@@ -57,6 +57,39 @@ cmd /c "echo content > path\to\file.txt"
 - `cmd /c` (cmd.exe is not subject to CLM)
 - `apply_patch` (Codex built-in tool, bypasses shell entirely)
 
+## Known Normal-Privilege Operations
+
+Some winsmux workflows are known to need credentials, network access, GUI access,
+or writes outside the repository. In Codex sessions, run these with normal
+privileges from the start instead of first trying the sandbox and repeating the
+same known failure:
+
+1. `winsmux-core/scripts/sync-roadmap.ps1` when updating planning.
+   - It writes both repo-local generated docs and the external planning root,
+     including the external `ROADMAP.md`.
+2. GitHub live-state and write operations through `gh`.
+   - This includes issue, PR, check, workflow-run, merge, release, and `gh api`
+     operations used for release gates or issue cleanup.
+   - The Windows credential store and network access are not reliable from the
+     sandbox.
+3. Local git index and commit operations used to prepare release PRs.
+   - This includes `git add` and `git commit` when the Windows sandbox cannot
+     create `.git/index.lock`.
+4. Remote git operations used for release work.
+   - This includes `git fetch`, `git pull`, `git push`, and tag pushes when the
+     command needs remote network or credential access.
+5. npm registry release verification.
+   - This includes `npm view winsmux@<version>` and other package-publication
+     checks that contact the npm registry.
+6. Desktop app launch, installer launch, and GUI/E2E workflows.
+   - This includes Tauri desktop runs, installer smoke checks, and browser or
+     desktop automation that opens windows or drives the installed app.
+
+Do not use this as a blanket rule for local-only reads, diffs, tests, builds, or
+file edits inside the repository. Keep sandboxed execution for local work unless
+one of the known categories above applies or a sandbox-specific denial is the
+expected result.
+
 ## Project Context
 
 winsmux is a Windows-native AI agent orchestration platform.
@@ -111,12 +144,13 @@ When updating planning:
 1. Keep task metadata in `backlog.yaml` in English unless the task explicitly requires otherwise.
 2. Generate planning views through `winsmux-core/scripts/sync-roadmap.ps1`.
    - This now refreshes `ROADMAP.md` and the internal-only planning docs under `docs/internal/`.
-3. Maintain live Japanese roadmap title overrides in the external planning root `roadmap-title-ja.psd1`.
-4. The repository copy is only `tasks/roadmap-title-ja.example.psd1` and must remain example-only.
-5. For `v0.20.0` and later, do not allow English task titles to leak into `ROADMAP.md`.
+3. Because `sync-roadmap.ps1` writes to the external planning root as well as the repo, run it with normal privileges from the start when updating planning in Codex. Do not first run it in the sandbox if the expected failure is access denied on the external `ROADMAP.md`.
+4. Maintain live Japanese roadmap title overrides in the external planning root `roadmap-title-ja.psd1`.
+5. The repository copy is only `tasks/roadmap-title-ja.example.psd1` and must remain example-only.
+6. For `v0.20.0` and later, do not allow English task titles to leak into `ROADMAP.md`.
    - If a new task is added or renamed in `backlog.yaml`, update the Japanese title override before considering roadmap sync complete.
-6. Treat missing Japanese roadmap titles as a sync gate failure, not as acceptable drift.
-7. Treat stale internal planning docs under `docs/internal/` as a sync failure when backlog-driven sections no longer match the external planning source of truth.
+7. Treat missing Japanese roadmap titles as a sync gate failure, not as acceptable drift.
+8. Treat stale internal planning docs under `docs/internal/` as a sync failure when backlog-driven sections no longer match the external planning source of truth.
 
 ## Private Maintainer Skill Gate
 

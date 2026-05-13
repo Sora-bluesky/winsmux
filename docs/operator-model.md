@@ -120,10 +120,12 @@ eventually be hosted. The current public values are:
 
 `local` preserves the existing managed pane behavior. `colab_cli` now records a
 worker state layer for `google-colab-cli` detection, session reuse metadata,
-stale-session marking, GPU fallback, and degraded-state reporting. `codex` and
-`noop` remain contract metadata until their later release lanes add execution
-behavior. A standard initialized project keeps six managed worker slots, and
-`agent-slots` remains the source of truth when present.
+stale-session marking, GPU fallback, and degraded-state reporting. The
+`winsmux workers` commands report, start, stop, and diagnose the six configured
+worker slots. `codex` and `noop` remain contract metadata until their later
+release lanes add execution behavior. A standard initialized project keeps six
+managed worker slots, and `agent-slots` remains the source of truth when
+present.
 
 Review is handled by any **review-capable slot**, not by a permanently dedicated reviewer pane.
 Meta-planning follows the same rule: the current Claude/Codex role pair is an
@@ -144,6 +146,7 @@ The public first-run entrypoints now converge on:
 - `winsmux launch`
 - `winsmux launcher presets [--json]`
 - `winsmux launcher lifecycle [preset|--clear] [--json]`
+- `winsmux workers <status|start|stop|doctor> [slot|all] [--json]`
 - `winsmux conflict-preflight`
 - `winsmux compare <runs|preflight|promote>`
 

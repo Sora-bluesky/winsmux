@@ -365,6 +365,8 @@ function Get-PaneControlManifestEntries {
             HeadSha             = [string](Get-PaneControlValue -InputObject $pane -Name 'head_sha' -Default '')
             ChangedFileCount    = [int](Get-PaneControlValue -InputObject $pane -Name 'changed_file_count' -Default 0)
             ChangedFiles        = @(ConvertFrom-PaneControlChangedFiles -Value (Get-PaneControlValue -InputObject $pane -Name 'changed_files' -Default @()))
+            LastCommand         = [string](Get-PaneControlValue -InputObject $pane -Name 'last_command' -Default '')
+            LastCommandAt       = [string](Get-PaneControlValue -InputObject $pane -Name 'last_command_at' -Default '')
             LastEvent           = [string](Get-PaneControlValue -InputObject $pane -Name 'last_event' -Default '')
             LastEventAt         = [string](Get-PaneControlValue -InputObject $pane -Name 'last_event_at' -Default '')
             ParentRunId         = [string](Get-PaneControlValue -InputObject $pane -Name 'parent_run_id' -Default '')
