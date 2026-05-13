@@ -63,9 +63,13 @@ winsmux workers doctor
 Colab 対応ワーカースロットでは、ファイルを指定して単発実行し、ログを確認できます。
 
 ```powershell
-winsmux workers exec w2 --script workers/colab/impl_worker.py
+winsmux workers exec w2 --script workers/colab/impl_worker.py --run-id demo-1 -- --task-json-inline '{"task_id":"demo-1","title":"この変更を実装する"}' --worker-id worker-2 --run-id demo-1
 winsmux workers logs w2
 ```
+
+`workers/colab/` の追跡済みテンプレートは、実装、批評、リポジトリ調査、
+テスト実行計画、重い再判定を扱います。各テンプレートは構造化 JSON を出力し、
+既定では `/content/winsmux_artifacts/<worker_id>/<run_id>/` に成果物を書き込みます。
 
 アップロードは安全側に制限しています。明示したファイルは対象にできますが、
 ディレクトリを送る場合は `--allow-dir` が必要です。その場合も `.git`、秘密情報、

@@ -67,6 +67,7 @@ tests/*
 !tests/GitHubWritePreflight.Tests.ps1
 !tests/McpServerContract.Tests.ps1
 !tests/HarnessContract.Tests.ps1
+!tests/ColabWorkerTemplates.Tests.ps1
 !tests/NpmReleasePackage.Tests.ps1
 !tests/VersionSurface.Tests.ps1
 !tests/README.md
@@ -145,6 +146,8 @@ pnpm-debug.log*
 .npm/
 .yarn/cache/
 .pnp.*
+__pycache__/
+*.py[cod]
 
 # =========================
 # Build output

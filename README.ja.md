@@ -88,7 +88,7 @@ winsmux send worker-2 "最新の認証変更をレビューしてください。
 winsmux health-check
 winsmux workers status
 winsmux workers doctor
-winsmux workers exec w2 --script workers/colab/impl_worker.py
+winsmux workers exec w2 --script workers/colab/impl_worker.py --run-id demo-1 -- --task-json-inline '{"task_id":"demo-1","title":"この変更を実装する"}' --worker-id worker-2 --run-id demo-1
 winsmux workers upload w2 data/input.json --remote /content/input.json
 winsmux workers download w2 /content/output.json
 winsmux review-pack <run_id> --json

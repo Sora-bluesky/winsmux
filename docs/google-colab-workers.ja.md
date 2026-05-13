@@ -159,19 +159,26 @@ winsmux はこれを実行時メタデータとして記録します。正確な
 
 ## タスクを実行する
 
-プロジェクト内にスクリプトを作ります。
+リポジトリには `workers/colab/` 配下の薄いテンプレートが含まれています。
 
-```powershell
-New-Item -ItemType Directory -Force workers\colab | Out-Null
-@'
-print("hello from colab worker")
-'@ > workers\colab\impl_worker.py
-```
+- `impl_worker.py`
+- `critic_worker.py`
+- `scout_worker.py`
+- `test_worker.py`
+- `heavy_judge_worker.py`
+
+各テンプレートは `--task-json`、`--task-json-inline`、または
+`WINSMUX_TASK_JSON` からタスク JSON を受け取ります。標準出力へ構造化 JSON を返し、
+既定では `/content/winsmux_artifacts/<worker_id>/<run_id>/` にロール別の成果物を書き込みます。
+リモート成果物と winsmux 側の実行メタデータを揃えるため、スクリプト引数の区切りの後にも
+同じ `--run-id` を渡してください。入力が不正な場合は非ゼロで終了し、
+`status: failed` と `errors` 配列を返します。
 
 実行します。
 
 ```powershell
-winsmux workers exec w2 --script workers/colab/impl_worker.py --run-id demo-1 --json
+$task = '{"task_id":"demo-1","title":"この変更を実装する","changed_files":["src/app.ts"],"verification_plan":["npm test"]}'
+winsmux workers exec w2 --script workers/colab/impl_worker.py --run-id demo-1 --json -- --task-json-inline $task --worker-id worker-2 --run-id demo-1
 winsmux workers logs w2 --run-id demo-1
 ```
 

@@ -164,19 +164,26 @@ for loading the exact model, API target, quantization, or distilled checkpoint.
 
 ## Run a task
 
-Create a script in the project:
+The repository includes thin templates in `workers/colab/`:
 
-```powershell
-New-Item -ItemType Directory -Force workers\colab | Out-Null
-@'
-print("hello from colab worker")
-'@ > workers\colab\impl_worker.py
-```
+- `impl_worker.py`
+- `critic_worker.py`
+- `scout_worker.py`
+- `test_worker.py`
+- `heavy_judge_worker.py`
+
+Each template accepts task JSON through `--task-json`, `--task-json-inline`, or
+`WINSMUX_TASK_JSON`. It prints a structured JSON result to stdout and writes
+role-specific artifacts under `/content/winsmux_artifacts/<worker_id>/<run_id>/`
+by default. Pass the same `--run-id` after the script-argument delimiter so
+remote artifacts stay aligned with the winsmux run metadata. Invalid input exits
+non-zero and still returns `status: failed` with an `errors` array.
 
 Run it:
 
 ```powershell
-winsmux workers exec w2 --script workers/colab/impl_worker.py --run-id demo-1 --json
+$task = '{"task_id":"demo-1","title":"Implement this change","changed_files":["src/app.ts"],"verification_plan":["npm test"]}'
+winsmux workers exec w2 --script workers/colab/impl_worker.py --run-id demo-1 --json -- --task-json-inline $task --worker-id worker-2 --run-id demo-1
 winsmux workers logs w2 --run-id demo-1
 ```
 

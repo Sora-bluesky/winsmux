@@ -50,12 +50,28 @@ Colab-backed slots also support file-backed one-shot execution and safe artifact
 movement:
 
 ```powershell
-winsmux workers exec w2 --script workers/colab/impl_worker.py
+winsmux workers exec w2 --script workers/colab/impl_worker.py --run-id demo-1 -- --task-json-inline '{"task_id":"demo-1","title":"Implement this change"}' --worker-id worker-2 --run-id demo-1
 winsmux workers logs w2 --run-id <run_id>
 winsmux workers upload w2 data/input.json --remote /content/input.json
 winsmux workers upload w2 data --remote /content/data --allow-dir data
 winsmux workers download w2 /content/output.json --output artifacts/worker-output
 ```
+
+The tracked templates under `workers/colab/` are:
+
+- `impl_worker.py`
+- `critic_worker.py`
+- `scout_worker.py`
+- `test_worker.py`
+- `heavy_judge_worker.py`
+
+Each template accepts task JSON through `--task-json`, `--task-json-inline`, or
+`WINSMUX_TASK_JSON`. It writes a role-specific artifact under
+`/content/winsmux_artifacts/<worker_id>/<run_id>/` by default and prints a
+structured JSON result. Pass the same `--run-id` after the script-argument
+delimiter so remote artifacts stay aligned with the winsmux run metadata.
+Invalid input exits non-zero and still returns `status: failed` with an `errors`
+array.
 
 Directory uploads require `--allow-dir`. The upload manifest excludes `.git`,
 secret-like files, `node_modules`, virtual environments, build outputs,
