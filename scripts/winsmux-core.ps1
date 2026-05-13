@@ -6530,7 +6530,10 @@ function Invoke-WorkersDoctor {
         } elseif ([bool](Get-SendConfigValue -InputObject $auth -Name 'available' -Default $false)) {
             $checks.Add((New-WorkersDoctorCheck -Status 'pass' -Label 'colab auth' -Detail ([string](Get-SendConfigValue -InputObject $auth -Name 'state' -Default 'authenticated')) -Action '')) | Out-Null
         } else {
-            $checks.Add((New-WorkersDoctorCheck -Status 'fail' -Label 'colab auth' -Detail ([string](Get-SendConfigValue -InputObject $auth -Name 'reason' -Default 'colab_auth_unverified')) -Action 'Authenticate google-colab-cli in the local user session.')) | Out-Null
+            $reason = [string](Get-SendConfigValue -InputObject $auth -Name 'reason' -Default 'colab_auth_unverified')
+            $status = if ([string]::Equals($reason, 'colab_auth_unverified', [System.StringComparison]::OrdinalIgnoreCase)) { 'warn' } else { 'fail' }
+            $action = if ($status -eq 'warn') { 'Run a google-colab-cli command or continue; the adapter may complete authentication interactively.' } else { 'Authenticate google-colab-cli in the local user session.' }
+            $checks.Add((New-WorkersDoctorCheck -Status $status -Label 'colab auth' -Detail $reason -Action $action)) | Out-Null
         }
     }
 

@@ -524,6 +524,45 @@ agent-slots:
         }
     }
 
+    It 'keeps a colab_cli worker available when auth is only unverified by winsmux' {
+        $fakeCli = Join-Path $script:settingsTempRoot 'google-colab-cli.cmd'
+        Write-PsmuxBridgeTestFile -Path $fakeCli -Content '@echo off'
+
+        $previousCli = $env:WINSMUX_COLAB_CLI
+        $previousAuth = $env:WINSMUX_COLAB_AUTH_STATE
+        $previousGpu = $env:WINSMUX_COLAB_AVAILABLE_GPUS
+        try {
+            $env:WINSMUX_COLAB_CLI = $fakeCli
+            Remove-Item Env:WINSMUX_COLAB_AUTH_STATE -ErrorAction SilentlyContinue
+            $env:WINSMUX_COLAB_AVAILABLE_GPUS = 'H100'
+            Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+@'
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: colab_cli
+    session-name: unverified-auth-session
+    gpu-preference: [H100]
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+            $settings = Get-BridgeSettings
+            $state = Update-WinsmuxColabSessionState -ProjectDir $script:settingsTempRoot -Settings $settings
+            $record = @($state.active_sessions)[0]
+
+            $record['state'] | Should -Be 'available'
+            $record['degraded'] | Should -Be $false
+            $record['degraded_reason'] | Should -Be ''
+            $record['auth_state'] | Should -Be 'unknown'
+            $record['auth_available'] | Should -Be $false
+        } finally {
+            if ($null -eq $previousCli) { Remove-Item Env:WINSMUX_COLAB_CLI -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_CLI = $previousCli }
+            if ($null -eq $previousAuth) { Remove-Item Env:WINSMUX_COLAB_AUTH_STATE -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_AUTH_STATE = $previousAuth }
+            if ($null -eq $previousGpu) { Remove-Item Env:WINSMUX_COLAB_AVAILABLE_GPUS -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_AVAILABLE_GPUS = $previousGpu }
+        }
+    }
+
     It 'marks renamed colab_cli sessions stale and reuses matching session records' {
         $fakeCli = Join-Path $script:settingsTempRoot 'google-colab-cli.cmd'
         Write-PsmuxBridgeTestFile -Path $fakeCli -Content '@echo off'
@@ -8982,6 +9021,21 @@ worker-backend: colab_cli
         $logsPayload = ($logsOutput | Select-Object -Last 1) | ConvertFrom-Json
         $logsPayload.source | Should -Be 'local'
         $logsPayload.log | Should -Match 'fake-colab run'
+    }
+
+    It 'lets the Colab adapter handle authentication when winsmux auth is unverified' {
+        New-WorkersFakeColabCli | Out-Null
+        Write-WorkersColabProjectConfig
+        Remove-Item Env:WINSMUX_COLAB_AUTH_STATE -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Path (Join-Path $script:workersTempRoot 'workers\colab') -Force | Out-Null
+        'print("hello")' | Set-Content -Path (Join-Path $script:workersTempRoot 'workers\colab\task.py') -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers exec w2 --script workers/colab/task.py --run-id auth-unverified --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+
+        $payload.status | Should -Be 'succeeded'
+        $payload.run_id | Should -Be 'auth-unverified'
+        $payload.cli_arguments[0] | Should -Be 'run'
     }
 
     It 'uploads only allowed files and excludes unsafe directory contents' {
