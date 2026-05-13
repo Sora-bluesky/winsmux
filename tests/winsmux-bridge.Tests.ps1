@@ -9180,11 +9180,13 @@ worker-backend: colab_cli
 
         $fileFinding = Get-WorkersColabSafetyFinding -Values @('{"task_id":"secret-file","token":"abcdefghijklmnopqrstuvwxyz123456"}')
         $inlineFinding = Get-WorkersColabSafetyFinding -Values @('{"task_id":"secret-inline","api_key":"abcdefghijklmnop"}')
+        $bearerFinding = Get-WorkersColabSafetyFinding -Values @('{"headers":{"Authorization":"Bearer abcdefghijklmnopqrstuvwxyz123456"}}')
         $equalsValues = Get-WorkersExecSafetyInputValues -ProjectDir $script:workersTempRoot -ScriptArgs @('--task-json=task-equals.json')
         $equalsFinding = Get-WorkersColabSafetyFinding -Values @($equalsValues)
 
         $fileFinding.Code | Should -Be 'secret_like_input'
         $inlineFinding.Code | Should -Be 'secret_like_input'
+        $bearerFinding.Code | Should -Be 'secret_like_input'
         ($equalsValues -join ' ') | Should -Match 'secret-equals'
         $equalsFinding.Code | Should -Be 'secret_like_input'
     }
@@ -9215,7 +9217,7 @@ worker-backend: colab_cli
     It 'redacts secrets and Drive paths from stored Colab logs and payload arguments' {
         $outsideLocalPath = 'D:\work\repo\secret.txt'
         $spacedLocalPath = 'C:\Users\Jane Doe\repo\secret.txt'
-        New-WorkersFakeColabCli -OutputLine 'fake-colab token=ghp_abcdefghijklmnopqrstuvwxyz123456 /content/drive/MyDrive/private/model.bin C:\Users\Example\secret.txt D:\work\repo\secret.txt C:\Users\Jane Doe\repo\secret.txt %*' | Out-Null
+        New-WorkersFakeColabCli -OutputLine 'fake-colab token=ghp_abcdefghijklmnopqrstuvwxyz123456 "Authorization":"Bearer abcdefghijklmnopqrstuvwxyz123456" /content/drive/MyDrive/private/model.bin C:\Users\Example\secret.txt D:\work\repo\secret.txt C:\Users\Jane Doe\repo\secret.txt %*' | Out-Null
         Write-WorkersColabProjectConfig
         New-Item -ItemType Directory -Path (Join-Path $script:workersTempRoot 'workers\colab') -Force | Out-Null
         'print("hello")' | Set-Content -Path (Join-Path $script:workersTempRoot 'workers\colab\task.py') -Encoding UTF8
@@ -9228,10 +9230,12 @@ worker-backend: colab_cli
         $outsideArgumentText = @(ConvertTo-WorkersSafeArgumentArray -Arguments @('run', '--script', $outsideLocalPath, '--output-dir', $spacedLocalPath)) -join ' '
 
         ($output | Out-String) | Should -Not -Match 'ghp_abcdefghijklmnopqrstuvwxyz123456'
+        ($output | Out-String) | Should -Not -Match 'abcdefghijklmnopqrstuvwxyz123456'
         ($output | Out-String) | Should -Not -Match '/content/drive/MyDrive/private/model.bin'
         ($output | Out-String) | Should -Not -Match ([regex]::Escape($outsideLocalPath))
         ($output | Out-String) | Should -Not -Match 'Jane Doe'
         $logText | Should -Not -Match 'ghp_abcdefghijklmnopqrstuvwxyz123456'
+        $logText | Should -Not -Match 'abcdefghijklmnopqrstuvwxyz123456'
         $logText | Should -Not -Match '/content/drive/MyDrive/private/model.bin'
         $logText | Should -Not -Match ([regex]::Escape($outsideLocalPath))
         $logText | Should -Not -Match 'Jane Doe'
