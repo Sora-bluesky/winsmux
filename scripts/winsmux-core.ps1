@@ -6205,6 +6205,9 @@ function Invoke-WorkersExec {
     foreach ($value in @(Get-WorkersExecSafetyInputValues -ProjectDir $options.ProjectDir -ScriptArgs @($options.ScriptArgs))) {
         $safetyInput.Add([string]$value) | Out-Null
     }
+    if (-not [string]::IsNullOrWhiteSpace([string]$env:WINSMUX_TASK_JSON)) {
+        $safetyInput.Add([string]$env:WINSMUX_TASK_JSON) | Out-Null
+    }
     if (-not [string]::IsNullOrWhiteSpace([string]$options.TaskId)) {
         $safetyInput.Add([string]$options.TaskId) | Out-Null
     }

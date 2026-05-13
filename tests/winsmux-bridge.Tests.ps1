@@ -9189,6 +9189,29 @@ worker-backend: colab_cli
         $equalsFinding.Code | Should -Be 'secret_like_input'
     }
 
+    It 'rejects WINSMUX_TASK_JSON Colab task input before invoking the adapter' {
+        New-WorkersFakeColabCli | Out-Null
+        Write-WorkersColabProjectConfig
+        New-Item -ItemType Directory -Path (Join-Path $script:workersTempRoot 'workers\colab') -Force | Out-Null
+        'print("hello")' | Set-Content -Path (Join-Path $script:workersTempRoot 'workers\colab\task.py') -Encoding UTF8
+        $previousTaskJson = $env:WINSMUX_TASK_JSON
+
+        try {
+            $env:WINSMUX_TASK_JSON = '{"task_id":"secret-env","token":"abcdefghijklmnopqrstuvwxyz123456"}'
+            $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers exec w2 --script workers/colab/task.py --run-id secret-env --json --project-dir $script:workersTempRoot 2>&1
+        } finally {
+            if ($null -eq $previousTaskJson) {
+                Remove-Item Env:WINSMUX_TASK_JSON -ErrorAction SilentlyContinue
+            } else {
+                $env:WINSMUX_TASK_JSON = $previousTaskJson
+            }
+        }
+
+        $LASTEXITCODE | Should -Be 1
+        ($output | Out-String) | Should -Match 'secret_like_input'
+        ($output | Out-String) | Should -Not -Match 'fake-colab'
+    }
+
     It 'redacts secrets and Drive paths from stored Colab logs and payload arguments' {
         $outsideLocalPath = 'D:\work\repo\secret.txt'
         $spacedLocalPath = 'C:\Users\Jane Doe\repo\secret.txt'
