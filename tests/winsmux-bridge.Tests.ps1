@@ -225,6 +225,7 @@ Describe 'reviewer.sh prompt contract' {
 Describe 'Get-BridgeSettings' {
     BeforeAll {
         . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\settings.ps1')
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\colab-backend.ps1')
     }
 
     BeforeEach {
@@ -441,6 +442,273 @@ agent-slots:
         $parsed['agent_slots'][0]['worker_backend'] | Should -Be 'colab_cli'
         $parsed['agent_slots'][0]['gpu_preference'] | Should -Be @('H100', 'A100', 'L4')
         $parsed['agent_slots'][0]['packages'] | Should -Be @('torch', 'transformers', 'accelerate')
+    }
+
+    It 'records degraded colab_cli worker state when google-colab-cli is missing' {
+@'
+agent: codex
+model: provider-default
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: colab_cli
+    worker-role: impl
+    session-name: '{{project_slug}}_w2_impl'
+    gpu-preference: [H100, A100, L4]
+    packages: [torch, transformers]
+    bootstrap: workers/colab/bootstrap_impl.py
+    task-script: workers/colab/impl_worker.py
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        $previousCli = $env:WINSMUX_COLAB_CLI
+        $previousAuth = $env:WINSMUX_COLAB_AUTH_STATE
+        $previousGpu = $env:WINSMUX_COLAB_AVAILABLE_GPUS
+        try {
+            $env:WINSMUX_COLAB_CLI = Join-Path $script:settingsTempRoot 'missing-google-colab-cli.exe'
+            Remove-Item Env:WINSMUX_COLAB_AUTH_STATE -ErrorAction SilentlyContinue
+            Remove-Item Env:WINSMUX_COLAB_AVAILABLE_GPUS -ErrorAction SilentlyContinue
+            Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+            $settings = Get-BridgeSettings
+            $state = Update-WinsmuxColabSessionState -ProjectDir $script:settingsTempRoot -Settings $settings
+
+            $state.degraded_count | Should -Be 1
+            Test-Path -LiteralPath (Get-WinsmuxColabStatePath -ProjectDir $script:settingsTempRoot) | Should -Be $true
+            $record = @($state.active_sessions)[0]
+            $record['slot_id'] | Should -Be 'worker-2'
+            $record['session_name'] | Should -Be ((Split-Path -Leaf $script:settingsTempRoot).ToLowerInvariant() + '_w2_impl')
+            $record['state'] | Should -Be 'degraded'
+            $record['degraded_reason'] | Should -Match 'colab_cli_missing'
+            $record['selected_gpu'] | Should -Be 'CPU'
+            $record['packages'] | Should -Be @('torch', 'transformers')
+        } finally {
+            if ($null -eq $previousCli) { Remove-Item Env:WINSMUX_COLAB_CLI -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_CLI = $previousCli }
+            if ($null -eq $previousAuth) { Remove-Item Env:WINSMUX_COLAB_AUTH_STATE -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_AUTH_STATE = $previousAuth }
+            if ($null -eq $previousGpu) { Remove-Item Env:WINSMUX_COLAB_AVAILABLE_GPUS -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_AVAILABLE_GPUS = $previousGpu }
+        }
+    }
+
+    It 'keeps a colab_cli worker degraded when a stale authenticated auth override remains without the CLI' {
+@'
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: colab_cli
+    session-name: stale-auth-session
+    gpu-preference: [H100]
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        $previousCli = $env:WINSMUX_COLAB_CLI
+        $previousAuth = $env:WINSMUX_COLAB_AUTH_STATE
+        $previousGpu = $env:WINSMUX_COLAB_AVAILABLE_GPUS
+        try {
+            $env:WINSMUX_COLAB_CLI = Join-Path $script:settingsTempRoot 'missing-google-colab-cli.exe'
+            $env:WINSMUX_COLAB_AUTH_STATE = 'authenticated'
+            $env:WINSMUX_COLAB_AVAILABLE_GPUS = 'H100'
+            Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+            $settings = Get-BridgeSettings
+            $state = Update-WinsmuxColabSessionState -ProjectDir $script:settingsTempRoot -Settings $settings
+            $record = @($state.active_sessions)[0]
+
+            $record['state'] | Should -Be 'degraded'
+            $record['degraded_reason'] | Should -Match 'colab_cli_missing'
+            $record['auth_state'] | Should -Be 'unknown'
+            $record['auth_available'] | Should -Be $false
+        } finally {
+            if ($null -eq $previousCli) { Remove-Item Env:WINSMUX_COLAB_CLI -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_CLI = $previousCli }
+            if ($null -eq $previousAuth) { Remove-Item Env:WINSMUX_COLAB_AUTH_STATE -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_AUTH_STATE = $previousAuth }
+            if ($null -eq $previousGpu) { Remove-Item Env:WINSMUX_COLAB_AVAILABLE_GPUS -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_AVAILABLE_GPUS = $previousGpu }
+        }
+    }
+
+    It 'marks renamed colab_cli sessions stale and reuses matching session records' {
+        $fakeCli = Join-Path $script:settingsTempRoot 'google-colab-cli.cmd'
+        Write-PsmuxBridgeTestFile -Path $fakeCli -Content '@echo off'
+
+        $previousCli = $env:WINSMUX_COLAB_CLI
+        $previousAuth = $env:WINSMUX_COLAB_AUTH_STATE
+        $previousGpu = $env:WINSMUX_COLAB_AVAILABLE_GPUS
+        try {
+            $env:WINSMUX_COLAB_CLI = $fakeCli
+            $env:WINSMUX_COLAB_AUTH_STATE = 'authenticated'
+            $env:WINSMUX_COLAB_AVAILABLE_GPUS = 'H100,A100'
+            Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+@'
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: colab_cli
+    session-name: old-session
+    gpu-preference: [H100, A100]
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+            $settings = Get-BridgeSettings
+            Update-WinsmuxColabSessionState -ProjectDir $script:settingsTempRoot -Settings $settings | Out-Null
+
+@'
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: colab_cli
+    session-name: new-session
+    gpu-preference: [H100, A100]
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+            $settings = Get-BridgeSettings
+            $firstNew = Update-WinsmuxColabSessionState -ProjectDir $script:settingsTempRoot -Settings $settings
+            $secondNew = Update-WinsmuxColabSessionState -ProjectDir $script:settingsTempRoot -Settings $settings
+
+            $store = Get-Content -LiteralPath (Get-WinsmuxColabStatePath -ProjectDir $script:settingsTempRoot) -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
+            $old = @($store.sessions | Where-Object { $_.session_name -eq 'old-session' })[0]
+            $current = @($store.sessions | Where-Object { $_.session_name -eq 'new-session' })[0]
+            $old.state | Should -Be 'stale'
+            $old.stale | Should -Be $true
+            $old.stale_reason | Should -Be 'slot_session_name_changed'
+            $current.state | Should -Be 'available'
+            $current.selected_gpu | Should -Be 'H100'
+            @($firstNew.active_sessions)[0]['reused_session'] | Should -Be $false
+            @($secondNew.active_sessions)[0]['reused_session'] | Should -Be $true
+        } finally {
+            if ($null -eq $previousCli) { Remove-Item Env:WINSMUX_COLAB_CLI -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_CLI = $previousCli }
+            if ($null -eq $previousAuth) { Remove-Item Env:WINSMUX_COLAB_AUTH_STATE -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_AUTH_STATE = $previousAuth }
+            if ($null -eq $previousGpu) { Remove-Item Env:WINSMUX_COLAB_AVAILABLE_GPUS -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_AVAILABLE_GPUS = $previousGpu }
+        }
+    }
+
+    It 'marks removed or backend-changed colab_cli sessions stale' {
+        $fakeCli = Join-Path $script:settingsTempRoot 'google-colab-cli.cmd'
+        Write-PsmuxBridgeTestFile -Path $fakeCli -Content '@echo off'
+
+        $previousCli = $env:WINSMUX_COLAB_CLI
+        $previousAuth = $env:WINSMUX_COLAB_AUTH_STATE
+        $previousGpu = $env:WINSMUX_COLAB_AVAILABLE_GPUS
+        try {
+            $env:WINSMUX_COLAB_CLI = $fakeCli
+            $env:WINSMUX_COLAB_AUTH_STATE = 'authenticated'
+            $env:WINSMUX_COLAB_AVAILABLE_GPUS = 'H100'
+            Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+@'
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: colab_cli
+    session-name: colab-session
+    gpu-preference: [H100]
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+            $settings = Get-BridgeSettings
+            Update-WinsmuxColabSessionState -ProjectDir $script:settingsTempRoot -Settings $settings | Out-Null
+
+@'
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    session-name: colab-session
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+            $settings = Get-BridgeSettings
+            $state = Update-WinsmuxColabSessionState -ProjectDir $script:settingsTempRoot -Settings $settings
+            $stale = @($state.sessions | Where-Object { $_['session_name'] -eq 'colab-session' })[0]
+
+            $state.degraded_count | Should -Be 0
+            $stale['state'] | Should -Be 'stale'
+            $stale['stale_reason'] | Should -Be 'slot_removed_or_backend_changed'
+        } finally {
+            if ($null -eq $previousCli) { Remove-Item Env:WINSMUX_COLAB_CLI -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_CLI = $previousCli }
+            if ($null -eq $previousAuth) { Remove-Item Env:WINSMUX_COLAB_AUTH_STATE -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_AUTH_STATE = $previousAuth }
+            if ($null -eq $previousGpu) { Remove-Item Env:WINSMUX_COLAB_AVAILABLE_GPUS -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_AVAILABLE_GPUS = $previousGpu }
+        }
+    }
+
+    It 'recovers from unreadable colab_cli session state by rewriting degraded active records' {
+        $fakeCli = Join-Path $script:settingsTempRoot 'google-colab-cli.cmd'
+        Write-PsmuxBridgeTestFile -Path $fakeCli -Content '@echo off'
+
+        $previousCli = $env:WINSMUX_COLAB_CLI
+        $previousAuth = $env:WINSMUX_COLAB_AUTH_STATE
+        $previousGpu = $env:WINSMUX_COLAB_AVAILABLE_GPUS
+        try {
+            $env:WINSMUX_COLAB_CLI = $fakeCli
+            $env:WINSMUX_COLAB_AUTH_STATE = 'authenticated'
+            $env:WINSMUX_COLAB_AVAILABLE_GPUS = 'H100'
+            Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+@'
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: colab_cli
+    session-name: unreadable-state-session
+    gpu-preference: [H100]
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+            $statePath = Get-WinsmuxColabStatePath -ProjectDir $script:settingsTempRoot
+            Write-PsmuxBridgeTestFile -Path $statePath -Content '{ invalid json'
+
+            $settings = Get-BridgeSettings
+            $state = Update-WinsmuxColabSessionState -ProjectDir $script:settingsTempRoot -Settings $settings
+            $record = @($state.active_sessions)[0]
+            $store = Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
+
+            $record['state'] | Should -Be 'degraded'
+            $record['degraded_reason'] | Should -Match 'colab_state_unreadable'
+            @($store.sessions)[0].degraded_reason | Should -Match 'colab_state_unreadable'
+        } finally {
+            if ($null -eq $previousCli) { Remove-Item Env:WINSMUX_COLAB_CLI -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_CLI = $previousCli }
+            if ($null -eq $previousAuth) { Remove-Item Env:WINSMUX_COLAB_AUTH_STATE -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_AUTH_STATE = $previousAuth }
+            if ($null -eq $previousGpu) { Remove-Item Env:WINSMUX_COLAB_AVAILABLE_GPUS -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_AVAILABLE_GPUS = $previousGpu }
+        }
+    }
+
+    It 'builds degraded fallback records when colab_cli state refresh fails' {
+@'
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: colab_cli
+    session-name: fallback-session
+    worktree-mode: managed
+  - slot-id: worker-3
+    runtime-role: worker
+    worker-backend: local
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        $settings = Get-BridgeSettings
+        $records = @(New-WinsmuxColabStateUpdateFailureRecords -ProjectDir $script:settingsTempRoot -Settings $settings -Reason 'colab_state_update_failed')
+
+        $records.Count | Should -Be 1
+        $records[0]['slot_id'] | Should -Be 'worker-2'
+        $records[0]['state'] | Should -Be 'degraded'
+        $records[0]['degraded_reason'] | Should -Be 'colab_state_update_failed'
+        $records[0]['selected_gpu'] | Should -Be 'CPU'
+    }
+
+    It 'selects the first available GPU and treats missing inventory as CPU without degradation' {
+        $withFallback = Resolve-WinsmuxColabGpuSelection -GpuPreference @('H100', 'A100', 'L4') -AvailableGpu @('L4')
+        $withFallback.selected | Should -Be 'L4'
+        $withFallback.degraded | Should -Be $true
+        $withFallback.reason | Should -Be 'gpu_fallback_selected'
+
+        $withoutInventory = Resolve-WinsmuxColabGpuSelection -GpuPreference @('H100', 'A100') -AvailableGpu @()
+        $withoutInventory.selected | Should -Be 'CPU'
+        $withoutInventory.degraded | Should -Be $false
+        $withoutInventory.reason | Should -Be ''
+        $withoutInventory.inventory_known | Should -Be $false
+        $withoutInventory.fallback_chain | Should -Contain 'CPU'
     }
 
     It 'parses per-role agent and model overrides and falls back to global settings' {
@@ -2641,6 +2909,50 @@ panes:
         $entries[0].LaunchDir | Should -Be 'C:\repo\.worktrees\worker-1'
         $entries[0].BuilderBranch | Should -Be 'worktree-worker-1'
         $entries[0].GitWorktreeDir | Should -Be 'C:\repo\.git\worktrees\worker-1'
+    }
+
+    It 'round-trips colab session manifest metadata as structured pane-control data' {
+        Save-WinsmuxManifest -ProjectDir $script:paneControlTempRoot -Manifest ([ordered]@{
+            version = 1
+            saved_at = '2026-05-13T00:00:00Z'
+            session = [ordered]@{
+                name = 'winsmux-orchestra'
+                project_dir = $script:paneControlTempRoot
+                git_worktree_dir = (Join-Path $script:paneControlTempRoot '.git')
+            }
+            panes = [ordered]@{
+                'worker-2' = [ordered]@{
+                    pane_id = '%3'
+                    slot_id = 'worker-2'
+                    worker_backend = 'colab_cli'
+                    role = 'Worker'
+                    exec_mode = $false
+                    launch_dir = $script:paneControlTempRoot
+                    status = 'backend_degraded'
+                    colab_session = [ordered]@{
+                        worker_backend = 'colab_cli'
+                        session_name = 'winsmux_worker_2'
+                        state = 'degraded'
+                        degraded_reason = 'colab_cli_missing;gpu_inventory_unavailable'
+                    }
+                    task = $null
+                }
+            }
+            tasks = [ordered]@{
+                queued = @()
+                in_progress = @()
+                completed = @()
+            }
+            worktrees = [ordered]@{}
+        })
+
+        $entries = @(Get-PaneControlManifestEntries -ProjectDir $script:paneControlTempRoot)
+
+        $entries.Count | Should -Be 1
+        $entries[0].WorkerBackend | Should -Be 'colab_cli'
+        $entries[0].Status | Should -Be 'backend_degraded'
+        $entries[0].ColabSession['worker_backend'] | Should -Be 'colab_cli'
+        $entries[0].ColabSession['degraded_reason'] | Should -Be 'colab_cli_missing;gpu_inventory_unavailable'
     }
 
     It 'ignores stale worker worktree metadata when reading a non-worker entry' {
@@ -16227,10 +16539,32 @@ Describe 'deferred worker startup' {
         $script:deferredStatusWrites | Should -Be @('deferred_start_failed')
     }
 
+    It 'blocks a degraded Colab backend pane instead of sending task text to the shell' {
+        $entry = [PSCustomObject]@{
+            Label             = 'worker-2'
+            PaneId            = '%3'
+            Status            = 'backend_degraded'
+            BootstrapPlanPath = $script:deferredPlanPath
+            CapabilityAdapter = 'codex'
+            ProviderTarget    = ''
+            ColabSession      = [PSCustomObject]@{
+                degraded_reason = 'colab_cli_missing;gpu_inventory_unavailable'
+            }
+        }
+
+        { Start-DeferredPaneFromManifestEntry -ProjectDir $script:deferredTempRoot -ManifestEntry $entry } |
+            Should -Throw "*colab_cli_missing*"
+
+        Should -Invoke Wait-PaneShellReady -Times 0 -Exactly
+        $script:deferredSendCommands.Count | Should -Be 0
+        $script:deferredStatusWrites.Count | Should -Be 0
+    }
+
     It 'keeps send, dispatch-task, and monitor paths aware of deferred panes' {
         $script:deferredCoreContent | Should -Match 'function Start-DeferredPaneFromManifestEntry'
         $script:deferredCoreContent | Should -Match 'Start-DeferredPaneFromManifestEntry -ProjectDir \$projectDir -ManifestEntry \$context'
         $script:deferredCoreContent | Should -Match 'Start-DeferredPaneFromManifestEntry -ProjectDir \$projectDir -ManifestEntry \$manifestEntry'
+        $script:deferredCoreContent | Should -Match 'backend_degraded'
         $script:deferredCoreContent | Should -Match 'deferred_starting'
         $script:deferredMonitorContent | Should -Match 'deferred_start_failed'
     }

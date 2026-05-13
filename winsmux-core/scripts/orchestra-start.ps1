@@ -9,6 +9,7 @@ $scriptDir = $PSScriptRoot
 . "$scriptDir/manifest.ps1"
 . "$scriptDir/pane-env.ps1"
 . "$scriptDir/orchestra-ui-attach.ps1"
+. "$scriptDir/colab-backend.ps1"
 
 Set-StrictMode -Version Latest
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -818,7 +819,7 @@ function Test-OrchestraPaneBootstrapVerificationDeferred {
         return $false
     }
 
-    return @('deferred_start', 'deferred_starting') -contains $status.Trim().ToLowerInvariant()
+    return @('deferred_start', 'deferred_starting', 'backend_degraded') -contains $status.Trim().ToLowerInvariant()
 }
 
 function Get-AgentLaunchCommand {
@@ -1138,6 +1139,7 @@ function Save-OrchestraSessionState {
         $paneEntry = [PSCustomObject]@{
             pane_id                    = $paneSummary.PaneId
             slot_id                    = $paneSummary.SlotId
+            worker_backend             = [string](Get-OrchestraObjectPropertyValue -InputObject $paneSummary -Name 'WorkerBackend' -Default 'local')
             role                       = $paneSummary.Role
             exec_mode                  = [bool]$paneSummary.ExecMode
             project_dir                = $paneSummary.ProjectDir
@@ -1160,6 +1162,7 @@ function Save-OrchestraSessionState {
             bootstrap_marker_path      = [string](Get-OrchestraObjectPropertyValue -InputObject $paneSummary -Name 'BootstrapMarkerPath' -Default '')
             task                       = $null
             status                     = if ($paneSummary.Status) { $paneSummary.Status } else { 'ready' }
+            colab_session              = (Get-OrchestraObjectPropertyValue -InputObject $paneSummary -Name 'ColabSessionState' -Default $null)
         }
         if ($paneSummary.Contains('BootstrapFailures') -and $paneSummary['BootstrapFailures']) {
             $paneEntry | Add-Member -NotePropertyName 'bootstrap_failures' -NotePropertyValue $paneSummary['BootstrapFailures']
@@ -1924,6 +1927,8 @@ if ($MyInvocation.InvocationName -ne '.') {
     $createdPaneIds = @()
     $bootstrapPaneId = $null
     $createdWorktrees = @()
+    $colabSessionState = $null
+    $colabSessionMap = @{}
     try {
         Enable-OrchestraManagedWarmSuppression
         $script:winsmuxBin = Get-WinsmuxBin
@@ -1955,6 +1960,34 @@ if ($MyInvocation.InvocationName -ne '.') {
             researchers        = $layoutSettings.Researchers
             reviewers          = $layoutSettings.Reviewers
         } | Out-Null
+        try {
+            $colabSessionState = Update-WinsmuxColabSessionState -ProjectDir $projectDir -Settings $settings
+            foreach ($entry in @($colabSessionState.active_sessions)) {
+                $slotId = [string](Get-WinsmuxColabValue -InputObject $entry -Name 'slot_id' -Default '')
+                if (-not [string]::IsNullOrWhiteSpace($slotId)) {
+                    $colabSessionMap[$slotId] = $entry
+                }
+            }
+            if (@($colabSessionState.active_sessions).Count -gt 0) {
+                Write-WinsmuxLog -Level INFO -Event 'preflight.colab_backend.state' -Message 'Updated Colab backend session state.' -Data ([ordered]@{
+                    state_path      = [string]$colabSessionState.path
+                    active_sessions = @($colabSessionState.active_sessions).Count
+                    degraded_count  = [int]$colabSessionState.degraded_count
+                }) | Out-Null
+            }
+        } catch {
+            Write-Warning "Colab backend state update failed: $($_.Exception.Message)"
+            foreach ($entry in @(New-WinsmuxColabStateUpdateFailureRecords -ProjectDir $projectDir -Settings $settings -Reason 'colab_state_update_failed')) {
+                $slotId = [string](Get-WinsmuxColabValue -InputObject $entry -Name 'slot_id' -Default '')
+                if (-not [string]::IsNullOrWhiteSpace($slotId)) {
+                    $colabSessionMap[$slotId] = $entry
+                }
+            }
+            Write-WinsmuxLog -Level WARN -Event 'preflight.colab_backend.state_failed' -Message 'Colab backend session state update failed.' -Data ([ordered]@{
+                error = $_.Exception.Message
+                degraded_count = [int]$colabSessionMap.Count
+            }) | Out-Null
+        }
         Write-WinsmuxLog -Level INFO -Event 'preflight.winsmux_bin.ready' -Message "Using winsmux binary: $winsmuxBin." -Data @{ winsmux_bin = $winsmuxBin } | Out-Null
         Write-WinsmuxLog -Level INFO -Event 'preflight.bridge_script.ready' -Message "Using bridge script: $bridgeScript." -Data @{ bridge_script = $bridgeScript } | Out-Null
         Write-WinsmuxLog -Level INFO -Event 'preflight.project_dir.resolved' -Message "Resolved project directory: $projectDir." -Data @{ project_dir = $projectDir } | Out-Null
@@ -2223,6 +2256,15 @@ if ($MyInvocation.InvocationName -ne '.') {
         $launchCommand = Get-AgentLaunchCommand -Agent $slotAgentConfig.Agent -Model $slotAgentConfig.Model -ModelSource $slotAgentConfig.ModelSource -ReasoningEffort $slotAgentConfig.ReasoningEffort -ProjectDir $launchDir -GitWorktreeDir $launchGitWorktreeDir -RootPath $projectDir -ExecMode $false
         $supportsInterrupt = Test-OrchestraProviderInterruptAvailable -SlotAgentConfig $slotAgentConfig
         $deferPaneStart = Test-OrchestraPaneDeferredStart -Label $label -Role $canonicalRole -LayoutSettings $layoutSettings
+        $deferredPaneStatus = 'deferred_start'
+        $colabSessionEntry = $null
+        if ([string]::Equals(([string]$slotAgentConfig.WorkerBackend), 'colab_cli', [System.StringComparison]::OrdinalIgnoreCase) -and $colabSessionMap.ContainsKey($label)) {
+            $colabSessionEntry = $colabSessionMap[$label]
+            if ([bool](Get-WinsmuxColabValue -InputObject $colabSessionEntry -Name 'degraded' -Default $false)) {
+                $deferPaneStart = $true
+                $deferredPaneStatus = 'backend_degraded'
+            }
+        }
 
         Invoke-Bridge -Arguments @('name', $paneId, $label)
         try {
@@ -2250,11 +2292,15 @@ if ($MyInvocation.InvocationName -ne '.') {
                     -LaunchCommand $launchCommand `
                     -SupportsInterrupt $supportsInterrupt
                 if ($deferPaneStart) {
-                    $paneStatus = 'deferred_start'
-                    Write-WinsmuxLog -Level INFO -Event 'preflight.worker.deferred_start' -Message "Deferred worker startup for $label." -Data ([ordered]@{
+                    $paneStatus = $deferredPaneStatus
+                    $eventName = if ($paneStatus -eq 'backend_degraded') { 'preflight.worker.backend_degraded' } else { 'preflight.worker.deferred_start' }
+                    $eventMessage = if ($paneStatus -eq 'backend_degraded') { "Colab backend is degraded for $label." } else { "Deferred worker startup for $label." }
+                    Write-WinsmuxLog -Level INFO -Event $eventName -Message $eventMessage -Data ([ordered]@{
                         label               = $label
                         pane_id             = $paneId
                         bootstrap_plan_path = $bootstrapPlanPath
+                        worker_backend      = [string]$slotAgentConfig.WorkerBackend
+                        degraded_reason     = if ($null -ne $colabSessionEntry) { [string](Get-WinsmuxColabValue -InputObject $colabSessionEntry -Name 'degraded_reason' -Default '') } else { '' }
                     }) | Out-Null
                 } else {
                     Start-OrchestraPaneBootstrap -PaneId $paneId -PlanPath $bootstrapPlanPath
@@ -2281,6 +2327,8 @@ if ($MyInvocation.InvocationName -ne '.') {
             PaneId = $paneId
             SlotId = $label
             Role = $canonicalRole
+            WorkerBackend = [string]$slotAgentConfig.WorkerBackend
+            ColabSessionState = $colabSessionEntry
             Agent = [string]$slotAgentConfig.Agent
             Model = [string]$slotAgentConfig.Model
             CapabilityAdapter = [string]$slotAgentConfig.CapabilityAdapter

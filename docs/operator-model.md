@@ -118,8 +118,10 @@ eventually be hosted. The current public values are:
 - `colab_cli`
 - `noop`
 
-`local` preserves the existing managed pane behavior. `codex`, `colab_cli`, and
-`noop` are contract metadata until their later release lanes add execution
+`local` preserves the existing managed pane behavior. `colab_cli` now records a
+worker state layer for `google-colab-cli` detection, session reuse metadata,
+stale-session marking, GPU fallback, and degraded-state reporting. `codex` and
+`noop` remain contract metadata until their later release lanes add execution
 behavior. A standard initialized project keeps six managed worker slots, and
 `agent-slots` remains the source of truth when present.
 

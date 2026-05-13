@@ -1244,7 +1244,7 @@ function Invoke-AgentMonitorCycle {
 
         $checkedCount++
         $manifestPaneStatus = [string](Get-MonitorPropertyValue -InputObject $pane -Name 'status' -Default '')
-        if (@('deferred_start', 'deferred_starting', 'deferred_start_failed') -contains $manifestPaneStatus) {
+        if (@('deferred_start', 'deferred_starting', 'deferred_start_failed', 'backend_degraded') -contains $manifestPaneStatus) {
             $currentResults[$paneId] = $manifestPaneStatus
             $results.Add([ordered]@{
                 Label      = $label

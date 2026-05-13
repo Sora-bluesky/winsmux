@@ -350,6 +350,7 @@ function Get-PaneControlManifestEntries {
             ProjectDir          = $projectRoot
             Label               = $label
             PaneId              = [string](Get-PaneControlValue -InputObject $pane -Name 'pane_id' -Default '')
+            WorkerBackend       = [string](Get-PaneControlValue -InputObject $pane -Name 'worker_backend' -Default 'local')
             Role                = $role
             LaunchDir           = $launchDir
             BuilderBranch       = $builderBranch
@@ -381,6 +382,7 @@ function Get-PaneControlManifestEntries {
             AgentRole           = [string](Get-PaneControlValue -InputObject $pane -Name 'agent_role' -Default '')
             CapabilityAdapter   = [string](Get-PaneControlValue -InputObject $pane -Name 'capability_adapter' -Default '')
             Status              = [string](Get-PaneControlValue -InputObject $pane -Name 'status' -Default '')
+            ColabSession        = ConvertFrom-PaneControlSecurityPolicy -Value (Get-PaneControlValue -InputObject $pane -Name 'colab_session' -Default $null)
             BootstrapPlanPath   = [string](Get-PaneControlValue -InputObject $pane -Name 'bootstrap_plan_path' -Default '')
             BootstrapMarkerPath = [string](Get-PaneControlValue -InputObject $pane -Name 'bootstrap_marker_path' -Default '')
             TimeoutPolicy       = [string](Get-PaneControlValue -InputObject $pane -Name 'timeout_policy' -Default '')
