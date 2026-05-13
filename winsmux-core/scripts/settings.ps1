@@ -449,6 +449,17 @@ function New-BridgeManagedAgentSlots {
             worktree_mode  = 'managed'
             worker_backend = $normalizedWorkerBackend
         }
+        if ($index -eq 1) {
+            $slot.agent = 'codex'
+            $slot.model = 'provider-default'
+            $slot.model_source = 'provider-default'
+            $slot.worker_backend = 'codex'
+            $slot.worker_role = 'reviewer'
+            $slot.fallback_model = 'gpt-5.3-codex-spark'
+            $slot.pane_title = 'W1 Codex Reviewer'
+            $slots += $slot
+            continue
+        }
         if (-not [string]::IsNullOrWhiteSpace($Model)) {
             $slot.model = $Model
         }

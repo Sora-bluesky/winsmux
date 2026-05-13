@@ -258,7 +258,14 @@ Describe 'Get-BridgeSettings' {
         $settings.agent_slots.Count | Should -Be 6
         $settings.agent_slots[0].slot_id | Should -Be 'worker-1'
         $settings.agent_slots[0].runtime_role | Should -Be 'worker'
-        $settings.agent_slots[0].worker_backend | Should -Be 'local'
+        $settings.agent_slots[0].agent | Should -Be 'codex'
+        $settings.agent_slots[0].model | Should -Be 'provider-default'
+        $settings.agent_slots[0].model_source | Should -Be 'provider-default'
+        $settings.agent_slots[0].worker_backend | Should -Be 'codex'
+        $settings.agent_slots[0].worker_role | Should -Be 'reviewer'
+        $settings.agent_slots[0].fallback_model | Should -Be 'gpt-5.3-codex-spark'
+        $settings.agent_slots[0].pane_title | Should -Be 'W1 Codex Reviewer'
+        $settings.agent_slots[1].worker_backend | Should -Be 'local'
         $settings.builders | Should -Be 0
         $settings.researchers | Should -Be 0
         $settings.reviewers | Should -Be 0
@@ -8889,11 +8896,19 @@ worker-backend: colab_cli
         @($payload.workers).Count | Should -Be 6
         $payload.workers[0].slot | Should -Be 'w1'
         $payload.workers[0].slot_id | Should -Be 'worker-1'
-        $payload.workers[0].backend | Should -Be 'colab_cli'
-        $payload.workers[0].session | Should -Match '_worker_1$'
-        $payload.workers[0].actual_gpu | Should -Be 'CPU'
-        $payload.workers[0].degraded_reason | Should -Match 'colab_cli_missing'
+        $payload.workers[0].backend | Should -Be 'codex'
+        $payload.workers[0].role | Should -Be 'reviewer'
+        $payload.workers[0].session | Should -Be ''
+        $payload.workers[0].actual_gpu | Should -Be ''
+        $payload.workers[0].degraded_reason | Should -Be ''
         $payload.workers[0].state | Should -Be 'not_launched'
+        $payload.workers[1].slot | Should -Be 'w2'
+        $payload.workers[1].slot_id | Should -Be 'worker-2'
+        $payload.workers[1].backend | Should -Be 'colab_cli'
+        $payload.workers[1].session | Should -Match '_worker_2$'
+        $payload.workers[1].actual_gpu | Should -Be 'CPU'
+        $payload.workers[1].degraded_reason | Should -Match 'colab_cli_missing'
+        $payload.workers[1].state | Should -Be 'not_launched'
     }
 
     It 'stops one worker by slot alias and records the lifecycle command in the manifest' {
@@ -11657,6 +11672,266 @@ Set-Location '__DIGEST_TEMP_ROOT__'
     }
 }
 
+Describe 'winsmux review-pack command' {
+    BeforeAll {
+        $script:winsmuxCorePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        . $script:winsmuxCorePath 'version' *> $null
+    }
+
+    BeforeEach {
+        $script:reviewPackTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-review-pack-tests-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:reviewPackTempRoot -Force | Out-Null
+        $script:reviewPackManifestDir = Join-Path $script:reviewPackTempRoot '.winsmux'
+        New-Item -ItemType Directory -Path $script:reviewPackManifestDir -Force | Out-Null
+        $script:reviewPackManifestPath = Join-Path $script:reviewPackManifestDir 'manifest.yaml'
+        $script:reviewPackEventsPath = Join-Path $script:reviewPackManifestDir 'events.jsonl'
+
+        Push-Location $script:reviewPackTempRoot
+    }
+
+    AfterEach {
+        Pop-Location
+        if ($script:reviewPackTempRoot -and (Test-Path $script:reviewPackTempRoot)) {
+            Remove-Item -Path $script:reviewPackTempRoot -Recurse -Force
+        }
+
+        $global:Target = $null
+        $global:Rest = @()
+        Remove-Item function:\winsmux -ErrorAction SilentlyContinue
+    }
+
+    It 'writes a bounded reviewer packet without logs, secrets, local paths, or vendor content' {
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:reviewPackTempRoot
+panes:
+  worker-2:
+    pane_id: %6
+    role: Worker
+    task_id: task-474
+    parent_run_id: operator:session-1
+    goal: Ship bounded reviewer packets
+    task: Implement review-pack
+    task_type: implementation
+    task_state: in_progress
+    task_owner: worker-2
+    review_state: PENDING
+    priority: P1
+    blocking: true
+    branch: worktree-worker-2
+    head_sha: abc1234def5678
+    worktree: /home/alice/repo
+    changed_file_count: 7
+    changed_files: '["scripts/winsmux-core.ps1","node_modules/pkg/index.js","dist/app.exe",".env","/home/alice/repo/src/app.ts","\\\\server\\share\\file.ts","src/.."]'
+    write_scope: '["scripts/winsmux-core.ps1","tests/winsmux-bridge.Tests.ps1"]'
+    read_scope: '["docs/operator-model.md"]'
+    constraints: '["no raw logs in reviewer packet"]'
+    expected_output: Stable review-pack JSON
+    verification_plan: '["Invoke-Pester tests/winsmux-bridge.Tests.ps1"]'
+    review_required: true
+    provider_target: colab_cli:worker
+    agent_role: worker
+    timeout_policy: standard
+    last_event: operator.review_requested
+    last_event_at: 2026-04-10T12:00:00+09:00
+"@ | Set-Content -Path $script:reviewPackManifestPath -Encoding UTF8
+
+        $observationPack = New-ObservationPackFile -ProjectDir $script:reviewPackTempRoot -ObservationPack ([ordered]@{
+            run_id          = 'task:task-474'
+            task_id         = 'task-474'
+            pane_id         = '%6'
+            slot            = 'worker-2'
+            hypothesis      = 'bounded packets are enough for review'
+            result          = 'worker result ready from /workspace/winsmux'
+            confidence      = 0.74
+            next_action     = 'request_codex_review'
+            failing_command = 'Invoke-Pester /home/alice/repo/tests/winsmux-bridge.Tests.ps1 token=PLACEHOLDER_VALUE'
+        })
+        $consultationPacket = New-ConsultationPacketFile -ProjectDir $script:reviewPackTempRoot -ConsultationPacket ([ordered]@{
+            run_id         = 'task:task-474'
+            task_id        = 'task-474'
+            pane_id        = '%6'
+            slot           = 'worker-2'
+            kind           = 'consult_result'
+            mode           = 'final'
+            target_slot    = 'worker-1'
+            confidence     = 0.68
+            recommendation = 'verify packet boundaries before merge'
+            risks          = @('password = PLACEHOLDER_VALUE', 'reviewer still needs focused verification')
+        })
+
+        @(
+            ([ordered]@{
+                timestamp = '2026-04-10T12:01:00+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'operator.review_requested'
+                message   = 'review requested with local path /mnt/c/Users/alice/repo and /var/folders/alice/repo'
+                label     = 'worker-1'
+                pane_id   = '%3'
+                role      = 'Worker'
+                branch    = 'worktree-worker-2'
+                head_sha  = 'abc1234def5678'
+                data      = [ordered]@{
+                    task_id              = 'task-474'
+                    run_id               = 'task:task-474'
+                    observation_pack_ref = $observationPack.reference
+                    consultation_ref     = $consultationPacket.reference
+                    result               = 'worker result ready'
+                    confidence           = 0.74
+                    next_action          = 'request_codex_review'
+                    slot                 = 'worker-2'
+                    worktree             = '.worktrees/worker-2'
+                }
+            } | ConvertTo-Json -Compress -Depth 8),
+            ([ordered]@{
+                timestamp = '2026-04-10T12:02:00+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'pipeline.verify.partial'
+                message   = 'verification partial with token : PLACEHOLDER_VALUE'
+                label     = 'worker-2'
+                pane_id   = '%6'
+                role      = 'Worker'
+                branch    = 'worktree-worker-2'
+                head_sha  = 'abc1234def5678'
+                data      = [ordered]@{
+                    task_id = 'task-474'
+                    run_id  = 'task:task-474'
+                    verification_contract = [ordered]@{
+                        build = [ordered]@{ command = 'npm run build api_key = PLACEHOLDER_VALUE --prefix /tmp/repo'; outcome = 'PASS' }
+                        test  = [ordered]@{ command = 'Invoke-Pester C:\Users\Example\repo\tests\winsmux-bridge.Tests.ps1'; outcome = 'PARTIAL' }
+                    }
+                    verification_result = [ordered]@{
+                        outcome     = 'PARTIAL'
+                        summary     = 'rerun focused review-pack tests'
+                        next_action = 'rerun_verify'
+                    }
+                }
+            } | ConvertTo-Json -Compress -Depth 8)
+        ) | Set-Content -Path $script:reviewPackEventsPath -Encoding UTF8
+
+@'
+{
+  "worktree-worker-2": {
+    "status": "PENDING",
+    "branch": "worktree-worker-2",
+    "head_sha": "abc1234def5678",
+    "request": {
+      "branch": "worktree-worker-2",
+      "head_sha": "abc1234def5678",
+      "target_review_label": "worker-1",
+      "target_review_pane_id": "%3",
+      "target_review_role": "Worker",
+      "review_contract": {
+        "version": 1,
+        "source_task": "TASK-474",
+        "issue_ref": "#911",
+        "style": "bounded_pack",
+        "required_scope": [
+          "bounded_review_pack",
+          "review /home/alice/repo scope",
+          "token : PLACEHOLDER_VALUE"
+        ]
+      }
+    },
+    "reviewer": {
+      "pane_id": "%3",
+      "label": "worker-1",
+      "role": "Worker"
+    },
+    "updatedAt": "2026-04-10T12:01:00+09:00"
+  }
+}
+'@ | Set-Content -Path (Join-Path $script:reviewPackManifestDir 'review-state.json') -Encoding UTF8
+
+        function global:winsmux {
+            $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+            switch -Regex ($commandLine) {
+                '^capture-pane .*%6' { return @('gpt-5.4   64% context left', '? send   Ctrl+J newline', '>') }
+                default { throw "unexpected winsmux call: $commandLine" }
+            }
+        }
+
+        $result = (Invoke-ReviewPack -ReviewPackTarget 'task:task-474' -ReviewPackRest @('--json') | Out-String | ConvertFrom-Json -AsHashtable)
+        $pack = $result['review_pack']
+        $serialized = $pack | ConvertTo-Json -Depth 20
+
+        $pack['packet_type'] | Should -Be 'review_pack'
+        $pack['schema_version'] | Should -Be 1
+        $result['review_pack_ref'] | Should -Match '^\.winsmux/review-packs/review-pack-[a-f0-9]+\.json$'
+        Test-Path -LiteralPath (Join-Path $script:reviewPackTempRoot ($result['review_pack_ref'] -replace '/', '\')) | Should -Be $true
+        $pack['changed_files'] | Should -Be @('scripts/winsmux-core.ps1')
+        $pack['diff_summary']['raw_diff_included'] | Should -Be $false
+        $pack['commands_run'] -join '|' | Should -Match '\[REDACTED\]'
+        $pack['review_request']['required_scope'] | Should -Contain 'bounded_review_pack'
+        $pack['review_request']['required_scope'] -join '|' | Should -Match '\[LOCAL_PATH\]'
+        $pack['review_request']['required_scope'] -join '|' | Should -Match '\[REDACTED\]'
+        $pack['artifact_refs'] | Should -Contain $observationPack.reference
+        $pack['artifact_refs'] | Should -Contain $consultationPacket.reference
+        $pack['critic_objections'] -join '|' | Should -Match 'reviewer still needs focused verification'
+        $pack['unresolved_risks'] -join '|' | Should -Match 'reviewer still needs focused verification'
+        $pack['excluded_content'] | Should -Contain 'repository_dumps'
+        $pack['storage_policy']['repository_dump_stored'] | Should -Be $false
+        $pack['storage_policy']['full_conversation_history_stored'] | Should -Be $false
+        $serialized | Should -Not -Match 'PLACEHOLDER_VALUE'
+        $serialized | Should -Not -Match 'C:\\Users'
+        $serialized | Should -Not -Match 'home/alice'
+        $serialized | Should -Not -Match 'server/share'
+        $serialized | Should -Not -Match 'workspace/winsmux'
+        $serialized | Should -Not -Match 'var/folders'
+        $serialized | Should -Not -Match 'tmp/repo'
+        $serialized | Should -Not -Match 'src/\.\.'
+        $serialized | Should -Not -Match 'node_modules'
+        $serialized | Should -Not -Match 'dist/app.exe'
+        $serialized | Should -Not -Match '"\.env"'
+    }
+
+    It 'requires a run id' {
+        { Invoke-ReviewPack -ReviewPackTarget '--json' } | Should -Throw '*usage: winsmux review-pack*'
+    }
+}
+
+Describe 'winsmux dispatch-task routing' {
+    BeforeAll {
+        $script:dispatchCorePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $script:dispatchRouterPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\dispatch-router.ps1'
+        . $script:dispatchCorePath 'version' *> $null
+        . $script:dispatchRouterPath
+    }
+
+    It 'keeps reviewer worker slots out of generic worker dispatch targets' {
+        Mock Get-PaneControlManifestEntries {
+            @(
+                [PSCustomObject]@{ Label = 'worker-1'; PaneId = '%1'; Role = 'Worker'; WorkerRole = 'reviewer'; AgentRole = '' },
+                [PSCustomObject]@{ Label = 'worker-2'; PaneId = '%2'; Role = 'Worker'; WorkerRole = 'impl'; AgentRole = '' }
+            )
+        }
+
+        $targets = @(Get-DispatchTaskAvailableTargets -ProjectDir 'C:\repo')
+        $route = Get-DispatchRoute -Text 'implement bounded review packets' -AvailableTargets $targets -DefaultRole 'Worker'
+
+        $targets | Should -Be @('worker-2')
+        $route.SelectedRole | Should -Be 'Builder'
+        $route.SelectedTarget | Should -Be 'worker-2'
+    }
+
+    It 'does not fall back to labels when the manifest contains only reviewer worker slots' {
+        Mock Get-PaneControlManifestEntries {
+            @(
+                [PSCustomObject]@{ Label = 'worker-1'; PaneId = '%1'; Role = 'Worker'; WorkerRole = 'reviewer'; AgentRole = '' }
+            )
+        }
+        Mock Get-Labels { @{ 'worker-1' = '%1' } }
+
+        $targets = @(Get-DispatchTaskAvailableTargets -ProjectDir 'C:\repo')
+        $route = Get-DispatchRoute -Text 'implement bounded review packets' -AvailableTargets $targets -DefaultRole 'Worker'
+
+        $targets.Count | Should -Be 0
+        $route.HandleLocally | Should -Be $true
+    }
+}
+
 Describe 'winsmux explain command' {
     BeforeAll {
         $script:winsmuxCorePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
@@ -13171,11 +13446,17 @@ Describe 'public first-run helper' {
         $settings.worker_backend | Should -Be 'local'
         $settings.agent_slots.Count | Should -Be 6
         $settings.agent_slots[0].slot_id | Should -Be 'worker-1'
-        $settings.agent_slots[0].worker_backend | Should -Be 'local'
-        $slotKeys = if ($settings.agent_slots[0] -is [System.Collections.IDictionary]) {
-            @($settings.agent_slots[0].Keys)
+        $settings.agent_slots[0].agent | Should -Be 'codex'
+        $settings.agent_slots[0].model | Should -Be 'provider-default'
+        $settings.agent_slots[0].model_source | Should -Be 'provider-default'
+        $settings.agent_slots[0].worker_backend | Should -Be 'codex'
+        $settings.agent_slots[0].worker_role | Should -Be 'reviewer'
+        $settings.agent_slots[0].fallback_model | Should -Be 'gpt-5.3-codex-spark'
+        $settings.agent_slots[1].worker_backend | Should -Be 'local'
+        $slotKeys = if ($settings.agent_slots[1] -is [System.Collections.IDictionary]) {
+            @($settings.agent_slots[1].Keys)
         } else {
-            @($settings.agent_slots[0].PSObject.Properties.Name)
+            @($settings.agent_slots[1].PSObject.Properties.Name)
         }
         $slotKeys | Should -Not -Contain 'model'
         $settings.workspace_lifecycle_preset | Should -Be 'managed-worktree'
@@ -13202,8 +13483,11 @@ Describe 'public first-run helper' {
         $settings.model | Should -Be 'gpt-5.4-code'
         $settings.worker_count | Should -Be 2
         $settings.agent_slots.Count | Should -Be 2
-        $settings.agent_slots[0].agent | Should -Be 'codex-nightly'
-        $settings.agent_slots[0].model | Should -Be 'gpt-5.4-code'
+        $settings.agent_slots[0].agent | Should -Be 'codex'
+        $settings.agent_slots[0].model | Should -Be 'provider-default'
+        $settings.agent_slots[0].worker_role | Should -Be 'reviewer'
+        $settings.agent_slots[1].agent | Should -Be 'codex-nightly'
+        $settings.agent_slots[1].model | Should -Be 'gpt-5.4-code'
     }
 
     It 'returns already_initialized when config exists and force is not set' {

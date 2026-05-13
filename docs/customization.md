@@ -37,7 +37,7 @@ and each slot can override it with one of the contract values:
 - `colab_cli`: `google-colab-cli` worker state metadata
 - `noop`: disabled or placeholder worker metadata
 
-`v0.32.4` records Colab backend availability under
+Starting in `v0.32.4`, winsmux records Colab backend availability under
 `.winsmux/state/colab_sessions.json`. Missing `google-colab-cli`, missing auth,
 and unavailable `H100` / `A100` GPUs are recorded as degraded worker state.
 Renamed sessions are marked stale. winsmux does not silently fall back to a
@@ -63,6 +63,13 @@ coverage, and oversized files by default. Automatic `colab repl` or
 `colab console` loops are intentionally out of scope; workers run one command at
 a time through the configured `google-colab-cli`-compatible adapter.
 
+Before handing a worker result to the Codex reviewer slot, use
+`winsmux review-pack <run_id> --json`. The command writes a bounded packet under
+`.winsmux/review-packs` with changed files, test results, critic objections,
+remaining risks, commands, and artifact references. It excludes repository
+dumps, long logs, secrets, binary artifacts, vendor directories, local absolute
+paths, and full conversation history.
+
 Example slot entries (excerpt; `winsmux init` creates six slots):
 
 ```yaml
@@ -71,9 +78,13 @@ worker-backend: local
 agent-slots:
   - slot-id: worker-1
     runtime-role: worker
+    agent: codex
+    model: provider-default
+    model-source: provider-default
     worker-backend: codex
     worker-role: reviewer
-    fallback-model: gpt-5.4
+    fallback-model: gpt-5.3-codex-spark
+    pane-title: W1 Codex Reviewer
     worktree-mode: managed
   - slot-id: worker-2
     runtime-role: worker

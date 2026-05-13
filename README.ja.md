@@ -30,7 +30,7 @@ Claude Code、Codex、Gemini を 1 つずつ手で眺める段階を越えたい
 
 - 複数の CLI エージェント用に、管理された Windows Terminal ワークスペースを起動します。
 - オペレーターがペインを読み、ペインへ送信し、ペインを中断し、状態を確認できます。
-- 既定で 6 つの管理ワーカースロットを作成します。ローカル、Codex、Google Colab、仮置きワーカー向けに、バックエンド契約と縮退状態の表示を用意しています。
+- 既定で 6 つの管理ワーカースロットを作成します。生成される最初のスロットは Codex レビュー用で、残りのスロットは選択したワーカーバックエンドに従います。
 - ワークツリー分離を有効にすると、ワーカーごとに別々の git ワークツリーを使えます。
 - 記録済みの実行結果を比較し、採用する結果を選ぶ前に両方で変更されたファイルを確認できます。
 - 記録済みの実行について、レビュー、検証、アーキテクチャ、チェックポイント、後続作業などの証跡を確認できます。
@@ -91,6 +91,7 @@ winsmux workers doctor
 winsmux workers exec w2 --script workers/colab/impl_worker.py
 winsmux workers upload w2 data/input.json --remote /content/input.json
 winsmux workers download w2 /content/output.json
+winsmux review-pack <run_id> --json
 winsmux compare runs <left_run_id> <right_run_id>
 winsmux compare preflight <left_ref> <right_ref>
 winsmux compare promote <run_id>
@@ -112,6 +113,7 @@ winsmux skills --json
 | `winsmux workers logs` | ワーカー実行の保存済みログを読む。必要に応じて Colab CLI から取得 |
 | `winsmux workers upload` | 明示したファイル、または許可したディレクトリだけをアップロード |
 | `winsmux workers download` | リモート成果物をプロジェクト配下へダウンロード |
+| `winsmux review-pack` | 変更ファイル、テスト結果、リスク、実行コマンド、成果物参照だけを含むレビュー用パケットを書き出す |
 | `winsmux compare runs` | 2 つの記録済み実行について、証跡と信頼度を比較 |
 | `winsmux compare preflight` | マージ前や比較レビュー前に 2 つの git 参照を確認 |
 | `winsmux compare promote` | 成功した実行結果を、次の実行で使う入力として書き出す |

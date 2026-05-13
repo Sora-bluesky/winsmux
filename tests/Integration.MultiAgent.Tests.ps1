@@ -64,7 +64,11 @@ Describe 'Get-BridgeSettings defaults' {
         $settings.worker_count | Should -Be 6
         $settings.worker_backend | Should -Be 'local'
         $settings.agent_slots.Count | Should -Be 6
-        $settings.agent_slots[0].worker_backend | Should -Be 'local'
+        $settings.agent_slots[0].agent | Should -Be 'codex'
+        $settings.agent_slots[0].worker_backend | Should -Be 'codex'
+        $settings.agent_slots[0].worker_role | Should -Be 'reviewer'
+        $settings.agent_slots[0].fallback_model | Should -Be 'gpt-5.3-codex-spark'
+        $settings.agent_slots[1].worker_backend | Should -Be 'local'
         $settings.builders | Should -Be 0
         $settings.researchers | Should -Be 0
         $settings.reviewers | Should -Be 0

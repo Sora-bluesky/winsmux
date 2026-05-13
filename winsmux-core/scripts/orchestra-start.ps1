@@ -1140,6 +1140,7 @@ function Save-OrchestraSessionState {
             pane_id                    = $paneSummary.PaneId
             slot_id                    = $paneSummary.SlotId
             worker_backend             = [string](Get-OrchestraObjectPropertyValue -InputObject $paneSummary -Name 'WorkerBackend' -Default 'local')
+            worker_role                = [string](Get-OrchestraObjectPropertyValue -InputObject $paneSummary -Name 'WorkerRole' -Default '')
             role                       = $paneSummary.Role
             exec_mode                  = [bool]$paneSummary.ExecMode
             project_dir                = $paneSummary.ProjectDir
@@ -2328,6 +2329,7 @@ if ($MyInvocation.InvocationName -ne '.') {
             SlotId = $label
             Role = $canonicalRole
             WorkerBackend = [string]$slotAgentConfig.WorkerBackend
+            WorkerRole = [string]$slotAgentConfig.WorkerRole
             ColabSessionState = $colabSessionEntry
             Agent = [string]$slotAgentConfig.Agent
             Model = [string]$slotAgentConfig.Model

@@ -351,6 +351,7 @@ function Get-PaneControlManifestEntries {
             Label               = $label
             PaneId              = [string](Get-PaneControlValue -InputObject $pane -Name 'pane_id' -Default '')
             WorkerBackend       = [string](Get-PaneControlValue -InputObject $pane -Name 'worker_backend' -Default 'local')
+            WorkerRole          = [string](Get-PaneControlValue -InputObject $pane -Name 'worker_role' -Default '')
             Role                = $role
             LaunchDir           = $launchDir
             BuilderBranch       = $builderBranch
