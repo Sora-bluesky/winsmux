@@ -136,7 +136,7 @@ Use `winsmux` for scripts and docs. This does not remove tmux-compatible configu
 | Codex | API key | Officially supported |
 | Codex | ChatGPT OAuth | This PC only, interactive use |
 | Gemini | Gemini API key | Officially supported |
-| Gemini | Gemini API through Gemini Enterprise Agent Platform | Officially supported |
+| Gemini | Gemini API in Vertex AI | Officially supported |
 | Gemini | Google OAuth | This PC only, interactive use |
 
 See [Authentication Support](docs/authentication-support.md) for the full policy.

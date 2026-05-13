@@ -132,7 +132,7 @@ winsmux skills --json
 | Codex | API key | 公式に対応 |
 | Codex | ChatGPT OAuth | この PC での対話利用のみ |
 | Gemini | Gemini API key | 公式に対応 |
-| Gemini | Gemini Enterprise Agent Platform 経由の Gemini API | 公式に対応 |
+| Gemini | Vertex AI の Gemini API | 公式に対応 |
 | Gemini | Google OAuth | 当該 PC での対話利用のみ |
 
 詳しくは [認証方針](docs/authentication-support.ja.md) を参照してください。
