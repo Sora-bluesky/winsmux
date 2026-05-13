@@ -462,7 +462,7 @@ let editorSurfaceMode: "code" | "preview" = "code";
 let settingsSheetOpen = false;
 let sidebarOpen = true;
 let sidebarMode: SidebarMode = "explorer";
-let workbenchLayout: WorkbenchLayoutMode = "2x2";
+let workbenchLayout: WorkbenchLayoutMode = "3x2";
 let focusedWorkbenchPaneId: string | null = null;
 let composerImeActive = false;
 let sidebarWidth = 256;
@@ -514,6 +514,8 @@ let pendingAttachments: ComposerAttachment[] = [];
 let sourceControlCommitMessage = "";
 let operatorPtyStarted = false;
 let operatorPtyStarting: Promise<void> | null = null;
+let operatorTerminal: Terminal | null = null;
+let operatorFitAddon: FitAddon | null = null;
 let operatorRequestActive = false;
 let operatorRequestGeneration = 0;
 let operatorRequestStartedAt = 0;
@@ -1382,6 +1384,83 @@ function getWorkbenchPaneOrdinal(paneId: string | null | undefined) {
   return null;
 }
 
+function createWorkbenchTerminal(options?: { cursorBlink?: boolean; scrollback?: number }) {
+  return new Terminal({
+    allowProposedApi: true,
+    cursorBlink: options?.cursorBlink ?? false,
+    cursorStyle: "block",
+    cursorInactiveStyle: "outline",
+    fontSize: themeState.editorFontSize,
+    fontFamily: getCodeFontFamily(),
+    fontWeight: "normal",
+    fontWeightBold: "bold",
+    letterSpacing: 0,
+    lineHeight: 1,
+    minimumContrastRatio: 4.5,
+    scrollback: options?.scrollback ?? 1000,
+    theme: VSCODE_DARK_TERMINAL_THEME,
+  });
+}
+
+function fitOperatorTerminal() {
+  if (!operatorTerminal || !operatorFitAddon) {
+    return;
+  }
+  const root = document.getElementById("operator-terminal");
+  if (!root || root.offsetParent === null) {
+    return;
+  }
+  try {
+    operatorFitAddon.fit();
+  } catch (error) {
+    console.warn("Failed to fit operator terminal", error);
+  }
+}
+
+function initializeOperatorTerminal() {
+  const root = document.getElementById("operator-terminal");
+  if (!root || operatorTerminal) {
+    return;
+  }
+
+  const terminal = createWorkbenchTerminal({ cursorBlink: true, scrollback: 5000 });
+  const fitAddon = new FitAddon();
+  terminal.loadAddon(fitAddon);
+  terminal.open(root);
+  terminal.onData((data: string) => {
+    void ensureOperatorPtyStarted()
+      .then(() => writePtyData(OPERATOR_PTY_ID, data))
+      .catch((error) => {
+        console.warn("Failed to write operator PTY data", error);
+      });
+  });
+  terminal.onResize(({ cols, rows }) => {
+    if (operatorPtyStarted) {
+      void resizePtyPane(OPERATOR_PTY_ID, cols, rows);
+    }
+  });
+
+  operatorTerminal = terminal;
+  operatorFitAddon = fitAddon;
+
+  document.getElementById("operator-terminal-panel")?.addEventListener("pointerdown", () => {
+    void ensureOperatorPtyStarted().catch((error) => {
+      console.warn("Failed to start operator PTY", error);
+    });
+  });
+
+  requestAnimationFrame(() => {
+    fitOperatorTerminal();
+  });
+}
+
+function writeOperatorTerminal(data: string) {
+  if (!operatorTerminal) {
+    return;
+  }
+  operatorTerminal.write(data);
+}
+
 function createPane(paneId?: string): string {
   const id = paneId || getNextWorkerPaneId();
   const container = document.getElementById("panes-container");
@@ -1430,21 +1509,7 @@ function createPane(paneId?: string): string {
 
   container.appendChild(paneDiv);
 
-  const terminal = new Terminal({
-    allowProposedApi: true,
-    cursorBlink: false,
-    cursorStyle: "block",
-    cursorInactiveStyle: "outline",
-    fontSize: themeState.editorFontSize,
-    fontFamily: getCodeFontFamily(),
-    fontWeight: "normal",
-    fontWeightBold: "bold",
-    letterSpacing: 0,
-    lineHeight: 1,
-    minimumContrastRatio: 4.5,
-    scrollback: 1000,
-    theme: VSCODE_DARK_TERMINAL_THEME,
-  });
+  const terminal = createWorkbenchTerminal();
 
   const fitAddon = new FitAddon();
   terminal.loadAddon(fitAddon);
@@ -1525,7 +1590,9 @@ function ensureOperatorPtyStarted() {
     return operatorPtyStarting;
   }
 
-  operatorPtyStarting = spawnPtyPane(OPERATOR_PTY_ID, OPERATOR_PTY_COLS, OPERATOR_PTY_ROWS, getOperatorStartupInput())
+  const cols = operatorTerminal?.cols || OPERATOR_PTY_COLS;
+  const rows = operatorTerminal?.rows || OPERATOR_PTY_ROWS;
+  operatorPtyStarting = spawnPtyPane(OPERATOR_PTY_ID, cols, rows, getOperatorStartupInput())
     .then(() => {
       operatorPtyStarted = true;
     })
@@ -1533,7 +1600,9 @@ function ensureOperatorPtyStarted() {
       const message = error instanceof Error ? error.message : String(error);
       if (message.includes(`Pane ${OPERATOR_PTY_ID} already exists`)) {
         operatorPtyStarted = true;
-        return;
+        return resizePtyPane(OPERATOR_PTY_ID, cols, rows).catch((resizeError) => {
+          console.warn("Failed to resize adopted operator PTY", resizeError);
+        });
       }
       operatorPtyStarted = false;
       throw error;
@@ -6310,6 +6379,7 @@ function applyWorkbenchWidth(width: number) {
   const handle = document.getElementById("workbench-resizer");
   handle?.setAttribute("aria-valuenow", `${workbenchWidth}`);
   requestAnimationFrame(() => {
+    fitOperatorTerminal();
     fitVisibleWorkbenchPanes();
   });
 }
@@ -6616,6 +6686,14 @@ function applyThemeState(nextState: ThemeState) {
 function applyCodeFontToPanes() {
   const fontFamily = getCodeFontFamily();
   const fontSize = themeState.editorFontSize;
+  if (operatorTerminal) {
+    operatorTerminal.options.fontFamily = fontFamily;
+    operatorTerminal.options.fontSize = fontSize;
+    operatorTerminal.options.lineHeight = 1;
+    operatorTerminal.options.letterSpacing = 0;
+    operatorTerminal.options.minimumContrastRatio = 4.5;
+    operatorTerminal.options.theme = VSCODE_DARK_TERMINAL_THEME;
+  }
   panes.forEach((pane) => {
     pane.terminal.options.fontFamily = fontFamily;
     pane.terminal.options.fontSize = fontSize;
@@ -6624,6 +6702,7 @@ function applyCodeFontToPanes() {
     pane.terminal.options.minimumContrastRatio = 4.5;
     pane.terminal.options.theme = VSCODE_DARK_TERMINAL_THEME;
   });
+  fitOperatorTerminal();
   fitVisibleWorkbenchPanes();
 }
 
@@ -11349,6 +11428,7 @@ function setTerminalDrawer(open: boolean) {
   updateWorkbenchControls();
   void persistThemeState();
   requestAnimationFrame(() => {
+    fitOperatorTerminal();
     fitVisibleWorkbenchPanes();
   });
 }
@@ -12827,8 +12907,11 @@ window.addEventListener("DOMContentLoaded", async () => {
     focusedWorkbenchPaneId = storedShellPreferences.focusedWorkbenchPaneId;
   }
 
+  initializeOperatorTerminal();
+
   void subscribeToPtyOutput((payload) => {
     if (payload.pane_id === OPERATOR_PTY_ID) {
+      writeOperatorTerminal(payload.data);
       appendOperatorPtyOutput(payload.data);
       return;
     }
@@ -13406,6 +13489,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   window.addEventListener("resize", () => {
     syncResponsiveShell();
     syncComposerInputHeight();
+    fitOperatorTerminal();
     fitVisibleWorkbenchPanes();
   });
 

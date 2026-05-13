@@ -107,6 +107,7 @@ winsmux skills --json
 | `winsmux launcher presets` | Show launcher presets and pair templates |
 | `winsmux launcher lifecycle` | Choose the workspace lifecycle policy |
 | `winsmux workers status` | Show backend, state, GPU, session, and last command for worker slots |
+| `winsmux workers attach` | Prepare a Colab-backed worker slot for desktop visibility without starting an unbounded loop |
 | `winsmux workers doctor` | Diagnose worker config, Colab CLI, auth, uv, and session-state paths |
 | `winsmux workers exec` | Run one file-backed command on a Colab-backed worker slot |
 | `winsmux workers logs` | Read the stored log for a worker run, or ask the Colab CLI for it |

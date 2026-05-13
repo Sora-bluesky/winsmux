@@ -32,7 +32,7 @@ column.
 | `codex` worker backend | Metadata today | Used to describe Codex-capable worker or review slots. |
 | `colab_cli` worker backend | Supported for status, doctor, one-shot execution, logs, upload, and download | Requires a `google-colab-cli` compatible adapter and is intended for H100 or A100 Colab-backed work. |
 | Major open model families | Supported as Colab model targets when the task script and runtime provide them | Examples include Gemma, Llama, Mistral, Qwen, DeepSeek, and Kimi/Moonshot. Treat the model family as workload metadata, not as a provider. |
-| Local LLM runtimes | Planned adapter family | Not a `v0.32.3` runtime requirement. Today, run them as normal local tools or behind an agent CLI that can use a local endpoint. |
+| Local LLM runtimes | Planned adapter family | Not a `v0.32.4` runtime requirement. Today, run them as normal local tools or behind an agent CLI that can use a local endpoint. |
 | `noop` worker backend | Supported placeholder | Keeps a slot declared but inactive. |
 
 ## Model selection policy
@@ -59,7 +59,7 @@ is acceptable for a task.
 
 ## Current Colab model target
 
-`v0.32.3` is aimed at Google Colab execution, not local LLM serving. For model
+`v0.32.4` is aimed at Google Colab execution, not local LLM serving. For model
 workloads, the expected accelerator target is:
 
 - preferred: `H100`
@@ -131,7 +131,7 @@ The task script remains responsible for:
 ## Future local LLM landscape
 
 Local model support is moving quickly. The following information is included to
-guide future adapters and documentation. It is not a `v0.32.3` runtime
+guide future adapters and documentation. It is not a `v0.32.4` runtime
 requirement.
 
 | Runtime | Windows posture | Practical role for winsmux |

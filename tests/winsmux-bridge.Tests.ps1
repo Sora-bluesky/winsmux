@@ -8866,12 +8866,13 @@ agent-slots:
     }
 
     It 'documents and routes the workers lifecycle command' {
-        $script:winsmuxWorkersCoreRawContent | Should -Match 'workers <status\|start\|stop\|doctor> \[slot\|all\] \[--json\] \[--project-dir <path>\]'
+        $script:winsmuxWorkersCoreRawContent | Should -Match 'workers <status\|start\|stop\|attach\|doctor> \[slot\|all\] \[--json\] \[--project-dir <path>\]'
         $script:winsmuxWorkersCoreRawContent | Should -Match 'workers <exec\|logs\|upload\|download> <slot> \.\.\. \[--json\] \[--project-dir <path>\]'
         $script:winsmuxWorkersCoreRawContent | Should -Match "'workers'\s*\{\s*Invoke-Workers\s*\}"
         $script:winsmuxWorkersCoreRawContent | Should -Match 'google-colab-cli not found on PATH'
         $script:winsmuxWorkersCoreRawContent | Should -Match 'uv not found on PATH'
         $script:winsmuxWorkersCoreRawContent | Should -Match "'exec'\s*\{\s*Invoke-WorkersExec\s*\}"
+        $script:winsmuxWorkersCoreRawContent | Should -Match "'attach'\s*\{\s*Invoke-WorkersAttach\s*\}"
         $script:winsmuxWorkersCoreRawContent | Should -Match "'download'\s*\{\s*Invoke-WorkersDownload\s*\}"
     }
 
@@ -9014,6 +9015,70 @@ agent-slots:
         $payload.results[0].slot_id | Should -Be 'worker-2'
         $payload.results[0].status | Should -Be 'blocked'
         $payload.results[0].reason | Should -Be 'colab_cli_missing'
+        Should -Invoke Send-TextToPane -Times 0 -Exactly
+    }
+
+    It 'attaches a degraded Colab worker without starting a compute loop' {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: colab_cli
+    session-name: winsmux_worker_2
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        New-Item -ItemType Directory -Path (Join-Path $script:workersTempRoot '.winsmux') -Force | Out-Null
+        Save-WinsmuxManifest -ProjectDir $script:workersTempRoot -Manifest ([ordered]@{
+            version = 1
+            saved_at = '2026-05-13T00:00:00Z'
+            session = [ordered]@{
+                name = 'winsmux-orchestra'
+                project_dir = $script:workersTempRoot
+                git_worktree_dir = (Join-Path $script:workersTempRoot '.git')
+            }
+            panes = [ordered]@{
+                'worker-2' = [ordered]@{
+                    pane_id = '%3'
+                    slot_id = 'worker-2'
+                    worker_backend = 'colab_cli'
+                    role = 'Worker'
+                    exec_mode = $false
+                    launch_dir = $script:workersTempRoot
+                    status = 'backend_degraded'
+                    bootstrap_plan_path = (Join-Path $script:workersTempRoot 'worker-2.json')
+                    colab_session = [ordered]@{
+                        worker_backend = 'colab_cli'
+                        session_name = 'winsmux_worker_2'
+                        state = 'degraded'
+                        degraded = $true
+                        degraded_reason = 'colab_cli_missing'
+                        selected_gpu = 'CPU'
+                    }
+                    task = $null
+                }
+            }
+            tasks = [ordered]@{
+                queued = @()
+                in_progress = @()
+                completed = @()
+            }
+            worktrees = [ordered]@{}
+        })
+
+        Mock Send-TextToPane { throw 'bootstrap should not be dispatched' }
+
+        $Rest = @('worker-2', '--json', '--project-dir', $script:workersTempRoot)
+        $output = Invoke-WorkersAttach
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $entry = @(Get-PaneControlManifestEntries -ProjectDir $script:workersTempRoot)[0]
+
+        $payload.results[0].slot_id | Should -Be 'worker-2'
+        $payload.results[0].status | Should -Be 'degraded'
+        $payload.results[0].reason | Should -Be 'colab_cli_missing'
+        $entry.Status | Should -Be 'backend_degraded'
+        $entry.LastCommand | Should -Be 'workers.attach'
         Should -Invoke Send-TextToPane -Times 0 -Exactly
     }
 

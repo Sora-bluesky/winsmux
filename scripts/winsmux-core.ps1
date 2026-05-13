@@ -17,7 +17,7 @@ if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_RAW_EXE)) {
 }
 
 # --- Config ---
-$VERSION = "0.32.3"
+$VERSION = "0.32.4"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 $BridgeScriptPath = $PSCommandPath
@@ -4904,7 +4904,7 @@ function Invoke-Status {
 }
 
 function Get-WorkersUsage {
-    return "usage: winsmux workers <status|start|stop|doctor> [slot|all] [--json] [--project-dir <path>]; winsmux workers <exec|logs|upload|download> <slot> ... [--json] [--project-dir <path>]"
+    return "usage: winsmux workers <status|start|stop|attach|doctor> [slot|all] [--json] [--project-dir <path>]; winsmux workers <exec|logs|upload|download> <slot> ... [--json] [--project-dir <path>]"
 }
 
 function Read-WorkersOptions {
@@ -6395,6 +6395,44 @@ function Invoke-WorkersStart {
     Write-WorkersLifecycleOutput -ProjectDir $options.ProjectDir -Results @($results) -Json:([bool]$options.Json)
 }
 
+function Invoke-WorkersAttach {
+    $usage = "usage: winsmux workers attach <slot|all> [--json] [--project-dir <path>]"
+    $options = Read-WorkersOptions -Tokens $Rest -Usage $usage -RequireTarget
+    $context = Get-WorkersLifecycleContext -ProjectDir $options.ProjectDir
+    $rows = Select-WorkersRows -Rows (Get-WorkersStatusRows -Context $context) -Target $options.Target
+    $results = [System.Collections.Generic.List[object]]::new()
+
+    foreach ($row in @($rows)) {
+        $entry = if ($context.EntriesBySlot.ContainsKey($row.SlotId)) { $context.EntriesBySlot[$row.SlotId] } else { $null }
+        if (-not [string]::Equals(([string]$row.Backend), 'colab_cli', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.attach' -Status 'skipped' -Reason 'backend_not_colab_cli')) | Out-Null
+            continue
+        }
+
+        if ([string]$row.State -eq 'backend_degraded' -or -not [string]::IsNullOrWhiteSpace([string]$row.DegradedReason)) {
+            $reason = [string]$row.DegradedReason
+            if ([string]::IsNullOrWhiteSpace($reason)) {
+                $reason = 'backend_degraded'
+            }
+            if ($null -ne $entry) {
+                Set-WorkersManifestLifecycleCommand -Entry $entry -CommandName 'workers.attach' -Status 'backend_degraded'
+            }
+            $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.attach' -Status 'degraded' -Reason $reason)) | Out-Null
+            continue
+        }
+
+        if ($null -eq $entry) {
+            $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.attach' -Status 'pending_launch' -Reason 'manifest_entry_missing')) | Out-Null
+            continue
+        }
+
+        Set-WorkersManifestLifecycleCommand -Entry $entry -CommandName 'workers.attach'
+        $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.attach' -Status 'attached')) | Out-Null
+    }
+
+    Write-WorkersLifecycleOutput -ProjectDir $options.ProjectDir -Results @($results) -Json:([bool]$options.Json)
+}
+
 function Invoke-WorkersStop {
     $usage = "usage: winsmux workers stop <slot|all> [--json] [--project-dir <path>]"
     $options = Read-WorkersOptions -Tokens $Rest -Usage $usage -RequireTarget
@@ -6590,6 +6628,7 @@ function Invoke-Workers {
     switch ($action.Trim().ToLowerInvariant()) {
         'status' { Invoke-WorkersStatus }
         'start'  { Invoke-WorkersStart }
+        'attach' { Invoke-WorkersAttach }
         'stop'   { Invoke-WorkersStop }
         'doctor' { Invoke-WorkersDoctor }
         'exec'   { Invoke-WorkersExec }
@@ -12929,7 +12968,7 @@ Commands:
   wait-ready <target> [timeout_seconds]  Wait for the configured agent prompt in pane
   health-check              Report READY/BUSY/HUNG/DEAD for labeled panes
   status                    Report manifest pane states via capture-pane
-  workers <status|start|stop|doctor> [slot|all] [--json] [--project-dir <path>]  Inspect and control configured worker slots
+  workers <status|start|stop|attach|doctor> [slot|all] [--json] [--project-dir <path>]  Inspect and control configured worker slots
   board [--json]            Report pane/task/review/git session board
 desktop-summary [--json] [--stream]  Report the aggregated desktop read-model snapshot or follow refresh signals
 inbox [--json] [--stream] Report actionable approvals/review/blockers
