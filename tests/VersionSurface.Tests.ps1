@@ -28,6 +28,7 @@ Describe 'winsmux version surface' {
         $installScript | Should -Match 'version = \$ResolvedVersion'
         $installScript | Should -Match '\$ResolvedVersion \| Set-Content \$VERSION_FILE'
         $installScript | Should -Match 'function Get-WinsmuxCommandVersion'
+        $installScript | Should -Match 'winsmux-core/scripts/colab-backend\.ps1'
         $installScript | Should -Match 'does not match release version'
         $installScript | Should -Match 'Reinstalling release binary'
         $bridgeScript | Should -Match ('\$VERSION\s*=\s*"{0}"' -f [regex]::Escape($script:ProductVersion))
