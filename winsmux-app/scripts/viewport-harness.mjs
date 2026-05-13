@@ -24,6 +24,12 @@ async function assertOperatorChatContractSource() {
       `Operator chat must mirror Claude Code output without internal sent acknowledgements: ${matched.join(", ")}`,
     );
   }
+  if (!source.includes("resizePtyPane(OPERATOR_PTY_ID")) {
+    throw new Error("Operator terminal resize must propagate to the operator PTY");
+  }
+  if (!source.includes("operatorTerminal?.cols || OPERATOR_PTY_COLS")) {
+    throw new Error("Operator PTY startup must use the fitted terminal column count");
+  }
 }
 
 async function ensureOutputDir() {
@@ -1091,6 +1097,42 @@ async function assertWorkbenchPaneGrid(page, expectedMin = 4) {
   }, expectedMin);
 }
 
+async function assertOperatorTerminalSurface(page) {
+  await assertFullyVisible(page, "#operator-terminal-panel");
+  await page.locator("#operator-terminal .xterm").waitFor({ state: "visible" });
+  await page.locator("#operator-terminal .xterm-screen").waitFor({ state: "visible" });
+  await page.locator("#operator-terminal-status", { hasText: "PTY" }).waitFor();
+  await page.locator("#operator-terminal-status", { hasText: "Claude Code" }).waitFor();
+  await page.locator("#operator-terminal-status", { hasText: "interactive" }).waitFor();
+  await page.waitForFunction(() => {
+    const panel = document.querySelector("#operator-terminal-panel");
+    const terminal = document.querySelector("#operator-terminal .xterm");
+    const toolbar = document.querySelector("#operator-terminal-toolbar");
+    if (!(panel instanceof HTMLElement) || !(terminal instanceof HTMLElement) || !(toolbar instanceof HTMLElement)) {
+      return false;
+    }
+    const panelBox = panel.getBoundingClientRect();
+    const terminalBox = terminal.getBoundingClientRect();
+    const toolbarBox = toolbar.getBoundingClientRect();
+    const panelStyles = getComputedStyle(panel);
+    return panelBox.height >= 260 &&
+      terminalBox.height >= 180 &&
+      toolbarBox.height >= 24 &&
+      terminalBox.top >= toolbarBox.top &&
+      panelStyles.backgroundColor !== "rgba(0, 0, 0, 0)";
+  });
+}
+
+async function assertFreshWorkbenchDefaultLayout(page) {
+  await ensureWorkbenchOpen(page);
+  await page.locator("#workbench-layout-btn", { hasText: "3x2" }).waitFor();
+  const labels = await assertVisibleWorkbenchPaneCount(page, 6, "fresh 3x2 default");
+  if (!labels.includes("worker-6")) {
+    throw new Error(`fresh default layout did not include worker-6: ${labels.join(", ")}`);
+  }
+  await page.locator("#menu-layout-status", { hasText: "3x2 · 6 panes" }).waitFor();
+}
+
 async function assertWorkbenchFontSizeScaling(page) {
   const key = "winsmux.shell.preferences.v1";
   const originalPreferences = await page.evaluate((storageKey) => window.localStorage.getItem(storageKey), key);
@@ -1592,7 +1634,8 @@ async function verifyDesktopViewport(page, previewUrl) {
   await runStep("desktop initial chrome", async () => {
     await assertHorizontallyVisible(page, "#left-rail");
     await assertFullyVisible(page, "#conversation-panel");
-    await assertWorkbenchPaneGrid(page);
+    await assertOperatorTerminalSurface(page);
+    await assertFreshWorkbenchDefaultLayout(page);
     await assertButtonVisible(page, "#send-btn");
     await assertButtonVisible(page, "#voice-input-btn");
     await page.waitForFunction(() => {
@@ -1923,6 +1966,8 @@ async function run() {
           checks: [
             "desktop-operator-chat-contract",
             "desktop-1440x900",
+            "desktop-operator-terminal-surface",
+            "desktop-workbench-fresh-3x2-default",
             "desktop-workbench-font-size-scaling",
             "desktop-voice-input-a11y",
             "desktop-voice-draft-shaping",

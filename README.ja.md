@@ -106,6 +106,7 @@ winsmux skills --json
 | `winsmux launcher presets` | 起動プリセットとペア構成テンプレートを表示 |
 | `winsmux launcher lifecycle` | ワークスペースのライフサイクル方針を選択 |
 | `winsmux workers status` | ワーカースロットのバックエンド、状態、GPU、セッション、直近コマンドを表示 |
+| `winsmux workers attach` | Colab 対応ワーカーを、長時間ループを始めずにデスクトップ表示へ準備 |
 | `winsmux workers doctor` | ワーカー設定、Colab CLI、認証、uv、状態ファイルの場所を診断 |
 | `winsmux workers exec` | Colab 対応ワーカースロットで、ファイル指定の単発実行を行う |
 | `winsmux workers logs` | ワーカー実行の保存済みログを読む。必要に応じて Colab CLI から取得 |

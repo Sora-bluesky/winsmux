@@ -37,16 +37,16 @@ winsmux はベンダーごとに固定された役割ではなく、スロット
 - `colab_cli`: `google-colab-cli` ワーカー用の状態メタデータ
 - `noop`: 無効化または仮置きのワーカー用メタデータ
 
-`v0.32.3` では、Colab バックエンドの状態を
+`v0.32.4` では、Colab バックエンドの状態を
 `.winsmux/state/colab_sessions.json` に保存します。`google-colab-cli` の
 不在、認証を確認できない状態、`H100` / `A100` GPU を使えない状態のいずれかが発生した場合は、
 ワーカーを `degraded` 状態として記録します。セッション名が変わった既存記録は
 `stale` として残します。Colab のモデル作業では、ローカル CPU やローカル LLM
 ランタイムへ黙って切り替えません。
 
-`winsmux workers status`、`winsmux workers start`、`winsmux workers stop`、
-`winsmux workers doctor` で、6 つの設定済みワーカースロットを確認、起動、停止、
-診断できます。
+`winsmux workers status`、`winsmux workers attach`、`winsmux workers start`、
+`winsmux workers stop`、`winsmux workers doctor` で、6 つの設定済みワーカースロットを
+確認、デスクトップ表示へ準備、起動、停止、診断できます。
 
 Colab 対応スロットでは、ファイルを指定した単発実行と成果物の受け渡しも使えます。
 

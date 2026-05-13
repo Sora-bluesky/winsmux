@@ -2,13 +2,14 @@
 
 このページでは、Colab 対応の winsmux ワーカーを準備する方法を説明します。
 
-`v0.32.3` では、winsmux は `google-colab-cli` 互換アダプターを通じて、
+`v0.32.4` では、winsmux は `google-colab-cli` 互換アダプターを通じて、
 次の単発ワーカー操作を実行できます。
 
 - `winsmux workers exec`
 - `winsmux workers logs`
 - `winsmux workers upload`
 - `winsmux workers download`
+- `winsmux workers attach`
 
 winsmux は Google のサインインを代行しません。認証、ランタイム作成、GPU の可用性、
 割り当て、ブラウザーでのサインインは、Colab 側またはアダプター側の責務です。
@@ -104,6 +105,7 @@ agent-slots:
 
 ```powershell
 winsmux workers status
+winsmux workers attach w2
 winsmux workers doctor
 ```
 
@@ -117,7 +119,7 @@ Colab ワーカーは、特定モデルファミリーに固定しません。wi
 メタデータとして記録し、正確なチェックポイントまたは API 対象の読み込みは
 タスクスクリプトに任せます。
 
-`v0.32.3` のアクセラレーター対象は `H100` です。`A100` を許容する代替候補にします。
+`v0.32.4` のアクセラレーター対象は `H100` です。`A100` を許容する代替候補にします。
 大きな通常構造のモデル、MoE、マルチモーダル、長文コンテキストのモデルでは、
 それでも量子化、短めのコンテキスト設定、テンソル並列、またはホスト API 対象が
 必要になる場合があります。
@@ -212,7 +214,7 @@ winsmux は次を除外します。
 
 ## 制限
 
-`v0.32.3` は、対話型の Colab REPL や console ループを自動化しません。
+`v0.32.4` は、対話型の Colab REPL や console ループを自動化しません。
 設定されたアダプターを通じて、ファイルを指定したタスクを 1 回ずつ実行します。
 
 大きな成果物は、アダプターが対応している場合、Google Drive、Cloud Storage、

@@ -37,14 +37,14 @@ and each slot can override it with one of the contract values:
 - `colab_cli`: `google-colab-cli` worker state metadata
 - `noop`: disabled or placeholder worker metadata
 
-`v0.32.3` records Colab backend availability under
+`v0.32.4` records Colab backend availability under
 `.winsmux/state/colab_sessions.json`. Missing `google-colab-cli`, missing auth,
 and unavailable `H100` / `A100` GPUs are recorded as degraded worker state.
 Renamed sessions are marked stale. winsmux does not silently fall back to a
 local CPU or local LLM runtime for Colab model work.
-Use `winsmux workers status`, `winsmux workers start`, `winsmux workers stop`,
-and `winsmux workers doctor` to inspect and control the six configured worker
-slots.
+Use `winsmux workers status`, `winsmux workers attach`, `winsmux workers start`,
+`winsmux workers stop`, and `winsmux workers doctor` to inspect and control the
+six configured worker slots.
 
 Colab-backed slots also support file-backed one-shot execution and safe artifact
 movement:

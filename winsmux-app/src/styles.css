@@ -1470,10 +1470,10 @@ body[data-popout-surface="1"] #editor-surface {
 
 #conversation-panel {
   min-height: 0;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
-  background: #1e1e1e;
+  background: #08090b;
   border-right: 1px solid var(--border-muted);
 }
 
@@ -1492,6 +1492,90 @@ body[data-popout-surface="1"] #editor-surface {
 #thread-meta span:first-child {
   color: #cccccc;
   font-weight: 600;
+}
+
+#operator-terminal-panel {
+  min-height: 260px;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.026), transparent 56px),
+    #090a0d;
+  border-bottom: 1px solid #20242d;
+}
+
+#operator-terminal-toolbar {
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 10px;
+  border-bottom: 1px solid #20242d;
+  background: #111318;
+  color: #9ca7b7;
+  font-family: var(--font-code);
+  font-size: var(--text-2xs);
+}
+
+.operator-terminal-title,
+#operator-terminal-status {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.operator-terminal-title {
+  color: #d6dde8;
+  font-weight: 700;
+}
+
+#operator-terminal-status {
+  color: #7f8a9b;
+  overflow: hidden;
+}
+
+#operator-terminal-status span {
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.terminal-led {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #5f6876;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.terminal-led-live {
+  background: #23d18b;
+  box-shadow: 0 0 0 1px rgba(35, 209, 139, 0.32), 0 0 12px rgba(35, 209, 139, 0.2);
+}
+
+#operator-terminal {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  background: #090a0d;
+}
+
+#operator-terminal .xterm {
+  height: 100%;
+  padding: 10px 14px 8px;
+}
+
+#operator-terminal .xterm .xterm-screen {
+  cursor: text;
+}
+
+#operator-terminal .xterm .xterm-viewport {
+  background: #090a0d;
+  scrollbar-color: rgba(121, 121, 121, 0.55) transparent;
+  scrollbar-width: thin;
 }
 
 #timeline-toolbar,
@@ -1787,11 +1871,14 @@ body[data-popout-surface="1"] #editor-surface {
 #conversation-timeline {
   min-height: 0;
   overflow: auto;
-  padding: 14px 16px 20px;
+  max-height: 132px;
+  flex: 0 0 auto;
+  padding: 8px 12px 10px;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  background: #1e1e1e;
+  background: #0f1116;
+  border-top: 1px solid #20242d;
   font-family: var(--font-code);
 }
 
@@ -1949,8 +2036,9 @@ body[data-popout-surface="1"] #editor-surface {
 
 #composer {
   border-top: 1px solid var(--border-muted);
+  flex: 0 0 auto;
   padding: 8px 12px;
-  background: #1e1e1e;
+  background: #111318;
 }
 
 #composer-input-wrap {
@@ -1967,8 +2055,9 @@ body[data-popout-surface="1"] #editor-surface {
   overflow-y: hidden;
   border: 1px solid #3c3c3c;
   border-radius: 2px;
-  background: #1e1e1e;
+  background: #090a0d;
   color: #d4d4d4;
+  font-family: var(--font-code);
   padding: 6px 56px 6px 8px;
   outline: none;
   font-size: var(--text-sm);
@@ -3423,6 +3512,8 @@ body[data-popout-surface="1"] #editor-surface {
   grid-template-rows: auto minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
+  background: #08090b;
+  border-left: 1px solid #20242d;
 }
 
 #workbench-resizer {
@@ -4138,12 +4229,14 @@ body.is-resizing-workbench {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  min-height: 30px;
+  min-height: 28px;
   gap: 12px;
-  padding: 0 12px;
-  border-bottom: 1px solid var(--border-muted);
-  font-size: var(--text-xs);
-  color: #8f99ba;
+  padding: 0 10px;
+  border-bottom: 1px solid #20242d;
+  background: #111318;
+  font-family: var(--font-code);
+  font-size: var(--text-2xs);
+  color: #9ca7b7;
 }
 
 #terminal-toolbar-actions {
@@ -4193,7 +4286,8 @@ body.is-resizing-workbench {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   grid-auto-rows: minmax(0, 1fr);
   overflow: hidden;
-  background: #1e1e1e;
+  gap: 1px;
+  background: #20242d;
 }
 
 #terminal-drawer[data-layout="3x2"] #panes-container {
@@ -4209,19 +4303,20 @@ body.is-resizing-workbench {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  border-right: 1px solid var(--border-muted);
-  border-bottom: 1px solid var(--border-muted);
+  border: 0;
+  background: #090a0d;
   overflow: hidden;
 }
 
 .pane-header {
-  min-height: 22px;
-  background: var(--bg-surface-raised);
+  min-height: 26px;
+  background: #111318;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 8px;
+  padding: 0 8px 0 10px;
   gap: 6px;
+  border-bottom: 1px solid #20242d;
   flex-shrink: 0;
 }
 
@@ -4234,16 +4329,18 @@ body.is-resizing-workbench {
 }
 
 .pane-label {
-  color: var(--text-primary);
-  font-size: var(--text-xs);
-  line-height: 22px;
+  color: #d6dde8;
+  font-size: var(--text-2xs);
+  line-height: 26px;
   font-family: var(--font-code);
+  font-weight: 700;
 }
 
 .pane-meta {
-  color: var(--text-muted);
+  color: #7f8a9b;
   font-size: var(--text-2xs);
-  line-height: 22px;
+  line-height: 26px;
+  font-family: var(--font-code);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4252,30 +4349,34 @@ body.is-resizing-workbench {
 .pane-close {
   background: none;
   border: none;
-  color: #8b95b8;
-  font-size: 12px;
+  color: #7f8a9b;
+  font-size: 13px;
   cursor: pointer;
   flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 3px;
 }
 
 .pane-close:hover {
-  color: #f7768e;
+  color: #f2b1b1;
+  background: rgba(242, 154, 154, 0.12);
 }
 
 .pane-terminal {
   flex: 1;
   overflow: hidden;
-  background: #1e1e1e;
+  background: #090a0d;
 }
 
 .pane-terminal .xterm {
   height: 100%;
-  padding-left: 20px;
+  padding: 8px 10px;
 }
 
 .pane-terminal .xterm .xterm-scrollable-element {
-  margin-left: -20px;
-  padding-left: 20px;
+  margin-left: -10px;
+  padding-left: 10px;
 }
 
 .pane-terminal .xterm .xterm-screen {
@@ -4283,7 +4384,7 @@ body.is-resizing-workbench {
 }
 
 .pane-terminal .xterm .xterm-viewport {
-  background: #1e1e1e;
+  background: #090a0d;
   scrollbar-color: rgba(121, 121, 121, 0.55) transparent;
   scrollbar-width: thin;
 }

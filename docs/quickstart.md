@@ -56,6 +56,7 @@ Check the configured workers before sending work:
 
 ```powershell
 winsmux workers status
+winsmux workers attach w2
 winsmux workers doctor
 ```
 

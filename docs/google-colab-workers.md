@@ -2,13 +2,14 @@
 
 This page explains how to prepare a Colab-backed winsmux worker.
 
-In `v0.32.3`, winsmux can route one-shot worker actions through a
+In `v0.32.4`, winsmux can route one-shot worker actions through a
 `google-colab-cli` compatible adapter:
 
 - `winsmux workers exec`
 - `winsmux workers logs`
 - `winsmux workers upload`
 - `winsmux workers download`
+- `winsmux workers attach`
 
 winsmux does not become a Google sign-in broker. The Colab tool or Google-owned
 runtime owns authentication, runtime creation, GPU availability, quota, and
@@ -107,6 +108,7 @@ Run:
 
 ```powershell
 winsmux workers status
+winsmux workers attach w2
 winsmux workers doctor
 ```
 
@@ -119,7 +121,7 @@ but is marked degraded.
 Colab workers are model-family agnostic. winsmux records the intended model as
 metadata and lets the task script load the exact checkpoint or API target.
 
-The intended `v0.32.3` accelerator target is `H100`, with `A100` as the
+The intended `v0.32.4` accelerator target is `H100`, with `A100` as the
 accepted fallback. Large dense, mixture-of-experts, multimodal, or long-context
 models may still require quantization, smaller context settings, tensor
 parallelism, or a hosted API target even on those GPUs.
@@ -216,7 +218,7 @@ Directory uploads are staged through a safe manifest. winsmux excludes:
 
 ## Limits
 
-`v0.32.3` does not automate an interactive Colab REPL or console loop. It runs
+`v0.32.4` does not automate an interactive Colab REPL or console loop. It runs
 one file-backed task at a time through the configured adapter.
 
 Use Google Drive, Cloud Storage, or another explicit storage path for large
