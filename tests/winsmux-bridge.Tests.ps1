@@ -9081,6 +9081,44 @@ agent-slots:
         ($badSlot | Out-String) | Should -Match 'slot id contains unsupported characters'
     }
 
+    It 'rejects reparse points in worker transfer paths' {
+        New-WorkersFakeColabCli | Out-Null
+        Write-WorkersColabProjectConfig
+        $outside = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-workers-outside-' + [guid]::NewGuid().ToString('N'))
+        $inputDir = Join-Path $script:workersTempRoot 'inputs'
+        $linkedInput = Join-Path $inputDir 'linked-outside'
+        $linkedOutput = Join-Path $script:workersTempRoot 'linked-output'
+
+        try {
+            New-Item -ItemType Directory -Path $outside -Force | Out-Null
+            'secret' | Set-Content -Path (Join-Path $outside 'secret.txt') -Encoding UTF8
+            New-Item -ItemType Directory -Path $inputDir -Force | Out-Null
+            'payload' | Set-Content -Path (Join-Path $inputDir 'data.txt') -Encoding UTF8
+            New-Item -ItemType Junction -Path $linkedInput -Target $outside | Out-Null
+
+            $uploadOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers upload w2 inputs --remote /content/inputs --allow-dir inputs --json --project-dir $script:workersTempRoot 2>&1
+
+            $LASTEXITCODE | Should -Be 1
+            ($uploadOutput | Out-String) | Should -Match 'unsupported reparse point'
+
+            New-Item -ItemType Junction -Path $linkedOutput -Target $outside | Out-Null
+            $downloadOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers download w2 /content/out.txt --output linked-output/result.txt --json --project-dir $script:workersTempRoot 2>&1
+
+            $LASTEXITCODE | Should -Be 1
+            ($downloadOutput | Out-String) | Should -Match 'unsupported reparse point'
+        } finally {
+            if (Test-Path -LiteralPath $linkedOutput) {
+                Remove-Item -LiteralPath $linkedOutput -Force
+            }
+            if (Test-Path -LiteralPath $linkedInput) {
+                Remove-Item -LiteralPath $linkedInput -Force
+            }
+            if (Test-Path -LiteralPath $outside) {
+                Remove-Item -LiteralPath $outside -Recurse -Force
+            }
+        }
+    }
+
     It 'excludes build outputs and oversized files from directory uploads' {
         New-WorkersFakeColabCli | Out-Null
         Write-WorkersColabProjectConfig

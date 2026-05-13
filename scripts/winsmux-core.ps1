@@ -5407,6 +5407,37 @@ function ConvertTo-WorkersProjectRelativePath {
     return $relative.Replace('\', '/')
 }
 
+function Assert-WorkersNoReparsePointPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$FullPath,
+        [AllowEmptyString()][string]$Name = 'path'
+    )
+
+    $projectFull = [System.IO.Path]::GetFullPath($ProjectDir).TrimEnd('\', '/')
+    $current = [System.IO.Path]::GetFullPath($FullPath)
+    while (-not [string]::IsNullOrWhiteSpace($current)) {
+        $currentFull = [System.IO.Path]::GetFullPath($current).TrimEnd('\', '/')
+        if ([string]::Equals($currentFull, $projectFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+            break
+        }
+
+        if (Test-Path -LiteralPath $currentFull) {
+            $item = Get-Item -LiteralPath $currentFull -Force
+            if (([int]($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) -ne 0) {
+                $relative = ConvertTo-WorkersProjectRelativePath -ProjectDir $ProjectDir -FullPath $currentFull
+                Stop-WithError "$Name contains unsupported reparse point: $relative"
+            }
+        }
+
+        $parent = Split-Path -Parent $currentFull
+        if ([string]::IsNullOrWhiteSpace($parent) -or [string]::Equals($parent, $currentFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+            break
+        }
+        $current = $parent
+    }
+}
+
 function Get-WorkersPathExclusionReason {
     param([Parameter(Mandatory = $true)][string]$RelativePath)
 
@@ -5473,6 +5504,7 @@ function Resolve-WorkersProjectPath {
     }
     $fullPath = [System.IO.Path]::GetFullPath($candidate)
     $relative = ConvertTo-WorkersProjectRelativePath -ProjectDir $ProjectDir -FullPath $fullPath
+    Assert-WorkersNoReparsePointPath -ProjectDir $ProjectDir -FullPath $fullPath -Name 'path'
 
     if ($MustExist -and -not (Test-Path -LiteralPath $fullPath)) {
         Stop-WithError "path not found: $Path"
@@ -5562,6 +5594,13 @@ function Get-WorkersUploadManifestEntries {
         Stop-WithError "directory upload source is not under an allowlisted directory: $($SourceInfo.RelativePath)"
     }
 
+    foreach ($item in @(Get-ChildItem -LiteralPath $SourceInfo.FullPath -Recurse -Force)) {
+        if (([int]($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) -ne 0) {
+            $relative = ConvertTo-WorkersProjectRelativePath -ProjectDir $ProjectDir -FullPath $item.FullName
+            Stop-WithError "upload source contains unsupported reparse point: $relative"
+        }
+    }
+
     foreach ($item in @(Get-ChildItem -LiteralPath $SourceInfo.FullPath -File -Recurse -Force)) {
         $relative = ConvertTo-WorkersProjectRelativePath -ProjectDir $ProjectDir -FullPath $item.FullName
         $reason = Get-WorkersPathExclusionReason -RelativePath $relative
@@ -5629,6 +5668,7 @@ function New-WorkersSafeUploadSource {
         }
 
         $sourcePath = [System.IO.Path]::GetFullPath((Join-Path $ProjectDir ($relativeProjectPath.Replace('/', '\'))))
+        Assert-WorkersNoReparsePointPath -ProjectDir $ProjectDir -FullPath $sourcePath -Name 'upload manifest file'
         if (-not (Test-WorkersPathIsUnderDirectory -Path $sourcePath -Directory $sourceFull)) {
             Stop-WithError "upload manifest file is outside source directory: $relativeProjectPath"
         }
