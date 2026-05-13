@@ -276,6 +276,8 @@ function Get-PaneStatusRecords {
             Label           = $entry.Label
             Role            = $entry.Role
             PaneId          = $entry.PaneId
+            WorkerBackend   = $entry.WorkerBackend
+            ManifestStatus  = $entry.Status
             State           = $state
             TokensRemaining = Get-PaneTokensRemainingText -Text $snapshot
             TaskId          = $entry.TaskId
@@ -288,6 +290,8 @@ function Get-PaneStatusRecords {
             HeadSha         = $entry.HeadSha
             ChangedFileCount = $entry.ChangedFileCount
             ChangedFiles    = @($entry.ChangedFiles)
+            LastCommand     = $entry.LastCommand
+            LastCommandAt   = $entry.LastCommandAt
             LastEvent       = $entry.LastEvent
             LastEventAt     = $entry.LastEventAt
             ParentRunId     = $entry.ParentRunId
@@ -306,6 +310,7 @@ function Get-PaneStatusRecords {
             TimeoutPolicy   = $entry.TimeoutPolicy
             HandoffRefs     = @($entry.HandoffRefs)
             SecurityPolicy  = $entry.SecurityPolicy
+            ColabSession    = $entry.ColabSession
         }
     }
 

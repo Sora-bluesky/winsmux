@@ -8729,6 +8729,204 @@ panes:
     }
 }
 
+Describe 'winsmux workers command' {
+    BeforeAll {
+        $script:winsmuxWorkersCorePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $script:winsmuxWorkersCoreRawContent = Get-Content -LiteralPath $script:winsmuxWorkersCorePath -Raw -Encoding UTF8
+        . $script:winsmuxWorkersCorePath 'version' *> $null
+    }
+
+    BeforeEach {
+        $script:workersTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-workers-tests-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:workersTempRoot -Force | Out-Null
+        $script:previousColabCli = $env:WINSMUX_COLAB_CLI
+        $script:previousColabAuth = $env:WINSMUX_COLAB_AUTH_STATE
+        $env:WINSMUX_COLAB_CLI = 'winsmux-test-missing-google-colab-cli'
+        $env:WINSMUX_COLAB_AUTH_STATE = ''
+    }
+
+    AfterEach {
+        $env:WINSMUX_COLAB_CLI = $script:previousColabCli
+        $env:WINSMUX_COLAB_AUTH_STATE = $script:previousColabAuth
+        if ($script:workersTempRoot -and (Test-Path -LiteralPath $script:workersTempRoot)) {
+            Remove-Item -LiteralPath $script:workersTempRoot -Recurse -Force
+        }
+
+        Remove-Item function:\winsmux -ErrorAction SilentlyContinue
+    }
+
+    It 'documents and routes the workers lifecycle command' {
+        $script:winsmuxWorkersCoreRawContent | Should -Match 'workers <status\|start\|stop\|doctor> \[slot\|all\] \[--json\] \[--project-dir <path>\]'
+        $script:winsmuxWorkersCoreRawContent | Should -Match "'workers'\s*\{\s*Invoke-Workers\s*\}"
+        $script:winsmuxWorkersCoreRawContent | Should -Match 'google-colab-cli not found on PATH'
+        $script:winsmuxWorkersCoreRawContent | Should -Match 'uv not found on PATH'
+    }
+
+    It 'reports the default six worker slots with aliases and Colab degraded state' {
+@'
+agent: codex
+model: gpt-5.4
+worker-backend: colab_cli
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers status --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+
+        @($payload.workers).Count | Should -Be 6
+        $payload.workers[0].slot | Should -Be 'w1'
+        $payload.workers[0].slot_id | Should -Be 'worker-1'
+        $payload.workers[0].backend | Should -Be 'colab_cli'
+        $payload.workers[0].session | Should -Match '_worker_1$'
+        $payload.workers[0].actual_gpu | Should -Be 'CPU'
+        $payload.workers[0].degraded_reason | Should -Match 'colab_cli_missing'
+        $payload.workers[0].state | Should -Be 'not_launched'
+    }
+
+    It 'stops one worker by slot alias and records the lifecycle command in the manifest' {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    worker-backend: local
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        New-Item -ItemType Directory -Path (Join-Path $script:workersTempRoot '.winsmux') -Force | Out-Null
+        Save-WinsmuxManifest -ProjectDir $script:workersTempRoot -Manifest ([ordered]@{
+            version = 1
+            saved_at = '2026-05-13T00:00:00Z'
+            session = [ordered]@{
+                name = 'winsmux-orchestra'
+                project_dir = $script:workersTempRoot
+                git_worktree_dir = (Join-Path $script:workersTempRoot '.git')
+            }
+            panes = [ordered]@{
+                'worker-1' = [ordered]@{
+                    pane_id = '%2'
+                    slot_id = 'worker-1'
+                    worker_backend = 'local'
+                    role = 'Worker'
+                    exec_mode = $false
+                    launch_dir = $script:workersTempRoot
+                    status = 'ready'
+                    task = $null
+                }
+            }
+            tasks = [ordered]@{
+                queued = @()
+                in_progress = @()
+                completed = @()
+            }
+            worktrees = [ordered]@{}
+        })
+
+        Mock Invoke-WinsmuxRaw {
+            param([string[]]$Arguments)
+            $global:LASTEXITCODE = 0
+            return @()
+        } -ParameterFilter {
+            $Arguments[0] -eq 'respawn-pane'
+        }
+
+        $Rest = @('w1', '--json', '--project-dir', $script:workersTempRoot)
+        $output = Invoke-WorkersStop
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $entry = @(Get-PaneControlManifestEntries -ProjectDir $script:workersTempRoot)[0]
+
+        $payload.results[0].slot_id | Should -Be 'worker-1'
+        $payload.results[0].status | Should -Be 'stopped'
+        $entry.Status | Should -Be 'deferred_start'
+        $entry.LastCommand | Should -Be 'workers.stop'
+        Should -Invoke Invoke-WinsmuxRaw -Times 1 -Exactly -ParameterFilter {
+            $Arguments[0] -eq 'respawn-pane' -and $Arguments -contains '%2'
+        }
+    }
+
+    It 'blocks start for a degraded Colab worker without dispatching bootstrap text' {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: colab_cli
+    session-name: winsmux_worker_2
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        New-Item -ItemType Directory -Path (Join-Path $script:workersTempRoot '.winsmux') -Force | Out-Null
+        Save-WinsmuxManifest -ProjectDir $script:workersTempRoot -Manifest ([ordered]@{
+            version = 1
+            saved_at = '2026-05-13T00:00:00Z'
+            session = [ordered]@{
+                name = 'winsmux-orchestra'
+                project_dir = $script:workersTempRoot
+                git_worktree_dir = (Join-Path $script:workersTempRoot '.git')
+            }
+            panes = [ordered]@{
+                'worker-2' = [ordered]@{
+                    pane_id = '%3'
+                    slot_id = 'worker-2'
+                    worker_backend = 'colab_cli'
+                    role = 'Worker'
+                    exec_mode = $false
+                    launch_dir = $script:workersTempRoot
+                    status = 'backend_degraded'
+                    bootstrap_plan_path = (Join-Path $script:workersTempRoot 'worker-2.json')
+                    colab_session = [ordered]@{
+                        worker_backend = 'colab_cli'
+                        session_name = 'winsmux_worker_2'
+                        state = 'degraded'
+                        degraded = $true
+                        degraded_reason = 'colab_cli_missing'
+                        selected_gpu = 'CPU'
+                    }
+                    task = $null
+                }
+            }
+            tasks = [ordered]@{
+                queued = @()
+                in_progress = @()
+                completed = @()
+            }
+            worktrees = [ordered]@{}
+        })
+
+        Mock Send-TextToPane { throw 'bootstrap should not be dispatched' }
+
+        $Rest = @('worker-2', '--json', '--project-dir', $script:workersTempRoot)
+        $output = Invoke-WorkersStart
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+
+        $payload.results[0].slot_id | Should -Be 'worker-2'
+        $payload.results[0].status | Should -Be 'blocked'
+        $payload.results[0].reason | Should -Be 'colab_cli_missing'
+        Should -Invoke Send-TextToPane -Times 0 -Exactly
+    }
+
+    It 'prints worker doctor checks with actionable Colab and uv diagnostics' {
+@'
+agent: codex
+model: gpt-5.4
+worker-backend: colab_cli
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers doctor --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $labels = @($payload.checks | ForEach-Object { $_.label })
+
+        $labels | Should -Contain 'config'
+        $labels | Should -Contain 'google-colab-cli'
+        $labels | Should -Contain 'uv'
+        $labels | Should -Contain 'colab auth'
+        (@($payload.checks | Where-Object { $_.label -eq 'google-colab-cli' })[0].action) | Should -Match 'Install google-colab-cli'
+        $uvCheck = @($payload.checks | Where-Object { $_.label -eq 'uv' })[0]
+        if ($uvCheck.status -eq 'fail') {
+            $uvCheck.action | Should -Match 'Install uv'
+        }
+    }
+}
+
 Describe 'winsmux board command' {
     BeforeAll {
         $script:winsmuxCorePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'

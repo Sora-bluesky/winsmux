@@ -17,7 +17,7 @@ if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_RAW_EXE)) {
 }
 
 # --- Config ---
-$VERSION = "0.32.1"
+$VERSION = "0.32.2"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 $BridgeScriptPath = $PSCommandPath
@@ -30,6 +30,7 @@ $LabelsFile     = Join-Path $env:APPDATA "winsmux\labels.json"
 $BridgeSettingsScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\settings.ps1'))
 $PaneControlScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\pane-control.ps1'))
 $PaneStatusScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\pane-status.ps1'))
+$ColabBackendScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\colab-backend.ps1'))
 $RoleGateScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\role-gate.ps1'))
 $ClmSafeIoScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\clm-safe-io.ps1'))
 $PaneEnvScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\pane-env.ps1'))
@@ -46,6 +47,10 @@ if (Test-Path $PaneControlScript -PathType Leaf) {
 
 if (Test-Path $PaneStatusScript -PathType Leaf) {
     . $PaneStatusScript
+}
+
+if (Test-Path $ColabBackendScript -PathType Leaf) {
+    . $ColabBackendScript
 }
 
 if (Test-Path $RoleGateScript -PathType Leaf) {
@@ -4896,6 +4901,715 @@ function Invoke-Status {
         Out-String
 
     Write-Output ($table.TrimEnd())
+}
+
+function Get-WorkersUsage {
+    return "usage: winsmux workers <status|start|stop|doctor> [slot|all] [--json] [--project-dir <path>]"
+}
+
+function Read-WorkersOptions {
+    param(
+        [AllowNull()][string[]]$Tokens,
+        [Parameter(Mandatory = $true)][string]$Usage,
+        [AllowEmptyString()][string]$DefaultTarget = '',
+        [switch]$RequireTarget
+    )
+
+    $projectDir = (Get-Location).Path
+    $asJson = $false
+    $targetValue = ''
+    $targetSet = $false
+    $items = @($Tokens)
+
+    for ($index = 0; $index -lt $items.Count; $index++) {
+        $token = [string]$items[$index]
+        switch ($token) {
+            '--json' {
+                $asJson = $true
+            }
+            '--project-dir' {
+                if ($index + 1 -ge $items.Count) {
+                    Stop-WithError $Usage
+                }
+
+                $projectDir = [string]$items[$index + 1]
+                $index++
+            }
+            default {
+                if ($targetSet) {
+                    Stop-WithError $Usage
+                }
+
+                $targetValue = $token
+                $targetSet = $true
+            }
+        }
+    }
+
+    if (-not $targetSet) {
+        $targetValue = $DefaultTarget
+    }
+
+    if ($RequireTarget -and [string]::IsNullOrWhiteSpace($targetValue)) {
+        Stop-WithError $Usage
+    }
+
+    return [PSCustomObject]@{
+        ProjectDir = $projectDir
+        Json       = $asJson
+        Target     = $targetValue
+    }
+}
+
+function ConvertTo-WorkersSlotAlias {
+    param([AllowEmptyString()][string]$SlotId)
+
+    if ([string]::IsNullOrWhiteSpace($SlotId)) {
+        return ''
+    }
+
+    if ($SlotId -match '^worker-(\d+)$') {
+        return "w$($Matches[1])"
+    }
+
+    return $SlotId
+}
+
+function Resolve-WorkersSlotId {
+    param([AllowEmptyString()][string]$Target)
+
+    if ([string]::IsNullOrWhiteSpace($Target)) {
+        return ''
+    }
+
+    $normalized = $Target.Trim().ToLowerInvariant()
+    if ($normalized -eq 'all') {
+        return 'all'
+    }
+
+    if ($normalized -match '^w(\d+)$') {
+        return "worker-$($Matches[1])"
+    }
+
+    return $normalized
+}
+
+function Join-WorkersValue {
+    param([AllowNull()]$Value)
+
+    if ($null -eq $Value) {
+        return ''
+    }
+
+    if ($Value -is [string]) {
+        return $Value
+    }
+
+    $items = @($Value | ForEach-Object {
+        $text = [string]$_
+        if (-not [string]::IsNullOrWhiteSpace($text)) {
+            $text
+        }
+    })
+
+    return ($items -join ',')
+}
+
+function Get-WorkersSlotRuntimeRole {
+    param([AllowNull()]$Slot)
+
+    $role = [string](Get-SendConfigValue -InputObject $Slot -Name 'runtime_role' -Default '')
+    if ([string]::IsNullOrWhiteSpace($role)) {
+        $role = [string](Get-SendConfigValue -InputObject $Slot -Name 'runtime-role' -Default '')
+    }
+    if ([string]::IsNullOrWhiteSpace($role)) {
+        $role = 'worker'
+    }
+
+    return $role
+}
+
+function Get-WorkersSlotId {
+    param([AllowNull()]$Slot)
+
+    $slotId = [string](Get-SendConfigValue -InputObject $Slot -Name 'slot_id' -Default '')
+    if ([string]::IsNullOrWhiteSpace($slotId)) {
+        $slotId = [string](Get-SendConfigValue -InputObject $Slot -Name 'slot-id' -Default '')
+    }
+
+    return $slotId
+}
+
+function Get-WorkersColabSessionState {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)]$Settings
+    )
+
+    $sessionsBySlot = @{}
+    $statePath = ''
+    $errorReason = ''
+    $updatedAt = ''
+    $degradedCount = 0
+
+    if (Get-Command Get-WinsmuxColabStatePath -ErrorAction SilentlyContinue) {
+        $statePath = Get-WinsmuxColabStatePath -ProjectDir $ProjectDir
+    }
+
+    if (-not (Get-Command Update-WinsmuxColabSessionState -ErrorAction SilentlyContinue)) {
+        return [PSCustomObject]@{
+            SessionsBySlot = $sessionsBySlot
+            StatePath      = $statePath
+            UpdatedAt      = $updatedAt
+            DegradedCount  = $degradedCount
+            ErrorReason    = 'colab_backend_helpers_unavailable'
+        }
+    }
+
+    try {
+        $state = Update-WinsmuxColabSessionState -ProjectDir $ProjectDir -Settings $Settings
+        $statePath = [string](Get-SendConfigValue -InputObject $state -Name 'path' -Default $statePath)
+        $updatedAt = [string](Get-SendConfigValue -InputObject $state -Name 'updated_at' -Default '')
+        $degradedCount = [int](Get-SendConfigValue -InputObject $state -Name 'degraded_count' -Default 0)
+        foreach ($record in @(Get-SendConfigValue -InputObject $state -Name 'active_sessions' -Default @())) {
+            $slotId = [string](Get-SendConfigValue -InputObject $record -Name 'slot_id' -Default '')
+            if (-not [string]::IsNullOrWhiteSpace($slotId) -and -not $sessionsBySlot.ContainsKey($slotId)) {
+                $sessionsBySlot[$slotId] = $record
+            }
+        }
+    } catch {
+        $errorReason = $_.Exception.Message
+        if (Get-Command New-WinsmuxColabStateUpdateFailureRecords -ErrorAction SilentlyContinue) {
+            foreach ($record in @(New-WinsmuxColabStateUpdateFailureRecords -ProjectDir $ProjectDir -Settings $Settings -Reason 'colab_state_update_failed')) {
+                $slotId = [string](Get-SendConfigValue -InputObject $record -Name 'slot_id' -Default '')
+                if (-not [string]::IsNullOrWhiteSpace($slotId) -and -not $sessionsBySlot.ContainsKey($slotId)) {
+                    $sessionsBySlot[$slotId] = $record
+                }
+            }
+            $degradedCount = $sessionsBySlot.Count
+        }
+    }
+
+    return [PSCustomObject]@{
+        SessionsBySlot = $sessionsBySlot
+        StatePath      = $statePath
+        UpdatedAt      = $updatedAt
+        DegradedCount  = $degradedCount
+        ErrorReason    = $errorReason
+    }
+}
+
+function Get-WorkersLifecycleContext {
+    param([Parameter(Mandatory = $true)][string]$ProjectDir)
+
+    $settings = Get-BridgeSettings -RootPath $ProjectDir
+    $slots = @($settings.agent_slots | Where-Object {
+        (Get-WorkersSlotRuntimeRole -Slot $_).Trim().ToLowerInvariant() -eq 'worker'
+    })
+
+    $entries = @()
+    $manifestError = ''
+    try {
+        $entries = @(Get-PaneControlManifestEntries -ProjectDir $ProjectDir | Where-Object {
+            ([string]$_.Role -eq 'Worker') -or ([string]$_.Label -match '^worker-\d+$')
+        })
+    } catch {
+        $manifestError = $_.Exception.Message
+    }
+
+    $statusRecords = @()
+    try {
+        if ($entries.Count -gt 0) {
+            $statusRecords = @(Get-PaneStatusRecords -ProjectDir $ProjectDir)
+        }
+    } catch {
+    }
+
+    $entriesBySlot = @{}
+    foreach ($entry in $entries) {
+        foreach ($key in @([string]$entry.Label, [string](Get-SendConfigValue -InputObject $entry -Name 'SlotId' -Default ''))) {
+            if (-not [string]::IsNullOrWhiteSpace($key) -and -not $entriesBySlot.ContainsKey($key)) {
+                $entriesBySlot[$key] = $entry
+            }
+        }
+    }
+
+    $statusBySlot = @{}
+    foreach ($record in $statusRecords) {
+        foreach ($key in @([string]$record.Label, [string](Get-SendConfigValue -InputObject $record -Name 'SlotId' -Default ''))) {
+            if (-not [string]::IsNullOrWhiteSpace($key) -and -not $statusBySlot.ContainsKey($key)) {
+                $statusBySlot[$key] = $record
+            }
+        }
+    }
+
+    return [PSCustomObject]@{
+        ProjectDir      = $ProjectDir
+        Settings        = $settings
+        Slots           = @($slots)
+        EntriesBySlot   = $entriesBySlot
+        StatusBySlot    = $statusBySlot
+        ManifestError   = $manifestError
+        ColabState      = Get-WorkersColabSessionState -ProjectDir $ProjectDir -Settings $settings
+    }
+}
+
+function Get-WorkersStatusRows {
+    param([Parameter(Mandatory = $true)]$Context)
+
+    $rows = [System.Collections.Generic.List[object]]::new()
+    foreach ($slot in @($Context.Slots)) {
+        $slotId = Get-WorkersSlotId -Slot $slot
+        if ([string]::IsNullOrWhiteSpace($slotId)) {
+            continue
+        }
+
+        $runtimeRole = Get-WorkersSlotRuntimeRole -Slot $slot
+        $slotConfig = Get-SlotAgentConfig -Role 'Worker' -SlotId $slotId -Settings $Context.Settings -RootPath $Context.ProjectDir
+        $workerRole = [string]$slotConfig.WorkerRole
+        if ([string]::IsNullOrWhiteSpace($workerRole)) {
+            $workerRole = $runtimeRole
+        }
+
+        $entry = if ($Context.EntriesBySlot.ContainsKey($slotId)) { $Context.EntriesBySlot[$slotId] } else { $null }
+        $statusRecord = if ($Context.StatusBySlot.ContainsKey($slotId)) { $Context.StatusBySlot[$slotId] } else { $null }
+        $colabSession = $null
+        if ($Context.ColabState.SessionsBySlot.ContainsKey($slotId)) {
+            $colabSession = $Context.ColabState.SessionsBySlot[$slotId]
+        } elseif ($null -ne $entry) {
+            $colabSession = Get-SendConfigValue -InputObject $entry -Name 'ColabSession' -Default $null
+        }
+
+        $manifestStatus = if ($null -ne $entry) { [string]$entry.Status } else { '' }
+        $paneState = if ($null -ne $statusRecord) { [string]$statusRecord.State } else { '' }
+        $state = $paneState
+        if ($manifestStatus -in @('deferred_start', 'deferred_starting', 'deferred_start_failed', 'backend_degraded')) {
+            $state = $manifestStatus
+        }
+        if ([string]::IsNullOrWhiteSpace($state)) {
+            $state = if ($null -eq $entry) { 'not_launched' } else { 'unknown' }
+        }
+
+        $sessionName = [string](Get-SendConfigValue -InputObject $colabSession -Name 'session_name' -Default '')
+        if ([string]::IsNullOrWhiteSpace($sessionName) -and [string]::Equals(([string]$slotConfig.WorkerBackend), 'colab_cli', [System.StringComparison]::OrdinalIgnoreCase) -and (Get-Command Resolve-WinsmuxColabSessionName -ErrorAction SilentlyContinue)) {
+            $sessionName = Resolve-WinsmuxColabSessionName -ProjectDir $Context.ProjectDir -SlotId $slotId -Template ([string]$slotConfig.SessionName)
+        }
+
+        $requestedGpu = Join-WorkersValue (Get-SendConfigValue -InputObject $colabSession -Name 'requested_gpu' -Default @())
+        if ([string]::IsNullOrWhiteSpace($requestedGpu)) {
+            $requestedGpu = Join-WorkersValue @($slotConfig.GpuPreference)
+        }
+
+        $actualGpu = [string](Get-SendConfigValue -InputObject $colabSession -Name 'selected_gpu' -Default '')
+        $degradedReason = [string](Get-SendConfigValue -InputObject $colabSession -Name 'degraded_reason' -Default '')
+        $lastCommand = ''
+        $lastCommandAt = ''
+        if ($null -ne $entry) {
+            $lastCommand = [string](Get-SendConfigValue -InputObject $entry -Name 'LastCommand' -Default '')
+            $lastCommandAt = [string](Get-SendConfigValue -InputObject $entry -Name 'LastCommandAt' -Default '')
+            if ([string]::IsNullOrWhiteSpace($lastCommand)) {
+                $lastCommand = [string](Get-SendConfigValue -InputObject $entry -Name 'Task' -Default '')
+            }
+            if ([string]::IsNullOrWhiteSpace($lastCommand)) {
+                $lastCommand = [string](Get-SendConfigValue -InputObject $entry -Name 'LastEvent' -Default '')
+            }
+        }
+
+        $rows.Add([PSCustomObject][ordered]@{
+            Slot           = ConvertTo-WorkersSlotAlias -SlotId $slotId
+            SlotId         = $slotId
+            PaneId         = if ($null -ne $entry) { [string]$entry.PaneId } else { '' }
+            State          = $state
+            PaneState      = $paneState
+            ManifestStatus = $manifestStatus
+            Backend        = [string]$slotConfig.WorkerBackend
+            Role           = $workerRole
+            Session        = $sessionName
+            RequestedGpu   = $requestedGpu
+            ActualGpu      = $actualGpu
+            DegradedReason = $degradedReason
+            LastCommand    = $lastCommand
+            LastCommandAt  = $lastCommandAt
+        }) | Out-Null
+    }
+
+    return @($rows)
+}
+
+function Select-WorkersRows {
+    param(
+        [Parameter(Mandatory = $true)][object[]]$Rows,
+        [Parameter(Mandatory = $true)][string]$Target
+    )
+
+    $resolved = Resolve-WorkersSlotId -Target $Target
+    if ([string]::IsNullOrWhiteSpace($resolved) -or $resolved -eq 'all') {
+        return @($Rows)
+    }
+
+    $selected = @($Rows | Where-Object {
+        [string]::Equals([string]$_.SlotId, $resolved, [System.StringComparison]::OrdinalIgnoreCase) -or
+        [string]::Equals([string]$_.Slot, $Target, [System.StringComparison]::OrdinalIgnoreCase)
+    })
+
+    if ($selected.Count -lt 1) {
+        Stop-WithError "unknown worker slot: $Target"
+    }
+
+    return @($selected)
+}
+
+function Write-WorkersStatusOutput {
+    param(
+        [Parameter(Mandatory = $true)]$Context,
+        [Parameter(Mandatory = $true)][object[]]$Rows,
+        [switch]$Json
+    )
+
+    if ($Json) {
+        [ordered]@{
+            project_dir     = $Context.ProjectDir
+            generated_at    = (Get-Date).ToUniversalTime().ToString('o')
+            manifest_error  = $Context.ManifestError
+            colab_state     = [ordered]@{
+                path           = [string]$Context.ColabState.StatePath
+                updated_at     = [string]$Context.ColabState.UpdatedAt
+                degraded_count = [int]$Context.ColabState.DegradedCount
+                error_reason   = [string]$Context.ColabState.ErrorReason
+            }
+            workers         = @(ConvertTo-WorkersStatusJsonRows -Rows $Rows)
+        } | ConvertTo-Json -Depth 20 -Compress | Write-Output
+        return
+    }
+
+    if ($Rows.Count -lt 1) {
+        Write-Output "(no workers)"
+        return
+    }
+
+    $table = $Rows |
+        Select-Object Slot, SlotId, State, Backend, Role, Session, RequestedGpu, ActualGpu, DegradedReason, LastCommand |
+        Format-Table -AutoSize |
+        Out-String
+    Write-Output ($table.TrimEnd())
+}
+
+function ConvertTo-WorkersStatusJsonRows {
+    param([Parameter(Mandatory = $true)][object[]]$Rows)
+
+    foreach ($row in @($Rows)) {
+        [ordered]@{
+            slot            = [string]$row.Slot
+            slot_id         = [string]$row.SlotId
+            pane_id         = [string]$row.PaneId
+            state           = [string]$row.State
+            pane_state      = [string]$row.PaneState
+            manifest_status = [string]$row.ManifestStatus
+            backend         = [string]$row.Backend
+            role            = [string]$row.Role
+            session         = [string]$row.Session
+            requested_gpu   = [string]$row.RequestedGpu
+            actual_gpu      = [string]$row.ActualGpu
+            degraded_reason = [string]$row.DegradedReason
+            last_command    = [string]$row.LastCommand
+            last_command_at = [string]$row.LastCommandAt
+        }
+    }
+}
+
+function Set-WorkersManifestLifecycleCommand {
+    param(
+        [Parameter(Mandatory = $true)]$Entry,
+        [Parameter(Mandatory = $true)][string]$CommandName,
+        [AllowEmptyString()][string]$Status = ''
+    )
+
+    if ($null -eq $Entry -or [string]::IsNullOrWhiteSpace([string]$Entry.PaneId)) {
+        return
+    }
+
+    $properties = [ordered]@{
+        last_command    = $CommandName
+        last_command_at = (Get-Date).ToUniversalTime().ToString('o')
+        last_event      = $CommandName
+        last_event_at   = (Get-Date).ToUniversalTime().ToString('o')
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Status)) {
+        $properties['status'] = $Status
+    }
+
+    Set-PaneControlManifestPaneProperties -ManifestPath $Entry.ManifestPath -PaneId $Entry.PaneId -Properties $properties
+}
+
+function New-WorkersLifecycleResult {
+    param(
+        [Parameter(Mandatory = $true)]$Row,
+        [Parameter(Mandatory = $true)][string]$Action,
+        [Parameter(Mandatory = $true)][string]$Status,
+        [AllowEmptyString()][string]$Reason = ''
+    )
+
+    return [ordered]@{
+        slot_id       = [string]$Row.SlotId
+        slot          = [string]$Row.Slot
+        pane_id       = [string]$Row.PaneId
+        action        = $Action
+        status        = $Status
+        reason        = $Reason
+        backend       = [string]$Row.Backend
+        worker_state  = [string]$Row.State
+        last_command  = "$Action"
+    }
+}
+
+function Invoke-WorkersStatus {
+    $usage = "usage: winsmux workers status [slot|all] [--json] [--project-dir <path>]"
+    $options = Read-WorkersOptions -Tokens $Rest -Usage $usage -DefaultTarget 'all'
+    $context = Get-WorkersLifecycleContext -ProjectDir $options.ProjectDir
+    $rows = Select-WorkersRows -Rows (Get-WorkersStatusRows -Context $context) -Target $options.Target
+    Write-WorkersStatusOutput -Context $context -Rows $rows -Json:([bool]$options.Json)
+}
+
+function Invoke-WorkersStart {
+    $usage = "usage: winsmux workers start [slot|all] [--json] [--project-dir <path>]"
+    $options = Read-WorkersOptions -Tokens $Rest -Usage $usage -DefaultTarget 'all'
+    $context = Get-WorkersLifecycleContext -ProjectDir $options.ProjectDir
+    $rows = Select-WorkersRows -Rows (Get-WorkersStatusRows -Context $context) -Target $options.Target
+    $results = [System.Collections.Generic.List[object]]::new()
+
+    foreach ($row in @($rows)) {
+        $entry = if ($context.EntriesBySlot.ContainsKey($row.SlotId)) { $context.EntriesBySlot[$row.SlotId] } else { $null }
+        if ($null -eq $entry) {
+            $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status 'failed' -Reason 'manifest_entry_missing')) | Out-Null
+            continue
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$entry.PaneId)) {
+            $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status 'failed' -Reason 'pane_id_missing')) | Out-Null
+            continue
+        }
+        if ([string]$entry.Status -eq 'backend_degraded') {
+            $reason = [string]$row.DegradedReason
+            if ([string]::IsNullOrWhiteSpace($reason)) {
+                $reason = 'backend_degraded'
+            }
+            $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status 'blocked' -Reason $reason)) | Out-Null
+            continue
+        }
+
+        try {
+            if (Test-DeferredPaneStartManifestEntry -ManifestEntry $entry) {
+                $started = Start-DeferredPaneFromManifestEntry -ProjectDir $options.ProjectDir -ManifestEntry $entry
+                Set-WorkersManifestLifecycleCommand -Entry $entry -CommandName 'workers.start' -Status 'ready'
+                $status = if ($started) { 'started' } else { 'unchanged' }
+                $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status $status)) | Out-Null
+            } else {
+                Set-WorkersManifestLifecycleCommand -Entry $entry -CommandName 'workers.start'
+                $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status 'already_running')) | Out-Null
+            }
+        } catch {
+            $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status 'failed' -Reason $_.Exception.Message)) | Out-Null
+        }
+    }
+
+    Write-WorkersLifecycleOutput -ProjectDir $options.ProjectDir -Results @($results) -Json:([bool]$options.Json)
+}
+
+function Invoke-WorkersStop {
+    $usage = "usage: winsmux workers stop <slot|all> [--json] [--project-dir <path>]"
+    $options = Read-WorkersOptions -Tokens $Rest -Usage $usage -RequireTarget
+    $context = Get-WorkersLifecycleContext -ProjectDir $options.ProjectDir
+    $rows = Select-WorkersRows -Rows (Get-WorkersStatusRows -Context $context) -Target $options.Target
+    $results = [System.Collections.Generic.List[object]]::new()
+
+    foreach ($row in @($rows)) {
+        $entry = if ($context.EntriesBySlot.ContainsKey($row.SlotId)) { $context.EntriesBySlot[$row.SlotId] } else { $null }
+        if ($null -eq $entry) {
+            $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.stop' -Status 'failed' -Reason 'manifest_entry_missing')) | Out-Null
+            continue
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$entry.PaneId)) {
+            $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.stop' -Status 'failed' -Reason 'pane_id_missing')) | Out-Null
+            continue
+        }
+
+        try {
+            Invoke-WinsmuxRaw -Arguments @('respawn-pane', '-k', '-t', [string]$entry.PaneId) | Out-Null
+            $nativeExitCode = Get-SafeLastExitCode
+            if ($null -ne $nativeExitCode -and $nativeExitCode -ne 0) {
+                throw "failed to stop pane process: $($entry.PaneId)"
+            }
+
+            Clear-ReadMark ([string]$entry.PaneId)
+            Clear-Watermark ([string]$entry.PaneId)
+            $nextStatus = if ([string]$entry.Status -eq 'backend_degraded') { 'backend_degraded' } else { 'deferred_start' }
+            Set-WorkersManifestLifecycleCommand -Entry $entry -CommandName 'workers.stop' -Status $nextStatus
+            $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.stop' -Status 'stopped' -Reason $nextStatus)) | Out-Null
+        } catch {
+            $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.stop' -Status 'failed' -Reason $_.Exception.Message)) | Out-Null
+        }
+    }
+
+    Write-WorkersLifecycleOutput -ProjectDir $options.ProjectDir -Results @($results) -Json:([bool]$options.Json)
+}
+
+function Write-WorkersLifecycleOutput {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][object[]]$Results,
+        [switch]$Json
+    )
+
+    if ($Json) {
+        [ordered]@{
+            project_dir  = $ProjectDir
+            generated_at = (Get-Date).ToUniversalTime().ToString('o')
+            results      = @($Results)
+        } | ConvertTo-Json -Depth 16 -Compress | Write-Output
+        return
+    }
+
+    foreach ($result in @($Results)) {
+        $line = "$($result.slot_id): $($result.status)"
+        if (-not [string]::IsNullOrWhiteSpace([string]$result.reason)) {
+            $line = "$line ($($result.reason))"
+        }
+        Write-Output $line
+    }
+}
+
+function New-WorkersDoctorCheck {
+    param(
+        [Parameter(Mandatory = $true)][string]$Status,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [Parameter(Mandatory = $true)][string]$Detail,
+        [AllowEmptyString()][string]$Action = ''
+    )
+
+    return [ordered]@{
+        status = $Status
+        label  = $Label
+        detail = $Detail
+        action = $Action
+    }
+}
+
+function Invoke-WorkersDoctor {
+    $usage = "usage: winsmux workers doctor [--json] [--project-dir <path>]"
+    $options = Read-WorkersOptions -Tokens $Rest -Usage $usage
+    if (-not [string]::IsNullOrWhiteSpace($options.Target)) {
+        Stop-WithError $usage
+    }
+
+    $checks = [System.Collections.Generic.List[object]]::new()
+    $context = $null
+    $colabSlotCount = 0
+
+    try {
+        $context = Get-WorkersLifecycleContext -ProjectDir $options.ProjectDir
+        $workerCount = @($context.Slots).Count
+        foreach ($slot in @($context.Slots)) {
+            $slotId = Get-WorkersSlotId -Slot $slot
+            $slotConfig = Get-SlotAgentConfig -Role 'Worker' -SlotId $slotId -Settings $context.Settings -RootPath $options.ProjectDir
+            if ([string]::Equals(([string]$slotConfig.WorkerBackend), 'colab_cli', [System.StringComparison]::OrdinalIgnoreCase)) {
+                $colabSlotCount++
+            }
+        }
+        $checks.Add((New-WorkersDoctorCheck -Status 'pass' -Label 'config' -Detail "$workerCount worker slots configured" -Action '')) | Out-Null
+    } catch {
+        $checks.Add((New-WorkersDoctorCheck -Status 'fail' -Label 'config' -Detail $_.Exception.Message -Action 'Fix .winsmux.yaml and rerun winsmux workers doctor.')) | Out-Null
+    }
+
+    $manifestPath = Join-Path (Join-Path $options.ProjectDir '.winsmux') 'manifest.yaml'
+    if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
+        $checks.Add((New-WorkersDoctorCheck -Status 'pass' -Label 'manifest' -Detail $manifestPath -Action '')) | Out-Null
+    } else {
+        $checks.Add((New-WorkersDoctorCheck -Status 'warn' -Label 'manifest' -Detail "manifest not found: $manifestPath" -Action 'Run winsmux launch before workers start or stop.')) | Out-Null
+    }
+
+    $uvCommand = Get-Command uv -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -ne $uvCommand) {
+        $checks.Add((New-WorkersDoctorCheck -Status 'pass' -Label 'uv' -Detail ([string]$uvCommand.Source) -Action '')) | Out-Null
+    } else {
+        $checks.Add((New-WorkersDoctorCheck -Status 'fail' -Label 'uv' -Detail 'uv not found on PATH' -Action 'Install uv or add it to PATH before launching managed workers.')) | Out-Null
+    }
+
+    $cli = $null
+    if (Get-Command Get-WinsmuxColabCliAvailability -ErrorAction SilentlyContinue) {
+        $cli = Get-WinsmuxColabCliAvailability
+    }
+    if ($null -eq $cli) {
+        $checks.Add((New-WorkersDoctorCheck -Status 'warn' -Label 'google-colab-cli' -Detail 'Colab backend helpers are unavailable' -Action 'Check the winsmux installation.')) | Out-Null
+    } elseif ([bool](Get-SendConfigValue -InputObject $cli -Name 'available' -Default $false)) {
+        $checks.Add((New-WorkersDoctorCheck -Status 'pass' -Label 'google-colab-cli' -Detail ([string](Get-SendConfigValue -InputObject $cli -Name 'path' -Default 'google-colab-cli')) -Action '')) | Out-Null
+    } else {
+        $status = if ($colabSlotCount -gt 0) { 'fail' } else { 'warn' }
+        $checks.Add((New-WorkersDoctorCheck -Status $status -Label 'google-colab-cli' -Detail 'google-colab-cli not found on PATH' -Action 'Install google-colab-cli or change colab_cli slots to local until it is available.')) | Out-Null
+    }
+
+    if ($null -ne $cli -and (Get-Command Get-WinsmuxColabAuthState -ErrorAction SilentlyContinue)) {
+        $auth = Get-WinsmuxColabAuthState -CliAvailability $cli
+        if ($colabSlotCount -lt 1) {
+            $checks.Add((New-WorkersDoctorCheck -Status 'pass' -Label 'colab auth' -Detail 'no colab_cli worker slots configured' -Action '')) | Out-Null
+        } elseif ([bool](Get-SendConfigValue -InputObject $auth -Name 'available' -Default $false)) {
+            $checks.Add((New-WorkersDoctorCheck -Status 'pass' -Label 'colab auth' -Detail ([string](Get-SendConfigValue -InputObject $auth -Name 'state' -Default 'authenticated')) -Action '')) | Out-Null
+        } else {
+            $checks.Add((New-WorkersDoctorCheck -Status 'fail' -Label 'colab auth' -Detail ([string](Get-SendConfigValue -InputObject $auth -Name 'reason' -Default 'colab_auth_unverified')) -Action 'Authenticate google-colab-cli in the local user session.')) | Out-Null
+        }
+    }
+
+    $statePath = if ($null -ne $context) { [string]$context.ColabState.StatePath } else { '' }
+    if ([string]::IsNullOrWhiteSpace($statePath) -and (Get-Command Get-WinsmuxColabStatePath -ErrorAction SilentlyContinue)) {
+        $statePath = Get-WinsmuxColabStatePath -ProjectDir $options.ProjectDir
+    }
+    if (-not [string]::IsNullOrWhiteSpace($statePath)) {
+        $stateParent = Split-Path -Parent $statePath
+        if (Test-Path -LiteralPath $stateParent -PathType Container) {
+            $checks.Add((New-WorkersDoctorCheck -Status 'pass' -Label 'session state path' -Detail $statePath -Action '')) | Out-Null
+        } else {
+            $checks.Add((New-WorkersDoctorCheck -Status 'warn' -Label 'session state path' -Detail $statePath -Action 'Run winsmux workers status or winsmux launch to create the state directory.')) | Out-Null
+        }
+    }
+
+    if ($null -ne $context -and -not [string]::IsNullOrWhiteSpace([string]$context.ColabState.ErrorReason)) {
+        $checks.Add((New-WorkersDoctorCheck -Status 'fail' -Label 'colab session state' -Detail ([string]$context.ColabState.ErrorReason) -Action 'Fix the session-state file or remove it so winsmux can recreate it.')) | Out-Null
+    } elseif ($null -ne $context -and [int]$context.ColabState.DegradedCount -gt 0) {
+        $checks.Add((New-WorkersDoctorCheck -Status 'warn' -Label 'colab session state' -Detail "$($context.ColabState.DegradedCount) degraded colab_cli worker sessions" -Action 'Run winsmux workers status --json for per-slot degraded reasons.')) | Out-Null
+    }
+
+    $rows = if ($null -ne $context) { Get-WorkersStatusRows -Context $context } else { @() }
+    if ($options.Json) {
+        [ordered]@{
+            project_dir  = $options.ProjectDir
+            generated_at = (Get-Date).ToUniversalTime().ToString('o')
+            checks       = @($checks)
+            workers      = @(ConvertTo-WorkersStatusJsonRows -Rows @($rows))
+        } | ConvertTo-Json -Depth 20 -Compress | Write-Output
+        return
+    }
+
+    Write-Output "=== winsmux workers doctor ==="
+    foreach ($check in @($checks)) {
+        $line = "[{0}] {1}: {2}" -f ([string]$check.status).ToUpperInvariant(), $check.label, $check.detail
+        Write-Output $line
+        if (-not [string]::IsNullOrWhiteSpace([string]$check.action)) {
+            Write-Output "  action: $($check.action)"
+        }
+    }
+}
+
+function Invoke-Workers {
+    $action = [string]$Target
+    if ([string]::IsNullOrWhiteSpace($action)) {
+        Stop-WithError (Get-WorkersUsage)
+    }
+
+    switch ($action.Trim().ToLowerInvariant()) {
+        'status' { Invoke-WorkersStatus }
+        'start'  { Invoke-WorkersStart }
+        'stop'   { Invoke-WorkersStop }
+        'doctor' { Invoke-WorkersDoctor }
+        default  { Stop-WithError (Get-WorkersUsage) }
+    }
 }
 
 function Get-BoardStateCounts {
@@ -11227,6 +11941,7 @@ Commands:
   wait-ready <target> [timeout_seconds]  Wait for the configured agent prompt in pane
   health-check              Report READY/BUSY/HUNG/DEAD for labeled panes
   status                    Report manifest pane states via capture-pane
+  workers <status|start|stop|doctor> [slot|all] [--json] [--project-dir <path>]  Inspect and control configured worker slots
   board [--json]            Report pane/task/review/git session board
 desktop-summary [--json] [--stream]  Report the aggregated desktop read-model snapshot or follow refresh signals
 inbox [--json] [--stream] Report actionable approvals/review/blockers
@@ -11902,6 +12617,7 @@ switch ($Command) {
     'wait-ready'      { Invoke-WaitReady }
     'health-check'    { Invoke-HealthCheck }
     'status'          { Invoke-Status }
+    'workers'         { Invoke-Workers }
     'board'           { Invoke-Board }
     'desktop-summary' { Invoke-DesktopSummary }
     'inbox'           { Invoke-Inbox }

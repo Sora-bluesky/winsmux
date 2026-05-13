@@ -87,6 +87,8 @@ winsmux list
 winsmux read worker-1 30
 winsmux send worker-2 "Review the latest auth changes."
 winsmux health-check
+winsmux workers status
+winsmux workers doctor
 winsmux compare runs <left_run_id> <right_run_id>
 winsmux compare preflight <left_ref> <right_ref>
 winsmux compare promote <run_id>
@@ -101,6 +103,8 @@ winsmux skills --json
 | `winsmux launch` | Run checks and start the default managed workspace |
 | `winsmux launcher presets` | Show launcher presets and pair templates |
 | `winsmux launcher lifecycle` | Choose the workspace lifecycle policy |
+| `winsmux workers status` | Show backend, state, GPU, session, and last command for worker slots |
+| `winsmux workers doctor` | Diagnose worker config, Colab CLI, auth, uv, and session-state paths |
 | `winsmux compare runs` | Compare evidence and confidence between two recorded runs |
 | `winsmux compare preflight` | Check two refs before merge or compare review |
 | `winsmux compare promote` | Export a successful run as input for the next run |

@@ -43,6 +43,13 @@ winsmux launch
 
 This starts the managed Windows Terminal workspace. In the desktop app, use the project selector to open the same project and inspect the operator and worker panes from the control plane. The operator remains responsible for reading pane output and deciding what to accept.
 
+Check the configured workers before sending work:
+
+```powershell
+winsmux workers status
+winsmux workers doctor
+```
+
 ## 5. Read and send
 
 Check a pane before sending instructions:
