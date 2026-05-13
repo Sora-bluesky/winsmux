@@ -10,7 +10,7 @@ Install these first:
 - PowerShell 7+
 - Windows Terminal
 - Node.js with `npm`
-- The agent CLIs you want to run, such as Codex CLI, Claude Code, or Gemini CLI
+- The official agent CLIs you want to run, such as Codex, Claude Code, or Gemini
 
 ## 2. Install winsmux
 
@@ -24,6 +24,15 @@ winsmux install --profile full
 ```
 
 The `full` profile installs the terminal runtime, orchestration scripts, Windows Terminal profile, vault support, and audit-oriented helpers.
+
+Quick install:
+
+```powershell
+npm install -g winsmux
+winsmux install --profile full
+winsmux version
+winsmux doctor
+```
 
 ## 3. Create project settings
 
@@ -49,6 +58,24 @@ Check the configured workers before sending work:
 winsmux workers status
 winsmux workers doctor
 ```
+
+For Colab-backed worker slots, run one file-backed task and inspect its log:
+
+```powershell
+winsmux workers exec w2 --script workers/colab/impl_worker.py
+winsmux workers logs w2
+```
+
+Uploads are intentionally constrained. Explicit files are allowed, while
+directory uploads require `--allow-dir` and still exclude `.git`, secrets,
+`node_modules`, virtual environments, build outputs, coverage, and oversized
+files by default.
+
+For Colab-backed model work, prepare a Colab notebook or an adapter-managed
+equivalent connected to `H100` or `A100`. winsmux records model metadata such
+as `model_family` and `model_id`, but the task script loads the exact model,
+including Gemma, Llama, Mistral, Qwen, DeepSeek, Kimi/Moonshot, and distilled
+variants.
 
 ## 5. Read and send
 
@@ -76,3 +103,5 @@ winsmux compare promote <run_id>
 - Choose install profiles and update behavior in [Installation](installation.md).
 - Customize launcher presets, worktree policy, slots, and credentials in [Customization](customization.md).
 - Review authentication boundaries in [Authentication support](authentication-support.md).
+- Review model and runtime policy in [Provider and model support](provider-and-model-support.md).
+- Prepare GPU-backed one-shot execution in [Google Colab workers](google-colab-workers.md).

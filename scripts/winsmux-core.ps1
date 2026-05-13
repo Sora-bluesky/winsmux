@@ -17,7 +17,7 @@ if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_RAW_EXE)) {
 }
 
 # --- Config ---
-$VERSION = "0.32.2"
+$VERSION = "0.32.3"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 $BridgeScriptPath = $PSCommandPath
@@ -4904,7 +4904,7 @@ function Invoke-Status {
 }
 
 function Get-WorkersUsage {
-    return "usage: winsmux workers <status|start|stop|doctor> [slot|all] [--json] [--project-dir <path>]"
+    return "usage: winsmux workers <status|start|stop|doctor> [slot|all] [--json] [--project-dir <path>]; winsmux workers <exec|logs|upload|download> <slot> ... [--json] [--project-dir <path>]"
 }
 
 function Read-WorkersOptions {
@@ -5362,6 +5362,906 @@ function New-WorkersLifecycleResult {
     }
 }
 
+function New-WorkersRunId {
+    param([Parameter(Mandatory = $true)][string]$SlotId)
+
+    $slotSlug = ($SlotId.ToLowerInvariant() -replace '[^a-z0-9_-]+', '-').Trim('-')
+    if ([string]::IsNullOrWhiteSpace($slotSlug)) {
+        $slotSlug = 'worker'
+    }
+
+    $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
+    $suffix = [guid]::NewGuid().ToString('N').Substring(0, 8)
+    return "$slotSlug-$stamp-$suffix"
+}
+
+function Assert-WorkersPathSegment {
+    param(
+        [AllowEmptyString()][string]$Value,
+        [AllowEmptyString()][string]$Name = 'path segment'
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        Stop-WithError "$Name is required"
+    }
+    if ($Value -notmatch '^[A-Za-z0-9._-]+$' -or $Value -eq '.' -or $Value -eq '..' -or $Value.Contains('..')) {
+        Stop-WithError "$Name contains unsupported characters: $Value"
+    }
+
+    return $Value
+}
+
+function ConvertTo-WorkersProjectRelativePath {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$FullPath
+    )
+
+    $projectFull = [System.IO.Path]::GetFullPath($ProjectDir)
+    $candidateFull = [System.IO.Path]::GetFullPath($FullPath)
+    $relative = [System.IO.Path]::GetRelativePath($projectFull, $candidateFull)
+    if ([string]::IsNullOrWhiteSpace($relative) -or $relative.StartsWith('..') -or [System.IO.Path]::IsPathRooted($relative)) {
+        Stop-WithError "path must stay under project directory: $FullPath"
+    }
+
+    return $relative.Replace('\', '/')
+}
+
+function Get-WorkersPathExclusionReason {
+    param([Parameter(Mandatory = $true)][string]$RelativePath)
+
+    $normalized = $RelativePath.Replace('\', '/').Trim('/')
+    if ([string]::IsNullOrWhiteSpace($normalized)) {
+        return ''
+    }
+
+    $blockedSegments = @(
+        '.git', '.hg', '.svn', '.winsmux', '.orchestra-prompts',
+        'node_modules', '.venv', 'venv', 'env', 'dist', 'build', 'target',
+        'coverage', '.coverage', '.pytest_cache', '.mypy_cache', '.ruff_cache'
+    )
+    foreach ($segment in @($normalized.Split('/'))) {
+        $lower = $segment.ToLowerInvariant()
+        if ($blockedSegments -contains $lower) {
+            return "excluded_segment:$lower"
+        }
+    }
+
+    $leaf = (Split-Path -Leaf $normalized).ToLowerInvariant()
+    if ($leaf -eq '.env' -or $leaf.StartsWith('.env.')) {
+        return 'secret_like_file'
+    }
+    if ($leaf -in @('id_rsa', 'id_ed25519', 'credentials.json', 'token.json')) {
+        return 'secret_like_file'
+    }
+    if ($leaf -match '\.(pem|key|pfx|p12|crt|cer)$') {
+        return 'secret_like_file'
+    }
+    if ($leaf -match '(^|[._-])(secret|secrets|token|credential|credentials)([._-]|$)') {
+        return 'secret_like_file'
+    }
+
+    return ''
+}
+
+function Get-WorkersUploadMaxBytes {
+    $raw = [string]$env:WINSMUX_WORKER_UPLOAD_MAX_BYTES
+    if (-not [string]::IsNullOrWhiteSpace($raw)) {
+        $parsed = 0L
+        if ([long]::TryParse($raw, [ref]$parsed) -and $parsed -gt 0) {
+            return $parsed
+        }
+    }
+
+    return 104857600L
+}
+
+function Resolve-WorkersProjectPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$Path,
+        [switch]$MustExist,
+        [switch]$AllowFile,
+        [switch]$AllowDirectory,
+        [switch]$AllowRuntimePath,
+        [long]$MaxBytes = 0
+    )
+
+    $candidate = $Path
+    if (-not [System.IO.Path]::IsPathRooted($candidate)) {
+        $candidate = Join-Path $ProjectDir $candidate
+    }
+    $fullPath = [System.IO.Path]::GetFullPath($candidate)
+    $relative = ConvertTo-WorkersProjectRelativePath -ProjectDir $ProjectDir -FullPath $fullPath
+
+    if ($MustExist -and -not (Test-Path -LiteralPath $fullPath)) {
+        Stop-WithError "path not found: $Path"
+    }
+
+    $isDirectory = Test-Path -LiteralPath $fullPath -PathType Container
+    $isFile = Test-Path -LiteralPath $fullPath -PathType Leaf
+    if ($isDirectory -and -not $AllowDirectory) {
+        Stop-WithError "directory is not allowed here: $relative"
+    }
+    if ($isFile -and -not $AllowFile) {
+        Stop-WithError "file is not allowed here: $relative"
+    }
+
+    $reason = Get-WorkersPathExclusionReason -RelativePath $relative
+    if ($AllowRuntimePath -and $reason -eq 'excluded_segment:.winsmux') {
+        $reason = ''
+    }
+    if (-not [string]::IsNullOrWhiteSpace($reason)) {
+        Stop-WithError "unsafe path rejected: $relative ($reason)"
+    }
+
+    if ($isFile -and $MaxBytes -gt 0) {
+        $item = Get-Item -LiteralPath $fullPath -Force
+        if ([long]$item.Length -gt $MaxBytes) {
+            Stop-WithError "file exceeds max upload size: $relative"
+        }
+    }
+
+    return [PSCustomObject]@{
+        FullPath     = $fullPath
+        RelativePath = $relative
+        IsDirectory  = $isDirectory
+        IsFile       = $isFile
+    }
+}
+
+function Test-WorkersPathIsUnderDirectory {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Directory
+    )
+
+    $pathFull = [System.IO.Path]::GetFullPath($Path)
+    $dirFull = [System.IO.Path]::GetFullPath($Directory).TrimEnd('\', '/')
+    return (
+        [string]::Equals($pathFull, $dirFull, [System.StringComparison]::OrdinalIgnoreCase) -or
+        $pathFull.StartsWith($dirFull + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase) -or
+        $pathFull.StartsWith($dirFull + [System.IO.Path]::AltDirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)
+    )
+}
+
+function Get-WorkersUploadManifestEntries {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)]$SourceInfo,
+        [object[]]$AllowDirs = @(),
+        [long]$MaxBytes
+    )
+
+    $files = [System.Collections.Generic.List[object]]::new()
+    $excluded = [System.Collections.Generic.List[object]]::new()
+
+    if ($SourceInfo.IsFile) {
+        $files.Add([ordered]@{
+            path = [string]$SourceInfo.RelativePath
+            size = [long](Get-Item -LiteralPath $SourceInfo.FullPath -Force).Length
+        }) | Out-Null
+        return [PSCustomObject]@{ Files = @($files); Excluded = @($excluded) }
+    }
+
+    if (-not $SourceInfo.IsDirectory) {
+        Stop-WithError "upload source must be a file or directory: $($SourceInfo.RelativePath)"
+    }
+    if ($AllowDirs.Count -lt 1) {
+        Stop-WithError 'directory upload requires --allow-dir <path>'
+    }
+
+    $allowed = $false
+    foreach ($allowDir in @($AllowDirs)) {
+        if (Test-WorkersPathIsUnderDirectory -Path $SourceInfo.FullPath -Directory $allowDir.FullPath) {
+            $allowed = $true
+            break
+        }
+    }
+    if (-not $allowed) {
+        Stop-WithError "directory upload source is not under an allowlisted directory: $($SourceInfo.RelativePath)"
+    }
+
+    foreach ($item in @(Get-ChildItem -LiteralPath $SourceInfo.FullPath -File -Recurse -Force)) {
+        $relative = ConvertTo-WorkersProjectRelativePath -ProjectDir $ProjectDir -FullPath $item.FullName
+        $reason = Get-WorkersPathExclusionReason -RelativePath $relative
+        if ([string]::IsNullOrWhiteSpace($reason) -and $MaxBytes -gt 0 -and [long]$item.Length -gt $MaxBytes) {
+            $reason = 'oversized_file'
+        }
+        if (-not [string]::IsNullOrWhiteSpace($reason)) {
+            $excluded.Add([ordered]@{ path = $relative; reason = $reason }) | Out-Null
+            continue
+        }
+
+        $files.Add([ordered]@{ path = $relative; size = [long]$item.Length }) | Out-Null
+    }
+
+    if ($files.Count -lt 1) {
+        Stop-WithError "upload source contains no allowed files: $($SourceInfo.RelativePath)"
+    }
+
+    return [PSCustomObject]@{ Files = @($files); Excluded = @($excluded) }
+}
+
+function Write-WorkersJsonArtifact {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)]$Data
+    )
+
+    $parent = Split-Path -Parent $Path
+    if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+
+    $content = ($Data | ConvertTo-Json -Depth 24)
+    Write-ClmSafeTextFile -Path $Path -Content $content
+    return $Path
+}
+
+function New-WorkersSafeUploadSource {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)]$SourceInfo,
+        [Parameter(Mandatory = $true)][object[]]$Files,
+        [Parameter(Mandatory = $true)][string]$RunDir
+    )
+
+    if ($SourceInfo.IsFile) {
+        return [PSCustomObject]@{
+            FullPath  = [string]$SourceInfo.FullPath
+            Reference = [string]$SourceInfo.RelativePath
+            Staged    = $false
+        }
+    }
+
+    $stagingRoot = Join-Path $RunDir 'upload-source'
+    if (Test-Path -LiteralPath $stagingRoot) {
+        Remove-Item -LiteralPath $stagingRoot -Recurse -Force
+    }
+    New-Item -ItemType Directory -Path $stagingRoot -Force | Out-Null
+
+    $sourceFull = [System.IO.Path]::GetFullPath([string]$SourceInfo.FullPath)
+    foreach ($file in @($Files)) {
+        $relativeProjectPath = [string](Get-SendConfigValue -InputObject $file -Name 'path' -Default '')
+        if ([string]::IsNullOrWhiteSpace($relativeProjectPath)) {
+            continue
+        }
+
+        $sourcePath = [System.IO.Path]::GetFullPath((Join-Path $ProjectDir ($relativeProjectPath.Replace('/', '\'))))
+        if (-not (Test-WorkersPathIsUnderDirectory -Path $sourcePath -Directory $sourceFull)) {
+            Stop-WithError "upload manifest file is outside source directory: $relativeProjectPath"
+        }
+
+        $relativeToSource = [System.IO.Path]::GetRelativePath($sourceFull, $sourcePath)
+        if ([string]::IsNullOrWhiteSpace($relativeToSource) -or $relativeToSource.StartsWith('..') -or [System.IO.Path]::IsPathRooted($relativeToSource)) {
+            Stop-WithError "upload manifest file is outside source directory: $relativeProjectPath"
+        }
+
+        $destinationPath = Join-Path $stagingRoot $relativeToSource
+        $destinationParent = Split-Path -Parent $destinationPath
+        if (-not (Test-Path -LiteralPath $destinationParent -PathType Container)) {
+            New-Item -ItemType Directory -Path $destinationParent -Force | Out-Null
+        }
+        Copy-Item -LiteralPath $sourcePath -Destination $destinationPath -Force
+    }
+
+    return [PSCustomObject]@{
+        FullPath  = $stagingRoot
+        Reference = Get-WorkersArtifactReference -ProjectDir $ProjectDir -Path $stagingRoot
+        Staged    = $true
+    }
+}
+
+function Get-WorkersRunDirectory {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$SlotId,
+        [Parameter(Mandatory = $true)][string]$RunId
+    )
+
+    $safeSlotId = Assert-WorkersPathSegment -Value $SlotId -Name 'slot id'
+    $safeRunId = Assert-WorkersPathSegment -Value $RunId -Name 'run id'
+    return Join-Path (Join-Path (Join-Path (Join-Path $ProjectDir '.winsmux') 'worker-runs') $safeSlotId) $safeRunId
+}
+
+function Get-WorkersArtifactReference {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+
+    return (ConvertTo-WorkersProjectRelativePath -ProjectDir $ProjectDir -FullPath $Path)
+}
+
+function Assert-WorkersRemotePath {
+    param([Parameter(Mandatory = $true)][string]$RemotePath)
+
+    if ([string]::IsNullOrWhiteSpace($RemotePath)) {
+        Stop-WithError 'remote path is required'
+    }
+    $normalized = $RemotePath.Replace('\', '/')
+    foreach ($segment in @($normalized.Split('/'))) {
+        if ($segment -eq '..') {
+            Stop-WithError "remote path must not contain '..': $RemotePath"
+        }
+    }
+
+    return $RemotePath
+}
+
+function Assert-WorkersRunId {
+    param([AllowEmptyString()][string]$RunId)
+
+    if ([string]::IsNullOrWhiteSpace($RunId)) {
+        return ''
+    }
+    if ($RunId -notmatch '^[A-Za-z0-9._-]+$' -or $RunId -eq '.' -or $RunId -eq '..' -or $RunId.Contains('..')) {
+        Stop-WithError "run id contains unsupported characters: $RunId"
+    }
+
+    return $RunId
+}
+
+function Get-WorkersSingleColabContext {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$Target
+    )
+
+    $context = Get-WorkersLifecycleContext -ProjectDir $ProjectDir
+    $rows = @(Select-WorkersRows -Rows (Get-WorkersStatusRows -Context $context) -Target $Target)
+    if ($rows.Count -ne 1) {
+        Stop-WithError "workers command requires exactly one slot, got $($rows.Count)"
+    }
+
+    $row = $rows[0]
+    Assert-WorkersPathSegment -Value ([string]$row.SlotId) -Name 'slot id' | Out-Null
+    if (-not [string]::Equals([string]$row.Backend, 'colab_cli', [System.StringComparison]::OrdinalIgnoreCase)) {
+        Stop-WithError "worker slot $($row.SlotId) uses backend '$($row.Backend)', not colab_cli"
+    }
+
+    $reason = [string]$row.DegradedReason
+    if ([string]$row.State -eq 'backend_degraded' -or -not [string]::IsNullOrWhiteSpace($reason)) {
+        if ([string]::IsNullOrWhiteSpace($reason)) {
+            $reason = 'backend_degraded'
+        }
+        Stop-WithError "colab worker $($row.SlotId) is unavailable: $reason"
+    }
+
+    $session = [string]$row.Session
+    if ([string]::IsNullOrWhiteSpace($session)) {
+        Stop-WithError "colab worker $($row.SlotId) has no session name"
+    }
+
+    $entry = if ($context.EntriesBySlot.ContainsKey($row.SlotId)) { $context.EntriesBySlot[$row.SlotId] } else { $null }
+    return [PSCustomObject]@{
+        Context = $context
+        Row     = $row
+        Entry   = $entry
+        Session = $session
+    }
+}
+
+function Invoke-WorkersColabCli {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Arguments
+    )
+
+    if (-not (Get-Command Get-WinsmuxColabCliAvailability -ErrorAction SilentlyContinue)) {
+        Stop-WithError 'Colab backend helpers are unavailable'
+    }
+    $cli = Get-WinsmuxColabCliAvailability
+    if (-not [bool](Get-SendConfigValue -InputObject $cli -Name 'available' -Default $false)) {
+        Stop-WithError 'google-colab-cli not found on PATH'
+    }
+
+    $command = [string](Get-SendConfigValue -InputObject $cli -Name 'command' -Default 'google-colab-cli')
+    $output = @()
+    try {
+        $output = & $command @Arguments 2>&1
+    } catch {
+        return [PSCustomObject]@{
+            Command  = $command
+            Arguments = @($Arguments)
+            ExitCode = 1
+            Output   = $_.Exception.Message
+        }
+    }
+
+    $exitCode = Get-SafeLastExitCode
+    if ($null -eq $exitCode) {
+        $exitCode = 0
+    }
+
+    return [PSCustomObject]@{
+        Command  = $command
+        Arguments = @($Arguments)
+        ExitCode = [int]$exitCode
+        Output   = ($output | Out-String).TrimEnd()
+    }
+}
+
+function Write-WorkersOperationOutput {
+    param(
+        [Parameter(Mandatory = $true)]$Payload,
+        [switch]$Json,
+        [AllowEmptyString()][string]$Text = ''
+    )
+
+    $operationExitCode = 0
+    $rawExitCode = Get-SendConfigValue -InputObject $Payload -Name 'exit_code' -Default 0
+    $parsedExitCode = 0
+    if ([int]::TryParse(([string]$rawExitCode), [ref]$parsedExitCode) -and $parsedExitCode -ne 0) {
+        $operationExitCode = $parsedExitCode
+    }
+
+    if ($Json) {
+        $Payload | ConvertTo-Json -Depth 24 -Compress | Write-Output
+    } elseif ([string]::IsNullOrWhiteSpace($Text)) {
+        $status = [string](Get-SendConfigValue -InputObject $Payload -Name 'status' -Default '')
+        $runId = [string](Get-SendConfigValue -InputObject $Payload -Name 'run_id' -Default '')
+        Write-Output "$status $runId".Trim()
+    } else {
+        Write-Output $Text
+    }
+
+    if ($operationExitCode -ne 0) {
+        exit $operationExitCode
+    }
+}
+
+function Read-WorkersExecOptions {
+    param([Parameter(Mandatory = $true)][string]$Usage)
+
+    $projectDir = (Get-Location).Path
+    $asJson = $false
+    $targetValue = ''
+    $scriptPath = ''
+    $runId = ''
+    $taskId = ''
+    $scriptArgs = @()
+    $items = @($Rest)
+
+    for ($index = 0; $index -lt $items.Count; $index++) {
+        $token = [string]$items[$index]
+        if ($token -eq '--') {
+            if ($index + 1 -lt $items.Count) {
+                $scriptArgs = @($items | Select-Object -Skip ($index + 1))
+            }
+            break
+        }
+
+        switch ($token) {
+            '--json' { $asJson = $true }
+            '--project-dir' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $projectDir = [string]$items[$index + 1]
+                $index++
+            }
+            '--script' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $scriptPath = [string]$items[$index + 1]
+                $index++
+            }
+            '--run-id' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $runId = [string]$items[$index + 1]
+                $index++
+            }
+            '--task-id' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $taskId = [string]$items[$index + 1]
+                $index++
+            }
+            default {
+                if (-not [string]::IsNullOrWhiteSpace($targetValue)) {
+                    Stop-WithError $Usage
+                }
+                $targetValue = $token
+            }
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($targetValue) -or [string]::IsNullOrWhiteSpace($scriptPath)) {
+        Stop-WithError $Usage
+    }
+
+    return [PSCustomObject]@{
+        ProjectDir = $projectDir
+        Json       = $asJson
+        Target     = $targetValue
+        ScriptPath = $scriptPath
+        RunId      = $runId
+        TaskId     = $taskId
+        ScriptArgs = @($scriptArgs)
+    }
+}
+
+function Read-WorkersTransferOptions {
+    param(
+        [Parameter(Mandatory = $true)][string]$Usage,
+        [Parameter(Mandatory = $true)][string]$Mode
+    )
+
+    $projectDir = (Get-Location).Path
+    $asJson = $false
+    $targetValue = ''
+    $sourceValue = ''
+    $remoteValue = ''
+    $outputValue = ''
+    $runId = ''
+    $allowDirs = [System.Collections.Generic.List[string]]::new()
+    $maxBytes = Get-WorkersUploadMaxBytes
+    $items = @($Rest)
+
+    for ($index = 0; $index -lt $items.Count; $index++) {
+        $token = [string]$items[$index]
+        switch ($token) {
+            '--json' { $asJson = $true }
+            '--project-dir' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $projectDir = [string]$items[$index + 1]
+                $index++
+            }
+            '--remote' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $remoteValue = [string]$items[$index + 1]
+                $index++
+            }
+            '--output' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $outputValue = [string]$items[$index + 1]
+                $index++
+            }
+            '--allow-dir' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $allowDirs.Add([string]$items[$index + 1]) | Out-Null
+                $index++
+            }
+            '--run-id' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $runId = [string]$items[$index + 1]
+                $index++
+            }
+            '--max-bytes' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $parsed = 0L
+                if (-not [long]::TryParse([string]$items[$index + 1], [ref]$parsed) -or $parsed -lt 1) {
+                    Stop-WithError $Usage
+                }
+                $maxBytes = $parsed
+                $index++
+            }
+            default {
+                if ([string]::IsNullOrWhiteSpace($targetValue)) {
+                    $targetValue = $token
+                } elseif ([string]::IsNullOrWhiteSpace($sourceValue)) {
+                    $sourceValue = $token
+                } else {
+                    Stop-WithError $Usage
+                }
+            }
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($targetValue) -or [string]::IsNullOrWhiteSpace($sourceValue)) {
+        Stop-WithError $Usage
+    }
+
+    if ($Mode -eq 'upload' -and [string]::IsNullOrWhiteSpace($remoteValue)) {
+        $remoteValue = "/content/winsmux/$((Split-Path -Leaf $sourceValue))"
+    }
+    if ($Mode -eq 'download') {
+        $remoteValue = $sourceValue
+        $sourceValue = ''
+    }
+
+    return [PSCustomObject]@{
+        ProjectDir = $projectDir
+        Json       = $asJson
+        Target     = $targetValue
+        Source     = $sourceValue
+        Remote     = $remoteValue
+        Output     = $outputValue
+        RunId      = $runId
+        AllowDirs  = @($allowDirs)
+        MaxBytes   = $maxBytes
+    }
+}
+
+function Read-WorkersLogsOptions {
+    param([Parameter(Mandatory = $true)][string]$Usage)
+
+    $projectDir = (Get-Location).Path
+    $asJson = $false
+    $targetValue = ''
+    $runId = ''
+    $items = @($Rest)
+
+    for ($index = 0; $index -lt $items.Count; $index++) {
+        $token = [string]$items[$index]
+        switch ($token) {
+            '--json' { $asJson = $true }
+            '--project-dir' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $projectDir = [string]$items[$index + 1]
+                $index++
+            }
+            '--run-id' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $runId = [string]$items[$index + 1]
+                $index++
+            }
+            default {
+                if (-not [string]::IsNullOrWhiteSpace($targetValue)) {
+                    Stop-WithError $Usage
+                }
+                $targetValue = $token
+            }
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($targetValue)) {
+        Stop-WithError $Usage
+    }
+
+    return [PSCustomObject]@{
+        ProjectDir = $projectDir
+        Json       = $asJson
+        Target     = $targetValue
+        RunId      = $runId
+    }
+}
+
+function Invoke-WorkersExec {
+    $usage = "usage: winsmux workers exec <slot> --script <path> [--task-id <id>] [--run-id <id>] [--json] [--project-dir <path>]"
+    $options = Read-WorkersExecOptions -Usage $usage
+    $worker = Get-WorkersSingleColabContext -ProjectDir $options.ProjectDir -Target $options.Target
+    $scriptInfo = Resolve-WorkersProjectPath -ProjectDir $options.ProjectDir -Path $options.ScriptPath -MustExist -AllowFile -MaxBytes (Get-WorkersUploadMaxBytes)
+    $runId = Assert-WorkersRunId -RunId ([string]$options.RunId)
+    if ([string]::IsNullOrWhiteSpace($runId)) {
+        $runId = New-WorkersRunId -SlotId ([string]$worker.Row.SlotId)
+    }
+    $runDir = Get-WorkersRunDirectory -ProjectDir $options.ProjectDir -SlotId ([string]$worker.Row.SlotId) -RunId $runId
+    if (-not (Test-Path -LiteralPath $runDir -PathType Container)) {
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+    }
+
+    $arguments = @('run', '--session', [string]$worker.Session, '--script', [string]$scriptInfo.FullPath, '--run-id', $runId, '--output-dir', $runDir)
+    if (-not [string]::IsNullOrWhiteSpace([string]$options.TaskId)) {
+        $arguments += @('--task-id', [string]$options.TaskId)
+    }
+    $arguments += @($options.ScriptArgs)
+    $cli = Invoke-WorkersColabCli -Arguments $arguments
+    $logPath = Join-Path $runDir 'stdout.log'
+    Write-ClmSafeTextFile -Path $logPath -Content ([string]$cli.Output)
+    $status = if ([int]$cli.ExitCode -eq 0) { 'succeeded' } else { 'failed' }
+
+    $payload = [ordered]@{
+        project_dir    = $options.ProjectDir
+        generated_at   = (Get-Date).ToUniversalTime().ToString('o')
+        command        = 'workers.exec'
+        status         = $status
+        slot           = [string]$worker.Row.Slot
+        slot_id        = [string]$worker.Row.SlotId
+        session        = [string]$worker.Session
+        run_id         = $runId
+        task_id        = [string]$options.TaskId
+        script         = [string]$scriptInfo.RelativePath
+        run_dir        = Get-WorkersArtifactReference -ProjectDir $options.ProjectDir -Path $runDir
+        stdout_log     = Get-WorkersArtifactReference -ProjectDir $options.ProjectDir -Path $logPath
+        exit_code      = [int]$cli.ExitCode
+        cli_command    = [string]$cli.Command
+        cli_arguments  = @($cli.Arguments)
+    }
+    $runJsonPath = Join-Path $runDir 'run.json'
+    $payload['run_json'] = Get-WorkersArtifactReference -ProjectDir $options.ProjectDir -Path $runJsonPath
+    Write-WorkersJsonArtifact -Path $runJsonPath -Data $payload | Out-Null
+    if ($null -ne $worker.Entry) {
+        Set-WorkersManifestLifecycleCommand -Entry $worker.Entry -CommandName 'workers.exec'
+    }
+
+    Write-WorkersOperationOutput -Payload $payload -Json:([bool]$options.Json)
+}
+
+function Get-WorkersLatestRunDirectory {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$SlotId
+    )
+
+    $safeSlotId = Assert-WorkersPathSegment -Value $SlotId -Name 'slot id'
+    $root = Join-Path (Join-Path (Join-Path $ProjectDir '.winsmux') 'worker-runs') $safeSlotId
+    if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+        return $null
+    }
+
+    return @(Get-ChildItem -LiteralPath $root -Directory | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1)[0]
+}
+
+function Invoke-WorkersLogs {
+    $usage = "usage: winsmux workers logs <slot> [--run-id <id>] [--json] [--project-dir <path>]"
+    $options = Read-WorkersLogsOptions -Usage $usage
+    $worker = Get-WorkersSingleColabContext -ProjectDir $options.ProjectDir -Target $options.Target
+    $runId = Assert-WorkersRunId -RunId ([string]$options.RunId)
+    $runDir = $null
+    if ([string]::IsNullOrWhiteSpace($runId)) {
+        $latest = Get-WorkersLatestRunDirectory -ProjectDir $options.ProjectDir -SlotId ([string]$worker.Row.SlotId)
+        if ($null -ne $latest) {
+            $runId = [string]$latest.Name
+            $runDir = [string]$latest.FullName
+        }
+    } else {
+        $runDir = Get-WorkersRunDirectory -ProjectDir $options.ProjectDir -SlotId ([string]$worker.Row.SlotId) -RunId $runId
+    }
+
+    $content = ''
+    $source = 'local'
+    $cli = $null
+    $hasLocalLog = $false
+    if (-not [string]::IsNullOrWhiteSpace($runDir)) {
+        $logPath = Join-Path $runDir 'stdout.log'
+        if (Test-Path -LiteralPath $logPath -PathType Leaf) {
+            $hasLocalLog = $true
+            $rawLog = Get-Content -LiteralPath $logPath -Raw -Encoding UTF8
+            $content = if ($null -eq $rawLog) { '' } else { [string]$rawLog }
+        }
+    }
+    if (-not $hasLocalLog) {
+        $arguments = @('logs', '--session', [string]$worker.Session)
+        if (-not [string]::IsNullOrWhiteSpace($runId)) {
+            $arguments += @('--run-id', $runId)
+        }
+        $cli = Invoke-WorkersColabCli -Arguments $arguments
+        $content = [string]$cli.Output
+        $source = 'google-colab-cli'
+    }
+    $status = 'succeeded'
+    if ($null -ne $cli -and [int]$cli.ExitCode -ne 0) {
+        $status = 'failed'
+    }
+
+    $payload = [ordered]@{
+        project_dir  = $options.ProjectDir
+        generated_at = (Get-Date).ToUniversalTime().ToString('o')
+        command      = 'workers.logs'
+        status       = $status
+        slot         = [string]$worker.Row.Slot
+        slot_id      = [string]$worker.Row.SlotId
+        session      = [string]$worker.Session
+        run_id       = $runId
+        source       = $source
+        log          = $content
+        exit_code    = if ($null -ne $cli) { [int]$cli.ExitCode } else { 0 }
+        cli_command  = if ($null -ne $cli) { [string]$cli.Command } else { '' }
+        cli_arguments = if ($null -ne $cli) { @($cli.Arguments) } else { @() }
+    }
+
+    Write-WorkersOperationOutput -Payload $payload -Json:([bool]$options.Json) -Text $content
+}
+
+function Invoke-WorkersUpload {
+    $usage = "usage: winsmux workers upload <slot> <path> [--remote <path>] [--allow-dir <path>] [--run-id <id>] [--max-bytes <n>] [--json] [--project-dir <path>]"
+    $options = Read-WorkersTransferOptions -Usage $usage -Mode 'upload'
+    $worker = Get-WorkersSingleColabContext -ProjectDir $options.ProjectDir -Target $options.Target
+    $source = Resolve-WorkersProjectPath -ProjectDir $options.ProjectDir -Path $options.Source -MustExist -AllowFile -AllowDirectory -MaxBytes ([long]$options.MaxBytes)
+    $allowDirs = @($options.AllowDirs | ForEach-Object {
+        Resolve-WorkersProjectPath -ProjectDir $options.ProjectDir -Path $_ -MustExist -AllowDirectory
+    })
+    $manifestEntries = Get-WorkersUploadManifestEntries -ProjectDir $options.ProjectDir -SourceInfo $source -AllowDirs $allowDirs -MaxBytes ([long]$options.MaxBytes)
+    $remote = Assert-WorkersRemotePath -RemotePath ([string]$options.Remote)
+    $runId = Assert-WorkersRunId -RunId ([string]$options.RunId)
+    if ([string]::IsNullOrWhiteSpace($runId)) {
+        $runId = New-WorkersRunId -SlotId ([string]$worker.Row.SlotId)
+    }
+    $runDir = Get-WorkersRunDirectory -ProjectDir $options.ProjectDir -SlotId ([string]$worker.Row.SlotId) -RunId $runId
+    if (-not (Test-Path -LiteralPath $runDir -PathType Container)) {
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+    }
+
+    $manifestPath = Join-Path $runDir 'upload-manifest.json'
+    $manifest = [ordered]@{
+        run_id       = $runId
+        slot_id      = [string]$worker.Row.SlotId
+        source       = [string]$source.RelativePath
+        remote       = $remote
+        max_bytes    = [long]$options.MaxBytes
+        files        = @($manifestEntries.Files)
+        excluded     = @($manifestEntries.Excluded)
+        generated_at = (Get-Date).ToUniversalTime().ToString('o')
+    }
+    Write-WorkersJsonArtifact -Path $manifestPath -Data $manifest | Out-Null
+
+    $uploadSource = New-WorkersSafeUploadSource -ProjectDir $options.ProjectDir -SourceInfo $source -Files @($manifestEntries.Files) -RunDir $runDir
+    $manifest['staged_source'] = [string]$uploadSource.Reference
+    Write-WorkersJsonArtifact -Path $manifestPath -Data $manifest | Out-Null
+
+    $arguments = @('upload', '--session', [string]$worker.Session, '--source', [string]$uploadSource.FullPath, '--dest', $remote, '--manifest', $manifestPath, '--run-id', $runId)
+    $cli = Invoke-WorkersColabCli -Arguments $arguments
+    $status = if ([int]$cli.ExitCode -eq 0) { 'succeeded' } else { 'failed' }
+    $payload = [ordered]@{
+        project_dir    = $options.ProjectDir
+        generated_at   = (Get-Date).ToUniversalTime().ToString('o')
+        command        = 'workers.upload'
+        status         = $status
+        slot           = [string]$worker.Row.Slot
+        slot_id        = [string]$worker.Row.SlotId
+        session        = [string]$worker.Session
+        run_id         = $runId
+        source         = [string]$source.RelativePath
+        staged_source  = [string]$uploadSource.Reference
+        remote         = $remote
+        manifest       = Get-WorkersArtifactReference -ProjectDir $options.ProjectDir -Path $manifestPath
+        uploaded_count = @($manifestEntries.Files).Count
+        excluded_count = @($manifestEntries.Excluded).Count
+        exit_code      = [int]$cli.ExitCode
+        cli_command    = [string]$cli.Command
+        cli_arguments  = @($cli.Arguments)
+    }
+    Write-WorkersJsonArtifact -Path (Join-Path $runDir 'upload.json') -Data $payload | Out-Null
+    if ($null -ne $worker.Entry) {
+        Set-WorkersManifestLifecycleCommand -Entry $worker.Entry -CommandName 'workers.upload'
+    }
+
+    Write-WorkersOperationOutput -Payload $payload -Json:([bool]$options.Json)
+}
+
+function Invoke-WorkersDownload {
+    $usage = "usage: winsmux workers download <slot> <remote-path> [--output <path>] [--run-id <id>] [--json] [--project-dir <path>]"
+    $options = Read-WorkersTransferOptions -Usage $usage -Mode 'download'
+    $worker = Get-WorkersSingleColabContext -ProjectDir $options.ProjectDir -Target $options.Target
+    $remote = Assert-WorkersRemotePath -RemotePath ([string]$options.Remote)
+    $runId = Assert-WorkersRunId -RunId ([string]$options.RunId)
+    if ([string]::IsNullOrWhiteSpace($runId)) {
+        $runId = New-WorkersRunId -SlotId ([string]$worker.Row.SlotId)
+    }
+    $runDir = Get-WorkersRunDirectory -ProjectDir $options.ProjectDir -SlotId ([string]$worker.Row.SlotId) -RunId $runId
+    if (-not (Test-Path -LiteralPath $runDir -PathType Container)) {
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+    }
+
+    $outputPath = [string]$options.Output
+    if ([string]::IsNullOrWhiteSpace($outputPath)) {
+        $safeSlotId = Assert-WorkersPathSegment -Value ([string]$worker.Row.SlotId) -Name 'slot id'
+        $outputPath = Join-Path (Join-Path (Join-Path (Join-Path $options.ProjectDir '.winsmux') 'worker-downloads') $safeSlotId) $runId
+    }
+    $outputInfo = Resolve-WorkersProjectPath -ProjectDir $options.ProjectDir -Path $outputPath -AllowDirectory -AllowFile -AllowRuntimePath
+    if ($outputInfo.IsFile) {
+        $parent = Split-Path -Parent $outputInfo.FullPath
+        if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+            New-Item -ItemType Directory -Path $parent -Force | Out-Null
+        }
+    } elseif (-not (Test-Path -LiteralPath $outputInfo.FullPath -PathType Container)) {
+        New-Item -ItemType Directory -Path $outputInfo.FullPath -Force | Out-Null
+    }
+
+    $arguments = @('download', '--session', [string]$worker.Session, '--source', $remote, '--dest', [string]$outputInfo.FullPath, '--run-id', $runId)
+    $cli = Invoke-WorkersColabCli -Arguments $arguments
+    $status = if ([int]$cli.ExitCode -eq 0) { 'succeeded' } else { 'failed' }
+    $payload = [ordered]@{
+        project_dir   = $options.ProjectDir
+        generated_at  = (Get-Date).ToUniversalTime().ToString('o')
+        command       = 'workers.download'
+        status        = $status
+        slot          = [string]$worker.Row.Slot
+        slot_id       = [string]$worker.Row.SlotId
+        session       = [string]$worker.Session
+        run_id        = $runId
+        remote        = $remote
+        output        = Get-WorkersArtifactReference -ProjectDir $options.ProjectDir -Path ([string]$outputInfo.FullPath)
+        exit_code     = [int]$cli.ExitCode
+        cli_command   = [string]$cli.Command
+        cli_arguments = @($cli.Arguments)
+    }
+    Write-WorkersJsonArtifact -Path (Join-Path $runDir 'download.json') -Data $payload | Out-Null
+    if ($null -ne $worker.Entry) {
+        Set-WorkersManifestLifecycleCommand -Entry $worker.Entry -CommandName 'workers.download'
+    }
+
+    Write-WorkersOperationOutput -Payload $payload -Json:([bool]$options.Json)
+}
+
 function Invoke-WorkersStatus {
     $usage = "usage: winsmux workers status [slot|all] [--json] [--project-dir <path>]"
     $options = Read-WorkersOptions -Tokens $Rest -Usage $usage -DefaultTarget 'all'
@@ -5608,6 +6508,10 @@ function Invoke-Workers {
         'start'  { Invoke-WorkersStart }
         'stop'   { Invoke-WorkersStop }
         'doctor' { Invoke-WorkersDoctor }
+        'exec'   { Invoke-WorkersExec }
+        'logs'   { Invoke-WorkersLogs }
+        'upload' { Invoke-WorkersUpload }
+        'download' { Invoke-WorkersDownload }
         default  { Stop-WithError (Get-WorkersUsage) }
     }
 }

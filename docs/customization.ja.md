@@ -37,16 +37,32 @@ winsmux はベンダーごとに固定された役割ではなく、スロット
 - `colab_cli`: `google-colab-cli` ワーカー用の状態メタデータ
 - `noop`: 無効化または仮置きのワーカー用メタデータ
 
-`v0.32.2` では、Colab バックエンドの状態を
+`v0.32.3` では、Colab バックエンドの状態を
 `.winsmux/state/colab_sessions.json` に保存します。`google-colab-cli` の
-不在、認証を確認できない状態、GPU を使えない状態のいずれかが発生した場合は、
+不在、認証を確認できない状態、`H100` / `A100` GPU を使えない状態のいずれかが発生した場合は、
 ワーカーを `degraded` 状態として記録します。セッション名が変わった既存記録は
-`stale` として残します。GPU は設定された優先順序で選択を試み、使えない場合は
-最終的に CPU へ縮退します。
+`stale` として残します。Colab のモデル作業では、ローカル CPU やローカル LLM
+ランタイムへ黙って切り替えません。
 
 `winsmux workers status`、`winsmux workers start`、`winsmux workers stop`、
 `winsmux workers doctor` で、6 つの設定済みワーカースロットを確認、起動、停止、
-診断できます。単発実行コマンドは、後続のリリースで扱います。
+診断できます。
+
+Colab 対応スロットでは、ファイルを指定した単発実行と成果物の受け渡しも使えます。
+
+```powershell
+winsmux workers exec w2 --script workers/colab/impl_worker.py
+winsmux workers logs w2 --run-id <run_id>
+winsmux workers upload w2 data/input.json --remote /content/input.json
+winsmux workers upload w2 data --remote /content/data --allow-dir data
+winsmux workers download w2 /content/output.json --output artifacts/worker-output
+```
+
+ディレクトリをアップロードする場合は `--allow-dir` が必要です。アップロード用の
+manifest では、`.git`、秘密情報らしいファイル、`node_modules`、仮想環境、
+ビルド成果物、coverage、サイズが大きすぎるファイルを既定で除外します。
+`colab repl` や `colab console` のような自動対話ループは対象外です。設定された
+`google-colab-cli` 互換 adapter に対して、1 回ずつコマンドを実行します。
 
 契約のみを記述したスロット設定の例（抜粋）です。`winsmux init` では 6 スロットが作成されます。
 
@@ -65,7 +81,7 @@ agent-slots:
     worker-backend: colab_cli
     worker-role: impl
     session-name: "{{project_slug}}_w2_impl"
-    gpu-preference: [H100, A100, L4]
+    gpu-preference: [H100, A100]
     packages: [torch, transformers, accelerate]
     bootstrap: workers/colab/bootstrap_impl.py
     task-script: workers/colab/impl_worker.py

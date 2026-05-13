@@ -35,8 +35,10 @@ The operator layer is where:
 
 happen.
 
-The operator can be Claude Code, Codex CLI, Gemini CLI, or another external
-user-to-operator channel surface.
+The operator can be Claude Code, Codex, Gemini, or another external
+user-to-operator channel surface. When a product runs as an official agent CLI,
+the CLI detail is described in the authentication or runtime column rather than
+being appended to only some product names.
 
 The important abstraction is the **channel boundary**, not Telegram, Discord, or another single product.
 
@@ -121,8 +123,9 @@ eventually be hosted. The current public values are:
 `local` preserves the existing managed pane behavior. `colab_cli` now records a
 worker state layer for `google-colab-cli` detection, session reuse metadata,
 stale-session marking, GPU fallback, and degraded-state reporting. The
-`winsmux workers` commands report, start, stop, and diagnose the six configured
-worker slots. `codex` and `noop` remain contract metadata until their later
+`winsmux workers` commands report, start, stop, diagnose, run one-shot
+file-backed jobs, read logs, and move artifacts for the six configured worker
+slots. `codex` and `noop` remain contract metadata until their later
 release lanes add execution behavior. A standard initialized project keeps six
 managed worker slots, and `agent-slots` remains the source of truth when
 present.
@@ -147,6 +150,7 @@ The public first-run entrypoints now converge on:
 - `winsmux launcher presets [--json]`
 - `winsmux launcher lifecycle [preset|--clear] [--json]`
 - `winsmux workers <status|start|stop|doctor> [slot|all] [--json]`
+- `winsmux workers <exec|logs|upload|download> <slot> ... [--json]`
 - `winsmux conflict-preflight`
 - `winsmux compare <runs|preflight|promote>`
 

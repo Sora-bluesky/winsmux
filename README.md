@@ -10,7 +10,7 @@
 
 Instead of hiding agents behind a black-box orchestrator, `winsmux` opens each worker in a real pane, keeps file changes isolated in git worktrees, lets you send or interrupt instructions, and compares completed runs with evidence such as changed-file overlap, review state, verification state, and checkpoints before you decide what to keep.
 
-Use it when one Claude Code, Codex CLI, or Gemini CLI session is not enough, but you still want one human operator, local credentials, and a review trail.
+Use it when one Claude Code, Codex, or Gemini session is not enough, but you still want one human operator, local credentials, and a review trail.
 
 For example: run the same task through two agents, watch both panes live, stop the one going off track, then compare the recorded evidence before accepting either result.
 
@@ -31,7 +31,7 @@ Most tools solve only one part of this workflow.
 - Starts a managed Windows Terminal workspace for multiple CLI agents.
 - Lets an operator read, send, interrupt, and check pane health.
 - Initializes six managed worker slots by default, with a worker backend
-  contract for local, Codex, future Colab CLI, and placeholder workers.
+  contract for local, Codex, Google Colab, and placeholder workers.
 - Keeps worker agents in separate git worktrees when isolation is enabled.
 - Compares recorded runs and highlights shared changed files before you choose a winner.
 - Shows review, verification, architecture, checkpoint, and follow-up evidence for recorded runs.
@@ -59,7 +59,7 @@ If you only need a terminal multiplexer, see the runtime docs under [`core/docs`
 - Windows 10 or Windows 11
 - PowerShell 7+
 - Windows Terminal
-- The CLI agents you want to run, such as Codex CLI, Claude Code, or Gemini CLI
+- The official agent CLIs you want to run, such as Claude Code, Codex, or Gemini
 
 Rust is only needed when you build the runtime from source.
 
@@ -89,6 +89,9 @@ winsmux send worker-2 "Review the latest auth changes."
 winsmux health-check
 winsmux workers status
 winsmux workers doctor
+winsmux workers exec w2 --script workers/colab/impl_worker.py
+winsmux workers upload w2 data/input.json --remote /content/input.json
+winsmux workers download w2 /content/output.json
 winsmux compare runs <left_run_id> <right_run_id>
 winsmux compare preflight <left_ref> <right_ref>
 winsmux compare promote <run_id>
@@ -105,6 +108,10 @@ winsmux skills --json
 | `winsmux launcher lifecycle` | Choose the workspace lifecycle policy |
 | `winsmux workers status` | Show backend, state, GPU, session, and last command for worker slots |
 | `winsmux workers doctor` | Diagnose worker config, Colab CLI, auth, uv, and session-state paths |
+| `winsmux workers exec` | Run one file-backed command on a Colab-backed worker slot |
+| `winsmux workers logs` | Read the stored log for a worker run, or ask the Colab CLI for it |
+| `winsmux workers upload` | Upload explicit files or allowlisted directories while excluding unsafe paths |
+| `winsmux workers download` | Download a remote artifact into a project-local output directory |
 | `winsmux compare runs` | Compare evidence and confidence between two recorded runs |
 | `winsmux compare preflight` | Check two refs before merge or compare review |
 | `winsmux compare promote` | Export a successful run as input for the next run |
@@ -120,36 +127,21 @@ winsmux skills --json
 Legacy binary aliases `psmux`, `pmux`, and `tmux` are no longer shipped.
 Use `winsmux` for scripts and docs. This does not remove tmux-compatible configuration, targets, or commands where documented.
 
-## Git Graph CLI
-
-The repository includes `git-graph`, a Rust CLI that renders recent Git history as a source-control-style SVG graph. It reads commit IDs and parent IDs, rebuilds lanes from the parent relationships, and draws lane shifts with cubic Bezier curves instead of parsing `git log --graph` characters.
-
-```powershell
-New-Item -ItemType Directory -Force -Path output | Out-Null
-cargo run -p git-graph -- --repo . --max 30 --out output/git-graph.svg
-git log --topo-order --format="%H %P" --max-count=30 | cargo run -p git-graph -- --from-stdin --out output/git-graph.svg
-```
-
-After installing or copying the binary, use the same options directly:
-
-```powershell
-git-graph --max 30 --out graph.svg
-git log --topo-order --format="%H %P" --max-count=30 | git-graph --from-stdin --out graph.svg
-```
-
 ## Authentication Support
 
 | Tool | Authentication mode | winsmux support |
 | ------- | ------- | ------- |
 | Claude Code | API key or documented enterprise auth | Officially supported |
 | Claude Code | Pro / Max OAuth | This PC only, interactive use |
-| Codex CLI | API key | Officially supported |
-| Codex CLI | ChatGPT OAuth | This PC only, interactive use |
-| Gemini CLI | Gemini API key | Officially supported |
-| Gemini CLI | Vertex AI | Officially supported |
-| Gemini CLI | Google OAuth | This PC only, interactive use |
+| Codex | API key | Officially supported |
+| Codex | ChatGPT OAuth | This PC only, interactive use |
+| Gemini | Gemini API key | Officially supported |
+| Gemini | Gemini API in Vertex AI | Officially supported |
+| Gemini | Google OAuth | This PC only, interactive use |
 
 See [Authentication Support](docs/authentication-support.md) for the full policy.
+See [Provider and Model Support](docs/provider-and-model-support.md) for hosted, Colab, and future local LLM runtime policy.
+See [Google Colab Workers](docs/google-colab-workers.md) for the H100/A100 worker setup.
 
 ## Security Notes
 
@@ -168,6 +160,8 @@ See [Authentication Support](docs/authentication-support.md) for the full policy
 - [Installation](docs/installation.md)
 - [Customization](docs/customization.md)
 - [Authentication support](docs/authentication-support.md)
+- [Provider and model support](docs/provider-and-model-support.md)
+- [Google Colab workers](docs/google-colab-workers.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Repository surface policy](docs/repo-surface-policy.md)
 - [Runtime features](core/docs/features.md)

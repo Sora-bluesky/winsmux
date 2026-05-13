@@ -128,6 +128,16 @@
     },
     {
       "class": "intentional-shim",
+      "owner": "dependency lock metadata",
+      "surface": "package lock integrity hashes",
+      "reason": "npm integrity hashes can contain legacy term substrings by chance and do not describe a product or runtime compatibility surface.",
+      "target": "keep classified while package lockfiles are scanned by the legacy compatibility gate",
+      "paths": [
+        "winsmux-app/package-lock.json"
+      ]
+    },
+    {
+      "class": "intentional-shim",
       "owner": "TASK-408 gate",
       "surface": "compatibility inventory and validator",
       "reason": "The gate must name the legacy terms it detects so future changes cannot add unclassified compatibility surfaces.",

@@ -14,6 +14,27 @@
 
 Rust is only required when building the runtime from source.
 
+For Colab-backed model workers, also prepare a Colab notebook or an
+adapter-managed equivalent connected to `H100` or `A100`. The Windows PC does
+not need a local LLM runtime for that path.
+
+## Quick install
+
+Desktop app:
+
+1. Download `winsmux_<version>_x64-setup.exe` from the matching GitHub Release.
+2. Verify `SHA256SUMS-desktop` when Windows shows a publisher or SmartScreen warning.
+3. Run the installer and choose the project folder after launch.
+
+CLI package:
+
+```powershell
+npm install -g winsmux
+winsmux install --profile full
+winsmux version
+winsmux doctor
+```
+
 ## Desktop app installer
 
 For the desktop app, download the Windows installer from the matching GitHub Release:
@@ -82,3 +103,13 @@ winsmux doctor
 ```
 
 Use `winsmux doctor` after install or update to confirm PowerShell startup, repository configuration, process pressure, and workspace prerequisites.
+
+For Colab-backed worker slots, also run:
+
+```powershell
+winsmux workers doctor
+```
+
+The Colab doctor path reports missing adapter commands, missing authentication,
+and `H100` / `A100` runtime mismatches as worker state instead of silently
+falling back to a local model runtime.
