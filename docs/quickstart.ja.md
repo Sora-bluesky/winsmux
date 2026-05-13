@@ -10,7 +10,7 @@
 - PowerShell 7+
 - Windows Terminal
 - `npm` を含む Node.js
-- 実行したいエージェント CLI。例: Codex CLI、Claude Code、Gemini CLI
+- 実行したい公式エージェント CLI。例: Codex、Claude Code、Gemini
 
 ## 2. winsmux をインストールする
 
@@ -24,6 +24,15 @@ winsmux install --profile full
 ```
 
 `full` プロファイルは、ターミナルランタイム、オーケストレーション用スクリプト、Windows Terminal プロファイル、vault、監査用の支援機能を入れます。
+
+クイックインストール:
+
+```powershell
+npm install -g winsmux
+winsmux install --profile full
+winsmux version
+winsmux doctor
+```
 
 ## 3. プロジェクト設定を作る
 
@@ -49,6 +58,24 @@ winsmux launch
 winsmux workers status
 winsmux workers doctor
 ```
+
+Colab 対応ワーカースロットでは、ファイルを指定して単発実行し、ログを確認できます。
+
+```powershell
+winsmux workers exec w2 --script workers/colab/impl_worker.py
+winsmux workers logs w2
+```
+
+アップロードは安全側に制限しています。明示したファイルは対象にできますが、
+ディレクトリを送る場合は `--allow-dir` が必要です。その場合も `.git`、秘密情報、
+`node_modules`、仮想環境、ビルド成果物、coverage、サイズが大きすぎるファイルは
+既定で除外します。
+
+Colab 対応のモデル作業では、`H100` または `A100` へ接続した Colab ノートブック、
+またはアダプターが管理する同等の実行環境を先に用意します。winsmux は
+`model_family` や `model_id` などのモデルメタデータを記録しますが、正確なモデルを
+読み込む責任はタスクスクリプト側にあります。対象には Gemma、Llama、Mistral、Qwen、
+DeepSeek、Kimi/Moonshot、蒸留モデルの変種を含められます。
 
 ## 5. 読み取りと送信を試す
 
@@ -76,3 +103,5 @@ winsmux compare promote <run_id>
 - インストールプロファイルと更新は [インストール](installation.ja.md) を参照してください。
 - 起動プリセット、ワークツリー方針、スロット、資格情報は [カスタマイズ](customization.ja.md) を参照してください。
 - 認証の境界は [認証方針](authentication-support.ja.md) を参照してください。
+- モデルとランタイムの方針は [プロバイダーとモデルの対応方針](provider-and-model-support.ja.md) を参照してください。
+- GPU 付き単発実行は [Google Colab ワーカー](google-colab-workers.ja.md) を参照してください。

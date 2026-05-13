@@ -37,13 +37,31 @@ and each slot can override it with one of the contract values:
 - `colab_cli`: `google-colab-cli` worker state metadata
 - `noop`: disabled or placeholder worker metadata
 
-`v0.32.2` records Colab backend availability under
+`v0.32.3` records Colab backend availability under
 `.winsmux/state/colab_sessions.json`. Missing `google-colab-cli`, missing auth,
-and unavailable GPUs are recorded as degraded worker state. Renamed sessions are
-marked stale, and GPU preference falls back from the configured order to CPU.
+and unavailable `H100` / `A100` GPUs are recorded as degraded worker state.
+Renamed sessions are marked stale. winsmux does not silently fall back to a
+local CPU or local LLM runtime for Colab model work.
 Use `winsmux workers status`, `winsmux workers start`, `winsmux workers stop`,
 and `winsmux workers doctor` to inspect and control the six configured worker
-slots. One-shot execution is still handled by a later release lane.
+slots.
+
+Colab-backed slots also support file-backed one-shot execution and safe artifact
+movement:
+
+```powershell
+winsmux workers exec w2 --script workers/colab/impl_worker.py
+winsmux workers logs w2 --run-id <run_id>
+winsmux workers upload w2 data/input.json --remote /content/input.json
+winsmux workers upload w2 data --remote /content/data --allow-dir data
+winsmux workers download w2 /content/output.json --output artifacts/worker-output
+```
+
+Directory uploads require `--allow-dir`. The upload manifest excludes `.git`,
+secret-like files, `node_modules`, virtual environments, build outputs,
+coverage, and oversized files by default. Automatic `colab repl` or
+`colab console` loops are intentionally out of scope; workers run one command at
+a time through the configured `google-colab-cli`-compatible adapter.
 
 Example slot entries (excerpt; `winsmux init` creates six slots):
 
@@ -62,7 +80,7 @@ agent-slots:
     worker-backend: colab_cli
     worker-role: impl
     session-name: "{{project_slug}}_w2_impl"
-    gpu-preference: [H100, A100, L4]
+    gpu-preference: [H100, A100]
     packages: [torch, transformers, accelerate]
     bootstrap: workers/colab/bootstrap_impl.py
     task-script: workers/colab/impl_worker.py

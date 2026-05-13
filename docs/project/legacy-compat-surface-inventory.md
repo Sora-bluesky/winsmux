@@ -23,6 +23,7 @@ Validate it with either command:
 - Legacy `psmux`, `pmux`, and `tmux` binary aliases are no longer shipped.
 - Legacy upstream tests remain governed by `TASK-407`; this task only prevents unclassified compatibility references from being added.
 - Operator startup guidance that forbids `psmux` probes is an intentional safety shim for older local installs and stale runbooks.
+- npm lockfile integrity hashes can contain legacy term substrings by chance; those hashes are classified as dependency metadata, not product compatibility surface.
 
 ## Gate contract
 

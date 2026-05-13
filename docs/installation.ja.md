@@ -14,6 +14,27 @@
 
 Rust は、ランタイムをソースからビルドする時だけ必要です。
 
+Colab 対応のモデルワーカーを使う場合は、`H100` または `A100` へ接続した
+Colab ノートブック、またはアダプターが管理する同等の実行環境も用意します。
+この経路では、Windows PC 側にローカル LLM ランタイムは不要です。
+
+## クイックインストール
+
+デスクトップアプリ:
+
+1. 対象の GitHub Release から `winsmux_<version>_x64-setup.exe` を取得します。
+2. Windows が発行元または SmartScreen の警告を出した場合は、`SHA256SUMS-desktop` と照合します。
+3. インストーラーを実行し、起動後にプロジェクトフォルダーを選びます。
+
+CLI パッケージ:
+
+```powershell
+npm install -g winsmux
+winsmux install --profile full
+winsmux version
+winsmux doctor
+```
+
 ## デスクトップアプリのインストーラー
 
 デスクトップアプリを使う場合は、対象の GitHub Release から Windows 用インストーラーを取得します。
@@ -82,3 +103,13 @@ winsmux doctor
 ```
 
 インストール後または更新後は `winsmux doctor` を実行してください。PowerShell の起動、リポジトリ設定、プロセス数、ワークスペースの前提条件を確認できます。
+
+Colab 対応ワーカースロットでは、次も実行します。
+
+```powershell
+winsmux workers doctor
+```
+
+Colab の診断では、アダプターコマンドの不在、認証不足、`H100` / `A100`
+ランタイム不一致をワーカー状態として表示します。ローカル LLM ランタイムへ
+黙って切り替えることはしません。

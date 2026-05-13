@@ -524,6 +524,83 @@ agent-slots:
         }
     }
 
+    It 'keeps a colab_cli worker available when auth is only unverified by winsmux' {
+        $fakeCli = Join-Path $script:settingsTempRoot 'google-colab-cli.cmd'
+        Write-PsmuxBridgeTestFile -Path $fakeCli -Content '@echo off'
+
+        $previousCli = $env:WINSMUX_COLAB_CLI
+        $previousAuth = $env:WINSMUX_COLAB_AUTH_STATE
+        $previousGpu = $env:WINSMUX_COLAB_AVAILABLE_GPUS
+        try {
+            $env:WINSMUX_COLAB_CLI = $fakeCli
+            Remove-Item Env:WINSMUX_COLAB_AUTH_STATE -ErrorAction SilentlyContinue
+            $env:WINSMUX_COLAB_AVAILABLE_GPUS = 'H100'
+            Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+@'
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: colab_cli
+    session-name: unverified-auth-session
+    gpu-preference: [H100]
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+            $settings = Get-BridgeSettings
+            $state = Update-WinsmuxColabSessionState -ProjectDir $script:settingsTempRoot -Settings $settings
+            $record = @($state.active_sessions)[0]
+
+            $record['state'] | Should -Be 'available'
+            $record['degraded'] | Should -Be $false
+            $record['degraded_reason'] | Should -Be ''
+            $record['auth_state'] | Should -Be 'unknown'
+            $record['auth_available'] | Should -Be $false
+        } finally {
+            if ($null -eq $previousCli) { Remove-Item Env:WINSMUX_COLAB_CLI -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_CLI = $previousCli }
+            if ($null -eq $previousAuth) { Remove-Item Env:WINSMUX_COLAB_AUTH_STATE -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_AUTH_STATE = $previousAuth }
+            if ($null -eq $previousGpu) { Remove-Item Env:WINSMUX_COLAB_AVAILABLE_GPUS -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_AVAILABLE_GPUS = $previousGpu }
+        }
+    }
+
+    It 'keeps a colab_cli worker available when an accepted fallback GPU is selected' {
+        $fakeCli = Join-Path $script:settingsTempRoot 'google-colab-cli.cmd'
+        Write-PsmuxBridgeTestFile -Path $fakeCli -Content '@echo off'
+
+        $previousCli = $env:WINSMUX_COLAB_CLI
+        $previousAuth = $env:WINSMUX_COLAB_AUTH_STATE
+        $previousGpu = $env:WINSMUX_COLAB_AVAILABLE_GPUS
+        try {
+            $env:WINSMUX_COLAB_CLI = $fakeCli
+            $env:WINSMUX_COLAB_AUTH_STATE = 'authenticated'
+            $env:WINSMUX_COLAB_AVAILABLE_GPUS = 'A100'
+            Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+@'
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: colab_cli
+    session-name: fallback-gpu-session
+    gpu-preference: [H100, A100]
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+            $settings = Get-BridgeSettings
+            $state = Update-WinsmuxColabSessionState -ProjectDir $script:settingsTempRoot -Settings $settings
+            $record = @($state.active_sessions)[0]
+
+            $record['state'] | Should -Be 'available'
+            $record['degraded'] | Should -Be $false
+            $record['degraded_reason'] | Should -Be ''
+            $record['selected_gpu'] | Should -Be 'A100'
+        } finally {
+            if ($null -eq $previousCli) { Remove-Item Env:WINSMUX_COLAB_CLI -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_CLI = $previousCli }
+            if ($null -eq $previousAuth) { Remove-Item Env:WINSMUX_COLAB_AUTH_STATE -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_AUTH_STATE = $previousAuth }
+            if ($null -eq $previousGpu) { Remove-Item Env:WINSMUX_COLAB_AVAILABLE_GPUS -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_AVAILABLE_GPUS = $previousGpu }
+        }
+    }
+
     It 'marks renamed colab_cli sessions stale and reuses matching session records' {
         $fakeCli = Join-Path $script:settingsTempRoot 'google-colab-cli.cmd'
         Write-PsmuxBridgeTestFile -Path $fakeCli -Content '@echo off'
@@ -8741,13 +8818,16 @@ Describe 'winsmux workers command' {
         New-Item -ItemType Directory -Path $script:workersTempRoot -Force | Out-Null
         $script:previousColabCli = $env:WINSMUX_COLAB_CLI
         $script:previousColabAuth = $env:WINSMUX_COLAB_AUTH_STATE
+        $script:previousColabGpu = $env:WINSMUX_COLAB_AVAILABLE_GPUS
         $env:WINSMUX_COLAB_CLI = 'winsmux-test-missing-google-colab-cli'
         $env:WINSMUX_COLAB_AUTH_STATE = ''
+        $env:WINSMUX_COLAB_AVAILABLE_GPUS = ''
     }
 
     AfterEach {
         $env:WINSMUX_COLAB_CLI = $script:previousColabCli
         $env:WINSMUX_COLAB_AUTH_STATE = $script:previousColabAuth
+        $env:WINSMUX_COLAB_AVAILABLE_GPUS = $script:previousColabGpu
         if ($script:workersTempRoot -and (Test-Path -LiteralPath $script:workersTempRoot)) {
             Remove-Item -LiteralPath $script:workersTempRoot -Recurse -Force
         }
@@ -8755,11 +8835,44 @@ Describe 'winsmux workers command' {
         Remove-Item function:\winsmux -ErrorAction SilentlyContinue
     }
 
+    function script:New-WorkersFakeColabCli {
+        param([int]$ExitCode = 0)
+
+        $fakeCli = Join-Path $script:workersTempRoot 'google-colab-cli.cmd'
+$content = @'
+@echo off
+echo fake-colab %*
+exit /b __EXIT_CODE__
+'@
+        $content.Replace('__EXIT_CODE__', [string]$ExitCode) | Set-Content -Path $fakeCli -Encoding ASCII
+        $env:WINSMUX_COLAB_CLI = $fakeCli
+        $env:WINSMUX_COLAB_AUTH_STATE = 'authenticated'
+        $env:WINSMUX_COLAB_AVAILABLE_GPUS = 'H100,A100'
+        return $fakeCli
+    }
+
+    function script:Write-WorkersColabProjectConfig {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: colab_cli
+    session-name: winsmux_worker_2
+    task-script: workers/colab/task.py
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+    }
+
     It 'documents and routes the workers lifecycle command' {
         $script:winsmuxWorkersCoreRawContent | Should -Match 'workers <status\|start\|stop\|doctor> \[slot\|all\] \[--json\] \[--project-dir <path>\]'
+        $script:winsmuxWorkersCoreRawContent | Should -Match 'workers <exec\|logs\|upload\|download> <slot> \.\.\. \[--json\] \[--project-dir <path>\]'
         $script:winsmuxWorkersCoreRawContent | Should -Match "'workers'\s*\{\s*Invoke-Workers\s*\}"
         $script:winsmuxWorkersCoreRawContent | Should -Match 'google-colab-cli not found on PATH'
         $script:winsmuxWorkersCoreRawContent | Should -Match 'uv not found on PATH'
+        $script:winsmuxWorkersCoreRawContent | Should -Match "'exec'\s*\{\s*Invoke-WorkersExec\s*\}"
+        $script:winsmuxWorkersCoreRawContent | Should -Match "'download'\s*\{\s*Invoke-WorkersDownload\s*\}"
     }
 
     It 'reports the default six worker slots with aliases and Colab degraded state' {
@@ -8924,6 +9037,313 @@ worker-backend: colab_cli
         if ($uvCheck.status -eq 'fail') {
             $uvCheck.action | Should -Match 'Install uv'
         }
+    }
+
+    It 'runs a one-shot Colab worker script and reads the stored log' {
+        New-WorkersFakeColabCli | Out-Null
+        Write-WorkersColabProjectConfig
+        New-Item -ItemType Directory -Path (Join-Path $script:workersTempRoot 'workers\colab') -Force | Out-Null
+        'print("hello")' | Set-Content -Path (Join-Path $script:workersTempRoot 'workers\colab\task.py') -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers exec w2 --script workers/colab/task.py --run-id run-1 --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+
+        $payload.status | Should -Be 'succeeded'
+        $payload.slot_id | Should -Be 'worker-2'
+        $payload.run_id | Should -Be 'run-1'
+        $payload.cli_arguments[0] | Should -Be 'run'
+        $logPath = Join-Path $script:workersTempRoot ($payload.stdout_log -replace '/', '\')
+        (Get-Content -LiteralPath $logPath -Raw -Encoding UTF8) | Should -Match 'fake-colab run'
+
+        $logsOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers logs worker-2 --run-id run-1 --json --project-dir $script:workersTempRoot
+        $logsPayload = ($logsOutput | Select-Object -Last 1) | ConvertFrom-Json
+        $logsPayload.source | Should -Be 'local'
+        $logsPayload.log | Should -Match 'fake-colab run'
+    }
+
+    It 'lets the Colab adapter handle authentication when winsmux auth is unverified' {
+        New-WorkersFakeColabCli | Out-Null
+        Write-WorkersColabProjectConfig
+        Remove-Item Env:WINSMUX_COLAB_AUTH_STATE -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Path (Join-Path $script:workersTempRoot 'workers\colab') -Force | Out-Null
+        'print("hello")' | Set-Content -Path (Join-Path $script:workersTempRoot 'workers\colab\task.py') -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers exec w2 --script workers/colab/task.py --run-id auth-unverified --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+
+        $payload.status | Should -Be 'succeeded'
+        $payload.run_id | Should -Be 'auth-unverified'
+        $payload.cli_arguments[0] | Should -Be 'run'
+    }
+
+    It 'uploads only allowed files and excludes unsafe directory contents' {
+        New-WorkersFakeColabCli | Out-Null
+        Write-WorkersColabProjectConfig
+        $inputDir = Join-Path $script:workersTempRoot 'inputs'
+        New-Item -ItemType Directory -Path (Join-Path $inputDir 'node_modules') -Force | Out-Null
+        'payload' | Set-Content -Path (Join-Path $inputDir 'data.txt') -Encoding UTF8
+        'SECRET=1' | Set-Content -Path (Join-Path $inputDir '.env') -Encoding UTF8
+        'module' | Set-Content -Path (Join-Path $inputDir 'node_modules\dep.js') -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers upload worker-2 inputs --remote /content/inputs --allow-dir inputs --run-id upload-1 --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $manifestPath = Join-Path $script:workersTempRoot ($payload.manifest -replace '/', '\')
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+
+        $payload.status | Should -Be 'succeeded'
+        $payload.uploaded_count | Should -Be 1
+        $payload.excluded_count | Should -Be 2
+        $payload.staged_source | Should -Match '^\.winsmux/worker-runs/worker-2/upload-1/upload-source$'
+        $payload.cli_arguments | Should -Contain (Join-Path $script:workersTempRoot '.winsmux\worker-runs\worker-2\upload-1\upload-source')
+        $payload.cli_arguments | Should -Not -Contain (Join-Path $script:workersTempRoot 'inputs')
+        @($manifest.files | ForEach-Object { $_.path }) | Should -Contain 'inputs/data.txt'
+        $manifest.staged_source | Should -Match '^\.winsmux/worker-runs/worker-2/upload-1/upload-source$'
+        Test-Path -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\worker-runs\worker-2\upload-1\upload-source\data.txt') | Should -Be $true
+        Test-Path -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\worker-runs\worker-2\upload-1\upload-source\.env') | Should -Be $false
+        @($manifest.excluded | ForEach-Object { $_.reason }) | Should -Contain 'secret_like_file'
+        @($manifest.excluded | ForEach-Object { $_.reason }) | Should -Contain 'excluded_segment:node_modules'
+    }
+
+    It 'keeps empty stored worker logs local' {
+        New-WorkersFakeColabCli | Out-Null
+        Write-WorkersColabProjectConfig
+        $runDir = Join-Path $script:workersTempRoot '.winsmux\worker-runs\worker-2\empty-log'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        New-Item -ItemType File -Path (Join-Path $runDir 'stdout.log') -Force | Out-Null
+
+        $logsOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers logs worker-2 --run-id empty-log --json --project-dir $script:workersTempRoot
+        $logsPayload = ($logsOutput | Select-Object -Last 1) | ConvertFrom-Json
+
+        $logsPayload.source | Should -Be 'local'
+        $logsPayload.log | Should -Be ''
+    }
+
+    It 'ignores transfer artifacts when selecting the latest stored worker log' {
+        New-WorkersFakeColabCli | Out-Null
+        Write-WorkersColabProjectConfig
+        $runRoot = Join-Path $script:workersTempRoot '.winsmux\worker-runs\worker-2'
+        $execDir = Join-Path $runRoot 'exec-run'
+        $uploadDir = Join-Path $runRoot 'upload-run'
+        New-Item -ItemType Directory -Path $execDir -Force | Out-Null
+        'exec log body' | Set-Content -Path (Join-Path $execDir 'stdout.log') -Encoding UTF8
+        @{
+            status    = 'succeeded'
+            exit_code = 0
+        } | ConvertTo-Json | Set-Content -Path (Join-Path $execDir 'run.json') -Encoding UTF8
+        Start-Sleep -Milliseconds 50
+        New-Item -ItemType Directory -Path $uploadDir -Force | Out-Null
+        @{
+            command = 'workers.upload'
+            status  = 'succeeded'
+        } | ConvertTo-Json | Set-Content -Path (Join-Path $uploadDir 'upload.json') -Encoding UTF8
+
+        $logsOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers logs worker-2 --json --project-dir $script:workersTempRoot
+        $logsPayload = ($logsOutput | Select-Object -Last 1) | ConvertFrom-Json
+
+        $logsPayload.source | Should -Be 'local'
+        $logsPayload.run_id | Should -Be 'exec-run'
+        $logsPayload.log | Should -Match 'exec log body'
+    }
+
+    It 'propagates stored failed run status from local logs' {
+        New-WorkersFakeColabCli | Out-Null
+        Write-WorkersColabProjectConfig
+        $runDir = Join-Path $script:workersTempRoot '.winsmux\worker-runs\worker-2\failed-run'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        'failed log body' | Set-Content -Path (Join-Path $runDir 'stdout.log') -Encoding UTF8
+        @{
+            status    = 'failed'
+            exit_code = 7
+        } | ConvertTo-Json | Set-Content -Path (Join-Path $runDir 'run.json') -Encoding UTF8
+
+        $logsOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers logs worker-2 --run-id failed-run --json --project-dir $script:workersTempRoot 2>&1
+        $logsPayload = ($logsOutput | Select-Object -Last 1) | ConvertFrom-Json
+
+        $LASTEXITCODE | Should -Be 7
+        $logsPayload.source | Should -Be 'local'
+        $logsPayload.status | Should -Be 'failed'
+        $logsPayload.exit_code | Should -Be 7
+        $logsPayload.log | Should -Match 'failed log body'
+    }
+
+    It 'rejects unsafe run ids, remote paths, output paths, and slot ids' {
+        New-WorkersFakeColabCli | Out-Null
+        Write-WorkersColabProjectConfig
+        New-Item -ItemType Directory -Path (Join-Path $script:workersTempRoot 'workers\colab') -Force | Out-Null
+        'print("hello")' | Set-Content -Path (Join-Path $script:workersTempRoot 'workers\colab\task.py') -Encoding UTF8
+
+        $badRun = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers exec w2 --script workers/colab/task.py --run-id ..\bad --json --project-dir $script:workersTempRoot 2>&1
+        $LASTEXITCODE | Should -Be 1
+        ($badRun | Out-String) | Should -Match 'run id contains unsupported characters'
+
+        $badRemote = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers download w2 /content/../secret.txt --json --project-dir $script:workersTempRoot 2>&1
+        $LASTEXITCODE | Should -Be 1
+        ($badRemote | Out-String) | Should -Match "remote path must not contain '\.\.'"
+
+        $badOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers download w2 /content/out.txt --output ..\escape --json --project-dir $script:workersTempRoot 2>&1
+        $LASTEXITCODE | Should -Be 1
+        ($badOutput | Out-String) | Should -Match 'path must stay under project directory'
+
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: ../escape
+    runtime-role: worker
+    worker-backend: colab_cli
+    session-name: winsmux_escape
+    task-script: workers/colab/task.py
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        $badSlot = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers exec ../escape --script workers/colab/task.py --json --project-dir $script:workersTempRoot 2>&1
+        $LASTEXITCODE | Should -Be 1
+        ($badSlot | Out-String) | Should -Match 'slot id contains unsupported characters'
+    }
+
+    It 'rejects reparse points in worker transfer paths' {
+        New-WorkersFakeColabCli | Out-Null
+        Write-WorkersColabProjectConfig
+        $outside = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-workers-outside-' + [guid]::NewGuid().ToString('N'))
+        $inputDir = Join-Path $script:workersTempRoot 'inputs'
+        $linkedInput = Join-Path $inputDir 'linked-outside'
+        $linkedOutput = Join-Path $script:workersTempRoot 'linked-output'
+
+        try {
+            New-Item -ItemType Directory -Path $outside -Force | Out-Null
+            'secret' | Set-Content -Path (Join-Path $outside 'secret.txt') -Encoding UTF8
+            New-Item -ItemType Directory -Path $inputDir -Force | Out-Null
+            'payload' | Set-Content -Path (Join-Path $inputDir 'data.txt') -Encoding UTF8
+            New-Item -ItemType Junction -Path $linkedInput -Target $outside | Out-Null
+
+            $uploadOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers upload w2 inputs --remote /content/inputs --allow-dir inputs --json --project-dir $script:workersTempRoot 2>&1
+
+            $LASTEXITCODE | Should -Be 1
+            ($uploadOutput | Out-String) | Should -Match 'unsupported reparse point'
+
+            New-Item -ItemType Junction -Path $linkedOutput -Target $outside | Out-Null
+            $downloadOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers download w2 /content/out.txt --output linked-output/result.txt --json --project-dir $script:workersTempRoot 2>&1
+
+            $LASTEXITCODE | Should -Be 1
+            ($downloadOutput | Out-String) | Should -Match 'unsupported reparse point'
+        } finally {
+            if (Test-Path -LiteralPath $linkedOutput) {
+                Remove-Item -LiteralPath $linkedOutput -Force
+            }
+            if (Test-Path -LiteralPath $linkedInput) {
+                Remove-Item -LiteralPath $linkedInput -Force
+            }
+            if (Test-Path -LiteralPath $outside) {
+                Remove-Item -LiteralPath $outside -Recurse -Force
+            }
+        }
+    }
+
+    It 'excludes build outputs and oversized files from directory uploads' {
+        New-WorkersFakeColabCli | Out-Null
+        Write-WorkersColabProjectConfig
+        $inputDir = Join-Path $script:workersTempRoot 'inputs'
+        New-Item -ItemType Directory -Path (Join-Path $inputDir 'build') -Force | Out-Null
+        'ok' | Set-Content -Path (Join-Path $inputDir 'keep.txt') -Encoding UTF8
+        'build' | Set-Content -Path (Join-Path $inputDir 'build\artifact.bin') -Encoding UTF8
+        'toolong' | Set-Content -Path (Join-Path $inputDir 'large.txt') -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers upload worker-2 inputs --remote /content/inputs --allow-dir inputs --run-id upload-2 --max-bytes 4 --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $manifestPath = Join-Path $script:workersTempRoot ($payload.manifest -replace '/', '\')
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+
+        $payload.uploaded_count | Should -Be 1
+        $payload.excluded_count | Should -Be 2
+        @($manifest.files | ForEach-Object { $_.path }) | Should -Contain 'inputs/keep.txt'
+        @($manifest.excluded | ForEach-Object { $_.reason }) | Should -Contain 'excluded_segment:build'
+        @($manifest.excluded | ForEach-Object { $_.reason }) | Should -Contain 'oversized_file'
+    }
+
+    It 'rejects directory uploads without an allowlisted directory' {
+        New-WorkersFakeColabCli | Out-Null
+        Write-WorkersColabProjectConfig
+        New-Item -ItemType Directory -Path (Join-Path $script:workersTempRoot 'inputs') -Force | Out-Null
+        'payload' | Set-Content -Path (Join-Path $script:workersTempRoot 'inputs\data.txt') -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers upload w2 inputs --remote /content/inputs --json --project-dir $script:workersTempRoot 2>&1
+
+        $LASTEXITCODE | Should -Be 1
+        ($output | Out-String) | Should -Match 'directory upload requires --allow-dir'
+    }
+
+    It 'downloads a remote artifact into the worker runtime download directory' {
+        New-WorkersFakeColabCli | Out-Null
+        Write-WorkersColabProjectConfig
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers download w2 /content/out/result.json --run-id download-1 --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+
+        $payload.status | Should -Be 'succeeded'
+        $payload.remote | Should -Be '/content/out/result.json'
+        $payload.output | Should -Match '^\.winsmux/worker-downloads/worker-2/download-1$'
+        $payload.cli_arguments[0] | Should -Be 'download'
+    }
+
+    It 'treats a new explicit download output as a file path' {
+        New-WorkersFakeColabCli | Out-Null
+        Write-WorkersColabProjectConfig
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers download w2 /content/out/result.json --output results/result.json --run-id download-file --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $expectedOutput = Join-Path $script:workersTempRoot 'results\result.json'
+
+        $payload.status | Should -Be 'succeeded'
+        $payload.output | Should -Be 'results/result.json'
+        $payload.cli_arguments | Should -Contain $expectedOutput
+        Test-Path -LiteralPath (Split-Path -Parent $expectedOutput) -PathType Container | Should -Be $true
+        Test-Path -LiteralPath $expectedOutput -PathType Container | Should -Be $false
+    }
+
+    It 'rejects explicit download outputs under the winsmux runtime directory' {
+        New-WorkersFakeColabCli | Out-Null
+        Write-WorkersColabProjectConfig
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers download w2 /content/out/result.json --output .winsmux/manifest.yaml --run-id blocked-runtime-output --json --project-dir $script:workersTempRoot 2>&1
+
+        $LASTEXITCODE | Should -Be 1
+        ($output | Out-String) | Should -Match 'unsafe path rejected'
+        ($output | Out-String) | Should -Match 'excluded_segment:.winsmux'
+    }
+
+    It 'returns failing process exit codes when the Colab adapter fails' {
+        New-WorkersFakeColabCli -ExitCode 7 | Out-Null
+        Write-WorkersColabProjectConfig
+        New-Item -ItemType Directory -Path (Join-Path $script:workersTempRoot 'workers\colab') -Force | Out-Null
+        'print("hello")' | Set-Content -Path (Join-Path $script:workersTempRoot 'workers\colab\task.py') -Encoding UTF8
+        'payload' | Set-Content -Path (Join-Path $script:workersTempRoot 'input.json') -Encoding UTF8
+
+        $execOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers exec w2 --script workers/colab/task.py --run-id exec-failed --json --project-dir $script:workersTempRoot 2>&1
+        $execPayload = ($execOutput | Select-Object -Last 1) | ConvertFrom-Json
+
+        $LASTEXITCODE | Should -Be 7
+        $execPayload.status | Should -Be 'failed'
+        $execPayload.exit_code | Should -Be 7
+
+        $uploadOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers upload w2 input.json --remote /content/input.json --run-id upload-failed --json --project-dir $script:workersTempRoot 2>&1
+        $uploadPayload = ($uploadOutput | Select-Object -Last 1) | ConvertFrom-Json
+
+        $LASTEXITCODE | Should -Be 7
+        $uploadPayload.status | Should -Be 'failed'
+        $uploadPayload.exit_code | Should -Be 7
+
+        $downloadOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers download w2 /content/output.json --run-id download-failed --json --project-dir $script:workersTempRoot 2>&1
+        $downloadPayload = ($downloadOutput | Select-Object -Last 1) | ConvertFrom-Json
+
+        $LASTEXITCODE | Should -Be 7
+        $downloadPayload.status | Should -Be 'failed'
+        $downloadPayload.exit_code | Should -Be 7
+
+        $logsOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers logs w2 --run-id logs-failed --json --project-dir $script:workersTempRoot 2>&1
+        $logsPayload = ($logsOutput | Select-Object -Last 1) | ConvertFrom-Json
+
+        $LASTEXITCODE | Should -Be 7
+        $logsPayload.status | Should -Be 'failed'
+        $logsPayload.exit_code | Should -Be 7
     }
 }
 

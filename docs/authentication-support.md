@@ -16,11 +16,17 @@ Within that model, winsmux does **not** broker OAuth logins or extract and relay
 | ------- | ------- | ------- |
 | Claude Code | API key / documented enterprise auth | Supported |
 | Claude Code | Pro / Max OAuth | This PC only, interactive use |
-| Codex CLI | API key | Supported |
-| Codex CLI | ChatGPT OAuth | This PC only, interactive use |
-| Gemini CLI | Gemini API key | Supported |
-| Gemini CLI | Vertex AI | Supported |
-| Gemini CLI | Google OAuth | This PC only, interactive use |
+| Codex | API key through the official agent CLI | Supported |
+| Codex | ChatGPT OAuth through the official agent CLI | This PC only, interactive use |
+| Gemini | Gemini API key through the official agent CLI | Supported |
+| Gemini | Gemini API in Vertex AI through the official agent CLI | Supported |
+| Gemini | Google OAuth through the official agent CLI | This PC only, interactive use |
+
+Model families such as Gemma, Llama, Mistral, Qwen, DeepSeek, and Kimi are not
+authentication providers by themselves. For Colab workers, authenticate the
+official model source or hosted endpoint inside the Colab-owned or
+adapter-owned flow, and record only non-secret model metadata in winsmux
+evidence.
 
 ## What the terms mean
 

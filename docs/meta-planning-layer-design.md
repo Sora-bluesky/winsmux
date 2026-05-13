@@ -42,7 +42,7 @@ User -> Operator planning session -> specialist planning workers
 ## Constraints
 
 - Windows-native only. Do not require WSL2.
-- The MVP seed uses Claude Code and Codex CLI, but role selection must be
+- The MVP seed uses Claude Code and Codex, but role selection must be
   capability-driven for custom role files.
 - Providers outside the built-in MVP seed must be declared in
   `.winsmux/provider-capabilities.json` before they can be used as planning
@@ -85,7 +85,7 @@ Phase 1 should treat `claude --permission-mode plan` as the first-choice launch
 contract for Claude Code planning workers. A startup probe must verify that the
 worker is actually in plan mode before any task is sent.
 
-### Codex CLI planning mode equivalent
+### Codex planning mode equivalent
 
 Local `codex exec --help` does not expose a dedicated plan-mode flag. It does
 expose:

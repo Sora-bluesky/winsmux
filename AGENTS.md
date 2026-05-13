@@ -329,6 +329,18 @@ Codex must follow these rules:
    - manual diff review is completed,
    - the `no result yet` status is explicitly recorded in `.claude/local/operator-handoff.md` or the PR summary.
 
+## GitHub Codex Review Iteration Budget
+
+Automated GitHub `Codex Review` comments are useful, but they must not become an unbounded loop.
+
+Codex must follow these rules:
+
+1. Default to the initial `Codex Review` plus at most two fix-and-recheck rounds per PR.
+2. After the budget is exhausted, continue only for `P0`, `P1`, security, data loss, release-blocking CI, or feature-unusable findings.
+3. Do not keep chasing `P2` or lower suggestions one by one after the budget is exhausted.
+4. If a lower-priority finding is still worth preserving, open or update a follow-up issue or task and continue the main workflow.
+5. Record the budget cutoff in `.claude/local/operator-handoff.md` or the PR summary when review comments remain intentionally deferred.
+
 ## Public Surface Gate
 
 winsmux uses one repository with five distinct surfaces:
