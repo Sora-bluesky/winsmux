@@ -335,7 +335,7 @@ function New-WinsmuxColabSessionRecord {
 
     $reasons = [System.Collections.Generic.List[string]]::new()
     foreach ($reason in @([string]$StateReadError, [string]$cli.reason, [string]$auth.reason, [string]$gpu.reason)) {
-        if ([string]::Equals($reason, 'colab_auth_unverified', [System.StringComparison]::OrdinalIgnoreCase)) {
+        if ($reason -in @('colab_auth_unverified', 'gpu_fallback_selected')) {
             continue
         }
         if (-not [string]::IsNullOrWhiteSpace($reason) -and -not $reasons.Contains($reason)) {
