@@ -114,6 +114,7 @@ events.db-*
 # =========================
 # Claude Code / AI agent config
 # =========================
+/AGENTS.md
 /CLAUDE.md
 .claude/settings.local.json
 .claude/logs/
