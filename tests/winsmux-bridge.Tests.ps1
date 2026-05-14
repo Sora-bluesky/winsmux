@@ -10381,7 +10381,7 @@ panes:
                     rationale = 'keep worker context scoped'
                     knowledge_pack_id = 'know-runs'
                     knowledge_pack_ref = 'knowledge/know-runs.json'
-                        knowledge_source_refs = @('GUARDRAILS.md#Git-Guard', 'docs/operator-model.md#knowledge', '%LOCALAPPDATA%\winsmux\private.md', 'private guidance body')
+                        knowledge_source_refs = @('GUARDRAILS.md#17-git-guard-gate', 'docs/operator-model.md#knowledge', '%LOCALAPPDATA%\winsmux\private.md', 'private guidance body')
                     operating_guidance_refs = @('guidance:git-guard', 'guidance:review-before-merge')
                     knowledge_hard_constraints = @('never bypass git-guard')
                     capability_contract = [ordered]@{ can_edit = $true; can_merge = $false }
@@ -10484,7 +10484,7 @@ panes:
         $result.runs[0].context_contract.knowledge_layer.packet_type | Should -Be 'knowledge_layer_contract'
         $result.runs[0].context_contract.knowledge_layer.knowledge_pack_id | Should -Be 'know-runs'
         $result.runs[0].context_contract.knowledge_layer.knowledge_pack_ref | Should -Be 'knowledge/know-runs.json'
-        $result.runs[0].context_contract.knowledge_layer.source_refs | Should -Be @('GUARDRAILS.md#Git-Guard', 'docs/operator-model.md#knowledge')
+        $result.runs[0].context_contract.knowledge_layer.source_refs | Should -Be @('GUARDRAILS.md#17-git-guard-gate', 'docs/operator-model.md#knowledge')
         ($result.runs[0].context_contract.knowledge_layer.source_refs -join '|') | Should -Not -Match 'LOCALAPPDATA'
         ($result.runs[0].context_contract.knowledge_layer.source_refs -join '|') | Should -Not -Match 'private guidance'
         $result.runs[0].context_contract.knowledge_layer.operating_guidance_refs | Should -Be @('guidance:git-guard', 'guidance:review-before-merge')
@@ -12218,7 +12218,7 @@ panes:
                         rationale = 'keep worker context scoped'
                         knowledge_pack_id = 'know-task-256'
                         knowledge_pack_ref = 'knowledge/know-task-256.json'
-                        knowledge_source_refs = @('GUARDRAILS.md#Git-Guard', 'docs/operator-model.md#knowledge', '%LOCALAPPDATA%\winsmux\private.md', 'private guidance body')
+                        knowledge_source_refs = @('GUARDRAILS.md#17-git-guard-gate', 'docs/operator-model.md#knowledge', '%LOCALAPPDATA%\winsmux\private.md', 'private guidance body')
                         operating_guidance_refs = @('guidance:git-guard', 'guidance:review-before-merge')
                         knowledge_hard_constraints = @('never bypass git-guard')
                         capability_contract = [ordered]@{ can_edit = $true; can_merge = $false }
@@ -12411,7 +12411,7 @@ panes:
         $result.run.context_contract.knowledge_layer.packet_type | Should -Be 'knowledge_layer_contract'
         $result.run.context_contract.knowledge_layer.knowledge_pack_id | Should -Be 'know-task-256'
         $result.run.context_contract.knowledge_layer.knowledge_pack_ref | Should -Be 'knowledge/know-task-256.json'
-        $result.run.context_contract.knowledge_layer.source_refs | Should -Be @('GUARDRAILS.md#Git-Guard', 'docs/operator-model.md#knowledge')
+        $result.run.context_contract.knowledge_layer.source_refs | Should -Be @('GUARDRAILS.md#17-git-guard-gate', 'docs/operator-model.md#knowledge')
         ($result.run.context_contract.knowledge_layer.source_refs -join '|') | Should -Not -Match 'LOCALAPPDATA'
         ($result.run.context_contract.knowledge_layer.source_refs -join '|') | Should -Not -Match 'private guidance'
         $result.run.context_contract.knowledge_layer.operating_guidance_refs | Should -Be @('guidance:git-guard', 'guidance:review-before-merge')

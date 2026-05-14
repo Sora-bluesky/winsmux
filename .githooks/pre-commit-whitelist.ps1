@@ -23,6 +23,7 @@ $whitelistPatterns = @(
     'core/tests-rs/*.rs',
     'git-graph/**',
     '.gitignore',
+    'GUARDRAILS.md',
     '.winsmux.conf',
     '.winsmux.yaml.example',
     'docs/brand-hero.svg',
