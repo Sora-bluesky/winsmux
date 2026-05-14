@@ -79,6 +79,11 @@ coverage, and oversized files by default. Automatic `colab repl` or
 `colab console` loops are intentionally out of scope; workers run one command at
 a time through the configured `google-colab-cli`-compatible adapter.
 
+Colab worker commands reject task input with secret-like values or prohibited
+automation patterns before invoking the adapter. Stored adapter output and
+`cli_arguments` metadata redact secret-like values, Google Drive paths, and
+local absolute paths so review packets and release-gate evidence stay shareable.
+
 Before handing a worker result to the Codex reviewer slot, use
 `winsmux review-pack <run_id> --json`. The command writes a bounded packet under
 `.winsmux/review-packs` with changed files, test results, critic objections,

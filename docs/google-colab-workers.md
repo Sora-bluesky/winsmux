@@ -192,6 +192,20 @@ winsmux stores local metadata under:
 - `.winsmux/worker-runs/<slot-id>/<run-id>/run.json`
 - `.winsmux/worker-runs/<slot-id>/<run-id>/stdout.log`
 
+## Safety boundary
+
+Colab worker commands apply a local safety boundary before the adapter is
+invoked. `workers exec` rejects task input that contains secret-like values or
+prohibited automation patterns such as mining tools, proxy tunnels, network
+scanners, file-hosting servers, destructive shell commands, pipe-to-shell
+installers, infinite loops, or credential-dumping tools.
+
+winsmux also redacts secret-like values, Google Drive paths, and local absolute
+paths from stored adapter output, `stdout.log`, and the JSON `cli_arguments`
+metadata. The adapter still receives the real paths needed to execute the
+operation; winsmux keeps the local evidence safe to share in review packets and
+release gates.
+
 ## Upload and download artifacts
 
 Upload an explicit file:

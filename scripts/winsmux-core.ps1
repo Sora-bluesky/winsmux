@@ -17,7 +17,7 @@ if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_RAW_EXE)) {
 }
 
 # --- Config ---
-$VERSION = "0.32.6"
+$VERSION = "0.32.7"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 $BridgeScriptPath = $PSCommandPath
@@ -5517,6 +5517,118 @@ function Get-WorkersUploadMaxBytes {
     return 104857600L
 }
 
+function ConvertTo-WorkersSafeLogText {
+    param([AllowNull()][string]$Text)
+
+    if ($null -eq $Text) {
+        return ''
+    }
+
+    $safe = [string]$Text
+    $safe = [regex]::Replace($safe, '(?is)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----', '[PRIVATE_KEY_REDACTED]')
+    $safe = [regex]::Replace($safe, '(?i)(?<![A-Za-z0-9_])(["'']?authorization["'']?\s*[:=]\s*["'']?\s*bearer\s+)[^\s"'',;}]+', '$1[REDACTED]')
+    $safe = [regex]::Replace($safe, '(?i)(?<![A-Za-z0-9_])(["'']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|oauth[_-]?token|token|password|passwd|secret|credential|credentials)["'']?\s*[:=]\s*["'']?)[^\s"'',;}]+', '$1[REDACTED]')
+    $safe = [regex]::Replace($safe, '(?i)/content/drive/(?:MyDrive|Shareddrives)(?:/[^\s"'']*)?', '[DRIVE_PATH_REDACTED]')
+    $safe = [regex]::Replace($safe, '(?i)\b[A-Z]:\\[^"'',;}\r\n]+', '[LOCAL_PATH_REDACTED]')
+    return $safe
+}
+
+function ConvertTo-WorkersSafeArgumentArray {
+    param([AllowNull()][string[]]$Arguments)
+
+    $safe = [System.Collections.Generic.List[string]]::new()
+    foreach ($argument in @($Arguments)) {
+        $safe.Add((ConvertTo-WorkersSafeLogText -Text ([string]$argument))) | Out-Null
+    }
+
+    return @($safe)
+}
+
+function Get-WorkersColabSafetyFinding {
+    param([AllowNull()][string[]]$Values)
+
+    $rules = @(
+        @{ Code = 'prohibited_mining'; Pattern = '(?i)\b(xmrig|cpuminer|ethminer|lolminer|hashcat|john)\b' },
+        @{ Code = 'prohibited_proxying'; Pattern = '(?i)\b(ngrok|cloudflared\s+tunnel|frpc|frps|ssh\s+-R)\b' },
+        @{ Code = 'prohibited_network_scan'; Pattern = '(?i)\b(nmap|masscan|zmap|nikto|sqlmap)\b' },
+        @{ Code = 'prohibited_file_hosting'; Pattern = '(?i)(python\d*(?:\.\d+)?\s+-m\s+http\.server|SimpleHTTPServer|php\s+-S)\b' },
+        @{ Code = 'prohibited_destructive_shell'; Pattern = '(?i)(\brm\s+-rf\s+/(?:\s|$)|Remove-Item\b[^\r\n;|]*\b-Recurse\b[^\r\n;|]*\b-Force\b)' },
+        @{ Code = 'prohibited_pipe_to_shell'; Pattern = '(?i)\b(curl|wget)\b[^\r\n|;]*\|\s*(sh|bash|pwsh|powershell)\b' },
+        @{ Code = 'prohibited_infinite_loop'; Pattern = '(?i)(\bwhile\s+(?:\$?true|1)\b|\bfor\s*\(\s*;\s*;\s*\))' },
+        @{ Code = 'prohibited_credential_dumping'; Pattern = '(?i)\b(mimikatz|secretsdump|credential dumping|dump credentials)\b' }
+    )
+
+    foreach ($value in @($Values)) {
+        $text = [string]$value
+        if ([string]::IsNullOrWhiteSpace($text)) {
+            continue
+        }
+
+        if ($text -match '(?is)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----') {
+            return [PSCustomObject]@{ Code = 'secret_like_input'; Source = 'colab_task_input' }
+        }
+        if ($text -match '(?i)(?<![A-Za-z0-9_])["'']?authorization["'']?\s*[:=]\s*["'']?\s*bearer\s+\S+') {
+            return [PSCustomObject]@{ Code = 'secret_like_input'; Source = 'colab_task_input' }
+        }
+        if ($text -match '(?i)(?<![A-Za-z0-9_])["'']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|oauth[_-]?token|token|password|passwd|secret|credential|credentials)["'']?\s*[:=]\s*["'']?[A-Za-z0-9_./+=-]{8,}') {
+            return [PSCustomObject]@{ Code = 'secret_like_input'; Source = 'colab_task_input' }
+        }
+
+        foreach ($rule in @($rules)) {
+            if ($text -match [string]$rule.Pattern) {
+                return [PSCustomObject]@{ Code = [string]$rule.Code; Source = 'colab_task_input' }
+            }
+        }
+    }
+
+    return $null
+}
+
+function Assert-WorkersColabSafetyInput {
+    param(
+        [AllowNull()][string[]]$Values,
+        [AllowEmptyString()][string]$Name = 'Colab task input'
+    )
+
+    $finding = Get-WorkersColabSafetyFinding -Values $Values
+    if ($null -ne $finding) {
+        Stop-WithError "$Name rejected by Colab safety policy: $($finding.Code)"
+    }
+}
+
+function Get-WorkersExecSafetyInputValues {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [AllowNull()][string[]]$ScriptArgs
+    )
+
+    $values = [System.Collections.Generic.List[string]]::new()
+    $items = @($ScriptArgs)
+    for ($index = 0; $index -lt $items.Count; $index++) {
+        $value = [string]$items[$index]
+        if (-not [string]::IsNullOrWhiteSpace($value)) {
+            $values.Add($value) | Out-Null
+        }
+
+        $taskJsonPath = ''
+        if ($value -eq '--task-json' -and $index + 1 -lt $items.Count) {
+            $taskJsonPath = [string]$items[$index + 1]
+        } elseif ($value.StartsWith('--task-json=', [System.StringComparison]::Ordinal)) {
+            $taskJsonPath = $value.Substring('--task-json='.Length)
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($taskJsonPath)) {
+            $taskJsonInfo = Resolve-WorkersProjectPath -ProjectDir $ProjectDir -Path $taskJsonPath -MustExist -AllowFile -MaxBytes (Get-WorkersUploadMaxBytes)
+            $taskJsonContent = Get-Content -LiteralPath ([string]$taskJsonInfo.FullPath) -Raw -Encoding UTF8
+            if (-not [string]::IsNullOrWhiteSpace($taskJsonContent)) {
+                $values.Add([string]$taskJsonContent) | Out-Null
+            }
+        }
+    }
+
+    return @($values)
+}
+
 function Resolve-WorkersProjectPath {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -6089,6 +6201,17 @@ function Invoke-WorkersExec {
     $options = Read-WorkersExecOptions -Usage $usage
     $worker = Get-WorkersSingleColabContext -ProjectDir $options.ProjectDir -Target $options.Target
     $scriptInfo = Resolve-WorkersProjectPath -ProjectDir $options.ProjectDir -Path $options.ScriptPath -MustExist -AllowFile -MaxBytes (Get-WorkersUploadMaxBytes)
+    $safetyInput = [System.Collections.Generic.List[string]]::new()
+    foreach ($value in @(Get-WorkersExecSafetyInputValues -ProjectDir $options.ProjectDir -ScriptArgs @($options.ScriptArgs))) {
+        $safetyInput.Add([string]$value) | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$env:WINSMUX_TASK_JSON)) {
+        $safetyInput.Add([string]$env:WINSMUX_TASK_JSON) | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$options.TaskId)) {
+        $safetyInput.Add([string]$options.TaskId) | Out-Null
+    }
+    Assert-WorkersColabSafetyInput -Values @($safetyInput) -Name 'Colab task input'
     $runId = Assert-WorkersRunId -RunId ([string]$options.RunId)
     if ([string]::IsNullOrWhiteSpace($runId)) {
         $runId = New-WorkersRunId -SlotId ([string]$worker.Row.SlotId)
@@ -6104,8 +6227,9 @@ function Invoke-WorkersExec {
     }
     $arguments += @($options.ScriptArgs)
     $cli = Invoke-WorkersColabCli -Arguments $arguments
+    $safeCliOutput = ConvertTo-WorkersSafeLogText -Text ([string]$cli.Output)
     $logPath = Join-Path $runDir 'stdout.log'
-    Write-ClmSafeTextFile -Path $logPath -Content ([string]$cli.Output)
+    Write-ClmSafeTextFile -Path $logPath -Content $safeCliOutput
     $status = if ([int]$cli.ExitCode -eq 0) { 'succeeded' } else { 'failed' }
 
     $payload = [ordered]@{
@@ -6122,8 +6246,8 @@ function Invoke-WorkersExec {
         run_dir        = Get-WorkersArtifactReference -ProjectDir $options.ProjectDir -Path $runDir
         stdout_log     = Get-WorkersArtifactReference -ProjectDir $options.ProjectDir -Path $logPath
         exit_code      = [int]$cli.ExitCode
-        cli_command    = [string]$cli.Command
-        cli_arguments  = @($cli.Arguments)
+        cli_command    = ConvertTo-WorkersSafeLogText -Text ([string]$cli.Command)
+        cli_arguments  = @(ConvertTo-WorkersSafeArgumentArray -Arguments @($cli.Arguments))
     }
     $runJsonPath = Join-Path $runDir 'run.json'
     $payload['run_json'] = Get-WorkersArtifactReference -ProjectDir $options.ProjectDir -Path $runJsonPath
@@ -6185,7 +6309,8 @@ function Invoke-WorkersLogs {
         if (Test-Path -LiteralPath $logPath -PathType Leaf) {
             $hasLocalLog = $true
             $rawLog = Get-Content -LiteralPath $logPath -Raw -Encoding UTF8
-            $content = if ($null -eq $rawLog) { '' } else { [string]$rawLog }
+            $rawLogText = if ($null -eq $rawLog) { '' } else { [string]$rawLog }
+            $content = ConvertTo-WorkersSafeLogText -Text $rawLogText
             $runJsonPath = Join-Path $runDir 'run.json'
             if (Test-Path -LiteralPath $runJsonPath -PathType Leaf) {
                 try {
@@ -6215,7 +6340,7 @@ function Invoke-WorkersLogs {
             $arguments += @('--run-id', $runId)
         }
         $cli = Invoke-WorkersColabCli -Arguments $arguments
-        $content = [string]$cli.Output
+        $content = ConvertTo-WorkersSafeLogText -Text ([string]$cli.Output)
         $source = 'google-colab-cli'
     }
     $status = 'succeeded'
@@ -6237,8 +6362,8 @@ function Invoke-WorkersLogs {
         source       = $source
         log          = $content
         exit_code    = if ($null -ne $cli) { [int]$cli.ExitCode } else { [int]$localExitCode }
-        cli_command  = if ($null -ne $cli) { [string]$cli.Command } else { '' }
-        cli_arguments = if ($null -ne $cli) { @($cli.Arguments) } else { @() }
+        cli_command  = if ($null -ne $cli) { ConvertTo-WorkersSafeLogText -Text ([string]$cli.Command) } else { '' }
+        cli_arguments = if ($null -ne $cli) { @(ConvertTo-WorkersSafeArgumentArray -Arguments @($cli.Arguments)) } else { @() }
     }
 
     Write-WorkersOperationOutput -Payload $payload -Json:([bool]$options.Json) -Text $content
@@ -6268,7 +6393,7 @@ function Invoke-WorkersUpload {
         run_id       = $runId
         slot_id      = [string]$worker.Row.SlotId
         source       = [string]$source.RelativePath
-        remote       = $remote
+        remote       = ConvertTo-WorkersSafeLogText -Text $remote
         max_bytes    = [long]$options.MaxBytes
         files        = @($manifestEntries.Files)
         excluded     = @($manifestEntries.Excluded)
@@ -6294,13 +6419,13 @@ function Invoke-WorkersUpload {
         run_id         = $runId
         source         = [string]$source.RelativePath
         staged_source  = [string]$uploadSource.Reference
-        remote         = $remote
+        remote         = ConvertTo-WorkersSafeLogText -Text $remote
         manifest       = Get-WorkersArtifactReference -ProjectDir $options.ProjectDir -Path $manifestPath
         uploaded_count = @($manifestEntries.Files).Count
         excluded_count = @($manifestEntries.Excluded).Count
         exit_code      = [int]$cli.ExitCode
-        cli_command    = [string]$cli.Command
-        cli_arguments  = @($cli.Arguments)
+        cli_command    = ConvertTo-WorkersSafeLogText -Text ([string]$cli.Command)
+        cli_arguments  = @(ConvertTo-WorkersSafeArgumentArray -Arguments @($cli.Arguments))
     }
     Write-WorkersJsonArtifact -Path (Join-Path $runDir 'upload.json') -Data $payload | Out-Null
     if ($null -ne $worker.Entry) {
@@ -6359,11 +6484,11 @@ function Invoke-WorkersDownload {
         slot_id       = [string]$worker.Row.SlotId
         session       = [string]$worker.Session
         run_id        = $runId
-        remote        = $remote
+        remote        = ConvertTo-WorkersSafeLogText -Text $remote
         output        = Get-WorkersArtifactReference -ProjectDir $options.ProjectDir -Path ([string]$outputInfo.FullPath)
         exit_code     = [int]$cli.ExitCode
-        cli_command   = [string]$cli.Command
-        cli_arguments = @($cli.Arguments)
+        cli_command   = ConvertTo-WorkersSafeLogText -Text ([string]$cli.Command)
+        cli_arguments = @(ConvertTo-WorkersSafeArgumentArray -Arguments @($cli.Arguments))
     }
     Write-WorkersJsonArtifact -Path (Join-Path $runDir 'download.json') -Data $payload | Out-Null
     if ($null -ne $worker.Entry) {

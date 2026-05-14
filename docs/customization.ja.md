@@ -79,6 +79,12 @@ manifest では、`.git`、秘密情報らしいファイル、`node_modules`、
 `colab repl` や `colab console` のような自動対話ループは対象外です。設定された
 `google-colab-cli` 互換 adapter に対して、1 回ずつコマンドを実行します。
 
+Colab ワーカーコマンドは、秘密情報らしい値や禁止された自動化パターンを含む
+タスク入力を、アダプター呼び出し前に拒否します。保存するアダプター出力と
+`cli_arguments` メタデータでは、秘密情報らしい値、Google Drive パス、
+ローカル絶対パスを伏せ字にします。これにより、レビューパックとリリースゲートの
+証跡を共有しやすくします。
+
 ワーカーの結果を Codex レビュースロットへ渡す前に、
 `winsmux review-pack <run_id> --json` を使います。このコマンドは
 `.winsmux/review-packs` に、変更ファイル、テスト結果、レビュー上の懸念、
