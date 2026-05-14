@@ -8657,7 +8657,10 @@ function Add-RunContractRefs {
 function Get-RunPublicContextRefPrefixes {
     return @(
         'ADR-',
-        'AGENTS.md',
+        'AGENT-BASE.md',
+        'AGENT.md',
+        'GEMINI.md',
+        'GUARDRAILS.md',
         'README',
         'docs/',
         'guidance:',
@@ -11012,7 +11015,10 @@ function Get-ReviewPackArtifactRefPrefixes {
         'knowledge/',
         'docs/',
         'README',
-        'AGENTS.md',
+        'AGENT-BASE.md',
+        'AGENT.md',
+        'GEMINI.md',
+        'GUARDRAILS.md',
         'ADR-',
         'context:',
         'evidence:',

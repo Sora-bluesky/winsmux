@@ -13,7 +13,6 @@ Describe 'Public surface policy' {
         $docsIndex = Get-Content (Join-Path $repoRoot 'docs/README.md') -Raw
         $docsIndexJa = Get-Content (Join-Path $repoRoot 'docs/README.ja.md') -Raw
         $operatorModel = Get-Content (Join-Path $repoRoot 'docs/operator-model.md') -Raw
-        $agents = Get-Content (Join-Path $repoRoot 'AGENTS.md') -Raw
         $surfacePolicy = Get-Content (Join-Path $repoRoot 'docs/repo-surface-policy.md') -Raw
         $gitignore = Get-Content (Join-Path $repoRoot '.gitignore') -Raw
         $claudeContract = Get-Content (Join-Path $repoRoot '.claude/CLAUDE.md') -Raw
@@ -101,18 +100,14 @@ Describe 'Public surface policy' {
     }
 
     It 'uses local operator handoff and example roadmap title override in durable repo rules' {
-        $agents | Should -Match '\.claude/local/operator-handoff\.md'
-        $agents | Should -Match 'tasks/roadmap-title-ja\.example\.psd1'
-        $agents | Should -Not -Match 'docs/handoff\.md'
-        $agents | Should -Not -Match 'tasks/roadmap-title-ja\.psd1'
+        $claudeContract | Should -Match '\.claude/local/operator-handoff\.md'
+        $syncRoadmap | Should -Match 'tasks/roadmap-title-ja\.example\.psd1'
+        $syncInternalDocs | Should -Match 'tasks/roadmap-title-ja\.example\.psd1'
+        $claudeContract | Should -Not -Match 'docs/handoff\.md'
+        $syncRoadmap | Should -Not -Match 'tasks/roadmap-title-ja\.psd1'
     }
 
     It 'uses the five-surface model consistently in durable policy files' {
-        $agents | Should -Match 'five distinct surfaces'
-        $agents | Should -Match 'runtime contract surface'
-        $agents | Should -Match 'contributor/test surface'
-        $agents | Should -Not -Match 'contributor/runtime surface'
-
         $surfacePolicy | Should -Match '## 1\. Public product surface'
         $surfacePolicy | Should -Match '## 2\. Runtime contract surface'
         $surfacePolicy | Should -Match '## 3\. Contributor/test surface'
@@ -120,9 +115,12 @@ Describe 'Public surface policy' {
         $surfacePolicy | Should -Match '## 5\. Generated/runtime artifacts'
         $surfacePolicy | Should -Match 'Runtime contract surface'
         $surfacePolicy | Should -Match 'Contributor/test surface'
+        $surfacePolicy | Should -Match 'root `AGENTS\.md` when present as local Codex project rules'
+        $surfacePolicy | Should -Not -Match 'contributor/runtime surface'
     }
 
     It 'keeps ignore rules aligned with tracked contributor/runtime files' {
+        $gitignore | Should -Match '/AGENTS\.md'
         $gitignore | Should -Match '/CLAUDE\.md'
         $gitignore | Should -Match 'docs/handoff\.md'
         $gitignore | Should -Match '\.claude/local/'
@@ -179,8 +177,6 @@ Describe 'Public surface policy' {
     }
 
     It 'describes Codex UI provenance as public openai/codex TUI-derived work' {
-        $agents | Should -Match 'public `openai/codex` TUI-derived UI work'
-        $agents | Should -Match 'Do not treat non-public Codex App desktop source as an upstream reference'
         $thirdPartyNotices | Should -Match 'public `openai/codex` TUI-derived UI work'
         $thirdPartyNotices | Should -Match 'does not imply.*non-public Codex App desktop source code'
         $thirdPartyNotices | Should -Not -Match 'Codex-derived UI'

@@ -37,7 +37,6 @@ Examples:
 - `AGENT-BASE.md`
 - `AGENT.md`
 - `GEMINI.md`
-- `AGENTS.md`
 - `GUARDRAILS.md`
 
 Rules:
@@ -79,6 +78,7 @@ Examples:
 - current operator handoff
 - `HANDOFF.md`
 - `docs/handoff.md`
+- root `AGENTS.md` when present as local Codex project rules
 - live roadmap title overrides
 - local planning notes
 - maintainer-only checklists
