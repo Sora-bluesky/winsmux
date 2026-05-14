@@ -1063,9 +1063,21 @@ function ConvertTo-BridgeProviderCapabilityEntry {
         return $null
     }
 
-    $stringFields = @('adapter', 'display_name', 'command', 'model_catalog_source', 'local_access_note')
+    $stringFields = @(
+        'adapter',
+        'display_name',
+        'command',
+        'model_catalog_source',
+        'local_access_note',
+        'harness_availability',
+        'credential_requirements',
+        'execution_backend',
+        'runtime_requirements',
+        'analysis_posture'
+    )
     $transportFields = @('prompt_transports')
     $stringArrayFields = @('auth_modes', 'local_interactive_oauth_modes', 'model_sources', 'reasoning_efforts')
+    $rawStringArrayFields = @('read_only_launch_args')
     $modelOptionFields = @('model_options')
     $boolFields = @(
         'supports_parallel_runs',
@@ -1077,7 +1089,7 @@ function ConvertTo-BridgeProviderCapabilityEntry {
         'supports_consultation',
         'supports_context_reset'
     )
-    $allowedFields = @($stringFields + $transportFields + $stringArrayFields + $modelOptionFields + $boolFields)
+    $allowedFields = @($stringFields + $transportFields + $stringArrayFields + $rawStringArrayFields + $modelOptionFields + $boolFields)
 
     $entry = [ordered]@{}
     foreach ($pair in $pairs) {
@@ -1146,6 +1158,32 @@ function ConvertTo-BridgeProviderCapabilityEntry {
                 }
 
                 $items += $normalizedText
+            }
+
+            $entry[$key] = @($items)
+            continue
+        }
+
+        if ($key -in $rawStringArrayFields) {
+            if ($pair.Value -isnot [System.Collections.IEnumerable] -or $pair.Value -is [string]) {
+                throw "Invalid provider capability field '$key'."
+            }
+
+            $items = @()
+            foreach ($item in @($pair.Value)) {
+                if ($item -isnot [string]) {
+                    throw "Invalid provider capability field '$key'."
+                }
+
+                $text = ([string]$item).Trim()
+                if ([string]::IsNullOrWhiteSpace($text)) {
+                    throw "Invalid provider capability field '$key'."
+                }
+
+                $items += $text
+            }
+            if ($items.Count -lt 1) {
+                throw "Invalid provider capability field '$key'."
             }
 
             $entry[$key] = @($items)
@@ -2752,6 +2790,11 @@ function Get-SlotAgentConfig {
         ModelSources             = @(Get-BridgeProviderCapabilityValue -Capability $providerCapability -Name 'model_sources' -Default @())
         ReasoningEfforts         = @(Get-BridgeProviderCapabilityValue -Capability $providerCapability -Name 'reasoning_efforts' -Default @())
         LocalAccessNote          = [string](Get-BridgeProviderCapabilityValue -Capability $providerCapability -Name 'local_access_note' -Default '')
+        HarnessAvailability      = [string](Get-BridgeProviderCapabilityValue -Capability $providerCapability -Name 'harness_availability' -Default '')
+        CredentialRequirements   = [string](Get-BridgeProviderCapabilityValue -Capability $providerCapability -Name 'credential_requirements' -Default '')
+        ExecutionBackend         = [string](Get-BridgeProviderCapabilityValue -Capability $providerCapability -Name 'execution_backend' -Default '')
+        RuntimeRequirements      = [string](Get-BridgeProviderCapabilityValue -Capability $providerCapability -Name 'runtime_requirements' -Default '')
+        AnalysisPosture          = [string](Get-BridgeProviderCapabilityValue -Capability $providerCapability -Name 'analysis_posture' -Default '')
         SupportsParallelRuns     = Get-BridgeProviderCapabilityBoolean -Capability $providerCapability -Name 'supports_parallel_runs'
         SupportsInterrupt        = Get-BridgeProviderCapabilityBoolean -Capability $providerCapability -Name 'supports_interrupt'
         SupportsInterruptDeclared = Test-BridgeProviderCapabilityField -Capability $providerCapability -Name 'supports_interrupt'

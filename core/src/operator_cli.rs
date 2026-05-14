@@ -1546,6 +1546,11 @@ pub fn run_provider_switch_command(args: &[&String]) -> io::Result<()> {
         "auth_mode": effective.auth_mode,
         "auth_policy": effective.auth_policy,
         "local_access_note": effective.local_access_note,
+        "harness_availability": effective.harness_availability,
+        "credential_requirements": effective.credential_requirements,
+        "execution_backend": effective.execution_backend,
+        "runtime_requirements": effective.runtime_requirements,
+        "analysis_posture": effective.analysis_posture,
         "source": effective.source,
         "capability_adapter": effective.capability_adapter,
         "capability_command": effective.capability_command,
@@ -1850,6 +1855,11 @@ struct SlotAgentConfig {
     model_sources: Value,
     reasoning_efforts: Value,
     local_access_note: String,
+    harness_availability: String,
+    credential_requirements: String,
+    execution_backend: String,
+    runtime_requirements: String,
+    analysis_posture: String,
     supports_parallel_runs: bool,
     supports_interrupt: bool,
     supports_structured_result: bool,
@@ -2821,6 +2831,11 @@ fn normalize_provider_capability_entry(
         "command",
         "model_catalog_source",
         "local_access_note",
+        "harness_availability",
+        "credential_requirements",
+        "execution_backend",
+        "runtime_requirements",
+        "analysis_posture",
     ];
     let transport_fields = ["prompt_transports"];
     let string_array_fields = [
@@ -3802,6 +3817,11 @@ fn finalize_slot_agent_config(
             .cloned()
             .unwrap_or_else(|| Value::Array(Vec::new())),
         local_access_note: capability_string(capability.as_ref(), "local_access_note"),
+        harness_availability: capability_string(capability.as_ref(), "harness_availability"),
+        credential_requirements: capability_string(capability.as_ref(), "credential_requirements"),
+        execution_backend: capability_string(capability.as_ref(), "execution_backend"),
+        runtime_requirements: capability_string(capability.as_ref(), "runtime_requirements"),
+        analysis_posture: capability_string(capability.as_ref(), "analysis_posture"),
         supports_parallel_runs: capability_bool(capability.as_ref(), "supports_parallel_runs"),
         supports_interrupt: capability_bool(capability.as_ref(), "supports_interrupt"),
         supports_structured_result: capability_bool(

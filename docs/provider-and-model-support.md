@@ -35,6 +35,35 @@ column.
 | Local LLM runtimes | Planned adapter family | Not a `v0.32.x` Colab-lane runtime requirement. Today, run them as normal local tools or behind an agent CLI that can use a local endpoint. |
 | `noop` worker backend | Supported placeholder | Keeps a slot declared but inactive. |
 
+## Provider capability catalog
+
+From `v0.33.0`, `.winsmux/provider-capabilities.json` is the capability catalog
+for agent CLIs and local endpoint adapters. The catalog separates launch
+mechanics from model metadata and from credential boundaries, so winsmux does
+not treat a local inference endpoint as a write-capable worker by accident.
+
+Provider entries may declare:
+
+- `harness_availability`: whether the provider is a built-in CLI, an external
+  adapter, or a manual pane tool.
+- `credential_requirements`: who owns sign-in, API keys, endpoint secrets, and
+  token storage.
+- `execution_backend`: the runtime path, such as an agent CLI, Colab worker, or
+  OpenAI-compatible local endpoint.
+- `runtime_requirements`: endpoint, executable, GPU, CPU, memory, OS, or remote
+  runtime expectations.
+- `model_catalog_source` and `model_options`: where model names come from and
+  which choices the operator can select.
+- `analysis_posture`: whether the provider is safe only for read-only analysis
+  or can act as a normal write-capable worker.
+
+For OpenAI-compatible local endpoints and GPU-backed local runtimes, the safe
+default is a read-only analysis provider: `supports_file_edit: false`,
+`supports_verification: false`, `supports_consultation: true`, and
+`analysis_posture: "read-only-analysis"`. The local runtime owns its endpoint,
+models, and credentials. winsmux must not broker OAuth, collect callback URLs,
+or copy provider tokens between panes.
+
 ## Model selection policy
 
 Model names change faster than winsmux releases. winsmux therefore treats a
