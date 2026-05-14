@@ -524,6 +524,8 @@ let operatorRequestStatusTimer: number | null = null;
 let operatorInterruptInFlight = false;
 let operatorOutputBuffer = "";
 let operatorOutputFlushTimer: number | null = null;
+let operatorAttentionFingerprint = "";
+let operatorClaudeSessionId = createOperatorSessionId();
 let voiceRecognition: SpeechRecognitionLike | null = null;
 let voiceListening = false;
 let voiceTranscriptBase = "";
@@ -588,6 +590,7 @@ const OPERATOR_PTY_ID = "operator";
 const OPERATOR_PTY_COLS = 120;
 const OPERATOR_PTY_ROWS = 32;
 const OPERATOR_PTY_ACTION_TIMEOUT_MS = 15_000;
+const OPERATOR_MULTILINE_SUBMIT_DELAY_MS = 100;
 const DEFAULT_EDITOR_FONT_SIZE = 13;
 const MIN_EDITOR_FONT_SIZE = 8;
 const MAX_EDITOR_FONT_SIZE = 32;
@@ -1470,6 +1473,8 @@ function markOperatorPtyStartedFromExternalEvent() {
 function markOperatorPtyStoppedFromExternalEvent() {
   operatorPtyStarted = false;
   operatorPtyStarting = null;
+  operatorAttentionFingerprint = "";
+  operatorClaudeSessionId = createOperatorSessionId();
   setOperatorRequestActive(false);
 }
 
@@ -1602,8 +1607,18 @@ function getPaneStartupInput(_paneId: string) {
   return undefined;
 }
 
+function createOperatorSessionId() {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+
+  const randomPart = () => Math.floor(Math.random() * 0x10000).toString(16).padStart(4, "0");
+  const variantPart = ((Math.random() * 0x4000) | 0x8000).toString(16);
+  return `${randomPart()}${randomPart()}-${randomPart()}-4${randomPart().slice(1)}-${variantPart}-${randomPart()}${randomPart()}${randomPart()}`;
+}
+
 function getOperatorStartupInput() {
-  const args = ["claude", "--permission-mode", activeComposerPermissionMode];
+  const args = ["claude", "--permission-mode", activeComposerPermissionMode, "--session-id", operatorClaudeSessionId];
   const modelOption = getComposerModelOption();
   if (modelOption.cliModel) {
     args.push("--model", modelOption.cliModel);
@@ -9044,10 +9059,7 @@ function renderTimelineFilters() {
     button.textContent = themeState.language === "ja" ? timelineFilterLabelsJa[item.filter] : item.label;
     button.setAttribute("aria-pressed", item.filter === activeTimelineFilter ? "true" : "false");
     button.addEventListener("click", () => {
-      activeTimelineFilter = item.filter;
-      renderTimelineFilters();
-      renderConversation(getConversationItems());
-      renderRunSummary();
+      setTimelineFilter(item.filter);
     });
     root.appendChild(button);
   }
@@ -9057,6 +9069,12 @@ function renderTimelineFilters() {
 function renderRunSummary() {
   const root = document.getElementById("selected-run-summary");
   if (!root) {
+    return;
+  }
+
+  if (activeTimelineFilter !== "activity") {
+    root.hidden = true;
+    root.innerHTML = "";
     return;
   }
 
@@ -9124,6 +9142,12 @@ function renderRunSummary() {
 function renderAgentWorkDashboard() {
   const root = document.getElementById("agent-work-dashboard");
   if (!root) {
+    return;
+  }
+
+  if (activeTimelineFilter !== "activity") {
+    root.hidden = true;
+    root.innerHTML = "";
     return;
   }
 
@@ -9959,12 +9983,7 @@ function getCommandActions(): CommandAction[] {
       ),
       keywords: getLanguageText("filter attention blocked timeline", "絞り込み 要確認 停止 タイムライン").split(" "),
       tone: "danger",
-      run: () => {
-        activeTimelineFilter = "attention";
-        renderTimelineFilters();
-        renderRunSummary();
-        renderConversation(getConversationItems());
-      },
+      run: () => setTimelineFilter("attention"),
     },
     {
       id: "review-filter",
@@ -9975,12 +9994,7 @@ function getCommandActions(): CommandAction[] {
       ),
       keywords: getLanguageText("filter review timeline approve", "絞り込み レビュー タイムライン 承認").split(" "),
       tone: "warning",
-      run: () => {
-        activeTimelineFilter = "review";
-        renderTimelineFilters();
-        renderRunSummary();
-        renderConversation(getConversationItems());
-      },
+      run: () => setTimelineFilter("review"),
     },
   ];
 }
@@ -10128,6 +10142,7 @@ function setTimelineFilter(filter: TimelineFilter) {
   activeTimelineFilter = filter;
   renderTimelineFilters();
   renderRunSummary();
+  renderAgentWorkDashboard();
   renderConversation(getConversationItems());
 }
 
@@ -10857,24 +10872,55 @@ function stripTerminalControlSequences(value: string) {
     .trim();
 }
 
-function getRecentNonEmptyLines(text: string, maxCount: number) {
-  const lines = text.split(/\r?\n/).filter((line) => line.trim().length > 0);
-  return lines.slice(Math.max(0, lines.length - maxCount));
-}
-
 function isClaudeOperatorReadyText(text: string) {
-  const recentLines = getRecentNonEmptyLines(text, 8);
-  if (recentLines.length === 0) {
+  const stripped = stripTerminalControlSequences(text).replace(/\u00a0/g, " ");
+  if (!stripped) {
     return false;
   }
 
-  const tailText = recentLines.join("\n");
+  const tailText = stripped.slice(-3000);
   if (/\b(missing api key|run \/login|unable to connect|failed to connect)\b/i.test(tailText)) {
     return false;
   }
+  if (
+    /トークン予算超過|確認待ち|どう進めますか|running \d+ shell command|wrangling|choreographing|spelunking|thinking with|still thinking|running stop hook|pasted text|paste again to expand/i
+      .test(tailText)
+  ) {
+    return false;
+  }
 
-  const finalLine = recentLines[recentLines.length - 1]?.trim() ?? "";
-  return /^[>›▌❯]$/.test(finalLine);
+  const compactTail = tailText.replace(/\s+/g, "");
+  const recentLines = tailText.split("\n").map((line) => line.trim()).filter(Boolean).slice(-6);
+  const hasStandalonePrompt = recentLines.slice(-2).some((line) => /^(?:[>›❯]|[>›❯]\s*▌|▌)$/.test(line));
+  const hasStartupPrompt = compactTail.includes("ClaudeCode")
+    && (
+      /accepteditson/i.test(compactTail)
+      || /[>›▌❯].*(?:Try"create|createautil)/i.test(compactTail)
+    );
+  return hasStandalonePrompt || hasStartupPrompt;
+}
+
+function getOperatorAttentionFromText(text: string): { title: string; body: string } | null {
+  const compact = text.replace(/\s+/g, "");
+  if (/トークン予算超過|tokenbudget/i.test(compact)) {
+    return {
+      title: getLanguageText("Operator needs confirmation", "オペレーターが確認待ちです"),
+      body: getLanguageText(
+        "Claude Code is waiting for a token budget or continuation confirmation. Check the operator pane before sending more work.",
+        "Claude Code がトークン予算または続行確認で停止しています。追加で依頼する前にオペレーターペインを確認してください。",
+      ),
+    };
+  }
+  if (/どう進めますか|確認待ち|approval|continue\?/i.test(text)) {
+    return {
+      title: getLanguageText("Operator is waiting", "オペレーターが待機中です"),
+      body: getLanguageText(
+        "Claude Code is asking for a decision in the operator pane.",
+        "Claude Code がオペレーターペインで判断を求めています。",
+      ),
+    };
+  }
+  return null;
 }
 
 function appendOperatorPtyOutput(data: string) {
@@ -10897,15 +10943,24 @@ function appendOperatorPtyOutput(data: string) {
     if (operatorRequestActive && isClaudeOperatorReadyText(body)) {
       setOperatorRequestActive(false);
     }
-    appendRuntimeConversation({
-      type: "operator",
-      category: "activity",
-      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-      actor: "Claude Code",
-      body,
-      tone: "info",
-    });
-    renderConversation(getConversationItems());
+    const attention = getOperatorAttentionFromText(body);
+    if (attention) {
+      const fingerprint = `${attention.title}:${attention.body}`;
+      if (fingerprint !== operatorAttentionFingerprint) {
+        operatorAttentionFingerprint = fingerprint;
+        setOperatorRequestActive(false);
+        appendRuntimeConversation({
+          type: "system",
+          category: "attention",
+          timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          actor: "winsmux",
+          title: attention.title,
+          body: attention.body,
+          tone: "warning",
+        });
+        renderConversation(getConversationItems());
+      }
+    }
   }, 350);
 }
 
@@ -12012,6 +12067,7 @@ function setOperatorRequestActive(active: boolean) {
 
 function beginOperatorRequest() {
   operatorRequestGeneration += 1;
+  operatorAttentionFingerprint = "";
   setOperatorRequestActive(true);
   return operatorRequestGeneration;
 }
@@ -12040,6 +12096,12 @@ async function withOperatorTimeout<T>(operation: Promise<T>, label: string): Pro
       window.clearTimeout(timeoutId);
     }
   }
+}
+
+function waitForOperatorSubmitDelay() {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(resolve, OPERATOR_MULTILINE_SUBMIT_DELAY_MS);
+  });
 }
 
 async function interruptOperatorRequest() {
@@ -12103,9 +12165,20 @@ function formatComposerMessageForPty(message: string, attachments: ComposerAttac
 
 function encodePtySubmission(message: string) {
   if (message.includes("\n")) {
-    return `\x1b[200~${message}\x1b[201~\r`;
+    return `\x1b[200~${message}\x1b[201~`;
   }
   return `${message}\r`;
+}
+
+async function writeOperatorSubmission(payload: string, requestGeneration: number) {
+  await withOperatorTimeout(writePtyData(OPERATOR_PTY_ID, encodePtySubmission(payload)), "operator request write");
+  if (payload.includes("\n")) {
+    await waitForOperatorSubmitDelay();
+    if (!isCurrentOperatorRequest(requestGeneration)) {
+      return;
+    }
+    await withOperatorTimeout(writePtyData(OPERATOR_PTY_ID, "\r"), "operator request submit");
+  }
 }
 
 async function forwardComposerMessageToOperatorPane(
@@ -12125,7 +12198,7 @@ async function forwardComposerMessageToOperatorPane(
     if (!isCurrentOperatorRequest(requestGeneration)) {
       return;
     }
-    await withOperatorTimeout(writePtyData(OPERATOR_PTY_ID, encodePtySubmission(payload)), "operator request write");
+    await writeOperatorSubmission(payload, requestGeneration);
     if (!isCurrentOperatorRequest(requestGeneration)) {
       return;
     }

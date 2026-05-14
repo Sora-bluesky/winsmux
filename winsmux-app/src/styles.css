@@ -1595,7 +1595,8 @@ body[data-popout-surface="1"] #editor-surface {
   display: none;
 }
 
-#agent-work-dashboard[hidden] {
+#agent-work-dashboard[hidden],
+#agent-work-dashboard:empty {
   display: none;
 }
 
