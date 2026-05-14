@@ -84,3 +84,8 @@
 - **Trigger**: Builder (Codex) needs to commit changes
 - **Instruction**: Builder edits only. Git operations delegated to Researcher (Sonnet) or Operator.
 - **Reason**: Codex --sandbox danger-full-access bypasses CLM; previously --full-auto blocked .git/worktrees/*/index.lock creation.
+
+### 17. Git-Guard gate
+- **Trigger**: Preparing a commit, push, PR, merge, or release.
+- **Instruction**: Run repository git-guard through the managed hooks or `scripts/git-guard.ps1`. Do not bypass failures.
+- **Reason**: Git-guard keeps secrets, local-only material, and generated runtime artifacts out of the public repository.
