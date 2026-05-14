@@ -82,7 +82,14 @@ Colab 対応のモデル作業では、`H100` または `A100` へ接続した C
 読み込む責任はタスクスクリプト側にあります。対象には Gemma、Llama、Mistral、Qwen、
 DeepSeek、Kimi/Moonshot、蒸留モデルの変種を含められます。
 
-Colab の計算単位を使う前に、モックの受け入れ確認を実行します。
+Colab の実行リソースを使う前に、インストール済み環境で確認します。
+
+```powershell
+winsmux workers doctor
+```
+
+インストール済みパッケージではなく、ソースから検証している場合は、
+リポジトリ内のモック受け入れ確認も使えます。
 
 ```powershell
 Invoke-Pester -Path tests/ColabAcceptance.Tests.ps1 -PassThru

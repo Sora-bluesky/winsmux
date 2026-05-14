@@ -245,8 +245,8 @@ Directory uploads are staged through a safe manifest. winsmux excludes:
 
 ## Acceptance gate
 
-The CI acceptance path is mock-first and does not require a real Google Colab
-runtime:
+The CI acceptance path is for source checkouts. It is mock-first and does not
+require a real Google Colab runtime:
 
 ```powershell
 Invoke-Pester -Path tests/ColabAcceptance.Tests.ps1 -PassThru
@@ -258,8 +258,14 @@ directory upload filtering, downloads, and attach behavior. The fake adapter
 also accepts `new`, `status`, and `stop` so adapter authors can test lifecycle
 wrappers without spending Colab compute units.
 
-Real Colab checks are manual-only. To opt in, point the test at a project that
-already has a working `colab_cli` slot:
+Installed-product users should start with the local doctor check instead:
+
+```powershell
+winsmux workers doctor
+```
+
+Real Colab checks from a source checkout are manual-only. To opt in, point the
+test at a project that already has a working `colab_cli` slot:
 
 ```powershell
 $env:WINSMUX_COLAB_ACCEPTANCE_REAL = "1"

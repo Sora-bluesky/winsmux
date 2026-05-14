@@ -68,10 +68,10 @@ google-colab-cli download --session <name> --source <remote-path> --dest <path> 
 アダプター側にあります。
 
 アダプター側が `new`、`status`、`exec`、`log`、`stop` のような別の操作名を
-持つ場合は、上の契約へ合わせる薄いラッパーを用意してください。`exec` は `run`、
+持つ場合は、上の仕様に合わせる薄いラッパーを用意してください。`exec` は `run`、
 `log` は `logs` に対応します。アダプター側の `new`、`status`、`stop` は
 手動のランタイム確認では有用ですが、winsmux のワーカー状態、`attach`、`stop` は
-ローカルの制御プレーン操作として扱います。
+ローカル側で完結する制御コマンドとして扱います。
 
 アダプターの実行ファイル名が異なる場合は、次を設定します。
 
@@ -240,7 +240,8 @@ winsmux は次を除外します。
 
 ## 受け入れ確認
 
-CI の受け入れ確認はモック優先です。実 Colab ランタイムは必要ありません。
+CI の受け入れ確認は、ソースから検証する場合の手順です。モック優先で、
+実 Colab ランタイムは必要ありません。
 
 ```powershell
 Invoke-Pester -Path tests/ColabAcceptance.Tests.ps1 -PassThru
@@ -248,12 +249,18 @@ Invoke-Pester -Path tests/ColabAcceptance.Tests.ps1 -PassThru
 
 このモック確認では、6 ワーカーの Colab 構成、`workers status`、`workers doctor`、
 単発実行、ローカルログとアダプター経由ログ、ディレクトリアップロードの除外、
-ダウンロード、attach の挙動を確認します。フェイクアダプターは `new`、`status`、
-`stop` も受け付けるため、アダプター作者は Colab の計算単位を使わずに
-ライフサイクル用ラッパーを確認できます。
+ダウンロード、attach の挙動を確認します。モックアダプターは `new`、`status`、
+`stop` も受け付けるため、アダプター作者は Colab の実行リソースを使わずに
+ライフサイクル管理のラッパーを確認できます。
 
-実 Colab の確認は手動だけで実行します。動作する `colab_cli` スロットを持つ
-プロジェクトを指定してから、明示的に有効化してください。
+インストール済み環境では、まずローカル側の診断を実行してください。
+
+```powershell
+winsmux workers doctor
+```
+
+ソースから実 Colab を使う確認は、手動でのみ実行します。動作する `colab_cli`
+スロットを持つプロジェクトを指定してから、明示的に有効化してください。
 
 ```powershell
 $env:WINSMUX_COLAB_ACCEPTANCE_REAL = "1"
@@ -283,7 +290,7 @@ Invoke-Pester -Path tests/ColabAcceptance.Tests.ps1 -PassThru
 | ノートブックを準備していない | Colab ノートブックを作成して `H100` または `A100` ランタイムへ接続するか、それを管理するアダプターを設定します。 |
 | 認証がない、または認証状態が縮退している | Google またはアダプターが所有する公式フローでサインインします。winsmux は callback URL を受け取らず、トークンも抽出しません。 |
 | GPU が `H100` または `A100` ではない | Colab 側のランタイム種別とクォータを確認し、その後 `winsmux workers doctor` を再実行します。 |
-| モック受け入れ確認は通るが実ランタイムが失敗する | 実プロジェクトで `workers doctor` を再実行し、アダプターのサインインとランタイムのクォータを確認したうえで、`WINSMUX_COLAB_ACCEPTANCE_REAL=1` を立てて再実行してください。 |
+| モック受け入れ確認は通るが実ランタイムが失敗する | 実プロジェクトで `workers doctor` を再実行し、アダプターのサインインとランタイムのクォータを確認したうえで、`WINSMUX_COLAB_ACCEPTANCE_REAL=1` を設定して再実行してください。 |
 | モデルのダウンロード、または API 対象の準備に失敗する | モデル利用条件への同意と、ランタイム内の Kaggle、Hugging Face、Google、各プロバイダーの資格情報を確認します。 |
 | ディレクトリアップロードが拒否される | `--allow-dir <path>` を追加し、プロジェクト配下のディレクトリを指定します。 |
 | 秘密情報らしいファイルが除外される | 意図した挙動です。秘密情報を含まないファイルを用意してください。 |
