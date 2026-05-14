@@ -10,11 +10,11 @@ const OUTPUT_DIR = path.join(process.cwd(), "output", "playwright", "desktop-pan
 const APP_URL_PATTERN = /localhost:1420|127\.0\.0\.1:1420/;
 const CONTROL_PIPE_NAME = "winsmux-control";
 const WORKER_UI_MARKER = "WORKER_1_UI_E2E_READY";
-const OPERATOR_MARKER = "OPERATOR_TERMINAL_E2E_READY";
-const COMPOSER_TO_OPERATOR_MARKER = "COMPOSER_TO_OPERATOR_E2E_READY";
-const COMPOSER_ENTER_MARKER = "COMPOSER_ENTER_E2E_READY";
-const COMPOSER_ATTACHMENT_MARKER = "COMPOSER_ATTACHMENT_E2E_READY";
-const OPERATOR_TO_WORKER_MARKER = "OPERATOR_TO_WORKER_E2E_READY";
+const OPERATOR_MARKER = "OP_E2E_READY";
+const COMPOSER_TO_OPERATOR_MARKER = "BTN_E2E_READY";
+const COMPOSER_ENTER_MARKER = "ENT_E2E_READY";
+const COMPOSER_ATTACHMENT_MARKER = "ATT_E2E_READY";
+const OPERATOR_TO_WORKER_MARKER = "W2_E2E_READY";
 
 const steps = [];
 const consoleErrors = [];
@@ -331,10 +331,22 @@ async function spawnPtyIfNeeded(page, paneId) {
 async function waitForPtyOutput(page, paneId, marker, timeoutMs = 45_000) {
   const startedAt = Date.now();
   let lastOutput = "";
+  const compactMarker = marker.replace(/\s+/g, "");
   while (Date.now() - startedAt < timeoutMs) {
     lastOutput = await capturePty(page, paneId).catch((error) => `capture failed: ${error.message}`);
-    if (lastOutput.includes(marker)) {
+    const stripped = stripAnsi(lastOutput);
+    if (
+      lastOutput.includes(marker) ||
+      stripped.includes(marker) ||
+      stripped.replace(/\s+/g, "").includes(compactMarker)
+    ) {
       return lastOutput;
+    }
+    if (
+      paneId === "operator" &&
+      /トークン予算超過|確認待ち|どう進めますか|token budget|continue\?/i.test(stripped)
+    ) {
+      throw new Error(`Operator is waiting for a user decision before ${marker}. Last output:\n${lastOutput}`);
     }
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
@@ -374,10 +386,61 @@ async function waitForPtyPrompt(page, paneId, timeoutMs = 45_000) {
   throw new Error(`Timed out waiting for a PowerShell prompt in ${paneId}. Last output:\n${lastOutput}`);
 }
 
+function isClaudeOperatorReadyText(output) {
+  const stripped = stripAnsi(output)
+    .replace(/\r/g, "\n")
+    .replace(/\u00a0/g, " ");
+  const compact = stripped.replace(/\s+/g, "");
+  if (!compact.includes("ClaudeCode")) {
+    return false;
+  }
+  const tail = stripped.slice(-4000);
+  if (/\b(missing api key|run \/login|unable to connect|failed to connect)\b/i.test(tail)) {
+    return false;
+  }
+  if (
+    /トークン予算超過|確認待ち|どう進めますか|running \d+ shell command|listing \d+ director|wrangling|choreographing|spelunking|thinking with|still thinking|running stop hook|pasted text|paste again to expand/i
+      .test(tail)
+  ) {
+    return false;
+  }
+  return /(?:^|\n)[^\n]*[>›▌❯][^\n]*(?:Try "create|create a util|$)/.test(tail)
+    || /accepteditson/i.test(tail.replace(/\s+/g, ""));
+}
+
+async function waitForClaudeOperatorReady(page, timeoutMs = 90_000) {
+  const startedAt = Date.now();
+  let lastOutput = "";
+  while (Date.now() - startedAt < timeoutMs) {
+    lastOutput = await capturePty(page, "operator").catch((error) => `capture failed: ${error.message}`);
+    if (isClaudeOperatorReadyText(lastOutput)) {
+      return lastOutput;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error(`Timed out waiting for Claude Code readiness in operator. Last output:\n${lastOutput}`);
+}
+
+async function startOperatorFromUiAndWaitForClaude(page) {
+  await page.click("#operator-terminal-panel", { timeout: 10_000 });
+  return await waitForClaudeOperatorReady(page);
+}
+
 async function typeIntoTerminal(page, selector, text) {
   await page.click(selector, { timeout: 10_000 });
   await page.keyboard.type(text, { delay: 2 });
   await page.keyboard.press("Enter");
+}
+
+async function typeTerminalDraft(page, selector, text) {
+  await page.click(selector, { timeout: 10_000 });
+  await page.keyboard.type(text, { delay: 2 });
+}
+
+async function clearOperatorInputFromUi(page) {
+  await page.click("#operator-terminal-panel", { timeout: 10_000 });
+  await page.keyboard.press("Control+C");
+  await page.waitForTimeout(750);
 }
 
 async function startPaneFromUiAndWaitForPrompt(page, paneId, selector) {
@@ -427,7 +490,7 @@ async function writeOperatorPipeScript(scriptPath) {
 }
 
 async function submitComposerWithButton(page, command, expectedMarker) {
-  await waitForPtyPrompt(page, "operator");
+  await startOperatorFromUiAndWaitForClaude(page);
   await page.fill("#composer-input", command);
   await page.click("#send-btn");
   await page.waitForFunction(() => {
@@ -438,11 +501,11 @@ async function submitComposerWithButton(page, command, expectedMarker) {
   if (conversationContainsMessage < 1) {
     throw new Error("submitted composer message was not rendered in the conversation panel");
   }
-  return await waitForPtyOutputLine(page, "operator", expectedMarker);
+  return await waitForPtyOutput(page, "operator", expectedMarker);
 }
 
 async function submitComposerWithEnter(page, command, expectedMarker) {
-  await waitForPtyPrompt(page, "operator");
+  await startOperatorFromUiAndWaitForClaude(page);
   await page.fill("#composer-input", command);
   await page.focus("#composer-input");
   await page.keyboard.press("Enter");
@@ -450,11 +513,16 @@ async function submitComposerWithEnter(page, command, expectedMarker) {
     const input = document.querySelector("#composer-input");
     return input instanceof HTMLTextAreaElement && input.value === "";
   });
-  return await waitForPtyOutputLine(page, "operator", expectedMarker);
+  return await waitForPtyOutput(page, "operator", expectedMarker);
 }
 
 async function openCommandPaletteAction(page, query, expected) {
-  await page.keyboard.press("Control+K");
+  if (await page.locator("#open-command-bar-btn").isVisible().catch(() => false)) {
+    await page.click("#open-command-bar-btn");
+  } else {
+    await page.focus("#composer-input");
+    await page.keyboard.press("Control+K");
+  }
   await page.locator("#command-bar-shell").waitFor({ state: "visible" });
   await page.fill("#command-bar-input", query);
   await page.keyboard.press("Enter");
@@ -606,6 +674,17 @@ async function main() {
       return { url: page.url() };
     });
 
+    await runStep("default center keeps operator and composer unobstructed", async () => {
+      await page.waitForTimeout(2_000);
+      await page.locator("#operator-terminal-panel").waitFor({ state: "visible" });
+      await page.locator("#composer").waitFor({ state: "visible" });
+      const runSummaryVisible = await page.locator("#selected-run-summary").isVisible().catch(() => false);
+      const dashboardVisible = await page.locator("#agent-work-dashboard").isVisible().catch(() => false);
+      if (runSummaryVisible || dashboardVisible) {
+        throw new Error(`default center should not show run summary or dashboard; summary=${runSummaryVisible}, dashboard=${dashboardVisible}`);
+      }
+    });
+
     await runStep("drawer close and reopen controls", async () => {
       await ensureDrawerOpen(page);
       await page.click("#close-terminal-drawer-btn");
@@ -667,17 +746,37 @@ async function main() {
       return { outputTail: output.slice(-800) };
     });
 
-    await runStep("operator pane runs a real terminal command", async () => {
-      await spawnPtyIfNeeded(page, "operator");
-      await waitForPtyPrompt(page, "operator");
-      await typeIntoTerminal(page, "#operator-terminal-panel", `Write-Output '${OPERATOR_MARKER}'`);
-      const output = await waitForPtyOutputLine(page, "operator", OPERATOR_MARKER);
-      return { outputTail: output.slice(-800) };
+    await runStep("operator pane starts Claude Code and accepts real user input", async () => {
+      const readyOutput = await startOperatorFromUiAndWaitForClaude(page);
+      await typeTerminalDraft(page, "#operator-terminal-panel", OPERATOR_MARKER);
+      const output = await waitForPtyOutput(page, "operator", OPERATOR_MARKER);
+      await clearOperatorInputFromUi(page);
+      const timelineText = await page.locator("#conversation-timeline").innerText().catch(() => "");
+      if (/Claude Code v\d|--permission-mode/.test(timelineText)) {
+        throw new Error("operator startup log should stay in the operator pane and not mirror into the chat timeline");
+      }
+      return { readyTail: readyOutput.slice(-800), outputTail: output.slice(-800) };
+    });
+
+    await runStep("operator command writes to worker through desktop control pipe", async () => {
+      await spawnPtyIfNeeded(page, "worker-2");
+      await waitForPtyPrompt(page, "worker-2");
+      await startOperatorFromUiAndWaitForClaude(page);
+      // Claude Code uses `!` as its shell-command prefix; this is typed into the operator, not PowerShell.
+      const claudeShellCommand = `!pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File '${scriptPath.replace(/'/g, "''")}'`;
+      await typeIntoTerminal(page, "#operator-terminal-panel", claudeShellCommand);
+      const operatorOutput = await waitForPtyOutput(page, "operator", "PIPE_RESPONSE:");
+      const workerOutput = await waitForPtyOutputLine(page, "worker-2", OPERATOR_TO_WORKER_MARKER);
+      return {
+        operatorTail: operatorOutput.slice(-1_200),
+        workerTail: workerOutput.slice(-800),
+      };
     });
 
     await runStep("composer send button writes user message to operator pane", async () => {
-      const command = `Write-Output '${COMPOSER_TO_OPERATOR_MARKER}'`;
+      const command = COMPOSER_TO_OPERATOR_MARKER;
       const output = await submitComposerWithButton(page, command, COMPOSER_TO_OPERATOR_MARKER);
+      await clearOperatorInputFromUi(page);
       return { outputTail: output.slice(-800) };
     });
 
@@ -690,8 +789,9 @@ async function main() {
       if (!draft.includes("\n") || !draft.includes("second line")) {
         throw new Error(`Shift+Enter should insert a newline, got ${JSON.stringify(draft)}`);
       }
-      const command = `Write-Output '${COMPOSER_ENTER_MARKER}'`;
+      const command = COMPOSER_ENTER_MARKER;
       const output = await submitComposerWithEnter(page, command, COMPOSER_ENTER_MARKER);
+      await clearOperatorInputFromUi(page);
       return { outputTail: output.slice(-800) };
     });
 
@@ -716,15 +816,14 @@ async function main() {
       await page.locator("#composer-file-input").setInputFiles(attachmentPath);
       await page.locator("#attachment-tray", { hasText: "composer-attachment.txt" }).waitFor({ state: "visible" });
       const message = COMPOSER_ATTACHMENT_MARKER;
-      await waitForPtyPrompt(page, "operator");
+      await startOperatorFromUiAndWaitForClaude(page);
       await page.fill("#composer-input", message);
       await page.click("#send-btn");
       await page.waitForFunction(() => {
         const input = document.querySelector("#composer-input");
         return input instanceof HTMLTextAreaElement && input.value === "";
       });
-      const output = await waitForPtyOutput(page, "operator", COMPOSER_ATTACHMENT_MARKER);
-      await waitForPtyPrompt(page, "operator");
+      const output = await waitForPtyOutput(page, "operator", "Pasted text");
       const attachmentStillVisible = await page.locator("#attachment-tray", { hasText: "composer-attachment.txt" }).isVisible().catch(() => false);
       if (attachmentStillVisible) {
         throw new Error("attachment tray should clear after composer submit");
@@ -767,19 +866,6 @@ async function main() {
         return shell instanceof HTMLElement && shell.dataset.density === "compact";
       });
       await page.click("#close-settings-btn");
-    });
-
-    await runStep("operator command writes to worker through desktop control pipe", async () => {
-      await spawnPtyIfNeeded(page, "worker-2");
-      await waitForPtyPrompt(page, "worker-2");
-      await waitForPtyPrompt(page, "operator");
-      await typeIntoTerminal(page, "#operator-terminal-panel", `& '${scriptPath.replace(/\\/g, "\\\\")}'`);
-      const operatorOutput = await waitForPtyOutput(page, "operator", "PIPE_RESPONSE:");
-      const workerOutput = await waitForPtyOutputLine(page, "worker-2", OPERATOR_TO_WORKER_MARKER);
-      return {
-        operatorTail: operatorOutput.slice(-1_200),
-        workerTail: workerOutput.slice(-800),
-      };
     });
 
     await runStep("Tauri native APIs exercise Rust, filesystem, voice, and webview windows", async () => {
