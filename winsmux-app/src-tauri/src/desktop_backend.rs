@@ -6,7 +6,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -1667,7 +1667,7 @@ fn looks_like_repo_root(path: &Path) -> bool {
     path.join("scripts").join("winsmux-core.ps1").exists()
 }
 
-fn resolve_repo_root() -> Result<PathBuf, String> {
+pub(crate) fn resolve_repo_root() -> Result<PathBuf, String> {
     let mut candidates = Vec::new();
 
     if let Ok(current_dir) = std::env::current_dir() {
@@ -1841,22 +1841,34 @@ where
                 }
             };
 
-            let reader = BufReader::new(stdout);
-            for line in reader.lines() {
+            let (line_tx, line_rx) = mpsc::channel();
+            thread::spawn(move || {
+                let reader = BufReader::new(stdout);
+                for line in reader.lines() {
+                    let payload = line.map_err(|err| err.to_string());
+                    if line_tx.send(payload).is_err() {
+                        break;
+                    }
+                }
+            });
+
+            loop {
                 if stop_requested.load(Ordering::Relaxed) {
                     let _ = child.kill();
                     break;
                 }
-                match line {
-                    Ok(line) => {
+                match line_rx.recv_timeout(Duration::from_millis(250)) {
+                    Ok(Ok(line)) => {
                         if let Some(signal) = parse_desktop_summary_stream_signal(&source, &line) {
                             on_signal(signal);
                         }
                     }
-                    Err(err) => {
+                    Ok(Err(err)) => {
                         eprintln!("winsmux {} stream read failed: {}", source, err);
                         break;
                     }
+                    Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 }
             }
 

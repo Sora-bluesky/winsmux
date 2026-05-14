@@ -85,6 +85,7 @@ $whitelistPatterns = @(
     'tests/test_support/rust_parity.rs',
     'packages/winsmux/**',
     'winsmux-app/scripts/*.mjs',
+    'winsmux-app/public/**',
     'winsmux-app/package.json',
     'winsmux-app/package-lock.json',
     'winsmux-app/src/composerText.ts',

@@ -236,6 +236,7 @@ textarea {
 #top-menu-bar {
   grid-area: menu;
   position: relative;
+  z-index: 40;
   min-width: 0;
   min-height: 0;
   border-bottom: 1px solid var(--border-muted);
@@ -1469,10 +1470,12 @@ body[data-popout-surface="1"] #editor-surface {
 }
 
 #conversation-panel {
+  position: relative;
+  z-index: 15;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow: visible;
   background: #08090b;
   border-right: 1px solid var(--border-muted);
 }
@@ -2035,6 +2038,8 @@ body[data-popout-surface="1"] #editor-surface {
 }
 
 #composer {
+  position: relative;
+  z-index: 80;
   border-top: 1px solid var(--border-muted);
   flex: 0 0 auto;
   padding: 8px 12px;
@@ -2180,7 +2185,7 @@ body[data-popout-surface="1"] #editor-surface {
   position: absolute;
   left: 0;
   bottom: calc(100% + 7px);
-  z-index: 40;
+  z-index: 120;
   width: min(360px, calc(100vw - 48px));
   padding: 6px;
   border: 1px solid var(--border-strong);
@@ -2690,6 +2695,8 @@ body[data-popout-surface="1"] #editor-surface {
 }
 
 #workspace-footer {
+  position: relative;
+  z-index: 45;
   display: flex;
   align-items: stretch;
   justify-content: space-between;
@@ -3507,6 +3514,7 @@ body[data-popout-surface="1"] #editor-surface {
 
 #terminal-drawer {
   position: relative;
+  z-index: 5;
   overflow: hidden;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -4253,7 +4261,8 @@ body.is-resizing-workbench {
 
 #add-pane-btn,
 #workbench-layout-btn,
-#focused-pane-select {
+#focused-pane-select,
+#close-terminal-drawer-btn {
   border: 1px solid var(--border-strong);
   background: transparent;
   color: var(--text-secondary);
@@ -4266,8 +4275,16 @@ body.is-resizing-workbench {
 
 #add-pane-btn:hover,
 #workbench-layout-btn:hover,
-#focused-pane-select:hover {
+#focused-pane-select:hover,
+#close-terminal-drawer-btn:hover {
   background: var(--bg-panel);
+}
+
+#close-terminal-drawer-btn {
+  min-width: 24px;
+  padding: 0;
+  font-size: var(--text-sm);
+  line-height: 1;
 }
 
 #focused-pane-select {
@@ -4468,7 +4485,7 @@ body.is-resizing-workbench {
 
   #sidebar-overlay {
     position: fixed;
-    inset: 0;
+    inset: var(--menu-height) 0 var(--statusbar-height) 0;
     display: block;
     background: rgba(8, 10, 16, 0.48);
     z-index: 24;
@@ -4478,7 +4495,7 @@ body.is-resizing-workbench {
     position: fixed;
     top: var(--menu-height);
     left: var(--activity-width);
-    bottom: 0;
+    bottom: var(--statusbar-height);
     width: min(calc(86vw - var(--activity-width)), 340px);
     z-index: 32;
     transform: translateX(-100%);

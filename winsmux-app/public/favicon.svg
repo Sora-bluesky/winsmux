@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="400" height="400" role="img" aria-label="winsmux brand mark">
+  <title>winsmux brand mark · V2-δ Right-angle Fluent</title>
+  <rect width="400" height="400" rx="8" fill="#0B0D10"></rect>
+  <polygon points="72,96 136,96 72,200" fill="#0F6E56"></polygon>
+  <polygon points="72,96 136,96 136,200" fill="#5EEAD4"></polygon>
+  <polygon points="136,96 200,96 200,200" fill="#0F6E56"></polygon>
+  <polygon points="136,96 200,96 136,200" fill="#A7F3E0"></polygon>
+  <polygon points="200,96 264,96 200,200" fill="#0F6E56"></polygon>
+  <polygon points="200,96 264,96 264,200" fill="#A7F3E0"></polygon>
+  <polygon points="264,96 328,96 328,200" fill="#0F6E56"></polygon>
+  <polygon points="264,96 328,96 264,200" fill="#5EEAD4"></polygon>
+  <polygon points="72,200 136,200 72,304" fill="#1D9E75"></polygon>
+  <polygon points="136,200 200,200 200,304" fill="#5EEAD4"></polygon>
+  <polygon points="200,200 264,200 200,304" fill="#5EEAD4"></polygon>
+  <polygon points="264,200 328,200 328,304" fill="#1D9E75"></polygon>
+  <g stroke="#0B0D10" stroke-width="1.5" fill="none">
+    <line x1="72" y1="200" x2="328" y2="200"></line>
+    <line x1="136" y1="96" x2="136" y2="304"></line>
+    <line x1="200" y1="96" x2="200" y2="304"></line>
+    <line x1="264" y1="96" x2="264" y2="304"></line>
+    <line x1="72" y1="96" x2="136" y2="200"></line>
+    <line x1="200" y1="96" x2="136" y2="200"></line>
+    <line x1="200" y1="96" x2="264" y2="200"></line>
+    <line x1="328" y1="96" x2="264" y2="200"></line>
+    <line x1="72" y1="200" x2="136" y2="304"></line>
+    <line x1="200" y1="200" x2="136" y2="304"></line>
+    <line x1="200" y1="200" x2="264" y2="304"></line>
+    <line x1="328" y1="200" x2="264" y2="304"></line>
+  </g>
+</svg>

@@ -1048,7 +1048,7 @@ async function assertNarrowSettingsRoundtrip(page, returnSelector) {
   if (!viewport) {
     throw new Error("Viewport size is unavailable");
   }
-  await page.mouse.click(viewport.width - 10, 24);
+  await page.mouse.click(viewport.width - 10, 44);
   await page.locator("#activity-explorer-btn[aria-expanded='false']").waitFor();
 }
 
@@ -1824,7 +1824,7 @@ async function verifyNarrowViewport(page, previewUrl) {
   if (!narrowViewport) {
     throw new Error("Viewport size is unavailable");
   }
-  await page.mouse.click(narrowViewport.width - 10, 24);
+  await page.mouse.click(narrowViewport.width - 10, 44);
   await page.locator("#activity-explorer-btn[aria-expanded='false']").waitFor();
 
   await ensureContextPanelOpen(page);
@@ -1883,7 +1883,7 @@ async function verifyShortNarrowViewport(page, previewUrl) {
   if (!shortNarrowViewport) {
     throw new Error("Viewport size is unavailable");
   }
-  await page.mouse.click(shortNarrowViewport.width - 10, 24);
+  await page.mouse.click(shortNarrowViewport.width - 10, 44);
   await page.locator("#activity-explorer-btn[aria-expanded='false']").waitFor();
 
   await assertWorkbenchPaneGrid(page);
@@ -1926,7 +1926,7 @@ async function verifyDeveloperWindowViewport(page, previewUrl, width, height, la
   if (!viewport) {
     throw new Error(`Viewport size is unavailable for ${label}`);
   }
-  await page.mouse.click(viewport.width - 10, 24);
+  await page.mouse.click(viewport.width - 10, 44);
   await page.locator("#activity-explorer-btn[aria-expanded='false']").waitFor();
 
   await assertWorkbenchPaneGrid(page);
