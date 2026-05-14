@@ -83,6 +83,12 @@ as `model_family` and `model_id`, but the task script loads the exact model,
 including Gemma, Llama, Mistral, Qwen, DeepSeek, Kimi/Moonshot, and distilled
 variants.
 
+Before spending Colab compute units, run the mock acceptance gate:
+
+```powershell
+Invoke-Pester -Path tests/ColabAcceptance.Tests.ps1 -PassThru
+```
+
 ## 5. Read and send
 
 Check a pane before sending instructions:
