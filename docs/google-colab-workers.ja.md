@@ -2,7 +2,7 @@
 
 このページでは、Colab 対応の winsmux ワーカーを準備する方法を説明します。
 
-`v0.32.4` では、winsmux は `google-colab-cli` 互換アダプターを通じて、
+`v0.32.x` の Colab 対応では、winsmux は `google-colab-cli` 互換アダプターを通じて、
 次の単発ワーカー操作を実行できます。
 
 - `winsmux workers exec`
@@ -12,7 +12,7 @@
 - `winsmux workers attach`
 
 winsmux は Google のサインインを代行しません。認証、ランタイム作成、GPU の可用性、
-割り当て、ブラウザーでのサインインは、Colab 側またはアダプター側の責務です。
+クォータ、ブラウザーでのサインインは、Colab 側またはアダプター側の責務です。
 
 ## ノートブックとランタイムの要件
 
@@ -67,6 +67,12 @@ google-colab-cli download --session <name> --source <remote-path> --dest <path> 
 セッションを指します。その名前を実際のノートブックとランタイムへ対応づける責任は
 アダプター側にあります。
 
+アダプター側が `new`、`status`、`exec`、`log`、`stop` のような別の操作名を
+持つ場合は、上の仕様に合わせる薄いラッパーを用意してください。`exec` は `run`、
+`log` は `logs` に対応します。アダプター側の `new`、`status`、`stop` は
+手動のランタイム確認では有用ですが、winsmux のワーカー状態、`attach`、`stop` は
+ローカル側で完結する制御コマンドとして扱います。
+
 アダプターの実行ファイル名が異なる場合は、次を設定します。
 
 ```powershell
@@ -119,7 +125,7 @@ Colab ワーカーは、特定モデルファミリーに固定しません。wi
 メタデータとして記録し、正確なチェックポイントまたは API 対象の読み込みは
 タスクスクリプトに任せます。
 
-`v0.32.4` のアクセラレーター対象は `H100` です。`A100` を許容する代替候補にします。
+アクセラレーター対象は `H100` です。`A100` を許容する代替候補にします。
 大きな通常構造のモデル、MoE、マルチモーダル、長文コンテキストのモデルでは、
 それでも量子化、短めのコンテキスト設定、テンソル並列、またはホスト API 対象が
 必要になる場合があります。
@@ -232,9 +238,44 @@ winsmux は次を除外します。
 - `.env`、鍵、証明書、トークン、資格情報など、秘密情報らしいファイル
 - 設定された最大アップロードサイズを超えるファイル
 
+## 受け入れ確認
+
+CI の受け入れ確認は、ソースから検証する場合の手順です。モック優先で、
+実 Colab ランタイムは必要ありません。
+
+```powershell
+Invoke-Pester -Path tests/ColabAcceptance.Tests.ps1 -PassThru
+```
+
+このモック確認では、6 ワーカーの Colab 構成、`workers status`、`workers doctor`、
+単発実行、ローカルログとアダプター経由ログ、ディレクトリアップロードの除外、
+ダウンロード、attach の挙動を確認します。モックアダプターは `new`、`status`、
+`stop` も受け付けるため、アダプター作者は Colab の実行リソースを使わずに
+ライフサイクル管理のラッパーを確認できます。
+
+インストール済み環境では、まずローカル側の診断を実行してください。
+
+```powershell
+winsmux workers doctor
+```
+
+ソースから実 Colab を使う確認は、手動でのみ実行します。動作する `colab_cli`
+スロットを持つプロジェクトを指定してから、明示的に有効化してください。
+
+```powershell
+$env:WINSMUX_COLAB_ACCEPTANCE_REAL = "1"
+$env:WINSMUX_COLAB_ACCEPTANCE_PROJECT = "C:\path\to\project"
+Invoke-Pester -Path tests/ColabAcceptance.Tests.ps1 -PassThru
+```
+
+実タスクを動かす前に、Colab 側のクォータと停止方針を winsmux の外で確認してください。
+ローカルワーカーペインを止める時は `winsmux workers stop <slot>` を使います。
+リモートのノートブックやランタイムも止める必要がある場合は、アダプター側の
+停止コマンドも使ってください。
+
 ## 制限
 
-`v0.32.4` は、対話型の Colab REPL や console ループを自動化しません。
+`v0.32.x` の Colab 対応は、対話型の Colab REPL や console ループを自動化しません。
 設定されたアダプターを通じて、ファイルを指定したタスクを 1 回ずつ実行します。
 
 大きな成果物は、アダプターが対応している場合、Google Drive、Cloud Storage、
@@ -248,7 +289,8 @@ winsmux は次を除外します。
 | `google-colab-cli not found on PATH` | アダプターをインストールするか、`WINSMUX_COLAB_CLI` を設定します。 |
 | ノートブックを準備していない | Colab ノートブックを作成して `H100` または `A100` ランタイムへ接続するか、それを管理するアダプターを設定します。 |
 | 認証がない、または認証状態が縮退している | Google またはアダプターが所有する公式フローでサインインします。winsmux は callback URL を受け取らず、トークンも抽出しません。 |
-| GPU が `H100` または `A100` ではない | Colab 側のランタイム種別と割り当てを確認し、その後 `winsmux workers doctor` を再実行します。 |
+| GPU が `H100` または `A100` ではない | Colab 側のランタイム種別とクォータを確認し、その後 `winsmux workers doctor` を再実行します。 |
+| モック受け入れ確認は通るが実ランタイムが失敗する | 実プロジェクトで `workers doctor` を再実行し、アダプターのサインインとランタイムのクォータを確認したうえで、`WINSMUX_COLAB_ACCEPTANCE_REAL=1` を設定して再実行してください。 |
 | モデルのダウンロード、または API 対象の準備に失敗する | モデル利用条件への同意と、ランタイム内の Kaggle、Hugging Face、Google、各プロバイダーの資格情報を確認します。 |
 | ディレクトリアップロードが拒否される | `--allow-dir <path>` を追加し、プロジェクト配下のディレクトリを指定します。 |
 | 秘密情報らしいファイルが除外される | 意図した挙動です。秘密情報を含まないファイルを用意してください。 |

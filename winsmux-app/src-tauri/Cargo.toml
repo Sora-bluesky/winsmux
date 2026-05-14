@@ -1,6 +1,6 @@
 [package]
 name = "winsmux-app"
-version = "0.32.7"
+version = "0.32.8"
 description = "Desktop control plane for winsmux"
 authors = ["Sora-bluesky"]
 edition = "2021"

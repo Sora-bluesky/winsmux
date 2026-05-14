@@ -76,6 +76,7 @@ $whitelistPatterns = @(
     'tests/codex-subagent-worktree-guard.Tests.ps1',
     'tests/HarnessContract.Tests.ps1',
     'tests/ColabWorkerTemplates.Tests.ps1',
+    'tests/ColabAcceptance.Tests.ps1',
     'tests/NpmReleasePackage.Tests.ps1',
     'tests/VersionSurface.Tests.ps1',
     'tests/fixtures/rust-parity/*.json',

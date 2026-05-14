@@ -2,7 +2,7 @@
 
 This page explains how to prepare a Colab-backed winsmux worker.
 
-In `v0.32.4`, winsmux can route one-shot worker actions through a
+As of the `v0.32.x` Colab lane, winsmux can route one-shot worker actions through a
 `google-colab-cli` compatible adapter:
 
 - `winsmux workers exec`
@@ -70,6 +70,12 @@ In that contract, `--session <name>` identifies the adapter-managed Colab
 notebook/runtime session. The adapter is responsible for mapping that name to
 the notebook and runtime.
 
+If your adapter exposes a different lifecycle surface such as `new`, `status`,
+`exec`, `log`, or `stop`, wrap it so winsmux can call the contract above.
+`exec` maps to `run`, and `log` maps to `logs`. Adapter-owned `new`,
+`status`, and `stop` commands may still be useful for manual runtime checks,
+but winsmux worker status, attach, and stop remain local control-plane commands.
+
 If your adapter has another executable name, set:
 
 ```powershell
@@ -121,7 +127,7 @@ but is marked degraded.
 Colab workers are model-family agnostic. winsmux records the intended model as
 metadata and lets the task script load the exact checkpoint or API target.
 
-The intended `v0.32.4` accelerator target is `H100`, with `A100` as the
+The intended accelerator target is `H100`, with `A100` as the
 accepted fallback. Large dense, mixture-of-experts, multimodal, or long-context
 models may still require quantization, smaller context settings, tensor
 parallelism, or a hosted API target even on those GPUs.
@@ -237,9 +243,43 @@ Directory uploads are staged through a safe manifest. winsmux excludes:
 - secret-like files such as `.env`, key files, certificates, tokens, and credentials
 - files larger than the configured maximum upload size
 
+## Acceptance gate
+
+The CI acceptance path is for source checkouts. It is mock-first and does not
+require a real Google Colab runtime:
+
+```powershell
+Invoke-Pester -Path tests/ColabAcceptance.Tests.ps1 -PassThru
+```
+
+The mock gate checks a six-worker Colab configuration, `workers status`,
+`workers doctor`, one-shot execution, local and adapter-backed logs,
+directory upload filtering, downloads, and attach behavior. The fake adapter
+also accepts `new`, `status`, and `stop` so adapter authors can test lifecycle
+wrappers without spending Colab compute units.
+
+Installed-product users should start with the local doctor check instead:
+
+```powershell
+winsmux workers doctor
+```
+
+Real Colab checks from a source checkout are manual-only. To opt in, point the
+test at a project that already has a working `colab_cli` slot:
+
+```powershell
+$env:WINSMUX_COLAB_ACCEPTANCE_REAL = "1"
+$env:WINSMUX_COLAB_ACCEPTANCE_PROJECT = "C:\path\to\project"
+Invoke-Pester -Path tests/ColabAcceptance.Tests.ps1 -PassThru
+```
+
+Before running a live task, check quota and stop policy outside winsmux. Use
+`winsmux workers stop <slot>` to stop local worker panes, and use the adapter's
+own stop command when the remote notebook/runtime also needs to be stopped.
+
 ## Limits
 
-`v0.32.4` does not automate an interactive Colab REPL or console loop. It runs
+The `v0.32.x` Colab lane does not automate an interactive Colab REPL or console loop. It runs
 one file-backed task at a time through the configured adapter.
 
 Use Google Drive, Cloud Storage, or another explicit storage path for large
@@ -254,6 +294,7 @@ local run metadata and the upload/download command evidence.
 | No notebook is prepared | Create a Colab notebook and connect it to an `H100` or `A100` runtime, or configure an adapter that manages that notebook/runtime. |
 | `missing auth` or degraded auth state | Complete sign-in in the official Google or adapter-owned flow. winsmux will not receive callback URLs or extract tokens. |
 | GPU is not `H100` or `A100` | Confirm the Colab runtime type and quota outside winsmux, then run `winsmux workers doctor` again. |
+| Mock acceptance passes but live runtime fails | Re-run `workers doctor` in the live project, check the adapter sign-in session, confirm the runtime has available quota, then retry with `WINSMUX_COLAB_ACCEPTANCE_REAL=1`. |
 | Model download or API target setup fails | Confirm that model access terms were accepted and the runtime has the expected Kaggle, Hugging Face, Google, or provider credentials. |
 | Directory upload is rejected | Add `--allow-dir <path>` and keep the source under the project directory. |
 | Secret-like file is excluded | This is intentional. Upload a sanitized file instead. |
