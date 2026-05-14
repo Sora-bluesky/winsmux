@@ -264,9 +264,12 @@ When generating or editing a release:
 4. Keep the GitHub Release body aligned with the `/release-notes` structure, but in English and mapped onto the Codex-style headings above.
 5. Link the compare range in `Full Changelog` when the repository and tag range support it.
 6. Local or private post drafts may be Japanese if the task explicitly asks for them, but the public GitHub Release stays English.
-7. Do not name external competing editor, IDE, or workbench products as UI references in public release notes or public documentation.
-   - Describe the behavior generically, such as "familiar developer workbench flow" or "source-control-oriented surface".
-   - Provider/runtime names may appear only when they are needed to explain supported official agent integrations, authentication, or compatibility.
+7. Do not name external competing editor, IDE, terminal, workbench, agent orchestration, or AI coding products anywhere in public release notes or public documentation.
+   - This includes comparisons, migration notes, roadmap examples, UI inspiration notes, screenshots, captions, and attribution-free references.
+   - Describe the behavior generically, such as "terminal-faithful workflow" or "source-control-oriented surface".
+   - Keep competitor and upstream research notes in private or ignored maintainer material only.
+   - Provider/runtime names may appear only when they are needed to explain supported official agent integrations, authentication, model compatibility, or required license notices.
+   - Do not directly reuse competitor assets or code in public-facing work if that would force public competitor naming, unless the user explicitly approves the attribution path first.
 8. When an item maps to a repository issue or PR, preserve that reference inline in the bullet in Codex style.
    - Prefer `(#315)` or `(#315, #318)` at the end of the bullet when the reference is available.
    - Do not strip issue/PR references out of release bullets during summarization if they materially help traceability.
