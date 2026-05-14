@@ -64,7 +64,7 @@ worker-backend: colab_cli
         $fakeCli = Join-Path $script:AcceptanceRoot 'google-colab-cli.cmd'
         $content = @'
 @echo off
-echo %*>> "__LOG_PATH__"
+>> "__LOG_PATH__" echo(%*
 if "%1"=="new" (
   echo fake-colab new ok
   exit /b 0
