@@ -271,6 +271,36 @@ async function invokePty(page, method, params) {
   return response?.result;
 }
 
+async function invokeDesktop(page, method, params = {}) {
+  const response = await page.evaluate(
+    async ({ methodName, methodParams }) => {
+      return await window.__TAURI__.core.invoke("desktop_json_rpc", {
+        request: {
+          jsonrpc: "2.0",
+          id: `desktop-native-e2e-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+          method: methodName,
+          params: methodParams,
+        },
+      });
+    },
+    { methodName: method, methodParams: params },
+  );
+
+  if (response?.error) {
+    throw new Error(response.error.message);
+  }
+  return response?.result;
+}
+
+async function invokeTauriCommand(page, command, args = {}) {
+  return await page.evaluate(
+    async ({ commandName, commandArgs }) => {
+      return await window.__TAURI__.core.invoke(commandName, commandArgs);
+    },
+    { commandName: command, commandArgs: args },
+  );
+}
+
 async function capturePty(page, paneId, lines = 120) {
   const result = await invokePty(page, "pty.capture", { paneId, lines });
   return String(result?.output ?? "");
@@ -429,6 +459,107 @@ async function openCommandPaletteAction(page, query, expected) {
   await page.fill("#command-bar-input", query);
   await page.keyboard.press("Enter");
   await expected();
+}
+
+async function waitForTauriPage(browser, predicate, timeoutMs = 20_000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    for (const context of browser.contexts()) {
+      for (const candidate of context.pages()) {
+        if (await predicate(candidate)) {
+          return candidate;
+        }
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+
+  const pages = browser.contexts().flatMap((context) => context.pages()).map((candidate) => candidate.url());
+  throw new Error(`Timed out waiting for a Tauri page. Seen pages: ${pages.join(", ")}`);
+}
+
+async function exerciseTauriNativeSurface(page, browser) {
+  const apiSurface = await page.evaluate(() => {
+    const tauri = window.__TAURI__;
+    return {
+      keys: tauri ? Object.keys(tauri).sort() : [],
+      hasCoreInvoke: typeof tauri?.core?.invoke === "function",
+      hasWebviewWindow: Boolean(tauri?.webviewWindow),
+      hasDialog: Boolean(tauri?.dialog),
+      hasTray: Boolean(tauri?.tray),
+    };
+  });
+  if (!apiSurface.hasCoreInvoke || !apiSurface.hasWebviewWindow) {
+    throw new Error(`Tauri API surface is incomplete: ${JSON.stringify(apiSurface)}`);
+  }
+
+  const contract = await invokeDesktop(page, "desktop.control_plane.contract");
+  if (!Array.isArray(contract?.methods) || !contract.methods.includes("desktop.editor.read")) {
+    throw new Error(`desktop control-plane contract missing editor read: ${JSON.stringify(contract)}`);
+  }
+
+  const editorFile = await invokeDesktop(page, "desktop.editor.read", { path: "winsmux-app/src/main.ts" });
+  if (!String(editorFile?.content ?? "").includes("@tauri-apps/plugin-dialog")) {
+    throw new Error("desktop.editor.read did not return the expected source content");
+  }
+
+  const explorer = await invokeDesktop(page, "desktop.explorer.list");
+  if (!Array.isArray(explorer?.entries) || explorer.entries.length === 0) {
+    throw new Error("desktop.explorer.list returned no project entries");
+  }
+
+  const voiceInitial = await invokeTauriCommand(page, "desktop_voice_capture_status");
+  const voiceStart = await invokeTauriCommand(page, "desktop_voice_capture_start");
+  await page.waitForTimeout(500);
+  const voiceDuring = await invokeTauriCommand(page, "desktop_voice_capture_status");
+  const voiceStop = await invokeTauriCommand(page, "desktop_voice_capture_stop", { cancelled: true });
+
+  const harnessUrl = new URL(page.url());
+  harnessUrl.search = "?viewport-harness=1";
+  await page.goto(harnessUrl.toString(), { waitUntil: "domcontentloaded" });
+  await waitForAppReady(page);
+  await page.waitForFunction(() => Boolean(window.__winsmuxViewportHarness?.openEditorPreview));
+  await page.evaluate(() => {
+    window.__winsmuxViewportHarness.openEditorPreview(
+      "winsmux-app/src/main.ts",
+      "export const tauriNativeE2e = true;\n",
+    );
+  });
+  await page.locator("#editor-surface").waitFor({ state: "visible" });
+  await page.locator("#popout-editor-btn").waitFor({ state: "visible" });
+
+  await page.click("#popout-editor-btn");
+  const popout = await waitForTauriPage(
+    browser,
+    async (candidate) => candidate !== page && candidate.url().includes("popout=1"),
+  );
+  attachPageErrorCapture(popout);
+  await popout.locator("#editor-surface").waitFor({ state: "visible" });
+  await popout.locator("#editor-code", { hasText: "@tauri-apps/plugin-dialog" }).waitFor({ state: "visible" });
+  const popoutLabel = await popout.evaluate(() => window.__TAURI__.webviewWindow.getCurrentWebviewWindow().label);
+  await popout.click("#close-editor-btn");
+  await page.waitForFunction(
+    async (label) => {
+      const windows = await window.__TAURI__.webviewWindow.getAllWebviewWindows();
+      return !windows.some((item) => item.label === label);
+    },
+    popoutLabel,
+    { timeout: 20_000 },
+  );
+
+  return {
+    apiSurface,
+    contractMethods: contract.methods.length,
+    editorLineCount: editorFile.line_count,
+    explorerEntryCount: explorer.entries.length,
+    voiceStates: {
+      initial: voiceInitial?.native?.state,
+      start: voiceStart?.native?.state,
+      during: voiceDuring?.native?.state,
+      stop: voiceStop?.native?.state,
+    },
+    webviewWindow: `created-and-closed:${popoutLabel}`,
+  };
 }
 
 async function writeEvidence(ok, extra = {}) {
@@ -649,6 +780,10 @@ async function main() {
         operatorTail: operatorOutput.slice(-1_200),
         workerTail: workerOutput.slice(-800),
       };
+    });
+
+    await runStep("Tauri native APIs exercise Rust, filesystem, voice, and webview windows", async () => {
+      return await exerciseTauriNativeSurface(page, browser);
     });
 
     await runStep("close spawned PTYs", async () => {

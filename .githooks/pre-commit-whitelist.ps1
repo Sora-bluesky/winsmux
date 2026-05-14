@@ -93,6 +93,7 @@ $whitelistPatterns = @(
     'winsmux-app/src-tauri/Cargo.toml',
     'winsmux-app/src-tauri/Cargo.lock',
     'winsmux-app/src-tauri/tauri.conf.json',
+    'winsmux-app/src-tauri/capabilities/*.json',
     'winsmux-app/src-tauri/src/control_pipe.rs',
     'workers/colab/*.py',
     'winsmux-core/**',

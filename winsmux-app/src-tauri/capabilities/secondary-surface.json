@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "secondary-surface",
+  "description": "Capability for editor and preview popout windows",
+  "windows": ["secondary-surface-*"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-close"
+  ]
+}
