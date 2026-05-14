@@ -5,9 +5,10 @@ mod pty_backend;
 use control_pipe::start_control_pipe_server;
 use desktop_backend::{
     handle_desktop_json_rpc, load_desktop_run_explain, load_desktop_summary_snapshot,
-    spawn_desktop_summary_refresh_stream, DesktopExplainPayload, DesktopJsonRpcRequest,
-    DesktopJsonRpcResponse, DesktopStreamCommand, DesktopSummaryRefreshSignal,
-    DesktopSummarySnapshot, DesktopVoiceCaptureStatus, PwshScriptTransport,
+    resolve_repo_root, spawn_desktop_summary_refresh_stream, DesktopExplainPayload,
+    DesktopJsonRpcRequest, DesktopJsonRpcResponse, DesktopStreamCommand,
+    DesktopSummaryRefreshSignal, DesktopSummarySnapshot, DesktopVoiceCaptureStatus,
+    PwshScriptTransport,
 };
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use pty_backend::{
@@ -15,6 +16,7 @@ use pty_backend::{
 };
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -661,6 +663,13 @@ fn spawn_pty(
 type PtyReader = Box<dyn Read + Send>;
 type SinglePtyParts = (SinglePty, PtyReader, Arc<Mutex<String>>, Arc<AtomicBool>);
 
+fn build_pty_command(workspace_dir: &Path) -> CommandBuilder {
+    let mut cmd = CommandBuilder::new("pwsh");
+    cmd.arg("-NoLogo");
+    cmd.cwd(workspace_dir.as_os_str());
+    cmd
+}
+
 fn create_single_pty(cols: u16, rows: u16, generation: u64) -> Result<SinglePtyParts, String> {
     let pty_system = native_pty_system();
 
@@ -673,8 +682,8 @@ fn create_single_pty(cols: u16, rows: u16, generation: u64) -> Result<SinglePtyP
         })
         .map_err(|e| format!("Failed to open PTY: {e}"))?;
 
-    let mut cmd = CommandBuilder::new("pwsh");
-    cmd.arg("-NoLogo");
+    let workspace_dir = resolve_repo_root()?;
+    let cmd = build_pty_command(&workspace_dir);
 
     let child = pair
         .slave
@@ -1014,10 +1023,11 @@ pub fn run() {
         .expect("error while building tauri application");
 
     app.run(|app_handle, event| {
-        if matches!(
-            event,
-            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
-        ) {
+        if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
+            let manager = app_handle.state::<DesktopSummaryStreamManager>();
+            manager.stop_requested.store(true, Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(750));
+        } else if matches!(event, tauri::RunEvent::Exit) {
             let manager = app_handle.state::<DesktopSummaryStreamManager>();
             manager.stop_requested.store(true, Ordering::SeqCst);
         }
@@ -1037,6 +1047,17 @@ mod tests {
         assert!(history.len() <= PTY_CAPTURE_LIMIT);
         assert!(history.is_char_boundary(0));
         assert!(history.ends_with('あ'));
+    }
+
+    #[test]
+    fn build_pty_command_sets_workspace_cwd() {
+        let workspace = Path::new("C:\\repo\\winsmux");
+        let command = build_pty_command(workspace);
+
+        assert_eq!(
+            command.get_cwd().and_then(|value| value.to_str()),
+            Some("C:\\repo\\winsmux")
+        );
     }
 
     #[test]

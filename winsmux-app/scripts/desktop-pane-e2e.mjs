@@ -1,0 +1,682 @@
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import fs from "node:fs/promises";
+import net from "node:net";
+import path from "node:path";
+import process from "node:process";
+import { chromium } from "playwright";
+
+const OUTPUT_DIR = path.join(process.cwd(), "output", "playwright", "desktop-pane-e2e");
+const APP_URL_PATTERN = /localhost:1420|127\.0\.0\.1:1420/;
+const CONTROL_PIPE_NAME = "winsmux-control";
+const WORKER_UI_MARKER = "WORKER_1_UI_E2E_READY";
+const OPERATOR_MARKER = "OPERATOR_TERMINAL_E2E_READY";
+const COMPOSER_TO_OPERATOR_MARKER = "COMPOSER_TO_OPERATOR_E2E_READY";
+const COMPOSER_ENTER_MARKER = "COMPOSER_ENTER_E2E_READY";
+const COMPOSER_ATTACHMENT_MARKER = "COMPOSER_ATTACHMENT_E2E_READY";
+const OPERATOR_TO_WORKER_MARKER = "OPERATOR_TO_WORKER_E2E_READY";
+
+const steps = [];
+const consoleErrors = [];
+const pageErrors = [];
+const tauriOutput = [];
+const tauriErrors = [];
+
+async function ensureOutputDir() {
+  await fs.mkdir(OUTPUT_DIR, { recursive: true });
+}
+
+async function getAvailablePort() {
+  return await new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        server.close();
+        reject(new Error("Failed to resolve an available port"));
+        return;
+      }
+      const { port } = address;
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(port);
+      });
+    });
+    server.on("error", reject);
+  });
+}
+
+function appendBounded(lines, chunk) {
+  const text = chunk.toString();
+  lines.push(text);
+  while (lines.join("").length > 200_000) {
+    lines.shift();
+  }
+}
+
+function startTauriDev(debugPort, userDataDir) {
+  const args = process.platform === "win32"
+    ? ["/c", "npm", "run", "tauri", "--", "dev"]
+    : ["run", "tauri", "--", "dev"];
+  const child = spawn(process.platform === "win32" ? "cmd.exe" : "npm", args, {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${debugPort} --remote-allow-origins=*`,
+      WEBVIEW2_USER_DATA_FOLDER: userDataDir,
+      NO_COLOR: "1",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  child.stdout.on("data", (chunk) => {
+    appendBounded(tauriOutput, chunk);
+    process.stdout.write(chunk);
+  });
+  child.stderr.on("data", (chunk) => {
+    appendBounded(tauriErrors, chunk);
+    process.stderr.write(chunk);
+  });
+
+  return child;
+}
+
+async function stopProcessTree(child) {
+  if (!child || child.exitCode !== null || child.killed) {
+    return;
+  }
+
+  if (process.platform === "win32") {
+    const killer = spawn("taskkill", ["/pid", `${child.pid}`, "/t", "/f"], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    await once(killer, "exit").catch(() => {});
+    child.stdout?.destroy();
+    child.stderr?.destroy();
+    child.unref();
+    return;
+  }
+
+  child.kill("SIGTERM");
+  await once(child, "exit").catch(() => {});
+}
+
+async function waitForCdp(debugPort, child, timeoutMs = 180_000) {
+  const endpoint = `http://127.0.0.1:${debugPort}/json/version`;
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (child.exitCode !== null) {
+      throw new Error(`tauri dev exited before WebView2 remote debugging became available (${child.exitCode})`);
+    }
+    try {
+      const response = await fetch(endpoint);
+      if (response.ok) {
+        return;
+      }
+    } catch {
+      // Retry until the WebView2 debug endpoint opens.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error(`WebView2 remote debugging did not start within ${timeoutMs}ms on port ${debugPort}`);
+}
+
+async function resolveAppPage(browser, timeoutMs = 60_000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    for (const context of browser.contexts()) {
+      for (const page of context.pages()) {
+        if (APP_URL_PATTERN.test(page.url())) {
+          return page;
+        }
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+
+  const pages = browser.contexts().flatMap((context) => context.pages()).map((page) => page.url());
+  throw new Error(`Could not find the Tauri app page. Seen pages: ${pages.join(", ")}`);
+}
+
+function attachPageErrorCapture(page) {
+  page.on("console", (message) => {
+    if (message.type() === "error") {
+      consoleErrors.push(message.text());
+    }
+  });
+  page.on("pageerror", (error) => {
+    pageErrors.push(error.message);
+  });
+  page.on("dialog", async (dialog) => {
+    await dialog.accept().catch(() => {});
+  });
+}
+
+async function runStep(name, action) {
+  process.stdout.write(`[desktop-pane-e2e] ${name}\n`);
+  const consoleStart = consoleErrors.length;
+  const pageStart = pageErrors.length;
+  const startedAt = Date.now();
+  try {
+    const value = await action();
+    steps.push({ name, ok: true, durationMs: Date.now() - startedAt, value });
+    if (pageErrors.length > pageStart) {
+      throw new Error(`${name}: page error: ${pageErrors.slice(pageStart).join(" | ")}`);
+    }
+    if (consoleErrors.length > consoleStart) {
+      throw new Error(`${name}: console error: ${consoleErrors.slice(consoleStart).join(" | ")}`);
+    }
+    return value;
+  } catch (error) {
+    steps.push({
+      name,
+      ok: false,
+      durationMs: Date.now() - startedAt,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    if (error instanceof Error) {
+      error.message = `${name}: ${error.message}`;
+    }
+    throw error;
+  }
+}
+
+async function waitForAppReady(page) {
+  await page.locator("#workspace").waitFor({ state: "visible", timeout: 60_000 });
+  await page.locator("#terminal-drawer").waitFor({ state: "visible", timeout: 60_000 });
+  await page.locator("#operator-terminal-panel").waitFor({ state: "visible", timeout: 60_000 });
+  await page.waitForFunction(() => Boolean(window.__TAURI__?.core?.invoke), undefined, {
+    timeout: 30_000,
+  });
+}
+
+async function resetAppState(page) {
+  await page.evaluate(() => {
+    localStorage.clear();
+    sessionStorage.clear();
+  });
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await waitForAppReady(page);
+}
+
+async function assertDrawerVisible(page, expected) {
+  await page.waitForFunction((visible) => {
+    const drawer = document.querySelector("#terminal-drawer");
+    const toggle = document.querySelector("#toggle-terminal-btn");
+    if (!(drawer instanceof HTMLElement) || !(toggle instanceof HTMLElement)) {
+      return false;
+    }
+    return drawer.hidden === !visible && toggle.getAttribute("aria-expanded") === String(visible);
+  }, expected);
+}
+
+async function ensureDrawerOpen(page) {
+  if (await page.locator("#terminal-drawer").evaluate((drawer) => drawer.hidden).catch(() => false)) {
+    await clickWorkerPanesFooterToggle(page);
+    await assertDrawerVisible(page, true);
+  }
+}
+
+async function clickWorkerPanesFooterToggle(page) {
+  await page.locator(".footer-pill", { hasText: "Worker panes" }).first().click({ timeout: 10_000 });
+}
+
+async function getWorkbenchLayout(page) {
+  return await page.locator("#terminal-drawer").getAttribute("data-layout");
+}
+
+async function setWorkbenchLayout(page, target) {
+  await ensureDrawerOpen(page);
+  for (let index = 0; index < 4; index += 1) {
+    if ((await getWorkbenchLayout(page)) === target) {
+      return;
+    }
+    await page.click("#workbench-layout-btn");
+    await page.waitForTimeout(250);
+  }
+  throw new Error(`Could not switch workbench layout to ${target}; current=${await getWorkbenchLayout(page)}`);
+}
+
+async function paneCount(page) {
+  return await page.locator("#panes-container .pane").count();
+}
+
+async function visiblePaneIds(page) {
+  return await page.locator("#panes-container .pane:visible").evaluateAll((panes) =>
+    panes.map((pane) => pane.id.replace(/^pane-/, "")),
+  );
+}
+
+async function invokePty(page, method, params) {
+  const response = await page.evaluate(
+    async ({ methodName, methodParams }) => {
+      return await window.__TAURI__.core.invoke("pty_json_rpc", {
+        request: {
+          jsonrpc: "2.0",
+          id: `desktop-e2e-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+          method: methodName,
+          params: methodParams,
+        },
+      });
+    },
+    { methodName: method, methodParams: params },
+  );
+
+  if (response?.error) {
+    throw new Error(response.error.message);
+  }
+  return response?.result;
+}
+
+async function capturePty(page, paneId, lines = 120) {
+  const result = await invokePty(page, "pty.capture", { paneId, lines });
+  return String(result?.output ?? "");
+}
+
+async function closePtyIfExists(page, paneId) {
+  try {
+    await invokePty(page, "pty.close", { paneId });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!message.includes(`Pane ${paneId} not found`)) {
+      throw error;
+    }
+  }
+}
+
+async function spawnPtyIfNeeded(page, paneId) {
+  try {
+    await invokePty(page, "pty.spawn", { paneId, cols: 100, rows: 24 });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!message.includes(`Pane ${paneId} already exists`)) {
+      throw error;
+    }
+  }
+}
+
+async function waitForPtyOutput(page, paneId, marker, timeoutMs = 45_000) {
+  const startedAt = Date.now();
+  let lastOutput = "";
+  while (Date.now() - startedAt < timeoutMs) {
+    lastOutput = await capturePty(page, paneId).catch((error) => `capture failed: ${error.message}`);
+    if (lastOutput.includes(marker)) {
+      return lastOutput;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error(`Timed out waiting for ${marker} in ${paneId}. Last output:\n${lastOutput}`);
+}
+
+function stripAnsi(value) {
+  return value.replace(/\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\u0007]*(?:\u0007|\u001B\\))/g, "");
+}
+
+async function waitForPtyOutputLine(page, paneId, line, timeoutMs = 45_000) {
+  const startedAt = Date.now();
+  let lastOutput = "";
+  while (Date.now() - startedAt < timeoutMs) {
+    lastOutput = await capturePty(page, paneId).catch((error) => `capture failed: ${error.message}`);
+    const strippedLines = stripAnsi(lastOutput)
+      .split(/\r?\n/)
+      .map((item) => item.trim());
+    if (strippedLines.includes(line)) {
+      return lastOutput;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error(`Timed out waiting for output line ${line} in ${paneId}. Last output:\n${lastOutput}`);
+}
+
+async function waitForPtyPrompt(page, paneId, timeoutMs = 45_000) {
+  const startedAt = Date.now();
+  let lastOutput = "";
+  while (Date.now() - startedAt < timeoutMs) {
+    lastOutput = await capturePty(page, paneId).catch((error) => `capture failed: ${error.message}`);
+    if (/PS [^\r\n>]*> ?$/m.test(stripAnsi(lastOutput).trimEnd())) {
+      return lastOutput;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error(`Timed out waiting for a PowerShell prompt in ${paneId}. Last output:\n${lastOutput}`);
+}
+
+async function typeIntoTerminal(page, selector, text) {
+  await page.click(selector, { timeout: 10_000 });
+  await page.keyboard.type(text, { delay: 2 });
+  await page.keyboard.press("Enter");
+}
+
+async function startPaneFromUiAndWaitForPrompt(page, paneId, selector) {
+  await page.click(selector, { timeout: 10_000 });
+  await page.keyboard.press("Enter");
+  await waitForPtyPrompt(page, paneId);
+}
+
+function escapePwshSingleQuoted(value) {
+  return value.replace(/'/g, "''");
+}
+
+async function writeOperatorPipeScript(scriptPath) {
+  const payload = {
+    jsonrpc: "2.0",
+    id: "operator-to-worker",
+    method: "pty.write",
+    params: {
+      paneId: "worker-2",
+      data: `Write-Output '${OPERATOR_TO_WORKER_MARKER}'\r`,
+    },
+  };
+
+  const body = [
+    "$ErrorActionPreference = 'Stop'",
+    `$payload = '${escapePwshSingleQuoted(JSON.stringify(payload))}'`,
+    `$pipe = [System.IO.Pipes.NamedPipeClientStream]::new('.', '${CONTROL_PIPE_NAME}', [System.IO.Pipes.PipeDirection]::InOut)`,
+    "$pipe.Connect(5000)",
+    "$encoding = [System.Text.UTF8Encoding]::new($false)",
+    "$writer = [System.IO.StreamWriter]::new($pipe, $encoding)",
+    "$reader = [System.IO.StreamReader]::new($pipe, $encoding)",
+    "$writer.AutoFlush = $true",
+    "try {",
+    "  $writer.Write($payload)",
+    "  $response = $reader.ReadToEnd()",
+    `  Write-Output '${OPERATOR_MARKER}'`,
+    '  Write-Output "PIPE_RESPONSE:$response"',
+    "} finally {",
+    "  try { $reader.Dispose() } catch {}",
+    "  try { $writer.Dispose() } catch {}",
+    "  try { $pipe.Dispose() } catch {}",
+    "}",
+    "",
+  ].join("\r\n");
+
+  await fs.writeFile(scriptPath, body, "utf8");
+}
+
+async function submitComposerWithButton(page, command, expectedMarker) {
+  await waitForPtyPrompt(page, "operator");
+  await page.fill("#composer-input", command);
+  await page.click("#send-btn");
+  await page.waitForFunction(() => {
+    const input = document.querySelector("#composer-input");
+    return input instanceof HTMLTextAreaElement && input.value === "";
+  });
+  const conversationContainsMessage = await page.locator("#conversation-panel", { hasText: command }).count();
+  if (conversationContainsMessage < 1) {
+    throw new Error("submitted composer message was not rendered in the conversation panel");
+  }
+  return await waitForPtyOutputLine(page, "operator", expectedMarker);
+}
+
+async function submitComposerWithEnter(page, command, expectedMarker) {
+  await waitForPtyPrompt(page, "operator");
+  await page.fill("#composer-input", command);
+  await page.focus("#composer-input");
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => {
+    const input = document.querySelector("#composer-input");
+    return input instanceof HTMLTextAreaElement && input.value === "";
+  });
+  return await waitForPtyOutputLine(page, "operator", expectedMarker);
+}
+
+async function openCommandPaletteAction(page, query, expected) {
+  await page.keyboard.press("Control+K");
+  await page.locator("#command-bar-shell").waitFor({ state: "visible" });
+  await page.fill("#command-bar-input", query);
+  await page.keyboard.press("Enter");
+  await expected();
+}
+
+async function writeEvidence(ok, extra = {}) {
+  const evidence = {
+    ok,
+    timestamp: new Date().toISOString(),
+    steps,
+    consoleErrors,
+    pageErrors,
+    tauriOutputTail: tauriOutput.join("").slice(-20_000),
+    tauriErrorTail: tauriErrors.join("").slice(-20_000),
+    ...extra,
+  };
+  await fs.writeFile(path.join(OUTPUT_DIR, "desktop-pane-e2e.json"), JSON.stringify(evidence, null, 2));
+}
+
+async function main() {
+  await ensureOutputDir();
+  const debugPort = await getAvailablePort();
+  const userDataDir = path.join(OUTPUT_DIR, `webview2-user-data-${Date.now()}`);
+  const scriptPath = path.join(OUTPUT_DIR, "operator-to-worker.ps1");
+  const attachmentPath = path.join(OUTPUT_DIR, "composer-attachment.txt");
+  await writeOperatorPipeScript(scriptPath);
+  await fs.writeFile(attachmentPath, "desktop composer attachment e2e\n", "utf8");
+
+  let browser;
+  let page;
+  const tauri = startTauriDev(debugPort, userDataDir);
+
+  try {
+    await runStep("wait for WebView2 remote debugging", async () => {
+      await waitForCdp(debugPort, tauri);
+      return { debugPort };
+    });
+
+    browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`);
+    page = await resolveAppPage(browser);
+    attachPageErrorCapture(page);
+    await page.setViewportSize({ width: 1600, height: 900 }).catch(() => {});
+
+    await runStep("wait for desktop app chrome", async () => {
+      await waitForAppReady(page);
+      await resetAppState(page);
+      return { url: page.url() };
+    });
+
+    await runStep("drawer close and reopen controls", async () => {
+      await ensureDrawerOpen(page);
+      await page.click("#close-terminal-drawer-btn");
+      await assertDrawerVisible(page, false);
+      await clickWorkerPanesFooterToggle(page);
+      await assertDrawerVisible(page, true);
+    });
+
+    await runStep("workbench layout cycling and focus selector", async () => {
+      await setWorkbenchLayout(page, "3x2");
+      if ((await paneCount(page)) < 6) {
+        throw new Error(`3x2 layout should create 6 panes, found ${await paneCount(page)}`);
+      }
+      await setWorkbenchLayout(page, "focus");
+      await page.locator("#focused-pane-select").waitFor({ state: "visible" });
+      await page.selectOption("#focused-pane-select", "worker-2");
+      const ids = await visiblePaneIds(page);
+      if (ids.length !== 1 || ids[0] !== "worker-2") {
+        throw new Error(`focus layout should show only worker-2, saw ${ids.join(",")}`);
+      }
+      await setWorkbenchLayout(page, "3x2");
+    });
+
+    await runStep("add and close worker pane controls", async () => {
+      await setWorkbenchLayout(page, "3x2");
+      const before = await paneCount(page);
+      if (before >= 6) {
+        if (!(await page.locator("#add-pane-btn").isDisabled())) {
+          throw new Error("add pane button should be disabled at the 6 pane limit");
+        }
+        const lastPaneId = await page.locator("#panes-container .pane").last().getAttribute("id");
+        await page.click(`#${lastPaneId} .pane-close`);
+        await page.waitForFunction((expected) => document.querySelectorAll("#panes-container .pane").length === expected, before - 1);
+        await page.click("#add-pane-btn");
+        await page.waitForFunction((expected) => document.querySelectorAll("#panes-container .pane").length === expected, before);
+        return {
+          limitVerified: true,
+          restoredCount: await paneCount(page),
+        };
+      }
+      await page.click("#add-pane-btn");
+      const after = await paneCount(page);
+      if (before < 6 && after !== before + 1) {
+        throw new Error(`add pane should increase count from ${before} to ${before + 1}, saw ${after}`);
+      }
+      const countAfterAdd = await paneCount(page);
+      if (countAfterAdd > 4) {
+        const lastPaneId = await page.locator("#panes-container .pane").last().getAttribute("id");
+        await page.click(`#${lastPaneId} .pane-close`);
+        await page.waitForFunction((expected) => document.querySelectorAll("#panes-container .pane").length === expected, countAfterAdd - 1);
+      }
+    });
+
+    await runStep("worker pane starts from real UI typing", async () => {
+      await setWorkbenchLayout(page, "3x2");
+      await startPaneFromUiAndWaitForPrompt(page, "worker-1", "#pane-worker-1 .pane-terminal");
+      await typeIntoTerminal(page, "#pane-worker-1 .pane-terminal", `Write-Output '${WORKER_UI_MARKER}'`);
+      const output = await waitForPtyOutputLine(page, "worker-1", WORKER_UI_MARKER);
+      return { outputTail: output.slice(-800) };
+    });
+
+    await runStep("operator pane runs a real terminal command", async () => {
+      await spawnPtyIfNeeded(page, "operator");
+      await waitForPtyPrompt(page, "operator");
+      await typeIntoTerminal(page, "#operator-terminal-panel", `Write-Output '${OPERATOR_MARKER}'`);
+      const output = await waitForPtyOutputLine(page, "operator", OPERATOR_MARKER);
+      return { outputTail: output.slice(-800) };
+    });
+
+    await runStep("composer send button writes user message to operator pane", async () => {
+      const command = `Write-Output '${COMPOSER_TO_OPERATOR_MARKER}'`;
+      const output = await submitComposerWithButton(page, command, COMPOSER_TO_OPERATOR_MARKER);
+      return { outputTail: output.slice(-800) };
+    });
+
+    await runStep("composer keyboard behavior preserves newline and Enter sends", async () => {
+      await page.fill("#composer-input", "first line");
+      await page.focus("#composer-input");
+      await page.keyboard.press("Shift+Enter");
+      await page.keyboard.type("second line");
+      const draft = await page.locator("#composer-input").inputValue();
+      if (!draft.includes("\n") || !draft.includes("second line")) {
+        throw new Error(`Shift+Enter should insert a newline, got ${JSON.stringify(draft)}`);
+      }
+      const command = `Write-Output '${COMPOSER_ENTER_MARKER}'`;
+      const output = await submitComposerWithEnter(page, command, COMPOSER_ENTER_MARKER);
+      return { outputTail: output.slice(-800) };
+    });
+
+    await runStep("composer slash command changes mode without sending", async () => {
+      await page.fill("#composer-input", "/ask");
+      await page.focus("#composer-input");
+      await page.keyboard.press("Enter");
+      await page.waitForFunction(() => {
+        const input = document.querySelector("#composer-input");
+        return input instanceof HTMLTextAreaElement && input.value === "";
+      });
+      await page.waitForFunction(() => {
+        return Array.from(document.querySelectorAll(".footer-pill")).some((item) =>
+          item.textContent?.includes("Mode") && item.textContent?.includes("Ask"),
+        );
+      });
+      const value = await page.locator("#composer-input").inputValue();
+      return { mode: "ask", inputValue: value };
+    });
+
+    await runStep("composer attachment is included in user send flow", async () => {
+      await page.locator("#composer-file-input").setInputFiles(attachmentPath);
+      await page.locator("#attachment-tray", { hasText: "composer-attachment.txt" }).waitFor({ state: "visible" });
+      const message = COMPOSER_ATTACHMENT_MARKER;
+      await waitForPtyPrompt(page, "operator");
+      await page.fill("#composer-input", message);
+      await page.click("#send-btn");
+      await page.waitForFunction(() => {
+        const input = document.querySelector("#composer-input");
+        return input instanceof HTMLTextAreaElement && input.value === "";
+      });
+      const output = await waitForPtyOutput(page, "operator", COMPOSER_ATTACHMENT_MARKER);
+      await waitForPtyPrompt(page, "operator");
+      const attachmentStillVisible = await page.locator("#attachment-tray", { hasText: "composer-attachment.txt" }).isVisible().catch(() => false);
+      if (attachmentStillVisible) {
+        throw new Error("attachment tray should clear after composer submit");
+      }
+      const conversationHasMessage = await page.locator("#conversation-panel", { hasText: COMPOSER_ATTACHMENT_MARKER }).count();
+      if (conversationHasMessage < 1) {
+        throw new Error("submitted attachment message was not rendered in the conversation panel");
+      }
+      const conversationHasAttachment = await page.locator("#conversation-panel", { hasText: "composer-attachment.txt" }).count();
+      if (conversationHasAttachment < 1) {
+        throw new Error("submitted attachment was not rendered in the conversation panel");
+      }
+      return { outputTail: output.slice(-800) };
+    });
+
+    await runStep("command palette drives settings and worker pane navigation", async () => {
+      await openCommandPaletteAction(page, "settings", async () => {
+        await page.locator("#settings-sheet").waitFor({ state: "visible" });
+      });
+      await page.click("#close-settings-btn");
+      await page.waitForFunction(() => {
+        const sheet = document.querySelector("#settings-sheet");
+        return sheet instanceof HTMLElement && sheet.hidden;
+      });
+
+      await page.click("#close-terminal-drawer-btn");
+      await assertDrawerVisible(page, false);
+      await openCommandPaletteAction(page, "workbench", async () => {
+        await assertDrawerVisible(page, true);
+      });
+    });
+
+    await runStep("settings density change applies and persists to shell", async () => {
+      await page.click("#activity-settings-btn");
+      await page.locator("#settings-sheet").waitFor({ state: "visible" });
+      await page.locator("#density-options .settings-option-chip", { hasText: "Compact" }).click();
+      await page.click("#apply-settings-btn");
+      await page.waitForFunction(() => {
+        const shell = document.querySelector("#app-shell");
+        return shell instanceof HTMLElement && shell.dataset.density === "compact";
+      });
+      await page.click("#close-settings-btn");
+    });
+
+    await runStep("operator command writes to worker through desktop control pipe", async () => {
+      await spawnPtyIfNeeded(page, "worker-2");
+      await waitForPtyPrompt(page, "worker-2");
+      await waitForPtyPrompt(page, "operator");
+      await typeIntoTerminal(page, "#operator-terminal-panel", `& '${scriptPath.replace(/\\/g, "\\\\")}'`);
+      const operatorOutput = await waitForPtyOutput(page, "operator", "PIPE_RESPONSE:");
+      const workerOutput = await waitForPtyOutputLine(page, "worker-2", OPERATOR_TO_WORKER_MARKER);
+      return {
+        operatorTail: operatorOutput.slice(-1_200),
+        workerTail: workerOutput.slice(-800),
+      };
+    });
+
+    await runStep("close spawned PTYs", async () => {
+      await closePtyIfExists(page, "worker-1");
+      await closePtyIfExists(page, "worker-2");
+      await closePtyIfExists(page, "operator");
+    });
+
+    await writeEvidence(true, { debugPort });
+    process.stdout.write(`[desktop-pane-e2e] PASS evidence=${path.join(OUTPUT_DIR, "desktop-pane-e2e.json")}\n`);
+  } catch (error) {
+    if (page) {
+      await page.screenshot({ path: path.join(OUTPUT_DIR, "desktop-pane-e2e-failure.png"), fullPage: true }).catch(() => {});
+    }
+    await writeEvidence(false, {
+      debugPort,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  } finally {
+    if (browser) {
+      await browser.close().catch(() => {});
+    }
+    await stopProcessTree(tauri);
+  }
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

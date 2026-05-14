@@ -271,6 +271,7 @@ interface FooterStatusItem {
   label: string;
   value?: string;
   tone?: SurfaceTone;
+  action?: "open-actions" | "open-settings" | "toggle-worker-panes";
 }
 
 interface HandoffDecisionItem {
@@ -1459,6 +1460,44 @@ function writeOperatorTerminal(data: string) {
     return;
   }
   operatorTerminal.write(data);
+}
+
+function markOperatorPtyStartedFromExternalEvent() {
+  operatorPtyStarted = true;
+  operatorPtyStarting = null;
+}
+
+function markOperatorPtyStoppedFromExternalEvent() {
+  operatorPtyStarted = false;
+  operatorPtyStarting = null;
+  setOperatorRequestActive(false);
+}
+
+function markPanePtyStartedFromExternalEvent(paneId: string) {
+  const entry = panes.get(paneId);
+  if (!entry) {
+    return;
+  }
+
+  entry.ptyStarted = true;
+  entry.ptyStarting = null;
+  entry.metaElement.textContent = getLanguageText("shell active", "シェル起動済み");
+  entry.metaElement.title = getLanguageText(
+    "This pane was started by the desktop control pipe.",
+    "このペインはデスクトップ制御パイプから起動されました。",
+  );
+}
+
+function markPanePtyStoppedFromExternalEvent(paneId: string) {
+  const entry = panes.get(paneId);
+  if (!entry) {
+    return;
+  }
+
+  entry.ptyStarted = false;
+  entry.ptyStarting = null;
+  entry.metaElement.textContent = getLanguageText("not started", "未起動");
+  entry.metaElement.removeAttribute("title");
 }
 
 function createPane(paneId?: string): string {
@@ -5938,6 +5977,7 @@ function getFooterContextItem(settingsStatus: string): FooterStatusItem {
       label: "Details",
       value: query ? `Search ${query}` : (activeAction?.label || "Search actions"),
       tone: "focus",
+      action: "open-actions",
     };
   }
 
@@ -5946,6 +5986,7 @@ function getFooterContextItem(settingsStatus: string): FooterStatusItem {
       label: "Details",
       value: `Settings ${settingsStatus}`,
       tone: getFooterSettingsTone(settingsStatus),
+      action: "open-settings",
     };
   }
 
@@ -5975,15 +6016,17 @@ function getFooterContextItem(settingsStatus: string): FooterStatusItem {
   if (terminalDrawerOpen) {
     return {
       label: "Details",
-      value: "Utility drawer",
+      value: "Worker panes",
       tone: "info",
+      action: "toggle-worker-panes",
     };
   }
 
   return {
     label: "Details",
-    value: "Ctrl+K",
-    tone: "accent",
+    value: "Worker panes",
+    tone: "info",
+    action: "toggle-worker-panes",
   };
 }
 
@@ -6582,6 +6625,9 @@ function applyLanguageChrome() {
   setElementText("source-control-graph-title", japanese ? "グラフ" : "Graph");
   setElementText("evidence-title", japanese ? "証跡" : "Evidence");
   setElementText("workbench-title", japanese ? "ワーカーペイン" : "Worker panes");
+  setElementText("close-terminal-drawer-btn", "×");
+  document.getElementById("close-terminal-drawer-btn")?.setAttribute("aria-label", japanese ? "ワーカーペインを隠す" : "Hide worker panes");
+  document.getElementById("close-terminal-drawer-btn")?.setAttribute("title", japanese ? "ワーカーペインを隠す" : "Hide worker panes");
   document.getElementById("terminal-drawer")?.setAttribute("aria-label", japanese ? "ワーカーペイン" : "Worker panes");
   document.getElementById("workbench-layout-btn")?.setAttribute("aria-label", japanese ? "ワーカーペインの配置を切り替える" : "Switch worker pane layout");
   updateWorkbenchControls();
@@ -7210,6 +7256,30 @@ function renderFooterLane() {
     button.innerHTML = item.value
       ? `<span class="footer-pill-label">${item.label}</span><span class="footer-pill-value">${item.value}</span>`
       : `<span class="footer-pill-value">${item.label}</span>`;
+    if (item.action === "open-actions") {
+      button.addEventListener("click", () => openCommandBar());
+      return button;
+    }
+    if (item.action === "open-settings") {
+      button.addEventListener("click", () => setSettingsSheet(true));
+      return button;
+    }
+    if (item.action === "toggle-worker-panes") {
+      button.title = terminalDrawerOpen
+        ? getLanguageText("Hide worker panes", "ワーカーペインを隠す")
+        : getLanguageText("Show worker panes", "ワーカーペインを表示");
+      button.setAttribute("aria-label", button.title);
+      button.addEventListener("click", () => setTerminalDrawer(!terminalDrawerOpen));
+      return button;
+    }
+    if (item.label === "Details") {
+      button.title = contextPanelOpen
+        ? getLanguageText("Hide details panel", "詳細パネルを隠す")
+        : getLanguageText("Show details panel", "詳細パネルを表示");
+      button.setAttribute("aria-label", button.title);
+      button.addEventListener("click", () => setContextPanel(!contextPanelOpen));
+      return button;
+    }
     if (item.label === "Actions" || item.value === "Actions") {
       button.addEventListener("click", () => openCommandBar());
     }
@@ -11426,6 +11496,7 @@ function setTerminalDrawer(open: boolean) {
   }
 
   updateWorkbenchControls();
+  renderFooterLane();
   void persistThemeState();
   requestAnimationFrame(() => {
     fitOperatorTerminal();
@@ -12729,6 +12800,19 @@ function registerDesktopSummaryLiveRefresh() {
   registerDesktopSummaryFallbackRefresh();
 
   void subscribeToDesktopSummaryRefresh((event) => {
+    if (event.source === "pty" && event.pane_id) {
+      if (event.pane_id === OPERATOR_PTY_ID) {
+        if (event.reason === "pty.close") {
+          markOperatorPtyStoppedFromExternalEvent();
+        } else if (event.reason === "pty.spawn" || event.reason === "pty.respawn") {
+          markOperatorPtyStartedFromExternalEvent();
+        }
+      } else if (event.reason === "pty.close") {
+        markPanePtyStoppedFromExternalEvent(event.pane_id);
+      } else if (event.reason === "pty.spawn" || event.reason === "pty.respawn") {
+        markPanePtyStartedFromExternalEvent(event.pane_id);
+      }
+    }
     if (event.source !== "pty") {
       desktopSummaryLastStreamSignalAt = Date.now();
     }
@@ -12911,6 +12995,7 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   void subscribeToPtyOutput((payload) => {
     if (payload.pane_id === OPERATOR_PTY_ID) {
+      markOperatorPtyStartedFromExternalEvent();
       writeOperatorTerminal(payload.data);
       appendOperatorPtyOutput(payload.data);
       return;
@@ -12918,6 +13003,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     registerPreviewTargets(payload.pane_id, payload.data);
     const entry = payload.pane_id ? panes.get(payload.pane_id) : undefined;
     if (entry) {
+      markPanePtyStartedFromExternalEvent(payload.pane_id);
       entry.lastOutputAt = Date.now();
       entry.terminal.write(payload.data);
       renderPaneMetadata();
@@ -13031,6 +13117,10 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   document.getElementById("toggle-terminal-btn")?.addEventListener("click", () => {
     setTerminalDrawer(!terminalDrawerOpen);
+  });
+
+  document.getElementById("close-terminal-drawer-btn")?.addEventListener("click", () => {
+    setTerminalDrawer(false);
   });
 
   document.getElementById("browser-reload-btn")?.addEventListener("click", () => {
