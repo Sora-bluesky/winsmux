@@ -8957,15 +8957,18 @@ Describe 'winsmux workers command' {
         $script:previousColabCli = $env:WINSMUX_COLAB_CLI
         $script:previousColabAuth = $env:WINSMUX_COLAB_AUTH_STATE
         $script:previousColabGpu = $env:WINSMUX_COLAB_AVAILABLE_GPUS
+        $script:previousWorkersNow = $env:WINSMUX_TEST_NOW_UTC
         $env:WINSMUX_COLAB_CLI = 'winsmux-test-missing-google-colab-cli'
         $env:WINSMUX_COLAB_AUTH_STATE = ''
         $env:WINSMUX_COLAB_AVAILABLE_GPUS = ''
+        $env:WINSMUX_TEST_NOW_UTC = ''
     }
 
     AfterEach {
         $env:WINSMUX_COLAB_CLI = $script:previousColabCli
         $env:WINSMUX_COLAB_AUTH_STATE = $script:previousColabAuth
         $env:WINSMUX_COLAB_AVAILABLE_GPUS = $script:previousColabGpu
+        $env:WINSMUX_TEST_NOW_UTC = $script:previousWorkersNow
         if ($script:workersTempRoot -and (Test-Path -LiteralPath $script:workersTempRoot)) {
             Remove-Item -LiteralPath $script:workersTempRoot -Recurse -Force
         }
@@ -9011,6 +9014,7 @@ agent-slots:
         $script:winsmuxWorkersCoreRawContent | Should -Match 'workers <exec\|logs\|upload\|download> <slot> \.\.\. \[--json\] \[--project-dir <path>\]'
         $script:winsmuxWorkersCoreRawContent | Should -Match 'workers workspace <prepare\|cleanup> <slot> \[--include <path>\] \[--run-id <id>\] \[--json\] \[--project-dir <path>\]'
         $script:winsmuxWorkersCoreRawContent | Should -Match 'workers secrets project <slot> --run-id <id> \[--env <name=key>\] \[--file <path=key>\] \[--variable <name=key>\] \[--json\] \[--project-dir <path>\]'
+        $script:winsmuxWorkersCoreRawContent | Should -Match 'workers heartbeat <mark\|check> <slot> --run-id <id> \[--state <state>\] \[--json\] \[--project-dir <path>\]'
         $script:winsmuxWorkersCoreRawContent | Should -Match "'workers'\s*\{\s*Invoke-Workers\s*\}"
         $script:winsmuxWorkersCoreRawContent | Should -Match 'google-colab-cli not found on PATH'
         $script:winsmuxWorkersCoreRawContent | Should -Match 'uv not found on PATH'
@@ -9019,6 +9023,7 @@ agent-slots:
         $script:winsmuxWorkersCoreRawContent | Should -Match "'download'\s*\{\s*Invoke-WorkersDownload\s*\}"
         $script:winsmuxWorkersCoreRawContent | Should -Match "'workspace'\s*\{\s*Invoke-WorkersWorkspace\s*\}"
         $script:winsmuxWorkersCoreRawContent | Should -Match "'secrets'\s*\{\s*Invoke-WorkersSecrets\s*\}"
+        $script:winsmuxWorkersCoreRawContent | Should -Match "'heartbeat'\s*\{\s*Invoke-WorkersHeartbeat\s*\}"
     }
 
     It 'prepares and cleans up a disposable isolated workspace from explicit includes' {
@@ -9314,6 +9319,117 @@ agent-slots:
             $env:WINSMUX_TEST_SECRET_VAULT_MODE = $previousVaultMode
             $env:WINSMUX_TEST_SECRET_VAULT_JSON = $previousVaultJson
         }
+    }
+
+    It 'marks and checks local worker heartbeats without exposing local paths' {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    execution-profile: local-windows
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        $env:WINSMUX_TEST_NOW_UTC = '2026-05-16T00:00:00Z'
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers heartbeat mark w2 --run-id hb-local --state running --message "running from C:\work\secret.txt" --stalled-after 60 --offline-after 600 --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $serialized = $payload | ConvertTo-Json -Depth 24
+        $heartbeatPath = Join-Path $script:workersTempRoot '.winsmux\worker-runs\worker-2\hb-local\heartbeat.json'
+
+        $payload.status | Should -Be 'marked'
+        $payload.health | Should -Be 'running'
+        $payload.message | Should -Match '\[LOCAL_PATH_REDACTED\]'
+        $payload.artifact | Should -Be '.winsmux/worker-runs/worker-2/hb-local/heartbeat.json'
+        Test-Path -LiteralPath $heartbeatPath | Should -Be $true
+        $serialized | Should -Not -Match ([regex]::Escape($script:workersTempRoot))
+
+        $env:WINSMUX_TEST_NOW_UTC = '2026-05-16T00:11:01Z'
+        $checkOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers heartbeat check w2 --run-id hb-local --stalled-after 60 --offline-after 600 --json --project-dir $script:workersTempRoot
+        $checkPayload = ($checkOutput | Select-Object -Last 1) | ConvertFrom-Json
+
+        $checkPayload.health | Should -Be 'offline'
+        $checkPayload.reason | Should -Be 'heartbeat_expired'
+        $checkPayload.age_seconds | Should -BeGreaterThan 600
+    }
+
+    It 'keeps child run waiting separate from stopped or offline state' {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    execution-profile: local-windows
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        $env:WINSMUX_TEST_NOW_UTC = '2026-05-16T00:00:00Z'
+        & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers heartbeat mark w2 --run-id child-wait --state child_wait --message 'waiting for nested run' --json --project-dir $script:workersTempRoot | Out-Null
+
+        $env:WINSMUX_TEST_NOW_UTC = '2026-05-16T02:00:00Z'
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers heartbeat check w2 --run-id child-wait --stalled-after 60 --offline-after 600 --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+
+        $payload.health | Should -Be 'child_wait'
+        $payload.reason | Should -Be 'child_run_waiting'
+        $payload.waiting_for_child_run | Should -Be $true
+        $payload.terminal | Should -Be $false
+    }
+
+    It 'marks isolated worker heartbeats under the isolated run boundary' {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    execution-profile: isolated-enterprise
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        'payload' | Set-Content -Path (Join-Path $script:workersTempRoot 'input.txt') -Encoding UTF8
+        & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers workspace prepare w2 --include input.txt --run-id hb-isolated --json --project-dir $script:workersTempRoot | Out-Null
+        $env:WINSMUX_TEST_NOW_UTC = '2026-05-16T00:00:00Z'
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers heartbeat mark w2 --run-id hb-isolated --profile isolated-enterprise --state approval_waiting --message 'operator approval required' --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+
+        $payload.status | Should -Be 'marked'
+        $payload.execution_profile | Should -Be 'isolated-enterprise'
+        $payload.health | Should -Be 'approval_waiting'
+        $payload.requires_user | Should -Be $true
+        $payload.artifact | Should -Be '.winsmux/isolated-workspaces/worker-2/hb-isolated/heartbeat.json'
+        Test-Path -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\isolated-workspaces\worker-2\hb-isolated\heartbeat.json') | Should -Be $true
+    }
+
+    It 'includes worker heartbeat health in status rows for desktop consumers' {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    execution-profile: local-windows
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        $env:WINSMUX_TEST_NOW_UTC = '2026-05-16T00:00:00Z'
+        & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers heartbeat mark worker-2 --run-id hb-blocked --state blocked --message 'waiting for user' --json --project-dir $script:workersTempRoot | Out-Null
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers status worker-2 --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $row = @($payload.workers)[0]
+
+        $row.slot_id | Should -Be 'worker-2'
+        $row.state | Should -Be 'blocked'
+        $row.heartbeat_health | Should -Be 'blocked'
+        $row.heartbeat_state | Should -Be 'blocked'
+        $row.heartbeat.health | Should -Be 'blocked'
+        $row.heartbeat.requires_user | Should -Be $true
+        $row.heartbeat.artifact | Should -Be '.winsmux/worker-runs/worker-2/hb-blocked/heartbeat.json'
     }
 
     It 'reports the default six worker slots with aliases and Colab degraded state' {

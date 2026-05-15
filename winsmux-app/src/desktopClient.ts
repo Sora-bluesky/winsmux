@@ -601,6 +601,30 @@ export interface DesktopWorkerApprovalDifference {
   current: string;
 }
 
+export interface DesktopWorkerHeartbeat {
+  contract_version?: number;
+  command?: string;
+  slot?: string;
+  slot_id?: string;
+  run_id?: string;
+  execution_profile?: string;
+  state?: string;
+  health?: string;
+  reason?: string;
+  message?: string;
+  heartbeat_at?: string;
+  checked_at?: string;
+  age_seconds?: number | null;
+  stalled_after_seconds?: number;
+  offline_after_seconds?: number;
+  requires_user?: boolean;
+  waiting_for_child_run?: boolean;
+  terminal?: boolean;
+  resumable?: boolean;
+  artifact?: string;
+  [key: string]: unknown;
+}
+
 export interface DesktopWorkerStatusRow {
   slot: string;
   slot_id: string;
@@ -619,6 +643,9 @@ export interface DesktopWorkerStatusRow {
   approved_launch: DesktopWorkerLaunchApproval | null;
   current_launch: DesktopWorkerLaunchApproval | null;
   approval_differences: DesktopWorkerApprovalDifference[];
+  heartbeat?: DesktopWorkerHeartbeat | null;
+  heartbeat_health?: string;
+  heartbeat_state?: string;
 }
 
 export interface DesktopWorkersStatusResult {

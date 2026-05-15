@@ -72,6 +72,32 @@ secret values. Isolated runs must already have a prepared isolated workspace so
 the secret directory stays under that run boundary and is removed by workspace
 cleanup.
 
+### Worker heartbeat and offline detection
+
+Use `workers heartbeat` to report liveness for a local or isolated worker run:
+
+```powershell
+winsmux workers heartbeat mark w2 --run-id run-123 --state running --json
+winsmux workers heartbeat check w2 --run-id run-123 --json
+```
+
+The shared heartbeat states are `running`, `blocked`, `approval_waiting`,
+`child_wait`, `stalled`, `completed`, and `resumable`. `blocked` and
+`approval_waiting` mean the worker needs operator attention. `child_wait` means
+the worker is waiting for a nested child run and must not be treated as a
+stopped process. A recent `running` heartbeat is healthy, an old heartbeat
+becomes `stalled` after the grace period, and an expired heartbeat becomes
+`offline`.
+
+Heartbeat artifacts are stored as `heartbeat.json` under the run boundary:
+
+- `.winsmux/worker-runs/<slot>/<run>/heartbeat.json` for `local-windows`
+- `.winsmux/isolated-workspaces/<slot>/<run>/heartbeat.json` for `isolated-enterprise`
+
+`winsmux workers status --json` includes the same `heartbeat`,
+`heartbeat_health`, and `heartbeat_state` fields that the desktop app uses, so
+CLI and Tauri surfaces share one worker liveness contract.
+
 ## Launcher presets
 
 Inspect the presets before launching a compare-oriented run:
