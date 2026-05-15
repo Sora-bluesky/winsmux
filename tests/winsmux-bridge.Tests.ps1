@@ -9105,6 +9105,7 @@ agent-slots:
   - slot-id: worker-1
     runtime-role: worker
     worker-backend: local
+    worker-role: worker
     agent: codex
     model: gpt-5.5
     model-source: operator-override
@@ -9190,6 +9191,81 @@ agent-slots:
         $payload.results[0].status | Should -Be 'blocked'
         $payload.results[0].reason | Should -Match 'worker launch approval mismatch'
         @($payload.results[0].approval_differences | Where-Object { $_.field -eq 'model' }).Count | Should -Be 1
+        Should -Invoke Send-TextToPane -Times 0 -Exactly
+    }
+
+    It 'keeps a ready deferred worker idempotent when its approved launch was manual' {
+@'
+agent: codex
+model: gpt-5.5
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    worker-backend: local
+    worker-role: worker
+    agent: codex
+    model: gpt-5.5
+    model-source: operator-override
+    reasoning-effort: high
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        New-Item -ItemType Directory -Path (Join-Path $script:workersTempRoot '.winsmux') -Force | Out-Null
+        Save-WinsmuxManifest -ProjectDir $script:workersTempRoot -Manifest ([ordered]@{
+            version = 1
+            saved_at = '2026-05-13T00:00:00Z'
+            session = [ordered]@{
+                name = 'winsmux-orchestra'
+                project_dir = $script:workersTempRoot
+                git_worktree_dir = (Join-Path $script:workersTempRoot '.git')
+            }
+            panes = [ordered]@{
+                'worker-1' = [ordered]@{
+                    pane_id = '%2'
+                    slot_id = 'worker-1'
+                    worker_backend = 'local'
+                    role = 'Worker'
+                    exec_mode = $false
+                    launch_dir = $script:workersTempRoot
+                    status = 'ready'
+                    bootstrap_plan_path = (Join-Path $script:workersTempRoot 'worker-1.json')
+                    approved_launch = [ordered]@{
+                        packet_type = 'worker_launch_approval'
+                        source = 'user_approved_worker_config'
+                        slot_id = 'worker-1'
+                        worker_backend = 'local'
+                        worker_role = 'worker'
+                        agent = 'codex'
+                        model = 'gpt-5.5'
+                        model_source = 'operator-override'
+                        reasoning_effort = 'high'
+                        prompt_transport = 'argv'
+                        auth_mode = ''
+                        credential_requirements = ''
+                        execution_backend = ''
+                        analysis_posture = ''
+                        auto_launch = $false
+                    }
+                    task = $null
+                }
+            }
+            tasks = [ordered]@{
+                queued = @()
+                in_progress = @()
+                completed = @()
+            }
+            worktrees = [ordered]@{}
+        })
+
+        Mock Send-TextToPane { throw 'bootstrap should not be dispatched' }
+
+        $Rest = @('worker-1', '--json', '--project-dir', $script:workersTempRoot)
+        $output = Invoke-WorkersStart
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+
+        $payload.results[0].slot_id | Should -Be 'worker-1'
+        $payload.results[0].status | Should -Be 'already_running'
+        [bool]$payload.results[0].current_launch.auto_launch | Should -Be $false
+        @($payload.results[0].approval_differences).Count | Should -Be 0
         Should -Invoke Send-TextToPane -Times 0 -Exactly
     }
 

@@ -5372,12 +5372,15 @@ function Get-WorkersStatusRows {
             }
         }
 
+        $approvedLaunch = if ($null -ne $entry) { Get-SendConfigValue -InputObject $entry -Name 'ApprovedLaunch' -Default $null } else { $null }
+        $approvedAutoLaunch = ConvertTo-WorkersLaunchApprovalValue (Get-SendConfigValue -InputObject $approvedLaunch -Name 'auto_launch' -Default $null)
         $autoLaunch = $true
-        if ($null -ne $entry -and (Test-DeferredPaneStartManifestEntry -ManifestEntry $entry)) {
+        if ($approvedAutoLaunch -in @('true', 'false')) {
+            $autoLaunch = [string]::Equals($approvedAutoLaunch, 'true', [System.StringComparison]::OrdinalIgnoreCase)
+        } elseif ($null -ne $entry -and (Test-DeferredPaneStartManifestEntry -ManifestEntry $entry)) {
             $autoLaunch = $false
         }
         $currentLaunch = New-WorkersLaunchApprovalSummary -SlotId $slotId -SlotConfig $slotConfig -AutoLaunch:$autoLaunch
-        $approvedLaunch = if ($null -ne $entry) { Get-SendConfigValue -InputObject $entry -Name 'ApprovedLaunch' -Default $null } else { $null }
         $approvalDifferences = @(Get-WorkersLaunchApprovalDifferences -ApprovedLaunch $approvedLaunch -CurrentLaunch $currentLaunch)
 
         $rows.Add([PSCustomObject][ordered]@{
