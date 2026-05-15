@@ -3518,7 +3518,7 @@ body[data-popout-surface="1"] #editor-surface {
   z-index: 5;
   overflow: hidden;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
   background: #08090b;
@@ -4298,6 +4298,135 @@ body.is-resizing-workbench {
 
 #focused-pane-select[hidden] {
   display: none;
+}
+
+#worker-status-pill-bar {
+  display: grid;
+  grid-template-columns: minmax(176px, 0.55fr) minmax(260px, 1fr);
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 38px;
+  padding: 5px 8px;
+  border-bottom: 1px solid #20242d;
+  background: #0c0e12;
+  overflow: hidden;
+}
+
+.worker-status-pill-list,
+.worker-status-detail-strip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.worker-status-pill-list {
+  flex-wrap: wrap;
+}
+
+.worker-status-detail-strip {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  overflow: hidden;
+}
+
+@media (max-width: 900px) {
+  #worker-status-pill-bar {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+}
+
+.worker-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  max-width: 140px;
+  min-height: 26px;
+  border: 1px solid var(--border-muted);
+  border-radius: 4px;
+  background: #111318;
+  color: var(--text-secondary);
+  padding: 3px 5px;
+  font-family: var(--font-code);
+  font-size: var(--text-2xs);
+  line-height: 1.25;
+  cursor: pointer;
+}
+
+.worker-status-pill:hover,
+.worker-status-pill:focus-visible,
+.worker-status-pill[data-focused="true"] {
+  border-color: var(--status-focus-border);
+  background: #151820;
+  color: var(--text-primary);
+}
+
+.worker-status-pill:focus-visible {
+  outline: 1px solid var(--status-focus-border);
+  outline-offset: -1px;
+}
+
+.worker-status-pill[data-tone="success"] {
+  border-color: var(--status-success-border);
+}
+
+.worker-status-pill[data-tone="warning"] {
+  border-color: var(--status-warning-border);
+}
+
+.worker-status-pill[data-tone="danger"] {
+  border-color: var(--status-danger-border);
+}
+
+.worker-status-pill[data-tone="info"] {
+  border-color: var(--status-info-border);
+}
+
+.worker-status-pill-main {
+  font-weight: 700;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.worker-status-pill-chip {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 116px;
+  border: 1px solid var(--border-muted);
+  border-radius: 3px;
+  background: #1a1d24;
+  color: var(--text-secondary);
+  padding: 1px 5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.worker-status-pill-chip[data-status-field="blocked"] {
+  color: var(--status-warning);
+  border-color: var(--status-warning-border);
+  background: var(--status-warning-bg);
+}
+
+.worker-status-pill-chip[data-status-field="focus"] {
+  color: var(--status-focus);
+  border-color: var(--status-focus-border);
+  background: var(--status-focus-bg);
+}
+
+.worker-status-pill-chip[data-status-field="remote"] {
+  color: var(--status-info);
+  border-color: var(--status-info-border);
+}
+
+.worker-status-detail-empty {
+  color: var(--text-muted);
+  font-family: var(--font-code);
+  font-size: var(--text-2xs);
 }
 
 #panes-container {

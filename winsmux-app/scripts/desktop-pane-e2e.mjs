@@ -234,6 +234,56 @@ async function clickWorkerPanesFooterToggle(page) {
   await page.locator(".footer-pill", { hasText: "Worker panes" }).first().click({ timeout: 10_000 });
 }
 
+async function readViewportFillMetrics(page) {
+  return await page.evaluate(() => ({
+    innerWidth: window.innerWidth,
+    innerHeight: window.innerHeight,
+    screenWidth: window.screen.width,
+    screenHeight: window.screen.height,
+    bodyWidth: Math.round(document.body.getBoundingClientRect().width),
+    bodyHeight: Math.round(document.body.getBoundingClientRect().height),
+  }));
+}
+
+function assertNoFixedViewportBlank(metrics) {
+  if (
+    metrics.innerWidth === 1600
+    && metrics.innerHeight === 900
+    && metrics.screenWidth >= 1800
+    && metrics.screenHeight >= 1000
+  ) {
+    throw new Error(`WebView is stuck at the old test viewport: ${JSON.stringify(metrics)}`);
+  }
+  if (Math.abs(metrics.bodyWidth - metrics.innerWidth) > 2 || Math.abs(metrics.bodyHeight - metrics.innerHeight) > 2) {
+    throw new Error(`document body should fill the WebView viewport: ${JSON.stringify(metrics)}`);
+  }
+}
+
+async function maximizeNativeWindowAndReadMetrics(page) {
+  const beforeMetrics = await readViewportFillMetrics(page);
+  await page.evaluate(async () => {
+    const currentWindow = window.__TAURI__.webviewWindow.getCurrentWebviewWindow();
+    await currentWindow.maximize();
+  });
+  await page.waitForFunction((before) => {
+    const body = document.body;
+    if (!body) {
+      return false;
+    }
+    const bodyRect = body.getBoundingClientRect();
+    const fillsViewport = Math.abs(bodyRect.width - window.innerWidth) <= 2
+      && Math.abs(bodyRect.height - window.innerHeight) <= 2;
+    const sizeChanged = Math.abs(window.innerWidth - before.innerWidth) > 2
+      || Math.abs(window.innerHeight - before.innerHeight) > 2;
+    const alreadyAtScreenLimit = window.screen.width <= before.innerWidth + 2
+      || window.screen.height <= before.innerHeight + 80;
+    return fillsViewport && (sizeChanged || alreadyAtScreenLimit);
+  }, beforeMetrics, {
+    timeout: 10_000,
+  });
+  return await readViewportFillMetrics(page);
+}
+
 async function getWorkbenchLayout(page) {
   return await page.locator("#terminal-drawer").getAttribute("data-layout");
 }
@@ -367,15 +417,27 @@ function stripAnsi(value) {
   return value.replace(/\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\u0007]*(?:\u0007|\u001B\\))/g, "");
 }
 
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function removePtyCommandEchoes(value, marker) {
+  const escapedMarker = escapeRegExp(marker);
+  return value
+    .replace(new RegExp(`Write-Output\\s+['"]${escapedMarker}['"]`, "g"), "")
+    .replace(new RegExp(`echo\\s+['"]?${escapedMarker}['"]?`, "g"), "");
+}
+
 async function waitForPtyOutputLine(page, paneId, line, timeoutMs = 45_000) {
   const startedAt = Date.now();
   let lastOutput = "";
   while (Date.now() - startedAt < timeoutMs) {
     lastOutput = await capturePty(page, paneId).catch((error) => `capture failed: ${error.message}`);
-    const strippedLines = stripAnsi(lastOutput)
+    const stripped = removePtyCommandEchoes(stripAnsi(lastOutput), line);
+    const strippedLines = stripped
       .split(/\r?\n/)
       .map((item) => item.trim());
-    if (strippedLines.includes(line)) {
+    if (strippedLines.includes(line) || stripped.includes(line)) {
       return lastOutput;
     }
     await new Promise((resolve) => setTimeout(resolve, 500));
@@ -704,12 +766,23 @@ async function main() {
     browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`);
     page = await resolveAppPage(browser);
     attachPageErrorCapture(page);
-    await page.setViewportSize({ width: 1600, height: 900 }).catch(() => {});
 
     await runStep("wait for desktop app chrome", async () => {
       await waitForAppReady(page);
       await resetAppState(page);
       return { url: page.url() };
+    });
+
+    await runStep("desktop app fills the native WebView without fixed viewport emulation", async () => {
+      const metrics = await readViewportFillMetrics(page);
+      assertNoFixedViewportBlank(metrics);
+      return metrics;
+    });
+
+    await runStep("maximized desktop window still fills the WebView", async () => {
+      const metrics = await maximizeNativeWindowAndReadMetrics(page);
+      assertNoFixedViewportBlank(metrics);
+      return metrics;
     });
 
     await runStep("default center keeps operator and composer unobstructed", async () => {
@@ -782,6 +855,71 @@ async function main() {
       await typeIntoTerminal(page, "#pane-worker-1 .pane-terminal", `Write-Output '${WORKER_UI_MARKER}'`);
       const output = await waitForPtyOutputLine(page, "worker-1", WORKER_UI_MARKER);
       return { outputTail: output.slice(-800) };
+    });
+
+    await runStep("worker status pills mirror native state and focus panes", async () => {
+      await ensureDrawerOpen(page);
+      await page.locator("#worker-status-pill-bar").waitFor({ state: "visible", timeout: 10_000 });
+      const workerOnePill = page.locator('.worker-status-pill[data-worker-status-target="worker-1"]');
+      await workerOnePill.waitFor({ state: "visible", timeout: 10_000 });
+      await workerOnePill.click();
+      await page.waitForFunction(() => {
+        const detail = document.querySelector(".worker-status-detail-strip");
+        return detail?.getAttribute("data-worker-status-detail") === "worker-1";
+      }, undefined, { timeout: 10_000 });
+      const requiredFields = ["role", "backend", "auth", "model-source", "launch", "blocked", "remote", "elapsed", "focus"];
+      for (const field of requiredFields) {
+        const count = await page.locator(`.worker-status-detail-strip[data-worker-status-detail="worker-1"] .worker-status-pill-chip[data-status-field="${field}"]`).count();
+        if (count !== 1) {
+          throw new Error(`worker-1 status pill should expose ${field}, saw ${count}`);
+        }
+      }
+      const detailMetrics = await page.locator('.worker-status-detail-strip[data-worker-status-detail="worker-1"]').evaluate((detail) => {
+        const detailRect = detail.getBoundingClientRect();
+        const visibleFields = Array.from(detail.querySelectorAll(".worker-status-pill-chip"))
+          .filter((chip) => {
+            const chipRect = chip.getBoundingClientRect();
+            return chipRect.width > 0
+              && chipRect.height > 0
+              && chipRect.left >= detailRect.left
+              && chipRect.right <= detailRect.right
+              && chipRect.top >= detailRect.top
+              && chipRect.bottom <= detailRect.bottom;
+          })
+          .map((chip) => chip.getAttribute("data-status-field"));
+        return {
+          width: detailRect.width,
+          height: detailRect.height,
+          visibleFields,
+        };
+      });
+      if (detailMetrics.width < 220 || detailMetrics.visibleFields.length !== requiredFields.length) {
+        throw new Error(`worker status details should stay visible: ${JSON.stringify(detailMetrics)}`);
+      }
+      const workerTwoPill = page.locator('.worker-status-pill[data-worker-status-target="worker-2"]');
+      await workerTwoPill.waitFor({ state: "visible", timeout: 10_000 });
+      await workerTwoPill.click();
+      await page.waitForFunction(() => {
+        const drawer = document.querySelector("#terminal-drawer");
+        const pill = document.querySelector('.worker-status-pill[data-worker-status-target="worker-2"]');
+        const detail = document.querySelector(".worker-status-detail-strip");
+        return drawer?.getAttribute("data-focused-pane") === "worker-2"
+          && pill?.getAttribute("data-focused") === "true"
+          && detail?.getAttribute("data-worker-status-detail") === "worker-2";
+      }, undefined, { timeout: 10_000 });
+      const workerPaneVisible = await page.locator("#pane-worker-2").isVisible();
+      if (!workerPaneVisible) {
+        throw new Error("worker-2 pane should remain visible after status pill focus");
+      }
+      const statusBarMetrics = await page.locator("#worker-status-pill-bar").evaluate((bar) => ({
+        clientWidth: bar.clientWidth,
+        scrollWidth: bar.scrollWidth,
+        clientHeight: bar.clientHeight,
+        scrollHeight: bar.scrollHeight,
+      }));
+      if (statusBarMetrics.scrollWidth > statusBarMetrics.clientWidth + 2) {
+        throw new Error(`worker status surface should not require horizontal scrolling: ${JSON.stringify(statusBarMetrics)}`);
+      }
     });
 
     await runStep("worker terminal keeps shortcuts, arrows, and paste in the PTY", async () => {

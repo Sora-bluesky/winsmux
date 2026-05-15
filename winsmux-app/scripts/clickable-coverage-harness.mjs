@@ -558,6 +558,15 @@ async function testWorkbench(page) {
     await page.selectOption("#focused-pane-select", value ?? "worker-1");
     recordClick("workbench focused pane select");
   }
+  const statusPill = page.locator('.worker-status-pill[data-worker-status-target="worker-2"]').first();
+  await statusPill.waitFor({ state: "visible" });
+  await clickLocator(page, statusPill, "workbench worker status pill");
+  await page.waitForFunction(() => {
+    const drawer = document.querySelector("#terminal-drawer");
+    const detail = document.querySelector(".worker-status-detail-strip");
+    return drawer?.getAttribute("data-focused-pane") === "worker-2"
+      && detail?.getAttribute("data-worker-status-detail") === "worker-2";
+  });
   await clickWorkbenchLayoutUntil(page, "2x2");
   await clickSelector(page, "#add-pane-btn", "workbench add pane");
   await clickLocator(page, page.locator("#panes-container .pane-close").last(), "workbench pane close");
