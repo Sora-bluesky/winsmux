@@ -7102,6 +7102,23 @@ Describe 'orchestra-start rollback helpers' {
                 WINSMUX_GOVERNANCE_MODE = 'enhanced'
             }
         }
+        $approvedLaunch = [ordered]@{
+            packet_type = 'worker_launch_approval'
+            source = 'user_approved_worker_config'
+            slot_id = 'worker-1'
+            worker_backend = 'local'
+            worker_role = 'worker'
+            agent = 'codex'
+            model = 'gpt-5.4'
+            model_source = 'operator-override'
+            reasoning_effort = 'high'
+            prompt_transport = 'argv'
+            auth_mode = 'local-cli'
+            credential_requirements = 'local-cli-owned'
+            execution_backend = 'local'
+            analysis_posture = 'read-write-worker'
+            auto_launch = $false
+        }
 
         Mock Wait-PaneShellReady { }
         Mock Invoke-Bridge {
@@ -7132,7 +7149,8 @@ Describe 'orchestra-start rollback helpers' {
             -StartupToken 'token-123' `
             -LaunchDir 'C:\repo\.worktrees\builder-1' `
             -CleanPtyEnv $cleanPtyEnv `
-            -LaunchCommand 'codex --help'
+            -LaunchCommand 'codex --help' `
+            -ApprovedLaunch $approvedLaunch
 
         Start-OrchestraPaneBootstrap -PaneId '%2' -PlanPath $planPath
 
@@ -7147,6 +7165,8 @@ Describe 'orchestra-start rollback helpers' {
         [string]$plan.environment.WINSMUX_GOVERNANCE_MODE | Should -Be 'enhanced'
         [string]$plan.launch_command | Should -Be 'codex --help'
         [bool]$plan.supports_interrupt | Should -Be $true
+        [string]$plan.approved_launch.packet_type | Should -Be 'worker_launch_approval'
+        [string]$plan.approved_launch.model | Should -Be 'gpt-5.4'
         [string]$plan.startup_token | Should -Be 'token-123'
         [string]$plan.ready_marker_path | Should -Match '[\\/]2-token-123\.ready\.json$'
         $bridgeCalls.Count | Should -Be 1
@@ -8950,6 +8970,9 @@ worker-backend: colab_cli
         $payload.workers[1].actual_gpu | Should -Be 'CPU'
         $payload.workers[1].degraded_reason | Should -Match 'colab_cli_missing'
         $payload.workers[1].state | Should -Be 'not_launched'
+        $payload.workers[1].current_launch.packet_type | Should -Be 'worker_launch_approval'
+        $payload.workers[1].current_launch.source | Should -Be 'user_approved_worker_config'
+        @($payload.workers[1].approval_differences).Count | Should -Be 0
     }
 
     It 'stops one worker by slot alias and records the lifecycle command in the manifest' {
@@ -9071,6 +9094,102 @@ agent-slots:
         $payload.results[0].slot_id | Should -Be 'worker-2'
         $payload.results[0].status | Should -Be 'blocked'
         $payload.results[0].reason | Should -Be 'colab_cli_missing'
+        Should -Invoke Send-TextToPane -Times 0 -Exactly
+    }
+
+    It 'blocks start when the manifest approval no longer matches the worker config' {
+@'
+agent: codex
+model: gpt-5.5
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    worker-backend: local
+    agent: codex
+    model: gpt-5.5
+    model-source: operator-override
+    reasoning-effort: high
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        New-Item -ItemType Directory -Path (Join-Path $script:workersTempRoot '.winsmux') -Force | Out-Null
+        $planPath = Join-Path $script:workersTempRoot 'worker-1.json'
+        Save-WinsmuxManifest -ProjectDir $script:workersTempRoot -Manifest ([ordered]@{
+            version = 1
+            saved_at = '2026-05-13T00:00:00Z'
+            session = [ordered]@{
+                name = 'winsmux-orchestra'
+                project_dir = $script:workersTempRoot
+                git_worktree_dir = (Join-Path $script:workersTempRoot '.git')
+            }
+            panes = [ordered]@{
+                'worker-1' = [ordered]@{
+                    pane_id = '%2'
+                    slot_id = 'worker-1'
+                    worker_backend = 'local'
+                    role = 'Worker'
+                    exec_mode = $false
+                    launch_dir = $script:workersTempRoot
+                    status = 'deferred_start'
+                    bootstrap_plan_path = $planPath
+                    approved_launch = [ordered]@{
+                        packet_type = 'worker_launch_approval'
+                        source = 'user_approved_worker_config'
+                        slot_id = 'worker-1'
+                        worker_backend = 'local'
+                        worker_role = 'worker'
+                        agent = 'codex'
+                        model = 'gpt-5.4'
+                        model_source = 'operator-override'
+                        reasoning_effort = 'high'
+                        prompt_transport = 'argv'
+                        auth_mode = 'local-cli'
+                        credential_requirements = 'local-cli-owned'
+                        execution_backend = 'local'
+                        analysis_posture = 'read-write-worker'
+                        auto_launch = $false
+                    }
+                    task = $null
+                }
+            }
+            tasks = [ordered]@{
+                queued = @()
+                in_progress = @()
+                completed = @()
+            }
+            worktrees = [ordered]@{}
+        })
+        ([ordered]@{
+            agent = 'codex'
+            ready_marker_path = (Join-Path $script:workersTempRoot 'worker-1.ready.json')
+            approved_launch = [ordered]@{
+                packet_type = 'worker_launch_approval'
+                source = 'user_approved_worker_config'
+                slot_id = 'worker-1'
+                worker_backend = 'local'
+                worker_role = 'worker'
+                agent = 'codex'
+                model = 'gpt-5.5'
+                model_source = 'operator-override'
+                reasoning_effort = 'high'
+                prompt_transport = 'argv'
+                auth_mode = 'local-cli'
+                credential_requirements = 'local-cli-owned'
+                execution_backend = 'local'
+                analysis_posture = 'read-write-worker'
+                auto_launch = $false
+            }
+        } | ConvertTo-Json -Depth 8) | Set-Content -Path $planPath -Encoding UTF8
+
+        Mock Send-TextToPane { throw 'bootstrap should not be dispatched' }
+
+        $Rest = @('worker-1', '--json', '--project-dir', $script:workersTempRoot)
+        $output = Invoke-WorkersStart
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+
+        $payload.results[0].slot_id | Should -Be 'worker-1'
+        $payload.results[0].status | Should -Be 'blocked'
+        $payload.results[0].reason | Should -Match 'worker launch approval mismatch'
+        @($payload.results[0].approval_differences | Where-Object { $_.field -eq 'model' }).Count | Should -Be 1
         Should -Invoke Send-TextToPane -Times 0 -Exactly
     }
 
@@ -15410,6 +15529,8 @@ Describe 'orchestra pane bootstrap plan' {
         $script:orchestraStartContent | Should -Match 'deferred_start'
         $script:orchestraStartContent | Should -Match 'preflight\.worker\.deferred_start'
         $script:orchestraStartContent | Should -Match 'ready_marker_path'
+        $script:orchestraStartContent | Should -Match 'function New-OrchestraWorkerLaunchApproval'
+        $script:orchestraStartContent | Should -Match 'approved_launch'
         $script:orchestraStartContent | Should -Match 'Wait-OrchestraServerSessionAbsent -SessionName \$SessionName -TimeoutSeconds 20'
     }
 
@@ -17686,6 +17807,62 @@ Describe 'deferred worker startup' {
         { Start-DeferredPaneFromManifestEntry -ProjectDir $script:deferredTempRoot -ManifestEntry $entry } |
             Should -Throw "*bootstrap plan not found*"
 
+        $script:deferredSendCommands.Count | Should -Be 0
+        $script:deferredStatusWrites | Should -Be @('deferred_start_failed')
+    }
+
+    It 'blocks a deferred pane when its bootstrap plan does not match the approved launch' {
+        $entry = [PSCustomObject]@{
+            Label             = 'worker-2'
+            PaneId            = '%3'
+            Status            = 'deferred_start'
+            BootstrapPlanPath = $script:deferredPlanPath
+            CapabilityAdapter = 'codex'
+            ProviderTarget    = ''
+            ApprovedLaunch    = [PSCustomObject]@{
+                packet_type = 'worker_launch_approval'
+                source = 'user_approved_worker_config'
+                slot_id = 'worker-2'
+                worker_backend = 'local'
+                worker_role = 'worker'
+                agent = 'codex'
+                model = 'gpt-5.4'
+                model_source = 'operator-override'
+                reasoning_effort = 'high'
+                prompt_transport = 'argv'
+                auth_mode = 'local-cli'
+                credential_requirements = 'local-cli-owned'
+                execution_backend = 'local'
+                analysis_posture = 'read-write-worker'
+                auto_launch = $false
+            }
+        }
+        ([ordered]@{
+            agent = 'codex'
+            ready_marker_path = $script:deferredMarkerPath
+            approved_launch = [ordered]@{
+                packet_type = 'worker_launch_approval'
+                source = 'user_approved_worker_config'
+                slot_id = 'worker-2'
+                worker_backend = 'local'
+                worker_role = 'worker'
+                agent = 'codex'
+                model = 'gpt-5.5'
+                model_source = 'operator-override'
+                reasoning_effort = 'high'
+                prompt_transport = 'argv'
+                auth_mode = 'local-cli'
+                credential_requirements = 'local-cli-owned'
+                execution_backend = 'local'
+                analysis_posture = 'read-write-worker'
+                auto_launch = $false
+            }
+        } | ConvertTo-Json -Depth 8) | Set-Content -Path $script:deferredPlanPath -Encoding UTF8
+
+        { Start-DeferredPaneFromManifestEntry -ProjectDir $script:deferredTempRoot -ManifestEntry $entry } |
+            Should -Throw "*worker launch approval mismatch*"
+
+        Should -Invoke Wait-PaneShellReady -Times 0 -Exactly
         $script:deferredSendCommands.Count | Should -Be 0
         $script:deferredStatusWrites | Should -Be @('deferred_start_failed')
     }

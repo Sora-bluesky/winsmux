@@ -663,6 +663,32 @@ function Send-OrchestraBridgeCommand {
     Invoke-Bridge -Arguments @('send', $Target, $Text)
 }
 
+function New-OrchestraWorkerLaunchApproval {
+    param(
+        [Parameter(Mandatory = $true)][string]$SlotId,
+        [Parameter(Mandatory = $true)]$SlotAgentConfig,
+        [bool]$AutoLaunch = $false
+    )
+
+    return [ordered]@{
+        packet_type             = 'worker_launch_approval'
+        source                  = 'user_approved_worker_config'
+        slot_id                 = $SlotId
+        worker_backend          = [string]$SlotAgentConfig.WorkerBackend
+        worker_role             = [string]$SlotAgentConfig.WorkerRole
+        agent                   = [string]$SlotAgentConfig.Agent
+        model                   = [string]$SlotAgentConfig.Model
+        model_source            = [string]$SlotAgentConfig.ModelSource
+        reasoning_effort        = [string]$SlotAgentConfig.ReasoningEffort
+        prompt_transport        = [string]$SlotAgentConfig.PromptTransport
+        auth_mode               = [string]$SlotAgentConfig.AuthMode
+        credential_requirements = [string]$SlotAgentConfig.CredentialRequirements
+        execution_backend       = [string]$SlotAgentConfig.ExecutionBackend
+        analysis_posture        = [string]$SlotAgentConfig.AnalysisPosture
+        auto_launch             = [bool]$AutoLaunch
+    }
+}
+
 function New-OrchestraPaneBootstrapPlan {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -675,7 +701,8 @@ function New-OrchestraPaneBootstrapPlan {
         [Parameter(Mandatory = $true)][string]$LaunchDir,
         [Parameter(Mandatory = $true)]$CleanPtyEnv,
         [Parameter(Mandatory = $true)][string]$LaunchCommand,
-        [bool]$SupportsInterrupt = $true
+        [bool]$SupportsInterrupt = $true,
+        [AllowNull()]$ApprovedLaunch = $null
     )
 
     $bootstrapDir = Join-Path (Join-Path $ProjectDir '.winsmux') 'orchestra-bootstrap'
@@ -702,6 +729,9 @@ function New-OrchestraPaneBootstrapPlan {
         supports_interrupt = $SupportsInterrupt
         ready_marker_path = $readyMarkerPath
         environment    = $CleanPtyEnv.Environment
+    }
+    if ($null -ne $ApprovedLaunch) {
+        $plan['approved_launch'] = $ApprovedLaunch
     }
 
     $planJson = ($plan | ConvertTo-Json -Depth 8)
@@ -1159,6 +1189,7 @@ function Save-OrchestraSessionState {
             supports_verification      = [bool]$paneSummary.SupportsVerification
             supports_consultation      = [bool]$paneSummary.SupportsConsultation
             supports_context_reset     = [bool](Get-OrchestraObjectPropertyValue -InputObject $paneSummary -Name 'SupportsContextReset' -Default $false)
+            approved_launch            = (Get-OrchestraObjectPropertyValue -InputObject $paneSummary -Name 'ApprovedLaunch' -Default $null)
             bootstrap_plan_path        = [string](Get-OrchestraObjectPropertyValue -InputObject $paneSummary -Name 'BootstrapPlanPath' -Default '')
             bootstrap_marker_path      = [string](Get-OrchestraObjectPropertyValue -InputObject $paneSummary -Name 'BootstrapMarkerPath' -Default '')
             task                       = $null
@@ -2268,6 +2299,7 @@ if ($MyInvocation.InvocationName -ne '.') {
         }
 
         Invoke-Bridge -Arguments @('name', $paneId, $label)
+        $approvedLaunch = $null
         try {
             $paneEnvironment = Get-WinsmuxPaneEnvironment -Role $canonicalRole -PaneId $paneId -SessionName $sessionName -ProjectDir $projectDir -RoleMapJson $sessionRoleMapJson -BuilderWorktreePath $builderWorktreePath -SlotId $label -AssignedBranch $builderBranch -GitWorktreeDir $launchGitWorktreeDir -ExpectedOrigin $expectedOrigin
             $cleanPtyEnv = Get-CleanPtyEnv -AllowedEnvironment $paneEnvironment
@@ -2280,6 +2312,9 @@ if ($MyInvocation.InvocationName -ne '.') {
             if ([string]::IsNullOrWhiteSpace($launchCommand)) {
                 Write-Warning "TASK-231: empty launch command for pane $paneId ($label, role=$canonicalRole, execMode=$execMode). Agent will not start automatically."
             } else {
+                if ($canonicalRole -eq 'Worker') {
+                    $approvedLaunch = New-OrchestraWorkerLaunchApproval -SlotId $label -SlotAgentConfig $slotAgentConfig -AutoLaunch:(!$deferPaneStart)
+                }
                 $bootstrapPlanPath = New-OrchestraPaneBootstrapPlan `
                     -ProjectDir $projectDir `
                     -PaneId $paneId `
@@ -2291,7 +2326,8 @@ if ($MyInvocation.InvocationName -ne '.') {
                     -LaunchDir $launchDir `
                     -CleanPtyEnv $cleanPtyEnv `
                     -LaunchCommand $launchCommand `
-                    -SupportsInterrupt $supportsInterrupt
+                    -SupportsInterrupt $supportsInterrupt `
+                    -ApprovedLaunch $approvedLaunch
                 if ($deferPaneStart) {
                     $paneStatus = $deferredPaneStatus
                     $eventName = if ($paneStatus -eq 'backend_degraded') { 'preflight.worker.backend_degraded' } else { 'preflight.worker.deferred_start' }
@@ -2350,6 +2386,7 @@ if ($MyInvocation.InvocationName -ne '.') {
             BuilderWorktreePath = $builderWorktreePath
             WorktreeGitDir = $launchGitWorktreeDir
             ExpectedOrigin = $expectedOrigin
+            ApprovedLaunch = $approvedLaunch
             BootstrapPlanPath = $bootstrapPlanPath
             BootstrapMarkerPath = $bootstrapMarkerPath
             Status = $paneStatus

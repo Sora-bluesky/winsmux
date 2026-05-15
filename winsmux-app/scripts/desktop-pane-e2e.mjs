@@ -202,6 +202,14 @@ async function resetAppState(page) {
   await waitForAppReady(page);
 }
 
+async function setActiveProjectDirForUi(page, projectDir) {
+  await page.evaluate((value) => {
+    localStorage.setItem("winsmux.active-project.v1", value.replace(/\\/g, "/"));
+  }, projectDir);
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await waitForAppReady(page);
+}
+
 async function assertDrawerVisible(page, expected) {
   await page.waitForFunction((visible) => {
     const drawer = document.querySelector("#terminal-drawer");
@@ -870,6 +878,43 @@ async function main() {
 
     await runStep("Tauri native APIs exercise Rust, filesystem, voice, and webview windows", async () => {
       return await exerciseTauriNativeSurface(page, browser);
+    });
+
+    await runStep("worker start button shows launch approval before lifecycle command", async () => {
+      const tempProjectDir = path.join(OUTPUT_DIR, "worker-start-project");
+      await fs.rm(tempProjectDir, { recursive: true, force: true });
+      await fs.mkdir(tempProjectDir, { recursive: true });
+      await fs.writeFile(
+        path.join(tempProjectDir, ".winsmux.yaml"),
+        [
+          "agent: codex",
+          "model: gpt-5.4",
+          "agent-slots:",
+          "  - slot-id: worker-1",
+          "    runtime-role: worker",
+          "    worker-backend: local",
+          "    agent: codex",
+          "    model: gpt-5.4",
+          "    model-source: operator-override",
+          "    reasoning-effort: high",
+          "    worktree-mode: managed",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+
+      await setActiveProjectDirForUi(page, tempProjectDir);
+      await setWorkbenchLayout(page, "focus");
+      await page.selectOption("#focused-pane-select", "worker-1");
+      await setWorkbenchLayout(page, "3x2");
+      await page.click("#start-worker-btn");
+      await page.locator("#conversation-panel", { hasText: "Worker launch approval" }).waitFor({ state: "visible", timeout: 60_000 });
+      await page.locator("#conversation-panel", { hasText: "Worker start blocked" }).waitFor({ state: "visible", timeout: 60_000 });
+      const text = await page.locator("#conversation-panel").innerText();
+      if (!text.includes("worker-1") || !text.includes("manifest_entry_missing")) {
+        throw new Error(`worker start conversation did not expose the expected launch result:\n${text.slice(-1_200)}`);
+      }
+      return { conversationTail: text.slice(-1_200) };
     });
 
     await runStep("close spawned PTYs", async () => {

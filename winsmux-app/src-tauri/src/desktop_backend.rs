@@ -708,6 +708,14 @@ pub enum DesktopCommand {
         next_test: String,
         project_dir: Option<String>,
     },
+    WorkersStatus {
+        target: String,
+        project_dir: Option<String>,
+    },
+    WorkersStart {
+        target: String,
+        project_dir: Option<String>,
+    },
     RuntimeRolesApply {
         roles_json: String,
         project_dir: Option<String>,
@@ -841,6 +849,8 @@ impl DesktopCommand {
             DesktopCommand::RunCompare { project_dir, .. } => project_dir.as_deref(),
             DesktopCommand::RunPromote { project_dir, .. } => project_dir.as_deref(),
             DesktopCommand::RunPickWinner { project_dir, .. } => project_dir.as_deref(),
+            DesktopCommand::WorkersStatus { project_dir, .. } => project_dir.as_deref(),
+            DesktopCommand::WorkersStart { project_dir, .. } => project_dir.as_deref(),
             DesktopCommand::RuntimeRolesApply { project_dir, .. } => project_dir.as_deref(),
             DesktopCommand::DogfoodEvent { project_dir, .. } => project_dir.as_deref(),
         }
@@ -900,6 +910,18 @@ impl DesktopCommand {
                 }
                 args
             }
+            DesktopCommand::WorkersStatus { target, .. } => vec![
+                "workers".to_string(),
+                "status".to_string(),
+                target.clone(),
+                "--json".to_string(),
+            ],
+            DesktopCommand::WorkersStart { target, .. } => vec![
+                "workers".to_string(),
+                "start".to_string(),
+                target.clone(),
+                "--json".to_string(),
+            ],
             DesktopCommand::RuntimeRolesApply { roles_json, .. } => vec![
                 "runtime-roles".to_string(),
                 "apply".to_string(),
@@ -1285,6 +1307,28 @@ pub fn apply_desktop_runtime_roles(
     })
 }
 
+pub fn load_desktop_workers_status(
+    transport: &dyn DesktopCommandTransport,
+    target: String,
+    project_dir: Option<String>,
+) -> Result<Value, String> {
+    transport.request_json(&DesktopCommand::WorkersStatus {
+        target,
+        project_dir,
+    })
+}
+
+pub fn start_desktop_worker(
+    transport: &dyn DesktopCommandTransport,
+    target: String,
+    project_dir: Option<String>,
+) -> Result<Value, String> {
+    transport.request_json(&DesktopCommand::WorkersStart {
+        target,
+        project_dir,
+    })
+}
+
 pub fn load_desktop_editor_file(
     path: String,
     worktree: Option<String>,
@@ -1362,6 +1406,8 @@ pub fn handle_desktop_json_rpc(
                     "desktop.run.compare",
                     "desktop.run.promote",
                     "desktop.run.pick_winner",
+                    "desktop.workers.status",
+                    "desktop.workers.start",
                     "desktop.runtime.roles.apply",
                     "desktop.voice.capture_status",
                     "desktop.dogfood.event",
@@ -1500,6 +1546,26 @@ pub fn handle_desktop_json_rpc(
                         format!("Failed to serialize desktop pick-winner payload: {err}"),
                     ),
                 },
+                Err(err) => json_rpc_error(request_id, JSON_RPC_SERVER_ERROR, err),
+            }
+        }
+        "desktop.workers.status" => {
+            let target = get_optional_string_param(params.as_ref(), &["target", "slot"])
+                .unwrap_or_else(|| "all".to_string());
+            match load_desktop_workers_status(transport, target, resolved_project_dir) {
+                Ok(result) => json_rpc_result(request_id, result),
+                Err(err) => json_rpc_error(request_id, JSON_RPC_SERVER_ERROR, err),
+            }
+        }
+        "desktop.workers.start" => {
+            let target = match get_required_string_param(params.as_ref(), &["target", "slot"]) {
+                Ok(value) => value,
+                Err(err) => {
+                    return json_rpc_error(request_id, JSON_RPC_INVALID_PARAMS, err);
+                }
+            };
+            match start_desktop_worker(transport, target, resolved_project_dir) {
+                Ok(result) => json_rpc_result(request_id, result),
                 Err(err) => json_rpc_error(request_id, JSON_RPC_SERVER_ERROR, err),
             }
         }
@@ -4912,6 +4978,12 @@ mod tests {
                     .any(|method| { method.as_str() == Some("desktop.runtime.roles.apply") }));
                 assert!(methods
                     .iter()
+                    .any(|method| { method.as_str() == Some("desktop.workers.status") }));
+                assert!(methods
+                    .iter()
+                    .any(|method| { method.as_str() == Some("desktop.workers.start") }));
+                assert!(methods
+                    .iter()
                     .any(|method| { method.as_str() == Some("desktop.dogfood.event") }));
                 assert!(methods
                     .iter()
@@ -4960,6 +5032,119 @@ mod tests {
             }
             DesktopJsonRpcResponse::Error { error, .. } => {
                 panic!("expected success, got {:?}", error);
+            }
+        }
+        assert!(transport.requests.borrow().is_empty());
+    }
+
+    #[test]
+    fn handle_desktop_json_rpc_routes_workers_status() {
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response: serde_json::json!({
+                "workers": [
+                    {
+                        "slot_id": "worker-2",
+                        "approved_launch": {"agent": "codex"},
+                        "current_launch": {"agent": "codex"},
+                        "approval_differences": []
+                    }
+                ]
+            }),
+        };
+        let response = handle_desktop_json_rpc(
+            &transport,
+            DesktopJsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::json!("req-workers-status"),
+                method: "desktop.workers.status".to_string(),
+                params: Some(serde_json::json!({
+                    "target": "worker-2",
+                    "projectDir": r"C:\repo",
+                })),
+            },
+            None,
+        );
+
+        match response {
+            DesktopJsonRpcResponse::Success { id, result, .. } => {
+                assert_eq!(id, serde_json::json!("req-workers-status"));
+                assert_eq!(result["workers"][0]["slot_id"], "worker-2");
+            }
+            DesktopJsonRpcResponse::Error { error, .. } => {
+                panic!("expected success, got {:?}", error);
+            }
+        }
+        assert_eq!(
+            transport.requests.borrow().as_slice(),
+            ["workers status worker-2 --json"]
+        );
+    }
+
+    #[test]
+    fn handle_desktop_json_rpc_routes_workers_start() {
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response: serde_json::json!({
+                "results": [
+                    {
+                        "slot_id": "worker-2",
+                        "status": "started",
+                        "approval_differences": []
+                    }
+                ]
+            }),
+        };
+        let response = handle_desktop_json_rpc(
+            &transport,
+            DesktopJsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::json!("req-workers-start"),
+                method: "desktop.workers.start".to_string(),
+                params: Some(serde_json::json!({
+                    "slot": "worker-2",
+                })),
+            },
+            None,
+        );
+
+        match response {
+            DesktopJsonRpcResponse::Success { id, result, .. } => {
+                assert_eq!(id, serde_json::json!("req-workers-start"));
+                assert_eq!(result["results"][0]["status"], "started");
+            }
+            DesktopJsonRpcResponse::Error { error, .. } => {
+                panic!("expected success, got {:?}", error);
+            }
+        }
+        assert_eq!(
+            transport.requests.borrow().as_slice(),
+            ["workers start worker-2 --json"]
+        );
+    }
+
+    #[test]
+    fn handle_desktop_json_rpc_rejects_workers_start_without_target() {
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response: serde_json::json!({}),
+        };
+        let response = handle_desktop_json_rpc(
+            &transport,
+            DesktopJsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::json!("req-workers-start-missing"),
+                method: "desktop.workers.start".to_string(),
+                params: Some(serde_json::json!({})),
+            },
+            None,
+        );
+
+        match response {
+            DesktopJsonRpcResponse::Success { .. } => panic!("expected error"),
+            DesktopJsonRpcResponse::Error { error, .. } => {
+                assert_eq!(error.code, JSON_RPC_INVALID_PARAMS);
+                assert!(error.message.contains("target"));
             }
         }
         assert!(transport.requests.borrow().is_empty());

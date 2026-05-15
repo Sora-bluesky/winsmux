@@ -7,6 +7,8 @@ type DesktopCommandName =
   | "desktop_run_compare"
   | "desktop_run_promote"
   | "desktop_run_pick_winner"
+  | "desktop_workers_status"
+  | "desktop_workers_start"
   | "desktop_runtime_roles_apply"
   | "desktop_voice_capture_status"
   | "desktop_voice_capture_start"
@@ -20,6 +22,8 @@ type DesktopJsonRpcMethod =
   | "desktop.run.compare"
   | "desktop.run.promote"
   | "desktop.run.pick_winner"
+  | "desktop.workers.status"
+  | "desktop.workers.start"
   | "desktop.runtime.roles.apply"
   | "desktop.voice.capture_status"
   | "desktop.dogfood.event"
@@ -571,6 +575,80 @@ export interface DesktopCompareRunsResult {
   recommend: DesktopCompareRecommendation;
 }
 
+export interface DesktopWorkerLaunchApproval {
+  packet_type?: string;
+  source?: string;
+  slot_id?: string;
+  worker_backend?: string;
+  worker_role?: string;
+  agent?: string;
+  model?: string;
+  model_source?: string;
+  reasoning_effort?: string;
+  prompt_transport?: string;
+  auth_mode?: string;
+  credential_requirements?: string;
+  execution_backend?: string;
+  analysis_posture?: string;
+  auto_launch?: boolean;
+  [key: string]: unknown;
+}
+
+export interface DesktopWorkerApprovalDifference {
+  field: string;
+  approved: string;
+  current: string;
+}
+
+export interface DesktopWorkerStatusRow {
+  slot: string;
+  slot_id: string;
+  pane_id: string;
+  state: string;
+  pane_state: string;
+  manifest_status: string;
+  backend: string;
+  role: string;
+  session: string;
+  requested_gpu: string;
+  actual_gpu: string;
+  degraded_reason: string;
+  last_command: string;
+  last_command_at: string;
+  approved_launch: DesktopWorkerLaunchApproval | null;
+  current_launch: DesktopWorkerLaunchApproval | null;
+  approval_differences: DesktopWorkerApprovalDifference[];
+}
+
+export interface DesktopWorkersStatusResult {
+  project_dir: string;
+  generated_at: string;
+  manifest_error?: string;
+  colab_state?: Record<string, unknown>;
+  workers: DesktopWorkerStatusRow[];
+}
+
+export interface DesktopWorkerLifecycleResult {
+  slot_id: string;
+  slot: string;
+  pane_id: string;
+  action: string;
+  status: string;
+  reason: string;
+  backend: string;
+  worker_state: string;
+  last_command: string;
+  approved_launch: DesktopWorkerLaunchApproval | null;
+  current_launch: DesktopWorkerLaunchApproval | null;
+  approval_differences: DesktopWorkerApprovalDifference[];
+}
+
+export interface DesktopWorkersStartResult {
+  project_dir: string;
+  generated_at: string;
+  results: DesktopWorkerLifecycleResult[];
+}
+
 let nextDesktopJsonRpcId = 0;
 
 function normalizeDesktopError(action: string, error: unknown) {
@@ -593,6 +671,10 @@ function getDesktopJsonRpcMethod(command: DesktopCommandName): DesktopJsonRpcMet
       return "desktop.run.promote";
     case "desktop_run_pick_winner":
       return "desktop.run.pick_winner";
+    case "desktop_workers_status":
+      return "desktop.workers.status";
+    case "desktop_workers_start":
+      return "desktop.workers.start";
     case "desktop_runtime_roles_apply":
       return "desktop.runtime.roles.apply";
     case "desktop_voice_capture_status":
@@ -784,6 +866,34 @@ export async function applyDesktopRuntimeRolePreferences(
     );
   } catch (error) {
     throw normalizeDesktopError("desktop_runtime_roles_apply", error);
+  }
+}
+
+export async function getDesktopWorkersStatus(
+  target = "all",
+  projectDir?: string | null,
+) {
+  try {
+    return await desktopCommandTransport.request<DesktopWorkersStatusResult>(
+      "desktop_workers_status",
+      { target, ...buildProjectDirPayload(projectDir) },
+    );
+  } catch (error) {
+    throw normalizeDesktopError(`desktop_workers_status(${target})`, error);
+  }
+}
+
+export async function startDesktopWorker(
+  target: string,
+  projectDir?: string | null,
+) {
+  try {
+    return await desktopCommandTransport.request<DesktopWorkersStartResult>(
+      "desktop_workers_start",
+      { target, ...buildProjectDirPayload(projectDir) },
+    );
+  } catch (error) {
+    throw normalizeDesktopError(`desktop_workers_start(${target})`, error);
   }
 }
 
