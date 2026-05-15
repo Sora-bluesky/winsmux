@@ -158,6 +158,7 @@ The public first-run entrypoints now converge on:
 - `winsmux launcher lifecycle [preset|--clear] [--json]`
 - `winsmux workers <status|start|stop|doctor> [slot|all] [--json]`
 - `winsmux workers <exec|logs|upload|download> <slot> ... [--json]`
+- `winsmux workers workspace <prepare|cleanup> <slot> ... [--json]`
 - `winsmux conflict-preflight`
 - `winsmux compare <runs|preflight|promote>`
 
@@ -167,6 +168,9 @@ Repository-specific startup flows are kept in contributor documents, not in the 
 `winsmux launcher lifecycle [preset|--clear] [--json]` reports or stores the local workspace lifecycle override.
 `winsmux launcher save <name>` stores that launcher template in the project `.winsmux` directory for later reuse.
 Lifecycle presets are declarative workspace policy. They do not execute arbitrary setup or teardown scripts from project configuration.
+`winsmux workers workspace prepare` creates a disposable `isolated-enterprise` run workspace from explicit project-relative projections only.
+It separates the projected workspace, downloads, and artifacts directories, and the returned location identities use shareable artifact references instead of host absolute paths.
+`winsmux workers workspace cleanup` deletes only the verified run directory under `.winsmux/isolated-workspaces`.
 `winsmux compare <runs|preflight|promote>` is the public compare coordination surface.
 It wraps run comparison, merge preflight, and follow-up candidate promotion behind one entrypoint.
 The desktop compare card surfaces shared changed files as hotspots and displays a risk badge before winner selection.

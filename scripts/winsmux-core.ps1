@@ -17,7 +17,7 @@ if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_RAW_EXE)) {
 }
 
 # --- Config ---
-$VERSION = "0.34.1"
+$VERSION = "0.34.2"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 $BridgeScriptPath = $PSCommandPath
@@ -5123,7 +5123,7 @@ function Invoke-Status {
 }
 
 function Get-WorkersUsage {
-    return "usage: winsmux workers <status|start|stop|attach|doctor> [slot|all] [--json] [--project-dir <path>]; winsmux workers <exec|logs|upload|download> <slot> ... [--json] [--project-dir <path>]"
+    return "usage: winsmux workers <status|start|stop|attach|doctor> [slot|all] [--json] [--project-dir <path>]; winsmux workers <exec|logs|upload|download> <slot> ... [--json] [--project-dir <path>]; winsmux workers workspace <prepare|cleanup> <slot> ... [--json] [--project-dir <path>]"
 }
 
 function Read-WorkersOptions {
@@ -6056,6 +6056,209 @@ function Get-WorkersRunDirectory {
     return Join-Path (Join-Path (Join-Path (Join-Path $ProjectDir '.winsmux') 'worker-runs') $safeSlotId) $safeRunId
 }
 
+function Get-WorkersIsolatedWorkspaceRoot {
+    param([Parameter(Mandatory = $true)][string]$ProjectDir)
+
+    return [System.IO.Path]::GetFullPath((Join-Path (Join-Path $ProjectDir '.winsmux') 'isolated-workspaces'))
+}
+
+function Get-WorkersIsolatedWorkspaceRunDirectory {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$SlotId,
+        [Parameter(Mandatory = $true)][string]$RunId
+    )
+
+    $safeSlotId = Assert-WorkersPathSegment -Value $SlotId -Name 'slot id'
+    $safeRunId = Assert-WorkersPathSegment -Value $RunId -Name 'run id'
+    return [System.IO.Path]::GetFullPath((Join-Path (Join-Path (Get-WorkersIsolatedWorkspaceRoot -ProjectDir $ProjectDir) $safeSlotId) $safeRunId))
+}
+
+function Test-WorkersWindowsReservedPathName {
+    param([AllowEmptyString()][string]$Name)
+
+    if ([string]::IsNullOrWhiteSpace($Name)) {
+        return $false
+    }
+
+    $trimmed = $Name.TrimEnd([char[]]@('.', ' '))
+    if ($trimmed.Length -ne $Name.Length) {
+        return $true
+    }
+
+    $baseName = ($trimmed -split '\.')[0]
+    $reserved = @('CON', 'PRN', 'AUX', 'NUL', 'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9', 'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9')
+    return ($reserved -contains $baseName.ToUpperInvariant())
+}
+
+function Assert-WorkersNoWindowsReservedPathSegments {
+    param(
+        [AllowEmptyString()][string]$RelativePath,
+        [AllowEmptyString()][string]$Name = 'path'
+    )
+
+    $normalized = $RelativePath.Replace('\', '/').Trim('/')
+    if ([string]::IsNullOrWhiteSpace($normalized) -or $normalized -eq '.') {
+        return
+    }
+
+    foreach ($segment in @($normalized.Split('/'))) {
+        if ([string]::IsNullOrWhiteSpace($segment) -or $segment -eq '.' -or $segment -eq '..') {
+            Stop-WithError "$Name contains unsupported path segment: $RelativePath"
+        }
+        if (Test-WorkersWindowsReservedPathName -Name $segment) {
+            Stop-WithError "$Name contains reserved Windows name: $segment"
+        }
+    }
+}
+
+function Resolve-WorkersIsolatedProjectionPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+
+    if ([System.IO.Path]::IsPathRooted($Path)) {
+        Stop-WithError "isolated workspace includes must be project-relative paths: $Path"
+    }
+    if ($Path.IndexOfAny([char[]]@('*', '?')) -ge 0) {
+        Stop-WithError "isolated workspace includes must not contain wildcards: $Path"
+    }
+
+    Assert-WorkersNoWindowsReservedPathSegments -RelativePath $Path -Name 'isolated workspace include'
+    $info = Resolve-WorkersProjectPath -ProjectDir $ProjectDir -Path $Path -MustExist -AllowFile -AllowDirectory
+    Assert-WorkersNoWindowsReservedPathSegments -RelativePath ([string]$info.RelativePath) -Name 'isolated workspace include'
+
+    if ([string]::Equals([string]$info.RelativePath, '.', [System.StringComparison]::OrdinalIgnoreCase)) {
+        Stop-WithError 'isolated workspace must project explicit files or subdirectories, not the project root'
+    }
+
+    return $info
+}
+
+function Assert-WorkersDirectoryContainsOnlyIsolatedSafeFiles {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)]$SourceInfo
+    )
+
+    foreach ($item in @(Get-ChildItem -LiteralPath ([string]$SourceInfo.FullPath) -Recurse -Force)) {
+        $relative = ConvertTo-WorkersProjectRelativePath -ProjectDir $ProjectDir -FullPath ([string]$item.FullName)
+        if (([int]($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) -ne 0) {
+            Stop-WithError "isolated workspace include contains unsupported reparse point: $relative"
+        }
+        Assert-WorkersNoWindowsReservedPathSegments -RelativePath $relative -Name 'isolated workspace include'
+        $reason = Get-WorkersPathExclusionReason -RelativePath $relative
+        if (-not [string]::IsNullOrWhiteSpace($reason)) {
+            Stop-WithError "isolated workspace include contains unsafe path: $relative ($reason)"
+        }
+    }
+}
+
+function Copy-WorkersIsolatedProjection {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$WorkspaceDir,
+        [Parameter(Mandatory = $true)]$SourceInfo
+    )
+
+    if ([bool]$SourceInfo.IsDirectory) {
+        Assert-WorkersDirectoryContainsOnlyIsolatedSafeFiles -ProjectDir $ProjectDir -SourceInfo $SourceInfo
+    }
+
+    $workspaceFull = [System.IO.Path]::GetFullPath($WorkspaceDir)
+    $destination = [System.IO.Path]::GetFullPath((Join-Path $workspaceFull ([string]$SourceInfo.RelativePath).Replace('/', '\')))
+    if (-not (Test-WorkersPathIsUnderDirectory -Path $destination -Directory $workspaceFull) -or [string]::Equals($destination, $workspaceFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Stop-WithError "isolated workspace destination escaped workspace root: $($SourceInfo.RelativePath)"
+    }
+
+    if ([bool]$SourceInfo.IsFile) {
+        $destinationParent = Split-Path -Parent $destination
+        if (-not (Test-Path -LiteralPath $destinationParent -PathType Container)) {
+            New-Item -ItemType Directory -Path $destinationParent -Force | Out-Null
+        }
+        Copy-Item -LiteralPath ([string]$SourceInfo.FullPath) -Destination $destination -Force
+    } elseif ([bool]$SourceInfo.IsDirectory) {
+        foreach ($file in @(Get-ChildItem -LiteralPath ([string]$SourceInfo.FullPath) -File -Recurse -Force)) {
+            $relative = ConvertTo-WorkersProjectRelativePath -ProjectDir $ProjectDir -FullPath ([string]$file.FullName)
+            $fileDestination = [System.IO.Path]::GetFullPath((Join-Path $workspaceFull $relative.Replace('/', '\')))
+            if (-not (Test-WorkersPathIsUnderDirectory -Path $fileDestination -Directory $workspaceFull)) {
+                Stop-WithError "isolated workspace destination escaped workspace root: $relative"
+            }
+            $parent = Split-Path -Parent $fileDestination
+            if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+                New-Item -ItemType Directory -Path $parent -Force | Out-Null
+            }
+            Copy-Item -LiteralPath ([string]$file.FullName) -Destination $fileDestination -Force
+        }
+    } else {
+        Stop-WithError "isolated workspace include must be a file or directory: $($SourceInfo.RelativePath)"
+    }
+
+    return [ordered]@{
+        source    = [string]$SourceInfo.RelativePath
+        kind      = if ([bool]$SourceInfo.IsDirectory) { 'local_directory' } else { 'local_file' }
+        workspace = (Get-WorkersArtifactReference -ProjectDir $ProjectDir -Path $destination)
+    }
+}
+
+function Assert-WorkersIsolatedWorkspaceCleanupTarget {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$RunDir
+    )
+
+    $root = Get-WorkersIsolatedWorkspaceRoot -ProjectDir $ProjectDir
+    $target = [System.IO.Path]::GetFullPath($RunDir)
+    if (-not (Test-WorkersPathIsUnderDirectory -Path $target -Directory $root) -or [string]::Equals($target, $root, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Stop-WithError "isolated workspace cleanup target escaped runtime root: $RunDir"
+    }
+}
+
+function Remove-WorkersIsolatedWorkspaceRunDirectory {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$RunDir
+    )
+
+    Assert-WorkersIsolatedWorkspaceCleanupTarget -ProjectDir $ProjectDir -RunDir $RunDir
+    $targetInfo = Get-Item -LiteralPath $RunDir -Force -ErrorAction Stop
+    if (-not $targetInfo.PSIsContainer) {
+        Stop-WithError "isolated workspace cleanup target is not a directory: $RunDir"
+    }
+    if (([int]($targetInfo.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) -ne 0) {
+        Stop-WithError "isolated workspace cleanup target is a reparse point: $RunDir"
+    }
+
+    $target = [System.IO.Path]::GetFullPath([string]$targetInfo.FullName)
+    $pending = [System.Collections.Generic.Stack[string]]::new()
+    $reparsePoints = [System.Collections.Generic.List[string]]::new()
+    $pending.Push($target)
+
+    while ($pending.Count -gt 0) {
+        $current = $pending.Pop()
+        foreach ($item in @(Get-ChildItem -LiteralPath $current -Force)) {
+            $itemPath = [System.IO.Path]::GetFullPath([string]$item.FullName)
+            if (-not (Test-WorkersPathIsUnderDirectory -Path $itemPath -Directory $target)) {
+                Stop-WithError "isolated workspace cleanup child escaped run directory: $itemPath"
+            }
+            if (([int]($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) -ne 0) {
+                $reparsePoints.Add($itemPath) | Out-Null
+                continue
+            }
+            if ($item.PSIsContainer) {
+                $pending.Push($itemPath)
+            }
+        }
+    }
+
+    foreach ($linkPath in @($reparsePoints | Sort-Object { $_.Length } -Descending)) {
+        Remove-Item -LiteralPath $linkPath -Force
+    }
+
+    Remove-Item -LiteralPath $target -Recurse -Force
+}
+
 function Get-WorkersArtifactReference {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -6402,6 +6605,244 @@ function Read-WorkersLogsOptions {
         Json       = $asJson
         Target     = $targetValue
         RunId      = $runId
+    }
+}
+
+function Read-WorkersWorkspaceOptions {
+    param([Parameter(Mandatory = $true)][string]$Usage)
+
+    $projectDir = (Get-Location).Path
+    $asJson = $false
+    $workspaceAction = ''
+    $targetValue = ''
+    $runId = ''
+    $profile = 'isolated-enterprise'
+    $includes = [System.Collections.Generic.List[string]]::new()
+    $items = @($Rest)
+
+    if ($items.Count -ge 1) {
+        $workspaceAction = [string]$items[0]
+    }
+    if ($items.Count -ge 2) {
+        $targetValue = [string]$items[1]
+    }
+    if ([string]::IsNullOrWhiteSpace($workspaceAction) -or [string]::IsNullOrWhiteSpace($targetValue)) {
+        Stop-WithError $Usage
+    }
+
+    for ($index = 2; $index -lt $items.Count; $index++) {
+        $token = [string]$items[$index]
+        switch ($token) {
+            '--json' { $asJson = $true }
+            '--project-dir' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $projectDir = [string]$items[$index + 1]
+                $index++
+            }
+            '--run-id' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $runId = [string]$items[$index + 1]
+                $index++
+            }
+            '--profile' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $profile = [string]$items[$index + 1]
+                $index++
+            }
+            '--include' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $includes.Add([string]$items[$index + 1]) | Out-Null
+                $index++
+            }
+            default {
+                Stop-WithError $Usage
+            }
+        }
+    }
+
+    if ($workspaceAction -notin @('prepare', 'cleanup')) {
+        Stop-WithError $Usage
+    }
+    if (Get-Command Test-BridgeExecutionProfileKind -ErrorAction SilentlyContinue) {
+        if (-not (Test-BridgeExecutionProfileKind -Value $profile)) {
+            Stop-WithError "unsupported execution profile for isolated workspace: $profile"
+        }
+    }
+    if (-not [string]::Equals($profile, 'isolated-enterprise', [System.StringComparison]::OrdinalIgnoreCase)) {
+        Stop-WithError 'isolated workspace requires execution profile isolated-enterprise'
+    }
+    if ($workspaceAction -eq 'prepare' -and $includes.Count -lt 1) {
+        Stop-WithError 'isolated workspace prepare requires at least one --include path'
+    }
+    if ($workspaceAction -eq 'cleanup' -and [string]::IsNullOrWhiteSpace($runId)) {
+        Stop-WithError 'isolated workspace cleanup requires --run-id'
+    }
+
+    return [PSCustomObject]@{
+        ProjectDir = $projectDir
+        Json       = $asJson
+        Action     = $workspaceAction
+        Target     = $targetValue
+        RunId      = $runId
+        Profile    = $profile.Trim().ToLowerInvariant()
+        Includes   = @($includes)
+    }
+}
+
+function Get-WorkersSingleSlotContext {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$Target
+    )
+
+    $context = Get-WorkersLifecycleContext -ProjectDir $ProjectDir
+    $rows = @(Select-WorkersRows -Rows (Get-WorkersStatusRows -Context $context) -Target $Target)
+    if ($rows.Count -ne 1) {
+        Stop-WithError "workers command requires exactly one slot, got $($rows.Count)"
+    }
+
+    $row = $rows[0]
+    Assert-WorkersPathSegment -Value ([string]$row.SlotId) -Name 'slot id' | Out-Null
+    $slotConfig = Get-SlotAgentConfig -Role 'Worker' -SlotId ([string]$row.SlotId) -Settings $context.Settings -RootPath $ProjectDir
+    $entry = if ($context.EntriesBySlot.ContainsKey($row.SlotId)) { $context.EntriesBySlot[$row.SlotId] } else { $null }
+
+    return [PSCustomObject]@{
+        Context    = $context
+        Row        = $row
+        Entry      = $entry
+        SlotConfig = $slotConfig
+    }
+}
+
+function Invoke-WorkersWorkspacePrepare {
+    param([Parameter(Mandatory = $true)]$Options)
+
+    $slot = Get-WorkersSingleSlotContext -ProjectDir $Options.ProjectDir -Target $Options.Target
+    $slotProfile = [string]$slot.SlotConfig.ExecutionProfile
+    if (-not [string]::Equals($slotProfile, [string]$Options.Profile, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Stop-WithError "worker slot $($slot.Row.SlotId) uses execution profile '$slotProfile', not isolated-enterprise"
+    }
+
+    $runId = Assert-WorkersRunId -RunId ([string]$Options.RunId)
+    if ([string]::IsNullOrWhiteSpace($runId)) {
+        $runId = New-WorkersRunId -SlotId ([string]$slot.Row.SlotId)
+    }
+
+    $runDir = Get-WorkersIsolatedWorkspaceRunDirectory -ProjectDir $Options.ProjectDir -SlotId ([string]$slot.Row.SlotId) -RunId $runId
+    Assert-WorkersIsolatedWorkspaceCleanupTarget -ProjectDir $Options.ProjectDir -RunDir $runDir
+    if (Test-Path -LiteralPath $runDir) {
+        Stop-WithError "isolated workspace run already exists: $runId"
+    }
+
+    $sources = [System.Collections.Generic.List[object]]::new()
+    foreach ($includePath in @($Options.Includes)) {
+        $source = Resolve-WorkersIsolatedProjectionPath -ProjectDir $Options.ProjectDir -Path ([string]$includePath)
+        if ([bool]$source.IsDirectory) {
+            Assert-WorkersDirectoryContainsOnlyIsolatedSafeFiles -ProjectDir $Options.ProjectDir -SourceInfo $source
+        }
+        $sources.Add($source) | Out-Null
+    }
+
+    $workspaceDir = Join-Path $runDir 'workspace'
+    $downloadsDir = Join-Path $runDir 'downloads'
+    $artifactsDir = Join-Path $runDir 'artifacts'
+    New-Item -ItemType Directory -Path $workspaceDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $downloadsDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $artifactsDir -Force | Out-Null
+
+    $projections = [System.Collections.Generic.List[object]]::new()
+    foreach ($source in @($sources)) {
+        $projections.Add((Copy-WorkersIsolatedProjection -ProjectDir $Options.ProjectDir -WorkspaceDir $workspaceDir -SourceInfo $source)) | Out-Null
+    }
+
+    $manifestPath = Join-Path $runDir 'workspace.json'
+    $runReference = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $runDir
+    $workspaceReference = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $workspaceDir
+    $downloadsReference = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $downloadsDir
+    $artifactsReference = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $artifactsDir
+    $manifestReference = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $manifestPath
+
+    $payload = [ordered]@{
+        version       = 1
+        project_ref   = '.'
+        generated_at  = (Get-Date).ToUniversalTime().ToString('o')
+        command       = 'workers.workspace.prepare'
+        status        = 'prepared'
+        slot          = [string]$slot.Row.Slot
+        slot_id       = [string]$slot.Row.SlotId
+        run_id        = $runId
+        execution_profile = 'isolated-enterprise'
+        workspace_lifecycle = 'disposable'
+        policy        = [ordered]@{
+            direct_project_write = 'prohibited'
+            projection           = 'explicit-includes-only'
+            cleanup              = 'delete-isolated-run-directory'
+            rejects              = @('path_traversal', 'absolute_escape', 'reparse_point', 'windows_reserved_name', 'excluded_or_secret_like_path')
+        }
+        locations     = [ordered]@{
+            project_root = New-WinsmuxLocationIdentity -Kind 'local_directory' -DisplayName 'project root' -Backend 'local-windows' -AccessMethod 'project_root' -Reference '.' -Provenance 'workers.workspace.project_root'
+            run_root     = New-WinsmuxLocationIdentity -Kind 'local_directory' -DisplayName $runReference -Backend 'local-windows' -AccessMethod 'isolated_run_root' -Reference $runReference -Provenance 'workers.workspace.run_root'
+            workspace    = New-WinsmuxLocationIdentity -Kind 'local_directory' -DisplayName $workspaceReference -Backend 'local-windows' -AccessMethod 'isolated_workspace' -Reference $workspaceReference -Provenance 'workers.workspace.workspace'
+            downloads    = New-WinsmuxLocationIdentity -Kind 'local_directory' -DisplayName $downloadsReference -Backend 'local-windows' -AccessMethod 'isolated_downloads' -Reference $downloadsReference -Provenance 'workers.workspace.downloads'
+            artifacts    = New-WinsmuxLocationIdentity -Kind 'local_directory' -DisplayName $artifactsReference -Backend 'local-windows' -AccessMethod 'isolated_artifacts' -Reference $artifactsReference -Provenance 'workers.workspace.artifacts'
+            manifest     = New-WinsmuxLocationIdentity -Kind 'local_file' -DisplayName 'workspace.json' -Backend 'local-windows' -AccessMethod 'artifact_ref' -Reference $manifestReference -Provenance 'workers.workspace.manifest'
+        }
+        projections   = @($projections)
+        exit_code     = 0
+    }
+
+    Write-WorkersJsonArtifact -Path $manifestPath -Data $payload | Out-Null
+    if ($null -ne $slot.Entry) {
+        Set-WorkersManifestLifecycleCommand -Entry $slot.Entry -CommandName 'workers.workspace.prepare'
+    }
+
+    Write-WorkersOperationOutput -Payload $payload -Json:([bool]$Options.Json) -Text "prepared $runId"
+}
+
+function Invoke-WorkersWorkspaceCleanup {
+    param([Parameter(Mandatory = $true)]$Options)
+
+    $slot = Get-WorkersSingleSlotContext -ProjectDir $Options.ProjectDir -Target $Options.Target
+    $runId = Assert-WorkersRunId -RunId ([string]$Options.RunId)
+    $runDir = Get-WorkersIsolatedWorkspaceRunDirectory -ProjectDir $Options.ProjectDir -SlotId ([string]$slot.Row.SlotId) -RunId $runId
+    Assert-WorkersIsolatedWorkspaceCleanupTarget -ProjectDir $Options.ProjectDir -RunDir $runDir
+    $existed = Test-Path -LiteralPath $runDir
+    if ($existed) {
+        Remove-WorkersIsolatedWorkspaceRunDirectory -ProjectDir $Options.ProjectDir -RunDir $runDir
+    }
+
+    $runReference = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $runDir
+    $payload = [ordered]@{
+        version       = 1
+        project_ref   = '.'
+        generated_at  = (Get-Date).ToUniversalTime().ToString('o')
+        command       = 'workers.workspace.cleanup'
+        status        = if ($existed) { 'cleaned' } else { 'not_found' }
+        slot          = [string]$slot.Row.Slot
+        slot_id       = [string]$slot.Row.SlotId
+        run_id        = $runId
+        execution_profile = 'isolated-enterprise'
+        workspace_lifecycle = 'disposable'
+        locations     = [ordered]@{
+            run_root = New-WinsmuxLocationIdentity -Kind 'local_directory' -DisplayName $runReference -Backend 'local-windows' -AccessMethod 'isolated_run_root' -Reference $runReference -Provenance 'workers.workspace.cleanup'
+        }
+        existed       = [bool]$existed
+        exit_code     = 0
+    }
+    if ($null -ne $slot.Entry) {
+        Set-WorkersManifestLifecycleCommand -Entry $slot.Entry -CommandName 'workers.workspace.cleanup'
+    }
+
+    Write-WorkersOperationOutput -Payload $payload -Json:([bool]$Options.Json) -Text "$($payload['status']) $runId"
+}
+
+function Invoke-WorkersWorkspace {
+    $usage = "usage: winsmux workers workspace <prepare|cleanup> <slot> [--include <path>] [--run-id <id>] [--profile isolated-enterprise] [--json] [--project-dir <path>]"
+    $options = Read-WorkersWorkspaceOptions -Usage $usage
+    switch ([string]$options.Action) {
+        'prepare' { Invoke-WorkersWorkspacePrepare -Options $options }
+        'cleanup' { Invoke-WorkersWorkspaceCleanup -Options $options }
+        default { Stop-WithError $usage }
     }
 }
 
@@ -7021,6 +7462,7 @@ function Invoke-Workers {
         'attach' { Invoke-WorkersAttach }
         'stop'   { Invoke-WorkersStop }
         'doctor' { Invoke-WorkersDoctor }
+        'workspace' { Invoke-WorkersWorkspace }
         'exec'   { Invoke-WorkersExec }
         'logs'   { Invoke-WorkersLogs }
         'upload' { Invoke-WorkersUpload }
@@ -13915,6 +14357,7 @@ Commands:
   health-check              Report READY/BUSY/HUNG/DEAD for labeled panes
   status                    Report manifest pane states via capture-pane
   workers <status|start|stop|attach|doctor> [slot|all] [--json] [--project-dir <path>]  Inspect and control configured worker slots
+  workers workspace <prepare|cleanup> <slot> [--include <path>] [--run-id <id>] [--json] [--project-dir <path>]  Prepare or remove disposable isolated worker workspaces
   board [--json]            Report pane/task/review/git session board
 desktop-summary [--json] [--stream]  Report the aggregated desktop read-model snapshot or follow refresh signals
 inbox [--json] [--stream] Report actionable approvals/review/blockers

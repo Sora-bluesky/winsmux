@@ -9009,12 +9009,190 @@ agent-slots:
     It 'documents and routes the workers lifecycle command' {
         $script:winsmuxWorkersCoreRawContent | Should -Match 'workers <status\|start\|stop\|attach\|doctor> \[slot\|all\] \[--json\] \[--project-dir <path>\]'
         $script:winsmuxWorkersCoreRawContent | Should -Match 'workers <exec\|logs\|upload\|download> <slot> \.\.\. \[--json\] \[--project-dir <path>\]'
+        $script:winsmuxWorkersCoreRawContent | Should -Match 'workers workspace <prepare\|cleanup> <slot> \[--include <path>\] \[--run-id <id>\] \[--json\] \[--project-dir <path>\]'
         $script:winsmuxWorkersCoreRawContent | Should -Match "'workers'\s*\{\s*Invoke-Workers\s*\}"
         $script:winsmuxWorkersCoreRawContent | Should -Match 'google-colab-cli not found on PATH'
         $script:winsmuxWorkersCoreRawContent | Should -Match 'uv not found on PATH'
         $script:winsmuxWorkersCoreRawContent | Should -Match "'exec'\s*\{\s*Invoke-WorkersExec\s*\}"
         $script:winsmuxWorkersCoreRawContent | Should -Match "'attach'\s*\{\s*Invoke-WorkersAttach\s*\}"
         $script:winsmuxWorkersCoreRawContent | Should -Match "'download'\s*\{\s*Invoke-WorkersDownload\s*\}"
+        $script:winsmuxWorkersCoreRawContent | Should -Match "'workspace'\s*\{\s*Invoke-WorkersWorkspace\s*\}"
+    }
+
+    It 'prepares and cleans up a disposable isolated workspace from explicit includes' {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    execution-profile: isolated-enterprise
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        New-Item -ItemType Directory -Path (Join-Path $script:workersTempRoot 'src') -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $script:workersTempRoot 'docs') -Force | Out-Null
+        'Write-Output "ok"' | Set-Content -Path (Join-Path $script:workersTempRoot 'src\tool.ps1') -Encoding UTF8
+        'spec' | Set-Content -Path (Join-Path $script:workersTempRoot 'docs\spec.md') -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers workspace prepare w2 --include src/tool.ps1 --include docs --run-id isolated-run --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $serialized = $payload | ConvertTo-Json -Depth 24
+        $runDir = Join-Path $script:workersTempRoot '.winsmux\isolated-workspaces\worker-2\isolated-run'
+
+        $payload.status | Should -Be 'prepared'
+        $payload.execution_profile | Should -Be 'isolated-enterprise'
+        $payload.workspace_lifecycle | Should -Be 'disposable'
+        $payload.policy.direct_project_write | Should -Be 'prohibited'
+        $payload.locations.workspace.kind | Should -Be 'local_directory'
+        $payload.locations.workspace.access_method | Should -Be 'isolated_workspace'
+        $payload.locations.downloads.access_method | Should -Be 'isolated_downloads'
+        $payload.locations.artifacts.access_method | Should -Be 'isolated_artifacts'
+        $payload.locations.manifest.kind | Should -Be 'local_file'
+        $payload.locations.workspace.local_path | Should -Be ''
+        $serialized | Should -Not -Match ([regex]::Escape($script:workersTempRoot))
+        $serialized | Should -Not -Match ([regex]::Escape($script:workersTempRoot.Replace('\', '\\')))
+        @($payload.projections | ForEach-Object { $_.source }) | Should -Contain 'src/tool.ps1'
+        @($payload.projections | ForEach-Object { $_.source }) | Should -Contain 'docs'
+        Test-Path -LiteralPath (Join-Path $runDir 'workspace\src\tool.ps1') | Should -Be $true
+        Test-Path -LiteralPath (Join-Path $runDir 'workspace\docs\spec.md') | Should -Be $true
+        Test-Path -LiteralPath (Join-Path $script:workersTempRoot 'src\tool.ps1') | Should -Be $true
+
+        $cleanupOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers workspace cleanup worker-2 --run-id isolated-run --json --project-dir $script:workersTempRoot
+        $cleanupPayload = ($cleanupOutput | Select-Object -Last 1) | ConvertFrom-Json
+
+        $cleanupPayload.status | Should -Be 'cleaned'
+        $cleanupPayload.existed | Should -Be $true
+        Test-Path -LiteralPath $runDir | Should -Be $false
+    }
+
+    It 'requires the isolated-enterprise execution profile for isolated workspaces' {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    execution-profile: local-windows
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        'payload' | Set-Content -Path (Join-Path $script:workersTempRoot 'input.txt') -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers workspace prepare w2 --include input.txt --run-id local-profile --json --project-dir $script:workersTempRoot 2>&1
+
+        $LASTEXITCODE | Should -Be 1
+        ($output | Out-String) | Should -Match "not isolated-enterprise"
+        Test-Path -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\isolated-workspaces\worker-2\local-profile') | Should -Be $false
+    }
+
+    It 'rejects unsafe isolated workspace projection paths' {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    execution-profile: isolated-enterprise
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        New-Item -ItemType Directory -Path (Join-Path $script:workersTempRoot 'safe') -Force | Out-Null
+        'payload' | Set-Content -Path (Join-Path $script:workersTempRoot 'safe\data.txt') -Encoding UTF8
+
+        $rootOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers workspace prepare w2 --include . --run-id root-include --json --project-dir $script:workersTempRoot 2>&1
+        $LASTEXITCODE | Should -Be 1
+        ($rootOutput | Out-String) | Should -Match 'not the project root'
+
+        $escapeOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers workspace prepare w2 --include ..\escape --run-id traversal --json --project-dir $script:workersTempRoot 2>&1
+        $LASTEXITCODE | Should -Be 1
+        ($escapeOutput | Out-String) | Should -Match 'unsupported path segment'
+
+        $reservedOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers workspace prepare w2 --include CON --run-id reserved --json --project-dir $script:workersTempRoot 2>&1
+        $LASTEXITCODE | Should -Be 1
+        ($reservedOutput | Out-String) | Should -Match 'reserved Windows name'
+
+        Test-Path -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\isolated-workspaces\worker-2\root-include') | Should -Be $false
+        Test-Path -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\isolated-workspaces\worker-2\traversal') | Should -Be $false
+        Test-Path -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\isolated-workspaces\worker-2\reserved') | Should -Be $false
+    }
+
+    It 'rejects reparse points in isolated workspace projections' {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    execution-profile: isolated-enterprise
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        $outside = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-isolated-outside-' + [guid]::NewGuid().ToString('N'))
+        $linkedInput = Join-Path $script:workersTempRoot 'linked-input'
+
+        try {
+            New-Item -ItemType Directory -Path $outside -Force | Out-Null
+            'secret' | Set-Content -Path (Join-Path $outside 'secret.txt') -Encoding UTF8
+            New-Item -ItemType Junction -Path $linkedInput -Target $outside | Out-Null
+
+            $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers workspace prepare w2 --include linked-input --run-id reparse --json --project-dir $script:workersTempRoot 2>&1
+
+            $LASTEXITCODE | Should -Be 1
+            ($output | Out-String) | Should -Match 'unsupported reparse point'
+            Test-Path -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\isolated-workspaces\worker-2\reparse') | Should -Be $false
+        } finally {
+            if (Test-Path -LiteralPath $linkedInput) {
+                Remove-Item -LiteralPath $linkedInput -Force
+            }
+            if (Test-Path -LiteralPath $outside) {
+                Remove-Item -LiteralPath $outside -Recurse -Force
+            }
+        }
+    }
+
+    It 'cleans isolated workspace run directories without following worker-created reparse points' {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    execution-profile: isolated-enterprise
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        'payload' | Set-Content -Path (Join-Path $script:workersTempRoot 'input.txt') -Encoding UTF8
+        $outside = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-isolated-cleanup-outside-' + [guid]::NewGuid().ToString('N'))
+        $runDir = Join-Path $script:workersTempRoot '.winsmux\isolated-workspaces\worker-2\cleanup-reparse'
+        $linkedOutput = Join-Path $runDir 'workspace\worker-link'
+
+        try {
+            $prepareOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers workspace prepare w2 --include input.txt --run-id cleanup-reparse --json --project-dir $script:workersTempRoot
+            $preparePayload = ($prepareOutput | Select-Object -Last 1) | ConvertFrom-Json
+            $preparePayload.status | Should -Be 'prepared'
+
+            New-Item -ItemType Directory -Path $outside -Force | Out-Null
+            'external' | Set-Content -Path (Join-Path $outside 'external.txt') -Encoding UTF8
+            New-Item -ItemType Junction -Path $linkedOutput -Target $outside | Out-Null
+
+            $cleanupOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers workspace cleanup w2 --run-id cleanup-reparse --json --project-dir $script:workersTempRoot
+            $cleanupPayload = ($cleanupOutput | Select-Object -Last 1) | ConvertFrom-Json
+
+            $cleanupPayload.status | Should -Be 'cleaned'
+            Test-Path -LiteralPath $runDir | Should -Be $false
+            Test-Path -LiteralPath (Join-Path $outside 'external.txt') | Should -Be $true
+        } finally {
+            if (Test-Path -LiteralPath $linkedOutput) {
+                Remove-Item -LiteralPath $linkedOutput -Force
+            }
+            if (Test-Path -LiteralPath $runDir) {
+                Remove-Item -LiteralPath $runDir -Recurse -Force
+            }
+            if (Test-Path -LiteralPath $outside) {
+                Remove-Item -LiteralPath $outside -Recurse -Force
+            }
+        }
     }
 
     It 'reports the default six worker slots with aliases and Colab degraded state' {
