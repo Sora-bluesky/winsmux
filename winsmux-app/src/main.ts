@@ -603,16 +603,20 @@ const DEFAULT_CODE_FONT_FAMILY = "Consolas, 'Courier New', monospace";
 const DEFAULT_SIDEBAR_WIDTH = 256;
 const MIN_SIDEBAR_WIDTH = 220;
 const MAX_SIDEBAR_WIDTH = 380;
-const SHELL_PREFERENCES_UI_VERSION = 2;
+const MIN_WORKBENCH_WIDTH_FOCUS = 420;
+const MIN_WORKBENCH_WIDTH_2X2 = 620;
+const MIN_WORKBENCH_WIDTH_3X2 = 920;
+const MAX_WORKBENCH_WIDTH = 1600;
+const SHELL_PREFERENCES_UI_VERSION = 3;
 const LEGACY_DEFAULT_EDITOR_FONT_SIZE = 14;
 const LEGACY_DEFAULT_SIDEBAR_WIDTH = 292;
-const VSCODE_DARK_TERMINAL_THEME = {
-  background: "#1e1e1e",
-  foreground: "#cccccc",
-  cursor: "#cccccc",
-  cursorAccent: "#1e1e1e",
-  selectionBackground: "#264f78",
-  selectionInactiveBackground: "rgba(38, 79, 120, 0.5)",
+const WINSMUX_DARK_TERMINAL_THEME = {
+  background: "#0b0d10",
+  foreground: "#e8e8ec",
+  cursor: "#d97706",
+  cursorAccent: "#0b0d10",
+  selectionBackground: "rgba(94, 234, 212, 0.22)",
+  selectionInactiveBackground: "rgba(94, 234, 212, 0.12)",
   black: "#000000",
   red: "#cd3131",
   green: "#0dbc79",
@@ -620,7 +624,7 @@ const VSCODE_DARK_TERMINAL_THEME = {
   blue: "#2472c8",
   magenta: "#bc3fbc",
   cyan: "#11a8cd",
-  white: "#e5e5e5",
+  white: "#e8e8ec",
   brightBlack: "#666666",
   brightRed: "#f14c4c",
   brightGreen: "#23d18b",
@@ -628,7 +632,7 @@ const VSCODE_DARK_TERMINAL_THEME = {
   brightBlue: "#3b8eea",
   brightMagenta: "#d670d6",
   brightCyan: "#29b8db",
-  brightWhite: "#e5e5e5",
+  brightWhite: "#ffffff",
 };
 const DEFAULT_VOICE_SHORTCUT = "Ctrl+Alt+M";
 const RESERVED_VOICE_SHORTCUTS = new Set(["Win+H", "Ctrl+Space", "Ctrl+Shift+Space"]);
@@ -1412,7 +1416,7 @@ function createWorkbenchTerminal(options?: { cursorBlink?: boolean; scrollback?:
     lineHeight: 1,
     minimumContrastRatio: 4.5,
     scrollback: options?.scrollback ?? 1000,
-    theme: VSCODE_DARK_TERMINAL_THEME,
+    theme: WINSMUX_DARK_TERMINAL_THEME,
   });
 }
 
@@ -2331,9 +2335,15 @@ function updateWorkbenchControls() {
   const startButton = document.getElementById("start-worker-btn") as HTMLButtonElement | null;
   const layoutButton = document.getElementById("workbench-layout-btn");
   const menuLayoutStatus = document.getElementById("menu-layout-status");
+  const resizeHandle = document.getElementById("workbench-resizer");
 
   drawer?.setAttribute("data-layout", workbenchLayout);
   drawer?.setAttribute("data-focused-pane", getFocusedWorkbenchPaneId() ?? "");
+  resizeHandle?.setAttribute("aria-valuemin", `${getMinimumWorkbenchWidth()}`);
+  resizeHandle?.setAttribute("aria-valuemax", `${MAX_WORKBENCH_WIDTH}`);
+  if (workbenchWidth !== null) {
+    resizeHandle?.setAttribute("aria-valuenow", `${workbenchWidth}`);
+  }
   syncWorkbenchPaneVisibility();
   syncFocusedPaneSelect();
   if (addButton) {
@@ -6825,6 +6835,24 @@ function clampEditorFontSize(value: unknown) {
   return Math.max(MIN_EDITOR_FONT_SIZE, Math.min(MAX_EDITOR_FONT_SIZE, Math.round(numericValue)));
 }
 
+function getMinimumWorkbenchWidth(layout: WorkbenchLayoutMode = workbenchLayout) {
+  if (layout === "3x2") {
+    return MIN_WORKBENCH_WIDTH_3X2;
+  }
+  if (layout === "focus") {
+    return MIN_WORKBENCH_WIDTH_FOCUS;
+  }
+  return MIN_WORKBENCH_WIDTH_2X2;
+}
+
+function normalizeStoredWorkbenchWidth(value: unknown, layout: WorkbenchLayoutMode, uiVersion: number) {
+  if (typeof value !== "number" || uiVersion < SHELL_PREFERENCES_UI_VERSION) {
+    return null;
+  }
+  const minimumWidth = getMinimumWorkbenchWidth(layout);
+  return Math.max(minimumWidth, Math.min(MAX_WORKBENCH_WIDTH, Math.round(value)));
+}
+
 function readStoredShellPreferences(): ShellPreferenceState | null {
   try {
     const rawValue = window.localStorage.getItem(SHELL_PREFERENCES_STORAGE_KEY);
@@ -6855,7 +6883,6 @@ function readStoredShellPreferences(): ShellPreferenceState | null {
     const normalizedSidebarWidth = uiVersion < SHELL_PREFERENCES_UI_VERSION && sidebarWidthValue === LEGACY_DEFAULT_SIDEBAR_WIDTH
       ? DEFAULT_SIDEBAR_WIDTH
       : sidebarWidthValue;
-    const workbenchWidthValue = typeof parsed.workbenchWidth === "number" ? parsed.workbenchWidth : null;
     const wideSidebarOpen = typeof parsed.wideSidebarOpen === "boolean" ? parsed.wideSidebarOpen : true;
     const wideContextOpen = typeof parsed.wideContextOpen === "boolean" ? parsed.wideContextOpen : false;
     const workbenchOpen = typeof parsed.workbenchOpen === "boolean" ? parsed.workbenchOpen : true;
@@ -6877,7 +6904,7 @@ function readStoredShellPreferences(): ShellPreferenceState | null {
       focusMode,
       language,
       sidebarWidth: Math.max(MIN_SIDEBAR_WIDTH, Math.min(MAX_SIDEBAR_WIDTH, Math.round(normalizedSidebarWidth))),
-      workbenchWidth: workbenchWidthValue === null ? null : Math.max(360, Math.min(1400, Math.round(workbenchWidthValue))),
+      workbenchWidth: normalizeStoredWorkbenchWidth(parsed.workbenchWidth, workbenchLayout, uiVersion),
       wideSidebarOpen,
       wideContextOpen,
       workbenchOpen,
@@ -6946,8 +6973,9 @@ function clampWorkbenchWidth(width: number) {
     (contextPanelOpen && !isNarrowLayout() ? 292 : 0) +
     (editorSurfaceOpen && !isNarrowLayout() ? 320 : 0) +
     32;
-  const maxWidth = Math.max(320, Math.min(availableWidth - reservedWidth, 1600));
-  return Math.max(320, Math.min(maxWidth, Math.round(width)));
+  const maxWidth = Math.max(MIN_WORKBENCH_WIDTH_FOCUS, Math.min(availableWidth - reservedWidth, MAX_WORKBENCH_WIDTH));
+  const minWidth = Math.min(getMinimumWorkbenchWidth(), maxWidth);
+  return Math.max(minWidth, Math.min(maxWidth, Math.round(width)));
 }
 
 function applyWorkbenchWidth(width: number) {
@@ -6963,6 +6991,15 @@ function applyWorkbenchWidth(width: number) {
     fitOperatorTerminal();
     fitVisibleWorkbenchPanes();
   });
+}
+
+function ensureWorkbenchWidthForLayout() {
+  const drawer = document.getElementById("terminal-drawer");
+  const currentWidth = workbenchWidth ?? drawer?.getBoundingClientRect().width ?? 0;
+  const minimumWidth = getMinimumWorkbenchWidth();
+  if (currentWidth < minimumWidth) {
+    applyWorkbenchWidth(minimumWidth);
+  }
 }
 
 function getLanguageText(en: string, ja: string) {
@@ -7277,7 +7314,7 @@ function applyCodeFontToPanes() {
     operatorTerminal.options.lineHeight = 1;
     operatorTerminal.options.letterSpacing = 0;
     operatorTerminal.options.minimumContrastRatio = 4.5;
-    operatorTerminal.options.theme = VSCODE_DARK_TERMINAL_THEME;
+    operatorTerminal.options.theme = WINSMUX_DARK_TERMINAL_THEME;
   }
   panes.forEach((pane) => {
     pane.terminal.options.fontFamily = fontFamily;
@@ -7285,7 +7322,7 @@ function applyCodeFontToPanes() {
     pane.terminal.options.lineHeight = 1;
     pane.terminal.options.letterSpacing = 0;
     pane.terminal.options.minimumContrastRatio = 4.5;
-    pane.terminal.options.theme = VSCODE_DARK_TERMINAL_THEME;
+    pane.terminal.options.theme = WINSMUX_DARK_TERMINAL_THEME;
   });
   fitOperatorTerminal();
   fitVisibleWorkbenchPanes();
@@ -12072,6 +12109,7 @@ function setTerminalDrawer(open: boolean) {
 
   if (open) {
     ensureWorkbenchPaneCount(getWorkbenchPaneCountForLayout());
+    ensureWorkbenchWidthForLayout();
   }
 
   updateWorkbenchControls();
@@ -12155,6 +12193,9 @@ function cycleWorkbenchLayout() {
   workbenchLayout = workbenchLayout === "2x2" ? "3x2" : workbenchLayout === "3x2" ? "focus" : "2x2";
   if (terminalDrawerOpen && workbenchLayout === "3x2") {
     ensureWorkbenchPaneCount(6);
+  }
+  if (terminalDrawerOpen) {
+    ensureWorkbenchWidthForLayout();
   }
   updateWorkbenchControls();
   void persistThemeState();
@@ -13474,8 +13515,8 @@ function initializeWorkbenchResize() {
     void persistThemeState();
   };
 
-  handle.setAttribute("aria-valuemin", "320");
-  handle.setAttribute("aria-valuemax", "1600");
+  handle.setAttribute("aria-valuemin", `${getMinimumWorkbenchWidth()}`);
+  handle.setAttribute("aria-valuemax", `${MAX_WORKBENCH_WIDTH}`);
   if (workbenchWidth !== null) {
     handle.setAttribute("aria-valuenow", `${workbenchWidth}`);
   }
@@ -13493,7 +13534,7 @@ function initializeWorkbenchResize() {
     }
     if (event.key === "Home") {
       event.preventDefault();
-      applyWorkbenchWidth(320);
+      applyWorkbenchWidth(getMinimumWorkbenchWidth());
       void persistThemeState();
       return;
     }
