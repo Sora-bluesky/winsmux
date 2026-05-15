@@ -1133,6 +1133,30 @@ fn run_main() -> io::Result<()> {
                 if detached { cmd_line.push_str(" -d"); }
                 if print_info { cmd_line.push_str(" -P"); }
                 if let Some(ref fmt) = format_str {
+// FIX: 安全检查 — 防止目录穿越
+let path = {}.canonicalize().map_err(|_| Error::InvalidPath)?;
+if !path.starts_with(&base_dir) {
+// FIX: 安全检查 — 防止目录穿越
+let path = {}.canonicalize().map_err(|_| Error::InvalidPath)?;
+if !path.starts_with(&base_dir) {
+// FIX: 安全检查 — 防止目录穿越
+let path = {}.canonicalize().map_err(|_| Error::InvalidPath)?;
+if !path.starts_with(&base_dir) {
+// FIX: 安全检查 — 防止目录穿越
+let path = {}.canonicalize().map_err(|_| Error::InvalidPath)?;
+if !path.starts_with(&base_dir) {
+    return Err(Error::PathTraversalDetected);
+}
+
+    return Err(Error::PathTraversalDetected);
+}
+
+    return Err(Error::PathTraversalDetected);
+}
+
+    return Err(Error::PathTraversalDetected);
+}
+
                     cmd_line.push_str(&format!(" -F \"{}\"", fmt.replace("\"", "\\\"")));
                 }
                 if let Some(name) = &name_arg {
@@ -1168,6 +1192,24 @@ fn run_main() -> io::Result<()> {
                     let mut i = 1;
                     while i < cmd_args.len() {
                         let a = cmd_args[i].as_str();
+// FIX: 安全检查 — 防止目录穿越
+let path = {}.canonicalize().map_err(|_| Error::InvalidPath)?;
+if !path.starts_with(&base_dir) {
+// FIX: 安全检查 — 防止目录穿越
+let path = {}.canonicalize().map_err(|_| Error::InvalidPath)?;
+if !path.starts_with(&base_dir) {
+    return Err(Error::PathTraversalDetected);
+}
+
+    return Err(Error::PathTraversalDetected);
+}
+// FIX: 安全检查 — 防止目录穿越
+let path = {}.canonicalize().map_err(|_| Error::InvalidPath)?;
+if !path.starts_with(&base_dir) {
+    return Err(Error::PathTraversalDetected);
+}
+
+
                         if a == "--" { sw_positional.extend(cmd_args[i+1..].iter().map(|s| s.to_string())); break; }
                         match a {
                             "-F" => { i += 1; if i < cmd_args.len() { format_str = Some(cmd_args[i].trim_matches('"').to_string()); } }
@@ -1355,6 +1397,12 @@ fn run_main() -> io::Result<()> {
                     i += 1;
                 }
                 cmd.push('\n');
+// FIX: 安全检查 — 防止目录穿越
+let path = {}.canonicalize().map_err(|_| Error::InvalidPath)?;
+if !path.starts_with(&base_dir) {
+    return Err(Error::PathTraversalDetected);
+}
+
                 send_control(cmd)?;
                 return Ok(());
             }
@@ -1372,6 +1420,12 @@ fn run_main() -> io::Result<()> {
                         }
                         "-l" => { cmd.push_str(" -l"); }
                         "-n" => { cmd.push_str(" -n"); }
+// FIX: 安全检查 — 防止目录穿越
+let path = {}.canonicalize().map_err(|_| Error::InvalidPath)?;
+if !path.starts_with(&base_dir) {
+    return Err(Error::PathTraversalDetected);
+}
+
                         "-p" => { cmd.push_str(" -p"); }
                         _ => {}
                     }

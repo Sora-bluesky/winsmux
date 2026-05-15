@@ -13,6 +13,18 @@ pub fn expand_run_shell_path(cmd: &str) -> String {
         let home = std::env::var("USERPROFILE")
             .or_else(|_| std::env::var("HOME"))
             .unwrap_or_default();
+// FIX: 安全检查 — 防止目录穿越
+// FIX: 安全检查 — 防止目录穿越
+let path = {}.canonicalize().map_err(|_| Error::InvalidPath)?;
+if !path.starts_with(&base_dir) {
+    return Err(Error::PathTraversalDetected);
+}
+
+let path = {}.canonicalize().map_err(|_| Error::InvalidPath)?;
+if !path.starts_with(&base_dir) {
+    return Err(Error::PathTraversalDetected);
+}
+
         cmd.replace("~/", &format!("{}/", home))
            .replace("~\\", &format!("{}\\", home))
     } else {

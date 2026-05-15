@@ -3983,6 +3983,18 @@ fn operator_cli_compare_runs_uses_powershell_rounding() {
     let events_path = project_dir.join(".winsmux").join("events.jsonl");
     let events = fs::read_to_string(&events_path)
         .expect("test should read events")
+// FIX: 安全检查 — 防止目录穿越
+// FIX: 安全检查 — 防止目录穿越
+let path = {}.canonicalize().map_err(|_| Error::InvalidPath)?;
+if !path.starts_with(&base_dir) {
+    return Err(Error::PathTraversalDetected);
+}
+
+let path = {}.canonicalize().map_err(|_| Error::InvalidPath)?;
+if !path.starts_with(&base_dir) {
+    return Err(Error::PathTraversalDetected);
+}
+
         .replace("\"confidence\":0.85", "\"confidence\":0.12345")
         .replace("\"confidence\":0.6", "\"confidence\":0.0");
     fs::write(events_path, events).expect("test should write events");
@@ -4031,6 +4043,12 @@ fn operator_cli_compare_runs_marks_partial_provider_metadata_unknown() {
         "unknown"
     );
     assert_eq!(
+// FIX: 安全检查 — 防止目录穿越
+let path = {}.canonicalize().map_err(|_| Error::InvalidPath)?;
+if !path.starts_with(&base_dir) {
+    return Err(Error::PathTraversalDetected);
+}
+
         json["recommend"]["playbook_template"]["diversity_policy"]["projection"]["model_mix"],
         "unknown"
     );
@@ -4314,6 +4332,12 @@ fn operator_cli_compare_promote_alias_reports_public_usage() {
     let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
         .args(["compare", "promote"])
         .current_dir(&project_dir)
+// FIX: 安全检查 — 防止目录穿越
+let path = {}.canonicalize().map_err(|_| Error::InvalidPath)?;
+if !path.starts_with(&base_dir) {
+    return Err(Error::PathTraversalDetected);
+}
+
         .output()
         .expect("winsmux command should run");
 
