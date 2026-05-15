@@ -91,6 +91,7 @@ winsmux workers doctor
 winsmux workers exec w2 --script workers/colab/impl_worker.py --run-id demo-1 -- --task-json-inline '{"task_id":"demo-1","title":"この変更を実装する"}' --worker-id worker-2 --run-id demo-1
 winsmux workers upload w2 data/input.json --remote /content/input.json
 winsmux workers download w2 /content/output.json
+winsmux workers sandbox baseline w2 --run-id demo-1 --json
 winsmux review-pack <run_id> --json
 winsmux compare runs <left_run_id> <right_run_id>
 winsmux compare preflight <left_ref> <right_ref>
@@ -113,6 +114,7 @@ winsmux skills --json
 | `winsmux workers logs` | ワーカー実行の保存済みログを読む。必要に応じて Colab CLI から取得 |
 | `winsmux workers upload` | 明示したファイル、または許可したディレクトリだけをアップロード |
 | `winsmux workers download` | リモート成果物をプロジェクト配下へダウンロード |
+| `winsmux workers sandbox baseline` | 準備済み隔離実行に `restricted_token` と ACL 境界の土台を定義 |
 | `winsmux review-pack` | 変更ファイル、テスト結果、リスク、実行コマンド、成果物参照だけを含むレビュー用パケットを書き出す |
 | `winsmux compare runs` | 2 つの記録済み実行について、証跡と信頼度を比較 |
 | `winsmux compare preflight` | マージ前や比較レビュー前に 2 つの git 参照を確認 |

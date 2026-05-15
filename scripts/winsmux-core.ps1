@@ -17,7 +17,7 @@ if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_RAW_EXE)) {
 }
 
 # --- Config ---
-$VERSION = "0.34.4"
+$VERSION = "0.34.5"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 $BridgeScriptPath = $PSCommandPath
@@ -5123,7 +5123,7 @@ function Invoke-Status {
 }
 
 function Get-WorkersUsage {
-    return "usage: winsmux workers <status|start|stop|attach|doctor> [slot|all] [--json] [--project-dir <path>]; winsmux workers <exec|logs|upload|download> <slot> ... [--json] [--project-dir <path>]; winsmux workers heartbeat <mark|check> <slot> [--run-id <id>] ... [--json] [--project-dir <path>]; winsmux workers workspace <prepare|cleanup> <slot> ... [--json] [--project-dir <path>]; winsmux workers secrets project <slot> ... [--json] [--project-dir <path>]"
+    return "usage: winsmux workers <status|start|stop|attach|doctor> [slot|all] [--json] [--project-dir <path>]; winsmux workers <exec|logs|upload|download> <slot> ... [--json] [--project-dir <path>]; winsmux workers heartbeat <mark|check> <slot> [--run-id <id>] ... [--json] [--project-dir <path>]; winsmux workers workspace <prepare|cleanup> <slot> ... [--json] [--project-dir <path>]; winsmux workers secrets project <slot> ... [--json] [--project-dir <path>]; winsmux workers sandbox baseline <slot> --run-id <id> [--json] [--project-dir <path>]"
 }
 
 function Read-WorkersOptions {
@@ -6747,6 +6747,41 @@ function Assert-WorkersIsolatedWorkspaceCleanupTarget {
     }
 }
 
+function Assert-WorkersNoReparsePointUnderDirectory {
+    param(
+        [Parameter(Mandatory = $true)][string]$RootDir,
+        [AllowEmptyString()][string]$Name = 'directory'
+    )
+
+    $rootInfo = Get-Item -LiteralPath $RootDir -Force -ErrorAction Stop
+    if (-not $rootInfo.PSIsContainer) {
+        Stop-WithError "$Name is not a directory: $RootDir"
+    }
+    if (([int]($rootInfo.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) -ne 0) {
+        Stop-WithError "$Name boundary contains unsupported reparse point: $RootDir"
+    }
+
+    $root = [System.IO.Path]::GetFullPath([string]$rootInfo.FullName)
+    $pending = [System.Collections.Generic.Stack[string]]::new()
+    $pending.Push($root)
+
+    while ($pending.Count -gt 0) {
+        $current = $pending.Pop()
+        foreach ($item in @(Get-ChildItem -LiteralPath $current -Force)) {
+            $itemPath = [System.IO.Path]::GetFullPath([string]$item.FullName)
+            if (-not (Test-WorkersPathIsUnderDirectory -Path $itemPath -Directory $root)) {
+                Stop-WithError "$Name boundary child escaped root: $itemPath"
+            }
+            if (([int]($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) -ne 0) {
+                Stop-WithError "$Name boundary contains unsupported reparse point: $itemPath"
+            }
+            if ($item.PSIsContainer) {
+                $pending.Push($itemPath)
+            }
+        }
+    }
+}
+
 function Remove-WorkersIsolatedWorkspaceRunDirectory {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -7417,6 +7452,63 @@ function Read-WorkersHeartbeatOptions {
     }
 }
 
+function Read-WorkersSandboxOptions {
+    param([Parameter(Mandatory = $true)][string]$Usage)
+
+    $projectDir = (Get-Location).Path
+    $asJson = $false
+    $action = ''
+    $targetValue = ''
+    $runId = ''
+    $profile = 'isolated-enterprise'
+    $items = @($Rest)
+
+    if ($items.Count -ge 1) {
+        $action = ([string]$items[0]).Trim().ToLowerInvariant()
+    }
+    if ($items.Count -ge 2) {
+        $targetValue = [string]$items[1]
+    }
+
+    for ($index = 2; $index -lt $items.Count; $index++) {
+        $token = [string]$items[$index]
+        switch ($token) {
+            '--json' { $asJson = $true }
+            '--project-dir' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $projectDir = [string]$items[$index + 1]
+                $index++
+            }
+            '--run-id' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $runId = [string]$items[$index + 1]
+                $index++
+            }
+            '--profile' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $profile = [string]$items[$index + 1]
+                $index++
+            }
+            default {
+                Stop-WithError $Usage
+            }
+        }
+    }
+
+    if ($action -ne 'baseline' -or [string]::IsNullOrWhiteSpace($targetValue) -or [string]::IsNullOrWhiteSpace($runId)) {
+        Stop-WithError $Usage
+    }
+
+    return [PSCustomObject]@{
+        ProjectDir = $projectDir
+        Json       = $asJson
+        Action     = $action
+        Target     = $targetValue
+        RunId      = $runId
+        Profile    = $profile
+    }
+}
+
 function Get-WorkersSingleSlotContext {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -7819,6 +7911,159 @@ function Invoke-WorkersHeartbeat {
     }
 
     Write-WorkersOperationOutput -Payload $status -Json:([bool]$options.Json) -Text "marked $state heartbeat for $runId"
+}
+
+function Invoke-WorkersSandboxBaseline {
+    param([Parameter(Mandatory = $true)]$Options)
+
+    $slot = Get-WorkersSingleSlotContext -ProjectDir $Options.ProjectDir -Target $Options.Target
+    $slotProfile = [string]$slot.SlotConfig.ExecutionProfile
+    if ([string]::IsNullOrWhiteSpace($slotProfile)) {
+        $slotProfile = 'local-windows'
+    }
+
+    $requestedProfile = [string]$Options.Profile
+    if ([string]::IsNullOrWhiteSpace($requestedProfile)) {
+        $requestedProfile = 'isolated-enterprise'
+    }
+    if (Get-Command Test-BridgeExecutionProfileKind -ErrorAction SilentlyContinue) {
+        if (-not (Test-BridgeExecutionProfileKind -Value $requestedProfile)) {
+            Stop-WithError "unsupported execution profile for Windows sandbox baseline: $requestedProfile"
+        }
+    }
+    if (-not [string]::Equals($requestedProfile, 'isolated-enterprise', [System.StringComparison]::OrdinalIgnoreCase)) {
+        Stop-WithError 'Windows sandbox baseline requires execution profile isolated-enterprise'
+    }
+    if (-not [string]::Equals($slotProfile, $requestedProfile, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Stop-WithError "worker slot $($slot.Row.SlotId) uses execution profile '$slotProfile', not $requestedProfile"
+    }
+
+    $runId = Assert-WorkersRunId -RunId ([string]$Options.RunId)
+    if ([string]::IsNullOrWhiteSpace($runId)) {
+        Stop-WithError 'Windows sandbox baseline requires --run-id'
+    }
+
+    $runDir = Get-WorkersIsolatedWorkspaceRunDirectory -ProjectDir $Options.ProjectDir -SlotId ([string]$slot.Row.SlotId) -RunId $runId
+    if (-not (Test-Path -LiteralPath $runDir -PathType Container)) {
+        Stop-WithError "Windows sandbox baseline requires an existing isolated workspace run: $runId"
+    }
+    Assert-WorkersIsolatedWorkspaceCleanupTarget -ProjectDir $Options.ProjectDir -RunDir $runDir
+
+    $workspaceDir = Join-Path $runDir 'workspace'
+    $downloadsDir = Join-Path $runDir 'downloads'
+    $artifactsDir = Join-Path $runDir 'artifacts'
+    foreach ($requiredDir in @($workspaceDir, $downloadsDir, $artifactsDir)) {
+        if (-not (Test-Path -LiteralPath $requiredDir -PathType Container)) {
+            Stop-WithError "Windows sandbox baseline requires prepared isolated workspace directories: $runId"
+        }
+    }
+
+    Assert-WorkersNoReparsePointUnderDirectory -RootDir $runDir -Name 'Windows sandbox baseline'
+
+    $manifestPath = Join-Path $runDir 'sandbox-baseline.json'
+    $secretRoot = Join-Path $runDir 'secrets'
+    $runReference = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $runDir
+    $workspaceReference = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $workspaceDir
+    $downloadsReference = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $downloadsDir
+    $artifactsReference = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $artifactsDir
+    $secretReference = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $secretRoot
+    $manifestReference = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $manifestPath
+
+    $payload = [ordered]@{
+        version       = 1
+        project_ref   = '.'
+        generated_at  = (Get-Date).ToUniversalTime().ToString('o')
+        command       = 'workers.sandbox.baseline'
+        status        = 'baseline_defined'
+        slot          = [string]$slot.Row.Slot
+        slot_id       = [string]$slot.Row.SlotId
+        role          = [string]$slot.SlotConfig.WorkerRole
+        run_id        = $runId
+        execution_profile = 'isolated-enterprise'
+        sandbox_kind  = 'windows_native_baseline'
+        public_default = $false
+        boundary      = [ordered]@{
+            process = [ordered]@{
+                token = [ordered]@{
+                    kind = 'restricted_token'
+                    required = $true
+                    launch_contract = 'worker_process_must_use_restricted_token'
+                    current_command_launches_process = $false
+                }
+            }
+            filesystem = [ordered]@{
+                acl = [ordered]@{
+                    kind = 'run_acl_boundary'
+                    required = $true
+                    root = $runReference
+                    allowed_roots = @($workspaceReference, $downloadsReference, $artifactsReference, $secretReference)
+                    denied = @('project_root_direct_write', 'parent_escape', 'reparse_point_escape')
+                    verified_no_reparse_points = $true
+                }
+            }
+            credentials = [ordered]@{
+                kind = 'run_scoped_secret_projection'
+                root = $secretReference
+                value_output = $false
+                manifest_value_output = $false
+            }
+            logs = [ordered]@{
+                kind = 'safe_log_boundary'
+                secret_values = $false
+                local_paths_redacted = $true
+            }
+        }
+        failure_policy = [ordered]@{
+            fail_closed_on = @(
+                'non_isolated_enterprise_profile',
+                'missing_isolated_workspace_run',
+                'missing_workspace_directories',
+                'run_directory_reparse_point',
+                'child_reparse_point',
+                'path_escape'
+            )
+            unsafe_claims_prohibited = $true
+        }
+        isolation_claim = [ordered]@{
+            secure = $false
+            reason = 'baseline contract only; worker launch must enforce the restricted token and ACL boundary before claiming secure isolation'
+        }
+        locations     = [ordered]@{
+            run_root  = New-WinsmuxLocationIdentity -Kind 'local_directory' -DisplayName $runReference -Backend 'local-windows' -AccessMethod 'isolated_run_root' -Reference $runReference -Provenance 'workers.sandbox.run_root'
+            workspace = New-WinsmuxLocationIdentity -Kind 'local_directory' -DisplayName $workspaceReference -Backend 'local-windows' -AccessMethod 'isolated_workspace' -Reference $workspaceReference -Provenance 'workers.sandbox.workspace'
+            downloads = New-WinsmuxLocationIdentity -Kind 'local_directory' -DisplayName $downloadsReference -Backend 'local-windows' -AccessMethod 'isolated_downloads' -Reference $downloadsReference -Provenance 'workers.sandbox.downloads'
+            artifacts = New-WinsmuxLocationIdentity -Kind 'local_directory' -DisplayName $artifactsReference -Backend 'local-windows' -AccessMethod 'isolated_artifacts' -Reference $artifactsReference -Provenance 'workers.sandbox.artifacts'
+            secrets   = New-WinsmuxLocationIdentity -Kind 'local_directory' -DisplayName $secretReference -Backend 'local-windows' -AccessMethod 'secret_projection_root' -Reference $secretReference -Provenance 'workers.sandbox.secrets'
+            manifest  = New-WinsmuxLocationIdentity -Kind 'local_file' -DisplayName 'sandbox-baseline.json' -Backend 'local-windows' -AccessMethod 'artifact_ref' -Reference $manifestReference -Provenance 'workers.sandbox.manifest'
+        }
+        testable_guards = @(
+            'isolated_enterprise_profile_required',
+            'existing_isolated_workspace_required',
+            'run_boundary_no_reparse_points',
+            'artifact_paths_project_relative',
+            'secret_values_not_reported'
+        )
+        exit_code     = 0
+    }
+
+    Write-WorkersJsonArtifact -Path $manifestPath -Data $payload | Out-Null
+    if ($null -ne $slot.Entry) {
+        Set-WorkersManifestLifecycleCommand -Entry $slot.Entry -CommandName 'workers.sandbox.baseline' -ExtraProperties ([ordered]@{
+            last_sandbox_run_id  = $runId
+            last_sandbox_profile = 'isolated-enterprise'
+        })
+    }
+
+    Write-WorkersOperationOutput -Payload $payload -Json:([bool]$Options.Json) -Text "defined Windows sandbox baseline for $runId"
+}
+
+function Invoke-WorkersSandbox {
+    $usage = "usage: winsmux workers sandbox baseline <slot> --run-id <id> [--profile isolated-enterprise] [--json] [--project-dir <path>]"
+    $options = Read-WorkersSandboxOptions -Usage $usage
+    switch ([string]$options.Action) {
+        'baseline' { Invoke-WorkersSandboxBaseline -Options $options }
+        default { Stop-WithError $usage }
+    }
 }
 
 function Invoke-WorkersExec {
@@ -8443,6 +8688,7 @@ function Invoke-Workers {
         'workspace' { Invoke-WorkersWorkspace }
         'secrets' { Invoke-WorkersSecrets }
         'heartbeat' { Invoke-WorkersHeartbeat }
+        'sandbox' { Invoke-WorkersSandbox }
         'exec'   { Invoke-WorkersExec }
         'logs'   { Invoke-WorkersLogs }
         'upload' { Invoke-WorkersUpload }
@@ -15340,6 +15586,7 @@ Commands:
   workers heartbeat <mark|check> <slot> [--run-id <id>] [--state <state>] [--json] [--project-dir <path>]  Mark or check isolated/local worker liveness without classifying child waits as stopped
   workers workspace <prepare|cleanup> <slot> [--include <path>] [--run-id <id>] [--json] [--project-dir <path>]  Prepare or remove disposable isolated worker workspaces
   workers secrets project <slot> --run-id <id> [--env <name=key>] [--file <path=key>] [--variable <name=key>] [--json] [--project-dir <path>]  Project typed run-scoped secrets without printing secret values
+  workers sandbox baseline <slot> --run-id <id> [--json] [--project-dir <path>]  Define the Windows restricted-token and ACL baseline for an isolated run
   board [--json]            Report pane/task/review/git session board
 desktop-summary [--json] [--stream]  Report the aggregated desktop read-model snapshot or follow refresh signals
 inbox [--json] [--stream] Report actionable approvals/review/blockers

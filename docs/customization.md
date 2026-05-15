@@ -20,9 +20,9 @@ Use managed worktrees when multiple agents may edit files in parallel. They keep
 
 The default is `local-windows`. It preserves the normal Windows managed-pane
 behavior. `isolated-enterprise` is opt-in and should only be selected when the
-operator explicitly wants the enterprise isolation lane. Later releases attach
-the isolated workspace, credential, heartbeat, and Windows sandbox behavior to
-that profile.
+operator explicitly wants the enterprise isolation lane. The isolated
+workspace, credential, heartbeat, and Windows sandbox baseline behavior are
+attached to that profile only; they are not public defaults.
 
 ### Isolated workspaces
 
@@ -97,6 +97,33 @@ Heartbeat artifacts are stored as `heartbeat.json` under the run boundary:
 `winsmux workers status --json` includes the same `heartbeat`,
 `heartbeat_health`, and `heartbeat_state` fields that the desktop app uses, so
 CLI and Tauri surfaces share one worker liveness contract.
+
+### Windows sandbox baseline
+
+`isolated-enterprise` runs can define a Windows native sandbox baseline after
+the isolated workspace exists:
+
+```powershell
+winsmux workers sandbox baseline w2 --run-id run-123 --json
+```
+
+The baseline combines two contracts for the run:
+
+- a `restricted_token` process-launch requirement for any worker process that
+  later executes inside the run
+- a `run_acl_boundary` file boundary rooted at
+  `.winsmux/isolated-workspaces/<slot>/<run>`
+
+The command fails closed unless the slot uses `isolated-enterprise`, the run
+workspace has already been prepared, the required run directories exist, and no
+reparse point is present under the run boundary. It writes
+`sandbox-baseline.json` under the isolated run directory and reports only
+project-relative artifact references.
+
+This is a baseline contract, not a claim that an already running worker is
+securely isolated. The JSON output sets `isolation_claim.secure` to `false`
+until the worker launch path enforces the restricted token and ACL boundary.
+Do not use `local-windows` runs for this lane.
 
 ## Launcher presets
 

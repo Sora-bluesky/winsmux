@@ -65,6 +65,12 @@ managed-pane behavior. `isolated-enterprise` is explicit opt-in for the
 enterprise isolation lane and should not be selected implicitly by provider,
 model, or role.
 
+The Windows sandbox baseline belongs to this execution-profile layer. It is a
+run contract for `isolated-enterprise`: a restricted-token launch requirement,
+a run-scoped ACL boundary, and fail-closed checks around the prepared isolated
+workspace. It is not a provider capability and does not make `local-windows`
+workers sandboxed.
+
 This keeps three decisions separate:
 
 - role or playbook intent: why the slot exists and what evidence it should
