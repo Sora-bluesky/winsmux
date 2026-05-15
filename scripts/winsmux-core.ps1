@@ -6408,6 +6408,13 @@ function Get-WorkersLatestHeartbeatStatus {
     $localRoot = Join-Path (Join-Path (Join-Path $ProjectDir '.winsmux') 'worker-runs') $safeSlotId
     $isolatedRoot = Join-Path (Get-WorkersIsolatedWorkspaceRoot -ProjectDir $ProjectDir) $safeSlotId
     $profile = [string]$ExecutionProfile
+    if (
+        -not [string]::IsNullOrWhiteSpace($profile) -and
+        -not [string]::Equals($profile, 'local-windows', [System.StringComparison]::OrdinalIgnoreCase) -and
+        -not [string]::Equals($profile, 'isolated-enterprise', [System.StringComparison]::OrdinalIgnoreCase)
+    ) {
+        return $null
+    }
     $roots = [System.Collections.Generic.List[string]]::new()
     if (-not [string]::Equals($profile, 'isolated-enterprise', [System.StringComparison]::OrdinalIgnoreCase)) {
         $roots.Add($localRoot) | Out-Null
@@ -7711,6 +7718,22 @@ function Invoke-WorkersHeartbeat {
     if ([string]::IsNullOrWhiteSpace($profile)) {
         $profile = 'local-windows'
     }
+    if (Get-Command Test-BridgeExecutionProfileKind -ErrorAction SilentlyContinue) {
+        if (-not (Test-BridgeExecutionProfileKind -Value $profile)) {
+            Stop-WithError "unsupported execution profile for heartbeat: $profile"
+        }
+    }
+    $slotProfile = [string]$slot.SlotConfig.ExecutionProfile
+    if ([string]::IsNullOrWhiteSpace($slotProfile)) {
+        $slotProfile = 'local-windows'
+    }
+    $action = [string]$options.Action
+    if (
+        -not [string]::Equals($action, 'check', [System.StringComparison]::OrdinalIgnoreCase) -and
+        -not [string]::Equals($slotProfile, $profile, [System.StringComparison]::OrdinalIgnoreCase)
+    ) {
+        Stop-WithError "worker slot $slotId uses execution profile '$slotProfile', not $profile"
+    }
 
     $stalledAfter = Get-WorkersHeartbeatThresholdSeconds -Value ([int]$options.StalledAfterSeconds) -EnvName 'WINSMUX_WORKER_HEARTBEAT_STALLED_AFTER_SECONDS' -Default 300
     $offlineAfter = Get-WorkersHeartbeatThresholdSeconds -Value ([int]$options.OfflineAfterSeconds) -EnvName 'WINSMUX_WORKER_HEARTBEAT_OFFLINE_AFTER_SECONDS' -Default 900
@@ -7720,7 +7743,7 @@ function Invoke-WorkersHeartbeat {
 
     $nowUtc = Get-WorkersNowUtc
 
-    if ([string]::Equals([string]$options.Action, 'check', [System.StringComparison]::OrdinalIgnoreCase)) {
+    if ([string]::Equals($action, 'check', [System.StringComparison]::OrdinalIgnoreCase)) {
         $heartbeatPath = ''
         if (-not [string]::IsNullOrWhiteSpace($runId)) {
             $runDir = Get-WorkersHeartbeatRunDirectory -ProjectDir $options.ProjectDir -SlotId $slotId -RunId $runId -ExecutionProfile $profile -AllowMissing

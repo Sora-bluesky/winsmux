@@ -9505,6 +9505,46 @@ agent-slots:
         $payload.execution_profile | Should -Be 'isolated-enterprise'
     }
 
+    It 'rejects unsupported latest heartbeat profile before scanning local artifacts' {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    execution-profile: local-windows
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        $env:WINSMUX_TEST_NOW_UTC = '2026-05-16T00:00:00Z'
+        & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers heartbeat mark worker-2 --run-id latest-local --state running --json --project-dir $script:workersTempRoot | Out-Null
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers heartbeat check worker-2 --profile typo-profile --json --project-dir $script:workersTempRoot 2>&1
+
+        $LASTEXITCODE | Should -Be 1
+        ($output | Out-String) | Should -Match 'unsupported execution profile for heartbeat: typo-profile'
+        ($output | Out-String) | Should -Not -Match 'latest-local'
+    }
+
+    It 'rejects heartbeat mark profile mismatches for isolated slots' {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    execution-profile: isolated-enterprise
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers heartbeat mark worker-2 --run-id cross-profile --profile local-windows --state running --json --project-dir $script:workersTempRoot 2>&1
+
+        $LASTEXITCODE | Should -Be 1
+        ($output | Out-String) | Should -Match "worker slot worker-2 uses execution profile 'isolated-enterprise', not local-windows"
+        Test-Path -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\worker-runs\worker-2\cross-profile\heartbeat.json') | Should -Be $false
+    }
+
     It 'honors latest heartbeat check thresholds and profile filters' {
 @'
 agent: codex
