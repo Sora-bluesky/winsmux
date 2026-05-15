@@ -6615,6 +6615,9 @@ function Invoke-WorkersUpload {
     Write-WorkersJsonArtifact -Path $manifestPath -Data $manifest | Out-Null
 
     $sourceLocationKind = if ([bool]$source.IsDirectory) { 'local_directory' } else { 'local_file' }
+    $stagedSourceLocationKind = if ([bool]$uploadSource.Staged) { 'local_directory' } else { $sourceLocationKind }
+    $stagedSourceAccessMethod = if ([bool]$uploadSource.Staged) { 'runtime_staging' } else { 'project_path' }
+    $stagedSourceProvenance = if ([bool]$uploadSource.Staged) { 'workers.upload.staged_source' } else { 'workers.upload.source' }
     $safeRemote = ConvertTo-WorkersSafeLogText -Text $remote
     $manifestReference = Get-WorkersArtifactReference -ProjectDir $options.ProjectDir -Path $manifestPath
     $arguments = @('upload', '--session', [string]$worker.Session, '--source', [string]$uploadSource.FullPath, '--dest', $remote, '--manifest', $manifestPath, '--run-id', $runId)
@@ -6634,10 +6637,10 @@ function Invoke-WorkersUpload {
         remote         = $safeRemote
         manifest       = $manifestReference
         locations      = [ordered]@{
-            source        = New-WinsmuxLocationIdentity -Kind $sourceLocationKind -DisplayName ([string]$source.RelativePath) -Backend 'local-windows' -AccessMethod 'project_path' -Reference ([string]$source.RelativePath) -LocalPath ([string]$source.FullPath) -Provenance 'workers.upload.source'
-            staged_source = New-WinsmuxLocationIdentity -Kind 'local_directory' -DisplayName ([string]$uploadSource.Reference) -Backend 'local-windows' -AccessMethod 'runtime_staging' -Reference ([string]$uploadSource.Reference) -LocalPath ([string]$uploadSource.FullPath) -Provenance 'workers.upload.staged_source'
+            source        = New-WinsmuxLocationIdentity -Kind $sourceLocationKind -DisplayName ([string]$source.RelativePath) -Backend 'local-windows' -AccessMethod 'project_path' -Reference ([string]$source.RelativePath) -Provenance 'workers.upload.source'
+            staged_source = New-WinsmuxLocationIdentity -Kind $stagedSourceLocationKind -DisplayName ([string]$uploadSource.Reference) -Backend 'local-windows' -AccessMethod $stagedSourceAccessMethod -Reference ([string]$uploadSource.Reference) -Provenance $stagedSourceProvenance
             remote        = New-WinsmuxLocationIdentity -Kind 'remote_artifact' -DisplayName $safeRemote -Backend 'colab_cli' -AccessMethod 'adapter_remote_path' -RemotePath $safeRemote -Provenance 'workers.upload.remote'
-            manifest      = New-WinsmuxLocationIdentity -Kind 'local_file' -DisplayName 'upload-manifest.json' -Backend 'local-windows' -AccessMethod 'artifact_ref' -Reference $manifestReference -LocalPath $manifestPath -Provenance 'workers.upload.manifest'
+            manifest      = New-WinsmuxLocationIdentity -Kind 'local_file' -DisplayName 'upload-manifest.json' -Backend 'local-windows' -AccessMethod 'artifact_ref' -Reference $manifestReference -Provenance 'workers.upload.manifest'
         }
         uploaded_count = @($manifestEntries.Files).Count
         excluded_count = @($manifestEntries.Excluded).Count
@@ -6709,7 +6712,7 @@ function Invoke-WorkersDownload {
         output        = $outputReference
         locations     = [ordered]@{
             remote = New-WinsmuxLocationIdentity -Kind 'remote_artifact' -DisplayName $safeRemote -Backend 'colab_cli' -AccessMethod 'adapter_remote_path' -RemotePath $safeRemote -Provenance 'workers.download.remote'
-            output = New-WinsmuxLocationIdentity -Kind $outputLocationKind -DisplayName $outputReference -Backend 'local-windows' -AccessMethod 'artifact_ref' -Reference $outputReference -LocalPath ([string]$outputInfo.FullPath) -Provenance 'workers.download.output'
+            output = New-WinsmuxLocationIdentity -Kind $outputLocationKind -DisplayName $outputReference -Backend 'local-windows' -AccessMethod 'artifact_ref' -Reference $outputReference -Provenance 'workers.download.output'
         }
         exit_code     = [int]$cli.ExitCode
         cli_command   = ConvertTo-WorkersSafeLogText -Text ([string]$cli.Command)

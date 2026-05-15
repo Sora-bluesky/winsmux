@@ -234,9 +234,10 @@ winsmux workers download w2 /content/output.json --output artifacts/worker-outpu
 
 Upload and download JSON include typed `locations` records for the local source
 or output, the remote artifact path, and the local manifest or staging
-directory. Remote artifacts use `kind: remote_artifact` and do not expose a
-`local_path`; local-only path helpers are valid only for `local_file` and
-`local_directory` records.
+directory. These records publish stable project-relative references and do not
+expose host absolute paths. Remote artifacts use `kind: remote_artifact` and do
+not expose a `local_path`; persisted local records also keep `local_path` empty
+so shareable worker evidence does not leak the operator's project directory.
 
 Directory uploads are staged through a safe manifest. winsmux excludes:
 

@@ -226,7 +226,7 @@ winsmux workers upload w2 data --remote /content/data --allow-dir data --run-id 
 winsmux workers download w2 /content/output.json --output artifacts/worker-output --run-id demo-1 --json
 ```
 
-アップロードとダウンロードの JSON には、型付きの `locations` 記録が含まれます。これはローカルの入力または出力、リモート成果物パス、ローカルの manifest またはステージングディレクトリを分けて表します。リモート成果物は `kind: remote_artifact` で、`local_path` を公開しません。ローカル専用のパス helper は `local_file` と `local_directory` の記録にだけ使えます。
+アップロードとダウンロードの JSON には、型付きの `locations` 記録が含まれます。これはローカルの入力または出力、リモート成果物パス、ローカルの manifest またはステージングディレクトリを分けて表します。記録にはプロジェクト相対の参照だけを保存し、端末上の絶対パスは公開しません。リモート成果物は `kind: remote_artifact` で、`local_path` を公開しません。永続化されるローカル記録でも `local_path` は空にし、共有される worker 証跡から操作者のプロジェクトパスが漏れないようにします。
 
 ディレクトリアップロードでは、安全な manifest を使ってステージングします。
 winsmux は次を除外します。

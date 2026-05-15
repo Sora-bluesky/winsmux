@@ -2182,8 +2182,8 @@ function Read-BridgeGlobalSettings {
             } else {
                 $settings[$key] = $normalizedValue
             }
-        } elseif ($key -eq 'prompt_transport') {
-            throw "Invalid prompt_transport configuration: unsupported value '$rawValue'."
+        } elseif ($key -in @('prompt_transport', 'execution_profile')) {
+            throw "Invalid $key configuration: unsupported value '$rawValue'."
         }
     }
 

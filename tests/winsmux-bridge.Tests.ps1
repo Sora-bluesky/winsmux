@@ -422,6 +422,19 @@ execution-profile: container-mandatory
         { Get-BridgeSettings } | Should -Throw '*Invalid execution_profile configuration*'
     }
 
+    It 'fails closed when global execution profile is unsupported' {
+        Mock Get-WinsmuxOption {
+            param($Name, $Default)
+
+            switch ($Name) {
+                '@bridge-execution-profile' { 'container-mandatory' }
+                default { $null }
+            }
+        }
+
+        { Get-BridgeSettings } | Should -Throw "*Invalid execution_profile configuration: unsupported value 'container-mandatory'.*"
+    }
+
     It 'parses WorkerBackend metadata for six-slot worker configs without runtime dispatch' {
 @'
 agent: codex
@@ -9564,11 +9577,17 @@ worker-backend: colab_cli
         $payload.staged_source | Should -Match '^\.winsmux/worker-runs/worker-2/upload-1/upload-source$'
         $payload.locations.source.kind | Should -Be 'local_directory'
         $payload.locations.source.backend | Should -Be 'local-windows'
+        $payload.locations.source.local_path | Should -Be ''
+        $payload.locations.staged_source.kind | Should -Be 'local_directory'
+        $payload.locations.staged_source.access_method | Should -Be 'runtime_staging'
+        $payload.locations.staged_source.local_path | Should -Be ''
         $payload.locations.remote.kind | Should -Be 'remote_artifact'
         $payload.locations.remote.backend | Should -Be 'colab_cli'
         $payload.locations.remote.remote_path | Should -Be '/content/inputs'
         $payload.locations.remote.local_path | Should -Be ''
         $payload.locations.manifest.kind | Should -Be 'local_file'
+        $payload.locations.manifest.local_path | Should -Be ''
+        ($payload.locations | ConvertTo-Json -Depth 12) | Should -Not -Match ([regex]::Escape($script:workersTempRoot))
         $payload.cli_arguments | Should -Not -Contain (Join-Path $script:workersTempRoot 'inputs')
         (@($payload.cli_arguments) -join ' ') | Should -Not -Match ([regex]::Escape($script:workersTempRoot))
         (@($payload.cli_arguments) -join ' ') | Should -Match '\[LOCAL_PATH_REDACTED\]'
@@ -9578,6 +9597,31 @@ worker-backend: colab_cli
         Test-Path -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\worker-runs\worker-2\upload-1\upload-source\.env') | Should -Be $false
         @($manifest.excluded | ForEach-Object { $_.reason }) | Should -Contain 'secret_like_file'
         @($manifest.excluded | ForEach-Object { $_.reason }) | Should -Contain 'excluded_segment:node_modules'
+    }
+
+    It 'keeps unstaged file upload locations typed without publishing absolute local paths' {
+        New-WorkersFakeColabCli | Out-Null
+        Write-WorkersColabProjectConfig
+        'payload' | Set-Content -Path (Join-Path $script:workersTempRoot 'input.json') -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers upload w2 input.json --remote /content/input.json --run-id upload-file --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $runJsonPath = Join-Path $script:workersTempRoot '.winsmux\worker-runs\worker-2\upload-file\upload.json'
+        $storedPayload = Get-Content -LiteralPath $runJsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
+
+        $payload.status | Should -Be 'succeeded'
+        $payload.source | Should -Be 'input.json'
+        $payload.staged_source | Should -Be 'input.json'
+        $payload.locations.source.kind | Should -Be 'local_file'
+        $payload.locations.source.access_method | Should -Be 'project_path'
+        $payload.locations.source.reference | Should -Be 'input.json'
+        $payload.locations.source.local_path | Should -Be ''
+        $payload.locations.staged_source.kind | Should -Be 'local_file'
+        $payload.locations.staged_source.access_method | Should -Be 'project_path'
+        $payload.locations.staged_source.reference | Should -Be 'input.json'
+        $payload.locations.staged_source.local_path | Should -Be ''
+        ($payload.locations | ConvertTo-Json -Depth 12) | Should -Not -Match ([regex]::Escape($script:workersTempRoot))
+        ($storedPayload.locations | ConvertTo-Json -Depth 12) | Should -Not -Match ([regex]::Escape($script:workersTempRoot))
     }
 
     It 'keeps empty stored worker logs local' {
@@ -9761,6 +9805,8 @@ agent-slots:
         $payload.locations.remote.local_path | Should -Be ''
         $payload.locations.output.kind | Should -Be 'local_directory'
         $payload.locations.output.backend | Should -Be 'local-windows'
+        $payload.locations.output.local_path | Should -Be ''
+        ($payload.locations | ConvertTo-Json -Depth 12) | Should -Not -Match ([regex]::Escape($script:workersTempRoot))
         $payload.cli_arguments[0] | Should -Be 'download'
     }
 
@@ -9776,6 +9822,8 @@ agent-slots:
         $payload.output | Should -Be 'results/result.json'
         $payload.locations.output.kind | Should -Be 'local_file'
         $payload.locations.output.reference | Should -Be 'results/result.json'
+        $payload.locations.output.local_path | Should -Be ''
+        ($payload.locations | ConvertTo-Json -Depth 12) | Should -Not -Match ([regex]::Escape($script:workersTempRoot))
         (@($payload.cli_arguments) -join ' ') | Should -Not -Match ([regex]::Escape($expectedOutput))
         (@($payload.cli_arguments) -join ' ') | Should -Match '\[LOCAL_PATH_REDACTED\]'
         Test-Path -LiteralPath (Split-Path -Parent $expectedOutput) -PathType Container | Should -Be $true
