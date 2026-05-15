@@ -748,6 +748,7 @@ async function exerciseTauriNativeSurface(page, browser) {
 }
 
 async function writeEvidence(ok, extra = {}) {
+  await ensureOutputDir();
   const evidence = {
     ok,
     timestamp: new Date().toISOString(),
@@ -999,6 +1000,7 @@ async function main() {
 
     await runStep("operator pane starts Claude Code and accepts real user input", async () => {
       const readyOutput = await startOperatorFromUiAndWaitForClaude(page);
+      await ensureOutputDir();
       await page.screenshot({ path: path.join(OUTPUT_DIR, "desktop-pane-e2e-operator-claude.png"), fullPage: true });
       await typeTerminalDraft(page, "#operator-terminal-panel", OPERATOR_MARKER);
       const visibleText = await waitForVisibleTerminalText(page, "#operator-terminal", OPERATOR_MARKER);
@@ -1171,11 +1173,13 @@ async function main() {
       await closePtyIfExists(page, "operator");
     });
 
+    await ensureOutputDir();
     await page.screenshot({ path: path.join(OUTPUT_DIR, "desktop-pane-e2e-success.png"), fullPage: true });
     await writeEvidence(true, { debugPort });
     process.stdout.write(`[desktop-pane-e2e] PASS evidence=${path.join(OUTPUT_DIR, "desktop-pane-e2e.json")}\n`);
   } catch (error) {
     if (page) {
+      await ensureOutputDir();
       await page.screenshot({ path: path.join(OUTPUT_DIR, "desktop-pane-e2e-failure.png"), fullPage: true }).catch(() => {});
     }
     await writeEvidence(false, {
