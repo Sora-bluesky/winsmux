@@ -24,6 +24,31 @@ operator explicitly wants the enterprise isolation lane. Later releases attach
 the isolated workspace, credential, heartbeat, and Windows sandbox behavior to
 that profile.
 
+### Isolated workspaces
+
+`isolated-enterprise` slots can prepare a disposable workspace for one run:
+
+```powershell
+winsmux workers workspace prepare w2 --include src --include docs/task.md --run-id run-123 --json
+```
+
+The command copies only the requested project-relative files or directories
+into `.winsmux/isolated-workspaces/<slot>/<run>/workspace`. It also creates
+separate `downloads` and `artifacts` directories for the run. Direct writes to
+the project root are not part of the contract.
+
+Projection paths are strict. winsmux rejects absolute path escapes, `..`
+segments, reparse points such as symlinks or junctions, Windows reserved names,
+runtime directories, dependency directories, build outputs, and secret-like
+files. Directory projections must pass the same checks for every file inside
+the directory before the workspace is created.
+
+Remove the run workspace after collecting the required artifacts:
+
+```powershell
+winsmux workers workspace cleanup w2 --run-id run-123 --json
+```
+
 ## Launcher presets
 
 Inspect the presets before launching a compare-oriented run:
