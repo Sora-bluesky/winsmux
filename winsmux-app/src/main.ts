@@ -651,6 +651,10 @@ let settingsFontFamilyMenuOpen = false;
 let runtimeRolePreferences: RuntimeRolePreference[] = [];
 let runtimeRoleDraftState: RuntimeRolePreference[] | null = null;
 let workerStartTarget: string | null = null;
+let workerStatusRows: DesktopWorkerStatusRow[] = [];
+let workerStatusError = "";
+let workerStatusRefreshInFlight: Promise<void> | null = null;
+let workerStatusRefreshSequence = 0;
 let preferredWideSidebarOpen = true;
 let preferredWideContextOpen = false;
 const SHELL_PREFERENCES_STORAGE_KEY = "winsmux.shell.preferences.v1";
@@ -1490,6 +1494,7 @@ function markPanePtyStartedFromExternalEvent(paneId: string) {
     return;
   }
 
+  const wasStarted = entry.ptyStarted;
   entry.ptyStarted = true;
   entry.ptyStarting = null;
   entry.metaElement.textContent = getLanguageText("shell active", "シェル起動済み");
@@ -1497,6 +1502,9 @@ function markPanePtyStartedFromExternalEvent(paneId: string) {
     "This pane was started by the desktop control pipe.",
     "このペインはデスクトップ制御パイプから起動されました。",
   );
+  if (!wasStarted) {
+    void refreshWorkerStatusSurface();
+  }
 }
 
 function markPanePtyStoppedFromExternalEvent(paneId: string) {
@@ -1505,10 +1513,14 @@ function markPanePtyStoppedFromExternalEvent(paneId: string) {
     return;
   }
 
+  const wasRunning = entry.ptyStarted || Boolean(entry.ptyStarting);
   entry.ptyStarted = false;
   entry.ptyStarting = null;
   entry.metaElement.textContent = getLanguageText("not started", "未起動");
   entry.metaElement.removeAttribute("title");
+  if (wasRunning) {
+    void refreshWorkerStatusSurface();
+  }
 }
 
 function createPane(paneId?: string): string {
@@ -1688,20 +1700,24 @@ function ensurePanePtyStarted(paneId: string) {
 
   const { cols, rows } = { cols: entry.terminal.cols, rows: entry.terminal.rows };
   entry.metaElement.textContent = getLanguageText("starting shell", "シェル起動中");
+  renderWorkerStatusSurface();
   entry.ptyStarting = spawnPtyPane(paneId, cols, rows, getPaneStartupInput(paneId))
     .then(() => {
       entry.ptyStarted = true;
       entry.metaElement.textContent = getLanguageText("waiting for summary", "要約待ち");
       requestDesktopSummaryRefresh(undefined, 500);
+      void refreshWorkerStatusSurface();
     })
     .catch((error) => {
       entry.ptyStarted = false;
       entry.metaElement.textContent = getLanguageText("shell start failed", "シェル起動失敗");
       entry.metaElement.title = error instanceof Error ? error.message : String(error);
+      void refreshWorkerStatusSurface();
       throw error;
     })
     .finally(() => {
       entry.ptyStarting = null;
+      renderWorkerStatusSurface();
     });
 
   return entry.ptyStarting;
@@ -1741,6 +1757,315 @@ function closePane(id: string) {
 
 function getWorkerStartTarget() {
   return getFocusedWorkbenchPaneId() ?? getWorkbenchPaneIds()[0] ?? null;
+}
+
+function getWorkerStatusTarget(row: DesktopWorkerStatusRow) {
+  return row.slot_id || row.slot || row.pane_id || "";
+}
+
+function getWorkerStatusLaunch(row: DesktopWorkerStatusRow) {
+  return row.current_launch ?? row.approved_launch ?? null;
+}
+
+function getWorkerStatusRowsForSurface() {
+  const currentRows = workerStatusRows.length > 0 ? workerStatusRows : getFallbackWorkerStatusRows();
+  return currentRows.slice().sort((left, right) => {
+    const leftOrdinal = getWorkbenchPaneOrdinal(getWorkerStatusTarget(left)) ?? Number.MAX_SAFE_INTEGER;
+    const rightOrdinal = getWorkbenchPaneOrdinal(getWorkerStatusTarget(right)) ?? Number.MAX_SAFE_INTEGER;
+    if (leftOrdinal !== rightOrdinal) {
+      return leftOrdinal - rightOrdinal;
+    }
+    return getWorkerStatusTarget(left).localeCompare(getWorkerStatusTarget(right));
+  });
+}
+
+function getFallbackWorkerStatusRows(): DesktopWorkerStatusRow[] {
+  return getWorkbenchPaneIds().map((paneId) => {
+    const entry = panes.get(paneId);
+    const state = entry?.ptyStarted ? "running" : entry?.ptyStarting ? "starting" : "not_started";
+    return {
+      slot: paneId,
+      slot_id: paneId,
+      pane_id: paneId,
+      state,
+      pane_state: state,
+      manifest_status: "",
+      backend: "local",
+      role: "worker",
+      session: "desktop",
+      requested_gpu: "none",
+      actual_gpu: "none",
+      degraded_reason: "",
+      last_command: "",
+      last_command_at: "",
+      approved_launch: null,
+      current_launch: null,
+      approval_differences: [],
+    };
+  });
+}
+
+function formatWorkerCommandElapsed(timestamp: string) {
+  const parsed = Date.parse(timestamp);
+  if (Number.isNaN(parsed)) {
+    return getLanguageText("idle", "待機");
+  }
+
+  const elapsedMinutes = Math.max(0, Math.floor((Date.now() - parsed) / 60000));
+  if (elapsedMinutes < 1) {
+    return getLanguageText("<1m", "1分未満");
+  }
+  if (elapsedMinutes < 60) {
+    return getLanguageText(`${elapsedMinutes}m`, `${elapsedMinutes}分`);
+  }
+
+  const hours = Math.floor(elapsedMinutes / 60);
+  const minutes = elapsedMinutes % 60;
+  if (minutes === 0) {
+    return getLanguageText(`${hours}h`, `${hours}時間`);
+  }
+  return getLanguageText(`${hours}h${minutes}m`, `${hours}時間${minutes}分`);
+}
+
+function getWorkerAuthState(row: DesktopWorkerStatusRow) {
+  const launch = getWorkerStatusLaunch(row);
+  return getLaunchApprovalField(launch, "auth_mode")
+    || getLaunchApprovalField(launch, "credential_requirements")
+    || "default";
+}
+
+function getWorkerModelSource(row: DesktopWorkerStatusRow) {
+  const launch = getWorkerStatusLaunch(row);
+  return getLaunchApprovalField(launch, "model_source")
+    || (getLaunchApprovalField(launch, "model") ? "configured" : "provider-default");
+}
+
+function getConcreteWorkerStatusValue(...values: Array<string | null | undefined>) {
+  for (const value of values) {
+    const normalized = (value ?? "").trim();
+    if (normalized && normalized !== "unknown") {
+      return normalized;
+    }
+  }
+  return "";
+}
+
+function getWorkerLaunchState(row: DesktopWorkerStatusRow) {
+  return getConcreteWorkerStatusValue(row.state, row.pane_state, row.manifest_status) || "unknown";
+}
+
+function getWorkerRemoteState(row: DesktopWorkerStatusRow) {
+  const launch = getWorkerStatusLaunch(row);
+  const executionBackend = getLaunchApprovalField(launch, "execution_backend") || row.session || "local";
+  const requestedGpu = (row.requested_gpu || "none").trim();
+  const actualGpu = (row.actual_gpu || requestedGpu || "none").trim();
+  if (requestedGpu && requestedGpu !== "none" && actualGpu !== requestedGpu) {
+    return `${executionBackend} gpu:${actualGpu || "none"}`;
+  }
+  if (actualGpu && actualGpu !== "none") {
+    return `${executionBackend} gpu:${actualGpu}`;
+  }
+  return executionBackend;
+}
+
+function isWorkerStatusBlocked(row: DesktopWorkerStatusRow) {
+  const stateText = `${row.state} ${row.pane_state} ${row.manifest_status}`.toLowerCase();
+  return Boolean(row.degraded_reason)
+    || (row.approval_differences ?? []).length > 0
+    || stateText.includes("block")
+    || stateText.includes("fail")
+    || stateText.includes("error")
+    || stateText.includes("degraded");
+}
+
+function getWorkerStatusTone(row: DesktopWorkerStatusRow): SurfaceTone {
+  const stateText = `${row.state} ${row.pane_state} ${row.manifest_status}`.toLowerCase();
+  if (stateText.includes("fail") || stateText.includes("error")) {
+    return "danger";
+  }
+  if (isWorkerStatusBlocked(row) || stateText.includes("pending") || stateText.includes("start")) {
+    return "warning";
+  }
+  if (stateText.includes("run") || stateText.includes("active") || stateText.includes("live")) {
+    return "success";
+  }
+  return "info";
+}
+
+function createWorkerStatusChip(field: string, label: string, value: string) {
+  const chip = document.createElement("span");
+  chip.className = "worker-status-pill-chip";
+  chip.dataset.statusField = field;
+  chip.textContent = `${label}:${value || "unknown"}`;
+  chip.title = `${label}: ${value || "unknown"}`;
+  return chip;
+}
+
+function getWorkerStatusPillTitle(row: DesktopWorkerStatusRow, target: string) {
+  const launch = getWorkerStatusLaunch(row);
+  return [
+    `${target}: ${getWorkerLaunchState(row)}`,
+    `role=${row.role || getLaunchApprovalField(launch, "worker_role") || "worker"}`,
+    `backend=${getLaunchApprovalField(launch, "worker_backend") || row.backend || "unknown"}`,
+    `auth=${getWorkerAuthState(row)}`,
+    `model=${getLaunchApprovalField(launch, "model") || "provider-default"}`,
+    `model_source=${getWorkerModelSource(row)}`,
+    `remote=${getWorkerRemoteState(row)}`,
+    `elapsed=${formatWorkerCommandElapsed(row.last_command_at)}`,
+    isWorkerStatusBlocked(row) ? `blocked=${row.degraded_reason || "requires attention"}` : "blocked=no",
+  ].join(" · ");
+}
+
+function focusWorkerPaneFromStatus(target: string) {
+  if (!target) {
+    return;
+  }
+
+  setTerminalDrawer(true);
+  const targetOrdinal = getWorkbenchPaneOrdinal(target);
+  if (targetOrdinal !== null) {
+    ensureWorkbenchPaneCount(Math.min(6, Math.max(1, targetOrdinal)));
+  }
+  if (!panes.has(target)) {
+    createPane(target);
+  }
+  if (workbenchLayout === "2x2" && targetOrdinal !== null && targetOrdinal > 4) {
+    workbenchLayout = "3x2";
+  }
+  focusedWorkbenchPaneId = target;
+  updateWorkbenchControls();
+  void refreshWorkerStatusSurface();
+  void persistThemeState();
+  window.requestAnimationFrame(() => {
+    const entry = panes.get(target);
+    if (!entry) {
+      return;
+    }
+    if (!entry.container.hidden) {
+      entry.fitAddon.fit();
+    }
+    entry.terminal.focus();
+  });
+}
+
+function renderWorkerStatusSurface() {
+  const bar = document.getElementById("worker-status-pill-bar");
+  if (!bar) {
+    return;
+  }
+
+  const focusedPaneId = getFocusedWorkbenchPaneId();
+  const rows = getWorkerStatusRowsForSurface();
+  const focusedRow = rows.find((row) => getWorkerStatusTarget(row) === focusedPaneId) ?? rows[0] ?? null;
+  bar.replaceChildren();
+  bar.dataset.statusError = workerStatusError;
+  bar.title = workerStatusError || getLanguageText("Worker status mirrors native runtime state.", "ワーカー状態はネイティブ実行状態を反映します。");
+
+  const pillList = document.createElement("div");
+  pillList.className = "worker-status-pill-list";
+  const detailStrip = document.createElement("div");
+  detailStrip.className = "worker-status-detail-strip";
+  detailStrip.dataset.workerStatusDetail = focusedRow ? getWorkerStatusTarget(focusedRow) : "";
+
+  for (const row of rows) {
+    const target = getWorkerStatusTarget(row);
+    if (!target) {
+      continue;
+    }
+    const launchState = getWorkerLaunchState(row);
+    const blocked = isWorkerStatusBlocked(row);
+    const pill = document.createElement("button");
+    pill.type = "button";
+    pill.className = "worker-status-pill";
+    pill.dataset.workerStatusTarget = target;
+    pill.dataset.tone = workerStatusError ? "warning" : getWorkerStatusTone(row);
+    pill.dataset.focused = String(target === focusedPaneId);
+    pill.setAttribute(
+      "aria-label",
+      getLanguageText(`Focus ${getPaneDisplayLabel(target)} status`, `${getPaneDisplayLabel(target)} の状態へフォーカス`),
+    );
+    pill.title = getWorkerStatusPillTitle(row, target);
+    pill.onclick = () => focusWorkerPaneFromStatus(target);
+
+    const main = document.createElement("span");
+    main.className = "worker-status-pill-main";
+    main.textContent = getPaneDisplayLabel(target);
+    pill.appendChild(main);
+    pill.appendChild(createWorkerStatusChip("launch", "launch", launchState));
+    if (blocked) {
+      pill.appendChild(createWorkerStatusChip("blocked", "block", "yes"));
+    }
+    pillList.appendChild(pill);
+  }
+
+  if (focusedRow) {
+    const launch = getWorkerStatusLaunch(focusedRow);
+    const target = getWorkerStatusTarget(focusedRow);
+    detailStrip.appendChild(createWorkerStatusChip("role", "role", focusedRow.role || getLaunchApprovalField(launch, "worker_role") || "worker"));
+    detailStrip.appendChild(createWorkerStatusChip("backend", "backend", getLaunchApprovalField(launch, "worker_backend") || focusedRow.backend || "unknown"));
+    detailStrip.appendChild(createWorkerStatusChip("auth", "auth", getWorkerAuthState(focusedRow)));
+    detailStrip.appendChild(createWorkerStatusChip("model-source", "model-src", getWorkerModelSource(focusedRow)));
+    detailStrip.appendChild(createWorkerStatusChip("launch", "launch", getWorkerLaunchState(focusedRow)));
+    detailStrip.appendChild(createWorkerStatusChip("blocked", "blocked", isWorkerStatusBlocked(focusedRow) ? "yes" : "no"));
+    detailStrip.appendChild(createWorkerStatusChip("remote", "remote", getWorkerRemoteState(focusedRow)));
+    detailStrip.appendChild(createWorkerStatusChip("elapsed", "elapsed", formatWorkerCommandElapsed(focusedRow.last_command_at)));
+    detailStrip.appendChild(createWorkerStatusChip("focus", "focus", target === focusedPaneId ? "yes" : "target"));
+  } else {
+    const empty = document.createElement("span");
+    empty.className = "worker-status-detail-empty";
+    empty.textContent = getLanguageText("No worker status yet", "ワーカー状態はまだありません");
+    detailStrip.appendChild(empty);
+  }
+
+  bar.appendChild(pillList);
+  bar.appendChild(detailStrip);
+}
+
+async function refreshWorkerStatusSurface() {
+  if (workerStatusRefreshInFlight) {
+    return workerStatusRefreshInFlight;
+  }
+  if (!isTauri()) {
+    workerStatusRows = getFallbackWorkerStatusRows();
+    workerStatusError = "";
+    renderWorkerStatusSurface();
+    return Promise.resolve();
+  }
+
+  const requestProjectDir = getActiveProjectDirPayload();
+  const requestProjectKey = normalizeProjectDirInput(requestProjectDir) || "";
+  const requestSequence = ++workerStatusRefreshSequence;
+  const isCurrentWorkerStatusRequest = (responseProjectDir?: string | null) => {
+    const currentProjectKey = normalizeProjectDirInput(getActiveProjectDirPayload()) || "";
+    const responseProjectKey = normalizeProjectDirInput(responseProjectDir) || "";
+    return requestSequence === workerStatusRefreshSequence
+      && currentProjectKey === requestProjectKey
+      && (!requestProjectKey || !responseProjectKey || responseProjectKey === requestProjectKey);
+  };
+
+  workerStatusRefreshInFlight = getDesktopWorkersStatus("all", requestProjectDir)
+    .then((payload) => {
+      if (!isCurrentWorkerStatusRequest(payload.project_dir)) {
+        return;
+      }
+      workerStatusRows = payload.workers;
+      workerStatusError = payload.manifest_error ?? "";
+    })
+    .catch((error) => {
+      if (!isCurrentWorkerStatusRequest()) {
+        return;
+      }
+      workerStatusRows = getFallbackWorkerStatusRows();
+      workerStatusError = error instanceof Error ? error.message : String(error);
+      console.warn("Failed to refresh worker status surface", error);
+    })
+    .finally(() => {
+      if (requestSequence === workerStatusRefreshSequence) {
+        workerStatusRefreshInFlight = null;
+        renderWorkerStatusSurface();
+      }
+    });
+  return workerStatusRefreshInFlight;
 }
 
 function getLaunchApprovalField(
@@ -2008,6 +2333,7 @@ function updateWorkbenchControls() {
   const menuLayoutStatus = document.getElementById("menu-layout-status");
 
   drawer?.setAttribute("data-layout", workbenchLayout);
+  drawer?.setAttribute("data-focused-pane", getFocusedWorkbenchPaneId() ?? "");
   syncWorkbenchPaneVisibility();
   syncFocusedPaneSelect();
   if (addButton) {
@@ -2043,6 +2369,7 @@ function updateWorkbenchControls() {
     const paneLabel = paneCount === 1 ? "pane" : "panes";
     menuLayoutStatus.textContent = getLanguageText(`${workbenchLayout} · ${paneCount} ${paneLabel}`, `${workbenchLayout}・${paneCount} ペイン`);
   }
+  renderWorkerStatusSurface();
 }
 
 function normalizeProjectDirInput(value: string | null | undefined) {
@@ -2144,6 +2471,10 @@ function rememberProjectSession(projectDir: string) {
 
 function resetDesktopProjectState() {
   desktopSummarySnapshot = null;
+  workerStatusRows = [];
+  workerStatusError = "";
+  workerStatusRefreshInFlight = null;
+  workerStatusRefreshSequence += 1;
   selectedRunId = null;
   selectedEditorKey = "";
   selectedPreviewUrl = "";
@@ -2188,6 +2519,7 @@ function setActiveProjectDir(projectDir: string | null) {
   renderDesktopSurfaces();
   void refreshProjectExplorerEntries();
   void refreshBrowserSourceControl();
+  void refreshWorkerStatusSurface();
   requestDesktopSummaryRefresh(undefined, 0);
 }
 
@@ -12761,6 +13093,7 @@ function pruneExplainCache(snapshot: DesktopSummarySnapshot, preservedRunId?: st
 
 function renderDesktopSurfaces() {
   renderPaneMetadata();
+  renderWorkerStatusSurface();
   renderSessions();
   renderFooterLane();
   renderRunSummary();
@@ -12973,6 +13306,7 @@ async function refreshDesktopSummary(forceExplainRunId?: string | null) {
       appendRuntimeConversation(item);
     }
     renderDesktopSurfaces();
+    void refreshWorkerStatusSurface();
     } catch (error) {
       console.warn("Failed to load desktop summary snapshot", error);
     } finally {
@@ -13325,12 +13659,15 @@ window.addEventListener("DOMContentLoaded", async () => {
   setTerminalDrawer(true);
   applyPopoutSurfaceState(popoutSurfaceState);
   registerDesktopSummaryLiveRefresh();
+  renderWorkerStatusSurface();
+  void refreshWorkerStatusSurface();
   void refreshDesktopSummary();
   initializeSidebarResize();
   initializeWorkbenchResize();
   initializeSourceControlSplitResize();
   window.setInterval(() => {
     renderPaneMetadata();
+    void refreshWorkerStatusSurface();
   }, PANE_META_REFRESH_INTERVAL_MS);
 
   for (const menuButton of document.querySelectorAll<HTMLButtonElement>(".menu-bar-item")) {
