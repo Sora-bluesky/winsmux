@@ -3048,6 +3048,115 @@ function Get-SendConfigValue {
     return $Default
 }
 
+function Get-WorkersLaunchApprovalFieldNames {
+    return @(
+        'slot_id',
+        'worker_backend',
+        'worker_role',
+        'agent',
+        'model',
+        'model_source',
+        'reasoning_effort',
+        'prompt_transport',
+        'auth_mode',
+        'credential_requirements',
+        'execution_backend',
+        'analysis_posture',
+        'auto_launch'
+    )
+}
+
+function ConvertTo-WorkersLaunchApprovalValue {
+    param([AllowNull()]$Value)
+
+    if ($null -eq $Value) {
+        return ''
+    }
+
+    if ($Value -is [bool]) {
+        if ($Value) {
+            return 'true'
+        }
+
+        return 'false'
+    }
+
+    return ([string]$Value).Trim()
+}
+
+function New-WorkersLaunchApprovalSummary {
+    param(
+        [Parameter(Mandatory = $true)][string]$SlotId,
+        [Parameter(Mandatory = $true)]$SlotConfig,
+        [bool]$AutoLaunch = $false
+    )
+
+    return [ordered]@{
+        packet_type             = 'worker_launch_approval'
+        source                  = 'user_approved_worker_config'
+        slot_id                 = $SlotId
+        worker_backend          = [string]$SlotConfig.WorkerBackend
+        worker_role             = [string]$SlotConfig.WorkerRole
+        agent                   = [string]$SlotConfig.Agent
+        model                   = [string]$SlotConfig.Model
+        model_source            = [string]$SlotConfig.ModelSource
+        reasoning_effort        = [string]$SlotConfig.ReasoningEffort
+        prompt_transport        = [string]$SlotConfig.PromptTransport
+        auth_mode               = [string]$SlotConfig.AuthMode
+        credential_requirements = [string]$SlotConfig.CredentialRequirements
+        execution_backend       = [string]$SlotConfig.ExecutionBackend
+        analysis_posture        = [string]$SlotConfig.AnalysisPosture
+        auto_launch             = [bool]$AutoLaunch
+    }
+}
+
+function Get-WorkersLaunchApprovalDifferences {
+    param(
+        [AllowNull()]$ApprovedLaunch,
+        [AllowNull()]$CurrentLaunch
+    )
+
+    if ($null -eq $ApprovedLaunch) {
+        return @()
+    }
+
+    if ($null -eq $CurrentLaunch) {
+        return @([ordered]@{
+            field    = 'approved_launch'
+            approved = 'present'
+            current  = 'missing'
+        })
+    }
+
+    $differences = [System.Collections.Generic.List[object]]::new()
+    foreach ($field in @(Get-WorkersLaunchApprovalFieldNames)) {
+        $approvedValue = ConvertTo-WorkersLaunchApprovalValue (Get-SendConfigValue -InputObject $ApprovedLaunch -Name $field -Default '')
+        $currentValue = ConvertTo-WorkersLaunchApprovalValue (Get-SendConfigValue -InputObject $CurrentLaunch -Name $field -Default '')
+        if (-not [string]::Equals($approvedValue, $currentValue, [System.StringComparison]::Ordinal)) {
+            $differences.Add([ordered]@{
+                field    = $field
+                approved = $approvedValue
+                current  = $currentValue
+            }) | Out-Null
+        }
+    }
+
+    return @($differences)
+}
+
+function Format-WorkersLaunchApprovalMismatch {
+    param([Parameter(Mandatory = $true)][object[]]$Differences)
+
+    $summary = @($Differences | Select-Object -First 4 | ForEach-Object {
+        "$($_.field): approved='$($_.approved)' current='$($_.current)'"
+    }) -join '; '
+    if ($Differences.Count -gt 4) {
+        $summary = "$summary; +$($Differences.Count - 4) more"
+    }
+
+    return "worker launch approval mismatch: $summary"
+}
+
 function Test-DeferredPaneStartManifestEntry {
     param([AllowNull()]$ManifestEntry)
 
@@ -3162,6 +3271,14 @@ function Start-DeferredPaneFromManifestEntry {
     }
 
     $plan = Get-Content -LiteralPath $planPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 8
+    $approvedLaunch = Get-SendConfigValue -InputObject $ManifestEntry -Name 'ApprovedLaunch' -Default $null
+    $candidateLaunch = Get-SendConfigValue -InputObject $plan -Name 'approved_launch' -Default $null
+    $approvalDifferences = @(Get-WorkersLaunchApprovalDifferences -ApprovedLaunch $approvedLaunch -CurrentLaunch $candidateLaunch)
+    if ($approvalDifferences.Count -gt 0) {
+        Set-DeferredPaneStartStatus -ProjectDir $ProjectDir -PaneId $paneId -Status 'deferred_start_failed'
+        Stop-WithError (Format-WorkersLaunchApprovalMismatch -Differences $approvalDifferences)
+    }
+
     $markerPath = [string](Get-SendConfigValue -InputObject $plan -Name 'ready_marker_path' -Default '')
 
     if (@('deferred_start', 'deferred_start_failed') -contains $normalizedStatus) {
@@ -5255,6 +5372,17 @@ function Get-WorkersStatusRows {
             }
         }
 
+        $approvedLaunch = if ($null -ne $entry) { Get-SendConfigValue -InputObject $entry -Name 'ApprovedLaunch' -Default $null } else { $null }
+        $approvedAutoLaunch = ConvertTo-WorkersLaunchApprovalValue (Get-SendConfigValue -InputObject $approvedLaunch -Name 'auto_launch' -Default $null)
+        $autoLaunch = $true
+        if ($approvedAutoLaunch -in @('true', 'false')) {
+            $autoLaunch = [string]::Equals($approvedAutoLaunch, 'true', [System.StringComparison]::OrdinalIgnoreCase)
+        } elseif ($null -ne $entry -and (Test-DeferredPaneStartManifestEntry -ManifestEntry $entry)) {
+            $autoLaunch = $false
+        }
+        $currentLaunch = New-WorkersLaunchApprovalSummary -SlotId $slotId -SlotConfig $slotConfig -AutoLaunch:$autoLaunch
+        $approvalDifferences = @(Get-WorkersLaunchApprovalDifferences -ApprovedLaunch $approvedLaunch -CurrentLaunch $currentLaunch)
+
         $rows.Add([PSCustomObject][ordered]@{
             Slot           = ConvertTo-WorkersSlotAlias -SlotId $slotId
             SlotId         = $slotId
@@ -5270,6 +5398,9 @@ function Get-WorkersStatusRows {
             DegradedReason = $degradedReason
             LastCommand    = $lastCommand
             LastCommandAt  = $lastCommandAt
+            ApprovedLaunch = $approvedLaunch
+            CurrentLaunch  = $currentLaunch
+            ApprovalDifferences = @($approvalDifferences)
         }) | Out-Null
     }
 
@@ -5353,6 +5484,9 @@ function ConvertTo-WorkersStatusJsonRows {
             degraded_reason = [string]$row.DegradedReason
             last_command    = [string]$row.LastCommand
             last_command_at = [string]$row.LastCommandAt
+            approved_launch = $row.ApprovedLaunch
+            current_launch  = $row.CurrentLaunch
+            approval_differences = @($row.ApprovalDifferences)
         }
     }
 }
@@ -5399,6 +5533,9 @@ function New-WorkersLifecycleResult {
         backend       = [string]$Row.Backend
         worker_state  = [string]$Row.State
         last_command  = "$Action"
+        approved_launch = $Row.ApprovedLaunch
+        current_launch  = $Row.CurrentLaunch
+        approval_differences = @($Row.ApprovalDifferences)
     }
 }
 
@@ -6541,6 +6678,11 @@ function Invoke-WorkersStart {
             $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status 'blocked' -Reason $reason)) | Out-Null
             continue
         }
+        $approvalDifferences = @($row.ApprovalDifferences)
+        if ($approvalDifferences.Count -gt 0) {
+            $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status 'blocked' -Reason (Format-WorkersLaunchApprovalMismatch -Differences $approvalDifferences))) | Out-Null
+            continue
+        }
 
         try {
             if (Test-DeferredPaneStartManifestEntry -ManifestEntry $entry) {
@@ -6553,7 +6695,9 @@ function Invoke-WorkersStart {
                 $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status 'already_running')) | Out-Null
             }
         } catch {
-            $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status 'failed' -Reason $_.Exception.Message)) | Out-Null
+            $reason = [string]$_.Exception.Message
+            $status = if ($reason -like 'worker launch approval mismatch:*') { 'blocked' } else { 'failed' }
+            $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status $status -Reason $reason)) | Out-Null
         }
     }
 

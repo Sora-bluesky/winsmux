@@ -11,10 +11,12 @@ import {
   getDesktopRunExplain,
   getDesktopExplorerEntries,
   getDesktopSummarySnapshot,
+  getDesktopWorkersStatus,
   getDesktopVoiceCaptureStatus,
   pickDesktopRunWinner,
   promoteDesktopRunTactic,
   recordDesktopDogfoodEvent,
+  startDesktopWorker,
   subscribeToDesktopSummaryRefresh,
   type DesktopCompareRunsResult,
   type DesktopBoardPane,
@@ -25,6 +27,9 @@ import {
   type DesktopRunProjection,
   type DesktopSummarySnapshot,
   type DesktopRuntimeRolePreference,
+  type DesktopWorkerApprovalDifference,
+  type DesktopWorkerLaunchApproval,
+  type DesktopWorkerStatusRow,
   type DesktopVoiceCaptureStatus,
 } from "./desktopClient";
 import { getEditorFileKey, getSourceChangeKey, pickEditorPathCandidate, pickSourceChangeKeyCandidate } from "./editorTargets";
@@ -645,6 +650,7 @@ let settingsDraftState: ThemeState | null = null;
 let settingsFontFamilyMenuOpen = false;
 let runtimeRolePreferences: RuntimeRolePreference[] = [];
 let runtimeRoleDraftState: RuntimeRolePreference[] | null = null;
+let workerStartTarget: string | null = null;
 let preferredWideSidebarOpen = true;
 let preferredWideContextOpen = false;
 const SHELL_PREFERENCES_STORAGE_KEY = "winsmux.shell.preferences.v1";
@@ -1733,6 +1739,173 @@ function closePane(id: string) {
   fitVisibleWorkbenchPanes();
 }
 
+function getWorkerStartTarget() {
+  return getFocusedWorkbenchPaneId() ?? getWorkbenchPaneIds()[0] ?? null;
+}
+
+function getLaunchApprovalField(
+  launch: DesktopWorkerLaunchApproval | null | undefined,
+  field: keyof DesktopWorkerLaunchApproval,
+) {
+  const value = launch?.[field];
+  if (typeof value === "boolean") {
+    return value ? "true" : "false";
+  }
+  if (typeof value === "string") {
+    return value.trim();
+  }
+  if (typeof value === "number") {
+    return String(value);
+  }
+  return "";
+}
+
+function summarizeWorkerLaunchApproval(row: DesktopWorkerStatusRow) {
+  const launch = row.current_launch ?? row.approved_launch;
+  const agent = getLaunchApprovalField(launch, "agent") || row.backend || "unknown";
+  const model = getLaunchApprovalField(launch, "model") || "provider-default";
+  const backend = getLaunchApprovalField(launch, "worker_backend") || row.backend || "unknown";
+  const effort = getLaunchApprovalField(launch, "reasoning_effort") || "provider-default";
+  const credential = getLaunchApprovalField(launch, "credential_requirements") || "default";
+  return getLanguageText(
+    `${row.slot_id}: ${agent} / ${model} / ${backend} / effort ${effort} / credential ${credential}`,
+    `${row.slot_id}: ${agent} / ${model} / ${backend} / 思考量 ${effort} / 認証 ${credential}`,
+  );
+}
+
+function summarizeWorkerApprovalDifferences(differences: DesktopWorkerApprovalDifference[]) {
+  if (differences.length === 0) {
+    return getLanguageText("No approval differences.", "承認内容との差分はありません。");
+  }
+
+  return differences.slice(0, 4).map((difference) => {
+    return `${difference.field}: ${difference.approved || "(empty)"} -> ${difference.current || "(empty)"}`;
+  }).join(" · ");
+}
+
+function buildWorkerLaunchDetails(row: DesktopWorkerStatusRow, differences: DesktopWorkerApprovalDifference[]): ConversationDetail[] {
+  const launch = row.current_launch ?? row.approved_launch;
+  return [
+    { label: getLanguageText("slot", "スロット"), value: row.slot_id },
+    { label: getLanguageText("state", "状態"), value: row.state || row.manifest_status || "unknown" },
+    { label: getLanguageText("agent", "エージェント"), value: getLaunchApprovalField(launch, "agent") || row.backend || "unknown" },
+    { label: getLanguageText("model", "モデル"), value: getLaunchApprovalField(launch, "model") || "provider-default" },
+    { label: getLanguageText("backend", "バックエンド"), value: getLaunchApprovalField(launch, "worker_backend") || row.backend || "unknown" },
+    { label: getLanguageText("differences", "差分"), value: String(differences.length) },
+  ];
+}
+
+function appendWorkerLaunchConversation(
+  row: DesktopWorkerStatusRow,
+  title: string,
+  tone: SurfaceTone,
+) {
+  const differences = row.approval_differences ?? [];
+  appendRuntimeConversation({
+    type: "system",
+    category: differences.length > 0 ? "attention" : "activity",
+    timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
+    actor: "winsmux",
+    title,
+    body: `${summarizeWorkerLaunchApproval(row)}. ${summarizeWorkerApprovalDifferences(differences)}`,
+    details: buildWorkerLaunchDetails(row, differences),
+    tone,
+  });
+  renderConversation(getConversationItems());
+}
+
+function appendWorkerStartResultConversation(
+  result: { slot_id: string; status: string; reason?: string; approval_differences?: DesktopWorkerApprovalDifference[] },
+  row?: DesktopWorkerStatusRow,
+) {
+  const differences = result.approval_differences ?? [];
+  const blocked = result.status === "blocked" || result.status === "failed" || differences.length > 0;
+  const reason = result.reason ? ` ${result.reason}` : "";
+  appendRuntimeConversation({
+    type: "system",
+    category: blocked ? "attention" : "activity",
+    timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
+    actor: "winsmux",
+    title: blocked
+      ? getLanguageText("Worker start blocked", "ワーカー起動を停止")
+      : getLanguageText("Worker start accepted", "ワーカー起動を受理"),
+    body: row
+      ? `${summarizeWorkerLaunchApproval(row)}. ${result.status}${reason}`
+      : `${result.slot_id}: ${result.status}${reason}`,
+    details: row
+      ? buildWorkerLaunchDetails(row, differences)
+      : [{ label: getLanguageText("slot", "スロット"), value: result.slot_id }, { label: getLanguageText("status", "状態"), value: result.status }],
+    tone: blocked ? "warning" : "success",
+  });
+  renderConversation(getConversationItems());
+}
+
+async function startFocusedWorkerFromDesktop() {
+  const target = getWorkerStartTarget();
+  if (!target) {
+    return;
+  }
+  if (workerStartTarget) {
+    return;
+  }
+  if (!isTauri()) {
+    appendRuntimeConversation({
+      type: "system",
+      category: "attention",
+      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
+      actor: "winsmux",
+      title: getLanguageText("Desktop worker start is unavailable", "デスクトップのワーカー起動は使えません"),
+      body: getLanguageText("Open the Tauri desktop app to start workers through the native control plane.", "Tauri デスクトップアプリで、ネイティブ制御経由のワーカー起動を使ってください。"),
+      tone: "warning",
+    });
+    renderConversation(getConversationItems());
+    return;
+  }
+
+  workerStartTarget = target;
+  updateWorkbenchControls();
+  try {
+    const statusPayload = await getDesktopWorkersStatus(target, activeProjectDir);
+    const row = statusPayload.workers.find((item) => item.slot_id === target || item.slot === target || item.pane_id === target)
+      ?? statusPayload.workers[0];
+    if (row) {
+      const differenceCount = (row.approval_differences ?? []).length;
+      appendWorkerLaunchConversation(
+        row,
+        getLanguageText("Worker launch approval", "ワーカー起動の承認内容"),
+        differenceCount > 0 ? "warning" : "info",
+      );
+      if (differenceCount > 0) {
+        return;
+      }
+    }
+
+    const startPayload = await startDesktopWorker(target, activeProjectDir);
+    const result = startPayload.results.find((item) => item.slot_id === target || item.slot === target || item.pane_id === target)
+      ?? startPayload.results[0];
+    if (result) {
+      appendWorkerStartResultConversation(result, row);
+    }
+    requestDesktopSummaryRefresh(undefined, 500);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    appendRuntimeConversation({
+      type: "system",
+      category: "attention",
+      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
+      actor: "winsmux",
+      title: getLanguageText("Worker start failed", "ワーカー起動に失敗"),
+      body: message,
+      tone: "danger",
+    });
+    renderConversation(getConversationItems());
+    console.warn("Failed to start worker through desktop runtime", error);
+  } finally {
+    workerStartTarget = null;
+    updateWorkbenchControls();
+  }
+}
+
 function ensureDefaultWorkbenchPanes() {
   const defaultPaneIds = ["worker-1", "worker-2", "worker-3", "worker-4"];
   for (const id of defaultPaneIds) {
@@ -1830,6 +2003,7 @@ function fitVisibleWorkbenchPanes() {
 function updateWorkbenchControls() {
   const drawer = document.getElementById("terminal-drawer");
   const addButton = document.getElementById("add-pane-btn") as HTMLButtonElement | null;
+  const startButton = document.getElementById("start-worker-btn") as HTMLButtonElement | null;
   const layoutButton = document.getElementById("workbench-layout-btn");
   const menuLayoutStatus = document.getElementById("menu-layout-status");
 
@@ -1846,6 +2020,23 @@ function updateWorkbenchControls() {
   }
   if (layoutButton) {
     layoutButton.textContent = workbenchLayout;
+  }
+  if (startButton) {
+    const targetPane = getFocusedWorkbenchPaneId();
+    startButton.disabled = !targetPane || Boolean(workerStartTarget);
+    startButton.textContent = workerStartTarget ? getLanguageText("Starting", "起動中") : getLanguageText("Start", "起動");
+    startButton.setAttribute(
+      "aria-label",
+      targetPane
+        ? getLanguageText(`Start ${getPaneDisplayLabel(targetPane)}`, `${getPaneDisplayLabel(targetPane)} を起動`)
+        : getLanguageText("Start selected worker", "選択中のワーカーを起動"),
+    );
+    startButton.setAttribute(
+      "title",
+      targetPane
+        ? getLanguageText(`Show launch approval, then start ${getPaneDisplayLabel(targetPane)}`, `${getPaneDisplayLabel(targetPane)} の起動承認を確認して起動`)
+        : getLanguageText("Select a worker pane first", "先にワーカーペインを選択"),
+    );
   }
   if (menuLayoutStatus) {
     const paneCount = terminalDrawerOpen ? getVisibleWorkbenchPaneIds().length : panes.size;
@@ -6641,6 +6832,7 @@ function applyLanguageChrome() {
   setElementText("evidence-title", japanese ? "証跡" : "Evidence");
   setElementText("workbench-title", japanese ? "ワーカーペイン" : "Worker panes");
   setElementText("close-terminal-drawer-btn", "×");
+  setButtonLabel("start-worker-btn", japanese ? "起動" : "Start", japanese ? "選択中のワーカーを起動" : "Start selected worker");
   document.getElementById("close-terminal-drawer-btn")?.setAttribute("aria-label", japanese ? "ワーカーペインを隠す" : "Hide worker panes");
   document.getElementById("close-terminal-drawer-btn")?.setAttribute("title", japanese ? "ワーカーペインを隠す" : "Hide worker panes");
   document.getElementById("terminal-drawer")?.setAttribute("aria-label", japanese ? "ワーカーペイン" : "Worker panes");
@@ -13194,6 +13386,10 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   document.getElementById("close-terminal-drawer-btn")?.addEventListener("click", () => {
     setTerminalDrawer(false);
+  });
+
+  document.getElementById("start-worker-btn")?.addEventListener("click", () => {
+    void startFocusedWorkerFromDesktop();
   });
 
   document.getElementById("browser-reload-btn")?.addEventListener("click", () => {

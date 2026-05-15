@@ -4262,6 +4262,7 @@ body.is-resizing-workbench {
 
 #add-pane-btn,
 #workbench-layout-btn,
+#start-worker-btn,
 #focused-pane-select,
 #close-terminal-drawer-btn {
   border: 1px solid var(--border-strong);
@@ -4276,6 +4277,7 @@ body.is-resizing-workbench {
 
 #add-pane-btn:hover,
 #workbench-layout-btn:hover,
+#start-worker-btn:hover,
 #focused-pane-select:hover,
 #close-terminal-drawer-btn:hover {
   background: var(--bg-panel);

@@ -386,6 +386,7 @@ function Get-PaneControlManifestEntries {
             CapabilityAdapter   = [string](Get-PaneControlValue -InputObject $pane -Name 'capability_adapter' -Default '')
             Status              = [string](Get-PaneControlValue -InputObject $pane -Name 'status' -Default '')
             ColabSession        = ConvertFrom-PaneControlSecurityPolicy -Value (Get-PaneControlValue -InputObject $pane -Name 'colab_session' -Default $null)
+            ApprovedLaunch      = ConvertFrom-PaneControlSecurityPolicy -Value (Get-PaneControlValue -InputObject $pane -Name 'approved_launch' -Default $null)
             BootstrapPlanPath   = [string](Get-PaneControlValue -InputObject $pane -Name 'bootstrap_plan_path' -Default '')
             BootstrapMarkerPath = [string](Get-PaneControlValue -InputObject $pane -Name 'bootstrap_marker_path' -Default '')
             TimeoutPolicy       = [string](Get-PaneControlValue -InputObject $pane -Name 'timeout_policy' -Default '')
