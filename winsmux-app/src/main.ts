@@ -1870,7 +1870,23 @@ function getConcreteWorkerStatusValue(...values: Array<string | null | undefined
   return "";
 }
 
+const WORKER_LAUNCH_PRIORITY_STATES = new Set(["backend_degraded", "deferred_start_failed"]);
+
+function getPriorityWorkerLifecycleState(...values: Array<string | null | undefined>) {
+  for (const value of values) {
+    const normalized = (value ?? "").trim();
+    if (WORKER_LAUNCH_PRIORITY_STATES.has(normalized)) {
+      return normalized;
+    }
+  }
+  return "";
+}
+
 function getWorkerLaunchState(row: DesktopWorkerStatusRow) {
+  const priorityState = getPriorityWorkerLifecycleState(row.manifest_status, row.state, row.pane_state);
+  if (priorityState) {
+    return priorityState;
+  }
   return getConcreteWorkerStatusValue(getWorkerHeartbeatHealth(row), row.state, row.pane_state, row.manifest_status) || "unknown";
 }
 

@@ -9432,6 +9432,58 @@ agent-slots:
         $row.heartbeat.artifact | Should -Be '.winsmux/worker-runs/worker-2/hb-blocked/heartbeat.json'
     }
 
+    It 'does not let stale worker heartbeat override a manifest-bound lifecycle state' {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    execution-profile: local-windows
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        $env:WINSMUX_TEST_NOW_UTC = '2026-05-16T00:00:00Z'
+        & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers heartbeat mark worker-2 --run-id stale-run --state running --message 'old worker run' --json --project-dir $script:workersTempRoot | Out-Null
+
+        New-Item -ItemType Directory -Path (Join-Path $script:workersTempRoot '.winsmux') -Force | Out-Null
+        Save-WinsmuxManifest -ProjectDir $script:workersTempRoot -Manifest ([ordered]@{
+            version = 1
+            saved_at = '2026-05-16T00:01:00Z'
+            session = [ordered]@{
+                name = 'winsmux-orchestra'
+                project_dir = $script:workersTempRoot
+                git_worktree_dir = (Join-Path $script:workersTempRoot '.git')
+            }
+            panes = [ordered]@{
+                'worker-2' = [ordered]@{
+                    pane_id = '%2'
+                    slot_id = 'worker-2'
+                    worker_backend = 'local'
+                    role = 'Worker'
+                    launch_dir = $script:workersTempRoot
+                    status = 'deferred_start'
+                    last_heartbeat_run_id = 'current-run'
+                    last_heartbeat_profile = 'local-windows'
+                }
+            }
+            tasks = [ordered]@{
+                queued = @()
+                in_progress = @()
+                completed = @()
+            }
+            worktrees = [ordered]@{}
+        })
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers status worker-2 --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $row = @($payload.workers)[0]
+
+        $row.state | Should -Be 'deferred_start'
+        $row.heartbeat_health | Should -Be ''
+        $row.heartbeat | Should -BeNullOrEmpty
+    }
+
     It 'reports the default six worker slots with aliases and Colab degraded state' {
 @'
 agent: codex

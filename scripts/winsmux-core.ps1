@@ -5408,13 +5408,27 @@ function Get-WorkersStatusRows {
         if ([string]::IsNullOrWhiteSpace($state)) {
             $state = if ($null -eq $entry) { 'not_launched' } else { 'unknown' }
         }
-        $heartbeat = Get-WorkersLatestHeartbeatStatus -ProjectDir $Context.ProjectDir -SlotId $slotId
+        $activeHeartbeatRunId = if ($null -ne $entry) { [string](Get-SendConfigValue -InputObject $entry -Name 'LastHeartbeatRunId' -Default '') } else { '' }
+        $activeHeartbeatProfile = if ($null -ne $entry) { [string](Get-SendConfigValue -InputObject $entry -Name 'LastHeartbeatProfile' -Default '') } else { '' }
+        if (-not [string]::IsNullOrWhiteSpace($activeHeartbeatRunId)) {
+            $heartbeat = Get-WorkersLatestHeartbeatStatus -ProjectDir $Context.ProjectDir -SlotId $slotId -RunId $activeHeartbeatRunId -ExecutionProfile $activeHeartbeatProfile
+        } elseif ($null -eq $entry) {
+            $heartbeat = Get-WorkersLatestHeartbeatStatus -ProjectDir $Context.ProjectDir -SlotId $slotId
+        } else {
+            $heartbeat = $null
+        }
         $heartbeatHealth = ''
         $heartbeatState = ''
         if ($null -ne $heartbeat) {
             $heartbeatHealth = [string](Get-SendConfigValue -InputObject $heartbeat -Name 'health' -Default '')
             $heartbeatState = [string](Get-SendConfigValue -InputObject $heartbeat -Name 'state' -Default '')
-            if ($heartbeatHealth -in @('running', 'blocked', 'approval_waiting', 'child_wait', 'stalled', 'offline', 'completed', 'resumable') -and
+            $heartbeatRunId = [string](Get-SendConfigValue -InputObject $heartbeat -Name 'run_id' -Default '')
+            $heartbeatCanDriveState = ($null -eq $entry) -or (
+                -not [string]::IsNullOrWhiteSpace($activeHeartbeatRunId) -and
+                [string]::Equals($activeHeartbeatRunId, $heartbeatRunId, [System.StringComparison]::Ordinal)
+            )
+            if ($heartbeatCanDriveState -and
+                $heartbeatHealth -in @('running', 'blocked', 'approval_waiting', 'child_wait', 'stalled', 'offline', 'completed', 'resumable') -and
                 $state -notin @('backend_degraded', 'deferred_start_failed')) {
                 $state = $heartbeatHealth
             }
@@ -5574,21 +5588,28 @@ function Set-WorkersManifestLifecycleCommand {
     param(
         [Parameter(Mandatory = $true)]$Entry,
         [Parameter(Mandatory = $true)][string]$CommandName,
-        [AllowEmptyString()][string]$Status = ''
+        [AllowEmptyString()][string]$Status = '',
+        [AllowNull()][System.Collections.IDictionary]$ExtraProperties = $null
     )
 
     if ($null -eq $Entry -or [string]::IsNullOrWhiteSpace([string]$Entry.PaneId)) {
         return
     }
 
+    $nowText = (Get-Date).ToUniversalTime().ToString('o')
     $properties = [ordered]@{
         last_command    = $CommandName
-        last_command_at = (Get-Date).ToUniversalTime().ToString('o')
+        last_command_at = $nowText
         last_event      = $CommandName
-        last_event_at   = (Get-Date).ToUniversalTime().ToString('o')
+        last_event_at   = $nowText
     }
     if (-not [string]::IsNullOrWhiteSpace($Status)) {
         $properties['status'] = $Status
+    }
+    if ($null -ne $ExtraProperties) {
+        foreach ($entry in $ExtraProperties.GetEnumerator()) {
+            $properties[[string]$entry.Key] = $entry.Value
+        }
     }
 
     Set-PaneControlManifestPaneProperties -ManifestPath $Entry.ManifestPath -PaneId $Entry.PaneId -Properties $properties
@@ -6356,10 +6377,20 @@ function Read-WorkersHeartbeatArtifact {
 function Get-WorkersLatestHeartbeatStatus {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
-        [Parameter(Mandatory = $true)][string]$SlotId
+        [Parameter(Mandatory = $true)][string]$SlotId,
+        [AllowEmptyString()][string]$RunId = '',
+        [AllowEmptyString()][string]$ExecutionProfile = ''
     )
 
     $safeSlotId = Assert-WorkersPathSegment -Value $SlotId -Name 'slot id'
+    $safeRunId = ''
+    if (-not [string]::IsNullOrWhiteSpace($RunId)) {
+        try {
+            $safeRunId = Assert-WorkersPathSegment -Value $RunId -Name 'run id'
+        } catch {
+            return $null
+        }
+    }
     $nowUtc = Get-WorkersNowUtc
     $stalledAfter = Get-WorkersHeartbeatThresholdSeconds -Value 0 -EnvName 'WINSMUX_WORKER_HEARTBEAT_STALLED_AFTER_SECONDS' -Default 300
     $offlineAfter = Get-WorkersHeartbeatThresholdSeconds -Value 0 -EnvName 'WINSMUX_WORKER_HEARTBEAT_OFFLINE_AFTER_SECONDS' -Default 900
@@ -6370,14 +6401,31 @@ function Get-WorkersLatestHeartbeatStatus {
     $candidates = [System.Collections.Generic.List[object]]::new()
     $localRoot = Join-Path (Join-Path (Join-Path $ProjectDir '.winsmux') 'worker-runs') $safeSlotId
     $isolatedRoot = Join-Path (Get-WorkersIsolatedWorkspaceRoot -ProjectDir $ProjectDir) $safeSlotId
-    foreach ($root in @($localRoot, $isolatedRoot)) {
-        if (-not (Test-Path -LiteralPath $root -PathType Container)) {
-            continue
+    if (-not [string]::IsNullOrWhiteSpace($safeRunId)) {
+        $profile = [string]$ExecutionProfile
+        $roots = [System.Collections.Generic.List[string]]::new()
+        if (-not [string]::Equals($profile, 'isolated-enterprise', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $roots.Add($localRoot) | Out-Null
         }
-        foreach ($runDir in @(Get-ChildItem -LiteralPath $root -Directory)) {
-            $heartbeatPath = Join-Path $runDir.FullName 'heartbeat.json'
+        if (-not [string]::Equals($profile, 'local-windows', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $roots.Add($isolatedRoot) | Out-Null
+        }
+        foreach ($root in @($roots)) {
+            $heartbeatPath = Join-Path (Join-Path $root $safeRunId) 'heartbeat.json'
             if (Test-Path -LiteralPath $heartbeatPath -PathType Leaf) {
                 $candidates.Add((Get-Item -LiteralPath $heartbeatPath -Force)) | Out-Null
+            }
+        }
+    } else {
+        foreach ($root in @($localRoot, $isolatedRoot)) {
+            if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+                continue
+            }
+            foreach ($runDir in @(Get-ChildItem -LiteralPath $root -Directory)) {
+                $heartbeatPath = Join-Path $runDir.FullName 'heartbeat.json'
+                if (Test-Path -LiteralPath $heartbeatPath -PathType Leaf) {
+                    $candidates.Add((Get-Item -LiteralPath $heartbeatPath -Force)) | Out-Null
+                }
             }
         }
     }
@@ -7712,7 +7760,11 @@ function Invoke-WorkersHeartbeat {
     $status = ConvertTo-WorkersHeartbeatStatus -Payload $payload -Artifact ([string]$payload.artifact) -NowUtc $nowUtc -StalledAfterSeconds $stalledAfter -OfflineAfterSeconds $offlineAfter
     $status['status'] = 'marked'
     if ($null -ne $slot.Entry) {
-        Set-WorkersManifestLifecycleCommand -Entry $slot.Entry -CommandName 'workers.heartbeat'
+        Set-WorkersManifestLifecycleCommand -Entry $slot.Entry -CommandName 'workers.heartbeat' -ExtraProperties ([ordered]@{
+            last_heartbeat_run_id  = $runId
+            last_heartbeat_profile = $profile
+            last_heartbeat_at      = $nowUtc.ToString('o')
+        })
     }
 
     Write-WorkersOperationOutput -Payload $status -Json:([bool]$options.Json) -Text "marked $state heartbeat for $runId"
