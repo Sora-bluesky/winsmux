@@ -167,7 +167,7 @@ The public first-run entrypoints now converge on:
 - `winsmux launcher lifecycle [preset|--clear] [--json]`
 - `winsmux workers <status|start|stop|doctor> [slot|all] [--json]`
 - `winsmux workers <exec|logs|upload|download> <slot> ... [--json]`
-- `winsmux workers heartbeat <mark|check> <slot> --run-id <id> ... [--json]`
+- `winsmux workers heartbeat <mark|check> <slot> [--run-id <id>] ... [--json]`
 - `winsmux workers workspace <prepare|cleanup> <slot> ... [--json]`
 - `winsmux workers secrets project <slot> --run-id <id> ... [--json]`
 - `winsmux conflict-preflight`

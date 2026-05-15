@@ -9014,7 +9014,7 @@ agent-slots:
         $script:winsmuxWorkersCoreRawContent | Should -Match 'workers <exec\|logs\|upload\|download> <slot> \.\.\. \[--json\] \[--project-dir <path>\]'
         $script:winsmuxWorkersCoreRawContent | Should -Match 'workers workspace <prepare\|cleanup> <slot> \[--include <path>\] \[--run-id <id>\] \[--json\] \[--project-dir <path>\]'
         $script:winsmuxWorkersCoreRawContent | Should -Match 'workers secrets project <slot> --run-id <id> \[--env <name=key>\] \[--file <path=key>\] \[--variable <name=key>\] \[--json\] \[--project-dir <path>\]'
-        $script:winsmuxWorkersCoreRawContent | Should -Match 'workers heartbeat <mark\|check> <slot> --run-id <id> \[--state <state>\] \[--json\] \[--project-dir <path>\]'
+        $script:winsmuxWorkersCoreRawContent | Should -Match 'workers heartbeat <mark\|check> <slot> \[--run-id <id>\] \[--state <state>\] \[--json\] \[--project-dir <path>\]'
         $script:winsmuxWorkersCoreRawContent | Should -Match "'workers'\s*\{\s*Invoke-Workers\s*\}"
         $script:winsmuxWorkersCoreRawContent | Should -Match 'google-colab-cli not found on PATH'
         $script:winsmuxWorkersCoreRawContent | Should -Match 'uv not found on PATH'
@@ -9463,7 +9463,7 @@ agent-slots:
                     role = 'Worker'
                     launch_dir = $script:workersTempRoot
                     status = 'deferred_start'
-                    last_heartbeat_run_id = 'current-run'
+                    last_heartbeat_run_id = 'stale-run'
                     last_heartbeat_profile = 'local-windows'
                 }
             }
@@ -9480,8 +9480,29 @@ agent-slots:
         $row = @($payload.workers)[0]
 
         $row.state | Should -Be 'deferred_start'
-        $row.heartbeat_health | Should -Be ''
-        $row.heartbeat | Should -BeNullOrEmpty
+        $row.heartbeat_health | Should -Be 'running'
+        $row.heartbeat.run_id | Should -Be 'stale-run'
+    }
+
+    It 'returns offline heartbeat status for missing isolated check runs' {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    execution-profile: isolated-enterprise
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers heartbeat check worker-2 --run-id missing-isolated --profile isolated-enterprise --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+
+        $payload.health | Should -Be 'offline'
+        $payload.reason | Should -Be 'heartbeat_missing'
+        $payload.run_id | Should -Be 'missing-isolated'
+        $payload.execution_profile | Should -Be 'isolated-enterprise'
     }
 
     It 'reports the default six worker slots with aliases and Colab degraded state' {

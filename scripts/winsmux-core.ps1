@@ -5123,7 +5123,7 @@ function Invoke-Status {
 }
 
 function Get-WorkersUsage {
-    return "usage: winsmux workers <status|start|stop|attach|doctor> [slot|all] [--json] [--project-dir <path>]; winsmux workers <exec|logs|upload|download> <slot> ... [--json] [--project-dir <path>]; winsmux workers heartbeat <mark|check> <slot> --run-id <id> ... [--json] [--project-dir <path>]; winsmux workers workspace <prepare|cleanup> <slot> ... [--json] [--project-dir <path>]; winsmux workers secrets project <slot> ... [--json] [--project-dir <path>]"
+    return "usage: winsmux workers <status|start|stop|attach|doctor> [slot|all] [--json] [--project-dir <path>]; winsmux workers <exec|logs|upload|download> <slot> ... [--json] [--project-dir <path>]; winsmux workers heartbeat <mark|check> <slot> [--run-id <id>] ... [--json] [--project-dir <path>]; winsmux workers workspace <prepare|cleanup> <slot> ... [--json] [--project-dir <path>]; winsmux workers secrets project <slot> ... [--json] [--project-dir <path>]"
 }
 
 function Read-WorkersOptions {
@@ -5429,7 +5429,7 @@ function Get-WorkersStatusRows {
             )
             if ($heartbeatCanDriveState -and
                 $heartbeatHealth -in @('running', 'blocked', 'approval_waiting', 'child_wait', 'stalled', 'offline', 'completed', 'resumable') -and
-                $state -notin @('backend_degraded', 'deferred_start_failed')) {
+                $state -notin @('backend_degraded', 'deferred_start_failed', 'deferred_start', 'deferred_starting')) {
                 $state = $heartbeatHealth
             }
         }
@@ -6209,12 +6209,16 @@ function Get-WorkersHeartbeatRunDirectory {
         [Parameter(Mandatory = $true)][string]$SlotId,
         [Parameter(Mandatory = $true)][string]$RunId,
         [Parameter(Mandatory = $true)][string]$ExecutionProfile,
-        [switch]$CreateLocal
+        [switch]$CreateLocal,
+        [switch]$AllowMissing
     )
 
     if ([string]::Equals($ExecutionProfile, 'isolated-enterprise', [System.StringComparison]::OrdinalIgnoreCase)) {
         $runDir = Get-WorkersIsolatedWorkspaceRunDirectory -ProjectDir $ProjectDir -SlotId $SlotId -RunId $RunId
         if (-not (Test-Path -LiteralPath $runDir -PathType Container)) {
+            if ($AllowMissing) {
+                return $runDir
+            }
             Stop-WithError "isolated heartbeat requires an existing isolated workspace run: $RunId"
         }
         Assert-WorkersIsolatedWorkspaceCleanupTarget -ProjectDir $ProjectDir -RunDir $runDir
@@ -7693,7 +7697,7 @@ function Invoke-WorkersSecrets {
 }
 
 function Invoke-WorkersHeartbeat {
-    $usage = "usage: winsmux workers heartbeat <mark|check> <slot> --run-id <id> [--profile <profile>] [--state <running|blocked|approval_waiting|child_wait|stalled|completed|resumable>] [--message <text>] [--stalled-after <seconds>] [--offline-after <seconds>] [--json] [--project-dir <path>]"
+    $usage = "usage: winsmux workers heartbeat <mark|check> <slot> [--run-id <id>] [--profile <profile>] [--state <running|blocked|approval_waiting|child_wait|stalled|completed|resumable>] [--message <text>] [--stalled-after <seconds>] [--offline-after <seconds>] [--json] [--project-dir <path>]"
     $options = Read-WorkersHeartbeatOptions -Usage $usage
     $slot = Get-WorkersSingleSlotContext -ProjectDir $options.ProjectDir -Target $options.Target
     $slotId = [string]$slot.Row.SlotId
@@ -7717,7 +7721,7 @@ function Invoke-WorkersHeartbeat {
     if ([string]::Equals([string]$options.Action, 'check', [System.StringComparison]::OrdinalIgnoreCase)) {
         $heartbeatPath = ''
         if (-not [string]::IsNullOrWhiteSpace($runId)) {
-            $runDir = Get-WorkersHeartbeatRunDirectory -ProjectDir $options.ProjectDir -SlotId $slotId -RunId $runId -ExecutionProfile $profile
+            $runDir = Get-WorkersHeartbeatRunDirectory -ProjectDir $options.ProjectDir -SlotId $slotId -RunId $runId -ExecutionProfile $profile -AllowMissing
             $heartbeatPath = Join-Path $runDir 'heartbeat.json'
         } else {
             $latest = Get-WorkersLatestHeartbeatStatus -ProjectDir $options.ProjectDir -SlotId $slotId
@@ -15283,7 +15287,7 @@ Commands:
   health-check              Report READY/BUSY/HUNG/DEAD for labeled panes
   status                    Report manifest pane states via capture-pane
   workers <status|start|stop|attach|doctor> [slot|all] [--json] [--project-dir <path>]  Inspect and control configured worker slots
-  workers heartbeat <mark|check> <slot> --run-id <id> [--state <state>] [--json] [--project-dir <path>]  Mark or check isolated/local worker liveness without classifying child waits as stopped
+  workers heartbeat <mark|check> <slot> [--run-id <id>] [--state <state>] [--json] [--project-dir <path>]  Mark or check isolated/local worker liveness without classifying child waits as stopped
   workers workspace <prepare|cleanup> <slot> [--include <path>] [--run-id <id>] [--json] [--project-dir <path>]  Prepare or remove disposable isolated worker workspaces
   workers secrets project <slot> --run-id <id> [--env <name=key>] [--file <path=key>] [--variable <name=key>] [--json] [--project-dir <path>]  Project typed run-scoped secrets without printing secret values
   board [--json]            Report pane/task/review/git session board
