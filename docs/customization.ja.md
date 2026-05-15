@@ -34,6 +34,31 @@ winsmux workers secrets project w2 --run-id run-123 --env OPENAI_API_KEY=openai 
 
 JSON 出力と `secret-projection.json` には、型付きの保存場所、保管庫キー名、スコープ、値への参照だけを記録します。秘密情報の値は含めません。隔離実行では、先に隔離ワークスペースを準備しておく必要があります。これにより、秘密情報ディレクトリがその実行境界の内側に残り、ワークスペースのクリーンアップで削除されます。
 
+### ワーカーの生存確認とオフライン判定
+
+`workers heartbeat` で、ローカルまたは隔離ワーカー実行の生存状態を記録できます。
+
+```powershell
+winsmux workers heartbeat mark w2 --run-id run-123 --state running --json
+winsmux workers heartbeat check w2 --run-id run-123 --json
+```
+
+共有する状態は、`running`、`blocked`、`approval_waiting`、`child_wait`、
+`stalled`、`completed`、`resumable` です。`blocked` と
+`approval_waiting` は、オペレーターの対応待ちを表します。`child_wait`
+は、ワーカーが子実行の完了を待っている状態です。停止したプロセスとして扱ってはいけません。
+直近の `running` は正常、猶予時間を過ぎた heartbeat は `stalled`、
+期限を超えた heartbeat は `offline` になります。
+
+heartbeat の成果物は、実行境界の内側に `heartbeat.json` として保存します。
+
+- `local-windows`: `.winsmux/worker-runs/<slot>/<run>/heartbeat.json`
+- `isolated-enterprise`: `.winsmux/isolated-workspaces/<slot>/<run>/heartbeat.json`
+
+`winsmux workers status --json` は、デスクトップアプリと同じ
+`heartbeat`、`heartbeat_health`、`heartbeat_state` を返します。CLI と
+Tauri の画面は、同じワーカー生存確認契約を読みます。
+
 ## 起動プリセット
 
 比較を目的とした実行を始める前に、プリセットを確認できます。

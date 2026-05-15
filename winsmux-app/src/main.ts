@@ -1805,6 +1805,9 @@ function getFallbackWorkerStatusRows(): DesktopWorkerStatusRow[] {
       approved_launch: null,
       current_launch: null,
       approval_differences: [],
+      heartbeat: null,
+      heartbeat_health: "",
+      heartbeat_state: "",
     };
   });
 }
@@ -1849,6 +1852,14 @@ function getWorkerExecutionProfile(row: DesktopWorkerStatusRow) {
   return getLaunchApprovalField(launch, "execution_profile") || "local-windows";
 }
 
+function getWorkerHeartbeatHealth(row: DesktopWorkerStatusRow) {
+  return (row.heartbeat_health || row.heartbeat?.health || "").trim();
+}
+
+function getWorkerHeartbeatState(row: DesktopWorkerStatusRow) {
+  return (row.heartbeat_state || row.heartbeat?.state || "").trim();
+}
+
 function getConcreteWorkerStatusValue(...values: Array<string | null | undefined>) {
   for (const value of values) {
     const normalized = (value ?? "").trim();
@@ -1859,8 +1870,24 @@ function getConcreteWorkerStatusValue(...values: Array<string | null | undefined
   return "";
 }
 
+const WORKER_LAUNCH_PRIORITY_STATES = new Set(["backend_degraded", "deferred_start_failed", "deferred_start", "deferred_starting"]);
+
+function getPriorityWorkerLifecycleState(...values: Array<string | null | undefined>) {
+  for (const value of values) {
+    const normalized = (value ?? "").trim();
+    if (WORKER_LAUNCH_PRIORITY_STATES.has(normalized)) {
+      return normalized;
+    }
+  }
+  return "";
+}
+
 function getWorkerLaunchState(row: DesktopWorkerStatusRow) {
-  return getConcreteWorkerStatusValue(row.state, row.pane_state, row.manifest_status) || "unknown";
+  const priorityState = getPriorityWorkerLifecycleState(row.manifest_status, row.state, row.pane_state);
+  if (priorityState) {
+    return priorityState;
+  }
+  return getConcreteWorkerStatusValue(getWorkerHeartbeatHealth(row), row.state, row.pane_state, row.manifest_status) || "unknown";
 }
 
 function getWorkerRemoteState(row: DesktopWorkerStatusRow) {
@@ -1878,9 +1905,14 @@ function getWorkerRemoteState(row: DesktopWorkerStatusRow) {
 }
 
 function isWorkerStatusBlocked(row: DesktopWorkerStatusRow) {
-  const stateText = `${row.state} ${row.pane_state} ${row.manifest_status}`.toLowerCase();
+  const heartbeatText = `${getWorkerHeartbeatHealth(row)} ${getWorkerHeartbeatState(row)}`.toLowerCase();
+  const stateText = `${heartbeatText} ${row.state} ${row.pane_state} ${row.manifest_status}`.toLowerCase();
   return Boolean(row.degraded_reason)
     || (row.approval_differences ?? []).length > 0
+    || heartbeatText.includes("blocked")
+    || heartbeatText.includes("approval_waiting")
+    || heartbeatText.includes("stalled")
+    || heartbeatText.includes("offline")
     || stateText.includes("block")
     || stateText.includes("fail")
     || stateText.includes("error")
@@ -1888,13 +1920,27 @@ function isWorkerStatusBlocked(row: DesktopWorkerStatusRow) {
 }
 
 function getWorkerStatusTone(row: DesktopWorkerStatusRow): SurfaceTone {
+  const heartbeat = getWorkerHeartbeatHealth(row).toLowerCase();
   const stateText = `${row.state} ${row.pane_state} ${row.manifest_status}`.toLowerCase();
+  if (heartbeat === "offline") {
+    return "danger";
+  }
   if (stateText.includes("fail") || stateText.includes("error")) {
     return "danger";
   }
-  if (isWorkerStatusBlocked(row) || stateText.includes("pending") || stateText.includes("start")) {
+  if (isWorkerStatusBlocked(row) || stateText.includes("pending") || stateText.includes("start") || stateText.includes("degraded")) {
     return "warning";
   }
+  if (heartbeat === "blocked" || heartbeat === "approval_waiting" || heartbeat === "stalled") {
+    return "warning";
+  }
+  if (heartbeat === "child_wait" || heartbeat === "resumable") {
+    return "info";
+  }
+  if (heartbeat === "running" || heartbeat === "completed") {
+    return "success";
+  }
+
   if (stateText.includes("run") || stateText.includes("active") || stateText.includes("live")) {
     return "success";
   }
@@ -1921,6 +1967,7 @@ function getWorkerStatusPillTitle(row: DesktopWorkerStatusRow, target: string) {
     `model=${getLaunchApprovalField(launch, "model") || "provider-default"}`,
     `model_source=${getWorkerModelSource(row)}`,
     `remote=${getWorkerRemoteState(row)}`,
+    `heartbeat=${getWorkerHeartbeatHealth(row) || "none"}`,
     `elapsed=${formatWorkerCommandElapsed(row.last_command_at)}`,
     isWorkerStatusBlocked(row) ? `blocked=${row.degraded_reason || "requires attention"}` : "blocked=no",
   ].join(" · ");
@@ -2002,6 +2049,10 @@ function renderWorkerStatusSurface() {
     main.textContent = getPaneDisplayLabel(target);
     pill.appendChild(main);
     pill.appendChild(createWorkerStatusChip("launch", "launch", launchState));
+    const heartbeatHealth = getWorkerHeartbeatHealth(row);
+    if (heartbeatHealth) {
+      pill.appendChild(createWorkerStatusChip("heartbeat", "hb", heartbeatHealth));
+    }
     if (blocked) {
       pill.appendChild(createWorkerStatusChip("blocked", "block", "yes"));
     }
@@ -2017,6 +2068,7 @@ function renderWorkerStatusSurface() {
     detailStrip.appendChild(createWorkerStatusChip("auth", "auth", getWorkerAuthState(focusedRow)));
     detailStrip.appendChild(createWorkerStatusChip("model-source", "model-src", getWorkerModelSource(focusedRow)));
     detailStrip.appendChild(createWorkerStatusChip("launch", "launch", getWorkerLaunchState(focusedRow)));
+    detailStrip.appendChild(createWorkerStatusChip("heartbeat", "hb", getWorkerHeartbeatHealth(focusedRow) || "none"));
     detailStrip.appendChild(createWorkerStatusChip("blocked", "blocked", isWorkerStatusBlocked(focusedRow) ? "yes" : "no"));
     detailStrip.appendChild(createWorkerStatusChip("remote", "remote", getWorkerRemoteState(focusedRow)));
     detailStrip.appendChild(createWorkerStatusChip("elapsed", "elapsed", formatWorkerCommandElapsed(focusedRow.last_command_at)));
@@ -2129,6 +2181,7 @@ function buildWorkerLaunchDetails(row: DesktopWorkerStatusRow, differences: Desk
     { label: getLanguageText("model", "モデル"), value: getLaunchApprovalField(launch, "model") || "provider-default" },
     { label: getLanguageText("backend", "バックエンド"), value: getLaunchApprovalField(launch, "worker_backend") || row.backend || "unknown" },
     { label: getLanguageText("profile", "実行プロファイル"), value: getWorkerExecutionProfile(row) },
+    { label: getLanguageText("heartbeat", "生存確認"), value: getWorkerHeartbeatHealth(row) || "none" },
     { label: getLanguageText("differences", "差分"), value: String(differences.length) },
   ];
 }

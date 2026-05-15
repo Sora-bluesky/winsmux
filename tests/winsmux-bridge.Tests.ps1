@@ -8957,15 +8957,18 @@ Describe 'winsmux workers command' {
         $script:previousColabCli = $env:WINSMUX_COLAB_CLI
         $script:previousColabAuth = $env:WINSMUX_COLAB_AUTH_STATE
         $script:previousColabGpu = $env:WINSMUX_COLAB_AVAILABLE_GPUS
+        $script:previousWorkersNow = $env:WINSMUX_TEST_NOW_UTC
         $env:WINSMUX_COLAB_CLI = 'winsmux-test-missing-google-colab-cli'
         $env:WINSMUX_COLAB_AUTH_STATE = ''
         $env:WINSMUX_COLAB_AVAILABLE_GPUS = ''
+        $env:WINSMUX_TEST_NOW_UTC = ''
     }
 
     AfterEach {
         $env:WINSMUX_COLAB_CLI = $script:previousColabCli
         $env:WINSMUX_COLAB_AUTH_STATE = $script:previousColabAuth
         $env:WINSMUX_COLAB_AVAILABLE_GPUS = $script:previousColabGpu
+        $env:WINSMUX_TEST_NOW_UTC = $script:previousWorkersNow
         if ($script:workersTempRoot -and (Test-Path -LiteralPath $script:workersTempRoot)) {
             Remove-Item -LiteralPath $script:workersTempRoot -Recurse -Force
         }
@@ -9011,6 +9014,7 @@ agent-slots:
         $script:winsmuxWorkersCoreRawContent | Should -Match 'workers <exec\|logs\|upload\|download> <slot> \.\.\. \[--json\] \[--project-dir <path>\]'
         $script:winsmuxWorkersCoreRawContent | Should -Match 'workers workspace <prepare\|cleanup> <slot> \[--include <path>\] \[--run-id <id>\] \[--json\] \[--project-dir <path>\]'
         $script:winsmuxWorkersCoreRawContent | Should -Match 'workers secrets project <slot> --run-id <id> \[--env <name=key>\] \[--file <path=key>\] \[--variable <name=key>\] \[--json\] \[--project-dir <path>\]'
+        $script:winsmuxWorkersCoreRawContent | Should -Match 'workers heartbeat <mark\|check> <slot> \[--run-id <id>\] \[--state <state>\] \[--json\] \[--project-dir <path>\]'
         $script:winsmuxWorkersCoreRawContent | Should -Match "'workers'\s*\{\s*Invoke-Workers\s*\}"
         $script:winsmuxWorkersCoreRawContent | Should -Match 'google-colab-cli not found on PATH'
         $script:winsmuxWorkersCoreRawContent | Should -Match 'uv not found on PATH'
@@ -9019,6 +9023,7 @@ agent-slots:
         $script:winsmuxWorkersCoreRawContent | Should -Match "'download'\s*\{\s*Invoke-WorkersDownload\s*\}"
         $script:winsmuxWorkersCoreRawContent | Should -Match "'workspace'\s*\{\s*Invoke-WorkersWorkspace\s*\}"
         $script:winsmuxWorkersCoreRawContent | Should -Match "'secrets'\s*\{\s*Invoke-WorkersSecrets\s*\}"
+        $script:winsmuxWorkersCoreRawContent | Should -Match "'heartbeat'\s*\{\s*Invoke-WorkersHeartbeat\s*\}"
     }
 
     It 'prepares and cleans up a disposable isolated workspace from explicit includes' {
@@ -9316,6 +9321,365 @@ agent-slots:
         }
     }
 
+    It 'marks and checks local worker heartbeats without exposing local paths' {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    execution-profile: local-windows
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        $env:WINSMUX_TEST_NOW_UTC = '2026-05-16T00:00:00Z'
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers heartbeat mark w2 --run-id hb-local --state running --message "running from C:\work\secret.txt" --stalled-after 60 --offline-after 600 --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $serialized = $payload | ConvertTo-Json -Depth 24
+        $heartbeatPath = Join-Path $script:workersTempRoot '.winsmux\worker-runs\worker-2\hb-local\heartbeat.json'
+
+        $payload.status | Should -Be 'marked'
+        $payload.health | Should -Be 'running'
+        $payload.message | Should -Match '\[LOCAL_PATH_REDACTED\]'
+        $payload.artifact | Should -Be '.winsmux/worker-runs/worker-2/hb-local/heartbeat.json'
+        Test-Path -LiteralPath $heartbeatPath | Should -Be $true
+        $serialized | Should -Not -Match ([regex]::Escape($script:workersTempRoot))
+
+        $env:WINSMUX_TEST_NOW_UTC = '2026-05-16T00:11:01Z'
+        $checkOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers heartbeat check w2 --run-id hb-local --stalled-after 60 --offline-after 600 --json --project-dir $script:workersTempRoot
+        $checkPayload = ($checkOutput | Select-Object -Last 1) | ConvertFrom-Json
+
+        $checkPayload.health | Should -Be 'offline'
+        $checkPayload.reason | Should -Be 'heartbeat_expired'
+        $checkPayload.age_seconds | Should -BeGreaterThan 600
+    }
+
+    It 'keeps child run waiting separate from stopped or offline state' {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    execution-profile: local-windows
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        $env:WINSMUX_TEST_NOW_UTC = '2026-05-16T00:00:00Z'
+        & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers heartbeat mark w2 --run-id child-wait --state child_wait --message 'waiting for nested run' --json --project-dir $script:workersTempRoot | Out-Null
+
+        $env:WINSMUX_TEST_NOW_UTC = '2026-05-16T02:00:00Z'
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers heartbeat check w2 --run-id child-wait --stalled-after 60 --offline-after 600 --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+
+        $payload.health | Should -Be 'child_wait'
+        $payload.reason | Should -Be 'child_run_waiting'
+        $payload.waiting_for_child_run | Should -Be $true
+        $payload.terminal | Should -Be $false
+    }
+
+    It 'marks isolated worker heartbeats under the isolated run boundary' {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    execution-profile: isolated-enterprise
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        'payload' | Set-Content -Path (Join-Path $script:workersTempRoot 'input.txt') -Encoding UTF8
+        & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers workspace prepare w2 --include input.txt --run-id hb-isolated --json --project-dir $script:workersTempRoot | Out-Null
+        $env:WINSMUX_TEST_NOW_UTC = '2026-05-16T00:00:00Z'
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers heartbeat mark w2 --run-id hb-isolated --profile isolated-enterprise --state approval_waiting --message 'operator approval required' --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+
+        $payload.status | Should -Be 'marked'
+        $payload.execution_profile | Should -Be 'isolated-enterprise'
+        $payload.health | Should -Be 'approval_waiting'
+        $payload.requires_user | Should -Be $true
+        $payload.artifact | Should -Be '.winsmux/isolated-workspaces/worker-2/hb-isolated/heartbeat.json'
+        Test-Path -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\isolated-workspaces\worker-2\hb-isolated\heartbeat.json') | Should -Be $true
+    }
+
+    It 'includes worker heartbeat health in status rows for desktop consumers' {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    execution-profile: local-windows
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        New-Item -ItemType Directory -Path (Join-Path $script:workersTempRoot '.winsmux') -Force | Out-Null
+        Save-WinsmuxManifest -ProjectDir $script:workersTempRoot -Manifest ([ordered]@{
+            version = 1
+            saved_at = '2026-05-16T00:00:00Z'
+            session = [ordered]@{
+                name = 'winsmux-orchestra'
+                project_dir = $script:workersTempRoot
+                git_worktree_dir = (Join-Path $script:workersTempRoot '.git')
+            }
+            panes = [ordered]@{
+                'worker-2' = [ordered]@{
+                    pane_id = '%2'
+                    slot_id = 'worker-2'
+                    worker_backend = 'local'
+                    role = 'Worker'
+                    launch_dir = $script:workersTempRoot
+                    status = 'ready'
+                    last_heartbeat_run_id = 'hb-blocked'
+                    last_heartbeat_profile = 'local-windows'
+                }
+            }
+            tasks = [ordered]@{
+                queued = @()
+                in_progress = @()
+                completed = @()
+            }
+            worktrees = [ordered]@{}
+        })
+        $runDir = Join-Path $script:workersTempRoot '.winsmux\worker-runs\worker-2\hb-blocked'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        [ordered]@{
+            contract_version      = 1
+            command               = 'workers.heartbeat'
+            status                = 'marked'
+            slot                  = 'w2'
+            slot_id               = 'worker-2'
+            run_id                = 'hb-blocked'
+            execution_profile     = 'local-windows'
+            state                 = 'blocked'
+            message               = 'waiting for user'
+            heartbeat_at          = '2026-05-16T00:00:00Z'
+            stalled_after_seconds = 300
+            offline_after_seconds = 900
+            artifact              = '.winsmux/worker-runs/worker-2/hb-blocked/heartbeat.json'
+        } | ConvertTo-Json -Depth 12 | Set-Content -Path (Join-Path $runDir 'heartbeat.json') -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers status worker-2 --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $row = @($payload.workers)[0]
+
+        $row.slot_id | Should -Be 'worker-2'
+        $row.state | Should -Be 'blocked'
+        $row.heartbeat_health | Should -Be 'blocked'
+        $row.heartbeat_state | Should -Be 'blocked'
+        $row.heartbeat.health | Should -Be 'blocked'
+        $row.heartbeat.requires_user | Should -Be $true
+        $row.heartbeat.artifact | Should -Be '.winsmux/worker-runs/worker-2/hb-blocked/heartbeat.json'
+    }
+
+    It 'does not let stale worker heartbeat override a manifest-bound lifecycle state' {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    execution-profile: local-windows
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        $env:WINSMUX_TEST_NOW_UTC = '2026-05-16T00:00:00Z'
+        & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers heartbeat mark worker-2 --run-id stale-run --state running --message 'old worker run' --json --project-dir $script:workersTempRoot | Out-Null
+
+        New-Item -ItemType Directory -Path (Join-Path $script:workersTempRoot '.winsmux') -Force | Out-Null
+        Save-WinsmuxManifest -ProjectDir $script:workersTempRoot -Manifest ([ordered]@{
+            version = 1
+            saved_at = '2026-05-16T00:01:00Z'
+            session = [ordered]@{
+                name = 'winsmux-orchestra'
+                project_dir = $script:workersTempRoot
+                git_worktree_dir = (Join-Path $script:workersTempRoot '.git')
+            }
+            panes = [ordered]@{
+                'worker-2' = [ordered]@{
+                    pane_id = '%2'
+                    slot_id = 'worker-2'
+                    worker_backend = 'local'
+                    role = 'Worker'
+                    launch_dir = $script:workersTempRoot
+                    status = 'deferred_start'
+                    last_heartbeat_run_id = 'stale-run'
+                    last_heartbeat_profile = 'local-windows'
+                }
+            }
+            tasks = [ordered]@{
+                queued = @()
+                in_progress = @()
+                completed = @()
+            }
+            worktrees = [ordered]@{}
+        })
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers status worker-2 --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $row = @($payload.workers)[0]
+
+        $row.state | Should -Be 'deferred_start'
+        $row.heartbeat_health | Should -Be 'running'
+        $row.heartbeat.run_id | Should -Be 'stale-run'
+    }
+
+    It 'does not let orphan heartbeat artifacts drive unlaunched worker status' {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    execution-profile: local-windows
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        $runDir = Join-Path $script:workersTempRoot '.winsmux\worker-runs\worker-2\orphan-run'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        [ordered]@{
+            contract_version      = 1
+            command               = 'workers.heartbeat'
+            status                = 'marked'
+            slot                  = 'w2'
+            slot_id               = 'worker-2'
+            run_id                = 'orphan-run'
+            execution_profile     = 'local-windows'
+            state                 = 'running'
+            message               = 'orphaned old worker'
+            heartbeat_at          = '2026-05-16T00:00:00Z'
+            stalled_after_seconds = 300
+            offline_after_seconds = 900
+            artifact              = '.winsmux/worker-runs/worker-2/orphan-run/heartbeat.json'
+        } | ConvertTo-Json -Depth 12 | Set-Content -Path (Join-Path $runDir 'heartbeat.json') -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers status worker-2 --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $row = @($payload.workers)[0]
+
+        $row.state | Should -Be 'not_launched'
+        $row.heartbeat_health | Should -Be ''
+        $row.heartbeat | Should -BeNullOrEmpty
+    }
+
+    It 'expires self-reported stalled heartbeats after the offline window' {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    execution-profile: local-windows
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        $env:WINSMUX_TEST_NOW_UTC = '2026-05-16T00:00:00Z'
+        & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers heartbeat mark worker-2 --run-id self-stalled --state stalled --stalled-after 60 --offline-after 600 --json --project-dir $script:workersTempRoot | Out-Null
+
+        $env:WINSMUX_TEST_NOW_UTC = '2026-05-16T00:11:01Z'
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers heartbeat check worker-2 --run-id self-stalled --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+
+        $payload.state | Should -Be 'stalled'
+        $payload.health | Should -Be 'offline'
+        $payload.reason | Should -Be 'heartbeat_expired'
+        $payload.age_seconds | Should -BeGreaterThan 600
+    }
+
+    It 'returns offline heartbeat status for missing isolated check runs' {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    execution-profile: isolated-enterprise
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers heartbeat check worker-2 --run-id missing-isolated --profile isolated-enterprise --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+
+        $payload.health | Should -Be 'offline'
+        $payload.reason | Should -Be 'heartbeat_missing'
+        $payload.run_id | Should -Be 'missing-isolated'
+        $payload.execution_profile | Should -Be 'isolated-enterprise'
+    }
+
+    It 'rejects unsupported latest heartbeat profile before scanning local artifacts' {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    execution-profile: local-windows
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        $env:WINSMUX_TEST_NOW_UTC = '2026-05-16T00:00:00Z'
+        & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers heartbeat mark worker-2 --run-id latest-local --state running --json --project-dir $script:workersTempRoot | Out-Null
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers heartbeat check worker-2 --profile typo-profile --json --project-dir $script:workersTempRoot 2>&1
+
+        $LASTEXITCODE | Should -Be 1
+        ($output | Out-String) | Should -Match 'unsupported execution profile for heartbeat: typo-profile'
+        ($output | Out-String) | Should -Not -Match 'latest-local'
+    }
+
+    It 'rejects heartbeat mark profile mismatches for isolated slots' {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    execution-profile: isolated-enterprise
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers heartbeat mark worker-2 --run-id cross-profile --profile local-windows --state running --json --project-dir $script:workersTempRoot 2>&1
+
+        $LASTEXITCODE | Should -Be 1
+        ($output | Out-String) | Should -Match "worker slot worker-2 uses execution profile 'isolated-enterprise', not local-windows"
+        Test-Path -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\worker-runs\worker-2\cross-profile\heartbeat.json') | Should -Be $false
+    }
+
+    It 'honors latest heartbeat check thresholds and profile filters' {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    execution-profile: local-windows
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        $env:WINSMUX_TEST_NOW_UTC = '2026-05-16T00:00:00Z'
+        & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers heartbeat mark worker-2 --run-id latest-local --state running --json --project-dir $script:workersTempRoot | Out-Null
+
+        $env:WINSMUX_TEST_NOW_UTC = '2026-05-16T00:01:30Z'
+        $staleOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers heartbeat check worker-2 --stalled-after 10 --offline-after 20 --json --project-dir $script:workersTempRoot
+        $stalePayload = ($staleOutput | Select-Object -Last 1) | ConvertFrom-Json
+
+        $stalePayload.run_id | Should -Be 'latest-local'
+        $stalePayload.health | Should -Be 'offline'
+        $stalePayload.reason | Should -Be 'heartbeat_expired'
+
+        $profileOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers heartbeat check worker-2 --profile isolated-enterprise --json --project-dir $script:workersTempRoot
+        $profilePayload = ($profileOutput | Select-Object -Last 1) | ConvertFrom-Json
+
+        $profilePayload.health | Should -Be 'offline'
+        $profilePayload.reason | Should -Be 'heartbeat_missing'
+        $profilePayload.execution_profile | Should -Be 'isolated-enterprise'
+    }
+
     It 'reports the default six worker slots with aliases and Colab degraded state' {
 @'
 agent: codex
@@ -9564,6 +9928,101 @@ agent-slots:
         $payload.results[0].reason | Should -Match 'worker launch approval mismatch'
         @($payload.results[0].approval_differences | Where-Object { $_.field -eq 'model' }).Count | Should -Be 1
         Should -Invoke Send-TextToPane -Times 0 -Exactly
+    }
+
+    It 'clears stale heartbeat binding when a deferred worker starts' {
+@'
+agent: codex
+model: gpt-5.5
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    worker-backend: local
+    worker-role: worker
+    agent: codex
+    model: gpt-5.5
+    model-source: operator-override
+    reasoning-effort: high
+    execution-profile: local-windows
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        New-Item -ItemType Directory -Path (Join-Path $script:workersTempRoot '.winsmux') -Force | Out-Null
+        $planPath = Join-Path $script:workersTempRoot 'worker-1.json'
+        Save-WinsmuxManifest -ProjectDir $script:workersTempRoot -Manifest ([ordered]@{
+            version = 1
+            saved_at = '2026-05-13T00:00:00Z'
+            session = [ordered]@{
+                name = 'winsmux-orchestra'
+                project_dir = $script:workersTempRoot
+                git_worktree_dir = (Join-Path $script:workersTempRoot '.git')
+            }
+            panes = [ordered]@{
+                'worker-1' = [ordered]@{
+                    pane_id = '%2'
+                    slot_id = 'worker-1'
+                    worker_backend = 'local'
+                    role = 'Worker'
+                    exec_mode = $false
+                    launch_dir = $script:workersTempRoot
+                    status = 'deferred_start'
+                    bootstrap_plan_path = $planPath
+                    last_heartbeat_run_id = 'old-run'
+                    last_heartbeat_profile = 'local-windows'
+                    task = $null
+                }
+            }
+            tasks = [ordered]@{
+                queued = @()
+                in_progress = @()
+                completed = @()
+            }
+            worktrees = [ordered]@{}
+        })
+        ([ordered]@{
+            agent = 'codex'
+            ready_marker_path = (Join-Path $script:workersTempRoot 'worker-1.ready.json')
+        } | ConvertTo-Json -Depth 8) | Set-Content -Path $planPath -Encoding UTF8
+        $runDir = Join-Path $script:workersTempRoot '.winsmux\worker-runs\worker-1\old-run'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        [ordered]@{
+            contract_version      = 1
+            command               = 'workers.heartbeat'
+            status                = 'marked'
+            slot                  = 'w1'
+            slot_id               = 'worker-1'
+            run_id                = 'old-run'
+            execution_profile     = 'local-windows'
+            state                 = 'blocked'
+            message               = 'stale approval wait'
+            heartbeat_at          = '2026-05-13T00:00:00Z'
+            stalled_after_seconds = 60
+            offline_after_seconds = 600
+            artifact              = '.winsmux/worker-runs/worker-1/old-run/heartbeat.json'
+        } | ConvertTo-Json -Depth 12 | Set-Content -Path (Join-Path $runDir 'heartbeat.json') -Encoding UTF8
+
+        Mock Wait-PaneShellReady { }
+        Mock Send-TextToPane { return $true }
+        Mock Wait-DeferredPaneReady { }
+
+        $Rest = @('worker-1', '--json', '--project-dir', $script:workersTempRoot)
+        $output = Invoke-WorkersStart
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $entry = @(Get-PaneControlManifestEntries -ProjectDir $script:workersTempRoot)[0]
+
+        $payload.results[0].slot_id | Should -Be 'worker-1'
+        $payload.results[0].status | Should -Be 'started' -Because ([string]$payload.results[0].reason)
+        $entry.Status | Should -Be 'ready'
+        [string](Get-SendConfigValue -InputObject $entry -Name 'LastHeartbeatRunId' -Default '') | Should -Be ''
+        [string](Get-SendConfigValue -InputObject $entry -Name 'LastHeartbeatProfile' -Default '') | Should -Be ''
+
+        $Rest = @('worker-1', '--json', '--project-dir', $script:workersTempRoot)
+        $statusOutput = Invoke-WorkersStatus
+        $statusPayload = ($statusOutput | Select-Object -Last 1) | ConvertFrom-Json
+        $row = @($statusPayload.workers)[0]
+
+        $row.state | Should -Not -Be 'blocked'
+        $row.heartbeat_health | Should -Be ''
+        $row.heartbeat | Should -BeNullOrEmpty
     }
 
     It 'keeps a ready deferred worker idempotent when its approved launch was manual' {

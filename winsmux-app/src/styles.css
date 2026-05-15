@@ -4463,6 +4463,12 @@ body.is-resizing-workbench {
   background: var(--status-warning-bg);
 }
 
+.worker-status-pill-chip[data-status-field="heartbeat"] {
+  color: var(--ws-accent);
+  border-color: color-mix(in srgb, var(--ws-accent) 28%, var(--border-muted));
+  background: color-mix(in srgb, var(--ws-accent) 8%, var(--ws-bg-elevated));
+}
+
 .worker-status-pill-chip[data-status-field="focus"] {
   color: var(--status-focus);
   border-color: var(--status-focus-border);

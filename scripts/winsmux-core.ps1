@@ -17,7 +17,7 @@ if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_RAW_EXE)) {
 }
 
 # --- Config ---
-$VERSION = "0.34.3"
+$VERSION = "0.34.4"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 $BridgeScriptPath = $PSCommandPath
@@ -5123,7 +5123,7 @@ function Invoke-Status {
 }
 
 function Get-WorkersUsage {
-    return "usage: winsmux workers <status|start|stop|attach|doctor> [slot|all] [--json] [--project-dir <path>]; winsmux workers <exec|logs|upload|download> <slot> ... [--json] [--project-dir <path>]; winsmux workers workspace <prepare|cleanup> <slot> ... [--json] [--project-dir <path>]; winsmux workers secrets project <slot> ... [--json] [--project-dir <path>]"
+    return "usage: winsmux workers <status|start|stop|attach|doctor> [slot|all] [--json] [--project-dir <path>]; winsmux workers <exec|logs|upload|download> <slot> ... [--json] [--project-dir <path>]; winsmux workers heartbeat <mark|check> <slot> [--run-id <id>] ... [--json] [--project-dir <path>]; winsmux workers workspace <prepare|cleanup> <slot> ... [--json] [--project-dir <path>]; winsmux workers secrets project <slot> ... [--json] [--project-dir <path>]"
 }
 
 function Read-WorkersOptions {
@@ -5408,6 +5408,29 @@ function Get-WorkersStatusRows {
         if ([string]::IsNullOrWhiteSpace($state)) {
             $state = if ($null -eq $entry) { 'not_launched' } else { 'unknown' }
         }
+        $activeHeartbeatRunId = if ($null -ne $entry) { [string](Get-SendConfigValue -InputObject $entry -Name 'LastHeartbeatRunId' -Default '') } else { '' }
+        $activeHeartbeatProfile = if ($null -ne $entry) { [string](Get-SendConfigValue -InputObject $entry -Name 'LastHeartbeatProfile' -Default '') } else { '' }
+        if (-not [string]::IsNullOrWhiteSpace($activeHeartbeatRunId)) {
+            $heartbeat = Get-WorkersLatestHeartbeatStatus -ProjectDir $Context.ProjectDir -SlotId $slotId -RunId $activeHeartbeatRunId -ExecutionProfile $activeHeartbeatProfile
+        } else {
+            $heartbeat = $null
+        }
+        $heartbeatHealth = ''
+        $heartbeatState = ''
+        if ($null -ne $heartbeat) {
+            $heartbeatHealth = [string](Get-SendConfigValue -InputObject $heartbeat -Name 'health' -Default '')
+            $heartbeatState = [string](Get-SendConfigValue -InputObject $heartbeat -Name 'state' -Default '')
+            $heartbeatRunId = [string](Get-SendConfigValue -InputObject $heartbeat -Name 'run_id' -Default '')
+            $heartbeatCanDriveState = ($null -ne $entry) -and (
+                -not [string]::IsNullOrWhiteSpace($activeHeartbeatRunId) -and
+                [string]::Equals($activeHeartbeatRunId, $heartbeatRunId, [System.StringComparison]::Ordinal)
+            )
+            if ($heartbeatCanDriveState -and
+                $heartbeatHealth -in @('running', 'blocked', 'approval_waiting', 'child_wait', 'stalled', 'offline', 'completed', 'resumable') -and
+                $state -notin @('backend_degraded', 'deferred_start_failed', 'deferred_start', 'deferred_starting')) {
+                $state = $heartbeatHealth
+            }
+        }
 
         $sessionName = [string](Get-SendConfigValue -InputObject $colabSession -Name 'session_name' -Default '')
         if ([string]::IsNullOrWhiteSpace($sessionName) -and [string]::Equals(([string]$slotConfig.WorkerBackend), 'colab_cli', [System.StringComparison]::OrdinalIgnoreCase) -and (Get-Command Resolve-WinsmuxColabSessionName -ErrorAction SilentlyContinue)) {
@@ -5463,6 +5486,9 @@ function Get-WorkersStatusRows {
             ApprovedLaunch = $approvedLaunch
             CurrentLaunch  = $currentLaunch
             ApprovalDifferences = @($approvalDifferences)
+            Heartbeat      = $heartbeat
+            HeartbeatHealth = $heartbeatHealth
+            HeartbeatState = $heartbeatState
         }) | Out-Null
     }
 
@@ -5549,6 +5575,9 @@ function ConvertTo-WorkersStatusJsonRows {
             approved_launch = $row.ApprovedLaunch
             current_launch  = $row.CurrentLaunch
             approval_differences = @($row.ApprovalDifferences)
+            heartbeat       = $row.Heartbeat
+            heartbeat_health = [string]$row.HeartbeatHealth
+            heartbeat_state = [string]$row.HeartbeatState
         }
     }
 }
@@ -5557,21 +5586,28 @@ function Set-WorkersManifestLifecycleCommand {
     param(
         [Parameter(Mandatory = $true)]$Entry,
         [Parameter(Mandatory = $true)][string]$CommandName,
-        [AllowEmptyString()][string]$Status = ''
+        [AllowEmptyString()][string]$Status = '',
+        [AllowNull()][System.Collections.IDictionary]$ExtraProperties = $null
     )
 
     if ($null -eq $Entry -or [string]::IsNullOrWhiteSpace([string]$Entry.PaneId)) {
         return
     }
 
+    $nowText = (Get-Date).ToUniversalTime().ToString('o')
     $properties = [ordered]@{
         last_command    = $CommandName
-        last_command_at = (Get-Date).ToUniversalTime().ToString('o')
+        last_command_at = $nowText
         last_event      = $CommandName
-        last_event_at   = (Get-Date).ToUniversalTime().ToString('o')
+        last_event_at   = $nowText
     }
     if (-not [string]::IsNullOrWhiteSpace($Status)) {
         $properties['status'] = $Status
+    }
+    if ($null -ne $ExtraProperties) {
+        foreach ($propertyEntry in $ExtraProperties.GetEnumerator()) {
+            $properties[[string]$propertyEntry.Key] = $propertyEntry.Value
+        }
     }
 
     Set-PaneControlManifestPaneProperties -ManifestPath $Entry.ManifestPath -PaneId $Entry.PaneId -Properties $properties
@@ -5612,6 +5648,73 @@ function New-WorkersRunId {
     $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
     $suffix = [guid]::NewGuid().ToString('N').Substring(0, 8)
     return "$slotSlug-$stamp-$suffix"
+}
+
+function Get-WorkersNowUtc {
+    $rawNow = [string]$env:WINSMUX_TEST_NOW_UTC
+    if (-not [string]::IsNullOrWhiteSpace($rawNow)) {
+        try {
+            return ([datetimeoffset]::Parse($rawNow, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal)).UtcDateTime
+        } catch {
+            Stop-WithError "WINSMUX_TEST_NOW_UTC is invalid: $rawNow"
+        }
+    }
+
+    return (Get-Date).ToUniversalTime()
+}
+
+function ConvertTo-WorkersUtcDateTime {
+    param([AllowEmptyString()][string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return $null
+    }
+
+    try {
+        return ([datetimeoffset]::Parse($Value, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal)).UtcDateTime
+    } catch {
+        return $null
+    }
+}
+
+function Get-WorkersHeartbeatThresholdSeconds {
+    param(
+        [int]$Value,
+        [Parameter(Mandatory = $true)][string]$EnvName,
+        [int]$Default
+    )
+
+    if ($Value -gt 0) {
+        return $Value
+    }
+
+    $envItem = Get-Item -Path "Env:$EnvName" -ErrorAction SilentlyContinue
+    $raw = ''
+    if ($null -ne $envItem) {
+        $raw = [string]$envItem.Value
+    }
+    $parsed = 0
+    if (-not [string]::IsNullOrWhiteSpace($raw) -and [int]::TryParse($raw, [ref]$parsed) -and $parsed -gt 0) {
+        return $parsed
+    }
+
+    return $Default
+}
+
+function Assert-WorkersHeartbeatState {
+    param([AllowEmptyString()][string]$State)
+
+    $normalized = ([string]$State).Trim().ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($normalized)) {
+        return 'running'
+    }
+
+    $allowed = @('running', 'blocked', 'approval_waiting', 'child_wait', 'stalled', 'completed', 'resumable')
+    if ($allowed -notcontains $normalized) {
+        Stop-WithError "unsupported heartbeat state: $State"
+    }
+
+    return $normalized
 }
 
 function Assert-WorkersPathSegment {
@@ -6096,6 +6199,313 @@ function Get-WorkersSecretRunDirectory {
     }
 
     Stop-WithError "unsupported execution profile for secret projection: $ExecutionProfile"
+}
+
+function Get-WorkersHeartbeatRunDirectory {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$SlotId,
+        [Parameter(Mandatory = $true)][string]$RunId,
+        [Parameter(Mandatory = $true)][string]$ExecutionProfile,
+        [switch]$CreateLocal,
+        [switch]$AllowMissing
+    )
+
+    if ([string]::Equals($ExecutionProfile, 'isolated-enterprise', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $runDir = Get-WorkersIsolatedWorkspaceRunDirectory -ProjectDir $ProjectDir -SlotId $SlotId -RunId $RunId
+        if (-not (Test-Path -LiteralPath $runDir -PathType Container)) {
+            if ($AllowMissing) {
+                return $runDir
+            }
+            Stop-WithError "isolated heartbeat requires an existing isolated workspace run: $RunId"
+        }
+        Assert-WorkersIsolatedWorkspaceCleanupTarget -ProjectDir $ProjectDir -RunDir $runDir
+        return $runDir
+    }
+
+    if ([string]::Equals($ExecutionProfile, 'local-windows', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $runDir = [System.IO.Path]::GetFullPath((Get-WorkersRunDirectory -ProjectDir $ProjectDir -SlotId $SlotId -RunId $RunId))
+        if ($CreateLocal -and -not (Test-Path -LiteralPath $runDir -PathType Container)) {
+            New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        }
+        return $runDir
+    }
+
+    Stop-WithError "unsupported execution profile for heartbeat: $ExecutionProfile"
+}
+
+function New-WorkersHeartbeatAssessment {
+    param(
+        [Parameter(Mandatory = $true)][string]$State,
+        [AllowNull()]$HeartbeatAt,
+        [Parameter(Mandatory = $true)][datetime]$NowUtc,
+        [int]$StalledAfterSeconds,
+        [int]$OfflineAfterSeconds
+    )
+
+    $health = $State
+    $reason = 'state_reported'
+    $ageSeconds = $null
+    $requiresUser = $false
+    $waitingForChildRun = $false
+    $terminal = $false
+    $resumable = $false
+
+    if ($null -ne $HeartbeatAt) {
+        $heartbeatAtUtc = [datetime]$HeartbeatAt
+        $ageSeconds = [int][math]::Max(0, [math]::Floor(($NowUtc - $heartbeatAtUtc).TotalSeconds))
+    }
+
+    switch ($State) {
+        'blocked' {
+            $health = 'blocked'
+            $reason = 'blocked_by_worker'
+            $requiresUser = $true
+        }
+        'approval_waiting' {
+            $health = 'approval_waiting'
+            $reason = 'approval_waiting'
+            $requiresUser = $true
+        }
+        'child_wait' {
+            $health = 'child_wait'
+            $reason = 'child_run_waiting'
+            $waitingForChildRun = $true
+        }
+        'stalled' {
+            if ($null -eq $HeartbeatAt) {
+                $health = 'offline'
+                $reason = 'heartbeat_invalid'
+            } elseif ($ageSeconds -gt $OfflineAfterSeconds) {
+                $health = 'offline'
+                $reason = 'heartbeat_expired'
+            } else {
+                $health = 'stalled'
+                $reason = 'stalled_by_worker'
+            }
+        }
+        'completed' {
+            $health = 'completed'
+            $reason = 'run_completed'
+            $terminal = $true
+        }
+        'resumable' {
+            $health = 'resumable'
+            $reason = 'run_resumable'
+            $resumable = $true
+        }
+        default {
+            if ($null -eq $HeartbeatAt) {
+                $health = 'offline'
+                $reason = 'heartbeat_invalid'
+            } elseif ($ageSeconds -gt $OfflineAfterSeconds) {
+                $health = 'offline'
+                $reason = 'heartbeat_expired'
+            } elseif ($ageSeconds -gt $StalledAfterSeconds) {
+                $health = 'stalled'
+                $reason = 'heartbeat_stale'
+            } else {
+                $health = 'running'
+                $reason = 'heartbeat_recent'
+            }
+        }
+    }
+
+    return [ordered]@{
+        health                = $health
+        reason                = $reason
+        age_seconds           = $ageSeconds
+        stalled_after_seconds = $StalledAfterSeconds
+        offline_after_seconds = $OfflineAfterSeconds
+        requires_user         = $requiresUser
+        waiting_for_child_run = $waitingForChildRun
+        terminal              = $terminal
+        resumable             = $resumable
+    }
+}
+
+function ConvertTo-WorkersHeartbeatStatus {
+    param(
+        [Parameter(Mandatory = $true)]$Payload,
+        [Parameter(Mandatory = $true)][string]$Artifact,
+        [Parameter(Mandatory = $true)][datetime]$NowUtc,
+        [int]$StalledAfterSeconds,
+        [int]$OfflineAfterSeconds,
+        [bool]$PreferPayloadThresholds = $true
+    )
+
+    $state = Assert-WorkersHeartbeatState -State ([string](Get-SendConfigValue -InputObject $Payload -Name 'state' -Default 'running'))
+    $heartbeatAtText = [string](Get-SendConfigValue -InputObject $Payload -Name 'heartbeat_at' -Default '')
+    $heartbeatAt = ConvertTo-WorkersUtcDateTime -Value $heartbeatAtText
+    $effectiveStalledAfter = $StalledAfterSeconds
+    $effectiveOfflineAfter = $OfflineAfterSeconds
+    if ($PreferPayloadThresholds) {
+        $effectiveStalledAfter = [int](Get-SendConfigValue -InputObject $Payload -Name 'stalled_after_seconds' -Default $StalledAfterSeconds)
+        $effectiveOfflineAfter = [int](Get-SendConfigValue -InputObject $Payload -Name 'offline_after_seconds' -Default $OfflineAfterSeconds)
+    }
+    if ($effectiveStalledAfter -lt 1) {
+        $effectiveStalledAfter = $StalledAfterSeconds
+    }
+    if ($effectiveOfflineAfter -le $effectiveStalledAfter) {
+        $effectiveOfflineAfter = $effectiveStalledAfter + 1
+    }
+    $assessment = New-WorkersHeartbeatAssessment -State $state -HeartbeatAt $heartbeatAt -NowUtc $NowUtc -StalledAfterSeconds $effectiveStalledAfter -OfflineAfterSeconds $effectiveOfflineAfter
+
+    return [ordered]@{
+        contract_version      = [int](Get-SendConfigValue -InputObject $Payload -Name 'contract_version' -Default 1)
+        command               = 'workers.heartbeat'
+        slot                  = [string](Get-SendConfigValue -InputObject $Payload -Name 'slot' -Default '')
+        slot_id               = [string](Get-SendConfigValue -InputObject $Payload -Name 'slot_id' -Default '')
+        run_id                = [string](Get-SendConfigValue -InputObject $Payload -Name 'run_id' -Default '')
+        execution_profile     = [string](Get-SendConfigValue -InputObject $Payload -Name 'execution_profile' -Default '')
+        state                 = $state
+        health                = [string]$assessment.health
+        reason                = [string]$assessment.reason
+        message               = [string](Get-SendConfigValue -InputObject $Payload -Name 'message' -Default '')
+        heartbeat_at          = $heartbeatAtText
+        checked_at            = $NowUtc.ToString('o')
+        age_seconds           = $assessment.age_seconds
+        stalled_after_seconds = [int]$assessment.stalled_after_seconds
+        offline_after_seconds = [int]$assessment.offline_after_seconds
+        requires_user         = [bool]$assessment.requires_user
+        waiting_for_child_run = [bool]$assessment.waiting_for_child_run
+        terminal              = [bool]$assessment.terminal
+        resumable             = [bool]$assessment.resumable
+        artifact              = $Artifact
+    }
+}
+
+function Read-WorkersHeartbeatArtifact {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][datetime]$NowUtc,
+        [int]$StalledAfterSeconds,
+        [int]$OfflineAfterSeconds,
+        [bool]$PreferPayloadThresholds = $true
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $null
+    }
+
+    try {
+        $payload = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
+        $artifact = Get-WorkersArtifactReference -ProjectDir $ProjectDir -Path $Path
+        return ConvertTo-WorkersHeartbeatStatus -Payload $payload -Artifact $artifact -NowUtc $NowUtc -StalledAfterSeconds $StalledAfterSeconds -OfflineAfterSeconds $OfflineAfterSeconds -PreferPayloadThresholds:([bool]$PreferPayloadThresholds)
+    } catch {
+        return $null
+    }
+}
+
+function Get-WorkersLatestHeartbeatStatus {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$SlotId,
+        [AllowEmptyString()][string]$RunId = '',
+        [AllowEmptyString()][string]$ExecutionProfile = '',
+        [int]$StalledAfterSeconds = 0,
+        [int]$OfflineAfterSeconds = 0,
+        [bool]$PreferPayloadThresholds = $true
+    )
+
+    $safeSlotId = Assert-WorkersPathSegment -Value $SlotId -Name 'slot id'
+    $safeRunId = ''
+    if (-not [string]::IsNullOrWhiteSpace($RunId)) {
+        try {
+            $safeRunId = Assert-WorkersPathSegment -Value $RunId -Name 'run id'
+        } catch {
+            return $null
+        }
+    }
+    $nowUtc = Get-WorkersNowUtc
+    $stalledAfter = Get-WorkersHeartbeatThresholdSeconds -Value $StalledAfterSeconds -EnvName 'WINSMUX_WORKER_HEARTBEAT_STALLED_AFTER_SECONDS' -Default 300
+    $offlineAfter = Get-WorkersHeartbeatThresholdSeconds -Value $OfflineAfterSeconds -EnvName 'WINSMUX_WORKER_HEARTBEAT_OFFLINE_AFTER_SECONDS' -Default 900
+    if ($offlineAfter -le $stalledAfter) {
+        $offlineAfter = $stalledAfter + 1
+    }
+
+    $candidates = [System.Collections.Generic.List[object]]::new()
+    $localRoot = Join-Path (Join-Path (Join-Path $ProjectDir '.winsmux') 'worker-runs') $safeSlotId
+    $isolatedRoot = Join-Path (Get-WorkersIsolatedWorkspaceRoot -ProjectDir $ProjectDir) $safeSlotId
+    $profile = [string]$ExecutionProfile
+    if (
+        -not [string]::IsNullOrWhiteSpace($profile) -and
+        -not [string]::Equals($profile, 'local-windows', [System.StringComparison]::OrdinalIgnoreCase) -and
+        -not [string]::Equals($profile, 'isolated-enterprise', [System.StringComparison]::OrdinalIgnoreCase)
+    ) {
+        return $null
+    }
+    $roots = [System.Collections.Generic.List[string]]::new()
+    if (-not [string]::Equals($profile, 'isolated-enterprise', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $roots.Add($localRoot) | Out-Null
+    }
+    if (-not [string]::Equals($profile, 'local-windows', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $roots.Add($isolatedRoot) | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($safeRunId)) {
+        foreach ($root in @($roots)) {
+            $heartbeatPath = Join-Path (Join-Path $root $safeRunId) 'heartbeat.json'
+            if (Test-Path -LiteralPath $heartbeatPath -PathType Leaf) {
+                $candidates.Add((Get-Item -LiteralPath $heartbeatPath -Force)) | Out-Null
+            }
+        }
+    } else {
+        foreach ($root in @($roots)) {
+            if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+                continue
+            }
+            foreach ($runDir in @(Get-ChildItem -LiteralPath $root -Directory)) {
+                $heartbeatPath = Join-Path $runDir.FullName 'heartbeat.json'
+                if (Test-Path -LiteralPath $heartbeatPath -PathType Leaf) {
+                    $candidates.Add((Get-Item -LiteralPath $heartbeatPath -Force)) | Out-Null
+                }
+            }
+        }
+    }
+
+    foreach ($candidate in @($candidates | Sort-Object LastWriteTimeUtc -Descending)) {
+        $status = Read-WorkersHeartbeatArtifact -ProjectDir $ProjectDir -Path ([string]$candidate.FullName) -NowUtc $nowUtc -StalledAfterSeconds $stalledAfter -OfflineAfterSeconds $offlineAfter -PreferPayloadThresholds $PreferPayloadThresholds
+        if ($null -ne $status) {
+            return $status
+        }
+    }
+
+    return $null
+}
+
+function New-WorkersHeartbeatMissingStatus {
+    param(
+        [Parameter(Mandatory = $true)]$Slot,
+        [AllowEmptyString()][string]$RunId,
+        [AllowEmptyString()][string]$ExecutionProfile,
+        [int]$StalledAfterSeconds,
+        [int]$OfflineAfterSeconds,
+        [Parameter(Mandatory = $true)][datetime]$NowUtc
+    )
+
+    return [ordered]@{
+        contract_version      = 1
+        command               = 'workers.heartbeat'
+        slot                  = [string]$Slot.Row.Slot
+        slot_id               = [string]$Slot.Row.SlotId
+        run_id                = $RunId
+        execution_profile     = $ExecutionProfile
+        state                 = 'offline'
+        health                = 'offline'
+        reason                = 'heartbeat_missing'
+        message               = ''
+        heartbeat_at          = ''
+        checked_at            = $NowUtc.ToString('o')
+        age_seconds           = $null
+        stalled_after_seconds = $StalledAfterSeconds
+        offline_after_seconds = $OfflineAfterSeconds
+        requires_user         = $false
+        waiting_for_child_run = $false
+        terminal              = $false
+        resumable             = $false
+        artifact              = ''
+    }
 }
 
 function Test-WorkersWindowsReservedPathName {
@@ -6915,6 +7325,98 @@ function Read-WorkersSecretsOptions {
     }
 }
 
+function Read-WorkersHeartbeatOptions {
+    param([Parameter(Mandatory = $true)][string]$Usage)
+
+    $projectDir = (Get-Location).Path
+    $asJson = $false
+    $action = ''
+    $targetValue = ''
+    $runId = ''
+    $profile = ''
+    $state = 'running'
+    $message = ''
+    $stalledAfter = 0
+    $offlineAfter = 0
+    $items = @($Rest)
+
+    if ($items.Count -ge 1) {
+        $action = ([string]$items[0]).Trim().ToLowerInvariant()
+    }
+    if ($items.Count -ge 2) {
+        $targetValue = [string]$items[1]
+    }
+
+    for ($index = 2; $index -lt $items.Count; $index++) {
+        $token = [string]$items[$index]
+        switch ($token) {
+            '--json' { $asJson = $true }
+            '--project-dir' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $projectDir = [string]$items[$index + 1]
+                $index++
+            }
+            '--run-id' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $runId = [string]$items[$index + 1]
+                $index++
+            }
+            '--profile' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $profile = [string]$items[$index + 1]
+                $index++
+            }
+            '--state' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $state = [string]$items[$index + 1]
+                $index++
+            }
+            '--message' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $message = [string]$items[$index + 1]
+                $index++
+            }
+            '--stalled-after' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                if (-not [int]::TryParse([string]$items[$index + 1], [ref]$stalledAfter) -or $stalledAfter -lt 1) {
+                    Stop-WithError $Usage
+                }
+                $index++
+            }
+            '--offline-after' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                if (-not [int]::TryParse([string]$items[$index + 1], [ref]$offlineAfter) -or $offlineAfter -lt 1) {
+                    Stop-WithError $Usage
+                }
+                $index++
+            }
+            default {
+                Stop-WithError $Usage
+            }
+        }
+    }
+
+    if ($action -notin @('mark', 'check') -or [string]::IsNullOrWhiteSpace($targetValue)) {
+        Stop-WithError $Usage
+    }
+    if ($action -eq 'mark' -and [string]::IsNullOrWhiteSpace($runId)) {
+        Stop-WithError $Usage
+    }
+
+    return [PSCustomObject]@{
+        ProjectDir           = $projectDir
+        Json                 = $asJson
+        Action               = $action
+        Target               = $targetValue
+        RunId                = $runId
+        Profile              = $profile
+        State                = $state
+        Message              = $message
+        StalledAfterSeconds  = $stalledAfter
+        OfflineAfterSeconds  = $offlineAfter
+    }
+}
+
 function Get-WorkersSingleSlotContext {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -7222,6 +7724,101 @@ function Invoke-WorkersSecrets {
         'project' { Invoke-WorkersSecretsProject -Options $options }
         default { Stop-WithError $usage }
     }
+}
+
+function Invoke-WorkersHeartbeat {
+    $usage = "usage: winsmux workers heartbeat <mark|check> <slot> [--run-id <id>] [--profile <profile>] [--state <running|blocked|approval_waiting|child_wait|stalled|completed|resumable>] [--message <text>] [--stalled-after <seconds>] [--offline-after <seconds>] [--json] [--project-dir <path>]"
+    $options = Read-WorkersHeartbeatOptions -Usage $usage
+    $slot = Get-WorkersSingleSlotContext -ProjectDir $options.ProjectDir -Target $options.Target
+    $slotId = [string]$slot.Row.SlotId
+    $runId = Assert-WorkersRunId -RunId ([string]$options.RunId)
+    $profile = [string]$options.Profile
+    if ([string]::IsNullOrWhiteSpace($profile)) {
+        $profile = [string]$slot.SlotConfig.ExecutionProfile
+    }
+    if ([string]::IsNullOrWhiteSpace($profile)) {
+        $profile = 'local-windows'
+    }
+    if (Get-Command Test-BridgeExecutionProfileKind -ErrorAction SilentlyContinue) {
+        if (-not (Test-BridgeExecutionProfileKind -Value $profile)) {
+            Stop-WithError "unsupported execution profile for heartbeat: $profile"
+        }
+    }
+    $slotProfile = [string]$slot.SlotConfig.ExecutionProfile
+    if ([string]::IsNullOrWhiteSpace($slotProfile)) {
+        $slotProfile = 'local-windows'
+    }
+    $action = [string]$options.Action
+    if (
+        -not [string]::Equals($action, 'check', [System.StringComparison]::OrdinalIgnoreCase) -and
+        -not [string]::Equals($slotProfile, $profile, [System.StringComparison]::OrdinalIgnoreCase)
+    ) {
+        Stop-WithError "worker slot $slotId uses execution profile '$slotProfile', not $profile"
+    }
+
+    $stalledAfter = Get-WorkersHeartbeatThresholdSeconds -Value ([int]$options.StalledAfterSeconds) -EnvName 'WINSMUX_WORKER_HEARTBEAT_STALLED_AFTER_SECONDS' -Default 300
+    $offlineAfter = Get-WorkersHeartbeatThresholdSeconds -Value ([int]$options.OfflineAfterSeconds) -EnvName 'WINSMUX_WORKER_HEARTBEAT_OFFLINE_AFTER_SECONDS' -Default 900
+    if ($offlineAfter -le $stalledAfter) {
+        Stop-WithError 'heartbeat --offline-after must be greater than --stalled-after'
+    }
+    $preferPayloadThresholds = ([int]$options.StalledAfterSeconds -lt 1 -and [int]$options.OfflineAfterSeconds -lt 1)
+
+    $nowUtc = Get-WorkersNowUtc
+
+    if ([string]::Equals($action, 'check', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $heartbeatPath = ''
+        if (-not [string]::IsNullOrWhiteSpace($runId)) {
+            $runDir = Get-WorkersHeartbeatRunDirectory -ProjectDir $options.ProjectDir -SlotId $slotId -RunId $runId -ExecutionProfile $profile -AllowMissing
+            $heartbeatPath = Join-Path $runDir 'heartbeat.json'
+        } else {
+            $latest = Get-WorkersLatestHeartbeatStatus -ProjectDir $options.ProjectDir -SlotId $slotId -ExecutionProfile $profile -StalledAfterSeconds $stalledAfter -OfflineAfterSeconds $offlineAfter -PreferPayloadThresholds $preferPayloadThresholds
+            if ($null -ne $latest) {
+                Write-WorkersOperationOutput -Payload $latest -Json:([bool]$options.Json) -Text "$($latest.health) $($latest.run_id)"
+                return
+            }
+        }
+
+        $status = $null
+        if (-not [string]::IsNullOrWhiteSpace($heartbeatPath)) {
+            $status = Read-WorkersHeartbeatArtifact -ProjectDir $options.ProjectDir -Path $heartbeatPath -NowUtc $nowUtc -StalledAfterSeconds $stalledAfter -OfflineAfterSeconds $offlineAfter -PreferPayloadThresholds $preferPayloadThresholds
+        }
+        if ($null -eq $status) {
+            $status = New-WorkersHeartbeatMissingStatus -Slot $slot -RunId $runId -ExecutionProfile $profile -StalledAfterSeconds $stalledAfter -OfflineAfterSeconds $offlineAfter -NowUtc $nowUtc
+        }
+        Write-WorkersOperationOutput -Payload $status -Json:([bool]$options.Json) -Text "$($status.health) $runId"
+        return
+    }
+
+    $state = Assert-WorkersHeartbeatState -State ([string]$options.State)
+    $runDir = Get-WorkersHeartbeatRunDirectory -ProjectDir $options.ProjectDir -SlotId $slotId -RunId $runId -ExecutionProfile $profile -CreateLocal
+    $heartbeatPath = Join-Path $runDir 'heartbeat.json'
+    $payload = [ordered]@{
+        contract_version      = 1
+        command               = 'workers.heartbeat'
+        status                = 'marked'
+        slot                  = [string]$slot.Row.Slot
+        slot_id               = $slotId
+        run_id                = $runId
+        execution_profile     = $profile
+        state                 = $state
+        message               = ConvertTo-WorkersSafeLogText -Text ([string]$options.Message)
+        heartbeat_at          = $nowUtc.ToString('o')
+        stalled_after_seconds = $stalledAfter
+        offline_after_seconds = $offlineAfter
+        artifact              = Get-WorkersArtifactReference -ProjectDir $options.ProjectDir -Path $heartbeatPath
+    }
+    Write-WorkersJsonArtifact -Path $heartbeatPath -Data $payload | Out-Null
+    $status = ConvertTo-WorkersHeartbeatStatus -Payload $payload -Artifact ([string]$payload.artifact) -NowUtc $nowUtc -StalledAfterSeconds $stalledAfter -OfflineAfterSeconds $offlineAfter
+    $status['status'] = 'marked'
+    if ($null -ne $slot.Entry) {
+        Set-WorkersManifestLifecycleCommand -Entry $slot.Entry -CommandName 'workers.heartbeat' -ExtraProperties ([ordered]@{
+            last_heartbeat_run_id  = $runId
+            last_heartbeat_profile = $profile
+            last_heartbeat_at      = $nowUtc.ToString('o')
+        })
+    }
+
+    Write-WorkersOperationOutput -Payload $status -Json:([bool]$options.Json) -Text "marked $state heartbeat for $runId"
 }
 
 function Invoke-WorkersExec {
@@ -7587,7 +8184,10 @@ function Invoke-WorkersStart {
         try {
             if (Test-DeferredPaneStartManifestEntry -ManifestEntry $entry) {
                 $started = Start-DeferredPaneFromManifestEntry -ProjectDir $options.ProjectDir -ManifestEntry $entry
-                Set-WorkersManifestLifecycleCommand -Entry $entry -CommandName 'workers.start' -Status 'ready'
+                Set-WorkersManifestLifecycleCommand -Entry $entry -CommandName 'workers.start' -Status 'ready' -ExtraProperties ([ordered]@{
+                    last_heartbeat_run_id  = ''
+                    last_heartbeat_profile = ''
+                })
                 $status = if ($started) { 'started' } else { 'unchanged' }
                 $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status $status)) | Out-Null
             } else {
@@ -7842,6 +8442,7 @@ function Invoke-Workers {
         'doctor' { Invoke-WorkersDoctor }
         'workspace' { Invoke-WorkersWorkspace }
         'secrets' { Invoke-WorkersSecrets }
+        'heartbeat' { Invoke-WorkersHeartbeat }
         'exec'   { Invoke-WorkersExec }
         'logs'   { Invoke-WorkersLogs }
         'upload' { Invoke-WorkersUpload }
@@ -14736,6 +15337,7 @@ Commands:
   health-check              Report READY/BUSY/HUNG/DEAD for labeled panes
   status                    Report manifest pane states via capture-pane
   workers <status|start|stop|attach|doctor> [slot|all] [--json] [--project-dir <path>]  Inspect and control configured worker slots
+  workers heartbeat <mark|check> <slot> [--run-id <id>] [--state <state>] [--json] [--project-dir <path>]  Mark or check isolated/local worker liveness without classifying child waits as stopped
   workers workspace <prepare|cleanup> <slot> [--include <path>] [--run-id <id>] [--json] [--project-dir <path>]  Prepare or remove disposable isolated worker workspaces
   workers secrets project <slot> --run-id <id> [--env <name=key>] [--file <path=key>] [--variable <name=key>] [--json] [--project-dir <path>]  Project typed run-scoped secrets without printing secret values
   board [--json]            Report pane/task/review/git session board

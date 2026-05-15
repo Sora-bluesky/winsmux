@@ -86,6 +86,23 @@ function startTauriDev(debugPort, userDataDir) {
   return child;
 }
 
+function runWinsmuxCore(args, env = {}) {
+  const coreScript = path.resolve(process.cwd(), "..", "scripts", "winsmux-core.ps1");
+  const result = spawnSync("pwsh", ["-NoProfile", "-File", coreScript, ...args], {
+    cwd: path.resolve(process.cwd(), ".."),
+    env: {
+      ...process.env,
+      ...env,
+      NO_COLOR: "1",
+    },
+    encoding: "utf8",
+  });
+  if (result.status !== 0) {
+    throw new Error(`winsmux-core.ps1 ${args.join(" ")} failed (${result.status}): ${result.stdout}\n${result.stderr}`);
+  }
+  return result.stdout.trim();
+}
+
 async function stopProcessTree(child) {
   if (!child || child.exitCode !== null || child.killed) {
     return;
@@ -1001,7 +1018,7 @@ async function main() {
         const detail = document.querySelector(".worker-status-detail-strip");
         return detail?.getAttribute("data-worker-status-detail") === "worker-1";
       }, undefined, { timeout: 10_000 });
-      const requiredFields = ["role", "backend", "profile", "auth", "model-source", "launch", "blocked", "remote", "elapsed", "focus"];
+      const requiredFields = ["role", "backend", "profile", "auth", "model-source", "launch", "heartbeat", "blocked", "remote", "elapsed", "focus"];
       for (const field of requiredFields) {
         const count = await page.locator(`.worker-status-detail-strip[data-worker-status-detail="worker-1"] .worker-status-pill-chip[data-status-field="${field}"]`).count();
         if (count !== 1) {
@@ -1245,11 +1262,31 @@ async function main() {
         ].join("\n"),
         "utf8",
       );
+      runWinsmuxCore(
+        [
+          "workers",
+          "heartbeat",
+          "mark",
+          "worker-1",
+          "--run-id",
+          "desktop-heartbeat-e2e",
+          "--state",
+          "approval_waiting",
+          "--message",
+          "desktop e2e approval wait",
+          "--json",
+          "--project-dir",
+          tempProjectDir,
+        ],
+        { WINSMUX_TEST_NOW_UTC: "2026-05-16T00:00:00Z" },
+      );
 
       await setActiveProjectDirForUi(page, tempProjectDir);
       await setWorkbenchLayout(page, "focus");
       await page.selectOption("#focused-pane-select", "worker-1");
       await setWorkbenchLayout(page, "3x2");
+      await page.locator('.worker-status-detail-strip[data-worker-status-detail="worker-1"] .worker-status-pill-chip[data-status-field="launch"]', { hasText: "launch:not_launched" }).waitFor({ state: "visible", timeout: 60_000 });
+      await page.locator('.worker-status-detail-strip[data-worker-status-detail="worker-1"] .worker-status-pill-chip[data-status-field="heartbeat"]', { hasText: "hb:none" }).waitFor({ state: "visible", timeout: 60_000 });
       await page.click("#start-worker-btn");
       await page.locator("#conversation-panel", { hasText: "Worker launch approval" }).waitFor({ state: "visible", timeout: 60_000 });
       await page.locator("#conversation-panel", { hasText: "Worker start blocked" }).waitFor({ state: "visible", timeout: 60_000 });

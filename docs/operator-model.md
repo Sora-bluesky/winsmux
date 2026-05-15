@@ -137,6 +137,15 @@ a different worker backend by itself. Backend selection, provider capability,
 and run policy stay separate so role or playbook intent is not mixed with the
 execution substrate.
 
+Worker liveness is a shared CLI and desktop contract. `winsmux workers
+heartbeat mark` writes a run-scoped `heartbeat.json`, and `winsmux workers
+heartbeat check` evaluates it as `running`, `blocked`, `approval_waiting`,
+`child_wait`, `stalled`, `offline`, `completed`, or `resumable`. The state model
+separates child-run waiting and approval waiting from genuine process stops.
+`winsmux workers status --json` projects the latest heartbeat into each worker
+row through `heartbeat`, `heartbeat_health`, and `heartbeat_state`, which is the
+same contract consumed by the Tauri worker status surface.
+
 Review is handled by any **review-capable slot**, not by a permanently dedicated reviewer pane.
 Meta-planning follows the same rule: the current Claude/Codex role pair is an
 MVP seed, while custom planning roles should be selected from provider
@@ -158,6 +167,7 @@ The public first-run entrypoints now converge on:
 - `winsmux launcher lifecycle [preset|--clear] [--json]`
 - `winsmux workers <status|start|stop|doctor> [slot|all] [--json]`
 - `winsmux workers <exec|logs|upload|download> <slot> ... [--json]`
+- `winsmux workers heartbeat <mark|check> <slot> [--run-id <id>] ... [--json]`
 - `winsmux workers workspace <prepare|cleanup> <slot> ... [--json]`
 - `winsmux workers secrets project <slot> --run-id <id> ... [--json]`
 - `winsmux conflict-preflight`
