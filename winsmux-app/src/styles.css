@@ -4492,7 +4492,7 @@ body.is-resizing-workbench {
 }
 
 #terminal-drawer[data-layout="3x2"] #panes-container {
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 #terminal-drawer[data-layout="focus"] #panes-container {

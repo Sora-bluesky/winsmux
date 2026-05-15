@@ -827,14 +827,22 @@ async function main() {
         throw new Error(`3x2 layout should create 6 panes, found ${await paneCount(page)}`);
       }
       const threeColumnMetrics = await page.locator("#panes-container .pane").evaluateAll((panes) => {
-        const widths = panes.map((pane) => Math.round(pane.getBoundingClientRect().width));
+        const rects = panes.map((pane) => pane.getBoundingClientRect());
+        const widths = rects.map((rect) => Math.round(rect.width));
+        const columns = new Set(rects.map((rect) => Math.round(rect.left))).size;
+        const rows = new Set(rects.map((rect) => Math.round(rect.top))).size;
         const labelHeights = panes.map((pane) => Math.round(pane.querySelector(".pane-label")?.getBoundingClientRect().height ?? 0));
         return {
           minWidth: Math.min(...widths),
           widths,
+          columns,
+          rows,
           labelHeights,
         };
       });
+      if (threeColumnMetrics.columns !== 3 || threeColumnMetrics.rows !== 2) {
+        throw new Error(`3x2 worker panes should stay fixed at 3 columns by 2 rows: ${JSON.stringify(threeColumnMetrics)}`);
+      }
       if (threeColumnMetrics.minWidth < 300) {
         throw new Error(`3x2 worker panes are too narrow: ${JSON.stringify(threeColumnMetrics)}`);
       }
