@@ -1285,7 +1285,8 @@ async function main() {
       await setWorkbenchLayout(page, "focus");
       await page.selectOption("#focused-pane-select", "worker-1");
       await setWorkbenchLayout(page, "3x2");
-      await page.locator('.worker-status-pill[data-worker-status-target="worker-1"] .worker-status-pill-chip[data-status-field="heartbeat"]', { hasText: "hb:approval_waiting" }).waitFor({ state: "visible", timeout: 60_000 });
+      await page.locator('.worker-status-detail-strip[data-worker-status-detail="worker-1"] .worker-status-pill-chip[data-status-field="launch"]', { hasText: "launch:not_launched" }).waitFor({ state: "visible", timeout: 60_000 });
+      await page.locator('.worker-status-detail-strip[data-worker-status-detail="worker-1"] .worker-status-pill-chip[data-status-field="heartbeat"]', { hasText: "hb:none" }).waitFor({ state: "visible", timeout: 60_000 });
       await page.click("#start-worker-btn");
       await page.locator("#conversation-panel", { hasText: "Worker launch approval" }).waitFor({ state: "visible", timeout: 60_000 });
       await page.locator("#conversation-panel", { hasText: "Worker start blocked" }).waitFor({ state: "visible", timeout: 60_000 });

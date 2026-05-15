@@ -1870,7 +1870,7 @@ function getConcreteWorkerStatusValue(...values: Array<string | null | undefined
   return "";
 }
 
-const WORKER_LAUNCH_PRIORITY_STATES = new Set(["backend_degraded", "deferred_start_failed"]);
+const WORKER_LAUNCH_PRIORITY_STATES = new Set(["backend_degraded", "deferred_start_failed", "deferred_start", "deferred_starting"]);
 
 function getPriorityWorkerLifecycleState(...values: Array<string | null | undefined>) {
   for (const value of values) {
@@ -1921,8 +1921,15 @@ function isWorkerStatusBlocked(row: DesktopWorkerStatusRow) {
 
 function getWorkerStatusTone(row: DesktopWorkerStatusRow): SurfaceTone {
   const heartbeat = getWorkerHeartbeatHealth(row).toLowerCase();
+  const stateText = `${row.state} ${row.pane_state} ${row.manifest_status}`.toLowerCase();
   if (heartbeat === "offline") {
     return "danger";
+  }
+  if (stateText.includes("fail") || stateText.includes("error")) {
+    return "danger";
+  }
+  if (isWorkerStatusBlocked(row) || stateText.includes("pending") || stateText.includes("start") || stateText.includes("degraded")) {
+    return "warning";
   }
   if (heartbeat === "blocked" || heartbeat === "approval_waiting" || heartbeat === "stalled") {
     return "warning";
@@ -1934,13 +1941,6 @@ function getWorkerStatusTone(row: DesktopWorkerStatusRow): SurfaceTone {
     return "success";
   }
 
-  const stateText = `${row.state} ${row.pane_state} ${row.manifest_status}`.toLowerCase();
-  if (stateText.includes("fail") || stateText.includes("error")) {
-    return "danger";
-  }
-  if (isWorkerStatusBlocked(row) || stateText.includes("pending") || stateText.includes("start")) {
-    return "warning";
-  }
   if (stateText.includes("run") || stateText.includes("active") || stateText.includes("live")) {
     return "success";
   }

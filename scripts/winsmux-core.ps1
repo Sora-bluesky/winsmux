@@ -5412,8 +5412,6 @@ function Get-WorkersStatusRows {
         $activeHeartbeatProfile = if ($null -ne $entry) { [string](Get-SendConfigValue -InputObject $entry -Name 'LastHeartbeatProfile' -Default '') } else { '' }
         if (-not [string]::IsNullOrWhiteSpace($activeHeartbeatRunId)) {
             $heartbeat = Get-WorkersLatestHeartbeatStatus -ProjectDir $Context.ProjectDir -SlotId $slotId -RunId $activeHeartbeatRunId -ExecutionProfile $activeHeartbeatProfile
-        } elseif ($null -eq $entry) {
-            $heartbeat = Get-WorkersLatestHeartbeatStatus -ProjectDir $Context.ProjectDir -SlotId $slotId
         } else {
             $heartbeat = $null
         }
@@ -5423,7 +5421,7 @@ function Get-WorkersStatusRows {
             $heartbeatHealth = [string](Get-SendConfigValue -InputObject $heartbeat -Name 'health' -Default '')
             $heartbeatState = [string](Get-SendConfigValue -InputObject $heartbeat -Name 'state' -Default '')
             $heartbeatRunId = [string](Get-SendConfigValue -InputObject $heartbeat -Name 'run_id' -Default '')
-            $heartbeatCanDriveState = ($null -eq $entry) -or (
+            $heartbeatCanDriveState = ($null -ne $entry) -and (
                 -not [string]::IsNullOrWhiteSpace($activeHeartbeatRunId) -and
                 [string]::Equals($activeHeartbeatRunId, $heartbeatRunId, [System.StringComparison]::Ordinal)
             )
@@ -6275,8 +6273,16 @@ function New-WorkersHeartbeatAssessment {
             $waitingForChildRun = $true
         }
         'stalled' {
-            $health = 'stalled'
-            $reason = 'stalled_by_worker'
+            if ($null -eq $HeartbeatAt) {
+                $health = 'offline'
+                $reason = 'heartbeat_invalid'
+            } elseif ($ageSeconds -gt $OfflineAfterSeconds) {
+                $health = 'offline'
+                $reason = 'heartbeat_expired'
+            } else {
+                $health = 'stalled'
+                $reason = 'stalled_by_worker'
+            }
         }
         'completed' {
             $health = 'completed'
@@ -6324,13 +6330,26 @@ function ConvertTo-WorkersHeartbeatStatus {
         [Parameter(Mandatory = $true)][string]$Artifact,
         [Parameter(Mandatory = $true)][datetime]$NowUtc,
         [int]$StalledAfterSeconds,
-        [int]$OfflineAfterSeconds
+        [int]$OfflineAfterSeconds,
+        [bool]$PreferPayloadThresholds = $true
     )
 
     $state = Assert-WorkersHeartbeatState -State ([string](Get-SendConfigValue -InputObject $Payload -Name 'state' -Default 'running'))
     $heartbeatAtText = [string](Get-SendConfigValue -InputObject $Payload -Name 'heartbeat_at' -Default '')
     $heartbeatAt = ConvertTo-WorkersUtcDateTime -Value $heartbeatAtText
-    $assessment = New-WorkersHeartbeatAssessment -State $state -HeartbeatAt $heartbeatAt -NowUtc $NowUtc -StalledAfterSeconds $StalledAfterSeconds -OfflineAfterSeconds $OfflineAfterSeconds
+    $effectiveStalledAfter = $StalledAfterSeconds
+    $effectiveOfflineAfter = $OfflineAfterSeconds
+    if ($PreferPayloadThresholds) {
+        $effectiveStalledAfter = [int](Get-SendConfigValue -InputObject $Payload -Name 'stalled_after_seconds' -Default $StalledAfterSeconds)
+        $effectiveOfflineAfter = [int](Get-SendConfigValue -InputObject $Payload -Name 'offline_after_seconds' -Default $OfflineAfterSeconds)
+    }
+    if ($effectiveStalledAfter -lt 1) {
+        $effectiveStalledAfter = $StalledAfterSeconds
+    }
+    if ($effectiveOfflineAfter -le $effectiveStalledAfter) {
+        $effectiveOfflineAfter = $effectiveStalledAfter + 1
+    }
+    $assessment = New-WorkersHeartbeatAssessment -State $state -HeartbeatAt $heartbeatAt -NowUtc $NowUtc -StalledAfterSeconds $effectiveStalledAfter -OfflineAfterSeconds $effectiveOfflineAfter
 
     return [ordered]@{
         contract_version      = [int](Get-SendConfigValue -InputObject $Payload -Name 'contract_version' -Default 1)
@@ -6362,7 +6381,8 @@ function Read-WorkersHeartbeatArtifact {
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][datetime]$NowUtc,
         [int]$StalledAfterSeconds,
-        [int]$OfflineAfterSeconds
+        [int]$OfflineAfterSeconds,
+        [bool]$PreferPayloadThresholds = $true
     )
 
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
@@ -6372,7 +6392,7 @@ function Read-WorkersHeartbeatArtifact {
     try {
         $payload = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
         $artifact = Get-WorkersArtifactReference -ProjectDir $ProjectDir -Path $Path
-        return ConvertTo-WorkersHeartbeatStatus -Payload $payload -Artifact $artifact -NowUtc $NowUtc -StalledAfterSeconds $StalledAfterSeconds -OfflineAfterSeconds $OfflineAfterSeconds
+        return ConvertTo-WorkersHeartbeatStatus -Payload $payload -Artifact $artifact -NowUtc $NowUtc -StalledAfterSeconds $StalledAfterSeconds -OfflineAfterSeconds $OfflineAfterSeconds -PreferPayloadThresholds:([bool]$PreferPayloadThresholds)
     } catch {
         return $null
     }
@@ -6385,7 +6405,8 @@ function Get-WorkersLatestHeartbeatStatus {
         [AllowEmptyString()][string]$RunId = '',
         [AllowEmptyString()][string]$ExecutionProfile = '',
         [int]$StalledAfterSeconds = 0,
-        [int]$OfflineAfterSeconds = 0
+        [int]$OfflineAfterSeconds = 0,
+        [bool]$PreferPayloadThresholds = $true
     )
 
     $safeSlotId = Assert-WorkersPathSegment -Value $SlotId -Name 'slot id'
@@ -6444,7 +6465,7 @@ function Get-WorkersLatestHeartbeatStatus {
     }
 
     foreach ($candidate in @($candidates | Sort-Object LastWriteTimeUtc -Descending)) {
-        $status = Read-WorkersHeartbeatArtifact -ProjectDir $ProjectDir -Path ([string]$candidate.FullName) -NowUtc $nowUtc -StalledAfterSeconds $stalledAfter -OfflineAfterSeconds $offlineAfter
+        $status = Read-WorkersHeartbeatArtifact -ProjectDir $ProjectDir -Path ([string]$candidate.FullName) -NowUtc $nowUtc -StalledAfterSeconds $stalledAfter -OfflineAfterSeconds $offlineAfter -PreferPayloadThresholds $PreferPayloadThresholds
         if ($null -ne $status) {
             return $status
         }
@@ -7740,6 +7761,7 @@ function Invoke-WorkersHeartbeat {
     if ($offlineAfter -le $stalledAfter) {
         Stop-WithError 'heartbeat --offline-after must be greater than --stalled-after'
     }
+    $preferPayloadThresholds = ([int]$options.StalledAfterSeconds -lt 1 -and [int]$options.OfflineAfterSeconds -lt 1)
 
     $nowUtc = Get-WorkersNowUtc
 
@@ -7749,7 +7771,7 @@ function Invoke-WorkersHeartbeat {
             $runDir = Get-WorkersHeartbeatRunDirectory -ProjectDir $options.ProjectDir -SlotId $slotId -RunId $runId -ExecutionProfile $profile -AllowMissing
             $heartbeatPath = Join-Path $runDir 'heartbeat.json'
         } else {
-            $latest = Get-WorkersLatestHeartbeatStatus -ProjectDir $options.ProjectDir -SlotId $slotId -ExecutionProfile $profile -StalledAfterSeconds $stalledAfter -OfflineAfterSeconds $offlineAfter
+            $latest = Get-WorkersLatestHeartbeatStatus -ProjectDir $options.ProjectDir -SlotId $slotId -ExecutionProfile $profile -StalledAfterSeconds $stalledAfter -OfflineAfterSeconds $offlineAfter -PreferPayloadThresholds $preferPayloadThresholds
             if ($null -ne $latest) {
                 Write-WorkersOperationOutput -Payload $latest -Json:([bool]$options.Json) -Text "$($latest.health) $($latest.run_id)"
                 return
@@ -7758,7 +7780,7 @@ function Invoke-WorkersHeartbeat {
 
         $status = $null
         if (-not [string]::IsNullOrWhiteSpace($heartbeatPath)) {
-            $status = Read-WorkersHeartbeatArtifact -ProjectDir $options.ProjectDir -Path $heartbeatPath -NowUtc $nowUtc -StalledAfterSeconds $stalledAfter -OfflineAfterSeconds $offlineAfter
+            $status = Read-WorkersHeartbeatArtifact -ProjectDir $options.ProjectDir -Path $heartbeatPath -NowUtc $nowUtc -StalledAfterSeconds $stalledAfter -OfflineAfterSeconds $offlineAfter -PreferPayloadThresholds $preferPayloadThresholds
         }
         if ($null -eq $status) {
             $status = New-WorkersHeartbeatMissingStatus -Slot $slot -RunId $runId -ExecutionProfile $profile -StalledAfterSeconds $stalledAfter -OfflineAfterSeconds $offlineAfter -NowUtc $nowUtc
