@@ -140,6 +140,7 @@ winsmux skills --json
 
 詳しくは [認証方針](docs/authentication-support.ja.md) を参照してください。
 [プロバイダーとモデルの対応方針](docs/provider-and-model-support.ja.md) では、クラウド、Colab、将来のローカル LLM ランタイムの扱いを説明しています。
+[外部コントロールプレーン API](docs/external-control-plane.ja.md) では、外部自動化クライアント向けのローカル named pipe JSON-RPC 契約を説明しています。
 [Google Colab ワーカー](docs/google-colab-workers.ja.md) では、`H100` / `A100` 前提の設定を説明しています。
 
 ## 安全に使うための注意
@@ -163,6 +164,7 @@ winsmux skills --json
 - [カスタマイズ](docs/customization.ja.md)
 - [認証方針](docs/authentication-support.ja.md)
 - [プロバイダーとモデルの対応方針](docs/provider-and-model-support.ja.md)
+- [外部コントロールプレーン API](docs/external-control-plane.ja.md)
 - [Google Colab ワーカー](docs/google-colab-workers.ja.md)
 - [トラブルシューティング](docs/TROUBLESHOOTING.ja.md)
 - [リポジトリの公開面ポリシー](docs/repo-surface-policy.md)（英語のみ）

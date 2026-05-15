@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs/promises";
 import net from "node:net";
@@ -527,30 +527,103 @@ async function typeTerminalDraft(page, selector, text) {
 
 async function pasteIntoTerminal(page, selector, text) {
   await page.click(selector, { timeout: 10_000 });
-  try {
-    await page.evaluate((value) => navigator.clipboard.writeText(value), text);
-    await page.keyboard.press(process.platform === "darwin" ? "Meta+V" : "Control+V");
-    return "clipboard";
-  } catch {
-    await page.evaluate(
-      ({ targetSelector, value }) => {
-        const root = document.querySelector(targetSelector);
-        const textarea = root?.querySelector("textarea.xterm-helper-textarea");
-        if (!(textarea instanceof HTMLTextAreaElement)) {
-          throw new Error("xterm helper textarea was not available for paste");
-        }
-        const data = new DataTransfer();
-        data.setData("text/plain", value);
-        textarea.dispatchEvent(new ClipboardEvent("paste", {
-          bubbles: true,
-          cancelable: true,
-          clipboardData: data,
-        }));
-      },
-      { targetSelector: selector, value: text },
-    );
-    return "clipboard-event";
+  let mode;
+  if (process.platform === "win32") {
+    try {
+      mode = setWindowsClipboardText(text);
+    } catch {
+      mode = await pasteViaTerminalClipboardEvent(page, selector, text);
+      await waitForVisibleTerminalText(page, selector, text.includes(WORKER_PASTE_MARKER) ? WORKER_PASTE_MARKER : text, 10_000);
+      return `${mode}:windows-clipboard-unavailable`;
+    }
+  } else {
+    mode = await setBrowserClipboardText(page, text);
   }
+  await page.keyboard.press(process.platform === "darwin" ? "Meta+V" : "Control+V");
+  await waitForVisibleTerminalText(page, selector, text.includes(WORKER_PASTE_MARKER) ? WORKER_PASTE_MARKER : text, 10_000);
+  return mode;
+}
+
+function setWindowsClipboardText(text) {
+  const errors = [];
+  for (let attempt = 1; attempt <= 12; attempt += 1) {
+    const powershellResult = spawnSync("powershell.exe", [
+      "-NoLogo",
+      "-NoProfile",
+      "-Command",
+      "Set-Clipboard -Value $env:WINSMUX_E2E_CLIPBOARD",
+    ], {
+      env: {
+        ...process.env,
+        WINSMUX_E2E_CLIPBOARD: text,
+      },
+      encoding: "utf8",
+    });
+    if (powershellResult.status === 0) {
+      return `windows-system-clipboard:set-clipboard:${attempt}`;
+    }
+    errors.push(`Set-Clipboard(${attempt}): ${powershellResult.stderr || powershellResult.stdout}`);
+
+    const staResult = spawnSync("powershell.exe", [
+      "-STA",
+      "-NoLogo",
+      "-NoProfile",
+      "-Command",
+      "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Clipboard]::SetText($env:WINSMUX_E2E_CLIPBOARD)",
+    ], {
+      env: {
+        ...process.env,
+        WINSMUX_E2E_CLIPBOARD: text,
+      },
+      encoding: "utf8",
+    });
+    if (staResult.status === 0) {
+      return `windows-system-clipboard:forms:${attempt}`;
+    }
+    errors.push(`FormsClipboard(${attempt}): ${staResult.stderr || staResult.stdout}`);
+
+    const clipResult = spawnSync("cmd.exe", ["/c", "clip"], {
+      input: text,
+      encoding: "utf8",
+    });
+    if (clipResult.status === 0) {
+      return `windows-system-clipboard:clip:${attempt}`;
+    }
+    errors.push(`clip.exe(${attempt}): ${clipResult.stderr || clipResult.stdout}`);
+
+    sleepSync(250);
+  }
+  throw new Error(`failed to set Windows clipboard after retries: ${errors.slice(-6).join("; ")}`);
+}
+
+function sleepSync(milliseconds) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+}
+
+async function setBrowserClipboardText(page, text) {
+  await page.evaluate((value) => navigator.clipboard.writeText(value), text);
+  return "browser-clipboard";
+}
+
+async function pasteViaTerminalClipboardEvent(page, selector, text) {
+  await page.evaluate(
+    ({ targetSelector, value }) => {
+      const root = document.querySelector(targetSelector);
+      const textarea = root?.querySelector("textarea.xterm-helper-textarea");
+      if (!(textarea instanceof HTMLTextAreaElement)) {
+        throw new Error("xterm helper textarea was not available for paste");
+      }
+      const data = new DataTransfer();
+      data.setData("text/plain", value);
+      textarea.dispatchEvent(new ClipboardEvent("paste", {
+        bubbles: true,
+        cancelable: true,
+        clipboardData: data,
+      }));
+    },
+    { targetSelector: selector, value: text },
+  );
+  return "xterm-clipboard-event";
 }
 
 async function clearOperatorInputFromUi(page) {
@@ -571,6 +644,11 @@ function escapePwshSingleQuoted(value) {
 }
 
 async function writeOperatorPipeScript(scriptPath) {
+  const contractPayload = {
+    jsonrpc: "2.0",
+    id: "operator-contract",
+    method: "desktop.control_plane.contract",
+  };
   const payload = {
     jsonrpc: "2.0",
     id: "operator-to-worker",
@@ -583,23 +661,34 @@ async function writeOperatorPipeScript(scriptPath) {
 
   const body = [
     "$ErrorActionPreference = 'Stop'",
-    `$payload = '${escapePwshSingleQuoted(JSON.stringify(payload))}'`,
-    `$pipe = [System.IO.Pipes.NamedPipeClientStream]::new('.', '${CONTROL_PIPE_NAME}', [System.IO.Pipes.PipeDirection]::InOut)`,
-    "$pipe.Connect(5000)",
-    "$encoding = [System.Text.UTF8Encoding]::new($false)",
-    "$writer = [System.IO.StreamWriter]::new($pipe, $encoding)",
-    "$reader = [System.IO.StreamReader]::new($pipe, $encoding)",
-    "$writer.AutoFlush = $true",
-    "try {",
-    "  $writer.Write($payload)",
-    "  $response = $reader.ReadToEnd()",
-    `  Write-Output '${OPERATOR_MARKER}'`,
-    '  Write-Output "PIPE_RESPONSE:$response"',
-    "} finally {",
-    "  try { $reader.Dispose() } catch {}",
-    "  try { $writer.Dispose() } catch {}",
-    "  try { $pipe.Dispose() } catch {}",
+    "function Invoke-WinsmuxPipe {",
+    "  param([Parameter(Mandatory = $true)][string]$Payload)",
+    `  $pipe = [System.IO.Pipes.NamedPipeClientStream]::new('.', '${CONTROL_PIPE_NAME}', [System.IO.Pipes.PipeDirection]::InOut)`,
+    "  $pipe.Connect(5000)",
+    "  $encoding = [System.Text.UTF8Encoding]::new($false)",
+    "  $writer = [System.IO.StreamWriter]::new($pipe, $encoding)",
+    "  $reader = [System.IO.StreamReader]::new($pipe, $encoding)",
+    "  $writer.AutoFlush = $true",
+    "  try {",
+    "    $writer.Write($Payload)",
+    "    return $reader.ReadToEnd()",
+    "  } finally {",
+    "    try { $reader.Dispose() } catch {}",
+    "    try { $writer.Dispose() } catch {}",
+    "    try { $pipe.Dispose() } catch {}",
+    "  }",
     "}",
+    `$contractPayload = '${escapePwshSingleQuoted(JSON.stringify(contractPayload))}'`,
+    "$contractResponse = Invoke-WinsmuxPipe -Payload $contractPayload",
+    "$contract = $contractResponse | ConvertFrom-Json",
+    "if ($contract.result.scope -ne 'external_control_pipe') { throw \"unexpected contract scope: $($contract.result.scope)\" }",
+    "if ($contract.result.methods -contains 'desktop.editor.read') { throw 'external contract must not advertise desktop.editor.read' }",
+    "if (-not ($contract.result.methods -contains 'pty.write')) { throw 'external contract must advertise pty.write' }",
+    'Write-Output "PIPE_CONTRACT_OK"',
+    `$payload = '${escapePwshSingleQuoted(JSON.stringify(payload))}'`,
+    "$response = Invoke-WinsmuxPipe -Payload $payload",
+    `Write-Output '${OPERATOR_MARKER}'`,
+    'Write-Output "PIPE_RESPONSE:$response"',
     "",
   ].join("\r\n");
 
@@ -679,6 +768,9 @@ async function exerciseTauriNativeSurface(page, browser) {
   }
 
   const contract = await invokeDesktop(page, "desktop.control_plane.contract");
+  if (contract?.scope !== "internal_desktop_json_rpc" || contract?.transport !== "tauri_invoke_desktop_json_rpc") {
+    throw new Error(`desktop internal contract should identify the Tauri invoke surface: ${JSON.stringify(contract)}`);
+  }
   if (!Array.isArray(contract?.methods) || !contract.methods.includes("desktop.editor.read")) {
     throw new Error(`desktop control-plane contract missing editor read: ${JSON.stringify(contract)}`);
   }
@@ -1020,6 +1112,7 @@ async function main() {
       // Claude Code uses `!` as its shell-command prefix; this is typed into the operator, not PowerShell.
       const claudeShellCommand = `!pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File '${scriptPath.replace(/'/g, "''")}'`;
       await typeIntoTerminal(page, "#operator-terminal-panel", claudeShellCommand);
+      await waitForPtyOutput(page, "operator", "PIPE_CONTRACT_OK");
       const operatorOutput = await waitForPtyOutput(page, "operator", "PIPE_RESPONSE:");
       const workerOutput = await waitForPtyOutputLine(page, "worker-2", OPERATOR_TO_WORKER_MARKER);
       return {

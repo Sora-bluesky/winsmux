@@ -1,7 +1,9 @@
 use crate::desktop_backend::{
     handle_desktop_json_rpc, DesktopCommandTransport, DesktopJsonRpcRequest, PwshScriptTransport,
 };
-use crate::pty_backend::{handle_pty_json_rpc, PtyCommandTransport, PtyJsonRpcRequest};
+use crate::pty_backend::{
+    handle_pty_json_rpc, PtyCommandTransport, PtyJsonRpcRequest, PTY_CONTROL_PIPE_METHODS,
+};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -9,10 +11,11 @@ pub const WINSMUX_CONTROL_PIPE_NAME: &str = r"\\.\pipe\winsmux-control";
 
 const JSON_RPC_PARSE_ERROR: i32 = -32700;
 const JSON_RPC_METHOD_NOT_FOUND: i32 = -32601;
+const JSON_RPC_INVALID_REQUEST: i32 = -32600;
 const JSON_RPC_INVALID_PARAMS: i32 = -32602;
 const JSON_RPC_INTERNAL_ERROR: i32 = -32603;
 
-const DESKTOP_CONTROL_PIPE_METHODS: &[&str] = &[
+pub const DESKTOP_CONTROL_PIPE_METHODS: &[&str] = &[
     "desktop.control_plane.contract",
     "desktop.summary.snapshot",
     "desktop.run.explain",
@@ -20,6 +23,15 @@ const DESKTOP_CONTROL_PIPE_METHODS: &[&str] = &[
     "desktop.run.promote",
     "desktop.run.pick_winner",
     "desktop.voice.capture_status",
+];
+
+const CONTROL_PIPE_EXCLUDED_INTERNAL_DESKTOP_METHODS: &[&str] = &[
+    "desktop.workers.status",
+    "desktop.workers.start",
+    "desktop.runtime.roles.apply",
+    "desktop.dogfood.event",
+    "desktop.explorer.list",
+    "desktop.editor.read",
 ];
 
 pub fn handle_control_pipe_payload(
@@ -55,6 +67,27 @@ pub fn handle_control_pipe_payload(
             JSON_RPC_INVALID_PARAMS,
             "Control pipe requests must not override projectDir".to_string(),
         );
+    }
+
+    if method == "desktop.control_plane.contract" {
+        let request = match serde_json::from_value::<DesktopJsonRpcRequest>(request_value) {
+            Ok(value) => value,
+            Err(err) => {
+                return serialize_control_pipe_error(
+                    Value::Null,
+                    JSON_RPC_PARSE_ERROR,
+                    format!("Invalid JSON-RPC request: {err}"),
+                );
+            }
+        };
+        if request.jsonrpc != "2.0" {
+            return serialize_control_pipe_error(
+                request.id,
+                JSON_RPC_INVALID_REQUEST,
+                "desktop_json_rpc expects jsonrpc=\"2.0\"".to_string(),
+            );
+        }
+        return serialize_control_pipe_result(request.id, control_pipe_contract());
     }
 
     if DESKTOP_CONTROL_PIPE_METHODS.contains(&method) {
@@ -113,10 +146,31 @@ pub fn handle_control_pipe_payload(
 }
 
 fn is_pty_control_pipe_method(method: &str) -> bool {
-    matches!(
-        method,
-        "pty.spawn" | "pty.write" | "pty.resize" | "pty.capture" | "pty.respawn" | "pty.close"
-    )
+    PTY_CONTROL_PIPE_METHODS.contains(&method)
+}
+
+fn control_pipe_methods() -> Vec<&'static str> {
+    DESKTOP_CONTROL_PIPE_METHODS
+        .iter()
+        .chain(PTY_CONTROL_PIPE_METHODS.iter())
+        .copied()
+        .collect()
+}
+
+fn control_pipe_contract() -> Value {
+    json!({
+        "version": 1,
+        "scope": "external_control_pipe",
+        "transport": "named_pipe_json_rpc",
+        "pipe": WINSMUX_CONTROL_PIPE_NAME,
+        "jsonrpc": "2.0",
+        "localhost_http": false,
+        "websocket": false,
+        "methods": control_pipe_methods(),
+        "desktop_methods": DESKTOP_CONTROL_PIPE_METHODS,
+        "pty_methods": PTY_CONTROL_PIPE_METHODS,
+        "internal_desktop_methods_excluded": CONTROL_PIPE_EXCLUDED_INTERNAL_DESKTOP_METHODS,
+    })
 }
 
 fn has_project_dir_override(request_value: &Value) -> bool {
@@ -139,6 +193,17 @@ fn serialize_control_pipe_error(id: Value, code: i32, message: String) -> Vec<u8
     }))
     .unwrap_or_else(|_| {
         br#"{"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"Failed to serialize JSON-RPC error"}}"#.to_vec()
+    })
+}
+
+fn serialize_control_pipe_result(id: Value, result: Value) -> Vec<u8> {
+    serde_json::to_vec(&json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "result": result,
+    }))
+    .unwrap_or_else(|_| {
+        br#"{"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"Failed to serialize JSON-RPC result"}}"#.to_vec()
     })
 }
 
@@ -342,7 +407,7 @@ mod tests {
     }
 
     #[test]
-    fn control_pipe_routes_json_rpc_to_desktop_handler() {
+    fn control_pipe_returns_external_contract_matching_allowlist() {
         let payload = br#"{"jsonrpc":"2.0","id":1,"method":"desktop.control_plane.contract"}"#;
         let pty_transport = StubPtyTransport::new();
         let response =
@@ -352,9 +417,48 @@ mod tests {
         assert_eq!(value["jsonrpc"], "2.0");
         assert_eq!(value["id"], 1);
         assert_eq!(value["result"]["version"], 1);
+        assert_eq!(value["result"]["scope"], "external_control_pipe");
+        assert_eq!(value["result"]["transport"], "named_pipe_json_rpc");
         assert_eq!(value["result"]["pipe"], WINSMUX_CONTROL_PIPE_NAME);
         assert_eq!(value["result"]["localhost_http"], false);
         assert_eq!(value["result"]["websocket"], false);
+        assert_eq!(
+            value["result"]["desktop_methods"],
+            json!(DESKTOP_CONTROL_PIPE_METHODS)
+        );
+        assert_eq!(
+            value["result"]["pty_methods"],
+            json!(PTY_CONTROL_PIPE_METHODS)
+        );
+        assert_eq!(value["result"]["methods"], json!(control_pipe_methods()));
+        assert!(!value["result"]["methods"]
+            .as_array()
+            .expect("methods")
+            .iter()
+            .any(|method| method.as_str() == Some("desktop.editor.read")));
+        assert!(!value["result"]["methods"]
+            .as_array()
+            .expect("methods")
+            .iter()
+            .any(|method| method.as_str() == Some("desktop.explorer.list")));
+        assert!(value["result"]["methods"]
+            .as_array()
+            .expect("methods")
+            .iter()
+            .any(|method| method.as_str() == Some("pty.capture")));
+    }
+
+    #[test]
+    fn control_pipe_contract_rejects_invalid_jsonrpc_version() {
+        let payload = br#"{"jsonrpc":"1.0","id":1,"method":"desktop.control_plane.contract"}"#;
+        let pty_transport = StubPtyTransport::new();
+        let response =
+            handle_control_pipe_payload(&StubDesktopTransport, &pty_transport, payload, None);
+        let value: Value = serde_json::from_slice(&response).expect("response should be JSON");
+
+        assert_eq!(value["jsonrpc"], "2.0");
+        assert_eq!(value["id"], 1);
+        assert_eq!(value["error"]["code"], JSON_RPC_INVALID_REQUEST);
     }
 
     #[test]

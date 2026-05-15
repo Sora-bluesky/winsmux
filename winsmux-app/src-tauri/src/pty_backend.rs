@@ -7,6 +7,15 @@ const JSON_RPC_METHOD_NOT_FOUND: i32 = -32601;
 const JSON_RPC_INVALID_PARAMS: i32 = -32602;
 const JSON_RPC_SERVER_ERROR: i32 = -32000;
 
+pub const PTY_CONTROL_PIPE_METHODS: &[&str] = &[
+    "pty.spawn",
+    "pty.write",
+    "pty.resize",
+    "pty.capture",
+    "pty.respawn",
+    "pty.close",
+];
+
 #[derive(Deserialize)]
 pub struct PtyJsonRpcRequest {
     pub jsonrpc: String,

@@ -1,6 +1,6 @@
 {
   "name": "winsmux-mcp",
-  "version": "0.33.4",
+  "version": "0.33.5",
   "description": "MCP server exposing winsmux commands as tools",
   "private": true,
   "main": "mcp-server.js",

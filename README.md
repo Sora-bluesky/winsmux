@@ -81,6 +81,7 @@ winsmux launch
 See [Quickstart](docs/quickstart.md) for a guided first run.
 See [Installation](docs/installation.md) for desktop installers, CLI profiles, updates, and uninstall steps.
 See [Customization](docs/customization.md) for launcher presets, worktree policy, slots, credentials, and desktop settings.
+See [External control plane API](docs/external-control-plane.md) for the local named-pipe JSON-RPC contract used by external automation clients.
 
 ## Main Commands
 
@@ -166,6 +167,7 @@ See [Google Colab Workers](docs/google-colab-workers.md) for the H100/A100 worke
 - [Customization](docs/customization.md)
 - [Authentication support](docs/authentication-support.md)
 - [Provider and model support](docs/provider-and-model-support.md)
+- [External control plane API](docs/external-control-plane.md)
 - [Google Colab workers](docs/google-colab-workers.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Repository surface policy](docs/repo-surface-policy.md)
