@@ -9930,6 +9930,101 @@ agent-slots:
         Should -Invoke Send-TextToPane -Times 0 -Exactly
     }
 
+    It 'clears stale heartbeat binding when a deferred worker starts' {
+@'
+agent: codex
+model: gpt-5.5
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    worker-backend: local
+    worker-role: worker
+    agent: codex
+    model: gpt-5.5
+    model-source: operator-override
+    reasoning-effort: high
+    execution-profile: local-windows
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        New-Item -ItemType Directory -Path (Join-Path $script:workersTempRoot '.winsmux') -Force | Out-Null
+        $planPath = Join-Path $script:workersTempRoot 'worker-1.json'
+        Save-WinsmuxManifest -ProjectDir $script:workersTempRoot -Manifest ([ordered]@{
+            version = 1
+            saved_at = '2026-05-13T00:00:00Z'
+            session = [ordered]@{
+                name = 'winsmux-orchestra'
+                project_dir = $script:workersTempRoot
+                git_worktree_dir = (Join-Path $script:workersTempRoot '.git')
+            }
+            panes = [ordered]@{
+                'worker-1' = [ordered]@{
+                    pane_id = '%2'
+                    slot_id = 'worker-1'
+                    worker_backend = 'local'
+                    role = 'Worker'
+                    exec_mode = $false
+                    launch_dir = $script:workersTempRoot
+                    status = 'deferred_start'
+                    bootstrap_plan_path = $planPath
+                    last_heartbeat_run_id = 'old-run'
+                    last_heartbeat_profile = 'local-windows'
+                    task = $null
+                }
+            }
+            tasks = [ordered]@{
+                queued = @()
+                in_progress = @()
+                completed = @()
+            }
+            worktrees = [ordered]@{}
+        })
+        ([ordered]@{
+            agent = 'codex'
+            ready_marker_path = (Join-Path $script:workersTempRoot 'worker-1.ready.json')
+        } | ConvertTo-Json -Depth 8) | Set-Content -Path $planPath -Encoding UTF8
+        $runDir = Join-Path $script:workersTempRoot '.winsmux\worker-runs\worker-1\old-run'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        [ordered]@{
+            contract_version      = 1
+            command               = 'workers.heartbeat'
+            status                = 'marked'
+            slot                  = 'w1'
+            slot_id               = 'worker-1'
+            run_id                = 'old-run'
+            execution_profile     = 'local-windows'
+            state                 = 'blocked'
+            message               = 'stale approval wait'
+            heartbeat_at          = '2026-05-13T00:00:00Z'
+            stalled_after_seconds = 60
+            offline_after_seconds = 600
+            artifact              = '.winsmux/worker-runs/worker-1/old-run/heartbeat.json'
+        } | ConvertTo-Json -Depth 12 | Set-Content -Path (Join-Path $runDir 'heartbeat.json') -Encoding UTF8
+
+        Mock Wait-PaneShellReady { }
+        Mock Send-TextToPane { return $true }
+        Mock Wait-DeferredPaneReady { }
+
+        $Rest = @('worker-1', '--json', '--project-dir', $script:workersTempRoot)
+        $output = Invoke-WorkersStart
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $entry = @(Get-PaneControlManifestEntries -ProjectDir $script:workersTempRoot)[0]
+
+        $payload.results[0].slot_id | Should -Be 'worker-1'
+        $payload.results[0].status | Should -Be 'started' -Because ([string]$payload.results[0].reason)
+        $entry.Status | Should -Be 'ready'
+        [string](Get-SendConfigValue -InputObject $entry -Name 'LastHeartbeatRunId' -Default '') | Should -Be ''
+        [string](Get-SendConfigValue -InputObject $entry -Name 'LastHeartbeatProfile' -Default '') | Should -Be ''
+
+        $Rest = @('worker-1', '--json', '--project-dir', $script:workersTempRoot)
+        $statusOutput = Invoke-WorkersStatus
+        $statusPayload = ($statusOutput | Select-Object -Last 1) | ConvertFrom-Json
+        $row = @($statusPayload.workers)[0]
+
+        $row.state | Should -Not -Be 'blocked'
+        $row.heartbeat_health | Should -Be ''
+        $row.heartbeat | Should -BeNullOrEmpty
+    }
+
     It 'keeps a ready deferred worker idempotent when its approved launch was manual' {
 @'
 agent: codex

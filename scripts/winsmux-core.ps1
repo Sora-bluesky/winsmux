@@ -5605,8 +5605,8 @@ function Set-WorkersManifestLifecycleCommand {
         $properties['status'] = $Status
     }
     if ($null -ne $ExtraProperties) {
-        foreach ($entry in $ExtraProperties.GetEnumerator()) {
-            $properties[[string]$entry.Key] = $entry.Value
+        foreach ($propertyEntry in $ExtraProperties.GetEnumerator()) {
+            $properties[[string]$propertyEntry.Key] = $propertyEntry.Value
         }
     }
 
@@ -8184,7 +8184,10 @@ function Invoke-WorkersStart {
         try {
             if (Test-DeferredPaneStartManifestEntry -ManifestEntry $entry) {
                 $started = Start-DeferredPaneFromManifestEntry -ProjectDir $options.ProjectDir -ManifestEntry $entry
-                Set-WorkersManifestLifecycleCommand -Entry $entry -CommandName 'workers.start' -Status 'ready'
+                Set-WorkersManifestLifecycleCommand -Entry $entry -CommandName 'workers.start' -Status 'ready' -ExtraProperties ([ordered]@{
+                    last_heartbeat_run_id  = ''
+                    last_heartbeat_profile = ''
+                })
                 $status = if ($started) { 'started' } else { 'unchanged' }
                 $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status $status)) | Out-Null
             } else {
