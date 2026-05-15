@@ -17,7 +17,7 @@ if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_RAW_EXE)) {
 }
 
 # --- Config ---
-$VERSION = "0.34.2"
+$VERSION = "0.34.3"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 $BridgeScriptPath = $PSCommandPath
@@ -5123,7 +5123,7 @@ function Invoke-Status {
 }
 
 function Get-WorkersUsage {
-    return "usage: winsmux workers <status|start|stop|attach|doctor> [slot|all] [--json] [--project-dir <path>]; winsmux workers <exec|logs|upload|download> <slot> ... [--json] [--project-dir <path>]; winsmux workers workspace <prepare|cleanup> <slot> ... [--json] [--project-dir <path>]"
+    return "usage: winsmux workers <status|start|stop|attach|doctor> [slot|all] [--json] [--project-dir <path>]; winsmux workers <exec|logs|upload|download> <slot> ... [--json] [--project-dir <path>]; winsmux workers workspace <prepare|cleanup> <slot> ... [--json] [--project-dir <path>]; winsmux workers secrets project <slot> ... [--json] [--project-dir <path>]"
 }
 
 function Read-WorkersOptions {
@@ -6074,6 +6074,30 @@ function Get-WorkersIsolatedWorkspaceRunDirectory {
     return [System.IO.Path]::GetFullPath((Join-Path (Join-Path (Get-WorkersIsolatedWorkspaceRoot -ProjectDir $ProjectDir) $safeSlotId) $safeRunId))
 }
 
+function Get-WorkersSecretRunDirectory {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$SlotId,
+        [Parameter(Mandatory = $true)][string]$RunId,
+        [Parameter(Mandatory = $true)][string]$ExecutionProfile
+    )
+
+    if ([string]::Equals($ExecutionProfile, 'isolated-enterprise', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $runDir = Get-WorkersIsolatedWorkspaceRunDirectory -ProjectDir $ProjectDir -SlotId $SlotId -RunId $RunId
+        if (-not (Test-Path -LiteralPath $runDir -PathType Container)) {
+            Stop-WithError "isolated secret projection requires an existing isolated workspace run: $RunId"
+        }
+        Assert-WorkersIsolatedWorkspaceCleanupTarget -ProjectDir $ProjectDir -RunDir $runDir
+        return $runDir
+    }
+
+    if ([string]::Equals($ExecutionProfile, 'local-windows', [System.StringComparison]::OrdinalIgnoreCase)) {
+        return [System.IO.Path]::GetFullPath((Get-WorkersRunDirectory -ProjectDir $ProjectDir -SlotId $SlotId -RunId $RunId))
+    }
+
+    Stop-WithError "unsupported execution profile for secret projection: $ExecutionProfile"
+}
+
 function Test-WorkersWindowsReservedPathName {
     param([AllowEmptyString()][string]$Name)
 
@@ -6199,6 +6223,104 @@ function Copy-WorkersIsolatedProjection {
         source    = [string]$SourceInfo.RelativePath
         kind      = if ([bool]$SourceInfo.IsDirectory) { 'local_directory' } else { 'local_file' }
         workspace = (Get-WorkersArtifactReference -ProjectDir $ProjectDir -Path $destination)
+    }
+}
+
+function Assert-WorkersSecretName {
+    param(
+        [AllowEmptyString()][string]$Name,
+        [AllowEmptyString()][string]$Kind = 'secret name'
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Name) -or $Name -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') {
+        Stop-WithError "$Kind must be a valid variable name"
+    }
+
+    return $Name
+}
+
+function Assert-WorkersSecretVaultKey {
+    param([AllowEmptyString()][string]$Key)
+
+    if ([string]::IsNullOrWhiteSpace($Key) -or $Key -match '[\r\n]' -or $Key.Contains('..')) {
+        Stop-WithError 'secret projection vault key is invalid'
+    }
+
+    return $Key
+}
+
+function ConvertTo-WorkersPowerShellSingleQuotedValue {
+    param([AllowNull()][string]$Value)
+
+    return "'" + ([string]$Value).Replace("'", "''") + "'"
+}
+
+function Resolve-WorkersSecretFileTarget {
+    param(
+        [Parameter(Mandatory = $true)][string]$RelativePath,
+        [Parameter(Mandatory = $true)][string]$SecretRoot
+    )
+
+    if ([System.IO.Path]::IsPathRooted($RelativePath)) {
+        Stop-WithError "secret file projection must be relative: $RelativePath"
+    }
+    if ($RelativePath.IndexOfAny([char[]]@('*', '?')) -ge 0) {
+        Stop-WithError "secret file projection must not contain wildcards: $RelativePath"
+    }
+    Assert-WorkersNoWindowsReservedPathSegments -RelativePath $RelativePath -Name 'secret file projection'
+
+    $normalized = $RelativePath.Replace('\', '/').Trim('/')
+    if ([string]::IsNullOrWhiteSpace($normalized) -or $normalized -eq '.') {
+        Stop-WithError 'secret file projection target is required'
+    }
+
+    $rootFull = [System.IO.Path]::GetFullPath($SecretRoot)
+    $target = [System.IO.Path]::GetFullPath((Join-Path $rootFull $normalized.Replace('/', '\')))
+    if (-not (Test-WorkersPathIsUnderDirectory -Path $target -Directory $rootFull) -or [string]::Equals($target, $rootFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Stop-WithError "secret file projection escaped secret root: $RelativePath"
+    }
+
+    return [PSCustomObject]@{
+        RelativePath = $normalized
+        FullPath     = $target
+    }
+}
+
+function Resolve-WorkersVaultSecretValue {
+    param([Parameter(Mandatory = $true)][string]$Key)
+
+    $safeKey = Assert-WorkersSecretVaultKey -Key $Key
+    $allowTestVault = [string]::Equals([string]$env:WINSMUX_TEST_SECRET_VAULT_MODE, '1', [System.StringComparison]::Ordinal)
+    if ($allowTestVault -and -not [string]::IsNullOrWhiteSpace([string]$env:WINSMUX_TEST_SECRET_VAULT_JSON)) {
+        $map = $env:WINSMUX_TEST_SECRET_VAULT_JSON | ConvertFrom-Json
+        $property = $map.PSObject.Properties[$safeKey]
+        if ($null -eq $property) {
+            Stop-WithError "credential not found: $safeKey"
+        }
+        return [string]$property.Value
+    }
+
+    $credTarget = "winsmux:$safeKey"
+    $credPtr = [IntPtr]::Zero
+    $ok = [WinCred]::CredRead($credTarget, [WinCred]::CRED_TYPE_GENERIC, 0, [ref]$credPtr)
+    if (-not $ok) {
+        $errCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        if ($errCode -eq 1168) {
+            Stop-WithError "credential not found: $safeKey"
+        }
+        Stop-WithError "CredRead failed (error $errCode)"
+    }
+
+    try {
+        $cred = [Runtime.InteropServices.Marshal]::PtrToStructure($credPtr, [Type][WinCred+CREDENTIAL])
+        if ($cred.CredentialBlobSize -le 0) {
+            return ''
+        }
+        $bytes = New-Object byte[] $cred.CredentialBlobSize
+        [Runtime.InteropServices.Marshal]::Copy($cred.CredentialBlob, $bytes, 0, $cred.CredentialBlobSize)
+        return [System.Text.Encoding]::Unicode.GetString($bytes)
+    } finally {
+        [WinCred]::CredFree($credPtr) | Out-Null
     }
 }
 
@@ -6689,6 +6811,110 @@ function Read-WorkersWorkspaceOptions {
     }
 }
 
+function Read-WorkersSecretMapSpec {
+    param(
+        [Parameter(Mandatory = $true)][string]$Spec,
+        [Parameter(Mandatory = $true)][string]$Kind
+    )
+
+    $separator = $Spec.IndexOf('=')
+    if ($separator -le 0 -or $separator -ge ($Spec.Length - 1)) {
+        Stop-WithError "secret $Kind projection must use target=vault-key"
+    }
+
+    return [PSCustomObject]@{
+        Target   = $Spec.Substring(0, $separator)
+        VaultKey = $Spec.Substring($separator + 1)
+    }
+}
+
+function Read-WorkersSecretsOptions {
+    param([Parameter(Mandatory = $true)][string]$Usage)
+
+    $projectDir = (Get-Location).Path
+    $asJson = $false
+    $action = ''
+    $targetValue = ''
+    $runId = ''
+    $profile = ''
+    $envSpecs = [System.Collections.Generic.List[object]]::new()
+    $fileSpecs = [System.Collections.Generic.List[object]]::new()
+    $variableSpecs = [System.Collections.Generic.List[object]]::new()
+    $items = @($Rest)
+
+    if ($items.Count -ge 1) {
+        $action = [string]$items[0]
+    }
+    if ($items.Count -ge 2) {
+        $targetValue = [string]$items[1]
+    }
+    if ([string]::IsNullOrWhiteSpace($action) -or [string]::IsNullOrWhiteSpace($targetValue)) {
+        Stop-WithError $Usage
+    }
+
+    for ($index = 2; $index -lt $items.Count; $index++) {
+        $token = [string]$items[$index]
+        switch ($token) {
+            '--json' { $asJson = $true }
+            '--project-dir' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $projectDir = [string]$items[$index + 1]
+                $index++
+            }
+            '--run-id' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $runId = [string]$items[$index + 1]
+                $index++
+            }
+            '--profile' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $profile = [string]$items[$index + 1]
+                $index++
+            }
+            '--env' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $envSpecs.Add((Read-WorkersSecretMapSpec -Spec ([string]$items[$index + 1]) -Kind 'env')) | Out-Null
+                $index++
+            }
+            '--file' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $fileSpecs.Add((Read-WorkersSecretMapSpec -Spec ([string]$items[$index + 1]) -Kind 'file')) | Out-Null
+                $index++
+            }
+            '--variable' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $variableSpecs.Add((Read-WorkersSecretMapSpec -Spec ([string]$items[$index + 1]) -Kind 'variable')) | Out-Null
+                $index++
+            }
+            default {
+                Stop-WithError $Usage
+            }
+        }
+    }
+
+    if ($action -ne 'project') {
+        Stop-WithError $Usage
+    }
+    if ([string]::IsNullOrWhiteSpace($runId)) {
+        Stop-WithError 'secret projection requires --run-id'
+    }
+    if (($envSpecs.Count + $fileSpecs.Count + $variableSpecs.Count) -lt 1) {
+        Stop-WithError 'secret projection requires at least one --env, --file, or --variable mapping'
+    }
+
+    return [PSCustomObject]@{
+        ProjectDir = $projectDir
+        Json       = $asJson
+        Action     = $action
+        Target     = $targetValue
+        RunId      = $runId
+        Profile    = $profile
+        Env        = @($envSpecs)
+        File       = @($fileSpecs)
+        Variable   = @($variableSpecs)
+    }
+}
+
 function Get-WorkersSingleSlotContext {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -6842,6 +7068,158 @@ function Invoke-WorkersWorkspace {
     switch ([string]$options.Action) {
         'prepare' { Invoke-WorkersWorkspacePrepare -Options $options }
         'cleanup' { Invoke-WorkersWorkspaceCleanup -Options $options }
+        default { Stop-WithError $usage }
+    }
+}
+
+function Invoke-WorkersSecretsProject {
+    param([Parameter(Mandatory = $true)]$Options)
+
+    $slot = Get-WorkersSingleSlotContext -ProjectDir $Options.ProjectDir -Target $Options.Target
+    $slotProfile = [string]$slot.SlotConfig.ExecutionProfile
+    if ([string]::IsNullOrWhiteSpace($slotProfile)) {
+        $slotProfile = 'local-windows'
+    }
+    $requestedProfile = [string]$Options.Profile
+    if ([string]::IsNullOrWhiteSpace($requestedProfile)) {
+        $requestedProfile = $slotProfile
+    }
+    if (Get-Command Test-BridgeExecutionProfileKind -ErrorAction SilentlyContinue) {
+        if (-not (Test-BridgeExecutionProfileKind -Value $requestedProfile)) {
+            Stop-WithError "unsupported execution profile for secret projection: $requestedProfile"
+        }
+    }
+    if (-not [string]::Equals($slotProfile, $requestedProfile, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Stop-WithError "worker slot $($slot.Row.SlotId) uses execution profile '$slotProfile', not $requestedProfile"
+    }
+
+    $runId = Assert-WorkersRunId -RunId ([string]$Options.RunId)
+    $runDir = Get-WorkersSecretRunDirectory -ProjectDir $Options.ProjectDir -SlotId ([string]$slot.Row.SlotId) -RunId $runId -ExecutionProfile $requestedProfile
+    $secretRoot = [System.IO.Path]::GetFullPath((Join-Path $runDir 'secrets'))
+    $envFile = Join-Path $secretRoot 'env.ps1'
+    $fileRoot = Join-Path $secretRoot 'files'
+    $variableFile = Join-Path $secretRoot 'variables.json'
+    $manifestPath = Join-Path $secretRoot 'secret-projection.json'
+    $envEntries = [System.Collections.Generic.List[object]]::new()
+    $fileEntries = [System.Collections.Generic.List[object]]::new()
+    $variableEntries = [System.Collections.Generic.List[object]]::new()
+
+    foreach ($spec in @($Options.Env)) {
+        $name = Assert-WorkersSecretName -Name ([string]$spec.Target) -Kind 'secret env target'
+        $vaultKey = Assert-WorkersSecretVaultKey -Key ([string]$spec.VaultKey)
+        $value = Resolve-WorkersVaultSecretValue -Key $vaultKey
+        $envEntries.Add([PSCustomObject]@{ Name = $name; VaultKey = $vaultKey; Value = $value }) | Out-Null
+    }
+
+    foreach ($spec in @($Options.File)) {
+        $targetInfo = Resolve-WorkersSecretFileTarget -RelativePath ([string]$spec.Target) -SecretRoot $fileRoot
+        $vaultKey = Assert-WorkersSecretVaultKey -Key ([string]$spec.VaultKey)
+        $value = Resolve-WorkersVaultSecretValue -Key $vaultKey
+        $fileEntries.Add([PSCustomObject]@{ TargetInfo = $targetInfo; VaultKey = $vaultKey; Value = $value }) | Out-Null
+    }
+
+    foreach ($spec in @($Options.Variable)) {
+        $name = Assert-WorkersSecretName -Name ([string]$spec.Target) -Kind 'secret variable target'
+        $vaultKey = Assert-WorkersSecretVaultKey -Key ([string]$spec.VaultKey)
+        $value = Resolve-WorkersVaultSecretValue -Key $vaultKey
+        $variableEntries.Add([PSCustomObject]@{ Name = $name; VaultKey = $vaultKey; Value = $value }) | Out-Null
+    }
+
+    New-Item -ItemType Directory -Path $secretRoot -Force | Out-Null
+    New-Item -ItemType Directory -Path $fileRoot -Force | Out-Null
+
+    $projections = [System.Collections.Generic.List[object]]::new()
+    $envLines = [System.Collections.Generic.List[string]]::new()
+    foreach ($entry in @($envEntries)) {
+        $envLines.Add(('$env:' + [string]$entry.Name + ' = ' + (ConvertTo-WorkersPowerShellSingleQuotedValue -Value ([string]$entry.Value)))) | Out-Null
+        $projections.Add([ordered]@{
+            kind        = 'env'
+            target      = [string]$entry.Name
+            vault_key   = [string]$entry.VaultKey
+            value_ref   = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $envFile
+            value_stored = $true
+        }) | Out-Null
+    }
+    if ($envLines.Count -gt 0) {
+        Write-ClmSafeTextFile -Path $envFile -Content (($envLines -join [Environment]::NewLine) + [Environment]::NewLine)
+    }
+
+    foreach ($entry in @($fileEntries)) {
+        $targetInfo = $entry.TargetInfo
+        $parent = Split-Path -Parent ([string]$targetInfo.FullPath)
+        if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+            New-Item -ItemType Directory -Path $parent -Force | Out-Null
+        }
+        Write-ClmSafeTextFile -Path ([string]$targetInfo.FullPath) -Content ([string]$entry.Value)
+        $projections.Add([ordered]@{
+            kind        = 'file'
+            target      = [string]$targetInfo.RelativePath
+            vault_key   = [string]$entry.VaultKey
+            value_ref   = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path ([string]$targetInfo.FullPath)
+            value_stored = $true
+        }) | Out-Null
+    }
+
+    $variables = [ordered]@{}
+    foreach ($entry in @($variableEntries)) {
+        $variables[[string]$entry.Name] = [string]$entry.Value
+        $projections.Add([ordered]@{
+            kind        = 'variable'
+            target      = [string]$entry.Name
+            vault_key   = [string]$entry.VaultKey
+            value_ref   = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $variableFile
+            value_stored = $true
+        }) | Out-Null
+    }
+    if ($variables.Count -gt 0) {
+        Write-WorkersJsonArtifact -Path $variableFile -Data $variables | Out-Null
+    }
+
+    $payload = [ordered]@{
+        version       = 1
+        project_ref   = '.'
+        generated_at  = (Get-Date).ToUniversalTime().ToString('o')
+        command       = 'workers.secrets.project'
+        status        = 'projected'
+        slot          = [string]$slot.Row.Slot
+        slot_id       = [string]$slot.Row.SlotId
+        role          = [string]$slot.SlotConfig.WorkerRole
+        run_id        = $runId
+        execution_profile = $requestedProfile.Trim().ToLowerInvariant()
+        binding       = 'late-bound-at-run-start'
+        scope         = [ordered]@{
+            role    = [string]$slot.SlotConfig.WorkerRole
+            slot    = [string]$slot.Row.Slot
+            slot_id = [string]$slot.Row.SlotId
+            run_id  = $runId
+        }
+        locations     = [ordered]@{
+            run_root = New-WinsmuxLocationIdentity -Kind 'local_directory' -DisplayName (Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $runDir) -Backend 'local-windows' -AccessMethod 'secret_projection_run_root' -Reference (Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $runDir) -Provenance 'workers.secrets.run_root'
+            secrets  = New-WinsmuxLocationIdentity -Kind 'local_directory' -DisplayName (Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $secretRoot) -Backend 'local-windows' -AccessMethod 'secret_projection_root' -Reference (Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $secretRoot) -Provenance 'workers.secrets.root'
+            manifest = New-WinsmuxLocationIdentity -Kind 'local_file' -DisplayName 'secret-projection.json' -Backend 'local-windows' -AccessMethod 'artifact_ref' -Reference (Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $manifestPath) -Provenance 'workers.secrets.manifest'
+        }
+        projections   = @($projections)
+        value_policy  = [ordered]@{
+            output_contains_secret_values = $false
+            manifest_contains_secret_values = $false
+            values_stored_as_local_secret_files = $true
+        }
+        exit_code     = 0
+    }
+
+    Write-WorkersJsonArtifact -Path $manifestPath -Data $payload | Out-Null
+    if ($null -ne $slot.Entry) {
+        Set-WorkersManifestLifecycleCommand -Entry $slot.Entry -CommandName 'workers.secrets.project'
+    }
+
+    Write-WorkersOperationOutput -Payload $payload -Json:([bool]$Options.Json) -Text "projected $($projections.Count) secret(s) for $runId"
+}
+
+function Invoke-WorkersSecrets {
+    $usage = "usage: winsmux workers secrets project <slot> --run-id <id> [--profile <profile>] [--env <name=vault-key>] [--file <path=vault-key>] [--variable <name=vault-key>] [--json] [--project-dir <path>]"
+    $options = Read-WorkersSecretsOptions -Usage $usage
+    switch ([string]$options.Action) {
+        'project' { Invoke-WorkersSecretsProject -Options $options }
         default { Stop-WithError $usage }
     }
 }
@@ -7463,6 +7841,7 @@ function Invoke-Workers {
         'stop'   { Invoke-WorkersStop }
         'doctor' { Invoke-WorkersDoctor }
         'workspace' { Invoke-WorkersWorkspace }
+        'secrets' { Invoke-WorkersSecrets }
         'exec'   { Invoke-WorkersExec }
         'logs'   { Invoke-WorkersLogs }
         'upload' { Invoke-WorkersUpload }
@@ -14358,6 +14737,7 @@ Commands:
   status                    Report manifest pane states via capture-pane
   workers <status|start|stop|attach|doctor> [slot|all] [--json] [--project-dir <path>]  Inspect and control configured worker slots
   workers workspace <prepare|cleanup> <slot> [--include <path>] [--run-id <id>] [--json] [--project-dir <path>]  Prepare or remove disposable isolated worker workspaces
+  workers secrets project <slot> --run-id <id> [--env <name=key>] [--file <path=key>] [--variable <name=key>] [--json] [--project-dir <path>]  Project typed run-scoped secrets without printing secret values
   board [--json]            Report pane/task/review/git session board
 desktop-summary [--json] [--stream]  Report the aggregated desktop read-model snapshot or follow refresh signals
 inbox [--json] [--stream] Report actionable approvals/review/blockers

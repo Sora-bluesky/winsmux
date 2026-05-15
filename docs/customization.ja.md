@@ -18,6 +18,22 @@ winsmux init --workspace-lifecycle managed-worktree
 
 既定値は `local-windows` です。これは通常の Windows 管理ペイン動作を維持します。`isolated-enterprise` は明示的に選んだ場合だけ使います。後続リリースでは、このプロファイルに隔離作業領域、資格情報、状態確認、Windows sandbox の動作を接続します。
 
+### 実行単位の秘密情報投影
+
+`local-windows` と `isolated-enterprise` のワーカー実行では、同じ型付き秘密情報投影の契約を使います。コマンドは実行開始時に Windows DPAPI の保管庫エントリーを解決し、値はその実行のローカル秘密情報ディレクトリにだけ保存します。
+
+```powershell
+winsmux workers secrets project w2 --run-id run-123 --env OPENAI_API_KEY=openai --file creds/token.txt=github --variable model_token=anthropic --json
+```
+
+投影の種類は明示的です。
+
+- `--env <name=vault-key>` は、その実行用の PowerShell 環境読み込みファイルを書き込みます。
+- `--file <path=vault-key>` は、実行内の秘密情報ファイルを書き込みます。
+- `--variable <name=vault-key>` は、実行内の変数マップを書き込みます。
+
+JSON 出力と `secret-projection.json` には、型付きの保存場所、保管庫キー名、スコープ、値への参照だけを記録します。秘密情報の値は含めません。隔離実行では、先に隔離ワークスペースを準備しておく必要があります。これにより、秘密情報ディレクトリがその実行境界の内側に残り、ワークスペースのクリーンアップで削除されます。
+
 ## 起動プリセット
 
 比較を目的とした実行を始める前に、プリセットを確認できます。
@@ -143,6 +159,8 @@ agent-slots:
 winsmux vault set <name> <value>
 winsmux vault inject <name> <pane>
 ```
+
+実行単位のワーカーでは、`winsmux workers secrets project` を使ってください。資格情報をペイン全体へ広く注入するのではなく、1 つのスロットと 1 つの実行に紐づけられます。
 
 winsmux は OAuth フローを代理実行しません。コールバック URL を受け取らず、同じ PC で対話的にログインして取得したトークンを別ペインへ共有しません。
 

@@ -49,6 +49,29 @@ Remove the run workspace after collecting the required artifacts:
 winsmux workers workspace cleanup w2 --run-id run-123 --json
 ```
 
+### Run-scoped secret projections
+
+Use the same typed secret projection contract for `local-windows` and
+`isolated-enterprise` worker runs. The command resolves Windows DPAPI vault
+entries at run start and stores values only under the run's local secret
+directory:
+
+```powershell
+winsmux workers secrets project w2 --run-id run-123 --env OPENAI_API_KEY=openai --file creds/token.txt=github --variable model_token=anthropic --json
+```
+
+Projection types are explicit:
+
+- `--env <name=vault-key>` writes a PowerShell environment loader for that run.
+- `--file <path=vault-key>` writes a run-local secret file.
+- `--variable <name=vault-key>` writes a run-local variable map.
+
+The JSON output and `secret-projection.json` manifest report only typed
+locations, vault key names, scope, and value references. They do not include
+secret values. Isolated runs must already have a prepared isolated workspace so
+the secret directory stays under that run boundary and is removed by workspace
+cleanup.
+
 ## Launcher presets
 
 Inspect the presets before launching a compare-oriented run:
@@ -173,6 +196,10 @@ Store credentials that must be injected into a pane with Windows DPAPI:
 winsmux vault set <name> <value>
 winsmux vault inject <name> <pane>
 ```
+
+For run-scoped workers, prefer `winsmux workers secrets project` so credentials
+are bound to one slot and one run instead of being injected broadly into a pane
+session.
 
 winsmux does not broker OAuth flows, receive callback URLs, or share local interactive login tokens across panes.
 

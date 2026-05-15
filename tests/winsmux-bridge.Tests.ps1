@@ -9010,6 +9010,7 @@ agent-slots:
         $script:winsmuxWorkersCoreRawContent | Should -Match 'workers <status\|start\|stop\|attach\|doctor> \[slot\|all\] \[--json\] \[--project-dir <path>\]'
         $script:winsmuxWorkersCoreRawContent | Should -Match 'workers <exec\|logs\|upload\|download> <slot> \.\.\. \[--json\] \[--project-dir <path>\]'
         $script:winsmuxWorkersCoreRawContent | Should -Match 'workers workspace <prepare\|cleanup> <slot> \[--include <path>\] \[--run-id <id>\] \[--json\] \[--project-dir <path>\]'
+        $script:winsmuxWorkersCoreRawContent | Should -Match 'workers secrets project <slot> --run-id <id> \[--env <name=key>\] \[--file <path=key>\] \[--variable <name=key>\] \[--json\] \[--project-dir <path>\]'
         $script:winsmuxWorkersCoreRawContent | Should -Match "'workers'\s*\{\s*Invoke-Workers\s*\}"
         $script:winsmuxWorkersCoreRawContent | Should -Match 'google-colab-cli not found on PATH'
         $script:winsmuxWorkersCoreRawContent | Should -Match 'uv not found on PATH'
@@ -9017,6 +9018,7 @@ agent-slots:
         $script:winsmuxWorkersCoreRawContent | Should -Match "'attach'\s*\{\s*Invoke-WorkersAttach\s*\}"
         $script:winsmuxWorkersCoreRawContent | Should -Match "'download'\s*\{\s*Invoke-WorkersDownload\s*\}"
         $script:winsmuxWorkersCoreRawContent | Should -Match "'workspace'\s*\{\s*Invoke-WorkersWorkspace\s*\}"
+        $script:winsmuxWorkersCoreRawContent | Should -Match "'secrets'\s*\{\s*Invoke-WorkersSecrets\s*\}"
     }
 
     It 'prepares and cleans up a disposable isolated workspace from explicit includes' {
@@ -9192,6 +9194,125 @@ agent-slots:
             if (Test-Path -LiteralPath $outside) {
                 Remove-Item -LiteralPath $outside -Recurse -Force
             }
+        }
+    }
+
+    It 'projects typed secrets for local Windows runs without printing secret values' {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    execution-profile: local-windows
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        $previousVaultMode = $env:WINSMUX_TEST_SECRET_VAULT_MODE
+        $previousVaultJson = $env:WINSMUX_TEST_SECRET_VAULT_JSON
+        $env:WINSMUX_TEST_SECRET_VAULT_MODE = '1'
+        $env:WINSMUX_TEST_SECRET_VAULT_JSON = '{"api":"local-secret-token-123","cert":"CERT-DATA-456","var":"variable-secret-789"}'
+        $runDir = Join-Path $script:workersTempRoot '.winsmux\worker-runs\worker-2\secret-local'
+
+        try {
+            $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers secrets project w2 --run-id secret-local --env OPENAI_API_KEY=api --file creds/token.txt=cert --variable model_token=var --json --project-dir $script:workersTempRoot
+            $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+            $serialized = $payload | ConvertTo-Json -Depth 24
+
+            $payload.status | Should -Be 'projected'
+            $payload.execution_profile | Should -Be 'local-windows'
+            $payload.binding | Should -Be 'late-bound-at-run-start'
+            $payload.scope.slot_id | Should -Be 'worker-2'
+            $payload.scope.run_id | Should -Be 'secret-local'
+            $payload.value_policy.output_contains_secret_values | Should -Be $false
+            $payload.value_policy.manifest_contains_secret_values | Should -Be $false
+            @($payload.projections | ForEach-Object { $_.kind }) | Should -Contain 'env'
+            @($payload.projections | ForEach-Object { $_.kind }) | Should -Contain 'file'
+            @($payload.projections | ForEach-Object { $_.kind }) | Should -Contain 'variable'
+            $serialized | Should -Not -Match 'local-secret-token-123'
+            $serialized | Should -Not -Match 'CERT-DATA-456'
+            $serialized | Should -Not -Match 'variable-secret-789'
+
+            (Get-Content -Raw -Path (Join-Path $runDir 'secrets\env.ps1')) | Should -Match 'local-secret-token-123'
+            (Get-Content -Raw -Path (Join-Path $runDir 'secrets\files\creds\token.txt')) | Should -Match 'CERT-DATA-456'
+            (Get-Content -Raw -Path (Join-Path $runDir 'secrets\variables.json')) | Should -Match 'variable-secret-789'
+        } finally {
+            $env:WINSMUX_TEST_SECRET_VAULT_MODE = $previousVaultMode
+            $env:WINSMUX_TEST_SECRET_VAULT_JSON = $previousVaultJson
+        }
+    }
+
+    It 'projects typed secrets for isolated workspace runs under the isolated run boundary' {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    execution-profile: isolated-enterprise
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        'payload' | Set-Content -Path (Join-Path $script:workersTempRoot 'input.txt') -Encoding UTF8
+        $previousVaultMode = $env:WINSMUX_TEST_SECRET_VAULT_MODE
+        $previousVaultJson = $env:WINSMUX_TEST_SECRET_VAULT_JSON
+        $env:WINSMUX_TEST_SECRET_VAULT_MODE = '1'
+        $env:WINSMUX_TEST_SECRET_VAULT_JSON = '{"api":"isolated-secret-token"}'
+        $runDir = Join-Path $script:workersTempRoot '.winsmux\isolated-workspaces\worker-2\secret-isolated'
+
+        try {
+            & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers workspace prepare w2 --include input.txt --run-id secret-isolated --json --project-dir $script:workersTempRoot | Out-Null
+
+            $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers secrets project w2 --run-id secret-isolated --profile isolated-enterprise --env OPENAI_API_KEY=api --json --project-dir $script:workersTempRoot
+            $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+            $serialized = $payload | ConvertTo-Json -Depth 24
+
+            $payload.status | Should -Be 'projected'
+            $payload.execution_profile | Should -Be 'isolated-enterprise'
+            $payload.locations.secrets.reference | Should -Match '\.winsmux/isolated-workspaces/worker-2/secret-isolated/secrets'
+            $serialized | Should -Not -Match 'isolated-secret-token'
+            (Get-Content -Raw -Path (Join-Path $runDir 'secrets\env.ps1')) | Should -Match 'isolated-secret-token'
+        } finally {
+            $env:WINSMUX_TEST_SECRET_VAULT_MODE = $previousVaultMode
+            $env:WINSMUX_TEST_SECRET_VAULT_JSON = $previousVaultJson
+        }
+    }
+
+    It 'rejects unsafe or unresolved secret projections before writing files' {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    execution-profile: local-windows
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        $previousVaultMode = $env:WINSMUX_TEST_SECRET_VAULT_MODE
+        $previousVaultJson = $env:WINSMUX_TEST_SECRET_VAULT_JSON
+        $env:WINSMUX_TEST_SECRET_VAULT_MODE = '1'
+        $env:WINSMUX_TEST_SECRET_VAULT_JSON = '{"api":"secret-value"}'
+
+        try {
+            $invalidEnv = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers secrets project w2 --run-id bad-env --env 1BAD=api --json --project-dir $script:workersTempRoot 2>&1
+            $LASTEXITCODE | Should -Be 1
+            ($invalidEnv | Out-String) | Should -Match 'valid variable name'
+
+            $escapeFile = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers secrets project w2 --run-id bad-file --file ..\token.txt=api --json --project-dir $script:workersTempRoot 2>&1
+            $LASTEXITCODE | Should -Be 1
+            ($escapeFile | Out-String) | Should -Match 'unsupported path segment'
+
+            $missing = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers secrets project w2 --run-id missing-key --env API_TOKEN=missing --json --project-dir $script:workersTempRoot 2>&1
+            $LASTEXITCODE | Should -Be 1
+            ($missing | Out-String) | Should -Match 'credential not found'
+
+            Test-Path -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\worker-runs\worker-2\bad-env') | Should -Be $false
+            Test-Path -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\worker-runs\worker-2\bad-file') | Should -Be $false
+            Test-Path -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\worker-runs\worker-2\missing-key') | Should -Be $false
+        } finally {
+            $env:WINSMUX_TEST_SECRET_VAULT_MODE = $previousVaultMode
+            $env:WINSMUX_TEST_SECRET_VAULT_JSON = $previousVaultJson
         }
     }
 
