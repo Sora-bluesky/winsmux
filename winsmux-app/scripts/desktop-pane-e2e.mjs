@@ -10,6 +10,8 @@ const OUTPUT_DIR = path.join(process.cwd(), "output", "playwright", "desktop-pan
 const APP_URL_PATTERN = /localhost:1420|127\.0\.0\.1:1420/;
 const CONTROL_PIPE_NAME = "winsmux-control";
 const WORKER_UI_MARKER = "WORKER_1_UI_E2E_READY";
+const WORKER_ARROW_MARKER = "RAW_ABC";
+const WORKER_PASTE_MARKER = "WORKER_PASTE_E2E_READY";
 const OPERATOR_MARKER = "OP_E2E_READY";
 const COMPOSER_TO_OPERATOR_MARKER = "BTN_E2E_READY";
 const COMPOSER_ENTER_MARKER = "ENT_E2E_READY";
@@ -445,6 +447,34 @@ async function typeTerminalDraft(page, selector, text) {
   await page.keyboard.type(text, { delay: 2 });
 }
 
+async function pasteIntoTerminal(page, selector, text) {
+  await page.click(selector, { timeout: 10_000 });
+  try {
+    await page.evaluate((value) => navigator.clipboard.writeText(value), text);
+    await page.keyboard.press(process.platform === "darwin" ? "Meta+V" : "Control+V");
+    return "clipboard";
+  } catch {
+    await page.evaluate(
+      ({ targetSelector, value }) => {
+        const root = document.querySelector(targetSelector);
+        const textarea = root?.querySelector("textarea.xterm-helper-textarea");
+        if (!(textarea instanceof HTMLTextAreaElement)) {
+          throw new Error("xterm helper textarea was not available for paste");
+        }
+        const data = new DataTransfer();
+        data.setData("text/plain", value);
+        textarea.dispatchEvent(new ClipboardEvent("paste", {
+          bubbles: true,
+          cancelable: true,
+          clipboardData: data,
+        }));
+      },
+      { targetSelector: selector, value: text },
+    );
+    return "clipboard-event";
+  }
+}
+
 async function clearOperatorInputFromUi(page) {
   await page.click("#operator-terminal-panel", { timeout: 10_000 });
   await page.keyboard.press("Control+C");
@@ -752,6 +782,40 @@ async function main() {
       await typeIntoTerminal(page, "#pane-worker-1 .pane-terminal", `Write-Output '${WORKER_UI_MARKER}'`);
       const output = await waitForPtyOutputLine(page, "worker-1", WORKER_UI_MARKER);
       return { outputTail: output.slice(-800) };
+    });
+
+    await runStep("worker terminal keeps shortcuts, arrows, and paste in the PTY", async () => {
+      const terminalSelector = "#pane-worker-1 .pane-terminal";
+      await page.click(terminalSelector, { timeout: 10_000 });
+      await page.keyboard.press("Control+K");
+      const commandPaletteVisible = await page.locator("#command-bar-shell").isVisible().catch(() => false);
+      if (commandPaletteVisible) {
+        throw new Error("Ctrl+K opened the command palette while the worker terminal was focused");
+      }
+      await page.keyboard.press(process.platform === "darwin" ? "Meta+," : "Control+,");
+      const settingsVisible = await page.locator("#settings-sheet").isVisible().catch(() => false);
+      if (settingsVisible) {
+        throw new Error("settings opened while the worker terminal was focused");
+      }
+      await page.keyboard.press("Control+C");
+      await waitForPtyPrompt(page, "worker-1");
+
+      await page.keyboard.type("Write-Output 'RAW_AC'", { delay: 2 });
+      await page.keyboard.press("ArrowLeft");
+      await page.keyboard.press("ArrowLeft");
+      await page.keyboard.type("B", { delay: 2 });
+      await page.keyboard.press("End");
+      await page.keyboard.press("Enter");
+      const arrowOutput = await waitForPtyOutputLine(page, "worker-1", WORKER_ARROW_MARKER);
+
+      const pasteMode = await pasteIntoTerminal(page, terminalSelector, `Write-Output '${WORKER_PASTE_MARKER}'`);
+      await page.keyboard.press("Enter");
+      const pasteOutput = await waitForPtyOutputLine(page, "worker-1", WORKER_PASTE_MARKER);
+      return {
+        arrowOutputTail: arrowOutput.slice(-800),
+        pasteOutputTail: pasteOutput.slice(-800),
+        pasteMode,
+      };
     });
 
     await runStep("operator pane starts Claude Code and accepts real user input", async () => {
