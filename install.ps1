@@ -12,7 +12,7 @@ param(
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-$VERSION      = "0.33.1"
+$VERSION      = "0.33.2"
 $WINSMUX_DIR  = Join-Path $HOME ".winsmux"
 $BIN_DIR      = Join-Path $WINSMUX_DIR "bin"
 $BACKUP_DIR   = Join-Path $WINSMUX_DIR "backups"
