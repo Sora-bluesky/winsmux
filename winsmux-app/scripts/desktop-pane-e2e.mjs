@@ -445,6 +445,20 @@ async function waitForPtyOutputLine(page, paneId, line, timeoutMs = 45_000) {
   throw new Error(`Timed out waiting for output line ${line} in ${paneId}. Last output:\n${lastOutput}`);
 }
 
+async function waitForVisibleTerminalText(page, selector, marker, timeoutMs = 15_000) {
+  const startedAt = Date.now();
+  let lastText = "";
+  const compactMarker = marker.replace(/\s+/g, "");
+  while (Date.now() - startedAt < timeoutMs) {
+    lastText = await page.locator(selector).innerText().catch((error) => `terminal text failed: ${error.message}`);
+    if (lastText.includes(marker) || lastText.replace(/\s+/g, "").includes(compactMarker)) {
+      return lastText;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error(`Timed out waiting for visible text ${marker} in ${selector}. Last text:\n${lastText}`);
+}
+
 async function waitForPtyPrompt(page, paneId, timeoutMs = 45_000) {
   const startedAt = Date.now();
   let lastOutput = "";
@@ -471,7 +485,7 @@ function isClaudeOperatorReadyText(output) {
     return false;
   }
   if (
-    /トークン予算超過|確認待ち|どう進めますか|running \d+ shell command|listing \d+ director|wrangling|choreographing|spelunking|thinking with|still thinking|running stop hook|pasted text|paste again to expand/i
+    /トークン予算超過|確認待ち|どう進めますか|running \d+ shell command|listing \d+ director|wrangling|choreographing|spelunking|reticulating|fermenting|caramelizing|unfurling|schlepping|frolicking|cooking|hatching|frosting|tempering|thinking with|still thinking|running stop hooks?|running hooks?|tip:|pasted text|paste again to expand/i
       .test(tail)
   ) {
     return false;
@@ -483,14 +497,16 @@ function isClaudeOperatorReadyText(output) {
 async function waitForClaudeOperatorReady(page, timeoutMs = 90_000) {
   const startedAt = Date.now();
   let lastOutput = "";
+  let lastVisibleText = "";
   while (Date.now() - startedAt < timeoutMs) {
     lastOutput = await capturePty(page, "operator").catch((error) => `capture failed: ${error.message}`);
-    if (isClaudeOperatorReadyText(lastOutput)) {
+    lastVisibleText = await page.locator("#operator-terminal").innerText().catch((error) => `terminal text failed: ${error.message}`);
+    if (isClaudeOperatorReadyText(lastVisibleText) || isClaudeOperatorReadyText(lastOutput)) {
       return lastOutput;
     }
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
-  throw new Error(`Timed out waiting for Claude Code readiness in operator. Last output:\n${lastOutput}`);
+  throw new Error(`Timed out waiting for Claude Code readiness in operator. Last visible text:\n${lastVisibleText}\nLast output:\n${lastOutput}`);
 }
 
 async function startOperatorFromUiAndWaitForClaude(page) {
@@ -541,6 +557,7 @@ async function clearOperatorInputFromUi(page) {
   await page.click("#operator-terminal-panel", { timeout: 10_000 });
   await page.keyboard.press("Control+C");
   await page.waitForTimeout(750);
+  await waitForClaudeOperatorReady(page);
 }
 
 async function startPaneFromUiAndWaitForPrompt(page, paneId, selector) {
@@ -731,6 +748,7 @@ async function exerciseTauriNativeSurface(page, browser) {
 }
 
 async function writeEvidence(ok, extra = {}) {
+  await ensureOutputDir();
   const evidence = {
     ok,
     timestamp: new Date().toISOString(),
@@ -809,6 +827,29 @@ async function main() {
       if ((await paneCount(page)) < 6) {
         throw new Error(`3x2 layout should create 6 panes, found ${await paneCount(page)}`);
       }
+      const threeColumnMetrics = await page.locator("#panes-container .pane").evaluateAll((panes) => {
+        const rects = panes.map((pane) => pane.getBoundingClientRect());
+        const widths = rects.map((rect) => Math.round(rect.width));
+        const columns = new Set(rects.map((rect) => Math.round(rect.left))).size;
+        const rows = new Set(rects.map((rect) => Math.round(rect.top))).size;
+        const labelHeights = panes.map((pane) => Math.round(pane.querySelector(".pane-label")?.getBoundingClientRect().height ?? 0));
+        return {
+          minWidth: Math.min(...widths),
+          widths,
+          columns,
+          rows,
+          labelHeights,
+        };
+      });
+      if (threeColumnMetrics.columns !== 3 || threeColumnMetrics.rows !== 2) {
+        throw new Error(`3x2 worker panes should stay fixed at 3 columns by 2 rows: ${JSON.stringify(threeColumnMetrics)}`);
+      }
+      if (threeColumnMetrics.minWidth < 300) {
+        throw new Error(`3x2 worker panes are too narrow: ${JSON.stringify(threeColumnMetrics)}`);
+      }
+      if (threeColumnMetrics.labelHeights.some((height) => height > 26)) {
+        throw new Error(`worker pane labels should stay on one row: ${JSON.stringify(threeColumnMetrics)}`);
+      }
       await setWorkbenchLayout(page, "focus");
       await page.locator("#focused-pane-select").waitFor({ state: "visible" });
       await page.selectOption("#focused-pane-select", "worker-2");
@@ -817,6 +858,7 @@ async function main() {
         throw new Error(`focus layout should show only worker-2, saw ${ids.join(",")}`);
       }
       await setWorkbenchLayout(page, "3x2");
+      return threeColumnMetrics;
     });
 
     await runStep("add and close worker pane controls", async () => {
@@ -958,14 +1000,17 @@ async function main() {
 
     await runStep("operator pane starts Claude Code and accepts real user input", async () => {
       const readyOutput = await startOperatorFromUiAndWaitForClaude(page);
+      await ensureOutputDir();
+      await page.screenshot({ path: path.join(OUTPUT_DIR, "desktop-pane-e2e-operator-claude.png"), fullPage: true });
       await typeTerminalDraft(page, "#operator-terminal-panel", OPERATOR_MARKER);
-      const output = await waitForPtyOutput(page, "operator", OPERATOR_MARKER);
+      const visibleText = await waitForVisibleTerminalText(page, "#operator-terminal", OPERATOR_MARKER);
+      const output = await capturePty(page, "operator");
       await clearOperatorInputFromUi(page);
       const timelineText = await page.locator("#conversation-timeline").innerText().catch(() => "");
       if (/Claude Code v\d|--permission-mode/.test(timelineText)) {
         throw new Error("operator startup log should stay in the operator pane and not mirror into the chat timeline");
       }
-      return { readyTail: readyOutput.slice(-800), outputTail: output.slice(-800) };
+      return { readyTail: readyOutput.slice(-800), visibleTextTail: visibleText.slice(-400), outputTail: output.slice(-800) };
     });
 
     await runStep("operator command writes to worker through desktop control pipe", async () => {
@@ -1033,7 +1078,10 @@ async function main() {
         const input = document.querySelector("#composer-input");
         return input instanceof HTMLTextAreaElement && input.value === "";
       });
-      const output = await waitForPtyOutput(page, "operator", "Pasted text");
+      const output = await waitForPtyOutput(page, "operator", COMPOSER_ATTACHMENT_MARKER, 90_000);
+      const attachmentOutput = stripAnsi(output).includes("composer-attachment.txt")
+        ? output
+        : await waitForPtyOutput(page, "operator", "composer-attachment.txt", 30_000);
       const attachmentStillVisible = await page.locator("#attachment-tray", { hasText: "composer-attachment.txt" }).isVisible().catch(() => false);
       if (attachmentStillVisible) {
         throw new Error("attachment tray should clear after composer submit");
@@ -1046,7 +1094,7 @@ async function main() {
       if (conversationHasAttachment < 1) {
         throw new Error("submitted attachment was not rendered in the conversation panel");
       }
-      return { outputTail: output.slice(-800) };
+      return { outputTail: attachmentOutput.slice(-800) };
     });
 
     await runStep("command palette drives settings and worker pane navigation", async () => {
@@ -1125,10 +1173,13 @@ async function main() {
       await closePtyIfExists(page, "operator");
     });
 
+    await ensureOutputDir();
+    await page.screenshot({ path: path.join(OUTPUT_DIR, "desktop-pane-e2e-success.png"), fullPage: true });
     await writeEvidence(true, { debugPort });
     process.stdout.write(`[desktop-pane-e2e] PASS evidence=${path.join(OUTPUT_DIR, "desktop-pane-e2e.json")}\n`);
   } catch (error) {
     if (page) {
+      await ensureOutputDir();
       await page.screenshot({ path: path.join(OUTPUT_DIR, "desktop-pane-e2e-failure.png"), fullPage: true }).catch(() => {});
     }
     await writeEvidence(false, {
