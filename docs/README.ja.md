@@ -14,6 +14,7 @@
 - [オペレーターモデル](operator-model.md) - オペレーター層、管理ペイン層、証跡契約、デスクトップ方針を説明します。
 - [認証方針](authentication-support.ja.md) - 対応する認証方式と、同じ PC 上での対話利用に限る認証の境界を説明します。
 - [プロバイダーとモデルの対応方針](provider-and-model-support.ja.md) - クラウド型エージェント CLI、Colab 上のモデル対象、将来のローカル LLM、モデルファミリーのメタデータを説明します。
+- [外部コントロールプレーン API](external-control-plane.ja.md) - 外部自動化クライアント向けのローカル named pipe JSON-RPC 契約を説明します。
 - [リポジトリの公開面ポリシー](repo-surface-policy.md) - 追跡対象ファイルの公開面、実行時契約面、コントリビューター向け面を分けます。
 
 ## 困った時

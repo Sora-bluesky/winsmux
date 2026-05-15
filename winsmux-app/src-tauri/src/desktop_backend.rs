@@ -1394,8 +1394,13 @@ pub fn handle_desktop_json_rpc(
             request_id,
             serde_json::json!({
                 "version": 1,
-                "transport": "named_pipe_json_rpc",
-                "pipe": r"\\.\pipe\winsmux-control",
+                "scope": "internal_desktop_json_rpc",
+                "transport": "tauri_invoke_desktop_json_rpc",
+                "external_control_pipe": {
+                    "transport": "named_pipe_json_rpc",
+                    "pipe": r"\\.\pipe\winsmux-control",
+                    "contract_method": "desktop.control_plane.contract",
+                },
                 "jsonrpc": DESKTOP_JSON_RPC_VERSION,
                 "localhost_http": false,
                 "websocket": false,
@@ -4970,6 +4975,8 @@ mod tests {
 
         match response {
             DesktopJsonRpcResponse::Success { result, .. } => {
+                assert_eq!(result["scope"], "internal_desktop_json_rpc");
+                assert_eq!(result["transport"], "tauri_invoke_desktop_json_rpc");
                 let methods = result["methods"]
                     .as_array()
                     .expect("contract methods must be an array");
