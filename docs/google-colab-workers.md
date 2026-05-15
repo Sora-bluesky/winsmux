@@ -232,6 +232,12 @@ Download an output:
 winsmux workers download w2 /content/output.json --output artifacts/worker-output --run-id demo-1 --json
 ```
 
+Upload and download JSON include typed `locations` records for the local source
+or output, the remote artifact path, and the local manifest or staging
+directory. Remote artifacts use `kind: remote_artifact` and do not expose a
+`local_path`; local-only path helpers are valid only for `local_file` and
+`local_directory` records.
+
 Directory uploads are staged through a safe manifest. winsmux excludes:
 
 - `.git`, `.hg`, `.svn`

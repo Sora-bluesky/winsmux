@@ -12,6 +12,18 @@ winsmux init --workspace-lifecycle managed-worktree
 
 Use managed worktrees when multiple agents may edit files in parallel. They keep changes separated until the operator chooses what to accept.
 
+## Execution profiles
+
+`execution-profile` describes the run policy lane. It is separate from
+`worker-backend`, which describes where a worker slot is hosted, and from
+`execution_backend`, which describes the provider capability runtime path.
+
+The default is `local-windows`. It preserves the normal Windows managed-pane
+behavior. `isolated-enterprise` is opt-in and should only be selected when the
+operator explicitly wants the enterprise isolation lane. Later releases attach
+the isolated workspace, credential, heartbeat, and Windows sandbox behavior to
+that profile.
+
 ## Launcher presets
 
 Inspect the presets before launching a compare-oriented run:
@@ -96,6 +108,7 @@ Example slot entries (excerpt; `winsmux init` creates six slots):
 ```yaml
 external-operator: true
 worker-backend: local
+execution-profile: local-windows
 agent-slots:
   - slot-id: worker-1
     runtime-role: worker
@@ -103,6 +116,7 @@ agent-slots:
     model: provider-default
     model-source: provider-default
     worker-backend: codex
+    execution-profile: local-windows
     worker-role: reviewer
     fallback-model: gpt-5.3-codex-spark
     pane-title: W1 Codex Reviewer
@@ -110,6 +124,7 @@ agent-slots:
   - slot-id: worker-2
     runtime-role: worker
     worker-backend: colab_cli
+    execution-profile: isolated-enterprise
     worker-role: impl
     session-name: "{{project_slug}}_w2_impl"
     gpu-preference: [H100, A100]

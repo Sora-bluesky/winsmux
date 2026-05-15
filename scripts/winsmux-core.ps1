@@ -17,7 +17,7 @@ if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_RAW_EXE)) {
 }
 
 # --- Config ---
-$VERSION = "0.34.0"
+$VERSION = "0.34.1"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 $BridgeScriptPath = $PSCommandPath
@@ -450,6 +450,55 @@ function Get-WinsmuxArtifactReference {
     }
 
     return $artifactRef
+}
+
+function New-WinsmuxLocationIdentity {
+    param(
+        [Parameter(Mandatory = $true)][ValidateSet('local_file', 'local_directory', 'remote_artifact', 'pane_log', 'source_ref')][string]$Kind,
+        [Parameter(Mandatory = $true)][string]$DisplayName,
+        [Parameter(Mandatory = $true)][string]$Backend,
+        [Parameter(Mandatory = $true)][string]$AccessMethod,
+        [string]$Reference = '',
+        [string]$LocalPath = '',
+        [string]$RemotePath = '',
+        [string]$Provenance = ''
+    )
+
+    $identity = [ordered]@{
+        kind          = $Kind
+        display_name  = $DisplayName
+        backend       = $Backend
+        access_method = $AccessMethod
+        reference     = $Reference
+        local_path    = ''
+        remote_path   = ''
+        provenance    = $Provenance
+    }
+
+    if ($Kind -in @('local_file', 'local_directory')) {
+        $identity.local_path = $LocalPath
+    } elseif (-not [string]::IsNullOrWhiteSpace($LocalPath)) {
+        throw "local path is not available for $Kind locations"
+    }
+
+    if ($Kind -eq 'remote_artifact') {
+        $identity.remote_path = $RemotePath
+    } elseif (-not [string]::IsNullOrWhiteSpace($RemotePath)) {
+        throw "remote path is only available for remote_artifact locations"
+    }
+
+    return $identity
+}
+
+function Resolve-WinsmuxLocationIdentityLocalPath {
+    param([Parameter(Mandatory = $true)]$Location)
+
+    $kind = [string](Get-SendConfigValue -InputObject $Location -Name 'kind' -Default '')
+    if ($kind -notin @('local_file', 'local_directory')) {
+        throw "local path is not available for $kind locations"
+    }
+
+    return [string](Get-SendConfigValue -InputObject $Location -Name 'local_path' -Default '')
 }
 
 function Write-WinsmuxArtifactFile {
@@ -3060,6 +3109,7 @@ function Get-WorkersLaunchApprovalFieldNames {
         'prompt_transport',
         'auth_mode',
         'credential_requirements',
+        'execution_profile',
         'execution_backend',
         'analysis_posture',
         'auto_launch'
@@ -3084,6 +3134,15 @@ function ConvertTo-WorkersLaunchApprovalValue {
     return ([string]$Value).Trim()
 }
 
+function Get-WorkersLaunchApprovalDefaultValue {
+    param([Parameter(Mandatory = $true)][string]$Field)
+
+    switch ($Field) {
+        'execution_profile' { return 'local-windows' }
+        default { return '' }
+    }
+}
+
 function New-WorkersLaunchApprovalSummary {
     param(
         [Parameter(Mandatory = $true)][string]$SlotId,
@@ -3104,6 +3163,7 @@ function New-WorkersLaunchApprovalSummary {
         prompt_transport        = [string]$SlotConfig.PromptTransport
         auth_mode               = [string]$SlotConfig.AuthMode
         credential_requirements = [string]$SlotConfig.CredentialRequirements
+        execution_profile       = [string]$SlotConfig.ExecutionProfile
         execution_backend       = [string]$SlotConfig.ExecutionBackend
         analysis_posture        = [string]$SlotConfig.AnalysisPosture
         auto_launch             = [bool]$AutoLaunch
@@ -3130,8 +3190,9 @@ function Get-WorkersLaunchApprovalDifferences {
 
     $differences = [System.Collections.Generic.List[object]]::new()
     foreach ($field in @(Get-WorkersLaunchApprovalFieldNames)) {
-        $approvedValue = ConvertTo-WorkersLaunchApprovalValue (Get-SendConfigValue -InputObject $ApprovedLaunch -Name $field -Default '')
-        $currentValue = ConvertTo-WorkersLaunchApprovalValue (Get-SendConfigValue -InputObject $CurrentLaunch -Name $field -Default '')
+        $defaultValue = Get-WorkersLaunchApprovalDefaultValue -Field $field
+        $approvedValue = ConvertTo-WorkersLaunchApprovalValue (Get-SendConfigValue -InputObject $ApprovedLaunch -Name $field -Default $defaultValue)
+        $currentValue = ConvertTo-WorkersLaunchApprovalValue (Get-SendConfigValue -InputObject $CurrentLaunch -Name $field -Default $defaultValue)
         if (-not [string]::Equals($approvedValue, $currentValue, [System.StringComparison]::Ordinal)) {
             $differences.Add([ordered]@{
                 field    = $field
@@ -4235,6 +4296,7 @@ function New-LauncherSlotSummary {
         local_access_note          = [string]$effective.LocalAccessNote
         harness_availability       = [string]$effective.HarnessAvailability
         credential_requirements    = [string]$effective.CredentialRequirements
+        execution_profile          = [string]$effective.ExecutionProfile
         execution_backend          = [string]$effective.ExecutionBackend
         runtime_requirements       = [string]$effective.RuntimeRequirements
         analysis_posture           = [string]$effective.AnalysisPosture
@@ -6552,6 +6614,9 @@ function Invoke-WorkersUpload {
     $manifest['staged_source'] = [string]$uploadSource.Reference
     Write-WorkersJsonArtifact -Path $manifestPath -Data $manifest | Out-Null
 
+    $sourceLocationKind = if ([bool]$source.IsDirectory) { 'local_directory' } else { 'local_file' }
+    $safeRemote = ConvertTo-WorkersSafeLogText -Text $remote
+    $manifestReference = Get-WorkersArtifactReference -ProjectDir $options.ProjectDir -Path $manifestPath
     $arguments = @('upload', '--session', [string]$worker.Session, '--source', [string]$uploadSource.FullPath, '--dest', $remote, '--manifest', $manifestPath, '--run-id', $runId)
     $cli = Invoke-WorkersColabCli -Arguments $arguments
     $status = if ([int]$cli.ExitCode -eq 0) { 'succeeded' } else { 'failed' }
@@ -6566,8 +6631,14 @@ function Invoke-WorkersUpload {
         run_id         = $runId
         source         = [string]$source.RelativePath
         staged_source  = [string]$uploadSource.Reference
-        remote         = ConvertTo-WorkersSafeLogText -Text $remote
-        manifest       = Get-WorkersArtifactReference -ProjectDir $options.ProjectDir -Path $manifestPath
+        remote         = $safeRemote
+        manifest       = $manifestReference
+        locations      = [ordered]@{
+            source        = New-WinsmuxLocationIdentity -Kind $sourceLocationKind -DisplayName ([string]$source.RelativePath) -Backend 'local-windows' -AccessMethod 'project_path' -Reference ([string]$source.RelativePath) -LocalPath ([string]$source.FullPath) -Provenance 'workers.upload.source'
+            staged_source = New-WinsmuxLocationIdentity -Kind 'local_directory' -DisplayName ([string]$uploadSource.Reference) -Backend 'local-windows' -AccessMethod 'runtime_staging' -Reference ([string]$uploadSource.Reference) -LocalPath ([string]$uploadSource.FullPath) -Provenance 'workers.upload.staged_source'
+            remote        = New-WinsmuxLocationIdentity -Kind 'remote_artifact' -DisplayName $safeRemote -Backend 'colab_cli' -AccessMethod 'adapter_remote_path' -RemotePath $safeRemote -Provenance 'workers.upload.remote'
+            manifest      = New-WinsmuxLocationIdentity -Kind 'local_file' -DisplayName 'upload-manifest.json' -Backend 'local-windows' -AccessMethod 'artifact_ref' -Reference $manifestReference -LocalPath $manifestPath -Provenance 'workers.upload.manifest'
+        }
         uploaded_count = @($manifestEntries.Files).Count
         excluded_count = @($manifestEntries.Excluded).Count
         exit_code      = [int]$cli.ExitCode
@@ -6622,6 +6693,9 @@ function Invoke-WorkersDownload {
     $arguments = @('download', '--session', [string]$worker.Session, '--source', $remote, '--dest', [string]$outputInfo.FullPath, '--run-id', $runId)
     $cli = Invoke-WorkersColabCli -Arguments $arguments
     $status = if ([int]$cli.ExitCode -eq 0) { 'succeeded' } else { 'failed' }
+    $safeRemote = ConvertTo-WorkersSafeLogText -Text $remote
+    $outputReference = Get-WorkersArtifactReference -ProjectDir $options.ProjectDir -Path ([string]$outputInfo.FullPath)
+    $outputLocationKind = if ($downloadToDirectory) { 'local_directory' } else { 'local_file' }
     $payload = [ordered]@{
         project_dir   = $options.ProjectDir
         generated_at  = (Get-Date).ToUniversalTime().ToString('o')
@@ -6631,8 +6705,12 @@ function Invoke-WorkersDownload {
         slot_id       = [string]$worker.Row.SlotId
         session       = [string]$worker.Session
         run_id        = $runId
-        remote        = ConvertTo-WorkersSafeLogText -Text $remote
-        output        = Get-WorkersArtifactReference -ProjectDir $options.ProjectDir -Path ([string]$outputInfo.FullPath)
+        remote        = $safeRemote
+        output        = $outputReference
+        locations     = [ordered]@{
+            remote = New-WinsmuxLocationIdentity -Kind 'remote_artifact' -DisplayName $safeRemote -Backend 'colab_cli' -AccessMethod 'adapter_remote_path' -RemotePath $safeRemote -Provenance 'workers.download.remote'
+            output = New-WinsmuxLocationIdentity -Kind $outputLocationKind -DisplayName $outputReference -Backend 'local-windows' -AccessMethod 'artifact_ref' -Reference $outputReference -LocalPath ([string]$outputInfo.FullPath) -Provenance 'workers.download.output'
+        }
         exit_code     = [int]$cli.ExitCode
         cli_command   = ConvertTo-WorkersSafeLogText -Text ([string]$cli.Command)
         cli_arguments = @(ConvertTo-WorkersSafeArgumentArray -Arguments @($cli.Arguments))

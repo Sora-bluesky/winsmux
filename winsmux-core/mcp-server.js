@@ -7,8 +7,14 @@ const path = require("path");
 
 const BRIDGE_SCRIPT = resolveBridgeScript();
 const SERVER_NAME = "winsmux-mcp";
-const SERVER_VERSION = "0.34.0";
+const SERVER_VERSION = "0.34.1";
 const PROTOCOL_VERSION = "2024-11-05";
+const ADAPTER_BOUNDARY = Object.freeze({
+  protocolSource: "upstream-mcp-json-rpc",
+  transport: "stdio",
+  shimPolicy: "thin-winsmux-command-adapter",
+  localCompatibilityCode: "fallback-only",
+});
 
 // --- Tool Definitions ---
 
@@ -174,6 +180,7 @@ function handleInitialize(id, params) {
     protocolVersion: PROTOCOL_VERSION,
     capabilities: { tools: {} },
     serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
+    _meta: { "winsmux/adapterBoundary": ADAPTER_BOUNDARY },
   });
 }
 

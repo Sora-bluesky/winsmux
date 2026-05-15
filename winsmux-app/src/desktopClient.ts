@@ -588,6 +588,7 @@ export interface DesktopWorkerLaunchApproval {
   prompt_transport?: string;
   auth_mode?: string;
   credential_requirements?: string;
+  execution_profile?: string;
   execution_backend?: string;
   analysis_posture?: string;
   auto_launch?: boolean;

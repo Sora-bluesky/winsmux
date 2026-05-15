@@ -57,6 +57,21 @@ Provider entries may declare:
 - `analysis_posture`: whether the provider is safe only for read-only analysis
   or can act as a normal write-capable worker.
 
+## Execution profile policy
+
+`execution_profile` is a run-policy field, not a provider name and not a worker
+backend. The default value is `local-windows`; it keeps the existing local
+managed-pane behavior. `isolated-enterprise` is explicit opt-in for the
+enterprise isolation lane and should not be selected implicitly by provider,
+model, or role.
+
+This keeps three decisions separate:
+
+- role or playbook intent: why the slot exists and what evidence it should
+  produce
+- worker backend: where the worker slot is hosted
+- execution profile: which run policy and isolation lane applies
+
 For OpenAI-compatible local endpoints and GPU-backed local runtimes, the safe
 default is a read-only analysis provider: `supports_file_edit: false`,
 `supports_verification: false`, `supports_consultation: true`, and
