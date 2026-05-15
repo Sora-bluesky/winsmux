@@ -11860,6 +11860,15 @@ function isNarrowLayout() {
   return window.matchMedia("(max-width: 1366px)").matches;
 }
 
+function isTerminalKeyboardTarget(target: EventTarget | null) {
+  const element = target instanceof Element
+    ? target
+    : target instanceof Node
+      ? target.parentElement
+      : null;
+  return Boolean(element?.closest("#operator-terminal, .pane-terminal"));
+}
+
 function setSidebarOpen(open: boolean, options?: { preserveWidePreference?: boolean }) {
   sidebarOpen = open;
   const shell = document.getElementById("app-shell");
@@ -13792,13 +13801,14 @@ window.addEventListener("DOMContentLoaded", async () => {
     const keyTarget = event.target;
     const settingsSheet = document.getElementById("settings-sheet");
     const keyInsideSettings = keyTarget instanceof Node && Boolean(settingsSheet?.contains(keyTarget));
-    if (composerInput && !keyInsideSettings && !commandBarOpen && !event.isComposing && !composerImeActive && isVoiceShortcutEvent(event)) {
+    const keyInsideTerminal = isTerminalKeyboardTarget(keyTarget);
+    if (composerInput && !keyInsideTerminal && !keyInsideSettings && !commandBarOpen && !event.isComposing && !composerImeActive && isVoiceShortcutEvent(event)) {
       event.preventDefault();
       toggleVoiceInput(composerInput);
       return;
     }
 
-    if (event.ctrlKey && event.key.toLowerCase() === "k") {
+    if (!keyInsideTerminal && event.ctrlKey && event.key.toLowerCase() === "k") {
       event.preventDefault();
       if (commandBarOpen) {
         closeCommandBar();
@@ -13833,13 +13843,13 @@ window.addEventListener("DOMContentLoaded", async () => {
       return;
     }
 
-    if (event.key === "Escape" && operatorRequestActive && !operatorInterruptInFlight && !keyInsideSettings) {
+    if (event.key === "Escape" && operatorRequestActive && !operatorInterruptInFlight && !keyInsideTerminal && !keyInsideSettings) {
       event.preventDefault();
       void interruptOperatorRequest();
       return;
     }
 
-    if ((event.ctrlKey || event.metaKey) && event.key === ",") {
+    if (!keyInsideTerminal && (event.ctrlKey || event.metaKey) && event.key === ",") {
       event.preventDefault();
       setSettingsSheet(true);
     }
