@@ -9505,6 +9505,36 @@ agent-slots:
         $payload.execution_profile | Should -Be 'isolated-enterprise'
     }
 
+    It 'honors latest heartbeat check thresholds and profile filters' {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    execution-profile: local-windows
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        $env:WINSMUX_TEST_NOW_UTC = '2026-05-16T00:00:00Z'
+        & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers heartbeat mark worker-2 --run-id latest-local --state running --json --project-dir $script:workersTempRoot | Out-Null
+
+        $env:WINSMUX_TEST_NOW_UTC = '2026-05-16T00:01:30Z'
+        $staleOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers heartbeat check worker-2 --stalled-after 10 --offline-after 20 --json --project-dir $script:workersTempRoot
+        $stalePayload = ($staleOutput | Select-Object -Last 1) | ConvertFrom-Json
+
+        $stalePayload.run_id | Should -Be 'latest-local'
+        $stalePayload.health | Should -Be 'offline'
+        $stalePayload.reason | Should -Be 'heartbeat_expired'
+
+        $profileOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers heartbeat check worker-2 --profile isolated-enterprise --json --project-dir $script:workersTempRoot
+        $profilePayload = ($profileOutput | Select-Object -Last 1) | ConvertFrom-Json
+
+        $profilePayload.health | Should -Be 'offline'
+        $profilePayload.reason | Should -Be 'heartbeat_missing'
+        $profilePayload.execution_profile | Should -Be 'isolated-enterprise'
+    }
+
     It 'reports the default six worker slots with aliases and Colab degraded state' {
 @'
 agent: codex

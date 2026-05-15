@@ -6383,7 +6383,9 @@ function Get-WorkersLatestHeartbeatStatus {
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)][string]$SlotId,
         [AllowEmptyString()][string]$RunId = '',
-        [AllowEmptyString()][string]$ExecutionProfile = ''
+        [AllowEmptyString()][string]$ExecutionProfile = '',
+        [int]$StalledAfterSeconds = 0,
+        [int]$OfflineAfterSeconds = 0
     )
 
     $safeSlotId = Assert-WorkersPathSegment -Value $SlotId -Name 'slot id'
@@ -6396,8 +6398,8 @@ function Get-WorkersLatestHeartbeatStatus {
         }
     }
     $nowUtc = Get-WorkersNowUtc
-    $stalledAfter = Get-WorkersHeartbeatThresholdSeconds -Value 0 -EnvName 'WINSMUX_WORKER_HEARTBEAT_STALLED_AFTER_SECONDS' -Default 300
-    $offlineAfter = Get-WorkersHeartbeatThresholdSeconds -Value 0 -EnvName 'WINSMUX_WORKER_HEARTBEAT_OFFLINE_AFTER_SECONDS' -Default 900
+    $stalledAfter = Get-WorkersHeartbeatThresholdSeconds -Value $StalledAfterSeconds -EnvName 'WINSMUX_WORKER_HEARTBEAT_STALLED_AFTER_SECONDS' -Default 300
+    $offlineAfter = Get-WorkersHeartbeatThresholdSeconds -Value $OfflineAfterSeconds -EnvName 'WINSMUX_WORKER_HEARTBEAT_OFFLINE_AFTER_SECONDS' -Default 900
     if ($offlineAfter -le $stalledAfter) {
         $offlineAfter = $stalledAfter + 1
     }
@@ -6405,15 +6407,15 @@ function Get-WorkersLatestHeartbeatStatus {
     $candidates = [System.Collections.Generic.List[object]]::new()
     $localRoot = Join-Path (Join-Path (Join-Path $ProjectDir '.winsmux') 'worker-runs') $safeSlotId
     $isolatedRoot = Join-Path (Get-WorkersIsolatedWorkspaceRoot -ProjectDir $ProjectDir) $safeSlotId
+    $profile = [string]$ExecutionProfile
+    $roots = [System.Collections.Generic.List[string]]::new()
+    if (-not [string]::Equals($profile, 'isolated-enterprise', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $roots.Add($localRoot) | Out-Null
+    }
+    if (-not [string]::Equals($profile, 'local-windows', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $roots.Add($isolatedRoot) | Out-Null
+    }
     if (-not [string]::IsNullOrWhiteSpace($safeRunId)) {
-        $profile = [string]$ExecutionProfile
-        $roots = [System.Collections.Generic.List[string]]::new()
-        if (-not [string]::Equals($profile, 'isolated-enterprise', [System.StringComparison]::OrdinalIgnoreCase)) {
-            $roots.Add($localRoot) | Out-Null
-        }
-        if (-not [string]::Equals($profile, 'local-windows', [System.StringComparison]::OrdinalIgnoreCase)) {
-            $roots.Add($isolatedRoot) | Out-Null
-        }
         foreach ($root in @($roots)) {
             $heartbeatPath = Join-Path (Join-Path $root $safeRunId) 'heartbeat.json'
             if (Test-Path -LiteralPath $heartbeatPath -PathType Leaf) {
@@ -6421,7 +6423,7 @@ function Get-WorkersLatestHeartbeatStatus {
             }
         }
     } else {
-        foreach ($root in @($localRoot, $isolatedRoot)) {
+        foreach ($root in @($roots)) {
             if (-not (Test-Path -LiteralPath $root -PathType Container)) {
                 continue
             }
@@ -7724,7 +7726,7 @@ function Invoke-WorkersHeartbeat {
             $runDir = Get-WorkersHeartbeatRunDirectory -ProjectDir $options.ProjectDir -SlotId $slotId -RunId $runId -ExecutionProfile $profile -AllowMissing
             $heartbeatPath = Join-Path $runDir 'heartbeat.json'
         } else {
-            $latest = Get-WorkersLatestHeartbeatStatus -ProjectDir $options.ProjectDir -SlotId $slotId
+            $latest = Get-WorkersLatestHeartbeatStatus -ProjectDir $options.ProjectDir -SlotId $slotId -ExecutionProfile $profile -StalledAfterSeconds $stalledAfter -OfflineAfterSeconds $offlineAfter
             if ($null -ne $latest) {
                 Write-WorkersOperationOutput -Payload $latest -Json:([bool]$options.Json) -Text "$($latest.health) $($latest.run_id)"
                 return
