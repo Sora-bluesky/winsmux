@@ -18,6 +18,7 @@ $script:BridgeProviderRegistryFileName = 'provider-registry.json'
 $script:BridgeProviderCapabilityRegistryFileName = 'provider-capabilities.json'
 $script:BridgeRuntimeRolePreferencesFileName = 'runtime-role-preferences.json'
 $script:BridgeWorkerBackendKinds = @('local', 'codex', 'colab_cli', 'noop')
+$script:BridgeExecutionProfileKinds = @('local-windows', 'isolated-enterprise')
 $script:BridgeSlotScalarKeys = @(
     'slot_id',
     'runtime_role',
@@ -29,6 +30,7 @@ $script:BridgeSlotScalarKeys = @(
     'auth_mode',
     'worktree_mode',
     'worker_backend',
+    'execution_profile',
     'worker_role',
     'pane_title',
     'session_name',
@@ -48,6 +50,7 @@ $script:BridgeSettingsSchema = [ordered]@{
     external_operator  = @{ Type = 'bool';     Default = $true;         Option = '@bridge-external-operator' }
     worker_count        = @{ Type = 'int';      Default = 6;             Option = '@bridge-worker-count' }
     worker_backend      = @{ Type = 'workerbackend'; Default = 'local';  Option = $null }
+    execution_profile   = @{ Type = 'executionprofile'; Default = 'local-windows'; Option = '@bridge-execution-profile' }
     agent_slots         = @{ Type = 'slotlist'; Default = @();           Option = $null }
     legacy_role_layout  = @{ Type = 'bool';     Default = $false;        Option = '@bridge-legacy-role-layout' }
     operators          = @{ Type = 'int';      Default = 0;             Option = '@bridge-operators' }
@@ -354,6 +357,16 @@ function Test-BridgeWorkerBackendKind {
     return ($Value.Trim().ToLowerInvariant() -in $script:BridgeWorkerBackendKinds)
 }
 
+function Test-BridgeExecutionProfileKind {
+    param([AllowNull()][string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return $false
+    }
+
+    return ($Value.Trim().ToLowerInvariant() -in $script:BridgeExecutionProfileKinds)
+}
+
 function ConvertTo-BridgeSlotKey {
     param([Parameter(Mandatory = $true)][string]$Key)
 
@@ -431,13 +444,19 @@ function New-BridgeManagedAgentSlots {
         [Parameter(Mandatory = $true)][int]$Count,
         [Parameter(Mandatory = $true)][string]$Agent,
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Model,
-        [string]$WorkerBackend = 'local'
+        [string]$WorkerBackend = 'local',
+        [string]$ExecutionProfile = 'local-windows'
     )
 
     $normalizedWorkerBackend = if (Test-BridgeWorkerBackendKind -Value $WorkerBackend) {
         $WorkerBackend.Trim().ToLowerInvariant()
     } else {
         'local'
+    }
+    $normalizedExecutionProfile = if (Test-BridgeExecutionProfileKind -Value $ExecutionProfile) {
+        $ExecutionProfile.Trim().ToLowerInvariant()
+    } else {
+        'local-windows'
     }
 
     $slots = @()
@@ -448,6 +467,7 @@ function New-BridgeManagedAgentSlots {
             agent          = $Agent
             worktree_mode  = 'managed'
             worker_backend = $normalizedWorkerBackend
+            execution_profile = $normalizedExecutionProfile
         }
         if ($index -eq 1) {
             $slot.agent = 'codex'
@@ -1953,6 +1973,15 @@ function Test-BridgeSettingValue {
             $NormalizedValue.Value = $text.Trim().ToLowerInvariant()
             return $true
         }
+        'executionprofile' {
+            $text = ConvertFrom-BridgeYamlScalar $Value
+            if (-not (Test-BridgeExecutionProfileKind -Value $text)) {
+                return $false
+            }
+
+            $NormalizedValue.Value = $text.Trim().ToLowerInvariant()
+            return $true
+        }
         'lifecycle' {
             $text = ConvertFrom-BridgeYamlScalar $Value
             if ([string]::IsNullOrWhiteSpace($text)) {
@@ -2153,8 +2182,8 @@ function Read-BridgeGlobalSettings {
             } else {
                 $settings[$key] = $normalizedValue
             }
-        } elseif ($key -eq 'prompt_transport') {
-            throw "Invalid prompt_transport configuration: unsupported value '$rawValue'."
+        } elseif ($key -in @('prompt_transport', 'execution_profile')) {
+            throw "Invalid $key configuration: unsupported value '$rawValue'."
         }
     }
 
@@ -2213,6 +2242,11 @@ function Get-BridgeSettings {
         throw "Invalid worker_backend configuration: unsupported value '$rawWorkerBackend'. Supported values: $($script:BridgeWorkerBackendKinds -join ', ')."
     }
 
+    if ($rawProjectSettings -is [System.Collections.IDictionary] -and ($rawProjectSettings.Contains('execution_profile') -or $rawProjectSettings.Contains('execution-profile')) -and -not $projectSettings.Contains('execution_profile')) {
+        $rawExecutionProfile = if ($rawProjectSettings.Contains('execution_profile')) { $rawProjectSettings['execution_profile'] } else { $rawProjectSettings['execution-profile'] }
+        throw "Invalid execution_profile configuration: unsupported value '$rawExecutionProfile'. Supported values: $($script:BridgeExecutionProfileKinds -join ', ')."
+    }
+
     if ($rawProjectSettings -is [System.Collections.IDictionary] -and $rawProjectSettings.Contains('agent_slots')) {
         $rawSlotEntries = @()
         $rawSlotValue = $rawProjectSettings['agent_slots']
@@ -2264,11 +2298,18 @@ function Get-BridgeSettings {
         if (-not $slot.Contains('worker_backend')) {
             $slot.worker_backend = [string]$settings.worker_backend
         }
+        if (-not $slot.Contains('execution_profile')) {
+            $slot.execution_profile = [string]$settings.execution_profile
+        }
 
         if (-not (Test-BridgeWorkerBackendKind -Value ([string]$slot.worker_backend))) {
             throw "Invalid agent_slots configuration: unsupported worker_backend '$($slot.worker_backend)' for slot '$($slot.slot_id)'. Supported values: $($script:BridgeWorkerBackendKinds -join ', ')."
         }
         $slot.worker_backend = ([string]$slot.worker_backend).Trim().ToLowerInvariant()
+        if (-not (Test-BridgeExecutionProfileKind -Value ([string]$slot.execution_profile))) {
+            throw "Invalid agent_slots configuration: unsupported execution_profile '$($slot.execution_profile)' for slot '$($slot.slot_id)'. Supported values: $($script:BridgeExecutionProfileKinds -join ', ')."
+        }
+        $slot.execution_profile = ([string]$slot.execution_profile).Trim().ToLowerInvariant()
 
         $slotId = [string]$slot.slot_id
         if ($slotIds.ContainsKey($slotId)) {
@@ -2286,7 +2327,7 @@ function Get-BridgeSettings {
     }
 
     if (@($settings.agent_slots).Count -eq 0 -and -not $useLegacyLayout -and [bool]$settings.external_operator -and [int]$settings.worker_count -gt 0) {
-        $settings.agent_slots = New-BridgeManagedAgentSlots -Count ([int]$settings.worker_count) -Agent ([string]$settings.agent) -Model ([string]$settings.model) -WorkerBackend ([string]$settings.worker_backend)
+        $settings.agent_slots = New-BridgeManagedAgentSlots -Count ([int]$settings.worker_count) -Agent ([string]$settings.agent) -Model ([string]$settings.model) -WorkerBackend ([string]$settings.worker_backend) -ExecutionProfile ([string]$settings.execution_profile)
     }
 
     if (@($settings.agent_slots).Count -gt 0 -and -not $useLegacyLayout) {
@@ -2504,6 +2545,17 @@ function Get-SlotAgentConfig {
     if ([string]::IsNullOrWhiteSpace($workerBackend)) {
         $workerBackend = 'local'
     }
+    $executionProfile = ''
+    if ($Settings -is [System.Collections.IDictionary]) {
+        if ($Settings.Contains('execution_profile')) {
+            $executionProfile = [string]$Settings['execution_profile']
+        }
+    } elseif ($null -ne $Settings.PSObject -and $Settings.PSObject.Properties.Name -contains 'execution_profile') {
+        $executionProfile = [string]$Settings.execution_profile
+    }
+    if ([string]::IsNullOrWhiteSpace($executionProfile)) {
+        $executionProfile = 'local-windows'
+    }
     $workerRole = ''
     $paneTitle = ''
     $sessionName = ''
@@ -2537,6 +2589,7 @@ function Get-SlotAgentConfig {
             $slotPromptTransport = ''
             $slotAuthMode = ''
             $slotWorkerBackend = ''
+            $slotExecutionProfile = ''
             $slotWorkerRole = ''
             $slotPaneTitle = ''
             $slotSessionName = ''
@@ -2574,6 +2627,9 @@ function Get-SlotAgentConfig {
                 }
                 if ($slot.Contains('worker_backend')) {
                     $slotWorkerBackend = [string]$slot['worker_backend']
+                }
+                if ($slot.Contains('execution_profile')) {
+                    $slotExecutionProfile = [string]$slot['execution_profile']
                 }
                 if ($slot.Contains('worker_role')) {
                     $slotWorkerRole = [string]$slot['worker_role']
@@ -2625,6 +2681,9 @@ function Get-SlotAgentConfig {
                 }
                 if ($slot.PSObject.Properties.Name -contains 'worker_backend') {
                     $slotWorkerBackend = [string]$slot.worker_backend
+                }
+                if ($slot.PSObject.Properties.Name -contains 'execution_profile') {
+                    $slotExecutionProfile = [string]$slot.execution_profile
                 }
                 if ($slot.PSObject.Properties.Name -contains 'worker_role') {
                     $slotWorkerRole = [string]$slot.worker_role
@@ -2692,6 +2751,9 @@ function Get-SlotAgentConfig {
 
             if (-not [string]::IsNullOrWhiteSpace($slotWorkerBackend)) {
                 $workerBackend = $slotWorkerBackend
+            }
+            if (-not [string]::IsNullOrWhiteSpace($slotExecutionProfile)) {
+                $executionProfile = $slotExecutionProfile
             }
             if (-not [string]::IsNullOrWhiteSpace($slotWorkerRole)) {
                 $workerRole = $slotWorkerRole
@@ -2768,6 +2830,7 @@ function Get-SlotAgentConfig {
     return [PSCustomObject]@{
         SlotId                   = [string]$SlotId
         WorkerBackend            = [string]$workerBackend
+        ExecutionProfile         = [string]$executionProfile
         WorkerRole               = [string]$workerRole
         PaneTitle                = [string]$paneTitle
         SessionName              = [string]$sessionName

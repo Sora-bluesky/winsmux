@@ -130,6 +130,13 @@ release lanes add execution behavior. A standard initialized project keeps six
 managed worker slots, and `agent-slots` remains the source of truth when
 present.
 
+The execution profile is a separate run-policy contract. `local-windows` is the
+default profile and preserves the normal managed-pane behavior. The
+`isolated-enterprise` profile is explicit opt-in; it does not change a slot into
+a different worker backend by itself. Backend selection, provider capability,
+and run policy stay separate so role or playbook intent is not mixed with the
+execution substrate.
+
 Review is handled by any **review-capable slot**, not by a permanently dedicated reviewer pane.
 Meta-planning follows the same rule: the current Claude/Codex role pair is an
 MVP seed, while custom planning roles should be selected from provider

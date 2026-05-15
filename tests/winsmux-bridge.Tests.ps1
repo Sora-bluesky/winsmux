@@ -255,6 +255,7 @@ Describe 'Get-BridgeSettings' {
         $settings.operators | Should -Be 0
         $settings.worker_count | Should -Be 6
         $settings.worker_backend | Should -Be 'local'
+        $settings.execution_profile | Should -Be 'local-windows'
         $settings.agent_slots.Count | Should -Be 6
         $settings.agent_slots[0].slot_id | Should -Be 'worker-1'
         $settings.agent_slots[0].runtime_role | Should -Be 'worker'
@@ -262,10 +263,12 @@ Describe 'Get-BridgeSettings' {
         $settings.agent_slots[0].model | Should -Be 'provider-default'
         $settings.agent_slots[0].model_source | Should -Be 'provider-default'
         $settings.agent_slots[0].worker_backend | Should -Be 'codex'
+        $settings.agent_slots[0].execution_profile | Should -Be 'local-windows'
         $settings.agent_slots[0].worker_role | Should -Be 'reviewer'
         $settings.agent_slots[0].fallback_model | Should -Be 'gpt-5.3-codex-spark'
         $settings.agent_slots[0].pane_title | Should -Be 'W1 Codex Reviewer'
         $settings.agent_slots[1].worker_backend | Should -Be 'local'
+        $settings.agent_slots[1].execution_profile | Should -Be 'local-windows'
         $settings.builders | Should -Be 0
         $settings.researchers | Should -Be 0
         $settings.reviewers | Should -Be 0
@@ -367,6 +370,69 @@ worker_count: 2
         $settings.agent_slots.Count | Should -Be 2
         $settings.agent_slots[0].worker_backend | Should -Be 'codex'
         $settings.agent_slots[1].worker_backend | Should -Be 'codex'
+    }
+
+    It 'keeps execution profile separate from worker backend and execution backend' {
+@'
+agent: codex
+model: provider-default
+worker-backend: local
+execution-profile: isolated-enterprise
+worker_count: 2
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    worker-backend: codex
+    execution-profile: local-windows
+    worker-role: reviewer
+    agent: codex
+    model: provider-default
+    worktree-mode: managed
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: colab_cli
+    execution-profile: isolated-enterprise
+    worker-role: impl
+    agent: codex
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        $settings = Get-BridgeSettings
+
+        $settings.execution_profile | Should -Be 'isolated-enterprise'
+        $settings.agent_slots[0].execution_profile | Should -Be 'local-windows'
+        $settings.agent_slots[1].worker_backend | Should -Be 'colab_cli'
+        $settings.agent_slots[1].execution_profile | Should -Be 'isolated-enterprise'
+
+        $impl = Get-SlotAgentConfig -Role 'Worker' -SlotId 'worker-2' -Settings $settings
+        $impl.WorkerBackend | Should -Be 'colab_cli'
+        $impl.ExecutionProfile | Should -Be 'isolated-enterprise'
+        $impl.ExecutionBackend | Should -Be ''
+    }
+
+    It 'fails closed when execution profile is unsupported' {
+@'
+execution-profile: container-mandatory
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        { Get-BridgeSettings } | Should -Throw '*Invalid execution_profile configuration*'
+    }
+
+    It 'fails closed when global execution profile is unsupported' {
+        Mock Get-WinsmuxOption {
+            param($Name, $Default)
+
+            switch ($Name) {
+                '@bridge-execution-profile' { 'container-mandatory' }
+                default { $null }
+            }
+        }
+
+        { Get-BridgeSettings } | Should -Throw "*Invalid execution_profile configuration: unsupported value 'container-mandatory'.*"
     }
 
     It 'parses WorkerBackend metadata for six-slot worker configs without runtime dispatch' {
@@ -2073,10 +2139,11 @@ Describe 'Get-OrchestraLayoutSettings' {
                 model              = 'gpt-5.4'
                 external_operator = $true
                 worker_backend     = 'local'
+                execution_profile  = 'isolated-enterprise'
                 worker_count       = 2
                 agent_slots        = @(
-                    [ordered]@{ slot_id = 'worker-1'; runtime_role = 'worker'; agent = 'codex'; model = 'gpt-5.4'; worker_backend = 'codex'; worker_role = 'reviewer'; fallback_model = 'gpt-5.4'; worktree_mode = 'managed' },
-                    [ordered]@{ slot_id = 'worker-2'; runtime_role = 'worker'; agent = 'codex'; model = 'gpt-5.4'; worker_backend = 'colab_cli'; worker_role = 'impl'; gpu_preference = @('H100', 'A100', 'L4'); packages = @('torch', 'transformers'); worktree_mode = 'managed' }
+                    [ordered]@{ slot_id = 'worker-1'; runtime_role = 'worker'; agent = 'codex'; model = 'gpt-5.4'; worker_backend = 'codex'; execution_profile = 'local-windows'; worker_role = 'reviewer'; fallback_model = 'gpt-5.4'; worktree_mode = 'managed' },
+                    [ordered]@{ slot_id = 'worker-2'; runtime_role = 'worker'; agent = 'codex'; model = 'gpt-5.4'; worker_backend = 'colab_cli'; execution_profile = 'isolated-enterprise'; worker_role = 'impl'; gpu_preference = @('H100', 'A100', 'L4'); packages = @('torch', 'transformers'); worktree_mode = 'managed' }
                 )
                 vault_keys         = @('GH_TOKEN')
             })
@@ -2086,6 +2153,7 @@ Describe 'Get-OrchestraLayoutSettings' {
             $projectConfig = Get-Content -Raw -Path $projectConfigPath -Encoding UTF8
             $projectConfig | Should -Match 'agent_slots:'
             $projectConfig | Should -Not -Match 'worker_count:'
+            $projectConfig | Should -Match 'execution_profile: isolated-enterprise'
             $projectConfig | Should -Match 'worker_backend: colab_cli'
             $projectConfig | Should -Match 'gpu_preference: \[H100, A100, L4\]'
             $projectConfig | Should -Match 'packages: \[torch, transformers\]'
@@ -2094,10 +2162,13 @@ Describe 'Get-OrchestraLayoutSettings' {
 
             $roundTrip = Get-BridgeSettings -RootPath $projectRoot
             $roundTrip.worker_backend | Should -Be 'local'
+            $roundTrip.execution_profile | Should -Be 'isolated-enterprise'
             $roundTrip.worker_count | Should -Be 2
             $roundTrip.agent_slots[0].worker_backend | Should -Be 'codex'
+            $roundTrip.agent_slots[0].execution_profile | Should -Be 'local-windows'
             $roundTrip.agent_slots[0].worker_role | Should -Be 'reviewer'
             $roundTrip.agent_slots[1].worker_backend | Should -Be 'colab_cli'
+            $roundTrip.agent_slots[1].execution_profile | Should -Be 'isolated-enterprise'
             $roundTrip.agent_slots[1].worker_role | Should -Be 'impl'
             $roundTrip.agent_slots[1].gpu_preference | Should -Be @('H100', 'A100', 'L4')
             $roundTrip.agent_slots[1].packages | Should -Be @('torch', 'transformers')
@@ -7115,6 +7186,7 @@ Describe 'orchestra-start rollback helpers' {
             prompt_transport = 'argv'
             auth_mode = 'local-cli'
             credential_requirements = 'local-cli-owned'
+            execution_profile = 'local-windows'
             execution_backend = 'local'
             analysis_posture = 'read-write-worker'
             auto_launch = $false
@@ -7167,6 +7239,7 @@ Describe 'orchestra-start rollback helpers' {
         [bool]$plan.supports_interrupt | Should -Be $true
         [string]$plan.approved_launch.packet_type | Should -Be 'worker_launch_approval'
         [string]$plan.approved_launch.model | Should -Be 'gpt-5.4'
+        [string]$plan.approved_launch.execution_profile | Should -Be 'local-windows'
         [string]$plan.startup_token | Should -Be 'token-123'
         [string]$plan.ready_marker_path | Should -Match '[\\/]2-token-123\.ready\.json$'
         $bridgeCalls.Count | Should -Be 1
@@ -9502,6 +9575,19 @@ worker-backend: colab_cli
         $payload.uploaded_count | Should -Be 1
         $payload.excluded_count | Should -Be 2
         $payload.staged_source | Should -Match '^\.winsmux/worker-runs/worker-2/upload-1/upload-source$'
+        $payload.locations.source.kind | Should -Be 'local_directory'
+        $payload.locations.source.backend | Should -Be 'local-windows'
+        $payload.locations.source.local_path | Should -Be ''
+        $payload.locations.staged_source.kind | Should -Be 'local_directory'
+        $payload.locations.staged_source.access_method | Should -Be 'runtime_staging'
+        $payload.locations.staged_source.local_path | Should -Be ''
+        $payload.locations.remote.kind | Should -Be 'remote_artifact'
+        $payload.locations.remote.backend | Should -Be 'colab_cli'
+        $payload.locations.remote.remote_path | Should -Be '/content/inputs'
+        $payload.locations.remote.local_path | Should -Be ''
+        $payload.locations.manifest.kind | Should -Be 'local_file'
+        $payload.locations.manifest.local_path | Should -Be ''
+        ($payload.locations | ConvertTo-Json -Depth 12) | Should -Not -Match ([regex]::Escape($script:workersTempRoot))
         $payload.cli_arguments | Should -Not -Contain (Join-Path $script:workersTempRoot 'inputs')
         (@($payload.cli_arguments) -join ' ') | Should -Not -Match ([regex]::Escape($script:workersTempRoot))
         (@($payload.cli_arguments) -join ' ') | Should -Match '\[LOCAL_PATH_REDACTED\]'
@@ -9511,6 +9597,31 @@ worker-backend: colab_cli
         Test-Path -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\worker-runs\worker-2\upload-1\upload-source\.env') | Should -Be $false
         @($manifest.excluded | ForEach-Object { $_.reason }) | Should -Contain 'secret_like_file'
         @($manifest.excluded | ForEach-Object { $_.reason }) | Should -Contain 'excluded_segment:node_modules'
+    }
+
+    It 'keeps unstaged file upload locations typed without publishing absolute local paths' {
+        New-WorkersFakeColabCli | Out-Null
+        Write-WorkersColabProjectConfig
+        'payload' | Set-Content -Path (Join-Path $script:workersTempRoot 'input.json') -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers upload w2 input.json --remote /content/input.json --run-id upload-file --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $runJsonPath = Join-Path $script:workersTempRoot '.winsmux\worker-runs\worker-2\upload-file\upload.json'
+        $storedPayload = Get-Content -LiteralPath $runJsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
+
+        $payload.status | Should -Be 'succeeded'
+        $payload.source | Should -Be 'input.json'
+        $payload.staged_source | Should -Be 'input.json'
+        $payload.locations.source.kind | Should -Be 'local_file'
+        $payload.locations.source.access_method | Should -Be 'project_path'
+        $payload.locations.source.reference | Should -Be 'input.json'
+        $payload.locations.source.local_path | Should -Be ''
+        $payload.locations.staged_source.kind | Should -Be 'local_file'
+        $payload.locations.staged_source.access_method | Should -Be 'project_path'
+        $payload.locations.staged_source.reference | Should -Be 'input.json'
+        $payload.locations.staged_source.local_path | Should -Be ''
+        ($payload.locations | ConvertTo-Json -Depth 12) | Should -Not -Match ([regex]::Escape($script:workersTempRoot))
+        ($storedPayload.locations | ConvertTo-Json -Depth 12) | Should -Not -Match ([regex]::Escape($script:workersTempRoot))
     }
 
     It 'keeps empty stored worker logs local' {
@@ -9690,6 +9801,12 @@ agent-slots:
         $payload.status | Should -Be 'succeeded'
         $payload.remote | Should -Be '/content/out/result.json'
         $payload.output | Should -Match '^\.winsmux/worker-downloads/worker-2/download-1$'
+        $payload.locations.remote.kind | Should -Be 'remote_artifact'
+        $payload.locations.remote.local_path | Should -Be ''
+        $payload.locations.output.kind | Should -Be 'local_directory'
+        $payload.locations.output.backend | Should -Be 'local-windows'
+        $payload.locations.output.local_path | Should -Be ''
+        ($payload.locations | ConvertTo-Json -Depth 12) | Should -Not -Match ([regex]::Escape($script:workersTempRoot))
         $payload.cli_arguments[0] | Should -Be 'download'
     }
 
@@ -9703,6 +9820,10 @@ agent-slots:
 
         $payload.status | Should -Be 'succeeded'
         $payload.output | Should -Be 'results/result.json'
+        $payload.locations.output.kind | Should -Be 'local_file'
+        $payload.locations.output.reference | Should -Be 'results/result.json'
+        $payload.locations.output.local_path | Should -Be ''
+        ($payload.locations | ConvertTo-Json -Depth 12) | Should -Not -Match ([regex]::Escape($script:workersTempRoot))
         (@($payload.cli_arguments) -join ' ') | Should -Not -Match ([regex]::Escape($expectedOutput))
         (@($payload.cli_arguments) -join ' ') | Should -Match '\[LOCAL_PATH_REDACTED\]'
         Test-Path -LiteralPath (Split-Path -Parent $expectedOutput) -PathType Container | Should -Be $true
@@ -16865,6 +16986,31 @@ Describe 'winsmux observation and consultation artifacts' {
 
         $hydrated = Read-WinsmuxArtifactJson -Reference '.winsmux/observation-packs/observation-pack-bad.json' -ProjectDir $script:artifactTempRoot -ExpectedDirectoryPath $badDir -ExpectedRunId 'task:task-300'
         $hydrated | Should -Be $null
+    }
+
+    It 'does not expose local path helpers for remote artifact locations' {
+        $remoteLocation = New-WinsmuxLocationIdentity `
+            -Kind 'remote_artifact' `
+            -DisplayName '/content/out/result.json' `
+            -Backend 'colab_cli' `
+            -AccessMethod 'adapter_remote_path' `
+            -RemotePath '/content/out/result.json' `
+            -Provenance 'test.remote'
+
+        $remoteLocation.kind | Should -Be 'remote_artifact'
+        $remoteLocation.local_path | Should -Be ''
+        { Resolve-WinsmuxLocationIdentityLocalPath -Location $remoteLocation } | Should -Throw '*local path is not available*'
+
+        $localLocation = New-WinsmuxLocationIdentity `
+            -Kind 'local_file' `
+            -DisplayName 'artifact.json' `
+            -Backend 'local-windows' `
+            -AccessMethod 'artifact_ref' `
+            -Reference '.winsmux/artifact.json' `
+            -LocalPath (Join-Path $script:artifactTempRoot 'artifact.json') `
+            -Provenance 'test.local'
+
+        Resolve-WinsmuxLocationIdentityLocalPath -Location $localLocation | Should -Be (Join-Path $script:artifactTempRoot 'artifact.json')
     }
 }
 

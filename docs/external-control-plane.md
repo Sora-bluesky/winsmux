@@ -60,17 +60,25 @@ For example, `desktop.editor.read` and `desktop.explorer.list` can read local
 project files. They remain internal to the Tauri desktop context until a
 separate external authorization model exists.
 
+## MCP Adapter Boundary
+
+The bundled MCP server is a thin local adapter over the upstream MCP JSON-RPC
+shape and stdio transport. winsmux-specific code should stay limited to
+argument-array command invocation, input validation, and local safety policy.
+If an upstream protocol client or official transport behavior can handle a
+case, winsmux should prefer that path before adding local compatibility code.
+
 ## Client Compatibility
 
-OpenClaw-style local clients can connect if they run on the same Windows host
-and implement JSON-RPC over the named pipe. They should call
+Local automation clients can connect if they run on the same Windows host and
+implement JSON-RPC over the named pipe. They should call
 `desktop.control_plane.contract` first and generate client capabilities from
 the returned `methods` list.
 
-Codex and Claude Code can also drive the pipe from a local shell or tool call
-when the user has granted permission to run a local command. They do not get a
-special privileged API surface. They see the same external contract as any
-other local client.
+Agent CLIs can also drive the pipe from a local shell or tool call when the user
+has granted permission to run a local command. They do not get a special
+privileged API surface. They see the same external contract as any other local
+client.
 
 The desktop app remains the required control surface for worker launch approval
 and local file-reading UI actions. External clients should not assume that an

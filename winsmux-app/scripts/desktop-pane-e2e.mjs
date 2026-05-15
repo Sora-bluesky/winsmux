@@ -1001,7 +1001,7 @@ async function main() {
         const detail = document.querySelector(".worker-status-detail-strip");
         return detail?.getAttribute("data-worker-status-detail") === "worker-1";
       }, undefined, { timeout: 10_000 });
-      const requiredFields = ["role", "backend", "auth", "model-source", "launch", "blocked", "remote", "elapsed", "focus"];
+      const requiredFields = ["role", "backend", "profile", "auth", "model-source", "launch", "blocked", "remote", "elapsed", "focus"];
       for (const field of requiredFields) {
         const count = await page.locator(`.worker-status-detail-strip[data-worker-status-detail="worker-1"] .worker-status-pill-chip[data-status-field="${field}"]`).count();
         if (count !== 1) {
@@ -1256,6 +1256,9 @@ async function main() {
       const text = await page.locator("#conversation-panel").innerText();
       if (!text.includes("worker-1") || !text.includes("manifest_entry_missing")) {
         throw new Error(`worker start conversation did not expose the expected launch result:\n${text.slice(-1_200)}`);
+      }
+      if (!text.includes("profile local-windows")) {
+        throw new Error(`worker start conversation did not expose the execution profile:\n${text.slice(-1_200)}`);
       }
       return { conversationTail: text.slice(-1_200) };
     });

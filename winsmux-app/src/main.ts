@@ -1844,6 +1844,11 @@ function getWorkerModelSource(row: DesktopWorkerStatusRow) {
     || (getLaunchApprovalField(launch, "model") ? "configured" : "provider-default");
 }
 
+function getWorkerExecutionProfile(row: DesktopWorkerStatusRow) {
+  const launch = getWorkerStatusLaunch(row);
+  return getLaunchApprovalField(launch, "execution_profile") || "local-windows";
+}
+
 function getConcreteWorkerStatusValue(...values: Array<string | null | undefined>) {
   for (const value of values) {
     const normalized = (value ?? "").trim();
@@ -1911,6 +1916,7 @@ function getWorkerStatusPillTitle(row: DesktopWorkerStatusRow, target: string) {
     `${target}: ${getWorkerLaunchState(row)}`,
     `role=${row.role || getLaunchApprovalField(launch, "worker_role") || "worker"}`,
     `backend=${getLaunchApprovalField(launch, "worker_backend") || row.backend || "unknown"}`,
+    `profile=${getWorkerExecutionProfile(row)}`,
     `auth=${getWorkerAuthState(row)}`,
     `model=${getLaunchApprovalField(launch, "model") || "provider-default"}`,
     `model_source=${getWorkerModelSource(row)}`,
@@ -2007,6 +2013,7 @@ function renderWorkerStatusSurface() {
     const target = getWorkerStatusTarget(focusedRow);
     detailStrip.appendChild(createWorkerStatusChip("role", "role", focusedRow.role || getLaunchApprovalField(launch, "worker_role") || "worker"));
     detailStrip.appendChild(createWorkerStatusChip("backend", "backend", getLaunchApprovalField(launch, "worker_backend") || focusedRow.backend || "unknown"));
+    detailStrip.appendChild(createWorkerStatusChip("profile", "prof", getWorkerExecutionProfile(focusedRow)));
     detailStrip.appendChild(createWorkerStatusChip("auth", "auth", getWorkerAuthState(focusedRow)));
     detailStrip.appendChild(createWorkerStatusChip("model-source", "model-src", getWorkerModelSource(focusedRow)));
     detailStrip.appendChild(createWorkerStatusChip("launch", "launch", getWorkerLaunchState(focusedRow)));
@@ -2094,11 +2101,12 @@ function summarizeWorkerLaunchApproval(row: DesktopWorkerStatusRow) {
   const agent = getLaunchApprovalField(launch, "agent") || row.backend || "unknown";
   const model = getLaunchApprovalField(launch, "model") || "provider-default";
   const backend = getLaunchApprovalField(launch, "worker_backend") || row.backend || "unknown";
+  const profile = getWorkerExecutionProfile(row);
   const effort = getLaunchApprovalField(launch, "reasoning_effort") || "provider-default";
   const credential = getLaunchApprovalField(launch, "credential_requirements") || "default";
   return getLanguageText(
-    `${row.slot_id}: ${agent} / ${model} / ${backend} / effort ${effort} / credential ${credential}`,
-    `${row.slot_id}: ${agent} / ${model} / ${backend} / 思考量 ${effort} / 認証 ${credential}`,
+    `${row.slot_id}: ${agent} / ${model} / ${backend} / profile ${profile} / effort ${effort} / credential ${credential}`,
+    `${row.slot_id}: ${agent} / ${model} / ${backend} / profile ${profile} / 思考量 ${effort} / 認証 ${credential}`,
   );
 }
 
@@ -2120,6 +2128,7 @@ function buildWorkerLaunchDetails(row: DesktopWorkerStatusRow, differences: Desk
     { label: getLanguageText("agent", "エージェント"), value: getLaunchApprovalField(launch, "agent") || row.backend || "unknown" },
     { label: getLanguageText("model", "モデル"), value: getLaunchApprovalField(launch, "model") || "provider-default" },
     { label: getLanguageText("backend", "バックエンド"), value: getLaunchApprovalField(launch, "worker_backend") || row.backend || "unknown" },
+    { label: getLanguageText("profile", "実行プロファイル"), value: getWorkerExecutionProfile(row) },
     { label: getLanguageText("differences", "差分"), value: String(differences.length) },
   ];
 }

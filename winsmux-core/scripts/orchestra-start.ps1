@@ -683,6 +683,7 @@ function New-OrchestraWorkerLaunchApproval {
         prompt_transport        = [string]$SlotAgentConfig.PromptTransport
         auth_mode               = [string]$SlotAgentConfig.AuthMode
         credential_requirements = [string]$SlotAgentConfig.CredentialRequirements
+        execution_profile       = [string]$SlotAgentConfig.ExecutionProfile
         execution_backend       = [string]$SlotAgentConfig.ExecutionBackend
         analysis_posture        = [string]$SlotAgentConfig.AnalysisPosture
         auto_launch             = [bool]$AutoLaunch
