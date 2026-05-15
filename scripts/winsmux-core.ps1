@@ -3554,6 +3554,11 @@ function Invoke-Role {
             provider_target            = $providerTarget
             capability_adapter         = [string]$roleAgentConfig.CapabilityAdapter
             capability_command         = [string]$roleAgentConfig.CapabilityCommand
+            harness_availability       = [string]$roleAgentConfig.HarnessAvailability
+            credential_requirements    = [string]$roleAgentConfig.CredentialRequirements
+            execution_backend          = [string]$roleAgentConfig.ExecutionBackend
+            runtime_requirements       = [string]$roleAgentConfig.RuntimeRequirements
+            analysis_posture           = [string]$roleAgentConfig.AnalysisPosture
             supports_parallel_runs     = [bool]$roleAgentConfig.SupportsParallelRuns
             supports_interrupt         = [bool]$roleAgentConfig.SupportsInterrupt
             supports_structured_result = [bool]$roleAgentConfig.SupportsStructuredResult
@@ -4111,6 +4116,11 @@ function New-LauncherSlotSummary {
         auth_mode                  = [string]$effective.AuthMode
         auth_policy                = [string]$effective.AuthPolicy
         local_access_note          = [string]$effective.LocalAccessNote
+        harness_availability       = [string]$effective.HarnessAvailability
+        credential_requirements    = [string]$effective.CredentialRequirements
+        execution_backend          = [string]$effective.ExecutionBackend
+        runtime_requirements       = [string]$effective.RuntimeRequirements
+        analysis_posture           = [string]$effective.AnalysisPosture
         source                     = [string]$effective.Source
         capability_adapter         = [string]$effective.CapabilityAdapter
         capability_command         = [string]$effective.CapabilityCommand
@@ -13528,6 +13538,11 @@ function Invoke-ProviderSwitch {
         auth_mode                  = [string]$effective.AuthMode
         auth_policy                = [string]$effective.AuthPolicy
         local_access_note          = [string]$effective.LocalAccessNote
+        harness_availability       = [string]$effective.HarnessAvailability
+        credential_requirements    = [string]$effective.CredentialRequirements
+        execution_backend          = [string]$effective.ExecutionBackend
+        runtime_requirements       = [string]$effective.RuntimeRequirements
+        analysis_posture           = [string]$effective.AnalysisPosture
         source                     = [string]$effective.Source
         capability_adapter         = [string]$effective.CapabilityAdapter
         capability_command         = [string]$effective.CapabilityCommand

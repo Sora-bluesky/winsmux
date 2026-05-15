@@ -33,6 +33,29 @@ CLI であることは認証方式や実行方式の列で説明します。
 | ローカル LLM ランタイム | 今後のアダプター候補 | `v0.32.x` の Colab 対応では動作要件にしません。現時点では、通常のローカルツールとしてペインで動かすか、ローカルエンドポイントを使えるエージェント CLI 経由で使います。 |
 | `noop` ワーカーバックエンド | 仮置きスロットとして対応 | スロットを宣言したまま無効にできます。 |
 
+## プロバイダー能力カタログ
+
+`v0.33.0` から、`.winsmux/provider-capabilities.json` をエージェント CLI と
+ローカルエンドポイント用アダプターの能力カタログとして扱います。このカタログでは、
+起動方法、モデル情報、資格情報の境界を分けます。これにより、winsmux は
+ローカル推論エンドポイントを誤って書き込み可能ワーカーとして扱いません。
+
+プロバイダー定義では、次の項目を分けて宣言できます。
+
+- `harness_availability`: 組み込み CLI、外部アダプター、手動ペインツールのどれか。
+- `credential_requirements`: サインイン、API キー、エンドポイントの秘密情報、トークン保存を誰が所有するか。
+- `execution_backend`: エージェント CLI、Colab ワーカー、OpenAI 互換ローカルエンドポイントなどの実行経路。
+- `runtime_requirements`: エンドポイント、実行ファイル、GPU、CPU、メモリ、OS、リモートランタイムの要件。
+- `model_catalog_source` と `model_options`: モデル名の取得元と、オペレーターが選べる候補。
+- `analysis_posture`: 読み取り専用の分析に限るか、通常の書き込み可能ワーカーとして扱えるか。
+
+OpenAI 互換ローカルエンドポイントや GPU 付きローカルランタイムの既定は、
+読み取り専用の分析プロバイダーです。`supports_file_edit: false`、
+`supports_verification: false`、`supports_consultation: true`、
+`analysis_posture: "read-only-analysis"` と宣言します。ローカルランタイムは、
+エンドポイント、モデル、資格情報を自分で所有します。winsmux は OAuth を仲介せず、
+callback URL を受け取らず、プロバイダートークンをペイン間でコピーしません。
+
 ## モデル選択の方針
 
 モデル名は winsmux のリリースより速く変わります。そのため winsmux は、モデルを

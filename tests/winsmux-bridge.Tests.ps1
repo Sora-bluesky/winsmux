@@ -1232,6 +1232,11 @@ agent-slots:
       "model_sources": ["provider-default", "cli-discovery"],
       "reasoning_efforts": ["provider-default", "low", "medium", "high", "xhigh"],
       "local_access_note": "Local Codex CLI catalog and ChatGPT account access.",
+      "harness_availability": "official-cli",
+      "credential_requirements": "local-cli-owned",
+      "execution_backend": "agent-cli",
+      "runtime_requirements": "Codex CLI installed in the pane environment.",
+      "analysis_posture": "read-write-worker",
       "prompt_transports": ["argv", "file", "stdin"],
       "auth_modes": ["api-key", "codex-chatgpt-local"],
       "local_interactive_oauth_modes": ["codex-chatgpt-local"],
@@ -1255,6 +1260,11 @@ agent-slots:
         $registry.providers.codex.model_sources | Should -Be @('provider-default', 'cli-discovery')
         $registry.providers.codex.reasoning_efforts | Should -Be @('provider-default', 'low', 'medium', 'high', 'xhigh')
         $registry.providers.codex.local_access_note | Should -Be 'Local Codex CLI catalog and ChatGPT account access.'
+        $registry.providers.codex.harness_availability | Should -Be 'official-cli'
+        $registry.providers.codex.credential_requirements | Should -Be 'local-cli-owned'
+        $registry.providers.codex.execution_backend | Should -Be 'agent-cli'
+        $registry.providers.codex.runtime_requirements | Should -Be 'Codex CLI installed in the pane environment.'
+        $registry.providers.codex.analysis_posture | Should -Be 'read-write-worker'
         $registry.providers.codex.auth_modes | Should -Be @('api-key', 'codex-chatgpt-local')
         $registry.providers.codex.local_interactive_oauth_modes | Should -Be @('codex-chatgpt-local')
         $registry.providers.codex.supports_file_edit | Should -Be $true
@@ -1283,6 +1293,11 @@ agent-slots:
       "model_sources": ["provider-default", "cli-discovery"],
       "reasoning_efforts": ["provider-default", "low", "medium", "high", "xhigh"],
       "local_access_note": "Local Codex CLI catalog and ChatGPT account access.",
+      "harness_availability": "official-cli",
+      "credential_requirements": "local-cli-owned",
+      "execution_backend": "agent-cli",
+      "runtime_requirements": "Codex CLI installed in the pane environment.",
+      "analysis_posture": "read-write-worker",
       "prompt_transports": ["argv", "file", "stdin"],
       "auth_modes": ["api-key", "codex-chatgpt-local"],
       "local_interactive_oauth_modes": ["codex-chatgpt-local"],
@@ -1326,6 +1341,11 @@ agent-slots:
         $config.ModelSources | Should -Be @('provider-default', 'cli-discovery')
         $config.ReasoningEfforts | Should -Be @('provider-default', 'low', 'medium', 'high', 'xhigh')
         $config.LocalAccessNote | Should -Be 'Local Codex CLI catalog and ChatGPT account access.'
+        $config.HarnessAvailability | Should -Be 'official-cli'
+        $config.CredentialRequirements | Should -Be 'local-cli-owned'
+        $config.ExecutionBackend | Should -Be 'agent-cli'
+        $config.RuntimeRequirements | Should -Be 'Codex CLI installed in the pane environment.'
+        $config.AnalysisPosture | Should -Be 'read-write-worker'
         $config.AuthMode | Should -Be 'codex-chatgpt-local'
         $config.AuthPolicy | Should -Be 'local_interactive_only'
         $config.SupportsParallelRuns | Should -Be $true
@@ -1711,6 +1731,24 @@ agent-slots:
 }
 '@ | Set-Content -Path $registryPath -Encoding UTF8
         { Read-BridgeProviderCapabilityRegistry -RootPath $script:settingsTempRoot } | Should -Throw "*provider capability field 'supports_file_edit'*"
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "local-openai-compatible": {
+      "adapter": "openai-compatible",
+      "command": "winsmux-local-llm",
+      "prompt_transports": ["stdin"],
+      "read_only_launch_args": [
+        { "arg": "--read-only" }
+      ],
+      "supports_file_edit": false
+    }
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+        { Read-BridgeProviderCapabilityRegistry -RootPath $script:settingsTempRoot } | Should -Throw "*provider capability field 'read_only_launch_args'*"
 
 @'
 {
@@ -13834,10 +13872,38 @@ Describe 'winsmux provider-capabilities command' {
       "model_sources": ["provider-default", "cli-discovery"],
       "reasoning_efforts": ["provider-default", "low", "medium", "high", "xhigh"],
       "local_access_note": "Local Codex CLI catalog and ChatGPT account access.",
+      "harness_availability": "official-cli",
+      "credential_requirements": "local-cli-owned",
+      "execution_backend": "agent-cli",
+      "runtime_requirements": "Codex CLI installed in the pane environment.",
+      "analysis_posture": "read-write-worker",
       "prompt_transports": ["argv", "file", "stdin"],
       "supports_file_edit": true,
       "supports_verification": true,
       "supports_subagents": true
+    },
+    "local-openai-compatible": {
+      "adapter": "openai-compatible",
+      "display_name": "Local OpenAI-compatible endpoint",
+      "command": "winsmux-local-llm",
+      "model_options": [
+        {"id": "operator-selected", "label": "Operator-selected runtime model", "source": "operator-override", "availability": "runtime-discovery"}
+      ],
+      "model_sources": ["operator-override"],
+      "reasoning_efforts": ["provider-default"],
+      "model_catalog_source": "runtime-health-endpoint",
+      "local_access_note": "Local endpoint owns model access and request handling.",
+      "harness_availability": "external-adapter",
+      "credential_requirements": "runtime-owned-local-endpoint",
+      "execution_backend": "openai-compatible-local-endpoint",
+      "runtime_requirements": "127.0.0.1 endpoint; GPU/CPU capacity owned by runtime.",
+      "analysis_posture": "read-only-analysis",
+      "prompt_transports": ["stdin"],
+      "auth_modes": ["none", "local-api-key"],
+      "read_only_launch_args": ["--read-only", "--no-file-edits"],
+      "supports_file_edit": false,
+      "supports_verification": false,
+      "supports_consultation": true
     }
   }
 }
@@ -13867,8 +13933,14 @@ Describe 'winsmux provider-capabilities command' {
         $payload.providers.codex.model_options[1].source | Should -Be 'cli-discovery'
         $payload.providers.codex.reasoning_efforts | Should -Be @('provider-default', 'low', 'medium', 'high', 'xhigh')
         $payload.providers.codex.local_access_note | Should -Be 'Local Codex CLI catalog and ChatGPT account access.'
+        $payload.providers.codex.harness_availability | Should -Be 'official-cli'
         $payload.providers.codex.prompt_transports | Should -Be @('argv', 'file', 'stdin')
         $payload.providers.codex.supports_file_edit | Should -Be $true
+        $payload.providers.'local-openai-compatible'.analysis_posture | Should -Be 'read-only-analysis'
+        $payload.providers.'local-openai-compatible'.credential_requirements | Should -Be 'runtime-owned-local-endpoint'
+        $payload.providers.'local-openai-compatible'.execution_backend | Should -Be 'openai-compatible-local-endpoint'
+        $payload.providers.'local-openai-compatible'.read_only_launch_args | Should -Be @('--read-only', '--no-file-edits')
+        $payload.providers.'local-openai-compatible'.supports_file_edit | Should -Be $false
     }
 
     It 'reports one provider capability entry' {
@@ -14354,6 +14426,11 @@ agent-slots:
       "model_sources": ["provider-default", "cli-discovery"],
       "reasoning_efforts": ["provider-default", "low", "medium", "high", "xhigh"],
       "local_access_note": "Local Codex CLI catalog and ChatGPT account access.",
+      "harness_availability": "official-cli",
+      "credential_requirements": "local-cli-owned",
+      "execution_backend": "agent-cli",
+      "runtime_requirements": "Codex CLI installed in the pane environment.",
+      "analysis_posture": "read-write-worker",
       "prompt_transports": ["argv", "file", "stdin"],
       "auth_modes": ["api-key", "codex-chatgpt-local"],
       "local_interactive_oauth_modes": ["codex-chatgpt-local"],
@@ -14378,6 +14455,11 @@ agent-slots:
       "model_sources": ["provider-default", "official-doc", "operator-override"],
       "reasoning_efforts": ["provider-default", "low", "medium", "high", "xhigh", "max"],
       "local_access_note": "Local Claude Code account and settings.",
+      "harness_availability": "official-cli",
+      "credential_requirements": "local-cli-owned",
+      "execution_backend": "agent-cli",
+      "runtime_requirements": "Claude Code CLI installed in the pane environment.",
+      "analysis_posture": "read-write-worker",
       "prompt_transports": ["file"],
       "auth_modes": ["api-key", "claude-pro-max-oauth"],
       "local_interactive_oauth_modes": ["claude-pro-max-oauth"],
@@ -14425,6 +14507,11 @@ agent-slots:
         $result.capability_adapter | Should -Be 'claude'
         $result.capability_command | Should -Be 'claude'
         $result.local_access_note | Should -Be 'Local Claude Code account and settings.'
+        $result.harness_availability | Should -Be 'official-cli'
+        $result.credential_requirements | Should -Be 'local-cli-owned'
+        $result.execution_backend | Should -Be 'agent-cli'
+        $result.runtime_requirements | Should -Be 'Claude Code CLI installed in the pane environment.'
+        $result.analysis_posture | Should -Be 'read-write-worker'
         $result.supports_file_edit | Should -Be $true
         $result.supports_subagents | Should -Be $false
         $result.supports_consultation | Should -Be $true

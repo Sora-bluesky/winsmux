@@ -1367,9 +1367,37 @@ fn operator_cli_provider_capabilities_json_reads_registry() {
       "model_sources": ["provider-default", "cli-discovery"],
       "reasoning_efforts": ["provider-default", "low", "medium", "high", "xhigh"],
       "local_access_note": "Local Codex CLI catalog and ChatGPT account access.",
+      "harness_availability": "official-cli",
+      "credential_requirements": "local-cli-owned",
+      "execution_backend": "agent-cli",
+      "runtime_requirements": "Codex CLI installed in the pane environment.",
+      "analysis_posture": "read-write-worker",
       "prompt_transports": ["argv", "file", "stdin"],
       "auth_modes": ["local_interactive"],
       "supports_subagents": true
+    },
+    "local-openai-compatible": {
+      "adapter": "openai-compatible",
+      "display_name": "Local OpenAI-compatible endpoint",
+      "command": "winsmux-local-llm",
+      "model_options": [
+        {"id": "operator-selected", "label": "Operator-selected runtime model", "source": "operator-override", "availability": "runtime-discovery"}
+      ],
+      "model_sources": ["operator-override"],
+      "reasoning_efforts": ["provider-default"],
+      "model_catalog_source": "runtime-health-endpoint",
+      "local_access_note": "Local endpoint owns model access and request handling.",
+      "harness_availability": "external-adapter",
+      "credential_requirements": "runtime-owned-local-endpoint",
+      "execution_backend": "openai-compatible-local-endpoint",
+      "runtime_requirements": "127.0.0.1 endpoint; GPU/CPU capacity owned by runtime.",
+      "analysis_posture": "read-only-analysis",
+      "prompt_transports": ["stdin"],
+      "auth_modes": ["none", "local-api-key"],
+      "read_only_launch_args": ["--read-only", "--no-file-edits"],
+      "supports_file_edit": false,
+      "supports_verification": false,
+      "supports_consultation": true
     },
     "claude": {
       "adapter": "claude",
@@ -1404,6 +1432,30 @@ fn operator_cli_provider_capabilities_json_reads_registry() {
     assert_eq!(
         registry["providers"]["codex"]["local_access_note"],
         "Local Codex CLI catalog and ChatGPT account access."
+    );
+    assert_eq!(
+        registry["providers"]["local-openai-compatible"]["analysis_posture"],
+        "read-only-analysis"
+    );
+    assert_eq!(
+        registry["providers"]["local-openai-compatible"]["credential_requirements"],
+        "runtime-owned-local-endpoint"
+    );
+    assert_eq!(
+        registry["providers"]["local-openai-compatible"]["execution_backend"],
+        "openai-compatible-local-endpoint"
+    );
+    assert_eq!(
+        registry["providers"]["local-openai-compatible"]["read_only_launch_args"][1],
+        "--no-file-edits"
+    );
+    assert_eq!(
+        registry["providers"]["local-openai-compatible"]["supports_file_edit"],
+        false
+    );
+    assert_eq!(
+        registry["providers"]["local-openai-compatible"]["supports_consultation"],
+        true
     );
     assert_eq!(
         registry["providers"]["codex"]["prompt_transports"][2],
@@ -2601,6 +2653,14 @@ fn operator_cli_provider_switch_writes_registry_entry() {
     assert_eq!(result["source"], "registry");
     assert_eq!(result["capability_adapter"], "claude");
     assert_eq!(result["capability_command"], "claude");
+    assert_eq!(result["harness_availability"], "official-cli");
+    assert_eq!(result["credential_requirements"], "local-cli-owned");
+    assert_eq!(result["execution_backend"], "agent-cli");
+    assert_eq!(
+        result["runtime_requirements"],
+        "Claude Code CLI installed in the pane environment."
+    );
+    assert_eq!(result["analysis_posture"], "read-write-worker");
     assert_eq!(result["supports_file_edit"], true);
     assert_eq!(result["supports_subagents"], false);
     assert_eq!(result["supports_consultation"], true);
@@ -5253,6 +5313,82 @@ fn operator_cli_dispatch_review_sends_review_request_to_preferred_pane() {
 }
 
 #[test]
+fn operator_cli_dispatch_review_prefers_reviewer_role_over_manifest_order() {
+    let project_dir = make_temp_project_dir("dispatch-review-prefers-reviewer-role");
+    write_manifest(&project_dir);
+    let manifest_path = project_dir.join(".winsmux").join("manifest.yaml");
+    fs::write(
+        &manifest_path,
+        r#"
+version: 1
+session:
+  name: winsmux-orchestra
+panes:
+  worker-1:
+    pane_id: "%2"
+    role: Worker
+    state: idle
+  reviewer-1:
+    pane_id: "%3"
+    role: Reviewer
+    state: idle
+"#,
+    )
+    .expect("test should write manifest with worker before reviewer");
+    init_git_branch(
+        &project_dir,
+        "codex/task266-rust-operator-readmodels-20260424",
+    );
+    set_git_head(
+        &project_dir,
+        "codex/task266-rust-operator-readmodels-20260424",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    write_review_state(
+        &project_dir,
+        r#"{
+  "codex/task266-rust-operator-readmodels-20260424": {
+    "status": "PENDING",
+    "branch": "codex/task266-rust-operator-readmodels-20260424",
+    "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+}"#,
+    );
+    let (winsmux_bin, log_path) = write_fake_winsmux_dispatch_review(&project_dir);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .arg("dispatch-review")
+        .env("WINSMUX_BIN", winsmux_bin)
+        .env("WINSMUX_PANE_ID", "%1")
+        .env("WINSMUX_ROLE", "Operator")
+        .env("WINSMUX_ROLE_MAP", r#"{"%1":"Operator"}"#)
+        .env("WINSMUX_DISPATCH_REVIEW_POLL_ATTEMPTS", "0")
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(
+        output.status.success(),
+        "winsmux command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Dispatching review to reviewer-1 [%3]"),
+        "unexpected stdout: {stdout}"
+    );
+    let log = fs::read_to_string(log_path).expect("test should read fake winsmux log");
+    assert!(
+        log.contains("send-keys") && log.contains("%3") && log.contains("winsmux review-request"),
+        "unexpected fake winsmux log: {log}"
+    );
+    assert!(
+        !log.contains("send-keys -t %2"),
+        "review request should not be sent to the worker pane: {log}"
+    );
+}
+
+#[test]
 fn operator_cli_dispatch_review_rejects_stale_pending_review_state() {
     let project_dir = make_temp_project_dir("dispatch-review-stale");
     write_manifest(&project_dir);
@@ -6499,6 +6635,11 @@ agent-slots:
       "model_sources": ["provider-default", "cli-discovery"],
       "reasoning_efforts": ["provider-default", "low", "medium", "high", "xhigh"],
       "local_access_note": "Local Codex CLI catalog and ChatGPT account access.",
+      "harness_availability": "official-cli",
+      "credential_requirements": "local-cli-owned",
+      "execution_backend": "agent-cli",
+      "runtime_requirements": "Codex CLI installed in the pane environment.",
+      "analysis_posture": "read-write-worker",
       "prompt_transports": ["argv", "file", "stdin"],
       "auth_modes": ["api-key", "codex-chatgpt-local"],
       "local_interactive_oauth_modes": ["codex-chatgpt-local"],
@@ -6522,6 +6663,11 @@ agent-slots:
       "model_sources": ["provider-default", "official-doc", "operator-override"],
       "reasoning_efforts": ["provider-default", "low", "medium", "high", "xhigh", "max"],
       "local_access_note": "Local Claude Code account and settings.",
+      "harness_availability": "official-cli",
+      "credential_requirements": "local-cli-owned",
+      "execution_backend": "agent-cli",
+      "runtime_requirements": "Claude Code CLI installed in the pane environment.",
+      "analysis_posture": "read-write-worker",
       "prompt_transports": ["file"],
       "auth_modes": ["api-key", "claude-pro-max-oauth"],
       "local_interactive_oauth_modes": ["claude-pro-max-oauth"],
@@ -6543,6 +6689,11 @@ agent-slots:
       "model_sources": ["provider-default", "operator-override"],
       "reasoning_efforts": ["provider-default"],
       "local_access_note": "Local Gemini CLI account and settings.",
+      "harness_availability": "official-cli",
+      "credential_requirements": "local-cli-owned",
+      "execution_backend": "agent-cli",
+      "runtime_requirements": "Gemini CLI installed in the pane environment.",
+      "analysis_posture": "read-write-worker",
       "prompt_transports": ["argv", "file"],
       "auth_modes": ["gemini-local"],
       "local_interactive_oauth_modes": ["gemini-local"],
