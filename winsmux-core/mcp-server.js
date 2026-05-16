@@ -7,7 +7,7 @@ const path = require("path");
 
 const BRIDGE_SCRIPT = resolveBridgeScript();
 const SERVER_NAME = "winsmux-mcp";
-const SERVER_VERSION = "0.34.5";
+const SERVER_VERSION = "0.35.0";
 const PROTOCOL_VERSION = "2024-11-05";
 const ADAPTER_BOUNDARY = Object.freeze({
   protocolSource: "upstream-mcp-json-rpc",
