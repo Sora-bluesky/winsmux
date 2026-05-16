@@ -160,6 +160,13 @@ broker baseline` records one external broker node for a prepared
 token brokering, does not start an external process, and projects the latest
 broker state through `winsmux workers status --json`.
 
+Brokered agents use a run-scoped short-lived token after the baseline exists.
+`winsmux workers broker token issue` stores the token value only under the
+isolated run secret directory, and `winsmux workers broker token check` reports
+or refreshes expiry without printing the token. If the token is expired and
+cannot be refreshed, the run moves to `offline` through the worker heartbeat
+surface.
+
 Review is handled by any **review-capable slot**, not by a permanently dedicated reviewer pane.
 Meta-planning follows the same rule: the current Claude/Codex role pair is an
 MVP seed, while custom planning roles should be selected from provider
@@ -186,6 +193,7 @@ The public first-run entrypoints now converge on:
 - `winsmux workers secrets project <slot> --run-id <id> ... [--json]`
 - `winsmux workers sandbox baseline <slot> --run-id <id> ... [--json]`
 - `winsmux workers broker baseline <slot> --run-id <id> --endpoint <url> ... [--json]`
+- `winsmux workers broker token <issue|check> <slot> --run-id <id> ... [--json]`
 - `winsmux conflict-preflight`
 - `winsmux compare <runs|preflight|promote>`
 
@@ -201,6 +209,7 @@ It separates the projected workspace, downloads, and artifacts directories, and 
 `winsmux workers secrets project` resolves DPAPI vault entries at run start and writes typed `env`, `file`, and `variable` projections into the run-local secret boundary without returning secret values in JSON or public metadata.
 `winsmux workers sandbox baseline` records the Windows restricted-token and ACL boundary contract for a prepared isolated run, without claiming full process isolation before the launcher enforces it.
 `winsmux workers broker baseline` records the single external broker node contract for a prepared isolated run, without starting the external worker or mixing broker metadata with OAuth or token brokering.
+`winsmux workers broker token` stores short-lived broker run tokens inside the run secret boundary, reports only references and expiry metadata, and marks the run offline when an expired token cannot be refreshed.
 `winsmux compare <runs|preflight|promote>` is the public compare coordination surface.
 It wraps run comparison, merge preflight, and follow-up candidate promotion behind one entrypoint.
 The desktop compare card surfaces shared changed files as hotspots and displays a risk badge before winner selection.

@@ -147,6 +147,21 @@ boundary. It writes `broker-baseline.json` under the isolated run directory and
 reports only project-relative artifact references. `winsmux workers status
 --json` includes the latest broker contract in each worker row as `broker`.
 
+After the broker baseline exists, issue a short-lived run token for the brokered
+agent:
+
+```powershell
+winsmux workers broker token issue w2 --run-id run-123 --ttl-seconds 900 --json
+winsmux workers broker token check w2 --run-id run-123 --json
+```
+
+The token value is stored only as `secrets/broker-run-token.txt` inside the
+isolated run boundary. JSON output and `broker-token.json` report only the
+token reference, fingerprint, issue time, and expiry time. A token check rotates
+an expired token by default. If refresh is disabled or cannot complete, the run
+is marked `offline` through the same heartbeat surface used by
+`winsmux workers heartbeat`.
+
 ## Launcher presets
 
 Inspect the presets before launching a compare-oriented run:
