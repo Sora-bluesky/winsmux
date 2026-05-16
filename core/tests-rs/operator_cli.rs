@@ -2381,7 +2381,8 @@ fn operator_cli_guard_json_reports_release_guard_baseline() {
     let json = run_json(&project_dir, &["guard", "--json"]);
 
     assert_eq!(json["command"], "guard");
-    assert_eq!(json["task_ids"].as_array().unwrap().len(), 0);
+    assert_eq!(json["task_ids"][0], "TASK-390");
+    assert_eq!(json["task_ids"][3], "TASK-384");
     assert_eq!(json["issue_refs"][0], "#522");
     assert_eq!(json["issue_refs"][3], "#525");
     assert_eq!(json["issue_refs"][4], "#685");
@@ -2408,6 +2409,19 @@ fn operator_cli_guard_json_reports_release_guard_baseline() {
         "docs/project/pester-suite-reduction-plan.md"
     );
     assert_eq!(json["required_checks"][8]["id"], "desktop_release_workflow");
+    assert_eq!(json["parent_tracking"]["task_id"], "TASK-390");
+    assert_eq!(
+        json["parent_tracking"]["scope"],
+        "coordination_and_acceptance_tracking"
+    );
+    assert_eq!(
+        json["parent_tracking"]["child_tasks"][0]["task_id"],
+        "TASK-382"
+    );
+    assert_eq!(
+        json["parent_tracking"]["child_tasks"][2]["issue_ref"],
+        "#525"
+    );
     assert_eq!(
         json["evidence_contract"]["security_contract"]["provider_token_broker_allowed"],
         false

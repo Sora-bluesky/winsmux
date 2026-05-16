@@ -9444,7 +9444,7 @@ fn guard_report_payload(project_dir: &Path) -> Value {
     json!({
         "contract_version": 1,
         "command": "guard",
-        "task_ids": [],
+        "task_ids": ["TASK-390", "TASK-382", "TASK-383", "TASK-384"],
         "issue_refs": ["#522", "#523", "#524", "#525", "#685"],
         "target_version": "v1.0.0",
         "generated_at": generated_at(),
@@ -9465,6 +9465,32 @@ fn guard_report_payload(project_dir: &Path) -> Value {
             "gitleaks_baseline_commit": baseline_commit
         },
         "required_checks": required_checks,
+        "parent_tracking": {
+            "task_id": "TASK-390",
+            "issue_ref": "#522",
+            "scope": "coordination_and_acceptance_tracking",
+            "child_tasks": [
+                {
+                    "task_id": "TASK-382",
+                    "issue_ref": "#524",
+                    "area": "architecture",
+                    "status": "done"
+                },
+                {
+                    "task_id": "TASK-383",
+                    "issue_ref": "#523",
+                    "area": "security",
+                    "status": "done"
+                },
+                {
+                    "task_id": "TASK-384",
+                    "issue_ref": "#525",
+                    "area": "release_gating",
+                    "status": "done"
+                }
+            ],
+            "acceptance_policy": "Do not close the parent by child implementation alone; confirm child status, then map any remaining scope to follow-up tasks or issues."
+        },
         "evidence_contract": {
             "run_surfaces": ["winsmux runs --json", "winsmux digest --json", "winsmux explain <run_id> --json"],
             "required_fields": [

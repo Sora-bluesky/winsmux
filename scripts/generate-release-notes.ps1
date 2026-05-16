@@ -259,6 +259,9 @@ function ConvertTo-UserBenefit {
         'complete winsmux-surface rename|send buffer overflow' {
             return 'Continued the winsmux naming convergence and stabilized the send pipeline'
         }
+        'guard parent tracking|guard mesh parent|parent_tracking|TASK-390' {
+            return 'Added machine-readable guard mesh parent tracking for architecture, security, evidence, and release gating acceptance'
+        }
         'bump version|sync backlog and roadmap' {
             return $null
         }
