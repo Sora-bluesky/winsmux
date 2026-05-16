@@ -146,6 +146,14 @@ separates child-run waiting and approval waiting from genuine process stops.
 row through `heartbeat`, `heartbeat_health`, and `heartbeat_state`, which is the
 same contract consumed by the Tauri worker status surface.
 
+The Windows sandbox baseline is also attached only to `isolated-enterprise`.
+`winsmux workers sandbox baseline` defines the restricted-token launch
+requirement and the run-scoped ACL boundary for a prepared isolated run. It
+fails closed for local profiles, missing run directories, path escapes, and
+reparse points. The baseline manifest deliberately keeps
+`isolation_claim.secure=false` until the worker launch path actually enforces
+the restricted token and ACL boundary.
+
 Review is handled by any **review-capable slot**, not by a permanently dedicated reviewer pane.
 Meta-planning follows the same rule: the current Claude/Codex role pair is an
 MVP seed, while custom planning roles should be selected from provider
@@ -170,6 +178,7 @@ The public first-run entrypoints now converge on:
 - `winsmux workers heartbeat <mark|check> <slot> [--run-id <id>] ... [--json]`
 - `winsmux workers workspace <prepare|cleanup> <slot> ... [--json]`
 - `winsmux workers secrets project <slot> --run-id <id> ... [--json]`
+- `winsmux workers sandbox baseline <slot> --run-id <id> ... [--json]`
 - `winsmux conflict-preflight`
 - `winsmux compare <runs|preflight|promote>`
 
@@ -183,6 +192,7 @@ Lifecycle presets are declarative workspace policy. They do not execute arbitrar
 It separates the projected workspace, downloads, and artifacts directories, and the returned location identities use shareable artifact references instead of host absolute paths.
 `winsmux workers workspace cleanup` deletes only the verified run directory under `.winsmux/isolated-workspaces`.
 `winsmux workers secrets project` resolves DPAPI vault entries at run start and writes typed `env`, `file`, and `variable` projections into the run-local secret boundary without returning secret values in JSON or public metadata.
+`winsmux workers sandbox baseline` records the Windows restricted-token and ACL boundary contract for a prepared isolated run, without claiming full process isolation before the launcher enforces it.
 `winsmux compare <runs|preflight|promote>` is the public compare coordination surface.
 It wraps run comparison, merge preflight, and follow-up candidate promotion behind one entrypoint.
 The desktop compare card surfaces shared changed files as hotspots and displays a risk badge before winner selection.

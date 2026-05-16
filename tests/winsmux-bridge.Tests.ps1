@@ -9015,6 +9015,7 @@ agent-slots:
         $script:winsmuxWorkersCoreRawContent | Should -Match 'workers workspace <prepare\|cleanup> <slot> \[--include <path>\] \[--run-id <id>\] \[--json\] \[--project-dir <path>\]'
         $script:winsmuxWorkersCoreRawContent | Should -Match 'workers secrets project <slot> --run-id <id> \[--env <name=key>\] \[--file <path=key>\] \[--variable <name=key>\] \[--json\] \[--project-dir <path>\]'
         $script:winsmuxWorkersCoreRawContent | Should -Match 'workers heartbeat <mark\|check> <slot> \[--run-id <id>\] \[--state <state>\] \[--json\] \[--project-dir <path>\]'
+        $script:winsmuxWorkersCoreRawContent | Should -Match 'workers sandbox baseline <slot> --run-id <id> \[--json\] \[--project-dir <path>\]'
         $script:winsmuxWorkersCoreRawContent | Should -Match "'workers'\s*\{\s*Invoke-Workers\s*\}"
         $script:winsmuxWorkersCoreRawContent | Should -Match 'google-colab-cli not found on PATH'
         $script:winsmuxWorkersCoreRawContent | Should -Match 'uv not found on PATH'
@@ -9024,6 +9025,7 @@ agent-slots:
         $script:winsmuxWorkersCoreRawContent | Should -Match "'workspace'\s*\{\s*Invoke-WorkersWorkspace\s*\}"
         $script:winsmuxWorkersCoreRawContent | Should -Match "'secrets'\s*\{\s*Invoke-WorkersSecrets\s*\}"
         $script:winsmuxWorkersCoreRawContent | Should -Match "'heartbeat'\s*\{\s*Invoke-WorkersHeartbeat\s*\}"
+        $script:winsmuxWorkersCoreRawContent | Should -Match "'sandbox'\s*\{\s*Invoke-WorkersSandbox\s*\}"
     }
 
     It 'prepares and cleans up a disposable isolated workspace from explicit includes' {
@@ -9189,6 +9191,121 @@ agent-slots:
             $cleanupPayload.status | Should -Be 'cleaned'
             Test-Path -LiteralPath $runDir | Should -Be $false
             Test-Path -LiteralPath (Join-Path $outside 'external.txt') | Should -Be $true
+        } finally {
+            if (Test-Path -LiteralPath $linkedOutput) {
+                Remove-Item -LiteralPath $linkedOutput -Force
+            }
+            if (Test-Path -LiteralPath $runDir) {
+                Remove-Item -LiteralPath $runDir -Recurse -Force
+            }
+            if (Test-Path -LiteralPath $outside) {
+                Remove-Item -LiteralPath $outside -Recurse -Force
+            }
+        }
+    }
+
+    It 'defines a Windows sandbox baseline for prepared isolated runs without claiming full isolation' {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    execution-profile: isolated-enterprise
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        'payload' | Set-Content -Path (Join-Path $script:workersTempRoot 'input.txt') -Encoding UTF8
+        & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers workspace prepare w2 --include input.txt --run-id sandbox-run --json --project-dir $script:workersTempRoot | Out-Null
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers sandbox baseline worker-2 --run-id sandbox-run --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $serialized = $payload | ConvertTo-Json -Depth 32
+        $manifestPath = Join-Path $script:workersTempRoot '.winsmux\isolated-workspaces\worker-2\sandbox-run\sandbox-baseline.json'
+
+        $payload.status | Should -Be 'baseline_defined'
+        $payload.execution_profile | Should -Be 'isolated-enterprise'
+        $payload.public_default | Should -Be $false
+        $payload.boundary.process.token.kind | Should -Be 'restricted_token'
+        $payload.boundary.process.token.required | Should -Be $true
+        $payload.boundary.filesystem.acl.kind | Should -Be 'run_acl_boundary'
+        $payload.boundary.filesystem.acl.verified_no_reparse_points | Should -Be $true
+        $payload.boundary.credentials.value_output | Should -Be $false
+        $payload.failure_policy.unsafe_claims_prohibited | Should -Be $true
+        $payload.isolation_claim.secure | Should -Be $false
+        $payload.isolation_claim.reason | Should -Match 'restricted token'
+        $payload.locations.manifest.reference | Should -Be '.winsmux/isolated-workspaces/worker-2/sandbox-run/sandbox-baseline.json'
+        @($payload.testable_guards) | Should -Contain 'isolated_enterprise_profile_required'
+        Test-Path -LiteralPath $manifestPath | Should -Be $true
+        $serialized | Should -Not -Match ([regex]::Escape($script:workersTempRoot))
+        $serialized | Should -Not -Match ([regex]::Escape($script:workersTempRoot.Replace('\', '\\')))
+    }
+
+    It 'fails closed for Windows sandbox baselines outside the prepared isolated boundary' {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    execution-profile: local-windows
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        'payload' | Set-Content -Path (Join-Path $script:workersTempRoot 'input.txt') -Encoding UTF8
+
+        $localProfile = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers sandbox baseline worker-2 --run-id sandbox-local --profile local-windows --json --project-dir $script:workersTempRoot 2>&1
+        $LASTEXITCODE | Should -Be 1
+        ($localProfile | Out-String) | Should -Match 'requires execution profile isolated-enterprise'
+
+        $missingRun = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers sandbox baseline worker-2 --run-id sandbox-missing --json --project-dir $script:workersTempRoot 2>&1
+        $LASTEXITCODE | Should -Be 1
+        ($missingRun | Out-String) | Should -Match 'uses execution profile'
+        Test-Path -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\isolated-workspaces\worker-2\sandbox-missing\sandbox-baseline.json') | Should -Be $false
+
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    execution-profile: isolated-enterprise
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        $missingIsolatedRun = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers sandbox baseline worker-2 --run-id sandbox-missing --json --project-dir $script:workersTempRoot 2>&1
+        $LASTEXITCODE | Should -Be 1
+        ($missingIsolatedRun | Out-String) | Should -Match 'requires an existing isolated workspace run'
+        Test-Path -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\isolated-workspaces\worker-2\sandbox-missing\sandbox-baseline.json') | Should -Be $false
+    }
+
+    It 'rejects worker-created reparse points before writing the Windows sandbox baseline manifest' {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    execution-profile: isolated-enterprise
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        'payload' | Set-Content -Path (Join-Path $script:workersTempRoot 'input.txt') -Encoding UTF8
+        $outside = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-sandbox-outside-' + [guid]::NewGuid().ToString('N'))
+        $runDir = Join-Path $script:workersTempRoot '.winsmux\isolated-workspaces\worker-2\sandbox-reparse'
+        $linkedOutput = Join-Path $runDir 'workspace\worker-link'
+
+        try {
+            & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers workspace prepare w2 --include input.txt --run-id sandbox-reparse --json --project-dir $script:workersTempRoot | Out-Null
+            New-Item -ItemType Directory -Path $outside -Force | Out-Null
+            'external' | Set-Content -Path (Join-Path $outside 'external.txt') -Encoding UTF8
+            New-Item -ItemType Junction -Path $linkedOutput -Target $outside | Out-Null
+
+            $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers sandbox baseline w2 --run-id sandbox-reparse --json --project-dir $script:workersTempRoot 2>&1
+
+            $LASTEXITCODE | Should -Be 1
+            ($output | Out-String) | Should -Match 'unsupported reparse point'
+            Test-Path -LiteralPath (Join-Path $runDir 'sandbox-baseline.json') | Should -Be $false
         } finally {
             if (Test-Path -LiteralPath $linkedOutput) {
                 Remove-Item -LiteralPath $linkedOutput -Force

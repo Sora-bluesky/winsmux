@@ -5252,7 +5252,7 @@ dependencies = [
 
 [[package]]
 name = "winsmux-app"
-version = "0.34.4"
+version = "0.34.5"
 dependencies = [
  "chrono",
  "portable-pty",
