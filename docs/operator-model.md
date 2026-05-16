@@ -167,6 +167,16 @@ or refreshes expiry without printing the token. If the token is expired and
 cannot be refreshed, the run moves to `offline` through the worker heartbeat
 surface.
 
+Enterprise execution policy is the next boundary after the broker baseline and
+token. `winsmux workers policy baseline` records network availability, write
+permissions, provider availability, mandatory checks, and role-specific
+evidence for the prepared `isolated-enterprise` run. It fails closed before
+execution when the broker baseline or valid token is missing, when a policy
+value is invalid, or when the run boundary contains a reparse point. The latest
+policy is projected through `winsmux workers status --json` as `policy` so the
+operator surface can show the enforced controls and stop reason without reading
+the prompt.
+
 Review is handled by any **review-capable slot**, not by a permanently dedicated reviewer pane.
 Meta-planning follows the same rule: the current Claude/Codex role pair is an
 MVP seed, while custom planning roles should be selected from provider
@@ -194,6 +204,7 @@ The public first-run entrypoints now converge on:
 - `winsmux workers sandbox baseline <slot> --run-id <id> ... [--json]`
 - `winsmux workers broker baseline <slot> --run-id <id> --endpoint <url> ... [--json]`
 - `winsmux workers broker token <issue|check> <slot> --run-id <id> ... [--json]`
+- `winsmux workers policy baseline <slot> --run-id <id> ... [--json]`
 - `winsmux conflict-preflight`
 - `winsmux compare <runs|preflight|promote>`
 
@@ -210,6 +221,7 @@ It separates the projected workspace, downloads, and artifacts directories, and 
 `winsmux workers sandbox baseline` records the Windows restricted-token and ACL boundary contract for a prepared isolated run, without claiming full process isolation before the launcher enforces it.
 `winsmux workers broker baseline` records the single external broker node contract for a prepared isolated run, without starting the external worker or mixing broker metadata with OAuth or token brokering.
 `winsmux workers broker token` stores short-lived broker run tokens inside the run secret boundary, reports only references and expiry metadata, and marks the run offline when an expired token cannot be refreshed.
+`winsmux workers policy baseline` records the prompt-external execution policy for a prepared isolated run, including network, write, provider, check, and evidence requirements.
 `winsmux compare <runs|preflight|promote>` is the public compare coordination surface.
 It wraps run comparison, merge preflight, and follow-up candidate promotion behind one entrypoint.
 The desktop compare card surfaces shared changed files as hotspots and displays a risk badge before winner selection.

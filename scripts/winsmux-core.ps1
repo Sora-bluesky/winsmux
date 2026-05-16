@@ -5123,7 +5123,7 @@ function Invoke-Status {
 }
 
 function Get-WorkersUsage {
-    return "usage: winsmux workers <status|start|stop|attach|doctor> [slot|all] [--json] [--project-dir <path>]; winsmux workers <exec|logs|upload|download> <slot> ... [--json] [--project-dir <path>]; winsmux workers heartbeat <mark|check> <slot> [--run-id <id>] ... [--json] [--project-dir <path>]; winsmux workers workspace <prepare|cleanup> <slot> ... [--json] [--project-dir <path>]; winsmux workers secrets project <slot> ... [--json] [--project-dir <path>]; winsmux workers sandbox baseline <slot> --run-id <id> [--json] [--project-dir <path>]; winsmux workers broker baseline <slot> --run-id <id> --endpoint <url> [--node-id <id>] [--json] [--project-dir <path>]; winsmux workers broker token <issue|check> <slot> --run-id <id> [--ttl-seconds <n>] [--no-refresh] [--json] [--project-dir <path>]"
+    return "usage: winsmux workers <status|start|stop|attach|doctor> [slot|all] [--json] [--project-dir <path>]; winsmux workers <exec|logs|upload|download> <slot> ... [--json] [--project-dir <path>]; winsmux workers heartbeat <mark|check> <slot> [--run-id <id>] ... [--json] [--project-dir <path>]; winsmux workers workspace <prepare|cleanup> <slot> ... [--json] [--project-dir <path>]; winsmux workers secrets project <slot> ... [--json] [--project-dir <path>]; winsmux workers sandbox baseline <slot> --run-id <id> [--json] [--project-dir <path>]; winsmux workers broker baseline <slot> --run-id <id> --endpoint <url> [--node-id <id>] [--json] [--project-dir <path>]; winsmux workers broker token <issue|check> <slot> --run-id <id> [--ttl-seconds <n>] [--no-refresh] [--json] [--project-dir <path>]; winsmux workers policy baseline <slot> --run-id <id> [--network <mode>] [--write <mode>] [--provider <mode>] [--require-check <name>] [--require-evidence <role:name>] [--json] [--project-dir <path>]"
 }
 
 function Read-WorkersOptions {
@@ -5456,6 +5456,26 @@ function Get-WorkersStatusRows {
             }
         }
 
+        $policy = $null
+        if ($null -ne $entry) {
+            $policyRunId = [string](Get-SendConfigValue -InputObject $entry -Name 'LastPolicyRunId' -Default '')
+            if (-not [string]::IsNullOrWhiteSpace($policyRunId)) {
+                $policy = [ordered]@{
+                    run_id            = $policyRunId
+                    execution_profile = [string](Get-SendConfigValue -InputObject $entry -Name 'LastPolicyProfile' -Default '')
+                    status            = [string](Get-SendConfigValue -InputObject $entry -Name 'LastPolicyStatus' -Default '')
+                    health            = [string](Get-SendConfigValue -InputObject $entry -Name 'LastPolicyHealth' -Default '')
+                    reason            = [string](Get-SendConfigValue -InputObject $entry -Name 'LastPolicyReason' -Default '')
+                    network           = [string](Get-SendConfigValue -InputObject $entry -Name 'LastPolicyNetwork' -Default '')
+                    write             = [string](Get-SendConfigValue -InputObject $entry -Name 'LastPolicyWrite' -Default '')
+                    provider          = [string](Get-SendConfigValue -InputObject $entry -Name 'LastPolicyProvider' -Default '')
+                    mandatory_checks  = [string](Get-SendConfigValue -InputObject $entry -Name 'LastPolicyMandatoryChecks' -Default '')
+                    required_evidence = [string](Get-SendConfigValue -InputObject $entry -Name 'LastPolicyRequiredEvidence' -Default '')
+                    manifest          = [string](Get-SendConfigValue -InputObject $entry -Name 'LastPolicyManifest' -Default '')
+                }
+            }
+        }
+
         $sessionName = [string](Get-SendConfigValue -InputObject $colabSession -Name 'session_name' -Default '')
         if ([string]::IsNullOrWhiteSpace($sessionName) -and [string]::Equals(([string]$slotConfig.WorkerBackend), 'colab_cli', [System.StringComparison]::OrdinalIgnoreCase) -and (Get-Command Resolve-WinsmuxColabSessionName -ErrorAction SilentlyContinue)) {
             $sessionName = Resolve-WinsmuxColabSessionName -ProjectDir $Context.ProjectDir -SlotId $slotId -Template ([string]$slotConfig.SessionName)
@@ -5514,6 +5534,7 @@ function Get-WorkersStatusRows {
             HeartbeatHealth = $heartbeatHealth
             HeartbeatState = $heartbeatState
             Broker         = $broker
+            Policy         = $policy
         }) | Out-Null
     }
 
@@ -5604,6 +5625,7 @@ function ConvertTo-WorkersStatusJsonRows {
             heartbeat_health = [string]$row.HeartbeatHealth
             heartbeat_state = [string]$row.HeartbeatState
             broker          = $row.Broker
+            policy          = $row.Policy
         }
     }
 }
@@ -7731,6 +7753,185 @@ function Read-WorkersBrokerOptions {
     }
 }
 
+function Assert-WorkersPolicyChoice {
+    param(
+        [AllowEmptyString()][string]$Value,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string[]]$Allowed,
+        [Parameter(Mandatory = $true)][string]$Default
+    )
+
+    $choice = $Value
+    if ([string]::IsNullOrWhiteSpace($choice)) {
+        $choice = $Default
+    }
+    $choice = $choice.Trim().ToLowerInvariant()
+    if ($Allowed -notcontains $choice) {
+        Stop-WithError "enterprise execution policy --$Name must be one of: $($Allowed -join ', ')"
+    }
+
+    return $choice
+}
+
+function Assert-WorkersPolicyName {
+    param(
+        [AllowEmptyString()][string]$Value,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    $text = ([string]$Value).Trim()
+    if ([string]::IsNullOrWhiteSpace($text) -or $text -notmatch '^[A-Za-z0-9_.-]+$') {
+        Stop-WithError "enterprise execution policy $Name must use letters, numbers, dot, underscore, or dash"
+    }
+
+    return $text
+}
+
+function Add-WorkersPolicyEvidenceRequirement {
+    param(
+        [Parameter(Mandatory = $true)][System.Collections.IDictionary]$Evidence,
+        [Parameter(Mandatory = $true)][string]$Role,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    if (-not $Evidence.Contains($Role)) {
+        $Evidence[$Role] = @()
+    }
+
+    $values = @($Evidence[$Role])
+    if ($values -notcontains $Name) {
+        $Evidence[$Role] = @($values + $Name)
+    }
+}
+
+function Get-WorkersPolicyEvidenceRequirements {
+    param([AllowNull()][string[]]$Specs)
+
+    $evidence = [ordered]@{
+        builder  = @('implementation_diff', 'focused_tests', 'public_surface_audit')
+        reviewer = @('codex_review', 'ci_checks')
+        operator = @('release_checklist', 'release_notes')
+    }
+
+    foreach ($spec in @($Specs)) {
+        $text = ([string]$spec).Trim()
+        $match = [regex]::Match($text, '^([^:]+):(.+)$')
+        if ([string]::IsNullOrWhiteSpace($text) -or -not $match.Success) {
+            Stop-WithError 'enterprise execution policy --require-evidence must use <role:name>'
+        }
+        $role = (Assert-WorkersPolicyName -Value $match.Groups[1].Value -Name 'evidence role').ToLowerInvariant()
+        if ($role -notin @('builder', 'reviewer', 'operator')) {
+            Stop-WithError 'enterprise execution policy --require-evidence role must be builder, reviewer, or operator'
+        }
+        $name = Assert-WorkersPolicyName -Value $match.Groups[2].Value -Name 'evidence name'
+        Add-WorkersPolicyEvidenceRequirement -Evidence $evidence -Role $role -Name $name
+    }
+
+    return $evidence
+}
+
+function Read-WorkersPolicyOptions {
+    param([Parameter(Mandatory = $true)][string]$Usage)
+
+    $projectDir = (Get-Location).Path
+    $asJson = $false
+    $action = ''
+    $targetValue = ''
+    $runId = ''
+    $profile = 'isolated-enterprise'
+    $network = 'broker-only'
+    $write = 'workspace-artifacts'
+    $provider = 'configured'
+    $requiredChecks = [System.Collections.Generic.List[string]]::new()
+    $requiredEvidence = [System.Collections.Generic.List[string]]::new()
+    $items = @($Rest)
+
+    if ($items.Count -ge 1) {
+        $action = ([string]$items[0]).Trim().ToLowerInvariant()
+    }
+    if ($items.Count -ge 2) {
+        $targetValue = [string]$items[1]
+    }
+
+    for ($index = 2; $index -lt $items.Count; $index++) {
+        $token = [string]$items[$index]
+        switch ($token) {
+            '--json' { $asJson = $true }
+            '--project-dir' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $projectDir = [string]$items[$index + 1]
+                $index++
+            }
+            '--run-id' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $runId = [string]$items[$index + 1]
+                $index++
+            }
+            '--profile' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $profile = [string]$items[$index + 1]
+                $index++
+            }
+            '--network' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $network = [string]$items[$index + 1]
+                $index++
+            }
+            '--write' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $write = [string]$items[$index + 1]
+                $index++
+            }
+            '--provider' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $provider = [string]$items[$index + 1]
+                $index++
+            }
+            '--require-check' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $requiredChecks.Add((Assert-WorkersPolicyName -Value ([string]$items[$index + 1]) -Name 'check name')) | Out-Null
+                $index++
+            }
+            '--require-evidence' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $requiredEvidence.Add([string]$items[$index + 1]) | Out-Null
+                $index++
+            }
+            default {
+                Stop-WithError $Usage
+            }
+        }
+    }
+
+    if ($action -ne 'baseline' -or [string]::IsNullOrWhiteSpace($targetValue) -or [string]::IsNullOrWhiteSpace($runId)) {
+        Stop-WithError $Usage
+    }
+
+    $network = Assert-WorkersPolicyChoice -Value $network -Name 'network' -Allowed @('blocked', 'broker-only', 'allowed') -Default 'broker-only'
+    $write = Assert-WorkersPolicyChoice -Value $write -Name 'write' -Allowed @('read-only', 'workspace-artifacts', 'workspace-only') -Default 'workspace-artifacts'
+    $provider = Assert-WorkersPolicyChoice -Value $provider -Name 'provider' -Allowed @('blocked', 'configured', 'allowed') -Default 'configured'
+    $checks = @('broker_baseline', 'broker_token_valid', 'public_surface_audit', 'git_guard', 'focused_tests')
+    foreach ($check in @($requiredChecks)) {
+        if ($checks -notcontains $check) {
+            $checks += $check
+        }
+    }
+
+    return [PSCustomObject]@{
+        ProjectDir        = $projectDir
+        Json              = $asJson
+        Action            = $action
+        Target            = $targetValue
+        RunId             = $runId
+        Profile           = $profile
+        Network           = $network
+        Write             = $write
+        Provider          = $provider
+        RequiredChecks    = @($checks)
+        RequiredEvidence  = Get-WorkersPolicyEvidenceRequirements -Specs @($requiredEvidence)
+    }
+}
+
 function Get-WorkersSingleSlotContext {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -8336,9 +8537,16 @@ function Invoke-WorkersBrokerToken {
         Stop-WithError "broker token requires a readable broker baseline: $runId"
     }
 
+    $baselineNode = Get-SendConfigValue -InputObject $baseline -Name 'node' -Default $null
+    $baselineNodeId = [string](Get-SendConfigValue -InputObject $baselineNode -Name 'node_id' -Default 'broker-1')
+    $baselineEndpoint = [string](Get-SendConfigValue -InputObject $baselineNode -Name 'endpoint' -Default '')
+    if ([string]::IsNullOrWhiteSpace($baselineEndpoint)) {
+        Stop-WithError "broker token requires a readable broker baseline: $runId"
+    }
+
     $nodeId = [string]$Options.NodeId
     if ([string]::IsNullOrWhiteSpace($nodeId)) {
-        $nodeId = [string](Get-SendConfigValue -InputObject (Get-SendConfigValue -InputObject $baseline -Name 'node' -Default $null) -Name 'node_id' -Default 'broker-1')
+        $nodeId = $baselineNodeId
     }
     $nodeId = Assert-WorkersPathSegment -Value $nodeId -Name 'broker node id'
 
@@ -8353,6 +8561,7 @@ function Invoke-WorkersBrokerToken {
     $manifestPath = Join-Path $runDir 'broker-token.json'
     $heartbeatPath = Join-Path $runDir 'heartbeat.json'
     $tokenReference = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $tokenPath
+    $baselineReference = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $baselinePath
     $manifestReference = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $manifestPath
     $heartbeatReference = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $heartbeatPath
     $existing = Read-WorkersBrokerTokenManifest -Path $manifestPath
@@ -8365,7 +8574,14 @@ function Invoke-WorkersBrokerToken {
     if ($existingIsValid) {
         $existingValueRef = [string](Get-SendConfigValue -InputObject $existingToken -Name 'value_ref' -Default '')
         $existingFingerprint = [string](Get-SendConfigValue -InputObject $existingToken -Name 'fingerprint' -Default '')
-        if ([string]::IsNullOrWhiteSpace($existingValueRef)) {
+        $existingBaseline = Get-SendConfigValue -InputObject $existing -Name 'broker_baseline' -Default $null
+        $existingBaselineNodeId = [string](Get-SendConfigValue -InputObject $existingBaseline -Name 'node_id' -Default '')
+        $existingBaselineEndpoint = [string](Get-SendConfigValue -InputObject $existingBaseline -Name 'endpoint' -Default '')
+        if ([string]::IsNullOrWhiteSpace($existingBaselineNodeId) -or -not [string]::Equals($existingBaselineNodeId, $nodeId, [System.StringComparison]::Ordinal)) {
+            $existingTokenFailureReason = 'broker_baseline_mismatch'
+        } elseif ([string]::IsNullOrWhiteSpace($existingBaselineEndpoint) -or -not [string]::Equals($existingBaselineEndpoint, $baselineEndpoint, [System.StringComparison]::Ordinal)) {
+            $existingTokenFailureReason = 'broker_baseline_mismatch'
+        } elseif ([string]::IsNullOrWhiteSpace($existingValueRef)) {
             $existingTokenFailureReason = 'token_value_ref_missing'
         } elseif (-not [string]::Equals($existingValueRef, $tokenReference, [System.StringComparison]::Ordinal)) {
             $existingTokenFailureReason = 'token_value_ref_mismatch'
@@ -8511,6 +8727,11 @@ function Invoke-WorkersBrokerToken {
         execution_profile = 'isolated-enterprise'
         node          = [ordered]@{
             node_id = $nodeId
+        }
+        broker_baseline = [ordered]@{
+            manifest = $baselineReference
+            node_id  = $nodeId
+            endpoint = $baselineEndpoint
         }
         run_token     = $runToken
         credential_refresh = $credentialRefresh
@@ -8714,6 +8935,263 @@ function Invoke-WorkersBroker {
     switch ([string]$options.Action) {
         'baseline' { Invoke-WorkersBrokerBaseline -Options $options }
         'token' { Invoke-WorkersBrokerToken -Options $options }
+        default { Stop-WithError $usage }
+    }
+}
+
+function Invoke-WorkersPolicyBaseline {
+    param([Parameter(Mandatory = $true)]$Options)
+
+    $slot = Get-WorkersSingleSlotContext -ProjectDir $Options.ProjectDir -Target $Options.Target
+    $slotProfile = [string]$slot.SlotConfig.ExecutionProfile
+    if ([string]::IsNullOrWhiteSpace($slotProfile)) {
+        $slotProfile = 'local-windows'
+    }
+
+    $requestedProfile = [string]$Options.Profile
+    if ([string]::IsNullOrWhiteSpace($requestedProfile)) {
+        $requestedProfile = 'isolated-enterprise'
+    }
+    if (Get-Command Test-BridgeExecutionProfileKind -ErrorAction SilentlyContinue) {
+        if (-not (Test-BridgeExecutionProfileKind -Value $requestedProfile)) {
+            Stop-WithError "unsupported execution profile for enterprise execution policy: $requestedProfile"
+        }
+    }
+    if (-not [string]::Equals($requestedProfile, 'isolated-enterprise', [System.StringComparison]::OrdinalIgnoreCase)) {
+        Stop-WithError 'enterprise execution policy requires execution profile isolated-enterprise'
+    }
+    if (-not [string]::Equals($slotProfile, $requestedProfile, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Stop-WithError "worker slot $($slot.Row.SlotId) uses execution profile '$slotProfile', not $requestedProfile"
+    }
+
+    $runId = Assert-WorkersRunId -RunId ([string]$Options.RunId)
+    if ([string]::IsNullOrWhiteSpace($runId)) {
+        Stop-WithError 'enterprise execution policy requires --run-id'
+    }
+
+    $runDir = Get-WorkersIsolatedWorkspaceRunDirectory -ProjectDir $Options.ProjectDir -SlotId ([string]$slot.Row.SlotId) -RunId $runId
+    if (-not (Test-Path -LiteralPath $runDir -PathType Container)) {
+        Stop-WithError "enterprise execution policy requires an existing isolated workspace run: $runId"
+    }
+    Assert-WorkersIsolatedWorkspaceCleanupTarget -ProjectDir $Options.ProjectDir -RunDir $runDir
+
+    $workspaceDir = Join-Path $runDir 'workspace'
+    $downloadsDir = Join-Path $runDir 'downloads'
+    $artifactsDir = Join-Path $runDir 'artifacts'
+    foreach ($requiredDir in @($workspaceDir, $downloadsDir, $artifactsDir)) {
+        if (-not (Test-Path -LiteralPath $requiredDir -PathType Container)) {
+            Stop-WithError "enterprise execution policy requires prepared isolated workspace directories: $runId"
+        }
+    }
+
+    Assert-WorkersNoReparsePointUnderDirectory -RootDir $runDir -Name 'enterprise execution policy'
+
+    $baselinePath = Join-Path $runDir 'broker-baseline.json'
+    if (-not (Test-Path -LiteralPath $baselinePath -PathType Leaf)) {
+        Stop-WithError "enterprise execution policy requires an existing broker baseline: $runId"
+    }
+    $brokerBaseline = $null
+    try {
+        $brokerBaseline = Get-Content -LiteralPath $baselinePath -Raw -Encoding UTF8 | ConvertFrom-Json
+    } catch {
+        Stop-WithError "enterprise execution policy requires a readable broker baseline: $runId"
+    }
+    if (-not [string]::Equals(([string](Get-SendConfigValue -InputObject $brokerBaseline -Name 'status' -Default '')), 'broker_defined', [System.StringComparison]::OrdinalIgnoreCase)) {
+        Stop-WithError "enterprise execution policy requires an existing broker baseline: $runId"
+    }
+    $brokerNode = Get-SendConfigValue -InputObject $brokerBaseline -Name 'node' -Default $null
+    $brokerNodeId = [string](Get-SendConfigValue -InputObject $brokerNode -Name 'node_id' -Default 'broker-1')
+    $brokerEndpoint = [string](Get-SendConfigValue -InputObject $brokerNode -Name 'endpoint' -Default '')
+
+    $tokenManifestPath = Join-Path $runDir 'broker-token.json'
+    if (-not (Test-Path -LiteralPath $tokenManifestPath -PathType Leaf)) {
+        Stop-WithError "enterprise execution policy requires a valid broker token: $runId"
+    }
+    $tokenManifest = Read-WorkersBrokerTokenManifest -Path $tokenManifestPath
+    if ($null -eq $tokenManifest) {
+        Stop-WithError "enterprise execution policy requires a valid broker token: $runId"
+    }
+    $tokenHealth = [string](Get-SendConfigValue -InputObject $tokenManifest -Name 'health' -Default '')
+    $runToken = Get-SendConfigValue -InputObject $tokenManifest -Name 'run_token' -Default $null
+    $tokenExpiresAtText = [string](Get-SendConfigValue -InputObject $runToken -Name 'expires_at' -Default '')
+    $tokenExpiresAt = ConvertTo-WorkersUtcDateTime -Value $tokenExpiresAtText
+    $nowUtc = Get-WorkersNowUtc
+    if (-not [string]::Equals($tokenHealth, 'valid', [System.StringComparison]::OrdinalIgnoreCase) -or $null -eq $tokenExpiresAt -or $tokenExpiresAt -le $nowUtc) {
+        Stop-WithError "enterprise execution policy requires a valid broker token: $runId"
+    }
+    $tokenNode = Get-SendConfigValue -InputObject $tokenManifest -Name 'node' -Default $null
+    $tokenNodeId = [string](Get-SendConfigValue -InputObject $tokenNode -Name 'node_id' -Default '')
+    if ([string]::IsNullOrWhiteSpace($tokenNodeId) -or -not [string]::Equals($tokenNodeId, $brokerNodeId, [System.StringComparison]::Ordinal)) {
+        Stop-WithError "enterprise execution policy requires a valid broker token: $runId"
+    }
+    $tokenBaseline = Get-SendConfigValue -InputObject $tokenManifest -Name 'broker_baseline' -Default $null
+    $tokenBaselineNodeId = [string](Get-SendConfigValue -InputObject $tokenBaseline -Name 'node_id' -Default '')
+    $tokenBaselineEndpoint = [string](Get-SendConfigValue -InputObject $tokenBaseline -Name 'endpoint' -Default '')
+    if ([string]::IsNullOrWhiteSpace($tokenBaselineNodeId) -or -not [string]::Equals($tokenBaselineNodeId, $brokerNodeId, [System.StringComparison]::Ordinal)) {
+        Stop-WithError "enterprise execution policy requires a valid broker token: $runId"
+    }
+    if ([string]::IsNullOrWhiteSpace($tokenBaselineEndpoint) -or -not [string]::Equals($tokenBaselineEndpoint, $brokerEndpoint, [System.StringComparison]::Ordinal)) {
+        Stop-WithError "enterprise execution policy requires a valid broker token: $runId"
+    }
+
+    $tokenPath = Join-Path (Join-Path $runDir 'secrets') 'broker-run-token.txt'
+    $tokenReference = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $tokenPath
+    $tokenValueRef = [string](Get-SendConfigValue -InputObject $runToken -Name 'value_ref' -Default '')
+    $tokenFingerprint = [string](Get-SendConfigValue -InputObject $runToken -Name 'fingerprint' -Default '')
+    if ([string]::IsNullOrWhiteSpace($tokenValueRef) -or -not [string]::Equals($tokenValueRef, $tokenReference, [System.StringComparison]::Ordinal)) {
+        Stop-WithError "enterprise execution policy requires a valid broker token: $runId"
+    }
+    if ([string]::IsNullOrWhiteSpace($tokenFingerprint) -or -not (Test-Path -LiteralPath $tokenPath -PathType Leaf)) {
+        Stop-WithError "enterprise execution policy requires a valid broker token: $runId"
+    }
+    try {
+        $tokenValue = (Get-Content -LiteralPath $tokenPath -Raw -Encoding UTF8).Trim()
+        if ([string]::IsNullOrWhiteSpace($tokenValue) -or -not [string]::Equals((Get-WorkersBrokerRunTokenFingerprint -Value $tokenValue), $tokenFingerprint, [System.StringComparison]::OrdinalIgnoreCase)) {
+            Stop-WithError "enterprise execution policy requires a valid broker token: $runId"
+        }
+    } catch {
+        Stop-WithError "enterprise execution policy requires a valid broker token: $runId"
+    }
+
+    $manifestPath = Join-Path $runDir 'execution-policy.json'
+    $runReference = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $runDir
+    $workspaceReference = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $workspaceDir
+    $downloadsReference = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $downloadsDir
+    $artifactsReference = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $artifactsDir
+    $baselineReference = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $baselinePath
+    $tokenManifestReference = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $tokenManifestPath
+    $manifestReference = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $manifestPath
+
+    $writeAllowedRoots = @()
+    switch ([string]$Options.Write) {
+        'workspace-artifacts' { $writeAllowedRoots = @($workspaceReference, $artifactsReference) }
+        'workspace-only' { $writeAllowedRoots = @($workspaceReference) }
+        default { $writeAllowedRoots = @() }
+    }
+    $requiredEvidence = $Options.RequiredEvidence
+    $requiredEvidenceSummary = @($requiredEvidence.GetEnumerator() | ForEach-Object {
+        "$($_.Key):$(@($_.Value) -join ',')"
+    }) -join ';'
+    $mandatoryChecks = @($Options.RequiredChecks)
+    $mandatoryChecksSummary = $mandatoryChecks -join ','
+    $outboundNetwork = 'blocked_before_execution'
+    if ([string]::Equals(([string]$Options.Network), 'allowed', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $outboundNetwork = 'allowed'
+    }
+
+    $payload = [ordered]@{
+        version       = 1
+        project_ref   = '.'
+        generated_at  = $nowUtc.ToString('o')
+        command       = 'workers.policy.baseline'
+        status        = 'policy_defined'
+        health        = 'enforced'
+        reason        = 'policy_enforced_before_execution'
+        slot          = [string]$slot.Row.Slot
+        slot_id       = [string]$slot.Row.SlotId
+        role          = [string]$slot.SlotConfig.WorkerRole
+        run_id        = $runId
+        execution_profile = 'isolated-enterprise'
+        public_default = $false
+        controls      = [ordered]@{
+            network = [ordered]@{
+                mode = [string]$Options.Network
+                outbound_network = $outboundNetwork
+                broker_endpoint = $brokerEndpoint
+                broker_only_requires_token = $true
+            }
+            write = [ordered]@{
+                mode = [string]$Options.Write
+                allowed_roots = @($writeAllowedRoots)
+                direct_project_write = 'prohibited'
+            }
+            provider = [ordered]@{
+                mode = [string]$Options.Provider
+                registry_required = $true
+                prompt_override_allowed = $false
+            }
+        }
+        required_evidence = $requiredEvidence
+        mandatory_checks = @($mandatoryChecks)
+        alignment = [ordered]@{
+            broker_baseline = [ordered]@{
+                manifest = $baselineReference
+                node_id = $brokerNodeId
+                endpoint = $brokerEndpoint
+            }
+            broker_token = [ordered]@{
+                manifest = $tokenManifestReference
+                health = $tokenHealth
+                expires_at = $tokenExpiresAtText
+                baseline_node_id = $tokenBaselineNodeId
+                baseline_endpoint = $tokenBaselineEndpoint
+                value_output = $false
+                value_in_manifest = $false
+            }
+        }
+        failure_policy = [ordered]@{
+            pre_execution_required = $true
+            boundary_enforced_before_worker_start = $true
+            operator_visible_stop_reasons = $true
+            fail_closed_on = @(
+                'non_isolated_enterprise_profile',
+                'missing_isolated_workspace_run',
+                'missing_broker_baseline',
+                'missing_or_invalid_broker_token',
+                'expired_broker_token',
+                'run_directory_reparse_point',
+                'invalid_policy_option',
+                'path_escape'
+            )
+        }
+        operator_surface = [ordered]@{
+            status_projection = 'workers.status.policy'
+            reason_property = 'last_policy_reason'
+            manifest_property = 'last_policy_manifest'
+        }
+        locations     = [ordered]@{
+            run_root  = New-WinsmuxLocationIdentity -Kind 'local_directory' -DisplayName $runReference -Backend 'local-windows' -AccessMethod 'isolated_run_root' -Reference $runReference -Provenance 'workers.policy.run_root'
+            workspace = New-WinsmuxLocationIdentity -Kind 'local_directory' -DisplayName $workspaceReference -Backend 'local-windows' -AccessMethod 'isolated_workspace' -Reference $workspaceReference -Provenance 'workers.policy.workspace'
+            downloads = New-WinsmuxLocationIdentity -Kind 'local_directory' -DisplayName $downloadsReference -Backend 'local-windows' -AccessMethod 'isolated_downloads' -Reference $downloadsReference -Provenance 'workers.policy.downloads'
+            artifacts = New-WinsmuxLocationIdentity -Kind 'local_directory' -DisplayName $artifactsReference -Backend 'local-windows' -AccessMethod 'isolated_artifacts' -Reference $artifactsReference -Provenance 'workers.policy.artifacts'
+            manifest  = New-WinsmuxLocationIdentity -Kind 'local_file' -DisplayName 'execution-policy.json' -Backend 'local-windows' -AccessMethod 'artifact_ref' -Reference $manifestReference -Provenance 'workers.policy.manifest'
+        }
+        testable_guards = @(
+            'isolated_enterprise_profile_required',
+            'existing_isolated_workspace_required',
+            'broker_baseline_required',
+            'valid_broker_token_required',
+            'policy_options_validated',
+            'operator_status_projection'
+        )
+        exit_code     = 0
+    }
+
+    Write-WorkersJsonArtifact -Path $manifestPath -Data $payload | Out-Null
+    if ($null -ne $slot.Entry) {
+        Set-WorkersManifestLifecycleCommand -Entry $slot.Entry -CommandName 'workers.policy.baseline' -Status 'ready' -ExtraProperties ([ordered]@{
+            last_policy_run_id            = $runId
+            last_policy_profile           = 'isolated-enterprise'
+            last_policy_status            = 'policy_defined'
+            last_policy_health            = 'enforced'
+            last_policy_reason            = 'policy_enforced_before_execution'
+            last_policy_network           = [string]$Options.Network
+            last_policy_write             = [string]$Options.Write
+            last_policy_provider          = [string]$Options.Provider
+            last_policy_mandatory_checks  = $mandatoryChecksSummary
+            last_policy_required_evidence = $requiredEvidenceSummary
+            last_policy_manifest          = $manifestReference
+        })
+    }
+
+    Write-WorkersOperationOutput -Payload $payload -Json:([bool]$Options.Json) -Text "defined enterprise execution policy for $runId"
+}
+
+function Invoke-WorkersPolicy {
+    $usage = "usage: winsmux workers policy baseline <slot> --run-id <id> [--profile isolated-enterprise] [--network <blocked|broker-only|allowed>] [--write <read-only|workspace-artifacts|workspace-only>] [--provider <blocked|configured|allowed>] [--require-check <name>] [--require-evidence <role:name>] [--json] [--project-dir <path>]"
+    $options = Read-WorkersPolicyOptions -Usage $usage
+    switch ([string]$options.Action) {
+        'baseline' { Invoke-WorkersPolicyBaseline -Options $options }
         default { Stop-WithError $usage }
     }
 }
@@ -9342,6 +9820,7 @@ function Invoke-Workers {
         'heartbeat' { Invoke-WorkersHeartbeat }
         'sandbox' { Invoke-WorkersSandbox }
         'broker' { Invoke-WorkersBroker }
+        'policy' { Invoke-WorkersPolicy }
         'exec'   { Invoke-WorkersExec }
         'logs'   { Invoke-WorkersLogs }
         'upload' { Invoke-WorkersUpload }
@@ -16242,6 +16721,7 @@ Commands:
   workers sandbox baseline <slot> --run-id <id> [--json] [--project-dir <path>]  Define the Windows restricted-token and ACL baseline for an isolated run
   workers broker baseline <slot> --run-id <id> --endpoint <url> [--node-id <id>] [--json] [--project-dir <path>]  Define the single external broker node contract for a prepared isolated run
   workers broker token <issue|check> <slot> --run-id <id> [--ttl-seconds <n>] [--no-refresh] [--json] [--project-dir <path>]  Issue or check short-lived broker run tokens without printing token values
+  workers policy baseline <slot> --run-id <id> [--network <mode>] [--write <mode>] [--provider <mode>] [--json] [--project-dir <path>]  Define enterprise execution policy outside prompts for a prepared isolated run
   board [--json]            Report pane/task/review/git session board
 desktop-summary [--json] [--stream]  Report the aggregated desktop read-model snapshot or follow refresh signals
 inbox [--json] [--stream] Report actionable approvals/review/blockers

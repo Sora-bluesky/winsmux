@@ -98,6 +98,7 @@ winsmux workers download w2 /content/output.json
 winsmux workers sandbox baseline w2 --run-id demo-1 --json
 winsmux workers broker baseline w2 --run-id demo-1 --endpoint https://broker.example.invalid/worker --json
 winsmux workers broker token issue w2 --run-id demo-1 --ttl-seconds 900 --json
+winsmux workers policy baseline w2 --run-id demo-1 --network broker-only --write workspace-artifacts --provider configured --json
 winsmux review-pack <run_id> --json
 winsmux compare runs <left_run_id> <right_run_id>
 winsmux compare preflight <left_ref> <right_ref>
@@ -123,6 +124,7 @@ winsmux skills --json
 | `winsmux workers sandbox baseline` | Define the restricted-token and ACL baseline for a prepared isolated run |
 | `winsmux workers broker baseline` | Define the single external broker node contract for a prepared isolated run |
 | `winsmux workers broker token` | Issue or check short-lived broker run tokens without printing token values |
+| `winsmux workers policy baseline` | Define enterprise execution policy outside prompts for a prepared isolated run |
 | `winsmux review-pack` | Write a bounded reviewer packet with changed files, test results, risks, commands, and artifact refs |
 | `winsmux compare runs` | Compare evidence and confidence between two recorded runs |
 | `winsmux compare preflight` | Check two refs before merge or compare review |

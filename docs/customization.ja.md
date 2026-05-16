@@ -99,6 +99,18 @@ winsmux workers broker token check w2 --run-id run-123 --json
 
 トークン値は、隔離実行境界の内側にある `secrets/broker-run-token.txt` にだけ保存します。JSON 出力と `broker-token.json` には、トークン参照、指紋、発行時刻、期限だけを記録します。期限切れの確認では、既定でトークンを更新します。更新を無効化した場合、または更新できない場合は、`winsmux workers heartbeat` と同じ生存確認面で実行を `offline` にします。
 
+### 企業向け実行ポリシー
+
+ブローカー契約と有効なブローカートークンを用意した後は、プロンプトの外側に置く実行ポリシーを定義できます。
+
+```powershell
+winsmux workers policy baseline w2 --run-id run-123 --network broker-only --write workspace-artifacts --provider configured --json
+```
+
+このポリシーは、準備済みの `isolated-enterprise` 実行について、ネットワーク可否、書き込み権限、プロバイダー利用可否、必須チェック、ロールごとの証跡を制御します。コマンドは実行ディレクトリに `execution-policy.json` を書き、`winsmux workers status --json` の各ワーカー行に `policy` として最新状態を出します。
+
+コマンドは安全側で失敗します。スロットが `isolated-enterprise` ではない場合、実行ワークスペースが未作成の場合、ブローカー契約がない場合、有効期限内のブローカートークンがない場合、不正なポリシー値を渡した場合、または実行境界の内側にリパースポイントがある場合は、`execution-policy.json` を書きません。オペレーターは、コマンドのエラーと、成功後の状態表示に含まれる理由から停止理由を確認できます。
+
 ## 起動プリセット
 
 比較を目的とした実行を始める前に、プリセットを確認できます。
