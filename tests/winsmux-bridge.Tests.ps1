@@ -9016,6 +9016,7 @@ agent-slots:
         $script:winsmuxWorkersCoreRawContent | Should -Match 'workers secrets project <slot> --run-id <id> \[--env <name=key>\] \[--file <path=key>\] \[--variable <name=key>\] \[--json\] \[--project-dir <path>\]'
         $script:winsmuxWorkersCoreRawContent | Should -Match 'workers heartbeat <mark\|check> <slot> \[--run-id <id>\] \[--state <state>\] \[--json\] \[--project-dir <path>\]'
         $script:winsmuxWorkersCoreRawContent | Should -Match 'workers sandbox baseline <slot> --run-id <id> \[--json\] \[--project-dir <path>\]'
+        $script:winsmuxWorkersCoreRawContent | Should -Match 'workers broker baseline <slot> --run-id <id> --endpoint <url> \[--node-id <id>\] \[--json\] \[--project-dir <path>\]'
         $script:winsmuxWorkersCoreRawContent | Should -Match "'workers'\s*\{\s*Invoke-Workers\s*\}"
         $script:winsmuxWorkersCoreRawContent | Should -Match 'google-colab-cli not found on PATH'
         $script:winsmuxWorkersCoreRawContent | Should -Match 'uv not found on PATH'
@@ -9026,6 +9027,7 @@ agent-slots:
         $script:winsmuxWorkersCoreRawContent | Should -Match "'secrets'\s*\{\s*Invoke-WorkersSecrets\s*\}"
         $script:winsmuxWorkersCoreRawContent | Should -Match "'heartbeat'\s*\{\s*Invoke-WorkersHeartbeat\s*\}"
         $script:winsmuxWorkersCoreRawContent | Should -Match "'sandbox'\s*\{\s*Invoke-WorkersSandbox\s*\}"
+        $script:winsmuxWorkersCoreRawContent | Should -Match "'broker'\s*\{\s*Invoke-WorkersBroker\s*\}"
     }
 
     It 'prepares and cleans up a disposable isolated workspace from explicit includes' {
@@ -9317,6 +9319,123 @@ agent-slots:
                 Remove-Item -LiteralPath $outside -Recurse -Force
             }
         }
+    }
+
+    It 'defines a brokered execution baseline for prepared isolated runs without starting an external worker' {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    execution-profile: isolated-enterprise
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        Save-WinsmuxManifest -ProjectDir $script:workersTempRoot -Manifest ([ordered]@{
+            version = 1
+            saved_at = '2026-05-16T00:00:00Z'
+            session = [ordered]@{
+                name = 'winsmux-orchestra'
+                project_dir = $script:workersTempRoot
+                git_worktree_dir = (Join-Path $script:workersTempRoot '.git')
+            }
+            panes = [ordered]@{
+                'worker-2' = [ordered]@{
+                    pane_id = '%2'
+                    slot_id = 'worker-2'
+                    worker_backend = 'local'
+                    role = 'Worker'
+                    launch_dir = $script:workersTempRoot
+                    status = 'ready'
+                }
+            }
+            tasks = [ordered]@{
+                queued = @()
+                in_progress = @()
+                completed = @()
+            }
+            worktrees = [ordered]@{}
+        })
+        'payload' | Set-Content -Path (Join-Path $script:workersTempRoot 'input.txt') -Encoding UTF8
+        & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers workspace prepare w2 --include input.txt --run-id broker-run --json --project-dir $script:workersTempRoot | Out-Null
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers broker baseline worker-2 --run-id broker-run --endpoint https://broker.example.invalid/worker --node-id broker-a --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $serialized = $payload | ConvertTo-Json -Depth 32
+        $manifestPath = Join-Path $script:workersTempRoot '.winsmux\isolated-workspaces\worker-2\broker-run\broker-baseline.json'
+
+        $payload.status | Should -Be 'broker_defined'
+        $payload.execution_profile | Should -Be 'isolated-enterprise'
+        $payload.public_default | Should -Be $false
+        $payload.broker_kind | Should -Be 'single_external_worker_node'
+        $payload.node.node_id | Should -Be 'broker-a'
+        $payload.node.endpoint | Should -Be 'https://broker.example.invalid/worker'
+        $payload.node.endpoint_contains_secret | Should -Be $false
+        $payload.node.command_starts_process | Should -Be $false
+        $payload.topology.multi_broker_supported | Should -Be $false
+        $payload.topology.multi_hub_supported | Should -Be $false
+        $payload.boundary.workspace.direct_project_write | Should -Be 'prohibited'
+        $payload.boundary.heartbeat.broker_must_report_liveness | Should -Be $true
+        $payload.boundary.connection.command_connects_network | Should -Be $false
+        $payload.boundary.connection.command_launches_external_worker | Should -Be $false
+        $payload.boundary.credentials.endpoint_credentials_allowed | Should -Be $false
+        $payload.boundary.credentials.secret_values_in_manifest | Should -Be $false
+        $payload.failure_policy.unsafe_claims_prohibited | Should -Be $true
+        $payload.locations.manifest.reference | Should -Be '.winsmux/isolated-workspaces/worker-2/broker-run/broker-baseline.json'
+        @($payload.testable_guards) | Should -Contain 'single_broker_only'
+        @($payload.testable_guards) | Should -Contain 'endpoint_credentials_rejected'
+        Test-Path -LiteralPath $manifestPath | Should -Be $true
+        $serialized | Should -Not -Match ([regex]::Escape($script:workersTempRoot))
+        $serialized | Should -Not -Match ([regex]::Escape($script:workersTempRoot.Replace('\', '\\')))
+
+        $statusOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers status worker-2 --json --project-dir $script:workersTempRoot
+        $statusPayload = ($statusOutput | Select-Object -Last 1) | ConvertFrom-Json
+        $statusRow = @($statusPayload.workers)[0]
+        $statusRow.broker.run_id | Should -Be 'broker-run'
+        $statusRow.broker.execution_profile | Should -Be 'isolated-enterprise'
+        $statusRow.broker.status | Should -Be 'broker_defined'
+        $statusRow.broker.node_id | Should -Be 'broker-a'
+        $statusRow.broker.endpoint | Should -Be 'https://broker.example.invalid/worker'
+        $statusRow.broker.manifest | Should -Be '.winsmux/isolated-workspaces/worker-2/broker-run/broker-baseline.json'
+    }
+
+    It 'fails closed for broker baselines outside the prepared isolated boundary' {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    execution-profile: local-windows
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        $localProfile = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers broker baseline worker-2 --run-id broker-local --profile local-windows --endpoint https://broker.example.invalid/worker --json --project-dir $script:workersTempRoot 2>&1
+        $LASTEXITCODE | Should -Be 1
+        ($localProfile | Out-String) | Should -Match 'requires execution profile isolated-enterprise'
+
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    execution-profile: isolated-enterprise
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        $missingRun = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers broker baseline worker-2 --run-id broker-missing --endpoint https://broker.example.invalid/worker --json --project-dir $script:workersTempRoot 2>&1
+        $LASTEXITCODE | Should -Be 1
+        ($missingRun | Out-String) | Should -Match 'requires an existing isolated workspace run'
+        Test-Path -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\isolated-workspaces\worker-2\broker-missing\broker-baseline.json') | Should -Be $false
+
+        $credentialEndpoint = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers broker baseline worker-2 --run-id broker-credentials --endpoint https://user:pass@broker.example.invalid/worker --json --project-dir $script:workersTempRoot 2>&1
+        $LASTEXITCODE | Should -Be 1
+        ($credentialEndpoint | Out-String) | Should -Match 'must not include credentials'
+        Test-Path -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\isolated-workspaces\worker-2\broker-credentials\broker-baseline.json') | Should -Be $false
     }
 
     It 'projects typed secrets for local Windows runs without printing secret values' {

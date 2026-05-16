@@ -96,6 +96,7 @@ winsmux workers exec w2 --script workers/colab/impl_worker.py --run-id demo-1 --
 winsmux workers upload w2 data/input.json --remote /content/input.json
 winsmux workers download w2 /content/output.json
 winsmux workers sandbox baseline w2 --run-id demo-1 --json
+winsmux workers broker baseline w2 --run-id demo-1 --endpoint https://broker.example.invalid/worker --json
 winsmux review-pack <run_id> --json
 winsmux compare runs <left_run_id> <right_run_id>
 winsmux compare preflight <left_ref> <right_ref>
@@ -119,6 +120,7 @@ winsmux skills --json
 | `winsmux workers upload` | Upload explicit files or allowlisted directories while excluding unsafe paths |
 | `winsmux workers download` | Download a remote artifact into a project-local output directory |
 | `winsmux workers sandbox baseline` | Define the restricted-token and ACL baseline for a prepared isolated run |
+| `winsmux workers broker baseline` | Define the single external broker node contract for a prepared isolated run |
 | `winsmux review-pack` | Write a bounded reviewer packet with changed files, test results, risks, commands, and artifact refs |
 | `winsmux compare runs` | Compare evidence and confidence between two recorded runs |
 | `winsmux compare preflight` | Check two refs before merge or compare review |

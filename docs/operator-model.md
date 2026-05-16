@@ -154,6 +154,12 @@ reparse points. The baseline manifest deliberately keeps
 `isolation_claim.secure=false` until the worker launch path actually enforces
 the restricted token and ACL boundary.
 
+The brokered execution baseline is also explicit opt-in. `winsmux workers
+broker baseline` records one external broker node for a prepared
+`isolated-enterprise` run. It keeps the broker contract separate from OAuth and
+token brokering, does not start an external process, and projects the latest
+broker state through `winsmux workers status --json`.
+
 Review is handled by any **review-capable slot**, not by a permanently dedicated reviewer pane.
 Meta-planning follows the same rule: the current Claude/Codex role pair is an
 MVP seed, while custom planning roles should be selected from provider
@@ -179,6 +185,7 @@ The public first-run entrypoints now converge on:
 - `winsmux workers workspace <prepare|cleanup> <slot> ... [--json]`
 - `winsmux workers secrets project <slot> --run-id <id> ... [--json]`
 - `winsmux workers sandbox baseline <slot> --run-id <id> ... [--json]`
+- `winsmux workers broker baseline <slot> --run-id <id> --endpoint <url> ... [--json]`
 - `winsmux conflict-preflight`
 - `winsmux compare <runs|preflight|promote>`
 
@@ -193,6 +200,7 @@ It separates the projected workspace, downloads, and artifacts directories, and 
 `winsmux workers workspace cleanup` deletes only the verified run directory under `.winsmux/isolated-workspaces`.
 `winsmux workers secrets project` resolves DPAPI vault entries at run start and writes typed `env`, `file`, and `variable` projections into the run-local secret boundary without returning secret values in JSON or public metadata.
 `winsmux workers sandbox baseline` records the Windows restricted-token and ACL boundary contract for a prepared isolated run, without claiming full process isolation before the launcher enforces it.
+`winsmux workers broker baseline` records the single external broker node contract for a prepared isolated run, without starting the external worker or mixing broker metadata with OAuth or token brokering.
 `winsmux compare <runs|preflight|promote>` is the public compare coordination surface.
 It wraps run comparison, merge preflight, and follow-up candidate promotion behind one entrypoint.
 The desktop compare card surfaces shared changed files as hotspots and displays a risk badge before winner selection.
