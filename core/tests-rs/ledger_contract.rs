@@ -1118,11 +1118,13 @@ panes:
         explain.run.verification_envelope["static_gates"]["required_fields"][0],
         "verification_evidence"
     );
-    assert!(explain.run.verification_envelope["static_gates"]["required_fields"]
-        .as_array()
-        .expect("required fields should be an array")
-        .iter()
-        .any(|item| item.as_str().unwrap_or_default() == "architecture_contract"));
+    assert!(
+        explain.run.verification_envelope["static_gates"]["required_fields"]
+            .as_array()
+            .expect("required fields should be an array")
+            .iter()
+            .any(|item| item.as_str().unwrap_or_default() == "architecture_contract")
+    );
     assert_eq!(
         explain.run.verification_envelope["dynamic_gates"]["context"]["context_mode"],
         "isolated"
@@ -1166,16 +1168,20 @@ panes:
             .iter()
             .any(|reason| reason == "draft PR gate is blocked")
     );
-    assert!(explain.run.verification_envelope["release_decision"]["blocked_reasons"]
-        .as_array()
-        .expect("blocked reasons should be an array")
-        .iter()
-        .any(|reason| reason == "architecture baseline mismatch requires review"));
-    assert!(explain.run.draft_pr_gate["handoff_package"]["blocked_reasons"]
-        .as_array()
-        .expect("draft PR blocked reasons should be an array")
-        .iter()
-        .any(|reason| reason == "architecture baseline mismatch requires review"));
+    assert!(
+        explain.run.verification_envelope["release_decision"]["blocked_reasons"]
+            .as_array()
+            .expect("blocked reasons should be an array")
+            .iter()
+            .any(|reason| reason == "architecture baseline mismatch requires review")
+    );
+    assert!(
+        explain.run.draft_pr_gate["handoff_package"]["blocked_reasons"]
+            .as_array()
+            .expect("draft PR blocked reasons should be an array")
+            .iter()
+            .any(|reason| reason == "architecture baseline mismatch requires review")
+    );
     assert!(explain.run.audit_chain["events"]
         .as_array()
         .expect("audit chain events should be an array")
@@ -1252,10 +1258,7 @@ panes:
         explain.run.architecture_contract["status"],
         "baseline_match"
     );
-    assert_eq!(
-        explain.run.architecture_contract["score_regression"],
-        false
-    );
+    assert_eq!(explain.run.architecture_contract["score_regression"], false);
 }
 
 #[test]
@@ -1684,6 +1687,323 @@ panes:
         gated_run["verification_envelope"]["dynamic_gates"]["phase"]["stop_stage"],
         "package"
     );
+}
+
+#[test]
+fn ledger_contract_requires_final_human_approval_for_enterprise_chain() {
+    let manifest = r#"
+version: 1
+session:
+  name: winsmux-orchestra
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    task_id: task-enterprise-approval
+    task: Implement enterprise approval chain
+    task_state: completed
+    review_state: PASS
+    branch: worktree-enterprise-approval
+    head_sha: abc1234def5678
+    review_required: true
+    provider_target: enterprise:isolated
+    verification_plan: ["cargo test"]
+"#;
+    let events = r#"{"timestamp":"2026-05-16T12:00:00+09:00","session":"winsmux-orchestra","event":"operator.review_requested","message":"review requested","label":"reviewer-1","pane_id":"%3","role":"Reviewer","data":{"task_id":"task-enterprise-approval"}}
+{"timestamp":"2026-05-16T12:01:00+09:00","session":"winsmux-orchestra","event":"operator.review_passed","message":"review passed","label":"reviewer-1","pane_id":"%3","role":"Reviewer","data":{"task_id":"task-enterprise-approval"}}
+{"timestamp":"2026-05-16T12:02:00+09:00","session":"winsmux-orchestra","event":"pipeline.verify.pass","message":"verification passed","status":"completed","data":{"task_id":"task-enterprise-approval","verification_result":{"outcome":"PASS","summary":"tests passed"}}}
+{"timestamp":"2026-05-16T12:03:00+09:00","session":"winsmux-orchestra","event":"pipeline.security.allowed","message":"security allowed","status":"ALLOW","data":{"task_id":"task-enterprise-approval","security_verdict":{"verdict":"ALLOW","reason":"policy passed"}}}
+"#;
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, events)
+        .expect("ledger snapshot should load enterprise approval inputs");
+    let explain = snapshot
+        .explain_projection("task:task-enterprise-approval")
+        .expect("enterprise run should explain");
+
+    assert_eq!(
+        explain.run.audit_chain["approval"]["mode"],
+        "enterprise_multi_stage"
+    );
+    assert_eq!(explain.run.audit_chain["approval"]["chain_required"], true);
+    assert_eq!(explain.run.audit_chain["approval"]["state"], "missing");
+    let stages = explain.run.audit_chain["approval"]["stages"]
+        .as_array()
+        .expect("approval stages should be an array");
+    assert_eq!(stages.len(), 4);
+    assert!(stages
+        .iter()
+        .any(|stage| stage["name"] == "human_final_approval" && stage["state"] == "missing"));
+    let reasons = explain.run.verification_envelope["release_decision"]["blocked_reasons"]
+        .as_array()
+        .expect("blocked reasons should be an array");
+    assert!(reasons
+        .iter()
+        .any(|reason| reason == "approval stage human_final_approval is missing"));
+}
+
+#[test]
+fn ledger_contract_rejects_builder_as_enterprise_final_approver() {
+    let manifest = r#"
+version: 1
+session:
+  name: winsmux-orchestra
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    task_id: task-enterprise-self-approval
+    task: Implement enterprise approval chain
+    task_state: completed
+    review_state: PASS
+    branch: worktree-enterprise-approval
+    head_sha: abc1234def5678
+    review_required: true
+    provider_target: enterprise:isolated
+    verification_plan: ["cargo test"]
+"#;
+    let events = r#"{"timestamp":"2026-05-16T12:00:00+09:00","session":"winsmux-orchestra","event":"operator.review_requested","message":"review requested","label":"reviewer-1","pane_id":"%3","role":"Reviewer","data":{"task_id":"task-enterprise-self-approval"}}
+{"timestamp":"2026-05-16T12:01:00+09:00","session":"winsmux-orchestra","event":"operator.review_passed","message":"review passed","label":"reviewer-1","pane_id":"%3","role":"Reviewer","data":{"task_id":"task-enterprise-self-approval"}}
+{"timestamp":"2026-05-16T12:02:00+09:00","session":"winsmux-orchestra","event":"pipeline.verify.pass","message":"verification passed","status":"completed","data":{"task_id":"task-enterprise-self-approval","verification_result":{"outcome":"PASS","summary":"tests passed"}}}
+{"timestamp":"2026-05-16T12:03:00+09:00","session":"winsmux-orchestra","event":"pipeline.security.allowed","message":"security allowed","status":"ALLOW","data":{"task_id":"task-enterprise-self-approval","security_verdict":{"verdict":"ALLOW","reason":"policy passed"}}}
+{"timestamp":"2026-05-16T12:04:00+09:00","session":"winsmux-orchestra","event":"operator.final_approval_granted","message":"final approval granted","label":"builder-1","pane_id":"%2","role":"Builder","data":{"task_id":"task-enterprise-self-approval"}}
+"#;
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, events)
+        .expect("ledger snapshot should load enterprise self-approval inputs");
+    let explain = snapshot
+        .explain_projection("task:task-enterprise-self-approval")
+        .expect("enterprise self-approval run should explain");
+
+    let stages = explain.run.audit_chain["approval"]["stages"]
+        .as_array()
+        .expect("approval stages should be an array");
+    assert_eq!(explain.run.audit_chain["approval"]["state"], "failed");
+    assert!(stages.iter().any(|stage| {
+        stage["name"] == "human_final_approval"
+            && stage["state"] == "failed"
+            && stage["actor_separation_satisfied"] == false
+    }));
+    let reasons = explain.run.verification_envelope["release_decision"]["blocked_reasons"]
+        .as_array()
+        .expect("blocked reasons should be an array");
+    assert!(reasons
+        .iter()
+        .any(|reason| reason == "approval stage human_final_approval violates actor separation"));
+}
+
+#[test]
+fn ledger_contract_rejects_blank_enterprise_final_approver() {
+    let manifest = r#"
+version: 1
+session:
+  name: winsmux-orchestra
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    task_id: task-enterprise-blank-final-approval
+    task: Implement enterprise approval chain
+    task_state: completed
+    review_state: PASS
+    branch: worktree-enterprise-approval
+    head_sha: abc1234def5678
+    review_required: true
+    provider_target: enterprise:isolated
+    verification_plan: ["cargo test"]
+"#;
+    let events = r#"{"timestamp":"2026-05-16T12:00:00+09:00","session":"winsmux-orchestra","event":"operator.review_requested","message":"review requested","label":"reviewer-1","pane_id":"%3","role":"Reviewer","data":{"task_id":"task-enterprise-blank-final-approval"}}
+{"timestamp":"2026-05-16T12:01:00+09:00","session":"winsmux-orchestra","event":"operator.review_passed","message":"review passed","label":"reviewer-1","pane_id":"%3","role":"Reviewer","data":{"task_id":"task-enterprise-blank-final-approval"}}
+{"timestamp":"2026-05-16T12:02:00+09:00","session":"winsmux-orchestra","event":"pipeline.verify.pass","message":"verification passed","status":"completed","data":{"task_id":"task-enterprise-blank-final-approval","verification_result":{"outcome":"PASS","summary":"tests passed"}}}
+{"timestamp":"2026-05-16T12:03:00+09:00","session":"winsmux-orchestra","event":"pipeline.security.allowed","message":"security allowed","status":"ALLOW","data":{"task_id":"task-enterprise-blank-final-approval","security_verdict":{"verdict":"ALLOW","reason":"policy passed"}}}
+{"timestamp":"2026-05-16T12:04:00+09:00","session":"winsmux-orchestra","event":"operator.final_approval_granted","message":"final approval granted","data":{"task_id":"task-enterprise-blank-final-approval"}}
+"#;
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, events)
+        .expect("ledger snapshot should load blank final approver inputs");
+    let explain = snapshot
+        .explain_projection("task:task-enterprise-blank-final-approval")
+        .expect("enterprise blank final approval run should explain");
+
+    let stages = explain.run.audit_chain["approval"]["stages"]
+        .as_array()
+        .expect("approval stages should be an array");
+    assert_eq!(explain.run.audit_chain["approval"]["state"], "failed");
+    assert!(stages.iter().any(|stage| {
+        stage["name"] == "human_final_approval"
+            && stage["state"] == "failed"
+            && stage["actor_separation_satisfied"] == false
+    }));
+    let reasons = explain.run.verification_envelope["release_decision"]["blocked_reasons"]
+        .as_array()
+        .expect("blocked reasons should be an array");
+    assert!(reasons
+        .iter()
+        .any(|reason| reason == "approval stage human_final_approval violates actor separation"));
+}
+
+#[test]
+fn ledger_contract_rejects_builder_as_enterprise_review_approver() {
+    let manifest = r#"
+version: 1
+session:
+  name: winsmux-orchestra
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    task_id: task-enterprise-review-self-approval
+    task: Implement enterprise approval chain
+    task_state: commit_ready
+    review_state: PASS
+    branch: worktree-enterprise-approval
+    head_sha: abc1234def5678
+    review_required: true
+    provider_target: enterprise:isolated
+    verification_plan: ["cargo test"]
+"#;
+    let events = r#"{"timestamp":"2026-05-16T12:00:00+09:00","session":"winsmux-orchestra","event":"operator.review_requested","message":"review requested","label":"reviewer-1","pane_id":"%3","role":"Reviewer","data":{"task_id":"task-enterprise-review-self-approval"}}
+{"timestamp":"2026-05-16T12:01:00+09:00","session":"winsmux-orchestra","event":"operator.review_passed","message":"review passed","label":"builder-1","pane_id":"%2","role":"Builder","data":{"task_id":"task-enterprise-review-self-approval"}}
+{"timestamp":"2026-05-16T12:02:00+09:00","session":"winsmux-orchestra","event":"pipeline.verify.pass","message":"verification passed","status":"completed","data":{"task_id":"task-enterprise-review-self-approval","verification_result":{"outcome":"PASS","summary":"tests passed"}}}
+{"timestamp":"2026-05-16T12:03:00+09:00","session":"winsmux-orchestra","event":"pipeline.security.allowed","message":"security allowed","status":"ALLOW","data":{"task_id":"task-enterprise-review-self-approval","security_verdict":{"verdict":"ALLOW","reason":"policy passed"}}}
+{"timestamp":"2026-05-16T12:04:00+09:00","session":"winsmux-orchestra","event":"operator.final_approval_granted","message":"final approval granted","label":"operator-1","pane_id":"%1","role":"Operator","data":{"task_id":"task-enterprise-review-self-approval"}}
+{"timestamp":"2026-05-16T12:05:00+09:00","session":"winsmux-orchestra","event":"operator.draft_pr.created","message":"draft PR created","head_sha":"abc1234def5678","data":{"task_id":"task-enterprise-review-self-approval","draft_pr_url":"https://github.com/Sora-bluesky/winsmux/pull/999"}}
+"#;
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, events)
+        .expect("ledger snapshot should load enterprise review self-approval inputs");
+    let explain = snapshot
+        .explain_projection("task:task-enterprise-review-self-approval")
+        .expect("enterprise review self-approval run should explain");
+
+    let stages = explain.run.audit_chain["approval"]["stages"]
+        .as_array()
+        .expect("approval stages should be an array");
+    assert_eq!(explain.run.audit_chain["approval"]["state"], "failed");
+    assert!(stages.iter().any(|stage| {
+        stage["name"] == "operator_review"
+            && stage["state"] == "failed"
+            && stage["actor_separation_satisfied"] == false
+    }));
+    let reasons = explain.run.verification_envelope["release_decision"]["blocked_reasons"]
+        .as_array()
+        .expect("blocked reasons should be an array");
+    assert!(reasons
+        .iter()
+        .any(|reason| reason == "approval stage operator_review violates actor separation"));
+}
+
+#[test]
+fn ledger_contract_allows_separated_enterprise_final_approver() {
+    let manifest = r#"
+version: 1
+session:
+  name: winsmux-orchestra
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    task_id: task-enterprise-separated-approval
+    task: Implement enterprise approval chain
+    task_state: commit_ready
+    review_state: PASS
+    branch: worktree-enterprise-approval
+    head_sha: abc1234def5678
+    review_required: true
+    provider_target: enterprise:isolated
+    verification_plan: ["cargo test"]
+"#;
+    let events = r#"{"timestamp":"2026-05-16T12:00:00+09:00","session":"winsmux-orchestra","event":"operator.review_requested","message":"review requested","label":"reviewer-1","pane_id":"%3","role":"Reviewer","data":{"task_id":"task-enterprise-separated-approval"}}
+{"timestamp":"2026-05-16T12:01:00+09:00","session":"winsmux-orchestra","event":"operator.review_passed","message":"review passed","label":"builder-1","pane_id":"%2","role":"Builder","data":{"task_id":"task-enterprise-separated-approval"}}
+{"timestamp":"2026-05-16T03:02:00Z","session":"winsmux-orchestra","event":"operator.review_passed","message":"review passed","label":"reviewer-1","pane_id":"%3","role":"Reviewer","data":{"task_id":"task-enterprise-separated-approval"}}
+{"timestamp":"2026-05-16T12:03:00+09:00","session":"winsmux-orchestra","event":"pipeline.verify.pass","message":"verification passed","status":"completed","data":{"task_id":"task-enterprise-separated-approval","verification_result":{"outcome":"PASS","summary":"tests passed"}}}
+{"timestamp":"2026-05-16T12:04:00+09:00","session":"winsmux-orchestra","event":"pipeline.security.allowed","message":"security allowed","status":"ALLOW","data":{"task_id":"task-enterprise-separated-approval","security_verdict":{"verdict":"ALLOW","reason":"policy passed"}}}
+{"timestamp":"2026-05-16T12:05:00+09:00","session":"winsmux-orchestra","event":"operator.final_approval_denied","message":"final approval denied","label":"operator-1","pane_id":"%1","role":"Operator","data":{"task_id":"task-enterprise-separated-approval"}}
+{"timestamp":"2026-05-16T03:06:00Z","session":"winsmux-orchestra","event":"operator.final_approval_granted","message":"final approval granted","label":"operator-1","pane_id":"%1","role":"Operator","data":{"task_id":"task-enterprise-separated-approval"}}
+{"timestamp":"2026-05-16T12:07:00+09:00","session":"winsmux-orchestra","event":"operator.draft_pr.created","message":"draft PR created","head_sha":"abc1234def5678","data":{"task_id":"task-enterprise-separated-approval","draft_pr_url":"https://github.com/Sora-bluesky/winsmux/pull/999"}}
+"#;
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, events)
+        .expect("ledger snapshot should load separated enterprise approval inputs");
+    let explain = snapshot
+        .explain_projection("task:task-enterprise-separated-approval")
+        .expect("enterprise separated approval run should explain");
+
+    let stages = explain.run.audit_chain["approval"]["stages"]
+        .as_array()
+        .expect("approval stages should be an array");
+    assert_eq!(explain.run.audit_chain["approval"]["state"], "approved");
+    assert!(stages.iter().any(|stage| {
+        stage["name"] == "operator_review"
+            && stage["state"] == "approved"
+            && stage["actor_separation_satisfied"] == true
+    }));
+    assert!(stages.iter().any(|stage| {
+        stage["name"] == "human_final_approval"
+            && stage["state"] == "approved"
+            && stage["decided_event"] == "operator.final_approval_granted"
+            && stage["actor_separation_satisfied"] == true
+    }));
+    assert_eq!(
+        explain.run.verification_envelope["release_decision"]["status"], "approved",
+        "blocked reasons: {:?}",
+        explain.run.verification_envelope["release_decision"]["blocked_reasons"]
+    );
+    assert_eq!(
+        explain.run.verification_envelope["release_decision"]["blocked_reasons"]
+            .as_array()
+            .expect("blocked reasons should be an array")
+            .len(),
+        0
+    );
+}
+
+#[test]
+fn ledger_contract_marks_failed_enterprise_verification_stage_failed() {
+    let manifest = r#"
+version: 1
+session:
+  name: winsmux-orchestra
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    task_id: task-enterprise-verify-fail
+    task: Implement enterprise approval chain
+    task_state: commit_ready
+    review_state: PASS
+    branch: worktree-enterprise-approval
+    head_sha: abc1234def5678
+    review_required: true
+    provider_target: enterprise:isolated
+    verification_plan: ["cargo test"]
+"#;
+    let events = r#"{"timestamp":"2026-05-16T12:00:00+09:00","session":"winsmux-orchestra","event":"operator.review_requested","message":"review requested","label":"reviewer-1","pane_id":"%3","role":"Reviewer","data":{"task_id":"task-enterprise-verify-fail"}}
+{"timestamp":"2026-05-16T12:01:00+09:00","session":"winsmux-orchestra","event":"operator.review_passed","message":"review passed","label":"reviewer-1","pane_id":"%3","role":"Reviewer","data":{"task_id":"task-enterprise-verify-fail"}}
+{"timestamp":"2026-05-16T12:02:00+09:00","session":"winsmux-orchestra","event":"pipeline.verify.fail","message":"verification failed","status":"failed","data":{"task_id":"task-enterprise-verify-fail","verification_result":{"outcome":"FAIL","summary":"tests failed"}}}
+{"timestamp":"2026-05-16T12:03:00+09:00","session":"winsmux-orchestra","event":"pipeline.security.allowed","message":"security allowed","status":"ALLOW","data":{"task_id":"task-enterprise-verify-fail","security_verdict":{"verdict":"ALLOW","reason":"policy passed"}}}
+{"timestamp":"2026-05-16T12:04:00+09:00","session":"winsmux-orchestra","event":"operator.final_approval_granted","message":"final approval granted","label":"operator-1","pane_id":"%1","role":"Operator","data":{"task_id":"task-enterprise-verify-fail"}}
+"#;
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, events)
+        .expect("ledger snapshot should load failed verification enterprise inputs");
+    let explain = snapshot
+        .explain_projection("task:task-enterprise-verify-fail")
+        .expect("enterprise failed verification run should explain");
+
+    let stages = explain.run.audit_chain["approval"]["stages"]
+        .as_array()
+        .expect("approval stages should be an array");
+    assert_eq!(explain.run.audit_chain["approval"]["state"], "failed");
+    assert!(stages
+        .iter()
+        .any(|stage| stage["name"] == "static_verification" && stage["state"] == "failed"));
+    let reasons = explain.run.verification_envelope["release_decision"]["blocked_reasons"]
+        .as_array()
+        .expect("blocked reasons should be an array");
+    assert!(reasons
+        .iter()
+        .any(|reason| reason == "verification outcome is FAIL"));
 }
 
 #[test]

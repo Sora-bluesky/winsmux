@@ -321,6 +321,8 @@ export interface DesktopExplainPayload {
     security_verdict: Record<string, unknown> | null;
     verification_contract: Record<string, unknown> | null;
     verification_result: Record<string, unknown> | null;
+    verification_envelope?: Record<string, unknown> | null;
+    audit_chain?: Record<string, unknown> | null;
     changed_files: string[];
     action_items: Array<{
       kind: string;

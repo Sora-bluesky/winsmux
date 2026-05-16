@@ -366,6 +366,9 @@
           "required": true,
           "state": "pending",
           "verdict": "PENDING",
+          "mode": "single_review",
+          "chain_required": false,
+          "final_approval_required": false,
           "requested_at": "2026-04-10T03:01:00Z",
           "requested_event": "operator.review_requested",
           "requested_reviewer_label": "reviewer-1",
@@ -374,7 +377,9 @@
           "decided_at": "",
           "decided_event": "",
           "human_judgement_required": true,
-          "automatic_merge_allowed": false
+          "automatic_merge_allowed": false,
+          "builder_can_approve_itself": false,
+          "stages": []
         },
         "context": {
           "contract_version": 1,
@@ -700,6 +705,9 @@
           "required": true,
           "state": "pending",
           "verdict": "PENDING",
+          "mode": "single_review",
+          "chain_required": false,
+          "final_approval_required": false,
           "requested_at": "2026-04-10T03:01:00Z",
           "requested_event": "operator.review_requested",
           "requested_reviewer_label": "reviewer-1",
@@ -708,7 +716,9 @@
           "decided_at": "",
           "decided_event": "",
           "human_judgement_required": true,
-          "automatic_merge_allowed": false
+          "automatic_merge_allowed": false,
+          "builder_can_approve_itself": false,
+          "stages": []
         },
         "events": [
           {
@@ -849,6 +859,9 @@
         "required": true,
         "state": "pending",
         "verdict": "PENDING",
+        "mode": "single_review",
+        "chain_required": false,
+        "final_approval_required": false,
         "requested_at": "2026-04-10T03:01:00Z",
         "requested_event": "operator.review_requested",
         "requested_reviewer_label": "reviewer-1",
@@ -857,7 +870,9 @@
         "decided_at": "",
         "decided_event": "",
         "human_judgement_required": true,
-        "automatic_merge_allowed": false
+        "automatic_merge_allowed": false,
+        "builder_can_approve_itself": false,
+        "stages": []
       },
       "events": [
         {

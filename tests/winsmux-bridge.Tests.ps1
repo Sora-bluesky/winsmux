@@ -12498,6 +12498,297 @@ panes:
         $gate.handoff_package.suggested_next_action | Should -Be 'resolve blocked reasons before creating or merging a draft PR'
     }
 
+    It 'requires final human approval for enterprise approval chains' {
+        $run = [PSCustomObject]@{
+            run_id                = 'task:task-359'
+            task_id               = 'TASK-359'
+            task                  = 'Enterprise approval chain'
+            task_type             = 'feature'
+            priority              = 'P1'
+            branch                = 'worktree-builder-1'
+            head_sha              = 'abc1234def5678'
+            changed_files         = @('scripts/winsmux-core.ps1')
+            primary_label         = 'builder-1'
+            primary_pane_id       = '%2'
+            primary_role          = 'Builder'
+            provider_target       = 'codex:gpt-5.5'
+            agent_role            = 'worker'
+            review_required       = $true
+            review_state          = 'PASS'
+            verification_plan     = @('Invoke-Pester')
+            verification_result   = [ordered]@{ outcome = 'PASS'; summary = 'tests passed' }
+            verification_evidence = [ordered]@{ packet_type = 'verification_evidence' }
+            context_contract      = [ordered]@{ context_mode = 'isolated' }
+            security_policy       = [ordered]@{ execution_profile = 'isolated-enterprise' }
+            security_verdict      = [ordered]@{ verdict = 'ALLOW'; reason = 'policy passed' }
+            draft_pr_gate         = [ordered]@{ state = 'passed' }
+            phase_gate            = [ordered]@{ stop_reason = ''; stop_stage = '' }
+            architecture_contract = [ordered]@{
+                score_regression = $false
+                baseline = [ordered]@{ review_required_on_drift = $true }
+            }
+            last_event            = 'operator.review_passed'
+        }
+        $events = @(
+            [ordered]@{ timestamp = '2026-05-16T12:00:00+09:00'; line_number = 1; event = 'operator.review_requested'; label = 'reviewer-1'; pane_id = '%3'; role = 'Reviewer'; data = [ordered]@{} },
+            [ordered]@{ timestamp = '2026-05-16T12:05:00+09:00'; line_number = 2; event = 'operator.review_passed'; label = 'reviewer-1'; pane_id = '%3'; role = 'Reviewer'; data = [ordered]@{} }
+        )
+
+        $run | Add-Member -NotePropertyName audit_chain -NotePropertyValue (New-RunAuditChainContract -Run $run -EventRecords $events)
+        $envelope = New-RunVerificationEnvelope -Run $run
+
+        $run.audit_chain.approval.mode | Should -Be 'enterprise_multi_stage'
+        $run.audit_chain.approval.chain_required | Should -Be $true
+        $run.audit_chain.approval.state | Should -Be 'missing'
+        $run.audit_chain.approval.final_approval_required | Should -Be $true
+        @($run.audit_chain.approval.stages | ForEach-Object { $_.name }) | Should -Be @('static_verification', 'policy_gate', 'operator_review', 'human_final_approval')
+        ($run.audit_chain.approval.stages | Where-Object { $_.name -eq 'human_final_approval' } | Select-Object -First 1).state | Should -Be 'missing'
+        $envelope.release_decision.status | Should -Be 'blocked'
+        $envelope.release_decision.blocked_reasons | Should -Contain 'approval stage human_final_approval is missing'
+    }
+
+    It 'rejects enterprise final approval from the builder actor' {
+        $run = [PSCustomObject]@{
+            run_id                = 'task:task-359-self'
+            task_id               = 'TASK-359'
+            task                  = 'Enterprise approval chain'
+            task_type             = 'feature'
+            priority              = 'P1'
+            branch                = 'worktree-builder-1'
+            head_sha              = 'abc1234def5678'
+            changed_files         = @('scripts/winsmux-core.ps1')
+            primary_label         = 'builder-1'
+            primary_pane_id       = '%2'
+            primary_role          = 'Builder'
+            provider_target       = 'codex:gpt-5.5'
+            agent_role            = 'worker'
+            review_required       = $true
+            review_state          = 'PASS'
+            verification_plan     = @('Invoke-Pester')
+            verification_result   = [ordered]@{ outcome = 'PASS'; summary = 'tests passed' }
+            verification_evidence = [ordered]@{ packet_type = 'verification_evidence' }
+            context_contract      = [ordered]@{ context_mode = 'isolated' }
+            security_policy       = [ordered]@{ execution_profile = 'isolated-enterprise' }
+            security_verdict      = [ordered]@{ verdict = 'ALLOW'; reason = 'policy passed' }
+            draft_pr_gate         = [ordered]@{ state = 'passed' }
+            phase_gate            = [ordered]@{ stop_reason = ''; stop_stage = '' }
+            architecture_contract = [ordered]@{
+                score_regression = $false
+                baseline = [ordered]@{ review_required_on_drift = $true }
+            }
+            last_event            = 'operator.final_approval_granted'
+        }
+        $events = @(
+            [ordered]@{ timestamp = '2026-05-16T12:00:00+09:00'; line_number = 1; event = 'operator.review_requested'; label = 'reviewer-1'; pane_id = '%3'; role = 'Reviewer'; data = [ordered]@{} },
+            [ordered]@{ timestamp = '2026-05-16T12:05:00+09:00'; line_number = 2; event = 'operator.review_passed'; label = 'reviewer-1'; pane_id = '%3'; role = 'Reviewer'; data = [ordered]@{} },
+            [ordered]@{ timestamp = '2026-05-16T12:06:00+09:00'; line_number = 3; event = 'operator.final_approval_granted'; label = 'builder-1'; pane_id = '%2'; role = 'Builder'; data = [ordered]@{} }
+        )
+
+        $run | Add-Member -NotePropertyName audit_chain -NotePropertyValue (New-RunAuditChainContract -Run $run -EventRecords $events)
+        $envelope = New-RunVerificationEnvelope -Run $run
+        $finalStage = $run.audit_chain.approval.stages | Where-Object { $_.name -eq 'human_final_approval' } | Select-Object -First 1
+
+        $run.audit_chain.approval.state | Should -Be 'failed'
+        $finalStage.state | Should -Be 'failed'
+        $finalStage.actor_separation_satisfied | Should -Be $false
+        $envelope.release_decision.blocked_reasons | Should -Contain 'approval stage human_final_approval violates actor separation'
+    }
+
+    It 'rejects enterprise final approval without approver identity' {
+        $run = [PSCustomObject]@{
+            run_id                = 'task:task-359-blank-final'
+            task_id               = 'TASK-359'
+            task                  = 'Enterprise approval chain'
+            task_type             = 'feature'
+            priority              = 'P1'
+            branch                = 'worktree-builder-1'
+            head_sha              = 'abc1234def5678'
+            changed_files         = @('scripts/winsmux-core.ps1')
+            primary_label         = 'builder-1'
+            primary_pane_id       = '%2'
+            primary_role          = 'Builder'
+            provider_target       = 'codex:gpt-5.5'
+            agent_role            = 'worker'
+            review_required       = $true
+            review_state          = 'PASS'
+            verification_plan     = @('Invoke-Pester')
+            verification_result   = [ordered]@{ outcome = 'PASS'; summary = 'tests passed' }
+            verification_evidence = [ordered]@{ packet_type = 'verification_evidence' }
+            context_contract      = [ordered]@{ context_mode = 'isolated' }
+            security_policy       = [ordered]@{ execution_profile = 'isolated-enterprise' }
+            security_verdict      = [ordered]@{ verdict = 'ALLOW'; reason = 'policy passed' }
+            draft_pr_gate         = [ordered]@{ state = 'passed' }
+            phase_gate            = [ordered]@{ stop_reason = ''; stop_stage = '' }
+            architecture_contract = [ordered]@{
+                score_regression = $false
+                baseline = [ordered]@{ review_required_on_drift = $true }
+            }
+            last_event            = 'operator.final_approval_granted'
+        }
+        $events = @(
+            [ordered]@{ timestamp = '2026-05-16T12:00:00+09:00'; line_number = 1; event = 'operator.review_requested'; label = 'reviewer-1'; pane_id = '%3'; role = 'Reviewer'; data = [ordered]@{} },
+            [ordered]@{ timestamp = '2026-05-16T12:05:00+09:00'; line_number = 2; event = 'operator.review_passed'; label = 'reviewer-1'; pane_id = '%3'; role = 'Reviewer'; data = [ordered]@{} },
+            [ordered]@{ timestamp = '2026-05-16T12:06:00+09:00'; line_number = 3; event = 'operator.final_approval_granted'; label = ''; pane_id = ''; role = ''; data = [ordered]@{} }
+        )
+
+        $run | Add-Member -NotePropertyName audit_chain -NotePropertyValue (New-RunAuditChainContract -Run $run -EventRecords $events)
+        $envelope = New-RunVerificationEnvelope -Run $run
+        $finalStage = $run.audit_chain.approval.stages | Where-Object { $_.name -eq 'human_final_approval' } | Select-Object -First 1
+
+        $run.audit_chain.approval.state | Should -Be 'failed'
+        $finalStage.state | Should -Be 'failed'
+        $finalStage.actor_separation_satisfied | Should -Be $false
+        $envelope.release_decision.blocked_reasons | Should -Contain 'approval stage human_final_approval violates actor separation'
+    }
+
+    It 'rejects enterprise review approval from the builder actor' {
+        $run = [PSCustomObject]@{
+            run_id                = 'task:task-359-review-self'
+            task_id               = 'TASK-359'
+            task                  = 'Enterprise approval chain'
+            task_type             = 'feature'
+            priority              = 'P1'
+            branch                = 'worktree-builder-1'
+            head_sha              = 'abc1234def5678'
+            changed_files         = @('scripts/winsmux-core.ps1')
+            primary_label         = 'builder-1'
+            primary_pane_id       = '%2'
+            primary_role          = 'Builder'
+            provider_target       = 'codex:gpt-5.5'
+            agent_role            = 'worker'
+            review_required       = $true
+            review_state          = 'PASS'
+            verification_plan     = @('Invoke-Pester')
+            verification_result   = [ordered]@{ outcome = 'PASS'; summary = 'tests passed' }
+            verification_evidence = [ordered]@{ packet_type = 'verification_evidence' }
+            context_contract      = [ordered]@{ context_mode = 'isolated' }
+            security_policy       = [ordered]@{ execution_profile = 'isolated-enterprise' }
+            security_verdict      = [ordered]@{ verdict = 'ALLOW'; reason = 'policy passed' }
+            draft_pr_gate         = [ordered]@{ state = 'passed' }
+            phase_gate            = [ordered]@{ stop_reason = ''; stop_stage = '' }
+            architecture_contract = [ordered]@{
+                score_regression = $false
+                baseline = [ordered]@{ review_required_on_drift = $true }
+            }
+            last_event            = 'operator.final_approval_granted'
+        }
+        $events = @(
+            [ordered]@{ timestamp = '2026-05-16T12:00:00+09:00'; line_number = 1; event = 'operator.review_requested'; label = 'reviewer-1'; pane_id = '%3'; role = 'Reviewer'; data = [ordered]@{} },
+            [ordered]@{ timestamp = '2026-05-16T12:05:00+09:00'; line_number = 2; event = 'operator.review_passed'; label = 'builder-1'; pane_id = '%2'; role = 'Builder'; data = [ordered]@{} },
+            [ordered]@{ timestamp = '2026-05-16T12:06:00+09:00'; line_number = 3; event = 'operator.final_approval_granted'; label = 'operator-1'; pane_id = '%1'; role = 'Operator'; data = [ordered]@{} }
+        )
+
+        $run | Add-Member -NotePropertyName audit_chain -NotePropertyValue (New-RunAuditChainContract -Run $run -EventRecords $events)
+        $envelope = New-RunVerificationEnvelope -Run $run
+        $reviewStage = $run.audit_chain.approval.stages | Where-Object { $_.name -eq 'operator_review' } | Select-Object -First 1
+
+        $run.audit_chain.approval.state | Should -Be 'failed'
+        $reviewStage.state | Should -Be 'failed'
+        $reviewStage.actor_separation_satisfied | Should -Be $false
+        $envelope.release_decision.blocked_reasons | Should -Contain 'approval stage operator_review violates actor separation'
+    }
+
+    It 'allows enterprise approval chain only after separated final approval' {
+        $run = [PSCustomObject]@{
+            run_id                = 'task:task-359-approved'
+            task_id               = 'TASK-359'
+            task                  = 'Enterprise approval chain'
+            task_type             = 'feature'
+            priority              = 'P1'
+            branch                = 'worktree-builder-1'
+            head_sha              = 'abc1234def5678'
+            changed_files         = @('scripts/winsmux-core.ps1')
+            primary_label         = 'builder-1'
+            primary_pane_id       = '%2'
+            primary_role          = 'Builder'
+            provider_target       = 'codex:gpt-5.5'
+            agent_role            = 'worker'
+            review_required       = $true
+            review_state          = 'PASS'
+            verification_plan     = @('Invoke-Pester')
+            verification_result   = [ordered]@{ outcome = 'PASS'; summary = 'tests passed' }
+            verification_evidence = [ordered]@{ packet_type = 'verification_evidence' }
+            context_contract      = [ordered]@{ context_mode = 'isolated' }
+            security_policy       = [ordered]@{ execution_profile = 'isolated-enterprise' }
+            security_verdict      = [ordered]@{ verdict = 'ALLOW'; reason = 'policy passed' }
+            draft_pr_gate         = [ordered]@{ state = 'passed' }
+            phase_gate            = [ordered]@{ stop_reason = ''; stop_stage = '' }
+            architecture_contract = [ordered]@{
+                score_regression = $false
+                baseline = [ordered]@{ review_required_on_drift = $true }
+            }
+            last_event            = 'operator.final_approval_granted'
+        }
+        $events = @(
+            [ordered]@{ timestamp = '2026-05-16T12:00:00+09:00'; line_number = 1; event = 'operator.review_requested'; label = 'reviewer-1'; pane_id = '%3'; role = 'Reviewer'; data = [ordered]@{} },
+            [ordered]@{ timestamp = '2026-05-16T12:04:00+09:00'; line_number = 2; event = 'operator.review_passed'; label = 'builder-1'; pane_id = '%2'; role = 'Builder'; data = [ordered]@{} },
+            [ordered]@{ timestamp = '2026-05-16T03:05:00Z'; line_number = 3; event = 'operator.review_passed'; label = 'reviewer-1'; pane_id = '%3'; role = 'Reviewer'; data = [ordered]@{} },
+            [ordered]@{ timestamp = '2026-05-16T12:06:00+09:00'; line_number = 4; event = 'operator.final_approval_denied'; label = 'operator-1'; pane_id = '%1'; role = 'Operator'; data = [ordered]@{} },
+            [ordered]@{ timestamp = '2026-05-16T03:07:00Z'; line_number = 5; event = 'operator.final_approval_granted'; label = 'operator-1'; pane_id = '%1'; role = 'Operator'; data = [ordered]@{} }
+        )
+
+        $run | Add-Member -NotePropertyName audit_chain -NotePropertyValue (New-RunAuditChainContract -Run $run -EventRecords $events)
+        $envelope = New-RunVerificationEnvelope -Run $run
+        $reviewStage = $run.audit_chain.approval.stages | Where-Object { $_.name -eq 'operator_review' } | Select-Object -First 1
+        $finalStage = $run.audit_chain.approval.stages | Where-Object { $_.name -eq 'human_final_approval' } | Select-Object -First 1
+
+        $run.audit_chain.approval.state | Should -Be 'approved'
+        $reviewStage.state | Should -Be 'approved'
+        $reviewStage.actor_separation_satisfied | Should -Be $true
+        $finalStage.state | Should -Be 'approved'
+        $finalStage.decided_event | Should -Be 'operator.final_approval_granted'
+        $finalStage.actor_separation_satisfied | Should -Be $true
+        $envelope.release_decision.status | Should -Be 'approved'
+        $envelope.release_decision.blocked_reasons | Should -Be @()
+    }
+
+    It 'marks failed enterprise verification as a failed approval stage' {
+        $run = [PSCustomObject]@{
+            run_id                = 'task:task-359-verify-fail'
+            task_id               = 'TASK-359'
+            task                  = 'Enterprise approval chain'
+            task_type             = 'feature'
+            priority              = 'P1'
+            branch                = 'worktree-builder-1'
+            head_sha              = 'abc1234def5678'
+            changed_files         = @('scripts/winsmux-core.ps1')
+            primary_label         = 'builder-1'
+            primary_pane_id       = '%2'
+            primary_role          = 'Builder'
+            provider_target       = 'codex:gpt-5.5'
+            agent_role            = 'worker'
+            review_required       = $true
+            review_state          = 'PASS'
+            verification_plan     = @('Invoke-Pester')
+            verification_result   = [ordered]@{ outcome = 'FAIL'; summary = 'tests failed' }
+            verification_evidence = [ordered]@{ packet_type = 'verification_evidence' }
+            context_contract      = [ordered]@{ context_mode = 'isolated' }
+            security_policy       = [ordered]@{ execution_profile = 'isolated-enterprise' }
+            security_verdict      = [ordered]@{ verdict = 'ALLOW'; reason = 'policy passed' }
+            draft_pr_gate         = [ordered]@{ state = 'passed' }
+            phase_gate            = [ordered]@{ stop_reason = ''; stop_stage = '' }
+            architecture_contract = [ordered]@{
+                score_regression = $false
+                baseline = [ordered]@{ review_required_on_drift = $true }
+            }
+            last_event            = 'pipeline.verify.fail'
+        }
+        $events = @(
+            [ordered]@{ timestamp = '2026-05-16T12:00:00+09:00'; line_number = 1; event = 'operator.review_requested'; label = 'reviewer-1'; pane_id = '%3'; role = 'Reviewer'; data = [ordered]@{} },
+            [ordered]@{ timestamp = '2026-05-16T12:05:00+09:00'; line_number = 2; event = 'operator.review_passed'; label = 'reviewer-1'; pane_id = '%3'; role = 'Reviewer'; data = [ordered]@{} },
+            [ordered]@{ timestamp = '2026-05-16T12:06:00+09:00'; line_number = 3; event = 'pipeline.verify.fail'; label = 'builder-1'; pane_id = '%2'; role = 'Builder'; data = [ordered]@{} },
+            [ordered]@{ timestamp = '2026-05-16T12:07:00+09:00'; line_number = 4; event = 'operator.final_approval_granted'; label = 'operator-1'; pane_id = '%1'; role = 'Operator'; data = [ordered]@{} }
+        )
+
+        $run | Add-Member -NotePropertyName audit_chain -NotePropertyValue (New-RunAuditChainContract -Run $run -EventRecords $events)
+        $envelope = New-RunVerificationEnvelope -Run $run
+        $verificationStage = $run.audit_chain.approval.stages | Where-Object { $_.name -eq 'static_verification' } | Select-Object -First 1
+
+        $run.audit_chain.approval.state | Should -Be 'failed'
+        $verificationStage.state | Should -Be 'failed'
+        $envelope.release_decision.blocked_reasons | Should -Contain 'verification outcome is FAIL'
+    }
+
     It 'keeps in-progress outcome when draft PR gate is blocked only for missing evidence' {
         $run = [ordered]@{
             task_state            = 'in_progress'

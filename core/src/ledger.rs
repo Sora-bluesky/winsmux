@@ -1200,11 +1200,7 @@ impl LedgerSnapshot {
                 .enumerate()
                 .filter(|(_, event)| run.matches_event(event))
                 .collect();
-            matching_events.sort_by(|(left_index, left), (right_index, right)| {
-                left.timestamp
-                    .cmp(&right.timestamp)
-                    .then_with(|| left_index.cmp(right_index))
-            });
+            matching_events.sort_by(compare_event_record_order);
             for (_, event) in matching_events {
                 run.apply_event(event);
             }
@@ -1266,12 +1262,7 @@ impl LedgerSnapshot {
             .enumerate()
             .filter(|(_, event)| event_matches_explain_run(event, &evidence_digest, &panes))
             .collect();
-        recent_events.sort_by(|(left_index, left), (right_index, right)| {
-            right
-                .timestamp
-                .cmp(&left.timestamp)
-                .then_with(|| right_index.cmp(left_index))
-        });
+        recent_events.sort_by(compare_event_record_order_desc);
         let recent_event_records = recent_events.clone();
         let recent_events: Vec<_> = recent_events
             .into_iter()
@@ -2144,11 +2135,7 @@ fn run_phase_gate_value(
     let mut stop_reason = String::new();
     let mut stop_stage = String::new();
     let mut ordered_events = events.to_vec();
-    ordered_events.sort_by(|(left_index, left), (right_index, right)| {
-        left.timestamp
-            .cmp(&right.timestamp)
-            .then_with(|| left_index.cmp(right_index))
-    });
+    ordered_events.sort_by(compare_event_record_order);
 
     for (_, event) in ordered_events {
         match event.event.as_str() {
@@ -2363,11 +2350,7 @@ fn run_requires_tdd_gate(run: &LedgerExplainRun) -> bool {
 fn run_tdd_gate_value(run: &LedgerExplainRun, events: &[(usize, &EventRecord)]) -> Value {
     let required = run_requires_tdd_gate(run);
     let mut ordered_events = events.to_vec();
-    ordered_events.sort_by(|(left_index, left), (right_index, right)| {
-        left.timestamp
-            .cmp(&right.timestamp)
-            .then_with(|| left_index.cmp(right_index))
-    });
+    ordered_events.sort_by(compare_event_record_order);
 
     let red_event = ordered_events.iter().find(|(_, event)| {
         matches!(
@@ -2558,18 +2541,297 @@ fn run_draft_pr_handoff_package_value(run: &LedgerExplainRun, draft_pr_url: &str
     })
 }
 
+fn run_enterprise_approval_chain_required(run: &LedgerExplainRun) -> bool {
+    if !run.review_required {
+        return false;
+    }
+
+    let context_mode = value_field_string(&run.context_contract, "context_mode");
+    let mut execution_profile = value_field_string(&run.security_policy, "execution_profile");
+    if execution_profile.trim().is_empty() {
+        execution_profile = value_field_string(&run.security_policy, "profile");
+    }
+    let provider_target = run.provider_target.to_ascii_lowercase();
+
+    context_mode.eq_ignore_ascii_case("enterprise")
+        || execution_profile.eq_ignore_ascii_case("isolated-enterprise")
+        || provider_target.contains("enterprise")
+}
+
+fn latest_audit_event_by_name<'a>(
+    events: &'a [(usize, &EventRecord)],
+    names: &[&str],
+) -> Option<&'a EventRecord> {
+    events
+        .iter()
+        .filter(|(_, event)| names.contains(&event.event.as_str()))
+        .max_by(|left, right| compare_event_record_order(*left, *right))
+        .map(|(_, event)| *event)
+}
+
+fn is_final_approval_denied_event(event: &str) -> bool {
+    matches!(
+        event,
+        "operator.final_approval_denied"
+            | "operator.approval_denied"
+            | "operator.human_approval_denied"
+    )
+}
+
+fn approval_actor_separated(run: &LedgerExplainRun, event: Option<&EventRecord>) -> bool {
+    let Some(event) = event else {
+        return false;
+    };
+
+    if event.label.trim().is_empty()
+        && event.pane_id.trim().is_empty()
+        && event.role.trim().is_empty()
+    {
+        return false;
+    }
+
+    if !run.primary_label.trim().is_empty() && run.primary_label.eq_ignore_ascii_case(&event.label)
+    {
+        return false;
+    }
+    if !run.primary_pane_id.trim().is_empty()
+        && run.primary_pane_id.eq_ignore_ascii_case(&event.pane_id)
+    {
+        return false;
+    }
+    if event.role.eq_ignore_ascii_case("Builder") {
+        return false;
+    }
+    if !run.primary_role.trim().is_empty() && run.primary_role.eq_ignore_ascii_case(&event.role) {
+        return false;
+    }
+    true
+}
+
+fn approval_stage_value(
+    name: &str,
+    state: &str,
+    required: bool,
+    evidence: &str,
+    requested_event: &str,
+    decided_event: &str,
+    actor_separation_required: bool,
+    actor_separation_satisfied: bool,
+) -> Value {
+    json!({
+        "name": name,
+        "required": required,
+        "state": state,
+        "evidence": evidence,
+        "requested_event": requested_event,
+        "decided_event": decided_event,
+        "actor_separation_required": actor_separation_required,
+        "actor_separation_satisfied": actor_separation_satisfied,
+        "builder_can_approve_itself": false,
+    })
+}
+
+fn approval_stage_blocked_reasons(approval: &Value) -> Vec<String> {
+    approval
+        .get("stages")
+        .and_then(Value::as_array)
+        .map(|stages| {
+            stages
+                .iter()
+                .filter(|stage| {
+                    stage
+                        .get("required")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                })
+                .filter_map(|stage| {
+                    let stage_name = value_field_string(stage, "name");
+                    if stage_name == "static_verification" {
+                        return None;
+                    }
+                    let state = value_field_string(stage, "state");
+                    if state == "missing" {
+                        Some(format!("approval stage {stage_name} is missing"))
+                    } else if state == "failed" {
+                        let actor_separation_required = stage
+                            .get("actor_separation_required")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false);
+                        let actor_separation_satisfied = stage
+                            .get("actor_separation_satisfied")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false);
+                        if actor_separation_required && !actor_separation_satisfied {
+                            Some(format!(
+                                "approval stage {stage_name} violates actor separation"
+                            ))
+                        } else {
+                            Some(format!("approval stage {stage_name} failed"))
+                        }
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn aggregate_enterprise_approval_state(stages: &[Value]) -> &'static str {
+    let mut has_required_stage = false;
+    let mut has_missing_stage = false;
+    let mut has_pending_stage = false;
+
+    for stage in stages {
+        let required = stage
+            .get("required")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if !required {
+            continue;
+        }
+        has_required_stage = true;
+        match value_field_string(stage, "state").as_str() {
+            "approved" => {}
+            "failed" => return "failed",
+            "missing" | "" => has_missing_stage = true,
+            "pending" => has_pending_stage = true,
+            _ => has_pending_stage = true,
+        }
+    }
+
+    if has_missing_stage {
+        "missing"
+    } else if has_pending_stage {
+        "pending"
+    } else if has_required_stage {
+        "approved"
+    } else {
+        "not_required"
+    }
+}
+
 fn run_audit_chain_value(run: &LedgerExplainRun, events: &[(usize, &EventRecord)]) -> Value {
     let mut ordered_events = events.to_vec();
-    ordered_events.sort_by(|(left_index, left), (right_index, right)| {
-        left.timestamp
-            .cmp(&right.timestamp)
-            .then_with(|| left_index.cmp(right_index))
-    });
+    ordered_events.sort_by(compare_event_record_order);
     let review_request = ordered_events
         .iter()
         .map(|(_, event)| *event)
         .find(|event| event.event == "operator.review_requested");
     let decision_event = run_audit_chain_decision_event(run, &ordered_events);
+    let final_approval_decision = latest_audit_event_by_name(
+        &ordered_events,
+        &[
+            "operator.final_approval_granted",
+            "operator.final_approval_denied",
+            "operator.approval_granted",
+            "operator.approval_denied",
+            "operator.human_approval_granted",
+            "operator.human_approval_denied",
+        ],
+    );
+    let enterprise_approval_required = run_enterprise_approval_chain_required(run);
+    let review_approval_state = audit_chain_approval_state(&run.review_state, run.review_required);
+    let verification_outcome = value_field_string(&run.verification_result, "outcome");
+    let security_verdict = first_non_empty(
+        &value_field_string(&run.security_verdict, "verdict"),
+        run.security_verdict.as_str().unwrap_or_default(),
+    )
+    .to_string();
+    let final_approval_separated = approval_actor_separated(run, final_approval_decision);
+    let operator_review_separated = approval_actor_separated(run, decision_event);
+    let final_approval_state = if final_approval_decision
+        .map(|event| is_final_approval_denied_event(&event.event))
+        .unwrap_or(false)
+    {
+        "failed"
+    } else if final_approval_decision.is_some() && final_approval_separated {
+        "approved"
+    } else if final_approval_decision.is_some() {
+        "failed"
+    } else {
+        "missing"
+    };
+    let operator_review_stage_state =
+        if review_approval_state == "approved" && !operator_review_separated {
+            "failed"
+        } else {
+            review_approval_state
+        };
+    let review_requested_event = review_request
+        .map(|event| event.event.clone())
+        .unwrap_or_default();
+    let review_decided_event = decision_event
+        .map(|event| event.event.clone())
+        .unwrap_or_default();
+    let final_decided_event = final_approval_decision
+        .map(|event| event.event.clone())
+        .unwrap_or_default();
+    let approval_stages = if enterprise_approval_required {
+        let verification_stage_state = if verification_outcome.trim().is_empty() {
+            "missing"
+        } else if verification_outcome == "PASS" {
+            "approved"
+        } else {
+            "failed"
+        };
+        let policy_stage_state = if security_verdict == "BLOCK" {
+            "failed"
+        } else if security_verdict.trim().is_empty() {
+            "missing"
+        } else {
+            "approved"
+        };
+        vec![
+            approval_stage_value(
+                "static_verification",
+                verification_stage_state,
+                true,
+                "verification_result.outcome",
+                "",
+                "pipeline.verify.*",
+                false,
+                false,
+            ),
+            approval_stage_value(
+                "policy_gate",
+                policy_stage_state,
+                true,
+                "security_verdict.verdict",
+                "",
+                "pipeline.security.*",
+                false,
+                false,
+            ),
+            approval_stage_value(
+                "operator_review",
+                operator_review_stage_state,
+                run.review_required,
+                "review_state",
+                &review_requested_event,
+                &review_decided_event,
+                true,
+                operator_review_separated,
+            ),
+            approval_stage_value(
+                "human_final_approval",
+                final_approval_state,
+                true,
+                "operator.final_approval_granted",
+                "",
+                &final_decided_event,
+                true,
+                final_approval_separated,
+            ),
+        ]
+    } else {
+        Vec::new()
+    };
+    let approval_state = if enterprise_approval_required {
+        aggregate_enterprise_approval_state(&approval_stages)
+    } else {
+        review_approval_state
+    };
     let chain_events: Vec<_> = ordered_events
         .iter()
         .filter(|(_, event)| is_audit_chain_event(&event.event))
@@ -2601,8 +2863,11 @@ fn run_audit_chain_value(run: &LedgerExplainRun, events: &[(usize, &EventRecord)
         },
         "approval": {
             "required": run.review_required,
-            "state": audit_chain_approval_state(&run.review_state, run.review_required),
+            "state": approval_state,
             "verdict": run.review_state,
+            "mode": if enterprise_approval_required { "enterprise_multi_stage" } else { "single_review" },
+            "chain_required": enterprise_approval_required,
+            "final_approval_required": enterprise_approval_required,
             "requested_at": review_request.map(|event| event_timestamp_text(&event.timestamp)).unwrap_or_default(),
             "requested_event": review_request.map(|event| event.event.clone()).unwrap_or_default(),
             "requested_reviewer_label": review_request.map(|event| event.label.clone()).unwrap_or_default(),
@@ -2612,6 +2877,8 @@ fn run_audit_chain_value(run: &LedgerExplainRun, events: &[(usize, &EventRecord)
             "decided_event": decision_event.map(|event| event.event.clone()).unwrap_or_default(),
             "human_judgement_required": run.review_required,
             "automatic_merge_allowed": false,
+            "builder_can_approve_itself": false,
+            "stages": approval_stages,
         },
         "events": chain_events,
     })
@@ -2652,8 +2919,9 @@ fn run_audit_chain_decision_event<'a>(
 
     events
         .iter()
+        .filter(|(_, event)| decision_events.contains(&event.event.as_str()))
+        .max_by(|left, right| compare_event_record_order(*left, *right))
         .map(|(_, event)| *event)
-        .find(|event| decision_events.contains(&event.event.as_str()))
 }
 
 fn is_audit_chain_event(event: &str) -> bool {
@@ -2662,6 +2930,12 @@ fn is_audit_chain_event(event: &str) -> bool {
         "operator.review_requested"
             | "operator.review_passed"
             | "operator.review_failed"
+            | "operator.final_approval_granted"
+            | "operator.final_approval_denied"
+            | "operator.approval_granted"
+            | "operator.approval_denied"
+            | "operator.human_approval_granted"
+            | "operator.human_approval_denied"
             | "review.pass"
             | "review.fail"
             | "pane.approval_waiting"
@@ -2762,6 +3036,7 @@ fn run_verification_envelope_value(run: &LedgerExplainRun) -> Value {
             first_non_empty(&approval_state, &run.review_state)
         ));
     }
+    blocked_reasons.extend(approval_stage_blocked_reasons(&approval));
     if !draft_pr_gate_state.trim().is_empty() && draft_pr_gate_state != "passed" {
         blocked_reasons.push(format!("draft PR gate is {draft_pr_gate_state}"));
     }
@@ -2860,6 +3135,32 @@ fn event_timestamp_text(timestamp: &str) -> String {
                 .to_rfc3339_opts(SecondsFormat::Secs, true)
         })
         .unwrap_or_else(|_| timestamp.to_string())
+}
+
+fn event_timestamp_sort_key(timestamp: &str) -> String {
+    DateTime::parse_from_rfc3339(timestamp)
+        .map(|value| {
+            value
+                .with_timezone(&Utc)
+                .to_rfc3339_opts(SecondsFormat::Nanos, true)
+        })
+        .unwrap_or_else(|_| timestamp.to_string())
+}
+
+fn compare_event_record_order(
+    left: &(usize, &EventRecord),
+    right: &(usize, &EventRecord),
+) -> Ordering {
+    event_timestamp_sort_key(&left.1.timestamp)
+        .cmp(&event_timestamp_sort_key(&right.1.timestamp))
+        .then_with(|| left.0.cmp(&right.0))
+}
+
+fn compare_event_record_order_desc(
+    left: &(usize, &EventRecord),
+    right: &(usize, &EventRecord),
+) -> Ordering {
+    compare_event_record_order(right, left)
 }
 
 fn run_outcome_value(run: &LedgerExplainRun, phase_gate: &Value, draft_pr_gate: &Value) -> Value {
@@ -4243,7 +4544,10 @@ fn compare_inbox_items(left: &LedgerInboxItem, right: &LedgerInboxItem) -> Order
     left.priority
         .cmp(&right.priority)
         .then_with(|| inbox_source_rank(&left.source).cmp(&inbox_source_rank(&right.source)))
-        .then_with(|| right.timestamp.cmp(&left.timestamp))
+        .then_with(|| {
+            event_timestamp_sort_key(&right.timestamp)
+                .cmp(&event_timestamp_sort_key(&left.timestamp))
+        })
         .then_with(|| left.label.cmp(&right.label))
 }
 
