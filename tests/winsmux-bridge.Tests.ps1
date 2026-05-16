@@ -9018,6 +9018,7 @@ agent-slots:
         $script:winsmuxWorkersCoreRawContent | Should -Match 'workers sandbox baseline <slot> --run-id <id> \[--json\] \[--project-dir <path>\]'
         $script:winsmuxWorkersCoreRawContent | Should -Match 'workers broker baseline <slot> --run-id <id> --endpoint <url> \[--node-id <id>\] \[--json\] \[--project-dir <path>\]'
         $script:winsmuxWorkersCoreRawContent | Should -Match 'workers broker token <issue\|check> <slot> --run-id <id> \[--ttl-seconds <n>\] \[--no-refresh\] \[--json\] \[--project-dir <path>\]'
+        $script:winsmuxWorkersCoreRawContent | Should -Match 'workers policy baseline <slot> --run-id <id> \[--network <mode>\] \[--write <mode>\] \[--provider <mode>\] \[--json\] \[--project-dir <path>\]'
         $script:winsmuxWorkersCoreRawContent | Should -Match "'workers'\s*\{\s*Invoke-Workers\s*\}"
         $script:winsmuxWorkersCoreRawContent | Should -Match 'google-colab-cli not found on PATH'
         $script:winsmuxWorkersCoreRawContent | Should -Match 'uv not found on PATH'
@@ -9029,6 +9030,7 @@ agent-slots:
         $script:winsmuxWorkersCoreRawContent | Should -Match "'heartbeat'\s*\{\s*Invoke-WorkersHeartbeat\s*\}"
         $script:winsmuxWorkersCoreRawContent | Should -Match "'sandbox'\s*\{\s*Invoke-WorkersSandbox\s*\}"
         $script:winsmuxWorkersCoreRawContent | Should -Match "'broker'\s*\{\s*Invoke-WorkersBroker\s*\}"
+        $script:winsmuxWorkersCoreRawContent | Should -Match "'policy'\s*\{\s*Invoke-WorkersPolicy\s*\}"
     }
 
     It 'prepares and cleans up a disposable isolated workspace from explicit includes' {
@@ -9474,6 +9476,9 @@ agent-slots:
             $issue.run_token.value_ref | Should -Be '.winsmux/isolated-workspaces/worker-2/broker-token-run/secrets/broker-run-token.txt'
             $issue.run_token.value_output | Should -Be $false
             $issue.run_token.value_in_manifest | Should -Be $false
+            $issue.broker_baseline.manifest | Should -Be '.winsmux/isolated-workspaces/worker-2/broker-token-run/broker-baseline.json'
+            $issue.broker_baseline.node_id | Should -Be 'broker-a'
+            $issue.broker_baseline.endpoint | Should -Be 'https://broker.example.invalid/worker'
             $issue.value_policy.output_contains_token_value | Should -Be $false
             $issueSerialized | Should -Not -Match ([regex]::Escape($firstTokenValue.Trim()))
             $manifestRaw | Should -Not -Match ([regex]::Escape($firstTokenValue.Trim()))
@@ -9545,6 +9550,209 @@ agent-slots:
             $recovery.health | Should -Be 'valid'
             $recovery.credential_refresh.refreshed | Should -Be $true
             $fourthTokenValue | Should -Not -Be $thirdTokenValue
+        } finally {
+            $env:WINSMUX_TEST_NOW_UTC = $previousNow
+        }
+    }
+
+    It 'defines enterprise execution policy for prepared isolated broker runs outside prompts' {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    execution-profile: isolated-enterprise
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        Save-WinsmuxManifest -ProjectDir $script:workersTempRoot -Manifest ([ordered]@{
+            version = 1
+            saved_at = '2026-05-16T00:00:00Z'
+            session = [ordered]@{
+                name = 'winsmux-orchestra'
+                project_dir = $script:workersTempRoot
+                git_worktree_dir = (Join-Path $script:workersTempRoot '.git')
+            }
+            panes = [ordered]@{
+                'worker-2' = [ordered]@{
+                    pane_id = '%2'
+                    slot_id = 'worker-2'
+                    worker_backend = 'local'
+                    role = 'Worker'
+                    launch_dir = $script:workersTempRoot
+                    status = 'ready'
+                }
+            }
+            tasks = [ordered]@{
+                queued = @()
+                in_progress = @()
+                completed = @()
+            }
+            worktrees = [ordered]@{}
+        })
+        'payload' | Set-Content -Path (Join-Path $script:workersTempRoot 'input.txt') -Encoding UTF8
+        & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers workspace prepare w2 --include input.txt --run-id policy-run --json --project-dir $script:workersTempRoot | Out-Null
+        & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers broker baseline worker-2 --run-id policy-run --endpoint https://broker.example.invalid/worker --node-id broker-a --json --project-dir $script:workersTempRoot | Out-Null
+
+        $previousNow = $env:WINSMUX_TEST_NOW_UTC
+        try {
+            $env:WINSMUX_TEST_NOW_UTC = '2026-05-16T00:00:00Z'
+            & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers broker token issue w2 --run-id policy-run --ttl-seconds 900 --json --project-dir $script:workersTempRoot | Out-Null
+
+            $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers policy baseline worker-2 --run-id policy-run --network broker-only --write workspace-artifacts --provider configured --require-check codex_review --require-evidence reviewer:release_review --json --project-dir $script:workersTempRoot
+            $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+            $serialized = $payload | ConvertTo-Json -Depth 32
+            $manifestPath = Join-Path $script:workersTempRoot '.winsmux\isolated-workspaces\worker-2\policy-run\execution-policy.json'
+
+            $payload.status | Should -Be 'policy_defined'
+            $payload.health | Should -Be 'enforced'
+            $payload.reason | Should -Be 'policy_enforced_before_execution'
+            $payload.execution_profile | Should -Be 'isolated-enterprise'
+            $payload.public_default | Should -Be $false
+            $payload.controls.network.mode | Should -Be 'broker-only'
+            $payload.controls.network.outbound_network | Should -Be 'blocked_before_execution'
+            $payload.controls.network.broker_only_requires_token | Should -Be $true
+            $payload.controls.write.mode | Should -Be 'workspace-artifacts'
+            @($payload.controls.write.allowed_roots) | Should -Contain '.winsmux/isolated-workspaces/worker-2/policy-run/workspace'
+            @($payload.controls.write.allowed_roots) | Should -Contain '.winsmux/isolated-workspaces/worker-2/policy-run/artifacts'
+            $payload.controls.write.direct_project_write | Should -Be 'prohibited'
+            $payload.controls.provider.mode | Should -Be 'configured'
+            $payload.controls.provider.prompt_override_allowed | Should -Be $false
+            @($payload.required_evidence.builder) | Should -Contain 'focused_tests'
+            @($payload.required_evidence.reviewer) | Should -Contain 'codex_review'
+            @($payload.required_evidence.reviewer) | Should -Contain 'release_review'
+            @($payload.mandatory_checks) | Should -Contain 'broker_baseline'
+            @($payload.mandatory_checks) | Should -Contain 'broker_token_valid'
+            @($payload.mandatory_checks) | Should -Contain 'codex_review'
+            $payload.alignment.broker_baseline.manifest | Should -Be '.winsmux/isolated-workspaces/worker-2/policy-run/broker-baseline.json'
+            $payload.alignment.broker_token.manifest | Should -Be '.winsmux/isolated-workspaces/worker-2/policy-run/broker-token.json'
+            $payload.alignment.broker_token.health | Should -Be 'valid'
+            $payload.alignment.broker_token.baseline_node_id | Should -Be 'broker-a'
+            $payload.alignment.broker_token.baseline_endpoint | Should -Be 'https://broker.example.invalid/worker'
+            $payload.alignment.broker_token.value_output | Should -Be $false
+            $payload.failure_policy.pre_execution_required | Should -Be $true
+            $payload.failure_policy.operator_visible_stop_reasons | Should -Be $true
+            @($payload.failure_policy.fail_closed_on) | Should -Contain 'missing_or_invalid_broker_token'
+            $payload.operator_surface.status_projection | Should -Be 'workers.status.policy'
+            $payload.locations.manifest.reference | Should -Be '.winsmux/isolated-workspaces/worker-2/policy-run/execution-policy.json'
+            @($payload.testable_guards) | Should -Contain 'policy_options_validated'
+            Test-Path -LiteralPath $manifestPath | Should -Be $true
+            $serialized | Should -Not -Match ([regex]::Escape($script:workersTempRoot))
+            $serialized | Should -Not -Match ([regex]::Escape($script:workersTempRoot.Replace('\', '\\')))
+
+            $statusOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers status worker-2 --json --project-dir $script:workersTempRoot
+            $statusPayload = ($statusOutput | Select-Object -Last 1) | ConvertFrom-Json
+            $statusRow = @($statusPayload.workers)[0]
+            $statusRow.policy.run_id | Should -Be 'policy-run'
+            $statusRow.policy.execution_profile | Should -Be 'isolated-enterprise'
+            $statusRow.policy.status | Should -Be 'policy_defined'
+            $statusRow.policy.health | Should -Be 'enforced'
+            $statusRow.policy.network | Should -Be 'broker-only'
+            $statusRow.policy.write | Should -Be 'workspace-artifacts'
+            $statusRow.policy.provider | Should -Be 'configured'
+            $statusRow.policy.mandatory_checks | Should -Match 'codex_review'
+            $statusRow.policy.required_evidence | Should -Match 'release_review'
+            $statusRow.policy.manifest | Should -Be '.winsmux/isolated-workspaces/worker-2/policy-run/execution-policy.json'
+
+            $workspaceOnlyOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers policy baseline worker-2 --run-id policy-run --network broker-only --write workspace-only --provider configured --json --project-dir $script:workersTempRoot
+            $workspaceOnly = ($workspaceOnlyOutput | Select-Object -Last 1) | ConvertFrom-Json
+            $workspaceOnly.controls.write.mode | Should -Be 'workspace-only'
+            @($workspaceOnly.controls.write.allowed_roots) | Should -HaveCount 1
+            @($workspaceOnly.controls.write.allowed_roots) | Should -Contain '.winsmux/isolated-workspaces/worker-2/policy-run/workspace'
+            @($workspaceOnly.controls.write.allowed_roots) | Should -Not -Contain '.winsmux/isolated-workspaces/worker-2/policy-run/downloads'
+            @($workspaceOnly.controls.write.allowed_roots) | Should -Not -Contain '.winsmux/isolated-workspaces/worker-2/policy-run/artifacts'
+        } finally {
+            $env:WINSMUX_TEST_NOW_UTC = $previousNow
+        }
+
+        & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers workspace prepare w2 --include input.txt --run-id policy-stale-endpoint-token --json --project-dir $script:workersTempRoot | Out-Null
+        & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers broker baseline worker-2 --run-id policy-stale-endpoint-token --endpoint https://broker-a.example.invalid/worker --node-id broker-a --json --project-dir $script:workersTempRoot | Out-Null
+        $previousNow = $env:WINSMUX_TEST_NOW_UTC
+        try {
+            $env:WINSMUX_TEST_NOW_UTC = '2026-05-16T00:00:00Z'
+            & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers broker token issue worker-2 --run-id policy-stale-endpoint-token --ttl-seconds 900 --json --project-dir $script:workersTempRoot | Out-Null
+            & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers broker baseline worker-2 --run-id policy-stale-endpoint-token --endpoint https://broker-b.example.invalid/worker --node-id broker-a --json --project-dir $script:workersTempRoot | Out-Null
+            $staleEndpointToken = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers policy baseline worker-2 --run-id policy-stale-endpoint-token --json --project-dir $script:workersTempRoot 2>&1
+            $LASTEXITCODE | Should -Be 1
+            ($staleEndpointToken | Out-String) | Should -Match 'requires a valid broker token'
+            Test-Path -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\isolated-workspaces\worker-2\policy-stale-endpoint-token\execution-policy.json') | Should -Be $false
+        } finally {
+            $env:WINSMUX_TEST_NOW_UTC = $previousNow
+        }
+    }
+
+    It 'fails closed for enterprise execution policy outside the prepared broker boundary' {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    execution-profile: local-windows
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        $localProfile = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers policy baseline worker-2 --run-id policy-local --profile local-windows --json --project-dir $script:workersTempRoot 2>&1
+        $LASTEXITCODE | Should -Be 1
+        ($localProfile | Out-String) | Should -Match 'requires execution profile isolated-enterprise'
+
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    execution-profile: isolated-enterprise
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        'payload' | Set-Content -Path (Join-Path $script:workersTempRoot 'input.txt') -Encoding UTF8
+
+        $invalidNetwork = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers policy baseline worker-2 --run-id policy-invalid --network internet --json --project-dir $script:workersTempRoot 2>&1
+        $LASTEXITCODE | Should -Be 1
+        ($invalidNetwork | Out-String) | Should -Match '--network must be one of'
+
+        & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers workspace prepare w2 --include input.txt --run-id policy-missing-broker --json --project-dir $script:workersTempRoot | Out-Null
+        $missingBroker = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers policy baseline worker-2 --run-id policy-missing-broker --json --project-dir $script:workersTempRoot 2>&1
+        $LASTEXITCODE | Should -Be 1
+        ($missingBroker | Out-String) | Should -Match 'requires an existing broker baseline'
+        Test-Path -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\isolated-workspaces\worker-2\policy-missing-broker\execution-policy.json') | Should -Be $false
+
+        & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers workspace prepare w2 --include input.txt --run-id policy-missing-token --json --project-dir $script:workersTempRoot | Out-Null
+        & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers broker baseline worker-2 --run-id policy-missing-token --endpoint https://broker.example.invalid/worker --json --project-dir $script:workersTempRoot | Out-Null
+        $missingToken = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers policy baseline worker-2 --run-id policy-missing-token --json --project-dir $script:workersTempRoot 2>&1
+        $LASTEXITCODE | Should -Be 1
+        ($missingToken | Out-String) | Should -Match 'requires a valid broker token'
+        Test-Path -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\isolated-workspaces\worker-2\policy-missing-token\execution-policy.json') | Should -Be $false
+
+        & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers workspace prepare w2 --include input.txt --run-id policy-expired-token --json --project-dir $script:workersTempRoot | Out-Null
+        & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers broker baseline worker-2 --run-id policy-expired-token --endpoint https://broker.example.invalid/worker --json --project-dir $script:workersTempRoot | Out-Null
+        $previousNow = $env:WINSMUX_TEST_NOW_UTC
+        try {
+            $env:WINSMUX_TEST_NOW_UTC = '2026-05-16T00:00:00Z'
+            & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers broker token issue worker-2 --run-id policy-expired-token --ttl-seconds 60 --json --project-dir $script:workersTempRoot | Out-Null
+            $env:WINSMUX_TEST_NOW_UTC = '2026-05-16T00:02:00Z'
+            $expiredToken = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers policy baseline worker-2 --run-id policy-expired-token --json --project-dir $script:workersTempRoot 2>&1
+            $LASTEXITCODE | Should -Be 1
+            ($expiredToken | Out-String) | Should -Match 'requires a valid broker token'
+            Test-Path -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\isolated-workspaces\worker-2\policy-expired-token\execution-policy.json') | Should -Be $false
+        } finally {
+            $env:WINSMUX_TEST_NOW_UTC = $previousNow
+        }
+
+        & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers workspace prepare w2 --include input.txt --run-id policy-mismatched-token --json --project-dir $script:workersTempRoot | Out-Null
+        & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers broker baseline worker-2 --run-id policy-mismatched-token --endpoint https://broker.example.invalid/worker --node-id broker-a --json --project-dir $script:workersTempRoot | Out-Null
+        $previousNow = $env:WINSMUX_TEST_NOW_UTC
+        try {
+            $env:WINSMUX_TEST_NOW_UTC = '2026-05-16T00:00:00Z'
+            & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers broker token issue worker-2 --run-id policy-mismatched-token --ttl-seconds 900 --json --project-dir $script:workersTempRoot | Out-Null
+            & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers broker baseline worker-2 --run-id policy-mismatched-token --endpoint https://broker.example.invalid/worker --node-id broker-b --json --project-dir $script:workersTempRoot | Out-Null
+            $mismatchedToken = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers policy baseline worker-2 --run-id policy-mismatched-token --json --project-dir $script:workersTempRoot 2>&1
+            $LASTEXITCODE | Should -Be 1
+            ($mismatchedToken | Out-String) | Should -Match 'requires a valid broker token'
+            Test-Path -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\isolated-workspaces\worker-2\policy-mismatched-token\execution-policy.json') | Should -Be $false
         } finally {
             $env:WINSMUX_TEST_NOW_UTC = $previousNow
         }

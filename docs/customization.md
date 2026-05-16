@@ -162,6 +162,28 @@ an expired token by default. If refresh is disabled or cannot complete, the run
 is marked `offline` through the same heartbeat surface used by
 `winsmux workers heartbeat`.
 
+### Enterprise execution policy
+
+After the broker baseline and a valid broker token exist, define the execution
+policy that sits outside prompts:
+
+```powershell
+winsmux workers policy baseline w2 --run-id run-123 --network broker-only --write workspace-artifacts --provider configured --json
+```
+
+The policy controls network availability, write permissions, provider
+availability, mandatory checks, and role-specific evidence for the prepared
+`isolated-enterprise` run. It writes `execution-policy.json` under the run
+directory and projects the latest policy through `winsmux workers status
+--json` as `policy`.
+
+The command fails closed unless the slot uses `isolated-enterprise`, the run
+workspace exists, the broker baseline exists, and the broker token is valid and
+unexpired. It also rejects invalid policy values and run-boundary reparse
+points before writing the policy manifest. Operators can read the stop reason
+from the command error and from the latest status projection after a successful
+policy write.
+
 ## Launcher presets
 
 Inspect the presets before launching a compare-oriented run:

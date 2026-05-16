@@ -60,6 +60,21 @@ For example, `desktop.editor.read` and `desktop.explorer.list` can read local
 project files. They remain internal to the Tauri desktop context until a
 separate external authorization model exists.
 
+## Enterprise Worker Policy
+
+External clients do not grant network, write, or provider access by sending
+instructions in a prompt. For prepared `isolated-enterprise` runs, the operator
+defines that access with `winsmux workers policy baseline` after the broker
+baseline and a valid broker token exist. The policy artifact records mandatory
+checks and role-specific evidence outside the prompt and projects the latest
+state through `winsmux workers status --json` as `policy`.
+
+The policy command fails closed before execution when the run is not
+`isolated-enterprise`, the broker baseline is missing, the broker token is
+missing or expired, a policy value is invalid, or the run boundary contains a
+reparse point. External bridges should surface those stop reasons instead of
+retrying with broader prompt instructions.
+
 ## MCP Adapter Boundary
 
 The bundled MCP server is a thin local adapter over the upstream MCP JSON-RPC
