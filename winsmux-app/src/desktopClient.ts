@@ -625,6 +625,60 @@ export interface DesktopWorkerHeartbeat {
   [key: string]: unknown;
 }
 
+export interface DesktopWorkerWorkspaceState {
+  type?: string;
+  status?: string;
+  lifecycle?: string;
+  execution_profile?: string;
+  run_id?: string;
+  workspace?: string;
+  manifest?: string;
+  [key: string]: unknown;
+}
+
+export interface DesktopWorkerSecretProjectionState {
+  run_id?: string;
+  execution_profile?: string;
+  status?: string;
+  binding?: string;
+  projection_count?: string | number;
+  manifest?: string;
+  value_output?: boolean;
+  [key: string]: unknown;
+}
+
+export interface DesktopWorkerBrokerState {
+  run_id?: string;
+  execution_profile?: string;
+  status?: string;
+  node_id?: string;
+  endpoint?: string;
+  manifest?: string;
+  token?: {
+    status?: string;
+    health?: string;
+    expires_at?: string;
+    manifest?: string;
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
+
+export interface DesktopWorkerPolicyState {
+  run_id?: string;
+  execution_profile?: string;
+  status?: string;
+  health?: string;
+  reason?: string;
+  network?: string;
+  write?: string;
+  provider?: string;
+  mandatory_checks?: string;
+  required_evidence?: string;
+  manifest?: string;
+  [key: string]: unknown;
+}
+
 export interface DesktopWorkerStatusRow {
   slot: string;
   slot_id: string;
@@ -634,6 +688,7 @@ export interface DesktopWorkerStatusRow {
   manifest_status: string;
   backend: string;
   role: string;
+  execution_profile?: string;
   session: string;
   requested_gpu: string;
   actual_gpu: string;
@@ -646,6 +701,10 @@ export interface DesktopWorkerStatusRow {
   heartbeat?: DesktopWorkerHeartbeat | null;
   heartbeat_health?: string;
   heartbeat_state?: string;
+  workspace?: DesktopWorkerWorkspaceState | null;
+  secret_projection?: DesktopWorkerSecretProjectionState | null;
+  broker?: DesktopWorkerBrokerState | null;
+  policy?: DesktopWorkerPolicyState | null;
 }
 
 export interface DesktopWorkersStatusResult {

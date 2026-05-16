@@ -177,6 +177,13 @@ policy is projected through `winsmux workers status --json` as `policy` so the
 operator surface can show the enforced controls and stop reason without reading
 the prompt.
 
+Desktop worker status uses the same `winsmux workers status --json` contract.
+Rows expose the execution profile, workspace, secret projection, heartbeat,
+broker, and policy state. The UI distinguishes local Windows runs, isolated
+enterprise runs, and offline runs, then shows the recovery action from the same
+status row. Credential refresh waits are represented as recovery actions
+without keeping a separate desktop-only state model.
+
 Review is handled by any **review-capable slot**, not by a permanently dedicated reviewer pane.
 Meta-planning follows the same rule: the current Claude/Codex role pair is an
 MVP seed, while custom planning roles should be selected from provider

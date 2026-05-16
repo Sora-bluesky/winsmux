@@ -111,6 +111,12 @@ winsmux workers policy baseline w2 --run-id run-123 --network broker-only --writ
 
 コマンドは安全側で失敗します。スロットが `isolated-enterprise` ではない場合、実行ワークスペースが未作成の場合、ブローカー契約がない場合、有効期限内のブローカートークンがない場合、不正なポリシー値を渡した場合、または実行境界の内側にリパースポイントがある場合は、`execution-policy.json` を書きません。オペレーターは、コマンドのエラーと、成功後の状態表示に含まれる理由から停止理由を確認できます。
 
+### デスクトップの実行状態表示
+
+デスクトップのワーカー状態表示は、自動化と同じ `winsmux workers status --json` の契約を使います。各ワーカー行には `execution_profile`、`workspace`、`secret_projection`、`heartbeat`、`broker`、`policy` が含まれます。
+
+デスクトップのピルバーは、実行状態を `exec:local`、`exec:isolated`、`exec:offline` にまとめます。フォーカス中の詳細行では、ワークスペース、資格情報投影、ポリシーの状態、生存確認、復旧アクションを表示します。資格情報更新待ちは復旧アクションとして表示し、資格情報の値は表示しません。
+
 ## 起動プリセット
 
 比較を目的とした実行を始める前に、プリセットを確認できます。

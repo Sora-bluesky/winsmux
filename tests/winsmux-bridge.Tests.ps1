@@ -9662,6 +9662,15 @@ agent-slots:
             @($workspaceOnly.controls.write.allowed_roots) | Should -Contain '.winsmux/isolated-workspaces/worker-2/policy-run/workspace'
             @($workspaceOnly.controls.write.allowed_roots) | Should -Not -Contain '.winsmux/isolated-workspaces/worker-2/policy-run/downloads'
             @($workspaceOnly.controls.write.allowed_roots) | Should -Not -Contain '.winsmux/isolated-workspaces/worker-2/policy-run/artifacts'
+
+            & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers workspace prepare w2 --include input.txt --run-id policy-run-next --json --project-dir $script:workersTempRoot | Out-Null
+            $nextStatusOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers status worker-2 --json --project-dir $script:workersTempRoot
+            $nextStatusPayload = ($nextStatusOutput | Select-Object -Last 1) | ConvertFrom-Json
+            $nextStatusRow = @($nextStatusPayload.workers)[0]
+
+            $nextStatusRow.workspace.run_id | Should -Be 'policy-run-next'
+            $nextStatusRow.broker | Should -BeNullOrEmpty
+            $nextStatusRow.policy | Should -BeNullOrEmpty
         } finally {
             $env:WINSMUX_TEST_NOW_UTC = $previousNow
         }
@@ -9884,6 +9893,101 @@ agent-slots:
         }
     }
 
+    It 'includes execution profile workspace and secret projection state in status rows for desktop consumers' {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    execution-profile: isolated-enterprise
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        New-Item -ItemType Directory -Path (Join-Path $script:workersTempRoot '.winsmux') -Force | Out-Null
+        Save-WinsmuxManifest -ProjectDir $script:workersTempRoot -Manifest ([ordered]@{
+            version = 1
+            saved_at = '2026-05-16T00:00:00Z'
+            session = [ordered]@{
+                name = 'winsmux-orchestra'
+                project_dir = $script:workersTempRoot
+                git_worktree_dir = (Join-Path $script:workersTempRoot '.git')
+            }
+            panes = [ordered]@{
+                'worker-2' = [ordered]@{
+                    pane_id = '%2'
+                    slot_id = 'worker-2'
+                    worker_backend = 'local'
+                    role = 'Worker'
+                    launch_dir = $script:workersTempRoot
+                    status = 'ready'
+                }
+            }
+            tasks = [ordered]@{
+                queued = @()
+                in_progress = @()
+                completed = @()
+            }
+            worktrees = [ordered]@{}
+        })
+        'payload' | Set-Content -Path (Join-Path $script:workersTempRoot 'input.txt') -Encoding UTF8
+        $previousVaultMode = $env:WINSMUX_TEST_SECRET_VAULT_MODE
+        $previousVaultJson = $env:WINSMUX_TEST_SECRET_VAULT_JSON
+        $previousNow = $env:WINSMUX_TEST_NOW_UTC
+        $env:WINSMUX_TEST_SECRET_VAULT_MODE = '1'
+        $env:WINSMUX_TEST_SECRET_VAULT_JSON = '{"api":"desktop-secret-token"}'
+        $env:WINSMUX_TEST_NOW_UTC = '2026-05-16T00:00:00Z'
+
+        try {
+            & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers workspace prepare w2 --include input.txt --run-id desktop-profile --json --project-dir $script:workersTempRoot | Out-Null
+            & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers secrets project w2 --run-id desktop-profile --profile isolated-enterprise --env OPENAI_API_KEY=api --json --project-dir $script:workersTempRoot | Out-Null
+            & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers heartbeat mark w2 --run-id desktop-profile --profile isolated-enterprise --state offline --message 'credential refresh required' --json --project-dir $script:workersTempRoot | Out-Null
+
+            $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers status worker-2 --json --project-dir $script:workersTempRoot
+            $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+            $row = @($payload.workers)[0]
+
+            $row.execution_profile | Should -Be 'isolated-enterprise'
+            $row.state | Should -Be 'offline'
+            $row.heartbeat_health | Should -Be 'offline'
+            $row.heartbeat.message | Should -Be 'credential refresh required'
+            $row.workspace.type | Should -Be 'isolated-workspace'
+            $row.workspace.status | Should -Be 'prepared'
+            $row.workspace.lifecycle | Should -Be 'disposable'
+            $row.workspace.workspace | Should -Be '.winsmux/isolated-workspaces/worker-2/desktop-profile/workspace'
+            $row.workspace.manifest | Should -Be '.winsmux/isolated-workspaces/worker-2/desktop-profile/workspace.json'
+            $row.secret_projection.status | Should -Be 'projected'
+            $row.secret_projection.binding | Should -Be 'late-bound-at-run-start'
+            $row.secret_projection.projection_count | Should -Be '1'
+            $row.secret_projection.manifest | Should -Be '.winsmux/isolated-workspaces/worker-2/desktop-profile/secrets/secret-projection.json'
+            $row.secret_projection.value_output | Should -Be $false
+
+            & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers workspace prepare w2 --include input.txt --run-id desktop-profile-next --json --project-dir $script:workersTempRoot | Out-Null
+
+            $nextOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers status worker-2 --json --project-dir $script:workersTempRoot
+            $nextPayload = ($nextOutput | Select-Object -Last 1) | ConvertFrom-Json
+            $nextRow = @($nextPayload.workers)[0]
+
+            $nextRow.workspace.run_id | Should -Be 'desktop-profile-next'
+            $nextRow.workspace.status | Should -Be 'prepared'
+            $nextRow.secret_projection | Should -BeNullOrEmpty
+
+            & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers workspace cleanup w2 --run-id desktop-profile --json --project-dir $script:workersTempRoot | Out-Null
+
+            $afterOldCleanupOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers status worker-2 --json --project-dir $script:workersTempRoot
+            $afterOldCleanupPayload = ($afterOldCleanupOutput | Select-Object -Last 1) | ConvertFrom-Json
+            $afterOldCleanupRow = @($afterOldCleanupPayload.workers)[0]
+
+            $afterOldCleanupRow.workspace.run_id | Should -Be 'desktop-profile-next'
+            $afterOldCleanupRow.workspace.status | Should -Be 'prepared'
+            $afterOldCleanupRow.secret_projection | Should -BeNullOrEmpty
+        } finally {
+            $env:WINSMUX_TEST_SECRET_VAULT_MODE = $previousVaultMode
+            $env:WINSMUX_TEST_SECRET_VAULT_JSON = $previousVaultJson
+            $env:WINSMUX_TEST_NOW_UTC = $previousNow
+        }
+    }
+
     It 'rejects unsafe or unresolved secret projections before writing files' {
 @'
 agent: codex
@@ -10068,12 +10172,18 @@ agent-slots:
         $row = @($payload.workers)[0]
 
         $row.slot_id | Should -Be 'worker-2'
+        $row.execution_profile | Should -Be 'local-windows'
         $row.state | Should -Be 'blocked'
         $row.heartbeat_health | Should -Be 'blocked'
         $row.heartbeat_state | Should -Be 'blocked'
         $row.heartbeat.health | Should -Be 'blocked'
         $row.heartbeat.requires_user | Should -Be $true
         $row.heartbeat.artifact | Should -Be '.winsmux/worker-runs/worker-2/hb-blocked/heartbeat.json'
+        $row.workspace.type | Should -Be 'local-project'
+        $row.workspace.status | Should -Be 'local'
+        $row.workspace.lifecycle | Should -Be 'project'
+        $row.workspace.workspace | Should -Be '.'
+        $row.secret_projection | Should -BeNullOrEmpty
     }
 
     It 'does not let stale worker heartbeat override a manifest-bound lifecycle state' {

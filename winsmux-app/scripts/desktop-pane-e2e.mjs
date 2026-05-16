@@ -17,6 +17,8 @@ const COMPOSER_TO_OPERATOR_MARKER = "BTN_E2E_READY";
 const COMPOSER_ENTER_MARKER = "ENT_E2E_READY";
 const COMPOSER_ATTACHMENT_MARKER = "ATT_E2E_READY";
 const OPERATOR_TO_WORKER_MARKER = "W2_E2E_READY";
+const STOP_AFTER_WORKER_STATUS = process.argv.includes("--stop-after-worker-status")
+  || process.env.WINSMUX_DESKTOP_E2E_STOP_AFTER_WORKER_STATUS === "1";
 
 const steps = [];
 const consoleErrors = [];
@@ -217,15 +219,18 @@ async function resetAppState(page) {
     localStorage.clear();
     sessionStorage.clear();
   });
-  await page.reload({ waitUntil: "domcontentloaded" });
-  await waitForAppReady(page);
+  await reloadAppPage(page);
 }
 
 async function setActiveProjectDirForUi(page, projectDir) {
   await page.evaluate((value) => {
     localStorage.setItem("winsmux.active-project.v1", value.replace(/\\/g, "/"));
   }, projectDir);
-  await page.reload({ waitUntil: "domcontentloaded" });
+  await reloadAppPage(page);
+}
+
+async function reloadAppPage(page) {
+  await page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 }).catch(() => {});
   await waitForAppReady(page);
 }
 
@@ -533,7 +538,7 @@ async function startOperatorFromUiAndWaitForClaude(page) {
 
 async function typeIntoTerminal(page, selector, text) {
   await page.click(selector, { timeout: 10_000 });
-  await page.keyboard.type(text, { delay: 2 });
+  await page.keyboard.type(text, { delay: 8 });
   await page.keyboard.press("Enter");
 }
 
@@ -1018,7 +1023,7 @@ async function main() {
         const detail = document.querySelector(".worker-status-detail-strip");
         return detail?.getAttribute("data-worker-status-detail") === "worker-1";
       }, undefined, { timeout: 10_000 });
-      const requiredFields = ["role", "backend", "profile", "auth", "model-source", "launch", "heartbeat", "blocked", "remote", "elapsed", "focus"];
+      const requiredFields = ["role", "backend", "profile", "workspace", "auth", "secrets", "policy", "model-source", "launch", "heartbeat", "blocked", "recovery", "remote", "elapsed", "focus"];
       for (const field of requiredFields) {
         const count = await page.locator(`.worker-status-detail-strip[data-worker-status-detail="worker-1"] .worker-status-pill-chip[data-status-field="${field}"]`).count();
         if (count !== 1) {
@@ -1072,6 +1077,14 @@ async function main() {
         throw new Error(`worker status surface should not require horizontal scrolling: ${JSON.stringify(statusBarMetrics)}`);
       }
     });
+
+    if (STOP_AFTER_WORKER_STATUS) {
+      await ensureOutputDir();
+      await page.screenshot({ path: path.join(OUTPUT_DIR, "desktop-pane-e2e-worker-status.png"), fullPage: true });
+      await writeEvidence(true, { debugPort, mode: "worker-status-only" });
+      process.stdout.write(`[desktop-pane-e2e] PASS worker-status-only evidence=${path.join(OUTPUT_DIR, "desktop-pane-e2e.json")}\n`);
+      return;
+    }
 
     await runStep("worker terminal keeps shortcuts, arrows, and paste in the PTY", async () => {
       const terminalSelector = "#pane-worker-1 .pane-terminal";
