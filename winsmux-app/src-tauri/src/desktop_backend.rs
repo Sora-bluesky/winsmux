@@ -391,6 +391,10 @@ pub struct DesktopExplainRun {
     pub verification_contract: Value,
     pub verification_result: Value,
     #[serde(default)]
+    pub verification_envelope: Value,
+    #[serde(default)]
+    pub audit_chain: Value,
+    #[serde(default)]
     pub changed_files: Vec<String>,
     #[serde(default)]
     pub action_items: Vec<DesktopExplainActionItem>,
@@ -3125,6 +3129,11 @@ mod tests {
         assert!(payload.run.security_verdict.is_null());
         assert!(payload.run.verification_contract.is_null());
         assert!(payload.run.verification_result.is_null());
+        assert_eq!(
+            payload.run.verification_envelope["packet_type"],
+            "verification_envelope"
+        );
+        assert_eq!(payload.run.audit_chain["approval"]["mode"], "single_review");
         assert_eq!(payload.run.worktree, ".worktrees/builder-1");
         assert_eq!(payload.run.action_items.len(), 2);
         assert_eq!(payload.run.action_items[0].kind, "review_pending");

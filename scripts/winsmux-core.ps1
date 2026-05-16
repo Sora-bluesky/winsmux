@@ -11027,6 +11027,184 @@ function ConvertTo-RunAuditChainApprovalState {
     return 'not_required'
 }
 
+function Test-RunEnterpriseApprovalChainRequired {
+    param([Parameter(Mandatory = $true)]$Run)
+
+    if (-not [bool]$Run.review_required) {
+        return $false
+    }
+
+    $contextContract = Get-RunContractField -InputObject $Run -Name 'context_contract'
+    $contextMode = [string](Get-RunContractField -InputObject $contextContract -Name 'context_mode')
+    $securityPolicy = Get-RunContractField -InputObject $Run -Name 'security_policy'
+    $executionProfile = [string](Get-RunContractField -InputObject $securityPolicy -Name 'execution_profile')
+    if ([string]::IsNullOrWhiteSpace($executionProfile)) {
+        $executionProfile = [string](Get-RunContractField -InputObject $securityPolicy -Name 'profile')
+    }
+    $providerTarget = [string](Get-RunContractField -InputObject $Run -Name 'provider_target')
+
+    return (
+        [string]::Equals($contextMode, 'enterprise', [System.StringComparison]::OrdinalIgnoreCase) -or
+        [string]::Equals($executionProfile, 'isolated-enterprise', [System.StringComparison]::OrdinalIgnoreCase) -or
+        $providerTarget.IndexOf('enterprise', [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+    )
+}
+
+function Get-LatestRunAuditEventByName {
+    param(
+        [object[]]$EventRecords = @(),
+        [string[]]$EventNames = @()
+    )
+
+    $matches = @(
+        $EventRecords |
+            Where-Object { [string]$_['event'] -in $EventNames } |
+            Sort-Object @{ Expression = { Get-RunEventTimestampSortKey -Value $_['timestamp'] }; Descending = $true }, @{ Expression = { [int]$_['line_number'] }; Descending = $true } |
+            Select-Object -First 1
+    )
+    if ($matches.Count -gt 0) {
+        return $matches[0]
+    }
+    return $null
+}
+
+function Test-RunFinalApprovalDeniedEvent {
+    param([string]$EventName = '')
+
+    return [string]$EventName -in @(
+        'operator.final_approval_denied',
+        'operator.approval_denied',
+        'operator.human_approval_denied'
+    )
+}
+
+function Test-RunApprovalActorSeparated {
+    param(
+        [Parameter(Mandatory = $true)]$Run,
+        $EventRecord = $null
+    )
+
+    if ($null -eq $EventRecord) {
+        return $false
+    }
+
+    $actorLabel = [string]$Run.primary_label
+    $actorPane = [string]$Run.primary_pane_id
+    $actorRole = [string]$Run.primary_role
+    $approverLabel = [string]$EventRecord['label']
+    $approverPane = [string]$EventRecord['pane_id']
+    $approverRole = [string]$EventRecord['role']
+
+    if ([string]::IsNullOrWhiteSpace($approverLabel) -and [string]::IsNullOrWhiteSpace($approverPane) -and [string]::IsNullOrWhiteSpace($approverRole)) {
+        return $false
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($actorLabel) -and [string]::Equals($actorLabel, $approverLabel, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $false
+    }
+    if (-not [string]::IsNullOrWhiteSpace($actorPane) -and [string]::Equals($actorPane, $approverPane, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $false
+    }
+    if ([string]::Equals($approverRole, 'Builder', [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $false
+    }
+    if (-not [string]::IsNullOrWhiteSpace($actorRole) -and [string]::Equals($actorRole, $approverRole, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $false
+    }
+    return $true
+}
+
+function New-RunApprovalStageRecord {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$State,
+        [bool]$Required = $true,
+        [string]$Evidence = '',
+        [string]$RequestedEvent = '',
+        [string]$DecidedEvent = '',
+        [bool]$ActorSeparationRequired = $false,
+        [bool]$ActorSeparationSatisfied = $false
+    )
+
+    return [ordered]@{
+        name                         = $Name
+        required                     = $Required
+        state                        = $State
+        evidence                     = $Evidence
+        requested_event              = $RequestedEvent
+        decided_event                = $DecidedEvent
+        actor_separation_required    = $ActorSeparationRequired
+        actor_separation_satisfied   = $ActorSeparationSatisfied
+        builder_can_approve_itself   = $false
+    }
+}
+
+function Get-RunApprovalStageBlockedReasons {
+    param($Approval = $null)
+
+    $reasons = [System.Collections.Generic.List[string]]::new()
+    if ($null -eq $Approval -or $null -eq $Approval.stages) {
+        return @()
+    }
+
+    foreach ($stage in @($Approval.stages)) {
+        if (-not [bool](Get-RunContractField -InputObject $stage -Name 'required')) {
+            continue
+        }
+        $stageName = [string](Get-RunContractField -InputObject $stage -Name 'name')
+        if ($stageName -eq 'static_verification') {
+            continue
+        }
+        $state = [string](Get-RunContractField -InputObject $stage -Name 'state')
+        if ($state -eq 'missing') {
+            $reasons.Add("approval stage $stageName is missing") | Out-Null
+        } elseif ($state -eq 'failed') {
+            if ([bool](Get-RunContractField -InputObject $stage -Name 'actor_separation_required') -and -not [bool](Get-RunContractField -InputObject $stage -Name 'actor_separation_satisfied')) {
+                $reasons.Add("approval stage $stageName violates actor separation") | Out-Null
+            } else {
+                $reasons.Add("approval stage $stageName failed") | Out-Null
+            }
+        }
+    }
+    return @($reasons)
+}
+
+function Get-RunAggregateApprovalState {
+    param($ApprovalStages = @())
+
+    $hasRequiredStage = $false
+    $hasMissingStage = $false
+    $hasPendingStage = $false
+
+    foreach ($stage in @($ApprovalStages)) {
+        if (-not [bool](Get-RunContractField -InputObject $stage -Name 'required')) {
+            continue
+        }
+        $hasRequiredStage = $true
+        $state = [string](Get-RunContractField -InputObject $stage -Name 'state')
+        if ($state -eq 'approved') {
+            continue
+        } elseif ($state -eq 'failed') {
+            return 'failed'
+        } elseif ([string]::IsNullOrWhiteSpace($state) -or $state -eq 'missing') {
+            $hasMissingStage = $true
+        } else {
+            $hasPendingStage = $true
+        }
+    }
+
+    if ($hasMissingStage) {
+        return 'missing'
+    }
+    if ($hasPendingStage) {
+        return 'pending'
+    }
+    if ($hasRequiredStage) {
+        return 'approved'
+    }
+    return 'not_required'
+}
+
 function Get-RunAuditChainDecisionEvent {
     param(
         [object[]]$EventRecords = @(),
@@ -11049,7 +11227,7 @@ function Get-RunAuditChainDecisionEvent {
         $EventRecords |
             Where-Object { [string]$_['event'] -in $decisionEvents } |
             Sort-Object @{ Expression = { Get-RunEventTimestampSortKey -Value $_['timestamp'] } }, @{ Expression = { [int]$_['line_number'] } } |
-            Select-Object -First 1
+            Select-Object -Last 1
     )
     if ($matches.Count -gt 0) {
         return $matches[0]
@@ -11102,6 +11280,61 @@ function New-RunAuditChainContract {
     )
     $reviewRequest = if ($reviewRequests.Count -gt 0) { $reviewRequests[0] } else { $null }
     $decisionEvent = Get-RunAuditChainDecisionEvent -EventRecords $orderedEvents -ReviewState ([string]$Run.review_state)
+    $finalApprovalDecision = Get-LatestRunAuditEventByName -EventRecords $orderedEvents -EventNames @('operator.final_approval_granted', 'operator.final_approval_denied', 'operator.approval_granted', 'operator.approval_denied', 'operator.human_approval_granted', 'operator.human_approval_denied')
+    $enterpriseApprovalRequired = Test-RunEnterpriseApprovalChainRequired -Run $Run
+    $reviewApprovalState = ConvertTo-RunAuditChainApprovalState -ReviewState ([string]$Run.review_state) -ReviewRequired ([bool]$Run.review_required)
+    $verificationOutcome = [string](Get-RunContractField -InputObject $Run.verification_result -Name 'outcome')
+    $securityVerdict = [string](Get-RunContractField -InputObject $Run.security_verdict -Name 'verdict')
+    if ([string]::IsNullOrWhiteSpace($securityVerdict) -and $Run.security_verdict -is [string]) {
+        $securityVerdict = [string]$Run.security_verdict
+    }
+    $finalApprovalSeparated = Test-RunApprovalActorSeparated -Run $Run -EventRecord $finalApprovalDecision
+    $operatorReviewSeparated = Test-RunApprovalActorSeparated -Run $Run -EventRecord $decisionEvent
+    $finalApprovalState = if ($null -ne $finalApprovalDecision -and (Test-RunFinalApprovalDeniedEvent -EventName ([string]$finalApprovalDecision['event']))) {
+        'failed'
+    } elseif ($null -ne $finalApprovalDecision -and $finalApprovalSeparated) {
+        'approved'
+    } elseif ($null -ne $finalApprovalDecision) {
+        'failed'
+    } else {
+        'missing'
+    }
+    $operatorReviewStageState = if ($reviewApprovalState -eq 'approved' -and -not $operatorReviewSeparated) {
+        'failed'
+    } else {
+        $reviewApprovalState
+    }
+    $reviewRequestedEvent = if ($null -ne $reviewRequest) { [string]$reviewRequest['event'] } else { '' }
+    $reviewDecidedEvent = if ($null -ne $decisionEvent) { [string]$decisionEvent['event'] } else { '' }
+    $finalDecidedEvent = if ($null -ne $finalApprovalDecision) {
+        [string]$finalApprovalDecision['event']
+    } else {
+        ''
+    }
+    $approvalStages = @()
+    if ($enterpriseApprovalRequired) {
+        $verificationStageState = if ([string]::IsNullOrWhiteSpace($verificationOutcome)) {
+            'missing'
+        } elseif ($verificationOutcome -eq 'PASS') {
+            'approved'
+        } else {
+            'failed'
+        }
+        $policyStageState = if ($securityVerdict -eq 'BLOCK') {
+            'failed'
+        } elseif ([string]::IsNullOrWhiteSpace($securityVerdict)) {
+            'missing'
+        } else {
+            'approved'
+        }
+        $approvalStages = @(
+            (New-RunApprovalStageRecord -Name 'static_verification' -State $verificationStageState -Evidence 'verification_result.outcome' -DecidedEvent 'pipeline.verify.*'),
+            (New-RunApprovalStageRecord -Name 'policy_gate' -State $policyStageState -Evidence 'security_verdict.verdict' -DecidedEvent 'pipeline.security.*'),
+            (New-RunApprovalStageRecord -Name 'operator_review' -State $operatorReviewStageState -Required ([bool]$Run.review_required) -Evidence 'review_state' -RequestedEvent $reviewRequestedEvent -DecidedEvent $reviewDecidedEvent -ActorSeparationRequired $true -ActorSeparationSatisfied $operatorReviewSeparated),
+            (New-RunApprovalStageRecord -Name 'human_final_approval' -State $finalApprovalState -Evidence 'operator.final_approval_granted' -DecidedEvent $finalDecidedEvent -ActorSeparationRequired $true -ActorSeparationSatisfied $finalApprovalSeparated)
+        )
+    }
+    $approvalState = if ($enterpriseApprovalRequired) { Get-RunAggregateApprovalState -ApprovalStages $approvalStages } else { $reviewApprovalState }
     $chainEvents = @(
         $orderedEvents |
             Where-Object {
@@ -11109,6 +11342,12 @@ function New-RunAuditChainContract {
                     'operator.review_requested',
                     'operator.review_passed',
                     'operator.review_failed',
+                    'operator.final_approval_granted',
+                    'operator.final_approval_denied',
+                    'operator.approval_granted',
+                    'operator.approval_denied',
+                    'operator.human_approval_granted',
+                    'operator.human_approval_denied',
                     'review.pass',
                     'review.fail',
                     'pane.approval_waiting',
@@ -11149,8 +11388,11 @@ function New-RunAuditChainContract {
         }
         approval = [ordered]@{
             required                 = [bool]$Run.review_required
-            state                    = ConvertTo-RunAuditChainApprovalState -ReviewState ([string]$Run.review_state) -ReviewRequired ([bool]$Run.review_required)
+            state                    = $approvalState
             verdict                  = [string]$Run.review_state
+            mode                     = if ($enterpriseApprovalRequired) { 'enterprise_multi_stage' } else { 'single_review' }
+            chain_required           = $enterpriseApprovalRequired
+            final_approval_required  = $enterpriseApprovalRequired
             requested_at             = if ($null -ne $reviewRequest) { ConvertTo-RunEventTimestampText -Value $reviewRequest['timestamp'] } else { '' }
             requested_event          = if ($null -ne $reviewRequest) { [string]$reviewRequest['event'] } else { '' }
             requested_reviewer_label = if ($null -ne $reviewRequest) { [string]$reviewRequest['label'] } else { '' }
@@ -11160,6 +11402,8 @@ function New-RunAuditChainContract {
             decided_event            = if ($null -ne $decisionEvent) { [string]$decisionEvent['event'] } else { '' }
             human_judgement_required = [bool]$Run.review_required
             automatic_merge_allowed  = $false
+            builder_can_approve_itself = $false
+            stages                   = @($approvalStages)
         }
         events   = @($chainEvents)
     }
@@ -12180,6 +12424,9 @@ function New-RunVerificationEnvelope {
     if ([bool]$Run.review_required -and $approvalState -ne 'approved') {
         $stateText = if (-not [string]::IsNullOrWhiteSpace($approvalState)) { $approvalState } else { [string]$Run.review_state }
         $blockedReasons.Add("approval state is unresolved: $stateText") | Out-Null
+    }
+    foreach ($stageReason in @(Get-RunApprovalStageBlockedReasons -Approval $approval)) {
+        $blockedReasons.Add($stageReason) | Out-Null
     }
     if (-not [string]::IsNullOrWhiteSpace($draftPrGateState) -and $draftPrGateState -ne 'passed') {
         $blockedReasons.Add("draft PR gate is $draftPrGateState") | Out-Null
