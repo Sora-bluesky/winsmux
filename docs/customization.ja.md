@@ -16,7 +16,7 @@ winsmux init --workspace-lifecycle managed-worktree
 
 `execution-profile` は実行方針のレーンを表します。ワーカースロットの配置先を表す `worker-backend` や、プロバイダー能力の実行経路を表す `execution_backend` とは別の契約です。
 
-既定値は `local-windows` です。これは通常の Windows 管理ペイン動作を維持します。`isolated-enterprise` は明示的に選んだ場合だけ使います。隔離ワークスペース、資格情報、生存確認、Windows sandbox の土台は、このプロファイルにだけ接続します。公開時の既定動作にはしません。
+既定値は `local-windows` です。これは通常の Windows 管理ペイン動作を維持します。`isolated-enterprise` は明示的に選んだ場合だけ使います。隔離ワークスペース、資格情報、生存確認、Windows sandbox の土台、ブローカー実行の土台は、このプロファイルにだけ接続します。公開時の既定動作にはしません。
 
 ### 実行単位の秘密情報投影
 
@@ -77,6 +77,18 @@ winsmux workers sandbox baseline w2 --run-id run-123 --json
 コマンドは安全側で失敗します。スロットが `isolated-enterprise` ではない場合、実行ワークスペースが未作成の場合、必要な実行ディレクトリがない場合、または実行境界の内側にリパースポイントがある場合は、`sandbox-baseline.json` を書きません。出力にはプロジェクト相対の成果物参照だけを含めます。
 
 これは土台の契約であり、すでに動いているワーカーが安全に隔離されているという主張ではありません。JSON 出力の `isolation_claim.secure` は、起動経路が `restricted_token` と ACL 境界を実際に適用するまで `false` のままです。このレーンに `local-windows` 実行を使わないでください。
+
+### ブローカー実行の土台
+
+`isolated-enterprise` の実行では、隔離ワークスペースを作成した後に、最初のブローカー実行契約も定義できます。
+
+```powershell
+winsmux workers broker baseline w2 --run-id run-123 --endpoint https://broker.example.invalid/worker --json
+```
+
+この土台は、準備済みの実行に単一の外部ブローカーノードを記録します。プロセスを起動せず、ネットワーク接続も開かず、winsmux を資格情報の仲介役にしません。エンドポイント URL は `http` または `https` だけを許可し、埋め込み資格情報を含めてはいけません。
+
+コマンドは安全側で失敗します。スロットが `isolated-enterprise` ではない場合、実行ワークスペースが未作成の場合、必要な実行ディレクトリがない場合、エンドポイントを安全に記録できない場合、または実行境界の内側にリパースポイントがある場合は、`broker-baseline.json` を書きません。出力にはプロジェクト相対の成果物参照だけを含めます。`winsmux workers status --json` は、各ワーカー行の `broker` に最新のブローカー契約を含めます。
 
 ## 起動プリセット
 

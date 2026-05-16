@@ -5123,7 +5123,7 @@ function Invoke-Status {
 }
 
 function Get-WorkersUsage {
-    return "usage: winsmux workers <status|start|stop|attach|doctor> [slot|all] [--json] [--project-dir <path>]; winsmux workers <exec|logs|upload|download> <slot> ... [--json] [--project-dir <path>]; winsmux workers heartbeat <mark|check> <slot> [--run-id <id>] ... [--json] [--project-dir <path>]; winsmux workers workspace <prepare|cleanup> <slot> ... [--json] [--project-dir <path>]; winsmux workers secrets project <slot> ... [--json] [--project-dir <path>]; winsmux workers sandbox baseline <slot> --run-id <id> [--json] [--project-dir <path>]"
+    return "usage: winsmux workers <status|start|stop|attach|doctor> [slot|all] [--json] [--project-dir <path>]; winsmux workers <exec|logs|upload|download> <slot> ... [--json] [--project-dir <path>]; winsmux workers heartbeat <mark|check> <slot> [--run-id <id>] ... [--json] [--project-dir <path>]; winsmux workers workspace <prepare|cleanup> <slot> ... [--json] [--project-dir <path>]; winsmux workers secrets project <slot> ... [--json] [--project-dir <path>]; winsmux workers sandbox baseline <slot> --run-id <id> [--json] [--project-dir <path>]; winsmux workers broker baseline <slot> --run-id <id> --endpoint <url> [--node-id <id>] [--json] [--project-dir <path>]"
 }
 
 function Read-WorkersOptions {
@@ -5432,6 +5432,21 @@ function Get-WorkersStatusRows {
             }
         }
 
+        $broker = $null
+        if ($null -ne $entry) {
+            $brokerRunId = [string](Get-SendConfigValue -InputObject $entry -Name 'LastBrokerRunId' -Default '')
+            if (-not [string]::IsNullOrWhiteSpace($brokerRunId)) {
+                $broker = [ordered]@{
+                    run_id            = $brokerRunId
+                    execution_profile = [string](Get-SendConfigValue -InputObject $entry -Name 'LastBrokerProfile' -Default '')
+                    status            = [string](Get-SendConfigValue -InputObject $entry -Name 'LastBrokerStatus' -Default '')
+                    node_id           = [string](Get-SendConfigValue -InputObject $entry -Name 'LastBrokerNodeId' -Default '')
+                    endpoint          = [string](Get-SendConfigValue -InputObject $entry -Name 'LastBrokerEndpoint' -Default '')
+                    manifest          = [string](Get-SendConfigValue -InputObject $entry -Name 'LastBrokerManifest' -Default '')
+                }
+            }
+        }
+
         $sessionName = [string](Get-SendConfigValue -InputObject $colabSession -Name 'session_name' -Default '')
         if ([string]::IsNullOrWhiteSpace($sessionName) -and [string]::Equals(([string]$slotConfig.WorkerBackend), 'colab_cli', [System.StringComparison]::OrdinalIgnoreCase) -and (Get-Command Resolve-WinsmuxColabSessionName -ErrorAction SilentlyContinue)) {
             $sessionName = Resolve-WinsmuxColabSessionName -ProjectDir $Context.ProjectDir -SlotId $slotId -Template ([string]$slotConfig.SessionName)
@@ -5489,6 +5504,7 @@ function Get-WorkersStatusRows {
             Heartbeat      = $heartbeat
             HeartbeatHealth = $heartbeatHealth
             HeartbeatState = $heartbeatState
+            Broker         = $broker
         }) | Out-Null
     }
 
@@ -5578,6 +5594,7 @@ function ConvertTo-WorkersStatusJsonRows {
             heartbeat       = $row.Heartbeat
             heartbeat_health = [string]$row.HeartbeatHealth
             heartbeat_state = [string]$row.HeartbeatState
+            broker          = $row.Broker
         }
     }
 }
@@ -5854,6 +5871,27 @@ function ConvertTo-WorkersSafeArgumentArray {
     }
 
     return @($safe)
+}
+
+function Assert-WorkersBrokerEndpoint {
+    param([AllowEmptyString()][string]$Endpoint)
+
+    if ([string]::IsNullOrWhiteSpace($Endpoint)) {
+        Stop-WithError 'broker endpoint is required'
+    }
+
+    $uri = $null
+    if (-not [System.Uri]::TryCreate($Endpoint.Trim(), [System.UriKind]::Absolute, [ref]$uri)) {
+        Stop-WithError "broker endpoint must be an absolute URI: $Endpoint"
+    }
+    if ($uri.Scheme -notin @('http', 'https')) {
+        Stop-WithError "broker endpoint must use http or https: $Endpoint"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($uri.UserInfo)) {
+        Stop-WithError 'broker endpoint must not include credentials'
+    }
+
+    return $uri.AbsoluteUri
 }
 
 function Get-WorkersColabSafetyFinding {
@@ -7509,6 +7547,77 @@ function Read-WorkersSandboxOptions {
     }
 }
 
+function Read-WorkersBrokerOptions {
+    param([Parameter(Mandatory = $true)][string]$Usage)
+
+    $projectDir = (Get-Location).Path
+    $asJson = $false
+    $action = ''
+    $targetValue = ''
+    $runId = ''
+    $profile = 'isolated-enterprise'
+    $endpoint = ''
+    $nodeId = 'broker-1'
+    $items = @($Rest)
+
+    if ($items.Count -ge 1) {
+        $action = ([string]$items[0]).Trim().ToLowerInvariant()
+    }
+    if ($items.Count -ge 2) {
+        $targetValue = [string]$items[1]
+    }
+
+    for ($index = 2; $index -lt $items.Count; $index++) {
+        $token = [string]$items[$index]
+        switch ($token) {
+            '--json' { $asJson = $true }
+            '--project-dir' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $projectDir = [string]$items[$index + 1]
+                $index++
+            }
+            '--run-id' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $runId = [string]$items[$index + 1]
+                $index++
+            }
+            '--profile' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $profile = [string]$items[$index + 1]
+                $index++
+            }
+            '--endpoint' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $endpoint = [string]$items[$index + 1]
+                $index++
+            }
+            '--node-id' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $nodeId = [string]$items[$index + 1]
+                $index++
+            }
+            default {
+                Stop-WithError $Usage
+            }
+        }
+    }
+
+    if ($action -ne 'baseline' -or [string]::IsNullOrWhiteSpace($targetValue) -or [string]::IsNullOrWhiteSpace($runId) -or [string]::IsNullOrWhiteSpace($endpoint)) {
+        Stop-WithError $Usage
+    }
+
+    return [PSCustomObject]@{
+        ProjectDir = $projectDir
+        Json       = $asJson
+        Action     = $action
+        Target     = $targetValue
+        RunId      = $runId
+        Profile    = $profile
+        Endpoint   = $endpoint
+        NodeId     = $nodeId
+    }
+}
+
 function Get-WorkersSingleSlotContext {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -8062,6 +8171,166 @@ function Invoke-WorkersSandbox {
     $options = Read-WorkersSandboxOptions -Usage $usage
     switch ([string]$options.Action) {
         'baseline' { Invoke-WorkersSandboxBaseline -Options $options }
+        default { Stop-WithError $usage }
+    }
+}
+
+function Invoke-WorkersBrokerBaseline {
+    param([Parameter(Mandatory = $true)]$Options)
+
+    $slot = Get-WorkersSingleSlotContext -ProjectDir $Options.ProjectDir -Target $Options.Target
+    $slotProfile = [string]$slot.SlotConfig.ExecutionProfile
+    if ([string]::IsNullOrWhiteSpace($slotProfile)) {
+        $slotProfile = 'local-windows'
+    }
+
+    $requestedProfile = [string]$Options.Profile
+    if ([string]::IsNullOrWhiteSpace($requestedProfile)) {
+        $requestedProfile = 'isolated-enterprise'
+    }
+    if (Get-Command Test-BridgeExecutionProfileKind -ErrorAction SilentlyContinue) {
+        if (-not (Test-BridgeExecutionProfileKind -Value $requestedProfile)) {
+            Stop-WithError "unsupported execution profile for brokered execution baseline: $requestedProfile"
+        }
+    }
+    if (-not [string]::Equals($requestedProfile, 'isolated-enterprise', [System.StringComparison]::OrdinalIgnoreCase)) {
+        Stop-WithError 'brokered execution baseline requires execution profile isolated-enterprise'
+    }
+    if (-not [string]::Equals($slotProfile, $requestedProfile, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Stop-WithError "worker slot $($slot.Row.SlotId) uses execution profile '$slotProfile', not $requestedProfile"
+    }
+
+    $runId = Assert-WorkersRunId -RunId ([string]$Options.RunId)
+    if ([string]::IsNullOrWhiteSpace($runId)) {
+        Stop-WithError 'brokered execution baseline requires --run-id'
+    }
+    $nodeId = Assert-WorkersPathSegment -Value ([string]$Options.NodeId) -Name 'broker node id'
+    $endpoint = Assert-WorkersBrokerEndpoint -Endpoint ([string]$Options.Endpoint)
+
+    $runDir = Get-WorkersIsolatedWorkspaceRunDirectory -ProjectDir $Options.ProjectDir -SlotId ([string]$slot.Row.SlotId) -RunId $runId
+    if (-not (Test-Path -LiteralPath $runDir -PathType Container)) {
+        Stop-WithError "brokered execution baseline requires an existing isolated workspace run: $runId"
+    }
+    Assert-WorkersIsolatedWorkspaceCleanupTarget -ProjectDir $Options.ProjectDir -RunDir $runDir
+
+    $workspaceDir = Join-Path $runDir 'workspace'
+    $downloadsDir = Join-Path $runDir 'downloads'
+    $artifactsDir = Join-Path $runDir 'artifacts'
+    foreach ($requiredDir in @($workspaceDir, $downloadsDir, $artifactsDir)) {
+        if (-not (Test-Path -LiteralPath $requiredDir -PathType Container)) {
+            Stop-WithError "brokered execution baseline requires prepared isolated workspace directories: $runId"
+        }
+    }
+
+    Assert-WorkersNoReparsePointUnderDirectory -RootDir $runDir -Name 'brokered execution baseline'
+
+    $manifestPath = Join-Path $runDir 'broker-baseline.json'
+    $heartbeatPath = Join-Path $runDir 'heartbeat.json'
+    $runReference = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $runDir
+    $workspaceReference = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $workspaceDir
+    $downloadsReference = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $downloadsDir
+    $artifactsReference = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $artifactsDir
+    $heartbeatReference = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $heartbeatPath
+    $manifestReference = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $manifestPath
+
+    $payload = [ordered]@{
+        version       = 1
+        project_ref   = '.'
+        generated_at  = (Get-Date).ToUniversalTime().ToString('o')
+        command       = 'workers.broker.baseline'
+        status        = 'broker_defined'
+        slot          = [string]$slot.Row.Slot
+        slot_id       = [string]$slot.Row.SlotId
+        role          = [string]$slot.SlotConfig.WorkerRole
+        run_id        = $runId
+        execution_profile = 'isolated-enterprise'
+        broker_kind   = 'single_external_worker_node'
+        public_default = $false
+        node          = [ordered]@{
+            node_id                  = $nodeId
+            endpoint                 = $endpoint
+            endpoint_contains_secret = $false
+            command_starts_process   = $false
+        }
+        topology      = [ordered]@{
+            mode                  = 'single_broker'
+            multi_broker_supported = $false
+            multi_hub_supported    = $false
+        }
+        boundary      = [ordered]@{
+            workspace = [ordered]@{
+                run_root  = $runReference
+                workspace = $workspaceReference
+                downloads = $downloadsReference
+                artifacts = $artifactsReference
+                direct_project_write = 'prohibited'
+            }
+            heartbeat = [ordered]@{
+                artifact = $heartbeatReference
+                state_model = @('running', 'blocked', 'approval_waiting', 'child_wait', 'stalled', 'offline', 'completed', 'resumable')
+                broker_must_report_liveness = $true
+            }
+            connection = [ordered]@{
+                operator_mediated = $true
+                command_connects_network = $false
+                command_launches_external_worker = $false
+            }
+            credentials = [ordered]@{
+                endpoint_credentials_allowed = $false
+                uses_run_secret_projection = $true
+                secret_values_in_manifest = $false
+            }
+        }
+        failure_policy = [ordered]@{
+            fail_closed_on = @(
+                'non_isolated_enterprise_profile',
+                'missing_isolated_workspace_run',
+                'missing_workspace_directories',
+                'invalid_broker_endpoint',
+                'endpoint_credentials',
+                'run_directory_reparse_point',
+                'path_escape'
+            )
+            unsafe_claims_prohibited = $true
+        }
+        locations     = [ordered]@{
+            run_root  = New-WinsmuxLocationIdentity -Kind 'local_directory' -DisplayName $runReference -Backend 'local-windows' -AccessMethod 'isolated_run_root' -Reference $runReference -Provenance 'workers.broker.run_root'
+            workspace = New-WinsmuxLocationIdentity -Kind 'local_directory' -DisplayName $workspaceReference -Backend 'local-windows' -AccessMethod 'isolated_workspace' -Reference $workspaceReference -Provenance 'workers.broker.workspace'
+            downloads = New-WinsmuxLocationIdentity -Kind 'local_directory' -DisplayName $downloadsReference -Backend 'local-windows' -AccessMethod 'isolated_downloads' -Reference $downloadsReference -Provenance 'workers.broker.downloads'
+            artifacts = New-WinsmuxLocationIdentity -Kind 'local_directory' -DisplayName $artifactsReference -Backend 'local-windows' -AccessMethod 'isolated_artifacts' -Reference $artifactsReference -Provenance 'workers.broker.artifacts'
+            heartbeat = New-WinsmuxLocationIdentity -Kind 'local_file' -DisplayName 'heartbeat.json' -Backend 'local-windows' -AccessMethod 'heartbeat_artifact' -Reference $heartbeatReference -Provenance 'workers.broker.heartbeat'
+            manifest  = New-WinsmuxLocationIdentity -Kind 'local_file' -DisplayName 'broker-baseline.json' -Backend 'local-windows' -AccessMethod 'artifact_ref' -Reference $manifestReference -Provenance 'workers.broker.manifest'
+        }
+        testable_guards = @(
+            'isolated_enterprise_profile_required',
+            'existing_isolated_workspace_required',
+            'single_broker_only',
+            'endpoint_credentials_rejected',
+            'artifact_paths_project_relative'
+        )
+        exit_code     = 0
+    }
+
+    Write-WorkersJsonArtifact -Path $manifestPath -Data $payload | Out-Null
+    if ($null -ne $slot.Entry) {
+        Set-WorkersManifestLifecycleCommand -Entry $slot.Entry -CommandName 'workers.broker.baseline' -ExtraProperties ([ordered]@{
+            last_broker_run_id   = $runId
+            last_broker_profile  = 'isolated-enterprise'
+            last_broker_node_id  = $nodeId
+            last_broker_endpoint = $endpoint
+            last_broker_status   = 'broker_defined'
+            last_broker_manifest = $manifestReference
+        })
+    }
+
+    Write-WorkersOperationOutput -Payload $payload -Json:([bool]$Options.Json) -Text "defined broker baseline for $runId"
+}
+
+function Invoke-WorkersBroker {
+    $usage = "usage: winsmux workers broker baseline <slot> --run-id <id> --endpoint <url> [--node-id <id>] [--profile isolated-enterprise] [--json] [--project-dir <path>]"
+    $options = Read-WorkersBrokerOptions -Usage $usage
+    switch ([string]$options.Action) {
+        'baseline' { Invoke-WorkersBrokerBaseline -Options $options }
         default { Stop-WithError $usage }
     }
 }
@@ -8689,6 +8958,7 @@ function Invoke-Workers {
         'secrets' { Invoke-WorkersSecrets }
         'heartbeat' { Invoke-WorkersHeartbeat }
         'sandbox' { Invoke-WorkersSandbox }
+        'broker' { Invoke-WorkersBroker }
         'exec'   { Invoke-WorkersExec }
         'logs'   { Invoke-WorkersLogs }
         'upload' { Invoke-WorkersUpload }
@@ -15587,6 +15857,7 @@ Commands:
   workers workspace <prepare|cleanup> <slot> [--include <path>] [--run-id <id>] [--json] [--project-dir <path>]  Prepare or remove disposable isolated worker workspaces
   workers secrets project <slot> --run-id <id> [--env <name=key>] [--file <path=key>] [--variable <name=key>] [--json] [--project-dir <path>]  Project typed run-scoped secrets without printing secret values
   workers sandbox baseline <slot> --run-id <id> [--json] [--project-dir <path>]  Define the Windows restricted-token and ACL baseline for an isolated run
+  workers broker baseline <slot> --run-id <id> --endpoint <url> [--node-id <id>] [--json] [--project-dir <path>]  Define the single external broker node contract for a prepared isolated run
   board [--json]            Report pane/task/review/git session board
 desktop-summary [--json] [--stream]  Report the aggregated desktop read-model snapshot or follow refresh signals
 inbox [--json] [--stream] Report actionable approvals/review/blockers

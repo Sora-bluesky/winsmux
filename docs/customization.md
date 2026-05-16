@@ -21,8 +21,9 @@ Use managed worktrees when multiple agents may edit files in parallel. They keep
 The default is `local-windows`. It preserves the normal Windows managed-pane
 behavior. `isolated-enterprise` is opt-in and should only be selected when the
 operator explicitly wants the enterprise isolation lane. The isolated
-workspace, credential, heartbeat, and Windows sandbox baseline behavior are
-attached to that profile only; they are not public defaults.
+workspace, credential, heartbeat, Windows sandbox baseline, and brokered
+execution baseline behavior are attached to that profile only; they are not
+public defaults.
 
 ### Isolated workspaces
 
@@ -124,6 +125,27 @@ This is a baseline contract, not a claim that an already running worker is
 securely isolated. The JSON output sets `isolation_claim.secure` to `false`
 until the worker launch path enforces the restricted token and ACL boundary.
 Do not use `local-windows` runs for this lane.
+
+### Brokered execution baseline
+
+`isolated-enterprise` runs can also define the first brokered execution
+contract after the isolated workspace exists:
+
+```powershell
+winsmux workers broker baseline w2 --run-id run-123 --endpoint https://broker.example.invalid/worker --json
+```
+
+The baseline records one external broker node for the prepared run. It does not
+start a process, open a network connection, or turn winsmux into a credential
+broker. Endpoint URLs must use `http` or `https` and must not include embedded
+credentials.
+
+The command fails closed unless the slot uses `isolated-enterprise`, the run
+workspace has already been prepared, the required run directories exist, the
+endpoint is safe to record, and no reparse point is present under the run
+boundary. It writes `broker-baseline.json` under the isolated run directory and
+reports only project-relative artifact references. `winsmux workers status
+--json` includes the latest broker contract in each worker row as `broker`.
 
 ## Launcher presets
 
