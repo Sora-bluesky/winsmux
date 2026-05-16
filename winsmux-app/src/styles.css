@@ -4469,6 +4469,20 @@ body.is-resizing-workbench {
   background: color-mix(in srgb, var(--ws-accent) 8%, var(--ws-bg-elevated));
 }
 
+.worker-status-pill-chip[data-status-field="profile"],
+.worker-status-pill-chip[data-status-field="workspace"] {
+  color: var(--status-info);
+  border-color: var(--status-info-border);
+}
+
+.worker-status-pill-chip[data-status-field="secrets"],
+.worker-status-pill-chip[data-status-field="policy"],
+.worker-status-pill-chip[data-status-field="recovery"] {
+  color: var(--status-focus);
+  border-color: var(--status-focus-border);
+  background: var(--status-focus-bg);
+}
+
 .worker-status-pill-chip[data-status-field="focus"] {
   color: var(--status-focus);
   border-color: var(--status-focus-border);

@@ -184,6 +184,16 @@ points before writing the policy manifest. Operators can read the stop reason
 from the command error and from the latest status projection after a successful
 policy write.
 
+### Desktop run-state visibility
+
+The desktop worker status surface consumes the same `winsmux workers status
+--json` contract as automation. Each worker row reports `execution_profile`,
+`workspace`, `secret_projection`, `heartbeat`, `broker`, and `policy`. The
+desktop pill bar reduces those fields to `exec:local`, `exec:isolated`, or
+`exec:offline`, while the focused detail strip shows the workspace, secret
+projection, policy health, heartbeat, and recovery action. Credential refresh
+waits are shown as a recovery action without exposing secret values.
+
 ## Launcher presets
 
 Inspect the presets before launching a compare-oriented run:

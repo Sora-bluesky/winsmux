@@ -5389,6 +5389,15 @@ function Get-WorkersStatusRows {
         if ([string]::IsNullOrWhiteSpace($workerRole)) {
             $workerRole = $runtimeRole
         }
+        $executionProfile = [string]$slotConfig.ExecutionProfile
+        if ([string]::IsNullOrWhiteSpace($executionProfile)) {
+            $executionProfile = 'local-windows'
+        }
+        $usesIsolatedProfile = [string]::Equals($executionProfile, 'isolated-enterprise', [System.StringComparison]::OrdinalIgnoreCase)
+        $workspaceType = if ($usesIsolatedProfile) { 'isolated-workspace' } else { 'local-project' }
+        $workspaceStatus = if ($usesIsolatedProfile) { 'not_prepared' } else { 'local' }
+        $workspaceLifecycle = if ($usesIsolatedProfile) { 'disposable' } else { 'project' }
+        $workspaceReference = if ($usesIsolatedProfile) { '' } else { '.' }
 
         $entry = if ($Context.EntriesBySlot.ContainsKey($slotId)) { $Context.EntriesBySlot[$slotId] } else { $null }
         $statusRecord = if ($Context.StatusBySlot.ContainsKey($slotId)) { $Context.StatusBySlot[$slotId] } else { $null }
@@ -5432,9 +5441,71 @@ function Get-WorkersStatusRows {
             }
         }
 
+        $workspace = [ordered]@{
+            type              = $workspaceType
+            status            = $workspaceStatus
+            lifecycle         = $workspaceLifecycle
+            execution_profile = $executionProfile
+            run_id            = ''
+            workspace         = $workspaceReference
+            manifest          = ''
+        }
+        if ($null -ne $entry) {
+            $workspaceRunId = [string](Get-SendConfigValue -InputObject $entry -Name 'LastWorkspaceRunId' -Default '')
+            if (-not [string]::IsNullOrWhiteSpace($workspaceRunId)) {
+                $workspace['run_id'] = $workspaceRunId
+                $workspace['execution_profile'] = [string](Get-SendConfigValue -InputObject $entry -Name 'LastWorkspaceProfile' -Default $executionProfile)
+                $workspace['status'] = [string](Get-SendConfigValue -InputObject $entry -Name 'LastWorkspaceStatus' -Default 'prepared')
+                $workspace['lifecycle'] = [string](Get-SendConfigValue -InputObject $entry -Name 'LastWorkspaceLifecycle' -Default 'disposable')
+                $workspace['workspace'] = [string](Get-SendConfigValue -InputObject $entry -Name 'LastWorkspaceRoot' -Default '')
+                $workspace['manifest'] = [string](Get-SendConfigValue -InputObject $entry -Name 'LastWorkspaceManifest' -Default '')
+            }
+        }
+
+        $secretProjection = $null
+        if ($null -ne $entry) {
+            $secretRunId = [string](Get-SendConfigValue -InputObject $entry -Name 'LastSecretRunId' -Default '')
+            if (-not [string]::IsNullOrWhiteSpace($secretRunId)) {
+                $secretProfile = [string](Get-SendConfigValue -InputObject $entry -Name 'LastSecretProfile' -Default $executionProfile)
+                $secretMatchesActiveRun = $true
+                if ([string]::Equals($secretProfile, 'isolated-enterprise', [System.StringComparison]::OrdinalIgnoreCase)) {
+                    $workspaceRunId = [string]$workspace['run_id']
+                    $workspaceStatusText = [string]$workspace['status']
+                    $secretMatchesActiveRun = -not [string]::IsNullOrWhiteSpace($workspaceRunId) -and
+                        [string]::Equals($workspaceRunId, $secretRunId, [System.StringComparison]::Ordinal) -and
+                        [string]::Equals($workspaceStatusText, 'prepared', [System.StringComparison]::OrdinalIgnoreCase)
+                }
+                if ($secretMatchesActiveRun) {
+                    $secretProjection = [ordered]@{
+                        run_id            = $secretRunId
+                        execution_profile = $secretProfile
+                        status            = [string](Get-SendConfigValue -InputObject $entry -Name 'LastSecretStatus' -Default '')
+                        binding           = [string](Get-SendConfigValue -InputObject $entry -Name 'LastSecretBinding' -Default '')
+                        projection_count  = [string](Get-SendConfigValue -InputObject $entry -Name 'LastSecretProjectionCount' -Default '')
+                        manifest          = [string](Get-SendConfigValue -InputObject $entry -Name 'LastSecretManifest' -Default '')
+                        value_output      = $false
+                    }
+                }
+            }
+        }
+
         $broker = $null
         if ($null -ne $entry) {
             $brokerRunId = [string](Get-SendConfigValue -InputObject $entry -Name 'LastBrokerRunId' -Default '')
+            if (-not [string]::IsNullOrWhiteSpace($brokerRunId)) {
+                $brokerProfile = [string](Get-SendConfigValue -InputObject $entry -Name 'LastBrokerProfile' -Default $executionProfile)
+                $brokerMatchesActiveRun = $true
+                if ([string]::Equals($brokerProfile, 'isolated-enterprise', [System.StringComparison]::OrdinalIgnoreCase)) {
+                    $workspaceRunId = [string]$workspace['run_id']
+                    $workspaceStatusText = [string]$workspace['status']
+                    $brokerMatchesActiveRun = -not [string]::IsNullOrWhiteSpace($workspaceRunId) -and
+                        [string]::Equals($workspaceRunId, $brokerRunId, [System.StringComparison]::Ordinal) -and
+                        [string]::Equals($workspaceStatusText, 'prepared', [System.StringComparison]::OrdinalIgnoreCase)
+                }
+                if (-not $brokerMatchesActiveRun) {
+                    $brokerRunId = ''
+                }
+            }
             if (-not [string]::IsNullOrWhiteSpace($brokerRunId)) {
                 $broker = [ordered]@{
                     run_id            = $brokerRunId
@@ -5459,6 +5530,20 @@ function Get-WorkersStatusRows {
         $policy = $null
         if ($null -ne $entry) {
             $policyRunId = [string](Get-SendConfigValue -InputObject $entry -Name 'LastPolicyRunId' -Default '')
+            if (-not [string]::IsNullOrWhiteSpace($policyRunId)) {
+                $policyProfile = [string](Get-SendConfigValue -InputObject $entry -Name 'LastPolicyProfile' -Default $executionProfile)
+                $policyMatchesActiveRun = $true
+                if ([string]::Equals($policyProfile, 'isolated-enterprise', [System.StringComparison]::OrdinalIgnoreCase)) {
+                    $workspaceRunId = [string]$workspace['run_id']
+                    $workspaceStatusText = [string]$workspace['status']
+                    $policyMatchesActiveRun = -not [string]::IsNullOrWhiteSpace($workspaceRunId) -and
+                        [string]::Equals($workspaceRunId, $policyRunId, [System.StringComparison]::Ordinal) -and
+                        [string]::Equals($workspaceStatusText, 'prepared', [System.StringComparison]::OrdinalIgnoreCase)
+                }
+                if (-not $policyMatchesActiveRun) {
+                    $policyRunId = ''
+                }
+            }
             if (-not [string]::IsNullOrWhiteSpace($policyRunId)) {
                 $policy = [ordered]@{
                     run_id            = $policyRunId
@@ -5521,6 +5606,7 @@ function Get-WorkersStatusRows {
             ManifestStatus = $manifestStatus
             Backend        = [string]$slotConfig.WorkerBackend
             Role           = $workerRole
+            ExecutionProfile = $executionProfile
             Session        = $sessionName
             RequestedGpu   = $requestedGpu
             ActualGpu      = $actualGpu
@@ -5533,6 +5619,8 @@ function Get-WorkersStatusRows {
             Heartbeat      = $heartbeat
             HeartbeatHealth = $heartbeatHealth
             HeartbeatState = $heartbeatState
+            Workspace      = $workspace
+            SecretProjection = $secretProjection
             Broker         = $broker
             Policy         = $policy
         }) | Out-Null
@@ -5612,6 +5700,7 @@ function ConvertTo-WorkersStatusJsonRows {
             manifest_status = [string]$row.ManifestStatus
             backend         = [string]$row.Backend
             role            = [string]$row.Role
+            execution_profile = [string]$row.ExecutionProfile
             session         = [string]$row.Session
             requested_gpu   = [string]$row.RequestedGpu
             actual_gpu      = [string]$row.ActualGpu
@@ -5624,6 +5713,8 @@ function ConvertTo-WorkersStatusJsonRows {
             heartbeat       = $row.Heartbeat
             heartbeat_health = [string]$row.HeartbeatHealth
             heartbeat_state = [string]$row.HeartbeatState
+            workspace       = $row.Workspace
+            secret_projection = $row.SecretProjection
             broker          = $row.Broker
             policy          = $row.Policy
         }
@@ -8036,7 +8127,41 @@ function Invoke-WorkersWorkspacePrepare {
 
     Write-WorkersJsonArtifact -Path $manifestPath -Data $payload | Out-Null
     if ($null -ne $slot.Entry) {
-        Set-WorkersManifestLifecycleCommand -Entry $slot.Entry -CommandName 'workers.workspace.prepare'
+        Set-WorkersManifestLifecycleCommand -Entry $slot.Entry -CommandName 'workers.workspace.prepare' -ExtraProperties ([ordered]@{
+            last_workspace_run_id = $runId
+            last_workspace_profile = 'isolated-enterprise'
+            last_workspace_status = 'prepared'
+            last_workspace_lifecycle = 'disposable'
+            last_workspace_root = $workspaceReference
+            last_workspace_manifest = $manifestReference
+            last_secret_run_id = ''
+            last_secret_profile = ''
+            last_secret_status = ''
+            last_secret_binding = ''
+            last_secret_projection_count = ''
+            last_secret_manifest = ''
+            last_broker_run_id = ''
+            last_broker_profile = ''
+            last_broker_status = ''
+            last_broker_node_id = ''
+            last_broker_endpoint = ''
+            last_broker_manifest = ''
+            last_broker_token_status = ''
+            last_broker_token_health = ''
+            last_broker_token_expires_at = ''
+            last_broker_token_manifest = ''
+            last_policy_run_id = ''
+            last_policy_profile = ''
+            last_policy_status = ''
+            last_policy_health = ''
+            last_policy_reason = ''
+            last_policy_network = ''
+            last_policy_write = ''
+            last_policy_provider = ''
+            last_policy_mandatory_checks = ''
+            last_policy_required_evidence = ''
+            last_policy_manifest = ''
+        })
     }
 
     Write-WorkersOperationOutput -Payload $payload -Json:([bool]$Options.Json) -Text "prepared $runId"
@@ -8073,6 +8198,46 @@ function Invoke-WorkersWorkspaceCleanup {
         exit_code     = 0
     }
     if ($null -ne $slot.Entry) {
+        $activeWorkspaceRunId = [string](Get-SendConfigValue -InputObject $slot.Entry -Name 'LastWorkspaceRunId' -Default '')
+        $cleanupIsActiveWorkspace = [string]::Equals($activeWorkspaceRunId, $runId, [System.StringComparison]::Ordinal)
+    }
+    if ($null -ne $slot.Entry -and $cleanupIsActiveWorkspace) {
+        Set-WorkersManifestLifecycleCommand -Entry $slot.Entry -CommandName 'workers.workspace.cleanup' -ExtraProperties ([ordered]@{
+            last_workspace_run_id = $runId
+            last_workspace_profile = 'isolated-enterprise'
+            last_workspace_status = [string]$payload['status']
+            last_workspace_lifecycle = 'disposable'
+            last_workspace_root = ''
+            last_workspace_manifest = ''
+            last_secret_run_id = ''
+            last_secret_profile = ''
+            last_secret_status = ''
+            last_secret_binding = ''
+            last_secret_projection_count = ''
+            last_secret_manifest = ''
+            last_broker_run_id = ''
+            last_broker_profile = ''
+            last_broker_status = ''
+            last_broker_node_id = ''
+            last_broker_endpoint = ''
+            last_broker_manifest = ''
+            last_broker_token_status = ''
+            last_broker_token_health = ''
+            last_broker_token_expires_at = ''
+            last_broker_token_manifest = ''
+            last_policy_run_id = ''
+            last_policy_profile = ''
+            last_policy_status = ''
+            last_policy_health = ''
+            last_policy_reason = ''
+            last_policy_network = ''
+            last_policy_write = ''
+            last_policy_provider = ''
+            last_policy_mandatory_checks = ''
+            last_policy_required_evidence = ''
+            last_policy_manifest = ''
+        })
+    } elseif ($null -ne $slot.Entry) {
         Set-WorkersManifestLifecycleCommand -Entry $slot.Entry -CommandName 'workers.workspace.cleanup'
     }
 
@@ -8226,7 +8391,14 @@ function Invoke-WorkersSecretsProject {
 
     Write-WorkersJsonArtifact -Path $manifestPath -Data $payload | Out-Null
     if ($null -ne $slot.Entry) {
-        Set-WorkersManifestLifecycleCommand -Entry $slot.Entry -CommandName 'workers.secrets.project'
+        Set-WorkersManifestLifecycleCommand -Entry $slot.Entry -CommandName 'workers.secrets.project' -ExtraProperties ([ordered]@{
+            last_secret_run_id = $runId
+            last_secret_profile = $requestedProfile.Trim().ToLowerInvariant()
+            last_secret_status = 'projected'
+            last_secret_binding = 'late-bound-at-run-start'
+            last_secret_projection_count = "$(@($projections).Count)"
+            last_secret_manifest = (Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $manifestPath)
+        })
     }
 
     Write-WorkersOperationOutput -Payload $payload -Json:([bool]$Options.Json) -Text "projected $($projections.Count) secret(s) for $runId"

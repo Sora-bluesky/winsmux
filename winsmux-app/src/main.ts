@@ -1849,7 +1849,7 @@ function getWorkerModelSource(row: DesktopWorkerStatusRow) {
 
 function getWorkerExecutionProfile(row: DesktopWorkerStatusRow) {
   const launch = getWorkerStatusLaunch(row);
-  return getLaunchApprovalField(launch, "execution_profile") || "local-windows";
+  return getLaunchApprovalField(launch, "execution_profile") || (row.execution_profile || "").trim() || "local-windows";
 }
 
 function getWorkerHeartbeatHealth(row: DesktopWorkerStatusRow) {
@@ -1868,6 +1868,97 @@ function getConcreteWorkerStatusValue(...values: Array<string | null | undefined
     }
   }
   return "";
+}
+
+function getWorkerStatusProfileBadge(row: DesktopWorkerStatusRow) {
+  const statusText = `${getWorkerHeartbeatHealth(row)} ${getWorkerHeartbeatState(row)} ${row.state} ${row.pane_state} ${row.manifest_status}`.toLowerCase();
+  if (statusText.includes("offline")) {
+    return "offline";
+  }
+  const profile = getWorkerExecutionProfile(row);
+  if (profile === "isolated-enterprise") {
+    return "isolated";
+  }
+  return "local";
+}
+
+function getWorkerWorkspaceState(row: DesktopWorkerStatusRow) {
+  const workspace = row.workspace;
+  const type = (workspace?.type || (getWorkerExecutionProfile(row) === "isolated-enterprise" ? "isolated-workspace" : "local-project")).trim();
+  const status = (workspace?.status || (type === "isolated-workspace" ? "not_prepared" : "local")).trim();
+  return `${type}:${status}`;
+}
+
+function getWorkerSecretProjectionState(row: DesktopWorkerStatusRow) {
+  const projection = row.secret_projection;
+  if (!projection) {
+    return getWorkerExecutionProfile(row) === "isolated-enterprise" ? "not-projected" : "default";
+  }
+  const status = (projection.status || "unknown").trim();
+  const count = projection.projection_count;
+  if (count !== undefined && count !== null && `${count}`.trim()) {
+    return `${status}:${count}`;
+  }
+  return status;
+}
+
+function getWorkerPolicyState(row: DesktopWorkerStatusRow) {
+  const policy = row.policy;
+  if (!policy) {
+    return getWorkerExecutionProfile(row) === "isolated-enterprise" ? "missing" : "not-required";
+  }
+  return (policy.health || policy.status || "unknown").trim();
+}
+
+function hasWorkerCredentialRefreshWait(row: DesktopWorkerStatusRow) {
+  const token = row.broker?.token;
+  const statusText = [
+    row.degraded_reason,
+    row.heartbeat?.reason,
+    row.heartbeat?.message,
+    token?.status,
+    token?.health,
+  ].join(" ").toLowerCase();
+  return statusText.includes("credential refresh")
+    || statusText.includes("token_expired_refresh")
+    || statusText.includes("token_refresh_failed")
+    || statusText.includes("refresh_disabled");
+}
+
+function getWorkerRecoveryAction(row: DesktopWorkerStatusRow) {
+  const heartbeat = `${getWorkerHeartbeatHealth(row)} ${getWorkerHeartbeatState(row)}`.toLowerCase();
+  const stateText = `${heartbeat} ${row.state} ${row.pane_state} ${row.manifest_status}`.toLowerCase();
+  if (hasWorkerCredentialRefreshWait(row)) {
+    return "refresh-credentials";
+  }
+  if (stateText.includes("offline")) {
+    return "restart-worker";
+  }
+  if (stateText.includes("stalled")) {
+    return "check-heartbeat";
+  }
+  if (stateText.includes("resumable")) {
+    return "resume-worker";
+  }
+  if (stateText.includes("approval_waiting") || stateText.includes("blocked") || stateText.includes("block")) {
+    return "operator-review";
+  }
+  if (getWorkerExecutionProfile(row) === "isolated-enterprise" && row.workspace?.status !== "prepared") {
+    return "prepare-workspace";
+  }
+  if (getWorkerExecutionProfile(row) === "isolated-enterprise" && !row.secret_projection) {
+    return "project-secrets";
+  }
+  if (getWorkerExecutionProfile(row) === "isolated-enterprise" && getWorkerPolicyState(row) === "missing") {
+    return "define-policy";
+  }
+  if (stateText.includes("stopped") || stateText.includes("not_launched")) {
+    return "start-worker";
+  }
+  if (stateText.includes("deferred_start") || stateText.includes("start")) {
+    return "start-worker";
+  }
+  return "monitor";
 }
 
 const WORKER_LAUNCH_PRIORITY_STATES = new Set(["backend_degraded", "deferred_start_failed", "deferred_start", "deferred_starting"]);
@@ -1963,11 +2054,15 @@ function getWorkerStatusPillTitle(row: DesktopWorkerStatusRow, target: string) {
     `role=${row.role || getLaunchApprovalField(launch, "worker_role") || "worker"}`,
     `backend=${getLaunchApprovalField(launch, "worker_backend") || row.backend || "unknown"}`,
     `profile=${getWorkerExecutionProfile(row)}`,
+    `workspace=${getWorkerWorkspaceState(row)}`,
     `auth=${getWorkerAuthState(row)}`,
     `model=${getLaunchApprovalField(launch, "model") || "provider-default"}`,
     `model_source=${getWorkerModelSource(row)}`,
     `remote=${getWorkerRemoteState(row)}`,
     `heartbeat=${getWorkerHeartbeatHealth(row) || "none"}`,
+    `secrets=${getWorkerSecretProjectionState(row)}`,
+    `policy=${getWorkerPolicyState(row)}`,
+    `recovery=${getWorkerRecoveryAction(row)}`,
     `elapsed=${formatWorkerCommandElapsed(row.last_command_at)}`,
     isWorkerStatusBlocked(row) ? `blocked=${row.degraded_reason || "requires attention"}` : "blocked=no",
   ].join(" · ");
@@ -2048,6 +2143,7 @@ function renderWorkerStatusSurface() {
     main.className = "worker-status-pill-main";
     main.textContent = getPaneDisplayLabel(target);
     pill.appendChild(main);
+    pill.appendChild(createWorkerStatusChip("profile", "exec", getWorkerStatusProfileBadge(row)));
     pill.appendChild(createWorkerStatusChip("launch", "launch", launchState));
     const heartbeatHealth = getWorkerHeartbeatHealth(row);
     if (heartbeatHealth) {
@@ -2065,11 +2161,15 @@ function renderWorkerStatusSurface() {
     detailStrip.appendChild(createWorkerStatusChip("role", "role", focusedRow.role || getLaunchApprovalField(launch, "worker_role") || "worker"));
     detailStrip.appendChild(createWorkerStatusChip("backend", "backend", getLaunchApprovalField(launch, "worker_backend") || focusedRow.backend || "unknown"));
     detailStrip.appendChild(createWorkerStatusChip("profile", "prof", getWorkerExecutionProfile(focusedRow)));
+    detailStrip.appendChild(createWorkerStatusChip("workspace", "ws", getWorkerWorkspaceState(focusedRow)));
     detailStrip.appendChild(createWorkerStatusChip("auth", "auth", getWorkerAuthState(focusedRow)));
+    detailStrip.appendChild(createWorkerStatusChip("secrets", "secrets", getWorkerSecretProjectionState(focusedRow)));
+    detailStrip.appendChild(createWorkerStatusChip("policy", "policy", getWorkerPolicyState(focusedRow)));
     detailStrip.appendChild(createWorkerStatusChip("model-source", "model-src", getWorkerModelSource(focusedRow)));
     detailStrip.appendChild(createWorkerStatusChip("launch", "launch", getWorkerLaunchState(focusedRow)));
     detailStrip.appendChild(createWorkerStatusChip("heartbeat", "hb", getWorkerHeartbeatHealth(focusedRow) || "none"));
     detailStrip.appendChild(createWorkerStatusChip("blocked", "blocked", isWorkerStatusBlocked(focusedRow) ? "yes" : "no"));
+    detailStrip.appendChild(createWorkerStatusChip("recovery", "recover", getWorkerRecoveryAction(focusedRow)));
     detailStrip.appendChild(createWorkerStatusChip("remote", "remote", getWorkerRemoteState(focusedRow)));
     detailStrip.appendChild(createWorkerStatusChip("elapsed", "elapsed", formatWorkerCommandElapsed(focusedRow.last_command_at)));
     detailStrip.appendChild(createWorkerStatusChip("focus", "focus", target === focusedPaneId ? "yes" : "target"));
@@ -2181,7 +2281,11 @@ function buildWorkerLaunchDetails(row: DesktopWorkerStatusRow, differences: Desk
     { label: getLanguageText("model", "モデル"), value: getLaunchApprovalField(launch, "model") || "provider-default" },
     { label: getLanguageText("backend", "バックエンド"), value: getLaunchApprovalField(launch, "worker_backend") || row.backend || "unknown" },
     { label: getLanguageText("profile", "実行プロファイル"), value: getWorkerExecutionProfile(row) },
+    { label: getLanguageText("workspace", "作業領域"), value: getWorkerWorkspaceState(row) },
     { label: getLanguageText("heartbeat", "生存確認"), value: getWorkerHeartbeatHealth(row) || "none" },
+    { label: getLanguageText("secret projection", "資格情報投影"), value: getWorkerSecretProjectionState(row) },
+    { label: getLanguageText("policy", "ポリシー"), value: getWorkerPolicyState(row) },
+    { label: getLanguageText("recovery", "復旧"), value: getWorkerRecoveryAction(row) },
     { label: getLanguageText("differences", "差分"), value: String(differences.length) },
   ];
 }

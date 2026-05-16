@@ -10,6 +10,7 @@
     "test:composer-text": "node ./scripts/composer-text-check.mjs",
     "test:clickable-coverage": "npm run build && node ./scripts/clickable-coverage-harness.mjs",
     "test:desktop-pane-e2e": "node ./scripts/desktop-pane-e2e.mjs",
+    "test:desktop-status-e2e": "node ./scripts/desktop-pane-e2e.mjs --stop-after-worker-status",
     "test:editor-targets": "node ./scripts/editor-targets-check.mjs",
     "test:source-graph": "node ./scripts/source-graph-check.mjs",
     "test:viewport-harness": "npm run build && node ./scripts/viewport-harness.mjs",
