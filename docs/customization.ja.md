@@ -90,6 +90,15 @@ winsmux workers broker baseline w2 --run-id run-123 --endpoint https://broker.ex
 
 コマンドは安全側で失敗します。スロットが `isolated-enterprise` ではない場合、実行ワークスペースが未作成の場合、必要な実行ディレクトリがない場合、エンドポイントを安全に記録できない場合、または実行境界の内側にリパースポイントがある場合は、`broker-baseline.json` を書きません。出力にはプロジェクト相対の成果物参照だけを含めます。`winsmux workers status --json` は、各ワーカー行の `broker` に最新のブローカー契約を含めます。
 
+ブローカー契約を作成した後は、ブローカー対応エージェント向けの短命実行トークンを発行できます。
+
+```powershell
+winsmux workers broker token issue w2 --run-id run-123 --ttl-seconds 900 --json
+winsmux workers broker token check w2 --run-id run-123 --json
+```
+
+トークン値は、隔離実行境界の内側にある `secrets/broker-run-token.txt` にだけ保存します。JSON 出力と `broker-token.json` には、トークン参照、指紋、発行時刻、期限だけを記録します。期限切れの確認では、既定でトークンを更新します。更新を無効化した場合、または更新できない場合は、`winsmux workers heartbeat` と同じ生存確認面で実行を `offline` にします。
+
 ## 起動プリセット
 
 比較を目的とした実行を始める前に、プリセットを確認できます。

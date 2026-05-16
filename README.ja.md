@@ -93,6 +93,7 @@ winsmux workers upload w2 data/input.json --remote /content/input.json
 winsmux workers download w2 /content/output.json
 winsmux workers sandbox baseline w2 --run-id demo-1 --json
 winsmux workers broker baseline w2 --run-id demo-1 --endpoint https://broker.example.invalid/worker --json
+winsmux workers broker token issue w2 --run-id demo-1 --ttl-seconds 900 --json
 winsmux review-pack <run_id> --json
 winsmux compare runs <left_run_id> <right_run_id>
 winsmux compare preflight <left_ref> <right_ref>
@@ -117,6 +118,7 @@ winsmux skills --json
 | `winsmux workers download` | リモート成果物をプロジェクト配下へダウンロード |
 | `winsmux workers sandbox baseline` | 準備済み隔離実行に `restricted_token` と ACL 境界の土台を定義 |
 | `winsmux workers broker baseline` | 準備済み隔離実行に、単一の外部ブローカーノード契約を定義 |
+| `winsmux workers broker token` | 短命ブローカー実行トークンを発行または確認。値は出力しない |
 | `winsmux review-pack` | 変更ファイル、テスト結果、リスク、実行コマンド、成果物参照だけを含むレビュー用パケットを書き出す |
 | `winsmux compare runs` | 2 つの記録済み実行について、証跡と信頼度を比較 |
 | `winsmux compare preflight` | マージ前や比較レビュー前に 2 つの git 参照を確認 |

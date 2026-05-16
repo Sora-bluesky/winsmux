@@ -9017,6 +9017,7 @@ agent-slots:
         $script:winsmuxWorkersCoreRawContent | Should -Match 'workers heartbeat <mark\|check> <slot> \[--run-id <id>\] \[--state <state>\] \[--json\] \[--project-dir <path>\]'
         $script:winsmuxWorkersCoreRawContent | Should -Match 'workers sandbox baseline <slot> --run-id <id> \[--json\] \[--project-dir <path>\]'
         $script:winsmuxWorkersCoreRawContent | Should -Match 'workers broker baseline <slot> --run-id <id> --endpoint <url> \[--node-id <id>\] \[--json\] \[--project-dir <path>\]'
+        $script:winsmuxWorkersCoreRawContent | Should -Match 'workers broker token <issue\|check> <slot> --run-id <id> \[--ttl-seconds <n>\] \[--no-refresh\] \[--json\] \[--project-dir <path>\]'
         $script:winsmuxWorkersCoreRawContent | Should -Match "'workers'\s*\{\s*Invoke-Workers\s*\}"
         $script:winsmuxWorkersCoreRawContent | Should -Match 'google-colab-cli not found on PATH'
         $script:winsmuxWorkersCoreRawContent | Should -Match 'uv not found on PATH'
@@ -9400,6 +9401,155 @@ agent-slots:
         $statusRow.broker.manifest | Should -Be '.winsmux/isolated-workspaces/worker-2/broker-run/broker-baseline.json'
     }
 
+    It 'issues, checks, refreshes, and expires broker run tokens without exposing token values' {
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    execution-profile: isolated-enterprise
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        Save-WinsmuxManifest -ProjectDir $script:workersTempRoot -Manifest ([ordered]@{
+            version = 1
+            saved_at = '2026-05-16T00:00:00Z'
+            session = [ordered]@{
+                name = 'winsmux-orchestra'
+                project_dir = $script:workersTempRoot
+                git_worktree_dir = (Join-Path $script:workersTempRoot '.git')
+            }
+            panes = [ordered]@{
+                'worker-2' = [ordered]@{
+                    pane_id = '%2'
+                    slot_id = 'worker-2'
+                    worker_backend = 'local'
+                    role = 'Worker'
+                    launch_dir = $script:workersTempRoot
+                    status = 'ready'
+                }
+            }
+            tasks = [ordered]@{
+                queued = @()
+                in_progress = @()
+                completed = @()
+            }
+            worktrees = [ordered]@{}
+        })
+        'payload' | Set-Content -Path (Join-Path $script:workersTempRoot 'input.txt') -Encoding UTF8
+        & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers workspace prepare w2 --include input.txt --run-id broker-token-run --json --project-dir $script:workersTempRoot | Out-Null
+        & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers broker baseline worker-2 --run-id broker-token-run --endpoint https://broker.example.invalid/worker --node-id broker-a --json --project-dir $script:workersTempRoot | Out-Null
+
+        $tokenPath = Join-Path $script:workersTempRoot '.winsmux\isolated-workspaces\worker-2\broker-token-run\secrets\broker-run-token.txt'
+        $manifestPath = Join-Path $script:workersTempRoot '.winsmux\isolated-workspaces\worker-2\broker-token-run\broker-token.json'
+        $heartbeatPath = Join-Path $script:workersTempRoot '.winsmux\isolated-workspaces\worker-2\broker-token-run\heartbeat.json'
+        $previousNow = $env:WINSMUX_TEST_NOW_UTC
+
+        try {
+            $env:WINSMUX_TEST_NOW_UTC = '2026-05-16T00:00:00Z'
+            $missingOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers broker token check w2 --run-id broker-token-run --ttl-seconds 60 --json --project-dir $script:workersTempRoot
+            $missing = ($missingOutput | Select-Object -Last 1) | ConvertFrom-Json
+            $missing.status | Should -Be 'offline'
+            $missing.reason | Should -Be 'broker_token_missing'
+            $missing.offline_heartbeat.health | Should -Be 'offline'
+            Test-Path -LiteralPath $tokenPath | Should -Be $false
+
+            $missingAgainOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers broker token check w2 --run-id broker-token-run --ttl-seconds 60 --json --project-dir $script:workersTempRoot
+            $missingAgain = ($missingAgainOutput | Select-Object -Last 1) | ConvertFrom-Json
+            $missingAgain.status | Should -Be 'offline'
+            $missingAgain.reason | Should -Be 'broker_token_missing'
+            $missingAgain.credential_refresh.failure_reason | Should -Be 'missing_run_token'
+            Test-Path -LiteralPath $tokenPath | Should -Be $false
+
+            $issueOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers broker token issue w2 --run-id broker-token-run --ttl-seconds 60 --json --project-dir $script:workersTempRoot
+            $issue = ($issueOutput | Select-Object -Last 1) | ConvertFrom-Json
+            $firstTokenValue = Get-Content -LiteralPath $tokenPath -Raw -Encoding UTF8
+            $issueSerialized = $issue | ConvertTo-Json -Depth 32
+            $manifestRaw = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8
+
+            $issue.status | Should -Be 'issued'
+            $issue.health | Should -Be 'valid'
+            $issue.run_token.kind | Should -Be 'short_lived_broker_run_token'
+            $issue.run_token.value_ref | Should -Be '.winsmux/isolated-workspaces/worker-2/broker-token-run/secrets/broker-run-token.txt'
+            $issue.run_token.value_output | Should -Be $false
+            $issue.run_token.value_in_manifest | Should -Be $false
+            $issue.value_policy.output_contains_token_value | Should -Be $false
+            $issueSerialized | Should -Not -Match ([regex]::Escape($firstTokenValue.Trim()))
+            $manifestRaw | Should -Not -Match ([regex]::Escape($firstTokenValue.Trim()))
+
+            $statusOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers status worker-2 --json --project-dir $script:workersTempRoot
+            $statusPayload = ($statusOutput | Select-Object -Last 1) | ConvertFrom-Json
+            $statusRow = @($statusPayload.workers)[0]
+            $statusRow.broker.token.status | Should -Be 'issued'
+            $statusRow.broker.token.health | Should -Be 'valid'
+            $statusRow.broker.token.manifest | Should -Be '.winsmux/isolated-workspaces/worker-2/broker-token-run/broker-token.json'
+
+            $env:WINSMUX_TEST_NOW_UTC = '2026-05-16T00:00:30Z'
+            $validOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers broker token check w2 --run-id broker-token-run --ttl-seconds 60 --json --project-dir $script:workersTempRoot
+            $valid = ($validOutput | Select-Object -Last 1) | ConvertFrom-Json
+            $valid.status | Should -Be 'valid'
+            $valid.health | Should -Be 'valid'
+            $valid.credential_refresh.attempted | Should -Be $false
+
+            Remove-Item -LiteralPath $tokenPath -Force
+            $env:WINSMUX_TEST_NOW_UTC = '2026-05-16T00:00:31Z'
+            $missingSecretOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers broker token check w2 --run-id broker-token-run --ttl-seconds 60 --json --project-dir $script:workersTempRoot
+            $missingSecret = ($missingSecretOutput | Select-Object -Last 1) | ConvertFrom-Json
+            $secondTokenValue = Get-Content -LiteralPath $tokenPath -Raw -Encoding UTF8
+            $missingSecretSerialized = $missingSecret | ConvertTo-Json -Depth 32
+
+            $missingSecret.status | Should -Be 'refreshed'
+            $missingSecret.health | Should -Be 'valid'
+            $missingSecret.reason | Should -Be 'token_secret_invalid_refreshed'
+            $missingSecret.credential_refresh.attempted | Should -Be $true
+            $missingSecret.credential_refresh.refreshed | Should -Be $true
+            $secondTokenValue | Should -Not -Be $firstTokenValue
+            $missingSecretSerialized | Should -Not -Match ([regex]::Escape($secondTokenValue.Trim()))
+
+            $env:WINSMUX_TEST_NOW_UTC = '2026-05-16T00:01:32Z'
+            $refreshOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers broker token check w2 --run-id broker-token-run --ttl-seconds 60 --json --project-dir $script:workersTempRoot
+            $refresh = ($refreshOutput | Select-Object -Last 1) | ConvertFrom-Json
+            $thirdTokenValue = Get-Content -LiteralPath $tokenPath -Raw -Encoding UTF8
+            $refreshSerialized = $refresh | ConvertTo-Json -Depth 32
+
+            $refresh.status | Should -Be 'refreshed'
+            $refresh.health | Should -Be 'valid'
+            $refresh.credential_refresh.attempted | Should -Be $true
+            $refresh.credential_refresh.refreshed | Should -Be $true
+            $thirdTokenValue | Should -Not -Be $secondTokenValue
+            $refreshSerialized | Should -Not -Match ([regex]::Escape($thirdTokenValue.Trim()))
+
+            $env:WINSMUX_TEST_NOW_UTC = '2026-05-16T00:02:33Z'
+            $offlineOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers broker token check w2 --run-id broker-token-run --ttl-seconds 60 --no-refresh --json --project-dir $script:workersTempRoot
+            $offline = ($offlineOutput | Select-Object -Last 1) | ConvertFrom-Json
+
+            $offline.status | Should -Be 'offline'
+            $offline.health | Should -Be 'offline'
+            $offline.reason | Should -Be 'token_expired_refresh_disabled'
+            $offline.credential_refresh.failure_reason | Should -Be 'refresh_disabled'
+            $offline.offline_heartbeat.health | Should -Be 'offline'
+            Test-Path -LiteralPath $heartbeatPath | Should -Be $true
+
+            $offlineStatusOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers status worker-2 --json --project-dir $script:workersTempRoot
+            $offlineStatusPayload = ($offlineStatusOutput | Select-Object -Last 1) | ConvertFrom-Json
+            $offlineStatusRow = @($offlineStatusPayload.workers)[0]
+            $offlineStatusRow.heartbeat_health | Should -Be 'offline'
+            $offlineStatusRow.broker.token.health | Should -Be 'offline'
+
+            $env:WINSMUX_TEST_NOW_UTC = '2026-05-16T00:02:34Z'
+            $recoveryOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers broker token check w2 --run-id broker-token-run --ttl-seconds 60 --json --project-dir $script:workersTempRoot
+            $recovery = ($recoveryOutput | Select-Object -Last 1) | ConvertFrom-Json
+            $fourthTokenValue = Get-Content -LiteralPath $tokenPath -Raw -Encoding UTF8
+            $recovery.status | Should -Be 'refreshed'
+            $recovery.health | Should -Be 'valid'
+            $recovery.credential_refresh.refreshed | Should -Be $true
+            $fourthTokenValue | Should -Not -Be $thirdTokenValue
+        } finally {
+            $env:WINSMUX_TEST_NOW_UTC = $previousNow
+        }
+    }
+
     It 'fails closed for broker baselines outside the prepared isolated boundary' {
 @'
 agent: codex
@@ -9436,6 +9586,13 @@ agent-slots:
         $LASTEXITCODE | Should -Be 1
         ($credentialEndpoint | Out-String) | Should -Match 'must not include credentials'
         Test-Path -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\isolated-workspaces\worker-2\broker-credentials\broker-baseline.json') | Should -Be $false
+
+        'payload' | Set-Content -Path (Join-Path $script:workersTempRoot 'input.txt') -Encoding UTF8
+        & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers workspace prepare w2 --include input.txt --run-id token-no-baseline --json --project-dir $script:workersTempRoot | Out-Null
+        $tokenWithoutBaseline = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers broker token issue worker-2 --run-id token-no-baseline --json --project-dir $script:workersTempRoot 2>&1
+        $LASTEXITCODE | Should -Be 1
+        ($tokenWithoutBaseline | Out-String) | Should -Match 'requires an existing broker baseline'
+        Test-Path -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\isolated-workspaces\worker-2\token-no-baseline\broker-token.json') | Should -Be $false
     }
 
     It 'projects typed secrets for local Windows runs without printing secret values' {

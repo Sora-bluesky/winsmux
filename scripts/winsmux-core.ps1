@@ -5123,7 +5123,7 @@ function Invoke-Status {
 }
 
 function Get-WorkersUsage {
-    return "usage: winsmux workers <status|start|stop|attach|doctor> [slot|all] [--json] [--project-dir <path>]; winsmux workers <exec|logs|upload|download> <slot> ... [--json] [--project-dir <path>]; winsmux workers heartbeat <mark|check> <slot> [--run-id <id>] ... [--json] [--project-dir <path>]; winsmux workers workspace <prepare|cleanup> <slot> ... [--json] [--project-dir <path>]; winsmux workers secrets project <slot> ... [--json] [--project-dir <path>]; winsmux workers sandbox baseline <slot> --run-id <id> [--json] [--project-dir <path>]; winsmux workers broker baseline <slot> --run-id <id> --endpoint <url> [--node-id <id>] [--json] [--project-dir <path>]"
+    return "usage: winsmux workers <status|start|stop|attach|doctor> [slot|all] [--json] [--project-dir <path>]; winsmux workers <exec|logs|upload|download> <slot> ... [--json] [--project-dir <path>]; winsmux workers heartbeat <mark|check> <slot> [--run-id <id>] ... [--json] [--project-dir <path>]; winsmux workers workspace <prepare|cleanup> <slot> ... [--json] [--project-dir <path>]; winsmux workers secrets project <slot> ... [--json] [--project-dir <path>]; winsmux workers sandbox baseline <slot> --run-id <id> [--json] [--project-dir <path>]; winsmux workers broker baseline <slot> --run-id <id> --endpoint <url> [--node-id <id>] [--json] [--project-dir <path>]; winsmux workers broker token <issue|check> <slot> --run-id <id> [--ttl-seconds <n>] [--no-refresh] [--json] [--project-dir <path>]"
 }
 
 function Read-WorkersOptions {
@@ -5444,6 +5444,15 @@ function Get-WorkersStatusRows {
                     endpoint          = [string](Get-SendConfigValue -InputObject $entry -Name 'LastBrokerEndpoint' -Default '')
                     manifest          = [string](Get-SendConfigValue -InputObject $entry -Name 'LastBrokerManifest' -Default '')
                 }
+                $brokerTokenManifest = [string](Get-SendConfigValue -InputObject $entry -Name 'LastBrokerTokenManifest' -Default '')
+                if (-not [string]::IsNullOrWhiteSpace($brokerTokenManifest)) {
+                    $broker['token'] = [ordered]@{
+                        status     = [string](Get-SendConfigValue -InputObject $entry -Name 'LastBrokerTokenStatus' -Default '')
+                        health     = [string](Get-SendConfigValue -InputObject $entry -Name 'LastBrokerTokenHealth' -Default '')
+                        expires_at = [string](Get-SendConfigValue -InputObject $entry -Name 'LastBrokerTokenExpiresAt' -Default '')
+                        manifest   = $brokerTokenManifest
+                    }
+                }
             }
         }
 
@@ -5726,7 +5735,7 @@ function Assert-WorkersHeartbeatState {
         return 'running'
     }
 
-    $allowed = @('running', 'blocked', 'approval_waiting', 'child_wait', 'stalled', 'completed', 'resumable')
+    $allowed = @('running', 'blocked', 'approval_waiting', 'child_wait', 'stalled', 'offline', 'completed', 'resumable')
     if ($allowed -notcontains $normalized) {
         Stop-WithError "unsupported heartbeat state: $State"
     }
@@ -5892,6 +5901,66 @@ function Assert-WorkersBrokerEndpoint {
     }
 
     return $uri.AbsoluteUri
+}
+
+function New-WorkersBrokerRunTokenValue {
+    $bytes = [byte[]]::new(32)
+    [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+    return ([Convert]::ToBase64String($bytes)).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+}
+
+function Get-WorkersBrokerRunTokenFingerprint {
+    param([AllowEmptyString()][string]$Value)
+
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes([string]$Value)
+    $hash = [System.Security.Cryptography.SHA256]::Create().ComputeHash($bytes)
+    return (($hash | ForEach-Object { $_.ToString('x2') }) -join '').Substring(0, 16)
+}
+
+function Read-WorkersBrokerTokenManifest {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $null
+    }
+
+    try {
+        return (Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json)
+    } catch {
+        return $null
+    }
+}
+
+function Write-WorkersBrokerTokenHeartbeat {
+    param(
+        [Parameter(Mandatory = $true)]$Slot,
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$RunDir,
+        [Parameter(Mandatory = $true)][string]$RunId,
+        [Parameter(Mandatory = $true)][datetime]$NowUtc,
+        [Parameter(Mandatory = $true)][string]$State,
+        [AllowEmptyString()][string]$Message = ''
+    )
+
+    $safeState = Assert-WorkersHeartbeatState -State $State
+    $heartbeatPath = Join-Path $RunDir 'heartbeat.json'
+    $payload = [ordered]@{
+        contract_version      = 1
+        command               = 'workers.heartbeat'
+        status                = 'marked'
+        slot                  = [string]$Slot.Row.Slot
+        slot_id               = [string]$Slot.Row.SlotId
+        run_id                = $RunId
+        execution_profile     = 'isolated-enterprise'
+        state                 = $safeState
+        message               = ConvertTo-WorkersSafeLogText -Text $Message
+        heartbeat_at          = $NowUtc.ToString('o')
+        stalled_after_seconds = 300
+        offline_after_seconds = 900
+        artifact              = Get-WorkersArtifactReference -ProjectDir $ProjectDir -Path $heartbeatPath
+    }
+    Write-WorkersJsonArtifact -Path $heartbeatPath -Data $payload | Out-Null
+    return (ConvertTo-WorkersHeartbeatStatus -Payload $payload -Artifact ([string]$payload.artifact) -NowUtc $NowUtc -StalledAfterSeconds 300 -OfflineAfterSeconds 900)
 }
 
 function Get-WorkersColabSafetyFinding {
@@ -6309,6 +6378,11 @@ function New-WorkersHeartbeatAssessment {
             $health = 'child_wait'
             $reason = 'child_run_waiting'
             $waitingForChildRun = $true
+        }
+        'offline' {
+            $health = 'offline'
+            $reason = 'offline_reported'
+            $terminal = $true
         }
         'stalled' {
             if ($null -eq $HeartbeatAt) {
@@ -7553,21 +7627,33 @@ function Read-WorkersBrokerOptions {
     $projectDir = (Get-Location).Path
     $asJson = $false
     $action = ''
+    $tokenAction = ''
     $targetValue = ''
     $runId = ''
     $profile = 'isolated-enterprise'
     $endpoint = ''
-    $nodeId = 'broker-1'
+    $nodeId = ''
+    $ttlSeconds = 900
+    $refresh = $true
     $items = @($Rest)
 
     if ($items.Count -ge 1) {
         $action = ([string]$items[0]).Trim().ToLowerInvariant()
     }
-    if ($items.Count -ge 2) {
+    $optionStartIndex = 2
+    if ($action -eq 'token') {
+        if ($items.Count -ge 2) {
+            $tokenAction = ([string]$items[1]).Trim().ToLowerInvariant()
+        }
+        if ($items.Count -ge 3) {
+            $targetValue = [string]$items[2]
+        }
+        $optionStartIndex = 3
+    } elseif ($items.Count -ge 2) {
         $targetValue = [string]$items[1]
     }
 
-    for ($index = 2; $index -lt $items.Count; $index++) {
+    for ($index = $optionStartIndex; $index -lt $items.Count; $index++) {
         $token = [string]$items[$index]
         switch ($token) {
             '--json' { $asJson = $true }
@@ -7587,14 +7673,28 @@ function Read-WorkersBrokerOptions {
                 $index++
             }
             '--endpoint' {
+                if ($action -ne 'baseline') { Stop-WithError $Usage }
                 if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
                 $endpoint = [string]$items[$index + 1]
                 $index++
             }
             '--node-id' {
+                if ($action -ne 'baseline') { Stop-WithError $Usage }
                 if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
                 $nodeId = [string]$items[$index + 1]
                 $index++
+            }
+            '--ttl-seconds' {
+                if ($action -ne 'token') { Stop-WithError $Usage }
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                if (-not [int]::TryParse([string]$items[$index + 1], [ref]$ttlSeconds) -or $ttlSeconds -lt 1) {
+                    Stop-WithError 'broker token --ttl-seconds must be a positive integer'
+                }
+                $index++
+            }
+            '--no-refresh' {
+                if ($action -ne 'token') { Stop-WithError $Usage }
+                $refresh = $false
             }
             default {
                 Stop-WithError $Usage
@@ -7602,19 +7702,32 @@ function Read-WorkersBrokerOptions {
         }
     }
 
-    if ($action -ne 'baseline' -or [string]::IsNullOrWhiteSpace($targetValue) -or [string]::IsNullOrWhiteSpace($runId) -or [string]::IsNullOrWhiteSpace($endpoint)) {
+    if ($action -eq 'baseline' -and [string]::IsNullOrWhiteSpace($nodeId)) {
+        $nodeId = 'broker-1'
+    }
+
+    if ($action -eq 'baseline' -and ([string]::IsNullOrWhiteSpace($targetValue) -or [string]::IsNullOrWhiteSpace($runId) -or [string]::IsNullOrWhiteSpace($endpoint))) {
+        Stop-WithError $Usage
+    }
+    if ($action -eq 'token' -and ($tokenAction -notin @('issue', 'check') -or [string]::IsNullOrWhiteSpace($targetValue) -or [string]::IsNullOrWhiteSpace($runId))) {
+        Stop-WithError $Usage
+    }
+    if ($action -notin @('baseline', 'token')) {
         Stop-WithError $Usage
     }
 
     return [PSCustomObject]@{
-        ProjectDir = $projectDir
-        Json       = $asJson
-        Action     = $action
-        Target     = $targetValue
-        RunId      = $runId
-        Profile    = $profile
-        Endpoint   = $endpoint
-        NodeId     = $nodeId
+        ProjectDir  = $projectDir
+        Json        = $asJson
+        Action      = $action
+        TokenAction = $tokenAction
+        Target      = $targetValue
+        RunId       = $runId
+        Profile     = $profile
+        Endpoint    = $endpoint
+        NodeId      = $nodeId
+        TtlSeconds  = $ttlSeconds
+        Refresh     = $refresh
     }
 }
 
@@ -7928,7 +8041,7 @@ function Invoke-WorkersSecrets {
 }
 
 function Invoke-WorkersHeartbeat {
-    $usage = "usage: winsmux workers heartbeat <mark|check> <slot> [--run-id <id>] [--profile <profile>] [--state <running|blocked|approval_waiting|child_wait|stalled|completed|resumable>] [--message <text>] [--stalled-after <seconds>] [--offline-after <seconds>] [--json] [--project-dir <path>]"
+    $usage = "usage: winsmux workers heartbeat <mark|check> <slot> [--run-id <id>] [--profile <profile>] [--state <running|blocked|approval_waiting|child_wait|stalled|offline|completed|resumable>] [--message <text>] [--stalled-after <seconds>] [--offline-after <seconds>] [--json] [--project-dir <path>]"
     $options = Read-WorkersHeartbeatOptions -Usage $usage
     $slot = Get-WorkersSingleSlotContext -ProjectDir $options.ProjectDir -Target $options.Target
     $slotId = [string]$slot.Row.SlotId
@@ -8175,6 +8288,275 @@ function Invoke-WorkersSandbox {
     }
 }
 
+function Invoke-WorkersBrokerToken {
+    param([Parameter(Mandatory = $true)]$Options)
+
+    $slot = Get-WorkersSingleSlotContext -ProjectDir $Options.ProjectDir -Target $Options.Target
+    $slotProfile = [string]$slot.SlotConfig.ExecutionProfile
+    if ([string]::IsNullOrWhiteSpace($slotProfile)) {
+        $slotProfile = 'local-windows'
+    }
+    $requestedProfile = [string]$Options.Profile
+    if ([string]::IsNullOrWhiteSpace($requestedProfile)) {
+        $requestedProfile = 'isolated-enterprise'
+    }
+    if (Get-Command Test-BridgeExecutionProfileKind -ErrorAction SilentlyContinue) {
+        if (-not (Test-BridgeExecutionProfileKind -Value $requestedProfile)) {
+            Stop-WithError "unsupported execution profile for broker token: $requestedProfile"
+        }
+    }
+    if (-not [string]::Equals($requestedProfile, 'isolated-enterprise', [System.StringComparison]::OrdinalIgnoreCase)) {
+        Stop-WithError 'broker token requires execution profile isolated-enterprise'
+    }
+    if (-not [string]::Equals($slotProfile, $requestedProfile, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Stop-WithError "worker slot $($slot.Row.SlotId) uses execution profile '$slotProfile', not $requestedProfile"
+    }
+
+    $runId = Assert-WorkersRunId -RunId ([string]$Options.RunId)
+    if ([string]::IsNullOrWhiteSpace($runId)) {
+        Stop-WithError 'broker token requires --run-id'
+    }
+
+    $runDir = Get-WorkersIsolatedWorkspaceRunDirectory -ProjectDir $Options.ProjectDir -SlotId ([string]$slot.Row.SlotId) -RunId $runId
+    if (-not (Test-Path -LiteralPath $runDir -PathType Container)) {
+        Stop-WithError "broker token requires an existing isolated workspace run: $runId"
+    }
+    Assert-WorkersIsolatedWorkspaceCleanupTarget -ProjectDir $Options.ProjectDir -RunDir $runDir
+    Assert-WorkersNoReparsePointUnderDirectory -RootDir $runDir -Name 'broker token'
+
+    $baselinePath = Join-Path $runDir 'broker-baseline.json'
+    if (-not (Test-Path -LiteralPath $baselinePath -PathType Leaf)) {
+        Stop-WithError "broker token requires an existing broker baseline: $runId"
+    }
+
+    $baseline = $null
+    try {
+        $baseline = Get-Content -LiteralPath $baselinePath -Raw -Encoding UTF8 | ConvertFrom-Json
+    } catch {
+        Stop-WithError "broker token requires a readable broker baseline: $runId"
+    }
+
+    $nodeId = [string]$Options.NodeId
+    if ([string]::IsNullOrWhiteSpace($nodeId)) {
+        $nodeId = [string](Get-SendConfigValue -InputObject (Get-SendConfigValue -InputObject $baseline -Name 'node' -Default $null) -Name 'node_id' -Default 'broker-1')
+    }
+    $nodeId = Assert-WorkersPathSegment -Value $nodeId -Name 'broker node id'
+
+    $ttlSeconds = [int]$Options.TtlSeconds
+    if ($ttlSeconds -lt 1) {
+        Stop-WithError 'broker token --ttl-seconds must be a positive integer'
+    }
+
+    $nowUtc = Get-WorkersNowUtc
+    $secretRoot = Join-Path $runDir 'secrets'
+    $tokenPath = Join-Path $secretRoot 'broker-run-token.txt'
+    $manifestPath = Join-Path $runDir 'broker-token.json'
+    $heartbeatPath = Join-Path $runDir 'heartbeat.json'
+    $tokenReference = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $tokenPath
+    $manifestReference = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $manifestPath
+    $heartbeatReference = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $heartbeatPath
+    $existing = Read-WorkersBrokerTokenManifest -Path $manifestPath
+    $existingToken = Get-SendConfigValue -InputObject $existing -Name 'run_token' -Default $null
+    $existingExpiresAtText = [string](Get-SendConfigValue -InputObject $existingToken -Name 'expires_at' -Default '')
+    $existingExpiresAt = ConvertTo-WorkersUtcDateTime -Value $existingExpiresAtText
+    $existingIsValid = ($null -ne $existingExpiresAt -and $existingExpiresAt -gt $nowUtc)
+    $existingTokenIsUsable = $false
+    $existingTokenFailureReason = ''
+    if ($existingIsValid) {
+        $existingValueRef = [string](Get-SendConfigValue -InputObject $existingToken -Name 'value_ref' -Default '')
+        $existingFingerprint = [string](Get-SendConfigValue -InputObject $existingToken -Name 'fingerprint' -Default '')
+        if ([string]::IsNullOrWhiteSpace($existingValueRef)) {
+            $existingTokenFailureReason = 'token_value_ref_missing'
+        } elseif (-not [string]::Equals($existingValueRef, $tokenReference, [System.StringComparison]::Ordinal)) {
+            $existingTokenFailureReason = 'token_value_ref_mismatch'
+        } elseif ([string]::IsNullOrWhiteSpace($existingFingerprint)) {
+            $existingTokenFailureReason = 'token_fingerprint_missing'
+        } elseif (-not (Test-Path -LiteralPath $tokenPath -PathType Leaf)) {
+            $existingTokenFailureReason = 'token_secret_missing'
+        } else {
+            try {
+                $existingTokenValue = (Get-Content -LiteralPath $tokenPath -Raw -Encoding UTF8).Trim()
+                if ([string]::IsNullOrWhiteSpace($existingTokenValue)) {
+                    $existingTokenFailureReason = 'token_secret_empty'
+                } elseif (-not [string]::Equals((Get-WorkersBrokerRunTokenFingerprint -Value $existingTokenValue), $existingFingerprint, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    $existingTokenFailureReason = 'token_fingerprint_mismatch'
+                } else {
+                    $existingTokenIsUsable = $true
+                }
+            } catch {
+                $existingTokenFailureReason = 'token_secret_unreadable'
+            }
+        }
+    }
+    $existingRunToken = $null
+    if ($null -ne $existingToken) {
+        $existingRunToken = [ordered]@{
+            kind              = [string](Get-SendConfigValue -InputObject $existingToken -Name 'kind' -Default 'short_lived_broker_run_token')
+            fingerprint       = [string](Get-SendConfigValue -InputObject $existingToken -Name 'fingerprint' -Default '')
+            issued_at         = [string](Get-SendConfigValue -InputObject $existingToken -Name 'issued_at' -Default '')
+            expires_at        = [string](Get-SendConfigValue -InputObject $existingToken -Name 'expires_at' -Default '')
+            ttl_seconds       = [int](Get-SendConfigValue -InputObject $existingToken -Name 'ttl_seconds' -Default $ttlSeconds)
+            value_ref         = [string](Get-SendConfigValue -InputObject $existingToken -Name 'value_ref' -Default $tokenReference)
+            value_output      = $false
+            value_in_manifest = $false
+        }
+    }
+    $tokenAction = [string]$Options.TokenAction
+    $refreshAllowed = [bool]$Options.Refresh
+
+    $status = ''
+    $health = ''
+    $reason = ''
+    $credentialRefresh = [ordered]@{
+        attempted      = $false
+        refreshed      = $false
+        mode           = 'rotate_run_token'
+        failure_reason = ''
+    }
+    $runToken = $null
+    $offlineHeartbeat = $null
+    $lifecycleHeartbeat = $null
+    $shouldWriteToken = $false
+
+    if ($tokenAction -eq 'issue') {
+        $status = 'issued'
+        $health = 'valid'
+        $reason = 'token_issued'
+        $shouldWriteToken = $true
+    } elseif ($null -eq $existing) {
+        $status = 'offline'
+        $health = 'offline'
+        $reason = 'broker_token_missing'
+        $credentialRefresh.failure_reason = 'missing_token_manifest'
+    } elseif ($null -eq $existingToken) {
+        $status = 'offline'
+        $health = 'offline'
+        $reason = 'broker_token_missing'
+        $credentialRefresh.failure_reason = 'missing_run_token'
+    } elseif ($existingIsValid -and $existingTokenIsUsable) {
+        $status = 'valid'
+        $health = 'valid'
+        $reason = 'token_valid'
+        $runToken = $existingRunToken
+    } elseif ($existingIsValid -and -not $refreshAllowed) {
+        $status = 'offline'
+        $health = 'offline'
+        $reason = 'token_secret_invalid_refresh_disabled'
+        $credentialRefresh.failure_reason = $existingTokenFailureReason
+        $runToken = $existingRunToken
+    } elseif ($refreshAllowed) {
+        $status = 'refreshed'
+        $health = 'valid'
+        $reason = if ($existingIsValid) { 'token_secret_invalid_refreshed' } else { 'token_expired_refreshed' }
+        $credentialRefresh.attempted = $true
+        $credentialRefresh.refreshed = $true
+        $shouldWriteToken = $true
+    } else {
+        $status = 'offline'
+        $health = 'offline'
+        $reason = 'token_expired_refresh_disabled'
+        $credentialRefresh.failure_reason = 'refresh_disabled'
+        $runToken = $existingRunToken
+    }
+
+    if ($shouldWriteToken) {
+        try {
+            if (-not (Test-Path -LiteralPath $secretRoot -PathType Container)) {
+                New-Item -ItemType Directory -Path $secretRoot -Force | Out-Null
+            }
+            $tokenValue = New-WorkersBrokerRunTokenValue
+            Write-ClmSafeTextFile -Path $tokenPath -Content ($tokenValue + [Environment]::NewLine)
+            $expiresAt = $nowUtc.AddSeconds($ttlSeconds)
+            $runToken = [ordered]@{
+                kind              = 'short_lived_broker_run_token'
+                fingerprint       = Get-WorkersBrokerRunTokenFingerprint -Value $tokenValue
+                issued_at         = $nowUtc.ToString('o')
+                expires_at        = $expiresAt.ToString('o')
+                ttl_seconds       = $ttlSeconds
+                value_ref         = $tokenReference
+                value_output      = $false
+                value_in_manifest = $false
+            }
+        } catch {
+            $status = 'offline'
+            $health = 'offline'
+            $reason = 'token_refresh_failed'
+            $credentialRefresh.attempted = $true
+            $credentialRefresh.refreshed = $false
+            $credentialRefresh.failure_reason = ConvertTo-WorkersSafeLogText -Text $_.Exception.Message
+            $runToken = $existingRunToken
+        }
+    }
+
+    if ($health -eq 'offline') {
+        $offlineHeartbeat = Write-WorkersBrokerTokenHeartbeat -Slot $slot -ProjectDir $Options.ProjectDir -RunDir $runDir -RunId $runId -NowUtc $nowUtc -State 'offline' -Message $reason
+        $lifecycleHeartbeat = $offlineHeartbeat
+    } elseif ($status -in @('issued', 'refreshed')) {
+        $lifecycleHeartbeat = Write-WorkersBrokerTokenHeartbeat -Slot $slot -ProjectDir $Options.ProjectDir -RunDir $runDir -RunId $runId -NowUtc $nowUtc -State 'resumable' -Message $reason
+    }
+
+    $payload = [ordered]@{
+        version       = 1
+        project_ref   = '.'
+        generated_at  = $nowUtc.ToString('o')
+        command       = 'workers.broker.token'
+        action        = $tokenAction
+        status        = $status
+        health        = $health
+        reason        = $reason
+        slot          = [string]$slot.Row.Slot
+        slot_id       = [string]$slot.Row.SlotId
+        role          = [string]$slot.SlotConfig.WorkerRole
+        run_id        = $runId
+        execution_profile = 'isolated-enterprise'
+        node          = [ordered]@{
+            node_id = $nodeId
+        }
+        run_token     = $runToken
+        credential_refresh = $credentialRefresh
+        value_policy  = [ordered]@{
+            output_contains_token_value   = $false
+            manifest_contains_token_value = $false
+            token_value_stored_as_secret_file = $true
+        }
+        failure_policy = [ordered]@{
+            expired_token_without_refresh_becomes_offline = $true
+            missing_token_becomes_offline = $true
+        }
+        locations     = [ordered]@{
+            token     = New-WinsmuxLocationIdentity -Kind 'local_file' -DisplayName 'broker-run-token.txt' -Backend 'local-windows' -AccessMethod 'secret_value_ref' -Reference $tokenReference -Provenance 'workers.broker.token'
+            manifest  = New-WinsmuxLocationIdentity -Kind 'local_file' -DisplayName 'broker-token.json' -Backend 'local-windows' -AccessMethod 'artifact_ref' -Reference $manifestReference -Provenance 'workers.broker.token.manifest'
+            heartbeat = New-WinsmuxLocationIdentity -Kind 'local_file' -DisplayName 'heartbeat.json' -Backend 'local-windows' -AccessMethod 'heartbeat_artifact' -Reference $heartbeatReference -Provenance 'workers.broker.token.heartbeat'
+        }
+        offline_heartbeat = $offlineHeartbeat
+        exit_code     = 0
+    }
+
+    Write-WorkersJsonArtifact -Path $manifestPath -Data $payload | Out-Null
+    if ($null -ne $slot.Entry) {
+        $extraProperties = [ordered]@{
+            last_broker_run_id           = $runId
+            last_broker_profile          = 'isolated-enterprise'
+            last_broker_node_id          = $nodeId
+            last_broker_status           = [string](Get-SendConfigValue -InputObject $baseline -Name 'status' -Default 'broker_defined')
+            last_broker_manifest         = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $baselinePath
+            last_broker_token_status     = $status
+            last_broker_token_health     = $health
+            last_broker_token_expires_at = [string](Get-SendConfigValue -InputObject $runToken -Name 'expires_at' -Default '')
+            last_broker_token_manifest   = $manifestReference
+        }
+        if ($null -ne $lifecycleHeartbeat) {
+            $extraProperties['last_heartbeat_run_id'] = $runId
+            $extraProperties['last_heartbeat_profile'] = 'isolated-enterprise'
+            $extraProperties['last_heartbeat_at'] = $nowUtc.ToString('o')
+        }
+        $manifestStatus = if ($health -eq 'offline') { 'offline' } elseif ($status -in @('issued', 'refreshed')) { 'ready' } else { '' }
+        Set-WorkersManifestLifecycleCommand -Entry $slot.Entry -CommandName 'workers.broker.token' -Status $manifestStatus -ExtraProperties $extraProperties
+    }
+
+    Write-WorkersOperationOutput -Payload $payload -Json:([bool]$Options.Json) -Text "$status broker token for $runId"
+}
+
 function Invoke-WorkersBrokerBaseline {
     param([Parameter(Mandatory = $true)]$Options)
 
@@ -8327,10 +8709,11 @@ function Invoke-WorkersBrokerBaseline {
 }
 
 function Invoke-WorkersBroker {
-    $usage = "usage: winsmux workers broker baseline <slot> --run-id <id> --endpoint <url> [--node-id <id>] [--profile isolated-enterprise] [--json] [--project-dir <path>]"
+    $usage = "usage: winsmux workers broker baseline <slot> --run-id <id> --endpoint <url> [--node-id <id>] [--profile isolated-enterprise] [--json] [--project-dir <path>]; winsmux workers broker token <issue|check> <slot> --run-id <id> [--ttl-seconds <n>] [--no-refresh] [--json] [--project-dir <path>]"
     $options = Read-WorkersBrokerOptions -Usage $usage
     switch ([string]$options.Action) {
         'baseline' { Invoke-WorkersBrokerBaseline -Options $options }
+        'token' { Invoke-WorkersBrokerToken -Options $options }
         default { Stop-WithError $usage }
     }
 }
@@ -15858,6 +16241,7 @@ Commands:
   workers secrets project <slot> --run-id <id> [--env <name=key>] [--file <path=key>] [--variable <name=key>] [--json] [--project-dir <path>]  Project typed run-scoped secrets without printing secret values
   workers sandbox baseline <slot> --run-id <id> [--json] [--project-dir <path>]  Define the Windows restricted-token and ACL baseline for an isolated run
   workers broker baseline <slot> --run-id <id> --endpoint <url> [--node-id <id>] [--json] [--project-dir <path>]  Define the single external broker node contract for a prepared isolated run
+  workers broker token <issue|check> <slot> --run-id <id> [--ttl-seconds <n>] [--no-refresh] [--json] [--project-dir <path>]  Issue or check short-lived broker run tokens without printing token values
   board [--json]            Report pane/task/review/git session board
 desktop-summary [--json] [--stream]  Report the aggregated desktop read-model snapshot or follow refresh signals
 inbox [--json] [--stream] Report actionable approvals/review/blockers
