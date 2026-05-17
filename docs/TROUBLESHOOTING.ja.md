@@ -91,6 +91,19 @@ sandbox = "unelevated"
 - リポジトリ単位の `git add`、`git commit`、`git push` は通常のシェルから実行する。
 - ペイン内でのファイル書き込みは `apply_patch` または `cmd /c` を使う。
 
+### デスクトップアプリ終了後もバックグラウンドプロセスが残る
+
+既知の問題として、デスクトップ終了時の子プロセス回収は [issue #967](https://github.com/Sora-bluesky/winsmux/issues/967) で追跡しています。完了するまでは、デスクトップアプリを閉じた後に、ワーカーの shell、アダプタープロセス、デスクトップ側の子プロセスが残る場合があります。
+
+停止する前に、winsmux が起動したプロセスだけを確認してください。
+
+```powershell
+Get-Process node,cargo,winsmux-app -ErrorAction SilentlyContinue |
+  Where-Object { $_.Path -like "*winsmux*" -or $_.Path -like "*\\target\\*" }
+```
+
+現在の winsmux デスクトップセッションが起動したと判断できるプロセスだけを停止してください。他のプロジェクトの `node` や `cargo` は停止しないでください。
+
 ## 資格情報の問題
 
 ### vault のキーが見つからない

@@ -3,7 +3,7 @@
 
 | Command | Alias | Args Template | Min | Max | Source File |
 |---|---|---|---|---|---|
-| `attach-session` | `attach` | `"ErdD:f:c:t:x:"` | 0 | 0 | cmd-attach-session.c *(not fetched, from Perplexity)* |
+| `attach-session` | `attach` | `"ErdD:f:c:t:x:"` | 0 | 0 | cmd-attach-session.c |
 | `bind-key` | `bind` | `"nrN:T:"` | 1 | -1 | cmd-bind-key.c |
 | `break-pane` | `breakp` | `"abdPF:n:s:t:"` | 0 | 0 | cmd-break-pane.c |
 | `capture-pane` | `capturep` | `"ab:CeE:JMNpPqS:Tt:"` | 0 | 0 | cmd-capture-pane.c |
@@ -88,7 +88,7 @@
 ### Session Commands
 
 **new-session** (`new`) — `"Ac:dDe:EF:f:n:Ps:t:x:Xy:"`
-- Boolean: `-A` (attach if exists), `-d` (detach), `-D` (detach other), `-E` (no environ update), `-P` (print info), `-X` (no default-command exec), `-x` → **wait, x: takes value**
+- Boolean: `-A` (attach if exists), `-d` (detach), `-D` (detach other), `-E` (no environ update), `-P` (print info), `-X` (no default-command exec)
 - Value: `-c` (start-dir), `-e` (environment), `-F` (format), `-f` (flags), `-n` (window-name), `-s` (session-name), `-t` (group target), `-x` (width), `-y` (height)
 
 **has-session** (`has`) — `"t:"`
@@ -106,7 +106,7 @@
 - Value: `-F` (format), `-f` (filter), `-O` (sort order)
 
 **switch-client** (`switchc`) — `"c:EFlnO:pt:rT:Z"`
-- Boolean: `-E` (no environ), `-F` → **wait, F: no-colon = boolean here**, `-l` (last), `-n` (next), `-p` (previous), `-r` (toggle readonly), `-Z` (zoom)
+- Boolean: `-E` (no environ), `-F` (format flag), `-l` (last), `-n` (next), `-p` (previous), `-r` (toggle readonly), `-Z` (zoom)
 - Value: `-c` (client), `-O` (sort order), `-t` (target), `-T` (key-table)
 
 **detach-client** (`detach`) — `"aE:s:t:P"`
@@ -378,7 +378,7 @@
 - Value: `-F` (format), `-f` (filter), `-K` (key-format), `-O` (sort order), `-t` (target-pane)
 
 **run-shell** (`run`) — `"bd:Ct:Es:c:"`
-- Boolean: `-b` (background), `-C` (command), `-E` → **wait, no-colon = boolean**
+- Boolean: `-b` (background), `-C` (command), `-E` (expand command)
 - Value: `-d` (delay), `-t` (target-pane), `-s` (shell), `-c` (start-dir)
 
 **if-shell** (`if`) — `"bFt:"`  [2-3 positional args: shell-cmd, if-true-cmd, [if-false-cmd]]

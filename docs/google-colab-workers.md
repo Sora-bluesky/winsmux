@@ -2,7 +2,8 @@
 
 This page explains how to prepare a Colab-backed winsmux worker.
 
-As of the `v0.32.x` Colab lane, winsmux can route one-shot worker actions through a
+Introduced in the `v0.32.x` Colab lane and still supported in current `v0.36.x`
+releases, winsmux can route one-shot worker actions through a
 `google-colab-cli` compatible adapter:
 
 - `winsmux workers exec`
@@ -283,10 +284,11 @@ Invoke-Pester -Path tests/ColabAcceptance.Tests.ps1 -PassThru
 Before running a live task, check quota and stop policy outside winsmux. Use
 `winsmux workers stop <slot>` to stop local worker panes, and use the adapter's
 own stop command when the remote notebook/runtime also needs to be stopped.
+Desktop shutdown child-process cleanup is still tracked in [issue #967](https://github.com/Sora-bluesky/winsmux/issues/967), so verify adapter and runtime shutdown separately when quota leakage matters.
 
 ## Limits
 
-The `v0.32.x` Colab lane does not automate an interactive Colab REPL or console loop. It runs
+The Colab worker lane does not automate an interactive Colab REPL or console loop. It runs
 one file-backed task at a time through the configured adapter.
 
 Use Google Drive, Cloud Storage, or another explicit storage path for large

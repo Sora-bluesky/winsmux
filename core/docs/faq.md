@@ -16,7 +16,7 @@ A: Yes! winsmux reads `~/.tmux.conf` automatically. Most tmux config options, ke
 A: Yes. winsmux supports 14 style options with 24-bit true color, 256 indexed colors, and text attributes (bold, italic, dim, etc.). Most tmux theme configs are compatible.
 
 **Q: Can I use tmux commands with winsmux?**
-A: Yes! winsmux includes a `tmux` alias. Commands like `tmux new-session`, `tmux attach`, `tmux ls`, `tmux split-window` all work. 76 commands in total.
+A: Yes. winsmux accepts tmux-style command syntax and arguments, with 76 commands in total. The legacy executable aliases `tmux`, `psmux`, and `pmux` are no longer shipped, so invoke commands as `winsmux new-session`, `winsmux attach`, `winsmux ls`, or `winsmux split-window`. See [compatibility.md](compatibility.md) for the alias sunset policy.
 
 **Q: How fast is winsmux?**
 A: Session creation takes < 100ms. New windows/panes add < 80ms overhead. The bottleneck is your shell's startup time, not winsmux. Compiled with opt-level 3 and full LTO.

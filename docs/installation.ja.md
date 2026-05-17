@@ -47,7 +47,7 @@ winsmux doctor
 
 Windows が発行元または SmartScreen の警告を出した場合は、同じ GitHub Release の `SHA256SUMS-desktop` と照合してから実行してください。各リリースの署名方針はリリースノートに記載します。
 
-`v1.0.0` のデスクトップ配布方針は次の通りです。
+現在の `v0.36.x` リリースで有効で、`v1.0.0` へ引き継ぐデスクトップ配布方針は次の通りです。
 
 - 主な配布物: `winsmux_<version>_x64-setup.exe`
 - 配布ツール向けの配布物: `winsmux_<version>_x64_en-US.msi`

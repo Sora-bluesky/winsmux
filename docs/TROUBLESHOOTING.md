@@ -93,6 +93,19 @@ Fix:
 - run repository-level `git add`, `git commit`, and `git push` from a regular shell
 - use `apply_patch` or `cmd /c` for pane-side file writes
 
+### Background processes remain after closing the desktop app
+
+Known issue: desktop shutdown child-process cleanup is still tracked in [issue #967](https://github.com/Sora-bluesky/winsmux/issues/967). Until that is complete, closing the desktop app may leave a worker shell, adapter process, or desktop child process running.
+
+Check for winsmux-owned processes before killing anything:
+
+```powershell
+Get-Process node,cargo,winsmux-app -ErrorAction SilentlyContinue |
+  Where-Object { $_.Path -like "*winsmux*" -or $_.Path -like "*\\target\\*" }
+```
+
+Stop only the processes you can identify as started by the current winsmux desktop session. Do not stop unrelated `node` or `cargo` processes from other projects.
+
 ## Credential problems
 
 ### Vault key not found

@@ -14,6 +14,7 @@ Contributor-facing contract inventory:
 
 - [Architecture](./ARCHITECTURE.md)
 - [Detailed Design](./DETAILED_DESIGN.md)
+- [Local-First UI Contract](./local-first-ui-contract.md)
 - [Threat Model](./THREAT_MODEL.md)
 - [Threat Model Audit](./THREAT_MODEL_AUDIT.md)
 - [PowerShell Adapter Inventory](./powershell-adapter-inventory.md)

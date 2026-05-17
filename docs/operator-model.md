@@ -83,6 +83,7 @@ The public contract is:
 - each run may carry a structured handoff package for the next pane or follow-up run
 - checkpoint packages record changed-file summaries, review state, verification state, and public worktree references
 - end-of-run snapshots record what can be safely resumed without storing raw terminal transcripts, private local paths, or private prompt bodies
+- Agent Vault indexes safe resume metadata for Claude Code, Codex, and OpenCode sessions. The public contract is provider, workspace identity, session title, last-seen state, and a resume handle; it does not include raw transcripts, prompt bodies, secrets, or private local paths.
 - context budgets describe why a pane received a bounded context packet instead of the full conversation
 - architecture contracts record drift score, baseline status, review requirement, and whether a gate should stop
 - managed follow-up contracts describe the next run candidate after a compare or promote decision
@@ -183,6 +184,11 @@ broker, and policy state. The UI distinguishes local Windows runs, isolated
 enterprise runs, and offline runs, then shows the recovery action from the same
 status row. Credential refresh waits are represented as recovery actions
 without keeping a separate desktop-only state model.
+The desktop View menu may hide the worker status strip, but this changes only
+the local layout and does not change the underlying status JSON contract.
+As of `v0.36.8`, desktop shutdown child-process cleanup is still a known
+limitation tracked outside this contract; operators should verify cleanup when
+complete process teardown matters.
 
 Review is handled by any **review-capable slot**, not by a permanently dedicated reviewer pane.
 Meta-planning follows the same rule: the current Claude/Codex role pair is an
@@ -259,9 +265,11 @@ The current model is:
 The Tauri desktop direction follows the same contract:
 
 - **workspace sidebar** for sessions, explorer, open editors, and source control summary
+- **Agent Vault sidebar** for safe session search, filtering, resume metadata, and drag restore into worker panes
 - **conversation shell** as the primary operator surface
 - **details panel** for the selected run, slot, branch, and review state
 - **evidence sidebar** for source-linked verification, review, security, and event records
+- **Feed and notifications** linked to worker state, approval waits, blocked work, and offline state
 - **secondary editor surface** for source-level drill-down
 - **terminal drawer** for raw PTY and diagnostics only
 - **decision view** for verification, review, security, architecture, and operator judgement

@@ -73,6 +73,10 @@ winsmux does not:
 - relay or share tokens across panes or users
 - treat consumer OAuth as shared credentials for multi-pane operation
 
+## Agent Vault and authentication
+
+Agent Vault stores and displays safe session metadata for discovery and resume. It is not an OAuth broker, token proxy, or shared credential store. A resume entry may identify the provider and workspace needed to restart a CLI session, but each CLI still uses its own official local sign-in or API key setup.
+
 ## Preflight handling
 
 Preflight handling looks at both the CLI name and the authentication mode.
@@ -112,6 +116,7 @@ This document and `README.md` use these meanings consistently.
 - dispatch -> execution routing
 - operator docs -> operator-facing docs
 - credential store -> authentication storage
+- pane -> managed terminal surface
 - callback URL / localhost redirect -> the URL used to finish authentication
 - local interactive only -> this PC only, interactive use
 - fail-closed -> stop when the required condition is not satisfied

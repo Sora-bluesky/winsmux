@@ -47,7 +47,7 @@ Use the setup executable for a normal single-user install. Use the MSI when your
 
 If Windows shows a publisher or SmartScreen warning, verify the downloaded file against `SHA256SUMS-desktop` from the same release before running it. Release notes state the signing posture for each release.
 
-The v1.0.0 desktop packaging decision is:
+The desktop packaging policy, effective for current `v0.36.x` releases and carried forward to `v1.0.0`, is:
 
 - primary artifact: `winsmux_<version>_x64-setup.exe`
 - deployment artifact: `winsmux_<version>_x64_en-US.msi`

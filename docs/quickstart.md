@@ -108,7 +108,13 @@ winsmux send worker-1 "Inspect the current branch and report the next safe step.
 
 The final number for `winsmux read` is the number of tail lines to capture.
 
-## 6. Compare work
+## 6. Resume a recorded session
+
+In the desktop app, open Agent Vault from the right sidebar, search or filter the recorded sessions, and drag the session card into an available worker pane. winsmux uses the recorded provider metadata to start the matching resume command for Claude Code, Codex, or OpenCode.
+
+If the pane is already starting a restore, wait for it to finish before dropping another session onto the same pane.
+
+## 7. Compare work
 
 After two recorded runs exist, compare them before choosing a winner:
 

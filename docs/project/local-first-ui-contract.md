@@ -1,6 +1,6 @@
 # Local-First UI Contract
 
-Status: `TASK-414` design intake for `v0.24.15`
+Status: `TASK-414` design intake for `v0.24.15`; updated through `v0.36.8` for Agent Vault, resume metadata, worker state notifications, and worker status strip visibility.
 
 This contract records which local-first UI ideas winsmux will adopt from internal reference snapshots. It intentionally uses generic reference labels only. Public docs, release notes, task titles, and roadmap text must not publish the upstream repository names.
 
@@ -34,6 +34,9 @@ Initial card kinds:
 - review result
 - preview opened
 - snapshot captured
+- Agent Vault session entry
+- resume metadata snapshot
+- worker notification
 
 Cards must use existing projections or safe summaries. They must not show raw thinking text, private prompt bodies, private memory bodies, private local paths, secrets, or unfiltered tool output.
 
@@ -83,8 +86,16 @@ winsmux will not adopt these patterns:
 
 ## Follow-Up Split
 
-No more than three follow-up tasks should be created from this intake:
+The original intake allowed at most three follow-up tasks:
 
 1. Live work surface tabs for `Preview`, `Code`, and `Files`.
 2. Progress envelope cards for verification, review wait, and snapshot work.
 3. Optional local voice composer prototype behind a feature flag.
+
+`v0.36.8` completes the Agent Vault and session-restore branch of this contract:
+
+- safe session entries are searchable and filterable in Agent Vault
+- resume metadata remains a safe envelope, not a transcript or prompt body
+- session cards can be dragged into worker panes for restore
+- Feed and notifications can point back to worker state
+- the worker status strip can be hidden from the View menu without changing the status contract

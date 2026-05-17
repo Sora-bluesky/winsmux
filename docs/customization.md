@@ -194,6 +194,8 @@ desktop pill bar reduces those fields to `exec:local`, `exec:isolated`, or
 projection, policy health, heartbeat, and recovery action. Credential refresh
 waits are shown as a recovery action without exposing secret values.
 
+The desktop View menu can hide or show the worker status strip. Hiding the strip changes only the local UI layout; the underlying status contract remains `winsmux workers status --json`. Feed and notifications are linked to worker state, including blocked, offline, and approval-waiting conditions.
+
 ## Launcher presets
 
 Inspect the presets before launching a compare-oriented run:
@@ -332,6 +334,12 @@ The desktop app follows the same operator contract as the CLI. It may expose the
 Use the desktop app for:
 
 - scanning source-linked run evidence and decision gates
+- searching and filtering recorded sessions in Agent Vault
+- dragging a recorded session into a worker pane to restore it
 - comparing recorded work
 - drilling into source-level context
 - keeping terminal diagnostics available without making them the primary surface
+
+### Known limitations
+
+As of `v0.36.8`, desktop shutdown child-process cleanup is not product-complete. This is tracked in [issue #967](https://github.com/Sora-bluesky/winsmux/issues/967). When complete cleanup is required, verify after closing the app that related worker shells and desktop child processes are not still running.
