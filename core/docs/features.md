@@ -2,7 +2,7 @@
 
 ## Highlights
 
-- 🦠 **Made in Rust** : opt-level 3, full LTO, single codegen unit. Maximum performance.
+- 🦀 **Made in Rust** : opt-level 3, full LTO, single codegen unit. Maximum performance.
 - 🖱️ **Full mouse support** : click panes, drag-resize borders, scroll, click tabs, select text, right-click copy
 - 🎨 **tmux theme support** : 16 named colors + 256 indexed + 24-bit true color (`#RRGGBB`), 14 style options
 - 📋 **Reads your `.tmux.conf`** : drop-in config compatibility, zero learning curve

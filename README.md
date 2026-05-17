@@ -38,6 +38,8 @@ Most tools solve only one part of this workflow.
 - Compares recorded runs and highlights shared changed files before you choose a winner.
 - Shows review, verification, architecture, checkpoint, and follow-up evidence for recorded runs.
 - Captures structured end-of-run snapshots without storing raw terminal transcripts or private local paths.
+- Searches recorded sessions in Agent Vault and restores a selected run by dragging it into a worker pane.
+- Links Feed and notification state to worker panes, with a View menu toggle for the worker status strip.
 - Stores selected credentials with Windows DPAPI instead of writing repository `.env` files.
 - Records review and verification evidence for later audit.
 

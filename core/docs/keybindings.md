@@ -69,6 +69,8 @@ Default prefix: `Ctrl+b` (same as tmux). Change with `set -g prefix C-a`.
 | `Prefix + d` | Detach from session |
 | `Prefix + $` | Rename session |
 | `Prefix + s` | Session chooser/switcher |
+| `Prefix + (` | Switch to previous session |
+| `Prefix + )` | Switch to next session |
 
 ### Copy / Paste
 

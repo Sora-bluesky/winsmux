@@ -71,6 +71,10 @@ winsmux は次を行いません。
 - トークンの中継や共有
 - 個人向け OAuth（consumer OAuth）を複数ペイン運用の共有資格情報として扱うこと
 
+## Agent Vault と認証
+
+Agent Vault は、検索と再開に使う安全なセッションメタデータを保存して表示します。OAuth ブローカー、トークンプロキシ、共有資格情報ストアではありません。再開エントリーは、CLI セッションを再起動するために必要なプロバイダーとワークスペースを示す場合がありますが、各 CLI は自分の公式ログイン状態または API キー設定を使い続けます。
+
 ## 起動前の確認での扱い
 
 起動前の確認では、CLI 名だけでなく認証方式も見ます。
@@ -110,6 +114,7 @@ winsmux は次を行いません。
 - dispatch → 実行の振り分け
 - operator docs → オペレーター向け説明
 - credential store → 認証情報の保存場所
+- pane → ペイン
 - token → トークン
 - callback URL / localhost redirect → 認証完了を受け取る URL
 - local interactive only → 当該 PC での対話利用のみ

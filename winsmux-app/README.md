@@ -7,10 +7,16 @@ The desktop app is not a replacement for the CLI. It presents the same local-fir
 - workspace sidebar for sessions, files, and source-control summary
 - conversation shell for the operator-facing run stream
 - context side sheet for run, slot, branch, evidence, and review state
+- Agent Vault right sidebar for safe session discovery, search, filtering, and drag restore into worker panes
 - decision cockpit for verification, review, security, architecture, and operator-decision gates
+- worker status strip, Feed, and notification linkage for per-pane state, with a View menu toggle for the strip
 - terminal drawer for raw PTY output and diagnostics
 
 The app must not proxy AI service sign-in. Each pane agent keeps using its own official authentication setup.
+
+## Known limitations
+
+Desktop shutdown child-process cleanup is still tracked in issue #967. Until that work is complete, verify that worker shells and desktop child processes have stopped when a complete cleanup is required.
 
 ## Development
 

@@ -105,6 +105,7 @@ Examples:
 
 - `.winsmux/`
 - `.orchestra-prompts/`
+- Agent Vault resume metadata and generated session indexes
 - `testResults.xml`
 - temporary cache and marker files
 
@@ -112,6 +113,7 @@ Rules:
 
 - never tracked
 - safe to delete and regenerate
+- must not contain raw vault payloads, DPAPI secrets, provider tokens, raw transcripts, or private local paths
 
 ## Durable publication rules
 
@@ -120,3 +122,4 @@ Rules:
 3. A tracked file must not be ignored by `.gitignore`.
 4. Public docs must not instruct readers to use private live-ops files.
 5. Any maintainer-local path such as `C:\Users\...`, `iCloudDrive`, or `MainVault` is forbidden in tracked docs.
+6. Agent Vault resume metadata may be documented only as a safe contract envelope; generated metadata files, raw vault payloads, and host-specific secret references must not be tracked.

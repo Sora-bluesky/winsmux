@@ -55,10 +55,17 @@ These methods are intentionally not exposed through the named pipe today:
 - `desktop.dogfood.event`
 - `desktop.explorer.list`
 - `desktop.editor.read`
+- Agent Vault, session search, resume metadata, and drag-restore methods
+- Feed, notification, and View menu state methods
 
 For example, `desktop.editor.read` and `desktop.explorer.list` can read local
 project files. They remain internal to the Tauri desktop context until a
 separate external authorization model exists.
+
+The Agent Vault, session search/filtering, resume metadata, drag restore, Feed,
+notification linkage, and worker status strip visibility controls added in
+`v0.36.8` are desktop-internal UI surfaces today. They are not exposed as named
+pipe JSON-RPC methods until an explicit external authorization model exists.
 
 ## Enterprise Worker Policy
 
@@ -99,3 +106,7 @@ The desktop app remains the required control surface for worker launch approval
 and local file-reading UI actions. External clients should not assume that an
 internal Tauri method is available through the pipe unless the pipe contract
 advertises it.
+
+## Known limitations
+
+Desktop shutdown child-process cleanup is still tracked in [issue #967](https://github.com/Sora-bluesky/winsmux/issues/967). External clients should close panes explicitly before disconnecting and should not assume that closing the desktop app has already reaped every worker child process.
