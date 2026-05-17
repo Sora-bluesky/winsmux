@@ -138,6 +138,21 @@ Those verbs mean:
 - `plan`: map accepted patterns into tasks and docs
 - `apply`: update the public contract, contributor docs, planning, or private maintainer assets
 
+The repository command entrypoint is `scripts/upstream-reevaluation.ps1`.
+It records each pass under `.winsmux/evolution/`, which is a local cache and must stay out of git.
+Use `-Json` when another tool needs structured output.
+The command always records `human_merge_required: true`; it may support draft PR preparation around a record, but it is not a merge decision tool.
+
+Example:
+
+```powershell
+pwsh -NoProfile -File scripts/upstream-reevaluation.ps1 collect `
+  -SourceType official-docs `
+  -Source https://example.invalid/llms.txt `
+  -RecordId codex-2026-05-17 `
+  -Json
+```
+
 ## Public/private boundary
 
 When the reevaluation gate touches public surfaces:
@@ -152,6 +167,9 @@ Do not publish:
 - maintainer-only skill bodies
 - private planning paths
 - local operational notes
+
+`TASK-366` uses the same record shape for private maintainer intake.
+The public repository may document the contract and evidence shape, but the `opus-review-intake` skill body and detailed prompt assets must remain in a private skill root.
 
 ## Current Rust-oriented baseline
 
