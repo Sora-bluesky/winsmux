@@ -14,6 +14,8 @@ Contributor-facing contract inventory:
 
 - [Architecture](./ARCHITECTURE.md)
 - [Detailed Design](./DETAILED_DESIGN.md)
+- [Threat Model](./THREAT_MODEL.md)
+- [Threat Model Audit](./THREAT_MODEL_AUDIT.md)
 - [PowerShell Adapter Inventory](./powershell-adapter-inventory.md)
 - [Rust Schema Freeze Inventory](./rust-schema-freeze-inventory.md)
 - [Upstream Reevaluation Gate](./upstream-reevaluation-gate.md)
