@@ -24,6 +24,8 @@ docs/project/
 !docs/project/
 docs/project/*
 !docs/project/README.md
+!docs/project/ARCHITECTURE.md
+!docs/project/DETAILED_DESIGN.md
 !docs/project/legacy-compat-surface-inventory.json
 !docs/project/legacy-compat-surface-inventory.md
 !docs/project/pester-suite-inventory.json
