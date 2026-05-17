@@ -26,6 +26,8 @@ docs/project/*
 !docs/project/README.md
 !docs/project/ARCHITECTURE.md
 !docs/project/DETAILED_DESIGN.md
+!docs/project/THREAT_MODEL.md
+!docs/project/THREAT_MODEL_AUDIT.md
 !docs/project/legacy-compat-surface-inventory.json
 !docs/project/legacy-compat-surface-inventory.md
 !docs/project/pester-suite-inventory.json
@@ -73,6 +75,7 @@ tests/*
 !tests/ColabAcceptance.Tests.ps1
 !tests/NpmReleasePackage.Tests.ps1
 !tests/VersionSurface.Tests.ps1
+!tests/ThreatModelContract.Tests.ps1
 !tests/README.md
 !tests/fixtures/
 tests/fixtures/*
