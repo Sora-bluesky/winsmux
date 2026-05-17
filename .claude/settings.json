@@ -7,6 +7,10 @@
           {
             "type": "command",
             "command": "node .claude/hooks/sh-session-start.js"
+          },
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-plugin-loader.js"
           }
         ]
       }
@@ -18,6 +22,10 @@
           {
             "type": "command",
             "command": "node .claude/hooks/sh-session-end.js"
+          },
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-plugin-loader.js"
           }
         ]
       }
@@ -88,6 +96,10 @@
           {
             "type": "command",
             "command": "node .claude/hooks/sh-permission.js"
+          },
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-plugin-loader.js"
           }
         ]
       }
@@ -107,6 +119,10 @@
           {
             "type": "command",
             "command": "node .claude/hooks/sh-pane-monitor.js"
+          },
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-plugin-loader.js"
           }
         ]
       },
@@ -136,6 +152,10 @@
           {
             "type": "command",
             "command": "node .claude/hooks/sh-user-prompt.js"
+          },
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-plugin-loader.js"
           }
         ]
       }
@@ -147,6 +167,10 @@
           {
             "type": "command",
             "command": "node .claude/hooks/sh-circuit-breaker.js"
+          },
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-plugin-loader.js"
           }
         ]
       }
@@ -158,6 +182,10 @@
           {
             "type": "command",
             "command": "node .claude/hooks/sh-subagent.js"
+          },
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-plugin-loader.js"
           }
         ]
       }
@@ -169,6 +197,10 @@
           {
             "type": "command",
             "command": "node .claude/hooks/sh-worktree.js"
+          },
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-plugin-loader.js"
           }
         ]
       }
@@ -180,6 +212,10 @@
           {
             "type": "command",
             "command": "node .claude/hooks/sh-precompact.js"
+          },
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-plugin-loader.js"
           }
         ]
       }
@@ -191,6 +227,10 @@
           {
             "type": "command",
             "command": "node .claude/hooks/sh-postcompact.js"
+          },
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-plugin-loader.js"
           }
         ]
       }
@@ -202,6 +242,10 @@
           {
             "type": "command",
             "command": "node .claude/hooks/sh-elicitation.js"
+          },
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-plugin-loader.js"
           }
         ]
       }
@@ -213,6 +257,10 @@
           {
             "type": "command",
             "command": "node .claude/hooks/sh-config-guard.js"
+          },
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-plugin-loader.js"
           }
         ]
       }
@@ -224,6 +272,10 @@
           {
             "type": "command",
             "command": "node .claude/hooks/sh-instructions.js"
+          },
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-plugin-loader.js"
           }
         ]
       }
@@ -235,6 +287,10 @@
           {
             "type": "command",
             "command": "node .claude/hooks/sh-permission-learn.js"
+          },
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-plugin-loader.js"
           }
         ]
       }
@@ -250,6 +306,10 @@
           {
             "type": "command",
             "command": "node .claude/hooks/sh-task-gate.js"
+          },
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-plugin-loader.js"
           }
         ]
       }
