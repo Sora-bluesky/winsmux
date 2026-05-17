@@ -346,6 +346,7 @@ interface ShellPreferenceState extends ThemeState {
   wideSidebarOpen: boolean;
   wideContextOpen: boolean;
   workbenchOpen: boolean;
+  workerStatusStripVisible: boolean;
   workbenchLayout: WorkbenchLayoutMode;
   focusedWorkbenchPaneId: string | null;
 }
@@ -439,6 +440,47 @@ type ComposerMode = "ask" | "dispatch" | "review";
 type DogfoodInputSource = DesktopDogfoodEventInput["inputSource"];
 type DogfoodActionType = DesktopDogfoodEventInput["actionType"];
 type SidebarMode = "explorer" | "source" | "evidence" | "workspace";
+type AgentVaultProviderId = "claude" | "codex" | "opencode";
+type AgentVaultProviderFilter = "all" | AgentVaultProviderId;
+
+interface AgentVaultProviderDefinition {
+  id: AgentVaultProviderId;
+  label: string;
+  labelJa: string;
+  commandName: string;
+}
+
+interface AgentVaultSessionEntry {
+  id: string;
+  provider: AgentVaultProviderId;
+  title: string;
+  workspaceKey: string;
+  workspaceLabel: string;
+  resumeId: string;
+  paneId: string;
+  runId: string;
+  lastSeen: string;
+  state: string;
+  reviewState: string;
+  summary: string;
+  thisProject: boolean;
+  source: "summary" | "worker";
+  searchText: string;
+}
+
+interface AgentVaultFeedEntry {
+  id: string;
+  tone: SurfaceTone;
+  label: string;
+  body: string;
+  paneId?: string;
+  runId?: string;
+}
+
+interface AgentVaultPreferenceState {
+  projectOnly: boolean;
+  collapsedProviderIds: AgentVaultProviderId[];
+}
 
 interface ComposerSlashCommand {
   command: string;
@@ -468,6 +510,14 @@ let editorSurfaceMode: "code" | "preview" = "code";
 let settingsSheetOpen = false;
 let sidebarOpen = true;
 let sidebarMode: SidebarMode = "explorer";
+let agentVaultOpen = true;
+let agentVaultQuery = "";
+let agentVaultProjectOnly = true;
+let agentVaultProviderFilter: AgentVaultProviderFilter = "all";
+let agentVaultWorkspaceFilter = "all";
+let agentVaultStatusMessage = "";
+let selectedAgentVaultSessionId = "";
+const agentVaultCollapsedProviderIds = new Set<AgentVaultProviderId>();
 let workbenchLayout: WorkbenchLayoutMode = "3x2";
 let focusedWorkbenchPaneId: string | null = null;
 let composerImeActive = false;
@@ -586,6 +636,7 @@ const promotingRunIds = new Set<string>();
 const pickingWinnerRunIds = new Set<string>();
 const pendingPromotedRunRefreshIds = new Set<string>();
 const comparingRunPairKeys = new Set<string>();
+const pendingPaneStartupInputs = new Map<string, string>();
 const backendConversation: ConversationItem[] = [];
 const runtimeConversation: ConversationItem[] = [];
 const DESKTOP_SUMMARY_REFRESH_FALLBACK_INTERVAL_MS = 15_000;
@@ -607,6 +658,7 @@ const MIN_WORKBENCH_WIDTH_FOCUS = 420;
 const MIN_WORKBENCH_WIDTH_2X2 = 620;
 const MIN_WORKBENCH_WIDTH_3X2 = 960;
 const MAX_WORKBENCH_WIDTH = 1600;
+const MAX_WORKBENCH_PANES = 6;
 const SHELL_PREFERENCES_UI_VERSION = 3;
 const LEGACY_DEFAULT_EDITOR_FONT_SIZE = 14;
 const LEGACY_DEFAULT_SIDEBAR_WIDTH = 292;
@@ -661,6 +713,7 @@ let workerStatusRefreshInFlight: Promise<void> | null = null;
 let workerStatusRefreshSequence = 0;
 let preferredWideSidebarOpen = true;
 let preferredWideContextOpen = false;
+let workerStatusStripVisible = true;
 const SHELL_PREFERENCES_STORAGE_KEY = "winsmux.shell.preferences.v1";
 const RUNTIME_ROLE_PREFERENCES_STORAGE_KEY = "winsmux.runtime-role.preferences.v1";
 const COMPOSER_SESSION_STORAGE_KEY = "winsmux.composer-session.v1";
@@ -669,7 +722,14 @@ const VOICE_VOCABULARY_STORAGE_NAME = "winsmux.voice-vocabulary.v1";
 const POPOUT_SURFACE_STORAGE_KEY_PREFIX = "winsmux.popout-surface.";
 const PROJECT_SESSIONS_STORAGE_KEY = "winsmux.project-sessions.v1";
 const ACTIVE_PROJECT_STORAGE_KEY = "winsmux.active-project.v1";
+const AGENT_VAULT_PREFERENCES_STORAGE_KEY = "winsmux.agent-vault.preferences.v1";
 const MAX_PROJECT_SESSIONS = 8;
+const AGENT_VAULT_DRAG_TYPE = "application/x-winsmux-agent-vault-session";
+const agentVaultProviders: AgentVaultProviderDefinition[] = [
+  { id: "claude", label: "Claude Code", labelJa: "Claude Code", commandName: "claude" },
+  { id: "codex", label: "Codex", labelJa: "Codex", commandName: "codex" },
+  { id: "opencode", label: "OpenCode", labelJa: "OpenCode", commandName: "opencode" },
+];
 let projectSessionEntries: ProjectSessionEntry[] = readStoredProjectSessions();
 let activeProjectDir: string | null = readStoredActiveProjectDir();
 
@@ -1517,6 +1577,7 @@ function markPanePtyStoppedFromExternalEvent(paneId: string) {
     return;
   }
 
+  clearPaneStartupInput(paneId);
   const wasRunning = entry.ptyStarted || Boolean(entry.ptyStarting);
   entry.ptyStarted = false;
   entry.ptyStarting = null;
@@ -1534,7 +1595,7 @@ function createPane(paneId?: string): string {
     return id;
   }
 
-  if (!paneId && panes.size >= 6) {
+  if (!paneId && panes.size >= MAX_WORKBENCH_PANES) {
     const paneIds = Array.from(panes.keys());
     return paneIds[paneIds.length - 1] ?? id;
   }
@@ -1542,6 +1603,7 @@ function createPane(paneId?: string): string {
   const paneDiv = document.createElement("div");
   paneDiv.className = "pane";
   paneDiv.id = `pane-${id}`;
+  registerAgentVaultPaneDropTarget(paneDiv, id);
 
   const header = document.createElement("div");
   header.className = "pane-header";
@@ -1626,7 +1688,28 @@ function shouldAutoStartPane(_paneId: string) {
 }
 
 function getPaneStartupInput(_paneId: string) {
+  const startupInput = pendingPaneStartupInputs.get(_paneId);
+  if (startupInput) {
+    clearPaneStartupInput(_paneId);
+    return startupInput;
+  }
   return undefined;
+}
+
+function clearPaneStartupInput(paneId: string) {
+  pendingPaneStartupInputs.delete(paneId);
+}
+
+function hasPaneStartupInput(paneId: string) {
+  return pendingPaneStartupInputs.has(paneId);
+}
+
+function queuePaneStartupInput(paneId: string, startupInput: string) {
+  if (hasPaneStartupInput(paneId)) {
+    return false;
+  }
+  pendingPaneStartupInputs.set(paneId, startupInput);
+  return true;
 }
 
 function createOperatorSessionId() {
@@ -1737,6 +1820,7 @@ function closePane(id: string) {
     return;
   }
 
+  clearPaneStartupInput(id);
   entry.terminal.dispose();
 
   entry.container.remove();
@@ -2106,6 +2190,13 @@ function renderWorkerStatusSurface() {
     return;
   }
 
+  bar.hidden = !workerStatusStripVisible;
+  bar.setAttribute("aria-hidden", workerStatusStripVisible ? "false" : "true");
+  if (!workerStatusStripVisible) {
+    bar.replaceChildren();
+    return;
+  }
+
   const focusedPaneId = getFocusedWorkbenchPaneId();
   const rows = getWorkerStatusRowsForSurface();
   const focusedRow = rows.find((row) => getWorkerStatusTarget(row) === focusedPaneId) ?? rows[0] ?? null;
@@ -2184,6 +2275,15 @@ function renderWorkerStatusSurface() {
   bar.appendChild(detailStrip);
 }
 
+function setWorkerStatusStripVisible(visible: boolean, options?: { persist?: boolean }) {
+  workerStatusStripVisible = visible;
+  renderWorkerStatusSurface();
+  if (options?.persist ?? true) {
+    void persistThemeState();
+  }
+  scheduleWorkbenchPaneFit();
+}
+
 async function refreshWorkerStatusSurface() {
   if (workerStatusRefreshInFlight) {
     return workerStatusRefreshInFlight;
@@ -2226,9 +2326,753 @@ async function refreshWorkerStatusSurface() {
       if (requestSequence === workerStatusRefreshSequence) {
         workerStatusRefreshInFlight = null;
         renderWorkerStatusSurface();
+        renderAgentVaultPanel();
       }
     });
   return workerStatusRefreshInFlight;
+}
+
+function getAgentVaultProviderDefinition(provider: AgentVaultProviderId) {
+  return agentVaultProviders.find((item) => item.id === provider) ?? agentVaultProviders[0];
+}
+
+function getAgentVaultProviderLabel(provider: AgentVaultProviderId) {
+  const definition = getAgentVaultProviderDefinition(provider);
+  return themeState.language === "ja" ? definition.labelJa : definition.label;
+}
+
+function readAgentVaultPreferences(): AgentVaultPreferenceState | null {
+  try {
+    const rawValue = window.localStorage.getItem(AGENT_VAULT_PREFERENCES_STORAGE_KEY);
+    if (!rawValue) {
+      return null;
+    }
+    const parsed = JSON.parse(rawValue) as Partial<AgentVaultPreferenceState>;
+    const validProviderIds = new Set(agentVaultProviders.map((provider) => provider.id));
+    return {
+      projectOnly: typeof parsed.projectOnly === "boolean" ? parsed.projectOnly : true,
+      collapsedProviderIds: Array.isArray(parsed.collapsedProviderIds)
+        ? parsed.collapsedProviderIds.filter((providerId): providerId is AgentVaultProviderId =>
+          typeof providerId === "string" && validProviderIds.has(providerId as AgentVaultProviderId),
+        )
+        : [],
+    };
+  } catch {
+    return null;
+  }
+}
+
+function applyAgentVaultPreferences() {
+  const preferences = readAgentVaultPreferences();
+  if (!preferences) {
+    return;
+  }
+  agentVaultProjectOnly = preferences.projectOnly;
+  agentVaultCollapsedProviderIds.clear();
+  for (const providerId of preferences.collapsedProviderIds) {
+    agentVaultCollapsedProviderIds.add(providerId);
+  }
+}
+
+function persistAgentVaultPreferences() {
+  try {
+    window.localStorage.setItem(AGENT_VAULT_PREFERENCES_STORAGE_KEY, JSON.stringify({
+      projectOnly: agentVaultProjectOnly,
+      collapsedProviderIds: Array.from(agentVaultCollapsedProviderIds),
+    } satisfies AgentVaultPreferenceState));
+    return true;
+  } catch (error) {
+    console.warn("Failed to persist Agent Vault preferences", error);
+    return false;
+  }
+}
+
+function normalizeAgentVaultText(value: string | null | undefined, fallback = "") {
+  const normalized = (value ?? "")
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return normalized || fallback;
+}
+
+function sanitizeAgentVaultDisplayText(value: string | null | undefined, fallback = "") {
+  const normalized = normalizeAgentVaultText(value, fallback);
+  return normalized
+    .replace(/[A-Za-z]:[\\/][^\s"'<>]+/g, "[local path]")
+    .replace(/\\\\[^\s"'<>]+/g, "[network path]");
+}
+
+function truncateAgentVaultText(value: string, limit = 128) {
+  const normalized = sanitizeAgentVaultDisplayText(value);
+  return normalized.length > limit ? `${normalized.slice(0, limit - 1)}…` : normalized;
+}
+
+function getAgentVaultWorkspaceLabel(path: string | null | undefined, snapshotProjectDir?: string | null) {
+  const normalized = normalizeProjectDirInput(path) || "";
+  const active = normalizeProjectDirInput(getActiveProjectDirPayload()) || normalizeProjectDirInput(snapshotProjectDir) || "";
+  if (!normalized) {
+    return getLanguageText("unknown workspace", "不明なワークスペース");
+  }
+  if (active && normalized.toLowerCase() === active.toLowerCase()) {
+    return getLanguageText("This project", "このプロジェクト");
+  }
+  const parts = normalized.split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] ?? getLanguageText("workspace", "ワークスペース");
+}
+
+function getAgentVaultWorkspaceKey(path: string | null | undefined, snapshotProjectDir?: string | null) {
+  const normalized = normalizeProjectDirInput(path) || "";
+  const active = normalizeProjectDirInput(getActiveProjectDirPayload()) || normalizeProjectDirInput(snapshotProjectDir) || "";
+  if (!normalized) {
+    return "unknown";
+  }
+  if (active && normalized.toLowerCase() === active.toLowerCase()) {
+    return "__this_project__";
+  }
+  return `workspace:${normalized.toLowerCase()}`;
+}
+
+function isAgentVaultThisProject(path: string | null | undefined, snapshotProjectDir?: string | null) {
+  const normalized = normalizeProjectDirInput(path) || "";
+  const active = normalizeProjectDirInput(getActiveProjectDirPayload()) || normalizeProjectDirInput(snapshotProjectDir) || "";
+  return Boolean(normalized && active && normalized.toLowerCase() === active.toLowerCase());
+}
+
+function inferAgentVaultProvider(...values: string[]): AgentVaultProviderId {
+  const text = values.join(" ").toLowerCase();
+  if (text.includes("opencode") || text.includes("open code")) {
+    return "opencode";
+  }
+  if (text.includes("codex")) {
+    return "codex";
+  }
+  return "claude";
+}
+
+function getAgentVaultReviewTone(reviewState: string, state: string): SurfaceTone {
+  const review = reviewState.toUpperCase();
+  const normalizedState = state.toLowerCase();
+  if (review === "FAIL" || review === "FAILED" || normalizedState.includes("blocked")) {
+    return "danger";
+  }
+  if (review === "PENDING" || normalizedState.includes("waiting")) {
+    return "warning";
+  }
+  if (review === "PASS" || normalizedState.includes("ready")) {
+    return "success";
+  }
+  return "info";
+}
+
+function getAgentVaultLastSeen(entryTime: string | null | undefined, fallbackTime?: string | null) {
+  const timestamp = normalizeAgentVaultText(entryTime || fallbackTime || "");
+  if (!timestamp) {
+    return getLanguageText("not seen yet", "未確認");
+  }
+  const parsed = Date.parse(timestamp);
+  if (Number.isNaN(parsed)) {
+    return timestamp;
+  }
+  return new Date(parsed).toLocaleString([], {
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function buildAgentVaultSearchText(entry: Omit<AgentVaultSessionEntry, "searchText">) {
+  return [
+    entry.id,
+    entry.provider,
+    getAgentVaultProviderLabel(entry.provider),
+    entry.title,
+    entry.workspaceLabel,
+    entry.resumeId,
+    entry.paneId,
+    entry.runId,
+    entry.state,
+    entry.reviewState,
+    entry.summary,
+  ].join(" ").toLowerCase();
+}
+
+function buildAgentVaultEntries() {
+  const snapshot = desktopSummarySnapshot;
+  const entries = new Map<string, AgentVaultSessionEntry>();
+  const digestByRun = new Map((snapshot?.digest.items ?? []).map((item) => [item.run_id, item]));
+  const paneById = new Map((snapshot?.board.panes ?? []).map((pane) => [pane.pane_id, pane]));
+
+  for (const projection of snapshot?.run_projections ?? []) {
+    const digest = digestByRun.get(projection.run_id);
+    const pane = paneById.get(projection.pane_id);
+    const provider = inferAgentVaultProvider(projection.provider_target, projection.label, projection.task);
+    const title = truncateAgentVaultText(
+      projection.task || projection.summary || projection.label || projection.run_id,
+      72,
+    );
+    const workspacePath = projection.worktree || digest?.worktree || pane?.worktree || snapshot?.project_dir || "";
+    const base: Omit<AgentVaultSessionEntry, "searchText"> = {
+      id: `summary:${projection.run_id}`,
+      provider,
+      title,
+      workspaceKey: getAgentVaultWorkspaceKey(workspacePath, snapshot?.project_dir),
+      workspaceLabel: getAgentVaultWorkspaceLabel(workspacePath, snapshot?.project_dir),
+      resumeId: normalizeAgentVaultText(projection.run_id || projection.pane_id),
+      paneId: projection.pane_id,
+      runId: projection.run_id,
+      lastSeen: getAgentVaultLastSeen(digest?.last_event_at, snapshot?.generated_at),
+      state: normalizeAgentVaultText(projection.task_state || projection.phase || projection.activity, "indexed"),
+      reviewState: normalizeAgentVaultText(projection.review_state, "n/a"),
+      summary: truncateAgentVaultText(projection.summary || projection.next_action || projection.detail || projection.activity, 140),
+      thisProject: isAgentVaultThisProject(workspacePath, snapshot?.project_dir),
+      source: "summary",
+    };
+    entries.set(base.id, { ...base, searchText: buildAgentVaultSearchText(base) });
+  }
+
+  for (const row of workerStatusRows) {
+    const target = getWorkerStatusTarget(row);
+    if (!target) {
+      continue;
+    }
+    const runId = row.heartbeat?.run_id || row.workspace?.run_id || row.secret_projection?.run_id || row.policy?.run_id || row.session || target;
+    const existing = Array.from(entries.values()).some((entry) => entry.runId === runId || entry.paneId === target);
+    if (existing) {
+      continue;
+    }
+    const launch = getWorkerStatusLaunch(row);
+    const provider = inferAgentVaultProvider(row.backend, row.role, row.session, getLaunchApprovalField(launch, "agent"));
+    const workspacePath = row.workspace?.workspace || activeProjectDir || desktopSummarySnapshot?.project_dir || "";
+    const base: Omit<AgentVaultSessionEntry, "searchText"> = {
+      id: `worker:${target}`,
+      provider,
+      title: truncateAgentVaultText(`${getPaneDisplayLabel(target)} ${row.role || row.backend || "worker"}`, 72),
+      workspaceKey: getAgentVaultWorkspaceKey(workspacePath, desktopSummarySnapshot?.project_dir),
+      workspaceLabel: getAgentVaultWorkspaceLabel(workspacePath, desktopSummarySnapshot?.project_dir),
+      resumeId: normalizeAgentVaultText(runId),
+      paneId: target,
+      runId,
+      lastSeen: getAgentVaultLastSeen(row.heartbeat?.heartbeat_at || row.last_command_at, desktopSummarySnapshot?.generated_at),
+      state: normalizeAgentVaultText(row.heartbeat_state || row.state || row.pane_state, "worker"),
+      reviewState: normalizeAgentVaultText(row.heartbeat_health || row.manifest_status, "n/a"),
+      summary: truncateAgentVaultText(row.degraded_reason || row.heartbeat?.message || row.last_command || row.backend || row.role, 140),
+      thisProject: isAgentVaultThisProject(workspacePath, desktopSummarySnapshot?.project_dir),
+      source: "worker",
+    };
+    entries.set(base.id, { ...base, searchText: buildAgentVaultSearchText(base) });
+  }
+
+  return Array.from(entries.values()).sort((left, right) => {
+    if (left.thisProject !== right.thisProject) {
+      return left.thisProject ? -1 : 1;
+    }
+    const providerOrder = agentVaultProviders.findIndex((provider) => provider.id === left.provider)
+      - agentVaultProviders.findIndex((provider) => provider.id === right.provider);
+    if (providerOrder !== 0) {
+      return providerOrder;
+    }
+    return left.title.localeCompare(right.title);
+  });
+}
+
+function getVisibleAgentVaultEntries() {
+  const query = agentVaultQuery.trim().toLowerCase();
+  return buildAgentVaultEntries().filter((entry) => {
+    if (agentVaultProjectOnly && !entry.thisProject) {
+      return false;
+    }
+    if (agentVaultProviderFilter !== "all" && entry.provider !== agentVaultProviderFilter) {
+      return false;
+    }
+    if (agentVaultWorkspaceFilter !== "all" && entry.workspaceKey !== agentVaultWorkspaceFilter) {
+      return false;
+    }
+    return !query || entry.searchText.includes(query);
+  });
+}
+
+function buildAgentVaultFeedEntries(): AgentVaultFeedEntry[] {
+  const entries: AgentVaultFeedEntry[] = [];
+  for (const item of desktopSummarySnapshot?.inbox.items ?? []) {
+    entries.push({
+      id: `inbox:${item.pane_id}:${item.timestamp}:${item.kind}`,
+      tone: item.priority <= 1 ? "danger" : item.priority <= 2 ? "warning" : "info",
+      label: item.label || item.kind || "notification",
+      body: truncateAgentVaultText(item.message || item.detail || item.activity || item.event, 110),
+      paneId: item.pane_id,
+    });
+  }
+  for (const row of workerStatusRows) {
+    if (!isWorkerStatusBlocked(row) && getWorkerHeartbeatState(row) !== "offline") {
+      continue;
+    }
+    const target = getWorkerStatusTarget(row);
+    entries.push({
+      id: `worker:${target}:${row.state}:${row.heartbeat_state}`,
+      tone: isWorkerStatusBlocked(row) ? "danger" : "warning",
+      label: target || row.slot || "worker",
+      body: truncateAgentVaultText(row.degraded_reason || row.heartbeat?.reason || row.heartbeat?.message || getWorkerRecoveryAction(row), 110),
+      paneId: target,
+      runId: row.heartbeat?.run_id || row.workspace?.run_id || row.session,
+    });
+  }
+  return entries.slice(0, 5);
+}
+
+function getAgentVaultNotificationTone(feedEntries: AgentVaultFeedEntry[]): SurfaceTone {
+  if (feedEntries.some((entry) => entry.tone === "danger")) {
+    return "danger";
+  }
+  if (feedEntries.some((entry) => entry.tone === "warning")) {
+    return "warning";
+  }
+  return "info";
+}
+
+function focusAgentVaultFeedEntry(entry: AgentVaultFeedEntry) {
+  if (!entry.paneId) {
+    return;
+  }
+  focusWorkerPaneFromStatus(entry.paneId);
+  agentVaultStatusMessage = getLanguageText(
+    `Focused ${getPaneDisplayLabel(entry.paneId)} from Feed.`,
+    `フィードから ${getPaneDisplayLabel(entry.paneId)} へ移動しました。`,
+  );
+  renderAgentVaultPanel();
+}
+
+function createAgentVaultChip(label: string, value: string, tone?: SurfaceTone) {
+  const chip = document.createElement("span");
+  chip.className = "agent-vault-chip";
+  if (tone) {
+    chip.dataset.tone = tone;
+  }
+  chip.textContent = `${label}: ${value}`;
+  return chip;
+}
+
+function renderAgentVaultProviderFilters(root: HTMLElement, entries: AgentVaultSessionEntry[]) {
+  root.replaceChildren();
+  const filters: Array<{ id: AgentVaultProviderFilter; label: string; count: number }> = [
+    { id: "all", label: getLanguageText("All", "すべて"), count: entries.length },
+    ...agentVaultProviders.map((provider) => ({
+      id: provider.id,
+      label: getAgentVaultProviderLabel(provider.id),
+      count: entries.filter((entry) => entry.provider === provider.id).length,
+    })),
+  ];
+  for (const filter of filters) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "agent-vault-filter-btn";
+    button.textContent = `${filter.label} ${filter.count}`;
+    button.setAttribute("aria-pressed", agentVaultProviderFilter === filter.id ? "true" : "false");
+    button.addEventListener("click", () => {
+      agentVaultProviderFilter = filter.id;
+      renderAgentVaultPanel();
+    });
+    root.appendChild(button);
+  }
+}
+
+function renderAgentVaultWorkspaceFilter(root: HTMLSelectElement, entries: AgentVaultSessionEntry[]) {
+  const workspaceCounts = new Map<string, { label: string; count: number }>();
+  for (const entry of entries) {
+    const current = workspaceCounts.get(entry.workspaceKey);
+    if (current) {
+      current.count += 1;
+    } else {
+      workspaceCounts.set(entry.workspaceKey, { label: entry.workspaceLabel, count: 1 });
+    }
+  }
+  if (agentVaultWorkspaceFilter !== "all" && !workspaceCounts.has(agentVaultWorkspaceFilter)) {
+    agentVaultWorkspaceFilter = "all";
+  }
+
+  root.replaceChildren();
+  const allOption = document.createElement("option");
+  allOption.value = "all";
+  allOption.textContent = getLanguageText(`All folders (${entries.length})`, `すべてのフォルダー (${entries.length})`);
+  root.appendChild(allOption);
+
+  const workspaces = Array.from(workspaceCounts.entries())
+    .sort((left, right) => left[1].label.localeCompare(right[1].label));
+  for (const [key, workspace] of workspaces) {
+    const option = document.createElement("option");
+    option.value = key;
+    option.textContent = `${workspace.label} (${workspace.count})`;
+    root.appendChild(option);
+  }
+  root.value = agentVaultWorkspaceFilter;
+}
+
+function renderAgentVaultPanel() {
+  const panel = document.getElementById("agent-vault-panel");
+  if (!panel) {
+    return;
+  }
+  panel.hidden = !agentVaultOpen;
+  updateAgentVaultToggleButton();
+  if (!agentVaultOpen) {
+    return;
+  }
+
+  const allEntries = buildAgentVaultEntries();
+  const feedEntries = buildAgentVaultFeedEntries();
+  const title = document.getElementById("agent-vault-title");
+  const ring = document.getElementById("agent-vault-ring");
+  const search = document.getElementById("agent-vault-search") as HTMLInputElement | null;
+  const workspaceFilter = document.getElementById("agent-vault-workspace-filter") as HTMLSelectElement | null;
+  const projectFilter = document.getElementById("agent-vault-project-filter");
+  const providerFilters = document.getElementById("agent-vault-provider-filters");
+  const status = document.getElementById("agent-vault-drop-status");
+  const list = document.getElementById("agent-vault-session-list");
+  const feed = document.getElementById("agent-vault-feed");
+
+  if (search && search.value !== agentVaultQuery) {
+    search.value = agentVaultQuery;
+  }
+  if (workspaceFilter) {
+    renderAgentVaultWorkspaceFilter(workspaceFilter, allEntries);
+  }
+  const visibleEntries = getVisibleAgentVaultEntries();
+
+  if (title) {
+    title.textContent = getLanguageText(`${visibleEntries.length} indexed sessions`, `${visibleEntries.length} 件の索引済みセッション`);
+  }
+  if (ring) {
+    ring.textContent = feedEntries.length > 0 ? `${feedEntries.length}` : "OK";
+    ring.dataset.tone = getAgentVaultNotificationTone(feedEntries);
+    ring.title = getLanguageText("Feed and worker notification ring", "フィードとワーカー通知リング");
+  }
+  if (projectFilter) {
+    projectFilter.textContent = getLanguageText("This project", "このプロジェクト");
+    projectFilter.setAttribute("aria-pressed", agentVaultProjectOnly ? "true" : "false");
+  }
+  if (providerFilters) {
+    renderAgentVaultProviderFilters(providerFilters, allEntries);
+  }
+  if (status) {
+    status.textContent = agentVaultStatusMessage || getLanguageText("Drag a session card onto a worker pane, or restore it into a new pane.", "セッションカードをワーカーペインへドラッグするか、新しいペインへ復元できます。");
+  }
+  if (list) {
+    list.replaceChildren();
+    if (visibleEntries.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "agent-vault-empty";
+      empty.textContent = allEntries.length === 0
+        ? getLanguageText("No safe session metadata is indexed yet.", "安全なセッションメタデータはまだ索引されていません。")
+        : getLanguageText("No sessions match the current filters.", "現在の条件に一致するセッションはありません。");
+      list.appendChild(empty);
+    } else {
+      for (const provider of agentVaultProviders) {
+        const providerEntries = visibleEntries.filter((entry) => entry.provider === provider.id);
+        if (providerEntries.length === 0) {
+          continue;
+        }
+        const collapsed = agentVaultCollapsedProviderIds.has(provider.id);
+        const group = document.createElement("section");
+        group.className = "agent-vault-provider-group";
+        group.dataset.collapsed = collapsed ? "true" : "false";
+        const heading = document.createElement("button");
+        heading.type = "button";
+        heading.className = "agent-vault-provider-heading";
+        heading.setAttribute("aria-expanded", collapsed ? "false" : "true");
+        heading.addEventListener("click", () => {
+          if (agentVaultCollapsedProviderIds.has(provider.id)) {
+            agentVaultCollapsedProviderIds.delete(provider.id);
+          } else {
+            agentVaultCollapsedProviderIds.add(provider.id);
+          }
+          persistAgentVaultPreferences();
+          renderAgentVaultPanel();
+        });
+        const label = document.createElement("span");
+        label.textContent = getAgentVaultProviderLabel(provider.id);
+        const count = document.createElement("span");
+        count.className = "agent-vault-provider-count";
+        count.textContent = `${providerEntries.length}`;
+        heading.append(label, count);
+        group.appendChild(heading);
+        if (!collapsed) {
+          for (const entry of providerEntries) {
+            group.appendChild(renderAgentVaultSessionCard(entry));
+          }
+        }
+        list.appendChild(group);
+      }
+    }
+  }
+  if (feed) {
+    feed.replaceChildren();
+    if (feedEntries.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "agent-vault-feed-row";
+      empty.textContent = getLanguageText("No worker notifications.", "ワーカー通知はありません。");
+      feed.appendChild(empty);
+    } else {
+      for (const entry of feedEntries) {
+        const row = document.createElement("button");
+        row.type = "button";
+        row.className = "agent-vault-feed-row";
+        row.dataset.tone = entry.tone;
+        row.disabled = !entry.paneId;
+        row.textContent = `${entry.label}: ${entry.body}`;
+        row.addEventListener("click", () => focusAgentVaultFeedEntry(entry));
+        feed.appendChild(row);
+      }
+    }
+  }
+}
+
+function updateAgentVaultToggleButton() {
+  const isVisible = agentVaultOpen && contextPanelOpen;
+  setButtonLabel(
+    "toggle-agent-vault-btn",
+    isVisible ? getLanguageText("Hide Vault", "Vault を隠す") : "Vault",
+    isVisible ? getLanguageText("Hide Agent Vault", "Agent Vault を隠す") : getLanguageText("Show Agent Vault", "Agent Vault を表示"),
+  );
+  document.getElementById("toggle-agent-vault-btn")?.setAttribute("aria-expanded", isVisible ? "true" : "false");
+}
+
+function renderAgentVaultSessionCard(entry: AgentVaultSessionEntry) {
+  const card = document.createElement("article");
+  card.className = "agent-vault-card";
+  card.draggable = true;
+  card.tabIndex = 0;
+  card.dataset.sessionId = entry.id;
+  card.dataset.selected = selectedAgentVaultSessionId === entry.id ? "true" : "false";
+  card.setAttribute("aria-label", getLanguageText(`Agent Vault session ${entry.title}`, `Agent Vault セッション ${entry.title}`));
+
+  card.addEventListener("dragstart", (event) => {
+    event.dataTransfer?.setData(AGENT_VAULT_DRAG_TYPE, entry.id);
+    event.dataTransfer?.setData("text/plain", entry.title);
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = "copyMove";
+    }
+    selectedAgentVaultSessionId = entry.id;
+    card.dataset.selected = "true";
+    card.dataset.agentVaultDragging = "true";
+    agentVaultStatusMessage = getLanguageText(
+      `${entry.title} ready. Drop it onto a worker pane.`,
+      `${entry.title} をワーカーペインへドロップできます。`,
+    );
+  });
+  card.addEventListener("dragend", () => {
+    delete card.dataset.agentVaultDragging;
+    renderAgentVaultPanel();
+  });
+  card.addEventListener("click", () => {
+    selectedAgentVaultSessionId = entry.id;
+    agentVaultStatusMessage = getLanguageText(
+      `${entry.title} selected. Drag it to a pane or use New pane.`,
+      `${entry.title} を選択しました。ペインへドラッグするか、新しいペインへ復元できます。`,
+    );
+    renderAgentVaultPanel();
+  });
+  card.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void restoreAgentVaultSession(entry.id);
+    }
+  });
+
+  const title = document.createElement("div");
+  title.className = "agent-vault-card-title";
+  title.textContent = entry.title;
+  const summary = document.createElement("div");
+  summary.className = "agent-vault-card-summary";
+  summary.textContent = entry.summary || getLanguageText("Safe metadata only.", "安全なメタデータのみ。");
+  const meta = document.createElement("div");
+  meta.className = "agent-vault-card-meta";
+  meta.append(
+    createAgentVaultChip("provider", getAgentVaultProviderLabel(entry.provider)),
+    createAgentVaultChip("workspace", entry.workspaceLabel),
+    createAgentVaultChip("resume", entry.resumeId.slice(0, 12)),
+    createAgentVaultChip("seen", entry.lastSeen),
+    createAgentVaultChip("state", entry.state, getAgentVaultReviewTone(entry.reviewState, entry.state)),
+  );
+  const actions = document.createElement("div");
+  actions.className = "agent-vault-card-actions";
+  const newPane = document.createElement("button");
+  newPane.type = "button";
+  newPane.className = "agent-vault-action";
+  newPane.textContent = getLanguageText("New pane", "新しいペイン");
+  newPane.disabled = panes.size >= MAX_WORKBENCH_PANES;
+  newPane.addEventListener("click", (event) => {
+    event.stopPropagation();
+    void restoreAgentVaultSession(entry.id);
+  });
+  const focusedPane = document.createElement("button");
+  focusedPane.type = "button";
+  focusedPane.className = "agent-vault-action";
+  focusedPane.textContent = getLanguageText("Focused pane", "選択中のペイン");
+  focusedPane.disabled = !getFocusedWorkbenchPaneId();
+  focusedPane.addEventListener("click", (event) => {
+    event.stopPropagation();
+    void restoreAgentVaultSession(entry.id, getFocusedWorkbenchPaneId() ?? undefined);
+  });
+  actions.append(newPane, focusedPane);
+  card.append(title, summary, meta, actions);
+  return card;
+}
+
+function quotePowerShellArgument(value: string) {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+function getSafeAgentVaultResumeId(entry: AgentVaultSessionEntry) {
+  const resumeId = normalizeAgentVaultText(entry.resumeId);
+  if (!resumeId || resumeId.length > 512 || /[\u0000-\u001f\u007f]/.test(resumeId)) {
+    return "";
+  }
+  return resumeId;
+}
+
+function buildAgentVaultResumeCommand(entry: AgentVaultSessionEntry) {
+  const resumeId = getSafeAgentVaultResumeId(entry);
+  if (!resumeId) {
+    return "";
+  }
+  switch (entry.provider) {
+    case "claude":
+      return `claude --resume ${quotePowerShellArgument(resumeId)}`;
+    case "codex":
+      return `codex resume ${quotePowerShellArgument(resumeId)}`;
+    case "opencode":
+      return `opencode --session ${quotePowerShellArgument(resumeId)}`;
+  }
+}
+
+async function restoreAgentVaultSession(entryId: string, targetPaneId?: string) {
+  const entry = buildAgentVaultEntries().find((item) => item.id === entryId);
+  if (!entry) {
+    agentVaultStatusMessage = getLanguageText("Session metadata is no longer available.", "セッションメタデータが見つかりません。");
+    renderAgentVaultPanel();
+    return;
+  }
+  const command = buildAgentVaultResumeCommand(entry);
+  if (!command) {
+    const rejectedId = entry.resumeId ? entry.resumeId.slice(0, 32) : "empty";
+    agentVaultStatusMessage = getLanguageText(
+      `Resume ${rejectedId} was rejected before writing to a pane: invalid resume id.`,
+      `再開 ID ${rejectedId} は不正なため、ペインへ送信しませんでした。`,
+    );
+    renderAgentVaultPanel();
+    return;
+  }
+  if (!targetPaneId && panes.size >= MAX_WORKBENCH_PANES) {
+    agentVaultStatusMessage = getLanguageText(
+      `Resume ${entry.resumeId.slice(0, 32)} could not create a new pane: maximum pane count reached.`,
+      `再開 ID ${entry.resumeId.slice(0, 32)} は新しいペインを作れませんでした。ペイン数が上限です。`,
+    );
+    renderAgentVaultPanel();
+    return;
+  }
+
+  setTerminalDrawer(true);
+  const paneId = targetPaneId && panes.has(targetPaneId) ? targetPaneId : createPane();
+  focusedWorkbenchPaneId = paneId;
+  selectedAgentVaultSessionId = entry.id;
+  updateWorkbenchControls();
+  scheduleWorkbenchPaneFit();
+
+  const startupInput = `${command}\r`;
+  const pane = panes.get(paneId);
+  try {
+    if (pane?.ptyStarted) {
+      await writePtyData(paneId, startupInput);
+    } else {
+      if (pane?.ptyStarting || !queuePaneStartupInput(paneId, startupInput)) {
+        agentVaultStatusMessage = getLanguageText(
+          `${getPaneDisplayLabel(paneId)} is already starting a restore. Wait for it to finish before restoring another session.`,
+          `${getPaneDisplayLabel(paneId)} は復元を開始中です。完了してから別のセッションを復元してください。`,
+        );
+        renderAgentVaultPanel();
+        return;
+      }
+      await ensurePanePtyStarted(paneId);
+    }
+    agentVaultStatusMessage = getLanguageText(
+      `Restoring ${entry.title} in ${getPaneDisplayLabel(paneId)}.`,
+      `${entry.title} を ${getPaneDisplayLabel(paneId)} で復元しています。`,
+    );
+    appendRuntimeConversation({
+      type: "system",
+      category: "activity",
+      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      actor: "Agent Vault",
+      title: "Session restore started",
+      body: `${getAgentVaultProviderLabel(entry.provider)} ${entry.resumeId} -> ${getPaneDisplayLabel(paneId)}`,
+      details: [
+        { label: "workspace", value: entry.workspaceLabel },
+        { label: "source", value: entry.source },
+      ],
+      tone: "focus",
+      runId: entry.runId || undefined,
+      statusLabel: entry.state,
+    });
+  } catch (error) {
+    clearPaneStartupInput(paneId);
+    agentVaultStatusMessage = error instanceof Error ? error.message : String(error);
+  }
+  renderDesktopSurfaces();
+}
+
+function registerAgentVaultPaneDropTarget(pane: HTMLElement, paneId: string) {
+  pane.addEventListener("dragover", (event) => {
+    const dataTransfer = event.dataTransfer;
+    if (!dataTransfer || !Array.from(dataTransfer.types).includes(AGENT_VAULT_DRAG_TYPE)) {
+      pane.dataset.agentVaultDrop = "reject";
+      return;
+    }
+    event.preventDefault();
+    dataTransfer.dropEffect = "move";
+    pane.dataset.agentVaultDrop = "ready";
+  });
+  pane.addEventListener("dragleave", () => {
+    delete pane.dataset.agentVaultDrop;
+  });
+  pane.addEventListener("drop", (event) => {
+    const entryId = event.dataTransfer?.getData(AGENT_VAULT_DRAG_TYPE);
+    delete pane.dataset.agentVaultDrop;
+    if (!entryId) {
+      agentVaultStatusMessage = getLanguageText("Only Agent Vault session cards can be dropped here.", "ここへドロップできるのは Agent Vault のセッションカードだけです。");
+      renderAgentVaultPanel();
+      return;
+    }
+    event.preventDefault();
+    void restoreAgentVaultSession(entryId, paneId);
+  });
+}
+
+function initializeAgentVaultDropTargets() {
+  const container = document.getElementById("panes-container");
+  container?.addEventListener("dragover", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (target?.closest(".pane")) {
+      return;
+    }
+    const dataTransfer = event.dataTransfer;
+    if (!dataTransfer || !Array.from(dataTransfer.types).includes(AGENT_VAULT_DRAG_TYPE)) {
+      return;
+    }
+    event.preventDefault();
+    dataTransfer.dropEffect = "move";
+  });
+  container?.addEventListener("drop", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (target?.closest(".pane")) {
+      return;
+    }
+    const entryId = event.dataTransfer?.getData(AGENT_VAULT_DRAG_TYPE);
+    if (!entryId) {
+      return;
+    }
+    event.preventDefault();
+    void restoreAgentVaultSession(entryId);
+  });
 }
 
 function getLaunchApprovalField(
@@ -2415,7 +3259,7 @@ function ensureDefaultWorkbenchPanes() {
 
 function ensureWorkbenchPaneCount(targetCount: number) {
   ensureDefaultWorkbenchPanes();
-  while (panes.size < targetCount && panes.size < 6) {
+  while (panes.size < targetCount && panes.size < MAX_WORKBENCH_PANES) {
     createPane();
   }
 }
@@ -2441,7 +3285,7 @@ function getFocusedWorkbenchPaneId() {
 
 function getWorkbenchPaneCountForLayout() {
   if (workbenchLayout === "3x2") {
-    return 6;
+    return MAX_WORKBENCH_PANES;
   }
   if (workbenchLayout === "focus") {
     return Math.max(4, getWorkbenchPaneOrdinal(focusedWorkbenchPaneId) ?? 1);
@@ -2455,7 +3299,7 @@ function getVisibleWorkbenchPaneIds() {
     const focusedPaneId = getFocusedWorkbenchPaneId();
     return focusedPaneId ? [focusedPaneId] : [];
   }
-  return paneIds.slice(0, workbenchLayout === "3x2" ? 6 : 4);
+  return paneIds.slice(0, workbenchLayout === "3x2" ? MAX_WORKBENCH_PANES : 4);
 }
 
 function syncFocusedPaneSelect() {
@@ -2495,6 +3339,15 @@ function fitVisibleWorkbenchPanes() {
   });
 }
 
+function scheduleWorkbenchPaneFit() {
+  window.requestAnimationFrame(() => {
+    fitVisibleWorkbenchPanes();
+    window.requestAnimationFrame(() => {
+      fitVisibleWorkbenchPanes();
+    });
+  });
+}
+
 function updateWorkbenchControls() {
   const drawer = document.getElementById("terminal-drawer");
   const addButton = document.getElementById("add-pane-btn") as HTMLButtonElement | null;
@@ -2513,11 +3366,11 @@ function updateWorkbenchControls() {
   syncWorkbenchPaneVisibility();
   syncFocusedPaneSelect();
   if (addButton) {
-    addButton.disabled = panes.size >= 6;
-    addButton.textContent = panes.size >= 6 ? getLanguageText("6 panes", "6 ペイン") : getLanguageText("+ Pane", "+ ペイン");
+    addButton.disabled = panes.size >= MAX_WORKBENCH_PANES;
+    addButton.textContent = panes.size >= MAX_WORKBENCH_PANES ? getLanguageText("6 panes", "6 ペイン") : getLanguageText("+ Pane", "+ ペイン");
     addButton.setAttribute(
       "aria-label",
-      panes.size >= 6 ? getLanguageText("Maximum pane count reached", "ペイン数が上限です") : getLanguageText("Add worker pane", "ワーカーペインを追加"),
+      panes.size >= MAX_WORKBENCH_PANES ? getLanguageText("Maximum pane count reached", "ペイン数が上限です") : getLanguageText("Add worker pane", "ワーカーペインを追加"),
     );
   }
   if (layoutButton) {
@@ -7052,6 +7905,7 @@ function readStoredShellPreferences(): ShellPreferenceState | null {
     const wideSidebarOpen = typeof parsed.wideSidebarOpen === "boolean" ? parsed.wideSidebarOpen : true;
     const wideContextOpen = typeof parsed.wideContextOpen === "boolean" ? parsed.wideContextOpen : false;
     const workbenchOpen = typeof parsed.workbenchOpen === "boolean" ? parsed.workbenchOpen : true;
+    const workerStatusStripVisible = typeof parsed.workerStatusStripVisible === "boolean" ? parsed.workerStatusStripVisible : true;
     const workbenchLayout = parsed.workbenchLayout === "3x2" || parsed.workbenchLayout === "focus" ? parsed.workbenchLayout : "2x2";
     const storedFocusedWorkbenchPaneId = typeof parsed.focusedWorkbenchPaneId === "string" && getWorkbenchPaneOrdinal(parsed.focusedWorkbenchPaneId) !== null
       ? parsed.focusedWorkbenchPaneId
@@ -7074,6 +7928,7 @@ function readStoredShellPreferences(): ShellPreferenceState | null {
       wideSidebarOpen,
       wideContextOpen,
       workbenchOpen,
+      workerStatusStripVisible,
       workbenchLayout,
       focusedWorkbenchPaneId: storedFocusedWorkbenchPaneId,
     };
@@ -7101,6 +7956,7 @@ function persistThemeState() {
       wideSidebarOpen: preferredWideSidebarOpen,
       wideContextOpen: preferredWideContextOpen,
       workbenchOpen: terminalDrawerOpen,
+      workerStatusStripVisible,
       workbenchLayout,
       focusedWorkbenchPaneId: focusedWorkbenchPaneId && panes.has(focusedWorkbenchPaneId) ? focusedWorkbenchPaneId : null,
     };
@@ -7275,6 +8131,7 @@ function applyLanguageChrome() {
     contextPanelOpen ? (japanese ? "隠す" : "Hide") : (japanese ? "詳細" : "Details"),
     contextPanelOpen ? (japanese ? "詳細パネルを隠す" : "Hide details panel") : (japanese ? "詳細パネルを表示" : "Show details panel"),
   );
+  updateAgentVaultToggleButton();
   setButtonLabel(
     "toggle-terminal-btn",
     terminalDrawerOpen ? (japanese ? "ペインを隠す" : "Hide panes") : (japanese ? "ペイン" : "Panes"),
@@ -7371,6 +8228,7 @@ function applyLanguageChrome() {
   document.getElementById("close-terminal-drawer-btn")?.setAttribute("aria-label", japanese ? "ワーカーペインを隠す" : "Hide worker panes");
   document.getElementById("close-terminal-drawer-btn")?.setAttribute("title", japanese ? "ワーカーペインを隠す" : "Hide worker panes");
   document.getElementById("terminal-drawer")?.setAttribute("aria-label", japanese ? "ワーカーペイン" : "Worker panes");
+  document.getElementById("worker-status-pill-bar")?.setAttribute("aria-label", japanese ? "ワーカー状態" : "Worker status");
   document.getElementById("workbench-layout-btn")?.setAttribute("aria-label", japanese ? "ワーカーペインの配置を切り替える" : "Switch worker pane layout");
   updateWorkbenchControls();
   setSelectorText("#thread-meta span:first-child", japanese ? "winsmux セッション" : "winsmux session");
@@ -7460,6 +8318,7 @@ function applyThemeState(nextState: ThemeState) {
   renderSourceEntries();
   renderSourceControlView();
   renderEvidenceView();
+  renderAgentVaultPanel();
   renderContextPanel();
   renderTimelineFilters();
   renderRunSummary();
@@ -10834,6 +11693,12 @@ function getTopMenuItems(menuId: string): TopMenuItem[] {
         { label: getLanguageText("Toggle source control", "ソース管理を切り替え"), action: () => toggleSidebarMode("source") },
         { label: getLanguageText("Toggle evidence", "証跡を切り替え"), action: () => toggleSidebarMode("evidence") },
         { label: getLanguageText("Toggle details", "詳細を切り替え"), action: () => setContextPanel(!contextPanelOpen) },
+        {
+          label: workerStatusStripVisible
+            ? getLanguageText("Hide worker status", "ワーカー状態を隠す")
+            : getLanguageText("Show worker status", "ワーカー状態を表示"),
+          action: () => setWorkerStatusStripVisible(!workerStatusStripVisible),
+        },
         { label: getLanguageText("Toggle panes", "ペインを切り替え"), action: () => setTerminalDrawer(!terminalDrawerOpen) },
       ];
     case "menu-go-btn":
@@ -12292,7 +13157,7 @@ function setContextPanel(open: boolean, options?: { preserveWidePreference?: boo
   const panel = document.getElementById("context-panel");
   const button = document.getElementById("toggle-context-btn");
   const body = document.getElementById("workspace-body");
-  if (!panel || !button || !body) {
+  if (!panel || !body) {
     return;
   }
 
@@ -12303,9 +13168,12 @@ function setContextPanel(open: boolean, options?: { preserveWidePreference?: boo
 
   panel.toggleAttribute("hidden", !open);
   body.classList.toggle("context-collapsed", !open);
-  setCompactButtonLabel(button, open ? getLanguageText("Hide", "隠す") : getLanguageText("Details", "詳細"));
-  button.setAttribute("aria-expanded", open ? "true" : "false");
-  button.setAttribute("aria-label", open ? getLanguageText("Hide details panel", "詳細パネルを隠す") : getLanguageText("Show details panel", "詳細パネルを表示"));
+  if (button) {
+    setCompactButtonLabel(button, open ? getLanguageText("Hide", "隠す") : getLanguageText("Details", "詳細"));
+    button.setAttribute("aria-expanded", open ? "true" : "false");
+    button.setAttribute("aria-label", open ? getLanguageText("Hide details panel", "詳細パネルを隠す") : getLanguageText("Show details panel", "詳細パネルを表示"));
+  }
+  renderAgentVaultPanel();
   syncActivityButtons();
 }
 
@@ -12365,9 +13233,7 @@ function cycleWorkbenchLayout() {
   }
   updateWorkbenchControls();
   void persistThemeState();
-  requestAnimationFrame(() => {
-    fitVisibleWorkbenchPanes();
-  });
+  scheduleWorkbenchPaneFit();
 }
 
 function setCompactButtonLabel(button: Element, label: string) {
@@ -13312,6 +14178,7 @@ function renderDesktopSurfaces() {
   renderOpenEditors();
   renderEditorSurface();
   renderAgentWorkDashboard();
+  renderAgentVaultPanel();
   renderConversation(getConversationItems());
 }
 
@@ -13801,10 +14668,12 @@ window.addEventListener("DOMContentLoaded", async () => {
     workbenchWidth = storedShellPreferences.workbenchWidth;
     preferredWideSidebarOpen = storedShellPreferences.wideSidebarOpen;
     preferredWideContextOpen = storedShellPreferences.wideContextOpen;
+    workerStatusStripVisible = storedShellPreferences.workerStatusStripVisible;
     terminalDrawerOpen = true;
     workbenchLayout = storedShellPreferences.workbenchLayout;
     focusedWorkbenchPaneId = storedShellPreferences.focusedWorkbenchPaneId;
   }
+  applyAgentVaultPreferences();
 
   initializeOperatorTerminal();
 
@@ -13847,6 +14716,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   renderSourceSummary();
   renderSourceEntries();
   renderEvidenceView();
+  renderAgentVaultPanel();
   renderContextPanel();
   applyShellPreferences();
   applyLanguageChrome();
@@ -13872,6 +14742,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   initializeSidebarResize();
   initializeWorkbenchResize();
   initializeSourceControlSplitResize();
+  initializeAgentVaultDropTargets();
   window.setInterval(() => {
     renderPaneMetadata();
     void refreshWorkerStatusSurface();
@@ -13963,6 +14834,42 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   document.getElementById("toggle-context-btn")?.addEventListener("click", () => {
     setContextPanel(!contextPanelOpen);
+  });
+
+  document.getElementById("toggle-agent-vault-btn")?.addEventListener("click", () => {
+    if (!contextPanelOpen || !agentVaultOpen) {
+      agentVaultOpen = true;
+      setContextPanel(true);
+    } else {
+      agentVaultOpen = false;
+    }
+    renderAgentVaultPanel();
+  });
+
+  (document.getElementById("agent-vault-search") as HTMLInputElement | null)?.addEventListener("input", (event) => {
+    agentVaultQuery = (event.currentTarget as HTMLInputElement).value;
+    renderAgentVaultPanel();
+  });
+
+  (document.getElementById("agent-vault-workspace-filter") as HTMLSelectElement | null)?.addEventListener("change", (event) => {
+    agentVaultWorkspaceFilter = (event.currentTarget as HTMLSelectElement).value || "all";
+    if (agentVaultWorkspaceFilter === "__this_project__") {
+      agentVaultProjectOnly = true;
+      persistAgentVaultPreferences();
+    } else {
+      agentVaultProjectOnly = false;
+      persistAgentVaultPreferences();
+    }
+    renderAgentVaultPanel();
+  });
+
+  document.getElementById("agent-vault-project-filter")?.addEventListener("click", () => {
+    agentVaultProjectOnly = !agentVaultProjectOnly;
+    if (agentVaultProjectOnly && agentVaultWorkspaceFilter !== "__this_project__") {
+      agentVaultWorkspaceFilter = "all";
+    }
+    persistAgentVaultPreferences();
+    renderAgentVaultPanel();
   });
 
   document.getElementById("close-editor-btn")?.addEventListener("click", async () => {
@@ -14122,9 +15029,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     focusedWorkbenchPaneId = value;
     updateWorkbenchControls();
     void persistThemeState();
-    requestAnimationFrame(() => {
-      fitVisibleWorkbenchPanes();
-    });
+    scheduleWorkbenchPaneFit();
   });
 
   const composer = document.getElementById("composer") as HTMLFormElement | null;
