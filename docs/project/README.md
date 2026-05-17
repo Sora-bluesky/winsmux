@@ -12,6 +12,8 @@ The active planning source of truth is maintained outside the public product doc
 
 Contributor-facing contract inventory:
 
+- [Architecture](./ARCHITECTURE.md)
+- [Detailed Design](./DETAILED_DESIGN.md)
 - [PowerShell Adapter Inventory](./powershell-adapter-inventory.md)
 - [Rust Schema Freeze Inventory](./rust-schema-freeze-inventory.md)
 - [Upstream Reevaluation Gate](./upstream-reevaluation-gate.md)
