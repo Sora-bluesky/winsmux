@@ -35,6 +35,7 @@ docs/project/*
 !docs/project/powershell-adapter-inventory.md
 !docs/project/rust-schema-freeze-inventory.md
 !docs/project/local-first-ui-contract.md
+!docs/project/review-latency-hardening.md
 !docs/project/upstream-reevaluation-gate.md
 !docs/project/upstream-snapshot-baseline.md
 !docs/project/enterprise-strategy-roadmap-alignment.md
@@ -69,6 +70,7 @@ tests/*
 !tests/Integration.PluginHookLoader.Tests.ps1
 !tests/UpstreamReevaluation.Tests.ps1
 !tests/EnterpriseStrategyAlignment.Tests.ps1
+!tests/ReviewLatencyHardening.Tests.ps1
 !tests/BuilderWorktree.Tests.ps1
 !tests/codex-subagent-worktree-guard.Tests.ps1
 !tests/PublicSurfacePolicy.Tests.ps1
