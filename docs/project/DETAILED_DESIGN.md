@@ -68,7 +68,7 @@ Branch gates:
 | release branch | Use a `codex/` branch for version work. |
 | public surface | Run `scripts/audit-public-surface.ps1` before release. |
 | secret surface | Run `scripts/git-guard.ps1 -Mode full` before release. |
-| review gate | Run `codex review` with the configured release-review model and a long timeout. |
+| review gate | Run `codex review` with the configured release-review model and a long timeout. For small desktop UI review latency, follow [Review Latency Hardening](./review-latency-hardening.md). |
 | merge gate | Merge only after local validation, PR review, and required CI pass. |
 | release gate | Verify local tag, remote tag, GitHub Release, body, and `release-body.md` asset. |
 
