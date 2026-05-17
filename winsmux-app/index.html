@@ -207,6 +207,22 @@
             </button>
             <button
               class="ghost-btn"
+              id="toggle-agent-vault-btn"
+              type="button"
+              aria-controls="agent-vault-panel"
+              aria-expanded="true"
+              aria-label="Toggle Agent Vault"
+            >
+              <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5 6.5h14v12H5z" />
+                <path d="M8 6.5V4h8v2.5" />
+                <path d="M9 12h6" />
+                <path d="M12 9v6" />
+              </svg>
+              <span class="btn-label">Vault</span>
+            </button>
+            <button
+              class="ghost-btn"
               id="toggle-terminal-btn"
               type="button"
               aria-controls="terminal-drawer"
@@ -348,6 +364,26 @@
           </aside>
 
           <aside id="context-panel">
+            <section id="agent-vault-panel" aria-label="Agent Vault">
+              <div class="agent-vault-header">
+                <div>
+                  <div class="timeline-eyebrow">Agent Vault</div>
+                  <div id="agent-vault-title" class="panel-title">Sessions</div>
+                </div>
+                <div id="agent-vault-ring" aria-label="Agent Vault notifications"></div>
+              </div>
+              <div class="agent-vault-search-row">
+                <input id="agent-vault-search" type="search" placeholder="Search sessions" aria-label="Search Agent Vault sessions" />
+                <div class="agent-vault-search-controls">
+                  <select id="agent-vault-workspace-filter" aria-label="Filter Agent Vault sessions by workspace folder"></select>
+                  <button id="agent-vault-project-filter" type="button" class="agent-vault-filter-btn" aria-pressed="true">This project</button>
+                </div>
+              </div>
+              <div id="agent-vault-provider-filters" class="agent-vault-filter-row" aria-label="Agent Vault provider filters"></div>
+              <div id="agent-vault-drop-status" class="agent-vault-drop-status" role="status"></div>
+              <div id="agent-vault-session-list" class="agent-vault-session-list"></div>
+              <div id="agent-vault-feed" class="agent-vault-feed" aria-label="Agent Vault feed"></div>
+            </section>
             <div id="context-panel-title" class="panel-title">Details</div>
             <div id="context-sections"></div>
             <div id="context-decision-title" class="panel-title secondary-title">Decision</div>

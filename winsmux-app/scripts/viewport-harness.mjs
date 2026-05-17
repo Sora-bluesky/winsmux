@@ -1071,6 +1071,13 @@ async function ensureContextPanelOpen(page) {
   if (await contextPanel.isVisible().catch(() => false)) {
     return;
   }
+  await page.waitForFunction(() => Boolean(window.__winsmuxViewportHarness));
+  await page.evaluate(() => {
+    window.__winsmuxViewportHarness?.setContextPanel(true);
+  });
+  if (await contextPanel.isVisible().catch(() => false)) {
+    return;
+  }
   await page.click("#activity-context-btn");
   await contextPanel.waitFor({ state: "visible" });
 }
@@ -1095,6 +1102,40 @@ async function assertWorkbenchPaneGrid(page, expectedMin = 4) {
   await page.waitForFunction((minCount) => {
     return document.querySelectorAll("#panes-container .pane").length >= minCount;
   }, expectedMin);
+  const fillMetrics = await page.locator("#panes-container").evaluate((container) => {
+    const containerRect = container.getBoundingClientRect();
+    const drawer = document.querySelector("#terminal-drawer");
+    const drawerRect = drawer instanceof HTMLElement ? drawer.getBoundingClientRect() : null;
+    const paneRects = Array.from(container.querySelectorAll(".pane:not([hidden])")).map((pane) => {
+      const rect = pane.getBoundingClientRect();
+      return {
+        top: Math.round(rect.top),
+        bottom: Math.round(rect.bottom),
+        height: Math.round(rect.height),
+      };
+    });
+    const maxBottom = paneRects.length > 0 ? Math.max(...paneRects.map((rect) => rect.bottom)) : 0;
+    const minHeight = paneRects.length > 0 ? Math.min(...paneRects.map((rect) => rect.height)) : 0;
+    const maxHeight = paneRects.length > 0 ? Math.max(...paneRects.map((rect) => rect.height)) : 0;
+    return {
+      layout: drawer instanceof HTMLElement ? drawer.getAttribute("data-layout") : "",
+      containerWidth: Math.round(containerRect.width),
+      containerHeight: Math.round(containerRect.height),
+      bottomGap: Math.round(containerRect.bottom - maxBottom),
+      drawerBottomGap: drawerRect ? Math.round(drawerRect.bottom - maxBottom) : 0,
+      minHeight,
+      maxHeight,
+      paneCount: paneRects.length,
+    };
+  });
+  if (
+    fillMetrics.layout === "3x2" &&
+    fillMetrics.paneCount === 6 &&
+    fillMetrics.containerWidth >= 900 &&
+    (fillMetrics.bottomGap > 12 || fillMetrics.drawerBottomGap > 12 || fillMetrics.minHeight < 120 || Math.abs(fillMetrics.maxHeight - fillMetrics.minHeight) > 32)
+  ) {
+    throw new Error(`3x2 worker panes should fill the workbench area: ${JSON.stringify(fillMetrics)}`);
+  }
 }
 
 async function assertOperatorTerminalSurface(page) {

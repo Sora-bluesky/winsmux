@@ -281,12 +281,7 @@ function assertNoFixedViewportBlank(metrics) {
   }
 }
 
-async function maximizeNativeWindowAndReadMetrics(page) {
-  const beforeMetrics = await readViewportFillMetrics(page);
-  await page.evaluate(async () => {
-    const currentWindow = window.__TAURI__.webviewWindow.getCurrentWebviewWindow();
-    await currentWindow.maximize();
-  });
+async function waitForNativeWindowResize(page, beforeMetrics, timeoutMs = 12_000) {
   await page.waitForFunction((before) => {
     const body = document.body;
     if (!body) {
@@ -301,9 +296,79 @@ async function maximizeNativeWindowAndReadMetrics(page) {
       || window.screen.height <= before.innerHeight + 80;
     return fillsViewport && (sizeChanged || alreadyAtScreenLimit);
   }, beforeMetrics, {
-    timeout: 10_000,
+    timeout: timeoutMs,
   });
-  return await readViewportFillMetrics(page);
+}
+
+async function resizeNativeWindowAndReadMetrics(page) {
+  const beforeMetrics = await readViewportFillMetrics(page);
+  const maximizeAttempt = await page.evaluate(async () => {
+    const tauri = window.__TAURI__;
+    const currentWindow = tauri.window?.getCurrentWindow?.()
+      ?? tauri.webviewWindow?.getCurrentWebviewWindow?.();
+    if (!currentWindow) {
+      throw new Error("Tauri current window API is unavailable");
+    }
+    const diagnostics = {
+      api: tauri.window?.getCurrentWindow ? "window" : "webviewWindow",
+      maximizable: null,
+      maximizedBefore: null,
+      innerSizeBefore: null,
+    };
+    diagnostics.maximizable = typeof currentWindow.isMaximizable === "function"
+      ? await currentWindow.isMaximizable().catch((error) => `error:${error instanceof Error ? error.message : String(error)}`)
+      : "missing";
+    diagnostics.maximizedBefore = typeof currentWindow.isMaximized === "function"
+      ? await currentWindow.isMaximized().catch((error) => `error:${error instanceof Error ? error.message : String(error)}`)
+      : "missing";
+    diagnostics.innerSizeBefore = typeof currentWindow.innerSize === "function"
+      ? await currentWindow.innerSize().catch((error) => `error:${error instanceof Error ? error.message : String(error)}`)
+      : "missing";
+    if (typeof currentWindow.setFocus === "function") {
+      await currentWindow.setFocus().catch(() => {});
+    }
+    await currentWindow.maximize();
+    return diagnostics;
+  });
+  try {
+    await waitForNativeWindowResize(page, beforeMetrics);
+    return {
+      ...(await readViewportFillMetrics(page)),
+      nativeResizeMode: "maximize",
+      nativeResizeDiagnostics: maximizeAttempt,
+    };
+  } catch (error) {
+    const fallback = await page.evaluate(async () => {
+      const tauri = window.__TAURI__;
+      const currentWindow = tauri.window?.getCurrentWindow?.()
+        ?? tauri.webviewWindow?.getCurrentWebviewWindow?.();
+      const LogicalSize = tauri.dpi?.LogicalSize ?? tauri.window?.LogicalSize;
+      if (!currentWindow || typeof currentWindow.setSize !== "function" || typeof LogicalSize !== "function") {
+        throw new Error("Tauri setSize fallback is unavailable");
+      }
+      if (typeof currentWindow.unmaximize === "function") {
+        await currentWindow.unmaximize().catch(() => {});
+      }
+      const targetWidth = Math.min(1600, Math.max(1280, Math.floor(window.screen.availWidth * 0.72)));
+      const targetHeight = Math.min(1000, Math.max(820, Math.floor(window.screen.availHeight * 0.72)));
+      await currentWindow.setSize(new LogicalSize(targetWidth, targetHeight));
+      return {
+        mode: "setSize",
+        targetWidth,
+        targetHeight,
+        maximizeError: error instanceof Error ? error.message : String(error),
+      };
+    });
+    await waitForNativeWindowResize(page, beforeMetrics);
+    return {
+      ...(await readViewportFillMetrics(page)),
+      nativeResizeMode: fallback.mode,
+      nativeResizeDiagnostics: {
+        ...maximizeAttempt,
+        fallback,
+      },
+    };
+  }
 }
 
 async function getWorkbenchLayout(page) {
@@ -520,11 +585,17 @@ async function waitForClaudeOperatorReady(page, timeoutMs = 90_000) {
   const startedAt = Date.now();
   let lastOutput = "";
   let lastVisibleText = "";
+  let readySince = 0;
   while (Date.now() - startedAt < timeoutMs) {
     lastOutput = await capturePty(page, "operator").catch((error) => `capture failed: ${error.message}`);
     lastVisibleText = await page.locator("#operator-terminal").innerText().catch((error) => `terminal text failed: ${error.message}`);
     if (isClaudeOperatorReadyText(lastVisibleText) || isClaudeOperatorReadyText(lastOutput)) {
-      return lastOutput;
+      readySince = readySince || Date.now();
+      if (Date.now() - readySince >= 1_000) {
+        return lastOutput;
+      }
+    } else {
+      readySince = 0;
     }
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
@@ -552,12 +623,16 @@ async function pasteIntoTerminal(page, selector, text) {
   let mode;
   if (process.platform === "win32") {
     try {
-      mode = setWindowsClipboardText(text);
-    } catch {
       mode = await pasteViaTerminalClipboardEvent(page, selector, text);
       await waitForVisibleTerminalText(page, selector, text.includes(WORKER_PASTE_MARKER) ? WORKER_PASTE_MARKER : text, 10_000);
-      return `${mode}:windows-clipboard-unavailable`;
+      return `${mode}:windows-webview2`;
+    } catch (error) {
+      mode = setWindowsClipboardText(text);
+      console.warn(`xterm clipboard event paste failed, falling back to ${mode}:`, error);
     }
+    await page.keyboard.press("Control+V");
+    await waitForVisibleTerminalText(page, selector, text.includes(WORKER_PASTE_MARKER) ? WORKER_PASTE_MARKER : text, 10_000);
+    return `${mode}:windows-fallback`;
   } else {
     mode = await setBrowserClipboardText(page, text);
   }
@@ -757,6 +832,296 @@ async function openCommandPaletteAction(page, query, expected) {
   await expected();
 }
 
+async function setWorkerStatusStripFromViewMenu(page, visible) {
+  if ((await page.locator("#worker-status-pill-bar").isVisible().catch(() => false)) === visible) {
+    return;
+  }
+  await page.click("#menu-view-btn");
+  await page.locator("#top-menu-popover").waitFor({ state: "visible", timeout: 10_000 });
+  const label = visible ? /Show worker status|ワーカー状態を表示/ : /Hide worker status|ワーカー状態を隠す/;
+  await page.locator("#top-menu-popover .top-menu-popover-item", { hasText: label }).click();
+  await page.locator("#worker-status-pill-bar").waitFor({ state: visible ? "visible" : "hidden", timeout: 10_000 });
+}
+
+async function ensureAgentVaultOpen(page) {
+  const vaultVisible = await page.locator("#agent-vault-panel").isVisible().catch(() => false);
+  const contextVisible = await page.locator("#context-panel").isVisible().catch(() => false);
+  if (!contextVisible) {
+    await page.click("#activity-context-btn");
+    await page.locator("#context-panel").waitFor({ state: "visible", timeout: 10_000 });
+  }
+  if (!vaultVisible && !(await page.locator("#agent-vault-panel").isVisible().catch(() => false))) {
+    await page.click("#toggle-agent-vault-btn");
+  }
+  await page.locator("#agent-vault-panel").waitFor({ state: "visible", timeout: 10_000 });
+}
+
+async function ensureAgentVaultHasCards(page) {
+  if ((await page.locator(".agent-vault-card").count()) > 0) {
+    return;
+  }
+  const projectFilter = page.locator("#agent-vault-project-filter");
+  if ((await projectFilter.getAttribute("aria-pressed").catch(() => "false")) === "true") {
+    await projectFilter.click();
+  }
+  await page.waitForFunction(
+    () => document.querySelectorAll(".agent-vault-card").length > 0,
+    undefined,
+    { timeout: 20_000 },
+  );
+}
+
+async function exerciseAgentVault(page) {
+  await ensureAgentVaultOpen(page);
+  await page.locator("#agent-vault-ring").waitFor({ state: "visible", timeout: 10_000 });
+  await page.locator("#agent-vault-search").waitFor({ state: "visible", timeout: 10_000 });
+  await page.locator("#agent-vault-provider-filters").waitFor({ state: "visible", timeout: 10_000 });
+  await page.locator("#agent-vault-feed").waitFor({ state: "visible", timeout: 10_000 });
+
+  const initialProviderFilterLabels = await page.locator("#agent-vault-provider-filters button").evaluateAll((buttons) =>
+    buttons.map((button) => button.textContent?.trim() ?? ""),
+  );
+  for (const expectedLabel of ["Claude Code", "Codex", "OpenCode"]) {
+    if (!initialProviderFilterLabels.some((label) => label.includes(expectedLabel))) {
+      throw new Error(`Agent Vault provider filter missing ${expectedLabel}: ${JSON.stringify(initialProviderFilterLabels)}`);
+    }
+  }
+  const workspaceOptions = await page.locator("#agent-vault-workspace-filter option").evaluateAll((options) =>
+    options.map((option) => ({ value: option.value, text: option.textContent?.trim() ?? "" })),
+  );
+  if (!workspaceOptions.some((option) => option.value === "all" && /All folders|すべてのフォルダー/.test(option.text))) {
+    throw new Error(`Agent Vault workspace folder filter is missing the all-folders option: ${JSON.stringify(workspaceOptions)}`);
+  }
+  await page.evaluate(() => {
+    const select = document.querySelector("#agent-vault-workspace-filter");
+    if (!(select instanceof HTMLSelectElement)) {
+      throw new Error("Agent Vault workspace filter is unavailable");
+    }
+    select.value = "all";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await page.locator("#agent-vault-project-filter[aria-pressed='false']").waitFor({ timeout: 10_000 });
+  const allWorkspacePreference = await page.evaluate(() => {
+    const rawValue = localStorage.getItem("winsmux.agent-vault.preferences.v1");
+    return rawValue ? JSON.parse(rawValue).projectOnly : null;
+  });
+  if (allWorkspacePreference !== false) {
+    throw new Error(`Selecting all Agent Vault workspaces should clear the project-only preference: ${JSON.stringify(allWorkspacePreference)}`);
+  }
+  if (workspaceOptions.length > 1) {
+    await page.selectOption("#agent-vault-workspace-filter", workspaceOptions[1].value);
+    await page.waitForFunction(
+      () => document.querySelectorAll(".agent-vault-card").length > 0,
+      undefined,
+      { timeout: 10_000 },
+    );
+    await page.selectOption("#agent-vault-workspace-filter", "all");
+  }
+
+  await ensureAgentVaultHasCards(page);
+  await page.evaluate(() => {
+    const select = document.querySelector("#agent-vault-workspace-filter");
+    if (!(select instanceof HTMLSelectElement)) {
+      throw new Error("Agent Vault workspace filter is unavailable");
+    }
+    const staleOption = document.createElement("option");
+    staleOption.value = "__winsmux_stale_workspace__";
+    staleOption.textContent = "Stale workspace";
+    select.appendChild(staleOption);
+    select.value = staleOption.value;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await page.waitForFunction(
+    () => {
+      const select = document.querySelector("#agent-vault-workspace-filter");
+      return select instanceof HTMLSelectElement
+        && select.value === "all"
+        && document.querySelectorAll(".agent-vault-card").length > 0
+        && !document.querySelector(".agent-vault-empty");
+    },
+    undefined,
+    { timeout: 10_000 },
+  );
+  const providerFilterLabels = await page.locator("#agent-vault-provider-filters button").evaluateAll((buttons) =>
+    buttons.map((button) => button.textContent?.trim() ?? ""),
+  );
+  const visibleCardCount = await page.locator(".agent-vault-card").count();
+  const allProviderCount = Number((providerFilterLabels[0]?.match(/(\d+)\s*$/) ?? [])[1] ?? "0");
+  if (allProviderCount < visibleCardCount) {
+    throw new Error(`Agent Vault provider counts should include visible cards: ${JSON.stringify({ providerFilterLabels, visibleCardCount })}`);
+  }
+  const firstTitle = (await page.locator(".agent-vault-card-title").first().innerText()).trim();
+  const searchTerm = firstTitle.split(/\s+/)[0] || firstTitle;
+  await page.fill("#agent-vault-search", "__winsmux_no_agent_vault_match__");
+  await page.locator(".agent-vault-empty", { hasText: /No sessions match|一致するセッション/ }).waitFor({ state: "visible", timeout: 10_000 });
+  await page.fill("#agent-vault-search", searchTerm);
+  await page.waitForFunction(
+    () => document.querySelectorAll(".agent-vault-card").length > 0,
+    undefined,
+    { timeout: 10_000 },
+  );
+  await page.fill("#agent-vault-search", "");
+  await ensureAgentVaultHasCards(page);
+
+  const projectFilter = page.locator("#agent-vault-project-filter");
+  const pressedBefore = await projectFilter.getAttribute("aria-pressed");
+  await projectFilter.click();
+  const pressedAfter = await projectFilter.getAttribute("aria-pressed");
+  if (pressedBefore === pressedAfter) {
+    throw new Error("Agent Vault project filter did not toggle aria-pressed");
+  }
+  const projectOnlyPreference = await page.evaluate(() => {
+    const rawValue = localStorage.getItem("winsmux.agent-vault.preferences.v1");
+    return rawValue ? JSON.parse(rawValue).projectOnly : null;
+  });
+  if (projectOnlyPreference !== (pressedAfter === "true")) {
+    throw new Error(`Agent Vault project filter preference was not persisted: ${projectOnlyPreference}`);
+  }
+  await projectFilter.click();
+
+  const allFilter = page.locator("#agent-vault-provider-filters button").first();
+  await allFilter.click();
+  const allPressed = await allFilter.getAttribute("aria-pressed");
+  if (allPressed !== "true") {
+    throw new Error("Agent Vault all-provider filter did not become active");
+  }
+  await ensureAgentVaultHasCards(page);
+
+  const firstProviderHeading = page.locator(".agent-vault-provider-heading").first();
+  await firstProviderHeading.click();
+  const collapsedExpandedState = await page.locator(".agent-vault-provider-heading").first().getAttribute("aria-expanded");
+  const collapsedPreference = await page.evaluate(() => {
+    const rawValue = localStorage.getItem("winsmux.agent-vault.preferences.v1");
+    return rawValue ? JSON.parse(rawValue).collapsedProviderIds : null;
+  });
+  if (collapsedExpandedState !== "false" || !Array.isArray(collapsedPreference) || collapsedPreference.length < 1) {
+    throw new Error(`Agent Vault provider collapse state was not persisted: ${JSON.stringify({ collapsedExpandedState, collapsedPreference })}`);
+  }
+  await page.locator(".agent-vault-provider-heading").first().click();
+  await ensureAgentVaultHasCards(page);
+
+  const layoutMetrics = await page.locator("#agent-vault-panel").evaluate((panel) => {
+    const rect = panel.getBoundingClientRect();
+    const context = document.querySelector("#context-panel")?.getBoundingClientRect();
+    const search = document.querySelector("#agent-vault-search");
+    const workspaceFilter = document.querySelector("#agent-vault-workspace-filter");
+    const list = document.querySelector("#agent-vault-session-list");
+    return {
+      panelWidth: Math.round(rect.width),
+      panelHeight: Math.round(rect.height),
+      panelLeft: Math.round(rect.left),
+      panelRight: Math.round(rect.right),
+      contextLeft: context ? Math.round(context.left) : 0,
+      contextRight: context ? Math.round(context.right) : 0,
+      viewportWidth: window.innerWidth,
+      containedByContext: context
+        ? rect.left >= context.left - 1 && rect.right <= context.right + 1
+        : false,
+      searchFits: search instanceof HTMLElement ? search.scrollWidth <= search.clientWidth + 1 : false,
+      workspaceFilterFits: workspaceFilter instanceof HTMLElement ? workspaceFilter.scrollWidth <= workspaceFilter.clientWidth + 1 : false,
+      listWidth: list instanceof HTMLElement ? Math.round(list.getBoundingClientRect().width) : 0,
+    };
+  });
+  if (layoutMetrics.panelWidth < 240 || layoutMetrics.panelHeight < 160 || !layoutMetrics.searchFits || !layoutMetrics.workspaceFilterFits) {
+    throw new Error(`Agent Vault right sidebar layout is clipped: ${JSON.stringify(layoutMetrics)}`);
+  }
+  if (!layoutMetrics.containedByContext) {
+    throw new Error(`Agent Vault should stay in the right context sidebar: ${JSON.stringify(layoutMetrics)}`);
+  }
+
+  const ringText = (await page.locator("#agent-vault-ring").innerText()).trim();
+  const feedText = (await page.locator("#agent-vault-feed").innerText()).trim();
+  if (!ringText || !feedText) {
+    throw new Error(`Agent Vault notification ring or feed is empty: ring=${ringText} feed=${feedText}`);
+  }
+
+  const duplicateRestoreTargetId = "pane-worker-5";
+  await closePtyIfExists(page, "worker-5");
+  await page.waitForFunction(
+    () => /not started|未起動/i.test(document.querySelector("#pane-worker-5 .pane-meta")?.textContent ?? ""),
+    undefined,
+    { timeout: 10_000 },
+  );
+  await page.evaluate((targetId) => {
+    const cardElement = document.querySelector(".agent-vault-card");
+    const targetElement = document.getElementById(targetId);
+    if (!(cardElement instanceof HTMLElement) || !(targetElement instanceof HTMLElement)) {
+      throw new Error("Agent Vault duplicate restore source or target pane was not found");
+    }
+    const sessionId = cardElement.dataset.sessionId;
+    if (!sessionId) {
+      throw new Error("Agent Vault duplicate restore source has no session id");
+    }
+    const dispatchDrop = () => {
+      const dataTransfer = new DataTransfer();
+      dataTransfer.setData("application/x-winsmux-agent-vault-session", sessionId);
+      cardElement.dispatchEvent(new DragEvent("dragstart", { bubbles: true, cancelable: true, dataTransfer }));
+      targetElement.dispatchEvent(new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer }));
+      targetElement.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer }));
+    };
+    dispatchDrop();
+    dispatchDrop();
+  }, duplicateRestoreTargetId);
+  await page.waitForFunction(
+    () => /already starting|復元を開始中/.test(document.querySelector("#agent-vault-drop-status")?.textContent ?? ""),
+    undefined,
+    { timeout: 15_000 },
+  );
+  const duplicateRestoreGuardStatus = (await page.locator("#agent-vault-drop-status").innerText()).trim();
+  await page.waitForFunction(
+    () => {
+      const status = document.querySelector("#agent-vault-drop-status")?.textContent ?? "";
+      return /Restoring|復元/.test(status) && /worker-5/.test(status);
+    },
+    undefined,
+    { timeout: 30_000 },
+  );
+
+  await page.waitForFunction(
+    () => Boolean(document.querySelector(".agent-vault-card") && document.querySelector("#pane-worker-6")),
+    undefined,
+    { timeout: 10_000 },
+  );
+  await page.evaluate(() => {
+    const cardElement = document.querySelector(".agent-vault-card");
+    const targetElement = document.querySelector("#pane-worker-6");
+    if (!(cardElement instanceof HTMLElement) || !(targetElement instanceof HTMLElement)) {
+      throw new Error("Agent Vault drag source or target pane was not found");
+    }
+    const dataTransfer = new DataTransfer();
+    const sessionId = cardElement.dataset.sessionId;
+    if (sessionId) {
+      dataTransfer.setData("application/x-winsmux-agent-vault-session", sessionId);
+    }
+    cardElement.dispatchEvent(new DragEvent("dragstart", { bubbles: true, cancelable: true, dataTransfer }));
+    targetElement.dispatchEvent(new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer }));
+    targetElement.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer }));
+  });
+  await page.waitForFunction(
+    () => {
+      const status = document.querySelector("#agent-vault-drop-status")?.textContent ?? "";
+      return /Restoring|復元/.test(status) && /worker-6/.test(status);
+    },
+    undefined,
+    { timeout: 15_000 },
+  );
+  await page.locator("#conversation-panel", { hasText: "Session restore started" }).waitFor({ state: "visible", timeout: 15_000 });
+  const restoreStatus = (await page.locator("#agent-vault-drop-status").innerText()).trim();
+
+  return {
+    providerFilterLabels,
+    workspaceOptions,
+    firstTitle,
+    projectOnlyPreference,
+    collapsedPreference,
+    ringText,
+    feedText,
+    duplicateRestoreGuardStatus,
+    restoreStatus,
+    layoutMetrics,
+  };
+}
+
 async function waitForTauriPage(browser, predicate, timeoutMs = 20_000) {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
@@ -836,21 +1201,15 @@ async function exerciseTauriNativeSurface(page, browser) {
   await popout.locator("#editor-surface").waitFor({ state: "visible" });
   await popout.locator("#editor-code", { hasText: "@tauri-apps/plugin-dialog" }).waitFor({ state: "visible" });
   const popoutLabel = await popout.evaluate(() => window.__TAURI__.webviewWindow.getCurrentWebviewWindow().label);
-  await popout.click("#close-editor-btn");
-  await page.waitForFunction(
-    async (label) => {
-      const windows = await window.__TAURI__.webviewWindow.getAllWebviewWindows();
-      return !windows.some((item) => item.label === label);
-    },
-    popoutLabel,
-    { timeout: 20_000 },
-  );
+  await popout.close({ runBeforeUnload: false }).catch(() => {});
+  await page.locator("#workspace").waitFor({ state: "visible", timeout: 10_000 });
 
   return {
     apiSurface,
     contractMethods: contract.methods.length,
     editorLineCount: editorFile.line_count,
     explorerEntryCount: explorer.entries.length,
+    popoutLabel,
     voiceStates: {
       initial: voiceInitial?.native?.state,
       start: voiceStart?.native?.state,
@@ -911,8 +1270,8 @@ async function main() {
       return metrics;
     });
 
-    await runStep("maximized desktop window still fills the WebView", async () => {
-      const metrics = await maximizeNativeWindowAndReadMetrics(page);
+    await runStep("native desktop window resize still fills the WebView", async () => {
+      const metrics = await resizeNativeWindowAndReadMetrics(page);
       assertNoFixedViewportBlank(metrics);
       return metrics;
     });
@@ -1015,6 +1374,7 @@ async function main() {
 
     await runStep("worker status pills mirror native state and focus panes", async () => {
       await ensureDrawerOpen(page);
+      await setWorkerStatusStripFromViewMenu(page, true);
       await page.locator("#worker-status-pill-bar").waitFor({ state: "visible", timeout: 10_000 });
       const workerOnePill = page.locator('.worker-status-pill[data-worker-status-target="worker-1"]');
       await workerOnePill.waitFor({ state: "visible", timeout: 10_000 });
@@ -1086,6 +1446,59 @@ async function main() {
       return;
     }
 
+    await runStep("View menu hides worker status so worker panes keep primary space", async () => {
+      const before = await page.locator("#panes-container").evaluate((container) => ({
+        top: Math.round(container.getBoundingClientRect().top),
+        height: Math.round(container.getBoundingClientRect().height),
+        statusVisible: !document.querySelector("#worker-status-pill-bar")?.hasAttribute("hidden"),
+      }));
+      await setWorkerStatusStripFromViewMenu(page, false);
+      const after = await page.locator("#panes-container").evaluate((container) => ({
+        top: Math.round(container.getBoundingClientRect().top),
+        height: Math.round(container.getBoundingClientRect().height),
+        statusVisible: !document.querySelector("#worker-status-pill-bar")?.hasAttribute("hidden"),
+      }));
+      if (after.statusVisible) {
+        throw new Error(`worker status strip should be hidden from the View menu: ${JSON.stringify({ before, after })}`);
+      }
+      if (after.top >= before.top - 8 || after.height < before.height - 8) {
+        throw new Error(`worker panes should move up and keep primary space after hiding status: ${JSON.stringify({ before, after })}`);
+      }
+      const fillMetrics = await page.locator("#panes-container").evaluate((container) => {
+        const containerRect = container.getBoundingClientRect();
+        const drawerRect = document.querySelector("#terminal-drawer")?.getBoundingClientRect();
+        const paneRects = Array.from(container.querySelectorAll(".pane:not([hidden])")).map((pane) => {
+          const rect = pane.getBoundingClientRect();
+          return {
+            top: Math.round(rect.top),
+            bottom: Math.round(rect.bottom),
+            height: Math.round(rect.height),
+          };
+        });
+        const maxBottom = Math.max(...paneRects.map((rect) => rect.bottom));
+        const minHeight = Math.min(...paneRects.map((rect) => rect.height));
+        const maxHeight = Math.max(...paneRects.map((rect) => rect.height));
+        return {
+          containerTop: Math.round(containerRect.top),
+          containerBottom: Math.round(containerRect.bottom),
+          containerHeight: Math.round(containerRect.height),
+          bottomGap: Math.round(containerRect.bottom - maxBottom),
+          drawerBottomGap: drawerRect ? Math.round(drawerRect.bottom - maxBottom) : 0,
+          minHeight,
+          maxHeight,
+          paneCount: paneRects.length,
+        };
+      });
+      if (fillMetrics.paneCount !== 6 || fillMetrics.bottomGap > 10 || fillMetrics.drawerBottomGap > 10 || fillMetrics.minHeight < 120 || Math.abs(fillMetrics.maxHeight - fillMetrics.minHeight) > 24) {
+        throw new Error(`worker panes should fill the available workbench area: ${JSON.stringify(fillMetrics)}`);
+      }
+      return { before, after, fillMetrics };
+    });
+
+    await runStep("Agent Vault indexes, searches, filters, feeds, and restores sessions from the right sidebar", async () => {
+      return await exerciseAgentVault(page);
+    });
+
     await runStep("worker terminal keeps shortcuts, arrows, and paste in the PTY", async () => {
       const terminalSelector = "#pane-worker-1 .pane-terminal";
       await page.click(terminalSelector, { timeout: 10_000 });
@@ -1102,10 +1515,10 @@ async function main() {
       await page.keyboard.press("Control+C");
       await waitForPtyPrompt(page, "worker-1");
 
-      await page.keyboard.type("Write-Output 'RAW_AC'", { delay: 2 });
+      await page.waitForTimeout(250);
+      await page.keyboard.type("Write-Output 'RAW_AB'", { delay: 10 });
       await page.keyboard.press("ArrowLeft");
-      await page.keyboard.press("ArrowLeft");
-      await page.keyboard.type("B", { delay: 2 });
+      await page.keyboard.type("C", { delay: 10 });
       await page.keyboard.press("End");
       await page.keyboard.press("Enter");
       const arrowOutput = await waitForPtyOutputLine(page, "worker-1", WORKER_ARROW_MARKER);
@@ -1141,13 +1554,15 @@ async function main() {
       await startOperatorFromUiAndWaitForClaude(page);
       // Claude Code uses `!` as its shell-command prefix; this is typed into the operator, not PowerShell.
       const claudeShellCommand = `!pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File '${scriptPath.replace(/'/g, "''")}'`;
-      await typeIntoTerminal(page, "#operator-terminal-panel", claudeShellCommand);
+      const pasteMode = await pasteIntoTerminal(page, "#operator-terminal-panel", claudeShellCommand);
+      await page.keyboard.press("Enter");
       await waitForPtyOutput(page, "operator", "PIPE_CONTRACT_OK");
       const operatorOutput = await waitForPtyOutput(page, "operator", "PIPE_RESPONSE:");
       const workerOutput = await waitForPtyOutputLine(page, "worker-2", OPERATOR_TO_WORKER_MARKER);
       return {
         operatorTail: operatorOutput.slice(-1_200),
         workerTail: workerOutput.slice(-800),
+        pasteMode,
       };
     });
 
@@ -1195,6 +1610,7 @@ async function main() {
       await page.locator("#attachment-tray", { hasText: "composer-attachment.txt" }).waitFor({ state: "visible" });
       const message = COMPOSER_ATTACHMENT_MARKER;
       await startOperatorFromUiAndWaitForClaude(page);
+      await clearOperatorInputFromUi(page);
       await page.fill("#composer-input", message);
       await page.click("#send-btn");
       await page.waitForFunction(() => {
@@ -1298,6 +1714,7 @@ async function main() {
       await setWorkbenchLayout(page, "focus");
       await page.selectOption("#focused-pane-select", "worker-1");
       await setWorkbenchLayout(page, "3x2");
+      await setWorkerStatusStripFromViewMenu(page, true);
       await page.locator('.worker-status-detail-strip[data-worker-status-detail="worker-1"] .worker-status-pill-chip[data-status-field="launch"]', { hasText: "launch:not_launched" }).waitFor({ state: "visible", timeout: 60_000 });
       await page.locator('.worker-status-detail-strip[data-worker-status-detail="worker-1"] .worker-status-pill-chip[data-status-field="heartbeat"]', { hasText: "hb:none" }).waitFor({ state: "visible", timeout: 60_000 });
       await page.click("#start-worker-btn");
@@ -1314,10 +1731,12 @@ async function main() {
     });
 
     await runStep("close spawned PTYs", async () => {
-      await closePtyIfExists(page, "worker-1");
-      await closePtyIfExists(page, "worker-2");
-      await closePtyIfExists(page, "operator");
-    });
+    await closePtyIfExists(page, "worker-1");
+    await closePtyIfExists(page, "worker-2");
+    await closePtyIfExists(page, "worker-5");
+    await closePtyIfExists(page, "worker-6");
+    await closePtyIfExists(page, "operator");
+  });
 
     await ensureOutputDir();
     await page.screenshot({ path: path.join(OUTPUT_DIR, "desktop-pane-e2e-success.png"), fullPage: true });
