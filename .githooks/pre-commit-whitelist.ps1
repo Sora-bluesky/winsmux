@@ -86,6 +86,7 @@ $whitelistPatterns = @(
     'tests/NpmReleasePackage.Tests.ps1',
     'tests/VersionSurface.Tests.ps1',
     'tests/ThreatModelContract.Tests.ps1',
+    'tests/Integration.PluginHookLoader.Tests.ps1',
     'tests/fixtures/rust-parity/*.json',
     'tests/fixtures/rust-parity/*.jsonl',
     'tests/fixtures/rust-parity/*.yaml',
