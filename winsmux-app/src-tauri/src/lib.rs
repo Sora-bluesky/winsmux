@@ -16,7 +16,7 @@ use pty_backend::{
 };
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -42,6 +42,73 @@ const NATIVE_VOICE_METER_ONLY_REASON: &str =
     "Native microphone capture is available for metering only; desktop dictation still uses the documented text fallback.";
 const NATIVE_VOICE_DICTATION_FALLBACK_REASON: &str =
     "Use browser speech recognition for composer dictation. Native microphone capture does not transcribe audio into text.";
+
+fn normalize_existing_launch_project_dir(value: &str) -> Option<String> {
+    let trimmed = value.trim().trim_matches('"').trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let path = PathBuf::from(trimmed);
+    if path.is_dir() {
+        Some(path.to_string_lossy().to_string())
+    } else {
+        None
+    }
+}
+
+fn resolve_initial_project_dir_from_args<I>(args: I) -> Option<String>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut args = args.into_iter();
+    let _ = args.next();
+
+    while let Some(arg) = args.next() {
+        let trimmed = arg.trim();
+        if trimmed.is_empty() || trimmed == "--" {
+            continue;
+        }
+
+        if trimmed == "--project-dir" || trimmed == "--workspace" {
+            if let Some(value) = args.next() {
+                if let Some(path) = normalize_existing_launch_project_dir(&value) {
+                    return Some(path);
+                }
+            }
+            continue;
+        }
+
+        if let Some(value) = trimmed.strip_prefix("--project-dir=") {
+            if let Some(path) = normalize_existing_launch_project_dir(value) {
+                return Some(path);
+            }
+            continue;
+        }
+
+        if let Some(value) = trimmed.strip_prefix("--workspace=") {
+            if let Some(path) = normalize_existing_launch_project_dir(value) {
+                return Some(path);
+            }
+            continue;
+        }
+
+        if trimmed.starts_with('-') {
+            continue;
+        }
+
+        if let Some(path) = normalize_existing_launch_project_dir(trimmed) {
+            return Some(path);
+        }
+    }
+
+    None
+}
+
+#[tauri::command]
+fn desktop_initial_project_dir() -> Option<String> {
+    resolve_initial_project_dir_from_args(std::env::args())
+}
 
 struct SinglePty {
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
@@ -137,6 +204,13 @@ fn start_desktop_summary_refresh_streams(app: &AppHandle) {
     ) {
         eprintln!("Failed to start desktop summary stream adapter: {}", err);
     }
+}
+
+fn schedule_desktop_summary_refresh_streams(app: AppHandle) {
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(250));
+        start_desktop_summary_refresh_streams(&app);
+    });
 }
 
 fn update_voice_capture_snapshot(
@@ -1137,7 +1211,7 @@ pub fn run() {
             start_control_pipe_server(Arc::new(TauriPtyTransport {
                 app: app_handle.clone(),
             }));
-            start_desktop_summary_refresh_streams(&app_handle);
+            schedule_desktop_summary_refresh_streams(app_handle);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1147,6 +1221,7 @@ pub fn run() {
             desktop_voice_capture_status,
             desktop_voice_capture_start,
             desktop_voice_capture_stop,
+            desktop_initial_project_dir,
             pty_json_rpc,
             pty_spawn,
             pty_write,
@@ -1171,6 +1246,57 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn make_temp_launch_project(name: &str) -> PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("winsmux-launch-arg-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).expect("temp launch project should be created");
+        path
+    }
+
+    #[test]
+    fn launch_project_dir_accepts_explicit_flag() {
+        let project_dir = make_temp_launch_project("explicit");
+        let project_arg = project_dir.to_string_lossy().to_string();
+        let resolved = resolve_initial_project_dir_from_args([
+            "winsmux-app.exe".to_string(),
+            "--project-dir".to_string(),
+            project_arg.clone(),
+        ])
+        .expect("project dir should resolve");
+
+        assert_eq!(resolved, project_arg);
+        let _ = std::fs::remove_dir_all(project_dir);
+    }
+
+    #[test]
+    fn launch_project_dir_accepts_explorer_positional_path() {
+        let project_dir = make_temp_launch_project("positional");
+        let project_arg = project_dir.to_string_lossy().to_string();
+        let resolved = resolve_initial_project_dir_from_args([
+            "winsmux-app.exe".to_string(),
+            project_arg.clone(),
+        ])
+        .expect("project dir should resolve");
+
+        assert_eq!(resolved, project_arg);
+        let _ = std::fs::remove_dir_all(project_dir);
+    }
+
+    #[test]
+    fn launch_project_dir_rejects_missing_or_non_directory_args() {
+        let missing =
+            std::env::temp_dir().join(format!("winsmux-launch-arg-missing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&missing);
+        let resolved = resolve_initial_project_dir_from_args([
+            "winsmux-app.exe".to_string(),
+            "--project-dir".to_string(),
+            missing.to_string_lossy().to_string(),
+        ]);
+
+        assert!(resolved.is_none());
+    }
 
     #[test]
     fn trim_pty_history_preserves_utf8_boundaries() {

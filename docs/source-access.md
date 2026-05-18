@@ -18,7 +18,7 @@ not a full implementation source drop. Public releases include:
 
 The public repository can keep documentation, release metadata, examples,
 security policy, and compatibility notes. Public documentation must not describe
-private source-sharing, review, or business arrangements.
+non-public agreements or internal operational planning.
 
 ## Boundary
 
@@ -27,4 +27,4 @@ access to the full implementation. Public releases do not grant rights to
 redistribute winsmux or create a competing public source mirror.
 
 Security reports should use the public security policy. Do not send secrets,
-credentials, or private customer data through public issue discussions.
+credentials, or customer data through public issue discussions.

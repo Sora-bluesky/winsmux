@@ -382,6 +382,30 @@ async function clickTopMenuItems(page, menuId) {
   }
 }
 
+async function ensureWorkerStatusStripVisible(page) {
+  const statusPill = page.locator('.worker-status-pill[data-worker-status-target="worker-2"]').first();
+  if (await statusPill.isVisible({ timeout: 1_000 }).catch(() => false)) {
+    return statusPill;
+  }
+
+  await openTopMenu(page, "menu-view-btn");
+  const showWorkerStatus = page
+    .locator("#top-menu-popover .top-menu-popover-item")
+    .filter({ hasText: /Show worker status|ワーカー状態を表示/ })
+    .first();
+  if (!(await showWorkerStatus.isVisible({ timeout: 2_000 }).catch(() => false))) {
+    const menuText = (await page.locator("#top-menu-popover .top-menu-popover-item").allTextContents().catch(() => []))
+      .map((text) => text.replace(/\s+/g, " ").trim())
+      .join(" | ");
+    await page.keyboard.press("Escape").catch(() => {});
+    throw new Error(`Worker status strip is hidden and View menu did not expose the restore action: ${menuText}`);
+  }
+
+  await clickLocator(page, showWorkerStatus, "workbench show worker status", { settleMs: 200 });
+  await statusPill.waitFor({ state: "visible", timeout: 5_000 });
+  return statusPill;
+}
+
 async function testTopMenus(page) {
   for (const menuId of [
     "menu-file-btn",
@@ -558,8 +582,7 @@ async function testWorkbench(page) {
     await page.selectOption("#focused-pane-select", value ?? "worker-1");
     recordClick("workbench focused pane select");
   }
-  const statusPill = page.locator('.worker-status-pill[data-worker-status-target="worker-2"]').first();
-  await statusPill.waitFor({ state: "visible" });
+  const statusPill = await ensureWorkerStatusStripVisible(page);
   await clickLocator(page, statusPill, "workbench worker status pill");
   await page.waitForFunction(() => {
     const drawer = document.querySelector("#terminal-drawer");

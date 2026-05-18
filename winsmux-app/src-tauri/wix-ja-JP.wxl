@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<WixLocalization Culture="ja-jp" Codepage="932" xmlns="http://schemas.microsoft.com/wix/2006/localization">
+  <String Id="TauriLanguage">1041</String>
+  <String Id="TauriCodepage">932</String>
+  <String Id="LaunchApp">winsmux を起動</String>
+  <String Id="DowngradeErrorMessage">新しいバージョンの winsmux が既にインストールされています。</String>
+  <String Id="PathEnvVarFeature">winsmux 実行ファイルのインストール先を PATH に追加します。これにより、任意の場所から winsmux を呼び出せます。</String>
+  <String Id="InstallAppFeature">winsmux をインストールします。</String>
+  <String Id="OpenWithWinsmux">winsmuxで開く</String>
+</WixLocalization>
