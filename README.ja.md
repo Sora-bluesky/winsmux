@@ -80,6 +80,7 @@ winsmux launch
 初回の流れは [クイックスタート](docs/quickstart.ja.md) を参照してください。
 デスクトップインストーラー、CLI プロファイル、更新、アンインストールは [インストール](docs/installation.ja.md) にまとめています。
 起動プリセット、ワークツリー方針、スロット、資格情報、デスクトップ設定は [カスタマイズ](docs/customization.ja.md) を参照してください。
+`v1.0.0` 以降のソースアクセスと再配布の境界は [ソースアクセス](docs/source-access.ja.md) を参照してください。
 
 ## 主要コマンド
 

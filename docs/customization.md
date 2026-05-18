@@ -340,6 +340,10 @@ Use the desktop app for:
 - drilling into source-level context
 - keeping terminal diagnostics available without making them the primary surface
 
-### Known limitations
+### Shutdown cleanup
 
-As of `v0.36.8`, desktop shutdown child-process cleanup is not product-complete. This is tracked in [issue #967](https://github.com/Sora-bluesky/winsmux/issues/967). When complete cleanup is required, verify after closing the app that related worker shells and desktop child processes are not still running.
+Desktop shutdown now runs the same cleanup path for window close and final app
+exit. It stops the summary stream, stops native voice capture when active,
+removes all active PTY panes from the desktop registry, kills their child
+processes, and waits briefly for those children to exit. `pty.close` remains
+available when a client wants to close one pane before the whole app exits.

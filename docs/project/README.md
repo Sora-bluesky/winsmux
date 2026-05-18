@@ -23,3 +23,4 @@ Contributor-facing contract inventory:
 - [Enterprise Strategy Roadmap Alignment](./enterprise-strategy-roadmap-alignment.md)
 - [Upstream Reevaluation Gate](./upstream-reevaluation-gate.md)
 - [Upstream Snapshot Baseline](./upstream-snapshot-baseline.md)
+- [v1.0.0 Release Gate](./v1-release-gate.md)

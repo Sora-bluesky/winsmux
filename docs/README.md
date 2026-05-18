@@ -7,6 +7,7 @@ Use this page as the public map for winsmux setup and operation.
 - [Quickstart](quickstart.md) - install the desktop app or CLI package, create project settings, launch a managed workspace, and send the first pane instruction.
 - [Installation](installation.md) - requirements, desktop installers, CLI profiles, updates, uninstall steps, and package behavior.
 - [Customization](customization.md) - launcher presets, workspace lifecycle, agent slots, credentials, and desktop preferences.
+- [Source access](source-access.md) - `v1.0.0` source access and redistribution boundary.
 - [Google Colab workers](google-colab-workers.md) - prepare `H100` / `A100` one-shot worker execution, uploads, downloads, and model metadata.
 
 ## Understand the model

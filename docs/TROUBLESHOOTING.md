@@ -93,11 +93,15 @@ Fix:
 - run repository-level `git add`, `git commit`, and `git push` from a regular shell
 - use `apply_patch` or `cmd /c` for pane-side file writes
 
-### Background processes remain after closing the desktop app
+### Verify desktop child-process cleanup
 
-Known issue: desktop shutdown child-process cleanup is still tracked in [issue #967](https://github.com/Sora-bluesky/winsmux/issues/967). Until that is complete, closing the desktop app may leave a worker shell, adapter process, or desktop child process running.
+Closing the desktop app requests the summary stream to stop, stops native voice
+capture when active, drains the PTY pane registry, and waits briefly after
+killing worker-pane child processes. If the desktop feels slow to exit, wait a
+few seconds before checking process state.
 
-Check for winsmux-owned processes before killing anything:
+When debugging a suspected leak, check for winsmux-owned processes before
+killing anything:
 
 ```powershell
 Get-Process node,cargo,winsmux-app -ErrorAction SilentlyContinue |
