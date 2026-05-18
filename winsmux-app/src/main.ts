@@ -8,6 +8,7 @@ import {
   applyDesktopRuntimeRolePreferences,
   compareDesktopRuns,
   getDesktopEditorFile,
+  getDesktopInitialProjectDir,
   getDesktopRunExplain,
   getDesktopExplorerEntries,
   getDesktopSummarySnapshot,
@@ -345,6 +346,7 @@ interface ShellPreferenceState extends ThemeState {
   workbenchWidth: number | null;
   wideSidebarOpen: boolean;
   wideContextOpen: boolean;
+  agentVaultOpen: boolean;
   workbenchOpen: boolean;
   workerStatusStripVisible: boolean;
   workbenchLayout: WorkbenchLayoutMode;
@@ -510,7 +512,8 @@ let editorSurfaceMode: "code" | "preview" = "code";
 let settingsSheetOpen = false;
 let sidebarOpen = true;
 let sidebarMode: SidebarMode = "explorer";
-let agentVaultOpen = true;
+let agentVaultOpen = false;
+let mainWindowRevealStarted = false;
 let agentVaultQuery = "";
 let agentVaultProjectOnly = true;
 let agentVaultProviderFilter: AgentVaultProviderFilter = "all";
@@ -659,7 +662,7 @@ const MIN_WORKBENCH_WIDTH_2X2 = 620;
 const MIN_WORKBENCH_WIDTH_3X2 = 960;
 const MAX_WORKBENCH_WIDTH = 1600;
 const MAX_WORKBENCH_PANES = 6;
-const SHELL_PREFERENCES_UI_VERSION = 3;
+const SHELL_PREFERENCES_UI_VERSION = 4;
 const LEGACY_DEFAULT_EDITOR_FONT_SIZE = 14;
 const LEGACY_DEFAULT_SIDEBAR_WIDTH = 292;
 const WINSMUX_DARK_TERMINAL_THEME = {
@@ -1588,7 +1591,7 @@ function markPanePtyStoppedFromExternalEvent(paneId: string) {
   }
 }
 
-function createPane(paneId?: string): string {
+function createPane(paneId?: string, options?: { deferWorkbenchUpdate?: boolean }): string {
   const id = paneId || getNextWorkerPaneId();
   const container = document.getElementById("panes-container");
   if (!container) {
@@ -1642,7 +1645,6 @@ function createPane(paneId?: string): string {
   const fitAddon = new FitAddon();
   terminal.loadAddon(fitAddon);
   terminal.open(termDiv);
-  fitAddon.fit();
 
   terminal.onData((data: string) => {
     void ensurePanePtyStarted(id).then(() => writePtyData(id, data)).catch((error) => {
@@ -1674,7 +1676,10 @@ function createPane(paneId?: string): string {
   if (!paneId && workbenchLayout === "2x2" && panes.size > 4) {
     workbenchLayout = "3x2";
   }
-  updateWorkbenchControls();
+  if (!options?.deferWorkbenchUpdate) {
+    updateWorkbenchControls();
+    scheduleWorkbenchPaneFit();
+  }
 
   if (shouldAutoStartPane(id)) {
     void ensurePanePtyStarted(id);
@@ -2836,6 +2841,20 @@ function updateAgentVaultToggleButton() {
   document.getElementById("toggle-agent-vault-btn")?.setAttribute("aria-expanded", isVisible ? "true" : "false");
 }
 
+function setAgentVaultPanelOpen(open: boolean, options?: { preserveWidePreference?: boolean }) {
+  agentVaultOpen = open;
+  if (open) {
+    setContextPanel(true, options);
+  } else if (contextPanelOpen) {
+    setContextPanel(false, options);
+  } else {
+    renderAgentVaultPanel();
+    syncActivityButtons();
+  }
+  void persistThemeState();
+  scheduleWorkbenchPaneFit();
+}
+
 function renderAgentVaultSessionCard(entry: AgentVaultSessionEntry) {
   const card = document.createElement("article");
   card.className = "agent-vault-card";
@@ -3245,22 +3264,30 @@ async function startFocusedWorkerFromDesktop() {
   }
 }
 
-function ensureDefaultWorkbenchPanes() {
+function ensureDefaultWorkbenchPanes(options?: { deferWorkbenchUpdate?: boolean }) {
   const defaultPaneIds = ["worker-1", "worker-2", "worker-3", "worker-4"];
+  let created = false;
   for (const id of defaultPaneIds) {
     if (panes.size >= 4) {
       break;
     }
     if (!panes.has(id)) {
-      createPane(id);
+      createPane(id, options);
+      created = true;
     }
   }
+  return created;
 }
 
 function ensureWorkbenchPaneCount(targetCount: number) {
-  ensureDefaultWorkbenchPanes();
+  let created = ensureDefaultWorkbenchPanes({ deferWorkbenchUpdate: true });
   while (panes.size < targetCount && panes.size < MAX_WORKBENCH_PANES) {
-    createPane();
+    createPane(undefined, { deferWorkbenchUpdate: true });
+    created = true;
+  }
+  if (created) {
+    updateWorkbenchControls();
+    scheduleWorkbenchPaneFit();
   }
 }
 
@@ -3587,6 +3614,49 @@ async function promptAndAddProjectSession() {
       projectName: getProjectDisplayName(projectDir),
     },
   });
+}
+
+function nextStartupTick() {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(resolve, 0);
+  });
+}
+
+async function revealMainWindowAfterInitialPaint() {
+  if (!isTauri() || mainWindowRevealStarted) {
+    return;
+  }
+
+  mainWindowRevealStarted = true;
+  await nextStartupTick();
+  try {
+    await getCurrentWebviewWindow().show();
+  } catch (error) {
+    console.warn("Failed to reveal main window", error);
+  }
+  await nextStartupTick();
+}
+
+function scheduleInitialDesktopRefresh() {
+  window.setTimeout(() => {
+    renderWorkerStatusSurface();
+    void refreshWorkerStatusSurface();
+    void refreshDesktopSummary();
+  }, 150);
+}
+
+async function applyInitialProjectDirFromLaunchArgs() {
+  if (!isTauri()) {
+    return;
+  }
+  try {
+    const projectDir = normalizeProjectDirInput(await getDesktopInitialProjectDir());
+    if (projectDir) {
+      setActiveProjectDir(projectDir);
+    }
+  } catch (error) {
+    console.warn("Failed to read launch project directory", error);
+  }
 }
 
 function renderSessions() {
@@ -6312,6 +6382,10 @@ function readPopoutSurfaceState() {
   }
 }
 
+function buildPopoutSurfaceUrl(key: string) {
+  return `/?popout=1&popout-key=${encodeURIComponent(key)}`;
+}
+
 function describeDetachedSurfaceSession(state: PopoutSurfaceState): DetachedSurfaceSessionState {
   if (state.mode === "preview") {
     return {
@@ -6518,7 +6592,7 @@ async function openEditorSurfacePopout() {
     return;
   }
 
-  const popoutUrl = `/?popout=1&popout-key=${encodeURIComponent(key)}`;
+  const popoutUrl = buildPopoutSurfaceUrl(key);
   if (isTauri()) {
     const label = `secondary-surface-${Date.now()}`;
     const detachedWindow = new WebviewWindow(label, {
@@ -6528,9 +6602,19 @@ async function openEditorSurfacePopout() {
       height: 760,
       minWidth: 720,
       minHeight: 480,
+      visible: false,
+      backgroundColor: "#0b0f14",
       focus: true,
     });
     setDetachedSurfaceSession(state);
+    void detachedWindow.once("tauri://created", () => {
+      window.setTimeout(() => {
+        void detachedWindow.show().catch((error) => {
+          console.warn("Failed to reveal editor popout", error);
+        });
+        void detachedWindow.setFocus().catch(() => {});
+      }, 150);
+    });
     void detachedWindow.once("tauri://destroyed", () => {
       clearDetachedSurfaceSession();
     });
@@ -7904,6 +7988,11 @@ function readStoredShellPreferences(): ShellPreferenceState | null {
       : sidebarWidthValue;
     const wideSidebarOpen = typeof parsed.wideSidebarOpen === "boolean" ? parsed.wideSidebarOpen : true;
     const wideContextOpen = typeof parsed.wideContextOpen === "boolean" ? parsed.wideContextOpen : false;
+    const storedAgentVaultOpen = uiVersion < 4
+      ? false
+      : typeof parsed.agentVaultOpen === "boolean"
+        ? parsed.agentVaultOpen
+        : false;
     const workbenchOpen = typeof parsed.workbenchOpen === "boolean" ? parsed.workbenchOpen : true;
     const workerStatusStripVisible = typeof parsed.workerStatusStripVisible === "boolean" ? parsed.workerStatusStripVisible : true;
     const workbenchLayout = parsed.workbenchLayout === "3x2" || parsed.workbenchLayout === "focus" ? parsed.workbenchLayout : "2x2";
@@ -7927,6 +8016,7 @@ function readStoredShellPreferences(): ShellPreferenceState | null {
       workbenchWidth: normalizeStoredWorkbenchWidth(parsed.workbenchWidth, workbenchLayout, uiVersion),
       wideSidebarOpen,
       wideContextOpen,
+      agentVaultOpen: storedAgentVaultOpen,
       workbenchOpen,
       workerStatusStripVisible,
       workbenchLayout,
@@ -7955,6 +8045,7 @@ function persistThemeState() {
       workbenchWidth,
       wideSidebarOpen: preferredWideSidebarOpen,
       wideContextOpen: preferredWideContextOpen,
+      agentVaultOpen,
       workbenchOpen: terminalDrawerOpen,
       workerStatusStripVisible,
       workbenchLayout,
@@ -11694,6 +11785,12 @@ function getTopMenuItems(menuId: string): TopMenuItem[] {
         { label: getLanguageText("Toggle evidence", "証跡を切り替え"), action: () => toggleSidebarMode("evidence") },
         { label: getLanguageText("Toggle details", "詳細を切り替え"), action: () => setContextPanel(!contextPanelOpen) },
         {
+          label: agentVaultOpen && contextPanelOpen
+            ? getLanguageText("Hide Agent Vault", "Agent Vault を隠す")
+            : getLanguageText("Show Agent Vault", "Agent Vault を表示"),
+          action: () => setAgentVaultPanelOpen(!(agentVaultOpen && contextPanelOpen)),
+        },
+        {
           label: workerStatusStripVisible
             ? getLanguageText("Hide worker status", "ワーカー状態を隠す")
             : getLanguageText("Show worker status", "ワーカー状態を表示"),
@@ -14668,12 +14765,18 @@ window.addEventListener("DOMContentLoaded", async () => {
     workbenchWidth = storedShellPreferences.workbenchWidth;
     preferredWideSidebarOpen = storedShellPreferences.wideSidebarOpen;
     preferredWideContextOpen = storedShellPreferences.wideContextOpen;
+    agentVaultOpen = storedShellPreferences.agentVaultOpen;
     workerStatusStripVisible = storedShellPreferences.workerStatusStripVisible;
     terminalDrawerOpen = true;
     workbenchLayout = storedShellPreferences.workbenchLayout;
     focusedWorkbenchPaneId = storedShellPreferences.focusedWorkbenchPaneId;
   }
   applyAgentVaultPreferences();
+
+  applyShellPreferences();
+  applyLanguageChrome();
+  syncResponsiveShell();
+  await revealMainWindowAfterInitialPaint();
 
   initializeOperatorTerminal();
 
@@ -14718,8 +14821,6 @@ window.addEventListener("DOMContentLoaded", async () => {
   renderEvidenceView();
   renderAgentVaultPanel();
   renderContextPanel();
-  applyShellPreferences();
-  applyLanguageChrome();
   renderSettingsControls();
   renderFooterLane();
   renderTimelineFilters();
@@ -14731,14 +14832,14 @@ window.addEventListener("DOMContentLoaded", async () => {
   renderAttachmentTray();
   renderCommandBar();
   renderEditorSurface();
-  syncResponsiveShell();
   setEditorSurface(false);
   setTerminalDrawer(true);
+  window.setTimeout(() => {
+    void applyInitialProjectDirFromLaunchArgs();
+  }, 0);
   applyPopoutSurfaceState(popoutSurfaceState);
   registerDesktopSummaryLiveRefresh();
-  renderWorkerStatusSurface();
-  void refreshWorkerStatusSurface();
-  void refreshDesktopSummary();
+  scheduleInitialDesktopRefresh();
   initializeSidebarResize();
   initializeWorkbenchResize();
   initializeSourceControlSplitResize();
@@ -14837,13 +14938,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   });
 
   document.getElementById("toggle-agent-vault-btn")?.addEventListener("click", () => {
-    if (!contextPanelOpen || !agentVaultOpen) {
-      agentVaultOpen = true;
-      setContextPanel(true);
-    } else {
-      agentVaultOpen = false;
-    }
-    renderAgentVaultPanel();
+    setAgentVaultPanelOpen(!(agentVaultOpen && contextPanelOpen));
   });
 
   (document.getElementById("agent-vault-search") as HTMLInputElement | null)?.addEventListener("input", (event) => {

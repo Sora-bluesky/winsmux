@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <DirectoryRef Id="INSTALLDIR">
+      <Component Id="ExplorerFolderContextMenu" Guid="{BD1B5A33-B9F1-4E77-98A0-0BFE250FB81E}">
+        <RegistryKey Root="HKCU" Key="Software\Classes\Directory\shell\winsmux">
+          <RegistryValue Type="string" Value="!(loc.OpenWithWinsmux)" KeyPath="yes" />
+          <RegistryValue Name="MUIVerb" Type="string" Value="!(loc.OpenWithWinsmux)" />
+          <RegistryValue Name="Icon" Type="string" Value="[INSTALLDIR]winsmux-app.exe,0" />
+          <RegistryValue Name="Position" Type="string" Value="Top" />
+        </RegistryKey>
+        <RegistryKey Root="HKCU" Key="Software\Classes\Directory\shell\winsmux\command">
+          <RegistryValue Type="string" Value="&quot;[INSTALLDIR]winsmux-app.exe&quot; &quot;%1&quot;" />
+        </RegistryKey>
+      </Component>
+      <Component Id="ExplorerFolderBackgroundContextMenu" Guid="{DB36114F-694A-4BBB-953A-B5F60D70F93A}">
+        <RegistryKey Root="HKCU" Key="Software\Classes\Directory\Background\shell\winsmux">
+          <RegistryValue Type="string" Value="!(loc.OpenWithWinsmux)" KeyPath="yes" />
+          <RegistryValue Name="MUIVerb" Type="string" Value="!(loc.OpenWithWinsmux)" />
+          <RegistryValue Name="Icon" Type="string" Value="[INSTALLDIR]winsmux-app.exe,0" />
+          <RegistryValue Name="Position" Type="string" Value="Top" />
+        </RegistryKey>
+        <RegistryKey Root="HKCU" Key="Software\Classes\Directory\Background\shell\winsmux\command">
+          <RegistryValue Type="string" Value="&quot;[INSTALLDIR]winsmux-app.exe&quot; &quot;%V&quot;" />
+        </RegistryKey>
+      </Component>
+    </DirectoryRef>
+  </Fragment>
+</Wix>

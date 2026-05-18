@@ -6,7 +6,20 @@ import path from "node:path";
 import process from "node:process";
 import { chromium } from "playwright";
 
-const OUTPUT_DIR = path.join(process.cwd(), "output", "playwright", "desktop-pane-e2e");
+const LAUNCH_PROJECT_ONLY = process.argv.includes("--launch-project-only")
+  || process.env.WINSMUX_DESKTOP_E2E_LAUNCH_PROJECT_ONLY === "1";
+const RELEASE_POPOUT_ONLY = process.argv.includes("--release-popout-only")
+  || process.env.WINSMUX_DESKTOP_E2E_RELEASE_POPOUT_ONLY === "1";
+const OUTPUT_DIR = path.join(
+  process.cwd(),
+  "output",
+  "playwright",
+  RELEASE_POPOUT_ONLY
+    ? "desktop-release-popout-e2e"
+    : LAUNCH_PROJECT_ONLY
+      ? "desktop-launch-arg-e2e"
+      : "desktop-pane-e2e",
+);
 const APP_URL_PATTERN = /localhost:1420|127\.0\.0\.1:1420/;
 const CONTROL_PIPE_NAME = "winsmux-control";
 const WORKER_UI_MARKER = "WORKER_1_UI_E2E_READY";
@@ -61,12 +74,41 @@ function appendBounded(lines, chunk) {
   }
 }
 
-function startTauriDev(debugPort, userDataDir) {
+function startTauriDev(debugPort, userDataDir, appArgs = []) {
   const args = process.platform === "win32"
     ? ["/c", "npm", "run", "tauri", "--", "dev"]
     : ["run", "tauri", "--", "dev"];
+  if (appArgs.length > 0) {
+    args.push("--", "--", ...appArgs);
+  }
   const child = spawn(process.platform === "win32" ? "cmd.exe" : "npm", args, {
     cwd: process.cwd(),
+    env: {
+      ...process.env,
+      WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${debugPort} --remote-allow-origins=*`,
+      WEBVIEW2_USER_DATA_FOLDER: userDataDir,
+      NO_COLOR: "1",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  child.stdout.on("data", (chunk) => {
+    appendBounded(tauriOutput, chunk);
+    process.stdout.write(chunk);
+  });
+  child.stderr.on("data", (chunk) => {
+    appendBounded(tauriErrors, chunk);
+    process.stderr.write(chunk);
+  });
+
+  return child;
+}
+
+function startPackagedDesktopApp(debugPort, userDataDir, appArgs = []) {
+  const appExe = process.env.WINSMUX_DESKTOP_E2E_APP_EXE
+    || path.resolve(process.cwd(), "..", "target", "release", "winsmux-app.exe");
+  const child = spawn(appExe, appArgs, {
+    cwd: path.resolve(process.cwd(), ".."),
     env: {
       ...process.env,
       WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${debugPort} --remote-allow-origins=*`,
@@ -151,6 +193,10 @@ async function resolveAppPage(browser, timeoutMs = 60_000) {
     for (const context of browser.contexts()) {
       for (const page of context.pages()) {
         if (APP_URL_PATTERN.test(page.url())) {
+          return page;
+        }
+        const hasAppShell = await page.evaluate(() => Boolean(document.querySelector("#app-shell"))).catch(() => false);
+        if (hasAppShell) {
           return page;
         }
       }
@@ -832,27 +878,60 @@ async function openCommandPaletteAction(page, query, expected) {
   await expected();
 }
 
+async function clickViewMenuItem(page, label, description) {
+  let lastMenuText = "";
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await page.click("#menu-view-btn");
+    const popover = page.locator("#top-menu-popover");
+    await popover.waitFor({ state: "visible", timeout: 10_000 });
+    const item = page.locator("#top-menu-popover .top-menu-popover-item", { hasText: label }).first();
+    lastMenuText = (await page.locator("#top-menu-popover .top-menu-popover-item").allTextContents().catch(() => []))
+      .map((text) => text.replace(/\s+/g, " ").trim())
+      .join(" | ");
+    await item.waitFor({ state: "visible", timeout: 10_000 });
+    await item.click({ force: attempt > 0 });
+    if (await popover.isHidden({ timeout: 2_000 }).catch(() => false)) {
+      return;
+    }
+    await page.keyboard.press("Escape").catch(() => {});
+  }
+  throw new Error(`View menu item did not activate for ${description}: ${lastMenuText}`);
+}
+
 async function setWorkerStatusStripFromViewMenu(page, visible) {
   if ((await page.locator("#worker-status-pill-bar").isVisible().catch(() => false)) === visible) {
     return;
   }
-  await page.click("#menu-view-btn");
-  await page.locator("#top-menu-popover").waitFor({ state: "visible", timeout: 10_000 });
   const label = visible ? /Show worker status|ワーカー状態を表示/ : /Hide worker status|ワーカー状態を隠す/;
-  await page.locator("#top-menu-popover .top-menu-popover-item", { hasText: label }).click();
-  await page.locator("#worker-status-pill-bar").waitFor({ state: visible ? "visible" : "hidden", timeout: 10_000 });
+  let lastError;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await clickViewMenuItem(page, label, visible ? "show worker status" : "hide worker status");
+    try {
+      await page.locator("#worker-status-pill-bar").waitFor({ state: visible ? "visible" : "hidden", timeout: 10_000 });
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
+}
+
+async function setAgentVaultPanelFromViewMenu(page, visible) {
+  const contextVisible = await page.locator("#context-panel").isVisible().catch(() => false);
+  const vaultVisible = contextVisible && (await page.locator("#agent-vault-panel").isVisible().catch(() => false));
+  if (vaultVisible === visible) {
+    return;
+  }
+  const label = visible ? /Show Agent Vault|Agent Vault を表示/ : /Hide Agent Vault|Agent Vault を隠す/;
+  await clickViewMenuItem(page, label, visible ? "show Agent Vault" : "hide Agent Vault");
+  await page.locator("#context-panel").waitFor({ state: visible ? "visible" : "hidden", timeout: 10_000 });
+  if (visible) {
+    await page.locator("#agent-vault-panel").waitFor({ state: "visible", timeout: 10_000 });
+  }
 }
 
 async function ensureAgentVaultOpen(page) {
-  const vaultVisible = await page.locator("#agent-vault-panel").isVisible().catch(() => false);
-  const contextVisible = await page.locator("#context-panel").isVisible().catch(() => false);
-  if (!contextVisible) {
-    await page.click("#activity-context-btn");
-    await page.locator("#context-panel").waitFor({ state: "visible", timeout: 10_000 });
-  }
-  if (!vaultVisible && !(await page.locator("#agent-vault-panel").isVisible().catch(() => false))) {
-    await page.click("#toggle-agent-vault-btn");
-  }
+  await setAgentVaultPanelFromViewMenu(page, true);
   await page.locator("#agent-vault-panel").waitFor({ state: "visible", timeout: 10_000 });
 }
 
@@ -1200,6 +1279,28 @@ async function exerciseTauriNativeSurface(page, browser) {
   attachPageErrorCapture(popout);
   await popout.locator("#editor-surface").waitFor({ state: "visible" });
   await popout.locator("#editor-code", { hasText: "@tauri-apps/plugin-dialog" }).waitFor({ state: "visible" });
+  const popoutVisualState = await popout.evaluate(() => {
+    const htmlBackground = getComputedStyle(document.documentElement).backgroundColor;
+    const bodyBackground = getComputedStyle(document.body).backgroundColor;
+    const shell = document.querySelector("#app-shell");
+    const editor = document.querySelector("#editor-surface");
+    return {
+      htmlBackground,
+      bodyBackground,
+      shellVisible: shell instanceof HTMLElement && !shell.hidden,
+      editorVisible: editor instanceof HTMLElement && !editor.hidden,
+      title: document.title,
+    };
+  });
+  if (
+    !popoutVisualState.shellVisible
+    || !popoutVisualState.editorVisible
+    || popoutVisualState.htmlBackground === "rgb(255, 255, 255)"
+    || popoutVisualState.bodyBackground === "rgb(255, 255, 255)"
+  ) {
+    throw new Error(`popout editor should render on a dark initialized surface: ${JSON.stringify(popoutVisualState)}`);
+  }
+  await popout.screenshot({ path: path.join(OUTPUT_DIR, "popout-editor-ready.png"), fullPage: true });
   const popoutLabel = await popout.evaluate(() => window.__TAURI__.webviewWindow.getCurrentWebviewWindow().label);
   await popout.close({ runBeforeUnload: false }).catch(() => {});
   await page.locator("#workspace").waitFor({ state: "visible", timeout: 10_000 });
@@ -1210,6 +1311,7 @@ async function exerciseTauriNativeSurface(page, browser) {
     editorLineCount: editorFile.line_count,
     explorerEntryCount: explorer.entries.length,
     popoutLabel,
+    popoutVisualState,
     voiceStates: {
       initial: voiceInitial?.native?.state,
       start: voiceStart?.native?.state,
@@ -1239,14 +1341,24 @@ async function main() {
   await ensureOutputDir();
   const debugPort = await getAvailablePort();
   const userDataDir = path.join(OUTPUT_DIR, `webview2-user-data-${Date.now()}`);
+  const launchProjectDir = path.join(OUTPUT_DIR, "launch-project");
   const scriptPath = path.join(OUTPUT_DIR, "operator-to-worker.ps1");
   const attachmentPath = path.join(OUTPUT_DIR, "composer-attachment.txt");
+  if (LAUNCH_PROJECT_ONLY) {
+    await fs.mkdir(launchProjectDir, { recursive: true });
+  }
   await writeOperatorPipeScript(scriptPath);
   await fs.writeFile(attachmentPath, "desktop composer attachment e2e\n", "utf8");
 
   let browser;
   let page;
-  const tauri = startTauriDev(debugPort, userDataDir);
+  const tauri = RELEASE_POPOUT_ONLY
+    ? startPackagedDesktopApp(debugPort, userDataDir)
+    : startTauriDev(
+      debugPort,
+      userDataDir,
+      LAUNCH_PROJECT_ONLY ? ["--project-dir", launchProjectDir] : [],
+    );
 
   try {
     await runStep("wait for WebView2 remote debugging", async () => {
@@ -1260,9 +1372,69 @@ async function main() {
 
     await runStep("wait for desktop app chrome", async () => {
       await waitForAppReady(page);
-      await resetAppState(page);
       return { url: page.url() };
     });
+
+    if (RELEASE_POPOUT_ONLY) {
+      await resetAppState(page);
+      await runStep("release exe opens editor popout without a white screen", async () => {
+        return await exerciseTauriNativeSurface(page, browser);
+      });
+      await ensureOutputDir();
+      await page.screenshot({ path: path.join(OUTPUT_DIR, "desktop-release-popout-e2e-success.png"), fullPage: true });
+      await writeEvidence(true, { debugPort, mode: "release-popout-only" });
+      process.stdout.write(`[desktop-pane-e2e] PASS release-popout-only evidence=${path.join(OUTPUT_DIR, "desktop-pane-e2e.json")}\n`);
+      return;
+    }
+
+    if (LAUNCH_PROJECT_ONLY) {
+      await runStep("launch project argument selects the active project", async () => {
+        const expectedProjectDir = launchProjectDir.replace(/\\/g, "/").replace(/\/+$/, "");
+        const nativeInitialProjectDir = await page.evaluate(async () => {
+          try {
+            return await window.__TAURI__?.core?.invoke?.("desktop_initial_project_dir");
+          } catch (error) {
+            return { error: error instanceof Error ? error.message : String(error) };
+          }
+        });
+        try {
+          await page.waitForFunction((expected) => {
+            const activeProjectDir = localStorage.getItem("winsmux.active-project.v1");
+            const sessions = JSON.parse(localStorage.getItem("winsmux.project-sessions.v1") || "[]");
+            return activeProjectDir === expected
+              && Array.isArray(sessions)
+              && sessions.some((entry) => entry?.path === expected);
+          }, expectedProjectDir, { timeout: 15_000 });
+        } catch (error) {
+          const state = await page.evaluate(() => ({
+            activeProjectDir: localStorage.getItem("winsmux.active-project.v1"),
+            sessions: JSON.parse(localStorage.getItem("winsmux.project-sessions.v1") || "[]"),
+          }));
+          throw new Error(`launch project state did not settle: ${JSON.stringify({ expectedProjectDir, nativeInitialProjectDir, ...state })}`);
+        }
+        const state = await page.evaluate(() => {
+          const activeProjectDir = localStorage.getItem("winsmux.active-project.v1");
+          const sessions = JSON.parse(localStorage.getItem("winsmux.project-sessions.v1") || "[]");
+          return {
+            activeProjectDir,
+            sessions,
+          };
+        });
+        const recorded = Array.isArray(state.sessions)
+          && state.sessions.some((entry) => entry?.path === expectedProjectDir);
+        if (state.activeProjectDir !== expectedProjectDir || !recorded) {
+          throw new Error(`launch project state mismatch: ${JSON.stringify({ expectedProjectDir, nativeInitialProjectDir, ...state })}`);
+        }
+        return { activeProjectDir: state.activeProjectDir, nativeInitialProjectDir, recorded };
+      });
+      await ensureOutputDir();
+      await page.screenshot({ path: path.join(OUTPUT_DIR, "desktop-launch-arg-e2e-success.png"), fullPage: true });
+      await writeEvidence(true, { debugPort });
+      process.stdout.write(`[desktop-pane-e2e] PASS evidence=${path.join(OUTPUT_DIR, "desktop-pane-e2e.json")}\n`);
+      return;
+    }
+
+    await resetAppState(page);
 
     await runStep("desktop app fills the native WebView without fixed viewport emulation", async () => {
       const metrics = await readViewportFillMetrics(page);
@@ -1285,6 +1457,24 @@ async function main() {
       if (runSummaryVisible || dashboardVisible) {
         throw new Error(`default center should not show run summary or dashboard; summary=${runSummaryVisible}, dashboard=${dashboardVisible}`);
       }
+    });
+
+    await runStep("Agent Vault is hidden by default so worker panes keep primary space", async () => {
+      const state = await page.locator("#workspace-body").evaluate((body) => {
+        const contextPanel = document.querySelector("#context-panel");
+        const agentVaultPanel = document.querySelector("#agent-vault-panel");
+        const toggle = document.querySelector("#toggle-agent-vault-btn");
+        return {
+          contextHidden: contextPanel?.hasAttribute("hidden") ?? false,
+          agentVaultHidden: agentVaultPanel?.hasAttribute("hidden") ?? false,
+          contextCollapsed: body.classList.contains("context-collapsed"),
+          toggleExpanded: toggle?.getAttribute("aria-expanded"),
+        };
+      });
+      if (!state.contextHidden || !state.agentVaultHidden || !state.contextCollapsed || state.toggleExpanded !== "false") {
+        throw new Error(`Agent Vault should start hidden by default: ${JSON.stringify(state)}`);
+      }
+      return state;
     });
 
     await runStep("drawer close and reopen controls", async () => {
@@ -1493,6 +1683,34 @@ async function main() {
         throw new Error(`worker panes should fill the available workbench area: ${JSON.stringify(fillMetrics)}`);
       }
       return { before, after, fillMetrics };
+    });
+
+    await runStep("View menu hides Agent Vault and frees the right sidebar", async () => {
+      await ensureAgentVaultOpen(page);
+      const before = await page.locator("#workspace-body").evaluate((body) => ({
+        contextHidden: document.querySelector("#context-panel")?.hasAttribute("hidden") ?? true,
+        vaultHidden: document.querySelector("#agent-vault-panel")?.hasAttribute("hidden") ?? true,
+        contextCollapsed: body.classList.contains("context-collapsed"),
+      }));
+      await setAgentVaultPanelFromViewMenu(page, false);
+      const hidden = await page.locator("#workspace-body").evaluate((body) => ({
+        contextHidden: document.querySelector("#context-panel")?.hasAttribute("hidden") ?? false,
+        vaultHidden: document.querySelector("#agent-vault-panel")?.hasAttribute("hidden") ?? false,
+        contextCollapsed: body.classList.contains("context-collapsed"),
+      }));
+      if (!hidden.contextHidden || !hidden.contextCollapsed) {
+        throw new Error(`Agent Vault View menu action should collapse the right sidebar: ${JSON.stringify({ before, hidden })}`);
+      }
+      await setAgentVaultPanelFromViewMenu(page, true);
+      const restored = await page.locator("#workspace-body").evaluate((body) => ({
+        contextHidden: document.querySelector("#context-panel")?.hasAttribute("hidden") ?? true,
+        vaultHidden: document.querySelector("#agent-vault-panel")?.hasAttribute("hidden") ?? true,
+        contextCollapsed: body.classList.contains("context-collapsed"),
+      }));
+      if (restored.contextHidden || restored.vaultHidden || restored.contextCollapsed) {
+        throw new Error(`Agent Vault View menu action should restore the right sidebar: ${JSON.stringify({ before, hidden, restored })}`);
+      }
+      return { before, hidden, restored };
     });
 
     await runStep("Agent Vault indexes, searches, filters, feeds, and restores sessions from the right sidebar", async () => {

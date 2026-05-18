@@ -859,6 +859,10 @@ export function configureDesktopCommandTransport(
   desktopCommandTransport = transport;
 }
 
+export async function getDesktopInitialProjectDir() {
+  return await invoke<string | null>("desktop_initial_project_dir");
+}
+
 function buildProjectDirPayload(projectDir?: string | null) {
   const normalized = projectDir?.trim();
   return normalized ? { projectDir: normalized } : {};

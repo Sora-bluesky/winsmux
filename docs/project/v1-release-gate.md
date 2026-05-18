@@ -33,11 +33,11 @@ authentication, and external provider credentials outside the app uninstaller.
 
 ## Public distribution boundary
 
-`v1.0.0` starts the closed-source public distribution model described in
-[Public Distribution Boundary](../source-access.md). Public users receive
-installers, packages, checksums, release notes, and public docs. Public
-repository materials must not describe private source-sharing, review, or
-business arrangements.
+The `v1.0.0` release gate verifies the public binary distribution boundary
+described in [Public Distribution Boundary](../source-access.md). Public users
+receive installers, packages, checksums, release notes, and public docs after
+the release gate is complete. Public repository materials must not describe
+non-public agreements or internal operational planning.
 
 ## Shutdown cleanup gate
 
@@ -55,9 +55,11 @@ worker-pane child processes.
 - Public install docs describe the setup executable, MSI artifact, checksum
   file, installer UI languages, signing posture, update path, and portable
   fallback policy.
-- Public docs describe the `v1.0.0` public distribution boundary.
-- Legacy `psmux` compatibility has already been retired or formally accepted by
-  the completed compatibility gates.
+- Public docs describe the `v1.0.0` public binary distribution boundary.
+- Removed legacy binary aliases are documented in the
+  [compatibility guide](../../core/docs/compatibility.md), and their remaining
+  references have been retired or formally accepted by the completed
+  compatibility gates.
 - The manual checklist gate is complete and machine-readable.
 - Desktop shutdown cleanup is covered by a focused Rust test and by release
   notes text.
