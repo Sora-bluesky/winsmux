@@ -83,6 +83,7 @@ winsmux launch
 See [Quickstart](docs/quickstart.md) for a guided first run.
 See [Installation](docs/installation.md) for desktop installers, CLI profiles, updates, and uninstall steps.
 See [Customization](docs/customization.md) for launcher presets, worktree policy, slots, credentials, and desktop settings.
+See [Public Distribution Boundary](docs/source-access.md) for the `v1.0.0` public distribution and redistribution boundary.
 See [External control plane API](docs/external-control-plane.md) for the local named-pipe JSON-RPC contract used by external automation clients.
 
 ## Main Commands

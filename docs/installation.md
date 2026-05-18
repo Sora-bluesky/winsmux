@@ -47,7 +47,7 @@ Use the setup executable for a normal single-user install. Use the MSI when your
 
 If Windows shows a publisher or SmartScreen warning, verify the downloaded file against `SHA256SUMS-desktop` from the same release before running it. Release notes state the signing posture for each release.
 
-The desktop packaging policy, effective for current `v0.36.x` releases and carried forward to `v1.0.0`, is:
+The desktop packaging policy, effective for the `v1.0.0` release line, is:
 
 - primary artifact: `winsmux_<version>_x64-setup.exe`
 - deployment artifact: `winsmux_<version>_x64_en-US.msi`
@@ -55,6 +55,11 @@ The desktop packaging policy, effective for current `v0.36.x` releases and carri
 - signing posture: documented per release until a stable signing certificate is available
 - update story: install the newer desktop release over the existing install
 - portable fallback: use the release `winsmux-x64.exe` core binary or the npm package; no portable desktop app artifact is published by default
+
+The `v1.0.0` public distribution is installer-first. Full implementation source
+is no longer part of the public release surface. See [Public Distribution
+Boundary](source-access.md) for the public distribution and redistribution
+boundary.
 
 ## CLI package install
 

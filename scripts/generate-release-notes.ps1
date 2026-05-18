@@ -256,6 +256,9 @@ function ConvertTo-UserBenefit {
         'pane\.completed|PostToolUse pane monitor hook' {
             return 'Surfaced pane completion events so the operator can make the next decision faster'
         }
+        'desktop shutdown|child[- ]process cleanup|worker-pane child|PTY.*shutdown|shutdown.*PTY' {
+            return 'Cleaned up worker-pane child processes when the desktop app exits'
+        }
         'complete winsmux-surface rename|send buffer overflow' {
             return 'Continued the winsmux naming convergence and stabilized the send pipeline'
         }

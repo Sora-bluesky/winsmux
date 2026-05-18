@@ -186,9 +186,10 @@ status row. Credential refresh waits are represented as recovery actions
 without keeping a separate desktop-only state model.
 The desktop View menu may hide the worker status strip, but this changes only
 the local layout and does not change the underlying status JSON contract.
-As of `v0.36.8`, desktop shutdown child-process cleanup is still a known
-limitation tracked outside this contract; operators should verify cleanup when
-complete process teardown matters.
+Desktop shutdown is part of the worker-pane lifecycle contract. When the app
+exits, winsmux stops the summary stream, stops native voice capture when active,
+drains the active PTY registry, kills worker-pane children, and waits briefly
+for those children to exit.
 
 Review is handled by any **review-capable slot**, not by a permanently dedicated reviewer pane.
 Meta-planning follows the same rule: the current Claude/Codex role pair is an

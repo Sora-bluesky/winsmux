@@ -71,6 +71,15 @@ function Test-IsTrackedTextSurface {
     return $normalized -match '(^README(\.ja)?\.md$)|(^AGENTS?(-BASE)?\.md$)|(^GEMINI\.md$)|(^docs/.+\.md$)|(^\.claude/CLAUDE\.md$)|(^\.agents/.+\.md$)|(^tests/.+\.(ps1|md|json|txt)$)|(^workers/colab/.+\.py$)|(^\.github/workflows/.+\.ya?ml$)|(^\.githooks/.+$)|(^scripts/.+\.ps1$)'
 }
 
+function Test-IsPublicMaterialScanSurface {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $normalized = $Path.Replace('\', '/')
+    if ($normalized -match '^docs/internal/') { return $false }
+    if ($normalized -match '^\.') { return $false }
+    return $normalized -match '(^README(\.ja)?\.md$)|(^docs/.+\.md$)|(^core/docs/.+\.md$)|(^packages/winsmux/README\.md$)'
+}
+
 function Test-IsMaintainerPathScanSurface {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -133,6 +142,20 @@ function Get-ForbiddenExternalProductReferencePatterns {
     )
 }
 
+function Get-ForbiddenPaidSourceDisclosurePatterns {
+    return @(
+        [pscustomobject]@{ Name = 'Substack'; Pattern = '(?i)(?<![A-Za-z0-9])Substack(?![A-Za-z0-9])' },
+        [pscustomobject]@{ Name = 'paid-member'; Pattern = '(?i)(?<![A-Za-z0-9])paid[- ]member(?:s)?(?![A-Za-z0-9])' },
+        [pscustomobject]@{ Name = 'member-only'; Pattern = '(?i)(?<![A-Za-z0-9])member[- ]only(?![A-Za-z0-9])' },
+        [pscustomobject]@{ Name = 'member source program'; Pattern = '(?i)(member source program|source community|member community program)' },
+        [pscustomobject]@{ Name = 'paid source access'; Pattern = '(?i)paid.{0,40}source access' },
+        [pscustomobject]@{ Name = 'Japanese paid member'; Pattern = '有料会員' },
+        [pscustomobject]@{ Name = 'Japanese member-only'; Pattern = '会員限定' },
+        [pscustomobject]@{ Name = 'Japanese source community'; Pattern = 'ソースコミュニティ' },
+        [pscustomobject]@{ Name = 'Japanese limited community'; Pattern = '限定コミュニティ' }
+    )
+}
+
 function Add-ForbiddenExternalProductReferenceFailures {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -149,6 +172,26 @@ function Add-ForbiddenExternalProductReferenceFailures {
     foreach ($reference in Get-ForbiddenExternalProductReferencePatterns) {
         if ($content -match $reference.Pattern) {
             $failures.Add("$Surface contains forbidden external product/reference name '$($reference.Name)': $Path")
+        }
+    }
+}
+
+function Add-ForbiddenPaidSourceDisclosureFailures {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Surface
+    )
+
+    $fullPath = if ([System.IO.Path]::IsPathRooted($Path)) { $Path } else { Join-Path $repoRoot $Path }
+    if (-not (Test-Path -LiteralPath $fullPath)) {
+        $failures.Add("$Surface path does not exist: $Path")
+        return
+    }
+
+    $content = Get-Content -LiteralPath $fullPath -Raw -ErrorAction Stop
+    foreach ($reference in Get-ForbiddenPaidSourceDisclosurePatterns) {
+        if ($content -match $reference.Pattern) {
+            $failures.Add("$Surface contains paid-source disclosure strategy '$($reference.Name)': $Path")
         }
     }
 }
@@ -270,8 +313,13 @@ foreach ($file in ($trackedFiles | Where-Object { Test-IsExternalProductReferenc
     Add-ForbiddenExternalProductReferenceFailures -Path $file -Surface 'public doc'
 }
 
+foreach ($file in ($trackedFiles | Where-Object { Test-IsPublicMaterialScanSurface -Path $_ })) {
+    Add-ForbiddenPaidSourceDisclosureFailures -Path $file -Surface 'public material'
+}
+
 if (-not [string]::IsNullOrWhiteSpace($ReleaseNotesPath)) {
     Add-ForbiddenExternalProductReferenceFailures -Path $ReleaseNotesPath -Surface 'release notes'
+    Add-ForbiddenPaidSourceDisclosureFailures -Path $ReleaseNotesPath -Surface 'release notes'
 }
 
 $claudeContractPath = Join-Path $repoRoot '.claude/CLAUDE.md'

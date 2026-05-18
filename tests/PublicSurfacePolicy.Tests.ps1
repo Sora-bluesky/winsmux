@@ -273,6 +273,26 @@ Describe 'Public surface policy' {
         }
     }
 
+    It 'blocks paid source disclosure strategy in public materials' {
+        $linkedPublicDoc = Join-Path $repoRoot 'docs/source-access.md'
+        $original = [System.IO.File]::ReadAllText($linkedPublicDoc)
+        try {
+            [System.IO.File]::WriteAllText(
+                $linkedPublicDoc,
+                $original + "`nSelected source can be shared with Substack paid-member reviewers.`n",
+                [System.Text.UTF8Encoding]::new($false)
+            )
+
+            $output = @(& pwsh -NoProfile -File $auditPublicSurface 2>&1)
+
+            $LASTEXITCODE | Should -Be 1
+            ($output -join "`n") | Should -Match 'public material contains paid-source disclosure strategy'
+            ($output -join "`n") | Should -Match 'docs/source-access\.md'
+        } finally {
+            [System.IO.File]::WriteAllText($linkedPublicDoc, $original, [System.Text.UTF8Encoding]::new($false))
+        }
+    }
+
     It 'allows upstream names in third-party notices for attribution' {
         $noticePath = Join-Path $repoRoot 'THIRD_PARTY_NOTICES.md'
         $original = [System.IO.File]::ReadAllText($noticePath)

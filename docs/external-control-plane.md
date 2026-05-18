@@ -107,6 +107,12 @@ and local file-reading UI actions. External clients should not assume that an
 internal Tauri method is available through the pipe unless the pipe contract
 advertises it.
 
-## Known limitations
+## Shutdown behavior
 
-Desktop shutdown child-process cleanup is still tracked in [issue #967](https://github.com/Sora-bluesky/winsmux/issues/967). External clients should close panes explicitly before disconnecting and should not assume that closing the desktop app has already reaped every worker child process.
+On desktop app shutdown, winsmux requests the summary stream to stop, stops
+native voice capture when it is running, drains the active PTY pane registry,
+kills worker-pane children, and waits briefly for those children to exit.
+
+External clients can still call `pty.close` for explicit per-pane cleanup
+before disconnecting. Closing the desktop app is now the final cleanup path for
+PTY-backed panes created by that desktop session.

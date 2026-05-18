@@ -284,7 +284,10 @@ Invoke-Pester -Path tests/ColabAcceptance.Tests.ps1 -PassThru
 Before running a live task, check quota and stop policy outside winsmux. Use
 `winsmux workers stop <slot>` to stop local worker panes, and use the adapter's
 own stop command when the remote notebook/runtime also needs to be stopped.
-Desktop shutdown child-process cleanup is still tracked in [issue #967](https://github.com/Sora-bluesky/winsmux/issues/967), so verify adapter and runtime shutdown separately when quota leakage matters.
+Desktop shutdown cleans up local PTY-backed worker panes for that desktop
+session. Remote Colab notebooks and adapter-owned runtimes remain outside the
+desktop process tree, so verify adapter and runtime shutdown separately when
+quota leakage matters.
 
 ## Limits
 

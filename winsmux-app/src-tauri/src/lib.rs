@@ -35,6 +35,9 @@ use windows_sys::Win32::Media::{
 
 const DESKTOP_SUMMARY_REFRESH_EVENT: &str = "desktop-summary-refresh";
 const PTY_CAPTURE_LIMIT: usize = 64 * 1024;
+const PTY_CLOSE_WAIT_MS: u64 = 250;
+const DESKTOP_SHUTDOWN_PTY_WAIT_MS: u64 = 750;
+const DESKTOP_SHUTDOWN_VOICE_WAIT_MS: u64 = 3_000;
 const NATIVE_VOICE_METER_ONLY_REASON: &str =
     "Native microphone capture is available for metering only; desktop dictation still uses the documented text fallback.";
 const NATIVE_VOICE_DICTATION_FALLBACK_REASON: &str =
@@ -59,6 +62,18 @@ struct PtyManager {
 struct DesktopSummaryStreamManager {
     started: AtomicBool,
     stop_requested: Arc<AtomicBool>,
+}
+
+struct DesktopShutdownManager {
+    requested: AtomicBool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct DesktopShutdownReport {
+    voice_stop_requested: bool,
+    voice_cleanup_completed: Option<bool>,
+    pty_count: usize,
+    pty_exited_count: usize,
 }
 
 struct VoiceCaptureSession {
@@ -145,6 +160,33 @@ fn wait_voice_capture_cleanup(session: &VoiceCaptureSession, timeout: Duration) 
         std::thread::sleep(Duration::from_millis(20));
     }
     true
+}
+
+fn request_voice_capture_shutdown(
+    manager: &VoiceCaptureManager,
+    timeout: Duration,
+) -> Option<bool> {
+    let existing = {
+        let Ok(mut session) = manager.session.lock() else {
+            return None;
+        };
+        session.take()
+    }?;
+    let generation = existing.generation;
+    existing.stop_requested.store(true, Ordering::SeqCst);
+    let completed = wait_voice_capture_cleanup(&existing, timeout);
+    if completed {
+        update_voice_capture_snapshot(&manager.snapshot, generation, |snapshot| {
+            snapshot.state = "stopped".to_string();
+            snapshot.reason =
+                "Native microphone capture stopped during desktop shutdown.".to_string();
+            snapshot.running = false;
+            snapshot.meter_level = 0.0;
+        });
+    } else if let Ok(mut session) = manager.session.lock() {
+        *session = Some(existing);
+    }
+    Some(completed)
 }
 
 fn desktop_voice_capture_status_from_snapshot(
@@ -905,10 +947,101 @@ fn respawn_pty(app: &AppHandle, pane_id: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn stop_single_pty(entry: &SinglePty) {
+fn wait_pty_child_exit(child: &mut dyn portable_pty::Child, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return true,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(_) => return true,
+        }
+    }
+}
+
+fn stop_single_pty(entry: &SinglePty) -> bool {
+    stop_single_pty_with_wait(entry, Duration::from_millis(0))
+}
+
+fn stop_single_pty_with_wait(entry: &SinglePty, timeout: Duration) -> bool {
     entry.alive.store(false, Ordering::SeqCst);
     if let Ok(mut child) = entry.child.lock() {
         let _ = child.kill();
+        return wait_pty_child_exit(child.as_mut(), timeout);
+    }
+    false
+}
+
+fn drain_all_ptys(manager: &PtyManager, timeout: Duration) -> (usize, usize) {
+    let entries = {
+        let Ok(mut panes) = manager.panes.lock() else {
+            return (0, 0);
+        };
+        std::mem::take(&mut *panes)
+    };
+    let total = entries.len();
+    let mut exited = 0usize;
+    for (_pane_id, entry) in entries {
+        if stop_single_pty_with_wait(&entry, timeout) {
+            exited += 1;
+        }
+        drop(entry.master);
+        drop(entry.writer);
+    }
+    (total, exited)
+}
+
+fn request_desktop_runtime_shutdown(
+    shutdown: &DesktopShutdownManager,
+    summary: &DesktopSummaryStreamManager,
+    voice: &VoiceCaptureManager,
+    pty: &PtyManager,
+    voice_timeout: Duration,
+    pty_timeout: Duration,
+) -> Option<DesktopShutdownReport> {
+    if shutdown.requested.swap(true, Ordering::SeqCst) {
+        return None;
+    }
+
+    summary.stop_requested.store(true, Ordering::SeqCst);
+    let voice_cleanup_completed = request_voice_capture_shutdown(voice, voice_timeout);
+    let (pty_count, pty_exited_count) = drain_all_ptys(pty, pty_timeout);
+    Some(DesktopShutdownReport {
+        voice_stop_requested: voice_cleanup_completed.is_some(),
+        voice_cleanup_completed,
+        pty_count,
+        pty_exited_count,
+    })
+}
+
+fn request_desktop_runtime_shutdown_for_app(app: &AppHandle) {
+    let shutdown = app.state::<DesktopShutdownManager>();
+    let summary = app.state::<DesktopSummaryStreamManager>();
+    let voice = app.state::<VoiceCaptureManager>();
+    let pty = app.state::<PtyManager>();
+    if let Some(report) = request_desktop_runtime_shutdown(
+        &shutdown,
+        &summary,
+        &voice,
+        &pty,
+        Duration::from_millis(DESKTOP_SHUTDOWN_VOICE_WAIT_MS),
+        Duration::from_millis(DESKTOP_SHUTDOWN_PTY_WAIT_MS),
+    ) {
+        if report.pty_count != report.pty_exited_count {
+            eprintln!(
+                "Desktop shutdown stopped {}/{} PTY children before timeout.",
+                report.pty_exited_count, report.pty_count
+            );
+        }
+        if report.voice_cleanup_completed == Some(false) {
+            eprintln!(
+                "Desktop shutdown requested native voice capture stop, but cleanup timed out."
+            );
+        }
     }
 }
 
@@ -918,7 +1051,7 @@ fn close_pty(app: &AppHandle, pane_id: &str) -> Result<(), String> {
     let entry = panes
         .remove(pane_id)
         .ok_or_else(|| format!("Pane {} not found", pane_id))?;
-    stop_single_pty(&entry);
+    stop_single_pty_with_wait(&entry, Duration::from_millis(PTY_CLOSE_WAIT_MS));
     // Drop master to signal EOF to reader thread
     drop(entry.master);
     drop(entry.writer);
@@ -991,6 +1124,9 @@ pub fn run() {
             started: AtomicBool::new(false),
             stop_requested: Arc::new(AtomicBool::new(false)),
         })
+        .manage(DesktopShutdownManager {
+            requested: AtomicBool::new(false),
+        })
         .manage(VoiceCaptureManager {
             snapshot: Arc::new(Mutex::new(VoiceCaptureRuntimeSnapshot::default())),
             session: Mutex::new(None),
@@ -1023,13 +1159,11 @@ pub fn run() {
         .expect("error while building tauri application");
 
     app.run(|app_handle, event| {
-        if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
-            let manager = app_handle.state::<DesktopSummaryStreamManager>();
-            manager.stop_requested.store(true, Ordering::SeqCst);
-            std::thread::sleep(std::time::Duration::from_millis(750));
-        } else if matches!(event, tauri::RunEvent::Exit) {
-            let manager = app_handle.state::<DesktopSummaryStreamManager>();
-            manager.stop_requested.store(true, Ordering::SeqCst);
+        if matches!(
+            event,
+            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+        ) {
+            request_desktop_runtime_shutdown_for_app(app_handle);
         }
     });
 }
@@ -1109,6 +1243,75 @@ mod tests {
             &session,
             Duration::from_millis(1)
         ));
+    }
+
+    #[test]
+    fn desktop_shutdown_stops_summary_voice_and_empty_pty_registry_once() {
+        let shutdown = DesktopShutdownManager {
+            requested: AtomicBool::new(false),
+        };
+        let summary = DesktopSummaryStreamManager {
+            started: AtomicBool::new(false),
+            stop_requested: Arc::new(AtomicBool::new(false)),
+        };
+        let voice_stop_requested = Arc::new(AtomicBool::new(false));
+        let voice = VoiceCaptureManager {
+            snapshot: Arc::new(Mutex::new(VoiceCaptureRuntimeSnapshot {
+                generation: 1,
+                state: "recording".to_string(),
+                permission: "granted".to_string(),
+                reason: "Native microphone capture is recording.".to_string(),
+                meter_level: 0.4,
+                running: true,
+                native_available: true,
+            })),
+            session: Mutex::new(Some(VoiceCaptureSession {
+                generation: 1,
+                stop_requested: voice_stop_requested.clone(),
+                cleanup_complete: Arc::new(AtomicBool::new(true)),
+            })),
+            next_generation: AtomicU64::new(2),
+        };
+        let pty = PtyManager {
+            panes: Arc::new(Mutex::new(HashMap::new())),
+            next_generation: AtomicU64::new(1),
+        };
+
+        let report = request_desktop_runtime_shutdown(
+            &shutdown,
+            &summary,
+            &voice,
+            &pty,
+            Duration::from_millis(1),
+            Duration::from_millis(1),
+        )
+        .expect("first shutdown request should run cleanup");
+
+        assert!(summary.stop_requested.load(Ordering::SeqCst));
+        assert!(voice_stop_requested.load(Ordering::SeqCst));
+        assert_eq!(
+            report,
+            DesktopShutdownReport {
+                voice_stop_requested: true,
+                voice_cleanup_completed: Some(true),
+                pty_count: 0,
+                pty_exited_count: 0,
+            }
+        );
+        let snapshot = voice.snapshot.lock().expect("snapshot lock").clone();
+        assert_eq!(snapshot.state, "stopped");
+        assert!(!snapshot.running);
+        assert!(voice.session.lock().expect("session lock").is_none());
+
+        assert!(request_desktop_runtime_shutdown(
+            &shutdown,
+            &summary,
+            &voice,
+            &pty,
+            Duration::from_millis(1),
+            Duration::from_millis(1),
+        )
+        .is_none());
     }
 
     #[test]
