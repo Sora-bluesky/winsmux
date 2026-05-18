@@ -29,13 +29,13 @@ The desktop update path is installing the newer desktop release over the
 existing installation. This keeps project repositories, agent CLI
 authentication, and external provider credentials outside the app uninstaller.
 
-## Source access transition
+## Public distribution boundary
 
 `v1.0.0` starts the closed-source public distribution model described in
-[Source Access and Redistribution](../source-access.md). Public users receive
-installers, packages, checksums, release notes, and public docs. Selected
-implementation source can be shared only through the paid-member source
-community rules.
+[Public Distribution Boundary](../source-access.md). Public users receive
+installers, packages, checksums, release notes, and public docs. Public
+repository materials must not describe private source-sharing, review, or
+business arrangements.
 
 ## Shutdown cleanup gate
 
@@ -52,7 +52,7 @@ worker-pane child processes.
 
 - Public install docs describe the setup executable, MSI artifact, checksum
   file, signing posture, update path, and portable fallback policy.
-- Public docs describe the `v1.0.0` source access boundary.
+- Public docs describe the `v1.0.0` public distribution boundary.
 - Legacy `psmux` compatibility has already been retired or formally accepted by
   the completed compatibility gates.
 - The manual checklist gate is complete and machine-readable.

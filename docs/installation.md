@@ -57,8 +57,8 @@ The desktop packaging policy, effective for the `v1.0.0` release line, is:
 - portable fallback: use the release `winsmux-x64.exe` core binary or the npm package; no portable desktop app artifact is published by default
 
 The `v1.0.0` public distribution is installer-first. Full implementation source
-is no longer part of the public release surface. See [Source Access and
-Redistribution](source-access.md) for the source access and redistribution
+is no longer part of the public release surface. See [Public Distribution
+Boundary](source-access.md) for the public distribution and redistribution
 boundary.
 
 ## CLI package install
