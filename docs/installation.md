@@ -45,6 +45,9 @@ For the desktop app, download the Windows installer from the matching GitHub Rel
 
 Use the setup executable for a normal single-user install. Use the MSI when your deployment tooling expects MSI packages.
 
+The setup executable includes English and Japanese installer UI. It shows a
+language selector before the installer or uninstaller window opens.
+
 If Windows shows a publisher or SmartScreen warning, verify the downloaded file against `SHA256SUMS-desktop` from the same release before running it. Release notes state the signing posture for each release.
 
 The desktop packaging policy, effective for the `v1.0.0` release line, is:
@@ -52,6 +55,7 @@ The desktop packaging policy, effective for the `v1.0.0` release line, is:
 - primary artifact: `winsmux_<version>_x64-setup.exe`
 - deployment artifact: `winsmux_<version>_x64_en-US.msi`
 - verification artifact: `SHA256SUMS-desktop`
+- setup executable languages: English and Japanese, with the language selector enabled
 - signing posture: documented per release until a stable signing certificate is available
 - update story: install the newer desktop release over the existing install
 - portable fallback: use the release `winsmux-x64.exe` core binary or the npm package; no portable desktop app artifact is published by default

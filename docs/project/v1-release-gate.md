@@ -14,6 +14,8 @@ Required public artifacts:
 - `SHA256SUMS-desktop` for checksum verification
 - npm package and CLI installer path for CLI-first users
 - release notes that state the signing posture and update path
+- English and Japanese installer UI for the setup executable, with the language
+  selector enabled
 
 The default release does not publish a portable desktop app artifact. If a
 portable fallback is needed, users can use the release `winsmux-x64.exe` core
@@ -51,7 +53,8 @@ worker-pane child processes.
 ## Final gate checklist
 
 - Public install docs describe the setup executable, MSI artifact, checksum
-  file, signing posture, update path, and portable fallback policy.
+  file, installer UI languages, signing posture, update path, and portable
+  fallback policy.
 - Public docs describe the `v1.0.0` public distribution boundary.
 - Legacy `psmux` compatibility has already been retired or formally accepted by
   the completed compatibility gates.

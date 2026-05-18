@@ -53,6 +53,8 @@ Describe 'winsmux version surface' {
         $tauriConfig.version | Should -Be $script:ProductVersion
         $tauriConfig.productName | Should -Be 'winsmux'
         $tauriConfig.app.windows[0].title | Should -Be 'winsmux'
+        $tauriConfig.bundle.windows.nsis.languages | Should -Be @('English', 'Japanese')
+        $tauriConfig.bundle.windows.nsis.displayLanguageSelector | Should -BeTrue
         $tauriManifest | Should -Match ('(?m)^version\s*=\s*"{0}"\r?$' -f [regex]::Escape($script:ProductVersion))
         $tauriManifest | Should -Match '(?m)^description\s*=\s*"Desktop control plane for winsmux"\r?$'
         $tauriManifest | Should -Match '(?m)^authors\s*=\s*\["Sora-bluesky"\]\r?$'
