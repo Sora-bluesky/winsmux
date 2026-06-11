@@ -81,6 +81,7 @@ tests/*
 !tests/HarnessContract.Tests.ps1
 !tests/ColabWorkerTemplates.Tests.ps1
 !tests/ColabAcceptance.Tests.ps1
+!tests/ColabCliAdapter.Tests.ps1
 !tests/NpmReleasePackage.Tests.ps1
 !tests/VersionSurface.Tests.ps1
 !tests/ThreatModelContract.Tests.ps1

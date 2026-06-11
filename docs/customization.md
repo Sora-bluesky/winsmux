@@ -273,6 +273,17 @@ automation patterns before invoking the adapter. Stored adapter output and
 `cli_arguments` metadata redact secret-like values, Google Drive paths, and
 local absolute paths so review packets and release-gate evidence stay shareable.
 
+If you use the companion Colab MCP checkout as the adapter implementation, point
+winsmux at the bundled bridge:
+
+```powershell
+$env:WINSMUX_COLAB_MCP_REPO = "C:\path\to\colab"
+$env:WINSMUX_COLAB_CLI = "C:\path\to\winsmux\scripts\google-colab-cli-adapter.ps1"
+```
+
+For command-shape checks that must not open Colab, set
+`WINSMUX_COLAB_CLI_ADAPTER_MODE=plan_only`.
+
 For Colab Pro GPU model work, use `colab_llm` on the visible worker slots. The
 Colab runtime downloads model files into the mounted Google Drive cache; do not
 use the Windows PC or Ollama cache for these models.

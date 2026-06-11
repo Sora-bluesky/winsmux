@@ -81,6 +81,16 @@ google-colab-cli download --session <name> --source <remote-path> --dest <path> 
 $env:WINSMUX_COLAB_CLI = "C:\path\to\your-adapter.exe"
 ```
 
+winsmux と並べて管理している Colab MCP 用のチェックアウトを使う場合は、同梱の薄いブリッジを指定できます。
+
+```powershell
+$env:WINSMUX_COLAB_MCP_REPO = "C:\path\to\colab"
+$env:WINSMUX_COLAB_CLI = "C:\path\to\winsmux\scripts\google-colab-cli-adapter.ps1"
+```
+
+このブリッジは `run` / `logs` を Colab MCP 側の実行ヘルパーへ渡します。Google アカウント識別子は repo ファイルに保存しません。
+Colab を開かずにコマンド形だけ確認する場合は、`WINSMUX_COLAB_CLI_ADAPTER_MODE=plan_only` を設定します。
+
 その後、確認します。
 
 ```powershell

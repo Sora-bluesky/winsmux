@@ -86,6 +86,19 @@ If your adapter has another executable name, set:
 $env:WINSMUX_COLAB_CLI = "C:\path\to\your-adapter.exe"
 ```
 
+For local verification with the companion Colab MCP checkout, winsmux also
+ships a thin bridge:
+
+```powershell
+$env:WINSMUX_COLAB_MCP_REPO = "C:\path\to\colab"
+$env:WINSMUX_COLAB_CLI = "C:\path\to\winsmux\scripts\google-colab-cli-adapter.ps1"
+```
+
+The bridge calls the companion project's Colab MCP execution helper for
+`run`/`logs`. It does not store Google account identifiers in repo files.
+Use `WINSMUX_COLAB_CLI_ADAPTER_MODE=plan_only` when you want to verify command
+shape without opening or using Colab.
+
 Then check:
 
 ```powershell
