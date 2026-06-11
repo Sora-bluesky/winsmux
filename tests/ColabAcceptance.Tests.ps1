@@ -318,6 +318,59 @@ exit /b 1
         $runJson | Should -Match '\[DRIVE_PATH_REDACTED\]'
     }
 
+    It 'executes worker-1 and worker-2 colab_llm jobs concurrently through the same adapter contract' {
+        Write-ColabLlmAcceptanceProjectConfig
+        $fake = New-AcceptanceFakeColabCli
+        New-Item -ItemType Directory -Path (Join-Path $script:AcceptanceRoot 'workers\colab') -Force | Out-Null
+        'print("hello from concurrent colab llm")' | Set-Content -LiteralPath (Join-Path $script:AcceptanceRoot 'workers\colab\llm_worker.py') -Encoding UTF8
+
+        $jobScript = {
+            param(
+                [string]$BridgePath,
+                [string]$ProjectRoot,
+                [string]$FakeCli,
+                [string]$Worker,
+                [string]$RunId
+            )
+
+            $env:WINSMUX_COLAB_CLI = $FakeCli
+            $env:WINSMUX_COLAB_AUTH_STATE = 'authenticated'
+            $env:WINSMUX_COLAB_AVAILABLE_GPUS = 'A100'
+            $output = & pwsh -NoProfile -File $BridgePath workers exec $Worker --prompt "Concurrent Colab LLM acceptance prompt for $Worker." --run-id $RunId --json --project-dir $ProjectRoot 2>&1
+            [PSCustomObject]@{
+                Worker   = $Worker
+                RunId    = $RunId
+                ExitCode = $LASTEXITCODE
+                Output   = ($output | Out-String)
+                Json     = (($output | Select-Object -Last 1) | ConvertFrom-Json -Depth 32)
+            }
+        }
+
+        $jobs = @(
+            Start-Job -ScriptBlock $jobScript -ArgumentList $script:BridgePath, $script:AcceptanceRoot, $fake.Path, 'worker-1', 'colab-llm-concurrent-1'
+            Start-Job -ScriptBlock $jobScript -ArgumentList $script:BridgePath, $script:AcceptanceRoot, $fake.Path, 'worker-2', 'colab-llm-concurrent-2'
+        )
+
+        try {
+            $completed = Wait-Job -Job $jobs -Timeout 90
+            @($completed).Count | Should -Be 2
+
+            $results = @($jobs | Receive-Job)
+            @($results).Count | Should -Be 2
+            foreach ($result in $results) {
+                $result.ExitCode | Should -Be 0 -Because $result.Output
+                $result.Json.status | Should -Be 'succeeded'
+                $result.Json.backend | Should -Be 'colab_llm'
+                $result.Json.runtime_engine | Should -Be 'vllm'
+                $result.Json.stdout_log | Should -Match "^\.winsmux/worker-runs/$($result.Worker)/$($result.RunId)/stdout\.log$"
+            }
+            @($results | ForEach-Object { $_.Json.slot_id }) | Should -Contain 'worker-1'
+            @($results | ForEach-Object { $_.Json.slot_id }) | Should -Contain 'worker-2'
+        } finally {
+            $jobs | Remove-Job -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     It 'keeps real Colab runtime acceptance behind an explicit manual flag' {
         if ([string]$env:WINSMUX_COLAB_ACCEPTANCE_REAL -ne '1') {
             Set-ItResult -Skipped -Because 'Set WINSMUX_COLAB_ACCEPTANCE_REAL=1 and WINSMUX_COLAB_ACCEPTANCE_PROJECT to run live Colab checks manually.'
@@ -326,14 +379,26 @@ exit /b 1
 
         $project = [string]$env:WINSMUX_COLAB_ACCEPTANCE_PROJECT
         if ([string]::IsNullOrWhiteSpace($project)) {
-            throw 'WINSMUX_COLAB_ACCEPTANCE_PROJECT must point to a project configured with at least one colab_cli slot.'
+            throw 'WINSMUX_COLAB_ACCEPTANCE_PROJECT must point to a project configured with worker-1 and worker-2 colab_llm slots.'
         }
 
         $doctor = Invoke-AcceptanceJson -Arguments @('workers', 'doctor', '--json', '--project-dir', $project)
         (@($doctor.checks | Where-Object { $_.label -eq 'google-colab-cli' })[0].status) | Should -Be 'pass'
         (@($doctor.checks | Where-Object { $_.label -eq 'colab auth' })[0].status) | Should -Be 'pass'
+        (@($doctor.checks | Where-Object { $_.label -eq 'Colab LLM slots' })[0].status) | Should -Be 'pass'
+        (@($doctor.checks | Where-Object { $_.label -eq 'Colab LLM worker worker-1' })[0].status) | Should -Be 'pass'
+        (@($doctor.checks | Where-Object { $_.label -eq 'Colab LLM worker worker-2' })[0].status) | Should -Be 'pass'
 
         $status = Invoke-AcceptanceJson -Arguments @('workers', 'status', '--json', '--project-dir', $project)
-        @($status.workers | Where-Object { $_.backend -eq 'colab_cli' -and $_.degraded_reason -eq '' }).Count | Should -BeGreaterThan 0
+        $worker1 = @($status.workers | Where-Object { $_.slot_id -eq 'worker-1' })[0]
+        $worker2 = @($status.workers | Where-Object { $_.slot_id -eq 'worker-2' })[0]
+        $worker1.backend | Should -Be 'colab_llm'
+        $worker2.backend | Should -Be 'colab_llm'
+        $worker1.degraded_reason | Should -Be ''
+        $worker2.degraded_reason | Should -Be ''
+        $worker1.actual_gpu | Should -Match 'H100|A100'
+        $worker2.actual_gpu | Should -Match 'H100|A100'
+        $worker1.colab_llm.runtime_engine | Should -Be 'vllm'
+        $worker2.colab_llm.runtime_engine | Should -Be 'vllm'
     }
 }
