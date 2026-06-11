@@ -46,4 +46,48 @@ Describe 'google-colab-cli adapter bridge' {
             if ($null -eq $previousStateRoot) { Remove-Item Env:WINSMUX_COLAB_CLI_ADAPTER_STATE_ROOT -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_CLI_ADAPTER_STATE_ROOT = $previousStateRoot }
         }
     }
+
+    It 'replaces file collisions while staging directory uploads and downloads' {
+        $previousStateRoot = $env:WINSMUX_COLAB_CLI_ADAPTER_STATE_ROOT
+        $stateRoot = Join-Path $TestDrive 'adapter-state-collisions'
+        try {
+            $env:WINSMUX_COLAB_CLI_ADAPTER_STATE_ROOT = $stateRoot
+
+            $sourceDir = Join-Path $TestDrive 'source-dir'
+            New-Item -ItemType Directory -Force -Path $sourceDir | Out-Null
+            'payload' | Set-Content -LiteralPath (Join-Path $sourceDir 'payload.txt') -Encoding UTF8
+
+            $uploadTargetFile = Join-Path $stateRoot 'test-session\run-2\uploads\source-dir'
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $uploadTargetFile) | Out-Null
+            'stale file' | Set-Content -LiteralPath $uploadTargetFile -Encoding UTF8
+
+            $uploadOutput = & pwsh -NoProfile -File $script:Adapter upload `
+                --session test-session `
+                --run-id run-2 `
+                --source $sourceDir `
+                --dest /content/source-dir
+
+            $LASTEXITCODE | Should -Be 0
+            ($uploadOutput | ConvertFrom-Json).status | Should -Be 'uploaded'
+            Test-Path -LiteralPath (Join-Path $uploadTargetFile 'payload.txt') | Should -BeTrue
+
+            $downloadSource = Join-Path $stateRoot 'test-session\run-2\uploads\result-dir'
+            New-Item -ItemType Directory -Force -Path $downloadSource | Out-Null
+            'result' | Set-Content -LiteralPath (Join-Path $downloadSource 'result.txt') -Encoding UTF8
+            $downloadTarget = Join-Path $TestDrive 'download-target'
+            'stale download file' | Set-Content -LiteralPath $downloadTarget -Encoding UTF8
+
+            $downloadOutput = & pwsh -NoProfile -File $script:Adapter download `
+                --session test-session `
+                --run-id run-2 `
+                --source /content/result-dir `
+                --dest $downloadTarget
+
+            $LASTEXITCODE | Should -Be 0
+            ($downloadOutput | ConvertFrom-Json).status | Should -Be 'downloaded'
+            Test-Path -LiteralPath (Join-Path $downloadTarget 'result.txt') | Should -BeTrue
+        } finally {
+            if ($null -eq $previousStateRoot) { Remove-Item Env:WINSMUX_COLAB_CLI_ADAPTER_STATE_ROOT -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_CLI_ADAPTER_STATE_ROOT = $previousStateRoot }
+        }
+    }
 }

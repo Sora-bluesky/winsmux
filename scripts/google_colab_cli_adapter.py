@@ -54,6 +54,15 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     write_text(path, json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
 
 
+def remove_existing_path(path: Path) -> None:
+    if not path.exists() and not path.is_symlink():
+        return
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+
+
 def find_colab_repo() -> Path | None:
     explicit = os.environ.get("WINSMUX_COLAB_MCP_REPO", "").strip()
     candidates: list[Path] = []
@@ -231,11 +240,11 @@ def command_upload(args: argparse.Namespace) -> int:
     dest.mkdir(parents=True, exist_ok=True)
     if source.is_dir():
         target = dest / source.name
-        if target.exists():
-            shutil.rmtree(target)
+        remove_existing_path(target)
         shutil.copytree(source, target)
     else:
         target = dest / source.name
+        remove_existing_path(target)
         shutil.copy2(source, target)
     payload = {
         "schema_version": STATE_SCHEMA,
@@ -260,12 +269,12 @@ def command_download(args: argparse.Namespace) -> int:
         return 1
     if staged.is_dir():
         target = dest / staged.name if dest.exists() and dest.is_dir() else dest
-        if target.exists():
-            shutil.rmtree(target)
+        remove_existing_path(target)
         shutil.copytree(staged, target)
     else:
         target = dest / staged.name if dest.exists() and dest.is_dir() else dest
         target.parent.mkdir(parents=True, exist_ok=True)
+        remove_existing_path(target)
         shutil.copy2(staged, target)
     payload = {
         "schema_version": STATE_SCHEMA,
