@@ -1477,10 +1477,29 @@ fn operator_cli_machine_contract_json_exposes_hook_facing_catalog() {
     assert_eq!(json["roles"][0]["canonical"], "operator");
     assert_eq!(json["roles"][1]["canonical"], "worker");
     assert_eq!(json["worker_backends"][0]["id"], "local");
-    assert_eq!(json["worker_backends"][2]["id"], "colab_cli");
-    assert_eq!(json["worker_backends"][2]["runtime_available"], true);
-    assert_eq!(json["worker_backends"][3]["id"], "noop");
-    assert_eq!(json["worker_backends"][3]["runtime_available"], false);
+    let worker_backends = json["worker_backends"]
+        .as_array()
+        .expect("worker_backends should be an array");
+    let colab_cli = worker_backends
+        .iter()
+        .find(|backend| backend["id"] == "colab_cli")
+        .expect("colab_cli backend should exist");
+    assert_eq!(colab_cli["runtime_available"], true);
+    let local_llm = worker_backends
+        .iter()
+        .find(|backend| backend["id"] == "local_llm")
+        .expect("local_llm backend should exist");
+    assert_eq!(local_llm["runtime_available"], true);
+    let colab_llm = worker_backends
+        .iter()
+        .find(|backend| backend["id"] == "colab_llm")
+        .expect("colab_llm backend should exist");
+    assert_eq!(colab_llm["runtime_available"], true);
+    let noop = worker_backends
+        .iter()
+        .find(|backend| backend["id"] == "noop")
+        .expect("noop backend should exist");
+    assert_eq!(noop["runtime_available"], false);
     assert_eq!(json["projection_surfaces"][1]["name"], "board");
     assert_eq!(json["projection_surfaces"][1]["command"], "board --json");
     assert_eq!(

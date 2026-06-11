@@ -33,7 +33,15 @@ fn machine_contract_exposes_worker_backend_contracts() {
             .iter()
             .map(|backend| backend.id)
             .collect::<Vec<_>>(),
-        vec!["local", "codex", "colab_cli", "noop"]
+        vec![
+            "local",
+            "codex",
+            "antigravity",
+            "colab_cli",
+            "local_llm",
+            "colab_llm",
+            "noop"
+        ]
     );
 
     let local = catalog
@@ -52,6 +60,26 @@ fn machine_contract_exposes_worker_backend_contracts() {
     assert!(colab.config_fields.contains(&"session_name"));
     assert!(colab.config_fields.contains(&"gpu_preference"));
     assert!(colab.config_fields.contains(&"task_script"));
+
+    let local_llm = catalog
+        .worker_backends
+        .iter()
+        .find(|backend| backend.id == "local_llm")
+        .expect("local_llm backend should exist");
+    assert!(local_llm.runtime_available);
+    assert!(local_llm.config_fields.contains(&"endpoint"));
+    assert!(local_llm.config_fields.contains(&"model_id"));
+    assert!(local_llm.config_fields.contains(&"artifact_root"));
+
+    let colab_llm = catalog
+        .worker_backends
+        .iter()
+        .find(|backend| backend.id == "colab_llm")
+        .expect("colab_llm backend should exist");
+    assert!(colab_llm.runtime_available);
+    assert!(colab_llm.config_fields.contains(&"runtime_engine"));
+    assert!(colab_llm.config_fields.contains(&"model_id"));
+    assert!(colab_llm.config_fields.contains(&"gpu_preference"));
 
     let noop = catalog
         .worker_backends
@@ -296,10 +324,19 @@ fn machine_contract_serializes_to_json() {
     assert_eq!(value["roles"][3]["canonical"], "builder");
     assert_eq!(value["roles"][3]["legacy_aliases"][0], "Builder");
     assert_eq!(value["organization"]["terms"][1]["name"], "agent");
-    assert_eq!(value["worker_backends"][2]["id"], "colab_cli");
-    assert_eq!(value["worker_backends"][2]["runtime_available"], true);
-    assert_eq!(value["worker_backends"][3]["id"], "noop");
-    assert_eq!(value["worker_backends"][3]["runtime_available"], false);
+    let backends = value["worker_backends"]
+        .as_array()
+        .expect("worker_backends should be an array");
+    let colab_llm = backends
+        .iter()
+        .find(|backend| backend["id"] == "colab_llm")
+        .expect("colab_llm should serialize");
+    assert_eq!(colab_llm["runtime_available"], true);
+    let noop = backends
+        .iter()
+        .find(|backend| backend["id"] == "noop")
+        .expect("noop should serialize");
+    assert_eq!(noop["runtime_available"], false);
     assert_eq!(
         value["organization"]["manifest_fields"][4]["field"],
         "budget_monthly_cents"
