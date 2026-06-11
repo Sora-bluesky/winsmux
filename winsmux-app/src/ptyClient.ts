@@ -51,6 +51,10 @@ export interface PtyCaptureResult {
   output: string;
 }
 
+export interface PtyWriteOptions {
+  interactive?: boolean;
+}
+
 let ptyRequestSequence = 0;
 
 function normalizePtyError(action: string, error: unknown) {
@@ -139,9 +143,13 @@ export async function spawnPtyPane(
   }
 }
 
-export async function writePtyData(paneId: string, data: string) {
+export async function writePtyData(paneId: string, data: string, options: PtyWriteOptions = {}) {
   try {
-    await ptyCommandTransport.request("pty.write", { paneId, data });
+    await ptyCommandTransport.request("pty.write", {
+      paneId,
+      data,
+      interactive: options.interactive ?? false,
+    });
   } catch (error) {
     throw normalizePtyError(`pty.write(${paneId})`, error);
   }

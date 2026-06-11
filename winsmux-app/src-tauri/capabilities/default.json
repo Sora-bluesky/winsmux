@@ -5,7 +5,10 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
+    "core:window:allow-is-maximized",
     "core:window:allow-maximize",
+    "core:window:allow-set-size",
+    "core:window:allow-unmaximize",
     "core:webview:allow-create-webview-window",
     "dialog:default",
     "opener:default"

@@ -27,6 +27,18 @@ const JSON_RPC_SERVER_ERROR: i32 = -32000;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+fn apply_hidden_subprocess_flags(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = command;
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct DesktopBoardSummary {
     pub pane_count: usize,
@@ -1864,27 +1876,27 @@ where
                 .current_dir(&effective_project_dir)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
-            #[cfg(windows)]
-            {
-                process.creation_flags(CREATE_NO_WINDOW);
-            }
+            apply_hidden_subprocess_flags(&mut process);
 
             let mut child = match process.spawn() {
                 Ok(child) => child,
                 Err(err) => {
                     eprintln!("Failed to start {} summary stream: {}", source, err);
                     quick_failure_count += 1;
-                    if quick_failure_count >= 3 {
+                    let retry_delay = if quick_failure_count >= 3 {
                         eprintln!(
-                            "winsmux {} stream disabled after repeated pwsh start failures",
+                            "winsmux {} stream start failed repeatedly; retrying after backoff",
                             source
                         );
-                        break;
-                    }
+                        quick_failure_count = 0;
+                        Duration::from_secs(10)
+                    } else {
+                        Duration::from_secs(2)
+                    };
                     if stop_requested.load(Ordering::Relaxed) {
                         break;
                     }
-                    thread::sleep(Duration::from_secs(2));
+                    thread::sleep(retry_delay);
                     continue;
                 }
             };
@@ -1908,10 +1920,21 @@ where
                     eprintln!("winsmux {} stream stdout pipe missing", source);
                     let _ = child.kill();
                     let _ = child.wait();
+                    quick_failure_count += 1;
+                    let retry_delay = if quick_failure_count >= 3 {
+                        eprintln!(
+                            "winsmux {} stream stdout failed repeatedly; retrying after backoff",
+                            source
+                        );
+                        quick_failure_count = 0;
+                        Duration::from_secs(10)
+                    } else {
+                        Duration::from_secs(2)
+                    };
                     if stop_requested.load(Ordering::Relaxed) {
                         break;
                     }
-                    thread::sleep(Duration::from_secs(2));
+                    thread::sleep(retry_delay);
                     continue;
                 }
             };
@@ -1951,36 +1974,54 @@ where
             if stop_requested.load(Ordering::Relaxed) {
                 break;
             }
-            match status {
+            let stream_exited_quickly = started_at.elapsed() < Duration::from_secs(10);
+            let stream_needs_backoff = match &status {
+                Ok(status) if status.success() && !stream_exited_quickly => false,
+                _ => true,
+            };
+            match &status {
                 Ok(status) if status.success() => {
-                    quick_failure_count = 0;
-                }
-                Ok(status) if started_at.elapsed() < Duration::from_secs(10) => {
-                    quick_failure_count += 1;
                     eprintln!(
-                        "winsmux {} stream exited quickly with status {}; attempt {}",
-                        source, status, quick_failure_count
+                        "winsmux {} stream exited with status {}; retrying live refresh stream",
+                        source, status
                     );
-                    if quick_failure_count >= 3 {
-                        eprintln!(
-                            "winsmux {} stream disabled after repeated quick failures",
-                            source
-                        );
-                        break;
-                    }
                 }
-                Ok(_) => {
-                    quick_failure_count = 0;
+                Ok(status) if stream_exited_quickly => {
+                    eprintln!(
+                        "winsmux {} stream exited quickly with status {}; retrying live refresh stream",
+                        source, status
+                    );
                 }
+                Ok(status) => eprintln!(
+                    "winsmux {} stream exited with status {}; retrying live refresh stream",
+                    source, status
+                ),
                 Err(err) => {
-                    quick_failure_count += 1;
-                    eprintln!("winsmux {} stream wait failed: {}", source, err);
-                    if quick_failure_count >= 3 {
-                        break;
-                    }
+                    eprintln!(
+                        "winsmux {} stream wait failed: {}; retrying live refresh stream",
+                        source, err
+                    );
                 }
             }
-            thread::sleep(Duration::from_secs(2));
+            if stream_needs_backoff {
+                quick_failure_count += 1;
+            } else {
+                quick_failure_count = 0;
+            }
+            let retry_delay = if quick_failure_count >= 3 {
+                eprintln!(
+                    "winsmux {} stream ended repeatedly; retrying after backoff",
+                    source
+                );
+                quick_failure_count = 0;
+                Duration::from_secs(10)
+            } else {
+                Duration::from_secs(2)
+            };
+            if stop_requested.load(Ordering::Relaxed) {
+                break;
+            }
+            thread::sleep(retry_delay);
         }
     });
 
@@ -2070,8 +2111,7 @@ fn collect_desktop_ignored_paths(root: &Path, relative_paths: &[String]) -> Hash
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    #[cfg(windows)]
-    command.creation_flags(CREATE_NO_WINDOW);
+    apply_hidden_subprocess_flags(&mut command);
 
     let Ok(mut child) = command.spawn() else {
         return HashSet::new();
@@ -2242,13 +2282,17 @@ fn run_winsmux_json(project_dir: Option<String>, args: &[String]) -> Result<Valu
     let script_path = repo_root.join("scripts").join("winsmux-core.ps1");
     let command_text = build_winsmux_command_text(&script_path, args);
 
-    let output = Command::new("pwsh")
+    let mut command = Command::new("pwsh");
+    command
         .arg("-NoProfile")
         .arg("-ExecutionPolicy")
         .arg("Bypass")
         .arg("-Command")
         .arg(command_text)
-        .current_dir(&effective_project_dir)
+        .current_dir(&effective_project_dir);
+    apply_hidden_subprocess_flags(&mut command);
+
+    let output = command
         .output()
         .map_err(|err| format!("Failed to start winsmux-core.ps1: {err}"))?;
 

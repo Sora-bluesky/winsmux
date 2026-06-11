@@ -318,12 +318,20 @@ type FocusMode = "standard" | "focused";
 type LanguageMode = "en" | "ja";
 type WorkbenchLayoutMode = "2x2" | "3x2" | "focus";
 type RuntimeRoleId = "operator" | "worker" | "reviewer";
-type RuntimeProviderId = "provider-default" | "codex" | "claude" | "gemini";
+type RuntimeProviderId = "provider-default" | "codex" | "claude" | "antigravity" | "gemini";
 type RuntimeModelSource = "provider-default" | "cli-discovery" | "official-doc" | "operator-override";
 type RuntimeReasoningEffort = "provider-default" | "low" | "medium" | "high" | "xhigh" | "max";
 type ComposerPermissionMode = "auto" | "default" | "acceptEdits" | "plan";
-type ComposerEffortLevel = "auto" | "low" | "medium" | "high" | "xhigh" | "max";
-type ComposerModelId = "opus-4.7" | "opus-4.7-1m" | "opus-4.6" | "sonnet-4.6" | "haiku-4.5";
+type ComposerEffortLevel = "auto" | "low" | "medium" | "high" | "xhigh" | "max" | "ultracode";
+type ComposerModelId =
+  | "fable-5"
+  | "opus-4.8"
+  | "opus-4.8-1m"
+  | "sonnet-4.6"
+  | "haiku-4.5"
+  | "legacy-opus-4.7"
+  | "legacy-opus-4.7-1m"
+  | "legacy-opus-4.6";
 type VoiceDraftMode = "raw" | "cleaned" | "operator_request";
 type VoiceVocabularyMode = "off" | "project" | "project_custom";
 
@@ -536,8 +544,8 @@ let detachedSurfaceSession: DetachedSurfaceSessionState | null = null;
 let detachedSurfacePollTimer: number | null = null;
 let activeComposerMode: ComposerMode = "dispatch";
 let activeComposerPermissionMode: ComposerPermissionMode = "acceptEdits";
-let activeComposerModel: ComposerModelId = "opus-4.7-1m";
-let activeComposerEffort: ComposerEffortLevel = "xhigh";
+let activeComposerModel: ComposerModelId = "opus-4.8-1m";
+let activeComposerEffort: ComposerEffortLevel = "max";
 let activeVoiceDraftMode: VoiceDraftMode = "raw";
 let activeComposerFastModeEnabled = false;
 let activeComposerFastModeTogglePending = false;
@@ -784,11 +792,14 @@ const composerModelOptions: Array<{
   shortcut: string;
   fastModeCompatible?: boolean;
 }> = [
-  { value: "opus-4.7", label: "Opus 4.7", labelJa: "Opus 4.7", cliModel: "opus", shortcut: "1" },
-  { value: "opus-4.7-1m", label: "Opus 4.7 1M", labelJa: "Opus 4.7 1M", cliModel: "opus[1m]", shortcut: "2" },
-  { value: "opus-4.6", label: "Opus 4.6", labelJa: "Opus 4.6", cliModel: "claude-opus-4-6", shortcut: "3", fastModeCompatible: true },
-  { value: "sonnet-4.6", label: "Sonnet 4.6", labelJa: "Sonnet 4.6", cliModel: "sonnet", shortcut: "4" },
-  { value: "haiku-4.5", label: "Haiku 4.5", labelJa: "Haiku 4.5", cliModel: "haiku", shortcut: "5" },
+  { value: "fable-5", label: "Fable 5", labelJa: "Fable 5", cliModel: "fable", shortcut: "1", fastModeCompatible: true },
+  { value: "opus-4.8", label: "Opus 4.8", labelJa: "Opus 4.8", cliModel: "opus", shortcut: "2", fastModeCompatible: true },
+  { value: "opus-4.8-1m", label: "Opus 4.8 1M", labelJa: "Opus 4.8 (1Mコンテキスト)", cliModel: "opus[1m]", shortcut: "3", fastModeCompatible: true },
+  { value: "sonnet-4.6", label: "Sonnet 4.6", labelJa: "Sonnet 4.6", cliModel: "sonnet", shortcut: "4", fastModeCompatible: true },
+  { value: "haiku-4.5", label: "Haiku 4.5", labelJa: "Haiku 4.5", cliModel: "haiku", shortcut: "5", fastModeCompatible: true },
+  { value: "legacy-opus-4.7", label: "Opus 4.7 Legacy", labelJa: "Opus 4.7 レガシー", cliModel: "claude-opus-4-7", shortcut: "6", fastModeCompatible: true },
+  { value: "legacy-opus-4.7-1m", label: "Opus 4.7 1M Legacy", labelJa: "Opus 4.7 (1Mコンテキスト) レガシー", cliModel: "claude-opus-4-7[1m]", shortcut: "7", fastModeCompatible: true },
+  { value: "legacy-opus-4.6", label: "Opus 4.6 Legacy", labelJa: "Opus 4.6 レガシー", cliModel: "claude-opus-4-6", shortcut: "8", fastModeCompatible: true },
 ];
 
 const composerEffortOptions: Array<{
@@ -798,7 +809,17 @@ const composerEffortOptions: Array<{
   description: string;
   descriptionJa: string;
   shortcut: string;
+  cliEffort?: "low" | "medium" | "high" | "xhigh" | "max";
+  startupCommand?: string;
 }> = [
+  {
+    value: "auto",
+    label: "Auto",
+    labelJa: "自動",
+    description: "Use the Claude Code default effort.",
+    descriptionJa: "Claude Code の既定の工数を使います。",
+    shortcut: "A",
+  },
   {
     value: "low",
     label: "Low",
@@ -838,6 +859,16 @@ const composerEffortOptions: Array<{
     description: "Use the maximum available effort.",
     descriptionJa: "利用可能な最大の思考量を使います。",
     shortcut: "X",
+  },
+  {
+    value: "ultracode",
+    label: "Ultracode",
+    labelJa: "ultracode",
+    description: "Select the Claude Code ultracode profile after the interactive session starts.",
+    descriptionJa: "対話セッション起動後に Claude Code の ultracode プロファイルを選択します。",
+    shortcut: "C",
+    cliEffort: "xhigh",
+    startupCommand: "/effort ultracode",
   },
 ];
 
@@ -1144,6 +1175,7 @@ const runtimeProviderOptions: Array<{ value: RuntimeProviderId; label: string; l
   { value: "provider-default", label: "Provider default", labelJa: "既定値" },
   { value: "codex", label: "Codex CLI", labelJa: "Codex CLI" },
   { value: "claude", label: "Claude Code", labelJa: "Claude Code" },
+  { value: "antigravity", label: "Antigravity CLI", labelJa: "Antigravity CLI" },
   { value: "gemini", label: "Gemini CLI", labelJa: "Gemini CLI" },
 ];
 const lockedOperatorRuntimePreference: RuntimeRolePreference = {
@@ -1174,6 +1206,8 @@ const runtimeModelSuggestions = [
   "provider-default",
   "gpt-5.3-codex-spark",
   "gpt-5.5",
+  "Gemini 3.5 Flash (High)",
+  "Gemini 3.5 Flash (Medium)",
   "default",
   "sonnet",
   "opus",
@@ -1510,7 +1544,7 @@ function initializeOperatorTerminal() {
   terminal.open(root);
   terminal.onData((data: string) => {
     void ensureOperatorPtyStarted()
-      .then(() => writePtyData(OPERATOR_PTY_ID, data))
+      .then(() => writePtyData(OPERATOR_PTY_ID, data, { interactive: true }))
       .catch((error) => {
         console.warn("Failed to write operator PTY data", error);
       });
@@ -1540,6 +1574,38 @@ function writeOperatorTerminal(data: string) {
     return;
   }
   operatorTerminal.write(data);
+}
+
+function resetTerminalDisplay(terminal: Terminal | null) {
+  if (!terminal) {
+    return;
+  }
+
+  try {
+    terminal.reset();
+    terminal.clear();
+  } catch (error) {
+    console.warn("Failed to reset terminal display", error);
+  }
+}
+
+function resetOperatorTerminalDisplay() {
+  resetTerminalDisplay(operatorTerminal);
+  operatorOutputBuffer = "";
+  if (operatorOutputFlushTimer !== null) {
+    window.clearTimeout(operatorOutputFlushTimer);
+    operatorOutputFlushTimer = null;
+  }
+  operatorAttentionFingerprint = "";
+}
+
+function resetPaneTerminalDisplay(paneId: string) {
+  const entry = panes.get(paneId);
+  if (!entry) {
+    return;
+  }
+  resetTerminalDisplay(entry.terminal);
+  entry.lastOutputAt = null;
 }
 
 function markOperatorPtyStartedFromExternalEvent() {
@@ -1647,9 +1713,11 @@ function createPane(paneId?: string, options?: { deferWorkbenchUpdate?: boolean 
   terminal.open(termDiv);
 
   terminal.onData((data: string) => {
-    void ensurePanePtyStarted(id).then(() => writePtyData(id, data)).catch((error) => {
-      console.warn("Failed to write PTY data", error);
-    });
+    void ensurePanePtyStarted(id)
+      .then(() => writePtyData(id, data, { interactive: true }))
+      .catch((error) => {
+        console.warn("Failed to write PTY data", error);
+      });
   });
 
   terminal.onResize(({ cols, rows }) => {
@@ -1733,17 +1801,26 @@ function getOperatorStartupInput() {
   if (modelOption.cliModel) {
     args.push("--model", modelOption.cliModel);
   }
-  if (activeComposerEffort !== "auto") {
-    args.push("--effort", activeComposerEffort);
+  const cliEffort = getComposerCliEffort();
+  if (cliEffort) {
+    args.push("--effort", cliEffort);
   }
   const startupInput = `${args.join(" ")}\r`;
+  const startupCommands = [];
+  const effortStartupCommand = getComposerStartupCommand();
+  if (effortStartupCommand) {
+    startupCommands.push(effortStartupCommand);
+  }
   const shouldToggleFastMode = activeComposerFastModeTogglePending;
-  if (!shouldToggleFastMode) {
+  if (shouldToggleFastMode) {
+    startupCommands.push("/fast");
+    activeComposerFastModeTogglePending = false;
+    persistComposerSessionControls();
+  }
+  if (startupCommands.length < 1) {
     return startupInput;
   }
-  activeComposerFastModeTogglePending = false;
-  persistComposerSessionControls();
-  return `${startupInput}/fast\r`;
+  return `${startupInput}${startupCommands.map((command) => `${command}\r`).join("")}`;
 }
 
 function ensureOperatorPtyStarted() {
@@ -2071,6 +2148,21 @@ function getWorkerLaunchState(row: DesktopWorkerStatusRow) {
 }
 
 function getWorkerRemoteState(row: DesktopWorkerStatusRow) {
+  if (isWorkerColabLlm(row)) {
+    const runtime = getWorkerColabLlmField(row, "runtime_engine") || getWorkerColabLlmField(row, "runtime") || "colab";
+    const health = getWorkerColabHealth(row);
+    const runState = getWorkerColabRunState(row);
+    const selectedGpu = getWorkerColabSelectedGpu(row);
+    const gpuSuffix = selectedGpu && selectedGpu !== "none" ? ` gpu:${selectedGpu}` : "";
+    return `${runtime}:${health}/${runState}${gpuSuffix}`;
+  }
+
+  const localRuntime = getWorkerLocalLlmField(row, "runtime");
+  if ((row.backend || "").toLowerCase() === "local_llm" || localRuntime) {
+    const health = getWorkerLocalLlmField(row, "health") || "unknown";
+    return `${localRuntime || "local"}:${health}`;
+  }
+
   const launch = getWorkerStatusLaunch(row);
   const executionBackend = getLaunchApprovalField(launch, "execution_backend") || row.session || "local";
   const requestedGpu = (row.requested_gpu || "none").trim();
@@ -2082,6 +2174,106 @@ function getWorkerRemoteState(row: DesktopWorkerStatusRow) {
     return `${executionBackend} gpu:${actualGpu}`;
   }
   return executionBackend;
+}
+
+function getWorkerStatusRecordField(record: Record<string, unknown> | null | undefined, field: string) {
+  const value = record?.[field];
+  if (typeof value === "string") {
+    return value.trim();
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return "";
+}
+
+function getWorkerLocalLlmField(row: DesktopWorkerStatusRow, field: string) {
+  return getWorkerStatusRecordField(row.local_llm, field);
+}
+
+function getWorkerColabLlmField(row: DesktopWorkerStatusRow, field: string) {
+  return getWorkerStatusRecordField(row.colab_llm, field);
+}
+
+function isWorkerColabLlm(row: DesktopWorkerStatusRow) {
+  return (row.backend || "").toLowerCase() === "colab_llm" || Boolean(row.colab_llm);
+}
+
+function getWorkerBackendDisplay(row: DesktopWorkerStatusRow, launch = getWorkerStatusLaunch(row)) {
+  if (isWorkerColabLlm(row)) {
+    return getWorkerColabLlmField(row, "backend") || "colab_llm";
+  }
+  return getLaunchApprovalField(launch, "worker_backend") || row.backend || "unknown";
+}
+
+function getWorkerRuntimeDisplay(row: DesktopWorkerStatusRow) {
+  return getWorkerColabLlmField(row, "runtime")
+    || getWorkerLocalLlmField(row, "runtime")
+    || getLaunchApprovalField(getWorkerStatusLaunch(row), "runtime")
+    || "default";
+}
+
+function getWorkerColabGpuPreference(row: DesktopWorkerStatusRow) {
+  return getWorkerColabLlmField(row, "gpu_preference")
+    || getWorkerColabLlmField(row, "requested_gpu")
+    || (row.requested_gpu || "").trim()
+    || "none";
+}
+
+function getWorkerColabSelectedGpu(row: DesktopWorkerStatusRow) {
+  return getWorkerColabLlmField(row, "selected_gpu")
+    || getWorkerColabLlmField(row, "actual_gpu")
+    || (row.actual_gpu || "").trim()
+    || getWorkerColabGpuPreference(row)
+    || "none";
+}
+
+function getWorkerColabHealth(row: DesktopWorkerStatusRow) {
+  return getWorkerColabLlmField(row, "health")
+    || getWorkerColabLlmField(row, "status")
+    || getWorkerHeartbeatHealth(row)
+    || "unknown";
+}
+
+function getWorkerColabRunState(row: DesktopWorkerStatusRow) {
+  return getWorkerColabLlmField(row, "run_state")
+    || getWorkerColabLlmField(row, "state")
+    || getWorkerHeartbeatState(row)
+    || row.state
+    || "unknown";
+}
+
+function getWorkerColabGpuDisplay(row: DesktopWorkerStatusRow) {
+  const preference = getWorkerColabGpuPreference(row);
+  const selected = getWorkerColabSelectedGpu(row);
+  return preference === selected ? selected : `${preference}->${selected}`;
+}
+
+function getWorkerColabTitleParts(row: DesktopWorkerStatusRow) {
+  if (!isWorkerColabLlm(row)) {
+    return [];
+  }
+  return [
+    `runtime=${getWorkerRuntimeDisplay(row)}`,
+    `runtime_engine=${getWorkerColabLlmField(row, "runtime_engine") || "unknown"}`,
+    `model_id=${getWorkerModelDisplay(row)}`,
+    `precision=${getWorkerColabLlmField(row, "precision") || "unknown"}`,
+    `quantization=${getWorkerColabLlmField(row, "quantization") || "unknown"}`,
+    `license_state=${getWorkerColabLlmField(row, "license_state") || "unknown"}`,
+    `gpu_preference=${getWorkerColabGpuPreference(row)}`,
+    `selected_gpu=${getWorkerColabSelectedGpu(row)}`,
+    `colab_health=${getWorkerColabHealth(row)}`,
+    `run_state=${getWorkerColabRunState(row)}`,
+  ];
+}
+
+function getWorkerModelDisplay(row: DesktopWorkerStatusRow) {
+  const launch = getWorkerStatusLaunch(row);
+  return getWorkerColabLlmField(row, "model_id")
+    || getWorkerLocalLlmField(row, "model_id")
+    || getLaunchApprovalField(launch, "model_id")
+    || getLaunchApprovalField(launch, "model")
+    || "provider-default";
 }
 
 function isWorkerStatusBlocked(row: DesktopWorkerStatusRow) {
@@ -2141,11 +2333,14 @@ function getWorkerStatusPillTitle(row: DesktopWorkerStatusRow, target: string) {
   return [
     `${target}: ${getWorkerLaunchState(row)}`,
     `role=${row.role || getLaunchApprovalField(launch, "worker_role") || "worker"}`,
-    `backend=${getLaunchApprovalField(launch, "worker_backend") || row.backend || "unknown"}`,
+    `backend=${getWorkerBackendDisplay(row, launch)}`,
     `profile=${getWorkerExecutionProfile(row)}`,
     `workspace=${getWorkerWorkspaceState(row)}`,
     `auth=${getWorkerAuthState(row)}`,
-    `model=${getLaunchApprovalField(launch, "model") || "provider-default"}`,
+    `model=${getWorkerModelDisplay(row)}`,
+    `runtime=${getWorkerRuntimeDisplay(row)}`,
+    `health=${isWorkerColabLlm(row) ? getWorkerColabHealth(row) : (getWorkerLocalLlmField(row, "health") || "default")}`,
+    ...getWorkerColabTitleParts(row),
     `model_source=${getWorkerModelSource(row)}`,
     `remote=${getWorkerRemoteState(row)}`,
     `heartbeat=${getWorkerHeartbeatHealth(row) || "none"}`,
@@ -2255,12 +2450,28 @@ function renderWorkerStatusSurface() {
     const launch = getWorkerStatusLaunch(focusedRow);
     const target = getWorkerStatusTarget(focusedRow);
     detailStrip.appendChild(createWorkerStatusChip("role", "role", focusedRow.role || getLaunchApprovalField(launch, "worker_role") || "worker"));
-    detailStrip.appendChild(createWorkerStatusChip("backend", "backend", getLaunchApprovalField(launch, "worker_backend") || focusedRow.backend || "unknown"));
+    detailStrip.appendChild(createWorkerStatusChip("backend", "backend", getWorkerBackendDisplay(focusedRow, launch)));
     detailStrip.appendChild(createWorkerStatusChip("profile", "prof", getWorkerExecutionProfile(focusedRow)));
     detailStrip.appendChild(createWorkerStatusChip("workspace", "ws", getWorkerWorkspaceState(focusedRow)));
     detailStrip.appendChild(createWorkerStatusChip("auth", "auth", getWorkerAuthState(focusedRow)));
     detailStrip.appendChild(createWorkerStatusChip("secrets", "secrets", getWorkerSecretProjectionState(focusedRow)));
     detailStrip.appendChild(createWorkerStatusChip("policy", "policy", getWorkerPolicyState(focusedRow)));
+    if (isWorkerColabLlm(focusedRow)) {
+      detailStrip.appendChild(createWorkerStatusChip("runtime", "runtime", getWorkerRuntimeDisplay(focusedRow)));
+      detailStrip.appendChild(createWorkerStatusChip("runtime-engine", "engine", getWorkerColabLlmField(focusedRow, "runtime_engine") || "unknown"));
+      detailStrip.appendChild(createWorkerStatusChip("model", "model", getWorkerModelDisplay(focusedRow)));
+      detailStrip.appendChild(createWorkerStatusChip("precision", "precision", getWorkerColabLlmField(focusedRow, "precision") || "unknown"));
+      detailStrip.appendChild(createWorkerStatusChip("quantization", "quant", getWorkerColabLlmField(focusedRow, "quantization") || "unknown"));
+      detailStrip.appendChild(createWorkerStatusChip("license-state", "license", getWorkerColabLlmField(focusedRow, "license_state") || "unknown"));
+      detailStrip.appendChild(createWorkerStatusChip("gpu", "gpu", getWorkerColabGpuDisplay(focusedRow)));
+      detailStrip.appendChild(createWorkerStatusChip("colab-health", "health", getWorkerColabHealth(focusedRow)));
+      detailStrip.appendChild(createWorkerStatusChip("run-state", "run", getWorkerColabRunState(focusedRow)));
+    }
+    if (!isWorkerColabLlm(focusedRow) && ((focusedRow.backend || "").toLowerCase() === "local_llm" || focusedRow.local_llm)) {
+      detailStrip.appendChild(createWorkerStatusChip("runtime", "runtime", getWorkerLocalLlmField(focusedRow, "runtime") || "local"));
+      detailStrip.appendChild(createWorkerStatusChip("model", "model", getWorkerModelDisplay(focusedRow)));
+      detailStrip.appendChild(createWorkerStatusChip("llm-health", "health", getWorkerLocalLlmField(focusedRow, "health") || "unknown"));
+    }
     detailStrip.appendChild(createWorkerStatusChip("model-source", "model-src", getWorkerModelSource(focusedRow)));
     detailStrip.appendChild(createWorkerStatusChip("launch", "launch", getWorkerLaunchState(focusedRow)));
     detailStrip.appendChild(createWorkerStatusChip("heartbeat", "hb", getWorkerHeartbeatHealth(focusedRow) || "none"));
@@ -3114,8 +3325,8 @@ function getLaunchApprovalField(
 function summarizeWorkerLaunchApproval(row: DesktopWorkerStatusRow) {
   const launch = row.current_launch ?? row.approved_launch;
   const agent = getLaunchApprovalField(launch, "agent") || row.backend || "unknown";
-  const model = getLaunchApprovalField(launch, "model") || "provider-default";
-  const backend = getLaunchApprovalField(launch, "worker_backend") || row.backend || "unknown";
+  const model = getWorkerModelDisplay(row);
+  const backend = getWorkerBackendDisplay(row, launch);
   const profile = getWorkerExecutionProfile(row);
   const effort = getLaunchApprovalField(launch, "reasoning_effort") || "provider-default";
   const credential = getLaunchApprovalField(launch, "credential_requirements") || "default";
@@ -3141,8 +3352,10 @@ function buildWorkerLaunchDetails(row: DesktopWorkerStatusRow, differences: Desk
     { label: getLanguageText("slot", "スロット"), value: row.slot_id },
     { label: getLanguageText("state", "状態"), value: row.state || row.manifest_status || "unknown" },
     { label: getLanguageText("agent", "エージェント"), value: getLaunchApprovalField(launch, "agent") || row.backend || "unknown" },
-    { label: getLanguageText("model", "モデル"), value: getLaunchApprovalField(launch, "model") || "provider-default" },
-    { label: getLanguageText("backend", "バックエンド"), value: getLaunchApprovalField(launch, "worker_backend") || row.backend || "unknown" },
+    { label: getLanguageText("model", "モデル"), value: getWorkerModelDisplay(row) },
+    { label: getLanguageText("backend", "バックエンド"), value: getWorkerBackendDisplay(row, launch) },
+    { label: getLanguageText("runtime", "ランタイム"), value: getWorkerRuntimeDisplay(row) },
+    { label: getLanguageText("health", "状態"), value: isWorkerColabLlm(row) ? getWorkerColabHealth(row) : (getWorkerLocalLlmField(row, "health") || "default") },
     { label: getLanguageText("profile", "実行プロファイル"), value: getWorkerExecutionProfile(row) },
     { label: getLanguageText("workspace", "作業領域"), value: getWorkerWorkspaceState(row) },
     { label: getLanguageText("heartbeat", "生存確認"), value: getWorkerHeartbeatHealth(row) || "none" },
@@ -7750,7 +7963,7 @@ function defaultRuntimeRolePreferences(): RuntimeRolePreference[] {
     { ...lockedOperatorRuntimePreference },
     {
       roleId: "worker",
-      provider: "codex",
+      provider: "antigravity",
       model: "provider-default",
       modelSource: "provider-default",
       reasoningEffort: "provider-default",
@@ -7818,8 +8031,8 @@ function persistRuntimeRolePreferences() {
 function defaultComposerSessionControls(): ComposerSessionControlState {
   return {
     permissionMode: "acceptEdits",
-    model: "opus-4.7-1m",
-    effort: "xhigh",
+    model: "opus-4.8-1m",
+    effort: "max",
     voiceDraftMode: "raw",
     voiceVocabularyMode: "project",
     fastModeEnabled: false,
@@ -8735,6 +8948,11 @@ function runtimeAccessNote(preference: RuntimeRolePreference, japanese: boolean)
     return japanese
       ? "ローカルの Claude Code 設定を使います。`default`、`sonnet`、`opus`、`opusplan` を指定できます。"
       : "Uses local Claude Code settings. Aliases such as default, sonnet, opus, and opusplan are accepted.";
+  }
+  if (preference.provider === "antigravity") {
+    return japanese
+      ? "ローカルの Antigravity CLI (`agy`) 設定を使います。モデルは Antigravity 側の選択状態を証跡で確認します。"
+      : "Uses local Antigravity CLI (`agy`) settings. Confirm the selected model from Antigravity evidence.";
   }
   if (preference.provider === "gemini") {
     return japanese
@@ -10218,6 +10436,17 @@ function getComposerEffortOption(effort: ComposerEffortLevel = activeComposerEff
   return composerEffortOptions.find((item) => item.value === effort) ?? composerEffortOptions[0];
 }
 
+function getComposerCliEffort(effort: ComposerEffortLevel = activeComposerEffort) {
+  if (effort === "auto") {
+    return "";
+  }
+  return getComposerEffortOption(effort).cliEffort ?? effort;
+}
+
+function getComposerStartupCommand(effort: ComposerEffortLevel = activeComposerEffort) {
+  return getComposerEffortOption(effort).startupCommand ?? "";
+}
+
 function getVoiceDraftModeOption(mode: VoiceDraftMode = activeVoiceDraftMode) {
   return voiceDraftModeOptions.find((item) => item.value === mode) ?? voiceDraftModeOptions[0];
 }
@@ -10444,7 +10673,7 @@ function createComposerModelMenu() {
   fastToggle.setAttribute("aria-checked", activeComposerFastModeEnabled ? "true" : "false");
   fastToggle.setAttribute("aria-disabled", fastModeCompatible ? "false" : "true");
   fastToggle.innerHTML = `
-    <span>${fastModeCompatible ? (japanese ? "高速モードを有効にする" : "Enable fast mode") : (japanese ? "高速モードは Opus 4.6 でのみ利用できます" : "Fast mode is only available on Opus 4.6")}</span>
+    <span>${fastModeCompatible ? (japanese ? "高速モードを有効にする" : "Enable fast mode") : (japanese ? "このモデルでは高速モードを利用できません" : "Fast mode is not available for this model")}</span>
     <span class="composer-fast-toggle-track" aria-hidden="true"><span class="composer-fast-toggle-thumb"></span></span>
   `;
   fastToggle.addEventListener("click", (event) => {
@@ -13823,7 +14052,10 @@ async function interruptOperatorRequest() {
     if (operatorRequestGeneration !== canceledGeneration || operatorRequestActive) {
       return;
     }
-    await withOperatorTimeout(writePtyData(OPERATOR_PTY_ID, "\x03"), "operator interrupt");
+    await withOperatorTimeout(
+      writePtyData(OPERATOR_PTY_ID, "\x03", { interactive: true }),
+      "operator interrupt",
+    );
     appendRuntimeConversation({
       type: "system",
       category: "attention",
@@ -13880,7 +14112,10 @@ async function writeOperatorSubmission(payload: string, requestGeneration: numbe
     if (!isCurrentOperatorRequest(requestGeneration)) {
       return;
     }
-    await withOperatorTimeout(writePtyData(OPERATOR_PTY_ID, "\r"), "operator request submit");
+    await withOperatorTimeout(
+      writePtyData(OPERATOR_PTY_ID, "\r", { interactive: true }),
+      "operator request submit",
+    );
   }
 }
 
@@ -14584,11 +14819,13 @@ function registerDesktopSummaryLiveRefresh() {
         if (event.reason === "pty.close") {
           markOperatorPtyStoppedFromExternalEvent();
         } else if (event.reason === "pty.spawn" || event.reason === "pty.respawn") {
+          resetOperatorTerminalDisplay();
           markOperatorPtyStartedFromExternalEvent();
         }
       } else if (event.reason === "pty.close") {
         markPanePtyStoppedFromExternalEvent(event.pane_id);
       } else if (event.reason === "pty.spawn" || event.reason === "pty.respawn") {
+        resetPaneTerminalDisplay(event.pane_id);
         markPanePtyStartedFromExternalEvent(event.pane_id);
       }
     }

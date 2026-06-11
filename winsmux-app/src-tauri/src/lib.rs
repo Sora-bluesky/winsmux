@@ -35,6 +35,8 @@ use windows_sys::Win32::Media::{
 
 const DESKTOP_SUMMARY_REFRESH_EVENT: &str = "desktop-summary-refresh";
 const PTY_CAPTURE_LIMIT: usize = 64 * 1024;
+const PTY_EXTERNAL_WRITE_QUIET_MS: u64 = 150;
+const PTY_EXTERNAL_WRITE_MAX_WAIT_MS: u64 = 1_500;
 const PTY_CLOSE_WAIT_MS: u64 = 250;
 const DESKTOP_SHUTDOWN_PTY_WAIT_MS: u64 = 750;
 const DESKTOP_SHUTDOWN_VOICE_WAIT_MS: u64 = 3_000;
@@ -115,6 +117,7 @@ struct SinglePty {
     master: Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>>,
     child: Arc<Mutex<Box<dyn portable_pty::Child + Send>>>,
     output_history: Arc<Mutex<String>>,
+    last_output_at: Arc<Mutex<Instant>>,
     alive: Arc<AtomicBool>,
     generation: u64,
     cols: u16,
@@ -696,7 +699,7 @@ async fn pty_spawn(app: AppHandle, pane_id: String, cols: u16, rows: u16) -> Res
 
 #[tauri::command]
 async fn pty_write(app: AppHandle, pane_id: String, data: String) -> Result<(), String> {
-    write_pty(&app, &pane_id, &data)
+    write_pty(&app, &pane_id, &data, true)
 }
 
 #[tauri::command]
@@ -740,7 +743,8 @@ fn spawn_pty(
     }
 
     let generation = manager.next_generation.fetch_add(1, Ordering::SeqCst);
-    let (single, reader, output_history, alive) = create_single_pty(cols, rows, generation)?;
+    let (single, reader, output_history, last_output_at, alive) =
+        create_single_pty(cols, rows, generation)?;
 
     {
         let mut panes = manager.panes.lock().map_err(|e| e.to_string())?;
@@ -766,18 +770,25 @@ fn spawn_pty(
         pane_id.clone(),
         reader,
         output_history,
+        last_output_at,
         alive,
         generation,
         manager.panes.clone(),
     );
     if let Some(input) = startup_input {
-        write_pty(app, &pane_id, &input)?;
+        write_pty(app, &pane_id, &input, false)?;
     }
     Ok(())
 }
 
 type PtyReader = Box<dyn Read + Send>;
-type SinglePtyParts = (SinglePty, PtyReader, Arc<Mutex<String>>, Arc<AtomicBool>);
+type SinglePtyParts = (
+    SinglePty,
+    PtyReader,
+    Arc<Mutex<String>>,
+    Arc<Mutex<Instant>>,
+    Arc<AtomicBool>,
+);
 
 fn build_pty_command(workspace_dir: &Path) -> CommandBuilder {
     let mut cmd = CommandBuilder::new("pwsh");
@@ -816,6 +827,7 @@ fn create_single_pty(cols: u16, rows: u16, generation: u64) -> Result<SinglePtyP
         .try_clone_reader()
         .map_err(|e| format!("Failed to get reader: {e}"))?;
     let output_history = Arc::new(Mutex::new(String::new()));
+    let last_output_at = Arc::new(Mutex::new(Instant::now()));
     let alive = Arc::new(AtomicBool::new(true));
 
     let single = SinglePty {
@@ -823,13 +835,14 @@ fn create_single_pty(cols: u16, rows: u16, generation: u64) -> Result<SinglePtyP
         master: Arc::new(Mutex::new(pair.master)),
         child: Arc::new(Mutex::new(child)),
         output_history: output_history.clone(),
+        last_output_at: last_output_at.clone(),
         alive: alive.clone(),
         generation,
         cols,
         rows,
     };
 
-    Ok((single, reader, output_history, alive))
+    Ok((single, reader, output_history, last_output_at, alive))
 }
 
 fn start_pty_reader(
@@ -837,6 +850,7 @@ fn start_pty_reader(
     pane_id: String,
     mut reader: PtyReader,
     output_history: Arc<Mutex<String>>,
+    last_output_at: Arc<Mutex<Instant>>,
     alive: Arc<AtomicBool>,
     generation: u64,
     panes: Arc<Mutex<HashMap<String, SinglePty>>>,
@@ -852,16 +866,19 @@ fn start_pty_reader(
                 Ok(0) => break,
                 Ok(n) => {
                     let data = String::from_utf8_lossy(&buf[..n]).to_string();
+                    if let Ok(mut last_output) = last_output_at.lock() {
+                        *last_output = Instant::now();
+                    }
                     let Ok(current_panes) = panes.lock() else {
                         break;
                     };
-                    let is_current = current_panes
-                        .get(&pane_id)
-                        .map(|pty| pty.generation == generation && Arc::ptr_eq(&pty.alive, &alive))
-                        .unwrap_or(false);
+                    let is_current = current_panes.get(&pane_id).is_some_and(|pty| {
+                        pty.generation == generation && Arc::ptr_eq(&pty.alive, &alive)
+                    });
                     if !is_current || !alive.load(Ordering::SeqCst) {
                         break;
                     }
+                    drop(current_panes);
                     if let Ok(mut history) = output_history.lock() {
                         history.push_str(&data);
                         trim_pty_history(&mut history);
@@ -889,18 +906,94 @@ fn trim_pty_history(history: &mut String) {
     history.drain(..drain_to);
 }
 
-fn write_pty(app: &AppHandle, pane_id: &str, data: &str) -> Result<(), String> {
-    let manager = app.state::<PtyManager>();
+fn wait_for_pty_quiet(last_output_at: &Arc<Mutex<Instant>>) {
+    let quiet_for = Duration::from_millis(PTY_EXTERNAL_WRITE_QUIET_MS);
+    let deadline = Instant::now() + Duration::from_millis(PTY_EXTERNAL_WRITE_MAX_WAIT_MS);
+
+    loop {
+        let elapsed = last_output_at
+            .lock()
+            .map(|last_output| last_output.elapsed())
+            .unwrap_or(quiet_for);
+        if elapsed >= quiet_for {
+            return;
+        }
+
+        let now = Instant::now();
+        if now >= deadline {
+            return;
+        }
+
+        let sleep_for = quiet_for
+            .saturating_sub(elapsed)
+            .min(deadline.saturating_duration_since(now))
+            .min(Duration::from_millis(50));
+        if sleep_for.is_zero() {
+            return;
+        }
+        std::thread::sleep(sleep_for);
+    }
+}
+
+fn current_pty_last_output_at(
+    manager: &PtyManager,
+    pane_id: &str,
+) -> Result<Arc<Mutex<Instant>>, String> {
     let panes = manager.panes.lock().map_err(|e| e.to_string())?;
     let pty = panes
         .get(pane_id)
         .ok_or_else(|| format!("Pane {} not found", pane_id))?;
+    Ok(pty.last_output_at.clone())
+}
+
+fn write_current_pty(
+    manager: &PtyManager,
+    pane_id: &str,
+    data: &str,
+    expected_last_output_at: Option<&Arc<Mutex<Instant>>>,
+) -> Result<bool, String> {
+    let panes = manager.panes.lock().map_err(|e| e.to_string())?;
+    let pty = panes
+        .get(pane_id)
+        .ok_or_else(|| format!("Pane {} not found", pane_id))?;
+    if expected_last_output_at.is_some_and(|expected| !Arc::ptr_eq(expected, &pty.last_output_at)) {
+        return Ok(false);
+    }
+    if !pty.alive.load(Ordering::SeqCst) {
+        return Err(format!("Pane {} is not active", pane_id));
+    }
     let mut writer = pty.writer.lock().map_err(|e| e.to_string())?;
+    if !pty.alive.load(Ordering::SeqCst) {
+        return Err(format!("Pane {} is not active", pane_id));
+    }
     writer
         .write_all(data.as_bytes())
         .map_err(|e| format!("Write failed: {e}"))?;
     writer.flush().map_err(|e| format!("Flush failed: {e}"))?;
-    Ok(())
+    Ok(true)
+}
+
+fn write_pty(app: &AppHandle, pane_id: &str, data: &str, interactive: bool) -> Result<(), String> {
+    let manager = app.state::<PtyManager>();
+    if interactive {
+        if write_current_pty(&manager, pane_id, data, None)? {
+            return Ok(());
+        }
+        return Err(format!("Pane {} changed before write", pane_id));
+    }
+
+    for _ in 0..3 {
+        let last_output_at = current_pty_last_output_at(&manager, pane_id)?;
+        wait_for_pty_quiet(&last_output_at);
+        if write_current_pty(&manager, pane_id, data, Some(&last_output_at))? {
+            return Ok(());
+        }
+    }
+
+    Err(format!(
+        "Pane {} changed before write; retry later",
+        pane_id
+    ))
 }
 
 fn resize_pty(app: &AppHandle, pane_id: &str, cols: u16, rows: u16) -> Result<(), String> {
@@ -983,7 +1076,8 @@ fn respawn_pty(app: &AppHandle, pane_id: &str) -> Result<(), String> {
         (entry.cols, entry.rows)
     };
     let generation = manager.next_generation.fetch_add(1, Ordering::SeqCst);
-    let (single, reader, output_history, alive) = create_single_pty(cols, rows, generation)?;
+    let (single, reader, output_history, last_output_at, alive) =
+        create_single_pty(cols, rows, generation)?;
 
     let old_entry = {
         let mut panes = manager.panes.lock().map_err(|e| e.to_string())?;
@@ -1014,6 +1108,7 @@ fn respawn_pty(app: &AppHandle, pane_id: &str) -> Result<(), String> {
         pane_id.to_string(),
         reader,
         output_history,
+        last_output_at,
         alive,
         generation,
         manager.panes.clone(),
@@ -1160,8 +1255,12 @@ impl PtyCommandTransport for TauriPtyTransport {
                 )?;
                 Ok(serde_json::json!({ "paneId": pane_id }))
             }
-            PtyCommand::Write { pane_id, data } => {
-                write_pty(&self.app, pane_id, data)?;
+            PtyCommand::Write {
+                pane_id,
+                data,
+                interactive,
+            } => {
+                write_pty(&self.app, pane_id, data, *interactive)?;
                 Ok(serde_json::json!({ "paneId": pane_id }))
             }
             PtyCommand::Resize {
@@ -1318,6 +1417,29 @@ mod tests {
             command.get_cwd().and_then(|value| value.to_str()),
             Some("C:\\repo\\winsmux")
         );
+    }
+
+    #[test]
+    fn wait_for_pty_quiet_returns_immediately_after_old_output() {
+        let last_output_at = Arc::new(Mutex::new(
+            Instant::now() - Duration::from_millis(PTY_EXTERNAL_WRITE_QUIET_MS + 20),
+        ));
+        let started = Instant::now();
+
+        wait_for_pty_quiet(&last_output_at);
+
+        assert!(started.elapsed() < Duration::from_millis(PTY_EXTERNAL_WRITE_QUIET_MS));
+    }
+
+    #[test]
+    fn wait_for_pty_quiet_waits_after_recent_output() {
+        let last_output_at = Arc::new(Mutex::new(Instant::now()));
+        let started = Instant::now();
+
+        wait_for_pty_quiet(&last_output_at);
+
+        assert!(started.elapsed() >= Duration::from_millis(PTY_EXTERNAL_WRITE_QUIET_MS - 25));
+        assert!(started.elapsed() < Duration::from_millis(PTY_EXTERNAL_WRITE_MAX_WAIT_MS));
     }
 
     #[test]

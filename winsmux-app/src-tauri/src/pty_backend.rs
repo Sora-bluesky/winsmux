@@ -57,6 +57,7 @@ pub enum PtyCommand {
     Write {
         pane_id: String,
         data: String,
+        interactive: bool,
     },
     Resize {
         pane_id: String,
@@ -124,6 +125,7 @@ fn parse_command(method: &str, params: Option<&Value>) -> Result<PtyCommand, Par
         "pty.write" => Ok(PtyCommand::Write {
             pane_id: get_required_string_param(params, &["paneId", "pane_id"])?,
             data: get_required_pty_data_param(params, &["data"])?,
+            interactive: get_optional_bool_param(params, &["interactive"])?.unwrap_or(false),
         }),
         "pty.resize" => Ok(PtyCommand::Resize {
             pane_id: get_required_string_param(params, &["paneId", "pane_id"])?,
@@ -238,6 +240,29 @@ fn get_optional_u16_param(
                 ))
             })?;
             return Ok(Some(value));
+        }
+    }
+
+    Ok(None)
+}
+
+fn get_optional_bool_param(
+    params: Option<&Value>,
+    keys: &[&str],
+) -> Result<Option<bool>, ParseError> {
+    let Some(object) = params.and_then(Value::as_object) else {
+        return Ok(None);
+    };
+
+    for key in keys {
+        if let Some(value) = object.get(*key) {
+            if let Some(parsed) = value.as_bool() {
+                return Ok(Some(parsed));
+            }
+            return Err(ParseError::InvalidParams(format!(
+                "Invalid params field {}: expected boolean",
+                keys.join(" or ")
+            )));
         }
     }
 
@@ -442,9 +467,83 @@ mod tests {
             transport.commands.borrow().as_slice(),
             [PtyCommand::Write {
                 pane_id: "pane-1".to_string(),
-                data: "echo ready\r".to_string()
+                data: "echo ready\r".to_string(),
+                interactive: false
             }]
         );
+    }
+
+    #[test]
+    fn handle_pty_json_rpc_routes_interactive_write() {
+        let transport = FakeTransport {
+            commands: RefCell::new(Vec::new()),
+            response: serde_json::json!({ "paneId": "pane-1" }),
+        };
+
+        let response = handle_pty_json_rpc(
+            &transport,
+            PtyJsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::json!("req-write-interactive"),
+                method: "pty.write".to_string(),
+                params: Some(serde_json::json!({
+                    "paneId": "pane-1",
+                    "data": "p",
+                    "interactive": true
+                })),
+            },
+        );
+
+        match response {
+            PtyJsonRpcResponse::Success { result, .. } => {
+                assert_eq!(result["paneId"], "pane-1");
+            }
+            PtyJsonRpcResponse::Error { error, .. } => {
+                panic!("expected success, got {:?}", error);
+            }
+        }
+
+        assert_eq!(
+            transport.commands.borrow().as_slice(),
+            [PtyCommand::Write {
+                pane_id: "pane-1".to_string(),
+                data: "p".to_string(),
+                interactive: true
+            }]
+        );
+    }
+
+    #[test]
+    fn handle_pty_json_rpc_rejects_non_boolean_interactive_write() {
+        let transport = FakeTransport {
+            commands: RefCell::new(Vec::new()),
+            response: serde_json::json!({ "paneId": "pane-1" }),
+        };
+
+        let response = handle_pty_json_rpc(
+            &transport,
+            PtyJsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::json!("req-write-invalid-interactive"),
+                method: "pty.write".to_string(),
+                params: Some(serde_json::json!({
+                    "paneId": "pane-1",
+                    "data": "p",
+                    "interactive": "false"
+                })),
+            },
+        );
+
+        match response {
+            PtyJsonRpcResponse::Error { error, .. } => {
+                assert_eq!(error.code, JSON_RPC_INVALID_PARAMS);
+                assert!(error.message.contains("expected boolean"));
+            }
+            PtyJsonRpcResponse::Success { .. } => {
+                panic!("expected invalid params");
+            }
+        }
+        assert!(transport.commands.borrow().is_empty());
     }
 
     #[test]
@@ -480,7 +579,8 @@ mod tests {
             transport.commands.borrow().as_slice(),
             [PtyCommand::Write {
                 pane_id: "pane-1".to_string(),
-                data: "\r".to_string()
+                data: "\r".to_string(),
+                interactive: false
             }]
         );
     }

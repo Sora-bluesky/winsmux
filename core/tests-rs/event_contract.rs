@@ -22,7 +22,9 @@ fn read_fixture(name: &str) -> String {
 
 fn parse_single_record(line: &str) -> EventRecord {
     let mut records = parse_event_jsonl(line).expect("single-line event should parse");
-    records.pop().expect("single-line parse should return one event")
+    records
+        .pop()
+        .expect("single-line parse should return one event")
 }
 
 fn resolved_branch(record: &EventRecord) -> String {

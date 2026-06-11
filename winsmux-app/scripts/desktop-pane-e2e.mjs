@@ -10,13 +10,30 @@ const LAUNCH_PROJECT_ONLY = process.argv.includes("--launch-project-only")
   || process.env.WINSMUX_DESKTOP_E2E_LAUNCH_PROJECT_ONLY === "1";
 const RELEASE_POPOUT_ONLY = process.argv.includes("--release-popout-only")
   || process.env.WINSMUX_DESKTOP_E2E_RELEASE_POPOUT_ONLY === "1";
+const PTY_RESET_ONLY = process.argv.includes("--pty-reset-only")
+  || process.env.WINSMUX_DESKTOP_E2E_PTY_RESET_ONLY === "1";
+const LOCAL_LLM_STATUS_ONLY = process.argv.includes("--local-llm-status-only")
+  || process.env.WINSMUX_DESKTOP_E2E_LOCAL_LLM_STATUS_ONLY === "1";
+const VISIBLE_LOCAL_LLM_DEMO = process.argv.includes("--visible-local-llm-demo")
+  || process.env.WINSMUX_DESKTOP_E2E_VISIBLE_LOCAL_LLM_DEMO === "1";
+const USE_PACKAGED_DESKTOP = process.argv.includes("--packaged")
+  || process.env.WINSMUX_DESKTOP_E2E_PACKAGED === "1"
+  || Boolean(process.env.WINSMUX_DESKTOP_E2E_APP_EXE)
+  || RELEASE_POPOUT_ONLY
+  || PTY_RESET_ONLY;
 const OUTPUT_DIR = path.join(
   process.cwd(),
   "output",
   "playwright",
   RELEASE_POPOUT_ONLY
     ? "desktop-release-popout-e2e"
-    : LAUNCH_PROJECT_ONLY
+    : PTY_RESET_ONLY
+      ? "desktop-pty-reset-e2e"
+      : VISIBLE_LOCAL_LLM_DEMO
+      ? "desktop-local-llm-visible-demo"
+      : LOCAL_LLM_STATUS_ONLY
+      ? "desktop-local-llm-status-e2e"
+      : LAUNCH_PROJECT_ONLY
       ? "desktop-launch-arg-e2e"
       : "desktop-pane-e2e",
 );
@@ -30,6 +47,15 @@ const COMPOSER_TO_OPERATOR_MARKER = "BTN_E2E_READY";
 const COMPOSER_ENTER_MARKER = "ENT_E2E_READY";
 const COMPOSER_ATTACHMENT_MARKER = "ATT_E2E_READY";
 const OPERATOR_TO_WORKER_MARKER = "W2_E2E_READY";
+const VISIBLE_DEMO_OPERATOR_MODEL = "Claude Code / Opus 4.8 (1Mコンテキスト) / Max";
+const VISIBLE_DEMO_STEPS = Math.max(
+  1,
+  Number.parseInt(process.env.WINSMUX_DESKTOP_E2E_VISIBLE_DEMO_STEPS || "10", 10),
+);
+const VISIBLE_DEMO_STEP_SECONDS = Math.max(
+  1,
+  Number.parseInt(process.env.WINSMUX_DESKTOP_E2E_VISIBLE_DEMO_STEP_SECONDS || "30", 10),
+);
 const STOP_AFTER_WORKER_STATUS = process.argv.includes("--stop-after-worker-status")
   || process.env.WINSMUX_DESKTOP_E2E_STOP_AFTER_WORKER_STATUS === "1";
 
@@ -275,6 +301,40 @@ async function setActiveProjectDirForUi(page, projectDir) {
   await reloadAppPage(page);
 }
 
+async function writeLocalLlmStatusProject(projectDir) {
+  await fs.rm(projectDir, { recursive: true, force: true });
+  await fs.mkdir(projectDir, { recursive: true });
+  const artifactRoot = process.env.WINSMUX_LOCAL_LLM_ARTIFACT_ROOT || "W:\\winsmux-local-llm\\artifacts";
+  await fs.writeFile(
+    path.join(projectDir, ".winsmux.yaml"),
+    [
+      "agent: codex",
+      "model: gpt-5.4",
+      "agent-slots:",
+      "  - slot-id: worker-3",
+      "    runtime-role: worker",
+      "    worker-backend: local_llm",
+      "    agent: ollama",
+      "    model: gemma3:1b",
+      "    model-id: gemma3:1b",
+      "    runtime: ollama",
+      "    endpoint: http://127.0.0.1:11434",
+      `    artifact-root: ${artifactRoot}`,
+      "  - slot-id: worker-4",
+      "    runtime-role: worker",
+      "    worker-backend: local_llm",
+      "    agent: ollama",
+      "    model: qwen2.5-coder:1.5b",
+      "    model-id: qwen2.5-coder:1.5b",
+      "    runtime: ollama",
+      "    endpoint: http://127.0.0.1:11434",
+      `    artifact-root: ${artifactRoot}`,
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+}
+
 async function reloadAppPage(page) {
   await page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 }).catch(() => {});
   await waitForAppReady(page);
@@ -327,11 +387,22 @@ function assertNoFixedViewportBlank(metrics) {
   }
 }
 
-async function waitForNativeWindowResize(page, beforeMetrics, timeoutMs = 12_000) {
-  await page.waitForFunction((before) => {
+async function readNativeWindowResizeState(page, beforeMetrics) {
+  return await page.evaluate((before) => {
     const body = document.body;
     if (!body) {
-      return false;
+      return {
+        bodyWidth: 0,
+        bodyHeight: 0,
+        fillsViewport: false,
+        sizeChanged: false,
+        alreadyAtScreenLimit: false,
+        usableViewport: false,
+        innerWidth: window.innerWidth,
+        innerHeight: window.innerHeight,
+        screenWidth: window.screen.width,
+        screenHeight: window.screen.height,
+      };
     }
     const bodyRect = body.getBoundingClientRect();
     const fillsViewport = Math.abs(bodyRect.width - window.innerWidth) <= 2
@@ -340,10 +411,49 @@ async function waitForNativeWindowResize(page, beforeMetrics, timeoutMs = 12_000
       || Math.abs(window.innerHeight - before.innerHeight) > 2;
     const alreadyAtScreenLimit = window.screen.width <= before.innerWidth + 2
       || window.screen.height <= before.innerHeight + 80;
-    return fillsViewport && (sizeChanged || alreadyAtScreenLimit);
-  }, beforeMetrics, {
-    timeout: timeoutMs,
-  });
+    return {
+      innerWidth: window.innerWidth,
+      innerHeight: window.innerHeight,
+      screenWidth: window.screen.width,
+      screenHeight: window.screen.height,
+      bodyWidth: Math.round(bodyRect.width),
+      bodyHeight: Math.round(bodyRect.height),
+      fillsViewport,
+      sizeChanged,
+      alreadyAtScreenLimit,
+      usableViewport: window.innerWidth >= 780 && window.innerHeight >= 560,
+    };
+  }, beforeMetrics);
+}
+
+async function waitForNativeWindowResize(page, beforeMetrics, timeoutMs = 12_000) {
+  try {
+    await page.waitForFunction((before) => {
+      const body = document.body;
+      if (!body) {
+        return false;
+      }
+      const bodyRect = body.getBoundingClientRect();
+      const fillsViewport = Math.abs(bodyRect.width - window.innerWidth) <= 2
+        && Math.abs(bodyRect.height - window.innerHeight) <= 2;
+      const sizeChanged = Math.abs(window.innerWidth - before.innerWidth) > 2
+        || Math.abs(window.innerHeight - before.innerHeight) > 2;
+      const alreadyAtScreenLimit = window.screen.width <= before.innerWidth + 2
+        || window.screen.height <= before.innerHeight + 80;
+      const usableViewport = window.innerWidth >= 780 && window.innerHeight >= 560;
+      return usableViewport && (fillsViewport || sizeChanged || alreadyAtScreenLimit);
+    }, beforeMetrics, {
+      timeout: timeoutMs,
+    });
+  } catch (error) {
+    const state = await readNativeWindowResizeState(page, beforeMetrics);
+    const message = error instanceof Error ? error.message : String(error);
+    if (state.usableViewport) {
+      return { bestEffort: true, waitError: message, state };
+    }
+    throw new Error(`Native window resize did not produce a usable viewport: ${JSON.stringify({ beforeMetrics, state, message })}`);
+  }
+  return { bestEffort: false, state: await readNativeWindowResizeState(page, beforeMetrics) };
 }
 
 async function resizeNativeWindowAndReadMetrics(page) {
@@ -377,14 +487,16 @@ async function resizeNativeWindowAndReadMetrics(page) {
     return diagnostics;
   });
   try {
-    await waitForNativeWindowResize(page, beforeMetrics);
+    const resizeWait = await waitForNativeWindowResize(page, beforeMetrics);
     return {
       ...(await readViewportFillMetrics(page)),
       nativeResizeMode: "maximize",
       nativeResizeDiagnostics: maximizeAttempt,
+      nativeResizeWait: resizeWait,
     };
   } catch (error) {
-    const fallback = await page.evaluate(async () => {
+    const maximizeError = error instanceof Error ? error.message : String(error);
+    const fallback = await page.evaluate(async (maximizeError) => {
       const tauri = window.__TAURI__;
       const currentWindow = tauri.window?.getCurrentWindow?.()
         ?? tauri.webviewWindow?.getCurrentWebviewWindow?.();
@@ -402,10 +514,11 @@ async function resizeNativeWindowAndReadMetrics(page) {
         mode: "setSize",
         targetWidth,
         targetHeight,
-        maximizeError: error instanceof Error ? error.message : String(error),
+        maximizeError,
       };
-    });
-    await waitForNativeWindowResize(page, beforeMetrics);
+    }, maximizeError);
+    const fallbackBeforeMetrics = await readViewportFillMetrics(page);
+    const resizeWait = await waitForNativeWindowResize(page, fallbackBeforeMetrics);
     return {
       ...(await readViewportFillMetrics(page)),
       nativeResizeMode: fallback.mode,
@@ -413,6 +526,7 @@ async function resizeNativeWindowAndReadMetrics(page) {
         ...maximizeAttempt,
         fallback,
       },
+      nativeResizeWait: resizeWait,
     };
   }
 }
@@ -421,16 +535,32 @@ async function getWorkbenchLayout(page) {
   return await page.locator("#terminal-drawer").getAttribute("data-layout");
 }
 
+async function getWorkbenchLayoutState(page) {
+  const dataLayout = await getWorkbenchLayout(page);
+  const buttonText = (await page.locator("#workbench-layout-btn").innerText().catch(() => "")).trim();
+  return { dataLayout, buttonText };
+}
+
+function isWorkbenchLayoutStateTarget(state, target) {
+  return state.dataLayout === target || state.buttonText === target;
+}
+
 async function setWorkbenchLayout(page, target) {
   await ensureDrawerOpen(page);
   for (let index = 0; index < 4; index += 1) {
-    if ((await getWorkbenchLayout(page)) === target) {
+    if (isWorkbenchLayoutStateTarget(await getWorkbenchLayoutState(page), target)) {
       return;
     }
-    await page.click("#workbench-layout-btn");
+    const button = page.locator("#workbench-layout-btn");
+    await button.waitFor({ state: "visible", timeout: 10_000 });
+    await button.click({ timeout: 5_000 }).catch(async () => {
+      await page.evaluate(() => {
+        document.querySelector("#workbench-layout-btn")?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      });
+    });
     await page.waitForTimeout(250);
   }
-  throw new Error(`Could not switch workbench layout to ${target}; current=${await getWorkbenchLayout(page)}`);
+  throw new Error(`Could not switch workbench layout to ${target}; current=${JSON.stringify(await getWorkbenchLayoutState(page))}`);
 }
 
 async function paneCount(page) {
@@ -590,6 +720,21 @@ async function waitForVisibleTerminalText(page, selector, marker, timeoutMs = 15
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   throw new Error(`Timed out waiting for visible text ${marker} in ${selector}. Last text:\n${lastText}`);
+}
+
+async function waitForVisibleTerminalTextAbsent(page, selector, marker, timeoutMs = 15_000) {
+  await page.locator(selector).waitFor({ state: "visible", timeout: timeoutMs });
+  const startedAt = Date.now();
+  let lastText = "";
+  const compactMarker = marker.replace(/\s+/g, "");
+  while (Date.now() - startedAt < timeoutMs) {
+    lastText = await page.locator(selector).innerText().catch((error) => `terminal text failed: ${error.message}`);
+    if (!lastText.includes(marker) && !lastText.replace(/\s+/g, "").includes(compactMarker)) {
+      return lastText;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error(`Timed out waiting for visible text ${marker} to clear from ${selector}. Last text:\n${lastText}`);
 }
 
 async function waitForPtyPrompt(page, paneId, timeoutMs = 45_000) {
@@ -832,6 +977,101 @@ async function writeOperatorPipeScript(scriptPath) {
     "$response = Invoke-WinsmuxPipe -Payload $payload",
     `Write-Output '${OPERATOR_MARKER}'`,
     'Write-Output "PIPE_RESPONSE:$response"',
+    "",
+  ].join("\r\n");
+
+  await fs.writeFile(scriptPath, body, "utf8");
+}
+
+async function writeVisibleWorkerInstructionFile(instructionPath, workerId, modelId) {
+  const body = [
+    `worker=${workerId}`,
+    `model=${modelId}`,
+    "task=visible_local_llm_demo",
+    `duration_seconds=${VISIBLE_DEMO_STEPS * VISIBLE_DEMO_STEP_SECONDS}`,
+    `progress_interval_seconds=${VISIBLE_DEMO_STEP_SECONDS}`,
+    "objective=Keep the worker pane visibly active while the operator monitors both local LLM workers.",
+    "output_contract=Print start, progress, and done markers so the recording shows operator-to-worker assignment and worker execution.",
+    "",
+  ].join("\r\n");
+  await fs.writeFile(instructionPath, body, "utf8");
+}
+
+async function writeVisibleWorkerDemoScript(scriptPath, instructionPath, workerId, modelId) {
+  const marker = workerId.toUpperCase();
+  const escapedInstructionPath = escapePwshSingleQuoted(instructionPath);
+  const body = [
+    "$ErrorActionPreference = 'Stop'",
+    `$instructionPath = '${escapedInstructionPath}'`,
+    `Write-Output "${marker}_INSTRUCTION_FILE $instructionPath"`,
+    `Get-Content -LiteralPath $instructionPath | ForEach-Object { Write-Output "${marker}_TASK $_" }`,
+    `Write-Output "${marker}_DEMO_START model=${modelId} task=local_llm_visible_smoke_test"`,
+    `for ($i = 1; $i -le ${VISIBLE_DEMO_STEPS}; $i++) {`,
+    "  $ts = (Get-Date).ToString('HH:mm:ss')",
+    `  $elapsed = (($i - 1) * ${VISIBLE_DEMO_STEP_SECONDS})`,
+    `  Write-Output "${marker}_DEMO_PROGRESS step=$i/${VISIBLE_DEMO_STEPS} model=${modelId} elapsed_seconds=$elapsed timestamp=$ts"`,
+    `  Start-Sleep -Seconds ${VISIBLE_DEMO_STEP_SECONDS}`,
+    "}",
+    `Write-Output "${marker}_DEMO_DONE model=${modelId} total_seconds=${VISIBLE_DEMO_STEPS * VISIBLE_DEMO_STEP_SECONDS}"`,
+    "",
+  ].join("\r\n");
+  await fs.writeFile(scriptPath, body, "utf8");
+}
+
+async function writeVisibleLocalLlmDemoOperatorScript(scriptPath, workerScripts, instructionFiles) {
+  const worker3Script = workerScripts["worker-3"].replace(/'/g, "''");
+  const worker4Script = workerScripts["worker-4"].replace(/'/g, "''");
+  const worker3Instruction = instructionFiles["worker-3"].replace(/'/g, "''");
+  const worker4Instruction = instructionFiles["worker-4"].replace(/'/g, "''");
+  const operatorModel = escapePwshSingleQuoted(VISIBLE_DEMO_OPERATOR_MODEL);
+  const body = [
+    "$ErrorActionPreference = 'Stop'",
+    `Write-Output "OPERATOR_DEMO_START local_llm_visible_demo steps=${VISIBLE_DEMO_STEPS} interval_seconds=${VISIBLE_DEMO_STEP_SECONDS}"`,
+    `Write-Output 'OPERATOR_MODEL ${operatorModel}'`,
+    "function Invoke-WinsmuxPipe {",
+    "  param([Parameter(Mandatory = $true)][string]$Payload)",
+    `  $pipe = [System.IO.Pipes.NamedPipeClientStream]::new('.', '${CONTROL_PIPE_NAME}', [System.IO.Pipes.PipeDirection]::InOut)`,
+    "  $pipe.Connect(5000)",
+    "  $encoding = [System.Text.UTF8Encoding]::new($false)",
+    "  $writer = [System.IO.StreamWriter]::new($pipe, $encoding)",
+    "  $reader = [System.IO.StreamReader]::new($pipe, $encoding)",
+    "  $writer.AutoFlush = $true",
+    "  try {",
+    "    $writer.Write($Payload)",
+    "    return $reader.ReadToEnd()",
+    "  } finally {",
+    "    try { $reader.Dispose() } catch {}",
+    "    try { $writer.Dispose() } catch {}",
+    "    try { $pipe.Dispose() } catch {}",
+    "  }",
+    "}",
+    "function Send-PtyWrite {",
+    "  param(",
+    "    [Parameter(Mandatory = $true)][string]$PaneId,",
+    "    [Parameter(Mandatory = $true)][string]$Data",
+    "  )",
+    "  $payload = @{",
+    "    jsonrpc = '2.0'",
+    "    id = \"visible-demo-$PaneId-$(Get-Date -Format HHmmssfff)\"",
+    "    method = 'pty.write'",
+    "    params = @{ paneId = $PaneId; data = $Data }",
+    "  } | ConvertTo-Json -Depth 8 -Compress",
+    "  $response = Invoke-WinsmuxPipe -Payload $payload",
+    "  Write-Output \"OPERATOR_DISPATCHED pane=$PaneId response=$response\"",
+    '  if ($response -notmatch \'\\"result\\"\') { throw "pty.write failed for $PaneId: $response" }',
+    "  Write-Output \"OPERATOR_DISPATCH_OK pane=$PaneId\"",
+    "}",
+    `Write-Output 'OPERATOR_ASSIGN worker-3 model=gemma3:1b action=read_instruction_file instruction_file=${worker3Instruction}'`,
+    `Send-PtyWrite -PaneId 'worker-3' -Data "pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File '${worker3Script}'\`r"`,
+    `Write-Output 'OPERATOR_ASSIGN worker-4 model=qwen2.5-coder:1.5b action=read_instruction_file instruction_file=${worker4Instruction}'`,
+    `Send-PtyWrite -PaneId 'worker-4' -Data "pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File '${worker4Script}'\`r"`,
+    `Write-Output 'OPERATOR_DEMO_READY operator_model=${operatorModel} worker-3=gemma3:1b worker-4=qwen2.5-coder:1.5b'`,
+    `for ($i = 1; $i -le ${VISIBLE_DEMO_STEPS}; $i++) {`,
+    "  $ts = (Get-Date).ToString('HH:mm:ss')",
+    `  Write-Output "OPERATOR_DEMO_PROGRESS step=$i/${VISIBLE_DEMO_STEPS} monitoring_workers=worker-3,worker-4 interval_seconds=${VISIBLE_DEMO_STEP_SECONDS} timestamp=$ts"`,
+    `  Start-Sleep -Seconds ${VISIBLE_DEMO_STEP_SECONDS}`,
+    "}",
+    `Write-Output "OPERATOR_DEMO_DONE total_seconds=${VISIBLE_DEMO_STEPS * VISIBLE_DEMO_STEP_SECONDS}"`,
     "",
   ].join("\r\n");
 
@@ -1342,23 +1582,30 @@ async function main() {
   const debugPort = await getAvailablePort();
   const userDataDir = path.join(OUTPUT_DIR, `webview2-user-data-${Date.now()}`);
   const launchProjectDir = path.join(OUTPUT_DIR, "launch-project");
+  const localLlmProjectDir = path.join(OUTPUT_DIR, "local-llm-project");
   const scriptPath = path.join(OUTPUT_DIR, "operator-to-worker.ps1");
   const attachmentPath = path.join(OUTPUT_DIR, "composer-attachment.txt");
   if (LAUNCH_PROJECT_ONLY) {
     await fs.mkdir(launchProjectDir, { recursive: true });
+  }
+  if (LOCAL_LLM_STATUS_ONLY || VISIBLE_LOCAL_LLM_DEMO) {
+    process.env.OLLAMA_MODELS ||= "W:\\winsmux-local-llm\\ollama-models";
+    process.env.WINSMUX_LOCAL_LLM_ARTIFACT_ROOT ||= "W:\\winsmux-local-llm\\artifacts";
+    await writeLocalLlmStatusProject(localLlmProjectDir);
   }
   await writeOperatorPipeScript(scriptPath);
   await fs.writeFile(attachmentPath, "desktop composer attachment e2e\n", "utf8");
 
   let browser;
   let page;
-  const tauri = RELEASE_POPOUT_ONLY
-    ? startPackagedDesktopApp(debugPort, userDataDir)
-    : startTauriDev(
-      debugPort,
-      userDataDir,
-      LAUNCH_PROJECT_ONLY ? ["--project-dir", launchProjectDir] : [],
-    );
+  const appArgs = LAUNCH_PROJECT_ONLY
+    ? ["--project-dir", launchProjectDir]
+    : LOCAL_LLM_STATUS_ONLY || VISIBLE_LOCAL_LLM_DEMO
+    ? ["--project-dir", localLlmProjectDir]
+    : [];
+  const tauri = USE_PACKAGED_DESKTOP
+    ? startPackagedDesktopApp(debugPort, userDataDir, appArgs)
+    : startTauriDev(debugPort, userDataDir, appArgs);
 
   try {
     await runStep("wait for WebView2 remote debugging", async () => {
@@ -1384,6 +1631,239 @@ async function main() {
       await page.screenshot({ path: path.join(OUTPUT_DIR, "desktop-release-popout-e2e-success.png"), fullPage: true });
       await writeEvidence(true, { debugPort, mode: "release-popout-only" });
       process.stdout.write(`[desktop-pane-e2e] PASS release-popout-only evidence=${path.join(OUTPUT_DIR, "desktop-pane-e2e.json")}\n`);
+      return;
+    }
+
+    if (PTY_RESET_ONLY) {
+      await resetAppState(page);
+      await runStep("external PTY lifecycle clears worker terminal display", async () => {
+        const paneId = "worker-1";
+        const selector = `#pane-${paneId} .xterm`;
+        const marker = `RESET_DISPLAY_E2E_${Date.now()}`;
+        await setWorkbenchLayout(page, "3x2");
+        await spawnPtyIfNeeded(page, paneId);
+        await waitForPtyPrompt(page, paneId);
+        await invokePty(page, "pty.write", { paneId, data: `Write-Output '${marker}'\r` });
+        await waitForPtyOutputLine(page, paneId, marker);
+        const beforeCloseText = await waitForVisibleTerminalText(page, selector, marker);
+        await invokePty(page, "pty.close", { paneId });
+        const afterCloseText = await waitForVisibleTerminalTextAbsent(page, selector, marker);
+        await invokePty(page, "pty.spawn", { paneId, cols: 100, rows: 24 });
+        await waitForPtyPrompt(page, paneId);
+        const afterSpawnText = await waitForVisibleTerminalTextAbsent(page, selector, marker);
+        return {
+          paneId,
+          beforeCloseTail: beforeCloseText.slice(-400),
+          afterCloseTail: afterCloseText.slice(-400),
+          afterSpawnTail: afterSpawnText.slice(-400),
+        };
+      });
+      await ensureOutputDir();
+      await page.screenshot({ path: path.join(OUTPUT_DIR, "desktop-pty-reset-e2e-success.png"), fullPage: true });
+      await writeEvidence(true, { debugPort, mode: "pty-reset-only" });
+      process.stdout.write(`[desktop-pane-e2e] PASS pty-reset-only evidence=${path.join(OUTPUT_DIR, "desktop-pane-e2e.json")}\n`);
+      return;
+    }
+
+    if (VISIBLE_LOCAL_LLM_DEMO) {
+      const visibleDemoRunId = `visible-demo-${new Date().toISOString().replace(/[^0-9]/g, "").slice(0, 14)}`;
+      const visibleDemoArtifactRoot = path.join(
+        process.env.WINSMUX_LOCAL_LLM_ARTIFACT_ROOT || "W:\\winsmux-local-llm\\artifacts",
+        "visible-demo",
+        visibleDemoRunId,
+      );
+      await fs.mkdir(visibleDemoArtifactRoot, { recursive: true });
+      const instructionFiles = {
+        "worker-3": path.join(visibleDemoArtifactRoot, "worker-3-instruction.txt"),
+        "worker-4": path.join(visibleDemoArtifactRoot, "worker-4-instruction.txt"),
+      };
+      const workerScripts = {
+        "worker-3": path.join(visibleDemoArtifactRoot, "worker-3-demo.ps1"),
+        "worker-4": path.join(visibleDemoArtifactRoot, "worker-4-demo.ps1"),
+      };
+      await writeVisibleWorkerInstructionFile(instructionFiles["worker-3"], "worker-3", "gemma3:1b");
+      await writeVisibleWorkerInstructionFile(instructionFiles["worker-4"], "worker-4", "qwen2.5-coder:1.5b");
+      await writeVisibleWorkerDemoScript(workerScripts["worker-3"], instructionFiles["worker-3"], "worker-3", "gemma3:1b");
+      await writeVisibleWorkerDemoScript(workerScripts["worker-4"], instructionFiles["worker-4"], "worker-4", "qwen2.5-coder:1.5b");
+      const visibleDemoScriptPath = path.join(visibleDemoArtifactRoot, "operator-demo.ps1");
+      await writeVisibleLocalLlmDemoOperatorScript(visibleDemoScriptPath, workerScripts, instructionFiles);
+      await fs.writeFile(
+        path.join(OUTPUT_DIR, "visible-local-llm-demo-run.json"),
+        JSON.stringify({
+          runId: visibleDemoRunId,
+          artifactRoot: visibleDemoArtifactRoot,
+          operatorScript: visibleDemoScriptPath,
+          workerScripts,
+          instructionFiles,
+        }, null, 2),
+        "utf8",
+      );
+      await setActiveProjectDirForUi(page, localLlmProjectDir);
+      await runStep("resize desktop window for visible local LLM demo", async () => {
+        return await resizeNativeWindowAndReadMetrics(page);
+      });
+      await runStep("visible demo shows local LLM worker status", async () => {
+        await ensureDrawerOpen(page);
+        await setWorkbenchLayout(page, "2x2");
+        await setWorkerStatusStripFromViewMenu(page, true);
+        await page.locator("#worker-status-pill-bar").waitFor({ state: "visible", timeout: 30_000 });
+        await page.waitForFunction(() => {
+          return ["worker-3", "worker-4"].every((target) => {
+            const pill = document.querySelector(`.worker-status-pill[data-worker-status-target="${target}"]`);
+            return (pill?.getAttribute("title") || "").includes("backend=local_llm");
+          });
+        }, undefined, { timeout: 90_000 });
+        return { status: "local_llm worker pills visible" };
+      });
+      await runStep("visible demo starts worker panes and dispatches a five minute operator task", async () => {
+        for (const paneId of ["worker-3", "worker-4"]) {
+          await spawnPtyIfNeeded(page, paneId);
+          await waitForPtyPrompt(page, paneId);
+        }
+
+        let operatorMode = "pwsh";
+        try {
+          await spawnPtyIfNeeded(page, "operator");
+          await waitForPtyPrompt(page, "operator", 20_000);
+        } catch {
+          operatorMode = "claude-shell";
+          await startOperatorFromUiAndWaitForClaude(page);
+        }
+
+        const escapedScriptPath = visibleDemoScriptPath.replace(/'/g, "''");
+        const operatorCommand = operatorMode === "claude-shell"
+          ? `!pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File '${escapedScriptPath}'`
+          : `pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File '${escapedScriptPath}'`;
+        const pasteMode = await pasteIntoTerminal(page, "#operator-terminal-panel", operatorCommand);
+        await page.keyboard.press("Enter");
+        await waitForPtyOutput(page, "operator", "OPERATOR_DEMO_READY", 90_000);
+        const worker3Dispatch = await waitForPtyOutput(page, "operator", "OPERATOR_DISPATCH_OK pane=worker-3", 15_000);
+        const worker4Dispatch = await waitForPtyOutput(page, "operator", "OPERATOR_DISPATCH_OK pane=worker-4", 15_000);
+        const worker3Start = await waitForPtyOutput(page, "worker-3", "WORKER-3_DEMO_START", 90_000);
+        const worker4Start = await waitForPtyOutput(page, "worker-4", "WORKER-4_DEMO_START", 90_000);
+        const progressStep = Math.min(2, VISIBLE_DEMO_STEPS);
+        const worker3Progress = await waitForPtyOutput(page, "worker-3", `WORKER-3_DEMO_PROGRESS step=${progressStep}/${VISIBLE_DEMO_STEPS}`, (VISIBLE_DEMO_STEP_SECONDS * 1000) + 90_000);
+        const worker4Progress = await waitForPtyOutput(page, "worker-4", `WORKER-4_DEMO_PROGRESS step=${progressStep}/${VISIBLE_DEMO_STEPS}`, (VISIBLE_DEMO_STEP_SECONDS * 1000) + 90_000);
+        const operatorProgress = await waitForPtyOutput(page, "operator", `OPERATOR_DEMO_PROGRESS step=${progressStep}/${VISIBLE_DEMO_STEPS}`, (VISIBLE_DEMO_STEP_SECONDS * 1000) + 90_000);
+        process.stdout.write(`[desktop-visible-demo] READY five-minute-demo operator_mode=${operatorMode}\n`);
+        process.stdout.write("[desktop-visible-demo] You can record now. Operator and workers will print progress every 30 seconds for at least 5 minutes.\n");
+        const timeoutMs = (VISIBLE_DEMO_STEPS * VISIBLE_DEMO_STEP_SECONDS * 1000) + 180_000;
+        const operatorDone = await waitForPtyOutput(page, "operator", "OPERATOR_DEMO_DONE", timeoutMs);
+        const worker3Done = await waitForPtyOutput(page, "worker-3", "WORKER-3_DEMO_DONE", 120_000);
+        const worker4Done = await waitForPtyOutput(page, "worker-4", "WORKER-4_DEMO_DONE", 120_000);
+        return {
+          operatorMode,
+          operatorModel: VISIBLE_DEMO_OPERATOR_MODEL,
+          pasteMode,
+          worker3DispatchTail: worker3Dispatch.slice(-800),
+          worker4DispatchTail: worker4Dispatch.slice(-800),
+          worker3StartTail: worker3Start.slice(-800),
+          worker4StartTail: worker4Start.slice(-800),
+          worker3ProgressTail: worker3Progress.slice(-800),
+          worker4ProgressTail: worker4Progress.slice(-800),
+          operatorProgressTail: operatorProgress.slice(-800),
+          operatorDoneTail: operatorDone.slice(-800),
+          worker3DoneTail: worker3Done.slice(-800),
+          worker4DoneTail: worker4Done.slice(-800),
+        };
+      });
+      await ensureOutputDir();
+      await page.screenshot({ path: path.join(OUTPUT_DIR, "desktop-local-llm-visible-demo-success.png"), fullPage: true });
+      await writeEvidence(true, {
+        debugPort,
+        mode: "visible-local-llm-demo",
+        projectDir: localLlmProjectDir,
+        totalSeconds: VISIBLE_DEMO_STEPS * VISIBLE_DEMO_STEP_SECONDS,
+        visibleDemoRunId,
+        visibleDemoArtifactRoot,
+        operatorScript: visibleDemoScriptPath,
+        workerScripts,
+        instructionFiles,
+      });
+      process.stdout.write(`[desktop-visible-demo] PASS visible-local-llm-demo evidence=${path.join(OUTPUT_DIR, "desktop-pane-e2e.json")}\n`);
+      return;
+    }
+
+    if (LOCAL_LLM_STATUS_ONLY) {
+      await setActiveProjectDirForUi(page, localLlmProjectDir);
+      await runStep("resize desktop window for local LLM worker panes", async () => {
+        return await resizeNativeWindowAndReadMetrics(page);
+      });
+      await runStep("desktop worker status shows two local LLM workers", async () => {
+        await ensureDrawerOpen(page);
+        await setWorkbenchLayout(page, "2x2");
+        await setWorkerStatusStripFromViewMenu(page, true);
+        await page.locator("#worker-status-pill-bar").waitFor({ state: "visible", timeout: 30_000 });
+        for (const target of ["worker-3", "worker-4"]) {
+          await page.locator(`.worker-status-pill[data-worker-status-target="${target}"]`).waitFor({ state: "visible", timeout: 30_000 });
+        }
+        await page.waitForFunction(() => {
+          return ["worker-3", "worker-4"].every((target) => {
+            const pill = document.querySelector(`.worker-status-pill[data-worker-status-target="${target}"]`);
+            return (pill?.getAttribute("title") || "").includes("backend=local_llm");
+          });
+        }, undefined, { timeout: 90_000 });
+        const expected = {
+          "worker-3": "gemma3:1b",
+          "worker-4": "qwen2.5-coder:1.5b",
+        };
+        const details = {};
+        for (const [target, model] of Object.entries(expected)) {
+          await page.locator(`.worker-status-pill[data-worker-status-target="${target}"]`).click();
+          await page.waitForFunction((paneId) => {
+            const detail = document.querySelector(".worker-status-detail-strip");
+            return detail?.getAttribute("data-worker-status-detail") === paneId;
+          }, target, { timeout: 10_000 });
+          const values = await page.locator(`.worker-status-detail-strip[data-worker-status-detail="${target}"] .worker-status-pill-chip`).evaluateAll((chips) => {
+            const result = {};
+            for (const chip of chips) {
+              const key = chip.getAttribute("data-status-field") || "";
+              result[key] = chip.textContent || "";
+            }
+            return result;
+          });
+          for (const field of ["backend", "runtime", "model", "llm-health", "remote"]) {
+            if (!values[field]) {
+              throw new Error(`${target} is missing local LLM status field ${field}: ${JSON.stringify(values)}`);
+            }
+          }
+          if (!values.backend.includes("local_llm")) {
+            throw new Error(`${target} backend should be local_llm: ${JSON.stringify(values)}`);
+          }
+          if (!values.runtime.includes("ollama")) {
+            throw new Error(`${target} runtime should be ollama: ${JSON.stringify(values)}`);
+          }
+          if (!values.model.includes(model)) {
+            throw new Error(`${target} model should include ${model}: ${JSON.stringify(values)}`);
+          }
+          if (values["llm-health"].includes("artifact_root_not_g_drive")) {
+            throw new Error(`${target} local LLM artifact root was not accepted as G drive storage: ${JSON.stringify(values)}`);
+          }
+          details[target] = values;
+        }
+        const layoutMetrics = await page.locator("#panes-container").evaluate((container) => {
+          const panes = Array.from(container.querySelectorAll(".pane:not([hidden])"));
+          const rects = panes.map((pane) => pane.getBoundingClientRect());
+          return {
+            paneCount: panes.length,
+            minWidth: Math.min(...rects.map((rect) => Math.round(rect.width))),
+            minHeight: Math.min(...rects.map((rect) => Math.round(rect.height))),
+            statusScrollWidth: document.querySelector("#worker-status-pill-bar")?.scrollWidth ?? 0,
+            statusClientWidth: document.querySelector("#worker-status-pill-bar")?.clientWidth ?? 0,
+          };
+        });
+        if (layoutMetrics.paneCount < 4 || layoutMetrics.minWidth < 300 || layoutMetrics.minHeight < 120) {
+          throw new Error(`local LLM worker panes should remain usable: ${JSON.stringify(layoutMetrics)}`);
+        }
+        if (layoutMetrics.statusScrollWidth > layoutMetrics.statusClientWidth + 2) {
+          throw new Error(`local LLM status strip should not require horizontal scrolling: ${JSON.stringify(layoutMetrics)}`);
+        }
+        return { details, layoutMetrics };
+      });
+      await ensureOutputDir();
+      await page.screenshot({ path: path.join(OUTPUT_DIR, "desktop-local-llm-status-e2e-success.png"), fullPage: true });
+      await writeEvidence(true, { debugPort, mode: "local-llm-status-only", projectDir: localLlmProjectDir });
+      process.stdout.write(`[desktop-pane-e2e] PASS local-llm-status-only evidence=${path.join(OUTPUT_DIR, "desktop-pane-e2e.json")}\n`);
       return;
     }
 

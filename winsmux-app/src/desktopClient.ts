@@ -585,6 +585,10 @@ export interface DesktopWorkerLaunchApproval {
   worker_role?: string;
   agent?: string;
   model?: string;
+  model_id?: string;
+  runtime?: string;
+  endpoint?: string;
+  artifact_root?: string;
   model_source?: string;
   reasoning_effort?: string;
   prompt_transport?: string;
@@ -681,6 +685,43 @@ export interface DesktopWorkerPolicyState {
   [key: string]: unknown;
 }
 
+export interface DesktopWorkerLocalLlmState {
+  backend?: string;
+  runtime?: string;
+  endpoint?: string;
+  endpoint_kind?: string;
+  model_id?: string;
+  model_root?: string;
+  artifact_root?: string;
+  model_root_on_g_drive?: boolean;
+  artifact_root_on_g_drive?: boolean;
+  health?: string;
+  reason?: string;
+  last_run?: Record<string, unknown> | null;
+  [key: string]: unknown;
+}
+
+export interface DesktopWorkerColabLlmState {
+  backend?: string;
+  runtime?: string;
+  runtime_engine?: string;
+  model_id?: string;
+  precision?: string;
+  quantization?: string;
+  license_state?: string;
+  gpu_preference?: string;
+  selected_gpu?: string;
+  requested_gpu?: string;
+  actual_gpu?: string;
+  health?: string;
+  run_state?: string;
+  state?: string;
+  status?: string;
+  reason?: string;
+  last_run?: Record<string, unknown> | null;
+  [key: string]: unknown;
+}
+
 export interface DesktopWorkerStatusRow {
   slot: string;
   slot_id: string;
@@ -707,6 +748,8 @@ export interface DesktopWorkerStatusRow {
   secret_projection?: DesktopWorkerSecretProjectionState | null;
   broker?: DesktopWorkerBrokerState | null;
   policy?: DesktopWorkerPolicyState | null;
+  local_llm?: DesktopWorkerLocalLlmState | null;
+  colab_llm?: DesktopWorkerColabLlmState | null;
 }
 
 export interface DesktopWorkersStatusResult {
