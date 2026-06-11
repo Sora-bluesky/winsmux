@@ -30,6 +30,7 @@ if ! command -v "$pwsh_bin" >/dev/null 2>&1; then
 fi
 
 "$pwsh_bin" -NoProfile -File "$repo_root_pwsh\\scripts\\git-guard.ps1" -Mode staged
+"$pwsh_bin" -NoProfile -File "$repo_root_pwsh\\scripts\\audit-staged-public-surface.ps1"
 
 # --- Guard: no commits on main with operator prompt ---
 branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"

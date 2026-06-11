@@ -156,6 +156,84 @@ function Get-ForbiddenPaidSourceDisclosurePatterns {
     )
 }
 
+function Test-IsReservedEmailDomain {
+    param([Parameter(Mandatory = $true)][string]$Domain)
+
+    $normalized = $Domain.Trim().TrimEnd('.').ToLowerInvariant()
+    if ($normalized -in @('example.com', 'example.net', 'example.org')) { return $true }
+    return $normalized -match '(^|\.)((example)|(invalid)|(test)|(localhost))$'
+}
+
+function Add-PersonalEmailFailures {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Surface
+    )
+
+    $fullPath = if ([System.IO.Path]::IsPathRooted($Path)) { $Path } else { Join-Path $repoRoot $Path }
+    if (-not (Test-Path -LiteralPath $fullPath)) {
+        $failures.Add("$Surface path does not exist: $Path")
+        return
+    }
+
+    $content = Get-Content -LiteralPath $fullPath -Raw -ErrorAction Stop
+    $emailPattern = '(?i)\b[A-Z0-9._%+\-]+@([A-Z0-9.\-]+\.[A-Z]{2,})\b'
+    $matches = [Regex]::Matches($content, $emailPattern)
+    foreach ($match in $matches) {
+        $domain = $match.Groups[1].Value
+        if (-not (Test-IsReservedEmailDomain -Domain $domain)) {
+            $failures.Add("$Surface contains non-reserved email address: $Path")
+            return
+        }
+    }
+}
+
+function Test-IsAllowedPublicLocalPathExample {
+    param([Parameter(Mandatory = $true)][string]$Value)
+
+    $normalized = $Value.Trim().TrimEnd('.', ',', ';', ':', ')', ']', '}').Replace('/', '\')
+    if ($normalized -match '(?i)^C:\\path\\to(?:\\|$)') { return $true }
+    if ($normalized -match '(?i)^C:\\Program(?:\\|$)') { return $true }
+    if ($normalized -match '(?i)^C:\\Users\\me(?:\\|$)') { return $true }
+    if ($normalized -match '(?i)^C:\\project(?:\\|$|>)') { return $true }
+    if ($normalized -match '(?i)^[GW]:\\winsmux-local-llm(?:\\|$)') { return $true }
+    return $false
+}
+
+function Add-PrivateRuntimeReferenceFailures {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Surface
+    )
+
+    $normalizedPath = $Path.Replace('\', '/')
+    if ($normalizedPath -eq 'docs/repo-surface-policy.md') {
+        return
+    }
+
+    $fullPath = if ([System.IO.Path]::IsPathRooted($Path)) { $Path } else { Join-Path $repoRoot $Path }
+    if (-not (Test-Path -LiteralPath $fullPath)) {
+        $failures.Add("$Surface path does not exist: $Path")
+        return
+    }
+
+    $content = Get-Content -LiteralPath $fullPath -Raw -ErrorAction Stop
+    $googleDriveUrlPattern = '(?i)https?://(?:drive|docs)\.google\.com/(?:drive/(?:u/\d+/)?folders/|file/d/|open\?id=|uc\?id=|document/d/|spreadsheets/d/|presentation/d/)[A-Za-z0-9_-]{10,}'
+    if ($content -match $googleDriveUrlPattern) {
+        $failures.Add("$Surface contains a Google Drive document or folder URL: $Path")
+        return
+    }
+
+    $localPathPattern = '(?i)\b[A-Z]:[\\/][^\s`''"<>|]+'
+    foreach ($match in [Regex]::Matches($content, $localPathPattern)) {
+        $candidate = [string]$match.Value
+        if (-not (Test-IsAllowedPublicLocalPathExample -Value $candidate)) {
+            $failures.Add("$Surface contains a local absolute path: $Path")
+            return
+        }
+    }
+}
+
 function Add-ForbiddenExternalProductReferenceFailures {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -314,10 +392,14 @@ foreach ($file in ($trackedFiles | Where-Object { Test-IsExternalProductReferenc
 }
 
 foreach ($file in ($trackedFiles | Where-Object { Test-IsPublicMaterialScanSurface -Path $_ })) {
+    Add-PersonalEmailFailures -Path $file -Surface 'public material'
+    Add-PrivateRuntimeReferenceFailures -Path $file -Surface 'public material'
     Add-ForbiddenPaidSourceDisclosureFailures -Path $file -Surface 'public material'
 }
 
 if (-not [string]::IsNullOrWhiteSpace($ReleaseNotesPath)) {
+    Add-PersonalEmailFailures -Path $ReleaseNotesPath -Surface 'release notes'
+    Add-PrivateRuntimeReferenceFailures -Path $ReleaseNotesPath -Surface 'release notes'
     Add-ForbiddenExternalProductReferenceFailures -Path $ReleaseNotesPath -Surface 'release notes'
     Add-ForbiddenPaidSourceDisclosureFailures -Path $ReleaseNotesPath -Surface 'release notes'
 }

@@ -75,6 +75,7 @@ tests/*
 !tests/BuilderWorktree.Tests.ps1
 !tests/codex-subagent-worktree-guard.Tests.ps1
 !tests/PublicSurfacePolicy.Tests.ps1
+!tests/PublicSurfaceRuntimeReferences.Tests.ps1
 !tests/GitHubWritePreflight.Tests.ps1
 !tests/McpServerContract.Tests.ps1
 !tests/HarnessContract.Tests.ps1
@@ -107,6 +108,7 @@ DEV-NOTES*.md
 .com[m]ander-prompt*.txt
 .orchestra-prompts/
 .winsmux/
+.tmp/
 .tmp-appdata/
 .tmp-settings/
 dogfood/
@@ -132,6 +134,7 @@ events.db-*
 .claude/logs/
 .claude/worktrees/
 .claude/local/
+.claude/launch.json
 # .codex/ and .gemini/ are tracked (agent project config)
 # Exclude sandbox config (local-only, contains danger-full-access for CLM bypass #319)
 .codex/config.toml
