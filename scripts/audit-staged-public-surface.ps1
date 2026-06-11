@@ -24,7 +24,7 @@ function Test-IsReservedEmailDomain {
     param([Parameter(Mandatory = $true)][string]$Domain)
 
     $normalized = $Domain.Trim().TrimEnd('.').ToLowerInvariant()
-    if ($normalized -in @('example.com', 'example.net', 'example.org')) { return $true }
+    if ($normalized -in @('example.com', 'example.net', 'example.org', 'example.invalid')) { return $true }
     return $normalized -match '(^|\.)((example)|(invalid)|(test)|(localhost))$'
 }
 

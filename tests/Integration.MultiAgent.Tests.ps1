@@ -56,7 +56,7 @@ Describe 'Get-BridgeSettings defaults' {
 
         $settings = Get-BridgeSettings
 
-        $settings.agent | Should -Be 'codex'
+        $settings.agent | Should -Be 'antigravity'
         $settings.model | Should -Be ''
         $settings.external_operator | Should -Be $true
         $settings.legacy_role_layout | Should -Be $false
