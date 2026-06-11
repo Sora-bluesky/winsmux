@@ -55,6 +55,9 @@ Google-side requirements depend on the Colab product you use:
 
 For model workloads, this release lane assumes the code runs on Google Colab.
 It does not require a local LLM runtime on the Windows PC.
+For local Ollama-backed workers, use the separate `local_llm` worker backend.
+`colab_cli` degraded-state handling is not a fallback path for local LLM
+execution.
 
 ## Adapter contract
 
@@ -123,6 +126,72 @@ The slot should show `backend` as `colab_cli`. If the adapter, authentication,
 or required `H100` / `A100` GPU cannot be confirmed, the slot remains visible
 but is marked degraded.
 
+## Configure Colab GPU LLM slots
+
+Use `worker-backend: colab_llm` when the worker is a Colab GPU model job rather
+than a generic script worker. The desktop E2E uses `worker-1` and `worker-2` so
+the operator and both model jobs are visible in a compact 2x2 layout.
+
+The model files are downloaded by the Colab runtime into Google Drive. They are
+not downloaded to the Windows PC, the normal Ollama cache, or a local model
+directory.
+
+```yaml
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    worker-backend: colab_llm
+    worker-role: consult
+    agent: colab-llm
+    model-family: gemma
+    model-id: <HF_MODEL_ID_A_27B_PLUS>
+    runtime: colab
+    runtime-engine: vllm
+    gpu-preference: [H100, A100]
+    session-name: "{{project_slug}}_colab_llm"
+    drive-root: /content/drive/MyDrive/winsmux-colab-llm
+    model-root: /content/drive/MyDrive/winsmux-colab-llm/models
+    hf-cache-root: /content/drive/MyDrive/winsmux-colab-llm/hf-cache
+    artifact-root: /content/drive/MyDrive/winsmux-colab-llm/artifacts
+    runtime-cache-root: /content/winsmux-runtime-cache
+    precision: bfloat16
+    license-state: accepted
+    task-script: workers/colab/llm_worker.py
+    worktree-mode: managed
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: colab_llm
+    worker-role: consult
+    agent: colab-llm
+    model-family: qwen
+    model-id: <HF_MODEL_ID_B_27B_PLUS>
+    runtime: colab
+    runtime-engine: vllm
+    gpu-preference: [H100, A100]
+    session-name: "{{project_slug}}_colab_llm"
+    drive-root: /content/drive/MyDrive/winsmux-colab-llm
+    model-root: /content/drive/MyDrive/winsmux-colab-llm/models
+    hf-cache-root: /content/drive/MyDrive/winsmux-colab-llm/hf-cache
+    artifact-root: /content/drive/MyDrive/winsmux-colab-llm/artifacts
+    runtime-cache-root: /content/winsmux-runtime-cache
+    precision: bfloat16
+    license-state: not_required
+    task-script: workers/colab/llm_worker.py
+    worktree-mode: managed
+```
+
+The Colab LLM worker script sets these cache variables before loading a model:
+
+- `HF_HOME`
+- `HF_HUB_CACHE`
+- `TRANSFORMERS_CACHE`
+- `XDG_CACHE_HOME`
+
+All four point to `/content/drive/MyDrive/winsmux-colab-llm/hf-cache`. Large
+outputs go under `/content/drive/MyDrive/winsmux-colab-llm/artifacts`.
+Performance-sensitive temporary expansion may use `/content/winsmux-runtime-cache`,
+but persistent model files must be copied or downloaded back to Drive.
+
 ## Model families
 
 Colab workers are model-family agnostic. winsmux records the intended model as
@@ -178,6 +247,7 @@ The repository includes thin templates in `workers/colab/`:
 - `scout_worker.py`
 - `test_worker.py`
 - `heavy_judge_worker.py`
+- `llm_worker.py`
 
 Each template accepts task JSON through `--task-json`, `--task-json-inline`, or
 `WINSMUX_TASK_JSON`. It prints a structured JSON result to stdout and writes

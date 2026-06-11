@@ -17,14 +17,28 @@ $script:BridgeSettingsFileName = '.winsmux.yaml'
 $script:BridgeProviderRegistryFileName = 'provider-registry.json'
 $script:BridgeProviderCapabilityRegistryFileName = 'provider-capabilities.json'
 $script:BridgeRuntimeRolePreferencesFileName = 'runtime-role-preferences.json'
-$script:BridgeWorkerBackendKinds = @('local', 'codex', 'colab_cli', 'noop')
+$script:BridgeWorkerBackendKinds = @('local', 'codex', 'antigravity', 'colab_cli', 'local_llm', 'colab_llm', 'noop')
 $script:BridgeExecutionProfileKinds = @('local-windows', 'isolated-enterprise')
 $script:BridgeSlotScalarKeys = @(
     'slot_id',
     'runtime_role',
     'agent',
     'model',
+    'model_id',
+    'model_family',
     'model_source',
+    'runtime',
+    'runtime_engine',
+    'endpoint',
+    'artifact_root',
+    'drive_root',
+    'model_root',
+    'cache_root',
+    'hf_cache_root',
+    'runtime_cache_root',
+    'precision',
+    'quantization',
+    'license_state',
     'reasoning_effort',
     'prompt_transport',
     'auth_mode',
@@ -41,11 +55,11 @@ $script:BridgeSlotScalarKeys = @(
 $script:BridgeSlotListKeys = @('gpu_preference', 'packages')
 $script:BridgeSettingsSchema = [ordered]@{
     config_version      = @{ Type = 'int';      Default = 1;             Option = $null }
-    agent               = @{ Type = 'string';   Default = 'codex';       Option = '@bridge-agent' }
+    agent               = @{ Type = 'string';   Default = 'antigravity'; Option = '@bridge-agent' }
     model               = @{ Type = 'string';   Default = '';            Option = '@bridge-model' }
     model_source        = @{ Type = 'string';   Default = 'provider-default'; Option = $null }
     reasoning_effort    = @{ Type = 'string';   Default = 'provider-default'; Option = $null }
-    prompt_transport    = @{ Type = 'transport'; Default = 'argv';       Option = '@bridge-prompt-transport' }
+    prompt_transport    = @{ Type = 'transport'; Default = 'file';       Option = '@bridge-prompt-transport' }
     auth_mode           = @{ Type = 'string';   Default = '';            Option = $null }
     external_operator  = @{ Type = 'bool';     Default = $true;         Option = '@bridge-external-operator' }
     worker_count        = @{ Type = 'int';      Default = 6;             Option = '@bridge-worker-count' }
@@ -459,6 +473,17 @@ function New-BridgeManagedAgentSlots {
         'local-windows'
     }
 
+    $effectiveModel = if (Test-BridgeAntigravityProviderId -ProviderId $Agent) { '' } else { $Model }
+    if ([string]::IsNullOrWhiteSpace($effectiveModel)) {
+        $effectiveModel = Get-BridgeDefaultModelForAgent -Agent $Agent
+    }
+    $effectiveModelSource = if (Test-BridgeProviderDefaultModel -Model $effectiveModel) {
+        'provider-default'
+    } else {
+        'operator-override'
+    }
+    $effectivePromptTransport = Get-BridgeDefaultPromptTransportForAgent -Agent $Agent
+
     $slots = @()
     for ($index = 1; $index -le $Count; $index++) {
         $slot = [ordered]@{
@@ -473,6 +498,7 @@ function New-BridgeManagedAgentSlots {
             $slot.agent = 'codex'
             $slot.model = 'provider-default'
             $slot.model_source = 'provider-default'
+            $slot.prompt_transport = 'argv'
             $slot.worker_backend = 'codex'
             $slot.worker_role = 'reviewer'
             $slot.fallback_model = 'gpt-5.3-codex-spark'
@@ -480,8 +506,12 @@ function New-BridgeManagedAgentSlots {
             $slots += $slot
             continue
         }
-        if (-not [string]::IsNullOrWhiteSpace($Model)) {
-            $slot.model = $Model
+        if (-not [string]::IsNullOrWhiteSpace($effectiveModel)) {
+            $slot.model = $effectiveModel
+            $slot.model_source = $effectiveModelSource
+        }
+        if (-not [string]::IsNullOrWhiteSpace($effectivePromptTransport)) {
+            $slot.prompt_transport = $effectivePromptTransport
         }
         $slots += $slot
     }
@@ -1303,6 +1333,86 @@ function ConvertTo-BridgePowerShellCommandInvocation {
     return '& ' + (ConvertTo-BridgePowerShellLiteral -Value $Value)
 }
 
+function New-BridgeBuiltinOllamaProviderCapability {
+    return [ordered]@{
+        adapter                 = 'local_llm'
+        display_name            = 'Ollama local endpoint'
+        command                 = 'ollama'
+        model_catalog_source    = 'ollama-library'
+        local_access_note       = 'Uses the local Ollama HTTP endpoint on 127.0.0.1.'
+        harness_availability    = 'local_endpoint'
+        credential_requirements = 'none'
+        execution_backend       = 'local_llm'
+        runtime_requirements    = 'Ollama for Windows and OLLAMA_MODELS on a non-C-drive model root.'
+        analysis_posture        = 'read-only'
+        prompt_transports       = @('stdin', 'file', 'argv')
+        auth_modes              = @('none')
+        model_sources           = @('provider-default', 'operator-override')
+        reasoning_efforts       = @('provider-default')
+        model_options           = @(
+            [ordered]@{ id = 'gemma3:1b'; source = 'official-doc'; availability = 'ollama-library'; notes = 'Initial winsmux local LLM E2E model.' },
+            [ordered]@{ id = 'qwen2.5-coder:1.5b'; source = 'official-doc'; availability = 'ollama-library'; notes = 'Initial winsmux local LLM E2E coding model.' }
+        )
+        supports_parallel_runs  = $true
+        supports_interrupt      = $false
+        supports_structured_result = $false
+        supports_file_edit      = $false
+        supports_subagents      = $false
+        supports_verification   = $false
+        supports_consultation   = $true
+        supports_context_reset  = $false
+    }
+}
+
+function New-BridgeBuiltinColabLlmProviderCapability {
+    return [ordered]@{
+        adapter                 = 'colab_llm'
+        display_name            = 'Colab GPU LLM'
+        command                 = 'google-colab-cli'
+        model_catalog_source    = 'operator-supplied'
+        local_access_note       = 'Runs open-weight model jobs inside a user-owned Google Colab runtime.'
+        harness_availability    = 'colab_gpu_runtime'
+        credential_requirements = 'colab-adapter-owned'
+        execution_backend       = 'colab_llm'
+        runtime_requirements    = 'A google-colab-cli compatible adapter, a prepared Colab Pro GPU runtime, and model cache roots under /content/drive/MyDrive/winsmux-colab-llm/.'
+        analysis_posture        = 'read-only'
+        prompt_transports       = @('file', 'argv')
+        auth_modes              = @('colab-adapter-owned')
+        model_sources           = @('provider-default', 'operator-override')
+        reasoning_efforts       = @('provider-default')
+        model_options           = @(
+            [ordered]@{ id = 'operator-supplied-27b-plus'; source = 'operator-override'; availability = 'requires-colab-license-and-cache'; notes = 'Use a 27B-class or larger open-weight model after accepting its upstream license.' },
+            [ordered]@{ id = 'operator-supplied-comparison-model'; source = 'operator-override'; availability = 'requires-colab-license-and-cache'; notes = 'Second model job for worker-2 in the same Colab runtime.' }
+        )
+        supports_parallel_runs  = $true
+        supports_interrupt      = $false
+        supports_structured_result = $true
+        supports_file_edit      = $false
+        supports_subagents      = $false
+        supports_verification   = $false
+        supports_consultation   = $true
+        supports_context_reset  = $false
+    }
+}
+
+function Get-BridgeBuiltinProviderCapability {
+    param([AllowEmptyString()][string]$ProviderId)
+
+    if ([string]::IsNullOrWhiteSpace($ProviderId)) {
+        return $null
+    }
+
+    $normalized = $ProviderId.Trim().ToLowerInvariant()
+    if ($normalized -in @('ollama', 'local-ollama', 'local_llm:ollama')) {
+        return (New-BridgeBuiltinOllamaProviderCapability)
+    }
+    if ($normalized -in @('colab-llm', 'colab_llm', 'colab-vllm', 'vllm-colab')) {
+        return (New-BridgeBuiltinColabLlmProviderCapability)
+    }
+
+    return $null
+}
+
 function Read-BridgeProviderCapabilityRegistry {
     param([string]$RootPath)
 
@@ -1383,6 +1493,11 @@ function Get-BridgeProviderCapability {
         return $null
     }
 
+    $builtin = Get-BridgeBuiltinProviderCapability -ProviderId $ProviderId
+    if ($null -ne $builtin) {
+        return $builtin
+    }
+
     $registry = Read-BridgeProviderCapabilityRegistry -RootPath $RootPath
     foreach ($entry in $registry.providers.GetEnumerator()) {
         if ([string]::Equals([string]$entry.Key, $ProviderId, [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -1403,6 +1518,10 @@ function Resolve-BridgeProviderCapability {
     if ([string]::IsNullOrWhiteSpace($ProviderId)) {
         return $null
     }
+    $builtin = Get-BridgeBuiltinProviderCapability -ProviderId $ProviderId
+    if ($null -ne $builtin) {
+        return $builtin
+    }
 
     $registry = Read-BridgeProviderCapabilityRegistry -RootPath $RootPath
     if ($registry.providers.Count -lt 1) {
@@ -1412,6 +1531,15 @@ function Resolve-BridgeProviderCapability {
     foreach ($entry in $registry.providers.GetEnumerator()) {
         if ([string]::Equals([string]$entry.Key, $ProviderId, [System.StringComparison]::OrdinalIgnoreCase)) {
             return $entry.Value
+        }
+    }
+
+    $lookupProviderId = Get-BridgeCanonicalProviderId -ProviderId $ProviderId
+    if (-not [string]::Equals($lookupProviderId, $ProviderId, [System.StringComparison]::OrdinalIgnoreCase)) {
+        foreach ($entry in $registry.providers.GetEnumerator()) {
+            if ([string]::Equals([string]$entry.Key, $lookupProviderId, [System.StringComparison]::OrdinalIgnoreCase)) {
+                return $entry.Value
+            }
         }
     }
 
@@ -1623,14 +1751,18 @@ function Get-BridgeProviderLaunchCommand {
     }
 
     $capability = Resolve-BridgeProviderCapability -ProviderId $provider -RootPath $RootPath -RequireWhenRegistryPresent
-    $adapter = $provider
-    $command = $provider
+    $canonicalProvider = Get-BridgeCanonicalProviderId -ProviderId $provider
+    $adapter = $canonicalProvider
+    $command = if ([string]::Equals($canonicalProvider, 'antigravity', [System.StringComparison]::OrdinalIgnoreCase)) { 'agy' } else { $provider }
     if ($null -ne $capability) {
         $adapter = [string]$capability.adapter
         $command = [string]$capability.command
     }
 
     $adapterKey = $adapter.Trim().ToLowerInvariant()
+    if ($adapterKey -eq 'antigravity' -and $command.Trim().ToLowerInvariant() -eq 'antigravity') {
+        $command = 'agy'
+    }
     $commandInvocation = ConvertTo-BridgePowerShellCommandInvocation -Value $command
     $modelOverride = Test-BridgeProviderModelOverride -Model $Model -ModelSource $ModelSource
     $effortOverride = -not (Test-BridgeProviderDefaultReasoningEffort -ReasoningEffort $ReasoningEffort)
@@ -1682,6 +1814,18 @@ function Get-BridgeProviderLaunchCommand {
             $parts += '--approval-mode=default'
             return ($parts -join ' ')
         }
+        'antigravity' {
+            if ($modelOverride) {
+                throw 'Antigravity CLI model overrides are not launchable; use provider-default and select the model inside agy.'
+            }
+            $parts = @($commandInvocation)
+            $parts += '--add-dir'
+            $parts += (ConvertTo-BridgePowerShellLiteral -Value $ProjectDir)
+            if ($ExecMode) {
+                $parts += '--print'
+            }
+            return ($parts -join ' ')
+        }
         default {
             throw "Unsupported provider adapter '$adapter' for provider '$provider'."
         }
@@ -1692,6 +1836,45 @@ function Test-BridgeProviderDefaultModel {
     param([AllowNull()][string]$Model)
 
     return ([string]::IsNullOrWhiteSpace($Model) -or [string]::Equals($Model.Trim(), 'provider-default', [System.StringComparison]::OrdinalIgnoreCase))
+}
+
+function Get-BridgeDefaultModelForAgent {
+    param([AllowNull()][string]$Agent)
+
+    return ''
+}
+
+function Get-BridgeCanonicalProviderId {
+    param([AllowNull()][string]$ProviderId)
+
+    if ([string]::IsNullOrWhiteSpace($ProviderId)) {
+        return ''
+    }
+
+    $providerKey = $ProviderId.Trim().ToLowerInvariant()
+    if ($providerKey -eq 'agy' -or $providerKey.StartsWith('agy:') -or $providerKey.StartsWith('agy-') -or $providerKey.StartsWith('agy_') -or $providerKey.StartsWith('agy/') -or
+        $providerKey -eq 'antigravity' -or $providerKey.StartsWith('antigravity:') -or $providerKey.StartsWith('antigravity-') -or $providerKey.StartsWith('antigravity_') -or $providerKey.StartsWith('antigravity/')) {
+        return 'antigravity'
+    }
+
+    return $ProviderId.Trim()
+}
+
+function Test-BridgeAntigravityProviderId {
+    param([AllowNull()][string]$ProviderId)
+
+    return [string]::Equals((Get-BridgeCanonicalProviderId -ProviderId $ProviderId), 'antigravity', [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Get-BridgeDefaultPromptTransportForAgent {
+    param([AllowNull()][string]$Agent)
+
+    $providerId = Get-BridgeCanonicalProviderId -ProviderId $Agent
+    if ([string]::Equals($providerId, 'antigravity', [System.StringComparison]::OrdinalIgnoreCase)) {
+        return 'file'
+    }
+
+    return ''
 }
 
 function Test-BridgeProviderDefaultModelSource {
@@ -2503,6 +2686,23 @@ function Get-RoleAgentConfig {
         }
     }
 
+    if (Test-BridgeAntigravityProviderId -ProviderId $agent) {
+        $model = ''
+        $modelSource = 'provider-default'
+    } elseif ([string]::IsNullOrWhiteSpace($model)) {
+        $defaultModel = Get-BridgeDefaultModelForAgent -Agent $agent
+        if (-not [string]::IsNullOrWhiteSpace($defaultModel)) {
+            $model = $defaultModel
+            $modelSource = 'operator-override'
+        }
+    }
+    if ([string]::Equals($promptTransport.Trim(), 'argv', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $defaultPromptTransport = Get-BridgeDefaultPromptTransportForAgent -Agent $agent
+        if (-not [string]::IsNullOrWhiteSpace($defaultPromptTransport)) {
+            $promptTransport = $defaultPromptTransport
+        }
+    }
+
     return [PSCustomObject]@{
         Agent           = [string]$agent
         Model           = [string]$model
@@ -2562,6 +2762,20 @@ function Get-SlotAgentConfig {
     $fallbackModel = ''
     $bootstrap = ''
     $taskScript = ''
+    $modelId = ''
+    $runtime = ''
+    $runtimeEngine = ''
+    $endpoint = ''
+    $artifactRoot = ''
+    $driveRoot = ''
+    $modelRoot = ''
+    $cacheRoot = ''
+    $hfCacheRoot = ''
+    $runtimeCacheRoot = ''
+    $precision = ''
+    $quantization = ''
+    $licenseState = ''
+    $modelFamily = ''
     $gpuPreference = @()
     $packages = @()
     $source = 'role'
@@ -2596,9 +2810,24 @@ function Get-SlotAgentConfig {
             $slotFallbackModel = ''
             $slotBootstrap = ''
             $slotTaskScript = ''
+            $slotModelId = ''
+            $slotModelFamily = ''
+            $slotRuntime = ''
+            $slotRuntimeEngine = ''
+            $slotEndpoint = ''
+            $slotArtifactRoot = ''
+            $slotDriveRoot = ''
+            $slotModelRoot = ''
+            $slotCacheRoot = ''
+            $slotHfCacheRoot = ''
+            $slotRuntimeCacheRoot = ''
+            $slotPrecision = ''
+            $slotQuantization = ''
+            $slotLicenseState = ''
             $slotGpuPreference = @()
             $slotPackages = @()
             $slotModelSet = $false
+            $slotModelIdSet = $false
             $slotModelSourceSet = $false
 
             if ($slot -is [System.Collections.IDictionary]) {
@@ -2612,9 +2841,52 @@ function Get-SlotAgentConfig {
                     $slotModel = [string]$slot['model']
                     $slotModelSet = $true
                 }
+                if ($slot.Contains('model_id')) {
+                    $slotModelId = [string]$slot['model_id']
+                    $slotModelIdSet = $true
+                }
+                if ($slot.Contains('model_family')) {
+                    $slotModelFamily = [string]$slot['model_family']
+                }
                 if ($slot.Contains('model_source')) {
                     $slotModelSource = [string]$slot['model_source']
                     $slotModelSourceSet = $true
+                }
+                if ($slot.Contains('runtime')) {
+                    $slotRuntime = [string]$slot['runtime']
+                }
+                if ($slot.Contains('runtime_engine')) {
+                    $slotRuntimeEngine = [string]$slot['runtime_engine']
+                }
+                if ($slot.Contains('endpoint')) {
+                    $slotEndpoint = [string]$slot['endpoint']
+                }
+                if ($slot.Contains('artifact_root')) {
+                    $slotArtifactRoot = [string]$slot['artifact_root']
+                }
+                if ($slot.Contains('drive_root')) {
+                    $slotDriveRoot = [string]$slot['drive_root']
+                }
+                if ($slot.Contains('model_root')) {
+                    $slotModelRoot = [string]$slot['model_root']
+                }
+                if ($slot.Contains('cache_root')) {
+                    $slotCacheRoot = [string]$slot['cache_root']
+                }
+                if ($slot.Contains('hf_cache_root')) {
+                    $slotHfCacheRoot = [string]$slot['hf_cache_root']
+                }
+                if ($slot.Contains('runtime_cache_root')) {
+                    $slotRuntimeCacheRoot = [string]$slot['runtime_cache_root']
+                }
+                if ($slot.Contains('precision')) {
+                    $slotPrecision = [string]$slot['precision']
+                }
+                if ($slot.Contains('quantization')) {
+                    $slotQuantization = [string]$slot['quantization']
+                }
+                if ($slot.Contains('license_state')) {
+                    $slotLicenseState = [string]$slot['license_state']
                 }
                 if ($slot.Contains('reasoning_effort')) {
                     $slotReasoningEffort = [string]$slot['reasoning_effort']
@@ -2666,9 +2938,52 @@ function Get-SlotAgentConfig {
                     $slotModel = [string]$slot.model
                     $slotModelSet = $true
                 }
+                if ($slot.PSObject.Properties.Name -contains 'model_id') {
+                    $slotModelId = [string]$slot.model_id
+                    $slotModelIdSet = $true
+                }
+                if ($slot.PSObject.Properties.Name -contains 'model_family') {
+                    $slotModelFamily = [string]$slot.model_family
+                }
                 if ($slot.PSObject.Properties.Name -contains 'model_source') {
                     $slotModelSource = [string]$slot.model_source
                     $slotModelSourceSet = $true
+                }
+                if ($slot.PSObject.Properties.Name -contains 'runtime') {
+                    $slotRuntime = [string]$slot.runtime
+                }
+                if ($slot.PSObject.Properties.Name -contains 'runtime_engine') {
+                    $slotRuntimeEngine = [string]$slot.runtime_engine
+                }
+                if ($slot.PSObject.Properties.Name -contains 'endpoint') {
+                    $slotEndpoint = [string]$slot.endpoint
+                }
+                if ($slot.PSObject.Properties.Name -contains 'artifact_root') {
+                    $slotArtifactRoot = [string]$slot.artifact_root
+                }
+                if ($slot.PSObject.Properties.Name -contains 'drive_root') {
+                    $slotDriveRoot = [string]$slot.drive_root
+                }
+                if ($slot.PSObject.Properties.Name -contains 'model_root') {
+                    $slotModelRoot = [string]$slot.model_root
+                }
+                if ($slot.PSObject.Properties.Name -contains 'cache_root') {
+                    $slotCacheRoot = [string]$slot.cache_root
+                }
+                if ($slot.PSObject.Properties.Name -contains 'hf_cache_root') {
+                    $slotHfCacheRoot = [string]$slot.hf_cache_root
+                }
+                if ($slot.PSObject.Properties.Name -contains 'runtime_cache_root') {
+                    $slotRuntimeCacheRoot = [string]$slot.runtime_cache_root
+                }
+                if ($slot.PSObject.Properties.Name -contains 'precision') {
+                    $slotPrecision = [string]$slot.precision
+                }
+                if ($slot.PSObject.Properties.Name -contains 'quantization') {
+                    $slotQuantization = [string]$slot.quantization
+                }
+                if ($slot.PSObject.Properties.Name -contains 'license_state') {
+                    $slotLicenseState = [string]$slot.license_state
                 }
                 if ($slot.PSObject.Properties.Name -contains 'reasoning_effort') {
                     $slotReasoningEffort = [string]$slot.reasoning_effort
@@ -2731,6 +3046,63 @@ function Get-SlotAgentConfig {
             }
             if ($slotModelSet -and -not $slotModelSourceSet) {
                 $modelSource = Get-BridgeProviderInferredModelSource -Model $model
+                $source = 'slot'
+            }
+            if ($slotModelIdSet) {
+                $modelId = $slotModelId
+                $source = 'slot'
+            }
+            if (-not [string]::IsNullOrWhiteSpace($slotModelFamily)) {
+                $modelFamily = $slotModelFamily
+                $source = 'slot'
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($slotRuntime)) {
+                $runtime = $slotRuntime
+                $source = 'slot'
+            }
+            if (-not [string]::IsNullOrWhiteSpace($slotRuntimeEngine)) {
+                $runtimeEngine = $slotRuntimeEngine
+                $source = 'slot'
+            }
+            if (-not [string]::IsNullOrWhiteSpace($slotEndpoint)) {
+                $endpoint = $slotEndpoint
+                $source = 'slot'
+            }
+            if (-not [string]::IsNullOrWhiteSpace($slotArtifactRoot)) {
+                $artifactRoot = $slotArtifactRoot
+                $source = 'slot'
+            }
+            if (-not [string]::IsNullOrWhiteSpace($slotDriveRoot)) {
+                $driveRoot = $slotDriveRoot
+                $source = 'slot'
+            }
+            if (-not [string]::IsNullOrWhiteSpace($slotModelRoot)) {
+                $modelRoot = $slotModelRoot
+                $source = 'slot'
+            }
+            if (-not [string]::IsNullOrWhiteSpace($slotCacheRoot)) {
+                $cacheRoot = $slotCacheRoot
+                $source = 'slot'
+            }
+            if (-not [string]::IsNullOrWhiteSpace($slotHfCacheRoot)) {
+                $hfCacheRoot = $slotHfCacheRoot
+                $source = 'slot'
+            }
+            if (-not [string]::IsNullOrWhiteSpace($slotRuntimeCacheRoot)) {
+                $runtimeCacheRoot = $slotRuntimeCacheRoot
+                $source = 'slot'
+            }
+            if (-not [string]::IsNullOrWhiteSpace($slotPrecision)) {
+                $precision = $slotPrecision
+                $source = 'slot'
+            }
+            if (-not [string]::IsNullOrWhiteSpace($slotQuantization)) {
+                $quantization = $slotQuantization
+                $source = 'slot'
+            }
+            if (-not [string]::IsNullOrWhiteSpace($slotLicenseState)) {
+                $licenseState = $slotLicenseState
                 $source = 'slot'
             }
 
@@ -2818,6 +3190,26 @@ function Get-SlotAgentConfig {
         $source = 'registry'
     }
 
+    if (Test-BridgeAntigravityProviderId -ProviderId $agent) {
+        $model = ''
+        $modelSource = 'provider-default'
+    } elseif ([string]::IsNullOrWhiteSpace($model)) {
+        $defaultModel = Get-BridgeDefaultModelForAgent -Agent $agent
+        if (-not [string]::IsNullOrWhiteSpace($defaultModel)) {
+            $model = $defaultModel
+            $modelSource = 'operator-override'
+        }
+    }
+    if ([string]::Equals($promptTransport.Trim(), 'argv', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $defaultPromptTransport = Get-BridgeDefaultPromptTransportForAgent -Agent $agent
+        if (-not [string]::IsNullOrWhiteSpace($defaultPromptTransport)) {
+            $promptTransport = $defaultPromptTransport
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($modelId)) {
+        $modelId = $model
+    }
+
     $providerCapability = $null
     if (-not [string]::IsNullOrWhiteSpace($RootPath)) {
         Assert-BridgeProviderCapabilityTransport -ProviderId $agent -PromptTransport $promptTransport -RootPath $RootPath
@@ -2841,6 +3233,20 @@ function Get-SlotAgentConfig {
         TaskScript               = [string]$taskScript
         Agent                    = [string]$agent
         Model                    = [string]$model
+        ModelId                  = [string]$modelId
+        ModelFamily              = [string]$modelFamily
+        Runtime                  = [string]$runtime
+        RuntimeEngine            = [string]$runtimeEngine
+        Endpoint                 = [string]$endpoint
+        ArtifactRoot             = [string]$artifactRoot
+        DriveRoot                = [string]$driveRoot
+        ModelRoot                = [string]$modelRoot
+        CacheRoot                = [string]$cacheRoot
+        HfCacheRoot              = [string]$hfCacheRoot
+        RuntimeCacheRoot         = [string]$runtimeCacheRoot
+        Precision                = [string]$precision
+        Quantization             = [string]$quantization
+        LicenseState             = [string]$licenseState
         ModelSource              = [string]$modelSource
         ReasoningEffort          = [string]$reasoningEffort
         PromptTransport          = [string]$promptTransport

@@ -223,8 +223,9 @@ function Invoke-TerminalWrite {
 
     if ((Resolve-TerminalBackend) -eq 'tauri') {
         $null = Invoke-TerminalJsonRpc -Method 'pty.write' -Params ([ordered]@{
-            paneId = $Target
-            data   = $Text
+            paneId      = $Target
+            data        = $Text
+            interactive = $false
         })
         return [ordered]@{
             ExitCode = 0
@@ -2405,6 +2406,9 @@ function Test-AgentReadyPromptLine {
                 $line -match '(?i)^Using:\s+\d+\s+GEMINI\.md\s+file' -or
                 $line -match '(?i)^gemini-[A-Za-z0-9._-]+\b.*\b\d+(?:\.\d+)?%\s+context\s+left\b'
         }
+        'antigravity' {
+            return $line -match '^\s*>\s*$'
+        }
         default {
             return $false
         }
@@ -2462,7 +2466,11 @@ function ConvertTo-ReadinessAgentName {
     }
 
     $candidate = $Value.Trim().ToLowerInvariant()
-    if ($candidate -match '^(codex|claude|gemini)(?:$|[:/_-])') {
+    if ($candidate -eq 'agy' -or $candidate -match '^agy(?:$|[:/_-])') {
+        return 'antigravity'
+    }
+
+    if ($candidate -match '^(codex|claude|antigravity|gemini)(?:$|[:/_-])') {
         return $matches[1]
     }
 
@@ -3158,6 +3166,10 @@ function New-WorkersLaunchApprovalSummary {
         worker_role             = [string]$SlotConfig.WorkerRole
         agent                   = [string]$SlotConfig.Agent
         model                   = [string]$SlotConfig.Model
+        model_id                = [string]$SlotConfig.ModelId
+        runtime                 = [string]$SlotConfig.Runtime
+        endpoint                = ConvertTo-WorkersSafeLogText -Text ([string]$SlotConfig.Endpoint)
+        artifact_root           = ConvertTo-WorkersSafeLogText -Text ([string]$SlotConfig.ArtifactRoot)
         model_source            = [string]$SlotConfig.ModelSource
         reasoning_effort        = [string]$SlotConfig.ReasoningEffort
         prompt_transport        = [string]$SlotConfig.PromptTransport
@@ -4112,7 +4124,7 @@ function Invoke-Init {
     $projectDir = ''
     $force = $false
     $asJson = $false
-    $agent = 'codex'
+    $agent = 'antigravity'
     $model = ''
     $workerCount = 6
     $workspaceLifecyclePreset = 'managed-worktree'
@@ -5562,7 +5574,7 @@ function Get-WorkersStatusRows {
         }
 
         $sessionName = [string](Get-SendConfigValue -InputObject $colabSession -Name 'session_name' -Default '')
-        if ([string]::IsNullOrWhiteSpace($sessionName) -and [string]::Equals(([string]$slotConfig.WorkerBackend), 'colab_cli', [System.StringComparison]::OrdinalIgnoreCase) -and (Get-Command Resolve-WinsmuxColabSessionName -ErrorAction SilentlyContinue)) {
+        if ([string]::IsNullOrWhiteSpace($sessionName) -and (Test-WorkersColabAdapterBackend -Backend ([string]$slotConfig.WorkerBackend)) -and (Get-Command Resolve-WinsmuxColabSessionName -ErrorAction SilentlyContinue)) {
             $sessionName = Resolve-WinsmuxColabSessionName -ProjectDir $Context.ProjectDir -SlotId $slotId -Template ([string]$slotConfig.SessionName)
         }
 
@@ -5573,6 +5585,26 @@ function Get-WorkersStatusRows {
 
         $actualGpu = [string](Get-SendConfigValue -InputObject $colabSession -Name 'selected_gpu' -Default '')
         $degradedReason = [string](Get-SendConfigValue -InputObject $colabSession -Name 'degraded_reason' -Default '')
+        $localLlm = $null
+        if (Test-WorkersLocalLlmBackend -Backend ([string]$slotConfig.WorkerBackend)) {
+            $localLlm = New-WorkersLocalLlmStatus -ProjectDir $Context.ProjectDir -SlotId $slotId -SlotConfig $slotConfig
+            if ([string]::IsNullOrWhiteSpace($degradedReason)) {
+                $localReason = [string](Get-SendConfigValue -InputObject $localLlm -Name 'reason' -Default '')
+                if (-not [string]::IsNullOrWhiteSpace($localReason)) {
+                    $degradedReason = $localReason
+                }
+            }
+        }
+        $colabLlm = $null
+        if (Test-WorkersColabLlmBackend -Backend ([string]$slotConfig.WorkerBackend)) {
+            $colabLlm = New-WorkersColabLlmStatus -ProjectDir $Context.ProjectDir -SlotId $slotId -SlotConfig $slotConfig -ColabSession $colabSession
+            if ([string]::IsNullOrWhiteSpace($degradedReason)) {
+                $colabReason = [string](Get-SendConfigValue -InputObject $colabLlm -Name 'reason' -Default '')
+                if (-not [string]::IsNullOrWhiteSpace($colabReason)) {
+                    $degradedReason = $colabReason
+                }
+            }
+        }
         $lastCommand = ''
         $lastCommandAt = ''
         if ($null -ne $entry) {
@@ -5623,6 +5655,8 @@ function Get-WorkersStatusRows {
             SecretProjection = $secretProjection
             Broker         = $broker
             Policy         = $policy
+            LocalLlm       = $localLlm
+            ColabLlm       = $colabLlm
         }) | Out-Null
     }
 
@@ -5717,6 +5751,8 @@ function ConvertTo-WorkersStatusJsonRows {
             secret_projection = $row.SecretProjection
             broker          = $row.Broker
             policy          = $row.Policy
+            local_llm       = $row.LocalLlm
+            colab_llm       = $row.ColabLlm
         }
     }
 }
@@ -5979,8 +6015,9 @@ function ConvertTo-WorkersSafeLogText {
     $safe = [regex]::Replace($safe, '(?is)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----', '[PRIVATE_KEY_REDACTED]')
     $safe = [regex]::Replace($safe, '(?i)(?<![A-Za-z0-9_])(["'']?authorization["'']?\s*[:=]\s*["'']?\s*bearer\s+)[^\s"'',;}]+', '$1[REDACTED]')
     $safe = [regex]::Replace($safe, '(?i)(?<![A-Za-z0-9_])(["'']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|oauth[_-]?token|token|password|passwd|secret|credential|credentials)["'']?\s*[:=]\s*["'']?)[^\s"'',;}]+', '$1[REDACTED]')
+    $safe = [regex]::Replace($safe, '(?i)\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b', '[EMAIL_REDACTED]')
     $safe = [regex]::Replace($safe, '(?i)/content/drive/(?:MyDrive|Shareddrives)(?:/[^\s"'']*)?', '[DRIVE_PATH_REDACTED]')
-    $safe = [regex]::Replace($safe, '(?i)\b[A-Z]:\\[^"'',;}\r\n]+', '[LOCAL_PATH_REDACTED]')
+    $safe = [regex]::Replace($safe, '(?i)\b[A-Z]:[\\/][^"'',;}\r\n]+', '[LOCAL_PATH_REDACTED]')
     return $safe
 }
 
@@ -7103,8 +7140,8 @@ function Get-WorkersSingleColabContext {
 
     $row = $rows[0]
     Assert-WorkersPathSegment -Value ([string]$row.SlotId) -Name 'slot id' | Out-Null
-    if (-not [string]::Equals([string]$row.Backend, 'colab_cli', [System.StringComparison]::OrdinalIgnoreCase)) {
-        Stop-WithError "worker slot $($row.SlotId) uses backend '$($row.Backend)', not colab_cli"
+    if (-not (Test-WorkersColabAdapterBackend -Backend ([string]$row.Backend))) {
+        Stop-WithError "worker slot $($row.SlotId) uses backend '$($row.Backend)', not a Colab adapter backend"
     }
 
     $reason = [string]$row.DegradedReason
@@ -7126,6 +7163,607 @@ function Get-WorkersSingleColabContext {
         Row     = $row
         Entry   = $entry
         Session = $session
+    }
+}
+
+function Test-WorkersLocalLlmBackend {
+    param([AllowEmptyString()][string]$Backend)
+
+    return [string]::Equals(([string]$Backend), 'local_llm', [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Test-WorkersColabCliBackend {
+    param([AllowEmptyString()][string]$Backend)
+
+    return [string]::Equals(([string]$Backend), 'colab_cli', [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Test-WorkersColabLlmBackend {
+    param([AllowEmptyString()][string]$Backend)
+
+    return [string]::Equals(([string]$Backend), 'colab_llm', [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Test-WorkersColabAdapterBackend {
+    param([AllowEmptyString()][string]$Backend)
+
+    return (Test-WorkersColabCliBackend -Backend $Backend) -or (Test-WorkersColabLlmBackend -Backend $Backend)
+}
+
+function Get-WorkersSubstTargetForDrive {
+    param([Parameter(Mandatory = $true)][string]$DriveLetter)
+
+    $drive = $DriveLetter.TrimEnd(':', '\', '/').ToUpperInvariant()
+    if ($drive.Length -ne 1) {
+        return ''
+    }
+
+    try {
+        $lines = @(cmd.exe /c subst 2>$null)
+    } catch {
+        return ''
+    }
+
+    foreach ($line in $lines) {
+        if ([string]::IsNullOrWhiteSpace([string]$line)) {
+            continue
+        }
+        if ([string]$line -match '^\s*([A-Za-z]):\\:\s*=>\s*(.+?)\s*$') {
+            if ([string]::Equals($matches[1], $drive, [System.StringComparison]::OrdinalIgnoreCase)) {
+                return [string]$matches[2]
+            }
+        }
+    }
+
+    return ''
+}
+
+function Test-WorkersGDrivePath {
+    param([AllowEmptyString()][string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $false
+    }
+
+    $text = ([string]$Path).Trim()
+    if ($text -match '^(?i)G:[\\/]') {
+        return $true
+    }
+
+    if ($text -match '^(?<drive>[A-Za-z]):[\\/]') {
+        $substTarget = Get-WorkersSubstTargetForDrive -DriveLetter $matches['drive']
+        return (-not [string]::IsNullOrWhiteSpace($substTarget) -and $substTarget -match '^(?i)G:[\\/]')
+    }
+
+    return $false
+}
+
+function Test-WorkersAsciiPath {
+    param([AllowEmptyString()][string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $false
+    }
+
+    $text = ([string]$Path).Trim()
+    return ($text -cmatch '^[\x00-\x7F]+$')
+}
+
+function Get-WorkersLocalLlmEndpoint {
+    param([AllowNull()]$SlotConfig)
+
+    $endpoint = [string](Get-SendConfigValue -InputObject $SlotConfig -Name 'Endpoint' -Default '')
+    if ([string]::IsNullOrWhiteSpace($endpoint)) {
+        $endpoint = [string]$env:WINSMUX_OLLAMA_ENDPOINT
+    }
+    if ([string]::IsNullOrWhiteSpace($endpoint)) {
+        $endpoint = 'http://127.0.0.1:11434'
+    }
+
+    return $endpoint.TrimEnd('/')
+}
+
+function Get-WorkersModelJobModelId {
+    param([AllowNull()]$SlotConfig)
+
+    $modelId = [string](Get-SendConfigValue -InputObject $SlotConfig -Name 'ModelId' -Default '')
+    if ([string]::IsNullOrWhiteSpace($modelId)) {
+        $modelId = [string](Get-SendConfigValue -InputObject $SlotConfig -Name 'Model' -Default '')
+    }
+
+    return $modelId
+}
+
+function Get-WorkersLocalLlmRuntime {
+    param([AllowNull()]$SlotConfig)
+
+    $runtime = [string](Get-SendConfigValue -InputObject $SlotConfig -Name 'Runtime' -Default '')
+    if ([string]::IsNullOrWhiteSpace($runtime)) {
+        $runtime = 'ollama'
+    }
+
+    return $runtime
+}
+
+function Get-WorkersLocalLlmArtifactRoot {
+    param([AllowNull()]$SlotConfig)
+
+    $artifactRoot = [string](Get-SendConfigValue -InputObject $SlotConfig -Name 'ArtifactRoot' -Default '')
+    if ([string]::IsNullOrWhiteSpace($artifactRoot)) {
+        $artifactRoot = [string]$env:WINSMUX_LOCAL_LLM_ARTIFACT_ROOT
+    }
+
+    return $artifactRoot
+}
+
+function Test-WorkersWritableDirectory {
+    param([AllowEmptyString()][string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $false
+    }
+
+    try {
+        if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+            return $false
+        }
+        $probeName = ".winsmux-write-probe-$([Guid]::NewGuid().ToString('N')).tmp"
+        $probePath = Join-Path $Path $probeName
+        Set-Content -LiteralPath $probePath -Value 'ok' -Encoding UTF8 -ErrorAction Stop
+        Remove-Item -LiteralPath $probePath -Force -ErrorAction SilentlyContinue
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Get-WorkersLocalLlmLastRun {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$SlotId
+    )
+
+    $latest = Get-WorkersLatestRunDirectory -ProjectDir $ProjectDir -SlotId $SlotId
+    if ($null -eq $latest) {
+        return $null
+    }
+
+    $runJsonPath = Join-Path ([string]$latest.FullName) 'run.json'
+    if (-not (Test-Path -LiteralPath $runJsonPath -PathType Leaf)) {
+        return [ordered]@{
+            run_id = [string]$latest.Name
+            status = 'unknown'
+            run_json = Get-WorkersArtifactReference -ProjectDir $ProjectDir -Path $runJsonPath
+        }
+    }
+
+    try {
+        $runJson = Get-Content -LiteralPath $runJsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        return [ordered]@{
+            run_id = [string](Get-SendConfigValue -InputObject $runJson -Name 'run_id' -Default ([string]$latest.Name))
+            status = [string](Get-SendConfigValue -InputObject $runJson -Name 'status' -Default 'unknown')
+            model_id = [string](Get-SendConfigValue -InputObject $runJson -Name 'model_id' -Default '')
+            elapsed_ms = Get-SendConfigValue -InputObject $runJson -Name 'elapsed_ms' -Default $null
+            run_json = Get-WorkersArtifactReference -ProjectDir $ProjectDir -Path $runJsonPath
+        }
+    } catch {
+        return [ordered]@{
+            run_id = [string]$latest.Name
+            status = 'unreadable'
+            run_json = Get-WorkersArtifactReference -ProjectDir $ProjectDir -Path $runJsonPath
+        }
+    }
+}
+
+function New-WorkersLocalLlmStatus {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$SlotId,
+        [AllowNull()]$SlotConfig
+    )
+
+    $runtime = Get-WorkersLocalLlmRuntime -SlotConfig $SlotConfig
+    $endpoint = Get-WorkersLocalLlmEndpoint -SlotConfig $SlotConfig
+    $modelId = Get-WorkersModelJobModelId -SlotConfig $SlotConfig
+    $modelRoot = [string]$env:OLLAMA_MODELS
+    $artifactRoot = Get-WorkersLocalLlmArtifactRoot -SlotConfig $SlotConfig
+    $health = 'configured'
+    $reason = ''
+    if (-not [string]::Equals($runtime, 'ollama', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $health = 'unsupported_runtime'
+        $reason = "unsupported runtime '$runtime'"
+    } elseif ([string]::IsNullOrWhiteSpace($modelId)) {
+        $health = 'missing_model_id'
+        $reason = 'model_id is required'
+    } elseif ([string]::IsNullOrWhiteSpace($modelRoot) -or -not (Test-WorkersGDrivePath -Path $modelRoot)) {
+        $health = 'storage_not_g_drive'
+        $reason = 'OLLAMA_MODELS must point to G drive before pulling or running local models'
+    } elseif (-not (Test-WorkersAsciiPath -Path $modelRoot)) {
+        $health = 'storage_path_non_ascii'
+        $reason = 'OLLAMA_MODELS must use an ASCII-only path on Windows because Ollama can fail to load model blobs from localized paths'
+    } elseif ([string]::IsNullOrWhiteSpace($artifactRoot) -or -not (Test-WorkersGDrivePath -Path $artifactRoot)) {
+        $health = 'artifact_root_not_g_drive'
+        $reason = 'local LLM artifact_root must point to G drive'
+    } elseif (-not (Test-WorkersAsciiPath -Path $artifactRoot)) {
+        $health = 'artifact_root_path_non_ascii'
+        $reason = 'local LLM artifact_root must use an ASCII-only path on Windows'
+    } elseif (-not (Test-WorkersWritableDirectory -Path $artifactRoot)) {
+        $health = 'artifact_root_not_writable'
+        $reason = 'local LLM artifact_root must exist and be writable'
+    }
+
+    return [ordered]@{
+        backend = 'local_llm'
+        runtime = $runtime
+        endpoint = $endpoint
+        endpoint_kind = 'ollama_native'
+        model_id = $modelId
+        model_root = ConvertTo-WorkersSafeLogText -Text $modelRoot
+        artifact_root = ConvertTo-WorkersSafeLogText -Text $artifactRoot
+        model_root_on_g_drive = (Test-WorkersGDrivePath -Path $modelRoot)
+        model_root_ascii = (Test-WorkersAsciiPath -Path $modelRoot)
+        artifact_root_on_g_drive = (Test-WorkersGDrivePath -Path $artifactRoot)
+        artifact_root_ascii = (Test-WorkersAsciiPath -Path $artifactRoot)
+        health = $health
+        reason = $reason
+        last_run = Get-WorkersLocalLlmLastRun -ProjectDir $ProjectDir -SlotId $SlotId
+    }
+}
+
+function Get-WorkersColabLlmRuntime {
+    param([AllowNull()]$SlotConfig)
+
+    $runtime = [string](Get-SendConfigValue -InputObject $SlotConfig -Name 'Runtime' -Default '')
+    if ([string]::IsNullOrWhiteSpace($runtime)) {
+        $runtime = 'colab'
+    }
+
+    return $runtime
+}
+
+function Get-WorkersColabLlmRuntimeEngine {
+    param([AllowNull()]$SlotConfig)
+
+    $engine = [string](Get-SendConfigValue -InputObject $SlotConfig -Name 'RuntimeEngine' -Default '')
+    if ([string]::IsNullOrWhiteSpace($engine)) {
+        $engine = 'vllm'
+    }
+
+    return $engine
+}
+
+function Get-WorkersColabLlmDriveRoot {
+    param([AllowNull()]$SlotConfig)
+
+    $driveRoot = [string](Get-SendConfigValue -InputObject $SlotConfig -Name 'DriveRoot' -Default '')
+    if ([string]::IsNullOrWhiteSpace($driveRoot)) {
+        $driveRoot = '/content/drive/MyDrive/winsmux-colab-llm'
+    }
+
+    return $driveRoot.TrimEnd('/')
+}
+
+function Get-WorkersColabLlmModelRoot {
+    param([AllowNull()]$SlotConfig)
+
+    $modelRoot = [string](Get-SendConfigValue -InputObject $SlotConfig -Name 'ModelRoot' -Default '')
+    if ([string]::IsNullOrWhiteSpace($modelRoot)) {
+        $modelRoot = (Get-WorkersColabLlmDriveRoot -SlotConfig $SlotConfig) + '/models'
+    }
+
+    return $modelRoot.TrimEnd('/')
+}
+
+function Get-WorkersColabLlmHfCacheRoot {
+    param([AllowNull()]$SlotConfig)
+
+    $cacheRoot = [string](Get-SendConfigValue -InputObject $SlotConfig -Name 'HfCacheRoot' -Default '')
+    if ([string]::IsNullOrWhiteSpace($cacheRoot)) {
+        $cacheRoot = (Get-WorkersColabLlmDriveRoot -SlotConfig $SlotConfig) + '/hf-cache'
+    }
+
+    return $cacheRoot.TrimEnd('/')
+}
+
+function Get-WorkersColabLlmArtifactRoot {
+    param([AllowNull()]$SlotConfig)
+
+    $artifactRoot = [string](Get-SendConfigValue -InputObject $SlotConfig -Name 'ArtifactRoot' -Default '')
+    if ([string]::IsNullOrWhiteSpace($artifactRoot)) {
+        $artifactRoot = (Get-WorkersColabLlmDriveRoot -SlotConfig $SlotConfig) + '/artifacts'
+    }
+
+    return $artifactRoot.TrimEnd('/')
+}
+
+function Get-WorkersColabLlmRuntimeCacheRoot {
+    param([AllowNull()]$SlotConfig)
+
+    $runtimeCacheRoot = [string](Get-SendConfigValue -InputObject $SlotConfig -Name 'RuntimeCacheRoot' -Default '')
+    if ([string]::IsNullOrWhiteSpace($runtimeCacheRoot)) {
+        $runtimeCacheRoot = '/content/winsmux-runtime-cache'
+    }
+
+    return $runtimeCacheRoot.TrimEnd('/')
+}
+
+function Get-WorkersColabLlmGpuPreference {
+    param([AllowNull()]$SlotConfig)
+
+    $preference = @($SlotConfig.GpuPreference | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    if ($preference.Count -lt 1) {
+        return @('H100', 'A100')
+    }
+
+    return $preference
+}
+
+function Test-WorkersColabDriveRootPath {
+    param([AllowEmptyString()][string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $false
+    }
+
+    return ([string]$Path).Trim() -match '^/content/drive/(MyDrive|Shareddrives)/'
+}
+
+function Test-WorkersColabRuntimeCachePath {
+    param([AllowEmptyString()][string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $false
+    }
+
+    return ([string]$Path).Trim().StartsWith('/content/winsmux-runtime-cache', [System.StringComparison]::Ordinal)
+}
+
+function Get-WorkersColabLlmLastRun {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$SlotId
+    )
+
+    $latest = Get-WorkersLatestRunDirectory -ProjectDir $ProjectDir -SlotId $SlotId
+    if ($null -eq $latest) {
+        return $null
+    }
+
+    $runJsonPath = Join-Path ([string]$latest.FullName) 'run.json'
+    if (-not (Test-Path -LiteralPath $runJsonPath -PathType Leaf)) {
+        return [ordered]@{
+            run_id = [string]$latest.Name
+            status = 'unknown'
+            run_json = Get-WorkersArtifactReference -ProjectDir $ProjectDir -Path $runJsonPath
+        }
+    }
+
+    try {
+        $runJson = Get-Content -LiteralPath $runJsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        return [ordered]@{
+            run_id = [string](Get-SendConfigValue -InputObject $runJson -Name 'run_id' -Default ([string]$latest.Name))
+            status = [string](Get-SendConfigValue -InputObject $runJson -Name 'status' -Default 'unknown')
+            model_id = [string](Get-SendConfigValue -InputObject $runJson -Name 'model_id' -Default '')
+            elapsed_ms = Get-SendConfigValue -InputObject $runJson -Name 'elapsed_ms' -Default $null
+            run_json = Get-WorkersArtifactReference -ProjectDir $ProjectDir -Path $runJsonPath
+        }
+    } catch {
+        return [ordered]@{
+            run_id = [string]$latest.Name
+            status = 'unreadable'
+            run_json = Get-WorkersArtifactReference -ProjectDir $ProjectDir -Path $runJsonPath
+        }
+    }
+}
+
+function New-WorkersColabLlmStatus {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$SlotId,
+        [AllowNull()]$SlotConfig,
+        [AllowNull()]$ColabSession = $null
+    )
+
+    $runtime = Get-WorkersColabLlmRuntime -SlotConfig $SlotConfig
+    $runtimeEngine = Get-WorkersColabLlmRuntimeEngine -SlotConfig $SlotConfig
+    $modelId = Get-WorkersModelJobModelId -SlotConfig $SlotConfig
+    $modelFamily = [string](Get-SendConfigValue -InputObject $SlotConfig -Name 'ModelFamily' -Default '')
+    $precision = [string](Get-SendConfigValue -InputObject $SlotConfig -Name 'Precision' -Default '')
+    $quantization = [string](Get-SendConfigValue -InputObject $SlotConfig -Name 'Quantization' -Default '')
+    $licenseState = [string](Get-SendConfigValue -InputObject $SlotConfig -Name 'LicenseState' -Default '')
+    $driveRoot = Get-WorkersColabLlmDriveRoot -SlotConfig $SlotConfig
+    $modelRoot = Get-WorkersColabLlmModelRoot -SlotConfig $SlotConfig
+    $hfCacheRoot = Get-WorkersColabLlmHfCacheRoot -SlotConfig $SlotConfig
+    $artifactRoot = Get-WorkersColabLlmArtifactRoot -SlotConfig $SlotConfig
+    $runtimeCacheRoot = Get-WorkersColabLlmRuntimeCacheRoot -SlotConfig $SlotConfig
+    $gpuPreference = @(Get-WorkersColabLlmGpuPreference -SlotConfig $SlotConfig)
+    $requestedGpu = Join-WorkersValue $gpuPreference
+    $selectedGpu = [string](Get-SendConfigValue -InputObject $ColabSession -Name 'selected_gpu' -Default '')
+    $runState = [string](Get-SendConfigValue -InputObject $ColabSession -Name 'state' -Default '')
+
+    $health = 'configured'
+    $reason = ''
+    if (-not [string]::Equals($runtime, 'colab', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $health = 'unsupported_runtime'
+        $reason = "unsupported runtime '$runtime'"
+    } elseif (-not [string]::Equals($runtimeEngine, 'vllm', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $health = 'unsupported_runtime_engine'
+        $reason = "unsupported runtime_engine '$runtimeEngine'"
+    } elseif ([string]::IsNullOrWhiteSpace($modelId)) {
+        $health = 'missing_model_id'
+        $reason = 'model_id is required'
+    } elseif (-not (Test-WorkersColabDriveRootPath -Path $driveRoot)) {
+        $health = 'drive_root_not_colab_drive'
+        $reason = 'drive_root must point under /content/drive/MyDrive or /content/drive/Shareddrives'
+    } elseif (-not (Test-WorkersColabDriveRootPath -Path $modelRoot)) {
+        $health = 'model_root_not_colab_drive'
+        $reason = 'model_root must point under the mounted Colab Drive'
+    } elseif (-not (Test-WorkersColabDriveRootPath -Path $hfCacheRoot)) {
+        $health = 'hf_cache_root_not_colab_drive'
+        $reason = 'hf_cache_root must point under the mounted Colab Drive'
+    } elseif (-not (Test-WorkersColabDriveRootPath -Path $artifactRoot)) {
+        $health = 'artifact_root_not_colab_drive'
+        $reason = 'artifact_root must point under the mounted Colab Drive'
+    } elseif (-not (Test-WorkersColabRuntimeCachePath -Path $runtimeCacheRoot)) {
+        $health = 'runtime_cache_not_scoped'
+        $reason = 'runtime_cache_root must stay under /content/winsmux-runtime-cache'
+    } elseif ([string]::IsNullOrWhiteSpace($licenseState) -or $licenseState -notin @('accepted', 'not_required')) {
+        $health = 'license_not_accepted'
+        $reason = 'license_state must be accepted or not_required before running a model job'
+    } elseif (-not [string]::IsNullOrWhiteSpace($selectedGpu) -and $selectedGpu -notin @('H100', 'A100')) {
+        $health = 'gpu_degraded'
+        $reason = "selected GPU '$selectedGpu' is not H100 or A100"
+    }
+
+    return [ordered]@{
+        backend = 'colab_llm'
+        runtime = $runtime
+        runtime_engine = $runtimeEngine
+        model_id = $modelId
+        model_family = $modelFamily
+        precision = $precision
+        quantization = $quantization
+        license_state = $licenseState
+        drive_root = ConvertTo-WorkersSafeLogText -Text $driveRoot
+        model_root = ConvertTo-WorkersSafeLogText -Text $modelRoot
+        hf_cache_root = ConvertTo-WorkersSafeLogText -Text $hfCacheRoot
+        artifact_root = ConvertTo-WorkersSafeLogText -Text $artifactRoot
+        runtime_cache_root = ConvertTo-WorkersSafeLogText -Text $runtimeCacheRoot
+        env = [ordered]@{
+            HF_HOME = ConvertTo-WorkersSafeLogText -Text $hfCacheRoot
+            HF_HUB_CACHE = ConvertTo-WorkersSafeLogText -Text $hfCacheRoot
+            TRANSFORMERS_CACHE = ConvertTo-WorkersSafeLogText -Text $hfCacheRoot
+            XDG_CACHE_HOME = ConvertTo-WorkersSafeLogText -Text $hfCacheRoot
+        }
+        gpu_preference = $requestedGpu
+        selected_gpu = $selectedGpu
+        health = $health
+        reason = $reason
+        run_state = $runState
+        last_run = Get-WorkersColabLlmLastRun -ProjectDir $ProjectDir -SlotId $SlotId
+    }
+}
+
+function Get-WorkersSingleContext {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$Target,
+        [AllowEmptyString()][string]$ExpectedBackend = ''
+    )
+
+    $context = Get-WorkersLifecycleContext -ProjectDir $ProjectDir
+    $rows = @(Select-WorkersRows -Rows (Get-WorkersStatusRows -Context $context) -Target $Target)
+    if ($rows.Count -ne 1) {
+        Stop-WithError "workers command requires exactly one slot, got $($rows.Count)"
+    }
+
+    $row = $rows[0]
+    Assert-WorkersPathSegment -Value ([string]$row.SlotId) -Name 'slot id' | Out-Null
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedBackend) -and -not [string]::Equals([string]$row.Backend, $ExpectedBackend, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Stop-WithError "worker slot $($row.SlotId) uses backend '$($row.Backend)', not $ExpectedBackend"
+    }
+
+    $slotConfig = Get-SlotAgentConfig -Role 'Worker' -SlotId ([string]$row.SlotId) -Settings $context.Settings -RootPath $ProjectDir
+    $entry = if ($context.EntriesBySlot.ContainsKey($row.SlotId)) { $context.EntriesBySlot[$row.SlotId] } else { $null }
+    return [PSCustomObject]@{
+        Context    = $context
+        Row        = $row
+        Entry      = $entry
+        SlotConfig = $slotConfig
+    }
+}
+
+function Get-WorkersSingleLocalLlmContext {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$Target
+    )
+
+    $worker = Get-WorkersSingleContext -ProjectDir $ProjectDir -Target $Target -ExpectedBackend 'local_llm'
+    $local = $worker.Row.LocalLlm
+    $reason = [string](Get-SendConfigValue -InputObject $local -Name 'reason' -Default '')
+    if (-not [string]::IsNullOrWhiteSpace($reason)) {
+        Stop-WithError "local LLM worker $($worker.Row.SlotId) is not ready: $reason"
+    }
+
+    return $worker
+}
+
+function Invoke-WorkersOllamaChat {
+    param(
+        [Parameter(Mandatory = $true)][string]$Endpoint,
+        [Parameter(Mandatory = $true)][string]$ModelId,
+        [Parameter(Mandatory = $true)][string]$Prompt
+    )
+
+    $uri = "$($Endpoint.TrimEnd('/'))/api/chat"
+    $body = [ordered]@{
+        model = $ModelId
+        messages = @(
+            [ordered]@{
+                role = 'user'
+                content = $Prompt
+            }
+        )
+        stream = $false
+    }
+    $timeoutSeconds = 300
+    $timeoutRaw = [string]$env:WINSMUX_LOCAL_LLM_TIMEOUT_SECONDS
+    if (-not [string]::IsNullOrWhiteSpace($timeoutRaw)) {
+        $parsedTimeout = 0
+        if ([int]::TryParse($timeoutRaw, [ref]$parsedTimeout) -and $parsedTimeout -gt 0 -and $parsedTimeout -le 3600) {
+            $timeoutSeconds = $parsedTimeout
+        }
+    }
+
+    $started = Get-Date
+    try {
+        $response = Invoke-RestMethod -Uri $uri -Method Post -ContentType 'application/json' -Body ($body | ConvertTo-Json -Depth 8) -TimeoutSec $timeoutSeconds
+        $elapsed = [int]([DateTime]::UtcNow - $started.ToUniversalTime()).TotalMilliseconds
+        $errorText = [string](Get-SendConfigValue -InputObject $response -Name 'error' -Default '')
+        if (-not [string]::IsNullOrWhiteSpace($errorText)) {
+            return [PSCustomObject]@{
+                Status = 'failed'
+                ExitCode = 1
+                Content = ''
+                Request = $body
+                Response = $response
+                ElapsedMs = $elapsed
+                Error = $errorText
+            }
+        }
+        $content = [string](Get-SendConfigValue -InputObject (Get-SendConfigValue -InputObject $response -Name 'message' -Default $null) -Name 'content' -Default '')
+        if ([string]::IsNullOrWhiteSpace($content)) {
+            return [PSCustomObject]@{
+                Status = 'failed'
+                ExitCode = 1
+                Content = ''
+                Request = $body
+                Response = $response
+                ElapsedMs = $elapsed
+                Error = 'Ollama response did not include message.content'
+            }
+        }
+        return [PSCustomObject]@{
+            Status = 'succeeded'
+            ExitCode = 0
+            Content = $content
+            Request = $body
+            Response = $response
+            ElapsedMs = $elapsed
+            Error = ''
+        }
+    } catch {
+        $elapsed = [int]([DateTime]::UtcNow - $started.ToUniversalTime()).TotalMilliseconds
+        return [PSCustomObject]@{
+            Status = 'failed'
+            ExitCode = 1
+            Content = ''
+            Request = $body
+            Response = $null
+            ElapsedMs = $elapsed
+            Error = $_.Exception.Message
+        }
     }
 }
 
@@ -7206,6 +7844,9 @@ function Read-WorkersExecOptions {
     $scriptPath = ''
     $runId = ''
     $taskId = ''
+    $prompt = ''
+    $taskJsonPath = ''
+    $taskJsonInline = ''
     $scriptArgs = @()
     $items = @($Rest)
 
@@ -7230,6 +7871,21 @@ function Read-WorkersExecOptions {
                 $scriptPath = [string]$items[$index + 1]
                 $index++
             }
+            '--prompt' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $prompt = [string]$items[$index + 1]
+                $index++
+            }
+            '--task-json' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $taskJsonPath = [string]$items[$index + 1]
+                $index++
+            }
+            '--task-json-inline' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $taskJsonInline = [string]$items[$index + 1]
+                $index++
+            }
             '--run-id' {
                 if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
                 $runId = [string]$items[$index + 1]
@@ -7249,7 +7905,7 @@ function Read-WorkersExecOptions {
         }
     }
 
-    if ([string]::IsNullOrWhiteSpace($targetValue) -or [string]::IsNullOrWhiteSpace($scriptPath)) {
+    if ([string]::IsNullOrWhiteSpace($targetValue)) {
         Stop-WithError $Usage
     }
 
@@ -7260,6 +7916,9 @@ function Read-WorkersExecOptions {
         ScriptPath = $scriptPath
         RunId      = $runId
         TaskId     = $taskId
+        Prompt     = $prompt
+        TaskJsonPath = $taskJsonPath
+        TaskJsonInline = $taskJsonInline
         ScriptArgs = @($scriptArgs)
     }
 }
@@ -9368,9 +10027,316 @@ function Invoke-WorkersPolicy {
     }
 }
 
+function Get-WorkersModelJobPrompt {
+    param(
+        [Parameter(Mandatory = $true)]$Options
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace([string]$Options.Prompt)) {
+        return [string]$Options.Prompt
+    }
+
+    $taskJsonText = ''
+    if (-not [string]::IsNullOrWhiteSpace([string]$Options.TaskJsonInline)) {
+        $taskJsonText = [string]$Options.TaskJsonInline
+    } elseif (-not [string]::IsNullOrWhiteSpace([string]$Options.TaskJsonPath)) {
+        $taskJsonInfo = Resolve-WorkersProjectPath -ProjectDir ([string]$Options.ProjectDir) -Path ([string]$Options.TaskJsonPath) -MustExist -AllowFile -MaxBytes (Get-WorkersUploadMaxBytes)
+        $taskJsonText = Get-Content -LiteralPath ([string]$taskJsonInfo.FullPath) -Raw -Encoding UTF8
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($taskJsonText)) {
+        try {
+            $taskJson = $taskJsonText | ConvertFrom-Json -Depth 16 -ErrorAction Stop
+            foreach ($name in @('prompt', 'task', 'instruction', 'description', 'title', 'query')) {
+                $value = [string](Get-SendConfigValue -InputObject $taskJson -Name $name -Default '')
+                if (-not [string]::IsNullOrWhiteSpace($value)) {
+                    return $value
+                }
+            }
+        } catch {
+        }
+
+        return $taskJsonText
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace([string]$Options.ScriptPath)) {
+        $scriptInfo = Resolve-WorkersProjectPath -ProjectDir ([string]$Options.ProjectDir) -Path ([string]$Options.ScriptPath) -MustExist -AllowFile -MaxBytes (Get-WorkersUploadMaxBytes)
+        return (Get-Content -LiteralPath ([string]$scriptInfo.FullPath) -Raw -Encoding UTF8)
+    }
+
+    Stop-WithError 'model worker exec requires --prompt, --task-json, --task-json-inline, or --script'
+}
+
+function Write-WorkersLocalLlmArtifact {
+    param(
+        [AllowEmptyString()][string]$ArtifactRoot,
+        [Parameter(Mandatory = $true)][string]$SlotId,
+        [Parameter(Mandatory = $true)][string]$RunId,
+        [Parameter(Mandatory = $true)]$Data
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ArtifactRoot)) {
+        return ''
+    }
+
+    $safeSlotId = Assert-WorkersPathSegment -Value $SlotId -Name 'slot id'
+    $safeRunId = Assert-WorkersPathSegment -Value $RunId -Name 'run id'
+    $artifactPath = Join-Path (Join-Path (Join-Path $ArtifactRoot $safeSlotId) $safeRunId) 'request-response.json'
+    Write-WorkersJsonArtifact -Path $artifactPath -Data $Data | Out-Null
+    return "local_llm_artifacts/$safeSlotId/$safeRunId/request-response.json"
+}
+
+function Invoke-WorkersLocalLlmExec {
+    param([Parameter(Mandatory = $true)]$Options)
+
+    $worker = Get-WorkersSingleContext -ProjectDir $Options.ProjectDir -Target $Options.Target -ExpectedBackend 'local_llm'
+    $local = New-WorkersLocalLlmStatus -ProjectDir $Options.ProjectDir -SlotId ([string]$worker.Row.SlotId) -SlotConfig $worker.SlotConfig
+    $reason = [string](Get-SendConfigValue -InputObject $local -Name 'reason' -Default '')
+    if (-not [string]::IsNullOrWhiteSpace($reason)) {
+        Stop-WithError "local LLM worker $($worker.Row.SlotId) is not ready: $reason"
+    }
+
+    $runtime = [string](Get-SendConfigValue -InputObject $local -Name 'runtime' -Default 'ollama')
+    if (-not [string]::Equals($runtime, 'ollama', [System.StringComparison]::OrdinalIgnoreCase)) {
+        Stop-WithError "unsupported local LLM runtime: $runtime"
+    }
+
+    $prompt = Get-WorkersModelJobPrompt -Options $Options
+    $safePrompt = ConvertTo-WorkersSafeLogText -Text $prompt
+    $runId = Assert-WorkersRunId -RunId ([string]$Options.RunId)
+    if ([string]::IsNullOrWhiteSpace($runId)) {
+        $runId = New-WorkersRunId -SlotId ([string]$worker.Row.SlotId)
+    }
+
+    $runDir = Get-WorkersRunDirectory -ProjectDir $Options.ProjectDir -SlotId ([string]$worker.Row.SlotId) -RunId $runId
+    if (-not (Test-Path -LiteralPath $runDir -PathType Container)) {
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+    }
+
+    $endpoint = [string](Get-SendConfigValue -InputObject $local -Name 'endpoint' -Default 'http://127.0.0.1:11434')
+    $modelId = [string](Get-SendConfigValue -InputObject $local -Name 'model_id' -Default '')
+    $ollama = Invoke-WorkersOllamaChat -Endpoint $endpoint -ModelId $modelId -Prompt $prompt
+    $safeOutput = ConvertTo-WorkersSafeLogText -Text ([string]$ollama.Content)
+    if ([string]::IsNullOrWhiteSpace($safeOutput) -and -not [string]::IsNullOrWhiteSpace([string]$ollama.Error)) {
+        $safeOutput = ConvertTo-WorkersSafeLogText -Text ([string]$ollama.Error)
+    }
+    $logPath = Join-Path $runDir 'stdout.log'
+    Write-ClmSafeTextFile -Path $logPath -Content $safeOutput
+
+    $artifactRoot = Get-WorkersLocalLlmArtifactRoot -SlotConfig $worker.SlotConfig
+    $artifactPayload = [ordered]@{
+        generated_at = (Get-Date).ToUniversalTime().ToString('o')
+        runtime = $runtime
+        endpoint = $endpoint
+        model_id = $modelId
+        prompt = $safePrompt
+        response = ConvertTo-WorkersSafeLogText -Text ([string]$ollama.Content)
+        error = ConvertTo-WorkersSafeLogText -Text ([string]$ollama.Error)
+    }
+    $largeArtifactRef = Write-WorkersLocalLlmArtifact -ArtifactRoot $artifactRoot -SlotId ([string]$worker.Row.SlotId) -RunId $runId -Data $artifactPayload
+
+    $payload = [ordered]@{
+        project_dir    = ConvertTo-WorkersSafeLogText -Text ([string]$Options.ProjectDir)
+        generated_at   = (Get-Date).ToUniversalTime().ToString('o')
+        command        = 'workers.exec'
+        status         = [string]$ollama.Status
+        slot           = [string]$worker.Row.Slot
+        slot_id        = [string]$worker.Row.SlotId
+        backend        = 'local_llm'
+        runtime        = $runtime
+        endpoint_kind  = 'ollama_native'
+        endpoint       = ConvertTo-WorkersSafeLogText -Text $endpoint
+        model_id       = $modelId
+        run_id         = $runId
+        task_id        = [string]$Options.TaskId
+        prompt_source  = if (-not [string]::IsNullOrWhiteSpace([string]$Options.TaskJsonPath)) { 'task_json' } elseif (-not [string]::IsNullOrWhiteSpace([string]$Options.TaskJsonInline)) { 'task_json_inline' } elseif (-not [string]::IsNullOrWhiteSpace([string]$Options.ScriptPath)) { 'script' } else { 'prompt' }
+        run_dir        = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $runDir
+        stdout_log     = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $logPath
+        large_artifact = $largeArtifactRef
+        elapsed_ms     = [int]$ollama.ElapsedMs
+        exit_code      = [int]$ollama.ExitCode
+        error          = ConvertTo-WorkersSafeLogText -Text ([string]$ollama.Error)
+    }
+    $runJsonPath = Join-Path $runDir 'run.json'
+    $payload['run_json'] = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $runJsonPath
+    Write-WorkersJsonArtifact -Path $runJsonPath -Data $payload | Out-Null
+    if ($null -ne $worker.Entry) {
+        Set-WorkersManifestLifecycleCommand -Entry $worker.Entry -CommandName 'workers.exec'
+    }
+
+    Write-WorkersOperationOutput -Payload $payload -Json:([bool]$Options.Json)
+}
+
+function Get-WorkersColabLlmTaskPayload {
+    param(
+        [Parameter(Mandatory = $true)]$Options,
+        [Parameter(Mandatory = $true)]$Worker,
+        [Parameter(Mandatory = $true)]$ColabLlm
+    )
+
+    $prompt = Get-WorkersModelJobPrompt -Options $Options
+    $slotConfig = $Worker.SlotConfig
+    return [ordered]@{
+        schema_version = 'winsmux.colab_llm.task.v1'
+        generated_at = (Get-Date).ToUniversalTime().ToString('o')
+        backend = 'colab_llm'
+        slot_id = [string]$Worker.Row.SlotId
+        run_id = [string]$Options.RunId
+        task_id = [string]$Options.TaskId
+        prompt = ConvertTo-WorkersSafeLogText -Text $prompt
+        runtime = [string](Get-SendConfigValue -InputObject $ColabLlm -Name 'runtime' -Default 'colab')
+        runtime_engine = [string](Get-SendConfigValue -InputObject $ColabLlm -Name 'runtime_engine' -Default 'vllm')
+        model_id = [string](Get-SendConfigValue -InputObject $ColabLlm -Name 'model_id' -Default '')
+        model_family = [string](Get-SendConfigValue -InputObject $ColabLlm -Name 'model_family' -Default '')
+        precision = [string](Get-SendConfigValue -InputObject $ColabLlm -Name 'precision' -Default '')
+        quantization = [string](Get-SendConfigValue -InputObject $ColabLlm -Name 'quantization' -Default '')
+        license_state = [string](Get-SendConfigValue -InputObject $ColabLlm -Name 'license_state' -Default '')
+        gpu_preference = @(Get-WorkersColabLlmGpuPreference -SlotConfig $slotConfig)
+        storage = [ordered]@{
+            drive_root = Get-WorkersColabLlmDriveRoot -SlotConfig $slotConfig
+            model_root = Get-WorkersColabLlmModelRoot -SlotConfig $slotConfig
+            hf_cache_root = Get-WorkersColabLlmHfCacheRoot -SlotConfig $slotConfig
+            artifact_root = Get-WorkersColabLlmArtifactRoot -SlotConfig $slotConfig
+            runtime_cache_root = Get-WorkersColabLlmRuntimeCacheRoot -SlotConfig $slotConfig
+        }
+        env = [ordered]@{
+            HF_HOME = Get-WorkersColabLlmHfCacheRoot -SlotConfig $slotConfig
+            HF_HUB_CACHE = Get-WorkersColabLlmHfCacheRoot -SlotConfig $slotConfig
+            TRANSFORMERS_CACHE = Get-WorkersColabLlmHfCacheRoot -SlotConfig $slotConfig
+            XDG_CACHE_HOME = Get-WorkersColabLlmHfCacheRoot -SlotConfig $slotConfig
+        }
+        execution = [ordered]@{
+            one_colab_runtime_two_model_jobs = $true
+            local_ollama_fallback = $false
+            colab_cli_fallback = $false
+        }
+    }
+}
+
+function Invoke-WorkersColabLlmExec {
+    param([Parameter(Mandatory = $true)]$Options)
+
+    $worker = Get-WorkersSingleContext -ProjectDir $Options.ProjectDir -Target $Options.Target -ExpectedBackend 'colab_llm'
+    $colabLlm = New-WorkersColabLlmStatus -ProjectDir $Options.ProjectDir -SlotId ([string]$worker.Row.SlotId) -SlotConfig $worker.SlotConfig
+    $reason = [string](Get-SendConfigValue -InputObject $colabLlm -Name 'reason' -Default '')
+    if (-not [string]::IsNullOrWhiteSpace($reason)) {
+        Stop-WithError "Colab LLM worker $($worker.Row.SlotId) is not ready: $reason"
+    }
+
+    $runId = Assert-WorkersRunId -RunId ([string]$Options.RunId)
+    if ([string]::IsNullOrWhiteSpace($runId)) {
+        $runId = New-WorkersRunId -SlotId ([string]$worker.Row.SlotId)
+    }
+    $Options.RunId = $runId
+
+    if ([string]::IsNullOrWhiteSpace([string]$Options.ScriptPath)) {
+        $taskScript = [string](Get-SendConfigValue -InputObject $worker.SlotConfig -Name 'TaskScript' -Default '')
+        if ([string]::IsNullOrWhiteSpace($taskScript)) {
+            $taskScript = 'workers/colab/llm_worker.py'
+        }
+        $Options.ScriptPath = $taskScript
+    }
+
+    $scriptInfo = Resolve-WorkersProjectPath -ProjectDir $Options.ProjectDir -Path $Options.ScriptPath -MustExist -AllowFile -MaxBytes (Get-WorkersUploadMaxBytes)
+    $taskPayload = Get-WorkersColabLlmTaskPayload -Options $Options -Worker $worker -ColabLlm $colabLlm
+    $taskPayload.run_id = $runId
+    $taskPayloadText = $taskPayload | ConvertTo-Json -Depth 24 -Compress
+    $safetyInput = [System.Collections.Generic.List[string]]::new()
+    $safetyInput.Add($taskPayloadText) | Out-Null
+    foreach ($value in @(Get-WorkersExecSafetyInputValues -ProjectDir $Options.ProjectDir -ScriptArgs @($Options.ScriptArgs))) {
+        $safetyInput.Add([string]$value) | Out-Null
+    }
+    Assert-WorkersColabSafetyInput -Values @($safetyInput) -Name 'Colab LLM task input'
+
+    $colabWorker = Get-WorkersSingleColabContext -ProjectDir $Options.ProjectDir -Target $Options.Target
+    $runDir = Get-WorkersRunDirectory -ProjectDir $Options.ProjectDir -SlotId ([string]$worker.Row.SlotId) -RunId $runId
+    if (-not (Test-Path -LiteralPath $runDir -PathType Container)) {
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+    }
+
+    $taskPayloadPath = Join-Path $runDir 'task.json'
+    Write-WorkersJsonArtifact -Path $taskPayloadPath -Data $taskPayload | Out-Null
+
+    $arguments = @(
+        'run',
+        '--session', [string]$colabWorker.Session,
+        '--script', [string]$scriptInfo.FullPath,
+        '--run-id', $runId,
+        '--output-dir', $runDir,
+        '--task-json-inline', $taskPayloadText,
+        '--worker-id', [string]$worker.Row.SlotId,
+        '--artifact-root', (Get-WorkersColabLlmArtifactRoot -SlotConfig $worker.SlotConfig),
+        '--model-id', [string](Get-SendConfigValue -InputObject $colabLlm -Name 'model_id' -Default ''),
+        '--runtime-engine', [string](Get-SendConfigValue -InputObject $colabLlm -Name 'runtime_engine' -Default 'vllm')
+    )
+    if (-not [string]::IsNullOrWhiteSpace([string]$Options.TaskId)) {
+        $arguments += @('--task-id', [string]$Options.TaskId)
+    }
+    $arguments += @($Options.ScriptArgs)
+
+    $cli = Invoke-WorkersColabCli -Arguments $arguments
+    $safeCliOutput = ConvertTo-WorkersSafeLogText -Text ([string]$cli.Output)
+    $logPath = Join-Path $runDir 'stdout.log'
+    Write-ClmSafeTextFile -Path $logPath -Content $safeCliOutput
+    $status = if ([int]$cli.ExitCode -eq 0) { 'succeeded' } else { 'failed' }
+
+    $payload = [ordered]@{
+        project_dir    = ConvertTo-WorkersSafeLogText -Text ([string]$Options.ProjectDir)
+        generated_at   = (Get-Date).ToUniversalTime().ToString('o')
+        command        = 'workers.exec'
+        status         = $status
+        slot           = [string]$worker.Row.Slot
+        slot_id        = [string]$worker.Row.SlotId
+        backend        = 'colab_llm'
+        session        = [string]$colabWorker.Session
+        runtime        = [string](Get-SendConfigValue -InputObject $colabLlm -Name 'runtime' -Default 'colab')
+        runtime_engine = [string](Get-SendConfigValue -InputObject $colabLlm -Name 'runtime_engine' -Default 'vllm')
+        model_id       = [string](Get-SendConfigValue -InputObject $colabLlm -Name 'model_id' -Default '')
+        precision      = [string](Get-SendConfigValue -InputObject $colabLlm -Name 'precision' -Default '')
+        quantization   = [string](Get-SendConfigValue -InputObject $colabLlm -Name 'quantization' -Default '')
+        license_state  = [string](Get-SendConfigValue -InputObject $colabLlm -Name 'license_state' -Default '')
+        selected_gpu   = [string](Get-SendConfigValue -InputObject $colabLlm -Name 'selected_gpu' -Default '')
+        run_id         = $runId
+        task_id        = [string]$Options.TaskId
+        script         = [string]$scriptInfo.RelativePath
+        task_json      = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $taskPayloadPath
+        run_dir        = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $runDir
+        stdout_log     = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $logPath
+        drive_root     = ConvertTo-WorkersSafeLogText -Text (Get-WorkersColabLlmDriveRoot -SlotConfig $worker.SlotConfig)
+        model_root     = ConvertTo-WorkersSafeLogText -Text (Get-WorkersColabLlmModelRoot -SlotConfig $worker.SlotConfig)
+        hf_cache_root  = ConvertTo-WorkersSafeLogText -Text (Get-WorkersColabLlmHfCacheRoot -SlotConfig $worker.SlotConfig)
+        artifact_root  = ConvertTo-WorkersSafeLogText -Text (Get-WorkersColabLlmArtifactRoot -SlotConfig $worker.SlotConfig)
+        runtime_cache_root = ConvertTo-WorkersSafeLogText -Text (Get-WorkersColabLlmRuntimeCacheRoot -SlotConfig $worker.SlotConfig)
+        exit_code      = [int]$cli.ExitCode
+        cli_command    = ConvertTo-WorkersSafeLogText -Text ([string]$cli.Command)
+        cli_arguments  = @(ConvertTo-WorkersSafeArgumentArray -Arguments @($cli.Arguments))
+    }
+    $runJsonPath = Join-Path $runDir 'run.json'
+    $payload['run_json'] = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $runJsonPath
+    Write-WorkersJsonArtifact -Path $runJsonPath -Data $payload | Out-Null
+    if ($null -ne $worker.Entry) {
+        Set-WorkersManifestLifecycleCommand -Entry $worker.Entry -CommandName 'workers.exec'
+    }
+
+    Write-WorkersOperationOutput -Payload $payload -Json:([bool]$Options.Json)
+}
+
 function Invoke-WorkersExec {
-    $usage = "usage: winsmux workers exec <slot> --script <path> [--task-id <id>] [--run-id <id>] [--json] [--project-dir <path>]"
+    $usage = "usage: winsmux workers exec <slot> [--script <path>|--task-json <path>|--task-json-inline <json>|--prompt <text>] [--task-id <id>] [--run-id <id>] [--json] [--project-dir <path>]"
     $options = Read-WorkersExecOptions -Usage $usage
+    $genericWorker = Get-WorkersSingleContext -ProjectDir $options.ProjectDir -Target $options.Target
+    if (Test-WorkersLocalLlmBackend -Backend ([string]$genericWorker.Row.Backend)) {
+        Invoke-WorkersLocalLlmExec -Options $options
+        return
+    }
+    if (Test-WorkersColabLlmBackend -Backend ([string]$genericWorker.Row.Backend)) {
+        Invoke-WorkersColabLlmExec -Options $options
+        return
+    }
+
+    if ([string]::IsNullOrWhiteSpace([string]$options.ScriptPath)) {
+        Stop-WithError $usage
+    }
     $worker = Get-WorkersSingleColabContext -ProjectDir $options.ProjectDir -Target $options.Target
     $scriptInfo = Resolve-WorkersProjectPath -ProjectDir $options.ProjectDir -Path $options.ScriptPath -MustExist -AllowFile -MaxBytes (Get-WorkersUploadMaxBytes)
     $safetyInput = [System.Collections.Generic.List[string]]::new()
@@ -9457,7 +10423,12 @@ function Get-WorkersLatestRunDirectory {
 function Invoke-WorkersLogs {
     $usage = "usage: winsmux workers logs <slot> [--run-id <id>] [--json] [--project-dir <path>]"
     $options = Read-WorkersLogsOptions -Usage $usage
-    $worker = Get-WorkersSingleColabContext -ProjectDir $options.ProjectDir -Target $options.Target
+    $genericWorker = Get-WorkersSingleContext -ProjectDir $options.ProjectDir -Target $options.Target
+    $worker = if (Test-WorkersLocalLlmBackend -Backend ([string]$genericWorker.Row.Backend)) {
+        $genericWorker
+    } else {
+        Get-WorkersSingleColabContext -ProjectDir $options.ProjectDir -Target $options.Target
+    }
     $runId = Assert-WorkersRunId -RunId ([string]$options.RunId)
     $runDir = $null
     if ([string]::IsNullOrWhiteSpace($runId)) {
@@ -9500,13 +10471,19 @@ function Invoke-WorkersLogs {
                         $localStatus = 'failed'
                     }
                 } catch {
-                    $localStatus = 'succeeded'
-                    $localExitCode = 0
+                    $localStatus = 'failed'
+                    $localExitCode = 1
+                    $content = "$(ConvertTo-WorkersSafeLogText -Text $rawLogText)`n[RUN_METADATA_UNREADABLE]"
                 }
             }
         }
     }
-    if (-not $hasLocalLog) {
+    if (-not $hasLocalLog -and (Test-WorkersLocalLlmBackend -Backend ([string]$worker.Row.Backend))) {
+        $content = ''
+        $source = 'local'
+        $localStatus = 'not_found'
+        $localExitCode = 1
+    } elseif (-not $hasLocalLog) {
         $arguments = @('logs', '--session', [string]$worker.Session)
         if (-not [string]::IsNullOrWhiteSpace($runId)) {
             $arguments += @('--run-id', $runId)
@@ -9522,14 +10499,21 @@ function Invoke-WorkersLogs {
         $status = $localStatus
     }
 
+    $payloadProjectDir = if ((Test-WorkersLocalLlmBackend -Backend ([string]$worker.Row.Backend)) -or (Test-WorkersColabLlmBackend -Backend ([string]$worker.Row.Backend))) {
+        ConvertTo-WorkersSafeLogText -Text ([string]$options.ProjectDir)
+    } else {
+        [string]$options.ProjectDir
+    }
+
     $payload = [ordered]@{
-        project_dir  = $options.ProjectDir
+        project_dir  = $payloadProjectDir
         generated_at = (Get-Date).ToUniversalTime().ToString('o')
         command      = 'workers.logs'
         status       = $status
         slot         = [string]$worker.Row.Slot
         slot_id      = [string]$worker.Row.SlotId
-        session      = [string]$worker.Session
+        session      = [string](Get-SendConfigValue -InputObject $worker -Name 'Session' -Default '')
+        backend      = [string]$worker.Row.Backend
         run_id       = $runId
         source       = $source
         log          = $content
@@ -9760,8 +10744,8 @@ function Invoke-WorkersAttach {
 
     foreach ($row in @($rows)) {
         $entry = if ($context.EntriesBySlot.ContainsKey($row.SlotId)) { $context.EntriesBySlot[$row.SlotId] } else { $null }
-        if (-not [string]::Equals(([string]$row.Backend), 'colab_cli', [System.StringComparison]::OrdinalIgnoreCase)) {
-            $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.attach' -Status 'skipped' -Reason 'backend_not_colab_cli')) | Out-Null
+        if (-not (Test-WorkersColabAdapterBackend -Backend ([string]$row.Backend))) {
+            $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.attach' -Status 'skipped' -Reason 'backend_not_colab_adapter')) | Out-Null
             continue
         }
 
@@ -9878,6 +10862,8 @@ function Invoke-WorkersDoctor {
     $checks = [System.Collections.Generic.List[object]]::new()
     $context = $null
     $colabSlotCount = 0
+    $colabLlmSlotConfigs = [System.Collections.Generic.List[object]]::new()
+    $localLlmSlotConfigs = [System.Collections.Generic.List[object]]::new()
 
     try {
         $context = Get-WorkersLifecycleContext -ProjectDir $options.ProjectDir
@@ -9885,8 +10871,20 @@ function Invoke-WorkersDoctor {
         foreach ($slot in @($context.Slots)) {
             $slotId = Get-WorkersSlotId -Slot $slot
             $slotConfig = Get-SlotAgentConfig -Role 'Worker' -SlotId $slotId -Settings $context.Settings -RootPath $options.ProjectDir
-            if ([string]::Equals(([string]$slotConfig.WorkerBackend), 'colab_cli', [System.StringComparison]::OrdinalIgnoreCase)) {
+            if (Test-WorkersColabAdapterBackend -Backend ([string]$slotConfig.WorkerBackend)) {
                 $colabSlotCount++
+            }
+            if (Test-WorkersColabLlmBackend -Backend ([string]$slotConfig.WorkerBackend)) {
+                $colabLlmSlotConfigs.Add([PSCustomObject]@{
+                    SlotId = $slotId
+                    SlotConfig = $slotConfig
+                }) | Out-Null
+            }
+            if (Test-WorkersLocalLlmBackend -Backend ([string]$slotConfig.WorkerBackend)) {
+                $localLlmSlotConfigs.Add([PSCustomObject]@{
+                    SlotId = $slotId
+                    SlotConfig = $slotConfig
+                }) | Out-Null
             }
         }
         $checks.Add((New-WorkersDoctorCheck -Status 'pass' -Label 'config' -Detail "$workerCount worker slots configured" -Action '')) | Out-Null
@@ -9918,13 +10916,13 @@ function Invoke-WorkersDoctor {
         $checks.Add((New-WorkersDoctorCheck -Status 'pass' -Label 'google-colab-cli' -Detail ([string](Get-SendConfigValue -InputObject $cli -Name 'path' -Default 'google-colab-cli')) -Action '')) | Out-Null
     } else {
         $status = if ($colabSlotCount -gt 0) { 'fail' } else { 'warn' }
-        $checks.Add((New-WorkersDoctorCheck -Status $status -Label 'google-colab-cli' -Detail 'google-colab-cli not found on PATH' -Action 'Install google-colab-cli or change colab_cli slots to local until it is available.')) | Out-Null
+        $checks.Add((New-WorkersDoctorCheck -Status $status -Label 'google-colab-cli' -Detail 'google-colab-cli not found on PATH' -Action 'Install google-colab-cli or change Colab-backed slots to local until it is available.')) | Out-Null
     }
 
     if ($null -ne $cli -and (Get-Command Get-WinsmuxColabAuthState -ErrorAction SilentlyContinue)) {
         $auth = Get-WinsmuxColabAuthState -CliAvailability $cli
         if ($colabSlotCount -lt 1) {
-            $checks.Add((New-WorkersDoctorCheck -Status 'pass' -Label 'colab auth' -Detail 'no colab_cli worker slots configured' -Action '')) | Out-Null
+            $checks.Add((New-WorkersDoctorCheck -Status 'pass' -Label 'colab auth' -Detail 'no Colab-backed worker slots configured' -Action '')) | Out-Null
         } elseif ([bool](Get-SendConfigValue -InputObject $auth -Name 'available' -Default $false)) {
             $checks.Add((New-WorkersDoctorCheck -Status 'pass' -Label 'colab auth' -Detail ([string](Get-SendConfigValue -InputObject $auth -Name 'state' -Default 'authenticated')) -Action '')) | Out-Null
         } else {
@@ -9951,10 +10949,141 @@ function Invoke-WorkersDoctor {
     if ($null -ne $context -and -not [string]::IsNullOrWhiteSpace([string]$context.ColabState.ErrorReason)) {
         $checks.Add((New-WorkersDoctorCheck -Status 'fail' -Label 'colab session state' -Detail ([string]$context.ColabState.ErrorReason) -Action 'Fix the session-state file or remove it so winsmux can recreate it.')) | Out-Null
     } elseif ($null -ne $context -and [int]$context.ColabState.DegradedCount -gt 0) {
-        $checks.Add((New-WorkersDoctorCheck -Status 'warn' -Label 'colab session state' -Detail "$($context.ColabState.DegradedCount) degraded colab_cli worker sessions" -Action 'Run winsmux workers status --json for per-slot degraded reasons.')) | Out-Null
+        $checks.Add((New-WorkersDoctorCheck -Status 'warn' -Label 'colab session state' -Detail "$($context.ColabState.DegradedCount) degraded Colab-backed worker sessions" -Action 'Run winsmux workers status --json for per-slot degraded reasons.')) | Out-Null
     }
 
-    $rows = if ($null -ne $context) { Get-WorkersStatusRows -Context $context } else { @() }
+    $rows = if ($null -ne $context) { @(Get-WorkersStatusRows -Context $context) } else { @() }
+    $rowsBySlot = @{}
+    foreach ($row in @($rows)) {
+        $slotKey = [string](Get-SendConfigValue -InputObject $row -Name 'SlotId' -Default '')
+        if (-not [string]::IsNullOrWhiteSpace($slotKey) -and -not $rowsBySlot.ContainsKey($slotKey)) {
+            $rowsBySlot[$slotKey] = $row
+        }
+    }
+
+    if ($colabLlmSlotConfigs.Count -lt 1) {
+        $checks.Add((New-WorkersDoctorCheck -Status 'pass' -Label 'Colab LLM slots' -Detail 'no colab_llm worker slots configured' -Action '')) | Out-Null
+    } else {
+        $checks.Add((New-WorkersDoctorCheck -Status 'pass' -Label 'Colab LLM slots' -Detail "$($colabLlmSlotConfigs.Count) colab_llm worker slots configured" -Action '')) | Out-Null
+        foreach ($slotInfo in @($colabLlmSlotConfigs)) {
+            $slotConfig = $slotInfo.SlotConfig
+            $slotIdText = [string]$slotInfo.SlotId
+            $row = if ($rowsBySlot.ContainsKey($slotIdText)) { $rowsBySlot[$slotIdText] } else { $null }
+            $slotStatus = if ($null -ne $row) { Get-SendConfigValue -InputObject $row -Name 'ColabLlm' -Default $null } else { $null }
+            if ($null -eq $slotStatus) {
+                $slotStatus = New-WorkersColabLlmStatus -ProjectDir $options.ProjectDir -SlotId $slotIdText -SlotConfig $slotConfig
+            }
+            $reason = [string](Get-SendConfigValue -InputObject $slotStatus -Name 'reason' -Default '')
+            $health = [string](Get-SendConfigValue -InputObject $slotStatus -Name 'health' -Default 'configured')
+            $rowDegradedReason = if ($null -ne $row) { [string](Get-SendConfigValue -InputObject $row -Name 'DegradedReason' -Default '') } else { '' }
+            if (-not [string]::IsNullOrWhiteSpace($rowDegradedReason)) {
+                if ([string]::IsNullOrWhiteSpace($reason) -or $reason -match '(?i)^selected GPU ') {
+                    $reason = $rowDegradedReason
+                }
+            }
+            $status = if ([string]::IsNullOrWhiteSpace($reason)) {
+                'pass'
+            } elseif ($reason -match '(?i)(colab_cli_missing|colab_auth_missing|colab_state_update_failed|colab_backend_helpers_unavailable)') {
+                'fail'
+            } elseif ($health -eq 'gpu_degraded' -or $reason -match '(?i)(gpu_fallback_selected|requested_gpu_unavailable|selected GPU)') {
+                'warn'
+            } else {
+                'fail'
+            }
+            $action = ''
+            if ($status -ne 'pass') {
+                $action = if ($reason -match '(?i)colab_cli_missing') {
+                    'Install or configure the Colab adapter before running colab_llm workers.'
+                } elseif ($reason -match '(?i)colab_auth_missing') {
+                    'Authenticate the Colab adapter in the local user session before running colab_llm workers.'
+                } elseif ($reason -match '(?i)(gpu_fallback_selected|requested_gpu_unavailable|selected GPU)') {
+                    'Attach an H100 or A100 Colab runtime before running the model job.'
+                } else {
+                    'Fix the colab_llm slot model, license, GPU preference, and Drive cache roots before running the model job.'
+                }
+            }
+            $checks.Add((New-WorkersDoctorCheck -Status $status -Label "Colab LLM worker $($slotInfo.SlotId)" -Detail $(if ([string]::IsNullOrWhiteSpace($reason)) { "$([string](Get-SendConfigValue -InputObject $slotStatus -Name 'model_id' -Default '')) via $([string](Get-SendConfigValue -InputObject $slotStatus -Name 'runtime_engine' -Default 'vllm'))" } else { $reason }) -Action $action)) | Out-Null
+        }
+    }
+
+    if ($localLlmSlotConfigs.Count -lt 1) {
+        $checks.Add((New-WorkersDoctorCheck -Status 'pass' -Label 'local LLM slots' -Detail 'no local_llm worker slots configured' -Action '')) | Out-Null
+    } else {
+        $checks.Add((New-WorkersDoctorCheck -Status 'pass' -Label 'local LLM slots' -Detail "$($localLlmSlotConfigs.Count) local_llm worker slots configured" -Action '')) | Out-Null
+
+        $ollamaCommand = Get-Command ollama -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($null -ne $ollamaCommand) {
+            $checks.Add((New-WorkersDoctorCheck -Status 'pass' -Label 'ollama command' -Detail ([string]$ollamaCommand.Source) -Action '')) | Out-Null
+        } else {
+            $checks.Add((New-WorkersDoctorCheck -Status 'fail' -Label 'ollama command' -Detail 'ollama not found on PATH' -Action 'Install Ollama for Windows after confirming the G drive model root.')) | Out-Null
+        }
+
+        $modelRoot = [string]$env:OLLAMA_MODELS
+        if (Test-WorkersGDrivePath -Path $modelRoot) {
+            $checks.Add((New-WorkersDoctorCheck -Status 'pass' -Label 'OLLAMA_MODELS' -Detail (ConvertTo-WorkersSafeLogText -Text $modelRoot) -Action '')) | Out-Null
+        } else {
+            $detail = if ([string]::IsNullOrWhiteSpace($modelRoot)) { 'OLLAMA_MODELS is not set' } else { "OLLAMA_MODELS is not on G drive: $(ConvertTo-WorkersSafeLogText -Text $modelRoot)" }
+            $checks.Add((New-WorkersDoctorCheck -Status 'fail' -Label 'OLLAMA_MODELS' -Detail $detail -Action 'Set OLLAMA_MODELS to a G drive model root before pulling or running local models.')) | Out-Null
+        }
+        if (-not [string]::IsNullOrWhiteSpace($modelRoot)) {
+            if (Test-WorkersAsciiPath -Path $modelRoot) {
+                $checks.Add((New-WorkersDoctorCheck -Status 'pass' -Label 'OLLAMA_MODELS path characters' -Detail 'ASCII-only model root' -Action '')) | Out-Null
+            } else {
+                $checks.Add((New-WorkersDoctorCheck -Status 'fail' -Label 'OLLAMA_MODELS path characters' -Detail 'model root contains non-ASCII characters' -Action 'Use an ASCII-only G drive model root such as G:\winsmux-local-llm\ollama-models before pulling or running Windows Ollama models.')) | Out-Null
+            }
+        }
+
+        $artifactRoots = @($localLlmSlotConfigs | ForEach-Object { Get-WorkersLocalLlmArtifactRoot -SlotConfig $_.SlotConfig } | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Unique)
+        if ($artifactRoots.Count -lt 1) {
+            $checks.Add((New-WorkersDoctorCheck -Status 'fail' -Label 'local LLM artifact root' -Detail 'no local_llm artifact_root configured' -Action 'Set artifact-root on each local_llm slot or WINSMUX_LOCAL_LLM_ARTIFACT_ROOT to a G drive path.')) | Out-Null
+        } else {
+            foreach ($artifactRoot in @($artifactRoots)) {
+                $status = if (Test-WorkersGDrivePath -Path $artifactRoot) { 'pass' } else { 'fail' }
+                $action = if ($status -eq 'pass') { '' } else { 'Move the local LLM artifact root to G drive.' }
+                $checks.Add((New-WorkersDoctorCheck -Status $status -Label 'local LLM artifact root' -Detail (ConvertTo-WorkersSafeLogText -Text ([string]$artifactRoot)) -Action $action)) | Out-Null
+            }
+        }
+
+        $endpointGroups = @($localLlmSlotConfigs | ForEach-Object { Get-WorkersLocalLlmEndpoint -SlotConfig $_.SlotConfig } | Select-Object -Unique)
+        $availableModels = @()
+        $modelListVerified = $false
+        foreach ($endpoint in @($endpointGroups)) {
+            try {
+                $version = Invoke-RestMethod -Uri "$($endpoint.TrimEnd('/'))/api/version" -Method Get -TimeoutSec 5
+                $versionText = [string](Get-SendConfigValue -InputObject $version -Name 'version' -Default 'available')
+                $checks.Add((New-WorkersDoctorCheck -Status 'pass' -Label 'ollama endpoint' -Detail "$endpoint version $versionText" -Action '')) | Out-Null
+                try {
+                    $tags = Invoke-RestMethod -Uri "$($endpoint.TrimEnd('/'))/api/tags" -Method Get -TimeoutSec 5
+                    $modelListVerified = $true
+                    foreach ($model in @((Get-SendConfigValue -InputObject $tags -Name 'models' -Default @()))) {
+                        $name = [string](Get-SendConfigValue -InputObject $model -Name 'name' -Default '')
+                        if (-not [string]::IsNullOrWhiteSpace($name)) {
+                            $availableModels += $name
+                        }
+                    }
+                } catch {
+                    $checks.Add((New-WorkersDoctorCheck -Status 'warn' -Label 'ollama models' -Detail "could not read model list from $endpoint" -Action 'Run ollama list in the user session.')) | Out-Null
+                }
+            } catch {
+                $checks.Add((New-WorkersDoctorCheck -Status 'fail' -Label 'ollama endpoint' -Detail "$endpoint unavailable: $($_.Exception.Message)" -Action 'Start Ollama and verify http://127.0.0.1:11434/api/version.')) | Out-Null
+            }
+        }
+
+        foreach ($slotInfo in @($localLlmSlotConfigs)) {
+            $modelId = Get-WorkersModelJobModelId -SlotConfig $slotInfo.SlotConfig
+            if ([string]::IsNullOrWhiteSpace($modelId)) {
+                $checks.Add((New-WorkersDoctorCheck -Status 'fail' -Label "local LLM model $($slotInfo.SlotId)" -Detail 'model_id is not configured' -Action 'Set model-id on the local_llm worker slot.')) | Out-Null
+            } elseif ($modelListVerified -and ($availableModels -notcontains $modelId)) {
+                $checks.Add((New-WorkersDoctorCheck -Status 'fail' -Label "local LLM model $($slotInfo.SlotId)" -Detail "$modelId is not available in Ollama" -Action "Run ollama pull $modelId after OLLAMA_MODELS points to G drive.")) | Out-Null
+            } else {
+                $status = if ($modelListVerified) { 'pass' } else { 'warn' }
+                $detail = if ($modelListVerified) { "$modelId available" } else { "$modelId configured; availability not verified" }
+                $action = if ($modelListVerified) { '' } else { 'Start Ollama and rerun workers doctor to verify model availability.' }
+                $checks.Add((New-WorkersDoctorCheck -Status $status -Label "local LLM model $($slotInfo.SlotId)" -Detail $detail -Action $action)) | Out-Null
+            }
+        }
+    }
+
     if ($options.Json) {
         [ordered]@{
             project_dir  = $options.ProjectDir

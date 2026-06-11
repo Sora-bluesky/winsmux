@@ -51,6 +51,8 @@ Google 側の要件は、使う Colab の種類によって変わります。
 
 モデル作業では、Google Colab 上でコードを実行することを前提にします。
 Windows PC 側にローカル LLM ランタイムを用意する必要はありません。
+ローカル Ollama ワーカーを使う場合は、別機能の `local_llm` ワーカーバックエンドを使います。
+`colab_cli` の縮退状態処理は、ローカル LLM 実行への fallback 経路ではありません。
 
 ## アダプター契約
 
@@ -119,6 +121,71 @@ winsmux workers doctor
 必要な `H100` / `A100` GPU を確認できない場合もスロットは表示されますが、
 縮退状態として扱います。
 
+## Colab GPU LLM スロットを設定する
+
+ワーカーが汎用スクリプトではなく Colab GPU 上のモデルジョブである場合は、
+`worker-backend: colab_llm` を使います。デスクトップ E2E では `worker-1` と
+`worker-2` を使い、operator と 2 つのモデルジョブを 2x2 レイアウトで見えるようにします。
+
+モデルファイルは Colab ランタイムが Google Drive 配下へダウンロードします。
+Windows PC、通常の Ollama cache、PC ローカルのモデルディレクトリには保存しません。
+
+```yaml
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    worker-backend: colab_llm
+    worker-role: consult
+    agent: colab-llm
+    model-family: gemma
+    model-id: <HF_MODEL_ID_A_27B_PLUS>
+    runtime: colab
+    runtime-engine: vllm
+    gpu-preference: [H100, A100]
+    session-name: "{{project_slug}}_colab_llm"
+    drive-root: /content/drive/MyDrive/winsmux-colab-llm
+    model-root: /content/drive/MyDrive/winsmux-colab-llm/models
+    hf-cache-root: /content/drive/MyDrive/winsmux-colab-llm/hf-cache
+    artifact-root: /content/drive/MyDrive/winsmux-colab-llm/artifacts
+    runtime-cache-root: /content/winsmux-runtime-cache
+    precision: bfloat16
+    license-state: accepted
+    task-script: workers/colab/llm_worker.py
+    worktree-mode: managed
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: colab_llm
+    worker-role: consult
+    agent: colab-llm
+    model-family: qwen
+    model-id: <HF_MODEL_ID_B_27B_PLUS>
+    runtime: colab
+    runtime-engine: vllm
+    gpu-preference: [H100, A100]
+    session-name: "{{project_slug}}_colab_llm"
+    drive-root: /content/drive/MyDrive/winsmux-colab-llm
+    model-root: /content/drive/MyDrive/winsmux-colab-llm/models
+    hf-cache-root: /content/drive/MyDrive/winsmux-colab-llm/hf-cache
+    artifact-root: /content/drive/MyDrive/winsmux-colab-llm/artifacts
+    runtime-cache-root: /content/winsmux-runtime-cache
+    precision: bfloat16
+    license-state: not_required
+    task-script: workers/colab/llm_worker.py
+    worktree-mode: managed
+```
+
+Colab LLM worker script は、モデルを読む前に次の cache 変数を設定します。
+
+- `HF_HOME`
+- `HF_HUB_CACHE`
+- `TRANSFORMERS_CACHE`
+- `XDG_CACHE_HOME`
+
+4つとも `/content/drive/MyDrive/winsmux-colab-llm/hf-cache` を指します。
+大きな出力は `/content/drive/MyDrive/winsmux-colab-llm/artifacts` に置きます。
+性能上必要な一時展開は `/content/winsmux-runtime-cache` を使えますが、永続化する
+モデルファイルは必ず Drive 側へ戻すか、最初から Drive 側へダウンロードします。
+
 ## モデルファミリー
 
 Colab ワーカーは、特定モデルファミリーに固定しません。winsmux は意図したモデルを
@@ -172,6 +239,7 @@ winsmux はこれを実行時メタデータとして記録します。正確な
 - `scout_worker.py`
 - `test_worker.py`
 - `heavy_judge_worker.py`
+- `llm_worker.py`
 
 各テンプレートは `--task-json`、`--task-json-inline`、または
 `WINSMUX_TASK_JSON` からタスク JSON を受け取ります。標準出力へ構造化 JSON を返し、

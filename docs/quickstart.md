@@ -10,7 +10,7 @@ Install these first:
 - PowerShell 7+
 - Windows Terminal
 - Node.js with `npm`
-- The official agent CLIs you want to run, such as Codex, Claude Code, or Gemini
+- The official agent CLIs you want to run, such as Codex, Claude Code, or Antigravity CLI
 
 ## 2. Install winsmux
 
@@ -110,7 +110,7 @@ The final number for `winsmux read` is the number of tail lines to capture.
 
 ## 6. Resume a recorded session
 
-In the desktop app, open Agent Vault from the right sidebar, search or filter the recorded sessions, and drag the session card into an available worker pane. winsmux uses the recorded provider metadata to start the matching resume command for Claude Code, Codex, or OpenCode.
+In the desktop app, open Agent Vault from the right sidebar, search or filter the recorded sessions, and drag the session card into an available worker pane. winsmux uses the recorded provider metadata to start the matching resume command for Claude Code, Codex, Antigravity CLI, or OpenCode.
 
 If the pane is already starting a restore, wait for it to finish before dropping another session onto the same pane.
 

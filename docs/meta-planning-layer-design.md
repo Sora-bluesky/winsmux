@@ -13,10 +13,10 @@ read-only, and the operator keeps the single approval gate.
 `v0.24.19` adds UTF-8 role YAML loading through `--roles <path>` and supports
 one or two cross-review rounds through `--review-rounds <1|2>`. Role labels and
 prompts may contain Japanese text, while `role_id` remains ASCII for logs.
-The built-in seed remains Claude/Codex for the MVP, but custom role files can
-select future providers when `.winsmux/provider-capabilities.json` declares the
-adapter, launch command, prompt transport, and a known read-only launch
-contract.
+The built-in seed remains Claude/Codex for the MVP. Custom role files can select
+Antigravity CLI or future providers when `.winsmux/provider-capabilities.json`
+declares the adapter, launch command, prompt transport, and a known read-only
+launch contract.
 
 `v0.24.20` hardens runtime retention. Generated scaffold artifacts keep
 `task_hash` and `prompt_hash` references instead of storing the operator task
@@ -47,9 +47,10 @@ User -> Operator planning session -> specialist planning workers
 - Providers outside the built-in MVP seed must be declared in
   `.winsmux/provider-capabilities.json` before they can be used as planning
   workers.
-- Custom provider adapters outside the known Claude, Codex, and Gemini launch
-  contracts must declare `read_only_launch_args`, which winsmux records in the
-  launch contract before the provider is eligible for planning work.
+- Custom provider adapters outside the known Claude, Codex, Gemini, and
+  Antigravity launch contracts must declare `read_only_launch_args`, which
+  winsmux records in the launch contract before the provider is eligible for
+  planning work.
 - Worker panes must stay read-only and must not leave planning mode.
 - The operator is the only component that may request final user approval.
 - Role names must be configurable per task. Do not build around fixed role pairs.

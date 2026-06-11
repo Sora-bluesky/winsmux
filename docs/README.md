@@ -15,6 +15,7 @@ Use this page as the public map for winsmux setup and operation.
 - [Operator model](operator-model.md) - the operator layer, managed pane layer, evidence contracts, and desktop direction.
 - [Authentication support](authentication-support.md) - supported authentication modes and local-only interactive login boundaries.
 - [Provider and model support](provider-and-model-support.md) - hosted agent CLIs, Colab model targets, future local LLM runtimes, and model-family metadata.
+- [CLI comparison bakeoff](cli-comparison-bakeoff.md) - public test plan for comparing Claude Code, Codex, and Antigravity CLI with winsmux evidence.
 - [External control plane API](external-control-plane.md) - local named-pipe JSON-RPC contract for external automation clients.
 - [Repository surface policy](repo-surface-policy.md) - which tracked files are public product surface, runtime contract surface, or contributor/test surface.
 

@@ -1664,17 +1664,11 @@ fn operator_cli_skills_json_exposes_quality_workflow_templates() {
     assert_eq!(docs_pack["metadata"]["status"], "template");
     assert_eq!(docs_pack["metadata"]["review_role"], "writer");
     assert_eq!(docs_pack["required_evidence_fields"][0], "changed_docs");
-    assert_eq!(
-        docs_pack["expected_result_fields"][3],
-        "doc_update_summary"
-    );
+    assert_eq!(docs_pack["expected_result_fields"][3], "doc_update_summary");
 
     let ci_pack = find_pack("ci-diagnosis");
     assert_eq!(ci_pack["evidence_requirements"][0], "failing_check");
-    assert_eq!(
-        ci_pack["required_evidence_fields"][4],
-        "next_verification"
-    );
+    assert_eq!(ci_pack["required_evidence_fields"][4], "next_verification");
 
     let issue_pack = find_pack("issue-dedupe");
     assert_eq!(
@@ -1711,13 +1705,7 @@ fn operator_cli_skills_json_exposes_quality_workflow_templates() {
     }
 
     let catalog = serde_json::to_string(&json).expect("catalog should serialize");
-    for forbidden in [
-        "Visual Studio Code",
-        "VS Code",
-        "Cursor",
-        "C:\\",
-        "/Users/",
-    ] {
+    for forbidden in ["Visual Studio Code", "VS Code", "Cursor", "C:\\", "/Users/"] {
         assert!(
             !catalog.contains(forbidden),
             "quality workflow templates should stay public-safe: {forbidden}"
@@ -1949,7 +1937,10 @@ fn operator_cli_manual_checklist_json_reports_release_gate() {
             "meta_plan_multi_pane_flow_recorded",
         ),
         ("clipboard_image_input", "clipboard_image_flow_recorded"),
-        ("settings_language_control", "settings_language_flow_recorded"),
+        (
+            "settings_language_control",
+            "settings_language_flow_recorded",
+        ),
         ("status_bar_fit", "status_bar_fit_recorded"),
         (
             "native_voice_dictation_or_fallback_contract",
@@ -2006,7 +1997,11 @@ fn operator_cli_manual_checklist_json_reports_release_gate() {
             "fallback_contract",
             None,
         ),
-        ("status_bar_fit", "dogfood_task_class", Some("status_bar_fit")),
+        (
+            "status_bar_fit",
+            "dogfood_task_class",
+            Some("status_bar_fit"),
+        ),
     ] {
         let item = json["desktop_manual_items"]
             .as_array()
@@ -2101,10 +2096,7 @@ fn operator_cli_manual_checklist_json_reports_release_gate() {
         json["blocking_conditions"][6],
         "missing_native_voice_dictation_or_fallback_contract"
     );
-    assert_eq!(
-        json["blocking_condition_scope"],
-        "release_blocker_classes"
-    );
+    assert_eq!(json["blocking_condition_scope"], "release_blocker_classes");
     assert!(json["blocking_condition_note"]
         .as_str()
         .unwrap_or_default()
@@ -2553,6 +2545,34 @@ fn operator_cli_provider_capabilities_json_reads_single_provider_case_insensitiv
 }
 
 #[test]
+fn operator_cli_provider_capabilities_accepts_agy_alias() {
+    let project_dir = make_temp_project_dir("provider-capabilities-agy-alias");
+    let winsmux_dir = project_dir.join(".winsmux");
+    fs::create_dir_all(&winsmux_dir).expect("test should create .winsmux directory");
+    fs::write(
+        winsmux_dir.join("provider-capabilities.json"),
+        r#"{"version":1,"providers":{"antigravity":{"adapter":"antigravity","command":"agy","prompt_transports":["file"]}}}"#,
+    )
+    .expect("test should write provider registry");
+
+    let provider = run_json(&project_dir, &["provider-capabilities", "agy", "--json"]);
+
+    assert_eq!(provider["provider_id"], "agy");
+    assert_eq!(provider["capabilities"]["adapter"], "antigravity");
+    assert_eq!(provider["capabilities"]["command"], "agy");
+    assert_eq!(provider["capabilities"]["prompt_transports"][0], "file");
+
+    let suffixed = run_json(
+        &project_dir,
+        &["provider-capabilities", "agy:flash", "--json"],
+    );
+
+    assert_eq!(suffixed["provider_id"], "agy:flash");
+    assert_eq!(suffixed["capabilities"]["adapter"], "antigravity");
+    assert_eq!(suffixed["capabilities"]["command"], "agy");
+}
+
+#[test]
 fn operator_cli_provider_capabilities_missing_provider_fails() {
     let project_dir = make_temp_project_dir("provider-capabilities-missing");
     let winsmux_dir = project_dir.join(".winsmux");
@@ -2694,6 +2714,32 @@ fn operator_cli_provider_switch_writes_registry_entry() {
         registry["slots"]["worker-1"]["reason"],
         "operator requested provider switch"
     );
+}
+
+#[test]
+fn operator_cli_provider_switch_defaults_agy_alias_to_file_transport() {
+    let project_dir = make_temp_project_dir("provider-switch-agy-alias");
+    write_provider_switch_fixture(&project_dir);
+
+    let result = run_json(
+        &project_dir,
+        &[
+            "provider-switch",
+            "worker-1",
+            "--agent",
+            "agy",
+            "--model",
+            "Gemini 3.5 Flash (High)",
+            "--model-source",
+            "operator-override",
+            "--json",
+        ],
+    );
+
+    assert_eq!(result["agent"], "agy");
+    assert_eq!(result["prompt_transport"], "file");
+    assert_eq!(result["capability_adapter"], "antigravity");
+    assert_eq!(result["capability_command"], "agy");
 }
 
 #[test]
@@ -6716,6 +6762,32 @@ agent-slots:
       "supports_structured_result": false,
       "supports_file_edit": true,
       "supports_subagents": false,
+      "supports_verification": true,
+      "supports_consultation": true
+    },
+    "antigravity": {
+      "adapter": "antigravity",
+      "command": "agy",
+      "model_options": [
+        {"id": "Gemini 3.5 Flash (High)", "label": "Gemini 3.5 Flash (High)", "source": "operator-override"},
+        {"id": "Gemini 3.5 Flash (Medium)", "label": "Gemini 3.5 Flash (Medium)", "source": "operator-override"}
+      ],
+      "model_sources": ["provider-default", "operator-override"],
+      "reasoning_efforts": ["provider-default"],
+      "local_access_note": "Local Antigravity CLI account and settings.",
+      "harness_availability": "official-cli",
+      "credential_requirements": "local-cli-owned",
+      "execution_backend": "agent-cli",
+      "runtime_requirements": "Antigravity CLI agy installed in the pane environment.",
+      "analysis_posture": "read-write-worker",
+      "prompt_transports": ["file"],
+      "auth_modes": ["antigravity-google-signin"],
+      "local_interactive_oauth_modes": ["antigravity-google-signin"],
+      "supports_parallel_runs": true,
+      "supports_interrupt": true,
+      "supports_structured_result": false,
+      "supports_file_edit": true,
+      "supports_subagents": true,
       "supports_verification": true,
       "supports_consultation": true
     }

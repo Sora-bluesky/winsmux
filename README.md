@@ -10,7 +10,7 @@
 
 Instead of hiding agents behind a black-box orchestrator, `winsmux` opens each worker in a real pane, keeps file changes isolated in git worktrees, lets you send or interrupt instructions, and compares completed runs with evidence such as changed-file overlap, review state, verification state, and checkpoints before you decide what to keep.
 
-Use it when one Claude Code, Codex, or Gemini session is not enough, but you still want one human operator, local credentials, and a review trail.
+Use it when one Claude Code, Codex, Antigravity CLI, or legacy Gemini CLI session is not enough, but you still want one human operator, local credentials, and a review trail.
 
 For example: run the same task through two agents, watch both panes live, stop the one going off track, then compare the recorded evidence before accepting either result.
 
@@ -63,7 +63,7 @@ If you only need a terminal multiplexer, see the runtime docs under [`core/docs`
 - Windows 10 or Windows 11
 - PowerShell 7+
 - Windows Terminal
-- The official agent CLIs you want to run, such as Claude Code, Codex, or Gemini
+- The official agent CLIs you want to run, such as Claude Code, Codex, or Antigravity CLI
 
 Rust is only needed when you build the runtime from source.
 
@@ -152,9 +152,11 @@ Use `winsmux` for scripts and docs. This does not remove tmux-compatible configu
 | Claude Code | Pro / Max OAuth | This PC only, interactive use |
 | Codex | API key | Officially supported |
 | Codex | ChatGPT OAuth | This PC only, interactive use |
+| Antigravity CLI | Google Sign-In through secure keyring | This PC only, interactive use |
+| Antigravity CLI | Enterprise Google account / GCP onboarding | Supported through the official CLI |
 | Gemini | Gemini API key | Officially supported |
 | Gemini | Gemini API in Vertex AI | Officially supported |
-| Gemini | Google OAuth | This PC only, interactive use |
+| Gemini CLI | Google OAuth | Legacy local use; migrate to Antigravity CLI |
 
 See [Authentication Support](docs/authentication-support.md) for the full policy.
 See [Provider and Model Support](docs/provider-and-model-support.md) for hosted, Colab, and future local LLM runtime policy.
@@ -178,6 +180,7 @@ See [Google Colab Workers](docs/google-colab-workers.md) for the H100/A100 worke
 - [Customization](docs/customization.md)
 - [Authentication support](docs/authentication-support.md)
 - [Provider and model support](docs/provider-and-model-support.md)
+- [CLI comparison bakeoff](docs/cli-comparison-bakeoff.md)
 - [External control plane API](docs/external-control-plane.md)
 - [Google Colab workers](docs/google-colab-workers.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)

@@ -181,7 +181,10 @@ pub fn run_provider_capabilities_command(args: &[&String]) -> io::Result<()> {
     let registry = read_provider_capability_registry(&registry_path)?;
 
     if let Some(provider_id) = options.provider_id.as_deref() {
-        let Some(capabilities) = find_provider_capability(&registry, provider_id) else {
+        let lookup_provider_id = provider_capability_lookup_id(provider_id);
+        let Some(capabilities) = find_provider_capability(&registry, provider_id)
+            .or_else(|| find_provider_capability(&registry, &lookup_provider_id))
+        else {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
                 format!("provider capability '{provider_id}' was not found."),
@@ -3105,6 +3108,26 @@ fn find_provider_capability<'a>(
         .map(|(_, value)| value)
 }
 
+fn provider_capability_lookup_id(provider_id: &str) -> String {
+    let trimmed = provider_id.trim();
+    let lowered = trimmed.to_ascii_lowercase();
+    if lowered == "agy"
+        || lowered.starts_with("agy:")
+        || lowered.starts_with("agy-")
+        || lowered.starts_with("agy_")
+        || lowered.starts_with("agy/")
+        || lowered == "antigravity"
+        || lowered.starts_with("antigravity:")
+        || lowered.starts_with("antigravity-")
+        || lowered.starts_with("antigravity_")
+        || lowered.starts_with("antigravity/")
+    {
+        "antigravity".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 fn provider_capability_value_text(value: &Value) -> String {
     match value {
         Value::Array(items) => items
@@ -3268,11 +3291,11 @@ impl ProviderRegistryEntry {
 fn read_bridge_settings(project_dir: &Path) -> io::Result<BridgeSettings> {
     let path = project_dir.join(".winsmux.yaml");
     let mut settings = BridgeSettings {
-        agent: "codex".to_string(),
+        agent: "antigravity".to_string(),
         model: String::new(),
         model_source: "provider-default".to_string(),
         reasoning_effort: "provider-default".to_string(),
-        prompt_transport: "argv".to_string(),
+        prompt_transport: "file".to_string(),
         auth_mode: String::new(),
         agent_explicit: false,
         model_explicit: false,
@@ -3315,6 +3338,14 @@ fn read_bridge_settings(project_dir: &Path) -> io::Result<BridgeSettings> {
     } else if settings.model_explicit {
         settings.model_source = inferred_model_source_for_model(&settings.model);
     }
+    if provider_adapter_from_agent(&settings.agent) == "antigravity" {
+        settings.model.clear();
+        settings.model_source = default_provider_model_source();
+        settings.model_explicit = false;
+    } else if !settings.model_explicit {
+        settings.model.clear();
+        settings.model_source = default_provider_model_source();
+    }
     if let Some(value) =
         yaml_string(&root, "reasoning_effort").or_else(|| yaml_string(&root, "reasoning-effort"))
     {
@@ -3323,6 +3354,11 @@ fn read_bridge_settings(project_dir: &Path) -> io::Result<BridgeSettings> {
     settings.prompt_transport = yaml_string(&root, "prompt_transport")
         .or_else(|| yaml_string(&root, "prompt-transport"))
         .unwrap_or(settings.prompt_transport);
+    if provider_adapter_from_agent(&settings.agent) == "antigravity"
+        && settings.prompt_transport.trim().eq_ignore_ascii_case("argv")
+    {
+        settings.prompt_transport = "file".to_string();
+    }
     settings.auth_mode = yaml_string(&root, "auth_mode")
         .or_else(|| yaml_string(&root, "auth-mode"))
         .unwrap_or_default();
@@ -3771,13 +3807,22 @@ fn resolve_slot_agent_config_with_registry_replacement(
 fn finalize_slot_agent_config(
     project_dir: &Path,
     agent: String,
-    model: String,
-    model_source: String,
+    mut model: String,
+    mut model_source: String,
     reasoning_effort: String,
-    prompt_transport: String,
+    mut prompt_transport: String,
     auth_mode: String,
     source: String,
 ) -> io::Result<SlotAgentConfig> {
+    if provider_adapter_from_agent(&agent) == "antigravity" {
+        model.clear();
+        model_source = default_provider_model_source();
+    }
+    if prompt_transport.trim().eq_ignore_ascii_case("argv") {
+        if let Some(default_transport) = default_prompt_transport_for_agent(&agent) {
+            prompt_transport = default_transport.to_string();
+        }
+    }
     assert_provider_prompt_transport(project_dir, &agent, &prompt_transport)?;
     assert_provider_auth_mode(project_dir, &agent, &auth_mode)?;
     validate_model_source(&model_source)?;
@@ -4085,6 +4130,14 @@ fn resolve_provider_capability(project_dir: &Path, provider_id: &str) -> io::Res
         return Ok(None);
     }
     find_provider_capability(&registry, provider_id)
+        .or_else(|| {
+            let lookup_provider_id = provider_capability_lookup_id(provider_id);
+            if lookup_provider_id.eq_ignore_ascii_case(provider_id) {
+                None
+            } else {
+                find_provider_capability(&registry, &lookup_provider_id)
+            }
+        })
         .cloned()
         .map(Some)
         .ok_or_else(|| {
@@ -5544,7 +5597,10 @@ fn validate_meta_plan_role(project_dir: &Path, role: &MetaPlanRole) -> io::Resul
     if provider_adapter != "claude" && role.plan_mode != "read_only_equivalent" {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("meta-plan role '{}' must use plan_mode: read_only_equivalent for non-Claude providers", role.role_id)));
     }
-    if !matches!(provider_adapter.as_str(), "claude" | "codex" | "gemini") {
+    if !matches!(
+        provider_adapter.as_str(),
+        "claude" | "codex" | "gemini" | "antigravity"
+    ) {
         let _ = meta_plan_provider_read_only_launch_args(project_dir, role, &provider_adapter)?;
     }
     if !matches!(role.review_rounds, 0 | 1 | 2) {
@@ -5607,11 +5663,17 @@ fn meta_plan_provider_capability(
 ) -> io::Result<Option<Value>> {
     let path = provider_capability_registry_path(project_dir);
     let registry = read_provider_capability_registry(&path)?;
-    if let Some(capability) = find_provider_capability(&registry, &role.provider) {
+    let lookup_provider = provider_capability_lookup_id(&role.provider);
+    if let Some(capability) = find_provider_capability(&registry, &role.provider)
+        .or_else(|| find_provider_capability(&registry, &lookup_provider))
+    {
         return Ok(Some(capability.clone()));
     }
 
-    if matches!(role.provider.as_str(), "claude" | "codex") {
+    if matches!(
+        provider_adapter_from_agent(&role.provider).as_str(),
+        "claude" | "codex" | "antigravity" | "agy"
+    ) {
         return Ok(None);
     }
 
@@ -5638,6 +5700,9 @@ fn meta_plan_provider_adapter(project_dir: &Path, role: &MetaPlanRole) -> io::Re
 
 fn meta_plan_provider_command(project_dir: &Path, role: &MetaPlanRole) -> io::Result<String> {
     let Some(capability) = meta_plan_provider_capability(project_dir, role)? else {
+        if provider_adapter_from_agent(&role.provider) == "antigravity" {
+            return Ok("agy".to_string());
+        }
         return Ok(role.provider.clone());
     };
 
@@ -5659,7 +5724,10 @@ fn meta_plan_provider_read_only_launch_args(
     role: &MetaPlanRole,
     provider_adapter: &str,
 ) -> io::Result<Vec<String>> {
-    if matches!(provider_adapter, "claude" | "codex" | "gemini") {
+    if matches!(
+        provider_adapter,
+        "claude" | "codex" | "gemini" | "antigravity"
+    ) {
         return Ok(Vec::new());
     }
 
@@ -5758,6 +5826,23 @@ fn meta_plan_launch_contract(
                 "reasoning_effort": role.reasoning_effort.clone(),
                 "model_override": model_override,
                 "args": args,
+                "plan_mode_enforced": false,
+                "read_only_equivalent": true,
+                "read_only": role.read_only,
+            })
+        }
+        "antigravity" => {
+            args.push("--sandbox".to_string());
+            json!({
+                "provider": role.provider.clone(),
+                "provider_adapter": provider_adapter,
+                "command": provider_command,
+                "model": role.model.clone(),
+                "model_source": role.model_source.clone(),
+                "reasoning_effort": role.reasoning_effort.clone(),
+                "model_override": model_override,
+                "args": args,
+                "model_override_launch_supported": false,
                 "plan_mode_enforced": false,
                 "read_only_equivalent": true,
                 "read_only": role.read_only,
@@ -7732,10 +7817,16 @@ fn resolve_restart_provider(
                 Err(err) => return Err(err),
             }
         };
+        let mut launch_model = model.clone();
+        let mut launch_model_source = inferred_model_source_for_model(&launch_model);
+        if provider_adapter_from_agent(&agent) == "antigravity" {
+            launch_model.clear();
+            launch_model_source = default_provider_model_source();
+        }
         return Ok((
             agent,
-            model.clone(),
-            inferred_model_source_for_model(&model),
+            launch_model,
+            launch_model_source,
             default_provider_reasoning_effort(),
             adapter,
         ));
@@ -7838,10 +7929,20 @@ fn provider_adapter_from_agent(agent: &str) -> String {
         "codex".to_string()
     } else if lowered.starts_with("claude") {
         "claude".to_string()
+    } else if lowered.starts_with("antigravity") || lowered.starts_with("agy") {
+        "antigravity".to_string()
     } else if lowered.starts_with("gemini") {
         "gemini".to_string()
     } else {
         lowered
+    }
+}
+
+fn default_prompt_transport_for_agent(agent: &str) -> Option<&'static str> {
+    if provider_adapter_from_agent(agent) == "antigravity" {
+        Some("file")
+    } else {
+        None
     }
 }
 
@@ -7899,6 +8000,23 @@ fn build_provider_launch_command(
                 parts.push(shell_literal(model));
             }
             parts.push("--approval-mode=default".to_string());
+            Ok(parts.join(" "))
+        }
+        "antigravity" => {
+            if model_override {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Antigravity CLI model overrides are not launchable; use provider-default and select the model inside agy",
+                ));
+            }
+            let command = if provider_adapter_from_agent(agent) == "antigravity" {
+                "agy"
+            } else {
+                agent
+            };
+            let mut parts = vec![shell_literal(command)];
+            parts.push("--add-dir".to_string());
+            parts.push(shell_literal(launch_dir));
             Ok(parts.join(" "))
         }
         adapter => Err(io::Error::new(
@@ -7971,7 +8089,15 @@ fn restart_readiness_agent(plan: &RestartPlan) -> String {
 
 fn readiness_agent_name(value: &str) -> String {
     let lowered = value.trim().to_ascii_lowercase();
-    for name in ["codex", "claude", "gemini"] {
+    if lowered == "agy"
+        || lowered.starts_with("agy:")
+        || lowered.starts_with("agy-")
+        || lowered.starts_with("agy_")
+        || lowered.starts_with("agy/")
+    {
+        return "antigravity".to_string();
+    }
+    for name in ["codex", "claude", "antigravity", "gemini"] {
         if lowered == name
             || lowered.starts_with(&format!("{name}:"))
             || lowered.starts_with(&format!("{name}-"))
@@ -8041,6 +8167,9 @@ fn agent_ready_prompt(text: &str, agent: &str) -> bool {
                 line.to_ascii_lowercase().starts_with("type your message")
                     || line.to_ascii_lowercase().starts_with("using:")
                     || line.to_ascii_lowercase().starts_with("gemini-")
+            }
+            "antigravity" => {
+                line == ">"
             }
             _ => line == ">" || line == "›" || line == "▌" || line == "❯" || line.starts_with('>'),
         }
@@ -11482,6 +11611,87 @@ mod tests {
             restart_readiness_agent(&restart_plan("gemini:flash", "")),
             "gemini"
         );
+        assert_eq!(restart_readiness_agent(&restart_plan("agy", "")), "antigravity");
+        assert_eq!(
+            restart_readiness_agent(&restart_plan("antigravity:flash", "")),
+            "antigravity"
+        );
+    }
+
+    #[test]
+    fn antigravity_restart_launch_uses_agy_without_model_override() {
+        let command = build_provider_launch_command(
+            "antigravity:flash",
+            "provider-default",
+            "provider-default",
+            "provider-default",
+            "antigravity",
+            r"C:\repo",
+            r"C:\repo\.git\worktrees\worker-1",
+        )
+        .expect("antigravity launch should build");
+
+        assert_eq!(command, "agy --add-dir C:\\repo");
+
+        let err = build_provider_launch_command(
+            "agy:flash",
+            "Gemini 3.5 Flash (High)",
+            "operator-override",
+            "provider-default",
+            "antigravity",
+            r"C:\repo",
+            r"C:\repo\.git\worktrees\worker-1",
+        )
+        .expect_err("antigravity model overrides must be rejected");
+
+        assert!(err
+            .to_string()
+            .contains("Antigravity CLI model overrides are not launchable"));
+    }
+
+    #[test]
+    fn read_bridge_settings_normalizes_antigravity_model_override() {
+        let project_dir = test_project_dir("bridge-settings-antigravity-model");
+        std::fs::write(
+            project_dir.join(".winsmux.yaml"),
+            "agent: agy:flash\nmodel: Gemini 3.5 Flash (High)\nprompt-transport: argv\n",
+        )
+        .expect("write settings");
+
+        let settings = read_bridge_settings(&project_dir).expect("settings should load");
+
+        assert_eq!(settings.agent, "agy:flash");
+        assert_eq!(settings.model, "");
+        assert_eq!(settings.model_source, default_provider_model_source());
+        assert!(!settings.model_explicit);
+        assert_eq!(settings.prompt_transport, "file");
+    }
+
+    #[test]
+    fn meta_plan_role_accepts_suffixed_antigravity_alias_without_registry() {
+        let project_dir = test_project_dir("meta-plan-antigravity-alias");
+        let role = meta_plan_role("agy:flash", "read_only_equivalent");
+
+        validate_meta_plan_role(&project_dir, &role).expect("suffixed agy role should validate");
+        let adapter = meta_plan_provider_adapter(&project_dir, &role).expect("adapter");
+        let command = meta_plan_provider_command(&project_dir, &role).expect("command");
+
+        assert_eq!(adapter, "antigravity");
+        assert_eq!(command, "agy");
+    }
+
+    #[test]
+    fn antigravity_readiness_requires_prompt_marker() {
+        assert!(agent_ready_prompt(">", "antigravity"));
+        assert!(agent_ready_prompt("Antigravity CLI 1.0.0\n>", "antigravity"));
+        assert!(!agent_ready_prompt(
+            "Antigravity CLI 1.0.0\nGemini 3.5 Flash (High)",
+            "antigravity"
+        ));
+        assert!(!agent_ready_prompt(
+            "Gemini 3.5 Flash (High)",
+            "antigravity"
+        ));
     }
 
     #[test]

@@ -18,9 +18,11 @@ Within that model, winsmux does **not** broker OAuth logins or extract and relay
 | Claude Code | Pro / Max OAuth | This PC only, interactive use |
 | Codex | API key through the official agent CLI | Supported |
 | Codex | ChatGPT OAuth through the official agent CLI | This PC only, interactive use |
+| Antigravity CLI | Google Sign-In through the official `agy` CLI and secure keyring | This PC only, interactive use |
+| Antigravity CLI | Enterprise Google account / GCP onboarding through the official `agy` CLI | Supported |
 | Gemini | Gemini API key through the official agent CLI | Supported |
 | Gemini | Gemini API in Vertex AI through the official agent CLI | Supported |
-| Gemini | Google OAuth through the official agent CLI | This PC only, interactive use |
+| Gemini CLI | Google OAuth through the official agent CLI | Legacy local use; migrate to Antigravity CLI |
 
 Model families such as Gemma, Llama, Mistral, Qwen, DeepSeek, and Kimi are not
 authentication providers by themselves. For Colab workers, authenticate the
@@ -87,7 +89,9 @@ Examples:
 
 - `gemini-api-key` is allowed
 - `gemini-vertex` is allowed
-- `gemini-google-oauth` is limited to interactive use on that same PC
+- `gemini-google-oauth` is legacy local use and should migrate to `antigravity-google-signin`
+- `antigravity-google-signin` is limited to interactive use on that same PC
+- `antigravity-enterprise-gcp` is allowed when the official `agy` CLI owns the enterprise sign-in
 - `codex-chatgpt-local` is limited to interactive use on that same PC
 - `claude-pro-max-oauth` is limited to interactive use on that same PC
 

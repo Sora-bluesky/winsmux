@@ -50,12 +50,15 @@ function ConvertTo-ReadinessAgentName {
     param([AllowNull()][string]$Value)
 
     $lowered = if ($null -eq $Value) { '' } else { $Value.Trim().ToLowerInvariant() }
-    foreach ($name in @('codex', 'claude', 'gemini')) {
+    foreach ($name in @('codex', 'claude', 'antigravity', 'agy', 'gemini')) {
         if ($lowered -eq $name `
             -or $lowered.StartsWith("${name}:") `
             -or $lowered.StartsWith("${name}-") `
             -or $lowered.StartsWith("${name}_") `
             -or $lowered.StartsWith("${name}/")) {
+            if ($name -eq 'agy') {
+                return 'antigravity'
+            }
             return $name
         }
     }
@@ -135,6 +138,15 @@ function Test-AgentPromptText {
             }
 
             if ($tailText -match '(?im)\bgemini-[A-Za-z0-9._-]+\b.*\b\d+%\s+context\s+left\b') {
+                return $true
+            }
+        }
+        'antigravity' {
+            if (($tailText -match '(?im)\bAntigravity CLI\b') -and ($tailText -match '(?im)^\s*>\s*$')) {
+                return $true
+            }
+
+            if ($tailText -match '(?im)^\s*>\s*$') {
                 return $true
             }
         }

@@ -59,6 +59,48 @@ worker-backend: colab_cli
 '@ | Set-Content -LiteralPath (Join-Path $script:AcceptanceRoot '.winsmux.yaml') -Encoding UTF8
     }
 
+    function script:Write-ColabLlmAcceptanceProjectConfig {
+        @'
+agent: claude
+worker-backend: local
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    worker-backend: colab_llm
+    worker-role: consult
+    agent: colab-llm
+    model-id: google/gemma-3-27b-it
+    model-family: gemma
+    runtime: colab
+    runtime-engine: vllm
+    gpu-preference: H100,A100
+    session-name: winsmux_colab_llm_runtime
+    drive-root: /content/drive/MyDrive/winsmux-colab-llm
+    model-root: /content/drive/MyDrive/winsmux-colab-llm/models
+    hf-cache-root: /content/drive/MyDrive/winsmux-colab-llm/hf-cache
+    artifact-root: /content/drive/MyDrive/winsmux-colab-llm/artifacts
+    runtime-cache-root: /content/winsmux-runtime-cache
+    precision: bfloat16
+    quantization: none
+    license-state: accepted
+    worktree-mode: managed
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: colab_llm
+    worker-role: consult
+    agent: colab-llm
+    model-id: Qwen/Qwen3-32B
+    model-family: qwen
+    runtime: colab
+    runtime-engine: vllm
+    gpu-preference: H100,A100
+    session-name: winsmux_colab_llm_runtime
+    drive-root: /content/drive/MyDrive/winsmux-colab-llm
+    license-state: not_required
+    worktree-mode: managed
+'@ | Set-Content -LiteralPath (Join-Path $script:AcceptanceRoot '.winsmux.yaml') -Encoding UTF8
+    }
+
     function script:New-AcceptanceFakeColabCli {
         $logPath = Join-Path $script:AcceptanceRoot 'fake-colab-commands.log'
         $fakeCli = Join-Path $script:AcceptanceRoot 'google-colab-cli.cmd'
@@ -208,6 +250,72 @@ exit /b 1
         $commandLog | Should -Match '(?m)^upload --session .+_worker_2'
         $commandLog | Should -Match '(?m)^download --session .+_worker_2'
         $commandLog | Should -Match '(?m)^stop --session winsmux_worker_2'
+    }
+
+    It 'reports two colab_llm workers in one Colab GPU runtime without local Ollama fallback' {
+        Write-ColabLlmAcceptanceProjectConfig
+        New-AcceptanceFakeColabCli | Out-Null
+
+        $status = Invoke-AcceptanceJson -Arguments @('workers', 'status', '--json', '--project-dir', $script:AcceptanceRoot)
+        @($status.workers).Count | Should -Be 2
+
+        $worker1 = @($status.workers | Where-Object { $_.slot_id -eq 'worker-1' })[0]
+        $worker2 = @($status.workers | Where-Object { $_.slot_id -eq 'worker-2' })[0]
+        $worker1.backend | Should -Be 'colab_llm'
+        $worker2.backend | Should -Be 'colab_llm'
+        $worker1.actual_gpu | Should -Be 'A100'
+        $worker2.actual_gpu | Should -Be 'A100'
+        $worker1.colab_llm.runtime | Should -Be 'colab'
+        $worker1.colab_llm.runtime_engine | Should -Be 'vllm'
+        $worker1.colab_llm.model_id | Should -Be 'google/gemma-3-27b-it'
+        $worker2.colab_llm.model_id | Should -Be 'Qwen/Qwen3-32B'
+        $worker1.colab_llm.health | Should -Be 'configured'
+        $worker2.colab_llm.health | Should -Be 'configured'
+        $worker1.colab_llm.drive_root | Should -Be '[DRIVE_PATH_REDACTED]'
+        $worker1.colab_llm.env.HF_HOME | Should -Be '[DRIVE_PATH_REDACTED]'
+        $worker1.local_llm | Should -BeNullOrEmpty
+        $worker2.local_llm | Should -BeNullOrEmpty
+
+        $doctor = Invoke-AcceptanceJson -Arguments @('workers', 'doctor', '--json', '--project-dir', $script:AcceptanceRoot)
+        (@($doctor.checks | Where-Object { $_.label -eq 'Colab LLM slots' })[0].status) | Should -Be 'pass'
+        (@($doctor.checks | Where-Object { $_.label -eq 'Colab LLM worker worker-1' })[0].status) | Should -Be 'pass'
+        (@($doctor.checks | Where-Object { $_.label -eq 'Colab LLM worker worker-2' })[0].detail) | Should -Match 'Qwen/Qwen3-32B via vllm'
+        @($doctor.checks | ForEach-Object { $_.label }) | Should -Not -Contain 'ollama command'
+        @($doctor.checks | ForEach-Object { $_.label }) | Should -Not -Contain 'OLLAMA_MODELS'
+    }
+
+    It 'records redacted colab_llm worker exec evidence through the Colab adapter' {
+        Write-ColabLlmAcceptanceProjectConfig
+        New-AcceptanceFakeColabCli | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $script:AcceptanceRoot 'workers\colab') -Force | Out-Null
+        'print("hello from colab llm")' | Set-Content -LiteralPath (Join-Path $script:AcceptanceRoot 'workers\colab\llm_worker.py') -Encoding UTF8
+
+        $exec = Invoke-AcceptanceJson -Arguments @(
+            'workers', 'exec', 'worker-1',
+            '--prompt', 'Summarize the repository shape.',
+            '--run-id', 'colab-llm-run',
+            '--json',
+            '--project-dir', $script:AcceptanceRoot
+        )
+
+        $exec.status | Should -Be 'succeeded'
+        $exec.backend | Should -Be 'colab_llm'
+        $exec.runtime | Should -Be 'colab'
+        $exec.runtime_engine | Should -Be 'vllm'
+        $exec.model_id | Should -Be 'google/gemma-3-27b-it'
+        $exec.drive_root | Should -Be '[DRIVE_PATH_REDACTED]'
+        $exec.model_root | Should -Be '[DRIVE_PATH_REDACTED]'
+        $exec.hf_cache_root | Should -Be '[DRIVE_PATH_REDACTED]'
+        $exec.artifact_root | Should -Be '[DRIVE_PATH_REDACTED]'
+        (@($exec.cli_arguments) -join ' ') | Should -Not -Match '/content/drive/MyDrive'
+        $exec.stdout_log | Should -Match '^\.winsmux/worker-runs/worker-1/colab-llm-run/stdout\.log$'
+        $exec.task_json | Should -Match '^\.winsmux/worker-runs/worker-1/colab-llm-run/task\.json$'
+        $exec.run_json | Should -Match '^\.winsmux/worker-runs/worker-1/colab-llm-run/run\.json$'
+
+        $runJsonPath = Join-Path $script:AcceptanceRoot ($exec.run_json -replace '/', '\')
+        $runJson = Get-Content -LiteralPath $runJsonPath -Raw -Encoding UTF8
+        $runJson | Should -Not -Match '/content/drive/MyDrive'
+        $runJson | Should -Match '\[DRIVE_PATH_REDACTED\]'
     }
 
     It 'keeps real Colab runtime acceptance behind an explicit manual flag' {

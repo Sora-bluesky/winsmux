@@ -39,7 +39,7 @@ function Invoke-WinsmuxPublicInit {
     param(
         [string]$ProjectDir,
         [switch]$Force,
-        [string]$Agent = 'codex',
+        [string]$Agent = 'antigravity',
         [string]$Model = '',
         [int]$WorkerCount = 6,
         [string]$WorkspaceLifecyclePreset = 'managed-worktree'
@@ -69,6 +69,14 @@ function Invoke-WinsmuxPublicInit {
         }
     }
 
+    $isAntigravity = Test-BridgeAntigravityProviderId -ProviderId $Agent
+    $effectiveModel = if ($isAntigravity) { '' } else { $Model }
+    $effectivePromptTransport = if ($isAntigravity) {
+        'file'
+    } else {
+        ''
+    }
+
     $settingsToSave = [ordered]@{
         agent               = $Agent
         external_operator  = $true
@@ -81,11 +89,15 @@ function Invoke-WinsmuxPublicInit {
         vault_keys          = @('GH_TOKEN')
         workspace_lifecycle_preset = $WorkspaceLifecyclePreset
     }
-    if (-not [string]::IsNullOrWhiteSpace($Model)) {
-        $settingsToSave.model = $Model
+    if (-not [string]::IsNullOrWhiteSpace($effectiveModel)) {
+        $settingsToSave.model = $effectiveModel
+        $settingsToSave.model_source = 'operator-override'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($effectivePromptTransport)) {
+        $settingsToSave.prompt_transport = $effectivePromptTransport
     }
 
-    $agentSlots = New-BridgeManagedAgentSlots -Count $WorkerCount -Agent $Agent -Model $Model
+    $agentSlots = New-BridgeManagedAgentSlots -Count $WorkerCount -Agent $Agent -Model $effectiveModel
     $settingsToSave.agent_slots = @($agentSlots)
     Save-BridgeSettings -Scope project -RootPath $resolvedProjectDir -Settings $settingsToSave
 

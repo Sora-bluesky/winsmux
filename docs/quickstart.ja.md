@@ -10,7 +10,7 @@
 - PowerShell 7+
 - Windows Terminal
 - `npm` を含む Node.js
-- 実行したい公式エージェント CLI。例: Codex、Claude Code、Gemini
+- 実行したい公式エージェント CLI。例: Codex、Claude Code、Antigravity CLI
 
 ## 2. winsmux をインストールする
 
@@ -109,7 +109,7 @@ winsmux send worker-1 "現在のブランチを確認し、次の安全な手順
 
 ## 6. 記録済みセッションを復元する
 
-デスクトップアプリでは、右サイドバーの Agent Vault を開きます。記録済みセッションを検索または絞り込み、セッションカードを空いているワーカーペインへドラッグします。winsmux は記録されたプロバイダーメタデータを使い、Claude Code、Codex、OpenCode に合った再開コマンドを起動します。
+デスクトップアプリでは、右サイドバーの Agent Vault を開きます。記録済みセッションを検索または絞り込み、セッションカードを空いているワーカーペインへドラッグします。winsmux は記録されたプロバイダーメタデータを使い、Claude Code、Codex、Antigravity CLI、OpenCode に合った再開コマンドを起動します。
 
 同じペインですでに復元を開始している場合は、その処理が終わるまで待ってから次のセッションをドロップしてください。
 

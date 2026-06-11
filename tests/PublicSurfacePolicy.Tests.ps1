@@ -22,6 +22,7 @@ Describe 'Public surface policy' {
         $syncInternalDocs = Get-Content (Join-Path $repoRoot 'winsmux-core/scripts/sync-internal-docs.ps1') -Raw
         $installer = Get-Content (Join-Path $repoRoot 'install.ps1') -Raw
         $auditPublicSurface = Join-Path $repoRoot 'scripts/audit-public-surface.ps1'
+        $auditStagedPublicSurface = Join-Path $repoRoot 'scripts/audit-staged-public-surface.ps1'
         $previousHooksPath = (& git config --get core.hooksPath 2>$null | Out-String).Trim()
         $hadHooksPath = $LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($previousHooksPath)
         & git config core.hooksPath .githooks
@@ -216,17 +217,21 @@ Describe 'Public surface policy' {
         $readmeJa | Should -Match 'npm install -g winsmux'
 
         $readme | Should -Match 'Claude Code \| Pro / Max OAuth \| This PC only, interactive use'
-        $readme | Should -Match 'Gemini \| Google OAuth \| This PC only, interactive use'
+        $readme | Should -Match 'Antigravity CLI \| Google Sign-In through secure keyring \| This PC only, interactive use'
+        $readme | Should -Match 'Gemini CLI \| Google OAuth \| Legacy local use; migrate to Antigravity CLI'
         $readmeJa | Should -Match 'Claude Code \| Pro / Max OAuth \| 当該 PC での対話利用のみ'
-        $readmeJa | Should -Match 'Gemini \| Google OAuth \| 当該 PC での対話利用のみ'
+        $readmeJa | Should -Match 'Antigravity CLI \| セキュアキーチェーン経由の Google Sign-In \| この PC での対話利用のみ'
+        $readmeJa | Should -Match 'Gemini CLI \| Google OAuth \| 従来のローカル利用。Antigravity CLI への移行対象'
 
         $authSupport | Should -Match 'claude-pro-max-oauth.*interactive use on that same PC'
-        $authSupport | Should -Match 'gemini-google-oauth.*interactive use on that same PC'
+        $authSupport | Should -Match 'antigravity-google-signin.*interactive use on that same PC'
+        $authSupport | Should -Match 'gemini-google-oauth.*legacy local use'
         $authSupport | Should -Match 'configured `auth_mode`'
         $authSupport | Should -Match 'token-broker'
         $authSupport | Should -Match 'provider-api-proxy'
         $authSupportJa | Should -Match 'claude-pro-max-oauth.*その PC 上での対話利用のみ'
-        $authSupportJa | Should -Match 'gemini-google-oauth.*その PC 上での対話利用のみ'
+        $authSupportJa | Should -Match 'antigravity-google-signin.*その PC 上での対話利用のみ'
+        $authSupportJa | Should -Match 'gemini-google-oauth.*従来のローカル利用'
         $authSupportJa | Should -Match '設定された `auth_mode`'
         $authSupportJa | Should -Match 'token-broker'
         $authSupportJa | Should -Match 'provider-api-proxy'
@@ -251,6 +256,107 @@ Describe 'Public surface policy' {
 
         $LASTEXITCODE | Should -Be 0
         ($output -join "`n") | Should -Match 'audit-public-surface passed'
+    }
+
+    It 'blocks non-reserved email addresses in public materials without printing the address' {
+        $linkedPublicDoc = Join-Path $repoRoot 'docs/source-access.md'
+        $original = [System.IO.File]::ReadAllText($linkedPublicDoc)
+        $blockedAddress = 'sample.operator' + '@' + ('gmail' + '.com')
+        try {
+            [System.IO.File]::WriteAllText(
+                $linkedPublicDoc,
+                $original + "`nMaintainer contact: $blockedAddress`n",
+                [System.Text.UTF8Encoding]::new($false)
+            )
+
+            $output = @(& pwsh -NoProfile -File $auditPublicSurface 2>&1)
+
+            $LASTEXITCODE | Should -Be 1
+            ($output -join "`n") | Should -Match 'public material contains non-reserved email address'
+            ($output -join "`n") | Should -Match 'docs/source-access\.md'
+            ($output -join "`n") | Should -Not -Match ([Regex]::Escape($blockedAddress))
+        } finally {
+            [System.IO.File]::WriteAllText($linkedPublicDoc, $original, [System.Text.UTF8Encoding]::new($false))
+        }
+    }
+
+    It 'allows reserved example email addresses in public materials and release notes' {
+        $linkedPublicDoc = Join-Path $repoRoot 'docs/source-access.md'
+        $original = [System.IO.File]::ReadAllText($linkedPublicDoc)
+        $releaseBody = Join-Path $TestDrive 'reserved-email-release-body.md'
+        try {
+            [System.IO.File]::WriteAllText(
+                $linkedPublicDoc,
+                $original + "`nFixture contact: winsmux-test@example.invalid`n",
+                [System.Text.UTF8Encoding]::new($false)
+            )
+            Set-Content -LiteralPath $releaseBody -Value @'
+## Notes
+
+- Fixture contact remains winsmux-test@example.invalid.
+'@ -Encoding UTF8
+
+            $output = @(& pwsh -NoProfile -File $auditPublicSurface -ReleaseNotesPath $releaseBody 2>&1)
+
+            $LASTEXITCODE | Should -Be 0
+            ($output -join "`n") | Should -Match 'audit-public-surface passed'
+        } finally {
+            [System.IO.File]::WriteAllText($linkedPublicDoc, $original, [System.Text.UTF8Encoding]::new($false))
+        }
+    }
+
+    It 'blocks non-reserved email addresses in generated release notes without printing the address' {
+        $releaseBody = Join-Path $TestDrive 'personal-email-release-body.md'
+        $blockedAddress = 'sample.operator' + '@' + ('gmail' + '.com')
+        Set-Content -LiteralPath $releaseBody -Value @"
+## Notes
+
+- Maintainer contact: $blockedAddress.
+"@ -Encoding UTF8
+
+        $output = @(& pwsh -NoProfile -File $auditPublicSurface -ReleaseNotesPath $releaseBody 2>&1)
+
+        $LASTEXITCODE | Should -Be 1
+        ($output -join "`n") | Should -Match 'release notes contains non-reserved email address'
+        ($output -join "`n") | Should -Not -Match ([Regex]::Escape($blockedAddress))
+    }
+
+    It 'blocks Google Drive URLs in public materials without printing the URL' {
+        $linkedPublicDoc = Join-Path $repoRoot 'docs/source-access.md'
+        $original = [System.IO.File]::ReadAllText($linkedPublicDoc)
+        $blockedUrl = 'https://drive.google.com/drive/folders/1A2B3C4D5E6F7G8H9I0J'
+        try {
+            [System.IO.File]::WriteAllText(
+                $linkedPublicDoc,
+                $original + "`nColab model cache: $blockedUrl`n",
+                [System.Text.UTF8Encoding]::new($false)
+            )
+
+            $output = @(& pwsh -NoProfile -File $auditPublicSurface 2>&1)
+
+            $LASTEXITCODE | Should -Be 1
+            ($output -join "`n") | Should -Match 'public material contains a Google Drive document or folder URL'
+            ($output -join "`n") | Should -Match 'docs/source-access\.md'
+            ($output -join "`n") | Should -Not -Match ([Regex]::Escape($blockedUrl))
+        } finally {
+            [System.IO.File]::WriteAllText($linkedPublicDoc, $original, [System.Text.UTF8Encoding]::new($false))
+        }
+    }
+
+    It 'blocks local absolute paths in generated release notes without printing the path' {
+        $releaseBody = Join-Path $TestDrive 'private-path-release-body.md'
+        $blockedPath = 'D:\work\repo\private-models'
+        Set-Content -LiteralPath $releaseBody -Value @"
+## Notes
+
+- Colab artifact cache was prepared at $blockedPath.
+"@ -Encoding UTF8
+
+        $output = @(& pwsh -NoProfile -File $auditPublicSurface -ReleaseNotesPath $releaseBody 2>&1)
+
+        $LASTEXITCODE | Should -Be 1
+        ($output -join "`n") | Should -Match 'release notes contains a local absolute path'
+        ($output -join "`n") | Should -Not -Match ([Regex]::Escape($blockedPath))
     }
 
     It 'blocks forbidden external product names in linked top-level public docs' {
@@ -327,8 +433,86 @@ Describe 'Public surface policy' {
         ($output -join "`n") | Should -Match "name 'VS Code'"
     }
 
+    It 'blocks non-reserved email addresses staged for public materials without printing the address' {
+        $fixtureRepo = Join-Path $TestDrive 'staged-personal-email-repo'
+        New-Item -ItemType Directory -Path (Join-Path $fixtureRepo 'scripts') -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $fixtureRepo 'docs') -Force | Out-Null
+        Copy-Item -LiteralPath $auditStagedPublicSurface -Destination (Join-Path $fixtureRepo 'scripts/audit-staged-public-surface.ps1')
+        & git -C $fixtureRepo init | Out-Null
+        & git -C $fixtureRepo config user.name 'winsmux-test' | Out-Null
+        & git -C $fixtureRepo config user.email 'winsmux-test@example.invalid' | Out-Null
+
+        $blockedAddress = 'sample.operator' + '@' + ('gmail' + '.com')
+        Set-Content -LiteralPath (Join-Path $fixtureRepo 'docs/release-notes.md') -Value "Maintainer contact: $blockedAddress" -Encoding UTF8
+        & git -C $fixtureRepo add docs/release-notes.md scripts/audit-staged-public-surface.ps1 | Out-Null
+
+        Push-Location -LiteralPath $fixtureRepo
+        try {
+            $output = @(& pwsh -NoProfile -File (Join-Path $fixtureRepo 'scripts/audit-staged-public-surface.ps1') 2>&1)
+        } finally {
+            Pop-Location
+        }
+
+        $LASTEXITCODE | Should -Be 1
+        ($output -join "`n") | Should -Match 'staged public material contains non-reserved email address'
+        ($output -join "`n") | Should -Match 'docs/release-notes\.md'
+        ($output -join "`n") | Should -Not -Match ([Regex]::Escape($blockedAddress))
+    }
+
+    It 'allows reserved example email addresses staged for public materials' {
+        $fixtureRepo = Join-Path $TestDrive 'staged-reserved-email-repo'
+        New-Item -ItemType Directory -Path (Join-Path $fixtureRepo 'scripts') -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $fixtureRepo 'docs') -Force | Out-Null
+        Copy-Item -LiteralPath $auditStagedPublicSurface -Destination (Join-Path $fixtureRepo 'scripts/audit-staged-public-surface.ps1')
+        & git -C $fixtureRepo init | Out-Null
+        & git -C $fixtureRepo config user.name 'winsmux-test' | Out-Null
+        & git -C $fixtureRepo config user.email 'winsmux-test@example.invalid' | Out-Null
+
+        Set-Content -LiteralPath (Join-Path $fixtureRepo 'docs/release-notes.md') -Value 'Fixture contact: winsmux-test@example.invalid' -Encoding UTF8
+        & git -C $fixtureRepo add docs/release-notes.md scripts/audit-staged-public-surface.ps1 | Out-Null
+
+        Push-Location -LiteralPath $fixtureRepo
+        try {
+            $output = @(& pwsh -NoProfile -File (Join-Path $fixtureRepo 'scripts/audit-staged-public-surface.ps1') 2>&1)
+        } finally {
+            Pop-Location
+        }
+
+        $LASTEXITCODE | Should -Be 0
+        ($output -join "`n") | Should -Match 'audit-staged-public-surface passed'
+    }
+
+    It 'blocks staged Google Drive URLs and local absolute paths without printing the values' {
+        $fixtureRepo = Join-Path $TestDrive 'staged-private-runtime-reference-repo'
+        New-Item -ItemType Directory -Path (Join-Path $fixtureRepo 'scripts') -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $fixtureRepo 'docs') -Force | Out-Null
+        Copy-Item -LiteralPath $auditStagedPublicSurface -Destination (Join-Path $fixtureRepo 'scripts/audit-staged-public-surface.ps1')
+        & git -C $fixtureRepo init | Out-Null
+        & git -C $fixtureRepo config user.name 'winsmux-test' | Out-Null
+        & git -C $fixtureRepo config user.email 'winsmux-test@example.invalid' | Out-Null
+
+        $blockedUrl = 'https://drive.google.com/file/d/1Z2Y3X4W5V6U7T8S9R0Q/view'
+        $blockedPath = 'E:\private\colab-cache'
+        Set-Content -LiteralPath (Join-Path $fixtureRepo 'docs/release-notes.md') -Value "Cache: $blockedUrl`nMirror: $blockedPath" -Encoding UTF8
+        & git -C $fixtureRepo add docs/release-notes.md scripts/audit-staged-public-surface.ps1 | Out-Null
+
+        Push-Location -LiteralPath $fixtureRepo
+        try {
+            $output = @(& pwsh -NoProfile -File (Join-Path $fixtureRepo 'scripts/audit-staged-public-surface.ps1') 2>&1)
+        } finally {
+            Pop-Location
+        }
+
+        $LASTEXITCODE | Should -Be 1
+        ($output -join "`n") | Should -Match 'staged public material contains a Google Drive document or folder URL'
+        ($output -join "`n") | Should -Match 'staged public material contains a local absolute path'
+        ($output -join "`n") | Should -Not -Match ([Regex]::Escape($blockedUrl))
+        ($output -join "`n") | Should -Not -Match ([Regex]::Escape($blockedPath))
+    }
+
     It 'uses recorded-baseline gitleaks scans for routine push and CI checks' {
         $workflow = Get-Content (Join-Path $repoRoot '.github/workflows/test.yml') -Raw
+        $preCommit = Get-Content (Join-Path $repoRoot '.githooks/pre-commit') -Raw
         $prePush = Get-Content (Join-Path $repoRoot '.githooks/pre-push') -Raw
         $gitleaksScript = Get-Content (Join-Path $repoRoot 'scripts/gitleaks-history.ps1') -Raw
         $baseline = Get-Content (Join-Path $repoRoot 'scripts/gitleaks-history-baseline.txt') -Raw
@@ -337,6 +521,9 @@ Describe 'Public surface policy' {
         $workflow | Should -Match 'Run secret scan since recorded baseline'
         $workflow | Should -Not -Match 'Run full-history secret scan'
 
+        $preCommit | Should -Match 'scripts\\\\git-guard\.ps1" -Mode staged'
+        $preCommit | Should -Match 'scripts\\\\audit-staged-public-surface\.ps1'
+        $prePush | Should -Match 'scripts\\\\audit-public-surface\.ps1'
         $prePush | Should -Match 'scripts\\\\gitleaks-history\.ps1'
         $gitleaksScript | Should -Match 'BaselineFile'
         $gitleaksScript | Should -Match 'baselineCommit\.\.HEAD'

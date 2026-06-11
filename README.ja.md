@@ -10,7 +10,7 @@
 
 エージェントをブラックボックス化せず、各ワーカーを実際のペインで見せ、ファイル変更を git worktree で分離し、必要なペインへ指示を送り、中断できます。完了後は、変更ファイルの重なり、レビュー状態、検証状態、チェックポイントなどの証跡を見ながら、どの結果を採用するか決められます。
 
-Claude Code、Codex、Gemini を 1 つずつ手で眺める段階を越えたい。ただし、クラウド任せにも、特定ベンダー任せにもしたくない。`winsmux` はそのためのローカル管制面です。
+Claude Code、Codex、Antigravity CLI、従来の Gemini CLI を 1 つずつ手で眺める段階を越えたい。ただし、クラウド任せにも、特定ベンダー任せにもしたくない。`winsmux` はそのためのローカル管制面です。
 
 たとえば、同じタスクを 2 つのエージェントに並走させ、両方のペインを見ながら、逸れた片方だけを止め、最後に証跡を比較して採用する結果を選べます。
 
@@ -60,7 +60,7 @@ Windows PC で複数のコーディングエージェントを動かしつつ、
 - Windows 10 または Windows 11
 - PowerShell 7+
 - Windows Terminal
-- 実行したい公式エージェント CLI。例: Claude Code、Codex、Gemini
+- 実行したい公式エージェント CLI。例: Claude Code、Codex、Antigravity CLI
 
 Rust は、ランタイムをソースからビルドする時だけ必要です。
 
@@ -145,9 +145,11 @@ winsmux skills --json
 | Claude Code | Pro / Max OAuth | 当該 PC での対話利用のみ |
 | Codex | API key | 公式に対応 |
 | Codex | ChatGPT OAuth | この PC での対話利用のみ |
+| Antigravity CLI | セキュアキーチェーン経由の Google Sign-In | この PC での対話利用のみ |
+| Antigravity CLI | 企業向け Google アカウント / GCP オンボーディング | 公式 CLI 経由で対応 |
 | Gemini | Gemini API key | 公式に対応 |
 | Gemini | Vertex AI の Gemini API | 公式に対応 |
-| Gemini | Google OAuth | 当該 PC での対話利用のみ |
+| Gemini CLI | Google OAuth | 従来のローカル利用。Antigravity CLI への移行対象 |
 
 詳しくは [認証方針](docs/authentication-support.ja.md) を参照してください。
 [プロバイダーとモデルの対応方針](docs/provider-and-model-support.ja.md) では、クラウド、Colab、将来のローカル LLM ランタイムの扱いを説明しています。
@@ -175,6 +177,7 @@ winsmux skills --json
 - [カスタマイズ](docs/customization.ja.md)
 - [認証方針](docs/authentication-support.ja.md)
 - [プロバイダーとモデルの対応方針](docs/provider-and-model-support.ja.md)
+- [CLI 比較テスト](docs/cli-comparison-bakeoff.ja.md)
 - [外部コントロールプレーン API](docs/external-control-plane.ja.md)
 - [Google Colab ワーカー](docs/google-colab-workers.ja.md)
 - [トラブルシューティング](docs/TROUBLESHOOTING.ja.md)

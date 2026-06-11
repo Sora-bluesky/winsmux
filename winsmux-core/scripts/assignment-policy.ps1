@@ -202,7 +202,7 @@ function Get-AssignmentPolicy {
             New-ProviderCandidate -Provider 'codex' -Role 'builder' -CapabilityTier $tier -ModelResolution 'provider_recommended_default' -PromptTransport 'file' -AuthMode 'codex-official-cli' -Rationale 'Use Codex for implementation and verification without pinning a stale model id.'
         }
         'fast_coding' {
-            New-ProviderCandidate -Provider 'gemini' -Role 'researcher' -CapabilityTier $tier -ModelResolution 'alias:auto' -PromptTransport 'file' -AuthMode 'gemini-official-cli' -Rationale 'Use Gemini for fast investigation and context shaping before implementation.'
+            New-ProviderCandidate -Provider 'antigravity' -Role 'researcher' -CapabilityTier $tier -ModelResolution 'Gemini 3.5 Flash (High)' -PromptTransport 'file' -AuthMode 'antigravity-google-signin' -Rationale 'Use Antigravity CLI for fast investigation, parallel background tasks, and low-overhead terminal work.'
         }
         default {
             New-ProviderCandidate -Provider 'claude' -Role 'researcher' -CapabilityTier $tier -ModelResolution 'alias:haiku' -PromptTransport 'file' -AuthMode 'claude-official-cli' -Rationale 'Use a low-cost summary-capable worker for small context packets.'
@@ -212,7 +212,7 @@ function Get-AssignmentPolicy {
     $fallbacks = @(
         New-ProviderCandidate -Provider 'claude' -Role 'worker' -CapabilityTier $tier -ModelResolution 'alias:sonnet' -PromptTransport 'file' -AuthMode 'claude-official-cli' -Rationale 'Fallback to Claude Sonnet alias when the primary provider is unavailable.'
         New-ProviderCandidate -Provider 'codex' -Role 'worker' -CapabilityTier 'fast_coding' -ModelResolution 'provider_recommended_default' -PromptTransport 'file' -AuthMode 'codex-official-cli' -Rationale 'Fallback to Codex default when coding help is still needed and local Codex auth is healthy.'
-        New-ProviderCandidate -Provider 'gemini' -Role 'worker' -CapabilityTier 'cheap_summary' -ModelResolution 'alias:flash' -PromptTransport 'file' -AuthMode 'gemini-official-cli' -Rationale 'Fallback to Gemini Flash alias for summarization or broad context reduction.'
+        New-ProviderCandidate -Provider 'antigravity' -Role 'worker' -CapabilityTier 'cheap_summary' -ModelResolution 'Gemini 3.5 Flash (High)' -PromptTransport 'file' -AuthMode 'antigravity-google-signin' -Rationale 'Fallback to Antigravity CLI with Gemini 3.5 Flash for summarization or broad context reduction.'
     )
 
     [pscustomobject][ordered]@{

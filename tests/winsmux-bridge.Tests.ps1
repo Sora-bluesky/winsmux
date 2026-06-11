@@ -246,10 +246,10 @@ Describe 'Get-BridgeSettings' {
 
         $settings = Get-BridgeSettings
 
-        $settings.agent | Should -Be 'codex'
+        $settings.agent | Should -Be 'antigravity'
         $settings.model | Should -Be ''
         $settings.config_version | Should -Be 1
-        $settings.prompt_transport | Should -Be 'argv'
+        $settings.prompt_transport | Should -Be 'file'
         $settings.external_operator | Should -Be $true
         $settings.legacy_role_layout | Should -Be $false
         $settings.operators | Should -Be 0
@@ -262,6 +262,7 @@ Describe 'Get-BridgeSettings' {
         $settings.agent_slots[0].agent | Should -Be 'codex'
         $settings.agent_slots[0].model | Should -Be 'provider-default'
         $settings.agent_slots[0].model_source | Should -Be 'provider-default'
+        $settings.agent_slots[0].prompt_transport | Should -Be 'argv'
         $settings.agent_slots[0].worker_backend | Should -Be 'codex'
         $settings.agent_slots[0].execution_profile | Should -Be 'local-windows'
         $settings.agent_slots[0].worker_role | Should -Be 'reviewer'
@@ -269,6 +270,10 @@ Describe 'Get-BridgeSettings' {
         $settings.agent_slots[0].pane_title | Should -Be 'W1 Codex Reviewer'
         $settings.agent_slots[1].worker_backend | Should -Be 'local'
         $settings.agent_slots[1].execution_profile | Should -Be 'local-windows'
+        $settings.agent_slots[1].agent | Should -Be 'antigravity'
+        $settings.agent_slots[1].PSObject.Properties.Name | Should -Not -Contain 'model'
+        $settings.agent_slots[1].PSObject.Properties.Name | Should -Not -Contain 'model_source'
+        $settings.agent_slots[1].prompt_transport | Should -Be 'file'
         $settings.builders | Should -Be 0
         $settings.researchers | Should -Be 0
         $settings.reviewers | Should -Be 0
@@ -353,6 +358,32 @@ agent-slots:
         $settings.agent_slots[2].model | Should -Be 'gemini-2.5-pro'
     }
 
+    It 'uses file prompt transport for public-safe Antigravity slots without recording a local model' {
+@'
+external-operator: true
+worker-backend: local
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    worker-backend: local
+    worktree-mode: managed
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        $settings = Get-BridgeSettings
+        $workerOneConfig = Get-SlotAgentConfig -Role 'Worker' -SlotId 'worker-1' -Settings $settings
+
+        $workerOneConfig.Agent | Should -Be 'antigravity'
+        $workerOneConfig.Model | Should -Be ''
+        $workerOneConfig.ModelSource | Should -Be 'provider-default'
+        $workerOneConfig.PromptTransport | Should -Be 'file'
+    }
+
     It 'propagates top-level worker backend into generated managed slots' {
 @'
 agent: codex
@@ -410,6 +441,104 @@ agent-slots:
         $impl.WorkerBackend | Should -Be 'colab_cli'
         $impl.ExecutionProfile | Should -Be 'isolated-enterprise'
         $impl.ExecutionBackend | Should -Be ''
+    }
+
+    It 'parses local_llm slot metadata without using Colab fallback fields' {
+@'
+agent: ollama
+worker-backend: local
+agent-slots:
+  - slot-id: worker-3
+    runtime-role: worker
+    worker-backend: local_llm
+    worker-role: consult
+    agent: ollama
+    model-id: gemma3:1b
+    runtime: ollama
+    endpoint: http://127.0.0.1:11434
+    artifact-root: G:\winsmux-local-llm\artifacts
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        $settings = Get-BridgeSettings
+        $slot = Get-SlotAgentConfig -Role 'Worker' -SlotId 'worker-3' -Settings $settings -RootPath $script:settingsTempRoot
+
+        $settings.agent_slots[0].worker_backend | Should -Be 'local_llm'
+        $slot.WorkerBackend | Should -Be 'local_llm'
+        $slot.Agent | Should -Be 'ollama'
+        $slot.ModelId | Should -Be 'gemma3:1b'
+        $slot.Runtime | Should -Be 'ollama'
+        $slot.Endpoint | Should -Be 'http://127.0.0.1:11434'
+        $slot.ArtifactRoot | Should -Be 'G:\winsmux-local-llm\artifacts'
+        $slot.GpuPreference.Count | Should -Be 0
+    }
+
+    It 'parses colab_llm slot metadata for worker-1 and worker-2 without local Ollama storage' {
+@'
+agent: claude
+worker-backend: local
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    worker-backend: colab_llm
+    worker-role: consult
+    agent: colab-llm
+    model-id: google/gemma-3-27b-it
+    model-family: gemma
+    runtime: colab
+    runtime-engine: vllm
+    gpu-preference: H100,A100
+    session-name: winsmux_colab_llm_runtime
+    drive-root: /content/drive/MyDrive/winsmux-colab-llm
+    model-root: /content/drive/MyDrive/winsmux-colab-llm/models
+    hf-cache-root: /content/drive/MyDrive/winsmux-colab-llm/hf-cache
+    artifact-root: /content/drive/MyDrive/winsmux-colab-llm/artifacts
+    runtime-cache-root: /content/winsmux-runtime-cache
+    precision: bfloat16
+    quantization: none
+    license-state: accepted
+    worktree-mode: managed
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: colab_llm
+    worker-role: consult
+    agent: colab-llm
+    model-id: Qwen/Qwen3-32B
+    model-family: qwen
+    runtime: colab
+    runtime-engine: vllm
+    gpu-preference: H100,A100
+    session-name: winsmux_colab_llm_runtime
+    drive-root: /content/drive/MyDrive/winsmux-colab-llm
+    license-state: not_required
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        $settings = Get-BridgeSettings
+        $worker1 = Get-SlotAgentConfig -Role 'Worker' -SlotId 'worker-1' -Settings $settings -RootPath $script:settingsTempRoot
+        $worker2 = Get-SlotAgentConfig -Role 'Worker' -SlotId 'worker-2' -Settings $settings -RootPath $script:settingsTempRoot
+
+        $worker1.WorkerBackend | Should -Be 'colab_llm'
+        $worker1.Runtime | Should -Be 'colab'
+        $worker1.RuntimeEngine | Should -Be 'vllm'
+        $worker1.ModelId | Should -Be 'google/gemma-3-27b-it'
+        $worker1.ModelFamily | Should -Be 'gemma'
+        $worker1.DriveRoot | Should -Be '/content/drive/MyDrive/winsmux-colab-llm'
+        $worker1.ModelRoot | Should -Be '/content/drive/MyDrive/winsmux-colab-llm/models'
+        $worker1.HfCacheRoot | Should -Be '/content/drive/MyDrive/winsmux-colab-llm/hf-cache'
+        $worker1.ArtifactRoot | Should -Be '/content/drive/MyDrive/winsmux-colab-llm/artifacts'
+        $worker1.RuntimeCacheRoot | Should -Be '/content/winsmux-runtime-cache'
+        $worker1.Precision | Should -Be 'bfloat16'
+        $worker1.Quantization | Should -Be 'none'
+        $worker1.LicenseState | Should -Be 'accepted'
+        $worker1.GpuPreference | Should -Be @('H100', 'A100')
+        $worker2.WorkerBackend | Should -Be 'colab_llm'
+        $worker2.ModelId | Should -Be 'Qwen/Qwen3-32B'
+        $worker2.SessionName | Should -Be 'winsmux_colab_llm_runtime'
     }
 
     It 'fails closed when execution profile is unsupported' {
@@ -674,6 +803,49 @@ agent-slots:
         }
     }
 
+    It 'marks a colab_llm worker degraded when only a non-target fallback GPU is available' {
+        $fakeCli = Join-Path $script:settingsTempRoot 'google-colab-cli.cmd'
+        Write-PsmuxBridgeTestFile -Path $fakeCli -Content '@echo off'
+
+        $previousCli = $env:WINSMUX_COLAB_CLI
+        $previousAuth = $env:WINSMUX_COLAB_AUTH_STATE
+        $previousGpu = $env:WINSMUX_COLAB_AVAILABLE_GPUS
+        try {
+            $env:WINSMUX_COLAB_CLI = $fakeCli
+            $env:WINSMUX_COLAB_AUTH_STATE = 'authenticated'
+            $env:WINSMUX_COLAB_AVAILABLE_GPUS = 'L4'
+            Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+@'
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    worker-backend: colab_llm
+    session-name: colab-llm-gpu-session
+    gpu-preference: [H100, A100]
+    model-id: Qwen/Qwen3-32B
+    runtime: colab
+    runtime-engine: vllm
+    license-state: not_required
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+            $settings = Get-BridgeSettings
+            $state = Update-WinsmuxColabSessionState -ProjectDir $script:settingsTempRoot -Settings $settings
+            $record = @($state.active_sessions)[0]
+
+            $record['worker_backend'] | Should -Be 'colab_llm'
+            $record['state'] | Should -Be 'degraded'
+            $record['degraded'] | Should -Be $true
+            $record['degraded_reason'] | Should -Be 'gpu_fallback_selected'
+            $record['selected_gpu'] | Should -Be 'L4'
+        } finally {
+            if ($null -eq $previousCli) { Remove-Item Env:WINSMUX_COLAB_CLI -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_CLI = $previousCli }
+            if ($null -eq $previousAuth) { Remove-Item Env:WINSMUX_COLAB_AUTH_STATE -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_AUTH_STATE = $previousAuth }
+            if ($null -eq $previousGpu) { Remove-Item Env:WINSMUX_COLAB_AVAILABLE_GPUS -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_AVAILABLE_GPUS = $previousGpu }
+        }
+    }
+
     It 'marks renamed colab_cli sessions stale and reuses matching session records' {
         $fakeCli = Join-Path $script:settingsTempRoot 'google-colab-cli.cmd'
         Write-PsmuxBridgeTestFile -Path $fakeCli -Content '@echo off'
@@ -847,11 +1019,11 @@ agent-slots:
         $records[0]['selected_gpu'] | Should -Be 'CPU'
     }
 
-    It 'selects the first available GPU and treats missing inventory as CPU without degradation' {
+    It 'selects configured fallback GPUs and treats missing inventory as CPU without degradation' {
         $withFallback = Resolve-WinsmuxColabGpuSelection -GpuPreference @('H100', 'A100', 'L4') -AvailableGpu @('L4')
         $withFallback.selected | Should -Be 'L4'
-        $withFallback.degraded | Should -Be $true
-        $withFallback.reason | Should -Be 'gpu_fallback_selected'
+        $withFallback.degraded | Should -Be $false
+        $withFallback.reason | Should -Be ''
 
         $withoutInventory = Resolve-WinsmuxColabGpuSelection -GpuPreference @('H100', 'A100') -AvailableGpu @()
         $withoutInventory.selected | Should -Be 'CPU'
@@ -1111,7 +1283,7 @@ prompt-transport: socket
 
         $settings = Get-BridgeSettings
 
-        $settings.prompt_transport | Should -Be 'argv'
+        $settings.prompt_transport | Should -Be 'file'
     }
 
     It 'rejects retired operator role keys from project settings' {
@@ -1338,6 +1510,33 @@ agent-slots:
 
         $capability = Get-BridgeProviderCapability -RootPath $script:settingsTempRoot -ProviderId 'CODEX'
         $capability.command | Should -Be 'codex'
+    }
+
+    It 'exposes a built-in Ollama provider capability entry' {
+        $capability = Get-BridgeProviderCapability -RootPath $script:settingsTempRoot -ProviderId 'ollama'
+
+        $capability.adapter | Should -Be 'local_llm'
+        $capability.command | Should -Be 'ollama'
+        $capability.execution_backend | Should -Be 'local_llm'
+        $capability.analysis_posture | Should -Be 'read-only'
+        $capability.supports_file_edit | Should -Be $false
+        $capability.supports_verification | Should -Be $false
+        $capability.supports_consultation | Should -Be $true
+        @($capability.model_options | ForEach-Object { $_.id }) | Should -Contain 'gemma3:1b'
+        @($capability.model_options | ForEach-Object { $_.id }) | Should -Contain 'qwen2.5-coder:1.5b'
+    }
+
+    It 'exposes a built-in Colab GPU LLM provider capability entry' {
+        $capability = Get-BridgeProviderCapability -RootPath $script:settingsTempRoot -ProviderId 'colab-llm'
+
+        $capability.adapter | Should -Be 'colab_llm'
+        $capability.command | Should -Be 'google-colab-cli'
+        $capability.execution_backend | Should -Be 'colab_llm'
+        $capability.runtime_requirements | Should -Match 'Colab Pro'
+        $capability.analysis_posture | Should -Be 'read-only'
+        $capability.supports_file_edit | Should -Be $false
+        $capability.supports_verification | Should -Be $false
+        $capability.supports_consultation | Should -Be $true
     }
 
     It 'projects provider capability fields onto resolved slot configs' {
@@ -1674,6 +1873,16 @@ agent-slots:
       "adapter": "codex",
       "command": "codex-beta",
       "prompt_transports": ["argv", "file"]
+    },
+    "antigravity-local": {
+      "adapter": "antigravity",
+      "command": "agy",
+      "prompt_transports": ["file"]
+    },
+    "antigravity": {
+      "adapter": "antigravity",
+      "command": "agy",
+      "prompt_transports": ["file"]
     }
   }
 }
@@ -1716,6 +1925,109 @@ agent-slots:
             -RootPath $script:settingsTempRoot
 
         $providerDefaultSourceCommand | Should -Not -Match 'model=gpt-5\.4'
+
+        $antigravityCommand = Get-BridgeProviderLaunchCommand `
+            -ProviderId 'antigravity-local' `
+            -Model 'provider-default' `
+            -ModelSource 'provider-default' `
+            -ReasoningEffort 'provider-default' `
+            -ProjectDir 'C:\Project Root' `
+            -GitWorktreeDir 'C:\Project Root\.git\worktrees\worker-2' `
+            -RootPath $script:settingsTempRoot
+
+        $antigravityCommand | Should -Match '^agy '
+        $antigravityCommand | Should -Match "--add-dir 'C:\\Project Root'"
+        $antigravityCommand | Should -Not -Match '--model'
+
+        $agyAliasCommand = Get-BridgeProviderLaunchCommand `
+            -ProviderId 'agy' `
+            -Model 'provider-default' `
+            -ModelSource 'provider-default' `
+            -ReasoningEffort 'provider-default' `
+            -ProjectDir 'C:\Project Root' `
+            -GitWorktreeDir 'C:\Project Root\.git\worktrees\worker-3' `
+            -RootPath $script:settingsTempRoot
+
+        $agyAliasCommand | Should -Match '^agy '
+        $agyAliasCommand | Should -Match "--add-dir 'C:\\Project Root'"
+
+        $antigravitySuffixCommand = Get-BridgeProviderLaunchCommand `
+            -ProviderId 'antigravity:flash' `
+            -Model 'provider-default' `
+            -ModelSource 'provider-default' `
+            -ReasoningEffort 'provider-default' `
+            -ProjectDir 'C:\Project Root' `
+            -GitWorktreeDir 'C:\Project Root\.git\worktrees\worker-4' `
+            -RootPath $script:settingsTempRoot
+
+        $antigravitySuffixCommand | Should -Match '^agy '
+        $antigravitySuffixCommand | Should -Match "--add-dir 'C:\\Project Root'"
+
+        $agySuffixCommand = Get-BridgeProviderLaunchCommand `
+            -ProviderId 'agy:flash' `
+            -Model 'provider-default' `
+            -ModelSource 'provider-default' `
+            -ReasoningEffort 'provider-default' `
+            -ProjectDir 'C:\Project Root' `
+            -GitWorktreeDir 'C:\Project Root\.git\worktrees\worker-5' `
+            -RootPath $script:settingsTempRoot
+
+        $agySuffixCommand | Should -Match '^agy '
+        $agySuffixCommand | Should -Match "--add-dir 'C:\\Project Root'"
+
+        {
+            Get-BridgeProviderLaunchCommand `
+                -ProviderId 'antigravity' `
+                -Model 'Gemini 3.5 Flash (High)' `
+                -ModelSource 'operator-override' `
+                -ReasoningEffort 'provider-default' `
+                -ProjectDir 'C:\Project Root' `
+                -GitWorktreeDir 'C:\Project Root\.git\worktrees\worker-6' `
+                -RootPath $script:settingsTempRoot
+        } | Should -Throw '*Antigravity CLI model overrides are not launchable*'
+    }
+
+    It 'resolves the agy alias against Antigravity provider capabilities' {
+        $registryPath = Get-BridgeProviderCapabilityRegistryPath -RootPath $script:settingsTempRoot
+        $registryDir = Split-Path -Parent $registryPath
+        New-Item -ItemType Directory -Path $registryDir -Force | Out-Null
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "antigravity": {
+      "adapter": "antigravity",
+      "command": "agy",
+      "prompt_transports": ["file"],
+      "model_sources": ["provider-default", "operator-override"],
+      "reasoning_efforts": ["provider-default"]
+    }
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+
+@'
+agent: codex
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    agent: agy
+    model: Gemini 3.5 Flash (High)
+    model-source: operator-override
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        $settings = Get-BridgeSettings
+        $config = Get-SlotAgentConfig -Role 'Worker' -SlotId 'worker-1' -Settings $settings -RootPath $script:settingsTempRoot
+
+        $config.Agent | Should -Be 'agy'
+        $config.Model | Should -Be ''
+        $config.ModelSource | Should -Be 'provider-default'
+        $config.PromptTransport | Should -Be 'file'
+        $config.CapabilityAdapter | Should -Be 'antigravity'
+        $config.CapabilityCommand | Should -Be 'agy'
     }
 
     It 'rejects structurally malformed provider capability registries' {
@@ -8395,7 +8707,11 @@ panes:
         Mock Add-OrchestraPane { throw 'should not add a Builder pane without parallel-run support' }
         Mock Remove-OrchestraPane { throw 'should not remove' }
 
-        $result = Invoke-PaneScalingCheck -ManifestPath $script:paneScalerManifestPath -ScaleUpThreshold 0.8 -ScaleDownThreshold 0.0
+        $result = Invoke-PaneScalingCheck `
+            -ManifestPath $script:paneScalerManifestPath `
+            -Settings ([ordered]@{ agent = 'codex'; model = 'gpt-5.4'; roles = [ordered]@{} }) `
+            -ScaleUpThreshold 0.8 `
+            -ScaleDownThreshold 0.0
 
         $result.Action | Should -Be 'no_change'
         $result.Reason | Should -Be 'parallel_runs_unsupported'
@@ -8947,6 +9263,7 @@ panes:
 Describe 'winsmux workers command' {
     BeforeAll {
         $script:winsmuxWorkersCorePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $script:winsmuxLocalLlmE2ePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\test-local-llm-e2e.ps1'
         $script:winsmuxWorkersCoreRawContent = Get-Content -LiteralPath $script:winsmuxWorkersCorePath -Raw -Encoding UTF8
         . $script:winsmuxWorkersCorePath 'version' *> $null
     }
@@ -8958,10 +9275,16 @@ Describe 'winsmux workers command' {
         $script:previousColabAuth = $env:WINSMUX_COLAB_AUTH_STATE
         $script:previousColabGpu = $env:WINSMUX_COLAB_AVAILABLE_GPUS
         $script:previousWorkersNow = $env:WINSMUX_TEST_NOW_UTC
+        $script:previousOllamaModels = $env:OLLAMA_MODELS
+        $script:previousLocalLlmArtifactRoot = $env:WINSMUX_LOCAL_LLM_ARTIFACT_ROOT
+        $script:previousOllamaEndpoint = $env:WINSMUX_OLLAMA_ENDPOINT
         $env:WINSMUX_COLAB_CLI = 'winsmux-test-missing-google-colab-cli'
         $env:WINSMUX_COLAB_AUTH_STATE = ''
         $env:WINSMUX_COLAB_AVAILABLE_GPUS = ''
         $env:WINSMUX_TEST_NOW_UTC = ''
+        $env:OLLAMA_MODELS = ''
+        $env:WINSMUX_LOCAL_LLM_ARTIFACT_ROOT = ''
+        $env:WINSMUX_OLLAMA_ENDPOINT = ''
     }
 
     AfterEach {
@@ -8969,6 +9292,9 @@ Describe 'winsmux workers command' {
         $env:WINSMUX_COLAB_AUTH_STATE = $script:previousColabAuth
         $env:WINSMUX_COLAB_AVAILABLE_GPUS = $script:previousColabGpu
         $env:WINSMUX_TEST_NOW_UTC = $script:previousWorkersNow
+        $env:OLLAMA_MODELS = $script:previousOllamaModels
+        $env:WINSMUX_LOCAL_LLM_ARTIFACT_ROOT = $script:previousLocalLlmArtifactRoot
+        $env:WINSMUX_OLLAMA_ENDPOINT = $script:previousOllamaEndpoint
         if ($script:workersTempRoot -and (Test-Path -LiteralPath $script:workersTempRoot)) {
             Remove-Item -LiteralPath $script:workersTempRoot -Recurse -Force
         }
@@ -9005,6 +9331,106 @@ agent-slots:
     worker-backend: colab_cli
     session-name: winsmux_worker_2
     task-script: workers/colab/task.py
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+    }
+
+    function script:Write-WorkersLocalLlmProjectConfig {
+@'
+agent: ollama
+agent-slots:
+  - slot-id: worker-3
+    runtime-role: worker
+    worker-backend: local_llm
+    worker-role: consult
+    agent: ollama
+    model-id: gemma3:1b
+    runtime: ollama
+    endpoint: http://127.0.0.1:11434
+    artifact-root: G:\winsmux-local-llm\artifacts
+    worktree-mode: managed
+  - slot-id: worker-4
+    runtime-role: worker
+    worker-backend: local_llm
+    worker-role: consult
+    agent: ollama
+    model-id: qwen2.5-coder:1.5b
+    runtime: ollama
+    endpoint: http://127.0.0.1:11434
+    artifact-root: G:\winsmux-local-llm\artifacts
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+    }
+
+    function script:Write-WorkersColabLlmProjectConfig {
+@'
+agent: claude
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    worker-backend: colab_llm
+    worker-role: consult
+    agent: colab-llm
+    model-id: google/gemma-3-27b-it
+    model-family: gemma
+    runtime: colab
+    runtime-engine: vllm
+    gpu-preference: H100,A100
+    session-name: winsmux_colab_llm_runtime
+    drive-root: /content/drive/MyDrive/winsmux-colab-llm
+    model-root: /content/drive/MyDrive/winsmux-colab-llm/models
+    hf-cache-root: /content/drive/MyDrive/winsmux-colab-llm/hf-cache
+    artifact-root: /content/drive/MyDrive/winsmux-colab-llm/artifacts
+    runtime-cache-root: /content/winsmux-runtime-cache
+    precision: bfloat16
+    license-state: accepted
+    task-script: workers/colab/llm_worker.py
+    worktree-mode: managed
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: colab_llm
+    worker-role: consult
+    agent: colab-llm
+    model-id: Qwen/Qwen3-32B
+    model-family: qwen
+    runtime: colab
+    runtime-engine: vllm
+    gpu-preference: H100,A100
+    session-name: winsmux_colab_llm_runtime
+    drive-root: /content/drive/MyDrive/winsmux-colab-llm
+    model-root: /content/drive/MyDrive/winsmux-colab-llm/models
+    hf-cache-root: /content/drive/MyDrive/winsmux-colab-llm/hf-cache
+    artifact-root: /content/drive/MyDrive/winsmux-colab-llm/artifacts
+    runtime-cache-root: /content/winsmux-runtime-cache
+    precision: bfloat16
+    license-state: not_required
+    task-script: workers/colab/llm_worker.py
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+    }
+
+    function script:Write-WorkersColabLlmProjectConfigWithoutGpuPreference {
+@'
+agent: claude
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    worker-backend: colab_llm
+    worker-role: consult
+    agent: colab-llm
+    model-id: google/gemma-3-27b-it
+    model-family: gemma
+    runtime: colab
+    runtime-engine: vllm
+    session-name: winsmux_colab_llm_runtime
+    drive-root: /content/drive/MyDrive/winsmux-colab-llm
+    model-root: /content/drive/MyDrive/winsmux-colab-llm/models
+    hf-cache-root: /content/drive/MyDrive/winsmux-colab-llm/hf-cache
+    artifact-root: /content/drive/MyDrive/winsmux-colab-llm/artifacts
+    runtime-cache-root: /content/winsmux-runtime-cache
+    precision: bfloat16
+    license-state: accepted
+    task-script: workers/colab/llm_worker.py
     worktree-mode: managed
 '@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
     }
@@ -10422,6 +10848,516 @@ worker-backend: colab_cli
         @($payload.workers[1].approval_differences).Count | Should -Be 0
     }
 
+    It 'reports local_llm worker metadata in status output' {
+@'
+agent: ollama
+agent-slots:
+  - slot-id: worker-3
+    runtime-role: worker
+    worker-backend: local_llm
+    worker-role: consult
+    agent: ollama
+    model-id: gemma3:1b
+    runtime: ollama
+    endpoint: http://127.0.0.1:11434
+    artifact-root: G:\winsmux-local-llm\artifacts
+    worktree-mode: managed
+  - slot-id: worker-4
+    runtime-role: worker
+    worker-backend: local_llm
+    worker-role: consult
+    agent: ollama
+    model-id: qwen2.5-coder:1.5b
+    runtime: ollama
+    endpoint: http://127.0.0.1:11434
+    artifact-root: G:\winsmux-local-llm\artifacts
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        $env:OLLAMA_MODELS = 'G:\winsmux-local-llm\ollama-models'
+
+        Mock Test-WorkersWritableDirectory { return $true }
+
+        $Rest = @('--json', '--project-dir', $script:workersTempRoot)
+        $output = Invoke-WorkersStatus
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+
+        $payload.workers[0].backend | Should -Be 'local_llm'
+        $payload.workers[0].local_llm.runtime | Should -Be 'ollama'
+        $payload.workers[0].local_llm.model_id | Should -Be 'gemma3:1b'
+        $payload.workers[0].local_llm.health | Should -Be 'configured'
+        $payload.workers[1].local_llm.model_id | Should -Be 'qwen2.5-coder:1.5b'
+        $payload.workers[0].degraded_reason | Should -Be ''
+    }
+
+    It 'reports worker-1 and worker-2 as Colab GPU LLM model jobs in one runtime' {
+        New-WorkersFakeColabCli | Out-Null
+        Write-WorkersColabLlmProjectConfig
+
+        $Rest = @('--json', '--project-dir', $script:workersTempRoot)
+        $output = Invoke-WorkersStatus
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+
+        $payload.workers[0].slot_id | Should -Be 'worker-1'
+        $payload.workers[0].backend | Should -Be 'colab_llm'
+        $payload.workers[0].session | Should -Be 'winsmux_colab_llm_runtime'
+        $payload.workers[0].actual_gpu | Should -Be 'H100'
+        $payload.workers[0].colab_llm.runtime | Should -Be 'colab'
+        $payload.workers[0].colab_llm.runtime_engine | Should -Be 'vllm'
+        $payload.workers[0].colab_llm.model_id | Should -Be 'google/gemma-3-27b-it'
+        $payload.workers[0].colab_llm.health | Should -Be 'configured'
+        $payload.workers[0].colab_llm.gpu_preference | Should -Be 'H100,A100'
+        $payload.workers[0].colab_llm.drive_root | Should -Be '[DRIVE_PATH_REDACTED]'
+        $payload.workers[1].slot_id | Should -Be 'worker-2'
+        $payload.workers[1].backend | Should -Be 'colab_llm'
+        $payload.workers[1].session | Should -Be 'winsmux_colab_llm_runtime'
+        $payload.workers[1].colab_llm.model_id | Should -Be 'Qwen/Qwen3-32B'
+        $payload.workers[1].degraded_reason | Should -Be ''
+    }
+
+    It 'defaults colab_llm GPU preference to H100 and A100 when omitted' {
+        New-WorkersFakeColabCli | Out-Null
+        Write-WorkersColabLlmProjectConfigWithoutGpuPreference
+
+        $Rest = @('--json', '--project-dir', $script:workersTempRoot)
+        $output = Invoke-WorkersStatus
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+
+        $payload.workers[0].slot_id | Should -Be 'worker-1'
+        $payload.workers[0].backend | Should -Be 'colab_llm'
+        $payload.workers[0].colab_llm.gpu_preference | Should -Be 'H100,A100'
+        $payload.workers[0].colab_llm.health | Should -Be 'configured'
+        $payload.workers[0].degraded_reason | Should -Be ''
+    }
+
+    It 'marks colab_llm workers degraded when the model license has not been accepted' {
+@'
+agent: claude
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    worker-backend: colab_llm
+    agent: colab-llm
+    model-id: google/gemma-3-27b-it
+    runtime: colab
+    runtime-engine: vllm
+    gpu-preference: H100,A100
+    session-name: winsmux_colab_llm_runtime
+    drive-root: /content/drive/MyDrive/winsmux-colab-llm
+    license-state: pending
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        New-WorkersFakeColabCli | Out-Null
+
+        $Rest = @('worker-1', '--json', '--project-dir', $script:workersTempRoot)
+        $output = Invoke-WorkersStatus
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $row = @($payload.workers)[0]
+
+        $row.backend | Should -Be 'colab_llm'
+        $row.colab_llm.health | Should -Be 'license_not_accepted'
+        $row.degraded_reason | Should -Be 'license_state must be accepted or not_required before running a model job'
+    }
+
+    It 'marks local_llm workers degraded when artifact root is not writable' {
+        Write-WorkersLocalLlmProjectConfig
+        $env:OLLAMA_MODELS = 'G:\winsmux-local-llm\ollama-models'
+
+        Mock Test-WorkersWritableDirectory { return $false }
+
+        $Rest = @('worker-3', '--json', '--project-dir', $script:workersTempRoot)
+        $output = Invoke-WorkersStatus
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $row = @($payload.workers)[0]
+
+        $row.backend | Should -Be 'local_llm'
+        $row.local_llm.health | Should -Be 'artifact_root_not_writable'
+        $row.degraded_reason | Should -Be 'local LLM artifact_root must exist and be writable'
+    }
+
+    It 'marks local_llm workers degraded when artifact root is not ASCII-only' {
+@'
+agent: ollama
+agent-slots:
+  - slot-id: worker-3
+    runtime-role: worker
+    worker-backend: local_llm
+    worker-role: consult
+    agent: ollama
+    model-id: gemma3:1b
+    runtime: ollama
+    endpoint: http://127.0.0.1:11434
+    artifact-root: G:\非ASCII\winsmux-local-llm\artifacts
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        $env:OLLAMA_MODELS = 'G:\winsmux-local-llm\ollama-models'
+
+        Mock Test-WorkersWritableDirectory { return $true }
+
+        $Rest = @('worker-3', '--json', '--project-dir', $script:workersTempRoot)
+        $output = Invoke-WorkersStatus
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $row = @($payload.workers)[0]
+
+        $row.backend | Should -Be 'local_llm'
+        $row.local_llm.health | Should -Be 'artifact_root_path_non_ascii'
+        $row.local_llm.artifact_root_ascii | Should -Be $false
+        $row.degraded_reason | Should -Be 'local LLM artifact_root must use an ASCII-only path on Windows'
+    }
+
+    It 'marks local_llm workers degraded when model id is missing' {
+@'
+agent: ollama
+agent-slots:
+  - slot-id: worker-3
+    runtime-role: worker
+    worker-backend: local_llm
+    worker-role: consult
+    agent: ollama
+    runtime: ollama
+    endpoint: http://127.0.0.1:11434
+    artifact-root: G:\winsmux-local-llm\artifacts
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        $env:OLLAMA_MODELS = 'G:\winsmux-local-llm\ollama-models'
+
+        Mock Test-WorkersWritableDirectory { return $true }
+
+        $Rest = @('worker-3', '--json', '--project-dir', $script:workersTempRoot)
+        $output = Invoke-WorkersStatus
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $row = @($payload.workers)[0]
+
+        $row.backend | Should -Be 'local_llm'
+        $row.local_llm.health | Should -Be 'missing_model_id'
+        $row.degraded_reason | Should -Be 'model_id is required'
+    }
+
+    It 'reports healthy Ollama doctor checks when local_llm endpoint and models are available' {
+        Write-WorkersLocalLlmProjectConfig
+        $env:OLLAMA_MODELS = 'G:\winsmux-local-llm\ollama-models'
+
+        Mock Get-Command {
+            [PSCustomObject]@{ Source = 'G:\tools\ollama.exe' }
+        } -ParameterFilter { $Name -eq 'ollama' }
+        Mock Invoke-RestMethod {
+            param([string]$Uri)
+            if ($Uri -like '*/api/version') {
+                return [PSCustomObject]@{ version = '1.0.0' }
+            }
+            if ($Uri -like '*/api/tags') {
+                return [PSCustomObject]@{
+                    models = @(
+                        [PSCustomObject]@{ name = 'gemma3:1b' },
+                        [PSCustomObject]@{ name = 'qwen2.5-coder:1.5b' }
+                    )
+                }
+            }
+            throw "unexpected uri: $Uri"
+        }
+
+        $Rest = @('--json', '--project-dir', $script:workersTempRoot)
+        $output = Invoke-WorkersDoctor
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+
+        (@($payload.checks | Where-Object { $_.label -eq 'ollama command' })[0].status) | Should -Be 'pass'
+        (@($payload.checks | Where-Object { $_.label -eq 'ollama endpoint' })[0].status) | Should -Be 'pass'
+        (@($payload.checks | Where-Object { $_.label -eq 'local LLM model worker-3' })[0].status) | Should -Be 'pass'
+        (@($payload.checks | Where-Object { $_.label -eq 'local LLM model worker-4' })[0].status) | Should -Be 'pass'
+    }
+
+    It 'reports Ollama doctor failure when the local_llm endpoint is unavailable' {
+        Write-WorkersLocalLlmProjectConfig
+        $env:OLLAMA_MODELS = 'G:\winsmux-local-llm\ollama-models'
+
+        Mock Get-Command {
+            [PSCustomObject]@{ Source = 'G:\tools\ollama.exe' }
+        } -ParameterFilter { $Name -eq 'ollama' }
+        Mock Invoke-RestMethod {
+            throw 'connection refused'
+        }
+
+        $Rest = @('--json', '--project-dir', $script:workersTempRoot)
+        $output = Invoke-WorkersDoctor
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+
+        (@($payload.checks | Where-Object { $_.label -eq 'ollama endpoint' })[0].status) | Should -Be 'fail'
+        (@($payload.checks | Where-Object { $_.label -eq 'local LLM model worker-3' })[0].status) | Should -Be 'warn'
+    }
+
+    It 'reports Ollama doctor failure when a local_llm model is missing' {
+        Write-WorkersLocalLlmProjectConfig
+        $env:OLLAMA_MODELS = 'G:\winsmux-local-llm\ollama-models'
+
+        Mock Get-Command {
+            [PSCustomObject]@{ Source = 'G:\tools\ollama.exe' }
+        } -ParameterFilter { $Name -eq 'ollama' }
+        Mock Invoke-RestMethod {
+            param([string]$Uri)
+            if ($Uri -like '*/api/version') {
+                return [PSCustomObject]@{ version = '1.0.0' }
+            }
+            if ($Uri -like '*/api/tags') {
+                return [PSCustomObject]@{
+                    models = @([PSCustomObject]@{ name = 'gemma3:1b' })
+                }
+            }
+            throw "unexpected uri: $Uri"
+        }
+
+        $Rest = @('--json', '--project-dir', $script:workersTempRoot)
+        $output = Invoke-WorkersDoctor
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+
+        (@($payload.checks | Where-Object { $_.label -eq 'local LLM model worker-3' })[0].status) | Should -Be 'pass'
+        (@($payload.checks | Where-Object { $_.label -eq 'local LLM model worker-4' })[0].status) | Should -Be 'fail'
+        (@($payload.checks | Where-Object { $_.label -eq 'local LLM model worker-4' })[0].action) | Should -Match 'ollama pull qwen2.5-coder:1.5b'
+    }
+
+    It 'treats Ollama error payloads as failed local_llm responses' {
+        Mock Invoke-RestMethod {
+            [PSCustomObject]@{ error = 'model not found' }
+        }
+
+        $result = Invoke-WorkersOllamaChat -Endpoint 'http://127.0.0.1:11434' -ModelId 'missing:model' -Prompt 'hello'
+
+        $result.Status | Should -Be 'failed'
+        $result.ExitCode | Should -Be 1
+        $result.Error | Should -Be 'model not found'
+        $result.Content | Should -Be ''
+    }
+
+    It 'treats Ollama responses without message content as failed local_llm responses' {
+        Mock Invoke-RestMethod {
+            [PSCustomObject]@{ done = $true }
+        }
+
+        $result = Invoke-WorkersOllamaChat -Endpoint 'http://127.0.0.1:11434' -ModelId 'gemma3:1b' -Prompt 'hello'
+
+        $result.Status | Should -Be 'failed'
+        $result.ExitCode | Should -Be 1
+        $result.Error | Should -Be 'Ollama response did not include message.content'
+        $result.Content | Should -Be ''
+    }
+
+    It 'executes two local_llm workers with mocked Ollama and stores redacted evidence' {
+        Write-WorkersLocalLlmProjectConfig
+        $env:OLLAMA_MODELS = 'G:\winsmux-local-llm\ollama-models'
+        $prompt = 'Summarize token=ghp_abcdefghijklmnopqrstuvwxyz123456 C:\Users\Example\secret.txt G:\private\model.bin'
+
+        Mock Invoke-WorkersOllamaChat {
+            param([string]$Endpoint, [string]$ModelId, [string]$Prompt)
+            [PSCustomObject]@{
+                Status = 'succeeded'
+                ExitCode = 0
+                Content = "answer from $ModelId token=ghp_abcdefghijklmnopqrstuvwxyz123456 C:\Users\Example\secret.txt"
+                Request = [ordered]@{ model = $ModelId; prompt = $Prompt }
+                Response = [ordered]@{ message = [ordered]@{ content = "answer from $ModelId" } }
+                ElapsedMs = 42
+                Error = ''
+            }
+        }
+        Mock Write-WorkersLocalLlmArtifact {
+            param([string]$ArtifactRoot, [string]$SlotId, [string]$RunId, $Data)
+            "local_llm_artifacts/$SlotId/$RunId/request-response.json"
+        }
+        Mock Test-WorkersWritableDirectory { return $true }
+
+        $Rest = @('worker-3', '--prompt', $prompt, '--run-id', 'local-success-3', '--json', '--project-dir', $script:workersTempRoot)
+        $worker3Output = Invoke-WorkersExec
+        $worker3 = ($worker3Output | Select-Object -Last 1) | ConvertFrom-Json
+
+        $Rest = @('worker-4', '--prompt', $prompt, '--run-id', 'local-success-4', '--json', '--project-dir', $script:workersTempRoot)
+        $worker4Output = Invoke-WorkersExec
+        $worker4 = ($worker4Output | Select-Object -Last 1) | ConvertFrom-Json
+
+        $worker3.status | Should -Be 'succeeded'
+        $worker3.backend | Should -Be 'local_llm'
+        $worker3.model_id | Should -Be 'gemma3:1b'
+        $worker3.large_artifact | Should -Be 'local_llm_artifacts/worker-3/local-success-3/request-response.json'
+        $worker4.status | Should -Be 'succeeded'
+        $worker4.model_id | Should -Be 'qwen2.5-coder:1.5b'
+        $worker4.large_artifact | Should -Be 'local_llm_artifacts/worker-4/local-success-4/request-response.json'
+
+        $log3 = Get-Content -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\worker-runs\worker-3\local-success-3\stdout.log') -Raw -Encoding UTF8
+        $run3 = Get-Content -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\worker-runs\worker-3\local-success-3\run.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $log3 | Should -Match '\[REDACTED\]'
+        $log3 | Should -Match '\[LOCAL_PATH_REDACTED\]'
+        $log3 | Should -Not -Match 'ghp_abcdefghijklmnopqrstuvwxyz123456'
+        $run3.project_dir | Should -Match '\[LOCAL_PATH_REDACTED\]'
+        $run3.project_dir | Should -Not -Match ([regex]::Escape($script:workersTempRoot))
+        $run3.large_artifact | Should -Be 'local_llm_artifacts/worker-3/local-success-3/request-response.json'
+        $run3.large_artifact | Should -Not -Match '^G:'
+        $run3.status | Should -Be $worker3.status
+        $run3.exit_code | Should -Be 0
+        $run3.error | Should -Be ''
+
+        Should -Invoke Invoke-WorkersOllamaChat -Times 2 -Exactly
+        Should -Invoke Write-WorkersLocalLlmArtifact -Times 2 -Exactly
+    }
+
+    It 'redacts local_llm run logs without calling the Colab adapter' {
+@'
+agent: ollama
+agent-slots:
+  - slot-id: worker-3
+    runtime-role: worker
+    worker-backend: local_llm
+    agent: ollama
+    model-id: gemma3:1b
+    runtime: ollama
+    artifact-root: G:\winsmux-local-llm\artifacts
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        $runDir = Join-Path $script:workersTempRoot '.winsmux\worker-runs\worker-3\local-run'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        "Authorization: Bearer abcdefghijklmnop`nG:\private\drive\artifact.json`nc:\users\example\secret.txt`nD:/work/repo/secret.txt" | Set-Content -Path (Join-Path $runDir 'stdout.log') -Encoding UTF8
+        @{ status = 'succeeded'; exit_code = 0; run_id = 'local-run'; model_id = 'gemma3:1b' } | ConvertTo-Json | Set-Content -Path (Join-Path $runDir 'run.json') -Encoding UTF8
+
+        $logsOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers logs worker-3 --run-id local-run --json --project-dir $script:workersTempRoot
+        $payload = ($logsOutput | Select-Object -Last 1) | ConvertFrom-Json
+
+        $payload.backend | Should -Be 'local_llm'
+        $payload.source | Should -Be 'local'
+        $payload.project_dir | Should -Match '\[LOCAL_PATH_REDACTED\]'
+        $payload.project_dir | Should -Not -Match ([regex]::Escape($script:workersTempRoot))
+        $payload.log | Should -Match '\[REDACTED\]'
+        $payload.log | Should -Match '\[LOCAL_PATH_REDACTED\]'
+        $payload.log | Should -Not -Match 'c:\\users\\example'
+        $payload.log | Should -Not -Match 'D:/work/repo'
+        $payload.cli_command | Should -Be ''
+    }
+
+    It 'keeps one local_llm stored success separate from another stored failure' {
+        Write-WorkersLocalLlmProjectConfig
+        $successDir = Join-Path $script:workersTempRoot '.winsmux\worker-runs\worker-3\mixed-success'
+        $failedDir = Join-Path $script:workersTempRoot '.winsmux\worker-runs\worker-4\mixed-failed'
+        New-Item -ItemType Directory -Path $successDir,$failedDir -Force | Out-Null
+        'success body' | Set-Content -Path (Join-Path $successDir 'stdout.log') -Encoding UTF8
+        'failed body' | Set-Content -Path (Join-Path $failedDir 'stdout.log') -Encoding UTF8
+        @{ status = 'succeeded'; exit_code = 0; run_id = 'mixed-success'; model_id = 'gemma3:1b' } | ConvertTo-Json | Set-Content -Path (Join-Path $successDir 'run.json') -Encoding UTF8
+        @{ status = 'failed'; exit_code = 9; run_id = 'mixed-failed'; model_id = 'qwen2.5-coder:1.5b' } | ConvertTo-Json | Set-Content -Path (Join-Path $failedDir 'run.json') -Encoding UTF8
+
+        $successOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers logs worker-3 --run-id mixed-success --json --project-dir $script:workersTempRoot
+        $success = ($successOutput | Select-Object -Last 1) | ConvertFrom-Json
+        $failedOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers logs worker-4 --run-id mixed-failed --json --project-dir $script:workersTempRoot 2>&1
+        $failed = ($failedOutput | Select-Object -Last 1) | ConvertFrom-Json
+
+        $success.status | Should -Be 'succeeded'
+        $success.log | Should -Match 'success body'
+        $failed.status | Should -Be 'failed'
+        $failed.exit_code | Should -Be 9
+        $failed.log | Should -Match 'failed body'
+    }
+
+    It 'marks local_llm logs as failed when run.json is unreadable' {
+        Write-WorkersLocalLlmProjectConfig
+        $runDir = Join-Path $script:workersTempRoot '.winsmux\worker-runs\worker-3\corrupt-run'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        'body from corrupt run' | Set-Content -Path (Join-Path $runDir 'stdout.log') -Encoding UTF8
+        '{ not valid json' | Set-Content -Path (Join-Path $runDir 'run.json') -Encoding UTF8
+
+        $logsOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers logs worker-3 --run-id corrupt-run --json --project-dir $script:workersTempRoot 2>&1
+        $payload = ($logsOutput | Select-Object -Last 1) | ConvertFrom-Json
+
+        $LASTEXITCODE | Should -Be 1
+        $payload.status | Should -Be 'failed'
+        $payload.exit_code | Should -Be 1
+        $payload.log | Should -Match 'body from corrupt run'
+        $payload.log | Should -Match '\[RUN_METADATA_UNREADABLE\]'
+    }
+
+    It 'blocks local_llm exec before Ollama when model storage is not on G drive' {
+@'
+agent: ollama
+agent-slots:
+  - slot-id: worker-3
+    runtime-role: worker
+    worker-backend: local_llm
+    agent: ollama
+    model-id: gemma3:1b
+    runtime: ollama
+    artifact-root: G:\winsmux-local-llm\artifacts
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        $env:OLLAMA_MODELS = ''
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers exec worker-3 --prompt 'hello' --run-id missing-storage --json --project-dir $script:workersTempRoot 2>&1
+
+        $LASTEXITCODE | Should -Be 1
+        ($output | Out-String) | Should -Match 'OLLAMA_MODELS must point to G drive'
+        ($output | Out-String) | Should -Not -Match 'google-colab-cli'
+        Test-Path -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\worker-runs\worker-3\missing-storage') | Should -Be $false
+    }
+
+    It 'blocks the local_llm E2E runner when model storage is on C drive' {
+        $output = & pwsh -NoProfile -File $script:winsmuxLocalLlmE2ePath -ProjectDir $script:workersTempRoot -ModelRoot 'C:\winsmux-local-llm\ollama-models' -ArtifactRoot 'G:\winsmux-local-llm\artifacts' 2>&1
+
+        $LASTEXITCODE | Should -Be 1
+        ($output | Out-String) | Should -Match 'ModelRoot must be on G drive'
+        Test-Path -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\local-llm-e2e') | Should -Be $false
+    }
+
+    It 'blocks the local_llm E2E runner when the Ollama model root is not ASCII-only' {
+        $output = & pwsh -NoProfile -File $script:winsmuxLocalLlmE2ePath -ProjectDir $script:workersTempRoot -ModelRoot 'G:\非ASCII\winsmux-local-llm\ollama-models' -ArtifactRoot 'G:\winsmux-local-llm\artifacts' 2>&1
+
+        $LASTEXITCODE | Should -Be 1
+        ($output | Out-String) | Should -Match 'ModelRoot must be ASCII-only'
+        Test-Path -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\local-llm-e2e') | Should -Be $false
+    }
+
+    It 'blocks the local_llm E2E runner when artifact root is not ASCII-only' {
+        $output = & pwsh -NoProfile -File $script:winsmuxLocalLlmE2ePath -ProjectDir $script:workersTempRoot -ModelRoot 'G:\winsmux-local-llm\ollama-models' -ArtifactRoot 'G:\非ASCII\winsmux-local-llm\artifacts' 2>&1
+
+        $LASTEXITCODE | Should -Be 1
+        ($output | Out-String) | Should -Match 'ArtifactRoot must be ASCII-only'
+        Test-Path -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\local-llm-e2e') | Should -Be $false
+    }
+
+    It 'documents local_llm support for ASCII subst drives backed by G drive' {
+        $e2eRawContent = Get-Content -LiteralPath $script:winsmuxLocalLlmE2ePath -Raw -Encoding UTF8
+
+        $script:winsmuxWorkersCoreRawContent | Should -Match 'Get-WorkersSubstTargetForDrive'
+        $script:winsmuxWorkersCoreRawContent | Should -Match 'cmd\.exe /c subst'
+        $e2eRawContent | Should -Match 'Get-SubstTargetForDrive'
+        $e2eRawContent | Should -Match 'cmd\.exe /c subst'
+    }
+
+    It 'bounds local_llm E2E worker jobs and validates output artifacts' {
+        $e2eRawContent = Get-Content -LiteralPath $script:winsmuxLocalLlmE2ePath -Raw -Encoding UTF8
+
+        $e2eRawContent | Should -Match 'WorkerExecTimeoutSeconds'
+        $e2eRawContent | Should -Match 'Wait-Job -Job \$jobs -Timeout'
+        $e2eRawContent | Should -Match 'workers exec stdout log is empty'
+        $e2eRawContent | Should -Match 'large_artifact'
+        $e2eRawContent | Should -Match 'workers logs returned empty log'
+        $e2eRawContent | Should -Match 'Test-PathWithinRoot'
+        $e2eRawContent | Should -Match '\[System\.IO\.Path\]::GetFullPath'
+    }
+
+    It 'blocks the local_llm E2E runner when an explicit OllamaPath is invalid' {
+        $repoRoot = Split-Path -Parent $PSScriptRoot
+        $output = & pwsh -NoProfile -File $script:winsmuxLocalLlmE2ePath -ProjectDir $repoRoot -ModelRoot 'G:\winsmux-local-llm\ollama-models' -ArtifactRoot 'G:\winsmux-local-llm\artifacts' -OllamaPath 'C:\tmp\missing-ollama.exe' 2>&1
+
+        $LASTEXITCODE | Should -Be 1
+        ($output | Out-String) | Should -Match 'OllamaPath is not readable or does not point to a file'
+        Test-Path -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\local-llm-e2e') | Should -Be $false
+    }
+
+    It 'prints local_llm E2E preflight JSON without creating evidence when OllamaPath is invalid' {
+        $repoRoot = Split-Path -Parent $PSScriptRoot
+        $evidenceRoot = Join-Path $repoRoot '.winsmux\local-llm-e2e\preflight-invalid'
+        if (Test-Path -LiteralPath $evidenceRoot) {
+            Remove-Item -LiteralPath $evidenceRoot -Recurse -Force
+        }
+        $output = & pwsh -NoProfile -File $script:winsmuxLocalLlmE2ePath -ProjectDir $repoRoot -ModelRoot 'G:\winsmux-local-llm\ollama-models' -ArtifactRoot 'G:\winsmux-local-llm\artifacts' -OllamaPath 'C:\tmp\missing-ollama.exe' -RunId 'preflight-invalid' -PreflightOnly 2>&1
+        $payload = ($output | Out-String) | ConvertFrom-Json
+
+        $LASTEXITCODE | Should -Be 1
+        $payload.status | Should -Be 'blocked'
+        (@($payload.checks | Where-Object { $_.name -eq 'ollama_command' })[0].status) | Should -Be 'fail'
+        Test-Path -LiteralPath $evidenceRoot | Should -Be $false
+    }
+
     It 'stops one worker by slot alias and records the lifecycle command in the manifest' {
 @'
 agent: codex
@@ -10548,6 +11484,7 @@ agent-slots:
 @'
 agent: codex
 model: gpt-5.5
+prompt-transport: file
 agent-slots:
   - slot-id: worker-1
     runtime-role: worker
@@ -10589,7 +11526,7 @@ agent-slots:
                         model = 'gpt-5.4'
                         model_source = 'operator-override'
                         reasoning_effort = 'high'
-                        prompt_transport = 'argv'
+                        prompt_transport = 'file'
                         auth_mode = 'local-cli'
                         credential_requirements = 'local-cli-owned'
                         execution_backend = 'local'
@@ -10645,6 +11582,7 @@ agent-slots:
 @'
 agent: codex
 model: gpt-5.5
+prompt-transport: argv
 agent-slots:
   - slot-id: worker-1
     runtime-role: worker
@@ -10780,9 +11718,10 @@ agent-slots:
                         model = 'gpt-5.5'
                         model_source = 'operator-override'
                         reasoning_effort = 'high'
-                        prompt_transport = 'argv'
+                        prompt_transport = 'file'
                         auth_mode = ''
                         credential_requirements = ''
+                        execution_profile = 'local-windows'
                         execution_backend = ''
                         analysis_posture = ''
                         auto_launch = $false
@@ -10805,7 +11744,7 @@ agent-slots:
         $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
 
         $payload.results[0].slot_id | Should -Be 'worker-1'
-        $payload.results[0].status | Should -Be 'already_running'
+        $payload.results[0].status | Should -Be 'already_running' -Because ([string]$payload.results[0].reason)
         [bool]$payload.results[0].current_launch.auto_launch | Should -Be $false
         @($payload.results[0].approval_differences).Count | Should -Be 0
         Should -Invoke Send-TextToPane -Times 0 -Exactly
@@ -10897,6 +11836,41 @@ worker-backend: colab_cli
         }
     }
 
+    It 'reports Colab LLM doctor checks without requiring local Ollama storage' {
+        New-WorkersFakeColabCli | Out-Null
+        Write-WorkersColabLlmProjectConfig
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers doctor --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+
+        (@($payload.checks | Where-Object { $_.label -eq 'Colab LLM slots' })[0].status) | Should -Be 'pass'
+        (@($payload.checks | Where-Object { $_.label -eq 'Colab LLM worker worker-1' })[0].status) | Should -Be 'pass'
+        (@($payload.checks | Where-Object { $_.label -eq 'Colab LLM worker worker-2' })[0].detail) | Should -Match 'Qwen/Qwen3-32B via vllm'
+        $labels = @($payload.checks | ForEach-Object { $_.label })
+        $labels | Should -Not -Contain 'ollama command'
+        $labels | Should -Not -Contain 'OLLAMA_MODELS'
+    }
+
+    It 'reports colab_llm workers as not runnable when the Colab adapter is missing' {
+        Write-WorkersColabLlmProjectConfig
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers doctor --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+
+        $worker1Check = @($payload.checks | Where-Object { $_.label -eq 'Colab LLM worker worker-1' })[0]
+        $worker2Check = @($payload.checks | Where-Object { $_.label -eq 'Colab LLM worker worker-2' })[0]
+        $worker1Row = @($payload.workers | Where-Object { $_.slot_id -eq 'worker-1' })[0]
+
+        $worker1Check.status | Should -Be 'fail'
+        $worker1Check.detail | Should -Match 'colab_cli_missing'
+        $worker1Check.action | Should -Match 'Colab adapter'
+        $worker2Check.status | Should -Be 'fail'
+        $worker1Row.backend | Should -Be 'colab_llm'
+        $worker1Row.degraded_reason | Should -Match 'colab_cli_missing'
+        $worker1Row.colab_llm.health | Should -Be 'gpu_degraded'
+        $worker1Row.colab_llm.reason | Should -Match 'selected GPU'
+    }
+
     It 'runs a one-shot Colab worker script and reads the stored log' {
         New-WorkersFakeColabCli | Out-Null
         Write-WorkersColabProjectConfig
@@ -10917,6 +11891,38 @@ worker-backend: colab_cli
         $logsPayload = ($logsOutput | Select-Object -Last 1) | ConvertFrom-Json
         $logsPayload.source | Should -Be 'local'
         $logsPayload.log | Should -Match 'fake-colab run'
+    }
+
+    It 'runs a Colab LLM worker through inline task JSON and records redacted evidence' {
+        New-WorkersFakeColabCli | Out-Null
+        Write-WorkersColabLlmProjectConfig
+        New-Item -ItemType Directory -Path (Join-Path $script:workersTempRoot 'workers\colab') -Force | Out-Null
+        'print("hello from colab llm")' | Set-Content -Path (Join-Path $script:workersTempRoot 'workers\colab\llm_worker.py') -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers exec worker-1 --prompt 'Summarize the repository shape.' --run-id colab-llm-run --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $argumentText = @($payload.cli_arguments) -join ' '
+        $runJsonPath = Join-Path $script:workersTempRoot ($payload.run_json -replace '/', '\')
+        $stored = Get-Content -LiteralPath $runJsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
+
+        $payload.status | Should -Be 'succeeded'
+        $payload.backend | Should -Be 'colab_llm'
+        $payload.slot_id | Should -Be 'worker-1'
+        $payload.model_id | Should -Be 'google/gemma-3-27b-it'
+        $argumentText | Should -Match '--task-json-inline'
+        $argumentText | Should -Not -Match '--task-json '
+        $argumentText | Should -Not -Match '/content/drive/MyDrive'
+        $argumentText | Should -Not -Match ([regex]::Escape($script:workersTempRoot))
+        $argumentText | Should -Match '\[DRIVE_PATH_REDACTED\]'
+        $argumentText | Should -Match '\[LOCAL_PATH_REDACTED\]'
+        $stored.backend | Should -Be 'colab_llm'
+        $stored.drive_root | Should -Be '[DRIVE_PATH_REDACTED]'
+        $stored.cli_arguments | Should -Contain '--task-json-inline'
+        $taskPath = Join-Path $script:workersTempRoot ($payload.task_json -replace '/', '\')
+        $task = Get-Content -LiteralPath $taskPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $task.execution.local_ollama_fallback | Should -Be $false
+        $task.execution.colab_cli_fallback | Should -Be $false
+        $task.storage.model_root | Should -Be '/content/drive/MyDrive/winsmux-colab-llm/models'
     }
 
     It 'lets the Colab adapter handle authentication when winsmux auth is unverified' {
@@ -15653,6 +16659,10 @@ Describe 'public first-run helper' {
 
         $settings = Get-BridgeSettings -RootPath $script:publicFirstRunTempRoot
         $settings.external_operator | Should -Be $true
+        $settings.agent | Should -Be 'antigravity'
+        $settings.model | Should -Be ''
+        $settings.model_source | Should -Be 'provider-default'
+        $settings.prompt_transport | Should -Be 'file'
         $settings.worker_count | Should -Be 6
         $settings.worker_backend | Should -Be 'local'
         $settings.agent_slots.Count | Should -Be 6
@@ -15660,16 +16670,39 @@ Describe 'public first-run helper' {
         $settings.agent_slots[0].agent | Should -Be 'codex'
         $settings.agent_slots[0].model | Should -Be 'provider-default'
         $settings.agent_slots[0].model_source | Should -Be 'provider-default'
+        $settings.agent_slots[0].prompt_transport | Should -Be 'argv'
         $settings.agent_slots[0].worker_backend | Should -Be 'codex'
         $settings.agent_slots[0].worker_role | Should -Be 'reviewer'
         $settings.agent_slots[0].fallback_model | Should -Be 'gpt-5.3-codex-spark'
         $settings.agent_slots[1].worker_backend | Should -Be 'local'
-        $slotKeys = if ($settings.agent_slots[1] -is [System.Collections.IDictionary]) {
-            @($settings.agent_slots[1].Keys)
-        } else {
-            @($settings.agent_slots[1].PSObject.Properties.Name)
-        }
-        $slotKeys | Should -Not -Contain 'model'
+        $settings.agent_slots[1].agent | Should -Be 'antigravity'
+        $settings.agent_slots[1].PSObject.Properties.Name | Should -Not -Contain 'model'
+        $settings.agent_slots[1].PSObject.Properties.Name | Should -Not -Contain 'model_source'
+        $settings.agent_slots[1].prompt_transport | Should -Be 'file'
+
+        $registryPath = Get-BridgeProviderCapabilityRegistryPath -RootPath $script:publicFirstRunTempRoot
+        New-Item -ItemType Directory -Path (Split-Path -Parent $registryPath) -Force | Out-Null
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "adapter": "codex",
+      "command": "codex",
+      "prompt_transports": ["argv", "file"]
+    },
+    "antigravity": {
+      "adapter": "antigravity",
+      "command": "agy",
+      "prompt_transports": ["file"]
+    }
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+        $workerTwoConfig = Get-SlotAgentConfig -Role 'Worker' -SlotId 'worker-2' -Settings $settings -RootPath $script:publicFirstRunTempRoot
+        $workerTwoConfig.Agent | Should -Be 'antigravity'
+        $workerTwoConfig.PromptTransport | Should -Be 'file'
+        $workerTwoConfig.CapabilityAdapter | Should -Be 'antigravity'
         $settings.workspace_lifecycle_preset | Should -Be 'managed-worktree'
     }
 
@@ -15699,6 +16732,22 @@ Describe 'public first-run helper' {
         $settings.agent_slots[0].worker_role | Should -Be 'reviewer'
         $settings.agent_slots[1].agent | Should -Be 'codex-nightly'
         $settings.agent_slots[1].model | Should -Be 'gpt-5.4-code'
+    }
+
+    It 'normalizes Antigravity model overrides to provider defaults on init' {
+        $result = Invoke-WinsmuxPublicInit -ProjectDir $script:publicFirstRunTempRoot -Agent 'agy:flash' -Model 'Gemini 3.5 Flash (High)' -WorkerCount 2
+
+        $result.status | Should -Be 'initialized'
+
+        $settings = Get-BridgeSettings -RootPath $script:publicFirstRunTempRoot
+        $settings.agent | Should -Be 'agy:flash'
+        $settings.model | Should -Be ''
+        $settings.model_source | Should -Be 'provider-default'
+        $settings.prompt_transport | Should -Be 'file'
+        $settings.agent_slots[1].agent | Should -Be 'agy:flash'
+        $settings.agent_slots[1].PSObject.Properties.Name | Should -Not -Contain 'model'
+        $settings.agent_slots[1].PSObject.Properties.Name | Should -Not -Contain 'model_source'
+        $settings.agent_slots[1].prompt_transport | Should -Be 'file'
     }
 
     It 'returns already_initialized when config exists and force is not set' {
@@ -15879,6 +16928,12 @@ gpt-5.4   64% context left
 │ Type your message... │
 ╰──────────────────────╯
 "@ -Agent 'gemini') | Should -Be $true
+        (Test-AgentReadyPromptText -Text @"
+Antigravity CLI 1.0.0
+>
+"@ -Agent 'antigravity') | Should -Be $true
+        (Test-AgentReadyPromptText -Text 'Antigravity CLI 1.0.0' -Agent 'antigravity') | Should -Be $false
+        (Test-AgentReadyPromptText -Text 'Gemini 3.5 Flash (High)' -Agent 'antigravity') | Should -Be $false
     }
 
     It 'does not treat stale prompt markers as ready' {
@@ -15893,6 +16948,12 @@ thinking
 Welcome to Claude Code!
 thinking
 "@ -Agent 'claude') | Should -Be $false
+
+        (Get-PaneActualStateFromText -Text @"
+Antigravity CLI 1.0.0
+Gemini 3.5 Flash (High)
+running background analysis
+"@ -Agent 'antigravity') | Should -Be 'busy'
     }
 
     It 'keeps readiness unknown when provider metadata is missing' {
@@ -15905,6 +16966,8 @@ thinking
         ConvertTo-ReadinessAgentName 'codex-nightly' | Should -Be 'codex'
         ConvertTo-ReadinessAgentName 'Claude/opus' | Should -Be 'claude'
         ConvertTo-ReadinessAgentName 'gemini:flash' | Should -Be 'gemini'
+        ConvertTo-ReadinessAgentName 'agy' | Should -Be 'antigravity'
+        ConvertTo-ReadinessAgentName 'antigravity:flash' | Should -Be 'antigravity'
     }
 
     It 'resolves readiness adapters from the pane manifest' {
@@ -20178,5 +21241,3518 @@ Describe 'watermark helpers' {
         $savedHash | Should -Not -BeNullOrEmpty
         (Test-WatermarkChanged -PaneId '%7' -CurrentContent 'hello') | Should -Be $false
         (Test-WatermarkChanged -PaneId '%7' -CurrentContent 'updated') | Should -Be $true
+    }
+}
+
+Describe 'CLI bakeoff evidence scaffold' {
+    BeforeAll {
+        $script:bakeoffRepoRoot = Split-Path -Parent $PSScriptRoot
+        $script:bakeoffScriptPath = Join-Path $script:bakeoffRepoRoot 'scripts\new-cli-bakeoff-run.ps1'
+        $script:bakeoffWorkerScriptPath = Join-Path $script:bakeoffRepoRoot 'scripts\invoke-cli-bakeoff-worker.ps1'
+        $script:bakeoffPreflightScriptPath = Join-Path $script:bakeoffRepoRoot 'scripts\test-cli-bakeoff-preflight.ps1'
+        $script:bakeoffSummaryScriptPath = Join-Path $script:bakeoffRepoRoot 'scripts\summarize-cli-bakeoff.ps1'
+        $script:bakeoffBenchmarkRunScriptPath = Join-Path $script:bakeoffRepoRoot 'scripts\new-cli-bakeoff-benchmark-run.ps1'
+        $script:bakeoffHarnessPackScriptPath = Join-Path $script:bakeoffRepoRoot 'scripts\new-cli-bakeoff-harnessbench-pack.ps1'
+        $script:bakeoffHarnessReferenceImportScriptPath = Join-Path $script:bakeoffRepoRoot 'scripts\import-cli-bakeoff-harnessbench-reference.ps1'
+        $script:bakeoffHarnessMatrixScriptPath = Join-Path $script:bakeoffRepoRoot 'scripts\new-cli-bakeoff-harnessbench-run-matrix.ps1'
+        $script:bakeoffRecordingReadyScriptPath = Join-Path $script:bakeoffRepoRoot 'scripts\test-cli-bakeoff-recording-ready.ps1'
+        $script:bakeoffPwshPath = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+        $script:NewMockAgyExe = {
+            param([Parameter(Mandatory = $true)][string]$Directory)
+
+            $className = 'WinsmuxMockAgy' + [guid]::NewGuid().ToString('N')
+            $source = @'
+using System;
+using System.IO;
+using System.Linq;
+using System.Text;
+using System.Threading;
+
+public static class CLASS_NAME
+{
+    public static int Main(string[] args)
+    {
+        string capturePath = Environment.GetEnvironmentVariable("WINS_MOCK_AGY_ARGS");
+        if (!String.IsNullOrWhiteSpace(capturePath))
+        {
+            File.WriteAllLines(
+                capturePath,
+                args.Select(arg => Convert.ToBase64String(Encoding.UTF8.GetBytes(arg))),
+                new UTF8Encoding(false));
+        }
+
+        if (args.Contains("--version"))
+        {
+            Console.OutputEncoding = new UTF8Encoding(false);
+            Console.WriteLine("Antigravity CLI 1.2.3");
+            return 0;
+        }
+
+        string mode = Environment.GetEnvironmentVariable("WINS_MOCK_AGY_MODE") ?? "";
+        int logIndex = Array.IndexOf(args, "--log-file");
+        if (logIndex >= 0 && (logIndex + 1) < args.Length &&
+            !String.Equals(mode, "no-log", StringComparison.OrdinalIgnoreCase) &&
+            !String.Equals(mode, "stdout-model-no-log", StringComparison.OrdinalIgnoreCase) &&
+            !String.Equals(mode, "plain-model-no-log", StringComparison.OrdinalIgnoreCase))
+        {
+            string modelLine = String.Equals(mode, "mismatch", StringComparison.OrdinalIgnoreCase)
+                ? "model: Gemini 3 Flash"
+                : "model: Gemini 3.5 Flash (High)";
+            string logText = String.Equals(mode, "metadata-only", StringComparison.OrdinalIgnoreCase) ||
+                String.Equals(mode, "empty-with-transcript", StringComparison.OrdinalIgnoreCase)
+                ? modelLine
+                : modelLine + Environment.NewLine + "text_drip.go length=128";
+            File.WriteAllText(args[logIndex + 1], logText, new UTF8Encoding(false));
+        }
+
+        if (String.Equals(mode, "empty-with-transcript", StringComparison.OrdinalIgnoreCase) ||
+            String.Equals(mode, "hang-after-transcript", StringComparison.OrdinalIgnoreCase))
+        {
+            string home = Environment.GetEnvironmentVariable("HOME") ?? "";
+            string transcriptDir = Path.Combine(
+                home,
+                ".gemini",
+                "antigravity-cli",
+                "brain",
+                "mock-conversation",
+                ".system_generated",
+                "logs");
+            Directory.CreateDirectory(transcriptDir);
+            string transcript = "{\"step_index\":2,\"source\":\"MODEL\",\"type\":\"PLANNER_RESPONSE\",\"status\":\"DONE\",\"content\":\"PREFLIGHT_OK worker-agy-transcript\\nBAKEOFF_ROUND_A_END\"}" + Environment.NewLine;
+            File.WriteAllText(Path.Combine(transcriptDir, "transcript.jsonl"), transcript, new UTF8Encoding(false));
+        }
+
+        if (String.Equals(mode, "hang-after-transcript", StringComparison.OrdinalIgnoreCase))
+        {
+            Thread.Sleep(30000);
+            return 0;
+        }
+
+        if (String.Equals(mode, "empty", StringComparison.OrdinalIgnoreCase) ||
+            String.Equals(mode, "empty-with-transcript", StringComparison.OrdinalIgnoreCase))
+        {
+            return 0;
+        }
+
+        if (String.Equals(mode, "cargo-missing", StringComparison.OrdinalIgnoreCase))
+        {
+            Console.OutputEncoding = new UTF8Encoding(false);
+            Console.Error.WriteLine("cargo : The term 'cargo' is not recognized as the name of a cmdlet, function, script file, or executable program.");
+            Console.WriteLine("BAKEOFF_ROUND_A_BEGIN");
+            Console.WriteLine("BAKEOFF_ROUND_A_END");
+            return 1;
+        }
+
+        Console.OutputEncoding = new UTF8Encoding(false);
+        Console.WriteLine("BAKEOFF_ROUND_A_BEGIN");
+        if (String.Equals(mode, "metadata", StringComparison.OrdinalIgnoreCase) ||
+            String.Equals(mode, "stdout-model-no-log", StringComparison.OrdinalIgnoreCase))
+        {
+            Console.WriteLine("model: Gemini 3.5 Flash (High)");
+        }
+        else if (String.Equals(mode, "plain-model-no-log", StringComparison.OrdinalIgnoreCase))
+        {
+            Console.WriteLine("The answer happens to mention Gemini 3.5 Flash (High) in plain text.");
+        }
+        else
+        {
+            Console.WriteLine("antigravity ok");
+        }
+        Console.WriteLine("BAKEOFF_ROUND_A_END");
+        return 0;
+    }
+}
+'@
+            $source = $source.Replace('CLASS_NAME', $className)
+
+            $sourcePath = Join-Path $Directory "$className.cs"
+            $outputPath = Join-Path $Directory 'agy.exe'
+            Set-Content -LiteralPath $sourcePath -Value $source -Encoding UTF8
+            $windowsRoot = if ([string]::IsNullOrWhiteSpace($env:WINDIR)) { $env:SystemRoot } else { $env:WINDIR }
+            if ([string]::IsNullOrWhiteSpace($windowsRoot)) {
+                throw 'WINDIR or SystemRoot is required to locate the C# compiler for mock agy.exe.'
+            }
+            $compilerPath = Join-Path $windowsRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+            if (-not (Test-Path -LiteralPath $compilerPath -PathType Leaf)) {
+                throw "Missing C# compiler for mock agy.exe: $compilerPath"
+            }
+
+            $compilerOutput = & $compilerPath /nologo /target:exe "/out:$outputPath" $sourcePath 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                throw "Failed to compile mock agy.exe: $compilerOutput"
+            }
+        }
+    }
+
+    BeforeEach {
+        $script:bakeoffTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-bakeoff-tests-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:bakeoffTempRoot -Force | Out-Null
+        $script:SetBakeoffPreflightArtifacts = {
+            param(
+                [Parameter(Mandatory = $true)][string]$RunDir,
+                [string]$TaskText = 'same task',
+                [string]$LaunchText = "Write-Output 'run worker'",
+                [string]$LaunchName = 'run-worker-1.ps1'
+            )
+
+            $taskPath = Join-Path $RunDir 'task-packet.md'
+            $launchPath = Join-Path $RunDir $LaunchName
+            Set-Content -LiteralPath $taskPath -Value $TaskText -Encoding UTF8
+            Set-Content -LiteralPath $launchPath -Value $LaunchText -Encoding UTF8
+
+            return [pscustomobject]@{
+                TaskHash   = (Get-FileHash -Algorithm SHA256 -LiteralPath $taskPath).Hash
+                LaunchName = $LaunchName
+                LaunchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $launchPath).Hash
+            }
+        }
+        $script:WriteBakeoffPreflightManifest = {
+            param(
+                [Parameter(Mandatory = $true)][string]$RunDir,
+                [Parameter(Mandatory = $true)]$Artifacts,
+                [object[]]$ActiveWorkers = @(),
+                [switch]$OmitTaskPacketHash,
+                [switch]$OmitLaunchScripts,
+                [switch]$OmitLaunchHash
+            )
+
+            $manifest = [ordered]@{
+                version = 1
+                run_id  = (Split-Path -Leaf $RunDir)
+            }
+            if (-not $OmitTaskPacketHash) {
+                $manifest['task_packet_hash'] = [string]$Artifacts.TaskHash
+            }
+            if (-not $OmitLaunchScripts) {
+                $manifest['launch_scripts'] = @(
+                    [ordered]@{
+                        name   = [string]$Artifacts.LaunchName
+                        sha256 = if ($OmitLaunchHash) { '' } else { [string]$Artifacts.LaunchHash }
+                    }
+                )
+            }
+            if (@($ActiveWorkers).Count -gt 0) {
+                $manifest['active_workers'] = @($ActiveWorkers)
+            }
+
+            $manifest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $RunDir 'manifest.json') -Encoding UTF8
+        }
+    }
+
+    AfterEach {
+        if ($script:bakeoffTempRoot -and (Test-Path -LiteralPath $script:bakeoffTempRoot)) {
+            Remove-Item -LiteralPath $script:bakeoffTempRoot -Recurse -Force
+        }
+    }
+
+    It 'creates the required evidence files and model vector scaffold' {
+        $json = & pwsh -NoLogo -NoProfile -File $script:bakeoffScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -RunId 'run-one' `
+            -Cli 'Antigravity CLI' `
+            -Model 'Gemini 3.5 Flash (High)' `
+            -TaskClass 'bounded_fix' `
+            -TaskAttributesJson '{"scope":"one_file","ambiguity":"clear"}' `
+            -TaskPacketText 'Fix the focused bug and run the focused test.' `
+            -DesktopAppVersion 'test-desktop' `
+            -AllowMissingRecording `
+            -Json
+
+        $created = $json | ConvertFrom-Json
+        $runDir = $created.evidence_dir
+        $runDir | Should -Not -BeNullOrEmpty
+
+        foreach ($fileName in @(
+            'manifest.json',
+            'pane-transcript.txt',
+            'commands.jsonl',
+            'resource-samples.jsonl',
+            'screen-recording.json',
+            'review-findings.jsonl',
+            'result.json',
+            'scorecard.md'
+        )) {
+            Test-Path -LiteralPath (Join-Path $runDir $fileName) | Should -BeTrue
+        }
+
+        Test-Path -LiteralPath (Join-Path $runDir 'screen-recording.mp4') | Should -BeFalse
+
+        $manifest = Get-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $manifest.cli | Should -Be 'Antigravity CLI'
+        $manifest.model | Should -Be 'Gemini 3.5 Flash (High)'
+        $manifest.task_class | Should -Be 'bounded_fix'
+        $manifest.task_attributes.scope | Should -Be 'one_file'
+        @($manifest.active_workers).Count | Should -Be 1
+        $manifest.active_workers[0].task_sha256 | Should -Be $manifest.task_packet_hash
+        @($manifest.launch_scripts).Count | Should -Be 1
+        Test-Path -LiteralPath (Join-Path $runDir $manifest.launch_scripts[0].name) | Should -BeTrue
+        $manifest.recording.required | Should -BeTrue
+        $manifest.recording.status | Should -Be 'missing_allowed_for_scaffold'
+
+        $result = Get-Content -LiteralPath (Join-Path $runDir 'result.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $result.capability_vector.PSObject.Properties.Name | Should -Contain 'quality'
+        $result.capability_vector.PSObject.Properties.Name | Should -Contain 'terminal_operation'
+        $result.verdict | Should -Be 'pending'
+
+        $scorecard = Get-Content -LiteralPath (Join-Path $runDir 'scorecard.md') -Raw -Encoding UTF8
+        $scorecard | Should -Match 'CLI Bakeoff Scorecard'
+        $scorecard | Should -Match 'Antigravity CLI'
+    }
+
+    It 'hashes inline task packets from the saved file bytes' {
+        $json = & pwsh -NoLogo -NoProfile -File $script:bakeoffScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -RunId 'inline-hash' `
+            -Cli 'Codex' `
+            -Model 'gpt-5.5' `
+            -TaskClass 'bounded_fix' `
+            -TaskPacketText "line1`nline2" `
+            -AllowMissingRecording `
+            -Json
+
+        $created = $json | ConvertFrom-Json
+        $runDir = $created.evidence_dir
+        $manifest = Get-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $manifest.task_packet_hash | Should -Be (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $runDir 'task-packet.md')).Hash
+    }
+
+    It 'requires a desktop recording unless an explicit scaffold override is used' {
+        $output = & pwsh -NoLogo -NoProfile -File $script:bakeoffScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -RunId 'missing-recording' `
+            -Cli 'Codex' `
+            -Model 'gpt-5.5' `
+            -TaskClass 'code_review' `
+            -TaskPacketText 'Review the anonymous packet.' `
+            -Json 2>&1
+
+        $LASTEXITCODE | Should -Not -Be 0
+        [string]::Join("`n", @($output)) | Should -Match 'RecordingPath is required'
+    }
+
+    It 'copies a provided recording and marks private evidence as not publishable' {
+        $recordingPath = Join-Path $script:bakeoffTempRoot 'source-recording.mp4'
+        [System.IO.File]::WriteAllBytes($recordingPath, [byte[]](1, 2, 3, 4))
+
+        $json = & pwsh -NoLogo -NoProfile -File $script:bakeoffScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -RunId 'private-recording' `
+            -Cli 'Claude Code' `
+            -Model 'Opus' `
+            -TaskClass 'investigation_design' `
+            -TaskPacketText 'Investigate the issue and produce evidence.' `
+            -RecordingPath $recordingPath `
+            -PrivateEvidence `
+            -Json
+
+        $created = $json | ConvertFrom-Json
+        $runDir = $created.evidence_dir
+        Test-Path -LiteralPath (Join-Path $runDir 'screen-recording.mp4') | Should -BeTrue
+
+        $recording = Get-Content -LiteralPath (Join-Path $runDir 'screen-recording.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $recording.status | Should -Be 'present'
+        $recording.private_evidence | Should -BeTrue
+        $recording.publishable | Should -BeFalse
+    }
+
+    It 'creates a benchmark-pack recording run with a shared task packet for all workers' {
+        $packDir = Join-Path $script:bakeoffTempRoot 'pack'
+        New-Item -ItemType Directory -Path $packDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $packDir 'WB-TEST.md') -Value "BAKEOFF_ROUND_A_BEGIN`nDo the shared task.`nBAKEOFF_ROUND_A_END" -Encoding UTF8
+
+        $mockPath = Join-Path $script:bakeoffTempRoot 'mock-worker.ps1'
+        @'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$prompt = [Console]::In.ReadToEnd()
+Write-Output 'BAKEOFF_ROUND_A_BEGIN'
+if ($prompt -match 'PREFLIGHT_OK [^\r\n]+') {
+    Write-Output $Matches[0]
+} else {
+    Write-Output 'worker result'
+}
+Write-Output 'BAKEOFF_ROUND_A_END'
+'@ | Set-Content -LiteralPath $mockPath -Encoding UTF8
+
+        $commandArgsJson = @('-NoLogo', '-NoProfile', '-File', $mockPath) | ConvertTo-Json -Compress
+        $pack = [ordered]@{
+            version = 1
+            pack_id = 'test-pack'
+            review_model = 'gpt-5.5'
+            default_timeout_seconds = 20
+            scoring = [ordered]@{
+                axes = [ordered]@{
+                    accuracy = 30
+                    review_findings = 20
+                    speed = 15
+                    parallelism = 15
+                    async_terminal = 10
+                    evidence_quality = 10
+                }
+            }
+            qc_gates = @('same_task_packet_sha256_for_all_workers')
+            default_workers = @(
+                [ordered]@{
+                    pane = 'worker-1'
+                    role = 'mock-one'
+                    cli = 'custom'
+                    model = 'mock'
+                    effort = 'medium'
+                    display_model = 'Mock One'
+                    commandPath = $script:bakeoffPwshPath
+                    commandArgsJson = $commandArgsJson
+                },
+                [ordered]@{
+                    pane = 'worker-2'
+                    role = 'mock-two'
+                    cli = 'custom'
+                    model = 'mock'
+                    effort = 'high'
+                    display_model = 'Mock Two'
+                    commandPath = $script:bakeoffPwshPath
+                    commandArgsJson = $commandArgsJson
+                }
+            )
+            tasks = @(
+                [ordered]@{
+                    task_id = 'WB-TEST'
+                    title = 'Shared task'
+                    task_class = 'investigation_design'
+                    packet_path = 'WB-TEST.md'
+                    attributes = [ordered]@{
+                        scope = 'one_file'
+                        ambiguity = 'clear'
+                    }
+                }
+            )
+        }
+        $packPath = Join-Path $packDir 'benchmark-pack.json'
+        $pack | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $packPath -Encoding UTF8
+
+        $json = & pwsh -NoLogo -NoProfile -File $script:bakeoffBenchmarkRunScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -PackPath $packPath `
+            -TaskId 'WB-TEST' `
+            -RunId 'benchmark-recording' `
+            -DesktopAppVersion 'test-desktop' `
+            -AllowMissingRecording `
+            -Json
+
+        $created = $json | ConvertFrom-Json
+        $runDir = $created.evidence_dir
+        Test-Path -LiteralPath $created.operator_start | Should -BeTrue
+        Test-Path -LiteralPath $created.recording_checklist | Should -BeTrue
+
+        $manifest = Get-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $manifest.benchmark_pack.pack_id | Should -Be 'test-pack'
+        $manifest.benchmark_pack.review_model | Should -Be 'gpt-5.5'
+        @($manifest.active_workers).Count | Should -Be 2
+        @($manifest.launch_scripts).Count | Should -Be 2
+        $manifest.active_workers[0].effort | Should -Be 'medium'
+        $manifest.active_workers[1].effort | Should -Be 'high'
+        $manifest.operator_script.name | Should -Be 'operator-start.ps1'
+        @($manifest.active_workers | Where-Object { $_.task_sha256 -eq $manifest.task_packet_hash }).Count | Should -Be 2
+
+        $workerSpec = Get-Content -LiteralPath (Join-Path $runDir 'worker-spec.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $workerSpec[0].effort | Should -Be 'medium'
+        $workerSpec[1].effort | Should -Be 'high'
+
+        $launcher = Get-Content -LiteralPath (Join-Path $runDir 'run-worker-1.ps1') -Raw -Encoding UTF8
+        $launcher | Should -Match "-Effort 'medium'"
+        $launcher | Should -Match '-LiveProgress'
+        $launcher | Should -Match '-LiveProgressIntervalSeconds 60'
+        $launcher | Should -Match 'WINSMUX_WORKER_START worker-1'
+        $launcher | Should -Match 'WINSMUX_WORKER_PROGRESS_NOTE'
+        $launcher | Should -Match 'WINSMUX_WORKER_RESULT'
+
+        $operator = Get-Content -LiteralPath $created.operator_start -Raw -Encoding UTF8
+        $operator | Should -Match 'Operator -> worker-1'
+        $operator | Should -Match 'Operator -> worker-2'
+        $operator | Should -Match 'Recording must start before worker launch scripts run'
+        $operator | Should -Match '-ProjectDir'
+        $operator | Should -Match ([regex]::Escape($script:bakeoffTempRoot))
+
+        $readyJson = & pwsh -NoLogo -NoProfile -File $script:bakeoffRecordingReadyScriptPath `
+            -RunDir $runDir `
+            -Json
+        ($readyJson | ConvertFrom-Json).all_pass | Should -BeTrue
+    }
+
+    It 'creates isolated real-repo workspaces for every benchmark worker' {
+        $sourceRepo = Join-Path $script:bakeoffTempRoot 'target-repo'
+        New-Item -ItemType Directory -Path $sourceRepo -Force | Out-Null
+        & git -C $sourceRepo init | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw 'git init failed for target fixture.'
+        }
+        Set-Content -LiteralPath (Join-Path $sourceRepo 'src.txt') -Value 'base content' -Encoding UTF8
+        & git -C $sourceRepo -c user.name='winsmux-test' -c user.email='winsmux-test@example.invalid' add src.txt | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw 'git add failed for target fixture.'
+        }
+        & git -C $sourceRepo -c user.name='winsmux-test' -c user.email='winsmux-test@example.invalid' -c core.hooksPath= commit -m 'initial fixture' | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw 'git commit failed for target fixture.'
+        }
+        $baseRef = [string]((& git -C $sourceRepo rev-parse HEAD) | Select-Object -First 1)
+        $baseRef = $baseRef.Trim()
+
+        $packDir = Join-Path $script:bakeoffTempRoot 'real-pack'
+        New-Item -ItemType Directory -Path $packDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $packDir 'HB-REAL.md') -Value "BAKEOFF_ROUND_A_BEGIN`nFix the real repo task.`nBAKEOFF_ROUND_A_END" -Encoding UTF8
+        $mockPath = Join-Path $script:bakeoffTempRoot 'mock-preflight-real-workspace.ps1'
+        @'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$prompt = [Console]::In.ReadToEnd()
+Write-Output 'BAKEOFF_ROUND_A_BEGIN'
+if ($prompt -match 'PREFLIGHT_OK [^\r\n]+') {
+    Write-Output $Matches[0]
+} else {
+    Write-Output 'worker result'
+}
+Write-Output 'BAKEOFF_ROUND_A_END'
+'@ | Set-Content -LiteralPath $mockPath -Encoding UTF8
+        $commandArgsJson = @('-NoLogo', '-NoProfile', '-File', $mockPath) | ConvertTo-Json -Compress
+
+        $pack = [ordered]@{
+            version = 1
+            pack_id = 'real-pack'
+            review_model = 'gpt-5.5'
+            default_timeout_seconds = 20
+            scoring = [ordered]@{ axes = [ordered]@{ accuracy = 30 } }
+            qc_gates = @('isolated_worktree_per_worker', 'same_task_packet_sha256_for_all_workers')
+            default_workers = @(
+                [ordered]@{
+                    pane = 'worker-1'
+                    role = 'solver'
+                    cli = 'custom'
+                    model = 'mock'
+                    effort = 'medium'
+                    display_model = 'Mock One'
+                    commandPath = $script:bakeoffPwshPath
+                    commandArgsJson = $commandArgsJson
+                },
+                [ordered]@{
+                    pane = 'worker-2'
+                    role = 'solver'
+                    cli = 'custom'
+                    model = 'mock'
+                    effort = 'medium'
+                    display_model = 'Mock Two'
+                    commandPath = $script:bakeoffPwshPath
+                    commandArgsJson = $commandArgsJson
+                }
+            )
+            tasks = @(
+                [ordered]@{
+                    task_id = 'HB-REAL'
+                    title = 'Real repo fixture'
+                    task_class = 'real_repo_fix'
+                    packet_path = 'HB-REAL.md'
+                    attributes = [ordered]@{
+                        repo = $sourceRepo
+                        base_ref = $baseRef
+                    }
+                }
+            )
+        }
+        $packPath = Join-Path $packDir 'benchmark-pack.json'
+        $pack | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $packPath -Encoding UTF8
+
+        $oldWorkspaceRoot = $env:WINSMUX_BAKEOFF_WORKSPACE_ROOT
+        try {
+            $env:WINSMUX_BAKEOFF_WORKSPACE_ROOT = Join-Path $script:bakeoffTempRoot 'external-workspaces'
+            $json = & pwsh -NoLogo -NoProfile -File $script:bakeoffBenchmarkRunScriptPath `
+                -ProjectDir $script:bakeoffTempRoot `
+                -PackPath $packPath `
+                -TaskId 'HB-REAL' `
+                -RunId 'real-workspaces' `
+                -AllowMissingRecording `
+                -Json
+        } finally {
+            if ($null -eq $oldWorkspaceRoot) {
+                Remove-Item Env:\WINSMUX_BAKEOFF_WORKSPACE_ROOT -ErrorAction SilentlyContinue
+            } else {
+                $env:WINSMUX_BAKEOFF_WORKSPACE_ROOT = $oldWorkspaceRoot
+            }
+        }
+
+        $created = $json | ConvertFrom-Json
+        $runDir = $created.evidence_dir
+        $manifest = Get-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $workerSpec = Get-Content -LiteralPath (Join-Path $runDir 'worker-spec.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+
+        $manifest.workspace_setup.enabled | Should -BeTrue
+        $manifest.workspace_setup.repo | Should -Be $sourceRepo
+        $manifest.workspace_setup.base_ref | Should -Be $baseRef
+        $manifest.workspace_setup.root | Should -Match ([regex]::Escape((Join-Path $script:bakeoffTempRoot 'external-workspaces')))
+        @($manifest.workspace_setup.workspaces).Count | Should -Be 2
+
+        $workspaces = @($manifest.active_workers | Select-Object -ExpandProperty workspace)
+        @($workspaces | Select-Object -Unique).Count | Should -Be 2
+        foreach ($workspace in $workspaces) {
+            $workspace | Should -Match ([regex]::Escape([string]$manifest.workspace_setup.root))
+            Test-Path -LiteralPath (Join-Path $workspace 'src.txt') | Should -BeTrue
+            ([string]((& git -C $workspace rev-parse HEAD) | Select-Object -First 1)).Trim() | Should -Be $baseRef
+        }
+
+        $manifest.active_workers[0].workspace_isolated | Should -BeTrue
+        $manifest.active_workers[0].workspace_repo | Should -Be $sourceRepo
+        $manifest.active_workers[0].workspace_base_ref | Should -Be $baseRef
+        $workerSpec[0].workspace | Should -Be $manifest.active_workers[0].workspace
+        $workerSpec[0].workspaceIsolated | Should -BeTrue
+        $workerSpec[0].workspaceRepo | Should -Be $sourceRepo
+
+        $launcher = Get-Content -LiteralPath (Join-Path $runDir 'run-worker-1.ps1') -Raw -Encoding UTF8
+        $launcher | Should -Match ([regex]::Escape("-ProjectDir '$($manifest.active_workers[0].workspace)'"))
+        $launcher | Should -Not -Match ([regex]::Escape("-ProjectDir '$script:bakeoffTempRoot'"))
+
+        $preflightJson = & pwsh -NoLogo -NoProfile -File $script:bakeoffPreflightScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -RunDir $runDir `
+            -WorkerSpecPath (Join-Path $runDir 'worker-spec.json') `
+            -Json
+        $preflight = $preflightJson | ConvertFrom-Json
+        $preflight.all_pass | Should -BeTrue
+        $preflight.worker_specs[0].workspace | Should -Be $manifest.active_workers[0].workspace
+        $preflight.worker_specs[0].workspace_isolated | Should -Be 'True'
+
+        $manifestPreflightJson = & pwsh -NoLogo -NoProfile -File $script:bakeoffPreflightScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -RunDir $runDir `
+            -Json
+        $manifestPreflight = $manifestPreflightJson | ConvertFrom-Json
+        $manifestPreflight.all_pass | Should -BeTrue
+        $manifestPreflight.worker_specs[0].workspace | Should -Be $manifest.active_workers[0].workspace
+        $manifestPreflight.worker_specs[0].workspace_isolated | Should -Be 'True'
+    }
+
+    It 'creates a HarnessBench-style benchmark pack without leaking hidden checks into task packets' {
+        $caseDir = Join-Path $script:bakeoffTempRoot 'harness-cases'
+        $outputDir = Join-Path $script:bakeoffTempRoot 'harness-pack'
+        New-Item -ItemType Directory -Path $caseDir -Force | Out-Null
+
+        $casesPath = Join-Path $caseDir 'cases.json'
+        [ordered]@{
+            version = 1
+            suite_id = 'hb-local-test'
+            default_workers = @(
+                [ordered]@{
+                    pane = 'worker-1'
+                    role = 'solver'
+                    cli = 'Claude Code'
+                    model = 'sonnet'
+                    effort = 'high'
+                    display_model = 'Claude Sonnet 4.7'
+                },
+                [ordered]@{
+                    pane = 'worker-2'
+                    role = 'solver'
+                    cli = 'Codex'
+                    model = 'gpt-5.3-codex-spark'
+                    effort = 'medium'
+                    display_model = 'Codex / gpt-5.3-spark'
+                }
+            )
+            cases = @(
+                [ordered]@{
+                    case_id = 'HB-001'
+                    title = 'Fix parser newline handling'
+                    repo = 'https://github.com/example/parser'
+                    base_ref = 'abc1234'
+                    difficulty = 'mid'
+                    public_prompt = 'Fix the parser so trailing newlines are accepted without changing valid token handling.'
+                    allowed_paths = @('src/parser.ts', 'tests/parser.public.test.ts')
+                    public_checks = @('npm test -- parser.public')
+                    hidden_checks = @(
+                        [ordered]@{
+                            id = 'core'
+                            command = 'npm test -- hidden/core'
+                            weight = 0.7
+                        },
+                        [ordered]@{
+                            id = 'regression'
+                            command = 'npm test -- hidden/regression'
+                            weight = 0.3
+                        }
+                    )
+                    success_criteria = @(
+                        'trailing_newline_is_accepted',
+                        'existing_valid_tokens_still_parse'
+                    )
+                }
+            )
+        } | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $casesPath -Encoding UTF8
+
+        $json = & pwsh -NoLogo -NoProfile -File $script:bakeoffHarnessPackScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -CasesPath $casesPath `
+            -OutputDir $outputDir `
+            -RunsPerCase 5 `
+            -ReviewModel 'gpt-5.5' `
+            -Json
+
+        $created = $json | ConvertFrom-Json
+        $created.task_count | Should -Be 1
+        $created.worker_count | Should -Be 2
+        $created.runs_per_case | Should -Be 5
+        $created.planned_runs | Should -Be 10
+        Test-Path -LiteralPath $created.benchmark_pack | Should -BeTrue
+        Test-Path -LiteralPath $created.run_matrix | Should -BeTrue
+        Test-Path -LiteralPath $created.scoring_rubric | Should -BeTrue
+
+        $pack = Get-Content -LiteralPath $created.benchmark_pack -Raw -Encoding UTF8 | ConvertFrom-Json
+        $pack.methodology | Should -Be 'harnessbench-style-real-repo-hidden-tests'
+        $pack.source_cases_path | Should -Be (Join-Path 'harness-cases' 'cases.json')
+        $pack.review_model | Should -Be 'gpt-5.5'
+        $pack.scoring.pass_rule | Should -Be 'hidden_core_and_regression_must_pass'
+        $pack.scoring.axes.hidden_core | Should -Be 40
+        $pack.scoring.axes.hidden_regression | Should -Be 25
+        $pack.qc_gates | Should -Contain 'hidden_tests_not_in_prompt'
+        $pack.qc_gates | Should -Contain 'isolated_worktree_per_worker'
+        $pack.tasks[0].task_class | Should -Be 'real_repo_fix'
+        $pack.tasks[0].attributes.benchmark_style | Should -Be 'harnessbench'
+        $pack.tasks[0].attributes.hidden_checks_path | Should -Be 'HB-001.hidden-checks.json'
+        $pack.tasks[0].attributes.runs_per_case | Should -Be 5
+        $pack.tasks[0].attributes.difficulty | Should -Be 'mid'
+
+        $packet = Get-Content -LiteralPath (Join-Path $created.output_dir 'HB-001.md') -Raw -Encoding UTF8
+        $packet | Should -Match 'Public checks'
+        $packet | Should -Match 'BAKEOFF_ROUND_A_BEGIN'
+        $packet | Should -Match 'BAKEOFF_ROUND_A_END'
+        $packet | Should -Match 'final line'
+        $packet | Should -Match 'cannot be scored'
+        $packet | Should -Match 'required local verification'
+        $packet | Should -Match 'unrelated failures outside the listed public checks'
+        $packet | Should -Not -Match 'hidden/core'
+        $packet | Should -Not -Match 'hidden/regression'
+
+        $hidden = Get-Content -LiteralPath (Join-Path $created.output_dir 'HB-001.hidden-checks.json') -Raw -Encoding UTF8
+        $hidden | Should -Match 'hidden/core'
+        $hidden | Should -Match 'scorer_only'
+
+        $matrixLines = @(Get-Content -LiteralPath $created.run_matrix -Encoding UTF8)
+        $matrixLines.Count | Should -Be 6
+        $matrixLines[0] | Should -Be 'case_id,repeat_index,task_id,recommended_run_id'
+        $matrixLines[1] | Should -Be 'HB-001,1,HB-001,hb-local-test-HB-001-r1'
+        $matrixLines[5] | Should -Be 'HB-001,5,HB-001,hb-local-test-HB-001-r5'
+    }
+
+    It 'imports upstream HarnessBench cases and conditions without exposing hidden checks to workers' {
+        $referenceDir = Join-Path $script:bakeoffTempRoot 'harness-bench-reference'
+        $caseDir = Join-Path $referenceDir 'benchmark\cases\example__repo'
+        $conditionDir = Join-Path $referenceDir 'benchmark\conditions'
+        $scriptsDir = Join-Path $referenceDir 'scripts'
+        New-Item -ItemType Directory -Path $caseDir, $conditionDir, $scriptsDir -Force | Out-Null
+
+        $casePath = Join-Path $caseDir 'low.yaml'
+@'
+id: example-low-hidden-parser
+repo: example/repo
+repo_url: https://github.com/example/repo
+pr_number: 42
+pr_url: https://github.com/example/repo/pull/42
+pr_title: Fix hidden parser issue
+original_pr_head_commit: 1111111111111111111111111111111111111111
+base_commit: 2222222222222222222222222222222222222222
+fixed_commit: 3333333333333333333333333333333333333333
+difficulty: "low"
+tags: ["parser", "quoted"]
+instruction: >
+  Fix parser handling for a real repository case. Preserve existing public
+  behavior and avoid reading hidden test files.
+setup:
+  - npm ci
+public_tests:
+  - npm test -- parser.public
+test_strategy:
+  core_tests:
+    - benchmark/cases/example__repo/hidden-tests/low/core.sh
+  regression_tests:
+    - benchmark/cases/example__repo/hidden-tests/low/regression.sh
+  success_rule: core_and_regression
+'@ | Set-Content -LiteralPath $casePath -Encoding UTF8
+
+        $conditionPath = Join-Path $conditionDir 'mixed.json'
+@'
+{
+  "conditions": [
+    {
+      "id": "antigravity:gemini-3.5-flash-high:baseline",
+      "harness": "antigravity",
+      "model": "provider-default",
+      "effort": "high",
+      "antigravity_config": {
+        "model": "Gemini 3.5 Flash (High)"
+      }
+    },
+    {
+      "id": "codex:gpt-5.3-codex-spark:medium",
+      "harness": "codex",
+      "model": "gpt-5.3-codex-spark",
+      "effort": "medium",
+      "display_model": "Codex / gpt-5.3-spark"
+    },
+    {
+      "id": "claude:sonnet-4-7:high:test",
+      "harness": "claude",
+      "model": "sonnet",
+      "effort": "high",
+      "display_model": "Claude Sonnet 4.7 (high)"
+    },
+    {
+      "id": "cursor:composer:test",
+      "harness": "cursor",
+      "model": "Composer",
+      "effort": "medium"
+    }
+  ]
+}
+'@ | Set-Content -LiteralPath $conditionPath -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $scriptsDir 'run-case.mjs') -Value '// mocked by importer test' -Encoding UTF8
+
+        $casesPath = Join-Path $script:bakeoffTempRoot 'imported-cases.json'
+        $json = & pwsh -NoLogo -NoProfile -File $script:bakeoffHarnessReferenceImportScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -ReferenceDir $referenceDir `
+            -ConditionPath 'benchmark/conditions/mixed.json' `
+            -OutputPath $casesPath `
+            -SuiteId 'hb-upstream-import-test' `
+            -LimitCases 1 `
+            -Json
+
+        $created = $json | ConvertFrom-Json
+        $created.case_count | Should -Be 1
+        $created.worker_count | Should -Be 3
+        $created.skipped_condition_count | Should -Be 1
+
+        $imported = Get-Content -LiteralPath $casesPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $imported.source.name | Should -Be 'nyosegawa/harness-bench'
+        $imported.source.skipped_conditions[0].id | Should -Be 'cursor:composer:test'
+        $imported.default_workers[0].cli | Should -Be 'Antigravity CLI'
+        $imported.default_workers[0].model | Should -Be 'Gemini 3.5 Flash (High)'
+        $imported.default_workers[0].harnessbench_condition_id | Should -Be 'antigravity:gemini-3.5-flash-high:baseline'
+        $imported.default_workers[1].cli | Should -Be 'Codex'
+        $imported.default_workers[1].model | Should -Be 'gpt-5.3-codex-spark'
+        $imported.default_workers[1].effort | Should -Be 'medium'
+        $imported.default_workers[1].display_model | Should -Be 'Codex / gpt-5.3-spark'
+        $imported.default_workers[2].cli | Should -Be 'Claude Code'
+        $imported.default_workers[2].model | Should -Be 'sonnet'
+        $imported.default_workers[2].display_model | Should -Be 'Claude Sonnet 4.7 (high)'
+
+        $case = $imported.cases[0]
+        $case.case_id | Should -Be 'example-low-hidden-parser'
+        $case.public_prompt | Should -Match 'Preserve existing public behavior'
+        @($case.public_checks).Count | Should -Be 2
+        $case.public_checks[0] | Should -Be 'npm ci'
+        $case.public_checks[1] | Should -Be 'npm test -- parser.public'
+        $case.hidden_checks[0].source_path | Should -Be 'benchmark/cases/example__repo/hidden-tests/low/core.sh'
+        $case.hidden_checks[0].group | Should -Be 'core'
+        $case.hidden_checks[0].command | Should -Match '-Group core'
+        $case.hidden_checks[0].command | Should -Match ([regex]::Escape('$env:WINSMUX_BAKEOFF_WORKSPACE'))
+        $case.hidden_checks[1].group | Should -Be 'regression'
+        $case.hidden_checks[1].command | Should -Match '-Group regression'
+        $case.hidden_checks[1].command | Should -Not -Be $case.hidden_checks[0].command
+        $case.harnessbench.success_rule | Should -Be 'core_and_regression'
+
+        $packDir = Join-Path $script:bakeoffTempRoot 'imported-pack'
+        $packJson = & pwsh -NoLogo -NoProfile -File $script:bakeoffHarnessPackScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -CasesPath $casesPath `
+            -OutputDir $packDir `
+            -RunsPerCase 1 `
+            -Json
+
+        $pack = $packJson | ConvertFrom-Json
+        $packet = Get-Content -LiteralPath (Join-Path $pack.output_dir 'example-low-hidden-parser.md') -Raw -Encoding UTF8
+        $packet | Should -Match 'Public checks'
+        $packet | Should -Not -Match 'hidden-tests'
+        $packet | Should -Not -Match 'core\.sh'
+        $packet | Should -Not -Match 'regression\.sh'
+
+        $hidden = Get-Content -LiteralPath (Join-Path $pack.output_dir 'example-low-hidden-parser.hidden-checks.json') -Raw -Encoding UTF8
+        $hidden | Should -Match 'hidden-tests/low/core\.sh'
+        $hidden | Should -Match ([regex]::Escape('$env:WINSMUX_BAKEOFF_WORKSPACE'))
+    }
+
+    It 'expands a HarnessBench-style run matrix into repeated benchmark run directories' {
+        $caseDir = Join-Path $script:bakeoffTempRoot 'harness-matrix-cases'
+        $outputDir = Join-Path $script:bakeoffTempRoot 'harness-matrix-pack'
+        New-Item -ItemType Directory -Path $caseDir -Force | Out-Null
+        $sourceRepo = Join-Path $script:bakeoffTempRoot 'harness-matrix-source-repo'
+        New-Item -ItemType Directory -Path $sourceRepo -Force | Out-Null
+        & git -C $sourceRepo init | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw 'git init failed for matrix fixture.'
+        }
+        Set-Content -LiteralPath (Join-Path $sourceRepo 'status.txt') -Value 'base status parser' -Encoding UTF8
+        & git -C $sourceRepo -c user.name='winsmux-test' -c user.email='winsmux-test@example.invalid' add status.txt | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw 'git add failed for matrix fixture.'
+        }
+        & git -C $sourceRepo -c user.name='winsmux-test' -c user.email='winsmux-test@example.invalid' -c core.hooksPath= commit -m 'initial matrix fixture' | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw 'git commit failed for matrix fixture.'
+        }
+        $baseRef = [string]((& git -C $sourceRepo rev-parse HEAD) | Select-Object -First 1)
+        $baseRef = $baseRef.Trim()
+
+        $casesPath = Join-Path $caseDir 'cases.json'
+        [ordered]@{
+            version = 1
+            suite_id = 'hb-matrix-test'
+            default_workers = @(
+                [ordered]@{
+                    pane = 'worker-1'
+                    role = 'mock'
+                    cli = 'custom'
+                    model = 'mock'
+                    effort = 'medium'
+                    display_model = 'Mock Worker'
+                    commandPath = $script:bakeoffPwshPath
+                    commandArgsJson = (@('-NoLogo', '-NoProfile', '-Command', "Write-Output 'BAKEOFF_ROUND_A_BEGIN'; Write-Output 'mock'; Write-Output 'BAKEOFF_ROUND_A_END'") | ConvertTo-Json -Compress)
+                }
+            )
+            cases = @(
+                [ordered]@{
+                    case_id = 'HB-010'
+                    title = 'Fix status parser'
+                    repo = $sourceRepo
+                    base_ref = $baseRef
+                    public_prompt = 'Fix the status parser without changing unrelated output.'
+                    public_checks = @('npm test -- status.public')
+                    hidden_checks = @(
+                        [ordered]@{
+                            id = 'core'
+                            command = 'npm test -- hidden/status-core'
+                            weight = 1.0
+                        }
+                    )
+                }
+            )
+        } | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $casesPath -Encoding UTF8
+
+        $packResult = (& pwsh -NoLogo -NoProfile -File $script:bakeoffHarnessPackScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -CasesPath $casesPath `
+            -OutputDir $outputDir `
+            -RunsPerCase 3 `
+            -Json) | ConvertFrom-Json
+
+        $matrixResult = (& pwsh -NoLogo -NoProfile -File $script:bakeoffHarnessMatrixScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -PackPath $packResult.benchmark_pack `
+            -MaxRuns 2 `
+            -AllowMissingRecording `
+            -Json) | ConvertFrom-Json
+
+        $matrixResult.created_count | Should -Be 2
+        $matrixResult.skipped_count | Should -Be 0
+        $matrixResult.requested_rows | Should -Be 2
+        Test-Path -LiteralPath $matrixResult.summary_path | Should -BeTrue
+
+        foreach ($run in @($matrixResult.created)) {
+            Test-Path -LiteralPath $run.evidence_dir | Should -BeTrue
+            Test-Path -LiteralPath (Join-Path $run.evidence_dir 'manifest.json') | Should -BeTrue
+            Test-Path -LiteralPath (Join-Path $run.evidence_dir 'operator-start.ps1') | Should -BeTrue
+        }
+
+        $firstManifest = Get-Content -LiteralPath (Join-Path $matrixResult.created[0].evidence_dir 'manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $firstManifest.benchmark_pack.pack_id | Should -Be 'hb-matrix-test'
+        $firstManifest.benchmark_pack.qc_gates | Should -Contain 'hidden_tests_not_in_prompt'
+
+        $skipResult = (& pwsh -NoLogo -NoProfile -File $script:bakeoffHarnessMatrixScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -PackPath $packResult.benchmark_pack `
+            -MaxRuns 2 `
+            -SkipExisting `
+            -AllowMissingRecording `
+            -Json) | ConvertFrom-Json
+
+        $skipResult.created_count | Should -Be 0
+        $skipResult.skipped_count | Should -Be 2
+    }
+
+    It 'requires preflight when recording readiness is checked for a final run' {
+        $packDir = Join-Path $script:bakeoffTempRoot 'preflight-pack'
+        New-Item -ItemType Directory -Path $packDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $packDir 'WB-PREFLIGHT.md') -Value "BAKEOFF_ROUND_A_BEGIN`nDo the shared task.`nBAKEOFF_ROUND_A_END" -Encoding UTF8
+
+        $pack = [ordered]@{
+            version = 1
+            pack_id = 'preflight-pack'
+            review_model = 'gpt-5.5'
+            default_timeout_seconds = 20
+            scoring = [ordered]@{ axes = [ordered]@{ accuracy = 30 } }
+            qc_gates = @('same_task_packet_sha256_for_all_workers')
+            default_workers = @(
+                [ordered]@{
+                    pane = 'worker-1'
+                    role = 'mock'
+                    cli = 'custom'
+                    model = 'mock'
+                    display_model = 'Mock'
+                    commandPath = $script:bakeoffPwshPath
+                    commandArgsJson = (@('-NoLogo', '-NoProfile', '-Command', "Write-Output 'BAKEOFF_ROUND_A_BEGIN'; Write-Output 'PREFLIGHT_OK worker-1'; Write-Output 'BAKEOFF_ROUND_A_END'") | ConvertTo-Json -Compress)
+                }
+            )
+            tasks = @(
+                [ordered]@{
+                    task_id = 'WB-PREFLIGHT'
+                    title = 'Preflight task'
+                    task_class = 'investigation_design'
+                    packet_path = 'WB-PREFLIGHT.md'
+                    attributes = [ordered]@{ scope = 'one_file' }
+                }
+            )
+        }
+        $packPath = Join-Path $packDir 'benchmark-pack.json'
+        $pack | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $packPath -Encoding UTF8
+
+        $created = (& pwsh -NoLogo -NoProfile -File $script:bakeoffBenchmarkRunScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -PackPath $packPath `
+            -TaskId 'WB-PREFLIGHT' `
+            -RunId 'requires-preflight' `
+            -AllowMissingRecording `
+            -Json) | ConvertFrom-Json
+
+        $output = & pwsh -NoLogo -NoProfile -File $script:bakeoffRecordingReadyScriptPath `
+            -RunDir $created.evidence_dir `
+            -RequirePreflight `
+            -Json 2>&1 | Out-String
+
+        $LASTEXITCODE | Should -Be 1
+        $output | Should -Match '"passed":\s*false'
+
+        $preflightJson = & pwsh -NoLogo -NoProfile -File $script:bakeoffPreflightScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -RunDir $created.evidence_dir `
+            -TimeoutSeconds 20 `
+            -Json
+        ($preflightJson | ConvertFrom-Json).all_pass | Should -BeTrue
+
+        $readyJson = & pwsh -NoLogo -NoProfile -File $script:bakeoffRecordingReadyScriptPath `
+            -RunDir $created.evidence_dir `
+            -RequirePreflight `
+            -Json
+        ($readyJson | ConvertFrom-Json).all_pass | Should -BeTrue
+    }
+
+    It 'summarizes scored runs into model fit and assignment artifacts' {
+        $json = & pwsh -NoLogo -NoProfile -File $script:bakeoffScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -RunId 'scored-run' `
+            -Cli 'Codex' `
+            -Model 'gpt-5.5' `
+            -TaskClass 'bounded_fix' `
+            -TaskPacketText 'Fix the focused bug and run tests.' `
+            -AllowMissingRecording `
+            -Json
+
+        $created = $json | ConvertFrom-Json
+        $resultPath = Join-Path $created.evidence_dir 'result.json'
+        [ordered]@{
+            version = 1
+            run_id = 'scored-run'
+            cli = 'Codex'
+            model = 'gpt-5.5'
+            task_class = 'bounded_fix'
+            scores = [ordered]@{
+                accuracy = 90
+                review_findings = 96
+                speed = 70
+                parallelism = 50
+                async_terminal = 60
+                evidence_quality = 12
+                overall = 84
+            }
+            capability_vector = [ordered]@{
+                quality = 90
+                speed = 70
+                autonomy = 75
+                parallelism = 50
+                terminal_operation = 60
+                evidence = 92
+                safety = 95
+                continuity = 82
+            }
+            review_counts = [ordered]@{
+                P0 = 0
+                P1 = 0
+                P2 = 1
+                P3 = 0
+            }
+            caps = @()
+            derived_metrics = [ordered]@{}
+            verdict = 'accepted'
+        } | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $resultPath -Encoding UTF8
+
+        $summaryJson = & pwsh -NoLogo -NoProfile -File $script:bakeoffSummaryScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -Json
+
+        $summary = $summaryJson | ConvertFrom-Json
+        $summary.run_count | Should -Be 1
+
+        foreach ($path in @(
+            $summary.raw_score_matrix,
+            $summary.model_task_fit,
+            $summary.assignment_policy,
+            $summary.model_evidence_profile
+        )) {
+            Test-Path -LiteralPath $path | Should -BeTrue
+        }
+
+        $fit = Get-Content -LiteralPath $summary.model_task_fit -Raw -Encoding UTF8
+        $fit | Should -Match 'gpt-5.5'
+        $fit | Should -Match 'bounded_fix'
+        $fit | Should -Match 'conditional'
+
+        $profile = Get-Content -LiteralPath $summary.model_evidence_profile -Raw -Encoding UTF8 | ConvertFrom-Json
+        $profile.run_count | Should -Be 1
+        $profile.models[0].cli | Should -Be 'Codex'
+        $profile.models[0].model | Should -Be 'gpt-5.5'
+        $profile.models[0].scores_average.evidence_quality | Should -Be 12
+        $profile.models[0].capability_average.evidence | Should -Be 92
+    }
+
+    It 'keeps same-named models separate by CLI in recommendations' {
+        $runRoot = Join-Path (Join-Path (Join-Path $script:bakeoffTempRoot '.winsmux') 'evidence') 'cli-bakeoff'
+        New-Item -ItemType Directory -Path $runRoot -Force | Out-Null
+
+        function New-BakeoffCliRun {
+            param(
+                [Parameter(Mandatory = $true)][string]$RunId,
+                [Parameter(Mandatory = $true)][string]$Cli,
+                [Parameter(Mandatory = $true)][int]$Overall
+            )
+
+            $runDir = Join-Path $runRoot $RunId
+            New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+            [ordered]@{
+                version = 1
+                run_id = $RunId
+                cli = $Cli
+                model = 'shared-model'
+                task_class = 'bounded_fix'
+            } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Encoding UTF8
+            [ordered]@{
+                version = 1
+                run_id = $RunId
+                cli = $Cli
+                model = 'shared-model'
+                task_class = 'bounded_fix'
+                scores = [ordered]@{
+                    accuracy = $Overall
+                    review_findings = 95
+                    speed = $Overall
+                    parallelism = 70
+                    async_terminal = 70
+                    evidence_quality = 90
+                    overall = $Overall
+                }
+                capability_vector = [ordered]@{
+                    quality = $Overall
+                    speed = $Overall
+                    autonomy = 80
+                    parallelism = 70
+                    terminal_operation = 70
+                    evidence = 90
+                    safety = 90
+                    continuity = 90
+                }
+                review_counts = [ordered]@{ P0 = 0; P1 = 0; P2 = 0; P3 = 0 }
+                caps = @()
+                derived_metrics = [ordered]@{}
+                verdict = 'accepted'
+            } | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath (Join-Path $runDir 'result.json') -Encoding UTF8
+        }
+
+        1..2 | ForEach-Object { New-BakeoffCliRun -RunId "codex-shared-$($_)" -Cli 'Codex' -Overall 72 }
+        1..2 | ForEach-Object { New-BakeoffCliRun -RunId "agy-shared-$($_)" -Cli 'Antigravity CLI' -Overall 92 }
+
+        $summaryJson = & pwsh -NoLogo -NoProfile -File $script:bakeoffSummaryScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -Json
+
+        $summary = $summaryJson | ConvertFrom-Json
+        $profile = Get-Content -LiteralPath $summary.model_evidence_profile -Raw -Encoding UTF8 | ConvertFrom-Json
+        @($profile.models | Where-Object { $_.model -eq 'shared-model' }).Count | Should -Be 2
+
+        $assignment = Get-Content -LiteralPath $summary.assignment_policy -Raw -Encoding UTF8
+        $assignment | Should -Match 'Recommended CLI/model: Antigravity CLI / shared-model'
+    }
+
+    It 'prefers higher-confidence fit rows when assignment recommendations are tied' {
+        $runRoot = Join-Path (Join-Path (Join-Path $script:bakeoffTempRoot '.winsmux') 'evidence') 'cli-bakeoff'
+        New-Item -ItemType Directory -Path $runRoot -Force | Out-Null
+
+        function New-BakeoffScoredRun {
+            param(
+                [Parameter(Mandatory = $true)][string]$RunId,
+                [Parameter(Mandatory = $true)][string]$Model
+            )
+
+            $runDir = Join-Path $runRoot $RunId
+            New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+
+            [ordered]@{
+                version = 1
+                run_id = $RunId
+                cli = 'Codex'
+                model = $Model
+                task_class = 'bounded_fix'
+            } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Encoding UTF8
+
+            [ordered]@{
+                version = 1
+                run_id = $RunId
+                cli = 'Codex'
+                model = $Model
+                task_class = 'bounded_fix'
+                scores = [ordered]@{
+                    accuracy = 90
+                    review_findings = 96
+                    speed = 80
+                    parallelism = 70
+                    async_terminal = 70
+                    evidence_quality = 90
+                    overall = 90
+                }
+                capability_vector = [ordered]@{
+                    quality = 90
+                    speed = 80
+                    autonomy = 80
+                    parallelism = 70
+                    terminal_operation = 70
+                    evidence = 90
+                    safety = 90
+                    continuity = 90
+                }
+                review_counts = [ordered]@{
+                    P0 = 0
+                    P1 = 0
+                    P2 = 0
+                    P3 = 0
+                }
+                caps = @()
+                derived_metrics = [ordered]@{}
+                verdict = 'accepted'
+            } | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath (Join-Path $runDir 'result.json') -Encoding UTF8
+        }
+
+        1..5 | ForEach-Object { New-BakeoffScoredRun -RunId "alpha-high-$($_)" -Model 'alpha-high' }
+        1..2 | ForEach-Object { New-BakeoffScoredRun -RunId "beta-medium-$($_)" -Model 'beta-medium' }
+
+        $summaryJson = & pwsh -NoLogo -NoProfile -File $script:bakeoffSummaryScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -Json
+
+        $summary = $summaryJson | ConvertFrom-Json
+        $assignment = Get-Content -LiteralPath $summary.assignment_policy -Raw -Encoding UTF8
+        $assignment | Should -Match 'Recommended CLI/model: Codex / alpha-high'
+        $assignment | Should -Match 'Confidence: high'
+        $assignment | Should -Not -Match 'Recommended CLI/model: Codex / beta-medium'
+    }
+
+    It 'captures worker stdout as UTF-8 while keeping stderr out of the visible pane transcript' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-worker'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $runDir 'pane-transcript.txt') -Value '' -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'commands.jsonl') -Value '' -Encoding UTF8
+
+        $mockPath = Join-Path $script:bakeoffTempRoot 'mock-success.ps1'
+        @'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+Write-Output 'BAKEOFF_ROUND_A_BEGIN'
+Write-Output '日本語_OK'
+Write-Output 'BAKEOFF_ROUND_A_END'
+[Console]::Error.WriteLine('WARN hidden stderr')
+'@ | Set-Content -LiteralPath $mockPath -Encoding UTF8
+
+        $pwshPath = $script:bakeoffPwshPath
+        $commandArgsJson = @('-NoLogo', '-NoProfile', '-File', $mockPath) | ConvertTo-Json -Compress
+        $json = & pwsh -NoLogo -NoProfile -File $script:bakeoffWorkerScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -RunDir $runDir `
+            -PaneId 'worker-1' `
+            -Cli 'custom' `
+            -Model 'mock' `
+            -PromptText "BAKEOFF_ROUND_A_BEGIN`nRun the mock.`nBAKEOFF_ROUND_A_END" `
+            -CommandPath $pwshPath `
+            -CommandArgsJson $commandArgsJson `
+            -Json
+
+        $created = $json | ConvertFrom-Json
+        $stdout = Get-Content -LiteralPath (Join-Path $runDir 'worker-1-stdout.txt') -Raw -Encoding UTF8
+        $stderr = Get-Content -LiteralPath (Join-Path $runDir 'worker-1-stderr.txt') -Raw -Encoding UTF8
+        $paneTranscript = Get-Content -LiteralPath (Join-Path $runDir 'worker-1-pane-transcript.txt') -Raw -Encoding UTF8
+        $result = Get-Content -LiteralPath (Join-Path $runDir 'worker-1-result.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+
+        $created.status | Should -Be 'completed' -Because "$($result.start_error) $stderr"
+        $stdout | Should -Match '日本語_OK'
+        $stderr | Should -Match 'WARN hidden stderr'
+        $paneTranscript | Should -Match '日本語_OK'
+        $paneTranscript | Should -Match 'BAKEOFF_STDERR_FILE=worker-1-stderr.txt'
+        $paneTranscript | Should -Not -Match 'WARN hidden stderr'
+        $result.status | Should -Be 'completed'
+        $result.end_marker_seen | Should -BeTrue
+    }
+
+    It 'runs Codex npm shims through node instead of the cmd wrapper' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-codex-node-entrypoint'
+        $shimDir = Join-Path $script:bakeoffTempRoot 'codex-node-shim'
+        $codexBinDir = Join-Path $shimDir 'node_modules\@openai\codex\bin'
+        New-Item -ItemType Directory -Path $runDir, $codexBinDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $runDir 'pane-transcript.txt') -Value '' -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'commands.jsonl') -Value '' -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Value '{"version":1,"run_id":"run-codex-node-entrypoint"}' -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $codexBinDir 'codex.js') -Value '// mock codex entrypoint' -Encoding UTF8
+
+        $argsPath = Join-Path $script:bakeoffTempRoot 'mock-node-args.txt'
+        $className = 'WinsmuxMockNode' + [guid]::NewGuid().ToString('N')
+        $source = @'
+using System;
+using System.IO;
+using System.Linq;
+using System.Text;
+
+public static class CLASS_NAME
+{
+    public static int Main(string[] args)
+    {
+        string capturePath = Environment.GetEnvironmentVariable("WINS_MOCK_NODE_ARGS");
+        if (!String.IsNullOrWhiteSpace(capturePath))
+        {
+            File.WriteAllLines(
+                capturePath,
+                args.Select(arg => Convert.ToBase64String(Encoding.UTF8.GetBytes(arg))),
+                new UTF8Encoding(false));
+        }
+
+        int outputIndex = Array.IndexOf(args, "-o");
+        if (outputIndex >= 0 && outputIndex + 1 < args.Length)
+        {
+            File.WriteAllText(args[outputIndex + 1], "PREFLIGHT_OK worker-codex-node\n", new UTF8Encoding(false));
+        }
+        return 0;
+    }
+}
+'@.Replace('CLASS_NAME', $className)
+        $sourcePath = Join-Path $shimDir "$className.cs"
+        $nodeExe = Join-Path $shimDir 'node.exe'
+        Set-Content -LiteralPath $sourcePath -Value $source -Encoding UTF8
+        $windowsRoot = if ([string]::IsNullOrWhiteSpace($env:WINDIR)) { $env:SystemRoot } else { $env:WINDIR }
+        $compilerPath = Join-Path $windowsRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+        $compilerOutput = & $compilerPath /nologo /target:exe "/out:$nodeExe" $sourcePath 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to compile mock node.exe: $compilerOutput"
+        }
+
+        @'
+@echo off
+if "%1"=="--version" (
+  echo codex-cli mock
+  exit /b 0
+)
+exit /b 1
+'@ | Set-Content -LiteralPath (Join-Path $shimDir 'codex.cmd') -Encoding ASCII
+
+        $oldPath = $env:PATH
+        $oldCapture = $env:WINS_MOCK_NODE_ARGS
+        try {
+            $env:PATH = "$shimDir;$oldPath"
+            $env:WINS_MOCK_NODE_ARGS = $argsPath
+            $json = & pwsh -NoLogo -NoProfile -File $script:bakeoffWorkerScriptPath `
+                -ProjectDir $script:bakeoffTempRoot `
+                -RunDir $runDir `
+                -PaneId 'worker-codex-node' `
+                -Cli 'Codex' `
+                -Model 'gpt-5.3-codex-spark' `
+                -Effort 'medium' `
+                -PromptText "Return exactly this single line:`nPREFLIGHT_OK worker-codex-node" `
+                -EndMarker '' `
+                -TimeoutSeconds 20 `
+                -Json
+        } finally {
+            $env:PATH = $oldPath
+            $env:WINS_MOCK_NODE_ARGS = $oldCapture
+        }
+
+        $created = $json | ConvertFrom-Json
+        $result = Get-Content -LiteralPath (Join-Path $runDir 'worker-codex-node-result.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $capturedArgs = @(Get-Content -LiteralPath $argsPath -Encoding UTF8 | ForEach-Object {
+            [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($_))
+        })
+
+        $created.status | Should -Be 'completed'
+        [System.IO.Path]::GetFileName([string]$result.command) | Should -Be 'node.exe'
+        [System.IO.Path]::GetFileName([string]$result.command_version.command) | Should -Be 'codex.cmd'
+        $result.stdout_source | Should -Be 'codex_output_last_message'
+        $capturedArgs[0] | Should -Match 'node_modules\\@openai\\codex\\bin\\codex\.js$'
+        $capturedArgs[1] | Should -Be 'exec'
+        $capturedArgs | Should -Contain '-o'
+        $capturedArgs[-1] | Should -Match 'PREFLIGHT_OK worker-codex-node'
+        $capturedArgs[-1] | Should -Not -Be '-'
+    }
+
+    It 'runs Claude Code bakeoff workers without plan-approval mode' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-claude'
+        $mockDir = Join-Path $script:bakeoffTempRoot 'mock-claude'
+        New-Item -ItemType Directory -Path $runDir, $mockDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $runDir 'pane-transcript.txt') -Value '' -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'commands.jsonl') -Value '' -Encoding UTF8
+
+        $argsPath = Join-Path $script:bakeoffTempRoot 'claude-args.txt'
+        $className = 'WinsmuxMockClaude' + [guid]::NewGuid().ToString('N')
+        $source = @'
+using System;
+using System.IO;
+using System.Linq;
+using System.Text;
+
+public static class CLASS_NAME
+{
+    public static int Main(string[] args)
+    {
+        string capturePath = Environment.GetEnvironmentVariable("WINS_MOCK_CLAUDE_ARGS");
+        if (!String.IsNullOrWhiteSpace(capturePath))
+        {
+            File.WriteAllLines(
+                capturePath,
+                args.Select(arg => Convert.ToBase64String(Encoding.UTF8.GetBytes(arg))),
+                new UTF8Encoding(false));
+        }
+
+        if (args.Contains("--version"))
+        {
+            Console.OutputEncoding = new UTF8Encoding(false);
+            Console.WriteLine("2.1.150 (Claude Code)");
+            return 0;
+        }
+
+        Console.OutputEncoding = new UTF8Encoding(false);
+        Console.WriteLine("BAKEOFF_ROUND_A_BEGIN");
+        Console.WriteLine("claude ok");
+        Console.WriteLine("BAKEOFF_ROUND_A_END");
+        return 0;
+    }
+}
+'@.Replace('CLASS_NAME', $className)
+        $sourcePath = Join-Path $mockDir "$className.cs"
+        $mockExe = Join-Path $mockDir 'claude.exe'
+        Set-Content -LiteralPath $sourcePath -Value $source -Encoding UTF8
+        $windowsRoot = if ([string]::IsNullOrWhiteSpace($env:WINDIR)) { $env:SystemRoot } else { $env:WINDIR }
+        $compilerPath = Join-Path $windowsRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+        $compilerOutput = & $compilerPath /nologo /target:exe "/out:$mockExe" $sourcePath 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to compile mock claude.exe: $compilerOutput"
+        }
+
+        $oldPath = $env:PATH
+        $oldCapture = $env:WINS_MOCK_CLAUDE_ARGS
+        try {
+            $env:PATH = "$mockDir;$oldPath"
+            $env:WINS_MOCK_CLAUDE_ARGS = $argsPath
+            $json = & $script:bakeoffPwshPath -NoLogo -NoProfile -File $script:bakeoffWorkerScriptPath `
+                -ProjectDir $script:bakeoffTempRoot `
+                -RunDir $runDir `
+                -PaneId 'worker-claude' `
+                -Cli 'Claude Code' `
+                -Model 'sonnet' `
+                -Effort 'high' `
+                -PromptText "BAKEOFF_ROUND_A_BEGIN`nRun the mock.`nBAKEOFF_ROUND_A_END" `
+                -Json
+        } finally {
+            $env:PATH = $oldPath
+            $env:WINS_MOCK_CLAUDE_ARGS = $oldCapture
+        }
+
+        $created = $json | ConvertFrom-Json
+        $created.status | Should -Be 'completed'
+        $args = Get-Content -LiteralPath $argsPath -Encoding UTF8 | ForEach-Object {
+            [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($_))
+        }
+        $args | Should -Contain '--dangerously-skip-permissions'
+        $args | Should -Contain '--disallowedTools'
+        $denyIndex = [array]::IndexOf($args, '--disallowedTools')
+        $args[$denyIndex + 1] | Should -Match 'mcp__plugin_telegram_telegram__reply'
+        $args[$denyIndex + 1] | Should -Match 'mcp__voicevox__speak'
+        $args | Should -Not -Contain '--channels'
+        $args | Should -Not -Contain '--permission-mode'
+        $args | Should -Not -Contain 'plan'
+    }
+
+    It 'passes Claude Code channels only when explicitly configured' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-claude-channels'
+        $mockDir = Join-Path $script:bakeoffTempRoot 'mock-claude-channels'
+        New-Item -ItemType Directory -Path $runDir, $mockDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $runDir 'pane-transcript.txt') -Value '' -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'commands.jsonl') -Value '' -Encoding UTF8
+
+        $argsPath = Join-Path $script:bakeoffTempRoot 'claude-channel-args.txt'
+        $className = 'WinsmuxMockClaudeChannels' + [guid]::NewGuid().ToString('N')
+        $source = @'
+using System;
+using System.IO;
+using System.Linq;
+using System.Text;
+
+public static class CLASS_NAME
+{
+    public static int Main(string[] args)
+    {
+        string capturePath = Environment.GetEnvironmentVariable("WINS_MOCK_CLAUDE_ARGS");
+        if (!String.IsNullOrWhiteSpace(capturePath))
+        {
+            File.WriteAllLines(
+                capturePath,
+                args.Select(arg => Convert.ToBase64String(Encoding.UTF8.GetBytes(arg))),
+                new UTF8Encoding(false));
+        }
+
+        if (args.Contains("--version"))
+        {
+            Console.OutputEncoding = new UTF8Encoding(false);
+            Console.WriteLine("2.1.150 (Claude Code)");
+            return 0;
+        }
+
+        Console.OutputEncoding = new UTF8Encoding(false);
+        Console.WriteLine("BAKEOFF_ROUND_A_BEGIN");
+        Console.WriteLine("claude channels ok");
+        Console.WriteLine("BAKEOFF_ROUND_A_END");
+        return 0;
+    }
+}
+'@.Replace('CLASS_NAME', $className)
+        $sourcePath = Join-Path $mockDir "$className.cs"
+        $mockExe = Join-Path $mockDir 'claude.exe'
+        Set-Content -LiteralPath $sourcePath -Value $source -Encoding UTF8
+        $windowsRoot = if ([string]::IsNullOrWhiteSpace($env:WINDIR)) { $env:SystemRoot } else { $env:WINDIR }
+        $compilerPath = Join-Path $windowsRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+        $compilerOutput = & $compilerPath /nologo /target:exe "/out:$mockExe" $sourcePath 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to compile mock claude.exe: $compilerOutput"
+        }
+
+        $oldPath = $env:PATH
+        $oldCapture = $env:WINS_MOCK_CLAUDE_ARGS
+        try {
+            $env:PATH = "$mockDir;$oldPath"
+            $env:WINS_MOCK_CLAUDE_ARGS = $argsPath
+            $json = & pwsh -NoLogo -NoProfile -File $script:bakeoffWorkerScriptPath `
+                -ProjectDir $script:bakeoffTempRoot `
+                -RunDir $runDir `
+                -PaneId 'worker-claude-channels' `
+                -Cli 'Claude Code' `
+                -Model 'sonnet' `
+                -Effort 'high' `
+                -PromptText "BAKEOFF_ROUND_A_BEGIN`nRun the mock.`nBAKEOFF_ROUND_A_END" `
+                -ClaudeChannels 'plugin:telegram@claude-plugins-official' `
+                -Json
+        } finally {
+            $env:PATH = $oldPath
+            $env:WINS_MOCK_CLAUDE_ARGS = $oldCapture
+        }
+
+        $created = $json | ConvertFrom-Json
+        $created.status | Should -Be 'completed'
+        $args = Get-Content -LiteralPath $argsPath -Encoding UTF8 | ForEach-Object {
+            [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($_))
+        }
+        $args | Should -Contain '--channels'
+        $args | Should -Contain 'plugin:telegram@claude-plugins-official'
+        $denyIndex = [array]::IndexOf($args, '--disallowedTools')
+        $denyIndex | Should -BeGreaterThan -1
+        $args[$denyIndex + 1] | Should -Match 'mcp__voicevox__speak'
+        $args[$denyIndex + 1] | Should -Not -Match 'mcp__plugin_telegram_telegram__reply'
+    }
+
+    It 'prefers Windows executable shims over extensionless command stubs' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-command-resolution'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $runDir 'pane-transcript.txt') -Value '' -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'commands.jsonl') -Value '' -Encoding UTF8
+
+        $shimDir = Join-Path $script:bakeoffTempRoot 'shim'
+        New-Item -ItemType Directory -Path $shimDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $shimDir 'mock-cli') -Value 'this extensionless stub must not be selected' -Encoding UTF8
+        @'
+@echo off
+echo BAKEOFF_ROUND_A_BEGIN
+echo PREFLIGHT_OK worker-1
+echo BAKEOFF_ROUND_A_END
+'@ | Set-Content -LiteralPath (Join-Path $shimDir 'mock-cli.cmd') -Encoding ASCII
+
+        $oldPath = $env:PATH
+        try {
+            $env:PATH = "$shimDir;$oldPath"
+            $json = & pwsh -NoLogo -NoProfile -File $script:bakeoffWorkerScriptPath `
+                -ProjectDir $script:bakeoffTempRoot `
+                -RunDir $runDir `
+                -PaneId 'worker-1' `
+                -Cli 'custom' `
+                -Model 'mock' `
+                -PromptText "BAKEOFF_ROUND_A_BEGIN`nPREFLIGHT_OK worker-1`nBAKEOFF_ROUND_A_END" `
+                -CommandPath 'mock-cli' `
+                -Json
+        } finally {
+            $env:PATH = $oldPath
+        }
+
+        $created = $json | ConvertFrom-Json
+        $commandRecord = Get-Content -LiteralPath (Join-Path $runDir 'commands.jsonl') -Raw -Encoding UTF8 | ConvertFrom-Json
+
+        $created.status | Should -Be 'completed'
+        $commandRecord.command | Should -Match 'mock-cli\.cmd$'
+    }
+
+    It 'prints live worker heartbeats as no-restart waiting evidence' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-live-progress'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $runDir 'pane-transcript.txt') -Value '' -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'commands.jsonl') -Value '' -Encoding UTF8
+        [ordered]@{
+            version = 1
+            run_id  = 'run-live-progress'
+        } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Encoding UTF8
+
+        $slowWorkerPath = Join-Path $script:bakeoffTempRoot 'slow-worker.ps1'
+@'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$null = [Console]::In.ReadToEnd()
+Start-Sleep -Seconds 2
+Write-Output 'BAKEOFF_ROUND_A_BEGIN'
+Write-Output 'slow worker ok'
+Write-Output 'BAKEOFF_ROUND_A_END'
+'@ | Set-Content -LiteralPath $slowWorkerPath -Encoding UTF8
+
+        $commandArgsJson = @('-NoLogo', '-NoProfile', '-File', $slowWorkerPath) | ConvertTo-Json -Compress
+        $output = & pwsh -NoLogo -NoProfile -File $script:bakeoffWorkerScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -RunDir $runDir `
+            -PaneId 'worker-slow' `
+            -Cli 'custom' `
+            -Model 'mock' `
+            -PromptText "BAKEOFF_ROUND_A_BEGIN`nRun slowly.`nBAKEOFF_ROUND_A_END" `
+            -CommandPath $script:bakeoffPwshPath `
+            -CommandArgsJson $commandArgsJson `
+            -TimeoutSeconds 10 `
+            -Json `
+            -LiveProgress `
+            -LiveProgressIntervalSeconds 1 2>&1
+
+        $liveText = [string]::Join("`n", @($output))
+        $liveText | Should -Match 'BAKEOFF_LAUNCH worker-slow child_pid=\d+'
+        $liveText | Should -Match 'BAKEOFF_WAITING_NOTE worker-slow progress_lines_are_heartbeat=true no_restart=true'
+        $liveText | Should -Match 'BAKEOFF_WAITING worker-slow elapsed=1s child_pid=\d+ still_running=true no_restart=true'
+        $liveText | Should -Match 'BAKEOFF_EXIT worker-slow child_pid=\d+ exit_code=0'
+        $liveText | Should -Not -Match 'BAKEOFF_PROGRESS worker-slow elapsed='
+
+        $created = Get-Content -LiteralPath (Join-Path $runDir 'worker-slow-result.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $created.status | Should -Be 'completed'
+    }
+
+    It 'launches Antigravity with HarnessBench-style print flags and evidence paths' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-antigravity-command-shape'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $runDir 'pane-transcript.txt') -Value '' -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'commands.jsonl') -Value '' -Encoding UTF8
+        [ordered]@{
+            version = 1
+            run_id  = 'run-antigravity-command-shape'
+        } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Encoding UTF8
+
+        $shimDir = Join-Path $script:bakeoffTempRoot 'agy-shim'
+        New-Item -ItemType Directory -Path $shimDir -Force | Out-Null
+        $capturedArgsPath = Join-Path $script:bakeoffTempRoot 'agy-args.json'
+        & $script:NewMockAgyExe -Directory $shimDir
+
+        $oldPath = $env:PATH
+        $oldArgs = $env:WINS_MOCK_AGY_ARGS
+        try {
+            $env:PATH = "$shimDir;$oldPath"
+            $env:WINS_MOCK_AGY_ARGS = $capturedArgsPath
+
+            $prompt = "BAKEOFF_ROUND_A_BEGIN`nRun the Antigravity mock.`nBAKEOFF_ROUND_A_END"
+            $json = & pwsh -NoLogo -NoProfile -File $script:bakeoffWorkerScriptPath `
+                -ProjectDir $script:bakeoffTempRoot `
+                -RunDir $runDir `
+                -PaneId 'worker-agy' `
+                -Cli 'Antigravity CLI' `
+                -Model 'Gemini 3.5 Flash (High)' `
+                -PromptText $prompt `
+                -TimeoutSeconds 20 `
+                -Json
+        } finally {
+            $env:PATH = $oldPath
+            $env:WINS_MOCK_AGY_ARGS = $oldArgs
+        }
+
+        $created = $json | ConvertFrom-Json
+        $created.status | Should -Be 'completed'
+
+        $args = @(Get-Content -LiteralPath $capturedArgsPath -Encoding UTF8 | ForEach-Object {
+            [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($_))
+        })
+        $args | Should -Not -Contain '--sandbox'
+        $args | Should -Contain '--dangerously-skip-permissions'
+        $args | Should -Contain '--log-file'
+        $args | Should -Contain '--add-dir'
+        $args | Should -Contain '--print-timeout'
+        @($args | Where-Object { $_ -in @('-p', '--print') }).Count | Should -Be 1
+        $args[([array]::IndexOf($args, '--add-dir') + 1)] | Should -Be $script:bakeoffTempRoot
+        $args[([array]::IndexOf($args, '--print-timeout') + 1)] | Should -Be '20s'
+        $args[([array]::IndexOf($args, '--log-file') + 1)] | Should -Match 'worker-agy.*\.log$'
+        $printIndex = [array]::IndexOf($args, '--print')
+        if ($printIndex -lt 0) {
+            $printIndex = [array]::IndexOf($args, '-p')
+        }
+        $sentPrompt = [string]$args[$printIndex + 1]
+        $sentPrompt | Should -Match ([regex]::Escape($prompt))
+        if (Get-Command -Name 'cargo.exe' -ErrorAction SilentlyContinue) {
+            $sentPrompt | Should -Match 'Windows toolchain bootstrap for Antigravity CLI'
+        }
+    }
+
+    It 'keeps host Rust tooling available when Antigravity uses an isolated home' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-antigravity-rust-env'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $runDir 'pane-transcript.txt') -Value '' -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'commands.jsonl') -Value '' -Encoding UTF8
+        [ordered]@{
+            version = 1
+            run_id  = 'run-antigravity-rust-env'
+        } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Encoding UTF8
+
+        $shimDir = Join-Path $script:bakeoffTempRoot 'agy-rust-env-shim'
+        $cargoHome = Join-Path $script:bakeoffTempRoot 'host-cargo'
+        $rustupHome = Join-Path $script:bakeoffTempRoot 'host-rustup'
+        $cargoBin = Join-Path $cargoHome 'bin'
+        $cargoExe = Join-Path $cargoBin 'cargo.exe'
+        New-Item -ItemType Directory -Path $shimDir, $cargoBin, $rustupHome -Force | Out-Null
+        Set-Content -LiteralPath $cargoExe -Value 'mock cargo' -Encoding UTF8
+        & $script:NewMockAgyExe -Directory $shimDir
+
+        $oldPath = $env:PATH
+        $oldCargoHome = $env:CARGO_HOME
+        $oldRustupHome = $env:RUSTUP_HOME
+        $oldArgs = $env:WINS_MOCK_AGY_ARGS
+        $capturedArgsPath = Join-Path $script:bakeoffTempRoot 'agy-rust-env-args.json'
+        try {
+            $env:PATH = "$shimDir;$oldPath"
+            $env:CARGO_HOME = $cargoHome
+            $env:RUSTUP_HOME = $rustupHome
+            $env:WINS_MOCK_AGY_ARGS = $capturedArgsPath
+
+            $json = & pwsh -NoLogo -NoProfile -File $script:bakeoffWorkerScriptPath `
+                -ProjectDir $script:bakeoffTempRoot `
+                -RunDir $runDir `
+                -PaneId 'worker-agy-rust-env' `
+                -Cli 'Antigravity CLI' `
+                -Model 'Gemini 3.5 Flash (High)' `
+                -PromptText "BAKEOFF_ROUND_A_BEGIN`nRun the Antigravity mock.`nBAKEOFF_ROUND_A_END" `
+                -TimeoutSeconds 20 `
+                -Json
+        } finally {
+            $env:PATH = $oldPath
+            $env:CARGO_HOME = $oldCargoHome
+            $env:RUSTUP_HOME = $oldRustupHome
+            $env:WINS_MOCK_AGY_ARGS = $oldArgs
+        }
+
+        $created = $json | ConvertFrom-Json
+        $result = Get-Content -LiteralPath (Join-Path $runDir 'worker-agy-rust-env-result.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $commandRecord = Get-Content -LiteralPath (Join-Path $runDir 'commands.jsonl') -Raw -Encoding UTF8 | ConvertFrom-Json
+
+        $created.status | Should -Be 'completed'
+        $result.antigravity.home_dir | Should -Match 'worker-agy-rust-env-antigravity-home$'
+        $settings = Get-Content -LiteralPath $result.antigravity.config_path -Raw -Encoding UTF8 | ConvertFrom-Json
+        $settings.enableTerminalSandbox | Should -BeFalse
+        $commandRecord.environment.HOME | Should -Be $result.antigravity.home_dir
+        $commandRecord.environment.USERPROFILE | Should -Be $result.antigravity.home_dir
+        $commandRecord.environment.CARGO_HOME | Should -Be $cargoHome
+        $commandRecord.environment.RUSTUP_HOME | Should -Be $rustupHome
+        [string]$commandRecord.environment.Path | Should -Match ([regex]::Escape($cargoBin))
+        $mcpConfig = Get-Content -LiteralPath (Join-Path $result.antigravity.home_dir '.gemini\config\mcp_config.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        @($mcpConfig.mcpServers.PSObject.Properties).Count | Should -Be 0
+        Test-Path -LiteralPath (Join-Path $result.antigravity.home_dir '.gemini\config\.migrated') | Should -BeTrue
+
+        $args = @(Get-Content -LiteralPath $capturedArgsPath -Encoding UTF8 | ForEach-Object {
+            [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($_))
+        })
+        $printIndex = [array]::IndexOf($args, '--print')
+        if ($printIndex -lt 0) {
+            $printIndex = [array]::IndexOf($args, '-p')
+        }
+        $sentPrompt = [string]$args[$printIndex + 1]
+        $sentPrompt | Should -Match 'Windows toolchain bootstrap for Antigravity CLI'
+        $sentPrompt | Should -Match ([regex]::Escape($cargoExe))
+        $sentPrompt | Should -Match "do not call bare cargo"
+    }
+
+    It 'classifies Antigravity cargo lookup failures as a toolchain path problem' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-antigravity-cargo-missing'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $runDir 'pane-transcript.txt') -Value '' -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'commands.jsonl') -Value '' -Encoding UTF8
+        [ordered]@{
+            version = 1
+            run_id  = 'run-antigravity-cargo-missing'
+        } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Encoding UTF8
+
+        $shimDir = Join-Path $script:bakeoffTempRoot 'agy-cargo-missing-shim'
+        New-Item -ItemType Directory -Path $shimDir -Force | Out-Null
+        & $script:NewMockAgyExe -Directory $shimDir
+
+        $oldPath = $env:PATH
+        $oldMode = $env:WINS_MOCK_AGY_MODE
+        try {
+            $env:PATH = "$shimDir;$oldPath"
+            $env:WINS_MOCK_AGY_MODE = 'cargo-missing'
+
+            $json = & pwsh -NoLogo -NoProfile -File $script:bakeoffWorkerScriptPath `
+                -ProjectDir $script:bakeoffTempRoot `
+                -RunDir $runDir `
+                -PaneId 'worker-agy-cargo-missing' `
+                -Cli 'Antigravity CLI' `
+                -Model 'Gemini 3.5 Flash (High)' `
+                -PromptText "BAKEOFF_ROUND_A_BEGIN`nRun the Antigravity mock.`nBAKEOFF_ROUND_A_END" `
+                -TimeoutSeconds 20 `
+                -Json
+        } finally {
+            $env:PATH = $oldPath
+            $env:WINS_MOCK_AGY_MODE = $oldMode
+        }
+
+        $created = $json | ConvertFrom-Json
+        $created.status | Should -Be 'blocked_toolchain_path_missing'
+        $created.blocked_reason | Should -Be 'antigravity_internal_cargo_path_missing'
+    }
+
+    It 'records Antigravity version, log path, and model evidence when the CLI reports them' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-antigravity-metadata'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $runDir 'pane-transcript.txt') -Value '' -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'commands.jsonl') -Value '' -Encoding UTF8
+        [ordered]@{
+            version = 1
+            run_id  = 'run-antigravity-metadata'
+        } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Encoding UTF8
+
+        $shimDir = Join-Path $script:bakeoffTempRoot 'agy-metadata-shim'
+        New-Item -ItemType Directory -Path $shimDir -Force | Out-Null
+        & $script:NewMockAgyExe -Directory $shimDir
+
+        $oldPath = $env:PATH
+        $oldMode = $env:WINS_MOCK_AGY_MODE
+        try {
+            $env:PATH = "$shimDir;$oldPath"
+            $env:WINS_MOCK_AGY_MODE = 'metadata'
+
+            $json = & pwsh -NoLogo -NoProfile -File $script:bakeoffWorkerScriptPath `
+                -ProjectDir $script:bakeoffTempRoot `
+                -RunDir $runDir `
+                -PaneId 'worker-agy-meta' `
+                -Cli 'Antigravity CLI' `
+                -Model 'Gemini 3.5 Flash (High)' `
+                -PromptText "BAKEOFF_ROUND_A_BEGIN`nRun the Antigravity mock.`nBAKEOFF_ROUND_A_END" `
+                -TimeoutSeconds 20 `
+                -Json
+        } finally {
+            $env:PATH = $oldPath
+            $env:WINS_MOCK_AGY_MODE = $oldMode
+        }
+
+        $created = $json | ConvertFrom-Json
+        $result = Get-Content -LiteralPath (Join-Path $runDir 'worker-agy-meta-result.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+
+        $created.status | Should -Be 'completed'
+        $result.command_version.stdout.Trim() | Should -Be 'Antigravity CLI 1.2.3'
+        $result.log_file | Should -Match 'worker-agy-meta.*\.log$'
+        $result.antigravity.log_file | Should -Be $result.log_file
+        $result.antigravity.selected_model_evidence.selected_model | Should -Be 'Gemini 3.5 Flash (High)'
+        $result.antigravity.selected_model_evidence.has_generated_text | Should -BeTrue
+        $result.antigravity.selected_model_evidence.generated_text_length | Should -Be 128
+        Test-Path -LiteralPath (Join-Path $runDir $result.log_file) | Should -BeTrue
+    }
+
+    It 'blocks Antigravity runs when the log has model metadata but no generation marker' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-antigravity-metadata-only'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $runDir 'pane-transcript.txt') -Value '' -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'commands.jsonl') -Value '' -Encoding UTF8
+        [ordered]@{
+            version = 1
+            run_id  = 'run-antigravity-metadata-only'
+        } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Encoding UTF8
+
+        $shimDir = Join-Path $script:bakeoffTempRoot 'agy-metadata-only-shim'
+        New-Item -ItemType Directory -Path $shimDir -Force | Out-Null
+        & $script:NewMockAgyExe -Directory $shimDir
+
+        $oldPath = $env:PATH
+        $oldMode = $env:WINS_MOCK_AGY_MODE
+        try {
+            $env:PATH = "$shimDir;$oldPath"
+            $env:WINS_MOCK_AGY_MODE = 'metadata-only'
+
+            $json = & pwsh -NoLogo -NoProfile -File $script:bakeoffWorkerScriptPath `
+                -ProjectDir $script:bakeoffTempRoot `
+                -RunDir $runDir `
+                -PaneId 'worker-agy-metadata-only' `
+                -Cli 'Antigravity CLI' `
+                -Model 'Gemini 3.5 Flash (High)' `
+                -PromptText "BAKEOFF_ROUND_A_BEGIN`nRun the Antigravity mock.`nBAKEOFF_ROUND_A_END" `
+                -TimeoutSeconds 20 `
+                -Json
+        } finally {
+            $env:PATH = $oldPath
+            $env:WINS_MOCK_AGY_MODE = $oldMode
+        }
+
+        $created = $json | ConvertFrom-Json
+        $result = Get-Content -LiteralPath (Join-Path $runDir 'worker-agy-metadata-only-result.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+
+        $created.status | Should -Be 'blocked_unverified_model'
+        $result.blocked_reason | Should -Be 'antigravity_generation_unverified'
+        $result.antigravity.model_evidence | Should -Be 'Gemini 3.5 Flash (High)'
+        $result.antigravity.selected_model_evidence.has_generated_text | Should -BeFalse
+    }
+
+    It 'does not accept Antigravity stdout model metadata when no log file is written' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-antigravity-stdout-model'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $runDir 'pane-transcript.txt') -Value '' -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'commands.jsonl') -Value '' -Encoding UTF8
+        [ordered]@{
+            version = 1
+            run_id  = 'run-antigravity-stdout-model'
+        } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Encoding UTF8
+
+        $shimDir = Join-Path $script:bakeoffTempRoot 'agy-stdout-model-shim'
+        New-Item -ItemType Directory -Path $shimDir -Force | Out-Null
+        & $script:NewMockAgyExe -Directory $shimDir
+
+        $oldPath = $env:PATH
+        $oldMode = $env:WINS_MOCK_AGY_MODE
+        try {
+            $env:PATH = "$shimDir;$oldPath"
+            $env:WINS_MOCK_AGY_MODE = 'stdout-model-no-log'
+
+            $json = & pwsh -NoLogo -NoProfile -File $script:bakeoffWorkerScriptPath `
+                -ProjectDir $script:bakeoffTempRoot `
+                -RunDir $runDir `
+                -PaneId 'worker-agy-stdout-model' `
+                -Cli 'Antigravity CLI' `
+                -Model 'Gemini 3.5 Flash (High)' `
+                -PromptText "BAKEOFF_ROUND_A_BEGIN`nRun the Antigravity mock.`nBAKEOFF_ROUND_A_END" `
+                -TimeoutSeconds 20 `
+                -Json
+        } finally {
+            $env:PATH = $oldPath
+            $env:WINS_MOCK_AGY_MODE = $oldMode
+        }
+
+        $created = $json | ConvertFrom-Json
+        $result = Get-Content -LiteralPath (Join-Path $runDir 'worker-agy-stdout-model-result.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+
+        $created.status | Should -Be 'blocked_unverified_model'
+        $result.blocked_reason | Should -Be 'antigravity_model_unverified'
+        $result.antigravity.model_evidence | Should -Be ''
+    }
+
+    It 'blocks Antigravity runs when selected model evidence is missing' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-antigravity-no-model-evidence'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $runDir 'pane-transcript.txt') -Value '' -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'commands.jsonl') -Value '' -Encoding UTF8
+        [ordered]@{
+            version = 1
+            run_id  = 'run-antigravity-no-model-evidence'
+        } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Encoding UTF8
+
+        $shimDir = Join-Path $script:bakeoffTempRoot 'agy-no-model-shim'
+        New-Item -ItemType Directory -Path $shimDir -Force | Out-Null
+        & $script:NewMockAgyExe -Directory $shimDir
+
+        $oldPath = $env:PATH
+        $oldMode = $env:WINS_MOCK_AGY_MODE
+        try {
+            $env:PATH = "$shimDir;$oldPath"
+            $env:WINS_MOCK_AGY_MODE = 'no-log'
+
+            $json = & pwsh -NoLogo -NoProfile -File $script:bakeoffWorkerScriptPath `
+                -ProjectDir $script:bakeoffTempRoot `
+                -RunDir $runDir `
+                -PaneId 'worker-agy-no-model' `
+                -Cli 'Antigravity CLI' `
+                -Model 'Gemini 3.5 Flash (High)' `
+                -PromptText "BAKEOFF_ROUND_A_BEGIN`nRun the Antigravity mock.`nBAKEOFF_ROUND_A_END" `
+                -TimeoutSeconds 20 `
+                -Json
+        } finally {
+            $env:PATH = $oldPath
+            $env:WINS_MOCK_AGY_MODE = $oldMode
+        }
+
+        $created = $json | ConvertFrom-Json
+        $result = Get-Content -LiteralPath (Join-Path $runDir 'worker-agy-no-model-result.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+
+        $created.status | Should -Be 'blocked_unverified_model'
+        $result.status | Should -Be 'blocked_unverified_model'
+        $result.blocked_reason | Should -Be 'antigravity_model_unverified'
+        $result.antigravity.model_evidence | Should -Be ''
+    }
+
+    It 'does not reuse stale Antigravity log metadata as selected-model evidence' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-antigravity-stale-log'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $runDir 'pane-transcript.txt') -Value '' -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'commands.jsonl') -Value '' -Encoding UTF8
+        [ordered]@{
+            version = 1
+            run_id  = 'run-antigravity-stale-log'
+        } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'worker-agy-stale-log-antigravity.log') -Value 'model: Gemini 3.5 Flash (High)' -Encoding UTF8
+
+        $shimDir = Join-Path $script:bakeoffTempRoot 'agy-stale-log-shim'
+        New-Item -ItemType Directory -Path $shimDir -Force | Out-Null
+        & $script:NewMockAgyExe -Directory $shimDir
+
+        $oldPath = $env:PATH
+        $oldMode = $env:WINS_MOCK_AGY_MODE
+        try {
+            $env:PATH = "$shimDir;$oldPath"
+            $env:WINS_MOCK_AGY_MODE = 'no-log'
+
+            $json = & pwsh -NoLogo -NoProfile -File $script:bakeoffWorkerScriptPath `
+                -ProjectDir $script:bakeoffTempRoot `
+                -RunDir $runDir `
+                -PaneId 'worker-agy-stale-log' `
+                -Cli 'Antigravity CLI' `
+                -Model 'Gemini 3.5 Flash (High)' `
+                -PromptText "BAKEOFF_ROUND_A_BEGIN`nRun the Antigravity mock.`nBAKEOFF_ROUND_A_END" `
+                -TimeoutSeconds 20 `
+                -Json
+        } finally {
+            $env:PATH = $oldPath
+            $env:WINS_MOCK_AGY_MODE = $oldMode
+        }
+
+        $created = $json | ConvertFrom-Json
+        $result = Get-Content -LiteralPath (Join-Path $runDir 'worker-agy-stale-log-result.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+
+        $created.status | Should -Be 'blocked_unverified_model'
+        $result.blocked_reason | Should -Be 'antigravity_model_unverified'
+        $result.antigravity.model_evidence | Should -Be ''
+        $result.log_bytes | Should -Be 0
+    }
+
+    It 'does not accept incidental stdout model mentions as Antigravity selected-model evidence' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-antigravity-plain-model-mention'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $runDir 'pane-transcript.txt') -Value '' -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'commands.jsonl') -Value '' -Encoding UTF8
+        [ordered]@{
+            version = 1
+            run_id  = 'run-antigravity-plain-model-mention'
+        } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Encoding UTF8
+
+        $shimDir = Join-Path $script:bakeoffTempRoot 'agy-plain-model-shim'
+        New-Item -ItemType Directory -Path $shimDir -Force | Out-Null
+        & $script:NewMockAgyExe -Directory $shimDir
+
+        $oldPath = $env:PATH
+        $oldMode = $env:WINS_MOCK_AGY_MODE
+        try {
+            $env:PATH = "$shimDir;$oldPath"
+            $env:WINS_MOCK_AGY_MODE = 'plain-model-no-log'
+
+            $json = & pwsh -NoLogo -NoProfile -File $script:bakeoffWorkerScriptPath `
+                -ProjectDir $script:bakeoffTempRoot `
+                -RunDir $runDir `
+                -PaneId 'worker-agy-plain-model' `
+                -Cli 'Antigravity CLI' `
+                -Model 'Gemini 3.5 Flash (High)' `
+                -PromptText "BAKEOFF_ROUND_A_BEGIN`nRun the Antigravity mock.`nBAKEOFF_ROUND_A_END" `
+                -TimeoutSeconds 20 `
+                -Json
+        } finally {
+            $env:PATH = $oldPath
+            $env:WINS_MOCK_AGY_MODE = $oldMode
+        }
+
+        $created = $json | ConvertFrom-Json
+        $result = Get-Content -LiteralPath (Join-Path $runDir 'worker-agy-plain-model-result.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+
+        $created.status | Should -Be 'blocked_unverified_model'
+        $result.blocked_reason | Should -Be 'antigravity_model_unverified'
+        $result.antigravity.model_evidence | Should -Be ''
+    }
+
+    It 'blocks Antigravity runs when selected model evidence differs from the requested model' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-antigravity-model-mismatch'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $runDir 'pane-transcript.txt') -Value '' -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'commands.jsonl') -Value '' -Encoding UTF8
+        [ordered]@{
+            version = 1
+            run_id  = 'run-antigravity-model-mismatch'
+        } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Encoding UTF8
+
+        $shimDir = Join-Path $script:bakeoffTempRoot 'agy-model-mismatch-shim'
+        New-Item -ItemType Directory -Path $shimDir -Force | Out-Null
+        & $script:NewMockAgyExe -Directory $shimDir
+
+        $oldPath = $env:PATH
+        $oldMode = $env:WINS_MOCK_AGY_MODE
+        try {
+            $env:PATH = "$shimDir;$oldPath"
+            $env:WINS_MOCK_AGY_MODE = 'mismatch'
+
+            $json = & pwsh -NoLogo -NoProfile -File $script:bakeoffWorkerScriptPath `
+                -ProjectDir $script:bakeoffTempRoot `
+                -RunDir $runDir `
+                -PaneId 'worker-agy-mismatch' `
+                -Cli 'Antigravity CLI' `
+                -Model 'Gemini 3.5 Flash (High)' `
+                -PromptText "BAKEOFF_ROUND_A_BEGIN`nRun the Antigravity mock.`nBAKEOFF_ROUND_A_END" `
+                -TimeoutSeconds 20 `
+                -Json
+        } finally {
+            $env:PATH = $oldPath
+            $env:WINS_MOCK_AGY_MODE = $oldMode
+        }
+
+        $created = $json | ConvertFrom-Json
+        $result = Get-Content -LiteralPath (Join-Path $runDir 'worker-agy-mismatch-result.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+
+        $created.status | Should -Be 'blocked_model_mismatch'
+        $result.status | Should -Be 'blocked_model_mismatch'
+        $result.blocked_reason | Should -Be 'antigravity_model_mismatch'
+        $result.antigravity.model_evidence | Should -Be 'Gemini 3 Flash'
+    }
+
+    It 'requires every configured worker to pass preflight before a recorded run starts' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-preflight-pass'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+
+        $mockPath = Join-Path $script:bakeoffTempRoot 'mock-preflight-pass.ps1'
+@'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$prompt = [Console]::In.ReadToEnd()
+Write-Output 'BAKEOFF_ROUND_A_BEGIN'
+if ($prompt -match 'PREFLIGHT_OK [^\r\n]+') {
+    Write-Output $Matches[0]
+}
+Write-Output 'BAKEOFF_ROUND_A_END'
+'@ | Set-Content -LiteralPath $mockPath -Encoding UTF8
+
+        $artifacts = & $script:SetBakeoffPreflightArtifacts -RunDir $runDir
+        $workerSpecPath = Join-Path $script:bakeoffTempRoot 'workers-pass.json'
+        $workers = @(
+            [ordered]@{
+                paneId          = 'worker-1'
+                cli             = 'custom'
+                model           = 'mock'
+                task_sha256     = $artifacts.TaskHash
+                commandPath     = $script:bakeoffPwshPath
+                commandArgsJson = (@('-NoLogo', '-NoProfile', '-File', $mockPath) | ConvertTo-Json -Compress)
+            },
+            [ordered]@{
+                paneId          = 'worker-2'
+                cli             = 'custom'
+                model           = 'mock'
+                task_sha256     = $artifacts.TaskHash
+                commandPath     = $script:bakeoffPwshPath
+                commandArgsJson = (@('-NoLogo', '-NoProfile', '-File', $mockPath) | ConvertTo-Json -Compress)
+            }
+        )
+        & $script:WriteBakeoffPreflightManifest -RunDir $runDir -Artifacts $artifacts -ActiveWorkers $workers
+        $workers | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $workerSpecPath -Encoding UTF8
+
+        $json = & pwsh -NoLogo -NoProfile -File $script:bakeoffPreflightScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -RunDir $runDir `
+            -WorkerSpecPath $workerSpecPath `
+            -TimeoutSeconds 20 `
+            -Json
+
+        $report = $json | ConvertFrom-Json
+        $report.all_pass | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $runDir 'preflight.json') | Should -BeTrue
+        @($report.workers).Count | Should -Be 2
+        @($report.workers | Where-Object { -not $_.passed }).Count | Should -Be 0
+    }
+
+    It 'treats preflight as connectivity and does not require the task end marker' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-preflight-marker-only'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+
+        $mockPath = Join-Path $script:bakeoffTempRoot 'mock-preflight-marker-only.ps1'
+@'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$prompt = [Console]::In.ReadToEnd()
+if ($prompt -match 'PREFLIGHT_OK [^\r\n]+') {
+    Write-Output $Matches[0]
+}
+'@ | Set-Content -LiteralPath $mockPath -Encoding UTF8
+
+        $artifacts = & $script:SetBakeoffPreflightArtifacts -RunDir $runDir
+        $workerSpecPath = Join-Path $script:bakeoffTempRoot 'workers-marker-only.json'
+        $workers = @(
+            [ordered]@{
+                paneId          = 'worker-1'
+                cli             = 'custom'
+                model           = 'mock'
+                task_sha256     = $artifacts.TaskHash
+                commandPath     = $script:bakeoffPwshPath
+                commandArgsJson = (@('-NoLogo', '-NoProfile', '-File', $mockPath) | ConvertTo-Json -Compress)
+            }
+        )
+        & $script:WriteBakeoffPreflightManifest -RunDir $runDir -Artifacts $artifacts -ActiveWorkers $workers
+        $workers | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $workerSpecPath -Encoding UTF8
+
+        $json = & pwsh -NoLogo -NoProfile -File $script:bakeoffPreflightScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -RunDir $runDir `
+            -WorkerSpecPath $workerSpecPath `
+            -TimeoutSeconds 20 `
+            -Json
+
+        $report = $json | ConvertFrom-Json
+        $report.all_pass | Should -BeTrue
+        $report.workers[0].expected_marker | Should -Be 'PREFLIGHT_OK worker-1'
+    }
+
+    It 'blocks external worker specs that differ from the manifest workers' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-preflight-worker-spec-mismatch'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+
+        $mockPath = Join-Path $script:bakeoffTempRoot 'mock-preflight-worker-spec-mismatch.ps1'
+        @'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$prompt = [Console]::In.ReadToEnd()
+Write-Output 'BAKEOFF_ROUND_A_BEGIN'
+if ($prompt -match 'PREFLIGHT_OK [^\r\n]+') {
+    Write-Output $Matches[0]
+}
+Write-Output 'BAKEOFF_ROUND_A_END'
+'@ | Set-Content -LiteralPath $mockPath -Encoding UTF8
+
+        $artifacts = & $script:SetBakeoffPreflightArtifacts -RunDir $runDir
+        $manifestWorkers = @(
+            [ordered]@{
+                paneId          = 'worker-1'
+                cli             = 'custom'
+                model           = 'mock'
+                task_sha256     = $artifacts.TaskHash
+                commandPath     = $script:bakeoffPwshPath
+                commandArgsJson = (@('-NoLogo', '-NoProfile', '-File', $mockPath) | ConvertTo-Json -Compress)
+            }
+        )
+        & $script:WriteBakeoffPreflightManifest -RunDir $runDir -Artifacts $artifacts -ActiveWorkers $manifestWorkers
+
+        $workerSpecPath = Join-Path $script:bakeoffTempRoot 'workers-spec-mismatch.json'
+        @(
+            [ordered]@{
+                paneId          = 'worker-1'
+                cli             = 'custom'
+                model           = 'mock'
+                task_sha256     = $artifacts.TaskHash
+                commandPath     = $script:bakeoffPwshPath
+                commandArgsJson = (@('-NoLogo', '-NoProfile', '-Command', 'Write-Output stale') | ConvertTo-Json -Compress)
+            }
+        ) | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $workerSpecPath -Encoding UTF8
+
+        $output = & pwsh -NoLogo -NoProfile -File $script:bakeoffPreflightScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -RunDir $runDir `
+            -WorkerSpecPath $workerSpecPath `
+            -TimeoutSeconds 20 `
+            -Json 2>&1 | Out-String
+
+        $LASTEXITCODE | Should -Be 1
+        $report = Get-Content -LiteralPath (Join-Path $runDir 'preflight.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $report.all_pass | Should -BeFalse
+        $report.worker_spec_consistency.reason | Should -Be 'stale_worker_spec'
+        $report.worker_spec_consistency.mismatches[0].field | Should -Be 'command_args_json'
+        Test-Path -LiteralPath (Join-Path $runDir '.preflight') | Should -BeFalse
+        $output | Should -Match 'stale_worker_spec'
+    }
+
+    It 'blocks external worker specs when the manifest has no active worker contract' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-preflight-worker-spec-no-manifest-workers'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+
+        $mockPath = Join-Path $script:bakeoffTempRoot 'mock-preflight-no-manifest-workers.ps1'
+        @'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+Write-Output 'BAKEOFF_ROUND_A_BEGIN'
+Write-Output 'PREFLIGHT_OK worker-1'
+Write-Output 'BAKEOFF_ROUND_A_END'
+'@ | Set-Content -LiteralPath $mockPath -Encoding UTF8
+
+        $artifacts = & $script:SetBakeoffPreflightArtifacts -RunDir $runDir
+        & $script:WriteBakeoffPreflightManifest -RunDir $runDir -Artifacts $artifacts
+
+        $workerSpecPath = Join-Path $script:bakeoffTempRoot 'workers-no-manifest-workers.json'
+        @(
+            [ordered]@{
+                paneId          = 'worker-1'
+                cli             = 'custom'
+                model           = 'mock'
+                task_sha256     = $artifacts.TaskHash
+                commandPath     = $script:bakeoffPwshPath
+                commandArgsJson = (@('-NoLogo', '-NoProfile', '-File', $mockPath) | ConvertTo-Json -Compress)
+            }
+        ) | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $workerSpecPath -Encoding UTF8
+
+        $output = & pwsh -NoLogo -NoProfile -File $script:bakeoffPreflightScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -RunDir $runDir `
+            -WorkerSpecPath $workerSpecPath `
+            -TimeoutSeconds 20 `
+            -Json 2>&1 | Out-String
+
+        $LASTEXITCODE | Should -Be 1
+        $report = Get-Content -LiteralPath (Join-Path $runDir 'preflight.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $report.all_pass | Should -BeFalse
+        $report.worker_spec_consistency.reason | Should -Be 'missing_manifest_active_workers'
+        Test-Path -LiteralPath (Join-Path $runDir '.preflight') | Should -BeFalse
+        $output | Should -Match 'missing_manifest_active_workers'
+    }
+
+    It 'blocks external worker specs that add a worker outside the manifest' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-preflight-worker-spec-extra-worker'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+
+        $mockPath = Join-Path $script:bakeoffTempRoot 'mock-preflight-extra-worker.ps1'
+        @'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+Write-Output 'BAKEOFF_ROUND_A_BEGIN'
+Write-Output 'PREFLIGHT_OK worker-1'
+Write-Output 'BAKEOFF_ROUND_A_END'
+'@ | Set-Content -LiteralPath $mockPath -Encoding UTF8
+
+        $artifacts = & $script:SetBakeoffPreflightArtifacts -RunDir $runDir
+        $workerOne = [ordered]@{
+            paneId          = 'worker-1'
+            cli             = 'custom'
+            model           = 'mock'
+            task_sha256     = $artifacts.TaskHash
+            commandPath     = $script:bakeoffPwshPath
+            commandArgsJson = (@('-NoLogo', '-NoProfile', '-File', $mockPath) | ConvertTo-Json -Compress)
+        }
+        $workerTwo = [ordered]@{
+            paneId          = 'worker-2'
+            cli             = 'custom'
+            model           = 'mock'
+            task_sha256     = $artifacts.TaskHash
+            commandPath     = $script:bakeoffPwshPath
+            commandArgsJson = (@('-NoLogo', '-NoProfile', '-File', $mockPath) | ConvertTo-Json -Compress)
+        }
+        & $script:WriteBakeoffPreflightManifest -RunDir $runDir -Artifacts $artifacts -ActiveWorkers @($workerOne)
+
+        $workerSpecPath = Join-Path $script:bakeoffTempRoot 'workers-extra-worker.json'
+        @($workerOne, $workerTwo) | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $workerSpecPath -Encoding UTF8
+
+        $output = & pwsh -NoLogo -NoProfile -File $script:bakeoffPreflightScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -RunDir $runDir `
+            -WorkerSpecPath $workerSpecPath `
+            -TimeoutSeconds 20 `
+            -Json 2>&1 | Out-String
+
+        $LASTEXITCODE | Should -Be 1
+        $report = Get-Content -LiteralPath (Join-Path $runDir 'preflight.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $report.all_pass | Should -BeFalse
+        $report.worker_spec_consistency.mismatches[0].reason | Should -Be 'unexpected_worker_spec'
+        Test-Path -LiteralPath (Join-Path $runDir '.preflight') | Should -BeFalse
+        $output | Should -Match 'unexpected_worker_spec'
+    }
+
+    It 'blocks external worker specs that omit a manifest worker' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-preflight-worker-spec-missing-worker'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+
+        $mockPath = Join-Path $script:bakeoffTempRoot 'mock-preflight-missing-worker.ps1'
+        @'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+Write-Output 'BAKEOFF_ROUND_A_BEGIN'
+Write-Output 'PREFLIGHT_OK worker-1'
+Write-Output 'BAKEOFF_ROUND_A_END'
+'@ | Set-Content -LiteralPath $mockPath -Encoding UTF8
+
+        $artifacts = & $script:SetBakeoffPreflightArtifacts -RunDir $runDir
+        $workerOne = [ordered]@{
+            paneId          = 'worker-1'
+            cli             = 'custom'
+            model           = 'mock'
+            task_sha256     = $artifacts.TaskHash
+            commandPath     = $script:bakeoffPwshPath
+            commandArgsJson = (@('-NoLogo', '-NoProfile', '-File', $mockPath) | ConvertTo-Json -Compress)
+        }
+        $workerTwo = [ordered]@{
+            paneId          = 'worker-2'
+            cli             = 'custom'
+            model           = 'mock'
+            task_sha256     = $artifacts.TaskHash
+            commandPath     = $script:bakeoffPwshPath
+            commandArgsJson = (@('-NoLogo', '-NoProfile', '-File', $mockPath) | ConvertTo-Json -Compress)
+        }
+        & $script:WriteBakeoffPreflightManifest -RunDir $runDir -Artifacts $artifacts -ActiveWorkers @($workerOne, $workerTwo)
+
+        $workerSpecPath = Join-Path $script:bakeoffTempRoot 'workers-missing-worker.json'
+        @($workerOne) | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $workerSpecPath -Encoding UTF8
+
+        $output = & pwsh -NoLogo -NoProfile -File $script:bakeoffPreflightScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -RunDir $runDir `
+            -WorkerSpecPath $workerSpecPath `
+            -TimeoutSeconds 20 `
+            -Json 2>&1 | Out-String
+
+        $LASTEXITCODE | Should -Be 1
+        $report = Get-Content -LiteralPath (Join-Path $runDir 'preflight.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $report.all_pass | Should -BeFalse
+        $report.worker_spec_consistency.mismatches[0].reason | Should -Be 'missing_worker_spec'
+        Test-Path -LiteralPath (Join-Path $runDir '.preflight') | Should -BeFalse
+        $output | Should -Match 'missing_worker_spec'
+    }
+
+    It 'blocks worker-spec preflight when shared artifacts are missing' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-preflight-missing-artifacts'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+
+        $mockPath = Join-Path $script:bakeoffTempRoot 'mock-preflight-missing-artifacts.ps1'
+@'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$prompt = [Console]::In.ReadToEnd()
+Write-Output 'BAKEOFF_ROUND_A_BEGIN'
+if ($prompt -match 'PREFLIGHT_OK [^\r\n]+') {
+    Write-Output $Matches[0]
+}
+Write-Output 'BAKEOFF_ROUND_A_END'
+'@ | Set-Content -LiteralPath $mockPath -Encoding UTF8
+
+        $workerSpecPath = Join-Path $script:bakeoffTempRoot 'workers-missing-artifacts.json'
+        @(
+            [ordered]@{
+                paneId          = 'worker-1'
+                cli             = 'custom'
+                model           = 'mock'
+                commandPath     = $script:bakeoffPwshPath
+                commandArgsJson = (@('-NoLogo', '-NoProfile', '-File', $mockPath) | ConvertTo-Json -Compress)
+            }
+        ) | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $workerSpecPath -Encoding UTF8
+
+        $output = & pwsh -NoLogo -NoProfile -File $script:bakeoffPreflightScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -RunDir $runDir `
+            -WorkerSpecPath $workerSpecPath `
+            -TimeoutSeconds 20 `
+            -Json 2>&1 | Out-String
+
+        $LASTEXITCODE | Should -Be 1
+        $report = Get-Content -LiteralPath (Join-Path $runDir 'preflight.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $report.all_pass | Should -BeFalse
+        $report.task_packet_artifact.passed | Should -BeFalse
+        $report.launch_scripts_artifact.passed | Should -BeFalse
+        $output | Should -Match 'missing_task_packet'
+        $output | Should -Match 'missing_launch_script'
+    }
+
+    It 'uses the invocation model separately from the display model during preflight' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-preflight-model-arg'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+
+        $mockPath = Join-Path $script:bakeoffTempRoot 'mock-preflight-model-arg.ps1'
+        @'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$prompt = [Console]::In.ReadToEnd()
+Write-Output 'BAKEOFF_ROUND_A_BEGIN'
+if ($prompt -match 'PREFLIGHT_OK [^\r\n]+') {
+    Write-Output $Matches[0]
+}
+Write-Output 'BAKEOFF_ROUND_A_END'
+'@ | Set-Content -LiteralPath $mockPath -Encoding UTF8
+
+        $artifacts = & $script:SetBakeoffPreflightArtifacts -RunDir $runDir
+        [ordered]@{
+            version = 1
+            run_id = 'run-preflight-model-arg'
+            task_packet_hash = $artifacts.TaskHash
+            launch_scripts = @(
+                [ordered]@{
+                    name   = $artifacts.LaunchName
+                    sha256 = $artifacts.LaunchHash
+                }
+            )
+            active_workers = @(
+                [ordered]@{
+                    pane            = 'worker-1'
+                    cli             = 'custom'
+                    model           = 'visible-model'
+                    model_arg       = 'actual-cli-model'
+                    display_model   = 'Visible Model'
+                    task_sha256     = $artifacts.TaskHash
+                    commandPath     = $script:bakeoffPwshPath
+                    commandArgsJson = (@('-NoLogo', '-NoProfile', '-File', $mockPath) | ConvertTo-Json -Compress)
+                }
+            )
+        } | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Encoding UTF8
+
+        $json = & pwsh -NoLogo -NoProfile -File $script:bakeoffPreflightScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -RunDir $runDir `
+            -TimeoutSeconds 20 `
+            -Json
+
+        $report = $json | ConvertFrom-Json
+        $report.all_pass | Should -BeTrue
+        $report.workers[0].model | Should -Be 'actual-cli-model'
+        $report.workers[0].display_model | Should -Be 'Visible Model'
+    }
+
+    It 'fingerprints the task packet, manifest, and launch scripts in preflight output' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-preflight-fingerprints'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+
+        $mockPath = Join-Path $script:bakeoffTempRoot 'mock-preflight-fingerprint.ps1'
+        @'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$prompt = [Console]::In.ReadToEnd()
+Write-Output 'BAKEOFF_ROUND_A_BEGIN'
+if ($prompt -match 'PREFLIGHT_OK [^\r\n]+') {
+    Write-Output $Matches[0]
+}
+Write-Output 'BAKEOFF_ROUND_A_END'
+'@ | Set-Content -LiteralPath $mockPath -Encoding UTF8
+
+        Set-Content -LiteralPath (Join-Path $runDir 'task-packet.md') -Value 'same task' -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'run-worker-1.ps1') -Value "Write-Output 'run worker'" -Encoding UTF8
+        $taskHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $runDir 'task-packet.md')).Hash
+        $launchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $runDir 'run-worker-1.ps1')).Hash
+        [ordered]@{
+            version = 1
+            run_id = 'run-preflight-fingerprints'
+            task_packet_hash = $taskHash
+            launch_scripts = @(
+                [ordered]@{
+                    name   = 'run-worker-1.ps1'
+                    sha256 = $launchHash
+                }
+            )
+            active_workers = @(
+                [ordered]@{
+                    pane            = 'worker-1'
+                    cli             = 'custom'
+                    model           = 'mock'
+                    task_sha256     = $taskHash
+                    commandPath     = $script:bakeoffPwshPath
+                    commandArgsJson = (@('-NoLogo', '-NoProfile', '-File', $mockPath) | ConvertTo-Json -Compress)
+                }
+            )
+        } | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Encoding UTF8
+
+        $json = & pwsh -NoLogo -NoProfile -File $script:bakeoffPreflightScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -RunDir $runDir `
+            -TimeoutSeconds 20 `
+            -Json
+
+        $report = $json | ConvertFrom-Json
+        $report.all_pass | Should -BeTrue
+        $report.manifest_sha256 | Should -Be (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $runDir 'manifest.json')).Hash
+        $report.task_sha256 | Should -Be (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $runDir 'task-packet.md')).Hash
+        $report.launch_scripts[0].name | Should -Be 'run-worker-1.ps1'
+        $report.launch_scripts[0].sha256 | Should -Be (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $runDir 'run-worker-1.ps1')).Hash
+    }
+
+    It 'blocks preflight when worker task packet hashes do not match the shared task' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-preflight-task-mismatch'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+
+        $mockPath = Join-Path $script:bakeoffTempRoot 'mock-preflight-task-mismatch.ps1'
+        @'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$prompt = [Console]::In.ReadToEnd()
+Write-Output 'BAKEOFF_ROUND_A_BEGIN'
+if ($prompt -match 'PREFLIGHT_OK [^\r\n]+') {
+    Write-Output $Matches[0]
+}
+Write-Output 'BAKEOFF_ROUND_A_END'
+'@ | Set-Content -LiteralPath $mockPath -Encoding UTF8
+
+        $taskPath = Join-Path $runDir 'task-packet.md'
+        Set-Content -LiteralPath $taskPath -Value 'shared task packet' -Encoding UTF8
+        $launchPath = Join-Path $runDir 'run-worker-1.ps1'
+        Set-Content -LiteralPath $launchPath -Value "Write-Output 'run worker'" -Encoding UTF8
+        $sharedTaskHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $taskPath).Hash
+        $launchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $launchPath).Hash
+        [ordered]@{
+            version = 1
+            run_id = 'run-preflight-task-mismatch'
+            task_packet_hash = $sharedTaskHash
+            launch_scripts = @(
+                [ordered]@{
+                    name   = 'run-worker-1.ps1'
+                    sha256 = $launchHash
+                }
+            )
+            active_workers = @(
+                [ordered]@{
+                    pane            = 'worker-1'
+                    cli             = 'custom'
+                    model           = 'mock'
+                    task_sha256     = $sharedTaskHash
+                    commandPath     = $script:bakeoffPwshPath
+                    commandArgsJson = (@('-NoLogo', '-NoProfile', '-File', $mockPath) | ConvertTo-Json -Compress)
+                },
+                [ordered]@{
+                    pane            = 'worker-2'
+                    cli             = 'custom'
+                    model           = 'mock'
+                    task_sha256     = 'STALE_TASK_HASH'
+                    commandPath     = $script:bakeoffPwshPath
+                    commandArgsJson = (@('-NoLogo', '-NoProfile', '-File', $mockPath) | ConvertTo-Json -Compress)
+                }
+            )
+        } | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Encoding UTF8
+
+        $output = & pwsh -NoLogo -NoProfile -File $script:bakeoffPreflightScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -RunDir $runDir `
+            -TimeoutSeconds 20 `
+            -Json 2>&1 | Out-String
+
+        $LASTEXITCODE | Should -Be 1
+        $report = Get-Content -LiteralPath (Join-Path $runDir 'preflight.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $report.all_pass | Should -BeFalse
+        $report.task_packet_consistency.passed | Should -BeFalse
+        $report.task_packet_consistency.expected_sha256 | Should -Be $sharedTaskHash
+        $report.task_packet_consistency.mismatched_workers[0].pane_id | Should -Be 'worker-2'
+        $output | Should -Match 'stale_task_packet'
+    }
+
+    It 'blocks preflight when the task packet no longer matches the manifest hash' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-preflight-manifest-task-mismatch'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+
+        $mockPath = Join-Path $script:bakeoffTempRoot 'mock-preflight-manifest-task-mismatch.ps1'
+        @'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$prompt = [Console]::In.ReadToEnd()
+Write-Output 'BAKEOFF_ROUND_A_BEGIN'
+if ($prompt -match 'PREFLIGHT_OK [^\r\n]+') {
+    Write-Output $Matches[0]
+}
+Write-Output 'BAKEOFF_ROUND_A_END'
+'@ | Set-Content -LiteralPath $mockPath -Encoding UTF8
+
+        $taskPath = Join-Path $runDir 'task-packet.md'
+        Set-Content -LiteralPath $taskPath -Value 'edited task packet' -Encoding UTF8
+        $launchPath = Join-Path $runDir 'run-worker-1.ps1'
+        Set-Content -LiteralPath $launchPath -Value "Write-Output 'run worker'" -Encoding UTF8
+        $currentTaskHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $taskPath).Hash
+        $launchHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $launchPath).Hash
+        [ordered]@{
+            version = 1
+            run_id = 'run-preflight-manifest-task-mismatch'
+            task_packet_hash = 'STALE_MANIFEST_TASK_HASH'
+            launch_scripts = @(
+                [ordered]@{
+                    name   = 'run-worker-1.ps1'
+                    sha256 = $launchHash
+                }
+            )
+            active_workers = @(
+                [ordered]@{
+                    pane            = 'worker-1'
+                    cli             = 'custom'
+                    model           = 'mock'
+                    task_sha256     = $currentTaskHash
+                    commandPath     = $script:bakeoffPwshPath
+                    commandArgsJson = (@('-NoLogo', '-NoProfile', '-File', $mockPath) | ConvertTo-Json -Compress)
+                }
+            )
+        } | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Encoding UTF8
+
+        $output = & pwsh -NoLogo -NoProfile -File $script:bakeoffPreflightScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -RunDir $runDir `
+            -TimeoutSeconds 20 `
+            -Json 2>&1 | Out-String
+
+        $LASTEXITCODE | Should -Be 1
+        $report = Get-Content -LiteralPath (Join-Path $runDir 'preflight.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $report.all_pass | Should -BeFalse
+        $report.task_packet_consistency.manifest_matches_task | Should -BeFalse
+        $report.task_packet_consistency.manifest_sha256 | Should -Be 'STALE_MANIFEST_TASK_HASH'
+        $report.task_packet_consistency.expected_sha256 | Should -Be $currentTaskHash
+        $output | Should -Match 'stale_task_packet_manifest'
+    }
+
+    It 'blocks preflight when the manifest task packet hash is missing' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-preflight-missing-manifest-task-hash'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+
+        $mockPath = Join-Path $script:bakeoffTempRoot 'mock-preflight-missing-manifest-task-hash.ps1'
+        @'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$prompt = [Console]::In.ReadToEnd()
+Write-Output 'BAKEOFF_ROUND_A_BEGIN'
+if ($prompt -match 'PREFLIGHT_OK [^\r\n]+') {
+    Write-Output $Matches[0]
+}
+Write-Output 'BAKEOFF_ROUND_A_END'
+'@ | Set-Content -LiteralPath $mockPath -Encoding UTF8
+
+        $artifacts = & $script:SetBakeoffPreflightArtifacts -RunDir $runDir
+        $workers = @(
+            [ordered]@{
+                pane            = 'worker-1'
+                cli             = 'custom'
+                model           = 'mock'
+                task_sha256     = $artifacts.TaskHash
+                commandPath     = $script:bakeoffPwshPath
+                commandArgsJson = (@('-NoLogo', '-NoProfile', '-File', $mockPath) | ConvertTo-Json -Compress)
+            }
+        )
+        & $script:WriteBakeoffPreflightManifest -RunDir $runDir -Artifacts $artifacts -ActiveWorkers $workers -OmitTaskPacketHash
+
+        $output = & pwsh -NoLogo -NoProfile -File $script:bakeoffPreflightScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -RunDir $runDir `
+            -TimeoutSeconds 20 `
+            -Json 2>&1 | Out-String
+
+        $LASTEXITCODE | Should -Be 1
+        $report = Get-Content -LiteralPath (Join-Path $runDir 'preflight.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $report.all_pass | Should -BeFalse
+        $report.task_packet_consistency.manifest_reason | Should -Be 'missing_task_packet_manifest'
+        Test-Path -LiteralPath (Join-Path $runDir '.preflight') | Should -BeFalse
+        $output | Should -Match 'missing_task_packet_manifest'
+    }
+
+    It 'blocks preflight when a worker task packet hash is missing' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-preflight-missing-worker-task-hash'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+
+        $mockPath = Join-Path $script:bakeoffTempRoot 'mock-preflight-missing-worker-task-hash.ps1'
+        @'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$prompt = [Console]::In.ReadToEnd()
+Write-Output 'BAKEOFF_ROUND_A_BEGIN'
+if ($prompt -match 'PREFLIGHT_OK [^\r\n]+') {
+    Write-Output $Matches[0]
+}
+Write-Output 'BAKEOFF_ROUND_A_END'
+'@ | Set-Content -LiteralPath $mockPath -Encoding UTF8
+
+        $artifacts = & $script:SetBakeoffPreflightArtifacts -RunDir $runDir
+        $workers = @(
+            [ordered]@{
+                pane            = 'worker-1'
+                cli             = 'custom'
+                model           = 'mock'
+                commandPath     = $script:bakeoffPwshPath
+                commandArgsJson = (@('-NoLogo', '-NoProfile', '-File', $mockPath) | ConvertTo-Json -Compress)
+            }
+        )
+        & $script:WriteBakeoffPreflightManifest -RunDir $runDir -Artifacts $artifacts -ActiveWorkers $workers
+
+        $output = & pwsh -NoLogo -NoProfile -File $script:bakeoffPreflightScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -RunDir $runDir `
+            -TimeoutSeconds 20 `
+            -Json 2>&1 | Out-String
+
+        $LASTEXITCODE | Should -Be 1
+        $report = Get-Content -LiteralPath (Join-Path $runDir 'preflight.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $report.all_pass | Should -BeFalse
+        $report.task_packet_consistency.mismatched_workers[0].reason | Should -Be 'missing_worker_task_packet_hash'
+        Test-Path -LiteralPath (Join-Path $runDir '.preflight') | Should -BeFalse
+        $output | Should -Match 'missing_worker_task_packet_hash'
+    }
+
+    It 'blocks preflight when launch script fingerprints changed after generation' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-preflight-stale-launch'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+
+        $mockPath = Join-Path $script:bakeoffTempRoot 'mock-preflight-stale-launch.ps1'
+        @'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$prompt = [Console]::In.ReadToEnd()
+Write-Output 'BAKEOFF_ROUND_A_BEGIN'
+if ($prompt -match 'PREFLIGHT_OK [^\r\n]+') {
+    Write-Output $Matches[0]
+}
+Write-Output 'BAKEOFF_ROUND_A_END'
+'@ | Set-Content -LiteralPath $mockPath -Encoding UTF8
+
+        Set-Content -LiteralPath (Join-Path $runDir 'task-packet.md') -Value 'same task' -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'run-worker-1.ps1') -Value "Write-Output 'changed launch script'" -Encoding UTF8
+        $taskHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $runDir 'task-packet.md')).Hash
+        [ordered]@{
+            version = 1
+            run_id = 'run-preflight-stale-launch'
+            task_packet_hash = $taskHash
+            launch_scripts = @(
+                [ordered]@{
+                    name   = 'run-worker-1.ps1'
+                    sha256 = 'STALE_LAUNCH_SCRIPT_HASH'
+                }
+            )
+            active_workers = @(
+                [ordered]@{
+                    pane            = 'worker-1'
+                    cli             = 'custom'
+                    model           = 'mock'
+                    task_sha256     = $taskHash
+                    commandPath     = $script:bakeoffPwshPath
+                    commandArgsJson = (@('-NoLogo', '-NoProfile', '-File', $mockPath) | ConvertTo-Json -Compress)
+                }
+            )
+        } | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Encoding UTF8
+
+        $output = & pwsh -NoLogo -NoProfile -File $script:bakeoffPreflightScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -RunDir $runDir `
+            -TimeoutSeconds 20 `
+            -Json 2>&1 | Out-String
+
+        $LASTEXITCODE | Should -Be 1
+        $report = Get-Content -LiteralPath (Join-Path $runDir 'preflight.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $report.all_pass | Should -BeFalse
+        $report.launch_scripts[0].name | Should -Be 'run-worker-1.ps1'
+        $report.launch_scripts[0].expected_sha256 | Should -Be 'STALE_LAUNCH_SCRIPT_HASH'
+        $report.launch_scripts[0].status | Should -Be 'changed'
+        $output | Should -Match 'stale_launch_script'
+    }
+
+    It 'blocks preflight when the manifest launch script hash is missing' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-preflight-missing-launch-hash'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+
+        $mockPath = Join-Path $script:bakeoffTempRoot 'mock-preflight-missing-launch-hash.ps1'
+        @'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$prompt = [Console]::In.ReadToEnd()
+Write-Output 'BAKEOFF_ROUND_A_BEGIN'
+if ($prompt -match 'PREFLIGHT_OK [^\r\n]+') {
+    Write-Output $Matches[0]
+}
+Write-Output 'BAKEOFF_ROUND_A_END'
+'@ | Set-Content -LiteralPath $mockPath -Encoding UTF8
+
+        $artifacts = & $script:SetBakeoffPreflightArtifacts -RunDir $runDir
+        $workers = @(
+            [ordered]@{
+                pane            = 'worker-1'
+                cli             = 'custom'
+                model           = 'mock'
+                task_sha256     = $artifacts.TaskHash
+                commandPath     = $script:bakeoffPwshPath
+                commandArgsJson = (@('-NoLogo', '-NoProfile', '-File', $mockPath) | ConvertTo-Json -Compress)
+            }
+        )
+        & $script:WriteBakeoffPreflightManifest -RunDir $runDir -Artifacts $artifacts -ActiveWorkers $workers -OmitLaunchHash
+
+        $output = & pwsh -NoLogo -NoProfile -File $script:bakeoffPreflightScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -RunDir $runDir `
+            -TimeoutSeconds 20 `
+            -Json 2>&1 | Out-String
+
+        $LASTEXITCODE | Should -Be 1
+        $report = Get-Content -LiteralPath (Join-Path $runDir 'preflight.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $report.all_pass | Should -BeFalse
+        $report.launch_scripts_artifact.reason | Should -Be 'missing_launch_script_hash'
+        $report.launch_scripts[0].status | Should -Be 'missing_baseline'
+        Test-Path -LiteralPath (Join-Path $runDir '.preflight') | Should -BeFalse
+        $output | Should -Match 'missing_launch_script_hash'
+    }
+
+    It 'blocks preflight when the manifest launch script list is missing' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-preflight-missing-launch-manifest'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+
+        $mockPath = Join-Path $script:bakeoffTempRoot 'mock-preflight-missing-launch-manifest.ps1'
+        @'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$prompt = [Console]::In.ReadToEnd()
+Write-Output 'BAKEOFF_ROUND_A_BEGIN'
+if ($prompt -match 'PREFLIGHT_OK [^\r\n]+') {
+    Write-Output $Matches[0]
+}
+Write-Output 'BAKEOFF_ROUND_A_END'
+'@ | Set-Content -LiteralPath $mockPath -Encoding UTF8
+
+        $artifacts = & $script:SetBakeoffPreflightArtifacts -RunDir $runDir
+        $workers = @(
+            [ordered]@{
+                pane            = 'worker-1'
+                cli             = 'custom'
+                model           = 'mock'
+                task_sha256     = $artifacts.TaskHash
+                commandPath     = $script:bakeoffPwshPath
+                commandArgsJson = (@('-NoLogo', '-NoProfile', '-File', $mockPath) | ConvertTo-Json -Compress)
+            }
+        )
+        & $script:WriteBakeoffPreflightManifest -RunDir $runDir -Artifacts $artifacts -ActiveWorkers $workers -OmitLaunchScripts
+
+        $output = & pwsh -NoLogo -NoProfile -File $script:bakeoffPreflightScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -RunDir $runDir `
+            -TimeoutSeconds 20 `
+            -Json 2>&1 | Out-String
+
+        $LASTEXITCODE | Should -Be 1
+        $report = Get-Content -LiteralPath (Join-Path $runDir 'preflight.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $report.all_pass | Should -BeFalse
+        $report.launch_scripts_artifact.reason | Should -Be 'missing_launch_script_manifest'
+        $report.launch_scripts[0].status | Should -Be 'unexpected'
+        $output | Should -Match 'missing_launch_script_manifest'
+    }
+
+    It 'blocks preflight when an unexpected launch script is present after generation' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-preflight-unexpected-launch'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+
+        $mockPath = Join-Path $script:bakeoffTempRoot 'mock-preflight-unexpected-launch.ps1'
+        @'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$prompt = [Console]::In.ReadToEnd()
+Write-Output 'BAKEOFF_ROUND_A_BEGIN'
+if ($prompt -match 'PREFLIGHT_OK [^\r\n]+') {
+    Write-Output $Matches[0]
+}
+Write-Output 'BAKEOFF_ROUND_A_END'
+'@ | Set-Content -LiteralPath $mockPath -Encoding UTF8
+
+        Set-Content -LiteralPath (Join-Path $runDir 'task-packet.md') -Value 'same task' -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'run-worker-1.ps1') -Value "Write-Output 'known launch script'" -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'run-worker-extra.ps1') -Value "Write-Output 'unexpected launch script'" -Encoding UTF8
+        $taskHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $runDir 'task-packet.md')).Hash
+        [ordered]@{
+            version = 1
+            run_id = 'run-preflight-unexpected-launch'
+            task_packet_hash = $taskHash
+            launch_scripts = @(
+                [ordered]@{
+                    name   = 'run-worker-1.ps1'
+                    sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $runDir 'run-worker-1.ps1')).Hash
+                }
+            )
+            active_workers = @(
+                [ordered]@{
+                    pane            = 'worker-1'
+                    cli             = 'custom'
+                    model           = 'mock'
+                    task_sha256     = $taskHash
+                    commandPath     = $script:bakeoffPwshPath
+                    commandArgsJson = (@('-NoLogo', '-NoProfile', '-File', $mockPath) | ConvertTo-Json -Compress)
+                }
+            )
+        } | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Encoding UTF8
+
+        $output = & pwsh -NoLogo -NoProfile -File $script:bakeoffPreflightScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -RunDir $runDir `
+            -TimeoutSeconds 20 `
+            -Json 2>&1 | Out-String
+
+        $LASTEXITCODE | Should -Be 1
+        $report = Get-Content -LiteralPath (Join-Path $runDir 'preflight.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $report.all_pass | Should -BeFalse
+        ($report.launch_scripts | Where-Object { $_.name -eq 'run-worker-extra.ps1' }).status | Should -Be 'unexpected'
+        $output | Should -Match 'stale_launch_script'
+    }
+
+    It 'uses the runner-reported result path when pane ids need safe-name hashes' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-preflight-pane-hash'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+
+        $mockPath = Join-Path $script:bakeoffTempRoot 'mock-preflight-pane-hash.ps1'
+        @'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$prompt = [Console]::In.ReadToEnd()
+Write-Output 'BAKEOFF_ROUND_A_BEGIN'
+if ($prompt -match 'PREFLIGHT_OK [^\r\n]+') {
+    Write-Output $Matches[0]
+}
+Write-Output 'BAKEOFF_ROUND_A_END'
+'@ | Set-Content -LiteralPath $mockPath -Encoding UTF8
+
+        $artifacts = & $script:SetBakeoffPreflightArtifacts -RunDir $runDir
+        $workerSpecPath = Join-Path $script:bakeoffTempRoot 'workers-pane-hash.json'
+        $workers = @(
+            [ordered]@{
+                paneId          = 'Worker-1'
+                cli             = 'custom'
+                model           = 'mock'
+                task_sha256     = $artifacts.TaskHash
+                commandPath     = $script:bakeoffPwshPath
+                commandArgsJson = (@('-NoLogo', '-NoProfile', '-File', $mockPath) | ConvertTo-Json -Compress)
+            }
+        )
+        & $script:WriteBakeoffPreflightManifest -RunDir $runDir -Artifacts $artifacts -ActiveWorkers $workers
+        $workers | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $workerSpecPath -Encoding UTF8
+
+        $json = & pwsh -NoLogo -NoProfile -File $script:bakeoffPreflightScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -RunDir $runDir `
+            -WorkerSpecPath $workerSpecPath `
+            -TimeoutSeconds 20 `
+            -Json
+
+        $report = $json | ConvertFrom-Json
+        $report.all_pass | Should -BeTrue
+        $report.workers[0].pane_id | Should -Be 'Worker-1'
+        $report.workers[0].status | Should -Be 'completed'
+        $hashedResult = Get-ChildItem -LiteralPath (Join-Path $runDir '.preflight\Worker-1') -Filter 'Worker-1-*-result.json' -File
+        @($hashedResult).Count | Should -Be 1
+    }
+
+    It 'blocks preflight when a worker exits successfully without usable stdout' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-preflight-empty'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+
+        $mockPath = Join-Path $script:bakeoffTempRoot 'mock-preflight-empty.ps1'
+@'
+exit 0
+'@ | Set-Content -LiteralPath $mockPath -Encoding UTF8
+
+        $artifacts = & $script:SetBakeoffPreflightArtifacts -RunDir $runDir
+        $workerSpecPath = Join-Path $script:bakeoffTempRoot 'workers-empty.json'
+        $workers = @(
+            [ordered]@{
+                paneId          = 'worker-1'
+                cli             = 'custom'
+                model           = 'mock-empty'
+                task_sha256     = $artifacts.TaskHash
+                commandPath     = $script:bakeoffPwshPath
+                commandArgsJson = (@('-NoLogo', '-NoProfile', '-File', $mockPath) | ConvertTo-Json -Compress)
+            }
+        )
+        & $script:WriteBakeoffPreflightManifest -RunDir $runDir -Artifacts $artifacts -ActiveWorkers $workers
+        $workers | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $workerSpecPath -Encoding UTF8
+
+        $output = & pwsh -NoLogo -NoProfile -File $script:bakeoffPreflightScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -RunDir $runDir `
+            -WorkerSpecPath $workerSpecPath `
+            -TimeoutSeconds 20 `
+            -Json 2>&1 | Out-String
+
+        $LASTEXITCODE | Should -Be 1
+        $report = Get-Content -LiteralPath (Join-Path $runDir 'preflight.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $report.all_pass | Should -BeFalse
+        $report.workers[0].passed | Should -BeFalse
+        $report.workers[0].reason | Should -Be 'empty_stdout'
+        $output | Should -Match '"all_pass":\s*false'
+    }
+
+    It 'drains worker stdout while the child process is still running' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-large-stdout-worker'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $runDir 'pane-transcript.txt') -Value '' -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'commands.jsonl') -Value '' -Encoding UTF8
+
+        $mockPath = Join-Path $script:bakeoffTempRoot 'mock-large-stdout.ps1'
+        @'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+Write-Output 'BAKEOFF_ROUND_A_BEGIN'
+$payload = 'x' * 512
+for ($i = 0; $i -lt 512; $i++) {
+    Write-Output "LINE_$i $payload"
+}
+Write-Output 'BAKEOFF_ROUND_A_END'
+'@ | Set-Content -LiteralPath $mockPath -Encoding UTF8
+
+        $pwshPath = $script:bakeoffPwshPath
+        $commandArgsJson = @('-NoLogo', '-NoProfile', '-File', $mockPath) | ConvertTo-Json -Compress
+        $json = & pwsh -NoLogo -NoProfile -File $script:bakeoffWorkerScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -RunDir $runDir `
+            -PaneId 'worker-large-output' `
+            -Cli 'custom' `
+            -Model 'mock-large-output' `
+            -PromptText "BAKEOFF_ROUND_A_BEGIN`nRun the mock.`nBAKEOFF_ROUND_A_END" `
+            -CommandPath $pwshPath `
+            -CommandArgsJson $commandArgsJson `
+            -TimeoutSeconds 20 `
+            -Json
+
+        $created = $json | ConvertFrom-Json
+        $result = Get-Content -LiteralPath (Join-Path $runDir 'worker-large-output-result.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $paneTranscript = Get-Content -LiteralPath (Join-Path $runDir 'worker-large-output-pane-transcript.txt') -Raw -Encoding UTF8
+
+        $created.status | Should -Be 'completed'
+        $result.stdout_bytes | Should -BeGreaterThan 200000
+        $result.stream_strategy | Should -Be 'async_read_before_wait'
+        $paneTranscript | Should -Match 'BAKEOFF_STREAM_READ_STRATEGY=async_read_before_wait'
+    }
+
+    It 'bounds large stdin writes when the child process does not read prompt input' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-large-stdin-worker'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $runDir 'pane-transcript.txt') -Value '' -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'commands.jsonl') -Value '' -Encoding UTF8
+
+        $mockPath = Join-Path $script:bakeoffTempRoot 'mock-no-stdin-read.ps1'
+        @'
+Start-Sleep -Seconds 30
+Write-Output 'BAKEOFF_ROUND_A_BEGIN'
+Write-Output 'BAKEOFF_ROUND_A_END'
+'@ | Set-Content -LiteralPath $mockPath -Encoding UTF8
+
+        $promptPath = Join-Path $script:bakeoffTempRoot 'large-prompt.txt'
+        Set-Content -LiteralPath $promptPath -Value ('p' * 200000) -Encoding UTF8
+        $pwshPath = $script:bakeoffPwshPath
+        $commandArgsJson = @('-NoLogo', '-NoProfile', '-File', $mockPath) | ConvertTo-Json -Compress
+        $json = & pwsh -NoLogo -NoProfile -File $script:bakeoffWorkerScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -RunDir $runDir `
+            -PaneId 'worker-large-stdin' `
+            -Cli 'custom' `
+            -Model 'mock-large-stdin' `
+            -PromptPath $promptPath `
+            -CommandPath $pwshPath `
+            -CommandArgsJson $commandArgsJson `
+            -TimeoutSeconds 3 `
+            -Json
+
+        $created = $json | ConvertFrom-Json
+        $result = Get-Content -LiteralPath (Join-Path $runDir 'worker-large-stdin-result.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $paneTranscript = Get-Content -LiteralPath (Join-Path $runDir 'worker-large-stdin-pane-transcript.txt') -Raw -Encoding UTF8
+
+        $created.status | Should -Be 'blocked_timeout' -Because $result.start_error
+        $created.elapsed_seconds | Should -BeLessThan 10
+        $result.stdin_strategy | Should -Be 'async_write_with_process_timeout'
+        $paneTranscript | Should -Match 'BAKEOFF_STDIN_WRITE_STRATEGY=async_write_with_process_timeout'
+    }
+
+    It 'keeps per-pane evidence files unique when pane ids sanitize to the same name' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-pane-name-collision'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $runDir 'pane-transcript.txt') -Value '' -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'commands.jsonl') -Value '' -Encoding UTF8
+        [ordered]@{
+            version = 1
+            run_id = 'run-pane-name-collision'
+        } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Encoding UTF8
+
+        $mockPath = Join-Path $script:bakeoffTempRoot 'mock-name-collision-success.ps1'
+        @'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+Write-Output 'BAKEOFF_ROUND_A_BEGIN'
+Write-Output 'worker ok'
+Write-Output 'BAKEOFF_ROUND_A_END'
+'@ | Set-Content -LiteralPath $mockPath -Encoding UTF8
+
+        $pwshPath = $script:bakeoffPwshPath
+        $commandArgsJson = @('-NoLogo', '-NoProfile', '-File', $mockPath) | ConvertTo-Json -Compress
+        foreach ($paneId in @('worker 1', 'worker/1', 'Worker-1')) {
+            $json = & pwsh -NoLogo -NoProfile -File $script:bakeoffWorkerScriptPath `
+                -ProjectDir $script:bakeoffTempRoot `
+                -RunDir $runDir `
+                -PaneId $paneId `
+                -Cli 'custom' `
+                -Model 'mock' `
+                -PromptText "BAKEOFF_ROUND_A_BEGIN`nRun the mock.`nBAKEOFF_ROUND_A_END" `
+                -CommandPath $pwshPath `
+                -CommandArgsJson $commandArgsJson `
+                -Json
+
+            ($json | ConvertFrom-Json).status | Should -Be 'completed'
+        }
+
+        $manifest = Get-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $paneResults = @(
+            $manifest.worker_executions.PSObject.Properties['worker 1'].Value.pane_result
+            $manifest.worker_executions.PSObject.Properties['worker/1'].Value.pane_result
+            $manifest.worker_executions.PSObject.Properties['Worker-1'].Value.pane_result
+        )
+        @($paneResults | Select-Object -Unique).Count | Should -Be 3
+        foreach ($paneResult in $paneResults) {
+            Test-Path -LiteralPath (Join-Path $runDir $paneResult) | Should -BeTrue
+        }
+    }
+
+    It 'serializes shared manifest updates across concurrent worker processes' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-concurrent-workers'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $runDir 'pane-transcript.txt') -Value '' -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'commands.jsonl') -Value '' -Encoding UTF8
+        [ordered]@{
+            version = 1
+            run_id = 'run-concurrent-workers'
+        } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Encoding UTF8
+
+        $mockPath = Join-Path $script:bakeoffTempRoot 'mock-concurrent-success.ps1'
+        @'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+Start-Sleep -Milliseconds 100
+Write-Output 'BAKEOFF_ROUND_A_BEGIN'
+Write-Output 'worker ok'
+Write-Output 'BAKEOFF_ROUND_A_END'
+'@ | Set-Content -LiteralPath $mockPath -Encoding UTF8
+
+        $pwshPath = $script:bakeoffPwshPath
+        $commandArgsJson = @('-NoLogo', '-NoProfile', '-File', $mockPath) | ConvertTo-Json -Compress
+        $workers = foreach ($workerId in 1..4) {
+            $process = [System.Diagnostics.Process]::new()
+            $process.StartInfo.FileName = $pwshPath
+            $process.StartInfo.WorkingDirectory = $script:bakeoffRepoRoot
+            $process.StartInfo.UseShellExecute = $false
+            $process.StartInfo.RedirectStandardOutput = $true
+            $process.StartInfo.RedirectStandardError = $true
+            foreach ($argument in @(
+                '-NoLogo',
+                '-NoProfile',
+                '-File', $script:bakeoffWorkerScriptPath,
+                '-ProjectDir', $script:bakeoffTempRoot,
+                '-RunDir', $runDir,
+                '-PaneId', "worker-$workerId",
+                '-Cli', 'custom',
+                '-Model', 'mock',
+                '-PromptText', "BAKEOFF_ROUND_A_BEGIN`nRun the mock.`nBAKEOFF_ROUND_A_END",
+                '-CommandPath', $pwshPath,
+                '-CommandArgsJson', $commandArgsJson,
+                '-TimeoutSeconds', '20',
+                '-Json'
+            )) {
+                [void]$process.StartInfo.ArgumentList.Add([string]$argument)
+            }
+            [void]$process.Start()
+            [pscustomobject]@{
+                Process = $process
+                Stdout  = $process.StandardOutput.ReadToEndAsync()
+                Stderr  = $process.StandardError.ReadToEndAsync()
+            }
+        }
+
+        foreach ($worker in $workers) {
+            $exited = $worker.Process.WaitForExit(30000)
+            if (-not $exited) {
+                try { $worker.Process.Kill($true) } catch {}
+            }
+            $exited | Should -BeTrue
+            $worker.Process.ExitCode | Should -Be 0
+            $worker.Stdout.Result | Should -Match '"status":\s*"completed"'
+            $worker.Stderr.Result | Should -BeNullOrEmpty
+        }
+
+        $manifest = Get-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        @($manifest.worker_executions.PSObject.Properties).Count | Should -Be 4
+        foreach ($workerId in 1..4) {
+            $entry = $manifest.worker_executions.PSObject.Properties["worker-$workerId"].Value
+            $entry.status | Should -Be 'completed'
+            $entry.pane_result | Should -Be "worker-$workerId-result.json"
+        }
+
+        $commandLines = @(Get-Content -LiteralPath (Join-Path $runDir 'commands.jsonl') -Encoding UTF8 | Where-Object {
+            -not [string]::IsNullOrWhiteSpace($_)
+        })
+        $commandLines.Count | Should -Be 4
+        foreach ($commandLine in $commandLines) {
+            ($commandLine | ConvertFrom-Json).status | Should -Be 'completed'
+        }
+
+        $combinedTranscript = Get-Content -LiteralPath (Join-Path $runDir 'pane-transcript.txt') -Raw -Encoding UTF8
+        ([regex]::Matches($combinedTranscript, 'BAKEOFF_LAUNCH_BEGIN')).Count | Should -Be 4
+        foreach ($workerId in 1..4) {
+            $combinedTranscript | Should -Match "BAKEOFF_PANE=worker-$workerId"
+        }
+    }
+
+    It 'marks empty stdout from a nominally successful worker as blocked evidence' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-empty-worker'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $runDir 'pane-transcript.txt') -Value '' -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'commands.jsonl') -Value '' -Encoding UTF8
+
+        $mockPath = Join-Path $script:bakeoffTempRoot 'mock-empty.ps1'
+        @'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+[Console]::Error.WriteLine('stderr only')
+exit 0
+'@ | Set-Content -LiteralPath $mockPath -Encoding UTF8
+
+        $pwshPath = $script:bakeoffPwshPath
+        $commandArgsJson = @('-NoLogo', '-NoProfile', '-File', $mockPath) | ConvertTo-Json -Compress
+        $json = & pwsh -NoLogo -NoProfile -File $script:bakeoffWorkerScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -RunDir $runDir `
+            -PaneId 'worker-2' `
+            -Cli 'custom' `
+            -Model 'mock-empty' `
+            -PromptText "BAKEOFF_ROUND_A_BEGIN`nRun the mock.`nBAKEOFF_ROUND_A_END" `
+            -CommandPath $pwshPath `
+            -CommandArgsJson $commandArgsJson `
+            -Json
+
+        $created = $json | ConvertFrom-Json
+        $result = Get-Content -LiteralPath (Join-Path $runDir 'worker-2-result.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $paneTranscript = Get-Content -LiteralPath (Join-Path $runDir 'worker-2-pane-transcript.txt') -Raw -Encoding UTF8
+
+        $created.status | Should -Be 'blocked_empty_stdout'
+        $result.status | Should -Be 'blocked_empty_stdout'
+        $result.blocked_reason | Should -Be 'empty_stdout'
+        $result.stdout_bytes | Should -Be 0
+        $paneTranscript | Should -Match 'BAKEOFF_STATUS=blocked_empty_stdout'
+    }
+
+    It 'marks explicit worker-reported blocked status as blocked evidence' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-worker-reported-blocked'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $runDir 'pane-transcript.txt') -Value '' -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'commands.jsonl') -Value '' -Encoding UTF8
+
+        $mockPath = Join-Path $script:bakeoffTempRoot 'mock-reported-blocked.ps1'
+        @'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+Write-Output 'BAKEOFF_ROUND_A_BEGIN'
+Write-Output '- **STATUS**: BLOCKED'
+Write-Output 'Reason: missing writable repository checkout.'
+Write-Output 'BAKEOFF_ROUND_A_END'
+exit 0
+'@ | Set-Content -LiteralPath $mockPath -Encoding UTF8
+
+        $commandArgsJson = @('-NoLogo', '-NoProfile', '-File', $mockPath) | ConvertTo-Json -Compress
+        $json = & pwsh -NoLogo -NoProfile -File $script:bakeoffWorkerScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -RunDir $runDir `
+            -PaneId 'worker-reported-blocked' `
+            -Cli 'custom' `
+            -Model 'mock-reported-blocked' `
+            -PromptText "BAKEOFF_ROUND_A_BEGIN`nRun the mock.`nBAKEOFF_ROUND_A_END" `
+            -CommandPath $script:bakeoffPwshPath `
+            -CommandArgsJson $commandArgsJson `
+            -Json
+
+        $created = $json | ConvertFrom-Json
+        $result = Get-Content -LiteralPath (Join-Path $runDir 'worker-reported-blocked-result.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $paneTranscript = Get-Content -LiteralPath (Join-Path $runDir 'worker-reported-blocked-pane-transcript.txt') -Raw -Encoding UTF8
+
+        $created.status | Should -Be 'blocked_worker_reported_blocked'
+        $result.status | Should -Be 'blocked_worker_reported_blocked'
+        $result.blocked_reason | Should -Be 'worker_reported_blocked'
+        $paneTranscript | Should -Match 'BAKEOFF_STATUS=blocked_worker_reported_blocked'
+    }
+
+    It 'does not treat not-blocked wording as worker-reported blocked status' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-worker-not-blocked'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $runDir 'pane-transcript.txt') -Value '' -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'commands.jsonl') -Value '' -Encoding UTF8
+
+        $mockPath = Join-Path $script:bakeoffTempRoot 'mock-not-blocked.ps1'
+        @'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+Write-Output 'BAKEOFF_ROUND_A_BEGIN'
+Write-Output 'STATUS: NOT BLOCKED'
+Write-Output 'BAKEOFF_ROUND_A_END'
+exit 0
+'@ | Set-Content -LiteralPath $mockPath -Encoding UTF8
+
+        $commandArgsJson = @('-NoLogo', '-NoProfile', '-File', $mockPath) | ConvertTo-Json -Compress
+        $json = & pwsh -NoLogo -NoProfile -File $script:bakeoffWorkerScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -RunDir $runDir `
+            -PaneId 'worker-not-blocked' `
+            -Cli 'custom' `
+            -Model 'mock-not-blocked' `
+            -PromptText "BAKEOFF_ROUND_A_BEGIN`nRun the mock.`nBAKEOFF_ROUND_A_END" `
+            -CommandPath $script:bakeoffPwshPath `
+            -CommandArgsJson $commandArgsJson `
+            -Json
+
+        $created = $json | ConvertFrom-Json
+        $result = Get-Content -LiteralPath (Join-Path $runDir 'worker-not-blocked-result.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+
+        $created.status | Should -Be 'completed'
+        $result.status | Should -Be 'completed'
+    }
+
+    It 'keeps Antigravity generated-text logs from turning empty stdout into a pass' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-antigravity-empty-generated-log'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $runDir 'pane-transcript.txt') -Value '' -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'commands.jsonl') -Value '' -Encoding UTF8
+        [ordered]@{
+            version = 1
+            run_id  = 'run-antigravity-empty-generated-log'
+        } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Encoding UTF8
+
+        $shimDir = Join-Path $script:bakeoffTempRoot 'agy-empty-shim'
+        New-Item -ItemType Directory -Path $shimDir -Force | Out-Null
+        & $script:NewMockAgyExe -Directory $shimDir
+
+        $oldPath = $env:PATH
+        $oldMode = $env:WINS_MOCK_AGY_MODE
+        try {
+            $env:PATH = "$shimDir;$oldPath"
+            $env:WINS_MOCK_AGY_MODE = 'empty'
+
+            $json = & pwsh -NoLogo -NoProfile -File $script:bakeoffWorkerScriptPath `
+                -ProjectDir $script:bakeoffTempRoot `
+                -RunDir $runDir `
+                -PaneId 'worker-agy-empty' `
+                -Cli 'Antigravity CLI' `
+                -Model 'Gemini 3.5 Flash (High)' `
+                -PromptText "BAKEOFF_ROUND_A_BEGIN`nRun the Antigravity mock.`nBAKEOFF_ROUND_A_END" `
+                -TimeoutSeconds 20 `
+                -Json
+        } finally {
+            $env:PATH = $oldPath
+            $env:WINS_MOCK_AGY_MODE = $oldMode
+        }
+
+        $created = $json | ConvertFrom-Json
+        $result = Get-Content -LiteralPath (Join-Path $runDir 'worker-agy-empty-result.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $commandRecord = Get-Content -LiteralPath (Join-Path $runDir 'commands.jsonl') -Raw -Encoding UTF8 | ConvertFrom-Json
+
+        $created.status | Should -Be 'blocked_empty_stdout'
+        $result.status | Should -Be 'blocked_empty_stdout'
+        $result.blocked_reason | Should -Be 'antigravity_print_empty_stdout'
+        $commandRecord.status | Should -Be 'blocked_empty_stdout'
+        $result.stdout_bytes | Should -Be 0
+        Test-Path -LiteralPath (Join-Path $runDir $result.antigravity.log_file) | Should -BeTrue
+    }
+
+    It 'recovers Antigravity print output from its transcript when process stdout is empty' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-antigravity-transcript-output'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $runDir 'pane-transcript.txt') -Value '' -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'commands.jsonl') -Value '' -Encoding UTF8
+        [ordered]@{
+            version = 1
+            run_id  = 'run-antigravity-transcript-output'
+        } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Encoding UTF8
+
+        $shimDir = Join-Path $script:bakeoffTempRoot 'agy-transcript-shim'
+        New-Item -ItemType Directory -Path $shimDir -Force | Out-Null
+        & $script:NewMockAgyExe -Directory $shimDir
+
+        $oldPath = $env:PATH
+        $oldMode = $env:WINS_MOCK_AGY_MODE
+        try {
+            $env:PATH = "$shimDir;$oldPath"
+            $env:WINS_MOCK_AGY_MODE = 'empty-with-transcript'
+
+            $json = & pwsh -NoLogo -NoProfile -File $script:bakeoffWorkerScriptPath `
+                -ProjectDir $script:bakeoffTempRoot `
+                -RunDir $runDir `
+                -PaneId 'worker-agy-transcript' `
+                -Cli 'Antigravity CLI' `
+                -Model 'Gemini 3.5 Flash (High)' `
+                -PromptText "BAKEOFF_ROUND_A_BEGIN`nPREFLIGHT_OK worker-agy-transcript`nBAKEOFF_ROUND_A_END" `
+                -TimeoutSeconds 20 `
+                -Json
+        } finally {
+            $env:PATH = $oldPath
+            $env:WINS_MOCK_AGY_MODE = $oldMode
+        }
+
+        $created = $json | ConvertFrom-Json
+        $result = Get-Content -LiteralPath (Join-Path $runDir 'worker-agy-transcript-result.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $stdout = Get-Content -LiteralPath (Join-Path $runDir 'worker-agy-transcript-stdout.txt') -Raw -Encoding UTF8
+
+        $created.status | Should -Be 'completed'
+        $result.status | Should -Be 'completed'
+        $result.stdout_source | Should -Be 'antigravity_transcript_jsonl'
+        $result.antigravity.model_evidence | Should -Be 'Gemini 3.5 Flash (High)'
+        $result.antigravity.selected_model_evidence.has_generated_text | Should -BeTrue
+        $result.antigravity.transcript_path | Should -Match 'transcript\.jsonl$'
+        $stdout | Should -Match 'PREFLIGHT_OK worker-agy-transcript'
+    }
+
+    It 'finishes Antigravity from a transcript end marker when the print process stays alive' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-antigravity-transcript-hang'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $runDir 'pane-transcript.txt') -Value '' -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'commands.jsonl') -Value '' -Encoding UTF8
+        [ordered]@{
+            version = 1
+            run_id  = 'run-antigravity-transcript-hang'
+        } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Encoding UTF8
+
+        $shimDir = Join-Path $script:bakeoffTempRoot 'agy-transcript-hang-shim'
+        New-Item -ItemType Directory -Path $shimDir -Force | Out-Null
+        & $script:NewMockAgyExe -Directory $shimDir
+
+        $oldPath = $env:PATH
+        $oldMode = $env:WINS_MOCK_AGY_MODE
+        try {
+            $env:PATH = "$shimDir;$oldPath"
+            $env:WINS_MOCK_AGY_MODE = 'hang-after-transcript'
+
+            $json = & pwsh -NoLogo -NoProfile -File $script:bakeoffWorkerScriptPath `
+                -ProjectDir $script:bakeoffTempRoot `
+                -RunDir $runDir `
+                -PaneId 'worker-agy-transcript-hang' `
+                -Cli 'Antigravity CLI' `
+                -Model 'Gemini 3.5 Flash (High)' `
+                -PromptText "BAKEOFF_ROUND_A_BEGIN`nPREFLIGHT_OK worker-agy-transcript-hang`nBAKEOFF_ROUND_A_END" `
+                -TimeoutSeconds 20 `
+                -Json
+        } finally {
+            $env:PATH = $oldPath
+            $env:WINS_MOCK_AGY_MODE = $oldMode
+        }
+
+        $created = $json | ConvertFrom-Json
+        $result = Get-Content -LiteralPath (Join-Path $runDir 'worker-agy-transcript-hang-result.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $stdout = Get-Content -LiteralPath (Join-Path $runDir 'worker-agy-transcript-hang-stdout.txt') -Raw -Encoding UTF8
+
+        $created.status | Should -Be 'completed'
+        $created.elapsed_seconds | Should -BeLessThan 20
+        $result.status | Should -Be 'completed'
+        $result.completed_from_antigravity_transcript | Should -BeTrue
+        $result.stdout_source | Should -Be 'antigravity_transcript_jsonl'
+        $stdout | Should -Match 'PREFLIGHT_OK worker-agy-transcript'
+    }
+
+    It 'marks missing end marker as blocked evidence' {
+        $runDir = Join-Path $script:bakeoffTempRoot 'run-missing-marker'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $runDir 'pane-transcript.txt') -Value '' -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'commands.jsonl') -Value '' -Encoding UTF8
+
+        $mockPath = Join-Path $script:bakeoffTempRoot 'mock-missing-marker.ps1'
+        @'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+Write-Output 'BAKEOFF_ROUND_A_BEGIN'
+Write-Output 'work finished but marker is absent'
+exit 0
+'@ | Set-Content -LiteralPath $mockPath -Encoding UTF8
+
+        $pwshPath = $script:bakeoffPwshPath
+        $commandArgsJson = @('-NoLogo', '-NoProfile', '-File', $mockPath) | ConvertTo-Json -Compress
+        $json = & pwsh -NoLogo -NoProfile -File $script:bakeoffWorkerScriptPath `
+            -ProjectDir $script:bakeoffTempRoot `
+            -RunDir $runDir `
+            -PaneId 'worker-3' `
+            -Cli 'custom' `
+            -Model 'mock-missing-marker' `
+            -PromptText "BAKEOFF_ROUND_A_BEGIN`nRun the mock.`nBAKEOFF_ROUND_A_END" `
+            -CommandPath $pwshPath `
+            -CommandArgsJson $commandArgsJson `
+            -Json
+
+        $created = $json | ConvertFrom-Json
+        $result = Get-Content -LiteralPath (Join-Path $runDir 'worker-3-result.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $paneTranscript = Get-Content -LiteralPath (Join-Path $runDir 'worker-3-pane-transcript.txt') -Raw -Encoding UTF8
+
+        $created.status | Should -Be 'blocked_missing_end_marker'
+        $result.status | Should -Be 'blocked_missing_end_marker'
+        $result.blocked_reason | Should -Be 'missing_end_marker'
+        $paneTranscript | Should -Match 'BAKEOFF_STATUS=blocked_missing_end_marker'
     }
 }

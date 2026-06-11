@@ -248,7 +248,7 @@ function Resolve-WinsmuxColabGpuSelection {
                 break
             }
         }
-        $reason = if ($selected -eq $preference[0]) { '' } elseif ($selected -eq 'CPU') { 'requested_gpu_unavailable' } else { 'gpu_fallback_selected' }
+        $reason = if ($preference -contains $selected) { '' } elseif ($selected -eq 'CPU') { 'requested_gpu_unavailable' } else { 'gpu_fallback_selected' }
     }
 
     return [PSCustomObject]@{
@@ -295,6 +295,18 @@ function Get-WinsmuxColabSlotId {
     return $slotId
 }
 
+function Test-WinsmuxColabAdapterBackend {
+    param([AllowEmptyString()][string]$Backend)
+
+    return ([string]$Backend) -in @('colab_cli', 'colab_llm')
+}
+
+function Test-WinsmuxColabStrictGpuBackend {
+    param([AllowEmptyString()][string]$Backend)
+
+    return [string]::Equals(([string]$Backend), 'colab_llm', [System.StringComparison]::OrdinalIgnoreCase)
+}
+
 function ConvertTo-WinsmuxColabStaleRecord {
     param(
         [Parameter(Mandatory = $true)]$ExistingRecord,
@@ -304,7 +316,7 @@ function ConvertTo-WinsmuxColabStaleRecord {
 
     return [ordered]@{
         slot_id         = [string](Get-WinsmuxColabValue -InputObject $ExistingRecord -Name 'slot_id' -Default '')
-        worker_backend  = 'colab_cli'
+        worker_backend  = [string](Get-WinsmuxColabValue -InputObject $ExistingRecord -Name 'worker_backend' -Default 'colab_cli')
         session_name    = [string](Get-WinsmuxColabValue -InputObject $ExistingRecord -Name 'session_name' -Default '')
         state           = 'stale'
         stale           = $true
@@ -331,11 +343,19 @@ function New-WinsmuxColabSessionRecord {
     $sessionName = Resolve-WinsmuxColabSessionName -ProjectDir $ProjectDir -SlotId $SlotId -Template ([string]$SlotAgentConfig.SessionName)
     $cli = Get-WinsmuxColabCliAvailability
     $auth = Get-WinsmuxColabAuthState -CliAvailability $cli
-    $gpu = Resolve-WinsmuxColabGpuSelection -GpuPreference @($SlotAgentConfig.GpuPreference) -AvailableGpu (Get-WinsmuxColabAvailableGpuOverride)
+    $strictGpuBackend = Test-WinsmuxColabStrictGpuBackend -Backend ([string]$SlotAgentConfig.WorkerBackend)
+    $gpuPreference = @(ConvertTo-WinsmuxColabStringArray -Value $SlotAgentConfig.GpuPreference)
+    if ($strictGpuBackend -and $gpuPreference.Count -eq 0) {
+        $gpuPreference = @('H100', 'A100')
+    }
+    $gpu = Resolve-WinsmuxColabGpuSelection -GpuPreference $gpuPreference -AvailableGpu (Get-WinsmuxColabAvailableGpuOverride)
 
     $reasons = [System.Collections.Generic.List[string]]::new()
     foreach ($reason in @([string]$StateReadError, [string]$cli.reason, [string]$auth.reason, [string]$gpu.reason)) {
-        if ($reason -in @('colab_auth_unverified', 'gpu_fallback_selected')) {
+        if ($reason -eq 'colab_auth_unverified') {
+            continue
+        }
+        if ($reason -eq 'gpu_fallback_selected' -and -not $strictGpuBackend) {
             continue
         }
         if (-not [string]::IsNullOrWhiteSpace($reason) -and -not $reasons.Contains($reason)) {
@@ -351,7 +371,7 @@ function New-WinsmuxColabSessionRecord {
 
     return [ordered]@{
         slot_id          = $SlotId
-        worker_backend   = 'colab_cli'
+        worker_backend   = [string]$SlotAgentConfig.WorkerBackend
         session_name     = $sessionName
         state            = if ($degraded) { 'degraded' } else { 'available' }
         degraded         = $degraded
@@ -412,7 +432,7 @@ function Update-WinsmuxColabSessionState {
         }
 
         $slotConfig = Get-SlotAgentConfig -Role 'Worker' -SlotId $slotId -Settings $Settings -RootPath $ProjectDir
-        if (-not [string]::Equals(([string]$slotConfig.WorkerBackend), 'colab_cli', [System.StringComparison]::OrdinalIgnoreCase)) {
+        if (-not (Test-WinsmuxColabAdapterBackend -Backend ([string]$slotConfig.WorkerBackend))) {
             continue
         }
 
@@ -501,13 +521,13 @@ function New-WinsmuxColabStateUpdateFailureRecords {
         }
 
         $slotConfig = Get-SlotAgentConfig -Role 'Worker' -SlotId $slotId -Settings $Settings -RootPath $ProjectDir
-        if (-not [string]::Equals(([string]$slotConfig.WorkerBackend), 'colab_cli', [System.StringComparison]::OrdinalIgnoreCase)) {
+        if (-not (Test-WinsmuxColabAdapterBackend -Backend ([string]$slotConfig.WorkerBackend))) {
             continue
         }
 
         $records.Add([ordered]@{
             slot_id         = $slotId
-            worker_backend  = 'colab_cli'
+            worker_backend  = [string]$slotConfig.WorkerBackend
             session_name    = Resolve-WinsmuxColabSessionName -ProjectDir $ProjectDir -SlotId $slotId -Template ([string]$slotConfig.SessionName)
             state           = 'degraded'
             degraded        = $true

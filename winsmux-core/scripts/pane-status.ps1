@@ -150,11 +150,15 @@ function ConvertTo-PaneStatusReadinessAgent {
     }
 
     $normalized = $Name.Trim().ToLowerInvariant()
-    if ($normalized -in @('codex', 'claude', 'gemini')) {
+    if ($normalized -in @('codex', 'claude', 'antigravity', 'gemini')) {
         return $normalized
     }
 
-    if ($normalized -match '^(codex|claude|gemini)(?:$|[:/_-])') {
+    if ($normalized -eq 'agy' -or $normalized -match '^agy(?:$|[:/_-])') {
+        return 'antigravity'
+    }
+
+    if ($normalized -match '^(codex|claude|antigravity|gemini)(?:$|[:/_-])') {
         return $Matches[1]
     }
 

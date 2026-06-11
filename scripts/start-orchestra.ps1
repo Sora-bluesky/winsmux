@@ -7,9 +7,9 @@
 #   pwsh scripts/start-orchestra.ps1 -Rows 2 -Cols 3 -Agents @(
 #     @{label="builder-1"; command="codex --sandbox danger-full-access"},
 #     @{label="builder-2"; command="codex --sandbox danger-full-access"},
-#     @{label="builder-3"; command="gemini --model gemini-3.1-pro-preview --yolo"},
+#     @{label="builder-3"; command="agy --dangerously-skip-permissions"},
 #     @{label="researcher"; command="claude --model sonnet"},
-#     @{label="builder-4"; command="gemini --model gemini-3-flash-preview --yolo"},
+#     @{label="builder-4"; command="agy --dangerously-skip-permissions"},
 #     @{label="reviewer"; command="codex --sandbox danger-full-access"}
 #   ) -ShieldHarness
 #
@@ -286,6 +286,9 @@ function Get-LegacyDefaultAgentSpec {
         $adapter = [string](Get-BridgeProviderCapabilityValue -Capability $capability -Name 'adapter' -Default $provider)
         $command = [string](Get-BridgeProviderCapabilityValue -Capability $capability -Name 'command' -Default $provider)
     }
+    if ($adapter.Trim().ToLowerInvariant() -eq 'antigravity' -and $command.Trim().ToLowerInvariant() -eq 'antigravity') {
+        $command = 'agy'
+    }
 
     if ([string]::IsNullOrWhiteSpace($command)) {
         $command = $provider
@@ -398,6 +401,9 @@ function Get-ApprovalFreeCommand {
     }
     if (($adapterKey -eq 'gemini' -or $Cmd -match '^gemini\b') -and $Cmd -notmatch '--yolo') {
         return "$Cmd --yolo"
+    }
+    if (($adapterKey -eq 'antigravity' -or $Cmd -match '^agy\b') -and $Cmd -notmatch '--dangerously-skip-permissions') {
+        return "$Cmd --dangerously-skip-permissions"
     }
     return $Cmd
 }
@@ -634,8 +640,9 @@ if ($shieldActive) {
     Write-Output "  Shield:        OFF (manual approval mode)"
 }
 
-# --- Gemini cleanup hint ---
+# --- CLI cleanup hints ---
 $hasGemini = ($Agents | Where-Object { $_.command -match 'gemini' }).Count -gt 0
+$hasAntigravity = ($Agents | Where-Object { $_.command -match '(^|\s)agy(\s|$)' }).Count -gt 0
 
 Write-Output ""
 Write-Output "Navigation (pane switching from outside winsmux):"
@@ -652,4 +659,9 @@ if ($hasGemini) {
     Write-Output ""
     Write-Output "Cleanup (if gemini processes linger after session end):"
     Write-Output "  taskkill /F /IM node.exe /FI `"WINDOWTITLE eq gemini*`" 2>`$null"
+}
+if ($hasAntigravity) {
+    Write-Output ""
+    Write-Output "Cleanup (if Antigravity CLI processes linger after session end):"
+    Write-Output "  taskkill /F /IM agy.exe 2>`$null"
 }

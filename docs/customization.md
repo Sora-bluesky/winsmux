@@ -214,11 +214,16 @@ winsmux uses slot and capability concepts rather than permanent vendor roles. A 
 `winsmux init` creates six managed worker slots by default. When `agent-slots`
 is present, that list is the source of truth and `worker_count` is derived from
 the number of entries. The top-level `worker-backend` value defaults to `local`,
-and each slot can override it with one of the contract values:
+which preserves the normal managed-pane baseline. For the Colab GPU LLM desktop
+E2E, override the visible `worker-1` and `worker-2` slots to `colab_llm`; do not
+interpret the top-level local default as the model-job path. Each slot can
+override the backend with one of the contract values:
 
 - `local`: current local managed pane behavior
 - `codex`: Codex reviewer or worker metadata
+- `local_llm`: local endpoint worker metadata and one-shot prompt execution
 - `colab_cli`: `google-colab-cli` worker state metadata
+- `colab_llm`: Colab GPU LLM model-job metadata and one-shot execution
 - `noop`: disabled or placeholder worker metadata
 
 Starting in `v0.32.4`, winsmux records Colab backend availability under
@@ -268,6 +273,68 @@ automation patterns before invoking the adapter. Stored adapter output and
 `cli_arguments` metadata redact secret-like values, Google Drive paths, and
 local absolute paths so review packets and release-gate evidence stay shareable.
 
+For Colab Pro GPU model work, use `colab_llm` on the visible worker slots. The
+Colab runtime downloads model files into the mounted Google Drive cache; do not
+use the Windows PC or Ollama cache for these models.
+
+```yaml
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    worker-backend: colab_llm
+    agent: colab-llm
+    model-family: gemma
+    model-id: <HF_MODEL_ID_A_27B_PLUS>
+    runtime: colab
+    runtime-engine: vllm
+    gpu-preference: [H100, A100]
+    session-name: "{{project_slug}}_colab_llm"
+    drive-root: /content/drive/MyDrive/winsmux-colab-llm
+    model-root: /content/drive/MyDrive/winsmux-colab-llm/models
+    hf-cache-root: /content/drive/MyDrive/winsmux-colab-llm/hf-cache
+    artifact-root: /content/drive/MyDrive/winsmux-colab-llm/artifacts
+    runtime-cache-root: /content/winsmux-runtime-cache
+    precision: bfloat16
+    license-state: accepted
+    task-script: workers/colab/llm_worker.py
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: colab_llm
+    agent: colab-llm
+    model-family: qwen
+    model-id: <HF_MODEL_ID_B_27B_PLUS>
+    runtime: colab
+    runtime-engine: vllm
+    gpu-preference: [H100, A100]
+    session-name: "{{project_slug}}_colab_llm"
+    drive-root: /content/drive/MyDrive/winsmux-colab-llm
+    model-root: /content/drive/MyDrive/winsmux-colab-llm/models
+    hf-cache-root: /content/drive/MyDrive/winsmux-colab-llm/hf-cache
+    artifact-root: /content/drive/MyDrive/winsmux-colab-llm/artifacts
+    runtime-cache-root: /content/winsmux-runtime-cache
+    precision: bfloat16
+    license-state: not_required
+    task-script: workers/colab/llm_worker.py
+```
+
+Local LLM slots use a local endpoint runtime rather than a Colab adapter. The
+initial supported runtime is Ollama. Set `OLLAMA_MODELS` to a G drive model root
+before pulling models, and use an ASCII-only path such as
+`G:\winsmux-local-llm\ollama-models` on Windows. Localized or otherwise
+non-ASCII model paths can let `ollama list` pass while `llama-server` fails to
+open the model blob. If your Google Drive mount has a localized path, use a
+session-only `subst` drive such as `W:` that points back to the G drive mount,
+then use `W:\winsmux-local-llm\ollama-models`. Set `artifact-root` or
+`WINSMUX_LOCAL_LLM_ARTIFACT_ROOT` to a G drive artifact root. winsmux writes only
+lightweight `run.json` and redacted `stdout.log` files under `.winsmux`.
+
+```powershell
+winsmux workers doctor --json
+winsmux workers status --json
+winsmux workers exec worker-3 --prompt "Summarize this project." --run-id local-smoke-1 --json
+winsmux workers logs worker-3 --run-id local-smoke-1 --json
+```
+
 Before handing a worker result to the Codex reviewer slot, use
 `winsmux review-pack <run_id> --json`. The command writes a bounded packet under
 `.winsmux/review-packs` with changed files, test results, critic objections,
@@ -275,7 +342,10 @@ remaining risks, commands, and artifact references. It excludes repository
 dumps, long logs, secrets, binary artifacts, vendor directories, local absolute
 paths, and full conversation history.
 
-Example slot entries (excerpt; `winsmux init` creates six slots):
+Example slot entries for the Colab GPU LLM desktop E2E. The excerpt
+intentionally shows only `worker-1` and `worker-2`; PC-local `local_llm` slots
+belong to a separate optional configuration and are not part of this Colab
+layout.
 
 ```yaml
 external-operator: true
@@ -284,25 +354,39 @@ execution-profile: local-windows
 agent-slots:
   - slot-id: worker-1
     runtime-role: worker
-    agent: codex
-    model: provider-default
-    model-source: provider-default
-    worker-backend: codex
-    execution-profile: local-windows
-    worker-role: reviewer
-    fallback-model: gpt-5.3-codex-spark
-    pane-title: W1 Codex Reviewer
+    worker-backend: colab_llm
+    agent: colab-llm
+    model-family: gemma
+    model-id: <HF_MODEL_ID_A_27B_PLUS>
+    runtime: colab
+    runtime-engine: vllm
+    gpu-preference: [H100, A100]
+    session-name: "{{project_slug}}_colab_llm"
+    drive-root: /content/drive/MyDrive/winsmux-colab-llm
+    model-root: /content/drive/MyDrive/winsmux-colab-llm/models
+    hf-cache-root: /content/drive/MyDrive/winsmux-colab-llm/hf-cache
+    artifact-root: /content/drive/MyDrive/winsmux-colab-llm/artifacts
+    runtime-cache-root: /content/winsmux-runtime-cache
+    license-state: accepted
+    task-script: workers/colab/llm_worker.py
     worktree-mode: managed
   - slot-id: worker-2
     runtime-role: worker
-    worker-backend: colab_cli
-    execution-profile: isolated-enterprise
-    worker-role: impl
-    session-name: "{{project_slug}}_w2_impl"
+    worker-backend: colab_llm
+    agent: colab-llm
+    model-family: qwen
+    model-id: <HF_MODEL_ID_B_27B_PLUS>
+    runtime: colab
+    runtime-engine: vllm
     gpu-preference: [H100, A100]
-    packages: [torch, transformers, accelerate]
-    bootstrap: workers/colab/bootstrap_impl.py
-    task-script: workers/colab/impl_worker.py
+    session-name: "{{project_slug}}_colab_llm"
+    drive-root: /content/drive/MyDrive/winsmux-colab-llm
+    model-root: /content/drive/MyDrive/winsmux-colab-llm/models
+    hf-cache-root: /content/drive/MyDrive/winsmux-colab-llm/hf-cache
+    artifact-root: /content/drive/MyDrive/winsmux-colab-llm/artifacts
+    runtime-cache-root: /content/winsmux-runtime-cache
+    license-state: not_required
+    task-script: workers/colab/llm_worker.py
     worktree-mode: managed
 ```
 

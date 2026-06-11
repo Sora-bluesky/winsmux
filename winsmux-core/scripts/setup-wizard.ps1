@@ -73,7 +73,7 @@ function Read-DefaultValue {
 }
 
 function Read-AgentCli {
-    param([string]$Default = 'codex')
+    param([string]$Default = 'antigravity')
 
     while ($true) {
         $value = (Read-DefaultValue -Prompt 'AI agent provider' -Default $Default).ToLowerInvariant()
@@ -81,7 +81,7 @@ function Read-AgentCli {
             return $value
         }
 
-        Write-Host "Provider '$value' is not launchable yet. Use 'codex', 'claude', or add it to .winsmux/provider-capabilities.json first."
+        Write-Host "Provider '$value' is not launchable yet. Use 'antigravity', 'codex', 'claude', or add it to .winsmux/provider-capabilities.json first."
     }
 }
 

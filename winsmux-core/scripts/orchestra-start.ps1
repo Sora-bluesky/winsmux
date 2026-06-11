@@ -2291,7 +2291,7 @@ if ($MyInvocation.InvocationName -ne '.') {
         $deferPaneStart = Test-OrchestraPaneDeferredStart -Label $label -Role $canonicalRole -LayoutSettings $layoutSettings
         $deferredPaneStatus = 'deferred_start'
         $colabSessionEntry = $null
-        if ([string]::Equals(([string]$slotAgentConfig.WorkerBackend), 'colab_cli', [System.StringComparison]::OrdinalIgnoreCase) -and $colabSessionMap.ContainsKey($label)) {
+        if (([string]$slotAgentConfig.WorkerBackend) -in @('colab_cli', 'colab_llm') -and $colabSessionMap.ContainsKey($label)) {
             $colabSessionEntry = $colabSessionMap[$label]
             if ([bool](Get-WinsmuxColabValue -InputObject $colabSessionEntry -Name 'degraded' -Default $false)) {
                 $deferPaneStart = $true

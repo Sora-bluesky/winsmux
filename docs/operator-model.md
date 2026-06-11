@@ -35,7 +35,7 @@ The operator layer is where:
 
 happen.
 
-The operator can be Claude Code, Codex, Gemini, or another external
+The operator can be Claude Code, Codex, Antigravity CLI, legacy Gemini CLI, or another external
 user-to-operator channel surface. When a product runs as an official agent CLI,
 the CLI detail is described in the authentication or runtime column rather than
 being appended to only some product names.
@@ -83,7 +83,7 @@ The public contract is:
 - each run may carry a structured handoff package for the next pane or follow-up run
 - checkpoint packages record changed-file summaries, review state, verification state, and public worktree references
 - end-of-run snapshots record what can be safely resumed without storing raw terminal transcripts, private local paths, or private prompt bodies
-- Agent Vault indexes safe resume metadata for Claude Code, Codex, and OpenCode sessions. The public contract is provider, workspace identity, session title, last-seen state, and a resume handle; it does not include raw transcripts, prompt bodies, secrets, or private local paths.
+- Agent Vault indexes safe resume metadata for Claude Code, Codex, Antigravity CLI, and OpenCode sessions. The public contract is provider, workspace identity, session title, last-seen state, and a resume handle; it does not include raw transcripts, prompt bodies, secrets, or private local paths.
 - context budgets describe why a pane received a bounded context packet instead of the full conversation
 - architecture contracts record drift score, baseline status, review requirement, and whether a gate should stop
 - managed follow-up contracts describe the next run candidate after a compare or promote decision
@@ -98,7 +98,8 @@ The managed pane layer is where agent CLIs run inside winsmux-controlled panes o
 Examples:
 
 - Codex
-- Gemini
+- Antigravity CLI
+- legacy Gemini CLI
 - Claude Code when explicitly assigned to a pane
 - future local or hosted LLM CLIs
 
@@ -333,7 +334,8 @@ Consultation is handled as a slot capability, similar to review capability.
 
 - no dedicated consultation pane is required
 - Codex is the default consultation candidate for code, build, and debug work
-- Gemini is the default consultation candidate for long-context, multimodal, policy, or specification work
+- Antigravity CLI is the default consultation candidate for fast fan-out, asynchronous terminal work, and Gemini 3.5 Flash experiments
+- legacy Gemini CLI remains a migration source, not the default consultation candidate
 - other providers may advertise consultation capability in the same slot model
 
 In **advisory mode**, a consult-capable slot does not perform file mutation or destructive command execution. It returns recommendations, risks, confidence, and the next test to run.
