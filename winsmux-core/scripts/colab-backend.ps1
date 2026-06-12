@@ -239,7 +239,7 @@ function Resolve-WinsmuxColabGpuSelection {
     }
 
     $available = @(ConvertTo-WinsmuxColabStringArray -Value $AvailableGpu | ForEach-Object { $_.Trim().ToUpperInvariant() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-    $selected = 'CPU'
+    $selected = ''
     $reason = ''
     if ($available.Count -gt 0) {
         foreach ($candidate in @($fallback)) {
@@ -533,7 +533,7 @@ function New-WinsmuxColabStateUpdateFailureRecords {
             degraded        = $true
             degraded_reason = $Reason
             stale           = $false
-            selected_gpu    = 'CPU'
+            selected_gpu    = ''
             checked_at      = $now
             updated_at      = $now
         }) | Out-Null

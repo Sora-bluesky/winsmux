@@ -682,7 +682,7 @@ agent-slots:
             $record['session_name'] | Should -Be ((Split-Path -Leaf $script:settingsTempRoot).ToLowerInvariant() + '_w2_impl')
             $record['state'] | Should -Be 'degraded'
             $record['degraded_reason'] | Should -Match 'colab_cli_missing'
-            $record['selected_gpu'] | Should -Be 'CPU'
+            $record['selected_gpu'] | Should -Be ''
             $record['packages'] | Should -Be @('torch', 'transformers')
         } finally {
             if ($null -eq $previousCli) { Remove-Item Env:WINSMUX_COLAB_CLI -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_CLI = $previousCli }
@@ -1016,17 +1016,17 @@ agent-slots:
         $records[0]['slot_id'] | Should -Be 'worker-2'
         $records[0]['state'] | Should -Be 'degraded'
         $records[0]['degraded_reason'] | Should -Be 'colab_state_update_failed'
-        $records[0]['selected_gpu'] | Should -Be 'CPU'
+        $records[0]['selected_gpu'] | Should -Be ''
     }
 
-    It 'selects configured fallback GPUs and treats missing inventory as CPU without degradation' {
+    It 'selects configured fallback GPUs and leaves missing inventory unknown without degradation' {
         $withFallback = Resolve-WinsmuxColabGpuSelection -GpuPreference @('H100', 'A100', 'L4') -AvailableGpu @('L4')
         $withFallback.selected | Should -Be 'L4'
         $withFallback.degraded | Should -Be $false
         $withFallback.reason | Should -Be ''
 
         $withoutInventory = Resolve-WinsmuxColabGpuSelection -GpuPreference @('H100', 'A100') -AvailableGpu @()
-        $withoutInventory.selected | Should -Be 'CPU'
+        $withoutInventory.selected | Should -Be ''
         $withoutInventory.degraded | Should -Be $false
         $withoutInventory.reason | Should -Be ''
         $withoutInventory.inventory_known | Should -Be $false
@@ -10840,7 +10840,7 @@ worker-backend: colab_cli
         $payload.workers[1].slot_id | Should -Be 'worker-2'
         $payload.workers[1].backend | Should -Be 'colab_cli'
         $payload.workers[1].session | Should -Match '_worker_2$'
-        $payload.workers[1].actual_gpu | Should -Be 'CPU'
+        $payload.workers[1].actual_gpu | Should -Be ''
         $payload.workers[1].degraded_reason | Should -Match 'colab_cli_missing'
         $payload.workers[1].state | Should -Be 'not_launched'
         $payload.workers[1].current_launch.packet_type | Should -Be 'worker_launch_approval'
@@ -11867,8 +11867,8 @@ worker-backend: colab_cli
         $worker2Check.status | Should -Be 'fail'
         $worker1Row.backend | Should -Be 'colab_llm'
         $worker1Row.degraded_reason | Should -Match 'colab_cli_missing'
-        $worker1Row.colab_llm.health | Should -Be 'gpu_degraded'
-        $worker1Row.colab_llm.reason | Should -Match 'selected GPU'
+        $worker1Row.colab_llm.health | Should -Be 'configured'
+        $worker1Row.colab_llm.reason | Should -Be ''
     }
 
     It 'runs a one-shot Colab worker script and reads the stored log' {
