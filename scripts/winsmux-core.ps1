@@ -7886,6 +7886,11 @@ function Read-WorkersExecOptions {
                 $taskJsonInline = [string]$items[$index + 1]
                 $index++
             }
+            '--script-arg' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $scriptArgs += @([string]$items[$index + 1])
+                $index++
+            }
             '--run-id' {
                 if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
                 $runId = [string]$items[$index + 1]
@@ -10322,7 +10327,7 @@ function Invoke-WorkersColabLlmExec {
 }
 
 function Invoke-WorkersExec {
-    $usage = "usage: winsmux workers exec <slot> [--script <path>|--task-json <path>|--task-json-inline <json>|--prompt <text>] [--task-id <id>] [--run-id <id>] [--json] [--project-dir <path>]"
+    $usage = "usage: winsmux workers exec <slot> [--script <path>|--task-json <path>|--task-json-inline <json>|--prompt <text>] [--task-id <id>] [--run-id <id>] [--script-arg <value>]... [--json] [--project-dir <path>]"
     $options = Read-WorkersExecOptions -Usage $usage
     $genericWorker = Get-WorkersSingleContext -ProjectDir $options.ProjectDir -Target $options.Target
     if (Test-WorkersLocalLlmBackend -Backend ([string]$genericWorker.Row.Backend)) {

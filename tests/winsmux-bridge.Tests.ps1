@@ -11925,6 +11925,22 @@ worker-backend: colab_cli
         $task.storage.model_root | Should -Be '/content/drive/MyDrive/winsmux-colab-llm/models'
     }
 
+    It 'passes Colab LLM worker script arguments through PowerShell-safe --script-arg' {
+        New-WorkersFakeColabCli | Out-Null
+        Write-WorkersColabLlmProjectConfig
+        New-Item -ItemType Directory -Path (Join-Path $script:workersTempRoot 'workers\colab') -Force | Out-Null
+        'print("hello from colab llm")' | Set-Content -Path (Join-Path $script:workersTempRoot 'workers\colab\llm_worker.py') -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers exec worker-1 --prompt 'Dry run the Colab worker.' --run-id colab-llm-dry-run --json --project-dir $script:workersTempRoot --script-arg --dry-run --script-arg 'value with spaces' --script-arg '--flag=value'
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+
+        $payload.status | Should -Be 'succeeded'
+        $payload.backend | Should -Be 'colab_llm'
+        $payload.cli_arguments | Should -Contain '--dry-run'
+        $payload.cli_arguments | Should -Contain 'value with spaces'
+        $payload.cli_arguments | Should -Contain '--flag=value'
+    }
+
     It 'lets the Colab adapter handle authentication when winsmux auth is unverified' {
         New-WorkersFakeColabCli | Out-Null
         Write-WorkersColabProjectConfig
