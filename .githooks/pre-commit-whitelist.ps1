@@ -80,6 +80,7 @@ $whitelistPatterns = @(
     'scripts/audit-staged-public-surface.ps1',
     'scripts/google-colab-cli-adapter.ps1',
     'scripts/google_colab_cli_adapter.py',
+    'scripts/run-colab-llm-e2e.ps1',
     'scripts/import-cli-bakeoff-harnessbench-reference.ps1',
     'scripts/invoke-cli-bakeoff-worker.ps1',
     'scripts/invoke-harnessbench-hidden-check.ps1',

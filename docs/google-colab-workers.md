@@ -356,12 +356,28 @@ winsmux workers doctor
 ```
 
 Real Colab checks from a source checkout are manual-only. To opt in, point the
-test at a project that already has a working `colab_cli` slot:
+test at a project that already has working `worker-1` and `worker-2`
+`colab_llm` slots:
 
 ```powershell
 $env:WINSMUX_COLAB_ACCEPTANCE_REAL = "1"
 $env:WINSMUX_COLAB_ACCEPTANCE_PROJECT = "C:\path\to\project"
 Invoke-Pester -Path tests/ColabAcceptance.Tests.ps1 -PassThru
+```
+
+For a repeatable two-worker smoke run outside Pester, use the source-checkout
+runner. `-PlanOnly` checks `doctor`, `status`, and the worker slot contract
+without connecting to Colab. Remove `-PlanOnly` only after the browser is signed
+in, the runtime is connected, and MCP Connect has been approved. `-PlanOnly`
+does not prepare or copy worker scripts. In execution mode, if the target project
+does not already contain `workers\colab\llm_worker.py`, the runner prepares it
+from the source checkout before invoking `workers exec`.
+
+```powershell
+.\scripts\run-colab-llm-e2e.ps1 -ProjectDir "C:\path\to\project" -PlanOnly
+
+$env:WINSMUX_COLAB_ACCEPTANCE_REAL = "1"
+.\scripts\run-colab-llm-e2e.ps1 -ProjectDir "C:\path\to\project" -Mode Concurrent
 ```
 
 Before running a live task, check quota and stop policy outside winsmux. Use

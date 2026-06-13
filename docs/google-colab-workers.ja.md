@@ -339,13 +339,25 @@ Invoke-Pester -Path tests/ColabAcceptance.Tests.ps1 -PassThru
 winsmux workers doctor
 ```
 
-ソースから実 Colab を使う確認は、手動でのみ実行します。動作する `colab_cli`
-スロットを持つプロジェクトを指定してから、明示的に有効化してください。
+ソースから実 Colab を使う確認は、手動でのみ実行します。`worker-1` と
+`worker-2` が `colab_llm` として動くプロジェクトを指定してから、明示的に有効化してください。
 
 ```powershell
 $env:WINSMUX_COLAB_ACCEPTANCE_REAL = "1"
 $env:WINSMUX_COLAB_ACCEPTANCE_PROJECT = "C:\path\to\project"
 Invoke-Pester -Path tests/ColabAcceptance.Tests.ps1 -PassThru
+```
+
+Pester の外で2ワーカーの確認を繰り返す場合は、ソースチェックアウト用の実行スクリプトを使えます。
+`-PlanOnly` は Colab へ接続せず、`doctor`、`status`、ワーカースロットの契約だけを確認します。
+実行モードは、ブラウザーで対象アカウントにログインし、ランタイム接続と MCP Connect 承認を済ませてから使ってください。
+`-PlanOnly` は worker script を準備またはコピーしません。実行モードで対象プロジェクトに `workers\colab\llm_worker.py` が無い場合、runner はソースチェックアウトからそのファイルを準備してから `workers exec` を呼びます。
+
+```powershell
+.\scripts\run-colab-llm-e2e.ps1 -ProjectDir "C:\path\to\project" -PlanOnly
+
+$env:WINSMUX_COLAB_ACCEPTANCE_REAL = "1"
+.\scripts\run-colab-llm-e2e.ps1 -ProjectDir "C:\path\to\project" -Mode Concurrent
 ```
 
 実タスクを動かす前に、Colab 側のクォータと停止方針を winsmux の外で確認してください。
