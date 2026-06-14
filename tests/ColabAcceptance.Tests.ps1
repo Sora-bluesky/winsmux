@@ -157,6 +157,30 @@ exit /b 1
         }
     }
 
+    function script:ConvertFrom-AcceptanceJsonOutput {
+        param(
+            [Parameter(Mandatory = $true)]
+            [object[]]$Output
+        )
+
+        $raw = ($Output | Out-String)
+        $clean = [regex]::Replace($raw, "`e\[[0-?]*[ -/]*[@-~]", '')
+        $clean = [regex]::Replace($clean, '[\x00-\x08\x0B\x0C\x0E-\x1F]', '')
+        $lines = @($clean -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        for ($i = $lines.Count - 1; $i -ge 0; $i--) {
+            $candidate = $lines[$i].Trim()
+            if ($candidate.StartsWith('{') -or $candidate.StartsWith('[')) {
+                try {
+                    return $candidate | ConvertFrom-Json -Depth 32 -ErrorAction Stop
+                } catch {
+                    continue
+                }
+            }
+        }
+
+        throw "No JSON payload found in command output. Sanitized output: $clean"
+    }
+
     function script:Invoke-AcceptanceJson {
         param(
             [Parameter(Mandatory = $true)]
@@ -168,7 +192,7 @@ exit /b 1
         if ($LASTEXITCODE -ne $ExpectedExitCode) {
             throw "Expected exit code $ExpectedExitCode, got $LASTEXITCODE. Output: $($output | Out-String)"
         }
-        return (($output | Select-Object -Last 1) | ConvertFrom-Json -Depth 32)
+        return ConvertFrom-AcceptanceJsonOutput -Output $output
     }
 
     It 'runs the mock Colab worker acceptance flow without a real runtime' {
@@ -336,13 +360,33 @@ exit /b 1
             $env:WINSMUX_COLAB_CLI = $FakeCli
             $env:WINSMUX_COLAB_AUTH_STATE = 'authenticated'
             $env:WINSMUX_COLAB_AVAILABLE_GPUS = 'A100'
+            $env:NO_COLOR = '1'
+            $PSStyle.OutputRendering = 'PlainText'
             $output = & pwsh -NoProfile -File $BridgePath workers exec $Worker --prompt "Concurrent Colab LLM acceptance prompt for $Worker." --run-id $RunId --json --project-dir $ProjectRoot 2>&1
+            $raw = ($output | Out-String)
+            $clean = [regex]::Replace($raw, "`e\[[0-?]*[ -/]*[@-~]", '')
+            $clean = [regex]::Replace($clean, '[\x00-\x08\x0B\x0C\x0E-\x1F]', '')
+            $json = $null
+            $lines = @($clean -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+            for ($i = $lines.Count - 1; $i -ge 0; $i--) {
+                $candidate = $lines[$i].Trim()
+                if ($candidate.StartsWith('{') -or $candidate.StartsWith('[')) {
+                    try {
+                        $json = $candidate | ConvertFrom-Json -Depth 32 -ErrorAction Stop
+                        break
+                    } catch {
+                    }
+                }
+            }
+            if ($null -eq $json) {
+                throw "No JSON payload found in command output. Sanitized output: $clean"
+            }
             [PSCustomObject]@{
                 Worker   = $Worker
                 RunId    = $RunId
                 ExitCode = $LASTEXITCODE
-                Output   = ($output | Out-String)
-                Json     = (($output | Select-Object -Last 1) | ConvertFrom-Json -Depth 32)
+                Output   = $clean
+                Json     = $json
             }
         }
 
