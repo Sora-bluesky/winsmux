@@ -9,6 +9,7 @@ Describe 'Colab worker acceptance gate' {
         }
 
         $script:BridgePath = Join-Path $script:RepoRoot 'scripts\winsmux-core.ps1'
+        $script:ColabLlmE2eRunnerPath = Join-Path $script:RepoRoot 'scripts\run-colab-llm-e2e.ps1'
     }
 
     BeforeEach {
@@ -97,6 +98,22 @@ agent-slots:
     session-name: winsmux_colab_llm_runtime
     drive-root: /content/drive/MyDrive/winsmux-colab-llm
     license-state: not_required
+    worktree-mode: managed
+'@ | Set-Content -LiteralPath (Join-Path $script:AcceptanceRoot '.winsmux.yaml') -Encoding UTF8
+    }
+
+    function script:Write-LocalWorkerProjectConfig {
+        @'
+agent: claude
+worker-backend: local
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    worker-backend: local
+    worktree-mode: managed
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: local
     worktree-mode: managed
 '@ | Set-Content -LiteralPath (Join-Path $script:AcceptanceRoot '.winsmux.yaml') -Encoding UTF8
     }
@@ -274,6 +291,17 @@ exit /b 1
         $commandLog | Should -Match '(?m)^upload --session .+_worker_2'
         $commandLog | Should -Match '(?m)^download --session .+_worker_2'
         $commandLog | Should -Match '(?m)^stop --session winsmux_worker_2'
+    }
+
+    It 'explains that the live Colab LLM E2E runner needs a private colab_llm project' {
+        Write-LocalWorkerProjectConfig
+        New-AcceptanceFakeColabCli | Out-Null
+
+        $output = & pwsh -NoProfile -File $script:ColabLlmE2eRunnerPath -ProjectDir $script:AcceptanceRoot -PlanOnly -Json 2>&1
+        $LASTEXITCODE | Should -Not -Be 0
+        ($output | Out-String) | Should -Match "worker slot worker-1 uses backend 'local', not colab_llm"
+        ($output | Out-String) | Should -Match 'Pass -ProjectDir to a Git-ignored project configured'
+        ($output | Out-String) | Should -Match 'worker-1 and worker-2 colab_llm slots'
     }
 
     It 'reports two colab_llm workers in one Colab GPU runtime without local Ollama fallback' {

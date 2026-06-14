@@ -69,6 +69,10 @@ function Invoke-WinsmuxJson {
     }
 }
 
+function Get-ColabLlmProjectHint {
+    return 'Pass -ProjectDir to a Git-ignored project configured with worker-1 and worker-2 colab_llm slots. The source checkout defaults are public-safe and are not a live Colab LLM E2E project.'
+}
+
 function Start-WorkerJob {
     param(
         [Parameter(Mandatory = $true)][string]$WorkerId,
@@ -132,10 +136,10 @@ $workers = @($status.Json.workers | Where-Object { $_.slot_id -in @('worker-1', 
 foreach ($required in @('worker-1', 'worker-2')) {
     $worker = @($workers | Where-Object { $_.slot_id -eq $required })[0]
     if ($null -eq $worker) {
-        throw "missing required worker slot: $required"
+        throw "missing required worker slot: $required. $(Get-ColabLlmProjectHint)"
     }
     if ([string]$worker.backend -ne 'colab_llm') {
-        throw "worker slot $required uses backend '$($worker.backend)', not colab_llm"
+        throw "worker slot $required uses backend '$($worker.backend)', not colab_llm. $(Get-ColabLlmProjectHint)"
     }
     if (-not [string]::IsNullOrWhiteSpace([string]$worker.degraded_reason)) {
         throw "worker slot $required is degraded: $($worker.degraded_reason)"
