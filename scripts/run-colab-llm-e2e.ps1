@@ -186,8 +186,10 @@ if (-not (Test-Path -LiteralPath $script:ColabLlmWorkerPath -PathType Leaf)) {
 $script:ColabLlmWorkerPath = (Get-Item -LiteralPath $script:ColabLlmWorkerPath).FullName
 
 $envSnapshot = @{}
-Get-ChildItem Env:WINSMUX_COLAB* | ForEach-Object {
-    $envSnapshot[$_.Name] = $_.Value
+foreach ($envPattern in @('WINSMUX_COLAB*', 'COLAB_MCP_*')) {
+    Get-ChildItem "Env:$envPattern" | ForEach-Object {
+        $envSnapshot[$_.Name] = $_.Value
+    }
 }
 
 $execResults = @()
