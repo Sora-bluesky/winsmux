@@ -839,6 +839,55 @@ foreach ($versionGroup in $versionGroups) {
 }
 
 [void]$builder.AppendLine()
+[void]$builder.AppendLine('## 直近完了した版')
+[void]$builder.AppendLine()
+[void]$builder.AppendLine('この欄は、完了済みで「これから進めるタスク」から外れた直近版を確認するための一覧です。')
+[void]$builder.AppendLine('追加直後に完了した版も、ここでタスク単位の証跡を確認できます。')
+[void]$builder.AppendLine()
+
+$completedFocusGroups = @(
+    $versionGroups |
+        Where-Object {
+            if (-not (Test-RoadmapVersionInFocusRange -Version $_.Name)) {
+                return $false
+            }
+
+            $groupTasks = @($_.Group)
+            if ($groupTasks.Count -eq 0) {
+                return $false
+            }
+
+            $unfinishedTasks = @($groupTasks | Where-Object { $_.Status -ne 'done' })
+            return $unfinishedTasks.Count -eq 0
+        } |
+        Select-Object -Last 3
+)
+
+if ($completedFocusGroups.Count -eq 0) {
+    [void]$builder.AppendLine('直近で完了した対象版はありません。')
+    [void]$builder.AppendLine()
+} else {
+    foreach ($versionGroup in $completedFocusGroups) {
+        $vName = $versionGroup.Name
+        $defaultVersionTitle = if ($versionTitles.Contains($vName)) { $versionTitles[$vName] } else { '' }
+        $localizedVersionTitle = Get-RoadmapVersionTitle -Version $vName -DefaultTitle $defaultVersionTitle -Localization $roadmapLocalization.VersionTitles
+        $titleSuffix = if (-not [string]::IsNullOrWhiteSpace($localizedVersionTitle)) { ': ' + $localizedVersionTitle } else { '' }
+        [void]$builder.AppendLine(('### {0}{1}' -f $vName, $titleSuffix))
+        [void]$builder.AppendLine()
+        [void]$builder.AppendLine('| | ID | やること | 優先度 | 対象 | 状態 |')
+        [void]$builder.AppendLine('|-|-----|-------|----------|------|--------|')
+
+        $sortedTasks = @($versionGroup.Group | Sort-Object @{ Expression = { Get-PriorityRank -Priority $_.Priority } }, @{ Expression = { $_.IdNumber } }, @{ Expression = { $_.Id } })
+        foreach ($task in $sortedTasks) {
+            $localizedTaskTitle = Get-RoadmapTaskTitle -Task $task -Localization $roadmapLocalization.TaskTitles
+            [void]$builder.AppendLine(('| {0} | {1} | {2} | {3} | {4} | {5} |' -f (Get-StatusSymbol -Status $task.Status), $task.Id, $localizedTaskTitle.Title, (Get-PriorityLabel -Priority $task.Priority), $task.Repo, (Get-StatusLabel -Status $task.Status)))
+        }
+
+        [void]$builder.AppendLine()
+    }
+}
+
+[void]$builder.AppendLine()
 [void]$builder.AppendLine('## これから進めるタスク')
 [void]$builder.AppendLine()
 [void]$builder.AppendLine('完了済みの版は、この一覧から外しています。')
@@ -872,6 +921,48 @@ foreach ($versionGroup in $versionGroups) {
     }
 
     [void]$builder.AppendLine()
+}
+
+[void]$builder.AppendLine('## 現在の作業版で完了済みのタスク')
+[void]$builder.AppendLine()
+[void]$builder.AppendLine('未完了のゲートが残っている版でも、完了済みの前提作業をここで確認できます。')
+[void]$builder.AppendLine()
+
+$completedInFocusGroups = @(
+    $versionGroups |
+        Where-Object {
+            if (-not (Test-RoadmapVersionInFocusRange -Version $_.Name)) {
+                return $false
+            }
+
+            $doneTasks = @($_.Group | Where-Object { $_.Status -eq 'done' })
+            $unfinishedTasks = @($_.Group | Where-Object { $_.Status -ne 'done' -and $_.Status -ne 'cancelled' })
+            return $doneTasks.Count -gt 0 -and $unfinishedTasks.Count -gt 0
+        }
+)
+
+if ($completedInFocusGroups.Count -eq 0) {
+    [void]$builder.AppendLine('現在の作業版で、未完了ゲートと同じ版に残る完了済みタスクはありません。')
+    [void]$builder.AppendLine()
+} else {
+    foreach ($versionGroup in $completedInFocusGroups) {
+        $vName = $versionGroup.Name
+        $defaultVersionTitle = if ($versionTitles.Contains($vName)) { $versionTitles[$vName] } else { '' }
+        $localizedVersionTitle = Get-RoadmapVersionTitle -Version $vName -DefaultTitle $defaultVersionTitle -Localization $roadmapLocalization.VersionTitles
+        $titleSuffix = if (-not [string]::IsNullOrWhiteSpace($localizedVersionTitle)) { ': ' + $localizedVersionTitle } else { '' }
+        [void]$builder.AppendLine(('### {0}{1}' -f $vName, $titleSuffix))
+        [void]$builder.AppendLine()
+        [void]$builder.AppendLine('| | ID | やること | 優先度 | 対象 | 状態 |')
+        [void]$builder.AppendLine('|-|-----|-------|----------|------|--------|')
+
+        $sortedTasks = @($versionGroup.Group | Where-Object { $_.Status -eq 'done' } | Sort-Object @{ Expression = { Get-PriorityRank -Priority $_.Priority } }, @{ Expression = { $_.IdNumber } }, @{ Expression = { $_.Id } })
+        foreach ($task in $sortedTasks) {
+            $localizedTaskTitle = Get-RoadmapTaskTitle -Task $task -Localization $roadmapLocalization.TaskTitles
+            [void]$builder.AppendLine(('| {0} | {1} | {2} | {3} | {4} | {5} |' -f (Get-StatusSymbol -Status $task.Status), $task.Id, $localizedTaskTitle.Title, (Get-PriorityLabel -Priority $task.Priority), $task.Repo, (Get-StatusLabel -Status $task.Status)))
+        }
+
+        [void]$builder.AppendLine()
+    }
 }
 
 [void]$builder.AppendLine('## 長期計画の未完了タスク')
