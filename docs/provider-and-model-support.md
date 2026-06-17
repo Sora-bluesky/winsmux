@@ -161,6 +161,13 @@ Both jobs may target one adapter-managed Colab runtime. If the selected models
 cannot be loaded at the same time, run them sequentially in the same runtime and
 record the shared GPU condition. Do not replace this with CPU-only local models.
 
+Large models must pass capacity preflight before a live runtime is started. For
+example, when a GLM-5.2-family candidate exceeds the 350GiB safety limit,
+winsmux stops before consuming Colab GPU quota and records the estimated size,
+failure class, and next action in `summary.json`. To prove the execution path
+itself, first use an under-limit model to verify the adapter, Drive artifact,
+and GUI visibility flow.
+
 Storage contract:
 
 - Persistent root: `/content/drive/MyDrive/winsmux-colab-llm/`

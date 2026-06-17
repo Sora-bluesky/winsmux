@@ -396,15 +396,24 @@ $env:WINSMUX_COLAB_ACCEPTANCE_REAL = "1"
 
 For the first check of a very large model, select one worker and declare the
 expected model ID. This stops before consuming Colab GPU quota when the target
-project is still configured for another model.
+project is still configured for another model. By default, the runner also
+performs model-capacity preflight. If the estimated storage exceeds the safety
+limit, it does not start a live Colab runtime and writes the failure class plus
+the next action to `summary.json`.
 
 ```powershell
 .\scripts\run-colab-llm-e2e.ps1 `
   -ProjectDir "C:\path\to\project" `
   -Workers worker-1 `
   -ExpectedModelId "zai-org/GLM-5.2" `
-  -PlanOnly
+  -CapacityPreflightOnly
 ```
+
+The base GLM-5.2 weights and several smaller variants are still hundreds of GB
+to over 1TB. For the first live path check, prefer an under-limit model such as
+`Qwen/Qwen3-32B` to prove the Colab adapter, Drive artifact, and GUI visibility
+path. Run the GLM-5.2 family only after choosing a quantized candidate, an API
+evaluation path, a higher explicit limit, or a multi-GPU plan.
 
 Before running a live task, check quota and stop policy outside winsmux. Use
 `winsmux workers stop <slot>` to stop local worker panes, and use the adapter's

@@ -114,22 +114,26 @@ pwsh -NoLogo -NoProfile -File scripts\new-cli-bakeoff-harnessbench-run-matrix.ps
 
 ## GLM-5.2 とクラウド上位モデルのE2E比較
 
-GLM-5.2 の評価は2段階に分けます。Phase 0 では、GLM-5.2 が winsmux の
-`colab_llm` worker として実際に動くかを確認します。Phase 1 では、すべての worker に
-同じ HarnessBench 型タスクを渡し、クラウドLLMの上位モデルと比較します。
+GLM-5.2 の評価は3段階に分けます。Phase 0 では、GLM-5.2 が winsmux の
+`colab_llm` worker として実行可能かを、まず容量プリフライトで確認します。
+350GiB の安全上限を超える場合は、Colab の実ランタイムを開始しません。
+Phase 1 では、容量確認を通ったモデルで Colab worker 経路そのものを確認します。
+Phase 2 では、容量を通ったモデルまたは明示的に承認した実行方式を使い、
+すべての worker に同じ HarnessBench 型タスクを渡してクラウドLLMの上位モデルと比較します。
 
 | Phase | Worker | 候補 | 目的 | 必須証跡 |
 | --- | --- | --- | --- | --- |
-| 0 | `worker-1` | Colab H100/A100 上の `colab_llm` 経由 `zai-org/GLM-5.2` | ロード、生成、成果物回収、失敗分類、Colab費用境界を確認する。 | Colab runtime log、model cache location、GPU RAM、load time、generation time、伏せ字化済み worker result |
-| 1 | `worker-1` | `colab_llm` 経由 `zai-org/GLM-5.2` | 同じ実リポジトリタスクで、オープンウェイトColab基準として測る。 | hidden core/regression test、scorecard、resource metrics |
-| 1 | `worker-2` | Claude Code の現行上位モデル。例: Fable 5 または Opus 4.8 | Claude系クラウドLLMのコーディング基準。実行前にローカルで選べるモデルと工数を記録する。 | model picker または CLI 証跡、工数設定、transcript、hidden test、review packet |
-| 1 | `worker-3` | Codex の現行上位モデル。例: `gpt-5.5` | OpenAI系クラウドLLMのコーディング基準。`gpt-5.5` をworkerにする場合、そのrunの唯一の第三者レビュー担当にはしない。 | Codex model evidence、effort setting、transcript、hidden test、review packet |
-| 1 optional | `worker-4` | Antigravity CLI の Gemini 3.5 Flash High、またはローカルで確認済みのGemini上位条件 | Gemini/Antigravity基準。速度、サブエージェント、非同期terminal挙動を重点的に見る。 | `agy --help`、model setting evidence、transcript、hidden test、review packet |
+| 0 | `worker-1` | `zai-org/GLM-5.2` の容量プリフライト | Hugging Face上のweight shardから推定容量を確認し、上限超過なら実ランタイムを開始せずに失敗分類と次の行動を記録する。 | capacity preflight summary、model ID、推定容量、上限、次の行動 |
+| 1 | `worker-1` | 容量確認を通った `colab_llm` モデル。例: `Qwen/Qwen3-32B` | Colab adapter、Drive artifact、GUI表示、worker result の経路を実機で確認する。 | Colab runtime log、model cache location、GPU RAM、load time、generation time、伏せ字化済み worker result |
+| 2 | `worker-1` | 承認済みのGLM-5.2実行方式 | 同じ実リポジトリタスクで、オープンウェイトColab基準として測る。 | hidden core/regression test、scorecard、resource metrics |
+| 2 | `worker-2` | Claude Code の現行上位モデル。例: Fable 5 または Opus 4.8 | Claude系クラウドLLMのコーディング基準。実行前にローカルで選べるモデルと工数を記録する。 | model picker または CLI 証跡、工数設定、transcript、hidden test、review packet |
+| 2 | `worker-3` | Codex の現行上位モデル。例: `gpt-5.5` | OpenAI系クラウドLLMのコーディング基準。`gpt-5.5` をworkerにする場合、そのrunの唯一の第三者レビュー担当にはしない。 | Codex model evidence、effort setting、transcript、hidden test、review packet |
+| 2 optional | `worker-4` | Antigravity CLI の Gemini 3.5 Flash High、またはローカルで確認済みのGemini上位条件 | Gemini/Antigravity基準。速度、サブエージェント、非同期terminal挙動を重点的に見る。 | `agy --help`、model setting evidence、transcript、hidden test、review packet |
 
 各 worker に違うタスク文、違う hidden test、追加の誘導を渡した場合、その比較runは無効です。
-Phase 1 は low difficulty の HarnessBench 1ケースを `n=1` で確認し、安定後に `n=5`、
-その後に27タスク構成へ広げます。Phase 0 は容量不足やruntime未対応で失敗してもよいですが、
-失敗分類と再利用できる証跡を必ず残します。
+Phase 2 の比較は low difficulty の HarnessBench 1ケースを `n=1` で確認し、安定後に `n=5`、
+その後に27タスク構成へ広げます。Phase 0 は容量不足やランタイム未対応で失敗してもよいですが、
+失敗分類と再利用できる証跡を必ず残します。GLM-5.2系の通常版、FP8、NVFP4、Q4候補が安全上限を超える場合は、実ランタイムを開始せず、容量を通ったモデルで経路確認を先に行います。
 
 最初に使う候補ケース:
 

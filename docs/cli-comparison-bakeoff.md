@@ -178,23 +178,30 @@ should be reported as broad upper, middle, and lower bands.
 
 ## GLM-5.2 and cloud-baseline E2E matrix
 
-GLM-5.2 is evaluated in two phases. Phase 0 proves that the model can run as a
-winsmux `colab_llm` worker before it is compared against hosted cloud models.
-Phase 1 uses the same HarnessBench-style task pack for every worker.
+GLM-5.2 is evaluated in three phases. Phase 0 first proves whether the model is
+safe to attempt as a winsmux `colab_llm` worker through capacity preflight.
+If the estimated model storage exceeds the 350GiB safety limit, winsmux does not
+start a live Colab runtime. Phase 1 verifies the Colab worker path with an
+under-limit model. Phase 2 uses an under-limit model or an explicitly approved
+GLM-5.2 execution path before comparing against hosted cloud models.
 
 | Phase | Worker | Candidate | Purpose | Required evidence |
 | --- | --- | --- | --- | --- |
-| 0 | `worker-1` | `zai-org/GLM-5.2` through `colab_llm` on Colab H100/A100 | Prove load, generation, artifact capture, failure classification, and Colab cost boundaries. | Colab runtime log, model cache location, GPU RAM, load time, generation time, redacted worker result. |
-| 1 | `worker-1` | `zai-org/GLM-5.2` through `colab_llm` | Open-weight Colab baseline on the same real-repository task. | Hidden core/regression tests, scorecard, resource metrics. |
-| 1 | `worker-2` | Claude Code with a current high-level Claude model such as Fable 5 or Opus 4.8 | Hosted Claude coding baseline. The exact locally selectable model and effort must be recorded before each run. | Model picker or CLI evidence, effort setting, transcript, hidden tests, review packet. |
-| 1 | `worker-3` | Codex with a current high-level OpenAI model such as `gpt-5.5` | Hosted OpenAI coding baseline. If `gpt-5.5` is a worker, it cannot be the sole independent reviewer for that run. | Codex model evidence, effort setting, transcript, hidden tests, review packet. |
-| 1 optional | `worker-4` | Antigravity CLI with Gemini 3.5 Flash High or another locally verified high-level Gemini condition | Hosted Gemini/Antigravity baseline, especially speed, subagents, and async terminal behavior. | `agy --help`, model setting evidence, transcript, hidden tests, review packet. |
+| 0 | `worker-1` | Capacity preflight for `zai-org/GLM-5.2` | Estimate storage from Hugging Face weight shards and stop before live runtime startup when the model exceeds the safety limit. | Capacity preflight summary, model ID, estimated size, limit, next action. |
+| 1 | `worker-1` | Under-limit `colab_llm` model such as `Qwen/Qwen3-32B` | Prove the Colab adapter, Drive artifact, GUI visibility, and worker result path on real hardware. | Colab runtime log, model cache location, GPU RAM, load time, generation time, redacted worker result. |
+| 2 | `worker-1` | Approved GLM-5.2 execution path | Open-weight Colab baseline on the same real-repository task. | Hidden core/regression tests, scorecard, resource metrics. |
+| 2 | `worker-2` | Claude Code with a current high-level Claude model such as Fable 5 or Opus 4.8 | Hosted Claude coding baseline. The exact locally selectable model and effort must be recorded before each run. | Model picker or CLI evidence, effort setting, transcript, hidden tests, review packet. |
+| 2 | `worker-3` | Codex with a current high-level OpenAI model such as `gpt-5.5` | Hosted OpenAI coding baseline. If `gpt-5.5` is a worker, it cannot be the sole independent reviewer for that run. | Codex model evidence, effort setting, transcript, hidden tests, review packet. |
+| 2 optional | `worker-4` | Antigravity CLI with Gemini 3.5 Flash High or another locally verified high-level Gemini condition | Hosted Gemini/Antigravity baseline, especially speed, subagents, and async terminal behavior. | `agy --help`, model setting evidence, transcript, hidden tests, review packet. |
 
 The comparison is invalid if these workers receive different task packets,
-different hidden tests, or extra steering. Phase 1 starts with one low-difficulty
+different hidden tests, or extra steering. Phase 2 starts with one low-difficulty
 HarnessBench case at `n=1`, moves to `n=5`, and only then expands to the full
 27-task HarnessBench shape. Phase 0 is allowed to fail on capacity or runtime
 support, but it must still produce a classified result and reusable evidence.
+When the base, FP8, NVFP4, or Q4 GLM-5.2 candidates exceed the safety limit, do
+not start a live runtime; verify the Colab worker path with an under-limit model
+first.
 
 Recommended first cases:
 

@@ -376,14 +376,22 @@ $env:WINSMUX_COLAB_ACCEPTANCE_REAL = "1"
 
 大型モデルを最初に1ワーカーだけで確認する場合は、対象ワーカーと期待するモデルIDを明示します。
 この指定により、プロジェクト設定が想定モデルと違うときは Colab GPU を使う前に停止します。
+さらに、既定ではモデル容量のプリフライトを行います。推定容量が安全上限を超える場合は、
+Colab の実ランタイムを開始せず、`summary.json` に失敗分類と次の行動を記録します。
 
 ```powershell
 .\scripts\run-colab-llm-e2e.ps1 `
   -ProjectDir "C:\path\to\project" `
   -Workers worker-1 `
   -ExpectedModelId "zai-org/GLM-5.2" `
-  -PlanOnly
+  -CapacityPreflightOnly
 ```
+
+GLM-5.2 の通常版や一部の軽量候補は数百GBから1TB超の重みを持つため、
+初回の経路確認では容量確認を通ったモデルを使う方が安全です。たとえば
+`Qwen/Qwen3-32B` のような32B級モデルで Colab adapter、Drive artifact、
+GUI表示の経路を先に確認し、GLM-5.2系は量子化、外部API、上限変更、
+多GPUなどの方針を決めてから実行してください。
 
 実タスクを動かす前に、Colab 側のクォータと停止方針を winsmux の外で確認してください。
 ローカルワーカーペインを止める時は `winsmux workers stop <slot>` を使います。
