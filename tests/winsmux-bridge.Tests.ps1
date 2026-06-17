@@ -20119,6 +20119,30 @@ panes:
         $events[-1].data.governance_cost_units[0].unit_id | Should -Be $events[-1].data.cost_unit_refs[0]
     }
 
+    It 'keeps appending events readable when an existing event log lacks a trailing newline' {
+        $eventsPath = Get-BridgeEventsPath -ProjectDir $script:consultTempRoot
+        New-Item -ItemType Directory -Path (Split-Path -Parent $eventsPath) -Force | Out-Null
+        $oldRecord = [ordered]@{
+            timestamp = '2026-04-27T09:00:00.0000000+09:00'
+            event     = 'pane.completed'
+            message   = 'completed before newline fix'
+            data      = [ordered]@{ task = 'task-301' }
+        } | ConvertTo-Json -Compress -Depth 10
+        Set-Content -LiteralPath $eventsPath -Value $oldRecord -Encoding UTF8 -NoNewline
+
+        Write-BridgeEventRecord -ProjectDir $script:consultTempRoot -EventRecord ([ordered]@{
+            timestamp = '2026-04-27T09:01:00.0000000+09:00'
+            event     = 'pane.consult_result'
+            message   = 'consult after newline fix'
+            data      = [ordered]@{ task = 'task-301' }
+        }) | Out-Null
+
+        $events = @(Get-BridgeEventRecords -ProjectDir $script:consultTempRoot)
+        $events.Count | Should -Be 2
+        $events[0].event | Should -Be 'pane.completed'
+        $events[1].event | Should -Be 'pane.consult_result'
+    }
+
     It 'accepts run override and json output for consult result' {
         $args = Parse-ConsultCommandArgs -Mode 'final' -Args @('--run-id', 'task:task-301', '--json', '--message', 'pick builder-1', '--target-slot', 'builder-2', '--next-test', 'promote tactic')
 

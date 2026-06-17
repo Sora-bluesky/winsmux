@@ -749,7 +749,31 @@ function Write-BridgeEventRecord {
 
     $eventsPath = Get-BridgeEventsPath -ProjectDir $ProjectDir
     $recordLine = ($EventRecord | ConvertTo-Json -Compress -Depth 12)
-    Write-ClmSafeTextFile -Path $eventsPath -Content $recordLine -Append
+    $separator = ''
+    if (Test-Path -LiteralPath $eventsPath -PathType Leaf) {
+        $fileInfo = Get-Item -LiteralPath $eventsPath
+        if ($fileInfo.Length -gt 0) {
+            $needsSeparator = $true
+            try {
+                $stream = [System.IO.File]::Open($eventsPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+                try {
+                    $null = $stream.Seek(-1, [System.IO.SeekOrigin]::End)
+                    $lastByte = $stream.ReadByte()
+                    $needsSeparator = ($lastByte -ne 10 -and $lastByte -ne 13)
+                } finally {
+                    $stream.Dispose()
+                }
+            } catch {
+                $needsSeparator = $true
+            }
+
+            if ($needsSeparator) {
+                $separator = [Environment]::NewLine
+            }
+        }
+    }
+
+    Write-ClmSafeTextFile -Path $eventsPath -Content ($separator + $recordLine + [Environment]::NewLine) -Append
     return $eventsPath
 }
 
