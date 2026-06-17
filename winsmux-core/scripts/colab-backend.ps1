@@ -151,9 +151,39 @@ function Resolve-WinsmuxColabSessionName {
 function Get-WinsmuxColabCliAvailability {
     param([AllowEmptyString()][string]$Command = '')
 
+    function Test-OfficialGoogleColabCliName {
+        param([AllowEmptyString()][string]$Value = '')
+
+        if ([string]::IsNullOrWhiteSpace($Value)) {
+            return $false
+        }
+
+        $trimmed = $Value.Trim('"', "'")
+        $leaf = [System.IO.Path]::GetFileNameWithoutExtension($trimmed)
+        return [string]::Equals($leaf, 'colab', [System.StringComparison]::OrdinalIgnoreCase)
+    }
+
+    function New-OfficialGoogleColabCliResult {
+        param([Parameter(Mandatory = $true)]$CommandInfo)
+
+        return [PSCustomObject]@{
+            available                    = $false
+            command                      = 'colab'
+            path                         = ''
+            reason                       = 'official_colab_cli_requires_adapter'
+            kind                         = 'official_google_colab_cli'
+            official_colab_cli_available = $true
+            official_colab_cli_path      = [string]$CommandInfo.Source
+        }
+    }
+
+    $explicitAdapterRequest = -not [string]::IsNullOrWhiteSpace($Command)
     $requested = $Command
     if ([string]::IsNullOrWhiteSpace($requested)) {
         $requested = [string]$env:WINSMUX_COLAB_CLI
+        if (-not [string]::IsNullOrWhiteSpace($requested)) {
+            $explicitAdapterRequest = $true
+        }
     }
     if ([string]::IsNullOrWhiteSpace($requested)) {
         $candidateRoots = @(
@@ -184,21 +214,41 @@ function Get-WinsmuxColabCliAvailability {
     try {
         $resolved = Get-Command -Name $requested -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($null -ne $resolved) {
+            if ((Test-OfficialGoogleColabCliName -Value $requested) -or (Test-OfficialGoogleColabCliName -Value ([string]$resolved.Name)) -or (Test-OfficialGoogleColabCliName -Value ([string]$resolved.Source))) {
+                return New-OfficialGoogleColabCliResult -CommandInfo $resolved
+            }
+
             return [PSCustomObject]@{
-                available = $true
-                command   = $requested
-                path      = [string]$resolved.Source
-                reason    = ''
+                available                    = $true
+                command                      = $requested
+                path                         = [string]$resolved.Source
+                reason                       = ''
+                kind                         = 'winsmux_compatible_adapter'
+                official_colab_cli_available = $false
+                official_colab_cli_path      = ''
             }
         }
     } catch {
     }
 
+    if (-not $explicitAdapterRequest) {
+        try {
+            $officialColab = Get-Command -Name 'colab' -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($null -ne $officialColab) {
+                return New-OfficialGoogleColabCliResult -CommandInfo $officialColab
+            }
+        } catch {
+        }
+    }
+
     return [PSCustomObject]@{
-        available = $false
-        command   = $requested
-        path      = ''
-        reason    = 'colab_cli_missing'
+        available                    = $false
+        command                      = $requested
+        path                         = ''
+        reason                       = 'colab_cli_missing'
+        kind                         = 'missing'
+        official_colab_cli_available = $false
+        official_colab_cli_path      = ''
     }
 }
 
@@ -206,10 +256,14 @@ function Get-WinsmuxColabAuthState {
     param([Parameter(Mandatory = $true)]$CliAvailability)
 
     if (-not [bool](Get-WinsmuxColabValue -InputObject $CliAvailability -Name 'available' -Default $false)) {
+        $reason = [string](Get-WinsmuxColabValue -InputObject $CliAvailability -Name 'reason' -Default 'colab_cli_missing')
+        if ([string]::IsNullOrWhiteSpace($reason)) {
+            $reason = 'colab_cli_missing'
+        }
         return [PSCustomObject]@{
             state     = 'unknown'
             available = $false
-            reason    = 'colab_cli_missing'
+            reason    = $reason
         }
     }
 

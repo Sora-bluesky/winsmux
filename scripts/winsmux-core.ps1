@@ -7777,7 +7777,11 @@ function Invoke-WorkersColabCli {
     }
     $cli = Get-WinsmuxColabCliAvailability
     if (-not [bool](Get-SendConfigValue -InputObject $cli -Name 'available' -Default $false)) {
-        Stop-WithError 'google-colab-cli not found on PATH'
+        $reason = [string](Get-SendConfigValue -InputObject $cli -Name 'reason' -Default 'colab_cli_missing')
+        if ([string]::Equals($reason, 'official_colab_cli_requires_adapter', [System.StringComparison]::OrdinalIgnoreCase)) {
+            Stop-WithError 'official Google Colab CLI was found, but winsmux requires a compatible adapter that implements run/logs/upload/download. Set WINSMUX_COLAB_CLI to scripts/google-colab-cli-adapter.ps1 or a compatible wrapper.'
+        }
+        Stop-WithError 'google-colab-cli compatible adapter not found on PATH'
     }
 
     $command = [string](Get-SendConfigValue -InputObject $cli -Name 'command' -Default 'google-colab-cli')
@@ -10921,7 +10925,13 @@ function Invoke-WorkersDoctor {
         $checks.Add((New-WorkersDoctorCheck -Status 'pass' -Label 'google-colab-cli' -Detail ([string](Get-SendConfigValue -InputObject $cli -Name 'path' -Default 'google-colab-cli')) -Action '')) | Out-Null
     } else {
         $status = if ($colabSlotCount -gt 0) { 'fail' } else { 'warn' }
-        $checks.Add((New-WorkersDoctorCheck -Status $status -Label 'google-colab-cli' -Detail 'google-colab-cli not found on PATH' -Action 'Install google-colab-cli or change Colab-backed slots to local until it is available.')) | Out-Null
+        $reason = [string](Get-SendConfigValue -InputObject $cli -Name 'reason' -Default 'colab_cli_missing')
+        if ([string]::Equals($reason, 'official_colab_cli_requires_adapter', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $officialPath = [string](Get-SendConfigValue -InputObject $cli -Name 'official_colab_cli_path' -Default 'colab')
+            $checks.Add((New-WorkersDoctorCheck -Status $status -Label 'google-colab-cli' -Detail "official Google Colab CLI found at $officialPath, but winsmux requires a compatible adapter contract" -Action 'Set WINSMUX_COLAB_CLI to scripts/google-colab-cli-adapter.ps1 or a wrapper that implements run/logs/upload/download.')) | Out-Null
+        } else {
+            $checks.Add((New-WorkersDoctorCheck -Status $status -Label 'google-colab-cli' -Detail 'google-colab-cli compatible adapter not found on PATH' -Action 'Install or configure a compatible adapter, or change Colab-backed slots to local until it is available.')) | Out-Null
+        }
     }
 
     if ($null -ne $cli -and (Get-Command Get-WinsmuxColabAuthState -ErrorAction SilentlyContinue)) {
@@ -10933,7 +10943,7 @@ function Invoke-WorkersDoctor {
         } else {
             $reason = [string](Get-SendConfigValue -InputObject $auth -Name 'reason' -Default 'colab_auth_unverified')
             $status = if ([string]::Equals($reason, 'colab_auth_unverified', [System.StringComparison]::OrdinalIgnoreCase)) { 'warn' } else { 'fail' }
-            $action = if ($status -eq 'warn') { 'Run a google-colab-cli command or continue; the adapter may complete authentication interactively.' } else { 'Authenticate google-colab-cli in the local user session.' }
+            $action = if ($reason -eq 'official_colab_cli_requires_adapter') { 'Set WINSMUX_COLAB_CLI to a winsmux-compatible adapter before checking Colab authentication.' } elseif ($status -eq 'warn') { 'Run a compatible Colab adapter command or continue; the adapter may complete authentication interactively.' } else { 'Authenticate the compatible Colab adapter in the local user session.' }
             $checks.Add((New-WorkersDoctorCheck -Status $status -Label 'colab auth' -Detail $reason -Action $action)) | Out-Null
         }
     }
@@ -10988,7 +10998,7 @@ function Invoke-WorkersDoctor {
             }
             $status = if ([string]::IsNullOrWhiteSpace($reason)) {
                 'pass'
-            } elseif ($reason -match '(?i)(colab_cli_missing|colab_auth_missing|colab_state_update_failed|colab_backend_helpers_unavailable)') {
+            } elseif ($reason -match '(?i)(colab_cli_missing|official_colab_cli_requires_adapter|colab_auth_missing|colab_state_update_failed|colab_backend_helpers_unavailable)') {
                 'fail'
             } elseif ($health -eq 'gpu_degraded' -or $reason -match '(?i)(gpu_fallback_selected|requested_gpu_unavailable|selected GPU)') {
                 'warn'
@@ -10999,6 +11009,8 @@ function Invoke-WorkersDoctor {
             if ($status -ne 'pass') {
                 $action = if ($reason -match '(?i)colab_cli_missing') {
                     'Install or configure the Colab adapter before running colab_llm workers.'
+                } elseif ($reason -match '(?i)official_colab_cli_requires_adapter') {
+                    'Set WINSMUX_COLAB_CLI to scripts/google-colab-cli-adapter.ps1 or a wrapper that implements run/logs/upload/download.'
                 } elseif ($reason -match '(?i)colab_auth_missing') {
                     'Authenticate the Colab adapter in the local user session before running colab_llm workers.'
                 } elseif ($reason -match '(?i)(gpu_fallback_selected|requested_gpu_unavailable|selected GPU)') {

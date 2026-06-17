@@ -46,6 +46,20 @@ Local requirements:
 - `uv` when your adapter or bootstrap flow depends on it
 - network access and any browser session required by the adapter
 
+### Official Google Colab CLI 0.6.0
+
+Google's official `google-colab-cli` package currently installs a `colab`
+command. As of `2026-06-17`, PyPI reports `google-colab-cli` `0.6.0` as the
+latest release, and the official README states that Linux and macOS are
+supported while Windows is not supported.
+
+Do not point `WINSMUX_COLAB_CLI` directly at `colab` unless you provide a
+wrapper that implements the winsmux adapter contract below. The official
+`colab` command uses commands such as `colab exec`, `colab log`, and
+`colab drivemount`; winsmux `colab_cli` workers call a compatibility surface
+with `run`, `logs`, `upload`, and `download` so run evidence can be recorded in
+a stable shape.
+
 Google-side requirements depend on the Colab product you use:
 
 - for consumer Colab, sign in with the Google account that owns the notebook or runtime
@@ -413,7 +427,8 @@ local run metadata and the upload/download command evidence.
 
 | Symptom | Check |
 | ------- | ----- |
-| `google-colab-cli not found on PATH` | Install your adapter or set `WINSMUX_COLAB_CLI`. |
+| `google-colab-cli compatible adapter not found on PATH` | Install your adapter or set `WINSMUX_COLAB_CLI`. |
+| Official `colab` CLI is found but the worker is degraded | Set `WINSMUX_COLAB_CLI` to `scripts/google-colab-cli-adapter.ps1` or a wrapper that maps the official CLI to the winsmux adapter contract. |
 | No notebook is prepared | Create a Colab notebook and connect it to an `H100` or `A100` runtime, or configure an adapter that manages that notebook/runtime. |
 | `missing auth` or degraded auth state | Complete sign-in in the official Google or adapter-owned flow. winsmux will not receive callback URLs or extract tokens. |
 | GPU is not `H100` or `A100` | Confirm the Colab runtime type and quota outside winsmux, then run `winsmux workers doctor` again. |

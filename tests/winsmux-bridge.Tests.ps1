@@ -691,6 +691,56 @@ agent-slots:
         }
     }
 
+    It 'keeps explicit missing adapter diagnostics stable when official colab is on PATH' {
+        $fakeBin = Join-Path $script:settingsTempRoot 'ambient-official-colab-bin'
+        New-Item -ItemType Directory -Path $fakeBin -Force | Out-Null
+        $fakeColab = Join-Path $fakeBin 'colab.cmd'
+        Write-PsmuxBridgeTestFile -Path $fakeColab -Content @'
+@echo off
+echo google-colab-cli 0.6.0
+exit /b 0
+'@
+
+        $previousCli = $env:WINSMUX_COLAB_CLI
+        $previousAuth = $env:WINSMUX_COLAB_AUTH_STATE
+        $previousGpu = $env:WINSMUX_COLAB_AVAILABLE_GPUS
+        $previousPath = $env:PATH
+        try {
+            $env:WINSMUX_COLAB_CLI = Join-Path $script:settingsTempRoot 'missing-explicit-adapter.exe'
+            Remove-Item Env:WINSMUX_COLAB_AUTH_STATE -ErrorAction SilentlyContinue
+            Remove-Item Env:WINSMUX_COLAB_AVAILABLE_GPUS -ErrorAction SilentlyContinue
+            $env:PATH = "$fakeBin$([System.IO.Path]::PathSeparator)$previousPath"
+            Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+@'
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: colab_cli
+    session-name: missing-explicit-adapter
+    gpu-preference: [H100, A100]
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+            $cli = Get-WinsmuxColabCliAvailability
+            $cli.available | Should -Be $false
+            $cli.reason | Should -Be 'colab_cli_missing'
+            $cli.command | Should -Match 'missing-explicit-adapter\.exe$'
+
+            $settings = Get-BridgeSettings
+            $state = Update-WinsmuxColabSessionState -ProjectDir $script:settingsTempRoot -Settings $settings
+            $record = @($state.active_sessions)[0]
+
+            $record['state'] | Should -Be 'degraded'
+            $record['degraded_reason'] | Should -Match 'colab_cli_missing'
+        } finally {
+            if ($null -eq $previousCli) { Remove-Item Env:WINSMUX_COLAB_CLI -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_CLI = $previousCli }
+            if ($null -eq $previousAuth) { Remove-Item Env:WINSMUX_COLAB_AUTH_STATE -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_AUTH_STATE = $previousAuth }
+            if ($null -eq $previousGpu) { Remove-Item Env:WINSMUX_COLAB_AVAILABLE_GPUS -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_AVAILABLE_GPUS = $previousGpu }
+            $env:PATH = $previousPath
+        }
+    }
+
     It 'keeps a colab_cli worker degraded when a stale authenticated auth override remains without the CLI' {
 @'
 agent-slots:
@@ -762,6 +812,62 @@ agent-slots:
             if ($null -eq $previousCli) { Remove-Item Env:WINSMUX_COLAB_CLI -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_CLI = $previousCli }
             if ($null -eq $previousAuth) { Remove-Item Env:WINSMUX_COLAB_AUTH_STATE -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_AUTH_STATE = $previousAuth }
             if ($null -eq $previousGpu) { Remove-Item Env:WINSMUX_COLAB_AVAILABLE_GPUS -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_AVAILABLE_GPUS = $previousGpu }
+        }
+    }
+
+    It 'does not treat the official colab command as a winsmux-compatible adapter' {
+        $fakeBin = Join-Path $script:settingsTempRoot 'fake-colab-bin'
+        New-Item -ItemType Directory -Path $fakeBin -Force | Out-Null
+        $fakeColab = Join-Path $fakeBin 'colab.cmd'
+        Write-PsmuxBridgeTestFile -Path $fakeColab -Content @'
+@echo off
+if "%1"=="version" (
+  echo google-colab-cli 0.6.0
+  exit /b 0
+)
+echo official colab %*
+exit /b 0
+'@
+
+        $previousCli = $env:WINSMUX_COLAB_CLI
+        $previousAuth = $env:WINSMUX_COLAB_AUTH_STATE
+        $previousGpu = $env:WINSMUX_COLAB_AVAILABLE_GPUS
+        $previousPath = $env:PATH
+        try {
+            $env:WINSMUX_COLAB_CLI = 'colab'
+            $env:WINSMUX_COLAB_AUTH_STATE = 'authenticated'
+            $env:WINSMUX_COLAB_AVAILABLE_GPUS = 'A100'
+            $env:PATH = "$fakeBin$([System.IO.Path]::PathSeparator)$previousPath"
+            Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+@'
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: colab_cli
+    session-name: official-cli-session
+    gpu-preference: [H100, A100]
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+            $cli = Get-WinsmuxColabCliAvailability
+            $cli.available | Should -Be $false
+            $cli.reason | Should -Be 'official_colab_cli_requires_adapter'
+            $cli.official_colab_cli_available | Should -Be $true
+            $cli.official_colab_cli_path | Should -Match 'colab\.cmd$'
+
+            $settings = Get-BridgeSettings
+            $state = Update-WinsmuxColabSessionState -ProjectDir $script:settingsTempRoot -Settings $settings
+            $record = @($state.active_sessions)[0]
+
+            $record['state'] | Should -Be 'degraded'
+            $record['degraded_reason'] | Should -Match 'official_colab_cli_requires_adapter'
+            $record['cli_available'] | Should -Be $false
+        } finally {
+            if ($null -eq $previousCli) { Remove-Item Env:WINSMUX_COLAB_CLI -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_CLI = $previousCli }
+            if ($null -eq $previousAuth) { Remove-Item Env:WINSMUX_COLAB_AUTH_STATE -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_AUTH_STATE = $previousAuth }
+            if ($null -eq $previousGpu) { Remove-Item Env:WINSMUX_COLAB_AVAILABLE_GPUS -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_AVAILABLE_GPUS = $previousGpu }
+            $env:PATH = $previousPath
         }
     }
 
