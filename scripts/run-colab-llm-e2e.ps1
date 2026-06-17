@@ -19,6 +19,8 @@ param(
 
     [switch]$PlanOnly,
 
+    [switch]$CapacityPreflightOnly,
+
     [switch]$Json
 )
 
@@ -97,6 +99,229 @@ function Get-ColabLlmModelId {
     return ''
 }
 
+function Test-TruthyEnv {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [bool]$Default = $true
+    )
+    $value = [string](Get-Item -LiteralPath "Env:$Name" -ErrorAction SilentlyContinue).Value
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        return $Default
+    }
+    return ($value.Trim().ToLowerInvariant() -notin @('0', 'false', 'no', 'off'))
+}
+
+function Get-PositiveInt64Env {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][Int64]$Default
+    )
+    $value = [string](Get-Item -LiteralPath "Env:$Name" -ErrorAction SilentlyContinue).Value
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        return $Default
+    }
+    $parsed = 0L
+    if ([Int64]::TryParse($value.Trim(), [ref]$parsed) -and $parsed -gt 0) {
+        return $parsed
+    }
+    return $Default
+}
+
+function Get-PositiveDoubleEnv {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][double]$Default
+    )
+    $value = [string](Get-Item -LiteralPath "Env:$Name" -ErrorAction SilentlyContinue).Value
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        return $Default
+    }
+    $parsed = 0.0
+    if ([double]::TryParse($value.Trim(), [ref]$parsed) -and $parsed -gt 0) {
+        return $parsed
+    }
+    return $Default
+}
+
+function ConvertTo-HfPathSegment {
+    param([AllowEmptyString()][string]$Value)
+    return [System.Uri]::EscapeDataString([string]$Value)
+}
+
+function ConvertTo-HfModelPath {
+    param([Parameter(Mandatory = $true)][string]$ModelId)
+    return (([string]$ModelId -split '/') | ForEach-Object { ConvertTo-HfPathSegment -Value $_ }) -join '/'
+}
+
+function ConvertTo-HfFilePath {
+    param([Parameter(Mandatory = $true)][string]$FileName)
+    return (([string]$FileName -split '/') | ForEach-Object { ConvertTo-HfPathSegment -Value $_ }) -join '/'
+}
+
+function ConvertTo-PlainHashtable {
+    param([Parameter(Mandatory = $true)]$Value)
+    $result = [ordered]@{}
+    foreach ($property in $Value.PSObject.Properties) {
+        $result[$property.Name] = $property.Value
+    }
+    return $result
+}
+
+function Get-CapacityEstimateFixture {
+    param([Parameter(Mandatory = $true)][string]$ModelId)
+    $raw = [string]$env:WINSMUX_COLAB_LLM_E2E_CAPACITY_ESTIMATE_JSON
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        return $null
+    }
+    $parsed = $raw | ConvertFrom-Json -ErrorAction Stop
+    $candidates = @()
+    if ($parsed -is [array]) {
+        $candidates = @($parsed)
+    } else {
+        $directProperty = $parsed.PSObject.Properties | Where-Object { $_.Name -eq $ModelId } | Select-Object -First 1
+        if ($null -ne $directProperty) {
+            $candidates = @($directProperty.Value)
+        } elseif ($null -ne $parsed.models) {
+            $candidates = @($parsed.models)
+        } else {
+            $candidates = @($parsed)
+        }
+    }
+    foreach ($candidate in $candidates) {
+        if ($null -eq $candidate) {
+            continue
+        }
+        $candidateModel = [string]$candidate.model_id
+        if ([string]::IsNullOrWhiteSpace($candidateModel) -or $candidateModel -eq $ModelId) {
+            $estimate = ConvertTo-PlainHashtable -Value $candidate
+            if (-not $estimate.Contains('model_id')) {
+                $estimate['model_id'] = $ModelId
+            }
+            $estimate['source'] = 'env_fixture'
+            return $estimate
+        }
+    }
+    return $null
+}
+
+function Get-HeaderFirstValue {
+    param(
+        [Parameter(Mandatory = $true)]$Headers,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+    $value = $Headers[$Name]
+    if ($value -is [array]) {
+        return [string]$value[0]
+    }
+    return [string]$value
+}
+
+function Get-HfModelStorageEstimate {
+    param([Parameter(Mandatory = $true)][string]$ModelId)
+
+    $fixture = Get-CapacityEstimateFixture -ModelId $ModelId
+    if ($null -ne $fixture) {
+        return $fixture
+    }
+
+    $timeout = [int][Math]::Ceiling((Get-PositiveDoubleEnv -Name 'WINSMUX_COLAB_LLM_HF_METADATA_TIMEOUT_SECONDS' -Default 30.0))
+    $modelPath = ConvertTo-HfModelPath -ModelId $ModelId
+    $metadata = Invoke-RestMethod -Method Get -Uri "https://huggingface.co/api/models/$modelPath" -TimeoutSec $timeout -Headers @{ Accept = 'application/json' }
+    $weightFiles = @()
+    $safetensors = @()
+    $shardCount = 0
+    $firstShard = ''
+    foreach ($sibling in @($metadata.siblings)) {
+        $name = [string]$sibling.rfilename
+        if ([string]::IsNullOrWhiteSpace($name) -or $name -notmatch '\.(safetensors|bin|gguf)$') {
+            continue
+        }
+        $weightFiles += $name
+        if ($name.EndsWith('.safetensors', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $safetensors += $name
+        }
+        $match = [regex]::Match($name, '^(?:.*-)?([0-9]{5})-of-([0-9]{5})\.(?:safetensors|bin)$')
+        if ($match.Success) {
+            $shardCount = [Math]::Max($shardCount, [int]$match.Groups[2].Value)
+            if ([string]::IsNullOrWhiteSpace($firstShard) -or $name -lt $firstShard) {
+                $firstShard = $name
+            }
+        }
+    }
+    if ($weightFiles.Count -eq 0) {
+        return [ordered]@{
+            model_id = $ModelId
+            status = 'model_size_unavailable'
+            reason = 'Hugging Face model weight files were not found for capacity preflight'
+            weight_files = 0
+            estimated_total_bytes = 0
+            source = 'huggingface'
+        }
+    }
+    $sampleFile = if ([string]::IsNullOrWhiteSpace($firstShard)) { @($weightFiles | Sort-Object)[0] } else { $firstShard }
+    $samplePath = ConvertTo-HfFilePath -FileName $sampleFile
+    $head = Invoke-WebRequest -Method Head -Uri "https://huggingface.co/$modelPath/resolve/main/$samplePath" -TimeoutSec $timeout -MaximumRedirection 8 -UseBasicParsing
+    $linkedSize = Get-HeaderFirstValue -Headers $head.Headers -Name 'X-Linked-Size'
+    if ([string]::IsNullOrWhiteSpace($linkedSize)) {
+        $linkedSize = Get-HeaderFirstValue -Headers $head.Headers -Name 'Content-Length'
+    }
+    $sampleSize = 0L
+    [void][Int64]::TryParse(([string]$linkedSize).Trim(), [ref]$sampleSize)
+    $effectiveShards = if ($shardCount -gt 0) { $shardCount } else { $weightFiles.Count }
+    return [ordered]@{
+        model_id = $ModelId
+        weight_files = $weightFiles.Count
+        safetensor_files = $safetensors.Count
+        shard_count = $effectiveShards
+        sample_file = $sampleFile
+        sample_size_bytes = $sampleSize
+        estimated_total_bytes = if ($sampleSize -gt 0) { $sampleSize * [Int64]$effectiveShards } else { 0 }
+        source = 'huggingface'
+    }
+}
+
+function Test-ColabLlmCapacity {
+    param(
+        [Parameter(Mandatory = $true)][string]$WorkerId,
+        [Parameter(Mandatory = $true)][string]$ModelId
+    )
+    if (-not (Test-TruthyEnv -Name 'WINSMUX_COLAB_LLM_MODEL_CAPACITY_PREFLIGHT' -Default $true)) {
+        return [ordered]@{
+            enabled = $false
+            status = 'skipped'
+            worker_id = $WorkerId
+            model_id = $ModelId
+        }
+    }
+    $maxBytes = Get-PositiveInt64Env -Name 'WINSMUX_COLAB_LLM_MAX_MODEL_BYTES' -Default ([Int64]350 * 1024 * 1024 * 1024)
+    try {
+        $estimate = Get-HfModelStorageEstimate -ModelId $ModelId
+    } catch {
+        return [ordered]@{
+            enabled = $true
+            status = 'model_capacity_preflight_failed'
+            worker_id = $WorkerId
+            model_id = $ModelId
+            max_total_bytes = $maxBytes
+            estimated_total_bytes = 0
+            error = $_.Exception.Message
+        }
+    }
+    $estimatedBytes = 0L
+    [void][Int64]::TryParse(([string]$estimate['estimated_total_bytes']), [ref]$estimatedBytes)
+    $estimateStatus = if ($estimate.Contains('status')) { [string]$estimate['status'] } else { '' }
+    $status = if ($estimatedBytes -gt $maxBytes) { 'model_capacity_exceeded' } elseif ($estimateStatus -eq 'model_size_unavailable') { 'model_size_unavailable' } else { 'capacity_ok' }
+    return [ordered]@{
+        enabled = $true
+        status = $status
+        worker_id = $WorkerId
+        model_id = $ModelId
+        max_total_bytes = $maxBytes
+        estimated_total_bytes = $estimatedBytes
+        estimate = $estimate
+    }
+}
+
 function Start-WorkerJob {
     param(
         [Parameter(Mandatory = $true)][string]$WorkerId,
@@ -148,7 +373,7 @@ if ([string]::IsNullOrWhiteSpace($RunIdPrefix)) {
 }
 $RunIdPrefix = New-SafeRunId -Value $RunIdPrefix
 
-if (-not $PlanOnly -and [string]$env:WINSMUX_COLAB_ACCEPTANCE_REAL -ne '1') {
+if (-not $PlanOnly -and -not $CapacityPreflightOnly -and [string]$env:WINSMUX_COLAB_ACCEPTANCE_REAL -ne '1') {
     throw 'Refusing to run live Colab GPU E2E without WINSMUX_COLAB_ACCEPTANCE_REAL=1. Use -PlanOnly for a non-executing preflight.'
 }
 
@@ -263,6 +488,48 @@ if ($PlanOnly) {
         "Plan only. Doctor/status artifacts written to: $OutputDir"
     }
     exit 0
+}
+
+$shouldRunCapacityPreflight = $CapacityPreflightOnly -or (-not $PlanOnly -and (Test-TruthyEnv -Name 'WINSMUX_COLAB_LLM_MODEL_CAPACITY_PREFLIGHT' -Default $true))
+if ($shouldRunCapacityPreflight) {
+    $capacityFailures = @()
+    foreach ($workerEntry in @($summary.workers)) {
+        $capacity = Test-ColabLlmCapacity -WorkerId ([string]$workerEntry.slot_id) -ModelId ([string]$workerEntry.model_id)
+        $workerEntry.capacity_preflight = $capacity
+        if ([string]$capacity.status -eq 'model_capacity_exceeded') {
+            $workerEntry.status = 'model_capacity_exceeded'
+            $workerEntry.exit_code = 1
+            $workerEntry.blocked_reason = 'model_capacity_exceeded'
+            $capacityFailures += $workerEntry
+        } elseif ([string]$capacity.status -eq 'model_size_unavailable') {
+            $workerEntry.status = 'model_size_unavailable'
+            $workerEntry.exit_code = 1
+            $workerEntry.blocked_reason = 'model_size_unavailable'
+            $capacityFailures += $workerEntry
+        } elseif ([string]$capacity.status -eq 'model_capacity_preflight_failed') {
+            $workerEntry.status = 'model_capacity_preflight_failed'
+            $workerEntry.exit_code = 1
+            $workerEntry.blocked_reason = 'model_capacity_preflight_failed'
+            $capacityFailures += $workerEntry
+        } elseif ($CapacityPreflightOnly) {
+            $workerEntry.status = 'capacity_ok'
+        }
+    }
+
+    if ($CapacityPreflightOnly -or $capacityFailures.Count -gt 0) {
+        $summaryPath = Join-Path $OutputDir 'summary.json'
+        Set-Content -LiteralPath $summaryPath -Value ($summary | ConvertTo-Json -Depth 16) -Encoding UTF8
+        if ($Json) {
+            $summary | ConvertTo-Json -Depth 16
+        } else {
+            "Capacity preflight artifacts written to: $OutputDir"
+            "Summary: $summaryPath"
+        }
+        if ($capacityFailures.Count -gt 0) {
+            exit 1
+        }
+        exit 0
+    }
 }
 
 if (-not (Test-Path -LiteralPath $script:SourceColabLlmWorkerPath -PathType Leaf)) {

@@ -20,6 +20,9 @@ Describe 'Colab worker acceptance gate' {
         $script:PreviousColabAuth = $env:WINSMUX_COLAB_AUTH_STATE
         $script:PreviousColabGpu = $env:WINSMUX_COLAB_AVAILABLE_GPUS
         $script:PreviousTaskJson = $env:WINSMUX_TASK_JSON
+        $script:PreviousCapacityEstimateJson = $env:WINSMUX_COLAB_LLM_E2E_CAPACITY_ESTIMATE_JSON
+        $script:PreviousCapacityMaxBytes = $env:WINSMUX_COLAB_LLM_MAX_MODEL_BYTES
+        $script:PreviousCapacityPreflight = $env:WINSMUX_COLAB_LLM_MODEL_CAPACITY_PREFLIGHT
     }
 
     AfterEach {
@@ -45,6 +48,24 @@ Describe 'Colab worker acceptance gate' {
             Remove-Item Env:WINSMUX_TASK_JSON -ErrorAction SilentlyContinue
         } else {
             $env:WINSMUX_TASK_JSON = $script:PreviousTaskJson
+        }
+
+        if ($null -eq $script:PreviousCapacityEstimateJson) {
+            Remove-Item Env:WINSMUX_COLAB_LLM_E2E_CAPACITY_ESTIMATE_JSON -ErrorAction SilentlyContinue
+        } else {
+            $env:WINSMUX_COLAB_LLM_E2E_CAPACITY_ESTIMATE_JSON = $script:PreviousCapacityEstimateJson
+        }
+
+        if ($null -eq $script:PreviousCapacityMaxBytes) {
+            Remove-Item Env:WINSMUX_COLAB_LLM_MAX_MODEL_BYTES -ErrorAction SilentlyContinue
+        } else {
+            $env:WINSMUX_COLAB_LLM_MAX_MODEL_BYTES = $script:PreviousCapacityMaxBytes
+        }
+
+        if ($null -eq $script:PreviousCapacityPreflight) {
+            Remove-Item Env:WINSMUX_COLAB_LLM_MODEL_CAPACITY_PREFLIGHT -ErrorAction SilentlyContinue
+        } else {
+            $env:WINSMUX_COLAB_LLM_MODEL_CAPACITY_PREFLIGHT = $script:PreviousCapacityPreflight
         }
 
         if ($script:AcceptanceRoot -and (Test-Path -LiteralPath $script:AcceptanceRoot)) {
@@ -345,6 +366,87 @@ exit /b 1
 
         $LASTEXITCODE | Should -Not -Be 0
         ($output | Out-String) | Should -Match "worker slot worker-1 uses model_id 'google/gemma-3-27b-it', not expected 'zai-org/GLM-5.2'"
+    }
+
+    It 'classifies oversized GLM-5.2 before starting a live Colab runtime' {
+        Write-ColabLlmAcceptanceProjectConfig
+        New-AcceptanceFakeColabCli | Out-Null
+        $configPath = Join-Path $script:AcceptanceRoot '.winsmux.yaml'
+        (Get-Content -LiteralPath $configPath -Raw -Encoding UTF8).Replace('google/gemma-3-27b-it', 'zai-org/GLM-5.2').Replace('model-family: gemma', 'model-family: glm') |
+            Set-Content -LiteralPath $configPath -Encoding UTF8
+        $env:WINSMUX_COLAB_LLM_E2E_CAPACITY_ESTIMATE_JSON = @{
+            model_id = 'zai-org/GLM-5.2'
+            weight_files = 282
+            safetensor_files = 282
+            shard_count = 282
+            sample_file = 'model-00001-of-00282.safetensors'
+            sample_size_bytes = 5342821416
+            estimated_total_bytes = 1500000000000
+        } | ConvertTo-Json -Compress
+        $env:WINSMUX_COLAB_LLM_MAX_MODEL_BYTES = [string]([Int64]350 * 1024 * 1024 * 1024)
+
+        $output = & pwsh -NoProfile -File $script:ColabLlmE2eRunnerPath `
+            -ProjectDir $script:AcceptanceRoot `
+            -Workers worker-1 `
+            -ExpectedModelId 'zai-org/GLM-5.2' `
+            -CapacityPreflightOnly `
+            -Json 2>&1
+
+        $LASTEXITCODE | Should -Be 1
+        $summary = ConvertFrom-AcceptanceJsonOutput -Output $output
+        @($summary.workers).Count | Should -Be 1
+        $summary.workers[0].slot_id | Should -Be 'worker-1'
+        $summary.workers[0].status | Should -Be 'model_capacity_exceeded'
+        $summary.workers[0].blocked_reason | Should -Be 'model_capacity_exceeded'
+        $summary.workers[0].capacity_preflight.estimated_total_bytes | Should -Be 1500000000000
+        $summary.workers[0].capacity_preflight.max_total_bytes | Should -Be ([Int64]350 * 1024 * 1024 * 1024)
+    }
+
+    It 'allows capacity-only preflight to pass without live Colab execution for an under-limit model' {
+        Write-ColabLlmAcceptanceProjectConfig
+        New-AcceptanceFakeColabCli | Out-Null
+        $env:WINSMUX_COLAB_LLM_E2E_CAPACITY_ESTIMATE_JSON = @{
+            model_id = 'google/gemma-3-27b-it'
+            weight_files = 12
+            safetensor_files = 12
+            shard_count = 12
+            sample_file = 'model-00001-of-00012.safetensors'
+            sample_size_bytes = 1024
+            estimated_total_bytes = 12288
+        } | ConvertTo-Json -Compress
+
+        $output = & pwsh -NoProfile -File $script:ColabLlmE2eRunnerPath `
+            -ProjectDir $script:AcceptanceRoot `
+            -Workers worker-1 `
+            -CapacityPreflightOnly `
+            -Json 2>&1
+
+        $LASTEXITCODE | Should -Be 0
+        $summary = ConvertFrom-AcceptanceJsonOutput -Output $output
+        @($summary.workers).Count | Should -Be 1
+        $summary.workers[0].slot_id | Should -Be 'worker-1'
+        $summary.workers[0].status | Should -Be 'capacity_ok'
+        $summary.workers[0].capacity_preflight.status | Should -Be 'capacity_ok'
+    }
+
+    It 'records capacity preflight metadata failures without starting live Colab' {
+        Write-ColabLlmAcceptanceProjectConfig
+        New-AcceptanceFakeColabCli | Out-Null
+        $env:WINSMUX_COLAB_LLM_E2E_CAPACITY_ESTIMATE_JSON = '{not-json'
+
+        $output = & pwsh -NoProfile -File $script:ColabLlmE2eRunnerPath `
+            -ProjectDir $script:AcceptanceRoot `
+            -Workers worker-1 `
+            -CapacityPreflightOnly `
+            -Json 2>&1
+
+        $LASTEXITCODE | Should -Be 1
+        $summary = ConvertFrom-AcceptanceJsonOutput -Output $output
+        @($summary.workers).Count | Should -Be 1
+        $summary.workers[0].slot_id | Should -Be 'worker-1'
+        $summary.workers[0].status | Should -Be 'model_capacity_preflight_failed'
+        $summary.workers[0].blocked_reason | Should -Be 'model_capacity_preflight_failed'
+        $summary.workers[0].capacity_preflight.error | Should -Match 'JSON'
     }
 
     It 'rejects malformed worker ids before planning a Colab E2E run' {
