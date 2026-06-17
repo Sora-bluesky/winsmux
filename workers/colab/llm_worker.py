@@ -8,6 +8,7 @@ import ctypes
 import datetime as dt
 import importlib
 import json
+import math
 import os
 from pathlib import Path
 import platform
@@ -18,7 +19,9 @@ import subprocess
 import sys
 import time
 from typing import Any
+import urllib.error
 import urllib.request
+import urllib.parse
 
 
 SCHEMA_VERSION = "winsmux.colab_llm.result.v1"
@@ -33,13 +36,17 @@ SECRET_ASSIGNMENT_RE = re.compile(
 )
 DRIVE_PATH_RE = re.compile(r"/content/drive/(?:MyDrive|Shareddrives)/[^\s\"']+")
 COLAB_TOKEN_RE = re.compile(r"mcpProxyToken=[^&\s\"']+", re.IGNORECASE)
+SHARDED_SAFETENSOR_RE = re.compile(r"^model-\d{5}-of-(\d{5})\.safetensors$")
+SHARDED_PYTORCH_BIN_RE = re.compile(r"^pytorch_model-\d{5}-of-(\d{5})\.bin$")
+HF_WEIGHT_EXTENSIONS = (".safetensors", ".bin", ".gguf")
 
 
 class InputError(Exception):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, details: dict[str, Any] | None = None) -> None:
         super().__init__(message)
         self.code = code
-        self.message = message
+        self.message = redact_sensitive_text(message)
+        self.details = redact_details(details or {})
 
 
 def utc_now() -> str:
@@ -194,6 +201,17 @@ def positive_float_env(name: str, default: float) -> float:
         value = float(raw)
     except (TypeError, ValueError):
         return default
+    return value if math.isfinite(value) and value > 0 else default
+
+
+def positive_int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
     return value if value > 0 else default
 
 
@@ -210,6 +228,175 @@ def redact_sensitive_text(value: str) -> str:
     text = SECRET_ASSIGNMENT_RE.sub(r"\1[REDACTED]", text)
     text = DRIVE_PATH_RE.sub("[DRIVE_PATH_REDACTED]", text)
     return text
+
+
+def redact_details(value: Any) -> Any:
+    if isinstance(value, str):
+        return redact_sensitive_text(value)
+    if isinstance(value, dict):
+        return {str(key): redact_details(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [redact_details(item) for item in value]
+    if isinstance(value, tuple):
+        return [redact_details(item) for item in value]
+    return value
+
+
+def hf_model_api_url(model_id: str) -> str:
+    encoded = "/".join(urllib.parse.quote(part, safe="") for part in model_id.split("/"))
+    return f"https://huggingface.co/api/models/{encoded}"
+
+
+def hf_resolve_url(model_id: str, filename: str) -> str:
+    encoded = "/".join(urllib.parse.quote(part, safe="") for part in model_id.split("/"))
+    return f"https://huggingface.co/{encoded}/resolve/main/{urllib.parse.quote(filename, safe='')}"
+
+
+def read_json_url(url: str, timeout: float = 30.0) -> dict[str, Any]:
+    request = urllib.request.Request(url, headers={"Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - public HF metadata only
+            payload = response.read(5 * 1024 * 1024)
+    except urllib.error.HTTPError as exc:
+        if exc.code in {401, 403}:
+            raise InputError(
+                "model_access_denied",
+                "Hugging Face model metadata access was denied",
+                details={"status_code": exc.code},
+            ) from exc
+        if exc.code == 404:
+            raise InputError(
+                "model_not_found",
+                "Hugging Face model metadata was not found",
+                details={"status_code": exc.code},
+            ) from exc
+        raise InputError(
+            "model_metadata_unavailable",
+            "Hugging Face model metadata request failed",
+            details={"status_code": exc.code},
+        ) from exc
+    except (TimeoutError, urllib.error.URLError, OSError) as exc:
+        raise InputError(
+            "model_metadata_unavailable",
+            "Hugging Face model metadata request did not complete",
+            details={"error": str(exc)},
+        ) from exc
+    try:
+        data = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise InputError("model_metadata_invalid", "Hugging Face model metadata was not valid JSON") from exc
+    if not isinstance(data, dict):
+        raise InputError("model_metadata_invalid", "Hugging Face model metadata was not an object")
+    return data
+
+
+def head_linked_size(url: str, timeout: float = 30.0) -> int:
+    request = urllib.request.Request(url, method="HEAD")
+    opener = urllib.request.build_opener(urllib.request.HTTPRedirectHandler)
+    try:
+        with opener.open(request, timeout=timeout) as response:  # noqa: S310 - public HF metadata only
+            linked_size = response.headers.get("X-Linked-Size") or response.headers.get("Content-Length")
+    except urllib.error.HTTPError as exc:
+        if exc.code in {401, 403}:
+            raise InputError(
+                "model_access_denied",
+                "Hugging Face model file size access was denied",
+                details={"status_code": exc.code},
+            ) from exc
+        if exc.code == 404:
+            raise InputError(
+                "model_file_not_found",
+                "Hugging Face model file was not found during capacity preflight",
+                details={"status_code": exc.code},
+            ) from exc
+        raise InputError(
+            "model_size_unavailable",
+            "Hugging Face model file size request failed",
+            details={"status_code": exc.code},
+        ) from exc
+    except (TimeoutError, urllib.error.URLError, OSError) as exc:
+        raise InputError(
+            "model_size_unavailable",
+            "Hugging Face model file size request did not complete",
+            details={"error": str(exc)},
+        ) from exc
+    try:
+        size = int(str(linked_size or "0"))
+    except (TypeError, ValueError):
+        size = 0
+    if size <= 0:
+        raise InputError("model_size_unavailable", "Hugging Face model file size header was unavailable")
+    return size
+
+
+def estimate_hf_model_storage(model_id: str, timeout: float = 30.0) -> dict[str, Any]:
+    metadata = read_json_url(hf_model_api_url(model_id), timeout=timeout)
+    siblings = metadata.get("siblings") if isinstance(metadata.get("siblings"), list) else []
+    weight_files: list[str] = []
+    safetensors: list[str] = []
+    shard_count = 0
+    first_shard = ""
+    for sibling in siblings:
+        if not isinstance(sibling, dict):
+            continue
+        name = str(sibling.get("rfilename") or "")
+        if not name.endswith(HF_WEIGHT_EXTENSIONS):
+            continue
+        weight_files.append(name)
+        if name.endswith(".safetensors"):
+            safetensors.append(name)
+        match = SHARDED_SAFETENSOR_RE.match(name) or SHARDED_PYTORCH_BIN_RE.match(name)
+        if match:
+            shard_count = max(shard_count, int(match.group(1)))
+            if not first_shard or name < first_shard:
+                first_shard = name
+    if not weight_files:
+        raise InputError(
+            "model_size_unavailable",
+            "Hugging Face model weight files were not found for capacity preflight",
+            details={"model_id": model_id, "weight_files": 0, "safetensor_files": 0},
+        )
+    sample_file = first_shard or sorted(weight_files)[0]
+    sample_size = head_linked_size(hf_resolve_url(model_id, sample_file), timeout=timeout)
+    effective_shards = shard_count or len(weight_files)
+    return {
+        "model_id": model_id,
+        "weight_files": len(weight_files),
+        "safetensor_files": len(safetensors),
+        "shard_count": effective_shards,
+        "sample_file": sample_file,
+        "sample_size_bytes": sample_size,
+        "estimated_total_bytes": sample_size * effective_shards if sample_size > 0 else 0,
+    }
+
+
+def preflight_model_capacity(model_id: str, worker_id: str) -> dict[str, Any]:
+    if not bool_env("WINSMUX_COLAB_LLM_MODEL_CAPACITY_PREFLIGHT", True):
+        return {"enabled": False}
+    max_total_bytes = positive_int_env("WINSMUX_COLAB_LLM_MAX_MODEL_BYTES", 350 * 1024 * 1024 * 1024)
+    metadata_timeout = positive_float_env("WINSMUX_COLAB_LLM_HF_METADATA_TIMEOUT_SECONDS", 30.0)
+    emit_stage("model_capacity_preflight_begin", worker_id=worker_id, model_id=model_id, max_total_bytes=max_total_bytes)
+    estimate = estimate_hf_model_storage(model_id, timeout=metadata_timeout)
+    estimate["enabled"] = True
+    estimate["max_total_bytes"] = max_total_bytes
+    estimate["metadata_timeout_seconds"] = metadata_timeout
+    emit_stage(
+        "model_capacity_preflight_done",
+        worker_id=worker_id,
+        model_id=model_id,
+        shard_count=estimate.get("shard_count", 0),
+        estimated_total_bytes=estimate.get("estimated_total_bytes", 0),
+    )
+    estimated_total = int(estimate.get("estimated_total_bytes") or 0)
+    if estimated_total > max_total_bytes:
+        gib = estimated_total / (1024**3)
+        max_gib = max_total_bytes / (1024**3)
+        raise InputError(
+            "model_capacity_exceeded",
+            f"estimated model storage is {gib:.1f} GiB, above configured limit {max_gib:.1f} GiB",
+            details=estimate,
+        )
+    return estimate
 
 
 def classify_worker_exception(exc: BaseException) -> str:
@@ -673,6 +860,7 @@ def main(argv: list[str] | None = None) -> int:
         if "H100" not in gpu_name and "A100" not in gpu_name:
             raise InputError("gpu_degraded", f"expected H100 or A100, got {gpu_name}")
         emit_stage("gpu_detect_done", worker_id=worker_id, gpu=gpu_name)
+        capacity = preflight_model_capacity(model_id=model_id, worker_id=worker_id)
         prompt = build_effective_prompt(
             prompt=prompt,
             model_id=model_id,
@@ -708,6 +896,7 @@ def main(argv: list[str] | None = None) -> int:
             "model_id": model_id,
             "gpu": gpu,
             "storage": storage,
+            "capacity": capacity,
             "metrics": metrics,
             "elapsed_seconds": time.monotonic() - started,
             "output": output_text,
@@ -732,7 +921,7 @@ def main(argv: list[str] | None = None) -> int:
             "model_id": args.model_id,
             "elapsed_seconds": time.monotonic() - started,
             "output": "",
-            "errors": [{"code": exc.code, "message": exc.message}],
+            "errors": [{"code": exc.code, "message": exc.message, "details": exc.details}],
         }
         print(json.dumps(result, ensure_ascii=False, separators=(",", ":"), sort_keys=True))
         return 1

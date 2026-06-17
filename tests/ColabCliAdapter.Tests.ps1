@@ -46,6 +46,282 @@ Describe 'google-colab-cli adapter bridge' {
         $workerSource | Should -Match 'nvidia-cuda-nvrtc-cu13'
         $workerSource | Should -Match 'pip-cu129'
         $workerSource | Should -Match 'https://download\.pytorch\.org/whl/cu129'
+        $workerSource | Should -Match 'WINSMUX_COLAB_LLM_MODEL_CAPACITY_PREFLIGHT'
+        $workerSource | Should -Match 'WINSMUX_COLAB_LLM_HF_METADATA_TIMEOUT_SECONDS'
+        $workerSource | Should -Match 'math\.isfinite'
+        $workerSource | Should -Match 'SHARDED_PYTORCH_BIN_RE'
+        $workerSource | Should -Match 'HF_WEIGHT_EXTENSIONS'
+        $workerSource | Should -Match 'model_capacity_preflight_begin'
+        $workerSource | Should -Match 'X-Linked-Size'
+        $workerSource | Should -Match 'model_capacity_exceeded'
+        $workerSource | Should -Match 'model_size_unavailable'
+        $workerSource | Should -Match 'estimated_total_bytes'
+    }
+
+    It 'classifies oversized Hugging Face models before vLLM download or load' {
+        $probe = Join-Path $TestDrive 'capacity_probe.py'
+        $workerPath = ($script:WorkerScript -replace '\\', '\\')
+        @"
+import contextlib
+import io
+import json
+import importlib.util
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("llm_worker", r"$workerPath")
+mod = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(mod)
+
+mod.detect_gpu = lambda: {"available": True, "name": "NVIDIA A100-SXM4-80GB", "count": 1, "source": "test"}
+mod.configure_cache = lambda task: {
+    "drive_root": "/content/drive/MyDrive/winsmux-colab-llm",
+    "model_root": "/content/drive/MyDrive/winsmux-colab-llm/models",
+    "hf_cache_root": "/content/drive/MyDrive/winsmux-colab-llm/hf-cache",
+    "artifact_root": str(Path(r"$($TestDrive -replace '\\', '\\')") / "artifacts"),
+    "runtime_cache_root": "/content/winsmux-runtime-cache",
+}
+mod.estimate_hf_model_storage = lambda model_id, timeout=30.0: {
+    "model_id": model_id,
+    "safetensor_files": 282,
+    "shard_count": 282,
+    "sample_file": "model-00001-of-00282.safetensors",
+    "sample_size_bytes": 5342821416,
+    "estimated_total_bytes": 1500000000000,
+}
+
+task = {
+    "model_id": "zai-org/GLM-5.2",
+    "license_state": "not_required",
+    "prompt": "capacity probe",
+}
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    code = mod.main([
+        "--worker-id", "worker-1",
+        "--run-id", "capacity-probe",
+        "--model-id", "zai-org/GLM-5.2",
+        "--task-json-inline", json.dumps(task),
+        "--dry-run",
+    ])
+print(code)
+print(buf.getvalue())
+"@ | Set-Content -LiteralPath $probe -Encoding UTF8
+
+        $output = & python $probe
+        $LASTEXITCODE | Should -Be 0
+        ($output | Out-String) | Should -Match '^1'
+        ($output | Out-String) | Should -Match 'model_capacity_exceeded'
+        ($output | Out-String) | Should -Match 'estimated_total_bytes'
+        ($output | Out-String) | Should -Match '1500000000000'
+    }
+
+    It 'completes dry-run when the model capacity estimate is under the configured limit' {
+        $probe = Join-Path $TestDrive 'capacity_success_probe.py'
+        $workerPath = ($script:WorkerScript -replace '\\', '\\')
+        @"
+import contextlib
+import io
+import json
+import importlib.util
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("llm_worker", r"$workerPath")
+mod = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(mod)
+
+mod.detect_gpu = lambda: {"available": True, "name": "NVIDIA A100-SXM4-80GB", "count": 1, "source": "test"}
+mod.configure_cache = lambda task: {
+    "drive_root": "/content/drive/MyDrive/winsmux-colab-llm",
+    "model_root": "/content/drive/MyDrive/winsmux-colab-llm/models",
+    "hf_cache_root": "/content/drive/MyDrive/winsmux-colab-llm/hf-cache",
+    "artifact_root": str(Path(r"$($TestDrive -replace '\\', '\\')") / "artifacts"),
+    "runtime_cache_root": "/content/winsmux-runtime-cache",
+}
+mod.estimate_hf_model_storage = lambda model_id, timeout=30.0: {
+    "model_id": model_id,
+    "safetensor_files": 2,
+    "shard_count": 2,
+    "sample_file": "model-00001-of-00002.safetensors",
+    "sample_size_bytes": 1024,
+    "estimated_total_bytes": 2048,
+}
+
+task = {
+    "model_id": "example/small-model",
+    "license_state": "not_required",
+    "prompt": "capacity success probe",
+}
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    code = mod.main([
+        "--worker-id", "worker-1",
+        "--run-id", "capacity-success-probe",
+        "--model-id", "example/small-model",
+        "--task-json-inline", json.dumps(task),
+        "--dry-run",
+    ])
+print(code)
+print(buf.getvalue())
+"@ | Set-Content -LiteralPath $probe -Encoding UTF8
+
+        $output = & python $probe
+        $LASTEXITCODE | Should -Be 0
+        ($output | Out-String) | Should -Match '^0'
+        ($output | Out-String) | Should -Match '"status":"succeeded"'
+        ($output | Out-String) | Should -Match '"estimated_total_bytes":2048'
+    }
+
+    It 'does not treat missing Hugging Face size headers as a zero-byte model' {
+        $probe = Join-Path $TestDrive 'missing_size_header_probe.py'
+        $workerPath = ($script:WorkerScript -replace '\\', '\\')
+        @"
+import importlib.util
+
+spec = importlib.util.spec_from_file_location("llm_worker", r"$workerPath")
+mod = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(mod)
+
+class FakeResponse:
+    headers = {}
+    def __enter__(self):
+        return self
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+class FakeOpener:
+    def open(self, request, timeout=30.0):
+        return FakeResponse()
+
+mod.urllib.request.build_opener = lambda *args, **kwargs: FakeOpener()
+try:
+    mod.head_linked_size("https://huggingface.co/example/model/resolve/main/model.safetensors")
+except mod.InputError as exc:
+    print(exc.code)
+    print(exc.message)
+"@ | Set-Content -LiteralPath $probe -Encoding UTF8
+
+        $output = & python $probe
+        $LASTEXITCODE | Should -Be 0
+        ($output | Out-String) | Should -Match 'model_size_unavailable'
+        ($output | Out-String) | Should -Match 'size header was unavailable'
+    }
+
+    It 'estimates sharded PyTorch bin checkpoints instead of rejecting non-safetensor weights' {
+        $probe = Join-Path $TestDrive 'pytorch_bin_capacity_probe.py'
+        $workerPath = ($script:WorkerScript -replace '\\', '\\')
+        @"
+import importlib.util
+import json
+
+spec = importlib.util.spec_from_file_location("llm_worker", r"$workerPath")
+mod = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(mod)
+
+mod.read_json_url = lambda url, timeout=30.0: {
+    "siblings": [
+        {"rfilename": "README.md"},
+        {"rfilename": "pytorch_model-00001-of-00003.bin"},
+        {"rfilename": "pytorch_model-00002-of-00003.bin"},
+        {"rfilename": "pytorch_model-00003-of-00003.bin"},
+    ]
+}
+mod.head_linked_size = lambda url, timeout=30.0: 100
+print(json.dumps(mod.estimate_hf_model_storage("example/pytorch-bin", timeout=1.0), sort_keys=True))
+"@ | Set-Content -LiteralPath $probe -Encoding UTF8
+
+        $output = & python $probe
+        $LASTEXITCODE | Should -Be 0
+        $text = $output | Out-String
+        $text | Should -Match '"weight_files": 3'
+        $text | Should -Match '"safetensor_files": 0'
+        $text | Should -Match '"estimated_total_bytes": 300'
+    }
+
+    It 'rejects non-finite metadata timeout configuration before network use' {
+        $probe = Join-Path $TestDrive 'finite_timeout_probe.py'
+        $workerPath = ($script:WorkerScript -replace '\\', '\\')
+        @"
+import importlib.util
+import os
+
+spec = importlib.util.spec_from_file_location("llm_worker", r"$workerPath")
+mod = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(mod)
+
+os.environ["WINSMUX_COLAB_LLM_HF_METADATA_TIMEOUT_SECONDS"] = "inf"
+print(mod.positive_float_env("WINSMUX_COLAB_LLM_HF_METADATA_TIMEOUT_SECONDS", 30.0))
+"@ | Set-Content -LiteralPath $probe -Encoding UTF8
+
+        $output = & python $probe
+        $LASTEXITCODE | Should -Be 0
+        ($output | Out-String).Trim() | Should -Be '30.0'
+    }
+
+    It 'redacts preflight InputError details before printing worker results' {
+        $probe = Join-Path $TestDrive 'capacity_redaction_probe.py'
+        $workerPath = ($script:WorkerScript -replace '\\', '\\')
+        @"
+import contextlib
+import io
+import json
+import importlib.util
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("llm_worker", r"$workerPath")
+mod = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(mod)
+
+mod.detect_gpu = lambda: {"available": True, "name": "NVIDIA A100-SXM4-80GB", "count": 1, "source": "test"}
+mod.configure_cache = lambda task: {
+    "drive_root": "/content/drive/MyDrive/winsmux-colab-llm",
+    "model_root": "/content/drive/MyDrive/winsmux-colab-llm/models",
+    "hf_cache_root": "/content/drive/MyDrive/winsmux-colab-llm/hf-cache",
+    "artifact_root": str(Path(r"$($TestDrive -replace '\\', '\\')") / "artifacts"),
+    "runtime_cache_root": "/content/winsmux-runtime-cache",
+}
+
+def fail_capacity(model_id, timeout=30.0):
+    raise mod.InputError(
+        "model_size_unavailable",
+        "bad /content/drive/MyDrive/private user@example.com",
+        details={"path": "/content/drive/MyDrive/private/file", "email": "user@example.com"},
+    )
+
+mod.estimate_hf_model_storage = fail_capacity
+
+task = {
+    "model_id": "zai-org/GLM-5.2",
+    "license_state": "not_required",
+    "prompt": "capacity redaction probe",
+}
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    code = mod.main([
+        "--worker-id", "worker-1",
+        "--run-id", "capacity-redaction-probe",
+        "--model-id", "zai-org/GLM-5.2",
+        "--task-json-inline", json.dumps(task),
+        "--dry-run",
+    ])
+print(code)
+print(buf.getvalue())
+"@ | Set-Content -LiteralPath $probe -Encoding UTF8
+
+        $output = & python $probe
+        $LASTEXITCODE | Should -Be 0
+        $text = $output | Out-String
+        $text | Should -Match '^1'
+        $text | Should -Match 'model_size_unavailable'
+        $text | Should -Match '\[EMAIL_REDACTED\]'
+        $text | Should -Match '\[DRIVE_PATH_REDACTED\]'
+        $text | Should -Not -Match 'user@example\.com'
+        $text | Should -Not -Match '/content/drive/MyDrive/private'
     }
 
     It 'plans a Colab MCP run and exposes logs without connecting to Colab' {
