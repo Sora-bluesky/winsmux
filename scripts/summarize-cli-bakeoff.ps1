@@ -215,6 +215,304 @@ function Get-BakeoffConfidenceRank {
     }
 }
 
+function ConvertTo-BakeoffEmbeddedJson {
+    param([Parameter(Mandatory = $true)]$Value)
+
+    $json = $Value | ConvertTo-Json -Depth 32
+    return (($json -replace '&', '\u0026') -replace '<', '\u003c') -replace '>', '\u003e'
+}
+
+function New-BakeoffHtmlReport {
+    param([Parameter(Mandatory = $true)]$ReportData)
+
+    $embeddedJson = ConvertTo-BakeoffEmbeddedJson -Value $ReportData
+    $template = @'
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>winsmux Benchmark Report</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f8fb;
+      --paper: #ffffff;
+      --ink: #101827;
+      --muted: #64748b;
+      --line: #dbe3ef;
+      --blue: #4f9cf9;
+      --cyan: #1cc8c8;
+      --violet: #8768f2;
+      --green: #23b67b;
+      --amber: #f0a927;
+      --rose: #e65f7b;
+      --shadow: 0 18px 45px rgba(15, 23, 42, .10);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 18% 0%, rgba(79, 156, 249, .18), transparent 34rem),
+        radial-gradient(circle at 90% 10%, rgba(28, 200, 200, .16), transparent 30rem),
+        var(--bg);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+    .shell { width: min(1180px, calc(100vw - 48px)); margin: 0 auto; padding: 42px 0 56px; }
+    header { display: grid; gap: 12px; margin-bottom: 28px; }
+    .eyebrow { color: var(--blue); font-size: 13px; font-weight: 800; text-transform: uppercase; }
+    h1 { margin: 0; font-size: clamp(34px, 5vw, 58px); line-height: 1; letter-spacing: 0; }
+    .subtitle { max-width: 860px; margin: 0; color: var(--muted); font-size: 17px; line-height: 1.62; }
+    .kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin: 26px 0 28px; }
+    .kpi, .panel {
+      background: rgba(255, 255, 255, .86);
+      border: 1px solid rgba(203, 213, 225, .82);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+    .kpi { padding: 18px; }
+    .kpi-label { color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; }
+    .kpi-value { margin-top: 8px; font-size: 30px; font-weight: 850; }
+    .grid { display: grid; grid-template-columns: 1.1fr .9fr; gap: 18px; align-items: start; }
+    .panel { padding: 20px; overflow: hidden; }
+    .panel h2 { margin: 0 0 14px; font-size: 19px; }
+    .leaderboard { display: grid; gap: 12px; }
+    .condition-row { display: grid; grid-template-columns: minmax(190px, 1fr) minmax(280px, 2fr) 72px; gap: 12px; align-items: center; }
+    .condition-name { min-width: 0; }
+    .condition-name strong { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .condition-name span { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .bar-track { position: relative; height: 34px; background: #edf2f7; border: 1px solid #d8e2ee; border-radius: 6px; overflow: hidden; }
+    .bar-fill { height: 100%; border-radius: 6px; background: linear-gradient(90deg, var(--blue), var(--cyan)); }
+    .bar-fill.warn { background: linear-gradient(90deg, var(--amber), var(--rose)); }
+    .score { text-align: right; font-variant-numeric: tabular-nums; font-weight: 850; }
+    .chart-card { min-height: 280px; }
+    svg { width: 100%; height: auto; display: block; }
+    .axis text, .axis-label { fill: var(--muted); font-size: 11px; }
+    .point-label { fill: var(--ink); font-size: 11px; font-weight: 700; }
+    .section { margin-top: 18px; }
+    .heatmap { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .heatmap th, .heatmap td { border-bottom: 1px solid var(--line); padding: 10px; text-align: left; }
+    .heatmap th { color: var(--muted); font-size: 12px; text-transform: uppercase; }
+    .pill { display: inline-flex; align-items: center; min-height: 24px; padding: 3px 8px; border-radius: 999px; background: #eef6ff; color: #215a9d; font-size: 12px; font-weight: 750; }
+    .notes { color: var(--muted); line-height: 1.58; font-size: 14px; }
+    .empty { color: var(--muted); padding: 28px; border: 1px dashed var(--line); border-radius: 8px; background: #f8fafc; }
+    @media (max-width: 860px) {
+      .shell { width: min(100vw - 28px, 1180px); padding-top: 28px; }
+      .kpis, .grid { grid-template-columns: 1fr; }
+      .condition-row { grid-template-columns: 1fr; gap: 8px; }
+      .score { text-align: left; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div class="eyebrow">winsmux HarnessBench-style comparison</div>
+      <h1>Benchmark Report</h1>
+      <p class="subtitle">A static, reference-friendly HTML report for comparing worker-pane conditions. It uses the same task-packet and deterministic evidence contract, then visualizes score, completion, speed, and task fit in a SWE-bench Pro style layout.</p>
+    </header>
+    <section class="kpis" id="kpis"></section>
+    <section class="grid">
+      <article class="panel">
+        <h2>Score Leaderboard</h2>
+        <div class="leaderboard" id="leaderboard"></div>
+      </article>
+      <article class="panel chart-card">
+        <h2>Speed Quality Map</h2>
+        <div id="scatter"></div>
+      </article>
+    </section>
+    <section class="grid section">
+      <article class="panel chart-card">
+        <h2>Capability Radar</h2>
+        <div id="radar"></div>
+      </article>
+      <article class="panel">
+        <h2>Task-Class Heatmap</h2>
+        <div id="heatmap"></div>
+      </article>
+    </section>
+    <section class="panel section">
+      <h2>Methodology Notes</h2>
+      <p class="notes">Primary scoring must come from hidden or deterministic checks. LLM review is used for audit and explanation. Small samples remain directional until the task count and repeated runs are large enough.</p>
+      <p class="notes" id="refs"></p>
+    </section>
+  </main>
+  <script id="benchmark-data" type="application/json">
+__BENCHMARK_DATA_JSON__
+  </script>
+  <script>
+    const data = JSON.parse(document.getElementById("benchmark-data").textContent);
+    const conditions = Array.isArray(data.conditions) ? data.conditions : [];
+    const axes = [
+      ["AverageAccuracy", "average_accuracy", "Accuracy"],
+      ["AverageReview", "average_review", "Review"],
+      ["AverageSpeed", "average_speed", "Speed"],
+      ["AverageParallelism", "average_parallelism", "Parallel"],
+      ["AverageAsyncTerminal", "average_async_terminal", "Async"],
+      ["AverageEvidence", "average_evidence", "Evidence"]
+    ];
+    function pick(obj, ...names) {
+      for (const name of names) {
+        if (obj && Object.prototype.hasOwnProperty.call(obj, name) && obj[name] !== null && obj[name] !== "") return obj[name];
+      }
+      return null;
+    }
+    function num(value, fallback = 0) {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : fallback;
+    }
+    function pct(value) {
+      const n = num(value, NaN);
+      return Number.isFinite(n) ? n.toFixed(1) + "%" : "n/a";
+    }
+    function label(c) {
+      return [pick(c, "Cli", "cli"), pick(c, "Model", "model"), pick(c, "Effort", "effort")].filter(Boolean).join(" / ");
+    }
+    function metric(c) {
+      return num(pick(c, "AverageOverall", "average_overall"), num(pick(c, "PassRate", "pass_rate"), num(pick(c, "CompletionRate", "completion_rate"), 0)));
+    }
+    function metricText(c) {
+      const overall = pick(c, "AverageOverall", "average_overall");
+      if (overall !== null) return Number(overall).toFixed(1);
+      const pass = pick(c, "PassRate", "pass_rate");
+      if (pass !== null) return pct(pass);
+      return pct(pick(c, "CompletionRate", "completion_rate"));
+    }
+    function escapeHtml(s) {
+      return String(s ?? "").replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+    }
+    function conditionColor(i) {
+      return ["#4f9cf9", "#1cc8c8", "#8768f2", "#23b67b", "#f0a927", "#e65f7b"][i % 6];
+    }
+    function renderKpis() {
+      const total = conditions.length;
+      const started = conditions.reduce((sum, c) => sum + num(pick(c, "Started", "started")), 0);
+      const completed = conditions.reduce((sum, c) => sum + num(pick(c, "Completed", "completed")), 0);
+      const timeouts = conditions.reduce((sum, c) => sum + num(pick(c, "TimeoutCount", "timeout_count")), 0);
+      const best = conditions.length ? Math.max(...conditions.map(metric)) : 0;
+      document.getElementById("kpis").innerHTML = [
+        ["Conditions", total],
+        ["Started runs", started],
+        ["Completed runs", completed],
+        ["Best score", best ? best.toFixed(1) : "n/a"]
+      ].map(([k, v]) => '<div class="kpi"><div class="kpi-label">' + escapeHtml(k) + '</div><div class="kpi-value">' + escapeHtml(v) + '</div></div>').join("");
+    }
+    function renderLeaderboard() {
+      const sorted = [...conditions].sort((a, b) => metric(b) - metric(a));
+      const root = document.getElementById("leaderboard");
+      if (!sorted.length) {
+        root.innerHTML = '<div class="empty">No scored benchmark conditions yet.</div>';
+        return;
+      }
+      root.innerHTML = sorted.map((c, i) => {
+        const score = Math.max(0, Math.min(100, metric(c)));
+        const cli = pick(c, "Cli", "cli") || "unknown";
+        const model = pick(c, "Model", "model") || "unknown";
+        const task = pick(c, "TaskClass", "task_class") || "unknown task";
+        const runCount = pick(c, "RunCount", "run_count") || 0;
+        const time = pick(c, "MedianWallTimeSec", "median_wall_time_sec");
+        return '<div class="condition-row">'
+          + '<div class="condition-name"><strong>' + escapeHtml(cli) + '</strong><span>' + escapeHtml(model + " / " + task + " / n=" + runCount) + '</span></div>'
+          + '<div class="bar-track"><div class="bar-fill" style="width:' + score.toFixed(1) + '%; background:linear-gradient(90deg,' + conditionColor(i) + ',#1cc8c8)"></div></div>'
+          + '<div class="score">' + escapeHtml(metricText(c)) + '</div>'
+          + (time !== null ? '<div></div><div class="notes">median wall time: ' + Number(time).toFixed(1) + 's</div><div></div>' : '')
+          + '</div>';
+      }).join("");
+    }
+    function renderScatter() {
+      const width = 520, height = 310, pad = 48;
+      const points = conditions.filter(c => pick(c, "MedianWallTimeSec", "median_wall_time_sec") !== null || metric(c) > 0);
+      if (!points.length) {
+        document.getElementById("scatter").innerHTML = '<div class="empty">No speed-quality points yet.</div>';
+        return;
+      }
+      const maxX = Math.max(1, ...points.map(c => num(pick(c, "MedianWallTimeSec", "median_wall_time_sec"), 0))) * 1.15;
+      const maxY = Math.max(100, ...points.map(metric));
+      const x = c => pad + (num(pick(c, "MedianWallTimeSec", "median_wall_time_sec"), 0) / maxX) * (width - pad * 1.4);
+      const y = c => height - pad - (metric(c) / maxY) * (height - pad * 1.5);
+      let svg = '<svg viewBox="0 0 ' + width + ' ' + height + '" role="img" aria-label="Speed quality scatter plot">';
+      svg += '<line x1="' + pad + '" y1="' + (height-pad) + '" x2="' + (width-pad/2) + '" y2="' + (height-pad) + '" stroke="#cbd5e1"/>';
+      svg += '<line x1="' + pad + '" y1="' + pad/2 + '" x2="' + pad + '" y2="' + (height-pad) + '" stroke="#cbd5e1"/>';
+      svg += '<text class="axis-label" x="' + (width/2 - 64) + '" y="' + (height-10) + '">Median wall time (seconds)</text>';
+      svg += '<text class="axis-label" x="8" y="20">Quality score</text>';
+      points.forEach((c, i) => {
+        const px = x(c), py = y(c), name = (pick(c, "Cli", "cli") || "worker") + " / " + (pick(c, "Model", "model") || "model");
+        svg += '<circle cx="' + px.toFixed(1) + '" cy="' + py.toFixed(1) + '" r="7" fill="' + conditionColor(i) + '" opacity=".92"/>';
+        svg += '<text class="point-label" x="' + Math.min(px + 10, width - 150).toFixed(1) + '" y="' + (py - 9).toFixed(1) + '">' + escapeHtml(name.slice(0, 34)) + '</text>';
+      });
+      svg += '</svg>';
+      document.getElementById("scatter").innerHTML = svg;
+    }
+    function renderRadar() {
+      const top = [...conditions].sort((a, b) => metric(b) - metric(a)).slice(0, 4);
+      if (!top.length) {
+        document.getElementById("radar").innerHTML = '<div class="empty">No capability data yet.</div>';
+        return;
+      }
+      const width = 460, height = 330, cx = 230, cy = 165, maxR = 118;
+      const angle = i => -Math.PI / 2 + (i / axes.length) * Math.PI * 2;
+      let svg = '<svg viewBox="0 0 ' + width + ' ' + height + '" role="img" aria-label="Capability radar chart">';
+      [0.25, 0.5, 0.75, 1].forEach(r => {
+        const points = axes.map((_, i) => [cx + Math.cos(angle(i)) * maxR * r, cy + Math.sin(angle(i)) * maxR * r].join(",")).join(" ");
+        svg += '<polygon points="' + points + '" fill="none" stroke="#dbe3ef"/>';
+      });
+      axes.forEach(([pascalKey, snakeKey, text], i) => {
+        const ax = cx + Math.cos(angle(i)) * (maxR + 30), ay = cy + Math.sin(angle(i)) * (maxR + 30);
+        svg += '<line x1="' + cx + '" y1="' + cy + '" x2="' + (cx + Math.cos(angle(i)) * maxR) + '" y2="' + (cy + Math.sin(angle(i)) * maxR) + '" stroke="#e2e8f0"/>';
+        svg += '<text class="axis-label" x="' + (ax - 24) + '" y="' + ay + '">' + text + '</text>';
+      });
+      top.forEach((c, idx) => {
+        const points = axes.map(([pascalKey, snakeKey], i) => {
+          const value = num(pick(c, pascalKey, snakeKey), metric(c));
+          const r = Math.max(0, Math.min(100, value)) / 100 * maxR;
+          return [cx + Math.cos(angle(i)) * r, cy + Math.sin(angle(i)) * r].join(",");
+        }).join(" ");
+        const color = conditionColor(idx);
+        svg += '<polygon points="' + points + '" fill="' + color + '" fill-opacity=".16" stroke="' + color + '" stroke-width="2"/>';
+      });
+      svg += '</svg><div class="notes">' + top.map((c, i) => '<span class="pill" style="margin-right:6px;color:' + conditionColor(i) + '">' + escapeHtml(label(c).slice(0, 42)) + '</span>').join(" ") + '</div>';
+      document.getElementById("radar").innerHTML = svg;
+    }
+    function renderHeatmap() {
+      if (!conditions.length) {
+        document.getElementById("heatmap").innerHTML = '<div class="empty">No task-class cells yet.</div>';
+        return;
+      }
+      const sorted = [...conditions].sort((a, b) => String(pick(a, "TaskClass", "task_class")).localeCompare(String(pick(b, "TaskClass", "task_class"))) || metric(b) - metric(a));
+      let html = '<table class="heatmap"><thead><tr><th>Task class</th><th>Condition</th><th>Score</th><th>Run state</th></tr></thead><tbody>';
+      sorted.forEach(c => {
+        const score = metric(c);
+        const hue = 8 + Math.round(score * 1.25);
+        const bg = 'hsl(' + hue + ' 78% 88%)';
+        html += '<tr><td>' + escapeHtml(pick(c, "TaskClass", "task_class") || "unknown") + '</td>'
+          + '<td>' + escapeHtml(label(c)) + '</td>'
+          + '<td style="background:' + bg + ';font-weight:800">' + escapeHtml(metricText(c)) + '</td>'
+          + '<td><span class="pill">completed ' + escapeHtml(pick(c, "Completed", "completed") || 0) + ' / started ' + escapeHtml(pick(c, "Started", "started") || 0) + '</span></td></tr>';
+      });
+      html += '</tbody></table>';
+      document.getElementById("heatmap").innerHTML = html;
+    }
+    function renderRefs() {
+      const refs = data.methodology && Array.isArray(data.methodology.references) ? data.methodology.references : [];
+      document.getElementById("refs").innerHTML = refs.length ? "Methodology references: " + refs.map(r => '<a href="' + escapeHtml(r) + '">' + escapeHtml(r) + '</a>').join(" / ") : "";
+    }
+    renderKpis();
+    renderLeaderboard();
+    renderScatter();
+    renderRadar();
+    renderHeatmap();
+    renderRefs();
+  </script>
+</body>
+</html>
+'@
+
+    return $template.Replace('__BENCHMARK_DATA_JSON__', $embeddedJson)
+}
+
 $resolvedProjectDir = (Resolve-Path -LiteralPath $ProjectDir).Path
 $runRoot = Join-Path (Join-Path (Join-Path $resolvedProjectDir '.winsmux') 'evidence') 'cli-bakeoff'
 if (-not (Test-Path -LiteralPath $runRoot -PathType Container)) {
@@ -392,7 +690,7 @@ foreach ($group in $workerSource | Group-Object Cli, Model, Effort, TaskClass) {
 }
 
 $chartDataPath = Join-Path $OutputDir 'chart-data.json'
-([ordered]@{
+$chartData = [ordered]@{
     version          = 1
     generated_at_utc = (Get-Date).ToUniversalTime().ToString('o')
     methodology      = [ordered]@{
@@ -410,7 +708,8 @@ $chartDataPath = Join-Path $OutputDir 'chart-data.json'
         [ordered]@{ id = 'capability_radar'; title = 'Capability vector by condition'; axes = @('accuracy', 'review_findings', 'speed', 'parallelism', 'async_terminal', 'evidence_quality'); source = 'conditions' },
         [ordered]@{ id = 'task_class_heatmap'; title = 'Task-class fit heatmap'; x = 'condition'; y = 'task_class'; color = 'average_overall'; source = 'conditions' }
     )
-}) | ConvertTo-Json -Depth 32 | Set-Content -LiteralPath $chartDataPath -Encoding UTF8
+}
+$chartData | ConvertTo-Json -Depth 32 | Set-Content -LiteralPath $chartDataPath -Encoding UTF8
 
 $profileModels = [ordered]@{}
 $fitRows = @()
@@ -642,12 +941,23 @@ $chartPromptLines = @(
 )
 $chartPromptLines | Set-Content -LiteralPath $chartPromptPath -Encoding UTF8
 
+$htmlReportPath = Join-Path $OutputDir 'benchmark-report.html'
+$htmlReport = New-BakeoffHtmlReport -ReportData $chartData
+$htmlReport | Set-Content -LiteralPath $htmlReportPath -Encoding UTF8
+
+$referenceReportDir = Join-Path (Join-Path $resolvedProjectDir '.references') 'benchmark-reports'
+New-Item -ItemType Directory -Path $referenceReportDir -Force | Out-Null
+$referenceHtmlReportPath = Join-Path $referenceReportDir 'cli-bakeoff-benchmark-report.html'
+$htmlReport | Set-Content -LiteralPath $referenceHtmlReportPath -Encoding UTF8
+
 $output = [ordered]@{
     run_count = @($runs).Count
     output_dir = (Resolve-Path -LiteralPath $OutputDir).Path
     raw_score_matrix = $rawScorePath
     chart_data = $chartDataPath
     article_report = $articleReportPath
+    benchmark_report_html = $htmlReportPath
+    reference_benchmark_report_html = $referenceHtmlReportPath
     gpt_image_2_chart_prompts = $chartPromptPath
     model_task_fit = $fitPath
     assignment_policy = $assignmentPath

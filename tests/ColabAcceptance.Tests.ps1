@@ -183,6 +183,11 @@ exit /b 1
         $raw = ($Output | Out-String)
         $clean = [regex]::Replace($raw, "`e\[[0-?]*[ -/]*[@-~]", '')
         $clean = [regex]::Replace($clean, '[\x00-\x08\x0B\x0C\x0E-\x1F]', '')
+        try {
+            return $clean | ConvertFrom-Json -Depth 32 -ErrorAction Stop
+        } catch {
+        }
+
         $lines = @($clean -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         for ($i = $lines.Count - 1; $i -ge 0; $i--) {
             $candidate = $lines[$i].Trim()
@@ -301,7 +306,59 @@ exit /b 1
         $LASTEXITCODE | Should -Not -Be 0
         ($output | Out-String) | Should -Match "worker slot worker-1 uses backend 'local', not colab_llm"
         ($output | Out-String) | Should -Match 'Pass -ProjectDir to a Git-ignored project configured'
-        ($output | Out-String) | Should -Match 'worker-1 and worker-2 colab_llm slots'
+        ($output | Out-String) | Should -Match 'requested colab_llm worker slots'
+    }
+
+    It 'plans a worker-1 only GLM-5.2 Colab E2E run' {
+        Write-ColabLlmAcceptanceProjectConfig
+        New-AcceptanceFakeColabCli | Out-Null
+        $configPath = Join-Path $script:AcceptanceRoot '.winsmux.yaml'
+        (Get-Content -LiteralPath $configPath -Raw -Encoding UTF8).Replace('google/gemma-3-27b-it', 'zai-org/GLM-5.2').Replace('model-family: gemma', 'model-family: glm') |
+            Set-Content -LiteralPath $configPath -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:ColabLlmE2eRunnerPath `
+            -ProjectDir $script:AcceptanceRoot `
+            -Workers worker-1 `
+            -ExpectedModelId 'zai-org/GLM-5.2' `
+            -PlanOnly `
+            -Json 2>&1
+
+        $LASTEXITCODE | Should -Be 0
+        $summary = ConvertFrom-AcceptanceJsonOutput -Output $output
+        @($summary.workers).Count | Should -Be 1
+        $summary.workers[0].slot_id | Should -Be 'worker-1'
+        $summary.workers[0].model_id | Should -Be 'zai-org/GLM-5.2'
+        $summary.workers[0].status | Should -Be 'planned'
+        $summary.expected_model_id | Should -Be 'zai-org/GLM-5.2'
+    }
+
+    It 'stops a GLM-5.2 E2E plan when worker-1 points at another model' {
+        Write-ColabLlmAcceptanceProjectConfig
+        New-AcceptanceFakeColabCli | Out-Null
+
+        $output = & pwsh -NoProfile -File $script:ColabLlmE2eRunnerPath `
+            -ProjectDir $script:AcceptanceRoot `
+            -Workers worker-1 `
+            -ExpectedModelId 'zai-org/GLM-5.2' `
+            -PlanOnly `
+            -Json 2>&1
+
+        $LASTEXITCODE | Should -Not -Be 0
+        ($output | Out-String) | Should -Match "worker slot worker-1 uses model_id 'google/gemma-3-27b-it', not expected 'zai-org/GLM-5.2'"
+    }
+
+    It 'rejects malformed worker ids before planning a Colab E2E run' {
+        Write-ColabLlmAcceptanceProjectConfig
+        New-AcceptanceFakeColabCli | Out-Null
+
+        $output = & pwsh -NoProfile -File $script:ColabLlmE2eRunnerPath `
+            -ProjectDir $script:AcceptanceRoot `
+            -Workers 'worker 1' `
+            -PlanOnly `
+            -Json 2>&1
+
+        $LASTEXITCODE | Should -Not -Be 0
+        ($output | Out-String) | Should -Match "Invalid worker id 'worker 1'"
     }
 
     It 'reports two colab_llm workers in one Colab GPU runtime without local Ollama fallback' {

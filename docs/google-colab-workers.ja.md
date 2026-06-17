@@ -360,6 +360,17 @@ $env:WINSMUX_COLAB_ACCEPTANCE_REAL = "1"
 .\scripts\run-colab-llm-e2e.ps1 -ProjectDir "C:\path\to\project" -Mode Concurrent
 ```
 
+大型モデルを最初に1ワーカーだけで確認する場合は、対象ワーカーと期待するモデルIDを明示します。
+この指定により、プロジェクト設定が想定モデルと違うときは Colab GPU を使う前に停止します。
+
+```powershell
+.\scripts\run-colab-llm-e2e.ps1 `
+  -ProjectDir "C:\path\to\project" `
+  -Workers worker-1 `
+  -ExpectedModelId "zai-org/GLM-5.2" `
+  -PlanOnly
+```
+
 実タスクを動かす前に、Colab 側のクォータと停止方針を winsmux の外で確認してください。
 ローカルワーカーペインを止める時は `winsmux workers stop <slot>` を使います。
 リモートのノートブックやランタイムも止める必要がある場合は、アダプター側の

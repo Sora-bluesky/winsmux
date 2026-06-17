@@ -380,6 +380,18 @@ $env:WINSMUX_COLAB_ACCEPTANCE_REAL = "1"
 .\scripts\run-colab-llm-e2e.ps1 -ProjectDir "C:\path\to\project" -Mode Concurrent
 ```
 
+For the first check of a very large model, select one worker and declare the
+expected model ID. This stops before consuming Colab GPU quota when the target
+project is still configured for another model.
+
+```powershell
+.\scripts\run-colab-llm-e2e.ps1 `
+  -ProjectDir "C:\path\to\project" `
+  -Workers worker-1 `
+  -ExpectedModelId "zai-org/GLM-5.2" `
+  -PlanOnly
+```
+
 Before running a live task, check quota and stop policy outside winsmux. Use
 `winsmux workers stop <slot>` to stop local worker panes, and use the adapter's
 own stop command when the remote notebook/runtime also needs to be stopped.

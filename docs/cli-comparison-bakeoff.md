@@ -176,6 +176,39 @@ more task classes and difficulty levels, then should be read by pass rate,
 median time, timeout count, review findings, and variance. Small differences
 should be reported as broad upper, middle, and lower bands.
 
+## GLM-5.2 and cloud-baseline E2E matrix
+
+GLM-5.2 is evaluated in two phases. Phase 0 proves that the model can run as a
+winsmux `colab_llm` worker before it is compared against hosted cloud models.
+Phase 1 uses the same HarnessBench-style task pack for every worker.
+
+| Phase | Worker | Candidate | Purpose | Required evidence |
+| --- | --- | --- | --- | --- |
+| 0 | `worker-1` | `zai-org/GLM-5.2` through `colab_llm` on Colab H100/A100 | Prove load, generation, artifact capture, failure classification, and Colab cost boundaries. | Colab runtime log, model cache location, GPU RAM, load time, generation time, redacted worker result. |
+| 1 | `worker-1` | `zai-org/GLM-5.2` through `colab_llm` | Open-weight Colab baseline on the same real-repository task. | Hidden core/regression tests, scorecard, resource metrics. |
+| 1 | `worker-2` | Claude Code with a current high-level Claude model such as Fable 5 or Opus 4.8 | Hosted Claude coding baseline. The exact locally selectable model and effort must be recorded before each run. | Model picker or CLI evidence, effort setting, transcript, hidden tests, review packet. |
+| 1 | `worker-3` | Codex with a current high-level OpenAI model such as `gpt-5.5` | Hosted OpenAI coding baseline. If `gpt-5.5` is a worker, it cannot be the sole independent reviewer for that run. | Codex model evidence, effort setting, transcript, hidden tests, review packet. |
+| 1 optional | `worker-4` | Antigravity CLI with Gemini 3.5 Flash High or another locally verified high-level Gemini condition | Hosted Gemini/Antigravity baseline, especially speed, subagents, and async terminal behavior. | `agy --help`, model setting evidence, transcript, hidden tests, review packet. |
+
+The comparison is invalid if these workers receive different task packets,
+different hidden tests, or extra steering. Phase 1 starts with one low-difficulty
+HarnessBench case at `n=1`, moves to `n=5`, and only then expands to the full
+27-task HarnessBench shape. Phase 0 is allowed to fail on capacity or runtime
+support, but it must still produce a classified result and reusable evidence.
+
+Recommended first cases:
+
+1. `sharkdp__bat/low.yaml`: small Rust CLI task, good smoke test for harness and
+   hidden-test plumbing.
+2. `axios__axios/low.yaml`: JavaScript/TypeScript repository task, useful for
+   code-edit and test-loop behavior.
+3. `fastapi__fastapi/low.yaml`: Python web framework task, useful for dependency
+   and test-environment behavior.
+
+Do not use Design Arena, Code Arena, or vendor benchmark charts as direct
+winsmux scores. They can explain why GLM-5.2 is worth testing, but the winsmux
+score must come from the local run artifacts and deterministic hidden tests.
+
 ## Upstream facts to lock before testing
 
 - Google announced the transition from Gemini CLI to Antigravity CLI on
@@ -651,6 +684,12 @@ After all runs, publish:
   timing data.
 - `model-evidence-profile.json`: capability vector, confidence, and evidence
   runs per model.
+- `benchmark-report.html`: rich static benchmark report with a SWE-bench
+  Pro-style score grid, speed-quality scatter plot, capability radar, and
+  task-class heatmap.
+- `.references/benchmark-reports/cli-bakeoff-benchmark-report.html`: local
+  reference copy of the latest rich report. This path is ignored by git and is
+  for local review, recording, and article drafting only.
 
 Generate the summary with:
 

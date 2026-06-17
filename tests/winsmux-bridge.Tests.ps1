@@ -22314,10 +22314,23 @@ test_strategy:
             $summary.raw_score_matrix,
             $summary.model_task_fit,
             $summary.assignment_policy,
-            $summary.model_evidence_profile
+            $summary.model_evidence_profile,
+            $summary.benchmark_report_html,
+            $summary.reference_benchmark_report_html
         )) {
             Test-Path -LiteralPath $path | Should -BeTrue
         }
+
+        $html = Get-Content -LiteralPath $summary.benchmark_report_html -Raw -Encoding UTF8
+        $html | Should -Match 'winsmux HarnessBench-style comparison'
+        $html | Should -Match 'Score Leaderboard'
+        $html | Should -Match 'Speed Quality Map'
+        $html | Should -Match 'Capability Radar'
+        $html | Should -Match 'Task-Class Heatmap'
+        $html | Should -Match 'SWE-bench Pro style layout'
+
+        $referenceHtml = Get-Content -LiteralPath $summary.reference_benchmark_report_html -Raw -Encoding UTF8
+        $referenceHtml | Should -Match 'Benchmark Report'
 
         $fit = Get-Content -LiteralPath $summary.model_task_fit -Raw -Encoding UTF8
         $fit | Should -Match 'gpt-5.5'

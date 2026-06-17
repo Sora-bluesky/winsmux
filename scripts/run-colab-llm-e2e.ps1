@@ -13,6 +13,10 @@ param(
 
     [int]$TimeoutSec = 3600,
 
+    [string[]]$Workers = @('worker-1', 'worker-2'),
+
+    [string]$ExpectedModelId = '',
+
     [switch]$PlanOnly,
 
     [switch]$Json
@@ -40,6 +44,15 @@ function New-SafeRunId {
         throw 'run id is empty after sanitization'
     }
     return $safe
+}
+
+function Resolve-WorkerId {
+    param([Parameter(Mandatory = $true)][string]$Value)
+    $text = ([string]$Value).Trim()
+    if ($text -notmatch '^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$') {
+        throw "Invalid worker id '$Value'. Worker ids must start with an ASCII letter or digit and contain only letters, digits, '.', '_' or '-'."
+    }
+    return $text
 }
 
 function ConvertFrom-JsonOrNull {
@@ -70,7 +83,18 @@ function Invoke-WinsmuxJson {
 }
 
 function Get-ColabLlmProjectHint {
-    return 'Pass -ProjectDir to a Git-ignored project configured with worker-1 and worker-2 colab_llm slots. The source checkout defaults are public-safe and are not a live Colab LLM E2E project.'
+    return 'Pass -ProjectDir to a Git-ignored project configured with the requested colab_llm worker slots. The source checkout defaults are public-safe and are not a live Colab LLM E2E project.'
+}
+
+function Get-ColabLlmModelId {
+    param([Parameter(Mandatory = $true)]$Worker)
+    if ($null -ne $Worker.colab_llm -and $null -ne $Worker.colab_llm.model_id) {
+        return [string]$Worker.colab_llm.model_id
+    }
+    if ($null -ne $Worker.model_id) {
+        return [string]$Worker.model_id
+    }
+    return ''
 }
 
 function Start-WorkerJob {
@@ -105,6 +129,17 @@ $script:ColabLlmWorkerPath = ''
 $script:ProjectRoot = Resolve-RequiredPath -Path $ProjectDir -Label 'ProjectDir'
 $script:PromptText = $Prompt
 
+$targetWorkers = @()
+foreach ($workerId in @($Workers)) {
+    $resolvedWorkerId = Resolve-WorkerId -Value ([string]$workerId)
+    if ($targetWorkers -notcontains $resolvedWorkerId) {
+        $targetWorkers += $resolvedWorkerId
+    }
+}
+if ($targetWorkers.Count -eq 0) {
+    throw 'At least one worker must be selected.'
+}
+
 if (-not (Test-Path -LiteralPath $script:CorePath -PathType Leaf)) {
     throw "winsmux-core.ps1 not found: $script:CorePath"
 }
@@ -115,6 +150,30 @@ $RunIdPrefix = New-SafeRunId -Value $RunIdPrefix
 
 if (-not $PlanOnly -and [string]$env:WINSMUX_COLAB_ACCEPTANCE_REAL -ne '1') {
     throw 'Refusing to run live Colab GPU E2E without WINSMUX_COLAB_ACCEPTANCE_REAL=1. Use -PlanOnly for a non-executing preflight.'
+}
+
+if (-not $PlanOnly) {
+    if ([string]::IsNullOrWhiteSpace([string]$env:WINSMUX_COLAB_CLI_ADAPTER_PROXY_TIMEOUT_SEC)) {
+        $env:WINSMUX_COLAB_CLI_ADAPTER_PROXY_TIMEOUT_SEC = '600'
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$env:WINSMUX_COLAB_CLI_ADAPTER_PLAYWRIGHT_SETUP)) {
+        $env:WINSMUX_COLAB_CLI_ADAPTER_PLAYWRIGHT_SETUP = '1'
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$env:WINSMUX_COLAB_CLI_ADAPTER_PLAYWRIGHT_GPU)) {
+        $env:WINSMUX_COLAB_CLI_ADAPTER_PLAYWRIGHT_GPU = 'A100'
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$env:WINSMUX_COLAB_CLI_ADAPTER_PLAYWRIGHT_HEADLESS)) {
+        $env:WINSMUX_COLAB_CLI_ADAPTER_PLAYWRIGHT_HEADLESS = '0'
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$env:WINSMUX_COLAB_CLI_ADAPTER_PLAYWRIGHT_CHANNEL)) {
+        $env:WINSMUX_COLAB_CLI_ADAPTER_PLAYWRIGHT_CHANNEL = 'chrome'
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$env:WINSMUX_COLAB_CLI_ADAPTER_DIRECT_BROWSER)) {
+        $env:WINSMUX_COLAB_CLI_ADAPTER_DIRECT_BROWSER = '1'
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$env:WINSMUX_COLAB_CLI_ADAPTER_DIRECT_BROWSER_TIMEOUT_SEC)) {
+        $env:WINSMUX_COLAB_CLI_ADAPTER_DIRECT_BROWSER_TIMEOUT_SEC = [string][Math]::Max(30, ([int]$TimeoutSec - 30))
+    }
 }
 
 if ([string]::IsNullOrWhiteSpace($OutputDir)) {
@@ -132,9 +191,15 @@ if ($status.ExitCode -ne 0 -or $null -eq $status.Json) {
     throw "workers status failed; see $OutputDir"
 }
 
-$workers = @($status.Json.workers | Where-Object { $_.slot_id -in @('worker-1', 'worker-2') })
-foreach ($required in @('worker-1', 'worker-2')) {
-    $worker = @($workers | Where-Object { $_.slot_id -eq $required })[0]
+$statusWorkers = @($status.Json.workers)
+foreach ($required in $targetWorkers) {
+    $worker = $null
+    foreach ($candidate in $statusWorkers) {
+        if ([string]$candidate.slot_id -eq $required) {
+            $worker = $candidate
+            break
+        }
+    }
     if ($null -eq $worker) {
         throw "missing required worker slot: $required. $(Get-ColabLlmProjectHint)"
     }
@@ -144,11 +209,34 @@ foreach ($required in @('worker-1', 'worker-2')) {
     if (-not [string]::IsNullOrWhiteSpace([string]$worker.degraded_reason)) {
         throw "worker slot $required is degraded: $($worker.degraded_reason)"
     }
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedModelId)) {
+        $actualModelId = Get-ColabLlmModelId -Worker $worker
+        if ($actualModelId -ne $ExpectedModelId) {
+            throw "worker slot $required uses model_id '$actualModelId', not expected '$ExpectedModelId'."
+        }
+    }
 }
 
-$runIds = @{
-    'worker-1' = New-SafeRunId -Value "$RunIdPrefix-worker-1"
-    'worker-2' = New-SafeRunId -Value "$RunIdPrefix-worker-2"
+$runIds = @{}
+foreach ($workerId in $targetWorkers) {
+    $runIds[$workerId] = New-SafeRunId -Value "$RunIdPrefix-$workerId"
+}
+
+$summaryWorkers = @()
+foreach ($workerId in $targetWorkers) {
+    $worker = $null
+    foreach ($candidate in $statusWorkers) {
+        if ([string]$candidate.slot_id -eq $workerId) {
+            $worker = $candidate
+            break
+        }
+    }
+    $summaryWorkers += [ordered]@{
+        slot_id  = $workerId
+        run_id   = $runIds[$workerId]
+        model_id = Get-ColabLlmModelId -Worker $worker
+        status   = 'pending'
+    }
 }
 
 $summary = [ordered]@{
@@ -159,15 +247,14 @@ $summary = [ordered]@{
     project_dir = '[PROJECT_DIR_REDACTED]'
     output_dir = '[OUTPUT_DIR_REDACTED]'
     run_id_prefix = $RunIdPrefix
-    workers = @(
-        [ordered]@{ slot_id = 'worker-1'; run_id = $runIds['worker-1']; status = 'pending' }
-        [ordered]@{ slot_id = 'worker-2'; run_id = $runIds['worker-2']; status = 'pending' }
-    )
+    expected_model_id = if ([string]::IsNullOrWhiteSpace($ExpectedModelId)) { '' } else { $ExpectedModelId }
+    workers = @($summaryWorkers)
 }
 
 if ($PlanOnly) {
-    $summary.workers[0].status = 'planned'
-    $summary.workers[1].status = 'planned'
+    foreach ($workerEntry in @($summary.workers)) {
+        $workerEntry.status = 'planned'
+    }
     $summaryPath = Join-Path $OutputDir 'summary.json'
     Set-Content -LiteralPath $summaryPath -Value ($summary | ConvertTo-Json -Depth 12) -Encoding UTF8
     if ($Json) {
@@ -184,9 +271,7 @@ if (-not (Test-Path -LiteralPath $script:SourceColabLlmWorkerPath -PathType Leaf
 $projectWorkerDir = Join-Path (Join-Path $script:ProjectRoot 'workers') 'colab'
 New-Item -ItemType Directory -Path $projectWorkerDir -Force | Out-Null
 $script:ColabLlmWorkerPath = Join-Path $projectWorkerDir 'llm_worker.py'
-if (-not (Test-Path -LiteralPath $script:ColabLlmWorkerPath -PathType Leaf)) {
-    Copy-Item -LiteralPath $script:SourceColabLlmWorkerPath -Destination $script:ColabLlmWorkerPath
-}
+Copy-Item -LiteralPath $script:SourceColabLlmWorkerPath -Destination $script:ColabLlmWorkerPath -Force
 $script:ColabLlmWorkerPath = (Get-Item -LiteralPath $script:ColabLlmWorkerPath).FullName
 
 $envSnapshot = @{}
@@ -199,7 +284,7 @@ foreach ($envPattern in @('WINSMUX_COLAB*', 'COLAB_MCP_*')) {
 $execResults = @()
 if ($Mode -eq 'Concurrent') {
     $jobInfos = @()
-    foreach ($workerId in @('worker-1', 'worker-2')) {
+    foreach ($workerId in $targetWorkers) {
         $outputPath = Join-Path $OutputDir "exec-$workerId.json"
         $jobInfos += [PSCustomObject]@{
             WorkerId = $workerId
@@ -213,7 +298,7 @@ if ($Mode -eq 'Concurrent') {
     foreach ($jobInfo in $jobInfos) {
         $job = $jobInfo.Job
         if ($job.State -eq 'Running') {
-            Stop-Job -Job $job -Force
+            Stop-Job -Job $job -ErrorAction SilentlyContinue
             Set-Content -LiteralPath $jobInfo.OutputPath -Value "Timed out after $TimeoutSec seconds." -Encoding UTF8
             $execResults += [PSCustomObject]@{
                 WorkerId = $jobInfo.WorkerId
@@ -237,12 +322,12 @@ if ($Mode -eq 'Concurrent') {
     }
     $jobs | Remove-Job -Force -ErrorAction SilentlyContinue
 } else {
-    foreach ($workerId in @('worker-1', 'worker-2')) {
+    foreach ($workerId in $targetWorkers) {
         $outputPath = Join-Path $OutputDir "exec-$workerId.json"
         $job = Start-WorkerJob -WorkerId $workerId -RunId $runIds[$workerId] -OutputPath $outputPath -Environment $envSnapshot
         $null = Wait-Job -Job $job -Timeout $TimeoutSec
         if ($job.State -eq 'Running') {
-            Stop-Job -Job $job -Force
+            Stop-Job -Job $job -ErrorAction SilentlyContinue
             Set-Content -LiteralPath $outputPath -Value "Timed out after $TimeoutSec seconds." -Encoding UTF8
             $execResults += [PSCustomObject]@{
                 WorkerId = $workerId
@@ -276,7 +361,7 @@ foreach ($result in @($execResults)) {
     }
 }
 
-foreach ($workerId in @('worker-1', 'worker-2')) {
+foreach ($workerId in $targetWorkers) {
     $logPath = Join-Path $OutputDir "logs-$workerId.json"
     $logResult = Invoke-WinsmuxJson -Arguments @('workers', 'logs', $workerId, '--run-id', $runIds[$workerId], '--json', '--project-dir', $script:ProjectRoot) -OutputPath $logPath
     $workerEntry = @($summary.workers | Where-Object { $_.slot_id -eq $workerId })[0]
