@@ -156,6 +156,28 @@ function Get-WinsmuxColabCliAvailability {
         $requested = [string]$env:WINSMUX_COLAB_CLI
     }
     if ([string]::IsNullOrWhiteSpace($requested)) {
+        $candidateRoots = @(
+            $PSScriptRoot,
+            (Split-Path -Parent $PSScriptRoot),
+            (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
+        )
+        foreach ($root in @($candidateRoots)) {
+            if ([string]::IsNullOrWhiteSpace($root)) {
+                continue
+            }
+            $candidate = Join-Path (Join-Path $root 'scripts') 'google-colab-cli-adapter.ps1'
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+                $requested = (Get-Item -LiteralPath $candidate).FullName
+                break
+            }
+            $candidate = Join-Path $root 'google-colab-cli-adapter.ps1'
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+                $requested = (Get-Item -LiteralPath $candidate).FullName
+                break
+            }
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($requested)) {
         $requested = 'google-colab-cli'
     }
 

@@ -5,6 +5,49 @@ BeforeAll {
 }
 
 Describe 'google-colab-cli adapter bridge' {
+    It 'uses a torch CUDA matched uv backend and prepares torch before importing vLLM' {
+        $workerSource = Get-Content -LiteralPath $script:WorkerScript -Raw -Encoding UTF8
+        $workerSource | Should -Match 'WINSMUX_COLAB_LLM_VLLM_INSTALL_MODE", "uv-wheel"'
+        $workerSource | Should -Match 'resolve_uv_torch_backend'
+        $workerSource | Should -Match 'WINSMUX_COLAB_LLM_UV_TORCH_BACKEND'
+        $workerSource | Should -Match 'resolve_vllm_cuda_version'
+        $workerSource | Should -Match 'WINSMUX_COLAB_LLM_VLLM_WHEEL_URL_TEMPLATE'
+        $workerSource | Should -Match 'WINSMUX_COLAB_LLM_VLLM_RELEASE_TAG_API_TEMPLATE'
+        $workerSource | Should -Match 'WINSMUX_COLAB_LLM_UV_INDEX_STRATEGY'
+        $workerSource | Should -Match 'unsafe-best-match'
+        $workerSource | Should -Match 'browser_download_url'
+        $workerSource | Should -Match 'vllm_wheel_not_found'
+        $workerSource | Should -Match 'WINSMUX_COLAB_LLM_UPGRADE_PILLOW'
+        $workerSource | Should -Match 'clear_imported_modules'
+        $workerSource | Should -Match '"PIL", "vllm", "numpy"'
+        $workerSource | Should -Match 'detect_gpu_from_nvidia_smi'
+        $workerSource | Should -Match '--query-gpu=name'
+        $workerSource | Should -Match 'WINSMUX_COLAB_LLM_REEXEC_AFTER_INSTALL'
+        $workerSource | Should -Match 'os\.execv'
+        $workerSource | Should -Match 'build_effective_prompt'
+        $workerSource | Should -Match 'WINSMUX_COLAB_LLM_INCLUDE_RUNTIME_METADATA'
+        $workerSource | Should -Match 'format_chat_prompt'
+        $workerSource | Should -Match 'WINSMUX_COLAB_LLM_USE_QWEN_CHAT_TEMPLATE'
+        $workerSource | Should -Match '<\\|im_start\\|>system'
+        $workerSource | Should -Match 'classify_worker_exception'
+        $workerSource | Should -Match 'model_access_denied'
+        $workerSource | Should -Match 'redact_sensitive_text'
+        $workerSource | Should -Match 'quantization\.strip\(\)\.lower\(\) not in \("none", "null", "false"\)'
+        $workerSource | Should -Match 'torch\.version'
+        $workerSource | Should -Match 'WINSMUX_COLAB_LLM_DEFAULT_VLLM_CUDA_VERSION'
+        $workerSource | Should -Match '--torch-backend='
+        $workerSource | Should -Match '--reinstall-package=vllm'
+        $workerSource | Should -Match 'libcudart\.so\*'
+        $workerSource | Should -Match 'ctypes\.CDLL'
+        $workerSource | Should -Match 'prepare_torch_cuda_runtime'
+        $workerSource | Should -Match 'torch\.cuda\.current_device'
+        $workerSource | Should -Match 'WINSMUX_COLAB_LLM_INSTALL_CUDA13_RUNTIME", False'
+        $workerSource | Should -Match 'nvidia-cuda-runtime-cu13'
+        $workerSource | Should -Match 'nvidia-cuda-nvrtc-cu13'
+        $workerSource | Should -Match 'pip-cu129'
+        $workerSource | Should -Match 'https://download\.pytorch\.org/whl/cu129'
+    }
+
     It 'plans a Colab MCP run and exposes logs without connecting to Colab' {
         $previousMode = $env:WINSMUX_COLAB_CLI_ADAPTER_MODE
         $previousStateRoot = $env:WINSMUX_COLAB_CLI_ADAPTER_STATE_ROOT
@@ -35,7 +78,14 @@ Describe 'google-colab-cli adapter bridge' {
             $payload.status | Should -Be 'planned'
             $payload.mode | Should -Be 'plan_only'
             $payload.script | Should -Be 'llm_worker.py'
-            Test-Path -LiteralPath (Join-Path $outputDir 'colab-adapter-plan.py') | Should -BeTrue
+            $planPath = Join-Path $outputDir 'colab-adapter-plan.py'
+            Test-Path -LiteralPath $planPath | Should -BeTrue
+            $planSource = Get-Content -LiteralPath $planPath -Raw -Encoding UTF8
+            $planSource | Should -Match '"--run-id", "run-1"'
+            $planSource | Should -Match '_winsmux_env\[''PYTHONUNBUFFERED''\] = ''1'''
+            $planSource | Should -Match 'subprocess\.Popen\(_winsmux_argv'
+            $planSource | Should -Match 'for _winsmux_line in _winsmux_proc\.stdout'
+            $planSource | Should -Not -Match 'runpy\.run_path'
             Test-Path -LiteralPath (Join-Path $outputDir 'adapter-result.json') | Should -BeTrue
 
             $logs = & pwsh -NoProfile -File $script:Adapter logs --session test-session --run-id run-1
@@ -45,6 +95,36 @@ Describe 'google-colab-cli adapter bridge' {
             if ($null -eq $previousMode) { Remove-Item Env:WINSMUX_COLAB_CLI_ADAPTER_MODE -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_CLI_ADAPTER_MODE = $previousMode }
             if ($null -eq $previousStateRoot) { Remove-Item Env:WINSMUX_COLAB_CLI_ADAPTER_STATE_ROOT -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_CLI_ADAPTER_STATE_ROOT = $previousStateRoot }
         }
+    }
+
+    It 'extracts only real worker stage output lines from Colab page text' {
+        $adapterPath = Join-Path $script:RepoRoot 'scripts/google_colab_cli_adapter.py'
+        $python = @"
+import importlib.util
+import json
+import pathlib
+from datetime import datetime, timezone
+spec = importlib.util.spec_from_file_location("adapter", pathlib.Path(r"$adapterPath"))
+module = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(module)
+text = '''
+_stage('source code literal')
+print("WINSMUX_COLAB_LLM_STAGE " + json.dumps(payload, ensure_ascii=False, sort_keys=True))
+WINSMUX_COLAB_LLM_STAGE {"at":"2026-06-15T01:03:04.432575Z","stage":"worker_start","worker_id":"stale"}
+WINSMUX_COLAB_LLM_STAGE {"stage":"model_load_begin","model_id":"Qwen/Qwen3-32B"}
+WINSMUX_COLAB_LLM_STAGE {"at":"2026-06-15T01:20:27.779750Z","stage":"generation_begin","model_id":"Qwen/Qwen3-32B"}
+'''
+print(json.dumps(module.extract_worker_stage_lines(text, not_before_utc=datetime(2026, 6, 15, 1, 10, 0, tzinfo=timezone.utc)), ensure_ascii=False))
+"@
+        $output = $python | python -
+        $LASTEXITCODE | Should -Be 0
+        $stages = @($output | ConvertFrom-Json)
+        $stages.Count | Should -Be 1
+        $stages[0] | Should -Match '"model_id": "Qwen/Qwen3-32B"'
+        $stages[0] | Should -Match '"stage": "generation_begin"'
+        $stages[0] | Should -Not -Match 'source code literal'
+        $stages[0] | Should -Not -Match 'stale'
     }
 
     It 'replaces file collisions while staging directory uploads and downloads' {
@@ -979,6 +1059,97 @@ class ColabMcpPool:
         }
     }
 
+    It 'accepts a JSON string returned by the safe executor' {
+        $previousMode = $env:WINSMUX_COLAB_CLI_ADAPTER_MODE
+        $previousStateRoot = $env:WINSMUX_COLAB_CLI_ADAPTER_STATE_ROOT
+        $previousColabRepo = $env:WINSMUX_COLAB_MCP_REPO
+        $previousAdapterPython = $env:WINSMUX_COLAB_CLI_ADAPTER_PYTHON
+        $previousPythonPath = $env:PYTHONPATH
+        $stateRoot = Join-Path $TestDrive 'adapter-state-json-safe-payload'
+        $fakeColabRepo = Join-Path $TestDrive 'fake-colab-json-safe-payload'
+        $fakePackage = Join-Path $fakeColabRepo 'src\colab_llm_mcp'
+        $outputDir = Join-Path $TestDrive 'adapter-json-safe-payload-output'
+        New-Item -ItemType Directory -Force -Path $fakePackage | Out-Null
+        New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
+        try {
+            '' | Set-Content -LiteralPath (Join-Path $fakeColabRepo 'pyproject.toml') -Encoding UTF8
+            '' | Set-Content -LiteralPath (Join-Path $fakePackage '__init__.py') -Encoding UTF8
+            @'
+import json
+
+def execute_llm_plan(*args, **kwargs):
+    raise RuntimeError("fallback executor should not be used")
+
+def extract_plan_code(plan):
+    return plan
+
+def resolve_colab_notebook_url():
+    return "https://colab.research.google.com/drive/test-notebook"
+
+def parse_gpu_from_text(stdout):
+    return "NVIDIA A100"
+
+def build_execution_evidence(**kwargs):
+    return kwargs
+
+async def _maybe_verify_kernel_bind(session, notebook_url):
+    return True, "ok"
+
+async def add_code_cell(session, code):
+    return "cell-1"
+
+async def run_code_cell(session, cell_id):
+    return "ok"
+
+async def read_cell_output(session, cell_id):
+    return "SAFE_PATH_SHOULD_NOT_RUN"
+
+class ColabMcpPool:
+    @classmethod
+    def run(cls, coro):
+        coro.close()
+        return json.dumps({"ok": True, "stdout": "JSON_SAFE_PAYLOAD_OK", "mode": "execute_with_evidence"})
+
+    @classmethod
+    async def _connect_session(cls, proxy_timeout_sec, no_auto_browser):
+        return object()
+'@ | Set-Content -LiteralPath (Join-Path $fakePackage 'execute.py') -Encoding UTF8
+
+            $env:WINSMUX_COLAB_CLI_ADAPTER_MODE = 'execute_with_evidence'
+            $env:WINSMUX_COLAB_CLI_ADAPTER_STATE_ROOT = $stateRoot
+            $env:WINSMUX_COLAB_MCP_REPO = $fakeColabRepo
+            $env:WINSMUX_COLAB_CLI_ADAPTER_PYTHON = (Get-Command python).Source
+
+            $task = @{
+                model_id = 'Qwen/Qwen3-32B'
+                prompt = 'hello from JSON safe payload test'
+            } | ConvertTo-Json -Compress
+            $runOutput = & pwsh -NoProfile -File $script:Adapter run `
+                --session test-session `
+                --script $script:WorkerScript `
+                --run-id run-json-safe-payload `
+                --output-dir $outputDir `
+                --task-json-inline $task `
+                --worker-id worker-1 `
+                --model-id Qwen/Qwen3-32B `
+                --runtime-engine vllm
+
+            $LASTEXITCODE | Should -Be 0
+            ($runOutput | Out-String) | Should -Match 'JSON_SAFE_PAYLOAD_OK'
+            ($runOutput | Out-String) | Should -Not -Match 'SAFE_PATH_SHOULD_NOT_RUN'
+            Get-Content -LiteralPath (Join-Path $outputDir 'stderr.log') -Raw -Encoding UTF8 | Should -Not -Match 'safe_executor_payload_normalize_error'
+            $result = Get-Content -LiteralPath (Join-Path $outputDir 'adapter-result.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+            $result.status | Should -Be 'succeeded'
+            $result.exit_code | Should -Be 0
+        } finally {
+            if ($null -eq $previousMode) { Remove-Item Env:WINSMUX_COLAB_CLI_ADAPTER_MODE -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_CLI_ADAPTER_MODE = $previousMode }
+            if ($null -eq $previousStateRoot) { Remove-Item Env:WINSMUX_COLAB_CLI_ADAPTER_STATE_ROOT -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_CLI_ADAPTER_STATE_ROOT = $previousStateRoot }
+            if ($null -eq $previousColabRepo) { Remove-Item Env:WINSMUX_COLAB_MCP_REPO -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_MCP_REPO = $previousColabRepo }
+            if ($null -eq $previousAdapterPython) { Remove-Item Env:WINSMUX_COLAB_CLI_ADAPTER_PYTHON -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_CLI_ADAPTER_PYTHON = $previousAdapterPython }
+            if ($null -eq $previousPythonPath) { Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue } else { $env:PYTHONPATH = $previousPythonPath }
+        }
+    }
+
     It 'fails when the safe executor returns an invalid payload type' {
         $previousMode = $env:WINSMUX_COLAB_CLI_ADAPTER_MODE
         $previousStateRoot = $env:WINSMUX_COLAB_CLI_ADAPTER_STATE_ROOT
@@ -1055,6 +1226,26 @@ class ColabMcpPool:
             $LASTEXITCODE | Should -Be 1
             ($runOutput | Out-String) | Should -Match 'invalid safe executor result type'
             $result = Get-Content -LiteralPath (Join-Path $outputDir 'adapter-result.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+            $result.status | Should -Be 'failed'
+            $result.exit_code | Should -Be 1
+
+            (Get-Content -LiteralPath (Join-Path $fakePackage 'execute.py') -Raw -Encoding UTF8).Replace('return "BAD_PAYLOAD"', 'return "[]"') |
+                Set-Content -LiteralPath (Join-Path $fakePackage 'execute.py') -Encoding UTF8
+            $jsonNonObjectOutputDir = Join-Path $TestDrive 'adapter-invalid-safe-json-non-object-output'
+            New-Item -ItemType Directory -Force -Path $jsonNonObjectOutputDir | Out-Null
+            $runOutput = & pwsh -NoProfile -File $script:Adapter run `
+                --session test-session `
+                --script $script:WorkerScript `
+                --run-id run-invalid-safe-json-non-object `
+                --output-dir $jsonNonObjectOutputDir `
+                --task-json-inline $task `
+                --worker-id worker-1 `
+                --model-id Qwen/Qwen3-32B `
+                --runtime-engine vllm 2>&1
+
+            $LASTEXITCODE | Should -Be 1
+            ($runOutput | Out-String) | Should -Match 'JSON payload is not an object'
+            $result = Get-Content -LiteralPath (Join-Path $jsonNonObjectOutputDir 'adapter-result.json') -Raw -Encoding UTF8 | ConvertFrom-Json
             $result.status | Should -Be 'failed'
             $result.exit_code | Should -Be 1
         } finally {
@@ -1304,7 +1495,7 @@ class ColabMcpPool:
 '@ | Set-Content -LiteralPath (Join-Path $fakePackage 'execute.py') -Encoding UTF8
 
             $env:WINSMUX_COLAB_CLI_ADAPTER_MODE = 'execute_with_evidence'
-            $env:WINSMUX_COLAB_CLI_ADAPTER_TIMEOUT_SEC = '1'
+            $env:WINSMUX_COLAB_CLI_ADAPTER_TIMEOUT_SEC = '3'
             $env:WINSMUX_COLAB_CLI_ADAPTER_STATE_ROOT = $stateRoot
             $env:WINSMUX_COLAB_MCP_REPO = $fakeColabRepo
             $env:WINSMUX_COLAB_CLI_ADAPTER_PYTHON = (Get-Command python).Source
@@ -1366,12 +1557,12 @@ import time
 
 def execute_llm_plan(plan, mode, **kwargs):
     print("PARTIAL_PROGRESS before sleep", flush=True)
-    time.sleep(5)
+    time.sleep(10)
     return "{}"
 '@ | Set-Content -LiteralPath (Join-Path $fakePackage 'execute.py') -Encoding UTF8
 
             $env:WINSMUX_COLAB_CLI_ADAPTER_MODE = 'execute_with_evidence'
-            $env:WINSMUX_COLAB_CLI_ADAPTER_TIMEOUT_SEC = '1'
+            $env:WINSMUX_COLAB_CLI_ADAPTER_TIMEOUT_SEC = '3'
             $env:WINSMUX_COLAB_CLI_ADAPTER_STATE_ROOT = $stateRoot
             $env:WINSMUX_COLAB_MCP_REPO = $fakeColabRepo
             $env:WINSMUX_COLAB_CLI_ADAPTER_PYTHON = (Get-Command python).Source
@@ -1403,6 +1594,233 @@ def execute_llm_plan(plan, mode, **kwargs):
             if ($null -eq $previousColabRepo) { Remove-Item Env:WINSMUX_COLAB_MCP_REPO -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_MCP_REPO = $previousColabRepo }
             if ($null -eq $previousAdapterPython) { Remove-Item Env:WINSMUX_COLAB_CLI_ADAPTER_PYTHON -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_CLI_ADAPTER_PYTHON = $previousAdapterPython }
             if ($null -eq $previousPythonPath) { Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue } else { $env:PYTHONPATH = $previousPythonPath }
+        }
+    }
+
+    It 'runs Playwright setup before waiting for Colab proxy tools when enabled' {
+        $previousMode = $env:WINSMUX_COLAB_CLI_ADAPTER_MODE
+        $previousStateRoot = $env:WINSMUX_COLAB_CLI_ADAPTER_STATE_ROOT
+        $previousColabRepo = $env:WINSMUX_COLAB_MCP_REPO
+        $previousAdapterPython = $env:WINSMUX_COLAB_CLI_ADAPTER_PYTHON
+        $previousPythonPath = $env:PYTHONPATH
+        $previousPlaywrightSetup = $env:WINSMUX_COLAB_CLI_ADAPTER_PLAYWRIGHT_SETUP
+        $previousPlaywrightGpu = $env:WINSMUX_COLAB_CLI_ADAPTER_PLAYWRIGHT_GPU
+        $previousPlaywrightTimeout = $env:WINSMUX_COLAB_CLI_ADAPTER_PLAYWRIGHT_TIMEOUT_SEC
+        $stateRoot = Join-Path $TestDrive 'adapter-state-playwright-proxy'
+        $fakeColabRepo = Join-Path $TestDrive 'fake-colab-playwright-proxy'
+        $fakePackage = Join-Path $fakeColabRepo 'src\colab_llm_mcp'
+        $outputDir = Join-Path $TestDrive 'adapter-playwright-proxy-output'
+        New-Item -ItemType Directory -Force -Path $fakePackage | Out-Null
+        New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
+        try {
+            '' | Set-Content -LiteralPath (Join-Path $fakeColabRepo 'pyproject.toml') -Encoding UTF8
+            '' | Set-Content -LiteralPath (Join-Path $fakePackage '__init__.py') -Encoding UTF8
+            @'
+import asyncio
+
+async def call_tool(session, name, args):
+    return {}
+
+async def ensure_proxy_tools(session, proxy_timeout_sec):
+    from colab_llm_mcp import colab_playwright
+    if not colab_playwright.CALLED:
+        raise RuntimeError("proxy wait started before Playwright setup")
+    return True
+
+def colab_mcp_stdio_params(*args, **kwargs):
+    return object()
+
+class ColabMcpPool:
+    @classmethod
+    def run(cls, coro):
+        return asyncio.run(coro)
+
+    @classmethod
+    async def _connect_session(cls, proxy_timeout_sec, no_auto_browser):
+        await call_tool(None, "open_colab_browser_connection", {})
+        await ensure_proxy_tools(None, proxy_timeout_sec)
+        return object()
+'@ | Set-Content -LiteralPath (Join-Path $fakePackage 'colab_mcp_pool.py') -Encoding UTF8
+            @'
+CALLED = False
+
+class Result:
+    ok = True
+    message = "fake Playwright setup ok"
+    screenshot = ""
+
+def run_colab_playwright_setup(**kwargs):
+    global CALLED
+    CALLED = True
+    if kwargs.get("gpu") != "A100":
+        raise RuntimeError("unexpected gpu")
+    if not callable(globals().get("_click_mcp_connect")):
+        raise RuntimeError("MCP Connect override was not installed")
+    if not callable(globals().get("_connect_runtime_if_needed")):
+        raise RuntimeError("runtime connect override was not installed")
+    return Result()
+'@ | Set-Content -LiteralPath (Join-Path $fakePackage 'colab_playwright.py') -Encoding UTF8
+            @'
+from colab_llm_mcp.colab_mcp_pool import ColabMcpPool
+
+def execute_llm_plan(*args, **kwargs):
+    raise RuntimeError("fallback executor should not run")
+
+def extract_plan_code(plan):
+    return plan
+
+def resolve_colab_notebook_url():
+    return "https://colab.research.google.com/drive/test-notebook"
+
+def parse_gpu_from_text(stdout):
+    return "NVIDIA A100"
+
+def build_execution_evidence(**kwargs):
+    return kwargs
+
+async def _maybe_verify_kernel_bind(session, notebook_url):
+    return True, "ok"
+
+async def add_code_cell(session, code):
+    return "cell-1"
+
+async def run_code_cell(session, cell_id):
+    return "ok"
+
+async def read_cell_output(session, cell_id):
+    return "PLAYWRIGHT_PROXY_OK"
+'@ | Set-Content -LiteralPath (Join-Path $fakePackage 'execute.py') -Encoding UTF8
+
+            $env:WINSMUX_COLAB_CLI_ADAPTER_MODE = 'execute_with_evidence'
+            $env:WINSMUX_COLAB_CLI_ADAPTER_STATE_ROOT = $stateRoot
+            $env:WINSMUX_COLAB_MCP_REPO = $fakeColabRepo
+            $env:WINSMUX_COLAB_CLI_ADAPTER_PYTHON = (Get-Command python).Source
+            $env:WINSMUX_COLAB_CLI_ADAPTER_PLAYWRIGHT_SETUP = '1'
+            $env:WINSMUX_COLAB_CLI_ADAPTER_PLAYWRIGHT_GPU = 'A100'
+            $env:WINSMUX_COLAB_CLI_ADAPTER_PLAYWRIGHT_TIMEOUT_SEC = '1'
+
+            $task = @{
+                model_id = 'Qwen/Qwen3-32B'
+                prompt = 'hello from playwright proxy setup test'
+            } | ConvertTo-Json -Compress
+            $runOutput = & pwsh -NoProfile -File $script:Adapter run `
+                --session test-session `
+                --script $script:WorkerScript `
+                --run-id run-playwright-proxy `
+                --output-dir $outputDir `
+                --task-json-inline $task `
+                --worker-id worker-1 `
+                --model-id Qwen/Qwen3-32B `
+                --runtime-engine vllm
+
+            $LASTEXITCODE | Should -Be 0
+            ($runOutput | Out-String) | Should -Match 'PLAYWRIGHT_PROXY_OK'
+            $stderr = Get-Content -LiteralPath (Join-Path $outputDir 'stderr.log') -Raw -Encoding UTF8
+            $stderr | Should -Match 'playwright_setup_begin'
+            $stderr | Should -Match 'playwright_setup_done'
+        } finally {
+            if ($null -eq $previousMode) { Remove-Item Env:WINSMUX_COLAB_CLI_ADAPTER_MODE -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_CLI_ADAPTER_MODE = $previousMode }
+            if ($null -eq $previousStateRoot) { Remove-Item Env:WINSMUX_COLAB_CLI_ADAPTER_STATE_ROOT -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_CLI_ADAPTER_STATE_ROOT = $previousStateRoot }
+            if ($null -eq $previousColabRepo) { Remove-Item Env:WINSMUX_COLAB_MCP_REPO -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_MCP_REPO = $previousColabRepo }
+            if ($null -eq $previousAdapterPython) { Remove-Item Env:WINSMUX_COLAB_CLI_ADAPTER_PYTHON -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_CLI_ADAPTER_PYTHON = $previousAdapterPython }
+            if ($null -eq $previousPythonPath) { Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue } else { $env:PYTHONPATH = $previousPythonPath }
+            if ($null -eq $previousPlaywrightSetup) { Remove-Item Env:WINSMUX_COLAB_CLI_ADAPTER_PLAYWRIGHT_SETUP -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_CLI_ADAPTER_PLAYWRIGHT_SETUP = $previousPlaywrightSetup }
+            if ($null -eq $previousPlaywrightGpu) { Remove-Item Env:WINSMUX_COLAB_CLI_ADAPTER_PLAYWRIGHT_GPU -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_CLI_ADAPTER_PLAYWRIGHT_GPU = $previousPlaywrightGpu }
+            if ($null -eq $previousPlaywrightTimeout) { Remove-Item Env:WINSMUX_COLAB_CLI_ADAPTER_PLAYWRIGHT_TIMEOUT_SEC -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_CLI_ADAPTER_PLAYWRIGHT_TIMEOUT_SEC = $previousPlaywrightTimeout }
+        }
+    }
+
+    It 'uses the direct browser path when explicitly enabled' {
+        $previousMode = $env:WINSMUX_COLAB_CLI_ADAPTER_MODE
+        $previousStateRoot = $env:WINSMUX_COLAB_CLI_ADAPTER_STATE_ROOT
+        $previousColabRepo = $env:WINSMUX_COLAB_MCP_REPO
+        $previousAdapterPython = $env:WINSMUX_COLAB_CLI_ADAPTER_PYTHON
+        $previousPythonPath = $env:PYTHONPATH
+        $previousDirectBrowser = $env:WINSMUX_COLAB_CLI_ADAPTER_DIRECT_BROWSER
+        $previousDirectBrowserDryStdout = $env:WINSMUX_COLAB_CLI_ADAPTER_DIRECT_BROWSER_DRY_STDOUT
+        $stateRoot = Join-Path $TestDrive 'adapter-state-direct-browser'
+        $fakeColabRepo = Join-Path $TestDrive 'fake-colab-direct-browser'
+        $fakePackage = Join-Path $fakeColabRepo 'src\colab_llm_mcp'
+        $outputDir = Join-Path $TestDrive 'adapter-direct-browser-output'
+        New-Item -ItemType Directory -Force -Path $fakePackage | Out-Null
+        New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
+        try {
+            '' | Set-Content -LiteralPath (Join-Path $fakeColabRepo 'pyproject.toml') -Encoding UTF8
+            '' | Set-Content -LiteralPath (Join-Path $fakePackage '__init__.py') -Encoding UTF8
+            @'
+def execute_llm_plan(*args, **kwargs):
+    raise RuntimeError("compatible executor should not run")
+
+def extract_plan_code(plan):
+    return plan
+
+def resolve_colab_notebook_url():
+    return "https://colab.research.google.com/drive/test-notebook"
+
+class ColabMcpPool:
+    pass
+'@ | Set-Content -LiteralPath (Join-Path $fakePackage 'execute.py') -Encoding UTF8
+
+            $env:WINSMUX_COLAB_CLI_ADAPTER_MODE = 'execute_with_evidence'
+            $env:WINSMUX_COLAB_CLI_ADAPTER_STATE_ROOT = $stateRoot
+            $env:WINSMUX_COLAB_MCP_REPO = $fakeColabRepo
+            $env:WINSMUX_COLAB_CLI_ADAPTER_PYTHON = (Get-Command python).Source
+            $env:WINSMUX_COLAB_CLI_ADAPTER_DIRECT_BROWSER = '1'
+            $env:WINSMUX_COLAB_CLI_ADAPTER_DIRECT_BROWSER_DRY_STDOUT = '{"schema_version":"winsmux.colab_llm.result.v1","status":"succeeded","run_id":"run-direct-browser","output":"DIRECT_BROWSER_OK"}'
+
+            $task = @{
+                model_id = 'Qwen/Qwen3-32B'
+                prompt = 'hello from direct browser path test'
+            } | ConvertTo-Json -Compress
+            $runOutput = & pwsh -NoProfile -File $script:Adapter run `
+                --session test-session `
+                --script $script:WorkerScript `
+                --run-id run-direct-browser `
+                --output-dir $outputDir `
+                --task-json-inline $task `
+                --worker-id worker-1 `
+                --model-id Qwen/Qwen3-32B `
+                --runtime-engine vllm
+
+            $LASTEXITCODE | Should -Be 0
+            ($runOutput | Out-String) | Should -Match 'DIRECT_BROWSER_OK'
+            $stderr = Get-Content -LiteralPath (Join-Path $outputDir 'stderr.log') -Raw -Encoding UTF8
+            $stderr | Should -Match 'direct_browser_begin'
+            $stderr | Should -Match 'direct_browser_done'
+            $stderr | Should -Not -Match 'safe_executor_begin'
+            $progress = Get-Content -LiteralPath (Join-Path $outputDir 'progress.jsonl') -Raw -Encoding UTF8
+            $progress | Should -Match '"stage": "command_run_execute_plan_begin"'
+            $progress | Should -Match '"stage": "direct_browser_enter"'
+            $progress | Should -Match '"stage": "direct_browser_dry_run"'
+            $progress | Should -Not -Match 'mcpProxyToken='
+            $progress | Should -Not -Match 'Users\\\\'
+
+            $badOutputDir = Join-Path $TestDrive 'adapter-direct-browser-bad-output'
+            New-Item -ItemType Directory -Force -Path $badOutputDir | Out-Null
+            $env:WINSMUX_COLAB_CLI_ADAPTER_DIRECT_BROWSER_DRY_STDOUT = 'not a winsmux result marker'
+            $runOutput = & pwsh -NoProfile -File $script:Adapter run `
+                --session test-session `
+                --script $script:WorkerScript `
+                --run-id run-direct-browser-bad `
+                --output-dir $badOutputDir `
+                --task-json-inline $task `
+                --worker-id worker-1 `
+                --model-id Qwen/Qwen3-32B `
+                --runtime-engine vllm 2>&1
+
+            $LASTEXITCODE | Should -Be 1
+            ($runOutput | Out-String) | Should -Match 'direct browser dry run did not contain result marker'
+            $result = Get-Content -LiteralPath (Join-Path $badOutputDir 'adapter-result.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+            $result.status | Should -Be 'failed'
+            $result.exit_code | Should -Be 1
+        } finally {
+            if ($null -eq $previousMode) { Remove-Item Env:WINSMUX_COLAB_CLI_ADAPTER_MODE -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_CLI_ADAPTER_MODE = $previousMode }
+            if ($null -eq $previousStateRoot) { Remove-Item Env:WINSMUX_COLAB_CLI_ADAPTER_STATE_ROOT -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_CLI_ADAPTER_STATE_ROOT = $previousStateRoot }
+            if ($null -eq $previousColabRepo) { Remove-Item Env:WINSMUX_COLAB_MCP_REPO -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_MCP_REPO = $previousColabRepo }
+            if ($null -eq $previousAdapterPython) { Remove-Item Env:WINSMUX_COLAB_CLI_ADAPTER_PYTHON -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_CLI_ADAPTER_PYTHON = $previousAdapterPython }
+            if ($null -eq $previousPythonPath) { Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue } else { $env:PYTHONPATH = $previousPythonPath }
+            if ($null -eq $previousDirectBrowser) { Remove-Item Env:WINSMUX_COLAB_CLI_ADAPTER_DIRECT_BROWSER -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_CLI_ADAPTER_DIRECT_BROWSER = $previousDirectBrowser }
+            if ($null -eq $previousDirectBrowserDryStdout) { Remove-Item Env:WINSMUX_COLAB_CLI_ADAPTER_DIRECT_BROWSER_DRY_STDOUT -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_CLI_ADAPTER_DIRECT_BROWSER_DRY_STDOUT = $previousDirectBrowserDryStdout }
         }
     }
 }

@@ -8,6 +8,7 @@ the optional sibling apps/colab project owns the Colab MCP connection.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import json
 import math
 import os
@@ -16,6 +17,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from typing import Any
 
 
@@ -75,6 +77,26 @@ def write_text(path: Path, text: str) -> None:
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     write_text(path, json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+def utc_now_text() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def append_progress(stage: str, detail: str = "") -> None:
+    progress_path = os.environ.get("WINSMUX_COLAB_CLI_ADAPTER_PROGRESS_PATH", "").strip()
+    if not progress_path:
+        return
+    payload = {
+        "at": utc_now_text(),
+        "stage": safe_segment(stage, "stage"),
+    }
+    if detail:
+        payload["detail"] = redact_sensitive_text(detail)
+    path = Path(progress_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
 
 
 def redact_sensitive_text(text: str) -> str:
@@ -143,25 +165,633 @@ def colab_python(colab_repo: Path) -> list[str]:
 def build_cell_code(script_path: Path, session: str, run_id: str, script_args: list[str]) -> str:
     source = script_path.read_text(encoding="utf-8")
     remote_script = f"/content/winsmux-runtime-cache/adapter/{safe_segment(session, 'session')}/{safe_segment(run_id, 'run')}/{script_path.name}"
-    argv = [remote_script, *script_args]
+    argv = [remote_script]
+    if run_id and "--run-id" not in script_args:
+        argv.extend(["--run-id", run_id])
+    argv.extend(script_args)
     return "\n".join(
         [
             "from pathlib import Path",
-            "import runpy",
+            "import os",
+            "import subprocess",
             "import sys",
             f"_winsmux_script_source = {json.dumps(source, ensure_ascii=False)}",
             f"_winsmux_script_path = Path({json.dumps(remote_script)})",
             "_winsmux_script_path.parent.mkdir(parents=True, exist_ok=True)",
             "_winsmux_script_path.write_text(_winsmux_script_source, encoding='utf-8')",
-            f"sys.argv = {json.dumps(argv, ensure_ascii=False)}",
-            "runpy.run_path(str(_winsmux_script_path), run_name='__main__')",
+            f"_winsmux_argv = [sys.executable, *{json.dumps(argv, ensure_ascii=False)}]",
+            "_winsmux_env = dict(os.environ)",
+            "_winsmux_env['PYTHONUNBUFFERED'] = '1'",
+            "_winsmux_proc = subprocess.Popen(_winsmux_argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=_winsmux_env)",
+            "assert _winsmux_proc.stdout is not None",
+            "for _winsmux_line in _winsmux_proc.stdout:",
+            "    print(_winsmux_line, end='', flush=True)",
+            "_winsmux_returncode = _winsmux_proc.wait()",
+            "if _winsmux_returncode:",
+            "    raise SystemExit(_winsmux_returncode)",
         ]
     )
 
 
+def acquire_direct_browser_lock(lock_path: Path, timeout_sec: float) -> int:
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + timeout_sec
+    while True:
+        try:
+            handle = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_RDWR)
+            os.write(handle, str(os.getpid()).encode("utf-8", errors="replace"))
+            return handle
+        except FileExistsError:
+            if not direct_browser_lock_owner_alive(lock_path):
+                try:
+                    lock_path.unlink()
+                    continue
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    pass
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"direct browser lock timed out: {lock_path.name}")
+            time.sleep(1.0)
+
+
+def direct_browser_lock_owner_alive(lock_path: Path) -> bool:
+    try:
+        raw = lock_path.read_text(encoding="utf-8", errors="replace").strip()
+        owner_pid = int(raw)
+    except (OSError, ValueError):
+        return False
+    if owner_pid <= 0:
+        return False
+    try:
+        os.kill(owner_pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def release_direct_browser_lock(lock_path: Path, handle: int | None) -> None:
+    if handle is not None:
+        try:
+            os.close(handle)
+        except OSError:
+            pass
+    try:
+        lock_path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def extract_json_object_containing(text: str, marker: str, run_id: str = "") -> dict[str, Any] | None:
+    decoder = json.JSONDecoder()
+    matches: list[dict[str, Any]] = []
+    for match in re.finditer(r"\{", text or ""):
+        try:
+            payload, _ = decoder.raw_decode(text[match.start() :])
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("schema_version") != marker and marker not in json.dumps(payload, ensure_ascii=False):
+            continue
+        matches.append(payload)
+    if not matches:
+        return None
+    if run_id:
+        for payload in reversed(matches):
+            if str(payload.get("run_id") or "") == run_id:
+                return payload
+        return None
+    return matches[-1]
+
+
+def read_direct_browser_text(page: Any) -> str:
+    texts: list[str] = []
+    for frame in [page.main_frame, *[candidate for candidate in page.frames if candidate != page.main_frame]]:
+        try:
+            text = frame.locator("body").inner_text(timeout=5000)
+        except Exception:
+            continue
+        if text and text not in texts:
+            texts.append(text)
+    return "\n".join(texts)
+
+
+def parse_utc_timestamp(raw: Any) -> datetime | None:
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    value = raw.strip()
+    if value.endswith("Z"):
+        value = value[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def extract_worker_stage_lines(text: str, not_before_utc: datetime | None = None) -> list[str]:
+    lines: list[str] = []
+    prefix = "WINSMUX_COLAB_LLM_STAGE "
+    for raw_line in (text or "").splitlines():
+        line = raw_line.strip()
+        if not line.startswith(prefix):
+            continue
+        payload_text = line[len(prefix) :].strip()
+        if not payload_text.startswith("{"):
+            continue
+        try:
+            payload = json.loads(payload_text)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if not_before_utc is not None:
+            stage_at = parse_utc_timestamp(payload.get("at"))
+            if stage_at is None or stage_at < not_before_utc:
+                continue
+        normalized = prefix + json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        if normalized not in lines:
+            lines.append(normalized)
+    return lines
+
+
+def direct_browser_scopes(page: Any) -> list[Any]:
+    scopes = [page]
+    try:
+        scopes.extend(page.frames)
+    except Exception:
+        pass
+    return scopes
+
+
+def click_direct_locator(locator: Any, timeout_ms: int = 5000) -> bool:
+    try:
+        count = locator.count()
+    except Exception:
+        return False
+    for index in range(min(count, 8) - 1, -1, -1):
+        candidate = locator.nth(index)
+        try:
+            candidate.scroll_into_view_if_needed(timeout=2000)
+        except Exception:
+            pass
+        try:
+            candidate.click(timeout=timeout_ms)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def click_direct_browser_editor(page: Any) -> bool:
+    for scope in direct_browser_scopes(page):
+        candidates = [
+            scope.locator("[role='textbox']"),
+            scope.locator("textarea"),
+            scope.locator(".cm-content"),
+            scope.locator(".CodeMirror textarea"),
+            scope.locator("[contenteditable='true']"),
+        ]
+        for locator in candidates:
+            if click_direct_locator(locator):
+                return True
+    for scope in direct_browser_scopes(page):
+        try:
+            locator = scope.get_by_text(re.compile(r"コーディングを開始するか|Start coding", re.I))
+        except Exception:
+            continue
+        if click_direct_locator(locator):
+            return True
+    return False
+
+
+def paste_direct_browser_code(page: Any, code: str) -> bool:
+    try:
+        page.evaluate("value => navigator.clipboard.writeText(value)", code)
+        page.keyboard.press("Control+V")
+        return True
+    except Exception:
+        return False
+
+
+def set_direct_browser_monaco_code(page: Any, code: str, run_id: str) -> bool:
+    script = """
+    ({ code, run_id }) => {
+      const api = window.monaco && window.monaco.editor;
+      if (!api) return { ok: false, reason: 'monaco_missing' };
+      const editors = typeof api.getEditors === 'function' ? api.getEditors() : [];
+      let editor = editors.find((candidate) => {
+        try { return candidate && candidate.hasTextFocus && candidate.hasTextFocus(); }
+        catch (_) { return false; }
+      });
+      if (!editor && editors.length > 0) editor = editors[editors.length - 1];
+      if (editor && editor.getModel) {
+        const model = editor.getModel();
+        if (model && model.setValue && model.getValue) {
+          model.setValue(code);
+          if (editor.focus) editor.focus();
+          return { ok: !run_id || model.getValue().includes(run_id), reason: 'editor_model' };
+        }
+      }
+      const models = typeof api.getModels === 'function' ? api.getModels() : [];
+      const target = [...models].reverse().find((model) => {
+        try { return !(model.getValue() || '').trim(); }
+        catch (_) { return false; }
+      }) || models[models.length - 1];
+      if (!target || !target.setValue || !target.getValue) {
+        return { ok: false, reason: 'model_missing' };
+      }
+      target.setValue(code);
+      return { ok: !run_id || target.getValue().includes(run_id), reason: 'standalone_model' };
+    }
+    """
+    for scope in direct_browser_scopes(page):
+        try:
+            result = scope.evaluate(script, {"code": code, "run_id": run_id})
+        except Exception:
+            continue
+        if isinstance(result, dict) and result.get("ok"):
+            return True
+    return False
+
+
+def build_terminal_python_command(code: str, run_id: str) -> str:
+    suffix = safe_segment(run_id or "run", "run").replace("-", "_")
+    marker = f"WINSMUX_PY_{suffix}_EOF"
+    while marker in code:
+        marker += "_X"
+    return f"python - <<'{marker}'\n{code}\n{marker}\n"
+
+
+def open_direct_browser_terminal(page: Any) -> bool:
+    candidates = [
+        page.get_by_text(re.compile(r"^ターミナル$|^Terminal$", re.I)).last,
+        page.get_by_role("button", name=re.compile(r"ターミナル|Terminal", re.I)).last,
+    ]
+    for locator in candidates:
+        try:
+            if locator.count() < 1:
+                continue
+            locator.click(timeout=5000)
+            page.wait_for_timeout(1500)
+            if direct_browser_terminal_visible(page):
+                return True
+        except Exception:
+            continue
+    try:
+        viewport = page.viewport_size or {"width": 1280, "height": 720}
+        page.mouse.click(145, max(40, viewport["height"] - 20))
+        page.wait_for_timeout(1500)
+        if direct_browser_terminal_visible(page):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def direct_browser_terminal_visible(page: Any) -> bool:
+    for selector in (".xterm", ".xterm-screen", ".xterm-helper-textarea", "[class*='terminal']"):
+        try:
+            if page.locator(selector).count() > 0:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def click_direct_browser_terminal(page: Any) -> bool:
+    candidates = [
+        page.locator(".xterm-helper-textarea").last,
+        page.locator(".xterm-screen").last,
+        page.locator("textarea").last,
+    ]
+    for locator in candidates:
+        try:
+            if locator.count() < 1:
+                continue
+            locator.click(timeout=5000)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def try_direct_browser_terminal(page: Any, code: str, run_id: str, timeout_sec: float, started: float) -> dict[str, Any] | None:
+    if os.environ.get("WINSMUX_COLAB_CLI_ADAPTER_DIRECT_BROWSER_TERMINAL", "1").strip().lower() not in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        return None
+    if not open_direct_browser_terminal(page):
+        return None
+    if not click_direct_browser_terminal(page):
+        return None
+    command = build_terminal_python_command(code, run_id)
+    if not paste_direct_browser_code(page, command):
+        page.keyboard.insert_text(command)
+    page.wait_for_timeout(500)
+    page.keyboard.press("Enter")
+    marker = "winsmux.colab_llm.result.v1"
+    echo_deadline = time.monotonic() + 20
+    while time.monotonic() < echo_deadline:
+        page.wait_for_timeout(1000)
+        body_text = read_direct_browser_text(page)
+        if run_id in body_text or "WINSMUX_PY_" in body_text or "python -" in body_text:
+            break
+    else:
+        return None
+    while time.monotonic() - started < timeout_sec:
+        page.wait_for_timeout(5000)
+        body_text = read_direct_browser_text(page)
+        result_json = extract_json_object_containing(body_text, marker, run_id=run_id)
+        if result_json is not None:
+            return result_json
+    return None
+
+
+def add_direct_browser_code_cell(page: Any) -> None:
+    try:
+        page.get_by_role("button", name=re.compile(r"(\+ Code|\+ コード|Code|コード)", re.I)).last.click(timeout=5000)
+        page.wait_for_timeout(700)
+        return
+    except Exception:
+        pass
+    try:
+        page.keyboard.press("Escape")
+        page.keyboard.press("Control+M")
+        page.keyboard.press("B")
+        page.wait_for_timeout(700)
+    except Exception:
+        pass
+
+
+def insert_direct_browser_code(page: Any, code: str, run_id: str) -> None:
+    for attempt in range(3):
+        if attempt > 0:
+            add_direct_browser_code_cell(page)
+        if set_direct_browser_monaco_code(page, code, run_id):
+            return
+        if not click_direct_browser_editor(page):
+            page.mouse.click(180, 145 + (attempt * 50))
+        page.wait_for_timeout(300)
+        try:
+            page.keyboard.press("Control+A")
+            page.wait_for_timeout(150)
+            page.keyboard.press("Backspace")
+            page.wait_for_timeout(150)
+        except Exception:
+            pass
+        if not paste_direct_browser_code(page, code):
+            page.keyboard.insert_text(code)
+        page.wait_for_timeout(1500)
+        if not run_id or run_id in read_direct_browser_text(page):
+            return
+    raise RuntimeError("direct browser code editor did not accept the run payload")
+
+
+def direct_browser_dry_payload(stdout: str, selected_mode: str, verify_kernel_bind: bool) -> dict[str, Any]:
+    result = extract_json_object_containing(stdout, "winsmux.colab_llm.result.v1")
+    ok = result is not None and str(result.get("status", "succeeded")) == "succeeded"
+    payload: dict[str, Any] = {
+        "mode": selected_mode,
+        "ok": ok,
+        "stdout": stdout,
+        "cell_id": "direct-browser-dry-run",
+        "notebook_url": "about:blank",
+        "kernel_bind_ok": not verify_kernel_bind or ok,
+        "kernel_bind_detail": "direct browser dry run",
+    }
+    if selected_mode == "execute_with_evidence":
+        payload["evidence"] = {
+            "stdout": stdout,
+            "cell_id": "direct-browser-dry-run",
+            "notebook_url": "about:blank",
+            "kernel_bind_ok": payload["kernel_bind_ok"],
+            "gpu": None,
+        }
+    if not ok:
+        error_message = (
+            "direct browser dry run did not contain result marker"
+            if result is None
+            else str(result.get("error") or stdout.strip() or "direct browser dry run failed")
+        )
+        payload["error"] = error_message
+        payload["stdout"] = f"{error_message}\n{stdout}".strip()
+    return payload
+
+
+def direct_browser_execute(plan_text: str, selected_mode: str, verify_kernel_bind: bool) -> dict[str, Any]:
+    append_progress("direct_browser_enter")
+    dry_stdout = os.environ.get("WINSMUX_COLAB_CLI_ADAPTER_DIRECT_BROWSER_DRY_STDOUT", "")
+    if dry_stdout:
+        append_progress("direct_browser_dry_run")
+        return direct_browser_dry_payload(dry_stdout, selected_mode, verify_kernel_bind)
+
+    append_progress("direct_browser_import_colab_modules")
+    import colab_llm_mcp.colab_playwright as colab_playwright
+    import colab_llm_mcp.execute as execute_mod
+
+    if selected_mode == "plan_only":
+        append_progress("direct_browser_plan_only")
+        return {"ok": True, **execute_mod.plan_only_result(plan_text)}
+
+    append_progress("direct_browser_extract_plan")
+    code = execute_mod.extract_plan_code(plan_text)
+    notebook_url = execute_mod.resolve_colab_notebook_url()
+    run_id_match = re.search(r'"--run-id"\s*,\s*"([^"]+)"', code)
+    run_id = run_id_match.group(1) if run_id_match else ""
+    profile = colab_playwright.resolve_playwright_profile_dir(None)
+    profile.mkdir(parents=True, exist_ok=True)
+    state_root = colab_playwright.repo_root() / ".colab"
+    state_root.mkdir(parents=True, exist_ok=True)
+    screenshot_path = state_root / "direct-browser-last.png"
+    lock_path = state_root / "winsmux-direct-browser.lock"
+    timeout_sec = read_positive_float_env("WINSMUX_COLAB_CLI_ADAPTER_DIRECT_BROWSER_TIMEOUT_SEC", DEFAULT_EXECUTE_TIMEOUT_SEC)
+    lock_timeout_sec = read_positive_float_env("WINSMUX_COLAB_CLI_ADAPTER_DIRECT_BROWSER_LOCK_TIMEOUT_SEC", 1200.0)
+    headless = os.environ.get("WINSMUX_COLAB_CLI_ADAPTER_PLAYWRIGHT_HEADLESS", "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    channel = os.environ.get("WINSMUX_COLAB_CLI_ADAPTER_PLAYWRIGHT_CHANNEL", "").strip()
+    gpu_label = colab_playwright.resolve_gpu_label(
+        os.environ.get("WINSMUX_COLAB_CLI_ADAPTER_PLAYWRIGHT_GPU", "").strip()
+        or os.environ.get("COLAB_PLAYWRIGHT_GPU", "").strip()
+        or "A100"
+    )
+    set_gpu = os.environ.get("WINSMUX_COLAB_CLI_ADAPTER_DIRECT_BROWSER_SET_GPU", "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    handle: int | None = None
+    playwright = None
+    context = None
+    started = time.monotonic()
+    try:
+        append_progress("direct_browser_acquire_lock")
+        handle = acquire_direct_browser_lock(lock_path, lock_timeout_sec)
+        append_progress("direct_browser_start_playwright")
+        playwright = colab_playwright._require_playwright()().start()
+        launch_kwargs: dict[str, Any] = {
+            "user_data_dir": str(profile),
+            "headless": headless,
+            "args": [
+                "--disable-blink-features=AutomationControlled",
+                "--disable-session-crashed-bubble",
+                "--disable-infobars",
+                "--no-first-run",
+            ],
+        }
+        if channel:
+            launch_kwargs["channel"] = channel
+        append_progress("direct_browser_launch_browser", f"headless={headless} channel={channel or 'default'}")
+        context = playwright.chromium.launch_persistent_context(**launch_kwargs)
+        try:
+            context.grant_permissions(["clipboard-read", "clipboard-write"], origin="https://colab.research.google.com")
+        except Exception:
+            pass
+        page = context.pages[0] if context.pages else context.new_page()
+        append_progress("direct_browser_open_notebook")
+        page.goto(notebook_url, wait_until="domcontentloaded", timeout=120000)
+        append_progress("direct_browser_wait_colab_ready")
+        colab_playwright._wait_until_colab_ready(page, login_wait_sec=300)
+        append_progress("direct_browser_colab_ready")
+        colab_playwright._dismiss_overlays(page)
+        if set_gpu:
+            append_progress("direct_browser_set_gpu", gpu_label)
+            colab_playwright._set_gpu_runtime(page, gpu_label)
+        try:
+            append_progress("direct_browser_connect_runtime")
+            colab_playwright._connect_runtime_if_needed(page)
+            append_progress("direct_browser_runtime_connect_attempted")
+        except Exception:
+            append_progress("direct_browser_runtime_connect_ignored_error")
+            pass
+        marker = "winsmux.colab_llm.result.v1"
+        append_progress("direct_browser_try_terminal")
+        terminal_result = try_direct_browser_terminal(page, code, run_id, timeout_sec, started)
+        if terminal_result is not None:
+            append_progress("direct_browser_terminal_result")
+            stdout = json.dumps(terminal_result, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+            ok = str(terminal_result.get("status", "succeeded")) == "succeeded"
+            payload: dict[str, Any] = {
+                "mode": selected_mode,
+                "ok": ok,
+                "stdout": stdout,
+                "cell_id": "direct-browser-terminal",
+                "notebook_url": notebook_url,
+                "kernel_bind_ok": ok or not verify_kernel_bind,
+                "kernel_bind_detail": "direct browser terminal output marker observed",
+            }
+            if selected_mode == "execute_with_evidence":
+                payload["evidence"] = execute_mod.build_execution_evidence(
+                    stdout=stdout,
+                    cell_id="direct-browser-terminal",
+                    notebook_url=notebook_url,
+                    kernel_bind_ok=payload["kernel_bind_ok"],
+                    gpu=execute_mod.parse_gpu_from_text(stdout),
+                )
+            if not ok:
+                payload["error"] = stdout
+            return payload
+        try:
+            append_progress("direct_browser_open_code_cell")
+            colab_playwright._click_first_visible(
+                page,
+                [
+                    page.get_by_text(re.compile(r"コーディングを開始|Start coding", re.I)),
+                    page.get_by_role("button", name=re.compile(r"(\+ Code|\+ コード|Code|コード)", re.I)),
+                ],
+                timeout_ms=15000,
+            )
+        except Exception:
+            append_progress("direct_browser_open_code_cell_ignored_error")
+            pass
+        page.wait_for_timeout(1000)
+        append_progress("direct_browser_insert_code")
+        insert_direct_browser_code(page, code, run_id)
+        append_progress("direct_browser_run_code")
+        worker_stage_not_before = datetime.now(timezone.utc)
+        page.keyboard.press("Control+Enter")
+        body_text = ""
+        last_wait_progress = 0.0
+        seen_worker_stage_lines: set[str] = set()
+        while time.monotonic() - started < timeout_sec:
+            page.wait_for_timeout(5000)
+            body_text = read_direct_browser_text(page)
+            for worker_stage in extract_worker_stage_lines(body_text, not_before_utc=worker_stage_not_before):
+                if worker_stage in seen_worker_stage_lines:
+                    continue
+                seen_worker_stage_lines.add(worker_stage)
+                append_progress("direct_browser_worker_stage", worker_stage)
+            elapsed = time.monotonic() - started
+            if elapsed - last_wait_progress >= 30:
+                last_wait_progress = elapsed
+                append_progress("direct_browser_wait_output", f"elapsed_seconds={elapsed:.0f}")
+            result_json = extract_json_object_containing(body_text, marker, run_id=run_id)
+            if result_json is not None:
+                append_progress("direct_browser_output_marker_found")
+                stdout = json.dumps(result_json, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+                ok = str(result_json.get("status", "succeeded")) == "succeeded"
+                payload: dict[str, Any] = {
+                    "mode": selected_mode,
+                    "ok": ok,
+                    "stdout": stdout,
+                    "cell_id": "direct-browser",
+                    "notebook_url": notebook_url,
+                    "kernel_bind_ok": ok or not verify_kernel_bind,
+                    "kernel_bind_detail": "direct browser code cell output marker observed",
+                }
+                if selected_mode == "execute_with_evidence":
+                    payload["evidence"] = execute_mod.build_execution_evidence(
+                        stdout=stdout,
+                        cell_id="direct-browser",
+                        notebook_url=notebook_url,
+                        kernel_bind_ok=payload["kernel_bind_ok"],
+                        gpu=execute_mod.parse_gpu_from_text(stdout),
+                    )
+                if not ok:
+                    payload["error"] = stdout
+                return payload
+        append_progress("direct_browser_output_marker_missing")
+        page.screenshot(path=str(screenshot_path), full_page=True)
+        return {
+            "mode": selected_mode,
+            "ok": False,
+            "error": "direct browser output marker not found",
+            "stdout_tail": body_text[-4000:],
+            "cell_id": "direct-browser",
+            "notebook_url": notebook_url,
+            "screenshot": str(screenshot_path),
+            "kernel_bind_ok": False,
+            "kernel_bind_detail": "direct browser output marker not found",
+        }
+    finally:
+        try:
+            if context is not None:
+                append_progress("direct_browser_close_context")
+                context.close()
+        finally:
+            try:
+                if playwright is not None:
+                    append_progress("direct_browser_stop_playwright")
+                    playwright.stop()
+            finally:
+                append_progress("direct_browser_release_lock")
+                release_direct_browser_lock(lock_path, handle)
+
+
 def execute_plan(colab_repo: Path, plan_path: Path, mode: str) -> tuple[int, str, str]:
     code = (
-        "import inspect, json, math, os, sys\n"
+        "import atexit, inspect, json, math, os, re, sys, threading, time\n"
         "from pathlib import Path\n"
         "print('WINSMUX_COLAB_ADAPTER_STAGE import_execute_begin', file=sys.stderr, flush=True)\n"
         "import colab_llm_mcp.execute as execute_mod\n"
@@ -244,6 +874,235 @@ def execute_plan(colab_repo: Path, plan_path: Path, mode: str) -> tuple[int, str
         "        _stage(f'{name}_invalid')\n"
         "        return default\n"
         "    return value\n"
+        "def _bool_env(name, default=False):\n"
+        "    raw = os.environ.get(name, '').strip().lower()\n"
+        "    if not raw:\n"
+        "        return default\n"
+        "    return raw in ('1', 'true', 'yes', 'on')\n"
+        "_winsmux_playwright_keepalive = []\n"
+        "def _cleanup_playwright_keepalive():\n"
+        "    while _winsmux_playwright_keepalive:\n"
+        "        context, playwright = _winsmux_playwright_keepalive.pop()\n"
+        "        try:\n"
+        "            context.close()\n"
+        "        except Exception:\n"
+        "            pass\n"
+        "        try:\n"
+        "            playwright.stop()\n"
+        "        except Exception:\n"
+        "            pass\n"
+        "atexit.register(_cleanup_playwright_keepalive)\n"
+        "def _winsmux_playwright_result(ok, message, screenshot=''):\n"
+        "    class Result:\n"
+        "        pass\n"
+        "    result = Result()\n"
+        "    result.ok = ok\n"
+        "    result.message = message\n"
+        "    result.screenshot = screenshot\n"
+        "    return result\n"
+        "def _winsmux_run_playwright_setup_keepalive(colab_playwright, gpu, headless, login_wait, setup_timeout):\n"
+        "    required = ('read_mcp_connect_url', 'resolve_gpu_label', 'resolve_playwright_profile_dir', 'repo_root', '_require_playwright', '_wait_until_colab_ready', '_dismiss_overlays', '_close_stray_colab_tabs', '_click_mcp_connect', '_set_gpu_runtime', '_connect_runtime_if_needed')\n"
+        "    if any(not hasattr(colab_playwright, name) for name in required):\n"
+        "        return colab_playwright.run_colab_playwright_setup(gpu=gpu, headless=headless, login_wait_sec=login_wait, setup_timeout_sec=setup_timeout)\n"
+        "    url = (colab_playwright.read_mcp_connect_url() or '').strip()\n"
+        "    if not url or 'mcpProxyToken=' not in url:\n"
+        "        return _winsmux_playwright_result(False, 'Missing MCP connect URL')\n"
+        "    gpu_label = colab_playwright.resolve_gpu_label(gpu)\n"
+        "    profile = colab_playwright.resolve_playwright_profile_dir(None)\n"
+        "    profile.mkdir(parents=True, exist_ok=True)\n"
+        "    channel = os.environ.get('WINSMUX_COLAB_CLI_ADAPTER_PLAYWRIGHT_CHANNEL', '').strip()\n"
+        "    screenshot_dir = colab_playwright.repo_root() / '.colab'\n"
+        "    screenshot_dir.mkdir(parents=True, exist_ok=True)\n"
+        "    screenshot_path = screenshot_dir / 'playwright-setup-last.png'\n"
+        "    playwright = None\n"
+        "    context = None\n"
+        "    started = time.monotonic()\n"
+        "    try:\n"
+        "        playwright = colab_playwright._require_playwright()().start()\n"
+        "        launch_kwargs = {'user_data_dir': str(profile), 'headless': headless, 'args': ['--disable-blink-features=AutomationControlled']}\n"
+        "        if channel:\n"
+        "            launch_kwargs['channel'] = channel\n"
+        "        context = playwright.chromium.launch_persistent_context(**launch_kwargs)\n"
+        "        page = context.pages[0] if context.pages else context.new_page()\n"
+        "        print('[pw] Navigating to pinned notebook + MCP token…', flush=True)\n"
+        "        page.goto(url, wait_until='domcontentloaded', timeout=120000)\n"
+        "        colab_playwright._wait_until_colab_ready(page, login_wait_sec=login_wait)\n"
+        "        colab_playwright._dismiss_overlays(page)\n"
+        "        colab_playwright._close_stray_colab_tabs(context, page)\n"
+        "        print('[pw] Clicking MCP Connect…', flush=True)\n"
+        "        if not colab_playwright._click_mcp_connect(page):\n"
+        "            page.screenshot(path=str(screenshot_path), full_page=True)\n"
+        "            return _winsmux_playwright_result(False, 'MCP Connect dialog/button not found', str(screenshot_path))\n"
+        "        page.wait_for_timeout(2000)\n"
+        "        print(f'[pw] Runtime → Change runtime type → {gpu_label} GPU → Save…', flush=True)\n"
+        "        colab_playwright._set_gpu_runtime(page, gpu_label)\n"
+        "        print('[pw] Connecting runtime if disconnected…', flush=True)\n"
+        "        colab_playwright._connect_runtime_if_needed(page)\n"
+        "        page.wait_for_timeout(4000)\n"
+        "        print('[pw] Re-opening MCP Connect after runtime changes…', flush=True)\n"
+        "        page.goto(url.split('#', 1)[0], wait_until='domcontentloaded', timeout=120000)\n"
+        "        page.wait_for_timeout(1000)\n"
+        "        page.goto(url, wait_until='domcontentloaded', timeout=120000)\n"
+        "        colab_playwright._wait_until_colab_ready(page, login_wait_sec=login_wait)\n"
+        "        colab_playwright._dismiss_overlays(page)\n"
+        "        if not colab_playwright._click_mcp_connect(page):\n"
+        "            _stage('mcp_connect_reopen_missing')\n"
+        "        else:\n"
+        "            _stage('mcp_connect_reopen_clicked')\n"
+        "        page.wait_for_timeout(4000)\n"
+        "        remaining = setup_timeout - (time.monotonic() - started)\n"
+        "        wait_ms = max(5000, int(min(60000, remaining) * 1000))\n"
+        "        page.wait_for_timeout(min(wait_ms, 30000))\n"
+        "        page.screenshot(path=str(screenshot_path), full_page=True)\n"
+        "        if time.monotonic() - started > setup_timeout:\n"
+        "            return _winsmux_playwright_result(False, 'Playwright setup timed out', str(screenshot_path))\n"
+        "        _winsmux_playwright_keepalive.append((context, playwright))\n"
+        "        return _winsmux_playwright_result(True, f'Playwright setup done ({gpu_label} GPU, MCP Connect attempted; browser kept alive)', str(screenshot_path))\n"
+        "    except BaseException as exc:\n"
+        "        try:\n"
+        "            if context is not None:\n"
+        "                context.close()\n"
+        "        except Exception:\n"
+        "            pass\n"
+        "        try:\n"
+        "            if playwright is not None:\n"
+        "                playwright.stop()\n"
+        "        except Exception:\n"
+        "            pass\n"
+        "        return _winsmux_playwright_result(False, str(exc), str(screenshot_path))\n"
+        "def _maybe_run_playwright_setup():\n"
+        "    if not _bool_env('WINSMUX_COLAB_CLI_ADAPTER_PLAYWRIGHT_SETUP', False):\n"
+        "        return\n"
+        "    _stage('playwright_setup_begin')\n"
+        "    holder = {}\n"
+        "    def _target():\n"
+        "        try:\n"
+        "            import colab_llm_mcp.colab_playwright as colab_playwright\n"
+        "            gpu = os.environ.get('WINSMUX_COLAB_CLI_ADAPTER_PLAYWRIGHT_GPU', '').strip() or os.environ.get('COLAB_PLAYWRIGHT_GPU', '').strip() or 'A100'\n"
+        "            headless = _bool_env('WINSMUX_COLAB_CLI_ADAPTER_PLAYWRIGHT_HEADLESS', False)\n"
+        "            login_wait = _float_env('WINSMUX_COLAB_CLI_ADAPTER_PLAYWRIGHT_LOGIN_WAIT_SEC', 300.0)\n"
+        "            setup_timeout = _float_env('WINSMUX_COLAB_CLI_ADAPTER_PLAYWRIGHT_TIMEOUT_SEC', 300.0)\n"
+        "            def _winsmux_click_mcp_connect(page):\n"
+        "                mcp_pat = re.compile(r'(Connect to a local Colab MCP|local Colab MCP|ローカル Colab MCP)', re.I)\n"
+        "                connect_pat = re.compile(r'^(Connect|接続)$', re.I)\n"
+        "                try:\n"
+        "                    page.get_by_text(mcp_pat).first.wait_for(state='visible', timeout=45000)\n"
+        "                except Exception:\n"
+        "                    _stage('mcp_connect_dialog_missing')\n"
+        "                    return False\n"
+        "                selectors = ('div[role=\"dialog\"]', 'colab-dialog', 'paper-dialog', 'mwc-dialog', 'dialog')\n"
+        "                for selector in selectors:\n"
+        "                    try:\n"
+        "                        dialog = page.locator(selector).filter(has_text=mcp_pat).first\n"
+        "                        if dialog.is_visible(timeout=3000):\n"
+        "                            clicked = colab_playwright._click_first_visible(page, [dialog.get_by_role('button', name=connect_pat), dialog.locator('button').filter(has_text=connect_pat), dialog.locator('[role=\"button\"]').filter(has_text=connect_pat)], timeout_ms=15000)\n"
+        "                            if clicked:\n"
+        "                                _stage('mcp_connect_dialog_clicked')\n"
+        "                                return True\n"
+        "                    except Exception:\n"
+        "                        pass\n"
+        "                try:\n"
+        "                    clicked_dom = page.evaluate(\"\"\"\n"
+        "() => {\n"
+        "  const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();\n"
+        "  const textRe = /(Connect to a local Colab MCP|local Colab MCP|ローカル Colab MCP)/i;\n"
+        "  const buttonRe = /^(Connect|接続)$/i;\n"
+        "  const collect = (root, out = []) => {\n"
+        "    if (!root) return out;\n"
+        "    const nodes = root.querySelectorAll ? Array.from(root.querySelectorAll('*')) : [];\n"
+        "    for (const node of nodes) {\n"
+        "      out.push(node);\n"
+        "      if (node.shadowRoot) collect(node.shadowRoot, out);\n"
+        "    }\n"
+        "    return out;\n"
+        "  };\n"
+        "  const visible = (el) => {\n"
+        "    const rect = el.getBoundingClientRect();\n"
+        "    const style = window.getComputedStyle(el);\n"
+        "    return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';\n"
+        "  };\n"
+        "  const all = collect(document).filter(visible);\n"
+        "  const mcpItems = all\n"
+        "    .map((el) => ({ el, rect: el.getBoundingClientRect(), text: normalize(el.innerText || el.textContent) }))\n"
+        "    .filter((item) => textRe.test(item.text));\n"
+        "  if (mcpItems.length < 1) return false;\n"
+        "  const mcpBox = mcpItems.sort((a, b) => (a.rect.width * a.rect.height) - (b.rect.width * b.rect.height))[0].rect;\n"
+        "  const buttons = all\n"
+        "    .map((el) => ({ el, rect: el.getBoundingClientRect(), text: normalize(el.innerText || el.textContent), tag: String(el.tagName || '').toLowerCase(), role: el.getAttribute('role') || '' }))\n"
+        "    .filter((item) => buttonRe.test(item.text))\n"
+        "    .filter((item) => item.tag.includes('button') || item.role === 'button' || item.el.tabIndex >= 0)\n"
+        "    .filter((item) => Math.abs((item.rect.left + item.rect.right) / 2 - (mcpBox.left + mcpBox.right) / 2) < 420)\n"
+        "    .filter((item) => item.rect.top >= mcpBox.top - 40 && item.rect.top <= mcpBox.bottom + 260)\n"
+        "    .sort((a, b) => Math.abs(a.rect.top - mcpBox.bottom) - Math.abs(b.rect.top - mcpBox.bottom));\n"
+        "  if (buttons.length < 1) return false;\n"
+        "  buttons[0].el.click();\n"
+        "  return true;\n"
+        "}\n"
+        "\"\"\")\n"
+        "                    if clicked_dom:\n"
+        "                        _stage('mcp_connect_shadow_dom_clicked')\n"
+        "                        return True\n"
+        "                except Exception:\n"
+        "                    pass\n"
+        "                _stage('mcp_connect_button_missing')\n"
+        "                return False\n"
+        "            colab_playwright._click_mcp_connect = _winsmux_click_mcp_connect\n"
+        "            def _winsmux_connect_runtime_if_needed(page):\n"
+        "                connect_pat = re.compile(r'^(Connect|接続)$', re.I)\n"
+        "                clicked_direct = colab_playwright._click_first_visible(page, [page.get_by_role('button', name=connect_pat), page.locator('div[role=\"button\"]').filter(has_text=connect_pat), page.locator('span').filter(has_text=connect_pat)], timeout_ms=12000)\n"
+        "                if clicked_direct:\n"
+        "                    page.wait_for_timeout(15000)\n"
+        "                    return\n"
+        "                try:\n"
+        "                    viewport = page.viewport_size or {}\n"
+        "                    width = int(viewport.get('width') or page.evaluate('window.innerWidth'))\n"
+        "                    page.mouse.click(max(0, width - 120), 84)\n"
+        "                    page.wait_for_timeout(20000)\n"
+        "                    return\n"
+        "                except Exception:\n"
+        "                    pass\n"
+        "                runtime_pat = re.compile(r'^(Runtime|ランタイム)$', re.I)\n"
+        "                runtime_items = [page.get_by_role('menuitem', name=runtime_pat), page.get_by_text(runtime_pat)]\n"
+        "                if colab_playwright._click_first_visible(page, runtime_items, timeout_ms=4000):\n"
+        "                    colab_playwright._click_first_visible(page, [page.get_by_role('menuitem', name=connect_pat), page.get_by_text(connect_pat)], timeout_ms=6000)\n"
+        "            colab_playwright._connect_runtime_if_needed = _winsmux_connect_runtime_if_needed\n"
+        "            result = _winsmux_run_playwright_setup_keepalive(colab_playwright, gpu, headless, login_wait, setup_timeout)\n"
+        "            holder['ok'] = bool(getattr(result, 'ok', False))\n"
+        "            holder['message'] = str(getattr(result, 'message', ''))\n"
+        "            holder['screenshot'] = str(getattr(result, 'screenshot', '') or '')\n"
+        "        except BaseException as exc:\n"
+        "            holder['error'] = exc\n"
+        "    timeout_budget = _float_env('WINSMUX_COLAB_CLI_ADAPTER_PLAYWRIGHT_THREAD_TIMEOUT_SEC', _float_env('WINSMUX_COLAB_CLI_ADAPTER_PLAYWRIGHT_TIMEOUT_SEC', 300.0) + 60.0)\n"
+        "    thread = threading.Thread(target=_target, name='winsmux-colab-playwright-setup', daemon=True)\n"
+        "    thread.start()\n"
+        "    thread.join(timeout_budget)\n"
+        "    if thread.is_alive():\n"
+        "        _stage('playwright_setup_error:TimeoutError')\n"
+        "        raise TimeoutError(f'Colab Playwright setup did not finish within {timeout_budget:.0f}s')\n"
+        "    if 'error' in holder:\n"
+        "        _stage(f\"playwright_setup_error:{type(holder['error']).__name__}\")\n"
+        "        raise holder['error']\n"
+        "    if not holder.get('ok', False):\n"
+        "        _stage('playwright_setup_error:ResultNotOk')\n"
+        "        raise RuntimeError('Colab Playwright setup failed: ' + holder.get('message', ''))\n"
+        "    _stage('playwright_setup_done')\n"
+        "def _install_playwright_proxy_setup():\n"
+        "    if pool_mod is None or not _bool_env('WINSMUX_COLAB_CLI_ADAPTER_PLAYWRIGHT_SETUP', False):\n"
+        "        return\n"
+        "    raw, original = _descriptor_target(pool_mod, 'ensure_proxy_tools')\n"
+        "    if original is None or getattr(original, '_winsmux_playwright_wrapped', False):\n"
+        "        return\n"
+        "    async def wrapped(*args, **kwargs):\n"
+        "        _maybe_run_playwright_setup()\n"
+        "        if inspect.iscoroutinefunction(original):\n"
+        "            return await original(*args, **kwargs)\n"
+        "        return original(*args, **kwargs)\n"
+        "    wrapped._winsmux_playwright_wrapped = True\n"
+        "    try:\n"
+        "        wrapped.__signature__ = inspect.signature(original)\n"
+        "    except (TypeError, ValueError):\n"
+        "        pass\n"
+        "    _set_wrapped(pool_mod, 'ensure_proxy_tools', raw, wrapped)\n"
         "def _execute_llm_plan_compat(plan_text, selected_mode, proxy_timeout, verify_kernel_bind):\n"
         "    kwargs = {}\n"
         "    try:\n"
@@ -268,6 +1127,33 @@ def execute_plan(colab_repo: Path, plan_path: Path, mode: str) -> tuple[int, str
         "            except TypeError:\n"
         "                return execute_llm_plan(plan_text, selected_mode)\n"
         "        return execute_llm_plan(plan_text, selected_mode)\n"
+        "def _payload_error(message, source, **extra):\n"
+        "    payload = {'ok': False, 'error': message, 'source': source}\n"
+        "    payload.update(extra)\n"
+        "    return payload\n"
+        "def _normalize_payload(payload, source):\n"
+        "    if isinstance(payload, dict):\n"
+        "        return payload\n"
+        "    if isinstance(payload, str):\n"
+        "        text = payload.strip()\n"
+        "        if not text:\n"
+        "            _stage(f'{source}_payload_normalize_error:empty_string')\n"
+        "            return _payload_error('invalid safe executor result type: empty string', source, result_type='str')\n"
+        "        try:\n"
+        "            parsed = json.loads(text)\n"
+        "        except json.JSONDecodeError:\n"
+        "            _stage(f'{source}_payload_normalize_error:json_decode')\n"
+        "            return _payload_error('invalid safe executor result type: string is not JSON', source, result_type='str')\n"
+        "        if isinstance(parsed, dict):\n"
+        "            return parsed\n"
+        "        _stage(f'{source}_payload_normalize_error:json_not_object')\n"
+        "        return _payload_error('invalid safe executor result type: JSON payload is not an object', source, result_type=type(parsed).__name__)\n"
+        "    _stage(f'{source}_payload_normalize_error:{type(payload).__name__}')\n"
+        "    return _payload_error('invalid safe executor result type', source, result_type=type(payload).__name__)\n"
+        "def _print_payload_and_exit_if_failed(payload):\n"
+        "    print(json.dumps(payload, ensure_ascii=False, indent=2))\n"
+        "    if not payload.get('ok', True):\n"
+        "        sys.exit(1)\n"
         "def _callable_accepts_positional(owner, attr, minimum):\n"
         "    fn = getattr(owner, attr, None)\n"
         "    if not callable(fn):\n"
@@ -296,6 +1182,7 @@ def execute_plan(colab_repo: Path, plan_path: Path, mode: str) -> tuple[int, str
         "        return True\n"
         "    raw, _ = _descriptor_target(owner, attr)\n"
         "    return isinstance(raw, (classmethod, staticmethod))\n"
+        "_install_playwright_proxy_setup()\n"
         "if os.environ.get('WINSMUX_COLAB_CLI_ADAPTER_STAGE_TRACE', '1').strip().lower() not in ('0', 'false', 'no', 'off'):\n"
         "    pool = getattr(execute_mod, 'ColabMcpPool', None)\n"
         "    if pool is not None:\n"
@@ -360,7 +1247,13 @@ def execute_plan(colab_repo: Path, plan_path: Path, mode: str) -> tuple[int, str
         "if normalized_mode not in ('plan_only', 'execute', 'execute_with_evidence'):\n"
         "    raise ValueError(f'mode must be plan_only, execute, or execute_with_evidence; got {sys.argv[2]!r}')\n"
         "print('WINSMUX_COLAB_ADAPTER_STAGE execute_plan_begin', file=sys.stderr, flush=True)\n"
-        "if _can_use_safe_executor(normalized_mode, verify_kernel_bind):\n"
+        "if _bool_env('WINSMUX_COLAB_CLI_ADAPTER_DIRECT_BROWSER', False):\n"
+        "    _stage('direct_browser_begin')\n"
+        "    from scripts.google_colab_cli_adapter import direct_browser_execute\n"
+        "    payload = direct_browser_execute(plan, normalized_mode, verify_kernel_bind)\n"
+        "    _stage('direct_browser_done')\n"
+        "    _print_payload_and_exit_if_failed(_normalize_payload(payload, 'direct_browser'))\n"
+        "elif _can_use_safe_executor(normalized_mode, verify_kernel_bind):\n"
         "    _stage('safe_executor_begin')\n"
         "    payload = execute_mod.ColabMcpPool.run(_winsmux_execute_plan_async(plan, normalized_mode, proxy_timeout, verify_kernel_bind))\n"
         "    _stage('safe_executor_done')\n"
@@ -369,24 +1262,23 @@ def execute_plan(colab_repo: Path, plan_path: Path, mode: str) -> tuple[int, str
         "        if callable(close):\n"
         "            close()\n"
         "        _stage('safe_executor_awaitable_result_fallback')\n"
-        "        print(_execute_llm_plan_compat(plan, normalized_mode, proxy_timeout, verify_kernel_bind))\n"
-        "    elif not isinstance(payload, dict):\n"
-        "        print(json.dumps({'ok': False, 'error': 'invalid safe executor result type', 'result_type': type(payload).__name__}, ensure_ascii=False, indent=2))\n"
-        "        sys.exit(1)\n"
+        "        _print_payload_and_exit_if_failed(_normalize_payload(_execute_llm_plan_compat(plan, normalized_mode, proxy_timeout, verify_kernel_bind), 'safe_executor_fallback'))\n"
         "    else:\n"
-        "        print(json.dumps(payload, ensure_ascii=False, indent=2))\n"
-        "        if not payload.get('ok', True):\n"
-        "            sys.exit(1)\n"
+        "        _print_payload_and_exit_if_failed(_normalize_payload(payload, 'safe_executor'))\n"
         "else:\n"
-        "    print(_execute_llm_plan_compat(plan, normalized_mode, proxy_timeout, verify_kernel_bind))\n"
+        "    _print_payload_and_exit_if_failed(_normalize_payload(_execute_llm_plan_compat(plan, normalized_mode, proxy_timeout, verify_kernel_bind), 'compat_executor'))\n"
         "print('WINSMUX_COLAB_ADAPTER_STAGE execute_plan_done', file=sys.stderr, flush=True)\n"
     )
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUNBUFFERED"] = "1"
     colab_src = str(colab_repo / "src")
+    adapter_src = str(repo_root())
     existing_pythonpath = env.get("PYTHONPATH", "").strip()
-    env["PYTHONPATH"] = colab_src if not existing_pythonpath else os.pathsep.join([colab_src, existing_pythonpath])
+    pythonpath_parts = [colab_src, adapter_src]
+    if existing_pythonpath:
+        pythonpath_parts.append(existing_pythonpath)
+    env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
     command = [*colab_python(colab_repo), "-u", "-c", code, str(plan_path), mode]
     timeout_sec = read_positive_float_env("WINSMUX_COLAB_CLI_ADAPTER_TIMEOUT_SEC", DEFAULT_EXECUTE_TIMEOUT_SEC)
     try:
@@ -445,6 +1337,9 @@ def command_run(args: argparse.Namespace, script_args: list[str]) -> int:
     plan_path = output_dir / "colab-adapter-plan.py"
     write_text(plan_path, cell_code)
     write_text(run_state / "colab-adapter-plan.py", cell_code)
+    progress_path = output_dir / "progress.jsonl"
+    write_text(progress_path, "")
+    write_text(run_state / "progress.jsonl", "")
 
     mode = os.environ.get("WINSMUX_COLAB_CLI_ADAPTER_MODE", DEFAULT_MODE).strip() or DEFAULT_MODE
     if mode == "plan_only":
@@ -473,11 +1368,22 @@ def command_run(args: argparse.Namespace, script_args: list[str]) -> int:
         print(message, file=sys.stderr)
         return 1
 
-    exit_code, stdout, stderr = execute_plan(colab_repo, plan_path.resolve(), mode)
+    previous_progress_path = os.environ.get("WINSMUX_COLAB_CLI_ADAPTER_PROGRESS_PATH")
+    os.environ["WINSMUX_COLAB_CLI_ADAPTER_PROGRESS_PATH"] = str(progress_path)
+    append_progress("command_run_execute_plan_begin", f"mode={mode}")
+    try:
+        exit_code, stdout, stderr = execute_plan(colab_repo, plan_path.resolve(), mode)
+        append_progress("command_run_execute_plan_done", f"exit_code={exit_code}")
+    finally:
+        if previous_progress_path is None:
+            os.environ.pop("WINSMUX_COLAB_CLI_ADAPTER_PROGRESS_PATH", None)
+        else:
+            os.environ["WINSMUX_COLAB_CLI_ADAPTER_PROGRESS_PATH"] = previous_progress_path
     visible_stdout = redact_sensitive_text(parse_colab_stdout(stdout))
     stderr = redact_sensitive_text(stderr)
     write_text(output_dir / "stdout.log", visible_stdout)
     write_text(run_state / "stdout.log", visible_stdout)
+    write_text(run_state / "progress.jsonl", progress_path.read_text(encoding="utf-8"))
     if stderr:
         write_text(output_dir / "stderr.log", stderr)
         write_text(run_state / "stderr.log", stderr)
