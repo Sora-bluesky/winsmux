@@ -62,7 +62,9 @@ Windows PC で複数のコーディングエージェントを動かしつつ、
 - Windows Terminal
 - 実行したい公式エージェント CLI。例: Claude Code、Codex、Gemini
 
-Rust は、ランタイムをソースからビルドする時だけ必要です。
+公開 npm wrapper は Node.js 18 以降で動作します。ソースチェックアウトの検証と
+デスクトップアプリのビルドでは、CI と同じ Node.js 24 を使います。Rust は、
+ランタイムをソースからビルドする時だけ必要です。
 
 ## 始め方
 

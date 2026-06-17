@@ -9,7 +9,7 @@ Install these first:
 - Windows 10 or Windows 11
 - PowerShell 7+
 - Windows Terminal
-- Node.js with `npm`
+- Node.js with `npm`; use Node.js 24 when validating a source checkout or building the desktop app
 - The official agent CLIs you want to run, such as Codex, Claude Code, or Gemini
 
 ## 2. Install winsmux

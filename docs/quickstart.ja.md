@@ -9,7 +9,7 @@
 - Windows 10 または Windows 11
 - PowerShell 7+
 - Windows Terminal
-- `npm` を含む Node.js
+- `npm` を含む Node.js。ソースチェックアウトの検証やデスクトップアプリのビルドでは Node.js 24 を使います。
 - 実行したい公式エージェント CLI。例: Codex、Claude Code、Gemini
 
 ## 2. winsmux をインストールする

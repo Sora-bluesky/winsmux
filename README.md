@@ -65,7 +65,9 @@ If you only need a terminal multiplexer, see the runtime docs under [`core/docs`
 - Windows Terminal
 - The official agent CLIs you want to run, such as Claude Code, Codex, or Gemini
 
-Rust is only needed when you build the runtime from source.
+The published npm wrapper supports Node.js 18 or newer. Source checkout
+validation and desktop app builds use Node.js 24, matching CI. Rust is only
+needed when you build the runtime from source.
 
 ## Get Started
 

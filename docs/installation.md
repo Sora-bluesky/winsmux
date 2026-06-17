@@ -12,7 +12,9 @@
 - Windows Terminal
 - Node.js and `npm` when using the npm install path
 
-Rust is only required when building the runtime from source.
+The published npm wrapper supports Node.js 18 or newer. Source checkout
+validation and desktop app builds use Node.js 24, matching CI. Rust is only
+required when building the runtime from source.
 
 For Colab-backed model workers, also prepare a Colab notebook or an
 adapter-managed equivalent connected to `H100` or `A100`. The Windows PC does

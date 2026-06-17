@@ -3,6 +3,9 @@
   "private": true,
   "version": "0.36.8",
   "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "dev": "vite",
     "dev:browser": "node ./scripts/open-dev-browser.mjs",
@@ -32,6 +35,6 @@
     "@tauri-apps/cli": "2.11.1",
     "playwright": "^1.58.1",
     "typescript": "~5.6.2",
-    "vite": "^6.4.2"
+    "vite": "^8.0.16"
   }
 }
