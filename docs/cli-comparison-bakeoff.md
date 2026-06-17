@@ -685,8 +685,9 @@ After all runs, publish:
 - `model-evidence-profile.json`: capability vector, confidence, and evidence
   runs per model.
 - `benchmark-report.html`: rich static benchmark report with a SWE-bench
-  Pro-style score grid, speed-quality scatter plot, capability radar, and
-  task-class heatmap.
+  Pro-style score matrix that places conditions on columns and task classes on
+  rows, plus a speed-quality scatter plot, capability radar, and task-class
+  heatmap.
 - `.references/benchmark-reports/cli-bakeoff-benchmark-report.html`: local
   reference copy of the latest rich report. This path is ignored by git and is
   for local review, recording, and article drafting only.

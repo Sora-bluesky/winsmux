@@ -278,6 +278,60 @@ function New-BakeoffHtmlReport {
     .grid { display: grid; grid-template-columns: 1.1fr .9fr; gap: 18px; align-items: start; }
     .panel { padding: 20px; overflow: hidden; }
     .panel h2 { margin: 0 0 14px; font-size: 19px; }
+    .matrix-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: linear-gradient(180deg, #ffffff, #f8fbff);
+    }
+    .score-matrix {
+      width: 100%;
+      min-width: 760px;
+      border-collapse: separate;
+      border-spacing: 0;
+      font-size: 13px;
+    }
+    .score-matrix th,
+    .score-matrix td {
+      border-right: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      padding: 12px;
+      text-align: left;
+      vertical-align: top;
+    }
+    .score-matrix th:last-child,
+    .score-matrix td:last-child { border-right: 0; }
+    .score-matrix tr:last-child td { border-bottom: 0; }
+    .score-matrix thead th {
+      background: #f3f7fc;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 850;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .matrix-task { width: 170px; color: var(--ink); font-weight: 850; }
+    .matrix-condition { min-width: 156px; }
+    .matrix-condition strong,
+    .matrix-cell strong { display: block; color: var(--ink); }
+    .matrix-condition span,
+    .matrix-cell span { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; line-height: 1.38; }
+    .matrix-cell {
+      border-radius: 7px;
+      border: 1px solid rgba(15, 23, 42, .08);
+      padding: 10px;
+      min-height: 76px;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, .55);
+    }
+    .matrix-score { font-size: 24px; font-weight: 900; font-variant-numeric: tabular-nums; }
+    .matrix-missing {
+      color: var(--muted);
+      border: 1px dashed var(--line);
+      border-radius: 7px;
+      padding: 10px;
+      min-height: 76px;
+      background: #f8fafc;
+    }
     .leaderboard { display: grid; gap: 12px; }
     .condition-row { display: grid; grid-template-columns: minmax(190px, 1fr) minmax(280px, 2fr) 72px; gap: 12px; align-items: center; }
     .condition-name { min-width: 0; }
@@ -314,6 +368,10 @@ function New-BakeoffHtmlReport {
       <p class="subtitle">A static, reference-friendly HTML report for comparing worker-pane conditions. It uses the same task-packet and deterministic evidence contract, then visualizes score, completion, speed, and task fit in a SWE-bench Pro style layout.</p>
     </header>
     <section class="kpis" id="kpis"></section>
+    <section class="panel section">
+      <h2>Benchmark Score Matrix</h2>
+      <div class="matrix-wrap" id="scoreMatrix"></div>
+    </section>
     <section class="grid">
       <article class="panel">
         <h2>Score Leaderboard</h2>
@@ -371,6 +429,15 @@ __BENCHMARK_DATA_JSON__
     function label(c) {
       return [pick(c, "Cli", "cli"), pick(c, "Model", "model"), pick(c, "Effort", "effort")].filter(Boolean).join(" / ");
     }
+    function conditionKey(c) {
+      return [pick(c, "Cli", "cli") || "", pick(c, "Model", "model") || "", pick(c, "Effort", "effort") || ""].join("\u001f");
+    }
+    function shortCondition(c) {
+      const cli = pick(c, "Cli", "cli") || "unknown";
+      const model = pick(c, "Model", "model") || "unknown";
+      const effort = pick(c, "Effort", "effort");
+      return { cli, model, effort: effort || "" };
+    }
     function metric(c) {
       return num(pick(c, "AverageOverall", "average_overall"), num(pick(c, "PassRate", "pass_rate"), num(pick(c, "CompletionRate", "completion_rate"), 0)));
     }
@@ -421,6 +488,57 @@ __BENCHMARK_DATA_JSON__
           + (time !== null ? '<div></div><div class="notes">median wall time: ' + Number(time).toFixed(1) + 's</div><div></div>' : '')
           + '</div>';
       }).join("");
+    }
+    function renderScoreMatrix() {
+      const root = document.getElementById("scoreMatrix");
+      if (!conditions.length) {
+        root.innerHTML = '<div class="empty">No benchmark rows yet.</div>';
+        return;
+      }
+
+      const columnMap = new Map();
+      conditions.forEach(c => {
+        const key = conditionKey(c);
+        if (!columnMap.has(key)) columnMap.set(key, c);
+      });
+      const columns = [...columnMap.values()].sort((a, b) => label(a).localeCompare(label(b)));
+      const taskClasses = [...new Set(conditions.map(c => pick(c, "TaskClass", "task_class") || "unknown"))].sort();
+      const byTaskAndColumn = new Map();
+      conditions.forEach(c => byTaskAndColumn.set((pick(c, "TaskClass", "task_class") || "unknown") + "\u001f" + conditionKey(c), c));
+
+      let html = '<table class="score-matrix" aria-label="SWE-bench Pro style score matrix"><thead><tr><th class="matrix-task">Task class</th>';
+      columns.forEach(c => {
+        const parts = shortCondition(c);
+        html += '<th class="matrix-condition"><strong>' + escapeHtml(parts.cli) + '</strong><span>' + escapeHtml(parts.model + (parts.effort ? " / " + parts.effort : "")) + '</span></th>';
+      });
+      html += '</tr></thead><tbody>';
+
+      taskClasses.forEach(task => {
+        html += '<tr><td class="matrix-task">' + escapeHtml(task) + '</td>';
+        columns.forEach((column, columnIndex) => {
+          const c = byTaskAndColumn.get(task + "\u001f" + conditionKey(column));
+          if (!c) {
+            html += '<td><div class="matrix-missing">not enough scored runs</div></td>';
+            return;
+          }
+          const score = Math.max(0, Math.min(100, metric(c)));
+          const hue = 208 - Math.round(score * 1.42);
+          const bg = 'linear-gradient(180deg, hsl(' + hue + ' 90% 91%), hsl(' + hue + ' 86% 84%))';
+          const completed = pick(c, "Completed", "completed") || 0;
+          const started = pick(c, "Started", "started") || 0;
+          const time = pick(c, "MedianWallTimeSec", "median_wall_time_sec");
+          const timeLabel = time !== null ? "median " + Number(time).toFixed(1) + "s" : "median n/a";
+          html += '<td><div class="matrix-cell" style="background:' + bg + '">'
+            + '<div class="matrix-score">' + escapeHtml(metricText(c)) + '</div>'
+            + '<strong>' + escapeHtml(pick(c, "Fit", "fit") || (score >= 85 ? "strong" : score >= 65 ? "conditional" : "watch")) + '</strong>'
+            + '<span>completed ' + escapeHtml(completed) + ' / started ' + escapeHtml(started) + '</span>'
+            + '<span>' + escapeHtml(timeLabel) + '</span>'
+            + '</div></td>';
+        });
+        html += '</tr>';
+      });
+      html += '</tbody></table>';
+      root.innerHTML = html;
     }
     function renderScatter() {
       const width = 520, height = 310, pad = 48;
@@ -500,6 +618,7 @@ __BENCHMARK_DATA_JSON__
       document.getElementById("refs").innerHTML = refs.length ? "Methodology references: " + refs.map(r => '<a href="' + escapeHtml(r) + '">' + escapeHtml(r) + '</a>').join(" / ") : "";
     }
     renderKpis();
+    renderScoreMatrix();
     renderLeaderboard();
     renderScatter();
     renderRadar();
