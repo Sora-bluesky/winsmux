@@ -467,6 +467,40 @@ exit /b 1
         $summary.workers[0].blocked_reason | Should -Be 'model_capacity_exceeded'
         $summary.workers[0].capacity_preflight.estimated_total_bytes | Should -Be 1500000000000
         $summary.workers[0].capacity_preflight.max_total_bytes | Should -Be ([Int64]350 * 1024 * 1024 * 1024)
+        $summary.blocked_workers[0].next_action.summary | Should -Match 'Do not start the live Colab runtime'
+        $summary.workers[0].next_action.summary | Should -Match 'Do not start the live Colab runtime'
+        @($summary.next_actions).Count | Should -Be 1
+        $summary.next_actions[0].slot_id | Should -Be 'worker-1'
+        $summary.next_actions[0].next_action.actions[0] | Should -Match 'smaller or quantized model'
+    }
+
+    It 'prints a human next action when capacity preflight blocks a large model' {
+        Write-ColabLlmAcceptanceProjectConfig
+        New-AcceptanceFakeColabCli | Out-Null
+        $configPath = Join-Path $script:AcceptanceRoot '.winsmux.yaml'
+        (Get-Content -LiteralPath $configPath -Raw -Encoding UTF8).Replace('google/gemma-3-27b-it', 'zai-org/GLM-5.2').Replace('model-family: gemma', 'model-family: glm') |
+            Set-Content -LiteralPath $configPath -Encoding UTF8
+        $env:WINSMUX_COLAB_LLM_E2E_CAPACITY_ESTIMATE_JSON = @{
+            model_id = 'zai-org/GLM-5.2'
+            weight_files = 282
+            safetensor_files = 282
+            shard_count = 282
+            sample_file = 'model-00001-of-00282.safetensors'
+            sample_size_bytes = 5342821416
+            estimated_total_bytes = 1500000000000
+        } | ConvertTo-Json -Compress
+        $env:WINSMUX_COLAB_LLM_MAX_MODEL_BYTES = [string]([Int64]350 * 1024 * 1024 * 1024)
+
+        $output = & pwsh -NoProfile -File $script:ColabLlmE2eRunnerPath `
+            -ProjectDir $script:AcceptanceRoot `
+            -Workers worker-1 `
+            -ExpectedModelId 'zai-org/GLM-5.2' `
+            -CapacityPreflightOnly 2>&1
+
+        $LASTEXITCODE | Should -Be 1
+        ($output | Out-String) | Should -Match 'Next action for worker-1'
+        ($output | Out-String) | Should -Match 'Do not start the live Colab runtime'
+        ($output | Out-String) | Should -Match 'smaller or quantized model'
     }
 
     It 'allows capacity-only preflight to pass without live Colab execution for an under-limit model' {

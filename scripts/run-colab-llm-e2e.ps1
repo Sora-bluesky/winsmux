@@ -333,6 +333,7 @@ function Test-ColabLlmCapacity {
             status = 'skipped'
             worker_id = $WorkerId
             model_id = $ModelId
+            next_action = New-ColabLlmCapacityNextAction -Status 'skipped' -ModelId $ModelId
         }
     }
     $maxBytes = Get-PositiveInt64Env -Name 'WINSMUX_COLAB_LLM_MAX_MODEL_BYTES' -Default ([Int64]350 * 1024 * 1024 * 1024)
@@ -347,6 +348,7 @@ function Test-ColabLlmCapacity {
             max_total_bytes = $maxBytes
             estimated_total_bytes = 0
             error = $_.Exception.Message
+            next_action = New-ColabLlmCapacityNextAction -Status 'model_capacity_preflight_failed' -ModelId $ModelId
         }
     }
     $estimatedBytes = 0L
@@ -361,6 +363,61 @@ function Test-ColabLlmCapacity {
         max_total_bytes = $maxBytes
         estimated_total_bytes = $estimatedBytes
         estimate = $estimate
+        next_action = New-ColabLlmCapacityNextAction -Status $status -ModelId $ModelId
+    }
+}
+
+function New-ColabLlmCapacityNextAction {
+    param(
+        [Parameter(Mandatory = $true)][string]$Status,
+        [Parameter(Mandatory = $true)][string]$ModelId
+    )
+    switch ($Status) {
+        'model_capacity_exceeded' {
+            return [ordered]@{
+                summary = 'Do not start the live Colab runtime for this model until a smaller, quantized, sharded, or explicitly approved storage plan is selected.'
+                actions = @(
+                    'Choose a smaller or quantized model for the next Colab LLM E2E path check.',
+                    'If this exact model must be used, confirm Drive capacity, GPU memory, expected Colab unit cost, and then raise WINSMUX_COLAB_LLM_MAX_MODEL_BYTES intentionally.',
+                    'Run the runner again with -CapacityPreflightOnly before setting WINSMUX_COLAB_ACCEPTANCE_REAL=1.'
+                )
+            }
+        }
+        'model_size_unavailable' {
+            return [ordered]@{
+                summary = 'Do not start the live Colab runtime until the Hugging Face weight files and expected storage size can be verified.'
+                actions = @(
+                    'Check the model repository metadata and weight filenames.',
+                    'Use a known under-limit model to verify the Colab worker path if metadata remains unavailable.',
+                    'Run the capacity preflight again after the model repository exposes usable weight metadata.'
+                )
+            }
+        }
+        'model_capacity_preflight_failed' {
+            return [ordered]@{
+                summary = 'Do not start the live Colab runtime until the capacity preflight error is fixed.'
+                actions = @(
+                    'Inspect the capacity_preflight error in summary.json.',
+                    'Fix invalid fixture JSON, network access, or Hugging Face metadata retrieval before live execution.',
+                    'Run -CapacityPreflightOnly again and require capacity_ok before live execution.'
+                )
+            }
+        }
+        'skipped' {
+            return [ordered]@{
+                summary = 'Capacity preflight was disabled, so this result does not prove the model is safe to start.'
+                actions = @(
+                    'Enable WINSMUX_COLAB_LLM_MODEL_CAPACITY_PREFLIGHT before live Colab execution.',
+                    'Run -CapacityPreflightOnly and verify capacity_ok for every selected worker.'
+                )
+            }
+        }
+        default {
+            return [ordered]@{
+                summary = "Capacity preflight status for $ModelId is $Status."
+                actions = @('Proceed only if the status is capacity_ok and the selected worker configuration is correct.')
+            }
+        }
     }
 }
 
@@ -541,6 +598,7 @@ $summary = [ordered]@{
     blocked_workers = @()
     skipped_workers = @()
     failed_workers = @()
+    next_actions = @()
     workers = @($summaryWorkers)
 }
 
@@ -569,20 +627,24 @@ if ($shouldRunCapacityPreflight) {
             $workerEntry.status = 'model_capacity_exceeded'
             $workerEntry.exit_code = 1
             $workerEntry.blocked_reason = 'model_capacity_exceeded'
+            $workerEntry.next_action = $capacity.next_action
             $capacityFailures += $workerEntry
         } elseif ([string]$capacity.status -eq 'model_size_unavailable') {
             $workerEntry.status = 'model_size_unavailable'
             $workerEntry.exit_code = 1
             $workerEntry.blocked_reason = 'model_size_unavailable'
+            $workerEntry.next_action = $capacity.next_action
             $capacityFailures += $workerEntry
         } elseif ([string]$capacity.status -eq 'model_capacity_preflight_failed') {
             $workerEntry.status = 'model_capacity_preflight_failed'
             $workerEntry.exit_code = 1
             $workerEntry.blocked_reason = 'model_capacity_preflight_failed'
+            $workerEntry.next_action = $capacity.next_action
             $capacityFailures += $workerEntry
         } elseif ([string]$capacity.status -eq 'skipped') {
             $workerEntry.status = 'capacity_skipped'
             $workerEntry.skipped_reason = 'capacity_preflight_disabled'
+            $workerEntry.next_action = $capacity.next_action
         } elseif ($CapacityPreflightOnly) {
             $workerEntry.status = 'capacity_ok'
         }
@@ -598,6 +660,15 @@ if ($shouldRunCapacityPreflight) {
                     model_id       = [string]$_.model_id
                     blocked_reason = [string]$_.blocked_reason
                     status         = [string]$_.status
+                    next_action    = $_.next_action
+                }
+            })
+            $summary.next_actions = @($capacityFailures | ForEach-Object {
+                [ordered]@{
+                    slot_id     = [string]$_.slot_id
+                    model_id    = [string]$_.model_id
+                    status      = [string]$_.status
+                    next_action = $_.next_action
                 }
             })
         } else {
@@ -610,6 +681,15 @@ if ($shouldRunCapacityPreflight) {
                         model_id       = [string]$_.model_id
                         skipped_reason = [string]$_.skipped_reason
                         status         = [string]$_.status
+                        next_action    = $_.next_action
+                    }
+                })
+                $summary.next_actions = @($skippedWorkers | ForEach-Object {
+                    [ordered]@{
+                        slot_id     = [string]$_.slot_id
+                        model_id    = [string]$_.model_id
+                        status      = [string]$_.status
+                        next_action = $_.next_action
                     }
                 })
             } else {
@@ -623,6 +703,14 @@ if ($shouldRunCapacityPreflight) {
         } else {
             "Capacity preflight artifacts written to: $OutputDir"
             "Summary: $summaryPath"
+            foreach ($next in @($summary.next_actions)) {
+                if ($null -ne $next.next_action -and -not [string]::IsNullOrWhiteSpace([string]$next.next_action.summary)) {
+                    "Next action for $($next.slot_id): $($next.next_action.summary)"
+                    foreach ($action in @($next.next_action.actions)) {
+                        "  - $action"
+                    }
+                }
+            }
         }
         if ($capacityFailures.Count -gt 0) {
             exit 1
