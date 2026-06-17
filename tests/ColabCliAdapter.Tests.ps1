@@ -337,7 +337,16 @@ print(buf.getvalue())
             $task = @{
                 model_id = 'Qwen/Qwen3-32B'
                 license_state = 'accepted'
-                prompt = 'hello from test'
+                prompt = 'hello user@example.com /content/drive/MyDrive/private'
+                local_note = 'check C:\Users\First Last\secret.txt'
+                forward_local_note = 'check C:/Users/Alice/secret.txt'
+                drive_note = 'check G:/My Drive/private.txt'
+                encoded_note = 'https://example.invalid/?email=user%40example.com&path=C%3A%2FUsers%2FAlice%2Fsecret.txt'
+                api_note = 'api_key=secret-value'
+                authorization = 'Bearer direct-secret-token'
+                headers = @{
+                    Authorization = 'Bearer nested-secret-token'
+                }
             } | ConvertTo-Json -Compress
             $runOutput = & pwsh -NoProfile -File $script:Adapter run `
                 --session test-session `
@@ -361,7 +370,24 @@ print(buf.getvalue())
             $planSource | Should -Match '_winsmux_env\[''PYTHONUNBUFFERED''\] = ''1'''
             $planSource | Should -Match 'subprocess\.Popen\(_winsmux_argv'
             $planSource | Should -Match 'for _winsmux_line in _winsmux_proc\.stdout'
+            $planSource | Should -Match '\[EMAIL_REDACTED\]'
+            $planSource | Should -Match '\[DRIVE_PATH_REDACTED\]'
+            $planSource | Should -Match '\[LOCAL_PATH_REDACTED\]'
+            $planSource | Should -Match '\[URL_ENCODED_SENSITIVE_REDACTED\]'
+            $planSource | Should -Match 'api_key=\[REDACTED\]'
+            $planSource | Should -Match 'Bearer \[REDACTED\]'
+            $planSource | Should -Not -Match 'user@example\.com'
+            $planSource | Should -Not -Match '/content/drive/MyDrive/private'
+            $planSource | Should -Not -Match 'C:\\\\Users'
+            $planSource | Should -Not -Match 'C:/Users/Alice'
+            $planSource | Should -Not -Match 'G:/My Drive/private'
+            $planSource | Should -Not -Match 'user%40example\.com'
+            $planSource | Should -Not -Match 'secret-value'
+            $planSource | Should -Not -Match 'direct-secret-token'
+            $planSource | Should -Not -Match 'nested-secret-token'
             $planSource | Should -Not -Match 'runpy\.run_path'
+            $compileOutput = & python -m py_compile $planPath 2>&1
+            $LASTEXITCODE | Should -Be 0 -Because ($compileOutput -join "`n")
             Test-Path -LiteralPath (Join-Path $outputDir 'adapter-result.json') | Should -BeTrue
 
             $logs = & pwsh -NoProfile -File $script:Adapter logs --session test-session --run-id run-1
@@ -371,6 +397,47 @@ print(buf.getvalue())
             if ($null -eq $previousMode) { Remove-Item Env:WINSMUX_COLAB_CLI_ADAPTER_MODE -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_CLI_ADAPTER_MODE = $previousMode }
             if ($null -eq $previousStateRoot) { Remove-Item Env:WINSMUX_COLAB_CLI_ADAPTER_STATE_ROOT -ErrorAction SilentlyContinue } else { $env:WINSMUX_COLAB_CLI_ADAPTER_STATE_ROOT = $previousStateRoot }
         }
+    }
+
+    It 'redacts equals-form inline task JSON and plus-encoded secrets before plan persistence' {
+        $probe = Join-Path $TestDrive 'adapter_redaction_probe.py'
+        $adapterPath = ((Join-Path $script:RepoRoot 'scripts/google_colab_cli_adapter.py') -replace '\\', '\\')
+        @"
+import importlib.util
+import json
+
+spec = importlib.util.spec_from_file_location("google_colab_cli_adapter", r"$adapterPath")
+module = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(module)
+
+task = {
+    "password": "foo bar",
+    "encoded_auth": "authorization%3A+Bearer+plus-secret",
+    "encoded_drive": "G%3A%2FMy+Drive%2Fprivate.txt",
+}
+args = [
+    "--task-json-inline=" + json.dumps(task),
+    "--task-json=C:/Users/Alice/private.json",
+]
+print(json.dumps(module.redact_script_args(args), ensure_ascii=False))
+"@ | Set-Content -LiteralPath $probe -Encoding UTF8
+
+        $output = (& python $probe) -join "`n"
+        $LASTEXITCODE | Should -Be 0
+        $redactedArgs = $output | ConvertFrom-Json
+        $inlineArg = [string]$redactedArgs[0]
+        $inlineTask = $inlineArg.Substring('--task-json-inline='.Length) | ConvertFrom-Json
+        $output | Should -Match '--task-json-inline='
+        $output | Should -Match '\[URL_ENCODED_SENSITIVE_REDACTED\]'
+        $output | Should -Match '\[LOCAL_PATH_REDACTED\]'
+        $inlineTask.password | Should -Be '[REDACTED]'
+        $inlineTask.encoded_auth | Should -Be '[URL_ENCODED_SENSITIVE_REDACTED]'
+        $inlineTask.encoded_drive | Should -Be '[URL_ENCODED_SENSITIVE_REDACTED]'
+        $output | Should -Not -Match 'foo bar'
+        $output | Should -Not -Match 'plus-secret'
+        $output | Should -Not -Match 'G%3A%2FMy\+Drive'
+        $output | Should -Not -Match 'C:/Users/Alice'
     }
 
     It 'extracts only real worker stage output lines from Colab page text' {
@@ -447,7 +514,7 @@ print(json.dumps(module.extract_worker_stage_lines(text, not_before_utc=datetime
         }
     }
 
-    It 'passes an absolute plan path to the sibling Colab executor when output dir is relative' {
+    It 'passes the raw plan through stdin to the sibling Colab executor when output dir is relative' {
         $previousMode = $env:WINSMUX_COLAB_CLI_ADAPTER_MODE
         $previousStateRoot = $env:WINSMUX_COLAB_CLI_ADAPTER_STATE_ROOT
         $previousColabRepo = $env:WINSMUX_COLAB_MCP_REPO
@@ -468,8 +535,10 @@ import os
 import sys
 
 def execute_llm_plan(plan, mode, **kwargs):
-    if not os.path.isabs(sys.argv[1]):
-        raise RuntimeError("plan path is not absolute")
+    if len(sys.argv) != 2 or sys.argv[1] != "execute_with_evidence":
+        raise RuntimeError(f"unexpected argv: {sys.argv!r}")
+    if "llm_worker.py" not in plan:
+        raise RuntimeError("plan was not passed through stdin")
     return json.dumps({"stdout": "FAKE_EXECUTE_OK", "mode": mode, "plan_length": len(plan)})
 '@ | Set-Content -LiteralPath (Join-Path $fakePackage 'execute.py') -Encoding UTF8
 

@@ -19,6 +19,7 @@ import subprocess
 import sys
 import time
 from typing import Any
+from urllib.parse import unquote, unquote_plus
 
 
 STATE_SCHEMA = "winsmux.google_colab_cli_adapter.v1"
@@ -35,8 +36,13 @@ EMAIL_RE = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
 COLAB_TOKEN_URL_RE = re.compile(r"https://colab\.(?:research\.)?google\.com/[^\s\"']*mcpProxyToken=[^\s\"']+", re.IGNORECASE)
 COLAB_DRIVE_URL_RE = re.compile(r"https://colab\.(?:research\.)?google\.com/drive/[A-Za-z0-9_-]+[^\s\"']*", re.IGNORECASE)
 MCP_TOKEN_RE = re.compile(r"mcpProxyToken=[^&\s\"']+", re.IGNORECASE)
-WINDOWS_PATH_RE = re.compile(r"(?<![A-Za-z0-9_])(?:[A-Za-z]:\\Users\\[^\\\r\n]+(?:\\[^\r\n\"']+)*)", re.IGNORECASE)
-DRIVE_PATH_RE = re.compile(r"(?:/content/drive/MyDrive|[A-Za-z]:\\マイドライブ|[A-Za-z]:\\My Drive)[^\r\n\"']*", re.IGNORECASE)
+WINDOWS_PATH_RE = re.compile(r"(?<![A-Za-z0-9_])(?:[A-Za-z]:[\\/]+Users[\\/]+[^\\/\r\n\"']+(?:[\\/]+[^\\/\r\n\"']+)*)", re.IGNORECASE)
+DRIVE_PATH_RE = re.compile(r"(?:/content/drive/MyDrive|[A-Za-z]:[\\/]+マイドライブ|[A-Za-z]:[\\/]+My Drive)[^\r\n\"']*", re.IGNORECASE)
+PERCENT_ENCODED_TOKEN_RE = re.compile(r"[^\s\"']*%[0-9A-Fa-f]{2}[^\s\"']*")
+SENSITIVE_KEY_RE = re.compile(
+    r"^(?:authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|oauth[_-]?token|token|password|passwd|secret|credential|credentials)$",
+    re.IGNORECASE,
+)
 
 
 def configure_stdio() -> None:
@@ -101,6 +107,7 @@ def append_progress(stage: str, detail: str = "") -> None:
 
 def redact_sensitive_text(text: str) -> str:
     redacted = PRIVATE_KEY_RE.sub("[PRIVATE_KEY_REDACTED]", text or "")
+    redacted = redact_percent_encoded_sensitive_text(redacted)
     redacted = AUTH_BEARER_RE.sub(r"\1[REDACTED]", redacted)
     redacted = SECRET_FIELD_RE.sub(r"\1[REDACTED]", redacted)
     redacted = EMAIL_RE.sub("[EMAIL_REDACTED]", redacted)
@@ -109,6 +116,99 @@ def redact_sensitive_text(text: str) -> str:
     redacted = MCP_TOKEN_RE.sub("mcpProxyToken=[REDACTED]", redacted)
     redacted = DRIVE_PATH_RE.sub("[DRIVE_PATH_REDACTED]", redacted)
     redacted = WINDOWS_PATH_RE.sub("[LOCAL_PATH_REDACTED]", redacted)
+    return redacted
+
+
+def contains_sensitive_text(text: str) -> bool:
+    value = text or ""
+    return any(
+        pattern.search(value)
+        for pattern in (
+            PRIVATE_KEY_RE,
+            AUTH_BEARER_RE,
+            SECRET_FIELD_RE,
+            EMAIL_RE,
+            COLAB_TOKEN_URL_RE,
+            COLAB_DRIVE_URL_RE,
+            MCP_TOKEN_RE,
+            DRIVE_PATH_RE,
+            WINDOWS_PATH_RE,
+        )
+    )
+
+
+def redact_percent_encoded_sensitive_text(text: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        value = match.group(0)
+        try:
+            decoded_values = {unquote(value), unquote_plus(value)}
+        except Exception:
+            return value
+        if any(decoded != value and contains_sensitive_text(decoded) for decoded in decoded_values):
+            return "[URL_ENCODED_SENSITIVE_REDACTED]"
+        return value
+
+    return PERCENT_ENCODED_TOKEN_RE.sub(replace, text or "")
+
+
+def redact_secret_value(value: Any) -> Any:
+    if isinstance(value, str):
+        if value.strip().lower().startswith("bearer "):
+            return "Bearer [REDACTED]"
+        return "[REDACTED]"
+    if value is None:
+        return None
+    return "[REDACTED]"
+
+
+def redact_sensitive_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            if SENSITIVE_KEY_RE.search(key_text):
+                redacted[key_text] = redact_secret_value(item)
+            else:
+                redacted[key_text] = redact_sensitive_value(item)
+        return redacted
+    if isinstance(value, list):
+        return [redact_sensitive_value(item) for item in value]
+    if isinstance(value, str):
+        return redact_sensitive_text(value)
+    return value
+
+
+def redact_json_arg(value: str) -> str:
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError:
+        return redact_sensitive_text(value)
+    return json.dumps(redact_sensitive_value(payload), ensure_ascii=False, separators=(",", ":"))
+
+
+def redact_script_args(script_args: list[str]) -> list[str]:
+    redacted: list[str] = []
+    index = 0
+    while index < len(script_args):
+        arg = script_args[index]
+        if arg.startswith("--task-json-inline="):
+            flag, value = arg.split("=", 1)
+            redacted.append(f"{flag}={redact_json_arg(value)}")
+            index += 1
+            continue
+        if arg.startswith("--task-json="):
+            flag, value = arg.split("=", 1)
+            redacted.append(f"{flag}={redact_sensitive_text(value)}")
+            index += 1
+            continue
+        redacted.append(redact_sensitive_text(arg))
+        if arg == "--task-json-inline" and index + 1 < len(script_args):
+            index += 1
+            redacted.append(redact_json_arg(script_args[index]))
+        elif arg == "--task-json" and index + 1 < len(script_args):
+            index += 1
+            redacted.append(redact_sensitive_text(script_args[index]))
+        index += 1
     return redacted
 
 
@@ -789,7 +889,7 @@ def direct_browser_execute(plan_text: str, selected_mode: str, verify_kernel_bin
                 release_direct_browser_lock(lock_path, handle)
 
 
-def execute_plan(colab_repo: Path, plan_path: Path, mode: str) -> tuple[int, str, str]:
+def execute_plan(colab_repo: Path, plan_text: str, mode: str) -> tuple[int, str, str]:
     code = (
         "import atexit, inspect, json, math, os, re, sys, threading, time\n"
         "from pathlib import Path\n"
@@ -1240,12 +1340,12 @@ def execute_plan(colab_repo: Path, plan_path: Path, mode: str) -> tuple[int, str
         "    if selected_mode == 'execute_with_evidence':\n"
         "        required.extend(['parse_gpu_from_text', 'build_execution_evidence'])\n"
         "    return selected_mode != 'plan_only' and pool is not None and _callable_is_class_accessible(pool, 'run') and _callable_is_class_accessible(pool, '_connect_session') and _callable_accepts_positional(pool, 'run', 1) and _callable_accepts_keywords(pool, '_connect_session', ('proxy_timeout_sec', 'no_auto_browser')) and _callable_is_coroutine(pool, '_connect_session') and all(callable(getattr(execute_mod, name, None)) for name in required) and all(_callable_is_coroutine(execute_mod, name) for name in async_required)\n"
-        "plan = Path(sys.argv[1]).read_text(encoding='utf-8')\n"
+        "plan = sys.stdin.read()\n"
         f"proxy_timeout = _float_env('WINSMUX_COLAB_CLI_ADAPTER_PROXY_TIMEOUT_SEC', {DEFAULT_PROXY_TIMEOUT_SEC!r})\n"
         "verify_kernel_bind = os.environ.get('WINSMUX_COLAB_CLI_ADAPTER_VERIFY_KERNEL_BIND', '1').strip().lower() not in ('0', 'false', 'no', 'off')\n"
-        "normalized_mode = sys.argv[2].strip().lower()\n"
+        "normalized_mode = sys.argv[1].strip().lower()\n"
         "if normalized_mode not in ('plan_only', 'execute', 'execute_with_evidence'):\n"
-        "    raise ValueError(f'mode must be plan_only, execute, or execute_with_evidence; got {sys.argv[2]!r}')\n"
+        "    raise ValueError(f'mode must be plan_only, execute, or execute_with_evidence; got {sys.argv[1]!r}')\n"
         "print('WINSMUX_COLAB_ADAPTER_STAGE execute_plan_begin', file=sys.stderr, flush=True)\n"
         "if _bool_env('WINSMUX_COLAB_CLI_ADAPTER_DIRECT_BROWSER', False):\n"
         "    _stage('direct_browser_begin')\n"
@@ -1279,7 +1379,7 @@ def execute_plan(colab_repo: Path, plan_path: Path, mode: str) -> tuple[int, str
     if existing_pythonpath:
         pythonpath_parts.append(existing_pythonpath)
     env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
-    command = [*colab_python(colab_repo), "-u", "-c", code, str(plan_path), mode]
+    command = [*colab_python(colab_repo), "-u", "-c", code, mode]
     timeout_sec = read_positive_float_env("WINSMUX_COLAB_CLI_ADAPTER_TIMEOUT_SEC", DEFAULT_EXECUTE_TIMEOUT_SEC)
     try:
         proc = subprocess.run(
@@ -1289,6 +1389,7 @@ def execute_plan(colab_repo: Path, plan_path: Path, mode: str) -> tuple[int, str
             text=True,
             encoding="utf-8",
             errors="replace",
+            input=plan_text,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=timeout_sec,
@@ -1334,9 +1435,10 @@ def command_run(args: argparse.Namespace, script_args: list[str]) -> int:
     run_state.mkdir(parents=True, exist_ok=True)
 
     cell_code = build_cell_code(script_path, args.session, args.run_id, script_args)
+    redacted_cell_code = build_cell_code(script_path, args.session, args.run_id, redact_script_args(script_args))
     plan_path = output_dir / "colab-adapter-plan.py"
-    write_text(plan_path, cell_code)
-    write_text(run_state / "colab-adapter-plan.py", cell_code)
+    write_text(plan_path, redacted_cell_code)
+    write_text(run_state / "colab-adapter-plan.py", redacted_cell_code)
     progress_path = output_dir / "progress.jsonl"
     write_text(progress_path, "")
     write_text(run_state / "progress.jsonl", "")
@@ -1372,7 +1474,7 @@ def command_run(args: argparse.Namespace, script_args: list[str]) -> int:
     os.environ["WINSMUX_COLAB_CLI_ADAPTER_PROGRESS_PATH"] = str(progress_path)
     append_progress("command_run_execute_plan_begin", f"mode={mode}")
     try:
-        exit_code, stdout, stderr = execute_plan(colab_repo, plan_path.resolve(), mode)
+        exit_code, stdout, stderr = execute_plan(colab_repo, cell_code, mode)
         append_progress("command_run_execute_plan_done", f"exit_code={exit_code}")
     finally:
         if previous_progress_path is None:
