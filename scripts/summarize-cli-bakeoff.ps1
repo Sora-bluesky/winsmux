@@ -236,25 +236,25 @@ function New-BakeoffHtmlReport {
   <style>
     :root {
       color-scheme: light;
-      --bg: #f6f8fb;
+      --bg: #f5f7fb;
       --paper: #ffffff;
       --ink: #101827;
       --muted: #64748b;
       --line: #dbe3ef;
-      --blue: #4f9cf9;
-      --cyan: #1cc8c8;
-      --violet: #8768f2;
-      --green: #23b67b;
-      --amber: #f0a927;
-      --rose: #e65f7b;
+      --blue: #2f7df6;
+      --cyan: #00a7b5;
+      --violet: #7b5cf6;
+      --green: #1aa66f;
+      --amber: #d99116;
+      --rose: #d94c6a;
+      --navy: #1f2a44;
       --shadow: 0 18px 45px rgba(15, 23, 42, .10);
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
       background:
-        radial-gradient(circle at 18% 0%, rgba(79, 156, 249, .18), transparent 34rem),
-        radial-gradient(circle at 90% 10%, rgba(28, 200, 200, .16), transparent 30rem),
+        linear-gradient(180deg, #eaf2ff 0, #f7fbff 260px, var(--bg) 720px),
         var(--bg);
       color: var(--ink);
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -265,7 +265,20 @@ function New-BakeoffHtmlReport {
     .eyebrow { color: var(--blue); font-size: 13px; font-weight: 800; text-transform: uppercase; }
     h1 { margin: 0; font-size: clamp(34px, 5vw, 58px); line-height: 1; letter-spacing: 0; }
     .subtitle { max-width: 860px; margin: 0; color: var(--muted); font-size: 17px; line-height: 1.62; }
-    .kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin: 26px 0 28px; }
+    .method-strip { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; }
+    .method-chip {
+      display: inline-flex;
+      align-items: center;
+      min-height: 30px;
+      padding: 5px 10px;
+      border: 1px solid rgba(100, 116, 139, .22);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, .72);
+      color: var(--navy);
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 14px; margin: 26px 0 28px; }
     .kpi, .panel {
       background: rgba(255, 255, 255, .86);
       border: 1px solid rgba(203, 213, 225, .82);
@@ -278,6 +291,7 @@ function New-BakeoffHtmlReport {
     .grid { display: grid; grid-template-columns: 1.1fr .9fr; gap: 18px; align-items: start; }
     .panel { padding: 20px; overflow: hidden; }
     .panel h2 { margin: 0 0 14px; font-size: 19px; }
+    .panel-intro { margin: -4px 0 14px; color: var(--muted); font-size: 13px; line-height: 1.52; }
     .matrix-wrap {
       overflow-x: auto;
       border: 1px solid var(--line);
@@ -366,29 +380,40 @@ function New-BakeoffHtmlReport {
       <div class="eyebrow">winsmux HarnessBench-style comparison</div>
       <h1>Benchmark Report</h1>
       <p class="subtitle">A static, reference-friendly HTML report for comparing worker-pane conditions. It uses the same task-packet and deterministic evidence contract, then visualizes score, completion, speed, and task fit in a SWE-bench Pro style layout.</p>
+      <div class="method-strip" aria-label="Benchmark method">
+        <span class="method-chip">same task packet</span>
+        <span class="method-chip">hidden or deterministic checks first</span>
+        <span class="method-chip">review findings separated</span>
+        <span class="method-chip">evidence quality tracked</span>
+      </div>
     </header>
     <section class="kpis" id="kpis"></section>
     <section class="panel section">
-      <h2>Benchmark Score Matrix</h2>
+      <h2>SWE-bench Pro Style Score Matrix</h2>
+      <p class="panel-intro">Rows are task classes. Columns are worker conditions. Each cell keeps score, completion count, and median time together so weak evidence does not look like a clean win.</p>
       <div class="matrix-wrap" id="scoreMatrix"></div>
     </section>
     <section class="grid">
       <article class="panel">
         <h2>Score Leaderboard</h2>
+        <p class="panel-intro">This ranking is a quick scan only. Use the matrix and heatmap before assigning a model to a winsmux worker role.</p>
         <div class="leaderboard" id="leaderboard"></div>
       </article>
       <article class="panel chart-card">
         <h2>Speed Quality Map</h2>
+        <p class="panel-intro">The best operating point moves toward the upper-left: higher quality with lower wall time.</p>
         <div id="scatter"></div>
       </article>
     </section>
     <section class="grid section">
       <article class="panel chart-card">
         <h2>Capability Radar</h2>
+        <p class="panel-intro">Shows whether a condition is broadly useful or specialized in one dimension such as speed, terminal handling, or evidence quality.</p>
         <div id="radar"></div>
       </article>
       <article class="panel">
         <h2>Task-Class Heatmap</h2>
+        <p class="panel-intro">Highlights which model family fits which work class. Missing cells mean there were not enough scored runs.</p>
         <div id="heatmap"></div>
       </article>
     </section>
@@ -452,7 +477,7 @@ __BENCHMARK_DATA_JSON__
       return String(s ?? "").replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
     }
     function conditionColor(i) {
-      return ["#4f9cf9", "#1cc8c8", "#8768f2", "#23b67b", "#f0a927", "#e65f7b"][i % 6];
+      return ["#2f7df6", "#00a7b5", "#7b5cf6", "#1aa66f", "#d99116", "#d94c6a"][i % 6];
     }
     function renderKpis() {
       const total = conditions.length;
@@ -462,8 +487,9 @@ __BENCHMARK_DATA_JSON__
       const best = conditions.length ? Math.max(...conditions.map(metric)) : 0;
       document.getElementById("kpis").innerHTML = [
         ["Conditions", total],
-        ["Started runs", started],
+        ["Measured runs", started],
         ["Completed runs", completed],
+        ["Timeouts", timeouts],
         ["Best score", best ? best.toFixed(1) : "n/a"]
       ].map(([k, v]) => '<div class="kpi"><div class="kpi-label">' + escapeHtml(k) + '</div><div class="kpi-value">' + escapeHtml(v) + '</div></div>').join("");
     }

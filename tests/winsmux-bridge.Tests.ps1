@@ -22323,7 +22323,9 @@ test_strategy:
 
         $html = Get-Content -LiteralPath $summary.benchmark_report_html -Raw -Encoding UTF8
         $html | Should -Match 'winsmux HarnessBench-style comparison'
-        $html | Should -Match 'Benchmark Score Matrix'
+        $html | Should -Match 'SWE-bench Pro Style Score Matrix'
+        $html | Should -Match 'same task packet'
+        $html | Should -Match 'hidden or deterministic checks first'
         $html | Should -Match 'SWE-bench Pro style score matrix'
         $html | Should -Match 'Score Leaderboard'
         $html | Should -Match 'Speed Quality Map'
