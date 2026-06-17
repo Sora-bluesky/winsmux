@@ -254,23 +254,75 @@ function Write-ClmSafeTextFile {
         New-Item -ItemType Directory -Path $parent -Force | Out-Null
     }
 
-    $escapedPath = $Path -replace '"', '""'
-    if ([string]::IsNullOrEmpty($Content)) {
+    $useCmdFallback = ($env:WINSMUX_FORCE_CLM_SAFE_WRITE -eq '1') -or ([string]$ExecutionContext.SessionState.LanguageMode -eq 'ConstrainedLanguage')
+    if ($useCmdFallback) {
+        Write-ClmSafeTextFileViaCmd -Path $Path -Content $Content -Append:$Append
+        return
+    }
+
+    try {
         if ($Append) {
+            if ([string]::IsNullOrEmpty($Content)) {
+                return
+            }
+            Add-Content -LiteralPath $Path -Value $Content -Encoding UTF8 -NoNewline
+        } else {
+            Set-Content -LiteralPath $Path -Value $Content -Encoding UTF8 -NoNewline
+        }
+    } catch {
+        Write-ClmSafeTextFileViaCmd -Path $Path -Content $Content -Append:$Append
+    }
+}
+
+function Write-ClmSafeTextFileViaCmd {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [AllowEmptyString()][string]$Content = '',
+        [switch]$Append
+    )
+
+    $escapedPath = $Path -replace '"', '""'
+    if ($Append) {
+        if ([string]::IsNullOrEmpty($Content)) {
             return
         }
-
-        $writeCommand = 'type nul > "{0}"' -f $escapedPath
-        cmd /d /c $writeCommand | Out-Null
+        $writeCommand = 'chcp 65001 >nul & more >> "{0}"' -f $escapedPath
+        Invoke-ClmSafeTextFileCmdWrite -Command $writeCommand -Content $Content
     } else {
-        $redirect = if ($Append) { '>>' } else { '>' }
-        $writeCommand = 'more {0} "{1}"' -f $redirect, $escapedPath
-        $Content | cmd /d /c $writeCommand | Out-Null
+        if ([string]::IsNullOrEmpty($Content)) {
+            $writeCommand = 'type nul > "{0}"' -f $escapedPath
+            cmd /d /c $writeCommand | Out-Null
+        } else {
+            $writeCommand = 'chcp 65001 >nul & more > "{0}"' -f $escapedPath
+            Invoke-ClmSafeTextFileCmdWrite -Command $writeCommand -Content $Content
+        }
     }
 
     $nativeExitCode = Get-SafeLastExitCode
     if ($null -ne $nativeExitCode -and $nativeExitCode -ne 0) {
         Stop-WithError "failed to write file via cmd.exe: $Path"
+    }
+}
+
+function Invoke-ClmSafeTextFileCmdWrite {
+    param(
+        [Parameter(Mandatory = $true)][string]$Command,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Content
+    )
+
+    $previousOutputEncoding = $OutputEncoding
+    try {
+        try {
+            $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+        } catch {
+            # ConstrainedLanguageMode may block this assignment; cmd fallback still runs.
+        }
+        $Content | cmd /d /c $Command | Out-Null
+    } finally {
+        try {
+            $OutputEncoding = $previousOutputEncoding
+        } catch {
+        }
     }
 }
 
@@ -6025,8 +6077,19 @@ function ConvertTo-WorkersSafeArgumentArray {
     param([AllowNull()][string[]]$Arguments)
 
     $safe = [System.Collections.Generic.List[string]]::new()
+    $redactNext = $false
     foreach ($argument in @($Arguments)) {
-        $safe.Add((ConvertTo-WorkersSafeLogText -Text ([string]$argument))) | Out-Null
+        if ($redactNext) {
+            $safe.Add('[TASK_JSON_INLINE_REDACTED]') | Out-Null
+            $redactNext = $false
+            continue
+        }
+
+        $argumentText = [string]$argument
+        $safe.Add((ConvertTo-WorkersSafeLogText -Text $argumentText)) | Out-Null
+        if ([string]::Equals($argumentText, '--task-json-inline', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $redactNext = $true
+        }
     }
 
     return @($safe)

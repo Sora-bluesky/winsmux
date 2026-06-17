@@ -9384,6 +9384,7 @@ Describe 'winsmux workers command' {
         $script:previousOllamaModels = $env:OLLAMA_MODELS
         $script:previousLocalLlmArtifactRoot = $env:WINSMUX_LOCAL_LLM_ARTIFACT_ROOT
         $script:previousOllamaEndpoint = $env:WINSMUX_OLLAMA_ENDPOINT
+        $script:previousForceClmSafeWrite = $env:WINSMUX_FORCE_CLM_SAFE_WRITE
         $env:WINSMUX_COLAB_CLI = 'winsmux-test-missing-google-colab-cli'
         $env:WINSMUX_COLAB_AUTH_STATE = ''
         $env:WINSMUX_COLAB_AVAILABLE_GPUS = ''
@@ -9391,6 +9392,7 @@ Describe 'winsmux workers command' {
         $env:OLLAMA_MODELS = ''
         $env:WINSMUX_LOCAL_LLM_ARTIFACT_ROOT = ''
         $env:WINSMUX_OLLAMA_ENDPOINT = ''
+        $env:WINSMUX_FORCE_CLM_SAFE_WRITE = ''
     }
 
     AfterEach {
@@ -9401,6 +9403,7 @@ Describe 'winsmux workers command' {
         $env:OLLAMA_MODELS = $script:previousOllamaModels
         $env:WINSMUX_LOCAL_LLM_ARTIFACT_ROOT = $script:previousLocalLlmArtifactRoot
         $env:WINSMUX_OLLAMA_ENDPOINT = $script:previousOllamaEndpoint
+        $env:WINSMUX_FORCE_CLM_SAFE_WRITE = $script:previousForceClmSafeWrite
         if ($script:workersTempRoot -and (Test-Path -LiteralPath $script:workersTempRoot)) {
             Remove-Item -LiteralPath $script:workersTempRoot -Recurse -Force
         }
@@ -9552,7 +9555,7 @@ agent-slots:
         $script:winsmuxWorkersCoreRawContent | Should -Match 'workers broker token <issue\|check> <slot> --run-id <id> \[--ttl-seconds <n>\] \[--no-refresh\] \[--json\] \[--project-dir <path>\]'
         $script:winsmuxWorkersCoreRawContent | Should -Match 'workers policy baseline <slot> --run-id <id> \[--network <mode>\] \[--write <mode>\] \[--provider <mode>\] \[--json\] \[--project-dir <path>\]'
         $script:winsmuxWorkersCoreRawContent | Should -Match "'workers'\s*\{\s*Invoke-Workers\s*\}"
-        $script:winsmuxWorkersCoreRawContent | Should -Match 'google-colab-cli not found on PATH'
+        $script:winsmuxWorkersCoreRawContent | Should -Match 'google-colab-cli compatible adapter not found on PATH'
         $script:winsmuxWorkersCoreRawContent | Should -Match 'uv not found on PATH'
         $script:winsmuxWorkersCoreRawContent | Should -Match "'exec'\s*\{\s*Invoke-WorkersExec\s*\}"
         $script:winsmuxWorkersCoreRawContent | Should -Match "'attach'\s*\{\s*Invoke-WorkersAttach\s*\}"
@@ -9563,6 +9566,40 @@ agent-slots:
         $script:winsmuxWorkersCoreRawContent | Should -Match "'sandbox'\s*\{\s*Invoke-WorkersSandbox\s*\}"
         $script:winsmuxWorkersCoreRawContent | Should -Match "'broker'\s*\{\s*Invoke-WorkersBroker\s*\}"
         $script:winsmuxWorkersCoreRawContent | Should -Match "'policy'\s*\{\s*Invoke-WorkersPolicy\s*\}"
+    }
+
+    It 'keeps CLM fallback writes readable for UTF-8 JSON evidence' {
+        $env:WINSMUX_FORCE_CLM_SAFE_WRITE = '1'
+        $path = Join-Path $script:workersTempRoot 'utf8-run.json'
+        $json = '{"prompt":"日本語で \"モデル名\" と runtime を短く返してください。","runtime":"colab"}'
+
+        Write-ClmSafeTextFile -Path $path -Content $json
+        $stored = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+
+        $stored.prompt | Should -Be '日本語で "モデル名" と runtime を短く返してください。'
+        $stored.runtime | Should -Be 'colab'
+    }
+
+    It 'redacts inline task JSON arguments across repeated and malformed flag shapes' {
+        $arguments = @(
+            'run',
+            '--TASK-JSON-INLINE',
+            '{"prompt":"secret-one"}',
+            '--other',
+            'visible',
+            '--task-json-inline',
+            '{"prompt":"secret-two"}',
+            '--task-json-inline'
+        )
+
+        $safe = @(ConvertTo-WorkersSafeArgumentArray -Arguments $arguments)
+        $safeText = $safe -join ' '
+
+        $safeText | Should -Not -Match 'secret-one'
+        $safeText | Should -Not -Match 'secret-two'
+        $safeText | Should -Match 'visible'
+        (@($safe | Where-Object { $_ -eq '[TASK_JSON_INLINE_REDACTED]' }).Count) | Should -Be 2
+        $safe[-1] | Should -Be '--task-json-inline'
     }
 
     It 'prepares and cleans up a disposable isolated workspace from explicit includes' {
@@ -11935,7 +11972,7 @@ worker-backend: colab_cli
         $labels | Should -Contain 'google-colab-cli'
         $labels | Should -Contain 'uv'
         $labels | Should -Contain 'colab auth'
-        (@($payload.checks | Where-Object { $_.label -eq 'google-colab-cli' })[0].action) | Should -Match 'Install google-colab-cli'
+        (@($payload.checks | Where-Object { $_.label -eq 'google-colab-cli' })[0].action) | Should -Match 'Install or configure a compatible adapter'
         $uvCheck = @($payload.checks | Where-Object { $_.label -eq 'uv' })[0]
         if ($uvCheck.status -eq 'fail') {
             $uvCheck.action | Should -Match 'Install uv'
@@ -12005,11 +12042,14 @@ worker-backend: colab_cli
         New-Item -ItemType Directory -Path (Join-Path $script:workersTempRoot 'workers\colab') -Force | Out-Null
         'print("hello from colab llm")' | Set-Content -Path (Join-Path $script:workersTempRoot 'workers\colab\llm_worker.py') -Encoding UTF8
 
-        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers exec worker-1 --prompt 'Summarize the repository shape.' --run-id colab-llm-run --json --project-dir $script:workersTempRoot
+        $prompt = '日本語で "モデル名" と runtime を短く返してください。'
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers exec worker-1 --prompt $prompt --run-id colab-llm-run --json --project-dir $script:workersTempRoot
         $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
         $argumentText = @($payload.cli_arguments) -join ' '
         $runJsonPath = Join-Path $script:workersTempRoot ($payload.run_json -replace '/', '\')
         $stored = Get-Content -LiteralPath $runJsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $taskPath = Join-Path $script:workersTempRoot ($payload.task_json -replace '/', '\')
+        $task = Get-Content -LiteralPath $taskPath -Raw -Encoding UTF8 | ConvertFrom-Json
 
         $payload.status | Should -Be 'succeeded'
         $payload.backend | Should -Be 'colab_llm'
@@ -12021,11 +12061,13 @@ worker-backend: colab_cli
         $argumentText | Should -Not -Match ([regex]::Escape($script:workersTempRoot))
         $argumentText | Should -Match '\[DRIVE_PATH_REDACTED\]'
         $argumentText | Should -Match '\[LOCAL_PATH_REDACTED\]'
+        $argumentText | Should -Match '\[TASK_JSON_INLINE_REDACTED\]'
+        $argumentText | Should -Not -Match ([regex]::Escape($prompt))
         $stored.backend | Should -Be 'colab_llm'
         $stored.drive_root | Should -Be '[DRIVE_PATH_REDACTED]'
         $stored.cli_arguments | Should -Contain '--task-json-inline'
-        $taskPath = Join-Path $script:workersTempRoot ($payload.task_json -replace '/', '\')
-        $task = Get-Content -LiteralPath $taskPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $stored.cli_arguments[([array]::IndexOf($stored.cli_arguments, '--task-json-inline') + 1)] | Should -Be '[TASK_JSON_INLINE_REDACTED]'
+        $task.prompt | Should -Be $prompt
         $task.execution.local_ollama_fallback | Should -Be $false
         $task.execution.colab_cli_fallback | Should -Be $false
         $task.storage.model_root | Should -Be '/content/drive/MyDrive/winsmux-colab-llm/models'
