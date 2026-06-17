@@ -59,6 +59,7 @@ jobs:
     name: Pester Tests
     runs-on: windows-latest
     needs: public-surface
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
 
