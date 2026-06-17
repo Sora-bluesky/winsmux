@@ -6,6 +6,7 @@ use crate::pty_backend::{
 };
 use serde_json::{json, Value};
 use std::sync::Arc;
+use std::time::Duration;
 
 pub const WINSMUX_CONTROL_PIPE_NAME: &str = r"\\.\pipe\winsmux-control";
 
@@ -209,9 +210,16 @@ fn serialize_control_pipe_result(id: Value, result: Value) -> Vec<u8> {
 
 #[cfg(windows)]
 pub fn start_control_pipe_server(pty_transport: Arc<dyn PtyCommandTransport + Send + Sync>) {
-    std::thread::spawn(move || loop {
-        if let Err(err) = serve_one_control_pipe_client(pty_transport.as_ref()) {
-            eprintln!("winsmux control pipe error: {err}");
+    std::thread::spawn(move || {
+        loop {
+            if let Err(err) = serve_one_control_pipe_client(pty_transport.as_ref()) {
+                if is_control_pipe_startup_error(&err) {
+                    eprintln!("winsmux control pipe disabled: {err}");
+                    break;
+                }
+                eprintln!("winsmux control pipe error: {err}");
+                std::thread::sleep(Duration::from_millis(250));
+            }
         }
     });
 }
@@ -325,6 +333,11 @@ fn serve_one_control_pipe_client(pty_transport: &dyn PtyCommandTransport) -> Res
         DisconnectNamedPipe(pipe.0);
     }
     Ok(())
+}
+
+#[cfg(windows)]
+fn is_control_pipe_startup_error(message: &str) -> bool {
+    message.starts_with("CreateNamedPipeW failed")
 }
 
 #[cfg(test)]
@@ -494,6 +507,17 @@ mod tests {
         assert!(!WINSMUX_CONTROL_PIPE_NAME.contains("localhost"));
         assert!(!WINSMUX_CONTROL_PIPE_NAME.contains("ws://"));
         assert!(!WINSMUX_CONTROL_PIPE_NAME.contains("http://"));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn control_pipe_startup_create_failure_disables_server_loop() {
+        assert!(is_control_pipe_startup_error(
+            "CreateNamedPipeW failed with 5"
+        ));
+        assert!(!is_control_pipe_startup_error(
+            "ReadFile failed with 109"
+        ));
     }
 
     #[test]

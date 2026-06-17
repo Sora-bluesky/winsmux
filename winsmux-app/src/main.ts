@@ -1466,7 +1466,7 @@ function getWorkbenchPaneOrdinal(paneId: string | null | undefined) {
 }
 
 function createWorkbenchTerminal(options?: { cursorBlink?: boolean; scrollback?: number }) {
-  return new Terminal({
+  const terminal = new Terminal({
     allowProposedApi: true,
     cursorBlink: options?.cursorBlink ?? false,
     cursorStyle: "block",
@@ -1480,6 +1480,31 @@ function createWorkbenchTerminal(options?: { cursorBlink?: boolean; scrollback?:
     minimumContrastRatio: 4.5,
     scrollback: options?.scrollback ?? 1000,
     theme: WINSMUX_DARK_TERMINAL_THEME,
+  });
+  attachTerminalCopySelectionGuard(terminal);
+  return terminal;
+}
+
+function attachTerminalCopySelectionGuard(terminal: Terminal) {
+  terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
+    if (event.type !== "keydown") {
+      return true;
+    }
+    const isCopyShortcut = (event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "c";
+    if (!isCopyShortcut || !terminal.hasSelection()) {
+      return true;
+    }
+
+    const selection = terminal.getSelection();
+    if (selection) {
+      void copyTextToClipboard(selection)
+        .then(() => terminal.clearSelection())
+        .catch((error) => {
+          console.warn("Failed to copy terminal selection", error);
+        });
+    }
+    event.preventDefault();
+    return false;
   });
 }
 
