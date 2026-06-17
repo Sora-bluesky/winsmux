@@ -17,6 +17,8 @@ param(
 
     [string]$ExpectedModelId = '',
 
+    [string]$ExpectedModelMapJson = '',
+
     [switch]$PlanOnly,
 
     [switch]$CapacityPreflightOnly,
@@ -97,6 +99,46 @@ function Get-ColabLlmModelId {
         return [string]$Worker.model_id
     }
     return ''
+}
+
+function ConvertTo-ExpectedModelMap {
+    param(
+        [AllowEmptyString()][string]$JsonText,
+        [AllowEmptyString()][string]$GlobalExpectedModelId,
+        [Parameter(Mandatory = $true)][string[]]$SelectedWorkers
+    )
+    $map = @{}
+    if ([string]::IsNullOrWhiteSpace($JsonText)) {
+        return $map
+    }
+    if (-not [string]::IsNullOrWhiteSpace($GlobalExpectedModelId)) {
+        throw 'Use either -ExpectedModelId or -ExpectedModelMapJson, not both.'
+    }
+    try {
+        $parsed = $JsonText | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        throw "ExpectedModelMapJson must be a JSON object mapping worker ids to model ids: $($_.Exception.Message)"
+    }
+    if ($null -eq $parsed -or $parsed -isnot [PSCustomObject]) {
+        throw 'ExpectedModelMapJson must be a JSON object mapping worker ids to model ids.'
+    }
+    foreach ($property in @($parsed.PSObject.Properties)) {
+        $workerId = Resolve-WorkerId -Value ([string]$property.Name)
+        if ($SelectedWorkers -notcontains $workerId) {
+            throw "ExpectedModelMapJson includes worker '$workerId', but that worker is not selected."
+        }
+        $modelId = ([string]$property.Value).Trim()
+        if ([string]::IsNullOrWhiteSpace($modelId)) {
+            throw "ExpectedModelMapJson entry for worker '$workerId' is empty."
+        }
+        $map[$workerId] = $modelId
+    }
+    foreach ($workerId in $SelectedWorkers) {
+        if (-not $map.ContainsKey($workerId)) {
+            throw "ExpectedModelMapJson is missing selected worker '$workerId'."
+        }
+    }
+    return $map
 }
 
 function Test-TruthyEnv {
@@ -356,14 +398,20 @@ $script:PromptText = $Prompt
 
 $targetWorkers = @()
 foreach ($workerId in @($Workers)) {
-    $resolvedWorkerId = Resolve-WorkerId -Value ([string]$workerId)
-    if ($targetWorkers -notcontains $resolvedWorkerId) {
-        $targetWorkers += $resolvedWorkerId
+    foreach ($workerPart in ([string]$workerId -split ',')) {
+        if ([string]::IsNullOrWhiteSpace($workerPart)) {
+            continue
+        }
+        $resolvedWorkerId = Resolve-WorkerId -Value ([string]$workerPart)
+        if ($targetWorkers -notcontains $resolvedWorkerId) {
+            $targetWorkers += $resolvedWorkerId
+        }
     }
 }
 if ($targetWorkers.Count -eq 0) {
     throw 'At least one worker must be selected.'
 }
+$expectedModelByWorker = ConvertTo-ExpectedModelMap -JsonText $ExpectedModelMapJson -GlobalExpectedModelId $ExpectedModelId -SelectedWorkers $targetWorkers
 
 if (-not (Test-Path -LiteralPath $script:CorePath -PathType Leaf)) {
     throw "winsmux-core.ps1 not found: $script:CorePath"
@@ -434,10 +482,16 @@ foreach ($required in $targetWorkers) {
     if (-not [string]::IsNullOrWhiteSpace([string]$worker.degraded_reason)) {
         throw "worker slot $required is degraded: $($worker.degraded_reason)"
     }
-    if (-not [string]::IsNullOrWhiteSpace($ExpectedModelId)) {
+    $expectedModelForWorker = ''
+    if ($expectedModelByWorker.ContainsKey($required)) {
+        $expectedModelForWorker = [string]$expectedModelByWorker[$required]
+    } elseif (-not [string]::IsNullOrWhiteSpace($ExpectedModelId)) {
+        $expectedModelForWorker = $ExpectedModelId
+    }
+    if (-not [string]::IsNullOrWhiteSpace($expectedModelForWorker)) {
         $actualModelId = Get-ColabLlmModelId -Worker $worker
-        if ($actualModelId -ne $ExpectedModelId) {
-            throw "worker slot $required uses model_id '$actualModelId', not expected '$ExpectedModelId'."
+        if ($actualModelId -ne $expectedModelForWorker) {
+            throw "worker slot $required uses model_id '$actualModelId', not expected '$expectedModelForWorker'."
         }
     }
 }
@@ -460,7 +514,15 @@ foreach ($workerId in $targetWorkers) {
         slot_id  = $workerId
         run_id   = $runIds[$workerId]
         model_id = Get-ColabLlmModelId -Worker $worker
+        expected_model_id = if ($expectedModelByWorker.ContainsKey($workerId)) { [string]$expectedModelByWorker[$workerId] } elseif ([string]::IsNullOrWhiteSpace($ExpectedModelId)) { '' } else { $ExpectedModelId }
         status   = 'pending'
+    }
+}
+
+$summaryExpectedModelMap = [ordered]@{}
+foreach ($workerId in $targetWorkers) {
+    if ($expectedModelByWorker.ContainsKey($workerId)) {
+        $summaryExpectedModelMap[$workerId] = [string]$expectedModelByWorker[$workerId]
     }
 }
 
@@ -473,6 +535,7 @@ $summary = [ordered]@{
     output_dir = '[OUTPUT_DIR_REDACTED]'
     run_id_prefix = $RunIdPrefix
     expected_model_id = if ([string]::IsNullOrWhiteSpace($ExpectedModelId)) { '' } else { $ExpectedModelId }
+    expected_model_ids = $summaryExpectedModelMap
     workers = @($summaryWorkers)
 }
 

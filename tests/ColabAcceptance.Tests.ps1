@@ -368,6 +368,68 @@ exit /b 1
         ($output | Out-String) | Should -Match "worker slot worker-1 uses model_id 'google/gemma-3-27b-it', not expected 'zai-org/GLM-5.2'"
     }
 
+    It 'plans two Colab LLM workers with per-worker expected model ids' {
+        Write-ColabLlmAcceptanceProjectConfig
+        New-AcceptanceFakeColabCli | Out-Null
+        $expectedModels = @{
+            'worker-1' = 'google/gemma-3-27b-it'
+            'worker-2' = 'Qwen/Qwen3-32B'
+        } | ConvertTo-Json -Compress
+
+        $output = & pwsh -NoProfile -File $script:ColabLlmE2eRunnerPath `
+            -ProjectDir $script:AcceptanceRoot `
+            -Workers 'worker-1,worker-2' `
+            -ExpectedModelMapJson $expectedModels `
+            -PlanOnly `
+            -Json 2>&1
+
+        $LASTEXITCODE | Should -Be 0
+        $summary = ConvertFrom-AcceptanceJsonOutput -Output $output
+        @($summary.workers).Count | Should -Be 2
+        $summary.expected_model_id | Should -Be ''
+        $summary.expected_model_ids.'worker-1' | Should -Be 'google/gemma-3-27b-it'
+        $summary.expected_model_ids.'worker-2' | Should -Be 'Qwen/Qwen3-32B'
+        (@($summary.workers | Where-Object { $_.slot_id -eq 'worker-1' })[0].expected_model_id) | Should -Be 'google/gemma-3-27b-it'
+        (@($summary.workers | Where-Object { $_.slot_id -eq 'worker-2' })[0].expected_model_id) | Should -Be 'Qwen/Qwen3-32B'
+    }
+
+    It 'stops a two-worker Colab LLM plan when a per-worker expected model id is wrong' {
+        Write-ColabLlmAcceptanceProjectConfig
+        New-AcceptanceFakeColabCli | Out-Null
+        $expectedModels = @{
+            'worker-1' = 'google/gemma-3-27b-it'
+            'worker-2' = 'zai-org/GLM-5.2'
+        } | ConvertTo-Json -Compress
+
+        $output = & pwsh -NoProfile -File $script:ColabLlmE2eRunnerPath `
+            -ProjectDir $script:AcceptanceRoot `
+            -Workers 'worker-1,worker-2' `
+            -ExpectedModelMapJson $expectedModels `
+            -PlanOnly `
+            -Json 2>&1
+
+        $LASTEXITCODE | Should -Not -Be 0
+        ($output | Out-String) | Should -Match "worker slot worker-2 uses model_id 'Qwen/Qwen3-32B', not expected 'zai-org/GLM-5.2'"
+    }
+
+    It 'requires per-worker expected model ids for every selected Colab LLM worker' {
+        Write-ColabLlmAcceptanceProjectConfig
+        New-AcceptanceFakeColabCli | Out-Null
+        $expectedModels = @{
+            'worker-1' = 'google/gemma-3-27b-it'
+        } | ConvertTo-Json -Compress
+
+        $output = & pwsh -NoProfile -File $script:ColabLlmE2eRunnerPath `
+            -ProjectDir $script:AcceptanceRoot `
+            -Workers 'worker-1,worker-2' `
+            -ExpectedModelMapJson $expectedModels `
+            -PlanOnly `
+            -Json 2>&1
+
+        $LASTEXITCODE | Should -Not -Be 0
+        ($output | Out-String) | Should -Match "ExpectedModelMapJson is missing selected worker 'worker-2'"
+    }
+
     It 'classifies oversized GLM-5.2 before starting a live Colab runtime' {
         Write-ColabLlmAcceptanceProjectConfig
         New-AcceptanceFakeColabCli | Out-Null
