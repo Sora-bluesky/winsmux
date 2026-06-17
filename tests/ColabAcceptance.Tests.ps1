@@ -456,6 +456,11 @@ exit /b 1
 
         $LASTEXITCODE | Should -Be 1
         $summary = ConvertFrom-AcceptanceJsonOutput -Output $output
+        $summary.status | Should -Be 'blocked'
+        $summary.blocked_reason | Should -Be 'capacity_preflight_failed'
+        @($summary.blocked_workers).Count | Should -Be 1
+        $summary.blocked_workers[0].slot_id | Should -Be 'worker-1'
+        $summary.blocked_workers[0].blocked_reason | Should -Be 'model_capacity_exceeded'
         @($summary.workers).Count | Should -Be 1
         $summary.workers[0].slot_id | Should -Be 'worker-1'
         $summary.workers[0].status | Should -Be 'model_capacity_exceeded'
@@ -485,10 +490,36 @@ exit /b 1
 
         $LASTEXITCODE | Should -Be 0
         $summary = ConvertFrom-AcceptanceJsonOutput -Output $output
+        $summary.status | Should -Be 'capacity_ok'
+        $summary.blocked_reason | Should -Be ''
+        @($summary.blocked_workers).Count | Should -Be 0
         @($summary.workers).Count | Should -Be 1
         $summary.workers[0].slot_id | Should -Be 'worker-1'
         $summary.workers[0].status | Should -Be 'capacity_ok'
         $summary.workers[0].capacity_preflight.status | Should -Be 'capacity_ok'
+    }
+
+    It 'reports disabled capacity-only preflight as skipped, not successful' {
+        Write-ColabLlmAcceptanceProjectConfig
+        New-AcceptanceFakeColabCli | Out-Null
+        $env:WINSMUX_COLAB_LLM_MODEL_CAPACITY_PREFLIGHT = '0'
+
+        $output = & pwsh -NoProfile -File $script:ColabLlmE2eRunnerPath `
+            -ProjectDir $script:AcceptanceRoot `
+            -Workers worker-1 `
+            -CapacityPreflightOnly `
+            -Json 2>&1
+
+        $LASTEXITCODE | Should -Be 0
+        $summary = ConvertFrom-AcceptanceJsonOutput -Output $output
+        $summary.status | Should -Be 'capacity_skipped'
+        @($summary.skipped_workers).Count | Should -Be 1
+        $summary.skipped_workers[0].slot_id | Should -Be 'worker-1'
+        $summary.skipped_workers[0].skipped_reason | Should -Be 'capacity_preflight_disabled'
+        @($summary.workers).Count | Should -Be 1
+        $summary.workers[0].slot_id | Should -Be 'worker-1'
+        $summary.workers[0].status | Should -Be 'capacity_skipped'
+        $summary.workers[0].capacity_preflight.status | Should -Be 'skipped'
     }
 
     It 'records capacity preflight metadata failures without starting live Colab' {
@@ -504,6 +535,11 @@ exit /b 1
 
         $LASTEXITCODE | Should -Be 1
         $summary = ConvertFrom-AcceptanceJsonOutput -Output $output
+        $summary.status | Should -Be 'blocked'
+        $summary.blocked_reason | Should -Be 'capacity_preflight_failed'
+        @($summary.blocked_workers).Count | Should -Be 1
+        $summary.blocked_workers[0].slot_id | Should -Be 'worker-1'
+        $summary.blocked_workers[0].blocked_reason | Should -Be 'model_capacity_preflight_failed'
         @($summary.workers).Count | Should -Be 1
         $summary.workers[0].slot_id | Should -Be 'worker-1'
         $summary.workers[0].status | Should -Be 'model_capacity_preflight_failed'

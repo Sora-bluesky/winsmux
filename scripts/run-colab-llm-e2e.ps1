@@ -536,6 +536,11 @@ $summary = [ordered]@{
     run_id_prefix = $RunIdPrefix
     expected_model_id = if ([string]::IsNullOrWhiteSpace($ExpectedModelId)) { '' } else { $ExpectedModelId }
     expected_model_ids = $summaryExpectedModelMap
+    status = 'pending'
+    blocked_reason = ''
+    blocked_workers = @()
+    skipped_workers = @()
+    failed_workers = @()
     workers = @($summaryWorkers)
 }
 
@@ -543,6 +548,7 @@ if ($PlanOnly) {
     foreach ($workerEntry in @($summary.workers)) {
         $workerEntry.status = 'planned'
     }
+    $summary.status = 'planned'
     $summaryPath = Join-Path $OutputDir 'summary.json'
     Set-Content -LiteralPath $summaryPath -Value ($summary | ConvertTo-Json -Depth 12) -Encoding UTF8
     if ($Json) {
@@ -574,12 +580,42 @@ if ($shouldRunCapacityPreflight) {
             $workerEntry.exit_code = 1
             $workerEntry.blocked_reason = 'model_capacity_preflight_failed'
             $capacityFailures += $workerEntry
+        } elseif ([string]$capacity.status -eq 'skipped') {
+            $workerEntry.status = 'capacity_skipped'
+            $workerEntry.skipped_reason = 'capacity_preflight_disabled'
         } elseif ($CapacityPreflightOnly) {
             $workerEntry.status = 'capacity_ok'
         }
     }
 
     if ($CapacityPreflightOnly -or $capacityFailures.Count -gt 0) {
+        if ($capacityFailures.Count -gt 0) {
+            $summary.status = 'blocked'
+            $summary.blocked_reason = 'capacity_preflight_failed'
+            $summary.blocked_workers = @($capacityFailures | ForEach-Object {
+                [ordered]@{
+                    slot_id        = [string]$_.slot_id
+                    model_id       = [string]$_.model_id
+                    blocked_reason = [string]$_.blocked_reason
+                    status         = [string]$_.status
+                }
+            })
+        } else {
+            $skippedWorkers = @($summary.workers | Where-Object { [string]$_.status -eq 'capacity_skipped' })
+            if ($skippedWorkers.Count -gt 0) {
+                $summary.status = 'capacity_skipped'
+                $summary.skipped_workers = @($skippedWorkers | ForEach-Object {
+                    [ordered]@{
+                        slot_id        = [string]$_.slot_id
+                        model_id       = [string]$_.model_id
+                        skipped_reason = [string]$_.skipped_reason
+                        status         = [string]$_.status
+                    }
+                })
+            } else {
+                $summary.status = 'capacity_ok'
+            }
+        }
         $summaryPath = Join-Path $OutputDir 'summary.json'
         Set-Content -LiteralPath $summaryPath -Value ($summary | ConvertTo-Json -Depth 16) -Encoding UTF8
         if ($Json) {
@@ -706,8 +742,36 @@ foreach ($workerId in $targetWorkers) {
 }
 
 $summaryPath = Join-Path $OutputDir 'summary.json'
-Set-Content -LiteralPath $summaryPath -Value ($summary | ConvertTo-Json -Depth 12) -Encoding UTF8
 $failed = @($summary.workers | Where-Object { $_.status -ne 'succeeded' })
+$summary.status = if ($failed.Count -gt 0) { 'failed' } else { 'succeeded' }
+$summary.failed_workers = @($failed | ForEach-Object {
+    $exitCode = $null
+    $logsExitCode = $null
+    if ($_ -is [System.Collections.IDictionary] -and $_.Contains('exit_code')) {
+        $exitCode = [int]$_['exit_code']
+    } elseif ($null -ne $_.PSObject.Properties['exit_code']) {
+        $exitCode = [int]$_.exit_code
+    }
+    if ($_ -is [System.Collections.IDictionary] -and $_.Contains('logs_exit_code')) {
+        $logsExitCode = [int]$_['logs_exit_code']
+    } elseif ($null -ne $_.PSObject.Properties['logs_exit_code']) {
+        $logsExitCode = [int]$_.logs_exit_code
+    }
+
+    $effectiveExitCode = $exitCode
+    if (($null -eq $effectiveExitCode -or $effectiveExitCode -eq 0) -and $null -ne $logsExitCode -and $logsExitCode -ne 0) {
+        $effectiveExitCode = $logsExitCode
+    }
+    [ordered]@{
+        slot_id        = [string]$_.slot_id
+        model_id       = [string]$_.model_id
+        status         = [string]$_.status
+        exit_code      = $effectiveExitCode
+        worker_exit_code = $exitCode
+        logs_exit_code = $logsExitCode
+    }
+})
+Set-Content -LiteralPath $summaryPath -Value ($summary | ConvertTo-Json -Depth 12) -Encoding UTF8
 if ($Json) {
     $summary | ConvertTo-Json -Depth 12
 } else {
