@@ -1479,8 +1479,10 @@ fn operator_cli_machine_contract_json_exposes_hook_facing_catalog() {
     assert_eq!(json["worker_backends"][0]["id"], "local");
     assert_eq!(json["worker_backends"][2]["id"], "colab_cli");
     assert_eq!(json["worker_backends"][2]["runtime_available"], true);
-    assert_eq!(json["worker_backends"][3]["id"], "noop");
+    assert_eq!(json["worker_backends"][3]["id"], "api_llm");
     assert_eq!(json["worker_backends"][3]["runtime_available"], false);
+    assert_eq!(json["worker_backends"][4]["id"], "noop");
+    assert_eq!(json["worker_backends"][4]["runtime_available"], false);
     assert_eq!(json["projection_surfaces"][1]["name"], "board");
     assert_eq!(json["projection_surfaces"][1]["command"], "board --json");
     assert_eq!(

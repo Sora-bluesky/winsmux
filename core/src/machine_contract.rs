@@ -238,6 +238,21 @@ const WORKER_BACKENDS: &[WorkerBackendContract<'static>] = &[
         ],
     },
     WorkerBackendContract {
+        id: "api_llm",
+        description: "hosted OpenAI-compatible API model worker contract with provider metadata, task JSON input, and redacted run artifacts",
+        runtime_available: false,
+        config_fields: &[
+            "worker_backend",
+            "worker_role",
+            "agent",
+            "model",
+            "model_source",
+            "prompt_transport",
+            "auth_mode",
+            "pane_title",
+        ],
+    },
+    WorkerBackendContract {
         id: "noop",
         description: "placeholder backend for disabled or unavailable workers",
         runtime_available: false,

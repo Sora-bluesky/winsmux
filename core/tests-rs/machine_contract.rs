@@ -33,7 +33,7 @@ fn machine_contract_exposes_worker_backend_contracts() {
             .iter()
             .map(|backend| backend.id)
             .collect::<Vec<_>>(),
-        vec!["local", "codex", "colab_cli", "noop"]
+        vec!["local", "codex", "colab_cli", "api_llm", "noop"]
     );
 
     let local = catalog
@@ -52,6 +52,18 @@ fn machine_contract_exposes_worker_backend_contracts() {
     assert!(colab.config_fields.contains(&"session_name"));
     assert!(colab.config_fields.contains(&"gpu_preference"));
     assert!(colab.config_fields.contains(&"task_script"));
+
+    let api_llm = catalog
+        .worker_backends
+        .iter()
+        .find(|backend| backend.id == "api_llm")
+        .expect("api_llm backend should exist");
+    assert!(!api_llm.runtime_available);
+    assert!(api_llm.config_fields.contains(&"agent"));
+    assert!(api_llm.config_fields.contains(&"model"));
+    assert!(api_llm.config_fields.contains(&"model_source"));
+    assert!(api_llm.config_fields.contains(&"prompt_transport"));
+    assert!(api_llm.config_fields.contains(&"auth_mode"));
 
     let noop = catalog
         .worker_backends
@@ -298,8 +310,10 @@ fn machine_contract_serializes_to_json() {
     assert_eq!(value["organization"]["terms"][1]["name"], "agent");
     assert_eq!(value["worker_backends"][2]["id"], "colab_cli");
     assert_eq!(value["worker_backends"][2]["runtime_available"], true);
-    assert_eq!(value["worker_backends"][3]["id"], "noop");
+    assert_eq!(value["worker_backends"][3]["id"], "api_llm");
     assert_eq!(value["worker_backends"][3]["runtime_available"], false);
+    assert_eq!(value["worker_backends"][4]["id"], "noop");
+    assert_eq!(value["worker_backends"][4]["runtime_available"], false);
     assert_eq!(
         value["organization"]["manifest_fields"][4]["field"],
         "budget_monthly_cents"
