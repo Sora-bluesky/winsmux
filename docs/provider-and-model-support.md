@@ -83,8 +83,9 @@ The default OpenRouter-compatible base URL is
 authentication. winsmux must not write this value to repository files, public
 docs, PR text, generated reports, worker logs, or release evidence.
 If the operator uses 1Password or another password manager, load the secret into
-that environment variable before starting the worker rather than documenting a
-repo-local credential path.
+the worker process environment before starting the worker. Do not use `setx`,
+shell startup files, inline command assignment, shell history, or repo-local
+`.env` files for this key.
 
 `api_llm` is intentionally separate from `local_llm`, `colab_llm`, and
 `colab_cli`. If hosted API execution is not configured, winsmux reports a

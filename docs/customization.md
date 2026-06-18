@@ -226,11 +226,11 @@ and each slot can override it with one of the contract values:
 workers. They may declare a provider such as `openrouter`, a model id such as
 `z-ai/glm-5.2`, `prompt-transport: file`, and `auth-mode: api-key-env`.
 Environment-based OpenRouter authentication uses
-`WINSMUX_OPENROUTER_API_KEY`. Keep that value in the operator environment. A
-local password manager such as 1Password may be used to populate the environment
-before launch, but winsmux documentation and release evidence should treat the
-environment variable as the public setup path. Do not write the value to repo
-files, public docs, logs, or release evidence.
+`WINSMUX_OPENROUTER_API_KEY`. Treat it as a process-scoped runtime environment
+variable for the worker process. A local password manager such as 1Password may
+populate that environment before launch, but do not store the key with `setx`, in
+shell startup files, in command history, in repo-local `.env` files, public docs,
+logs, or release evidence.
 
 Run a hosted API worker from a task JSON file:
 

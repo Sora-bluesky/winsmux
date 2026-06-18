@@ -11069,7 +11069,7 @@ worker-backend: colab_cli
         $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers exec w1 --script prompt.md --task-json task.json --run-id api-ambiguous-run --json --project-dir $script:workersTempRoot 2>&1
 
         $LASTEXITCODE | Should -Be 1
-        ($output | Out-String) | Should -Match 'either --script or --task-json, not both'
+        ($output | Out-String) | Should -Match 'api_llm workers exec accepts either --script or --task-json, not both'
         Test-Path -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\worker-runs\worker-1\api-ambiguous-run') | Should -Be $false
     }
 
@@ -11106,6 +11106,25 @@ worker-backend: colab_cli
         $logsPayload = ($logsOutput | Select-Object -Last 1) | ConvertFrom-Json
         $logsPayload.source | Should -Be 'local'
         $logsPayload.log | Should -Match 'fake-colab run'
+    }
+
+    It 'passes top-level task-json to the Colab adapter with the script' {
+        New-WorkersFakeColabCli | Out-Null
+        Write-WorkersColabProjectConfig
+        New-Item -ItemType Directory -Path (Join-Path $script:workersTempRoot 'workers\colab') -Force | Out-Null
+        'print("hello")' | Set-Content -Path (Join-Path $script:workersTempRoot 'workers\colab\task.py') -Encoding UTF8
+        '{"task_id":"colab-task-json","title":"Summarize release state"}' | Set-Content -Path (Join-Path $script:workersTempRoot 'task.json') -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers exec w2 --script workers/colab/task.py --task-json task.json --run-id colab-task-json-run --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+
+        $payload.status | Should -Be 'succeeded'
+        $payload.slot_id | Should -Be 'worker-2'
+        $payload.run_id | Should -Be 'colab-task-json-run'
+        @($payload.cli_arguments) | Should -Contain '--script'
+        @($payload.cli_arguments) | Should -Contain '--task-json'
+        (@($payload.cli_arguments) -join ' ') | Should -Match '\[LOCAL_PATH_REDACTED\]'
+        ($output | Out-String) | Should -Not -Match 'Summarize release state'
     }
 
     It 'lets the Colab adapter handle authentication when winsmux auth is unverified' {

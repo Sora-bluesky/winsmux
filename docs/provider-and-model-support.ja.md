@@ -80,8 +80,9 @@ OpenRouter 互換の既定 base URL は `https://openrouter.ai/api/v1` です。
 環境変数で認証する場合、既定名は `WINSMUX_OPENROUTER_API_KEY` です。
 winsmux はこの値をリポジトリ、公開ドキュメント、PR 本文、生成レポート、
 ワーカーログ、リリース証跡に保存しません。
-1Password などのパスワード管理ツールを使う場合も、worker 起動前にこの環境変数へ
-読み込む手段として扱い、リポジトリ内の資格情報パスとして案内しません。
+1Password などのパスワード管理ツールを使う場合も、worker 起動前に worker
+プロセスの環境へ読み込む手段として扱います。`setx`、シェル起動ファイル、
+コマンド履歴、リポジトリ内の `.env` へこのキーを書かないでください。
 
 `api_llm` は `local_llm`、`colab_llm`、`colab_cli` と分けて扱います。
 外部API実行が設定されていない場合、winsmux は診断理由を返し、ローカルや

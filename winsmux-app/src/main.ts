@@ -8790,8 +8790,8 @@ function runtimeAccessNote(preference: RuntimeRolePreference, japanese: boolean)
   }
   if (preference.provider === "openrouter") {
     return japanese
-      ? "OpenAI 互換の外部 API モデル候補です。API キーは実行時の環境変数で扱い、winsmux は共有資格情報の仲介役になりません。"
-      : "OpenAI-compatible hosted model candidate. API keys stay in the runtime environment variable; winsmux does not become a shared credential broker.";
+      ? "OpenAI 互換の外部 API モデル候補です。API キーは `WINSMUX_OPENROUTER_API_KEY` で worker プロセスへ渡し、winsmux は共有資格情報の仲介役になりません。"
+      : "OpenAI-compatible hosted model candidate. Pass the API key to the worker process with `WINSMUX_OPENROUTER_API_KEY`; winsmux does not become a shared credential broker.";
   }
   return japanese
     ? "winsmux はモデル指定を渡さず、プロバイダー側の既定値を使います。"

@@ -7343,9 +7343,6 @@ function Read-WorkersExecOptions {
     if ([string]::IsNullOrWhiteSpace($targetValue) -or ([string]::IsNullOrWhiteSpace($scriptPath) -and [string]::IsNullOrWhiteSpace($taskJsonPath))) {
         Stop-WithError $Usage
     }
-    if (-not [string]::IsNullOrWhiteSpace($scriptPath) -and -not [string]::IsNullOrWhiteSpace($taskJsonPath)) {
-        Stop-WithError 'workers exec accepts either --script or --task-json, not both'
-    }
 
     return [PSCustomObject]@{
         ProjectDir = $projectDir
@@ -9488,6 +9485,10 @@ function Invoke-WorkersApiLlmExec {
         [Parameter(Mandatory = $true)]$Worker
     )
 
+    if (-not [string]::IsNullOrWhiteSpace([string]$Options.ScriptPath) -and -not [string]::IsNullOrWhiteSpace([string]$Options.TaskJsonPath)) {
+        Stop-WithError 'api_llm workers exec accepts either --script or --task-json, not both'
+    }
+
     $inputKind = 'script'
     $inputPath = [string]$Options.ScriptPath
     if (-not [string]::IsNullOrWhiteSpace([string]$Options.TaskJsonPath)) {
@@ -9653,7 +9654,7 @@ function Invoke-WorkersApiLlmLogs {
 }
 
 function Invoke-WorkersExec {
-    $usage = "usage: winsmux workers exec <slot> (--script <path>|--task-json <path>) [--task-id <id>] [--run-id <id>] [--json] [--project-dir <path>]"
+    $usage = "usage: winsmux workers exec <slot> --script <path> [--task-json <path>] [--task-id <id>] [--run-id <id>] [--json] [--project-dir <path>]; api_llm accepts exactly one input: --script or --task-json"
     $options = Read-WorkersExecOptions -Usage $usage
     $workerProbe = Get-WorkersSingleWorkerContext -ProjectDir $options.ProjectDir -Target $options.Target
     if ([string]::Equals([string]$workerProbe.Row.Backend, 'api_llm', [System.StringComparison]::OrdinalIgnoreCase)) {
