@@ -239,9 +239,10 @@ winsmux workers exec w1 --task-json tasks/api-worker-task.json --run-id api-demo
 winsmux workers logs w1 --run-id api-demo-1 --json
 ```
 
-If the hosted runner is not configured, `workers exec` returns a blocked result
-with a diagnostic reason instead of falling back to `local_llm`, `colab_llm`, or
-`colab_cli`.
+If the API key environment variable is missing or the endpoint is invalid,
+`workers exec` returns a blocked result such as
+`api_llm_api_key_env_missing` before network access instead of falling back to
+`local_llm`, `colab_llm`, or `colab_cli`.
 
 Starting in `v0.32.4`, winsmux records Colab backend availability under
 `.winsmux/state/colab_sessions.json`. Missing `google-colab-cli`, missing auth,

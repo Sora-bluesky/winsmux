@@ -55,6 +55,8 @@ Provider entries may declare:
   runtime expectations.
 - `model_catalog_source` and `model_options`: where model names come from and
   which choices the operator can select.
+- `api_base_url` and `api_key_env`: the OpenAI-compatible endpoint and the
+  environment variable name used by hosted `api_llm` workers.
 - `analysis_posture`: whether the provider is safe only for read-only analysis
   or can act as a normal write-capable worker.
 
@@ -88,8 +90,10 @@ shell startup files, inline command assignment, shell history, or repo-local
 `.env` files for this key.
 
 `api_llm` is intentionally separate from `local_llm`, `colab_llm`, and
-`colab_cli`. If hosted API execution is not configured, winsmux reports a
-diagnostic reason instead of silently switching to a local or Colab runtime.
+`colab_cli`. If the API key environment variable is missing or the provider
+endpoint is invalid, winsmux reports a diagnostic reason such as
+`api_llm_api_key_env_missing` before network access instead of silently
+switching to a local or Colab runtime.
 
 ## Execution profile policy
 

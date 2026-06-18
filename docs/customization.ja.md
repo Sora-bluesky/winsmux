@@ -177,7 +177,8 @@ winsmux workers exec w1 --task-json tasks/api-worker-task.json --run-id api-demo
 winsmux workers logs w1 --run-id api-demo-1 --json
 ```
 
-外部API runner が未設定の場合、`workers exec` は診断理由付きで停止します。
+API key の環境変数がない場合や、エンドポイント設定が不正な場合、`workers exec`
+は通信前に `api_llm_api_key_env_missing` などの診断理由付きで停止します。
 `local_llm`、`colab_llm`、`colab_cli` へ黙って切り替えません。
 
 `v0.32.4` 以降では、Colab バックエンドの状態を

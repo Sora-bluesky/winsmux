@@ -121,7 +121,7 @@ winsmux skills --json
 | `winsmux workers status` | Show backend, state, GPU, session, and last command for worker slots |
 | `winsmux workers attach` | Prepare a Colab-backed worker slot for desktop visibility without starting an unbounded loop |
 | `winsmux workers doctor` | Diagnose worker config, Colab CLI, auth, uv, and session-state paths |
-| `winsmux workers exec` | Run Colab-backed tasks, or record a blocked `api_llm` run until the hosted runner is configured |
+| `winsmux workers exec` | Run Colab-backed tasks or hosted `api_llm` tasks through an OpenAI-compatible API; missing API key env vars stop before network access |
 | `winsmux workers logs` | Read the stored log for a worker run, or ask the Colab CLI for it |
 | `winsmux workers upload` | Upload explicit files or allowlisted directories while excluding unsafe paths |
 | `winsmux workers download` | Download a remote artifact into a project-local output directory |

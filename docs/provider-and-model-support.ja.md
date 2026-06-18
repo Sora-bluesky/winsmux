@@ -48,6 +48,7 @@ CLI であることは認証方式や実行方式の列で説明します。
 - `execution_backend`: エージェント CLI、Colab ワーカー、OpenAI 互換ローカルエンドポイントなどの実行経路。
 - `runtime_requirements`: エンドポイント、実行ファイル、GPU、CPU、メモリ、OS、リモートランタイムの要件。
 - `model_catalog_source` と `model_options`: モデル名の取得元と、オペレーターが選べる候補。
+- `api_base_url` と `api_key_env`: 外部APIモデルワーカーが使う OpenAI 互換エンドポイントと、API key の環境変数名。
 - `analysis_posture`: 読み取り専用の分析に限るか、通常の書き込み可能ワーカーとして扱えるか。
 
 OpenAI 互換ローカルエンドポイントや GPU 付きローカルランタイムの既定は、
@@ -85,8 +86,9 @@ winsmux はこの値をリポジトリ、公開ドキュメント、PR 本文、
 コマンド履歴、リポジトリ内の `.env` へこのキーを書かないでください。
 
 `api_llm` は `local_llm`、`colab_llm`、`colab_cli` と分けて扱います。
-外部API実行が設定されていない場合、winsmux は診断理由を返し、ローカルや
-Colab の実行経路へ黙って切り替えません。
+API key の環境変数がない場合や、プロバイダーのエンドポイント設定が不正な場合は、
+通信前に `api_llm_api_key_env_missing` などの診断理由を返します。ローカルや
+Colab の実行経路へ黙って切り替えることはありません。
 
 ## 実行プロファイル方針
 

@@ -1092,6 +1092,8 @@ function ConvertTo-BridgeProviderCapabilityEntry {
         'harness_availability',
         'credential_requirements',
         'execution_backend',
+        'api_base_url',
+        'api_key_env',
         'runtime_requirements',
         'analysis_posture'
     )
@@ -2856,6 +2858,8 @@ function Get-SlotAgentConfig {
         HarnessAvailability      = [string](Get-BridgeProviderCapabilityValue -Capability $providerCapability -Name 'harness_availability' -Default '')
         CredentialRequirements   = [string](Get-BridgeProviderCapabilityValue -Capability $providerCapability -Name 'credential_requirements' -Default '')
         ExecutionBackend         = [string](Get-BridgeProviderCapabilityValue -Capability $providerCapability -Name 'execution_backend' -Default '')
+        ApiBaseUrl               = [string](Get-BridgeProviderCapabilityValue -Capability $providerCapability -Name 'api_base_url' -Default '')
+        ApiKeyEnv                = [string](Get-BridgeProviderCapabilityValue -Capability $providerCapability -Name 'api_key_env' -Default '')
         RuntimeRequirements      = [string](Get-BridgeProviderCapabilityValue -Capability $providerCapability -Name 'runtime_requirements' -Default '')
         AnalysisPosture          = [string](Get-BridgeProviderCapabilityValue -Capability $providerCapability -Name 'analysis_posture' -Default '')
         SupportsParallelRuns     = Get-BridgeProviderCapabilityBoolean -Capability $providerCapability -Name 'supports_parallel_runs'
