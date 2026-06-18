@@ -7,7 +7,7 @@ use machine_contract::{canonical_role_for, machine_contract_catalog};
 fn machine_contract_exposes_version_and_canonical_roles() {
     let catalog = machine_contract_catalog();
 
-    assert_eq!(catalog.version, "0.32.1");
+    assert_eq!(catalog.version, "0.33.0");
     assert_eq!(
         catalog
             .roles
@@ -304,7 +304,7 @@ fn machine_contract_serializes_to_json() {
     let value = serde_json::to_value(machine_contract_catalog())
         .expect("machine contract should serialize to JSON");
 
-    assert_eq!(value["version"], "0.32.1");
+    assert_eq!(value["version"], "0.33.0");
     assert_eq!(value["roles"][3]["canonical"], "builder");
     assert_eq!(value["roles"][3]["legacy_aliases"][0], "Builder");
     assert_eq!(value["organization"]["terms"][1]["name"], "agent");

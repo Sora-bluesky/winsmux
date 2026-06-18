@@ -10528,6 +10528,29 @@ worker-backend: colab_cli
         ($payload | ConvertTo-Json -Depth 24) | Should -Not -Match 'colab worker worker-1'
     }
 
+    It 'fails api_llm diagnostics when provider metadata is inherited from the default agent' {
+@'
+agent: codex
+model: provider-default
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    worker-backend: api_llm
+    worker-role: impl
+    model: z-ai/glm-5.2
+    model-source: operator-override
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers doctor --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $apiBackend = @($payload.checks | Where-Object { $_.label -eq 'api_llm backend' })[0]
+
+        $apiBackend.status | Should -Be 'fail'
+        $apiBackend.detail | Should -Match 'missing explicit OpenAI-compatible provider or model metadata'
+        $apiBackend.action | Should -Match 'Set agent and model'
+    }
+
     It 'stops one worker by slot alias and records the lifecycle command in the manifest' {
 @'
 agent: codex

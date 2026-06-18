@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-pub const MACHINE_CONTRACT_VERSION: &str = "0.32.1";
+pub const MACHINE_CONTRACT_VERSION: &str = "0.33.0";
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 pub struct MachineContractCatalog<'a> {

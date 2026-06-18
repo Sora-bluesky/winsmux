@@ -5259,6 +5259,44 @@ function Get-WorkersSlotId {
     return $slotId
 }
 
+function Test-WorkersConfigValuePresent {
+    param(
+        [AllowNull()]$InputObject,
+        [Parameter(Mandatory = $true)][string[]]$Names
+    )
+
+    foreach ($name in $Names) {
+        $value = Get-SendConfigValue -InputObject $InputObject -Name $name -Default $null
+        if ($null -ne $value -and -not [string]::IsNullOrWhiteSpace([string]$value)) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Get-WorkersApiLlmMetadataState {
+    param(
+        [AllowNull()]$Slot,
+        [Parameter(Mandatory = $true)][string]$SlotId,
+        [Parameter(Mandatory = $true)][string]$RootPath
+    )
+
+    $hasAgent = Test-WorkersConfigValuePresent -InputObject $Slot -Names @('agent')
+    $hasModel = Test-WorkersConfigValuePresent -InputObject $Slot -Names @('model')
+
+    $registryEntry = Get-BridgeProviderRegistryEntry -SlotId $SlotId -RootPath $RootPath
+    if ($null -ne $registryEntry) {
+        $hasAgent = $hasAgent -or (Test-WorkersConfigValuePresent -InputObject $registryEntry -Names @('agent'))
+        $hasModel = $hasModel -or (Test-WorkersConfigValuePresent -InputObject $registryEntry -Names @('model'))
+    }
+
+    return [PSCustomObject]@{
+        HasAgent = [bool]$hasAgent
+        HasModel = [bool]$hasModel
+    }
+}
+
 function Get-WorkersColabSessionState {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -10195,7 +10233,15 @@ function Invoke-WorkersDoctor {
             }
             if ([string]::Equals($backend, 'api_llm', [System.StringComparison]::OrdinalIgnoreCase)) {
                 $apiLlmSlotCount++
-                if ([string]::IsNullOrWhiteSpace([string]$slotConfig.Agent) -or [string]::IsNullOrWhiteSpace([string]$slotConfig.Model)) {
+                $metadata = Get-WorkersApiLlmMetadataState -Slot $slot -SlotId $slotId -RootPath $options.ProjectDir
+                $usesOpenAiCompatibleProvider = [string]::Equals([string]$slotConfig.CapabilityAdapter, 'openai-compatible', [System.StringComparison]::OrdinalIgnoreCase)
+                if (
+                    (-not [bool]$metadata.HasAgent) -or
+                    (-not [bool]$metadata.HasModel) -or
+                    [string]::IsNullOrWhiteSpace([string]$slotConfig.Agent) -or
+                    (Test-BridgeProviderDefaultModel -Model ([string]$slotConfig.Model)) -or
+                    (-not $usesOpenAiCompatibleProvider)
+                ) {
                     $apiLlmMissingMetadataCount++
                 }
             }
@@ -10207,7 +10253,7 @@ function Invoke-WorkersDoctor {
 
     if ($apiLlmSlotCount -gt 0) {
         if ($apiLlmMissingMetadataCount -gt 0) {
-            $checks.Add((New-WorkersDoctorCheck -Status 'fail' -Label 'api_llm backend' -Detail "$apiLlmMissingMetadataCount of $apiLlmSlotCount api_llm worker slots are missing provider or model metadata" -Action 'Set agent and model for every api_llm slot.')) | Out-Null
+            $checks.Add((New-WorkersDoctorCheck -Status 'fail' -Label 'api_llm backend' -Detail "$apiLlmMissingMetadataCount of $apiLlmSlotCount api_llm worker slots are missing explicit OpenAI-compatible provider or model metadata" -Action 'Set agent and model for every api_llm slot, and declare an openai-compatible provider capability.')) | Out-Null
         } else {
             $checks.Add((New-WorkersDoctorCheck -Status 'pass' -Label 'api_llm backend' -Detail "$apiLlmSlotCount api_llm worker slots configured" -Action '')) | Out-Null
         }
