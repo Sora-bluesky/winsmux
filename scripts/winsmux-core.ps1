@@ -7343,6 +7343,9 @@ function Read-WorkersExecOptions {
     if ([string]::IsNullOrWhiteSpace($targetValue) -or ([string]::IsNullOrWhiteSpace($scriptPath) -and [string]::IsNullOrWhiteSpace($taskJsonPath))) {
         Stop-WithError $Usage
     }
+    if (-not [string]::IsNullOrWhiteSpace($scriptPath) -and -not [string]::IsNullOrWhiteSpace($taskJsonPath)) {
+        Stop-WithError 'workers exec accepts either --script or --task-json, not both'
+    }
 
     return [PSCustomObject]@{
         ProjectDir = $projectDir

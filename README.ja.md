@@ -117,7 +117,7 @@ winsmux skills --json
 | `winsmux workers status` | ワーカースロットのバックエンド、状態、GPU、セッション、直近コマンドを表示 |
 | `winsmux workers attach` | Colab 対応ワーカーを、長時間ループを始めずにデスクトップ表示へ準備 |
 | `winsmux workers doctor` | ワーカー設定、Colab CLI、認証、uv、状態ファイルの場所を診断 |
-| `winsmux workers exec` | `api_llm` または Colab 対応ワーカースロットで、タスクを1回実行する |
+| `winsmux workers exec` | Colab 対応タスクを実行する。`api_llm` は hosted runner 設定まで診断付き停止として記録する |
 | `winsmux workers logs` | ワーカー実行の保存済みログを読む。必要に応じて Colab CLI から取得 |
 | `winsmux workers upload` | 明示したファイル、または許可したディレクトリだけをアップロード |
 | `winsmux workers download` | リモート成果物をプロジェクト配下へダウンロード |

@@ -11061,6 +11061,18 @@ worker-backend: colab_cli
         ($output | Out-String) | Should -Not -Match 'google-colab-cli'
     }
 
+    It 'rejects ambiguous api_llm script and task-json exec input' {
+        Write-WorkersApiLlmProjectConfig
+        'Summarize the repository status.' | Set-Content -Path (Join-Path $script:workersTempRoot 'prompt.md') -Encoding UTF8
+        '{"task_id":"api-task-json","title":"Summarize release state"}' | Set-Content -Path (Join-Path $script:workersTempRoot 'task.json') -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers exec w1 --script prompt.md --task-json task.json --run-id api-ambiguous-run --json --project-dir $script:workersTempRoot 2>&1
+
+        $LASTEXITCODE | Should -Be 1
+        ($output | Out-String) | Should -Match 'either --script or --task-json, not both'
+        Test-Path -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\worker-runs\worker-1\api-ambiguous-run') | Should -Be $false
+    }
+
     It 'rejects secret-like api_llm prompt input before creating a run artifact' {
         Write-WorkersApiLlmProjectConfig
         '{"api_key":"abcdefghijklmnop"}' | Set-Content -Path (Join-Path $script:workersTempRoot 'prompt.json') -Encoding UTF8
