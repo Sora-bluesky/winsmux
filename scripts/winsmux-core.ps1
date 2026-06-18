@@ -10054,6 +10054,14 @@ function Invoke-WorkersStart {
             $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status 'failed' -Reason 'pane_id_missing')) | Out-Null
             continue
         }
+        if (
+            [string]::Equals(([string]$row.Backend), 'api_llm', [System.StringComparison]::OrdinalIgnoreCase) -or
+            [string]::Equals(([string]$entry.Status), 'api_llm_runner_unconfigured', [System.StringComparison]::OrdinalIgnoreCase)
+        ) {
+            Set-WorkersManifestLifecycleCommand -Entry $entry -CommandName 'workers.start' -Status 'api_llm_runner_unconfigured'
+            $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status 'blocked' -Reason 'api_llm_runner_unconfigured')) | Out-Null
+            continue
+        }
         if ([string]$entry.Status -eq 'backend_degraded') {
             $reason = [string]$row.DegradedReason
             if ([string]::IsNullOrWhiteSpace($reason)) {

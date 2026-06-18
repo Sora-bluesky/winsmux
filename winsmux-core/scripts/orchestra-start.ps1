@@ -2293,6 +2293,7 @@ if ($MyInvocation.InvocationName -ne '.') {
         $apiLlmPaneStartDeferred = [string]::Equals(([string]$slotAgentConfig.WorkerBackend), 'api_llm', [System.StringComparison]::OrdinalIgnoreCase)
         if ($apiLlmPaneStartDeferred) {
             $deferPaneStart = $true
+            $deferredPaneStatus = 'api_llm_runner_unconfigured'
         }
         $launchCommand = ''
         if (-not $apiLlmPaneStartDeferred) {
@@ -2323,8 +2324,16 @@ if ($MyInvocation.InvocationName -ne '.') {
             if ([string]::IsNullOrWhiteSpace($launchCommand)) {
                 if ($deferPaneStart) {
                     $paneStatus = $deferredPaneStatus
-                    $eventName = if ($paneStatus -eq 'backend_degraded') { 'preflight.worker.backend_degraded' } else { 'preflight.worker.deferred_start' }
-                    $eventMessage = if ($paneStatus -eq 'backend_degraded') { "Colab backend is degraded for $label." } else { "Deferred worker startup for $label." }
+                    if ($paneStatus -eq 'backend_degraded') {
+                        $eventName = 'preflight.worker.backend_degraded'
+                        $eventMessage = "Colab backend is degraded for $label."
+                    } elseif ($paneStatus -eq 'api_llm_runner_unconfigured') {
+                        $eventName = 'preflight.worker.api_llm_runner_unconfigured'
+                        $eventMessage = "API LLM worker runner is not configured for $label."
+                    } else {
+                        $eventName = 'preflight.worker.deferred_start'
+                        $eventMessage = "Deferred worker startup for $label."
+                    }
                     Write-WinsmuxLog -Level INFO -Event $eventName -Message $eventMessage -Data ([ordered]@{
                         label               = $label
                         pane_id             = $paneId
@@ -2351,8 +2360,16 @@ if ($MyInvocation.InvocationName -ne '.') {
                     -ApprovedLaunch $approvedLaunch
                 if ($deferPaneStart) {
                     $paneStatus = $deferredPaneStatus
-                    $eventName = if ($paneStatus -eq 'backend_degraded') { 'preflight.worker.backend_degraded' } else { 'preflight.worker.deferred_start' }
-                    $eventMessage = if ($paneStatus -eq 'backend_degraded') { "Colab backend is degraded for $label." } else { "Deferred worker startup for $label." }
+                    if ($paneStatus -eq 'backend_degraded') {
+                        $eventName = 'preflight.worker.backend_degraded'
+                        $eventMessage = "Colab backend is degraded for $label."
+                    } elseif ($paneStatus -eq 'api_llm_runner_unconfigured') {
+                        $eventName = 'preflight.worker.api_llm_runner_unconfigured'
+                        $eventMessage = "API LLM worker runner is not configured for $label."
+                    } else {
+                        $eventName = 'preflight.worker.deferred_start'
+                        $eventMessage = "Deferred worker startup for $label."
+                    }
                     Write-WinsmuxLog -Level INFO -Event $eventName -Message $eventMessage -Data ([ordered]@{
                         label               = $label
                         pane_id             = $paneId

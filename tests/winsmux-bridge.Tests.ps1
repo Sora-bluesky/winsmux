@@ -10673,6 +10673,66 @@ agent-slots:
         Should -Invoke Send-TextToPane -Times 0 -Exactly
     }
 
+    It 'blocks start for an api_llm worker without dispatching bootstrap text' {
+        Write-WorkersApiLlmProjectConfig
+        Save-WinsmuxManifest -ProjectDir $script:workersTempRoot -Manifest ([ordered]@{
+            version = 1
+            saved_at = '2026-05-13T00:00:00Z'
+            session = [ordered]@{
+                name = 'winsmux-orchestra'
+                project_dir = $script:workersTempRoot
+                git_worktree_dir = (Join-Path $script:workersTempRoot '.git')
+            }
+            panes = [ordered]@{
+                'worker-1' = [ordered]@{
+                    pane_id = '%2'
+                    slot_id = 'worker-1'
+                    worker_backend = 'api_llm'
+                    role = 'Worker'
+                    exec_mode = $false
+                    launch_dir = $script:workersTempRoot
+                    status = 'api_llm_runner_unconfigured'
+                    approved_launch = [ordered]@{
+                        packet_type = 'worker_launch_approval'
+                        source = 'user_approved_worker_config'
+                        slot_id = 'worker-1'
+                        worker_backend = 'api_llm'
+                        worker_role = 'impl'
+                        agent = 'openrouter'
+                        model = 'z-ai/glm-5.2'
+                        model_source = 'operator-override'
+                        prompt_transport = 'file'
+                        auth_mode = 'api-key-env'
+                        execution_backend = 'openai-compatible-chat-completions'
+                        analysis_posture = 'hosted-api-worker'
+                        auto_launch = $false
+                    }
+                    task = $null
+                }
+            }
+            tasks = [ordered]@{
+                queued = @()
+                in_progress = @()
+                completed = @()
+            }
+            worktrees = [ordered]@{}
+        })
+
+        Mock Send-TextToPane { throw 'bootstrap should not be dispatched' }
+
+        $Rest = @('worker-1', '--json', '--project-dir', $script:workersTempRoot)
+        $output = Invoke-WorkersStart
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $entry = @(Get-PaneControlManifestEntries -ProjectDir $script:workersTempRoot)[0]
+
+        $payload.results[0].slot_id | Should -Be 'worker-1'
+        $payload.results[0].status | Should -Be 'blocked'
+        $payload.results[0].reason | Should -Be 'api_llm_runner_unconfigured'
+        $entry.Status | Should -Be 'api_llm_runner_unconfigured'
+        $entry.LastCommand | Should -Be 'workers.start'
+        Should -Invoke Send-TextToPane -Times 0 -Exactly
+    }
+
     It 'blocks start when the manifest approval no longer matches the worker config' {
 @'
 agent: codex
@@ -17738,6 +17798,8 @@ Describe 'orchestra pane bootstrap plan' {
         $apiLlmDeferIndex | Should -BeGreaterThan -1
         $providerLaunchIndex | Should -BeGreaterThan $apiLlmDeferIndex
         $script:orchestraStartContent | Should -Match 'if \(-not \$apiLlmPaneStartDeferred\) \{'
+        $script:orchestraStartContent | Should -Match "\$deferredPaneStatus = 'api_llm_runner_unconfigured'"
+        $script:orchestraStartContent | Should -Match 'preflight\.worker\.api_llm_runner_unconfigured'
     }
 
     It 'prints a concise startup summary before invoking the agent launch command' {
