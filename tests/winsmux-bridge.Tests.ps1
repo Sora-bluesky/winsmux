@@ -17731,6 +17731,15 @@ Describe 'orchestra pane bootstrap plan' {
         $script:orchestraStartContent | Should -Match 'Get-AgentLaunchCommand -Agent \$slotAgentConfig\.Agent -Model \$slotAgentConfig\.Model -ModelSource \$slotAgentConfig\.ModelSource -ReasoningEffort \$slotAgentConfig\.ReasoningEffort -ProjectDir \$launchDir -GitWorktreeDir \$launchGitWorktreeDir -RootPath \$projectDir'
     }
 
+    It 'defers api_llm workers before resolving provider launch commands' {
+        $apiLlmDeferIndex = $script:orchestraStartContent.IndexOf('$apiLlmPaneStartDeferred = [string]::Equals(([string]$slotAgentConfig.WorkerBackend), ''api_llm''')
+        $providerLaunchIndex = $script:orchestraStartContent.IndexOf('$launchCommand = Get-AgentLaunchCommand')
+
+        $apiLlmDeferIndex | Should -BeGreaterThan -1
+        $providerLaunchIndex | Should -BeGreaterThan $apiLlmDeferIndex
+        $script:orchestraStartContent | Should -Match 'if \(-not \$apiLlmPaneStartDeferred\) \{'
+    }
+
     It 'prints a concise startup summary before invoking the agent launch command' {
         $script:orchestraPaneBootstrapContent | Should -Match '\[winsmux\] pane bootstrap:'
         $script:orchestraPaneBootstrapContent | Should -Match 'launch_command'

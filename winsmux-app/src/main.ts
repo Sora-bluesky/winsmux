@@ -318,7 +318,7 @@ type FocusMode = "standard" | "focused";
 type LanguageMode = "en" | "ja";
 type WorkbenchLayoutMode = "2x2" | "3x2" | "focus";
 type RuntimeRoleId = "operator" | "worker" | "reviewer";
-type RuntimeProviderId = "provider-default" | "codex" | "claude" | "gemini" | "openrouter";
+type RuntimeProviderId = "provider-default" | "codex" | "claude" | "gemini";
 type RuntimeModelSource = "provider-default" | "cli-discovery" | "official-doc" | "operator-override";
 type RuntimeReasoningEffort = "provider-default" | "low" | "medium" | "high" | "xhigh" | "max";
 type ComposerPermissionMode = "auto" | "default" | "acceptEdits" | "plan";
@@ -1145,7 +1145,6 @@ const runtimeProviderOptions: Array<{ value: RuntimeProviderId; label: string; l
   { value: "codex", label: "Codex CLI", labelJa: "Codex CLI" },
   { value: "claude", label: "Claude Code", labelJa: "Claude Code" },
   { value: "gemini", label: "Gemini CLI", labelJa: "Gemini CLI" },
-  { value: "openrouter", label: "OpenRouter", labelJa: "OpenRouter" },
 ];
 const lockedOperatorRuntimePreference: RuntimeRolePreference = {
   roleId: "operator",
@@ -1173,10 +1172,6 @@ const runtimeReasoningOptions: Array<{ value: RuntimeReasoningEffort; label: str
 
 const runtimeModelSuggestions = [
   "provider-default",
-  "z-ai/glm-5.2",
-  "deepseek/deepseek-v4-pro",
-  "moonshotai/kimi-k2.7-code",
-  "openrouter/auto",
   "gpt-5.3-codex-spark",
   "gpt-5.5",
   "default",
@@ -8787,11 +8782,6 @@ function runtimeAccessNote(preference: RuntimeRolePreference, japanese: boolean)
     return japanese
       ? "ローカルの Gemini CLI 設定を使います。計画時は `--approval-mode plan` を使えます。"
       : "Uses local Gemini CLI settings. Plan runs can use --approval-mode plan.";
-  }
-  if (preference.provider === "openrouter") {
-    return japanese
-      ? "OpenAI 互換の外部 API モデル候補です。API キーは `WINSMUX_OPENROUTER_API_KEY` で worker プロセスへ渡し、winsmux は共有資格情報の仲介役になりません。"
-      : "OpenAI-compatible hosted model candidate. Pass the API key to the worker process with `WINSMUX_OPENROUTER_API_KEY`; winsmux does not become a shared credential broker.";
   }
   return japanese
     ? "winsmux はモデル指定を渡さず、プロバイダー側の既定値を使います。"
