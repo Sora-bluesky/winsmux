@@ -157,8 +157,26 @@ winsmux はベンダーごとに固定された役割ではなく、スロット
 
 - `local`: 現在のローカル管理ペイン
 - `codex`: Codex レビュー用、またはワーカー用のメタデータ
+- `api_llm`: OpenAI 互換の外部APIモデルワーカー用メタデータと実行証跡
 - `colab_cli`: `google-colab-cli` ワーカー用の状態メタデータ
 - `noop`: 無効化または仮置きのワーカー用メタデータ
+
+`api_llm` スロットは、外部APIモデル実行をローカルワーカーや Colab ワーカーと
+分けて扱います。たとえば provider に `openrouter`、model に `z-ai/glm-5.2`、
+`prompt-transport: file`、`auth-mode: api-key-env` を指定できます。
+OpenRouter を環境変数で使う場合の既定名は `WINSMUX_OPENROUTER_API_KEY` です。
+この値はオペレーターの環境、保管庫、またはローカル専用設定に置き、リポジトリ、
+公開ドキュメント、ログ、リリース証跡へ書かないでください。
+
+外部APIワーカーは、タスク JSON ファイルから実行します。
+
+```powershell
+winsmux workers exec w1 --task-json tasks/api-worker-task.json --run-id api-demo-1 --json
+winsmux workers logs w1 --run-id api-demo-1 --json
+```
+
+外部API runner が未設定の場合、`workers exec` は診断理由付きで停止します。
+`local_llm`、`colab_llm`、`colab_cli` へ黙って切り替えません。
 
 `v0.32.4` 以降では、Colab バックエンドの状態を
 `.winsmux/state/colab_sessions.json` に保存します。`google-colab-cli` の
@@ -234,6 +252,17 @@ agent-slots:
     pane-title: W1 Codex Reviewer
     worktree-mode: managed
   - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: api_llm
+    execution-profile: local-windows
+    worker-role: impl
+    agent: openrouter
+    model: z-ai/glm-5.2
+    model-source: operator-override
+    prompt-transport: file
+    auth-mode: api-key-env
+    worktree-mode: managed
+  - slot-id: worker-3
     runtime-role: worker
     worker-backend: colab_cli
     execution-profile: isolated-enterprise

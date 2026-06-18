@@ -31,7 +31,7 @@ Most tools solve only one part of this workflow.
 - Starts a managed Windows Terminal workspace for multiple CLI agents.
 - Lets an operator read, send, interrupt, and check pane health.
 - Initializes six managed worker slots by default, with a worker backend
-  contract for local, Codex, Google Colab, and placeholder workers. The first
+  contract for local, Codex, hosted API model, Google Colab, and placeholder workers. The first
   generated slot is a Codex reviewer slot; the remaining slots keep the selected
   worker backend.
 - Keeps worker agents in separate git worktrees when isolation is enabled.
@@ -95,6 +95,7 @@ winsmux send worker-2 "Review the latest auth changes."
 winsmux health-check
 winsmux workers status
 winsmux workers doctor
+winsmux workers exec w1 --task-json tasks/api-worker-task.json --run-id api-demo-1 --json
 winsmux workers exec w2 --script workers/colab/impl_worker.py --run-id demo-1 -- --task-json-inline '{"task_id":"demo-1","title":"Implement this change"}' --worker-id worker-2 --run-id demo-1
 winsmux workers upload w2 data/input.json --remote /content/input.json
 winsmux workers download w2 /content/output.json
@@ -120,7 +121,7 @@ winsmux skills --json
 | `winsmux workers status` | Show backend, state, GPU, session, and last command for worker slots |
 | `winsmux workers attach` | Prepare a Colab-backed worker slot for desktop visibility without starting an unbounded loop |
 | `winsmux workers doctor` | Diagnose worker config, Colab CLI, auth, uv, and session-state paths |
-| `winsmux workers exec` | Run one file-backed command on a Colab-backed worker slot |
+| `winsmux workers exec` | Run one task on an `api_llm` or Colab-backed worker slot |
 | `winsmux workers logs` | Read the stored log for a worker run, or ask the Colab CLI for it |
 | `winsmux workers upload` | Upload explicit files or allowlisted directories while excluding unsafe paths |
 | `winsmux workers download` | Download a remote artifact into a project-local output directory |

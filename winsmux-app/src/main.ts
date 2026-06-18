@@ -318,7 +318,7 @@ type FocusMode = "standard" | "focused";
 type LanguageMode = "en" | "ja";
 type WorkbenchLayoutMode = "2x2" | "3x2" | "focus";
 type RuntimeRoleId = "operator" | "worker" | "reviewer";
-type RuntimeProviderId = "provider-default" | "codex" | "claude" | "gemini";
+type RuntimeProviderId = "provider-default" | "codex" | "claude" | "gemini" | "openrouter";
 type RuntimeModelSource = "provider-default" | "cli-discovery" | "official-doc" | "operator-override";
 type RuntimeReasoningEffort = "provider-default" | "low" | "medium" | "high" | "xhigh" | "max";
 type ComposerPermissionMode = "auto" | "default" | "acceptEdits" | "plan";
@@ -1145,6 +1145,7 @@ const runtimeProviderOptions: Array<{ value: RuntimeProviderId; label: string; l
   { value: "codex", label: "Codex CLI", labelJa: "Codex CLI" },
   { value: "claude", label: "Claude Code", labelJa: "Claude Code" },
   { value: "gemini", label: "Gemini CLI", labelJa: "Gemini CLI" },
+  { value: "openrouter", label: "OpenRouter", labelJa: "OpenRouter" },
 ];
 const lockedOperatorRuntimePreference: RuntimeRolePreference = {
   roleId: "operator",
@@ -1172,6 +1173,10 @@ const runtimeReasoningOptions: Array<{ value: RuntimeReasoningEffort; label: str
 
 const runtimeModelSuggestions = [
   "provider-default",
+  "z-ai/glm-5.2",
+  "deepseek/deepseek-v4-pro",
+  "moonshotai/kimi-k2.7-code",
+  "openrouter/auto",
   "gpt-5.3-codex-spark",
   "gpt-5.5",
   "default",
@@ -1860,6 +1865,37 @@ function getWorkerStatusLaunch(row: DesktopWorkerStatusRow) {
   return row.current_launch ?? row.approved_launch ?? null;
 }
 
+function getWorkerProvider(row: DesktopWorkerStatusRow) {
+  const launch = getWorkerStatusLaunch(row);
+  return getLaunchApprovalField(launch, "agent")
+    || (row.provider || "").trim()
+    || "provider-default";
+}
+
+function getWorkerModel(row: DesktopWorkerStatusRow) {
+  const launch = getWorkerStatusLaunch(row);
+  return getLaunchApprovalField(launch, "model")
+    || (row.model || "").trim()
+    || "provider-default";
+}
+
+function getWorkerApiPosture(row: DesktopWorkerStatusRow) {
+  const backend = (row.backend || getLaunchApprovalField(getWorkerStatusLaunch(row), "worker_backend") || "").toLowerCase();
+  const executionBackend = ((row.execution_backend || getLaunchApprovalField(getWorkerStatusLaunch(row), "execution_backend") || "")).toLowerCase();
+  const credentialRequirements = ((row.credential_requirements || getLaunchApprovalField(getWorkerStatusLaunch(row), "credential_requirements") || "")).toLowerCase();
+  if (backend === "api_llm" || executionBackend.includes("openai-compatible")) {
+    const cost = credentialRequirements.includes("api-key") ? "external-api" : "hosted";
+    return {
+      cost,
+      risk: "paid-api",
+    };
+  }
+  return {
+    cost: "local",
+    risk: "standard",
+  };
+}
+
 function getWorkerStatusRowsForSurface() {
   const currentRows = workerStatusRows.length > 0 ? workerStatusRows : getFallbackWorkerStatusRows();
   return currentRows.slice().sort((left, right) => {
@@ -1926,14 +1962,17 @@ function formatWorkerCommandElapsed(timestamp: string) {
 function getWorkerAuthState(row: DesktopWorkerStatusRow) {
   const launch = getWorkerStatusLaunch(row);
   return getLaunchApprovalField(launch, "auth_mode")
+    || (row.auth_mode || "").trim()
     || getLaunchApprovalField(launch, "credential_requirements")
+    || (row.credential_requirements || "").trim()
     || "default";
 }
 
 function getWorkerModelSource(row: DesktopWorkerStatusRow) {
   const launch = getWorkerStatusLaunch(row);
   return getLaunchApprovalField(launch, "model_source")
-    || (getLaunchApprovalField(launch, "model") ? "configured" : "provider-default");
+    || (row.model_source || "").trim()
+    || (getWorkerModel(row) !== "provider-default" ? "configured" : "provider-default");
 }
 
 function getWorkerExecutionProfile(row: DesktopWorkerStatusRow) {
@@ -2072,7 +2111,7 @@ function getWorkerLaunchState(row: DesktopWorkerStatusRow) {
 
 function getWorkerRemoteState(row: DesktopWorkerStatusRow) {
   const launch = getWorkerStatusLaunch(row);
-  const executionBackend = getLaunchApprovalField(launch, "execution_backend") || row.session || "local";
+  const executionBackend = getLaunchApprovalField(launch, "execution_backend") || (row.execution_backend || "").trim() || row.session || "local";
   const requestedGpu = (row.requested_gpu || "none").trim();
   const actualGpu = (row.actual_gpu || requestedGpu || "none").trim();
   if (requestedGpu && requestedGpu !== "none" && actualGpu !== requestedGpu) {
@@ -2142,12 +2181,15 @@ function getWorkerStatusPillTitle(row: DesktopWorkerStatusRow, target: string) {
     `${target}: ${getWorkerLaunchState(row)}`,
     `role=${row.role || getLaunchApprovalField(launch, "worker_role") || "worker"}`,
     `backend=${getLaunchApprovalField(launch, "worker_backend") || row.backend || "unknown"}`,
+    `provider=${getWorkerProvider(row)}`,
     `profile=${getWorkerExecutionProfile(row)}`,
     `workspace=${getWorkerWorkspaceState(row)}`,
     `auth=${getWorkerAuthState(row)}`,
-    `model=${getLaunchApprovalField(launch, "model") || "provider-default"}`,
+    `model=${getWorkerModel(row)}`,
     `model_source=${getWorkerModelSource(row)}`,
     `remote=${getWorkerRemoteState(row)}`,
+    `cost=${getWorkerApiPosture(row).cost}`,
+    `risk=${getWorkerApiPosture(row).risk}`,
     `heartbeat=${getWorkerHeartbeatHealth(row) || "none"}`,
     `secrets=${getWorkerSecretProjectionState(row)}`,
     `policy=${getWorkerPolicyState(row)}`,
@@ -2240,6 +2282,7 @@ function renderWorkerStatusSurface() {
     main.textContent = getPaneDisplayLabel(target);
     pill.appendChild(main);
     pill.appendChild(createWorkerStatusChip("profile", "exec", getWorkerStatusProfileBadge(row)));
+    pill.appendChild(createWorkerStatusChip("provider", "prov", getWorkerProvider(row)));
     pill.appendChild(createWorkerStatusChip("launch", "launch", launchState));
     const heartbeatHealth = getWorkerHeartbeatHealth(row);
     if (heartbeatHealth) {
@@ -2256,6 +2299,8 @@ function renderWorkerStatusSurface() {
     const target = getWorkerStatusTarget(focusedRow);
     detailStrip.appendChild(createWorkerStatusChip("role", "role", focusedRow.role || getLaunchApprovalField(launch, "worker_role") || "worker"));
     detailStrip.appendChild(createWorkerStatusChip("backend", "backend", getLaunchApprovalField(launch, "worker_backend") || focusedRow.backend || "unknown"));
+    detailStrip.appendChild(createWorkerStatusChip("provider", "provider", getWorkerProvider(focusedRow)));
+    detailStrip.appendChild(createWorkerStatusChip("model", "model", getWorkerModel(focusedRow)));
     detailStrip.appendChild(createWorkerStatusChip("profile", "prof", getWorkerExecutionProfile(focusedRow)));
     detailStrip.appendChild(createWorkerStatusChip("workspace", "ws", getWorkerWorkspaceState(focusedRow)));
     detailStrip.appendChild(createWorkerStatusChip("auth", "auth", getWorkerAuthState(focusedRow)));
@@ -2267,6 +2312,8 @@ function renderWorkerStatusSurface() {
     detailStrip.appendChild(createWorkerStatusChip("blocked", "blocked", isWorkerStatusBlocked(focusedRow) ? "yes" : "no"));
     detailStrip.appendChild(createWorkerStatusChip("recovery", "recover", getWorkerRecoveryAction(focusedRow)));
     detailStrip.appendChild(createWorkerStatusChip("remote", "remote", getWorkerRemoteState(focusedRow)));
+    detailStrip.appendChild(createWorkerStatusChip("cost", "cost", getWorkerApiPosture(focusedRow).cost));
+    detailStrip.appendChild(createWorkerStatusChip("risk", "risk", getWorkerApiPosture(focusedRow).risk));
     detailStrip.appendChild(createWorkerStatusChip("elapsed", "elapsed", formatWorkerCommandElapsed(focusedRow.last_command_at)));
     detailStrip.appendChild(createWorkerStatusChip("focus", "focus", target === focusedPaneId ? "yes" : "target"));
   } else {
@@ -8740,6 +8787,11 @@ function runtimeAccessNote(preference: RuntimeRolePreference, japanese: boolean)
     return japanese
       ? "ローカルの Gemini CLI 設定を使います。計画時は `--approval-mode plan` を使えます。"
       : "Uses local Gemini CLI settings. Plan runs can use --approval-mode plan.";
+  }
+  if (preference.provider === "openrouter") {
+    return japanese
+      ? "OpenAI 互換の外部 API モデル候補です。API キーは実行時の環境変数または保管庫で扱い、winsmux は共有資格情報の仲介役になりません。"
+      : "OpenAI-compatible hosted model candidate. API keys stay in runtime environment or vault storage; winsmux does not become a shared credential broker.";
   }
   return japanese
     ? "winsmux はモデル指定を渡さず、プロバイダー側の既定値を使います。"

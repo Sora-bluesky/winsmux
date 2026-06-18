@@ -80,6 +80,16 @@ function Test-IsPublicMaterialScanSurface {
     return $normalized -match '(^README(\.ja)?\.md$)|(^docs/.+\.md$)|(^core/docs/.+\.md$)|(^packages/winsmux/README\.md$)'
 }
 
+function Test-IsHostedApiRuntimeScanSurface {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $normalized = $Path.Replace('\', '/')
+    if ($normalized -match '^tests/') { return $false }
+    if ($normalized -match '^scripts/') { return $false }
+    return (Test-IsPublicMaterialScanSurface -Path $Path) -or
+        ($normalized -match '^\.github/workflows/.+\.ya?ml$')
+}
+
 function Test-IsMaintainerPathScanSurface {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -156,6 +166,15 @@ function Get-ForbiddenPaidSourceDisclosurePatterns {
     )
 }
 
+function Get-ForbiddenHostedApiRuntimePatterns {
+    return @(
+        [pscustomobject]@{ Name = 'OpenRouter API key'; Pattern = ('sk-or-' + 'v1-[A-Za-z0-9_-]{16,}') },
+        [pscustomobject]@{ Name = 'Bearer token'; Pattern = '(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{20,}' },
+        [pscustomobject]@{ Name = 'API key assignment'; Pattern = '(?i)\b(?:openrouter|openai|anthropic|gemini)?[-_ ]?api[-_ ]?key\s*[:=]\s*[''"]?[A-Za-z0-9._~+/=-]{8,}' },
+        [pscustomobject]@{ Name = 'provider request id'; Pattern = '(?i)\b(?:x-request-id|provider[-_ ]?request[-_ ]?id|request[-_ ]?id)\s*[:=]\s*[''"]?[A-Za-z0-9._:-]{8,}' }
+    )
+}
+
 function Add-ForbiddenExternalProductReferenceFailures {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -192,6 +211,26 @@ function Add-ForbiddenPaidSourceDisclosureFailures {
     foreach ($reference in Get-ForbiddenPaidSourceDisclosurePatterns) {
         if ($content -match $reference.Pattern) {
             $failures.Add("$Surface contains paid-source disclosure strategy '$($reference.Name)': $Path")
+        }
+    }
+}
+
+function Add-ForbiddenHostedApiRuntimeFailures {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Surface
+    )
+
+    $fullPath = if ([System.IO.Path]::IsPathRooted($Path)) { $Path } else { Join-Path $repoRoot $Path }
+    if (-not (Test-Path -LiteralPath $fullPath)) {
+        $failures.Add("$Surface path does not exist: $Path")
+        return
+    }
+
+    $content = Get-Content -LiteralPath $fullPath -Raw -ErrorAction Stop
+    foreach ($reference in Get-ForbiddenHostedApiRuntimePatterns) {
+        if ($content -match $reference.Pattern) {
+            $failures.Add("$Surface contains hosted API runtime secret or request metadata '$($reference.Name)': $Path")
         }
     }
 }
@@ -317,9 +356,14 @@ foreach ($file in ($trackedFiles | Where-Object { Test-IsPublicMaterialScanSurfa
     Add-ForbiddenPaidSourceDisclosureFailures -Path $file -Surface 'public material'
 }
 
+foreach ($file in ($trackedFiles | Where-Object { Test-IsHostedApiRuntimeScanSurface -Path $_ })) {
+    Add-ForbiddenHostedApiRuntimeFailures -Path $file -Surface 'public/release surface'
+}
+
 if (-not [string]::IsNullOrWhiteSpace($ReleaseNotesPath)) {
     Add-ForbiddenExternalProductReferenceFailures -Path $ReleaseNotesPath -Surface 'release notes'
     Add-ForbiddenPaidSourceDisclosureFailures -Path $ReleaseNotesPath -Surface 'release notes'
+    Add-ForbiddenHostedApiRuntimeFailures -Path $ReleaseNotesPath -Surface 'release notes'
 }
 
 $claudeContractPath = Join-Path $repoRoot '.claude/CLAUDE.md'
