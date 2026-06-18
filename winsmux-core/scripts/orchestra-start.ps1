@@ -850,7 +850,7 @@ function Test-OrchestraPaneBootstrapVerificationDeferred {
         return $false
     }
 
-    return @('deferred_start', 'deferred_starting', 'backend_degraded') -contains $status.Trim().ToLowerInvariant()
+    return @('deferred_start', 'deferred_starting', 'backend_degraded', 'api_llm_runner_unconfigured') -contains $status.Trim().ToLowerInvariant()
 }
 
 function Get-AgentLaunchCommand {

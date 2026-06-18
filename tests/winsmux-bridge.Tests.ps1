@@ -6911,6 +6911,7 @@ Describe 'orchestra-start session reuse contract' {
     It 'skips bootstrap readiness and cwd verification for deferred worker panes' {
         Test-OrchestraPaneBootstrapVerificationDeferred -PaneSummary ([pscustomobject]@{ Status = 'deferred_start' }) | Should -Be $true
         Test-OrchestraPaneBootstrapVerificationDeferred -PaneSummary ([pscustomobject]@{ Status = 'deferred_starting' }) | Should -Be $true
+        Test-OrchestraPaneBootstrapVerificationDeferred -PaneSummary ([pscustomobject]@{ Status = 'api_llm_runner_unconfigured' }) | Should -Be $true
         Test-OrchestraPaneBootstrapVerificationDeferred -PaneSummary ([pscustomobject]@{ Status = 'ready' }) | Should -Be $false
 
         $script:orchestraStartContent | Should -Match 'Test-OrchestraPaneBootstrapVerificationDeferred -PaneSummary \$paneSummary'
