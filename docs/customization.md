@@ -218,8 +218,30 @@ and each slot can override it with one of the contract values:
 
 - `local`: current local managed pane behavior
 - `codex`: Codex reviewer or worker metadata
+- `api_llm`: hosted OpenAI-compatible model worker metadata and run artifacts
 - `colab_cli`: `google-colab-cli` worker state metadata
 - `noop`: disabled or placeholder worker metadata
+
+`api_llm` slots keep hosted model execution separate from local and Colab
+workers. They may declare a provider such as `openrouter`, a model id such as
+`z-ai/glm-5.2`, `prompt-transport: file`, and `auth-mode: api-key-env`.
+Environment-based OpenRouter authentication uses
+`WINSMUX_OPENROUTER_API_KEY`. Treat it as a process-scoped runtime environment
+variable for the worker process. A local password manager such as 1Password may
+populate that environment before launch, but do not store the key with `setx`, in
+shell startup files, in command history, in repo-local `.env` files, public docs,
+logs, or release evidence.
+
+Run a hosted API worker from a task JSON file:
+
+```powershell
+winsmux workers exec w1 --task-json tasks/api-worker-task.json --run-id api-demo-1 --json
+winsmux workers logs w1 --run-id api-demo-1 --json
+```
+
+If the hosted runner is not configured, `workers exec` returns a blocked result
+with a diagnostic reason instead of falling back to `local_llm`, `colab_llm`, or
+`colab_cli`.
 
 Starting in `v0.32.4`, winsmux records Colab backend availability under
 `.winsmux/state/colab_sessions.json`. Missing `google-colab-cli`, missing auth,
@@ -294,6 +316,17 @@ agent-slots:
     pane-title: W1 Codex Reviewer
     worktree-mode: managed
   - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: api_llm
+    execution-profile: local-windows
+    worker-role: impl
+    agent: openrouter
+    model: z-ai/glm-5.2
+    model-source: operator-override
+    prompt-transport: file
+    auth-mode: api-key-env
+    worktree-mode: managed
+  - slot-id: worker-3
     runtime-role: worker
     worker-backend: colab_cli
     execution-profile: isolated-enterprise

@@ -30,7 +30,7 @@ Claude Code、Codex、Gemini を 1 つずつ手で眺める段階を越えたい
 
 - 複数の CLI エージェント用に、管理された Windows Terminal ワークスペースを起動します。
 - オペレーターがペインを読み、ペインへ送信し、ペインを中断し、状態を確認できます。
-- 既定で 6 つの管理ワーカースロットを作成します。生成される最初のスロットは Codex レビュー用で、残りのスロットは選択したワーカーバックエンドに従います。
+- 既定で 6 つの管理ワーカースロットを作成します。ローカル、Codex、外部APIモデル、Google Colab、仮置きのワーカーバックエンドを区別できます。生成される最初のスロットは Codex レビュー用で、残りのスロットは選択したワーカーバックエンドに従います。
 - ワークツリー分離を有効にすると、ワーカーごとに別々の git ワークツリーを使えます。
 - 記録済みの実行結果を比較し、採用する結果を選ぶ前に両方で変更されたファイルを確認できます。
 - 記録済みの実行について、レビュー、検証、アーキテクチャ、チェックポイント、後続作業などの証跡を確認できます。
@@ -91,6 +91,7 @@ winsmux send worker-2 "最新の認証変更をレビューしてください。
 winsmux health-check
 winsmux workers status
 winsmux workers doctor
+winsmux workers exec w1 --task-json tasks/api-worker-task.json --run-id api-demo-1 --json
 winsmux workers exec w2 --script workers/colab/impl_worker.py --run-id demo-1 -- --task-json-inline '{"task_id":"demo-1","title":"この変更を実装する"}' --worker-id worker-2 --run-id demo-1
 winsmux workers upload w2 data/input.json --remote /content/input.json
 winsmux workers download w2 /content/output.json
@@ -116,7 +117,7 @@ winsmux skills --json
 | `winsmux workers status` | ワーカースロットのバックエンド、状態、GPU、セッション、直近コマンドを表示 |
 | `winsmux workers attach` | Colab 対応ワーカーを、長時間ループを始めずにデスクトップ表示へ準備 |
 | `winsmux workers doctor` | ワーカー設定、Colab CLI、認証、uv、状態ファイルの場所を診断 |
-| `winsmux workers exec` | Colab 対応ワーカースロットで、ファイル指定の単発実行を行う |
+| `winsmux workers exec` | Colab 対応タスクを実行する。`api_llm` は hosted runner 設定まで診断付き停止として記録する |
 | `winsmux workers logs` | ワーカー実行の保存済みログを読む。必要に応じて Colab CLI から取得 |
 | `winsmux workers upload` | 明示したファイル、または許可したディレクトリだけをアップロード |
 | `winsmux workers download` | リモート成果物をプロジェクト配下へダウンロード |

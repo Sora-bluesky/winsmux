@@ -5259,6 +5259,44 @@ function Get-WorkersSlotId {
     return $slotId
 }
 
+function Test-WorkersConfigValuePresent {
+    param(
+        [AllowNull()]$InputObject,
+        [Parameter(Mandatory = $true)][string[]]$Names
+    )
+
+    foreach ($name in $Names) {
+        $value = Get-SendConfigValue -InputObject $InputObject -Name $name -Default $null
+        if ($null -ne $value -and -not [string]::IsNullOrWhiteSpace([string]$value)) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Get-WorkersApiLlmMetadataState {
+    param(
+        [AllowNull()]$Slot,
+        [Parameter(Mandatory = $true)][string]$SlotId,
+        [Parameter(Mandatory = $true)][string]$RootPath
+    )
+
+    $hasAgent = Test-WorkersConfigValuePresent -InputObject $Slot -Names @('agent')
+    $hasModel = Test-WorkersConfigValuePresent -InputObject $Slot -Names @('model')
+
+    $registryEntry = Get-BridgeProviderRegistryEntry -SlotId $SlotId -RootPath $RootPath
+    if ($null -ne $registryEntry) {
+        $hasAgent = $hasAgent -or (Test-WorkersConfigValuePresent -InputObject $registryEntry -Names @('agent'))
+        $hasModel = $hasModel -or (Test-WorkersConfigValuePresent -InputObject $registryEntry -Names @('model'))
+    }
+
+    return [PSCustomObject]@{
+        HasAgent = [bool]$hasAgent
+        HasModel = [bool]$hasModel
+    }
+}
+
 function Get-WorkersColabSessionState {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -5607,6 +5645,17 @@ function Get-WorkersStatusRows {
             Backend        = [string]$slotConfig.WorkerBackend
             Role           = $workerRole
             ExecutionProfile = $executionProfile
+            Provider       = [string]$slotConfig.Agent
+            Model          = [string]$slotConfig.Model
+            ModelSource    = [string]$slotConfig.ModelSource
+            ReasoningEffort = [string]$slotConfig.ReasoningEffort
+            PromptTransport = [string]$slotConfig.PromptTransport
+            AuthMode       = [string]$slotConfig.AuthMode
+            AuthPolicy     = [string]$slotConfig.AuthPolicy
+            CapabilityAdapter = [string]$slotConfig.CapabilityAdapter
+            CredentialRequirements = [string]$slotConfig.CredentialRequirements
+            ExecutionBackend = [string]$slotConfig.ExecutionBackend
+            AnalysisPosture = [string]$slotConfig.AnalysisPosture
             Session        = $sessionName
             RequestedGpu   = $requestedGpu
             ActualGpu      = $actualGpu
@@ -5681,7 +5730,7 @@ function Write-WorkersStatusOutput {
     }
 
     $table = $Rows |
-        Select-Object Slot, SlotId, State, Backend, Role, Session, RequestedGpu, ActualGpu, DegradedReason, LastCommand |
+        Select-Object Slot, SlotId, State, Backend, Role, Provider, Model, Session, RequestedGpu, ActualGpu, DegradedReason, LastCommand |
         Format-Table -AutoSize |
         Out-String
     Write-Output ($table.TrimEnd())
@@ -5701,6 +5750,17 @@ function ConvertTo-WorkersStatusJsonRows {
             backend         = [string]$row.Backend
             role            = [string]$row.Role
             execution_profile = [string]$row.ExecutionProfile
+            provider        = [string]$row.Provider
+            model           = [string]$row.Model
+            model_source    = [string]$row.ModelSource
+            reasoning_effort = [string]$row.ReasoningEffort
+            prompt_transport = [string]$row.PromptTransport
+            auth_mode       = [string]$row.AuthMode
+            auth_policy     = [string]$row.AuthPolicy
+            capability_adapter = [string]$row.CapabilityAdapter
+            credential_requirements = [string]$row.CredentialRequirements
+            execution_backend = [string]$row.ExecutionBackend
+            analysis_posture = [string]$row.AnalysisPosture
             session         = [string]$row.Session
             requested_gpu   = [string]$row.RequestedGpu
             actual_gpu      = [string]$row.ActualGpu
@@ -6128,13 +6188,34 @@ function Assert-WorkersColabSafetyInput {
     }
 }
 
+function Assert-WorkersApiLlmSafetyInput {
+    param(
+        [AllowNull()][string[]]$Values,
+        [AllowEmptyString()][string]$Name = 'API LLM task input'
+    )
+
+    $finding = Get-WorkersColabSafetyFinding -Values $Values
+    if ($null -ne $finding) {
+        Stop-WithError "$Name rejected by API LLM safety policy: $($finding.Code)"
+    }
+}
+
 function Get-WorkersExecSafetyInputValues {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
-        [AllowNull()][string[]]$ScriptArgs
+        [AllowNull()][string[]]$ScriptArgs,
+        [AllowEmptyString()][string]$TaskJsonPath = ''
     )
 
     $values = [System.Collections.Generic.List[string]]::new()
+    if (-not [string]::IsNullOrWhiteSpace($TaskJsonPath)) {
+        $taskJsonInfo = Resolve-WorkersProjectPath -ProjectDir $ProjectDir -Path $TaskJsonPath -MustExist -AllowFile -MaxBytes (Get-WorkersUploadMaxBytes)
+        $taskJsonContent = Get-Content -LiteralPath ([string]$taskJsonInfo.FullPath) -Raw -Encoding UTF8
+        if (-not [string]::IsNullOrWhiteSpace($taskJsonContent)) {
+            $values.Add([string]$taskJsonContent) | Out-Null
+        }
+    }
+
     $items = @($ScriptArgs)
     for ($index = 0; $index -lt $items.Count; $index++) {
         $value = [string]$items[$index]
@@ -7089,7 +7170,7 @@ function Assert-WorkersRunId {
     return $RunId
 }
 
-function Get-WorkersSingleColabContext {
+function Get-WorkersSingleWorkerContext {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)][string]$Target
@@ -7103,6 +7184,21 @@ function Get-WorkersSingleColabContext {
 
     $row = $rows[0]
     Assert-WorkersPathSegment -Value ([string]$row.SlotId) -Name 'slot id' | Out-Null
+    $entry = if ($context.EntriesBySlot.ContainsKey($row.SlotId)) { $context.EntriesBySlot[$row.SlotId] } else { $null }
+
+    return [PSCustomObject]@{
+        Context = $context
+        Row     = $row
+        Entry   = $entry
+    }
+}
+
+function ConvertTo-WorkersSingleColabContext {
+    param(
+        [Parameter(Mandatory = $true)]$Worker
+    )
+
+    $row = $Worker.Row
     if (-not [string]::Equals([string]$row.Backend, 'colab_cli', [System.StringComparison]::OrdinalIgnoreCase)) {
         Stop-WithError "worker slot $($row.SlotId) uses backend '$($row.Backend)', not colab_cli"
     }
@@ -7120,13 +7216,37 @@ function Get-WorkersSingleColabContext {
         Stop-WithError "colab worker $($row.SlotId) has no session name"
     }
 
-    $entry = if ($context.EntriesBySlot.ContainsKey($row.SlotId)) { $context.EntriesBySlot[$row.SlotId] } else { $null }
     return [PSCustomObject]@{
-        Context = $context
+        Context = $Worker.Context
         Row     = $row
-        Entry   = $entry
+        Entry   = $Worker.Entry
         Session = $session
     }
+}
+
+function Get-WorkersSingleColabContext {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$Target
+    )
+
+    $worker = Get-WorkersSingleWorkerContext -ProjectDir $ProjectDir -Target $Target
+    return ConvertTo-WorkersSingleColabContext -Worker $worker
+}
+
+function Get-WorkersSingleApiLlmContext {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$Target
+    )
+
+    $worker = Get-WorkersSingleWorkerContext -ProjectDir $ProjectDir -Target $Target
+    $row = $worker.Row
+    if (-not [string]::Equals([string]$row.Backend, 'api_llm', [System.StringComparison]::OrdinalIgnoreCase)) {
+        Stop-WithError "worker slot $($row.SlotId) uses backend '$($row.Backend)', not api_llm"
+    }
+
+    return $worker
 }
 
 function Invoke-WorkersColabCli {
@@ -7206,6 +7326,7 @@ function Read-WorkersExecOptions {
     $scriptPath = ''
     $runId = ''
     $taskId = ''
+    $taskJsonPath = ''
     $scriptArgs = @()
     $items = @($Rest)
 
@@ -7220,6 +7341,9 @@ function Read-WorkersExecOptions {
 
         switch ($token) {
             '--json' { $asJson = $true }
+            { $_.StartsWith('--task-json=', [System.StringComparison]::Ordinal) } {
+                $taskJsonPath = $token.Substring('--task-json='.Length)
+            }
             '--project-dir' {
                 if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
                 $projectDir = [string]$items[$index + 1]
@@ -7228,6 +7352,11 @@ function Read-WorkersExecOptions {
             '--script' {
                 if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
                 $scriptPath = [string]$items[$index + 1]
+                $index++
+            }
+            '--task-json' {
+                if ($index + 1 -ge $items.Count) { Stop-WithError $Usage }
+                $taskJsonPath = [string]$items[$index + 1]
                 $index++
             }
             '--run-id' {
@@ -7249,7 +7378,7 @@ function Read-WorkersExecOptions {
         }
     }
 
-    if ([string]::IsNullOrWhiteSpace($targetValue) -or [string]::IsNullOrWhiteSpace($scriptPath)) {
+    if ([string]::IsNullOrWhiteSpace($targetValue) -or ([string]::IsNullOrWhiteSpace($scriptPath) -and [string]::IsNullOrWhiteSpace($taskJsonPath))) {
         Stop-WithError $Usage
     }
 
@@ -7258,6 +7387,7 @@ function Read-WorkersExecOptions {
         Json       = $asJson
         Target     = $targetValue
         ScriptPath = $scriptPath
+        TaskJsonPath = $taskJsonPath
         RunId      = $runId
         TaskId     = $taskId
         ScriptArgs = @($scriptArgs)
@@ -9368,13 +9498,214 @@ function Invoke-WorkersPolicy {
     }
 }
 
+function New-WorkersApiLlmMetadata {
+    param([Parameter(Mandatory = $true)]$Worker)
+
+    $row = $Worker.Row
+    return [ordered]@{
+        backend                 = [string]$row.Backend
+        provider                = [string](Get-SendConfigValue -InputObject $row -Name 'Provider' -Default '')
+        model                   = [string](Get-SendConfigValue -InputObject $row -Name 'Model' -Default '')
+        model_source            = [string](Get-SendConfigValue -InputObject $row -Name 'ModelSource' -Default '')
+        reasoning_effort        = [string](Get-SendConfigValue -InputObject $row -Name 'ReasoningEffort' -Default '')
+        auth_mode               = [string](Get-SendConfigValue -InputObject $row -Name 'AuthMode' -Default '')
+        auth_policy             = [string](Get-SendConfigValue -InputObject $row -Name 'AuthPolicy' -Default '')
+        credential_requirements = [string](Get-SendConfigValue -InputObject $row -Name 'CredentialRequirements' -Default '')
+        execution_backend       = [string](Get-SendConfigValue -InputObject $row -Name 'ExecutionBackend' -Default '')
+        capability_adapter      = [string](Get-SendConfigValue -InputObject $row -Name 'CapabilityAdapter' -Default '')
+        analysis_posture        = [string](Get-SendConfigValue -InputObject $row -Name 'AnalysisPosture' -Default '')
+    }
+}
+
+function Invoke-WorkersApiLlmExec {
+    param(
+        [Parameter(Mandatory = $true)]$Options,
+        [Parameter(Mandatory = $true)]$Worker
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace([string]$Options.ScriptPath) -and -not [string]::IsNullOrWhiteSpace([string]$Options.TaskJsonPath)) {
+        Stop-WithError 'api_llm workers exec accepts either --script or --task-json, not both'
+    }
+
+    $inputKind = 'script'
+    $inputPath = [string]$Options.ScriptPath
+    if (-not [string]::IsNullOrWhiteSpace([string]$Options.TaskJsonPath)) {
+        $inputKind = 'task_json'
+        $inputPath = [string]$Options.TaskJsonPath
+    }
+    if ([string]::IsNullOrWhiteSpace($inputPath)) {
+        Stop-WithError 'api_llm workers exec requires --task-json or --script'
+    }
+
+    $inputInfo = Resolve-WorkersProjectPath -ProjectDir $Options.ProjectDir -Path $inputPath -MustExist -AllowFile -MaxBytes (Get-WorkersUploadMaxBytes)
+    $inputContent = Get-Content -LiteralPath ([string]$inputInfo.FullPath) -Raw -Encoding UTF8
+    if ($null -eq $inputContent) {
+        $inputContent = ''
+    }
+
+    $safetyInput = [System.Collections.Generic.List[string]]::new()
+    if (-not [string]::IsNullOrWhiteSpace([string]$inputContent)) {
+        $safetyInput.Add([string]$inputContent) | Out-Null
+    }
+    foreach ($value in @(Get-WorkersExecSafetyInputValues -ProjectDir $Options.ProjectDir -ScriptArgs @($Options.ScriptArgs))) {
+        $safetyInput.Add([string]$value) | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$env:WINSMUX_TASK_JSON)) {
+        $safetyInput.Add([string]$env:WINSMUX_TASK_JSON) | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$Options.TaskId)) {
+        $safetyInput.Add([string]$Options.TaskId) | Out-Null
+    }
+    Assert-WorkersApiLlmSafetyInput -Values @($safetyInput)
+
+    $runId = Assert-WorkersRunId -RunId ([string]$Options.RunId)
+    if ([string]::IsNullOrWhiteSpace($runId)) {
+        $runId = New-WorkersRunId -SlotId ([string]$Worker.Row.SlotId)
+    }
+    $runDir = Get-WorkersRunDirectory -ProjectDir $Options.ProjectDir -SlotId ([string]$Worker.Row.SlotId) -RunId $runId
+    if (-not (Test-Path -LiteralPath $runDir -PathType Container)) {
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+    }
+
+    $metadata = New-WorkersApiLlmMetadata -Worker $Worker
+    $reason = 'api_llm_runner_unconfigured'
+    $logPath = Join-Path $runDir 'stdout.log'
+    $logLines = @(
+        'api_llm runner is not configured.',
+        "reason: $reason",
+        "provider: $($metadata.provider)",
+        "model: $($metadata.model)",
+        "input: $($inputInfo.RelativePath)",
+        'network: not_started',
+        'next: TASK-504 owns OpenRouter/OpenAI-compatible execution and API key binding.'
+    )
+    Write-ClmSafeTextFile -Path $logPath -Content (ConvertTo-WorkersSafeLogText -Text ($logLines -join [Environment]::NewLine))
+
+    $payload = [ordered]@{
+        project_dir    = $Options.ProjectDir
+        generated_at   = (Get-Date).ToUniversalTime().ToString('o')
+        command        = 'workers.exec'
+        status         = 'blocked'
+        reason         = $reason
+        backend        = 'api_llm'
+        slot           = [string]$Worker.Row.Slot
+        slot_id        = [string]$Worker.Row.SlotId
+        run_id         = $runId
+        task_id        = [string]$Options.TaskId
+        input          = [string]$inputInfo.RelativePath
+        input_kind     = $inputKind
+        script         = if ($inputKind -eq 'script') { [string]$inputInfo.RelativePath } else { '' }
+        task_json      = if ($inputKind -eq 'task_json') { [string]$inputInfo.RelativePath } else { [string]$Options.TaskJsonPath }
+        run_dir        = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $runDir
+        stdout_log     = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $logPath
+        exit_code      = 1
+        prompt_value_output = $false
+        api_llm        = $metadata
+        locations      = [ordered]@{
+            input = New-WinsmuxLocationIdentity -Kind 'local_file' -DisplayName ([string]$inputInfo.RelativePath) -Backend 'local-windows' -AccessMethod 'project_path' -Reference ([string]$inputInfo.RelativePath) -Provenance 'workers.exec.input'
+        }
+    }
+    $runJsonPath = Join-Path $runDir 'run.json'
+    $payload['run_json'] = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $runJsonPath
+    Write-WorkersJsonArtifact -Path $runJsonPath -Data $payload | Out-Null
+    if ($null -ne $Worker.Entry) {
+        Set-WorkersManifestLifecycleCommand -Entry $Worker.Entry -CommandName 'workers.exec'
+    }
+
+    Write-WorkersOperationOutput -Payload $payload -Json:([bool]$Options.Json)
+}
+
+function Invoke-WorkersApiLlmLogs {
+    param(
+        [Parameter(Mandatory = $true)]$Options,
+        [Parameter(Mandatory = $true)]$Worker
+    )
+
+    $runId = Assert-WorkersRunId -RunId ([string]$Options.RunId)
+    $runDir = ''
+    if ([string]::IsNullOrWhiteSpace($runId)) {
+        $latest = Get-WorkersLatestRunDirectory -ProjectDir $Options.ProjectDir -SlotId ([string]$Worker.Row.SlotId)
+        if ($null -ne $latest) {
+            $runId = [string]$latest.Name
+            $runDir = [string]$latest.FullName
+        }
+    } else {
+        $runDir = Get-WorkersRunDirectory -ProjectDir $Options.ProjectDir -SlotId ([string]$Worker.Row.SlotId) -RunId $runId
+    }
+
+    $content = ''
+    $status = 'blocked'
+    $reason = 'api_llm_log_not_found'
+    $exitCode = 1
+    if (-not [string]::IsNullOrWhiteSpace($runDir)) {
+        $logPath = Join-Path $runDir 'stdout.log'
+        if (Test-Path -LiteralPath $logPath -PathType Leaf) {
+            $rawLog = Get-Content -LiteralPath $logPath -Raw -Encoding UTF8
+            $content = ConvertTo-WorkersSafeLogText -Text ([string]$rawLog)
+            $reason = ''
+            $runJsonPath = Join-Path $runDir 'run.json'
+            if (Test-Path -LiteralPath $runJsonPath -PathType Leaf) {
+                try {
+                    $runJson = Get-Content -LiteralPath $runJsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                    $storedStatus = [string](Get-SendConfigValue -InputObject $runJson -Name 'status' -Default '')
+                    if (-not [string]::IsNullOrWhiteSpace($storedStatus)) {
+                        $status = $storedStatus
+                    }
+                    $storedReason = [string](Get-SendConfigValue -InputObject $runJson -Name 'reason' -Default '')
+                    if (-not [string]::IsNullOrWhiteSpace($storedReason)) {
+                        $reason = $storedReason
+                    }
+                    $storedExitCode = 0
+                    $rawStoredExitCode = Get-SendConfigValue -InputObject $runJson -Name 'exit_code' -Default 0
+                    if ([int]::TryParse(([string]$rawStoredExitCode), [ref]$storedExitCode)) {
+                        $exitCode = $storedExitCode
+                    }
+                } catch {
+                    $status = 'succeeded'
+                    $reason = ''
+                    $exitCode = 0
+                }
+            } else {
+                $status = 'succeeded'
+                $exitCode = 0
+            }
+        }
+    }
+
+    $payload = [ordered]@{
+        project_dir  = $Options.ProjectDir
+        generated_at = (Get-Date).ToUniversalTime().ToString('o')
+        command      = 'workers.logs'
+        status       = $status
+        reason       = $reason
+        backend      = 'api_llm'
+        slot         = [string]$Worker.Row.Slot
+        slot_id      = [string]$Worker.Row.SlotId
+        run_id       = $runId
+        source       = 'local'
+        log          = $content
+        exit_code    = [int]$exitCode
+        api_llm      = New-WorkersApiLlmMetadata -Worker $Worker
+    }
+
+    Write-WorkersOperationOutput -Payload $payload -Json:([bool]$Options.Json) -Text $content
+}
+
 function Invoke-WorkersExec {
-    $usage = "usage: winsmux workers exec <slot> --script <path> [--task-id <id>] [--run-id <id>] [--json] [--project-dir <path>]"
+    $usage = "usage: winsmux workers exec <slot> --script <path> [--task-json <path>] [--task-id <id>] [--run-id <id>] [--json] [--project-dir <path>]; api_llm accepts exactly one input: --script or --task-json"
     $options = Read-WorkersExecOptions -Usage $usage
-    $worker = Get-WorkersSingleColabContext -ProjectDir $options.ProjectDir -Target $options.Target
+    $workerProbe = Get-WorkersSingleWorkerContext -ProjectDir $options.ProjectDir -Target $options.Target
+    if ([string]::Equals([string]$workerProbe.Row.Backend, 'api_llm', [System.StringComparison]::OrdinalIgnoreCase)) {
+        Invoke-WorkersApiLlmExec -Options $options -Worker $workerProbe
+        return
+    }
+    $worker = ConvertTo-WorkersSingleColabContext -Worker $workerProbe
+    if ([string]::IsNullOrWhiteSpace([string]$options.ScriptPath)) {
+        Stop-WithError 'colab_cli workers exec requires --script'
+    }
     $scriptInfo = Resolve-WorkersProjectPath -ProjectDir $options.ProjectDir -Path $options.ScriptPath -MustExist -AllowFile -MaxBytes (Get-WorkersUploadMaxBytes)
     $safetyInput = [System.Collections.Generic.List[string]]::new()
-    foreach ($value in @(Get-WorkersExecSafetyInputValues -ProjectDir $options.ProjectDir -ScriptArgs @($options.ScriptArgs))) {
+    foreach ($value in @(Get-WorkersExecSafetyInputValues -ProjectDir $options.ProjectDir -ScriptArgs @($options.ScriptArgs) -TaskJsonPath ([string]$options.TaskJsonPath))) {
         $safetyInput.Add([string]$value) | Out-Null
     }
     if (-not [string]::IsNullOrWhiteSpace([string]$env:WINSMUX_TASK_JSON)) {
@@ -9396,6 +9727,10 @@ function Invoke-WorkersExec {
     $arguments = @('run', '--session', [string]$worker.Session, '--script', [string]$scriptInfo.FullPath, '--run-id', $runId, '--output-dir', $runDir)
     if (-not [string]::IsNullOrWhiteSpace([string]$options.TaskId)) {
         $arguments += @('--task-id', [string]$options.TaskId)
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$options.TaskJsonPath)) {
+        $taskJsonInfo = Resolve-WorkersProjectPath -ProjectDir $options.ProjectDir -Path ([string]$options.TaskJsonPath) -MustExist -AllowFile -MaxBytes (Get-WorkersUploadMaxBytes)
+        $arguments += @('--task-json', [string]$taskJsonInfo.FullPath)
     }
     $arguments += @($options.ScriptArgs)
     $cli = Invoke-WorkersColabCli -Arguments $arguments
@@ -9457,7 +9792,12 @@ function Get-WorkersLatestRunDirectory {
 function Invoke-WorkersLogs {
     $usage = "usage: winsmux workers logs <slot> [--run-id <id>] [--json] [--project-dir <path>]"
     $options = Read-WorkersLogsOptions -Usage $usage
-    $worker = Get-WorkersSingleColabContext -ProjectDir $options.ProjectDir -Target $options.Target
+    $workerProbe = Get-WorkersSingleWorkerContext -ProjectDir $options.ProjectDir -Target $options.Target
+    if ([string]::Equals([string]$workerProbe.Row.Backend, 'api_llm', [System.StringComparison]::OrdinalIgnoreCase)) {
+        Invoke-WorkersApiLlmLogs -Options $options -Worker $workerProbe
+        return
+    }
+    $worker = ConvertTo-WorkersSingleColabContext -Worker $workerProbe
     $runId = Assert-WorkersRunId -RunId ([string]$options.RunId)
     $runDir = $null
     if ([string]::IsNullOrWhiteSpace($runId)) {
@@ -9714,6 +10054,14 @@ function Invoke-WorkersStart {
             $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status 'failed' -Reason 'pane_id_missing')) | Out-Null
             continue
         }
+        if (
+            [string]::Equals(([string]$row.Backend), 'api_llm', [System.StringComparison]::OrdinalIgnoreCase) -or
+            [string]::Equals(([string]$entry.Status), 'api_llm_runner_unconfigured', [System.StringComparison]::OrdinalIgnoreCase)
+        ) {
+            Set-WorkersManifestLifecycleCommand -Entry $entry -CommandName 'workers.start' -Status 'api_llm_runner_unconfigured'
+            $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status 'blocked' -Reason 'api_llm_runner_unconfigured')) | Out-Null
+            continue
+        }
         if ([string]$entry.Status -eq 'backend_degraded') {
             $reason = [string]$row.DegradedReason
             if ([string]::IsNullOrWhiteSpace($reason)) {
@@ -9878,6 +10226,8 @@ function Invoke-WorkersDoctor {
     $checks = [System.Collections.Generic.List[object]]::new()
     $context = $null
     $colabSlotCount = 0
+    $apiLlmSlotCount = 0
+    $apiLlmMissingMetadataCount = 0
 
     try {
         $context = Get-WorkersLifecycleContext -ProjectDir $options.ProjectDir
@@ -9885,13 +10235,37 @@ function Invoke-WorkersDoctor {
         foreach ($slot in @($context.Slots)) {
             $slotId = Get-WorkersSlotId -Slot $slot
             $slotConfig = Get-SlotAgentConfig -Role 'Worker' -SlotId $slotId -Settings $context.Settings -RootPath $options.ProjectDir
-            if ([string]::Equals(([string]$slotConfig.WorkerBackend), 'colab_cli', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $backend = [string]$slotConfig.WorkerBackend
+            if ([string]::Equals($backend, 'colab_cli', [System.StringComparison]::OrdinalIgnoreCase)) {
                 $colabSlotCount++
+            }
+            if ([string]::Equals($backend, 'api_llm', [System.StringComparison]::OrdinalIgnoreCase)) {
+                $apiLlmSlotCount++
+                $metadata = Get-WorkersApiLlmMetadataState -Slot $slot -SlotId $slotId -RootPath $options.ProjectDir
+                $usesOpenAiCompatibleProvider = [string]::Equals([string]$slotConfig.CapabilityAdapter, 'openai-compatible', [System.StringComparison]::OrdinalIgnoreCase)
+                if (
+                    (-not [bool]$metadata.HasAgent) -or
+                    (-not [bool]$metadata.HasModel) -or
+                    [string]::IsNullOrWhiteSpace([string]$slotConfig.Agent) -or
+                    (Test-BridgeProviderDefaultModel -Model ([string]$slotConfig.Model)) -or
+                    (-not $usesOpenAiCompatibleProvider)
+                ) {
+                    $apiLlmMissingMetadataCount++
+                }
             }
         }
         $checks.Add((New-WorkersDoctorCheck -Status 'pass' -Label 'config' -Detail "$workerCount worker slots configured" -Action '')) | Out-Null
     } catch {
         $checks.Add((New-WorkersDoctorCheck -Status 'fail' -Label 'config' -Detail $_.Exception.Message -Action 'Fix .winsmux.yaml and rerun winsmux workers doctor.')) | Out-Null
+    }
+
+    if ($apiLlmSlotCount -gt 0) {
+        if ($apiLlmMissingMetadataCount -gt 0) {
+            $checks.Add((New-WorkersDoctorCheck -Status 'fail' -Label 'api_llm backend' -Detail "$apiLlmMissingMetadataCount of $apiLlmSlotCount api_llm worker slots are missing explicit OpenAI-compatible provider or model metadata" -Action 'Set agent and model for every api_llm slot, and declare an openai-compatible provider capability.')) | Out-Null
+        } else {
+            $checks.Add((New-WorkersDoctorCheck -Status 'pass' -Label 'api_llm backend' -Detail "$apiLlmSlotCount api_llm worker slots configured" -Action '')) | Out-Null
+        }
+        $checks.Add((New-WorkersDoctorCheck -Status 'warn' -Label 'api_llm runner' -Detail 'OpenAI-compatible execution is not configured by TASK-503' -Action 'Implement TASK-504 before real external API execution.')) | Out-Null
     }
 
     $manifestPath = Join-Path (Join-Path $options.ProjectDir '.winsmux') 'manifest.yaml'

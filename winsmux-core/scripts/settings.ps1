@@ -17,7 +17,7 @@ $script:BridgeSettingsFileName = '.winsmux.yaml'
 $script:BridgeProviderRegistryFileName = 'provider-registry.json'
 $script:BridgeProviderCapabilityRegistryFileName = 'provider-capabilities.json'
 $script:BridgeRuntimeRolePreferencesFileName = 'runtime-role-preferences.json'
-$script:BridgeWorkerBackendKinds = @('local', 'codex', 'colab_cli', 'noop')
+$script:BridgeWorkerBackendKinds = @('local', 'codex', 'colab_cli', 'api_llm', 'noop')
 $script:BridgeExecutionProfileKinds = @('local-windows', 'isolated-enterprise')
 $script:BridgeSlotScalarKeys = @(
     'slot_id',

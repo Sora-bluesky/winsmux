@@ -850,7 +850,7 @@ function Test-OrchestraPaneBootstrapVerificationDeferred {
         return $false
     }
 
-    return @('deferred_start', 'deferred_starting', 'backend_degraded') -contains $status.Trim().ToLowerInvariant()
+    return @('deferred_start', 'deferred_starting', 'backend_degraded', 'api_llm_runner_unconfigured') -contains $status.Trim().ToLowerInvariant()
 }
 
 function Get-AgentLaunchCommand {
@@ -2286,11 +2286,19 @@ if ($MyInvocation.InvocationName -ne '.') {
             $execModeAgent = [string]$slotAgentConfig.Agent
         }
         $execMode = $execModeAgent.Trim().ToLowerInvariant() -eq 'codex'
-        $launchCommand = Get-AgentLaunchCommand -Agent $slotAgentConfig.Agent -Model $slotAgentConfig.Model -ModelSource $slotAgentConfig.ModelSource -ReasoningEffort $slotAgentConfig.ReasoningEffort -ProjectDir $launchDir -GitWorktreeDir $launchGitWorktreeDir -RootPath $projectDir -ExecMode $false
         $supportsInterrupt = Test-OrchestraProviderInterruptAvailable -SlotAgentConfig $slotAgentConfig
         $deferPaneStart = Test-OrchestraPaneDeferredStart -Label $label -Role $canonicalRole -LayoutSettings $layoutSettings
         $deferredPaneStatus = 'deferred_start'
         $colabSessionEntry = $null
+        $apiLlmPaneStartDeferred = [string]::Equals(([string]$slotAgentConfig.WorkerBackend), 'api_llm', [System.StringComparison]::OrdinalIgnoreCase)
+        if ($apiLlmPaneStartDeferred) {
+            $deferPaneStart = $true
+            $deferredPaneStatus = 'api_llm_runner_unconfigured'
+        }
+        $launchCommand = ''
+        if (-not $apiLlmPaneStartDeferred) {
+            $launchCommand = Get-AgentLaunchCommand -Agent $slotAgentConfig.Agent -Model $slotAgentConfig.Model -ModelSource $slotAgentConfig.ModelSource -ReasoningEffort $slotAgentConfig.ReasoningEffort -ProjectDir $launchDir -GitWorktreeDir $launchGitWorktreeDir -RootPath $projectDir -ExecMode $false
+        }
         if ([string]::Equals(([string]$slotAgentConfig.WorkerBackend), 'colab_cli', [System.StringComparison]::OrdinalIgnoreCase) -and $colabSessionMap.ContainsKey($label)) {
             $colabSessionEntry = $colabSessionMap[$label]
             if ([bool](Get-WinsmuxColabValue -InputObject $colabSessionEntry -Name 'degraded' -Default $false)) {
@@ -2310,12 +2318,33 @@ if ($MyInvocation.InvocationName -ne '.') {
                 }
             }
             Invoke-Winsmux -Arguments @('respawn-pane', '-k', '-t', $paneId, '-c', $launchDir)
+            if ($canonicalRole -eq 'Worker') {
+                $approvedLaunch = New-OrchestraWorkerLaunchApproval -SlotId $label -SlotAgentConfig $slotAgentConfig -AutoLaunch:(!$deferPaneStart)
+            }
             if ([string]::IsNullOrWhiteSpace($launchCommand)) {
-                Write-Warning "TASK-231: empty launch command for pane $paneId ($label, role=$canonicalRole, execMode=$execMode). Agent will not start automatically."
-            } else {
-                if ($canonicalRole -eq 'Worker') {
-                    $approvedLaunch = New-OrchestraWorkerLaunchApproval -SlotId $label -SlotAgentConfig $slotAgentConfig -AutoLaunch:(!$deferPaneStart)
+                if ($deferPaneStart) {
+                    $paneStatus = $deferredPaneStatus
+                    if ($paneStatus -eq 'backend_degraded') {
+                        $eventName = 'preflight.worker.backend_degraded'
+                        $eventMessage = "Colab backend is degraded for $label."
+                    } elseif ($paneStatus -eq 'api_llm_runner_unconfigured') {
+                        $eventName = 'preflight.worker.api_llm_runner_unconfigured'
+                        $eventMessage = "API LLM worker runner is not configured for $label."
+                    } else {
+                        $eventName = 'preflight.worker.deferred_start'
+                        $eventMessage = "Deferred worker startup for $label."
+                    }
+                    Write-WinsmuxLog -Level INFO -Event $eventName -Message $eventMessage -Data ([ordered]@{
+                        label               = $label
+                        pane_id             = $paneId
+                        bootstrap_plan_path = $bootstrapPlanPath
+                        worker_backend      = [string]$slotAgentConfig.WorkerBackend
+                        degraded_reason     = if ($null -ne $colabSessionEntry) { [string](Get-WinsmuxColabValue -InputObject $colabSessionEntry -Name 'degraded_reason' -Default '') } else { '' }
+                    }) | Out-Null
+                } else {
+                    Write-Warning "TASK-231: empty launch command for pane $paneId ($label, role=$canonicalRole, execMode=$execMode). Agent will not start automatically."
                 }
+            } else {
                 $bootstrapPlanPath = New-OrchestraPaneBootstrapPlan `
                     -ProjectDir $projectDir `
                     -PaneId $paneId `
@@ -2331,8 +2360,16 @@ if ($MyInvocation.InvocationName -ne '.') {
                     -ApprovedLaunch $approvedLaunch
                 if ($deferPaneStart) {
                     $paneStatus = $deferredPaneStatus
-                    $eventName = if ($paneStatus -eq 'backend_degraded') { 'preflight.worker.backend_degraded' } else { 'preflight.worker.deferred_start' }
-                    $eventMessage = if ($paneStatus -eq 'backend_degraded') { "Colab backend is degraded for $label." } else { "Deferred worker startup for $label." }
+                    if ($paneStatus -eq 'backend_degraded') {
+                        $eventName = 'preflight.worker.backend_degraded'
+                        $eventMessage = "Colab backend is degraded for $label."
+                    } elseif ($paneStatus -eq 'api_llm_runner_unconfigured') {
+                        $eventName = 'preflight.worker.api_llm_runner_unconfigured'
+                        $eventMessage = "API LLM worker runner is not configured for $label."
+                    } else {
+                        $eventName = 'preflight.worker.deferred_start'
+                        $eventMessage = "Deferred worker startup for $label."
+                    }
                     Write-WinsmuxLog -Level INFO -Event $eventName -Message $eventMessage -Data ([ordered]@{
                         label               = $label
                         pane_id             = $paneId

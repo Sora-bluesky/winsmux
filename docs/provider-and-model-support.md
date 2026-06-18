@@ -30,6 +30,7 @@ column.
 | Official hosted agent CLIs | Supported as pane agents | The CLI owns its own sign-in or API key flow. |
 | `local` worker backend | Supported | Runs normal managed panes on this PC. |
 | `codex` worker backend | Metadata today | Used to describe Codex-capable worker or review slots. |
+| `api_llm` worker backend | Supported contract for hosted OpenAI-compatible model workers | Uses provider-owned API access such as OpenRouter. The public setup path is the runtime environment variable; winsmux records only redacted run metadata and does not fall back to local or Colab LLM backends. |
 | `colab_cli` worker backend | Supported for status, doctor, one-shot execution, logs, upload, and download | Requires a `google-colab-cli` compatible adapter and is intended for H100 or A100 Colab-backed work. |
 | Major open model families | Supported as Colab model targets when the task script and runtime provide them | Examples include Gemma, Llama, Mistral, Qwen, DeepSeek, and Kimi/Moonshot. Treat the model family as workload metadata, not as a provider. |
 | Local LLM runtimes | Planned adapter family | Not a `v0.32.x` Colab-lane runtime requirement. Today, run them as normal local tools or behind an agent CLI that can use a local endpoint. |
@@ -56,6 +57,39 @@ Provider entries may declare:
   which choices the operator can select.
 - `analysis_posture`: whether the provider is safe only for read-only analysis
   or can act as a normal write-capable worker.
+
+## Hosted API model workers
+
+`api_llm` is the hosted OpenAI-compatible worker backend. It is for model
+providers that expose chat-completions style APIs, with OpenRouter as the first
+supported provider contract. A slot may declare:
+
+```yaml
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    worker-backend: api_llm
+    agent: openrouter
+    model: z-ai/glm-5.2
+    model-source: operator-override
+    prompt-transport: file
+    auth-mode: api-key-env
+    worktree-mode: managed
+```
+
+The default OpenRouter-compatible base URL is
+`https://openrouter.ai/api/v1`. The default environment variable name is
+`WINSMUX_OPENROUTER_API_KEY` when the operator chooses environment-based
+authentication. winsmux must not write this value to repository files, public
+docs, PR text, generated reports, worker logs, or release evidence.
+If the operator uses 1Password or another password manager, load the secret into
+the worker process environment before starting the worker. Do not use `setx`,
+shell startup files, inline command assignment, shell history, or repo-local
+`.env` files for this key.
+
+`api_llm` is intentionally separate from `local_llm`, `colab_llm`, and
+`colab_cli`. If hosted API execution is not configured, winsmux reports a
+diagnostic reason instead of silently switching to a local or Colab runtime.
 
 ## Execution profile policy
 

@@ -494,6 +494,36 @@ agent-slots:
         $impl.Packages | Should -Be @('torch', 'transformers', 'accelerate')
     }
 
+    It 'parses api_llm worker backend metadata without Colab fallback' {
+@'
+agent: codex
+model: provider-default
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    worker-backend: api_llm
+    worker-role: impl
+    agent: openrouter
+    model: z-ai/glm-5.2
+    model-source: operator-override
+    auth-mode: api-key-env
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        $settings = Get-BridgeSettings
+        $settings.agent_slots[0].worker_backend | Should -Be 'api_llm'
+        $settings.agent_slots[0].agent | Should -Be 'openrouter'
+        $settings.agent_slots[0].model | Should -Be 'z-ai/glm-5.2'
+
+        $impl = Get-SlotAgentConfig -Role 'Worker' -SlotId 'worker-1' -Settings $settings
+        $impl.WorkerBackend | Should -Be 'api_llm'
+        $impl.Agent | Should -Be 'openrouter'
+        $impl.Model | Should -Be 'z-ai/glm-5.2'
+        $impl.AuthMode | Should -Be 'api-key-env'
+    }
+
     It 'parses block-style slot metadata lists in the manual YAML fallback' {
         $parsed = ConvertFrom-BridgeManualYaml -Content @'
 agent-slots:
@@ -6881,6 +6911,7 @@ Describe 'orchestra-start session reuse contract' {
     It 'skips bootstrap readiness and cwd verification for deferred worker panes' {
         Test-OrchestraPaneBootstrapVerificationDeferred -PaneSummary ([pscustomobject]@{ Status = 'deferred_start' }) | Should -Be $true
         Test-OrchestraPaneBootstrapVerificationDeferred -PaneSummary ([pscustomobject]@{ Status = 'deferred_starting' }) | Should -Be $true
+        Test-OrchestraPaneBootstrapVerificationDeferred -PaneSummary ([pscustomobject]@{ Status = 'api_llm_runner_unconfigured' }) | Should -Be $true
         Test-OrchestraPaneBootstrapVerificationDeferred -PaneSummary ([pscustomobject]@{ Status = 'ready' }) | Should -Be $false
 
         $script:orchestraStartContent | Should -Match 'Test-OrchestraPaneBootstrapVerificationDeferred -PaneSummary \$paneSummary'
@@ -9009,6 +9040,46 @@ agent-slots:
 '@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
     }
 
+    function script:Write-WorkersApiLlmProjectConfig {
+@'
+agent: codex
+model: provider-default
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    worker-backend: api_llm
+    worker-role: impl
+    agent: openrouter
+    model: z-ai/glm-5.2
+    model-source: operator-override
+    prompt-transport: file
+    auth-mode: api-key-env
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        New-Item -ItemType Directory -Path (Join-Path $script:workersTempRoot '.winsmux') -Force | Out-Null
+@'
+{
+  "version": 1,
+  "providers": {
+    "openrouter": {
+      "adapter": "openai-compatible",
+      "display_name": "OpenRouter",
+      "command": "openrouter",
+      "prompt_transports": ["file"],
+      "auth_modes": ["api-key-env", "api-key-vault"],
+      "model_sources": ["provider-default", "operator-override"],
+      "reasoning_efforts": ["provider-default", "low", "medium", "high"],
+      "credential_requirements": "runtime-owned-api-key",
+      "execution_backend": "openai-compatible-chat-completions",
+      "analysis_posture": "hosted-api-worker",
+      "supports_file_edit": false,
+      "supports_structured_result": true
+    }
+  }
+}
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux\provider-capabilities.json') -Encoding UTF8
+    }
+
     It 'documents and routes the workers lifecycle command' {
         $script:winsmuxWorkersCoreRawContent | Should -Match 'workers <status\|start\|stop\|attach\|doctor> \[slot\|all\] \[--json\] \[--project-dir <path>\]'
         $script:winsmuxWorkersCoreRawContent | Should -Match 'workers <exec\|logs\|upload\|download> <slot> \.\.\. \[--json\] \[--project-dir <path>\]'
@@ -10422,6 +10493,65 @@ worker-backend: colab_cli
         @($payload.workers[1].approval_differences).Count | Should -Be 0
     }
 
+    It 'reports api_llm worker status with provider-hosted model metadata' {
+        Write-WorkersApiLlmProjectConfig
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers status --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $row = @($payload.workers)[0]
+
+        $row.slot_id | Should -Be 'worker-1'
+        $row.backend | Should -Be 'api_llm'
+        $row.provider | Should -Be 'openrouter'
+        $row.model | Should -Be 'z-ai/glm-5.2'
+        $row.model_source | Should -Be 'operator-override'
+        $row.auth_mode | Should -Be 'api-key-env'
+        $row.credential_requirements | Should -Be 'runtime-owned-api-key'
+        $row.execution_backend | Should -Be 'openai-compatible-chat-completions'
+        $row.capability_adapter | Should -Be 'openai-compatible'
+        $row.session | Should -Be ''
+        $row.actual_gpu | Should -Be ''
+        $row.degraded_reason | Should -Be ''
+    }
+
+    It 'adds api_llm diagnostics without requiring a Colab adapter fallback' {
+        Write-WorkersApiLlmProjectConfig
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers doctor --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $apiBackend = @($payload.checks | Where-Object { $_.label -eq 'api_llm backend' })[0]
+        $apiRunner = @($payload.checks | Where-Object { $_.label -eq 'api_llm runner' })[0]
+
+        $apiBackend.status | Should -Be 'pass'
+        $apiBackend.detail | Should -Be '1 api_llm worker slots configured'
+        $apiRunner.status | Should -Be 'warn'
+        $apiRunner.detail | Should -Match 'OpenAI-compatible execution'
+        ($payload | ConvertTo-Json -Depth 24) | Should -Not -Match 'colab worker worker-1'
+    }
+
+    It 'fails api_llm diagnostics when provider metadata is inherited from the default agent' {
+@'
+agent: codex
+model: provider-default
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    worker-backend: api_llm
+    worker-role: impl
+    model: z-ai/glm-5.2
+    model-source: operator-override
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers doctor --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $apiBackend = @($payload.checks | Where-Object { $_.label -eq 'api_llm backend' })[0]
+
+        $apiBackend.status | Should -Be 'fail'
+        $apiBackend.detail | Should -Match 'missing explicit OpenAI-compatible provider or model metadata'
+        $apiBackend.action | Should -Match 'Set agent and model'
+    }
+
     It 'stops one worker by slot alias and records the lifecycle command in the manifest' {
 @'
 agent: codex
@@ -10541,6 +10671,66 @@ agent-slots:
         $payload.results[0].slot_id | Should -Be 'worker-2'
         $payload.results[0].status | Should -Be 'blocked'
         $payload.results[0].reason | Should -Be 'colab_cli_missing'
+        Should -Invoke Send-TextToPane -Times 0 -Exactly
+    }
+
+    It 'blocks start for an api_llm worker without dispatching bootstrap text' {
+        Write-WorkersApiLlmProjectConfig
+        Save-WinsmuxManifest -ProjectDir $script:workersTempRoot -Manifest ([ordered]@{
+            version = 1
+            saved_at = '2026-05-13T00:00:00Z'
+            session = [ordered]@{
+                name = 'winsmux-orchestra'
+                project_dir = $script:workersTempRoot
+                git_worktree_dir = (Join-Path $script:workersTempRoot '.git')
+            }
+            panes = [ordered]@{
+                'worker-1' = [ordered]@{
+                    pane_id = '%2'
+                    slot_id = 'worker-1'
+                    worker_backend = 'api_llm'
+                    role = 'Worker'
+                    exec_mode = $false
+                    launch_dir = $script:workersTempRoot
+                    status = 'api_llm_runner_unconfigured'
+                    approved_launch = [ordered]@{
+                        packet_type = 'worker_launch_approval'
+                        source = 'user_approved_worker_config'
+                        slot_id = 'worker-1'
+                        worker_backend = 'api_llm'
+                        worker_role = 'impl'
+                        agent = 'openrouter'
+                        model = 'z-ai/glm-5.2'
+                        model_source = 'operator-override'
+                        prompt_transport = 'file'
+                        auth_mode = 'api-key-env'
+                        execution_backend = 'openai-compatible-chat-completions'
+                        analysis_posture = 'hosted-api-worker'
+                        auto_launch = $false
+                    }
+                    task = $null
+                }
+            }
+            tasks = [ordered]@{
+                queued = @()
+                in_progress = @()
+                completed = @()
+            }
+            worktrees = [ordered]@{}
+        })
+
+        Mock Send-TextToPane { throw 'bootstrap should not be dispatched' }
+
+        $Rest = @('worker-1', '--json', '--project-dir', $script:workersTempRoot)
+        $output = Invoke-WorkersStart
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $entry = @(Get-PaneControlManifestEntries -ProjectDir $script:workersTempRoot)[0]
+
+        $payload.results[0].slot_id | Should -Be 'worker-1'
+        $payload.results[0].status | Should -Be 'blocked'
+        $payload.results[0].reason | Should -Be 'api_llm_runner_unconfigured'
+        $entry.Status | Should -Be 'api_llm_runner_unconfigured'
+        $entry.LastCommand | Should -Be 'workers.start'
         Should -Invoke Send-TextToPane -Times 0 -Exactly
     }
 
@@ -10897,6 +11087,89 @@ worker-backend: colab_cli
         }
     }
 
+    It 'records blocked api_llm exec artifacts without invoking Colab' {
+        Write-WorkersApiLlmProjectConfig
+        'Summarize the repository status.' | Set-Content -Path (Join-Path $script:workersTempRoot 'prompt.md') -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers exec w1 --script prompt.md --run-id api-run --json --project-dir $script:workersTempRoot 2>&1
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+
+        $LASTEXITCODE | Should -Be 1
+        $payload.status | Should -Be 'blocked'
+        $payload.reason | Should -Be 'api_llm_runner_unconfigured'
+        $payload.backend | Should -Be 'api_llm'
+        $payload.slot_id | Should -Be 'worker-1'
+        $payload.input | Should -Be 'prompt.md'
+        $payload.api_llm.provider | Should -Be 'openrouter'
+        $payload.api_llm.model | Should -Be 'z-ai/glm-5.2'
+        $payload.api_llm.execution_backend | Should -Be 'openai-compatible-chat-completions'
+        $payload.prompt_value_output | Should -Be $false
+        $payload.locations.input.local_path | Should -Be ''
+        ($output | Out-String) | Should -Not -Match 'google-colab-cli'
+        ($output | Out-String) | Should -Not -Match 'Summarize the repository status'
+
+        $logPath = Join-Path $script:workersTempRoot ($payload.stdout_log -replace '/', '\')
+        $logText = Get-Content -LiteralPath $logPath -Raw -Encoding UTF8
+        $logText | Should -Match 'api_llm runner is not configured'
+        $logText | Should -Not -Match 'Summarize the repository status'
+
+        $logsOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers logs w1 --run-id api-run --json --project-dir $script:workersTempRoot 2>&1
+        $logsPayload = ($logsOutput | Select-Object -Last 1) | ConvertFrom-Json
+
+        $LASTEXITCODE | Should -Be 1
+        $logsPayload.status | Should -Be 'blocked'
+        $logsPayload.reason | Should -Be 'api_llm_runner_unconfigured'
+        $logsPayload.backend | Should -Be 'api_llm'
+        $logsPayload.source | Should -Be 'local'
+        $logsPayload.log | Should -Match 'api_llm runner is not configured'
+        ($logsOutput | Out-String) | Should -Not -Match 'google-colab-cli'
+    }
+
+    It 'accepts task-json as the api_llm exec input contract' {
+        Write-WorkersApiLlmProjectConfig
+        '{"task_id":"api-task-json","title":"Summarize release state"}' | Set-Content -Path (Join-Path $script:workersTempRoot 'task.json') -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers exec w1 --task-json task.json --run-id api-task-json-run --json --project-dir $script:workersTempRoot 2>&1
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+
+        $LASTEXITCODE | Should -Be 1
+        $payload.status | Should -Be 'blocked'
+        $payload.reason | Should -Be 'api_llm_runner_unconfigured'
+        $payload.backend | Should -Be 'api_llm'
+        $payload.input | Should -Be 'task.json'
+        $payload.input_kind | Should -Be 'task_json'
+        $payload.script | Should -Be ''
+        $payload.task_json | Should -Be 'task.json'
+        $payload.prompt_value_output | Should -Be $false
+        ($output | Out-String) | Should -Not -Match 'Summarize release state'
+        ($output | Out-String) | Should -Not -Match 'google-colab-cli'
+    }
+
+    It 'rejects ambiguous api_llm script and task-json exec input' {
+        Write-WorkersApiLlmProjectConfig
+        'Summarize the repository status.' | Set-Content -Path (Join-Path $script:workersTempRoot 'prompt.md') -Encoding UTF8
+        '{"task_id":"api-task-json","title":"Summarize release state"}' | Set-Content -Path (Join-Path $script:workersTempRoot 'task.json') -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers exec w1 --script prompt.md --task-json task.json --run-id api-ambiguous-run --json --project-dir $script:workersTempRoot 2>&1
+
+        $LASTEXITCODE | Should -Be 1
+        ($output | Out-String) | Should -Match 'api_llm workers exec accepts either --script or --task-json, not both'
+        Test-Path -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\worker-runs\worker-1\api-ambiguous-run') | Should -Be $false
+    }
+
+    It 'rejects secret-like api_llm prompt input before creating a run artifact' {
+        Write-WorkersApiLlmProjectConfig
+        '{"api_key":"abcdefghijklmnop"}' | Set-Content -Path (Join-Path $script:workersTempRoot 'prompt.json') -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers exec w1 --script prompt.json --run-id secret-api-run --json --project-dir $script:workersTempRoot 2>&1
+
+        $LASTEXITCODE | Should -Be 1
+        ($output | Out-String) | Should -Match 'API LLM safety policy'
+        ($output | Out-String) | Should -Match 'secret_like_input'
+        ($output | Out-String) | Should -Not -Match 'google-colab-cli'
+        Test-Path -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\worker-runs\worker-1\secret-api-run') | Should -Be $false
+    }
+
     It 'runs a one-shot Colab worker script and reads the stored log' {
         New-WorkersFakeColabCli | Out-Null
         Write-WorkersColabProjectConfig
@@ -10917,6 +11190,25 @@ worker-backend: colab_cli
         $logsPayload = ($logsOutput | Select-Object -Last 1) | ConvertFrom-Json
         $logsPayload.source | Should -Be 'local'
         $logsPayload.log | Should -Match 'fake-colab run'
+    }
+
+    It 'passes top-level task-json to the Colab adapter with the script' {
+        New-WorkersFakeColabCli | Out-Null
+        Write-WorkersColabProjectConfig
+        New-Item -ItemType Directory -Path (Join-Path $script:workersTempRoot 'workers\colab') -Force | Out-Null
+        'print("hello")' | Set-Content -Path (Join-Path $script:workersTempRoot 'workers\colab\task.py') -Encoding UTF8
+        '{"task_id":"colab-task-json","title":"Summarize release state"}' | Set-Content -Path (Join-Path $script:workersTempRoot 'task.json') -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers exec w2 --script workers/colab/task.py --task-json task.json --run-id colab-task-json-run --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+
+        $payload.status | Should -Be 'succeeded'
+        $payload.slot_id | Should -Be 'worker-2'
+        $payload.run_id | Should -Be 'colab-task-json-run'
+        @($payload.cli_arguments) | Should -Contain '--script'
+        @($payload.cli_arguments) | Should -Contain '--task-json'
+        (@($payload.cli_arguments) -join ' ') | Should -Match '\[LOCAL_PATH_REDACTED\]'
+        ($output | Out-String) | Should -Not -Match 'Summarize release state'
     }
 
     It 'lets the Colab adapter handle authentication when winsmux auth is unverified' {
@@ -17498,6 +17790,17 @@ Describe 'orchestra pane bootstrap plan' {
     It 'builds pane launch commands through provider capability metadata' {
         $script:orchestraStartContent | Should -Match 'Get-BridgeProviderLaunchCommand'
         $script:orchestraStartContent | Should -Match 'Get-AgentLaunchCommand -Agent \$slotAgentConfig\.Agent -Model \$slotAgentConfig\.Model -ModelSource \$slotAgentConfig\.ModelSource -ReasoningEffort \$slotAgentConfig\.ReasoningEffort -ProjectDir \$launchDir -GitWorktreeDir \$launchGitWorktreeDir -RootPath \$projectDir'
+    }
+
+    It 'defers api_llm workers before resolving provider launch commands' {
+        $apiLlmDeferIndex = $script:orchestraStartContent.IndexOf('$apiLlmPaneStartDeferred = [string]::Equals(([string]$slotAgentConfig.WorkerBackend), ''api_llm''')
+        $providerLaunchIndex = $script:orchestraStartContent.IndexOf('$launchCommand = Get-AgentLaunchCommand')
+
+        $apiLlmDeferIndex | Should -BeGreaterThan -1
+        $providerLaunchIndex | Should -BeGreaterThan $apiLlmDeferIndex
+        $script:orchestraStartContent | Should -Match 'if \(-not \$apiLlmPaneStartDeferred\) \{'
+        $script:orchestraStartContent | Should -Match "\$deferredPaneStatus = 'api_llm_runner_unconfigured'"
+        $script:orchestraStartContent | Should -Match 'preflight\.worker\.api_llm_runner_unconfigured'
     }
 
     It 'prints a concise startup summary before invoking the agent launch command' {

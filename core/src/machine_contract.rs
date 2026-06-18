@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-pub const MACHINE_CONTRACT_VERSION: &str = "0.32.1";
+pub const MACHINE_CONTRACT_VERSION: &str = "0.33.0";
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 pub struct MachineContractCatalog<'a> {
@@ -235,6 +235,21 @@ const WORKER_BACKENDS: &[WorkerBackendContract<'static>] = &[
             "packages",
             "bootstrap",
             "task_script",
+        ],
+    },
+    WorkerBackendContract {
+        id: "api_llm",
+        description: "hosted OpenAI-compatible API model worker contract with provider metadata, task JSON input, and redacted run artifacts",
+        runtime_available: false,
+        config_fields: &[
+            "worker_backend",
+            "worker_role",
+            "agent",
+            "model",
+            "model_source",
+            "prompt_transport",
+            "auth_mode",
+            "pane_title",
         ],
     },
     WorkerBackendContract {

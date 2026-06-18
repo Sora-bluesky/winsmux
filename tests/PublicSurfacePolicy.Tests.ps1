@@ -327,6 +327,24 @@ Describe 'Public surface policy' {
         ($output -join "`n") | Should -Match "name 'VS Code'"
     }
 
+    It 'blocks hosted API keys and provider request ids in generated release notes' {
+        $releaseBody = Join-Path $TestDrive 'hosted-api-release-body.md'
+        $openRouterKey = 'sk-or-' + 'v1-' + ('a' * 24)
+        Set-Content -LiteralPath $releaseBody -Value @"
+## New Features
+
+- Hosted worker smoke used $openRouterKey.
+- provider_request_id=req_release_123456789
+"@ -Encoding UTF8
+
+        $output = @(& pwsh -NoProfile -File $auditPublicSurface -ReleaseNotesPath $releaseBody 2>&1)
+
+        $LASTEXITCODE | Should -Be 1
+        ($output -join "`n") | Should -Match 'hosted API runtime secret or request metadata'
+        ($output -join "`n") | Should -Match 'OpenRouter'
+        ($output -join "`n") | Should -Match 'provider request id'
+    }
+
     It 'uses recorded-baseline gitleaks scans for routine push and CI checks' {
         $workflow = Get-Content (Join-Path $repoRoot '.github/workflows/test.yml') -Raw
         $prePush = Get-Content (Join-Path $repoRoot '.githooks/pre-push') -Raw

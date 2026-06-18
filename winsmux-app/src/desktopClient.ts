@@ -691,6 +691,17 @@ export interface DesktopWorkerStatusRow {
   backend: string;
   role: string;
   execution_profile?: string;
+  provider?: string;
+  model?: string;
+  model_source?: string;
+  reasoning_effort?: string;
+  prompt_transport?: string;
+  auth_mode?: string;
+  auth_policy?: string;
+  capability_adapter?: string;
+  credential_requirements?: string;
+  execution_backend?: string;
+  analysis_posture?: string;
   session: string;
   requested_gpu: string;
   actual_gpu: string;

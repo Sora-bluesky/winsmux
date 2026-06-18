@@ -4787,6 +4787,20 @@ body.is-resizing-workbench {
   border-color: var(--status-info-border);
 }
 
+.worker-status-pill-chip[data-status-field="provider"],
+.worker-status-pill-chip[data-status-field="model"] {
+  color: var(--status-info);
+  border-color: color-mix(in srgb, var(--status-info) 38%, var(--border-muted));
+  background: color-mix(in srgb, var(--status-info) 9%, var(--ws-bg-elevated));
+}
+
+.worker-status-pill-chip[data-status-field="cost"],
+.worker-status-pill-chip[data-status-field="risk"] {
+  color: var(--status-warning);
+  border-color: var(--status-warning-border);
+  background: color-mix(in srgb, var(--status-warning) 9%, var(--ws-bg-elevated));
+}
+
 .worker-status-detail-empty {
   color: var(--text-muted);
   font-family: var(--font-code);
