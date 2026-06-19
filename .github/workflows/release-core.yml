@@ -51,7 +51,7 @@ jobs:
           cd release && sha256sum *.exe > SHA256SUMS
       - name: Generate Release Body
         shell: pwsh
-        run: ./scripts/generate-release-notes.ps1 -Version "${{ github.ref_name }}" -BacklogPath "tasks/backlog.yaml" -OutputPath "release/release-body.md"
+        run: ./scripts/generate-release-notes.ps1 -Version "${{ github.ref_name }}" -OutputPath "release/release-body.md"
       - name: Check Release Body Quality
         shell: pwsh
         run: ./scripts/assert-release-notes-quality.ps1 -ReleaseNotesPath "release/release-body.md"

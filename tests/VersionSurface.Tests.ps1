@@ -100,7 +100,7 @@ Describe 'winsmux version surface' {
         $qualityIndex | Should -BeGreaterThan $generateIndex
         $auditIndex | Should -BeGreaterThan $qualityIndex
         $publishIndex | Should -BeGreaterThan $auditIndex
-        $releaseCoreWorkflow | Should -Match '-BacklogPath "tasks/backlog.yaml"'
+        $releaseCoreWorkflow | Should -Not -Match '-BacklogPath "tasks/backlog.yaml"'
 
         $terseBody = Join-Path $TestDrive 'terse-release-body.md'
         Set-Content -LiteralPath $terseBody -Value @'
@@ -206,6 +206,51 @@ This release body intentionally includes enough context for operators to underst
 
         $body = Get-Content -LiteralPath $generatedBody -Raw -Encoding UTF8
         $body | Should -Match 'Release workflow builds the Windows x64 core binary'
+        $body | Should -Not -Match 'source of truth'
+    }
+
+    It 'generates release notes from public git history when backlog is unavailable' {
+        $generator = Join-Path $script:RepoRoot 'scripts\generate-release-notes.ps1'
+        $qualityScript = Join-Path $script:RepoRoot 'scripts\assert-release-notes-quality.ps1'
+        $generatedBody = Join-Path $TestDrive 'generated-release-body-no-backlog.md'
+        $gitShimDir = Join-Path $TestDrive 'bin'
+        New-Item -ItemType Directory -Path $gitShimDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $gitShimDir 'git.cmd') -Value @'
+@echo off
+if "%~1"=="rev-parse" exit /b 0
+if "%~1"=="tag" (
+  echo v0.36.10
+  echo v0.36.9
+  exit /b 0
+)
+if "%~1"=="log" (
+  echo feat^(workers^): migrate worker path to Antigravity CLI ^(#982^)
+  echo test^(release^): gate release note quality ^(#981^)
+  echo fix^(desktop^): harden operator runtime controls ^(#975^)
+  echo chore^(deps-dev^): bump vite from 6.4.2 to 6.4.3 in /winsmux-app
+  exit /b 0
+)
+exit /b 1
+'@ -Encoding ascii
+
+        $previousPath = $env:PATH
+        try {
+            $env:PATH = "$gitShimDir;$previousPath"
+            $generateOutput = @(& pwsh -NoProfile -File $generator -Version 'v0.36.10' -BacklogPath (Join-Path $TestDrive 'missing-backlog.yaml') -OutputPath $generatedBody 2>&1)
+            $LASTEXITCODE | Should -Be 0
+            ($generateOutput -join "`n") | Should -Match 'backlog not found'
+            ($generateOutput -join "`n") | Should -Match 'release-notes.*wrote'
+
+            $qualityOutput = @(& pwsh -NoProfile -File $qualityScript -ReleaseNotesPath $generatedBody 2>&1)
+            $LASTEXITCODE | Should -Be 0
+            ($qualityOutput -join "`n") | Should -Match 'release-notes-quality.*passed'
+        } finally {
+            $env:PATH = $previousPath
+        }
+
+        $body = Get-Content -LiteralPath $generatedBody -Raw -Encoding UTF8
+        $body | Should -Match 'Antigravity CLI route'
+        $body | Should -Match 'release-note quality gates'
         $body | Should -Not -Match 'source of truth'
     }
 
