@@ -75,6 +75,7 @@ $whitelistPatterns = @(
     'scripts/gitleaks-history.ps1',
     'scripts/gitleaks-history-baseline.txt',
     'scripts/audit-public-surface.ps1',
+    'scripts/assert-release-notes-quality.ps1',
     'scripts/codex-subagent-worktree-guard.ps1',
     'scripts/upstream-reevaluation.ps1',
     'scripts/validate-pester-reduction-plan.ps1',
