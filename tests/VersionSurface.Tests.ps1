@@ -62,6 +62,14 @@ Describe 'winsmux version surface' {
         $tauriLock | Should -Match ('(?ms)^name\s*=\s*"winsmux-app"\s*\r?\nversion\s*=\s*"{0}"' -f [regex]::Escape($script:ProductVersion))
     }
 
+    It 'derives desktop installer E2E artifact names from VERSION' {
+        $contextMenuE2e = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'winsmux-app\scripts\windows-context-menu-e2e.ps1') -Raw -Encoding UTF8
+
+        $contextMenuE2e | Should -Match ([regex]::Escape("Join-Path `$script:RepoRoot 'VERSION'"))
+        $contextMenuE2e | Should -Match ([regex]::Escape('winsmux_$($script:ProductVersion)_x64-setup.exe'))
+        $contextMenuE2e | Should -Not -Match 'winsmux_\d+\.\d+\.\d+_x64-setup\.exe'
+    }
+
     It 'keeps staged npm package versions aligned while leaving the source package templated' {
         $stageScript = Join-Path $script:RepoRoot 'scripts\stage-npm-release.mjs'
         $outputRoot = Join-Path $TestDrive 'npm-release\winsmux'

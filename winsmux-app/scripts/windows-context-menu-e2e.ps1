@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$SetupPath = (Join-Path $PSScriptRoot '..\..\target\release\bundle\nsis\winsmux_0.36.8_x64-setup.exe'),
+    [string]$SetupPath = '',
     [string]$InstallRoot = 'C:\tmp\winsmux-context-menu-e2e',
     [ValidateSet('Both', 'English', 'Japanese')]
     [string]$Language = 'Both'
@@ -8,6 +8,12 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+$script:RepoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+$script:ProductVersion = (Get-Content -LiteralPath (Join-Path $script:RepoRoot 'VERSION') -Raw -Encoding UTF8).Trim()
+if ([string]::IsNullOrWhiteSpace($SetupPath)) {
+    $SetupPath = Join-Path $script:RepoRoot "target\release\bundle\nsis\winsmux_$($script:ProductVersion)_x64-setup.exe"
+}
 
 function Assert-True {
     param(
