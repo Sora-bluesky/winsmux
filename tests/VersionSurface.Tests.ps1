@@ -100,6 +100,7 @@ Describe 'winsmux version surface' {
         $qualityIndex | Should -BeGreaterThan $generateIndex
         $auditIndex | Should -BeGreaterThan $qualityIndex
         $publishIndex | Should -BeGreaterThan $auditIndex
+        $releaseCoreWorkflow | Should -Match '-BacklogPath "tasks/backlog.yaml"'
 
         $terseBody = Join-Path $TestDrive 'terse-release-body.md'
         Set-Content -LiteralPath $terseBody -Value @'
@@ -171,8 +172,31 @@ This release body intentionally includes enough context for operators to underst
         $generator = Join-Path $script:RepoRoot 'scripts\generate-release-notes.ps1'
         $qualityScript = Join-Path $script:RepoRoot 'scripts\assert-release-notes-quality.ps1'
         $generatedBody = Join-Path $TestDrive 'generated-release-body.md'
+        $backlog = Join-Path $TestDrive 'backlog.yaml'
+        Set-Content -LiteralPath $backlog -Value @'
+- id: TASK-503
+    title: api_llm backend contract and worker CLI surfaces
+    status: done
+    priority: HIGH
+    target_version: v0.36.9
+- id: TASK-504
+    title: OpenRouter/OpenAI-compatible runner and auth contract
+    status: done
+    priority: HIGH
+    target_version: v0.36.9
+- id: TASK-506
+    title: External API secret and public-surface gate
+    status: done
+    priority: HIGH
+    target_version: v0.36.9
+- id: TASK-507
+    title: External API worker E2E evidence and review gate
+    status: done
+    priority: HIGH
+    target_version: v0.36.9
+'@ -Encoding UTF8
 
-        $generateOutput = @(& pwsh -NoProfile -File $generator -Version 'v0.36.9' -OutputPath $generatedBody 2>&1)
+        $generateOutput = @(& pwsh -NoProfile -File $generator -Version 'v0.36.9' -BacklogPath $backlog -OutputPath $generatedBody 2>&1)
         $LASTEXITCODE | Should -Be 0
         ($generateOutput -join "`n") | Should -Match 'release-notes.*wrote'
 

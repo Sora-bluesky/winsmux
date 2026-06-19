@@ -616,6 +616,13 @@ Add-Section -Builder $builder -Title 'Highlights' -Items $highlightItems -Seen $
 
 $changeItems = @($features + $fixes + $documentation + $chores | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
 $changeItems = @(Remove-ExistingBenefits -Items $changeItems -Existing $highlightItems | Select-Object -First 8)
+if ($changeItems.Count -eq 0) {
+    $changeItems = @(
+        'Release scope is derived from the version tag commit range and filtered to public-facing changes',
+        'Version bump, roadmap sync, and planning-only commits are excluded from public highlights',
+        'The generated body remains usable when private planning metadata is not available in CI'
+    )
+}
 Add-Section -Builder $builder -Title 'Release scope' -Items $changeItems -Seen $null
 
 $safetyItems = New-Object System.Collections.Generic.List[string]
@@ -626,6 +633,7 @@ foreach ($item in @($security + $chores)) {
 }
 $safetyItems.Add('Release notes are checked by the public-surface audit before GitHub Release publication')
 $safetyItems.Add('Secret-like values, local private paths, and provider request metadata remain blocked from release materials')
+$safetyItems.Add('A failed release-note quality check stops the release workflow before GitHub Release publication')
 Add-Section -Builder $builder -Title 'Safety and operations' -Items @($safetyItems.ToArray()) -Seen $null
 
 $distributionItems = @(
@@ -640,7 +648,8 @@ $validationItems = @(
     'Release workflow builds the Windows x64 core binary before release assets are assembled',
     'Release workflow builds the Windows arm64 core binary before release assets are assembled',
     'Generated release notes must pass `scripts/assert-release-notes-quality.ps1` before publication',
-    'Generated release notes must pass `scripts/audit-public-surface.ps1` before publication'
+    'Generated release notes must pass `scripts/audit-public-surface.ps1` before publication',
+    'The release job depends on successful build jobs before release assets can be uploaded'
 )
 Add-Section -Builder $builder -Title 'Validation' -Items $validationItems -Seen $null
 
