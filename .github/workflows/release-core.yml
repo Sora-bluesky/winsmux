@@ -52,6 +52,9 @@ jobs:
       - name: Generate Release Body
         shell: pwsh
         run: ./scripts/generate-release-notes.ps1 -Version "${{ github.ref_name }}" -OutputPath "release/release-body.md"
+      - name: Check Release Body Quality
+        shell: pwsh
+        run: ./scripts/assert-release-notes-quality.ps1 -ReleaseNotesPath "release/release-body.md"
       - name: Audit Release Public Surface
         shell: pwsh
         run: ./scripts/audit-public-surface.ps1 -ReleaseNotesPath "release/release-body.md"

@@ -262,6 +262,36 @@ function ConvertTo-UserBenefit {
         'complete winsmux-surface rename|send buffer overflow' {
             return 'Continued the winsmux naming convergence and stabilized the send pipeline'
         }
+        'api llm openai-compatible runner|api_llm worker contract|api_llm backend contract' {
+            return 'Added the api_llm hosted OpenAI-compatible worker backend and execution contract'
+        }
+        'External API secret and public-surface gate' {
+            return 'Expanded public-surface checks so external API credentials and provider metadata stay out of release materials'
+        }
+        'External API worker E2E evidence and review gate' {
+            return 'Captured hosted API worker E2E evidence and tied it to the release review path'
+        }
+        'Hosted open-model API E2E release lane' {
+            return 'Made hosted open-model execution the v0.36.9 release lane instead of the deferred Colab local-model path'
+        }
+        'Persist winsmux planning source-of-truth paths locally' {
+            return 'Recorded the local planning source of truth so release notes and roadmaps are generated from the intended backlog'
+        }
+        'OpenRouter/OpenAI-compatible runner and auth contract' {
+            return 'Added the OpenRouter runner contract with environment-variable credentials and OpenAI-compatible requests'
+        }
+        'skip unconfigured api_llm readiness|block api_llm start without bootstrap|defer api_llm pane launch' {
+            return 'Stopped unconfigured api_llm workers before pane launch or network access'
+        }
+        'require explicit api_llm provider metadata|expose api_llm in machine contract|tighten api_llm exec contract' {
+            return 'Required explicit provider, model, adapter, and execution metadata for api_llm workers'
+        }
+        'preserve colab task-json forwarding' {
+            return 'Preserved existing Colab task-json forwarding while adding the hosted worker path'
+        }
+        'refresh public docs for v0\.36\.8' {
+            return 'Refreshed public setup documentation for the hosted API worker release'
+        }
         'guard parent tracking|guard mesh parent|parent_tracking|TASK-390' {
             return 'Added machine-readable guard mesh parent tracking for architecture, security, evidence, and release gating acceptance'
         }
@@ -577,10 +607,37 @@ $chores = @($chores | Select-Object -First 4)
 
 $builder = New-Object System.Text.StringBuilder
 $seenBenefits = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
-Add-Section -Builder $builder -Title 'New Features' -Items $features -Seen $seenBenefits
-Add-Section -Builder $builder -Title 'Bug Fixes' -Items $fixes -Seen $seenBenefits
-Add-Section -Builder $builder -Title 'Documentation' -Items $documentation -Seen $seenBenefits
-Add-Section -Builder $builder -Title 'Chores' -Items $chores -Seen $seenBenefits
+
+$highlightItems = @($features + $fixes + $documentation | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 6)
+if ($highlightItems.Count -eq 0) {
+    $highlightItems = @('Prepared the release from the recorded task and commit history')
+}
+Add-Section -Builder $builder -Title 'Highlights' -Items $highlightItems -Seen $seenBenefits
+
+$changeItems = @($features + $fixes + $documentation + $chores | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 8)
+Add-Section -Builder $builder -Title 'Release scope' -Items $changeItems -Seen $null
+
+$safetyItems = New-Object System.Collections.Generic.List[string]
+foreach ($item in @($security + $chores)) {
+    if (-not [string]::IsNullOrWhiteSpace($item)) {
+        $safetyItems.Add($item)
+    }
+}
+$safetyItems.Add('Release notes are checked by the public-surface audit before GitHub Release publication')
+$safetyItems.Add('Secret-like values, local private paths, and provider request metadata remain blocked from release materials')
+Add-Section -Builder $builder -Title 'Safety and operations' -Items @($safetyItems.ToArray()) -Seen $null
+
+$validationItems = @(
+    '`git diff --check`',
+    '`pwsh -NoProfile -File scripts/audit-public-surface.ps1`',
+    '`pwsh -NoProfile -File scripts/git-guard.ps1 -Mode full`',
+    '`Invoke-Pester -Path tests/VersionSurface.Tests.ps1 -PassThru`',
+    '`Invoke-Pester -Path tests/winsmux-bridge.Tests.ps1 -PassThru`',
+    '`cargo test --manifest-path core/Cargo.toml`',
+    '`cmd /c npm --prefix winsmux-app run build`',
+    '`cargo check --manifest-path winsmux-app/src-tauri/Cargo.toml --locked`'
+)
+Add-Section -Builder $builder -Title 'Validation' -Items $validationItems -Seen $null
 
 [void]$builder.AppendLine('## Full Changelog')
 [void]$builder.AppendLine()

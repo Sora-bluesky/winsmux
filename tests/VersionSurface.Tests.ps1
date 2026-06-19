@@ -87,6 +87,84 @@ Describe 'winsmux version surface' {
         $stagedInstaller | Should -Match ('\$VERSION\s*=\s*"{0}"' -f [regex]::Escape($script:ProductVersion))
     }
 
+    It 'rejects terse release notes before publishing release assets' {
+        $qualityScript = Join-Path $script:RepoRoot 'scripts\assert-release-notes-quality.ps1'
+        $releaseCoreWorkflow = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.github\workflows\release-core.yml') -Raw -Encoding UTF8
+
+        $generateIndex = $releaseCoreWorkflow.IndexOf('Generate Release Body')
+        $qualityIndex = $releaseCoreWorkflow.IndexOf('Check Release Body Quality')
+        $auditIndex = $releaseCoreWorkflow.IndexOf('Audit Release Public Surface')
+
+        $generateIndex | Should -BeGreaterThan -1
+        $qualityIndex | Should -BeGreaterThan $generateIndex
+        $auditIndex | Should -BeGreaterThan $qualityIndex
+
+        $terseBody = Join-Path $TestDrive 'terse-release-body.md'
+        Set-Content -LiteralPath $terseBody -Value @'
+## New Features
+
+- add api_llm runner
+
+## Full Changelog
+
+- [v0.36.8...v0.36.9](https://github.com/Sora-bluesky/winsmux/compare/v0.36.8...v0.36.9)
+'@ -Encoding UTF8
+
+        $terseOutput = @(& pwsh -NoProfile -File $qualityScript -ReleaseNotesPath $terseBody 2>&1)
+
+        $LASTEXITCODE | Should -Be 1
+        ($terseOutput -join "`n") | Should -Match 'missing required section: Highlights'
+        ($terseOutput -join "`n") | Should -Match 'release notes are too terse'
+    }
+
+    It 'accepts release-grade notes with highlights, safety, validation, and changelog evidence' {
+        $qualityScript = Join-Path $script:RepoRoot 'scripts\assert-release-notes-quality.ps1'
+        $releaseBody = Join-Path $TestDrive 'release-grade-body.md'
+        Set-Content -LiteralPath $releaseBody -Value @'
+## Highlights
+
+- Adds the api_llm worker backend for hosted OpenAI-compatible providers.
+- Keeps hosted API workers separate from local and Colab worker backends.
+- Validates a hosted provider path with explicit provider and model metadata.
+- Publishes release binaries, desktop installers, and npm package artifacts.
+
+## Safety and operations
+
+- Release notes are checked by the public-surface audit before publication.
+- Secret-like values, local private paths, bearer tokens, and provider request metadata remain blocked from public release materials.
+- Missing hosted API credentials stop before network access and do not launch a fallback backend.
+- Public setup guidance keeps credential storage outside the repository and points users to runtime environment variables.
+- Provider response identifiers are summarized as safe presence flags instead of being copied into public release text.
+
+## Distribution
+
+- GitHub Release assets are expected to include release executables, checksum files, and the final release body.
+- npm publication is verified separately so package availability is not inferred from GitHub release creation alone.
+- Desktop packaging remains a separate workflow gate and must finish before the release is treated as fully distributed.
+- Follow-up dependency updates can land after the tag, but release notes must say which quality gates protected the tagged version.
+
+## Validation
+
+- `git diff --check`
+- `pwsh -NoProfile -File scripts/audit-public-surface.ps1`
+- `pwsh -NoProfile -File scripts/git-guard.ps1 -Mode full`
+- `Invoke-Pester -Path tests/VersionSurface.Tests.ps1 -PassThru`
+- `Invoke-Pester -Path tests/winsmux-bridge.Tests.ps1 -PassThru`
+- `cargo test --manifest-path core/Cargo.toml`
+
+This release body intentionally includes enough context for operators to understand the release outcome, security posture, validation path, distribution artifacts, and follow-up boundaries without reading private planning notes or raw execution logs. The quality gate should accept this level of detail and reject short generated summaries that only list commit categories.
+
+## Full Changelog
+
+- [v0.36.8...v0.36.9](https://github.com/Sora-bluesky/winsmux/compare/v0.36.8...v0.36.9)
+'@ -Encoding UTF8
+
+        $output = @(& pwsh -NoProfile -File $qualityScript -ReleaseNotesPath $releaseBody 2>&1)
+
+        $LASTEXITCODE | Should -Be 0
+        ($output -join "`n") | Should -Match 'release-notes-quality.*passed'
+    }
+
     It 'keeps tracked package metadata aligned with the public product surface' {
         $mcpPackage = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'winsmux-core\package.json') -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
         $mcpServer = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'winsmux-core\mcp-server.js') -Raw -Encoding UTF8
