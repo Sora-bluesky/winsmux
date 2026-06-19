@@ -1862,6 +1862,7 @@ where
                 .arg("-Command")
                 .arg(&command_text)
                 .current_dir(&effective_project_dir)
+                .env("WINSMUX_DESKTOP_SUMMARY_STREAM_POLL_SECONDS", "5")
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
             #[cfg(windows)]

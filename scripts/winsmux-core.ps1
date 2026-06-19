@@ -15626,6 +15626,14 @@ function Invoke-DesktopSummary {
 
     $projectDir = (Get-Location).Path
     if ($streamOutput) {
+        $pollSeconds = 2
+        $pollOverride = [string]$env:WINSMUX_DESKTOP_SUMMARY_STREAM_POLL_SECONDS
+        if (-not [string]::IsNullOrWhiteSpace($pollOverride)) {
+            $parsedPollSeconds = 0
+            if ([int]::TryParse($pollOverride, [ref]$parsedPollSeconds)) {
+                $pollSeconds = [Math]::Min(30, [Math]::Max(1, $parsedPollSeconds))
+            }
+        }
         $cursor = @(Get-BridgeEventRecords -ProjectDir $projectDir).Count
         while ($true) {
             $delta = Get-BridgeEventDelta -ProjectDir $projectDir -Cursor $cursor
@@ -15661,7 +15669,7 @@ function Invoke-DesktopSummary {
                 }
             }
 
-            Start-Sleep -Seconds 2
+            Start-Sleep -Seconds $pollSeconds
         }
     }
 
