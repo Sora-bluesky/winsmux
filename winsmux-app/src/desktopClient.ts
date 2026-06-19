@@ -9,6 +9,7 @@ type DesktopCommandName =
   | "desktop_run_pick_winner"
   | "desktop_workers_status"
   | "desktop_workers_start"
+  | "desktop_provider_switch"
   | "desktop_runtime_roles_apply"
   | "desktop_voice_capture_status"
   | "desktop_voice_capture_start"
@@ -24,6 +25,7 @@ type DesktopJsonRpcMethod =
   | "desktop.run.pick_winner"
   | "desktop.workers.status"
   | "desktop.workers.start"
+  | "desktop.provider.switch"
   | "desktop.runtime.roles.apply"
   | "desktop.voice.capture_status"
   | "desktop.dogfood.event"
@@ -700,6 +702,9 @@ export interface DesktopWorkerStatusRow {
   auth_policy?: string;
   capability_adapter?: string;
   credential_requirements?: string;
+  api_key_env?: string;
+  api_key_env_status?: string;
+  credential_status?: string;
   execution_backend?: string;
   analysis_posture?: string;
   session: string;
@@ -749,6 +754,18 @@ export interface DesktopWorkersStartResult {
   results: DesktopWorkerLifecycleResult[];
 }
 
+export interface DesktopProviderSwitchInput {
+  slot: string;
+  agent?: string;
+  model?: string;
+  modelSource?: string;
+  reasoningEffort?: string;
+  promptTransport?: string;
+  authMode?: string;
+  reason?: string;
+  clear?: boolean;
+}
+
 let nextDesktopJsonRpcId = 0;
 
 function normalizeDesktopError(action: string, error: unknown) {
@@ -775,6 +792,8 @@ function getDesktopJsonRpcMethod(command: DesktopCommandName): DesktopJsonRpcMet
       return "desktop.workers.status";
     case "desktop_workers_start":
       return "desktop.workers.start";
+    case "desktop_provider_switch":
+      return "desktop.provider.switch";
     case "desktop_runtime_roles_apply":
       return "desktop.runtime.roles.apply";
     case "desktop_voice_capture_status":
@@ -998,6 +1017,20 @@ export async function startDesktopWorker(
     );
   } catch (error) {
     throw normalizeDesktopError(`desktop_workers_start(${target})`, error);
+  }
+}
+
+export async function switchDesktopProvider(
+  input: DesktopProviderSwitchInput,
+  projectDir?: string | null,
+) {
+  try {
+    return await desktopCommandTransport.request<Record<string, unknown>>(
+      "desktop_provider_switch",
+      { ...input, ...buildProjectDirPayload(projectDir) },
+    );
+  } catch (error) {
+    throw normalizeDesktopError(`desktop_provider_switch(${input.slot})`, error);
   }
 }
 

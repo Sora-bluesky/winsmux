@@ -4577,6 +4577,143 @@ body.is-resizing-workbench {
   border-color: var(--status-focus-border);
 }
 
+.runtime-model-panel {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border-muted);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--ws-bg-elevated) 72%, #0b0f15);
+}
+
+.runtime-model-slot-list {
+  display: grid;
+  gap: 6px;
+}
+
+.runtime-model-slot-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.8fr) minmax(180px, 1.3fr) auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.runtime-model-slot-summary {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-2xs);
+}
+
+.runtime-model-slot-summary strong {
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+}
+
+.runtime-model-slot-summary span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-model-slot-select {
+  height: 30px;
+}
+
+.runtime-model-assign-btn {
+  min-width: 54px;
+  height: 30px;
+}
+
+.runtime-model-empty {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.runtime-benchmark-table {
+  display: grid;
+  gap: 6px;
+}
+
+.runtime-benchmark-row {
+  display: grid;
+  grid-template-columns: minmax(118px, 0.75fr) minmax(74px, auto) minmax(150px, 1fr) minmax(160px, 1.2fr);
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px;
+  border: 1px solid var(--border-muted);
+  border-radius: 6px;
+  background: #0f1218;
+  font-size: var(--text-2xs);
+}
+
+.runtime-benchmark-model {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-benchmark-status {
+  justify-self: start;
+  border: 1px solid var(--status-info-border);
+  border-radius: 999px;
+  color: var(--status-info);
+  background: color-mix(in srgb, var(--status-info) 10%, var(--ws-bg-elevated));
+  padding: 2px 7px;
+  white-space: nowrap;
+}
+
+.runtime-benchmark-row[data-status="selectable"] .runtime-benchmark-status {
+  color: var(--status-success);
+  border-color: var(--status-success-border);
+  background: var(--status-success-bg);
+}
+
+.runtime-benchmark-row[data-status="candidate"] .runtime-benchmark-status {
+  color: var(--status-warning);
+  border-color: var(--status-warning-border);
+  background: var(--status-warning-bg);
+}
+
+.runtime-benchmark-row[data-status="unavailable"] .runtime-benchmark-status {
+  color: var(--status-danger);
+  border-color: var(--status-danger-border);
+  background: var(--status-danger-bg);
+}
+
+.runtime-benchmark-metrics,
+.runtime-benchmark-note {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 920px) {
+  .runtime-model-slot-row,
+  .runtime-benchmark-row {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+
+  .runtime-benchmark-status {
+    justify-self: start;
+  }
+
+  .runtime-benchmark-metrics,
+  .runtime-benchmark-note {
+    white-space: normal;
+  }
+}
+
 #terminal-toolbar {
   display: flex;
   align-items: center;

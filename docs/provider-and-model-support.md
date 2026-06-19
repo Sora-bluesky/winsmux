@@ -208,6 +208,32 @@ winsmux records the selected model and runtime metadata when they appear in run
 evidence, but the operator remains responsible for deciding whether that model
 is acceptable for a task.
 
+## Worker pane model picker and benchmark comparison
+
+The desktop runtime settings surface separates model entries into four classes:
+
+| Class | Picker behavior | Benchmark behavior |
+| ----- | --------------- | ------------------ |
+| `selectable` | Can be assigned to a compatible worker slot. The slot backend still decides whether the run can start. | Shown with winsmux-local run evidence when available. |
+| `candidate` | Can be assigned only when the worker backend and credential posture match the entry. For example, OpenRouter entries require an `api_llm` slot and `WINSMUX_OPENROUTER_API_KEY` in the runtime environment. | Shown as candidate evidence until a local run id, latency, cost, failure reason, and reproducibility data are recorded. |
+| `reference-only` | Shown for comparison context but not selectable from the desktop picker. | Can show Agent Arena, Code Arena, or Colab model-plan reference data, but must not imply that winsmux can run the model locally. |
+| `unavailable` | Disabled until the upstream provider restores official access. | Kept only to explain external benchmark rows. |
+
+Reference benchmarks are advisory. They do not directly change `winsmux
+compare-runs` winner selection, which is based on the local run evidence,
+review outcome, changed files, reproducibility, and operator decision trail.
+
+`Claude Fable 5` is currently treated as `unavailable`. Anthropic announced on
+2026-06-12 that Claude Fable 5 and Claude Mythos 5 access was suspended, and
+the Claude Fable product page states that Claude Fable 5 is currently
+unavailable. winsmux may keep Fable 5 in benchmark reference rows, but it must
+not offer it as a selectable worker model until official availability returns
+and the provider/API path is verified again.
+
+This availability decision was rechecked against Anthropic's official Fable
+page and Claude app release notes on 2026-06-20. Recheck those official pages
+before changing Fable 5 from `unavailable` to `selectable`.
+
 ## Current Colab model target
 
 The `v0.32.x` Colab lane is aimed at Google Colab execution, not local LLM serving. For model
@@ -352,3 +378,5 @@ manual pane tool rather than a first-class worker backend.
 - [DeepSeek V4 preview release](https://api-docs.deepseek.com/news/news260424)
 - [DeepSeek API quick start](https://api-docs.deepseek.com/)
 - [Kimi K2.6 model overview](https://www.kimi.com/ai-models/kimi-k2-6)
+- [Claude Fable availability](https://www.anthropic.com/claude/fable)
+- [Claude apps release notes](https://docs.anthropic.com/en/release-notes/claude-apps)
