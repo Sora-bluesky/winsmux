@@ -19,6 +19,7 @@ import {
   recordDesktopDogfoodEvent,
   startDesktopWorker,
   subscribeToDesktopSummaryRefresh,
+  switchDesktopProvider,
   type DesktopCompareRunsResult,
   type DesktopBoardPane,
   type DesktopDogfoodEventInput,
@@ -321,6 +322,8 @@ type RuntimeRoleId = "operator" | "worker" | "reviewer";
 type RuntimeProviderId = "provider-default" | "codex" | "claude" | "gemini" | "antigravity";
 type RuntimeModelSource = "provider-default" | "cli-discovery" | "official-doc" | "operator-override";
 type RuntimeReasoningEffort = "provider-default" | "low" | "medium" | "high" | "xhigh" | "max";
+type RuntimeModelCatalogStatus = "selectable" | "candidate" | "reference-only" | "unavailable";
+type RuntimeModelBenchmarkFamily = "agent-arena" | "code-arena" | "winsmux-local";
 type ComposerPermissionMode = "auto" | "default" | "acceptEdits" | "plan";
 type ComposerEffortLevel = "auto" | "low" | "medium" | "high" | "xhigh" | "max";
 type ComposerModelId = "opus-4.7" | "opus-4.7-1m" | "opus-4.6" | "sonnet-4.6" | "haiku-4.5";
@@ -359,6 +362,36 @@ interface RuntimeRolePreference {
   model: string;
   modelSource: RuntimeModelSource;
   reasoningEffort: RuntimeReasoningEffort;
+}
+
+interface RuntimeModelCatalogEntry {
+  id: string;
+  label: string;
+  labelJa: string;
+  agent: string;
+  model: string;
+  modelSource: RuntimeModelSource;
+  reasoningEffort: RuntimeReasoningEffort;
+  promptTransport: "argv" | "file" | "stdin";
+  authMode: string;
+  requiredEnv?: string;
+  requiredBackend: "any" | "api_llm" | "antigravity" | "agent-cli" | "colab_cli";
+  status: RuntimeModelCatalogStatus;
+  family: RuntimeModelBenchmarkFamily;
+  speed: string;
+  intelligence: string;
+  cost: string;
+  risk: string;
+  availability: string;
+  benchmark: string;
+  evidence: string;
+  sourceLabel?: string;
+  captureDate?: string;
+  localRunId?: string;
+  confidenceNote?: string;
+  confidenceNoteJa?: string;
+  note: string;
+  noteJa: string;
 }
 
 interface ComposerAttachment {
@@ -709,6 +742,7 @@ let settingsDraftState: ThemeState | null = null;
 let settingsFontFamilyMenuOpen = false;
 let runtimeRolePreferences: RuntimeRolePreference[] = [];
 let runtimeRoleDraftState: RuntimeRolePreference[] | null = null;
+let workerProviderSwitchInFlight = "";
 let workerStartTarget: string | null = null;
 let workerStatusRows: DesktopWorkerStatusRow[] = [];
 let workerStatusError = "";
@@ -1171,15 +1205,248 @@ const runtimeReasoningOptions: Array<{ value: RuntimeReasoningEffort; label: str
   { value: "max", label: "Max", labelJa: "最大" },
 ];
 
-const runtimeModelSuggestions = [
-  "provider-default",
-  "gpt-5.3-codex-spark",
-  "gpt-5.5",
-  "default",
-  "sonnet",
-  "opus",
-  "opusplan",
+const runtimeModelCatalog: RuntimeModelCatalogEntry[] = [
+  {
+    id: "provider-default",
+    label: "Auto / provider default",
+    labelJa: "自動 / プロバイダー既定",
+    agent: "provider-default",
+    model: "provider-default",
+    modelSource: "provider-default",
+    reasoningEffort: "provider-default",
+    promptTransport: "file",
+    authMode: "provider-default",
+    requiredBackend: "any",
+    status: "selectable",
+    family: "winsmux-local",
+    speed: "auto",
+    intelligence: "auto",
+    cost: "configured",
+    risk: "low",
+    availability: "Uses the configured slot provider.",
+    benchmark: "Local evidence only",
+    evidence: "provider-registry",
+    note: "Clears the slot override and lets the current provider choose its default.",
+    noteJa: "スロット上書きを解除し、現在のプロバイダー既定値に戻します。",
+  },
+  {
+    id: "codex-gpt-5-5",
+    label: "GPT-5.5",
+    labelJa: "GPT-5.5",
+    agent: "codex",
+    model: "gpt-5.5",
+    modelSource: "cli-discovery",
+    reasoningEffort: "high",
+    promptTransport: "file",
+    authMode: "codex-chatgpt-local",
+    requiredBackend: "agent-cli",
+    status: "selectable",
+    family: "agent-arena",
+    speed: "frontier",
+    intelligence: "high",
+    cost: "account",
+    risk: "local-cli",
+    availability: "Requires local Codex CLI model access.",
+    benchmark: "Agent Arena reference plus winsmux run evidence",
+    evidence: "cli-discovery",
+    note: "Use as a strong hosted coding worker when the local Codex CLI account exposes it.",
+    noteJa: "ローカル Codex CLI アカウントで利用できる場合の強いコーディング用ワーカーです。",
+  },
+  {
+    id: "codex-spark",
+    label: "GPT-5.3 Codex Spark",
+    labelJa: "GPT-5.3 Codex Spark",
+    agent: "codex",
+    model: "gpt-5.3-codex-spark",
+    modelSource: "cli-discovery",
+    reasoningEffort: "high",
+    promptTransport: "file",
+    authMode: "codex-chatgpt-local",
+    requiredBackend: "agent-cli",
+    status: "selectable",
+    family: "winsmux-local",
+    speed: "fast",
+    intelligence: "medium-high",
+    cost: "account",
+    risk: "local-cli",
+    availability: "Requires local Codex CLI model access.",
+    benchmark: "winsmux local review/e2e evidence",
+    evidence: "cli-discovery",
+    note: "Use for quick review, verification, and low-latency worker panes.",
+    noteJa: "高速なレビュー、検証、低遅延ワーカーに向きます。",
+  },
+  {
+    id: "claude-opus",
+    label: "Claude Opus",
+    labelJa: "Claude Opus",
+    agent: "claude",
+    model: "opus",
+    modelSource: "official-doc",
+    reasoningEffort: "xhigh",
+    promptTransport: "file",
+    authMode: "claude-pro-max-oauth",
+    requiredBackend: "agent-cli",
+    status: "selectable",
+    family: "agent-arena",
+    speed: "frontier",
+    intelligence: "high",
+    cost: "account",
+    risk: "local-cli",
+    availability: "Requires local Claude Code access.",
+    benchmark: "Agent Arena reference plus winsmux run evidence",
+    evidence: "official-doc",
+    note: "Use for high-complexity implementation or review when Claude Code access is healthy.",
+    noteJa: "Claude Code が利用できる場合の高難度実装・レビュー向けです。",
+  },
+  {
+    id: "claude-sonnet",
+    label: "Claude Sonnet",
+    labelJa: "Claude Sonnet",
+    agent: "claude",
+    model: "sonnet",
+    modelSource: "official-doc",
+    reasoningEffort: "high",
+    promptTransport: "file",
+    authMode: "claude-pro-max-oauth",
+    requiredBackend: "agent-cli",
+    status: "selectable",
+    family: "agent-arena",
+    speed: "balanced",
+    intelligence: "high",
+    cost: "account",
+    risk: "local-cli",
+    availability: "Requires local Claude Code access.",
+    benchmark: "Agent Arena reference plus winsmux run evidence",
+    evidence: "official-doc",
+    note: "Use as the balanced Claude Code worker default.",
+    noteJa: "Claude Code の標準的なバランス型ワーカーです。",
+  },
+  {
+    id: "antigravity-gemini-flash",
+    label: "Gemini Flash via Antigravity",
+    labelJa: "Gemini Flash / Antigravity",
+    agent: "antigravity",
+    model: "gemini-3.5-flash",
+    modelSource: "operator-override",
+    reasoningEffort: "provider-default",
+    promptTransport: "file",
+    authMode: "antigravity-official-cli",
+    requiredBackend: "antigravity",
+    status: "selectable",
+    family: "agent-arena",
+    speed: "fast",
+    intelligence: "medium",
+    cost: "account",
+    risk: "local-cli",
+    availability: "Requires agy print mode and Antigravity account access.",
+    benchmark: "Agent Arena reference plus Antigravity run evidence",
+    evidence: "operator-override",
+    note: "Use for the Gemini replacement lane after the individual Gemini CLI sunset.",
+    noteJa: "個人向け Gemini CLI 終了後の Gemini 系ワーカー候補です。",
+  },
+  {
+    id: "openrouter-glm-5-2",
+    label: "GLM-5.2 via OpenRouter",
+    labelJa: "GLM-5.2 / OpenRouter",
+    agent: "openrouter",
+    model: "z-ai/glm-5.2",
+    modelSource: "operator-override",
+    reasoningEffort: "provider-default",
+    promptTransport: "file",
+    authMode: "api-key-env",
+    requiredEnv: "WINSMUX_OPENROUTER_API_KEY",
+    requiredBackend: "api_llm",
+    status: "candidate",
+    family: "code-arena",
+    speed: "hosted",
+    intelligence: "high",
+    cost: "external-api",
+    risk: "api-key-env",
+    availability: "Requires api_llm slot metadata and WINSMUX_OPENROUTER_API_KEY.",
+    benchmark: "Code Arena / Agent Arena reference; local API run required",
+    evidence: "operator-override",
+    note: "Candidate only until the slot is api_llm and the OpenRouter env var is configured.",
+    noteJa: "api_llm スロットと OpenRouter 環境変数が揃うまで候補扱いです。",
+  },
+  {
+    id: "qwen-3-6-reference",
+    label: "Qwen 3.6 27B",
+    labelJa: "Qwen 3.6 27B",
+    agent: "colab_cli",
+    model: "Qwen/Qwen3.6-27B",
+    modelSource: "official-doc",
+    reasoningEffort: "provider-default",
+    promptTransport: "file",
+    authMode: "runtime-owned",
+    requiredBackend: "colab_cli",
+    status: "reference-only",
+    family: "code-arena",
+    speed: "gpu-dependent",
+    intelligence: "medium-high",
+    cost: "colab",
+    risk: "runtime-capacity",
+    availability: "Colab/H100-A100 model-plan candidate, not a direct desktop picker default.",
+    benchmark: "v0.36.13 Colab model plan",
+    evidence: "official-doc",
+    note: "Reference for Colab open-weight comparisons; do not imply a local desktop worker can run it.",
+    noteJa: "Colab open-weight 比較の参照行です。ローカルワーカーで動くとは扱いません。",
+  },
+  {
+    id: "kimi-k2-7-code-reference",
+    label: "Kimi K2.7 Code",
+    labelJa: "Kimi K2.7 Code",
+    agent: "colab_cli",
+    model: "moonshotai/Kimi-K2.7-Code",
+    modelSource: "official-doc",
+    reasoningEffort: "provider-default",
+    promptTransport: "file",
+    authMode: "runtime-owned",
+    requiredBackend: "colab_cli",
+    status: "reference-only",
+    family: "agent-arena",
+    speed: "large-reference",
+    intelligence: "high",
+    cost: "runtime-dependent",
+    risk: "large-model",
+    availability: "Reference candidate; too large for default single-runtime desktop execution.",
+    benchmark: "Agent Arena and v0.36.13 model plan reference",
+    evidence: "official-doc",
+    note: "Keep as a benchmark reference until a runnable hosted or Colab path is proven.",
+    noteJa: "実行経路が確認されるまでベンチ参照として扱います。",
+  },
+  {
+    id: "claude-fable-5-unavailable",
+    label: "Claude Fable 5",
+    labelJa: "Claude Fable 5",
+    agent: "claude",
+    model: "claude-fable-5",
+    modelSource: "official-doc",
+    reasoningEffort: "max",
+    promptTransport: "file",
+    authMode: "claude-pro-max-oauth",
+    requiredBackend: "agent-cli",
+    status: "unavailable",
+    family: "agent-arena",
+    speed: "frontier",
+    intelligence: "high",
+    cost: "account",
+    risk: "unavailable",
+    availability: "Anthropic suspended Fable 5 access on 2026-06-12.",
+    benchmark: "Reference only while unavailable",
+    evidence: "official-doc",
+    note: "Shown only to explain benchmark references; it must not be selected until official availability returns.",
+    noteJa: "ベンチ参照の説明用です。公式に復旧するまで選択不可です。",
+  },
 ];
+
+const runtimeModelSuggestions = Array.from(new Set([
+  "provider-default",
+  ...runtimeModelCatalog
+    .filter((entry) => entry.status === "selectable" || entry.status === "candidate")
+    .map((entry) => entry.model),
+  "default",
+  "opusplan",
+]));
 
 runtimeRolePreferences = readStoredRuntimeRolePreferences();
 {
@@ -8857,6 +9124,392 @@ function createRuntimeSelect<T extends string>(
   return group;
 }
 
+function getRuntimeCatalogStatusLabel(status: RuntimeModelCatalogStatus, japanese: boolean) {
+  const labels: Record<RuntimeModelCatalogStatus, { en: string; ja: string }> = {
+    selectable: { en: "selectable", ja: "選択可" },
+    candidate: { en: "candidate", ja: "候補" },
+    "reference-only": { en: "reference only", ja: "参照のみ" },
+    unavailable: { en: "unavailable", ja: "利用不可" },
+  };
+  const label = labels[status];
+  return japanese ? label.ja : label.en;
+}
+
+function findRuntimeModelCatalogEntry(id: string) {
+  return runtimeModelCatalog.find((entry) => entry.id === id) ?? null;
+}
+
+function getWorkerBackendForCatalog(row: DesktopWorkerStatusRow) {
+  return (
+    getLaunchApprovalField(getWorkerStatusLaunch(row), "worker_backend")
+    || row.backend
+    || "local"
+  ).trim().toLowerCase();
+}
+
+const runtimeCredentialBlockedStatuses = new Set([
+  "missing",
+  "unconfigured",
+  "not_configured",
+  "fail",
+  "failed",
+  "error",
+  "unavailable",
+  "not_ready",
+  "blocked",
+  "denied",
+  "invalid",
+]);
+
+const runtimeCredentialReadyStatuses = new Set([
+  "configured",
+  "ready",
+  "pass",
+  "passed",
+  "present",
+  "available",
+  "ok",
+]);
+
+function normalizeRuntimeCredentialStatus(value: string) {
+  return value.trim().toLowerCase().replace(/[\s-]+/g, "_");
+}
+
+function isRuntimeModelAssignableToWorker(entry: RuntimeModelCatalogEntry, row: DesktopWorkerStatusRow) {
+  if (entry.status === "reference-only" || entry.status === "unavailable") {
+    return false;
+  }
+  if (entry.id === "provider-default") {
+    return true;
+  }
+  const backend = getWorkerBackendForCatalog(row);
+  if (entry.requiredBackend === "any") {
+    return true;
+  }
+  if (entry.requiredBackend === "agent-cli") {
+    return backend === "local" || backend === "codex" || backend === "claude" || backend === "";
+  }
+  if (backend !== entry.requiredBackend) {
+    return false;
+  }
+  if (entry.requiredEnv) {
+    const launch = getWorkerStatusLaunch(row);
+    const apiKeyEnv = String(row.api_key_env ?? getLaunchApprovalField(launch, "api_key_env") ?? "").trim();
+    const credentialReadinessValues = [
+      row.api_key_env_status,
+      row.credential_status,
+      getLaunchApprovalField(launch, "api_key_env_status"),
+      getLaunchApprovalField(launch, "credential_status"),
+    ].map((value) => normalizeRuntimeCredentialStatus(String(value ?? ""))).filter(Boolean);
+    if (apiKeyEnv !== entry.requiredEnv || credentialReadinessValues.length === 0) {
+      return false;
+    }
+    if (credentialReadinessValues.some((value) => runtimeCredentialBlockedStatuses.has(value))) {
+      return false;
+    }
+    return credentialReadinessValues.some((value) => runtimeCredentialReadyStatuses.has(value));
+  }
+  return true;
+}
+
+function getWorkerRuntimeCatalogEntryId(row: DesktopWorkerStatusRow) {
+  const agent = getWorkerProvider(row).toLowerCase();
+  const model = getWorkerModel(row).toLowerCase();
+  const source = getWorkerModelSource(row).toLowerCase();
+  const match = runtimeModelCatalog.find((entry) => {
+    return entry.agent.toLowerCase() === agent
+      && entry.model.toLowerCase() === model
+      && (entry.modelSource.toLowerCase() === source || source === "configured");
+  });
+  return match?.id ?? "";
+}
+
+function getRuntimeCatalogOptionLabel(entry: RuntimeModelCatalogEntry, japanese: boolean) {
+  const status = getRuntimeCatalogStatusLabel(entry.status, japanese);
+  const label = japanese ? entry.labelJa : entry.label;
+  return `${label} · ${status}`;
+}
+
+function getRuntimeCatalogSourceLabel(entry: RuntimeModelCatalogEntry) {
+  if (entry.sourceLabel) {
+    return entry.sourceLabel;
+  }
+  if (entry.status === "unavailable") {
+    return "provider official availability";
+  }
+  if (entry.status === "reference-only") {
+    return "v0.36.13 model plan";
+  }
+  if (entry.family === "agent-arena" || entry.family === "code-arena") {
+    return `${entry.family} reference + ${entry.evidence}`;
+  }
+  return entry.evidence;
+}
+
+function getRuntimeCatalogCaptureDate(entry: RuntimeModelCatalogEntry) {
+  if (entry.captureDate) {
+    return entry.captureDate;
+  }
+  if (entry.id === "claude-fable-5-unavailable") {
+    return "2026-06-12";
+  }
+  if (entry.status === "reference-only" || entry.family === "agent-arena" || entry.family === "code-arena") {
+    return "2026-06-19";
+  }
+  return "runtime";
+}
+
+function getRuntimeCatalogRunId(entry: RuntimeModelCatalogEntry) {
+  if (entry.localRunId) {
+    return entry.localRunId;
+  }
+  if (entry.status === "reference-only") {
+    return "reference-only";
+  }
+  if (entry.status === "unavailable") {
+    return "unavailable";
+  }
+  return "pending-local-run";
+}
+
+function getRuntimeCatalogConfidenceNote(entry: RuntimeModelCatalogEntry, japanese: boolean) {
+  if (japanese && entry.confidenceNoteJa) {
+    return entry.confidenceNoteJa;
+  }
+  if (entry.confidenceNote) {
+    return entry.confidenceNote;
+  }
+  if (entry.status === "candidate") {
+    return japanese
+      ? "認証、backend、ローカルrun idの確認が必要です。"
+      : "Requires credential, backend, and local run-id confirmation.";
+  }
+  if (entry.status === "reference-only") {
+    return japanese
+      ? "比較参照です。workerで実行できる証跡ではありません。"
+      : "Comparison reference only; not runnable worker evidence.";
+  }
+  if (entry.status === "unavailable") {
+    return japanese
+      ? "上流providerが公式に利用不可としています。"
+      : "The upstream provider marks this unavailable.";
+  }
+  return japanese
+    ? "実行時のworker証跡で最終判断します。"
+    : "Final decision still depends on worker run evidence.";
+}
+
+async function applyWorkerModelCatalogEntry(slotId: string, entryId: string) {
+  const entry = findRuntimeModelCatalogEntry(entryId);
+  if (!entry) {
+    return;
+  }
+  workerProviderSwitchInFlight = slotId;
+  renderSettingsControls();
+  try {
+    const payload = entry.id === "provider-default"
+      ? {
+          slot: slotId,
+          clear: true,
+        }
+      : {
+          slot: slotId,
+          agent: entry.agent,
+          model: entry.model,
+          modelSource: entry.modelSource,
+          reasoningEffort: entry.reasoningEffort,
+          promptTransport: entry.promptTransport,
+          authMode: entry.authMode,
+          reason: `desktop model picker: ${entry.label}`,
+        };
+    await switchDesktopProvider(payload, activeProjectDir);
+    appendRuntimeConversation({
+      type: "system",
+      category: "activity",
+      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
+      actor: "winsmux",
+      title: getLanguageText("Worker model assignment updated", "ワーカーモデル割当を更新しました"),
+      body: entry.id === "provider-default"
+        ? getLanguageText(`${slotId} now uses provider default.`, `${slotId} はプロバイダー既定値に戻りました。`)
+        : getLanguageText(`${slotId} -> ${entry.agent} / ${entry.model}`, `${slotId} -> ${entry.agent} / ${entry.model}`),
+      tone: "success",
+      details: [
+        { label: "slot", value: slotId },
+        { label: "agent", value: entry.agent },
+        { label: "model", value: entry.model },
+        { label: "status", value: entry.status },
+      ],
+    });
+    await refreshWorkerStatusSurface();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    appendRuntimeConversation({
+      type: "system",
+      category: "attention",
+      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
+      actor: "winsmux",
+      title: getLanguageText("Worker model assignment failed", "ワーカーモデル割当に失敗しました"),
+      body: message,
+      tone: "warning",
+      details: [
+        { label: "slot", value: slotId },
+        { label: "model", value: entry.model },
+      ],
+    });
+  } finally {
+    workerProviderSwitchInFlight = "";
+    renderSettingsControls();
+    renderConversation(getConversationItems());
+  }
+}
+
+function renderWorkerModelAssignmentPanel(japanese: boolean) {
+  const panel = document.createElement("section");
+  panel.className = "runtime-model-panel runtime-model-assignment-panel";
+
+  const title = document.createElement("div");
+  title.className = "runtime-role-title";
+  title.textContent = japanese ? "ワーカーペインのモデル割当" : "Worker Pane Model Assignment";
+  const description = document.createElement("div");
+  description.className = "runtime-role-description";
+  description.textContent = japanese
+    ? "検出済み worker slot にだけモデル上書きを適用します。参照のみ、利用不可、またはバックエンド不一致の候補は選べません。"
+    : "Apply model overrides to detected worker slots only. Reference-only, unavailable, and backend-mismatched entries cannot be selected.";
+  panel.append(title, description);
+
+  const rows = getWorkerStatusRowsForSurface().filter((row) => getWorkerStatusTarget(row)).slice(0, MAX_WORKBENCH_PANES);
+  const list = document.createElement("div");
+  list.className = "runtime-model-slot-list";
+  if (rows.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "runtime-model-empty";
+    empty.textContent = japanese ? "worker slot はまだ検出されていません。" : "No worker slots detected yet.";
+    list.appendChild(empty);
+  }
+
+  for (const row of rows) {
+    const slotId = getWorkerStatusTarget(row);
+    const rowElement = document.createElement("div");
+    rowElement.className = "runtime-model-slot-row";
+    rowElement.dataset.backend = getWorkerBackendForCatalog(row);
+
+    const summary = document.createElement("div");
+    summary.className = "runtime-model-slot-summary";
+    const name = document.createElement("strong");
+    name.textContent = getPaneDisplayLabel(slotId);
+    const current = document.createElement("span");
+    current.textContent = `${getWorkerProvider(row)} / ${getWorkerModel(row)} · ${getWorkerBackendForCatalog(row)}`;
+    summary.append(name, current);
+
+    const select = document.createElement("select");
+    select.className = "runtime-control-select runtime-model-slot-select";
+    select.setAttribute("aria-label", japanese ? `${slotId} のモデル` : `${slotId} model`);
+    const currentCatalogId = getWorkerRuntimeCatalogEntryId(row);
+    if (!currentCatalogId) {
+      const currentOption = document.createElement("option");
+      currentOption.value = "";
+      currentOption.textContent = japanese
+        ? `現在のカスタム設定: ${getWorkerProvider(row)} / ${getWorkerModel(row)}`
+        : `Current custom setting: ${getWorkerProvider(row)} / ${getWorkerModel(row)}`;
+      currentOption.disabled = true;
+      currentOption.selected = true;
+      select.appendChild(currentOption);
+    }
+    for (const entry of runtimeModelCatalog) {
+      const option = document.createElement("option");
+      option.value = entry.id;
+      option.textContent = getRuntimeCatalogOptionLabel(entry, japanese);
+      option.disabled = !isRuntimeModelAssignableToWorker(entry, row);
+      option.selected = entry.id === currentCatalogId;
+      select.appendChild(option);
+    }
+    select.disabled = Boolean(workerProviderSwitchInFlight);
+
+    const action = document.createElement("button");
+    action.type = "button";
+    action.className = "ghost-btn ghost-btn-small runtime-model-assign-btn";
+    action.textContent = workerProviderSwitchInFlight === slotId
+      ? (japanese ? "適用中" : "Applying")
+      : (japanese ? "適用" : "Apply");
+    const updateActionState = () => {
+      const selectedEntry = findRuntimeModelCatalogEntry(select.value);
+      const assignable = selectedEntry ? isRuntimeModelAssignableToWorker(selectedEntry, row) : false;
+      action.disabled = Boolean(workerProviderSwitchInFlight) || !assignable;
+      action.title = selectedEntry
+        ? (assignable ? "" : (japanese ? selectedEntry.noteJa : selectedEntry.note))
+        : (japanese
+            ? "現在のカスタム設定です。既定へ戻す場合は明示的に自動 / プロバイダー既定を選んでください。"
+            : "This is the current custom setting. Explicitly select Auto / provider default to clear it.");
+    };
+    select.addEventListener("change", updateActionState);
+    action.addEventListener("click", () => {
+      if (findRuntimeModelCatalogEntry(select.value)) {
+        void applyWorkerModelCatalogEntry(slotId, select.value);
+      }
+    });
+    updateActionState();
+
+    rowElement.append(summary, select, action);
+    list.appendChild(rowElement);
+  }
+  panel.appendChild(list);
+  return panel;
+}
+
+function renderRuntimeBenchmarkComparisonPanel(japanese: boolean) {
+  const panel = document.createElement("section");
+  panel.className = "runtime-model-panel runtime-benchmark-panel";
+
+  const title = document.createElement("div");
+  title.className = "runtime-role-title";
+  title.textContent = japanese ? "モデル比較とベンチ参照" : "Model Benchmark Comparison";
+  const description = document.createElement("div");
+  description.className = "runtime-role-description";
+  description.textContent = japanese
+    ? "Agent Arena / Code Arena は参考値です。winsmux の勝敗判定は、実行ログ、再現性、コスト、失敗理由を別に確認します。"
+    : "Agent Arena / Code Arena values are references. winsmux decisions still use run logs, reproducibility, cost, and failure reasons.";
+  panel.append(title, description);
+
+  const table = document.createElement("div");
+  table.className = "runtime-benchmark-table";
+  for (const entry of runtimeModelCatalog.filter((item) => item.id !== "provider-default")) {
+    const row = document.createElement("div");
+    row.className = "runtime-benchmark-row";
+    row.dataset.status = entry.status;
+
+    const model = document.createElement("div");
+    model.className = "runtime-benchmark-model";
+    model.textContent = japanese ? entry.labelJa : entry.label;
+
+    const status = document.createElement("span");
+    status.className = "runtime-benchmark-status";
+    status.textContent = getRuntimeCatalogStatusLabel(entry.status, japanese);
+
+    const metrics = document.createElement("div");
+    metrics.className = "runtime-benchmark-metrics";
+    metrics.textContent = [
+      entry.family,
+      entry.speed,
+      entry.intelligence,
+      entry.cost,
+      `source: ${getRuntimeCatalogSourceLabel(entry)}`,
+      `captured: ${getRuntimeCatalogCaptureDate(entry)}`,
+      `run: ${getRuntimeCatalogRunId(entry)}`,
+    ].join(" · ");
+    metrics.title = metrics.textContent;
+
+    const note = document.createElement("div");
+    note.className = "runtime-benchmark-note";
+    note.textContent = `${japanese ? entry.noteJa : entry.note} ${japanese ? "信頼度" : "Confidence"}: ${getRuntimeCatalogConfidenceNote(entry, japanese)}`;
+    note.title = note.textContent;
+
+    row.append(model, status, metrics, note);
+    table.appendChild(row);
+  }
+  panel.appendChild(table);
+  return panel;
+}
+
 function renderRuntimeRoleControls() {
   const root = document.getElementById("runtime-role-options");
   if (!root) {
@@ -8962,6 +9615,8 @@ function renderRuntimeRoleControls() {
 
     root.appendChild(panel);
   }
+  root.appendChild(renderWorkerModelAssignmentPanel(japanese));
+  root.appendChild(renderRuntimeBenchmarkComparisonPanel(japanese));
 }
 
 function renderSettingsControls() {

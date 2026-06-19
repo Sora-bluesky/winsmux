@@ -24,6 +24,19 @@ const JSON_RPC_METHOD_NOT_FOUND: i32 = -32601;
 const JSON_RPC_INVALID_PARAMS: i32 = -32602;
 const JSON_RPC_INTERNAL_ERROR: i32 = -32603;
 const JSON_RPC_SERVER_ERROR: i32 = -32000;
+const PROVIDER_SWITCH_SELECTOR_PARAM_KEYS: &[&str] = &[
+    "agent",
+    "provider",
+    "model",
+    "modelSource",
+    "model_source",
+    "reasoningEffort",
+    "reasoning_effort",
+    "promptTransport",
+    "prompt_transport",
+    "authMode",
+    "auth_mode",
+];
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -720,6 +733,18 @@ pub enum DesktopCommand {
         target: String,
         project_dir: Option<String>,
     },
+    ProviderSwitch {
+        slot: String,
+        agent: Option<String>,
+        model: Option<String>,
+        model_source: Option<String>,
+        reasoning_effort: Option<String>,
+        prompt_transport: Option<String>,
+        auth_mode: Option<String>,
+        reason: Option<String>,
+        clear: bool,
+        project_dir: Option<String>,
+    },
     RuntimeRolesApply {
         roles_json: String,
         project_dir: Option<String>,
@@ -855,6 +880,7 @@ impl DesktopCommand {
             DesktopCommand::RunPickWinner { project_dir, .. } => project_dir.as_deref(),
             DesktopCommand::WorkersStatus { project_dir, .. } => project_dir.as_deref(),
             DesktopCommand::WorkersStart { project_dir, .. } => project_dir.as_deref(),
+            DesktopCommand::ProviderSwitch { project_dir, .. } => project_dir.as_deref(),
             DesktopCommand::RuntimeRolesApply { project_dir, .. } => project_dir.as_deref(),
             DesktopCommand::DogfoodEvent { project_dir, .. } => project_dir.as_deref(),
         }
@@ -926,6 +952,54 @@ impl DesktopCommand {
                 target.clone(),
                 "--json".to_string(),
             ],
+            DesktopCommand::ProviderSwitch {
+                slot,
+                agent,
+                model,
+                model_source,
+                reasoning_effort,
+                prompt_transport,
+                auth_mode,
+                reason,
+                clear,
+                ..
+            } => {
+                let mut args = vec!["provider-switch".to_string(), slot.clone()];
+                if *clear {
+                    args.push("--clear".to_string());
+                } else {
+                    if let Some(value) = agent {
+                        args.push("--agent".to_string());
+                        args.push(value.clone());
+                    }
+                    if let Some(value) = model {
+                        args.push("--model".to_string());
+                        args.push(value.clone());
+                    }
+                    if let Some(value) = model_source {
+                        args.push("--model-source".to_string());
+                        args.push(value.clone());
+                    }
+                    if let Some(value) = reasoning_effort {
+                        args.push("--reasoning-effort".to_string());
+                        args.push(value.clone());
+                    }
+                    if let Some(value) = prompt_transport {
+                        args.push("--prompt-transport".to_string());
+                        args.push(value.clone());
+                    }
+                    if let Some(value) = auth_mode {
+                        args.push("--auth-mode".to_string());
+                        args.push(value.clone());
+                    }
+                    if let Some(value) = reason {
+                        args.push("--reason".to_string());
+                        args.push(value.clone());
+                    }
+                }
+                args.push("--json".to_string());
+                args
+            }
             DesktopCommand::RuntimeRolesApply { roles_json, .. } => vec![
                 "runtime-roles".to_string(),
                 "apply".to_string(),
@@ -1333,6 +1407,33 @@ pub fn start_desktop_worker(
     })
 }
 
+pub fn switch_desktop_provider(
+    transport: &dyn DesktopCommandTransport,
+    slot: String,
+    agent: Option<String>,
+    model: Option<String>,
+    model_source: Option<String>,
+    reasoning_effort: Option<String>,
+    prompt_transport: Option<String>,
+    auth_mode: Option<String>,
+    reason: Option<String>,
+    clear: bool,
+    project_dir: Option<String>,
+) -> Result<Value, String> {
+    transport.request_json(&DesktopCommand::ProviderSwitch {
+        slot,
+        agent,
+        model_source,
+        model,
+        reasoning_effort,
+        prompt_transport,
+        auth_mode,
+        reason,
+        clear,
+        project_dir,
+    })
+}
+
 pub fn load_desktop_editor_file(
     path: String,
     worktree: Option<String>,
@@ -1417,6 +1518,7 @@ pub fn handle_desktop_json_rpc(
                     "desktop.run.pick_winner",
                     "desktop.workers.status",
                     "desktop.workers.start",
+                    "desktop.provider.switch",
                     "desktop.runtime.roles.apply",
                     "desktop.voice.capture_status",
                     "desktop.dogfood.event",
@@ -1578,6 +1680,52 @@ pub fn handle_desktop_json_rpc(
                 Err(err) => json_rpc_error(request_id, JSON_RPC_SERVER_ERROR, err),
             }
         }
+        "desktop.provider.switch" => {
+            let slot = match get_required_string_param(params.as_ref(), &["slot", "target"]) {
+                Ok(value) => value,
+                Err(err) => {
+                    return json_rpc_error(request_id, JSON_RPC_INVALID_PARAMS, err);
+                }
+            };
+            let clear = match get_optional_bool_param(params.as_ref(), &["clear"]) {
+                Ok(value) => value.unwrap_or(false),
+                Err(err) => {
+                    return json_rpc_error(request_id, JSON_RPC_INVALID_PARAMS, err);
+                }
+            };
+            let agent = get_optional_string_param(params.as_ref(), &["agent", "provider"]);
+            let model = get_optional_string_param(params.as_ref(), &["model"]);
+            let model_source =
+                get_optional_string_param(params.as_ref(), &["modelSource", "model_source"]);
+            let reasoning_effort =
+                get_optional_string_param(params.as_ref(), &["reasoningEffort", "reasoning_effort"]);
+            let prompt_transport =
+                get_optional_string_param(params.as_ref(), &["promptTransport", "prompt_transport"]);
+            let auth_mode = get_optional_string_param(params.as_ref(), &["authMode", "auth_mode"]);
+            if clear && has_any_param_field(params.as_ref(), PROVIDER_SWITCH_SELECTOR_PARAM_KEYS) {
+                return json_rpc_error(
+                    request_id,
+                    JSON_RPC_INVALID_PARAMS,
+                    "desktop.provider.switch clear cannot be combined with agent, model, modelSource, reasoningEffort, promptTransport, or authMode",
+                );
+            }
+            match switch_desktop_provider(
+                transport,
+                slot,
+                agent,
+                model,
+                model_source,
+                reasoning_effort,
+                prompt_transport,
+                auth_mode,
+                get_optional_string_param(params.as_ref(), &["reason"]),
+                clear,
+                resolved_project_dir,
+            ) {
+                Ok(result) => json_rpc_result(request_id, result),
+                Err(err) => json_rpc_error(request_id, JSON_RPC_SERVER_ERROR, err),
+            }
+        }
         "desktop.runtime.roles.apply" => {
             let roles = match params
                 .as_ref()
@@ -1708,6 +1856,13 @@ fn get_optional_string_param(params: Option<&Value>, keys: &[&str]) -> Option<St
     None
 }
 
+fn has_any_param_field(params: Option<&Value>, keys: &[&str]) -> bool {
+    let Some(object) = params.and_then(Value::as_object) else {
+        return false;
+    };
+    keys.iter().any(|key| object.contains_key(*key))
+}
+
 fn get_optional_f64_param(params: Option<&Value>, keys: &[&str]) -> Option<f64> {
     let object = params?.as_object()?;
     for key in keys {
@@ -1717,6 +1872,22 @@ fn get_optional_f64_param(params: Option<&Value>, keys: &[&str]) -> Option<f64> 
     }
 
     None
+}
+
+fn get_optional_bool_param(params: Option<&Value>, keys: &[&str]) -> Result<Option<bool>, String> {
+    let Some(object) = params.and_then(Value::as_object) else {
+        return Ok(None);
+    };
+    for key in keys {
+        if let Some(value) = object.get(*key) {
+            if let Some(bool_value) = value.as_bool() {
+                return Ok(Some(bool_value));
+            }
+            return Err(format!("Params field '{key}' must be a boolean."));
+        }
+    }
+
+    Ok(None)
 }
 
 fn json_rpc_result(id: Value, result: Value) -> DesktopJsonRpcResponse {
@@ -5001,6 +5172,9 @@ mod tests {
                     .any(|method| { method.as_str() == Some("desktop.workers.start") }));
                 assert!(methods
                     .iter()
+                    .any(|method| { method.as_str() == Some("desktop.provider.switch") }));
+                assert!(methods
+                    .iter()
                     .any(|method| { method.as_str() == Some("desktop.dogfood.event") }));
                 assert!(methods
                     .iter()
@@ -5138,6 +5312,228 @@ mod tests {
             transport.requests.borrow().as_slice(),
             ["workers start worker-2 --json"]
         );
+    }
+
+    #[test]
+    fn handle_desktop_json_rpc_routes_provider_switch() {
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response: serde_json::json!({
+                "slot_id": "worker-2",
+                "agent": "claude",
+                "model": "opus",
+                "model_source": "official-doc",
+                "reasoning_effort": "xhigh"
+            }),
+        };
+        let response = handle_desktop_json_rpc(
+            &transport,
+            DesktopJsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::json!("req-provider-switch"),
+                method: "desktop.provider.switch".to_string(),
+                params: Some(serde_json::json!({
+                    "slot": "worker-2",
+                    "agent": "claude",
+                    "model": "opus",
+                    "modelSource": "official-doc",
+                    "reasoningEffort": "xhigh",
+                    "promptTransport": "file",
+                    "authMode": "claude-pro-max-oauth",
+                    "reason": "desktop model picker"
+                })),
+            },
+            None,
+        );
+
+        match response {
+            DesktopJsonRpcResponse::Success { id, result, .. } => {
+                assert_eq!(id, serde_json::json!("req-provider-switch"));
+                assert_eq!(result["slot_id"], "worker-2");
+                assert_eq!(result["model"], "opus");
+            }
+            DesktopJsonRpcResponse::Error { error, .. } => {
+                panic!("expected success, got {:?}", error);
+            }
+        }
+        assert_eq!(
+            transport.requests.borrow().as_slice(),
+            ["provider-switch worker-2 --agent claude --model opus --model-source official-doc --reasoning-effort xhigh --prompt-transport file --auth-mode claude-pro-max-oauth --reason desktop model picker --json"]
+        );
+    }
+
+    #[test]
+    fn handle_desktop_json_rpc_routes_provider_switch_clear() {
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response: serde_json::json!({
+                "slot_id": "worker-2",
+                "clear_requested": true,
+                "cleared": true
+            }),
+        };
+        let response = handle_desktop_json_rpc(
+            &transport,
+            DesktopJsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::json!("req-provider-switch-clear"),
+                method: "desktop.provider.switch".to_string(),
+                params: Some(serde_json::json!({
+                    "slot": "worker-2",
+                    "clear": true
+                })),
+            },
+            None,
+        );
+
+        match response {
+            DesktopJsonRpcResponse::Success { id, result, .. } => {
+                assert_eq!(id, serde_json::json!("req-provider-switch-clear"));
+                assert_eq!(result["clear_requested"], true);
+            }
+            DesktopJsonRpcResponse::Error { error, .. } => {
+                panic!("expected success, got {:?}", error);
+            }
+        }
+        assert_eq!(
+            transport.requests.borrow().as_slice(),
+            ["provider-switch worker-2 --clear --json"]
+        );
+    }
+
+    #[test]
+    fn handle_desktop_json_rpc_rejects_provider_switch_clear_with_selector() {
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response: serde_json::json!({}),
+        };
+        let response = handle_desktop_json_rpc(
+            &transport,
+            DesktopJsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::json!("req-provider-switch-clear-selector"),
+                method: "desktop.provider.switch".to_string(),
+                params: Some(serde_json::json!({
+                    "slot": "worker-2",
+                    "clear": true,
+                    "model": "opus"
+                })),
+            },
+            None,
+        );
+
+        match response {
+            DesktopJsonRpcResponse::Error { id, error, .. } => {
+                assert_eq!(id, serde_json::json!("req-provider-switch-clear-selector"));
+                assert_eq!(error.code, JSON_RPC_INVALID_PARAMS);
+                assert!(error.message.contains("clear cannot be combined"));
+            }
+            DesktopJsonRpcResponse::Success { result, .. } => {
+                panic!("expected invalid params, got {:?}", result);
+            }
+        }
+        assert!(transport.requests.borrow().is_empty());
+    }
+
+    #[test]
+    fn handle_desktop_json_rpc_rejects_provider_switch_clear_with_empty_selector() {
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response: serde_json::json!({}),
+        };
+        let response = handle_desktop_json_rpc(
+            &transport,
+            DesktopJsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::json!("req-provider-switch-clear-empty-selector"),
+                method: "desktop.provider.switch".to_string(),
+                params: Some(serde_json::json!({
+                    "slot": "worker-2",
+                    "clear": true,
+                    "model": ""
+                })),
+            },
+            None,
+        );
+
+        match response {
+            DesktopJsonRpcResponse::Error { id, error, .. } => {
+                assert_eq!(id, serde_json::json!("req-provider-switch-clear-empty-selector"));
+                assert_eq!(error.code, JSON_RPC_INVALID_PARAMS);
+                assert!(error.message.contains("clear cannot be combined"));
+            }
+            DesktopJsonRpcResponse::Success { result, .. } => {
+                panic!("expected invalid params, got {:?}", result);
+            }
+        }
+        assert!(transport.requests.borrow().is_empty());
+    }
+
+    #[test]
+    fn handle_desktop_json_rpc_rejects_provider_switch_clear_with_non_string_selector() {
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response: serde_json::json!({}),
+        };
+        let response = handle_desktop_json_rpc(
+            &transport,
+            DesktopJsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::json!("req-provider-switch-clear-non-string-selector"),
+                method: "desktop.provider.switch".to_string(),
+                params: Some(serde_json::json!({
+                    "slot": "worker-2",
+                    "clear": true,
+                    "model": 42
+                })),
+            },
+            None,
+        );
+
+        match response {
+            DesktopJsonRpcResponse::Error { id, error, .. } => {
+                assert_eq!(id, serde_json::json!("req-provider-switch-clear-non-string-selector"));
+                assert_eq!(error.code, JSON_RPC_INVALID_PARAMS);
+                assert!(error.message.contains("clear cannot be combined"));
+            }
+            DesktopJsonRpcResponse::Success { result, .. } => {
+                panic!("expected invalid params, got {:?}", result);
+            }
+        }
+        assert!(transport.requests.borrow().is_empty());
+    }
+
+    #[test]
+    fn handle_desktop_json_rpc_rejects_provider_switch_bad_clear_type() {
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response: serde_json::json!({}),
+        };
+        let response = handle_desktop_json_rpc(
+            &transport,
+            DesktopJsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::json!("req-provider-switch-bad-clear"),
+                method: "desktop.provider.switch".to_string(),
+                params: Some(serde_json::json!({
+                    "slot": "worker-2",
+                    "clear": "true"
+                })),
+            },
+            None,
+        );
+
+        match response {
+            DesktopJsonRpcResponse::Error { id, error, .. } => {
+                assert_eq!(id, serde_json::json!("req-provider-switch-bad-clear"));
+                assert_eq!(error.code, JSON_RPC_INVALID_PARAMS);
+                assert!(error.message.contains("must be a boolean"));
+            }
+            DesktopJsonRpcResponse::Success { result, .. } => {
+                panic!("expected invalid params, got {:?}", result);
+            }
+        }
+        assert!(transport.requests.borrow().is_empty());
     }
 
     #[test]
