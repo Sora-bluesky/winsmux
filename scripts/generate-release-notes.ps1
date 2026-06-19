@@ -272,6 +272,15 @@ function ConvertTo-UserBenefit {
         'complete winsmux-surface rename|send buffer overflow' {
             return 'Continued the winsmux naming convergence and stabilized the send pipeline'
         }
+        'migrate worker path to Antigravity CLI|Antigravity CLI' {
+            return 'Migrated one-shot worker execution to the Antigravity CLI route while preserving explicit backend metadata'
+        }
+        'harden operator runtime controls|operator runtime controls' {
+            return 'Hardened desktop operator runtime controls used by managed worker sessions'
+        }
+        'release note quality|release body quality|release notes quality' {
+            return 'Kept GitHub Release publication behind concrete release-note quality gates'
+        }
         'api llm openai-compatible runner|api_llm worker contract|api_llm backend contract' {
             return 'Added the api_llm hosted OpenAI-compatible worker backend and execution contract'
         }
@@ -569,6 +578,7 @@ $fixSource += Get-MatchedCommits -Subjects $commitSubjects -Patterns @('Monitori
 $fixSource += Get-MatchedCommits -Subjects $commitSubjects -Patterns @('false success', 'pane creation does not actually occur', 'detached orchestra layout reliability')
 $fixSource += Get-MatchedCommits -Subjects $commitSubjects -Patterns @('Manifest convergence', 'CLM-safe writes')
 $fixSource += Get-MatchedCommits -Subjects $commitSubjects -Patterns @('native-exit handling', 'fixture temp dirs out of repo root', 'review-gate CI')
+$fixSource += Get-MatchedCommits -Subjects $commitSubjects -Patterns @('release note quality', 'release body quality', 'release notes quality')
 $fixSource += @(
     $commitSubjects |
         Where-Object {
