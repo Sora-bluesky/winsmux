@@ -8,7 +8,7 @@ worker slots, and evidence collection. It is not itself an LLM runtime and it
 does not promise that one specific provider, model, or endpoint will always be
 available.
 
-Last reviewed against current upstream documentation: 2026-05-13.
+Last reviewed against current upstream documentation: 2026-06-19.
 
 ## Naming policy
 
@@ -16,6 +16,7 @@ Public docs use product names consistently:
 
 - `Claude Code`
 - `Codex`
+- `Antigravity CLI`
 - `Gemini`
 
 When the docs need to describe how they run, they say "agent CLI", "official
@@ -31,6 +32,7 @@ column.
 | `local` worker backend | Supported | Runs normal managed panes on this PC. |
 | `codex` worker backend | Metadata today | Used to describe Codex-capable worker or review slots. |
 | `api_llm` worker backend | Supported contract for hosted OpenAI-compatible model workers | Uses provider-owned API access such as OpenRouter. The public setup path is the runtime environment variable; winsmux records only redacted run metadata and does not fall back to local or Colab LLM backends. |
+| `antigravity` worker backend | Supported for Antigravity CLI one-shot workers | Uses the local `agy` command in print mode. The CLI owns sign-in and model access; winsmux records redacted run metadata and does not log the prompt body. |
 | `colab_cli` worker backend | Supported for status, doctor, one-shot execution, logs, upload, and download | Requires a `google-colab-cli` compatible adapter and is intended for H100 or A100 Colab-backed work. |
 | Major open model families | Supported as Colab model targets when the task script and runtime provide them | Examples include Gemma, Llama, Mistral, Qwen, DeepSeek, and Kimi/Moonshot. Treat the model family as workload metadata, not as a provider. |
 | Local LLM runtimes | Planned adapter family | Not a `v0.32.x` Colab-lane runtime requirement. Today, run them as normal local tools or behind an agent CLI that can use a local endpoint. |
@@ -61,6 +63,42 @@ Provider entries may declare:
   limited to localhost.
 - `analysis_posture`: whether the provider is safe only for read-only analysis
   or can act as a normal write-capable worker.
+
+## Antigravity CLI workers
+
+Google's published migration notice says Gemini CLI and Gemini Code Assist IDE
+extensions stopped serving requests for Gemini Code Assist for individuals,
+Google AI Pro, and Google AI Ultra on 2026-06-18. Affected users should use
+Antigravity CLI. Google AI Standard and Enterprise tiers are not treated as
+sunset by this winsmux policy.
+
+Use `antigravity` for one-shot worker execution when the local `agy` command is
+available:
+
+```yaml
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    worker-backend: antigravity
+    agent: antigravity
+    model: provider-default
+    model-source: provider-default
+    prompt-transport: file
+    auth-mode: antigravity-official-cli
+    worktree-mode: managed
+```
+
+`winsmux workers exec` runs `agy --print <file-reference-prompt>
+--print-timeout <duration>` from the project directory and adds
+`--model <model>` when the slot declares an explicit model. The CLI process
+receives a short instruction to read the relative task file in the current
+workspace; winsmux does not place the task file body in the process arguments,
+run JSON, logs, PR text, or release evidence.
+
+If `agy` is not installed or cannot expose print mode, `winsmux workers doctor`
+reports an Antigravity CLI failure and migrated workers stay unconfigured.
+winsmux does not silently fall back to the consumer Gemini CLI path for these
+workers.
 
 ## Hosted API model workers
 

@@ -18,9 +18,16 @@ Within that model, winsmux does **not** broker OAuth logins or extract and relay
 | Claude Code | Pro / Max OAuth | This PC only, interactive use |
 | Codex | API key through the official agent CLI | Supported |
 | Codex | ChatGPT OAuth through the official agent CLI | This PC only, interactive use |
+| Antigravity CLI | Official Antigravity CLI sign-in | This PC only, interactive use |
 | Gemini | Gemini API key through the official agent CLI | Supported |
 | Gemini | Gemini API in Vertex AI through the official agent CLI | Supported |
-| Gemini | Google OAuth through the official agent CLI | This PC only, interactive use |
+| Gemini | Google OAuth through the official agent CLI | Legacy / tier-limited, this PC only |
+
+Google's published migration notice says Gemini CLI and Gemini Code Assist IDE
+extensions stopped serving requests for Gemini Code Assist for individuals,
+Google AI Pro, and Google AI Ultra on 2026-06-18. Affected users should use
+Antigravity CLI. Google AI Standard and Enterprise tiers are not treated as
+sunset by this winsmux policy.
 
 Model families such as Gemma, Llama, Mistral, Qwen, DeepSeek, and Kimi are not
 authentication providers by themselves. For Colab workers, authenticate the
@@ -87,7 +94,8 @@ Examples:
 
 - `gemini-api-key` is allowed
 - `gemini-vertex` is allowed
-- `gemini-google-oauth` is limited to interactive use on that same PC
+- `antigravity-official-cli` is limited to interactive use on that same PC
+- `gemini-google-oauth` is legacy / tier-limited after 2026-06-18 and limited to interactive use on that same PC when the upstream tier still serves it
 - `codex-chatgpt-local` is limited to interactive use on that same PC
 - `claude-pro-max-oauth` is limited to interactive use on that same PC
 

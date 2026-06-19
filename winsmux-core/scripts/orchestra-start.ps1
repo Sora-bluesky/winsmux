@@ -850,7 +850,7 @@ function Test-OrchestraPaneBootstrapVerificationDeferred {
         return $false
     }
 
-    return @('deferred_start', 'deferred_starting', 'backend_degraded', 'api_llm_runner_unconfigured') -contains $status.Trim().ToLowerInvariant()
+    return @('deferred_start', 'deferred_starting', 'backend_degraded', 'api_llm_runner_unconfigured', 'antigravity_runner_unconfigured') -contains $status.Trim().ToLowerInvariant()
 }
 
 function Get-AgentLaunchCommand {
@@ -2291,12 +2291,18 @@ if ($MyInvocation.InvocationName -ne '.') {
         $deferredPaneStatus = 'deferred_start'
         $colabSessionEntry = $null
         $apiLlmPaneStartDeferred = [string]::Equals(([string]$slotAgentConfig.WorkerBackend), 'api_llm', [System.StringComparison]::OrdinalIgnoreCase)
+        $antigravityPaneStartDeferred = [string]::Equals(([string]$slotAgentConfig.WorkerBackend), 'antigravity', [System.StringComparison]::OrdinalIgnoreCase)
         if ($apiLlmPaneStartDeferred) {
             $deferPaneStart = $true
             $deferredPaneStatus = 'api_llm_runner_unconfigured'
         }
+        if ($antigravityPaneStartDeferred) {
+            $deferPaneStart = $true
+            $deferredPaneStatus = 'antigravity_runner_unconfigured'
+        }
+        $oneShotPaneStartDeferred = $apiLlmPaneStartDeferred -or $antigravityPaneStartDeferred
         $launchCommand = ''
-        if (-not $apiLlmPaneStartDeferred) {
+        if (-not $oneShotPaneStartDeferred) {
             $launchCommand = Get-AgentLaunchCommand -Agent $slotAgentConfig.Agent -Model $slotAgentConfig.Model -ModelSource $slotAgentConfig.ModelSource -ReasoningEffort $slotAgentConfig.ReasoningEffort -ProjectDir $launchDir -GitWorktreeDir $launchGitWorktreeDir -RootPath $projectDir -ExecMode $false
         }
         if ([string]::Equals(([string]$slotAgentConfig.WorkerBackend), 'colab_cli', [System.StringComparison]::OrdinalIgnoreCase) -and $colabSessionMap.ContainsKey($label)) {
@@ -2330,6 +2336,9 @@ if ($MyInvocation.InvocationName -ne '.') {
                     } elseif ($paneStatus -eq 'api_llm_runner_unconfigured') {
                         $eventName = 'preflight.worker.api_llm_runner_unconfigured'
                         $eventMessage = "API LLM worker runner is not configured for $label."
+                    } elseif ($paneStatus -eq 'antigravity_runner_unconfigured') {
+                        $eventName = 'preflight.worker.antigravity_runner_unconfigured'
+                        $eventMessage = "Antigravity CLI worker runner is not configured for $label."
                     } else {
                         $eventName = 'preflight.worker.deferred_start'
                         $eventMessage = "Deferred worker startup for $label."
@@ -2366,6 +2375,9 @@ if ($MyInvocation.InvocationName -ne '.') {
                     } elseif ($paneStatus -eq 'api_llm_runner_unconfigured') {
                         $eventName = 'preflight.worker.api_llm_runner_unconfigured'
                         $eventMessage = "API LLM worker runner is not configured for $label."
+                    } elseif ($paneStatus -eq 'antigravity_runner_unconfigured') {
+                        $eventName = 'preflight.worker.antigravity_runner_unconfigured'
+                        $eventMessage = "Antigravity CLI worker runner is not configured for $label."
                     } else {
                         $eventName = 'preflight.worker.deferred_start'
                         $eventMessage = "Deferred worker startup for $label."
