@@ -240,7 +240,7 @@ const WORKER_BACKENDS: &[WorkerBackendContract<'static>] = &[
     WorkerBackendContract {
         id: "api_llm",
         description: "hosted OpenAI-compatible API model worker contract with provider metadata, task JSON input, and redacted run artifacts",
-        runtime_available: false,
+        runtime_available: true,
         config_fields: &[
             "worker_backend",
             "worker_role",

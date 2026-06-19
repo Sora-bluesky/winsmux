@@ -2834,6 +2834,8 @@ fn normalize_provider_capability_entry(
         "harness_availability",
         "credential_requirements",
         "execution_backend",
+        "api_base_url",
+        "api_key_env",
         "runtime_requirements",
         "analysis_posture",
     ];

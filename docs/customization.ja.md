@@ -165,9 +165,31 @@ winsmux はベンダーごとに固定された役割ではなく、スロット
 分けて扱います。たとえば provider に `openrouter`、model に `z-ai/glm-5.2`、
 `prompt-transport: file`、`auth-mode: api-key-env` を指定できます。
 OpenRouter を環境変数で使う場合の既定名は `WINSMUX_OPENROUTER_API_KEY` です。
-worker プロセスへ渡す実行時の環境変数として扱います。1Password などのローカルな
-パスワード管理ツールを使う場合も、起動前にその環境へ入れる取得手段として扱います。
-`setx`、シェル起動ファイル、コマンド履歴、リポジトリ内の `.env`、公開ドキュメント、
+公開リポジトリでの標準手順では、Windows のユーザー環境変数として保存し、
+新しい PowerShell を開いてから `winsmux` を実行します。
+
+```powershell
+$secret = Read-Host -AsSecureString "OpenRouter API key"
+$bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secret)
+try {
+  [Environment]::SetEnvironmentVariable(
+    "WINSMUX_OPENROUTER_API_KEY",
+    [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr),
+    "User"
+  )
+} finally {
+  [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+  Remove-Variable secret -ErrorAction SilentlyContinue
+}
+```
+
+反映確認では値を表示せず、設定済みかだけを確認します。
+
+```powershell
+if ([string]::IsNullOrWhiteSpace($env:WINSMUX_OPENROUTER_API_KEY)) { "missing" } else { "configured" }
+```
+
+シェル起動ファイル、コマンド履歴、リポジトリ内の `.env`、公開ドキュメント、PR 本文、
 ログ、リリース証跡へ値を書かないでください。
 
 外部APIワーカーは、タスク JSON ファイルから実行します。
@@ -177,7 +199,8 @@ winsmux workers exec w1 --task-json tasks/api-worker-task.json --run-id api-demo
 winsmux workers logs w1 --run-id api-demo-1 --json
 ```
 
-外部API runner が未設定の場合、`workers exec` は診断理由付きで停止します。
+API key の環境変数がない場合や、エンドポイント設定が不正な場合、`workers exec`
+は通信前に `api_llm_api_key_env_missing` などの診断理由付きで停止します。
 `local_llm`、`colab_llm`、`colab_cli` へ黙って切り替えません。
 
 `v0.32.4` 以降では、Colab バックエンドの状態を

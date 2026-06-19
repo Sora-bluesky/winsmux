@@ -48,6 +48,7 @@ CLI であることは認証方式や実行方式の列で説明します。
 - `execution_backend`: エージェント CLI、Colab ワーカー、OpenAI 互換ローカルエンドポイントなどの実行経路。
 - `runtime_requirements`: エンドポイント、実行ファイル、GPU、CPU、メモリ、OS、リモートランタイムの要件。
 - `model_catalog_source` と `model_options`: モデル名の取得元と、オペレーターが選べる候補。
+- `api_base_url` と `api_key_env`: 外部APIモデルワーカーが使う OpenAI 互換エンドポイントと、API key の環境変数名。`openrouter` などの組み込み外部 provider では固定値として扱い、カスタム endpoint は localhost に限定します。
 - `analysis_posture`: 読み取り専用の分析に限るか、通常の書き込み可能ワーカーとして扱えるか。
 
 OpenAI 互換ローカルエンドポイントや GPU 付きローカルランタイムの既定は、
@@ -80,13 +81,37 @@ OpenRouter 互換の既定 base URL は `https://openrouter.ai/api/v1` です。
 環境変数で認証する場合、既定名は `WINSMUX_OPENROUTER_API_KEY` です。
 winsmux はこの値をリポジトリ、公開ドキュメント、PR 本文、生成レポート、
 ワーカーログ、リリース証跡に保存しません。
-1Password などのパスワード管理ツールを使う場合も、worker 起動前に worker
-プロセスの環境へ読み込む手段として扱います。`setx`、シェル起動ファイル、
-コマンド履歴、リポジトリ内の `.env` へこのキーを書かないでください。
+公開リポジトリでの標準手順では、Windows のユーザー環境変数として保存し、
+新しい PowerShell を開いてから `winsmux` を実行します。
+
+```powershell
+$secret = Read-Host -AsSecureString "OpenRouter API key"
+$bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secret)
+try {
+  [Environment]::SetEnvironmentVariable(
+    "WINSMUX_OPENROUTER_API_KEY",
+    [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr),
+    "User"
+  )
+} finally {
+  [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+  Remove-Variable secret -ErrorAction SilentlyContinue
+}
+```
+
+反映確認では値を表示せず、設定済みかだけを確認します。
+
+```powershell
+if ([string]::IsNullOrWhiteSpace($env:WINSMUX_OPENROUTER_API_KEY)) { "missing" } else { "configured" }
+```
+
+シェル起動ファイル、コマンド履歴、リポジトリ内の `.env`、公開ドキュメント、PR 本文、
+生成レポート、ワーカーログ、リリース証跡へ値を書かないでください。
 
 `api_llm` は `local_llm`、`colab_llm`、`colab_cli` と分けて扱います。
-外部API実行が設定されていない場合、winsmux は診断理由を返し、ローカルや
-Colab の実行経路へ黙って切り替えません。
+API key の環境変数がない場合や、プロバイダーのエンドポイント設定が不正な場合は、
+通信前に `api_llm_api_key_env_missing` などの診断理由を返します。ローカルや
+Colab の実行経路へ黙って切り替えることはありません。
 
 ## 実行プロファイル方針
 
