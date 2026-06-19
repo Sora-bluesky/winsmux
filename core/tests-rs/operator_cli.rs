@@ -1390,6 +1390,8 @@ fn operator_cli_provider_capabilities_json_reads_registry() {
       "harness_availability": "external-adapter",
       "credential_requirements": "runtime-owned-local-endpoint",
       "execution_backend": "openai-compatible-local-endpoint",
+      "api_base_url": "http://127.0.0.1:8080/v1",
+      "api_key_env": "WINSMUX_LOCAL_OPENAI_COMPATIBLE_API_KEY",
       "runtime_requirements": "127.0.0.1 endpoint; GPU/CPU capacity owned by runtime.",
       "analysis_posture": "read-only-analysis",
       "prompt_transports": ["stdin"],
@@ -1446,6 +1448,14 @@ fn operator_cli_provider_capabilities_json_reads_registry() {
         "openai-compatible-local-endpoint"
     );
     assert_eq!(
+        registry["providers"]["local-openai-compatible"]["api_base_url"],
+        "http://127.0.0.1:8080/v1"
+    );
+    assert_eq!(
+        registry["providers"]["local-openai-compatible"]["api_key_env"],
+        "WINSMUX_LOCAL_OPENAI_COMPATIBLE_API_KEY"
+    );
+    assert_eq!(
         registry["providers"]["local-openai-compatible"]["read_only_launch_args"][1],
         "--no-file-edits"
     );
@@ -1480,7 +1490,7 @@ fn operator_cli_machine_contract_json_exposes_hook_facing_catalog() {
     assert_eq!(json["worker_backends"][2]["id"], "colab_cli");
     assert_eq!(json["worker_backends"][2]["runtime_available"], true);
     assert_eq!(json["worker_backends"][3]["id"], "api_llm");
-    assert_eq!(json["worker_backends"][3]["runtime_available"], false);
+    assert_eq!(json["worker_backends"][3]["runtime_available"], true);
     assert_eq!(json["worker_backends"][4]["id"], "noop");
     assert_eq!(json["worker_backends"][4]["runtime_available"], false);
     assert_eq!(json["projection_surfaces"][1]["name"], "board");

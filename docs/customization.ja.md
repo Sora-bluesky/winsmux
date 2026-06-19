@@ -165,9 +165,31 @@ winsmux はベンダーごとに固定された役割ではなく、スロット
 分けて扱います。たとえば provider に `openrouter`、model に `z-ai/glm-5.2`、
 `prompt-transport: file`、`auth-mode: api-key-env` を指定できます。
 OpenRouter を環境変数で使う場合の既定名は `WINSMUX_OPENROUTER_API_KEY` です。
-worker プロセスへ渡す実行時の環境変数として扱います。1Password などのローカルな
-パスワード管理ツールを使う場合も、起動前にその環境へ入れる取得手段として扱います。
-`setx`、シェル起動ファイル、コマンド履歴、リポジトリ内の `.env`、公開ドキュメント、
+公開リポジトリでの標準手順では、Windows のユーザー環境変数として保存し、
+新しい PowerShell を開いてから `winsmux` を実行します。
+
+```powershell
+$secret = Read-Host -AsSecureString "OpenRouter API key"
+$bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secret)
+try {
+  [Environment]::SetEnvironmentVariable(
+    "WINSMUX_OPENROUTER_API_KEY",
+    [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr),
+    "User"
+  )
+} finally {
+  [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+  Remove-Variable secret -ErrorAction SilentlyContinue
+}
+```
+
+反映確認では値を表示せず、設定済みかだけを確認します。
+
+```powershell
+if ([string]::IsNullOrWhiteSpace($env:WINSMUX_OPENROUTER_API_KEY)) { "missing" } else { "configured" }
+```
+
+シェル起動ファイル、コマンド履歴、リポジトリ内の `.env`、公開ドキュメント、PR 本文、
 ログ、リリース証跡へ値を書かないでください。
 
 外部APIワーカーは、タスク JSON ファイルから実行します。

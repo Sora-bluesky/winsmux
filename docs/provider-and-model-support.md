@@ -56,7 +56,9 @@ Provider entries may declare:
 - `model_catalog_source` and `model_options`: where model names come from and
   which choices the operator can select.
 - `api_base_url` and `api_key_env`: the OpenAI-compatible endpoint and the
-  environment variable name used by hosted `api_llm` workers.
+  environment variable name used by hosted `api_llm` workers. Built-in hosted
+  providers such as `openrouter` keep these values fixed; custom endpoints are
+  limited to localhost.
 - `analysis_posture`: whether the provider is safe only for read-only analysis
   or can act as a normal write-capable worker.
 
@@ -84,10 +86,33 @@ The default OpenRouter-compatible base URL is
 `WINSMUX_OPENROUTER_API_KEY` when the operator chooses environment-based
 authentication. winsmux must not write this value to repository files, public
 docs, PR text, generated reports, worker logs, or release evidence.
-If the operator uses 1Password or another password manager, load the secret into
-the worker process environment before starting the worker. Do not use `setx`,
-shell startup files, inline command assignment, shell history, or repo-local
-`.env` files for this key.
+For public setup on Windows, store the key as a user environment variable and
+open a new PowerShell session before running `winsmux`:
+
+```powershell
+$secret = Read-Host -AsSecureString "OpenRouter API key"
+$bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secret)
+try {
+  [Environment]::SetEnvironmentVariable(
+    "WINSMUX_OPENROUTER_API_KEY",
+    [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr),
+    "User"
+  )
+} finally {
+  [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+  Remove-Variable secret -ErrorAction SilentlyContinue
+}
+```
+
+Verify only that the variable is present; do not print the value:
+
+```powershell
+if ([string]::IsNullOrWhiteSpace($env:WINSMUX_OPENROUTER_API_KEY)) { "missing" } else { "configured" }
+```
+
+Do not store the key in shell startup files, command history, repo-local `.env`
+files, public docs, PR text, generated reports, worker logs, or release
+evidence.
 
 `api_llm` is intentionally separate from `local_llm`, `colab_llm`, and
 `colab_cli`. If the API key environment variable is missing or the provider

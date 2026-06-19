@@ -58,7 +58,7 @@ fn machine_contract_exposes_worker_backend_contracts() {
         .iter()
         .find(|backend| backend.id == "api_llm")
         .expect("api_llm backend should exist");
-    assert!(!api_llm.runtime_available);
+    assert!(api_llm.runtime_available);
     assert!(api_llm.config_fields.contains(&"agent"));
     assert!(api_llm.config_fields.contains(&"model"));
     assert!(api_llm.config_fields.contains(&"model_source"));
@@ -311,7 +311,7 @@ fn machine_contract_serializes_to_json() {
     assert_eq!(value["worker_backends"][2]["id"], "colab_cli");
     assert_eq!(value["worker_backends"][2]["runtime_available"], true);
     assert_eq!(value["worker_backends"][3]["id"], "api_llm");
-    assert_eq!(value["worker_backends"][3]["runtime_available"], false);
+    assert_eq!(value["worker_backends"][3]["runtime_available"], true);
     assert_eq!(value["worker_backends"][4]["id"], "noop");
     assert_eq!(value["worker_backends"][4]["runtime_available"], false);
     assert_eq!(

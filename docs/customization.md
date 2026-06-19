@@ -226,11 +226,33 @@ and each slot can override it with one of the contract values:
 workers. They may declare a provider such as `openrouter`, a model id such as
 `z-ai/glm-5.2`, `prompt-transport: file`, and `auth-mode: api-key-env`.
 Environment-based OpenRouter authentication uses
-`WINSMUX_OPENROUTER_API_KEY`. Treat it as a process-scoped runtime environment
-variable for the worker process. A local password manager such as 1Password may
-populate that environment before launch, but do not store the key with `setx`, in
-shell startup files, in command history, in repo-local `.env` files, public docs,
-logs, or release evidence.
+`WINSMUX_OPENROUTER_API_KEY`. For public setup, store it as a Windows user
+environment variable, then open a new PowerShell session before running
+`winsmux`:
+
+```powershell
+$secret = Read-Host -AsSecureString "OpenRouter API key"
+$bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secret)
+try {
+  [Environment]::SetEnvironmentVariable(
+    "WINSMUX_OPENROUTER_API_KEY",
+    [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr),
+    "User"
+  )
+} finally {
+  [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+  Remove-Variable secret -ErrorAction SilentlyContinue
+}
+```
+
+Verify only that the variable is present; do not print the value:
+
+```powershell
+if ([string]::IsNullOrWhiteSpace($env:WINSMUX_OPENROUTER_API_KEY)) { "missing" } else { "configured" }
+```
+
+Do not store the key in shell startup files, command history, repo-local `.env`
+files, public docs, logs, PR text, or release evidence.
 
 Run a hosted API worker from a task JSON file:
 

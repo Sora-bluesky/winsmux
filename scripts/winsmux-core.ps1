@@ -6043,6 +6043,7 @@ function ConvertTo-WorkersSafeLogText {
     $safe = [regex]::Replace($safe, '(?is)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----', '[PRIVATE_KEY_REDACTED]')
     $safe = [regex]::Replace($safe, '(?i)(?<![A-Za-z0-9_])(["'']?authorization["'']?\s*[:=]\s*["'']?\s*bearer\s+)[^\s"'',;}]+', '$1[REDACTED]')
     $safe = [regex]::Replace($safe, '(?i)(?<![A-Za-z0-9_])(["'']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|oauth[_-]?token|token|password|passwd|secret|credential|credentials)["'']?\s*[:=]\s*["'']?)[^\s"'',;}]+', '$1[REDACTED]')
+    $safe = [regex]::Replace($safe, '(?i)(?<![A-Za-z0-9_])(["'']?(?:x-request-id|request[_-]?id|provider[_-]?response[_-]?id)["'']?\s*[:=]\s*["'']?)[^\s"'',;}]+', '$1[REDACTED]')
     $safe = [regex]::Replace($safe, '(?i)/content/drive/(?:MyDrive|Shareddrives)(?:/[^\s"'']*)?', '[DRIVE_PATH_REDACTED]')
     $safe = [regex]::Replace($safe, '(?i)\b[A-Z]:\\[^"'',;}\r\n]+', '[LOCAL_PATH_REDACTED]')
     return $safe
@@ -9549,14 +9550,59 @@ function Get-WorkersApiLlmDefaultApiKeyEnv {
     return "WINSMUX_${providerSlug}_API_KEY"
 }
 
+function Test-WorkersApiLlmLocalHost {
+    param([AllowEmptyString()][string]$HostName)
+
+    if ([string]::IsNullOrWhiteSpace($HostName)) {
+        return $false
+    }
+
+    $normalized = $HostName.Trim().ToLowerInvariant()
+    return ($normalized -in @('localhost', '127.0.0.1', '::1'))
+}
+
+function Test-WorkersApiLlmCompatibleEndpoint {
+    param(
+        [Parameter(Mandatory = $true)][System.Uri]$Uri,
+        [Parameter(Mandatory = $true)][string]$Provider
+    )
+
+    if ([string]::Equals($Provider, 'openrouter', [System.StringComparison]::OrdinalIgnoreCase)) {
+        return [string]::Equals($Uri.AbsoluteUri.TrimEnd('/'), 'https://openrouter.ai/api/v1', [System.StringComparison]::OrdinalIgnoreCase)
+    }
+
+    return (Test-WorkersApiLlmLocalHost -HostName $Uri.Host)
+}
+
 function Resolve-WorkersApiLlmRuntimeConfig {
     param([Parameter(Mandatory = $true)]$Metadata)
 
-    $provider = [string](Get-SendConfigValue -InputObject $Metadata -Name 'provider' -Default '')
-    $baseUrl = [string](Get-SendConfigValue -InputObject $Metadata -Name 'api_base_url' -Default '')
-    if ([string]::IsNullOrWhiteSpace($baseUrl)) {
-        $baseUrl = Get-WorkersApiLlmDefaultApiBaseUrl -Provider $provider
+    $provider = ([string](Get-SendConfigValue -InputObject $Metadata -Name 'provider' -Default '')).Trim().ToLowerInvariant()
+    $authMode = ([string](Get-SendConfigValue -InputObject $Metadata -Name 'auth_mode' -Default '')).Trim().ToLowerInvariant()
+    if (-not [string]::Equals($authMode, 'api-key-env', [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "api_llm auth_mode must be api-key-env for hosted API execution: $authMode"
     }
+
+    $declaredBaseUrl = [string](Get-SendConfigValue -InputObject $Metadata -Name 'api_base_url' -Default '')
+    $declaredApiKeyEnv = [string](Get-SendConfigValue -InputObject $Metadata -Name 'api_key_env' -Default '')
+    $defaultBaseUrl = Get-WorkersApiLlmDefaultApiBaseUrl -Provider $provider
+    $defaultApiKeyEnv = Get-WorkersApiLlmDefaultApiKeyEnv -Provider $provider
+
+    $baseUrl = $declaredBaseUrl
+    $apiKeyEnv = $declaredApiKeyEnv
+    if ([string]::Equals($provider, 'openrouter', [System.StringComparison]::OrdinalIgnoreCase)) {
+        if (-not [string]::IsNullOrWhiteSpace($declaredBaseUrl) -and -not [string]::Equals($declaredBaseUrl.Trim().TrimEnd('/'), $defaultBaseUrl, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw 'api_llm provider openrouter uses a built-in endpoint; api_base_url overrides are not allowed.'
+        }
+        if (-not [string]::IsNullOrWhiteSpace($declaredApiKeyEnv) -and -not [string]::Equals($declaredApiKeyEnv.Trim(), $defaultApiKeyEnv, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw 'api_llm provider openrouter uses the built-in WINSMUX_OPENROUTER_API_KEY environment variable; api_key_env overrides are not allowed.'
+        }
+        $baseUrl = $defaultBaseUrl
+        $apiKeyEnv = $defaultApiKeyEnv
+    } elseif ([string]::IsNullOrWhiteSpace($apiKeyEnv)) {
+        $apiKeyEnv = $defaultApiKeyEnv
+    }
+
     if ([string]::IsNullOrWhiteSpace($baseUrl)) {
         throw 'api_llm provider capability must declare api_base_url.'
     }
@@ -9574,13 +9620,19 @@ function Resolve-WorkersApiLlmRuntimeConfig {
     if (-not [string]::IsNullOrWhiteSpace($baseUri.UserInfo)) {
         throw 'api_llm api_base_url must not contain credentials.'
     }
-
-    $apiKeyEnv = [string](Get-SendConfigValue -InputObject $Metadata -Name 'api_key_env' -Default '')
-    if ([string]::IsNullOrWhiteSpace($apiKeyEnv)) {
-        $apiKeyEnv = Get-WorkersApiLlmDefaultApiKeyEnv -Provider $provider
+    if (-not (Test-WorkersApiLlmCompatibleEndpoint -Uri $baseUri -Provider $provider)) {
+        throw 'api_llm remote endpoints are only supported for built-in providers; custom OpenAI-compatible endpoints must be localhost.'
     }
     if ($apiKeyEnv -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') {
         throw "api_llm api_key_env contains unsupported characters: $apiKeyEnv"
+    }
+    if (-not [string]::Equals($provider, 'openrouter', [System.StringComparison]::OrdinalIgnoreCase)) {
+        if (-not (
+            [string]::Equals($apiKeyEnv, $defaultApiKeyEnv, [System.StringComparison]::OrdinalIgnoreCase) -or
+            $apiKeyEnv.StartsWith('WINSMUX_API_LLM_', [System.StringComparison]::OrdinalIgnoreCase)
+        )) {
+            throw "api_llm custom provider api_key_env must be provider-scoped ($defaultApiKeyEnv) or WINSMUX_API_LLM_*."
+        }
     }
 
     $trimmedBase = $baseUri.AbsoluteUri.TrimEnd('/')
@@ -9706,6 +9758,7 @@ function Invoke-WorkersOpenAiCompatibleChatCompletion {
     return [PSCustomObject]@{
         Response                  = $response
         Text                      = [string]$responseText
+        ResponseMalformed         = [string]::IsNullOrWhiteSpace([string]$responseText)
         Usage                     = Get-WorkersApiLlmUsageMetadata -Response $response
         ProviderResponseIdPresent = -not [string]::IsNullOrWhiteSpace([string](Get-SendConfigValue -InputObject $response -Name 'id' -Default ''))
     }
@@ -9803,13 +9856,20 @@ function Invoke-WorkersApiLlmExec {
                 $network = 'started'
                 $completion = Invoke-WorkersOpenAiCompatibleChatCompletion -RuntimeConfig $runtime -Metadata $metadata -InputKind $inputKind -InputContent ([string]$inputContent) -ApiKey $apiKey
                 $network = 'completed'
-                $status = 'succeeded'
-                $reason = ''
-                $exitCode = 0
                 $usage = $completion.Usage
                 $providerResponseIdPresent = [bool]$completion.ProviderResponseIdPresent
-                Write-ClmSafeTextFile -Path $responsePath -Content (ConvertTo-WorkersSafeLogText -Text ([string]$completion.Text))
-                $responseReference = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $responsePath
+                if ([bool]$completion.ResponseMalformed) {
+                    $status = 'failed'
+                    $reason = 'api_llm_response_malformed'
+                    $exitCode = 1
+                    $runtimeError = 'provider response did not include non-empty choices message content'
+                } else {
+                    $status = 'succeeded'
+                    $reason = ''
+                    $exitCode = 0
+                    Write-ClmSafeTextFile -Path $responsePath -Content (ConvertTo-WorkersSafeLogText -Text ([string]$completion.Text))
+                    $responseReference = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $responsePath
+                }
             } catch {
                 $status = 'failed'
                 $reason = 'api_llm_request_failed'
@@ -9942,9 +10002,9 @@ function Invoke-WorkersApiLlmLogs {
                         $exitCode = $storedExitCode
                     }
                 } catch {
-                    $status = 'succeeded'
-                    $reason = ''
-                    $exitCode = 0
+                    $status = 'failed'
+                    $reason = 'api_llm_run_json_invalid'
+                    $exitCode = 1
                 }
             } else {
                 $status = 'succeeded'
@@ -10539,6 +10599,7 @@ function Invoke-WorkersDoctor {
                     $apiRuntimeMetadata = [ordered]@{
                         provider       = [string]$slotConfig.Agent
                         model          = [string]$slotConfig.Model
+                        auth_mode      = [string]$slotConfig.AuthMode
                         api_base_url   = [string]$slotConfig.ApiBaseUrl
                         api_key_env    = [string]$slotConfig.ApiKeyEnv
                     }

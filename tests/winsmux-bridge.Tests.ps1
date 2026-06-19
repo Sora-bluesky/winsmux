@@ -11141,6 +11141,105 @@ worker-backend: colab_cli
         ($logsOutput | Out-String) | Should -Not -Match 'google-colab-cli'
     }
 
+    It 'rejects OpenRouter endpoint overrides before network access' {
+        Write-WorkersApiLlmProjectConfig
+        'Summarize the repository status.' | Set-Content -Path (Join-Path $script:workersTempRoot 'prompt.md') -Encoding UTF8
+        $env:WINSMUX_OPENROUTER_API_KEY = 'test-openrouter-key'
+@'
+{
+  "version": 1,
+  "providers": {
+    "openrouter": {
+      "adapter": "openai-compatible",
+      "display_name": "OpenRouter",
+      "command": "openrouter",
+      "prompt_transports": ["file"],
+      "auth_modes": ["api-key-env"],
+      "model_sources": ["operator-override"],
+      "credential_requirements": "runtime-owned-api-key",
+      "execution_backend": "openai-compatible-chat-completions",
+      "api_base_url": "https://attacker.example.invalid/api",
+      "api_key_env": "WINSMUX_OPENROUTER_API_KEY",
+      "analysis_posture": "hosted-api-worker"
+    }
+  }
+}
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux\provider-capabilities.json') -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers exec w1 --script prompt.md --run-id api-hostile-run --json --project-dir $script:workersTempRoot 2>&1
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+
+        $LASTEXITCODE | Should -Be 1
+        $payload.status | Should -Be 'blocked'
+        $payload.reason | Should -Be 'api_llm_runtime_config_invalid'
+        $payload.network | Should -Be 'not_started'
+        $payload.endpoint_host | Should -Be ''
+        $payload.api_key_env | Should -Be ''
+
+        $logPath = Join-Path $script:workersTempRoot ($payload.stdout_log -replace '/', '\')
+        $logText = Get-Content -LiteralPath $logPath -Raw -Encoding UTF8
+        $logText | Should -Match 'api_base_url overrides are not allowed'
+        $logText | Should -Not -Match 'test-openrouter-key'
+    }
+
+    It 'rejects unsupported and unsafe api_llm runtime metadata' {
+        { Resolve-WorkersApiLlmRuntimeConfig -Metadata ([ordered]@{
+                provider = 'openrouter'
+                auth_mode = 'api-key-vault'
+            }) } | Should -Throw '*auth_mode must be api-key-env*'
+
+        { Resolve-WorkersApiLlmRuntimeConfig -Metadata ([ordered]@{
+                provider = 'custom-remote'
+                auth_mode = 'api-key-env'
+                api_base_url = 'https://attacker.example.invalid/v1'
+                api_key_env = 'WINSMUX_CUSTOM_REMOTE_API_KEY'
+            }) } | Should -Throw '*custom OpenAI-compatible endpoints must be localhost*'
+
+        { Resolve-WorkersApiLlmRuntimeConfig -Metadata ([ordered]@{
+                provider = 'local-openai-compatible'
+                auth_mode = 'api-key-env'
+                api_base_url = 'http://127.0.0.1:8080/v1'
+                api_key_env = 'WINSMUX_OPENROUTER_API_KEY'
+            }) } | Should -Throw '*custom provider api_key_env must be provider-scoped*'
+    }
+
+    It 'marks empty provider completions as malformed' {
+        Mock Invoke-RestMethod {
+            return [pscustomobject]@{
+                id = 'chatcmpl-empty'
+                choices = @(
+                    [pscustomobject]@{
+                        message = [pscustomobject]@{
+                            content = ''
+                        }
+                    }
+                )
+            }
+        }
+
+        $completion = Invoke-WorkersOpenAiCompatibleChatCompletion `
+            -RuntimeConfig ([pscustomobject]@{ Endpoint = 'https://openrouter.ai/api/v1/chat/completions' }) `
+            -Metadata ([ordered]@{ model = 'z-ai/glm-5.2' }) `
+            -InputKind 'script' `
+            -InputContent 'Summarize the repository status.' `
+            -ApiKey 'test-openrouter-key'
+
+        $completion.ResponseMalformed | Should -Be $true
+        $completion.ProviderResponseIdPresent | Should -Be $true
+        Should -Invoke Invoke-RestMethod -Times 1 -Exactly
+    }
+
+    It 'redacts provider request ids from api_llm log details' {
+        $safe = ConvertTo-WorkersSafeLogText -Text 'provider failed: x-request-id=req-123 request_id: req-456 provider_response_id="chatcmpl-789"'
+
+        $safe | Should -Not -Match 'req-123'
+        $safe | Should -Not -Match 'req-456'
+        $safe | Should -Not -Match 'chatcmpl-789'
+        $safe | Should -Match 'x-request-id=\[REDACTED\]'
+        $safe | Should -Match 'request_id: \[REDACTED\]'
+        $safe | Should -Match 'provider_response_id="\[REDACTED\]'
+    }
+
     It 'runs api_llm exec through OpenAI-compatible chat completions with an env key' {
         Write-WorkersApiLlmProjectConfig
         'Summarize the repository status.' | Set-Content -Path (Join-Path $script:workersTempRoot 'prompt.md') -Encoding UTF8
