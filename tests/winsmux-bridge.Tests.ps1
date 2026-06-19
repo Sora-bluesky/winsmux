@@ -524,6 +524,36 @@ agent-slots:
         $impl.AuthMode | Should -Be 'api-key-env'
     }
 
+    It 'parses antigravity worker backend metadata without Colab fallback' {
+@'
+agent: codex
+model: provider-default
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    worker-backend: antigravity
+    worker-role: impl
+    agent: antigravity
+    model: gemini-3.5-flash
+    model-source: operator-override
+    auth-mode: antigravity-official-cli
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        $settings = Get-BridgeSettings
+        $settings.agent_slots[0].worker_backend | Should -Be 'antigravity'
+        $settings.agent_slots[0].agent | Should -Be 'antigravity'
+        $settings.agent_slots[0].model | Should -Be 'gemini-3.5-flash'
+
+        $impl = Get-SlotAgentConfig -Role 'Worker' -SlotId 'worker-1' -Settings $settings
+        $impl.WorkerBackend | Should -Be 'antigravity'
+        $impl.Agent | Should -Be 'antigravity'
+        $impl.Model | Should -Be 'gemini-3.5-flash'
+        $impl.AuthMode | Should -Be 'antigravity-official-cli'
+    }
+
     It 'parses block-style slot metadata lists in the manual YAML fallback' {
         $parsed = ConvertFrom-BridgeManualYaml -Content @'
 agent-slots:
@@ -6912,6 +6942,7 @@ Describe 'orchestra-start session reuse contract' {
         Test-OrchestraPaneBootstrapVerificationDeferred -PaneSummary ([pscustomobject]@{ Status = 'deferred_start' }) | Should -Be $true
         Test-OrchestraPaneBootstrapVerificationDeferred -PaneSummary ([pscustomobject]@{ Status = 'deferred_starting' }) | Should -Be $true
         Test-OrchestraPaneBootstrapVerificationDeferred -PaneSummary ([pscustomobject]@{ Status = 'api_llm_runner_unconfigured' }) | Should -Be $true
+        Test-OrchestraPaneBootstrapVerificationDeferred -PaneSummary ([pscustomobject]@{ Status = 'antigravity_runner_unconfigured' }) | Should -Be $true
         Test-OrchestraPaneBootstrapVerificationDeferred -PaneSummary ([pscustomobject]@{ Status = 'ready' }) | Should -Be $false
 
         $script:orchestraStartContent | Should -Match 'Test-OrchestraPaneBootstrapVerificationDeferred -PaneSummary \$paneSummary'
@@ -8990,11 +9021,15 @@ Describe 'winsmux workers command' {
         $script:previousColabGpu = $env:WINSMUX_COLAB_AVAILABLE_GPUS
         $script:previousWorkersNow = $env:WINSMUX_TEST_NOW_UTC
         $script:previousOpenRouterApiKey = $env:WINSMUX_OPENROUTER_API_KEY
+        $script:previousAntigravityCli = $env:WINSMUX_ANTIGRAVITY_CLI
+        $script:previousAntigravityPrintTimeout = $env:WINSMUX_ANTIGRAVITY_PRINT_TIMEOUT
         $env:WINSMUX_COLAB_CLI = 'winsmux-test-missing-google-colab-cli'
         $env:WINSMUX_COLAB_AUTH_STATE = ''
         $env:WINSMUX_COLAB_AVAILABLE_GPUS = ''
         $env:WINSMUX_TEST_NOW_UTC = ''
         $env:WINSMUX_OPENROUTER_API_KEY = ''
+        $env:WINSMUX_ANTIGRAVITY_CLI = ''
+        $env:WINSMUX_ANTIGRAVITY_PRINT_TIMEOUT = ''
     }
 
     AfterEach {
@@ -9003,6 +9038,8 @@ Describe 'winsmux workers command' {
         $env:WINSMUX_COLAB_AVAILABLE_GPUS = $script:previousColabGpu
         $env:WINSMUX_TEST_NOW_UTC = $script:previousWorkersNow
         $env:WINSMUX_OPENROUTER_API_KEY = $script:previousOpenRouterApiKey
+        $env:WINSMUX_ANTIGRAVITY_CLI = $script:previousAntigravityCli
+        $env:WINSMUX_ANTIGRAVITY_PRINT_TIMEOUT = $script:previousAntigravityPrintTimeout
         if ($script:workersTempRoot -and (Test-Path -LiteralPath $script:workersTempRoot)) {
             Remove-Item -LiteralPath $script:workersTempRoot -Recurse -Force
         }
@@ -9029,6 +9066,29 @@ exit /b __EXIT_CODE__
         return $fakeCli
     }
 
+    function script:New-WorkersFakeAntigravityCli {
+        param(
+            [int]$ExitCode = 0,
+            [string]$OutputLine = 'fake-antigravity response'
+        )
+
+        $fakeCli = Join-Path $script:workersTempRoot 'agy.cmd'
+        $argsPath = Join-Path $script:workersTempRoot 'agy-args.txt'
+$content = @'
+@echo off
+if "%1"=="--help" (
+  echo Usage: agy --print PROMPT --print-timeout DURATION --model MODEL
+  exit /b 0
+)
+echo %* > "__ARGS_PATH__"
+echo __OUTPUT_LINE__
+exit /b __EXIT_CODE__
+'@
+        $content.Replace('__EXIT_CODE__', [string]$ExitCode).Replace('__OUTPUT_LINE__', $OutputLine).Replace('__ARGS_PATH__', $argsPath) | Set-Content -Path $fakeCli -Encoding ASCII
+        $env:WINSMUX_ANTIGRAVITY_CLI = $fakeCli
+        return $fakeCli
+    }
+
     function script:Write-WorkersColabProjectConfig {
 @'
 agent: codex
@@ -9041,6 +9101,46 @@ agent-slots:
     task-script: workers/colab/task.py
     worktree-mode: managed
 '@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+    }
+
+    function script:Write-WorkersAntigravityProjectConfig {
+@'
+agent: codex
+model: provider-default
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    worker-backend: antigravity
+    worker-role: impl
+    agent: antigravity
+    model: gemini-3.5-flash
+    model-source: operator-override
+    prompt-transport: file
+    auth-mode: antigravity-official-cli
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+        New-Item -ItemType Directory -Path (Join-Path $script:workersTempRoot '.winsmux') -Force | Out-Null
+@'
+{
+  "version": 1,
+  "providers": {
+    "antigravity": {
+      "adapter": "antigravity",
+      "display_name": "Antigravity CLI",
+      "command": "agy",
+      "prompt_transports": ["argv", "file"],
+      "auth_modes": ["antigravity-official-cli"],
+      "model_sources": ["provider-default", "cli-discovery", "operator-override"],
+      "credential_requirements": "local-cli-owned",
+      "execution_backend": "antigravity-cli-print",
+      "runtime_requirements": "Antigravity CLI agy installed in the pane environment.",
+      "analysis_posture": "read-write-worker",
+      "supports_file_edit": true,
+      "supports_structured_result": true
+    }
+  }
+}
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux\provider-capabilities.json') -Encoding UTF8
     }
 
     function script:Write-WorkersApiLlmProjectConfig {
@@ -10539,6 +10639,50 @@ worker-backend: colab_cli
         ($payload | ConvertTo-Json -Depth 24) | Should -Not -Match 'colab worker worker-1'
     }
 
+    It 'reports antigravity worker status with CLI runner metadata' {
+        Write-WorkersAntigravityProjectConfig
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers status --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $row = @($payload.workers)[0]
+
+        $row.slot_id | Should -Be 'worker-1'
+        $row.backend | Should -Be 'antigravity'
+        $row.provider | Should -Be 'antigravity'
+        $row.model | Should -Be 'gemini-3.5-flash'
+        $row.model_source | Should -Be 'operator-override'
+        $row.auth_mode | Should -Be 'antigravity-official-cli'
+        $row.credential_requirements | Should -Be 'local-cli-owned'
+        $row.execution_backend | Should -Be 'antigravity-cli-print'
+        $row.capability_adapter | Should -Be 'antigravity'
+        $row.session | Should -Be ''
+        $row.actual_gpu | Should -Be ''
+        $row.degraded_reason | Should -Be ''
+    }
+
+    It 'adds antigravity diagnostics without requiring a Colab adapter fallback' {
+        Write-WorkersAntigravityProjectConfig
+        New-WorkersFakeAntigravityCli | Out-Null
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers doctor --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $backend = @($payload.checks | Where-Object { $_.label -eq 'antigravity backend' })[0]
+        $cli = @($payload.checks | Where-Object { $_.label -eq 'antigravity CLI' })[0]
+        $printMode = @($payload.checks | Where-Object { $_.label -eq 'antigravity print mode' })[0]
+        $modelFlag = @($payload.checks | Where-Object { $_.label -eq 'antigravity model flag' })[0]
+
+        $backend.status | Should -Be 'pass'
+        $backend.detail | Should -Be '1 antigravity worker slots configured'
+        $cli.status | Should -Be 'pass'
+        $cli.detail | Should -Be '[LOCAL_PATH_REDACTED]'
+        $cli.detail | Should -Not -Match 'agy\.cmd'
+        $printMode.status | Should -Be 'pass'
+        $printMode.detail | Should -Match '--print'
+        $modelFlag.status | Should -Be 'pass'
+        $modelFlag.detail | Should -Match '--model'
+        ($payload | ConvertTo-Json -Depth 24) | Should -Not -Match 'colab worker worker-1'
+    }
+
     It 'fails api_llm diagnostics when provider metadata is inherited from the default agent' {
 @'
 agent: codex
@@ -10740,6 +10884,66 @@ agent-slots:
         $payload.results[0].status | Should -Be 'blocked'
         $payload.results[0].reason | Should -Be 'api_llm_runner_unconfigured'
         $entry.Status | Should -Be 'api_llm_runner_unconfigured'
+        $entry.LastCommand | Should -Be 'workers.start'
+        Should -Invoke Send-TextToPane -Times 0 -Exactly
+    }
+
+    It 'blocks start for an antigravity worker without dispatching bootstrap text' {
+        Write-WorkersAntigravityProjectConfig
+        Save-WinsmuxManifest -ProjectDir $script:workersTempRoot -Manifest ([ordered]@{
+            version = 1
+            saved_at = '2026-06-19T00:00:00Z'
+            session = [ordered]@{
+                name = 'winsmux-orchestra'
+                project_dir = $script:workersTempRoot
+                git_worktree_dir = (Join-Path $script:workersTempRoot '.git')
+            }
+            panes = [ordered]@{
+                'worker-1' = [ordered]@{
+                    pane_id = '%2'
+                    slot_id = 'worker-1'
+                    worker_backend = 'antigravity'
+                    role = 'Worker'
+                    exec_mode = $false
+                    launch_dir = $script:workersTempRoot
+                    status = 'antigravity_runner_unconfigured'
+                    approved_launch = [ordered]@{
+                        packet_type = 'worker_launch_approval'
+                        source = 'user_approved_worker_config'
+                        slot_id = 'worker-1'
+                        worker_backend = 'antigravity'
+                        worker_role = 'impl'
+                        agent = 'antigravity'
+                        model = 'gemini-3.5-flash'
+                        model_source = 'operator-override'
+                        prompt_transport = 'file'
+                        auth_mode = 'antigravity-official-cli'
+                        execution_backend = 'antigravity-cli-print'
+                        analysis_posture = 'read-write-worker'
+                        auto_launch = $false
+                    }
+                    task = $null
+                }
+            }
+            tasks = [ordered]@{
+                queued = @()
+                in_progress = @()
+                completed = @()
+            }
+            worktrees = [ordered]@{}
+        })
+
+        Mock Send-TextToPane { throw 'bootstrap should not be dispatched' }
+
+        $Rest = @('worker-1', '--json', '--project-dir', $script:workersTempRoot)
+        $output = Invoke-WorkersStart
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $entry = @(Get-PaneControlManifestEntries -ProjectDir $script:workersTempRoot)[0]
+
+        $payload.results[0].slot_id | Should -Be 'worker-1'
+        $payload.results[0].status | Should -Be 'blocked'
+        $payload.results[0].reason | Should -Be 'antigravity_runner_unconfigured'
+        $entry.Status | Should -Be 'antigravity_runner_unconfigured'
         $entry.LastCommand | Should -Be 'workers.start'
         Should -Invoke Send-TextToPane -Times 0 -Exactly
     }
@@ -11352,6 +11556,129 @@ worker-backend: colab_cli
         ($output | Out-String) | Should -Match 'secret_like_input'
         ($output | Out-String) | Should -Not -Match 'google-colab-cli'
         Test-Path -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\worker-runs\worker-1\secret-api-run') | Should -Be $false
+    }
+
+    It 'records blocked antigravity exec artifacts when agy is missing without invoking Colab' {
+        Write-WorkersAntigravityProjectConfig
+        $env:WINSMUX_ANTIGRAVITY_CLI = Join-Path $script:workersTempRoot 'missing-agy.cmd'
+        'Summarize the repository status.' | Set-Content -Path (Join-Path $script:workersTempRoot 'prompt.md') -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers exec w1 --script prompt.md --run-id agy-missing --json --project-dir $script:workersTempRoot 2>&1
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+
+        $LASTEXITCODE | Should -Be 1
+        $payload.status | Should -Be 'blocked'
+        $payload.reason | Should -Be 'antigravity_cli_missing'
+        $payload.backend | Should -Be 'antigravity'
+        $payload.slot_id | Should -Be 'worker-1'
+        $payload.input | Should -Be 'prompt.md'
+        $payload.antigravity.provider | Should -Be 'antigravity'
+        $payload.antigravity.model | Should -Be 'gemini-3.5-flash'
+        $payload.antigravity.execution_backend | Should -Be 'antigravity-cli-print'
+        $payload.process | Should -Be 'not_started'
+        $payload.prompt_value_output | Should -Be $false
+        $payload.locations.input.local_path | Should -Be ''
+        ($output | Out-String) | Should -Not -Match 'google-colab-cli'
+        ($output | Out-String) | Should -Not -Match 'Summarize the repository status'
+
+        $logPath = Join-Path $script:workersTempRoot ($payload.stdout_log -replace '/', '\')
+        $logText = Get-Content -LiteralPath $logPath -Raw -Encoding UTF8
+        $logText | Should -Match 'antigravity_cli_missing'
+        $logText | Should -Match 'process: not_started'
+        $logText | Should -Not -Match 'Summarize the repository status'
+
+        $logsOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers logs w1 --run-id agy-missing --json --project-dir $script:workersTempRoot 2>&1
+        $logsPayload = ($logsOutput | Select-Object -Last 1) | ConvertFrom-Json
+
+        $LASTEXITCODE | Should -Be 1
+        $logsPayload.status | Should -Be 'blocked'
+        $logsPayload.reason | Should -Be 'antigravity_cli_missing'
+        $logsPayload.backend | Should -Be 'antigravity'
+        $logsPayload.source | Should -Be 'local'
+        $logsPayload.log | Should -Match 'antigravity_cli_missing'
+        ($logsOutput | Out-String) | Should -Not -Match 'google-colab-cli'
+    }
+
+    It 'runs antigravity exec through agy print mode with explicit model selection' {
+        Write-WorkersAntigravityProjectConfig
+        New-WorkersFakeAntigravityCli | Out-Null
+        $env:WINSMUX_ANTIGRAVITY_PRINT_TIMEOUT = '5m'
+        'Summarize the repository status.' | Set-Content -Path (Join-Path $script:workersTempRoot 'prompt.md') -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers exec w1 --script prompt.md --run-id agy-success --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+
+        $payload.status | Should -Be 'succeeded'
+        $payload.reason | Should -Be ''
+        $payload.backend | Should -Be 'antigravity'
+        $payload.process | Should -Be 'completed'
+        $payload.response | Should -Be '.winsmux/worker-runs/worker-1/agy-success/response.txt'
+        $payload.print_timeout | Should -Be '5m'
+        $payload.prompt_value_output | Should -Be $false
+        $payload.cli_arguments | Should -Contain '--print'
+        $payload.cli_arguments | Should -Contain '[PROMPT_FILE_CONTENT_REDACTED]'
+        $payload.cli_arguments | Should -Contain '--print-timeout'
+        $payload.cli_arguments | Should -Contain '--model'
+        $payload.cli_arguments | Should -Contain 'gemini-3.5-flash'
+        ($payload.cli_arguments -join ' ') | Should -Not -Match 'Summarize the repository status'
+        ($output | Out-String) | Should -Not -Match 'Summarize the repository status'
+        ($output | Out-String) | Should -Not -Match 'google-colab-cli'
+        $actualArguments = Get-Content -LiteralPath (Join-Path $script:workersTempRoot 'agy-args.txt') -Raw -Encoding UTF8
+        $actualArguments | Should -Match 'prompt\.md'
+        $actualArguments | Should -Not -Match 'Summarize the repository status'
+
+        $logPath = Join-Path $script:workersTempRoot ($payload.stdout_log -replace '/', '\')
+        $logText = Get-Content -LiteralPath $logPath -Raw -Encoding UTF8
+        $logText | Should -Match 'status: succeeded'
+        $logText | Should -Match 'process: completed'
+        $logText | Should -Not -Match 'Summarize the repository status'
+
+        $responsePath = Join-Path $script:workersTempRoot ($payload.response -replace '/', '\')
+        (Get-Content -LiteralPath $responsePath -Raw -Encoding UTF8) | Should -Match 'fake-antigravity response'
+    }
+
+    It 'accepts task-json as the antigravity exec input contract' {
+        Write-WorkersAntigravityProjectConfig
+        New-WorkersFakeAntigravityCli | Out-Null
+        '{"task_id":"agy-task-json","title":"Summarize release state"}' | Set-Content -Path (Join-Path $script:workersTempRoot 'task.json') -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers exec w1 --task-json task.json --run-id agy-task-json-run --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+
+        $payload.status | Should -Be 'succeeded'
+        $payload.backend | Should -Be 'antigravity'
+        $payload.input | Should -Be 'task.json'
+        $payload.input_kind | Should -Be 'task_json'
+        $payload.script | Should -Be ''
+        $payload.task_json | Should -Be 'task.json'
+        $payload.prompt_value_output | Should -Be $false
+        ($payload.cli_arguments -join ' ') | Should -Not -Match 'Summarize release state'
+        ($output | Out-String) | Should -Not -Match 'google-colab-cli'
+    }
+
+    It 'rejects ambiguous antigravity script and task-json exec input' {
+        Write-WorkersAntigravityProjectConfig
+        'Summarize the repository status.' | Set-Content -Path (Join-Path $script:workersTempRoot 'prompt.md') -Encoding UTF8
+        '{"task_id":"agy-task-json","title":"Summarize release state"}' | Set-Content -Path (Join-Path $script:workersTempRoot 'task.json') -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers exec w1 --script prompt.md --task-json task.json --run-id agy-ambiguous-run --json --project-dir $script:workersTempRoot 2>&1
+
+        $LASTEXITCODE | Should -Be 1
+        ($output | Out-String) | Should -Match 'antigravity workers exec accepts either --script or --task-json, not both'
+        Test-Path -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\worker-runs\worker-1\agy-ambiguous-run') | Should -Be $false
+    }
+
+    It 'rejects secret-like antigravity prompt input before creating a run artifact' {
+        Write-WorkersAntigravityProjectConfig
+        '{"api_key":"abcdefghijklmnop"}' | Set-Content -Path (Join-Path $script:workersTempRoot 'prompt.json') -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers exec w1 --script prompt.json --run-id secret-agy-run --json --project-dir $script:workersTempRoot 2>&1
+
+        $LASTEXITCODE | Should -Be 1
+        ($output | Out-String) | Should -Match 'Antigravity safety policy'
+        ($output | Out-String) | Should -Match 'secret_like_input'
+        ($output | Out-String) | Should -Not -Match 'google-colab-cli'
+        Test-Path -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\worker-runs\worker-1\secret-agy-run') | Should -Be $false
     }
 
     It 'runs a one-shot Colab worker script and reads the stored log' {
@@ -16675,11 +17002,26 @@ tasks:
         $payload.assignment.selected.model_reasoning_effort | Should -Be 'high'
         $payload.assignment.selected.model_reasoning_summary | Should -Be 'none'
         $payload.assignment.selected.approvals_reviewer | Should -Be 'operator'
+        @($payload.assignment.fallback.provider) | Should -Contain 'antigravity'
         $payload.assignment.approval_policy | Should -Be 'operator_review_required'
         $payload.security.stores_provider_tokens | Should -BeFalse
         $payload.security.brokers_oauth | Should -BeFalse
         $payload.generated_outputs | Should -Contain 'provider_capability_catalog.generated.json'
         $payload.generated_outputs | Should -Contain 'model_resolution_report.json'
+    }
+
+    It 'routes fast research packets to Antigravity instead of Gemini' {
+        Push-Location $script:winsmuxAssignTempRoot
+        try {
+            $output = & pwsh -NoProfile -File $script:winsmuxAssignRawPath assign --text 'research docs and planning context shaping' --json
+        } finally {
+            Pop-Location
+        }
+
+        $payload = $output | ConvertFrom-Json
+        $payload.assignment.selected.provider | Should -Be 'antigravity'
+        $payload.assignment.selected.auth_mode | Should -Be 'antigravity-official-cli'
+        $payload.assignment.selected.rationale | Should -Match 'Gemini CLI individual tier sunset'
     }
 }
 
@@ -17976,15 +18318,20 @@ Describe 'orchestra pane bootstrap plan' {
         $script:orchestraStartContent | Should -Match 'Get-AgentLaunchCommand -Agent \$slotAgentConfig\.Agent -Model \$slotAgentConfig\.Model -ModelSource \$slotAgentConfig\.ModelSource -ReasoningEffort \$slotAgentConfig\.ReasoningEffort -ProjectDir \$launchDir -GitWorktreeDir \$launchGitWorktreeDir -RootPath \$projectDir'
     }
 
-    It 'defers api_llm workers before resolving provider launch commands' {
+    It 'defers one-shot workers before resolving provider launch commands' {
         $apiLlmDeferIndex = $script:orchestraStartContent.IndexOf('$apiLlmPaneStartDeferred = [string]::Equals(([string]$slotAgentConfig.WorkerBackend), ''api_llm''')
+        $antigravityDeferIndex = $script:orchestraStartContent.IndexOf('$antigravityPaneStartDeferred = [string]::Equals(([string]$slotAgentConfig.WorkerBackend), ''antigravity''')
         $providerLaunchIndex = $script:orchestraStartContent.IndexOf('$launchCommand = Get-AgentLaunchCommand')
 
         $apiLlmDeferIndex | Should -BeGreaterThan -1
+        $antigravityDeferIndex | Should -BeGreaterThan -1
         $providerLaunchIndex | Should -BeGreaterThan $apiLlmDeferIndex
-        $script:orchestraStartContent | Should -Match 'if \(-not \$apiLlmPaneStartDeferred\) \{'
+        $providerLaunchIndex | Should -BeGreaterThan $antigravityDeferIndex
+        $script:orchestraStartContent | Should -Match 'if \(-not \$oneShotPaneStartDeferred\) \{'
         $script:orchestraStartContent | Should -Match "\$deferredPaneStatus = 'api_llm_runner_unconfigured'"
         $script:orchestraStartContent | Should -Match 'preflight\.worker\.api_llm_runner_unconfigured'
+        $script:orchestraStartContent | Should -Match "\$deferredPaneStatus = 'antigravity_runner_unconfigured'"
+        $script:orchestraStartContent | Should -Match 'preflight\.worker\.antigravity_runner_unconfigured'
     }
 
     It 'prints a concise startup summary before invoking the agent launch command' {

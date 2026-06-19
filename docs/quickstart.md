@@ -10,7 +10,7 @@ Install these first:
 - PowerShell 7+
 - Windows Terminal
 - Node.js with `npm`
-- The official agent CLIs you want to run, such as Codex, Claude Code, or Gemini
+- The official agent CLIs you want to run, such as Codex, Claude Code, or Antigravity CLI
 
 ## 2. Install winsmux
 
@@ -65,6 +65,15 @@ For Colab-backed worker slots, run one file-backed task and inspect its log:
 ```powershell
 winsmux workers exec w2 --script workers/colab/impl_worker.py --run-id demo-1 -- --task-json-inline '{"task_id":"demo-1","title":"Implement this change"}' --worker-id worker-2 --run-id demo-1
 winsmux workers logs w2
+```
+
+For Antigravity CLI one-shot worker slots, configure `worker-backend:
+antigravity` and run a file-backed prompt. winsmux calls `agy --print`, records
+the response artifact, and does not log the prompt body:
+
+```powershell
+winsmux workers exec w1 --script tasks/antigravity-worker-task.md --run-id agy-demo-1 --json
+winsmux workers logs w1 --run-id agy-demo-1
 ```
 
 The tracked templates in `workers/colab/` cover implementation, critique,

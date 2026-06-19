@@ -17,7 +17,7 @@ $script:BridgeSettingsFileName = '.winsmux.yaml'
 $script:BridgeProviderRegistryFileName = 'provider-registry.json'
 $script:BridgeProviderCapabilityRegistryFileName = 'provider-capabilities.json'
 $script:BridgeRuntimeRolePreferencesFileName = 'runtime-role-preferences.json'
-$script:BridgeWorkerBackendKinds = @('local', 'codex', 'colab_cli', 'api_llm', 'noop')
+$script:BridgeWorkerBackendKinds = @('local', 'codex', 'colab_cli', 'api_llm', 'antigravity', 'noop')
 $script:BridgeExecutionProfileKinds = @('local-windows', 'isolated-enterprise')
 $script:BridgeSlotScalarKeys = @(
     'slot_id',
@@ -1682,6 +1682,14 @@ function Get-BridgeProviderLaunchCommand {
                 $parts += (ConvertTo-BridgePowerShellLiteral -Value $Model)
             }
             $parts += '--approval-mode=default'
+            return ($parts -join ' ')
+        }
+        'antigravity' {
+            $parts = @($commandInvocation)
+            if ($modelOverride) {
+                $parts += '--model'
+                $parts += (ConvertTo-BridgePowerShellLiteral -Value $Model)
+            }
             return ($parts -join ' ')
         }
         default {

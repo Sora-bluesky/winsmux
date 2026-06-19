@@ -10,7 +10,7 @@
 
 Instead of hiding agents behind a black-box orchestrator, `winsmux` opens each worker in a real pane, keeps file changes isolated in git worktrees, lets you send or interrupt instructions, and compares completed runs with evidence such as changed-file overlap, review state, verification state, and checkpoints before you decide what to keep.
 
-Use it when one Claude Code, Codex, or Gemini session is not enough, but you still want one human operator, local credentials, and a review trail.
+Use it when one Claude Code, Codex, Antigravity CLI, or legacy Gemini session is not enough, but you still want one human operator, local credentials, and a review trail.
 
 For example: run the same task through two agents, watch both panes live, stop the one going off track, then compare the recorded evidence before accepting either result.
 
@@ -63,7 +63,7 @@ If you only need a terminal multiplexer, see the runtime docs under [`core/docs`
 - Windows 10 or Windows 11
 - PowerShell 7+
 - Windows Terminal
-- The official agent CLIs you want to run, such as Claude Code, Codex, or Gemini
+- The official agent CLIs you want to run, such as Claude Code, Codex, or Antigravity CLI
 
 Rust is only needed when you build the runtime from source.
 
@@ -121,7 +121,7 @@ winsmux skills --json
 | `winsmux workers status` | Show backend, state, GPU, session, and last command for worker slots |
 | `winsmux workers attach` | Prepare a Colab-backed worker slot for desktop visibility without starting an unbounded loop |
 | `winsmux workers doctor` | Diagnose worker config, Colab CLI, auth, uv, and session-state paths |
-| `winsmux workers exec` | Run Colab-backed tasks or hosted `api_llm` tasks through an OpenAI-compatible API; missing API key env vars stop before network access |
+| `winsmux workers exec` | Run Colab-backed tasks, hosted `api_llm` tasks, or Antigravity CLI one-shot workers; missing API key env vars stop before network access |
 | `winsmux workers logs` | Read the stored log for a worker run, or ask the Colab CLI for it |
 | `winsmux workers upload` | Upload explicit files or allowlisted directories while excluding unsafe paths |
 | `winsmux workers download` | Download a remote artifact into a project-local output directory |
@@ -153,9 +153,12 @@ Use `winsmux` for scripts and docs. This does not remove tmux-compatible configu
 | Claude Code | Pro / Max OAuth | This PC only, interactive use |
 | Codex | API key | Officially supported |
 | Codex | ChatGPT OAuth | This PC only, interactive use |
+| Antigravity CLI | Official Antigravity CLI sign-in | This PC only, interactive use |
 | Gemini | Gemini API key | Officially supported |
 | Gemini | Gemini API in Vertex AI | Officially supported |
-| Gemini | Google OAuth | This PC only, interactive use |
+| Gemini | Google OAuth | Legacy / tier-limited, this PC only |
+
+Google's published migration notice says Gemini CLI and Gemini Code Assist IDE extensions stopped serving requests for Gemini Code Assist for individuals, Google AI Pro, and Google AI Ultra on 2026-06-18. Affected users should use Antigravity CLI; Google AI Standard and Enterprise tiers are not treated as sunset by this winsmux policy.
 
 See [Authentication Support](docs/authentication-support.md) for the full policy.
 See [Provider and Model Support](docs/provider-and-model-support.md) for hosted, Colab, and future local LLM runtime policy.

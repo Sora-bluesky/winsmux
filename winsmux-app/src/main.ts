@@ -318,7 +318,7 @@ type FocusMode = "standard" | "focused";
 type LanguageMode = "en" | "ja";
 type WorkbenchLayoutMode = "2x2" | "3x2" | "focus";
 type RuntimeRoleId = "operator" | "worker" | "reviewer";
-type RuntimeProviderId = "provider-default" | "codex" | "claude" | "gemini";
+type RuntimeProviderId = "provider-default" | "codex" | "claude" | "gemini" | "antigravity";
 type RuntimeModelSource = "provider-default" | "cli-discovery" | "official-doc" | "operator-override";
 type RuntimeReasoningEffort = "provider-default" | "low" | "medium" | "high" | "xhigh" | "max";
 type ComposerPermissionMode = "auto" | "default" | "acceptEdits" | "plan";
@@ -1144,6 +1144,7 @@ const runtimeProviderOptions: Array<{ value: RuntimeProviderId; label: string; l
   { value: "provider-default", label: "Provider default", labelJa: "既定値" },
   { value: "codex", label: "Codex CLI", labelJa: "Codex CLI" },
   { value: "claude", label: "Claude Code", labelJa: "Claude Code" },
+  { value: "antigravity", label: "Antigravity CLI", labelJa: "Antigravity CLI" },
   { value: "gemini", label: "Gemini CLI", labelJa: "Gemini CLI" },
 ];
 const lockedOperatorRuntimePreference: RuntimeRolePreference = {
@@ -1903,8 +1904,8 @@ function getWorkerApiPosture(row: DesktopWorkerStatusRow) {
   const backend = (row.backend || getLaunchApprovalField(getWorkerStatusLaunch(row), "worker_backend") || "").toLowerCase();
   const executionBackend = ((row.execution_backend || getLaunchApprovalField(getWorkerStatusLaunch(row), "execution_backend") || "")).toLowerCase();
   const credentialRequirements = ((row.credential_requirements || getLaunchApprovalField(getWorkerStatusLaunch(row), "credential_requirements") || "")).toLowerCase();
-  if (backend === "api_llm" || executionBackend.includes("openai-compatible")) {
-    const cost = credentialRequirements.includes("api-key") ? "external-api" : "hosted";
+  if (backend === "api_llm" || backend === "antigravity" || executionBackend.includes("openai-compatible") || executionBackend.includes("antigravity")) {
+    const cost = backend === "antigravity" || credentialRequirements.includes("api-key") ? "external-api" : "hosted";
     return {
       cost,
       risk: "paid-api",
@@ -8807,6 +8808,11 @@ function runtimeAccessNote(preference: RuntimeRolePreference, japanese: boolean)
     return japanese
       ? "ローカルの Gemini CLI 設定を使います。計画時は `--approval-mode plan` を使えます。"
       : "Uses local Gemini CLI settings. Plan runs can use --approval-mode plan.";
+  }
+  if (preference.provider === "antigravity") {
+    return japanese
+      ? "ローカルの Antigravity CLI 設定を使います。`agy --print` と明示モデル指定で一回実行できます。"
+      : "Uses local Antigravity CLI settings. One-shot runs use agy --print with explicit model selection when configured.";
   }
   return japanese
     ? "winsmux はモデル指定を渡さず、プロバイダー側の既定値を使います。"

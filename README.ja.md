@@ -10,7 +10,7 @@
 
 エージェントをブラックボックス化せず、各ワーカーを実際のペインで見せ、ファイル変更を git worktree で分離し、必要なペインへ指示を送り、中断できます。完了後は、変更ファイルの重なり、レビュー状態、検証状態、チェックポイントなどの証跡を見ながら、どの結果を採用するか決められます。
 
-Claude Code、Codex、Gemini を 1 つずつ手で眺める段階を越えたい。ただし、クラウド任せにも、特定ベンダー任せにもしたくない。`winsmux` はそのためのローカル管制面です。
+Claude Code、Codex、Antigravity CLI、または互換目的で残した Gemini を 1 つずつ手で眺める段階を越えたい。ただし、クラウド任せにも、特定ベンダー任せにもしたくない。`winsmux` はそのためのローカル管制面です。
 
 たとえば、同じタスクを 2 つのエージェントに並走させ、両方のペインを見ながら、逸れた片方だけを止め、最後に証跡を比較して採用する結果を選べます。
 
@@ -60,7 +60,7 @@ Windows PC で複数のコーディングエージェントを動かしつつ、
 - Windows 10 または Windows 11
 - PowerShell 7+
 - Windows Terminal
-- 実行したい公式エージェント CLI。例: Claude Code、Codex、Gemini
+- 実行したい公式エージェント CLI。例: Claude Code、Codex、Antigravity CLI
 
 Rust は、ランタイムをソースからビルドする時だけ必要です。
 
@@ -117,7 +117,7 @@ winsmux skills --json
 | `winsmux workers status` | ワーカースロットのバックエンド、状態、GPU、セッション、直近コマンドを表示 |
 | `winsmux workers attach` | Colab 対応ワーカーを、長時間ループを始めずにデスクトップ表示へ準備 |
 | `winsmux workers doctor` | ワーカー設定、Colab CLI、認証、uv、状態ファイルの場所を診断 |
-| `winsmux workers exec` | Colab 対応タスク、または OpenAI 互換 API 経由の `api_llm` タスクを実行する。API key の環境変数がない場合は通信前に停止する |
+| `winsmux workers exec` | Colab 対応タスク、OpenAI 互換 API 経由の `api_llm` タスク、または Antigravity CLI の一回実行ワーカーを実行する。API key の環境変数がない場合は通信前に停止する |
 | `winsmux workers logs` | ワーカー実行の保存済みログを読む。必要に応じて Colab CLI から取得 |
 | `winsmux workers upload` | 明示したファイル、または許可したディレクトリだけをアップロード |
 | `winsmux workers download` | リモート成果物をプロジェクト配下へダウンロード |
@@ -146,9 +146,12 @@ winsmux skills --json
 | Claude Code | Pro / Max OAuth | 当該 PC での対話利用のみ |
 | Codex | API key | 公式に対応 |
 | Codex | ChatGPT OAuth | この PC での対話利用のみ |
+| Antigravity CLI | 公式 Antigravity CLI のサインイン | 当該 PC での対話利用のみ |
 | Gemini | Gemini API key | 公式に対応 |
 | Gemini | Vertex AI の Gemini API | 公式に対応 |
-| Gemini | Google OAuth | 当該 PC での対話利用のみ |
+| Gemini | Google OAuth | 互換目的 / tier 制限あり、この PC のみ |
+
+Google の公開移行案内では、Gemini CLI と Gemini Code Assist IDE 拡張は、Gemini Code Assist for individuals、Google AI Pro、Google AI Ultra からのリクエスト提供を 2026-06-18 に停止し、対象ユーザーは Antigravity CLI へ移行するとされています。winsmux では、Google AI Standard と Enterprise はこの sunset 対象として扱いません。
 
 詳しくは [認証方針](docs/authentication-support.ja.md) を参照してください。
 [プロバイダーとモデルの対応方針](docs/provider-and-model-support.ja.md) では、クラウド、Colab、将来のローカル LLM ランタイムの扱いを説明しています。
