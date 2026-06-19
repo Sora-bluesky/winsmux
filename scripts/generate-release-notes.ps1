@@ -174,6 +174,16 @@ function Get-PreviousTag {
     return $null
 }
 
+function Test-GitRefExists {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Ref
+    )
+
+    & git rev-parse --verify --quiet $Ref *> $null
+    return ($LASTEXITCODE -eq 0)
+}
+
 function Test-MatchesAny {
     param(
         [AllowNull()]
@@ -509,8 +519,15 @@ $doneTaskTitlesForVersion = @(
         Select-Object -ExpandProperty Title
 )
 
-$previousTag = Get-PreviousTag -CurrentTag $Version
-$commitRange = if ($null -ne $previousTag) { "$previousTag..$Version" } else { $Version }
+$versionRefExists = Test-GitRefExists -Ref $Version
+$previousTag = if ($versionRefExists) { Get-PreviousTag -CurrentTag $Version } else { $null }
+$commitRange = if ($versionRefExists -and $null -ne $previousTag) {
+    "$previousTag..$Version"
+} elseif ($versionRefExists) {
+    $Version
+} else {
+    'HEAD'
+}
 $commitSubjects = @(git log $commitRange --pretty=format:%s --no-merges)
 
 $securityPatterns = @('gate', 'guard', 'security', 'bypass', 'review-approve', 'reviewer', 'write', 'block', 'deny', 'isolation', 'approval', 'hook disable')
