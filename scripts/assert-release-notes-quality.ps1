@@ -37,11 +37,24 @@ function Count-Bullets {
         [string]$Text
     )
 
+    return @(Get-Bullets -Text $Text).Count
+}
+
+function Get-Bullets {
+    param(
+        [AllowNull()]
+        [string]$Text
+    )
+
     if ([string]::IsNullOrWhiteSpace($Text)) {
-        return 0
+        return @()
     }
 
-    return [regex]::Matches($Text, '(?m)^-\s+\S').Count
+    return @(
+        foreach ($match in [regex]::Matches($Text, '(?m)^-\s+(?<text>\S.*)$')) {
+            [string]$match.Groups['text'].Value.Trim()
+        }
+    )
 }
 
 $requiredSections = @(
@@ -75,6 +88,15 @@ if ((Count-Bullets -Text $safetyBody) -lt 2) {
 $validationBody = Get-SectionBody -Content $content -Title 'Validation'
 if ((Count-Bullets -Text $validationBody) -lt 4) {
     $issues.Add('Validation must contain at least 4 command or workflow bullets')
+}
+
+$allBullets = @(Get-Bullets -Text $content)
+$uniqueBullets = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+foreach ($bullet in $allBullets) {
+    [void]$uniqueBullets.Add($bullet)
+}
+if ($uniqueBullets.Count -lt 9) {
+    $issues.Add('release notes must contain at least 9 unique bullets')
 }
 
 $fullChangelogBody = Get-SectionBody -Content $content -Title 'Full Changelog'

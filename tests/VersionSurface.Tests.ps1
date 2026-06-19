@@ -94,10 +94,12 @@ Describe 'winsmux version surface' {
         $generateIndex = $releaseCoreWorkflow.IndexOf('Generate Release Body')
         $qualityIndex = $releaseCoreWorkflow.IndexOf('Check Release Body Quality')
         $auditIndex = $releaseCoreWorkflow.IndexOf('Audit Release Public Surface')
+        $publishIndex = $releaseCoreWorkflow.IndexOf('softprops/action-gh-release')
 
         $generateIndex | Should -BeGreaterThan -1
         $qualityIndex | Should -BeGreaterThan $generateIndex
         $auditIndex | Should -BeGreaterThan $qualityIndex
+        $publishIndex | Should -BeGreaterThan $auditIndex
 
         $terseBody = Join-Path $TestDrive 'terse-release-body.md'
         Set-Content -LiteralPath $terseBody -Value @'
@@ -163,6 +165,24 @@ This release body intentionally includes enough context for operators to underst
 
         $LASTEXITCODE | Should -Be 0
         ($output -join "`n") | Should -Match 'release-notes-quality.*passed'
+    }
+
+    It 'generates release notes that pass the quality gate' {
+        $generator = Join-Path $script:RepoRoot 'scripts\generate-release-notes.ps1'
+        $qualityScript = Join-Path $script:RepoRoot 'scripts\assert-release-notes-quality.ps1'
+        $generatedBody = Join-Path $TestDrive 'generated-release-body.md'
+
+        $generateOutput = @(& pwsh -NoProfile -File $generator -Version 'v0.36.9' -OutputPath $generatedBody 2>&1)
+        $LASTEXITCODE | Should -Be 0
+        ($generateOutput -join "`n") | Should -Match 'release-notes.*wrote'
+
+        $qualityOutput = @(& pwsh -NoProfile -File $qualityScript -ReleaseNotesPath $generatedBody 2>&1)
+        $LASTEXITCODE | Should -Be 0
+        ($qualityOutput -join "`n") | Should -Match 'release-notes-quality.*passed'
+
+        $body = Get-Content -LiteralPath $generatedBody -Raw -Encoding UTF8
+        $body | Should -Match 'Release workflow builds the Windows x64 core binary'
+        $body | Should -Not -Match 'source of truth'
     }
 
     It 'keeps tracked package metadata aligned with the public product surface' {

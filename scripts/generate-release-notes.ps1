@@ -275,7 +275,7 @@ function ConvertTo-UserBenefit {
             return 'Made hosted open-model execution the v0.36.9 release lane instead of the deferred Colab local-model path'
         }
         'Persist winsmux planning source-of-truth paths locally' {
-            return 'Recorded the local planning source of truth so release notes and roadmaps are generated from the intended backlog'
+            return $null
         }
         'OpenRouter/OpenAI-compatible runner and auth contract' {
             return 'Added the OpenRouter runner contract with environment-variable credentials and OpenAI-compatible requests'
@@ -614,7 +614,8 @@ if ($highlightItems.Count -eq 0) {
 }
 Add-Section -Builder $builder -Title 'Highlights' -Items $highlightItems -Seen $seenBenefits
 
-$changeItems = @($features + $fixes + $documentation + $chores | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 8)
+$changeItems = @($features + $fixes + $documentation + $chores | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+$changeItems = @(Remove-ExistingBenefits -Items $changeItems -Existing $highlightItems | Select-Object -First 8)
 Add-Section -Builder $builder -Title 'Release scope' -Items $changeItems -Seen $null
 
 $safetyItems = New-Object System.Collections.Generic.List[string]
@@ -627,15 +628,19 @@ $safetyItems.Add('Release notes are checked by the public-surface audit before G
 $safetyItems.Add('Secret-like values, local private paths, and provider request metadata remain blocked from release materials')
 Add-Section -Builder $builder -Title 'Safety and operations' -Items @($safetyItems.ToArray()) -Seen $null
 
+$distributionItems = @(
+    'Release workflow downloads the completed Windows x64 and arm64 core binary artifacts before assembling assets',
+    'Core binaries are published as `winsmux-x64.exe` and `winsmux-arm64.exe`',
+    'Release assets include `SHA256SUMS` generated from the core executables',
+    'GitHub Release publication consumes the checked `release/release-body.md` and `release/*` asset set only after quality and public-surface gates pass'
+)
+Add-Section -Builder $builder -Title 'Distribution' -Items $distributionItems -Seen $null
+
 $validationItems = @(
-    '`git diff --check`',
-    '`pwsh -NoProfile -File scripts/audit-public-surface.ps1`',
-    '`pwsh -NoProfile -File scripts/git-guard.ps1 -Mode full`',
-    '`Invoke-Pester -Path tests/VersionSurface.Tests.ps1 -PassThru`',
-    '`Invoke-Pester -Path tests/winsmux-bridge.Tests.ps1 -PassThru`',
-    '`cargo test --manifest-path core/Cargo.toml`',
-    '`cmd /c npm --prefix winsmux-app run build`',
-    '`cargo check --manifest-path winsmux-app/src-tauri/Cargo.toml --locked`'
+    'Release workflow builds the Windows x64 core binary before release assets are assembled',
+    'Release workflow builds the Windows arm64 core binary before release assets are assembled',
+    'Generated release notes must pass `scripts/assert-release-notes-quality.ps1` before publication',
+    'Generated release notes must pass `scripts/audit-public-surface.ps1` before publication'
 )
 Add-Section -Builder $builder -Title 'Validation' -Items $validationItems -Seen $null
 
