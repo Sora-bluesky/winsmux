@@ -47,6 +47,7 @@ $whitelistPatterns = @(
     'docs/meta-planning-layer-design.md',
     'docs/authentication-support.md',
     'docs/authentication-support.ja.md',
+    'docs/cli-comparison-bakeoff.md',
     'docs/provider-and-model-support.md',
     'docs/provider-and-model-support.ja.md',
     'docs/external-control-plane.md',
@@ -77,6 +78,8 @@ $whitelistPatterns = @(
     'scripts/audit-public-surface.ps1',
     'scripts/assert-release-notes-quality.ps1',
     'scripts/codex-subagent-worktree-guard.ps1',
+    'scripts/summarize-cli-bakeoff.ps1',
+    'scripts/test-cli-bakeoff-preflight.ps1',
     'scripts/upstream-reevaluation.ps1',
     'scripts/validate-pester-reduction-plan.ps1',
     'scripts/validate-legacy-compat-inventory.ps1',
@@ -92,6 +95,7 @@ $whitelistPatterns = @(
     'tests/ColabAcceptance.Tests.ps1',
     'tests/NpmReleasePackage.Tests.ps1',
     'tests/VersionSurface.Tests.ps1',
+    'tests/CliBakeoff.Tests.ps1',
     'tests/ThreatModelContract.Tests.ps1',
     'tests/Integration.PluginHookLoader.Tests.ps1',
     'tests/UpstreamReevaluation.Tests.ps1',
@@ -128,7 +132,8 @@ $whitelistPatterns = @(
     '.github/workflows/release-desktop.yml',
     '.github/workflows/release-npm.yml',
     '.github/workflows/test.yml',
-    'tasks/roadmap-title-ja.example.psd1'
+    'tasks/roadmap-title-ja.example.psd1',
+    'tasks/cli-bakeoff/v1/**'
 )
 
 function Convert-WhitelistPatternToRegex {

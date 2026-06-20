@@ -49,11 +49,16 @@ docs/REQUIREMENTS.md
 .playwright-mcp/
 .tmp-hook-*
 .review-*
+/release/
 tasks/
 !tasks/
 tasks/*
 !tasks/README.md
 !tasks/roadmap-title-ja.example.psd1
+!tasks/cli-bakeoff/
+tasks/cli-bakeoff/*
+!tasks/cli-bakeoff/v1/
+!tasks/cli-bakeoff/v1/*
 /skills/
 tests/
 !tests/
@@ -82,6 +87,7 @@ tests/*
 !tests/ColabAcceptance.Tests.ps1
 !tests/NpmReleasePackage.Tests.ps1
 !tests/VersionSurface.Tests.ps1
+!tests/CliBakeoff.Tests.ps1
 !tests/ThreatModelContract.Tests.ps1
 !tests/README.md
 !tests/fixtures/

@@ -254,6 +254,57 @@ exit /b 1
         $body | Should -Not -Match 'source of truth'
     }
 
+    It 'uses the latest existing version tag when the requested release tag is missing' {
+        $generator = Join-Path $script:RepoRoot 'scripts\generate-release-notes.ps1'
+        $generatedBody = Join-Path $TestDrive 'generated-release-body-missing-target-tag.md'
+        $gitShimDir = Join-Path $TestDrive 'bin-missing-tag'
+        $gitArgsLog = Join-Path $TestDrive 'git-log-args.txt'
+        New-Item -ItemType Directory -Path $gitShimDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $gitShimDir 'git.ps1') -Value @"
+`$gitArgsLog = @'
+$gitArgsLog
+'@
+
+switch (`$args[0]) {
+    'rev-parse' {
+        if (`$args -contains 'v0.36.15') { exit 1 }
+        if (`$args -contains 'v0.36.10') {
+            '9b8475b2b3548f29977cf1f1b3c75995d9d76baa'
+            exit 0
+        }
+        exit 0
+    }
+    'tag' {
+        'v0.36.10'
+        'v0.36.9'
+        exit 0
+    }
+    'log' {
+        Add-Content -LiteralPath `$gitArgsLog -Value (`$args -join ' ') -Encoding UTF8
+        'feat(desktop): add worker model picker benchmark surface'
+        'fix(release): harden core release notes fallback (#984)'
+        exit 0
+    }
+    default {
+        exit 1
+    }
+}
+"@ -Encoding UTF8
+
+        $previousPath = $env:PATH
+        try {
+            $env:PATH = "$gitShimDir;$previousPath"
+            $generateOutput = @(& pwsh -NoProfile -File $generator -Version 'v0.36.15' -BacklogPath (Join-Path $TestDrive 'missing-backlog.yaml') -OutputPath $generatedBody 2>&1)
+            $LASTEXITCODE | Should -Be 0
+            ($generateOutput -join "`n") | Should -Match 'release-notes.*wrote'
+        } finally {
+            $env:PATH = $previousPath
+        }
+
+        (Get-Content -LiteralPath $gitArgsLog -Raw -Encoding UTF8) | Should -Match 'v0\.36\.10\.\.HEAD'
+        (Get-Content -LiteralPath $generatedBody -Raw -Encoding UTF8) | Should -Match 'v0\.36\.10\.\.\.v0\.36\.15'
+    }
+
     It 'keeps tracked package metadata aligned with the public product surface' {
         $mcpPackage = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'winsmux-core\package.json') -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
         $mcpServer = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'winsmux-core\mcp-server.js') -Raw -Encoding UTF8
