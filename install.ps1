@@ -12,7 +12,7 @@ param(
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-$VERSION      = "0.36.15"
+$VERSION      = "0.36.16"
 $WINSMUX_DIR  = Join-Path $HOME ".winsmux"
 $BIN_DIR      = Join-Path $WINSMUX_DIR "bin"
 $BACKUP_DIR   = Join-Path $WINSMUX_DIR "backups"
@@ -325,45 +325,43 @@ function Install-WinsmuxBinary {
             throw "$assetName asset not found in release $($release.tag_name)"
         }
 
-        Write-Status "Downloading $($asset.name) from $($release.tag_name)..."
-        Invoke-RestMethod -Uri $asset.browser_download_url -Headers $headers -OutFile $winsmuxExe -ErrorAction Stop
-
         $sha256Asset = $release.assets | Where-Object { $_.name -eq "SHA256SUMS" } | Select-Object -First 1
         if (-not $sha256Asset) {
-            Write-Warning "[winsmux] SHA256SUMS asset not found in release $($release.tag_name). Skipping checksum verification."
-        } else {
-            $checksumsPath = Join-Path ([System.IO.Path]::GetTempPath()) ("winsmux-" + [System.Guid]::NewGuid().ToString() + "-SHA256SUMS")
-            try {
-                Write-Status "Downloading $($sha256Asset.name) from $($release.tag_name)..."
-                Invoke-RestMethod -Uri $sha256Asset.browser_download_url -Headers $headers -OutFile $checksumsPath -ErrorAction Stop
+            throw "SHA256SUMS asset not found in release $($release.tag_name). Cannot verify $($asset.name)."
+        }
 
-                $expectedHash = $null
-                foreach ($line in Get-Content $checksumsPath) {
-                    if ($line -match '^(?<hash>[A-Fa-f0-9]{64})\s+\*?(?<name>.+)$') {
-                        if ($Matches.name -eq $asset.name) {
-                            $expectedHash = $Matches.hash.ToUpperInvariant()
-                            break
-                        }
+        $downloadPath = Join-Path ([System.IO.Path]::GetTempPath()) ("winsmux-" + [System.Guid]::NewGuid().ToString() + "-" + $asset.name)
+        $checksumsPath = Join-Path ([System.IO.Path]::GetTempPath()) ("winsmux-" + [System.Guid]::NewGuid().ToString() + "-SHA256SUMS")
+        try {
+            Write-Status "Downloading $($asset.name) from $($release.tag_name)..."
+            Invoke-RestMethod -Uri $asset.browser_download_url -Headers $headers -OutFile $downloadPath -ErrorAction Stop
+
+            Write-Status "Downloading $($sha256Asset.name) from $($release.tag_name)..."
+            Invoke-RestMethod -Uri $sha256Asset.browser_download_url -Headers $headers -OutFile $checksumsPath -ErrorAction Stop
+
+            $expectedHash = $null
+            foreach ($line in Get-Content $checksumsPath) {
+                if ($line -match '^(?<hash>[A-Fa-f0-9]{64})\s+\*?(?<name>.+)$') {
+                    if ($Matches.name -eq $asset.name) {
+                        $expectedHash = $Matches.hash.ToUpperInvariant()
+                        break
                     }
                 }
-
-                if (-not $expectedHash) {
-                    Write-Warning "[winsmux] SHA256SUMS does not contain an entry for $($asset.name). Skipping checksum verification."
-                } else {
-                    $actualHash = (Get-FileHash $winsmuxExe -Algorithm SHA256).Hash.ToUpperInvariant()
-                    if ($actualHash -ne $expectedHash) {
-                        throw "Checksum verification failed for $($asset.name)."
-                    }
-                    Write-Status "Checksum verified"
-                }
-            } catch {
-                if ($_.Exception.Message -like "Checksum verification failed*") {
-                    throw
-                }
-                Write-Warning "[winsmux] Failed to verify checksum for $($asset.name): $_. Skipping checksum verification."
-            } finally {
-                Remove-Item $checksumsPath -Force -ErrorAction SilentlyContinue
             }
+
+            if (-not $expectedHash) {
+                throw "SHA256SUMS does not contain an entry for $($asset.name). Cannot verify release asset."
+            }
+
+            $actualHash = (Get-FileHash $downloadPath -Algorithm SHA256).Hash.ToUpperInvariant()
+            if ($actualHash -ne $expectedHash) {
+                throw "Checksum verification failed for $($asset.name)."
+            }
+            Write-Status "Checksum verified"
+            Move-Item -LiteralPath $downloadPath -Destination $winsmuxExe -Force
+        } finally {
+            Remove-Item $downloadPath -Force -ErrorAction SilentlyContinue
+            Remove-Item $checksumsPath -Force -ErrorAction SilentlyContinue
         }
 
         $userPath = [Environment]::GetEnvironmentVariable("Path", "User")

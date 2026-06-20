@@ -97,6 +97,74 @@ function Test-ContentLeak {
     return $null
 }
 
+function Test-EvidenceAuthLeak {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Content
+    )
+
+    $normalized = $Path -replace '\\', '/'
+    if ($normalized -notmatch '(?i)(^|/|[-_])evidence([-_/]|$)') {
+        return $null
+    }
+
+    $patterns = @(
+        [pscustomobject]@{ Name = 'OpenRouter API key'; Pattern = ('sk-or-' + 'v1-[A-Za-z0-9_-]{16,}') },
+        [pscustomobject]@{ Name = 'GitHub token'; Pattern = '\bgh[pousr]_[A-Za-z0-9_]{20,}\b' },
+        [pscustomobject]@{ Name = 'Bearer token'; Pattern = '(?i)\bAuthorization\s*:\s*Bearer\s+[A-Za-z0-9._~+/=-]{20,}' },
+        [pscustomobject]@{ Name = 'API key assignment'; Pattern = '(?i)\b(?:openrouter|openai|anthropic|gemini|github|gh)[-_ ]?(?:api[-_ ]?)?key\s*[:=]\s*[''"]?[A-Za-z0-9._~+/=-]{12,}' },
+        [pscustomobject]@{ Name = 'secret assignment'; Pattern = '(?i)\b(?:token|secret|credential|oauth)[-_ ]?(?:value|token|secret|key)?\s*[:=]\s*[''"]?[A-Za-z0-9._~+/=-]{20,}' }
+    )
+
+    foreach ($pattern in $patterns) {
+        if ($Content -match $pattern.Pattern) {
+            return "evidence/auth secret leak ($($pattern.Name))"
+        }
+    }
+
+    return $null
+}
+
+function Test-ExternalRoadmapFreshness {
+    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+
+    $planningPaths = Join-Path $RepoRoot 'winsmux-core\scripts\planning-paths.ps1'
+    if (-not (Test-Path -LiteralPath $planningPaths -PathType Leaf)) {
+        return $null
+    }
+
+    try {
+        . $planningPaths
+        $backlogPath = Resolve-WinsmuxPlanningFilePath -RepoRoot $RepoRoot -LocalRelativePath 'tasks/backlog.yaml' -EnvironmentVariable 'WINSMUX_BACKLOG_PATH' -DefaultFileName 'backlog.yaml'
+        $roadmapPath = Resolve-WinsmuxPlanningFilePath -RepoRoot $RepoRoot -LocalRelativePath 'docs/project/ROADMAP.md' -EnvironmentVariable 'WINSMUX_ROADMAP_PATH' -DefaultFileName 'ROADMAP.md'
+
+        $hasBacklog = Test-Path -LiteralPath $backlogPath -PathType Leaf
+        $hasRoadmap = Test-Path -LiteralPath $roadmapPath -PathType Leaf
+
+        if (-not $hasBacklog -and -not $hasRoadmap) {
+            return $null
+        }
+
+        if ($hasBacklog -and -not $hasRoadmap) {
+            return 'external ROADMAP is missing while backlog.yaml exists; run winsmux-core/scripts/sync-roadmap.ps1'
+        }
+
+        if (-not $hasBacklog) {
+            return $null
+        }
+
+        $backlogItem = Get-Item -LiteralPath $backlogPath
+        $roadmapItem = Get-Item -LiteralPath $roadmapPath
+        if ($roadmapItem.LastWriteTimeUtc -lt $backlogItem.LastWriteTimeUtc.AddSeconds(-2)) {
+            return 'external ROADMAP is older than backlog.yaml; run winsmux-core/scripts/sync-roadmap.ps1'
+        }
+    } catch {
+        return 'external planning sync check failed; verify planning paths and run winsmux-core/scripts/sync-roadmap.ps1'
+    }
+
+    return $null
+}
+
 function Test-ExcessTrailingBlankLines {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -123,6 +191,11 @@ $repoRoot = (Resolve-Path '.').Path
 $files = Get-TrackedOrStagedFiles -SelectedMode $Mode
 $failures = [System.Collections.Generic.List[string]]::new()
 
+$roadmapFreshnessFailure = Test-ExternalRoadmapFreshness -RepoRoot $repoRoot
+if ($roadmapFreshnessFailure) {
+    $failures.Add($roadmapFreshnessFailure) | Out-Null
+}
+
 foreach ($file in $files) {
     $normalized = $file -replace '\\', '/'
     if (Test-PathLikeSecretPattern -Path $normalized) {
@@ -148,6 +221,11 @@ foreach ($file in $files) {
     $contentFailure = Test-ContentLeak -Path $normalized -Content $content
     if ($contentFailure) {
         $failures.Add("${contentFailure}: $normalized") | Out-Null
+    }
+
+    $evidenceAuthFailure = Test-EvidenceAuthLeak -Path $normalized -Content $content
+    if ($evidenceAuthFailure) {
+        $failures.Add("${evidenceAuthFailure}: $normalized") | Out-Null
     }
 
     $trailingBlankLineFailure = Test-ExcessTrailingBlankLines -Path $normalized -Content $content

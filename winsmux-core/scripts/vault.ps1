@@ -67,8 +67,17 @@ function Invoke-VaultSet {
     if (-not $key) { Stop-WithError "usage: winsmux vault set <key> [value]" }
     if (-not $value) {
         $secure = Read-Host -AsSecureString "Enter value for '$key'"
-        $value = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
-            [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure))
+        $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+        try {
+            $value = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+        } finally {
+            if ($bstr -ne [IntPtr]::Zero) {
+                [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+            }
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        Stop-WithError "vault value for '$key' must not be empty"
     }
 
     $credTarget = "winsmux:$key"

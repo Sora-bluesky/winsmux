@@ -10,6 +10,9 @@ automation clients that run on the same machine as the desktop app.
 - Network transport: none. There is no localhost HTTP or WebSocket endpoint.
 - Remote clients must connect through a user-approved local bridge; the desktop
   app does not expose this pipe to the network.
+- Authorization: `desktop.control_plane.contract` is discoverable without a
+  token. Every other method requires `auth.token`, supplied from the local
+  `WINSMUX_CONTROL_PIPE_TOKEN` environment variable by the winsmux CLI helper.
 
 Clients can discover the external contract by calling:
 
@@ -19,6 +22,17 @@ Clients can discover the external contract by calling:
 
 When that request is sent through the named pipe, `methods` contains only the
 methods that the pipe allowlist accepts.
+
+For any method other than `desktop.control_plane.contract`, clients must include
+the local control token outside `params`:
+
+```json
+{"jsonrpc":"2.0","id":"capture","method":"pty.capture","params":{"paneId":"pane-1"},"auth":{"token":"<WINSMUX_CONTROL_PIPE_TOKEN>"}}
+```
+
+Do not write the token directly in shell history. Prefer `winsmux control-rpc`,
+which reads `WINSMUX_CONTROL_PIPE_TOKEN` from the current process environment
+and injects `auth.token` into non-contract requests.
 
 ## Exposed Methods
 
@@ -96,6 +110,9 @@ Local automation clients can connect if they run on the same Windows host and
 implement JSON-RPC over the named pipe. They should call
 `desktop.control_plane.contract` first and generate client capabilities from
 the returned `methods` list.
+
+Non-contract calls fail closed when the desktop app was not launched with
+`WINSMUX_CONTROL_PIPE_TOKEN`, or when the request omits `auth.token`.
 
 Agent CLIs can also drive the pipe from a local shell or tool call when the user
 has granted permission to run a local command. They do not get a special

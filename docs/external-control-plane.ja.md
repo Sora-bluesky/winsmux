@@ -8,6 +8,7 @@ winsmux は、デスクトップアプリと同じ Windows マシンで動く外
 - プロトコル: JSON-RPC 2.0
 - ネットワーク伝送: なし。localhost HTTP や WebSocket エンドポイントはありません。
 - リモートクライアントは、ユーザーが承認したローカルブリッジを経由する必要があります。デスクトップアプリは、この pipe をネットワークへ公開しません。
+- 認可: `desktop.control_plane.contract` だけはトークンなしで取得できます。それ以外のメソッドは、winsmux CLI ヘルパーがローカル環境変数 `WINSMUX_CONTROL_PIPE_TOKEN` から注入する `auth.token` を要求します。
 
 外部契約は次の呼び出しで取得します。
 
@@ -16,6 +17,14 @@ winsmux は、デスクトップアプリと同じ Windows マシンで動く外
 ```
 
 この要求を named pipe 経由で送ると、`methods` には pipe の許可リストが受け付けるメソッドだけが入ります。
+
+`desktop.control_plane.contract` 以外のメソッドでは、`params` の外側にローカル制御トークンを含めます。
+
+```json
+{"jsonrpc":"2.0","id":"capture","method":"pty.capture","params":{"paneId":"pane-1"},"auth":{"token":"<WINSMUX_CONTROL_PIPE_TOKEN>"}}
+```
+
+トークン値をシェル履歴に直接書かないでください。通常は `winsmux control-rpc` を使います。このコマンドは現在のプロセス環境の `WINSMUX_CONTROL_PIPE_TOKEN` を読み、非契約メソッドへ `auth.token` を注入します。
 
 ## 公開メソッド
 
@@ -70,6 +79,8 @@ Tauri アプリは、より広い内部 `desktop_json_rpc` 面を使います。
 ## クライアント互換性
 
 ローカル自動化クライアントは、同じ Windows ホスト上で動き、named pipe 上の JSON-RPC を実装していれば接続できます。最初に `desktop.control_plane.contract` を呼び、返された `methods` からクライアント機能を構成してください。
+
+デスクトップアプリが `WINSMUX_CONTROL_PIPE_TOKEN` 付きで起動されていない場合、または要求に `auth.token` がない場合、契約取得以外の呼び出しは安全側で失敗します。
 
 エージェント CLI も、ユーザーがローカルコマンド実行を許可した場合は、ローカルシェルやツール呼び出しから pipe を操作できます。専用の特権 API 面はありません。他のローカルクライアントと同じ外部契約だけを見ます。
 

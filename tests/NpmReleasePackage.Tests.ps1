@@ -268,6 +268,12 @@ Describe 'winsmux npm release package contract' {
         $stagedInstallScript | Should -Match 'Remove-ProfileExcludedSupportScripts'
         $stagedInstallScript | Should -Match 'Removed profile-excluded support script'
         $stagedInstallScript | Should -Match 'Sync-WindowsTerminalFragment -Profile \$resolvedInstallProfile'
+        $stagedInstallScript | Should -Match 'SHA256SUMS asset not found in release'
+        $stagedInstallScript | Should -Match 'Cannot verify release asset'
+        $stagedInstallScript | Should -Match 'Invoke-RestMethod -Uri \$asset\.browser_download_url -Headers \$headers -OutFile \$downloadPath -ErrorAction Stop'
+        $stagedInstallScript | Should -Match 'Move-Item -LiteralPath \$downloadPath -Destination \$winsmuxExe -Force'
+        $stagedInstallScript | Should -Not -Match 'Invoke-RestMethod -Uri \$asset\.browser_download_url -Headers \$headers -OutFile \$winsmuxExe'
+        $stagedInstallScript | Should -Not -Match 'Skipping checksum verification'
 
         $helpResult = Invoke-NodeProcess -Arguments @((Join-Path $script:OutputRoot 'index.mjs'), 'help') -WorkingDirectory $script:OutputRoot
         $helpResult.ExitCode | Should -Be 0

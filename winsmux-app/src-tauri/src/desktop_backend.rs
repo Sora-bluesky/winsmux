@@ -1697,10 +1697,14 @@ pub fn handle_desktop_json_rpc(
             let model = get_optional_string_param(params.as_ref(), &["model"]);
             let model_source =
                 get_optional_string_param(params.as_ref(), &["modelSource", "model_source"]);
-            let reasoning_effort =
-                get_optional_string_param(params.as_ref(), &["reasoningEffort", "reasoning_effort"]);
-            let prompt_transport =
-                get_optional_string_param(params.as_ref(), &["promptTransport", "prompt_transport"]);
+            let reasoning_effort = get_optional_string_param(
+                params.as_ref(),
+                &["reasoningEffort", "reasoning_effort"],
+            );
+            let prompt_transport = get_optional_string_param(
+                params.as_ref(),
+                &["promptTransport", "prompt_transport"],
+            );
             let auth_mode = get_optional_string_param(params.as_ref(), &["authMode", "auth_mode"]);
             if clear && has_any_param_field(params.as_ref(), PROVIDER_SWITCH_SELECTOR_PARAM_KEYS) {
                 return json_rpc_error(
@@ -5458,7 +5462,10 @@ mod tests {
 
         match response {
             DesktopJsonRpcResponse::Error { id, error, .. } => {
-                assert_eq!(id, serde_json::json!("req-provider-switch-clear-empty-selector"));
+                assert_eq!(
+                    id,
+                    serde_json::json!("req-provider-switch-clear-empty-selector")
+                );
                 assert_eq!(error.code, JSON_RPC_INVALID_PARAMS);
                 assert!(error.message.contains("clear cannot be combined"));
             }
@@ -5492,7 +5499,10 @@ mod tests {
 
         match response {
             DesktopJsonRpcResponse::Error { id, error, .. } => {
-                assert_eq!(id, serde_json::json!("req-provider-switch-clear-non-string-selector"));
+                assert_eq!(
+                    id,
+                    serde_json::json!("req-provider-switch-clear-non-string-selector")
+                );
                 assert_eq!(error.code, JSON_RPC_INVALID_PARAMS);
                 assert!(error.message.contains("clear cannot be combined"));
             }

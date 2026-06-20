@@ -310,6 +310,20 @@ interface ExperimentDetailLine {
 }
 
 type SurfaceTone = "default" | "accent" | "success" | "warning" | "danger" | "info" | "focus";
+
+function createTextElement<K extends keyof HTMLElementTagNameMap>(
+  tagName: K,
+  className: string,
+  text: string | number | null | undefined,
+) {
+  const element = document.createElement(tagName);
+  if (className) {
+    element.className = className;
+  }
+  element.textContent = text === null || text === undefined ? "" : String(text);
+  return element;
+}
+
 type CompareRiskLevel = "low" | "medium" | "high";
 type ThemeMode = "codex-dark" | "graphite-dark";
 type DensityMode = "comfortable" | "compact";
@@ -4009,7 +4023,10 @@ function renderSessions() {
     if (session.projectDir) {
       button.title = session.projectDir;
     }
-    button.innerHTML = `<span class="sidebar-row-title">${session.name}</span><span class="sidebar-row-meta">${session.meta}</span>`;
+    button.replaceChildren(
+      createTextElement("span", "sidebar-row-title", session.name),
+      createTextElement("span", "sidebar-row-meta", session.meta),
+    );
     if (session.action === "add-project") {
       button.addEventListener("click", () => {
         promptAndAddProjectSession();
@@ -5535,9 +5552,10 @@ function renderOpenEditors() {
   if (editors.length === 0) {
     const empty = document.createElement("div");
     empty.className = "sidebar-row";
-    empty.innerHTML =
-      `<span class="sidebar-row-title">${getLanguageText("No open editors", "開いているエディタはありません")}</span>` +
-      `<span class="sidebar-row-meta">${getLanguageText("Open a file from Explorer or Source Control.", "エクスプローラーかソース管理からファイルを開いてください。")}</span>`;
+    empty.replaceChildren(
+      createTextElement("span", "sidebar-row-title", getLanguageText("No open editors", "開いているエディタはありません")),
+      createTextElement("span", "sidebar-row-meta", getLanguageText("Open a file from Explorer or Source Control.", "エクスプローラーかソース管理からファイルを開いてください。")),
+    );
     root.appendChild(empty);
     return;
   }
@@ -5548,9 +5566,10 @@ function renderOpenEditors() {
     button.className = `sidebar-row ${editor.key === selectedEditorKey && editorSurfaceOpen ? "is-active" : ""}`;
     const target = getEditorTargetByKey(editor.key);
     const worktreeLabel = getWorktreeLabel(target?.worktree);
-    button.innerHTML =
-      `<span class="sidebar-row-title">${editor.path.split("/").pop() ?? editor.path}</span>` +
-      `<span class="sidebar-row-meta">${worktreeLabel} · ${editor.summary}</span>`;
+    button.replaceChildren(
+      createTextElement("span", "sidebar-row-title", editor.path.split("/").pop() ?? editor.path),
+      createTextElement("span", "sidebar-row-meta", `${worktreeLabel} · ${editor.summary}`),
+    );
     button.addEventListener("click", () => {
       void openEditorTarget(getEditorTargetByKey(editor.key));
     });
@@ -5581,7 +5600,10 @@ function renderSourceSummary() {
   for (const item of summaryItems) {
     const row = document.createElement("div");
     row.className = "sidebar-summary-row";
-    row.innerHTML = `<span class="sidebar-summary-label">${item.label}</span><span class="sidebar-summary-value">${item.value}</span>`;
+    row.replaceChildren(
+      createTextElement("span", "sidebar-summary-label", item.label),
+      createTextElement("span", "sidebar-summary-value", item.value),
+    );
     root.appendChild(row);
   }
 }
@@ -5615,7 +5637,10 @@ function renderSourceEntries() {
     button.type = "button";
     button.className = `sidebar-row source-entry-row ${activeSourceFilter === item.filter ? "is-active" : ""}`;
     button.dataset.tone = item.tone ?? "default";
-    button.innerHTML = `<span class="sidebar-row-title">${item.label}</span><span class="sidebar-row-meta">${item.value}</span>`;
+    button.replaceChildren(
+      createTextElement("span", "sidebar-row-title", item.label),
+      createTextElement("span", "sidebar-row-meta", item.value),
+    );
     button.addEventListener("click", () => {
       activeSourceFilter = item.filter;
       setContextPanel(true);
@@ -6161,9 +6186,10 @@ function renderSourceControlView() {
   if (changes.length === 0) {
     const empty = document.createElement("div");
     empty.className = "sidebar-row";
-    empty.innerHTML =
-      `<span class="sidebar-row-title">${getLanguageText("No changed files", "変更ファイルはありません")}</span>` +
-      `<span class="sidebar-row-meta">${getLanguageText("Desktop summary has not reported source changes.", "デスクトップ要約には変更がありません。")}</span>`;
+    empty.replaceChildren(
+      createTextElement("span", "sidebar-row-title", getLanguageText("No changed files", "変更ファイルはありません")),
+      createTextElement("span", "sidebar-row-meta", getLanguageText("Desktop summary has not reported source changes.", "デスクトップ要約には変更がありません。")),
+    );
     changesRoot.appendChild(empty);
   } else {
     for (const change of stagedSectionVisible ? stagedChanges : changes) {
@@ -6193,9 +6219,10 @@ function renderSourceControlView() {
   if (graphItems.length === 0) {
     const empty = document.createElement("div");
     empty.className = "sidebar-row";
-    empty.innerHTML =
-      `<span class="sidebar-row-title">${getLanguageText("No graph data", "グラフデータはありません")}</span>` +
-      `<span class="sidebar-row-meta">${getLanguageText("Connect the desktop summary to show recent runs.", "最近の実行を表示するにはデスクトップ要約を接続してください。")}</span>`;
+    empty.replaceChildren(
+      createTextElement("span", "sidebar-row-title", getLanguageText("No graph data", "グラフデータはありません")),
+      createTextElement("span", "sidebar-row-meta", getLanguageText("Connect the desktop summary to show recent runs.", "最近の実行を表示するにはデスクトップ要約を接続してください。")),
+    );
     graphRoot.appendChild(empty);
   } else {
     const graphLayout = buildSourceGraphLayout(graphRows);
@@ -7159,9 +7186,10 @@ function renderHandoffCockpit(root: HTMLElement, projection: DesktopRunProjectio
   if (!projection) {
     const empty = document.createElement("div");
     empty.className = "context-empty-state";
-    empty.innerHTML =
-      `<div class="context-label">${getLanguageText("No selected run", "実行が選択されていません")}</div>` +
-      `<div class="context-value">${getLanguageText("A run must be selected before decision gates can be shown.", "判断項目を表示するには実行を選択してください。")}</div>`;
+    empty.replaceChildren(
+      createTextElement("div", "context-label", getLanguageText("No selected run", "実行が選択されていません")),
+      createTextElement("div", "context-value", getLanguageText("A run must be selected before decision gates can be shown.", "判断項目を表示するには実行を選択してください。")),
+    );
     root.appendChild(empty);
     return;
   }
@@ -7213,9 +7241,10 @@ function renderExperimentContext() {
     const empty = document.createElement("div");
     empty.className = "experiment-detail-card";
     empty.dataset.tone = "info";
-    empty.innerHTML =
-      `<div class="experiment-detail-title">${getLanguageText("No experiment run", "実験用の実行はありません")}</div>` +
-      `<div class="experiment-detail-body">${getLanguageText("Select a run to inspect observation, compare, and playbook context.", "観測、比較、手順の文脈を確認するには実行を選択してください。")}</div>`;
+    empty.replaceChildren(
+      createTextElement("div", "experiment-detail-title", getLanguageText("No experiment run", "実験用の実行はありません")),
+      createTextElement("div", "experiment-detail-body", getLanguageText("Select a run to inspect observation, compare, and playbook context.", "観測、比較、手順の文脈を確認するには実行を選択してください。")),
+    );
     detailRoot.appendChild(empty);
     return;
   }
@@ -7225,9 +7254,10 @@ function renderExperimentContext() {
     const empty = document.createElement("div");
     empty.className = "experiment-detail-card";
     empty.dataset.tone = "info";
-    empty.innerHTML =
-      `<div class="experiment-detail-title">${getLanguageText("Explain not loaded", "説明は未読込です")}</div>` +
-      `<div class="experiment-detail-body">${getLanguageText("Open Explain to load experiment context for the selected run.", "選択中の実行について実験文脈を読み込むには、説明を開いてください。")}</div>`;
+    empty.replaceChildren(
+      createTextElement("div", "experiment-detail-title", getLanguageText("Explain not loaded", "説明は未読込です")),
+      createTextElement("div", "experiment-detail-body", getLanguageText("Open Explain to load experiment context for the selected run.", "選択中の実行について実験文脈を読み込むには、説明を開いてください。")),
+    );
     detailRoot.appendChild(empty);
     return;
   }
@@ -7440,7 +7470,10 @@ function renderExperimentContext() {
   for (const item of overviewCards) {
     const card = document.createElement("div");
     card.className = "source-overview-card";
-    card.innerHTML = `<div class="context-label">${item.label}</div><div class="source-overview-value">${item.value}</div>`;
+    card.replaceChildren(
+      createTextElement("div", "context-label", item.label),
+      createTextElement("div", "source-overview-value", item.value),
+    );
     overviewRoot.appendChild(card);
   }
 
@@ -7639,9 +7672,10 @@ function renderExperimentContext() {
     const card = document.createElement("div");
     card.className = "experiment-detail-card";
     card.dataset.tone = item.tone;
-    card.innerHTML =
-      `<div class="experiment-detail-title">${item.title}</div>` +
-      `<div class="experiment-detail-body">${item.body}</div>`;
+    card.replaceChildren(
+      createTextElement("div", "experiment-detail-title", item.title),
+      createTextElement("div", "experiment-detail-body", item.body),
+    );
 
     const meta = document.createElement("div");
     meta.className = "experiment-detail-meta";
@@ -7651,7 +7685,10 @@ function renderExperimentContext() {
       if ("tone" in detail && detail.tone) {
         pill.dataset.tone = detail.tone;
       }
-      pill.innerHTML = `<span class="experiment-detail-pill-label">${detail.label}</span><span>${detail.value}</span>`;
+      pill.replaceChildren(
+        createTextElement("span", "experiment-detail-pill-label", detail.label),
+        createTextElement("span", "", detail.value),
+      );
       meta.appendChild(pill);
     }
     card.appendChild(meta);
@@ -7662,9 +7699,10 @@ function renderExperimentContext() {
       for (const line of item.lines as ExperimentDetailLine[]) {
         const row = document.createElement("div");
         row.className = "experiment-detail-line";
-        row.innerHTML =
-          `<span class="experiment-detail-line-label">${line.label}</span>` +
-          `<span class="experiment-detail-line-value">${line.value}</span>`;
+        row.replaceChildren(
+          createTextElement("span", "experiment-detail-line-label", line.label),
+          createTextElement("span", "experiment-detail-line-value", line.value),
+        );
         if (line.path) {
           row.classList.add("is-actionable");
           row.tabIndex = 0;
@@ -7793,7 +7831,10 @@ function renderContextPanel() {
   for (const item of resolvedContextSections) {
     const row = document.createElement("div");
     row.className = "context-section";
-    row.innerHTML = `<div class="context-label">${item.label}</div><div class="context-value">${item.value}</div>`;
+    row.replaceChildren(
+      createTextElement("div", "context-label", item.label),
+      createTextElement("div", "context-value", item.value),
+    );
     sectionRoot.appendChild(row);
   }
 
@@ -8797,7 +8838,10 @@ function renderPreferenceOptions<T extends string>(
     button.type = "button";
     button.className = `settings-option-chip ${option.value === selected ? "is-active" : ""}`;
     button.setAttribute("aria-pressed", option.value === selected ? "true" : "false");
-    button.innerHTML = `<span class="settings-option-label">${japanese ? (option.labelJa ?? option.label) : option.label}</span><span class="settings-option-description">${japanese ? (option.descriptionJa ?? option.description) : option.description}</span>`;
+    button.replaceChildren(
+      createTextElement("span", "settings-option-label", japanese ? (option.labelJa ?? option.label) : option.label),
+      createTextElement("span", "settings-option-description", japanese ? (option.descriptionJa ?? option.description) : option.description),
+    );
     button.addEventListener("click", () => onSelect(option.value));
     root.appendChild(button);
   }
@@ -9673,9 +9717,14 @@ function renderFooterLane() {
     button.type = "button";
     button.className = "footer-pill";
     button.dataset.tone = item.tone ?? "default";
-    button.innerHTML = item.value
-      ? `<span class="footer-pill-label">${item.label}</span><span class="footer-pill-value">${item.value}</span>`
-      : `<span class="footer-pill-value">${item.label}</span>`;
+    if (item.value) {
+      button.replaceChildren(
+        createTextElement("span", "footer-pill-label", item.label),
+        createTextElement("span", "footer-pill-value", item.value),
+      );
+    } else {
+      button.replaceChildren(createTextElement("span", "footer-pill-value", item.label));
+    }
     if (item.action === "open-actions") {
       button.addEventListener("click", () => openCommandBar());
       return button;
@@ -11025,7 +11074,7 @@ function createComposerSessionControl(kind: "permission" | "model" | "voice", se
   button.setAttribute("aria-expanded", openComposerSessionMenu === kind ? "true" : "false");
   button.setAttribute("aria-haspopup", "menu");
   button.setAttribute("aria-controls", `composer-${kind}-menu`);
-  button.innerHTML = `<span class="composer-session-value">${selectedLabel}</span>`;
+  button.replaceChildren(createTextElement("span", "composer-session-value", selectedLabel));
   button.addEventListener("click", (event) => {
     event.stopPropagation();
     openComposerSessionMenu = openComposerSessionMenu === kind ? null : kind;
@@ -11171,10 +11220,16 @@ function createComposerModelMenu() {
   fastToggle.setAttribute("role", "switch");
   fastToggle.setAttribute("aria-checked", activeComposerFastModeEnabled ? "true" : "false");
   fastToggle.setAttribute("aria-disabled", fastModeCompatible ? "false" : "true");
-  fastToggle.innerHTML = `
-    <span>${fastModeCompatible ? (japanese ? "高速モードを有効にする" : "Enable fast mode") : (japanese ? "高速モードは Opus 4.6 でのみ利用できます" : "Fast mode is only available on Opus 4.6")}</span>
-    <span class="composer-fast-toggle-track" aria-hidden="true"><span class="composer-fast-toggle-thumb"></span></span>
-  `;
+  const fastToggleTrack = document.createElement("span");
+  fastToggleTrack.className = "composer-fast-toggle-track";
+  fastToggleTrack.setAttribute("aria-hidden", "true");
+  const fastToggleThumb = document.createElement("span");
+  fastToggleThumb.className = "composer-fast-toggle-thumb";
+  fastToggleTrack.appendChild(fastToggleThumb);
+  fastToggle.replaceChildren(
+    createTextElement("span", "", fastModeCompatible ? (japanese ? "高速モードを有効にする" : "Enable fast mode") : (japanese ? "高速モードは Opus 4.6 でのみ利用できます" : "Fast mode is only available on Opus 4.6")),
+    fastToggleTrack,
+  );
   fastToggle.addEventListener("click", (event) => {
     event.stopPropagation();
     if (!fastModeCompatible) {
@@ -11331,7 +11386,10 @@ function renderAttachmentTray() {
 
     const meta = document.createElement("div");
     meta.className = "attachment-meta";
-    meta.innerHTML = `<span class="attachment-name">${attachment.name}</span><span class="attachment-size">${attachment.sizeLabel}</span>`;
+    meta.replaceChildren(
+      createTextElement("span", "attachment-name", attachment.name),
+      createTextElement("span", "attachment-size", attachment.sizeLabel),
+    );
     item.appendChild(meta);
 
     const removeButton = document.createElement("button");
@@ -11501,34 +11559,60 @@ function renderRunSummary() {
       ? getLanguageText(`security ${projection.security_blocked}`, `セキュリティ ${projection.security_blocked}`)
       : getLanguageText("security n/a", "セキュリティなし");
 
-    root.innerHTML = `
-      <div class="run-summary-card">
-        <div class="run-summary-header">
-          <div>
-            <div class="timeline-eyebrow">${getLanguageText("Selected run", "選択中の実行")}</div>
-            <div class="run-summary-title">${projection.run_id}</div>
-          </div>
-          <div class="run-summary-status" data-tone="${statusTone}">
-            ${projection.detail || projection.activity || projection.review_state || getLanguageText("ready", "準備済み")}
-          </div>
-        </div>
-        <div class="run-summary-meta-row">
-          <span class="run-summary-pill">${projection.label || projection.pane_id || "summary-stream"}</span>
-          <span class="run-summary-pill">${projection.branch || getLanguageText("no branch", "ブランチなし")}</span>
-          <span class="run-summary-pill">${projection.phase || getLanguageText("no phase", "フェーズなし")}</span>
-          <span class="run-summary-pill">${getLanguageText(`${projection.changed_files.length} changed`, `${projection.changed_files.length} 件の変更`)}</span>
-          <span class="run-summary-pill">${projection.next_action || getLanguageText("no next action", "次の操作なし")}</span>
-          <span class="run-summary-pill">${verification}</span>
-          <span class="run-summary-pill">${security}</span>
-        </div>
-        <div class="run-summary-body">${projection.summary || projection.task || getLanguageText("Projected run surfaced by the backend adapter.", "バックエンドから投影された実行です。")}</div>
-        <div class="timeline-chip-row">
-          <button type="button" class="timeline-chip" data-action="open-explain">${getLanguageText("Open Explain", "説明を開く")}</button>
-          <button type="button" class="timeline-chip" data-action="open-source-context">${getLanguageText("Source Control", "ソース管理")}</button>
-          <button type="button" class="timeline-chip" data-action="open-terminal">${getLanguageText("Terminal", "端末")}</button>
-        </div>
-      </div>
-    `;
+    root.innerHTML = "";
+    const card = document.createElement("div");
+    card.className = "run-summary-card";
+    const header = document.createElement("div");
+    header.className = "run-summary-header";
+    const heading = document.createElement("div");
+    heading.appendChild(createTextElement("div", "timeline-eyebrow", getLanguageText("Selected run", "選択中の実行")));
+    heading.appendChild(createTextElement("div", "run-summary-title", projection.run_id));
+    const status = createTextElement(
+      "div",
+      "run-summary-status",
+      projection.detail || projection.activity || projection.review_state || getLanguageText("ready", "準備済み"),
+    );
+    status.dataset.tone = statusTone;
+    header.append(heading, status);
+    card.appendChild(header);
+
+    const metaRow = document.createElement("div");
+    metaRow.className = "run-summary-meta-row";
+    [
+      projection.label || projection.pane_id || "summary-stream",
+      projection.branch || getLanguageText("no branch", "ブランチなし"),
+      projection.phase || getLanguageText("no phase", "フェーズなし"),
+      getLanguageText(`${projection.changed_files.length} changed`, `${projection.changed_files.length} 件の変更`),
+      projection.next_action || getLanguageText("no next action", "次の操作なし"),
+      verification,
+      security,
+    ].forEach((value) => {
+      metaRow.appendChild(createTextElement("span", "run-summary-pill", value));
+    });
+    card.appendChild(metaRow);
+
+    card.appendChild(createTextElement(
+      "div",
+      "run-summary-body",
+      projection.summary || projection.task || getLanguageText("Projected run surfaced by the backend adapter.", "バックエンドから投影された実行です。"),
+    ));
+
+    const chipRow = document.createElement("div");
+    chipRow.className = "timeline-chip-row";
+    [
+      { action: "open-explain", label: getLanguageText("Open Explain", "説明を開く") },
+      { action: "open-source-context", label: getLanguageText("Source Control", "ソース管理") },
+      { action: "open-terminal", label: getLanguageText("Terminal", "端末") },
+    ].forEach((chip) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "timeline-chip";
+      button.dataset.action = chip.action;
+      button.textContent = chip.label;
+      chipRow.appendChild(button);
+    });
+    card.appendChild(chipRow);
+    root.appendChild(card);
 
     for (const button of root.querySelectorAll<HTMLButtonElement>(".timeline-chip")) {
       const action = button.dataset.action as ChipAction | undefined;
@@ -11582,9 +11666,10 @@ function renderAgentWorkDashboard() {
   const header = document.createElement("div");
   header.className = "work-dashboard-header";
   const title = document.createElement("div");
-  title.innerHTML =
-    `<div class="timeline-eyebrow">${getLanguageText("Issue-to-run pipeline", "Issue から実行まで")}</div>` +
-    `<div class="work-dashboard-title">${getLanguageText("Agent work dashboard", "エージェント作業ダッシュボード")}</div>`;
+  title.replaceChildren(
+    createTextElement("div", "timeline-eyebrow", getLanguageText("Issue-to-run pipeline", "Issue から実行まで")),
+    createTextElement("div", "work-dashboard-title", getLanguageText("Agent work dashboard", "エージェント作業ダッシュボード")),
+  );
   const meta = document.createElement("div");
   meta.className = "work-dashboard-meta";
   meta.textContent = getLanguageText(
@@ -11718,11 +11803,14 @@ function renderConversation(items: ConversationItem[]) {
 
     const meta = document.createElement("div");
     meta.className = "timeline-meta-row";
-    meta.innerHTML =
-      `<span class="timeline-actor">${item.actor}</span>` +
-      `<span>${item.timestamp}</span>` +
-      (item.runId ? `<span>${item.runId}</span>` : "") +
-      (item.statusLabel ? `<span class="timeline-status-pill">${item.statusLabel}</span>` : "");
+    meta.appendChild(createTextElement("span", "timeline-actor", item.actor));
+    meta.appendChild(createTextElement("span", "", item.timestamp));
+    if (item.runId) {
+      meta.appendChild(createTextElement("span", "", item.runId));
+    }
+    if (item.statusLabel) {
+      meta.appendChild(createTextElement("span", "timeline-status-pill", item.statusLabel));
+    }
     article.appendChild(meta);
 
     if (item.title) {
@@ -11743,7 +11831,10 @@ function renderConversation(items: ConversationItem[]) {
       for (const detail of item.details) {
         const pill = document.createElement("span");
         pill.className = "timeline-detail-pill";
-        pill.innerHTML = `<span class="timeline-detail-label">${detail.label}</span><span>${detail.value}</span>`;
+        pill.replaceChildren(
+          createTextElement("span", "timeline-detail-label", detail.label),
+          createTextElement("span", "", detail.value),
+        );
         detailRow.appendChild(pill);
       }
       article.appendChild(detailRow);
@@ -11755,7 +11846,11 @@ function renderConversation(items: ConversationItem[]) {
       for (const attachment of item.attachments) {
         const pill = document.createElement("span");
         pill.className = "timeline-attachment-pill";
-        pill.innerHTML = `<span>${attachment.kind === "image" ? "Image" : "File"}</span><span>${attachment.name}</span><span>${attachment.sizeLabel}</span>`;
+        pill.replaceChildren(
+          createTextElement("span", "", attachment.kind === "image" ? "Image" : "File"),
+          createTextElement("span", "", attachment.name),
+          createTextElement("span", "", attachment.sizeLabel),
+        );
         attachmentRow.appendChild(pill);
       }
       article.appendChild(attachmentRow);
@@ -12612,9 +12707,10 @@ function openTopMenu(menuId: string) {
     itemButton.type = "button";
     itemButton.className = "top-menu-popover-item";
     itemButton.setAttribute("role", "menuitem");
-    itemButton.innerHTML =
-      `<span>${item.label}</span>` +
-      (item.shortcut ? `<span class="top-menu-popover-shortcut">${item.shortcut}</span>` : "");
+    itemButton.appendChild(createTextElement("span", "", item.label));
+    if (item.shortcut) {
+      itemButton.appendChild(createTextElement("span", "top-menu-popover-shortcut", item.shortcut));
+    }
     itemButton.addEventListener("click", () => {
       closeTopMenu();
       item.action?.();
@@ -12688,15 +12784,17 @@ function renderCommandBar() {
     button.dataset.tone = action.tone ?? "default";
     button.setAttribute("role", "option");
     button.setAttribute("aria-selected", index === selectedCommandIndex ? "true" : "false");
-    button.innerHTML =
-      `<div class="command-bar-item-main">` +
-      `<span class="command-bar-item-label">${action.label}</span>` +
-      `<span class="command-bar-item-description">${action.description}</span>` +
-      `</div>` +
-      `<div class="command-bar-item-meta">` +
-      (action.shortcut ? `<span class="command-bar-item-shortcut">${action.shortcut}</span>` : "") +
-      `<span class="command-bar-item-keywords">${action.keywords.slice(0, 3).join(" · ")}</span>` +
-      `</div>`;
+    const main = document.createElement("div");
+    main.className = "command-bar-item-main";
+    main.appendChild(createTextElement("span", "command-bar-item-label", action.label));
+    main.appendChild(createTextElement("span", "command-bar-item-description", action.description));
+    const meta = document.createElement("div");
+    meta.className = "command-bar-item-meta";
+    if (action.shortcut) {
+      meta.appendChild(createTextElement("span", "command-bar-item-shortcut", action.shortcut));
+    }
+    meta.appendChild(createTextElement("span", "command-bar-item-keywords", action.keywords.slice(0, 3).join(" · ")));
+    button.replaceChildren(main, meta);
     button.addEventListener("pointerenter", () => {
       setCommandBarActiveIndex(index);
     });

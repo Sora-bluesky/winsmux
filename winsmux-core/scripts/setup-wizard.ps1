@@ -130,19 +130,6 @@ function Read-YesNo {
     }
 }
 
-function ConvertTo-PlainText {
-    param([Parameter(Mandatory = $true)][Security.SecureString]$SecureString)
-
-    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecureString)
-    try {
-        return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
-    } finally {
-        if ($bstr -ne [IntPtr]::Zero) {
-            [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
-        }
-    }
-}
-
 function Set-WinsmuxOption {
     param(
         [Parameter(Mandatory = $true)][string]$WinsmuxBin,
@@ -165,25 +152,17 @@ function Clear-WinsmuxOption {
 function Set-GitHubTokenVault {
     param([Parameter(Mandatory = $true)][string]$BridgeCommand)
 
-    $secureToken = Read-Host -AsSecureString "Enter GH_TOKEN"
-    $plainToken = ConvertTo-PlainText -SecureString $secureToken
-
-    try {
-        if ([string]::IsNullOrWhiteSpace($plainToken)) {
-            Write-Host 'Skipped vault storage because GH_TOKEN was empty.'
-            return $false
-        }
-
-        if ($BridgeCommand.EndsWith('.ps1', [System.StringComparison]::OrdinalIgnoreCase)) {
-            & pwsh -NoProfile -File $BridgeCommand vault set GH_TOKEN $plainToken
-        } else {
-            & $BridgeCommand vault set GH_TOKEN $plainToken
-        }
-
-        return $true
-    } finally {
-        $plainToken = $null
+    if ($BridgeCommand.EndsWith('.ps1', [System.StringComparison]::OrdinalIgnoreCase)) {
+        & pwsh -NoProfile -File $BridgeCommand vault set GH_TOKEN
+    } else {
+        & $BridgeCommand vault set GH_TOKEN
     }
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "winsmux vault set GH_TOKEN failed with exit code $LASTEXITCODE."
+    }
+
+    return $true
 }
 
 $winsmuxBin = Get-WinsmuxBin

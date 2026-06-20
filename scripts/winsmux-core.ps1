@@ -17,7 +17,7 @@ if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_RAW_EXE)) {
 }
 
 # --- Config ---
-$VERSION = "0.36.15"
+$VERSION = "0.36.16"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 $BridgeScriptPath = $PSCommandPath
@@ -153,18 +153,43 @@ function Resolve-TerminalBackend {
     }
 }
 
+function Get-ControlRpcTokenEnvName {
+    return 'WINSMUX_CONTROL_PIPE_TOKEN'
+}
+
+function Add-ControlRpcAuthToPayload {
+    param([Parameter(Mandatory = $true)]$Payload)
+
+    $method = [string]$Payload.method
+    if ($method -eq 'desktop.control_plane.contract') {
+        return $Payload
+    }
+
+    $tokenEnvName = Get-ControlRpcTokenEnvName
+    $token = [string][Environment]::GetEnvironmentVariable($tokenEnvName, 'Process')
+    if ([string]::IsNullOrWhiteSpace($token)) {
+        Stop-WithError "control-rpc requires $tokenEnvName for non-contract methods"
+    }
+
+    $Payload | Add-Member -NotePropertyName auth -NotePropertyValue ([pscustomobject]@{ token = $token }) -Force
+    return $Payload
+}
+
 function New-TerminalJsonRpcPayload {
     param(
         [Parameter(Mandatory = $true)][string]$Method,
         [Parameter(Mandatory = $true)]$Params
     )
 
-    return ([ordered]@{
+    $payload = [pscustomobject][ordered]@{
         jsonrpc = '2.0'
         id      = "terminal-$([guid]::NewGuid().ToString('N'))"
         method  = $Method
         params   = $Params
-    } | ConvertTo-Json -Depth 100 -Compress)
+    }
+
+    $payload = Add-ControlRpcAuthToPayload -Payload $payload
+    return ($payload | ConvertTo-Json -Depth 100 -Compress)
 }
 
 function Invoke-TerminalJsonRpc {
@@ -17227,8 +17252,17 @@ function Invoke-VaultSet {
     if (-not $key) { Stop-WithError "usage: winsmux vault set <key> [value]" }
     if (-not $value) {
         $secure = Read-Host -AsSecureString "Enter value for '$key'"
-        $value = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
-            [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure))
+        $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+        try {
+            $value = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+        } finally {
+            if ($bstr -ne [IntPtr]::Zero) {
+                [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+            }
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        Stop-WithError "vault value for '$key' must not be empty"
     }
 
     $credTarget = "winsmux:$key"
@@ -18445,6 +18479,7 @@ function ConvertTo-ControlRpcPayload {
         Stop-WithError "control-rpc payload must include a non-empty method"
     }
 
+    $payload = Add-ControlRpcAuthToPayload -Payload $payload
     return ($payload | ConvertTo-Json -Depth 100 -Compress)
 }
 

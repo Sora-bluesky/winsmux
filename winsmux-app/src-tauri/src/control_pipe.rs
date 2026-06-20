@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub const WINSMUX_CONTROL_PIPE_NAME: &str = r"\\.\pipe\winsmux-control";
+pub const WINSMUX_CONTROL_PIPE_TOKEN_ENV: &str = "WINSMUX_CONTROL_PIPE_TOKEN";
 
 const JSON_RPC_PARSE_ERROR: i32 = -32700;
 const JSON_RPC_METHOD_NOT_FOUND: i32 = -32601;
@@ -91,6 +92,17 @@ pub fn handle_control_pipe_payload(
         return serialize_control_pipe_result(request.id, control_pipe_contract());
     }
 
+    if !is_authorized_control_pipe_request(&request_value) {
+        return serialize_control_pipe_error(
+            request_id,
+            JSON_RPC_INVALID_REQUEST,
+            format!(
+                "Control pipe method requires a valid {} value in auth.token",
+                WINSMUX_CONTROL_PIPE_TOKEN_ENV
+            ),
+        );
+    }
+
     if DESKTOP_CONTROL_PIPE_METHODS.contains(&method) {
         let request = match serde_json::from_value::<DesktopJsonRpcRequest>(request_value) {
             Ok(value) => value,
@@ -160,18 +172,52 @@ fn control_pipe_methods() -> Vec<&'static str> {
 
 fn control_pipe_contract() -> Value {
     json!({
-        "version": 1,
-        "scope": "external_control_pipe",
-        "transport": "named_pipe_json_rpc",
-        "pipe": WINSMUX_CONTROL_PIPE_NAME,
-        "jsonrpc": "2.0",
-        "localhost_http": false,
-        "websocket": false,
-        "methods": control_pipe_methods(),
-        "desktop_methods": DESKTOP_CONTROL_PIPE_METHODS,
-        "pty_methods": PTY_CONTROL_PIPE_METHODS,
-        "internal_desktop_methods_excluded": CONTROL_PIPE_EXCLUDED_INTERNAL_DESKTOP_METHODS,
+    "version": 1,
+    "scope": "external_control_pipe",
+    "transport": "named_pipe_json_rpc",
+    "pipe": WINSMUX_CONTROL_PIPE_NAME,
+    "jsonrpc": "2.0",
+    "localhost_http": false,
+    "websocket": false,
+    "auth": {
+        "required_for_methods": true,
+        "token_env": WINSMUX_CONTROL_PIPE_TOKEN_ENV,
+        "request_field": "auth.token",
+    },
+    "methods": control_pipe_methods(),
+    "desktop_methods": DESKTOP_CONTROL_PIPE_METHODS,
+    "pty_methods": PTY_CONTROL_PIPE_METHODS,
+    "internal_desktop_methods_excluded": CONTROL_PIPE_EXCLUDED_INTERNAL_DESKTOP_METHODS,
     })
+}
+
+fn is_authorized_control_pipe_request(request_value: &Value) -> bool {
+    let expected_token = match std::env::var(WINSMUX_CONTROL_PIPE_TOKEN_ENV) {
+        Ok(value) if !value.trim().is_empty() => value,
+        _ => return false,
+    };
+    let provided_token = match request_value
+        .get("auth")
+        .and_then(|auth| auth.get("token"))
+        .and_then(Value::as_str)
+    {
+        Some(value) => value,
+        None => return false,
+    };
+
+    constant_time_string_eq(provided_token.as_bytes(), expected_token.as_bytes())
+}
+
+fn constant_time_string_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+
+    let mut diff = 0u8;
+    for (left_byte, right_byte) in left.iter().zip(right.iter()) {
+        diff |= left_byte ^ right_byte;
+    }
+    diff == 0
 }
 
 fn has_project_dir_override(request_value: &Value) -> bool {
@@ -210,16 +256,14 @@ fn serialize_control_pipe_result(id: Value, result: Value) -> Vec<u8> {
 
 #[cfg(windows)]
 pub fn start_control_pipe_server(pty_transport: Arc<dyn PtyCommandTransport + Send + Sync>) {
-    std::thread::spawn(move || {
-        loop {
-            if let Err(err) = serve_one_control_pipe_client(pty_transport.as_ref()) {
-                if is_control_pipe_startup_error(&err) {
-                    eprintln!("winsmux control pipe disabled: {err}");
-                    break;
-                }
-                eprintln!("winsmux control pipe error: {err}");
-                std::thread::sleep(Duration::from_millis(250));
+    std::thread::spawn(move || loop {
+        if let Err(err) = serve_one_control_pipe_client(pty_transport.as_ref()) {
+            if is_control_pipe_startup_error(&err) {
+                eprintln!("winsmux control pipe disabled: {err}");
+                break;
             }
+            eprintln!("winsmux control pipe error: {err}");
+            std::thread::sleep(Duration::from_millis(250));
         }
     });
 }
@@ -346,7 +390,41 @@ mod tests {
     use crate::desktop_backend::{DesktopCommand, DesktopCommandTransport};
     use crate::pty_backend::PtyCommand;
     use serde_json::json;
-    use std::sync::Mutex;
+    use std::ffi::OsString;
+    use std::sync::{Mutex, MutexGuard};
+
+    static CONTROL_PIPE_TOKEN_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct ControlPipeTokenEnvGuard {
+        previous: Option<OsString>,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl Drop for ControlPipeTokenEnvGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = self.previous.take() {
+                std::env::set_var(WINSMUX_CONTROL_PIPE_TOKEN_ENV, previous);
+            } else {
+                std::env::remove_var(WINSMUX_CONTROL_PIPE_TOKEN_ENV);
+            }
+        }
+    }
+
+    fn set_control_pipe_token_for_test(token: Option<&str>) -> ControlPipeTokenEnvGuard {
+        let lock = CONTROL_PIPE_TOKEN_ENV_LOCK
+            .lock()
+            .expect("control pipe token env lock");
+        let previous = std::env::var_os(WINSMUX_CONTROL_PIPE_TOKEN_ENV);
+        if let Some(value) = token {
+            std::env::set_var(WINSMUX_CONTROL_PIPE_TOKEN_ENV, value);
+        } else {
+            std::env::remove_var(WINSMUX_CONTROL_PIPE_TOKEN_ENV);
+        }
+        ControlPipeTokenEnvGuard {
+            previous,
+            _lock: lock,
+        }
+    }
 
     struct StubDesktopTransport;
 
@@ -435,6 +513,12 @@ mod tests {
         assert_eq!(value["result"]["pipe"], WINSMUX_CONTROL_PIPE_NAME);
         assert_eq!(value["result"]["localhost_http"], false);
         assert_eq!(value["result"]["websocket"], false);
+        assert_eq!(value["result"]["auth"]["required_for_methods"], true);
+        assert_eq!(
+            value["result"]["auth"]["token_env"],
+            WINSMUX_CONTROL_PIPE_TOKEN_ENV
+        );
+        assert_eq!(value["result"]["auth"]["request_field"], "auth.token");
         assert_eq!(
             value["result"]["desktop_methods"],
             json!(DESKTOP_CONTROL_PIPE_METHODS)
@@ -476,7 +560,8 @@ mod tests {
 
     #[test]
     fn control_pipe_routes_voice_capture_status_to_desktop_handler() {
-        let payload = br#"{"jsonrpc":"2.0","id":1,"method":"desktop.voice.capture_status"}"#;
+        let _guard = set_control_pipe_token_for_test(Some("test-control-token"));
+        let payload = br#"{"jsonrpc":"2.0","id":1,"method":"desktop.voice.capture_status","auth":{"token":"test-control-token"}}"#;
         let pty_transport = StubPtyTransport::new();
         let response =
             handle_control_pipe_payload(&StubDesktopTransport, &pty_transport, payload, None);
@@ -487,6 +572,47 @@ mod tests {
         assert_eq!(value["result"]["capture_mode"], "browser_fallback");
         assert_eq!(value["result"]["native"]["available"], false);
         assert_eq!(value["result"]["browser_fallback"]["expected"], true);
+    }
+
+    #[test]
+    fn control_pipe_rejects_method_when_token_env_is_missing() {
+        let _guard = set_control_pipe_token_for_test(None);
+        let payload =
+            br#"{"jsonrpc":"2.0","id":1,"method":"pty.capture","params":{"paneId":"pane-1"}}"#;
+        let pty_transport = StubPtyTransport::new();
+        let response =
+            handle_control_pipe_payload(&StubDesktopTransport, &pty_transport, payload, None);
+        let value: Value = serde_json::from_slice(&response).expect("response should be JSON");
+
+        assert_eq!(value["id"], 1);
+        assert_eq!(value["error"]["code"], JSON_RPC_INVALID_REQUEST);
+        assert!(value["error"]["message"]
+            .as_str()
+            .expect("error message")
+            .contains(WINSMUX_CONTROL_PIPE_TOKEN_ENV));
+        assert!(pty_transport
+            .commands
+            .lock()
+            .expect("commands lock")
+            .is_empty());
+    }
+
+    #[test]
+    fn control_pipe_rejects_method_when_token_is_wrong() {
+        let _guard = set_control_pipe_token_for_test(Some("expected-token"));
+        let payload = br#"{"jsonrpc":"2.0","id":1,"method":"pty.capture","params":{"paneId":"pane-1"},"auth":{"token":"wrong-token"}}"#;
+        let pty_transport = StubPtyTransport::new();
+        let response =
+            handle_control_pipe_payload(&StubDesktopTransport, &pty_transport, payload, None);
+        let value: Value = serde_json::from_slice(&response).expect("response should be JSON");
+
+        assert_eq!(value["id"], 1);
+        assert_eq!(value["error"]["code"], JSON_RPC_INVALID_REQUEST);
+        assert!(pty_transport
+            .commands
+            .lock()
+            .expect("commands lock")
+            .is_empty());
     }
 
     #[test]
@@ -515,9 +641,7 @@ mod tests {
         assert!(is_control_pipe_startup_error(
             "CreateNamedPipeW failed with 5"
         ));
-        assert!(!is_control_pipe_startup_error(
-            "ReadFile failed with 109"
-        ));
+        assert!(!is_control_pipe_startup_error("ReadFile failed with 109"));
     }
 
     #[test]
@@ -534,8 +658,9 @@ mod tests {
 
     #[test]
     fn control_pipe_routes_pty_methods_to_pty_handler() {
+        let _guard = set_control_pipe_token_for_test(Some("test-control-token"));
         let payload =
-            br#"{"jsonrpc":"2.0","id":1,"method":"pty.capture","params":{"paneId":"pane-1"}}"#;
+            br#"{"jsonrpc":"2.0","id":1,"method":"pty.capture","params":{"paneId":"pane-1"},"auth":{"token":"test-control-token"}}"#;
         let pty_transport = StubPtyTransport::new();
         let response =
             handle_control_pipe_payload(&StubDesktopTransport, &pty_transport, payload, None);
@@ -577,7 +702,8 @@ mod tests {
 
     #[test]
     fn control_pipe_blocks_editor_read() {
-        let payload = br#"{"jsonrpc":"2.0","id":1,"method":"desktop.editor.read","params":{"path":"README.md"}}"#;
+        let _guard = set_control_pipe_token_for_test(Some("test-control-token"));
+        let payload = br#"{"jsonrpc":"2.0","id":1,"method":"desktop.editor.read","params":{"path":"README.md"},"auth":{"token":"test-control-token"}}"#;
         let pty_transport = StubPtyTransport::new();
         let response =
             handle_control_pipe_payload(&StubDesktopTransport, &pty_transport, payload, None);

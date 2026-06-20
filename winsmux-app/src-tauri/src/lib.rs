@@ -2,7 +2,7 @@ mod control_pipe;
 mod desktop_backend;
 mod pty_backend;
 
-use control_pipe::start_control_pipe_server;
+use control_pipe::{start_control_pipe_server, WINSMUX_CONTROL_PIPE_TOKEN_ENV};
 use desktop_backend::{
     handle_desktop_json_rpc, load_desktop_run_explain, load_desktop_summary_snapshot,
     resolve_repo_root, spawn_desktop_summary_refresh_stream, DesktopExplainPayload,
@@ -783,6 +783,7 @@ fn build_pty_command(workspace_dir: &Path) -> CommandBuilder {
     let mut cmd = CommandBuilder::new("pwsh");
     cmd.arg("-NoLogo");
     cmd.cwd(workspace_dir.as_os_str());
+    cmd.env_remove(WINSMUX_CONTROL_PIPE_TOKEN_ENV);
     cmd
 }
 
@@ -1318,6 +1319,7 @@ mod tests {
             command.get_cwd().and_then(|value| value.to_str()),
             Some("C:\\repo\\winsmux")
         );
+        assert!(command.get_env(WINSMUX_CONTROL_PIPE_TOKEN_ENV).is_none());
     }
 
     #[test]

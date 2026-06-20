@@ -18221,6 +18221,10 @@ Describe 'operator startup restore contract docs' {
         $setupWizardContent | Should -Match 'Test-SetupWizardAgentProvider'
         $setupWizardContent | Should -Match 'provider-capabilities\.json first'
         $setupWizardContent | Should -Match "(?s)if \(\[string\]::IsNullOrWhiteSpace\(\`$model\)\) \{\s*Clear-WinsmuxOption -WinsmuxBin \`$winsmuxBin -OptionName '@bridge-model'\s*\} else \{\s*Set-WinsmuxOption -WinsmuxBin \`$winsmuxBin -OptionName '@bridge-model' -OptionValue \`$model"
+        $setupWizardContent | Should -Match 'vault set GH_TOKEN'
+        $setupWizardContent | Should -Not -Match 'vault set GH_TOKEN\s+\$plainToken'
+        $setupWizardContent | Should -Not -Match 'ConvertTo-PlainText'
+        $setupWizardContent | Should -Not -Match 'Read-Host -AsSecureString "Enter GH_TOKEN"'
         $setupWizardContent | Should -Not -Match 'AI agent CLI \(codex/claude\)'
         $setupWizardContent | Should -Not -Match "Please enter 'codex' or 'claude'\."
         $setupWizardContent | Should -Not -Match 'Tried: winsmux, pmux, tmux'
@@ -20192,11 +20196,25 @@ Describe 'winsmux control-rpc command' {
         $null = . $script:controlRpcBridgePath version
     }
 
+    BeforeEach {
+        $script:previousControlPipeToken = $env:WINSMUX_CONTROL_PIPE_TOKEN
+        Remove-Item Env:\WINSMUX_CONTROL_PIPE_TOKEN -ErrorAction SilentlyContinue
+    }
+
+    AfterEach {
+        if ($null -eq $script:previousControlPipeToken) {
+            Remove-Item Env:\WINSMUX_CONTROL_PIPE_TOKEN -ErrorAction SilentlyContinue
+        } else {
+            $env:WINSMUX_CONTROL_PIPE_TOKEN = $script:previousControlPipeToken
+        }
+    }
+
     It 'documents control-rpc in usage and fixes the named pipe endpoint' {
         $script:controlRpcBridgeContent | Should -Match 'control-rpc <json>'
         $script:controlRpcBridgeContent | Should -Match "'control-rpc'\s*\{\s*Invoke-ControlRpc\s*\}"
         $script:controlRpcBridgeContent | Should -Match '\$client\.ReadAsync\(\$buffer, 0, \$buffer\.Length\)'
         $script:controlRpcBridgeContent | Should -Match 'timed out waiting for response'
+        $script:controlRpcBridgeContent | Should -Match 'WINSMUX_CONTROL_PIPE_TOKEN'
         Get-ControlRpcPipeName | Should -Be 'winsmux-control'
         Get-ControlRpcPipeDisplayName | Should -Be '\\.\pipe\winsmux-control'
     }
@@ -20216,6 +20234,21 @@ Describe 'winsmux control-rpc command' {
         Should -Invoke Invoke-ControlRpcPipeExchange -Times 1 -Exactly
         $script:controlRpcPayload | Should -Be '{"jsonrpc":"2.0","id":1,"method":"desktop.control_plane.contract"}'
         $output | Should -Be '{"jsonrpc":"2.0","id":1,"result":{"ok":true}}'
+    }
+
+    It 'adds the control pipe token from the environment for non-contract methods' {
+        $env:WINSMUX_CONTROL_PIPE_TOKEN = 'test-control-token'
+
+        $payload = ConvertTo-ControlRpcPayload -JsonText '{"jsonrpc":"2.0","id":1,"method":"pty.capture","params":{"paneId":"pane-1"}}'
+        $request = $payload | ConvertFrom-Json
+
+        $request.method | Should -Be 'pty.capture'
+        $request.auth.token | Should -Be 'test-control-token'
+    }
+
+    It 'fails closed when a non-contract method has no control pipe token' {
+        { ConvertTo-ControlRpcPayload -JsonText '{"jsonrpc":"2.0","id":1,"method":"pty.capture","params":{"paneId":"pane-1"}}' } |
+            Should -Throw '*WINSMUX_CONTROL_PIPE_TOKEN*'
     }
 
     It 'rejects missing JSON-RPC payloads' {
@@ -20373,7 +20406,9 @@ Describe 'winsmux terminal backend switch' {
 
     BeforeEach {
         $script:previousWinsmuxBackend = $env:WINSMUX_BACKEND
+        $script:previousTerminalControlPipeToken = $env:WINSMUX_CONTROL_PIPE_TOKEN
         Remove-Item Env:\WINSMUX_BACKEND -ErrorAction SilentlyContinue
+        $env:WINSMUX_CONTROL_PIPE_TOKEN = 'test-control-token'
         $script:terminalRpcPayloads = [System.Collections.Generic.List[string]]::new()
     }
 
@@ -20382,6 +20417,11 @@ Describe 'winsmux terminal backend switch' {
             Remove-Item Env:\WINSMUX_BACKEND -ErrorAction SilentlyContinue
         } else {
             $env:WINSMUX_BACKEND = $script:previousWinsmuxBackend
+        }
+        if ($null -eq $script:previousTerminalControlPipeToken) {
+            Remove-Item Env:\WINSMUX_CONTROL_PIPE_TOKEN -ErrorAction SilentlyContinue
+        } else {
+            $env:WINSMUX_CONTROL_PIPE_TOKEN = $script:previousTerminalControlPipeToken
         }
     }
 

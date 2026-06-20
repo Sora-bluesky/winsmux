@@ -90,6 +90,16 @@ function Test-IsHostedApiRuntimeScanSurface {
         ($normalized -match '^\.github/workflows/.+\.ya?ml$')
 }
 
+function Test-IsEvidenceAuthScanSurface {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $normalized = $Path.Replace('\', '/')
+    if ($normalized -match '^tests/' -or $normalized -match '^scripts/') { return $false }
+    if ($normalized -match '^docs/internal/') { return $false }
+    return (Test-IsTrackedTextSurface -Path $Path) -and
+        ($normalized -match '(?i)(^|/|[-_])evidence([-_/]|$)')
+}
+
 function Test-IsMaintainerPathScanSurface {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -175,6 +185,16 @@ function Get-ForbiddenHostedApiRuntimePatterns {
     )
 }
 
+function Get-ForbiddenEvidenceAuthPatterns {
+    return @(
+        [pscustomobject]@{ Name = 'OpenRouter API key'; Pattern = ('sk-or-' + 'v1-[A-Za-z0-9_-]{16,}') },
+        [pscustomobject]@{ Name = 'GitHub token'; Pattern = '\bgh[pousr]_[A-Za-z0-9_]{20,}\b' },
+        [pscustomobject]@{ Name = 'Bearer token'; Pattern = '(?i)\bAuthorization\s*:\s*Bearer\s+[A-Za-z0-9._~+/=-]{20,}' },
+        [pscustomobject]@{ Name = 'API key assignment'; Pattern = '(?i)\b(?:openrouter|openai|anthropic|gemini|github|gh)[-_ ]?(?:api[-_ ]?)?key\s*[:=]\s*[''"]?[A-Za-z0-9._~+/=-]{12,}' },
+        [pscustomobject]@{ Name = 'secret assignment'; Pattern = '(?i)\b(?:token|secret|credential|oauth)[-_ ]?(?:value|token|secret|key)?\s*[:=]\s*[''"]?[A-Za-z0-9._~+/=-]{20,}' }
+    )
+}
+
 function Add-ForbiddenExternalProductReferenceFailures {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -231,6 +251,26 @@ function Add-ForbiddenHostedApiRuntimeFailures {
     foreach ($reference in Get-ForbiddenHostedApiRuntimePatterns) {
         if ($content -match $reference.Pattern) {
             $failures.Add("$Surface contains hosted API runtime secret or request metadata '$($reference.Name)': $Path")
+        }
+    }
+}
+
+function Add-ForbiddenEvidenceAuthFailures {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Surface
+    )
+
+    $fullPath = if ([System.IO.Path]::IsPathRooted($Path)) { $Path } else { Join-Path $repoRoot $Path }
+    if (-not (Test-Path -LiteralPath $fullPath)) {
+        $failures.Add("$Surface path does not exist: $Path")
+        return
+    }
+
+    $content = Get-Content -LiteralPath $fullPath -Raw -ErrorAction Stop
+    foreach ($reference in Get-ForbiddenEvidenceAuthPatterns) {
+        if ($content -match $reference.Pattern) {
+            $failures.Add("$Surface contains evidence/auth secret material '$($reference.Name)': $Path")
         }
     }
 }
@@ -358,6 +398,10 @@ foreach ($file in ($trackedFiles | Where-Object { Test-IsPublicMaterialScanSurfa
 
 foreach ($file in ($trackedFiles | Where-Object { Test-IsHostedApiRuntimeScanSurface -Path $_ })) {
     Add-ForbiddenHostedApiRuntimeFailures -Path $file -Surface 'public/release surface'
+}
+
+foreach ($file in ($trackedFiles | Where-Object { Test-IsEvidenceAuthScanSurface -Path $_ })) {
+    Add-ForbiddenEvidenceAuthFailures -Path $file -Surface 'evidence/auth surface'
 }
 
 if (-not [string]::IsNullOrWhiteSpace($ReleaseNotesPath)) {
