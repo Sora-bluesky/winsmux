@@ -9020,6 +9020,7 @@ Describe 'winsmux workers command' {
         $script:previousColabAuth = $env:WINSMUX_COLAB_AUTH_STATE
         $script:previousColabGpu = $env:WINSMUX_COLAB_AVAILABLE_GPUS
         $script:previousWorkersNow = $env:WINSMUX_TEST_NOW_UTC
+        $script:previousPublicOpenRouterApiKey = $env:OPENROUTER_API_KEY
         $script:previousOpenRouterApiKey = $env:WINSMUX_OPENROUTER_API_KEY
         $script:previousAntigravityCli = $env:WINSMUX_ANTIGRAVITY_CLI
         $script:previousAntigravityPrintTimeout = $env:WINSMUX_ANTIGRAVITY_PRINT_TIMEOUT
@@ -9027,6 +9028,7 @@ Describe 'winsmux workers command' {
         $env:WINSMUX_COLAB_AUTH_STATE = ''
         $env:WINSMUX_COLAB_AVAILABLE_GPUS = ''
         $env:WINSMUX_TEST_NOW_UTC = ''
+        $env:OPENROUTER_API_KEY = ''
         $env:WINSMUX_OPENROUTER_API_KEY = ''
         $env:WINSMUX_ANTIGRAVITY_CLI = ''
         $env:WINSMUX_ANTIGRAVITY_PRINT_TIMEOUT = ''
@@ -9037,6 +9039,7 @@ Describe 'winsmux workers command' {
         $env:WINSMUX_COLAB_AUTH_STATE = $script:previousColabAuth
         $env:WINSMUX_COLAB_AVAILABLE_GPUS = $script:previousColabGpu
         $env:WINSMUX_TEST_NOW_UTC = $script:previousWorkersNow
+        $env:OPENROUTER_API_KEY = $script:previousPublicOpenRouterApiKey
         $env:WINSMUX_OPENROUTER_API_KEY = $script:previousOpenRouterApiKey
         $env:WINSMUX_ANTIGRAVITY_CLI = $script:previousAntigravityCli
         $env:WINSMUX_ANTIGRAVITY_PRINT_TIMEOUT = $script:previousAntigravityPrintTimeout
@@ -9175,7 +9178,7 @@ agent-slots:
       "credential_requirements": "runtime-owned-api-key",
       "execution_backend": "openai-compatible-chat-completions",
       "api_base_url": "https://openrouter.ai/api/v1",
-      "api_key_env": "WINSMUX_OPENROUTER_API_KEY",
+      "api_key_env": "OPENROUTER_API_KEY",
       "analysis_posture": "hosted-api-worker",
       "supports_file_edit": false,
       "supports_structured_result": true
@@ -10614,7 +10617,7 @@ worker-backend: colab_cli
         $row.credential_requirements | Should -Be 'runtime-owned-api-key'
         $row.execution_backend | Should -Be 'openai-compatible-chat-completions'
         $row.api_base_url | Should -Be 'https://openrouter.ai/api/v1'
-        $row.api_key_env | Should -Be 'WINSMUX_OPENROUTER_API_KEY'
+        $row.api_key_env | Should -Be 'OPENROUTER_API_KEY'
         $row.capability_adapter | Should -Be 'openai-compatible'
         $row.session | Should -Be ''
         $row.actual_gpu | Should -Be ''
@@ -10635,7 +10638,7 @@ worker-backend: colab_cli
         $apiRunner.status | Should -Be 'pass'
         $apiRunner.detail | Should -Match 'OpenAI-compatible chat completions execution is available'
         $apiKeyEnv.status | Should -Be 'warn'
-        $apiKeyEnv.detail | Should -Match 'WINSMUX_OPENROUTER_API_KEY'
+        $apiKeyEnv.detail | Should -Match 'OPENROUTER_API_KEY'
         ($payload | ConvertTo-Json -Depth 24) | Should -Not -Match 'colab worker worker-1'
     }
 
@@ -11317,9 +11320,9 @@ worker-backend: colab_cli
         $payload.api_llm.provider | Should -Be 'openrouter'
         $payload.api_llm.model | Should -Be 'z-ai/glm-5.2'
         $payload.api_llm.execution_backend | Should -Be 'openai-compatible-chat-completions'
-        $payload.api_llm.api_key_env | Should -Be 'WINSMUX_OPENROUTER_API_KEY'
+        $payload.api_llm.api_key_env | Should -Be 'OPENROUTER_API_KEY'
         $payload.network | Should -Be 'not_started'
-        $payload.api_key_env | Should -Be 'WINSMUX_OPENROUTER_API_KEY'
+        $payload.api_key_env | Should -Be 'OPENROUTER_API_KEY'
         $payload.endpoint_host | Should -Be 'openrouter.ai'
         $payload.provider_response_id_present | Should -Be $false
         $payload.prompt_value_output | Should -Be $false
@@ -11348,7 +11351,7 @@ worker-backend: colab_cli
     It 'rejects OpenRouter endpoint overrides before network access' {
         Write-WorkersApiLlmProjectConfig
         'Summarize the repository status.' | Set-Content -Path (Join-Path $script:workersTempRoot 'prompt.md') -Encoding UTF8
-        $env:WINSMUX_OPENROUTER_API_KEY = 'test-openrouter-key'
+        $env:OPENROUTER_API_KEY = 'test-openrouter-key'
 @'
 {
   "version": 1,
@@ -11363,7 +11366,7 @@ worker-backend: colab_cli
       "credential_requirements": "runtime-owned-api-key",
       "execution_backend": "openai-compatible-chat-completions",
       "api_base_url": "https://attacker.example.invalid/api",
-      "api_key_env": "WINSMUX_OPENROUTER_API_KEY",
+      "api_key_env": "OPENROUTER_API_KEY",
       "analysis_posture": "hosted-api-worker"
     }
   }
@@ -11447,7 +11450,7 @@ worker-backend: colab_cli
     It 'runs api_llm exec through OpenAI-compatible chat completions with an env key' {
         Write-WorkersApiLlmProjectConfig
         'Summarize the repository status.' | Set-Content -Path (Join-Path $script:workersTempRoot 'prompt.md') -Encoding UTF8
-        $env:WINSMUX_OPENROUTER_API_KEY = 'test-openrouter-key'
+        $env:OPENROUTER_API_KEY = 'test-openrouter-key'
         $script:apiLlmCapturedUri = ''
         $script:apiLlmCapturedHeaders = $null
         $script:apiLlmCapturedBody = ''
@@ -11490,7 +11493,7 @@ worker-backend: colab_cli
         $payload.reason | Should -Be ''
         $payload.network | Should -Be 'completed'
         $payload.response | Should -Be '.winsmux/worker-runs/worker-1/api-success-run/response.txt'
-        $payload.api_key_env | Should -Be 'WINSMUX_OPENROUTER_API_KEY'
+        $payload.api_key_env | Should -Be 'OPENROUTER_API_KEY'
         $payload.endpoint_host | Should -Be 'openrouter.ai'
         $payload.provider_response_id_present | Should -Be $true
         $payload.usage.total_tokens | Should -Be 16
@@ -11511,6 +11514,40 @@ worker-backend: colab_cli
         $responsePath = Join-Path $script:workersTempRoot ($payload.response -replace '/', '\')
         (Get-Content -LiteralPath $responsePath -Raw -Encoding UTF8) | Should -Match 'External model response'
         (Get-Content -LiteralPath $responsePath -Raw -Encoding UTF8) | Should -Not -Match 'test-openrouter-key'
+    }
+
+    It 'uses the legacy OpenRouter env only as an explicit compatibility fallback' {
+        Write-WorkersApiLlmProjectConfig
+        'Summarize the repository status.' | Set-Content -Path (Join-Path $script:workersTempRoot 'prompt.md') -Encoding UTF8
+        $env:OPENROUTER_API_KEY = ''
+        $env:WINSMUX_OPENROUTER_API_KEY = 'legacy-openrouter-key'
+        $script:apiLlmCapturedHeaders = $null
+
+        Mock Invoke-RestMethod {
+            param(
+                [string]$Uri,
+                [string]$Method,
+                [hashtable]$Headers,
+                [string]$Body,
+                [string]$ContentType,
+                [int]$TimeoutSec
+            )
+            $script:apiLlmCapturedHeaders = $Headers
+            return [pscustomobject]@{
+                id = 'chatcmpl-legacy'
+                choices = @([pscustomobject]@{ message = [pscustomobject]@{ content = 'Legacy key path response.' } })
+            }
+        }
+
+        $Rest = @('w1', '--script', 'prompt.md', '--run-id', 'api-legacy-run', '--json', '--project-dir', $script:workersTempRoot)
+        $output = Invoke-WorkersExec
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+
+        $payload.status | Should -Be 'succeeded'
+        $payload.api_key_env | Should -Be 'WINSMUX_OPENROUTER_API_KEY'
+        $payload.api_llm.api_key_env | Should -Be 'WINSMUX_OPENROUTER_API_KEY'
+        $script:apiLlmCapturedHeaders.Authorization | Should -Be 'Bearer legacy-openrouter-key'
+        ($output | Out-String) | Should -Not -Match 'legacy-openrouter-key'
     }
 
     It 'accepts task-json as the api_llm exec input contract' {

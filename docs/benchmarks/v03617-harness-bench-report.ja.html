@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>winsmux v0.36.17 Harness Bench Report</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #07111f;
+      --panel: #111d2e;
+      --panel-2: #18263a;
+      --line: #334963;
+      --text: #edf4ff;
+      --muted: #aebcd0;
+      --blue: #68aaff;
+      --green: #49d38b;
+      --cyan: #48d4d0;
+      --amber: #f5c15f;
+      --red: #ef7777;
+      --ink: #06111f;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font-family: "Segoe UI", "Yu Gothic UI", "Meiryo", sans-serif; line-height: 1.7; }
+    header { min-height: 360px; padding: 54px 36px 38px; background: linear-gradient(180deg, #101a2a 0%, #07111f 100%); border-bottom: 1px solid var(--line); }
+    .hero { max-width: 1180px; margin: 0 auto; }
+    .eyebrow { display: inline-flex; padding: 4px 10px; border-radius: 999px; background: #d8e8ff; color: #09233f; font-weight: 800; font-size: 13px; }
+    h1 { margin: 20px 0 14px; max-width: 980px; font-size: clamp(34px, 6vw, 72px); line-height: 1.04; letter-spacing: 0; }
+    .lead { max-width: 900px; color: var(--muted); font-size: 18px; }
+    .meta { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 28px; color: var(--muted); }
+    .meta span { border: 1px solid var(--line); border-radius: 999px; padding: 6px 12px; background: rgba(255,255,255,.03); }
+    main { max-width: 1180px; margin: 0 auto; padding: 24px 20px 64px; display: grid; gap: 18px; }
+    section { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 22px; }
+    h2, h3 { margin: 0; line-height: 1.25; }
+    h2 { font-size: 24px; margin-bottom: 16px; }
+    h3 { font-size: 17px; margin-bottom: 8px; }
+    p { margin: 0 0 10px; }
+    code { color: #d8ebff; }
+    a { color: #9cccff; }
+    .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 16px; }
+    .span-12 { grid-column: span 12; }
+    .span-8 { grid-column: span 8; }
+    .span-6 { grid-column: span 6; }
+    .span-4 { grid-column: span 4; }
+    .span-3 { grid-column: span 3; }
+    .card { border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); padding: 18px; min-height: 150px; }
+    .metric { display: flex; align-items: baseline; gap: 8px; margin: 10px 0; }
+    .metric strong { font-size: 42px; color: #b6d7ff; line-height: 1; }
+    .metric span { color: var(--muted); font-size: 13px; }
+    .badge { display: inline-flex; min-height: 26px; align-items: center; border-radius: 999px; padding: 3px 10px; color: var(--ink); background: #dbe8ff; font-size: 13px; font-weight: 800; }
+    .badge.pending { background: #ffe1a8; color: #4d3100; }
+    .badge.block { background: #ffd2d2; color: #4a0808; }
+    .badge.ok { background: #bdf2d4; color: #07351d; }
+    table { width: 100%; border-collapse: collapse; border: 1px solid var(--line); background: var(--panel-2); border-radius: 8px; overflow: hidden; }
+    th, td { padding: 11px 12px; border-bottom: 1px solid var(--line); vertical-align: top; text-align: left; }
+    th { background: #22304a; color: #c8d9f2; font-size: 13px; }
+    tr:last-child td { border-bottom: 0; }
+    .muted { color: var(--muted); }
+    .bar { width: 100%; height: 12px; border-radius: 999px; overflow: hidden; background: #3a465b; }
+    .bar i { display: block; height: 100%; width: var(--value, 0%); border-radius: inherit; background: linear-gradient(90deg, var(--blue), var(--cyan), var(--green)); }
+    .callout { border-left: 4px solid var(--amber); padding-left: 14px; color: #f4dfb8; }
+    @media (max-width: 900px) { header { padding: 36px 22px; } main { padding: 18px 14px 48px; } .span-8, .span-6, .span-4 { grid-column: span 12; } .grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="hero">
+      <span class="eyebrow">測定準備・ブロック証跡版</span>
+      <h1>winsmux Harness Bench Report</h1>
+      <p class="lead">v0.36.17 では、ワーカーの印象比較ではなく、Harness Bench 方式で winsmux の実 worker pane を測定する。Kimi K2.7 Code と GLM-5.2 は候補表示ではなく、OpenRouter 経由の <code>api_llm</code> worker として扱う。</p>
+      <div class="meta">
+        <span>対象版: v0.36.17</span>
+        <span>測定方式: Harness Bench</span>
+        <span>正式結果: OpenRouter API key 待ち</span>
+        <span>公開条件: GitHub Release 公開まで</span>
+      </div>
+    </div>
+  </header>
+  <main>
+    <section>
+      <h2>結論</h2>
+      <p>このレポートは測定準備とブロック証跡の版です。正式結果は、27件の課題、hidden tests、sanitized workspace、60分 timeout、deterministic scoring を満たす実測が完了するまで空欄にします。</p>
+      <p>既存の9問 pack は smoke や下準備には使えますが、v0.36.17 の公開スコアには使いません。</p>
+      <p><code>OPENROUTER_API_KEY</code> が未設定のため、OpenRouter Kimi K2.7 Code と GLM-5.2 は通信前に <code>api_llm_api_key_env_missing</code> で停止しました。これはモデル性能ではなく、除外理由付きの環境ブロックです。</p>
+    </section>
+    <section>
+      <h2>測定サマリー</h2>
+      <div class="grid">
+        <div class="card span-3"><h3>正式タスク</h3><div class="metric"><strong>27</strong><span>tasks</span></div><span class="badge pending">未実行</span></div>
+        <div class="card span-3"><h3>制限時間</h3><div class="metric"><strong>60</strong><span>min/task</span></div><span class="badge pending">計画済み</span></div>
+        <div class="card span-3"><h3>採点</h3><div class="metric"><strong>hidden</strong><span>tests</span></div><span class="badge ok">必須</span></div>
+        <div class="card span-3"><h3>レポート</h3><div class="metric"><strong>JA</strong><span>HTML</span></div><span class="badge pending">ブロック証跡</span></div>
+      </div>
+    </section>
+    <section>
+      <h2>測定対象</h2>
+      <table>
+        <thead><tr><th>Pane</th><th>採点</th><th>Worker</th><th>役割</th><th>測定前条件</th></tr></thead>
+        <tbody>
+          <tr><td>operator</td><td>対象外</td><td>人間/管理エージェント</td><td>環境確認、pane割り当て、実行管理、ログ収集、除外判定。</td><td>worker回答を途中で改善しない。</td></tr>
+          <tr><td>worker-1</td><td>対象</td><td>Claude Code / Sonnet 系</td><td>設計・レビュー系の基準 worker。</td><td>同一 task set と同一 timeout。</td></tr>
+          <tr><td>worker-2</td><td>対象</td><td>Codex</td><td>実装・レビュー系の比較 worker。</td><td>同一 task set と同一 timeout。</td></tr>
+          <tr><td>worker-3</td><td>対象</td><td>Antigravity CLI / Gemini High</td><td>高速・高推論設定。</td><td>empty stdout は除外。</td></tr>
+          <tr><td>worker-4</td><td>対象</td><td>Antigravity CLI / Gemini Medium</td><td>速度と安定性の比較。</td><td>empty stdout は除外。</td></tr>
+          <tr><td>worker-5</td><td>対象</td><td>OpenRouter / Kimi K2.7 Code</td><td>外部APIモデル worker。</td><td><code>OPENROUTER_API_KEY</code> と <code>api_llm</code> slot が必要。</td></tr>
+          <tr><td>worker-6</td><td>対象</td><td>OpenRouter / z-ai/glm-5.2</td><td>外部APIモデル worker。</td><td><code>OPENROUTER_API_KEY</code> と <code>api_llm</code> slot が必要。</td></tr>
+        </tbody>
+      </table>
+    </section>
+    <section>
+      <h2>正式結果</h2>
+      <table>
+        <thead><tr><th>Worker</th><th>解決数</th><th>Pass rate</th><th>Wall time</th><th>Cost</th><th>Operator介入</th><th>状態</th></tr></thead>
+        <tbody>
+          <tr><td>Claude Code / Sonnet</td><td class="muted">未測定</td><td><div class="bar"><i style="--value:0%"></i></div></td><td class="muted">未測定</td><td class="muted">未測定</td><td class="muted">未測定</td><td><span class="badge pending">未実行</span></td></tr>
+          <tr><td>Codex</td><td class="muted">未測定</td><td><div class="bar"><i style="--value:0%"></i></div></td><td class="muted">未測定</td><td class="muted">未測定</td><td class="muted">未測定</td><td><span class="badge pending">未実行</span></td></tr>
+          <tr><td>Antigravity High</td><td class="muted">未測定</td><td><div class="bar"><i style="--value:0%"></i></div></td><td class="muted">未測定</td><td class="muted">未測定</td><td class="muted">未測定</td><td><span class="badge pending">未実行</span></td></tr>
+          <tr><td>Antigravity Medium</td><td class="muted">未測定</td><td><div class="bar"><i style="--value:0%"></i></div></td><td class="muted">未測定</td><td class="muted">未測定</td><td class="muted">未測定</td><td><span class="badge pending">未実行</span></td></tr>
+          <tr><td>OpenRouter Kimi K2.7 Code</td><td class="muted">除外</td><td><div class="bar"><i style="--value:0%"></i></div></td><td class="muted">通信前停止</td><td class="muted">0 / 未取得</td><td class="muted">0</td><td><span class="badge block">missing key</span></td></tr>
+          <tr><td>OpenRouter GLM-5.2</td><td class="muted">除外</td><td><div class="bar"><i style="--value:0%"></i></div></td><td class="muted">通信前停止</td><td class="muted">0 / 未取得</td><td class="muted">0</td><td><span class="badge block">missing key</span></td></tr>
+        </tbody>
+      </table>
+    </section>
+    <section>
+      <h2>除外証跡</h2>
+      <table>
+        <thead><tr><th>Worker</th><th>Run id</th><th>除外理由</th><th>ネットワーク</th><th>公開可否</th></tr></thead>
+        <tbody>
+          <tr><td>OpenRouter Kimi K2.7 Code</td><td><code>v03617-kimi-missing-key</code></td><td><code>api_llm_api_key_env_missing</code></td><td>not_started</td><td>値を含まないため公開要約可</td></tr>
+          <tr><td>OpenRouter GLM-5.2</td><td><code>v03617-glm-missing-key</code></td><td><code>api_llm_api_key_env_missing</code></td><td>not_started</td><td>値を含まないため公開要約可</td></tr>
+        </tbody>
+      </table>
+    </section>
+    <section>
+      <h2>測定手法</h2>
+      <div class="grid">
+        <div class="card span-6"><h3>採点</h3><p>一次判定は hidden tests と deterministic checks。LLMレビューは失敗監査と品質補助に限定し、自己申告スコアは使わない。</p></div>
+        <div class="card span-6"><h3>環境</h3><p>各 worker に同じ task set、同じ timeout、同じ workspace 条件を適用する。operator は採点対象外。</p></div>
+        <div class="card span-6"><h3>除外</h3><p>missing key、timeout、crash、empty stdout、invalid output は、スコアから除外し、理由を別表で記録する。</p></div>
+        <div class="card span-6"><h3>秘匿</h3><p>API key、raw prompt、local user name、provider request id、生ログはHTMLへ出さない。</p></div>
+      </div>
+    </section>
+    <section>
+      <h2>失敗分析</h2>
+      <p class="callout">正式測定後、失敗を「テスト不通過」「timeout」「起動失敗」「認証不足」「出力形式不正」「operator介入過多」に分けて記録する。現時点の OpenRouter 行は「認証不足」であり、モデル品質スコアには入れない。</p>
+      <p>この章は、ランキングを補強するためではなく、winsmux の worker assignment と運用導線を改善するために使う。</p>
+    </section>
+    <section>
+      <h2>出典と参照</h2>
+      <ul>
+        <li><a href="https://nyosegawa.com/posts/harness-bench/">Harness Bench</a>: 測定方式の参照。</li>
+        <li><a href="https://deepswe.datacurve.ai/blog/deepswe">DeepSWE Report</a>: 日本語HTMLレポートの品質目標。</li>
+        <li><a href="https://openrouter.ai/moonshotai/kimi-k2.7-code">OpenRouter Kimi K2.7 Code</a>: Kimi worker の provider/model 参照。</li>
+        <li><a href="https://openrouter.ai/z-ai/glm-5.2">OpenRouter GLM-5.2</a>: GLM-5.2 worker の provider/model 参照。</li>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>

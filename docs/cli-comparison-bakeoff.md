@@ -1,7 +1,8 @@
 # CLI comparison bakeoff
 
-This page defines the `v0.36.15` bakeoff evidence path for comparing Claude
-Code, Codex, and Antigravity CLI as winsmux worker-pane candidates.
+This page defines the `v0.36.17` Harness Bench evidence path for comparing
+Claude Code, Codex, Antigravity CLI, and OpenRouter-backed open-weight LLM
+workers as winsmux worker-pane candidates.
 
 The bakeoff is not a model leaderboard. It is an operator evidence workflow for
 deciding which CLI is suitable for a task class inside winsmux.
@@ -14,7 +15,13 @@ The tracked task pack lives in `tasks/cli-bakeoff/v1/`.
 - `WB-*.md` files are shared task packets.
 - Every worker in a run must receive the same task packet content.
 - A worker result is scoreable only when it completed and the desktop recording evidence is publishable.
-- Blocked runs, empty Antigravity stdout, missing end markers, packet hash mismatches, and missing recordings are kept as evidence but are excluded from model scoring.
+- The official task target is 27 tasks with a 60 minute timeout per task.
+- The operator is not scored. The operator may assign panes, run commands,
+  collect logs, mark exclusions, update reports, and manage release gates, but
+  must not improve a worker answer mid-run.
+- Blocked runs, missing API keys, timeouts, crashes, empty stdout, invalid
+  output, missing end markers, packet hash mismatches, and missing recordings
+  are kept as evidence but are excluded from model scoring.
 
 The required local evidence directory is `.winsmux/evidence/cli-bakeoff/<run-id>/`.
 That directory is intentionally not committed.

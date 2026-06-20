@@ -336,7 +336,8 @@ type RuntimeRoleId = "operator" | "worker" | "reviewer";
 type RuntimeProviderId = "provider-default" | "codex" | "claude" | "gemini" | "antigravity";
 type RuntimeModelSource = "provider-default" | "cli-discovery" | "official-doc" | "operator-override";
 type RuntimeReasoningEffort = "provider-default" | "low" | "medium" | "high" | "xhigh" | "max";
-type RuntimeModelCatalogStatus = "selectable" | "candidate" | "reference-only" | "unavailable";
+type RuntimeModelCatalogStatus = "selectable" | "candidate" | "setup-required" | "runnable" | "blocked" | "reference-only" | "unavailable";
+type RuntimeModelWorkerReadinessState = "runnable" | "setup-required" | "blocked";
 type RuntimeModelBenchmarkFamily = "agent-arena" | "code-arena" | "winsmux-local";
 type ComposerPermissionMode = "auto" | "default" | "acceptEdits" | "plan";
 type ComposerEffortLevel = "auto" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -1368,19 +1369,19 @@ const runtimeModelCatalog: RuntimeModelCatalogEntry[] = [
     reasoningEffort: "provider-default",
     promptTransport: "file",
     authMode: "api-key-env",
-    requiredEnv: "WINSMUX_OPENROUTER_API_KEY",
+    requiredEnv: "OPENROUTER_API_KEY",
     requiredBackend: "api_llm",
-    status: "candidate",
+    status: "setup-required",
     family: "code-arena",
     speed: "hosted",
     intelligence: "high",
     cost: "external-api",
     risk: "api-key-env",
-    availability: "Requires api_llm slot metadata and WINSMUX_OPENROUTER_API_KEY.",
-    benchmark: "Code Arena / Agent Arena reference; local API run required",
+    availability: "Requires an api_llm slot and OPENROUTER_API_KEY. WINSMUX_OPENROUTER_API_KEY remains a legacy override.",
+    benchmark: "Code Arena / Agent Arena reference plus Harness Bench run evidence",
     evidence: "operator-override",
-    note: "Candidate only until the slot is api_llm and the OpenRouter env var is configured.",
-    noteJa: "api_llm スロットと OpenRouter 環境変数が揃うまで候補扱いです。",
+    note: "Setup required until the slot is api_llm and the OpenRouter API key env is configured.",
+    noteJa: "api_llm スロットと OpenRouter API key 環境変数が揃うと実行可能です。",
   },
   {
     id: "qwen-3-6-reference",
@@ -1406,27 +1407,30 @@ const runtimeModelCatalog: RuntimeModelCatalogEntry[] = [
     noteJa: "Colab open-weight 比較の参照行です。ローカルワーカーで動くとは扱いません。",
   },
   {
-    id: "kimi-k2-7-code-reference",
-    label: "Kimi K2.7 Code",
-    labelJa: "Kimi K2.7 Code",
-    agent: "colab_cli",
-    model: "moonshotai/Kimi-K2.7-Code",
-    modelSource: "official-doc",
+    id: "openrouter-kimi-k2-7-code",
+    label: "Kimi K2.7 Code via OpenRouter",
+    labelJa: "Kimi K2.7 Code / OpenRouter",
+    agent: "openrouter",
+    model: "moonshotai/kimi-k2.7-code",
+    modelSource: "operator-override",
     reasoningEffort: "provider-default",
     promptTransport: "file",
-    authMode: "runtime-owned",
-    requiredBackend: "colab_cli",
-    status: "reference-only",
+    authMode: "api-key-env",
+    requiredEnv: "OPENROUTER_API_KEY",
+    requiredBackend: "api_llm",
+    status: "setup-required",
     family: "agent-arena",
-    speed: "large-reference",
+    speed: "hosted",
     intelligence: "high",
-    cost: "runtime-dependent",
-    risk: "large-model",
-    availability: "Reference candidate; too large for default single-runtime desktop execution.",
-    benchmark: "Agent Arena and v0.36.13 model plan reference",
+    cost: "external-api",
+    risk: "api-key-env",
+    availability: "Requires an api_llm slot and OPENROUTER_API_KEY. WINSMUX_OPENROUTER_API_KEY remains a legacy override.",
+    benchmark: "Agent Arena reference plus Harness Bench run evidence",
     evidence: "official-doc",
-    note: "Keep as a benchmark reference until a runnable hosted or Colab path is proven.",
-    noteJa: "実行経路が確認されるまでベンチ参照として扱います。",
+    sourceLabel: "OpenRouter model page + official model weights",
+    captureDate: "2026-06-20",
+    note: "Setup required until the slot is api_llm and the OpenRouter API key env is configured.",
+    noteJa: "api_llm スロットと OpenRouter API key 環境変数が揃うと実行可能です。",
   },
   {
     id: "claude-fable-5-unavailable",
@@ -1456,7 +1460,7 @@ const runtimeModelCatalog: RuntimeModelCatalogEntry[] = [
 const runtimeModelSuggestions = Array.from(new Set([
   "provider-default",
   ...runtimeModelCatalog
-    .filter((entry) => entry.status === "selectable" || entry.status === "candidate")
+    .filter((entry) => entry.status === "selectable" || entry.status === "candidate" || entry.status === "setup-required" || entry.status === "runnable")
     .map((entry) => entry.model),
   "default",
   "opusplan",
@@ -9172,6 +9176,9 @@ function getRuntimeCatalogStatusLabel(status: RuntimeModelCatalogStatus, japanes
   const labels: Record<RuntimeModelCatalogStatus, { en: string; ja: string }> = {
     selectable: { en: "selectable", ja: "選択可" },
     candidate: { en: "candidate", ja: "候補" },
+    "setup-required": { en: "setup required", ja: "設定待ち" },
+    runnable: { en: "runnable", ja: "実行可能" },
+    blocked: { en: "blocked", ja: "ブロック" },
     "reference-only": { en: "reference only", ja: "参照のみ" },
     unavailable: { en: "unavailable", ja: "利用不可" },
   };
@@ -9219,41 +9226,111 @@ function normalizeRuntimeCredentialStatus(value: string) {
   return value.trim().toLowerCase().replace(/[\s-]+/g, "_");
 }
 
-function isRuntimeModelAssignableToWorker(entry: RuntimeModelCatalogEntry, row: DesktopWorkerStatusRow) {
+function getRuntimeModelAcceptedEnvNames(entry: RuntimeModelCatalogEntry) {
+  const names = [entry.requiredEnv].filter(Boolean) as string[];
+  if (entry.agent.toLowerCase() === "openrouter" && entry.requiredEnv === "OPENROUTER_API_KEY") {
+    names.push("WINSMUX_OPENROUTER_API_KEY");
+  }
+  return names;
+}
+
+function getRuntimeWorkerReadinessLabel(state: RuntimeModelWorkerReadinessState, japanese: boolean) {
+  if (state === "runnable") {
+    return japanese ? "実行可能" : "runnable";
+  }
+  if (state === "setup-required") {
+    return japanese ? "設定待ち" : "setup required";
+  }
+  return japanese ? "ブロック" : "blocked";
+}
+
+function getRuntimeModelReadinessForWorker(entry: RuntimeModelCatalogEntry, row: DesktopWorkerStatusRow, japanese: boolean = false) {
   if (entry.status === "reference-only" || entry.status === "unavailable") {
-    return false;
+    return {
+      assignable: false,
+      state: "blocked" as RuntimeModelWorkerReadinessState,
+      reason: japanese
+        ? (entry.status === "unavailable" ? "上流providerで利用不可です。" : "比較参照のみで、workerとしては選択できません。")
+        : (entry.status === "unavailable" ? "The upstream provider marks this unavailable." : "Reference-only entry; it cannot be assigned as a worker."),
+    };
+  }
+  if (entry.status === "blocked") {
+    return {
+      assignable: false,
+      state: "blocked" as RuntimeModelWorkerReadinessState,
+      reason: japanese ? entry.noteJa : entry.note,
+    };
   }
   if (entry.id === "provider-default") {
-    return true;
+    return { assignable: true, state: "runnable" as RuntimeModelWorkerReadinessState, reason: "" };
   }
   const backend = getWorkerBackendForCatalog(row);
   if (entry.requiredBackend === "any") {
-    return true;
+    return { assignable: true, state: "runnable" as RuntimeModelWorkerReadinessState, reason: "" };
   }
   if (entry.requiredBackend === "agent-cli") {
-    return backend === "local" || backend === "codex" || backend === "claude" || backend === "";
+    const assignable = backend === "local" || backend === "codex" || backend === "claude" || backend === "";
+    return {
+      assignable,
+      state: assignable ? "runnable" as RuntimeModelWorkerReadinessState : "blocked" as RuntimeModelWorkerReadinessState,
+      reason: assignable ? "" : (japanese ? "このモデルはエージェントCLI worker slot が必要です。" : "This model requires an agent CLI worker slot."),
+    };
   }
   if (backend !== entry.requiredBackend) {
-    return false;
+    const state: RuntimeModelWorkerReadinessState = entry.requiredBackend === "api_llm" ? "setup-required" : "blocked";
+    return {
+      assignable: false,
+      state,
+      reason: japanese
+        ? `${entry.requiredBackend} worker slot が必要です。現在の backend は ${backend || "未設定"} です。`
+        : `Requires a ${entry.requiredBackend} worker slot. Current backend is ${backend || "unset"}.`,
+    };
   }
   if (entry.requiredEnv) {
     const launch = getWorkerStatusLaunch(row);
     const apiKeyEnv = String(row.api_key_env ?? getLaunchApprovalField(launch, "api_key_env") ?? "").trim();
+    const acceptedEnvNames = getRuntimeModelAcceptedEnvNames(entry);
     const credentialReadinessValues = [
       row.api_key_env_status,
       row.credential_status,
       getLaunchApprovalField(launch, "api_key_env_status"),
       getLaunchApprovalField(launch, "credential_status"),
     ].map((value) => normalizeRuntimeCredentialStatus(String(value ?? ""))).filter(Boolean);
-    if (apiKeyEnv !== entry.requiredEnv || credentialReadinessValues.length === 0) {
-      return false;
+    if (!acceptedEnvNames.includes(apiKeyEnv)) {
+      return {
+        assignable: false,
+        state: "setup-required" as RuntimeModelWorkerReadinessState,
+        reason: japanese
+          ? `${acceptedEnvNames.join(" または ")} を worker 環境変数として設定してください。現在は ${apiKeyEnv || "未設定"} です。`
+          : `Set ${acceptedEnvNames.join(" or ")} as the worker API key env. Current value is ${apiKeyEnv || "unset"}.`,
+      };
+    }
+    if (credentialReadinessValues.length === 0) {
+      return {
+        assignable: false,
+        state: "setup-required" as RuntimeModelWorkerReadinessState,
+        reason: japanese
+          ? `${apiKeyEnv} の設定状態がまだ確認できていません。`
+          : `${apiKeyEnv} credential readiness has not been confirmed yet.`,
+      };
     }
     if (credentialReadinessValues.some((value) => runtimeCredentialBlockedStatuses.has(value))) {
-      return false;
+      return {
+        assignable: false,
+        state: "setup-required" as RuntimeModelWorkerReadinessState,
+        reason: japanese
+          ? `${apiKeyEnv} は未設定または利用不可です。`
+          : `${apiKeyEnv} is missing or not ready.`,
+      };
     }
-    return credentialReadinessValues.some((value) => runtimeCredentialReadyStatuses.has(value));
+    const assignable = credentialReadinessValues.some((value) => runtimeCredentialReadyStatuses.has(value));
+    return {
+      assignable,
+      state: assignable ? "runnable" as RuntimeModelWorkerReadinessState : "setup-required" as RuntimeModelWorkerReadinessState,
+      reason: assignable ? "" : (japanese ? `${apiKeyEnv} の設定完了を確認できません。` : `${apiKeyEnv} is not confirmed as configured.`),
+    };
   }
-  return true;
+  return { assignable: true, state: "runnable" as RuntimeModelWorkerReadinessState, reason: "" };
 }
 
 function getWorkerRuntimeCatalogEntryId(row: DesktopWorkerStatusRow) {
@@ -9268,8 +9345,10 @@ function getWorkerRuntimeCatalogEntryId(row: DesktopWorkerStatusRow) {
   return match?.id ?? "";
 }
 
-function getRuntimeCatalogOptionLabel(entry: RuntimeModelCatalogEntry, japanese: boolean) {
-  const status = getRuntimeCatalogStatusLabel(entry.status, japanese);
+function getRuntimeCatalogOptionLabel(entry: RuntimeModelCatalogEntry, japanese: boolean, row?: DesktopWorkerStatusRow) {
+  const status = row
+    ? getRuntimeWorkerReadinessLabel(getRuntimeModelReadinessForWorker(entry, row, japanese).state, japanese)
+    : getRuntimeCatalogStatusLabel(entry.status, japanese);
   const label = japanese ? entry.labelJa : entry.label;
   return `${label} · ${status}`;
 }
@@ -9278,7 +9357,7 @@ function getRuntimeCatalogSourceLabel(entry: RuntimeModelCatalogEntry) {
   if (entry.sourceLabel) {
     return entry.sourceLabel;
   }
-  if (entry.status === "unavailable") {
+  if (entry.status === "unavailable" || entry.status === "blocked") {
     return "provider official availability";
   }
   if (entry.status === "reference-only") {
@@ -9310,7 +9389,10 @@ function getRuntimeCatalogRunId(entry: RuntimeModelCatalogEntry) {
   if (entry.status === "reference-only") {
     return "reference-only";
   }
-  if (entry.status === "unavailable") {
+  if (entry.status === "setup-required") {
+    return "setup-required";
+  }
+  if (entry.status === "unavailable" || entry.status === "blocked") {
     return "unavailable";
   }
   return "pending-local-run";
@@ -9323,17 +9405,17 @@ function getRuntimeCatalogConfidenceNote(entry: RuntimeModelCatalogEntry, japane
   if (entry.confidenceNote) {
     return entry.confidenceNote;
   }
-  if (entry.status === "candidate") {
+  if (entry.status === "candidate" || entry.status === "setup-required") {
     return japanese
-      ? "認証、backend、ローカルrun idの確認が必要です。"
-      : "Requires credential, backend, and local run-id confirmation.";
+      ? "認証、api_llm backend、ローカルrun idの確認が必要です。"
+      : "Requires credential, api_llm backend, and local run-id confirmation.";
   }
   if (entry.status === "reference-only") {
     return japanese
       ? "比較参照です。workerで実行できる証跡ではありません。"
       : "Comparison reference only; not runnable worker evidence.";
   }
-  if (entry.status === "unavailable") {
+  if (entry.status === "unavailable" || entry.status === "blocked") {
     return japanese
       ? "上流providerが公式に利用不可としています。"
       : "The upstream provider marks this unavailable.";
@@ -9417,8 +9499,8 @@ function renderWorkerModelAssignmentPanel(japanese: boolean) {
   const description = document.createElement("div");
   description.className = "runtime-role-description";
   description.textContent = japanese
-    ? "検出済み worker slot にだけモデル上書きを適用します。参照のみ、利用不可、またはバックエンド不一致の候補は選べません。"
-    : "Apply model overrides to detected worker slots only. Reference-only, unavailable, and backend-mismatched entries cannot be selected.";
+    ? "検出済み worker slot にだけモデル上書きを適用します。設定待ちの行は、必要な backend と API key 環境変数を満たすと選択できます。"
+    : "Apply model overrides to detected worker slots only. Setup-required rows become selectable when backend and API key env requirements are met.";
   panel.append(title, description);
 
   const rows = getWorkerStatusRowsForSurface().filter((row) => getWorkerStatusTarget(row)).slice(0, MAX_WORKBENCH_PANES);
@@ -9462,8 +9544,10 @@ function renderWorkerModelAssignmentPanel(japanese: boolean) {
     for (const entry of runtimeModelCatalog) {
       const option = document.createElement("option");
       option.value = entry.id;
-      option.textContent = getRuntimeCatalogOptionLabel(entry, japanese);
-      option.disabled = !isRuntimeModelAssignableToWorker(entry, row);
+      const readiness = getRuntimeModelReadinessForWorker(entry, row, japanese);
+      option.textContent = getRuntimeCatalogOptionLabel(entry, japanese, row);
+      option.disabled = !readiness.assignable;
+      option.title = readiness.reason;
       option.selected = entry.id === currentCatalogId;
       select.appendChild(option);
     }
@@ -9477,10 +9561,10 @@ function renderWorkerModelAssignmentPanel(japanese: boolean) {
       : (japanese ? "適用" : "Apply");
     const updateActionState = () => {
       const selectedEntry = findRuntimeModelCatalogEntry(select.value);
-      const assignable = selectedEntry ? isRuntimeModelAssignableToWorker(selectedEntry, row) : false;
-      action.disabled = Boolean(workerProviderSwitchInFlight) || !assignable;
+      const readiness = selectedEntry ? getRuntimeModelReadinessForWorker(selectedEntry, row, japanese) : null;
+      action.disabled = Boolean(workerProviderSwitchInFlight) || !readiness?.assignable;
       action.title = selectedEntry
-        ? (assignable ? "" : (japanese ? selectedEntry.noteJa : selectedEntry.note))
+        ? (readiness?.assignable ? "" : (readiness?.reason || (japanese ? selectedEntry.noteJa : selectedEntry.note)))
         : (japanese
             ? "現在のカスタム設定です。既定へ戻す場合は明示的に自動 / プロバイダー既定を選んでください。"
             : "This is the current custom setting. Explicitly select Auto / provider default to clear it.");

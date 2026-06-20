@@ -164,16 +164,17 @@ winsmux はベンダーごとに固定された役割ではなく、スロット
 `api_llm` スロットは、外部APIモデル実行をローカルワーカーや Colab ワーカーと
 分けて扱います。たとえば provider に `openrouter`、model に `z-ai/glm-5.2`、
 `prompt-transport: file`、`auth-mode: api-key-env` を指定できます。
-OpenRouter を環境変数で使う場合の既定名は `WINSMUX_OPENROUTER_API_KEY` です。
-公開リポジトリでの標準手順では、Windows のユーザー環境変数として保存し、
-新しい PowerShell を開いてから `winsmux` を実行します。
+OpenRouter を環境変数で使う場合の既定名は `OPENROUTER_API_KEY` です。
+既存ローカル設定向けに `WINSMUX_OPENROUTER_API_KEY` も明示上書きとして使えますが、
+公開リポジトリの標準手順では provider 側の自然な名前を使います。Windows の
+ユーザー環境変数として保存し、新しい PowerShell を開いてから `winsmux` を実行します。
 
 ```powershell
 $secret = Read-Host -AsSecureString "OpenRouter API key"
 $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secret)
 try {
   [Environment]::SetEnvironmentVariable(
-    "WINSMUX_OPENROUTER_API_KEY",
+    "OPENROUTER_API_KEY",
     [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr),
     "User"
   )
@@ -186,7 +187,7 @@ try {
 反映確認では値を表示せず、設定済みかだけを確認します。
 
 ```powershell
-if ([string]::IsNullOrWhiteSpace($env:WINSMUX_OPENROUTER_API_KEY)) { "missing" } else { "configured" }
+if ([string]::IsNullOrWhiteSpace($env:OPENROUTER_API_KEY)) { "missing" } else { "configured" }
 ```
 
 シェル起動ファイル、コマンド履歴、リポジトリ内の `.env`、公開ドキュメント、PR 本文、

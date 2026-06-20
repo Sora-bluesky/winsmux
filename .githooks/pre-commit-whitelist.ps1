@@ -48,6 +48,7 @@ $whitelistPatterns = @(
     'docs/authentication-support.md',
     'docs/authentication-support.ja.md',
     'docs/cli-comparison-bakeoff.md',
+    'docs/benchmarks/*.html',
     'docs/provider-and-model-support.md',
     'docs/provider-and-model-support.ja.md',
     'docs/external-control-plane.md',

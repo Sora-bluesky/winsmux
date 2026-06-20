@@ -1,9 +1,9 @@
 {
   "version": 1,
   "pack_id": "winsmux-cli-bakeoff-v1",
-  "title": "winsmux CLI worker-pane benchmark pilot",
+  "title": "winsmux Harness Bench worker-pane benchmark",
   "methodology_reference": "https://nyosegawa.com/posts/harness-bench/",
-  "minimum_task_count_for_directional_findings": 9,
+  "minimum_task_count_for_directional_findings": 27,
   "official_task_count_target": 27,
   "review_model": "gpt-5.5",
   "review_policy": {
@@ -47,9 +47,14 @@
     "preflight_all_pass_before_recording",
     "desktop_app_screen_recording_required",
     "non_completed_worker_results_excluded_from_scoring",
-    "antigravity_empty_stdout_excluded_from_machine_scoring"
+    "antigravity_empty_stdout_excluded_from_machine_scoring",
+    "harness_bench_27_tasks_required",
+    "hidden_tests_required",
+    "sanitized_workspace_required",
+    "operator_rows_excluded_from_scoring",
+    "missing_key_timeout_crash_empty_stdout_invalid_output_excluded_from_scoring"
   ],
-  "default_timeout_seconds": 900,
+  "default_timeout_seconds": 3600,
   "default_workers": [
     {
       "pane": "worker-1",
@@ -80,6 +85,32 @@
       "cli": "Antigravity CLI",
       "model": "Gemini 3.5 Flash (Medium)",
       "display_model": "Antigravity CLI / Gemini 3.5 Flash (Medium)"
+    },
+    {
+      "pane": "worker-5",
+      "role": "openrouter-kimi-code",
+      "cli": "OpenRouter API",
+      "worker_backend": "api_llm",
+      "agent": "openrouter",
+      "model": "moonshotai/kimi-k2.7-code",
+      "effort": "provider-default",
+      "display_model": "OpenRouter / Kimi K2.7 Code",
+      "auth_mode": "api-key-env",
+      "required_env": "OPENROUTER_API_KEY",
+      "scored": true
+    },
+    {
+      "pane": "worker-6",
+      "role": "openrouter-glm-code",
+      "cli": "OpenRouter API",
+      "worker_backend": "api_llm",
+      "agent": "openrouter",
+      "model": "z-ai/glm-5.2",
+      "effort": "provider-default",
+      "display_model": "OpenRouter / GLM-5.2",
+      "auth_mode": "api-key-env",
+      "required_env": "OPENROUTER_API_KEY",
+      "scored": true
     }
   ],
   "tasks": [
@@ -101,7 +132,16 @@
         "cites desktop_backend and main.ts evidence",
         "distinguishes model failure from runner failure",
         "includes a rerun-safe mitigation"
-      ]
+      ],
+      "hidden_test": {
+        "contract_version": 1,
+        "fixture_scope": "private-harness-fixture",
+        "result_schema": "hidden_tests_passed/hidden_tests_total plus deterministic_score",
+        "public_disclosure": "categories-only",
+        "expected_signature": "wb-001-hidden-contract"
+      },
+      "timeout_seconds": 3600,
+      "sanitized_workspace_required": true
     },
     {
       "task_id": "WB-002",
@@ -121,7 +161,16 @@
         "mentions parent-child process cleanup",
         "captures Windows wait behavior",
         "separates app shutdown from pane reset"
-      ]
+      ],
+      "hidden_test": {
+        "contract_version": 1,
+        "fixture_scope": "private-harness-fixture",
+        "result_schema": "hidden_tests_passed/hidden_tests_total plus deterministic_score",
+        "public_disclosure": "categories-only",
+        "expected_signature": "wb-002-hidden-contract"
+      },
+      "timeout_seconds": 3600,
+      "sanitized_workspace_required": true
     },
     {
       "task_id": "WB-003",
@@ -141,7 +190,16 @@
         "checks default hidden state",
         "checks view menu toggle",
         "checks worker pane space impact"
-      ]
+      ],
+      "hidden_test": {
+        "contract_version": 1,
+        "fixture_scope": "private-harness-fixture",
+        "result_schema": "hidden_tests_passed/hidden_tests_total plus deterministic_score",
+        "public_disclosure": "categories-only",
+        "expected_signature": "wb-003-hidden-contract"
+      },
+      "timeout_seconds": 3600,
+      "sanitized_workspace_required": true
     },
     {
       "task_id": "WB-004",
@@ -161,7 +219,16 @@
         "flags private strategy leakage",
         "checks English and Japanese docs",
         "keeps public wording actionable"
-      ]
+      ],
+      "hidden_test": {
+        "contract_version": 1,
+        "fixture_scope": "private-harness-fixture",
+        "result_schema": "hidden_tests_passed/hidden_tests_total plus deterministic_score",
+        "public_disclosure": "categories-only",
+        "expected_signature": "wb-004-hidden-contract"
+      },
+      "timeout_seconds": 3600,
+      "sanitized_workspace_required": true
     },
     {
       "task_id": "WB-005",
@@ -181,7 +248,16 @@
         "requires agy version evidence",
         "requires model selection evidence",
         "separates migration support from Gemini CLI parity"
-      ]
+      ],
+      "hidden_test": {
+        "contract_version": 1,
+        "fixture_scope": "private-harness-fixture",
+        "result_schema": "hidden_tests_passed/hidden_tests_total plus deterministic_score",
+        "public_disclosure": "categories-only",
+        "expected_signature": "wb-005-hidden-contract"
+      },
+      "timeout_seconds": 3600,
+      "sanitized_workspace_required": true
     },
     {
       "task_id": "WB-006",
@@ -201,7 +277,16 @@
         "prioritizes P0/P1 over style",
         "contains reproducible file references",
         "avoids speculative findings"
-      ]
+      ],
+      "hidden_test": {
+        "contract_version": 1,
+        "fixture_scope": "private-harness-fixture",
+        "result_schema": "hidden_tests_passed/hidden_tests_total plus deterministic_score",
+        "public_disclosure": "categories-only",
+        "expected_signature": "wb-006-hidden-contract"
+      },
+      "timeout_seconds": 3600,
+      "sanitized_workspace_required": true
     },
     {
       "task_id": "WB-007",
@@ -221,7 +306,16 @@
         "scores useful parallel work rather than agent count",
         "detects duplicate work risk",
         "includes integration ownership"
-      ]
+      ],
+      "hidden_test": {
+        "contract_version": 1,
+        "fixture_scope": "private-harness-fixture",
+        "result_schema": "hidden_tests_passed/hidden_tests_total plus deterministic_score",
+        "public_disclosure": "categories-only",
+        "expected_signature": "wb-007-hidden-contract"
+      },
+      "timeout_seconds": 3600,
+      "sanitized_workspace_required": true
     },
     {
       "task_id": "WB-008",
@@ -241,7 +335,16 @@
         "checks shortcut icon evidence",
         "checks context menu localization",
         "separates setup.exe and MSI evidence"
-      ]
+      ],
+      "hidden_test": {
+        "contract_version": 1,
+        "fixture_scope": "private-harness-fixture",
+        "result_schema": "hidden_tests_passed/hidden_tests_total plus deterministic_score",
+        "public_disclosure": "categories-only",
+        "expected_signature": "wb-008-hidden-contract"
+      },
+      "timeout_seconds": 3600,
+      "sanitized_workspace_required": true
     },
     {
       "task_id": "WB-009",
@@ -261,7 +364,570 @@
         "requires one-glance scorecard",
         "requires blocked run exclusion",
         "requires third-party reproducibility"
-      ]
+      ],
+      "hidden_test": {
+        "contract_version": 1,
+        "fixture_scope": "private-harness-fixture",
+        "result_schema": "hidden_tests_passed/hidden_tests_total plus deterministic_score",
+        "public_disclosure": "categories-only",
+        "expected_signature": "wb-009-hidden-contract"
+      },
+      "timeout_seconds": 3600,
+      "sanitized_workspace_required": true
+    },
+    {
+      "task_id": "WB-010",
+      "title": "OpenRouter API worker readiness",
+      "task_class": "hosted_api_readiness",
+      "packet_path": "WB-010-openrouter-api-worker-readiness.md",
+      "attributes": {
+        "scope": "multiple_artifacts",
+        "ambiguity": "clear",
+        "context_length": "medium",
+        "verification": "hidden_tests_plus_artifact_checks",
+        "parallel_potential": "medium",
+        "risk": "medium",
+        "artifact": "benchmark_evidence"
+      },
+      "hidden_check_categories": [
+        "detects missing API key without network access",
+        "checks api_llm backend metadata",
+        "keeps credential value out of evidence"
+      ],
+      "hidden_test": {
+        "contract_version": 1,
+        "fixture_scope": "private-harness-fixture",
+        "result_schema": "hidden_tests_passed/hidden_tests_total plus deterministic_score",
+        "public_disclosure": "categories-only",
+        "expected_signature": "wb-010-hidden-contract"
+      },
+      "timeout_seconds": 3600,
+      "sanitized_workspace_required": true
+    },
+    {
+      "task_id": "WB-011",
+      "title": "Model picker setup-required review",
+      "task_class": "ui_contract",
+      "packet_path": "WB-011-model-picker-setup-required-review.md",
+      "attributes": {
+        "scope": "multiple_artifacts",
+        "ambiguity": "clear",
+        "context_length": "medium",
+        "verification": "hidden_tests_plus_artifact_checks",
+        "parallel_potential": "medium",
+        "risk": "medium",
+        "artifact": "benchmark_evidence"
+      },
+      "hidden_check_categories": [
+        "distinguishes setup-required from unavailable",
+        "checks runnable state with configured key",
+        "explains disabled assignment reason"
+      ],
+      "hidden_test": {
+        "contract_version": 1,
+        "fixture_scope": "private-harness-fixture",
+        "result_schema": "hidden_tests_passed/hidden_tests_total plus deterministic_score",
+        "public_disclosure": "categories-only",
+        "expected_signature": "wb-011-hidden-contract"
+      },
+      "timeout_seconds": 3600,
+      "sanitized_workspace_required": true
+    },
+    {
+      "task_id": "WB-012",
+      "title": "Harness Bench contract audit",
+      "task_class": "benchmark_contract",
+      "packet_path": "WB-012-harness-bench-contract-audit.md",
+      "attributes": {
+        "scope": "multiple_artifacts",
+        "ambiguity": "clear",
+        "context_length": "medium",
+        "verification": "hidden_tests_plus_artifact_checks",
+        "parallel_potential": "medium",
+        "risk": "medium",
+        "artifact": "benchmark_evidence"
+      },
+      "hidden_check_categories": [
+        "requires 27 tasks",
+        "requires 3600 second timeout",
+        "requires deterministic scoring"
+      ],
+      "hidden_test": {
+        "contract_version": 1,
+        "fixture_scope": "private-harness-fixture",
+        "result_schema": "hidden_tests_passed/hidden_tests_total plus deterministic_score",
+        "public_disclosure": "categories-only",
+        "expected_signature": "wb-012-hidden-contract"
+      },
+      "timeout_seconds": 3600,
+      "sanitized_workspace_required": true
+    },
+    {
+      "task_id": "WB-013",
+      "title": "Operator and worker boundary",
+      "task_class": "run_governance",
+      "packet_path": "WB-013-operator-worker-boundary.md",
+      "attributes": {
+        "scope": "multiple_artifacts",
+        "ambiguity": "clear",
+        "context_length": "medium",
+        "verification": "hidden_tests_plus_artifact_checks",
+        "parallel_potential": "medium",
+        "risk": "medium",
+        "artifact": "benchmark_evidence"
+      },
+      "hidden_check_categories": [
+        "operator is not scored",
+        "worker answers are not improved mid-run",
+        "same conditions for all workers"
+      ],
+      "hidden_test": {
+        "contract_version": 1,
+        "fixture_scope": "private-harness-fixture",
+        "result_schema": "hidden_tests_passed/hidden_tests_total plus deterministic_score",
+        "public_disclosure": "categories-only",
+        "expected_signature": "wb-013-hidden-contract"
+      },
+      "timeout_seconds": 3600,
+      "sanitized_workspace_required": true
+    },
+    {
+      "task_id": "WB-014",
+      "title": "Sanitized workspace check",
+      "task_class": "workspace_hygiene",
+      "packet_path": "WB-014-sanitized-workspace-check.md",
+      "attributes": {
+        "scope": "multiple_artifacts",
+        "ambiguity": "clear",
+        "context_length": "medium",
+        "verification": "hidden_tests_plus_artifact_checks",
+        "parallel_potential": "medium",
+        "risk": "medium",
+        "artifact": "benchmark_evidence"
+      },
+      "hidden_check_categories": [
+        "redacts private paths",
+        "uses tracked packets and untracked evidence",
+        "same sanitized baseline"
+      ],
+      "hidden_test": {
+        "contract_version": 1,
+        "fixture_scope": "private-harness-fixture",
+        "result_schema": "hidden_tests_passed/hidden_tests_total plus deterministic_score",
+        "public_disclosure": "categories-only",
+        "expected_signature": "wb-014-hidden-contract"
+      },
+      "timeout_seconds": 3600,
+      "sanitized_workspace_required": true
+    },
+    {
+      "task_id": "WB-015",
+      "title": "Missing API key exclusion",
+      "task_class": "exclusion_taxonomy",
+      "packet_path": "WB-015-missing-key-exclusion.md",
+      "attributes": {
+        "scope": "multiple_artifacts",
+        "ambiguity": "clear",
+        "context_length": "medium",
+        "verification": "hidden_tests_plus_artifact_checks",
+        "parallel_potential": "medium",
+        "risk": "medium",
+        "artifact": "benchmark_evidence"
+      },
+      "hidden_check_categories": [
+        "classifies missing key separately",
+        "does not print secret values",
+        "keeps evidence but excludes score"
+      ],
+      "hidden_test": {
+        "contract_version": 1,
+        "fixture_scope": "private-harness-fixture",
+        "result_schema": "hidden_tests_passed/hidden_tests_total plus deterministic_score",
+        "public_disclosure": "categories-only",
+        "expected_signature": "wb-015-hidden-contract"
+      },
+      "timeout_seconds": 3600,
+      "sanitized_workspace_required": true
+    },
+    {
+      "task_id": "WB-016",
+      "title": "Timeout exclusion",
+      "task_class": "exclusion_taxonomy",
+      "packet_path": "WB-016-timeout-exclusion.md",
+      "attributes": {
+        "scope": "multiple_artifacts",
+        "ambiguity": "clear",
+        "context_length": "medium",
+        "verification": "hidden_tests_plus_artifact_checks",
+        "parallel_potential": "medium",
+        "risk": "medium",
+        "artifact": "benchmark_evidence"
+      },
+      "hidden_check_categories": [
+        "uses benchmark timeout",
+        "separates infrastructure timeout",
+        "excludes from scored leaderboard"
+      ],
+      "hidden_test": {
+        "contract_version": 1,
+        "fixture_scope": "private-harness-fixture",
+        "result_schema": "hidden_tests_passed/hidden_tests_total plus deterministic_score",
+        "public_disclosure": "categories-only",
+        "expected_signature": "wb-016-hidden-contract"
+      },
+      "timeout_seconds": 3600,
+      "sanitized_workspace_required": true
+    },
+    {
+      "task_id": "WB-017",
+      "title": "Crash exclusion",
+      "task_class": "exclusion_taxonomy",
+      "packet_path": "WB-017-crash-exclusion.md",
+      "attributes": {
+        "scope": "multiple_artifacts",
+        "ambiguity": "clear",
+        "context_length": "medium",
+        "verification": "hidden_tests_plus_artifact_checks",
+        "parallel_potential": "medium",
+        "risk": "medium",
+        "artifact": "benchmark_evidence"
+      },
+      "hidden_check_categories": [
+        "classifies crash separately",
+        "preserves rerun diagnostics",
+        "redacts local evidence"
+      ],
+      "hidden_test": {
+        "contract_version": 1,
+        "fixture_scope": "private-harness-fixture",
+        "result_schema": "hidden_tests_passed/hidden_tests_total plus deterministic_score",
+        "public_disclosure": "categories-only",
+        "expected_signature": "wb-017-hidden-contract"
+      },
+      "timeout_seconds": 3600,
+      "sanitized_workspace_required": true
+    },
+    {
+      "task_id": "WB-018",
+      "title": "Invalid output exclusion",
+      "task_class": "exclusion_taxonomy",
+      "packet_path": "WB-018-invalid-output-exclusion.md",
+      "attributes": {
+        "scope": "multiple_artifacts",
+        "ambiguity": "clear",
+        "context_length": "medium",
+        "verification": "hidden_tests_plus_artifact_checks",
+        "parallel_potential": "medium",
+        "risk": "medium",
+        "artifact": "benchmark_evidence"
+      },
+      "hidden_check_categories": [
+        "detects missing markers",
+        "detects invalid structured output",
+        "does not trust self-report"
+      ],
+      "hidden_test": {
+        "contract_version": 1,
+        "fixture_scope": "private-harness-fixture",
+        "result_schema": "hidden_tests_passed/hidden_tests_total plus deterministic_score",
+        "public_disclosure": "categories-only",
+        "expected_signature": "wb-018-hidden-contract"
+      },
+      "timeout_seconds": 3600,
+      "sanitized_workspace_required": true
+    },
+    {
+      "task_id": "WB-019",
+      "title": "Open-weight worker selection",
+      "task_class": "model_selection",
+      "packet_path": "WB-019-open-weight-worker-selection.md",
+      "attributes": {
+        "scope": "multiple_artifacts",
+        "ambiguity": "clear",
+        "context_length": "medium",
+        "verification": "hidden_tests_plus_artifact_checks",
+        "parallel_potential": "medium",
+        "risk": "medium",
+        "artifact": "benchmark_evidence"
+      },
+      "hidden_check_categories": [
+        "includes Kimi K2.7 Code",
+        "includes GLM-5.2",
+        "separates provider availability from model score"
+      ],
+      "hidden_test": {
+        "contract_version": 1,
+        "fixture_scope": "private-harness-fixture",
+        "result_schema": "hidden_tests_passed/hidden_tests_total plus deterministic_score",
+        "public_disclosure": "categories-only",
+        "expected_signature": "wb-019-hidden-contract"
+      },
+      "timeout_seconds": 3600,
+      "sanitized_workspace_required": true
+    },
+    {
+      "task_id": "WB-020",
+      "title": "Cost and token accounting",
+      "task_class": "efficiency_reporting",
+      "packet_path": "WB-020-cost-and-token-accounting.md",
+      "attributes": {
+        "scope": "multiple_artifacts",
+        "ambiguity": "clear",
+        "context_length": "medium",
+        "verification": "hidden_tests_plus_artifact_checks",
+        "parallel_potential": "medium",
+        "risk": "medium",
+        "artifact": "benchmark_evidence"
+      },
+      "hidden_check_categories": [
+        "records tokens when available",
+        "records cost when available",
+        "redacts provider request ids"
+      ],
+      "hidden_test": {
+        "contract_version": 1,
+        "fixture_scope": "private-harness-fixture",
+        "result_schema": "hidden_tests_passed/hidden_tests_total plus deterministic_score",
+        "public_disclosure": "categories-only",
+        "expected_signature": "wb-020-hidden-contract"
+      },
+      "timeout_seconds": 3600,
+      "sanitized_workspace_required": true
+    },
+    {
+      "task_id": "WB-021",
+      "title": "Failure taxonomy report",
+      "task_class": "failure_analysis",
+      "packet_path": "WB-021-failure-taxonomy-report.md",
+      "attributes": {
+        "scope": "multiple_artifacts",
+        "ambiguity": "clear",
+        "context_length": "medium",
+        "verification": "hidden_tests_plus_artifact_checks",
+        "parallel_potential": "medium",
+        "risk": "medium",
+        "artifact": "benchmark_evidence"
+      },
+      "hidden_check_categories": [
+        "covers missing key timeout crash empty stdout invalid output",
+        "keeps exclusions out of denominator",
+        "supports assignment policy"
+      ],
+      "hidden_test": {
+        "contract_version": 1,
+        "fixture_scope": "private-harness-fixture",
+        "result_schema": "hidden_tests_passed/hidden_tests_total plus deterministic_score",
+        "public_disclosure": "categories-only",
+        "expected_signature": "wb-021-hidden-contract"
+      },
+      "timeout_seconds": 3600,
+      "sanitized_workspace_required": true
+    },
+    {
+      "task_id": "WB-022",
+      "title": "Run evidence redaction",
+      "task_class": "public_surface",
+      "packet_path": "WB-022-run-evidence-redaction.md",
+      "attributes": {
+        "scope": "multiple_artifacts",
+        "ambiguity": "clear",
+        "context_length": "medium",
+        "verification": "hidden_tests_plus_artifact_checks",
+        "parallel_potential": "medium",
+        "risk": "medium",
+        "artifact": "benchmark_evidence"
+      },
+      "hidden_check_categories": [
+        "omits raw prompts",
+        "omits local user names",
+        "omits provider request ids"
+      ],
+      "hidden_test": {
+        "contract_version": 1,
+        "fixture_scope": "private-harness-fixture",
+        "result_schema": "hidden_tests_passed/hidden_tests_total plus deterministic_score",
+        "public_disclosure": "categories-only",
+        "expected_signature": "wb-022-hidden-contract"
+      },
+      "timeout_seconds": 3600,
+      "sanitized_workspace_required": true
+    },
+    {
+      "task_id": "WB-023",
+      "title": "Release gate evidence",
+      "task_class": "release_work",
+      "packet_path": "WB-023-release-gate-evidence.md",
+      "attributes": {
+        "scope": "multiple_artifacts",
+        "ambiguity": "clear",
+        "context_length": "medium",
+        "verification": "hidden_tests_plus_artifact_checks",
+        "parallel_potential": "medium",
+        "risk": "medium",
+        "artifact": "benchmark_evidence"
+      },
+      "hidden_check_categories": [
+        "requires public-surface audit",
+        "requires secret scan",
+        "requires GitHub release"
+      ],
+      "hidden_test": {
+        "contract_version": 1,
+        "fixture_scope": "private-harness-fixture",
+        "result_schema": "hidden_tests_passed/hidden_tests_total plus deterministic_score",
+        "public_disclosure": "categories-only",
+        "expected_signature": "wb-023-hidden-contract"
+      },
+      "timeout_seconds": 3600,
+      "sanitized_workspace_required": true
+    },
+    {
+      "task_id": "WB-024",
+      "title": "Worker pane assignment plan",
+      "task_class": "parallel_fanout",
+      "packet_path": "WB-024-worker-pane-assignment-plan.md",
+      "attributes": {
+        "scope": "multiple_artifacts",
+        "ambiguity": "clear",
+        "context_length": "medium",
+        "verification": "hidden_tests_plus_artifact_checks",
+        "parallel_potential": "medium",
+        "risk": "medium",
+        "artifact": "benchmark_evidence"
+      },
+      "hidden_check_categories": [
+        "supports cohort split",
+        "keeps identical conditions",
+        "separates reruns from duplicate work"
+      ],
+      "hidden_test": {
+        "contract_version": 1,
+        "fixture_scope": "private-harness-fixture",
+        "result_schema": "hidden_tests_passed/hidden_tests_total plus deterministic_score",
+        "public_disclosure": "categories-only",
+        "expected_signature": "wb-024-hidden-contract"
+      },
+      "timeout_seconds": 3600,
+      "sanitized_workspace_required": true
+    },
+    {
+      "task_id": "WB-025",
+      "title": "Hidden test result schema",
+      "task_class": "scoring_schema",
+      "packet_path": "WB-025-hidden-test-result-schema.md",
+      "attributes": {
+        "scope": "multiple_artifacts",
+        "ambiguity": "clear",
+        "context_length": "medium",
+        "verification": "hidden_tests_plus_artifact_checks",
+        "parallel_potential": "medium",
+        "risk": "medium",
+        "artifact": "benchmark_evidence"
+      },
+      "hidden_check_categories": [
+        "does not reveal hidden fixtures",
+        "calculates pass rate deterministically",
+        "excludes non-scoreable runs"
+      ],
+      "hidden_test": {
+        "contract_version": 1,
+        "fixture_scope": "private-harness-fixture",
+        "result_schema": "hidden_tests_passed/hidden_tests_total plus deterministic_score",
+        "public_disclosure": "categories-only",
+        "expected_signature": "wb-025-hidden-contract"
+      },
+      "timeout_seconds": 3600,
+      "sanitized_workspace_required": true
+    },
+    {
+      "task_id": "WB-026",
+      "title": "Comparison policy check",
+      "task_class": "assignment_policy",
+      "packet_path": "WB-026-comparison-policy-check.md",
+      "attributes": {
+        "scope": "multiple_artifacts",
+        "ambiguity": "clear",
+        "context_length": "medium",
+        "verification": "hidden_tests_plus_artifact_checks",
+        "parallel_potential": "medium",
+        "risk": "medium",
+        "artifact": "benchmark_evidence"
+      },
+      "hidden_check_categories": [
+        "requires reproducibility",
+        "requires reviewer signoff",
+        "does not overfit defaults"
+      ],
+      "hidden_test": {
+        "contract_version": 1,
+        "fixture_scope": "private-harness-fixture",
+        "result_schema": "hidden_tests_passed/hidden_tests_total plus deterministic_score",
+        "public_disclosure": "categories-only",
+        "expected_signature": "wb-026-hidden-contract"
+      },
+      "timeout_seconds": 3600,
+      "sanitized_workspace_required": true
+    },
+    {
+      "task_id": "WB-027",
+      "title": "HTML report readiness",
+      "task_class": "report_quality",
+      "packet_path": "WB-027-html-report-readiness.md",
+      "attributes": {
+        "scope": "multiple_artifacts",
+        "ambiguity": "clear",
+        "context_length": "medium",
+        "verification": "hidden_tests_plus_artifact_checks",
+        "parallel_potential": "medium",
+        "risk": "medium",
+        "artifact": "benchmark_evidence"
+      },
+      "hidden_check_categories": [
+        "checks all report sections",
+        "rejects placeholder scores",
+        "keeps private evidence out"
+      ],
+      "hidden_test": {
+        "contract_version": 1,
+        "fixture_scope": "private-harness-fixture",
+        "result_schema": "hidden_tests_passed/hidden_tests_total plus deterministic_score",
+        "public_disclosure": "categories-only",
+        "expected_signature": "wb-027-hidden-contract"
+      },
+      "timeout_seconds": 3600,
+      "sanitized_workspace_required": true
     }
-  ]
+  ],
+  "workspace_policy": {
+    "sanitized_workspace_required": true,
+    "reset_mode": "fresh-clone-or-git-clean-reset",
+    "evidence_root": ".winsmux/evidence/cli-bakeoff/<run-id>",
+    "public_redaction": [
+      "api_keys",
+      "raw_prompts",
+      "local_user_names",
+      "provider_request_ids",
+      "unredacted_transcripts"
+    ],
+    "same_workspace_conditions_for_all_workers": true
+  },
+  "operator": {
+    "pane": "operator",
+    "role": "run-control",
+    "scored": false,
+    "responsibilities": [
+      "environment-check",
+      "pane-assignment",
+      "run-management",
+      "log-collection",
+      "exclusion-decision",
+      "report-update",
+      "release-gate-management"
+    ],
+    "forbidden_actions": [
+      "modify-worker-answer-mid-run",
+      "change-task-set-per-worker",
+      "change-timeout-per-worker"
+    ]
+  }
 }

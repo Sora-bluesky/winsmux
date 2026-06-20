@@ -225,17 +225,18 @@ and each slot can override it with one of the contract values:
 `api_llm` slots keep hosted model execution separate from local and Colab
 workers. They may declare a provider such as `openrouter`, a model id such as
 `z-ai/glm-5.2`, `prompt-transport: file`, and `auth-mode: api-key-env`.
-Environment-based OpenRouter authentication uses
-`WINSMUX_OPENROUTER_API_KEY`. For public setup, store it as a Windows user
-environment variable, then open a new PowerShell session before running
-`winsmux`:
+Environment-based OpenRouter authentication uses `OPENROUTER_API_KEY`.
+Existing local setups may explicitly keep using `WINSMUX_OPENROUTER_API_KEY`
+as a legacy override, but public setup should use the provider-native name.
+Store it as a Windows user environment variable, then open a new PowerShell
+session before running `winsmux`:
 
 ```powershell
 $secret = Read-Host -AsSecureString "OpenRouter API key"
 $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secret)
 try {
   [Environment]::SetEnvironmentVariable(
-    "WINSMUX_OPENROUTER_API_KEY",
+    "OPENROUTER_API_KEY",
     [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr),
     "User"
   )
@@ -248,7 +249,7 @@ try {
 Verify only that the variable is present; do not print the value:
 
 ```powershell
-if ([string]::IsNullOrWhiteSpace($env:WINSMUX_OPENROUTER_API_KEY)) { "missing" } else { "configured" }
+if ([string]::IsNullOrWhiteSpace($env:OPENROUTER_API_KEY)) { "missing" } else { "configured" }
 ```
 
 Do not store the key in shell startup files, command history, repo-local `.env`

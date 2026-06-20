@@ -8,7 +8,7 @@ worker slots, and evidence collection. It is not itself an LLM runtime and it
 does not promise that one specific provider, model, or endpoint will always be
 available.
 
-Last reviewed against current upstream documentation: 2026-06-19.
+Last reviewed against current upstream documentation: 2026-06-20.
 
 ## Naming policy
 
@@ -121,9 +121,11 @@ agent-slots:
 
 The default OpenRouter-compatible base URL is
 `https://openrouter.ai/api/v1`. The default environment variable name is
-`WINSMUX_OPENROUTER_API_KEY` when the operator chooses environment-based
-authentication. winsmux must not write this value to repository files, public
-docs, PR text, generated reports, worker logs, or release evidence.
+`OPENROUTER_API_KEY` when the operator chooses environment-based
+authentication. `WINSMUX_OPENROUTER_API_KEY` is still accepted as an explicit
+legacy override for existing local setups. winsmux must not write either value
+to repository files, public docs, PR text, generated reports, worker logs, or
+release evidence.
 For public setup on Windows, store the key as a user environment variable and
 open a new PowerShell session before running `winsmux`:
 
@@ -132,7 +134,7 @@ $secret = Read-Host -AsSecureString "OpenRouter API key"
 $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secret)
 try {
   [Environment]::SetEnvironmentVariable(
-    "WINSMUX_OPENROUTER_API_KEY",
+    "OPENROUTER_API_KEY",
     [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr),
     "User"
   )
@@ -145,7 +147,7 @@ try {
 Verify only that the variable is present; do not print the value:
 
 ```powershell
-if ([string]::IsNullOrWhiteSpace($env:WINSMUX_OPENROUTER_API_KEY)) { "missing" } else { "configured" }
+if ([string]::IsNullOrWhiteSpace($env:OPENROUTER_API_KEY)) { "missing" } else { "configured" }
 ```
 
 Do not store the key in shell startup files, command history, repo-local `.env`
@@ -210,12 +212,14 @@ is acceptable for a task.
 
 ## Worker pane model picker and benchmark comparison
 
-The desktop runtime settings surface separates model entries into four classes:
+The desktop runtime settings surface separates model entries into six classes:
 
 | Class | Picker behavior | Benchmark behavior |
 | ----- | --------------- | ------------------ |
 | `selectable` | Can be assigned to a compatible worker slot. The slot backend still decides whether the run can start. | Shown with winsmux-local run evidence when available. |
-| `candidate` | Can be assigned only when the worker backend and credential posture match the entry. For example, OpenRouter entries require an `api_llm` slot and `WINSMUX_OPENROUTER_API_KEY` in the runtime environment. | Shown as candidate evidence until a local run id, latency, cost, failure reason, and reproducibility data are recorded. |
+| `setup-required` | Shown when a normal worker path exists but setup is incomplete. For example, OpenRouter entries require an `api_llm` slot and `OPENROUTER_API_KEY` in the runtime environment. | Excluded from scoring until a local run id, latency, cost, failure reason, and reproducibility data are recorded. |
+| `runnable` | Can be assigned to a compatible worker slot after backend and credential checks pass. | Shown with winsmux-local run evidence when available. |
+| `blocked` | Disabled because the provider, endpoint, or local runner cannot currently satisfy the contract. | Kept as evidence with an explicit reason and excluded from scoring. |
 | `reference-only` | Shown for comparison context but not selectable from the desktop picker. | Can show Agent Arena, Code Arena, or Colab model-plan reference data, but must not imply that winsmux can run the model locally. |
 | `unavailable` | Disabled until the upstream provider restores official access. | Kept only to explain external benchmark rows. |
 
@@ -383,5 +387,8 @@ manual pane tool rather than a first-class worker backend.
 - [DeepSeek V4 preview release](https://api-docs.deepseek.com/news/news260424)
 - [DeepSeek API quick start](https://api-docs.deepseek.com/)
 - [Kimi K2.6 model overview](https://www.kimi.com/ai-models/kimi-k2-6)
+- [Kimi K2.7 Code model overview](https://platform.kimi.ai/docs/guide/kimi-k2-7-code-quickstart)
+- [OpenRouter Kimi K2.7 Code](https://openrouter.ai/moonshotai/kimi-k2.7-code)
+- [OpenRouter GLM 5.2](https://openrouter.ai/z-ai/glm-5.2)
 - [Claude Fable availability](https://www.anthropic.com/claude/fable)
 - [Claude apps release notes](https://docs.anthropic.com/en/release-notes/claude-apps)
