@@ -197,6 +197,11 @@ run 証跡にモデル名とランタイム情報が出てくる場合、winsmux
 参照ベンチは補助情報です。`winsmux compare-runs` の勝敗判断は、ローカル実行証跡、
 レビュー結果、変更ファイル、再現性、オペレーターの判断履歴をもとに行います。
 
+Claude Code、Codex、Antigravity CLI の worker 比較では、
+[CLI comparison bakeoff](cli-comparison-bakeoff.md) の task pack と preflight gate を使います。
+公開可能なデスクトップ録画証跡がない run は運用証跡として残しますが、
+既定の worker 割り当てを変える根拠にはしません。
+
 `Claude Fable 5` は現時点では `unavailable` として扱います。Anthropic は
 2026-06-12 に Claude Fable 5 と Claude Mythos 5 のアクセス停止を案内しており、
 Claude Fable の製品ページでも Claude Fable 5 は現在利用不可とされています。

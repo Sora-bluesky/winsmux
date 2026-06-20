@@ -174,6 +174,17 @@ function Get-PreviousTag {
     return $null
 }
 
+function Get-LatestVersionTag {
+    $allTags = @(git tag --sort=-v:refname)
+    foreach ($tag in $allTags) {
+        if ($tag -match '^v\d+\.\d+\.\d+$') {
+            return $tag
+        }
+    }
+
+    return $null
+}
+
 function Test-GitRefExists {
     param(
         [Parameter(Mandatory = $true)]
@@ -274,6 +285,24 @@ function ConvertTo-UserBenefit {
         }
         'migrate worker path to Antigravity CLI|Antigravity CLI' {
             return 'Migrated one-shot worker execution to the Antigravity CLI route while preserving explicit backend metadata'
+        }
+        'worker model picker benchmark surface|Worker-pane major model selection|Agent benchmark comparison surface|model picker' {
+            return 'Added the worker-pane model picker and benchmark comparison surface without making reference-only models selectable'
+        }
+        'v0\.36\.15 bakeoff rubric and tracked task packet|bakeoff rubric|tracked task packet' {
+            return 'Tracked the CLI bakeoff task pack with fixed scoring axes, shared packets, QC gates, and worker profiles'
+        }
+        'CLI bakeoff preflight and summary harness|bakeoff preflight|summary harness' {
+            return 'Added preflight and summary scripts for Claude Code, Codex, and Antigravity CLI comparison evidence'
+        }
+        'Existing CLI bakeoff evidence classification|evidence classification' {
+            return 'Classified existing local bakeoff evidence and withheld automatic assignment recommendations when publishable recordings were missing'
+        }
+        'Model-task fit and assignment policy outputs|assignment policy outputs|model-task fit' {
+            return 'Generated model-task fit and assignment policy outputs that keep worker defaults unchanged without reviewer-approved evidence'
+        }
+        'v0\.36\.15 release catch-up gate|release catch-up' {
+            return 'Brought the public release train forward from v0.36.10 to v0.36.15 with release-grade notes and version-surface checks'
         }
         'harden operator runtime controls|operator runtime controls' {
             return 'Hardened desktop operator runtime controls used by managed worker sessions'
@@ -529,11 +558,13 @@ $doneTaskTitlesForVersion = @(
 )
 
 $versionRefExists = Test-GitRefExists -Ref $Version
-$previousTag = if ($versionRefExists) { Get-PreviousTag -CurrentTag $Version } else { $null }
+$previousTag = if ($versionRefExists) { Get-PreviousTag -CurrentTag $Version } else { Get-LatestVersionTag }
 $commitRange = if ($versionRefExists -and $null -ne $previousTag) {
     "$previousTag..$Version"
 } elseif ($versionRefExists) {
     $Version
+} elseif ($null -ne $previousTag) {
+    "$previousTag..HEAD"
 } else {
     'HEAD'
 }

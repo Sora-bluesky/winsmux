@@ -1,0 +1,278 @@
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+
+Describe 'CLI bakeoff evidence harness' {
+    BeforeAll {
+        $script:RepoRoot = (& git rev-parse --show-toplevel 2>$null | Out-String).Trim()
+        if ([string]::IsNullOrWhiteSpace($script:RepoRoot)) {
+            throw 'Failed to resolve repository root.'
+        }
+        $script:PreflightScript = Join-Path $script:RepoRoot 'scripts\test-cli-bakeoff-preflight.ps1'
+        $script:SummaryScript = Join-Path $script:RepoRoot 'scripts\summarize-cli-bakeoff.ps1'
+        $script:PackPath = Join-Path $script:RepoRoot 'tasks\cli-bakeoff\v1\benchmark-pack.json'
+    }
+
+    It 'validates the tracked bakeoff task pack' {
+        $output = & pwsh -NoProfile -File $script:PreflightScript -PackPath $script:PackPath -Json
+        $LASTEXITCODE | Should -Be 0
+        $result = $output | ConvertFrom-Json -Depth 20
+        $result.all_pass | Should -BeTrue
+        $result.pack_id | Should -Be 'winsmux-cli-bakeoff-v1'
+        $result.check_count | Should -BeGreaterThan 20
+        ($output -join "`n") | Should -Not -Match 'C:\\Users\\'
+    }
+
+    It 'fails when a task packet is missing' {
+        $badRoot = Join-Path $TestDrive 'bad-pack'
+        New-Item -ItemType Directory -Path $badRoot -Force | Out-Null
+        $badPack = Join-Path $badRoot 'benchmark-pack.json'
+        Set-Content -LiteralPath $badPack -Value @'
+{
+  "version": 1,
+  "pack_id": "bad",
+  "minimum_task_count_for_directional_findings": 1,
+  "scoring": {
+    "axes": {
+      "accuracy": 30,
+      "review_findings": 20,
+      "speed": 15,
+      "parallelism": 15,
+      "async_terminal": 10,
+      "evidence_quality": 10
+    }
+  },
+  "qc_gates": [
+    "same_task_packet_sha256_for_all_workers",
+    "same_timeout_for_all_workers",
+    "preflight_all_pass_before_recording",
+    "desktop_app_screen_recording_required",
+    "non_completed_worker_results_excluded_from_scoring",
+    "antigravity_empty_stdout_excluded_from_machine_scoring"
+  ],
+  "default_workers": [
+    { "cli": "Claude Code" },
+    { "cli": "Codex" },
+    { "cli": "Antigravity CLI" }
+  ],
+  "tasks": [
+    {
+      "task_id": "WB-FAIL",
+      "task_class": "diagnostic",
+      "packet_path": "missing.md",
+      "hidden_check_categories": ["must fail"]
+    }
+  ]
+}
+'@ -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:PreflightScript -PackPath $badPack -TaskRoot $badRoot -Json 2>$null
+        $LASTEXITCODE | Should -Be 1
+        $result = $output | ConvertFrom-Json -Depth 20
+        $result.all_pass | Should -BeFalse
+        ($result.checks | Where-Object { $_.name -eq 'packet exists WB-FAIL' }).pass | Should -BeFalse
+    }
+
+    It 'rejects task packet paths that escape the task root' {
+        $badRoot = Join-Path $TestDrive 'escaping-pack'
+        New-Item -ItemType Directory -Path $badRoot -Force | Out-Null
+        $badPack = Join-Path $badRoot 'benchmark-pack.json'
+        Set-Content -LiteralPath $badPack -Value @'
+{
+  "version": 1,
+  "pack_id": "bad-escape",
+  "minimum_task_count_for_directional_findings": 1,
+  "scoring": {
+    "axes": {
+      "accuracy": 30,
+      "review_findings": 20,
+      "speed": 15,
+      "parallelism": 15,
+      "async_terminal": 10,
+      "evidence_quality": 10
+    }
+  },
+  "qc_gates": [
+    "same_task_packet_sha256_for_all_workers",
+    "same_timeout_for_all_workers",
+    "preflight_all_pass_before_recording",
+    "desktop_app_screen_recording_required",
+    "non_completed_worker_results_excluded_from_scoring",
+    "antigravity_empty_stdout_excluded_from_machine_scoring"
+  ],
+  "default_workers": [
+    { "cli": "Claude Code" },
+    { "cli": "Codex" },
+    { "cli": "Antigravity CLI" }
+  ],
+  "tasks": [
+    {
+      "task_id": "WB-ESCAPE",
+      "task_class": "diagnostic",
+      "packet_path": "../escape.md",
+      "hidden_check_categories": ["must fail"]
+    }
+  ]
+}
+'@ -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:PreflightScript -PackPath $badPack -TaskRoot $badRoot -Json 2>$null
+        $LASTEXITCODE | Should -Be 1
+        $result = $output | ConvertFrom-Json -Depth 20
+        ($result.checks | Where-Object { $_.name -eq 'packet path stays inside task root WB-ESCAPE' }).pass | Should -BeFalse
+    }
+
+    It 'scans packet files for obvious secrets and private local paths' {
+        $badRoot = Join-Path $TestDrive 'leaky-pack'
+        New-Item -ItemType Directory -Path $badRoot -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $badRoot 'leaky.md') -Value @'
+# Leaky
+
+BAKEOFF_ROUND_A_BEGIN
+api_key = abcdefghijklmnop
+C:\Users\example\private
+BAKEOFF_ROUND_A_END
+'@ -Encoding UTF8
+        $badPack = Join-Path $badRoot 'benchmark-pack.json'
+        Set-Content -LiteralPath $badPack -Value @'
+{
+  "version": 1,
+  "pack_id": "bad-secret",
+  "minimum_task_count_for_directional_findings": 1,
+  "scoring": {
+    "axes": {
+      "accuracy": 30,
+      "review_findings": 20,
+      "speed": 15,
+      "parallelism": 15,
+      "async_terminal": 10,
+      "evidence_quality": 10
+    }
+  },
+  "qc_gates": [
+    "same_task_packet_sha256_for_all_workers",
+    "same_timeout_for_all_workers",
+    "preflight_all_pass_before_recording",
+    "desktop_app_screen_recording_required",
+    "non_completed_worker_results_excluded_from_scoring",
+    "antigravity_empty_stdout_excluded_from_machine_scoring"
+  ],
+  "default_workers": [
+    { "cli": "Claude Code" },
+    { "cli": "Codex" },
+    { "cli": "Antigravity CLI" }
+  ],
+  "tasks": [
+    {
+      "task_id": "WB-LEAK",
+      "task_class": "diagnostic",
+      "packet_path": "leaky.md",
+      "hidden_check_categories": ["must fail"]
+    }
+  ]
+}
+'@ -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:PreflightScript -PackPath $badPack -TaskRoot $badRoot -Json 2>$null
+        $LASTEXITCODE | Should -Be 1
+        $result = $output | ConvertFrom-Json -Depth 20
+        ($result.checks | Where-Object { $_.name -eq 'packet does not contain obvious secrets WB-LEAK' }).pass | Should -BeFalse
+        ($result.checks | Where-Object { $_.name -eq 'packet does not contain private local paths WB-LEAK' }).pass | Should -BeFalse
+    }
+
+    It 'summarizes run evidence without copying local paths into public outputs' {
+        $runRoot = Join-Path $TestDrive 'runs'
+        $runDir = Join-Path $runRoot 'sample-run'
+        $outputDir = Join-Path $TestDrive 'summary'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Value @'
+{
+  "version": 1,
+  "run_id": "sample-run",
+  "task_class": "readonly_diagnostic",
+  "recording": {
+    "status": "publishable",
+    "publishable": true
+  },
+  "active_workers": [
+    {
+      "cli": "Codex",
+      "display_model": "Codex / gpt-5.3-spark"
+    }
+  ]
+}
+'@ -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'commands.jsonl') -Value @'
+{"cli":"Codex","model":"Codex / gpt-5.3-spark","status":"completed","elapsed_seconds":12.5,"working_dir":"C:\\Users\\example\\repo","end_marker_present":true,"packet_hash_match":true,"stdout_empty":false}
+'@ -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:SummaryScript -RunRoot $runRoot -OutputDir $outputDir -PackPath $script:PackPath -Json
+        $LASTEXITCODE | Should -Be 0
+        $result = $output | ConvertFrom-Json -Depth 20
+        $result.scoreable_runs | Should -Be 1
+
+        foreach ($name in @('raw-score-matrix.csv', 'model-evidence-profile.json', 'model-task-fit.md', 'assignment-policy.md')) {
+            Test-Path -LiteralPath (Join-Path $outputDir $name) | Should -BeTrue
+        }
+
+        $combined = @(
+            Get-Content -LiteralPath (Join-Path $outputDir 'raw-score-matrix.csv') -Raw -Encoding UTF8
+            Get-Content -LiteralPath (Join-Path $outputDir 'model-task-fit.md') -Raw -Encoding UTF8
+            Get-Content -LiteralPath (Join-Path $outputDir 'assignment-policy.md') -Raw -Encoding UTF8
+        ) -join "`n"
+        $combined | Should -Not -Match [regex]::Escape($TestDrive)
+        $combined | Should -Not -Match '[A-Za-z]:\\Users\\'
+    }
+
+    It 'excludes incomplete scoreability evidence from model scoring' {
+        $runRoot = Join-Path $TestDrive 'runs-excluded'
+        $outputDir = Join-Path $TestDrive 'summary-excluded'
+        foreach ($name in @('empty-stdout', 'missing-marker', 'bad-hash')) {
+            New-Item -ItemType Directory -Path (Join-Path $runRoot $name) -Force | Out-Null
+            Set-Content -LiteralPath (Join-Path $runRoot $name 'manifest.json') -Value @"
+{
+  "version": 1,
+  "run_id": "$name",
+  "task_class": "readonly_diagnostic",
+  "recording": {
+    "status": "publishable",
+    "publishable": true
+  }
+}
+"@ -Encoding UTF8
+        }
+        Set-Content -LiteralPath (Join-Path $runRoot 'empty-stdout' 'commands.jsonl') -Value @'
+{"cli":"Antigravity CLI","model":"Opus 4.7","status":"completed","end_marker_present":true,"packet_hash_match":true,"stdout_empty":true}
+'@ -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runRoot 'missing-marker' 'commands.jsonl') -Value @'
+{"cli":"Codex","model":"gpt-5.5","status":"completed","end_marker_present":false,"packet_hash_match":true,"stdout_empty":false}
+'@ -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runRoot 'bad-hash' 'commands.jsonl') -Value @'
+{"cli":"Claude Code","model":"Opus 4.8","status":"completed","end_marker_present":true,"packet_hash_match":false,"stdout_empty":false}
+'@ -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:SummaryScript -RunRoot $runRoot -OutputDir $outputDir -PackPath $script:PackPath -Json
+        $LASTEXITCODE | Should -Be 0
+        $result = $output | ConvertFrom-Json -Depth 20
+        $result.scoreable_runs | Should -Be 0
+
+        $raw = Get-Content -LiteralPath (Join-Path $outputDir 'raw-score-matrix.csv') -Raw -Encoding UTF8
+        $raw | Should -Match 'antigravity_empty_stdout'
+        $raw | Should -Match 'missing_end_marker'
+        $raw | Should -Match 'packet_hash_mismatch'
+    }
+
+    It 'keeps malformed manifests as blocked evidence instead of aborting the summary' {
+        $runRoot = Join-Path $TestDrive 'runs-malformed'
+        $runDir = Join-Path $runRoot 'bad-json'
+        $outputDir = Join-Path $TestDrive 'summary-malformed'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Value '{ invalid json' -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:SummaryScript -RunRoot $runRoot -OutputDir $outputDir -PackPath $script:PackPath -Json
+        $LASTEXITCODE | Should -Be 0
+        $result = $output | ConvertFrom-Json -Depth 20
+        $result.scoreable_runs | Should -Be 0
+        $raw = Get-Content -LiteralPath (Join-Path $outputDir 'raw-score-matrix.csv') -Raw -Encoding UTF8
+        $raw | Should -Match 'invalid_json'
+    }
+}

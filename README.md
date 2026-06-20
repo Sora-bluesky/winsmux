@@ -162,6 +162,7 @@ Google's published migration notice says Gemini CLI and Gemini Code Assist IDE e
 
 See [Authentication Support](docs/authentication-support.md) for the full policy.
 See [Provider and Model Support](docs/provider-and-model-support.md) for hosted, Colab, and future local LLM runtime policy.
+See [CLI comparison bakeoff](docs/cli-comparison-bakeoff.md) for Claude Code, Codex, and Antigravity CLI evidence gates.
 See [Google Colab Workers](docs/google-colab-workers.md) for the H100/A100 worker setup.
 
 ## Security Notes
@@ -182,6 +183,7 @@ See [Google Colab Workers](docs/google-colab-workers.md) for the H100/A100 worke
 - [Customization](docs/customization.md)
 - [Authentication support](docs/authentication-support.md)
 - [Provider and model support](docs/provider-and-model-support.md)
+- [CLI comparison bakeoff](docs/cli-comparison-bakeoff.md)
 - [External control plane API](docs/external-control-plane.md)
 - [Google Colab workers](docs/google-colab-workers.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)

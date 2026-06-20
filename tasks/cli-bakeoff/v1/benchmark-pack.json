@@ -1,0 +1,267 @@
+{
+  "version": 1,
+  "pack_id": "winsmux-cli-bakeoff-v1",
+  "title": "winsmux CLI worker-pane benchmark pilot",
+  "methodology_reference": "https://nyosegawa.com/posts/harness-bench/",
+  "minimum_task_count_for_directional_findings": 9,
+  "official_task_count_target": 27,
+  "review_model": "gpt-5.5",
+  "review_policy": {
+    "primary_scoring": "deterministic_checks",
+    "llm_review_role": "failure_audit_and_quality_control",
+    "candidate_self_report_counts_for_scoring": false,
+    "same_family_review_counts_for_scoring": false
+  },
+  "scoring": {
+    "axes": {
+      "accuracy": 30,
+      "review_findings": 20,
+      "speed": 15,
+      "parallelism": 15,
+      "async_terminal": 10,
+      "evidence_quality": 10
+    },
+    "caps": [
+      {
+        "condition": "tests_do_not_start_or_primary_feature_unusable",
+        "max_score": 40
+      },
+      {
+        "condition": "any_p0_finding",
+        "max_score": 50
+      },
+      {
+        "condition": "two_or_more_p1_findings",
+        "max_score": 70
+      },
+      {
+        "condition": "missing_reproducible_evidence",
+        "max_score": 60
+      }
+    ],
+    "review_score_formula": "max(0, 100 - P0*45 - P1*20 - P2*6 - P3*2)"
+  },
+  "qc_gates": [
+    "same_task_packet_sha256_for_all_workers",
+    "same_timeout_for_all_workers",
+    "preflight_all_pass_before_recording",
+    "desktop_app_screen_recording_required",
+    "non_completed_worker_results_excluded_from_scoring",
+    "antigravity_empty_stdout_excluded_from_machine_scoring"
+  ],
+  "default_timeout_seconds": 900,
+  "default_workers": [
+    {
+      "pane": "worker-1",
+      "role": "design-review",
+      "cli": "Claude Code",
+      "model": "sonnet",
+      "effort": "high",
+      "display_model": "Claude Sonnet 4.7"
+    },
+    {
+      "pane": "worker-2",
+      "role": "implementation-review",
+      "cli": "Codex",
+      "model": "gpt-5.3-codex-spark",
+      "effort": "medium",
+      "display_model": "Codex / gpt-5.3-spark"
+    },
+    {
+      "pane": "worker-3",
+      "role": "speed-parallelism",
+      "cli": "Antigravity CLI",
+      "model": "Gemini 3.5 Flash (High)",
+      "display_model": "Antigravity CLI / Gemini 3.5 Flash (High)"
+    },
+    {
+      "pane": "worker-4",
+      "role": "speed-parallelism-medium",
+      "cli": "Antigravity CLI",
+      "model": "Gemini 3.5 Flash (Medium)",
+      "display_model": "Antigravity CLI / Gemini 3.5 Flash (Medium)"
+    }
+  ],
+  "tasks": [
+    {
+      "task_id": "WB-001",
+      "title": "Desktop worker-pane launch diagnosis",
+      "task_class": "investigation_design",
+      "packet_path": "WB-001-desktop-worker-pane-launch-diagnosis.md",
+      "attributes": {
+        "scope": "multiple_subsystems",
+        "ambiguity": "mildly_ambiguous",
+        "context_length": "medium",
+        "verification": "review_plus_artifact_checks",
+        "parallel_potential": "medium",
+        "risk": "medium",
+        "artifact": "diagnosis"
+      },
+      "hidden_check_categories": [
+        "cites desktop_backend and main.ts evidence",
+        "distinguishes model failure from runner failure",
+        "includes a rerun-safe mitigation"
+      ]
+    },
+    {
+      "task_id": "WB-002",
+      "title": "PTY lifecycle and process cleanup plan",
+      "task_class": "long_running_commands",
+      "packet_path": "WB-002-pty-lifecycle-process-cleanup.md",
+      "attributes": {
+        "scope": "multiple_subsystems",
+        "ambiguity": "exploratory",
+        "context_length": "medium",
+        "verification": "review_plus_artifact_checks",
+        "parallel_potential": "medium",
+        "risk": "high",
+        "artifact": "remediation_plan"
+      },
+      "hidden_check_categories": [
+        "mentions parent-child process cleanup",
+        "captures Windows wait behavior",
+        "separates app shutdown from pane reset"
+      ]
+    },
+    {
+      "task_id": "WB-003",
+      "title": "Agent Vault default visibility review",
+      "task_class": "ui_e2e",
+      "packet_path": "WB-003-agent-vault-visibility-review.md",
+      "attributes": {
+        "scope": "multiple_files",
+        "ambiguity": "clear",
+        "context_length": "short",
+        "verification": "review_plus_artifact_checks",
+        "parallel_potential": "low",
+        "risk": "medium",
+        "artifact": "ui_review"
+      },
+      "hidden_check_categories": [
+        "checks default hidden state",
+        "checks view menu toggle",
+        "checks worker pane space impact"
+      ]
+    },
+    {
+      "task_id": "WB-004",
+      "title": "Public documentation safety audit",
+      "task_class": "documentation",
+      "packet_path": "WB-004-public-documentation-safety-audit.md",
+      "attributes": {
+        "scope": "multiple_docs",
+        "ambiguity": "mildly_ambiguous",
+        "context_length": "long",
+        "verification": "review_plus_artifact_checks",
+        "parallel_potential": "medium",
+        "risk": "high",
+        "artifact": "audit_report"
+      },
+      "hidden_check_categories": [
+        "flags private strategy leakage",
+        "checks English and Japanese docs",
+        "keeps public wording actionable"
+      ]
+    },
+    {
+      "task_id": "WB-005",
+      "title": "Antigravity CLI migration evidence check",
+      "task_class": "migration_compatibility",
+      "packet_path": "WB-005-antigravity-migration-evidence-check.md",
+      "attributes": {
+        "scope": "multiple_subsystems",
+        "ambiguity": "exploratory",
+        "context_length": "medium",
+        "verification": "review_plus_artifact_checks",
+        "parallel_potential": "high",
+        "risk": "medium",
+        "artifact": "compatibility_matrix"
+      },
+      "hidden_check_categories": [
+        "requires agy version evidence",
+        "requires model selection evidence",
+        "separates migration support from Gemini CLI parity"
+      ]
+    },
+    {
+      "task_id": "WB-006",
+      "title": "Review finding triage and patch plan",
+      "task_class": "code_review",
+      "packet_path": "WB-006-review-finding-triage.md",
+      "attributes": {
+        "scope": "multiple_files",
+        "ambiguity": "clear",
+        "context_length": "medium",
+        "verification": "review_plus_artifact_checks",
+        "parallel_potential": "medium",
+        "risk": "medium",
+        "artifact": "review_packet"
+      },
+      "hidden_check_categories": [
+        "prioritizes P0/P1 over style",
+        "contains reproducible file references",
+        "avoids speculative findings"
+      ]
+    },
+    {
+      "task_id": "WB-007",
+      "title": "Parallel worker assignment policy",
+      "task_class": "parallel_fanout",
+      "packet_path": "WB-007-parallel-worker-assignment-policy.md",
+      "attributes": {
+        "scope": "multiple_subsystems",
+        "ambiguity": "exploratory",
+        "context_length": "long",
+        "verification": "review_plus_artifact_checks",
+        "parallel_potential": "high",
+        "risk": "medium",
+        "artifact": "assignment_policy"
+      },
+      "hidden_check_categories": [
+        "scores useful parallel work rather than agent count",
+        "detects duplicate work risk",
+        "includes integration ownership"
+      ]
+    },
+    {
+      "task_id": "WB-008",
+      "title": "Installer and context-menu readiness audit",
+      "task_class": "release_work",
+      "packet_path": "WB-008-installer-context-menu-readiness.md",
+      "attributes": {
+        "scope": "multiple_artifacts",
+        "ambiguity": "mildly_ambiguous",
+        "context_length": "medium",
+        "verification": "review_plus_artifact_checks",
+        "parallel_potential": "medium",
+        "risk": "high",
+        "artifact": "release_checklist"
+      },
+      "hidden_check_categories": [
+        "checks shortcut icon evidence",
+        "checks context menu localization",
+        "separates setup.exe and MSI evidence"
+      ]
+    },
+    {
+      "task_id": "WB-009",
+      "title": "Evidence handoff scorecard review",
+      "task_class": "evidence_handoff",
+      "packet_path": "WB-009-evidence-handoff-scorecard-review.md",
+      "attributes": {
+        "scope": "multiple_artifacts",
+        "ambiguity": "clear",
+        "context_length": "medium",
+        "verification": "review_plus_artifact_checks",
+        "parallel_potential": "low",
+        "risk": "medium",
+        "artifact": "scorecard_review"
+      },
+      "hidden_check_categories": [
+        "requires one-glance scorecard",
+        "requires blocked run exclusion",
+        "requires third-party reproducibility"
+      ]
+    }
+  ]
+}
