@@ -227,11 +227,6 @@ $targets = @(
         Replace = "`${1}$Version`${2}"
     },
     @{
-        Path    = Join-Path $Root "winsmux-app\src-tauri\Cargo.lock"
-        Pattern = '(?ms)(name\s*=\s*"winsmux-app"\s*\r?\nversion\s*=\s*")[^"]*(")'
-        Replace = "`${1}$Version`${2}"
-    },
-    @{
         Path    = Join-Path $Root "winsmux-app\src-tauri\tauri.conf.json"
         Pattern = '("version"\s*:\s*")[^"]*(")'
         Replace = "`${1}$Version`${2}"
@@ -357,7 +352,6 @@ try {
         "winsmux-app/package.json",
         "winsmux-app/package-lock.json",
         "winsmux-app/src-tauri/Cargo.toml",
-        "winsmux-app/src-tauri/Cargo.lock",
         "winsmux-app/src-tauri/tauri.conf.json",
         "winsmux-core/package.json",
         "winsmux-core/mcp-server.js",

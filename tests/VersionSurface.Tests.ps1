@@ -50,7 +50,6 @@ Describe 'winsmux version surface' {
         $appPackageLock = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'winsmux-app\package-lock.json') -Raw -Encoding UTF8 | ConvertFrom-Json -AsHashtable -Depth 20
         $tauriConfig = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'winsmux-app\src-tauri\tauri.conf.json') -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
         $tauriManifest = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'winsmux-app\src-tauri\Cargo.toml') -Raw -Encoding UTF8
-        $tauriLock = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'winsmux-app\src-tauri\Cargo.lock') -Raw -Encoding UTF8
         $workspaceLock = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'Cargo.lock') -Raw -Encoding UTF8
 
         $appPackage.version | Should -Be $script:ProductVersion
@@ -65,7 +64,7 @@ Describe 'winsmux version surface' {
         $tauriManifest | Should -Match '(?m)^description\s*=\s*"Desktop control plane for winsmux"\r?$'
         $tauriManifest | Should -Match '(?m)^authors\s*=\s*\["Sora-bluesky"\]\r?$'
         $workspaceLock | Should -Match ('(?ms)^name\s*=\s*"winsmux-app"\s*\r?\nversion\s*=\s*"{0}"' -f [regex]::Escape($script:ProductVersion))
-        $tauriLock | Should -Match ('(?ms)^name\s*=\s*"winsmux-app"\s*\r?\nversion\s*=\s*"{0}"' -f [regex]::Escape($script:ProductVersion))
+        Test-Path -LiteralPath (Join-Path $script:RepoRoot 'winsmux-app\src-tauri\Cargo.lock') | Should -BeFalse
     }
 
     It 'derives desktop installer E2E artifact names from VERSION' {
