@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import fs from "node:fs/promises";
 import net from "node:net";
@@ -22,6 +23,8 @@ const OUTPUT_DIR = path.join(
 );
 const APP_URL_PATTERN = /localhost:1420|127\.0\.0\.1:1420/;
 const CONTROL_PIPE_NAME = "winsmux-control";
+const CONTROL_PIPE_TOKEN = process.env.WINSMUX_DESKTOP_E2E_CONTROL_PIPE_TOKEN
+  || `winsmux-desktop-e2e-${randomUUID()}`;
 const WORKER_UI_MARKER = "WORKER_1_UI_E2E_READY";
 const WORKER_ARROW_MARKER = "RAW_ABC";
 const WORKER_PASTE_MARKER = "WORKER_PASTE_E2E_READY";
@@ -87,6 +90,7 @@ function startTauriDev(debugPort, userDataDir, appArgs = []) {
       ...process.env,
       WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${debugPort} --remote-allow-origins=*`,
       WEBVIEW2_USER_DATA_FOLDER: userDataDir,
+      WINSMUX_CONTROL_PIPE_TOKEN: CONTROL_PIPE_TOKEN,
       NO_COLOR: "1",
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -113,6 +117,7 @@ function startPackagedDesktopApp(debugPort, userDataDir, appArgs = []) {
       ...process.env,
       WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${debugPort} --remote-allow-origins=*`,
       WEBVIEW2_USER_DATA_FOLDER: userDataDir,
+      WINSMUX_CONTROL_PIPE_TOKEN: CONTROL_PIPE_TOKEN,
       NO_COLOR: "1",
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -796,6 +801,9 @@ async function writeOperatorPipeScript(scriptPath) {
     jsonrpc: "2.0",
     id: "operator-to-worker",
     method: "pty.write",
+    auth: {
+      token: CONTROL_PIPE_TOKEN,
+    },
     params: {
       paneId: "worker-2",
       data: `Write-Output '${OPERATOR_TO_WORKER_MARKER}'\r`,

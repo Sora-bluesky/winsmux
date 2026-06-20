@@ -84,3 +84,74 @@ jobs:
         with:
           name: test-results
           path: test-results.xml
+
+  core-build-test:
+    name: Core Build and Test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build core
+        run: cargo build --release --manifest-path core/Cargo.toml
+
+      - name: Test core
+        run: cargo test --manifest-path core/Cargo.toml
+
+  desktop-build-test:
+    name: Desktop Build and Test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: winsmux-app/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        working-directory: winsmux-app
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: winsmux-app
+        run: npm run build
+
+      - name: Test Tauri backend
+        run: cargo test --manifest-path winsmux-app/src-tauri/Cargo.toml
+
+      - name: Build desktop binary without bundling
+        working-directory: winsmux-app
+        run: npm run tauri -- build --no-bundle
+
+  merge-gate:
+    name: Merge Gate
+    runs-on: ubuntu-latest
+    needs:
+      - secret-scan
+      - public-surface
+      - pester
+      - core-build-test
+      - desktop-build-test
+    if: always()
+    steps:
+      - name: Require all checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          for result in \
+            "${{ needs.secret-scan.result }}" \
+            "${{ needs.public-surface.result }}" \
+            "${{ needs.pester.result }}" \
+            "${{ needs.core-build-test.result }}" \
+            "${{ needs.desktop-build-test.result }}"; do
+            if [ "$result" != "success" ]; then
+              echo "Merge gate failed because a required job result was '$result'."
+              exit 1
+            fi
+          done
+          echo "Merge gate passed."

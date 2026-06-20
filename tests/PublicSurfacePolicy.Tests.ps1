@@ -21,6 +21,7 @@ Describe 'Public surface policy' {
         $syncRoadmap = Get-Content (Join-Path $repoRoot 'winsmux-core/scripts/sync-roadmap.ps1') -Raw
         $syncInternalDocs = Get-Content (Join-Path $repoRoot 'winsmux-core/scripts/sync-internal-docs.ps1') -Raw
         $installer = Get-Content (Join-Path $repoRoot 'install.ps1') -Raw
+        $desktopPaneE2E = Get-Content (Join-Path $repoRoot 'winsmux-app/scripts/desktop-pane-e2e.mjs') -Raw
         $auditPublicSurface = Join-Path $repoRoot 'scripts/audit-public-surface.ps1'
         $previousHooksPath = (& git config --get core.hooksPath 2>$null | Out-String).Trim()
         $hadHooksPath = $LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($previousHooksPath)
@@ -361,6 +362,74 @@ Describe 'Public surface policy' {
         ($output -join "`n") | Should -Match 'provider request id'
     }
 
+    It 'keeps evidence/auth secret scanning wired into git and public-surface gates' {
+        $gitGuard = Get-Content (Join-Path $repoRoot 'scripts/git-guard.ps1') -Raw
+        $publicAudit = Get-Content (Join-Path $repoRoot 'scripts/audit-public-surface.ps1') -Raw
+
+        $gitGuard | Should -Match 'function Test-EvidenceAuthLeak'
+        $gitGuard | Should -Match 'evidence/auth secret leak'
+        $gitGuard | Should -Match 'OpenRouter API key'
+        $gitGuard | Should -Match 'GitHub token'
+        $gitGuard | Should -Match 'function Test-ExternalRoadmapFreshness'
+        $gitGuard | Should -Match 'external ROADMAP is older than backlog.yaml'
+        $publicAudit | Should -Match 'function Test-IsEvidenceAuthScanSurface'
+        $publicAudit | Should -Match 'function Add-ForbiddenEvidenceAuthFailures'
+        $publicAudit | Should -Match 'evidence/auth surface'
+    }
+
+    It 'blocks stale external roadmap output before git operations' {
+        $gitGuard = Join-Path $repoRoot 'scripts/git-guard.ps1'
+        $backlog = Join-Path $TestDrive 'backlog.yaml'
+        $roadmap = Join-Path $TestDrive 'ROADMAP.md'
+        Set-Content -LiteralPath $backlog -Value "version: 3`ntasks: []`n" -Encoding UTF8
+        Set-Content -LiteralPath $roadmap -Value "# ロードマップ`n" -Encoding UTF8
+        $now = [DateTime]::UtcNow
+        [System.IO.File]::SetLastWriteTimeUtc($roadmap, $now.AddMinutes(-10))
+        [System.IO.File]::SetLastWriteTimeUtc($backlog, $now)
+
+        $previousBacklogPath = $env:WINSMUX_BACKLOG_PATH
+        $previousRoadmapPath = $env:WINSMUX_ROADMAP_PATH
+        try {
+            $env:WINSMUX_BACKLOG_PATH = $backlog
+            $env:WINSMUX_ROADMAP_PATH = $roadmap
+
+            $output = @(& pwsh -NoProfile -File $gitGuard -Mode staged 2>&1)
+
+            $LASTEXITCODE | Should -Be 1
+            ($output -join "`n") | Should -Match 'external ROADMAP is older than backlog.yaml'
+        } finally {
+            $env:WINSMUX_BACKLOG_PATH = $previousBacklogPath
+            $env:WINSMUX_ROADMAP_PATH = $previousRoadmapPath
+        }
+    }
+
+    It 'keeps desktop dynamic rendering out of innerHTML assignments' {
+        $mainTs = Get-Content (Join-Path $repoRoot 'winsmux-app/src/main.ts') -Raw
+        $unsafeAssignments = @(
+            $mainTs -split "`r?`n" |
+                Where-Object { $_ -match 'innerHTML\s*=' -and $_ -notmatch 'innerHTML\s*=\s*""\s*;' } |
+                ForEach-Object { $_.Trim() }
+        )
+
+        @($unsafeAssignments).Count | Should -Be 0
+    }
+
+    It 'keeps desktop E2E control-pipe calls authenticated' {
+        $desktopPaneE2E | Should -Match 'const CONTROL_PIPE_TOKEN'
+        $desktopPaneE2E | Should -Match 'WINSMUX_DESKTOP_E2E_CONTROL_PIPE_TOKEN'
+        $desktopPaneE2E | Should -Match 'WINSMUX_CONTROL_PIPE_TOKEN:\s*CONTROL_PIPE_TOKEN'
+        $desktopPaneE2E | Should -Match 'auth:\s*\{\s*token:\s*CONTROL_PIPE_TOKEN'
+        $desktopPaneE2E | Should -Not -Match 'process\.env\.WINSMUX_CONTROL_PIPE_TOKEN'
+        $desktopPaneE2E | Should -Not -Match '"pty\.write",\s*params:'
+    }
+
+    It 'keeps the desktop control token out of spawned PTY environments' {
+        $libRs = Get-Content (Join-Path $repoRoot 'winsmux-app/src-tauri/src/lib.rs') -Raw
+
+        $libRs | Should -Match 'WINSMUX_CONTROL_PIPE_TOKEN_ENV'
+        $libRs | Should -Match 'cmd\.env_remove\(WINSMUX_CONTROL_PIPE_TOKEN_ENV\);'
+    }
+
     It 'uses recorded-baseline gitleaks scans for routine push and CI checks' {
         $workflow = Get-Content (Join-Path $repoRoot '.github/workflows/test.yml') -Raw
         $prePush = Get-Content (Join-Path $repoRoot '.githooks/pre-push') -Raw
@@ -370,6 +439,11 @@ Describe 'Public surface policy' {
         $workflow | Should -Match 'Gitleaks Incremental Scan'
         $workflow | Should -Match 'Run secret scan since recorded baseline'
         $workflow | Should -Not -Match 'Run full-history secret scan'
+        $workflow | Should -Match 'name:\s+Merge Gate'
+        $workflow | Should -Match 'core-build-test:'
+        $workflow | Should -Match 'desktop-build-test:'
+        $workflow | Should -Match 'needs\.core-build-test\.result'
+        $workflow | Should -Match 'needs\.desktop-build-test\.result'
 
         $prePush | Should -Match 'scripts\\\\gitleaks-history\.ps1'
         $gitleaksScript | Should -Match 'BaselineFile'

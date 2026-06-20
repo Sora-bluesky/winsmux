@@ -31,6 +31,12 @@ Describe 'winsmux version surface' {
         $installScript | Should -Match 'winsmux-core/scripts/colab-backend\.ps1'
         $installScript | Should -Match 'does not match release version'
         $installScript | Should -Match 'Reinstalling release binary'
+        $installScript | Should -Match 'SHA256SUMS asset not found in release'
+        $installScript | Should -Match 'Cannot verify release asset'
+        $installScript | Should -Match 'Invoke-RestMethod -Uri \$asset\.browser_download_url -Headers \$headers -OutFile \$downloadPath -ErrorAction Stop'
+        $installScript | Should -Match 'Move-Item -LiteralPath \$downloadPath -Destination \$winsmuxExe -Force'
+        $installScript | Should -Not -Match 'Invoke-RestMethod -Uri \$asset\.browser_download_url -Headers \$headers -OutFile \$winsmuxExe'
+        $installScript | Should -Not -Match 'Skipping checksum verification'
         $bridgeScript | Should -Match ('\$VERSION\s*=\s*"{0}"' -f [regex]::Escape($script:ProductVersion))
         $workspaceLock | Should -Match ('(?ms)^name\s*=\s*"winsmux"\s*\r?\nversion\s*=\s*"{0}"' -f [regex]::Escape($script:ProductVersion))
         $coreManifest | Should -Match ('(?m)^version\s*=\s*"{0}"\r?$' -f [regex]::Escape($script:ProductVersion))
