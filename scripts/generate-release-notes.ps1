@@ -670,6 +670,21 @@ $highlightItems = @($features + $fixes + $documentation | Where-Object { -not [s
 if ($highlightItems.Count -eq 0) {
     $highlightItems = @('Prepared the release from the recorded task and commit history')
 }
+if ($highlightItems.Count -lt 3) {
+    foreach ($fallbackHighlight in @(
+        'Release scope is derived from the public version-tag commit range when private planning metadata is not available in CI',
+        'Release publication remains blocked by release-note quality checks and public-surface audit checks',
+        'Secret-like values, local private paths, and provider request metadata stay out of generated release materials'
+    )) {
+        if ($highlightItems -notcontains $fallbackHighlight) {
+            $highlightItems += $fallbackHighlight
+        }
+
+        if ($highlightItems.Count -ge 3) {
+            break
+        }
+    }
+}
 Add-Section -Builder $builder -Title 'Highlights' -Items $highlightItems -Seen $seenBenefits
 
 $changeItems = @($features + $fixes + $documentation + $chores | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
