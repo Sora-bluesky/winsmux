@@ -1,4 +1,4 @@
-# WB-020: Cost and Token Accounting
+# WB-020: Cost and Usage Accounting
 
 You are one worker in a winsmux Harness Bench comparison run.
 

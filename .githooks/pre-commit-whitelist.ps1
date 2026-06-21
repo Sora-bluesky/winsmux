@@ -79,6 +79,7 @@ $whitelistPatterns = @(
     'scripts/audit-public-surface.ps1',
     'scripts/assert-release-notes-quality.ps1',
     'scripts/codex-subagent-worktree-guard.ps1',
+    'scripts/run-cli-bakeoff-openrouter.ps1',
     'scripts/summarize-cli-bakeoff.ps1',
     'scripts/test-cli-bakeoff-preflight.ps1',
     'scripts/upstream-reevaluation.ps1',

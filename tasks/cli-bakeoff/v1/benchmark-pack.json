@@ -669,7 +669,7 @@
       "task_id": "WB-020",
       "title": "Cost and token accounting",
       "task_class": "efficiency_reporting",
-      "packet_path": "WB-020-cost-and-token-accounting.md",
+      "packet_path": "WB-020-cost-and-usage-accounting.md",
       "attributes": {
         "scope": "multiple_artifacts",
         "ambiguity": "clear",
