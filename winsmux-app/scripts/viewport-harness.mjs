@@ -1246,7 +1246,7 @@ async function setShellLanguage(page, language) {
 async function assertComposerSessionControls(page, previewUrl) {
   await page.locator("#composer-mode-row").waitFor({ state: "hidden" });
   await page.locator(".composer-session-trigger-permission", { hasText: "Approve edits" }).waitFor();
-  await page.locator(".composer-session-trigger-model", { hasText: "Opus 4.7 1M・Ultra" }).waitFor();
+  await page.locator(".composer-session-trigger-model", { hasText: "Opus 4.8" }).waitFor();
 
   await page.evaluate(() => {
     localStorage.setItem("winsmux.composer-session.v1", JSON.stringify({
@@ -1280,6 +1280,11 @@ async function assertComposerSessionControls(page, previewUrl) {
   });
   await page.reload({ waitUntil: "networkidle" });
   await page.locator(".composer-session-trigger-permission", { hasText: "Approve edits" }).waitFor();
+  await page.locator(".composer-session-trigger-model", { hasText: "Opus 4.8" }).waitFor();
+  const migratedStartupInput = await page.evaluate(() => window.__winsmuxViewportHarness?.getOperatorStartupInput());
+  if (!String(migratedStartupInput).includes("--model claude-opus-4-8")) {
+    throw new Error("Legacy Opus 4.7 composer state did not migrate to Opus 4.8 startup model");
+  }
 
   await page.click(".composer-session-trigger-permission");
   await page.locator("#composer-permission-menu", { hasText: "Mode" }).waitFor();
@@ -1288,26 +1293,40 @@ async function assertComposerSessionControls(page, previewUrl) {
 
   await page.click(".composer-session-trigger-model");
   await page.locator("#composer-model-menu", { hasText: "Model" }).waitFor();
-  await page.locator("#composer-model-menu", { hasText: "Effort" }).waitFor();
   await page.locator("#composer-model-menu", { hasText: "Fast mode" }).waitFor();
-  await page.locator("#composer-model-menu .composer-session-option", { hasText: "Max" }).click();
+  if (await page.locator("#composer-model-menu", { hasText: "Effort" }).count() > 0) {
+    throw new Error("Composer model menu must not expose the legacy Effort section");
+  }
+  await page.locator("#composer-model-menu .composer-session-submenu-trigger", { hasText: "Other models" }).waitFor();
+  await page.locator("#composer-model-menu .composer-session-option", { hasText: "Opus 4.8" }).waitFor();
+  const fableDisabled = await page.evaluate(() => {
+    const buttons = Array.from(document.querySelectorAll("#composer-model-menu .composer-session-option"));
+    const fable = buttons.find((button) => button.textContent?.includes("Fable 5 Currently unavailable"));
+    return fable instanceof HTMLButtonElement && fable.disabled && fable.getAttribute("aria-disabled") === "true";
+  });
+  if (!fableDisabled) {
+    throw new Error("Fable 5 must be shown as currently unavailable and disabled in the composer model menu");
+  }
+  await page.locator("#composer-model-menu .composer-session-submenu-trigger", { hasText: "Other models" }).hover();
+  await page.locator("#composer-other-models-menu .composer-session-option", { hasText: "Opus 4.7" }).waitFor();
+  await page.locator("#composer-other-models-menu .composer-session-option", { hasText: "Opus 4.7" }).click();
+  await page.locator(".composer-session-trigger-model", { hasText: "Opus 4.7" }).waitFor();
   await page.locator("#composer-model-menu .composer-session-option", { hasText: "Sonnet 4.6" }).click();
-  await page.locator(".composer-session-trigger-model", { hasText: "Sonnet 4.6・Max" }).waitFor();
+  await page.locator(".composer-session-trigger-model", { hasText: "Sonnet 4.6" }).waitFor();
   await page.waitForFunction(() => {
     const toggle = document.querySelector("#composer-model-menu .composer-fast-toggle");
     return toggle instanceof HTMLButtonElement &&
-      toggle.disabled &&
       toggle.getAttribute("aria-checked") === "false" &&
-      toggle.textContent?.includes("Opus 4.6");
+      !toggle.disabled &&
+      toggle.textContent?.includes("Enable fast mode");
   });
-  await page.locator("#composer-model-menu .composer-session-option", { hasText: "Opus 4.6" }).click();
-  await page.locator(".composer-session-trigger-model", { hasText: "Opus 4.6・Max" }).waitFor();
   await page.locator("#composer-model-menu .composer-fast-toggle").click();
   await page.locator("#composer-model-menu .composer-fast-toggle[aria-checked='true']").waitFor();
+  await page.locator(".composer-session-trigger-model", { hasText: "Sonnet 4.6・Fast" }).waitFor();
 
   await page.reload({ waitUntil: "networkidle" });
   await page.locator(".composer-session-trigger-permission", { hasText: "Plan mode" }).waitFor();
-  await page.locator(".composer-session-trigger-model", { hasText: "Opus 4.6・Max" }).waitFor();
+  await page.locator(".composer-session-trigger-model", { hasText: "Sonnet 4.6・Fast" }).waitFor();
   const startupInputs = await page.evaluate(() => [
     window.__winsmuxViewportHarness?.getOperatorStartupInput(),
     window.__winsmuxViewportHarness?.getOperatorStartupInput(),
@@ -1323,42 +1342,9 @@ async function assertComposerSessionControls(page, previewUrl) {
     throw new Error("Fast mode persisted state did not keep enabled mode with the launch toggle consumed");
   }
   await page.click(".composer-session-trigger-model");
-  await page.locator("#composer-model-menu .composer-session-option", { hasText: "Sonnet 4.6" }).click();
-  await page.locator(".composer-session-trigger-model", { hasText: "Sonnet 4.6・Max" }).waitFor();
-  await page.reload({ waitUntil: "networkidle" });
-  await page.locator(".composer-session-trigger-model", { hasText: "Sonnet 4.6・Max" }).waitFor();
-  const modelSwitchDisableStartupInputs = await page.evaluate(() => [
-    window.__winsmuxViewportHarness?.getOperatorStartupInput(),
-    window.__winsmuxViewportHarness?.getOperatorStartupInput(),
-    JSON.parse(localStorage.getItem("winsmux.composer-session.v1") || "{}"),
-  ]);
-  if (!String(modelSwitchDisableStartupInputs[0]).includes("/fast\r")) {
-    throw new Error("Fast mode toggle was not sent once after switching away from Opus 4.6 fast mode");
-  }
-  if (String(modelSwitchDisableStartupInputs[1]).includes("/fast\r")) {
-    throw new Error("Fast mode model-switch disable toggle was sent more than once");
-  }
-  if (modelSwitchDisableStartupInputs[2]?.fastModeEnabled !== false || modelSwitchDisableStartupInputs[2]?.fastModeTogglePending !== false) {
-    throw new Error("Fast mode model-switch disable did not persist with the launch toggle consumed");
-  }
-  await page.click(".composer-session-trigger-model");
-  await page.locator("#composer-model-menu .composer-session-option", { hasText: "Opus 4.6" }).click();
-  await page.locator(".composer-session-trigger-model", { hasText: "Opus 4.6・Max" }).waitFor();
-  await page.locator("#composer-model-menu .composer-fast-toggle").click();
-  await page.locator("#composer-model-menu .composer-fast-toggle[aria-checked='true']").waitFor();
-  const modelSwitchReenableStartupInputs = await page.evaluate(() => [
-    window.__winsmuxViewportHarness?.getOperatorStartupInput(),
-    window.__winsmuxViewportHarness?.getOperatorStartupInput(),
-    JSON.parse(localStorage.getItem("winsmux.composer-session.v1") || "{}"),
-  ]);
-  if (!String(modelSwitchReenableStartupInputs[0]).includes("/fast\r")) {
-    throw new Error("Fast mode toggle was not sent once after re-enabling Opus 4.6 fast mode");
-  }
-  if (String(modelSwitchReenableStartupInputs[1]).includes("/fast\r")) {
-    throw new Error("Fast mode re-enable toggle was sent more than once");
-  }
   await page.locator("#composer-model-menu .composer-fast-toggle[aria-checked='true']").click();
   await page.locator("#composer-model-menu .composer-fast-toggle[aria-checked='false']").waitFor();
+  await page.locator(".composer-session-trigger-model", { hasText: "Sonnet 4.6" }).waitFor();
   const disableStartupInputs = await page.evaluate(() => [
     window.__winsmuxViewportHarness?.getOperatorStartupInput(),
     window.__winsmuxViewportHarness?.getOperatorStartupInput(),
@@ -1377,10 +1363,13 @@ async function assertComposerSessionControls(page, previewUrl) {
   await setShellLanguage(page, "ja");
   await page.goto(`${previewUrl}${HARNESS_QUERY}`, { waitUntil: "networkidle" });
   await page.locator(".composer-session-trigger-permission", { hasText: "プランモード" }).waitFor();
-  await page.locator(".composer-session-trigger-model", { hasText: "Opus 4.6・Max" }).waitFor();
+  await page.locator(".composer-session-trigger-model", { hasText: "Sonnet 4.6" }).waitFor();
   await page.click(".composer-session-trigger-model");
   await page.locator("#composer-model-menu", { hasText: "モデル" }).waitFor();
-  await page.locator("#composer-model-menu", { hasText: "工数" }).waitFor();
+  if (await page.locator("#composer-model-menu", { hasText: "工数" }).count() > 0) {
+    throw new Error("Japanese composer model menu must not expose the legacy effort section");
+  }
+  await page.locator("#composer-model-menu .composer-session-submenu-trigger", { hasText: "他のモデル" }).waitFor();
   await page.locator("#composer-model-menu", { hasText: "高速モード" }).waitFor();
   await page.locator("#composer-model-menu", { hasText: "高速モードを有効にする" }).waitFor();
   await page.locator("#composer-model-menu .composer-fast-toggle[aria-checked='false']").waitFor();

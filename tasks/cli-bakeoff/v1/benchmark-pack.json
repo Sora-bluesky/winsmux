@@ -60,31 +60,45 @@
       "pane": "worker-1",
       "role": "design-review",
       "cli": "Claude Code",
-      "model": "sonnet",
+      "model": "claude-opus-4-8",
       "effort": "high",
-      "display_model": "Claude Sonnet 4.7"
+      "display_model": "Claude Code / Claude Opus 4.8",
+      "auth_mode": "claude-code-local",
+      "scored": true
     },
     {
       "pane": "worker-2",
       "role": "implementation-review",
       "cli": "Codex",
-      "model": "gpt-5.3-codex-spark",
+      "model": "gpt-5.5",
       "effort": "medium",
-      "display_model": "Codex / gpt-5.3-spark"
+      "display_model": "Codex / gpt-5.5",
+      "auth_mode": "codex-local",
+      "scored": true
     },
     {
       "pane": "worker-3",
       "role": "speed-parallelism",
       "cli": "Antigravity CLI",
+      "worker_backend": "antigravity",
+      "agent": "antigravity",
       "model": "Gemini 3.5 Flash (High)",
-      "display_model": "Antigravity CLI / Gemini 3.5 Flash (High)"
+      "model_source": "operator-override",
+      "display_model": "Antigravity CLI / Gemini 3.5 Flash High",
+      "auth_mode": "antigravity-official-cli",
+      "scored": true
     },
     {
       "pane": "worker-4",
       "role": "speed-parallelism-medium",
       "cli": "Antigravity CLI",
+      "worker_backend": "antigravity",
+      "agent": "antigravity",
       "model": "Gemini 3.5 Flash (Medium)",
-      "display_model": "Antigravity CLI / Gemini 3.5 Flash (Medium)"
+      "model_source": "operator-override",
+      "display_model": "Antigravity CLI / Gemini 3.5 Flash Medium",
+      "auth_mode": "antigravity-official-cli",
+      "scored": true
     },
     {
       "pane": "worker-5",
