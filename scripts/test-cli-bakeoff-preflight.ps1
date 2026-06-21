@@ -82,7 +82,12 @@ if ($null -ne $pack) {
         'preflight_all_pass_before_recording',
         'desktop_app_screen_recording_required',
         'non_completed_worker_results_excluded_from_scoring',
-        'antigravity_empty_stdout_excluded_from_machine_scoring'
+        'antigravity_empty_stdout_excluded_from_machine_scoring',
+        'harness_bench_27_tasks_required',
+        'hidden_tests_required',
+        'sanitized_workspace_required',
+        'operator_rows_excluded_from_scoring',
+        'missing_key_timeout_crash_empty_stdout_invalid_output_excluded_from_scoring'
     )
     $qcGates = @($pack.qc_gates)
     foreach ($gate in $requiredGates) {
@@ -93,10 +98,41 @@ if ($null -ne $pack) {
     Add-Check 'Claude worker profile exists' (@($workers | Where-Object { $_.cli -eq 'Claude Code' }).Count -ge 1)
     Add-Check 'Codex worker profile exists' (@($workers | Where-Object { $_.cli -eq 'Codex' }).Count -ge 1)
     Add-Check 'Antigravity worker profile exists' (@($workers | Where-Object { $_.cli -eq 'Antigravity CLI' }).Count -ge 1)
+    Add-Check 'OpenRouter Kimi worker profile exists' (@($workers | Where-Object {
+        ($_.PSObject.Properties.Name -contains 'agent') -and
+        ($_.PSObject.Properties.Name -contains 'model') -and
+        ($_.PSObject.Properties.Name -contains 'worker_backend') -and
+        $_.agent -eq 'openrouter' -and
+        $_.model -eq 'moonshotai/kimi-k2.7-code' -and
+        $_.worker_backend -eq 'api_llm'
+    }).Count -ge 1)
+    Add-Check 'OpenRouter GLM worker profile exists' (@($workers | Where-Object {
+        ($_.PSObject.Properties.Name -contains 'agent') -and
+        ($_.PSObject.Properties.Name -contains 'model') -and
+        ($_.PSObject.Properties.Name -contains 'worker_backend') -and
+        $_.agent -eq 'openrouter' -and
+        $_.model -eq 'z-ai/glm-5.2' -and
+        $_.worker_backend -eq 'api_llm'
+    }).Count -ge 1)
+    Add-Check 'OpenRouter workers use public env name' (@($workers | Where-Object {
+        ($_.PSObject.Properties.Name -contains 'agent') -and
+        $_.agent -eq 'openrouter' -and
+        (-not ($_.PSObject.Properties.Name -contains 'required_env') -or $_.required_env -ne 'OPENROUTER_API_KEY')
+    }).Count -eq 0)
+
+    $operator = $pack.operator
+    Add-Check 'operator role is declared' ($null -ne $operator)
+    Add-Check 'operator is not scored' ($null -ne $operator -and -not [bool]$operator.scored)
+
+    $workspacePolicy = $pack.workspace_policy
+    Add-Check 'sanitized workspace policy exists' ($null -ne $workspacePolicy -and [bool]$workspacePolicy.sanitized_workspace_required)
+    Add-Check 'same workspace conditions required' ($null -ne $workspacePolicy -and [bool]$workspacePolicy.same_workspace_conditions_for_all_workers)
+    Add-Check 'default timeout is 3600 seconds' ([int]$pack.default_timeout_seconds -eq 3600) "timeout=$($pack.default_timeout_seconds)"
 
     $tasks = @($pack.tasks)
     $minimumTaskCount = [int]$pack.minimum_task_count_for_directional_findings
     Add-Check 'minimum directional task count is met' ($tasks.Count -ge $minimumTaskCount) "$($tasks.Count)/$minimumTaskCount"
+    Add-Check 'official Harness Bench task count is met' ($tasks.Count -eq [int]$pack.official_task_count_target -and [int]$pack.official_task_count_target -eq 27) "$($tasks.Count)/$($pack.official_task_count_target)"
 
     foreach ($task in $tasks) {
         $taskId = [string]$task.task_id
@@ -107,6 +143,9 @@ if ($null -ne $pack) {
         Add-Check "packet exists $taskId" ($packetInsideRoot -and (Test-Path -LiteralPath $packet -PathType Leaf)) $packetPath
         Add-Check "task class exists $taskId" (-not [string]::IsNullOrWhiteSpace([string]$task.task_class))
         Add-Check "hidden checks exist $taskId" (@($task.hidden_check_categories).Count -gt 0)
+        Add-Check "hidden test contract exists $taskId" ($null -ne $task.hidden_test -and -not [string]::IsNullOrWhiteSpace([string]$task.hidden_test.result_schema))
+        Add-Check "task timeout is 3600 seconds $taskId" ([int]$task.timeout_seconds -eq 3600)
+        Add-Check "task requires sanitized workspace $taskId" ([bool]$task.sanitized_workspace_required)
 
         if ($packetInsideRoot -and (Test-Path -LiteralPath $packet -PathType Leaf)) {
             $packetText = Get-Content -LiteralPath $packet -Raw -Encoding UTF8

@@ -19,6 +19,11 @@ Describe 'CLI bakeoff evidence harness' {
         $result.all_pass | Should -BeTrue
         $result.pack_id | Should -Be 'winsmux-cli-bakeoff-v1'
         $result.check_count | Should -BeGreaterThan 20
+        ($result.checks | Where-Object { $_.name -eq 'official Harness Bench task count is met' }).pass | Should -BeTrue
+        ($result.checks | Where-Object { $_.name -eq 'default timeout is 3600 seconds' }).pass | Should -BeTrue
+        ($result.checks | Where-Object { $_.name -eq 'operator is not scored' }).pass | Should -BeTrue
+        ($result.checks | Where-Object { $_.name -eq 'OpenRouter Kimi worker profile exists' }).pass | Should -BeTrue
+        ($result.checks | Where-Object { $_.name -eq 'OpenRouter GLM worker profile exists' }).pass | Should -BeTrue
         ($output -join "`n") | Should -Not -Match 'C:\\Users\\'
     }
 
@@ -219,6 +224,7 @@ BAKEOFF_ROUND_A_END
             Get-Content -LiteralPath (Join-Path $outputDir 'model-task-fit.md') -Raw -Encoding UTF8
             Get-Content -LiteralPath (Join-Path $outputDir 'assignment-policy.md') -Raw -Encoding UTF8
         ) -join "`n"
+        $combined | Should -Match '"overall","100","scoreable"'
         $combined | Should -Not -Match [regex]::Escape($TestDrive)
         $combined | Should -Not -Match '[A-Za-z]:\\Users\\'
     }
@@ -257,8 +263,55 @@ BAKEOFF_ROUND_A_END
 
         $raw = Get-Content -LiteralPath (Join-Path $outputDir 'raw-score-matrix.csv') -Raw -Encoding UTF8
         $raw | Should -Match 'antigravity_empty_stdout'
+        $raw | Should -Match 'empty_stdout'
         $raw | Should -Match 'missing_end_marker'
         $raw | Should -Match 'packet_hash_mismatch'
+    }
+
+    It 'records Harness Bench exclusion reasons without scoring operator or blocked workers' {
+        $runRoot = Join-Path $TestDrive 'runs-harness-exclusions'
+        $outputDir = Join-Path $TestDrive 'summary-harness-exclusions'
+        foreach ($name in @('missing-key', 'timeout', 'crash', 'invalid-output', 'operator')) {
+            New-Item -ItemType Directory -Path (Join-Path $runRoot $name) -Force | Out-Null
+            Set-Content -LiteralPath (Join-Path $runRoot $name 'manifest.json') -Value @"
+{
+  "version": 1,
+  "run_id": "$name",
+  "task_class": "harness_contract",
+  "recording": {
+    "status": "publishable",
+    "publishable": true
+  }
+}
+"@ -Encoding UTF8
+        }
+        Set-Content -LiteralPath (Join-Path $runRoot 'missing-key' 'commands.jsonl') -Value @'
+{"cli":"OpenRouter API","model":"OpenRouter / GLM-5.2","status":"api_llm_api_key_env_missing","end_marker_present":true,"packet_hash_match":true,"stdout_empty":false}
+'@ -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runRoot 'timeout' 'commands.jsonl') -Value @'
+{"cli":"Codex","model":"gpt-5.5","status":"timeout","timed_out":true,"end_marker_present":true,"packet_hash_match":true,"stdout_empty":false}
+'@ -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runRoot 'crash' 'commands.jsonl') -Value @'
+{"cli":"Claude Code","model":"Sonnet","status":"crashed","crashed":true,"end_marker_present":true,"packet_hash_match":true,"stdout_empty":false}
+'@ -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runRoot 'invalid-output' 'commands.jsonl') -Value @'
+{"cli":"Antigravity CLI","model":"Gemini High","status":"completed","invalid_output":true,"end_marker_present":true,"packet_hash_match":true,"stdout_empty":false}
+'@ -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runRoot 'operator' 'commands.jsonl') -Value @'
+{"cli":"operator","model":"run-control","role":"operator","status":"completed","end_marker_present":true,"packet_hash_match":true,"stdout_empty":false}
+'@ -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:SummaryScript -RunRoot $runRoot -OutputDir $outputDir -PackPath $script:PackPath -Json
+        $LASTEXITCODE | Should -Be 0
+        $result = $output | ConvertFrom-Json -Depth 20
+        $result.scoreable_runs | Should -Be 0
+
+        $raw = Get-Content -LiteralPath (Join-Path $outputDir 'raw-score-matrix.csv') -Raw -Encoding UTF8
+        $raw | Should -Match 'missing_api_key'
+        $raw | Should -Match 'timeout'
+        $raw | Should -Match 'crash'
+        $raw | Should -Match 'invalid_output'
+        $raw | Should -Match 'operator_run'
     }
 
     It 'keeps malformed manifests as blocked evidence instead of aborting the summary' {

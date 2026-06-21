@@ -4675,13 +4675,26 @@ body.is-resizing-workbench {
   background: var(--status-success-bg);
 }
 
+.runtime-benchmark-row[data-status="runnable"] .runtime-benchmark-status {
+  color: var(--status-success);
+  border-color: var(--status-success-border);
+  background: var(--status-success-bg);
+}
+
 .runtime-benchmark-row[data-status="candidate"] .runtime-benchmark-status {
   color: var(--status-warning);
   border-color: var(--status-warning-border);
   background: var(--status-warning-bg);
 }
 
-.runtime-benchmark-row[data-status="unavailable"] .runtime-benchmark-status {
+.runtime-benchmark-row[data-status="setup-required"] .runtime-benchmark-status {
+  color: var(--status-warning);
+  border-color: var(--status-warning-border);
+  background: var(--status-warning-bg);
+}
+
+.runtime-benchmark-row[data-status="unavailable"] .runtime-benchmark-status,
+.runtime-benchmark-row[data-status="blocked"] .runtime-benchmark-status {
   color: var(--status-danger);
   border-color: var(--status-danger-border);
   background: var(--status-danger-bg);

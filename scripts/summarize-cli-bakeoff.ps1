@@ -83,6 +83,12 @@ function ConvertTo-StrictBool {
     return $Default
 }
 
+function ConvertTo-NormalizedReason {
+    param([AllowNull()][object]$Value)
+    if ($null -eq $Value) { return '' }
+    return ([string]$Value).Trim().ToLowerInvariant() -replace '[\s-]+', '_'
+}
+
 function Get-ScoreabilityDecision {
     param(
         [Parameter(Mandatory = $true)][string]$Cli,
@@ -90,20 +96,66 @@ function Get-ScoreabilityDecision {
         [Parameter(Mandatory = $true)][bool]$RecordingPublishable,
         [Parameter(Mandatory = $true)][bool]$EndMarkerPresent,
         [Parameter(Mandatory = $true)][bool]$PacketHashMatch,
-        [Parameter(Mandatory = $true)][bool]$StdoutEmpty
+        [Parameter(Mandatory = $true)][bool]$StdoutEmpty,
+        [bool]$OperatorRun = $false,
+        [AllowEmptyString()][string]$FailureClass = '',
+        [AllowEmptyString()][string]$ExclusionReason = '',
+        [bool]$MissingApiKey = $false,
+        [bool]$TimedOut = $false,
+        [bool]$Crashed = $false,
+        [bool]$InvalidOutput = $false
     )
 
     $reasons = [System.Collections.Generic.List[string]]::new()
+    $normalizedStatus = ConvertTo-NormalizedReason $Status
+    $normalizedFailureClass = ConvertTo-NormalizedReason $FailureClass
+    $normalizedExclusionReason = ConvertTo-NormalizedReason $ExclusionReason
+    if ($OperatorRun) { $reasons.Add('operator_run') | Out-Null }
+    if ($MissingApiKey -or $normalizedStatus -in @('missing_api_key', 'api_llm_api_key_env_missing') -or $normalizedFailureClass -in @('missing_api_key', 'api_llm_api_key_env_missing') -or $normalizedExclusionReason -in @('missing_api_key', 'api_llm_api_key_env_missing')) { $reasons.Add('missing_api_key') | Out-Null }
+    if ($TimedOut -or $normalizedStatus -in @('timeout', 'timed_out') -or $normalizedFailureClass -in @('timeout', 'timed_out') -or $normalizedExclusionReason -in @('timeout', 'timed_out')) { $reasons.Add('timeout') | Out-Null }
+    if ($Crashed -or $normalizedStatus -in @('crash', 'crashed') -or $normalizedFailureClass -in @('crash', 'crashed') -or $normalizedExclusionReason -in @('crash', 'crashed')) { $reasons.Add('crash') | Out-Null }
+    if ($InvalidOutput -or $normalizedStatus -in @('invalid_output', 'invalid_json', 'malformed') -or $normalizedFailureClass -in @('invalid_output', 'invalid_json', 'malformed') -or $normalizedExclusionReason -in @('invalid_output', 'invalid_json', 'malformed')) { $reasons.Add('invalid_output') | Out-Null }
     if ($Status -ne 'completed') { $reasons.Add('not_completed') | Out-Null }
     if (-not $RecordingPublishable) { $reasons.Add('recording_not_publishable') | Out-Null }
     if (-not $EndMarkerPresent) { $reasons.Add('missing_end_marker') | Out-Null }
     if (-not $PacketHashMatch) { $reasons.Add('packet_hash_mismatch') | Out-Null }
+    if ($StdoutEmpty) { $reasons.Add('empty_stdout') | Out-Null }
     if ($Cli -match '(?i)Antigravity' -and $StdoutEmpty) { $reasons.Add('antigravity_empty_stdout') | Out-Null }
 
     return [pscustomobject]@{
         scoreable = ($reasons.Count -eq 0)
-        reason    = if ($reasons.Count -eq 0) { '' } else { ($reasons.ToArray() -join ';') }
+        reason    = if ($reasons.Count -eq 0) { '' } else { (($reasons.ToArray() | Select-Object -Unique) -join ';') }
     }
+}
+
+function Get-DeterministicAxisScore {
+    param(
+        [Parameter(Mandatory = $true)]$Command,
+        [Parameter(Mandatory = $true)][bool]$Scoreable,
+        [Parameter(Mandatory = $true)][string]$Axis
+    )
+
+    if (-not $Scoreable) { return '' }
+
+    $scores = Get-ObjectProperty $Command 'scores' $null
+    if ($null -ne $scores -and $scores.PSObject.Properties.Name -contains $Axis) {
+        return [string](Get-ObjectProperty $scores $Axis '')
+    }
+
+    $deterministicScore = Get-ObjectProperty $Command 'deterministic_score' $null
+    if ($null -ne $deterministicScore -and -not [string]::IsNullOrWhiteSpace([string]$deterministicScore)) {
+        return [string]$deterministicScore
+    }
+
+    $passed = Get-ObjectProperty $Command 'hidden_tests_passed' $null
+    $total = Get-ObjectProperty $Command 'hidden_tests_total' $null
+    $passedInt = 0
+    $totalInt = 0
+    if ($null -ne $passed -and $null -ne $total -and [int]::TryParse([string]$passed, [ref]$passedInt) -and [int]::TryParse([string]$total, [ref]$totalInt) -and $totalInt -gt 0) {
+        return [string][math]::Round(($passedInt / $totalInt) * 100, 2)
+    }
+
+    return '100'
 }
 
 $resolvedRunRoot = Resolve-LocalPath $RunRoot
@@ -135,8 +187,10 @@ if (Test-Path -LiteralPath $resolvedRunRoot -PathType Container) {
                 end_marker_present    = $false
                 packet_hash_match     = $false
                 stdout_empty          = $false
+                operator_run          = $false
                 scoreable             = $false
                 score_exclusion       = $manifestResult.error
+                axis_scores           = @{}
             }) | Out-Null
             continue
         }
@@ -194,7 +248,32 @@ if (Test-Path -LiteralPath $resolvedRunRoot -PathType Container) {
             $endMarkerPresent = ConvertTo-StrictBool (Get-ObjectProperty $command 'end_marker_present' $manifestEndMarkerPresent) $false
             $packetHashMatch = ConvertTo-StrictBool (Get-ObjectProperty $command 'packet_hash_match' $manifestPacketHashMatch) $false
             $stdoutEmpty = ConvertTo-StrictBool (Get-ObjectProperty $command 'stdout_empty' $null) $false
-            $decision = Get-ScoreabilityDecision -Cli $cli -Status $status -RecordingPublishable $recordingPublishable -EndMarkerPresent $endMarkerPresent -PacketHashMatch $packetHashMatch -StdoutEmpty $stdoutEmpty
+            $operatorRun = ConvertTo-StrictBool (Get-ObjectProperty $command 'operator_run' $false) $false
+            $scoredValue = Get-ObjectProperty $command 'scored' $null
+            if ($null -ne $scoredValue -and -not (ConvertTo-StrictBool $scoredValue $true)) {
+                $operatorRun = $true
+            }
+            if ((Get-ObjectProperty $command 'role' '') -eq 'operator' -or (Get-ObjectProperty $command 'pane' '') -eq 'operator') {
+                $operatorRun = $true
+            }
+            $decision = Get-ScoreabilityDecision `
+                -Cli $cli `
+                -Status $status `
+                -RecordingPublishable $recordingPublishable `
+                -EndMarkerPresent $endMarkerPresent `
+                -PacketHashMatch $packetHashMatch `
+                -StdoutEmpty $stdoutEmpty `
+                -OperatorRun $operatorRun `
+                -FailureClass ([string](Get-ObjectProperty $command 'failure_class' '')) `
+                -ExclusionReason ([string](Get-ObjectProperty $command 'exclusion_reason' '')) `
+                -MissingApiKey (ConvertTo-StrictBool (Get-ObjectProperty $command 'missing_api_key' $false) $false) `
+                -TimedOut (ConvertTo-StrictBool (Get-ObjectProperty $command 'timed_out' $false) $false) `
+                -Crashed (ConvertTo-StrictBool (Get-ObjectProperty $command 'crashed' $false) $false) `
+                -InvalidOutput (ConvertTo-StrictBool (Get-ObjectProperty $command 'invalid_output' $false) $false)
+            $axisScores = [ordered]@{}
+            foreach ($axis in $allAxes) {
+                $axisScores[$axis] = Get-DeterministicAxisScore -Command $command -Scoreable ([bool]$decision.scoreable) -Axis $axis
+            }
             $runs.Add([pscustomobject]@{
                 run_id                = $runId
                 cli                   = $cli
@@ -207,8 +286,10 @@ if (Test-Path -LiteralPath $resolvedRunRoot -PathType Container) {
                 end_marker_present    = $endMarkerPresent
                 packet_hash_match     = $packetHashMatch
                 stdout_empty          = $stdoutEmpty
+                operator_run          = $operatorRun
                 scoreable             = $decision.scoreable
                 score_exclusion       = $decision.reason
+                axis_scores           = $axisScores
             }) | Out-Null
         }
     }
@@ -227,7 +308,7 @@ foreach ($run in $runs) {
             (ConvertTo-CsvCell $run.model),
             (ConvertTo-CsvCell $run.task_class),
             (ConvertTo-CsvCell $axis),
-            (ConvertTo-CsvCell ''),
+            (ConvertTo-CsvCell $run.axis_scores[$axis]),
             (ConvertTo-CsvCell $verdict),
             (ConvertTo-CsvCell $run.recording_status),
             (ConvertTo-CsvCell $run.recording_publishable),

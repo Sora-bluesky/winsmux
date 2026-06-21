@@ -9666,7 +9666,7 @@ function Get-WorkersApiLlmDefaultApiKeyEnv {
     param([AllowEmptyString()][string]$Provider)
 
     if ([string]::Equals(([string]$Provider), 'openrouter', [System.StringComparison]::OrdinalIgnoreCase)) {
-        return 'WINSMUX_OPENROUTER_API_KEY'
+        return 'OPENROUTER_API_KEY'
     }
 
     $providerSlug = ([string]$Provider).Trim().ToUpperInvariant() -replace '[^A-Z0-9]+', '_'
@@ -9717,16 +9717,19 @@ function Resolve-WorkersApiLlmRuntimeConfig {
     $defaultApiKeyEnv = Get-WorkersApiLlmDefaultApiKeyEnv -Provider $provider
 
     $baseUrl = $declaredBaseUrl
-    $apiKeyEnv = $declaredApiKeyEnv
+    $apiKeyEnv = $declaredApiKeyEnv.Trim()
     if ([string]::Equals($provider, 'openrouter', [System.StringComparison]::OrdinalIgnoreCase)) {
         if (-not [string]::IsNullOrWhiteSpace($declaredBaseUrl) -and -not [string]::Equals($declaredBaseUrl.Trim().TrimEnd('/'), $defaultBaseUrl, [System.StringComparison]::OrdinalIgnoreCase)) {
             throw 'api_llm provider openrouter uses a built-in endpoint; api_base_url overrides are not allowed.'
         }
-        if (-not [string]::IsNullOrWhiteSpace($declaredApiKeyEnv) -and -not [string]::Equals($declaredApiKeyEnv.Trim(), $defaultApiKeyEnv, [System.StringComparison]::OrdinalIgnoreCase)) {
-            throw 'api_llm provider openrouter uses the built-in WINSMUX_OPENROUTER_API_KEY environment variable; api_key_env overrides are not allowed.'
+        $openRouterApiKeyEnvs = @('OPENROUTER_API_KEY', 'WINSMUX_OPENROUTER_API_KEY')
+        if (-not [string]::IsNullOrWhiteSpace($declaredApiKeyEnv) -and -not ($openRouterApiKeyEnvs | Where-Object { [string]::Equals($_, $declaredApiKeyEnv.Trim(), [System.StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1)) {
+            throw 'api_llm provider openrouter supports OPENROUTER_API_KEY by default and WINSMUX_OPENROUTER_API_KEY as an explicit legacy override.'
         }
         $baseUrl = $defaultBaseUrl
-        $apiKeyEnv = $defaultApiKeyEnv
+        if ([string]::IsNullOrWhiteSpace($apiKeyEnv)) {
+            $apiKeyEnv = $defaultApiKeyEnv
+        }
     } elseif ([string]::IsNullOrWhiteSpace($apiKeyEnv)) {
         $apiKeyEnv = $defaultApiKeyEnv
     }
@@ -9782,6 +9785,29 @@ function Get-WorkersApiLlmEnvValue {
     }
 
     return [string]$item.Value
+}
+
+function Resolve-WorkersApiLlmCredential {
+    param([Parameter(Mandatory = $true)]$RuntimeConfig)
+
+    $apiKeyEnv = [string](Get-SendConfigValue -InputObject $RuntimeConfig -Name 'ApiKeyEnv' -Default '')
+    $apiKey = Get-WorkersApiLlmEnvValue -Name $apiKeyEnv
+    if (
+        [string]::Equals([string](Get-SendConfigValue -InputObject $RuntimeConfig -Name 'Provider' -Default ''), 'openrouter', [System.StringComparison]::OrdinalIgnoreCase) -and
+        [string]::Equals($apiKeyEnv, 'OPENROUTER_API_KEY', [System.StringComparison]::OrdinalIgnoreCase) -and
+        [string]::IsNullOrWhiteSpace($apiKey)
+    ) {
+        $legacyKey = Get-WorkersApiLlmEnvValue -Name 'WINSMUX_OPENROUTER_API_KEY'
+        if (-not [string]::IsNullOrWhiteSpace($legacyKey)) {
+            $apiKeyEnv = 'WINSMUX_OPENROUTER_API_KEY'
+            $apiKey = $legacyKey
+        }
+    }
+
+    return [pscustomobject]@{
+        ApiKeyEnv = $apiKeyEnv
+        ApiKey    = $apiKey
+    }
 }
 
 function Get-WorkersApiLlmTimeoutSeconds {
@@ -9976,13 +10002,17 @@ function Invoke-WorkersApiLlmExec {
     }
 
     if ([string]::IsNullOrWhiteSpace($reason)) {
-        $apiKey = Get-WorkersApiLlmEnvValue -Name $apiKeyEnv
-        if ([string]::IsNullOrWhiteSpace($apiKey)) {
+        $credential = Resolve-WorkersApiLlmCredential -RuntimeConfig $runtime
+        $apiKeyEnv = [string]$credential.ApiKeyEnv
+        if ($metadata -is [System.Collections.IDictionary]) {
+            $metadata['api_key_env'] = $apiKeyEnv
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$credential.ApiKey)) {
             $reason = 'api_llm_api_key_env_missing'
         } else {
             try {
                 $network = 'started'
-                $completion = Invoke-WorkersOpenAiCompatibleChatCompletion -RuntimeConfig $runtime -Metadata $metadata -InputKind $inputKind -InputContent ([string]$inputContent) -ApiKey $apiKey
+                $completion = Invoke-WorkersOpenAiCompatibleChatCompletion -RuntimeConfig $runtime -Metadata $metadata -InputKind $inputKind -InputContent ([string]$inputContent) -ApiKey ([string]$credential.ApiKey)
                 $network = 'completed'
                 $usage = $completion.Usage
                 $providerResponseIdPresent = [bool]$completion.ProviderResponseIdPresent
@@ -11068,11 +11098,12 @@ function Invoke-WorkersDoctor {
                     }
                     try {
                         $runtime = Resolve-WorkersApiLlmRuntimeConfig -Metadata $apiRuntimeMetadata
-                        $apiKeyEnvName = [string]$runtime.ApiKeyEnv
+                        $credential = Resolve-WorkersApiLlmCredential -RuntimeConfig $runtime
+                        $apiKeyEnvName = [string]$credential.ApiKeyEnv
                         if (-not [string]::IsNullOrWhiteSpace($apiKeyEnvName) -and -not $apiLlmApiKeyEnvNames.Contains($apiKeyEnvName)) {
                             $apiLlmApiKeyEnvNames.Add($apiKeyEnvName) | Out-Null
                         }
-                        if ([string]::IsNullOrWhiteSpace((Get-WorkersApiLlmEnvValue -Name $apiKeyEnvName)) -and -not $apiLlmMissingApiKeyEnvNames.Contains($apiKeyEnvName)) {
+                        if ([string]::IsNullOrWhiteSpace([string]$credential.ApiKey) -and -not $apiLlmMissingApiKeyEnvNames.Contains($apiKeyEnvName)) {
                             $apiLlmMissingApiKeyEnvNames.Add($apiKeyEnvName) | Out-Null
                         }
                     } catch {
