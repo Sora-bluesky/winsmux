@@ -6259,7 +6259,7 @@ dependencies = [
 
 [[package]]
 name = "winsmux"
-version = "0.36.16"
+version = "0.36.17"
 dependencies = [
  "chrono",
  "crossterm",
@@ -6280,7 +6280,7 @@ dependencies = [
 
 [[package]]
 name = "winsmux-app"
-version = "0.36.16"
+version = "0.36.17"
 dependencies = [
  "chrono",
  "portable-pty",
