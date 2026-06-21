@@ -60,7 +60,7 @@
       "pane": "worker-1",
       "role": "design-review",
       "cli": "Claude Code",
-      "model": "opus",
+      "model": "claude-opus-4-8",
       "effort": "high",
       "display_model": "Claude Code / Claude Opus 4.8",
       "auth_mode": "claude-code-local",

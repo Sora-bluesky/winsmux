@@ -341,7 +341,7 @@ type RuntimeModelWorkerReadinessState = "runnable" | "setup-required" | "blocked
 type RuntimeModelBenchmarkFamily = "agent-arena" | "code-arena" | "winsmux-local";
 type ComposerPermissionMode = "auto" | "default" | "acceptEdits" | "plan";
 type ComposerEffortLevel = "auto" | "low" | "medium" | "high" | "xhigh" | "max";
-type ComposerModelId = "opus-4.7" | "opus-4.7-1m" | "opus-4.6" | "sonnet-4.6" | "haiku-4.5";
+type ComposerModelId = "fable-5" | "opus-4.8" | "opus-4.7" | "opus-4.7-1m" | "opus-4.6" | "sonnet-4.6" | "haiku-4.5";
 type VoiceDraftMode = "raw" | "cleaned" | "operator_request";
 type VoiceVocabularyMode = "off" | "project" | "project_custom";
 
@@ -584,7 +584,7 @@ let detachedSurfaceSession: DetachedSurfaceSessionState | null = null;
 let detachedSurfacePollTimer: number | null = null;
 let activeComposerMode: ComposerMode = "dispatch";
 let activeComposerPermissionMode: ComposerPermissionMode = "acceptEdits";
-let activeComposerModel: ComposerModelId = "opus-4.7-1m";
+let activeComposerModel: ComposerModelId = "opus-4.8";
 let activeComposerEffort: ComposerEffortLevel = "xhigh";
 let activeVoiceDraftMode: VoiceDraftMode = "raw";
 let activeComposerFastModeEnabled = false;
@@ -830,14 +830,17 @@ const composerModelOptions: Array<{
   label: string;
   labelJa: string;
   cliModel: string;
-  shortcut: string;
+  shortcut?: string;
   fastModeCompatible?: boolean;
+  disabled?: boolean;
+  group?: "primary" | "other";
 }> = [
-  { value: "opus-4.7", label: "Opus 4.7", labelJa: "Opus 4.7", cliModel: "opus", shortcut: "1" },
-  { value: "opus-4.7-1m", label: "Opus 4.7 1M", labelJa: "Opus 4.7 1M", cliModel: "opus[1m]", shortcut: "2" },
-  { value: "opus-4.6", label: "Opus 4.6", labelJa: "Opus 4.6", cliModel: "claude-opus-4-6", shortcut: "3", fastModeCompatible: true },
-  { value: "sonnet-4.6", label: "Sonnet 4.6", labelJa: "Sonnet 4.6", cliModel: "sonnet", shortcut: "4" },
-  { value: "haiku-4.5", label: "Haiku 4.5", labelJa: "Haiku 4.5", cliModel: "haiku", shortcut: "5" },
+  { value: "fable-5", label: "Fable 5 Currently unavailable", labelJa: "Fable 5 Currently unavailable", cliModel: "claude-fable-5", disabled: true },
+  { value: "opus-4.8", label: "Opus 4.8", labelJa: "Opus 4.8", cliModel: "claude-opus-4-8", shortcut: "1" },
+  { value: "sonnet-4.6", label: "Sonnet 4.6", labelJa: "Sonnet 4.6", cliModel: "sonnet", shortcut: "2" },
+  { value: "haiku-4.5", label: "Haiku 4.5", labelJa: "Haiku 4.5", cliModel: "haiku", shortcut: "3" },
+  { value: "opus-4.7", label: "Opus 4.7", labelJa: "Opus 4.7", cliModel: "claude-opus-4-7", group: "other" },
+  { value: "opus-4.6", label: "Opus 4.6", labelJa: "Opus 4.6", cliModel: "claude-opus-4-6", fastModeCompatible: true, group: "other" },
 ];
 
 const composerEffortOptions: Array<{
@@ -1291,11 +1294,11 @@ const runtimeModelCatalog: RuntimeModelCatalogEntry[] = [
     noteJa: "高速なレビュー、検証、低遅延ワーカーに向きます。",
   },
   {
-    id: "claude-opus",
-    label: "Claude Opus",
-    labelJa: "Claude Opus",
+    id: "claude-opus-4-8",
+    label: "Claude Opus 4.8",
+    labelJa: "Claude Opus 4.8",
     agent: "claude",
-    model: "opus",
+    model: "claude-opus-4-8",
     modelSource: "official-doc",
     reasoningEffort: "xhigh",
     promptTransport: "file",
@@ -1310,8 +1313,8 @@ const runtimeModelCatalog: RuntimeModelCatalogEntry[] = [
     availability: "Requires local Claude Code access.",
     benchmark: "Agent Arena reference plus winsmux run evidence",
     evidence: "official-doc",
-    note: "Use for high-complexity implementation or review when Claude Code access is healthy.",
-    noteJa: "Claude Code が利用できる場合の高難度実装・レビュー向けです。",
+    note: "Use for high-complexity implementation or review when Claude Code access exposes Opus 4.8.",
+    noteJa: "Claude Code で Opus 4.8 が利用できる場合の高難度実装・レビュー向けです。",
   },
   {
     id: "claude-sonnet",
@@ -8198,7 +8201,7 @@ function persistRuntimeRolePreferences() {
 function defaultComposerSessionControls(): ComposerSessionControlState {
   return {
     permissionMode: "acceptEdits",
-    model: "opus-4.7-1m",
+    model: "opus-4.8",
     effort: "xhigh",
     voiceDraftMode: "raw",
     voiceVocabularyMode: "project",
@@ -8209,7 +8212,11 @@ function defaultComposerSessionControls(): ComposerSessionControlState {
 
 function normalizeComposerSessionControls(value: Partial<ComposerSessionControlState> | null | undefined) {
   const fallback = defaultComposerSessionControls();
-  const model = composerModelOptions.find((item) => item.value === value?.model)?.value ?? fallback.model;
+  const storedModel = value?.model;
+  const migratedModel = storedModel === "opus-4.7" || storedModel === "opus-4.7-1m" || storedModel === "fable-5"
+    ? fallback.model
+    : storedModel;
+  const model = composerModelOptions.find((item) => item.value === migratedModel && !item.disabled)?.value ?? fallback.model;
   const fastModeCompatible = isComposerFastModeCompatible(model);
   const storedFastModeEnabled =
     typeof value?.fastModeEnabled === "boolean" ? value.fastModeEnabled : fallback.fastModeEnabled;
@@ -9106,8 +9113,8 @@ function updateRuntimeRoleDraft(roleId: RuntimeRoleId, patch: Partial<RuntimeRol
 function runtimeAccessNote(preference: RuntimeRolePreference, japanese: boolean) {
   if (preference.roleId === "operator") {
     return japanese
-      ? "デスクトップのオペレーターペインは現在 Claude Code 固定です。プロバイダー変更は今後のリリースで対応予定です。モデルと工数は入力欄のメニューで選びます。"
-      : "The desktop operator pane is currently fixed to Claude Code. Provider switching is planned for a later release. Choose model and effort from the composer menu.";
+      ? "デスクトップのオペレーターペインは現在 Claude Code 固定です。プロバイダー変更は今後のリリースで対応予定です。モデルと高速モードは入力欄のメニューで選びます。"
+      : "The desktop operator pane is currently fixed to Claude Code. Provider switching is planned for a later release. Choose model and fast mode from the composer menu.";
   }
   if (preference.provider === "codex") {
     return japanese
@@ -11062,21 +11069,20 @@ function getComposerPermissionModeOption(mode: ComposerPermissionMode = activeCo
 }
 
 function getComposerModelOption(model: ComposerModelId = activeComposerModel) {
-  return composerModelOptions.find((item) => item.value === model) ?? composerModelOptions[0];
+  return composerModelOptions.find((item) => item.value === model && !item.disabled)
+    ?? composerModelOptions.find((item) => item.value === "opus-4.8")
+    ?? composerModelOptions.find((item) => !item.disabled)
+    ?? composerModelOptions[0];
 }
 
 function isComposerFastModeCompatible(model: ComposerModelId = activeComposerModel) {
-  return Boolean(getComposerModelOption(model).fastModeCompatible);
+  return !composerModelOptions.find((item) => item.value === model)?.disabled;
 }
 
 function getComposerFastModeAppliedState() {
   return activeComposerFastModeTogglePending
     ? !activeComposerFastModeEnabled
     : activeComposerFastModeEnabled;
-}
-
-function getComposerEffortOption(effort: ComposerEffortLevel = activeComposerEffort) {
-  return composerEffortOptions.find((item) => item.value === effort) ?? composerEffortOptions[0];
 }
 
 function getVoiceDraftModeOption(mode: VoiceDraftMode = activeVoiceDraftMode) {
@@ -11094,19 +11100,11 @@ function setComposerPermissionMode(mode: ComposerPermissionMode) {
   renderComposerSessionControls();
 }
 
-function setComposerEffort(effort: ComposerEffortLevel) {
-  activeComposerEffort = effort;
-  persistComposerSessionControls();
-  renderComposerSessionControls();
-}
-
 function setComposerModel(model: ComposerModelId) {
-  const previousAppliedState = getComposerFastModeAppliedState();
-  activeComposerModel = model;
-  if (!isComposerFastModeCompatible(model)) {
-    activeComposerFastModeEnabled = false;
-    activeComposerFastModeTogglePending = previousAppliedState;
+  if (composerModelOptions.find((item) => item.value === model)?.disabled) {
+    return;
   }
+  activeComposerModel = model;
   persistComposerSessionControls();
   renderComposerSessionControls();
 }
@@ -11191,16 +11189,22 @@ function appendComposerMenuSeparator(menu: HTMLElement) {
 
 function appendComposerOptionButton<T extends string>(
   menu: HTMLElement,
-  option: { value: T; label: string; labelJa: string; description?: string; descriptionJa?: string; shortcut?: string },
+  option: { value: T; label: string; labelJa: string; description?: string; descriptionJa?: string; shortcut?: string; disabled?: boolean },
   selectedValue: T,
   onSelect: (value: T) => void,
 ) {
   const japanese = themeState.language === "ja";
   const optionButton = document.createElement("button");
   optionButton.type = "button";
-  optionButton.className = `composer-session-option ${option.value === selectedValue ? "is-active" : ""}`;
+  optionButton.className = [
+    "composer-session-option",
+    option.value === selectedValue ? "is-active" : "",
+    option.disabled ? "is-disabled" : "",
+  ].filter(Boolean).join(" ");
+  optionButton.disabled = Boolean(option.disabled);
   optionButton.setAttribute("role", "menuitemradio");
   optionButton.setAttribute("aria-checked", option.value === selectedValue ? "true" : "false");
+  optionButton.setAttribute("aria-disabled", option.disabled ? "true" : "false");
 
   const labelRow = document.createElement("span");
   labelRow.className = "composer-session-option-label-row";
@@ -11211,6 +11215,8 @@ function appendComposerOptionButton<T extends string>(
   labelRow.appendChild(label);
   if (option.shortcut) {
     labelRow.appendChild(createComposerShortcut(option.shortcut));
+  } else if (option.value === selectedValue && !option.disabled) {
+    labelRow.appendChild(createComposerShortcut("✓"));
   }
   optionButton.appendChild(labelRow);
 
@@ -11224,9 +11230,41 @@ function appendComposerOptionButton<T extends string>(
 
   optionButton.addEventListener("click", (event) => {
     event.stopPropagation();
+    if (option.disabled) {
+      return;
+    }
     onSelect(option.value);
   });
   menu.appendChild(optionButton);
+}
+
+function appendComposerOtherModelsSubmenu(menu: HTMLElement) {
+  const japanese = themeState.language === "ja";
+  const wrapper = document.createElement("div");
+  wrapper.className = "composer-session-submenu-wrap";
+
+  const trigger = document.createElement("button");
+  trigger.type = "button";
+  trigger.className = "composer-session-submenu-trigger";
+  trigger.setAttribute("role", "menuitem");
+  trigger.setAttribute("aria-haspopup", "menu");
+  trigger.setAttribute("aria-expanded", "false");
+  trigger.replaceChildren(
+    createTextElement("span", "composer-session-option-label", japanese ? "他のモデル" : "Other models"),
+    createComposerShortcut("›"),
+  );
+  trigger.addEventListener("click", (event) => {
+    event.stopPropagation();
+    wrapper.classList.toggle("is-open");
+    trigger.setAttribute("aria-expanded", wrapper.classList.contains("is-open") ? "true" : "false");
+  });
+
+  const submenu = createComposerMenu("composer-other-models-menu", "composer-session-submenu");
+  for (const option of composerModelOptions.filter((item) => item.group === "other")) {
+    appendComposerOptionButton(submenu, option, activeComposerModel, setComposerModel);
+  }
+  wrapper.append(trigger, submenu);
+  menu.appendChild(wrapper);
 }
 
 function createComposerPermissionMenu() {
@@ -11271,8 +11309,8 @@ function createComposerVoiceDraftMenu() {
 
 function createComposerModelMenu() {
   const modelOption = getComposerModelOption();
-  const effortOption = getComposerEffortOption();
-  const selectedLabel = `${themeState.language === "ja" ? modelOption.labelJa : modelOption.label}・${themeState.language === "ja" ? effortOption.labelJa : effortOption.label}`;
+  const fastSuffix = activeComposerFastModeEnabled ? (themeState.language === "ja" ? "・高速" : "・Fast") : "";
+  const selectedLabel = `${themeState.language === "ja" ? modelOption.labelJa : modelOption.label}${fastSuffix}`;
   const group = createComposerSessionControl("model", selectedLabel);
   if (openComposerSessionMenu !== "model") {
     return group;
@@ -11281,14 +11319,11 @@ function createComposerModelMenu() {
   const japanese = themeState.language === "ja";
   const menu = createComposerMenu("composer-model-menu", "composer-session-menu-model");
   appendComposerMenuHeading(menu, japanese ? "モデル" : "Model");
-  for (const option of composerModelOptions) {
+  for (const option of composerModelOptions.filter((item) => item.group !== "other")) {
     appendComposerOptionButton(menu, option, activeComposerModel, setComposerModel);
   }
   appendComposerMenuSeparator(menu);
-  appendComposerMenuHeading(menu, japanese ? "工数" : "Effort");
-  for (const option of composerEffortOptions) {
-    appendComposerOptionButton(menu, option, activeComposerEffort, setComposerEffort);
-  }
+  appendComposerOtherModelsSubmenu(menu);
   appendComposerMenuSeparator(menu);
   appendComposerMenuHeading(menu, japanese ? "高速モード" : "Fast mode");
   const fastModeCompatible = isComposerFastModeCompatible();
@@ -11311,7 +11346,7 @@ function createComposerModelMenu() {
   fastToggleThumb.className = "composer-fast-toggle-thumb";
   fastToggleTrack.appendChild(fastToggleThumb);
   fastToggle.replaceChildren(
-    createTextElement("span", "", fastModeCompatible ? (japanese ? "高速モードを有効にする" : "Enable fast mode") : (japanese ? "高速モードは Opus 4.6 でのみ利用できます" : "Fast mode is only available on Opus 4.6")),
+    createTextElement("span", "", japanese ? "高速モードを有効にする" : "Enable fast mode"),
     fastToggleTrack,
   );
   fastToggle.addEventListener("click", (event) => {
