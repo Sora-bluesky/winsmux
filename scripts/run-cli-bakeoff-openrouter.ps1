@@ -39,6 +39,11 @@ function ConvertTo-SafeText {
     $text = [string]$Value
     $text = $text -replace [regex]::Escape($RepoRoot), '<repo>'
     $text = $text -replace '[A-Za-z]:\\[^,"\r\n]+', '<local-path>'
+    $text = $text -replace '(?i)(ResponseID:\s*)[A-Za-z0-9_-]{8,}', '$1<redacted>'
+    $text = $text -replace '(?i)(Trace:\s*)0x[a-f0-9]+', '$1<redacted>'
+    $text = $text -replace '(?i)(email=)[^\s,]+', '$1<redacted>'
+    $text = $text -replace '(?i)(authenticated successfully as\s+)[^\s,]+', '$1<redacted>'
+    $text = $text -replace '(?i)(provider[_ -]?request[_ -]?id\s*[:=]\s*)[A-Za-z0-9_-]{8,}', '$1<redacted>'
     $text = $text -replace '(?i)(bearer\s+)[a-z0-9._-]{16,}', '$1<redacted>'
     $text = $text -replace '(?i)(api[_-]?key\s*[:=]\s*)[a-z0-9._-]{16,}', '$1<redacted>'
     return $text
@@ -285,7 +290,10 @@ foreach ($task in $selectedTasks) {
         $hasEnd = -not [string]::IsNullOrWhiteSpace($markers.end) -and $responseText.Contains($markers.end)
         $hasNoObviousSecrets = $responseText -notmatch '(?i)(bearer\s+[a-z0-9._-]{16,}|api[_-]?key\s*[:=]\s*[a-z0-9._-]{16,}|secret\s*[:=]\s*[a-z0-9._-]{16,})'
         $hasNoPrivatePaths = $responseText -notmatch '(?i)([A-Za-z]:\\Users\\|/Users/|/home/)'
-        $hiddenPassed = @($hasBegin, $hasEnd, $hasNoObviousSecrets, $hasNoPrivatePaths | Where-Object { $_ }).Count
+        $hiddenPassed = @($hasBegin, $hasEnd, $hasNoObviousSecrets, $hasNoPrivatePaths) |
+            Where-Object { $_ } |
+            Measure-Object |
+            Select-Object -ExpandProperty Count
         $hiddenTotal = 4
         $deterministicScore = [math]::Round(($hiddenPassed / $hiddenTotal) * 100, 2)
         $endMarkerPresent = $hasBegin -and $hasEnd
@@ -301,6 +309,7 @@ foreach ($task in $selectedTasks) {
             provider_model               = [string]$worker.model
             role                         = [string]$worker.role
             pane                         = [string]$worker.pane
+            scored                       = if (Test-JsonProperty -InputObject $worker -Name 'scored') { [bool]$worker.scored } else { $true }
             task_id                      = $taskId
             task_class                   = [string]$task.task_class
             status                       = $status
