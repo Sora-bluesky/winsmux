@@ -325,17 +325,19 @@ function createTextElement<K extends keyof HTMLElementTagNameMap>(
 }
 
 type CompareRiskLevel = "low" | "medium" | "high";
-type ThemeMode = "codex-dark" | "graphite-dark";
+type ThemeMode = "system" | "light" | "dark";
 type DensityMode = "comfortable" | "compact";
 type WrapMode = "balanced" | "compact";
 type CodeFontMode = "system" | "google-sans-code" | "jetbrains-mono";
 type FocusMode = "standard" | "focused";
 type LanguageMode = "en" | "ja";
+type SettingsScope = "user" | "workspace";
 type WorkbenchLayoutMode = "2x2" | "3x2" | "focus";
 type RuntimeRoleId = "operator" | "worker" | "reviewer";
-type RuntimeProviderId = "provider-default" | "codex" | "claude" | "gemini" | "antigravity";
-type RuntimeModelSource = "provider-default" | "cli-discovery" | "official-doc" | "operator-override";
-type RuntimeReasoningEffort = "provider-default" | "low" | "medium" | "high" | "xhigh" | "max";
+type RuntimeProviderId = "provider-default" | "codex" | "claude" | "gemini" | "antigravity" | "grok-build" | "openrouter";
+type RuntimeModelSource = "provider-default" | "cli-discovery" | "provider-api" | "official-doc" | "operator-override";
+type RuntimeReasoningEffort = "provider-default" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+type RuntimeModelAssignmentMode = "shared" | "per-pane";
 type RuntimeModelCatalogStatus = "selectable" | "candidate" | "setup-required" | "runnable" | "blocked" | "reference-only" | "unavailable";
 type RuntimeModelWorkerReadinessState = "runnable" | "setup-required" | "blocked";
 type RuntimeModelBenchmarkFamily = "agent-arena" | "code-arena" | "winsmux-local";
@@ -387,6 +389,7 @@ interface RuntimeModelCatalogEntry {
   model: string;
   modelSource: RuntimeModelSource;
   reasoningEffort: RuntimeReasoningEffort;
+  supportedReasoningEfforts?: RuntimeReasoningEffort[];
   promptTransport: "argv" | "file" | "stdin";
   authMode: string;
   requiredEnv?: string;
@@ -407,6 +410,11 @@ interface RuntimeModelCatalogEntry {
   confidenceNoteJa?: string;
   note: string;
   noteJa: string;
+}
+
+interface RuntimePaneModelSelection {
+  entry: RuntimeModelCatalogEntry;
+  reasoningEffort: RuntimeReasoningEffort;
 }
 
 interface ComposerAttachment {
@@ -737,12 +745,36 @@ const WINSMUX_DARK_TERMINAL_THEME = {
   brightCyan: "#29b8db",
   brightWhite: "#ffffff",
 };
+const WINSMUX_LIGHT_TERMINAL_THEME = {
+  background: "#ffffff",
+  foreground: "#1a1c1f",
+  cursor: "#d97706",
+  cursorAccent: "#ffffff",
+  selectionBackground: "rgba(51, 156, 255, 0.22)",
+  selectionInactiveBackground: "rgba(51, 156, 255, 0.12)",
+  black: "#24292f",
+  red: "#cf222e",
+  green: "#116329",
+  yellow: "#9a6700",
+  blue: "#0969da",
+  magenta: "#8250df",
+  cyan: "#1b7c83",
+  white: "#6e7781",
+  brightBlack: "#57606a",
+  brightRed: "#a40e26",
+  brightGreen: "#1a7f37",
+  brightYellow: "#9a6700",
+  brightBlue: "#218bff",
+  brightMagenta: "#a475f9",
+  brightCyan: "#3192aa",
+  brightWhite: "#8c959f",
+};
 const DEFAULT_VOICE_SHORTCUT = "Ctrl+Alt+M";
 const RESERVED_VOICE_SHORTCUTS = new Set(["Win+H", "Ctrl+Space", "Ctrl+Shift+Space"]);
 const VOICE_LONG_SESSION_WARNING_MS = 5 * 60 * 1000;
 const VOICE_DRAFT_AUTO_SAVE_MS = 6 * 60 * 1000;
 const themeState: ThemeState = {
-  theme: "codex-dark",
+  theme: "system",
   density: "comfortable",
   wrapMode: "balanced",
   codeFont: "system",
@@ -755,8 +787,11 @@ const themeState: ThemeState = {
 };
 let settingsDraftState: ThemeState | null = null;
 let settingsFontFamilyMenuOpen = false;
+let settingsScope: SettingsScope = "user";
 let runtimeRolePreferences: RuntimeRolePreference[] = [];
 let runtimeRoleDraftState: RuntimeRolePreference[] | null = null;
+let runtimeModelAssignmentMode: RuntimeModelAssignmentMode = "shared";
+let runtimeModelAssignmentModeDraft: RuntimeModelAssignmentMode | null = null;
 let workerProviderSwitchInFlight = "";
 let workerStartTarget: string | null = null;
 let workerStatusRows: DesktopWorkerStatusRow[] = [];
@@ -765,9 +800,10 @@ let workerStatusRefreshInFlight: Promise<void> | null = null;
 let workerStatusRefreshSequence = 0;
 let preferredWideSidebarOpen = true;
 let preferredWideContextOpen = false;
-let workerStatusStripVisible = true;
+let workerStatusStripVisible = false;
 const SHELL_PREFERENCES_STORAGE_KEY = "winsmux.shell.preferences.v1";
 const RUNTIME_ROLE_PREFERENCES_STORAGE_KEY = "winsmux.runtime-role.preferences.v1";
+const RUNTIME_MODEL_ASSIGNMENT_MODE_STORAGE_KEY = "winsmux.runtime-model.assignment-mode.v1";
 const COMPOSER_SESSION_STORAGE_KEY = "winsmux.composer-session.v1";
 const VOICE_DRAFT_RECOVERY_STORAGE_KEY = "winsmux.voice-draft-recovery.v1";
 const VOICE_VOCABULARY_STORAGE_NAME = "winsmux.voice-vocabulary.v1";
@@ -876,20 +912,20 @@ const composerEffortOptions: Array<{
     shortcut: "H",
   },
   {
-    value: "xhigh",
-    label: "Ultra",
-    labelJa: "超高",
-    description: "Use extra reasoning depth for difficult work.",
-    descriptionJa: "難しい作業に向けてさらに深く考えます。",
-    shortcut: "U",
-  },
-  {
     value: "max",
     label: "Max",
     labelJa: "Max",
     description: "Use the maximum available effort.",
     descriptionJa: "利用可能な最大の思考量を使います。",
     shortcut: "X",
+  },
+  {
+    value: "xhigh",
+    label: "Ultra",
+    labelJa: "超高",
+    description: "Use extra reasoning depth for difficult work.",
+    descriptionJa: "難しい作業に向けてさらに深く考えます。",
+    shortcut: "U",
   },
 ];
 
@@ -1125,8 +1161,9 @@ const timelineFilterLabelsJa: Record<TimelineFilter, string> = {
 };
 
 const themeOptions: Array<{ value: ThemeMode; label: string; description: string; labelJa?: string; descriptionJa?: string }> = [
-  { value: "codex-dark", label: "Codex TUI Dark", labelJa: "Codex TUI Dark", description: "Adaptation of public openai/codex TUI typography and contrast.", descriptionJa: "公開されている openai/codex TUI の文字設計とコントラストを参考にした表示。" },
-  { value: "graphite-dark", label: "Graphite", labelJa: "Graphite", description: "Softer shell contrast for long operator sessions.", descriptionJa: "長時間のオペレーター作業向けにコントラストを抑えた表示。" },
+  { value: "system", label: "System", labelJa: "システム", description: "Follow the operating system appearance.", descriptionJa: "OS の外観設定に合わせます。" },
+  { value: "light", label: "Light", labelJa: "ライト", description: "Use a bright Codex-style workspace.", descriptionJa: "明るい Codex 風の作業領域にします。" },
+  { value: "dark", label: "Dark", labelJa: "ダーク", description: "Use a dark Codex-style workspace.", descriptionJa: "暗い Codex 風の作業領域にします。" },
 ];
 
 const densityOptions: Array<{ value: DensityMode; label: string; description: string; labelJa?: string; descriptionJa?: string }> = [
@@ -1186,18 +1223,12 @@ const projectVoiceVocabularyEntries = [
   { spoken: "slash dispatch", replacement: "slash dispatch" },
 ];
 
-const runtimeRoleOptions: Array<{ value: RuntimeRoleId; label: string; labelJa: string; description: string; descriptionJa: string }> = [
-  { value: "operator", label: "Operator", labelJa: "オペレーター", description: "Owns approvals and session control.", descriptionJa: "承認とセッション制御を担当します。" },
-  { value: "worker", label: "Worker", labelJa: "ワーカー", description: "Handles implementation and verification work.", descriptionJa: "実装と検証を担当します。" },
-  { value: "reviewer", label: "Reviewer", labelJa: "レビュアー", description: "Checks diffs, risks, and tests.", descriptionJa: "差分、リスク、テストを確認します。" },
-];
-
 const runtimeProviderOptions: Array<{ value: RuntimeProviderId; label: string; labelJa: string }> = [
-  { value: "provider-default", label: "Provider default", labelJa: "既定値" },
-  { value: "codex", label: "Codex CLI", labelJa: "Codex CLI" },
+  { value: "codex", label: "Codex", labelJa: "Codex" },
   { value: "claude", label: "Claude Code", labelJa: "Claude Code" },
-  { value: "antigravity", label: "Antigravity CLI", labelJa: "Antigravity CLI" },
-  { value: "gemini", label: "Gemini CLI", labelJa: "Gemini CLI" },
+  { value: "antigravity", label: "Antigravity", labelJa: "Antigravity" },
+  { value: "grok-build", label: "Grok Build", labelJa: "Grok Build" },
+  { value: "openrouter", label: "OpenRouter", labelJa: "OpenRouter" },
 ];
 const lockedOperatorRuntimePreference: RuntimeRolePreference = {
   roleId: "operator",
@@ -1210,6 +1241,7 @@ const lockedOperatorRuntimePreference: RuntimeRolePreference = {
 const runtimeModelSourceOptions: Array<{ value: RuntimeModelSource; label: string; labelJa: string }> = [
   { value: "provider-default", label: "Provider default", labelJa: "既定値" },
   { value: "cli-discovery", label: "Local CLI catalog", labelJa: "ローカル CLI" },
+  { value: "provider-api", label: "Provider API", labelJa: "プロバイダー API" },
   { value: "official-doc", label: "Official docs", labelJa: "公式ドキュメント" },
   { value: "operator-override", label: "Operator override", labelJa: "明示指定" },
 ];
@@ -1219,8 +1251,8 @@ const runtimeReasoningOptions: Array<{ value: RuntimeReasoningEffort; label: str
   { value: "low", label: "Low", labelJa: "低" },
   { value: "medium", label: "Medium", labelJa: "中" },
   { value: "high", label: "High", labelJa: "高" },
-  { value: "xhigh", label: "X High", labelJa: "特高" },
   { value: "max", label: "Max", labelJa: "最大" },
+  { value: "xhigh", label: "X High", labelJa: "X High" },
 ];
 
 const runtimeModelCatalog: RuntimeModelCatalogEntry[] = [
@@ -1254,7 +1286,8 @@ const runtimeModelCatalog: RuntimeModelCatalogEntry[] = [
     agent: "codex",
     model: "gpt-5.5",
     modelSource: "cli-discovery",
-    reasoningEffort: "high",
+    reasoningEffort: "medium",
+    supportedReasoningEfforts: ["low", "medium", "high", "xhigh"],
     promptTransport: "file",
     authMode: "codex-chatgpt-local",
     requiredBackend: "agent-cli",
@@ -1271,6 +1304,54 @@ const runtimeModelCatalog: RuntimeModelCatalogEntry[] = [
     noteJa: "ローカル Codex CLI アカウントで利用できる場合の強いコーディング用ワーカーです。",
   },
   {
+    id: "codex-gpt-5-4",
+    label: "GPT-5.4",
+    labelJa: "GPT-5.4",
+    agent: "codex",
+    model: "gpt-5.4",
+    modelSource: "cli-discovery",
+    reasoningEffort: "medium",
+    supportedReasoningEfforts: ["low", "medium", "high", "xhigh"],
+    promptTransport: "file",
+    authMode: "codex-chatgpt-local",
+    requiredBackend: "agent-cli",
+    status: "selectable",
+    family: "winsmux-local",
+    speed: "frontier",
+    intelligence: "high",
+    cost: "account",
+    risk: "local-cli",
+    availability: "Accepted by local Codex CLI headless execution.",
+    benchmark: "winsmux local model availability evidence",
+    evidence: "cli-discovery",
+    note: "Use when the local Codex CLI account exposes GPT-5.4.",
+    noteJa: "ローカル Codex CLI アカウントで GPT-5.4 が利用できる場合に使います。",
+  },
+  {
+    id: "codex-gpt-5-4-mini",
+    label: "GPT-5.4-Mini",
+    labelJa: "GPT-5.4-Mini",
+    agent: "codex",
+    model: "gpt-5.4-mini",
+    modelSource: "cli-discovery",
+    reasoningEffort: "medium",
+    supportedReasoningEfforts: ["low", "medium", "high", "xhigh"],
+    promptTransport: "file",
+    authMode: "codex-chatgpt-local",
+    requiredBackend: "agent-cli",
+    status: "selectable",
+    family: "winsmux-local",
+    speed: "fast",
+    intelligence: "medium-high",
+    cost: "account",
+    risk: "local-cli",
+    availability: "Accepted by local Codex CLI headless execution.",
+    benchmark: "winsmux local model availability evidence",
+    evidence: "cli-discovery",
+    note: "Use for lower-latency Codex worker panes.",
+    noteJa: "低遅延の Codex ワーカーペインに使います。",
+  },
+  {
     id: "codex-spark",
     label: "GPT-5.3 Codex Spark",
     labelJa: "GPT-5.3 Codex Spark",
@@ -1278,6 +1359,7 @@ const runtimeModelCatalog: RuntimeModelCatalogEntry[] = [
     model: "gpt-5.3-codex-spark",
     modelSource: "cli-discovery",
     reasoningEffort: "high",
+    supportedReasoningEfforts: ["low", "medium", "high", "xhigh"],
     promptTransport: "file",
     authMode: "codex-chatgpt-local",
     requiredBackend: "agent-cli",
@@ -1295,12 +1377,13 @@ const runtimeModelCatalog: RuntimeModelCatalogEntry[] = [
   },
   {
     id: "claude-opus-4-8",
-    label: "Claude Opus 4.8",
-    labelJa: "Claude Opus 4.8",
+    label: "Opus 4.8",
+    labelJa: "Opus 4.8",
     agent: "claude",
     model: "claude-opus-4-8",
     modelSource: "official-doc",
-    reasoningEffort: "xhigh",
+    reasoningEffort: "high",
+    supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
     promptTransport: "file",
     authMode: "claude-pro-max-oauth",
     requiredBackend: "agent-cli",
@@ -1318,12 +1401,13 @@ const runtimeModelCatalog: RuntimeModelCatalogEntry[] = [
   },
   {
     id: "claude-sonnet",
-    label: "Claude Sonnet",
-    labelJa: "Claude Sonnet",
+    label: "Sonnet 4.6",
+    labelJa: "Sonnet 4.6",
     agent: "claude",
     model: "sonnet",
     modelSource: "official-doc",
     reasoningEffort: "high",
+    supportedReasoningEfforts: ["low", "medium", "high", "max"],
     promptTransport: "file",
     authMode: "claude-pro-max-oauth",
     requiredBackend: "agent-cli",
@@ -1340,27 +1424,188 @@ const runtimeModelCatalog: RuntimeModelCatalogEntry[] = [
     noteJa: "Claude Code の標準的なバランス型ワーカーです。",
   },
   {
-    id: "antigravity-gemini-flash",
-    label: "Gemini Flash via Antigravity",
-    labelJa: "Gemini Flash / Antigravity",
+    id: "antigravity-gemini-3-5-flash-medium",
+    label: "Gemini 3.5 Flash (Medium)",
+    labelJa: "Gemini 3.5 Flash (Medium)",
     agent: "antigravity",
-    model: "gemini-3.5-flash",
-    modelSource: "operator-override",
+    model: "Gemini 3.5 Flash (Medium)",
+    modelSource: "cli-discovery",
     reasoningEffort: "provider-default",
     promptTransport: "file",
     authMode: "antigravity-official-cli",
-    requiredBackend: "antigravity",
+    requiredBackend: "agent-cli",
     status: "selectable",
     family: "agent-arena",
     speed: "fast",
     intelligence: "medium",
     cost: "account",
     risk: "local-cli",
-    availability: "Requires agy print mode and Antigravity account access.",
+    availability: "Shown by Antigravity CLI 1.0.10 model picker.",
     benchmark: "Agent Arena reference plus Antigravity run evidence",
-    evidence: "operator-override",
+    evidence: "cli-discovery",
     note: "Use for the Gemini replacement lane after the individual Gemini CLI sunset.",
     noteJa: "個人向け Gemini CLI 終了後の Gemini 系ワーカー候補です。",
+  },
+  {
+    id: "antigravity-gemini-3-5-flash-high",
+    label: "Gemini 3.5 Flash (High)",
+    labelJa: "Gemini 3.5 Flash (High)",
+    agent: "antigravity",
+    model: "Gemini 3.5 Flash (High)",
+    modelSource: "cli-discovery",
+    reasoningEffort: "provider-default",
+    promptTransport: "file",
+    authMode: "antigravity-official-cli",
+    requiredBackend: "agent-cli",
+    status: "selectable",
+    family: "agent-arena",
+    speed: "fast",
+    intelligence: "medium-high",
+    cost: "account",
+    risk: "local-cli",
+    availability: "Shown by Antigravity CLI 1.0.10 model picker.",
+    benchmark: "Agent Arena reference plus Antigravity run evidence",
+    evidence: "cli-discovery",
+    note: "Use when Antigravity should spend more reasoning on the Gemini Flash lane.",
+    noteJa: "Gemini Flash 系でより深い推論を使う場合に選びます。",
+  },
+  {
+    id: "antigravity-gemini-3-5-flash-low",
+    label: "Gemini 3.5 Flash (Low)",
+    labelJa: "Gemini 3.5 Flash (Low)",
+    agent: "antigravity",
+    model: "Gemini 3.5 Flash (Low)",
+    modelSource: "cli-discovery",
+    reasoningEffort: "provider-default",
+    promptTransport: "file",
+    authMode: "antigravity-official-cli",
+    requiredBackend: "agent-cli",
+    status: "selectable",
+    family: "agent-arena",
+    speed: "fast",
+    intelligence: "medium",
+    cost: "account",
+    risk: "local-cli",
+    availability: "Shown by Antigravity CLI 1.0.10 model picker.",
+    benchmark: "Antigravity CLI local availability evidence",
+    evidence: "cli-discovery",
+    note: "Use for lower-cost Antigravity smoke and parallel checks.",
+    noteJa: "低コストの Antigravity スモーク確認や並列確認に使います。",
+  },
+  {
+    id: "antigravity-gemini-3-1-pro-low",
+    label: "Gemini 3.1 Pro (Low)",
+    labelJa: "Gemini 3.1 Pro (Low)",
+    agent: "antigravity",
+    model: "Gemini 3.1 Pro (Low)",
+    modelSource: "cli-discovery",
+    reasoningEffort: "provider-default",
+    promptTransport: "file",
+    authMode: "antigravity-official-cli",
+    requiredBackend: "agent-cli",
+    status: "selectable",
+    family: "winsmux-local",
+    speed: "balanced",
+    intelligence: "high",
+    cost: "account",
+    risk: "local-cli",
+    availability: "Shown by Antigravity CLI 1.0.10 model picker.",
+    benchmark: "Antigravity CLI local availability evidence",
+    evidence: "cli-discovery",
+    note: "Use for Pro-model checks through Antigravity CLI.",
+    noteJa: "Antigravity CLI 経由の Pro 系確認に使います。",
+  },
+  {
+    id: "antigravity-gemini-3-1-pro-high",
+    label: "Gemini 3.1 Pro (High)",
+    labelJa: "Gemini 3.1 Pro (High)",
+    agent: "antigravity",
+    model: "Gemini 3.1 Pro (High)",
+    modelSource: "cli-discovery",
+    reasoningEffort: "provider-default",
+    promptTransport: "file",
+    authMode: "antigravity-official-cli",
+    requiredBackend: "agent-cli",
+    status: "selectable",
+    family: "winsmux-local",
+    speed: "balanced",
+    intelligence: "high",
+    cost: "account",
+    risk: "local-cli",
+    availability: "Shown by Antigravity CLI 1.0.10 model picker.",
+    benchmark: "Antigravity CLI local availability evidence",
+    evidence: "cli-discovery",
+    note: "Use for harder Pro-model checks through Antigravity CLI.",
+    noteJa: "より難しい Antigravity CLI 経由の Pro 系確認に使います。",
+  },
+  {
+    id: "antigravity-claude-sonnet-4-6-thinking",
+    label: "Claude Sonnet 4.6 (Thinking)",
+    labelJa: "Claude Sonnet 4.6 (Thinking)",
+    agent: "antigravity",
+    model: "Claude Sonnet 4.6 (Thinking)",
+    modelSource: "cli-discovery",
+    reasoningEffort: "provider-default",
+    promptTransport: "file",
+    authMode: "antigravity-official-cli",
+    requiredBackend: "agent-cli",
+    status: "selectable",
+    family: "winsmux-local",
+    speed: "balanced",
+    intelligence: "high",
+    cost: "account",
+    risk: "local-cli",
+    availability: "Shown by Antigravity CLI 1.0.10 model picker.",
+    benchmark: "Antigravity CLI local availability evidence",
+    evidence: "cli-discovery",
+    note: "Use only as an Antigravity-hosted Claude lane.",
+    noteJa: "Antigravity が提供する Claude 系レーンとして使います。",
+  },
+  {
+    id: "antigravity-claude-opus-4-6-thinking",
+    label: "Claude Opus 4.6 (Thinking)",
+    labelJa: "Claude Opus 4.6 (Thinking)",
+    agent: "antigravity",
+    model: "Claude Opus 4.6 (Thinking)",
+    modelSource: "cli-discovery",
+    reasoningEffort: "provider-default",
+    promptTransport: "file",
+    authMode: "antigravity-official-cli",
+    requiredBackend: "agent-cli",
+    status: "selectable",
+    family: "winsmux-local",
+    speed: "balanced",
+    intelligence: "high",
+    cost: "account",
+    risk: "local-cli",
+    availability: "Shown by Antigravity CLI 1.0.10 model picker.",
+    benchmark: "Antigravity CLI local availability evidence",
+    evidence: "cli-discovery",
+    note: "Use only as an Antigravity-hosted Claude lane.",
+    noteJa: "Antigravity が提供する Claude 系レーンとして使います。",
+  },
+  {
+    id: "antigravity-gpt-oss-120b-medium",
+    label: "GPT-OSS 120B (Medium)",
+    labelJa: "GPT-OSS 120B (Medium)",
+    agent: "antigravity",
+    model: "GPT-OSS 120B (Medium)",
+    modelSource: "cli-discovery",
+    reasoningEffort: "provider-default",
+    promptTransport: "file",
+    authMode: "antigravity-official-cli",
+    requiredBackend: "agent-cli",
+    status: "selectable",
+    family: "winsmux-local",
+    speed: "balanced",
+    intelligence: "medium-high",
+    cost: "account",
+    risk: "local-cli",
+    availability: "Shown by Antigravity CLI 1.0.10 model picker.",
+    benchmark: "Antigravity CLI local availability evidence",
+    evidence: "cli-discovery",
+    note: "Use for GPT-OSS checks exposed by Antigravity CLI.",
+    noteJa: "Antigravity CLI が提供する GPT-OSS 系確認に使います。",
   },
   {
     id: "openrouter-glm-5-2",
@@ -1373,18 +1618,18 @@ const runtimeModelCatalog: RuntimeModelCatalogEntry[] = [
     promptTransport: "file",
     authMode: "api-key-env",
     requiredEnv: "OPENROUTER_API_KEY",
-    requiredBackend: "api_llm",
-    status: "setup-required",
+    requiredBackend: "agent-cli",
+    status: "selectable",
     family: "code-arena",
     speed: "hosted",
     intelligence: "high",
     cost: "external-api",
     risk: "api-key-env",
-    availability: "Requires an api_llm slot and OPENROUTER_API_KEY. WINSMUX_OPENROUTER_API_KEY remains a legacy override.",
+    availability: "Requires OPENROUTER_API_KEY. The desktop worker pane launches through the OpenAI-compatible pane worker.",
     benchmark: "Code Arena / Agent Arena reference plus Harness Bench run evidence",
     evidence: "operator-override",
-    note: "Setup required until the slot is api_llm and the OpenRouter API key env is configured.",
-    noteJa: "api_llm スロットと OpenRouter API key 環境変数が揃うと実行可能です。",
+    note: "Selectable for a desktop worker pane; OPENROUTER_API_KEY is validated when the worker starts.",
+    noteJa: "デスクトップの worker pane で選択できます。OPENROUTER_API_KEY は worker 起動時に検証します。",
   },
   {
     id: "qwen-3-6-reference",
@@ -1420,29 +1665,30 @@ const runtimeModelCatalog: RuntimeModelCatalogEntry[] = [
     promptTransport: "file",
     authMode: "api-key-env",
     requiredEnv: "OPENROUTER_API_KEY",
-    requiredBackend: "api_llm",
-    status: "setup-required",
+    requiredBackend: "agent-cli",
+    status: "selectable",
     family: "agent-arena",
     speed: "hosted",
     intelligence: "high",
     cost: "external-api",
     risk: "api-key-env",
-    availability: "Requires an api_llm slot and OPENROUTER_API_KEY. WINSMUX_OPENROUTER_API_KEY remains a legacy override.",
+    availability: "Requires OPENROUTER_API_KEY. The desktop worker pane launches through the OpenAI-compatible pane worker.",
     benchmark: "Agent Arena reference plus Harness Bench run evidence",
     evidence: "official-doc",
     sourceLabel: "OpenRouter model page + official model weights",
     captureDate: "2026-06-20",
-    note: "Setup required until the slot is api_llm and the OpenRouter API key env is configured.",
-    noteJa: "api_llm スロットと OpenRouter API key 環境変数が揃うと実行可能です。",
+    note: "Selectable for a desktop worker pane; OPENROUTER_API_KEY is validated when the worker starts.",
+    noteJa: "デスクトップの worker pane で選択できます。OPENROUTER_API_KEY は worker 起動時に検証します。",
   },
   {
     id: "claude-fable-5-unavailable",
-    label: "Claude Fable 5",
-    labelJa: "Claude Fable 5",
+    label: "Fable 5 Currently unavailable",
+    labelJa: "Fable 5 Currently unavailable",
     agent: "claude",
     model: "claude-fable-5",
     modelSource: "official-doc",
-    reasoningEffort: "max",
+    reasoningEffort: "high",
+    supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
     promptTransport: "file",
     authMode: "claude-pro-max-oauth",
     requiredBackend: "agent-cli",
@@ -1460,16 +1706,34 @@ const runtimeModelCatalog: RuntimeModelCatalogEntry[] = [
   },
 ];
 
-const runtimeModelSuggestions = Array.from(new Set([
-  "provider-default",
-  ...runtimeModelCatalog
-    .filter((entry) => entry.status === "selectable" || entry.status === "candidate" || entry.status === "setup-required" || entry.status === "runnable")
-    .map((entry) => entry.model),
-  "default",
-  "opusplan",
-]));
+const OPENROUTER_MODELS_API_URL = "https://openrouter.ai/api/v1/models";
+
+type RuntimeProviderApiLoadState = "idle" | "loading" | "loaded" | "failed";
+
+interface OpenRouterModelsApiResponse {
+  data?: Array<{
+    id?: unknown;
+    name?: unknown;
+  }>;
+}
+
+let openRouterRuntimeModelEntries: RuntimeModelCatalogEntry[] = [];
+let openRouterModelsLoadState: RuntimeProviderApiLoadState = "idle";
+
+function getRuntimeModelSuggestions() {
+  return Array.from(new Set([
+    "provider-default",
+    ...runtimeModelCatalog
+      .filter((entry) => entry.status === "selectable" || entry.status === "candidate" || entry.status === "setup-required" || entry.status === "runnable")
+      .map((entry) => entry.model),
+    ...openRouterRuntimeModelEntries.map((entry) => entry.model),
+    "default",
+    "opusplan",
+  ]));
+}
 
 runtimeRolePreferences = readStoredRuntimeRolePreferences();
+runtimeModelAssignmentMode = readStoredRuntimeModelAssignmentMode();
 {
   const storedComposerControls = readStoredComposerSessionControls();
   activeComposerPermissionMode = storedComposerControls.permissionMode;
@@ -1525,6 +1789,20 @@ function getCodeFontFamily(mode: CodeFontMode = themeState.codeFont, fontFamily:
     default:
       return DEFAULT_CODE_FONT_FAMILY;
   }
+}
+
+function isLightShellTheme(state: ThemeState = themeState) {
+  if (state.theme === "light") {
+    return true;
+  }
+  if (state.theme === "dark") {
+    return false;
+  }
+  return window.matchMedia?.("(prefers-color-scheme: light)").matches ?? false;
+}
+
+function getWorkbenchTerminalTheme(state: ThemeState = themeState) {
+  return isLightShellTheme(state) ? WINSMUX_LIGHT_TERMINAL_THEME : WINSMUX_DARK_TERMINAL_THEME;
 }
 
 interface VoiceShortcutParts {
@@ -1768,7 +2046,7 @@ function createWorkbenchTerminal(options?: { cursorBlink?: boolean; scrollback?:
     lineHeight: 1,
     minimumContrastRatio: 4.5,
     scrollback: options?.scrollback ?? 1000,
-    theme: WINSMUX_DARK_TERMINAL_THEME,
+    theme: getWorkbenchTerminalTheme(),
   });
   attachTerminalCopySelectionGuard(terminal);
   return terminal;
@@ -2282,6 +2560,13 @@ function getWorkerModelSource(row: DesktopWorkerStatusRow) {
   return getLaunchApprovalField(launch, "model_source")
     || (row.model_source || "").trim()
     || (getWorkerModel(row) !== "provider-default" ? "configured" : "provider-default");
+}
+
+function getWorkerReasoningEffort(row: DesktopWorkerStatusRow) {
+  const launch = getWorkerStatusLaunch(row);
+  return getLaunchApprovalField(launch, "reasoning_effort")
+    || (row.reasoning_effort || "").trim()
+    || "provider-default";
 }
 
 function getWorkerExecutionProfile(row: DesktopWorkerStatusRow) {
@@ -8198,6 +8483,25 @@ function persistRuntimeRolePreferences() {
   }
 }
 
+function readStoredRuntimeModelAssignmentMode(): RuntimeModelAssignmentMode {
+  try {
+    const rawValue = window.localStorage.getItem(RUNTIME_MODEL_ASSIGNMENT_MODE_STORAGE_KEY);
+    return rawValue === "per-pane" ? "per-pane" : "shared";
+  } catch {
+    return "shared";
+  }
+}
+
+function persistRuntimeModelAssignmentMode() {
+  try {
+    window.localStorage.setItem(RUNTIME_MODEL_ASSIGNMENT_MODE_STORAGE_KEY, runtimeModelAssignmentMode);
+    return true;
+  } catch (error) {
+    console.warn("Failed to persist runtime model assignment mode", error);
+    return false;
+  }
+}
+
 function defaultComposerSessionControls(): ComposerSessionControlState {
   return {
     permissionMode: "acceptEdits",
@@ -8351,7 +8655,11 @@ function readStoredShellPreferences(): ShellPreferenceState | null {
     }
 
     const parsed = JSON.parse(rawValue) as Partial<ShellPreferenceState>;
-    const theme = themeOptions.find((item) => item.value === parsed.theme)?.value;
+    const storedTheme = typeof parsed.theme === "string" ? String(parsed.theme) : "";
+    const migratedTheme = storedTheme === "codex-dark" || storedTheme === "graphite-dark"
+      ? "dark"
+      : storedTheme;
+    const theme = themeOptions.find((item) => item.value === migratedTheme)?.value;
     const density = densityOptions.find((item) => item.value === parsed.density)?.value;
     const wrapMode = wrapOptions.find((item) => item.value === parsed.wrapMode)?.value;
     const codeFont = codeFontOptions.find((item) => item.value === parsed.codeFont)?.value ?? "system";
@@ -8381,7 +8689,7 @@ function readStoredShellPreferences(): ShellPreferenceState | null {
         ? parsed.agentVaultOpen
         : false;
     const workbenchOpen = typeof parsed.workbenchOpen === "boolean" ? parsed.workbenchOpen : true;
-    const workerStatusStripVisible = typeof parsed.workerStatusStripVisible === "boolean" ? parsed.workerStatusStripVisible : true;
+    const workerStatusStripVisible = typeof parsed.workerStatusStripVisible === "boolean" ? parsed.workerStatusStripVisible : false;
     const workbenchLayout = parsed.workbenchLayout === "3x2" || parsed.workbenchLayout === "focus" ? parsed.workbenchLayout : "2x2";
     const storedFocusedWorkbenchPaneId = typeof parsed.focusedWorkbenchPaneId === "string" && getWorkbenchPaneOrdinal(parsed.focusedWorkbenchPaneId) !== null
       ? parsed.focusedWorkbenchPaneId
@@ -8446,20 +8754,36 @@ function persistThemeState() {
   }
 }
 
+function applyShellPreferenceVisualState(state: ThemeState) {
+  const shell = document.getElementById("app-shell");
+  if (!shell) {
+    return;
+  }
+
+  shell.dataset.theme = state.theme;
+  shell.dataset.density = state.density;
+  shell.dataset.wrapMode = state.wrapMode;
+  shell.dataset.codeFont = state.codeFont;
+  shell.dataset.focusMode = state.focusMode;
+  shell.style.setProperty("--font-code", normalizeCodeFontFamily(state.codeFontFamily));
+  shell.style.setProperty("--editor-font-size", `${clampEditorFontSize(state.editorFontSize)}px`);
+  document.documentElement.lang = state.language;
+  applyCodeFontToPanes(state);
+}
+
+function applySettingsDraftPreview() {
+  if (settingsDraftState) {
+    applyShellPreferenceVisualState(settingsDraftState);
+  }
+}
+
 function applyShellPreferences() {
   const shell = document.getElementById("app-shell");
   if (!shell) {
     return;
   }
 
-  shell.dataset.theme = themeState.theme;
-  shell.dataset.density = themeState.density;
-  shell.dataset.wrapMode = themeState.wrapMode;
-  shell.dataset.codeFont = themeState.codeFont;
-  shell.dataset.focusMode = themeState.focusMode;
-  shell.style.setProperty("--font-code", themeState.codeFontFamily);
-  shell.style.setProperty("--editor-font-size", `${themeState.editorFontSize}px`);
-  document.documentElement.lang = themeState.language;
+  applyShellPreferenceVisualState(themeState);
   if (workbenchWidth !== null) {
     shell.style.setProperty("--workbench-width", `${workbenchWidth}px`);
   }
@@ -8808,16 +9132,17 @@ function applyThemeState(nextState: ThemeState) {
   renderFooterLane();
 }
 
-function applyCodeFontToPanes() {
-  const fontFamily = getCodeFontFamily();
-  const fontSize = themeState.editorFontSize;
+function applyCodeFontToPanes(state: ThemeState = themeState) {
+  const fontFamily = getCodeFontFamily(state.codeFont, state.codeFontFamily);
+  const fontSize = state.editorFontSize;
+  const terminalTheme = getWorkbenchTerminalTheme(state);
   if (operatorTerminal) {
     operatorTerminal.options.fontFamily = fontFamily;
     operatorTerminal.options.fontSize = fontSize;
     operatorTerminal.options.lineHeight = 1;
     operatorTerminal.options.letterSpacing = 0;
     operatorTerminal.options.minimumContrastRatio = 4.5;
-    operatorTerminal.options.theme = WINSMUX_DARK_TERMINAL_THEME;
+    operatorTerminal.options.theme = terminalTheme;
   }
   panes.forEach((pane) => {
     pane.terminal.options.fontFamily = fontFamily;
@@ -8825,7 +9150,7 @@ function applyCodeFontToPanes() {
     pane.terminal.options.lineHeight = 1;
     pane.terminal.options.letterSpacing = 0;
     pane.terminal.options.minimumContrastRatio = 4.5;
-    pane.terminal.options.theme = WINSMUX_DARK_TERMINAL_THEME;
+    pane.terminal.options.theme = terminalTheme;
   });
   fitOperatorTerminal();
   fitVisibleWorkbenchPanes();
@@ -8874,7 +9199,8 @@ function updateSettingsApplyButton() {
   const voiceShortcutValid = getVoiceShortcutValidation(activeState.voiceShortcut, activeState.language === "ja").valid;
   const hasThemeChanges = Boolean(settingsDraftState && !themeStatesEqual(settingsDraftState, themeState));
   const hasRuntimeChanges = Boolean(runtimeRoleDraftState && !runtimeRolePreferencesEqual(runtimeRoleDraftState, runtimeRolePreferences));
-  const hasChanges = hasThemeChanges || hasRuntimeChanges;
+  const hasAssignmentModeChanges = Boolean(runtimeModelAssignmentModeDraft && runtimeModelAssignmentModeDraft !== runtimeModelAssignmentMode);
+  const hasChanges = hasThemeChanges || hasRuntimeChanges || hasAssignmentModeChanges;
   applyButton.disabled = !hasChanges || !voiceShortcutValid;
   applyButton.setAttribute("aria-disabled", applyButton.disabled ? "true" : "false");
 }
@@ -9179,22 +9505,298 @@ function createRuntimeSelect<T extends string>(
   return group;
 }
 
-function getRuntimeCatalogStatusLabel(status: RuntimeModelCatalogStatus, japanese: boolean) {
-  const labels: Record<RuntimeModelCatalogStatus, { en: string; ja: string }> = {
-    selectable: { en: "selectable", ja: "選択可" },
-    candidate: { en: "candidate", ja: "候補" },
-    "setup-required": { en: "setup required", ja: "設定待ち" },
-    runnable: { en: "runnable", ja: "実行可能" },
-    blocked: { en: "blocked", ja: "ブロック" },
-    "reference-only": { en: "reference only", ja: "参照のみ" },
-    unavailable: { en: "unavailable", ja: "利用不可" },
-  };
-  const label = labels[status];
-  return japanese ? label.ja : label.en;
+function findRuntimeModelCatalogEntry(id: string) {
+  if (!id) {
+    return null;
+  }
+  const staticEntry = runtimeModelCatalog.find((entry) => entry.id === id);
+  if (staticEntry) {
+    return staticEntry;
+  }
+  const dynamicEntry = openRouterRuntimeModelEntries.find((entry) => entry.id === id);
+  if (dynamicEntry) {
+    return dynamicEntry;
+  }
+  for (const provider of runtimeProviderOptions) {
+    const entry = getRuntimePaneModelEntries(provider.value).find((item) => item.id === id);
+    if (entry) {
+      return entry;
+    }
+  }
+  return null;
 }
 
-function findRuntimeModelCatalogEntry(id: string) {
-  return runtimeModelCatalog.find((entry) => entry.id === id) ?? null;
+function normalizeRuntimeProviderId(value: string): RuntimeProviderId | null {
+  const normalized = value.trim().toLowerCase();
+  const option = runtimeProviderOptions.find((item) => item.value === normalized);
+  return option?.value ?? null;
+}
+
+function getRuntimeRequiredBackendForProvider(provider: RuntimeProviderId): RuntimeModelCatalogEntry["requiredBackend"] {
+  if (provider === "openrouter") {
+    return "agent-cli";
+  }
+  return "agent-cli";
+}
+
+function getRuntimeProviderDefaultEntry(provider: RuntimeProviderId): RuntimeModelCatalogEntry {
+  return {
+    id: `${provider}-provider-default`,
+    label: "Auto",
+    labelJa: "自動",
+    agent: provider,
+    model: "provider-default",
+    modelSource: "provider-default",
+    reasoningEffort: "provider-default",
+    promptTransport: "file",
+    authMode: provider === "openrouter" ? "api-key-env" : "provider-default",
+    requiredEnv: provider === "openrouter" ? "OPENROUTER_API_KEY" : undefined,
+    requiredBackend: getRuntimeRequiredBackendForProvider(provider),
+    status: "selectable",
+    family: "winsmux-local",
+    speed: "auto",
+    intelligence: "auto",
+    cost: provider === "openrouter" ? "external-api" : "account",
+    risk: provider === "openrouter" ? "api-key-env" : "local-cli",
+    availability: "Uses the selected provider default.",
+    benchmark: "Local runtime selection",
+    evidence: "provider-registry",
+    note: "Use the selected provider default model.",
+    noteJa: "選択したプロバイダーの既定モデルを使います。",
+  };
+}
+
+function createRuntimeCatalogEntry(input: Partial<RuntimeModelCatalogEntry> & Pick<RuntimeModelCatalogEntry, "id" | "label" | "labelJa" | "agent" | "model">): RuntimeModelCatalogEntry {
+  return {
+    modelSource: "operator-override",
+    reasoningEffort: "provider-default",
+    promptTransport: "file",
+    authMode: "provider-default",
+    requiredBackend: "agent-cli",
+    status: "selectable",
+    family: "winsmux-local",
+    speed: "configured",
+    intelligence: "configured",
+    cost: "account",
+    risk: "local-cli",
+    availability: "Runtime model picker option.",
+    benchmark: "Local runtime selection",
+    evidence: "desktop-model-picker",
+    note: "Selectable from the desktop worker model picker.",
+    noteJa: "デスクトップのワーカーモデル選択から選べます。",
+    ...input,
+  };
+}
+
+function slugRuntimeModelId(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._/-]+/g, "-")
+    .replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, "")
+    || "model";
+}
+
+function createOpenRouterApiCatalogEntry(modelId: string, displayName: string): RuntimeModelCatalogEntry {
+  const label = displayName && displayName !== modelId ? `${displayName} (${modelId})` : modelId;
+  return createRuntimeCatalogEntry({
+    id: `openrouter-api-${slugRuntimeModelId(modelId)}`,
+    label,
+    labelJa: label,
+    agent: "openrouter",
+    model: modelId,
+    modelSource: "provider-api",
+    reasoningEffort: "provider-default",
+    promptTransport: "file",
+    authMode: "api-key-env",
+    requiredEnv: "OPENROUTER_API_KEY",
+    requiredBackend: "agent-cli",
+    status: "selectable",
+    family: "winsmux-local",
+    speed: "provider-api",
+    intelligence: "provider-api",
+    cost: "external-api",
+    risk: "api-key-env",
+    availability: "Loaded from the OpenRouter Models API.",
+    benchmark: "Provider catalog; benchmark evidence is separate.",
+    evidence: "provider-api",
+    sourceLabel: "OpenRouter Models API",
+    note: "Loaded from OpenRouter at Settings render time. OPENROUTER_API_KEY is validated when the worker starts.",
+    noteJa: "Settings 表示時に OpenRouter から取得した候補です。OPENROUTER_API_KEY は worker 起動時に検証します。",
+  });
+}
+
+async function ensureOpenRouterRuntimeModelsLoaded() {
+  if (openRouterModelsLoadState === "loading" || openRouterModelsLoadState === "loaded") {
+    return;
+  }
+  openRouterModelsLoadState = "loading";
+  try {
+    const response = await fetch(OPENROUTER_MODELS_API_URL, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) {
+      throw new Error(`OpenRouter models API returned ${response.status}`);
+    }
+    const payload = await response.json() as OpenRouterModelsApiResponse;
+    const models = Array.isArray(payload.data) ? payload.data : [];
+    const entries = new Map<string, RuntimeModelCatalogEntry>();
+    for (const model of models) {
+      const modelId = typeof model.id === "string" ? model.id.trim() : "";
+      if (!modelId || entries.has(modelId)) {
+        continue;
+      }
+      const displayName = typeof model.name === "string" && model.name.trim() ? model.name.trim() : modelId;
+      entries.set(modelId, createOpenRouterApiCatalogEntry(modelId, displayName));
+    }
+    openRouterRuntimeModelEntries = Array.from(entries.values()).sort((left, right) => {
+      const leftLabel = left.label.toLowerCase();
+      const rightLabel = right.label.toLowerCase();
+      if (left.model === "moonshotai/kimi-k2.7-code") {
+        return -1;
+      }
+      if (right.model === "moonshotai/kimi-k2.7-code") {
+        return 1;
+      }
+      if (left.model === "z-ai/glm-5.2") {
+        return -1;
+      }
+      if (right.model === "z-ai/glm-5.2") {
+        return 1;
+      }
+      return leftLabel.localeCompare(rightLabel);
+    });
+    openRouterModelsLoadState = "loaded";
+  } catch (error) {
+    openRouterRuntimeModelEntries = [];
+    openRouterModelsLoadState = "failed";
+    console.warn("Failed to load OpenRouter model catalog", error);
+  } finally {
+    if (document.getElementById("runtime-role-options")) {
+      renderSettingsControls();
+    }
+  }
+}
+
+function createRuntimeCustomModelEntry(provider: RuntimeProviderId, model: string): RuntimeModelCatalogEntry {
+  const normalizedModel = model.trim() || "provider-default";
+  if (normalizedModel === "provider-default") {
+    return getRuntimeProviderDefaultEntry(provider);
+  }
+  const providerLabel = runtimeProviderOptions.find((option) => option.value === provider)?.label ?? provider;
+  const defaults = getRuntimeProviderDefaultEntry(provider);
+  const authModeByProvider: Record<RuntimeProviderId, string> = {
+    "provider-default": "provider-default",
+    codex: "codex-chatgpt-local",
+    claude: "claude-pro-max-oauth",
+    gemini: "provider-default",
+    antigravity: "antigravity-official-cli",
+    "grok-build": "grok-build-local",
+    openrouter: "api-key-env",
+  };
+  return createRuntimeCatalogEntry({
+    id: `${provider}-custom-${slugRuntimeModelId(normalizedModel)}`,
+    label: normalizedModel,
+    labelJa: normalizedModel,
+    agent: provider,
+    model: normalizedModel,
+    modelSource: "operator-override",
+    reasoningEffort: "provider-default",
+    promptTransport: "file",
+    authMode: authModeByProvider[provider] ?? defaults.authMode,
+    requiredEnv: provider === "openrouter" ? "OPENROUTER_API_KEY" : undefined,
+    requiredBackend: defaults.requiredBackend,
+    status: "selectable",
+    family: "winsmux-local",
+    speed: "custom",
+    intelligence: "custom",
+    cost: provider === "openrouter" ? "external-api" : "account",
+    risk: provider === "openrouter" ? "api-key-env" : "local-cli",
+    availability: `Direct ${providerLabel} model ID input.`,
+    benchmark: "Direct operator input; benchmark evidence is separate.",
+    evidence: "operator-override",
+    note: "Direct model ID input. winsmux records the exact value and validates it when the worker runs.",
+    noteJa: "モデルIDを直接指定します。winsmux は値をそのまま保存し、worker 実行時に検証します。",
+  });
+}
+
+function getRuntimePaneModelEntries(provider: RuntimeProviderId): RuntimeModelCatalogEntry[] {
+  const entries = new Map<string, RuntimeModelCatalogEntry>();
+  entries.set("provider-default", getRuntimeProviderDefaultEntry(provider));
+
+  for (const entry of runtimeModelCatalog) {
+    if (entry.id !== "provider-default" && entry.agent === provider) {
+      entries.set(entry.model, entry);
+    }
+  }
+
+  if (provider === "openrouter") {
+    for (const entry of openRouterRuntimeModelEntries) {
+      entries.set(entry.model, entry);
+    }
+  }
+
+  if (provider === "claude") {
+    for (const option of composerModelOptions) {
+      if (entries.has(option.cliModel)) {
+        continue;
+      }
+      const claudeEfforts = getClaudeRuntimeReasoningProfile(option.value);
+      entries.set(option.cliModel, createRuntimeCatalogEntry({
+        id: `claude-${option.value}`,
+        label: option.label,
+        labelJa: option.labelJa,
+        agent: "claude",
+        model: option.cliModel,
+        modelSource: "official-doc",
+        reasoningEffort: claudeEfforts.defaultEffort,
+        supportedReasoningEfforts: claudeEfforts.supportedEfforts,
+        authMode: "claude-pro-max-oauth",
+        requiredBackend: "agent-cli",
+        status: option.disabled ? "unavailable" : "selectable",
+        note: option.disabled ? "Currently unavailable in Claude Code." : "Selectable Claude Code model.",
+        noteJa: option.disabled ? "Claude Code で現在利用できません。" : "Claude Code の選択可能モデルです。",
+      }));
+    }
+  }
+
+  if (provider === "grok-build" && !entries.has("grok-build")) {
+    entries.set("grok-build", createRuntimeCatalogEntry({
+      id: "grok-build-grok-4-3",
+      label: "Grok 4.3",
+      labelJa: "Grok 4.3",
+      agent: "grok-build",
+      model: "grok-build",
+      modelSource: "cli-discovery",
+      authMode: "grok-build-local",
+      requiredBackend: "agent-cli",
+      cost: "account",
+      risk: "local-cli",
+      availability: "Requires Grok Build headless access.",
+      note: "Use through the Grok Build worker lane.",
+      noteJa: "Grok Build の worker 経由で使います。",
+    }));
+  }
+  if (provider === "grok-build" && !entries.has("grok-composer-2.5-fast")) {
+    entries.set("grok-composer-2.5-fast", createRuntimeCatalogEntry({
+      id: "grok-build-composer-2-5-fast",
+      label: "Composer 2.5 Fast",
+      labelJa: "Composer 2.5 Fast",
+      agent: "grok-build",
+      model: "grok-composer-2.5-fast",
+      modelSource: "cli-discovery",
+      authMode: "grok-build-local",
+      requiredBackend: "agent-cli",
+      cost: "account",
+      risk: "local-cli",
+      availability: "Requires Grok Build headless access.",
+      note: "Use through the Grok Build worker lane.",
+      noteJa: "Grok Build の worker 経由で使います。",
+    }));
+  }
+
+  return Array.from(entries.values());
 }
 
 function getWorkerBackendForCatalog(row: DesktopWorkerStatusRow) {
@@ -9268,7 +9870,7 @@ function getRuntimeModelReadinessForWorker(entry: RuntimeModelCatalogEntry, row:
       reason: japanese ? entry.noteJa : entry.note,
     };
   }
-  if (entry.id === "provider-default") {
+  if (entry.model === "provider-default") {
     return { assignable: true, state: "runnable" as RuntimeModelWorkerReadinessState, reason: "" };
   }
   const backend = getWorkerBackendForCatalog(row);
@@ -9344,7 +9946,9 @@ function getWorkerRuntimeCatalogEntryId(row: DesktopWorkerStatusRow) {
   const agent = getWorkerProvider(row).toLowerCase();
   const model = getWorkerModel(row).toLowerCase();
   const source = getWorkerModelSource(row).toLowerCase();
-  const match = runtimeModelCatalog.find((entry) => {
+  const provider = normalizeRuntimeProviderId(agent);
+  const candidates = provider ? getRuntimePaneModelEntries(provider) : runtimeModelCatalog;
+  const match = candidates.find((entry) => {
     return entry.agent.toLowerCase() === agent
       && entry.model.toLowerCase() === model
       && (entry.modelSource.toLowerCase() === source || source === "configured");
@@ -9352,109 +9956,134 @@ function getWorkerRuntimeCatalogEntryId(row: DesktopWorkerStatusRow) {
   return match?.id ?? "";
 }
 
-function getRuntimeCatalogOptionLabel(entry: RuntimeModelCatalogEntry, japanese: boolean, row?: DesktopWorkerStatusRow) {
-  const status = row
-    ? getRuntimeWorkerReadinessLabel(getRuntimeModelReadinessForWorker(entry, row, japanese).state, japanese)
-    : getRuntimeCatalogStatusLabel(entry.status, japanese);
-  const label = japanese ? entry.labelJa : entry.label;
-  return `${label} · ${status}`;
+function getRuntimeCatalogOptionLabel(entry: RuntimeModelCatalogEntry, japanese: boolean) {
+  if (entry.model === "provider-default") {
+    return japanese ? "自動" : "Auto";
+  }
+  return (japanese ? entry.labelJa : entry.label)
+    .replace(/\s+via\s+(OpenRouter|Antigravity)\s*$/i, "")
+    .replace(/\s*\/\s*(OpenRouter|Antigravity|provider default|プロバイダー既定)\s*$/i, "")
+    .trim();
 }
 
-function getRuntimeCatalogSourceLabel(entry: RuntimeModelCatalogEntry) {
-  if (entry.sourceLabel) {
-    return entry.sourceLabel;
+function getRuntimeModelSourceDisplayLabel(source: string, japanese: boolean) {
+  const normalized = source.trim().toLowerCase();
+  const option = runtimeModelSourceOptions.find((item) => item.value === normalized);
+  if (option) {
+    return japanese ? option.labelJa : option.label;
   }
-  if (entry.status === "unavailable" || entry.status === "blocked") {
-    return "provider official availability";
+  if (normalized === "configured") {
+    return japanese ? "現在値" : "Current setting";
   }
-  if (entry.status === "reference-only") {
-    return "v0.36.13 model plan";
-  }
-  if (entry.family === "agent-arena" || entry.family === "code-arena") {
-    return `${entry.family} reference + ${entry.evidence}`;
-  }
-  return entry.evidence;
+  return source || (japanese ? "未設定" : "unset");
 }
 
-function getRuntimeCatalogCaptureDate(entry: RuntimeModelCatalogEntry) {
-  if (entry.captureDate) {
-    return entry.captureDate;
+function getRuntimeReasoningOptionLabel(option: { value: RuntimeReasoningEffort; label: string; labelJa: string }, provider: RuntimeProviderId, japanese: boolean) {
+  if (provider === "claude" && option.value === "xhigh") {
+    return "Ultra";
   }
-  if (entry.id === "claude-fable-5-unavailable") {
-    return "2026-06-12";
-  }
-  if (entry.status === "reference-only" || entry.family === "agent-arena" || entry.family === "code-arena") {
-    return "2026-06-19";
-  }
-  return "runtime";
+  return japanese ? option.labelJa : option.label;
 }
 
-function getRuntimeCatalogRunId(entry: RuntimeModelCatalogEntry) {
-  if (entry.localRunId) {
-    return entry.localRunId;
-  }
-  if (entry.status === "reference-only") {
-    return "reference-only";
-  }
-  if (entry.status === "setup-required") {
-    return "setup-required";
-  }
-  if (entry.status === "unavailable" || entry.status === "blocked") {
-    return "unavailable";
-  }
-  return "pending-local-run";
+function getRuntimeReasoningOrderForProvider(provider: RuntimeProviderId) {
+  const orderByProvider: Partial<Record<RuntimeProviderId, RuntimeReasoningEffort[]>> = {
+    claude: ["provider-default", "low", "medium", "high", "max", "xhigh"],
+    "grok-build": ["provider-default", "low", "medium", "high", "xhigh", "max"],
+    codex: ["provider-default", "low", "medium", "high", "xhigh"],
+    openrouter: ["provider-default"],
+    antigravity: ["provider-default"],
+    gemini: ["provider-default"],
+  };
+  return orderByProvider[provider] ?? ["provider-default", "low", "medium", "high", "xhigh", "max"];
 }
 
-function getRuntimeCatalogConfidenceNote(entry: RuntimeModelCatalogEntry, japanese: boolean) {
-  if (japanese && entry.confidenceNoteJa) {
-    return entry.confidenceNoteJa;
-  }
-  if (entry.confidenceNote) {
-    return entry.confidenceNote;
-  }
-  if (entry.status === "candidate" || entry.status === "setup-required") {
-    return japanese
-      ? "認証、api_llm backend、ローカルrun idの確認が必要です。"
-      : "Requires credential, api_llm backend, and local run-id confirmation.";
-  }
-  if (entry.status === "reference-only") {
-    return japanese
-      ? "比較参照です。workerで実行できる証跡ではありません。"
-      : "Comparison reference only; not runnable worker evidence.";
-  }
-  if (entry.status === "unavailable" || entry.status === "blocked") {
-    return japanese
-      ? "上流providerが公式に利用不可としています。"
-      : "The upstream provider marks this unavailable.";
-  }
-  return japanese
-    ? "実行時のworker証跡で最終判断します。"
-    : "Final decision still depends on worker run evidence.";
+function sortRuntimeReasoningOptionsForProvider(provider: RuntimeProviderId, options: Array<{ value: RuntimeReasoningEffort; label: string; labelJa: string }>) {
+  const order = getRuntimeReasoningOrderForProvider(provider);
+  return [...options].sort((left, right) => {
+    const leftIndex = order.indexOf(left.value);
+    const rightIndex = order.indexOf(right.value);
+    return (leftIndex === -1 ? Number.MAX_SAFE_INTEGER : leftIndex)
+      - (rightIndex === -1 ? Number.MAX_SAFE_INTEGER : rightIndex);
+  });
 }
 
-async function applyWorkerModelCatalogEntry(slotId: string, entryId: string) {
-  const entry = findRuntimeModelCatalogEntry(entryId);
-  if (!entry) {
-    return;
+function getClaudeRuntimeReasoningProfile(model: ComposerModelId): { defaultEffort: RuntimeReasoningEffort; supportedEfforts: RuntimeReasoningEffort[] } {
+  switch (model) {
+    case "fable-5":
+    case "opus-4.8":
+      return { defaultEffort: "high", supportedEfforts: ["low", "medium", "high", "xhigh", "max"] };
+    case "opus-4.7":
+    case "opus-4.7-1m":
+      return { defaultEffort: "xhigh", supportedEfforts: ["low", "medium", "high", "xhigh", "max"] };
+    case "opus-4.6":
+    case "sonnet-4.6":
+      return { defaultEffort: "high", supportedEfforts: ["low", "medium", "high", "max"] };
+    case "haiku-4.5":
+    default:
+      return { defaultEffort: "provider-default", supportedEfforts: ["provider-default"] };
   }
+}
+
+function getRuntimeReasoningOptionsForProvider(provider: RuntimeProviderId) {
+  const allowedByProvider: Record<RuntimeProviderId, RuntimeReasoningEffort[]> = {
+    "provider-default": ["provider-default"],
+    claude: ["provider-default", "low", "medium", "high", "xhigh", "max"],
+    codex: ["provider-default", "low", "medium", "high", "xhigh"],
+    gemini: ["provider-default"],
+    antigravity: ["provider-default"],
+    "grok-build": ["provider-default", "low", "medium", "high", "xhigh", "max"],
+    openrouter: ["provider-default"],
+  };
+  const allowed = allowedByProvider[provider] ?? ["provider-default"];
+  return sortRuntimeReasoningOptionsForProvider(
+    provider,
+    runtimeReasoningOptions.filter((item) => allowed.includes(item.value)),
+  );
+}
+
+function getRuntimeReasoningOptionsForEntry(provider: RuntimeProviderId, entry?: RuntimeModelCatalogEntry | null) {
+  const allowed = entry?.supportedReasoningEfforts?.length
+    ? entry.supportedReasoningEfforts
+    : getRuntimeReasoningOptionsForProvider(provider).map((item) => item.value);
+  return sortRuntimeReasoningOptionsForProvider(
+    provider,
+    runtimeReasoningOptions.filter((item) => allowed.includes(item.value)),
+  );
+}
+
+function getRuntimeReasoningSelectOptionsForProvider(provider: RuntimeProviderId, japanese: boolean) {
+  return getRuntimeReasoningOptionsForProvider(provider).map((option) => ({
+    value: option.value,
+    label: getRuntimeReasoningOptionLabel(option, provider, false),
+    labelJa: getRuntimeReasoningOptionLabel(option, provider, japanese),
+  }));
+}
+
+function normalizeRuntimeReasoningForEntry(provider: RuntimeProviderId, entry: RuntimeModelCatalogEntry | undefined | null, effort: string | undefined) {
+  const fallback = entry?.reasoningEffort ?? "provider-default";
+  const value = runtimeReasoningOptions.find((item) => item.value === effort)?.value
+    ?? runtimeReasoningOptions.find((item) => item.value === fallback)?.value
+    ?? "provider-default";
+  return getRuntimeReasoningOptionsForEntry(provider, entry).some((item) => item.value === value)
+    ? value
+    : "provider-default";
+}
+
+async function applyWorkerModelSelection(slotId: string, selection: RuntimePaneModelSelection) {
+  const { entry, reasoningEffort } = selection;
   workerProviderSwitchInFlight = slotId;
   renderSettingsControls();
   try {
-    const payload = entry.id === "provider-default"
-      ? {
-          slot: slotId,
-          clear: true,
-        }
-      : {
-          slot: slotId,
-          agent: entry.agent,
-          model: entry.model,
-          modelSource: entry.modelSource,
-          reasoningEffort: entry.reasoningEffort,
-          promptTransport: entry.promptTransport,
-          authMode: entry.authMode,
-          reason: `desktop model picker: ${entry.label}`,
-        };
+    const payload = {
+      slot: slotId,
+      agent: entry.agent,
+      model: entry.model,
+      modelSource: entry.modelSource,
+      reasoningEffort,
+      promptTransport: entry.promptTransport,
+      authMode: entry.authMode,
+      reason: `desktop model picker: ${entry.label}; effort ${reasoningEffort}`,
+    };
     await switchDesktopProvider(payload, activeProjectDir);
     appendRuntimeConversation({
       type: "system",
@@ -9462,15 +10091,16 @@ async function applyWorkerModelCatalogEntry(slotId: string, entryId: string) {
       timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
       actor: "winsmux",
       title: getLanguageText("Worker model assignment updated", "ワーカーモデル割当を更新しました"),
-      body: entry.id === "provider-default"
-        ? getLanguageText(`${slotId} now uses provider default.`, `${slotId} はプロバイダー既定値に戻りました。`)
-        : getLanguageText(`${slotId} -> ${entry.agent} / ${entry.model}`, `${slotId} -> ${entry.agent} / ${entry.model}`),
+      body: getLanguageText(
+        `${slotId} -> ${entry.agent} / ${entry.model} / effort ${reasoningEffort}`,
+        `${slotId} -> ${entry.agent} / ${entry.model} / 思考量 ${reasoningEffort}`,
+      ),
       tone: "success",
       details: [
         { label: "slot", value: slotId },
         { label: "agent", value: entry.agent },
         { label: "model", value: entry.model },
-        { label: "status", value: entry.status },
+        { label: "reasoning_effort", value: reasoningEffort },
       ],
     });
     await refreshWorkerStatusSurface();
@@ -9496,19 +10126,184 @@ async function applyWorkerModelCatalogEntry(slotId: string, entryId: string) {
   }
 }
 
+async function clearDetectedWorkerModelOverrides() {
+  const rows = getWorkerStatusRowsForSurface()
+    .map((row) => getWorkerStatusTarget(row))
+    .filter((target): target is string => Boolean(target));
+  for (const slot of rows) {
+    await switchDesktopProvider(
+      {
+        slot,
+        clear: true,
+        reason: "desktop model picker: use shared worker default",
+      },
+      activeProjectDir,
+    );
+  }
+  await refreshWorkerStatusSurface();
+}
+
+function getRuntimeModelAssignmentModeDraft() {
+  return runtimeModelAssignmentModeDraft ?? runtimeModelAssignmentMode;
+}
+
+function updateRuntimeModelAssignmentModeDraft(mode: RuntimeModelAssignmentMode) {
+  runtimeModelAssignmentModeDraft = mode;
+  renderSettingsControls();
+}
+
+function getRuntimeWorkerDefaultPreference() {
+  const activeRuntimeState = runtimeRoleDraftState ?? runtimeRolePreferences;
+  return activeRuntimeState.find((item) => item.roleId === "worker")
+    ?? defaultRuntimeRolePreferences().find((item) => item.roleId === "worker")!;
+}
+
+function getRuntimePreferenceSelectedEntry(preference: RuntimeRolePreference) {
+  const entries = getRuntimePaneModelEntries(preference.provider);
+  const directMatch = entries.find((entry) => {
+    const current = preference.model.trim().toLowerCase();
+    return entry.id.toLowerCase() === current || entry.model.toLowerCase() === current;
+  });
+  if (directMatch) {
+    return { entry: directMatch, entries };
+  }
+  const providerDefault = entries.find((entry) => entry.model === "provider-default") ?? getRuntimeProviderDefaultEntry(preference.provider);
+  if (!preference.model || preference.model === "provider-default") {
+    return { entry: providerDefault, entries };
+  }
+  const customEntry = createRuntimeCustomModelEntry(preference.provider, preference.model);
+  return { entry: customEntry, entries: [customEntry, ...entries] };
+}
+
+function renderRuntimeAssignmentModeControls(japanese: boolean) {
+  const activeMode = getRuntimeModelAssignmentModeDraft();
+  const wrapper = document.createElement("div");
+  wrapper.className = "runtime-model-mode-toggle";
+  const options: Array<{ value: RuntimeModelAssignmentMode; label: string; labelJa: string; description: string; descriptionJa: string }> = [
+    {
+      value: "shared",
+      label: "All panes use the default",
+      labelJa: "全ペイン共通",
+      description: "Use one provider, model, and effort for every worker pane.",
+      descriptionJa: "すべてのワーカーペインで同じプロバイダー、モデル、思考量を使います。",
+    },
+    {
+      value: "per-pane",
+      label: "Set each pane individually",
+      labelJa: "ペインごと",
+      description: "Choose a different provider, model, and effort per worker pane.",
+      descriptionJa: "ワーカーペインごとにプロバイダー、モデル、思考量を選びます。",
+    },
+  ];
+  for (const option of options) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "runtime-model-mode-option";
+    button.dataset.selected = String(activeMode === option.value);
+    button.setAttribute("aria-pressed", activeMode === option.value ? "true" : "false");
+    button.replaceChildren(
+      createTextElement("span", "runtime-model-mode-label", japanese ? option.labelJa : option.label),
+      createTextElement("span", "runtime-model-mode-description", japanese ? option.descriptionJa : option.description),
+    );
+    button.addEventListener("click", () => updateRuntimeModelAssignmentModeDraft(option.value));
+    wrapper.appendChild(button);
+  }
+  return wrapper;
+}
+
+function renderRuntimeWorkerDefaultControls(japanese: boolean) {
+  const preference = getRuntimeWorkerDefaultPreference();
+  const selectedProvider = preference.provider;
+  const { entry: selectedEntry, entries } = getRuntimePreferenceSelectedEntry(preference);
+  const panel = document.createElement("div");
+  panel.className = "runtime-model-shared-default";
+
+  const header = document.createElement("div");
+  header.className = "runtime-model-default-title";
+  header.textContent = japanese ? "全ペイン共通の既定モデル" : "Default model for all worker panes";
+  panel.appendChild(header);
+
+  const controls = document.createElement("div");
+  controls.className = "runtime-model-shared-controls";
+  controls.appendChild(createRuntimeSelect(
+    "runtime-worker-default-provider",
+    japanese ? "プロバイダー" : "Provider",
+    selectedProvider,
+    runtimeProviderOptions,
+    japanese,
+    (provider) => updateRuntimeRoleDraft("worker", {
+      provider,
+      model: "provider-default",
+      modelSource: "provider-default",
+      reasoningEffort: "provider-default",
+    }),
+  ));
+
+  const modelOptions = entries.map((entry) => ({
+    value: entry.id,
+    label: getRuntimeCatalogOptionLabel(entry, false),
+    labelJa: getRuntimeCatalogOptionLabel(entry, japanese),
+  }));
+  const selectedModelValue = selectedEntry.id;
+  controls.appendChild(createRuntimeSelect(
+    "runtime-worker-default-model",
+    japanese ? "モデル" : "Model",
+    selectedModelValue,
+    modelOptions,
+    japanese,
+    (entryId) => {
+      const nextEntry = entries.find((entry) => entry.id === entryId) ?? getRuntimeProviderDefaultEntry(selectedProvider);
+      updateRuntimeRoleDraft("worker", {
+        model: nextEntry.model,
+        modelSource: nextEntry.modelSource,
+        reasoningEffort: normalizeRuntimeReasoningForEntry(selectedProvider, nextEntry, nextEntry.reasoningEffort),
+      });
+    },
+  ));
+
+  controls.appendChild(createRuntimeSelect(
+    "runtime-worker-default-effort",
+    japanese ? "思考量" : "Effort",
+    normalizeRuntimeReasoningForEntry(selectedProvider, selectedEntry, preference.reasoningEffort),
+    getRuntimeReasoningSelectOptionsForProvider(selectedProvider, japanese),
+    japanese,
+    (reasoningEffort) => updateRuntimeRoleDraft("worker", { reasoningEffort }),
+  ));
+  panel.appendChild(controls);
+
+  const note = document.createElement("div");
+  note.className = "runtime-access-note";
+  note.textContent = runtimeAccessNote(preference, japanese);
+  panel.appendChild(note);
+  return panel;
+}
+
 function renderWorkerModelAssignmentPanel(japanese: boolean) {
   const panel = document.createElement("section");
   panel.className = "runtime-model-panel runtime-model-assignment-panel";
 
   const title = document.createElement("div");
   title.className = "runtime-role-title";
-  title.textContent = japanese ? "ワーカーペインのモデル割当" : "Worker Pane Model Assignment";
+  title.textContent = japanese ? "ペインモデル設定" : "Pane model settings";
   const description = document.createElement("div");
   description.className = "runtime-role-description";
   description.textContent = japanese
-    ? "検出済み worker slot にだけモデル上書きを適用します。設定待ちの行は、必要な backend と API key 環境変数を満たすと選択できます。"
-    : "Apply model overrides to detected worker slots only. Setup-required rows become selectable when backend and API key env requirements are met.";
+    ? "全ペイン共通の既定モデルを使うか、ペインごとにプロバイダー、モデル、思考量を設定するかを選びます。何も設定しない場合は Codex の既定値を使います。"
+    : "Choose whether all worker panes use one default model or each pane has its own provider, model, and effort. With no custom setting, panes use the Codex default.";
   panel.append(title, description);
+
+  const assignmentMode = getRuntimeModelAssignmentModeDraft();
+  panel.appendChild(renderRuntimeAssignmentModeControls(japanese));
+  panel.appendChild(renderRuntimeWorkerDefaultControls(japanese));
+  if (assignmentMode === "shared") {
+    const note = document.createElement("div");
+    note.className = "runtime-model-empty";
+    note.textContent = japanese
+      ? "全ペイン共通が選択されているため、各ワーカーペインの個別設定は非表示です。個別に変えたい場合は「ペインごと」を選択してください。"
+      : "Per-pane controls are hidden because all panes use the shared default. Select per-pane mode to override individual worker panes.";
+    panel.appendChild(note);
+    return panel;
+  }
 
   const rows = getWorkerStatusRowsForSurface().filter((row) => getWorkerStatusTarget(row)).slice(0, MAX_WORKBENCH_PANES);
   const list = document.createElement("div");
@@ -9531,34 +10326,64 @@ function renderWorkerModelAssignmentPanel(japanese: boolean) {
     const name = document.createElement("strong");
     name.textContent = getPaneDisplayLabel(slotId);
     const current = document.createElement("span");
-    current.textContent = `${getWorkerProvider(row)} / ${getWorkerModel(row)} · ${getWorkerBackendForCatalog(row)}`;
+    current.textContent = `${getWorkerBackendForCatalog(row)} backend`;
     summary.append(name, current);
 
-    const select = document.createElement("select");
-    select.className = "runtime-control-select runtime-model-slot-select";
-    select.setAttribute("aria-label", japanese ? `${slotId} のモデル` : `${slotId} model`);
     const currentCatalogId = getWorkerRuntimeCatalogEntryId(row);
-    if (!currentCatalogId) {
-      const currentOption = document.createElement("option");
-      currentOption.value = "";
-      currentOption.textContent = japanese
-        ? `現在のカスタム設定: ${getWorkerProvider(row)} / ${getWorkerModel(row)}`
-        : `Current custom setting: ${getWorkerProvider(row)} / ${getWorkerModel(row)}`;
-      currentOption.disabled = true;
-      currentOption.selected = true;
-      select.appendChild(currentOption);
+    const currentCatalogEntry = currentCatalogId ? findRuntimeModelCatalogEntry(currentCatalogId) : null;
+    const inferredProvider = normalizeRuntimeProviderId(currentCatalogEntry?.agent ?? getWorkerProvider(row))
+      ?? (getWorkerBackendForCatalog(row) === "api_llm" ? "openrouter" : null)
+      ?? (getWorkerBackendForCatalog(row) === "antigravity" ? "antigravity" : null)
+      ?? "codex";
+
+    const providerField = document.createElement("label");
+    providerField.className = "runtime-model-slot-field";
+    const providerCaption = document.createElement("span");
+    providerCaption.className = "runtime-control-caption";
+    providerCaption.textContent = japanese ? "プロバイダー" : "Provider";
+    const providerSelect = document.createElement("select");
+    providerSelect.className = "runtime-control-select runtime-model-slot-provider";
+    providerSelect.setAttribute("aria-label", japanese ? `${slotId} のプロバイダー` : `${slotId} provider`);
+    for (const option of runtimeProviderOptions) {
+      const element = document.createElement("option");
+      element.value = option.value;
+      element.textContent = japanese ? option.labelJa : option.label;
+      element.selected = option.value === inferredProvider;
+      providerSelect.appendChild(element);
     }
-    for (const entry of runtimeModelCatalog) {
-      const option = document.createElement("option");
-      option.value = entry.id;
-      const readiness = getRuntimeModelReadinessForWorker(entry, row, japanese);
-      option.textContent = getRuntimeCatalogOptionLabel(entry, japanese, row);
-      option.disabled = !readiness.assignable;
-      option.title = readiness.reason;
-      option.selected = entry.id === currentCatalogId;
-      select.appendChild(option);
-    }
-    select.disabled = Boolean(workerProviderSwitchInFlight);
+    providerField.append(providerCaption, providerSelect);
+
+    const modelField = document.createElement("label");
+    modelField.className = "runtime-model-slot-field";
+    const modelCaption = document.createElement("span");
+    modelCaption.className = "runtime-control-caption";
+    modelCaption.textContent = japanese ? "モデル" : "Model";
+    const modelSelect = document.createElement("select");
+    modelSelect.className = "runtime-control-select runtime-model-slot-select";
+    modelSelect.setAttribute("aria-label", japanese ? `${slotId} のモデル` : `${slotId} model`);
+    modelField.append(modelCaption, modelSelect);
+
+    const effortField = document.createElement("label");
+    effortField.className = "runtime-model-slot-field";
+    const effortCaption = document.createElement("span");
+    effortCaption.className = "runtime-control-caption";
+    effortCaption.textContent = japanese ? "思考量" : "Effort";
+    const effortSelect = document.createElement("select");
+    effortSelect.className = "runtime-control-select runtime-model-slot-effort";
+    effortSelect.setAttribute("aria-label", japanese ? `${slotId} の思考量` : `${slotId} effort`);
+    effortField.append(effortCaption, effortSelect);
+
+    const control = document.createElement("div");
+    control.className = "runtime-model-slot-control";
+    control.append(providerField, modelField, effortField);
+
+    const state = document.createElement("div");
+    state.className = "runtime-model-slot-state";
+    const status = document.createElement("span");
+    status.className = "runtime-model-slot-status";
+    const reason = document.createElement("span");
+    reason.className = "runtime-model-slot-reason";
+    state.append(status, reason);
 
     const action = document.createElement("button");
     action.type = "button";
@@ -9566,82 +10391,120 @@ function renderWorkerModelAssignmentPanel(japanese: boolean) {
     action.textContent = workerProviderSwitchInFlight === slotId
       ? (japanese ? "適用中" : "Applying")
       : (japanese ? "適用" : "Apply");
+
+    let currentEntries: RuntimeModelCatalogEntry[] = [];
+    const renderEffortOptions = (provider: RuntimeProviderId, entry?: RuntimeModelCatalogEntry | null, preferredEffort?: RuntimeReasoningEffort) => {
+      const options = getRuntimeReasoningOptionsForEntry(provider, entry);
+      const normalizedEffort = normalizeRuntimeReasoningForEntry(provider, entry, preferredEffort ?? effortSelect.value);
+      effortSelect.innerHTML = "";
+      for (const option of options) {
+        const element = document.createElement("option");
+        element.value = option.value;
+        element.textContent = getRuntimeReasoningOptionLabel(option, provider, japanese);
+        element.selected = option.value === normalizedEffort;
+        effortSelect.appendChild(element);
+      }
+      effortSelect.disabled = Boolean(workerProviderSwitchInFlight) || options.length <= 1;
+      effortSelect.title = options.length <= 1
+        ? (japanese ? "このプロバイダーは思考量の明示指定に未対応です。" : "This provider does not expose a supported effort override.")
+        : "";
+    };
+    const resolveSelection = (): RuntimePaneModelSelection | null => {
+      const provider = normalizeRuntimeProviderId(providerSelect.value) ?? inferredProvider;
+      const modelValue = modelSelect.value.trim() || `${provider}-provider-default`;
+      const entry = currentEntries.find((item) => item.id === modelValue || item.model === modelValue)
+        ?? getRuntimeProviderDefaultEntry(provider);
+      const effort = normalizeRuntimeReasoningForEntry(provider, entry, effortSelect.value || entry.reasoningEffort);
+      return { entry, reasoningEffort: effort };
+    };
+
     const updateActionState = () => {
-      const selectedEntry = findRuntimeModelCatalogEntry(select.value);
+      const selection = resolveSelection();
+      const selectedEntry = selection?.entry ?? null;
       const readiness = selectedEntry ? getRuntimeModelReadinessForWorker(selectedEntry, row, japanese) : null;
+      const readinessState = readiness?.state ?? "runnable";
+      status.dataset.state = selectedEntry ? readinessState : "custom";
+      status.textContent = selectedEntry
+        ? getRuntimeWorkerReadinessLabel(readinessState, japanese)
+        : (japanese ? "カスタム" : "custom");
+      reason.textContent = selectedEntry
+        ? (readiness?.reason
+            || (readiness?.assignable
+              ? (japanese
+                  ? `Source: ${getRuntimeModelSourceDisplayLabel(selectedEntry.modelSource, japanese)}`
+                  : `Source: ${getRuntimeModelSourceDisplayLabel(selectedEntry.modelSource, japanese)}`)
+              : (japanese ? selectedEntry.noteJa : selectedEntry.note)))
+        : (japanese ? "カタログ外の現在値" : "Current value outside the catalog");
+      reason.title = reason.textContent;
       action.disabled = Boolean(workerProviderSwitchInFlight) || !readiness?.assignable;
       action.title = selectedEntry
         ? (readiness?.assignable ? "" : (readiness?.reason || (japanese ? selectedEntry.noteJa : selectedEntry.note)))
-        : (japanese
-            ? "現在のカスタム設定です。既定へ戻す場合は明示的に自動 / プロバイダー既定を選んでください。"
-            : "This is the current custom setting. Explicitly select Auto / provider default to clear it.");
+        : (japanese ? "モデルを選択してください。" : "Select a model.");
     };
-    select.addEventListener("change", updateActionState);
+
+    const renderModelOptions = (requestedModel?: string) => {
+      const provider = normalizeRuntimeProviderId(providerSelect.value) ?? inferredProvider;
+      currentEntries = getRuntimePaneModelEntries(provider);
+      let selectedEntry = currentEntries.find((entry) => {
+        const requestedValue = requestedModel?.trim().toLowerCase() ?? "";
+        return requestedValue
+          && (entry.model.toLowerCase() === requestedValue || entry.id.toLowerCase() === requestedValue);
+      }) ?? null;
+      if (!selectedEntry && currentCatalogEntry && currentCatalogEntry.agent === provider) {
+        selectedEntry = currentEntries.find((entry) => entry.id === currentCatalogEntry.id || entry.model === currentCatalogEntry.model) ?? null;
+      }
+      if (!selectedEntry && normalizeRuntimeProviderId(getWorkerProvider(row)) === provider && getWorkerModel(row)) {
+        const currentModel = getWorkerModel(row).toLowerCase();
+        selectedEntry = currentEntries.find((entry) => entry.model.toLowerCase() === currentModel || entry.id.toLowerCase() === currentModel) ?? null;
+      }
+      if (!selectedEntry && requestedModel && requestedModel !== "provider-default") {
+        selectedEntry = createRuntimeCustomModelEntry(provider, requestedModel);
+        currentEntries = [selectedEntry, ...currentEntries];
+      }
+      if (!selectedEntry) {
+        selectedEntry = currentEntries.find((entry) => entry.model === "provider-default") ?? getRuntimeProviderDefaultEntry(provider);
+      }
+      modelSelect.innerHTML = "";
+      for (const entry of currentEntries) {
+        const option = document.createElement("option");
+        option.value = entry.id;
+        const readiness = getRuntimeModelReadinessForWorker(entry, row, japanese);
+        option.textContent = getRuntimeCatalogOptionLabel(entry, japanese);
+        option.selected = entry.id === selectedEntry.id;
+        option.title = readiness.reason;
+        option.disabled = !readiness.assignable && entry.status === "unavailable";
+        modelSelect.appendChild(option);
+      }
+      renderEffortOptions(provider, selectedEntry, selectedEntry.reasoningEffort || getWorkerReasoningEffort(row));
+      updateActionState();
+    };
+
+    providerSelect.addEventListener("change", () => {
+      renderModelOptions("provider-default");
+    });
+    modelSelect.addEventListener("change", () => {
+      const provider = normalizeRuntimeProviderId(providerSelect.value) ?? inferredProvider;
+      const selection = resolveSelection();
+      if (selection) {
+        renderEffortOptions(provider, selection.entry, selection.entry.reasoningEffort);
+      }
+      updateActionState();
+    });
+    effortSelect.addEventListener("change", updateActionState);
     action.addEventListener("click", () => {
-      if (findRuntimeModelCatalogEntry(select.value)) {
-        void applyWorkerModelCatalogEntry(slotId, select.value);
+      const selection = resolveSelection();
+      if (selection) {
+        void applyWorkerModelSelection(slotId, selection);
       }
     });
-    updateActionState();
+    providerSelect.disabled = Boolean(workerProviderSwitchInFlight);
+    modelSelect.disabled = Boolean(workerProviderSwitchInFlight);
+    renderModelOptions(getWorkerModel(row));
 
-    rowElement.append(summary, select, action);
+    rowElement.append(summary, control, state, action);
     list.appendChild(rowElement);
   }
   panel.appendChild(list);
-  return panel;
-}
-
-function renderRuntimeBenchmarkComparisonPanel(japanese: boolean) {
-  const panel = document.createElement("section");
-  panel.className = "runtime-model-panel runtime-benchmark-panel";
-
-  const title = document.createElement("div");
-  title.className = "runtime-role-title";
-  title.textContent = japanese ? "モデル比較とベンチ参照" : "Model Benchmark Comparison";
-  const description = document.createElement("div");
-  description.className = "runtime-role-description";
-  description.textContent = japanese
-    ? "Agent Arena / Code Arena は参考値です。winsmux の勝敗判定は、実行ログ、再現性、コスト、失敗理由を別に確認します。"
-    : "Agent Arena / Code Arena values are references. winsmux decisions still use run logs, reproducibility, cost, and failure reasons.";
-  panel.append(title, description);
-
-  const table = document.createElement("div");
-  table.className = "runtime-benchmark-table";
-  for (const entry of runtimeModelCatalog.filter((item) => item.id !== "provider-default")) {
-    const row = document.createElement("div");
-    row.className = "runtime-benchmark-row";
-    row.dataset.status = entry.status;
-
-    const model = document.createElement("div");
-    model.className = "runtime-benchmark-model";
-    model.textContent = japanese ? entry.labelJa : entry.label;
-
-    const status = document.createElement("span");
-    status.className = "runtime-benchmark-status";
-    status.textContent = getRuntimeCatalogStatusLabel(entry.status, japanese);
-
-    const metrics = document.createElement("div");
-    metrics.className = "runtime-benchmark-metrics";
-    metrics.textContent = [
-      entry.family,
-      entry.speed,
-      entry.intelligence,
-      entry.cost,
-      `source: ${getRuntimeCatalogSourceLabel(entry)}`,
-      `captured: ${getRuntimeCatalogCaptureDate(entry)}`,
-      `run: ${getRuntimeCatalogRunId(entry)}`,
-    ].join(" · ");
-    metrics.title = metrics.textContent;
-
-    const note = document.createElement("div");
-    note.className = "runtime-benchmark-note";
-    note.textContent = `${japanese ? entry.noteJa : entry.note} ${japanese ? "信頼度" : "Confidence"}: ${getRuntimeCatalogConfidenceNote(entry, japanese)}`;
-    note.title = note.textContent;
-
-    row.append(model, status, metrics, note);
-    table.appendChild(row);
-  }
-  panel.appendChild(table);
   return panel;
 }
 
@@ -9650,108 +10513,23 @@ function renderRuntimeRoleControls() {
   if (!root) {
     return;
   }
+  if (openRouterModelsLoadState === "idle") {
+    void ensureOpenRouterRuntimeModelsLoaded();
+  }
 
-  const activeRuntimeState = runtimeRoleDraftState ?? runtimeRolePreferences;
   const japanese = (settingsDraftState?.language ?? themeState.language) === "ja";
   root.innerHTML = "";
 
   const datalist = document.createElement("datalist");
   datalist.id = "runtime-model-suggestions";
-  for (const model of runtimeModelSuggestions) {
+  for (const model of getRuntimeModelSuggestions()) {
     const option = document.createElement("option");
     option.value = model;
     datalist.appendChild(option);
   }
   root.appendChild(datalist);
 
-  for (const role of runtimeRoleOptions) {
-    const operatorLocked = role.value === "operator";
-    const preference = activeRuntimeState.find((item) => item.roleId === role.value)
-      ?? defaultRuntimeRolePreferences().find((item) => item.roleId === role.value)!;
-    const panel = document.createElement("section");
-    panel.className = `runtime-role-panel ${operatorLocked ? "is-locked" : ""}`;
-
-    const header = document.createElement("div");
-    header.className = "runtime-role-header";
-    const title = document.createElement("div");
-    title.className = "runtime-role-title";
-    title.textContent = japanese ? role.labelJa : role.label;
-    const description = document.createElement("div");
-    description.className = "runtime-role-description";
-    description.textContent = japanese ? role.descriptionJa : role.description;
-    header.append(title, description);
-    panel.appendChild(header);
-
-    const controls = document.createElement("div");
-    controls.className = "runtime-role-controls";
-    controls.appendChild(createRuntimeSelect(
-      `runtime-provider-${role.value}`,
-      japanese ? "プロバイダー" : "Provider",
-      operatorLocked ? lockedOperatorRuntimePreference.provider : preference.provider,
-      runtimeProviderOptions,
-      japanese,
-      (provider) => updateRuntimeRoleDraft(role.value, { provider }),
-      operatorLocked
-        ? {
-            disabled: true,
-            title: japanese
-              ? "オペレーターペインは現在 Claude Code 固定です。"
-              : "The operator pane is currently fixed to Claude Code.",
-          }
-        : {},
-    ));
-
-    const modelGroup = document.createElement("label");
-    modelGroup.className = "runtime-control-group runtime-control-group-wide";
-    modelGroup.setAttribute("for", `runtime-model-${role.value}`);
-    const modelCaption = document.createElement("span");
-    modelCaption.className = "runtime-control-caption";
-    modelCaption.textContent = japanese ? "モデル" : "Model";
-    const modelInput = document.createElement("input");
-    modelInput.id = `runtime-model-${role.value}`;
-    modelInput.className = "runtime-control-input";
-    modelInput.value = operatorLocked ? lockedOperatorRuntimePreference.model : preference.model;
-    modelInput.disabled = operatorLocked;
-    modelInput.setAttribute("aria-disabled", operatorLocked ? "true" : "false");
-    modelInput.setAttribute("list", "runtime-model-suggestions");
-    modelInput.placeholder = "provider-default";
-    modelInput.addEventListener("change", () => {
-      const value = modelInput.value.trim() || "provider-default";
-      const nextSource = value === "provider-default" ? "provider-default" : preference.modelSource;
-      updateRuntimeRoleDraft(role.value, { model: value, modelSource: nextSource });
-    });
-    modelGroup.append(modelCaption, modelInput);
-    controls.appendChild(modelGroup);
-
-    controls.appendChild(createRuntimeSelect(
-      `runtime-model-source-${role.value}`,
-      japanese ? "入手元" : "Source",
-      preference.modelSource,
-      runtimeModelSourceOptions,
-      japanese,
-      (modelSource) => updateRuntimeRoleDraft(role.value, { modelSource }),
-      operatorLocked ? { disabled: true } : {},
-    ));
-    controls.appendChild(createRuntimeSelect(
-      `runtime-reasoning-${role.value}`,
-      japanese ? "思考量" : "Effort",
-      preference.reasoningEffort,
-      runtimeReasoningOptions,
-      japanese,
-      (reasoningEffort) => updateRuntimeRoleDraft(role.value, { reasoningEffort }),
-      operatorLocked ? { disabled: true } : {},
-    ));
-    panel.appendChild(controls);
-
-    const note = document.createElement("div");
-    note.className = "runtime-access-note";
-    note.textContent = runtimeAccessNote(operatorLocked ? lockedOperatorRuntimePreference : preference, japanese);
-    panel.appendChild(note);
-
-    root.appendChild(panel);
-  }
   root.appendChild(renderWorkerModelAssignmentPanel(japanese));
-  root.appendChild(renderRuntimeBenchmarkComparisonPanel(japanese));
 }
 
 function renderSettingsControls() {
@@ -9765,26 +10543,31 @@ function renderSettingsControls() {
 
   renderPreferenceOptions("theme-options", themeOptions, activeState.theme, (value) => {
     getSettingsDraftState().theme = value;
+    applySettingsDraftPreview();
     renderSettingsControls();
   });
 
   renderPreferenceOptions("density-options", densityOptions, activeState.density, (value) => {
     getSettingsDraftState().density = value;
+    applySettingsDraftPreview();
     renderSettingsControls();
   });
 
   renderPreferenceOptions("wrap-options", wrapOptions, activeState.wrapMode, (value) => {
     getSettingsDraftState().wrapMode = value;
+    applySettingsDraftPreview();
     renderSettingsControls();
   });
 
   renderPreferenceOptions("focus-mode-options", focusModeOptions, activeState.focusMode, (value) => {
     getSettingsDraftState().focusMode = value;
+    applySettingsDraftPreview();
     renderSettingsControls();
   });
 
   renderPreferenceOptions("language-options", languageOptions, activeState.language, (value) => {
     getSettingsDraftState().language = value;
+    applySettingsDraftPreview();
     renderSettingsControls();
   });
 
@@ -12721,11 +13504,36 @@ function getTopMenuItems(menuId: string): TopMenuItem[] {
       ];
     case "menu-view-btn":
       return [
-        { label: getLanguageText("Toggle explorer", "エクスプローラーを切り替え"), action: () => toggleSidebarMode("explorer") },
-        { label: getLanguageText("Toggle workspace overview", "作業領域の概要を切り替え"), action: () => toggleSidebarMode("workspace") },
-        { label: getLanguageText("Toggle source control", "ソース管理を切り替え"), action: () => toggleSidebarMode("source") },
-        { label: getLanguageText("Toggle evidence", "証跡を切り替え"), action: () => toggleSidebarMode("evidence") },
-        { label: getLanguageText("Toggle details", "詳細を切り替え"), action: () => setContextPanel(!contextPanelOpen) },
+        {
+          label: sidebarOpen && sidebarMode === "explorer"
+            ? getLanguageText("Hide Explorer", "エクスプローラーを隠す")
+            : getLanguageText("Show Explorer", "エクスプローラーを表示"),
+          action: () => toggleSidebarMode("explorer"),
+        },
+        {
+          label: sidebarOpen && sidebarMode === "workspace"
+            ? getLanguageText("Hide Workspace Overview", "作業領域の概要を隠す")
+            : getLanguageText("Show Workspace Overview", "作業領域の概要を表示"),
+          action: () => toggleSidebarMode("workspace"),
+        },
+        {
+          label: sidebarOpen && sidebarMode === "source"
+            ? getLanguageText("Hide Source Control", "ソース管理を隠す")
+            : getLanguageText("Show Source Control", "ソース管理を表示"),
+          action: () => toggleSidebarMode("source"),
+        },
+        {
+          label: sidebarOpen && sidebarMode === "evidence"
+            ? getLanguageText("Hide Evidence", "証跡を隠す")
+            : getLanguageText("Show Evidence", "証跡を表示"),
+          action: () => toggleSidebarMode("evidence"),
+        },
+        {
+          label: contextPanelOpen
+            ? getLanguageText("Hide Details", "詳細を隠す")
+            : getLanguageText("Show Details", "詳細を表示"),
+          action: () => setContextPanel(!contextPanelOpen),
+        },
         {
           label: agentVaultOpen && contextPanelOpen
             ? getLanguageText("Hide Agent Vault", "Agent Vault を隠す")
@@ -12734,11 +13542,16 @@ function getTopMenuItems(menuId: string): TopMenuItem[] {
         },
         {
           label: workerStatusStripVisible
-            ? getLanguageText("Hide worker status", "ワーカー状態を隠す")
-            : getLanguageText("Show worker status", "ワーカー状態を表示"),
+            ? getLanguageText("Hide Worker Details", "ワーカー詳細情報を隠す")
+            : getLanguageText("Show Worker Details", "ワーカー詳細情報を表示"),
           action: () => setWorkerStatusStripVisible(!workerStatusStripVisible),
         },
-        { label: getLanguageText("Toggle panes", "ペインを切り替え"), action: () => setTerminalDrawer(!terminalDrawerOpen) },
+        {
+          label: terminalDrawerOpen
+            ? getLanguageText("Hide Worker Panes", "ワーカーペインを隠す")
+            : getLanguageText("Show Worker Panes", "ワーカーペインを表示"),
+          action: () => setTerminalDrawer(!terminalDrawerOpen),
+        },
       ];
     case "menu-go-btn":
       return [
@@ -14370,9 +15183,33 @@ function getSettingsSections() {
   return Array.from(document.querySelectorAll<HTMLElement>("#settings-content .settings-section"));
 }
 
-function setActiveSettingsNav(targetId: string) {
+function getSettingsSectionScope(sectionId: string): SettingsScope {
+  return sectionId === "settings-section-workspace" ? "workspace" : "user";
+}
+
+function syncSettingsScopeControls() {
+  document.querySelectorAll<HTMLButtonElement>(".settings-tab").forEach((button) => {
+    const scope: SettingsScope = button.id === "settings-tab-workspace" ? "workspace" : "user";
+    const selected = scope === settingsScope;
+    button.classList.toggle("is-active", selected);
+    button.setAttribute("aria-selected", selected ? "true" : "false");
+  });
+  const content = document.getElementById("settings-content");
+  if (content) {
+    content.dataset.settingsScope = settingsScope;
+  }
+}
+
+function setActiveSettingsNav(targetId: string, activeButton?: HTMLButtonElement | null) {
+  let activated = false;
   document.querySelectorAll<HTMLButtonElement>(".settings-nav-item").forEach((button) => {
-    button.classList.toggle("is-active", button.dataset.settingsTarget === targetId);
+    const matches = activeButton
+      ? button === activeButton
+      : !activated && button.dataset.settingsTarget === targetId && !button.hidden;
+    button.classList.toggle("is-active", matches);
+    if (matches) {
+      activated = true;
+    }
   });
 }
 
@@ -14383,7 +15220,8 @@ function updateSettingsSearchFilter() {
   let firstVisibleId = "";
   for (const section of sections) {
     const text = section.textContent?.toLowerCase() ?? "";
-    const visible = !query || text.includes(query);
+    const inScope = getSettingsSectionScope(section.id) === settingsScope;
+    const visible = inScope && (!query || text.includes(query));
     section.hidden = !visible;
     if (visible && !firstVisibleId) {
       firstVisibleId = section.id;
@@ -14393,7 +15231,9 @@ function updateSettingsSearchFilter() {
   document.querySelectorAll<HTMLButtonElement>(".settings-nav-item").forEach((button) => {
     const targetId = button.dataset.settingsTarget ?? "";
     const target = document.getElementById(targetId);
-    const disabled = Boolean(query && target instanceof HTMLElement && target.hidden);
+    const inScope = getSettingsSectionScope(targetId) === settingsScope;
+    button.hidden = !inScope;
+    const disabled = inScope && Boolean(query && target instanceof HTMLElement && target.hidden);
     button.disabled = disabled;
     button.setAttribute("aria-disabled", disabled ? "true" : "false");
   });
@@ -14403,28 +15243,38 @@ function updateSettingsSearchFilter() {
   }
 }
 
-function scrollToSettingsSection(targetId: string) {
+function scrollToSettingsSection(targetId: string, activeButton?: HTMLButtonElement | null) {
   const target = document.getElementById(targetId);
   if (!(target instanceof HTMLElement) || target.hidden) {
     return;
   }
-  setActiveSettingsNav(targetId);
-  target.scrollIntoView({ block: "start", behavior: "smooth" });
+  setActiveSettingsNav(targetId, activeButton);
+  const content = document.getElementById("settings-content");
+  if (content instanceof HTMLElement) {
+    const top = Math.max(0, target.offsetTop - content.offsetTop);
+    content.scrollTo({ top, behavior: "auto" });
+  }
+}
+
+function setSettingsScope(nextScope: SettingsScope) {
+  settingsScope = nextScope;
+  syncSettingsScopeControls();
+  updateSettingsSearchFilter();
+  const firstVisibleSection = getSettingsSections().find((section) => !section.hidden);
+  if (firstVisibleSection) {
+    scrollToSettingsSection(firstVisibleSection.id);
+  }
 }
 
 function resetSettingsView() {
   settingsFontFamilyMenuOpen = false;
+  settingsScope = "user";
+  syncSettingsScopeControls();
   const searchInput = document.getElementById("settings-search-input") as HTMLInputElement | null;
   if (searchInput) {
     searchInput.value = "";
   }
-  getSettingsSections().forEach((section) => {
-    section.hidden = false;
-  });
-  document.querySelectorAll<HTMLButtonElement>(".settings-nav-item").forEach((button) => {
-    button.disabled = false;
-    button.setAttribute("aria-disabled", "false");
-  });
+  updateSettingsSearchFilter();
   setActiveSettingsNav("settings-section-common");
   const content = document.getElementById("settings-content");
   if (content) {
@@ -14437,7 +15287,7 @@ function initializeSettingsDialogControls() {
     button.addEventListener("click", () => {
       const targetId = button.dataset.settingsTarget;
       if (targetId) {
-        scrollToSettingsSection(targetId);
+        scrollToSettingsSection(targetId, button);
       }
     });
   });
@@ -14462,9 +15312,7 @@ function initializeSettingsDialogControls() {
 
   document.querySelectorAll<HTMLButtonElement>(".settings-tab").forEach((button) => {
     button.addEventListener("click", () => {
-      document.querySelectorAll<HTMLButtonElement>(".settings-tab").forEach((candidate) => {
-        candidate.classList.toggle("is-active", candidate === button);
-      });
+      setSettingsScope(button.id === "settings-tab-workspace" ? "workspace" : "user");
     });
   });
 }
@@ -14482,6 +15330,12 @@ function setSettingsSheet(open: boolean) {
   settingsSheetOpen = open;
   if (!open) {
     settingsFontFamilyMenuOpen = false;
+    if (settingsDraftState || runtimeRoleDraftState || runtimeModelAssignmentModeDraft) {
+      settingsDraftState = null;
+      runtimeRoleDraftState = null;
+      runtimeModelAssignmentModeDraft = null;
+      applyShellPreferences();
+    }
   }
   if (open) {
     if (!settingsDraftState) {
@@ -14490,6 +15344,7 @@ function setSettingsSheet(open: boolean) {
     if (!runtimeRoleDraftState) {
       runtimeRoleDraftState = cloneRuntimeRolePreferences(runtimeRolePreferences);
     }
+    runtimeModelAssignmentModeDraft = runtimeModelAssignmentMode;
     resetSettingsView();
     renderSettingsControls();
     requestAnimationFrame(() => {
@@ -14532,8 +15387,31 @@ async function applySettingsDraft() {
       console.warn("Failed to apply runtime role preferences to desktop runtime", error);
     }
   }
+  if (runtimeModelAssignmentModeDraft) {
+    const previousMode = runtimeModelAssignmentMode;
+    runtimeModelAssignmentMode = runtimeModelAssignmentModeDraft;
+    persistRuntimeModelAssignmentMode();
+    if (previousMode !== "shared" && runtimeModelAssignmentMode === "shared") {
+      try {
+        await clearDetectedWorkerModelOverrides();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        appendRuntimeConversation({
+          type: "system",
+          category: "attention",
+          timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          actor: "winsmux",
+          title: getLanguageText("Pane model mode was saved locally", "ペインモデル設定モードはローカルに保存しました"),
+          body: message,
+          tone: "warning",
+        });
+        console.warn("Failed to clear per-pane model overrides", error);
+      }
+    }
+  }
   settingsDraftState = null;
   runtimeRoleDraftState = null;
+  runtimeModelAssignmentModeDraft = null;
   if (settingsSheetOpen) {
     renderSettingsControls();
     renderFooterLane();
@@ -14555,6 +15433,8 @@ async function applySettingsDraft() {
 function cancelSettingsDraft() {
   settingsDraftState = null;
   runtimeRoleDraftState = null;
+  runtimeModelAssignmentModeDraft = null;
+  applyShellPreferences();
   setSettingsSheet(false);
 }
 

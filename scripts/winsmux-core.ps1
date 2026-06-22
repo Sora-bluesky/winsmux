@@ -11,10 +11,42 @@ if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_BRIDGE_NAMESPACE_L)) {
 if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_BRIDGE_SOCKET_S)) {
     $script:WinsmuxRawGlobalArgs += @('-S', $env:WINSMUX_BRIDGE_SOCKET_S)
 }
-$script:WinsmuxRawCommand = 'winsmux'
-if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_RAW_EXE)) {
-    $script:WinsmuxRawCommand = $env:WINSMUX_RAW_EXE
+function Resolve-WinsmuxRawCommand {
+    foreach ($configured in @($env:WINSMUX_RAW_EXE, $env:WINSMUX_BIN)) {
+        if ([string]::IsNullOrWhiteSpace($configured)) {
+            continue
+        }
+
+        if ([System.IO.Path]::IsPathRooted($configured) -and (Test-Path -LiteralPath $configured -PathType Leaf)) {
+            return [System.IO.Path]::GetFullPath($configured)
+        }
+
+        $configuredCommand = Get-Command $configured -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($null -ne $configuredCommand) {
+            if ($configuredCommand.Path) {
+                return $configuredCommand.Path
+            }
+
+            return $configuredCommand.Name
+        }
+
+        throw "configured winsmux executable is missing: $configured"
+    }
+
+    $repoRoot = Split-Path $PSScriptRoot -Parent
+    foreach ($candidate in @(
+        (Join-Path $repoRoot 'target\debug\winsmux.exe'),
+        (Join-Path $repoRoot 'target\release\winsmux.exe')
+    )) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            return [System.IO.Path]::GetFullPath($candidate)
+        }
+    }
+
+    return 'winsmux'
 }
+
+$script:WinsmuxRawCommand = Resolve-WinsmuxRawCommand
 
 # --- Config ---
 $VERSION = "0.36.17"
@@ -2014,11 +2046,27 @@ function Resolve-Target {
     return $RawTarget
 }
 
+function Get-TargetSessionName {
+    foreach ($candidate in @($env:WINSMUX_TARGET_SESSION, $env:WINSMUX_SESSION_NAME)) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate)) {
+            return $candidate.Trim()
+        }
+    }
+
+    return ''
+}
+
 # --- Helper: Confirm-Target ---
 function Confirm-Target {
     param([string]$PaneId)
-        # Older core builds ignored the display-message -t flag, so validate via list-panes.
-    $allPanes = (Invoke-WinsmuxRaw -Arguments @('list-panes', '-a', '-F', '#{pane_id}') | Out-String).Trim() -split "`n" | ForEach-Object { $_.Trim() }
+    # Older core builds ignored the display-message -t flag, so validate via list-panes.
+    $targetSession = Get-TargetSessionName
+    $listPaneArguments = if (-not [string]::IsNullOrWhiteSpace($targetSession)) {
+        @('list-panes', '-t', $targetSession, '-F', '#{pane_id}')
+    } else {
+        @('list-panes', '-a', '-F', '#{pane_id}')
+    }
+    $allPanes = (Invoke-WinsmuxRaw -Arguments $listPaneArguments | Out-String).Trim() -split "`n" | ForEach-Object { $_.Trim() }
     if ($PaneId -notin $allPanes) {
         Stop-WithError "invalid target: $PaneId"
     }
@@ -2031,7 +2079,13 @@ function Get-PaneTargetCandidates {
     $candidates = [ordered]@{}
     $candidates[$PaneId] = $true
 
-    $raw = Invoke-WinsmuxRaw -Arguments @('list-panes', '-a', '-F', "#{pane_id}`t#{session_name}:#{window_index}.#{pane_index}") 2>$null
+    $targetSession = Get-TargetSessionName
+    $listPaneArguments = if (-not [string]::IsNullOrWhiteSpace($targetSession)) {
+        @('list-panes', '-t', $targetSession, '-F', "#{pane_id}`t#{session_name}:#{window_index}.#{pane_index}")
+    } else {
+        @('list-panes', '-a', '-F', "#{pane_id}`t#{session_name}:#{window_index}.#{pane_index}")
+    }
+    $raw = Invoke-WinsmuxRaw -Arguments $listPaneArguments 2>$null
     foreach ($line in @($raw)) {
         $trimmed = ([string]$line).Trim()
         if ([string]::IsNullOrWhiteSpace($trimmed)) {
@@ -5659,6 +5713,28 @@ function Get-WorkersStatusRows {
         }
         $currentLaunch = New-WorkersLaunchApprovalSummary -SlotId $slotId -SlotConfig $slotConfig -AutoLaunch:$autoLaunch
         $approvalDifferences = @(Get-WorkersLaunchApprovalDifferences -ApprovedLaunch $approvedLaunch -CurrentLaunch $currentLaunch)
+        $apiKeyEnvName = [string]$slotConfig.ApiKeyEnv
+        $apiKeyEnvStatus = ''
+        $credentialStatus = ''
+        if (-not [string]::IsNullOrWhiteSpace($apiKeyEnvName)) {
+            try {
+                $credential = Resolve-WorkersApiLlmCredential -RuntimeConfig ([ordered]@{
+                    Provider  = [string]$slotConfig.Agent
+                    ApiKeyEnv = $apiKeyEnvName
+                })
+                $apiKeyEnvName = [string]$credential.ApiKeyEnv
+                if (-not [string]::IsNullOrWhiteSpace([string]$credential.ApiKey)) {
+                    $apiKeyEnvStatus = 'configured'
+                    $credentialStatus = 'configured'
+                } else {
+                    $apiKeyEnvStatus = 'missing'
+                    $credentialStatus = 'missing'
+                }
+            } catch {
+                $apiKeyEnvStatus = 'error'
+                $credentialStatus = 'error'
+            }
+        }
 
         $rows.Add([PSCustomObject][ordered]@{
             Slot           = ConvertTo-WorkersSlotAlias -SlotId $slotId
@@ -5681,7 +5757,9 @@ function Get-WorkersStatusRows {
             CredentialRequirements = [string]$slotConfig.CredentialRequirements
             ExecutionBackend = [string]$slotConfig.ExecutionBackend
             ApiBaseUrl = [string]$slotConfig.ApiBaseUrl
-            ApiKeyEnv = [string]$slotConfig.ApiKeyEnv
+            ApiKeyEnv = $apiKeyEnvName
+            ApiKeyEnvStatus = $apiKeyEnvStatus
+            CredentialStatus = $credentialStatus
             AnalysisPosture = [string]$slotConfig.AnalysisPosture
             Session        = $sessionName
             RequestedGpu   = $requestedGpu
@@ -5789,6 +5867,8 @@ function ConvertTo-WorkersStatusJsonRows {
             execution_backend = [string]$row.ExecutionBackend
             api_base_url    = [string]$row.ApiBaseUrl
             api_key_env     = [string]$row.ApiKeyEnv
+            api_key_env_status = [string]$row.ApiKeyEnvStatus
+            credential_status = [string]$row.CredentialStatus
             analysis_posture = [string]$row.AnalysisPosture
             session         = [string]$row.Session
             requested_gpu   = [string]$row.RequestedGpu
@@ -10346,7 +10426,11 @@ function Invoke-WorkersAntigravityExec {
                 $recordedArguments = @(ConvertTo-WorkersAntigravityRecordedArguments -Arguments @($cli.Arguments))
                 $process = if ([int]$cli.ExitCode -eq 0) { 'completed' } else { 'failed' }
                 $exitCode = [int]$cli.ExitCode
-                if ($exitCode -eq 0) {
+                if ($exitCode -eq 0 -and [string]::IsNullOrWhiteSpace([string]$cli.Output)) {
+                    $status = 'failed'
+                    $reason = 'antigravity_empty_stdout'
+                    $runtimeError = 'Antigravity CLI completed without stdout. Official headless usage is expected to produce a response, so this run is not scoreable.'
+                } elseif ($exitCode -eq 0) {
                     $status = 'succeeded'
                     Write-ClmSafeTextFile -Path $responsePath -Content (ConvertTo-WorkersSafeLogText -Text ([string]$cli.Output))
                     $responseReference = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $responsePath
@@ -10879,22 +10963,6 @@ function Invoke-WorkersStart {
             $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status 'failed' -Reason 'pane_id_missing')) | Out-Null
             continue
         }
-        if (
-            [string]::Equals(([string]$row.Backend), 'api_llm', [System.StringComparison]::OrdinalIgnoreCase) -or
-            [string]::Equals(([string]$entry.Status), 'api_llm_runner_unconfigured', [System.StringComparison]::OrdinalIgnoreCase)
-        ) {
-            Set-WorkersManifestLifecycleCommand -Entry $entry -CommandName 'workers.start' -Status 'api_llm_runner_unconfigured'
-            $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status 'blocked' -Reason 'api_llm_runner_unconfigured')) | Out-Null
-            continue
-        }
-        if (
-            [string]::Equals(([string]$row.Backend), 'antigravity', [System.StringComparison]::OrdinalIgnoreCase) -or
-            [string]::Equals(([string]$entry.Status), 'antigravity_runner_unconfigured', [System.StringComparison]::OrdinalIgnoreCase)
-        ) {
-            Set-WorkersManifestLifecycleCommand -Entry $entry -CommandName 'workers.start' -Status 'antigravity_runner_unconfigured'
-            $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status 'blocked' -Reason 'antigravity_runner_unconfigured')) | Out-Null
-            continue
-        }
         if ([string]$entry.Status -eq 'backend_degraded') {
             $reason = [string]$row.DegradedReason
             if ([string]::IsNullOrWhiteSpace($reason)) {
@@ -10906,6 +10974,16 @@ function Invoke-WorkersStart {
         $approvalDifferences = @($row.ApprovalDifferences)
         if ($approvalDifferences.Count -gt 0) {
             $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status 'blocked' -Reason (Format-WorkersLaunchApprovalMismatch -Differences $approvalDifferences))) | Out-Null
+            continue
+        }
+        if ([string]::Equals(([string]$entry.Status), 'api_llm_runner_unconfigured', [System.StringComparison]::OrdinalIgnoreCase)) {
+            Set-WorkersManifestLifecycleCommand -Entry $entry -CommandName 'workers.start' -Status 'api_llm_runner_unconfigured'
+            $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status 'blocked' -Reason 'api_llm_runner_unconfigured')) | Out-Null
+            continue
+        }
+        if ([string]::Equals(([string]$entry.Status), 'antigravity_runner_unconfigured', [System.StringComparison]::OrdinalIgnoreCase)) {
+            Set-WorkersManifestLifecycleCommand -Entry $entry -CommandName 'workers.start' -Status 'antigravity_runner_unconfigured'
+            $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status 'blocked' -Reason 'antigravity_runner_unconfigured')) | Out-Null
             continue
         }
 
@@ -10924,7 +11002,11 @@ function Invoke-WorkersStart {
             }
         } catch {
             $reason = [string]$_.Exception.Message
-            $status = if ($reason -like 'worker launch approval mismatch:*') { 'blocked' } else { 'failed' }
+            $status = if (
+                $reason -like 'worker launch approval mismatch:*' -or
+                $reason -like 'api_llm_runner_unconfigured*' -or
+                $reason -like 'antigravity_runner_unconfigured*'
+            ) { 'blocked' } else { 'failed' }
             $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status $status -Reason $reason)) | Out-Null
         }
     }
@@ -18283,6 +18365,8 @@ function Invoke-ProviderSwitch {
         harness_availability       = [string]$effective.HarnessAvailability
         credential_requirements    = [string]$effective.CredentialRequirements
         execution_backend          = [string]$effective.ExecutionBackend
+        api_base_url               = [string]$effective.ApiBaseUrl
+        api_key_env                = [string]$effective.ApiKeyEnv
         runtime_requirements       = [string]$effective.RuntimeRequirements
         analysis_posture           = [string]$effective.AnalysisPosture
         source                     = [string]$effective.Source

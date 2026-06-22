@@ -17,11 +17,15 @@ $ErrorActionPreference = 'Stop'
 $scriptDir = $PSScriptRoot
 . "$scriptDir/settings.ps1"
 . "$scriptDir/pane-border.ps1"
+$script:winsmuxBin = Get-WinsmuxBin
+if (-not $script:winsmuxBin) {
+    throw (Get-WinsmuxOperatorNotFoundMessage)
+}
 
 function Invoke-OrchestraLayoutWinsmux {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
 
-    $output = Invoke-WinsmuxBridgeCommand -WinsmuxBin 'winsmux' -Arguments $Arguments 2>&1
+    $output = Invoke-WinsmuxBridgeCommand -WinsmuxBin $script:winsmuxBin -Arguments $Arguments 2>&1
     if ($LASTEXITCODE -ne 0) {
         $message = ($output | Out-String).Trim()
         if ([string]::IsNullOrWhiteSpace($message)) {
@@ -182,7 +186,7 @@ if ($newPaneId -notmatch '^%\d+$') {
     throw "winsmux new-window returned an unexpected pane id: '$newPaneId'."
 }
 
-if (-not (Set-OrchestraPaneBorderOptions -WindowId $newWindowId -WinsmuxBin 'winsmux')) {
+if (-not (Set-OrchestraPaneBorderOptions -WindowId $newWindowId -WinsmuxBin $script:winsmuxBin)) {
     Write-Warning "Could not enable pane border labels for window $newWindowId."
 }
 

@@ -9072,11 +9072,13 @@ exit /b __EXIT_CODE__
     function script:New-WorkersFakeAntigravityCli {
         param(
             [int]$ExitCode = 0,
-            [string]$OutputLine = 'fake-antigravity response'
+            [string]$OutputLine = 'fake-antigravity response',
+            [switch]$EmptyStdout
         )
 
         $fakeCli = Join-Path $script:workersTempRoot 'agy.cmd'
         $argsPath = Join-Path $script:workersTempRoot 'agy-args.txt'
+        $outputCommand = if ($EmptyStdout) { 'rem intentionally empty stdout' } else { "echo $OutputLine" }
 $content = @'
 @echo off
 if "%1"=="--help" (
@@ -9084,10 +9086,10 @@ if "%1"=="--help" (
   exit /b 0
 )
 echo %* > "__ARGS_PATH__"
-echo __OUTPUT_LINE__
+__OUTPUT_COMMAND__
 exit /b __EXIT_CODE__
 '@
-        $content.Replace('__EXIT_CODE__', [string]$ExitCode).Replace('__OUTPUT_LINE__', $OutputLine).Replace('__ARGS_PATH__', $argsPath) | Set-Content -Path $fakeCli -Encoding ASCII
+        $content.Replace('__EXIT_CODE__', [string]$ExitCode).Replace('__OUTPUT_COMMAND__', $outputCommand).Replace('__ARGS_PATH__', $argsPath) | Set-Content -Path $fakeCli -Encoding ASCII
         $env:WINSMUX_ANTIGRAVITY_CLI = $fakeCli
         return $fakeCli
     }
@@ -10859,8 +10861,10 @@ agent-slots:
                         agent = 'openrouter'
                         model = 'z-ai/glm-5.2'
                         model_source = 'operator-override'
+                        reasoning_effort = 'provider-default'
                         prompt_transport = 'file'
                         auth_mode = 'api-key-env'
+                        credential_requirements = 'runtime-owned-api-key'
                         execution_backend = 'openai-compatible-chat-completions'
                         analysis_posture = 'hosted-api-worker'
                         auto_launch = $false
@@ -10919,8 +10923,10 @@ agent-slots:
                         agent = 'antigravity'
                         model = 'gemini-3.5-flash'
                         model_source = 'operator-override'
+                        reasoning_effort = 'provider-default'
                         prompt_transport = 'file'
                         auth_mode = 'antigravity-official-cli'
+                        credential_requirements = 'local-cli-owned'
                         execution_backend = 'antigravity-cli-print'
                         analysis_posture = 'read-write-worker'
                         auto_launch = $false
@@ -11672,6 +11678,30 @@ worker-backend: colab_cli
 
         $responsePath = Join-Path $script:workersTempRoot ($payload.response -replace '/', '\')
         (Get-Content -LiteralPath $responsePath -Raw -Encoding UTF8) | Should -Match 'fake-antigravity response'
+    }
+
+    It 'marks antigravity exec with empty stdout as failed evidence' {
+        Write-WorkersAntigravityProjectConfig
+        New-WorkersFakeAntigravityCli -EmptyStdout | Out-Null
+        'Summarize the repository status.' | Set-Content -Path (Join-Path $script:workersTempRoot 'prompt.md') -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers exec w1 --script prompt.md --run-id agy-empty-stdout --json --project-dir $script:workersTempRoot 2>&1
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+
+        $payload.status | Should -Be 'failed'
+        $payload.reason | Should -Be 'antigravity_empty_stdout'
+        $payload.backend | Should -Be 'antigravity'
+        $payload.process | Should -Be 'completed'
+        $payload.exit_code | Should -Be 0
+        $payload.response | Should -Be ''
+        $payload.prompt_value_output | Should -Be $false
+        ($output | Out-String) | Should -Not -Match 'Summarize the repository status'
+
+        $logPath = Join-Path $script:workersTempRoot ($payload.stdout_log -replace '/', '\')
+        $logText = Get-Content -LiteralPath $logPath -Raw -Encoding UTF8
+        $logText | Should -Match 'antigravity_empty_stdout'
+        $logText | Should -Match 'completed without stdout'
+        $logText | Should -Not -Match 'Summarize the repository status'
     }
 
     It 'accepts task-json as the antigravity exec input contract' {
@@ -17523,6 +17553,28 @@ agent-slots:
         [string]::Join("`n", @($reasoningOutput)) | Should -Match "does not support reasoning_effort 'max'"
         $registryPath = Join-Path $script:providerSwitchTempRoot '.winsmux\provider-registry.json'
         Test-Path $registryPath | Should -BeFalse
+    }
+
+    It 'uses the built-in OpenRouter capability without a private capability file entry' {
+        Push-Location $script:providerSwitchTempRoot
+        try {
+            $output = & pwsh -NoProfile -File $script:winsmuxCoreRawPath provider-switch worker-1 --agent openrouter --model z-ai/glm-5.2 --model-source provider-api --reasoning-effort provider-default --prompt-transport file --auth-mode api-key-env --json
+        } finally {
+            Pop-Location
+        }
+
+        $result = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $result.slot_id | Should -Be 'worker-1'
+        $result.agent | Should -Be 'openrouter'
+        $result.model | Should -Be 'z-ai/glm-5.2'
+        $result.model_source | Should -Be 'provider-api'
+        $result.reasoning_effort | Should -Be 'provider-default'
+        $result.capability_adapter | Should -Be 'openai-compatible'
+        $result.execution_backend | Should -Be 'openai-compatible-chat-completions'
+        $result.api_base_url | Should -Be 'https://openrouter.ai/api/v1'
+        $result.api_key_env | Should -Be 'OPENROUTER_API_KEY'
+        $result.supports_structured_result | Should -Be $true
+        $result.supports_file_edit | Should -Be $false
     }
 
     It 'allows provider-switch to repair stale provider selector overrides' {

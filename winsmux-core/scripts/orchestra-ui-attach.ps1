@@ -419,6 +419,16 @@ function Get-OrchestraAttachEntryArgumentList {
     return @('-NoLogo', '-NoExit', '-File', $attachEntryScriptPath)
 }
 
+function Test-OrchestraTruthyEnvValue {
+    param([AllowEmptyString()][string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return $false
+    }
+
+    return ($Value.Trim().ToLowerInvariant() -in @('1', 'true', 'yes', 'on'))
+}
+
 function ConvertTo-OrchestraQuotedArgument {
     param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
 
@@ -572,8 +582,14 @@ function Get-OrchestraVisibleAttachHostCandidates {
     $powerShellPath = ''
     $powerShellReason = 'ready'
     $powerShellAvailable = $true
+    if (Test-OrchestraTruthyEnvValue -Value $env:WINSMUX_ORCHESTRA_DISABLE_POWERSHELL_ATTACH) {
+        $powerShellAvailable = $false
+        $powerShellReason = 'powershell_attach_disabled'
+    }
     try {
-        $powerShellPath = Get-OrchestraPowerShellPath
+        if ($powerShellAvailable) {
+            $powerShellPath = Get-OrchestraPowerShellPath
+        }
     } catch {
         $powerShellAvailable = $false
         $powerShellReason = $_.Exception.Message
@@ -819,6 +835,50 @@ function Invoke-OrchestraVisibleAttachRequest {
     }
 
     $ProjectDir = [System.IO.Path]::GetFullPath($ProjectDir)
+    if ([string]::Equals([string]$env:WINSMUX_ORCHESTRA_ATTACH_MODE, 'desktop-app', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $desktopPid = 0
+        [void][int]::TryParse(([string]$env:WINSMUX_DESKTOP_APP_PID), [ref]$desktopPid)
+        $desktopAlive = $desktopPid -gt 0 -and (Test-OrchestraProcessAlive -ProcessId $desktopPid)
+        $reason = if ($desktopAlive) {
+            "Desktop app PID $desktopPid is the visible attach host; skipped terminal attach."
+        } else {
+            "WINSMUX_ORCHESTRA_ATTACH_MODE=desktop-app requires a live WINSMUX_DESKTOP_APP_PID."
+        }
+        $stateProperties = @{
+            session_name        = $SessionName
+            winsmux_path        = [string]$WinsmuxPathForAttach
+            project_dir         = $ProjectDir
+            requested_at        = (Get-Date).ToString('o')
+            attach_request_id   = [guid]::NewGuid().ToString('N')
+            attach_process_id   = $desktopPid
+            attach_status       = if ($desktopAlive) { 'attach_confirmed' } else { 'attach_failed' }
+            attach_confirmed_at = if ($desktopAlive) { (Get-Date).ToString('o') } else { '' }
+            client_count_seen   = 0
+            attached_client_count = 0
+            attached_client_snapshot = @()
+            ui_attach_source    = 'desktop-app'
+            ui_host_kind        = 'desktop-app'
+            error               = $reason
+            attach_adapter_trace = @()
+        }
+        $state = Write-OrchestraAttachState -SessionName $SessionName -Properties $stateProperties
+
+        return [PSCustomObject][ordered]@{
+            Attempted                = $true
+            Launched                 = $false
+            Attached                 = $desktopAlive
+            AttachedClientCount      = 0
+            Status                   = if ($desktopAlive) { 'attach_confirmed' } else { 'attach_failed' }
+            Reason                   = $reason
+            Path                     = ''
+            Source                   = 'desktop-app'
+            attach_request_id        = (Get-OrchestraAttachRequestId -State $state)
+            attached_client_snapshot = @()
+            ui_host_kind             = 'desktop-app'
+            attach_adapter_trace     = @()
+        }
+    }
+
     $resolvedWinsmuxPath = [string]$WinsmuxPathForAttach
     if (-not [string]::IsNullOrWhiteSpace($resolvedWinsmuxPath) -and -not [System.IO.Path]::IsPathRooted($resolvedWinsmuxPath)) {
         $commandSource = Get-Command $resolvedWinsmuxPath -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue

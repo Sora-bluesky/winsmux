@@ -292,6 +292,130 @@ function Remove-OrchestraZombieProcesses {
     }
 }
 
+function Test-OrchestraSessionServerProcess {
+    param(
+        [AllowNull()]$Process,
+        [Parameter(Mandatory = $true)][string]$SessionName
+    )
+
+    if ($null -eq $Process) {
+        return $false
+    }
+
+    $processName = Get-OrchestraManagedProcessName -Name ([string]$Process.Name)
+    if ($processName -notin @('winsmux', 'psmux', 'pmux', 'tmux')) {
+        return $false
+    }
+
+    $commandLine = [string]$Process.CommandLine
+    if ([string]::IsNullOrWhiteSpace($commandLine)) {
+        return $false
+    }
+
+    if ($commandLine.IndexOf(' server', [System.StringComparison]::OrdinalIgnoreCase) -lt 0 -and
+        $commandLine.IndexOf('"server"', [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
+        return $false
+    }
+
+    foreach ($marker in @(
+        "-s $SessionName",
+        "-s `"$SessionName`"",
+        "-s '$SessionName'",
+        "--session $SessionName",
+        "--session `"$SessionName`"",
+        "--session '$SessionName'"
+    )) {
+        if ($commandLine.IndexOf($marker, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Remove-OrchestraSessionServerProcesses {
+    param(
+        [Parameter(Mandatory = $true)][string]$SessionName,
+        [Parameter(Mandatory = $true)][string]$WinsmuxBin,
+        [switch]$IncludeExpectedBinary,
+        [AllowNull()]$ProcessSnapshot = $null
+    )
+
+    $snapshot = if ($null -ne $ProcessSnapshot) { $ProcessSnapshot } else { Get-ProcessSnapshot }
+    $protectedIds = Get-AncestorProcessIds -Snapshot $snapshot -ProcessId $PID
+    if ($null -eq $protectedIds) {
+        $protectedIds = [System.Collections.Generic.HashSet[int]]::new()
+    }
+
+    $expectedWinsmuxPath = ''
+    if (-not [string]::IsNullOrWhiteSpace($WinsmuxBin)) {
+        try {
+            $expectedWinsmuxPath = [System.IO.Path]::GetFullPath($WinsmuxBin)
+        } catch {
+            $expectedWinsmuxPath = [string]$WinsmuxBin
+        }
+    }
+
+    $serverProcesses = @(
+        $snapshot.Processes |
+            Where-Object { Test-OrchestraSessionServerProcess -Process $_ -SessionName $SessionName } |
+            Sort-Object -Property ProcessId
+    )
+    $killed = [System.Collections.Generic.List[object]]::new()
+
+    foreach ($serverProcess in $serverProcesses) {
+        $serverPid = [int]$serverProcess.ProcessId
+        if ($protectedIds.Contains($serverPid)) {
+            continue
+        }
+
+        $actualPath = ''
+        if ($null -ne $serverProcess.PSObject.Properties['ExecutablePath']) {
+            $actualPath = [string]$serverProcess.ExecutablePath
+        }
+        $matchesExpectedPath = -not [string]::IsNullOrWhiteSpace($actualPath) -and
+            -not [string]::IsNullOrWhiteSpace($expectedWinsmuxPath) -and
+            [string]::Equals($actualPath, $expectedWinsmuxPath, [System.StringComparison]::OrdinalIgnoreCase)
+        if ($matchesExpectedPath -and -not $IncludeExpectedBinary) {
+            continue
+        }
+
+        $idsToStop = @(Get-DescendantProcessIds -Snapshot $snapshot -RootProcessIds @($serverPid)) |
+            Sort-Object -Descending
+        foreach ($processId in $idsToStop) {
+            if ($protectedIds.Contains([int]$processId)) {
+                continue
+            }
+            if (-not $snapshot.ById.ContainsKey([int]$processId)) {
+                continue
+            }
+
+            try {
+                Stop-Process -Id ([int]$processId) -Force -ErrorAction Stop
+                $process = $snapshot.ById[[int]$processId]
+                $killed.Add($process) | Out-Null
+                Write-Host ("Preflight: killed stale session process {0} ({1}) for {2}" -f $process.Name, [int]$processId, $SessionName)
+                if (Get-Command Write-WinsmuxLog -ErrorAction SilentlyContinue) {
+                    Write-WinsmuxLog -Level INFO -Event 'preflight.session_process.killed' -Message ("Killed stale session process {0} ({1}) for {2}." -f $process.Name, [int]$processId, $SessionName) -Data @{
+                        process_name = [string]$process.Name
+                        process_id = [int]$processId
+                        session_name = $SessionName
+                        executable_path = $actualPath
+                        expected_winsmux = $expectedWinsmuxPath
+                    } | Out-Null
+                }
+            } catch {
+                Write-Warning ("Preflight: failed to kill stale session process {0}: {1}" -f [int]$processId, $_.Exception.Message)
+            }
+        }
+    }
+
+    return [PSCustomObject]@{
+        SessionProcesses = @($serverProcesses)
+        Killed           = @($killed)
+    }
+}
+
 function Test-OrchestraWarmProcess {
     param([AllowNull()]$Process)
 

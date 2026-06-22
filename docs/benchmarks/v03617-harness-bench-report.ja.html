@@ -151,29 +151,29 @@
   <header>
     <div class="header-inner">
       <h1>winsmux v0.36.17 Harness Bench Report</h1>
-      <p class="lead">主要オープンウェイトLLMを worker pane として扱えるかを、winsmux の実行経路で確認した。正式採点は Harness Bench 27 task を同一条件で通した OpenRouter cohort を対象にし、ローカルCLI 4モデルは開始条件を満たさなかったため採点から分けた。</p>
-      <p class="meta">作成: 2026-06-21 JST / 主run: <code>v03617-openrouter-full4-20260621t064138z</code> / pack: <code>winsmux-cli-bakeoff-v1</code> / task: 27 / timeout: 3600秒</p>
+      <p class="lead">このHTMLは完成版ではない。v0.36.17 の正式レポートは、winsmuxアプリの operator pane が6つの worker pane を実際に管理し、全workerが同じ Harness Bench task set を走らせた結果から作り直す。</p>
+      <p class="meta">更新: 2026-06-21 JST / 状態: 再測定待ち / 既存run: <code>v03617-openrouter-full4-20260621t064138z</code> はwinsmux worker pane外で取得した部分証跡 / pack: <code>winsmux-cli-bakeoff-v1</code></p>
     </div>
   </header>
 
   <main>
     <section>
-      <h2>結論</h2>
+      <h2>現在の判断</h2>
       <div class="grid-2">
         <div class="card">
-          <span class="badge good">OpenRouter / GLM-5.2</span>
-          <div class="metric"><strong>27/27</strong><span>completed</span></div>
-          <div class="bar"><i style="--w:100%"></i></div>
-          <p>GLM-5.2 は主runで全27 taskを完了した。Harness Bench summary の軸別平均は98.15、最低hidden scoreは75。</p>
+          <span class="badge warn">正式採点は未完了</span>
+          <div class="metric"><strong>3/7</strong><span>source tasks complete</span></div>
+          <div class="bar"><i style="--w:43%"></i></div>
+          <p>正本ロードマップは43%。OpenRouter worker setup、model picker、Harness Bench契約は完了。6ペイン実測とレポート再作成は未完了。</p>
         </div>
         <div class="card">
-          <span class="badge good">OpenRouter / Kimi K2.7 Code</span>
-          <div class="metric"><strong>27/27</strong><span>completed</span></div>
-          <div class="bar"><i style="--w:100%"></i></div>
-          <p>Kimi K2.7 Code も主runで全27 taskを完了した。Harness Bench summary の軸別平均と最低hidden scoreはどちらも100。</p>
+          <span class="badge warn">既存runの扱い</span>
+          <div class="metric"><strong>2/6</strong><span>workers only</span></div>
+          <div class="bar"><i style="--w:33%"></i></div>
+          <p><code>v03617-openrouter-full4</code> は Kimi K2.7 Code と GLM-5.2 だけの部分証跡。winsmux worker pane上の6ペイン比較ではないため、正式結果には使わない。</p>
         </div>
       </div>
-      <p class="note">この結果はモデル単体の一般ランキングではない。winsmux の worker pane、<code>api_llm</code> adapter、OpenRouter、固定task pack、除外ルールを含む実行証跡として読む。</p>
+      <p class="note">正式版では、6 worker の pass rate、median wall time、pass rate と wall time の散布図、difficulty別成功率を、winsmux自身の実測値から生成する。</p>
     </section>
 
     <section class="span-8">
@@ -182,7 +182,7 @@
         <thead><tr><th>項目</th><th>内容</th></tr></thead>
         <tbody>
           <tr><td>方式</td><td>Harness Bench 型の固定task pack。27 task、hidden-check contract、sanitized workspace、同一timeout、operator非採点。</td></tr>
-          <tr><td>実行単位</td><td><code>worker-5</code> Kimi K2.7 Code と <code>worker-6</code> GLM-5.2 を OpenRouter / <code>api_llm</code> worker として実行。</td></tr>
+          <tr><td>実行単位</td><td>正式版では <code>worker-1</code> から <code>worker-6</code> までをwinsmuxアプリ内のworker paneとして起動し、同じtask setで測る。既存のOpenRouter 2 worker runは参考証跡として残し、正式図表は6 worker paneで取り直した実測値から作る。</td></tr>
           <tr><td>timeout</td><td>benchmark timeout 3600秒、API request timeout 300秒。</td></tr>
           <tr><td>出力上限</td><td><code>max_tokens=4096</code>。run manifestに記録済み。</td></tr>
           <tr><td>公開境界</td><td>API key、provider request id、raw prompt、local username、未伏せ字transcriptは公開対象外。</td></tr>
@@ -197,23 +197,23 @@
     </section>
 
     <section>
-      <h2>6 Worker Plan と判定</h2>
+      <h2>6 Worker Plan と未完了項目</h2>
       <table>
         <thead><tr><th>pane</th><th>予定モデル</th><th>役割</th><th>判定</th><th>根拠</th></tr></thead>
         <tbody>
           <tr><td class="mono">operator</td><td>なし</td><td>実行管理</td><td><span class="badge good">対象外</span></td><td>採点対象ではなく、run controlのみ。</td></tr>
-          <tr><td class="mono">worker-1</td><td>Claude Code / Claude Opus 4.8</td><td>design-review</td><td><span class="badge warn">除外</span></td><td><code>claude_auth_or_api_error</code>。preflightで認証/APIエラー。</td></tr>
-          <tr><td class="mono">worker-2</td><td>Codex / <code>gpt-5.5</code></td><td>implementation-review</td><td><span class="badge warn">除外</span></td><td><code>codex_probe_failed</code>。疎通確認がtimeout。</td></tr>
-          <tr><td class="mono">worker-3</td><td>Antigravity CLI / Gemini 3.5 Flash High</td><td>speed-parallelism</td><td><span class="badge warn">除外</span></td><td><code>antigravity_empty_stdout</code>。CLIは終了したが標準出力が空。</td></tr>
-          <tr><td class="mono">worker-4</td><td>Antigravity CLI / Gemini 3.5 Flash Medium</td><td>speed-parallelism-medium</td><td><span class="badge warn">除外</span></td><td><code>antigravity_empty_stdout</code>。CLIは終了したが標準出力が空。</td></tr>
-          <tr><td class="mono">worker-5</td><td>OpenRouter / Kimi K2.7 Code</td><td>open-weight code worker</td><td><span class="badge good">採点</span></td><td>主runで27/27完了。軸別平均100。</td></tr>
-          <tr><td class="mono">worker-6</td><td>OpenRouter / GLM-5.2</td><td>open-weight code worker</td><td><span class="badge good">採点</span></td><td>主runで27/27完了。軸別平均98.15。</td></tr>
+          <tr><td class="mono">worker-1</td><td>Claude Code / Claude Opus 4.8</td><td>design-review</td><td><span class="badge warn">未測定</span></td><td>winsmuxアプリ内の worker pane として Harness Bench を実行する。</td></tr>
+          <tr><td class="mono">worker-2</td><td>Codex / <code>gpt-5.5</code></td><td>implementation-review</td><td><span class="badge warn">未測定</span></td><td>winsmuxアプリ内の worker pane として Harness Bench を実行する。</td></tr>
+          <tr><td class="mono">worker-3</td><td>Antigravity CLI / Gemini 3.5 Flash High</td><td>speed-parallelism</td><td><span class="badge warn">未測定</span></td><td>winsmuxアプリ内の worker pane として Harness Bench を実行する。</td></tr>
+          <tr><td class="mono">worker-4</td><td>Grok Build / Grok 4.3</td><td>openrouter-grok-4-3</td><td><span class="badge warn">未測定</span></td><td>winsmuxアプリ内の worker pane として Harness Bench を実行する。</td></tr>
+          <tr><td class="mono">worker-5</td><td>OpenRouter / Kimi K2.7 Code</td><td>open-weight code worker</td><td><span class="badge warn">未測定</span></td><td>winsmuxアプリ内の <code>api_llm</code> worker pane として Harness Bench を実行する。</td></tr>
+          <tr><td class="mono">worker-6</td><td>OpenRouter / GLM-5.2</td><td>open-weight code worker</td><td><span class="badge warn">未測定</span></td><td>winsmuxアプリ内の <code>api_llm</code> worker pane として Harness Bench を実行する。</td></tr>
         </tbody>
       </table>
     </section>
 
     <section>
-      <h2>主run 採点表</h2>
+      <h2>OpenRouter 部分証跡</h2>
       <table>
         <thead><tr><th>モデル</th><th>完了</th><th>失敗</th><th>完了率</th><th>Harness平均</th><th>最低hidden score</th><th>総時間</th><th>中央値</th><th>総token</th><th>token中央値</th></tr></thead>
         <tbody>
@@ -221,7 +221,7 @@
           <tr><td>OpenRouter / Kimi K2.7 Code</td><td>27</td><td>0</td><td>100.0%</td><td>100.00</td><td>100</td><td>1,092.7s</td><td>36.537s</td><td>39,076</td><td>1,374</td></tr>
         </tbody>
       </table>
-      <p class="small">完了率は <code>completed / attempted</code>。Harness平均は <code>summarize-cli-bakeoff.ps1</code> の軸別score平均。operator は分母に含めない。raw response と provider request id は公開しない。</p>
+      <p class="small">この表は正式な6ペイン比較ではない。6ペイン実測後、同じ表は全workerを対象に再生成する。</p>
     </section>
 
     <section class="span-6">
@@ -244,42 +244,38 @@
     </section>
 
     <section>
-      <h2>Harness Bench 参考図</h2>
-      <p>比較設計は、逆瀬川ちゃん氏の Harness Bench 記事を参考にした。以下の5図は、元記事の図を出典付きで参照している。</p>
+      <h2>図2〜図5の再作成仕様</h2>
+      <p>外部記事の図を貼っても、winsmux のベンチ結果は説明できない。正式版では、以下の4図を6 workerの実測値から生成する。</p>
       <div class="grid-2">
-        <figure>
-          <img src="https://nyosegawa.com/img/harness-bench/matrix-design.png" alt="HarnessBenchの実験設計" loading="lazy">
-          <figcaption>図1: 実験設計。9 repo、27 issue、14条件という比較単位の考え方。</figcaption>
-        </figure>
-        <figure>
-          <img src="https://nyosegawa.com/img/harness-bench/pass-rate.png" alt="条件別Pass Rate" loading="lazy">
-          <figcaption>図2: 条件別Pass Rate。成功率だけで強弱を断定しない読み方の参考。</figcaption>
-        </figure>
-        <figure>
-          <img src="https://nyosegawa.com/img/harness-bench/wall-time.png" alt="条件別Median Wall Time" loading="lazy">
-          <figcaption>図3: Median Wall Time。速度を評価軸に入れる根拠。</figcaption>
-        </figure>
-        <figure>
-          <img src="https://nyosegawa.com/img/harness-bench/pass-time-frontier.png" alt="Pass RateとWall Timeの関係" loading="lazy">
-          <figcaption>図4: Pass Rate と Wall Time の関係。成功率と時間を同時に見る。</figcaption>
-        </figure>
-        <figure>
-          <img src="https://nyosegawa.com/img/harness-bench/difficulty.png" alt="Difficulty別の成功率" loading="lazy">
-          <figcaption>図5: Difficulty別成功率。難度ごとの落ち方を見るための参考。</figcaption>
-        </figure>
+        <div class="card">
+          <h3>図2: worker別 Pass Rate</h3>
+          <p>縦軸に6 worker、横軸に成功率を置く。添付例のような横棒グラフで、モデル名、CLI、effort、成功率を1行で読む。</p>
+        </div>
+        <div class="card">
+          <h3>図3: Median Wall Time</h3>
+          <p>同じ6 workerを中央値の所要時間で並べる。速いほど左、遅いほど右に見える形にし、成功率だけで判断しない。</p>
+        </div>
+        <div class="card">
+          <h3>図4: Pass Rate x Median Wall Time</h3>
+          <p>横軸を時間、縦軸を成功率にした散布図にする。右上ほど成功率が高く、左ほど速いという読み方を明記する。</p>
+        </div>
+        <div class="card">
+          <h3>図5: Difficulty別成功率</h3>
+          <p>low、mid、high の難度別に成功率を並べる。全体平均で隠れる弱点が見えるよう、workerごとの横棒を3分割する。</p>
+        </div>
       </div>
     </section>
 
     <section class="span-8">
       <h2>解釈</h2>
-      <p>OpenRouter cohortでは、GLM-5.2 と Kimi K2.7 Code はどちらも主runで全taskを完了した。速度とtoken量はGLM-5.2のほうが軽い。一方で、Harness平均はKimi K2.7 Codeが100、GLM-5.2が98.15で、GLMは2 taskだけhidden checkが3/4だった。</p>
-      <p>ローカルCLI 4モデルは「低スコア」ではなく「開始条件未達」として分ける。認証、timeout、空stdoutは、同じHarness Bench分母に混ぜるとモデル性能と実行環境問題を混同するため、除外理由付きで残す。</p>
+      <p>現時点で言えるのは、OpenRouter 2 worker の部分証跡があることだけである。6ペイン比較の結論、勝者、速度差、難度別の強弱はまだ判断しない。</p>
+      <p>ローカルCLI系とOpenRouter系の全6モデルを、アプリ内の worker pane として起動して同じtask setを実行する。認証、timeout、空stdout、API応答不正が出た場合も、operatorが除外理由を記録し、図表では「失敗」ではなく「除外」として分ける。</p>
     </section>
 
     <section class="span-4">
       <h2>限界</h2>
-      <p>今回の task pack は winsmux の worker pane、公開面、<code>api_llm</code>、release gate に寄せた27 taskであり、元記事のOSS 9 repo taskとは同一ではない。</p>
-      <p>したがって、結果は winsmux の worker選定証跡として扱い、一般的なコーディングモデルランキングにはしない。</p>
+      <p>正式結果はまだない。現在のHTMLを公開ベンチレポートとして読ませてはいけない。</p>
+      <p>次の版では、winsmux の worker選定証跡として読みやすくする。一般的なコーディングモデルランキングとは分ける。</p>
     </section>
 
     <section>
@@ -288,9 +284,9 @@
         <thead><tr><th>手順</th><th>コマンドまたは証跡</th></tr></thead>
         <tbody>
           <tr><td>事前確認</td><td><code>pwsh -NoProfile -File .\scripts\test-cli-bakeoff-preflight.ps1 -Json</code></td></tr>
-          <tr><td>OpenRouter測定</td><td><code>pwsh -NoProfile -File .\scripts\run-cli-bakeoff-openrouter.ps1 -RunId v03617-openrouter-full4-20260621t064138z -Json</code></td></tr>
-          <tr><td>ローカルCLI readiness</td><td><code>pwsh -NoProfile -File .\scripts\run-cli-bakeoff-local-workers.ps1 -RunId v03617-local-readiness-20260621152158 -TaskLimit 1 -Json</code></td></tr>
-          <tr><td>主run証跡</td><td><code>.winsmux/evidence/cli-bakeoff/v03617-openrouter-full4-20260621t064138z</code></td></tr>
+          <tr><td>必要な測定</td><td>winsmuxアプリの operator pane から6 worker paneを起動し、同じ Harness Bench task set を実行する。</td></tr>
+          <tr><td>既存の部分証跡</td><td><code>.winsmux/evidence/cli-bakeoff/v03617-openrouter-full4-20260621t064138z</code> は参考のみ。正式図表の入力にしない。</td></tr>
+          <tr><td>参考run</td><td><code>v03617-openrouter-visible-rerun-20260621t113611z</code> と <code>v03617-openrouter-visible-full-20260621t113822z</code> はwinsmux worker pane外の2 worker runのため、正式図表ではなく参考証跡として扱う。</td></tr>
         </tbody>
       </table>
     </section>
