@@ -109,6 +109,31 @@ function Assert-BridgeNoRetiredOperatorGlobalSettings {
 }
 
 if (-not (Get-Command Get-WinsmuxBin -ErrorAction SilentlyContinue)) {
+    function Get-BridgeCommandExecutableName {
+        param([AllowNull()]$Command)
+
+        if ($null -eq $Command) {
+            return ''
+        }
+
+        $pathProperty = $Command.PSObject.Properties['Path']
+        if ($null -ne $pathProperty -and -not [string]::IsNullOrWhiteSpace([string]$pathProperty.Value)) {
+            return [string]$pathProperty.Value
+        }
+
+        $sourceProperty = $Command.PSObject.Properties['Source']
+        if ($null -ne $sourceProperty -and -not [string]::IsNullOrWhiteSpace([string]$sourceProperty.Value)) {
+            return [string]$sourceProperty.Value
+        }
+
+        $nameProperty = $Command.PSObject.Properties['Name']
+        if ($null -ne $nameProperty -and -not [string]::IsNullOrWhiteSpace([string]$nameProperty.Value)) {
+            return [string]$nameProperty.Value
+        }
+
+        return ''
+    }
+
     function Get-WinsmuxBin {
         if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_BIN)) {
             $configuredPath = [string]$env:WINSMUX_BIN
@@ -118,11 +143,10 @@ if (-not (Get-Command Get-WinsmuxBin -ErrorAction SilentlyContinue)) {
 
             $configuredCommand = Get-Command $configuredPath -ErrorAction SilentlyContinue | Select-Object -First 1
             if ($null -ne $configuredCommand) {
-                if ($configuredCommand.Path) {
-                    return $configuredCommand.Path
+                $configuredExecutable = Get-BridgeCommandExecutableName -Command $configuredCommand
+                if (-not [string]::IsNullOrWhiteSpace($configuredExecutable)) {
+                    return $configuredExecutable
                 }
-
-                return $configuredCommand.Name
             }
 
             throw "WINSMUX_BIN points to a missing winsmux executable: $configuredPath"
@@ -141,11 +165,10 @@ if (-not (Get-Command Get-WinsmuxBin -ErrorAction SilentlyContinue)) {
         foreach ($candidate in @('winsmux', 'pmux', 'tmux')) {
             $command = Get-Command $candidate -ErrorAction SilentlyContinue | Select-Object -First 1
             if ($null -ne $command) {
-                if ($command.Path) {
-                    return $command.Path
+                $executable = Get-BridgeCommandExecutableName -Command $command
+                if (-not [string]::IsNullOrWhiteSpace($executable)) {
+                    return $executable
                 }
-
-                return $command.Name
             }
         }
 

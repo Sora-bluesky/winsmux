@@ -2344,8 +2344,10 @@ if ($MyInvocation.InvocationName -ne '.') {
         $deferPaneStart = Test-OrchestraPaneDeferredStart -Label $label -Role $canonicalRole -LayoutSettings $layoutSettings
         $deferredPaneStatus = 'deferred_start'
         $colabSessionEntry = $null
-        $apiLlmPaneStartDeferred = $false
-        $antigravityPaneStartDeferred = $false
+        $apiLlmPaneStartDeferred = [string]::Equals(([string]$slotAgentConfig.WorkerBackend), 'api_llm', [System.StringComparison]::OrdinalIgnoreCase) -and
+            (-not [string]::Equals(([string]$slotAgentConfig.CapabilityAdapter), 'openai-compatible', [System.StringComparison]::OrdinalIgnoreCase))
+        $antigravityPaneStartDeferred = [string]::Equals(([string]$slotAgentConfig.WorkerBackend), 'antigravity', [System.StringComparison]::OrdinalIgnoreCase) -and
+            (-not [string]::Equals(([string]$slotAgentConfig.CapabilityAdapter), 'antigravity', [System.StringComparison]::OrdinalIgnoreCase))
         if ($apiLlmPaneStartDeferred) {
             $deferPaneStart = $true
             $deferredPaneStatus = 'api_llm_runner_unconfigured'

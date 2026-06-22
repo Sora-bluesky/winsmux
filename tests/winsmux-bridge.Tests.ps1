@@ -8821,10 +8821,22 @@ panes:
 Describe 'orchestra layout script' {
     BeforeAll {
         $script:orchestraLayoutPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\orchestra-layout.ps1'
+        $script:previousWinsmuxBinForLayout = $env:WINSMUX_BIN
     }
 
     BeforeEach {
         Mock Start-Sleep { }
+        $env:WINSMUX_BIN = 'winsmux'
+    }
+
+    AfterEach {
+        if ($null -ne $script:previousWinsmuxBinForLayout) {
+            $env:WINSMUX_BIN = $script:previousWinsmuxBinForLayout
+        } else {
+            Remove-Item Env:\WINSMUX_BIN -ErrorAction SilentlyContinue
+        }
+
+        Remove-Item Function:\global:winsmux -ErrorAction SilentlyContinue
     }
 
     It 'creates a single labeled pane through the orchestra wrapper' {
