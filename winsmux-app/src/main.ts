@@ -619,6 +619,7 @@ let statusBarDogfoodRecorded = false;
 let statusBarDogfoodRecording = false;
 let activeSourceFilter: SourceFilter = "all";
 let activeTimelineFilter: TimelineFilter = "all";
+let timelineFeedVisible = false;
 let commandBarOpen = false;
 let commandBarQuery = "";
 let selectedCommandIndex = 0;
@@ -1433,7 +1434,7 @@ const runtimeModelCatalog: RuntimeModelCatalogEntry[] = [
     reasoningEffort: "provider-default",
     promptTransport: "file",
     authMode: "antigravity-official-cli",
-    requiredBackend: "agent-cli",
+    requiredBackend: "antigravity",
     status: "selectable",
     family: "agent-arena",
     speed: "fast",
@@ -1456,7 +1457,7 @@ const runtimeModelCatalog: RuntimeModelCatalogEntry[] = [
     reasoningEffort: "provider-default",
     promptTransport: "file",
     authMode: "antigravity-official-cli",
-    requiredBackend: "agent-cli",
+    requiredBackend: "antigravity",
     status: "selectable",
     family: "agent-arena",
     speed: "fast",
@@ -1479,7 +1480,7 @@ const runtimeModelCatalog: RuntimeModelCatalogEntry[] = [
     reasoningEffort: "provider-default",
     promptTransport: "file",
     authMode: "antigravity-official-cli",
-    requiredBackend: "agent-cli",
+    requiredBackend: "antigravity",
     status: "selectable",
     family: "agent-arena",
     speed: "fast",
@@ -1502,7 +1503,7 @@ const runtimeModelCatalog: RuntimeModelCatalogEntry[] = [
     reasoningEffort: "provider-default",
     promptTransport: "file",
     authMode: "antigravity-official-cli",
-    requiredBackend: "agent-cli",
+    requiredBackend: "antigravity",
     status: "selectable",
     family: "winsmux-local",
     speed: "balanced",
@@ -1525,7 +1526,7 @@ const runtimeModelCatalog: RuntimeModelCatalogEntry[] = [
     reasoningEffort: "provider-default",
     promptTransport: "file",
     authMode: "antigravity-official-cli",
-    requiredBackend: "agent-cli",
+    requiredBackend: "antigravity",
     status: "selectable",
     family: "winsmux-local",
     speed: "balanced",
@@ -1548,7 +1549,7 @@ const runtimeModelCatalog: RuntimeModelCatalogEntry[] = [
     reasoningEffort: "provider-default",
     promptTransport: "file",
     authMode: "antigravity-official-cli",
-    requiredBackend: "agent-cli",
+    requiredBackend: "antigravity",
     status: "selectable",
     family: "winsmux-local",
     speed: "balanced",
@@ -1571,7 +1572,7 @@ const runtimeModelCatalog: RuntimeModelCatalogEntry[] = [
     reasoningEffort: "provider-default",
     promptTransport: "file",
     authMode: "antigravity-official-cli",
-    requiredBackend: "agent-cli",
+    requiredBackend: "antigravity",
     status: "selectable",
     family: "winsmux-local",
     speed: "balanced",
@@ -1594,7 +1595,7 @@ const runtimeModelCatalog: RuntimeModelCatalogEntry[] = [
     reasoningEffort: "provider-default",
     promptTransport: "file",
     authMode: "antigravity-official-cli",
-    requiredBackend: "agent-cli",
+    requiredBackend: "antigravity",
     status: "selectable",
     family: "winsmux-local",
     speed: "balanced",
@@ -1618,7 +1619,7 @@ const runtimeModelCatalog: RuntimeModelCatalogEntry[] = [
     promptTransport: "file",
     authMode: "api-key-env",
     requiredEnv: "OPENROUTER_API_KEY",
-    requiredBackend: "agent-cli",
+    requiredBackend: "api_llm",
     status: "selectable",
     family: "code-arena",
     speed: "hosted",
@@ -1665,7 +1666,7 @@ const runtimeModelCatalog: RuntimeModelCatalogEntry[] = [
     promptTransport: "file",
     authMode: "api-key-env",
     requiredEnv: "OPENROUTER_API_KEY",
-    requiredBackend: "agent-cli",
+    requiredBackend: "api_llm",
     status: "selectable",
     family: "agent-arena",
     speed: "hosted",
@@ -8689,7 +8690,7 @@ function readStoredShellPreferences(): ShellPreferenceState | null {
         ? parsed.agentVaultOpen
         : false;
     const workbenchOpen = typeof parsed.workbenchOpen === "boolean" ? parsed.workbenchOpen : true;
-    const workerStatusStripVisible = typeof parsed.workerStatusStripVisible === "boolean" ? parsed.workerStatusStripVisible : false;
+    const workerStatusStripVisible = false;
     const workbenchLayout = parsed.workbenchLayout === "3x2" || parsed.workbenchLayout === "focus" ? parsed.workbenchLayout : "2x2";
     const storedFocusedWorkbenchPaneId = typeof parsed.focusedWorkbenchPaneId === "string" && getWorkbenchPaneOrdinal(parsed.focusedWorkbenchPaneId) !== null
       ? parsed.focusedWorkbenchPaneId
@@ -9572,7 +9573,7 @@ function createRuntimeCatalogEntry(input: Partial<RuntimeModelCatalogEntry> & Pi
     reasoningEffort: "provider-default",
     promptTransport: "file",
     authMode: "provider-default",
-    requiredBackend: "agent-cli",
+    requiredBackend: "api_llm",
     status: "selectable",
     family: "winsmux-local",
     speed: "configured",
@@ -9610,7 +9611,7 @@ function createOpenRouterApiCatalogEntry(modelId: string, displayName: string): 
     promptTransport: "file",
     authMode: "api-key-env",
     requiredEnv: "OPENROUTER_API_KEY",
-    requiredBackend: "agent-cli",
+    requiredBackend: "api_llm",
     status: "selectable",
     family: "winsmux-local",
     speed: "provider-api",
@@ -10211,16 +10212,26 @@ function renderRuntimeAssignmentModeControls(japanese: boolean) {
   return wrapper;
 }
 
-function renderRuntimeWorkerDefaultControls(japanese: boolean) {
+function renderRuntimeWorkerDefaultControls(japanese: boolean, disabled = false) {
   const preference = getRuntimeWorkerDefaultPreference();
   const selectedProvider = preference.provider;
   const { entry: selectedEntry, entries } = getRuntimePreferenceSelectedEntry(preference);
   const panel = document.createElement("div");
-  panel.className = "runtime-model-shared-default";
+  panel.className = `runtime-model-shared-default ${disabled ? "is-inactive" : ""}`;
+  if (disabled) {
+    panel.setAttribute("aria-disabled", "true");
+  }
+  const disabledTitle = disabled
+    ? (japanese
+        ? "ペインごと設定を選択中のため、この共通既定モデルは使われません。"
+        : "This shared default is not used while per-pane mode is selected.")
+    : "";
 
   const header = document.createElement("div");
   header.className = "runtime-model-default-title";
-  header.textContent = japanese ? "全ペイン共通の既定モデル" : "Default model for all worker panes";
+  header.textContent = disabled
+    ? (japanese ? "全ペイン共通の既定モデル（現在は未使用）" : "Shared default model (not used now)")
+    : (japanese ? "全ペイン共通の既定モデル" : "Default model for all worker panes");
   panel.appendChild(header);
 
   const controls = document.createElement("div");
@@ -10237,6 +10248,7 @@ function renderRuntimeWorkerDefaultControls(japanese: boolean) {
       modelSource: "provider-default",
       reasoningEffort: "provider-default",
     }),
+    { disabled, title: disabledTitle },
   ));
 
   const modelOptions = entries.map((entry) => ({
@@ -10259,6 +10271,7 @@ function renderRuntimeWorkerDefaultControls(japanese: boolean) {
         reasoningEffort: normalizeRuntimeReasoningForEntry(selectedProvider, nextEntry, nextEntry.reasoningEffort),
       });
     },
+    { disabled, title: disabledTitle },
   ));
 
   controls.appendChild(createRuntimeSelect(
@@ -10268,12 +10281,17 @@ function renderRuntimeWorkerDefaultControls(japanese: boolean) {
     getRuntimeReasoningSelectOptionsForProvider(selectedProvider, japanese),
     japanese,
     (reasoningEffort) => updateRuntimeRoleDraft("worker", { reasoningEffort }),
+    { disabled, title: disabledTitle },
   ));
   panel.appendChild(controls);
 
   const note = document.createElement("div");
   note.className = "runtime-access-note";
-  note.textContent = runtimeAccessNote(preference, japanese);
+  note.textContent = disabled
+    ? (japanese
+        ? "現在はペインごと設定が有効です。各ワーカーペインの行でプロバイダー、モデル、思考量を選択してください。"
+        : "Per-pane mode is active. Choose provider, model, and effort from each worker pane row.")
+    : runtimeAccessNote(preference, japanese);
   panel.appendChild(note);
   return panel;
 }
@@ -10294,7 +10312,7 @@ function renderWorkerModelAssignmentPanel(japanese: boolean) {
 
   const assignmentMode = getRuntimeModelAssignmentModeDraft();
   panel.appendChild(renderRuntimeAssignmentModeControls(japanese));
-  panel.appendChild(renderRuntimeWorkerDefaultControls(japanese));
+  panel.appendChild(renderRuntimeWorkerDefaultControls(japanese, assignmentMode !== "shared"));
   if (assignmentMode === "shared") {
     const note = document.createElement("div");
     note.className = "runtime-model-empty";
@@ -12431,13 +12449,49 @@ function renderTimelineFilters() {
   syncActivityButtons();
 }
 
+function syncTimelineFeedVisibility() {
+  const panel = document.getElementById("conversation-panel");
+  const timeline = document.getElementById("conversation-timeline");
+  const toolbar = document.getElementById("timeline-toolbar");
+  panel?.classList.toggle("timeline-collapsed", !timelineFeedVisible);
+  if (timeline) {
+    timeline.hidden = !timelineFeedVisible;
+    timeline.setAttribute("aria-hidden", timelineFeedVisible ? "false" : "true");
+  }
+  if (toolbar) {
+    toolbar.hidden = !timelineFeedVisible;
+    toolbar.setAttribute("aria-hidden", timelineFeedVisible ? "false" : "true");
+  }
+}
+
+function setTimelineFeedVisible(visible: boolean) {
+  timelineFeedVisible = visible;
+  syncTimelineFeedVisibility();
+  if (visible) {
+    renderTimelineFilters();
+    renderRunSummary();
+    renderAgentWorkDashboard();
+    renderConversation(getConversationItems());
+  } else {
+    const selectedRunSummary = document.getElementById("selected-run-summary");
+    const agentWorkDashboard = document.getElementById("agent-work-dashboard");
+    if (selectedRunSummary) {
+      selectedRunSummary.hidden = true;
+    }
+    if (agentWorkDashboard) {
+      agentWorkDashboard.hidden = true;
+    }
+  }
+  renderFooterLane();
+}
+
 function renderRunSummary() {
   const root = document.getElementById("selected-run-summary");
   if (!root) {
     return;
   }
 
-  if (activeTimelineFilter !== "activity") {
+  if (!timelineFeedVisible || activeTimelineFilter !== "activity") {
     root.hidden = true;
     root.innerHTML = "";
     return;
@@ -12536,7 +12590,7 @@ function renderAgentWorkDashboard() {
     return;
   }
 
-  if (activeTimelineFilter !== "activity") {
+  if (!timelineFeedVisible || activeTimelineFilter !== "activity") {
     root.hidden = true;
     root.innerHTML = "";
     return;
@@ -12679,6 +12733,7 @@ function renderConversation(items: ConversationItem[]) {
   if (!timeline) {
     return;
   }
+  syncTimelineFeedVisibility();
 
   timeline.innerHTML = "";
   const visibleItems = getVisibleConversationItems(items);
@@ -13547,6 +13602,12 @@ function getTopMenuItems(menuId: string): TopMenuItem[] {
           action: () => setWorkerStatusStripVisible(!workerStatusStripVisible),
         },
         {
+          label: timelineFeedVisible
+            ? getLanguageText("Hide Event Feed", "イベント欄を隠す")
+            : getLanguageText("Show Event Feed", "イベント欄を表示"),
+          action: () => setTimelineFeedVisible(!timelineFeedVisible),
+        },
+        {
           label: terminalDrawerOpen
             ? getLanguageText("Hide Worker Panes", "ワーカーペインを隠す")
             : getLanguageText("Show Worker Panes", "ワーカーペインを表示"),
@@ -13584,6 +13645,10 @@ function getTopMenuItems(menuId: string): TopMenuItem[] {
 
 function setTimelineFilter(filter: TimelineFilter) {
   activeTimelineFilter = filter;
+  if (!timelineFeedVisible) {
+    timelineFeedVisible = true;
+    syncTimelineFeedVisibility();
+  }
   renderTimelineFilters();
   renderRunSummary();
   renderAgentWorkDashboard();
@@ -16591,7 +16656,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     preferredWideSidebarOpen = storedShellPreferences.wideSidebarOpen;
     preferredWideContextOpen = storedShellPreferences.wideContextOpen;
     agentVaultOpen = storedShellPreferences.agentVaultOpen;
-    workerStatusStripVisible = storedShellPreferences.workerStatusStripVisible;
+    workerStatusStripVisible = false;
     terminalDrawerOpen = true;
     workbenchLayout = storedShellPreferences.workbenchLayout;
     focusedWorkbenchPaneId = storedShellPreferences.focusedWorkbenchPaneId;

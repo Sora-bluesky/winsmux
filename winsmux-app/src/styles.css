@@ -204,6 +204,17 @@ textarea {
   background: var(--bg-canvas);
 }
 
+#app-shell:not(.sidebar-open) {
+  grid-template-columns: var(--activity-width) minmax(0, 1fr);
+  grid-template-areas:
+    "menu menu"
+    "activity workspace";
+}
+
+#app-shell:not(.sidebar-open) #left-rail {
+  display: none;
+}
+
 #app-shell[data-theme="light"] {
   --ws-bg: #ffffff;
   --ws-bg-elevated: #ffffff;
@@ -537,6 +548,10 @@ textarea {
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
+}
+
+#app-shell.sidebar-open #left-rail {
+  display: flex;
 }
 
 .sidebar-mode-title {
@@ -2019,6 +2034,13 @@ body[data-popout-surface="1"] #editor-surface {
   background: var(--ws-chrome-bg);
   border-top: 1px solid var(--ws-border);
   font-family: var(--font-code);
+}
+
+#conversation-panel.timeline-collapsed #timeline-toolbar,
+#conversation-panel.timeline-collapsed #selected-run-summary,
+#conversation-panel.timeline-collapsed #agent-work-dashboard,
+#conversation-panel.timeline-collapsed #conversation-timeline {
+  display: none;
 }
 
 .timeline-item {
@@ -4803,6 +4825,11 @@ body.is-resizing-workbench {
   border: 1px solid var(--border-muted);
   border-radius: 6px;
   background: var(--bg-surface);
+}
+
+.runtime-model-shared-default.is-inactive {
+  opacity: 0.62;
+  background: color-mix(in srgb, var(--bg-surface) 84%, var(--ws-bg));
 }
 
 .runtime-model-shared-controls {

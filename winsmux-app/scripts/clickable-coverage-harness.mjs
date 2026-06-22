@@ -304,6 +304,26 @@ async function clickSelector(page, selector, label, options = {}) {
   await clickLocator(page, page.locator(selector).first(), label, options);
 }
 
+async function waitForElementVisibility(page, selector, expected, label) {
+  await page.waitForFunction(({ selector: targetSelector, expected: expectedVisibility }) => {
+    const element = document.querySelector(targetSelector);
+    if (!(element instanceof HTMLElement)) {
+      return expectedVisibility === false;
+    }
+    const style = getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    const visible = !element.hidden &&
+      !element.closest("[hidden]") &&
+      style.display !== "none" &&
+      style.visibility !== "hidden" &&
+      rect.width > 0 &&
+      rect.height > 0;
+    return visible === expectedVisibility;
+  }, { selector, expected }, { timeout: 5_000 }).catch((error) => {
+    throw new Error(`${label}: expected ${selector} visible=${expected}: ${error.message}`);
+  });
+}
+
 async function isSidebarModeOpen(page, mode) {
   return await page.evaluate((targetMode) => {
     const shell = document.getElementById("app-shell");
@@ -323,6 +343,39 @@ async function isSidebarModeOpen(page, mode) {
     const rect = view.getBoundingClientRect();
     return rect.width > 0 && rect.height > 0;
   }, mode);
+}
+
+async function waitForSidebarModeState(page, mode, expected, label) {
+  await page.waitForFunction(({ targetMode, expectedOpen }) => {
+    const shell = document.getElementById("app-shell");
+    const rail = document.getElementById("left-rail");
+    const viewByMode = {
+      explorer: document.getElementById("files-sidebar-section"),
+      source: document.getElementById("source-control-view"),
+      evidence: document.getElementById("evidence-view"),
+      workspace: document.getElementById("session-sidebar-section"),
+    };
+    const view = viewByMode[targetMode];
+    if (!shell || !(rail instanceof HTMLElement) || !(view instanceof HTMLElement)) {
+      return false;
+    }
+    const railStyle = getComputedStyle(rail);
+    const railRect = rail.getBoundingClientRect();
+    const railVisible = !rail.hidden &&
+      !rail.closest("[hidden]") &&
+      railStyle.display !== "none" &&
+      railStyle.visibility !== "hidden" &&
+      railRect.width > 0 &&
+      railRect.height > 0;
+    const modeOpen = shell.classList.contains("sidebar-open") &&
+      railVisible &&
+      !view.hidden &&
+      !view.closest("[hidden]") &&
+      view.getBoundingClientRect().height > 0;
+    return modeOpen === expectedOpen;
+  }, { targetMode: mode, expectedOpen: expected }, { timeout: 5_000 }).catch((error) => {
+    throw new Error(`${label}: expected sidebar mode ${mode} open=${expected}: ${error.message}`);
+  });
 }
 
 async function ensureSidebarMode(page, mode, triggerSelector, label) {
@@ -365,6 +418,19 @@ async function openTopMenu(page, menuId) {
   await page.locator("#top-menu-popover").waitFor({ state: "visible" });
 }
 
+async function clickTopMenuItemMatching(page, menuId, pattern, label) {
+  await openTopMenu(page, menuId);
+  const item = page.locator("#top-menu-popover .top-menu-popover-item").filter({ hasText: pattern }).first();
+  if (!(await item.isVisible({ timeout: 2_000 }).catch(() => false))) {
+    const menuText = (await page.locator("#top-menu-popover .top-menu-popover-item").allTextContents().catch(() => []))
+      .map((text) => text.replace(/\s+/g, " ").trim())
+      .join(" | ");
+    await page.keyboard.press("Escape").catch(() => {});
+    throw new Error(`${label}: menu item not found. Available: ${menuText}`);
+  }
+  await clickLocator(page, item, label, { settleMs: 200 });
+}
+
 async function clickTopMenuItems(page, menuId) {
   await openTopMenu(page, menuId);
   const count = await page.locator("#top-menu-popover .top-menu-popover-item").count();
@@ -382,6 +448,11 @@ async function clickTopMenuItems(page, menuId) {
   }
 }
 
+async function testInitialDefaultChrome(page) {
+  await waitForElementVisibility(page, "#conversation-timeline", false, "default event feed hidden");
+  await waitForElementVisibility(page, "#worker-status-pill-bar", false, "default worker details hidden");
+}
+
 async function ensureWorkerStatusStripVisible(page) {
   const statusPill = page.locator('.worker-status-pill[data-worker-status-target="worker-2"]').first();
   if (await statusPill.isVisible({ timeout: 1_000 }).catch(() => false)) {
@@ -391,7 +462,7 @@ async function ensureWorkerStatusStripVisible(page) {
   await openTopMenu(page, "menu-view-btn");
   const showWorkerStatus = page
     .locator("#top-menu-popover .top-menu-popover-item")
-    .filter({ hasText: /Show worker status|ワーカー状態を表示/ })
+    .filter({ hasText: /Show Worker Details|Show worker status|ワーカー詳細情報を表示|ワーカー状態を表示/ })
     .first();
   if (!(await showWorkerStatus.isVisible({ timeout: 2_000 }).catch(() => false))) {
     const menuText = (await page.locator("#top-menu-popover .top-menu-popover-item").allTextContents().catch(() => []))
@@ -404,6 +475,56 @@ async function ensureWorkerStatusStripVisible(page) {
   await clickLocator(page, showWorkerStatus, "workbench show worker status", { settleMs: 200 });
   await statusPill.waitFor({ state: "visible", timeout: 5_000 });
   return statusPill;
+}
+
+async function testViewMenuStateful(page) {
+  await recoverShell(page);
+  await ensureSidebarMode(page, "explorer", "#activity-explorer-btn", "view state explorer open");
+
+  await clickTopMenuItemMatching(page, "menu-view-btn", /Hide Explorer|エクスプローラーを隠す/, "view hide explorer");
+  await waitForSidebarModeState(page, "explorer", false, "view hide explorer");
+  await clickTopMenuItemMatching(page, "menu-view-btn", /Show Explorer|エクスプローラーを表示/, "view show explorer");
+  await waitForSidebarModeState(page, "explorer", true, "view show explorer");
+
+  await clickTopMenuItemMatching(page, "menu-view-btn", /Show Workspace Overview|作業領域の概要を表示/, "view show workspace overview");
+  await waitForSidebarModeState(page, "workspace", true, "view show workspace overview");
+  await clickTopMenuItemMatching(page, "menu-view-btn", /Hide Workspace Overview|作業領域の概要を隠す/, "view hide workspace overview");
+  await waitForSidebarModeState(page, "workspace", false, "view hide workspace overview");
+
+  await clickTopMenuItemMatching(page, "menu-view-btn", /Show Source Control|ソース管理を表示/, "view show source control");
+  await waitForSidebarModeState(page, "source", true, "view show source control");
+  await clickTopMenuItemMatching(page, "menu-view-btn", /Hide Source Control|ソース管理を隠す/, "view hide source control");
+  await waitForSidebarModeState(page, "source", false, "view hide source control");
+
+  await clickTopMenuItemMatching(page, "menu-view-btn", /Show Evidence|証跡を表示/, "view show evidence");
+  await waitForSidebarModeState(page, "evidence", true, "view show evidence");
+  await clickTopMenuItemMatching(page, "menu-view-btn", /Hide Evidence|証跡を隠す/, "view hide evidence");
+  await waitForSidebarModeState(page, "evidence", false, "view hide evidence");
+
+  await clickTopMenuItemMatching(page, "menu-view-btn", /Hide Details|詳細を隠す/, "view hide details");
+  await waitForElementVisibility(page, "#context-panel", false, "view hide details");
+  await clickTopMenuItemMatching(page, "menu-view-btn", /Show Details|詳細を表示/, "view show details");
+  await waitForElementVisibility(page, "#context-panel", true, "view show details");
+
+  await clickTopMenuItemMatching(page, "menu-view-btn", /Show Agent Vault|Agent Vault を表示/, "view show agent vault");
+  await waitForElementVisibility(page, "#agent-vault-panel", true, "view show agent vault");
+  await clickTopMenuItemMatching(page, "menu-view-btn", /Hide Agent Vault|Agent Vault を隠す/, "view hide agent vault");
+  await waitForElementVisibility(page, "#agent-vault-panel", false, "view hide agent vault");
+
+  await clickTopMenuItemMatching(page, "menu-view-btn", /Show Worker Details|ワーカー詳細情報を表示/, "view show worker details");
+  await waitForElementVisibility(page, "#worker-status-pill-bar", true, "view show worker details");
+  await clickTopMenuItemMatching(page, "menu-view-btn", /Hide Worker Details|ワーカー詳細情報を隠す/, "view hide worker details");
+  await waitForElementVisibility(page, "#worker-status-pill-bar", false, "view hide worker details");
+
+  await clickTopMenuItemMatching(page, "menu-view-btn", /Show Event Feed|イベント欄を表示/, "view show event feed");
+  await waitForElementVisibility(page, "#conversation-timeline", true, "view show event feed");
+  await clickTopMenuItemMatching(page, "menu-view-btn", /Hide Event Feed|イベント欄を隠す/, "view hide event feed");
+  await waitForElementVisibility(page, "#conversation-timeline", false, "view hide event feed");
+
+  await clickTopMenuItemMatching(page, "menu-view-btn", /Hide Worker Panes|ワーカーペインを隠す/, "view hide worker panes");
+  await waitForElementVisibility(page, "#terminal-drawer", false, "view hide worker panes");
+  await clickTopMenuItemMatching(page, "menu-view-btn", /Show Worker Panes|ワーカーペインを表示/, "view show worker panes");
+  await waitForElementVisibility(page, "#terminal-drawer", true, "view show worker panes");
 }
 
 async function testTopMenus(page) {
@@ -471,6 +592,9 @@ async function testSettings(page) {
   await clickAll(page, "#settings-tab-user, #settings-tab-workspace", "settings scope tab");
   await clickAll(page, "#settings-nav .settings-nav-item", "settings nav");
   await clickAll(page, ".settings-option-chip", "settings option chip");
+  await clickSelector(page, "#settings-tab-user", "settings user scope restore");
+  await clickSelector(page, "#settings-nav-common", "settings common nav restore");
+  await page.locator("#editor-font-size-input").scrollIntoViewIfNeeded();
   await page.locator("#editor-font-size-input").fill("15");
   recordClick("settings editor font size input");
   await clickSelector(page, "#editor-font-size-reset-btn", "settings font size reset");
@@ -658,8 +782,10 @@ async function run() {
       await installBrowserStubs(page);
       await page.goto(`${previewUrl}${HARNESS_QUERY}`, { waitUntil: "networkidle" });
       await waitForAppReady(page);
+      await runStep(`${viewport.name}: initial default chrome`, () => testInitialDefaultChrome(page));
       await recordVisibleInteractives(page, "initial");
 
+      await runStep(`${viewport.name}: view menu stateful toggles`, () => testViewMenuStateful(page));
       await runStep(`${viewport.name}: top menus`, () => testTopMenus(page));
       await recordVisibleInteractives(page, "after-top-menus");
       await runStep(`${viewport.name}: navigation and footer`, () => testNavigationAndFooter(page));

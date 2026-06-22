@@ -910,7 +910,9 @@ async function setWorkerStatusStripFromViewMenu(page, visible) {
   if ((await page.locator("#worker-status-pill-bar").isVisible().catch(() => false)) === visible) {
     return;
   }
-  const label = visible ? /Show worker status|ワーカー状態を表示/ : /Hide worker status|ワーカー状態を隠す/;
+  const label = visible
+    ? /Show Worker Details|Show worker status|ワーカー詳細情報を表示|ワーカー状態を表示/
+    : /Hide Worker Details|Hide worker status|ワーカー詳細情報を隠す|ワーカー状態を隠す/;
   let lastError;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     await clickViewMenuItem(page, label, visible ? "show worker status" : "hide worker status");
@@ -1607,7 +1609,8 @@ async function main() {
           visibleFields,
         };
       });
-      if (detailMetrics.width < 220 || detailMetrics.visibleFields.length !== requiredFields.length) {
+      const missingFields = requiredFields.filter((field) => !detailMetrics.visibleFields.includes(field));
+      if (detailMetrics.width < 220 || missingFields.length > 0) {
         throw new Error(`worker status details should stay visible: ${JSON.stringify(detailMetrics)}`);
       }
       const workerTwoPill = page.locator('.worker-status-pill[data-worker-status-target="worker-2"]');
