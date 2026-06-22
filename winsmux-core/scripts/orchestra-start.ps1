@@ -1,3 +1,9 @@
+[CmdletBinding()]
+param(
+    [Alias('ProjectDir')]
+    [string]$RequestedRootPath = ''
+)
+
 $ErrorActionPreference = 'Stop'
 $scriptDir = $PSScriptRoot
 . "$scriptDir/settings.ps1"
@@ -18,6 +24,7 @@ $sessionName = 'winsmux-orchestra'
 $bridgeScript = [System.IO.Path]::GetFullPath((Join-Path $scriptDir '..\..\scripts\winsmux-core.ps1'))
 $layoutScript = [System.IO.Path]::GetFullPath((Join-Path $scriptDir 'orchestra-layout.ps1'))
 $script:winsmuxBin = $null
+$script:RequestedProjectDir = $RequestedRootPath
 
 function Enable-OrchestraManagedWarmSuppression {
     foreach ($name in @('PSMUX_NO_WARM', 'WINSMUX_NO_WARM')) {
@@ -397,6 +404,14 @@ function Invoke-Bridge {
         [switch]$AllowFailure
     )
 
+    $previousRawExe = $env:WINSMUX_RAW_EXE
+    $previousTargetSession = $env:WINSMUX_TARGET_SESSION
+    try {
+        if (-not [string]::IsNullOrWhiteSpace($script:winsmuxBin)) {
+            $env:WINSMUX_RAW_EXE = $script:winsmuxBin
+        }
+        $env:WINSMUX_TARGET_SESSION = $sessionName
+
     if ($CaptureOutput -or $AllowFailure) {
         $output = & pwsh -NoProfile -File $script:bridgeScript @Arguments 2>&1
         $exitCode = $LASTEXITCODE
@@ -419,6 +434,19 @@ function Invoke-Bridge {
     if ($LASTEXITCODE -ne 0) {
         throw "winsmux $($Arguments -join ' ') failed with exit code $LASTEXITCODE."
     }
+    } finally {
+        if ($null -eq $previousRawExe) {
+            Remove-Item Env:WINSMUX_RAW_EXE -ErrorAction SilentlyContinue
+        } else {
+            $env:WINSMUX_RAW_EXE = $previousRawExe
+        }
+
+        if ($null -eq $previousTargetSession) {
+            Remove-Item Env:WINSMUX_TARGET_SESSION -ErrorAction SilentlyContinue
+        } else {
+            $env:WINSMUX_TARGET_SESSION = $previousTargetSession
+        }
+    }
 }
 
 function ConvertTo-PowerShellLiteral {
@@ -428,9 +456,27 @@ function ConvertTo-PowerShellLiteral {
 }
 
 function Get-ProjectDir {
+    foreach ($candidate in @($script:RequestedProjectDir, $env:WINSMUX_ORCHESTRA_PROJECT_DIR)) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate)) {
+            $resolvedCandidate = [System.IO.Path]::GetFullPath($candidate)
+            if (Test-Path -LiteralPath $resolvedCandidate -PathType Container) {
+                return $resolvedCandidate
+            }
+        }
+    }
+
+    $locationPath = (Get-Location).Path
+    if (-not [string]::IsNullOrWhiteSpace($locationPath)) {
+        $resolvedLocation = [System.IO.Path]::GetFullPath($locationPath)
+        if ((Test-Path -LiteralPath (Join-Path $resolvedLocation '.winsmux.yaml') -PathType Leaf) -or
+            (Test-Path -LiteralPath (Join-Path $resolvedLocation '.git'))) {
+            return $resolvedLocation
+        }
+    }
+
     $scriptProjectDir = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
     if (-not [string]::IsNullOrWhiteSpace($scriptProjectDir)) {
-        return $scriptProjectDir
+        return [System.IO.Path]::GetFullPath($scriptProjectDir)
     }
 
     try {
@@ -442,7 +488,7 @@ function Get-ProjectDir {
     } catch {
     }
 
-    return (Get-Location).Path
+    return [System.IO.Path]::GetFullPath((Get-Location).Path)
 }
 
 function Get-GitWorktreeDir {
@@ -2083,6 +2129,14 @@ if ($MyInvocation.InvocationName -ne '.') {
             Invoke-BuilderWorktreeGit -ProjectDir $projectDir -Arguments @('worktree', 'prune') | Out-Null
         }
 
+        $sessionServerCleanup = Remove-OrchestraSessionServerProcesses -SessionName $sessionName -WinsmuxBin $winsmuxBin -IncludeExpectedBinary
+        if (@($sessionServerCleanup.Killed).Count -gt 0) {
+            Write-WinsmuxLog -Level INFO -Event 'preflight.session_process.cleanup' -Message 'Removed stale session server processes before orchestra startup.' -Data ([ordered]@{
+                session_name = $sessionName
+                killed_count = @($sessionServerCleanup.Killed).Count
+            }) | Out-Null
+        }
+
         $warmCleanup = Remove-OrchestraExcessWarmProcesses -MaxWarmProcesses 1
         if (@($warmCleanup.Killed).Count -gt 0) {
             Write-WinsmuxLog -Level INFO -Event 'preflight.warm_process.cleanup' -Message 'Removed excess warm servers before orchestra startup.' -Data ([ordered]@{
@@ -2290,8 +2344,10 @@ if ($MyInvocation.InvocationName -ne '.') {
         $deferPaneStart = Test-OrchestraPaneDeferredStart -Label $label -Role $canonicalRole -LayoutSettings $layoutSettings
         $deferredPaneStatus = 'deferred_start'
         $colabSessionEntry = $null
-        $apiLlmPaneStartDeferred = [string]::Equals(([string]$slotAgentConfig.WorkerBackend), 'api_llm', [System.StringComparison]::OrdinalIgnoreCase)
-        $antigravityPaneStartDeferred = [string]::Equals(([string]$slotAgentConfig.WorkerBackend), 'antigravity', [System.StringComparison]::OrdinalIgnoreCase)
+        $apiLlmPaneStartDeferred = [string]::Equals(([string]$slotAgentConfig.WorkerBackend), 'api_llm', [System.StringComparison]::OrdinalIgnoreCase) -and
+            (-not [string]::Equals(([string]$slotAgentConfig.CapabilityAdapter), 'openai-compatible', [System.StringComparison]::OrdinalIgnoreCase))
+        $antigravityPaneStartDeferred = [string]::Equals(([string]$slotAgentConfig.WorkerBackend), 'antigravity', [System.StringComparison]::OrdinalIgnoreCase) -and
+            (-not [string]::Equals(([string]$slotAgentConfig.CapabilityAdapter), 'antigravity', [System.StringComparison]::OrdinalIgnoreCase))
         if ($apiLlmPaneStartDeferred) {
             $deferPaneStart = $true
             $deferredPaneStatus = 'api_llm_runner_unconfigured'

@@ -40,6 +40,13 @@ const PROVIDER_SWITCH_SELECTOR_PARAM_KEYS: &[&str] = &[
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+fn hide_subprocess_window(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct DesktopBoardSummary {
     pub pane_count: usize,
@@ -2040,10 +2047,7 @@ where
                 .env("WINSMUX_DESKTOP_SUMMARY_STREAM_POLL_SECONDS", "5")
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
-            #[cfg(windows)]
-            {
-                process.creation_flags(CREATE_NO_WINDOW);
-            }
+            hide_subprocess_window(&mut process);
 
             let mut child = match process.spawn() {
                 Ok(child) => child,
@@ -2246,8 +2250,7 @@ fn collect_desktop_ignored_paths(root: &Path, relative_paths: &[String]) -> Hash
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    #[cfg(windows)]
-    command.creation_flags(CREATE_NO_WINDOW);
+    hide_subprocess_window(&mut command);
 
     let Ok(mut child) = command.spawn() else {
         return HashSet::new();
@@ -2418,13 +2421,17 @@ fn run_winsmux_json(project_dir: Option<String>, args: &[String]) -> Result<Valu
     let script_path = repo_root.join("scripts").join("winsmux-core.ps1");
     let command_text = build_winsmux_command_text(&script_path, args);
 
-    let output = Command::new("pwsh")
+    let mut command = Command::new("pwsh");
+    command
         .arg("-NoProfile")
         .arg("-ExecutionPolicy")
         .arg("Bypass")
         .arg("-Command")
         .arg(command_text)
-        .current_dir(&effective_project_dir)
+        .current_dir(&effective_project_dir);
+    hide_subprocess_window(&mut command);
+
+    let output = command
         .output()
         .map_err(|err| format!("Failed to start winsmux-core.ps1: {err}"))?;
 

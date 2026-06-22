@@ -776,7 +776,7 @@ $expectedPaneCount = Get-OrchestraSmokeExpectedPaneCount -LayoutSettings $layout
 
 $winsmuxBin = ''
 try {
-    $winsmuxBin = (Get-Command 'winsmux' -ErrorAction Stop).Source
+    $winsmuxBin = Get-WinsmuxBin
 } catch {
 }
 
@@ -800,7 +800,17 @@ $sessionAlreadyHealthy = $paneProbeOk -and $paneCount -ge $expectedPaneCount -an
 if ($sessionAlreadyHealthy) {
     $startOutput = 'Skipped orchestra-start; existing orchestra session already meets the smoke prerequisites.'
 } elseif ($AutoStart) {
-    $startOutput = & pwsh -NoProfile -Command "Set-Location -LiteralPath '$ProjectDir'; & '$startScript'" 2>&1
+    $previousProjectDir = $env:WINSMUX_ORCHESTRA_PROJECT_DIR
+    try {
+        $env:WINSMUX_ORCHESTRA_PROJECT_DIR = $ProjectDir
+        $startOutput = & pwsh -NoProfile -File $startScript -ProjectDir $ProjectDir 2>&1
+    } finally {
+        if ($null -eq $previousProjectDir) {
+            Remove-Item Env:WINSMUX_ORCHESTRA_PROJECT_DIR -ErrorAction SilentlyContinue
+        } else {
+            $env:WINSMUX_ORCHESTRA_PROJECT_DIR = $previousProjectDir
+        }
+    }
     $startExitCode = $LASTEXITCODE
     $probeState = Wait-OrchestraSmokeConvergence -ProjectDir $ProjectDir -SessionName $SessionName -ExpectedPaneCount $expectedPaneCount -WinsmuxBin $winsmuxBin -TimeoutSeconds 10
     $manifestPath = [string]$probeState.ManifestPath

@@ -109,15 +109,66 @@ function Assert-BridgeNoRetiredOperatorGlobalSettings {
 }
 
 if (-not (Get-Command Get-WinsmuxBin -ErrorAction SilentlyContinue)) {
+    function Get-BridgeCommandExecutableName {
+        param([AllowNull()]$Command)
+
+        if ($null -eq $Command) {
+            return ''
+        }
+
+        $pathProperty = $Command.PSObject.Properties['Path']
+        if ($null -ne $pathProperty -and -not [string]::IsNullOrWhiteSpace([string]$pathProperty.Value)) {
+            return [string]$pathProperty.Value
+        }
+
+        $sourceProperty = $Command.PSObject.Properties['Source']
+        if ($null -ne $sourceProperty -and -not [string]::IsNullOrWhiteSpace([string]$sourceProperty.Value)) {
+            return [string]$sourceProperty.Value
+        }
+
+        $nameProperty = $Command.PSObject.Properties['Name']
+        if ($null -ne $nameProperty -and -not [string]::IsNullOrWhiteSpace([string]$nameProperty.Value)) {
+            return [string]$nameProperty.Value
+        }
+
+        return ''
+    }
+
     function Get-WinsmuxBin {
+        if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_BIN)) {
+            $configuredPath = [string]$env:WINSMUX_BIN
+            if ([System.IO.Path]::IsPathRooted($configuredPath) -and (Test-Path -LiteralPath $configuredPath -PathType Leaf)) {
+                return [System.IO.Path]::GetFullPath($configuredPath)
+            }
+
+            $configuredCommand = Get-Command $configuredPath -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($null -ne $configuredCommand) {
+                $configuredExecutable = Get-BridgeCommandExecutableName -Command $configuredCommand
+                if (-not [string]::IsNullOrWhiteSpace($configuredExecutable)) {
+                    return $configuredExecutable
+                }
+            }
+
+            throw "WINSMUX_BIN points to a missing winsmux executable: $configuredPath"
+        }
+
+        $repoRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+        foreach ($candidatePath in @(
+            (Join-Path $repoRoot 'target\debug\winsmux.exe'),
+            (Join-Path $repoRoot 'target\release\winsmux.exe')
+        )) {
+            if (Test-Path -LiteralPath $candidatePath -PathType Leaf) {
+                return [System.IO.Path]::GetFullPath($candidatePath)
+            }
+        }
+
         foreach ($candidate in @('winsmux', 'pmux', 'tmux')) {
             $command = Get-Command $candidate -ErrorAction SilentlyContinue | Select-Object -First 1
             if ($null -ne $command) {
-                if ($command.Path) {
-                    return $command.Path
+                $executable = Get-BridgeCommandExecutableName -Command $command
+                if (-not [string]::IsNullOrWhiteSpace($executable)) {
+                    return $executable
                 }
-
-                return $command.Name
             }
         }
 
@@ -578,10 +629,10 @@ function ConvertTo-BridgeProviderRegistryEntry {
         if ($key -eq 'prompt_transport' -and $text -notin @('argv', 'file', 'stdin')) {
             throw "Invalid provider registry prompt_transport '$text'."
         }
-        if ($key -eq 'model_source' -and $text -notin @('provider-default', 'cli-discovery', 'official-doc', 'operator-override')) {
+        if ($key -eq 'model_source' -and $text -notin @('provider-default', 'cli-discovery', 'provider-api', 'official-doc', 'operator-override')) {
             throw "Invalid provider registry model_source '$text'."
         }
-        if ($key -eq 'reasoning_effort' -and $text -notin @('provider-default', 'low', 'medium', 'high', 'xhigh', 'max')) {
+        if ($key -eq 'reasoning_effort' -and $text -notin @('provider-default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max')) {
             throw "Invalid provider registry reasoning_effort '$text'."
         }
 
@@ -714,7 +765,7 @@ function Write-BridgeProviderRegistryEntry {
     }
     if (-not [string]::IsNullOrWhiteSpace($ModelSource)) {
         $normalizedModelSource = $ModelSource.Trim()
-        if ($normalizedModelSource -notin @('provider-default', 'cli-discovery', 'official-doc', 'operator-override')) {
+        if ($normalizedModelSource -notin @('provider-default', 'cli-discovery', 'provider-api', 'official-doc', 'operator-override')) {
             throw "Invalid provider registry model_source '$ModelSource'."
         }
         $entry.model_source = $normalizedModelSource
@@ -727,7 +778,7 @@ function Write-BridgeProviderRegistryEntry {
     }
     if (-not [string]::IsNullOrWhiteSpace($ReasoningEffort)) {
         $normalizedEffort = $ReasoningEffort.Trim().ToLowerInvariant()
-        if ($normalizedEffort -notin @('provider-default', 'low', 'medium', 'high', 'xhigh', 'max')) {
+        if ($normalizedEffort -notin @('provider-default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max')) {
             throw "Invalid provider registry reasoning_effort '$ReasoningEffort'."
         }
         $entry.reasoning_effort = $normalizedEffort
@@ -864,12 +915,12 @@ function ConvertTo-BridgeRuntimeRoleConfig {
             continue
         }
 
-        if ($key -eq 'model_source' -and $text -notin @('provider-default', 'cli-discovery', 'official-doc', 'operator-override')) {
+        if ($key -eq 'model_source' -and $text -notin @('provider-default', 'cli-discovery', 'provider-api', 'official-doc', 'operator-override')) {
             throw "Invalid runtime role preference model_source '$text'."
         }
         if ($key -eq 'reasoning_effort') {
             $text = $text.Trim().ToLowerInvariant()
-            if ($text -notin @('provider-default', 'low', 'medium', 'high', 'xhigh', 'max')) {
+            if ($text -notin @('provider-default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max')) {
                 throw "Invalid runtime role preference reasoning_effort '$text'."
             }
         }
@@ -1172,10 +1223,10 @@ function ConvertTo-BridgeProviderCapabilityEntry {
                 }
 
                 $normalizedText = $text.Trim().ToLowerInvariant()
-                if ($key -eq 'model_sources' -and $normalizedText -notin @('provider-default', 'cli-discovery', 'official-doc', 'operator-override')) {
+                if ($key -eq 'model_sources' -and $normalizedText -notin @('provider-default', 'cli-discovery', 'provider-api', 'official-doc', 'operator-override')) {
                     throw "Invalid provider capability field '$key'."
                 }
-                if ($key -eq 'reasoning_efforts' -and $normalizedText -notin @('provider-default', 'low', 'medium', 'high', 'xhigh', 'max')) {
+                if ($key -eq 'reasoning_efforts' -and $normalizedText -notin @('provider-default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max')) {
                     throw "Invalid provider capability field '$key'."
                 }
 
@@ -1275,7 +1326,7 @@ function ConvertTo-BridgeProviderModelOption {
         }
         if ($key -eq 'source') {
             $text = $text.Trim().ToLowerInvariant()
-            if ($text -notin @('provider-default', 'cli-discovery', 'official-doc', 'operator-override')) {
+            if ($text -notin @('provider-default', 'cli-discovery', 'provider-api', 'official-doc', 'operator-override')) {
                 throw "Invalid provider capability field 'model_options'."
             }
         }
@@ -1303,6 +1354,54 @@ function ConvertTo-BridgePowerShellCommandInvocation {
     }
 
     return '& ' + (ConvertTo-BridgePowerShellLiteral -Value $Value)
+}
+
+function Get-BridgeBuiltinProviderCapability {
+    param([Parameter(Mandatory = $true)][string]$ProviderId)
+
+    if ([string]::IsNullOrWhiteSpace($ProviderId)) {
+        return $null
+    }
+
+    $providerKey = $ProviderId.Trim().ToLowerInvariant()
+    switch ($providerKey) {
+        'openrouter' {
+            return ConvertTo-BridgeProviderCapabilityEntry ([ordered]@{
+                adapter                  = 'openai-compatible'
+                display_name             = 'OpenRouter'
+                command                  = 'openrouter'
+                model_catalog_source     = 'https://openrouter.ai/api/v1/models'
+                model_options            = @(
+                    [ordered]@{ id = 'provider-default'; label = 'Provider default'; source = 'provider-default' },
+                    [ordered]@{ id = 'z-ai/glm-5.2'; label = 'Z.ai: GLM 5.2'; source = 'provider-api'; availability = 'OpenRouter Models API' },
+                    [ordered]@{ id = 'moonshotai/kimi-k2.7-code'; label = 'MoonshotAI: Kimi K2.7 Code'; source = 'provider-api'; availability = 'OpenRouter Models API' }
+                )
+                model_sources            = @('provider-default', 'provider-api', 'operator-override')
+                reasoning_efforts        = @('provider-default')
+                local_access_note        = 'Hosted OpenRouter Models API via the local api_llm pane worker.'
+                harness_availability     = 'official-api'
+                credential_requirements  = 'OPENROUTER_API_KEY environment variable'
+                execution_backend        = 'openai-compatible-chat-completions'
+                api_base_url             = 'https://openrouter.ai/api/v1'
+                api_key_env              = 'OPENROUTER_API_KEY'
+                runtime_requirements     = 'Set OPENROUTER_API_KEY in the process environment before starting the worker.'
+                analysis_posture         = 'hosted-api-worker'
+                prompt_transports        = @('file', 'stdin')
+                auth_modes               = @('api-key-env')
+                supports_parallel_runs   = $true
+                supports_interrupt       = $false
+                supports_structured_result = $true
+                supports_file_edit       = $false
+                supports_subagents       = $false
+                supports_verification    = $true
+                supports_consultation    = $true
+                supports_context_reset   = $true
+            })
+        }
+        default {
+            return $null
+        }
+    }
 }
 
 function Read-BridgeProviderCapabilityRegistry {
@@ -1392,7 +1491,7 @@ function Get-BridgeProviderCapability {
         }
     }
 
-    return $null
+    return Get-BridgeBuiltinProviderCapability -ProviderId $ProviderId
 }
 
 function Resolve-BridgeProviderCapability {
@@ -1408,13 +1507,18 @@ function Resolve-BridgeProviderCapability {
 
     $registry = Read-BridgeProviderCapabilityRegistry -RootPath $RootPath
     if ($registry.providers.Count -lt 1) {
-        return $null
+        return Get-BridgeBuiltinProviderCapability -ProviderId $ProviderId
     }
 
     foreach ($entry in $registry.providers.GetEnumerator()) {
         if ([string]::Equals([string]$entry.Key, $ProviderId, [System.StringComparison]::OrdinalIgnoreCase)) {
             return $entry.Value
         }
+    }
+
+    $builtinCapability = Get-BridgeBuiltinProviderCapability -ProviderId $ProviderId
+    if ($null -ne $builtinCapability) {
+        return $builtinCapability
     }
 
     if ($RequireWhenRegistryPresent) {
@@ -1689,6 +1793,42 @@ function Get-BridgeProviderLaunchCommand {
             if ($modelOverride) {
                 $parts += '--model'
                 $parts += (ConvertTo-BridgePowerShellLiteral -Value $Model)
+            }
+            return ($parts -join ' ')
+        }
+        'grok-build' {
+            $parts = @($commandInvocation)
+            if ($modelOverride) {
+                $parts += '--model'
+                $parts += (ConvertTo-BridgePowerShellLiteral -Value $Model)
+            }
+            if ($effortOverride) {
+                $parts += '--effort'
+                $parts += $ReasoningEffort.Trim().ToLowerInvariant()
+            }
+            return ($parts -join ' ')
+        }
+        'openai-compatible' {
+            $paneWorkerScript = Join-Path $PSScriptRoot 'api-llm-pane-worker.ps1'
+            $paneProjectDir = if ([string]::IsNullOrWhiteSpace($RootPath)) { $ProjectDir } else { $RootPath }
+            $parts = @(
+                'pwsh',
+                '-NoLogo',
+                '-NoProfile',
+                '-ExecutionPolicy',
+                'Bypass',
+                '-File',
+                (ConvertTo-BridgePowerShellLiteral -Value $paneWorkerScript),
+                '-Provider',
+                (ConvertTo-BridgePowerShellLiteral -Value $provider),
+                '-Model',
+                (ConvertTo-BridgePowerShellLiteral -Value $Model),
+                '-ProjectDir',
+                (ConvertTo-BridgePowerShellLiteral -Value $paneProjectDir)
+            )
+            if ($effortOverride) {
+                $parts += '-ReasoningEffort'
+                $parts += (ConvertTo-BridgePowerShellLiteral -Value $ReasoningEffort.Trim().ToLowerInvariant())
             }
             return ($parts -join ' ')
         }
