@@ -22,6 +22,7 @@ $whitelistPatterns = @(
     'core/src/bin/*.rs',
     'core/tests-rs/*.rs',
     'git-graph/**',
+    '.github/workflows/test.yml',
     '.gitignore',
     'GUARDRAILS.md',
     '.winsmux.conf',

@@ -56,9 +56,34 @@ jobs:
         run: pwsh -NoProfile -File scripts/audit-public-surface.ps1
 
   pester:
-    name: Pester Tests
+    name: Pester Tests (${{ matrix.name }})
     runs-on: windows-latest
     needs: public-surface
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: bridge-contract
+            result: bridge-contract
+            timeout_minutes: 45
+            paths: tests/winsmux-bridge.Tests.ps1
+          - name: integration
+            result: integration
+            timeout_minutes: 25
+            paths: tests/Integration.GateEnforcement.Tests.ps1;tests/Integration.MultiAgent.Tests.ps1;tests/Integration.PaneMonitorHook.Tests.ps1;tests/Integration.PluginHookLoader.Tests.ps1;tests/Integration.WorktreeHook.Tests.ps1
+          - name: worker-benchmark
+            result: worker-benchmark
+            timeout_minutes: 20
+            paths: tests/CliBakeoff.Tests.ps1;tests/HarnessContract.Tests.ps1;tests/ColabAcceptance.Tests.ps1;tests/ColabWorkerTemplates.Tests.ps1;tests/Runtime.VaultInject.Tests.ps1
+          - name: release-public
+            result: release-public
+            timeout_minutes: 20
+            paths: tests/PublicSurfacePolicy.Tests.ps1;tests/VersionSurface.Tests.ps1;tests/NpmReleasePackage.Tests.ps1;tests/GitHubWritePreflight.Tests.ps1;tests/McpServerContract.Tests.ps1;tests/ThreatModelContract.Tests.ps1;tests/EnterpriseStrategyAlignment.Tests.ps1;tests/ReviewLatencyHardening.Tests.ps1;tests/UpstreamReevaluation.Tests.ps1
+          - name: shell-support
+            result: shell-support
+            timeout_minutes: 15
+            paths: tests/BuilderWorktree.Tests.ps1;tests/codex-subagent-worktree-guard.Tests.ps1;tests/OrchestraPreflight.Tests.ps1;tests/PaneBorder.Tests.ps1
     steps:
       - uses: actions/checkout@v6
 
@@ -66,15 +91,36 @@ jobs:
         shell: pwsh
         run: Install-Module Pester -Force -Scope CurrentUser -MinimumVersion 5.0
 
-      - name: Run Pester
+      - name: Run Pester (${{ matrix.name }})
         shell: pwsh
         run: |
+          $requestedPaths = @('${{ matrix.paths }}' -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+          $resolvedPaths = @()
+          foreach ($requested in $requestedPaths) {
+            $matches = @(Resolve-Path -Path $requested -ErrorAction Stop)
+            foreach ($match in $matches) {
+              $resolvedPaths += $match.ProviderPath
+            }
+          }
+          $resolvedPaths = @($resolvedPaths | Sort-Object -Unique)
+          if ($resolvedPaths.Count -eq 0) {
+            throw "No Pester test files matched for category '${{ matrix.name }}'."
+          }
+
+          Write-Host "::group::Pester category ${{ matrix.name }} targets"
+          foreach ($path in $resolvedPaths) {
+            $item = Get-Item -LiteralPath $path
+            $relative = Resolve-Path -LiteralPath $path -Relative
+            Write-Host ("{0} ({1:n0} bytes)" -f $relative, $item.Length)
+          }
+          Write-Host "::endgroup::"
+
           $config = New-PesterConfiguration
-          $config.Run.Path = 'tests/'
+          $config.Run.Path = $resolvedPaths
           $config.Run.Exit = $true
           $config.Output.Verbosity = 'Detailed'
           $config.TestResult.Enabled = $true
-          $config.TestResult.OutputPath = 'test-results.xml'
+          $config.TestResult.OutputPath = 'test-results-${{ matrix.result }}.xml'
           $config.TestResult.OutputFormat = 'NUnitXml'
           Invoke-Pester -Configuration $config
 
@@ -82,8 +128,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: test-results
-          path: test-results.xml
+          name: test-results-${{ matrix.result }}
+          path: test-results-${{ matrix.result }}.xml
 
   core-build-test:
     name: Core Build and Test
