@@ -9,6 +9,29 @@ import { chromium } from "playwright";
 const OUTPUT_DIR = path.join(process.cwd(), "output", "playwright", "clickable-coverage");
 const HARNESS_QUERY = "?viewport-harness=1";
 const PROJECT_DIR = path.resolve(process.cwd(), "..").replace(/\\/g, "/");
+const DEFAULT_RUNTIME_ROLE_PREFERENCES = [
+  {
+    roleId: "operator",
+    provider: "claude",
+    model: "provider-default",
+    modelSource: "provider-default",
+    reasoningEffort: "provider-default",
+  },
+  {
+    roleId: "worker",
+    provider: "codex",
+    model: "provider-default",
+    modelSource: "provider-default",
+    reasoningEffort: "provider-default",
+  },
+  {
+    roleId: "reviewer",
+    provider: "codex",
+    model: "gpt-5.3-codex-spark",
+    modelSource: "cli-discovery",
+    reasoningEffort: "high",
+  },
+];
 const VIEWPORTS = [
   { name: "narrow", width: 1280, height: 720 },
   { name: "wide", width: 1600, height: 900 },
@@ -124,7 +147,13 @@ function attachErrorCapture(page) {
 }
 
 async function installBrowserStubs(page) {
-  await page.addInitScript((projectDir) => {
+  await page.addInitScript(({ projectDir, runtimePreferences }) => {
+    if (!window.localStorage.getItem("winsmux.runtime-role.preferences.v1")) {
+      window.localStorage.setItem("winsmux.runtime-role.preferences.v1", JSON.stringify(runtimePreferences));
+    }
+    if (!window.localStorage.getItem("winsmux.runtime-model.assignment-mode.v1")) {
+      window.localStorage.setItem("winsmux.runtime-model.assignment-mode.v1", "shared");
+    }
     window.prompt = () => projectDir;
     window.alert = (message) => {
       window.__winsmuxClickableAlerts = [
@@ -174,7 +203,7 @@ async function installBrowserStubs(page) {
     window.__winsmuxSpeechRecognition = speechRecognitionState;
     window.SpeechRecognition = MockSpeechRecognition;
     window.webkitSpeechRecognition = MockSpeechRecognition;
-  }, PROJECT_DIR);
+  }, { projectDir: PROJECT_DIR, runtimePreferences: DEFAULT_RUNTIME_ROLE_PREFERENCES });
 }
 
 async function runStep(name, action) {
@@ -586,9 +615,72 @@ async function testCommandBar(page) {
   }
 }
 
+async function testPaneModelSettings(page) {
+  await clickSelector(page, "#settings-tab-user", "settings user scope for pane model settings");
+  await clickSelector(page, "#settings-nav-common", "settings common nav for pane model settings");
+  await page.locator(".runtime-model-assignment-panel").scrollIntoViewIfNeeded();
+
+  const perPaneMode = page
+    .locator(".runtime-model-mode-option")
+    .filter({ hasText: /Set each pane individually|ペインごと/ })
+    .first();
+  await clickLocator(page, perPaneMode, "settings pane model per-pane mode", { settleMs: 200 });
+  await page.waitForFunction(() => {
+    const provider = document.querySelector("#runtime-worker-default-provider");
+    const model = document.querySelector("#runtime-worker-default-model");
+    const effort = document.querySelector("#runtime-worker-default-effort");
+    return provider instanceof HTMLSelectElement && provider.disabled
+      && model instanceof HTMLSelectElement && model.disabled
+      && effort instanceof HTMLSelectElement && effort.disabled;
+  });
+  await page.waitForFunction(() => {
+    return document.querySelector(".runtime-model-slot-row")
+      || document.querySelector(".runtime-model-empty")?.textContent?.includes("worker slot")
+      || document.querySelector(".runtime-model-empty")?.textContent?.includes("worker");
+  });
+  await clickSelector(page, "#apply-settings-btn", "settings pane model per-pane apply", { settleMs: 200 });
+  await page.waitForFunction(() => window.localStorage.getItem("winsmux.runtime-model.assignment-mode.v1") === "per-pane");
+
+  await page.reload({ waitUntil: "networkidle" });
+  await waitForAppReady(page);
+  await clickSelector(page, "#activity-settings-btn", "settings pane model reopen after reload");
+  await page.locator("#settings-sheet").waitFor({ state: "visible" });
+  await clickSelector(page, "#settings-tab-user", "settings user scope after pane mode reload");
+  await clickSelector(page, "#settings-nav-common", "settings common nav after pane mode reload");
+  await page.locator(".runtime-model-assignment-panel").scrollIntoViewIfNeeded();
+  await page.waitForFunction(() => {
+    const modeButtons = Array.from(document.querySelectorAll(".runtime-model-mode-option"));
+    const perPane = modeButtons.find((button) => /Set each pane individually|ペインごと/.test(button.textContent ?? ""));
+    const provider = document.querySelector("#runtime-worker-default-provider");
+    const model = document.querySelector("#runtime-worker-default-model");
+    const effort = document.querySelector("#runtime-worker-default-effort");
+    return perPane instanceof HTMLElement
+      && perPane.getAttribute("aria-pressed") === "true"
+      && provider instanceof HTMLSelectElement && provider.disabled
+      && model instanceof HTMLSelectElement && model.disabled
+      && effort instanceof HTMLSelectElement && effort.disabled;
+  });
+
+  const sharedMode = page
+    .locator(".runtime-model-mode-option")
+    .filter({ hasText: /All panes use the default|全ペイン共通/ })
+    .first();
+  await clickLocator(page, sharedMode, "settings pane model shared mode", { settleMs: 200 });
+  await page.waitForFunction(() => {
+    const provider = document.querySelector("#runtime-worker-default-provider");
+    const model = document.querySelector("#runtime-worker-default-model");
+    const effort = document.querySelector("#runtime-worker-default-effort");
+    return provider instanceof HTMLSelectElement && !provider.disabled
+      && model instanceof HTMLSelectElement && !model.disabled
+      && effort instanceof HTMLSelectElement && !effort.disabled
+      && document.querySelectorAll(".runtime-model-slot-row").length === 0;
+  });
+}
+
 async function testSettings(page) {
   await clickSelector(page, "#activity-settings-btn", "settings open");
   await page.locator("#settings-sheet").waitFor({ state: "visible" });
+  await testPaneModelSettings(page);
   await clickAll(page, "#settings-tab-user, #settings-tab-workspace", "settings scope tab");
   await clickAll(page, "#settings-nav .settings-nav-item", "settings nav");
   await clickAll(page, ".settings-option-chip", "settings option chip");

@@ -25,6 +25,7 @@ const APP_URL_PATTERN = /localhost:1420|127\.0\.0\.1:1420/;
 const CONTROL_PIPE_NAME = "winsmux-control";
 const CONTROL_PIPE_TOKEN = process.env.WINSMUX_DESKTOP_E2E_CONTROL_PIPE_TOKEN
   || `winsmux-desktop-e2e-${randomUUID()}`;
+const CDP_TIMEOUT_MS = Number.parseInt(process.env.WINSMUX_DESKTOP_E2E_CDP_TIMEOUT_MS || "300000", 10);
 const WORKER_UI_MARKER = "WORKER_1_UI_E2E_READY";
 const WORKER_ARROW_MARKER = "RAW_ABC";
 const WORKER_PASTE_MARKER = "WORKER_PASTE_E2E_READY";
@@ -1372,7 +1373,7 @@ async function main() {
 
   try {
     await runStep("wait for WebView2 remote debugging", async () => {
-      await waitForCdp(debugPort, tauri);
+      await waitForCdp(debugPort, tauri, Number.isFinite(CDP_TIMEOUT_MS) ? CDP_TIMEOUT_MS : 300000);
       return { debugPort };
     });
 
