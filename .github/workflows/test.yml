@@ -84,11 +84,21 @@ jobs:
             timeout_minutes: 12
             paths: tests/winsmux-bridge.Tests.ps1
             full_name: "*documents and routes the workers lifecycle command*;*prepares and cleans up a disposable isolated workspace*;*requires the isolated-enterprise execution profile*;*rejects unsafe isolated workspace projection paths*;*rejects reparse points in isolated workspace projections*;*cleans isolated workspace run directories*;*defines a Windows sandbox baseline*;*fails closed for Windows sandbox baselines*;*rejects worker-created reparse points before writing the Windows sandbox baseline manifest*"
-          - name: bridge-worker-broker-policy
-            result: bridge-worker-broker-policy
+          - name: bridge-worker-broker-token
+            result: bridge-worker-broker-token
             timeout_minutes: 12
             paths: tests/winsmux-bridge.Tests.ps1
-            full_name: "*defines a brokered execution baseline*;*issues, checks, refreshes, and expires broker run tokens*;*defines enterprise execution policy*;*fails closed for enterprise execution policy*;*fails closed for broker baselines*;*projects typed secrets for local Windows runs*;*projects typed secrets for isolated workspace runs*;*includes execution profile workspace and secret projection state*;*rejects unsafe or unresolved secret projections*"
+            full_name: "*defines a brokered execution baseline*;*issues, checks, refreshes, and expires broker run tokens*;*fails closed for broker baselines*"
+          - name: bridge-worker-policy
+            result: bridge-worker-policy
+            timeout_minutes: 12
+            paths: tests/winsmux-bridge.Tests.ps1
+            full_name: "*defines enterprise execution policy*;*fails closed for enterprise execution policy*"
+          - name: bridge-worker-secrets-status
+            result: bridge-worker-secrets-status
+            timeout_minutes: 12
+            paths: tests/winsmux-bridge.Tests.ps1
+            full_name: "*projects typed secrets for local Windows runs*;*projects typed secrets for isolated workspace runs*;*includes execution profile workspace and secret projection state*;*rejects unsafe or unresolved secret projections*"
           - name: bridge-worker-heartbeat-start
             result: bridge-worker-heartbeat-start
             timeout_minutes: 12
