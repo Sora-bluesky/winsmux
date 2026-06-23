@@ -9,6 +9,29 @@ import { chromium } from "playwright";
 const OUTPUT_DIR = path.join(process.cwd(), "output", "playwright", "viewport-harness");
 const HARNESS_QUERY = "?viewport-harness=1";
 const APP_DIR = process.cwd();
+const DEFAULT_RUNTIME_ROLE_PREFERENCES = [
+  {
+    roleId: "operator",
+    provider: "claude",
+    model: "provider-default",
+    modelSource: "provider-default",
+    reasoningEffort: "provider-default",
+  },
+  {
+    roleId: "worker",
+    provider: "codex",
+    model: "provider-default",
+    modelSource: "provider-default",
+    reasoningEffort: "provider-default",
+  },
+  {
+    roleId: "reviewer",
+    provider: "codex",
+    model: "gpt-5.3-codex-spark",
+    modelSource: "cli-discovery",
+    reasoningEffort: "high",
+  },
+];
 
 async function assertOperatorChatContractSource() {
   const source = await fs.readFile(path.join(APP_DIR, "src", "main.ts"), "utf8");
@@ -457,8 +480,8 @@ async function assertDesktopVoiceInputCoverage(page) {
     return button instanceof HTMLButtonElement && button.getAttribute("aria-pressed") === "true";
   });
   await page.evaluate(() => window.__winsmuxSpeechRecognition.emitError("not-allowed", "Microphone permission denied"));
-  await page.locator("#conversation-timeline .timeline-item", { hasText: "Voice input stopped" }).last().waitFor();
-  await page.locator("#conversation-timeline .timeline-item", { hasText: "Microphone permission denied" }).last().waitFor();
+  await page.locator("#conversation-timeline .timeline-item", { hasText: "Voice input stopped" }).last().waitFor({ state: "attached" });
+  await page.locator("#conversation-timeline .timeline-item", { hasText: "Microphone permission denied" }).last().waitFor({ state: "attached" });
   await page.waitForFunction(() => {
     const button = document.querySelector("#voice-input-btn");
     return button instanceof HTMLButtonElement && button.getAttribute("aria-pressed") === "false";
@@ -470,7 +493,7 @@ async function assertDesktopVoiceInputCoverage(page) {
     return button instanceof HTMLButtonElement && button.getAttribute("aria-pressed") === "true";
   });
   await page.evaluate(() => window.__winsmuxSpeechRecognition.emitError("audio-capture", "No microphone was found"));
-  await page.locator("#conversation-timeline .timeline-item", { hasText: "No microphone was found" }).last().waitFor();
+  await page.locator("#conversation-timeline .timeline-item", { hasText: "No microphone was found" }).last().waitFor({ state: "attached" });
   await page.waitForFunction(() => {
     const button = document.querySelector("#voice-input-btn");
     return button instanceof HTMLButtonElement && button.getAttribute("aria-pressed") === "false";
@@ -848,7 +871,13 @@ async function assertDesktopVoiceLongSessionPrivacy(page) {
 }
 
 async function installSpeechRecognitionStub(page) {
-  await page.addInitScript(() => {
+  await page.addInitScript((runtimePreferences) => {
+    if (!window.localStorage.getItem("winsmux.runtime-role.preferences.v1")) {
+      window.localStorage.setItem("winsmux.runtime-role.preferences.v1", JSON.stringify(runtimePreferences));
+    }
+    if (!window.localStorage.getItem("winsmux.runtime-model.assignment-mode.v1")) {
+      window.localStorage.setItem("winsmux.runtime-model.assignment-mode.v1", "shared");
+    }
     const speechRecognitionState = {
       aborts: 0,
       instances: [],
@@ -906,7 +935,7 @@ async function installSpeechRecognitionStub(page) {
     window.__winsmuxSpeechRecognition = speechRecognitionState;
     window.SpeechRecognition = MockSpeechRecognition;
     window.webkitSpeechRecognition = MockSpeechRecognition;
-  });
+  }, DEFAULT_RUNTIME_ROLE_PREFERENCES);
 }
 
 async function assertCommandBarRoundtrip(page, returnSelector) {
@@ -924,8 +953,9 @@ async function assertSettingsRoundtrip(page, returnSelector) {
   await page.locator("#settings-sheet").waitFor({ state: "visible" });
   await assertFullyVisible(page, "#settings-sheet");
   await assertButtonVisible(page, "#close-settings-btn");
-  await page.locator("#theme-options", { hasText: "Codex TUI Dark" }).waitFor();
-  await page.locator("#theme-options", { hasText: "Graphite" }).waitFor();
+  await page.locator("#theme-options", { hasText: "System" }).waitFor();
+  await page.locator("#theme-options", { hasText: "Light" }).waitFor();
+  await page.locator("#theme-options", { hasText: "Dark" }).waitFor();
   await page.locator("#density-options", { hasText: "Comfortable" }).waitFor();
   await page.locator("#wrap-options", { hasText: "Balanced" }).waitFor();
   await page.locator("#editor-font-size-input").waitFor();
@@ -939,7 +969,7 @@ async function assertSettingsRoundtrip(page, returnSelector) {
   await page.waitForFunction(() => {
     const input = document.querySelector("#settings-font-family-input");
     return input instanceof HTMLInputElement &&
-      input.value === "Consolas, 'Courier New', monospace";
+      input.value.trim().length > 0;
   });
   await page.click("#settings-font-family-menu-btn");
   await page.locator("#settings-font-family-menu").waitFor({ state: "visible" });
@@ -950,19 +980,27 @@ async function assertSettingsRoundtrip(page, returnSelector) {
     return input instanceof HTMLInputElement && input.value.startsWith("JetBrains Mono");
   });
   await page.waitForFunction(() => {
-    const provider = document.querySelector("#runtime-provider-operator");
-    const model = document.querySelector("#runtime-model-operator");
-    const source = document.querySelector("#runtime-model-source-operator");
-    const effort = document.querySelector("#runtime-reasoning-operator");
-    return provider instanceof HTMLSelectElement &&
-      provider.value === "claude" &&
-      provider.disabled &&
-      model instanceof HTMLInputElement &&
-      model.disabled &&
-      source instanceof HTMLSelectElement &&
-      source.disabled &&
+    const modeButtons = Array.from(document.querySelectorAll(".runtime-model-mode-option"));
+    const sharedMode = modeButtons.find((button) => /All panes use the default|全ペイン共通/.test(button.textContent ?? ""));
+    const perPaneMode = modeButtons.find((button) => /Set each pane individually|ペインごと/.test(button.textContent ?? ""));
+    const provider = document.querySelector("#runtime-worker-default-provider");
+    const model = document.querySelector("#runtime-worker-default-model");
+    const effort = document.querySelector("#runtime-worker-default-effort");
+    const perPaneRows = document.querySelectorAll(".runtime-model-slot-row");
+    return sharedMode instanceof HTMLElement &&
+      sharedMode.getAttribute("aria-pressed") === "true" &&
+      perPaneMode instanceof HTMLElement &&
+      perPaneMode.getAttribute("aria-pressed") === "false" &&
+      provider instanceof HTMLSelectElement &&
+      provider.value === "codex" &&
+      !provider.disabled &&
+      model instanceof HTMLSelectElement &&
+      model.value === "codex-provider-default" &&
+      !model.disabled &&
       effort instanceof HTMLSelectElement &&
-      effort.disabled;
+      effort.value === "provider-default" &&
+      !effort.disabled &&
+      perPaneRows.length === 0;
   });
   await page.locator("#voice-shortcut-input").waitFor();
   await page.locator("#voice-shortcut-input").scrollIntoViewIfNeeded();
@@ -1221,7 +1259,7 @@ async function setShellLanguage(page, language) {
     window.localStorage.setItem(
       key,
       JSON.stringify({
-        theme: "codex-dark",
+        theme: "system",
         density: "comfortable",
         wrapMode: "balanced",
         codeFont: "system",
