@@ -74,13 +74,48 @@ jobs:
             timeout_minutes: 20
             paths: tests/winsmux-bridge.Tests.ps1
             full_name: "*agent-monitor helpers*;*agent-watchdog helpers*;*server-watchdog helpers*;*orchestra-preflight health contract*;*orchestra-start watchdog contract*;*orchestra-start server bootstrap*;*orchestra-start session reuse contract*;*orchestra-start rollback helpers*;*doctor bridge config metadata check*;*worker isolation diagnostics*;*pane scaler helpers*;*pane status helpers*;*orchestra layout script*"
-          - name: bridge-commands-a
-            result: bridge-commands-a
-            timeout_minutes: 15
+          - name: bridge-command-status
+            result: bridge-command-status
+            timeout_minutes: 12
             paths: tests/winsmux-bridge.Tests.ps1
-            full_name: "*winsmux status command*;*winsmux workers command*;*winsmux board command*;*winsmux inbox command*;*winsmux runs command*;*winsmux digest command*;*winsmux review-pack command*;*winsmux dispatch-task routing*;*winsmux explain command*"
-          - name: bridge-commands-b
-            result: bridge-commands-b
+            full_name: "*winsmux status command*"
+          - name: bridge-worker-workspace-sandbox
+            result: bridge-worker-workspace-sandbox
+            timeout_minutes: 12
+            paths: tests/winsmux-bridge.Tests.ps1
+            full_name: "*documents and routes the workers lifecycle command*;*prepares and cleans up a disposable isolated workspace*;*requires the isolated-enterprise execution profile*;*rejects unsafe isolated workspace projection paths*;*rejects reparse points in isolated workspace projections*;*cleans isolated workspace run directories*;*defines a Windows sandbox baseline*;*fails closed for Windows sandbox baselines*;*rejects worker-created reparse points before writing the Windows sandbox baseline manifest*"
+          - name: bridge-worker-broker-policy
+            result: bridge-worker-broker-policy
+            timeout_minutes: 12
+            paths: tests/winsmux-bridge.Tests.ps1
+            full_name: "*defines a brokered execution baseline*;*issues, checks, refreshes, and expires broker run tokens*;*defines enterprise execution policy*;*fails closed for enterprise execution policy*;*fails closed for broker baselines*;*projects typed secrets for local Windows runs*;*projects typed secrets for isolated workspace runs*;*includes execution profile workspace and secret projection state*;*rejects unsafe or unresolved secret projections*"
+          - name: bridge-worker-heartbeat-start
+            result: bridge-worker-heartbeat-start
+            timeout_minutes: 12
+            paths: tests/winsmux-bridge.Tests.ps1
+            full_name: "*marks and checks local worker heartbeats*;*keeps child run waiting separate*;*marks isolated worker heartbeats*;*includes worker heartbeat health*;*does not let stale worker heartbeat*;*does not let orphan heartbeat artifacts*;*expires self-reported stalled heartbeats*;*returns offline heartbeat status*;*rejects unsupported latest heartbeat profile*;*rejects heartbeat mark profile mismatches*;*honors latest heartbeat check thresholds*;*reports the default six worker slots*;*reports api_llm worker status*;*adds api_llm diagnostics*;*reports antigravity worker status*;*adds antigravity diagnostics*;*fails api_llm diagnostics*;*stops one worker by slot alias*;*blocks start for a degraded Colab worker*;*blocks start for an api_llm worker*;*blocks start for an antigravity worker*;*blocks start when the manifest approval*;*clears stale heartbeat binding*;*keeps a ready deferred worker idempotent*;*attaches a degraded Colab worker*;*prints worker doctor checks*"
+          - name: bridge-worker-api-agy-exec
+            result: bridge-worker-api-agy-exec
+            timeout_minutes: 12
+            paths: tests/winsmux-bridge.Tests.ps1
+            full_name: "*records blocked api_llm exec artifacts*;*rejects OpenRouter endpoint overrides*;*rejects unsupported and unsafe api_llm runtime metadata*;*marks empty provider completions as malformed*;*redacts provider request ids*;*runs api_llm exec through OpenAI-compatible chat completions*;*uses the legacy OpenRouter env*;*accepts task-json as the api_llm exec input contract*;*rejects ambiguous api_llm script*;*rejects secret-like api_llm prompt input*;*records blocked antigravity exec artifacts*;*runs antigravity exec through agy print mode*;*marks antigravity exec with empty stdout*;*accepts task-json as the antigravity exec input contract*;*rejects ambiguous antigravity script*;*rejects secret-like antigravity prompt input*"
+          - name: bridge-worker-colab-transfer
+            result: bridge-worker-colab-transfer
+            timeout_minutes: 12
+            paths: tests/winsmux-bridge.Tests.ps1
+            full_name: "*runs a one-shot Colab worker script*;*passes top-level task-json to the Colab adapter*;*lets the Colab adapter handle authentication*;*rejects prohibited Colab task input*;*classifies JSON-formatted Colab secret task fields*;*rejects WINSMUX_TASK_JSON Colab task input*;*redacts secrets and Drive paths from stored Colab logs*;*uploads only allowed files*;*keeps unstaged file upload locations typed*;*keeps empty stored worker logs local*;*ignores transfer artifacts when selecting the latest stored worker log*;*propagates stored failed run status*;*rejects unsafe run ids*;*rejects reparse points in worker transfer paths*;*excludes build outputs and oversized files*;*rejects directory uploads without an allowlisted directory*;*downloads a remote artifact*;*treats a new explicit download output as a file path*;*rejects explicit download outputs under the winsmux runtime directory*;*returns failing process exit codes when the Colab adapter fails*"
+          - name: bridge-command-queue-reporting
+            result: bridge-command-queue-reporting
+            timeout_minutes: 12
+            paths: tests/winsmux-bridge.Tests.ps1
+            full_name: "*winsmux board command*;*winsmux inbox command*;*winsmux runs command*;*winsmux digest command*"
+          - name: bridge-command-review-dispatch
+            result: bridge-command-review-dispatch
+            timeout_minutes: 12
+            paths: tests/winsmux-bridge.Tests.ps1
+            full_name: "*winsmux review-pack command*;*winsmux dispatch-task routing*;*winsmux explain command*"
+          - name: bridge-provider-commands
+            result: bridge-provider-commands
             timeout_minutes: 15
             paths: tests/winsmux-bridge.Tests.ps1
             full_name: "*winsmux send dispatch payload*;*winsmux task-run command*;*winsmux profile command*;*winsmux public first-run commands*;*winsmux conflict-preflight command*;*conflict preflight helper*;*public first-run helper*;*winsmux readiness adapter helpers*;*winsmux provider-capabilities command*;*winsmux meta-plan command*;*winsmux guard command*;*winsmux skills command*;*winsmux assign command*;*winsmux launcher command*;*winsmux role command provider routing*;*winsmux provider-switch command*;*winsmux orchestra-smoke command*"
