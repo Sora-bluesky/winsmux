@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "artifact_id": "winsmux-local-router-shadow-v03621",
+  "policy_revision": "v03621",
+  "display_name": "winsmux local router shadow v0.36.21",
+  "execution_mode": "shadow_only",
+  "weights_path": "local-small-router-v03621.weights.json",
+  "weights_sha256": "2b0a2bf7d4cf00ff4c85f3bcbc8c0f5bf8ae0cb380396279ded764fac1ed210d",
+  "license": "Apache-2.0 AND MIT",
+  "provenance": "Repository-authored deterministic route-head fixture for offline Shadow Mode evaluation.",
+  "provider_calls_allowed": false,
+  "auto_update_allowed": false,
+  "raw_prompt_storage_allowed": false,
+  "writes_allowed": false,
+  "gpu_required": false,
+  "resource_profile": {
+    "runtime": "PowerShell 7",
+    "max_case_count_in_ci": 16,
+    "expected_cpu_only": true,
+    "max_workspace_write_bytes": 0
+  },
+  "outputs": {
+    "slot_logits": 6,
+    "role_logits": 3,
+    "roles": ["Thinker", "Worker", "Verifier"]
+  }
+}

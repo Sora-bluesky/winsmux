@@ -5096,6 +5096,29 @@ body.is-resizing-workbench {
   overflow: hidden;
 }
 
+.worker-shadow-proposal {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  border-top: 1px solid var(--border-muted);
+  padding-top: 5px;
+  overflow: hidden;
+}
+
+.worker-shadow-proposal-label {
+  flex: 0 0 auto;
+  color: var(--text-secondary);
+  font-family: var(--font-code);
+  font-size: var(--text-2xs);
+  font-weight: 700;
+}
+
+.worker-shadow-proposal[data-focused="true"] .worker-shadow-proposal-label {
+  color: var(--status-focus);
+}
+
 @media (max-width: 900px) {
   #worker-status-pill-bar {
     grid-template-columns: minmax(0, 1fr);

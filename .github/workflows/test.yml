@@ -173,6 +173,11 @@ jobs:
             timeout_minutes: 12
             paths: tests/V03620CoordinatorFoundation.Tests.ps1
             full_name: ""
+          - name: local-router-v03621
+            result: local-router-v03621
+            timeout_minutes: 12
+            paths: tests/V03621LocalRouterShadow.Tests.ps1
+            full_name: ""
     steps:
       - uses: actions/checkout@v6
 
