@@ -80,7 +80,7 @@ Add-Check 'core release publishes arm64 portable binary' ($releaseCore -match 'w
 Add-Check 'English install docs mention arm64 fallback' ($installEn -match 'winsmux-arm64\.exe') 'docs/installation.md'
 Add-Check 'Japanese install docs mention arm64 fallback' ($installJa -match 'winsmux-arm64\.exe') 'docs/installation.ja.md'
 
-Add-Check 'desktop RuntimeProviderId excludes retired standalone gemini provider' ($mainTs -notmatch 'type RuntimeProviderId = [^`r`n]*"gemini"') 'winsmux-app/src/main.ts'
+Add-Check 'desktop RuntimeProviderId excludes retired standalone gemini provider' ($mainTs -notmatch 'type RuntimeProviderId = [^\r\n]*"gemini"') 'winsmux-app/src/main.ts'
 Add-Check 'desktop runtime access note excludes standalone Gemini provider branch' ($mainTs -notmatch 'preference\.provider === "gemini"') 'winsmux-app/src/main.ts'
 Add-Check 'desktop Claude reasoning order treats Ultra as highest' ($mainTs -match 'claude:\s*\["provider-default",\s*"low",\s*"medium",\s*"high",\s*"max",\s*"xhigh"\]') 'winsmux-app/src/main.ts'
 Add-Check 'capability registry has no standalone gemini provider id' ($modelCapabilities -notmatch 'id:\s*"gemini"') 'winsmux-app/src/modelCapabilities.ts'

@@ -418,6 +418,16 @@ function Test-BridgeExecutionProfileKind {
     return ($Value.Trim().ToLowerInvariant() -in $script:BridgeExecutionProfileKinds)
 }
 
+function Test-BridgeReasoningEffortValue {
+    param([AllowNull()][string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return $false
+    }
+
+    return ($Value.Trim().ToLowerInvariant() -in @('provider-default', 'low', 'medium', 'high', 'xhigh', 'max'))
+}
+
 function ConvertTo-BridgeSlotKey {
     param([Parameter(Mandatory = $true)][string]$Key)
 
@@ -466,6 +476,12 @@ function ConvertTo-BridgeSlotEntry {
             $text = ConvertFrom-BridgeYamlScalar $pair.Value
             if ([string]::IsNullOrWhiteSpace($text)) {
                 continue
+            }
+            if ($key -eq 'reasoning_effort') {
+                if (-not (Test-BridgeReasoningEffortValue -Value $text)) {
+                    throw "Invalid agent_slots configuration: unsupported reasoning_effort '$text' for slot '$($slot.slot_id)'. Supported values: provider-default, low, medium, high, xhigh, max."
+                }
+                $text = $text.Trim().ToLowerInvariant()
             }
 
             $slot[$key] = $text
@@ -2056,6 +2072,14 @@ function Test-BridgeSettingValue {
             if ([string]::IsNullOrWhiteSpace($text)) {
                 return $false
             }
+            if ($Name -eq 'reasoning_effort') {
+                if (-not (Test-BridgeReasoningEffortValue -Value $text)) {
+                    return $false
+                }
+
+                $NormalizedValue.Value = $text.Trim().ToLowerInvariant()
+                return $true
+            }
 
             $NormalizedValue.Value = $text
             return $true
@@ -2229,6 +2253,12 @@ function Test-BridgeSettingValue {
                     if ([string]::IsNullOrWhiteSpace($text)) {
                         continue
                     }
+                    if ($propertyKey -eq 'reasoning_effort') {
+                        if (-not (Test-BridgeReasoningEffortValue -Value $text)) {
+                            throw "Invalid roles configuration: unsupported reasoning_effort '$text' for role '$roleKey'. Supported values: provider-default, low, medium, high, xhigh, max."
+                        }
+                        $text = $text.Trim().ToLowerInvariant()
+                    }
 
                     $roleConfig[$propertyKey] = $text
                 }
@@ -2395,6 +2425,11 @@ function Get-BridgeSettings {
     if ($rawProjectSettings -is [System.Collections.IDictionary] -and ($rawProjectSettings.Contains('execution_profile') -or $rawProjectSettings.Contains('execution-profile')) -and -not $projectSettings.Contains('execution_profile')) {
         $rawExecutionProfile = if ($rawProjectSettings.Contains('execution_profile')) { $rawProjectSettings['execution_profile'] } else { $rawProjectSettings['execution-profile'] }
         throw "Invalid execution_profile configuration: unsupported value '$rawExecutionProfile'. Supported values: $($script:BridgeExecutionProfileKinds -join ', ')."
+    }
+
+    if ($rawProjectSettings -is [System.Collections.IDictionary] -and ($rawProjectSettings.Contains('reasoning_effort') -or $rawProjectSettings.Contains('reasoning-effort')) -and -not $projectSettings.Contains('reasoning_effort')) {
+        $rawReasoningEffort = if ($rawProjectSettings.Contains('reasoning_effort')) { $rawProjectSettings['reasoning_effort'] } else { $rawProjectSettings['reasoning-effort'] }
+        throw "Invalid reasoning_effort configuration: unsupported value '$rawReasoningEffort'. Supported values: provider-default, low, medium, high, xhigh, max."
     }
 
     if ($rawProjectSettings -is [System.Collections.IDictionary] -and $rawProjectSettings.Contains('agent_slots')) {
