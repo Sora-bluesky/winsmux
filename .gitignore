@@ -42,6 +42,8 @@ docs/project/*
 !docs/project/v1-release-gate.md
 !docs/project/v03618-release-hardening.md
 !docs/project/v03619-repo-audit.md
+!docs/project/v03620-coordinator-foundation.md
+!docs/project/v03620-coordinator-baseline.md
 docs/*-research*.md
 docs/review-notes*.md
 docs/ci-checklist*.md
@@ -80,6 +82,7 @@ tests/*
 !tests/EnterpriseStrategyAlignment.Tests.ps1
 !tests/ReviewLatencyHardening.Tests.ps1
 !tests/V03619RepoAudit.Tests.ps1
+!tests/V03620CoordinatorFoundation.Tests.ps1
 !tests/BuilderWorktree.Tests.ps1
 !tests/codex-subagent-worktree-guard.Tests.ps1
 !tests/PublicSurfacePolicy.Tests.ps1

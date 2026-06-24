@@ -168,6 +168,11 @@ jobs:
             timeout_minutes: 12
             paths: tests/V03619RepoAudit.Tests.ps1
             full_name: ""
+          - name: coordinator-v03620
+            result: coordinator-v03620
+            timeout_minutes: 12
+            paths: tests/V03620CoordinatorFoundation.Tests.ps1
+            full_name: ""
     steps:
       - uses: actions/checkout@v6
 
