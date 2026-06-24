@@ -1,5 +1,5 @@
 use std::io::{self, Write};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::env;
 use std::path::{Path, PathBuf};
 
@@ -21,6 +21,236 @@ pub fn warm_session_base(socket_name: Option<&str>) -> String {
 fn psmux_dir() -> Option<std::path::PathBuf> {
     let home = env::var("USERPROFILE").or_else(|_| env::var("HOME")).ok()?;
     Some(Path::new(&home).join(".psmux"))
+}
+
+pub const SESSION_REGISTRY_PROTOCOL_VERSION: u32 = 1;
+const SESSION_REGISTRY_STARTUP_DEADLINE: Duration = Duration::from_secs(60);
+const LEGACY_PORT_FILE_STARTUP_GRACE: Duration = Duration::from_secs(5);
+
+pub fn session_registry_now_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default()
+}
+
+pub fn new_session_instance_nonce() -> String {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+
+    let seed = RandomState::new();
+    let mut hasher = seed.build_hasher();
+    hasher.write_u128(session_registry_now_millis());
+    hasher.write_u32(std::process::id());
+    format!("{:016x}", hasher.finish())
+}
+
+pub fn session_registry_path(psmux_dir: &Path, base: &str) -> PathBuf {
+    psmux_dir.join(format!("{base}.registry.json"))
+}
+
+pub fn remove_session_registry_files(psmux_dir: &Path, base: &str) {
+    let registry_path = session_registry_path(psmux_dir, base);
+    let tmp_path = psmux_dir.join(format!("{base}.registry.json.tmp"));
+    let _ = std::fs::remove_file(registry_path);
+    let _ = std::fs::remove_file(tmp_path);
+}
+
+pub fn remove_session_state_files(psmux_dir: &Path, base: &str) {
+    let _ = std::fs::remove_file(psmux_dir.join(format!("{base}.port")));
+    let _ = std::fs::remove_file(psmux_dir.join(format!("{base}.key")));
+    remove_session_registry_files(psmux_dir, base);
+}
+
+pub fn write_session_registry(
+    psmux_dir: &Path,
+    base: &str,
+    port: u16,
+    owner: &str,
+    state: &str,
+    instance_nonce: &str,
+    created_at: u128,
+    ready_at: Option<u128>,
+) -> io::Result<()> {
+    let namespace = session_namespace_from_base(base);
+    let registry_path = session_registry_path(psmux_dir, base);
+    let tmp_path = psmux_dir.join(format!("{base}.registry.json.tmp"));
+    let server_exe = env::current_exe()
+        .ok()
+        .map(|path| normalize_socket_selector_path(&path));
+    let payload = serde_json::json!({
+        "protocol_version": SESSION_REGISTRY_PROTOCOL_VERSION,
+        "session": base,
+        "namespace": namespace,
+        "server_pid": std::process::id(),
+        "process_started_at": created_at,
+        "server_exe": server_exe,
+        "instance_nonce": instance_nonce,
+        "port": port,
+        "state": state,
+        "owner": owner,
+        "created_at": created_at,
+        "ready_at": ready_at
+    });
+    let bytes = serde_json::to_vec_pretty(&payload).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("failed to serialize session registry: {err}"),
+        )
+    })?;
+    std::fs::write(&tmp_path, bytes)?;
+    std::fs::rename(&tmp_path, &registry_path)?;
+    Ok(())
+}
+
+fn session_namespace_from_base(base: &str) -> Option<&str> {
+    let (namespace, session_name) = base.split_once("__")?;
+    if namespace.is_empty() || session_name.is_empty() || is_warm_session(base) {
+        None
+    } else {
+        Some(namespace)
+    }
+}
+
+fn read_session_registry(psmux_dir: &Path, base: &str) -> Option<serde_json::Value> {
+    let text = std::fs::read_to_string(session_registry_path(psmux_dir, base)).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+fn registry_u128(registry: &serde_json::Value, key: &str) -> Option<u128> {
+    registry[key].as_u64().map(u128::from)
+}
+
+fn registry_is_for_base(registry: &serde_json::Value, base: &str) -> bool {
+    registry["protocol_version"].as_u64() == Some(SESSION_REGISTRY_PROTOCOL_VERSION as u64)
+        && registry["session"].as_str() == Some(base)
+}
+
+fn registry_server_exe_matches_current(registry: &serde_json::Value) -> bool {
+    let Some(server_exe) = registry["server_exe"].as_str() else {
+        return false;
+    };
+    let Some(current_exe) = env::current_exe()
+        .ok()
+        .map(|path| normalize_socket_selector_path(&path))
+    else {
+        return false;
+    };
+    server_exe == current_exe
+}
+
+fn registry_has_cleanup_ownership_evidence(registry: &serde_json::Value, base: &str) -> bool {
+    registry_is_for_base(registry, base)
+        && registry["server_pid"].as_u64().is_some_and(|pid| pid > 0)
+        && registry_u128(registry, "process_started_at").is_some()
+        && registry["instance_nonce"]
+            .as_str()
+            .is_some_and(|nonce| !nonce.trim().is_empty())
+        && registry_server_exe_matches_current(registry)
+}
+
+fn registry_server_pid(registry: &serde_json::Value, base: &str) -> Option<u32> {
+    if !registry_is_for_base(registry, base) || !registry_server_exe_matches_current(registry) {
+        return None;
+    }
+    let pid = registry["server_pid"].as_u64()?;
+    u32::try_from(pid).ok().filter(|pid| *pid > 0)
+}
+
+#[cfg(windows)]
+fn process_id_is_alive(pid: u32) -> bool {
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn OpenProcess(desired_access: u32, inherit_handle: i32, process_id: u32) -> isize;
+        fn CloseHandle(handle: isize) -> i32;
+    }
+
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle == 0 || handle == -1 {
+            return false;
+        }
+        let _ = CloseHandle(handle);
+        true
+    }
+}
+
+#[cfg(not(windows))]
+fn process_id_is_alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn registry_is_within_startup_deadline(registry: &serde_json::Value, base: &str) -> bool {
+    if !registry_is_for_base(registry, base) || registry["state"].as_str() != Some("starting") {
+        return false;
+    }
+    let Some(created_at) = registry_u128(registry, "created_at") else {
+        return false;
+    };
+    let elapsed_ms = session_registry_now_millis().saturating_sub(created_at);
+    elapsed_ms < SESSION_REGISTRY_STARTUP_DEADLINE.as_millis()
+}
+
+fn port_file_is_recent(path: &Path, max_age: Duration) -> bool {
+    std::fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .map(|elapsed| elapsed < max_age)
+        .unwrap_or(false)
+}
+
+fn authenticated_session_responds(psmux_dir: &Path, base: &str, port: u16) -> bool {
+    let key_path = psmux_dir.join(format!("{base}.key"));
+    let Ok(session_key) = std::fs::read_to_string(key_path) else {
+        return false;
+    };
+    let session_key = session_key.trim();
+    if session_key.is_empty() {
+        return false;
+    }
+    let addr = format!("127.0.0.1:{port}");
+    let Ok(sock_addr) = addr.parse() else {
+        return false;
+    };
+    let Ok(mut stream) =
+        std::net::TcpStream::connect_timeout(&sock_addr, Duration::from_millis(150))
+    else {
+        return false;
+    };
+    let _ = stream.set_nodelay(true);
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(300)));
+    if write!(stream, "AUTH {session_key}\n").is_err() {
+        return false;
+    }
+    if std::io::Write::write_all(&mut stream, b"session-info\n").is_err() {
+        return false;
+    }
+    if stream.flush().is_err() {
+        return false;
+    }
+    let mut reader = std::io::BufReader::new(stream);
+    let mut auth_line = String::new();
+    std::io::BufRead::read_line(&mut reader, &mut auth_line).is_ok()
+        && auth_line.trim() == "OK"
+}
+
+fn cleanup_is_allowed_for_dead_state(
+    psmux_dir: &Path,
+    base: &str,
+    port_path: &Path,
+    registry: Option<&serde_json::Value>,
+) -> bool {
+    if let Some(registry) = registry {
+        return registry_has_cleanup_ownership_evidence(registry, base);
+    }
+    !port_file_is_recent(port_path, LEGACY_PORT_FILE_STARTUP_GRACE)
+        && !session_registry_path(psmux_dir, base).exists()
 }
 
 pub fn socket_path_session_base(socket_path: &str) -> Option<String> {
@@ -204,8 +434,7 @@ fn cleanup_warm_server_for_socket_in_dir(psmux_dir: &Path, socket_name: Option<&
     }
 
     if can_remove {
-        let _ = std::fs::remove_file(&port_path);
-        let _ = std::fs::remove_file(&key_path);
+        remove_session_state_files(psmux_dir, &warm_base);
     }
 }
 
@@ -259,29 +488,50 @@ pub fn cleanup_stale_port_files() {
         Ok(h) => h,
         Err(_) => return,
     };
-    let psmux_dir = format!("{}\\.psmux", home);
+    let psmux_dir = Path::new(&home).join(".psmux");
     if let Ok(entries) = std::fs::read_dir(&psmux_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().map(|e| e == "port").unwrap_or(false) {
+                let Some(base) = path.file_stem().and_then(|value| value.to_str()) else {
+                    continue;
+                };
+                let registry = read_session_registry(&psmux_dir, base);
+                if registry
+                    .as_ref()
+                    .is_some_and(|value| registry_is_within_startup_deadline(value, base))
+                    || (registry.is_none()
+                        && port_file_is_recent(&path, LEGACY_PORT_FILE_STARTUP_GRACE))
+                {
+                    continue;
+                }
+                if registry
+                    .as_ref()
+                    .and_then(|value| registry_server_pid(value, base))
+                    .is_some_and(process_id_is_alive)
+                {
+                    continue;
+                }
+                let cleanup_allowed =
+                    cleanup_is_allowed_for_dead_state(&psmux_dir, base, &path, registry.as_ref());
                 if let Ok(port_str) = std::fs::read_to_string(&path) {
                     if let Ok(port) = port_str.trim().parse::<u16>() {
-                        let addr = format!("127.0.0.1:{}", port);
-                        if std::net::TcpStream::connect_timeout(
-                            &addr.parse().unwrap(),
-                            Duration::from_millis(5)
-                        ).is_err() {
-                            let _ = std::fs::remove_file(&path);
-                            // Also remove the matching .key file to prevent
-                            // orphaned keys from accumulating (issue #136).
-                            let key_path = path.with_extension("key");
-                            let _ = std::fs::remove_file(&key_path);
+                        if authenticated_session_responds(&psmux_dir, base, port) {
+                            continue;
+                        }
+                        if port_is_open(port, Duration::from_millis(100)) && registry.is_none() {
+                            continue;
+                        }
+                        if cleanup_allowed {
+                            remove_session_state_files(&psmux_dir, base);
                         }
                     } else {
-                        let _ = std::fs::remove_file(&path);
-                        let key_path = path.with_extension("key");
-                        let _ = std::fs::remove_file(&key_path);
+                        if cleanup_allowed {
+                            remove_session_state_files(&psmux_dir, base);
+                        }
                     }
+                } else if cleanup_allowed {
+                    remove_session_state_files(&psmux_dir, base);
                 }
             }
         }
@@ -335,9 +585,9 @@ pub fn send_control(line: String) -> io::Result<()> {
     let port = std::fs::read_to_string(&path).ok().and_then(|s| s.trim().parse::<u16>().ok()).ok_or_else(|| io::Error::new(io::ErrorKind::Other, format!("no server running on session '{}'", target)))?.clone();
     let session_key = read_session_key(&target).unwrap_or_default();
     let addr: std::net::SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-    let mut stream = std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(100))?;
+    let mut stream = std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(2000))?;
     let _ = stream.set_nodelay(true);
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
     let _ = write!(stream, "AUTH {}\n", session_key);
     if let Some(ref ft) = full_target {
         let _ = write!(stream, "TARGET {}\n", ft);
@@ -765,6 +1015,17 @@ mod tests {
             .expect("test should write warm port file");
         std::fs::write(dir.join("preview____warm__.key"), "secret")
             .expect("test should write warm key file");
+        write_session_registry(
+            &dir,
+            "preview____warm__",
+            12345,
+            "warm",
+            "ready",
+            "warm-cleanup-nonce",
+            session_registry_now_millis().saturating_sub(120_000),
+            Some(session_registry_now_millis().saturating_sub(119_000)),
+        )
+        .expect("test should write warm registry file");
         std::fs::write(dir.join("preview__0.port"), "12345")
             .expect("test should write normal port file");
         std::fs::write(dir.join("other____warm__.port"), "12346")
@@ -774,8 +1035,261 @@ mod tests {
 
         assert!(!dir.join("preview____warm__.port").exists());
         assert!(!dir.join("preview____warm__.key").exists());
+        assert!(!session_registry_path(&dir, "preview____warm__").exists());
         assert!(dir.join("preview__0.port").exists());
         assert!(dir.join("other____warm__.port").exists());
+    }
+
+    #[test]
+    fn cleanup_stale_port_files_preserves_recent_starting_registry_files() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let old_userprofile = env::var_os("USERPROFILE");
+        let old_home = env::var_os("HOME");
+        let temp_home = make_temp_psmux_home("recent-starting-registry");
+        let psmux_dir = temp_home.join(".psmux");
+        let port_path = psmux_dir.join("starting.port");
+        let key_path = psmux_dir.join("starting.key");
+
+        std::fs::write(&port_path, "not-a-port")
+            .expect("test should write recent port file");
+        std::fs::write(&key_path, "secret")
+            .expect("test should write recent key file");
+        write_session_registry(
+            &psmux_dir,
+            "starting",
+            42123,
+            "normal",
+            "starting",
+            "fresh-starting-nonce",
+            session_registry_now_millis(),
+            None,
+        )
+        .expect("test should write starting registry");
+
+        env::set_var("USERPROFILE", &temp_home);
+        env::set_var("HOME", &temp_home);
+        cleanup_stale_port_files();
+
+        restore_env("USERPROFILE", old_userprofile);
+        restore_env("HOME", old_home);
+        let port_exists = port_path.exists();
+        let key_exists = key_path.exists();
+        let _ = std::fs::remove_dir_all(&temp_home);
+
+        assert!(port_exists, "recent starting .port file must not be deleted");
+        assert!(key_exists, "recent starting .key file must not be deleted");
+    }
+
+    #[test]
+    fn cleanup_stale_port_files_removes_old_versioned_dead_registry_files() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let old_userprofile = env::var_os("USERPROFILE");
+        let old_home = env::var_os("HOME");
+        let temp_home = make_temp_psmux_home("old-dead-registry");
+        let psmux_dir = temp_home.join(".psmux");
+        let port_path = psmux_dir.join("dead.port");
+        let key_path = psmux_dir.join("dead.key");
+        let registry_path = session_registry_path(&psmux_dir, "dead");
+        let created_at = session_registry_now_millis().saturating_sub(120_000);
+
+        std::fs::write(&port_path, "not-a-port")
+            .expect("test should write stale port file");
+        std::fs::write(&key_path, "secret").expect("test should write stale key file");
+        write_session_registry(
+            &psmux_dir,
+            "dead",
+            42124,
+            "normal",
+            "ready",
+            "old-dead-nonce",
+            created_at,
+            Some(created_at + 250),
+        )
+        .expect("test should write dead registry");
+        let mut registry: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&registry_path).expect("test should read dead registry"),
+        )
+        .expect("test registry should be valid JSON");
+        registry["server_pid"] = serde_json::json!(u32::MAX);
+        std::fs::write(
+            &registry_path,
+            serde_json::to_vec_pretty(&registry).expect("test should serialize dead registry"),
+        )
+        .expect("test should rewrite dead registry");
+
+        env::set_var("USERPROFILE", &temp_home);
+        env::set_var("HOME", &temp_home);
+        cleanup_stale_port_files();
+
+        restore_env("USERPROFILE", old_userprofile);
+        restore_env("HOME", old_home);
+        let port_exists = port_path.exists();
+        let key_exists = key_path.exists();
+        let registry_exists = registry_path.exists();
+        let _ = std::fs::remove_dir_all(&temp_home);
+
+        assert!(!port_exists, "old dead .port file should be removed");
+        assert!(!key_exists, "old dead .key file should be removed");
+        assert!(
+            !registry_exists,
+            "old dead registry file should be removed with port/key"
+        );
+    }
+
+    #[test]
+    fn cleanup_stale_port_files_preserves_mismatched_registry_files() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let old_userprofile = env::var_os("USERPROFILE");
+        let old_home = env::var_os("HOME");
+        let temp_home = make_temp_psmux_home("mismatched-registry");
+        let psmux_dir = temp_home.join(".psmux");
+        let port_path = psmux_dir.join("victim.port");
+        let key_path = psmux_dir.join("victim.key");
+        let registry_path = session_registry_path(&psmux_dir, "victim");
+        let created_at = session_registry_now_millis().saturating_sub(120_000);
+        let server_exe = env::current_exe()
+            .ok()
+            .map(|path| normalize_socket_selector_path(&path));
+
+        std::fs::write(&port_path, "not-a-port")
+            .expect("test should write victim port file");
+        std::fs::write(&key_path, "secret").expect("test should write victim key file");
+        let registry = serde_json::json!({
+            "protocol_version": SESSION_REGISTRY_PROTOCOL_VERSION,
+            "session": "other",
+            "namespace": null,
+            "server_pid": std::process::id(),
+            "process_started_at": created_at,
+            "server_exe": server_exe,
+            "instance_nonce": "mismatched-nonce",
+            "port": 42125,
+            "state": "ready",
+            "owner": "normal",
+            "created_at": created_at,
+            "ready_at": created_at + 250
+        });
+        std::fs::write(
+            &registry_path,
+            serde_json::to_vec_pretty(&registry).expect("test should serialize registry"),
+        )
+        .expect("test should write mismatched registry");
+
+        env::set_var("USERPROFILE", &temp_home);
+        env::set_var("HOME", &temp_home);
+        cleanup_stale_port_files();
+
+        restore_env("USERPROFILE", old_userprofile);
+        restore_env("HOME", old_home);
+        let port_exists = port_path.exists();
+        let key_exists = key_path.exists();
+        let registry_exists = registry_path.exists();
+        let _ = std::fs::remove_dir_all(&temp_home);
+
+        assert!(port_exists, "mismatched registry must not remove .port");
+        assert!(key_exists, "mismatched registry must not remove .key");
+        assert!(registry_exists, "mismatched registry must be preserved");
+    }
+
+    #[test]
+    fn cleanup_stale_port_files_preserves_live_registry_process_files() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let old_userprofile = env::var_os("USERPROFILE");
+        let old_home = env::var_os("HOME");
+        let temp_home = make_temp_psmux_home("live-registry-process");
+        let psmux_dir = temp_home.join(".psmux");
+        let port_path = psmux_dir.join("live.port");
+        let key_path = psmux_dir.join("live.key");
+        let registry_path = session_registry_path(&psmux_dir, "live");
+        let created_at = session_registry_now_millis().saturating_sub(120_000);
+        let server_exe = env::current_exe()
+            .ok()
+            .map(|path| normalize_socket_selector_path(&path));
+
+        std::fs::write(&port_path, "not-a-port")
+            .expect("test should write live port file");
+        std::fs::write(&key_path, "secret").expect("test should write live key file");
+        let registry = serde_json::json!({
+            "protocol_version": SESSION_REGISTRY_PROTOCOL_VERSION,
+            "session": "live",
+            "namespace": null,
+            "server_pid": std::process::id(),
+            "process_started_at": created_at,
+            "server_exe": server_exe,
+            "instance_nonce": "live-registry-nonce",
+            "port": 42126,
+            "state": "ready",
+            "owner": "normal",
+            "created_at": created_at,
+            "ready_at": created_at + 250
+        });
+        std::fs::write(
+            &registry_path,
+            serde_json::to_vec_pretty(&registry).expect("test should serialize registry"),
+        )
+        .expect("test should write live registry");
+
+        env::set_var("USERPROFILE", &temp_home);
+        env::set_var("HOME", &temp_home);
+        cleanup_stale_port_files();
+
+        restore_env("USERPROFILE", old_userprofile);
+        restore_env("HOME", old_home);
+        let port_exists = port_path.exists();
+        let key_exists = key_path.exists();
+        let registry_exists = registry_path.exists();
+        let _ = std::fs::remove_dir_all(&temp_home);
+
+        assert!(port_exists, "live registry process must preserve .port");
+        assert!(key_exists, "live registry process must preserve .key");
+        assert!(registry_exists, "live registry process must preserve registry");
+    }
+
+    #[test]
+    fn write_session_registry_publishes_versioned_non_secret_metadata() {
+        let dir = make_temp_psmux_dir("session-registry-metadata");
+        let created_at = 1_782_196_000_000_u128;
+        let ready_at = Some(created_at + 250);
+        let nonce = "nonce-for-test";
+
+        write_session_registry(
+            &dir,
+            "ops__bench",
+            42123,
+            "normal",
+            "ready",
+            nonce,
+            created_at,
+            ready_at,
+        )
+        .expect("test should write session registry");
+
+        let path = session_registry_path(&dir, "ops__bench");
+        let text = std::fs::read_to_string(&path).expect("test should read registry");
+        let json: serde_json::Value =
+            serde_json::from_str(&text).expect("registry should be valid JSON");
+        let _ = std::fs::remove_dir_all(dir.parent().expect("temp dir should have parent"));
+
+        assert_eq!(
+            json["protocol_version"].as_u64(),
+            Some(SESSION_REGISTRY_PROTOCOL_VERSION as u64)
+        );
+        assert_eq!(json["session"], "ops__bench");
+        assert_eq!(json["namespace"], "ops");
+        assert_eq!(json["server_pid"].as_u64(), Some(std::process::id() as u64));
+        assert!(
+            json["server_exe"].as_str().is_some_and(|value| !value.is_empty()),
+            "session registry should include launch path evidence"
+        );
+        assert_eq!(json["instance_nonce"], nonce);
+        assert_eq!(json["port"], 42123);
+        assert_eq!(json["state"], "ready");
+        assert_eq!(json["owner"], "normal");
+        assert_eq!(json["created_at"].as_u64(), Some(created_at as u64));
+        assert_eq!(json["ready_at"].as_u64(), Some(ready_at.unwrap() as u64));
+        assert!(
+            !text.contains("secret"),
+            "session registry metadata must not contain credential material"
+        );
     }
 
     fn make_temp_psmux_dir(name: &str) -> std::path::PathBuf {

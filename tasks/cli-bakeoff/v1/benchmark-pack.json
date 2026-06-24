@@ -72,7 +72,7 @@
       "role": "implementation-review",
       "cli": "Codex",
       "model": "gpt-5.5",
-      "effort": "medium",
+      "effort": "high",
       "display_model": "Codex / gpt-5.5",
       "auth_mode": "codex-local",
       "scored": true

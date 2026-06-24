@@ -46,27 +46,65 @@ function Invoke-Winsmux {
     param(
         [Parameter(Mandatory = $true)]
         [string[]]$Arguments,
-        [switch]$CaptureOutput
+        [switch]$CaptureOutput,
+        [AllowEmptyString()][string]$TargetSessionName = ''
     )
 
-    if ($CaptureOutput) {
-        $output = Invoke-WinsmuxBridgeCommand -WinsmuxBin $script:winsmuxBin -Arguments $Arguments 2>&1
-        $exitCode = $LASTEXITCODE
-        if ($exitCode -ne 0) {
-            $message = ($output | Out-String).Trim()
-            if ([string]::IsNullOrWhiteSpace($message)) {
-                $message = 'unknown winsmux error'
-            }
+    function Format-WinsmuxArgumentsForError {
+        param([Parameter(Mandatory = $true)][string[]]$InputArguments)
 
-            throw "winsmux $($Arguments -join ' ') failed: $message"
+        $safeArguments = @($InputArguments)
+        if ($safeArguments.Count -gt 0 -and $safeArguments[0] -eq 'set-environment' -and $safeArguments -notcontains '-u') {
+            $valueIndex = $safeArguments.Count - 1
+            if ($valueIndex -ge 0) {
+                $safeArguments[$valueIndex] = '[redacted]'
+            }
         }
 
-        return $output
+        return ($safeArguments -join ' ')
     }
 
-    Invoke-WinsmuxBridgeCommand -WinsmuxBin $script:winsmuxBin -Arguments $Arguments | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        throw "winsmux $($Arguments -join ' ') failed with exit code $LASTEXITCODE."
+    $safeArgumentText = Format-WinsmuxArgumentsForError -InputArguments $Arguments
+
+    $previousPsmuxTargetSession = $env:PSMUX_TARGET_SESSION
+    $previousWinsmuxTargetSession = $env:WINSMUX_TARGET_SESSION
+    try {
+        if (-not [string]::IsNullOrWhiteSpace($TargetSessionName)) {
+            $env:PSMUX_TARGET_SESSION = $TargetSessionName
+            $env:WINSMUX_TARGET_SESSION = $TargetSessionName
+        }
+
+        if ($CaptureOutput) {
+            $output = Invoke-WinsmuxBridgeCommand -WinsmuxBin $script:winsmuxBin -Arguments $Arguments 2>&1
+            $exitCode = $LASTEXITCODE
+            if ($exitCode -ne 0) {
+                $message = ($output | Out-String).Trim()
+                if ([string]::IsNullOrWhiteSpace($message)) {
+                    $message = 'unknown winsmux error'
+                }
+
+                throw "winsmux $safeArgumentText failed: $message"
+            }
+
+            return $output
+        }
+
+        Invoke-WinsmuxBridgeCommand -WinsmuxBin $script:winsmuxBin -Arguments $Arguments | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "winsmux $safeArgumentText failed with exit code $LASTEXITCODE."
+        }
+    } finally {
+        if ($null -eq $previousPsmuxTargetSession) {
+            Remove-Item Env:PSMUX_TARGET_SESSION -ErrorAction SilentlyContinue
+        } else {
+            $env:PSMUX_TARGET_SESSION = $previousPsmuxTargetSession
+        }
+
+        if ($null -eq $previousWinsmuxTargetSession) {
+            Remove-Item Env:WINSMUX_TARGET_SESSION -ErrorAction SilentlyContinue
+        } else {
+            $env:WINSMUX_TARGET_SESSION = $previousWinsmuxTargetSession
+        }
     }
 }
 
@@ -213,7 +251,7 @@ function Ensure-OrchestraBootstrapSession {
         }
     }
 
-    Invoke-Winsmux -Arguments @('new-session', '-d', '-s', $SessionName)
+    Invoke-Winsmux -Arguments @('new-session', '-d', '-s', $SessionName, '--', 'cmd.exe', '/K', 'title winsmux-orchestra-bootstrap')
     $readiness = Wait-OrchestraBootstrapReadiness -SessionName $SessionName -TimeoutSeconds $TimeoutSeconds -ExpectedPaneCount $ExpectedPaneCount
     if ($readiness.Ready) {
         return [PSCustomObject][ordered]@{
@@ -688,7 +726,20 @@ function Set-OrchestraSessionEnvironment {
         [Parameter(Mandatory = $true)][string]$Value
     )
 
-    Invoke-Winsmux -Arguments @('set-environment', '-t', $SessionName, $Name, $Value)
+    $lastError = $null
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        try {
+            Invoke-Winsmux -Arguments @('set-environment', '-t', $SessionName, $Name, $Value)
+            return
+        } catch {
+            $lastError = $_
+            if ($attempt -lt 5) {
+                Start-Sleep -Milliseconds (250 * $attempt)
+            }
+        }
+    }
+
+    throw $lastError
 }
 
 function Clear-OrchestraSessionEnvironment {
@@ -789,7 +840,8 @@ function New-OrchestraPaneBootstrapPlan {
 function Start-OrchestraPaneBootstrap {
     param(
         [Parameter(Mandatory = $true)][string]$PaneId,
-        [Parameter(Mandatory = $true)][string]$PlanPath
+        [Parameter(Mandatory = $true)][string]$PlanPath,
+        [Parameter(Mandatory = $true)][string]$SessionName
     )
 
     $bootstrapScriptPath = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'orchestra-pane-bootstrap.ps1'))
@@ -803,7 +855,7 @@ function Start-OrchestraPaneBootstrap {
         $supportsInterrupt = $true
     }
 
-    Wait-PaneShellReady -PaneId $PaneId
+    Wait-PaneShellReady -PaneId $PaneId -SessionName $SessionName
     if ($supportsInterrupt) {
         Invoke-Bridge -Arguments @('keys', $PaneId, 'C-c') -AllowFailure | Out-Null
         Start-Sleep -Milliseconds 200
@@ -1131,13 +1183,14 @@ function Get-TailPreview {
 function Wait-PaneShellReady {
     param(
         [Parameter(Mandatory = $true)][string]$PaneId,
+        [Parameter(Mandatory = $true)][string]$SessionName,
         [int]$TimeoutSeconds = 30
     )
 
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
         try {
-            $snapshot = Invoke-Winsmux -Arguments @('capture-pane', '-t', $PaneId, '-p', '-J', '-S', '-80') -CaptureOutput
+            $snapshot = Invoke-Winsmux -Arguments @('capture-pane', '-t', $PaneId, '-p', '-J', '-S', '-80') -CaptureOutput -TargetSessionName $SessionName
             $text = ($snapshot | Out-String).TrimEnd()
             if ($null -ne (Get-LastNonEmptyLine -Text $text)) {
                 return
@@ -1149,7 +1202,7 @@ function Wait-PaneShellReady {
     }
 
     try {
-        $finalSnapshot = Invoke-Winsmux -Arguments @('capture-pane', '-t', $PaneId, '-p', '-J', '-S', '-80') -CaptureOutput
+        $finalSnapshot = Invoke-Winsmux -Arguments @('capture-pane', '-t', $PaneId, '-p', '-J', '-S', '-80') -CaptureOutput -TargetSessionName $SessionName
         $finalText = ($finalSnapshot | Out-String).TrimEnd()
         throw "Timed out waiting for pane $PaneId shell prompt after respawn. Last output:`n$(Get-TailPreview -Text $finalText)"
     } catch {
@@ -1397,12 +1450,13 @@ function Wait-AgentReady {
     param(
         [Parameter(Mandatory = $true)][string]$PaneId,
         [Parameter(Mandatory = $true)][string]$Agent,
+        [Parameter(Mandatory = $true)][string]$SessionName,
         [int]$TimeoutSeconds = 60
     )
 
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
-        $snapshot = Invoke-Winsmux -Arguments @('capture-pane', '-t', $PaneId, '-p', '-J', '-S', '-80') -CaptureOutput
+        $snapshot = Invoke-Winsmux -Arguments @('capture-pane', '-t', $PaneId, '-p', '-J', '-S', '-80') -CaptureOutput -TargetSessionName $SessionName
         $text = ($snapshot | Out-String).TrimEnd()
         if (Test-AgentPromptText -Text $text -Agent $Agent) {
             return
@@ -1411,7 +1465,7 @@ function Wait-AgentReady {
         Start-Sleep -Seconds 2
     }
 
-    $finalSnapshot = Invoke-Winsmux -Arguments @('capture-pane', '-t', $PaneId, '-p', '-J', '-S', '-80') -CaptureOutput
+    $finalSnapshot = Invoke-Winsmux -Arguments @('capture-pane', '-t', $PaneId, '-p', '-J', '-S', '-80') -CaptureOutput -TargetSessionName $SessionName
     $finalText = ($finalSnapshot | Out-String).TrimEnd()
     throw "Timed out waiting for pane $PaneId to become ready. Last output:`n$(Get-TailPreview -Text $finalText)"
 }
@@ -1772,7 +1826,7 @@ function Invoke-OrchestraStartupRollback {
         }
 
         try {
-            Invoke-Winsmux -Arguments @('kill-pane', '-t', $trackedPaneId)
+            Invoke-Winsmux -Arguments @('kill-pane', '-t', $trackedPaneId) -TargetSessionName $sessionName
             $removedPaneIds.Add($trackedPaneId) | Out-Null
         } catch {
             $rollbackErrors.Add("kill-pane $trackedPaneId failed: $($_.Exception.Message)") | Out-Null
@@ -1781,8 +1835,8 @@ function Invoke-OrchestraStartupRollback {
 
     if (-not [string]::IsNullOrWhiteSpace($BootstrapPaneId) -and -not [string]::IsNullOrWhiteSpace($ProjectDir)) {
         try {
-            Invoke-Winsmux -Arguments @('respawn-pane', '-k', '-t', $BootstrapPaneId, '-c', $ProjectDir)
-            Wait-PaneShellReady -PaneId $BootstrapPaneId
+            Invoke-Winsmux -Arguments @('respawn-pane', '-k', '-t', $BootstrapPaneId, '-c', $ProjectDir) -TargetSessionName $sessionName
+            Wait-PaneShellReady -PaneId $BootstrapPaneId -SessionName $sessionName
             $bootstrapRespawned = $true
         } catch {
             $rollbackErrors.Add("respawn-pane $BootstrapPaneId failed: $($_.Exception.Message)") | Out-Null
@@ -1926,7 +1980,7 @@ function Test-PaneBootstrapInvariants {
 
     # Check pane is alive
     try {
-        Invoke-Winsmux -Arguments @('display-message', '-t', $PaneId, '-p', '#{pane_id}') -CaptureOutput | Out-Null
+        Invoke-Winsmux -Arguments @('display-message', '-t', $PaneId, '-p', '#{pane_id}') -CaptureOutput -TargetSessionName $sessionName | Out-Null
     } catch {
         $failures.Add("pane $PaneId does not exist")
         return $failures
@@ -1934,12 +1988,12 @@ function Test-PaneBootstrapInvariants {
 
     # Check cwd by sending pwd and reading capture-pane
     try {
-        $cwdOutput = Invoke-Winsmux -Arguments @('display-message', '-t', $PaneId, '-p', '#{pane_current_path}') -CaptureOutput
+        $cwdOutput = Invoke-Winsmux -Arguments @('display-message', '-t', $PaneId, '-p', '#{pane_current_path}') -CaptureOutput -TargetSessionName $sessionName
         $actualCwd = ([string]$cwdOutput).Trim().Replace('\', '/')
         $expectedCwd = $ExpectedLaunchDir.Replace('\', '/')
         if ($actualCwd -and $expectedCwd -and ($actualCwd.ToLowerInvariant() -ne $expectedCwd.ToLowerInvariant())) {
             if (-not (Test-OrchestraBootstrapMarker -BootstrapMarkerPath $BootstrapMarkerPath -ExpectedLaunchDir $ExpectedLaunchDir)) {
-                $snapshot = Invoke-Winsmux -Arguments @('capture-pane', '-t', $PaneId, '-p', '-J', '-S', '-80') -CaptureOutput
+                $snapshot = Invoke-Winsmux -Arguments @('capture-pane', '-t', $PaneId, '-p', '-J', '-S', '-80') -CaptureOutput -TargetSessionName $sessionName
                 $snapshotText = ($snapshot | Out-String).TrimEnd()
                 if (-not (Test-PaneCaptureContainsLaunchDir -CaptureText $snapshotText -ExpectedLaunchDir $ExpectedLaunchDir)) {
                     $failures.Add("cwd mismatch: expected=$ExpectedLaunchDir actual=$actualCwd")
@@ -2147,31 +2201,30 @@ if ($MyInvocation.InvocationName -ne '.') {
         }
 
         $orchestraServer = Ensure-OrchestraBootstrapSession -SessionName $sessionName -TimeoutSeconds 60
-        Write-Warning ("Bootstrap ensure result type: " + $orchestraServer.GetType().FullName + " BootstrapReady=" + $orchestraServer.BootstrapReady + " Mode=" + $orchestraServer.BootstrapMode)
 
-    # Clean up any leftover orchestra panes in default session (#213)
-    try {
-        $existingPanes = Invoke-WinsmuxBridgeCommand -WinsmuxBin $winsmuxBin -Arguments @('list-panes', '-F', '#{pane_id} #{pane_title}') 2>$null
-        if ($LASTEXITCODE -eq 0 -and $existingPanes) {
-                    $orchestraLabels = @('worker-', 'builder-', 'researcher-', 'reviewer-')
-            foreach ($line in ($existingPanes -split "`n")) {
-                $parts = $line.Trim() -split '\s+', 2
-                if ($parts.Count -ge 2) {
-                    $paneId = $parts[0]
-                    $title = $parts[1]
-                    foreach ($label in $orchestraLabels) {
-                        if ($title -like "$label*") {
-                            Write-WinsmuxLog -Level INFO -Event 'preflight.default_pane.kill' -Message "Removing leftover orchestra pane $paneId ($title) from default session." -Data @{ pane_id = $paneId; title = $title } | Out-Null
-                            Invoke-WinsmuxBridgeCommand -WinsmuxBin $winsmuxBin -Arguments @('kill-pane', '-t', $paneId) 2>$null
-                            break
+        # Clean up any leftover orchestra panes in default session (#213)
+        try {
+            $existingPanes = Invoke-WinsmuxBridgeCommand -WinsmuxBin $winsmuxBin -Arguments @('list-panes', '-F', '#{pane_id} #{pane_title}') 2>$null
+            if ($LASTEXITCODE -eq 0 -and $existingPanes) {
+                $orchestraLabels = @('worker-', 'builder-', 'researcher-', 'reviewer-')
+                foreach ($line in ($existingPanes -split "`n")) {
+                    $parts = $line.Trim() -split '\s+', 2
+                    if ($parts.Count -ge 2) {
+                        $paneId = $parts[0]
+                        $title = $parts[1]
+                        foreach ($label in $orchestraLabels) {
+                            if ($title -like "$label*") {
+                                Write-WinsmuxLog -Level INFO -Event 'preflight.default_pane.kill' -Message "Removing leftover orchestra pane $paneId ($title) from default session." -Data @{ pane_id = $paneId; title = $title } | Out-Null
+                                Invoke-WinsmuxBridgeCommand -WinsmuxBin $winsmuxBin -Arguments @('kill-pane', '-t', $paneId) 2>$null
+                                break
+                            }
                         }
                     }
                 }
             }
-        }
-    } catch { }
+        } catch { }
 
-    if (-not [bool]$orchestraServer.BootstrapReady) {
+        if (-not [bool]$orchestraServer.BootstrapReady) {
         Write-WinsmuxLog -Level INFO -Event 'preflight.session.check' -Message "Checking for existing session $sessionName." -Data @{ session_name = $sessionName } | Out-Null
         $sessionHealth = Test-OrchestraServerHealth -SessionName $sessionName -WinsmuxBin $winsmuxBin -ExpectedPaneCount $expectedPaneCount
         Write-WinsmuxLog -Level INFO -Event 'preflight.session.health' -Message "Session health for ${sessionName}: $sessionHealth." -Data @{ session_name = $sessionName; health = $sessionHealth } | Out-Null
@@ -2242,9 +2295,9 @@ if ($MyInvocation.InvocationName -ne '.') {
 
         Write-WinsmuxLog -Level INFO -Event 'preflight.session_env.start' -Message 'Publishing vault values to session environment.' -Data ([ordered]@{ key_count = $vaultValues.Count }) | Out-Null
         foreach ($entry in $vaultValues.GetEnumerator()) {
-            Invoke-Winsmux -Arguments @('set-environment', '-t', $sessionName, $entry.Key, $entry.Value)
+            Set-OrchestraSessionEnvironment -SessionName $sessionName -Name ([string]$entry.Key) -Value ([string]$entry.Value)
         }
-        Invoke-Winsmux -Arguments @('set-environment', '-t', $sessionName, 'GIT_EDITOR', 'true')
+        Set-OrchestraSessionEnvironment -SessionName $sessionName -Name 'GIT_EDITOR' -Value 'true'
         Write-WinsmuxLog -Level INFO -Event 'preflight.session_env.git_editor_set' -Message 'Set GIT_EDITOR=true for orchestra session.' -Data ([ordered]@{ session_name = $sessionName; key = 'GIT_EDITOR'; value = 'true' }) | Out-Null
 
     $previousTargetSession = $env:WINSMUX_ORCHESTRA_SESSION
@@ -2254,9 +2307,7 @@ if ($MyInvocation.InvocationName -ne '.') {
 
         try {
             try {
-                Write-Warning "DEBUG: layout start session=$sessionName external=$($layoutSettings.ExternalOperator) legacy=$($layoutSettings.LegacyRoleLayout) C=$($layoutSettings.Operators) W=$($layoutSettings.Workers) B=$($layoutSettings.Builders) R=$($layoutSettings.Researchers) Rev=$($layoutSettings.Reviewers)"
                 $layout = . $layoutScript -SessionName $sessionName -Operators $layoutSettings.Operators -Workers $layoutSettings.Workers -Builders $layoutSettings.Builders -Researchers $layoutSettings.Researchers -Reviewers $layoutSettings.Reviewers
-                Write-Warning "DEBUG: layout done, panes=$($layout.Panes.Count)"
                 foreach ($sessionPaneId in @(Get-OrchestraSessionPaneIds -SessionName $sessionName)) {
                     if ($createdPaneIds -notcontains $sessionPaneId) {
                         $createdPaneIds += $sessionPaneId
@@ -2265,10 +2316,14 @@ if ($MyInvocation.InvocationName -ne '.') {
                 Assert-OrchestraSessionPaneCount -SessionName $sessionName -ExpectedPaneCount $layout.Panes.Count -StageName 'layout'
             } catch {
                 if (-not [string]::IsNullOrWhiteSpace($bootstrapPaneId)) {
-                    foreach ($sessionPaneId in @(Get-OrchestraSessionPaneIds -SessionName $sessionName)) {
-                        if ($createdPaneIds -notcontains $sessionPaneId) {
-                            $createdPaneIds += $sessionPaneId
+                    try {
+                        foreach ($sessionPaneId in @(Get-OrchestraSessionPaneIds -SessionName $sessionName)) {
+                            if ($createdPaneIds -notcontains $sessionPaneId) {
+                                $createdPaneIds += $sessionPaneId
+                            }
                         }
+                    } catch {
+                        Write-Warning "Could not refresh pane ids after layout failure: $($_.Exception.Message)"
                     }
                 }
 
@@ -2379,7 +2434,7 @@ if ($MyInvocation.InvocationName -ne '.') {
                     Set-OrchestraSessionEnvironment -SessionName $sessionName -Name ([string]$entry.Key) -Value ([string]$entry.Value)
                 }
             }
-            Invoke-Winsmux -Arguments @('respawn-pane', '-k', '-t', $paneId, '-c', $launchDir)
+            Invoke-Winsmux -Arguments @('respawn-pane', '-k', '-t', $paneId, '-c', $launchDir) -TargetSessionName $sessionName
             if ($canonicalRole -eq 'Worker') {
                 $approvedLaunch = New-OrchestraWorkerLaunchApproval -SlotId $label -SlotAgentConfig $slotAgentConfig -AutoLaunch:(!$deferPaneStart)
             }
@@ -2446,12 +2501,12 @@ if ($MyInvocation.InvocationName -ne '.') {
                         degraded_reason     = if ($null -ne $colabSessionEntry) { [string](Get-WinsmuxColabValue -InputObject $colabSessionEntry -Name 'degraded_reason' -Default '') } else { '' }
                     }) | Out-Null
                 } else {
-                    Start-OrchestraPaneBootstrap -PaneId $paneId -PlanPath $bootstrapPlanPath
+                    Start-OrchestraPaneBootstrap -PaneId $paneId -PlanPath $bootstrapPlanPath -SessionName $sessionName
                     $bootstrapMarkerPath = Get-OrchestraPaneBootstrapMarkerPath -PlanPath $bootstrapPlanPath -StartupToken $startupToken
                 }
                 # TASK-231: verify pane exists after respawn
                 try {
-                    Invoke-Winsmux -Arguments @('display-message', '-t', $paneId, '-p', '#{pane_id}') -CaptureOutput | Out-Null
+                    Invoke-Winsmux -Arguments @('display-message', '-t', $paneId, '-p', '#{pane_id}') -CaptureOutput -TargetSessionName $sessionName | Out-Null
                 } catch {
                     Write-Warning "TASK-231: pane $paneId ($label) not found after respawn-pane."
                 }
@@ -2506,7 +2561,7 @@ if ($MyInvocation.InvocationName -ne '.') {
 
         try {
             $readinessAgent = Get-OrchestraReadinessAgentName -PaneSummary $paneSummary
-            Wait-AgentReady -PaneId $paneSummary.PaneId -Agent $readinessAgent -TimeoutSeconds 60
+            Wait-AgentReady -PaneId $paneSummary.PaneId -Agent $readinessAgent -SessionName $sessionName -TimeoutSeconds 60
         } catch {
             Write-Error "Agent readiness timeout for $($paneSummary.Label) [$($paneSummary.PaneId)]: $($_.Exception.Message)"
             exit 1

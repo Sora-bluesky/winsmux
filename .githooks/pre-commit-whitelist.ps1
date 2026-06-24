@@ -84,6 +84,7 @@ $whitelistPatterns = @(
     'scripts/run-cli-bakeoff-local-workers.ps1',
     'scripts/summarize-cli-bakeoff.ps1',
     'scripts/test-cli-bakeoff-preflight.ps1',
+    'scripts/test-v03617-reliability-gate.ps1',
     'scripts/upstream-reevaluation.ps1',
     'scripts/validate-pester-reduction-plan.ps1',
     'scripts/validate-legacy-compat-inventory.ps1',

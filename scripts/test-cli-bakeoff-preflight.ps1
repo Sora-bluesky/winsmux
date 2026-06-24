@@ -97,6 +97,22 @@ if ($null -ne $pack) {
     $workers = @($pack.default_workers)
     Add-Check 'Claude worker profile exists' (@($workers | Where-Object { $_.cli -eq 'Claude Code' }).Count -ge 1)
     Add-Check 'Codex worker profile exists' (@($workers | Where-Object { $_.cli -eq 'Codex' }).Count -ge 1)
+    Add-Check 'Codex worker uses GPT-5.5 High canonical scenario' (@($workers | Where-Object {
+        ($_.PSObject.Properties.Name -contains 'cli') -and
+        ($_.PSObject.Properties.Name -contains 'model') -and
+        ($_.PSObject.Properties.Name -contains 'effort') -and
+        $_.cli -eq 'Codex' -and
+        $_.model -eq 'gpt-5.5' -and
+        $_.effort -eq 'high'
+    }).Count -ge 1)
+    Add-Check 'Codex GPT-5.5 worker does not use lower effort' (@($workers | Where-Object {
+        ($_.PSObject.Properties.Name -contains 'cli') -and
+        ($_.PSObject.Properties.Name -contains 'model') -and
+        ($_.PSObject.Properties.Name -contains 'effort') -and
+        $_.cli -eq 'Codex' -and
+        $_.model -eq 'gpt-5.5' -and
+        $_.effort -ne 'high'
+    }).Count -eq 0)
     Add-Check 'Antigravity worker profile exists' (@($workers | Where-Object { $_.cli -eq 'Antigravity CLI' }).Count -ge 1)
     Add-Check 'OpenRouter Kimi worker profile exists' (@($workers | Where-Object {
         ($_.PSObject.Properties.Name -contains 'agent') -and

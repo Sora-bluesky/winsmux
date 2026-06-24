@@ -25,17 +25,57 @@ if (-not $script:winsmuxBin) {
 function Invoke-OrchestraLayoutWinsmux {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
 
-    $output = Invoke-WinsmuxBridgeCommand -WinsmuxBin $script:winsmuxBin -Arguments $Arguments 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        $message = ($output | Out-String).Trim()
-        if ([string]::IsNullOrWhiteSpace($message)) {
-            $message = 'unknown winsmux error'
+    function Test-OrchestraLayoutRetrySafeCommand {
+        param([Parameter(Mandatory = $true)][string[]]$InputArguments)
+
+        if ($InputArguments.Count -lt 1) {
+            return $false
         }
 
-        throw "winsmux $($Arguments -join ' ') failed: $message"
+        return $InputArguments[0] -in @('display-message', 'has-session', 'list-panes', 'select-pane')
     }
 
-    return $output
+    $previousPsmuxTargetSession = $env:PSMUX_TARGET_SESSION
+    $previousWinsmuxTargetSession = $env:WINSMUX_TARGET_SESSION
+    try {
+        if (-not [string]::IsNullOrWhiteSpace($SessionName)) {
+            $env:PSMUX_TARGET_SESSION = $SessionName
+            $env:WINSMUX_TARGET_SESSION = $SessionName
+        }
+
+        $attemptLimit = if (Test-OrchestraLayoutRetrySafeCommand -InputArguments $Arguments) { 5 } else { 1 }
+        for ($attempt = 1; $attempt -le $attemptLimit; $attempt++) {
+            $output = Invoke-WinsmuxBridgeCommand -WinsmuxBin $script:winsmuxBin -Arguments $Arguments 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                return $output
+            }
+
+            $message = ($output | Out-String).Trim()
+            if ([string]::IsNullOrWhiteSpace($message)) {
+                $message = 'unknown winsmux error'
+            }
+
+            $retryable = $message -match 'connection timed out|no server running'
+            if ($attempt -lt $attemptLimit -and $retryable) {
+                Start-Sleep -Milliseconds (250 * $attempt)
+                continue
+            }
+
+            throw "winsmux $($Arguments -join ' ') failed: $message"
+        }
+    } finally {
+        if ($null -eq $previousPsmuxTargetSession) {
+            Remove-Item Env:PSMUX_TARGET_SESSION -ErrorAction SilentlyContinue
+        } else {
+            $env:PSMUX_TARGET_SESSION = $previousPsmuxTargetSession
+        }
+
+        if ($null -eq $previousWinsmuxTargetSession) {
+            Remove-Item Env:WINSMUX_TARGET_SESSION -ErrorAction SilentlyContinue
+        } else {
+            $env:WINSMUX_TARGET_SESSION = $previousWinsmuxTargetSession
+        }
+    }
 }
 
 function Test-PositiveCount {
