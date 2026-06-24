@@ -2066,11 +2066,30 @@ function Confirm-Target {
     } else {
         @('list-panes', '-a', '-F', '#{pane_id}')
     }
-    $allPanes = (Invoke-WinsmuxRaw -Arguments $listPaneArguments | Out-String).Trim() -split "`n" | ForEach-Object { $_.Trim() }
-    if ($PaneId -notin $allPanes) {
-        Stop-WithError "invalid target: $PaneId"
+
+    $lastOutput = ''
+    $lastExitCode = $null
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        $rawOutput = Invoke-WinsmuxRaw -Arguments $listPaneArguments 2>&1
+        $lastExitCode = Get-SafeLastExitCode
+        $lastOutput = ($rawOutput | Out-String).Trim()
+        if ($lastExitCode -eq 0 -or ($null -eq $lastExitCode -and -not [string]::IsNullOrWhiteSpace($lastOutput))) {
+            $allPanes = $lastOutput -split '\s+' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
+            if ($PaneId -in $allPanes) {
+                return $PaneId
+            }
+        }
+
+        if ($attempt -lt 5) {
+            Start-Sleep -Milliseconds (250 * $attempt)
+        }
     }
-    return $PaneId
+
+    if (-not [string]::IsNullOrWhiteSpace($lastOutput)) {
+        Stop-WithError "invalid target: $PaneId; list-panes failed or omitted target after retries (exit=$lastExitCode): $lastOutput"
+    }
+
+    Stop-WithError "invalid target: $PaneId"
 }
 
 function Get-PaneTargetCandidates {
@@ -3312,12 +3331,67 @@ function Test-DeferredPaneStartManifestEntry {
     return @('deferred_start', 'deferred_starting', 'deferred_start_failed', 'backend_degraded', 'api_llm_runner_unconfigured', 'antigravity_runner_unconfigured') -contains $status.Trim().ToLowerInvariant()
 }
 
+function Get-WorkersRecoveryActionForFailureStage {
+    param([AllowEmptyString()][string]$Stage)
+
+    $normalizedStage = if ($null -eq $Stage) { '' } else { $Stage.Trim().ToLowerInvariant() }
+    switch ($normalizedStage) {
+        'backend_preflight' { return 'inspect-backend-and-rerun-workers-start' }
+        'bootstrap_plan_missing' { return 'rerun-winsmux-launch' }
+        'bootstrap_plan_not_found' { return 'rerun-winsmux-launch' }
+        'launch_approval' { return 'review-worker-settings-and-rerun-launch' }
+        'runner_config' { return 'configure-runner-and-rerun-workers-start' }
+        'readiness_probe' { return 'inspect-pane-log-and-run-workers-start' }
+        default { return 'inspect-manifest-and-rerun-workers-start' }
+    }
+}
+
+function New-WorkersRepairProperties {
+    param(
+        [AllowEmptyString()][string]$FailedStage = '',
+        [AllowEmptyString()][string]$FailureReason = '',
+        [AllowEmptyString()][string]$RecoveryAction = ''
+    )
+
+    if ([string]::IsNullOrWhiteSpace($RecoveryAction) -and -not [string]::IsNullOrWhiteSpace($FailedStage)) {
+        $RecoveryAction = Get-WorkersRecoveryActionForFailureStage -Stage $FailedStage
+    }
+
+    return [ordered]@{
+        last_failure_stage  = $FailedStage
+        last_failure_reason = $FailureReason
+        recovery_action     = $RecoveryAction
+    }
+}
+
+function Get-WorkersFailureMetadataFromReason {
+    param([AllowEmptyString()][string]$Reason = '')
+
+    $stage = 'readiness_probe'
+    if ($Reason -like 'worker launch approval mismatch:*') {
+        $stage = 'launch_approval'
+    } elseif ($Reason -like '*bootstrap plan not found*') {
+        $stage = 'bootstrap_plan_not_found'
+    } elseif ($Reason -like '*missing bootstrap plan path*') {
+        $stage = 'bootstrap_plan_missing'
+    } elseif ($Reason -like '*backend*degraded*') {
+        $stage = 'backend_preflight'
+    } elseif ($Reason -like 'api_llm_runner_unconfigured*' -or $Reason -like 'antigravity_runner_unconfigured*') {
+        $stage = 'runner_config'
+    }
+
+    return New-WorkersRepairProperties -FailedStage $stage -FailureReason $Reason
+}
+
 function Set-DeferredPaneStartStatus {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)][string]$PaneId,
         [Parameter(Mandatory = $true)][string]$Status,
-        [AllowEmptyString()][string]$MarkerPath = ''
+        [AllowEmptyString()][string]$MarkerPath = '',
+        [AllowEmptyString()][string]$FailedStage = '',
+        [AllowEmptyString()][string]$FailureReason = '',
+        [AllowEmptyString()][string]$RecoveryAction = ''
     )
 
     if (-not (Get-Command Set-PaneControlManifestPaneProperties -ErrorAction SilentlyContinue)) {
@@ -3330,6 +3404,15 @@ function Set-DeferredPaneStartStatus {
     }
     if (-not [string]::IsNullOrWhiteSpace($MarkerPath)) {
         $properties['bootstrap_marker_path'] = $MarkerPath
+    }
+    if ($Status -in @('ready', 'deferred_starting')) {
+        $properties['last_failure_stage'] = ''
+        $properties['last_failure_reason'] = ''
+        $properties['recovery_action'] = ''
+    } elseif (-not [string]::IsNullOrWhiteSpace($FailedStage) -or -not [string]::IsNullOrWhiteSpace($FailureReason) -or -not [string]::IsNullOrWhiteSpace($RecoveryAction)) {
+        foreach ($propertyEntry in (New-WorkersRepairProperties -FailedStage $FailedStage -FailureReason $FailureReason -RecoveryAction $RecoveryAction).GetEnumerator()) {
+            $properties[[string]$propertyEntry.Key] = $propertyEntry.Value
+        }
     }
 
     Set-PaneControlManifestPaneProperties -ManifestPath $manifestPath -PaneId $PaneId -Properties $properties
@@ -3378,6 +3461,7 @@ function Start-DeferredPaneFromManifestEntry {
         if ([string]::IsNullOrWhiteSpace($reason)) {
             $reason = 'backend_degraded'
         }
+        Set-DeferredPaneStartStatus -ProjectDir $ProjectDir -PaneId $paneId -Status 'backend_degraded' -FailedStage 'backend_preflight' -FailureReason $reason -RecoveryAction 'inspect-backend-and-rerun-workers-start'
         Stop-WithError "worker backend for '$label' is degraded: $reason"
     }
 
@@ -3399,14 +3483,14 @@ function Start-DeferredPaneFromManifestEntry {
 
     $planPath = [string](Get-SendConfigValue -InputObject $ManifestEntry -Name 'BootstrapPlanPath' -Default '')
     if ([string]::IsNullOrWhiteSpace($planPath)) {
-        Set-DeferredPaneStartStatus -ProjectDir $ProjectDir -PaneId $paneId -Status 'deferred_start_failed'
+        Set-DeferredPaneStartStatus -ProjectDir $ProjectDir -PaneId $paneId -Status 'deferred_start_failed' -FailedStage 'bootstrap_plan_missing' -FailureReason "missing bootstrap plan path"
         Stop-WithError "deferred pane '$label' is missing bootstrap plan path"
     }
     if (-not [System.IO.Path]::IsPathRooted($planPath)) {
         $planPath = [System.IO.Path]::GetFullPath((Join-Path $ProjectDir $planPath))
     }
     if (-not (Test-Path -LiteralPath $planPath -PathType Leaf)) {
-        Set-DeferredPaneStartStatus -ProjectDir $ProjectDir -PaneId $paneId -Status 'deferred_start_failed'
+        Set-DeferredPaneStartStatus -ProjectDir $ProjectDir -PaneId $paneId -Status 'deferred_start_failed' -FailedStage 'bootstrap_plan_not_found' -FailureReason "bootstrap plan not found: $planPath"
         Stop-WithError "deferred pane '$label' bootstrap plan not found: $planPath"
     }
 
@@ -3415,8 +3499,9 @@ function Start-DeferredPaneFromManifestEntry {
     $candidateLaunch = Get-SendConfigValue -InputObject $plan -Name 'approved_launch' -Default $null
     $approvalDifferences = @(Get-WorkersLaunchApprovalDifferences -ApprovedLaunch $approvedLaunch -CurrentLaunch $candidateLaunch)
     if ($approvalDifferences.Count -gt 0) {
-        Set-DeferredPaneStartStatus -ProjectDir $ProjectDir -PaneId $paneId -Status 'deferred_start_failed'
-        Stop-WithError (Format-WorkersLaunchApprovalMismatch -Differences $approvalDifferences)
+        $mismatchReason = Format-WorkersLaunchApprovalMismatch -Differences $approvalDifferences
+        Set-DeferredPaneStartStatus -ProjectDir $ProjectDir -PaneId $paneId -Status 'deferred_start_failed' -FailedStage 'launch_approval' -FailureReason $mismatchReason -RecoveryAction 'review-worker-settings-and-rerun-launch'
+        Stop-WithError $mismatchReason
     }
 
     $markerPath = [string](Get-SendConfigValue -InputObject $plan -Name 'ready_marker_path' -Default '')
@@ -3441,7 +3526,8 @@ function Start-DeferredPaneFromManifestEntry {
         Set-DeferredPaneStartStatus -ProjectDir $ProjectDir -PaneId $paneId -Status 'ready' -MarkerPath $markerPath
         return $true
     } catch {
-        Set-DeferredPaneStartStatus -ProjectDir $ProjectDir -PaneId $paneId -Status 'deferred_start_failed' -MarkerPath $markerPath
+        $failureReason = [string]$_.Exception.Message
+        Set-DeferredPaneStartStatus -ProjectDir $ProjectDir -PaneId $paneId -Status 'deferred_start_failed' -MarkerPath $markerPath -FailedStage 'readiness_probe' -FailureReason $failureReason -RecoveryAction 'inspect-pane-log-and-run-workers-start'
         throw
     }
 }
@@ -5690,9 +5776,24 @@ function Get-WorkersStatusRows {
 
         $actualGpu = [string](Get-SendConfigValue -InputObject $colabSession -Name 'selected_gpu' -Default '')
         $degradedReason = [string](Get-SendConfigValue -InputObject $colabSession -Name 'degraded_reason' -Default '')
+        $lastFailureStage = ''
+        $lastFailureReason = ''
+        $recoveryAction = ''
         $lastCommand = ''
         $lastCommandAt = ''
         if ($null -ne $entry) {
+            $lastFailureStage = [string](Get-SendConfigValue -InputObject $entry -Name 'LastFailureStage' -Default '')
+            if ([string]::IsNullOrWhiteSpace($lastFailureStage)) {
+                $lastFailureStage = [string](Get-SendConfigValue -InputObject $entry -Name 'last_failure_stage' -Default '')
+            }
+            $lastFailureReason = [string](Get-SendConfigValue -InputObject $entry -Name 'LastFailureReason' -Default '')
+            if ([string]::IsNullOrWhiteSpace($lastFailureReason)) {
+                $lastFailureReason = [string](Get-SendConfigValue -InputObject $entry -Name 'last_failure_reason' -Default '')
+            }
+            $recoveryAction = [string](Get-SendConfigValue -InputObject $entry -Name 'RecoveryAction' -Default '')
+            if ([string]::IsNullOrWhiteSpace($recoveryAction)) {
+                $recoveryAction = [string](Get-SendConfigValue -InputObject $entry -Name 'recovery_action' -Default '')
+            }
             $lastCommand = [string](Get-SendConfigValue -InputObject $entry -Name 'LastCommand' -Default '')
             $lastCommandAt = [string](Get-SendConfigValue -InputObject $entry -Name 'LastCommandAt' -Default '')
             if ([string]::IsNullOrWhiteSpace($lastCommand)) {
@@ -5765,6 +5866,9 @@ function Get-WorkersStatusRows {
             RequestedGpu   = $requestedGpu
             ActualGpu      = $actualGpu
             DegradedReason = $degradedReason
+            LastFailureStage = $lastFailureStage
+            LastFailureReason = $lastFailureReason
+            RecoveryAction = $recoveryAction
             LastCommand    = $lastCommand
             LastCommandAt  = $lastCommandAt
             ApprovedLaunch = $approvedLaunch
@@ -5874,6 +5978,9 @@ function ConvertTo-WorkersStatusJsonRows {
             requested_gpu   = [string]$row.RequestedGpu
             actual_gpu      = [string]$row.ActualGpu
             degraded_reason = [string]$row.DegradedReason
+            failed_stage    = [string]$row.LastFailureStage
+            failure_reason  = [string]$row.LastFailureReason
+            recovery_action = [string]$row.RecoveryAction
             last_command    = [string]$row.LastCommand
             last_command_at = [string]$row.LastCommandAt
             approved_launch = $row.ApprovedLaunch
@@ -5926,8 +6033,17 @@ function New-WorkersLifecycleResult {
         [Parameter(Mandatory = $true)]$Row,
         [Parameter(Mandatory = $true)][string]$Action,
         [Parameter(Mandatory = $true)][string]$Status,
-        [AllowEmptyString()][string]$Reason = ''
+        [AllowEmptyString()][string]$Reason = '',
+        [AllowEmptyString()][string]$FailedStage = '',
+        [AllowEmptyString()][string]$RecoveryAction = ''
     )
+
+    if ([string]::IsNullOrWhiteSpace($FailedStage)) {
+        $FailedStage = [string]$Row.LastFailureStage
+    }
+    if ([string]::IsNullOrWhiteSpace($RecoveryAction)) {
+        $RecoveryAction = [string]$Row.RecoveryAction
+    }
 
     return [ordered]@{
         slot_id       = [string]$Row.SlotId
@@ -5936,6 +6052,8 @@ function New-WorkersLifecycleResult {
         action        = $Action
         status        = $Status
         reason        = $Reason
+        failed_stage  = $FailedStage
+        recovery_action = $RecoveryAction
         backend       = [string]$Row.Backend
         worker_state  = [string]$Row.State
         last_command  = "$Action"
@@ -10968,22 +11086,29 @@ function Invoke-WorkersStart {
             if ([string]::IsNullOrWhiteSpace($reason)) {
                 $reason = 'backend_degraded'
             }
-            $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status 'blocked' -Reason $reason)) | Out-Null
+            $repairProperties = New-WorkersRepairProperties -FailedStage 'backend_preflight' -FailureReason $reason -RecoveryAction 'inspect-backend-and-rerun-workers-start'
+            Set-WorkersManifestLifecycleCommand -Entry $entry -CommandName 'workers.start' -Status 'backend_degraded' -ExtraProperties $repairProperties
+            $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status 'blocked' -Reason $reason -FailedStage ([string]$repairProperties['last_failure_stage']) -RecoveryAction ([string]$repairProperties['recovery_action']))) | Out-Null
             continue
         }
         $approvalDifferences = @($row.ApprovalDifferences)
         if ($approvalDifferences.Count -gt 0) {
-            $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status 'blocked' -Reason (Format-WorkersLaunchApprovalMismatch -Differences $approvalDifferences))) | Out-Null
+            $reason = Format-WorkersLaunchApprovalMismatch -Differences $approvalDifferences
+            $repairProperties = New-WorkersRepairProperties -FailedStage 'launch_approval' -FailureReason $reason -RecoveryAction 'review-worker-settings-and-rerun-launch'
+            Set-WorkersManifestLifecycleCommand -Entry $entry -CommandName 'workers.start' -ExtraProperties $repairProperties
+            $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status 'blocked' -Reason $reason -FailedStage ([string]$repairProperties['last_failure_stage']) -RecoveryAction ([string]$repairProperties['recovery_action']))) | Out-Null
             continue
         }
         if ([string]::Equals(([string]$entry.Status), 'api_llm_runner_unconfigured', [System.StringComparison]::OrdinalIgnoreCase)) {
-            Set-WorkersManifestLifecycleCommand -Entry $entry -CommandName 'workers.start' -Status 'api_llm_runner_unconfigured'
-            $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status 'blocked' -Reason 'api_llm_runner_unconfigured')) | Out-Null
+            $repairProperties = New-WorkersRepairProperties -FailedStage 'runner_config' -FailureReason 'api_llm_runner_unconfigured' -RecoveryAction 'set-api-llm-slot-and-api-key-env'
+            Set-WorkersManifestLifecycleCommand -Entry $entry -CommandName 'workers.start' -Status 'api_llm_runner_unconfigured' -ExtraProperties $repairProperties
+            $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status 'blocked' -Reason 'api_llm_runner_unconfigured' -FailedStage ([string]$repairProperties['last_failure_stage']) -RecoveryAction ([string]$repairProperties['recovery_action']))) | Out-Null
             continue
         }
         if ([string]::Equals(([string]$entry.Status), 'antigravity_runner_unconfigured', [System.StringComparison]::OrdinalIgnoreCase)) {
-            Set-WorkersManifestLifecycleCommand -Entry $entry -CommandName 'workers.start' -Status 'antigravity_runner_unconfigured'
-            $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status 'blocked' -Reason 'antigravity_runner_unconfigured')) | Out-Null
+            $repairProperties = New-WorkersRepairProperties -FailedStage 'runner_config' -FailureReason 'antigravity_runner_unconfigured' -RecoveryAction 'install-or-configure-antigravity-cli'
+            Set-WorkersManifestLifecycleCommand -Entry $entry -CommandName 'workers.start' -Status 'antigravity_runner_unconfigured' -ExtraProperties $repairProperties
+            $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status 'blocked' -Reason 'antigravity_runner_unconfigured' -FailedStage ([string]$repairProperties['last_failure_stage']) -RecoveryAction ([string]$repairProperties['recovery_action']))) | Out-Null
             continue
         }
 
@@ -10993,6 +11118,9 @@ function Invoke-WorkersStart {
                 Set-WorkersManifestLifecycleCommand -Entry $entry -CommandName 'workers.start' -Status 'ready' -ExtraProperties ([ordered]@{
                     last_heartbeat_run_id  = ''
                     last_heartbeat_profile = ''
+                    last_failure_stage     = ''
+                    last_failure_reason    = ''
+                    recovery_action        = ''
                 })
                 $status = if ($started) { 'started' } else { 'unchanged' }
                 $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status $status)) | Out-Null
@@ -11007,7 +11135,11 @@ function Invoke-WorkersStart {
                 $reason -like 'api_llm_runner_unconfigured*' -or
                 $reason -like 'antigravity_runner_unconfigured*'
             ) { 'blocked' } else { 'failed' }
-            $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status $status -Reason $reason)) | Out-Null
+            $repairProperties = Get-WorkersFailureMetadataFromReason -Reason $reason
+            if ($null -ne $entry) {
+                Set-WorkersManifestLifecycleCommand -Entry $entry -CommandName 'workers.start' -ExtraProperties $repairProperties
+            }
+            $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status $status -Reason $reason -FailedStage ([string]$repairProperties['last_failure_stage']) -RecoveryAction ([string]$repairProperties['recovery_action']))) | Out-Null
         }
     }
 
@@ -11110,6 +11242,12 @@ function Write-WorkersLifecycleOutput {
         $line = "$($result.slot_id): $($result.status)"
         if (-not [string]::IsNullOrWhiteSpace([string]$result.reason)) {
             $line = "$line ($($result.reason))"
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$result.failed_stage)) {
+            $line = "$line stage=$($result.failed_stage)"
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$result.recovery_action)) {
+            $line = "$line recovery=$($result.recovery_action)"
         }
         Write-Output $line
     }

@@ -51,7 +51,7 @@ use crate::session::{cleanup_stale_port_files, read_session_key, send_control,
     send_control_with_response, resolve_last_session_name, resolve_default_session_name,
     kill_remaining_server_processes, request_server_shutdown,
     cleanup_warm_server_for_socket, resolve_last_session_name_with_prefix,
-    socket_path_session_base, normalize_socket_selector};
+    socket_path_session_base, normalize_socket_selector, remove_session_state_files};
 use crate::rendering::apply_cursor_style;
 use crate::client::run_remote;
 use crate::ssh_input::{send_mouse_enable, InputSource};
@@ -700,9 +700,11 @@ fn run_main() -> io::Result<()> {
             let handles: Vec<std::thread::JoinHandle<()>> = targets.into_iter().map(|(path, port, sess_key)| {
                 std::thread::spawn(move || {
                     if request_server_shutdown(port, &sess_key) {
-                        let _ = std::fs::remove_file(&path);
-                        let key_path = path.with_extension("key");
-                        let _ = std::fs::remove_file(&key_path);
+                        if let (Some(dir), Some(base)) =
+                            (path.parent(), path.file_stem().and_then(|value| value.to_str()))
+                        {
+                            remove_session_state_files(dir, base);
+                        }
                     }
                 })
             }).collect();
@@ -710,9 +712,11 @@ fn run_main() -> io::Result<()> {
             for h in handles { let _ = h.join(); }
             // Clean up stale port/key files
             for path in &stale_ports {
-                let _ = std::fs::remove_file(path);
-                let key_path = path.with_extension("key");
-                let _ = std::fs::remove_file(&key_path);
+                if let (Some(dir), Some(base)) =
+                    (path.parent(), path.file_stem().and_then(|value| value.to_str()))
+                {
+                    remove_session_state_files(dir, base);
+                }
             }
             if session_namespace.is_some() {
                 cleanup_warm_server_for_socket(session_namespace.as_deref());
@@ -774,9 +778,10 @@ fn run_main() -> io::Result<()> {
                                                 }
                                             } else {
                                                 // stale port file - remove it along with matching key
-                                                let _ = std::fs::remove_file(e.path());
-                                                let key_path = e.path().with_extension("key");
-                                                let _ = std::fs::remove_file(&key_path);
+                                                let port_path = e.path();
+                                                if let Some(dir) = port_path.parent() {
+                                                    remove_session_state_files(dir, base);
+                                                }
                                             }
                                         }
                                     }
@@ -932,8 +937,16 @@ fn run_main() -> io::Result<()> {
                             return Ok(());
                         }
                     } else {
-                        // Stale port file - remove it and continue
-                        let _ = std::fs::remove_file(&port_path);
+                        // Stale port file - clean it up and continue only when
+                        // the versioned registry proves the files are safe to remove.
+                        cleanup_stale_port_files();
+                        if std::path::Path::new(&port_path).exists() {
+                            eprintln!(
+                                "winsmux: session '{}' has an unverified startup record; not replacing it",
+                                name
+                            );
+                            return Ok(());
+                        }
                     }
                 }
                 
@@ -991,7 +1004,8 @@ fn run_main() -> io::Result<()> {
                                         }
                                     } else { false }
                                 } else {
-                                    let _ = std::fs::remove_file(&warm_port_path);
+                                    let psmux_path = std::path::Path::new(&home).join(".psmux");
+                                    remove_session_state_files(&psmux_path, &warm_base);
                                     false
                                 }
                             } else { false }
@@ -1048,25 +1062,35 @@ fn run_main() -> io::Result<()> {
                     std::thread::sleep(Duration::from_millis(10));
                 }
 
-                // Verify the server is actually alive — the TCP listener is
-                // already active when the port file appears (we moved file write
-                // before create_window), so this connect should succeed instantly.
+                // Verify the server is actually alive. In practice the port file
+                // can become visible before the spawned server accepts its first
+                // connection on some Windows systems, so use a short retry window
+                // instead of orphaning a healthy-but-not-yet-ready server.
                 if !std::path::Path::new(&port_path).exists() {
                     eprintln!("winsmux: failed to create session '{}'", name);
                     std::process::exit(1);
                 }
                 {
-                    let server_alive = if let Ok(port_str) = std::fs::read_to_string(&port_path) {
-                        if let Ok(port) = port_str.trim().parse::<u16>() {
-                            let addr = format!("127.0.0.1:{}", port);
-                            std::net::TcpStream::connect_timeout(
-                                &addr.parse().unwrap(),
-                                Duration::from_millis(100)
-                            ).is_ok()
-                        } else { false }
-                    } else { false };
+                    let verify_deadline = std::time::Instant::now() + Duration::from_secs(5);
+                    let mut server_alive = false;
+                    while std::time::Instant::now() < verify_deadline {
+                        server_alive = if let Ok(port_str) = std::fs::read_to_string(&port_path) {
+                            if let Ok(port) = port_str.trim().parse::<u16>() {
+                                let addr = format!("127.0.0.1:{}", port);
+                                std::net::TcpStream::connect_timeout(
+                                    &addr.parse().unwrap(),
+                                    Duration::from_millis(100)
+                                ).is_ok()
+                            } else { false }
+                        } else { false };
+                        if server_alive {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
                     if !server_alive {
-                        let _ = std::fs::remove_file(&port_path);
+                        let psmux_path = std::path::Path::new(&home).join(".psmux");
+                        remove_session_state_files(&psmux_path, &port_file_base);
                         eprintln!("winsmux: session '{}' exited immediately (check shell command)", name);
                         std::process::exit(1);
                     }
@@ -1492,15 +1516,11 @@ fn run_main() -> io::Result<()> {
                         }
                     })
                 });
-                if let Some(ref t) = target {
-                    env::set_var("PSMUX_TARGET_SESSION", t);
-                }
+                env::set_var("PSMUX_TARGET_SESSION", &session_name);
                 // Try to send kill command to server
                 if send_control("kill-session\n".to_string()).is_err() {
                     // Server not responding - clean up stale port file
-                    let home = env::var("USERPROFILE").or_else(|_| env::var("HOME")).unwrap_or_default();
-                    let port_path = format!("{}\\.psmux\\{}.port", home, session_name);
-                    let _ = std::fs::remove_file(&port_path);
+                    cleanup_stale_port_files();
                 }
                 return Ok(());
             }
@@ -1559,8 +1579,10 @@ fn run_main() -> io::Result<()> {
                             // Fallback: connection succeeded so session likely exists
                             std::process::exit(0);
                         } else {
-                            // Stale port file - clean it up
-                            let _ = std::fs::remove_file(&path);
+                            // Avoid deleting a just-created detached session whose server is
+                            // still becoming responsive.  Centralized cleanup checks the
+                            // versioned registry before removing any state files.
+                            cleanup_stale_port_files();
                         }
                     }
                 }
@@ -2704,7 +2726,8 @@ fn run_main() -> io::Result<()> {
                     return Ok(());
                 }
                 // Clean up stale port file if any
-                let _ = std::fs::remove_file(&warm_port_path);
+                let psmux_path = std::path::Path::new(&home).join(".psmux");
+                remove_session_state_files(&psmux_path, &warm_base);
                 // Spawn the warm server
                 let mut config = terminal_engine::HeadlessServerConfig {
                     session_name: "__warm__".to_string(),

@@ -2203,6 +2203,10 @@ function hasWorkerCredentialRefreshWait(row: DesktopWorkerStatusRow) {
 }
 
 function getWorkerRecoveryAction(row: DesktopWorkerStatusRow) {
+  const explicitAction = (row.recovery_action ?? "").trim();
+  if (explicitAction) {
+    return explicitAction;
+  }
   const heartbeat = `${getWorkerHeartbeatHealth(row)} ${getWorkerHeartbeatState(row)}`.toLowerCase();
   const stateText = `${heartbeat} ${row.state} ${row.pane_state} ${row.manifest_status}`.toLowerCase();
   if (hasWorkerCredentialRefreshWait(row)) {
@@ -3333,7 +3337,7 @@ function summarizeWorkerApprovalDifferences(differences: DesktopWorkerApprovalDi
 
 function buildWorkerLaunchDetails(row: DesktopWorkerStatusRow, differences: DesktopWorkerApprovalDifference[]): ConversationDetail[] {
   const launch = row.current_launch ?? row.approved_launch;
-  return [
+  const details: ConversationDetail[] = [
     { label: getLanguageText("slot", "スロット"), value: row.slot_id },
     { label: getLanguageText("state", "状態"), value: row.state || row.manifest_status || "unknown" },
     { label: getLanguageText("agent", "エージェント"), value: getLaunchApprovalField(launch, "agent") || row.backend || "unknown" },
@@ -3347,6 +3351,13 @@ function buildWorkerLaunchDetails(row: DesktopWorkerStatusRow, differences: Desk
     { label: getLanguageText("recovery", "復旧"), value: getWorkerRecoveryAction(row) },
     { label: getLanguageText("differences", "差分"), value: String(differences.length) },
   ];
+  if (row.failed_stage) {
+    details.splice(2, 0, { label: getLanguageText("failed stage", "失敗段階"), value: row.failed_stage });
+  }
+  if (row.failure_reason) {
+    details.splice(3, 0, { label: getLanguageText("failure reason", "失敗理由"), value: row.failure_reason });
+  }
+  return details;
 }
 
 function appendWorkerLaunchConversation(
@@ -3369,12 +3380,23 @@ function appendWorkerLaunchConversation(
 }
 
 function appendWorkerStartResultConversation(
-  result: { slot_id: string; status: string; reason?: string; approval_differences?: DesktopWorkerApprovalDifference[] },
+  result: { slot_id: string; status: string; reason?: string; failed_stage?: string; recovery_action?: string; approval_differences?: DesktopWorkerApprovalDifference[] },
   row?: DesktopWorkerStatusRow,
 ) {
   const differences = result.approval_differences ?? [];
   const blocked = result.status === "blocked" || result.status === "failed" || differences.length > 0;
   const reason = result.reason ? ` ${result.reason}` : "";
+  const stage = result.failed_stage ? ` stage=${result.failed_stage}` : "";
+  const recovery = result.recovery_action ? ` recovery=${result.recovery_action}` : "";
+  const details = row
+    ? buildWorkerLaunchDetails(row, differences)
+    : [{ label: getLanguageText("slot", "スロット"), value: result.slot_id }, { label: getLanguageText("status", "状態"), value: result.status }];
+  if (result.failed_stage) {
+    details.push({ label: getLanguageText("failed stage", "失敗段階"), value: result.failed_stage });
+  }
+  if (result.recovery_action) {
+    details.push({ label: getLanguageText("recovery action", "復旧手順"), value: result.recovery_action });
+  }
   appendRuntimeConversation({
     type: "system",
     category: blocked ? "attention" : "activity",
@@ -3384,11 +3406,9 @@ function appendWorkerStartResultConversation(
       ? getLanguageText("Worker start blocked", "ワーカー起動を停止")
       : getLanguageText("Worker start accepted", "ワーカー起動を受理"),
     body: row
-      ? `${summarizeWorkerLaunchApproval(row)}. ${result.status}${reason}`
-      : `${result.slot_id}: ${result.status}${reason}`,
-    details: row
-      ? buildWorkerLaunchDetails(row, differences)
-      : [{ label: getLanguageText("slot", "スロット"), value: result.slot_id }, { label: getLanguageText("status", "状態"), value: result.status }],
+      ? `${summarizeWorkerLaunchApproval(row)}. ${result.status}${reason}${stage}${recovery}`
+      : `${result.slot_id}: ${result.status}${reason}${stage}${recovery}`,
+    details,
     tone: blocked ? "warning" : "success",
   });
   renderConversation(getConversationItems());

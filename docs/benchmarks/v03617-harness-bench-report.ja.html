@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>winsmux v0.36.17 Harness Bench Report</title>
+  <title>winsmux v0.36.17 Harness Bench Contract</title>
   <style>
     :root {
       color-scheme: light;
@@ -150,9 +150,9 @@
 <body>
   <header>
     <div class="header-inner">
-      <h1>winsmux v0.36.17 Harness Bench Report</h1>
-      <p class="lead">このHTMLは完成版ではない。v0.36.17 の正式レポートは、winsmuxアプリの operator pane が6つの worker pane を実際に管理し、全workerが同じ Harness Bench task set を走らせた結果から作り直す。</p>
-      <p class="meta">更新: 2026-06-21 JST / 状態: 再測定待ち / 既存run: <code>v03617-openrouter-full4-20260621t064138z</code> はwinsmux worker pane外で取得した部分証跡 / pack: <code>winsmux-cli-bakeoff-v1</code></p>
+      <h1>winsmux v0.36.17 Harness Bench Contract</h1>
+      <p class="lead">v0.36.17 は正式ベンチマーク測定版ではない。このHTMLは、v0.36.22 で行う正式 Harness Bench 測定の条件、除外規則、6 worker pane の割り当てを固定するための契約メモである。</p>
+      <p class="meta">更新: 2026-06-24 JST / 状態: v0.36.22 測定待ち / 既存run: <code>v03617-openrouter-full4-20260621t064138z</code> はwinsmux worker pane外で取得した部分証跡 / pack: <code>winsmux-cli-bakeoff-v1</code></p>
     </div>
   </header>
 
@@ -161,10 +161,10 @@
       <h2>現在の判断</h2>
       <div class="grid-2">
         <div class="card">
-          <span class="badge warn">正式採点は未完了</span>
-          <div class="metric"><strong>3/7</strong><span>source tasks complete</span></div>
-          <div class="bar"><i style="--w:43%"></i></div>
-          <p>正本ロードマップは43%。OpenRouter worker setup、model picker、Harness Bench契約は完了。6ペイン実測とレポート再作成は未完了。</p>
+          <span class="badge good">v0.36.17の範囲</span>
+          <div class="metric"><strong>8/11</strong><span>source tasks complete</span></div>
+          <div class="bar"><i style="--w:73%"></i></div>
+          <p>正本ロードマップは73%。v0.36.17は主要モデル設定、起動信頼性、正式測定の契約までを扱う。6ペイン実測とレポート再作成は v0.36.22 で実施する。</p>
         </div>
         <div class="card">
           <span class="badge warn">既存runの扱い</span>
@@ -173,7 +173,7 @@
           <p><code>v03617-openrouter-full4</code> は Kimi K2.7 Code と GLM-5.2 だけの部分証跡。winsmux worker pane上の6ペイン比較ではないため、正式結果には使わない。</p>
         </div>
       </div>
-      <p class="note">正式版では、6 worker の pass rate、median wall time、pass rate と wall time の散布図、difficulty別成功率を、winsmux自身の実測値から生成する。</p>
+      <p class="note">v0.36.22 の正式版では、6 worker の pass rate、median wall time、pass rate と wall time の散布図、difficulty別成功率を、winsmux自身の実測値から生成する。</p>
     </section>
 
     <section class="span-8">
@@ -203,7 +203,7 @@
         <tbody>
           <tr><td class="mono">operator</td><td>なし</td><td>実行管理</td><td><span class="badge good">対象外</span></td><td>採点対象ではなく、run controlのみ。</td></tr>
           <tr><td class="mono">worker-1</td><td>Claude Code / Claude Opus 4.8</td><td>design-review</td><td><span class="badge warn">未測定</span></td><td>winsmuxアプリ内の worker pane として Harness Bench を実行する。</td></tr>
-          <tr><td class="mono">worker-2</td><td>Codex / <code>gpt-5.5</code></td><td>implementation-review</td><td><span class="badge warn">未測定</span></td><td>winsmuxアプリ内の worker pane として Harness Bench を実行する。</td></tr>
+          <tr><td class="mono">worker-2</td><td>Codex / <code>gpt-5.5</code> / High</td><td>implementation-review</td><td><span class="badge warn">未測定</span></td><td>winsmuxアプリ内の worker pane として Harness Bench を実行する。</td></tr>
           <tr><td class="mono">worker-3</td><td>Antigravity CLI / Gemini 3.5 Flash High</td><td>speed-parallelism</td><td><span class="badge warn">未測定</span></td><td>winsmuxアプリ内の worker pane として Harness Bench を実行する。</td></tr>
           <tr><td class="mono">worker-4</td><td>Grok Build / Grok 4.3</td><td>openrouter-grok-4-3</td><td><span class="badge warn">未測定</span></td><td>winsmuxアプリ内の worker pane として Harness Bench を実行する。</td></tr>
           <tr><td class="mono">worker-5</td><td>OpenRouter / Kimi K2.7 Code</td><td>open-weight code worker</td><td><span class="badge warn">未測定</span></td><td>winsmuxアプリ内の <code>api_llm</code> worker pane として Harness Bench を実行する。</td></tr>
@@ -274,7 +274,7 @@
 
     <section class="span-4">
       <h2>限界</h2>
-      <p>正式結果はまだない。現在のHTMLを公開ベンチレポートとして読ませてはいけない。</p>
+      <p>正式結果はまだない。現在のHTMLを公開ベンチレポートとして読ませてはいけない。v0.36.17の公開物としては、測定契約と延期理由の説明に限定する。</p>
       <p>次の版では、winsmux の worker選定証跡として読みやすくする。一般的なコーディングモデルランキングとは分ける。</p>
     </section>
 

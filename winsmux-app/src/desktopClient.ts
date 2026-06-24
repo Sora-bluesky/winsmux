@@ -711,6 +711,9 @@ export interface DesktopWorkerStatusRow {
   requested_gpu: string;
   actual_gpu: string;
   degraded_reason: string;
+  failed_stage?: string;
+  failure_reason?: string;
+  recovery_action?: string;
   last_command: string;
   last_command_at: string;
   approved_launch: DesktopWorkerLaunchApproval | null;
@@ -740,6 +743,8 @@ export interface DesktopWorkerLifecycleResult {
   action: string;
   status: string;
   reason: string;
+  failed_stage?: string;
+  recovery_action?: string;
   backend: string;
   worker_state: string;
   last_command: string;

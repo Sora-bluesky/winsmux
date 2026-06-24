@@ -16,5 +16,6 @@ Return exactly this structure:
 Quality bar:
 
 - Include public-surface audit and secret scan.
+- Include the v0.36.17 ten-run Tauri launch soak reliability gate.
 - Include PR, merge, and GitHub Release as completion gates.
 - Do not mark the version 100% before the release is public.

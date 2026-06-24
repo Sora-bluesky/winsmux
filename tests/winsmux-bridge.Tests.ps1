@@ -7286,7 +7286,7 @@ Describe 'orchestra-start rollback helpers' {
             -LaunchCommand 'codex --help' `
             -ApprovedLaunch $approvedLaunch
 
-        Start-OrchestraPaneBootstrap -PaneId '%2' -PlanPath $planPath
+        Start-OrchestraPaneBootstrap -PaneId '%2' -PlanPath $planPath -SessionName 'winsmux-orchestra'
 
         Should -Invoke Wait-PaneShellReady -Times 1 -Exactly -ParameterFilter {
             $PaneId -eq '%2'
@@ -7353,7 +7353,7 @@ Describe 'orchestra-start rollback helpers' {
             -LaunchCommand 'example-agent --help' `
             -SupportsInterrupt $false
 
-        Start-OrchestraPaneBootstrap -PaneId '%2' -PlanPath $planPath
+        Start-OrchestraPaneBootstrap -PaneId '%2' -PlanPath $planPath -SessionName 'winsmux-orchestra'
 
         Should -Invoke Wait-PaneShellReady -Times 1 -Exactly -ParameterFilter {
             $PaneId -eq '%2'
@@ -10902,8 +10902,13 @@ agent-slots:
         $payload.results[0].slot_id | Should -Be 'worker-1'
         $payload.results[0].status | Should -Be 'blocked'
         $payload.results[0].reason | Should -Be 'api_llm_runner_unconfigured'
+        $payload.results[0].failed_stage | Should -Be 'runner_config'
+        $payload.results[0].recovery_action | Should -Be 'set-api-llm-slot-and-api-key-env'
         $entry.Status | Should -Be 'api_llm_runner_unconfigured'
         $entry.LastCommand | Should -Be 'workers.start'
+        $entry.LastFailureStage | Should -Be 'runner_config'
+        $entry.LastFailureReason | Should -Be 'api_llm_runner_unconfigured'
+        $entry.RecoveryAction | Should -Be 'set-api-llm-slot-and-api-key-env'
         Should -Invoke Send-TextToPane -Times 0 -Exactly
     }
 
@@ -10964,8 +10969,13 @@ agent-slots:
         $payload.results[0].slot_id | Should -Be 'worker-1'
         $payload.results[0].status | Should -Be 'blocked'
         $payload.results[0].reason | Should -Be 'antigravity_runner_unconfigured'
+        $payload.results[0].failed_stage | Should -Be 'runner_config'
+        $payload.results[0].recovery_action | Should -Be 'install-or-configure-antigravity-cli'
         $entry.Status | Should -Be 'antigravity_runner_unconfigured'
         $entry.LastCommand | Should -Be 'workers.start'
+        $entry.LastFailureStage | Should -Be 'runner_config'
+        $entry.LastFailureReason | Should -Be 'antigravity_runner_unconfigured'
+        $entry.RecoveryAction | Should -Be 'install-or-configure-antigravity-cli'
         Should -Invoke Send-TextToPane -Times 0 -Exactly
     }
 
@@ -17651,6 +17661,11 @@ agent-slots:
         $script:winsmuxCoreRawContent | Should -Match 'restart_pane_id'
     }
 
+    It 'keeps Confirm-Target compatible with whitespace-separated pane lists' {
+        $script:winsmuxCoreRawContent | Should -Match "\$lastOutput -split '\\s\+'"
+        $script:winsmuxCoreRawContent | Should -Match '\$lastExitCode -eq 0 -or \(\$null -eq \$lastExitCode -and -not \[string\]::IsNullOrWhiteSpace\(\$lastOutput\)\)'
+    }
+
     It 'rejects provider-switch restart when the manifest pane id is stale before writing the registry' {
         $winsmuxBin = Join-Path $script:providerSwitchTempRoot 'bin'
         New-Item -ItemType Directory -Path $winsmuxBin -Force | Out-Null
@@ -18405,7 +18420,7 @@ Describe 'orchestra pane bootstrap plan' {
         $script:orchestraStartContent | Should -Match 'function Test-OrchestraPaneDeferredStart'
         $script:orchestraStartContent | Should -Match 'function Wait-OrchestraServerSessionAbsent'
         $script:orchestraStartContent | Should -Match 'orchestra-pane-bootstrap\.ps1'
-        $script:orchestraStartContent | Should -Match 'Start-OrchestraPaneBootstrap -PaneId \$paneId -PlanPath \$bootstrapPlanPath'
+        $script:orchestraStartContent | Should -Match 'Start-OrchestraPaneBootstrap -PaneId \$paneId -PlanPath \$bootstrapPlanPath -SessionName \$sessionName'
         $script:orchestraStartContent | Should -Match 'deferred_start'
         $script:orchestraStartContent | Should -Match 'preflight\.worker\.deferred_start'
         $script:orchestraStartContent | Should -Match 'ready_marker_path'
@@ -20403,6 +20418,7 @@ Describe 'winsmux raw namespace forwarding' {
             $script:namespaceRawCalls.Add(($Arguments -join '|')) | Out-Null
             return 'ok'
         }
+        $script:WinsmuxRawCommand = 'winsmux'
 
         try {
             Invoke-WinsmuxRaw -Arguments @('list-panes', '-a') | Out-Null
@@ -20426,6 +20442,7 @@ Describe 'winsmux raw namespace forwarding' {
             $script:namespaceRawCalls.Add(($Arguments -join '|')) | Out-Null
             return 'ok'
         }
+        $script:WinsmuxRawCommand = 'winsmux'
 
         try {
             Invoke-WinsmuxRaw -Arguments @('capture-pane', '-t', '%1', '-p', '-J', '-S', '-50') | Out-Null
@@ -20637,6 +20654,7 @@ Describe 'deferred worker startup' {
         } | ConvertTo-Json -Depth 6) | Set-Content -Path $script:deferredPlanPath -Encoding UTF8
         $script:deferredSendCommands = [System.Collections.Generic.List[string]]::new()
         $script:deferredStatusWrites = [System.Collections.Generic.List[string]]::new()
+        $script:deferredPropertyWrites = [System.Collections.Generic.List[object]]::new()
         $script:deferredReadyProbeCount = 0
         $script:deferredPreRetryProbeApplies = $false
         $script:deferredPreRetryReady = $false
@@ -20658,6 +20676,14 @@ Describe 'deferred worker startup' {
         Mock Set-PaneControlManifestPaneProperties {
             param([string]$ManifestPath, [string]$PaneId, [System.Collections.IDictionary]$Properties)
             $script:deferredStatusWrites.Add([string]$Properties['status']) | Out-Null
+            $capturedProperties = [ordered]@{}
+            foreach ($key in @($Properties.Keys)) {
+                $capturedProperties[[string]$key] = $Properties[$key]
+            }
+            $script:deferredPropertyWrites.Add([PSCustomObject]@{
+                PaneId = $PaneId
+                Properties = $capturedProperties
+            }) | Out-Null
         }
     }
 
@@ -20766,6 +20792,10 @@ Describe 'deferred worker startup' {
 
         $script:deferredSendCommands.Count | Should -Be 0
         $script:deferredStatusWrites | Should -Be @('deferred_start_failed')
+        $lastWrite = $script:deferredPropertyWrites[$script:deferredPropertyWrites.Count - 1].Properties
+        $lastWrite['last_failure_stage'] | Should -Be 'bootstrap_plan_not_found'
+        $lastWrite['last_failure_reason'] | Should -Match 'bootstrap plan not found'
+        $lastWrite['recovery_action'] | Should -Be 'rerun-winsmux-launch'
     }
 
     It 'blocks a deferred pane when its bootstrap plan does not match the approved launch' {
@@ -20822,6 +20852,10 @@ Describe 'deferred worker startup' {
         Should -Invoke Wait-PaneShellReady -Times 0 -Exactly
         $script:deferredSendCommands.Count | Should -Be 0
         $script:deferredStatusWrites | Should -Be @('deferred_start_failed')
+        $lastWrite = $script:deferredPropertyWrites[$script:deferredPropertyWrites.Count - 1].Properties
+        $lastWrite['last_failure_stage'] | Should -Be 'launch_approval'
+        $lastWrite['last_failure_reason'] | Should -Match 'worker launch approval mismatch'
+        $lastWrite['recovery_action'] | Should -Be 'review-worker-settings-and-rerun-launch'
     }
 
     It 'blocks a degraded Colab backend pane instead of sending task text to the shell' {
@@ -20842,7 +20876,11 @@ Describe 'deferred worker startup' {
 
         Should -Invoke Wait-PaneShellReady -Times 0 -Exactly
         $script:deferredSendCommands.Count | Should -Be 0
-        $script:deferredStatusWrites.Count | Should -Be 0
+        $script:deferredStatusWrites | Should -Be @('backend_degraded')
+        $lastWrite = $script:deferredPropertyWrites[$script:deferredPropertyWrites.Count - 1].Properties
+        $lastWrite['last_failure_stage'] | Should -Be 'backend_preflight'
+        $lastWrite['last_failure_reason'] | Should -Be 'colab_cli_missing;gpu_inventory_unavailable'
+        $lastWrite['recovery_action'] | Should -Be 'inspect-backend-and-rerun-workers-start'
     }
 
     It 'keeps send, dispatch-task, and monitor paths aware of deferred panes' {
