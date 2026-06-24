@@ -335,7 +335,7 @@ type LanguageMode = "en" | "ja";
 type SettingsScope = "user" | "workspace";
 type WorkbenchLayoutMode = "2x2" | "3x2" | "focus";
 type RuntimeRoleId = "operator" | "worker" | "reviewer";
-type RuntimeProviderId = "provider-default" | "codex" | "claude" | "gemini" | "antigravity" | "grok-build" | "openrouter";
+type RuntimeProviderId = "provider-default" | "codex" | "claude" | "antigravity" | "grok-build" | "openrouter";
 type RuntimeModelSource = "provider-default" | "cli-discovery" | "provider-api" | "official-doc" | "operator-override";
 type RuntimeReasoningEffort = "provider-default" | "low" | "medium" | "high" | "max" | "xhigh";
 type RuntimeModelAssignmentMode = "shared" | "per-pane";
@@ -9027,11 +9027,6 @@ function runtimeAccessNote(preference: RuntimeRolePreference, japanese: boolean)
       ? "ローカルの Claude Code 設定を使います。`default`、`sonnet`、`opus`、`opusplan` を指定できます。"
       : "Uses local Claude Code settings. Aliases such as default, sonnet, opus, and opusplan are accepted.";
   }
-  if (preference.provider === "gemini") {
-    return japanese
-      ? "ローカルの Gemini CLI 設定を使います。計画時は `--approval-mode plan` を使えます。"
-      : "Uses local Gemini CLI settings. Plan runs can use --approval-mode plan.";
-  }
   if (preference.provider === "antigravity") {
     return japanese
       ? "ローカルの Antigravity CLI 設定を使います。`agy --print` と明示モデル指定で一回実行できます。"
@@ -9271,7 +9266,6 @@ function createRuntimeCustomModelEntry(provider: RuntimeProviderId, model: strin
     "provider-default": "provider-default",
     codex: "codex-chatgpt-local",
     claude: "claude-pro-max-oauth",
-    gemini: "provider-default",
     antigravity: "antigravity-official-cli",
     "grok-build": "grok-build-local",
     openrouter: "api-key-env",
@@ -9577,7 +9571,6 @@ function getRuntimeReasoningOrderForProvider(provider: RuntimeProviderId) {
     codex: ["provider-default", "low", "medium", "high", "xhigh"],
     openrouter: ["provider-default"],
     antigravity: ["provider-default"],
-    gemini: ["provider-default"],
   };
   return orderByProvider[provider] ?? ["provider-default", "low", "medium", "high", "max", "xhigh"];
 }
@@ -9614,7 +9607,6 @@ function getRuntimeReasoningOptionsForProvider(provider: RuntimeProviderId) {
     "provider-default": ["provider-default"],
     claude: ["provider-default", "low", "medium", "high", "max", "xhigh"],
     codex: ["provider-default", "low", "medium", "high", "xhigh"],
-    gemini: ["provider-default"],
     antigravity: ["provider-default"],
     "grok-build": ["provider-default"],
     openrouter: ["provider-default"],

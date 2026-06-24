@@ -17,6 +17,7 @@ jobs:
   secret-scan:
     name: Gitleaks Incremental Scan
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
         with:
@@ -39,6 +40,7 @@ jobs:
   public-surface:
     name: Public Surface Audit
     runs-on: windows-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
 
@@ -161,6 +163,11 @@ jobs:
             timeout_minutes: 15
             paths: tests/BuilderWorktree.Tests.ps1;tests/codex-subagent-worktree-guard.Tests.ps1;tests/OrchestraPreflight.Tests.ps1;tests/PaneBorder.Tests.ps1;tests/V03618ReleaseHardening.Tests.ps1
             full_name: ""
+          - name: repo-audit-v03619
+            result: repo-audit-v03619
+            timeout_minutes: 12
+            paths: tests/V03619RepoAudit.Tests.ps1
+            full_name: ""
     steps:
       - uses: actions/checkout@v6
 
@@ -208,6 +215,57 @@ jobs:
           }
           $fullNameFilters = @('${{ matrix.full_name }}' -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 
+          function Convert-PesterFullNameFilterToContentRegex {
+            param([Parameter(Mandatory = $true)][string]$Filter)
+
+            $trimmed = $Filter.Trim()
+            if ([string]::IsNullOrWhiteSpace($trimmed)) {
+              return $null
+            }
+
+            $literal = $trimmed.Trim('*')
+            if ([string]::IsNullOrWhiteSpace($literal)) {
+              return $null
+            }
+
+            return [Regex]::Escape($literal).Replace('\*', '.*')
+          }
+
+          function Assert-PesterCategoryFilterCoverage {
+            param(
+              [Parameter(Mandatory = $true)][string]$Category,
+              [Parameter(Mandatory = $true)][string[]]$Paths,
+              [string[]]$Filters = @()
+            )
+
+            if ($Filters.Count -eq 0) {
+              return
+            }
+
+            $sourceText = @(
+              foreach ($path in $Paths) {
+                Get-Content -LiteralPath $path -Raw
+              }
+            ) -join "`n"
+            $missing = @()
+            foreach ($filter in $Filters) {
+              $regex = Convert-PesterFullNameFilterToContentRegex -Filter $filter
+              if ($null -eq $regex) {
+                continue
+              }
+              if ($sourceText -notmatch $regex) {
+                $missing += $filter
+              }
+            }
+            if ($missing.Count -gt 0) {
+              throw "Pester category '$Category' has FullName filters with no source match: $($missing -join '; ')"
+            }
+          }
+
+          if ($fullNameFilters.Count -gt 0) {
+            Assert-PesterCategoryFilterCoverage -Category '${{ matrix.name }}' -Paths $resolvedPaths -Filters $fullNameFilters
+          }
+
           Write-Host "::group::Pester category ${{ matrix.name }} targets"
           foreach ($path in $resolvedPaths) {
             $item = Get-Item -LiteralPath $path
@@ -244,6 +302,7 @@ jobs:
   core-build-test:
     name: Core Build and Test
     runs-on: windows-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
 
@@ -258,6 +317,7 @@ jobs:
   desktop-build-test:
     name: Desktop Build and Test
     runs-on: windows-latest
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v6
 
@@ -287,6 +347,7 @@ jobs:
   merge-gate:
     name: Merge Gate
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     needs:
       - secret-scan
       - public-surface

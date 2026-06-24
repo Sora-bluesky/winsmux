@@ -962,6 +962,44 @@ roles:
         $operatorConfig.Model | Should -Be 'gpt-5.4'
     }
 
+    It 'rejects retired reasoning efforts from top-level, role, and slot settings' {
+        foreach ($case in @(
+            @{
+                Name    = 'top-level'
+                Content = @'
+agent: codex
+reasoning-effort: none
+'@
+                Pattern = 'Invalid reasoning_effort configuration'
+            },
+            @{
+                Name    = 'role'
+                Content = @'
+agent: codex
+roles:
+  worker:
+    reasoning-effort: minimal
+'@
+                Pattern = 'Invalid roles configuration'
+            },
+            @{
+                Name    = 'slot'
+                Content = @'
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    reasoning-effort: none
+'@
+                Pattern = 'Invalid agent_slots configuration'
+            }
+        )) {
+            Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Value $case.Content -Encoding UTF8
+            Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+            { Get-BridgeSettings -RootPath $script:settingsTempRoot } | Should -Throw "*$($case.Pattern)*"
+        }
+    }
+
     It 'overlays ignored runtime role preferences on project role defaults' {
 @'
 agent: codex
