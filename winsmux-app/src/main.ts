@@ -418,6 +418,18 @@ interface RuntimePaneModelSelection {
   reasoningEffort: RuntimeReasoningEffort;
 }
 
+interface LocalRouterShadowProposalSnapshot {
+  artifactId?: string;
+  slot?: string | null;
+  role?: string;
+  confidence?: number;
+  margin?: number;
+  fallbackRequired?: boolean;
+  finalSlot?: string | null;
+  finalRole?: string;
+  recordedAt?: string;
+}
+
 interface ComposerAttachment {
   id: string;
   name: string;
@@ -813,6 +825,7 @@ const POPOUT_SURFACE_STORAGE_KEY_PREFIX = "winsmux.popout-surface.";
 const PROJECT_SESSIONS_STORAGE_KEY = "winsmux.project-sessions.v1";
 const ACTIVE_PROJECT_STORAGE_KEY = "winsmux.active-project.v1";
 const AGENT_VAULT_PREFERENCES_STORAGE_KEY = "winsmux.agent-vault.preferences.v1";
+const LOCAL_ROUTER_SHADOW_PROPOSAL_STORAGE_KEY = "winsmux.localRouterShadow.lastProposal.v1";
 const MAX_PROJECT_SESSIONS = 8;
 const AGENT_VAULT_DRAG_TYPE = "application/x-winsmux-agent-vault-session";
 const agentVaultProviders: AgentVaultProviderDefinition[] = [
@@ -2328,6 +2341,81 @@ function createWorkerStatusChip(field: string, label: string, value: string) {
   return chip;
 }
 
+function readLocalRouterShadowProposal(): LocalRouterShadowProposalSnapshot | null {
+  try {
+    const raw = window.localStorage.getItem(LOCAL_ROUTER_SHADOW_PROPOSAL_STORAGE_KEY);
+    if (!raw) {
+      return null;
+    }
+    const parsed = JSON.parse(raw) as LocalRouterShadowProposalSnapshot;
+    if (!parsed || typeof parsed !== "object") {
+      return null;
+    }
+    return parsed;
+  } catch (error) {
+    console.warn("Failed to read local router Shadow proposal", error);
+    return null;
+  }
+}
+
+function normalizeLocalRouterShadowNumber(value: unknown, minimum: number, maximum: number): number | null {
+  const numberValue = Number(value);
+  if (!Number.isFinite(numberValue)) {
+    return null;
+  }
+  return Math.max(minimum, Math.min(maximum, numberValue));
+}
+
+function formatLocalRouterShadowPercent(value: unknown) {
+  const normalized = normalizeLocalRouterShadowNumber(value, 0, 1);
+  return normalized === null ? "unknown" : `${Math.round(normalized * 100)}%`;
+}
+
+function formatLocalRouterShadowMargin(value: unknown) {
+  const normalized = normalizeLocalRouterShadowNumber(value, 0, Number.MAX_SAFE_INTEGER);
+  return normalized === null ? "unknown" : String(Number(normalized.toFixed(6)));
+}
+
+function renderLocalRouterShadowProposal(rows: DesktopWorkerStatusRow[], focusedPaneId: string | null) {
+  const snapshot = readLocalRouterShadowProposal();
+  if (!snapshot?.slot && !snapshot?.finalSlot) {
+    return null;
+  }
+
+  const proposalSlot = snapshot.slot || "";
+  const finalSlot = snapshot.finalSlot || "";
+  const proposalKnown = rows.some((row) => getWorkerStatusTarget(row) === proposalSlot);
+  const targetIsFocused = Boolean(focusedPaneId && (focusedPaneId === proposalSlot || focusedPaneId === finalSlot));
+  const confidence = formatLocalRouterShadowPercent(snapshot.confidence);
+  const margin = formatLocalRouterShadowMargin(snapshot.margin);
+
+  const container = document.createElement("div");
+  container.className = "worker-shadow-proposal";
+  container.dataset.shadowProposal = "local-router";
+  container.dataset.focused = String(targetIsFocused);
+  container.setAttribute(
+    "aria-label",
+    getLanguageText("Local router Shadow proposal", "ローカルルーターの影響なし提案"),
+  );
+  container.title = getLanguageText(
+    "Shadow proposal only. Deterministic fallback remains the execution authority.",
+    "影響なし提案のみです。実行権限は決定論fallbackのままです。",
+  );
+
+  const label = document.createElement("span");
+  label.className = "worker-shadow-proposal-label";
+  label.textContent = getLanguageText("Shadow proposal", "影響なし提案");
+  container.appendChild(label);
+  container.appendChild(createWorkerStatusChip("shadow-proposal", "slot", proposalKnown ? proposalSlot : (proposalSlot || "none")));
+  container.appendChild(createWorkerStatusChip("shadow-proposal", "role", snapshot.role || "unknown"));
+  container.appendChild(createWorkerStatusChip("shadow-proposal", "conf", confidence));
+  container.appendChild(createWorkerStatusChip("shadow-proposal", "margin", margin));
+  container.appendChild(createWorkerStatusChip("shadow-proposal", "fallback", snapshot.fallbackRequired ? "yes" : "no"));
+  container.appendChild(createWorkerStatusChip("shadow-proposal", "authority", finalSlot || "deterministic"));
+
+  return container;
+}
+
 function getWorkerStatusPillTitle(row: DesktopWorkerStatusRow, target: string) {
   const launch = getWorkerStatusLaunch(row);
   return [
@@ -2478,6 +2566,10 @@ function renderWorkerStatusSurface() {
 
   bar.appendChild(pillList);
   bar.appendChild(detailStrip);
+  const shadowProposal = renderLocalRouterShadowProposal(rows, focusedPaneId);
+  if (shadowProposal) {
+    bar.appendChild(shadowProposal);
+  }
 }
 
 function setWorkerStatusStripVisible(visible: boolean, options?: { persist?: boolean }) {

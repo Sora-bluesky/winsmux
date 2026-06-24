@@ -2,6 +2,7 @@
 .githooks/* text eol=lf
 .github/workflows/* text eol=lf
 *.sh text eol=lf
+winsmux-core/router/*.json text eol=lf
 
 # GitHub Languages should emphasize the primary Rust/Tauri implementation.
 # PowerShell remains supported for installer, generated bundle, orchestration,

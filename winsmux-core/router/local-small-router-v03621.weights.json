@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "artifact_id": "winsmux-local-router-shadow-v03621",
+  "policy_revision": "v03621",
+  "feature_dimension": 12,
+  "feature_names": [
+    "requested_role_worker",
+    "requested_role_verifier",
+    "requested_role_thinker",
+    "task_type_implementation",
+    "task_type_review_or_audit",
+    "write_scope_count",
+    "read_scope_count",
+    "remaining_turns",
+    "previous_failure_present",
+    "slot_count",
+    "priority_p0",
+    "bias"
+  ],
+  "slot_heads": {
+    "default": { "bias": -0.25, "weights": [0.30, 0.20, 0.10, 0.35, 0.25, 0.10, 0.05, 0.05, -0.20, 0.10, 0.20, 1.00] },
+    "worker-1": { "bias": 0.05, "weights": [0.10, 0.85, 0.25, 0.05, 0.80, -0.05, 0.20, 0.05, -0.25, 0.06, 0.20, 1.00] },
+    "worker-2": { "bias": 0.18, "weights": [0.85, 0.05, 0.05, 0.75, 0.10, 0.25, 0.06, 0.04, -0.25, 0.06, 0.24, 1.00] },
+    "worker-3": { "bias": 0.10, "weights": [0.70, 0.05, 0.10, 0.62, 0.10, 0.16, 0.05, 0.10, -0.22, 0.04, 0.20, 1.00] },
+    "worker-4": { "bias": 0.14, "weights": [0.72, 0.10, 0.20, 0.68, 0.18, 0.18, 0.10, 0.08, -0.20, 0.05, 0.18, 1.00] },
+    "worker-5": { "bias": 0.12, "weights": [0.78, 0.10, 0.08, 0.72, 0.14, 0.20, 0.08, 0.04, -0.24, 0.05, 0.20, 1.00] },
+    "worker-6": { "bias": 0.16, "weights": [0.76, 0.16, 0.20, 0.70, 0.22, 0.18, 0.14, 0.06, -0.23, 0.05, 0.22, 1.00] }
+  },
+  "role_heads": {
+    "Thinker": { "bias": -0.10, "weights": [0.05, 0.10, 0.90, 0.10, 0.15, -0.05, 0.22, 0.05, -0.10, 0.04, 0.16, 1.00] },
+    "Worker": { "bias": 0.15, "weights": [0.90, 0.05, 0.08, 0.82, 0.10, 0.22, 0.05, 0.04, -0.18, 0.05, 0.20, 1.00] },
+    "Verifier": { "bias": 0.05, "weights": [0.05, 0.88, 0.12, 0.08, 0.84, -0.08, 0.26, 0.03, -0.18, 0.05, 0.18, 1.00] }
+  },
+  "temperature": 1.15,
+  "minimum_confidence": 0.45,
+  "minimum_margin": 0.05
+}
