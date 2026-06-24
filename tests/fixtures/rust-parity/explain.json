@@ -162,6 +162,7 @@
     "run_insights": {
       "packet_type": "run_insights",
       "scope": "run",
+      "claim_level": "blocked",
       "retry_count": 0,
       "drift_signals": [],
       "intervention_count": 3,
@@ -172,7 +173,24 @@
       "next_improvements": [
         "capture operator decisions as reusable guidance",
         "resolve blocked reasons before release"
-      ]
+      ],
+      "loop_control": {
+        "two_strike_limit": 2,
+        "one_hypothesis_one_change_required": true,
+        "retry_count": 0,
+        "stop_required": true,
+        "stop_reasons": [
+          "blocked_reasons_present"
+        ]
+      },
+      "scope_circuit_breaker": {
+        "state": "open",
+        "open_reasons": [
+          "blocked_reasons_present"
+        ],
+        "auto_continue": false,
+        "operator_decision": true
+      }
     },
     "architecture_contract": {
       "contract_version": 1,
@@ -331,6 +349,7 @@
       "scope": "release_run",
       "run_id": "task:task-256",
       "task_id": "task-256",
+      "claim_level": "blocked",
       "static_gates": {
         "verification_plan": [
           "Invoke-Pester tests/winsmux-bridge.Tests.ps1",
@@ -548,6 +567,7 @@
       },
       "release_decision": {
         "status": "blocked",
+        "claim_level": "blocked",
         "blocked_reasons": [
           "verification evidence is missing",
           "approval state is unresolved: pending",

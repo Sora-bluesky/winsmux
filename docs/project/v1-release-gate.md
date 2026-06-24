@@ -63,5 +63,7 @@ worker-pane child processes.
 - The manual checklist gate is complete and machine-readable.
 - Desktop shutdown cleanup is covered by a focused Rust test and by release
   notes text.
+- Post-release smoke checks verify that published installers, checksums, npm
+  package metadata, and public docs are reachable from the GitHub Release.
 - Issue `#751` can be closed because the installer decision is recorded.
 - Issue `#967` can be closed after the cleanup implementation is merged.

@@ -49,7 +49,7 @@ function Resolve-WinsmuxRawCommand {
 $script:WinsmuxRawCommand = Resolve-WinsmuxRawCommand
 
 # --- Config ---
-$VERSION = "0.36.17"
+$VERSION = "0.36.18"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 $BridgeScriptPath = $PSCommandPath
@@ -13298,6 +13298,27 @@ function Get-RunEventAttempt {
     return 0
 }
 
+function Get-RunClaimLevel {
+    param(
+        [int]$BlockedReasonCount = 0,
+        [bool]$StopRequired = $false,
+        [bool]$EvidenceComplete = $false,
+        [string]$ReleaseStatus = ''
+    )
+
+    if ($BlockedReasonCount -gt 0) {
+        return 'blocked'
+    }
+    if ($StopRequired) {
+        return 'partial'
+    }
+    if ($EvidenceComplete -or $ReleaseStatus -in @('ready', 'approved')) {
+        return 'verified'
+    }
+
+    return 'observed'
+}
+
 function New-RunInsightsContract {
     param(
         [Parameter(Mandatory = $true)]$Run,
@@ -13376,15 +13397,53 @@ function New-RunInsightsContract {
         Add-RunInsightText -List $nextImprovements -Value 'resolve blocked reasons before release'
     }
 
+    $twoStrikeLimit = 2
+    $scopeCircuitReasons = [System.Collections.Generic.List[string]]::new()
+    if ($retryCount -ge $twoStrikeLimit) {
+        Add-RunInsightText -List $scopeCircuitReasons -Value 'two_strike_retry_limit_reached'
+    }
+    if ($driftSignals.Count -gt 0) {
+        Add-RunInsightText -List $scopeCircuitReasons -Value 'state_drift_detected'
+    }
+    if ($unhealthySessionSize) {
+        Add-RunInsightText -List $scopeCircuitReasons -Value 'scope_too_large'
+    }
+    if ($blockedReasons.Count -gt 0) {
+        Add-RunInsightText -List $scopeCircuitReasons -Value 'blocked_reasons_present'
+    }
+
+    $scopeCircuitState = if ($scopeCircuitReasons.Count -gt 0) {
+        'open'
+    } elseif ($retryCount -gt 0) {
+        'armed'
+    } else {
+        'closed'
+    }
+    $stopRequired = ($scopeCircuitState -eq 'open')
+
     return [ordered]@{
         packet_type            = 'run_insights'
         scope                  = 'run'
+        claim_level            = (Get-RunClaimLevel -BlockedReasonCount $blockedReasons.Count -StopRequired $stopRequired)
         retry_count            = $retryCount
         drift_signals          = @($driftSignals)
         intervention_count     = $interventionCount
         unhealthy_session_size = [bool]$unhealthySessionSize
         blocked_reasons        = @($blockedReasons)
         next_improvements      = @($nextImprovements)
+        loop_control           = [ordered]@{
+            two_strike_limit                  = $twoStrikeLimit
+            one_hypothesis_one_change_required = $true
+            retry_count                       = $retryCount
+            stop_required                     = $stopRequired
+            stop_reasons                      = @($scopeCircuitReasons)
+        }
+        scope_circuit_breaker  = [ordered]@{
+            state             = $scopeCircuitState
+            open_reasons      = @($scopeCircuitReasons)
+            auto_continue     = -not $stopRequired
+            operator_decision = $stopRequired
+        }
     }
 }
 
@@ -13962,6 +14021,7 @@ function New-RunVerificationEnvelope {
         scope                = 'release_run'
         run_id               = [string]$Run.run_id
         task_id              = [string]$Run.task_id
+        claim_level          = (Get-RunClaimLevel -BlockedReasonCount @($blockedReasons).Count -EvidenceComplete $evidenceComplete -ReleaseStatus $status)
         static_gates         = [ordered]@{
             verification_plan = @($Run.verification_plan)
             changed_files     = @($Run.changed_files)
@@ -13993,6 +14053,7 @@ function New-RunVerificationEnvelope {
         }
         release_decision     = [ordered]@{
             status                   = $status
+            claim_level              = (Get-RunClaimLevel -BlockedReasonCount @($blockedReasons).Count -EvidenceComplete $evidenceComplete -ReleaseStatus $status)
             blocked_reasons          = @($blockedReasons)
             human_judgement_required = $humanJudgementRequired
             automatic_merge_allowed  = $false
