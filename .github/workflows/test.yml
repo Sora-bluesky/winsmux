@@ -235,7 +235,7 @@ jobs:
             param(
               [Parameter(Mandatory = $true)][string]$Category,
               [Parameter(Mandatory = $true)][string[]]$Paths,
-              [Parameter(Mandatory = $true)][string[]]$Filters
+              [string[]]$Filters = @()
             )
 
             if ($Filters.Count -eq 0) {
@@ -262,7 +262,9 @@ jobs:
             }
           }
 
-          Assert-PesterCategoryFilterCoverage -Category '${{ matrix.name }}' -Paths $resolvedPaths -Filters $fullNameFilters
+          if ($fullNameFilters.Count -gt 0) {
+            Assert-PesterCategoryFilterCoverage -Category '${{ matrix.name }}' -Paths $resolvedPaths -Filters $fullNameFilters
+          }
 
           Write-Host "::group::Pester category ${{ matrix.name }} targets"
           foreach ($path in $resolvedPaths) {

@@ -19,4 +19,12 @@ Describe 'v0.36.19 repository-wide audit gate' {
         $result['failed_count'] | Should -Be 0
         [int]$result['check_count'] | Should -BeGreaterThan 20
     }
+
+    It 'keeps CI Pester categories without FullName filters runnable' {
+        $workflow = Get-Content -LiteralPath (Join-Path $script:repoRoot '.github/workflows/test.yml') -Raw
+
+        $workflow | Should -Match '\[string\[\]\]\$Filters = @\(\)'
+        $workflow | Should -Match 'if \(\$fullNameFilters\.Count -gt 0\)'
+        $workflow | Should -Match 'Assert-PesterCategoryFilterCoverage -Category'
+    }
 }
