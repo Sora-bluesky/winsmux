@@ -3069,6 +3069,7 @@ fn run_verification_envelope_value(run: &LedgerExplainRun) -> Value {
     } else {
         "ready"
     };
+    let claim_level = run_claim_level(blocked_reasons.len(), false, evidence_complete, status);
 
     json!({
         "contract_version": 1,
@@ -3076,6 +3077,7 @@ fn run_verification_envelope_value(run: &LedgerExplainRun) -> Value {
         "scope": "release_run",
         "run_id": run.run_id,
         "task_id": run.task_id,
+        "claim_level": claim_level,
         "static_gates": {
             "verification_plan": run.verification_plan,
             "changed_files": run.changed_files,
@@ -3115,6 +3117,7 @@ fn run_verification_envelope_value(run: &LedgerExplainRun) -> Value {
         },
         "release_decision": {
             "status": status,
+            "claim_level": claim_level,
             "blocked_reasons": blocked_reasons,
             "human_judgement_required": human_judgement_required,
             "automatic_merge_allowed": false
@@ -3125,6 +3128,23 @@ fn run_verification_envelope_value(run: &LedgerExplainRun) -> Value {
         "security_verdict": run.security_verdict,
         "audit_chain": run.audit_chain,
     })
+}
+
+fn run_claim_level(
+    blocked_reason_count: usize,
+    stop_required: bool,
+    evidence_complete: bool,
+    release_status: &str,
+) -> &'static str {
+    if blocked_reason_count > 0 {
+        "blocked"
+    } else if stop_required {
+        "partial"
+    } else if evidence_complete || matches!(release_status, "ready" | "approved") {
+        "verified"
+    } else {
+        "observed"
+    }
 }
 
 fn event_timestamp_text(timestamp: &str) -> String {
@@ -3307,15 +3327,53 @@ fn run_insights_value(run: &LedgerExplainRun, events: &[(usize, &EventRecord)]) 
         );
     }
 
+    let two_strike_limit = 2usize;
+    let mut scope_circuit_reasons = Vec::new();
+    if retry_count >= two_strike_limit {
+        push_unique_text(&mut scope_circuit_reasons, "two_strike_retry_limit_reached");
+    }
+    if !drift_signals.is_empty() {
+        push_unique_text(&mut scope_circuit_reasons, "state_drift_detected");
+    }
+    if unhealthy_session_size {
+        push_unique_text(&mut scope_circuit_reasons, "scope_too_large");
+    }
+    if !blocked_reasons.is_empty() {
+        push_unique_text(&mut scope_circuit_reasons, "blocked_reasons_present");
+    }
+    let scope_circuit_state = if !scope_circuit_reasons.is_empty() {
+        "open"
+    } else if retry_count > 0 {
+        "armed"
+    } else {
+        "closed"
+    };
+    let stop_required = scope_circuit_state == "open";
+    let claim_level = run_claim_level(blocked_reasons.len(), stop_required, false, "");
+
     json!({
         "packet_type": "run_insights",
         "scope": "run",
+        "claim_level": claim_level,
         "retry_count": retry_count,
         "drift_signals": drift_signals,
         "intervention_count": intervention_count,
         "unhealthy_session_size": unhealthy_session_size,
         "blocked_reasons": blocked_reasons,
         "next_improvements": next_improvements,
+        "loop_control": {
+            "two_strike_limit": two_strike_limit,
+            "one_hypothesis_one_change_required": true,
+            "retry_count": retry_count,
+            "stop_required": stop_required,
+            "stop_reasons": scope_circuit_reasons.clone()
+        },
+        "scope_circuit_breaker": {
+            "state": scope_circuit_state,
+            "open_reasons": scope_circuit_reasons,
+            "auto_continue": !stop_required,
+            "operator_decision": stop_required
+        }
     })
 }
 

@@ -6,6 +6,13 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   secret-scan:
     name: Gitleaks Incremental Scan
@@ -152,14 +159,37 @@ jobs:
           - name: shell-support
             result: shell-support
             timeout_minutes: 15
-            paths: tests/BuilderWorktree.Tests.ps1;tests/codex-subagent-worktree-guard.Tests.ps1;tests/OrchestraPreflight.Tests.ps1;tests/PaneBorder.Tests.ps1
+            paths: tests/BuilderWorktree.Tests.ps1;tests/codex-subagent-worktree-guard.Tests.ps1;tests/OrchestraPreflight.Tests.ps1;tests/PaneBorder.Tests.ps1;tests/V03618ReleaseHardening.Tests.ps1
             full_name: ""
     steps:
       - uses: actions/checkout@v6
 
       - name: Install Pester
         shell: pwsh
-        run: Install-Module Pester -Force -Scope CurrentUser -MinimumVersion 5.0
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $existing = Get-Module -ListAvailable Pester |
+            Where-Object { $_.Version -ge [version]'5.0.0' } |
+            Sort-Object Version -Descending |
+            Select-Object -First 1
+          if (-not $existing) {
+            $repo = Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue
+            if (-not $repo) {
+              Register-PSRepository -Default -ErrorAction Stop
+            }
+            Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction Stop
+            for ($attempt = 1; $attempt -le 3; $attempt++) {
+              try {
+                Install-Module Pester -Force -Scope CurrentUser -MinimumVersion 5.0 -Repository PSGallery -ErrorAction Stop
+                break
+              } catch {
+                if ($attempt -eq 3) { throw }
+                Start-Sleep -Seconds (5 * $attempt)
+              }
+            }
+          }
+          Import-Module Pester -MinimumVersion 5.0 -Force
+          Get-Module Pester | Format-Table Name,Version,Path -AutoSize
 
       - name: Run Pester (${{ matrix.name }})
         shell: pwsh

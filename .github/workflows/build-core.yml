@@ -14,6 +14,13 @@ on:
       - 'Cargo.lock'
       - '.github/workflows/build-core.yml'
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
