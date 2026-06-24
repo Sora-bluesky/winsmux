@@ -19,6 +19,7 @@ env:
 jobs:
   build:
     runs-on: windows-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
 
@@ -44,6 +45,18 @@ jobs:
           New-Item -ItemType Directory -Force -Path output/desktop-release | Out-Null
           Copy-Item target/release/bundle/msi/*.msi output/desktop-release/
           Copy-Item target/release/bundle/nsis/*.exe output/desktop-release/
+          $version = (Get-Content -LiteralPath VERSION -Raw).Trim()
+          $requiredAssets = @(
+            "winsmux_${version}_x64-setup.exe",
+            "winsmux_${version}_x64_en-US.msi"
+          )
+          foreach ($assetName in $requiredAssets) {
+            $assetPath = Join-Path "output/desktop-release" $assetName
+            if (-not (Test-Path -LiteralPath $assetPath -PathType Leaf)) {
+              $actualAssets = @(Get-ChildItem -LiteralPath output/desktop-release -File | Select-Object -ExpandProperty Name)
+              throw "Required desktop release asset '$assetName' was not collected. Actual assets: $($actualAssets -join ', ')"
+            }
+          }
           Push-Location output/desktop-release
           Get-ChildItem -File |
             Sort-Object Name |

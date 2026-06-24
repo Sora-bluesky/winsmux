@@ -58,7 +58,7 @@ The desktop packaging policy, effective for the `v1.0.0` release line, is:
 - setup executable languages: English and Japanese, with the language selector enabled
 - signing posture: documented per release until a stable signing certificate is available
 - update story: install the newer desktop release over the existing install
-- portable fallback: use the release `winsmux-x64.exe` core binary or the npm package; no portable desktop app artifact is published by default
+- portable fallback: use the release `winsmux-x64.exe` or `winsmux-arm64.exe` core binary, or use the npm package; no portable desktop app artifact is published by default
 
 The `v1.0.0` public distribution is installer-first. Full implementation source
 is no longer part of the public release surface. See [Public Distribution

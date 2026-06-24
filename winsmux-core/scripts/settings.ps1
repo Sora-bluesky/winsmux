@@ -632,7 +632,7 @@ function ConvertTo-BridgeProviderRegistryEntry {
         if ($key -eq 'model_source' -and $text -notin @('provider-default', 'cli-discovery', 'provider-api', 'official-doc', 'operator-override')) {
             throw "Invalid provider registry model_source '$text'."
         }
-        if ($key -eq 'reasoning_effort' -and $text -notin @('provider-default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max')) {
+        if ($key -eq 'reasoning_effort' -and $text -notin @('provider-default', 'low', 'medium', 'high', 'xhigh', 'max')) {
             throw "Invalid provider registry reasoning_effort '$text'."
         }
 
@@ -778,7 +778,7 @@ function Write-BridgeProviderRegistryEntry {
     }
     if (-not [string]::IsNullOrWhiteSpace($ReasoningEffort)) {
         $normalizedEffort = $ReasoningEffort.Trim().ToLowerInvariant()
-        if ($normalizedEffort -notin @('provider-default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max')) {
+        if ($normalizedEffort -notin @('provider-default', 'low', 'medium', 'high', 'xhigh', 'max')) {
             throw "Invalid provider registry reasoning_effort '$ReasoningEffort'."
         }
         $entry.reasoning_effort = $normalizedEffort
@@ -920,7 +920,7 @@ function ConvertTo-BridgeRuntimeRoleConfig {
         }
         if ($key -eq 'reasoning_effort') {
             $text = $text.Trim().ToLowerInvariant()
-            if ($text -notin @('provider-default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max')) {
+            if ($text -notin @('provider-default', 'low', 'medium', 'high', 'xhigh', 'max')) {
                 throw "Invalid runtime role preference reasoning_effort '$text'."
             }
         }
@@ -1226,7 +1226,7 @@ function ConvertTo-BridgeProviderCapabilityEntry {
                 if ($key -eq 'model_sources' -and $normalizedText -notin @('provider-default', 'cli-discovery', 'provider-api', 'official-doc', 'operator-override')) {
                     throw "Invalid provider capability field '$key'."
                 }
-                if ($key -eq 'reasoning_efforts' -and $normalizedText -notin @('provider-default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max')) {
+                if ($key -eq 'reasoning_efforts' -and $normalizedText -notin @('provider-default', 'low', 'medium', 'high', 'xhigh', 'max')) {
                     throw "Invalid provider capability field '$key'."
                 }
 
