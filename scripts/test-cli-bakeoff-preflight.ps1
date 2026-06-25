@@ -97,6 +97,10 @@ if ($null -ne $pack) {
     $workers = @($pack.default_workers)
     Add-Check 'Claude worker profile exists' (@($workers | Where-Object { $_.cli -eq 'Claude Code' }).Count -ge 1)
     Add-Check 'Codex worker profile exists' (@($workers | Where-Object { $_.cli -eq 'Codex' }).Count -ge 1)
+    $scoredWorkerRoles = @($workers | Where-Object { [bool]$_.scored } | ForEach-Object { [string]$_.role } | Sort-Object -Unique)
+    Add-Check 'scored workers share one Harness Bench role' (
+        $scoredWorkerRoles.Count -eq 1 -and $scoredWorkerRoles[0] -eq 'harness-bench-worker'
+    ) ($scoredWorkerRoles -join ',')
     Add-Check 'Codex worker uses GPT-5.5 High canonical scenario' (@($workers | Where-Object {
         ($_.PSObject.Properties.Name -contains 'cli') -and
         ($_.PSObject.Properties.Name -contains 'model') -and

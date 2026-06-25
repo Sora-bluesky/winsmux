@@ -199,15 +199,15 @@
     <section>
       <h2>6 Worker Plan と未完了項目</h2>
       <table>
-        <thead><tr><th>pane</th><th>予定モデル</th><th>役割</th><th>判定</th><th>根拠</th></tr></thead>
+        <thead><tr><th>pane</th><th>予定モデル</th><th>入力条件</th><th>判定</th><th>根拠</th></tr></thead>
         <tbody>
           <tr><td class="mono">operator</td><td>なし</td><td>実行管理</td><td><span class="badge good">対象外</span></td><td>採点対象ではなく、run controlのみ。</td></tr>
-          <tr><td class="mono">worker-1</td><td>Claude Code / Claude Opus 4.8</td><td>design-review</td><td><span class="badge warn">未測定</span></td><td>winsmuxアプリ内の worker pane として Harness Bench を実行する。</td></tr>
-          <tr><td class="mono">worker-2</td><td>Codex / <code>gpt-5.5</code> / High</td><td>implementation-review</td><td><span class="badge warn">未測定</span></td><td>winsmuxアプリ内の worker pane として Harness Bench を実行する。</td></tr>
-          <tr><td class="mono">worker-3</td><td>Antigravity CLI / Gemini 3.5 Flash High</td><td>speed-parallelism</td><td><span class="badge warn">未測定</span></td><td>winsmuxアプリ内の worker pane として Harness Bench を実行する。</td></tr>
-          <tr><td class="mono">worker-4</td><td>Grok Build / Grok 4.3</td><td>openrouter-grok-4-3</td><td><span class="badge warn">未測定</span></td><td>winsmuxアプリ内の worker pane として Harness Bench を実行する。</td></tr>
-          <tr><td class="mono">worker-5</td><td>OpenRouter / Kimi K2.7 Code</td><td>open-weight code worker</td><td><span class="badge warn">未測定</span></td><td>winsmuxアプリ内の <code>api_llm</code> worker pane として Harness Bench を実行する。</td></tr>
-          <tr><td class="mono">worker-6</td><td>OpenRouter / GLM-5.2</td><td>open-weight code worker</td><td><span class="badge warn">未測定</span></td><td>winsmuxアプリ内の <code>api_llm</code> worker pane として Harness Bench を実行する。</td></tr>
+          <tr><td class="mono">worker-1</td><td>Claude Code / Claude Opus 4.8</td><td>同一 Harness Bench task set</td><td><span class="badge warn">未測定</span></td><td>winsmuxアプリ内の worker pane として同じtask setを実行する。</td></tr>
+          <tr><td class="mono">worker-2</td><td>Codex / <code>gpt-5.5</code> / High</td><td>同一 Harness Bench task set</td><td><span class="badge warn">未測定</span></td><td>winsmuxアプリ内の worker pane として同じtask setを実行する。</td></tr>
+          <tr><td class="mono">worker-3</td><td>Antigravity CLI / Gemini 3.5 Flash High</td><td>同一 Harness Bench task set</td><td><span class="badge warn">未測定</span></td><td>winsmuxアプリ内の worker pane として同じtask setを実行する。</td></tr>
+          <tr><td class="mono">worker-4</td><td>Grok Build / Grok 4.3</td><td>同一 Harness Bench task set</td><td><span class="badge warn">未測定</span></td><td>winsmuxアプリ内の worker pane として同じtask setを実行する。</td></tr>
+          <tr><td class="mono">worker-5</td><td>OpenRouter / Kimi K2.7 Code</td><td>同一 Harness Bench task set</td><td><span class="badge warn">未測定</span></td><td>winsmuxアプリ内の <code>api_llm</code> worker pane として同じtask setを実行する。</td></tr>
+          <tr><td class="mono">worker-6</td><td>OpenRouter / GLM-5.2</td><td>同一 Harness Bench task set</td><td><span class="badge warn">未測定</span></td><td>winsmuxアプリ内の <code>api_llm</code> worker pane として同じtask setを実行する。</td></tr>
         </tbody>
       </table>
     </section>
