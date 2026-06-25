@@ -44,6 +44,16 @@ function script:ConvertTo-GoldenCorpusJson {
     )
     $normalized = [Regex]::Replace(
         $normalized,
+        '"created_at"\s*:\s*"[^"]+"',
+        '"created_at": "__LAST_EVENT_AT__"'
+    )
+    $normalized = [Regex]::Replace(
+        $normalized,
+        '"source_time"\s*:\s*"[^"]+"',
+        '"source_time": "__LAST_EVENT_AT__"'
+    )
+    $normalized = [Regex]::Replace(
+        $normalized,
         'observation-pack-[a-f0-9]+\.json',
         'observation-pack-__ID__.json'
     )

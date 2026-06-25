@@ -145,7 +145,7 @@
           "automatic_compact_action": "separate"
         },
         "source_head_sha": "abc1234def5678",
-        "created_at": "2026-04-10T12:00:00+09:00",
+        "created_at": "__LAST_EVENT_AT__",
         "expires_at": null,
         "validation": {
           "valid": false,
@@ -500,7 +500,7 @@
       "checkpoint_freshness": {
         "state": "fresh",
         "source_head_sha": "abc1234def5678",
-        "source_time": "2026-04-10T12:00:00+09:00",
+        "source_time": "__LAST_EVENT_AT__",
         "checkpoint_age": {
           "kind": "checkpoint",
           "seconds": null,
@@ -680,7 +680,7 @@
               "automatic_compact_action": "separate"
             },
             "source_head_sha": "abc1234def5678",
-            "created_at": "2026-04-10T12:00:00+09:00",
+            "created_at": "__LAST_EVENT_AT__",
             "expires_at": null,
             "validation": {
               "valid": false,
@@ -995,7 +995,7 @@
             "automatic_compact_action": "separate"
           },
           "source_head_sha": "abc1234def5678",
-          "created_at": "2026-04-10T12:00:00+09:00",
+          "created_at": "__LAST_EVENT_AT__",
           "expires_at": null,
           "validation": {
             "valid": false,
@@ -1221,7 +1221,7 @@
                 "automatic_compact_action": "separate"
               },
               "source_head_sha": "abc1234def5678",
-              "created_at": "2026-04-10T12:00:00+09:00",
+              "created_at": "__LAST_EVENT_AT__",
               "expires_at": null,
               "validation": {
                 "valid": false,
@@ -1513,7 +1513,7 @@
               "automatic_compact_action": "separate"
             },
             "source_head_sha": "abc1234def5678",
-            "created_at": "2026-04-10T12:00:00+09:00",
+            "created_at": "__LAST_EVENT_AT__",
             "expires_at": null,
             "validation": {
               "valid": false,
