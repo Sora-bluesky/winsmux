@@ -670,6 +670,14 @@ $highlightItems = @($features + $fixes + $documentation | Where-Object { -not [s
 if ($highlightItems.Count -eq 0) {
     $highlightItems = @('Prepared the release from the recorded task and commit history')
 }
+if ($Version -eq 'v0.36.22') {
+    $v03622Highlights = @(
+        'Context Capsule v1 carries bounded summary, decisions, evidence references, verification digest, risks, next action, claim level, source SHA, and freshness fields without storing raw terminal transcripts',
+        'Reliable Mailbox v2 records message, correlation, causation, idempotency, TTL, acknowledgement, processing, completion, failure, expiry, and malformed payload rejection so a pane write is not treated as delivery success',
+        'Checkpoint and context-pressure contracts expose resume handle, next exact step, open questions, pending mailbox count, pressure confidence, checkpoint freshness, and split-worthiness signals for operator decisions'
+    )
+    $highlightItems = @($v03622Highlights + $highlightItems | Select-Object -First 6)
+}
 if ($highlightItems.Count -lt 3) {
     foreach ($fallbackHighlight in @(
         'Release scope is derived from the public version-tag commit range when private planning metadata is not available in CI',
@@ -689,6 +697,13 @@ Add-Section -Builder $builder -Title 'Highlights' -Items $highlightItems -Seen $
 
 $changeItems = @($features + $fixes + $documentation + $chores | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
 $changeItems = @(Remove-ExistingBenefits -Items $changeItems -Existing $highlightItems | Select-Object -First 8)
+if ($Version -eq 'v0.36.22') {
+    $changeItems = @(
+        'The release extends existing ledger, checkpoint, mailbox, handoff, and desktop surfaces instead of introducing an isolated coordination subsystem',
+        'Formal six-pane model benchmarking remains outside this release; v0.36.22 records only the lightweight baseline and public boundary needed for the later benchmark lane',
+        'Summary quality and split-worthiness checks keep routing suggestions bounded by evidence freshness, retry cost, context pressure, write-conflict risk, and unhealthy scope'
+    ) + $changeItems
+}
 if ($changeItems.Count -eq 0) {
     $changeItems = @(
         'Release scope is derived from the version tag commit range and filtered to public-facing changes',
@@ -707,6 +722,9 @@ foreach ($item in @($security + $chores)) {
 $safetyItems.Add('Release notes are checked by the public-surface audit before GitHub Release publication')
 $safetyItems.Add('Secret-like values, local private paths, and provider request metadata remain blocked from release materials')
 $safetyItems.Add('A failed release-note quality check stops the release workflow before GitHub Release publication')
+if ($Version -eq 'v0.36.22') {
+    $safetyItems.Add('Invalid or stale capsules are kept out of routing decisions, and mailbox completion still requires audited acknowledgement and completion state')
+}
 Add-Section -Builder $builder -Title 'Safety and operations' -Items @($safetyItems.ToArray()) -Seen $null
 
 $distributionItems = @(
@@ -724,6 +742,9 @@ $validationItems = @(
     'Generated release notes must pass `scripts/audit-public-surface.ps1` before publication',
     'The release job depends on successful build jobs before release assets can be uploaded'
 )
+if ($Version -eq 'v0.36.22') {
+    $validationItems += 'The PR gate passed Core Build and Test, Desktop Build and Test, Pester matrix jobs, gitleaks, public-surface audit, npm build, and Merge Gate before tagging'
+}
 Add-Section -Builder $builder -Title 'Validation' -Items $validationItems -Seen $null
 
 [void]$builder.AppendLine('## Full Changelog')
