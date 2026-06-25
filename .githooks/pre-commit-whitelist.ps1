@@ -9,6 +9,7 @@ if ([string]::IsNullOrWhiteSpace($repoRoot)) {
 
 Set-Location -LiteralPath $repoRoot
 
+# Keep routine public maintenance paths explicit so non-interactive commits fail closed.
 $whitelistPatterns = @(
     'README.md',
     'README.ja.md',
