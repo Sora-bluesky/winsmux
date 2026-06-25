@@ -117,7 +117,7 @@ jobs:
             result: bridge-worker-api-agy-exec
             timeout_minutes: 12
             paths: tests/winsmux-bridge.Tests.ps1
-            full_name: "*records blocked api_llm exec artifacts*;*rejects OpenRouter endpoint overrides*;*rejects unsupported and unsafe api_llm runtime metadata*;*marks empty provider completions as malformed*;*redacts provider request ids*;*runs api_llm exec through OpenAI-compatible chat completions*;*uses the legacy OpenRouter env*;*accepts task-json as the api_llm exec input contract*;*rejects ambiguous api_llm script*;*rejects secret-like api_llm prompt input*;*records blocked antigravity exec artifacts*;*runs antigravity exec through agy print mode*;*marks antigravity exec with empty stdout*;*accepts task-json as the antigravity exec input contract*;*rejects ambiguous antigravity script*;*rejects secret-like antigravity prompt input*"
+            full_name: "*records blocked api_llm exec artifacts*;*rejects OpenRouter endpoint overrides*;*rejects unsupported and unsafe api_llm runtime metadata*;*marks empty provider completions as malformed*;*redacts provider request ids*;*runs api_llm exec through OpenAI-compatible chat completions*;*accepts task-json as the api_llm exec input contract*;*rejects ambiguous api_llm script*;*rejects secret-like api_llm prompt input*;*records blocked antigravity exec artifacts*;*runs antigravity exec through agy print mode*;*marks antigravity exec with empty stdout*;*accepts task-json as the antigravity exec input contract*;*rejects ambiguous antigravity script*;*rejects secret-like antigravity prompt input*"
           - name: bridge-worker-colab-transfer
             result: bridge-worker-colab-transfer
             timeout_minutes: 12
