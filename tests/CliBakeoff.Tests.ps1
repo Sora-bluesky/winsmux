@@ -27,6 +27,16 @@ Describe 'CLI bakeoff evidence harness' {
         ($output -join "`n") | Should -Not -Match 'C:\\Users\\'
     }
 
+    It 'routes the formal six-pane benchmark evidence to v0.36.23' {
+        $contractDoc = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'docs\cli-comparison-bakeoff.md') -Raw -Encoding UTF8
+        $contractDoc | Should -Match 'v0\.36\.23'
+        $contractDoc | Should -Not -Match 'publishing v0\.36\.22|Before publishing v0\.36\.22|official benchmark evidence.*v0\.36\.22'
+
+        $contractHtml = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'docs\benchmarks\v03617-harness-bench-report.ja.html') -Raw -Encoding UTF8
+        $contractHtml | Should -Match 'v0\.36\.23'
+        $contractHtml | Should -Not -Match 'v0\.36\.22 測定待ち|v0\.36\.22 で行う正式|6ペイン実測とレポート再作成は v0\.36\.22'
+    }
+
     It 'fails when a task packet is missing' {
         $badRoot = Join-Path $TestDrive 'bad-pack'
         New-Item -ItemType Directory -Path $badRoot -Force | Out-Null
