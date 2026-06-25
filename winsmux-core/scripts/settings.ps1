@@ -1414,6 +1414,74 @@ function Get-BridgeBuiltinProviderCapability {
                 supports_context_reset   = $true
             })
         }
+        'antigravity' {
+            return ConvertTo-BridgeProviderCapabilityEntry ([ordered]@{
+                adapter                  = 'antigravity'
+                display_name             = 'Antigravity'
+                command                  = 'agy'
+                model_options            = @(
+                    [ordered]@{ id = 'provider-default'; label = 'Provider default'; source = 'provider-default' },
+                    [ordered]@{ id = 'Gemini 3.5 Flash (High)'; label = 'Gemini 3.5 Flash (High)'; source = 'cli-discovery'; availability = 'Antigravity CLI model picker' },
+                    [ordered]@{ id = 'Gemini 3.5 Flash (Medium)'; label = 'Gemini 3.5 Flash (Medium)'; source = 'cli-discovery'; availability = 'Antigravity CLI model picker' },
+                    [ordered]@{ id = 'Gemini 3.5 Flash (Low)'; label = 'Gemini 3.5 Flash (Low)'; source = 'cli-discovery'; availability = 'Antigravity CLI model picker' },
+                    [ordered]@{ id = 'Gemini 3.1 Pro (High)'; label = 'Gemini 3.1 Pro (High)'; source = 'cli-discovery'; availability = 'Antigravity CLI model picker' },
+                    [ordered]@{ id = 'Gemini 3.1 Pro (Low)'; label = 'Gemini 3.1 Pro (Low)'; source = 'cli-discovery'; availability = 'Antigravity CLI model picker' },
+                    [ordered]@{ id = 'Claude Sonnet 4.6 (Thinking)'; label = 'Claude Sonnet 4.6 (Thinking)'; source = 'cli-discovery'; availability = 'Antigravity CLI model picker' },
+                    [ordered]@{ id = 'Claude Opus 4.6 (Thinking)'; label = 'Claude Opus 4.6 (Thinking)'; source = 'cli-discovery'; availability = 'Antigravity CLI model picker' },
+                    [ordered]@{ id = 'GPT-OSS 120B (Medium)'; label = 'GPT-OSS 120B (Medium)'; source = 'cli-discovery'; availability = 'Antigravity CLI model picker' }
+                )
+                model_sources            = @('provider-default', 'cli-discovery', 'operator-override')
+                reasoning_efforts        = @('provider-default')
+                local_access_note        = 'Local Antigravity CLI account and model picker access.'
+                harness_availability     = 'official-cli'
+                credential_requirements  = 'local-cli-owned'
+                execution_backend        = 'antigravity-cli-print'
+                runtime_requirements     = 'Antigravity CLI agy installed in the pane environment.'
+                analysis_posture         = 'read-write-worker'
+                prompt_transports        = @('argv', 'file')
+                auth_modes               = @('antigravity-official-cli')
+                local_interactive_oauth_modes = @('antigravity-official-cli')
+                supports_parallel_runs   = $true
+                supports_interrupt       = $false
+                supports_structured_result = $true
+                supports_file_edit       = $false
+                supports_subagents       = $false
+                supports_verification    = $true
+                supports_consultation    = $true
+                supports_context_reset   = $true
+            })
+        }
+        'grok-build' {
+            return ConvertTo-BridgeProviderCapabilityEntry ([ordered]@{
+                adapter                  = 'grok-build'
+                display_name             = 'Grok Build'
+                command                  = 'grok'
+                model_options            = @(
+                    [ordered]@{ id = 'provider-default'; label = 'Provider default'; source = 'provider-default' },
+                    [ordered]@{ id = 'grok-build'; label = 'Grok 4.3'; source = 'cli-discovery'; availability = 'Grok Build models' },
+                    [ordered]@{ id = 'grok-composer-2.5-fast'; label = 'Composer 2.5 Fast'; source = 'cli-discovery'; availability = 'Grok Build models' }
+                )
+                model_sources            = @('provider-default', 'cli-discovery', 'operator-override')
+                reasoning_efforts        = @('provider-default')
+                local_access_note        = 'Local Grok Build account and model picker access.'
+                harness_availability     = 'official-cli'
+                credential_requirements  = 'local-cli-owned'
+                execution_backend        = 'agent-cli'
+                runtime_requirements     = 'Grok Build CLI grok installed in the pane environment.'
+                analysis_posture         = 'read-write-worker'
+                prompt_transports        = @('argv', 'file')
+                auth_modes               = @('grok-build-local')
+                local_interactive_oauth_modes = @('grok-build-local')
+                supports_parallel_runs   = $true
+                supports_interrupt       = $false
+                supports_structured_result = $true
+                supports_file_edit       = $true
+                supports_subagents       = $false
+                supports_verification    = $true
+                supports_consultation    = $true
+                supports_context_reset   = $true
+            })
+        }
         default {
             return $null
         }

@@ -1826,6 +1826,32 @@ agent-slots:
         $providerDefaultSourceCommand | Should -Not -Match 'model=gpt-5\.4'
     }
 
+    It 'uses built-in launch command metadata for Antigravity and Grok Build providers' {
+        $antigravityCommand = Get-BridgeProviderLaunchCommand `
+            -ProviderId 'antigravity' `
+            -Model 'Gemini 3.5 Flash (High)' `
+            -ModelSource 'cli-discovery' `
+            -ReasoningEffort 'provider-default' `
+            -ProjectDir 'C:\Project Root' `
+            -GitWorktreeDir 'C:\Project Root\.git\worktrees\worker-3' `
+            -RootPath $script:settingsTempRoot
+
+        $antigravityCommand | Should -Be "agy --model 'Gemini 3.5 Flash (High)'"
+        $antigravityCommand | Should -Not -Match '^antigravity '
+
+        $grokCommand = Get-BridgeProviderLaunchCommand `
+            -ProviderId 'grok-build' `
+            -Model 'grok-build' `
+            -ModelSource 'cli-discovery' `
+            -ReasoningEffort 'provider-default' `
+            -ProjectDir 'C:\Project Root' `
+            -GitWorktreeDir 'C:\Project Root\.git\worktrees\worker-4' `
+            -RootPath $script:settingsTempRoot
+
+        $grokCommand | Should -Be "grok --model 'grok-build'"
+        $grokCommand | Should -Not -Match '^grok-build '
+    }
+
     It 'rejects structurally malformed provider capability registries' {
         $registryPath = Get-BridgeProviderCapabilityRegistryPath -RootPath $script:settingsTempRoot
         $registryDir = Split-Path -Parent $registryPath
