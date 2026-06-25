@@ -49,7 +49,7 @@ function Resolve-WinsmuxRawCommand {
 $script:WinsmuxRawCommand = Resolve-WinsmuxRawCommand
 
 # --- Config ---
-$VERSION = "0.36.21"
+$VERSION = "0.36.22"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 $BridgeScriptPath = $PSCommandPath
@@ -13420,6 +13420,13 @@ function New-RunInsightsContract {
         'closed'
     }
     $stopRequired = ($scopeCircuitState -eq 'open')
+    $splitWorthiness = New-RunSplitWorthinessPolicy `
+        -Run $Run `
+        -RetryCount $retryCount `
+        -InterventionCount $interventionCount `
+        -UnhealthySessionSize $unhealthySessionSize `
+        -ContextPressure $contextPressure `
+        -BlockedReasons @($blockedReasons)
 
     return [ordered]@{
         packet_type            = 'run_insights'
@@ -13431,6 +13438,7 @@ function New-RunInsightsContract {
         unhealthy_session_size = [bool]$unhealthySessionSize
         blocked_reasons        = @($blockedReasons)
         next_improvements      = @($nextImprovements)
+        split_worthiness       = $splitWorthiness
         loop_control           = [ordered]@{
             two_strike_limit                  = $twoStrikeLimit
             one_hypothesis_one_change_required = $true
@@ -13718,6 +13726,345 @@ function Get-RunDurableRefList {
     return @($refs)
 }
 
+function Get-RunFirstNonEmpty {
+    param([AllowEmptyCollection()][string[]]$Values = @())
+
+    foreach ($value in @($Values)) {
+        if (-not [string]::IsNullOrWhiteSpace($value)) {
+            return [string]$value
+        }
+    }
+
+    return ''
+}
+
+function Get-RunSha256Hex {
+    param([AllowEmptyString()][string]$Value = '')
+
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes([string]$Value)
+    $hash = [System.Security.Cryptography.SHA256]::Create().ComputeHash($bytes)
+    return (($hash | ForEach-Object { $_.ToString('x2') }) -join '')
+}
+
+function Get-RunStringListDigest {
+    param([AllowEmptyCollection()][string[]]$Values = @())
+
+    $payload = (($Values | ForEach-Object { [string]$_ }) -join "`0")
+    return Get-RunSha256Hex -Value $payload
+}
+
+function ConvertTo-RunStableRefFragment {
+    param([AllowEmptyString()][string]$Value = '')
+
+    $fragment = ([regex]::Replace(([string]$Value), '[^A-Za-z0-9_-]+', '-')).Trim('-')
+    if ([string]::IsNullOrWhiteSpace($fragment)) {
+        return 'unknown'
+    }
+    return $fragment
+}
+
+function Get-RunVerificationClaimLevel {
+    param([AllowEmptyString()][string]$Outcome = '')
+
+    switch ($Outcome.Trim().ToUpperInvariant()) {
+        'PASS' { return 'CONTRACT_VERIFIED' }
+        'FAIL' { return 'CONTRACT_FAILED' }
+        'PARTIAL' { return 'MOCK_INTEGRATION_VERIFIED' }
+        default { return 'NOT_TESTED' }
+    }
+}
+
+function ConvertTo-RunNullableInt {
+    param([AllowNull()]$Value = $null)
+
+    if ($null -eq $Value) {
+        return $null
+    }
+    $text = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return $null
+    }
+    $parsed = 0
+    if ([int]::TryParse($text, [ref]$parsed)) {
+        return $parsed
+    }
+    return $null
+}
+
+function New-RunUnknownAgeSnapshot {
+    param([string]$Kind)
+
+    return [ordered]@{
+        kind    = $Kind
+        seconds = $null
+        source  = 'not_measured'
+    }
+}
+
+function New-RunContextPressureSnapshot {
+    param(
+        [AllowNull()]$Run = $null,
+        [AllowNull()]$VerificationEvidence = $null,
+        [int]$PendingMailboxCount = 0,
+        [int]$UnresolvedQuestionCount = 0
+    )
+
+    $budget = ConvertTo-RunNullableInt -Value (Get-RunContractField -InputObject $VerificationEvidence -Name 'context_budget')
+    $estimate = ConvertTo-RunNullableInt -Value (Get-RunContractField -InputObject $VerificationEvidence -Name 'context_estimate')
+    $pressure = ([string](Get-RunContractField -InputObject $VerificationEvidence -Name 'context_pressure')).Trim().ToLowerInvariant()
+    $source = [string](Get-RunContractField -InputObject $VerificationEvidence -Name 'context_source')
+    if ([string]::IsNullOrWhiteSpace($source)) {
+        $source = if ($null -ne $budget -and $null -ne $estimate) { 'estimated' } else { 'unknown' }
+    }
+    $confidence = switch ($source) {
+        'provider-reported' { 'high' }
+        'reported' { 'high' }
+        'estimated' {
+            if (-not [string]::IsNullOrWhiteSpace($pressure)) { 'medium' } else { 'low' }
+        }
+        default { 'unknown' }
+    }
+    $usagePercent = $null
+    if ($null -ne $budget -and $budget -gt 0 -and $null -ne $estimate) {
+        $usagePercent = [Math]::Round(($estimate / $budget) * 100, 1)
+    }
+
+    $state = switch ($pressure) {
+        'exhausted' { 'compaction-imminent' }
+        'critical' { 'compaction-imminent' }
+        'high' { 'checkpoint-recommended' }
+        'medium' { 'healthy' }
+        'low' { 'healthy' }
+        default {
+            if ($null -eq $budget -or $null -eq $estimate) { 'unknown' } else { 'healthy' }
+        }
+    }
+    if ($UnresolvedQuestionCount -gt 0 -and $state -eq 'healthy') {
+        $state = 'handoff-recommended'
+    }
+    $recommendedAction = switch ($state) {
+        'compaction-imminent' { 'handoff_now' }
+        'checkpoint-recommended' { 'write_checkpoint' }
+        'handoff-recommended' { 'handoff_after_checkpoint' }
+        'checkpoint-stale' { 'refresh_checkpoint' }
+        'healthy' { 'continue' }
+        default { 'inspect_context' }
+    }
+
+    return [ordered]@{
+        state                       = $state
+        recommended_action          = $recommendedAction
+        usage                       = [ordered]@{
+            percent          = $usagePercent
+            estimated_tokens = $estimate
+            budget_tokens    = $budget
+            source           = $source
+            confidence       = $confidence
+        }
+        capsule_age                 = New-RunUnknownAgeSnapshot -Kind 'capsule'
+        checkpoint_age              = New-RunUnknownAgeSnapshot -Kind 'checkpoint'
+        pending_mailbox_count       = [int]$PendingMailboxCount
+        unresolved_question_count   = [int]$UnresolvedQuestionCount
+        false_precision_avoided     = $true
+        automatic_checkpoint_action = 'optional'
+        automatic_compact_action    = 'separate'
+    }
+}
+
+function New-RunSummaryQualityGate {
+    param(
+        [Parameter(Mandatory = $true)]$Capsule,
+        [AllowNull()]$Run = $null,
+        [AllowNull()]$PressureSnapshot = $null
+    )
+
+    $privacy = Get-RunContractField -InputObject $Capsule -Name 'privacy'
+    $validation = Get-RunContractField -InputObject $Capsule -Name 'validation'
+    $checks = [ordered]@{
+        status_present                 = -not [string]::IsNullOrWhiteSpace([string](Get-RunContractField -InputObject $Capsule -Name 'status'))
+        concrete_next_action           = -not [string]::IsNullOrWhiteSpace([string](Get-RunContractField -InputObject $Capsule -Name 'next_action'))
+        evidence_refs_present          = (@(Get-RunContractField -InputObject $Capsule -Name 'evidence_refs').Count -gt 0)
+        freshness_known                = -not [string]::IsNullOrWhiteSpace([string](Get-RunContractField -InputObject $Capsule -Name 'created_at'))
+        source_sha_matches             = ([string](Get-RunContractField -InputObject $Capsule -Name 'source_head_sha') -eq [string](Get-RunContractField -InputObject $Run -Name 'head_sha'))
+        verification_consistent        = -not [bool](Get-RunContractField -InputObject $validation -Name 'verification_contradiction')
+        risks_questions_separated      = $true
+        redaction_ok                   = (
+            -not [bool](Get-RunContractField -InputObject $privacy -Name 'raw_transcript_stored') -and
+            -not [bool](Get-RunContractField -InputObject $privacy -Name 'prompt_body_stored') -and
+            -not [bool](Get-RunContractField -InputObject $privacy -Name 'secret_stored') -and
+            -not [bool](Get-RunContractField -InputObject $privacy -Name 'private_path_stored')
+        )
+        capsule_schema_valid           = [bool](Get-RunContractField -InputObject $validation -Name 'valid')
+        stale_capsule_rejected         = -not [bool](Get-RunContractField -InputObject $validation -Name 'stale')
+    }
+    $failedChecks = @(
+        foreach ($name in $checks.Keys) {
+            if (-not [bool]$checks[$name]) {
+                [string]$name
+            }
+        }
+    )
+    $valid = (@($failedChecks).Count -eq 0)
+
+    return [ordered]@{
+        gate_version                   = 1
+        valid                          = $valid
+        checks                         = $checks
+        failed_checks                  = @($failedChecks)
+        action                         = if ($valid) { 'allow_routing' } else { 'resummary_or_operator_escalation' }
+        invalid_capsule_routing_rejected = (-not $valid)
+        governance_final_authority     = $true
+    }
+}
+
+function New-RunCheckpointFreshness {
+    param([AllowNull()]$Run = $null)
+
+    $headSha = [string](Get-RunContractField -InputObject $Run -Name 'head_sha')
+    $lastEventAt = [string](Get-RunContractField -InputObject $Run -Name 'last_event_at')
+    $state = if ([string]::IsNullOrWhiteSpace($headSha) -or [string]::IsNullOrWhiteSpace($lastEventAt)) { 'unknown' } else { 'fresh' }
+
+    return [ordered]@{
+        state                  = $state
+        source_head_sha        = $headSha
+        source_time            = $lastEventAt
+        checkpoint_age         = New-RunUnknownAgeSnapshot -Kind 'checkpoint'
+        source_sha_match       = -not [string]::IsNullOrWhiteSpace($headSha)
+        stale_checkpoint_rejected = ($state -eq 'checkpoint-stale')
+        false_precision_avoided = $true
+    }
+}
+
+function New-RunSplitWorthinessPolicy {
+    param(
+        [Parameter(Mandatory = $true)]$Run,
+        [int]$RetryCount = 0,
+        [int]$InterventionCount = 0,
+        [bool]$UnhealthySessionSize = $false,
+        [string]$ContextPressure = '',
+        [AllowEmptyCollection()][string[]]$BlockedReasons = @()
+    )
+
+    $reasonCodes = [System.Collections.Generic.List[string]]::new()
+    if ($RetryCount -ge 2) {
+        Add-RunInsightText -List $reasonCodes -Value 'retry_cost_high'
+    }
+    if ($ContextPressure -in @('high', 'critical', 'exhausted')) {
+        Add-RunInsightText -List $reasonCodes -Value 'context_pressure_high'
+    }
+    if ([int]$Run.changed_file_count -gt 20) {
+        Add-RunInsightText -List $reasonCodes -Value 'write_conflict_risk_high'
+    }
+    if ($UnhealthySessionSize) {
+        Add-RunInsightText -List $reasonCodes -Value 'scope_too_large'
+    }
+    $split = ($reasonCodes.Count -gt 0)
+    return [ordered]@{
+        policy_version                    = 1
+        split                             = $split
+        enforcement                       = 'suggestion_only'
+        reason_codes                      = @($reasonCodes)
+        expected_work_minutes             = $null
+        measured_startup_message_review_minutes = $null
+        estimated_work_minutes            = $null
+        estimated_coordination_minutes    = $null
+        context_isolation_benefit         = if ($ContextPressure -in @('high', 'critical', 'exhausted')) { 'high' } else { 'medium' }
+        write_conflict_risk               = if ([int]$Run.changed_file_count -gt 20) { 'high' } else { 'low' }
+        slot_availability                 = 'unknown'
+        current_pressure                  = if ([string]::IsNullOrWhiteSpace($ContextPressure)) { 'unknown' } else { $ContextPressure }
+        confidence                        = if ($split) { 'medium' } else { 'low' }
+        suggested_slot                    = if ($split) { 'next-available-worker' } else { $null }
+        suggested_role                    = if ($split) { 'worker' } else { $null }
+        governance_controlled_enforcement = $true
+    }
+}
+
+function New-RunContextCapsule {
+    param(
+        [AllowNull()]$Run = $null,
+        [AllowNull()]$VerificationEvidence = $null,
+        [AllowEmptyCollection()][string[]]$EvidenceRefs = @(),
+        [int]$PendingMailboxCount = 0
+    )
+
+    $verificationResult = Get-RunContractField -InputObject (Get-RunContractField -InputObject $Run -Name 'verification_result') -Name 'outcome'
+    $runId = [string](Get-RunContractField -InputObject $Run -Name 'run_id')
+    $taskId = [string](Get-RunContractField -InputObject $Run -Name 'task_id')
+    $sourceSlot = [string](Get-RunContractField -InputObject $Run -Name 'primary_label')
+    $headSha = [string](Get-RunContractField -InputObject $Run -Name 'head_sha')
+    $experimentPacket = Get-RunContractField -InputObject $Run -Name 'experiment_packet'
+    $nextAction = Get-RunFirstNonEmpty @(
+        [string](Get-RunContractField -InputObject $experimentPacket -Name 'next_action'),
+        [string](Get-RunContractField -InputObject $Run -Name 'activity'),
+        [string](Get-RunContractField -InputObject $Run -Name 'task_state')
+    )
+    $summary = Get-RunFirstNonEmpty @(
+        [string](Get-RunContractField -InputObject $Run -Name 'detail'),
+        [string](Get-RunContractField -InputObject $Run -Name 'task')
+    )
+    $status = Get-RunFirstNonEmpty @(
+        [string](Get-RunContractField -InputObject $Run -Name 'task_state'),
+        [string](Get-RunContractField -InputObject $Run -Name 'state')
+    )
+    $changedFiles = @(ConvertTo-RunPublicChangedFiles -ChangedFiles (Get-RunContractField -InputObject $Run -Name 'changed_files'))
+    $missing = [System.Collections.Generic.List[string]]::new()
+    foreach ($entry in @(
+        @('run_id', $runId),
+        @('task_id', $taskId),
+        @('source_slot', $sourceSlot),
+        @('summary', $summary),
+        @('next_action', $nextAction),
+        @('source_head_sha', $headSha)
+    )) {
+        if ([string]::IsNullOrWhiteSpace([string]$entry[1])) {
+            $missing.Add([string]$entry[0]) | Out-Null
+        }
+    }
+    if (@($EvidenceRefs).Count -eq 0) {
+        $missing.Add('evidence_refs') | Out-Null
+    }
+    $pressureSnapshot = New-RunContextPressureSnapshot -Run $Run -VerificationEvidence $VerificationEvidence -PendingMailboxCount $PendingMailboxCount -UnresolvedQuestionCount 0
+
+    return [ordered]@{
+        capsule_version       = 1
+        capsule_id            = ('capsule:{0}:{1}' -f (ConvertTo-RunStableRefFragment -Value $runId), (ConvertTo-RunStableRefFragment -Value $headSha))
+        run_id                = $runId
+        task_id               = $taskId
+        source_slot           = $sourceSlot
+        status                = $status
+        summary               = $summary
+        decisions             = @()
+        evidence_refs         = @($EvidenceRefs)
+        changed_files_digest  = Get-RunStringListDigest -Values $changedFiles
+        verification_digest   = Get-RunStringListDigest -Values @(
+            [string]$verificationResult,
+            [string](Get-RunContractField -InputObject $VerificationEvidence -Name 'context_pack_id'),
+            [string](Get-RunContractField -InputObject $VerificationEvidence -Name 'context_pack_version')
+        )
+        risks                 = @()
+        unresolved_questions  = @()
+        next_action           = $nextAction
+        claim_level           = Get-RunVerificationClaimLevel -Outcome ([string]$verificationResult)
+        context_budget        = Get-RunContractField -InputObject $VerificationEvidence -Name 'context_budget'
+        context_pressure      = $pressureSnapshot
+        source_head_sha       = $headSha
+        created_at            = [string](Get-RunContractField -InputObject $Run -Name 'last_event_at')
+        expires_at            = $null
+        validation            = [ordered]@{
+            valid                      = (@($missing).Count -eq 0)
+            missing_fields             = @($missing)
+            stale                      = $false
+            verification_contradiction = $false
+        }
+        privacy               = [ordered]@{
+            raw_transcript_stored = $false
+            prompt_body_stored    = $false
+            secret_stored         = $false
+            private_path_stored   = $false
+        }
+    }
+}
+
 function New-RunTeamMemoryContract {
     param(
         [Parameter(Mandatory = $true)]$Run,
@@ -13783,8 +14130,10 @@ function New-RunTeamMemoryContract {
 
 function New-RunContextContract {
     param(
+        [AllowNull()]$Run = $null,
         [AllowNull()]$VerificationEvidence = $null,
-        [string[]]$TeamMemoryRefs = @()
+        [string[]]$TeamMemoryRefs = @(),
+        [AllowNull()]$TeamMemory = $null
     )
 
     $requestedMode = [string](Get-RunContractField -InputObject $VerificationEvidence -Name 'context_mode')
@@ -13795,16 +14144,32 @@ function New-RunContextContract {
     }
 
     $safeTeamMemoryRefs = @(Get-RunDurableRefList -Values $TeamMemoryRefs -Prefixes @('team-memory:') | Sort-Object -Unique)
+    $safeEvidenceRefs = @(Get-RunContractRefList -Data $VerificationEvidence -Name 'evidence_refs' -Prefixes (Get-RunPublicContextRefPrefixes))
+    $pendingMailboxCount = ConvertTo-RunNullableInt -Value (Get-RunContractField -InputObject $TeamMemory -Name 'mailbox_event_count')
+    if ($null -eq $pendingMailboxCount) {
+        $pendingMailboxCount = 0
+    }
+    $contextCapsule = New-RunContextCapsule -Run $Run -VerificationEvidence $VerificationEvidence -EvidenceRefs $safeEvidenceRefs -PendingMailboxCount $pendingMailboxCount
+    $summaryQualityGate = New-RunSummaryQualityGate -Capsule $contextCapsule -Run $Run -PressureSnapshot (Get-RunContractField -InputObject $contextCapsule -Name 'context_pressure')
+    $contextCapsule['summary_quality_gate'] = $summaryQualityGate
 
     return [ordered]@{
         contract_version             = 1
         packet_type                  = 'context_budget_contract'
         scope                        = 'run'
+        context_capsule              = $contextCapsule
         context_pack_id              = Get-RunContractField -InputObject $VerificationEvidence -Name 'context_pack_id'
         context_pack_version         = Get-RunContractField -InputObject $VerificationEvidence -Name 'context_pack_version'
         context_budget               = Get-RunContractField -InputObject $VerificationEvidence -Name 'context_budget'
         context_estimate             = Get-RunContractField -InputObject $VerificationEvidence -Name 'context_estimate'
         context_pressure             = Get-RunContractField -InputObject $VerificationEvidence -Name 'context_pressure'
+        context_pressure_status      = Get-RunContractField -InputObject $contextCapsule -Name 'context_pressure'
+        summary_quality_gate         = $summaryQualityGate
+        router_policy                = [ordered]@{
+            usable_for_routing                = [bool](Get-RunContractField -InputObject $summaryQualityGate -Name 'valid')
+            invalid_or_stale_capsule_rejected = -not [bool](Get-RunContractField -InputObject $summaryQualityGate -Name 'valid')
+            governance_final_authority        = $true
+        }
         tool_output_pruned_count     = Get-RunContractField -InputObject $VerificationEvidence -Name 'tool_output_pruned_count'
         context_mode                 = $contextMode
         fork_reason                  = if ($contextMode -eq 'fork') { $forkReason } else { $null }
@@ -13829,7 +14194,7 @@ function New-RunContextContract {
             operating_guidance_refs   = @(Get-RunContractRefList -Data $VerificationEvidence -Name 'operating_guidance_refs' -Prefixes (Get-RunPublicContextRefPrefixes))
             hard_constraints          = Get-RunContractField -InputObject $VerificationEvidence -Name 'knowledge_hard_constraints'
             capability_contract       = Get-RunContractField -InputObject $VerificationEvidence -Name 'capability_contract'
-            evidence_refs             = @(Get-RunContractRefList -Data $VerificationEvidence -Name 'evidence_refs' -Prefixes (Get-RunPublicContextRefPrefixes))
+            evidence_refs             = @($safeEvidenceRefs)
             rationale_refs            = @(Get-RunContractRefList -Data $VerificationEvidence -Name 'rationale_refs' -Prefixes (Get-RunPublicContextRefPrefixes))
             team_memory_refs          = $safeTeamMemoryRefs
             freeform_body_stored      = $false
@@ -14193,13 +14558,28 @@ function New-RunCheckpointPackage {
         [string]$Run.task_state -in @('completed', 'task_completed', 'commit_ready', 'done') -or
         [string]$Run.review_state -eq 'PASS'
     )
+    $experimentPacket = Get-RunContractField -InputObject $Run -Name 'experiment_packet'
+    $nextExactStep = Get-RunFirstNonEmpty @(
+        [string](Get-RunContractField -InputObject $experimentPacket -Name 'next_action'),
+        [string](Get-RunContractField -InputObject $Run -Name 'activity'),
+        [string](Get-RunContractField -InputObject $Run -Name 'task_state')
+    )
+    $resumeHandle = 'checkpoint:{0}:{1}' -f `
+        (ConvertTo-RunStableRefFragment -Value ([string]$Run.run_id)), `
+        (ConvertTo-RunStableRefFragment -Value ([string]$Run.head_sha))
 
     return [ordered]@{
         contract_version             = 1
+        checkpoint_version           = 1
         packet_type                  = 'checkpoint_package'
         scope                        = 'worker_worktree'
         run_id                       = [string]$Run.run_id
         task_id                      = [string]$Run.task_id
+        resume_handle                = $resumeHandle
+        objective                    = [string](Get-RunContractField -InputObject $Run -Name 'goal')
+        phase                        = [string](Get-RunContractField -InputObject $Run -Name 'phase')
+        next_exact_step              = $nextExactStep
+        claim_level                  = Get-RunVerificationClaimLevel -Outcome $verificationOutcome
         project_ref                  = 'current_project'
         project_root_stored          = $false
         assigned_worktree            = $worktreeRef
@@ -14256,6 +14636,17 @@ function New-RunCheckpointPackage {
         }
         rollback_hint                = 'operator-owned-git-lifecycle'
         cleanup_hint                 = if ($cleanupRequired) { 'operator may clean the worker worktree after merge or explicit close' } else { 'keep the worker worktree for inspection' }
+        resume_policy                = [ordered]@{
+            resume_allowed                 = (-not $cleanupRequired)
+            completed_task_resume_rejected = [bool]$cleanupRequired
+            requires_same_head_sha         = $true
+            requires_operator_control      = $true
+        }
+        active_message_ids           = @()
+        open_questions               = @()
+        checkpoint_freshness         = New-RunCheckpointFreshness -Run $Run
+        context_pressure_status      = Get-RunContractField -InputObject $Run.context_contract -Name 'context_pressure_status'
+        summary_quality_gate         = Get-RunContractField -InputObject $Run.context_contract -Name 'summary_quality_gate'
         operator_git_required        = $true
         worker_git_write_allowed     = $false
         local_reference_paths_stored = $false
@@ -14914,7 +15305,7 @@ function Get-RunsPayload {
             $run.tdd_gate = New-RunTddGateContract -Run $run -EventRecords $runEvents
             $run.phase_gate = New-RunPhaseGateContract -Run $run -EventRecords $runEvents
             $run.team_memory = New-RunTeamMemoryContract -Run $run -EventRecords $runEvents
-            $run.context_contract = New-RunContextContract -VerificationEvidence $run.verification_evidence -TeamMemoryRefs @($run.team_memory.team_memory_refs)
+            $run.context_contract = New-RunContextContract -Run $run -VerificationEvidence $run.verification_evidence -TeamMemoryRefs @($run.team_memory.team_memory_refs) -TeamMemory $run.team_memory
             $run.audit_chain = New-RunAuditChainContract -Run $run -EventRecords $runEvents
             $run.run_insights = New-RunInsightsContract -Run $run -EventRecords $runEvents
             $run.architecture_contract = New-RunArchitectureContract -Run $run

@@ -17,6 +17,7 @@
 - [プロバイダーとモデルの対応方針](provider-and-model-support.ja.md) - クラウド型エージェント CLI、Colab 上のモデル対象、将来のローカル LLM、モデルファミリーのメタデータを説明します。
 - [外部コントロールプレーン API](external-control-plane.ja.md) - 外部自動化クライアント向けのローカル named pipe JSON-RPC 契約を説明します。
 - [リポジトリの公開面ポリシー](repo-surface-policy.md) - 追跡対象ファイルの公開面、実行時契約面、コントリビューター向け面を分けます。
+- [v0.36.22 コンテキスト継続性](project/v03622-context-continuity.ja.md) - Context Capsule、メールボックス、チェックポイント、圧迫状態、要約品質、分割判断の契約を説明します。
 
 ## 困った時
 

@@ -44,6 +44,16 @@ function script:ConvertTo-GoldenCorpusJson {
     )
     $normalized = [Regex]::Replace(
         $normalized,
+        '"created_at"\s*:\s*"[^"]+"',
+        '"created_at": "__LAST_EVENT_AT__"'
+    )
+    $normalized = [Regex]::Replace(
+        $normalized,
+        '"source_time"\s*:\s*"[^"]+"',
+        '"source_time": "__LAST_EVENT_AT__"'
+    )
+    $normalized = [Regex]::Replace(
+        $normalized,
         'observation-pack-[a-f0-9]+\.json',
         'observation-pack-__ID__.json'
     )
@@ -3768,6 +3778,31 @@ Describe 'agent-monitor helpers' {
 
     BeforeEach {
         Mock Send-MonitorOperatorMailboxMessage { return $true }
+    }
+
+    It 'builds v2 mailbox envelope metadata before sending monitor messages' {
+        $payload = New-MonitorOperatorMailboxPayload `
+            -SessionName 'winsmux-orchestra' `
+            -Event 'pane.idle' `
+            -Message 'worker idle' `
+            -Label 'worker-1' `
+            -PaneId '%2' `
+            -Role 'Worker' `
+            -Status 'ready' `
+            -Data ([ordered]@{ idle_threshold_seconds = 120 })
+
+        $payload.mailbox_version | Should -Be 2
+        $payload.message_type | Should -Be 'share'
+        $payload.state | Should -Be 'created'
+        $payload.idempotency_key | Should -Match '^mailbox:v2:winsmux-orchestra:worker-1:pane.idle:'
+        $payload.message_id | Should -Not -BeNullOrEmpty
+        $payload.correlation_id | Should -Be $payload.message_id
+        $payload.causation_id | Should -BeNullOrEmpty
+        $payload.ttl_seconds | Should -BeGreaterThan 0
+        $payload.ack_required | Should -Be $true
+        $payload.content.event | Should -Be 'pane.idle'
+        $payload.content.data.idle_threshold_seconds | Should -Be 120
+        ($payload | ConvertTo-Json -Depth 8) | Should -Not -Match 'raw_transcript'
     }
 
     It 'treats Codex context exhaustion followed by a PowerShell prompt as a crash reason' {
@@ -13223,6 +13258,25 @@ panes:
         $result.runs[0].verification_result.outcome | Should -Be 'PARTIAL'
         $result.runs[0].run_packet.verification_result.outcome | Should -Be 'PARTIAL'
         $result.runs[0].context_contract.context_pack_id | Should -Be 'ctx-runs'
+        $result.runs[0].context_contract.context_capsule.capsule_version | Should -Be 1
+        $result.runs[0].context_contract.context_capsule.run_id | Should -Be 'task:task-256'
+        $result.runs[0].context_contract.context_capsule.task_id | Should -Be 'task-256'
+        $result.runs[0].context_contract.context_capsule.source_slot | Should -Be 'builder-1'
+        $result.runs[0].context_contract.context_capsule.next_action | Should -Be 'review_pending'
+        $result.runs[0].context_contract.context_capsule.claim_level | Should -Be 'MOCK_INTEGRATION_VERIFIED'
+        $result.runs[0].context_contract.context_capsule.source_head_sha | Should -Be 'abc1234def5678'
+        $result.runs[0].context_contract.context_capsule.validation.valid | Should -Be $true
+        $result.runs[0].context_contract.context_capsule.privacy.raw_transcript_stored | Should -Be $false
+        $result.runs[0].context_contract.context_capsule.context_pressure.state | Should -Be 'checkpoint-recommended'
+        $result.runs[0].context_contract.context_capsule.context_pressure.recommended_action | Should -Be 'write_checkpoint'
+        $result.runs[0].context_contract.context_capsule.context_pressure.usage.percent | Should -Be 35
+        $result.runs[0].context_contract.context_capsule.context_pressure.usage.source | Should -Be 'estimated'
+        $result.runs[0].context_contract.context_capsule.context_pressure.pending_mailbox_count | Should -Be 2
+        $result.runs[0].context_contract.context_capsule.summary_quality_gate.valid | Should -Be $true
+        $result.runs[0].context_contract.context_capsule.summary_quality_gate.action | Should -Be 'allow_routing'
+        $result.runs[0].context_contract.context_pressure_status.state | Should -Be 'checkpoint-recommended'
+        $result.runs[0].context_contract.summary_quality_gate.valid | Should -Be $true
+        $result.runs[0].context_contract.router_policy.usable_for_routing | Should -Be $true
         $result.runs[0].context_contract.context_pressure | Should -Be 'high'
         $result.runs[0].context_contract.context_mode | Should -Be 'isolated'
         $result.runs[0].context_contract.tool_output_pruned_count | Should -Be 3
@@ -13275,6 +13329,9 @@ panes:
         $result.runs[0].run_insights.drift_signals | Should -Be @('drift_detected')
         $result.runs[0].run_insights.unhealthy_session_size | Should -Be $true
         $result.runs[0].run_insights.next_improvements | Should -Contain 'split the next run into a smaller scope'
+        $result.runs[0].run_insights.split_worthiness.split | Should -Be $true
+        $result.runs[0].run_insights.split_worthiness.reason_codes | Should -Contain 'context_pressure_high'
+        $result.runs[0].run_insights.split_worthiness.enforcement | Should -Be 'suggestion_only'
         $result.runs[0].architecture_contract.packet_type | Should -Be 'architecture_contract'
         $result.runs[0].architecture_contract.baseline.max_drift_score | Should -Be 0
         $result.runs[0].architecture_contract.current.drift_score | Should -Be 1
@@ -13310,6 +13367,15 @@ panes:
         ($result.runs[0].child_launch_contract | ConvertTo-Json -Depth 8) | Should -Not -Match 'Users'
         ($result.runs[0].child_launch_contract | ConvertTo-Json -Depth 8) | Should -Not -Match 'private next action'
         $result.runs[0].checkpoint_package.packet_type | Should -Be 'checkpoint_package'
+        $result.runs[0].checkpoint_package.checkpoint_version | Should -Be 1
+        $result.runs[0].checkpoint_package.resume_handle | Should -Be 'checkpoint:task-task-256:abc1234def5678'
+        $result.runs[0].checkpoint_package.next_exact_step | Should -Be 'review_pending'
+        $result.runs[0].checkpoint_package.claim_level | Should -Be 'MOCK_INTEGRATION_VERIFIED'
+        $result.runs[0].checkpoint_package.resume_policy.resume_allowed | Should -Be $true
+        $result.runs[0].checkpoint_package.resume_policy.completed_task_resume_rejected | Should -Be $false
+        $result.runs[0].checkpoint_package.checkpoint_freshness.state | Should -Be 'fresh'
+        $result.runs[0].checkpoint_package.context_pressure_status.state | Should -Be 'checkpoint-recommended'
+        $result.runs[0].checkpoint_package.summary_quality_gate.valid | Should -Be $true
         $result.runs[0].checkpoint_package.assigned_worktree | Should -Be '.worktrees/builder-1'
         $result.runs[0].checkpoint_package.session_type | Should -Be 'managed_worktree'
         $result.runs[0].checkpoint_package.changed_files | Should -Be @('scripts/winsmux-core.ps1')
@@ -15442,6 +15508,19 @@ panes:
         $result.run.verification_evidence.context_pressure | Should -Be 'medium'
         $result.run.context_contract.packet_type | Should -Be 'context_budget_contract'
         $result.run.context_contract.context_pack_id | Should -Be 'ctx-task-256'
+        $result.run.context_contract.context_capsule.capsule_version | Should -Be 1
+        $result.run.context_contract.context_capsule.run_id | Should -Be 'task:task-256'
+        $result.run.context_contract.context_capsule.task_id | Should -Be 'task-256'
+        $result.run.context_contract.context_capsule.source_slot | Should -Be 'builder-1'
+        $result.run.context_contract.context_capsule.next_action | Should -Be 'approval_waiting'
+        $result.run.context_contract.context_capsule.claim_level | Should -Be 'MOCK_INTEGRATION_VERIFIED'
+        $result.run.context_contract.context_capsule.source_head_sha | Should -Be 'abc1234def5678'
+        $result.run.context_contract.context_capsule.validation.valid | Should -Be $true
+        $result.run.context_contract.context_capsule.privacy.raw_transcript_stored | Should -Be $false
+        $result.run.context_contract.context_capsule.context_pressure.state | Should -Be 'healthy'
+        $result.run.context_contract.context_capsule.context_pressure.usage.percent | Should -Be 35
+        $result.run.context_contract.context_capsule.summary_quality_gate.valid | Should -Be $true
+        $result.run.context_contract.router_policy.usable_for_routing | Should -Be $true
         $result.run.context_contract.context_mode | Should -Be 'isolated'
         $result.run.context_contract.semantic_context.context_pack_id | Should -Be 'sem-task-256'
         $result.run.context_contract.semantic_context.source_refs | Should -Be @('ADR-001', 'docs/operator-model.md#context')
@@ -20014,6 +20093,58 @@ panes:
             $PaneId -eq '%2' -and
             $Message -eq 'builder-1 (%2) がアイドル。次タスクのディスパッチが必要'
         }
+    }
+
+    It 'converts v2 mailbox payloads into auditable operator events' {
+        $record = ConvertTo-OperatorPollMailboxRecord -MailboxMessage ([ordered]@{
+            mailbox_version = 2
+            message_id      = 'msg-1'
+            correlation_id  = 'corr-1'
+            causation_id    = 'cause-1'
+            idempotency_key = 'mailbox:v2:winsmux-orchestra:worker-1:pane.idle:abc123'
+            message_type    = 'share'
+            state           = 'created'
+            ttl_seconds     = 300
+            ack_required    = $true
+            from            = 'worker-1'
+            to              = 'Operator'
+            timestamp       = '2026-04-07T09:00:00.0000000+09:00'
+            content         = [ordered]@{
+                session = 'winsmux-orchestra'
+                event   = 'pane.idle'
+                message = 'worker idle'
+                label   = 'worker-1'
+                pane_id = '%2'
+                role    = 'Worker'
+                status  = 'ready'
+                data    = [ordered]@{ idle_threshold_seconds = 120 }
+            }
+        }) -SessionName 'winsmux-orchestra'
+
+        $record.source | Should -Be 'mailbox'
+        $record.mailbox_version | Should -Be 2
+        $record.mailbox_state | Should -Be 'created'
+        $record.message_id | Should -Be 'msg-1'
+        $record.correlation_id | Should -Be 'corr-1'
+        $record.causation_id | Should -Be 'cause-1'
+        $record.idempotency_key | Should -Be 'mailbox:v2:winsmux-orchestra:worker-1:pane.idle:abc123'
+        $record.ack_required | Should -Be $true
+        $record.data.mailbox_message_id | Should -Be 'msg-1'
+        $record.data.mailbox_state | Should -Be 'created'
+    }
+
+    It 'ignores malformed v2 mailbox payloads before they reach operator events' {
+        $record = ConvertTo-OperatorPollMailboxRecord -MailboxMessage ([ordered]@{
+            mailbox_version = 2
+            message_type    = 'share'
+            state           = 'created'
+            content         = [ordered]@{
+                session = 'winsmux-orchestra'
+                message = 'missing event'
+            }
+        }) -SessionName 'winsmux-orchestra'
+
+        $record | Should -BeNullOrEmpty
     }
 
     It 'processes mailbox idle messages when panes are stored in dictionary format' {

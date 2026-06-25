@@ -1,4 +1,4 @@
-@{
+﻿@{
     FeatureInventoryEntries = @(
         @{
             Order = 10

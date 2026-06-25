@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$BacklogPath = '',
 
@@ -71,6 +71,54 @@ function ConvertFrom-YamlInlineList {
     }
 
     return $items
+}
+
+function ConvertTo-StringOrEmpty {
+    param(
+        [AllowNull()]
+        [object]$Value
+    )
+
+    if ($null -eq $Value) {
+        return ''
+    }
+
+    return [string]$Value
+}
+
+function ConvertTo-PortableRelativePath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$BasePath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$TargetPath
+    )
+
+    $baseFullPath = [System.IO.Path]::GetFullPath($BasePath)
+    $targetFullPath = [System.IO.Path]::GetFullPath($TargetPath)
+
+    $getRelativePathMethod = [System.IO.Path].GetMethods() |
+        Where-Object { $_.Name -eq 'GetRelativePath' -and $_.GetParameters().Count -eq 2 } |
+        Select-Object -First 1
+    if ($null -ne $getRelativePathMethod) {
+        return [System.IO.Path]::GetRelativePath($baseFullPath, $targetFullPath)
+    }
+
+    # Windows PowerShell 5 runs on .NET Framework, which does not provide
+    # System.IO.Path.GetRelativePath.
+    if (-not $baseFullPath.EndsWith([System.IO.Path]::DirectorySeparatorChar)) {
+        $baseFullPath += [System.IO.Path]::DirectorySeparatorChar
+    }
+
+    $baseUri = [System.Uri]::new($baseFullPath)
+    $targetUri = [System.Uri]::new($targetFullPath)
+    if ($baseUri.Scheme -ne $targetUri.Scheme) {
+        return $targetFullPath
+    }
+
+    $relativeUri = $baseUri.MakeRelativeUri($targetUri).ToString()
+    return ([System.Uri]::UnescapeDataString($relativeUri) -replace '/', [System.IO.Path]::DirectorySeparatorChar)
 }
 
 function Get-TaskBlocks {
@@ -559,7 +607,7 @@ function Get-StatusSymbol {
         [string]$Status
     )
 
-    switch (($Status ?? '').ToLowerInvariant()) {
+    switch ((ConvertTo-StringOrEmpty -Value $Status).ToLowerInvariant()) {
         'done' { return '[x]' }
         'review' { return '[R]' }
         'in-progress' { return '[-]' }
@@ -577,7 +625,7 @@ function Get-StatusLabel {
         [string]$Status
     )
 
-    switch (($Status ?? '').ToLowerInvariant()) {
+    switch ((ConvertTo-StringOrEmpty -Value $Status).ToLowerInvariant()) {
         'done' { return '完了' }
         'review' { return 'レビュー中' }
         'in-progress' { return '作業中' }
@@ -603,7 +651,7 @@ function Get-PriorityLabel {
         [string]$Priority
     )
 
-    switch (($Priority ?? '').ToUpperInvariant()) {
+    switch ((ConvertTo-StringOrEmpty -Value $Priority).ToUpperInvariant()) {
         'P0' { return 'P0 最優先' }
         'P1' { return 'P1 高' }
         'P2' { return 'P2 中' }
@@ -624,7 +672,7 @@ function Get-PriorityRank {
         [string]$Priority
     )
 
-    switch (($Priority ?? '').ToUpperInvariant()) {
+    switch ((ConvertTo-StringOrEmpty -Value $Priority).ToUpperInvariant()) {
         'P0' { return 0 }
         'P1' { return 1 }
         'P2' { return 2 }
@@ -666,7 +714,7 @@ function Get-VersionSortKey {
         Major = [int]::MaxValue
         Minor = [int]::MaxValue
         Patch = [int]::MaxValue
-        Raw   = ($Version ?? '')
+        Raw   = (ConvertTo-StringOrEmpty -Value $Version)
     }
 }
 
@@ -708,7 +756,7 @@ if ([string]::IsNullOrWhiteSpace($RoadmapTitleJaPath)) {
 $resolvedBacklogPath = Resolve-WorkspacePath -Path $BacklogPath
 $resolvedRoadmapPath = Resolve-WorkspacePath -Path $RoadmapPath
 $resolvedRoadmapTitleJaPath = Resolve-WorkspacePath -Path $RoadmapTitleJaPath
-$roadmapRelativePath = [System.IO.Path]::GetRelativePath((Get-Location).Path, $resolvedRoadmapPath) -replace '\\', '/'
+$roadmapRelativePath = (ConvertTo-PortableRelativePath -BasePath (Get-Location).Path -TargetPath $resolvedRoadmapPath) -replace '\\', '/'
 
 if (-not (Test-Path -LiteralPath $resolvedBacklogPath)) {
     Write-Warning "Backlog not found: $resolvedBacklogPath"

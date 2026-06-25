@@ -425,6 +425,107 @@ function Get-OperatorPollMailboxChannel {
     return "$safeSessionName-operator"
 }
 
+function ConvertTo-OperatorPollDataMap {
+    param([AllowNull()]$InputObject = $null)
+
+    $data = [ordered]@{}
+    if ($null -eq $InputObject) {
+        return $data
+    }
+
+    if ($InputObject -is [System.Collections.IDictionary]) {
+        foreach ($key in $InputObject.Keys) {
+            $data[[string]$key] = $InputObject[$key]
+        }
+        return $data
+    }
+
+    foreach ($property in @($InputObject.PSObject.Properties)) {
+        $data[[string]$property.Name] = $property.Value
+    }
+
+    return $data
+}
+
+function ConvertTo-OperatorPollMailboxRecord {
+    param(
+        [AllowNull()]$MailboxMessage = $null,
+        [string]$SessionName = 'winsmux-orchestra'
+    )
+
+    if ($null -eq $MailboxMessage) {
+        return $null
+    }
+
+    $mailboxVersion = 1
+    $versionValue = Get-OperatorPollValue -InputObject $MailboxMessage -Name 'mailbox_version' -Default 1
+    [int]::TryParse(([string]$versionValue), [ref]$mailboxVersion) | Out-Null
+    $content = Get-OperatorPollValue -InputObject $MailboxMessage -Name 'content' -Default $null
+    $eventName = [string](Get-OperatorPollValue -InputObject $content -Name 'event' -Default '')
+    if ([string]::IsNullOrWhiteSpace($eventName)) {
+        return $null
+    }
+
+    $messageId = [string](Get-OperatorPollValue -InputObject $MailboxMessage -Name 'message_id' -Default '')
+    $correlationId = [string](Get-OperatorPollValue -InputObject $MailboxMessage -Name 'correlation_id' -Default '')
+    $causationId = [string](Get-OperatorPollValue -InputObject $MailboxMessage -Name 'causation_id' -Default '')
+    $idempotencyKey = [string](Get-OperatorPollValue -InputObject $MailboxMessage -Name 'idempotency_key' -Default '')
+    $messageType = [string](Get-OperatorPollValue -InputObject $MailboxMessage -Name 'message_type' -Default '')
+    $mailboxState = [string](Get-OperatorPollValue -InputObject $MailboxMessage -Name 'state' -Default '')
+    $ttlSeconds = Get-OperatorPollValue -InputObject $MailboxMessage -Name 'ttl_seconds' -Default $null
+    $ackRequired = [bool](Get-OperatorPollValue -InputObject $MailboxMessage -Name 'ack_required' -Default $false)
+
+    if ($mailboxVersion -ge 2) {
+        if (
+            [string]::IsNullOrWhiteSpace($messageId) -or
+            [string]::IsNullOrWhiteSpace($idempotencyKey) -or
+            [string]::IsNullOrWhiteSpace($messageType) -or
+            [string]::IsNullOrWhiteSpace($mailboxState)
+        ) {
+            return $null
+        }
+        if ([string]::IsNullOrWhiteSpace($correlationId)) {
+            $correlationId = $messageId
+        }
+    }
+
+    $data = ConvertTo-OperatorPollDataMap -InputObject (Get-OperatorPollValue -InputObject $content -Name 'data' -Default ([ordered]@{}))
+    if ($mailboxVersion -ge 2) {
+        $data['mailbox_version'] = $mailboxVersion
+        $data['mailbox_message_id'] = $messageId
+        $data['mailbox_correlation_id'] = $correlationId
+        $data['mailbox_causation_id'] = $causationId
+        $data['mailbox_idempotency_key'] = $idempotencyKey
+        $data['mailbox_message_type'] = $messageType
+        $data['mailbox_state'] = $mailboxState
+        $data['mailbox_ttl_seconds'] = $ttlSeconds
+        $data['mailbox_ack_required'] = $ackRequired
+    }
+
+    return [ordered]@{
+        timestamp       = [string](Get-OperatorPollValue -InputObject $MailboxMessage -Name 'timestamp' -Default ([System.DateTimeOffset]::Now.ToString('o')))
+        session         = [string](Get-OperatorPollValue -InputObject $content -Name 'session' -Default $SessionName)
+        event           = $eventName
+        message         = [string](Get-OperatorPollValue -InputObject $content -Name 'message' -Default '')
+        label           = [string](Get-OperatorPollValue -InputObject $content -Name 'label' -Default '')
+        pane_id         = [string](Get-OperatorPollValue -InputObject $content -Name 'pane_id' -Default '')
+        role            = [string](Get-OperatorPollValue -InputObject $content -Name 'role' -Default '')
+        status          = [string](Get-OperatorPollValue -InputObject $content -Name 'status' -Default '')
+        exit_reason     = [string](Get-OperatorPollValue -InputObject $content -Name 'exit_reason' -Default '')
+        data            = $data
+        source          = 'mailbox'
+        mailbox_from    = [string](Get-OperatorPollValue -InputObject $MailboxMessage -Name 'from' -Default '')
+        mailbox_version = $mailboxVersion
+        mailbox_state   = $mailboxState
+        message_id      = $messageId
+        correlation_id  = $correlationId
+        causation_id    = $causationId
+        idempotency_key = $idempotencyKey
+        message_type    = $messageType
+        ack_required    = $ackRequired
+    }
+}
+
 function Receive-OperatorPollMailboxMessages {
     param(
         [string]$SessionName = 'winsmux-orchestra',
@@ -468,26 +569,10 @@ function Receive-OperatorPollMailboxMessages {
                 continue
             }
 
-            $content = Get-OperatorPollValue -InputObject $mailboxMessage -Name 'content' -Default $null
-            $eventName = [string](Get-OperatorPollValue -InputObject $content -Name 'event' -Default '')
-            if ([string]::IsNullOrWhiteSpace($eventName)) {
-                continue
+            $record = ConvertTo-OperatorPollMailboxRecord -MailboxMessage $mailboxMessage -SessionName $SessionName
+            if ($null -ne $record) {
+                $messages.Add($record)
             }
-
-            $messages.Add([ordered]@{
-                timestamp   = [string](Get-OperatorPollValue -InputObject $mailboxMessage -Name 'timestamp' -Default ([System.DateTimeOffset]::Now.ToString('o')))
-                session     = [string](Get-OperatorPollValue -InputObject $content -Name 'session' -Default $SessionName)
-                event       = $eventName
-                message     = [string](Get-OperatorPollValue -InputObject $content -Name 'message' -Default '')
-                label       = [string](Get-OperatorPollValue -InputObject $content -Name 'label' -Default '')
-                pane_id     = [string](Get-OperatorPollValue -InputObject $content -Name 'pane_id' -Default '')
-                role        = [string](Get-OperatorPollValue -InputObject $content -Name 'role' -Default '')
-                status      = [string](Get-OperatorPollValue -InputObject $content -Name 'status' -Default '')
-                exit_reason = [string](Get-OperatorPollValue -InputObject $content -Name 'exit_reason' -Default '')
-                data        = Get-OperatorPollValue -InputObject $content -Name 'data' -Default ([ordered]@{})
-                source      = 'mailbox'
-                mailbox_from = [string](Get-OperatorPollValue -InputObject $mailboxMessage -Name 'from' -Default '')
-            })
         } catch {
             break
         } finally {
