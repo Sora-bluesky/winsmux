@@ -67,6 +67,14 @@ Describe 'winsmux version surface' {
         Test-Path -LiteralPath (Join-Path $script:RepoRoot 'winsmux-app\src-tauri\Cargo.lock') | Should -BeFalse
     }
 
+    It 'allows the desktop OpenRouter model catalog endpoint through Tauri CSP' {
+        $tauriConfig = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'winsmux-app\src-tauri\tauri.conf.json') -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
+        $modelCapabilities = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'winsmux-app\src\modelCapabilities.ts') -Raw -Encoding UTF8
+
+        $modelCapabilities | Should -Match 'export const openRouterModelsApiUrl = "https://openrouter\.ai/api/v1/models"'
+        $tauriConfig.app.security.csp | Should -Match 'connect-src[^;]*https://openrouter\.ai'
+    }
+
     It 'derives desktop installer E2E artifact names from VERSION' {
         $contextMenuE2e = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'winsmux-app\scripts\windows-context-menu-e2e.ps1') -Raw -Encoding UTF8
 

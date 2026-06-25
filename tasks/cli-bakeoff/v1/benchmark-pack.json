@@ -59,7 +59,7 @@
   "default_workers": [
     {
       "pane": "worker-1",
-      "role": "design-review",
+      "role": "harness-bench-worker",
       "cli": "Claude Code",
       "model": "claude-opus-4-8",
       "effort": "high",
@@ -69,7 +69,7 @@
     },
     {
       "pane": "worker-2",
-      "role": "implementation-review",
+      "role": "harness-bench-worker",
       "cli": "Codex",
       "model": "gpt-5.5",
       "effort": "high",
@@ -79,7 +79,7 @@
     },
     {
       "pane": "worker-3",
-      "role": "speed-parallelism",
+      "role": "harness-bench-worker",
       "cli": "Antigravity CLI",
       "worker_backend": "antigravity",
       "agent": "antigravity",
@@ -91,7 +91,7 @@
     },
     {
       "pane": "worker-4",
-      "role": "grok-build",
+      "role": "harness-bench-worker",
       "cli": "Grok Build",
       "worker_backend": "local",
       "agent": "grok-build",
@@ -104,7 +104,7 @@
     },
     {
       "pane": "worker-5",
-      "role": "openrouter-kimi-code",
+      "role": "harness-bench-worker",
       "cli": "OpenRouter API",
       "worker_backend": "api_llm",
       "agent": "openrouter",
@@ -117,7 +117,7 @@
     },
     {
       "pane": "worker-6",
-      "role": "openrouter-glm-code",
+      "role": "harness-bench-worker",
       "cli": "OpenRouter API",
       "worker_backend": "api_llm",
       "agent": "openrouter",
