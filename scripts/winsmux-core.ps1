@@ -9920,9 +9920,8 @@ function Resolve-WorkersApiLlmRuntimeConfig {
         if (-not [string]::IsNullOrWhiteSpace($declaredBaseUrl) -and -not [string]::Equals($declaredBaseUrl.Trim().TrimEnd('/'), $defaultBaseUrl, [System.StringComparison]::OrdinalIgnoreCase)) {
             throw 'api_llm provider openrouter uses a built-in endpoint; api_base_url overrides are not allowed.'
         }
-        $openRouterApiKeyEnvs = @('OPENROUTER_API_KEY', 'WINSMUX_OPENROUTER_API_KEY')
-        if (-not [string]::IsNullOrWhiteSpace($declaredApiKeyEnv) -and -not ($openRouterApiKeyEnvs | Where-Object { [string]::Equals($_, $declaredApiKeyEnv.Trim(), [System.StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1)) {
-            throw 'api_llm provider openrouter supports OPENROUTER_API_KEY by default and WINSMUX_OPENROUTER_API_KEY as an explicit legacy override.'
+        if (-not [string]::IsNullOrWhiteSpace($declaredApiKeyEnv) -and -not [string]::Equals($declaredApiKeyEnv.Trim(), 'OPENROUTER_API_KEY', [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw 'api_llm provider openrouter supports OPENROUTER_API_KEY only.'
         }
         $baseUrl = $defaultBaseUrl
         if ([string]::IsNullOrWhiteSpace($apiKeyEnv)) {
@@ -9990,18 +9989,6 @@ function Resolve-WorkersApiLlmCredential {
 
     $apiKeyEnv = [string](Get-SendConfigValue -InputObject $RuntimeConfig -Name 'ApiKeyEnv' -Default '')
     $apiKey = Get-WorkersApiLlmEnvValue -Name $apiKeyEnv
-    if (
-        [string]::Equals([string](Get-SendConfigValue -InputObject $RuntimeConfig -Name 'Provider' -Default ''), 'openrouter', [System.StringComparison]::OrdinalIgnoreCase) -and
-        [string]::Equals($apiKeyEnv, 'OPENROUTER_API_KEY', [System.StringComparison]::OrdinalIgnoreCase) -and
-        [string]::IsNullOrWhiteSpace($apiKey)
-    ) {
-        $legacyKey = Get-WorkersApiLlmEnvValue -Name 'WINSMUX_OPENROUTER_API_KEY'
-        if (-not [string]::IsNullOrWhiteSpace($legacyKey)) {
-            $apiKeyEnv = 'WINSMUX_OPENROUTER_API_KEY'
-            $apiKey = $legacyKey
-        }
-    }
-
     return [pscustomobject]@{
         ApiKeyEnv = $apiKeyEnv
         ApiKey    = $apiKey

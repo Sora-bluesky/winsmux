@@ -16,5 +16,4 @@ Return exactly this structure:
 Quality bar:
 
 - Treat `OPENROUTER_API_KEY` as the public setup path.
-- Mention legacy `WINSMUX_OPENROUTER_API_KEY` only as compatibility evidence.
 - Separate missing credential evidence from model-quality evidence.

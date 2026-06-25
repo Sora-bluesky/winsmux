@@ -120,10 +120,9 @@ agent-slots:
 ```
 
 The default OpenRouter-compatible base URL is
-`https://openrouter.ai/api/v1`. The default environment variable name is
+`https://openrouter.ai/api/v1`. The environment variable name is
 `OPENROUTER_API_KEY` when the operator chooses environment-based
-authentication. `WINSMUX_OPENROUTER_API_KEY` is still accepted as an explicit
-legacy override for existing local setups. winsmux must not write either value
+authentication. winsmux must not write this value
 to repository files, public docs, PR text, generated reports, worker logs, or
 release evidence.
 For public setup on Windows, store the key as a user environment variable and

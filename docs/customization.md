@@ -226,9 +226,7 @@ and each slot can override it with one of the contract values:
 workers. They may declare a provider such as `openrouter`, a model id such as
 `z-ai/glm-5.2`, `prompt-transport: file`, and `auth-mode: api-key-env`.
 Environment-based OpenRouter authentication uses `OPENROUTER_API_KEY`.
-Existing local setups may explicitly keep using `WINSMUX_OPENROUTER_API_KEY`
-as a legacy override, but public setup should use the provider-native name.
-Store it as a Windows user environment variable, then open a new PowerShell
+Public setup should use the provider-native name. Store it as a Windows user environment variable, then open a new PowerShell
 session before running `winsmux`:
 
 ```powershell
