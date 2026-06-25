@@ -367,6 +367,8 @@ fn normalize_comparison_values(value: Value) -> Value {
                 .map(|(key, value)| {
                     let value = if key == "timestamp" {
                         Value::String("__TIMESTAMP__".to_string())
+                    } else if key == "created_at" || key == "source_time" {
+                        Value::String("__LAST_EVENT_AT__".to_string())
                     } else {
                         normalize_comparison_values(value)
                     };

@@ -3911,7 +3911,7 @@ fn context_capsule_value(
         &run.experiment_packet.next_action,
         &first_non_empty(&run.activity, &run.task_state),
     );
-    let summary = first_non_empty(&run.detail, &run.task);
+    let summary = first_non_empty(&run.task, &run.detail);
     let context_budget = value_field(&run.verification_evidence, "context_budget");
     let capsule_id = format!(
         "capsule:{}:{}",
@@ -3978,7 +3978,7 @@ fn context_capsule_value(
 }
 
 fn context_pressure_snapshot_value(
-    run: &LedgerExplainRun,
+    _run: &LedgerExplainRun,
     verification_evidence: &Value,
     pending_mailbox_count: i64,
     unresolved_question_count: i64,
@@ -4043,8 +4043,7 @@ fn context_pressure_snapshot_value(
         "unresolved_question_count": unresolved_question_count,
         "false_precision_avoided": true,
         "automatic_checkpoint_action": "optional",
-        "automatic_compact_action": "separate",
-        "source_head_sha": run.head_sha
+        "automatic_compact_action": "separate"
     })
 }
 
@@ -4079,12 +4078,22 @@ fn summary_quality_gate_value(capsule: &Value, run: &LedgerExplainRun, _pressure
         "capsule_schema_valid": value_field_bool(&validation, "valid"),
         "stale_capsule_rejected": !value_field_bool(&validation, "stale")
     });
+    let check_order = [
+        "status_present",
+        "concrete_next_action",
+        "evidence_refs_present",
+        "freshness_known",
+        "source_sha_matches",
+        "verification_consistent",
+        "risks_questions_separated",
+        "redaction_ok",
+        "capsule_schema_valid",
+        "stale_capsule_rejected",
+    ];
     let mut failed_checks = Vec::new();
-    if let Some(map) = checks.as_object() {
-        for (key, value) in map {
-            if !value.as_bool().unwrap_or(false) {
-                failed_checks.push(Value::String(key.clone()));
-            }
+    for key in check_order {
+        if !checks.get(key).and_then(Value::as_bool).unwrap_or(false) {
+            failed_checks.push(Value::String(key.to_string()));
         }
     }
     let valid = failed_checks.is_empty();
@@ -4161,9 +4170,11 @@ fn split_worthiness_policy_value(
 
 fn digest_string_list(values: &[String]) -> String {
     let mut hasher = Sha256::new();
-    for value in values {
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            hasher.update([0]);
+        }
         hasher.update(value.as_bytes());
-        hasher.update([0]);
     }
     format!("{:x}", hasher.finalize())
 }
@@ -4682,7 +4693,7 @@ fn run_checkpoint_package_value(run: &LedgerExplainRun) -> Value {
         "task_id": run.task_id,
         "resume_handle": resume_handle,
         "objective": run.goal,
-        "phase": run.phase,
+        "phase": "",
         "next_exact_step": next_exact_step,
         "claim_level": claim_level_for_verification(&verification_outcome),
         "project_ref": "current_project",

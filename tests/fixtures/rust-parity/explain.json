@@ -101,11 +101,149 @@
       "contract_version": 1,
       "packet_type": "context_budget_contract",
       "scope": "run",
+      "context_capsule": {
+        "capsule_version": 1,
+        "capsule_id": "capsule:task-task-256:abc1234def5678",
+        "run_id": "task:task-256",
+        "task_id": "task-256",
+        "source_slot": "builder-1",
+        "status": "in_progress",
+        "summary": "Implement run ledger",
+        "decisions": [],
+        "evidence_refs": [],
+        "changed_files_digest": "8f9b9554499152a1980b37977cfc20aa7e7fb2b3afd60171a4aef53f82d958c9",
+        "verification_digest": "96a296d224f285c67bee93c30f8a309157f0daa35dc5b87e410b78630a09cfc7",
+        "risks": [],
+        "unresolved_questions": [],
+        "next_action": "approval_waiting",
+        "claim_level": "NOT_TESTED",
+        "context_budget": null,
+        "context_pressure": {
+          "state": "unknown",
+          "recommended_action": "inspect_context",
+          "usage": {
+            "percent": null,
+            "estimated_tokens": null,
+            "budget_tokens": null,
+            "source": "unknown",
+            "confidence": "unknown"
+          },
+          "capsule_age": {
+            "kind": "capsule",
+            "seconds": null,
+            "source": "not_measured"
+          },
+          "checkpoint_age": {
+            "kind": "checkpoint",
+            "seconds": null,
+            "source": "not_measured"
+          },
+          "pending_mailbox_count": 0,
+          "unresolved_question_count": 0,
+          "false_precision_avoided": true,
+          "automatic_checkpoint_action": "optional",
+          "automatic_compact_action": "separate"
+        },
+        "source_head_sha": "abc1234def5678",
+        "created_at": "2026-04-10T12:00:00+09:00",
+        "expires_at": null,
+        "validation": {
+          "valid": false,
+          "missing_fields": [
+            "evidence_refs"
+          ],
+          "stale": false,
+          "verification_contradiction": false
+        },
+        "privacy": {
+          "raw_transcript_stored": false,
+          "prompt_body_stored": false,
+          "secret_stored": false,
+          "private_path_stored": false
+        },
+        "summary_quality_gate": {
+          "gate_version": 1,
+          "valid": false,
+          "checks": {
+            "status_present": true,
+            "concrete_next_action": true,
+            "evidence_refs_present": false,
+            "freshness_known": true,
+            "source_sha_matches": true,
+            "verification_consistent": true,
+            "risks_questions_separated": true,
+            "redaction_ok": true,
+            "capsule_schema_valid": false,
+            "stale_capsule_rejected": true
+          },
+          "failed_checks": [
+            "evidence_refs_present",
+            "capsule_schema_valid"
+          ],
+          "action": "resummary_or_operator_escalation",
+          "invalid_capsule_routing_rejected": true,
+          "governance_final_authority": true
+        }
+      },
       "context_pack_id": null,
       "context_pack_version": null,
       "context_budget": null,
       "context_estimate": null,
       "context_pressure": null,
+      "context_pressure_status": {
+        "state": "unknown",
+        "recommended_action": "inspect_context",
+        "usage": {
+          "percent": null,
+          "estimated_tokens": null,
+          "budget_tokens": null,
+          "source": "unknown",
+          "confidence": "unknown"
+        },
+        "capsule_age": {
+          "kind": "capsule",
+          "seconds": null,
+          "source": "not_measured"
+        },
+        "checkpoint_age": {
+          "kind": "checkpoint",
+          "seconds": null,
+          "source": "not_measured"
+        },
+        "pending_mailbox_count": 0,
+        "unresolved_question_count": 0,
+        "false_precision_avoided": true,
+        "automatic_checkpoint_action": "optional",
+        "automatic_compact_action": "separate"
+      },
+      "summary_quality_gate": {
+        "gate_version": 1,
+        "valid": false,
+        "checks": {
+          "status_present": true,
+          "concrete_next_action": true,
+          "evidence_refs_present": false,
+          "freshness_known": true,
+          "source_sha_matches": true,
+          "verification_consistent": true,
+          "risks_questions_separated": true,
+          "redaction_ok": true,
+          "capsule_schema_valid": false,
+          "stale_capsule_rejected": true
+        },
+        "failed_checks": [
+          "evidence_refs_present",
+          "capsule_schema_valid"
+        ],
+        "action": "resummary_or_operator_escalation",
+        "invalid_capsule_routing_rejected": true,
+        "governance_final_authority": true
+      },
+      "router_policy": {
+        "usable_for_routing": false,
+        "invalid_or_stale_capsule_rejected": true,
+        "governance_final_authority": true
+      },
       "tool_output_pruned_count": null,
       "context_mode": "isolated",
       "fork_reason": null,
@@ -174,6 +312,24 @@
         "capture operator decisions as reusable guidance",
         "resolve blocked reasons before release"
       ],
+      "split_worthiness": {
+        "policy_version": 1,
+        "split": false,
+        "enforcement": "suggestion_only",
+        "reason_codes": [],
+        "expected_work_minutes": null,
+        "measured_startup_message_review_minutes": null,
+        "estimated_work_minutes": null,
+        "estimated_coordination_minutes": null,
+        "context_isolation_benefit": "medium",
+        "write_conflict_risk": "low",
+        "slot_availability": "unknown",
+        "current_pressure": "unknown",
+        "confidence": "low",
+        "suggested_slot": null,
+        "suggested_role": null,
+        "governance_controlled_enforcement": true
+      },
       "loop_control": {
         "two_strike_limit": 2,
         "one_hypothesis_one_change_required": true,
@@ -260,10 +416,16 @@
     },
     "checkpoint_package": {
       "contract_version": 1,
+      "checkpoint_version": 1,
       "packet_type": "checkpoint_package",
       "scope": "worker_worktree",
       "run_id": "task:task-256",
       "task_id": "task-256",
+      "resume_handle": "checkpoint:task-task-256:abc1234def5678",
+      "objective": "Ship run contract primitives",
+      "phase": "",
+      "next_exact_step": "approval_waiting",
+      "claim_level": "NOT_TESTED",
       "project_ref": "current_project",
       "project_root_stored": false,
       "assigned_worktree": ".worktrees/builder-1",
@@ -327,6 +489,76 @@
       },
       "rollback_hint": "operator-owned-git-lifecycle",
       "cleanup_hint": "keep the worker worktree for inspection",
+      "resume_policy": {
+        "resume_allowed": true,
+        "completed_task_resume_rejected": false,
+        "requires_same_head_sha": true,
+        "requires_operator_control": true
+      },
+      "active_message_ids": [],
+      "open_questions": [],
+      "checkpoint_freshness": {
+        "state": "fresh",
+        "source_head_sha": "abc1234def5678",
+        "source_time": "2026-04-10T12:00:00+09:00",
+        "checkpoint_age": {
+          "kind": "checkpoint",
+          "seconds": null,
+          "source": "not_measured"
+        },
+        "source_sha_match": true,
+        "stale_checkpoint_rejected": false,
+        "false_precision_avoided": true
+      },
+      "context_pressure_status": {
+        "state": "unknown",
+        "recommended_action": "inspect_context",
+        "usage": {
+          "percent": null,
+          "estimated_tokens": null,
+          "budget_tokens": null,
+          "source": "unknown",
+          "confidence": "unknown"
+        },
+        "capsule_age": {
+          "kind": "capsule",
+          "seconds": null,
+          "source": "not_measured"
+        },
+        "checkpoint_age": {
+          "kind": "checkpoint",
+          "seconds": null,
+          "source": "not_measured"
+        },
+        "pending_mailbox_count": 0,
+        "unresolved_question_count": 0,
+        "false_precision_avoided": true,
+        "automatic_checkpoint_action": "optional",
+        "automatic_compact_action": "separate"
+      },
+      "summary_quality_gate": {
+        "gate_version": 1,
+        "valid": false,
+        "checks": {
+          "status_present": true,
+          "concrete_next_action": true,
+          "evidence_refs_present": false,
+          "freshness_known": true,
+          "source_sha_matches": true,
+          "verification_consistent": true,
+          "risks_questions_separated": true,
+          "redaction_ok": true,
+          "capsule_schema_valid": false,
+          "stale_capsule_rejected": true
+        },
+        "failed_checks": [
+          "evidence_refs_present",
+          "capsule_schema_valid"
+        ],
+        "action": "resummary_or_operator_escalation",
+        "invalid_capsule_routing_rejected": true,
+        "governance_final_authority": true
+      },
       "operator_git_required": true,
       "worker_git_write_allowed": false,
       "local_reference_paths_stored": false,
@@ -404,11 +636,149 @@
           "contract_version": 1,
           "packet_type": "context_budget_contract",
           "scope": "run",
+          "context_capsule": {
+            "capsule_version": 1,
+            "capsule_id": "capsule:task-task-256:abc1234def5678",
+            "run_id": "task:task-256",
+            "task_id": "task-256",
+            "source_slot": "builder-1",
+            "status": "in_progress",
+            "summary": "Implement run ledger",
+            "decisions": [],
+            "evidence_refs": [],
+            "changed_files_digest": "8f9b9554499152a1980b37977cfc20aa7e7fb2b3afd60171a4aef53f82d958c9",
+            "verification_digest": "96a296d224f285c67bee93c30f8a309157f0daa35dc5b87e410b78630a09cfc7",
+            "risks": [],
+            "unresolved_questions": [],
+            "next_action": "approval_waiting",
+            "claim_level": "NOT_TESTED",
+            "context_budget": null,
+            "context_pressure": {
+              "state": "unknown",
+              "recommended_action": "inspect_context",
+              "usage": {
+                "percent": null,
+                "estimated_tokens": null,
+                "budget_tokens": null,
+                "source": "unknown",
+                "confidence": "unknown"
+              },
+              "capsule_age": {
+                "kind": "capsule",
+                "seconds": null,
+                "source": "not_measured"
+              },
+              "checkpoint_age": {
+                "kind": "checkpoint",
+                "seconds": null,
+                "source": "not_measured"
+              },
+              "pending_mailbox_count": 0,
+              "unresolved_question_count": 0,
+              "false_precision_avoided": true,
+              "automatic_checkpoint_action": "optional",
+              "automatic_compact_action": "separate"
+            },
+            "source_head_sha": "abc1234def5678",
+            "created_at": "2026-04-10T12:00:00+09:00",
+            "expires_at": null,
+            "validation": {
+              "valid": false,
+              "missing_fields": [
+                "evidence_refs"
+              ],
+              "stale": false,
+              "verification_contradiction": false
+            },
+            "privacy": {
+              "raw_transcript_stored": false,
+              "prompt_body_stored": false,
+              "secret_stored": false,
+              "private_path_stored": false
+            },
+            "summary_quality_gate": {
+              "gate_version": 1,
+              "valid": false,
+              "checks": {
+                "status_present": true,
+                "concrete_next_action": true,
+                "evidence_refs_present": false,
+                "freshness_known": true,
+                "source_sha_matches": true,
+                "verification_consistent": true,
+                "risks_questions_separated": true,
+                "redaction_ok": true,
+                "capsule_schema_valid": false,
+                "stale_capsule_rejected": true
+              },
+              "failed_checks": [
+                "evidence_refs_present",
+                "capsule_schema_valid"
+              ],
+              "action": "resummary_or_operator_escalation",
+              "invalid_capsule_routing_rejected": true,
+              "governance_final_authority": true
+            }
+          },
           "context_pack_id": null,
           "context_pack_version": null,
           "context_budget": null,
           "context_estimate": null,
           "context_pressure": null,
+          "context_pressure_status": {
+            "state": "unknown",
+            "recommended_action": "inspect_context",
+            "usage": {
+              "percent": null,
+              "estimated_tokens": null,
+              "budget_tokens": null,
+              "source": "unknown",
+              "confidence": "unknown"
+            },
+            "capsule_age": {
+              "kind": "capsule",
+              "seconds": null,
+              "source": "not_measured"
+            },
+            "checkpoint_age": {
+              "kind": "checkpoint",
+              "seconds": null,
+              "source": "not_measured"
+            },
+            "pending_mailbox_count": 0,
+            "unresolved_question_count": 0,
+            "false_precision_avoided": true,
+            "automatic_checkpoint_action": "optional",
+            "automatic_compact_action": "separate"
+          },
+          "summary_quality_gate": {
+            "gate_version": 1,
+            "valid": false,
+            "checks": {
+              "status_present": true,
+              "concrete_next_action": true,
+              "evidence_refs_present": false,
+              "freshness_known": true,
+              "source_sha_matches": true,
+              "verification_consistent": true,
+              "risks_questions_separated": true,
+              "redaction_ok": true,
+              "capsule_schema_valid": false,
+              "stale_capsule_rejected": true
+            },
+            "failed_checks": [
+              "evidence_refs_present",
+              "capsule_schema_valid"
+            ],
+            "action": "resummary_or_operator_escalation",
+            "invalid_capsule_routing_rejected": true,
+            "governance_final_authority": true
+          },
+          "router_policy": {
+            "usable_for_routing": false,
+            "invalid_or_stale_capsule_rejected": true,
+            "governance_final_authority": true
+          },
           "tool_output_pruned_count": null,
           "context_mode": "isolated",
           "fork_reason": null,
@@ -581,11 +951,149 @@
         "contract_version": 1,
         "packet_type": "context_budget_contract",
         "scope": "run",
+        "context_capsule": {
+          "capsule_version": 1,
+          "capsule_id": "capsule:task-task-256:abc1234def5678",
+          "run_id": "task:task-256",
+          "task_id": "task-256",
+          "source_slot": "builder-1",
+          "status": "in_progress",
+          "summary": "Implement run ledger",
+          "decisions": [],
+          "evidence_refs": [],
+          "changed_files_digest": "8f9b9554499152a1980b37977cfc20aa7e7fb2b3afd60171a4aef53f82d958c9",
+          "verification_digest": "96a296d224f285c67bee93c30f8a309157f0daa35dc5b87e410b78630a09cfc7",
+          "risks": [],
+          "unresolved_questions": [],
+          "next_action": "approval_waiting",
+          "claim_level": "NOT_TESTED",
+          "context_budget": null,
+          "context_pressure": {
+            "state": "unknown",
+            "recommended_action": "inspect_context",
+            "usage": {
+              "percent": null,
+              "estimated_tokens": null,
+              "budget_tokens": null,
+              "source": "unknown",
+              "confidence": "unknown"
+            },
+            "capsule_age": {
+              "kind": "capsule",
+              "seconds": null,
+              "source": "not_measured"
+            },
+            "checkpoint_age": {
+              "kind": "checkpoint",
+              "seconds": null,
+              "source": "not_measured"
+            },
+            "pending_mailbox_count": 0,
+            "unresolved_question_count": 0,
+            "false_precision_avoided": true,
+            "automatic_checkpoint_action": "optional",
+            "automatic_compact_action": "separate"
+          },
+          "source_head_sha": "abc1234def5678",
+          "created_at": "2026-04-10T12:00:00+09:00",
+          "expires_at": null,
+          "validation": {
+            "valid": false,
+            "missing_fields": [
+              "evidence_refs"
+            ],
+            "stale": false,
+            "verification_contradiction": false
+          },
+          "privacy": {
+            "raw_transcript_stored": false,
+            "prompt_body_stored": false,
+            "secret_stored": false,
+            "private_path_stored": false
+          },
+          "summary_quality_gate": {
+            "gate_version": 1,
+            "valid": false,
+            "checks": {
+              "status_present": true,
+              "concrete_next_action": true,
+              "evidence_refs_present": false,
+              "freshness_known": true,
+              "source_sha_matches": true,
+              "verification_consistent": true,
+              "risks_questions_separated": true,
+              "redaction_ok": true,
+              "capsule_schema_valid": false,
+              "stale_capsule_rejected": true
+            },
+            "failed_checks": [
+              "evidence_refs_present",
+              "capsule_schema_valid"
+            ],
+            "action": "resummary_or_operator_escalation",
+            "invalid_capsule_routing_rejected": true,
+            "governance_final_authority": true
+          }
+        },
         "context_pack_id": null,
         "context_pack_version": null,
         "context_budget": null,
         "context_estimate": null,
         "context_pressure": null,
+        "context_pressure_status": {
+          "state": "unknown",
+          "recommended_action": "inspect_context",
+          "usage": {
+            "percent": null,
+            "estimated_tokens": null,
+            "budget_tokens": null,
+            "source": "unknown",
+            "confidence": "unknown"
+          },
+          "capsule_age": {
+            "kind": "capsule",
+            "seconds": null,
+            "source": "not_measured"
+          },
+          "checkpoint_age": {
+            "kind": "checkpoint",
+            "seconds": null,
+            "source": "not_measured"
+          },
+          "pending_mailbox_count": 0,
+          "unresolved_question_count": 0,
+          "false_precision_avoided": true,
+          "automatic_checkpoint_action": "optional",
+          "automatic_compact_action": "separate"
+        },
+        "summary_quality_gate": {
+          "gate_version": 1,
+          "valid": false,
+          "checks": {
+            "status_present": true,
+            "concrete_next_action": true,
+            "evidence_refs_present": false,
+            "freshness_known": true,
+            "source_sha_matches": true,
+            "verification_consistent": true,
+            "risks_questions_separated": true,
+            "redaction_ok": true,
+            "capsule_schema_valid": false,
+            "stale_capsule_rejected": true
+          },
+          "failed_checks": [
+            "evidence_refs_present",
+            "capsule_schema_valid"
+          ],
+          "action": "resummary_or_operator_escalation",
+          "invalid_capsule_routing_rejected": true,
+          "governance_final_authority": true
+        },
+        "router_policy": {
+          "usable_for_routing": false,
+          "invalid_or_stale_capsule_rejected": true,
+          "governance_final_authority": true
+        },
         "tool_output_pruned_count": null,
         "context_mode": "isolated",
         "fork_reason": null,
@@ -669,11 +1177,149 @@
             "contract_version": 1,
             "packet_type": "context_budget_contract",
             "scope": "run",
+            "context_capsule": {
+              "capsule_version": 1,
+              "capsule_id": "capsule:task-task-256:abc1234def5678",
+              "run_id": "task:task-256",
+              "task_id": "task-256",
+              "source_slot": "builder-1",
+              "status": "in_progress",
+              "summary": "Implement run ledger",
+              "decisions": [],
+              "evidence_refs": [],
+              "changed_files_digest": "8f9b9554499152a1980b37977cfc20aa7e7fb2b3afd60171a4aef53f82d958c9",
+              "verification_digest": "96a296d224f285c67bee93c30f8a309157f0daa35dc5b87e410b78630a09cfc7",
+              "risks": [],
+              "unresolved_questions": [],
+              "next_action": "approval_waiting",
+              "claim_level": "NOT_TESTED",
+              "context_budget": null,
+              "context_pressure": {
+                "state": "unknown",
+                "recommended_action": "inspect_context",
+                "usage": {
+                  "percent": null,
+                  "estimated_tokens": null,
+                  "budget_tokens": null,
+                  "source": "unknown",
+                  "confidence": "unknown"
+                },
+                "capsule_age": {
+                  "kind": "capsule",
+                  "seconds": null,
+                  "source": "not_measured"
+                },
+                "checkpoint_age": {
+                  "kind": "checkpoint",
+                  "seconds": null,
+                  "source": "not_measured"
+                },
+                "pending_mailbox_count": 0,
+                "unresolved_question_count": 0,
+                "false_precision_avoided": true,
+                "automatic_checkpoint_action": "optional",
+                "automatic_compact_action": "separate"
+              },
+              "source_head_sha": "abc1234def5678",
+              "created_at": "2026-04-10T12:00:00+09:00",
+              "expires_at": null,
+              "validation": {
+                "valid": false,
+                "missing_fields": [
+                  "evidence_refs"
+                ],
+                "stale": false,
+                "verification_contradiction": false
+              },
+              "privacy": {
+                "raw_transcript_stored": false,
+                "prompt_body_stored": false,
+                "secret_stored": false,
+                "private_path_stored": false
+              },
+              "summary_quality_gate": {
+                "gate_version": 1,
+                "valid": false,
+                "checks": {
+                  "status_present": true,
+                  "concrete_next_action": true,
+                  "evidence_refs_present": false,
+                  "freshness_known": true,
+                  "source_sha_matches": true,
+                  "verification_consistent": true,
+                  "risks_questions_separated": true,
+                  "redaction_ok": true,
+                  "capsule_schema_valid": false,
+                  "stale_capsule_rejected": true
+                },
+                "failed_checks": [
+                  "evidence_refs_present",
+                  "capsule_schema_valid"
+                ],
+                "action": "resummary_or_operator_escalation",
+                "invalid_capsule_routing_rejected": true,
+                "governance_final_authority": true
+              }
+            },
             "context_pack_id": null,
             "context_pack_version": null,
             "context_budget": null,
             "context_estimate": null,
             "context_pressure": null,
+            "context_pressure_status": {
+              "state": "unknown",
+              "recommended_action": "inspect_context",
+              "usage": {
+                "percent": null,
+                "estimated_tokens": null,
+                "budget_tokens": null,
+                "source": "unknown",
+                "confidence": "unknown"
+              },
+              "capsule_age": {
+                "kind": "capsule",
+                "seconds": null,
+                "source": "not_measured"
+              },
+              "checkpoint_age": {
+                "kind": "checkpoint",
+                "seconds": null,
+                "source": "not_measured"
+              },
+              "pending_mailbox_count": 0,
+              "unresolved_question_count": 0,
+              "false_precision_avoided": true,
+              "automatic_checkpoint_action": "optional",
+              "automatic_compact_action": "separate"
+            },
+            "summary_quality_gate": {
+              "gate_version": 1,
+              "valid": false,
+              "checks": {
+                "status_present": true,
+                "concrete_next_action": true,
+                "evidence_refs_present": false,
+                "freshness_known": true,
+                "source_sha_matches": true,
+                "verification_consistent": true,
+                "risks_questions_separated": true,
+                "redaction_ok": true,
+                "capsule_schema_valid": false,
+                "stale_capsule_rejected": true
+              },
+              "failed_checks": [
+                "evidence_refs_present",
+                "capsule_schema_valid"
+              ],
+              "action": "resummary_or_operator_escalation",
+              "invalid_capsule_routing_rejected": true,
+              "governance_final_authority": true
+            },
+            "router_policy": {
+              "usable_for_routing": false,
+              "invalid_or_stale_capsule_rejected": true,
+              "governance_final_authority": true
+            },
             "tool_output_pruned_count": null,
             "context_mode": "isolated",
             "fork_reason": null,
@@ -823,11 +1469,149 @@
           "contract_version": 1,
           "packet_type": "context_budget_contract",
           "scope": "run",
+          "context_capsule": {
+            "capsule_version": 1,
+            "capsule_id": "capsule:task-task-256:abc1234def5678",
+            "run_id": "task:task-256",
+            "task_id": "task-256",
+            "source_slot": "builder-1",
+            "status": "in_progress",
+            "summary": "Implement run ledger",
+            "decisions": [],
+            "evidence_refs": [],
+            "changed_files_digest": "8f9b9554499152a1980b37977cfc20aa7e7fb2b3afd60171a4aef53f82d958c9",
+            "verification_digest": "96a296d224f285c67bee93c30f8a309157f0daa35dc5b87e410b78630a09cfc7",
+            "risks": [],
+            "unresolved_questions": [],
+            "next_action": "approval_waiting",
+            "claim_level": "NOT_TESTED",
+            "context_budget": null,
+            "context_pressure": {
+              "state": "unknown",
+              "recommended_action": "inspect_context",
+              "usage": {
+                "percent": null,
+                "estimated_tokens": null,
+                "budget_tokens": null,
+                "source": "unknown",
+                "confidence": "unknown"
+              },
+              "capsule_age": {
+                "kind": "capsule",
+                "seconds": null,
+                "source": "not_measured"
+              },
+              "checkpoint_age": {
+                "kind": "checkpoint",
+                "seconds": null,
+                "source": "not_measured"
+              },
+              "pending_mailbox_count": 0,
+              "unresolved_question_count": 0,
+              "false_precision_avoided": true,
+              "automatic_checkpoint_action": "optional",
+              "automatic_compact_action": "separate"
+            },
+            "source_head_sha": "abc1234def5678",
+            "created_at": "2026-04-10T12:00:00+09:00",
+            "expires_at": null,
+            "validation": {
+              "valid": false,
+              "missing_fields": [
+                "evidence_refs"
+              ],
+              "stale": false,
+              "verification_contradiction": false
+            },
+            "privacy": {
+              "raw_transcript_stored": false,
+              "prompt_body_stored": false,
+              "secret_stored": false,
+              "private_path_stored": false
+            },
+            "summary_quality_gate": {
+              "gate_version": 1,
+              "valid": false,
+              "checks": {
+                "status_present": true,
+                "concrete_next_action": true,
+                "evidence_refs_present": false,
+                "freshness_known": true,
+                "source_sha_matches": true,
+                "verification_consistent": true,
+                "risks_questions_separated": true,
+                "redaction_ok": true,
+                "capsule_schema_valid": false,
+                "stale_capsule_rejected": true
+              },
+              "failed_checks": [
+                "evidence_refs_present",
+                "capsule_schema_valid"
+              ],
+              "action": "resummary_or_operator_escalation",
+              "invalid_capsule_routing_rejected": true,
+              "governance_final_authority": true
+            }
+          },
           "context_pack_id": null,
           "context_pack_version": null,
           "context_budget": null,
           "context_estimate": null,
           "context_pressure": null,
+          "context_pressure_status": {
+            "state": "unknown",
+            "recommended_action": "inspect_context",
+            "usage": {
+              "percent": null,
+              "estimated_tokens": null,
+              "budget_tokens": null,
+              "source": "unknown",
+              "confidence": "unknown"
+            },
+            "capsule_age": {
+              "kind": "capsule",
+              "seconds": null,
+              "source": "not_measured"
+            },
+            "checkpoint_age": {
+              "kind": "checkpoint",
+              "seconds": null,
+              "source": "not_measured"
+            },
+            "pending_mailbox_count": 0,
+            "unresolved_question_count": 0,
+            "false_precision_avoided": true,
+            "automatic_checkpoint_action": "optional",
+            "automatic_compact_action": "separate"
+          },
+          "summary_quality_gate": {
+            "gate_version": 1,
+            "valid": false,
+            "checks": {
+              "status_present": true,
+              "concrete_next_action": true,
+              "evidence_refs_present": false,
+              "freshness_known": true,
+              "source_sha_matches": true,
+              "verification_consistent": true,
+              "risks_questions_separated": true,
+              "redaction_ok": true,
+              "capsule_schema_valid": false,
+              "stale_capsule_rejected": true
+            },
+            "failed_checks": [
+              "evidence_refs_present",
+              "capsule_schema_valid"
+            ],
+            "action": "resummary_or_operator_escalation",
+            "invalid_capsule_routing_rejected": true,
+            "governance_final_authority": true
+          },
+          "router_policy": {
+            "usable_for_routing": false,
+            "invalid_or_stale_capsule_rejected": true,
+            "governance_final_authority": true
+          },
           "tool_output_pruned_count": null,
           "context_mode": "isolated",
           "fork_reason": null,
