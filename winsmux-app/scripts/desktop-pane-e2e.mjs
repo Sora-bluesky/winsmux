@@ -11,11 +11,15 @@ const LAUNCH_PROJECT_ONLY = process.argv.includes("--launch-project-only")
   || process.env.WINSMUX_DESKTOP_E2E_LAUNCH_PROJECT_ONLY === "1";
 const RELEASE_POPOUT_ONLY = process.argv.includes("--release-popout-only")
   || process.env.WINSMUX_DESKTOP_E2E_RELEASE_POPOUT_ONLY === "1";
+const WORKER_START_ONLY = process.argv.includes("--worker-start-only")
+  || process.env.WINSMUX_DESKTOP_E2E_WORKER_START_ONLY === "1";
 const OUTPUT_DIR = path.join(
   process.cwd(),
   "output",
   "playwright",
-  RELEASE_POPOUT_ONLY
+  WORKER_START_ONLY
+    ? "desktop-worker-start-e2e"
+    : RELEASE_POPOUT_ONLY
     ? "desktop-release-popout-e2e"
     : LAUNCH_PROJECT_ONLY
       ? "desktop-launch-arg-e2e"
@@ -1348,6 +1352,121 @@ async function writeEvidence(ok, extra = {}) {
   await fs.writeFile(path.join(OUTPUT_DIR, "desktop-pane-e2e.json"), JSON.stringify(evidence, null, 2));
 }
 
+async function exerciseWorkerStartButton(page) {
+  const tempProjectDir = path.join(OUTPUT_DIR, "worker-start-project");
+  await fs.rm(tempProjectDir, { recursive: true, force: true });
+  await fs.mkdir(tempProjectDir, { recursive: true });
+  const tempWinsmuxDir = path.join(tempProjectDir, ".winsmux");
+  await fs.mkdir(tempWinsmuxDir, { recursive: true });
+  const markerScriptPath = path.join(tempProjectDir, "desktop-worker-launch-marker.ps1");
+  await fs.writeFile(
+    markerScriptPath,
+    [
+      "Write-Output 'DESKTOP_WORKER_START_OK worker-1'",
+      "Write-Output ($args -join ' ')",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  await fs.writeFile(
+    path.join(tempWinsmuxDir, "provider-capabilities.json"),
+    JSON.stringify({
+      version: 1,
+      providers: {
+        codex: {
+          adapter: "codex",
+          command: markerScriptPath,
+          prompt_transports: ["argv"],
+          auth_modes: ["default"],
+          model_sources: ["provider-default", "operator-override"],
+          reasoning_efforts: ["provider-default", "high"],
+          credential_requirements: "none",
+          execution_backend: "local-cli",
+          analysis_posture: "write",
+        },
+      },
+    }, null, 2),
+    "utf8",
+  );
+  await fs.writeFile(
+    path.join(tempProjectDir, ".winsmux.yaml"),
+    [
+      "agent: codex",
+      "model: gpt-5.4",
+      "agent-slots:",
+      "  - slot-id: worker-1",
+      "    runtime-role: worker",
+      "    worker-backend: local",
+      "    agent: codex",
+      "    model: gpt-5.4",
+      "    model-source: operator-override",
+      "    reasoning-effort: high",
+      "    worktree-mode: managed",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  runWinsmuxCore(
+    [
+      "workers",
+      "heartbeat",
+      "mark",
+      "worker-1",
+      "--run-id",
+      "desktop-heartbeat-e2e",
+      "--state",
+      "approval_waiting",
+      "--message",
+      "desktop e2e approval wait",
+      "--json",
+      "--project-dir",
+      tempProjectDir,
+    ],
+    { WINSMUX_TEST_NOW_UTC: "2026-05-16T00:00:00Z" },
+  );
+  const workerStatus = JSON.parse(runWinsmuxCore([
+    "workers",
+    "status",
+    "worker-1",
+    "--json",
+    "--project-dir",
+    tempProjectDir,
+  ]));
+  const workerRow = Array.isArray(workerStatus?.workers)
+    ? workerStatus.workers.find((row) => row.slot_id === "worker-1" || row.slot === "worker-1" || row.pane_id === "worker-1")
+    : null;
+  const launchCommand = String(workerRow?.launch_command ?? "");
+  if (workerRow?.launch_command_status !== "available") {
+    throw new Error(`worker-1 launch command was not available:\n${JSON.stringify(workerRow, null, 2)}`);
+  }
+  if (!launchCommand.includes("model=gpt-5.4") || !launchCommand.includes("model_reasoning_effort=high")) {
+    throw new Error(`worker-1 launch command did not include the selected model and effort:\n${launchCommand}`);
+  }
+
+  await setActiveProjectDirForUi(page, tempProjectDir);
+  await closePtyIfExists(page, "worker-1");
+  await setWorkbenchLayout(page, "focus");
+  await page.selectOption("#focused-pane-select", "worker-1");
+  await setWorkbenchLayout(page, "3x2");
+  await setWorkerStatusStripFromViewMenu(page, true);
+  await page.locator('.worker-status-detail-strip[data-worker-status-detail="worker-1"] .worker-status-pill-chip[data-status-field="launch"]', { hasText: "launch:not_launched" }).waitFor({ state: "visible", timeout: 60_000 });
+  await page.locator('.worker-status-detail-strip[data-worker-status-detail="worker-1"] .worker-status-pill-chip[data-status-field="heartbeat"]', { hasText: "hb:none" }).waitFor({ state: "visible", timeout: 60_000 });
+  await page.click("#start-worker-btn");
+  await page.locator("#conversation-panel", { hasText: "Worker launch approval" }).waitFor({ state: "visible", timeout: 60_000 });
+  await page.locator("#conversation-panel", { hasText: "Worker start accepted" }).waitFor({ state: "visible", timeout: 60_000 });
+  const workerOutput = await waitForPtyOutput(page, "worker-1", "DESKTOP_WORKER_START_OK", 60_000);
+  const compactWorkerOutput = stripAnsi(workerOutput).replace(/\s+/g, "");
+  if (!compactWorkerOutput.includes("DESKTOP_WORKER_START_OK")) {
+    throw new Error(`worker pane did not run the launch command:\n${workerOutput.slice(-1_200)}`);
+  }
+  const text = await page.locator("#conversation-panel").innerText().catch(() => "");
+  return {
+    conversationTail: text.slice(-1_200),
+    launchCommand,
+    workerOutput: workerOutput.slice(-1_200),
+  };
+}
+
 async function main() {
   await ensureOutputDir();
   const debugPort = await getAvailablePort();
@@ -1385,6 +1504,18 @@ async function main() {
       await waitForAppReady(page);
       return { url: page.url() };
     });
+
+    if (WORKER_START_ONLY) {
+      await resetAppState(page);
+      await runStep("worker start button launches the selected Tauri worker pane", async () => {
+        return await exerciseWorkerStartButton(page);
+      });
+      await ensureOutputDir();
+      await page.screenshot({ path: path.join(OUTPUT_DIR, "desktop-worker-start-e2e-success.png"), fullPage: true });
+      await writeEvidence(true, { debugPort, mode: "worker-start-only" });
+      process.stdout.write(`[desktop-pane-e2e] PASS worker-start-only evidence=${path.join(OUTPUT_DIR, "desktop-pane-e2e.json")}\n`);
+      return;
+    }
 
     if (RELEASE_POPOUT_ONLY) {
       await resetAppState(page);
@@ -1899,65 +2030,8 @@ async function main() {
       return await exerciseTauriNativeSurface(page, browser);
     });
 
-    await runStep("worker start button shows launch approval before lifecycle command", async () => {
-      const tempProjectDir = path.join(OUTPUT_DIR, "worker-start-project");
-      await fs.rm(tempProjectDir, { recursive: true, force: true });
-      await fs.mkdir(tempProjectDir, { recursive: true });
-      await fs.writeFile(
-        path.join(tempProjectDir, ".winsmux.yaml"),
-        [
-          "agent: codex",
-          "model: gpt-5.4",
-          "agent-slots:",
-          "  - slot-id: worker-1",
-          "    runtime-role: worker",
-          "    worker-backend: local",
-          "    agent: codex",
-          "    model: gpt-5.4",
-          "    model-source: operator-override",
-          "    reasoning-effort: high",
-          "    worktree-mode: managed",
-          "",
-        ].join("\n"),
-        "utf8",
-      );
-      runWinsmuxCore(
-        [
-          "workers",
-          "heartbeat",
-          "mark",
-          "worker-1",
-          "--run-id",
-          "desktop-heartbeat-e2e",
-          "--state",
-          "approval_waiting",
-          "--message",
-          "desktop e2e approval wait",
-          "--json",
-          "--project-dir",
-          tempProjectDir,
-        ],
-        { WINSMUX_TEST_NOW_UTC: "2026-05-16T00:00:00Z" },
-      );
-
-      await setActiveProjectDirForUi(page, tempProjectDir);
-      await setWorkbenchLayout(page, "focus");
-      await page.selectOption("#focused-pane-select", "worker-1");
-      await setWorkbenchLayout(page, "3x2");
-      await setWorkerStatusStripFromViewMenu(page, true);
-      await page.locator('.worker-status-detail-strip[data-worker-status-detail="worker-1"] .worker-status-pill-chip[data-status-field="launch"]', { hasText: "launch:not_launched" }).waitFor({ state: "visible", timeout: 60_000 });
-      await page.locator('.worker-status-detail-strip[data-worker-status-detail="worker-1"] .worker-status-pill-chip[data-status-field="heartbeat"]', { hasText: "hb:none" }).waitFor({ state: "visible", timeout: 60_000 });
-      await page.click("#start-worker-btn");
-      await page.locator("#conversation-panel", { hasText: "Worker launch approval" }).waitFor({ state: "visible", timeout: 60_000 });
-      await page.locator("#conversation-panel", { hasText: "Worker start blocked" }).waitFor({ state: "visible", timeout: 60_000 });
-      const text = await page.locator("#conversation-panel").innerText();
-      if (!text.includes("worker-1") || !text.includes("manifest_entry_missing")) {
-        throw new Error(`worker start conversation did not expose the expected launch result:\n${text.slice(-1_200)}`);
-      }
-      if (!text.includes("profile local-windows")) {
-        throw new Error(`worker start conversation did not expose the execution profile:\n${text.slice(-1_200)}`);
-      }
-      return { conversationTail: text.slice(-1_200) };
+    await runStep("worker start button launches the selected Tauri worker pane", async () => {
+      return await exerciseWorkerStartButton(page);
     });
 
     await runStep("close spawned PTYs", async () => {

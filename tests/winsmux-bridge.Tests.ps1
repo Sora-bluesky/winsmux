@@ -10683,6 +10683,10 @@ worker-backend: colab_cli
         $payload.workers[1].current_launch.packet_type | Should -Be 'worker_launch_approval'
         $payload.workers[1].current_launch.source | Should -Be 'user_approved_worker_config'
         @($payload.workers[1].approval_differences).Count | Should -Be 0
+        $payload.workers[0].launch_command_status | Should -Be 'available'
+        $payload.workers[0].launch_command_error | Should -Be ''
+        $payload.workers[0].launch_command | Should -Match '^codex '
+        $payload.workers[0].launch_command | Should -Match '--sandbox danger-full-access'
     }
 
     It 'reports api_llm worker status with provider-hosted model metadata' {
@@ -10706,6 +10710,11 @@ worker-backend: colab_cli
         $row.session | Should -Be ''
         $row.actual_gpu | Should -Be ''
         $row.degraded_reason | Should -Be ''
+        $row.launch_command_status | Should -Be 'available'
+        $row.launch_command_error | Should -Be ''
+        $row.launch_command | Should -Match 'api-llm-pane-worker\.ps1'
+        $row.launch_command | Should -Match "-Provider 'openrouter'"
+        $row.launch_command | Should -Match "-Model 'z-ai/glm-5\.2'"
     }
 
     It 'adds api_llm diagnostics without requiring a Colab adapter fallback' {

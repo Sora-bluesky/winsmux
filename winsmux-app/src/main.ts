@@ -17,7 +17,6 @@ import {
   pickDesktopRunWinner,
   promoteDesktopRunTactic,
   recordDesktopDogfoodEvent,
-  startDesktopWorker,
   subscribeToDesktopSummaryRefresh,
   switchDesktopProvider,
   type DesktopCompareRunsResult,
@@ -3506,6 +3505,34 @@ function appendWorkerStartResultConversation(
   renderConversation(getConversationItems());
 }
 
+async function startDesktopWorkerPaneWithLaunchCommand(target: string, row: DesktopWorkerStatusRow) {
+  const launchCommand = (row.launch_command ?? "").trim();
+  if (!launchCommand) {
+    throw new Error(row.launch_command_error || `No launch command is available for ${target}.`);
+  }
+  const pane = panes.get(target);
+  if (!pane) {
+    throw new Error(`Pane ${target} not found.`);
+  }
+  if (pane.ptyStarted) {
+    appendWorkerStartResultConversation({ slot_id: target, status: "already_running" }, row);
+    return;
+  }
+  if (pane.ptyStarting || !queuePaneStartupInput(target, `${launchCommand}\r`)) {
+    appendWorkerStartResultConversation({
+      slot_id: target,
+      status: "blocked",
+      reason: "pane_start_in_progress",
+      failed_stage: "desktop_pane_start",
+      recovery_action: "wait-for-pane-start-and-retry",
+    }, row);
+    return;
+  }
+
+  await ensurePanePtyStarted(target);
+  appendWorkerStartResultConversation({ slot_id: target, status: "started" }, row);
+}
+
 async function startFocusedWorkerFromDesktop() {
   const target = getWorkerStartTarget();
   if (!target) {
@@ -3546,12 +3573,10 @@ async function startFocusedWorkerFromDesktop() {
       }
     }
 
-    const startPayload = await startDesktopWorker(target, activeProjectDir);
-    const result = startPayload.results.find((item) => item.slot_id === target || item.slot === target || item.pane_id === target)
-      ?? startPayload.results[0];
-    if (result) {
-      appendWorkerStartResultConversation(result, row);
+    if (!row) {
+      throw new Error(`Worker status for ${target} was not found.`);
     }
+    await startDesktopWorkerPaneWithLaunchCommand(target, row);
     requestDesktopSummaryRefresh(undefined, 500);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

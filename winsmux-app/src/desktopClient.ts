@@ -722,6 +722,9 @@ export interface DesktopWorkerStatusRow {
   approved_launch: DesktopWorkerLaunchApproval | null;
   current_launch: DesktopWorkerLaunchApproval | null;
   approval_differences: DesktopWorkerApprovalDifference[];
+  launch_command?: string;
+  launch_command_status?: string;
+  launch_command_error?: string;
   heartbeat?: DesktopWorkerHeartbeat | null;
   heartbeat_health?: string;
   heartbeat_state?: string;

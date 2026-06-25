@@ -5836,6 +5836,29 @@ function Get-WorkersStatusRows {
                 $credentialStatus = 'error'
             }
         }
+        $launchCommand = ''
+        $launchCommandStatus = ''
+        $launchCommandError = ''
+        try {
+            $launchGitWorktreeDir = $Context.ProjectDir
+            if (Get-Command Get-PaneControlGitWorktreeDir -ErrorAction SilentlyContinue) {
+                $launchGitWorktreeDir = Get-PaneControlGitWorktreeDir -ProjectDir $Context.ProjectDir
+            }
+            $launchCommand = Get-BridgeProviderLaunchCommand `
+                -ProviderId ([string]$slotConfig.Agent) `
+                -Model ([string]$slotConfig.Model) `
+                -ModelSource ([string]$slotConfig.ModelSource) `
+                -ReasoningEffort ([string]$slotConfig.ReasoningEffort) `
+                -ProjectDir $Context.ProjectDir `
+                -GitWorktreeDir $launchGitWorktreeDir `
+                -RootPath $Context.ProjectDir
+            if (-not [string]::IsNullOrWhiteSpace($launchCommand)) {
+                $launchCommandStatus = 'available'
+            }
+        } catch {
+            $launchCommandStatus = 'error'
+            $launchCommandError = [string]$_.Exception.Message
+        }
 
         $rows.Add([PSCustomObject][ordered]@{
             Slot           = ConvertTo-WorkersSlotAlias -SlotId $slotId
@@ -5874,6 +5897,9 @@ function Get-WorkersStatusRows {
             ApprovedLaunch = $approvedLaunch
             CurrentLaunch  = $currentLaunch
             ApprovalDifferences = @($approvalDifferences)
+            LaunchCommand  = $launchCommand
+            LaunchCommandStatus = $launchCommandStatus
+            LaunchCommandError = $launchCommandError
             Heartbeat      = $heartbeat
             HeartbeatHealth = $heartbeatHealth
             HeartbeatState = $heartbeatState
@@ -5986,6 +6012,9 @@ function ConvertTo-WorkersStatusJsonRows {
             approved_launch = $row.ApprovedLaunch
             current_launch  = $row.CurrentLaunch
             approval_differences = @($row.ApprovalDifferences)
+            launch_command  = [string]$row.LaunchCommand
+            launch_command_status = [string]$row.LaunchCommandStatus
+            launch_command_error = [string]$row.LaunchCommandError
             heartbeat       = $row.Heartbeat
             heartbeat_health = [string]$row.HeartbeatHealth
             heartbeat_state = [string]$row.HeartbeatState
