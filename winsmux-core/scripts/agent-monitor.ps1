@@ -608,6 +608,65 @@ function Get-MonitorOperatorMailboxChannel {
     return "$safeSessionName-operator"
 }
 
+function Get-MonitorMailboxStableHash {
+    param([AllowEmptyString()][string]$Value = '')
+
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes([string]$Value)
+    $hash = [System.Security.Cryptography.SHA256]::Create().ComputeHash($bytes)
+    return (($hash | ForEach-Object { $_.ToString('x2') }) -join '')
+}
+
+function New-MonitorOperatorMailboxPayload {
+    param(
+        [string]$SessionName = 'winsmux-orchestra',
+        [Parameter(Mandatory = $true)][string]$Event,
+        [string]$Message = '',
+        [string]$Label = '',
+        [string]$PaneId = '',
+        [string]$Role = '',
+        [string]$Status = '',
+        [string]$ExitReason = '',
+        [AllowNull()]$Data = $null,
+        [string]$MessageType = 'share',
+        [string]$CausationId = '',
+        [int]$TtlSeconds = 300
+    )
+
+    $resolvedSessionName = if ([string]::IsNullOrWhiteSpace($SessionName)) { 'winsmux-orchestra' } else { $SessionName.Trim() }
+    $resolvedLabel = if ([string]::IsNullOrWhiteSpace($Label)) { 'agent-monitor' } else { $Label.Trim() }
+    $timestamp = (Get-Date).ToString('o')
+    $idSource = '{0}|{1}|{2}|{3}|{4}' -f $resolvedSessionName, $resolvedLabel, $Event, $PaneId, $timestamp
+    $messageId = 'msg-' + (Get-MonitorMailboxStableHash -Value $idSource).Substring(0, 24)
+    $idempotencySource = '{0}|{1}|{2}|{3}|{4}' -f $resolvedSessionName, $resolvedLabel, $Event, $PaneId, $Message
+    $idempotencyHash = (Get-MonitorMailboxStableHash -Value $idempotencySource).Substring(0, 16)
+
+    return [ordered]@{
+        mailbox_version = 2
+        message_id      = $messageId
+        correlation_id  = $messageId
+        causation_id    = if ([string]::IsNullOrWhiteSpace($CausationId)) { $null } else { $CausationId }
+        idempotency_key = ('mailbox:v2:{0}:{1}:{2}:{3}' -f $resolvedSessionName, $resolvedLabel, $Event, $idempotencyHash)
+        message_type    = if ([string]::IsNullOrWhiteSpace($MessageType)) { 'share' } else { $MessageType }
+        state           = 'created'
+        ttl_seconds     = [Math]::Max(1, $TtlSeconds)
+        ack_required    = $true
+        from            = $resolvedLabel
+        to              = 'Operator'
+        content         = [ordered]@{
+            session     = $resolvedSessionName
+            event       = $Event
+            message     = if ($null -eq $Message) { '' } else { $Message }
+            label       = if ($null -eq $Label) { '' } else { $Label }
+            pane_id     = if ($null -eq $PaneId) { '' } else { $PaneId }
+            role        = if ($null -eq $Role) { '' } else { $Role }
+            status      = if ($null -eq $Status) { '' } else { $Status }
+            exit_reason = if ($null -eq $ExitReason) { '' } else { $ExitReason }
+            data        = if ($null -eq $Data) { [ordered]@{} } else { $Data }
+        }
+        timestamp       = $timestamp
+    }
+}
+
 function Send-MonitorOperatorMailboxMessage {
     param(
         [string]$SessionName = 'winsmux-orchestra',
@@ -627,22 +686,16 @@ function Send-MonitorOperatorMailboxMessage {
 
     $bridgeScript = [System.IO.Path]::GetFullPath((Join-Path $scriptDir '..\..\scripts\winsmux-core.ps1'))
     $channel = Get-MonitorOperatorMailboxChannel -SessionName $SessionName
-    $payload = [ordered]@{
-        from      = if ([string]::IsNullOrWhiteSpace($Label)) { 'agent-monitor' } else { $Label }
-        to        = 'Operator'
-        content   = [ordered]@{
-            session     = if ([string]::IsNullOrWhiteSpace($SessionName)) { 'winsmux-orchestra' } else { $SessionName }
-            event       = $Event
-            message     = if ($null -eq $Message) { '' } else { $Message }
-            label       = if ($null -eq $Label) { '' } else { $Label }
-            pane_id     = if ($null -eq $PaneId) { '' } else { $PaneId }
-            role        = if ($null -eq $Role) { '' } else { $Role }
-            status      = if ($null -eq $Status) { '' } else { $Status }
-            exit_reason = if ($null -eq $ExitReason) { '' } else { $ExitReason }
-            data        = if ($null -eq $Data) { [ordered]@{} } else { $Data }
-        }
-        timestamp = (Get-Date).ToString('o')
-    }
+    $payload = New-MonitorOperatorMailboxPayload `
+        -SessionName $SessionName `
+        -Event $Event `
+        -Message $Message `
+        -Label $Label `
+        -PaneId $PaneId `
+        -Role $Role `
+        -Status $Status `
+        -ExitReason $ExitReason `
+        -Data $Data
 
     $payloadJson = $payload | ConvertTo-Json -Compress -Depth 10
     & pwsh -NoProfile -File $bridgeScript 'mailbox-send' $channel $payloadJson 2>&1 | Out-Null

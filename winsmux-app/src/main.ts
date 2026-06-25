@@ -6978,6 +6978,39 @@ function normalizeDecisionText(value: string | null | undefined) {
   return (value || "").trim();
 }
 
+function getDecisionRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function getDecisionRecordField(record: Record<string, unknown> | null | undefined, key: string): unknown {
+  if (!record || !Object.prototype.hasOwnProperty.call(record, key)) {
+    return undefined;
+  }
+  return record[key];
+}
+
+function getDecisionRecordString(record: Record<string, unknown> | null | undefined, key: string) {
+  const value = getDecisionRecordField(record, key);
+  if (typeof value === "string") {
+    return value.trim();
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return "";
+}
+
+function formatDecisionPercent(record: Record<string, unknown> | null | undefined, key: string) {
+  const value = getDecisionRecordField(record, key);
+  const numberValue = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numberValue)) {
+    return "";
+  }
+  return `${Math.round(numberValue)}%`;
+}
+
 function getDecisionStatusTone(status: HandoffDecisionItem["status"]): SurfaceTone {
   switch (status) {
     case "ready":
@@ -7140,6 +7173,116 @@ function getOperatorDecisionItem(
   };
 }
 
+function getContextPressureDecisionItem(payload: DesktopExplainPayload | null): HandoffDecisionItem {
+  const contextContract = payload?.run.context_contract ?? null;
+  const pressure = getDecisionRecord(getDecisionRecordField(contextContract, "context_pressure_status"));
+  if (!pressure) {
+    return {
+      label: getLanguageText("Context pressure", "文脈圧迫"),
+      value: getLanguageText("Not loaded", "未読込"),
+      detail: getLanguageText("Open Explain to load context pressure and checkpoint advice.", "文脈圧迫とチェックポイント助言を表示するには、説明を開いてください。"),
+      status: "missing",
+    };
+  }
+
+  const state = getDecisionRecordString(pressure, "state") || "unknown";
+  const usage = getDecisionRecord(getDecisionRecordField(pressure, "usage"));
+  const usagePercent = formatDecisionPercent(usage, "percent");
+  const usageSource = getDecisionRecordString(usage, "source") || "unknown";
+  const confidence = getDecisionRecordString(pressure, "confidence") || "unknown";
+  const recommendedAction = getDecisionRecordString(pressure, "recommended_action") || "monitor";
+  const pendingMailbox = getDecisionRecordString(pressure, "pending_mailbox_count") || "0";
+  const unresolved = getDecisionRecordString(pressure, "unresolved_question_count")
+    || getDecisionRecordString(pressure, "unresolved_questions")
+    || "0";
+  const lowerState = state.toLowerCase();
+  const status: HandoffDecisionItem["status"] = lowerState === "healthy"
+    ? "ready"
+    : lowerState === "unknown"
+      ? "missing"
+      : lowerState.includes("stale") || lowerState.includes("recommended") || lowerState.includes("imminent")
+        ? "waiting"
+        : "blocked";
+
+  return {
+    label: getLanguageText("Context pressure", "文脈圧迫"),
+    value: state,
+    detail: [
+      usagePercent ? `usage ${usagePercent}` : "",
+      `source ${usageSource}`,
+      `confidence ${confidence}`,
+      `pending mailbox ${pendingMailbox}`,
+      `unresolved ${unresolved}`,
+      `action ${recommendedAction}`,
+    ].filter(Boolean).join(" · "),
+    status,
+  };
+}
+
+function getCheckpointFreshnessDecisionItem(payload: DesktopExplainPayload | null): HandoffDecisionItem {
+  const checkpointPackage = payload?.run.checkpoint_package ?? null;
+  const freshness = getDecisionRecord(getDecisionRecordField(checkpointPackage, "checkpoint_freshness"));
+  if (!freshness) {
+    return {
+      label: getLanguageText("Checkpoint", "チェックポイント"),
+      value: getLanguageText("Not loaded", "未読込"),
+      detail: getLanguageText("Open Explain to load checkpoint freshness.", "チェックポイント鮮度を表示するには、説明を開いてください。"),
+      status: "missing",
+    };
+  }
+
+  const state = getDecisionRecordString(freshness, "state") || "unknown";
+  const checkpointAge = getDecisionRecord(getDecisionRecordField(freshness, "checkpoint_age"));
+  const age = getDecisionRecordString(checkpointAge, "seconds")
+    || getDecisionRecordString(freshness, "age_seconds")
+    || "unknown";
+  const sourceSha = getDecisionRecordString(freshness, "source_head_sha") || "unknown";
+  const lowerState = state.toLowerCase();
+  const status: HandoffDecisionItem["status"] = lowerState === "fresh"
+    ? "ready"
+    : lowerState === "unknown"
+      ? "missing"
+      : "waiting";
+
+  return {
+    label: getLanguageText("Checkpoint", "チェックポイント"),
+    value: state,
+    detail: getLanguageText(
+      `age ${age}s · source ${sourceSha}`,
+      `経過 ${age}秒 · ソース ${sourceSha}`,
+    ),
+    status,
+  };
+}
+
+function getSummaryQualityDecisionItem(payload: DesktopExplainPayload | null): HandoffDecisionItem {
+  const contextContract = payload?.run.context_contract ?? null;
+  const gate = getDecisionRecord(getDecisionRecordField(contextContract, "summary_quality_gate"));
+  if (!gate) {
+    return {
+      label: getLanguageText("Summary quality", "要約品質"),
+      value: getLanguageText("Not loaded", "未読込"),
+      detail: getLanguageText("Open Explain to load summary quality gate results.", "要約品質ゲートを表示するには、説明を開いてください。"),
+      status: "missing",
+    };
+  }
+
+  const valid = getDecisionRecordField(gate, "valid") === true;
+  const action = getDecisionRecordString(gate, "action") || (valid ? "allow_routing" : "block_routing");
+  const missing = getDecisionRecordField(gate, "missing_fields");
+  const missingCount = Array.isArray(missing) ? missing.length : 0;
+  const detail = valid
+    ? getLanguageText(`Routing allowed · action ${action}`, `ルーティング許可 · action ${action}`)
+    : getLanguageText(`Routing blocked · missing fields ${missingCount} · action ${action}`, `ルーティング停止 · 不足項目 ${missingCount} · action ${action}`);
+
+  return {
+    label: getLanguageText("Summary quality", "要約品質"),
+    value: valid ? getLanguageText("Passed", "通過") : getLanguageText("Blocked", "ブロック中"),
+    detail,
+    status: valid ? "ready" : "blocked",
+  };
+}
+
 function renderHandoffCockpit(root: HTMLElement, projection: DesktopRunProjection | null) {
   root.innerHTML = "";
   if (!projection) {
@@ -7159,6 +7302,9 @@ function renderHandoffCockpit(root: HTMLElement, projection: DesktopRunProjectio
     getVerificationDecisionItem(projection, payload),
     getSecurityDecisionItem(projection, payload),
     getOperatorDecisionItem(projection, payload),
+    getContextPressureDecisionItem(payload),
+    getCheckpointFreshnessDecisionItem(payload),
+    getSummaryQualityDecisionItem(payload),
   ];
 
   for (const item of items) {

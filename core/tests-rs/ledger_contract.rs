@@ -741,6 +741,62 @@ panes:
         "context_budget_contract"
     );
     assert_eq!(
+        explain.run.context_contract["context_capsule"]["capsule_version"],
+        1
+    );
+    assert_eq!(
+        explain.run.context_contract["context_capsule"]["run_id"],
+        "task:task-256"
+    );
+    assert_eq!(
+        explain.run.context_contract["context_capsule"]["task_id"],
+        "task-256"
+    );
+    assert_eq!(
+        explain.run.context_contract["context_capsule"]["source_slot"],
+        "builder-1"
+    );
+    assert_eq!(
+        explain.run.context_contract["context_capsule"]["next_action"],
+        "review_requested"
+    );
+    assert_eq!(
+        explain.run.context_contract["context_capsule"]["claim_level"],
+        "CONTRACT_VERIFIED"
+    );
+    assert_eq!(
+        explain.run.context_contract["context_capsule"]["source_head_sha"],
+        "abc1234def5678"
+    );
+    assert_eq!(
+        explain.run.context_contract["context_capsule"]["privacy"]["raw_transcript_stored"],
+        false
+    );
+    assert_eq!(
+        explain.run.context_contract["context_capsule"]["validation"]["valid"],
+        true
+    );
+    assert_eq!(
+        explain.run.context_contract["context_capsule"]["context_pressure"]["state"],
+        "healthy"
+    );
+    assert_eq!(
+        explain.run.context_contract["context_capsule"]["context_pressure"]["usage"]["percent"],
+        35.0
+    );
+    assert_eq!(
+        explain.run.context_contract["context_capsule"]["summary_quality_gate"]["valid"],
+        true
+    );
+    assert_eq!(
+        explain.run.context_contract["summary_quality_gate"]["valid"],
+        true
+    );
+    assert_eq!(
+        explain.run.context_contract["router_policy"]["usable_for_routing"],
+        true
+    );
+    assert_eq!(
         explain.run.context_contract["context_pack_id"],
         "ctx-task-256"
     );
@@ -927,6 +983,11 @@ panes:
         explain.run.run_insights["next_improvements"][0],
         "reduce retry loop before the next run"
     );
+    assert_eq!(explain.run.run_insights["split_worthiness"]["split"], false);
+    assert_eq!(
+        explain.run.run_insights["split_worthiness"]["enforcement"],
+        "suggestion_only"
+    );
     assert_eq!(
         explain.run.architecture_contract["packet_type"],
         "architecture_contract"
@@ -1029,6 +1090,39 @@ panes:
     assert_eq!(
         explain.run.checkpoint_package["packet_type"],
         "checkpoint_package"
+    );
+    assert_eq!(explain.run.checkpoint_package["checkpoint_version"], 1);
+    assert_eq!(
+        explain.run.checkpoint_package["resume_handle"],
+        "checkpoint:task-task-256:abc1234def5678"
+    );
+    assert_eq!(
+        explain.run.checkpoint_package["next_exact_step"],
+        "review_requested"
+    );
+    assert_eq!(
+        explain.run.checkpoint_package["claim_level"],
+        "CONTRACT_VERIFIED"
+    );
+    assert_eq!(
+        explain.run.checkpoint_package["resume_policy"]["resume_allowed"],
+        true
+    );
+    assert_eq!(
+        explain.run.checkpoint_package["resume_policy"]["completed_task_resume_rejected"],
+        false
+    );
+    assert_eq!(
+        explain.run.checkpoint_package["checkpoint_freshness"]["state"],
+        "fresh"
+    );
+    assert_eq!(
+        explain.run.checkpoint_package["context_pressure_status"]["state"],
+        "healthy"
+    );
+    assert_eq!(
+        explain.run.checkpoint_package["summary_quality_gate"]["valid"],
+        true
     );
     assert_eq!(
         explain.run.checkpoint_package["assigned_worktree"],

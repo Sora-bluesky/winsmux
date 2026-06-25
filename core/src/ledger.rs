@@ -1355,8 +1355,7 @@ impl LedgerSnapshot {
         run.phase_gate = run_phase_gate_value(&run, &recent_event_records, &run.draft_pr_gate);
         run.team_memory = team_memory_value(&run, &recent_event_records);
         let team_memory_refs = value_string_list(&run.team_memory, "team_memory_refs");
-        run.context_contract =
-            context_contract_value(&run.verification_evidence, &team_memory_refs);
+        run.context_contract = context_contract_value(&run, &team_memory_refs);
         run.run_insights = run_insights_value(&run, &recent_event_records);
         run.architecture_contract = run_architecture_contract_value(&run);
         run.draft_pr_gate = run_draft_pr_gate_value(&run, &recent_event_records);
@@ -3359,8 +3358,16 @@ fn run_insights_value(run: &LedgerExplainRun, events: &[(usize, &EventRecord)]) 
         "drift_signals": drift_signals,
         "intervention_count": intervention_count,
         "unhealthy_session_size": unhealthy_session_size,
-        "blocked_reasons": blocked_reasons,
+        "blocked_reasons": blocked_reasons.clone(),
         "next_improvements": next_improvements,
+        "split_worthiness": split_worthiness_policy_value(
+            run,
+            retry_count,
+            intervention_count,
+            unhealthy_session_size,
+            &context_pressure,
+            &blocked_reasons
+        ),
         "loop_control": {
             "two_strike_limit": two_strike_limit,
             "one_hypothesis_one_change_required": true,
@@ -3640,6 +3647,29 @@ fn value_field(value: &Value, key: &str) -> Value {
         .unwrap_or(Value::Null)
 }
 
+fn value_field_bool(value: &Value, key: &str) -> bool {
+    value
+        .as_object()
+        .and_then(|map| map.get(key))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn value_field_i64(value: &Value, key: &str) -> Option<i64> {
+    value
+        .as_object()
+        .and_then(|map| map.get(key))
+        .and_then(|item| {
+            if let Some(number) = item.as_i64() {
+                Some(number)
+            } else if let Some(text) = item.as_str() {
+                text.trim().parse::<i64>().ok()
+            } else {
+                None
+            }
+        })
+}
+
 fn value_field_durable_ref(value: &Value, key: &str, prefixes: &[&str]) -> Value {
     let text = value_field_string(value, key);
     if durable_ref_allowed(&text, prefixes) {
@@ -3771,7 +3801,8 @@ fn verification_evidence_value(data: &Value) -> Value {
     })
 }
 
-fn context_contract_value(verification_evidence: &Value, team_memory_refs: &[String]) -> Value {
+fn context_contract_value(run: &LedgerExplainRun, team_memory_refs: &[String]) -> Value {
+    let verification_evidence = &run.verification_evidence;
     let requested_mode = value_field_string(verification_evidence, "context_mode");
     let fork_reason = value_field_string(verification_evidence, "context_fork_reason");
     let context_mode =
@@ -3786,16 +3817,42 @@ fn context_contract_value(verification_evidence: &Value, team_memory_refs: &[Str
         Value::Null
     };
     let team_memory_refs_value = string_ref_list_value(team_memory_refs, &["team-memory:"]);
+    let evidence_refs_value = value_field_ref_list(
+        verification_evidence,
+        "evidence_refs",
+        public_context_ref_prefixes(),
+    );
+    let pending_mailbox_count =
+        value_field_i64(&run.team_memory, "mailbox_event_count").unwrap_or(0);
+    let pressure_snapshot =
+        context_pressure_snapshot_value(run, verification_evidence, pending_mailbox_count, 0);
+    let mut context_capsule = context_capsule_value(run, &evidence_refs_value, &pressure_snapshot);
+    let summary_quality_gate =
+        summary_quality_gate_value(&context_capsule, run, &pressure_snapshot);
+    if let Some(capsule) = context_capsule.as_object_mut() {
+        capsule.insert(
+            "summary_quality_gate".to_string(),
+            summary_quality_gate.clone(),
+        );
+    }
 
     json!({
         "contract_version": 1,
         "packet_type": "context_budget_contract",
         "scope": "run",
+        "context_capsule": context_capsule,
         "context_pack_id": value_field(verification_evidence, "context_pack_id"),
         "context_pack_version": value_field(verification_evidence, "context_pack_version"),
         "context_budget": value_field(verification_evidence, "context_budget"),
         "context_estimate": value_field(verification_evidence, "context_estimate"),
         "context_pressure": value_field(verification_evidence, "context_pressure"),
+        "context_pressure_status": pressure_snapshot,
+        "summary_quality_gate": summary_quality_gate,
+        "router_policy": {
+            "usable_for_routing": value_field_bool(&summary_quality_gate, "valid"),
+            "invalid_or_stale_capsule_rejected": !value_field_bool(&summary_quality_gate, "valid"),
+            "governance_final_authority": true
+        },
         "tool_output_pruned_count": value_field(verification_evidence, "tool_output_pruned_count"),
         "context_mode": context_mode,
         "fork_reason": fork_reason_value,
@@ -3820,7 +3877,7 @@ fn context_contract_value(verification_evidence: &Value, team_memory_refs: &[Str
             "operating_guidance_refs": value_field_ref_list(verification_evidence, "operating_guidance_refs", public_context_ref_prefixes()),
             "hard_constraints": value_field(verification_evidence, "knowledge_hard_constraints"),
             "capability_contract": value_field(verification_evidence, "capability_contract"),
-            "evidence_refs": value_field_ref_list(verification_evidence, "evidence_refs", public_context_ref_prefixes()),
+            "evidence_refs": evidence_refs_value,
             "rationale_refs": value_field_ref_list(verification_evidence, "rationale_refs", public_context_ref_prefixes()),
             "team_memory_refs": team_memory_refs_value,
             "freeform_body_stored": false,
@@ -3835,6 +3892,306 @@ fn context_contract_value(verification_evidence: &Value, team_memory_refs: &[Str
             "raw_tool_output_stored": false
         }
     })
+}
+
+fn context_capsule_value(
+    run: &LedgerExplainRun,
+    evidence_refs: &Value,
+    pressure_snapshot: &Value,
+) -> Value {
+    let changed_files = public_changed_files(&run.changed_files);
+    let changed_files_digest = digest_string_list(&changed_files);
+    let verification_outcome = value_field_string(&run.verification_result, "outcome");
+    let verification_digest = digest_string_list(&[
+        verification_outcome.clone(),
+        value_field_string(&run.verification_evidence, "context_pack_id"),
+        value_field_string(&run.verification_evidence, "context_pack_version"),
+    ]);
+    let next_action = first_non_empty(
+        &run.experiment_packet.next_action,
+        &first_non_empty(&run.activity, &run.task_state),
+    );
+    let summary = first_non_empty(&run.detail, &run.task);
+    let context_budget = value_field(&run.verification_evidence, "context_budget");
+    let capsule_id = format!(
+        "capsule:{}:{}",
+        stable_ref_fragment(&run.run_id),
+        stable_ref_fragment(&run.head_sha)
+    );
+
+    let mut missing = Vec::new();
+    for (field, value) in [
+        ("run_id", run.run_id.as_str()),
+        ("task_id", run.task_id.as_str()),
+        ("source_slot", run.primary_label.as_str()),
+        ("summary", summary.as_str()),
+        ("next_action", next_action.as_str()),
+        ("source_head_sha", run.head_sha.as_str()),
+    ] {
+        if value.trim().is_empty() {
+            missing.push(field.to_string());
+        }
+    }
+
+    if evidence_refs
+        .as_array()
+        .map(|items| items.is_empty())
+        .unwrap_or(true)
+    {
+        missing.push("evidence_refs".to_string());
+    }
+
+    json!({
+        "capsule_version": 1,
+        "capsule_id": capsule_id,
+        "run_id": run.run_id,
+        "task_id": run.task_id,
+        "source_slot": run.primary_label,
+        "status": first_non_empty(&run.task_state, &run.state),
+        "summary": summary,
+        "decisions": [],
+        "evidence_refs": evidence_refs,
+        "changed_files_digest": changed_files_digest,
+        "verification_digest": verification_digest,
+        "risks": [],
+        "unresolved_questions": [],
+        "next_action": next_action,
+        "claim_level": claim_level_for_verification(&verification_outcome),
+        "context_budget": context_budget,
+        "context_pressure": pressure_snapshot,
+        "source_head_sha": run.head_sha,
+        "created_at": run.last_event_at,
+        "expires_at": Value::Null,
+        "validation": {
+            "valid": missing.is_empty(),
+            "missing_fields": missing,
+            "stale": false,
+            "verification_contradiction": false
+        },
+        "privacy": {
+            "raw_transcript_stored": false,
+            "prompt_body_stored": false,
+            "secret_stored": false,
+            "private_path_stored": false
+        }
+    })
+}
+
+fn context_pressure_snapshot_value(
+    run: &LedgerExplainRun,
+    verification_evidence: &Value,
+    pending_mailbox_count: i64,
+    unresolved_question_count: i64,
+) -> Value {
+    let budget = value_field_i64(verification_evidence, "context_budget");
+    let estimate = value_field_i64(verification_evidence, "context_estimate");
+    let pressure = value_field_string(verification_evidence, "context_pressure")
+        .trim()
+        .to_ascii_lowercase();
+    let mut source = value_field_string(verification_evidence, "context_source");
+    if source.trim().is_empty() {
+        source = if budget.is_some() && estimate.is_some() {
+            "estimated".to_string()
+        } else {
+            "unknown".to_string()
+        };
+    }
+    let confidence = match source.as_str() {
+        "provider-reported" | "reported" => "high",
+        "estimated" if !pressure.trim().is_empty() => "medium",
+        "estimated" => "low",
+        _ => "unknown",
+    };
+    let usage_percent = match (estimate, budget) {
+        (Some(estimate), Some(budget)) if budget > 0 => {
+            Some(((estimate as f64 / budget as f64) * 1000.0).round() / 10.0)
+        }
+        _ => None,
+    };
+    let mut state = match pressure.as_str() {
+        "exhausted" | "critical" => "compaction-imminent",
+        "high" => "checkpoint-recommended",
+        "medium" | "low" => "healthy",
+        _ if budget.is_none() || estimate.is_none() => "unknown",
+        _ => "healthy",
+    };
+    if unresolved_question_count > 0 && state == "healthy" {
+        state = "handoff-recommended";
+    }
+    let recommended_action = match state {
+        "compaction-imminent" => "handoff_now",
+        "checkpoint-recommended" => "write_checkpoint",
+        "handoff-recommended" => "handoff_after_checkpoint",
+        "checkpoint-stale" => "refresh_checkpoint",
+        "healthy" => "continue",
+        _ => "inspect_context",
+    };
+
+    json!({
+        "state": state,
+        "recommended_action": recommended_action,
+        "usage": {
+            "percent": usage_percent,
+            "estimated_tokens": estimate,
+            "budget_tokens": budget,
+            "source": source,
+            "confidence": confidence
+        },
+        "capsule_age": unknown_age_snapshot_value("capsule"),
+        "checkpoint_age": unknown_age_snapshot_value("checkpoint"),
+        "pending_mailbox_count": pending_mailbox_count,
+        "unresolved_question_count": unresolved_question_count,
+        "false_precision_avoided": true,
+        "automatic_checkpoint_action": "optional",
+        "automatic_compact_action": "separate",
+        "source_head_sha": run.head_sha
+    })
+}
+
+fn unknown_age_snapshot_value(kind: &str) -> Value {
+    json!({
+        "kind": kind,
+        "seconds": Value::Null,
+        "source": "not_measured"
+    })
+}
+
+fn summary_quality_gate_value(capsule: &Value, run: &LedgerExplainRun, _pressure: &Value) -> Value {
+    let validation = value_field(capsule, "validation");
+    let privacy = value_field(capsule, "privacy");
+    let checks = json!({
+        "status_present": !value_field_string(capsule, "status").trim().is_empty(),
+        "concrete_next_action": !value_field_string(capsule, "next_action").trim().is_empty(),
+        "evidence_refs_present": capsule
+            .as_object()
+            .and_then(|map| map.get("evidence_refs"))
+            .and_then(Value::as_array)
+            .map(|items| !items.is_empty())
+            .unwrap_or(false),
+        "freshness_known": !value_field_string(capsule, "created_at").trim().is_empty(),
+        "source_sha_matches": value_field_string(capsule, "source_head_sha") == run.head_sha,
+        "verification_consistent": !value_field_bool(&validation, "verification_contradiction"),
+        "risks_questions_separated": true,
+        "redaction_ok": !value_field_bool(&privacy, "raw_transcript_stored")
+            && !value_field_bool(&privacy, "prompt_body_stored")
+            && !value_field_bool(&privacy, "secret_stored")
+            && !value_field_bool(&privacy, "private_path_stored"),
+        "capsule_schema_valid": value_field_bool(&validation, "valid"),
+        "stale_capsule_rejected": !value_field_bool(&validation, "stale")
+    });
+    let mut failed_checks = Vec::new();
+    if let Some(map) = checks.as_object() {
+        for (key, value) in map {
+            if !value.as_bool().unwrap_or(false) {
+                failed_checks.push(Value::String(key.clone()));
+            }
+        }
+    }
+    let valid = failed_checks.is_empty();
+    json!({
+        "gate_version": 1,
+        "valid": valid,
+        "checks": checks,
+        "failed_checks": failed_checks,
+        "action": if valid { "allow_routing" } else { "resummary_or_operator_escalation" },
+        "invalid_capsule_routing_rejected": !valid,
+        "governance_final_authority": true
+    })
+}
+
+fn checkpoint_freshness_value(run: &LedgerExplainRun) -> Value {
+    let state = if run.head_sha.trim().is_empty() || run.last_event_at.trim().is_empty() {
+        "unknown"
+    } else {
+        "fresh"
+    };
+    json!({
+        "state": state,
+        "source_head_sha": run.head_sha,
+        "source_time": run.last_event_at,
+        "checkpoint_age": unknown_age_snapshot_value("checkpoint"),
+        "source_sha_match": !run.head_sha.trim().is_empty(),
+        "stale_checkpoint_rejected": state == "checkpoint-stale",
+        "false_precision_avoided": true
+    })
+}
+
+fn split_worthiness_policy_value(
+    run: &LedgerExplainRun,
+    retry_count: usize,
+    _intervention_count: usize,
+    unhealthy_session_size: bool,
+    context_pressure: &str,
+    _blocked_reasons: &[String],
+) -> Value {
+    let pressure = context_pressure.trim().to_ascii_lowercase();
+    let mut reason_codes = Vec::new();
+    if retry_count >= 2 {
+        push_unique_text(&mut reason_codes, "retry_cost_high");
+    }
+    if matches!(pressure.as_str(), "high" | "critical" | "exhausted") {
+        push_unique_text(&mut reason_codes, "context_pressure_high");
+    }
+    if run.changed_file_count > 20 {
+        push_unique_text(&mut reason_codes, "write_conflict_risk_high");
+    }
+    if unhealthy_session_size {
+        push_unique_text(&mut reason_codes, "scope_too_large");
+    }
+    let split = !reason_codes.is_empty();
+    json!({
+        "policy_version": 1,
+        "split": split,
+        "enforcement": "suggestion_only",
+        "reason_codes": reason_codes,
+        "expected_work_minutes": Value::Null,
+        "measured_startup_message_review_minutes": Value::Null,
+        "estimated_work_minutes": Value::Null,
+        "estimated_coordination_minutes": Value::Null,
+        "context_isolation_benefit": if matches!(pressure.as_str(), "high" | "critical" | "exhausted") { "high" } else { "medium" },
+        "write_conflict_risk": if run.changed_file_count > 20 { "high" } else { "low" },
+        "slot_availability": "unknown",
+        "current_pressure": if pressure.trim().is_empty() { "unknown".to_string() } else { pressure },
+        "confidence": if split { "medium" } else { "low" },
+        "suggested_slot": if split { Value::String("next-available-worker".to_string()) } else { Value::Null },
+        "suggested_role": if split { Value::String("worker".to_string()) } else { Value::Null },
+        "governance_controlled_enforcement": true
+    })
+}
+
+fn digest_string_list(values: &[String]) -> String {
+    let mut hasher = Sha256::new();
+    for value in values {
+        hasher.update(value.as_bytes());
+        hasher.update([0]);
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+fn stable_ref_fragment(value: &str) -> String {
+    let mut fragment = String::new();
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+            fragment.push(ch);
+        } else if ch == ':' || ch == '/' || ch == '\\' || ch == '.' {
+            fragment.push('-');
+        }
+    }
+    let fragment = fragment.trim_matches('-');
+    if fragment.is_empty() {
+        "unknown".to_string()
+    } else {
+        fragment.to_string()
+    }
+}
+
+fn claim_level_for_verification(outcome: &str) -> &'static str {
+    match outcome.trim().to_ascii_uppercase().as_str() {
+        "PASS" => "CONTRACT_VERIFIED",
+        "FAIL" => "CONTRACT_FAILED",
+        "PARTIAL" => "MOCK_INTEGRATION_VERIFIED",
+        _ => "NOT_TESTED",
+    }
 }
 
 fn verification_evidence_field(data: &Value, key: &str) -> Value {
@@ -4306,13 +4663,28 @@ fn run_checkpoint_package_value(run: &LedgerExplainRun) -> Value {
         run.task_state.as_str(),
         "completed" | "task_completed" | "commit_ready" | "done"
     ) || run.review_state.eq_ignore_ascii_case("PASS");
+    let next_exact_step = first_non_empty(
+        &run.experiment_packet.next_action,
+        &first_non_empty(&run.activity, &run.task_state),
+    );
+    let resume_handle = format!(
+        "checkpoint:{}:{}",
+        stable_ref_fragment(&run.run_id),
+        stable_ref_fragment(&run.head_sha)
+    );
 
     json!({
         "contract_version": 1,
+        "checkpoint_version": 1,
         "packet_type": "checkpoint_package",
         "scope": "worker_worktree",
         "run_id": run.run_id,
         "task_id": run.task_id,
+        "resume_handle": resume_handle,
+        "objective": run.goal,
+        "phase": run.phase,
+        "next_exact_step": next_exact_step,
+        "claim_level": claim_level_for_verification(&verification_outcome),
         "project_ref": "current_project",
         "project_root_stored": false,
         "assigned_worktree": worktree_ref,
@@ -4373,6 +4745,17 @@ fn run_checkpoint_package_value(run: &LedgerExplainRun) -> Value {
         } else {
             "keep the worker worktree for inspection"
         },
+        "resume_policy": {
+            "resume_allowed": !cleanup_required,
+            "completed_task_resume_rejected": cleanup_required,
+            "requires_same_head_sha": true,
+            "requires_operator_control": true
+        },
+        "active_message_ids": [],
+        "open_questions": [],
+        "checkpoint_freshness": checkpoint_freshness_value(run),
+        "context_pressure_status": value_field(&run.context_contract, "context_pressure_status"),
+        "summary_quality_gate": value_field(&run.context_contract, "summary_quality_gate"),
         "operator_git_required": true,
         "worker_git_write_allowed": false,
         "local_reference_paths_stored": false,

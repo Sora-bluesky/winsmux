@@ -77,6 +77,8 @@ $whitelistPatterns = @(
     'docs/project/v03620-coordinator-baseline.md',
     'docs/project/v03621-local-router-shadow.md',
     'docs/project/v03621-local-router-shadow-profile.md',
+    'docs/project/v03622-context-continuity.md',
+    'docs/project/v03622-context-continuity.ja.md',
     '.agents/README.md',
     'scripts/bootstrap-git-guard.ps1',
     'scripts/bump-version.ps1',

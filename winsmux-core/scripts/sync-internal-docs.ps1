@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$BacklogPath = '',
     [string]$RoadmapTitleJaPath = '',
@@ -64,6 +64,89 @@ function ConvertFrom-YamlInlineList {
     }
 
     return $items
+}
+
+function ConvertTo-StringOrEmpty {
+    param([AllowNull()][object]$Value)
+
+    if ($null -eq $Value) {
+        return ''
+    }
+
+    return [string]$Value
+}
+
+function Initialize-InternalDocFileIfMissing {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][ValidateSet('FeatureInventory', 'ManualChecklist')][string]$Template,
+        [Parameter(Mandatory = $true)][System.Text.Encoding]$Encoding
+    )
+
+    if (Test-Path -LiteralPath $Path) {
+        return
+    }
+
+    $parent = Split-Path -Parent $Path
+    if (-not [string]::IsNullOrWhiteSpace($parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+
+    if ($Template -eq 'FeatureInventory') {
+        $content = @'
+# winsmux 機能一覧
+
+更新日: 未同期
+用途: 内部向けの機能棚卸し、手動確認の観点整理、要件との突き合わせ
+保存方針: `docs/internal/` 配下のため追跡対象外
+関連別紙: `docs/internal/winsmux-manual-checklist-by-version.md`
+
+## この資料の見方
+
+- この資料は backlog から同期して更新します。
+
+## 実装済み（公開済み）
+
+## 進行中（未公開）
+
+> この章は backlog から自動同期されます。
+
+## 今後実装予定
+
+> この章は backlog から自動同期されます。
+
+## 付録
+'@
+    } else {
+        $content = @'
+# winsmux 版ごとの手動確認チェック表
+
+更新日: 未同期
+用途: 版ごとの手動確認、総合確認、公開前の抜け漏れ確認
+保存方針: `docs/internal/` 配下のため追跡対象外
+関連資料: `docs/internal/winsmux-feature-inventory.md`
+
+## 使い方
+
+- この表は backlog から同期して更新します。
+
+## 公開済みの確認表
+
+| 版 | 状態 | 重点確認 | 確認例 | 結果 | メモ |
+| --- | --- | --- | --- | --- | --- |
+
+## 進行中・今後予定の確認表
+
+| 版 | 状態 | 実装後に重点確認すること | 確認例 | 結果 | 収録候補 | メモ |
+| --- | --- | --- | --- | --- | --- | --- |
+
+> この章は backlog から自動同期されます。
+
+## 総合確認の進め方
+'@
+    }
+
+    [System.IO.File]::WriteAllText($Path, $content, $Encoding)
 }
 
 function Get-TaskBlocks {
@@ -177,7 +260,7 @@ function Get-VersionSortTuple {
         return @(9998, 0, 0, $Version)
     }
 
-    return @(9997, 0, 0, ($Version ?? ''))
+    return @(9997, 0, 0, (ConvertTo-StringOrEmpty -Value $Version))
 }
 
 function Get-PlanningState {
@@ -189,7 +272,7 @@ function Get-PlanningState {
     $statuses = @()
     foreach ($taskId in $TaskIds) {
         if ($TasksById.ContainsKey($taskId)) {
-            $statuses += ($TasksById[$taskId].Status ?? '')
+            $statuses += (ConvertTo-StringOrEmpty -Value $TasksById[$taskId].Status)
         } else {
             $statuses += ''
         }
@@ -418,6 +501,9 @@ $checklistRows = $(
         ('| {0} | {1} | {2} | {3} | [ ] 未 | [ ] | {4} |' -f $versionLabel, $state, $entry.Focus, $entry.Example, $entry.Memo)
     }
 ) -join "`r`n"
+
+Initialize-InternalDocFileIfMissing -Path $resolvedFeatureInventoryPath -Template FeatureInventory -Encoding $utf8NoBom
+Initialize-InternalDocFileIfMissing -Path $resolvedManualChecklistPath -Template ManualChecklist -Encoding $utf8NoBom
 
 $featureContent = [System.IO.File]::ReadAllText($resolvedFeatureInventoryPath, $utf8NoBom)
 $featureContent = Set-UpdatedDateLine -Content $featureContent -DateText $dateText

@@ -91,6 +91,17 @@ The public contract is:
 
 These contracts are designed for local-first operation. They make later review, comparison, and recovery possible while keeping the operator responsible for the final decision.
 
+v0.36.22 extends this recovery contract with bounded context-continuity data:
+
+- **Context Capsule v1**: a compact run summary containing status, concrete next action, evidence references, changed-file and verification digests, claim level, source head SHA, and privacy flags. It never stores raw terminal transcripts, prompt bodies, secrets, or private local paths.
+- **Reliable Mailbox v2**: worker-to-operator messages include `message_id`, `correlation_id`, `causation_id`, `idempotency_key`, TTL, state, sender, recipient, and content metadata. A command exit code by itself is not delivery success; routing decisions rely on the recorded mailbox state and acknowledgement contract.
+- **Checkpoint package v1**: restart-safe packages expose objective, phase, next exact step, claim level, resume handle, source SHA, public changed files, verification state, active message IDs, open questions, and a freshness snapshot. Completed runs reject automatic resume unless the operator explicitly reopens the work.
+- **Context pressure status**: the run contract separates usage, source, confidence, capsule age, checkpoint age, pending mailbox count, unresolved question count, state, and recommended action. Unknown or unmeasured values stay explicit so the UI does not show false precision.
+- **Summary quality gate**: deterministic checks confirm status, next action, evidence refs, freshness, source SHA match, verification consistency, separated risks/questions, and redaction. Invalid or stale capsules are not passed to router or operator automation.
+- **Split-worthiness policy**: split decisions are suggestions, not automatic enforcement. The policy considers retry cost, context pressure, write-conflict risk, session size, slot availability, and expected coordination overhead, while the operator remains the final authority.
+
+Formal six-pane benchmark scoring is outside this v0.36.22 contract and belongs to the later benchmark release lane. v0.36.22 may collect only lightweight baseline evidence for before/after comparison.
+
 ## 3. Pane execution layer
 
 The managed pane layer is where agent CLIs run inside winsmux-controlled panes or slots.
