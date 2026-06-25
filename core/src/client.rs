@@ -19,6 +19,13 @@ use crate::debug_log::{client_log, client_log_enabled, input_log, input_log_enab
 use crate::layout::RowRunsJson;
 use crate::tree::split_with_gaps;
 
+pub(crate) fn should_refresh_managed_mouse_reporting(
+    managed_vt_input: bool,
+    elapsed: Duration,
+) -> bool {
+    managed_vt_input && elapsed >= Duration::from_secs(30)
+}
+
 /// Build a send-key name with modifier prefix (e.g. "C-Left", "S-Right", "C-S-Up").
 fn modified_key_name(base: &str, mods: KeyModifiers) -> String {
     let mut prefix = String::new();
@@ -750,10 +757,10 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
     // avoid corrupting ratatui's output buffer.
     let mut pending_osc52: Option<String> = None;
     let mut pending_bell = false;
-    // VT input mode: periodically re-send mouse-enable escape sequences.
-    // Covers SSH sessions and JetBrains JediTerm (which sends VT mouse
-    // sequences through ConPTY instead of native MOUSE_EVENT records).
-    let is_ssh_mode = crate::ssh_input::needs_vt_input();
+    // VT input mode: periodically re-send mouse-enable escape sequences only
+    // after winsmux installed its managed reader. Environment variables alone
+    // must not affect unrelated terminal tabs.
+    let managed_vt_input = input.uses_managed_vt_input();
     let mut last_mouse_enable = Instant::now();
     // ── Cursor blink stabilisation ──────────────────────────────────
     // Cache the last-sent DECSCUSR code so we only write it when it
@@ -2240,7 +2247,7 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                 }
                 // SSH: re-send mouse-enable on resize — terminal may reset
                 // mouse reporting mode after a window size change.
-                if is_ssh_mode {
+                if managed_vt_input {
                     crate::ssh_input::send_mouse_enable();
                     last_mouse_enable = Instant::now();
                 }
@@ -3694,7 +3701,7 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
         // ── SSH: periodic mouse-enable refresh ───────────────────────
         // ConPTY or terminal resize can silently disable mouse reporting.
         // Re-send every 30 seconds to keep mouse working reliably.
-        if is_ssh_mode && last_mouse_enable.elapsed().as_secs() >= 30 {
+        if should_refresh_managed_mouse_reporting(managed_vt_input, last_mouse_enable.elapsed()) {
             crate::ssh_input::send_mouse_enable();
             last_mouse_enable = Instant::now();
         }
@@ -3788,7 +3795,7 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
             // Update Win32 system caret for accessibility / speech-to-text
             // tools (e.g. Wispr Flow).  Skip for SSH sessions — no local
             // console window.
-            if !is_ssh_mode {
+            if !managed_vt_input {
                 if let Some((cx, cy)) = cursor_visible {
                     crate::platform::caret::update(cx, cy);
                 }
