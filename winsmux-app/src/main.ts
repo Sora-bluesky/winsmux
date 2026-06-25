@@ -9653,11 +9653,7 @@ function normalizeRuntimeCredentialStatus(value: string) {
 }
 
 function getRuntimeModelAcceptedEnvNames(entry: RuntimeModelCatalogEntry) {
-  const names = [entry.requiredEnv].filter(Boolean) as string[];
-  if (entry.agent.toLowerCase() === "openrouter" && entry.requiredEnv === "OPENROUTER_API_KEY") {
-    names.push("WINSMUX_OPENROUTER_API_KEY");
-  }
-  return names;
+  return [entry.requiredEnv].filter(Boolean) as string[];
 }
 
 function getRuntimeWorkerReadinessLabel(state: RuntimeModelWorkerReadinessState, japanese: boolean) {

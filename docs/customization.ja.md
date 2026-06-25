@@ -165,7 +165,6 @@ winsmux はベンダーごとに固定された役割ではなく、スロット
 分けて扱います。たとえば provider に `openrouter`、model に `z-ai/glm-5.2`、
 `prompt-transport: file`、`auth-mode: api-key-env` を指定できます。
 OpenRouter を環境変数で使う場合の既定名は `OPENROUTER_API_KEY` です。
-既存ローカル設定向けに `WINSMUX_OPENROUTER_API_KEY` も明示上書きとして使えますが、
 公開リポジトリの標準手順では provider 側の自然な名前を使います。Windows の
 ユーザー環境変数として保存し、新しい PowerShell を開いてから `winsmux` を実行します。
 

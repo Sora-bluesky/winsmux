@@ -116,9 +116,8 @@ agent-slots:
 
 OpenRouter 互換の既定 base URL は `https://openrouter.ai/api/v1` です。
 環境変数で認証する場合、既定名は `OPENROUTER_API_KEY` です。
-`WINSMUX_OPENROUTER_API_KEY` は既存ローカル設定向けの明示上書き名としてだけ
-引き続き受け付けます。winsmux はどちらの値もリポジトリ、公開ドキュメント、
-PR 本文、生成レポート、ワーカーログ、リリース証跡に保存しません。
+winsmux はこの値をリポジトリ、公開ドキュメント、PR 本文、
+生成レポート、ワーカーログ、リリース証跡に保存しません。
 公開リポジトリでの標準手順では、Windows のユーザー環境変数として保存し、
 新しい PowerShell を開いてから `winsmux` を実行します。
 
