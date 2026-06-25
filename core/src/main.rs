@@ -37,12 +37,17 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 use std::env;
+#[cfg(windows)]
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Once,
+};
 
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use crossterm::terminal::{enable_raw_mode, disable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{execute};
-use crossterm::cursor::{EnableBlinking, DisableBlinking};
+use crossterm::cursor::{EnableBlinking, DisableBlinking, Show};
 use crossterm::event::{EnableMouseCapture, DisableMouseCapture, EnableBracketedPaste, DisableBracketedPaste};
 
 use crate::platform::enable_virtual_terminal_processing;
@@ -55,6 +60,89 @@ use crate::session::{cleanup_stale_port_files, read_session_key, send_control,
 use crate::rendering::apply_cursor_style;
 use crate::client::run_remote;
 use crate::ssh_input::{send_mouse_enable, InputSource};
+
+#[cfg(windows)]
+static TERMINAL_EXIT_CLEANUP_ARMED: AtomicBool = AtomicBool::new(false);
+#[cfg(windows)]
+static TERMINAL_EXIT_CLEANUP_HANDLER_INSTALLED: Once = Once::new();
+
+fn restore_terminal_state_for_client_exit() {
+    let _ = disable_raw_mode();
+    crate::ssh_input::send_mouse_disable();
+    crate::ssh_input::restore_registered_console_mode();
+
+    let mut out = crate::platform::create_writer();
+    let _ = execute!(
+        out,
+        crossterm::style::Print("\x1b[0m"),
+        crossterm::style::Print("\x1b[0 q"),
+        DisableBlinking,
+        DisableMouseCapture,
+        DisableBracketedPaste,
+        LeaveAlternateScreen,
+        Show,
+    );
+}
+
+#[cfg(windows)]
+fn is_terminal_cleanup_ctrl_event(ctrl_type: u32) -> bool {
+    matches!(ctrl_type, 0 | 1 | 2 | 5 | 6)
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn terminal_exit_cleanup_ctrl_handler(ctrl_type: u32) -> i32 {
+    if is_terminal_cleanup_ctrl_event(ctrl_type)
+        && TERMINAL_EXIT_CLEANUP_ARMED.swap(false, Ordering::SeqCst)
+    {
+        restore_terminal_state_for_client_exit();
+    }
+    0
+}
+
+#[cfg(windows)]
+fn install_terminal_exit_cleanup_handler() {
+    type HandlerRoutine = unsafe extern "system" fn(u32) -> i32;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn SetConsoleCtrlHandler(handler: Option<HandlerRoutine>, add: i32) -> i32;
+    }
+
+    TERMINAL_EXIT_CLEANUP_HANDLER_INSTALLED.call_once(|| unsafe {
+        SetConsoleCtrlHandler(Some(terminal_exit_cleanup_ctrl_handler), 1);
+    });
+}
+
+#[cfg(not(windows))]
+fn install_terminal_exit_cleanup_handler() {}
+
+struct TerminalExitCleanupGuard {
+    armed: bool,
+}
+
+impl TerminalExitCleanupGuard {
+    fn arm() -> Self {
+        install_terminal_exit_cleanup_handler();
+        #[cfg(windows)]
+        TERMINAL_EXIT_CLEANUP_ARMED.store(true, Ordering::SeqCst);
+        Self { armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+        #[cfg(windows)]
+        TERMINAL_EXIT_CLEANUP_ARMED.store(false, Ordering::SeqCst);
+    }
+}
+
+impl Drop for TerminalExitCleanupGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            restore_terminal_state_for_client_exit();
+            self.disarm();
+        }
+    }
+}
 
 pub fn main() {
     if let Err(e) = run_main() {
@@ -295,6 +383,15 @@ mod tests {
     #[test]
     fn workers_command_is_forwarded_to_core_bridge() {
         assert!(is_winsmux_core_bridge_command("workers"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_terminal_abnormal_exit_events_trigger_cleanup() {
+        for ctrl_type in [0, 1, 2, 5, 6] {
+            assert!(super::is_terminal_cleanup_ctrl_event(ctrl_type));
+        }
+        assert!(!super::is_terminal_cleanup_ctrl_event(99));
     }
 
     #[test]
@@ -2978,6 +3075,7 @@ fn run_main() -> io::Result<()> {
     let mut stdout = crate::platform::create_writer();
     enable_virtual_terminal_processing();
     enable_raw_mode()?;
+    let mut terminal_exit_guard = TerminalExitCleanupGuard::arm();
 
     // Detect terminal type for input handling.
     // Use VT input parsing for SSH sessions and terminals that send VT mouse
@@ -3001,7 +3099,7 @@ fn run_main() -> io::Result<()> {
     // For VT input mode (SSH / JetBrains), explicitly (re-)send mouse-enable
     // escape sequences.  ConPTY may have consumed crossterm's
     // EnableMouseCapture output without forwarding it.
-    if use_vt_input {
+    if input.uses_managed_vt_input() {
         send_mouse_enable();
     }
 
@@ -3026,18 +3124,9 @@ fn run_main() -> io::Result<()> {
 
     // Terminal cleanup — always runs, even on error, to prevent leaked
     // SGR attributes (invisible text), stuck raw mode, or stale cursor style.
-    let _ = disable_raw_mode();
-    let out = terminal.backend_mut();
-    // Reset all SGR attributes (fg/bg color, bold, hidden, etc.) BEFORE
-    // leaving the alternate screen.  SGR state is global and NOT restored
-    // by the alternate-screen save/restore mechanism (\x1b[?1049l).
-    // Without this, the last ratatui frame's foreground color can persist
-    // into the main screen, making typed text invisible.
-    let _ = execute!(out, crossterm::style::Print("\x1b[0m"));
-    // Reset cursor style to terminal default (\x1b[0 q)
-    let _ = execute!(out, crossterm::style::Print("\x1b[0 q"));
-    let _ = execute!(out, DisableBlinking, DisableMouseCapture, DisableBracketedPaste, LeaveAlternateScreen);
+    restore_terminal_state_for_client_exit();
     let _ = terminal.show_cursor();
+    terminal_exit_guard.disarm();
     result
 }
 

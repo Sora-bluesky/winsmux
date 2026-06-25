@@ -3,6 +3,28 @@ use super::*;
 
 #[cfg(windows)]
 #[test]
+fn windows_terminal_normal_ssh_env_only_does_not_refresh_mouse_reporting() {
+    assert!(!should_refresh_managed_mouse_reporting(
+        false,
+        std::time::Duration::from_secs(31),
+    ));
+}
+
+#[cfg(windows)]
+#[test]
+fn mouse_refresh_waits_for_30_seconds_inside_managed_vt_input() {
+    assert!(!should_refresh_managed_mouse_reporting(
+        true,
+        std::time::Duration::from_secs(29),
+    ));
+    assert!(should_refresh_managed_mouse_reporting(
+        true,
+        std::time::Duration::from_secs(30),
+    ));
+}
+
+#[cfg(windows)]
+#[test]
 fn ime_detection_ascii_only() {
     // Pure ASCII text should NOT be detected as IME input
     assert!(!paste_buffer_has_non_ascii("abc"));

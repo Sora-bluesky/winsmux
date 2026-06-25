@@ -49,12 +49,75 @@
 //! and emitted event to `~/.psmux/ssh_input.log`.
 
 use std::io;
+#[cfg(windows)]
+use std::sync::{
+    atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
+    Arc,
+};
 use std::time::Duration;
 
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
     MouseButton, MouseEvent, MouseEventKind,
 };
+
+const MOUSE_DISABLE: &[u8] =
+    b"\x1b[?1006l\x1b[?1015l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?25h";
+
+/// VT sequence used to restore normal terminal mouse behavior.
+pub fn mouse_disable_sequence() -> &'static [u8] {
+    MOUSE_DISABLE
+}
+
+#[cfg(windows)]
+fn write_stdout_vt(bytes: &[u8], label: &str) {
+    unsafe {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetStdHandle(nStdHandle: u32) -> *mut std::ffi::c_void;
+            fn WriteFile(
+                hFile: *mut std::ffi::c_void,
+                lpBuffer: *const u8,
+                nNumberOfBytesToWrite: u32,
+                lpNumberOfBytesWritten: *mut u32,
+                lpOverlapped: *mut std::ffi::c_void,
+            ) -> i32;
+        }
+        const STD_OUTPUT_HANDLE: u32 = (-11i32) as u32;
+        let h = GetStdHandle(STD_OUTPUT_HANDLE);
+        if !h.is_null() && h != (-1isize) as *mut std::ffi::c_void {
+            let mut written: u32 = 0;
+            let ok = WriteFile(
+                h,
+                bytes.as_ptr(),
+                bytes.len() as u32,
+                &mut written,
+                std::ptr::null_mut(),
+            );
+            ssh_debug_log(&format!("{label}: WriteFile ok={ok} written={written}"));
+        } else {
+            ssh_debug_log(&format!("{label}: GetStdHandle(STDOUT) failed"));
+        }
+    }
+
+    use std::io::Write;
+    let mut out = io::stdout().lock();
+    let _ = out.write_all(bytes);
+    let _ = out.flush();
+    ssh_debug_log(&format!("{label}: stdout write_all done"));
+}
+
+/// Explicitly restore terminal mouse reporting to the user's normal terminal.
+#[cfg(windows)]
+pub fn send_mouse_disable() {
+    ssh_debug_log("send_mouse_disable: writing mouse-disable VT sequences to stdout");
+    write_stdout_vt(mouse_disable_sequence(), "send_mouse_disable");
+}
+
+#[cfg(not(windows))]
+pub fn send_mouse_disable() {
+    // On Unix, crossterm's DisableMouseCapture already works correctly.
+}
 
 /// Explicitly (re-)send the VT mouse-enable escape sequences to stdout.
 ///
@@ -79,52 +142,17 @@ pub fn send_mouse_enable() {
     // Approach 1: WriteFile on the raw output handle.
     // This uses the Win32 file I/O path rather than WriteConsole, which
     // may behave differently under ConPTY.
-    unsafe {
-        #[link(name = "kernel32")]
-        extern "system" {
-            fn GetStdHandle(nStdHandle: u32) -> *mut std::ffi::c_void;
-            fn WriteFile(
-                hFile: *mut std::ffi::c_void,
-                lpBuffer: *const u8,
-                nNumberOfBytesToWrite: u32,
-                lpNumberOfBytesWritten: *mut u32,
-                lpOverlapped: *mut std::ffi::c_void,
-            ) -> i32;
-        }
-        const STD_OUTPUT_HANDLE: u32 = (-11i32) as u32;
-        let h = GetStdHandle(STD_OUTPUT_HANDLE);
-        if !h.is_null() && h != (-1isize) as *mut std::ffi::c_void {
-            let mut written: u32 = 0;
-            let ok = WriteFile(
-                h,
-                MOUSE_ENABLE.as_ptr(),
-                MOUSE_ENABLE.len() as u32,
-                &mut written,
-                std::ptr::null_mut(),
-            );
-            ssh_debug_log(&format!(
-                "send_mouse_enable: WriteFile ok={} written={}",
-                ok, written,
-            ));
-        } else {
-            ssh_debug_log("send_mouse_enable: GetStdHandle(STDOUT) failed");
-        }
-    }
+    write_stdout_vt(MOUSE_ENABLE, "send_mouse_enable");
 
-    // Approach 2: standard Rust stdout write (goes through ConPTY normally).
-    use std::io::Write;
-    let mut out = io::stdout().lock();
-    let _ = out.write_all(MOUSE_ENABLE);
-    let _ = out.flush();
-    ssh_debug_log("send_mouse_enable: stdout write_all done");
-
-    // Approach 3: Also send a Device Status Report (DSR) probe.
+    // Approach 2: Also send a Device Status Report (DSR) probe.
     // If ConPTY is in VT pass-through mode, the query \x1b[5n should reach
     // the client terminal, which responds with \x1b[0n.  If we later see
     // that response in our reader thread (as KEY_EVENT chars: ESC [ 0 n),
     // it proves output→client→input roundtrip works through ConPTY.
     // If we don't see it, ConPTY is consuming VT queries (Windows 10).
     const DSR_PROBE: &[u8] = b"\x1b[5n";
+    use std::io::Write;
+    let mut out = io::stdout().lock();
     let _ = out.write_all(DSR_PROBE);
     let _ = out.flush();
     ssh_debug_log("send_mouse_enable: DSR probe \\x1b[5n sent (expect \\x1b[0n response)");
@@ -253,6 +281,8 @@ pub enum InputSource {
     #[cfg(windows)]
     Ssh {
         rx: std::sync::mpsc::Receiver<Event>,
+        stop: Arc<AtomicBool>,
+        _console_mode: ConsoleModeGuard,
     },
 }
 
@@ -270,7 +300,11 @@ impl InputSource {
         #[cfg(windows)]
         {
             match start_ssh_reader() {
-                Ok(rx) => Ok(InputSource::Ssh { rx }),
+                Ok((rx, stop, console_mode)) => Ok(InputSource::Ssh {
+                    rx,
+                    stop,
+                    _console_mode: console_mode,
+                }),
                 Err(e) => {
                     // Log to file instead of stderr (raw mode garbles eprintln).
                     ssh_debug_log(&format!("SSH VT input init failed: {}; falling back to crossterm", e));
@@ -299,7 +333,7 @@ impl InputSource {
                 }
             }
             #[cfg(windows)]
-            InputSource::Ssh { rx } => match rx.recv_timeout(timeout) {
+            InputSource::Ssh { rx, .. } => match rx.recv_timeout(timeout) {
                 Ok(evt) => Ok(Some(evt)),
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Ok(None),
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Ok(None),
@@ -319,10 +353,33 @@ impl InputSource {
                 }
             }
             #[cfg(windows)]
-            InputSource::Ssh { rx } => match rx.try_recv() {
+            InputSource::Ssh { rx, .. } => match rx.try_recv() {
                 Ok(evt) => Ok(Some(evt)),
                 Err(_) => Ok(None),
             },
+        }
+    }
+
+    /// Returns true only when winsmux successfully installed its managed VT
+    /// input reader. Environment variables alone are not enough to keep
+    /// sending mouse-enable sequences.
+    pub fn uses_managed_vt_input(&self) -> bool {
+        #[cfg(windows)]
+        {
+            matches!(self, InputSource::Ssh { .. })
+        }
+        #[cfg(not(windows))]
+        {
+            false
+        }
+    }
+}
+
+impl Drop for InputSource {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        if let InputSource::Ssh { stop, .. } = self {
+            stop.store(true, Ordering::SeqCst);
         }
     }
 }
@@ -1053,12 +1110,14 @@ fn ssh_verbose() -> bool {
 // ─── Windows: SSH reader thread + Win32 FFI ──────────────────────────────────
 
 #[cfg(windows)]
-fn start_ssh_reader() -> io::Result<std::sync::mpsc::Receiver<Event>> {
-    use std::ffi::c_void;
-    use std::sync::mpsc;
+static REGISTERED_CONSOLE_HANDLE: AtomicUsize = AtomicUsize::new(0);
+#[cfg(windows)]
+static REGISTERED_CONSOLE_MODE: AtomicU32 = AtomicU32::new(0);
+#[cfg(windows)]
+static REGISTERED_CONSOLE_MODE_ACTIVE: AtomicBool = AtomicBool::new(false);
 
-    // ── Win32 constants ──────────────────────────────────────────────────
-    const STD_INPUT_HANDLE: u32 = (-10i32) as u32;
+#[cfg(windows)]
+fn ssh_vt_input_mode(orig_mode: u32) -> u32 {
     const ENABLE_VIRTUAL_TERMINAL_INPUT: u32 = 0x0200;
     const ENABLE_WINDOW_INPUT: u32          = 0x0008;
     const ENABLE_MOUSE_INPUT: u32           = 0x0010;
@@ -1067,6 +1126,76 @@ fn start_ssh_reader() -> io::Result<std::sync::mpsc::Receiver<Event>> {
     const ENABLE_ECHO_INPUT: u32            = 0x0004;
     const ENABLE_PROCESSED_INPUT: u32       = 0x0001;
     const ENABLE_QUICK_EDIT_MODE: u32       = 0x0040;
+
+    (orig_mode
+        & !(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT | ENABLE_QUICK_EDIT_MODE))
+        | ENABLE_VIRTUAL_TERMINAL_INPUT
+        | ENABLE_WINDOW_INPUT
+        | ENABLE_MOUSE_INPUT
+        | ENABLE_EXTENDED_FLAGS
+}
+
+#[cfg(windows)]
+pub fn restore_registered_console_mode() {
+    if !REGISTERED_CONSOLE_MODE_ACTIVE.swap(false, Ordering::SeqCst) {
+        return;
+    }
+
+    let handle = REGISTERED_CONSOLE_HANDLE.load(Ordering::SeqCst) as *mut std::ffi::c_void;
+    let mode = REGISTERED_CONSOLE_MODE.load(Ordering::SeqCst);
+    if handle.is_null() || handle == (-1isize) as *mut std::ffi::c_void {
+        return;
+    }
+
+    unsafe {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn SetConsoleMode(h: *mut std::ffi::c_void, mode: u32) -> i32;
+        }
+        let ok = SetConsoleMode(handle, mode);
+        ssh_debug_log(&format!(
+            "restore_registered_console_mode: SetConsoleMode ok={} mode=0x{:04X}",
+            ok, mode,
+        ));
+    }
+}
+
+#[cfg(not(windows))]
+pub fn restore_registered_console_mode() {}
+
+#[cfg(windows)]
+pub(crate) struct ConsoleModeGuard {
+    active: bool,
+}
+
+#[cfg(windows)]
+impl ConsoleModeGuard {
+    fn new(handle: *mut std::ffi::c_void, original_mode: u32) -> Self {
+        REGISTERED_CONSOLE_HANDLE.store(handle as usize, Ordering::SeqCst);
+        REGISTERED_CONSOLE_MODE.store(original_mode, Ordering::SeqCst);
+        REGISTERED_CONSOLE_MODE_ACTIVE.store(true, Ordering::SeqCst);
+        Self { active: true }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ConsoleModeGuard {
+    fn drop(&mut self) {
+        if self.active {
+            restore_registered_console_mode();
+            self.active = false;
+        }
+    }
+}
+
+#[cfg(windows)]
+fn start_ssh_reader() -> io::Result<(std::sync::mpsc::Receiver<Event>, Arc<AtomicBool>, ConsoleModeGuard)> {
+    use std::ffi::c_void;
+    use std::sync::mpsc;
+
+    // ── Win32 constants ──────────────────────────────────────────────────
+    const STD_INPUT_HANDLE: u32 = (-10i32) as u32;
+    const ENABLE_VIRTUAL_TERMINAL_INPUT: u32 = 0x0200;
 
     const KEY_EVENT: u16                     = 0x0001;
     const MOUSE_EVENT: u16                   = 0x0002;
@@ -1254,12 +1383,7 @@ fn start_ssh_reader() -> io::Result<std::sync::mpsc::Receiver<Event>> {
     //
     // This must run AFTER crossterm's enable_raw_mode() and
     // EnableMouseCapture so our SetConsoleMode has the final word.
-    let new_mode = (orig_mode
-        & !(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT | ENABLE_QUICK_EDIT_MODE))
-        | ENABLE_VIRTUAL_TERMINAL_INPUT
-        | ENABLE_WINDOW_INPUT
-        | ENABLE_MOUSE_INPUT
-        | ENABLE_EXTENDED_FLAGS;
+    let new_mode = ssh_vt_input_mode(orig_mode);
 
     if unsafe { SetConsoleMode(handle, new_mode) } == 0 {
         return Err(io::Error::new(
@@ -1291,6 +1415,9 @@ fn start_ssh_reader() -> io::Result<std::sync::mpsc::Receiver<Event>> {
     // The console handle is process-global and remains
     // valid for the entire process lifetime.  We pass it as usize (which is
     // Send) and cast back inside the thread.
+    let console_mode = ConsoleModeGuard::new(handle, orig_mode);
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = Arc::clone(&stop);
     let handle_val = handle as usize;
     std::thread::Builder::new()
         .name("ssh-vt-input".into())
@@ -1314,12 +1441,18 @@ fn start_ssh_reader() -> io::Result<std::sync::mpsc::Receiver<Event>> {
             ssh_debug_log(&format!("Reader thread started (verbose={})", verbose));
 
             loop {
+                if thread_stop.load(Ordering::SeqCst) {
+                    break;
+                }
                 loop_count += 1;
                 // Dynamic timeout: short when the parser has a pending Esc.
                 let wait_ms = if parser.has_pending_escape() { ESC_TIMEOUT_MS } else { 500 };
                 let wait = unsafe { WaitForSingleObject(handle, wait_ms) };
 
                 if wait == WAIT_TIMEOUT {
+                    if thread_stop.load(Ordering::SeqCst) {
+                        break;
+                    }
                     // Heartbeat every ~60 loops (≈30 s at 500 ms timeout)
                     if loop_count % 60 == 0 {
                         ssh_debug_log(&format!(
@@ -1332,7 +1465,7 @@ fn start_ssh_reader() -> io::Result<std::sync::mpsc::Receiver<Event>> {
                         if unsafe { GetConsoleMode(handle, &mut cur_mode) } != 0 {
                             if cur_mode & ENABLE_VIRTUAL_TERMINAL_INPUT == 0 {
                                 ssh_debug_log("WARNING: VTI cleared! Re-enabling...");
-                                let fixed = cur_mode | ENABLE_VIRTUAL_TERMINAL_INPUT | ENABLE_MOUSE_INPUT;
+                                let fixed = ssh_vt_input_mode(cur_mode);
                                 unsafe { SetConsoleMode(handle, fixed) };
                             }
                         }
@@ -1455,5 +1588,60 @@ fn start_ssh_reader() -> io::Result<std::sync::mpsc::Receiver<Event>> {
             }
         })?;
 
-    Ok(rx)
+    Ok((rx, stop, console_mode))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_terminal_winsmux_profile_cleanup_disables_mouse_reporting() {
+        let seq = std::str::from_utf8(mouse_disable_sequence()).unwrap();
+        for mode in ["1000", "1002", "1003", "1006", "1015"] {
+            assert!(
+                seq.contains(&format!("\x1b[?{}l", mode)),
+                "missing mouse disable for DECSET {mode}",
+            );
+        }
+        assert!(seq.contains("\x1b[?25h"), "cursor must be shown on cleanup");
+    }
+
+    #[test]
+    fn windows_terminal_normal_powershell_is_not_managed_vt_input() {
+        let input = InputSource::Crossterm;
+        assert!(!input.uses_managed_vt_input());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn ssh_vt_mode_preserves_unrelated_flags_and_clears_line_input() {
+        const ENABLE_PROCESSED_INPUT: u32 = 0x0001;
+        const ENABLE_LINE_INPUT: u32 = 0x0002;
+        const ENABLE_ECHO_INPUT: u32 = 0x0004;
+        const ENABLE_WINDOW_INPUT: u32 = 0x0008;
+        const ENABLE_MOUSE_INPUT: u32 = 0x0010;
+        const ENABLE_QUICK_EDIT_MODE: u32 = 0x0040;
+        const ENABLE_EXTENDED_FLAGS: u32 = 0x0080;
+        const ENABLE_VIRTUAL_TERMINAL_INPUT: u32 = 0x0200;
+        const UNRELATED_FLAG: u32 = 0x4000;
+
+        let mode = ssh_vt_input_mode(
+            ENABLE_PROCESSED_INPUT
+                | ENABLE_LINE_INPUT
+                | ENABLE_ECHO_INPUT
+                | ENABLE_QUICK_EDIT_MODE
+                | UNRELATED_FLAG,
+        );
+
+        assert_eq!(mode & ENABLE_PROCESSED_INPUT, 0);
+        assert_eq!(mode & ENABLE_LINE_INPUT, 0);
+        assert_eq!(mode & ENABLE_ECHO_INPUT, 0);
+        assert_eq!(mode & ENABLE_QUICK_EDIT_MODE, 0);
+        assert_ne!(mode & ENABLE_WINDOW_INPUT, 0);
+        assert_ne!(mode & ENABLE_MOUSE_INPUT, 0);
+        assert_ne!(mode & ENABLE_EXTENDED_FLAGS, 0);
+        assert_ne!(mode & ENABLE_VIRTUAL_TERMINAL_INPUT, 0);
+        assert_ne!(mode & UNRELATED_FLAG, 0);
+    }
 }
