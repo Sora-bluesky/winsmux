@@ -25,6 +25,64 @@ function Get-TrackedOrStagedFiles {
     return @($output | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
 }
 
+function Invoke-GitGuardText {
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+
+    $output = & git @Arguments 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        return $null
+    }
+
+    return ($output | Out-String).Trim()
+}
+
+function Test-StaleMainDirtyState {
+    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+
+    $gitRoot = Invoke-GitGuardText -Arguments @('rev-parse', '--show-toplevel')
+    if ([string]::IsNullOrWhiteSpace($gitRoot)) {
+        return $null
+    }
+
+    $resolvedRepoRoot = (Resolve-Path -LiteralPath $RepoRoot).Path
+    $resolvedGitRoot = (Resolve-Path -LiteralPath $gitRoot).Path
+    if (-not [string]::Equals($resolvedRepoRoot, $resolvedGitRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $null
+    }
+
+    $branch = Invoke-GitGuardText -Arguments @('rev-parse', '--abbrev-ref', 'HEAD')
+    if ($branch -ne 'main') {
+        return $null
+    }
+
+    $upstream = Invoke-GitGuardText -Arguments @('rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}')
+    if ([string]::IsNullOrWhiteSpace($upstream)) {
+        return $null
+    }
+
+    $counts = Invoke-GitGuardText -Arguments @('rev-list', '--left-right', '--count', 'HEAD...@{upstream}')
+    if ([string]::IsNullOrWhiteSpace($counts)) {
+        return $null
+    }
+
+    $parts = @($counts -split '\s+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($parts.Count -lt 2) {
+        return $null
+    }
+
+    $behind = 0
+    if (-not [int]::TryParse($parts[1], [ref]$behind) -or $behind -le 0) {
+        return $null
+    }
+
+    $trackedStatus = Invoke-GitGuardText -Arguments @('status', '--porcelain', '--untracked-files=no')
+    if ([string]::IsNullOrWhiteSpace($trackedStatus)) {
+        return $null
+    }
+
+    return "local main is $behind commit(s) behind $upstream while tracked files are modified; fetch and fast-forward main before interpreting or committing local diffs"
+}
+
 function Test-PathLikeSecretPattern {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -190,6 +248,11 @@ function Test-ExcessTrailingBlankLines {
 $repoRoot = (Resolve-Path '.').Path
 $files = Get-TrackedOrStagedFiles -SelectedMode $Mode
 $failures = [System.Collections.Generic.List[string]]::new()
+
+$staleMainDirtyFailure = Test-StaleMainDirtyState -RepoRoot $repoRoot
+if ($staleMainDirtyFailure) {
+    $failures.Add($staleMainDirtyFailure) | Out-Null
+}
 
 $roadmapFreshnessFailure = Test-ExternalRoadmapFreshness -RepoRoot $repoRoot
 if ($roadmapFreshnessFailure) {
