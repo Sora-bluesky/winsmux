@@ -13,6 +13,8 @@ Set-Location -LiteralPath $repoRoot
 $whitelistPatterns = @(
     'README.md',
     'README.ja.md',
+    'CODE_OF_CONDUCT.md',
+    'CONTRIBUTING.md',
     'VERSION',
     'Cargo.toml',
     'Cargo.lock',
@@ -24,6 +26,8 @@ $whitelistPatterns = @(
     'core/tests-rs/*.rs',
     'git-graph/**',
     '.github/workflows/test.yml',
+    '.github/ISSUE_TEMPLATE/**',
+    '.github/PULL_REQUEST_TEMPLATE.md',
     '.gitignore',
     'GUARDRAILS.md',
     '.winsmux.conf',

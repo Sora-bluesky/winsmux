@@ -1,0 +1,53 @@
+name: Feature request
+description: Propose a scoped winsmux improvement.
+title: "[Feature]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for public product, documentation, workflow, or contributor-surface proposals. Do not include private planning notes or local-only paths.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or workflow
+      description: What user or maintainer workflow should improve?
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: What should change for the user, product, or repository workflow?
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Affected surface
+      options:
+        - Desktop app
+        - CLI or installer
+        - Worker orchestration
+        - Documentation
+        - GitHub Actions or release workflow
+        - Contributor/test surface
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed approach
+      description: Include constraints, alternatives, or compatibility concerns if known.
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence or examples
+      description: Link to public examples or paste sanitized evidence. Do not include private data.
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Public proposal safety check
+      options:
+        - label: I have not included secrets, credentials, private local paths, browser profile paths, customer data, or raw private logs.
+          required: true

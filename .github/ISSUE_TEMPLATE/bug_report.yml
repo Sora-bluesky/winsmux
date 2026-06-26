@@ -1,0 +1,80 @@
+name: Bug report
+description: Report reproducible winsmux behavior that looks broken.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Do not include secrets, credentials, customer data, private local paths, browser profile paths, or raw private logs.
+        Security vulnerabilities must be reported through SECURITY.md instead of a public issue.
+  - type: input
+    id: version
+    attributes:
+      label: winsmux version or commit
+      description: Use a release version, `winsmux version`, or a commit SHA.
+      placeholder: "v0.36.23 or commit SHA"
+    validations:
+      required: true
+  - type: dropdown
+    id: install_surface
+    attributes:
+      label: Install or run surface
+      options:
+        - Desktop installer
+        - npm package
+        - Source build
+        - GitHub Actions
+        - Documentation only
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include Windows version, PowerShell version, Windows Terminal version, and relevant agent CLI names.
+      placeholder: |
+        Windows:
+        PowerShell:
+        Windows Terminal:
+        Agent CLI:
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Provide the smallest workflow or command sequence that triggers the issue.
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Sanitized evidence
+      description: Paste short sanitized output, screenshots, or links to public artifacts. Redact private paths, tokens, IDs, and raw logs.
+      render: text
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Public report safety check
+      options:
+        - label: I have not included secrets, credentials, private local paths, browser profile paths, customer data, or raw private logs.
+          required: true
+        - label: This is not a security vulnerability report.
+          required: true

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability report
+    url: https://github.com/Sora-bluesky/winsmux/security/advisories/new
+    about: Report vulnerabilities privately. Do not open public issues for security reports.
+  - name: Documentation overview
+    url: https://github.com/Sora-bluesky/winsmux/blob/main/docs/README.md
+    about: Start here for setup, operation, and troubleshooting links.
