@@ -13,12 +13,16 @@ const RELEASE_POPOUT_ONLY = process.argv.includes("--release-popout-only")
   || process.env.WINSMUX_DESKTOP_E2E_RELEASE_POPOUT_ONLY === "1";
 const WORKER_START_ONLY = process.argv.includes("--worker-start-only")
   || process.env.WINSMUX_DESKTOP_E2E_WORKER_START_ONLY === "1";
+const COMPOSER_ONLY = process.argv.includes("--composer-only")
+  || process.env.WINSMUX_DESKTOP_E2E_COMPOSER_ONLY === "1";
 const OUTPUT_DIR = path.join(
   process.cwd(),
   "output",
   "playwright",
   WORKER_START_ONLY
     ? "desktop-worker-start-e2e"
+    : COMPOSER_ONLY
+    ? "desktop-composer-e2e"
     : RELEASE_POPOUT_ONLY
     ? "desktop-release-popout-e2e"
     : LAUNCH_PROJECT_ONLY
@@ -34,7 +38,9 @@ const WORKER_UI_MARKER = "WORKER_1_UI_E2E_READY";
 const WORKER_ARROW_MARKER = "RAW_ABC";
 const WORKER_PASTE_MARKER = "WORKER_PASTE_E2E_READY";
 const OPERATOR_MARKER = "OP_E2E_READY";
+const OPERATOR_SHELL_READY_MARKER = "OPERATOR_SHELL_E2E_READY";
 const COMPOSER_TO_OPERATOR_MARKER = "BTN_E2E_READY";
+const COMPOSER_MULTILINE_MARKER = "BTN_MULTI_E2E_READY";
 const COMPOSER_ENTER_MARKER = "ENT_E2E_READY";
 const COMPOSER_ATTACHMENT_MARKER = "ATT_E2E_READY";
 const OPERATOR_TO_WORKER_MARKER = "W2_E2E_READY";
@@ -288,6 +294,25 @@ async function setActiveProjectDirForUi(page, projectDir) {
 async function reloadAppPage(page) {
   await page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 }).catch(() => {});
   await waitForAppReady(page);
+}
+
+async function enableViewportHarness(page) {
+  const harnessUrl = new URL(page.url());
+  harnessUrl.search = "?viewport-harness=1";
+  if (page.url() !== harnessUrl.toString()) {
+    await page.goto(harnessUrl.toString(), { waitUntil: "domcontentloaded" });
+    await waitForAppReady(page);
+  }
+  await page.waitForFunction(() => Boolean(window.__winsmuxViewportHarness?.setOperatorStartupInputForTest), undefined, {
+    timeout: 30_000,
+  });
+}
+
+async function configureOperatorShellForTest(page) {
+  const startupInput = `pwsh -NoLogo -NoProfile -NoExit -Command "Write-Output '${OPERATOR_SHELL_READY_MARKER}'"\r`;
+  await page.evaluate((value) => {
+    window.__winsmuxViewportHarness?.setOperatorStartupInputForTest(value);
+  }, startupInput);
 }
 
 async function assertDrawerVisible(page, expected) {
@@ -698,24 +723,37 @@ async function waitForClaudeOperatorReady(page, timeoutMs = 90_000) {
   throw new Error(`Timed out waiting for Claude Code readiness in operator. Last visible text:\n${lastVisibleText}\nLast output:\n${lastOutput}`);
 }
 
+async function clickTerminalPanel(page, selector) {
+  const panel = page.locator(selector);
+  await panel.waitFor({ state: "visible", timeout: 10_000 });
+  await panel.scrollIntoViewIfNeeded();
+  await panel.click({ timeout: 10_000, force: true });
+}
+
 async function startOperatorFromUiAndWaitForClaude(page) {
-  await page.click("#operator-terminal-panel", { timeout: 10_000 });
+  await clickTerminalPanel(page, "#operator-terminal-panel");
   return await waitForClaudeOperatorReady(page);
 }
 
+async function startOperatorShellFromUiAndWaitForPrompt(page) {
+  await clickTerminalPanel(page, "#operator-terminal-panel");
+  await waitForPtyOutputLine(page, "operator", OPERATOR_SHELL_READY_MARKER, 30_000);
+  return await waitForPtyPrompt(page, "operator", 30_000);
+}
+
 async function typeIntoTerminal(page, selector, text) {
-  await page.click(selector, { timeout: 10_000 });
+  await clickTerminalPanel(page, selector);
   await page.keyboard.type(text, { delay: 8 });
   await page.keyboard.press("Enter");
 }
 
 async function typeTerminalDraft(page, selector, text) {
-  await page.click(selector, { timeout: 10_000 });
+  await clickTerminalPanel(page, selector);
   await page.keyboard.type(text, { delay: 2 });
 }
 
 async function pasteIntoTerminal(page, selector, text) {
-  await page.click(selector, { timeout: 10_000 });
+  await clickTerminalPanel(page, selector);
   let mode;
   if (process.platform === "win32") {
     try {
@@ -820,14 +858,14 @@ async function pasteViaTerminalClipboardEvent(page, selector, text) {
 }
 
 async function clearOperatorInputFromUi(page) {
-  await page.click("#operator-terminal-panel", { timeout: 10_000 });
+  await clickTerminalPanel(page, "#operator-terminal-panel");
   await page.keyboard.press("Control+C");
   await page.waitForTimeout(750);
   await waitForClaudeOperatorReady(page);
 }
 
 async function startPaneFromUiAndWaitForPrompt(page, paneId, selector) {
-  await page.click(selector, { timeout: 10_000 });
+  await clickTerminalPanel(page, selector);
   await page.keyboard.press("Enter");
   await waitForPtyPrompt(page, paneId);
 }
@@ -904,6 +942,23 @@ async function submitComposerWithButton(page, command, expectedMarker) {
     throw new Error("submitted composer message was not rendered in the conversation panel");
   }
   return await waitForPtyOutput(page, "operator", expectedMarker);
+}
+
+async function submitComposerShellWithButton(page, command, expectedMarker) {
+  await startOperatorShellFromUiAndWaitForPrompt(page);
+  await page.fill("#composer-input", command);
+  await page.click("#send-btn");
+  await page.waitForFunction(() => {
+    const input = document.querySelector("#composer-input");
+    return input instanceof HTMLTextAreaElement && input.value === "";
+  });
+  const conversationContainsMessage = await page.locator("#conversation-panel", { hasText: command }).count();
+  if (conversationContainsMessage < 1) {
+    throw new Error("submitted composer message was not rendered in the conversation panel");
+  }
+  const output = await waitForPtyOutputLine(page, "operator", expectedMarker, 30_000);
+  await waitForPtyPrompt(page, "operator", 30_000);
+  return output;
 }
 
 async function submitComposerWithEnter(page, command, expectedMarker) {
@@ -1545,11 +1600,21 @@ async function main() {
       return { url: page.url() };
     });
 
-    await runStep("desktop main window starts at a visible size", async () => {
-      const metrics = await readStartupWindowMetrics(page);
-      assertVisibleStartupGeometry(metrics);
-      return metrics;
-    });
+    if (COMPOSER_ONLY) {
+      await runStep("composer-only surface is visible", async () => {
+        await page.locator("#operator-terminal-panel").waitFor({ state: "visible" });
+        await page.locator("#composer").waitFor({ state: "visible" });
+        await page.locator("#composer-input").waitFor({ state: "visible" });
+        await page.locator("#send-btn").waitFor({ state: "visible" });
+        return await readViewportFillMetrics(page);
+      });
+    } else {
+      await runStep("desktop main window starts at a visible size", async () => {
+        const metrics = await readStartupWindowMetrics(page);
+        assertVisibleStartupGeometry(metrics);
+        return metrics;
+      });
+    }
 
     if (WORKER_START_ONLY) {
       await resetAppState(page);
@@ -1623,6 +1688,48 @@ async function main() {
     }
 
     await resetAppState(page);
+
+    if (COMPOSER_ONLY) {
+      await runStep("configure deterministic operator shell", async () => {
+        await enableViewportHarness(page);
+        await configureOperatorShellForTest(page);
+        return await page.evaluate(() => window.__winsmuxViewportHarness?.getOperatorStartupInput());
+      });
+
+      await runStep("operator pane starts local shell and accepts input", async () => {
+        const readyOutput = await startOperatorShellFromUiAndWaitForPrompt(page);
+        const visibleText = await waitForVisibleTerminalText(page, "#operator-terminal", OPERATOR_SHELL_READY_MARKER);
+        const output = await capturePty(page, "operator");
+        return { readyTail: readyOutput.slice(-800), visibleTextTail: visibleText.slice(-400), outputTail: output.slice(-800) };
+      });
+
+      await runStep("composer send button writes user message to operator pane", async () => {
+        const command = `Write-Output '${COMPOSER_TO_OPERATOR_MARKER}'`;
+        const output = await submitComposerShellWithButton(page, command, COMPOSER_TO_OPERATOR_MARKER);
+        return { outputTail: output.slice(-800) };
+      });
+
+      await runStep("composer send button writes multi-line run-control message to operator pane", async () => {
+        const command = [
+          "Write-Output 'TASK-575 operator-managed benchmark start'",
+          `Write-Output '${COMPOSER_MULTILINE_MARKER}'`,
+          "Write-Output 'Dispatch the same task packet to every worker pane.'",
+          "Write-Output 'Stop and report a blocker if operator-to-worker dispatch is unavailable.'",
+        ].join("\n");
+        const output = await submitComposerShellWithButton(page, command, COMPOSER_MULTILINE_MARKER);
+        return { outputTail: output.slice(-1_000) };
+      });
+
+      await runStep("close spawned PTYs", async () => {
+        await closePtyIfExists(page, "operator");
+      });
+
+      await ensureOutputDir();
+      await page.screenshot({ path: path.join(OUTPUT_DIR, "desktop-composer-e2e-success.png"), fullPage: true });
+      await writeEvidence(true, { debugPort, mode: "composer-only" });
+      process.stdout.write(`[desktop-pane-e2e] PASS composer-only evidence=${path.join(OUTPUT_DIR, "desktop-pane-e2e.json")}\n`);
+      return;
+    }
 
     await runStep("desktop app fills the native WebView without fixed viewport emulation", async () => {
       const metrics = await readViewportFillMetrics(page);
@@ -1978,6 +2085,18 @@ async function main() {
       const output = await submitComposerWithButton(page, command, COMPOSER_TO_OPERATOR_MARKER);
       await clearOperatorInputFromUi(page);
       return { outputTail: output.slice(-800) };
+    });
+
+    await runStep("composer send button writes multi-line run-control message to operator pane", async () => {
+      const command = [
+        "TASK-575 operator-managed benchmark start",
+        COMPOSER_MULTILINE_MARKER,
+        "Dispatch the same task packet to every worker pane.",
+        "Stop and report a blocker if operator-to-worker dispatch is unavailable.",
+      ].join("\n");
+      const output = await submitComposerWithButton(page, command, COMPOSER_MULTILINE_MARKER);
+      await clearOperatorInputFromUi(page);
+      return { outputTail: output.slice(-1_000) };
     });
 
     await runStep("composer keyboard behavior preserves newline and Enter sends", async () => {

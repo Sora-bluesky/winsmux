@@ -236,6 +236,7 @@ declare global {
       setContextPanel: (open: boolean) => void;
       setTerminalDrawer: (open: boolean) => void;
       getOperatorStartupInput: () => string;
+      setOperatorStartupInputForTest: (value: string | null) => void;
       setVoiceNow: (timestamp: number | null) => void;
     };
   }
@@ -660,6 +661,8 @@ let operatorOutputBuffer = "";
 let operatorOutputFlushTimer: number | null = null;
 let operatorAttentionFingerprint = "";
 let operatorClaudeSessionId = createOperatorSessionId();
+let composerSubmitInFlight = false;
+let viewportHarnessOperatorStartupInputOverride: string | null = null;
 let voiceRecognition: SpeechRecognitionLike | null = null;
 let voiceListening = false;
 let voiceTranscriptBase = "";
@@ -1894,6 +1897,10 @@ function createOperatorSessionId() {
 }
 
 function getOperatorStartupInput() {
+  if (viewportHarnessOperatorStartupInputOverride !== null) {
+    return viewportHarnessOperatorStartupInputOverride;
+  }
+
   const args = ["claude", "--permission-mode", activeComposerPermissionMode, "--session-id", operatorClaudeSessionId];
   const modelOption = getComposerModelOption();
   if (modelOption.cliModel) {
@@ -14246,6 +14253,11 @@ function appendRuntimeConversation(item: ConversationItem) {
   }
 }
 
+function getConversationTimestamp() {
+  const now = new Date();
+  return `${`${now.getHours()}`.padStart(2, "0")}:${`${now.getMinutes()}`.padStart(2, "0")}`;
+}
+
 function stripTerminalControlSequences(value: string) {
   return value
     .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
@@ -15413,6 +15425,9 @@ function installViewportHarnessHooks() {
       setTerminalDrawer(open);
     },
     getOperatorStartupInput: () => getOperatorStartupInput(),
+    setOperatorStartupInputForTest: (value: string | null) => {
+      viewportHarnessOperatorStartupInputOverride = value;
+    },
     setVoiceNow: (timestamp: number | null) => {
       viewportHarnessVoiceNow = typeof timestamp === "number" && Number.isFinite(timestamp) ? timestamp : null;
       updateVoiceInputButton();
@@ -15420,7 +15435,11 @@ function installViewportHarnessHooks() {
   };
 }
 
-function appendUserMessage(message: string, attachments: ComposerAttachment[]) {
+function appendUserMessage(
+  message: string,
+  attachments: ComposerAttachment[],
+  timestamp?: string,
+) {
   const dogfoodInputSource = composerInputSource;
   const dogfoodStartedAt = composerDraftStartedAt || Date.now();
   const dogfoodDraft = {
@@ -15428,12 +15447,11 @@ function appendUserMessage(message: string, attachments: ComposerAttachment[]) {
     voiceStartedAt: composerVoiceStartedAt,
     keyboardAfterVoiceAt: composerKeyboardAfterVoiceAt,
   };
-  const now = new Date();
-  const timestamp = `${`${now.getHours()}`.padStart(2, "0")}:${`${now.getMinutes()}`.padStart(2, "0")}`;
+  const messageTimestamp = timestamp ?? getConversationTimestamp();
   appendRuntimeConversation({
     type: "user",
     category: "user",
-    timestamp,
+    timestamp: messageTimestamp,
     actor: "User",
     body: message || "Attached files for dispatch.",
     attachments: attachments.map((attachment) => ({
@@ -15442,7 +15460,6 @@ function appendUserMessage(message: string, attachments: ComposerAttachment[]) {
       sizeLabel: attachment.sizeLabel,
     })),
   });
-  void forwardComposerMessageToOperatorPane(message, attachments, timestamp);
   void recordComposerDogfoodEvent(message, attachments, dogfoodInputSource, dogfoodStartedAt, dogfoodDraft);
   resetComposerDogfoodDraft();
   renderRunSummary();
@@ -15495,6 +15512,18 @@ function updateOperatorStatusIndicator() {
   if (hint) {
     hint.textContent = getLanguageText("Esc to interrupt", "Esc で中断");
   }
+}
+
+function setComposerSubmitInFlight(active: boolean) {
+  composerSubmitInFlight = active;
+  const button = document.getElementById("send-btn") as HTMLButtonElement | null;
+  if (!button) {
+    return;
+  }
+
+  button.disabled = active;
+  button.classList.toggle("is-busy", active);
+  button.setAttribute("aria-busy", active ? "true" : "false");
 }
 
 function startOperatorStatusTimer() {
@@ -15651,26 +15680,27 @@ async function forwardComposerMessageToOperatorPane(
   message: string,
   attachments: ComposerAttachment[],
   timestamp: string,
-) {
+): Promise<boolean> {
   const payload = formatComposerMessageForPty(message, attachments);
   if (!payload.trim()) {
     setOperatorRequestActive(false);
-    return;
+    return false;
   }
 
   const requestGeneration = beginOperatorRequest();
   try {
     await withOperatorTimeout(ensureOperatorPtyStarted(), "operator PTY startup");
     if (!isCurrentOperatorRequest(requestGeneration)) {
-      return;
+      return false;
     }
     await writeOperatorSubmission(payload, requestGeneration);
     if (!isCurrentOperatorRequest(requestGeneration)) {
-      return;
+      return false;
     }
+    return true;
   } catch (error) {
     if (!isCurrentOperatorRequest(requestGeneration)) {
-      return;
+      return false;
     }
     setOperatorRequestActive(false);
     const errorMessage = error instanceof Error ? error.message : String(error);
@@ -15690,6 +15720,7 @@ async function forwardComposerMessageToOperatorPane(
       tone: "warning",
     });
     renderConversation(getConversationItems());
+    return false;
   }
 }
 
@@ -16894,6 +16925,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   const composerInput = document.getElementById("composer-input") as HTMLTextAreaElement | null;
   const composerFileInput = document.getElementById("composer-file-input") as HTMLInputElement | null;
   const attachButton = document.getElementById("attach-btn") as HTMLButtonElement | null;
+  const sendButton = document.getElementById("send-btn") as HTMLButtonElement | null;
   const voiceInputButton = document.getElementById("voice-input-btn") as HTMLButtonElement | null;
   const interruptOperatorButton = document.getElementById("interrupt-operator-btn") as HTMLButtonElement | null;
   if (composer && composerInput) {
@@ -16976,6 +17008,11 @@ window.addEventListener("DOMContentLoaded", async () => {
       composer.requestSubmit();
     });
 
+    sendButton?.addEventListener("click", (event) => {
+      event.preventDefault();
+      composer.requestSubmit();
+    });
+
     composerInput.addEventListener("input", () => {
       if (composerHistoryIndex !== -1) {
         composerHistoryIndex = -1;
@@ -17035,8 +17072,11 @@ window.addEventListener("DOMContentLoaded", async () => {
       appendAttachments(files);
     });
 
-    composer.addEventListener("submit", (event) => {
+    composer.addEventListener("submit", async (event) => {
       event.preventDefault();
+      if (composerSubmitInFlight) {
+        return;
+      }
       const slashModeCommand = getComposerModeSlashCommand(composerInput.value);
       if (slashModeCommand) {
         applyComposerSlashCommand(slashModeCommand);
@@ -17062,17 +17102,29 @@ window.addEventListener("DOMContentLoaded", async () => {
           file: new File([], item.label),
         })),
       ];
-      appendUserMessage(rawValue, submittedAttachments);
-      pushComposerHistoryEntry(historyEntry);
-      composerInput.value = "";
-      clearVoiceDraftRecoveryStorage();
-      syncComposerInputHeight(composerInput);
-      syncComposerSlashState(composerInput.value);
-      clearPendingAttachments();
-      selectedComposerRemoteReferenceIds.clear();
-      renderComposerRemoteReferences();
-      renderAttachmentTray();
-      requestDesktopSummaryRefresh(undefined, 750);
+      const timestamp = getConversationTimestamp();
+      setComposerSubmitInFlight(true);
+      try {
+        const sent = await forwardComposerMessageToOperatorPane(rawValue, submittedAttachments, timestamp);
+        if (!sent) {
+          syncComposerInputHeight(composerInput);
+          syncComposerSlashState(composerInput.value);
+          return;
+        }
+        appendUserMessage(rawValue, submittedAttachments, timestamp);
+        pushComposerHistoryEntry(historyEntry);
+        composerInput.value = "";
+        clearVoiceDraftRecoveryStorage();
+        syncComposerInputHeight(composerInput);
+        syncComposerSlashState(composerInput.value);
+        clearPendingAttachments();
+        selectedComposerRemoteReferenceIds.clear();
+        renderComposerRemoteReferences();
+        renderAttachmentTray();
+        requestDesktopSummaryRefresh(undefined, 750);
+      } finally {
+        setComposerSubmitInFlight(false);
+      }
     });
 
     syncComposerInputHeight(composerInput);

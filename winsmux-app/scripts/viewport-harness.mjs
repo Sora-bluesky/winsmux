@@ -834,7 +834,20 @@ async function assertDesktopVoiceLongSessionPrivacy(page) {
     return input instanceof HTMLTextAreaElement && input.value === "recover this long voice draft";
   });
   await page.click("#send-btn");
-  await page.waitForFunction((key) => window.localStorage.getItem(key) === null, recoveryKey);
+  await page.waitForFunction((expectedValue) => {
+    const input = document.querySelector("#composer-input");
+    const panel = document.querySelector("#conversation-panel");
+    return input instanceof HTMLTextAreaElement &&
+      input.value === expectedValue &&
+      panel instanceof HTMLElement &&
+      panel.textContent?.includes("desktop runtime");
+  }, "recover this long voice draft");
+  await page.waitForFunction((key) => {
+    const rawValue = window.localStorage.getItem(key);
+    return rawValue !== null && JSON.parse(rawValue).value === "recover this long voice draft";
+  }, recoveryKey);
+  await composer.fill("");
+  await page.evaluate((key) => window.localStorage.removeItem(key), recoveryKey);
 
   await page.evaluate((key) => {
     window.localStorage.setItem(key, JSON.stringify({
