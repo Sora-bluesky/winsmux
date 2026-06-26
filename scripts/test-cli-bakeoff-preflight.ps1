@@ -30,6 +30,76 @@ function Resolve-LocalPath {
     return [System.IO.Path]::GetFullPath((Join-Path $RepoRoot $Path))
 }
 
+function Resolve-BenchmarkPackInput {
+    param(
+        [Parameter(Mandatory = $true)][string]$InputPath,
+        [AllowNull()][string]$ExplicitTaskRoot
+    )
+
+    $resolvedInput = Resolve-LocalPath $InputPath
+    $resolvedTaskRoot = ''
+
+    if (Test-Path -LiteralPath $resolvedInput -PathType Leaf) {
+        $resolvedTaskRoot = if ([string]::IsNullOrWhiteSpace($ExplicitTaskRoot)) {
+            Split-Path $resolvedInput -Parent
+        } else {
+            Resolve-LocalPath $ExplicitTaskRoot
+        }
+
+        return [pscustomobject]@{
+            PackPath = $resolvedInput
+            TaskRoot = $resolvedTaskRoot
+            Source = 'file'
+            Candidates = @($resolvedInput)
+        }
+    }
+
+    if (Test-Path -LiteralPath $resolvedInput -PathType Container) {
+        $candidateRelativePaths = @(
+            'benchmark-pack.json',
+            'tasks\cli-bakeoff\v1\benchmark-pack.json',
+            'cli-bakeoff\v1\benchmark-pack.json',
+            'v1\benchmark-pack.json'
+        )
+        $candidates = @(
+            $candidateRelativePaths |
+                ForEach-Object { Join-Path $resolvedInput $_ } |
+                Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+                ForEach-Object { [System.IO.Path]::GetFullPath($_) } |
+                Sort-Object -Unique
+        )
+
+        if ($candidates.Count -eq 1) {
+            $resolvedTaskRoot = if ([string]::IsNullOrWhiteSpace($ExplicitTaskRoot)) {
+                Split-Path $candidates[0] -Parent
+            } else {
+                Resolve-LocalPath $ExplicitTaskRoot
+            }
+
+            return [pscustomobject]@{
+                PackPath = $candidates[0]
+                TaskRoot = $resolvedTaskRoot
+                Source = 'directory'
+                Candidates = @($candidates)
+            }
+        }
+
+        return [pscustomobject]@{
+            PackPath = $resolvedInput
+            TaskRoot = if ([string]::IsNullOrWhiteSpace($ExplicitTaskRoot)) { $resolvedInput } else { Resolve-LocalPath $ExplicitTaskRoot }
+            Source = 'directory-unresolved'
+            Candidates = @($candidates)
+        }
+    }
+
+    return [pscustomobject]@{
+        PackPath = $resolvedInput
+        TaskRoot = if ([string]::IsNullOrWhiteSpace($ExplicitTaskRoot)) { Split-Path $resolvedInput -Parent } else { Resolve-LocalPath $ExplicitTaskRoot }
+        Source = 'missing'
+        Candidates = @()
+    }
+}
+
 function ConvertTo-SafeDetail {
     param([AllowNull()][object]$Value)
     if ($null -eq $Value) { return '' }
@@ -93,6 +163,23 @@ function Get-FileSha256 {
     }
 }
 
+function Get-CliReportedVersion {
+    param([AllowNull()][string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return ''
+    }
+    try {
+        $output = (& $Path --version 2>&1 | Out-String).Trim()
+        $match = [regex]::Match($output, '(\d+\.\d+\.\d+)')
+        if ($match.Success) {
+            return $match.Groups[1].Value
+        }
+        return $output
+    } catch {
+        return ''
+    }
+}
+
 function Get-ProjectVersionMetadata {
     $versionPath = Join-Path $RepoRoot 'VERSION'
     $cargoPath = Join-Path $RepoRoot 'core\Cargo.toml'
@@ -144,14 +231,14 @@ function Test-VersionSetMatches {
 }
 
 $checks = [System.Collections.Generic.List[object]]::new()
-$resolvedPackPath = Resolve-LocalPath $PackPath
-$resolvedTaskRoot = if ([string]::IsNullOrWhiteSpace($TaskRoot)) {
-    Split-Path $resolvedPackPath -Parent
-} else {
-    Resolve-LocalPath $TaskRoot
-}
+$resolvedPackInput = Resolve-BenchmarkPackInput -InputPath $PackPath -ExplicitTaskRoot $TaskRoot
+$resolvedPackPath = [string]$resolvedPackInput.PackPath
+$resolvedTaskRoot = [string]$resolvedPackInput.TaskRoot
 
 Add-Check 'benchmark pack exists' (Test-Path -LiteralPath $resolvedPackPath -PathType Leaf) $resolvedPackPath
+Add-Check 'benchmark pack input resolves unambiguously' (
+    [string]$resolvedPackInput.Source -ne 'directory-unresolved'
+) "source=$($resolvedPackInput.Source); candidates=$(@($resolvedPackInput.Candidates).Count)"
 
 if ($RequireCandidateIdentity) {
     $actualHead = Get-GitOutput -Arguments @('rev-parse', 'HEAD')
@@ -163,6 +250,7 @@ if ($RequireCandidateIdentity) {
     $cliBinaryExists = -not [string]::IsNullOrWhiteSpace($resolvedCliBinary) -and (Test-Path -LiteralPath $resolvedCliBinary -PathType Leaf)
     $desktopProductVersion = Get-FileProductVersion -Path $resolvedDesktopBinary
     $desktopSha256 = Get-FileSha256 -Path $resolvedDesktopBinary
+    $cliReportedVersion = Get-CliReportedVersion -Path $resolvedCliBinary
     $cliSha256 = Get-FileSha256 -Path $resolvedCliBinary
     $expectedHeadMatches = -not [string]::IsNullOrWhiteSpace($ExpectedGitHead) -and
         -not [string]::IsNullOrWhiteSpace($actualHead) -and
@@ -193,6 +281,11 @@ if ($RequireCandidateIdentity) {
     }
     Add-Check 'candidate CLI binary path is provided' (-not [string]::IsNullOrWhiteSpace($resolvedCliBinary))
     Add-Check 'candidate CLI binary exists' $cliBinaryExists $resolvedCliBinary
+    Add-Check 'candidate CLI reported version matches expected' (
+        $cliBinaryExists -and
+        -not [string]::IsNullOrWhiteSpace($ExpectedVersion) -and
+        [string]$cliReportedVersion -eq $ExpectedVersion
+    ) "reported=$cliReportedVersion expected=$ExpectedVersion"
     Add-Check 'candidate CLI binary sha256 is readable' (
         $cliBinaryExists -and -not [string]::IsNullOrWhiteSpace($cliSha256)
     ) "sha256=$cliSha256"
@@ -351,6 +444,9 @@ $failed = @($checks | Where-Object { -not $_.pass })
 $result = [pscustomobject]@{
     version      = 1
     pack_id      = if ($null -ne $pack) { [string]$pack.pack_id } else { '' }
+    pack_path    = ConvertTo-SafeDetail $resolvedPackPath
+    task_root    = ConvertTo-SafeDetail $resolvedTaskRoot
+    pack_source  = [string]$resolvedPackInput.Source
     all_pass     = ($failed.Count -eq 0)
     check_count  = $checks.Count
     failed_count = $failed.Count

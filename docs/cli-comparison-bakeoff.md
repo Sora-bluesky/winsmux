@@ -31,6 +31,28 @@ The tracked task pack lives in `tasks/cli-bakeoff/v1/`.
 The required local evidence directory is `.winsmux/evidence/cli-bakeoff/<run-id>/`.
 That directory is intentionally not committed.
 
+## One-command desktop preparation
+
+Use the desktop preparation entrypoint before any official six-pane run:
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/start-cli-bakeoff-desktop.ps1
+```
+
+The script builds the current release CLI and desktop app, copies the tracked
+task pack into the local benchmark project, verifies that the release binaries
+match the repository version and Git head, launches the production desktop app,
+and moves the visible window to the test display. It does not use the Start menu,
+installed shortcuts, stale installed binaries, or the Tauri dev server unless the
+caller explicitly edits the command.
+
+For a dry run that proves the pack and binary identity without launching the
+desktop app:
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/start-cli-bakeoff-desktop.ps1 -SkipBuild -NoLaunch
+```
+
 ## Gates
 
 Before recording or scoring a run:
