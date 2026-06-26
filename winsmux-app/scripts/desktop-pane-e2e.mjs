@@ -337,6 +337,46 @@ function assertNoFixedViewportBlank(metrics) {
   }
 }
 
+async function readStartupWindowMetrics(page) {
+  return await page.evaluate(async () => {
+    const tauri = window.__TAURI__;
+    const currentWindow = tauri?.window?.getCurrentWindow?.()
+      ?? tauri?.webviewWindow?.getCurrentWebviewWindow?.();
+    const outerSize = currentWindow && typeof currentWindow.outerSize === "function"
+      ? await currentWindow.outerSize().catch((error) => ({ error: error instanceof Error ? error.message : String(error) }))
+      : null;
+    return {
+      title: document.title,
+      innerWidth: window.innerWidth,
+      innerHeight: window.innerHeight,
+      outerWidth: typeof outerSize?.width === "number" ? outerSize.width : null,
+      outerHeight: typeof outerSize?.height === "number" ? outerSize.height : null,
+      outerSizeError: typeof outerSize?.error === "string" ? outerSize.error : null,
+      bodyWidth: Math.round(document.body.getBoundingClientRect().width),
+      bodyHeight: Math.round(document.body.getBoundingClientRect().height),
+    };
+  });
+}
+
+function assertVisibleStartupGeometry(metrics) {
+  if (metrics.title !== "winsmux") {
+    throw new Error(`desktop window title should be stable for UI automation: ${JSON.stringify(metrics)}`);
+  }
+  if (metrics.innerWidth < 640 || metrics.innerHeight < 480) {
+    throw new Error(`desktop window should start at a visible size: ${JSON.stringify(metrics)}`);
+  }
+  if (
+    metrics.outerWidth !== null
+    && metrics.outerHeight !== null
+    && (metrics.outerWidth < 640 || metrics.outerHeight < 480)
+  ) {
+    throw new Error(`native desktop window should not restore as a tiny window: ${JSON.stringify(metrics)}`);
+  }
+  if (Math.abs(metrics.bodyWidth - metrics.innerWidth) > 2 || Math.abs(metrics.bodyHeight - metrics.innerHeight) > 2) {
+    throw new Error(`document body should fill the startup viewport: ${JSON.stringify(metrics)}`);
+  }
+}
+
 async function waitForNativeWindowResize(page, beforeMetrics, timeoutMs = 12_000) {
   await page.waitForFunction((before) => {
     const body = document.body;
@@ -1503,6 +1543,12 @@ async function main() {
     await runStep("wait for desktop app chrome", async () => {
       await waitForAppReady(page);
       return { url: page.url() };
+    });
+
+    await runStep("desktop main window starts at a visible size", async () => {
+      const metrics = await readStartupWindowMetrics(page);
+      assertVisibleStartupGeometry(metrics);
+      return metrics;
     });
 
     if (WORKER_START_ONLY) {

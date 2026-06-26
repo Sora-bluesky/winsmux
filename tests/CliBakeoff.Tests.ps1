@@ -27,6 +27,31 @@ Describe 'CLI bakeoff evidence harness' {
         ($output -join "`n") | Should -Not -Match 'C:\\Users\\'
     }
 
+    It 'resolves the benchmark pack when given the repository root' {
+        $output = & pwsh -NoProfile -File $script:PreflightScript -PackPath $script:RepoRoot -Json
+        $LASTEXITCODE | Should -Be 0
+        $result = $output | ConvertFrom-Json -Depth 20
+        $result.all_pass | Should -BeTrue
+        $result.pack_id | Should -Be 'winsmux-cli-bakeoff-v1'
+        $result.pack_source | Should -Be 'directory'
+        $result.pack_path | Should -Be '<local-path>'
+        ($result.checks | Where-Object { $_.name -eq 'benchmark pack input resolves unambiguously' }).pass | Should -BeTrue
+        ($output -join "`n") | Should -Not -Match 'C:\\Users\\'
+    }
+
+    It 'resolves the benchmark pack when given the task packet directory' {
+        $taskRoot = Split-Path $script:PackPath -Parent
+        $output = & pwsh -NoProfile -File $script:PreflightScript -PackPath $taskRoot -Json
+        $LASTEXITCODE | Should -Be 0
+        $result = $output | ConvertFrom-Json -Depth 20
+        $result.all_pass | Should -BeTrue
+        $result.pack_id | Should -Be 'winsmux-cli-bakeoff-v1'
+        $result.pack_source | Should -Be 'directory'
+        $result.task_root | Should -Be '<local-path>'
+        ($result.checks | Where-Object { $_.name -eq 'benchmark pack input resolves unambiguously' }).pass | Should -BeTrue
+        ($output -join "`n") | Should -Not -Match 'C:\\Users\\'
+    }
+
     It 'routes the formal six-pane benchmark evidence to v0.36.23' {
         $contractDoc = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'docs\cli-comparison-bakeoff.md') -Raw -Encoding UTF8
         $contractDoc | Should -Match 'v0\.36\.23'
@@ -61,13 +86,39 @@ Describe 'CLI bakeoff evidence harness' {
         $checkNames | Should -Contain 'candidate desktop binary exists'
         $checkNames | Should -Contain 'candidate desktop binary sha256 is readable'
         $checkNames | Should -Contain 'candidate CLI binary exists'
+        $checkNames | Should -Contain 'candidate CLI reported version matches expected'
         $checkNames | Should -Contain 'candidate CLI binary sha256 is readable'
         ($result.checks | Where-Object { $_.name -eq 'candidate git head matches expected' }).pass | Should -BeFalse
         ($result.checks | Where-Object { $_.name -eq 'candidate version metadata matches expected' }).pass | Should -BeFalse
         ($result.checks | Where-Object { $_.name -eq 'candidate desktop binary exists' }).pass | Should -BeFalse
         ($result.checks | Where-Object { $_.name -eq 'candidate desktop binary sha256 is readable' }).pass | Should -BeFalse
         ($result.checks | Where-Object { $_.name -eq 'candidate CLI binary exists' }).pass | Should -BeFalse
+        ($result.checks | Where-Object { $_.name -eq 'candidate CLI reported version matches expected' }).pass | Should -BeFalse
         ($result.checks | Where-Object { $_.name -eq 'candidate CLI binary sha256 is readable' }).pass | Should -BeFalse
+    }
+
+    It 'rejects a stale CLI candidate even when the file exists' {
+        $fakeCliBinary = Join-Path $TestDrive 'winsmux-stale.cmd'
+        Set-Content -LiteralPath $fakeCliBinary -Value '@echo winsmux 0.36.16' -Encoding Ascii
+        $missingDesktopBinary = Join-Path $TestDrive 'missing-winsmux-app.exe'
+        $head = (& git -C $script:RepoRoot rev-parse HEAD | Out-String).Trim()
+
+        $output = & pwsh -NoProfile -File $script:PreflightScript `
+            -PackPath $script:PackPath `
+            -Json `
+            -RequireCandidateIdentity `
+            -AllowDirty `
+            -ExpectedVersion '0.36.23' `
+            -ExpectedGitHead $head `
+            -CandidateDesktopBinary $missingDesktopBinary `
+            -CandidateCliBinary $fakeCliBinary 2>$null
+
+        $LASTEXITCODE | Should -Be 1
+        $result = $output | ConvertFrom-Json -Depth 20
+        $result.all_pass | Should -BeFalse
+        $cliVersionCheck = $result.checks | Where-Object { $_.name -eq 'candidate CLI reported version matches expected' }
+        $cliVersionCheck.pass | Should -BeFalse
+        $cliVersionCheck.detail | Should -Match 'reported=0\.36\.16 expected=0\.36\.23'
     }
 
     It 'fails when a task packet is missing' {

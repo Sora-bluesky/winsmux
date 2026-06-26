@@ -2,6 +2,7 @@ import { Terminal } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "xterm/css/xterm.css";
 import { isTauri } from "@tauri-apps/api/core";
+import { LogicalSize } from "@tauri-apps/api/dpi";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { WebviewWindow, getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
@@ -582,6 +583,12 @@ let sidebarOpen = true;
 let sidebarMode: SidebarMode = "explorer";
 let agentVaultOpen = false;
 let mainWindowRevealStarted = false;
+const MAIN_WINDOW_MIN_LOGICAL_WIDTH = 1024;
+const MAIN_WINDOW_MIN_LOGICAL_HEIGHT = 720;
+const MAIN_WINDOW_RESTORE_LOGICAL_WIDTH = 1440;
+const MAIN_WINDOW_RESTORE_LOGICAL_HEIGHT = 900;
+const MAIN_WINDOW_TOO_SMALL_WIDTH = 640;
+const MAIN_WINDOW_TOO_SMALL_HEIGHT = 480;
 let agentVaultQuery = "";
 let agentVaultProjectOnly = true;
 let agentVaultProviderFilter: AgentVaultProviderFilter = "all";
@@ -3955,6 +3962,34 @@ function nextStartupTick() {
   });
 }
 
+async function ensureMainWindowVisibleGeometry(currentWindow: WebviewWindow) {
+  await currentWindow.setTitle("winsmux").catch((error) => {
+    console.warn("Failed to set main window title", error);
+  });
+  await currentWindow
+    .setMinSize(new LogicalSize(MAIN_WINDOW_MIN_LOGICAL_WIDTH, MAIN_WINDOW_MIN_LOGICAL_HEIGHT))
+    .catch((error) => {
+      console.warn("Failed to set main window minimum size", error);
+    });
+
+  const outerSize = await currentWindow.outerSize().catch(() => null);
+  if (
+    outerSize
+    && outerSize.width >= MAIN_WINDOW_TOO_SMALL_WIDTH
+    && outerSize.height >= MAIN_WINDOW_TOO_SMALL_HEIGHT
+  ) {
+    return;
+  }
+
+  await currentWindow.unminimize().catch(() => {});
+  await currentWindow.unmaximize().catch(() => {});
+  await currentWindow
+    .setSize(new LogicalSize(MAIN_WINDOW_RESTORE_LOGICAL_WIDTH, MAIN_WINDOW_RESTORE_LOGICAL_HEIGHT))
+    .catch((error) => {
+      console.warn("Failed to restore visible main window size", error);
+    });
+}
+
 async function revealMainWindowAfterInitialPaint() {
   if (!isTauri() || mainWindowRevealStarted) {
     return;
@@ -3963,7 +3998,10 @@ async function revealMainWindowAfterInitialPaint() {
   mainWindowRevealStarted = true;
   await nextStartupTick();
   try {
-    await getCurrentWebviewWindow().show();
+    const currentWindow = getCurrentWebviewWindow();
+    await ensureMainWindowVisibleGeometry(currentWindow);
+    await currentWindow.show();
+    await currentWindow.setFocus();
   } catch (error) {
     console.warn("Failed to reveal main window", error);
   }
