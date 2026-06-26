@@ -145,6 +145,15 @@ Describe 'CLI bakeoff evidence harness' {
         ($buildStopIndex -lt $tauriBuildIndex) | Should -BeTrue
     }
 
+    It 'filters content-clean status noise before enforcing the candidate clean gate' {
+        $scriptText = Get-Content -LiteralPath $script:PreflightScript -Raw -Encoding UTF8
+        $scriptText | Should -Match 'function Get-GitContentDirtyStatus'
+        $scriptText | Should -Match 'git -C \$RepoRoot diff --quiet -- \$pathSpec'
+        $scriptText | Should -Match 'git -C \$RepoRoot diff --cached --quiet -- \$pathSpec'
+        $scriptText | Should -Match 'candidate worktree is clean'
+        $scriptText.Contains("Add-Check 'candidate worktree is clean' ([bool]`$AllowDirty -or [string]::IsNullOrWhiteSpace(`$statusShort))") | Should -BeFalse
+    }
+
     It 'fails when a task packet is missing' {
         $badRoot = Join-Path $TestDrive 'bad-pack'
         New-Item -ItemType Directory -Path $badRoot -Force | Out-Null
