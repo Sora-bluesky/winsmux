@@ -3,6 +3,14 @@ param(
     [string]$PackPath = 'tasks/cli-bakeoff/v1/benchmark-pack.json',
     [string]$TaskRoot = '',
     [string]$RunDir = '',
+    [switch]$RequireCandidateIdentity,
+    [string]$ExpectedVersion = '',
+    [string]$ExpectedGitHead = '',
+    [string]$CandidateDesktopBinary = '',
+    [string]$CandidateCliBinary = '',
+    [string]$ExpectedDesktopSha256 = '',
+    [string]$ExpectedCliSha256 = '',
+    [switch]$AllowDirty,
     [switch]$Json
 )
 
@@ -52,6 +60,89 @@ function Add-Check {
     $script:checks.Add([pscustomobject]@{ name = $Name; pass = $Pass; detail = (ConvertTo-SafeDetail $Detail) }) | Out-Null
 }
 
+function Get-GitOutput {
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+    try {
+        return (& git -C $RepoRoot @Arguments 2>$null | Out-String).Trim()
+    } catch {
+        return ''
+    }
+}
+
+function Get-FileProductVersion {
+    param([AllowNull()][string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return ''
+    }
+    try {
+        return [string]([System.Diagnostics.FileVersionInfo]::GetVersionInfo($Path).ProductVersion)
+    } catch {
+        return ''
+    }
+}
+
+function Get-FileSha256 {
+    param([AllowNull()][string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return ''
+    }
+    try {
+        return [string]((Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash).ToLowerInvariant()
+    } catch {
+        return ''
+    }
+}
+
+function Get-ProjectVersionMetadata {
+    $versionPath = Join-Path $RepoRoot 'VERSION'
+    $cargoPath = Join-Path $RepoRoot 'core\Cargo.toml'
+    $tauriConfigPath = Join-Path $RepoRoot 'winsmux-app\src-tauri\tauri.conf.json'
+
+    $version = if (Test-Path -LiteralPath $versionPath -PathType Leaf) {
+        (Get-Content -LiteralPath $versionPath -Raw -Encoding UTF8).Trim()
+    } else {
+        ''
+    }
+
+    $cargoVersion = ''
+    if (Test-Path -LiteralPath $cargoPath -PathType Leaf) {
+        $cargoText = Get-Content -LiteralPath $cargoPath -Raw -Encoding UTF8
+        $match = [regex]::Match($cargoText, '(?m)^\s*version\s*=\s*"([^"]+)"')
+        if ($match.Success) {
+            $cargoVersion = $match.Groups[1].Value
+        }
+    }
+
+    $tauriVersion = ''
+    if (Test-Path -LiteralPath $tauriConfigPath -PathType Leaf) {
+        try {
+            $tauriConfig = Get-Content -LiteralPath $tauriConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
+            $tauriVersion = [string]$tauriConfig.version
+        } catch {
+            $tauriVersion = ''
+        }
+    }
+
+    return [pscustomobject]@{
+        VERSION    = $version
+        CargoToml  = $cargoVersion
+        TauriConf  = $tauriVersion
+    }
+}
+
+function Test-VersionSetMatches {
+    param(
+        [Parameter(Mandatory = $true)]$Metadata,
+        [Parameter(Mandatory = $true)][string]$Expected
+    )
+    if ([string]::IsNullOrWhiteSpace($Expected)) {
+        return $false
+    }
+    return [string]$Metadata.VERSION -eq $Expected -and
+        [string]$Metadata.CargoToml -eq $Expected -and
+        [string]$Metadata.TauriConf -eq $Expected
+}
+
 $checks = [System.Collections.Generic.List[object]]::new()
 $resolvedPackPath = Resolve-LocalPath $PackPath
 $resolvedTaskRoot = if ([string]::IsNullOrWhiteSpace($TaskRoot)) {
@@ -61,6 +152,57 @@ $resolvedTaskRoot = if ([string]::IsNullOrWhiteSpace($TaskRoot)) {
 }
 
 Add-Check 'benchmark pack exists' (Test-Path -LiteralPath $resolvedPackPath -PathType Leaf) $resolvedPackPath
+
+if ($RequireCandidateIdentity) {
+    $actualHead = Get-GitOutput -Arguments @('rev-parse', 'HEAD')
+    $statusShort = Get-GitOutput -Arguments @('status', '--porcelain')
+    $versionMetadata = Get-ProjectVersionMetadata
+    $resolvedDesktopBinary = if ([string]::IsNullOrWhiteSpace($CandidateDesktopBinary)) { '' } else { Resolve-LocalPath $CandidateDesktopBinary }
+    $resolvedCliBinary = if ([string]::IsNullOrWhiteSpace($CandidateCliBinary)) { '' } else { Resolve-LocalPath $CandidateCliBinary }
+    $desktopBinaryExists = -not [string]::IsNullOrWhiteSpace($resolvedDesktopBinary) -and (Test-Path -LiteralPath $resolvedDesktopBinary -PathType Leaf)
+    $cliBinaryExists = -not [string]::IsNullOrWhiteSpace($resolvedCliBinary) -and (Test-Path -LiteralPath $resolvedCliBinary -PathType Leaf)
+    $desktopProductVersion = Get-FileProductVersion -Path $resolvedDesktopBinary
+    $desktopSha256 = Get-FileSha256 -Path $resolvedDesktopBinary
+    $cliSha256 = Get-FileSha256 -Path $resolvedCliBinary
+    $expectedHeadMatches = -not [string]::IsNullOrWhiteSpace($ExpectedGitHead) -and
+        -not [string]::IsNullOrWhiteSpace($actualHead) -and
+        $actualHead.StartsWith($ExpectedGitHead, [System.StringComparison]::OrdinalIgnoreCase)
+
+    Add-Check 'candidate expected version is present' (-not [string]::IsNullOrWhiteSpace($ExpectedVersion)) $ExpectedVersion
+    Add-Check 'candidate expected git head is present' (-not [string]::IsNullOrWhiteSpace($ExpectedGitHead)) $ExpectedGitHead
+    Add-Check 'candidate git head matches expected' $expectedHeadMatches "actual=$actualHead expected=$ExpectedGitHead"
+    Add-Check 'candidate worktree is clean' ([bool]$AllowDirty -or [string]::IsNullOrWhiteSpace($statusShort)) $statusShort
+    Add-Check 'candidate version metadata matches expected' (Test-VersionSetMatches -Metadata $versionMetadata -Expected $ExpectedVersion) (
+        "VERSION=$($versionMetadata.VERSION); Cargo.toml=$($versionMetadata.CargoToml); tauri.conf.json=$($versionMetadata.TauriConf); expected=$ExpectedVersion"
+    )
+    Add-Check 'candidate desktop binary path is provided' (-not [string]::IsNullOrWhiteSpace($resolvedDesktopBinary))
+    Add-Check 'candidate desktop binary exists' $desktopBinaryExists $resolvedDesktopBinary
+    Add-Check 'candidate desktop binary version matches expected' (
+        $desktopBinaryExists -and
+        -not [string]::IsNullOrWhiteSpace($ExpectedVersion) -and
+        [string]$desktopProductVersion -eq $ExpectedVersion
+    ) "ProductVersion=$desktopProductVersion expected=$ExpectedVersion"
+    Add-Check 'candidate desktop binary sha256 is readable' (
+        $desktopBinaryExists -and -not [string]::IsNullOrWhiteSpace($desktopSha256)
+    ) "sha256=$desktopSha256"
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedDesktopSha256)) {
+        Add-Check 'candidate desktop binary sha256 matches expected' (
+            -not [string]::IsNullOrWhiteSpace($desktopSha256) -and
+            [string]$desktopSha256 -eq [string]$ExpectedDesktopSha256.ToLowerInvariant()
+        ) "actual=$desktopSha256 expected=$ExpectedDesktopSha256"
+    }
+    Add-Check 'candidate CLI binary path is provided' (-not [string]::IsNullOrWhiteSpace($resolvedCliBinary))
+    Add-Check 'candidate CLI binary exists' $cliBinaryExists $resolvedCliBinary
+    Add-Check 'candidate CLI binary sha256 is readable' (
+        $cliBinaryExists -and -not [string]::IsNullOrWhiteSpace($cliSha256)
+    ) "sha256=$cliSha256"
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedCliSha256)) {
+        Add-Check 'candidate CLI binary sha256 matches expected' (
+            -not [string]::IsNullOrWhiteSpace($cliSha256) -and
+            [string]$cliSha256 -eq [string]$ExpectedCliSha256.ToLowerInvariant()
+        ) "actual=$cliSha256 expected=$ExpectedCliSha256"
+    }
+}
 
 $pack = $null
 if (Test-Path -LiteralPath $resolvedPackPath -PathType Leaf) {

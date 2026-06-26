@@ -37,6 +37,39 @@ Describe 'CLI bakeoff evidence harness' {
         $contractHtml | Should -Not -Match 'v0\.36\.22 測定待ち|v0\.36\.22 で行う正式|6ペイン実測とレポート再作成は v0\.36\.22'
     }
 
+    It 'benchmark_readiness_gate_rejects_mismatched_candidate_identity' {
+        $missingDesktopBinary = Join-Path $TestDrive 'missing-winsmux-app.exe'
+        $missingCliBinary = Join-Path $TestDrive 'missing-winsmux.exe'
+
+        $output = & pwsh -NoProfile -File $script:PreflightScript `
+            -PackPath $script:PackPath `
+            -Json `
+            -RequireCandidateIdentity `
+            -AllowDirty `
+            -ExpectedVersion '0.0.0' `
+            -ExpectedGitHead 'deadbeef' `
+            -CandidateDesktopBinary $missingDesktopBinary `
+            -CandidateCliBinary $missingCliBinary 2>$null
+
+        $LASTEXITCODE | Should -Be 1
+        $result = $output | ConvertFrom-Json -Depth 20
+        $result | Should -Not -BeNullOrEmpty
+        $result.all_pass | Should -BeFalse
+        $checkNames = @($result.checks | ForEach-Object { $_.name })
+        $checkNames | Should -Contain 'candidate git head matches expected'
+        $checkNames | Should -Contain 'candidate version metadata matches expected'
+        $checkNames | Should -Contain 'candidate desktop binary exists'
+        $checkNames | Should -Contain 'candidate desktop binary sha256 is readable'
+        $checkNames | Should -Contain 'candidate CLI binary exists'
+        $checkNames | Should -Contain 'candidate CLI binary sha256 is readable'
+        ($result.checks | Where-Object { $_.name -eq 'candidate git head matches expected' }).pass | Should -BeFalse
+        ($result.checks | Where-Object { $_.name -eq 'candidate version metadata matches expected' }).pass | Should -BeFalse
+        ($result.checks | Where-Object { $_.name -eq 'candidate desktop binary exists' }).pass | Should -BeFalse
+        ($result.checks | Where-Object { $_.name -eq 'candidate desktop binary sha256 is readable' }).pass | Should -BeFalse
+        ($result.checks | Where-Object { $_.name -eq 'candidate CLI binary exists' }).pass | Should -BeFalse
+        ($result.checks | Where-Object { $_.name -eq 'candidate CLI binary sha256 is readable' }).pass | Should -BeFalse
+    }
+
     It 'fails when a task packet is missing' {
         $badRoot = Join-Path $TestDrive 'bad-pack'
         New-Item -ItemType Directory -Path $badRoot -Force | Out-Null
