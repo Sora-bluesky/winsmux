@@ -7,6 +7,7 @@ param(
     [switch]$NoLaunch,
     [switch]$AllowDirty,
     [switch]$NoMoveToExtendedDisplay,
+    [switch]$SelfTestPathNormalization,
     [switch]$Json,
     [int]$VisibleWidth = 1440,
     [int]$VisibleHeight = 900
@@ -18,6 +19,33 @@ $ErrorActionPreference = 'Stop'
 $RepoRoot = (& git rev-parse --show-toplevel 2>$null | Out-String).Trim()
 if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
     $RepoRoot = Split-Path $PSScriptRoot -Parent
+}
+$RepoRoot = [System.IO.Path]::GetFullPath($RepoRoot)
+
+function Convert-ToCanonicalPath {
+    param([AllowNull()][string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return ''
+    }
+
+    return [System.IO.Path]::GetFullPath($Path).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+}
+
+function Test-PathInsideRepo {
+    param([AllowNull()][string]$Path)
+
+    $candidate = Convert-ToCanonicalPath $Path
+    if ([string]::IsNullOrWhiteSpace($candidate)) {
+        return $false
+    }
+
+    if ($candidate.Equals($RepoRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $true
+    }
+
+    $repoPrefix = $RepoRoot.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
+    return $candidate.StartsWith($repoPrefix, [System.StringComparison]::OrdinalIgnoreCase)
 }
 
 function Resolve-RepoPath {
@@ -68,7 +96,7 @@ function Stop-RepoWinsmuxDesktopTree {
         $processes |
             Where-Object {
                 $_.Name -eq 'winsmux-app.exe' -and
-                ([string]$_.ExecutablePath).StartsWith($RepoRoot, [System.StringComparison]::OrdinalIgnoreCase)
+                (Test-PathInsideRepo ([string]$_.ExecutablePath))
             } |
             ForEach-Object { [int]$_.ProcessId }
     )
@@ -96,17 +124,32 @@ function Stop-RepoWinsmuxDesktopTree {
     foreach ($id in (@($ids) | Sort-Object -Descending)) {
         Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
     }
+
+    $deadline = (Get-Date).AddSeconds(15)
+    do {
+        $remaining = @($ids | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })
+        if ($remaining.Count -eq 0) {
+            return
+        }
+        Start-Sleep -Milliseconds 250
+    } while ((Get-Date) -lt $deadline)
+
+    throw "Existing repo-built winsmux desktop process did not exit: $($remaining -join ', ')"
 }
 
 function Wait-RepoWinsmuxDesktopApp {
-    param([int]$TimeoutSeconds = 120)
+    param(
+        [int]$TimeoutSeconds = 120,
+        [int]$ExpectedProcessId = 0
+    )
 
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     do {
         $candidate = Get-CimInstance Win32_Process |
             Where-Object {
                 $_.Name -eq 'winsmux-app.exe' -and
-                ([string]$_.ExecutablePath).StartsWith($RepoRoot, [System.StringComparison]::OrdinalIgnoreCase)
+                (Test-PathInsideRepo ([string]$_.ExecutablePath)) -and
+                ($ExpectedProcessId -le 0 -or [int]$_.ProcessId -eq $ExpectedProcessId)
             } |
             Sort-Object ProcessId -Descending |
             Select-Object -First 1
@@ -221,6 +264,31 @@ function Move-WindowToVisibleWorkspace {
     return Get-WindowMetrics -ProcessId $ProcessId
 }
 
+if ($SelfTestPathNormalization) {
+    $releaseAppSelfTestPath = Join-Path $RepoRoot 'target\release\winsmux-app.exe'
+    $forwardSlashPath = $releaseAppSelfTestPath -replace '\\', '/'
+    $siblingRepoPath = $RepoRoot.TrimEnd('\', '/') + '-sibling\target\release\winsmux-app.exe'
+
+    $result = [pscustomobject]@{
+        ok = (Test-PathInsideRepo $releaseAppSelfTestPath) -and
+            (Test-PathInsideRepo $forwardSlashPath) -and
+            -not (Test-PathInsideRepo $siblingRepoPath)
+        repoRoot = $RepoRoot
+        releaseAppPath = $releaseAppSelfTestPath
+    }
+
+    if (-not $result.ok) {
+        throw 'Path normalization self-test failed.'
+    }
+
+    if ($Json) {
+        $result | ConvertTo-Json -Depth 4
+    } else {
+        Write-Output 'winsmux desktop path normalization self-test passed.'
+    }
+    exit 0
+}
+
 $resolvedProjectDir = Resolve-RepoPath $ProjectDir
 $resolvedPackPath = Resolve-RepoPath $PackPath
 $canonicalTaskDir = Split-Path $resolvedPackPath -Parent
@@ -311,7 +379,7 @@ $env:WEBVIEW2_USER_DATA_FOLDER = $webviewUserData
 $env:NO_COLOR = '1'
 
 $launcherProcess = Start-Process -FilePath $releaseApp -ArgumentList @('--project-dir', $resolvedProjectDir) -WorkingDirectory $RepoRoot -PassThru
-$app = Wait-RepoWinsmuxDesktopApp
+$app = Wait-RepoWinsmuxDesktopApp -ExpectedProcessId ([int]$launcherProcess.Id)
 $page = Assert-ProductionDesktopPage -Port $DebugPort
 $metricsBeforeMove = Get-WindowMetrics -ProcessId ([int]$app.ProcessId)
 if (-not $NoMoveToExtendedDisplay) {
