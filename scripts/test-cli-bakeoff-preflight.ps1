@@ -139,6 +139,55 @@ function Get-GitOutput {
     }
 }
 
+function Get-GitContentDirtyStatus {
+    param([AllowNull()][string]$StatusShort)
+
+    if ([string]::IsNullOrWhiteSpace($StatusShort)) {
+        return [pscustomobject]@{ DirtyStatus = ''; IgnoredStatus = '' }
+    }
+
+    $dirtyLines = [System.Collections.Generic.List[string]]::new()
+    $ignoredLines = [System.Collections.Generic.List[string]]::new()
+    foreach ($rawLine in ($StatusShort -split "`r?`n")) {
+        $line = [string]$rawLine
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            continue
+        }
+
+        if ($line.Length -lt 4 -or $line.StartsWith('??', [System.StringComparison]::Ordinal)) {
+            $dirtyLines.Add($line) | Out-Null
+            continue
+        }
+
+        $statusCode = $line.Substring(0, 2)
+        $pathSpec = $line.Substring(3)
+        if ($pathSpec.Contains(' -> ')) {
+            $dirtyLines.Add($line) | Out-Null
+            continue
+        }
+
+        if ($statusCode -notmatch '^[ M]+$') {
+            $dirtyLines.Add($line) | Out-Null
+            continue
+        }
+
+        & git -C $RepoRoot diff --quiet -- $pathSpec 2>$null
+        $hasWorktreeDiff = ($LASTEXITCODE -ne 0)
+        & git -C $RepoRoot diff --cached --quiet -- $pathSpec 2>$null
+        $hasIndexDiff = ($LASTEXITCODE -ne 0)
+        if ($hasWorktreeDiff -or $hasIndexDiff) {
+            $dirtyLines.Add($line) | Out-Null
+        } else {
+            $ignoredLines.Add($line) | Out-Null
+        }
+    }
+
+    return [pscustomobject]@{
+        DirtyStatus = ($dirtyLines -join "`n")
+        IgnoredStatus = ($ignoredLines -join "`n")
+    }
+}
+
 function Get-FileProductVersion {
     param([AllowNull()][string]$Path)
     if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
@@ -243,6 +292,7 @@ Add-Check 'benchmark pack input resolves unambiguously' (
 if ($RequireCandidateIdentity) {
     $actualHead = Get-GitOutput -Arguments @('rev-parse', 'HEAD')
     $statusShort = Get-GitOutput -Arguments @('status', '--porcelain')
+    $contentDirtyStatus = Get-GitContentDirtyStatus -StatusShort $statusShort
     $versionMetadata = Get-ProjectVersionMetadata
     $resolvedDesktopBinary = if ([string]::IsNullOrWhiteSpace($CandidateDesktopBinary)) { '' } else { Resolve-LocalPath $CandidateDesktopBinary }
     $resolvedCliBinary = if ([string]::IsNullOrWhiteSpace($CandidateCliBinary)) { '' } else { Resolve-LocalPath $CandidateCliBinary }
@@ -256,10 +306,20 @@ if ($RequireCandidateIdentity) {
         -not [string]::IsNullOrWhiteSpace($actualHead) -and
         $actualHead.StartsWith($ExpectedGitHead, [System.StringComparison]::OrdinalIgnoreCase)
 
+    $candidateCleanDetail = if ([string]::IsNullOrWhiteSpace([string]$contentDirtyStatus.DirtyStatus)) {
+        if ([string]::IsNullOrWhiteSpace([string]$contentDirtyStatus.IgnoredStatus)) {
+            ''
+        } else {
+            "ignored content-clean status:`n$($contentDirtyStatus.IgnoredStatus)"
+        }
+    } else {
+        [string]$contentDirtyStatus.DirtyStatus
+    }
+
     Add-Check 'candidate expected version is present' (-not [string]::IsNullOrWhiteSpace($ExpectedVersion)) $ExpectedVersion
     Add-Check 'candidate expected git head is present' (-not [string]::IsNullOrWhiteSpace($ExpectedGitHead)) $ExpectedGitHead
     Add-Check 'candidate git head matches expected' $expectedHeadMatches "actual=$actualHead expected=$ExpectedGitHead"
-    Add-Check 'candidate worktree is clean' ([bool]$AllowDirty -or [string]::IsNullOrWhiteSpace($statusShort)) $statusShort
+    Add-Check 'candidate worktree is clean' ([bool]$AllowDirty -or [string]::IsNullOrWhiteSpace([string]$contentDirtyStatus.DirtyStatus)) $candidateCleanDetail
     Add-Check 'candidate version metadata matches expected' (Test-VersionSetMatches -Metadata $versionMetadata -Expected $ExpectedVersion) (
         "VERSION=$($versionMetadata.VERSION); Cargo.toml=$($versionMetadata.CargoToml); tauri.conf.json=$($versionMetadata.TauriConf); expected=$ExpectedVersion"
     )
