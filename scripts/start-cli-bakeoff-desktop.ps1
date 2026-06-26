@@ -302,6 +302,7 @@ New-Item -ItemType Directory -Path $resolvedProjectDir -Force | Out-Null
 Copy-BenchmarkTaskPack -SourceDir $canonicalTaskDir -DestinationDir $projectTaskDir
 
 if (-not $SkipBuild) {
+    Stop-RepoWinsmuxDesktopTree
     Invoke-CheckedCommand -FilePath 'cargo' -ArgumentList @('build', '--release', '-p', 'winsmux') -WorkingDirectory $RepoRoot
     Invoke-CheckedCommand -FilePath 'npm' -ArgumentList @('run', 'tauri', '--', 'build', '--no-bundle') -WorkingDirectory (Join-Path $RepoRoot 'winsmux-app')
 }

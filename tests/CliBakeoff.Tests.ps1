@@ -130,6 +130,21 @@ Describe 'CLI bakeoff evidence harness' {
         $result.repoRoot | Should -Match '^[A-Z]:\\'
     }
 
+    It 'stops an existing repo desktop before rebuilding the release desktop executable' {
+        $scriptText = Get-Content -LiteralPath $script:DesktopStartScript -Raw -Encoding UTF8
+        $buildBlockIndex = $scriptText.IndexOf('if (-not $SkipBuild) {')
+        $buildStopIndex = $scriptText.IndexOf('Stop-RepoWinsmuxDesktopTree', $buildBlockIndex)
+        $cargoBuildIndex = $scriptText.IndexOf("Invoke-CheckedCommand -FilePath 'cargo'", $buildBlockIndex)
+        $tauriBuildIndex = $scriptText.IndexOf("Invoke-CheckedCommand -FilePath 'npm'", $buildBlockIndex)
+
+        ($buildBlockIndex -ge 0) | Should -BeTrue
+        ($cargoBuildIndex -ge 0) | Should -BeTrue
+        ($tauriBuildIndex -ge 0) | Should -BeTrue
+        ($buildStopIndex -gt $buildBlockIndex) | Should -BeTrue
+        ($buildStopIndex -lt $cargoBuildIndex) | Should -BeTrue
+        ($buildStopIndex -lt $tauriBuildIndex) | Should -BeTrue
+    }
+
     It 'fails when a task packet is missing' {
         $badRoot = Join-Path $TestDrive 'bad-pack'
         New-Item -ItemType Directory -Path $badRoot -Force | Out-Null
