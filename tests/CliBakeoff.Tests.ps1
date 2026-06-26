@@ -9,6 +9,7 @@ Describe 'CLI bakeoff evidence harness' {
         }
         $script:PreflightScript = Join-Path $script:RepoRoot 'scripts\test-cli-bakeoff-preflight.ps1'
         $script:SummaryScript = Join-Path $script:RepoRoot 'scripts\summarize-cli-bakeoff.ps1'
+        $script:DesktopStartScript = Join-Path $script:RepoRoot 'scripts\start-cli-bakeoff-desktop.ps1'
         $script:PackPath = Join-Path $script:RepoRoot 'tasks\cli-bakeoff\v1\benchmark-pack.json'
     }
 
@@ -119,6 +120,14 @@ Describe 'CLI bakeoff evidence harness' {
         $cliVersionCheck = $result.checks | Where-Object { $_.name -eq 'candidate CLI reported version matches expected' }
         $cliVersionCheck.pass | Should -BeFalse
         $cliVersionCheck.detail | Should -Match 'reported=0\.36\.16 expected=0\.36\.23'
+    }
+
+    It 'normalizes desktop launcher paths before process matching' {
+        $output = & pwsh -NoProfile -File $script:DesktopStartScript -SelfTestPathNormalization -Json
+        $LASTEXITCODE | Should -Be 0
+        $result = $output | ConvertFrom-Json -Depth 8
+        $result.ok | Should -BeTrue
+        $result.repoRoot | Should -Match '^[A-Z]:\\'
     }
 
     It 'fails when a task packet is missing' {
