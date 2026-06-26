@@ -106,6 +106,7 @@ $whitelistPatterns = @(
     '.githooks/**',
     '.gitattributes',
     'tests/PublicSurfacePolicy.Tests.ps1',
+    'tests/GitGuard.Tests.ps1',
     'tests/GitHubWritePreflight.Tests.ps1',
     'tests/McpServerContract.Tests.ps1',
     'tests/codex-subagent-worktree-guard.Tests.ps1',

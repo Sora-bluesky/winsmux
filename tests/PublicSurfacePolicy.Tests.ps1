@@ -372,6 +372,8 @@ Describe 'Public surface policy' {
         $gitGuard | Should -Match 'GitHub token'
         $gitGuard | Should -Match 'function Test-ExternalRoadmapFreshness'
         $gitGuard | Should -Match 'external ROADMAP is older than backlog.yaml'
+        $gitGuard | Should -Match 'function Test-StaleMainDirtyState'
+        $gitGuard | Should -Match 'fast-forward main before interpreting or committing local diffs'
         $publicAudit | Should -Match 'function Test-IsEvidenceAuthScanSurface'
         $publicAudit | Should -Match 'function Add-ForbiddenEvidenceAuthFailures'
         $publicAudit | Should -Match 'evidence/auth surface'
