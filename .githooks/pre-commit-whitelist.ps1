@@ -92,6 +92,7 @@ $whitelistPatterns = @(
     'scripts/codex-subagent-worktree-guard.ps1',
     'scripts/run-cli-bakeoff-openrouter.ps1',
     'scripts/run-cli-bakeoff-local-workers.ps1',
+    'scripts/start-cli-bakeoff-desktop.ps1',
     'scripts/summarize-cli-bakeoff.ps1',
     'scripts/test-cli-bakeoff-preflight.ps1',
     'scripts/test-v03617-reliability-gate.ps1',
