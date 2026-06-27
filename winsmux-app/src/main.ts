@@ -37,6 +37,7 @@ import {
 import { getEditorFileKey, getSourceChangeKey, pickEditorPathCandidate, pickSourceChangeKeyCandidate } from "./editorTargets";
 import {
   closePtyPane,
+  capturePtyPane,
   resizePtyPane,
   spawnPtyPane,
   subscribeToPtyOutput,
@@ -52,6 +53,7 @@ interface PaneEntry {
   labelElement: HTMLElement;
   metaElement: HTMLElement;
   lastOutputAt: number | null;
+  outputBuffer: string;
   ptyStarted: boolean;
   ptyStarting: Promise<void> | null;
 }
@@ -1761,6 +1763,7 @@ function markPanePtyStoppedFromExternalEvent(paneId: string) {
   const wasRunning = entry.ptyStarted || Boolean(entry.ptyStarting);
   entry.ptyStarted = false;
   entry.ptyStarting = null;
+  entry.outputBuffer = "";
   entry.metaElement.textContent = getLanguageText("not started", "未起動");
   entry.metaElement.removeAttribute("title");
   if (wasRunning) {
@@ -1843,6 +1846,7 @@ function createPane(paneId?: string, options?: { deferWorkbenchUpdate?: boolean 
     labelElement: label,
     metaElement: meta,
     lastOutputAt: null,
+    outputBuffer: "",
     ptyStarted: false,
     ptyStarting: null,
   });
@@ -3650,6 +3654,202 @@ function getConfiguredWorkerPaneIds() {
   return Array.from({ length: MAX_WORKBENCH_PANES }, (_, index) => `worker-${index + 1}`);
 }
 
+type WorkerPaneReadinessState = "ready" | "blocked" | "pending";
+
+interface WorkerPaneReadiness {
+  target: string;
+  state: WorkerPaneReadinessState;
+  reason: string;
+  evidence: string;
+}
+
+const WORKER_READINESS_TIMEOUT_MS = 90_000;
+const WORKER_READINESS_POLL_MS = 1_000;
+const WORKER_READINESS_EVIDENCE_LIMIT = 360;
+
+function getWorkerReadinessEvidence(text: string) {
+  return text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(-6)
+    .join(" / ")
+    .slice(-WORKER_READINESS_EVIDENCE_LIMIT);
+}
+
+function normalizeWorkerReadinessOutput(output: string) {
+  return stripTerminalControlSequences(output).replace(/\u00a0/g, " ").trim();
+}
+
+function appendPaneOutputBuffer(entry: PaneEntry, data: string) {
+  entry.outputBuffer += data;
+  if (entry.outputBuffer.length > 16_000) {
+    entry.outputBuffer = entry.outputBuffer.slice(-16_000);
+  }
+}
+
+function detectWorkerReadinessBlocker(text: string) {
+  const checks = [
+    {
+      reason: getLanguageText("MCP authentication required", "MCP 認証が必要です"),
+      pattern: /(?:mcp\s+startup\s+incomplete|mcp\s+servers?\s+need\s+authentication|mcp\s+server\s+is\s+not\s+logged\s+in|run\s+\/mcp)/i,
+    },
+    {
+      reason: getLanguageText("Provider credentials or API setup required", "プロバイダーの資格情報または API 設定が必要です"),
+      pattern: /(?:setup\s+required|missing\s+api\s+key|requires?\s+(?:an?\s+)?(?:api|credential|key)|OPENROUTER_API_KEY)/i,
+    },
+    {
+      reason: getLanguageText("Quota or rate-limit warning", "利用枠またはレート制限の警告があります"),
+      pattern: /(?:less\s+than\s+\d+%\s+of\s+your\s+.*limit|rate\s+limit|quota\s+(?:exceeded|warning))/i,
+    },
+    {
+      reason: getLanguageText("Worker is waiting for a user decision", "ワーカーがユーザー判断待ちです"),
+      pattern: /(?:waiting\s+for\s+(?:approval|confirmation)|continue\?|確認待ち|どう進めますか)/i,
+    },
+  ];
+
+  return checks.find((check) => check.pattern.test(text))?.reason ?? "";
+}
+
+function hasWorkerReadyPrompt(text: string) {
+  const recentLines = text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(-10);
+  return recentLines.some((line) => /^(?:[>›❯]|PS\s+.+>|.*>\s*)$/.test(line))
+    || /(?:Claude Code v|OpenAI Codex|Antigravity CLI|Grok Build)[\s\S]{0,1200}(?:^|\n)\s*[>›❯]\s*$/i.test(text);
+}
+
+async function inspectWorkerPaneReadiness(
+  target: string,
+  expectedProbeLine?: string,
+): Promise<WorkerPaneReadiness> {
+  const entry = panes.get(target);
+  if (!entry) {
+    return {
+      target,
+      state: "blocked",
+      reason: getLanguageText("Worker pane is missing", "ワーカーペインが見つかりません"),
+      evidence: "",
+    };
+  }
+  if (!entry.ptyStarted) {
+    return {
+      target,
+      state: "pending",
+      reason: getLanguageText("PTY is not started yet", "PTY がまだ起動していません"),
+      evidence: entry.metaElement.textContent || "",
+    };
+  }
+
+  let output = "";
+  try {
+    output = `${entry.outputBuffer}\n${(await capturePtyPane(target)).output}`;
+  } catch (error) {
+    return {
+      target,
+      state: "pending",
+      reason: error instanceof Error ? error.message : String(error),
+      evidence: "",
+    };
+  }
+
+  const text = normalizeWorkerReadinessOutput(output);
+  const evidence = getWorkerReadinessEvidence(text);
+  if (!text) {
+    return {
+      target,
+      state: "pending",
+      reason: getLanguageText("Worker output is still empty", "ワーカー出力がまだ空です"),
+      evidence,
+    };
+  }
+
+  const blocker = detectWorkerReadinessBlocker(text);
+  if (blocker) {
+    return { target, state: "blocked", reason: blocker, evidence };
+  }
+
+  if (expectedProbeLine && text.includes(expectedProbeLine)) {
+    return {
+      target,
+      state: "ready",
+      reason: getLanguageText("Probe output confirmed", "確認用出力を確認しました"),
+      evidence,
+    };
+  }
+
+  if (/DESKTOP_(?:ALL_WORKERS_START|WORKER_START)_OK/.test(text) || hasWorkerReadyPrompt(text)) {
+    return {
+      target,
+      state: "ready",
+      reason: getLanguageText("Worker prompt is available", "ワーカーの入力待ちを確認しました"),
+      evidence,
+    };
+  }
+
+  return {
+    target,
+    state: "pending",
+    reason: getLanguageText("Worker prompt is not visible yet", "ワーカーの入力待ちがまだ見えていません"),
+    evidence,
+  };
+}
+
+function updateWorkerPaneReadinessMeta(readiness: WorkerPaneReadiness[]) {
+  for (const item of readiness) {
+    const entry = panes.get(item.target);
+    if (!entry) {
+      continue;
+    }
+    if (item.state === "ready") {
+      entry.metaElement.textContent = getLanguageText("ready for benchmark", "ベンチ投入可能");
+    } else if (item.state === "blocked") {
+      entry.metaElement.textContent = getLanguageText("readiness blocked", "投入前確認で停止");
+    } else {
+      entry.metaElement.textContent = getLanguageText("checking readiness", "投入前確認中");
+    }
+    entry.metaElement.title = [item.reason, item.evidence].filter(Boolean).join(" | ");
+  }
+}
+
+function readinessDetails(readiness: WorkerPaneReadiness[]): ConversationDetail[] {
+  return readiness.map((item) => ({
+    label: item.target,
+    value: `${item.state}: ${item.reason}${item.evidence ? ` (${item.evidence})` : ""}`,
+  }));
+}
+
+async function waitForWorkerPaneReadiness(
+  targets: string[],
+  expectedProbeLines: Map<string, string>,
+): Promise<WorkerPaneReadiness[]> {
+  const startedAt = Date.now();
+  let latest: WorkerPaneReadiness[] = [];
+  while (Date.now() - startedAt < WORKER_READINESS_TIMEOUT_MS) {
+    latest = await Promise.all(
+      targets.map((target) => inspectWorkerPaneReadiness(target, expectedProbeLines.get(target))),
+    );
+    updateWorkerPaneReadinessMeta(latest);
+    if (latest.some((item) => item.state === "blocked")) {
+      return latest;
+    }
+    if (latest.every((item) => item.state === "ready")) {
+      return latest;
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, WORKER_READINESS_POLL_MS));
+  }
+
+  return latest.map((item) => item.state === "ready"
+    ? item
+    : {
+        ...item,
+        state: "pending",
+        reason: getLanguageText("Timed out while checking worker readiness", "ワーカー投入前確認がタイムアウトしました"),
+      });
+}
+
 async function startAllWorkersFromOperatorCommand(timestamp: string): Promise<boolean> {
   if (workerStartTarget) {
     appendRuntimeConversation({
@@ -3871,12 +4071,36 @@ async function runBenchmarkReadyCheckFromOperatorCommand(timestamp: string): Pro
 
     const harnessProbe = isViewportHarnessMode();
     const probeId = `ready-${Date.now().toString(36)}`;
+    const expectedProbeLines = new Map<string, string>();
     for (const target of targets) {
       await ensurePanePtyStarted(target);
-      const data = harnessProbe
-        ? `Write-Output 'WINSMUX_BENCH_READY_CHECK ${target} ${probeId}'\r`
-        : "";
-      await writePtyData(target, data);
+      if (harnessProbe) {
+        const expectedLine = `WINSMUX_BENCH_READY_CHECK ${target} ${probeId}`;
+        expectedProbeLines.set(target, expectedLine);
+        await writePtyData(target, `Write-Output '${expectedLine}'\r`);
+      }
+    }
+
+    const readiness = await waitForWorkerPaneReadiness(targets, expectedProbeLines);
+    const notReady = readiness.filter((item) => item.state !== "ready");
+    if (notReady.length > 0) {
+      appendRuntimeConversation({
+        type: "system",
+        category: "attention",
+        timestamp,
+        actor: "winsmux",
+        title: getLanguageText("Benchmark start readiness blocked", "ベンチ開始準備を停止"),
+        body: getLanguageText(
+          `${notReady.length} worker pane(s) are not ready for benchmark dispatch. Resolve MCP/auth/quota warnings or pending prompts, then run the readiness check again. No benchmark task packet was sent.`,
+          `${notReady.length} 件のワーカーペインが正式ベンチ投入可能な状態ではありません。MCP 認証、資格情報、利用枠、確認待ちを解消してから投入前確認を再実行してください。正式ベンチ課題は投入していません。`,
+        ),
+        details: readinessDetails(readiness),
+        tone: "warning",
+      });
+      renderConversation(getConversationItems());
+      requestDesktopSummaryRefresh(undefined, 500);
+      renderWorkerStatusSurface();
+      return true;
     }
 
     appendRuntimeConversation({
@@ -3886,13 +4110,14 @@ async function runBenchmarkReadyCheckFromOperatorCommand(timestamp: string): Pro
       actor: "winsmux",
       title: getLanguageText("Benchmark start readiness confirmed", "ベンチ開始準備を確認"),
       body: getLanguageText(
-        "All six worker panes are running, launch approvals are clean, and the PTY write path was verified. No benchmark task packet was sent.",
-        "6つのワーカーペインが起動済みで、起動承認に差分はありません。書き込み経路も確認しました。正式ベンチ課題はまだ投入していません。",
+        "All six worker panes are running, launch approvals are clean, and the worker prompts have no MCP/auth/quota blockers. No benchmark task packet was sent.",
+        "6つのワーカーペインが起動済みで、起動承認に差分はありません。MCP 認証、資格情報、利用枠の停止要因も見つかりません。正式ベンチ課題はまだ投入していません。",
       ),
       details: [
         { label: getLanguageText("worker panes", "ワーカーペイン"), value: targets.join(", ") },
         { label: getLanguageText("formal task packets", "正式課題"), value: getLanguageText("not sent", "未投入") },
         { label: getLanguageText("probe id", "確認ID"), value: probeId },
+        ...readinessDetails(readiness),
       ],
       tone: "success",
     });
@@ -16913,6 +17138,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     if (entry) {
       markPanePtyStartedFromExternalEvent(payload.pane_id);
       entry.lastOutputAt = Date.now();
+      appendPaneOutputBuffer(entry, payload.data);
       entry.terminal.write(payload.data);
       renderPaneMetadata();
       return;
@@ -16925,6 +17151,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     const first = panes.values().next().value as PaneEntry | undefined;
     if (first) {
       first.lastOutputAt = Date.now();
+      appendPaneOutputBuffer(first, payload.data);
       first.terminal.write(payload.data);
       renderPaneMetadata();
     }
