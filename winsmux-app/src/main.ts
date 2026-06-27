@@ -58,6 +58,30 @@ interface PaneEntry {
   ptyStarting: Promise<void> | null;
 }
 
+interface HarnessBenchmarkPackTask {
+  task_id?: string;
+  title?: string;
+  packet_path?: string;
+  timeout_seconds?: number;
+}
+
+interface HarnessBenchmarkPack {
+  pack_id?: string;
+  title?: string;
+  default_timeout_seconds?: number;
+  tasks?: HarnessBenchmarkPackTask[];
+}
+
+interface HarnessBenchmarkTaskPacket {
+  packId: string;
+  taskId: string;
+  taskTitle: string;
+  packetPath: string;
+  timeoutSeconds: number;
+  prompt: string;
+  sha256: string;
+}
+
 type ChipAction =
   | "open-explain"
   | "open-editor"
@@ -3631,8 +3655,19 @@ function isOperatorBenchmarkReadyCheckCommand(value: string) {
   return /^\s*winsmux\s+(?:benchmark|harness)\s+ready-check\s*$/i.test(value);
 }
 
+function isOperatorBenchmarkDispatchCommand(value: string) {
+  return /^\s*winsmux\s+(?:benchmark|harness)\s+(?:dispatch|start)\s+(?:task\s+)?[A-Za-z0-9._-]+\s*$/i.test(value);
+}
+
+function getOperatorBenchmarkDispatchTaskId(value: string) {
+  const match = value.match(/^\s*winsmux\s+(?:benchmark|harness)\s+(?:dispatch|start)\s+(?:task\s+)?([A-Za-z0-9._-]+)\s*$/i);
+  return match?.[1]?.trim() || "";
+}
+
 function isOperatorHandledWinsmuxCommand(value: string) {
-  return isOperatorStartAllWorkersCommand(value) || isOperatorBenchmarkReadyCheckCommand(value);
+  return isOperatorStartAllWorkersCommand(value)
+    || isOperatorBenchmarkReadyCheckCommand(value)
+    || isOperatorBenchmarkDispatchCommand(value);
 }
 
 function isViewportHarnessMode() {
@@ -3819,6 +3854,82 @@ function readinessDetails(readiness: WorkerPaneReadiness[]): ConversationDetail[
     label: item.target,
     value: `${item.state}: ${item.reason}${item.evidence ? ` (${item.evidence})` : ""}`,
   }));
+}
+
+function parseHarnessBenchmarkPack(raw: string): HarnessBenchmarkPack {
+  const parsed = JSON.parse(raw) as HarnessBenchmarkPack;
+  if (!parsed || !Array.isArray(parsed.tasks)) {
+    throw new Error("benchmark-pack.json does not contain a tasks array.");
+  }
+  return parsed;
+}
+
+function buildHarnessTaskPrompt(pack: HarnessBenchmarkPack, task: HarnessBenchmarkPackTask, packetContent: string) {
+  const packId = String(pack.pack_id || "winsmux-cli-bakeoff-v1");
+  const taskId = String(task.task_id || "").trim();
+  const taskTitle = String(task.title || taskId).trim();
+  const timeoutSeconds = Number(task.timeout_seconds || pack.default_timeout_seconds || 3600);
+  return [
+    `Harness Bench task packet`,
+    `Pack: ${packId}`,
+    `Task: ${taskId}`,
+    `Title: ${taskTitle}`,
+    `Timeout seconds: ${Number.isFinite(timeoutSeconds) ? timeoutSeconds : 3600}`,
+    "",
+    "Instructions:",
+    packetContent.trim(),
+    "",
+  ].join("\n");
+}
+
+async function loadHarnessBenchmarkTaskPacket(taskId: string): Promise<HarnessBenchmarkTaskPacket> {
+  const normalizedTaskId = taskId.trim();
+  if (!normalizedTaskId) {
+    throw new Error("Benchmark task id is required.");
+  }
+  const packPath = "tasks/cli-bakeoff/v1/benchmark-pack.json";
+  const packFile = await getDesktopEditorFile(packPath, undefined, activeProjectDir);
+  if (packFile.truncated) {
+    throw new Error(`${packPath} is truncated and cannot be used for benchmark dispatch.`);
+  }
+  const pack = parseHarnessBenchmarkPack(packFile.content);
+  const task = (pack.tasks ?? []).find((item) => String(item.task_id || "").trim().toLowerCase() === normalizedTaskId.toLowerCase());
+  if (!task) {
+    throw new Error(`Benchmark task ${normalizedTaskId} was not found in ${packPath}.`);
+  }
+  const packetPath = String(task.packet_path || "").trim();
+  if (!packetPath || packetPath.includes("..") || packetPath.startsWith("/") || /^[A-Za-z]:[\\/]/.test(packetPath)) {
+    throw new Error(`Benchmark task ${normalizedTaskId} has an invalid packet_path.`);
+  }
+  const packetRelativePath = `tasks/cli-bakeoff/v1/${packetPath}`;
+  const packetFile = await getDesktopEditorFile(packetRelativePath, undefined, activeProjectDir);
+  if (packetFile.truncated) {
+    throw new Error(`${packetRelativePath} is truncated and cannot be used for benchmark dispatch.`);
+  }
+  const prompt = buildHarnessTaskPrompt(pack, task, packetFile.content);
+  const timeoutSeconds = Number(task.timeout_seconds || pack.default_timeout_seconds || 3600);
+  return {
+    packId: String(pack.pack_id || "winsmux-cli-bakeoff-v1"),
+    taskId: String(task.task_id || normalizedTaskId),
+    taskTitle: String(task.title || normalizedTaskId),
+    packetPath: packetRelativePath,
+    timeoutSeconds: Number.isFinite(timeoutSeconds) ? timeoutSeconds : 3600,
+    prompt,
+    sha256: await sha256Hex(prompt),
+  };
+}
+
+async function writeWorkerBenchmarkSubmission(target: string, packet: HarnessBenchmarkTaskPacket) {
+  await ensurePanePtyStarted(target);
+  if (isViewportHarnessMode()) {
+    await writePtyData(target, `Write-Output 'WINSMUX_BENCH_TASK_PACKET ${packet.taskId} ${target} ${packet.sha256.slice(0, 12)}'\r`);
+    return;
+  }
+  await writePtyData(target, encodePtySubmission(packet.prompt));
+  if (packet.prompt.includes("\n")) {
+    await waitForOperatorSubmitDelay();
+    await writePtyData(target, "\r");
+  }
 }
 
 async function waitForWorkerPaneReadiness(
@@ -4144,6 +4255,181 @@ async function runBenchmarkReadyCheckFromOperatorCommand(timestamp: string): Pro
   }
 }
 
+async function dispatchBenchmarkTaskFromOperatorCommand(
+  taskId: string,
+  timestamp: string,
+): Promise<boolean> {
+  if (workerStartTarget) {
+    appendRuntimeConversation({
+      type: "system",
+      category: "attention",
+      timestamp,
+      actor: "winsmux",
+      title: getLanguageText("Worker start is already running", "ワーカー起動は実行中"),
+      body: getLanguageText(
+        "Wait for the current worker start request to finish before dispatching a benchmark task.",
+        "現在のワーカー起動要求が完了してから、ベンチ課題を投入してください。",
+      ),
+      tone: "warning",
+    });
+    renderConversation(getConversationItems());
+    return true;
+  }
+  if (!isTauri()) {
+    appendRuntimeConversation({
+      type: "system",
+      category: "attention",
+      timestamp,
+      actor: "winsmux",
+      title: getLanguageText("Benchmark dispatch is unavailable", "ベンチ課題を投入できません"),
+      body: getLanguageText(
+        "Open winsmux in the desktop runtime. Browser preview cannot verify and dispatch worker pane PTYs.",
+        "winsmux デスクトップで開いてください。ブラウザー表示ではワーカーペインの PTY 確認と課題投入はできません。",
+      ),
+      tone: "warning",
+    });
+    renderConversation(getConversationItems());
+    return true;
+  }
+
+  workerStartTarget = "all";
+  setTerminalDrawer(true);
+  workbenchLayout = "3x2";
+  ensureWorkbenchPaneCount(MAX_WORKBENCH_PANES);
+  ensureWorkbenchWidthForLayout();
+  updateWorkbenchControls();
+
+  try {
+    const statusPayload = await getDesktopWorkersStatus("all", activeProjectDir);
+    const rowsByTarget = getWorkerRowsByTarget(statusPayload.workers);
+    const targets = getConfiguredWorkerPaneIds();
+    const missingTargets = targets.filter((target) => !rowsByTarget.has(target));
+    if (missingTargets.length > 0) {
+      appendRuntimeConversation({
+        type: "system",
+        category: "attention",
+        timestamp,
+        actor: "winsmux",
+        title: getLanguageText("Benchmark dispatch blocked", "ベンチ課題投入を停止"),
+        body: getLanguageText(
+          `Missing worker status rows: ${missingTargets.join(", ")}`,
+          `ワーカー状態行が不足しています: ${missingTargets.join(", ")}`,
+        ),
+        tone: "warning",
+      });
+      renderConversation(getConversationItems());
+      return true;
+    }
+
+    const rows = targets.map((target) => rowsByTarget.get(target)!);
+    const blockedRows = rows.filter((row) => (row.approval_differences ?? []).length > 0);
+    if (blockedRows.length > 0) {
+      appendRuntimeConversation({
+        type: "system",
+        category: "attention",
+        timestamp,
+        actor: "winsmux",
+        title: getLanguageText("Benchmark dispatch blocked", "ベンチ課題投入を停止"),
+        body: getLanguageText(
+          `${blockedRows.length} worker panes have launch approval differences. Review settings before dispatching the benchmark task.`,
+          `${blockedRows.length} 件のワーカーペインに起動承認との差分があります。設定を確認してからベンチ課題を投入してください。`,
+        ),
+        tone: "warning",
+      });
+      renderConversation(getConversationItems());
+      return true;
+    }
+
+    for (const row of rows) {
+      const target = getWorkerStatusTarget(row);
+      if (target) {
+        await startDesktopWorkerPaneWithLaunchCommand(target, row);
+      }
+    }
+
+    const harnessProbe = isViewportHarnessMode();
+    const probeId = `dispatch-${Date.now().toString(36)}`;
+    const expectedProbeLines = new Map<string, string>();
+    for (const target of targets) {
+      await ensurePanePtyStarted(target);
+      if (harnessProbe) {
+        const expectedLine = `WINSMUX_BENCH_READY_CHECK ${target} ${probeId}`;
+        expectedProbeLines.set(target, expectedLine);
+        await writePtyData(target, `Write-Output '${expectedLine}'\r`);
+      }
+    }
+
+    const readiness = await waitForWorkerPaneReadiness(targets, expectedProbeLines);
+    const notReady = readiness.filter((item) => item.state !== "ready");
+    if (notReady.length > 0) {
+      appendRuntimeConversation({
+        type: "system",
+        category: "attention",
+        timestamp,
+        actor: "winsmux",
+        title: getLanguageText("Benchmark dispatch blocked", "ベンチ課題投入を停止"),
+        body: getLanguageText(
+          `${notReady.length} worker pane(s) are not ready. Resolve MCP/auth/quota warnings or pending prompts, then run the operator dispatch command again. No benchmark task packet was sent.`,
+          `${notReady.length} 件のワーカーペインが投入可能な状態ではありません。MCP 認証、資格情報、利用枠、確認待ちを解消してから、オペレーターの投入コマンドを再実行してください。正式ベンチ課題は投入していません。`,
+        ),
+        details: readinessDetails(readiness),
+        tone: "warning",
+      });
+      renderConversation(getConversationItems());
+      requestDesktopSummaryRefresh(undefined, 500);
+      renderWorkerStatusSurface();
+      return true;
+    }
+
+    const packet = await loadHarnessBenchmarkTaskPacket(taskId);
+    for (const target of targets) {
+      await writeWorkerBenchmarkSubmission(target, packet);
+    }
+
+    appendRuntimeConversation({
+      type: "system",
+      category: "activity",
+      timestamp,
+      actor: "winsmux",
+      title: getLanguageText("Benchmark task packet dispatched", "ベンチ課題を投入しました"),
+      body: getLanguageText(
+        `The same Harness Bench task packet was sent to all six worker panes after readiness confirmation.`,
+        `投入前確認の通過後、同一の Harness Bench 課題パケットを6つのワーカーペインすべてへ送信しました。`,
+      ),
+      details: [
+        { label: getLanguageText("task", "課題"), value: `${packet.taskId} - ${packet.taskTitle}` },
+        { label: getLanguageText("pack", "パック"), value: packet.packId },
+        { label: getLanguageText("packet", "課題ファイル"), value: packet.packetPath },
+        { label: "sha256", value: packet.sha256 },
+        { label: getLanguageText("worker panes", "ワーカーペイン"), value: targets.join(", ") },
+        { label: getLanguageText("timeout", "制限時間"), value: `${packet.timeoutSeconds}s` },
+        ...readinessDetails(readiness),
+      ],
+      tone: "success",
+    });
+    renderConversation(getConversationItems());
+    requestDesktopSummaryRefresh(undefined, 500);
+    return true;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    appendRuntimeConversation({
+      type: "system",
+      category: "attention",
+      timestamp,
+      actor: "winsmux",
+      title: getLanguageText("Benchmark dispatch failed", "ベンチ課題投入に失敗"),
+      body: message,
+      tone: "danger",
+    });
+    renderConversation(getConversationItems());
+    console.warn("Failed to dispatch benchmark task through operator command", error);
+    return true;
+  } finally {
+    workerStartTarget = null;
+    updateWorkbenchControls();
+  }
+}
+
 async function handleOperatorWinsmuxCommand(
   value: string,
   attachments: ComposerAttachment[],
@@ -4158,6 +4444,10 @@ async function handleOperatorWinsmuxCommand(
   }
   if (isOperatorBenchmarkReadyCheckCommand(value)) {
     await runBenchmarkReadyCheckFromOperatorCommand(timestamp);
+    return true;
+  }
+  if (isOperatorBenchmarkDispatchCommand(value)) {
+    await dispatchBenchmarkTaskFromOperatorCommand(getOperatorBenchmarkDispatchTaskId(value), timestamp);
     return true;
   }
   return false;
