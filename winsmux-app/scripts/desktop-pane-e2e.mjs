@@ -1691,7 +1691,7 @@ async function exerciseOperatorCommandStartsAllWorkerPanes(page, options = {}) {
   return outputs;
 }
 
-async function exerciseOperatorBenchmarkReadyCheckBlocksOnMcpWarning(page) {
+async function exerciseOperatorBenchmarkReadyCheckAllowsPromptReadyMcpWarning(page) {
   await exerciseOperatorCommandStartsAllWorkerPanes(page, {
     projectName: "operator-ready-check-mcp-warning-project",
     scriptName: "operator-start-all-worker-mcp-warning.ps1",
@@ -1705,7 +1705,7 @@ async function exerciseOperatorBenchmarkReadyCheckBlocksOnMcpWarning(page) {
     ],
   });
   await submitWinsmuxComposerCommandWithButton(page, "winsmux benchmark ready-check");
-  await page.locator("#conversation-panel", { hasText: "Benchmark start readiness blocked" }).waitFor({ state: "visible", timeout: 60_000 });
+  await page.locator("#conversation-panel", { hasText: "Benchmark start readiness confirmed" }).waitFor({ state: "visible", timeout: 60_000 });
   const text = await page.locator("#conversation-panel").textContent();
   const metaState = await page.evaluate(() => {
     return Array.from(document.querySelectorAll(".pane")).map((pane) => {
@@ -1716,8 +1716,11 @@ async function exerciseOperatorBenchmarkReadyCheckBlocksOnMcpWarning(page) {
     });
   });
   const combined = `${text ?? ""}\n${JSON.stringify(metaState)}`;
-  if (!combined.includes("MCP authentication required")) {
-    throw new Error(`ready-check did not report the MCP blocker:\n${combined.slice(-1_800)}`);
+  if (!combined.includes("MCP warning is present")) {
+    throw new Error(`ready-check did not record the MCP warning:\n${combined.slice(-1_800)}`);
+  }
+  if (combined.includes("Benchmark start readiness blocked")) {
+    throw new Error(`ready-check blocked despite a prompt-ready worker with only MCP warnings:\n${combined.slice(-1_800)}`);
   }
   return {
     conversationTail: (text ?? "").slice(-1_200),
@@ -1772,7 +1775,7 @@ async function exerciseOperatorBenchmarkReadyCheckBlocksOnConfirmationPrompt(pag
   };
 }
 
-async function exerciseOperatorBenchmarkDispatchBlocksOnMcpWarning(page) {
+async function exerciseOperatorBenchmarkDispatchAllowsPromptReadyMcpWarning(page) {
   await exerciseOperatorCommandStartsAllWorkerPanes(page, {
     projectName: "operator-dispatch-mcp-warning-project",
     scriptName: "operator-dispatch-mcp-warning.ps1",
@@ -1785,7 +1788,7 @@ async function exerciseOperatorBenchmarkDispatchBlocksOnMcpWarning(page) {
     ],
   });
   await submitWinsmuxComposerCommandWithButton(page, "winsmux benchmark dispatch WB-001");
-  await page.locator("#conversation-panel", { hasText: "Benchmark dispatch blocked" }).waitFor({ state: "visible", timeout: 60_000 });
+  await page.locator("#conversation-panel", { hasText: "Benchmark task packet dispatched" }).waitFor({ state: "visible", timeout: 60_000 });
   const text = await page.locator("#conversation-panel").textContent();
   const outputs = {};
   for (let index = 1; index <= 6; index += 1) {
@@ -1793,11 +1796,11 @@ async function exerciseOperatorBenchmarkDispatchBlocksOnMcpWarning(page) {
     outputs[paneId] = (await capturePty(page, paneId).catch(() => "")).slice(-1_200);
   }
   const combined = `${text ?? ""}\n${JSON.stringify(outputs)}`;
-  if (!combined.includes("MCP authentication required")) {
-    throw new Error(`benchmark dispatch did not report the MCP blocker:\n${combined.slice(-1_800)}`);
+  if (!combined.includes("MCP warning is present")) {
+    throw new Error(`benchmark dispatch did not record the MCP warning:\n${combined.slice(-1_800)}`);
   }
-  if (combined.includes("WINSMUX_BENCH_TASK_PACKET")) {
-    throw new Error(`benchmark dispatch sent a task packet despite MCP warnings:\n${combined.slice(-1_800)}`);
+  if (!combined.includes("WINSMUX_BENCH_TASK_PACKET")) {
+    throw new Error(`benchmark dispatch did not send a task packet to prompt-ready workers with MCP warnings:\n${combined.slice(-1_800)}`);
   }
   return {
     conversationTail: (text ?? "").slice(-1_200),
@@ -1896,8 +1899,8 @@ async function main() {
       await runStep("worker start button launches the selected Tauri worker pane", async () => {
         return await exerciseWorkerStartButton(page);
       });
-      await runStep("operator benchmark ready-check stops on worker MCP warnings", async () => {
-        return await exerciseOperatorBenchmarkReadyCheckBlocksOnMcpWarning(page);
+      await runStep("operator benchmark ready-check records prompt-ready MCP warnings", async () => {
+        return await exerciseOperatorBenchmarkReadyCheckAllowsPromptReadyMcpWarning(page);
       });
       await runStep("operator benchmark ready-check waits for Codex MCP startup", async () => {
         return await exerciseOperatorBenchmarkReadyCheckWaitsForMcpStartup(page);
@@ -1905,8 +1908,8 @@ async function main() {
       await runStep("operator benchmark ready-check stops on confirmation prompts", async () => {
         return await exerciseOperatorBenchmarkReadyCheckBlocksOnConfirmationPrompt(page);
       });
-      await runStep("operator benchmark dispatch stops on worker MCP warnings", async () => {
-        return await exerciseOperatorBenchmarkDispatchBlocksOnMcpWarning(page);
+      await runStep("operator benchmark dispatch records prompt-ready MCP warnings", async () => {
+        return await exerciseOperatorBenchmarkDispatchAllowsPromptReadyMcpWarning(page);
       });
       await runStep("operator composer command starts all worker panes", async () => {
         return await exerciseOperatorCommandStartsAllWorkerPanes(page);

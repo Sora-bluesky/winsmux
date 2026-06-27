@@ -3696,6 +3696,7 @@ interface WorkerPaneReadiness {
   state: WorkerPaneReadinessState;
   reason: string;
   evidence: string;
+  warnings?: string[];
 }
 
 const WORKER_READINESS_TIMEOUT_MS = 90_000;
@@ -3736,11 +3737,6 @@ function detectWorkerReadinessBlocker(text: string) {
   const compactText = compactWorkerReadinessOutput(text);
   const checks = [
     {
-      reason: getLanguageText("MCP authentication required", "MCP 認証が必要です"),
-      pattern: /(?:mcp\s+startup\s+incomplete|mcp\s+servers?\s+need\s+authentication|mcp\s+server\s+is\s+not\s+logged\s+in|run\s+\/mcp)/i,
-      compactPattern: /(?:mcpstartupincomplete|mcpservers?needauthentication|mcpserverisnotloggedin|run\/mcp)/,
-    },
-    {
       reason: getLanguageText("Provider credentials or API setup required", "プロバイダーの資格情報または API 設定が必要です"),
       pattern: /(?:setup\s+required|missing\s+api\s+key|requires?\s+(?:an?\s+)?(?:api|credential|key)|OPENROUTER_API_KEY)/i,
       compactPattern: /(?:setuprequired|missingapikey|requires?(?:an?)?(?:api|credential|key)|openrouter_api_key)/,
@@ -3758,6 +3754,21 @@ function detectWorkerReadinessBlocker(text: string) {
   ];
 
   return checks.find((check) => check.pattern.test(text) || check.compactPattern.test(compactText))?.reason ?? "";
+}
+
+function detectWorkerReadinessWarnings(text: string) {
+  const compactText = compactWorkerReadinessOutput(text);
+  const checks = [
+    {
+      reason: getLanguageText("MCP warning is present", "MCP 警告を検出しました"),
+      pattern: /(?:mcp\s+startup\s+incomplete|mcp\s+servers?\s+need\s+authentication|mcp\s+server\s+is\s+not\s+logged\s+in|run\s+\/mcp)/i,
+      compactPattern: /(?:mcpstartupincomplete|mcpservers?needauthentication|mcpserverisnotloggedin|run\/mcp)/,
+    },
+  ];
+
+  return checks
+    .filter((check) => check.pattern.test(text) || check.compactPattern.test(compactText))
+    .map((check) => check.reason);
 }
 
 function detectWorkerReadinessPendingReason(text: string) {
@@ -3834,23 +3845,25 @@ async function inspectWorkerPaneReadiness(
 
   const text = normalizeWorkerReadinessOutput(output);
   const evidence = getWorkerReadinessEvidence(text);
+  const warnings = detectWorkerReadinessWarnings(text);
   if (!text) {
     return {
       target,
       state: "pending",
       reason: getLanguageText("Worker output is still empty", "ワーカー出力がまだ空です"),
       evidence,
+      warnings,
     };
   }
 
   const blocker = detectWorkerReadinessBlocker(text);
   if (blocker) {
-    return { target, state: "blocked", reason: blocker, evidence };
+    return { target, state: "blocked", reason: blocker, evidence, warnings };
   }
 
   const pendingReason = detectWorkerReadinessPendingReason(text);
   if (pendingReason) {
-    return { target, state: "pending", reason: pendingReason, evidence };
+    return { target, state: "pending", reason: pendingReason, evidence, warnings };
   }
 
   if (expectedProbeLine && workerReadinessOutputContains(text, expectedProbeLine)) {
@@ -3859,6 +3872,7 @@ async function inspectWorkerPaneReadiness(
       state: "ready",
       reason: getLanguageText("Probe output confirmed", "確認用出力を確認しました"),
       evidence,
+      warnings,
     };
   }
 
@@ -3868,12 +3882,13 @@ async function inspectWorkerPaneReadiness(
       state: "ready",
       reason: getLanguageText("Worker prompt is available", "ワーカーの入力待ちを確認しました"),
       evidence,
+      warnings,
     };
   }
 
   const launchPendingReason = detectWorkerLaunchPendingReason(text);
   if (launchPendingReason) {
-    return { target, state: "pending", reason: launchPendingReason, evidence };
+    return { target, state: "pending", reason: launchPendingReason, evidence, warnings };
   }
 
   return {
@@ -3881,6 +3896,7 @@ async function inspectWorkerPaneReadiness(
     state: "pending",
     reason: getLanguageText("Worker prompt is not visible yet", "ワーカーの入力待ちがまだ見えていません"),
     evidence,
+    warnings,
   };
 }
 
@@ -3897,14 +3913,18 @@ function updateWorkerPaneReadinessMeta(readiness: WorkerPaneReadiness[]) {
     } else {
       entry.metaElement.textContent = getLanguageText("checking readiness", "投入前確認中");
     }
-    entry.metaElement.title = [item.reason, item.evidence].filter(Boolean).join(" | ");
+    entry.metaElement.title = [item.reason, ...(item.warnings ?? []), item.evidence].filter(Boolean).join(" | ");
   }
 }
 
 function readinessDetails(readiness: WorkerPaneReadiness[]): ConversationDetail[] {
   return readiness.map((item) => ({
     label: item.target,
-    value: `${item.state}: ${item.reason}${item.evidence ? ` (${item.evidence})` : ""}`,
+    value: [
+      `${item.state}: ${item.reason}`,
+      ...(item.warnings ?? []).map((warning) => `warning: ${warning}`),
+      item.evidence ? `evidence: ${item.evidence}` : "",
+    ].filter(Boolean).join(" / "),
   }));
 }
 
@@ -4258,8 +4278,8 @@ async function runBenchmarkReadyCheckFromOperatorCommand(timestamp: string): Pro
         actor: "winsmux",
         title: getLanguageText("Benchmark start readiness blocked", "ベンチ開始準備を停止"),
         body: getLanguageText(
-          `${notReady.length} worker pane(s) are not ready for benchmark dispatch. Resolve MCP/auth/quota warnings or pending prompts, then run the readiness check again. No benchmark task packet was sent.`,
-          `${notReady.length} 件のワーカーペインが正式ベンチ投入可能な状態ではありません。MCP 認証、資格情報、利用枠、確認待ちを解消してから投入前確認を再実行してください。正式ベンチ課題は投入していません。`,
+          `${notReady.length} worker pane(s) are not ready for benchmark dispatch. Resolve blocking credentials, quota, setup, launch, or confirmation prompts, then run the readiness check again. No benchmark task packet was sent.`,
+          `${notReady.length} 件のワーカーペインが正式ベンチ投入可能な状態ではありません。資格情報、利用枠、設定不足、起動途中、確認待ちによる停止要因を解消してから投入前確認を再実行してください。正式ベンチ課題は投入していません。`,
         ),
         details: readinessDetails(readiness),
         tone: "warning",
@@ -4277,8 +4297,8 @@ async function runBenchmarkReadyCheckFromOperatorCommand(timestamp: string): Pro
       actor: "winsmux",
       title: getLanguageText("Benchmark start readiness confirmed", "ベンチ開始準備を確認"),
       body: getLanguageText(
-        "All six worker panes are running, launch approvals are clean, and the worker prompts have no MCP/auth/quota blockers. No benchmark task packet was sent.",
-        "6つのワーカーペインが起動済みで、起動承認に差分はありません。MCP 認証、資格情報、利用枠の停止要因も見つかりません。正式ベンチ課題はまだ投入していません。",
+        "All six worker panes are running, launch approvals are clean, and no blocking auth, quota, setup, or confirmation prompt remains. Non-blocking warnings are recorded below. No benchmark task packet was sent.",
+        "6つのワーカーペインが起動済みで、起動承認に差分はありません。資格情報、利用枠、設定不足、確認待ちによる停止要因も残っていません。停止しない警告は下の詳細に記録しています。正式ベンチ課題はまだ投入していません。",
       ),
       details: [
         { label: getLanguageText("worker panes", "ワーカーペイン"), value: targets.join(", ") },
@@ -4425,8 +4445,8 @@ async function dispatchBenchmarkTaskFromOperatorCommand(
         actor: "winsmux",
         title: getLanguageText("Benchmark dispatch blocked", "ベンチ課題投入を停止"),
         body: getLanguageText(
-          `${notReady.length} worker pane(s) are not ready. Resolve MCP/auth/quota warnings or pending prompts, then run the operator dispatch command again. No benchmark task packet was sent.`,
-          `${notReady.length} 件のワーカーペインが投入可能な状態ではありません。MCP 認証、資格情報、利用枠、確認待ちを解消してから、オペレーターの投入コマンドを再実行してください。正式ベンチ課題は投入していません。`,
+          `${notReady.length} worker pane(s) are not ready. Resolve blocking credentials, quota, setup, launch, or confirmation prompts, then run the operator dispatch command again. No benchmark task packet was sent.`,
+          `${notReady.length} 件のワーカーペインが投入可能な状態ではありません。資格情報、利用枠、設定不足、起動途中、確認待ちによる停止要因を解消してから、オペレーターの投入コマンドを再実行してください。正式ベンチ課題は投入していません。`,
         ),
         details: readinessDetails(readiness),
         tone: "warning",
