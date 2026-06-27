@@ -1137,6 +1137,14 @@ const winsmuxComposerCommandEntries: ComposerSlashCommand[] = [
     kind: "winsmux",
   },
   {
+    command: "winsmux workers start all",
+    label: "Start all worker panes",
+    labelJa: "全ワーカーを起動",
+    description: "Start every worker pane through the desktop operator path.",
+    descriptionJa: "オペレーター入力から全ワーカーペインを起動します。",
+    kind: "winsmux",
+  },
+  {
     command: "winsmux meta-plan --task \"この変更を計画して\" --json",
     label: "Draft a meta-plan",
     labelJa: "メタ計画を作る",
@@ -3609,6 +3617,167 @@ async function startFocusedWorkerFromDesktop() {
     workerStartTarget = null;
     updateWorkbenchControls();
   }
+}
+
+function isOperatorStartAllWorkersCommand(value: string) {
+  return /^\s*winsmux\s+workers\s+start\s+(?:all|\*)\s*$/i.test(value);
+}
+
+function getWorkerRowsByTarget(rows: DesktopWorkerStatusRow[]) {
+  const byTarget = new Map<string, DesktopWorkerStatusRow>();
+  for (const row of rows) {
+    const target = getWorkerStatusTarget(row);
+    if (target) {
+      byTarget.set(target, row);
+    }
+  }
+  return byTarget;
+}
+
+function getConfiguredWorkerPaneIds() {
+  return Array.from({ length: MAX_WORKBENCH_PANES }, (_, index) => `worker-${index + 1}`);
+}
+
+async function startAllWorkersFromOperatorCommand(timestamp: string): Promise<boolean> {
+  if (workerStartTarget) {
+    appendRuntimeConversation({
+      type: "system",
+      category: "attention",
+      timestamp,
+      actor: "winsmux",
+      title: getLanguageText("Worker start is already running", "ワーカー起動は実行中"),
+      body: getLanguageText(
+        "Wait for the current worker start request to finish before starting all panes.",
+        "現在のワーカー起動要求が完了してから、全ペイン起動を再実行してください。",
+      ),
+      tone: "warning",
+    });
+    renderConversation(getConversationItems());
+    return true;
+  }
+  if (!isTauri()) {
+    appendRuntimeConversation({
+      type: "system",
+      category: "attention",
+      timestamp,
+      actor: "winsmux",
+      title: getLanguageText("Desktop worker start is unavailable", "デスクトップのワーカー起動は使えません"),
+      body: getLanguageText(
+        "Open winsmux in the desktop runtime. Browser preview cannot start worker panes.",
+        "winsmux デスクトップで開いてください。ブラウザー表示ではワーカーペインを起動できません。",
+      ),
+      tone: "warning",
+    });
+    renderConversation(getConversationItems());
+    return true;
+  }
+
+  workerStartTarget = "all";
+  setTerminalDrawer(true);
+  workbenchLayout = "3x2";
+  ensureWorkbenchPaneCount(MAX_WORKBENCH_PANES);
+  ensureWorkbenchWidthForLayout();
+  updateWorkbenchControls();
+
+  try {
+    const statusPayload = await getDesktopWorkersStatus("all", activeProjectDir);
+    const rowsByTarget = getWorkerRowsByTarget(statusPayload.workers);
+    const targets = getConfiguredWorkerPaneIds();
+    const missingTargets = targets.filter((target) => !rowsByTarget.has(target));
+    if (missingTargets.length > 0) {
+      appendRuntimeConversation({
+        type: "system",
+        category: "attention",
+        timestamp,
+        actor: "winsmux",
+        title: getLanguageText("Worker start blocked", "ワーカー起動を停止"),
+        body: getLanguageText(
+          `Missing worker status rows: ${missingTargets.join(", ")}`,
+          `ワーカー状態行が不足しています: ${missingTargets.join(", ")}`,
+        ),
+        tone: "warning",
+      });
+      renderConversation(getConversationItems());
+      return true;
+    }
+
+    const rows = targets.map((target) => rowsByTarget.get(target)!);
+    const blockedRows = rows.filter((row) => (row.approval_differences ?? []).length > 0);
+    for (const row of rows) {
+      appendWorkerLaunchConversation(
+        row,
+        getLanguageText("Worker launch approval", "ワーカー起動の承認内容"),
+        (row.approval_differences ?? []).length > 0 ? "warning" : "info",
+      );
+    }
+    if (blockedRows.length > 0) {
+      appendRuntimeConversation({
+        type: "system",
+        category: "attention",
+        timestamp,
+        actor: "winsmux",
+        title: getLanguageText("All-worker start blocked", "全ワーカー起動を停止"),
+        body: getLanguageText(
+          `${blockedRows.length} worker panes have launch approval differences. Review settings before starting.`,
+          `${blockedRows.length} 件のワーカーペインに起動承認との差分があります。設定を確認してから起動してください。`,
+        ),
+        tone: "warning",
+      });
+      renderConversation(getConversationItems());
+      return true;
+    }
+
+    for (const row of rows) {
+      const target = getWorkerStatusTarget(row);
+      if (target) {
+        await startDesktopWorkerPaneWithLaunchCommand(target, row);
+      }
+    }
+    appendRuntimeConversation({
+      type: "system",
+      category: "activity",
+      timestamp,
+      actor: "winsmux",
+      title: getLanguageText("All worker panes were started", "全ワーカーペインを起動しました"),
+      body: getLanguageText(
+        "Launch commands were submitted to all six worker panes through the operator command.",
+        "オペレーターコマンドから6つのワーカーペインすべてへ起動コマンドを投入しました。",
+      ),
+      tone: "success",
+    });
+    renderConversation(getConversationItems());
+    requestDesktopSummaryRefresh(undefined, 500);
+    return true;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    appendRuntimeConversation({
+      type: "system",
+      category: "attention",
+      timestamp,
+      actor: "winsmux",
+      title: getLanguageText("All-worker start failed", "全ワーカー起動に失敗"),
+      body: message,
+      tone: "danger",
+    });
+    renderConversation(getConversationItems());
+    console.warn("Failed to start all workers through operator command", error);
+    return true;
+  } finally {
+    workerStartTarget = null;
+    updateWorkbenchControls();
+  }
+}
+
+async function handleOperatorWinsmuxCommand(
+  value: string,
+  attachments: ComposerAttachment[],
+  timestamp: string,
+): Promise<boolean> {
+  if (attachments.length > 0 || !isOperatorStartAllWorkersCommand(value)) {
+    return false;
+  }
+  await startAllWorkersFromOperatorCommand(timestamp);
+  return true;
 }
 
 function ensureDefaultWorkbenchPanes(options?: { deferWorkbenchUpdate?: boolean }) {
@@ -17105,6 +17274,21 @@ window.addEventListener("DOMContentLoaded", async () => {
       const timestamp = getConversationTimestamp();
       setComposerSubmitInFlight(true);
       try {
+        if (isOperatorStartAllWorkersCommand(value) && submittedAttachments.length === 0) {
+          appendUserMessage(rawValue, submittedAttachments, timestamp);
+          await handleOperatorWinsmuxCommand(value, submittedAttachments, timestamp);
+          pushComposerHistoryEntry(historyEntry);
+          composerInput.value = "";
+          clearVoiceDraftRecoveryStorage();
+          syncComposerInputHeight(composerInput);
+          syncComposerSlashState(composerInput.value);
+          clearPendingAttachments();
+          selectedComposerRemoteReferenceIds.clear();
+          renderComposerRemoteReferences();
+          renderAttachmentTray();
+          requestDesktopSummaryRefresh(undefined, 750);
+          return;
+        }
         const sent = await forwardComposerMessageToOperatorPane(rawValue, submittedAttachments, timestamp);
         if (!sent) {
           syncComposerInputHeight(composerInput);
