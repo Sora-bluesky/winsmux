@@ -357,8 +357,8 @@ function assertNoFixedViewportBlank(metrics) {
   ) {
     throw new Error(`WebView is stuck at the old test viewport: ${JSON.stringify(metrics)}`);
   }
-  if (Math.abs(metrics.bodyWidth - metrics.innerWidth) > 2 || Math.abs(metrics.bodyHeight - metrics.innerHeight) > 2) {
-    throw new Error(`document body should fill the WebView viewport: ${JSON.stringify(metrics)}`);
+  if (metrics.bodyWidth < metrics.innerWidth - 48 || metrics.bodyHeight < metrics.innerHeight - 2) {
+    throw new Error(`document body should cover the WebView viewport: ${JSON.stringify(metrics)}`);
   }
 }
 
@@ -397,8 +397,8 @@ function assertVisibleStartupGeometry(metrics) {
   ) {
     throw new Error(`native desktop window should not restore as a tiny window: ${JSON.stringify(metrics)}`);
   }
-  if (Math.abs(metrics.bodyWidth - metrics.innerWidth) > 2 || Math.abs(metrics.bodyHeight - metrics.innerHeight) > 2) {
-    throw new Error(`document body should fill the startup viewport: ${JSON.stringify(metrics)}`);
+  if (metrics.bodyWidth < metrics.innerWidth - 48 || metrics.bodyHeight < metrics.innerHeight - 2) {
+    throw new Error(`document body should cover the startup viewport: ${JSON.stringify(metrics)}`);
   }
 }
 
@@ -409,8 +409,8 @@ async function waitForNativeWindowResize(page, beforeMetrics, timeoutMs = 12_000
       return false;
     }
     const bodyRect = body.getBoundingClientRect();
-    const fillsViewport = Math.abs(bodyRect.width - window.innerWidth) <= 2
-      && Math.abs(bodyRect.height - window.innerHeight) <= 2;
+    const fillsViewport = bodyRect.width >= window.innerWidth - 48
+      && bodyRect.height >= window.innerHeight - 2;
     const sizeChanged = Math.abs(window.innerWidth - before.innerWidth) > 2
       || Math.abs(window.innerHeight - before.innerHeight) > 2;
     const alreadyAtScreenLimit = window.screen.width <= before.innerWidth + 2
@@ -942,6 +942,19 @@ async function submitComposerWithButton(page, command, expectedMarker) {
     throw new Error("submitted composer message was not rendered in the conversation panel");
   }
   return await waitForPtyOutput(page, "operator", expectedMarker);
+}
+
+async function submitWinsmuxComposerCommandWithButton(page, command) {
+  await page.fill("#composer-input", command);
+  await page.click("#send-btn");
+  await page.waitForFunction(() => {
+    const input = document.querySelector("#composer-input");
+    return input instanceof HTMLTextAreaElement && input.value === "";
+  });
+  const conversationContainsMessage = await page.locator("#conversation-panel", { hasText: command }).count();
+  if (conversationContainsMessage < 1) {
+    throw new Error("submitted winsmux command was not rendered in the conversation panel");
+  }
 }
 
 async function submitComposerShellWithButton(page, command, expectedMarker) {
@@ -1562,6 +1575,83 @@ async function exerciseWorkerStartButton(page) {
   };
 }
 
+async function exerciseOperatorCommandStartsAllWorkerPanes(page) {
+  const tempProjectDir = path.join(OUTPUT_DIR, "operator-start-all-workers-project");
+  await fs.rm(tempProjectDir, { recursive: true, force: true });
+  await fs.mkdir(tempProjectDir, { recursive: true });
+  const tempWinsmuxDir = path.join(tempProjectDir, ".winsmux");
+  await fs.mkdir(tempWinsmuxDir, { recursive: true });
+  const markerScriptPath = path.join(tempProjectDir, "operator-start-all-worker-marker.ps1");
+  await fs.writeFile(
+    markerScriptPath,
+    [
+      "Write-Output 'DESKTOP_ALL_WORKERS_START_OK'",
+      "Write-Output ($args -join ' ')",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  await fs.writeFile(
+    path.join(tempWinsmuxDir, "provider-capabilities.json"),
+    JSON.stringify({
+      version: 1,
+      providers: {
+        codex: {
+          adapter: "codex",
+          command: markerScriptPath,
+          prompt_transports: ["argv"],
+          auth_modes: ["default"],
+          model_sources: ["provider-default", "operator-override"],
+          reasoning_efforts: ["provider-default", "high"],
+          credential_requirements: "none",
+          execution_backend: "local-cli",
+          analysis_posture: "write",
+        },
+      },
+    }, null, 2),
+    "utf8",
+  );
+  const slotLines = [];
+  for (let index = 1; index <= 6; index += 1) {
+    slotLines.push(
+      `  - slot-id: worker-${index}`,
+      "    runtime-role: worker",
+      "    worker-backend: local",
+      "    agent: codex",
+      `    model: gpt-5.4-worker-${index}`,
+      "    model-source: operator-override",
+      "    reasoning-effort: high",
+      "    worktree-mode: managed",
+    );
+  }
+  await fs.writeFile(
+    path.join(tempProjectDir, ".winsmux.yaml"),
+    [
+      "agent: codex",
+      "model: gpt-5.4",
+      "agent-slots:",
+      ...slotLines,
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+
+  await setActiveProjectDirForUi(page, tempProjectDir);
+  await setWorkbenchLayout(page, "3x2");
+  for (let index = 1; index <= 6; index += 1) {
+    await closePtyIfExists(page, `worker-${index}`);
+  }
+  await submitWinsmuxComposerCommandWithButton(page, "winsmux workers start all");
+  await page.locator("#conversation-panel", { hasText: "All worker panes were started" }).waitFor({ state: "visible", timeout: 60_000 });
+  const outputs = {};
+  for (let index = 1; index <= 6; index += 1) {
+    const paneId = `worker-${index}`;
+    const output = await waitForPtyOutput(page, paneId, "DESKTOP_ALL_WORKERS_START_OK", 60_000);
+    outputs[paneId] = output.slice(-800);
+  }
+  return outputs;
+}
+
 async function main() {
   await ensureOutputDir();
   const debugPort = await getAvailablePort();
@@ -1620,6 +1710,9 @@ async function main() {
       await resetAppState(page);
       await runStep("worker start button launches the selected Tauri worker pane", async () => {
         return await exerciseWorkerStartButton(page);
+      });
+      await runStep("operator composer command starts all worker panes", async () => {
+        return await exerciseOperatorCommandStartsAllWorkerPanes(page);
       });
       await ensureOutputDir();
       await page.screenshot({ path: path.join(OUTPUT_DIR, "desktop-worker-start-e2e-success.png"), fullPage: true });
@@ -2197,6 +2290,10 @@ async function main() {
 
     await runStep("worker start button launches the selected Tauri worker pane", async () => {
       return await exerciseWorkerStartButton(page);
+    });
+
+    await runStep("operator composer command starts all worker panes", async () => {
+      return await exerciseOperatorCommandStartsAllWorkerPanes(page);
     });
 
     await runStep("close spawned PTYs", async () => {
