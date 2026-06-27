@@ -3734,6 +3734,10 @@ function appendPaneOutputBuffer(entry: PaneEntry, data: string) {
   }
 }
 
+function getWorkerPaneVisibleText(entry: PaneEntry) {
+  return (entry.container.innerText || entry.container.textContent || "").trim();
+}
+
 function detectWorkerReadinessBlocker(text: string) {
   const compactText = compactWorkerReadinessOutput(text);
   const checks = [
@@ -3798,19 +3802,24 @@ function detectWorkerLaunchPendingReason(text: string) {
   return checks.find((check) => check.pattern.test(text) || check.compactPattern.test(compactText))?.reason ?? "";
 }
 
+function isWorkerLaunchCommandEcho(line: string) {
+  return /^[>›❯]\s*(?:claude|codex|agy|grok|pwsh|powershell)\b/i.test(line)
+    || /^PS\s+.+>\s*(?:claude|codex|agy|grok|pwsh|powershell)\b/i.test(line);
+}
+
 function hasWorkerReadyPrompt(text: string) {
-  const compactText = compactWorkerReadinessOutput(text);
   const recentLines = text
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean)
     .slice(-10);
-  return recentLines.some((line) => /^(?:[>›❯])/.test(line)
-      || /^api_llm\[worker\]>\s*$/i.test(line)
-      || /Grok\s+Build/i.test(line))
-    || /(?:Claude Code v|OpenAI Codex|Antigravity CLI|Grok Build)[\s\S]{0,1200}(?:^|\n)\s*[>›❯]/i.test(text)
-    || (compactText.includes("claudecodev") && compactText.includes("❯try"))
-    || (compactText.includes("grokbuild") && /[>›❯]/.test(text));
+  const hasGrokInputBox = recentLines.some((line) => /^│\s*>\s*│?$/.test(line))
+    && recentLines.some((line) => /Grok\s+Build/i.test(line));
+  return hasGrokInputBox
+    || recentLines.some((line) => !isWorkerLaunchCommandEcho(line)
+      && (/^api_llm\[worker\]>\s*$/i.test(line)
+        || /^(?:[>›❯])\s*$/.test(line)
+        || /^(?:[>›❯])\s*(?!(?:claude|codex|agy|grok|pwsh|powershell)\b)\S/i.test(line)));
 }
 
 async function inspectWorkerPaneReadiness(
@@ -3837,7 +3846,11 @@ async function inspectWorkerPaneReadiness(
 
   let output = "";
   try {
-    output = `${entry.outputBuffer}\n${(await capturePtyPane(target)).output}`;
+    output = [
+      entry.outputBuffer,
+      getWorkerPaneVisibleText(entry),
+      (await capturePtyPane(target)).output,
+    ].filter(Boolean).join("\n");
   } catch (error) {
     return {
       target,
@@ -3865,11 +3878,11 @@ async function inspectWorkerPaneReadiness(
     return { target, state: "blocked", reason: blocker, evidence, warnings };
   }
 
-  if (hasWorkerReadyPrompt(text)) {
+  if (warnings.length > 0) {
     return {
       target,
-      state: "ready",
-      reason: getLanguageText("Worker prompt is available", "ワーカーの入力待ちを確認しました"),
+      state: "blocked",
+      reason: getLanguageText("Worker has startup warnings", "ワーカーに起動警告があります"),
       evidence,
       warnings,
     };
@@ -3878,6 +3891,16 @@ async function inspectWorkerPaneReadiness(
   const pendingReason = detectWorkerReadinessPendingReason(text);
   if (pendingReason) {
     return { target, state: "pending", reason: pendingReason, evidence, warnings };
+  }
+
+  if (hasWorkerReadyPrompt(text)) {
+    return {
+      target,
+      state: "ready",
+      reason: getLanguageText("Worker prompt is available", "ワーカーの入力待ちを確認しました"),
+      evidence,
+      warnings,
+    };
   }
 
   if (expectedProbeLine && workerReadinessOutputContains(text, expectedProbeLine)) {
