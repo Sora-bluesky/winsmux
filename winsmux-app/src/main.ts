@@ -3720,6 +3720,11 @@ function compactWorkerReadinessOutput(output: string) {
   return output.replace(/[\s\u00a0·•∙・]+/g, "").toLowerCase();
 }
 
+function workerReadinessOutputContains(text: string, expected: string) {
+  return text.includes(expected)
+    || compactWorkerReadinessOutput(text).includes(compactWorkerReadinessOutput(expected));
+}
+
 function appendPaneOutputBuffer(entry: PaneEntry, data: string) {
   entry.outputBuffer += data;
   if (entry.outputBuffer.length > 16_000) {
@@ -3749,6 +3754,32 @@ function detectWorkerReadinessBlocker(text: string) {
       reason: getLanguageText("Worker is waiting for a user decision", "ワーカーがユーザー判断待ちです"),
       pattern: /(?:waiting\s+for\s+(?:approval|confirmation)|continue\s+anyway\?\s+\[y\/n\]|continue\?|確認待ち|どう進めますか)/i,
       compactPattern: /(?:waitingfor(?:approval|confirmation)|continueanyway\?\[y\/n\]|continue\?)/,
+    },
+  ];
+
+  return checks.find((check) => check.pattern.test(text) || check.compactPattern.test(compactText))?.reason ?? "";
+}
+
+function detectWorkerReadinessPendingReason(text: string) {
+  const compactText = compactWorkerReadinessOutput(text);
+  const checks = [
+    {
+      reason: getLanguageText("MCP servers are still starting", "MCP サーバー起動中です"),
+      pattern: /(?:starting\s+mcp\s+servers?\s+\(\d+\/\d+\)|starting\s+mcp\s+servers?)/i,
+      compactPattern: /startingmcpservers?(?:\(\d+\/\d+\))?/,
+    },
+  ];
+
+  return checks.find((check) => check.pattern.test(text) || check.compactPattern.test(compactText))?.reason ?? "";
+}
+
+function detectWorkerLaunchPendingReason(text: string) {
+  const compactText = compactWorkerReadinessOutput(text);
+  const checks = [
+    {
+      reason: getLanguageText("Agent CLI launch is still in progress", "エージェント CLI の起動中です"),
+      pattern: /(?:\b(?:agy|codex|claude|grok)\b\s+(?:--model|-c|--dangerously|--print|--permission-mode)|PowerShell\s+\d+\.\d+\.\d+)/i,
+      compactPattern: /(?:\bagy\b|\bcodex\b|\bclaude\b|\bgrok\b)(?:--model|-c|--dangerously|--print|--permission-mode)/,
     },
   ];
 
@@ -3817,7 +3848,12 @@ async function inspectWorkerPaneReadiness(
     return { target, state: "blocked", reason: blocker, evidence };
   }
 
-  if (expectedProbeLine && text.includes(expectedProbeLine)) {
+  const pendingReason = detectWorkerReadinessPendingReason(text);
+  if (pendingReason) {
+    return { target, state: "pending", reason: pendingReason, evidence };
+  }
+
+  if (expectedProbeLine && workerReadinessOutputContains(text, expectedProbeLine)) {
     return {
       target,
       state: "ready",
@@ -3833,6 +3869,11 @@ async function inspectWorkerPaneReadiness(
       reason: getLanguageText("Worker prompt is available", "ワーカーの入力待ちを確認しました"),
       evidence,
     };
+  }
+
+  const launchPendingReason = detectWorkerLaunchPendingReason(text);
+  if (launchPendingReason) {
+    return { target, state: "pending", reason: launchPendingReason, evidence };
   }
 
   return {
@@ -3963,13 +4004,17 @@ async function waitForWorkerPaneReadiness(
     await new Promise((resolve) => window.setTimeout(resolve, WORKER_READINESS_POLL_MS));
   }
 
-  return latest.map((item) => item.state === "ready"
-    ? item
-    : {
-        ...item,
-        state: "pending",
-        reason: getLanguageText("Timed out while checking worker readiness", "ワーカー投入前確認がタイムアウトしました"),
-      });
+  return latest.map((item) => {
+    if (item.state === "ready") {
+      return item;
+    }
+    const timeoutReason = getLanguageText("Timed out while checking worker readiness", "ワーカー投入前確認がタイムアウトしました");
+    return {
+      ...item,
+      state: "pending",
+      reason: item.reason ? `${timeoutReason}: ${item.reason}` : timeoutReason,
+    };
+  });
 }
 
 async function startAllWorkersFromOperatorCommand(timestamp: string): Promise<boolean> {
@@ -17962,7 +18007,6 @@ window.addEventListener("DOMContentLoaded", async () => {
       try {
         if (isOperatorHandledWinsmuxCommand(value) && submittedAttachments.length === 0) {
           appendUserMessage(rawValue, submittedAttachments, timestamp);
-          await handleOperatorWinsmuxCommand(value, submittedAttachments, timestamp);
           pushComposerHistoryEntry(historyEntry);
           composerInput.value = "";
           clearVoiceDraftRecoveryStorage();
@@ -17972,6 +18016,7 @@ window.addEventListener("DOMContentLoaded", async () => {
           selectedComposerRemoteReferenceIds.clear();
           renderComposerRemoteReferences();
           renderAttachmentTray();
+          await handleOperatorWinsmuxCommand(value, submittedAttachments, timestamp);
           requestDesktopSummaryRefresh(undefined, 750);
           return;
         }

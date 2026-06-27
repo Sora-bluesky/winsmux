@@ -783,6 +783,8 @@ fn build_pty_command(workspace_dir: &Path) -> CommandBuilder {
     let mut cmd = CommandBuilder::new("pwsh");
     cmd.arg("-NoLogo");
     cmd.cwd(workspace_dir.as_os_str());
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
     cmd.env_remove(WINSMUX_CONTROL_PIPE_TOKEN_ENV);
     cmd
 }
@@ -1318,6 +1320,16 @@ mod tests {
         assert_eq!(
             command.get_cwd().and_then(|value| value.to_str()),
             Some("C:\\repo\\winsmux")
+        );
+        assert_eq!(
+            command.get_env("TERM").and_then(|value| value.to_str()),
+            Some("xterm-256color")
+        );
+        assert_eq!(
+            command
+                .get_env("COLORTERM")
+                .and_then(|value| value.to_str()),
+            Some("truecolor")
         );
         assert!(command.get_env(WINSMUX_CONTROL_PIPE_TOKEN_ENV).is_none());
     }
