@@ -3999,17 +3999,42 @@ async function loadHarnessBenchmarkTaskPacket(taskId: string): Promise<HarnessBe
   };
 }
 
-async function writeWorkerBenchmarkSubmission(target: string, packet: HarnessBenchmarkTaskPacket) {
+function getWorkerBackendForSubmission(row: DesktopWorkerStatusRow) {
+  return (
+    getLaunchApprovalField(getWorkerStatusLaunch(row), "worker_backend")
+    || row.backend
+    || ""
+  ).trim().toLowerCase();
+}
+
+function getBenchmarkSubmissionRunId(dispatchId: string, target: string) {
+  return `${dispatchId}-${target}`.replace(/[^A-Za-z0-9._-]/g, "-");
+}
+
+async function writeWorkerBenchmarkSubmission(
+  target: string,
+  row: DesktopWorkerStatusRow,
+  packet: HarnessBenchmarkTaskPacket,
+  dispatchId: string,
+) {
   await ensurePanePtyStarted(target);
   if (isViewportHarnessMode()) {
     await writePtyData(target, `Write-Output 'WINSMUX_BENCH_TASK_PACKET ${packet.taskId} ${target} ${packet.sha256.slice(0, 12)}'\r`);
-    return;
+    return "viewport marker";
   }
+
+  if (getWorkerBackendForSubmission(row) === "api_llm") {
+    const runId = getBenchmarkSubmissionRunId(dispatchId, target);
+    await writePtyData(target, `exec ${packet.packetPath} ${packet.taskId} ${runId}\r`);
+    return "api_llm exec";
+  }
+
   await writePtyData(target, encodePtySubmission(packet.prompt));
   if (packet.prompt.includes("\n")) {
     await waitForOperatorSubmitDelay();
     await writePtyData(target, "\r");
   }
+  return "interactive prompt";
 }
 
 async function waitForWorkerPaneReadiness(
@@ -4466,8 +4491,17 @@ async function dispatchBenchmarkTaskFromOperatorCommand(
     }
 
     const packet = await loadHarnessBenchmarkTaskPacket(taskId);
-    for (const target of targets) {
-      await writeWorkerBenchmarkSubmission(target, packet);
+    const submissionDetails: ConversationDetail[] = [];
+    for (const row of rows) {
+      const target = getWorkerStatusTarget(row);
+      if (!target) {
+        continue;
+      }
+      const transport = await writeWorkerBenchmarkSubmission(target, row, packet, probeId);
+      submissionDetails.push({
+        label: target,
+        value: `${getWorkerBackendForSubmission(row) || "unknown"} / ${transport}`,
+      });
     }
 
     appendRuntimeConversation({
@@ -4487,6 +4521,7 @@ async function dispatchBenchmarkTaskFromOperatorCommand(
         { label: "sha256", value: packet.sha256 },
         { label: getLanguageText("worker panes", "ワーカーペイン"), value: targets.join(", ") },
         { label: getLanguageText("timeout", "制限時間"), value: `${packet.timeoutSeconds}s` },
+        ...submissionDetails,
         ...readinessDetails(readiness),
       ],
       tone: "success",
