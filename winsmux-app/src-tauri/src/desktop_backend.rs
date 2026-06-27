@@ -237,6 +237,14 @@ pub struct DesktopEditorFilePayload {
 }
 
 #[derive(Serialize, Deserialize)]
+pub struct DesktopFullFilePayload {
+    pub path: String,
+    pub content: String,
+    pub byte_count: usize,
+    pub line_count: usize,
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct DesktopExplorerEntry {
     pub path: String,
     pub kind: String,
@@ -1531,6 +1539,7 @@ pub fn handle_desktop_json_rpc(
                     "desktop.dogfood.event",
                     "desktop.explorer.list",
                     "desktop.editor.read",
+                    "desktop.file.read_full",
                 ],
             }),
         ),
@@ -1813,6 +1822,27 @@ pub fn handle_desktop_json_rpc(
                         request_id,
                         JSON_RPC_INTERNAL_ERROR,
                         format!("Failed to serialize desktop editor payload: {err}"),
+                    ),
+                },
+                Err(err) => json_rpc_error(request_id, JSON_RPC_SERVER_ERROR, err),
+            }
+        }
+        "desktop.file.read_full" => {
+            let path = match get_required_string_param(params.as_ref(), &["path"]) {
+                Ok(value) => value,
+                Err(err) => {
+                    return json_rpc_error(request_id, JSON_RPC_INVALID_PARAMS, err);
+                }
+            };
+            let worktree = get_optional_string_param(params.as_ref(), &["worktree"]);
+
+            match read_desktop_full_file(resolved_project_dir, worktree, &path) {
+                Ok(result) => match serde_json::to_value(result) {
+                    Ok(value) => json_rpc_result(request_id, value),
+                    Err(err) => json_rpc_error(
+                        request_id,
+                        JSON_RPC_INTERNAL_ERROR,
+                        format!("Failed to serialize desktop full file payload: {err}"),
                     ),
                 },
                 Err(err) => json_rpc_error(request_id, JSON_RPC_SERVER_ERROR, err),
@@ -2412,6 +2442,65 @@ fn read_desktop_editor_file(
         content,
         line_count,
         truncated,
+    })
+}
+
+fn resolve_desktop_project_relative_file(
+    project_dir: Option<String>,
+    worktree: Option<String>,
+    relative_path: &str,
+    operation: &str,
+) -> Result<(PathBuf, PathBuf), String> {
+    let read_root = resolve_desktop_read_root(project_dir, worktree)?;
+    let requested_path = PathBuf::from(relative_path);
+    if requested_path.is_absolute() {
+        return Err(format!("{operation} expects a project-relative path"));
+    }
+
+    let full_path = read_root.join(&requested_path);
+    let normalized_full_path = full_path
+        .canonicalize()
+        .map_err(|err| format!("Failed to resolve file path: {err}"))?;
+
+    if !normalized_full_path.starts_with(&read_root) {
+        return Err(format!(
+            "{operation} rejected a path outside the selected worktree"
+        ));
+    }
+
+    Ok((requested_path, normalized_full_path))
+}
+
+fn read_desktop_full_file(
+    project_dir: Option<String>,
+    worktree: Option<String>,
+    relative_path: &str,
+) -> Result<DesktopFullFilePayload, String> {
+    let (requested_path, normalized_full_path) = resolve_desktop_project_relative_file(
+        project_dir,
+        worktree,
+        relative_path,
+        "desktop.file.read_full",
+    )?;
+    let bytes = fs::read(&normalized_full_path)
+        .map_err(|err| format!("Failed to read full file: {err}"))?;
+    const MAX_FULL_FILE_BYTES: usize = 1024 * 1024;
+    if bytes.len() > MAX_FULL_FILE_BYTES {
+        return Err(format!(
+            "desktop.file.read_full rejected a file larger than {} bytes",
+            MAX_FULL_FILE_BYTES
+        ));
+    }
+    let content = String::from_utf8(bytes)
+        .map_err(|err| format!("Failed to decode full file as UTF-8: {err}"))?;
+    let line_count = content.lines().count().max(1);
+    let byte_count = content.as_bytes().len();
+
+    Ok(DesktopFullFilePayload {
+        path: requested_path.to_string_lossy().replace('\\', "/"),
+        content,
+        byte_count,
+        line_count,
     })
 }
 
@@ -5098,6 +5187,90 @@ mod tests {
                 panic!("expected success, got {:?}", error);
             }
         }
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn handle_desktop_json_rpc_full_file_read_is_not_preview_truncated() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "winsmux-desktop-full-file-read-{}",
+            std::process::id()
+        ));
+        let target_file = temp_dir
+            .join("tasks")
+            .join("cli-bakeoff")
+            .join("v1")
+            .join("benchmark-pack.json");
+        let large_content = format!(
+            "{{\"pack_id\":\"large\",\"payload\":\"{}\"}}\n",
+            "x".repeat(40 * 1024)
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(target_file.parent().unwrap()).unwrap();
+        std::fs::write(&target_file, &large_content).unwrap();
+
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response: serde_json::json!({}),
+        };
+
+        let preview_response = handle_desktop_json_rpc(
+            &transport,
+            DesktopJsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::json!("req-preview"),
+                method: "desktop.editor.read".to_string(),
+                params: Some(serde_json::json!({
+                    "path": "tasks/cli-bakeoff/v1/benchmark-pack.json"
+                })),
+            },
+            Some(temp_dir.to_string_lossy().to_string()),
+        );
+
+        match preview_response {
+            DesktopJsonRpcResponse::Success { result, .. } => {
+                assert_eq!(result["path"], "tasks/cli-bakeoff/v1/benchmark-pack.json");
+                assert_eq!(result["truncated"], true);
+                assert!(
+                    result["content"].as_str().unwrap_or_default().len() < large_content.len()
+                );
+            }
+            DesktopJsonRpcResponse::Error { error, .. } => {
+                panic!("expected preview success, got {:?}", error);
+            }
+        }
+
+        let full_response = handle_desktop_json_rpc(
+            &transport,
+            DesktopJsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::json!("req-full"),
+                method: "desktop.file.read_full".to_string(),
+                params: Some(serde_json::json!({
+                    "path": "tasks/cli-bakeoff/v1/benchmark-pack.json"
+                })),
+            },
+            Some(temp_dir.to_string_lossy().to_string()),
+        );
+
+        match full_response {
+            DesktopJsonRpcResponse::Success { id, result, .. } => {
+                assert_eq!(id, serde_json::json!("req-full"));
+                assert_eq!(result["path"], "tasks/cli-bakeoff/v1/benchmark-pack.json");
+                assert_eq!(
+                    result["byte_count"].as_u64(),
+                    Some(large_content.as_bytes().len() as u64)
+                );
+                assert_eq!(result["content"].as_str(), Some(large_content.as_str()));
+            }
+            DesktopJsonRpcResponse::Error { error, .. } => {
+                panic!("expected full file read success, got {:?}", error);
+            }
+        }
+
+        assert!(transport.requests.borrow().is_empty());
 
         let _ = std::fs::remove_dir_all(temp_dir);
     }

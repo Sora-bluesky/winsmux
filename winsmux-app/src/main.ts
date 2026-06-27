@@ -9,6 +9,7 @@ import {
   applyDesktopRuntimeRolePreferences,
   compareDesktopRuns,
   getDesktopEditorFile,
+  getDesktopFullFile,
   getDesktopInitialProjectDir,
   getDesktopRunExplain,
   getDesktopExplorerEntries,
@@ -3733,6 +3734,10 @@ function appendPaneOutputBuffer(entry: PaneEntry, data: string) {
   }
 }
 
+function getWorkerPaneVisibleText(entry: PaneEntry) {
+  return (entry.container.innerText || entry.container.textContent || "").trim();
+}
+
 function detectWorkerReadinessBlocker(text: string) {
   const compactText = compactWorkerReadinessOutput(text);
   const checks = [
@@ -3797,19 +3802,24 @@ function detectWorkerLaunchPendingReason(text: string) {
   return checks.find((check) => check.pattern.test(text) || check.compactPattern.test(compactText))?.reason ?? "";
 }
 
+function isWorkerLaunchCommandEcho(line: string) {
+  return /^[>›❯]\s*(?:claude|codex|agy|grok|pwsh|powershell)\b/i.test(line)
+    || /^PS\s+.+>\s*(?:claude|codex|agy|grok|pwsh|powershell)\b/i.test(line);
+}
+
 function hasWorkerReadyPrompt(text: string) {
-  const compactText = compactWorkerReadinessOutput(text);
   const recentLines = text
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean)
     .slice(-10);
-  return recentLines.some((line) => /^(?:[>›❯])/.test(line)
-      || /^api_llm\[worker\]>\s*$/i.test(line)
-      || /Grok\s+Build/i.test(line))
-    || /(?:Claude Code v|OpenAI Codex|Antigravity CLI|Grok Build)[\s\S]{0,1200}(?:^|\n)\s*[>›❯]/i.test(text)
-    || (compactText.includes("claudecodev") && compactText.includes("❯try"))
-    || (compactText.includes("grokbuild") && /[>›❯]/.test(text));
+  const hasGrokInputBox = recentLines.some((line) => /^│\s*>\s*│?$/.test(line))
+    && recentLines.some((line) => /Grok\s+Build/i.test(line));
+  return hasGrokInputBox
+    || recentLines.some((line) => !isWorkerLaunchCommandEcho(line)
+      && (/^api_llm\[worker\]>\s*$/i.test(line)
+        || /^(?:[>›❯])\s*$/.test(line)
+        || /^(?:[>›❯])\s*(?!(?:claude|codex|agy|grok|pwsh|powershell)\b)\S/i.test(line)));
 }
 
 async function inspectWorkerPaneReadiness(
@@ -3836,7 +3846,11 @@ async function inspectWorkerPaneReadiness(
 
   let output = "";
   try {
-    output = `${entry.outputBuffer}\n${(await capturePtyPane(target)).output}`;
+    output = [
+      entry.outputBuffer,
+      getWorkerPaneVisibleText(entry),
+      (await capturePtyPane(target)).output,
+    ].filter(Boolean).join("\n");
   } catch (error) {
     return {
       target,
@@ -3864,11 +3878,11 @@ async function inspectWorkerPaneReadiness(
     return { target, state: "blocked", reason: blocker, evidence, warnings };
   }
 
-  if (hasWorkerReadyPrompt(text)) {
+  if (warnings.length > 0) {
     return {
       target,
-      state: "ready",
-      reason: getLanguageText("Worker prompt is available", "ワーカーの入力待ちを確認しました"),
+      state: "blocked",
+      reason: getLanguageText("Worker has startup warnings", "ワーカーに起動警告があります"),
       evidence,
       warnings,
     };
@@ -3877,6 +3891,16 @@ async function inspectWorkerPaneReadiness(
   const pendingReason = detectWorkerReadinessPendingReason(text);
   if (pendingReason) {
     return { target, state: "pending", reason: pendingReason, evidence, warnings };
+  }
+
+  if (hasWorkerReadyPrompt(text)) {
+    return {
+      target,
+      state: "ready",
+      reason: getLanguageText("Worker prompt is available", "ワーカーの入力待ちを確認しました"),
+      evidence,
+      warnings,
+    };
   }
 
   if (expectedProbeLine && workerReadinessOutputContains(text, expectedProbeLine)) {
@@ -3973,10 +3997,7 @@ async function loadHarnessBenchmarkTaskPacket(taskId: string): Promise<HarnessBe
     throw new Error("Benchmark task id is required.");
   }
   const packPath = "tasks/cli-bakeoff/v1/benchmark-pack.json";
-  const packFile = await getDesktopEditorFile(packPath, undefined, activeProjectDir);
-  if (packFile.truncated) {
-    throw new Error(`${packPath} is truncated and cannot be used for benchmark dispatch.`);
-  }
+  const packFile = await getDesktopFullFile(packPath, undefined, activeProjectDir);
   const pack = parseHarnessBenchmarkPack(packFile.content);
   const task = (pack.tasks ?? []).find((item) => String(item.task_id || "").trim().toLowerCase() === normalizedTaskId.toLowerCase());
   if (!task) {
@@ -3987,10 +4008,7 @@ async function loadHarnessBenchmarkTaskPacket(taskId: string): Promise<HarnessBe
     throw new Error(`Benchmark task ${normalizedTaskId} has an invalid packet_path.`);
   }
   const packetRelativePath = `tasks/cli-bakeoff/v1/${packetPath}`;
-  const packetFile = await getDesktopEditorFile(packetRelativePath, undefined, activeProjectDir);
-  if (packetFile.truncated) {
-    throw new Error(`${packetRelativePath} is truncated and cannot be used for benchmark dispatch.`);
-  }
+  const packetFile = await getDesktopFullFile(packetRelativePath, undefined, activeProjectDir);
   const prompt = buildHarnessTaskPrompt(pack, task, packetFile.content);
   const timeoutSeconds = Number(task.timeout_seconds || pack.default_timeout_seconds || 3600);
   return {
@@ -4004,17 +4022,42 @@ async function loadHarnessBenchmarkTaskPacket(taskId: string): Promise<HarnessBe
   };
 }
 
-async function writeWorkerBenchmarkSubmission(target: string, packet: HarnessBenchmarkTaskPacket) {
+function getWorkerBackendForSubmission(row: DesktopWorkerStatusRow) {
+  return (
+    getLaunchApprovalField(getWorkerStatusLaunch(row), "worker_backend")
+    || row.backend
+    || ""
+  ).trim().toLowerCase();
+}
+
+function getBenchmarkSubmissionRunId(dispatchId: string, target: string) {
+  return `${dispatchId}-${target}`.replace(/[^A-Za-z0-9._-]/g, "-");
+}
+
+async function writeWorkerBenchmarkSubmission(
+  target: string,
+  row: DesktopWorkerStatusRow,
+  packet: HarnessBenchmarkTaskPacket,
+  dispatchId: string,
+) {
   await ensurePanePtyStarted(target);
   if (isViewportHarnessMode()) {
     await writePtyData(target, `Write-Output 'WINSMUX_BENCH_TASK_PACKET ${packet.taskId} ${target} ${packet.sha256.slice(0, 12)}'\r`);
-    return;
+    return "viewport marker";
   }
+
+  if (getWorkerBackendForSubmission(row) === "api_llm") {
+    const runId = getBenchmarkSubmissionRunId(dispatchId, target);
+    await writePtyData(target, `exec ${packet.packetPath} ${packet.taskId} ${runId}\r`);
+    return "api_llm exec";
+  }
+
   await writePtyData(target, encodePtySubmission(packet.prompt));
   if (packet.prompt.includes("\n")) {
     await waitForOperatorSubmitDelay();
     await writePtyData(target, "\r");
   }
+  return "interactive prompt";
 }
 
 async function waitForWorkerPaneReadiness(
@@ -4471,8 +4514,17 @@ async function dispatchBenchmarkTaskFromOperatorCommand(
     }
 
     const packet = await loadHarnessBenchmarkTaskPacket(taskId);
-    for (const target of targets) {
-      await writeWorkerBenchmarkSubmission(target, packet);
+    const submissionDetails: ConversationDetail[] = [];
+    for (const row of rows) {
+      const target = getWorkerStatusTarget(row);
+      if (!target) {
+        continue;
+      }
+      const transport = await writeWorkerBenchmarkSubmission(target, row, packet, probeId);
+      submissionDetails.push({
+        label: target,
+        value: `${getWorkerBackendForSubmission(row) || "unknown"} / ${transport}`,
+      });
     }
 
     appendRuntimeConversation({
@@ -4492,6 +4544,7 @@ async function dispatchBenchmarkTaskFromOperatorCommand(
         { label: "sha256", value: packet.sha256 },
         { label: getLanguageText("worker panes", "ワーカーペイン"), value: targets.join(", ") },
         { label: getLanguageText("timeout", "制限時間"), value: `${packet.timeoutSeconds}s` },
+        ...submissionDetails,
         ...readinessDetails(readiness),
       ],
       tone: "success",

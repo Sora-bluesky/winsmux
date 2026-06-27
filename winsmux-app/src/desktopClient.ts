@@ -16,6 +16,7 @@ type DesktopCommandName =
   | "desktop_voice_capture_stop"
   | "desktop_dogfood_event"
   | "desktop_editor_read"
+  | "desktop_file_read_full"
   | "desktop_explorer_list";
 type DesktopJsonRpcMethod =
   | "desktop.summary.snapshot"
@@ -30,6 +31,7 @@ type DesktopJsonRpcMethod =
   | "desktop.voice.capture_status"
   | "desktop.dogfood.event"
   | "desktop.editor.read"
+  | "desktop.file.read_full"
   | "desktop.explorer.list";
 
 interface DesktopJsonRpcRequest {
@@ -475,6 +477,13 @@ export interface DesktopEditorFilePayload {
   truncated: boolean;
 }
 
+export interface DesktopFullFilePayload {
+  path: string;
+  content: string;
+  byte_count: number;
+  line_count: number;
+}
+
 export interface DesktopExplorerEntry {
   path: string;
   kind: "directory" | "file";
@@ -816,6 +825,8 @@ function getDesktopJsonRpcMethod(command: DesktopCommandName): DesktopJsonRpcMet
       return "desktop.dogfood.event";
     case "desktop_editor_read":
       return "desktop.editor.read";
+    case "desktop_file_read_full":
+      return "desktop.file.read_full";
     case "desktop_explorer_list":
       return "desktop.explorer.list";
   }
@@ -1106,6 +1117,24 @@ export async function getDesktopEditorFile(
   } catch (error) {
     const worktreeSuffix = worktree ? `, ${worktree}` : "";
     throw normalizeDesktopError(`desktop_editor_read(${path}${worktreeSuffix})`, error);
+  }
+}
+
+export async function getDesktopFullFile(
+  path: string,
+  worktree?: string,
+  projectDir?: string | null,
+) {
+  try {
+    return await desktopCommandTransport.request<DesktopFullFilePayload>(
+      "desktop_file_read_full",
+      worktree
+        ? { path, worktree, ...buildProjectDirPayload(projectDir) }
+        : { path, ...buildProjectDirPayload(projectDir) },
+    );
+  } catch (error) {
+    const worktreeSuffix = worktree ? `, ${worktree}` : "";
+    throw normalizeDesktopError(`desktop_file_read_full(${path}${worktreeSuffix})`, error);
   }
 }
 
