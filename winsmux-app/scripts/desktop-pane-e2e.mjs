@@ -1575,20 +1575,27 @@ async function exerciseWorkerStartButton(page) {
   };
 }
 
-async function exerciseOperatorCommandStartsAllWorkerPanes(page) {
-  const tempProjectDir = path.join(OUTPUT_DIR, "operator-start-all-workers-project");
+async function closeAllWorkerPtys(page) {
+  for (let index = 1; index <= 6; index += 1) {
+    await closePtyIfExists(page, `worker-${index}`);
+  }
+}
+
+async function exerciseOperatorCommandStartsAllWorkerPanes(page, options = {}) {
+  const tempProjectDir = path.join(OUTPUT_DIR, options.projectName ?? "operator-start-all-workers-project");
   await fs.rm(tempProjectDir, { recursive: true, force: true });
   await fs.mkdir(tempProjectDir, { recursive: true });
   const tempWinsmuxDir = path.join(tempProjectDir, ".winsmux");
   await fs.mkdir(tempWinsmuxDir, { recursive: true });
-  const markerScriptPath = path.join(tempProjectDir, "operator-start-all-worker-marker.ps1");
+  const markerScriptPath = path.join(tempProjectDir, options.scriptName ?? "operator-start-all-worker-marker.ps1");
+  const startMarker = options.startMarker ?? "DESKTOP_ALL_WORKERS_START_OK";
   await fs.writeFile(
     markerScriptPath,
-    [
-      "Write-Output 'DESKTOP_ALL_WORKERS_START_OK'",
+    (options.scriptLines ?? [
+      `Write-Output '${startMarker}'`,
       "Write-Output ($args -join ' ')",
       "",
-    ].join("\n"),
+    ]).join("\n"),
     "utf8",
   );
   await fs.writeFile(
@@ -1638,18 +1645,49 @@ async function exerciseOperatorCommandStartsAllWorkerPanes(page) {
 
   await setActiveProjectDirForUi(page, tempProjectDir);
   await setWorkbenchLayout(page, "3x2");
-  for (let index = 1; index <= 6; index += 1) {
-    await closePtyIfExists(page, `worker-${index}`);
-  }
+  await closeAllWorkerPtys(page);
   await submitWinsmuxComposerCommandWithButton(page, "winsmux workers start all");
   await page.locator("#conversation-panel", { hasText: "All worker panes were started" }).waitFor({ state: "visible", timeout: 60_000 });
   const outputs = {};
   for (let index = 1; index <= 6; index += 1) {
     const paneId = `worker-${index}`;
-    const output = await waitForPtyOutput(page, paneId, "DESKTOP_ALL_WORKERS_START_OK", 60_000);
+    const output = await waitForPtyOutput(page, paneId, startMarker, 60_000);
     outputs[paneId] = output.slice(-800);
   }
   return outputs;
+}
+
+async function exerciseOperatorBenchmarkReadyCheckBlocksOnMcpWarning(page) {
+  await exerciseOperatorCommandStartsAllWorkerPanes(page, {
+    projectName: "operator-ready-check-mcp-warning-project",
+    scriptName: "operator-start-all-worker-mcp-warning.ps1",
+    scriptLines: [
+      "Write-Output 'DESKTOP_ALL_WORKERS_START_OK'",
+      "Write-Output 'MCP startup incomplete (failed: figma)'",
+      "Write-Output '3 MCP servers need authentication - run /mcp'",
+      "Write-Output ($args -join ' ')",
+      "",
+    ],
+  });
+  await submitWinsmuxComposerCommandWithButton(page, "winsmux benchmark ready-check");
+  await page.locator("#conversation-panel", { hasText: "Benchmark start readiness blocked" }).waitFor({ state: "visible", timeout: 60_000 });
+  const text = await page.locator("#conversation-panel").textContent();
+  const metaState = await page.evaluate(() => {
+    return Array.from(document.querySelectorAll(".pane")).map((pane) => {
+      const title = pane.querySelector(".pane-label")?.textContent?.trim() ?? "";
+      const meta = pane.querySelector(".pane-meta")?.textContent?.trim() ?? "";
+      const metaTitle = pane.querySelector(".pane-meta")?.getAttribute("title") ?? "";
+      return { title, meta, metaTitle };
+    });
+  });
+  const combined = `${text ?? ""}\n${JSON.stringify(metaState)}`;
+  if (!combined.includes("MCP authentication required")) {
+    throw new Error(`ready-check did not report the MCP blocker:\n${combined.slice(-1_800)}`);
+  }
+  return {
+    conversationTail: (text ?? "").slice(-1_200),
+    metaState,
+  };
 }
 
 async function exerciseOperatorBenchmarkReadyCheck(page) {
@@ -1723,6 +1761,9 @@ async function main() {
       await enableViewportHarness(page);
       await runStep("worker start button launches the selected Tauri worker pane", async () => {
         return await exerciseWorkerStartButton(page);
+      });
+      await runStep("operator benchmark ready-check stops on worker MCP warnings", async () => {
+        return await exerciseOperatorBenchmarkReadyCheckBlocksOnMcpWarning(page);
       });
       await runStep("operator composer command starts all worker panes", async () => {
         return await exerciseOperatorCommandStartsAllWorkerPanes(page);
