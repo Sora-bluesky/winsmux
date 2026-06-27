@@ -9,6 +9,7 @@ import {
   applyDesktopRuntimeRolePreferences,
   compareDesktopRuns,
   getDesktopEditorFile,
+  getDesktopFullFile,
   getDesktopInitialProjectDir,
   getDesktopRunExplain,
   getDesktopExplorerEntries,
@@ -3973,10 +3974,7 @@ async function loadHarnessBenchmarkTaskPacket(taskId: string): Promise<HarnessBe
     throw new Error("Benchmark task id is required.");
   }
   const packPath = "tasks/cli-bakeoff/v1/benchmark-pack.json";
-  const packFile = await getDesktopEditorFile(packPath, undefined, activeProjectDir);
-  if (packFile.truncated) {
-    throw new Error(`${packPath} is truncated and cannot be used for benchmark dispatch.`);
-  }
+  const packFile = await getDesktopFullFile(packPath, undefined, activeProjectDir);
   const pack = parseHarnessBenchmarkPack(packFile.content);
   const task = (pack.tasks ?? []).find((item) => String(item.task_id || "").trim().toLowerCase() === normalizedTaskId.toLowerCase());
   if (!task) {
@@ -3987,10 +3985,7 @@ async function loadHarnessBenchmarkTaskPacket(taskId: string): Promise<HarnessBe
     throw new Error(`Benchmark task ${normalizedTaskId} has an invalid packet_path.`);
   }
   const packetRelativePath = `tasks/cli-bakeoff/v1/${packetPath}`;
-  const packetFile = await getDesktopEditorFile(packetRelativePath, undefined, activeProjectDir);
-  if (packetFile.truncated) {
-    throw new Error(`${packetRelativePath} is truncated and cannot be used for benchmark dispatch.`);
-  }
+  const packetFile = await getDesktopFullFile(packetRelativePath, undefined, activeProjectDir);
   const prompt = buildHarnessTaskPrompt(pack, task, packetFile.content);
   const timeoutSeconds = Number(task.timeout_seconds || pack.default_timeout_seconds || 3600);
   return {
