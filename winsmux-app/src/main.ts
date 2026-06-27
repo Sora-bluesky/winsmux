@@ -3716,6 +3716,10 @@ function normalizeWorkerReadinessOutput(output: string) {
   return stripTerminalControlSequences(output).replace(/\u00a0/g, " ").trim();
 }
 
+function compactWorkerReadinessOutput(output: string) {
+  return output.replace(/[\s\u00a0·•∙・]+/g, "").toLowerCase();
+}
+
 function appendPaneOutputBuffer(entry: PaneEntry, data: string) {
   entry.outputBuffer += data;
   if (entry.outputBuffer.length > 16_000) {
@@ -3724,36 +3728,43 @@ function appendPaneOutputBuffer(entry: PaneEntry, data: string) {
 }
 
 function detectWorkerReadinessBlocker(text: string) {
+  const compactText = compactWorkerReadinessOutput(text);
   const checks = [
     {
       reason: getLanguageText("MCP authentication required", "MCP 認証が必要です"),
       pattern: /(?:mcp\s+startup\s+incomplete|mcp\s+servers?\s+need\s+authentication|mcp\s+server\s+is\s+not\s+logged\s+in|run\s+\/mcp)/i,
+      compactPattern: /(?:mcpstartupincomplete|mcpservers?needauthentication|mcpserverisnotloggedin|run\/mcp)/,
     },
     {
       reason: getLanguageText("Provider credentials or API setup required", "プロバイダーの資格情報または API 設定が必要です"),
       pattern: /(?:setup\s+required|missing\s+api\s+key|requires?\s+(?:an?\s+)?(?:api|credential|key)|OPENROUTER_API_KEY)/i,
+      compactPattern: /(?:setuprequired|missingapikey|requires?(?:an?)?(?:api|credential|key)|openrouter_api_key)/,
     },
     {
       reason: getLanguageText("Quota or rate-limit warning", "利用枠またはレート制限の警告があります"),
       pattern: /(?:less\s+than\s+\d+%\s+of\s+your\s+.*limit|rate\s+limit|quota\s+(?:exceeded|warning))/i,
+      compactPattern: /(?:lessthan\d+%ofyour.*limit|ratelimit|quota(?:exceeded|warning))/,
     },
     {
       reason: getLanguageText("Worker is waiting for a user decision", "ワーカーがユーザー判断待ちです"),
-      pattern: /(?:waiting\s+for\s+(?:approval|confirmation)|continue\?|確認待ち|どう進めますか)/i,
+      pattern: /(?:waiting\s+for\s+(?:approval|confirmation)|continue\s+anyway\?\s+\[y\/n\]|continue\?|確認待ち|どう進めますか)/i,
+      compactPattern: /(?:waitingfor(?:approval|confirmation)|continueanyway\?\[y\/n\]|continue\?)/,
     },
   ];
 
-  return checks.find((check) => check.pattern.test(text))?.reason ?? "";
+  return checks.find((check) => check.pattern.test(text) || check.compactPattern.test(compactText))?.reason ?? "";
 }
 
 function hasWorkerReadyPrompt(text: string) {
+  const compactText = compactWorkerReadinessOutput(text);
   const recentLines = text
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean)
     .slice(-10);
   return recentLines.some((line) => /^(?:[>›❯]|PS\s+.+>|.*>\s*)$/.test(line))
-    || /(?:Claude Code v|OpenAI Codex|Antigravity CLI|Grok Build)[\s\S]{0,1200}(?:^|\n)\s*[>›❯]\s*$/i.test(text);
+    || /(?:Claude Code v|OpenAI Codex|Antigravity CLI|Grok Build)[\s\S]{0,1200}(?:^|\n)\s*[>›❯]\s*$/i.test(text)
+    || (compactText.includes("grokbuild") && /[>›❯]/.test(text));
 }
 
 async function inspectWorkerPaneReadiness(

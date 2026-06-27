@@ -1699,6 +1699,7 @@ async function exerciseOperatorBenchmarkReadyCheckBlocksOnMcpWarning(page) {
       "Write-Output 'DESKTOP_ALL_WORKERS_START_OK'",
       "Write-Output 'MCP startup incomplete (failed: figma)'",
       "Write-Output '3 MCP servers need authentication - run /mcp'",
+      "Write-Output '‼3MCPserversneedauthentication·run/mcp'",
       "Write-Output ($args -join ' ')",
       "",
     ],
@@ -1721,6 +1722,28 @@ async function exerciseOperatorBenchmarkReadyCheckBlocksOnMcpWarning(page) {
   return {
     conversationTail: (text ?? "").slice(-1_200),
     metaState,
+  };
+}
+
+async function exerciseOperatorBenchmarkReadyCheckBlocksOnConfirmationPrompt(page) {
+  await exerciseOperatorCommandStartsAllWorkerPanes(page, {
+    projectName: "operator-ready-check-confirmation-prompt-project",
+    scriptName: "operator-start-all-worker-confirmation-prompt.ps1",
+    scriptLines: [
+      "Write-Output 'DESKTOP_ALL_WORKERS_START_OK'",
+      "Write-Output 'Continue anyway? [y/N]:'",
+      "Write-Output ($args -join ' ')",
+      "",
+    ],
+  });
+  await submitWinsmuxComposerCommandWithButton(page, "winsmux benchmark ready-check");
+  await page.locator("#conversation-panel", { hasText: "Benchmark start readiness blocked" }).waitFor({ state: "visible", timeout: 60_000 });
+  const text = await page.locator("#conversation-panel").textContent();
+  if (!(text ?? "").includes("Worker is waiting for a user decision")) {
+    throw new Error(`ready-check did not report the confirmation prompt blocker:\n${(text ?? "").slice(-1_800)}`);
+  }
+  return {
+    conversationTail: (text ?? "").slice(-1_200),
   };
 }
 
@@ -1850,6 +1873,9 @@ async function main() {
       });
       await runStep("operator benchmark ready-check stops on worker MCP warnings", async () => {
         return await exerciseOperatorBenchmarkReadyCheckBlocksOnMcpWarning(page);
+      });
+      await runStep("operator benchmark ready-check stops on confirmation prompts", async () => {
+        return await exerciseOperatorBenchmarkReadyCheckBlocksOnConfirmationPrompt(page);
       });
       await runStep("operator benchmark dispatch stops on worker MCP warnings", async () => {
         return await exerciseOperatorBenchmarkDispatchBlocksOnMcpWarning(page);
