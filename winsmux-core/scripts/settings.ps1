@@ -27,6 +27,7 @@ $script:BridgeSlotScalarKeys = @(
     'model_source',
     'reasoning_effort',
     'prompt_transport',
+    'mcp_mode',
     'auth_mode',
     'worktree_mode',
     'worker_backend',
@@ -428,6 +429,16 @@ function Test-BridgeReasoningEffortValue {
     return ($Value.Trim().ToLowerInvariant() -in @('provider-default', 'low', 'medium', 'high', 'xhigh', 'max'))
 }
 
+function Test-BridgeMcpModeValue {
+    param([AllowNull()][string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return $false
+    }
+
+    return ($Value.Trim().ToLowerInvariant() -in @('provider-default', 'enabled', 'disabled'))
+}
+
 function ConvertTo-BridgeSlotKey {
     param([Parameter(Mandatory = $true)][string]$Key)
 
@@ -480,6 +491,12 @@ function ConvertTo-BridgeSlotEntry {
             if ($key -eq 'reasoning_effort') {
                 if (-not (Test-BridgeReasoningEffortValue -Value $text)) {
                     throw "Invalid agent_slots configuration: unsupported reasoning_effort '$text' for slot '$($slot.slot_id)'. Supported values: provider-default, low, medium, high, xhigh, max."
+                }
+                $text = $text.Trim().ToLowerInvariant()
+            }
+            if ($key -eq 'mcp_mode') {
+                if (-not (Test-BridgeMcpModeValue -Value $text)) {
+                    throw "Invalid agent_slots configuration: unsupported mcp_mode '$text' for slot '$($slot.slot_id)'. Supported values: provider-default, enabled, disabled."
                 }
                 $text = $text.Trim().ToLowerInvariant()
             }
@@ -1795,12 +1812,67 @@ function Assert-BridgeProviderCapabilitySelection {
     }
 }
 
+function Get-BridgeCodexMcpServerNamesToDisable {
+    param([Parameter(Mandatory = $true)][string]$Command)
+
+    $envValue = [Environment]::GetEnvironmentVariable('WINSMUX_CODEX_MCP_DISABLE_SERVERS')
+    if (-not [string]::IsNullOrWhiteSpace($envValue)) {
+        return @(
+            $envValue -split ',' |
+                ForEach-Object { $_.Trim() } |
+                Where-Object { $_ -match '^[A-Za-z0-9_.-]+$' } |
+                Select-Object -Unique
+        )
+    }
+
+    $cacheVariable = Get-Variable -Name BridgeCodexMcpServerNamesCache -Scope Script -ErrorAction SilentlyContinue
+    if ($null -ne $cacheVariable -and $cacheVariable.Value) {
+        return @($script:BridgeCodexMcpServerNamesCache)
+    }
+
+    $names = @()
+    try {
+        $output = & $Command --disable plugins mcp list 2>$null
+        foreach ($line in @($output)) {
+            $text = [string]$line
+            if ($text -match '^\s*(?<name>[A-Za-z0-9_.-]+)\s{2,}') {
+                $name = $Matches['name']
+                if ($name -ne 'Name') {
+                    $names += $name
+                }
+            }
+        }
+    } catch {
+        $names = @()
+    }
+
+    if ($names.Count -eq 0) {
+        $names = @('cua-driver', 'node_repl', 'playwright', 'mcpvault', 'pencil', 'figma')
+    }
+
+    $script:BridgeCodexMcpServerNamesCache = @($names | Select-Object -Unique)
+    return @($script:BridgeCodexMcpServerNamesCache)
+}
+
+function Get-BridgeCodexMcpSuppressionArguments {
+    param([Parameter(Mandatory = $true)][string]$Command)
+
+    $args = @('--disable', 'plugins')
+    foreach ($serverName in Get-BridgeCodexMcpServerNamesToDisable -Command $Command) {
+        $args += '-c'
+        $args += (ConvertTo-BridgePowerShellLiteral -Value "mcp_servers.$serverName.enabled=false")
+    }
+
+    return @($args)
+}
+
 function Get-BridgeProviderLaunchCommand {
     param(
         [Parameter(Mandatory = $true)][string]$ProviderId,
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Model,
         [AllowEmptyString()][string]$ModelSource = '',
         [AllowEmptyString()][string]$ReasoningEffort = '',
+        [AllowEmptyString()][string]$McpMode = '',
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)][string]$GitWorktreeDir,
         [string]$RootPath,
@@ -1824,6 +1896,7 @@ function Get-BridgeProviderLaunchCommand {
     $commandInvocation = ConvertTo-BridgePowerShellCommandInvocation -Value $command
     $modelOverride = Test-BridgeProviderModelOverride -Model $Model -ModelSource $ModelSource
     $effortOverride = -not (Test-BridgeProviderDefaultReasoningEffort -ReasoningEffort $ReasoningEffort)
+    $mcpDisabled = (-not [string]::IsNullOrWhiteSpace($McpMode)) -and [string]::Equals($McpMode.Trim(), 'disabled', [System.StringComparison]::OrdinalIgnoreCase)
     switch ($adapterKey) {
         'codex' {
             if ($ExecMode) {
@@ -1840,6 +1913,9 @@ function Get-BridgeProviderLaunchCommand {
             if ($effortOverride) {
                 $parts += '-c'
                 $parts += (ConvertTo-BridgePowerShellLiteral -Value "model_reasoning_effort=$($ReasoningEffort.Trim().ToLowerInvariant())")
+            }
+            if ($mcpDisabled) {
+                $parts += Get-BridgeCodexMcpSuppressionArguments -Command $command
             }
             $parts += '--sandbox'
             $parts += 'danger-full-access'
@@ -1858,6 +1934,11 @@ function Get-BridgeProviderLaunchCommand {
             if ($effortOverride) {
                 $parts += '--effort'
                 $parts += $ReasoningEffort.Trim().ToLowerInvariant()
+            }
+            if ($mcpDisabled) {
+                $parts += '--mcp-config'
+                $parts += (ConvertTo-BridgePowerShellLiteral -Value '{"mcpServers":{}}')
+                $parts += '--strict-mcp-config'
             }
             $parts += '--permission-mode'
             $parts += 'bypassPermissions'
@@ -2786,6 +2867,7 @@ function Get-SlotAgentConfig {
     $modelSource = [string]$roleAgentConfig.ModelSource
     $reasoningEffort = [string]$roleAgentConfig.ReasoningEffort
     $promptTransport = [string]$roleAgentConfig.PromptTransport
+    $mcpMode = ''
     $authMode = [string]$roleAgentConfig.AuthMode
     $workerBackend = ''
     if ($Settings -is [System.Collections.IDictionary]) {
@@ -2840,6 +2922,7 @@ function Get-SlotAgentConfig {
             $slotModelSource = ''
             $slotReasoningEffort = ''
             $slotPromptTransport = ''
+            $slotMcpMode = ''
             $slotAuthMode = ''
             $slotWorkerBackend = ''
             $slotExecutionProfile = ''
@@ -2874,6 +2957,9 @@ function Get-SlotAgentConfig {
                 }
                 if ($slot.Contains('prompt_transport')) {
                     $slotPromptTransport = [string]$slot['prompt_transport']
+                }
+                if ($slot.Contains('mcp_mode')) {
+                    $slotMcpMode = [string]$slot['mcp_mode']
                 }
                 if ($slot.Contains('auth_mode')) {
                     $slotAuthMode = [string]$slot['auth_mode']
@@ -2928,6 +3014,9 @@ function Get-SlotAgentConfig {
                 }
                 if ($slot.PSObject.Properties.Name -contains 'prompt_transport') {
                     $slotPromptTransport = [string]$slot.prompt_transport
+                }
+                if ($slot.PSObject.Properties.Name -contains 'mcp_mode') {
+                    $slotMcpMode = [string]$slot.mcp_mode
                 }
                 if ($slot.PSObject.Properties.Name -contains 'auth_mode') {
                     $slotAuthMode = [string]$slot.auth_mode
@@ -2994,6 +3083,11 @@ function Get-SlotAgentConfig {
 
             if (-not [string]::IsNullOrWhiteSpace($slotPromptTransport)) {
                 $promptTransport = $slotPromptTransport
+                $source = 'slot'
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($slotMcpMode)) {
+                $mcpMode = $slotMcpMode
                 $source = 'slot'
             }
 
@@ -3097,6 +3191,7 @@ function Get-SlotAgentConfig {
         ModelSource              = [string]$modelSource
         ReasoningEffort          = [string]$reasoningEffort
         PromptTransport          = [string]$promptTransport
+        McpMode                  = [string]$mcpMode
         AuthMode                 = [string]$authMode
         AuthPolicy               = Get-BridgeProviderAuthPolicy -Capability $providerCapability -AuthMode $authMode
         Source                   = [string]$source

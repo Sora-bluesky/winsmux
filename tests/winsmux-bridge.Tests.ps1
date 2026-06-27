@@ -1824,6 +1824,40 @@ agent-slots:
             -RootPath $script:settingsTempRoot
 
         $providerDefaultSourceCommand | Should -Not -Match 'model=gpt-5\.4'
+
+        $previousCodexMcpDisableServers = $env:WINSMUX_CODEX_MCP_DISABLE_SERVERS
+        try {
+            $env:WINSMUX_CODEX_MCP_DISABLE_SERVERS = 'cua-driver,node_repl,figma'
+            $mcpDisabledCommand = Get-BridgeProviderLaunchCommand `
+                -ProviderId 'codex-local' `
+                -Model 'gpt-5.5' `
+                -ModelSource 'cli-discovery' `
+                -ReasoningEffort 'high' `
+                -McpMode 'disabled' `
+                -ProjectDir 'C:\Project Root' `
+                -GitWorktreeDir 'C:\Project Root\.git\worktrees\worker-2' `
+                -RootPath $script:settingsTempRoot
+        } finally {
+            $env:WINSMUX_CODEX_MCP_DISABLE_SERVERS = $previousCodexMcpDisableServers
+        }
+
+        $mcpDisabledCommand | Should -Match '--disable plugins'
+        $mcpDisabledCommand | Should -Match "-c 'mcp_servers\.cua-driver\.enabled=false'"
+        $mcpDisabledCommand | Should -Match "-c 'mcp_servers\.node_repl\.enabled=false'"
+        $mcpDisabledCommand | Should -Match "-c 'mcp_servers\.figma\.enabled=false'"
+
+        $mcpEnabledCommand = Get-BridgeProviderLaunchCommand `
+            -ProviderId 'codex-local' `
+            -Model 'gpt-5.5' `
+            -ModelSource 'cli-discovery' `
+            -ReasoningEffort 'high' `
+            -McpMode 'enabled' `
+            -ProjectDir 'C:\Project Root' `
+            -GitWorktreeDir 'C:\Project Root\.git\worktrees\worker-2' `
+            -RootPath $script:settingsTempRoot
+
+        $mcpEnabledCommand | Should -Not -Match '--disable plugins'
+        $mcpEnabledCommand | Should -Not -Match 'mcp_servers\.figma\.enabled=false'
     }
 
     It 'uses built-in launch command metadata for Antigravity and Grok Build providers' {
@@ -1850,6 +1884,34 @@ agent-slots:
 
         $grokCommand | Should -Be "grok --model 'grok-build'"
         $grokCommand | Should -Not -Match '^grok-build '
+    }
+
+    It 'adds Claude strict empty MCP config only when MCP mode is disabled' {
+        $mcpDisabledCommand = Get-BridgeProviderLaunchCommand `
+            -ProviderId 'claude' `
+            -Model 'claude-opus-4-8' `
+            -ModelSource 'operator-override' `
+            -ReasoningEffort 'high' `
+            -McpMode 'disabled' `
+            -ProjectDir 'C:\Project Root' `
+            -GitWorktreeDir 'C:\Project Root\.git\worktrees\worker-1' `
+            -RootPath $script:settingsTempRoot
+
+        $mcpDisabledCommand | Should -Match '--mcp-config'
+        $mcpDisabledCommand | Should -Match 'mcpServers'
+        $mcpDisabledCommand | Should -Match '--strict-mcp-config'
+
+        $mcpDefaultCommand = Get-BridgeProviderLaunchCommand `
+            -ProviderId 'claude' `
+            -Model 'claude-opus-4-8' `
+            -ModelSource 'operator-override' `
+            -ReasoningEffort 'high' `
+            -ProjectDir 'C:\Project Root' `
+            -GitWorktreeDir 'C:\Project Root\.git\worktrees\worker-1' `
+            -RootPath $script:settingsTempRoot
+
+        $mcpDefaultCommand | Should -Not -Match '--mcp-config'
+        $mcpDefaultCommand | Should -Not -Match '--strict-mcp-config'
     }
 
     It 'rejects structurally malformed provider capability registries' {
@@ -10715,6 +10777,66 @@ worker-backend: colab_cli
         $payload.workers[0].launch_command | Should -Match '--sandbox danger-full-access'
     }
 
+    It 'reports MCP-disabled launch commands for benchmark worker slots only when requested' {
+@'
+agent: codex
+model: provider-default
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    worker-backend: local
+    agent: claude
+    model: claude-opus-4-8
+    model-source: operator-override
+    reasoning-effort: high
+    mcp-mode: disabled
+    worktree-mode: managed
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: codex
+    agent: codex
+    model: gpt-5.5
+    model-source: operator-override
+    reasoning-effort: high
+    mcp-mode: disabled
+    worktree-mode: managed
+  - slot-id: worker-3
+    runtime-role: worker
+    worker-backend: local
+    agent: codex
+    model: gpt-5.5
+    model-source: operator-override
+    reasoning-effort: high
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        $previousCodexMcpDisableServers = $env:WINSMUX_CODEX_MCP_DISABLE_SERVERS
+        try {
+            $env:WINSMUX_CODEX_MCP_DISABLE_SERVERS = 'cua-driver,node_repl,figma'
+            $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers status --json --project-dir $script:workersTempRoot
+        } finally {
+            $env:WINSMUX_CODEX_MCP_DISABLE_SERVERS = $previousCodexMcpDisableServers
+        }
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $claudeRow = @($payload.workers | Where-Object { $_.slot_id -eq 'worker-1' })[0]
+        $codexRow = @($payload.workers | Where-Object { $_.slot_id -eq 'worker-2' })[0]
+        $defaultMcpRow = @($payload.workers | Where-Object { $_.slot_id -eq 'worker-3' })[0]
+
+        $claudeRow.mcp_mode | Should -Be 'disabled'
+        $claudeRow.launch_command | Should -Match '--mcp-config'
+        $claudeRow.launch_command | Should -Match 'mcpServers'
+        $claudeRow.launch_command | Should -Match '--strict-mcp-config'
+        $codexRow.mcp_mode | Should -Be 'disabled'
+        $codexRow.launch_command | Should -Match '--disable plugins'
+        $codexRow.launch_command | Should -Match "mcp_servers\.cua-driver\.enabled=false"
+        $codexRow.launch_command | Should -Match "mcp_servers\.node_repl\.enabled=false"
+        $codexRow.launch_command | Should -Match "mcp_servers\.figma\.enabled=false"
+        $defaultMcpRow.mcp_mode | Should -Be ''
+        $defaultMcpRow.launch_command | Should -Not -Match '--disable plugins'
+        $defaultMcpRow.launch_command | Should -Not -Match 'mcp_servers\.figma\.enabled=false'
+        $defaultMcpRow.launch_command | Should -Not -Match '--mcp-config'
+    }
+
     It 'reports api_llm worker status with provider-hosted model metadata' {
         Write-WorkersApiLlmProjectConfig
 
@@ -18550,7 +18672,7 @@ Describe 'orchestra pane bootstrap plan' {
 
     It 'builds pane launch commands through provider capability metadata' {
         $script:orchestraStartContent | Should -Match 'Get-BridgeProviderLaunchCommand'
-        $script:orchestraStartContent | Should -Match 'Get-AgentLaunchCommand -Agent \$slotAgentConfig\.Agent -Model \$slotAgentConfig\.Model -ModelSource \$slotAgentConfig\.ModelSource -ReasoningEffort \$slotAgentConfig\.ReasoningEffort -ProjectDir \$launchDir -GitWorktreeDir \$launchGitWorktreeDir -RootPath \$projectDir'
+        $script:orchestraStartContent | Should -Match 'Get-AgentLaunchCommand -Agent \$slotAgentConfig\.Agent -Model \$slotAgentConfig\.Model -ModelSource \$slotAgentConfig\.ModelSource -ReasoningEffort \$slotAgentConfig\.ReasoningEffort -McpMode \$slotAgentConfig\.McpMode -ProjectDir \$launchDir -GitWorktreeDir \$launchGitWorktreeDir -RootPath \$projectDir'
     }
 
     It 'defers one-shot workers before resolving provider launch commands' {

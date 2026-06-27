@@ -3864,6 +3864,7 @@ function Invoke-Role {
         -Model ([string]$roleAgentConfig.Model) `
         -ModelSource ([string]$roleAgentConfig.ModelSource) `
         -ReasoningEffort ([string]$roleAgentConfig.ReasoningEffort) `
+        -McpMode ([string]$roleAgentConfig.McpMode) `
         -ProjectDir $launchDir `
         -GitWorktreeDir $gitDir `
         -RootPath $projectDir
@@ -4456,6 +4457,7 @@ function New-LauncherSlotSummary {
         model_source               = [string]$effective.ModelSource
         reasoning_effort           = [string]$effective.ReasoningEffort
         prompt_transport           = [string]$effective.PromptTransport
+        mcp_mode                   = [string]$effective.McpMode
         auth_mode                  = [string]$effective.AuthMode
         auth_policy                = [string]$effective.AuthPolicy
         local_access_note          = [string]$effective.LocalAccessNote
@@ -5849,6 +5851,7 @@ function Get-WorkersStatusRows {
                 -Model ([string]$slotConfig.Model) `
                 -ModelSource ([string]$slotConfig.ModelSource) `
                 -ReasoningEffort ([string]$slotConfig.ReasoningEffort) `
+                -McpMode ([string]$slotConfig.McpMode) `
                 -ProjectDir $Context.ProjectDir `
                 -GitWorktreeDir $launchGitWorktreeDir `
                 -RootPath $Context.ProjectDir
@@ -5875,6 +5878,7 @@ function Get-WorkersStatusRows {
             ModelSource    = [string]$slotConfig.ModelSource
             ReasoningEffort = [string]$slotConfig.ReasoningEffort
             PromptTransport = [string]$slotConfig.PromptTransport
+            McpMode       = [string]$slotConfig.McpMode
             AuthMode       = [string]$slotConfig.AuthMode
             AuthPolicy     = [string]$slotConfig.AuthPolicy
             CapabilityAdapter = [string]$slotConfig.CapabilityAdapter
@@ -5990,6 +5994,7 @@ function ConvertTo-WorkersStatusJsonRows {
             model_source    = [string]$row.ModelSource
             reasoning_effort = [string]$row.ReasoningEffort
             prompt_transport = [string]$row.PromptTransport
+            mcp_mode        = [string]$row.McpMode
             auth_mode       = [string]$row.AuthMode
             auth_policy     = [string]$row.AuthPolicy
             capability_adapter = [string]$row.CapabilityAdapter
