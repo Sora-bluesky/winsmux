@@ -3804,8 +3804,11 @@ function hasWorkerReadyPrompt(text: string) {
     .map((line) => line.trim())
     .filter(Boolean)
     .slice(-10);
-  return recentLines.some((line) => /^(?:[>›❯]|PS\s+.+>|.*>\s*)$/.test(line))
-    || /(?:Claude Code v|OpenAI Codex|Antigravity CLI|Grok Build)[\s\S]{0,1200}(?:^|\n)\s*[>›❯]\s*$/i.test(text)
+  return recentLines.some((line) => /^(?:[>›❯])/.test(line)
+      || /^api_llm\[worker\]>\s*$/i.test(line)
+      || /Grok\s+Build/i.test(line))
+    || /(?:Claude Code v|OpenAI Codex|Antigravity CLI|Grok Build)[\s\S]{0,1200}(?:^|\n)\s*[>›❯]/i.test(text)
+    || (compactText.includes("claudecodev") && compactText.includes("❯try"))
     || (compactText.includes("grokbuild") && /[>›❯]/.test(text));
 }
 
@@ -3861,6 +3864,16 @@ async function inspectWorkerPaneReadiness(
     return { target, state: "blocked", reason: blocker, evidence, warnings };
   }
 
+  if (hasWorkerReadyPrompt(text)) {
+    return {
+      target,
+      state: "ready",
+      reason: getLanguageText("Worker prompt is available", "ワーカーの入力待ちを確認しました"),
+      evidence,
+      warnings,
+    };
+  }
+
   const pendingReason = detectWorkerReadinessPendingReason(text);
   if (pendingReason) {
     return { target, state: "pending", reason: pendingReason, evidence, warnings };
@@ -3876,7 +3889,7 @@ async function inspectWorkerPaneReadiness(
     };
   }
 
-  if (/DESKTOP_(?:ALL_WORKERS_START|WORKER_START)_OK/.test(text) || hasWorkerReadyPrompt(text)) {
+  if (/DESKTOP_(?:ALL_WORKERS_START|WORKER_START)_OK/.test(text)) {
     return {
       target,
       state: "ready",

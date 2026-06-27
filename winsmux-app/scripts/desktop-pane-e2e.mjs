@@ -1697,6 +1697,12 @@ async function exerciseOperatorBenchmarkReadyCheckAllowsPromptReadyMcpWarning(pa
     scriptName: "operator-start-all-worker-mcp-warning.ps1",
     scriptLines: [
       "Write-Output 'DESKTOP_ALL_WORKERS_START_OK'",
+      "Write-Output 'claude --permission-mode bypassPermissions'",
+      "Write-Output 'Claude Code v2.1.195'",
+      "Write-Output '❯ Try \"fix typecheck errors\"'",
+      "Write-Output 'OpenAI Codex (v0.142.3)'",
+      "Write-Output '⚠ MCP startup incomplete (failed: figma)'",
+      "Write-Output '› Improve documentation in @filename'",
       "Write-Output 'MCP startup incomplete (failed: figma)'",
       "Write-Output '3 MCP servers need authentication - run /mcp'",
       "Write-Output '‼3MCPserversneedauthentication·run/mcp'",
@@ -1781,6 +1787,9 @@ async function exerciseOperatorBenchmarkDispatchAllowsPromptReadyMcpWarning(page
     scriptName: "operator-dispatch-mcp-warning.ps1",
     scriptLines: [
       "Write-Output 'DESKTOP_ALL_WORKERS_START_OK'",
+      "Write-Output 'OpenAI Codex (v0.142.3)'",
+      "Write-Output '⚠ MCP startup incomplete (failed: figma)'",
+      "Write-Output '› Improve documentation in @filename'",
       "Write-Output 'MCP startup incomplete (failed: figma)'",
       "Write-Output '3 MCP servers need authentication - run /mcp'",
       "Write-Output ($args -join ' ')",
