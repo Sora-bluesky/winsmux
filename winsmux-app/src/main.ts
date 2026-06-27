@@ -3623,6 +3623,18 @@ function isOperatorStartAllWorkersCommand(value: string) {
   return /^\s*winsmux\s+workers\s+start\s+(?:all|\*)\s*$/i.test(value);
 }
 
+function isOperatorBenchmarkReadyCheckCommand(value: string) {
+  return /^\s*winsmux\s+(?:benchmark|harness)\s+ready-check\s*$/i.test(value);
+}
+
+function isOperatorHandledWinsmuxCommand(value: string) {
+  return isOperatorStartAllWorkersCommand(value) || isOperatorBenchmarkReadyCheckCommand(value);
+}
+
+function isViewportHarnessMode() {
+  return new URLSearchParams(window.location.search).get("viewport-harness") === "1";
+}
+
 function getWorkerRowsByTarget(rows: DesktopWorkerStatusRow[]) {
   const byTarget = new Map<string, DesktopWorkerStatusRow>();
   for (const row of rows) {
@@ -3768,16 +3780,162 @@ async function startAllWorkersFromOperatorCommand(timestamp: string): Promise<bo
   }
 }
 
+async function runBenchmarkReadyCheckFromOperatorCommand(timestamp: string): Promise<boolean> {
+  if (workerStartTarget) {
+    appendRuntimeConversation({
+      type: "system",
+      category: "attention",
+      timestamp,
+      actor: "winsmux",
+      title: getLanguageText("Worker start is already running", "ワーカー起動は実行中"),
+      body: getLanguageText(
+        "Wait for the current worker start request to finish before checking benchmark readiness.",
+        "現在のワーカー起動要求が完了してから、ベンチ開始準備を確認してください。",
+      ),
+      tone: "warning",
+    });
+    renderConversation(getConversationItems());
+    return true;
+  }
+  if (!isTauri()) {
+    appendRuntimeConversation({
+      type: "system",
+      category: "attention",
+      timestamp,
+      actor: "winsmux",
+      title: getLanguageText("Benchmark readiness is unavailable", "ベンチ開始準備を確認できません"),
+      body: getLanguageText(
+        "Open winsmux in the desktop runtime. Browser preview cannot verify worker pane PTYs.",
+        "winsmux デスクトップで開いてください。ブラウザー表示ではワーカーペインの PTY を確認できません。",
+      ),
+      tone: "warning",
+    });
+    renderConversation(getConversationItems());
+    return true;
+  }
+
+  workerStartTarget = "all";
+  setTerminalDrawer(true);
+  workbenchLayout = "3x2";
+  ensureWorkbenchPaneCount(MAX_WORKBENCH_PANES);
+  ensureWorkbenchWidthForLayout();
+  updateWorkbenchControls();
+
+  try {
+    const statusPayload = await getDesktopWorkersStatus("all", activeProjectDir);
+    const rowsByTarget = getWorkerRowsByTarget(statusPayload.workers);
+    const targets = getConfiguredWorkerPaneIds();
+    const missingTargets = targets.filter((target) => !rowsByTarget.has(target));
+    if (missingTargets.length > 0) {
+      appendRuntimeConversation({
+        type: "system",
+        category: "attention",
+        timestamp,
+        actor: "winsmux",
+        title: getLanguageText("Benchmark readiness blocked", "ベンチ開始準備を停止"),
+        body: getLanguageText(
+          `Missing worker status rows: ${missingTargets.join(", ")}`,
+          `ワーカー状態行が不足しています: ${missingTargets.join(", ")}`,
+        ),
+        tone: "warning",
+      });
+      renderConversation(getConversationItems());
+      return true;
+    }
+
+    const rows = targets.map((target) => rowsByTarget.get(target)!);
+    const blockedRows = rows.filter((row) => (row.approval_differences ?? []).length > 0);
+    if (blockedRows.length > 0) {
+      appendRuntimeConversation({
+        type: "system",
+        category: "attention",
+        timestamp,
+        actor: "winsmux",
+        title: getLanguageText("Benchmark readiness blocked", "ベンチ開始準備を停止"),
+        body: getLanguageText(
+          `${blockedRows.length} worker panes have launch approval differences. Review settings before starting the benchmark.`,
+          `${blockedRows.length} 件のワーカーペインに起動承認との差分があります。設定を確認してからベンチを開始してください。`,
+        ),
+        tone: "warning",
+      });
+      renderConversation(getConversationItems());
+      return true;
+    }
+
+    for (const row of rows) {
+      const target = getWorkerStatusTarget(row);
+      if (target) {
+        await startDesktopWorkerPaneWithLaunchCommand(target, row);
+      }
+    }
+
+    const harnessProbe = isViewportHarnessMode();
+    const probeId = `ready-${Date.now().toString(36)}`;
+    for (const target of targets) {
+      await ensurePanePtyStarted(target);
+      const data = harnessProbe
+        ? `Write-Output 'WINSMUX_BENCH_READY_CHECK ${target} ${probeId}'\r`
+        : "";
+      await writePtyData(target, data);
+    }
+
+    appendRuntimeConversation({
+      type: "system",
+      category: "activity",
+      timestamp,
+      actor: "winsmux",
+      title: getLanguageText("Benchmark start readiness confirmed", "ベンチ開始準備を確認"),
+      body: getLanguageText(
+        "All six worker panes are running, launch approvals are clean, and the PTY write path was verified. No benchmark task packet was sent.",
+        "6つのワーカーペインが起動済みで、起動承認に差分はありません。書き込み経路も確認しました。正式ベンチ課題はまだ投入していません。",
+      ),
+      details: [
+        { label: getLanguageText("worker panes", "ワーカーペイン"), value: targets.join(", ") },
+        { label: getLanguageText("formal task packets", "正式課題"), value: getLanguageText("not sent", "未投入") },
+        { label: getLanguageText("probe id", "確認ID"), value: probeId },
+      ],
+      tone: "success",
+    });
+    renderConversation(getConversationItems());
+    requestDesktopSummaryRefresh(undefined, 500);
+    return true;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    appendRuntimeConversation({
+      type: "system",
+      category: "attention",
+      timestamp,
+      actor: "winsmux",
+      title: getLanguageText("Benchmark start readiness failed", "ベンチ開始準備に失敗"),
+      body: message,
+      tone: "danger",
+    });
+    renderConversation(getConversationItems());
+    console.warn("Failed to verify benchmark readiness through operator command", error);
+    return true;
+  } finally {
+    workerStartTarget = null;
+    updateWorkbenchControls();
+  }
+}
+
 async function handleOperatorWinsmuxCommand(
   value: string,
   attachments: ComposerAttachment[],
   timestamp: string,
 ): Promise<boolean> {
-  if (attachments.length > 0 || !isOperatorStartAllWorkersCommand(value)) {
+  if (attachments.length > 0) {
     return false;
   }
-  await startAllWorkersFromOperatorCommand(timestamp);
-  return true;
+  if (isOperatorStartAllWorkersCommand(value)) {
+    await startAllWorkersFromOperatorCommand(timestamp);
+    return true;
+  }
+  if (isOperatorBenchmarkReadyCheckCommand(value)) {
+    await runBenchmarkReadyCheckFromOperatorCommand(timestamp);
+    return true;
+  }
+  return false;
 }
 
 function ensureDefaultWorkbenchPanes(options?: { deferWorkbenchUpdate?: boolean }) {
@@ -17274,7 +17432,7 @@ window.addEventListener("DOMContentLoaded", async () => {
       const timestamp = getConversationTimestamp();
       setComposerSubmitInFlight(true);
       try {
-        if (isOperatorStartAllWorkersCommand(value) && submittedAttachments.length === 0) {
+        if (isOperatorHandledWinsmuxCommand(value) && submittedAttachments.length === 0) {
           appendUserMessage(rawValue, submittedAttachments, timestamp);
           await handleOperatorWinsmuxCommand(value, submittedAttachments, timestamp);
           pushComposerHistoryEntry(historyEntry);
