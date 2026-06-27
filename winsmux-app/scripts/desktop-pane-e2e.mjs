@@ -1581,12 +1581,46 @@ async function closeAllWorkerPtys(page) {
   }
 }
 
+async function writeMinimalHarnessBenchmarkPack(projectDir) {
+  const packDir = path.join(projectDir, "tasks", "cli-bakeoff", "v1");
+  await fs.mkdir(packDir, { recursive: true });
+  await fs.writeFile(
+    path.join(packDir, "WB-001-desktop-worker-pane-launch-diagnosis.md"),
+    [
+      "# WB-001: Desktop worker-pane launch diagnosis",
+      "",
+      "Return BAKEOFF_ROUND_A_BEGIN, a concise diagnosis, and BAKEOFF_ROUND_A_END.",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  await fs.writeFile(
+    path.join(packDir, "benchmark-pack.json"),
+    JSON.stringify({
+      version: 1,
+      pack_id: "winsmux-cli-bakeoff-v1",
+      title: "desktop pane e2e benchmark pack",
+      default_timeout_seconds: 3600,
+      tasks: [
+        {
+          task_id: "WB-001",
+          title: "Desktop worker-pane launch diagnosis",
+          packet_path: "WB-001-desktop-worker-pane-launch-diagnosis.md",
+          timeout_seconds: 3600,
+        },
+      ],
+    }, null, 2),
+    "utf8",
+  );
+}
+
 async function exerciseOperatorCommandStartsAllWorkerPanes(page, options = {}) {
   const tempProjectDir = path.join(OUTPUT_DIR, options.projectName ?? "operator-start-all-workers-project");
   await fs.rm(tempProjectDir, { recursive: true, force: true });
   await fs.mkdir(tempProjectDir, { recursive: true });
   const tempWinsmuxDir = path.join(tempProjectDir, ".winsmux");
   await fs.mkdir(tempWinsmuxDir, { recursive: true });
+  await writeMinimalHarnessBenchmarkPack(tempProjectDir);
   const markerScriptPath = path.join(tempProjectDir, options.scriptName ?? "operator-start-all-worker-marker.ps1");
   const startMarker = options.startMarker ?? "DESKTOP_ALL_WORKERS_START_OK";
   await fs.writeFile(
@@ -1690,6 +1724,39 @@ async function exerciseOperatorBenchmarkReadyCheckBlocksOnMcpWarning(page) {
   };
 }
 
+async function exerciseOperatorBenchmarkDispatchBlocksOnMcpWarning(page) {
+  await exerciseOperatorCommandStartsAllWorkerPanes(page, {
+    projectName: "operator-dispatch-mcp-warning-project",
+    scriptName: "operator-dispatch-mcp-warning.ps1",
+    scriptLines: [
+      "Write-Output 'DESKTOP_ALL_WORKERS_START_OK'",
+      "Write-Output 'MCP startup incomplete (failed: figma)'",
+      "Write-Output '3 MCP servers need authentication - run /mcp'",
+      "Write-Output ($args -join ' ')",
+      "",
+    ],
+  });
+  await submitWinsmuxComposerCommandWithButton(page, "winsmux benchmark dispatch WB-001");
+  await page.locator("#conversation-panel", { hasText: "Benchmark dispatch blocked" }).waitFor({ state: "visible", timeout: 60_000 });
+  const text = await page.locator("#conversation-panel").textContent();
+  const outputs = {};
+  for (let index = 1; index <= 6; index += 1) {
+    const paneId = `worker-${index}`;
+    outputs[paneId] = (await capturePty(page, paneId).catch(() => "")).slice(-1_200);
+  }
+  const combined = `${text ?? ""}\n${JSON.stringify(outputs)}`;
+  if (!combined.includes("MCP authentication required")) {
+    throw new Error(`benchmark dispatch did not report the MCP blocker:\n${combined.slice(-1_800)}`);
+  }
+  if (combined.includes("WINSMUX_BENCH_TASK_PACKET")) {
+    throw new Error(`benchmark dispatch sent a task packet despite MCP warnings:\n${combined.slice(-1_800)}`);
+  }
+  return {
+    conversationTail: (text ?? "").slice(-1_200),
+    outputs,
+  };
+}
+
 async function exerciseOperatorBenchmarkReadyCheck(page) {
   await submitWinsmuxComposerCommandWithButton(page, "winsmux benchmark ready-check");
   await page.locator("#conversation-panel", { hasText: "Benchmark start readiness confirmed" }).waitFor({ state: "visible", timeout: 60_000 });
@@ -1700,6 +1767,25 @@ async function exerciseOperatorBenchmarkReadyCheck(page) {
     outputs[paneId] = output.slice(-800);
   }
   return outputs;
+}
+
+async function exerciseOperatorBenchmarkDispatch(page) {
+  await submitWinsmuxComposerCommandWithButton(page, "winsmux benchmark dispatch WB-001");
+  await page.locator("#conversation-panel", { hasText: "Benchmark task packet dispatched" }).waitFor({ state: "visible", timeout: 60_000 });
+  const outputs = {};
+  for (let index = 1; index <= 6; index += 1) {
+    const paneId = `worker-${index}`;
+    const output = await waitForPtyOutputLine(page, paneId, `WINSMUX_BENCH_TASK_PACKET WB-001 ${paneId}`, 60_000);
+    outputs[paneId] = output.slice(-800);
+  }
+  const text = await page.locator("#conversation-panel").textContent();
+  if (!(text ?? "").includes("sha256")) {
+    throw new Error(`benchmark dispatch did not record the packet hash:\n${(text ?? "").slice(-1_200)}`);
+  }
+  return {
+    conversationTail: (text ?? "").slice(-1_200),
+    outputs,
+  };
 }
 
 async function main() {
@@ -1765,11 +1851,17 @@ async function main() {
       await runStep("operator benchmark ready-check stops on worker MCP warnings", async () => {
         return await exerciseOperatorBenchmarkReadyCheckBlocksOnMcpWarning(page);
       });
+      await runStep("operator benchmark dispatch stops on worker MCP warnings", async () => {
+        return await exerciseOperatorBenchmarkDispatchBlocksOnMcpWarning(page);
+      });
       await runStep("operator composer command starts all worker panes", async () => {
         return await exerciseOperatorCommandStartsAllWorkerPanes(page);
       });
       await runStep("operator benchmark ready-check verifies all worker write paths", async () => {
         return await exerciseOperatorBenchmarkReadyCheck(page);
+      });
+      await runStep("operator benchmark dispatch writes the same task packet to all workers", async () => {
+        return await exerciseOperatorBenchmarkDispatch(page);
       });
       await ensureOutputDir();
       await page.screenshot({ path: path.join(OUTPUT_DIR, "desktop-worker-start-e2e-success.png"), fullPage: true });
