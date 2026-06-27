@@ -1652,6 +1652,18 @@ async function exerciseOperatorCommandStartsAllWorkerPanes(page) {
   return outputs;
 }
 
+async function exerciseOperatorBenchmarkReadyCheck(page) {
+  await submitWinsmuxComposerCommandWithButton(page, "winsmux benchmark ready-check");
+  await page.locator("#conversation-panel", { hasText: "Benchmark start readiness confirmed" }).waitFor({ state: "visible", timeout: 60_000 });
+  const outputs = {};
+  for (let index = 1; index <= 6; index += 1) {
+    const paneId = `worker-${index}`;
+    const output = await waitForPtyOutputLine(page, paneId, `WINSMUX_BENCH_READY_CHECK ${paneId}`, 60_000);
+    outputs[paneId] = output.slice(-800);
+  }
+  return outputs;
+}
+
 async function main() {
   await ensureOutputDir();
   const debugPort = await getAvailablePort();
@@ -1708,11 +1720,15 @@ async function main() {
 
     if (WORKER_START_ONLY) {
       await resetAppState(page);
+      await enableViewportHarness(page);
       await runStep("worker start button launches the selected Tauri worker pane", async () => {
         return await exerciseWorkerStartButton(page);
       });
       await runStep("operator composer command starts all worker panes", async () => {
         return await exerciseOperatorCommandStartsAllWorkerPanes(page);
+      });
+      await runStep("operator benchmark ready-check verifies all worker write paths", async () => {
+        return await exerciseOperatorBenchmarkReadyCheck(page);
       });
       await ensureOutputDir();
       await page.screenshot({ path: path.join(OUTPUT_DIR, "desktop-worker-start-e2e-success.png"), fullPage: true });
