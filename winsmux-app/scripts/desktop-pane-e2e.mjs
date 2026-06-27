@@ -1725,6 +1725,31 @@ async function exerciseOperatorBenchmarkReadyCheckBlocksOnMcpWarning(page) {
   };
 }
 
+async function exerciseOperatorBenchmarkReadyCheckWaitsForMcpStartup(page) {
+  await exerciseOperatorCommandStartsAllWorkerPanes(page, {
+    projectName: "operator-ready-check-mcp-starting-project",
+    scriptName: "operator-start-all-worker-mcp-starting.ps1",
+    scriptLines: [
+      "Write-Output 'DESKTOP_ALL_WORKERS_START_OK'",
+      "Write-Output 'Starting MCP servers (0/2): codex-security, performance'",
+      "Write-Output ($args -join ' ')",
+      "",
+    ],
+  });
+  await submitWinsmuxComposerCommandWithButton(page, "winsmux benchmark ready-check");
+  await page.locator("#conversation-panel", { hasText: "Benchmark start readiness blocked" }).waitFor({ state: "visible", timeout: 120_000 });
+  const text = await page.locator("#conversation-panel").textContent();
+  if (!(text ?? "").includes("MCP servers are still starting")) {
+    throw new Error(`ready-check did not report MCP startup as a pending state:\n${(text ?? "").slice(-1_800)}`);
+  }
+  if ((text ?? "").includes("Benchmark task packet dispatched")) {
+    throw new Error(`ready-check should not dispatch a task packet while MCP startup is pending:\n${(text ?? "").slice(-1_800)}`);
+  }
+  return {
+    conversationTail: (text ?? "").slice(-1_200),
+  };
+}
+
 async function exerciseOperatorBenchmarkReadyCheckBlocksOnConfirmationPrompt(page) {
   await exerciseOperatorCommandStartsAllWorkerPanes(page, {
     projectName: "operator-ready-check-confirmation-prompt-project",
@@ -1873,6 +1898,9 @@ async function main() {
       });
       await runStep("operator benchmark ready-check stops on worker MCP warnings", async () => {
         return await exerciseOperatorBenchmarkReadyCheckBlocksOnMcpWarning(page);
+      });
+      await runStep("operator benchmark ready-check waits for Codex MCP startup", async () => {
+        return await exerciseOperatorBenchmarkReadyCheckWaitsForMcpStartup(page);
       });
       await runStep("operator benchmark ready-check stops on confirmation prompts", async () => {
         return await exerciseOperatorBenchmarkReadyCheckBlocksOnConfirmationPrompt(page);
