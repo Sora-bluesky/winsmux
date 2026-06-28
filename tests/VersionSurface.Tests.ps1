@@ -21,7 +21,9 @@ Describe 'winsmux version surface' {
         $coreLock = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'core\Cargo.lock') -Raw -Encoding UTF8
 
         $installScript | Should -Match ('\$VERSION\s*=\s*"{0}"' -f [regex]::Escape($script:ProductVersion))
-        $installScript | Should -Match '\$UseLatestRelease\s*=\s*\[string\]::IsNullOrWhiteSpace\(\$requestedReleaseTag\) -and \$Action\.Trim\(\)\.ToLowerInvariant\(\) -eq ''update'''
+        $installScript | Should -Match '\$releaseAction\s*=\s*\$Action\.Trim\(\)\.ToLowerInvariant\(\)'
+        $installScript | Should -Match '\$UseLatestRelease\s*=\s*\[string\]::IsNullOrWhiteSpace\(\$requestedReleaseTag\) -and \(\$releaseAction -eq ''install'' -or \$releaseAction -eq ''update''\)'
+        $installScript | Should -Not -Match '\$UseLatestRelease\s*=.*\$Action\.Trim\(\)\.ToLowerInvariant\(\) -eq ''update'''
         $installScript | Should -Match '\$EffectiveReleaseTag\s*=\s*if \(\[string\]::IsNullOrWhiteSpace\(\$requestedReleaseTag\)\) \{ "v\$VERSION" \}'
         $installScript | Should -Match 'releases/latest'
         $installScript | Should -Match 'releases/tags/\$escapedTag'
@@ -43,6 +45,17 @@ Describe 'winsmux version surface' {
         $coreManifest | Should -Match '(?m)^license\s*=\s*"Apache-2\.0 AND MIT"\r?$'
         $coreManifest | Should -Match '(?m)^repository\s*=\s*"https://github\.com/Sora-bluesky/winsmux"\r?$'
         $coreLock | Should -Match ('(?ms)^name\s*=\s*"winsmux"\s*\r?\nversion\s*=\s*"{0}"' -f [regex]::Escape($script:ProductVersion))
+    }
+
+    It 'uses latest release resolution for tagless install and update actions' {
+        $installScript = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'install.ps1') -Raw -Encoding UTF8
+
+        $installScript | Should -Match '\$releaseAction\s*=\s*\$Action\.Trim\(\)\.ToLowerInvariant\(\)'
+        $installScript | Should -Match '\$UseLatestRelease\s*=\s*\[string\]::IsNullOrWhiteSpace\(\$requestedReleaseTag\) -and \(\$releaseAction -eq ''install'' -or \$releaseAction -eq ''update''\)'
+        $installScript | Should -Not -Match '\$UseLatestRelease\s*=.*\$Action\.Trim\(\)\.ToLowerInvariant\(\) -eq ''update'''
+        $installScript | Should -Match '\$RELEASE_API_URL = "https://api\.github\.com/repos/Sora-bluesky/winsmux/releases/latest"'
+        $installScript | Should -Match '\$script:ResolvedReleaseTag = \[string\]\$release\.tag_name'
+        $installScript | Should -Match '\$script:BASE_URL = "https://raw\.githubusercontent\.com/Sora-bluesky/winsmux/\$script:ResolvedReleaseTag"'
     }
 
     It 'keeps desktop app metadata aligned with the product version' {
