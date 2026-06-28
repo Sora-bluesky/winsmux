@@ -1,16 +1,16 @@
 [English](README.md) | [日本語](README.ja.md)
 
 <p align="center">
-  <img src="docs/brand-hero.svg" alt="winsmux: Governance for AI agents on Windows" width="100%">
+  <img src="docs/brand-hero.svg" alt="winsmux: One control desk for every AI coding agent on Windows" width="100%">
 </p>
 
 # winsmux
 
-`winsmux` は、複数のコーディング CLI を同時に動かす人のための、Windows ネイティブの管制デスクです。1 人の人間が、複数の CLI エージェントを見て判断するためのコックピットです。
+`winsmux` は、**Windows 上で動くあらゆる AI コーディングエージェントのための 1 つの管制デスク**です。複数のコーディング CLI を同時に動かす人が、1 人で全体を見て判断するためのコックピットです。
 
 エージェントをブラックボックス化せず、各ワーカーを実際のペインで見せ、ファイル変更を git worktree で分離し、必要なペインへ指示を送り、中断できます。完了後は、変更ファイルの重なり、レビュー状態、検証状態、チェックポイントなどの証跡を見ながら、どの結果を採用するか決められます。
 
-Claude Code、Codex、Antigravity CLI、または互換目的で残した Gemini を 1 つずつ手で眺める段階を越えたい。ただし、クラウド任せにも、特定ベンダー任せにもしたくない。`winsmux` はそのためのローカル管制面です。
+Claude Code、Codex、Antigravity CLI、Grok Build、または互換目的で残した Gemini を 1 つずつ手で眺める段階を越えたい。ただし、クラウド任せにも、特定ベンダー任せにもしたくない。`winsmux` はそのためのローカル管制面です。
 
 たとえば、同じタスクを 2 つのエージェントに並走させ、両方のペインを見ながら、逸れた片方だけを止め、最後に証跡を比較して採用する結果を選べます。
 
@@ -30,7 +30,7 @@ Claude Code、Codex、Antigravity CLI、または互換目的で残した Gemini
 
 - 複数の CLI エージェント用に、管理された Windows Terminal ワークスペースを起動します。
 - オペレーターがペインを読み、ペインへ送信し、ペインを中断し、状態を確認できます。
-- 既定で 6 つの管理ワーカースロットを作成します。ローカル、Codex、外部APIモデル、Google Colab、仮置きのワーカーバックエンドを区別できます。生成される最初のスロットは Codex レビュー用で、残りのスロットは選択したワーカーバックエンドに従います。
+- 既定で 6 つの管理ワーカースロットを作成します。ローカル、Codex、Antigravity、Grok Build、OpenRouter 経由の外部 API モデル、Google Colab、仮置きのワーカーバックエンドを区別できます。生成される最初のスロットは Codex レビュー用で、残りのスロットは選択したワーカーバックエンドに従います。
 - ワークツリー分離を有効にすると、ワーカーごとに別々の git ワークツリーを使えます。
 - 記録済みの実行結果を比較し、採用する結果を選ぶ前に両方で変更されたファイルを確認できます。
 - 記録済みの実行について、レビュー、検証、アーキテクチャ、チェックポイント、後続作業などの証跡を確認できます。
@@ -60,7 +60,7 @@ Windows PC で複数のコーディングエージェントを動かしつつ、
 - Windows 10 または Windows 11
 - PowerShell 7+
 - Windows Terminal
-- 実行したい公式エージェント CLI。例: Claude Code、Codex、Antigravity CLI
+- 実行したい公式エージェント CLI。例: Claude Code、Codex、Antigravity CLI、Grok Build
 
 Rust は、ランタイムをソースからビルドする時だけ必要です。
 
@@ -147,6 +147,8 @@ winsmux skills --json
 | Codex | API key | 公式に対応 |
 | Codex | ChatGPT OAuth | この PC での対話利用のみ |
 | Antigravity CLI | 公式 Antigravity CLI のサインイン | 当該 PC での対話利用のみ |
+| Grok Build | Grok Build の headless（ローカル） | 当該 PC での対話利用のみ |
+| OpenRouter（クラウドモデル） | `OPENROUTER_API_KEY` による API key | 公式に対応 |
 | Gemini | Gemini API key | 公式に対応 |
 | Gemini | Vertex AI の Gemini API | 公式に対応 |
 | Gemini | Google OAuth | 互換目的 / tier 制限あり、この PC のみ |
