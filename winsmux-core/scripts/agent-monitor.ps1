@@ -971,6 +971,7 @@ function Invoke-AgentRespawn {
         [AllowEmptyString()][string]$ModelSource = '',
         [AllowEmptyString()][string]$ReasoningEffort = '',
         [AllowEmptyString()][string]$McpMode = '',
+        [AllowEmptyString()][string]$SlotId = '',
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)][string]$GitWorktreeDir,
         [string]$RootPath = '',
@@ -1007,6 +1008,7 @@ function Invoke-AgentRespawn {
             -ModelSource $ModelSource `
             -ReasoningEffort $ReasoningEffort `
             -McpMode $McpMode `
+            -SlotId $SlotId `
             -ProjectDir $ProjectDir `
             -GitWorktreeDir $GitWorktreeDir `
             -RootPath $capabilityRootPath
@@ -1591,6 +1593,7 @@ function Invoke-AgentMonitorCycle {
                 -Agent $agentName `
                 -Model $modelName `
                 -McpMode ([string](Get-MonitorPropertyValue -InputObject $roleAgentConfig -Name 'McpMode' -Default '')) `
+                -SlotId $label `
                 -ProjectDir $launchDir `
                 -GitWorktreeDir $launchGitWorktreeDir `
                 -RootPath $projectDir `

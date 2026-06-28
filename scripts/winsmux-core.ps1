@@ -5852,6 +5852,7 @@ function Get-WorkersStatusRows {
                 -ModelSource ([string]$slotConfig.ModelSource) `
                 -ReasoningEffort ([string]$slotConfig.ReasoningEffort) `
                 -McpMode ([string]$slotConfig.McpMode) `
+                -SlotId $slotId `
                 -ProjectDir $Context.ProjectDir `
                 -GitWorktreeDir $launchGitWorktreeDir `
                 -RootPath $Context.ProjectDir

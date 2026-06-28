@@ -3033,7 +3033,7 @@ fn normalize_provider_model_option(value: &Value) -> io::Result<Value> {
 fn valid_model_source(value: &str) -> bool {
     matches!(
         value,
-        "provider-default" | "cli-discovery" | "official-doc" | "operator-override"
+        "provider-default" | "cli-discovery" | "provider-api" | "official-doc" | "operator-override"
     )
 }
 
@@ -7485,9 +7485,11 @@ fn build_restart_plan_with_provider(
         if let Some(provider) = provider_override {
             provider
         } else {
-            resolve_restart_provider(project_dir, &context)?
+            resolve_restart_provider(&project_root, &context)?
         };
     let launch_command = build_provider_launch_command(
+        &project_root,
+        &context.label,
         &agent,
         &model,
         &model_source,
@@ -7698,21 +7700,19 @@ fn resolve_restart_provider(
         if settings.has_slot(&context.label)
             && restart_slot_has_explicit_provider_metadata(project_dir, &settings, &context.label)?
         {
-            if let Ok(effective) = resolve_slot_agent_config(project_dir, &settings, &context.label)
-            {
-                let adapter = if effective.capability_adapter.trim().is_empty() {
-                    provider_adapter_from_agent(&effective.agent)
-                } else {
-                    effective.capability_adapter
-                };
-                return Ok((
-                    effective.agent,
-                    effective.model,
-                    effective.model_source,
-                    effective.reasoning_effort,
-                    adapter,
-                ));
-            }
+            let effective = resolve_slot_agent_config(project_dir, &settings, &context.label)?;
+            let adapter = if effective.capability_adapter.trim().is_empty() {
+                provider_adapter_from_agent(&effective.agent)
+            } else {
+                effective.capability_adapter
+            };
+            return Ok((
+                effective.agent,
+                effective.model,
+                effective.model_source,
+                effective.reasoning_effort,
+                adapter,
+            ));
         }
     }
 
@@ -7848,6 +7848,8 @@ fn provider_adapter_from_agent(agent: &str) -> String {
 }
 
 fn build_provider_launch_command(
+    project_dir: &Path,
+    slot_id: &str,
     agent: &str,
     model: &str,
     model_source: &str,
@@ -7901,6 +7903,34 @@ fn build_provider_launch_command(
                 parts.push(shell_literal(model));
             }
             parts.push("--approval-mode=default".to_string());
+            Ok(parts.join(" "))
+        }
+        "openai-compatible" => {
+            let pane_worker_script = project_dir
+                .join("winsmux-core")
+                .join("scripts")
+                .join("api-llm-pane-worker.ps1");
+            let mut parts = vec![
+                "pwsh".to_string(),
+                "-NoLogo".to_string(),
+                "-NoProfile".to_string(),
+                "-ExecutionPolicy".to_string(),
+                "Bypass".to_string(),
+                "-File".to_string(),
+                shell_literal(&pane_worker_script.to_string_lossy()),
+                "-SlotId".to_string(),
+                shell_literal(slot_id),
+                "-Provider".to_string(),
+                shell_literal(agent),
+                "-Model".to_string(),
+                shell_literal(model),
+                "-ProjectDir".to_string(),
+                shell_literal(&project_dir.to_string_lossy()),
+            ];
+            if effort_override {
+                parts.push("-ReasoningEffort".to_string());
+                parts.push(shell_literal(&reasoning_effort.trim().to_ascii_lowercase()));
+            }
             Ok(parts.join(" "))
         }
         adapter => Err(io::Error::new(
@@ -7973,6 +8003,9 @@ fn restart_readiness_agent(plan: &RestartPlan) -> String {
 
 fn readiness_agent_name(value: &str) -> String {
     let lowered = value.trim().to_ascii_lowercase();
+    if lowered == "api_llm" || lowered == "openai-compatible" {
+        return "api_llm".to_string();
+    }
     for name in ["codex", "claude", "gemini"] {
         if lowered == name
             || lowered.starts_with(&format!("{name}:"))
@@ -8044,6 +8077,7 @@ fn agent_ready_prompt(text: &str, agent: &str) -> bool {
                     || line.to_ascii_lowercase().starts_with("using:")
                     || line.to_ascii_lowercase().starts_with("gemini-")
             }
+            "api_llm" => line.to_ascii_lowercase().starts_with("api_llm["),
             _ => line == ">" || line == "›" || line == "▌" || line == "❯" || line.starts_with('>'),
         }
     })

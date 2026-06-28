@@ -232,6 +232,7 @@ function Get-PaneControlLaunchCommand {
         [AllowEmptyString()][string]$ModelSource = '',
         [AllowEmptyString()][string]$ReasoningEffort = '',
         [AllowEmptyString()][string]$McpMode = '',
+        [AllowEmptyString()][string]$SlotId = '',
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)][string]$GitWorktreeDir,
         [string]$RootPath = ''
@@ -243,6 +244,7 @@ function Get-PaneControlLaunchCommand {
         -ModelSource $ModelSource `
         -ReasoningEffort $ReasoningEffort `
         -McpMode $McpMode `
+        -SlotId $SlotId `
         -ProjectDir $ProjectDir `
         -GitWorktreeDir $GitWorktreeDir `
         -RootPath $RootPath
@@ -600,7 +602,7 @@ function Get-PaneControlRestartPlan {
         }
     }
 
-    $launchCommand = Get-PaneControlLaunchCommand -Agent $agentConfig.Agent -Model $agentConfig.Model -ModelSource $agentConfig.ModelSource -ReasoningEffort $agentConfig.ReasoningEffort -McpMode $agentConfig.McpMode -ProjectDir $context.LaunchDir -GitWorktreeDir $context.GitWorktreeDir -RootPath $ProjectDir
+    $launchCommand = Get-PaneControlLaunchCommand -Agent $agentConfig.Agent -Model $agentConfig.Model -ModelSource $agentConfig.ModelSource -ReasoningEffort $agentConfig.ReasoningEffort -McpMode $agentConfig.McpMode -SlotId $context.Label -ProjectDir $context.LaunchDir -GitWorktreeDir $context.GitWorktreeDir -RootPath $ProjectDir
 
     return [ordered]@{
         PaneId         = $context.PaneId
