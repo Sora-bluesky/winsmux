@@ -29,7 +29,8 @@ $PROFILE_MATRIX = @{
     full = "Core, orchestra, and security profile contents."
 }
 $requestedReleaseTag = if ([string]::IsNullOrWhiteSpace($ReleaseTag)) { $env:WINSMUX_RELEASE_TAG } else { $ReleaseTag }
-$UseLatestRelease = [string]::IsNullOrWhiteSpace($requestedReleaseTag) -and $Action.Trim().ToLowerInvariant() -eq 'update'
+$releaseAction = $Action.Trim().ToLowerInvariant()
+$UseLatestRelease = [string]::IsNullOrWhiteSpace($requestedReleaseTag) -and ($releaseAction -eq 'install' -or $releaseAction -eq 'update')
 if ($UseLatestRelease) {
     $EffectiveReleaseTag = ''
     $BASE_URL = "https://raw.githubusercontent.com/Sora-bluesky/winsmux/main"
