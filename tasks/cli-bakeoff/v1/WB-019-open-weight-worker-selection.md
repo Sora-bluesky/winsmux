@@ -15,6 +15,6 @@ Return exactly this structure:
 
 Quality bar:
 
-- Include Kimi K2.7 Code and GLM-5.2.
+- Include Sakana Fugu Ultra and GLM-5.2.
 - Treat provider availability as separate from benchmark quality.
 - Do not add models without a verified provider path.

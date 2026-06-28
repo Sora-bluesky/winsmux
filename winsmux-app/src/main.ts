@@ -1341,18 +1341,6 @@ interface OpenRouterModelsApiResponse {
 let openRouterRuntimeModelEntries: RuntimeModelCatalogEntry[] = [];
 let openRouterModelsLoadState: RuntimeProviderApiLoadState = "idle";
 
-function getRuntimeModelSuggestions() {
-  return Array.from(new Set([
-    "provider-default",
-    ...runtimeModelCatalog
-      .filter((entry) => entry.status === "selectable" || entry.status === "candidate" || entry.status === "setup-required" || entry.status === "runnable")
-      .map((entry) => entry.model),
-    ...openRouterRuntimeModelEntries.map((entry) => entry.model),
-    "default",
-    "opusplan",
-  ]));
-}
-
 runtimeRolePreferences = readStoredRuntimeRolePreferences();
 runtimeModelAssignmentMode = readStoredRuntimeModelAssignmentMode();
 {
@@ -11211,32 +11199,44 @@ function renderRuntimeWorkerDefaultControls(japanese: boolean, disabled = false)
   const modelCaption = document.createElement("span");
   modelCaption.className = "runtime-control-caption";
   modelCaption.textContent = japanese ? "モデル" : "Model";
-  const modelSearchInput = document.createElement("input");
-  modelSearchInput.className = "runtime-control-input runtime-model-search-input";
-  modelSearchInput.type = "search";
-  modelSearchInput.placeholder = japanese ? "モデル名またはIDで検索" : "Search model name or ID";
-  modelSearchInput.disabled = disabled;
-  modelSearchInput.title = disabledTitle;
-  const modelSelect = document.createElement("select");
-  modelSelect.id = "runtime-worker-default-model";
-  modelSelect.className = "runtime-control-select runtime-model-slot-select";
-  modelSelect.disabled = disabled;
-  modelSelect.title = disabledTitle;
-  modelSelect.setAttribute("aria-label", japanese ? "全ペイン共通のモデル" : "Shared worker model");
+  const modelInput = document.createElement("input");
+  modelInput.id = "runtime-worker-default-model";
+  modelInput.className = "runtime-control-input runtime-model-slot-input";
+  modelInput.type = "search";
+  modelInput.placeholder = japanese ? "モデル名またはIDで検索" : "Search model name or ID";
+  modelInput.autocomplete = "off";
+  modelInput.disabled = disabled;
+  modelInput.title = disabledTitle;
+  modelInput.setAttribute("aria-label", japanese ? "全ペイン共通のモデル" : "Shared worker model");
+  const modelOptionsId = "runtime-worker-default-model-options";
+  modelInput.setAttribute("list", modelOptionsId);
+  const modelOptions = document.createElement("datalist");
+  modelOptions.id = modelOptionsId;
+  const resolveSharedModelEntry = () => {
+    const value = modelInput.value.trim().toLowerCase();
+    return entries.find((entry) => {
+      return entry.id.toLowerCase() === value
+        || entry.model.toLowerCase() === value
+        || entry.label.toLowerCase() === value
+        || (entry.labelJa ?? "").toLowerCase() === value
+        || getRuntimeCatalogOptionLabel(entry, japanese).toLowerCase() === value;
+    }) ?? selectedEntry;
+  };
   const renderSharedModelOptions = () => {
-    const displayEntries = getRuntimeModelSelectEntries(entries, selectedEntry, modelSearchInput.value, japanese);
-    modelSelect.innerHTML = "";
+    const displayEntries = getRuntimeModelSelectEntries(entries, selectedEntry, modelInput.value, japanese);
+    modelOptions.innerHTML = "";
     for (const entry of displayEntries) {
       const option = document.createElement("option");
-      option.value = entry.id;
-      option.textContent = getRuntimeCatalogOptionLabel(entry, japanese);
-      option.selected = entry.id === selectedEntry.id;
-      modelSelect.appendChild(option);
+      option.value = getRuntimeCatalogOptionLabel(entry, japanese);
+      option.label = entry.model;
+      modelOptions.appendChild(option);
     }
   };
-  modelSearchInput.addEventListener("input", renderSharedModelOptions);
-  modelSelect.addEventListener("change", () => {
-    const nextEntry = entries.find((entry) => entry.id === modelSelect.value) ?? getRuntimeProviderDefaultEntry(selectedProvider);
+  modelInput.value = getRuntimeCatalogOptionLabel(selectedEntry, japanese);
+  modelInput.addEventListener("input", renderSharedModelOptions);
+  modelInput.addEventListener("change", () => {
+    const nextEntry = resolveSharedModelEntry();
+    modelInput.value = getRuntimeCatalogOptionLabel(nextEntry, japanese);
     updateRuntimeRoleDraft("worker", {
       model: nextEntry.model,
       modelSource: nextEntry.modelSource,
@@ -11244,7 +11244,7 @@ function renderRuntimeWorkerDefaultControls(japanese: boolean, disabled = false)
     });
   });
   renderSharedModelOptions();
-  modelField.append(modelCaption, modelSearchInput, modelSelect);
+  modelField.append(modelCaption, modelInput, modelOptions);
   controls.appendChild(modelField);
 
   controls.appendChild(createRuntimeSelect(
@@ -11350,15 +11350,17 @@ function renderWorkerModelAssignmentPanel(japanese: boolean) {
     const modelCaption = document.createElement("span");
     modelCaption.className = "runtime-control-caption";
     modelCaption.textContent = japanese ? "モデル" : "Model";
-    const modelSelect = document.createElement("select");
-    modelSelect.className = "runtime-control-select runtime-model-slot-select";
-    modelSelect.setAttribute("aria-label", japanese ? `${slotId} のモデル` : `${slotId} model`);
-    const modelSearchInput = document.createElement("input");
-    modelSearchInput.className = "runtime-control-input runtime-model-search-input";
-    modelSearchInput.type = "search";
-    modelSearchInput.placeholder = japanese ? "モデル名またはIDで検索" : "Search model name or ID";
-    modelSearchInput.setAttribute("aria-label", japanese ? `${slotId} のモデル検索` : `${slotId} model search`);
-    modelField.append(modelCaption, modelSearchInput, modelSelect);
+    const modelInput = document.createElement("input");
+    modelInput.className = "runtime-control-input runtime-model-slot-input";
+    modelInput.type = "search";
+    modelInput.placeholder = japanese ? "モデル名またはIDで検索" : "Search model name or ID";
+    modelInput.autocomplete = "off";
+    modelInput.setAttribute("aria-label", japanese ? `${slotId} のモデル` : `${slotId} model`);
+    const modelOptionsId = `runtime-model-options-${slotId}`;
+    modelInput.setAttribute("list", modelOptionsId);
+    const modelOptions = document.createElement("datalist");
+    modelOptions.id = modelOptionsId;
+    modelField.append(modelCaption, modelInput, modelOptions);
 
     const effortField = document.createElement("label");
     effortField.className = "runtime-model-slot-field";
@@ -11406,11 +11408,32 @@ function renderWorkerModelAssignmentPanel(japanese: boolean) {
         ? (japanese ? "このプロバイダーは思考量の明示指定に未対応です。" : "This provider does not expose a supported effort override.")
         : "";
     };
+    const findModelEntryFromInput = (provider: RuntimeProviderId, inputValue: string) => {
+      const normalizedValue = inputValue.trim().toLowerCase();
+      if (!normalizedValue) {
+        return getRuntimeProviderDefaultEntry(provider);
+      }
+      return currentEntries.find((item) => {
+        return item.id.toLowerCase() === normalizedValue
+          || item.model.toLowerCase() === normalizedValue
+          || item.label.toLowerCase() === normalizedValue
+          || (item.labelJa ?? "").toLowerCase() === normalizedValue
+          || getRuntimeCatalogOptionLabel(item, japanese).toLowerCase() === normalizedValue;
+      }) ?? createRuntimeCustomModelEntry(provider, inputValue.trim());
+    };
+    const renderModelOptionList = (selectedEntry: RuntimeModelCatalogEntry) => {
+      const displayEntries = getRuntimeModelSelectEntries(currentEntries, selectedEntry, modelInput.value, japanese);
+      modelOptions.innerHTML = "";
+      for (const entry of displayEntries) {
+        const option = document.createElement("option");
+        option.value = getRuntimeCatalogOptionLabel(entry, japanese);
+        option.label = entry.model;
+        modelOptions.appendChild(option);
+      }
+    };
     const resolveSelection = (): RuntimePaneModelSelection | null => {
       const provider = normalizeRuntimeProviderId(providerSelect.value) ?? inferredProvider;
-      const modelValue = modelSelect.value.trim() || `${provider}-provider-default`;
-      const entry = currentEntries.find((item) => item.id === modelValue || item.model === modelValue)
-        ?? getRuntimeProviderDefaultEntry(provider);
+      const entry = findModelEntryFromInput(provider, modelInput.value);
       const effort = normalizeRuntimeReasoningForEntry(provider, entry, effortSelect.value || entry.reasoningEffort);
       return { entry, reasoningEffort: effort };
     };
@@ -11461,35 +11484,34 @@ function renderWorkerModelAssignmentPanel(japanese: boolean) {
       if (!selectedEntry) {
         selectedEntry = currentEntries.find((entry) => entry.model === "provider-default") ?? getRuntimeProviderDefaultEntry(provider);
       }
-      const displayEntries = getRuntimeModelSelectEntries(currentEntries, selectedEntry, modelSearchInput.value, japanese);
-      modelSelect.innerHTML = "";
-      for (const entry of displayEntries) {
-        const option = document.createElement("option");
-        option.value = entry.id;
-        const readiness = getRuntimeModelReadinessForWorker(entry, row, japanese);
-        option.textContent = getRuntimeCatalogOptionLabel(entry, japanese);
-        option.selected = entry.id === selectedEntry.id;
-        option.title = readiness.reason;
-        option.disabled = !readiness.assignable && entry.status === "unavailable";
-        modelSelect.appendChild(option);
-      }
-      renderEffortOptions(provider, selectedEntry, selectedEntry.reasoningEffort || getWorkerReasoningEffort(row));
+      modelInput.value = getRuntimeCatalogOptionLabel(selectedEntry, japanese);
+      renderModelOptionList(selectedEntry);
+      const currentEffort = runtimeReasoningOptions.find((option) => option.value === getWorkerReasoningEffort(row))?.value;
+      const preferredEffort = currentEffort && currentEffort !== "provider-default"
+        ? currentEffort
+        : selectedEntry.reasoningEffort;
+      renderEffortOptions(provider, selectedEntry, preferredEffort);
       updateActionState();
     };
 
     providerSelect.addEventListener("change", () => {
-      modelSearchInput.value = "";
       renderModelOptions("provider-default");
     });
-    modelSearchInput.addEventListener("input", () => {
+    modelInput.addEventListener("input", () => {
       const selection = resolveSelection();
-      renderModelOptions(selection?.entry.model ?? modelSelect.value);
-    });
-    modelSelect.addEventListener("change", () => {
       const provider = normalizeRuntimeProviderId(providerSelect.value) ?? inferredProvider;
-      const selection = resolveSelection();
       if (selection) {
-        modelSearchInput.value = getRuntimeCatalogOptionLabel(selection.entry, japanese);
+        renderModelOptionList(selection.entry);
+        renderEffortOptions(provider, selection.entry, selection.entry.reasoningEffort);
+      }
+      updateActionState();
+    });
+    modelInput.addEventListener("change", () => {
+      const selection = resolveSelection();
+      const provider = normalizeRuntimeProviderId(providerSelect.value) ?? inferredProvider;
+      if (selection) {
+        modelInput.value = getRuntimeCatalogOptionLabel(selection.entry, japanese);
+        renderModelOptionList(selection.entry);
         renderEffortOptions(provider, selection.entry, selection.entry.reasoningEffort);
       }
       updateActionState();
@@ -11502,8 +11524,7 @@ function renderWorkerModelAssignmentPanel(japanese: boolean) {
       }
     });
     providerSelect.disabled = Boolean(workerProviderSwitchInFlight);
-    modelSearchInput.disabled = Boolean(workerProviderSwitchInFlight);
-    modelSelect.disabled = Boolean(workerProviderSwitchInFlight);
+    modelInput.disabled = Boolean(workerProviderSwitchInFlight);
     renderModelOptions(getWorkerModel(row));
 
     rowElement.append(summary, control, state, action);
@@ -11524,15 +11545,6 @@ function renderRuntimeRoleControls() {
 
   const japanese = (settingsDraftState?.language ?? themeState.language) === "ja";
   root.innerHTML = "";
-
-  const datalist = document.createElement("datalist");
-  datalist.id = "runtime-model-suggestions";
-  for (const model of getRuntimeModelSuggestions()) {
-    const option = document.createElement("option");
-    option.value = model;
-    datalist.appendChild(option);
-  }
-  root.appendChild(datalist);
 
   root.appendChild(renderWorkerModelAssignmentPanel(japanese));
 }
