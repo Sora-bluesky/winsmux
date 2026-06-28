@@ -2004,7 +2004,8 @@ async function exerciseOperatorBenchmarkDispatchRecordsPromptReadyWarnings(page)
   const outputs = {};
   for (let index = 1; index <= 6; index += 1) {
     const paneId = `worker-${index}`;
-    outputs[paneId] = (await capturePty(page, paneId).catch(() => "")).slice(-1_200);
+    const output = await waitForPtyOutputLine(page, paneId, `WINSMUX_BENCH_TASK_PACKET WB-001 ${paneId}`, 60_000);
+    outputs[paneId] = output.slice(-1_200);
   }
   const combined = `${text ?? ""}\n${JSON.stringify(outputs)}`;
   if (!combined.includes("MCP warning is present")) {
