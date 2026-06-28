@@ -1841,6 +1841,51 @@ async function exerciseOperatorCommandStartsAllWorkerPanes(page, options = {}) {
     outputs[paneId] = output.slice(-800);
   }
   assertAllSixWorkerOutputs(fullOutputs, () => new RegExp(startMarker));
+  return {
+    tempProjectDir,
+    markerScriptPath,
+    startMarker,
+    outputs,
+    fullOutputs,
+  };
+}
+
+async function exerciseOperatorCommandRestartsWorkersWhenLaunchCommandsChange(page) {
+  const result = await exerciseOperatorCommandStartsAllWorkerPanes(page, {
+    projectName: "operator-start-all-workers-restart-project",
+    startMarker: "RESTART_OK",
+    scriptLines: [
+      "Write-Output 'RESTART_OK'",
+      "$modelArg = $args[1]",
+      "if ($modelArg -like 'model=gpt-5.5-restart-worker-*') {",
+      "  Write-Output ($modelArg -replace 'model=gpt-5.5-restart-worker-', 'RESTART_MODEL_')",
+      "} else {",
+      "  Write-Output $modelArg",
+      "}",
+      "",
+    ],
+  });
+  const configPath = path.join(result.tempProjectDir, ".winsmux.yaml");
+  const originalConfig = await fs.readFile(configPath, "utf8");
+  const updatedConfig = originalConfig.replaceAll("gpt-5.4-worker-", "gpt-5.5-restart-worker-");
+  if (updatedConfig === originalConfig) {
+    throw new Error("test setup did not update worker launch models");
+  }
+  await fs.writeFile(configPath, updatedConfig, "utf8");
+
+  await submitWinsmuxComposerCommandWithButton(page, "winsmux workers start all");
+  await page.locator("#conversation-panel", { hasText: "All worker panes were started" }).waitFor({ state: "visible", timeout: 60_000 });
+
+  const outputs = {};
+  for (let index = 1; index <= 6; index += 1) {
+    const paneId = `worker-${index}`;
+    const output = await waitForPtyOutput(page, paneId, `RESTART_MODEL_${index}`, 60_000);
+    const compactOutput = stripAnsi(output).replace(/\s+/g, "");
+    if (!compactOutput.includes(`RESTART_MODEL_${index}`)) {
+      throw new Error(`worker ${paneId} did not restart with updated launch command:\n${output.slice(-1_200)}`);
+    }
+    outputs[paneId] = output.slice(-1_200);
+  }
   return outputs;
 }
 
@@ -2100,6 +2145,9 @@ async function main() {
       });
       await runStep("operator composer command starts all worker panes", async () => {
         return await exerciseOperatorCommandStartsAllWorkerPanes(page);
+      });
+      await runStep("operator composer command restarts workers after launch commands change", async () => {
+        return await exerciseOperatorCommandRestartsWorkersWhenLaunchCommandsChange(page);
       });
       await runStep("operator benchmark ready-check verifies all worker write paths", async () => {
         return await exerciseOperatorBenchmarkReadyCheck(page);
