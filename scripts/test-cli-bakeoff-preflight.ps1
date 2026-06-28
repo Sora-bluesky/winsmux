@@ -391,18 +391,26 @@ if ($null -ne $pack) {
 
     $workers = @($pack.default_workers)
     Add-Check 'Claude worker profile exists' (@($workers | Where-Object { $_.cli -eq 'Claude Code' }).Count -ge 1)
+    Add-Check 'Claude Opus 4.8 worker uses Ultra effort' (@($workers | Where-Object {
+        ($_.PSObject.Properties.Name -contains 'cli') -and
+        ($_.PSObject.Properties.Name -contains 'model') -and
+        ($_.PSObject.Properties.Name -contains 'effort') -and
+        $_.cli -eq 'Claude Code' -and
+        $_.model -eq 'claude-opus-4-8' -and
+        $_.effort -eq 'xhigh'
+    }).Count -ge 1)
     Add-Check 'Codex worker profile exists' (@($workers | Where-Object { $_.cli -eq 'Codex' }).Count -ge 1)
     $scoredWorkerRoles = @($workers | Where-Object { [bool]$_.scored } | ForEach-Object { [string]$_.role } | Sort-Object -Unique)
     Add-Check 'scored workers share one Harness Bench role' (
         $scoredWorkerRoles.Count -eq 1 -and $scoredWorkerRoles[0] -eq 'harness-bench-worker'
     ) ($scoredWorkerRoles -join ',')
-    Add-Check 'Codex worker uses GPT-5.5 High canonical scenario' (@($workers | Where-Object {
+    Add-Check 'Codex worker uses GPT-5.5 xhigh canonical scenario' (@($workers | Where-Object {
         ($_.PSObject.Properties.Name -contains 'cli') -and
         ($_.PSObject.Properties.Name -contains 'model') -and
         ($_.PSObject.Properties.Name -contains 'effort') -and
         $_.cli -eq 'Codex' -and
         $_.model -eq 'gpt-5.5' -and
-        $_.effort -eq 'high'
+        $_.effort -eq 'xhigh'
     }).Count -ge 1)
     Add-Check 'Codex GPT-5.5 worker does not use lower effort' (@($workers | Where-Object {
         ($_.PSObject.Properties.Name -contains 'cli') -and
@@ -410,15 +418,15 @@ if ($null -ne $pack) {
         ($_.PSObject.Properties.Name -contains 'effort') -and
         $_.cli -eq 'Codex' -and
         $_.model -eq 'gpt-5.5' -and
-        $_.effort -ne 'high'
+        $_.effort -ne 'xhigh'
     }).Count -eq 0)
     Add-Check 'Antigravity worker profile exists' (@($workers | Where-Object { $_.cli -eq 'Antigravity CLI' }).Count -ge 1)
-    Add-Check 'OpenRouter Kimi worker profile exists' (@($workers | Where-Object {
+    Add-Check 'OpenRouter Sakana Fugu Ultra worker profile exists' (@($workers | Where-Object {
         ($_.PSObject.Properties.Name -contains 'agent') -and
         ($_.PSObject.Properties.Name -contains 'model') -and
         ($_.PSObject.Properties.Name -contains 'worker_backend') -and
         $_.agent -eq 'openrouter' -and
-        $_.model -eq 'moonshotai/kimi-k2.7-code' -and
+        $_.model -eq 'sakana/fugu-ultra' -and
         $_.worker_backend -eq 'api_llm'
     }).Count -ge 1)
     Add-Check 'OpenRouter GLM worker profile exists' (@($workers | Where-Object {

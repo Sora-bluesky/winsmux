@@ -4906,7 +4906,6 @@ body.is-resizing-workbench {
   white-space: nowrap;
 }
 
-.runtime-model-slot-select,
 .runtime-model-slot-input {
   height: 30px;
 }

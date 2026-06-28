@@ -62,7 +62,7 @@
       "role": "harness-bench-worker",
       "cli": "Claude Code",
       "model": "claude-opus-4-8",
-      "effort": "high",
+      "effort": "xhigh",
       "display_model": "Claude Code / Claude Opus 4.8",
       "auth_mode": "claude-code-local",
       "scored": true
@@ -72,7 +72,7 @@
       "role": "harness-bench-worker",
       "cli": "Codex",
       "model": "gpt-5.5",
-      "effort": "high",
+      "effort": "xhigh",
       "display_model": "Codex / gpt-5.5",
       "auth_mode": "codex-local",
       "scored": true
@@ -108,9 +108,9 @@
       "cli": "OpenRouter API",
       "worker_backend": "api_llm",
       "agent": "openrouter",
-      "model": "moonshotai/kimi-k2.7-code",
+      "model": "sakana/fugu-ultra",
       "effort": "provider-default",
-      "display_model": "OpenRouter / Kimi K2.7 Code",
+      "display_model": "OpenRouter / Sakana Fugu Ultra",
       "auth_mode": "api-key-env",
       "required_env": "OPENROUTER_API_KEY",
       "scored": true
@@ -667,7 +667,7 @@
         "artifact": "benchmark_evidence"
       },
       "hidden_check_categories": [
-        "includes Kimi K2.7 Code",
+        "includes Sakana Fugu Ultra",
         "includes GLM-5.2",
         "separates provider availability from model score"
       ],

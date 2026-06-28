@@ -23,7 +23,7 @@ Describe 'CLI bakeoff evidence harness' {
         ($result.checks | Where-Object { $_.name -eq 'official Harness Bench task count is met' }).pass | Should -BeTrue
         ($result.checks | Where-Object { $_.name -eq 'default timeout is 3600 seconds' }).pass | Should -BeTrue
         ($result.checks | Where-Object { $_.name -eq 'operator is not scored' }).pass | Should -BeTrue
-        ($result.checks | Where-Object { $_.name -eq 'OpenRouter Kimi worker profile exists' }).pass | Should -BeTrue
+        ($result.checks | Where-Object { $_.name -eq 'OpenRouter Sakana Fugu Ultra worker profile exists' }).pass | Should -BeTrue
         ($result.checks | Where-Object { $_.name -eq 'OpenRouter GLM worker profile exists' }).pass | Should -BeTrue
         ($output -join "`n") | Should -Not -Match 'C:\\Users\\'
     }
