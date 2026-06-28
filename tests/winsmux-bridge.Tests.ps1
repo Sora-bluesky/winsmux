@@ -9346,7 +9346,7 @@ agent-slots:
       "prompt_transports": ["file"],
       "auth_modes": ["api-key-env", "api-key-vault"],
       "model_sources": ["provider-default", "operator-override"],
-      "reasoning_efforts": ["provider-default", "low", "medium", "high"],
+      "reasoning_efforts": ["provider-default"],
       "credential_requirements": "runtime-owned-api-key",
       "execution_backend": "openai-compatible-chat-completions",
       "api_base_url": "https://openrouter.ai/api/v1",
@@ -10861,8 +10861,26 @@ agent-slots:
         $row.launch_command_status | Should -Be 'available'
         $row.launch_command_error | Should -Be ''
         $row.launch_command | Should -Match 'api-llm-pane-worker\.ps1'
+        $row.launch_command | Should -Match "-SlotId 'worker-1'"
         $row.launch_command | Should -Match "-Provider 'openrouter'"
         $row.launch_command | Should -Match "-Model 'z-ai/glm-5\.2'"
+    }
+
+    It 'rejects direct api_llm pane worker startup without a real slot id' {
+        $paneWorkerScript = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\api-llm-pane-worker.ps1'
+        $previousSlotId = $env:WINSMUX_SLOT_ID
+        try {
+            $env:WINSMUX_SLOT_ID = ''
+            $output = & pwsh -NoProfile -File $paneWorkerScript -Provider openrouter -Model z-ai/glm-5.2 -ProjectDir $script:workersTempRoot 2>&1
+        } finally {
+            $env:WINSMUX_SLOT_ID = $previousSlotId
+        }
+
+        $LASTEXITCODE | Should -Be 2
+        ($output | Out-String) | Should -Match 'status: failed'
+        ($output | Out-String) | Should -Match 'missing SlotId'
+        ($output | Out-String) | Should -Not -Match 'status: ready'
+        ($output | Out-String) | Should -Not -Match 'api_llm\[worker\]>'
     }
 
     It 'adds api_llm diagnostics without requiring a Colab adapter fallback' {
@@ -18672,7 +18690,7 @@ Describe 'orchestra pane bootstrap plan' {
 
     It 'builds pane launch commands through provider capability metadata' {
         $script:orchestraStartContent | Should -Match 'Get-BridgeProviderLaunchCommand'
-        $script:orchestraStartContent | Should -Match 'Get-AgentLaunchCommand -Agent \$slotAgentConfig\.Agent -Model \$slotAgentConfig\.Model -ModelSource \$slotAgentConfig\.ModelSource -ReasoningEffort \$slotAgentConfig\.ReasoningEffort -McpMode \$slotAgentConfig\.McpMode -ProjectDir \$launchDir -GitWorktreeDir \$launchGitWorktreeDir -RootPath \$projectDir'
+        $script:orchestraStartContent | Should -Match 'Get-AgentLaunchCommand -Agent \$slotAgentConfig\.Agent -Model \$slotAgentConfig\.Model -ModelSource \$slotAgentConfig\.ModelSource -ReasoningEffort \$slotAgentConfig\.ReasoningEffort -McpMode \$slotAgentConfig\.McpMode -SlotId \$label -ProjectDir \$launchDir -GitWorktreeDir \$launchGitWorktreeDir -RootPath \$projectDir'
     }
 
     It 'defers one-shot workers before resolving provider launch commands' {

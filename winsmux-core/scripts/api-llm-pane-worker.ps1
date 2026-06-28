@@ -1,5 +1,6 @@
 [CmdletBinding()]
 param(
+    [string]$SlotId = '',
     [string]$Provider = '',
     [string]$Model = '',
     [string]$ProjectDir = '',
@@ -9,9 +10,15 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$slotId = [string]$env:WINSMUX_SLOT_ID
+$slotId = [string]$SlotId
 if ([string]::IsNullOrWhiteSpace($slotId)) {
-    $slotId = 'worker'
+    $slotId = [string]$env:WINSMUX_SLOT_ID
+}
+if ([string]::IsNullOrWhiteSpace($slotId)) {
+    Write-Host 'winsmux api_llm pane worker'
+    Write-Host 'status: failed'
+    Write-Host 'reason: missing SlotId. Start this worker through winsmux so the actual worker pane id is provided.'
+    exit 2
 }
 
 $projectRoot = $ProjectDir

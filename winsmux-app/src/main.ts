@@ -264,6 +264,7 @@ declare global {
       setTerminalDrawer: (open: boolean) => void;
       getOperatorStartupInput: () => string;
       setOperatorStartupInputForTest: (value: string | null) => void;
+      refreshWorkerStatusRowsForTest: () => Promise<DesktopWorkerStatusRow[]>;
       setVoiceNow: (timestamp: number | null) => void;
     };
   }
@@ -1319,6 +1320,13 @@ const runtimeModelCatalog: RuntimeModelCatalogEntry[] = getRuntimeCatalogEntries
   supportedReasoningEfforts: entry.supportedReasoningEfforts ? [...entry.supportedReasoningEfforts] : undefined,
 }));
 const OPENROUTER_MODELS_API_URL = openRouterModelsApiUrl;
+const RUNTIME_MODEL_SELECT_PREVIEW_LIMIT = 24;
+const RUNTIME_MODEL_SELECT_FILTER_LIMIT = 80;
+const OPENROUTER_PRIORITY_MODELS = [
+  "sakana/fugu-ultra",
+  "z-ai/glm-5.2",
+  "moonshotai/kimi-k2.7-code",
+];
 
 type RuntimeProviderApiLoadState = "idle" | "loading" | "loaded" | "failed";
 
@@ -3747,9 +3755,9 @@ function detectWorkerReadinessBlocker(text: string) {
       compactPattern: /(?:setuprequired|missingapikey|requires?(?:an?)?(?:api|credential|key)|openrouter_api_key)/,
     },
     {
-      reason: getLanguageText("Quota or rate-limit warning", "利用枠またはレート制限の警告があります"),
-      pattern: /(?:less\s+than\s+\d+%\s+of\s+your\s+.*limit|rate\s+limit|quota\s+(?:exceeded|warning))/i,
-      compactPattern: /(?:lessthan\d+%ofyour.*limit|ratelimit|quota(?:exceeded|warning))/,
+      reason: getLanguageText("Quota or rate limit has stopped the worker", "利用枠またはレート制限によりワーカーが停止しています"),
+      pattern: /(?:quota\s+exceeded|rate\s+limit\s+(?:exceeded|reached)|usage\s+limit\s+(?:exceeded|reached)|too\s+many\s+requests|\b429\b|you\s+(?:have\s+)?(?:hit|reached)\s+.*limit)/i,
+      compactPattern: /(?:quotaexceeded|ratelimit(?:exceeded|reached)|usagelimit(?:exceeded|reached)|toomanyrequests|\b429\b|you(?:have)?(?:hit|reached).*limit)/,
     },
     {
       reason: getLanguageText("Worker is waiting for a user decision", "ワーカーがユーザー判断待ちです"),
@@ -3768,6 +3776,11 @@ function detectWorkerReadinessWarnings(text: string) {
       reason: getLanguageText("MCP warning is present", "MCP 警告を検出しました"),
       pattern: /(?:mcp\s+startup\s+incomplete|mcp\s+servers?\s+need\s+authentication|mcp\s+server\s+is\s+not\s+logged\s+in|run\s+\/mcp)/i,
       compactPattern: /(?:mcpstartupincomplete|mcpservers?needauthentication|mcpserverisnotloggedin|run\/mcp)/,
+    },
+    {
+      reason: getLanguageText("Quota advisory is present", "利用枠の注意表示を検出しました"),
+      pattern: /(?:less\s+than\s+\d+%\s+of\s+your\s+.*limit|usage\s+limit\s+resets?\s+available|run\s+\/usage\s+to\s+use\s+one)/i,
+      compactPattern: /(?:lessthan\d+%ofyour.*limit|usagelimitresets?available|run\/usagetouseone)/,
     },
   ];
 
@@ -3817,7 +3830,7 @@ function hasWorkerReadyPrompt(text: string) {
     && recentLines.some((line) => /Grok\s+Build/i.test(line));
   return hasGrokInputBox
     || recentLines.some((line) => !isWorkerLaunchCommandEcho(line)
-      && (/^api_llm\[worker\]>\s*$/i.test(line)
+      && (/^api_llm\[[a-z0-9._-]+\]>\s*$/i.test(line)
         || /^(?:[>›❯])\s*$/.test(line)
         || /^(?:[>›❯])\s*(?!(?:claude|codex|agy|grok|pwsh|powershell)\b)\S/i.test(line)));
 }
@@ -3876,16 +3889,6 @@ async function inspectWorkerPaneReadiness(
   const blocker = detectWorkerReadinessBlocker(text);
   if (blocker) {
     return { target, state: "blocked", reason: blocker, evidence, warnings };
-  }
-
-  if (warnings.length > 0) {
-    return {
-      target,
-      state: "blocked",
-      reason: getLanguageText("Worker has startup warnings", "ワーカーに起動警告があります"),
-      evidence,
-      warnings,
-    };
   }
 
   const pendingReason = detectWorkerReadinessPendingReason(text);
@@ -10521,17 +10524,11 @@ async function ensureOpenRouterRuntimeModelsLoaded() {
     openRouterRuntimeModelEntries = Array.from(entries.values()).sort((left, right) => {
       const leftLabel = left.label.toLowerCase();
       const rightLabel = right.label.toLowerCase();
-      if (left.model === "moonshotai/kimi-k2.7-code") {
-        return -1;
-      }
-      if (right.model === "moonshotai/kimi-k2.7-code") {
-        return 1;
-      }
-      if (left.model === "z-ai/glm-5.2") {
-        return -1;
-      }
-      if (right.model === "z-ai/glm-5.2") {
-        return 1;
+      const leftPriority = OPENROUTER_PRIORITY_MODELS.indexOf(left.model);
+      const rightPriority = OPENROUTER_PRIORITY_MODELS.indexOf(right.model);
+      if (leftPriority !== rightPriority) {
+        return (leftPriority === -1 ? Number.MAX_SAFE_INTEGER : leftPriority)
+          - (rightPriority === -1 ? Number.MAX_SAFE_INTEGER : rightPriority);
       }
       return leftLabel.localeCompare(rightLabel);
     });
@@ -10833,6 +10830,35 @@ function getRuntimeCatalogOptionLabel(entry: RuntimeModelCatalogEntry, japanese:
     .trim();
 }
 
+function getRuntimeCatalogSearchText(entry: RuntimeModelCatalogEntry, japanese: boolean) {
+  return [
+    getRuntimeCatalogOptionLabel(entry, japanese),
+    entry.label,
+    entry.labelJa,
+    entry.model,
+    entry.id,
+    entry.agent,
+  ].join(" ").toLowerCase();
+}
+
+function getRuntimeModelSelectEntries(
+  entries: RuntimeModelCatalogEntry[],
+  selectedEntry: RuntimeModelCatalogEntry,
+  filterText: string,
+  japanese: boolean,
+) {
+  const normalizedFilter = filterText.trim().toLowerCase();
+  const limit = normalizedFilter ? RUNTIME_MODEL_SELECT_FILTER_LIMIT : RUNTIME_MODEL_SELECT_PREVIEW_LIMIT;
+  const filtered = normalizedFilter
+    ? entries.filter((entry) => getRuntimeCatalogSearchText(entry, japanese).includes(normalizedFilter))
+    : entries.slice(0, limit);
+  const limited = filtered.slice(0, limit);
+  if (!limited.some((entry) => entry.id === selectedEntry.id)) {
+    return [selectedEntry, ...limited.filter((entry) => entry.id !== selectedEntry.id)];
+  }
+  return limited;
+}
+
 function getRuntimeModelSourceDisplayLabel(source: string, japanese: boolean) {
   const normalized = source.trim().toLowerCase();
   const option = runtimeModelSourceOptions.find((item) => item.value === normalized);
@@ -11008,8 +11034,41 @@ async function clearDetectedWorkerModelOverrides() {
   await refreshWorkerStatusSurface();
 }
 
+function normalizeRuntimeAssignmentValue(value: string | null | undefined, fallback = "provider-default") {
+  const normalized = (value ?? "").trim().toLowerCase();
+  return normalized || fallback;
+}
+
+function hasEffectivePaneSpecificModelAssignments() {
+  const defaultPreference = getRuntimeWorkerDefaultPreference();
+  const defaultProvider = normalizeRuntimeAssignmentValue(defaultPreference.provider);
+  const defaultModel = normalizeRuntimeAssignmentValue(defaultPreference.model);
+  const defaultEffort = normalizeRuntimeAssignmentValue(defaultPreference.reasoningEffort);
+
+  return getWorkerStatusRowsForSurface().some((row) => {
+    if (!getWorkerStatusTarget(row)) {
+      return false;
+    }
+    const hasConcreteAssignment = Boolean(getWorkerStatusLaunch(row))
+      || Boolean(row.provider?.trim())
+      || Boolean(row.model?.trim())
+      || Boolean(row.reasoning_effort?.trim());
+    if (!hasConcreteAssignment) {
+      return false;
+    }
+    const provider = normalizeRuntimeAssignmentValue(getWorkerProvider(row));
+    const model = normalizeRuntimeAssignmentValue(getWorkerModel(row));
+    const effort = normalizeRuntimeAssignmentValue(getWorkerReasoningEffort(row));
+    return provider !== defaultProvider || model !== defaultModel || effort !== defaultEffort;
+  });
+}
+
+function getEffectiveRuntimeModelAssignmentMode(): RuntimeModelAssignmentMode {
+  return hasEffectivePaneSpecificModelAssignments() ? "per-pane" : runtimeModelAssignmentMode;
+}
+
 function getRuntimeModelAssignmentModeDraft() {
-  return runtimeModelAssignmentModeDraft ?? runtimeModelAssignmentMode;
+  return runtimeModelAssignmentModeDraft ?? getEffectiveRuntimeModelAssignmentMode();
 }
 
 function updateRuntimeModelAssignmentModeDraft(mode: RuntimeModelAssignmentMode) {
@@ -11115,28 +11174,46 @@ function renderRuntimeWorkerDefaultControls(japanese: boolean, disabled = false)
     { disabled, title: disabledTitle },
   ));
 
-  const modelOptions = entries.map((entry) => ({
-    value: entry.id,
-    label: getRuntimeCatalogOptionLabel(entry, false),
-    labelJa: getRuntimeCatalogOptionLabel(entry, japanese),
-  }));
-  const selectedModelValue = selectedEntry.id;
-  controls.appendChild(createRuntimeSelect(
-    "runtime-worker-default-model",
-    japanese ? "モデル" : "Model",
-    selectedModelValue,
-    modelOptions,
-    japanese,
-    (entryId) => {
-      const nextEntry = entries.find((entry) => entry.id === entryId) ?? getRuntimeProviderDefaultEntry(selectedProvider);
-      updateRuntimeRoleDraft("worker", {
-        model: nextEntry.model,
-        modelSource: nextEntry.modelSource,
-        reasoningEffort: normalizeRuntimeReasoningForEntry(selectedProvider, nextEntry, nextEntry.reasoningEffort),
-      });
-    },
-    { disabled, title: disabledTitle },
-  ));
+  const modelField = document.createElement("label");
+  modelField.className = "runtime-model-slot-field";
+  const modelCaption = document.createElement("span");
+  modelCaption.className = "runtime-control-caption";
+  modelCaption.textContent = japanese ? "モデル" : "Model";
+  const modelSearchInput = document.createElement("input");
+  modelSearchInput.className = "runtime-control-input runtime-model-search-input";
+  modelSearchInput.type = "search";
+  modelSearchInput.placeholder = japanese ? "モデル名またはIDで検索" : "Search model name or ID";
+  modelSearchInput.disabled = disabled;
+  modelSearchInput.title = disabledTitle;
+  const modelSelect = document.createElement("select");
+  modelSelect.id = "runtime-worker-default-model";
+  modelSelect.className = "runtime-control-select runtime-model-slot-select";
+  modelSelect.disabled = disabled;
+  modelSelect.title = disabledTitle;
+  modelSelect.setAttribute("aria-label", japanese ? "全ペイン共通のモデル" : "Shared worker model");
+  const renderSharedModelOptions = () => {
+    const displayEntries = getRuntimeModelSelectEntries(entries, selectedEntry, modelSearchInput.value, japanese);
+    modelSelect.innerHTML = "";
+    for (const entry of displayEntries) {
+      const option = document.createElement("option");
+      option.value = entry.id;
+      option.textContent = getRuntimeCatalogOptionLabel(entry, japanese);
+      option.selected = entry.id === selectedEntry.id;
+      modelSelect.appendChild(option);
+    }
+  };
+  modelSearchInput.addEventListener("input", renderSharedModelOptions);
+  modelSelect.addEventListener("change", () => {
+    const nextEntry = entries.find((entry) => entry.id === modelSelect.value) ?? getRuntimeProviderDefaultEntry(selectedProvider);
+    updateRuntimeRoleDraft("worker", {
+      model: nextEntry.model,
+      modelSource: nextEntry.modelSource,
+      reasoningEffort: normalizeRuntimeReasoningForEntry(selectedProvider, nextEntry, nextEntry.reasoningEffort),
+    });
+  });
+  renderSharedModelOptions();
+  modelField.append(modelCaption, modelSearchInput, modelSelect);
+  controls.appendChild(modelField);
 
   controls.appendChild(createRuntimeSelect(
     "runtime-worker-default-effort",
@@ -11202,6 +11279,7 @@ function renderWorkerModelAssignmentPanel(japanese: boolean) {
     const rowElement = document.createElement("div");
     rowElement.className = "runtime-model-slot-row";
     rowElement.dataset.backend = getWorkerBackendForCatalog(row);
+    rowElement.dataset.slotId = slotId;
 
     const summary = document.createElement("div");
     summary.className = "runtime-model-slot-summary";
@@ -11243,7 +11321,12 @@ function renderWorkerModelAssignmentPanel(japanese: boolean) {
     const modelSelect = document.createElement("select");
     modelSelect.className = "runtime-control-select runtime-model-slot-select";
     modelSelect.setAttribute("aria-label", japanese ? `${slotId} のモデル` : `${slotId} model`);
-    modelField.append(modelCaption, modelSelect);
+    const modelSearchInput = document.createElement("input");
+    modelSearchInput.className = "runtime-control-input runtime-model-search-input";
+    modelSearchInput.type = "search";
+    modelSearchInput.placeholder = japanese ? "モデル名またはIDで検索" : "Search model name or ID";
+    modelSearchInput.setAttribute("aria-label", japanese ? `${slotId} のモデル検索` : `${slotId} model search`);
+    modelField.append(modelCaption, modelSearchInput, modelSelect);
 
     const effortField = document.createElement("label");
     effortField.className = "runtime-model-slot-field";
@@ -11346,8 +11429,9 @@ function renderWorkerModelAssignmentPanel(japanese: boolean) {
       if (!selectedEntry) {
         selectedEntry = currentEntries.find((entry) => entry.model === "provider-default") ?? getRuntimeProviderDefaultEntry(provider);
       }
+      const displayEntries = getRuntimeModelSelectEntries(currentEntries, selectedEntry, modelSearchInput.value, japanese);
       modelSelect.innerHTML = "";
-      for (const entry of currentEntries) {
+      for (const entry of displayEntries) {
         const option = document.createElement("option");
         option.value = entry.id;
         const readiness = getRuntimeModelReadinessForWorker(entry, row, japanese);
@@ -11362,12 +11446,18 @@ function renderWorkerModelAssignmentPanel(japanese: boolean) {
     };
 
     providerSelect.addEventListener("change", () => {
+      modelSearchInput.value = "";
       renderModelOptions("provider-default");
+    });
+    modelSearchInput.addEventListener("input", () => {
+      const selection = resolveSelection();
+      renderModelOptions(selection?.entry.model ?? modelSelect.value);
     });
     modelSelect.addEventListener("change", () => {
       const provider = normalizeRuntimeProviderId(providerSelect.value) ?? inferredProvider;
       const selection = resolveSelection();
       if (selection) {
+        modelSearchInput.value = getRuntimeCatalogOptionLabel(selection.entry, japanese);
         renderEffortOptions(provider, selection.entry, selection.entry.reasoningEffort);
       }
       updateActionState();
@@ -11380,6 +11470,7 @@ function renderWorkerModelAssignmentPanel(japanese: boolean) {
       }
     });
     providerSelect.disabled = Boolean(workerProviderSwitchInFlight);
+    modelSearchInput.disabled = Boolean(workerProviderSwitchInFlight);
     modelSelect.disabled = Boolean(workerProviderSwitchInFlight);
     renderModelOptions(getWorkerModel(row));
 
@@ -16278,7 +16369,7 @@ function setSettingsSheet(open: boolean) {
     if (!runtimeRoleDraftState) {
       runtimeRoleDraftState = cloneRuntimeRolePreferences(runtimeRolePreferences);
     }
-    runtimeModelAssignmentModeDraft = runtimeModelAssignmentMode;
+    runtimeModelAssignmentModeDraft = getEffectiveRuntimeModelAssignmentMode();
     resetSettingsView();
     renderSettingsControls();
     requestAnimationFrame(() => {
@@ -16292,6 +16383,7 @@ function setSettingsSheet(open: boolean) {
 async function applySettingsDraft() {
   const appliedThemeDraft = settingsDraftState ? cloneThemeState(settingsDraftState) : null;
   const languageChanged = Boolean(appliedThemeDraft && appliedThemeDraft.language !== themeState.language);
+  const previousEffectiveRuntimeModelAssignmentMode = getEffectiveRuntimeModelAssignmentMode();
   if (settingsDraftState) {
     const validation = getVoiceShortcutValidation(settingsDraftState.voiceShortcut, settingsDraftState.language === "ja");
     if (!validation.valid) {
@@ -16322,10 +16414,9 @@ async function applySettingsDraft() {
     }
   }
   if (runtimeModelAssignmentModeDraft) {
-    const previousMode = runtimeModelAssignmentMode;
     runtimeModelAssignmentMode = runtimeModelAssignmentModeDraft;
     persistRuntimeModelAssignmentMode();
-    if (previousMode !== "shared" && runtimeModelAssignmentMode === "shared") {
+    if (previousEffectiveRuntimeModelAssignmentMode !== "shared" && runtimeModelAssignmentMode === "shared") {
       try {
         await clearDetectedWorkerModelOverrides();
       } catch (error) {
@@ -16411,6 +16502,10 @@ function installViewportHarnessHooks() {
     getOperatorStartupInput: () => getOperatorStartupInput(),
     setOperatorStartupInputForTest: (value: string | null) => {
       viewportHarnessOperatorStartupInputOverride = value;
+    },
+    refreshWorkerStatusRowsForTest: async () => {
+      await refreshWorkerStatusSurface();
+      return getWorkerStatusRowsForSurface();
     },
     setVoiceNow: (timestamp: number | null) => {
       viewportHarnessVoiceNow = typeof timestamp === "number" && Number.isFinite(timestamp) ? timestamp : null;

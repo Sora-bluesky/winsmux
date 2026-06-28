@@ -10,6 +10,7 @@ function Get-AgentLaunchCommand {
         [AllowEmptyString()][string]$ModelSource = '',
         [AllowEmptyString()][string]$ReasoningEffort = '',
         [AllowEmptyString()][string]$McpMode = '',
+        [AllowEmptyString()][string]$SlotId = '',
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)][string]$GitWorktreeDir,
         [string]$RootPath,
@@ -22,6 +23,7 @@ function Get-AgentLaunchCommand {
         -ModelSource $ModelSource `
         -ReasoningEffort $ReasoningEffort `
         -McpMode $McpMode `
+        -SlotId $SlotId `
         -ProjectDir $ProjectDir `
         -GitWorktreeDir $GitWorktreeDir `
         -RootPath $RootPath `

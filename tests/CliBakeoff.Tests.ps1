@@ -63,6 +63,26 @@ Describe 'CLI bakeoff evidence harness' {
         $contractHtml | Should -Not -Match 'v0\.36\.22 測定待ち|v0\.36\.22 で行う正式|6ペイン実測とレポート再作成は v0\.36\.22'
     }
 
+    It 'treats low Codex usage remaining notices as non-blocking readiness warnings' {
+        $mainTs = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'winsmux-app\src\main.ts') -Raw -Encoding UTF8
+        $blockerFunction = [regex]::Match(
+            $mainTs,
+            '(?s)function detectWorkerReadinessBlocker\(text: string\) \{.*?\r?\n\}',
+            [System.Text.RegularExpressions.RegexOptions]::Singleline
+        ).Value
+        $warningFunction = [regex]::Match(
+            $mainTs,
+            '(?s)function detectWorkerReadinessWarnings\(text: string\) \{.*?\r?\n\}',
+            [System.Text.RegularExpressions.RegexOptions]::Singleline
+        ).Value
+
+        $blockerFunction | Should -Not -BeNullOrEmpty
+        $warningFunction | Should -Not -BeNullOrEmpty
+        $blockerFunction | Should -Not -Match 'less\\s\+than|run\\s\+\\\\/usage|usage\\s\+limit\\s\+resets'
+        $warningFunction | Should -Match 'less\\s\+than'
+        $warningFunction | Should -Match 'usage\\s\+limit\\s\+resets'
+    }
+
     It 'benchmark_readiness_gate_rejects_mismatched_candidate_identity' {
         $missingDesktopBinary = Join-Path $TestDrive 'missing-winsmux-app.exe'
         $missingCliBinary = Join-Path $TestDrive 'missing-winsmux.exe'

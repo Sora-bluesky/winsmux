@@ -1406,6 +1406,7 @@ function Get-BridgeBuiltinProviderCapability {
                 model_catalog_source     = 'https://openrouter.ai/api/v1/models'
                 model_options            = @(
                     [ordered]@{ id = 'provider-default'; label = 'Provider default'; source = 'provider-default' },
+                    [ordered]@{ id = 'sakana/fugu-ultra'; label = 'Sakana: Fugu Ultra'; source = 'provider-api'; availability = 'OpenRouter Models API' },
                     [ordered]@{ id = 'z-ai/glm-5.2'; label = 'Z.ai: GLM 5.2'; source = 'provider-api'; availability = 'OpenRouter Models API' },
                     [ordered]@{ id = 'moonshotai/kimi-k2.7-code'; label = 'MoonshotAI: Kimi K2.7 Code'; source = 'provider-api'; availability = 'OpenRouter Models API' }
                 )
@@ -1873,6 +1874,7 @@ function Get-BridgeProviderLaunchCommand {
         [AllowEmptyString()][string]$ModelSource = '',
         [AllowEmptyString()][string]$ReasoningEffort = '',
         [AllowEmptyString()][string]$McpMode = '',
+        [AllowEmptyString()][string]$SlotId = '',
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)][string]$GitWorktreeDir,
         [string]$RootPath,
@@ -1984,6 +1986,8 @@ function Get-BridgeProviderLaunchCommand {
                 'Bypass',
                 '-File',
                 (ConvertTo-BridgePowerShellLiteral -Value $paneWorkerScript),
+                '-SlotId',
+                (ConvertTo-BridgePowerShellLiteral -Value $SlotId),
                 '-Provider',
                 (ConvertTo-BridgePowerShellLiteral -Value $provider),
                 '-Model',

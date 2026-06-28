@@ -15,6 +15,8 @@ const WORKER_START_ONLY = process.argv.includes("--worker-start-only")
   || process.env.WINSMUX_DESKTOP_E2E_WORKER_START_ONLY === "1";
 const COMPOSER_ONLY = process.argv.includes("--composer-only")
   || process.env.WINSMUX_DESKTOP_E2E_COMPOSER_ONLY === "1";
+const ASSERT_DUPLICATE_GUARD_ONLY = process.argv.includes("--assert-duplicate-launch-guard")
+  || process.env.WINSMUX_DESKTOP_E2E_ASSERT_DUPLICATE_GUARD_ONLY === "1";
 const OUTPUT_DIR = path.join(
   process.cwd(),
   "output",
@@ -78,6 +80,67 @@ async function getAvailablePort() {
     });
     server.on("error", reject);
   });
+}
+
+function getRunningWinsmuxAppProcesses() {
+  if (process.platform !== "win32") {
+    return [];
+  }
+  if (process.env.WINSMUX_DESKTOP_E2E_FAKE_RUNNING_APPS_JSON) {
+    const parsed = JSON.parse(process.env.WINSMUX_DESKTOP_E2E_FAKE_RUNNING_APPS_JSON);
+    return Array.isArray(parsed) ? parsed : [parsed];
+  }
+  const result = spawnSync("powershell.exe", [
+    "-NoLogo",
+    "-NoProfile",
+    "-Command",
+    "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'winsmux-app.exe' } | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress -Depth 3",
+  ], {
+    encoding: "utf8",
+  });
+  if (result.status !== 0 || !result.stdout.trim()) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(result.stdout);
+    return Array.isArray(parsed) ? parsed : [parsed];
+  } catch {
+    return [];
+  }
+}
+
+function assertNoExistingWinsmuxAppBeforeLaunch() {
+  if (process.env.WINSMUX_DESKTOP_E2E_ALLOW_EXISTING_APP === "1") {
+    return;
+  }
+  const running = getRunningWinsmuxAppProcesses();
+  if (running.length > 0) {
+    const summary = running
+      .map((item) => `${item.ProcessId}: ${item.CommandLine}`)
+      .join("\n");
+    throw new Error(
+      [
+        "winsmux-app.exe is already running; refusing to start a second desktop app for E2E.",
+        "Stop the existing app or set WINSMUX_DESKTOP_E2E_ALLOW_EXISTING_APP=1 only for an intentional overlap test.",
+        summary,
+      ].join("\n"),
+    );
+  }
+}
+
+function assertAllSixWorkerOutputs(outputs, expectedPattern) {
+  const workerIds = Array.from({ length: 6 }, (_, index) => `worker-${index + 1}`);
+  const missing = workerIds.filter((workerId) => !Object.prototype.hasOwnProperty.call(outputs, workerId));
+  if (missing.length > 0) {
+    throw new Error(`missing worker output evidence for: ${missing.join(", ")}`);
+  }
+  const mismatched = workerIds.filter((workerId) => {
+    const pattern = typeof expectedPattern === "function" ? expectedPattern(workerId) : expectedPattern;
+    return !pattern.test(outputs[workerId] ?? "");
+  });
+  if (mismatched.length > 0) {
+    throw new Error(`worker output evidence did not match for: ${mismatched.join(", ")}`);
+  }
 }
 
 function appendBounded(lines, chunk) {
@@ -289,6 +352,46 @@ async function setActiveProjectDirForUi(page, projectDir) {
     localStorage.setItem("winsmux.active-project.v1", value.replace(/\\/g, "/"));
   }, projectDir);
   await reloadAppPage(page);
+}
+
+async function waitForWorkerModelAssignment(page, slotId, expectedModelPattern) {
+  const statusRows = await page.waitForFunction(async ({ slotId, expectedModelPattern }) => {
+    const rows = await window.__winsmuxViewportHarness?.refreshWorkerStatusRowsForTest?.();
+    if (!Array.isArray(rows)) {
+      return null;
+    }
+    const row = rows.find((item) => item?.slot_id === slotId || item?.slot === slotId || item?.pane_id === slotId);
+    if (!row) {
+      return null;
+    }
+    const text = `${row.provider ?? ""} ${row.model ?? ""} ${row.reasoning_effort ?? ""}`;
+    if (!new RegExp(expectedModelPattern, "i").test(text)) {
+      return null;
+    }
+    return rows;
+  }, { slotId, expectedModelPattern }, { timeout: 60_000 });
+  await statusRows.jsonValue();
+
+  await page.click("#activity-settings-btn");
+  await page.locator("#settings-sheet").waitFor({ state: "visible", timeout: 60_000 });
+  const userTab = page.locator("#settings-tab-user");
+  if (await userTab.isVisible().catch(() => false)) {
+    await userTab.click();
+  }
+  const commonNav = page.locator("#settings-nav-common");
+  if (await commonNav.isVisible().catch(() => false)) {
+    await commonNav.click();
+  }
+  await page.locator(".runtime-model-assignment-panel").waitFor({ state: "visible", timeout: 60_000 });
+  await page.waitForFunction(({ slotId, expectedModelPattern }) => {
+    const row = document.querySelector(`.runtime-model-slot-row[data-slot-id="${slotId}"]`);
+    if (!(row instanceof HTMLElement)) {
+      return false;
+    }
+    return new RegExp(expectedModelPattern, "i").test(row.textContent ?? "");
+  }, { slotId, expectedModelPattern });
+  await page.click("#close-settings-btn");
+  await page.locator("#settings-sheet").waitFor({ state: "hidden", timeout: 60_000 });
 }
 
 async function reloadAppPage(page) {
@@ -1460,6 +1563,51 @@ async function writeEvidence(ok, extra = {}) {
   await fs.writeFile(path.join(OUTPUT_DIR, "desktop-pane-e2e.json"), JSON.stringify(evidence, null, 2));
 }
 
+async function assertSettingsReflectPaneSpecificWorkerAssignment(page) {
+  await page.click("#activity-settings-btn");
+  await page.locator("#settings-sheet").waitFor({ state: "visible", timeout: 60_000 });
+  const userTab = page.locator("#settings-tab-user");
+  if (await userTab.isVisible().catch(() => false)) {
+    await userTab.click();
+  }
+  const commonNav = page.locator("#settings-nav-common");
+  if (await commonNav.isVisible().catch(() => false)) {
+    await commonNav.click();
+  }
+  if (!(await page.locator(".runtime-model-assignment-panel").isVisible().catch(() => false))) {
+    await page.evaluate(() => {
+      const settingsNav = document.querySelector("#settings-nav-common");
+      if (settingsNav instanceof HTMLElement) {
+        settingsNav.click();
+      }
+    });
+  }
+  await page.locator(".runtime-model-assignment-panel").scrollIntoViewIfNeeded();
+  await page.waitForFunction(() => {
+    const modeButtons = Array.from(document.querySelectorAll(".runtime-model-mode-option"));
+    const sharedMode = modeButtons.find((button) => /All panes use the default|全ペイン共通/.test(button.textContent ?? ""));
+    const perPaneMode = modeButtons.find((button) => /Set each pane individually|ペインごと/.test(button.textContent ?? ""));
+    const provider = document.querySelector("#runtime-worker-default-provider");
+    const model = document.querySelector("#runtime-worker-default-model");
+    const effort = document.querySelector("#runtime-worker-default-effort");
+    const workerRow = document.querySelector('.runtime-model-slot-row[data-slot-id="worker-1"]');
+    return sharedMode instanceof HTMLElement &&
+      sharedMode.getAttribute("aria-pressed") === "false" &&
+      perPaneMode instanceof HTMLElement &&
+      perPaneMode.getAttribute("aria-pressed") === "true" &&
+      provider instanceof HTMLSelectElement &&
+      provider.disabled &&
+      model instanceof HTMLSelectElement &&
+      model.disabled &&
+      effort instanceof HTMLSelectElement &&
+      effort.disabled &&
+      workerRow instanceof HTMLElement &&
+      /gpt-5\.4/i.test(workerRow.textContent ?? "");
+  });
+  await page.click("#close-settings-btn");
+  await page.locator("#settings-sheet").waitFor({ state: "hidden", timeout: 60_000 });
+}
+
 async function exerciseWorkerStartButton(page) {
   const tempProjectDir = path.join(OUTPUT_DIR, "worker-start-project");
   await fs.rm(tempProjectDir, { recursive: true, force: true });
@@ -1552,6 +1700,8 @@ async function exerciseWorkerStartButton(page) {
   }
 
   await setActiveProjectDirForUi(page, tempProjectDir);
+  await waitForWorkerModelAssignment(page, "worker-1", "gpt-5\\.4");
+  await assertSettingsReflectPaneSpecificWorkerAssignment(page);
   await closePtyIfExists(page, "worker-1");
   await setWorkbenchLayout(page, "focus");
   await page.selectOption("#focused-pane-select", "worker-1");
@@ -1683,15 +1833,18 @@ async function exerciseOperatorCommandStartsAllWorkerPanes(page, options = {}) {
   await submitWinsmuxComposerCommandWithButton(page, "winsmux workers start all");
   await page.locator("#conversation-panel", { hasText: "All worker panes were started" }).waitFor({ state: "visible", timeout: 60_000 });
   const outputs = {};
+  const fullOutputs = {};
   for (let index = 1; index <= 6; index += 1) {
     const paneId = `worker-${index}`;
     const output = await waitForPtyOutput(page, paneId, startMarker, 60_000);
+    fullOutputs[paneId] = output;
     outputs[paneId] = output.slice(-800);
   }
+  assertAllSixWorkerOutputs(fullOutputs, () => new RegExp(startMarker));
   return outputs;
 }
 
-async function exerciseOperatorBenchmarkReadyCheckBlocksOnPromptReadyMcpWarning(page) {
+async function exerciseOperatorBenchmarkReadyCheckRecordsPromptReadyWarnings(page) {
   await exerciseOperatorCommandStartsAllWorkerPanes(page, {
     projectName: "operator-ready-check-mcp-warning-project",
     scriptName: "operator-start-all-worker-mcp-warning.ps1",
@@ -1706,12 +1859,14 @@ async function exerciseOperatorBenchmarkReadyCheckBlocksOnPromptReadyMcpWarning(
       "Write-Output 'MCP startup incomplete (failed: figma)'",
       "Write-Output '3 MCP servers need authentication - run /mcp'",
       "Write-Output '‼3MCPserversneedauthentication·run/mcp'",
+      "Write-Output 'Heads up, you have less than 25% of your weekly limit left. Run /status for a breakdown.'",
+      "Write-Output 'You have 2 usage limit resets available. Run /usage to use one.'",
       "Write-Output ($args -join ' ')",
       "",
     ],
   });
   await submitWinsmuxComposerCommandWithButton(page, "winsmux benchmark ready-check");
-  await page.locator("#conversation-panel", { hasText: "Benchmark start readiness blocked" }).waitFor({ state: "visible", timeout: 60_000 });
+  await page.locator("#conversation-panel", { hasText: "Benchmark start readiness confirmed" }).waitFor({ state: "visible", timeout: 60_000 });
   const text = await page.locator("#conversation-panel").textContent();
   const metaState = await page.evaluate(() => {
     return Array.from(document.querySelectorAll(".pane")).map((pane) => {
@@ -1725,8 +1880,8 @@ async function exerciseOperatorBenchmarkReadyCheckBlocksOnPromptReadyMcpWarning(
   if (!combined.includes("MCP warning is present")) {
     throw new Error(`ready-check did not record the MCP warning:\n${combined.slice(-1_800)}`);
   }
-  if (combined.includes("Benchmark start readiness confirmed")) {
-    throw new Error(`ready-check confirmed despite worker MCP warnings:\n${combined.slice(-1_800)}`);
+  if (combined.includes("Benchmark start readiness blocked")) {
+    throw new Error(`ready-check blocked despite prompt-ready advisory warnings:\n${combined.slice(-1_800)}`);
   }
   return {
     conversationTail: (text ?? "").slice(-1_200),
@@ -1781,7 +1936,7 @@ async function exerciseOperatorBenchmarkReadyCheckBlocksOnConfirmationPrompt(pag
   };
 }
 
-async function exerciseOperatorBenchmarkDispatchBlocksOnPromptReadyMcpWarning(page) {
+async function exerciseOperatorBenchmarkDispatchRecordsPromptReadyWarnings(page) {
   await exerciseOperatorCommandStartsAllWorkerPanes(page, {
     projectName: "operator-dispatch-mcp-warning-project",
     scriptName: "operator-dispatch-mcp-warning.ps1",
@@ -1792,12 +1947,14 @@ async function exerciseOperatorBenchmarkDispatchBlocksOnPromptReadyMcpWarning(pa
       "Write-Output '› Improve documentation in @filename'",
       "Write-Output 'MCP startup incomplete (failed: figma)'",
       "Write-Output '3 MCP servers need authentication - run /mcp'",
+      "Write-Output 'Heads up, you have less than 25% of your weekly limit left. Run /status for a breakdown.'",
+      "Write-Output 'You have 2 usage limit resets available. Run /usage to use one.'",
       "Write-Output ($args -join ' ')",
       "",
     ],
   });
   await submitWinsmuxComposerCommandWithButton(page, "winsmux benchmark dispatch WB-001");
-  await page.locator("#conversation-panel", { hasText: "Benchmark dispatch blocked" }).waitFor({ state: "visible", timeout: 60_000 });
+  await page.locator("#conversation-panel", { hasText: "Benchmark task packet dispatched" }).waitFor({ state: "visible", timeout: 60_000 });
   const text = await page.locator("#conversation-panel").textContent();
   const outputs = {};
   for (let index = 1; index <= 6; index += 1) {
@@ -1808,9 +1965,10 @@ async function exerciseOperatorBenchmarkDispatchBlocksOnPromptReadyMcpWarning(pa
   if (!combined.includes("MCP warning is present")) {
     throw new Error(`benchmark dispatch did not record the MCP warning:\n${combined.slice(-1_800)}`);
   }
-  if (combined.includes("WINSMUX_BENCH_TASK_PACKET")) {
-    throw new Error(`benchmark dispatch sent a task packet despite worker MCP warnings:\n${combined.slice(-1_800)}`);
+  if (!combined.includes("WINSMUX_BENCH_TASK_PACKET")) {
+    throw new Error(`benchmark dispatch did not send a task packet despite prompt-ready advisory warnings:\n${combined.slice(-1_800)}`);
   }
+  assertAllSixWorkerOutputs(outputs, /WINSMUX_BENCH_TASK_PACKET/);
   return {
     conversationTail: (text ?? "").slice(-1_200),
     outputs,
@@ -1826,6 +1984,7 @@ async function exerciseOperatorBenchmarkReadyCheck(page) {
     const output = await waitForPtyOutputLine(page, paneId, `WINSMUX_BENCH_READY_CHECK ${paneId}`, 60_000);
     outputs[paneId] = output.slice(-800);
   }
+  assertAllSixWorkerOutputs(outputs, (paneId) => new RegExp(`WINSMUX_BENCH_READY_CHECK ${paneId}`));
   return outputs;
 }
 
@@ -1842,6 +2001,7 @@ async function exerciseOperatorBenchmarkDispatch(page) {
   if (!(text ?? "").includes("sha256")) {
     throw new Error(`benchmark dispatch did not record the packet hash:\n${(text ?? "").slice(-1_200)}`);
   }
+  assertAllSixWorkerOutputs(outputs, (paneId) => new RegExp(`WINSMUX_BENCH_TASK_PACKET WB-001 ${paneId}`));
   return {
     conversationTail: (text ?? "").slice(-1_200),
     outputs,
@@ -1850,6 +2010,23 @@ async function exerciseOperatorBenchmarkDispatch(page) {
 
 async function main() {
   await ensureOutputDir();
+  if (ASSERT_DUPLICATE_GUARD_ONLY) {
+    let blocked = false;
+    try {
+      assertNoExistingWinsmuxAppBeforeLaunch();
+    } catch (error) {
+      blocked = /already running/.test(error instanceof Error ? error.message : String(error));
+      if (!blocked) {
+        throw error;
+      }
+    }
+    if (!blocked) {
+      throw new Error("duplicate desktop launch guard did not reject a running winsmux-app.exe");
+    }
+    await writeEvidence(true, { mode: "assert-duplicate-launch-guard" });
+    process.stdout.write(`[desktop-pane-e2e] PASS assert-duplicate-launch-guard evidence=${path.join(OUTPUT_DIR, "desktop-pane-e2e.json")}\n`);
+    return;
+  }
   const debugPort = await getAvailablePort();
   const userDataDir = path.join(OUTPUT_DIR, `webview2-user-data-${Date.now()}`);
   const launchProjectDir = path.join(OUTPUT_DIR, "launch-project");
@@ -1860,6 +2037,7 @@ async function main() {
   }
   await writeOperatorPipeScript(scriptPath);
   await fs.writeFile(attachmentPath, "desktop composer attachment e2e\n", "utf8");
+  assertNoExistingWinsmuxAppBeforeLaunch();
 
   let browser;
   let page;
@@ -1908,8 +2086,8 @@ async function main() {
       await runStep("worker start button launches the selected Tauri worker pane", async () => {
         return await exerciseWorkerStartButton(page);
       });
-      await runStep("operator benchmark ready-check blocks on prompt-ready MCP warnings", async () => {
-        return await exerciseOperatorBenchmarkReadyCheckBlocksOnPromptReadyMcpWarning(page);
+      await runStep("operator benchmark ready-check records prompt-ready warnings", async () => {
+        return await exerciseOperatorBenchmarkReadyCheckRecordsPromptReadyWarnings(page);
       });
       await runStep("operator benchmark ready-check waits for Codex MCP startup", async () => {
         return await exerciseOperatorBenchmarkReadyCheckWaitsForMcpStartup(page);
@@ -1917,8 +2095,8 @@ async function main() {
       await runStep("operator benchmark ready-check stops on confirmation prompts", async () => {
         return await exerciseOperatorBenchmarkReadyCheckBlocksOnConfirmationPrompt(page);
       });
-      await runStep("operator benchmark dispatch blocks on prompt-ready MCP warnings", async () => {
-        return await exerciseOperatorBenchmarkDispatchBlocksOnPromptReadyMcpWarning(page);
+      await runStep("operator benchmark dispatch records prompt-ready warnings", async () => {
+        return await exerciseOperatorBenchmarkDispatchRecordsPromptReadyWarnings(page);
       });
       await runStep("operator composer command starts all worker panes", async () => {
         return await exerciseOperatorCommandStartsAllWorkerPanes(page);

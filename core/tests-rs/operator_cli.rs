@@ -6182,6 +6182,105 @@ fn operator_cli_restart_infers_adapter_when_registry_lacks_provider() {
 }
 
 #[test]
+fn operator_cli_restart_supports_openai_compatible_pane_worker_slot() {
+    let project_dir = make_temp_project_dir("restart-openai-compatible");
+    let winsmux_dir = project_dir.join(".winsmux");
+    fs::create_dir_all(&winsmux_dir).expect("test should create .winsmux directory");
+    fs::write(
+        project_dir.join(".winsmux.yaml"),
+        r#"
+external-operator: true
+agent-slots:
+  - slot-id: worker-5
+    runtime-role: worker
+    worker-backend: api_llm
+    agent: openrouter
+    model: sakana/fugu-ultra
+    model-source: operator-override
+    reasoning-effort: provider-default
+    prompt-transport: file
+    auth-mode: api-key-env
+"#,
+    )
+    .expect("test should write settings");
+    fs::write(
+        winsmux_dir.join("provider-capabilities.json"),
+        r#"{
+  "version": 1,
+  "providers": {
+    "openrouter": {
+      "adapter": "openai-compatible",
+      "command": "openrouter",
+      "model_sources": ["provider-default", "operator-override", "provider-api"],
+      "reasoning_efforts": ["provider-default"],
+      "auth_modes": ["api-key-env"],
+      "credential_requirements": "OPENROUTER_API_KEY environment variable",
+      "execution_backend": "openai-compatible-chat-completions",
+      "api_base_url": "https://openrouter.ai/api/v1",
+      "api_key_env": "OPENROUTER_API_KEY",
+      "prompt_transports": ["file"]
+    }
+  }
+}
+"#,
+    )
+    .expect("test should write provider capability registry");
+    fs::write(
+        winsmux_dir.join("manifest.yaml"),
+        format!(
+            r#"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: {}
+panes:
+  worker-5:
+    pane_id: "%5"
+    role: Worker
+    launch_dir: {}
+"#,
+            project_dir.display(),
+            project_dir.display()
+        ),
+    )
+    .expect("test should write manifest");
+    let (winsmux_bin, log_path) =
+        write_fake_winsmux_restart(&project_dir, Some("winsmux-orchestra"), &["%5"]);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["restart", "worker-5"])
+        .env("WINSMUX_BIN", winsmux_bin)
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(
+        output.status.success(),
+        "winsmux command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("restarted %5 (worker-5)"),
+        "unexpected stdout: {stdout}"
+    );
+    let log = fs::read_to_string(&log_path).expect("fake winsmux log should exist");
+    assert!(log.contains("api-llm-pane-worker.ps1"));
+    assert!(log.contains("-SlotId worker-5"));
+    assert!(log.contains("-Provider openrouter"));
+    assert!(log.contains("-Model sakana/fugu-ultra"));
+    let worker = read_manifest_pane(&project_dir, "worker-5");
+    assert_eq!(
+        worker["provider_target"].as_str(),
+        Some("openrouter:sakana/fugu-ultra")
+    );
+    assert_eq!(
+        worker["capability_adapter"].as_str(),
+        Some("openai-compatible")
+    );
+}
+
+#[test]
 fn operator_cli_restart_rejects_malformed_provider_registry() {
     let project_dir = make_temp_project_dir("restart-malformed-capability-registry");
     write_manifest(&project_dir);
@@ -6576,7 +6675,7 @@ fn write_fake_winsmux_restart(
             body.push_str("\r\n");
         }
         body.push_str("  exit /b 0\r\n)\r\n");
-        body.push_str("if \"%1\"==\"capture-pane\" (\r\n  echo PS C:\\repo^>\r\n  echo ^>\r\n  echo Welcome to Claude Code!\r\n  exit /b 0\r\n)\r\n");
+        body.push_str("if \"%1\"==\"capture-pane\" (\r\n  echo PS C:\\repo^>\r\n  echo ^>\r\n  echo Welcome to Claude Code!\r\n  echo api_llm[worker-5]^>\r\n  exit /b 0\r\n)\r\n");
         body.push_str("exit /b 0\r\n");
         fs::write(&fake_path, body).expect("test should write fake winsmux");
         (fake_path, log_path)
@@ -6600,7 +6699,7 @@ fn write_fake_winsmux_restart(
             body.push_str("'\n");
         }
         body.push_str("  exit 0\nfi\n");
-        body.push_str("if [ \"$1\" = \"capture-pane\" ]; then\n  printf '%s\\n' 'PS /repo>' '>' 'Welcome to Claude Code!'\n  exit 0\nfi\n");
+        body.push_str("if [ \"$1\" = \"capture-pane\" ]; then\n  printf '%s\\n' 'PS /repo>' '>' 'Welcome to Claude Code!' 'api_llm[worker-5]>'\n  exit 0\nfi\n");
         body.push_str("exit 0\n");
         fs::write(&fake_path, body).expect("test should write fake winsmux");
         #[cfg(unix)]

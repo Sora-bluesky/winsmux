@@ -165,6 +165,7 @@ function Get-PaneScalerLaunchCommand {
         [AllowEmptyString()][string]$ModelSource = '',
         [AllowEmptyString()][string]$ReasoningEffort = '',
         [AllowEmptyString()][string]$McpMode = '',
+        [AllowEmptyString()][string]$SlotId = '',
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)][string]$GitWorktreeDir,
         [string]$RootPath = ''
@@ -176,6 +177,7 @@ function Get-PaneScalerLaunchCommand {
         -ModelSource $ModelSource `
         -ReasoningEffort $ReasoningEffort `
         -McpMode $McpMode `
+        -SlotId $SlotId `
         -ProjectDir $ProjectDir `
         -GitWorktreeDir $GitWorktreeDir `
         -RootPath $RootPath
@@ -438,7 +440,7 @@ function Add-OrchestraPane {
         Invoke-MonitorWinsmux -Arguments @('select-pane', '-t', $newPaneId, '-T', $newLabel) | Out-Null
 
         Wait-MonitorPaneShellReady -PaneId $newPaneId
-        Send-MonitorBridgeCommand -PaneId $newPaneId -Text (Get-PaneScalerLaunchCommand -Agent ([string]$roleAgentConfig.Agent) -Model ([string]$roleAgentConfig.Model) -ModelSource ([string]$roleAgentConfig.ModelSource) -ReasoningEffort ([string]$roleAgentConfig.ReasoningEffort) -McpMode ([string]$roleAgentConfig.McpMode) -ProjectDir $worktree.WorktreePath -GitWorktreeDir $worktree.GitWorktreeDir -RootPath $projectDir)
+        Send-MonitorBridgeCommand -PaneId $newPaneId -Text (Get-PaneScalerLaunchCommand -Agent ([string]$roleAgentConfig.Agent) -Model ([string]$roleAgentConfig.Model) -ModelSource ([string]$roleAgentConfig.ModelSource) -ReasoningEffort ([string]$roleAgentConfig.ReasoningEffort) -McpMode ([string]$roleAgentConfig.McpMode) -SlotId $newLabel -ProjectDir $worktree.WorktreePath -GitWorktreeDir $worktree.GitWorktreeDir -RootPath $projectDir)
 
         $newPane = [ordered]@{
             label                = $newLabel
