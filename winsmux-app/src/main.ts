@@ -57,6 +57,7 @@ interface PaneEntry {
   outputBuffer: string;
   ptyStarted: boolean;
   ptyStarting: Promise<void> | null;
+  activeStartupInput: string;
 }
 
 interface HarnessBenchmarkPackTask {
@@ -1776,6 +1777,7 @@ function markPanePtyStartedFromExternalEvent(paneId: string) {
   const wasStarted = entry.ptyStarted;
   entry.ptyStarted = true;
   entry.ptyStarting = null;
+  entry.activeStartupInput = entry.activeStartupInput || "";
   entry.metaElement.textContent = getLanguageText("shell active", "シェル起動済み");
   entry.metaElement.title = getLanguageText(
     "This pane was started by the desktop control pipe.",
@@ -1796,6 +1798,7 @@ function markPanePtyStoppedFromExternalEvent(paneId: string) {
   const wasRunning = entry.ptyStarted || Boolean(entry.ptyStarting);
   entry.ptyStarted = false;
   entry.ptyStarting = null;
+  entry.activeStartupInput = "";
   entry.outputBuffer = "";
   entry.metaElement.textContent = getLanguageText("not started", "未起動");
   entry.metaElement.removeAttribute("title");
@@ -1882,6 +1885,7 @@ function createPane(paneId?: string, options?: { deferWorkbenchUpdate?: boolean 
     outputBuffer: "",
     ptyStarted: false,
     ptyStarting: null,
+    activeStartupInput: "",
   });
   const hasKnownFocusedPane = focusedWorkbenchPaneId && (panes.has(focusedWorkbenchPaneId) || getWorkbenchPaneOrdinal(focusedWorkbenchPaneId) !== null);
   if (!hasKnownFocusedPane || (!paneId && workbenchLayout === "focus")) {
@@ -2011,9 +2015,11 @@ function ensurePanePtyStarted(paneId: string) {
   const { cols, rows } = { cols: entry.terminal.cols, rows: entry.terminal.rows };
   entry.metaElement.textContent = getLanguageText("starting shell", "シェル起動中");
   renderWorkerStatusSurface();
-  entry.ptyStarting = spawnPtyPane(paneId, cols, rows, getPaneStartupInput(paneId))
+  const startupInput = getPaneStartupInput(paneId);
+  entry.ptyStarting = spawnPtyPane(paneId, cols, rows, startupInput)
     .then(() => {
       entry.ptyStarted = true;
+      entry.activeStartupInput = startupInput ?? "";
       entry.metaElement.textContent = getLanguageText("waiting for summary", "要約待ち");
       requestDesktopSummaryRefresh(undefined, 500);
       void refreshWorkerStatusSurface();
@@ -3564,20 +3570,46 @@ function appendWorkerStartResultConversation(
   renderConversation(getConversationItems());
 }
 
+function normalizeWorkerStartupInput(value: string) {
+  return value.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+}
+
+function isWorkerPaneRunningExpectedStartup(entry: PaneEntry, startupInput: string) {
+  return normalizeWorkerStartupInput(entry.activeStartupInput) === normalizeWorkerStartupInput(startupInput);
+}
+
+async function resetWorkerPaneForStartup(target: string, entry: PaneEntry) {
+  clearPaneStartupInput(target);
+  entry.ptyStarted = false;
+  entry.ptyStarting = null;
+  entry.activeStartupInput = "";
+  entry.outputBuffer = "";
+  entry.metaElement.textContent = getLanguageText("restarting shell", "シェル再起動中");
+  entry.metaElement.title = getLanguageText(
+    "The previous worker command did not match the requested launch command, so the pane is being restarted.",
+    "前回のワーカー起動コマンドが今回の起動コマンドと一致しないため、ペインを再起動しています。",
+  );
+  await closePtyPane(target);
+}
+
 async function startDesktopWorkerPaneWithLaunchCommand(target: string, row: DesktopWorkerStatusRow) {
   const launchCommand = (row.launch_command ?? "").trim();
   if (!launchCommand) {
     throw new Error(row.launch_command_error || `No launch command is available for ${target}.`);
   }
+  const startupInput = `${launchCommand}\r`;
   const pane = panes.get(target);
   if (!pane) {
     throw new Error(`Pane ${target} not found.`);
   }
   if (pane.ptyStarted) {
-    appendWorkerStartResultConversation({ slot_id: target, status: "already_running" }, row);
-    return;
+    if (isWorkerPaneRunningExpectedStartup(pane, startupInput)) {
+      appendWorkerStartResultConversation({ slot_id: target, status: "already_running" }, row);
+      return;
+    }
+    await resetWorkerPaneForStartup(target, pane);
   }
-  if (pane.ptyStarting || !queuePaneStartupInput(target, `${launchCommand}\r`)) {
+  if (pane.ptyStarting || !queuePaneStartupInput(target, startupInput)) {
     appendWorkerStartResultConversation({
       slot_id: target,
       status: "blocked",
