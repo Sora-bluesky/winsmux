@@ -50,6 +50,10 @@ path = "tests-rs/operator_cli.rs"
 name = "search_ledger_contract"
 path = "tests-rs/search_ledger_contract.rs"
 
+[[test]]
+name = "session_contract_test"
+path = "tests-rs/session_contract_test.rs"
+
 # Windows only
 [target.'cfg(not(windows))'.dependencies]
 [target.'cfg(windows)'.dependencies]
