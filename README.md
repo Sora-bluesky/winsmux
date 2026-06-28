@@ -1,16 +1,16 @@
 [English](README.md) | [日本語](README.ja.md)
 
 <p align="center">
-  <img src="docs/brand-hero.svg" alt="winsmux: Governance for AI agents on Windows" width="100%">
+  <img src="docs/brand-hero.svg" alt="winsmux: One control desk for every AI coding agent on Windows" width="100%">
 </p>
 
 # winsmux
 
-`winsmux` is a Windows-native control desk, a single human-run cockpit, for people who already use multiple coding CLIs and need to keep the work accountable.
+`winsmux` is **one control desk for every AI coding agent on Windows** — a single human-run cockpit for people who already run multiple coding CLIs and need to keep the work accountable.
 
 Instead of hiding agents behind a black-box orchestrator, `winsmux` opens each worker in a real pane, keeps file changes isolated in git worktrees, lets you send or interrupt instructions, and compares completed runs with evidence such as changed-file overlap, review state, verification state, and checkpoints before you decide what to keep.
 
-Use it when one Claude Code, Codex, Antigravity CLI, or legacy Gemini session is not enough, but you still want one human operator, local credentials, and a review trail.
+Use it when one Claude Code, Codex, Antigravity CLI, Grok Build, or legacy Gemini session is not enough, but you still want one human operator, local credentials, and a review trail.
 
 For example: run the same task through two agents, watch both panes live, stop the one going off track, then compare the recorded evidence before accepting either result.
 
@@ -31,9 +31,9 @@ Most tools solve only one part of this workflow.
 - Starts a managed Windows Terminal workspace for multiple CLI agents.
 - Lets an operator read, send, interrupt, and check pane health.
 - Initializes six managed worker slots by default, with a worker backend
-  contract for local, Codex, hosted API model, Google Colab, and placeholder workers. The first
-  generated slot is a Codex reviewer slot; the remaining slots keep the selected
-  worker backend.
+  contract for local, Codex, Antigravity, Grok Build, hosted API models via OpenRouter,
+  Google Colab, and placeholder workers. The first generated slot is a Codex reviewer
+  slot; the remaining slots keep the selected worker backend.
 - Keeps worker agents in separate git worktrees when isolation is enabled.
 - Compares recorded runs and highlights shared changed files before you choose a winner.
 - Shows review, verification, architecture, checkpoint, and follow-up evidence for recorded runs.
@@ -63,7 +63,7 @@ If you only need a terminal multiplexer, see the runtime docs under [`core/docs`
 - Windows 10 or Windows 11
 - PowerShell 7+
 - Windows Terminal
-- The official agent CLIs you want to run, such as Claude Code, Codex, or Antigravity CLI
+- The official agent CLIs you want to run, such as Claude Code, Codex, Antigravity CLI, or Grok Build
 
 Rust is only needed when you build the runtime from source.
 
@@ -154,6 +154,8 @@ Use `winsmux` for scripts and docs. This does not remove tmux-compatible configu
 | Codex | API key | Officially supported |
 | Codex | ChatGPT OAuth | This PC only, interactive use |
 | Antigravity CLI | Official Antigravity CLI sign-in | This PC only, interactive use |
+| Grok Build | Grok Build headless (local) | This PC only, interactive use |
+| OpenRouter (hosted models) | API key via `OPENROUTER_API_KEY` | Officially supported |
 | Gemini | Gemini API key | Officially supported |
 | Gemini | Gemini API in Vertex AI | Officially supported |
 | Gemini | Google OAuth | Legacy / tier-limited, this PC only |
