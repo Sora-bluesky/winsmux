@@ -19167,6 +19167,8 @@ promote-tactic <run_id> [--title <text>] [--kind <playbook|prewarm|verification>
   mailbox-send <ch> <json>  Send JSON message to mailbox channel
   mailbox-listen <ch>       Alias for mailbox-create
   control-rpc <json>        Send JSON-RPC to \\.\pipe\winsmux-control
+  operator-submit <text>    Submit one message to the desktop operator via control pipe
+  operator-snapshot [--lines <n>]  Capture recent desktop operator output via control pipe
   kill <target>             Stop pane process and respawn its shell
   restart <target>          Restart the pane agent using manifest context
   rebind-worktree <target> <path>  Update a Builder/Worker pane to use a new worktree path
@@ -19263,6 +19265,90 @@ function Invoke-ControlRpc {
 
     $jsonText = (@($ControlTarget) + @($ControlRest) | Where-Object { $null -ne $_ }) -join ' '
     $payload = ConvertTo-ControlRpcPayload -JsonText $jsonText
+    Invoke-ControlRpcPipeExchange -Payload $payload | Write-Output
+}
+
+function New-ControlRpcRequestPayload {
+    param(
+        [Parameter(Mandatory = $true)][string]$Method,
+        [Parameter(Mandatory = $true)]$Params,
+        [string]$Id = "winsmux-$([guid]::NewGuid().ToString('N'))"
+    )
+
+    $payload = [pscustomobject][ordered]@{
+        jsonrpc = '2.0'
+        id      = $Id
+        method  = $Method
+        params   = $Params
+    }
+
+    $payload = Add-ControlRpcAuthToPayload -Payload $payload
+    return ($payload | ConvertTo-Json -Depth 100 -Compress)
+}
+
+function Invoke-OperatorSnapshot {
+    param(
+        [AllowEmptyString()][string]$ControlTarget = $Target,
+        [string[]]$ControlRest = $Rest
+    )
+
+    $arguments = @(@($ControlTarget) + @($ControlRest) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    $lines = 80
+    for ($index = 0; $index -lt $arguments.Count; $index++) {
+        switch ($arguments[$index]) {
+            '--lines' {
+                $index++
+                if ($index -ge $arguments.Count -or -not [int]::TryParse([string]$arguments[$index], [ref]$lines)) {
+                    Stop-WithError "usage: winsmux operator-snapshot [--lines <n>]"
+                }
+            }
+            default {
+                Stop-WithError "usage: winsmux operator-snapshot [--lines <n>]"
+            }
+        }
+    }
+
+    if ($lines -lt 1) {
+        Stop-WithError "operator-snapshot --lines must be greater than 0"
+    }
+
+    $payload = New-ControlRpcRequestPayload `
+        -Method 'desktop.operator.snapshot' `
+        -Id 'operator-snapshot' `
+        -Params ([ordered]@{ lines = $lines })
+
+    Invoke-ControlRpcPipeExchange -Payload $payload | Write-Output
+}
+
+function Invoke-OperatorSubmit {
+    param(
+        [AllowEmptyString()][string]$ControlTarget = $Target,
+        [string[]]$ControlRest = $Rest
+    )
+
+    $arguments = @(@($ControlTarget) + @($ControlRest) | Where-Object { $null -ne $_ })
+    $message = ''
+    if ($arguments.Count -ge 2 -and [string]$arguments[0] -eq '--file') {
+        $messagePath = [string]$arguments[1]
+        if (-not (Test-Path -LiteralPath $messagePath -PathType Leaf)) {
+            Stop-WithError "operator-submit file not found: $messagePath"
+        }
+        $message = Get-Content -LiteralPath $messagePath -Raw -Encoding UTF8
+    } elseif ($arguments.Count -ge 2 -and [string]$arguments[0] -eq '--text') {
+        $message = (@($arguments | Select-Object -Skip 1) -join ' ')
+    } else {
+        $message = (@($arguments | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }) -join ' ')
+    }
+
+    if ([string]::IsNullOrWhiteSpace($message)) {
+        Stop-WithError "usage: winsmux operator-submit <text> | --text <text> | --file <path>"
+    }
+
+    $payload = New-ControlRpcRequestPayload `
+        -Method 'desktop.operator.submit' `
+        -Id 'operator-submit' `
+        -Params ([ordered]@{ message = $message })
+
     Invoke-ControlRpcPipeExchange -Payload $payload | Write-Output
 }
 
@@ -19830,6 +19916,8 @@ switch ($Command) {
     'mailbox-send'    { Invoke-MailboxSend }
     'mailbox-listen'  { Invoke-MailboxListen }
     'control-rpc'     { Invoke-ControlRpc }
+    'operator-submit' { Invoke-OperatorSubmit }
+    'operator-snapshot' { Invoke-OperatorSnapshot }
     'watch'           { Invoke-Watch }
     'profile'         { Invoke-Profile }
     'doctor'          { Invoke-Doctor }

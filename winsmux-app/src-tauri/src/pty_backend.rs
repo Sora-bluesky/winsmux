@@ -7,6 +7,11 @@ const JSON_RPC_METHOD_NOT_FOUND: i32 = -32601;
 const JSON_RPC_INVALID_PARAMS: i32 = -32602;
 const JSON_RPC_SERVER_ERROR: i32 = -32000;
 
+pub const OPERATOR_PANE_ID: &str = "operator";
+
+pub const OPERATOR_CONTROL_PIPE_METHODS: &[&str] =
+    &["desktop.operator.snapshot", "desktop.operator.submit"];
+
 pub const PTY_CONTROL_PIPE_METHODS: &[&str] = &[
     "pty.spawn",
     "pty.write",
@@ -66,6 +71,12 @@ pub enum PtyCommand {
     Capture {
         pane_id: String,
         lines: Option<u16>,
+    },
+    OperatorSnapshot {
+        lines: Option<u16>,
+    },
+    OperatorSubmit {
+        text: String,
     },
     Respawn {
         pane_id: String,
@@ -134,6 +145,21 @@ fn parse_command(method: &str, params: Option<&Value>) -> Result<PtyCommand, Par
             pane_id: get_required_string_param(params, &["paneId", "pane_id"])?,
             lines: get_optional_u16_param(params, &["lines"])?,
         }),
+        "desktop.operator.snapshot" => {
+            reject_operator_pane_override(params)?;
+            Ok(PtyCommand::OperatorSnapshot {
+                lines: get_optional_u16_param(params, &["lines"])?,
+            })
+        }
+        "desktop.operator.submit" => {
+            reject_operator_pane_override(params)?;
+            Ok(PtyCommand::OperatorSubmit {
+                text: normalize_operator_submit_text(get_required_pty_data_param(
+                    params,
+                    &["text", "message", "data"],
+                )?),
+            })
+        }
         "pty.respawn" => Ok(PtyCommand::Respawn {
             pane_id: get_required_string_param(params, &["paneId", "pane_id"])?,
         }),
@@ -144,6 +170,30 @@ fn parse_command(method: &str, params: Option<&Value>) -> Result<PtyCommand, Par
             "Unknown pty JSON-RPC method: {method}"
         ))),
     }
+}
+
+fn reject_operator_pane_override(params: Option<&Value>) -> Result<(), ParseError> {
+    let Some(object) = params.and_then(Value::as_object) else {
+        return Ok(());
+    };
+
+    for key in ["paneId", "pane_id"] {
+        if object.contains_key(key) {
+            return Err(ParseError::InvalidParams(
+                "desktop.operator.* methods always target the operator pane; remove paneId"
+                    .to_string(),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn normalize_operator_submit_text(mut text: String) -> String {
+    if !text.ends_with('\r') && !text.ends_with('\n') {
+        text.push('\r');
+    }
+    text
 }
 
 fn get_required_string_param(params: Option<&Value>, keys: &[&str]) -> Result<String, ParseError> {
@@ -407,6 +457,115 @@ mod tests {
                 lines: Some(25)
             }]
         );
+    }
+
+    #[test]
+    fn handle_pty_json_rpc_routes_operator_snapshot_without_pane_override() {
+        let transport = FakeTransport {
+            commands: RefCell::new(Vec::new()),
+            response: serde_json::json!({
+                "paneId": "operator",
+                "output": "operator waiting"
+            }),
+        };
+
+        let response = handle_pty_json_rpc(
+            &transport,
+            PtyJsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::json!("req-operator-snapshot"),
+                method: "desktop.operator.snapshot".to_string(),
+                params: Some(serde_json::json!({
+                    "lines": 80
+                })),
+            },
+        );
+
+        match response {
+            PtyJsonRpcResponse::Success { result, .. } => {
+                assert_eq!(result["paneId"], "operator");
+                assert_eq!(result["output"], "operator waiting");
+            }
+            PtyJsonRpcResponse::Error { error, .. } => {
+                panic!("expected success, got {:?}", error);
+            }
+        }
+
+        assert_eq!(
+            transport.commands.borrow().as_slice(),
+            [PtyCommand::OperatorSnapshot { lines: Some(80) }]
+        );
+    }
+
+    #[test]
+    fn handle_pty_json_rpc_routes_operator_submit_with_enter() {
+        let transport = FakeTransport {
+            commands: RefCell::new(Vec::new()),
+            response: serde_json::json!({
+                "paneId": "operator",
+                "submitted": true
+            }),
+        };
+
+        let response = handle_pty_json_rpc(
+            &transport,
+            PtyJsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::json!("req-operator-submit"),
+                method: "desktop.operator.submit".to_string(),
+                params: Some(serde_json::json!({
+                    "text": "Continue with option 1"
+                })),
+            },
+        );
+
+        match response {
+            PtyJsonRpcResponse::Success { result, .. } => {
+                assert_eq!(result["paneId"], "operator");
+                assert_eq!(result["submitted"], true);
+            }
+            PtyJsonRpcResponse::Error { error, .. } => {
+                panic!("expected success, got {:?}", error);
+            }
+        }
+
+        assert_eq!(
+            transport.commands.borrow().as_slice(),
+            [PtyCommand::OperatorSubmit {
+                text: "Continue with option 1\r".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn handle_pty_json_rpc_rejects_operator_pane_override() {
+        let transport = FakeTransport {
+            commands: RefCell::new(Vec::new()),
+            response: serde_json::json!({}),
+        };
+
+        let response = handle_pty_json_rpc(
+            &transport,
+            PtyJsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::json!("req-operator-override"),
+                method: "desktop.operator.submit".to_string(),
+                params: Some(serde_json::json!({
+                    "paneId": "worker-1",
+                    "text": "Do not route to a worker directly"
+                })),
+            },
+        );
+
+        match response {
+            PtyJsonRpcResponse::Error { error, .. } => {
+                assert_eq!(error.code, JSON_RPC_INVALID_PARAMS);
+                assert!(error.message.contains("operator pane"));
+            }
+            PtyJsonRpcResponse::Success { .. } => panic!("expected invalid params error"),
+        }
+
+        assert!(transport.commands.borrow().is_empty());
     }
 
     #[test]

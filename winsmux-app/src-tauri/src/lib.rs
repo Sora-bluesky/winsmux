@@ -1176,6 +1176,16 @@ impl PtyCommandTransport for TauriPtyTransport {
                 Ok(serde_json::json!({ "paneId": pane_id }))
             }
             PtyCommand::Capture { pane_id, lines } => capture_pty(&self.app, pane_id, *lines),
+            PtyCommand::OperatorSnapshot { lines } => {
+                capture_pty(&self.app, pty_backend::OPERATOR_PANE_ID, *lines)
+            }
+            PtyCommand::OperatorSubmit { text } => {
+                write_pty(&self.app, pty_backend::OPERATOR_PANE_ID, text)?;
+                Ok(serde_json::json!({
+                    "paneId": pty_backend::OPERATOR_PANE_ID,
+                    "submitted": true
+                }))
+            }
             PtyCommand::Respawn { pane_id } => {
                 respawn_pty(&self.app, pane_id)?;
                 Ok(serde_json::json!({ "paneId": pane_id }))
