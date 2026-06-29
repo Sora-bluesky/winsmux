@@ -255,6 +255,11 @@ type PopoutSurfaceState =
 
 declare global {
   interface Window {
+    __TAURI__?: {
+      core?: {
+        invoke?: (command: string, args?: Record<string, unknown>) => Promise<unknown>;
+      };
+    };
     __winsmuxViewportHarness?: {
       registerPreviewTarget: (sourceLabel: string, url: string) => void;
       openPreviewTarget: (url: string) => void;
@@ -1986,6 +1991,31 @@ function ensureOperatorPtyStarted() {
     });
 
   return operatorPtyStarting;
+}
+
+async function isControlPipeEnabled() {
+  try {
+    return Boolean(await window.__TAURI__?.core?.invoke?.("desktop_control_pipe_enabled"));
+  } catch (error) {
+    console.warn("Failed to read control pipe status", error);
+    return false;
+  }
+}
+
+function ensureOperatorPtyStartedForControlPipe() {
+  if (!isTauri()) {
+    return;
+  }
+  window.setTimeout(() => {
+    void (async () => {
+      if (!(await isControlPipeEnabled())) {
+        return;
+      }
+      await ensureOperatorPtyStarted();
+    })().catch((error) => {
+      console.warn("Failed to register operator PTY for control pipe", error);
+    });
+  }, 0);
 }
 
 function ensurePanePtyStarted(paneId: string) {
@@ -17729,6 +17759,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   }).catch((error) => {
     console.warn("Failed to subscribe to PTY output events", error);
   });
+  ensureOperatorPtyStartedForControlPipe();
 
   renderSessions();
   renderExplorer();

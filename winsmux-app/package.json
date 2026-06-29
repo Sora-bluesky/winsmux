@@ -11,6 +11,7 @@
     "test:clickable-coverage": "npm run build && node ./scripts/clickable-coverage-harness.mjs",
     "test:desktop-pane-e2e": "node ./scripts/desktop-pane-e2e.mjs",
     "test:desktop-launch-arg-e2e": "node ./scripts/desktop-pane-e2e.mjs --launch-project-only",
+    "test:desktop-operator-snapshot-e2e": "node ./scripts/desktop-pane-e2e.mjs --operator-snapshot-only",
     "test:desktop-release-popout-e2e": "node ./scripts/desktop-pane-e2e.mjs --release-popout-only",
     "test:desktop-status-e2e": "node ./scripts/desktop-pane-e2e.mjs --stop-after-worker-status",
     "test:editor-targets": "node ./scripts/editor-targets-check.mjs",
