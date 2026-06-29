@@ -15,6 +15,8 @@ const WORKER_START_ONLY = process.argv.includes("--worker-start-only")
   || process.env.WINSMUX_DESKTOP_E2E_WORKER_START_ONLY === "1";
 const COMPOSER_ONLY = process.argv.includes("--composer-only")
   || process.env.WINSMUX_DESKTOP_E2E_COMPOSER_ONLY === "1";
+const OPERATOR_SNAPSHOT_ONLY = process.argv.includes("--operator-snapshot-only")
+  || process.env.WINSMUX_DESKTOP_E2E_OPERATOR_SNAPSHOT_ONLY === "1";
 const ASSERT_DUPLICATE_GUARD_ONLY = process.argv.includes("--assert-duplicate-launch-guard")
   || process.env.WINSMUX_DESKTOP_E2E_ASSERT_DUPLICATE_GUARD_ONLY === "1";
 const OUTPUT_DIR = path.join(
@@ -25,6 +27,8 @@ const OUTPUT_DIR = path.join(
     ? "desktop-worker-start-e2e"
     : COMPOSER_ONLY
     ? "desktop-composer-e2e"
+    : OPERATOR_SNAPSHOT_ONLY
+    ? "desktop-operator-snapshot-e2e"
     : RELEASE_POPOUT_ONLY
     ? "desktop-release-popout-e2e"
     : LAUNCH_PROJECT_ONLY
@@ -224,6 +228,32 @@ function runWinsmuxCore(args, env = {}) {
     throw new Error(`winsmux-core.ps1 ${args.join(" ")} failed (${result.status}): ${result.stdout}\n${result.stderr}`);
   }
   return result.stdout.trim();
+}
+
+async function waitForOperatorSnapshotFromControlPipe(timeoutMs = 60_000) {
+  const startedAt = Date.now();
+  let lastError = "";
+  let lastOutput = "";
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      lastOutput = runWinsmuxCore(["operator-snapshot", "--lines", "20"], {
+        WINSMUX_CONTROL_PIPE_TOKEN: CONTROL_PIPE_TOKEN,
+      });
+      if (/Pane operator not found/i.test(lastOutput)) {
+        throw new Error(lastOutput);
+      }
+      return {
+        outputTail: lastOutput.slice(-1_200),
+      };
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+      if (!/Pane operator not found|failed \(|pipe|connect|timed out|timeout/i.test(lastError)) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+    }
+  }
+  throw new Error(`operator-snapshot did not become available. Last output: ${lastOutput}\nLast error: ${lastError}`);
 }
 
 async function stopProcessTree(child) {
@@ -2109,6 +2139,17 @@ async function main() {
       await waitForAppReady(page);
       return { url: page.url() };
     });
+
+    if (OPERATOR_SNAPSHOT_ONLY) {
+      await runStep("operator control pipe snapshot works without composer interaction", async () => {
+        return await waitForOperatorSnapshotFromControlPipe();
+      });
+      await ensureOutputDir();
+      await page.screenshot({ path: path.join(OUTPUT_DIR, "desktop-operator-snapshot-e2e-success.png"), fullPage: true });
+      await writeEvidence(true, { debugPort, mode: "operator-snapshot-only" });
+      process.stdout.write(`[desktop-pane-e2e] PASS operator-snapshot-only evidence=${path.join(OUTPUT_DIR, "desktop-pane-e2e.json")}\n`);
+      return;
+    }
 
     if (COMPOSER_ONLY) {
       await runStep("composer-only surface is visible", async () => {

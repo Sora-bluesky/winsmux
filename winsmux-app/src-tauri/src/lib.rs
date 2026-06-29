@@ -110,6 +110,11 @@ fn desktop_initial_project_dir() -> Option<String> {
     resolve_initial_project_dir_from_args(std::env::args())
 }
 
+#[tauri::command]
+fn desktop_control_pipe_enabled() -> bool {
+    std::env::var_os(WINSMUX_CONTROL_PIPE_TOKEN_ENV).is_some()
+}
+
 struct SinglePty {
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     master: Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>>,
@@ -1235,6 +1240,7 @@ pub fn run() {
             desktop_voice_capture_start,
             desktop_voice_capture_stop,
             desktop_initial_project_dir,
+            desktop_control_pipe_enabled,
             pty_json_rpc,
             pty_spawn,
             pty_write,
