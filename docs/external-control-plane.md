@@ -44,7 +44,38 @@ The named pipe currently exposes these desktop methods:
 - `desktop.run.compare`
 - `desktop.run.promote`
 - `desktop.run.pick_winner`
+- `desktop.operator.snapshot`
+- `desktop.operator.submit`
 - `desktop.voice.capture_status`
+
+The operator methods are the only external methods intended for agent-to-operator
+conversation:
+
+- `desktop.operator.snapshot` captures recent output from the operator pane.
+- `desktop.operator.submit` writes one message to the operator composer and
+  submits it. The API always targets the operator pane and rejects `paneId` /
+  `pane_id` overrides so external agents cannot bypass the operator and write
+  directly to worker panes.
+
+Prefer the dedicated CLI helpers for external agents:
+
+```powershell
+winsmux operator-snapshot --lines 80
+winsmux operator-submit --text "Restore the six-pane orchestra and report can_dispatch."
+```
+
+Those helpers read `WINSMUX_CONTROL_PIPE_TOKEN`, call only
+`desktop.operator.snapshot` / `desktop.operator.submit`, and never accept a
+worker pane target. Raw JSON-RPC remains available for clients that implement
+their own named-pipe transport:
+
+```json
+{"jsonrpc":"2.0","id":"operator-snapshot","method":"desktop.operator.snapshot","params":{"lines":80},"auth":{"token":"<WINSMUX_CONTROL_PIPE_TOKEN>"}}
+```
+
+```json
+{"jsonrpc":"2.0","id":"operator-submit","method":"desktop.operator.submit","params":{"message":"Restore the six-pane orchestra and report can_dispatch."},"auth":{"token":"<WINSMUX_CONTROL_PIPE_TOKEN>"}}
+```
 
 The same pipe also exposes these PTY methods for local pane control:
 

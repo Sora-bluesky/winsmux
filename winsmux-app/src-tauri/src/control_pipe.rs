@@ -2,7 +2,8 @@ use crate::desktop_backend::{
     handle_desktop_json_rpc, DesktopCommandTransport, DesktopJsonRpcRequest, PwshScriptTransport,
 };
 use crate::pty_backend::{
-    handle_pty_json_rpc, PtyCommandTransport, PtyJsonRpcRequest, PTY_CONTROL_PIPE_METHODS,
+    handle_pty_json_rpc, PtyCommandTransport, PtyJsonRpcRequest, OPERATOR_CONTROL_PIPE_METHODS,
+    PTY_CONTROL_PIPE_METHODS,
 };
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -159,13 +160,14 @@ pub fn handle_control_pipe_payload(
 }
 
 fn is_pty_control_pipe_method(method: &str) -> bool {
-    PTY_CONTROL_PIPE_METHODS.contains(&method)
+    PTY_CONTROL_PIPE_METHODS.contains(&method) || OPERATOR_CONTROL_PIPE_METHODS.contains(&method)
 }
 
 fn control_pipe_methods() -> Vec<&'static str> {
     DESKTOP_CONTROL_PIPE_METHODS
         .iter()
         .chain(PTY_CONTROL_PIPE_METHODS.iter())
+        .chain(OPERATOR_CONTROL_PIPE_METHODS.iter())
         .copied()
         .collect()
 }
@@ -187,6 +189,7 @@ fn control_pipe_contract() -> Value {
     "methods": control_pipe_methods(),
     "desktop_methods": DESKTOP_CONTROL_PIPE_METHODS,
     "pty_methods": PTY_CONTROL_PIPE_METHODS,
+    "operator_methods": OPERATOR_CONTROL_PIPE_METHODS,
     "internal_desktop_methods_excluded": CONTROL_PIPE_EXCLUDED_INTERNAL_DESKTOP_METHODS,
     })
 }
@@ -527,6 +530,10 @@ mod tests {
             value["result"]["pty_methods"],
             json!(PTY_CONTROL_PIPE_METHODS)
         );
+        assert_eq!(
+            value["result"]["operator_methods"],
+            json!(OPERATOR_CONTROL_PIPE_METHODS)
+        );
         assert_eq!(value["result"]["methods"], json!(control_pipe_methods()));
         assert!(!value["result"]["methods"]
             .as_array()
@@ -543,6 +550,16 @@ mod tests {
             .expect("methods")
             .iter()
             .any(|method| method.as_str() == Some("pty.capture")));
+        assert!(value["result"]["methods"]
+            .as_array()
+            .expect("methods")
+            .iter()
+            .any(|method| method.as_str() == Some("desktop.operator.snapshot")));
+        assert!(value["result"]["methods"]
+            .as_array()
+            .expect("methods")
+            .iter()
+            .any(|method| method.as_str() == Some("desktop.operator.submit")));
     }
 
     #[test]
@@ -681,6 +698,53 @@ mod tests {
                 lines: None
             }]
         );
+    }
+
+    #[test]
+    fn control_pipe_routes_operator_methods_to_operator_pane_only() {
+        let _guard = set_control_pipe_token_for_test(Some("test-control-token"));
+        let payload = br#"{"jsonrpc":"2.0","id":1,"method":"desktop.operator.submit","params":{"message":"Run the approved cleanup once"},"auth":{"token":"test-control-token"}}"#;
+        let pty_transport = StubPtyTransport::new();
+        let response =
+            handle_control_pipe_payload(&StubDesktopTransport, &pty_transport, payload, None);
+        let value: Value = serde_json::from_slice(&response).expect("response should be JSON");
+
+        assert_eq!(value["jsonrpc"], "2.0");
+        assert_eq!(value["id"], 1);
+        assert_eq!(value["result"]["ok"], true);
+        assert_eq!(
+            pty_transport
+                .commands
+                .lock()
+                .expect("commands lock")
+                .as_slice(),
+            [PtyCommand::OperatorSubmit {
+                text: "Run the approved cleanup once\r".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn control_pipe_rejects_operator_method_pane_override() {
+        let _guard = set_control_pipe_token_for_test(Some("test-control-token"));
+        let payload = br#"{"jsonrpc":"2.0","id":1,"method":"desktop.operator.snapshot","params":{"paneId":"worker-1","lines":40},"auth":{"token":"test-control-token"}}"#;
+        let pty_transport = StubPtyTransport::new();
+        let response =
+            handle_control_pipe_payload(&StubDesktopTransport, &pty_transport, payload, None);
+        let value: Value = serde_json::from_slice(&response).expect("response should be JSON");
+
+        assert_eq!(value["jsonrpc"], "2.0");
+        assert_eq!(value["id"], 1);
+        assert_eq!(value["error"]["code"], JSON_RPC_INVALID_PARAMS);
+        assert!(value["error"]["message"]
+            .as_str()
+            .expect("error message")
+            .contains("operator pane"));
+        assert!(pty_transport
+            .commands
+            .lock()
+            .expect("commands lock")
+            .is_empty());
     }
 
     #[test]

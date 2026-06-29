@@ -20635,6 +20635,10 @@ Describe 'winsmux control-rpc command' {
     It 'documents control-rpc in usage and fixes the named pipe endpoint' {
         $script:controlRpcBridgeContent | Should -Match 'control-rpc <json>'
         $script:controlRpcBridgeContent | Should -Match "'control-rpc'\s*\{\s*Invoke-ControlRpc\s*\}"
+        $script:controlRpcBridgeContent | Should -Match 'operator-submit <text>'
+        $script:controlRpcBridgeContent | Should -Match 'operator-snapshot \[--lines <n>\]'
+        $script:controlRpcBridgeContent | Should -Match "'operator-submit'\s*\{\s*Invoke-OperatorSubmit\s*\}"
+        $script:controlRpcBridgeContent | Should -Match "'operator-snapshot'\s*\{\s*Invoke-OperatorSnapshot\s*\}"
         $script:controlRpcBridgeContent | Should -Match '\$client\.ReadAsync\(\$buffer, 0, \$buffer\.Length\)'
         $script:controlRpcBridgeContent | Should -Match 'timed out waiting for response'
         $script:controlRpcBridgeContent | Should -Match 'WINSMUX_CONTROL_PIPE_TOKEN'
@@ -20690,6 +20694,46 @@ Describe 'winsmux control-rpc command' {
     It 'rejects JSON-RPC requests without a method' {
         { ConvertTo-ControlRpcPayload -JsonText '{"jsonrpc":"2.0","id":1}' } |
             Should -Throw 'control-rpc payload must include a non-empty method'
+    }
+
+    It 'submits operator messages through the dedicated operator control API' {
+        $env:WINSMUX_CONTROL_PIPE_TOKEN = 'test-control-token'
+        Mock Invoke-ControlRpcPipeExchange {
+            param([string]$Payload)
+            $script:operatorSubmitPayload = $Payload
+            return '{"jsonrpc":"2.0","id":"operator-submit","result":{"ok":true}}'
+        }
+
+        $script:operatorSubmitPayload = ''
+        $output = Invoke-OperatorSubmit -ControlTarget '--text' -ControlRest @('Restore', 'the', 'six-pane', 'orchestra')
+
+        Should -Invoke Invoke-ControlRpcPipeExchange -Times 1 -Exactly
+        $request = $script:operatorSubmitPayload | ConvertFrom-Json
+        $request.method | Should -Be 'desktop.operator.submit'
+        $request.params.message | Should -Be 'Restore the six-pane orchestra'
+        $request.auth.token | Should -Be 'test-control-token'
+        $request.PSObject.Properties.Name | Should -Not -Contain 'paneId'
+        $output | Should -Be '{"jsonrpc":"2.0","id":"operator-submit","result":{"ok":true}}'
+    }
+
+    It 'captures operator output through the dedicated operator control API' {
+        $env:WINSMUX_CONTROL_PIPE_TOKEN = 'test-control-token'
+        Mock Invoke-ControlRpcPipeExchange {
+            param([string]$Payload)
+            $script:operatorSnapshotPayload = $Payload
+            return '{"jsonrpc":"2.0","id":"operator-snapshot","result":{"paneId":"operator","output":"ready"}}'
+        }
+
+        $script:operatorSnapshotPayload = ''
+        $output = Invoke-OperatorSnapshot -ControlTarget '--lines' -ControlRest @('40')
+
+        Should -Invoke Invoke-ControlRpcPipeExchange -Times 1 -Exactly
+        $request = $script:operatorSnapshotPayload | ConvertFrom-Json
+        $request.method | Should -Be 'desktop.operator.snapshot'
+        $request.params.lines | Should -Be 40
+        $request.auth.token | Should -Be 'test-control-token'
+        $request.PSObject.Properties.Name | Should -Not -Contain 'paneId'
+        $output | Should -Be '{"jsonrpc":"2.0","id":"operator-snapshot","result":{"paneId":"operator","output":"ready"}}'
     }
 }
 

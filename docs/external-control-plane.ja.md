@@ -36,7 +36,33 @@ named pipe は、現時点で次のデスクトップメソッドを公開しま
 - `desktop.run.compare`
 - `desktop.run.promote`
 - `desktop.run.pick_winner`
+- `desktop.operator.snapshot`
+- `desktop.operator.submit`
 - `desktop.voice.capture_status`
+
+operator メソッドは、外部エージェントが operator と会話するための専用経路です。
+
+- `desktop.operator.snapshot` は operator ペインの直近出力を取得します。
+- `desktop.operator.submit` は operator composer に 1 件のメッセージを書き込み、送信します。この API は常に operator ペインだけを対象にし、`paneId` / `pane_id` の上書きを拒否します。外部エージェントが operator を迂回して worker ペインへ直接書き込む用途には使えません。
+
+外部エージェントは、通常は専用 CLI ヘルパーを使います。
+
+```powershell
+winsmux operator-snapshot --lines 80
+winsmux operator-submit --text "Restore the six-pane orchestra and report can_dispatch."
+```
+
+このヘルパーは `WINSMUX_CONTROL_PIPE_TOKEN` を読み取り、
+`desktop.operator.snapshot` / `desktop.operator.submit` だけを呼びます。
+worker ペインの指定は受け付けません。独自の named pipe クライアントを実装する場合は、次の JSON-RPC を直接送れます。
+
+```json
+{"jsonrpc":"2.0","id":"operator-snapshot","method":"desktop.operator.snapshot","params":{"lines":80},"auth":{"token":"<WINSMUX_CONTROL_PIPE_TOKEN>"}}
+```
+
+```json
+{"jsonrpc":"2.0","id":"operator-submit","method":"desktop.operator.submit","params":{"message":"Restore the six-pane orchestra and report can_dispatch."},"auth":{"token":"<WINSMUX_CONTROL_PIPE_TOKEN>"}}
+```
 
 同じ pipe は、ローカルペイン制御用に次の PTY メソッドも公開します。
 
