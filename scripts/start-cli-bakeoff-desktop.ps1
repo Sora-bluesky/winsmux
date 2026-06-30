@@ -74,6 +74,38 @@ function Invoke-CheckedCommand {
     }
 }
 
+function Assert-DesktopExecutableFreshForDist {
+    param(
+        [Parameter(Mandatory = $true)][string]$DesktopExecutable,
+        [string]$DistDir = (Join-Path $RepoRoot 'winsmux-app\dist')
+    )
+
+    if (-not (Test-Path -LiteralPath $DesktopExecutable -PathType Leaf)) {
+        throw "Production desktop executable was not found: $DesktopExecutable"
+    }
+    if (-not (Test-Path -LiteralPath $DistDir -PathType Container)) {
+        throw "Desktop dist directory was not found: $DistDir"
+    }
+
+    $newestDistFile = Get-ChildItem -LiteralPath $DistDir -Recurse -File |
+        Sort-Object LastWriteTimeUtc -Descending |
+        Select-Object -First 1
+    if ($null -eq $newestDistFile) {
+        throw "Desktop dist directory is empty: $DistDir"
+    }
+
+    $desktopFile = Get-Item -LiteralPath $DesktopExecutable
+    if ($desktopFile.LastWriteTimeUtc -lt $newestDistFile.LastWriteTimeUtc) {
+        throw "Production desktop executable is older than winsmux-app/dist. Rebuild the desktop app before launch. exeUtc=$($desktopFile.LastWriteTimeUtc.ToString('o')) newestDistUtc=$($newestDistFile.LastWriteTimeUtc.ToString('o')) newestDistFile=$($newestDistFile.FullName)"
+    }
+
+    return [pscustomobject]@{
+        desktopExecutableUtc = $desktopFile.LastWriteTimeUtc.ToString('o')
+        newestDistUtc = $newestDistFile.LastWriteTimeUtc.ToString('o')
+        newestDistFile = $newestDistFile.FullName
+    }
+}
+
 function Copy-BenchmarkTaskPack {
     param(
         [Parameter(Mandatory = $true)][string]$SourceDir,
@@ -135,6 +167,22 @@ function Stop-RepoWinsmuxDesktopTree {
     } while ((Get-Date) -lt $deadline)
 
     throw "Existing repo-built winsmux desktop process did not exit: $($remaining -join ', ')"
+}
+
+function Assert-NoExternalWinsmuxDesktopApp {
+    $externalApps = @(
+        Get-CimInstance Win32_Process |
+            Where-Object {
+                $_.Name -eq 'winsmux-app.exe' -and
+                -not (Test-PathInsideRepo ([string]$_.ExecutablePath))
+            } |
+            Select-Object ProcessId, ExecutablePath, CommandLine
+    )
+
+    if ($externalApps.Count -gt 0) {
+        $details = ($externalApps | ForEach-Object { "pid=$($_.ProcessId) exe=$($_.ExecutablePath)" }) -join '; '
+        throw "External winsmux desktop app is already running. Close it before benchmark launch. $details"
+    }
 }
 
 function Wait-RepoWinsmuxDesktopApp {
@@ -307,6 +355,8 @@ if (-not $SkipBuild) {
     Invoke-CheckedCommand -FilePath 'npm' -ArgumentList @('run', 'tauri', '--', 'build', '--no-bundle') -WorkingDirectory (Join-Path $RepoRoot 'winsmux-app')
 }
 
+$desktopFreshness = Assert-DesktopExecutableFreshForDist -DesktopExecutable $releaseApp
+
 $preflightArgs = @(
     '-NoProfile',
     '-ExecutionPolicy',
@@ -349,6 +399,7 @@ if ($NoLaunch) {
         gitHead = $head
         releaseCli = $releaseCli
         releaseApp = $releaseApp
+        desktopFreshness = $desktopFreshness
         preflight = $preflight
     }
     if ($Json) {
@@ -368,6 +419,7 @@ if (-not (Test-Path -LiteralPath $releaseApp -PathType Leaf)) {
 }
 
 Stop-RepoWinsmuxDesktopTree
+Assert-NoExternalWinsmuxDesktopApp
 
 $webviewUserData = Join-Path $RepoRoot '.winsmux\tmp\webview2-v03623-harness'
 New-Item -ItemType Directory -Path $webviewUserData -Force | Out-Null
@@ -402,6 +454,7 @@ $result = [pscustomobject]@{
     projectPackPath = Join-Path $projectTaskDir 'benchmark-pack.json'
     releaseCli = $releaseCli
     releaseApp = $releaseApp
+    desktopFreshness = $desktopFreshness
     debugPort = $DebugPort
     page = $page
     windowBeforeMove = $metricsBeforeMove

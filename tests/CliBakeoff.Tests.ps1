@@ -165,6 +165,28 @@ Describe 'CLI bakeoff evidence harness' {
         ($buildStopIndex -lt $tauriBuildIndex) | Should -BeTrue
     }
 
+    It 'rejects stale desktop executables before benchmark preflight or launch' {
+        $scriptText = Get-Content -LiteralPath $script:DesktopStartScript -Raw -Encoding UTF8
+        $freshnessFunctionIndex = $scriptText.IndexOf('function Assert-DesktopExecutableFreshForDist')
+        $freshnessCallIndex = $scriptText.IndexOf('$desktopFreshness = Assert-DesktopExecutableFreshForDist -DesktopExecutable $releaseApp')
+        $preflightArgsIndex = $scriptText.IndexOf('$preflightArgs = @(')
+        $launchIndex = $scriptText.IndexOf('$launcherProcess = Start-Process -FilePath $releaseApp')
+
+        ($freshnessFunctionIndex -ge 0) | Should -BeTrue
+        ($freshnessCallIndex -gt $freshnessFunctionIndex) | Should -BeTrue
+        ($preflightArgsIndex -gt $freshnessCallIndex) | Should -BeTrue
+        ($launchIndex -gt $freshnessCallIndex) | Should -BeTrue
+        $scriptText | Should -Match 'Production desktop executable is older than winsmux-app/dist'
+        $scriptText | Should -Match 'newestDistUtc'
+    }
+
+    It 'rejects the Tauri dev server URL during packaged desktop E2E' {
+        $scriptText = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'winsmux-app\scripts\desktop-pane-e2e.mjs') -Raw -Encoding UTF8
+        $scriptText | Should -Match 'allowDevServer'
+        $scriptText | Should -Match 'Packaged desktop resolved to the Tauri dev server URL'
+        $scriptText | Should -Match 'allowDevServer: !RELEASE_POPOUT_ONLY'
+    }
+
     It 'filters content-clean status noise before enforcing the candidate clean gate' {
         $scriptText = Get-Content -LiteralPath $script:PreflightScript -Raw -Encoding UTF8
         $scriptText | Should -Match 'function Get-GitContentDirtyStatus'
