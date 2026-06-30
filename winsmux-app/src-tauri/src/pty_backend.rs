@@ -77,6 +77,7 @@ pub enum PtyCommand {
     },
     OperatorSubmit {
         text: String,
+        submit_after_paste: bool,
     },
     Respawn {
         pane_id: String,
@@ -153,11 +154,12 @@ fn parse_command(method: &str, params: Option<&Value>) -> Result<PtyCommand, Par
         }
         "desktop.operator.submit" => {
             reject_operator_pane_override(params)?;
+            let (text, submit_after_paste) = normalize_operator_submit_text(
+                get_required_pty_data_param(params, &["text", "message", "data"])?,
+            );
             Ok(PtyCommand::OperatorSubmit {
-                text: normalize_operator_submit_text(get_required_pty_data_param(
-                    params,
-                    &["text", "message", "data"],
-                )?),
+                text,
+                submit_after_paste,
             })
         }
         "pty.respawn" => Ok(PtyCommand::Respawn {
@@ -189,11 +191,14 @@ fn reject_operator_pane_override(params: Option<&Value>) -> Result<(), ParseErro
     Ok(())
 }
 
-fn normalize_operator_submit_text(mut text: String) -> String {
-    if !text.ends_with('\r') && !text.ends_with('\n') {
-        text.push('\r');
+fn normalize_operator_submit_text(text: String) -> (String, bool) {
+    let text = text
+        .trim_end_matches(|character| character == '\r' || character == '\n')
+        .to_string();
+    if text.contains('\r') || text.contains('\n') {
+        return (format!("\x1b[200~{text}\x1b[201~"), true);
     }
-    text
+    (format!("{text}\r"), false)
 }
 
 fn get_required_string_param(params: Option<&Value>, keys: &[&str]) -> Result<String, ParseError> {
@@ -532,7 +537,49 @@ mod tests {
         assert_eq!(
             transport.commands.borrow().as_slice(),
             [PtyCommand::OperatorSubmit {
-                text: "Continue with option 1\r".to_string()
+                text: "Continue with option 1\r".to_string(),
+                submit_after_paste: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn handle_pty_json_rpc_routes_multiline_operator_submit_with_bracketed_paste_and_enter() {
+        let transport = FakeTransport {
+            commands: RefCell::new(Vec::new()),
+            response: serde_json::json!({
+                "paneId": "operator",
+                "submitted": true
+            }),
+        };
+
+        let response = handle_pty_json_rpc(
+            &transport,
+            PtyJsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::json!("req-operator-submit"),
+                method: "desktop.operator.submit".to_string(),
+                params: Some(serde_json::json!({
+                    "text": "Line one\nLine two\n"
+                })),
+            },
+        );
+
+        match response {
+            PtyJsonRpcResponse::Success { result, .. } => {
+                assert_eq!(result["paneId"], "operator");
+                assert_eq!(result["submitted"], true);
+            }
+            PtyJsonRpcResponse::Error { error, .. } => {
+                panic!("expected success, got {:?}", error);
+            }
+        }
+
+        assert_eq!(
+            transport.commands.borrow().as_slice(),
+            [PtyCommand::OperatorSubmit {
+                text: "\x1b[200~Line one\nLine two\x1b[201~".to_string(),
+                submit_after_paste: true,
             }]
         );
     }

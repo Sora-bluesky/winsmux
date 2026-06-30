@@ -719,7 +719,8 @@ mod tests {
                 .expect("commands lock")
                 .as_slice(),
             [PtyCommand::OperatorSubmit {
-                text: "Run the approved cleanup once\r".to_string()
+                text: "Run the approved cleanup once\r".to_string(),
+                submit_after_paste: false,
             }]
         );
     }
