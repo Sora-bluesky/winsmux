@@ -203,6 +203,29 @@ Describe 'CLI bakeoff evidence harness' {
         $scriptText | Should -Match 'frozen WebView window'
     }
 
+    It 'requires a rendered operator surface before desktop launch readiness passes' {
+        $scriptText = Get-Content -LiteralPath $script:DesktopStartScript -Raw -Encoding UTF8
+        $devToolsFunctionIndex = $scriptText.IndexOf('function Invoke-WebViewDevToolsRuntimeExpression')
+        $runtimeEvalIndex = $scriptText.IndexOf("method = 'Runtime.evaluate'", $devToolsFunctionIndex)
+        $surfaceFunctionIndex = $scriptText.IndexOf('function Test-DesktopOperatorSurface')
+        $surfaceRuntimeCallIndex = $scriptText.IndexOf('Invoke-WebViewDevToolsRuntimeExpression -WebSocketDebuggerUrl $webSocketDebuggerUrl -Expression $expression', $surfaceFunctionIndex)
+        $surfaceCallIndex = $scriptText.IndexOf('$operatorSurface = Test-DesktopOperatorSurface -Page $productionPage')
+        $windowMetricsIndex = $scriptText.IndexOf('$metricsBeforeMove = Get-WindowMetrics -ProcessId ([int]$app.ProcessId)')
+
+        ($devToolsFunctionIndex -ge 0) | Should -BeTrue
+        ($runtimeEvalIndex -gt $devToolsFunctionIndex) | Should -BeTrue
+        ($surfaceFunctionIndex -ge 0) | Should -BeTrue
+        ($surfaceRuntimeCallIndex -gt $surfaceFunctionIndex) | Should -BeTrue
+        ($surfaceCallIndex -gt $surfaceRuntimeCallIndex) | Should -BeTrue
+        ($surfaceCallIndex -lt $windowMetricsIndex) | Should -BeTrue
+        $scriptText | Should -Match '#operator-terminal-panel'
+        $scriptText | Should -Match '#composer-input'
+        $scriptText | Should -Match 'tauriInvokeAvailable'
+        $scriptText | Should -Match 'ERR_CONNECTION_REFUSED'
+        $scriptText | Should -Match 'browserError='
+        $scriptText | Should -Match 'operatorSurface = \$operatorSurface'
+    }
+
     It 'filters content-clean status noise before enforcing the candidate clean gate' {
         $scriptText = Get-Content -LiteralPath $script:PreflightScript -Raw -Encoding UTF8
         $scriptText | Should -Match 'function Get-GitContentDirtyStatus'
