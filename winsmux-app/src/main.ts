@@ -46,6 +46,10 @@ import {
 } from "./ptyClient";
 import { isComposerCommandText, normalizeComposerPlainTextPaste } from "./composerText";
 import { getRuntimeCatalogEntries, openRouterModelsApiUrl } from "./modelCapabilities";
+import {
+  findBoardPaneForWorkbenchPane as findBoardPaneForWorkbenchPaneFromRows,
+  resolveWorkbenchPaneIdForBackendPaneId as resolveWorkbenchPaneIdFromRows,
+} from "./workerPaneRouting";
 
 interface PaneEntry {
   terminal: Terminal;
@@ -2096,6 +2100,14 @@ function getWorkerStartTarget() {
 
 function getWorkerStatusTarget(row: DesktopWorkerStatusRow) {
   return row.slot_id || row.slot || row.pane_id || "";
+}
+
+function resolveWorkbenchPaneIdForBackendPaneId(paneId: string) {
+  const normalizedPaneId = (paneId || "").trim();
+  if (!normalizedPaneId) {
+    return null;
+  }
+  return resolveWorkbenchPaneIdFromRows(normalizedPaneId, getWorkerStatusRowsForSurface(), new Set(panes.keys()));
 }
 
 function getWorkerStatusLaunch(row: DesktopWorkerStatusRow) {
@@ -17296,12 +17308,16 @@ function summarizeBoardPaneStatus(pane: DesktopBoardPane | null) {
   return role;
 }
 
+function findBoardPaneForWorkbenchPane(boardPanes: DesktopBoardPane[], paneId: string) {
+  return findBoardPaneForWorkbenchPaneFromRows(boardPanes, paneId, getWorkerStatusRowsForSurface());
+}
+
 function renderPaneMetadata() {
   const boardPanes = desktopSummarySnapshot?.board.panes ?? [];
   const now = Date.now();
 
   panes.forEach((pane, paneId) => {
-    const paneRecord = boardPanes.find((item) => item.pane_id === paneId) ?? null;
+    const paneRecord = findBoardPaneForWorkbenchPane(boardPanes, paneId);
     const paneLabel = getPaneDisplayLabel(paneId, paneRecord?.label);
     pane.labelElement.textContent = paneLabel;
 
@@ -17533,10 +17549,13 @@ function registerDesktopSummaryLiveRefresh() {
         } else if (event.reason === "pty.spawn" || event.reason === "pty.respawn") {
           markOperatorPtyStartedFromExternalEvent();
         }
-      } else if (event.reason === "pty.close") {
-        markPanePtyStoppedFromExternalEvent(event.pane_id);
-      } else if (event.reason === "pty.spawn" || event.reason === "pty.respawn") {
-        markPanePtyStartedFromExternalEvent(event.pane_id);
+      } else {
+        const workbenchPaneId = resolveWorkbenchPaneIdForBackendPaneId(event.pane_id);
+        if (workbenchPaneId && event.reason === "pty.close") {
+          markPanePtyStoppedFromExternalEvent(workbenchPaneId);
+        } else if (workbenchPaneId && (event.reason === "pty.spawn" || event.reason === "pty.respawn")) {
+          markPanePtyStartedFromExternalEvent(workbenchPaneId);
+        }
       }
     }
     if (event.source !== "pty") {
@@ -17734,10 +17753,11 @@ window.addEventListener("DOMContentLoaded", async () => {
       appendOperatorPtyOutput(payload.data);
       return;
     }
-    registerPreviewTargets(payload.pane_id, payload.data);
-    const entry = payload.pane_id ? panes.get(payload.pane_id) : undefined;
-    if (entry) {
-      markPanePtyStartedFromExternalEvent(payload.pane_id);
+    const workbenchPaneId = payload.pane_id ? resolveWorkbenchPaneIdForBackendPaneId(payload.pane_id) : null;
+    registerPreviewTargets(workbenchPaneId ?? payload.pane_id, payload.data);
+    const entry = workbenchPaneId ? panes.get(workbenchPaneId) : undefined;
+    if (workbenchPaneId && entry) {
+      markPanePtyStartedFromExternalEvent(workbenchPaneId);
       entry.lastOutputAt = Date.now();
       appendPaneOutputBuffer(entry, payload.data);
       entry.terminal.write(payload.data);

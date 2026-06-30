@@ -15,6 +15,7 @@
     "test:desktop-release-popout-e2e": "node ./scripts/desktop-pane-e2e.mjs --release-popout-only",
     "test:desktop-status-e2e": "node ./scripts/desktop-pane-e2e.mjs --stop-after-worker-status",
     "test:editor-targets": "node ./scripts/editor-targets-check.mjs",
+    "test:worker-pane-routing": "node ./scripts/worker-pane-routing-check.mjs",
     "test:source-graph": "node ./scripts/source-graph-check.mjs",
     "test:windows-context-menu": "pwsh -NoProfile -ExecutionPolicy Bypass -File ./scripts/windows-context-menu-e2e.ps1",
     "test:viewport-harness": "npm run build && node ./scripts/viewport-harness.mjs",
