@@ -554,20 +554,30 @@ function New-BuilderWorktree {
         [Parameter(Mandatory = $true)][int]$BuilderIndex
     )
 
-    $branchName = "worktree-builder-$BuilderIndex"
     $worktreeRoot = Join-Path $ProjectDir '.worktrees'
-    $worktreeRelativePath = ".worktrees/builder-$BuilderIndex"
-    $worktreePath = Join-Path $ProjectDir '.worktrees' "builder-$BuilderIndex"
-
     New-Item -ItemType Directory -Path $worktreeRoot -Force | Out-Null
 
-    if (Test-Path -LiteralPath $worktreePath) {
-        throw "Builder worktree path already exists: $worktreePath. Clean it up before restarting orchestra."
+    $probeIndex = $BuilderIndex
+    $maxProbeIndex = $BuilderIndex + 128
+    $branchName = ''
+    $worktreeRelativePath = ''
+    $worktreePath = ''
+
+    while ($probeIndex -le $maxProbeIndex) {
+        $branchName = "worktree-builder-$probeIndex"
+        $worktreeRelativePath = ".worktrees/builder-$probeIndex"
+        $worktreePath = Join-Path $ProjectDir '.worktrees' "builder-$probeIndex"
+        $existingBranch = (& git -C $ProjectDir branch --list --format '%(refname:short)' $branchName 2>$null | Out-String).Trim()
+
+        if (-not (Test-Path -LiteralPath $worktreePath) -and [string]::IsNullOrWhiteSpace($existingBranch)) {
+            break
+        }
+
+        $probeIndex++
     }
 
-    $existingBranch = (& git -C $ProjectDir branch --list --format '%(refname:short)' $branchName 2>$null | Out-String).Trim()
-    if (-not [string]::IsNullOrWhiteSpace($existingBranch)) {
-        throw "Builder worktree branch already exists: $branchName. Clean it up before restarting orchestra."
+    if ($probeIndex -gt $maxProbeIndex) {
+        throw "Could not allocate a free Builder worktree slot starting at builder-$BuilderIndex."
     }
 
     $output = (& git -C $ProjectDir worktree add $worktreeRelativePath -b $branchName 2>&1 | Out-String).Trim()
@@ -2279,6 +2289,10 @@ if ($MyInvocation.InvocationName -ne '.') {
     foreach ($removedBranch in @($builderCleanup.RemovedBranches)) {
         Write-Output "Preflight: removed stale Builder branch $removedBranch"
         Write-WinsmuxLog -Level INFO -Event 'preflight.builder_worktree_cleanup.branch_removed' -Message "Removed stale Builder branch $removedBranch." -Data ([ordered]@{ branch_name = $removedBranch }) | Out-Null
+    }
+    foreach ($cleanupError in @($builderCleanup.CleanupErrors)) {
+        Write-Warning "Preflight: stale Builder cleanup skipped a locked resource: $cleanupError"
+        Write-WinsmuxLog -Level WARN -Event 'preflight.builder_worktree_cleanup.skipped' -Message 'Skipped a locked stale Builder resource during cleanup.' -Data ([ordered]@{ error = $cleanupError }) | Out-Null
     }
 
         Write-WinsmuxLog -Level INFO -Event 'preflight.bootstrap.ready' -Message "Bootstrap session $sessionName created by Ensure-OrchestraBootstrapSession." -Data ([ordered]@{
