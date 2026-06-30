@@ -1630,7 +1630,7 @@ async function assertSettingsReflectPaneSpecificWorkerAssignment(page) {
       perPaneMode.getAttribute("aria-pressed") === "true" &&
       provider instanceof HTMLSelectElement &&
       provider.disabled &&
-      model instanceof HTMLSelectElement &&
+      model instanceof HTMLInputElement &&
       model.disabled &&
       effort instanceof HTMLSelectElement &&
       effort.disabled &&

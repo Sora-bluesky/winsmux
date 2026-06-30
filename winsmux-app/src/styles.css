@@ -4757,6 +4757,75 @@ body.is-resizing-workbench {
   border-color: var(--status-focus-border);
 }
 
+.runtime-effort-control {
+  min-width: 0;
+}
+
+.runtime-effort-header {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.runtime-effort-current {
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.runtime-effort-scale-labels {
+  display: flex;
+  justify-content: space-between;
+  color: var(--text-muted);
+  font-size: var(--text-2xs);
+}
+
+.runtime-effort-range {
+  width: 100%;
+  accent-color: var(--status-focus-border);
+}
+
+.runtime-effort-steps {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(42px, 1fr));
+  gap: 4px;
+}
+
+.runtime-effort-step {
+  min-width: 0;
+  border: 1px solid var(--border-muted);
+  border-radius: 999px;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  padding: 2px 6px;
+  font: inherit;
+  font-size: var(--text-2xs);
+  line-height: var(--leading-tight);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.runtime-effort-step.is-selected {
+  color: var(--status-focus);
+  border-color: var(--status-focus-border);
+  background: color-mix(in srgb, var(--status-focus) 13%, var(--bg-surface));
+}
+
+.runtime-effort-step:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.runtime-effort-help {
+  min-height: 1.2em;
+  color: var(--text-muted);
+  font-size: var(--text-2xs);
+  line-height: var(--leading-normal);
+}
+
 .runtime-model-panel {
   display: grid;
   gap: 8px;
@@ -4912,7 +4981,7 @@ body.is-resizing-workbench {
 
 .runtime-model-slot-control {
   display: grid;
-  grid-template-columns: minmax(120px, 0.9fr) minmax(160px, 1.2fr) minmax(92px, 0.65fr);
+  grid-template-columns: minmax(120px, 0.8fr) minmax(180px, 1.1fr) minmax(190px, 1fr);
   gap: 5px;
   min-width: 0;
 }
@@ -4921,6 +4990,10 @@ body.is-resizing-workbench {
   display: grid;
   gap: 3px;
   min-width: 0;
+}
+
+.runtime-model-slot-effort-host .runtime-effort-help {
+  display: none;
 }
 
 .runtime-model-slot-state {
