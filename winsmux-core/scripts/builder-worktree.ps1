@@ -168,6 +168,7 @@ function Invoke-StaleBuilderWorktreeCleanup {
     $removedWorktreePaths = [System.Collections.Generic.List[string]]::new()
     $removedDirectoryPaths = [System.Collections.Generic.List[string]]::new()
     $removedBranches = [System.Collections.Generic.List[string]]::new()
+    $cleanupErrors = [System.Collections.Generic.List[string]]::new()
 
     foreach ($entry in @($inventory.RegisteredWorktrees | Sort-Object WorktreePath -Unique)) {
         $worktreePath = [System.IO.Path]::GetFullPath($entry.WorktreePath)
@@ -176,18 +177,35 @@ function Invoke-StaleBuilderWorktreeCleanup {
         }
 
         if (-not (Test-BuilderWorktreePathUnderRoot -Path $worktreePath -Root $worktreeRoot)) {
-            throw "Refusing to remove Builder worktree outside ${worktreeRoot}: $worktreePath"
+            $cleanupErrors.Add("external Builder worktree outside ${worktreeRoot} was left untouched: $worktreePath") | Out-Null
+            continue
         }
 
         if (Test-Path -LiteralPath $worktreePath -PathType Container) {
-            Invoke-BuilderWorktreeGit -ProjectDir $ProjectDir -Arguments @('worktree', 'remove', '--force', $worktreePath) | Out-Null
-            $removedWorktreePaths.Add($worktreePath) | Out-Null
+            $removeResult = Invoke-BuilderWorktreeGit -ProjectDir $ProjectDir -Arguments @('worktree', 'remove', '--force', $worktreePath) -AllowFailure
+            if ($removeResult.ExitCode -eq 0) {
+                $removedWorktreePaths.Add($worktreePath) | Out-Null
+            } else {
+                $message = if ([string]::IsNullOrWhiteSpace($removeResult.Output)) {
+                    'unknown git worktree remove error'
+                } else {
+                    $removeResult.Output
+                }
+                $cleanupErrors.Add("worktree remove $worktreePath failed: $message") | Out-Null
+            }
         }
 
         if (-not [string]::IsNullOrWhiteSpace($entry.BranchName)) {
             $deleteResult = Invoke-BuilderWorktreeGit -ProjectDir $ProjectDir -Arguments @('branch', '-D', $entry.BranchName) -AllowFailure
             if ($deleteResult.ExitCode -eq 0) {
                 $removedBranches.Add($entry.BranchName) | Out-Null
+            } else {
+                $message = if ([string]::IsNullOrWhiteSpace($deleteResult.Output)) {
+                    'unknown git branch delete error'
+                } else {
+                    $deleteResult.Output
+                }
+                $cleanupErrors.Add("branch delete $($entry.BranchName) failed: $message") | Out-Null
             }
         }
     }
@@ -199,8 +217,12 @@ function Invoke-StaleBuilderWorktreeCleanup {
         }
 
         if (Test-Path -LiteralPath $resolvedDirectoryPath -PathType Container) {
-            Remove-Item -LiteralPath $resolvedDirectoryPath -Recurse -Force
-            $removedDirectoryPaths.Add($resolvedDirectoryPath) | Out-Null
+            try {
+                Remove-Item -LiteralPath $resolvedDirectoryPath -Recurse -Force
+                $removedDirectoryPaths.Add($resolvedDirectoryPath) | Out-Null
+            } catch {
+                $cleanupErrors.Add("directory remove $resolvedDirectoryPath failed: $($_.Exception.Message)") | Out-Null
+            }
         }
     }
 
@@ -215,5 +237,6 @@ function Invoke-StaleBuilderWorktreeCleanup {
         RemovedWorktreePaths  = @($removedWorktreePaths)
         RemovedDirectoryPaths = @($removedDirectoryPaths)
         RemovedBranches       = @($removedBranches | Sort-Object -Unique)
+        CleanupErrors         = @($cleanupErrors)
     }
 }

@@ -5741,6 +5741,111 @@ Describe 'orchestra-start server bootstrap' {
             Should -Be 'git@example.com:org/repo.git'
     }
 
+    It 'allocates the next free builder worktree slot when the first slot is locked' {
+        $testProjectDir = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-builder-slot-tests-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $testProjectDir -Force | Out-Null
+        $lockedWorktreePath = Join-Path $testProjectDir '.worktrees\builder-1'
+        New-Item -ItemType Directory -Path $lockedWorktreePath -Force | Out-Null
+        $script:builderWorktreeGitCalls = [System.Collections.Generic.List[object]]::new()
+        $originalGitFunction = Get-Item -Path Function:\git -ErrorAction SilentlyContinue
+
+        function global:git {
+            param([Parameter(ValueFromRemainingArguments = $true)]$Args)
+
+            $script:builderWorktreeGitCalls.Add(@($Args)) | Out-Null
+            if ($Args[2] -eq 'branch' -and $Args[3] -eq '--list') {
+                $global:LASTEXITCODE = 0
+                return ''
+            }
+
+            if ($Args[2] -eq 'worktree' -and $Args[3] -eq 'add') {
+                $global:LASTEXITCODE = 0
+                return ''
+            }
+
+            $global:LASTEXITCODE = 0
+        }
+
+        try {
+            $worktree = New-BuilderWorktree -ProjectDir $testProjectDir -BuilderIndex 1
+
+            $worktree.BranchName | Should -Be 'worktree-builder-2'
+            $worktree.WorktreePath | Should -Be (Join-Path $testProjectDir '.worktrees\builder-2')
+            @($script:builderWorktreeGitCalls | Where-Object { $_[2] -eq 'worktree' -and $_[3] -eq 'add' -and $_[4] -eq '.worktrees/builder-2' -and $_[6] -eq 'worktree-builder-2' }).Count | Should -Be 1
+        } finally {
+            Remove-Item -Path Function:\git -ErrorAction SilentlyContinue
+            if ($null -ne $originalGitFunction) {
+                Set-Item -Path Function:\git -Value $originalGitFunction.ScriptBlock
+            }
+            if (Test-Path -LiteralPath $testProjectDir) {
+                Remove-Item -LiteralPath $testProjectDir -Recurse -Force
+            }
+        }
+    }
+
+    It 'keeps stale builder cleanup non-fatal when a registered worktree is locked' {
+        $testProjectDir = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-builder-cleanup-tests-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $testProjectDir -Force | Out-Null
+        $lockedWorktreePath = Join-Path $testProjectDir '.worktrees\builder-1'
+        New-Item -ItemType Directory -Path $lockedWorktreePath -Force | Out-Null
+        $originalGitFunction = Get-Item -Path Function:\git -ErrorAction SilentlyContinue
+
+        function global:git {
+            param([Parameter(ValueFromRemainingArguments = $true)]$Args)
+
+            if ($Args[2] -eq 'worktree' -and $Args[3] -eq 'prune') {
+                $global:LASTEXITCODE = 0
+                return ''
+            }
+
+            if ($Args[2] -eq 'worktree' -and $Args[3] -eq 'list') {
+                $global:LASTEXITCODE = 0
+                return @(
+                    "worktree $testProjectDir",
+                    'branch refs/heads/main',
+                    '',
+                    "worktree $lockedWorktreePath",
+                    'branch refs/heads/worktree-builder-1',
+                    ''
+                )
+            }
+
+            if ($Args[2] -eq 'branch' -and $Args[3] -eq '--list') {
+                $global:LASTEXITCODE = 0
+                return 'worktree-builder-1'
+            }
+
+            if ($Args[2] -eq 'worktree' -and $Args[3] -eq 'remove') {
+                $global:LASTEXITCODE = 1
+                return 'permission denied'
+            }
+
+            if ($Args[2] -eq 'branch' -and $Args[3] -eq '-D') {
+                $global:LASTEXITCODE = 1
+                return 'branch is checked out'
+            }
+
+            $global:LASTEXITCODE = 0
+        }
+
+        try {
+            $cleanup = Invoke-StaleBuilderWorktreeCleanup -ProjectDir $testProjectDir
+
+            @($cleanup.RemovedWorktreePaths).Count | Should -Be 0
+            @($cleanup.CleanupErrors | Where-Object { $_ -like "worktree remove $lockedWorktreePath failed:*" }).Count | Should -Be 1
+            @($cleanup.CleanupErrors | Where-Object { $_ -like 'branch delete worktree-builder-1 failed:*' }).Count | Should -Be 1
+            (Test-Path -LiteralPath $lockedWorktreePath) | Should -Be $true
+        } finally {
+            Remove-Item -Path Function:\git -ErrorAction SilentlyContinue
+            if ($null -ne $originalGitFunction) {
+                Set-Item -Path Function:\git -Value $originalGitFunction.ScriptBlock
+            }
+            if (Test-Path -LiteralPath $testProjectDir) {
+                Remove-Item -LiteralPath $testProjectDir -Recurse -Force
+            }
+        }
+    }
+
     It 'persists worker isolation metadata through Save-OrchestraSessionState' {
         $script:savedManifest = $null
         Mock Save-WinsmuxManifest {
