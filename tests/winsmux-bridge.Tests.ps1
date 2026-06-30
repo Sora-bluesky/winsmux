@@ -5355,27 +5355,33 @@ session:
         $events[0].data.health_status | Should -Be 'Missing'
     }
 
-    It 'treats unhealthy strict health as a restartable server failure' {
+    It 'does not restart an existing session on unhealthy strict health' {
         $state = New-ServerWatchdogState
 
         Mock Get-ServerWatchdogHealthStatus { 'Unhealthy' }
         Mock Invoke-ServerWatchdogWinsmux {
-            [ordered]@{
-                ExitCode = 0
-                Output   = @()
-            }
+            throw 'restart should not run for unhealthy strict health'
         } -ParameterFilter {
             $AllowFailure -and $Arguments[0] -eq 'new-session'
         }
 
         $result = Invoke-ServerWatchdogCycle -ManifestPath $script:serverWatchdogManifestPath -SessionName 'winsmux-orchestra' -State $state
 
-        $result.RestartAttempted | Should -Be $true
-        $result.RestartSucceeded | Should -Be $true
+        $result.SessionAlive | Should -Be $true
+        $result.RestartAttempted | Should -Be $false
+        $result.RestartSucceeded | Should -Be $false
         $result.HealthStatus | Should -Be 'Unhealthy'
+        $result.Event | Should -Be 'server.healthcheck_failed'
+        $state.RestartAttempts.Count | Should -Be 0
+        Should -Invoke Invoke-ServerWatchdogWinsmux -Times 0 -Exactly -ParameterFilter {
+            $AllowFailure -and $Arguments[0] -eq 'new-session'
+        }
 
         $eventsPath = Join-Path $script:serverWatchdogTempRoot '.winsmux\events.jsonl'
         $events = @(Get-Content -Path $eventsPath -Encoding UTF8 | Where-Object { $_ } | ForEach-Object { $_ | ConvertFrom-Json })
+        $events.Count | Should -Be 1
+        $events[0].event | Should -Be 'server.healthcheck_failed'
+        $events[0].status | Should -Be 'warning'
         $events[0].exit_reason | Should -Be 'healthcheck_failed'
         $events[0].data.health_status | Should -Be 'Unhealthy'
     }

@@ -268,8 +268,27 @@ function Invoke-ServerWatchdogCycle {
         return $result
     }
 
+    if ($healthStatus -eq 'Unhealthy') {
+        $result['Event'] = 'server.healthcheck_failed'
+        $result['Message'] = "Server session $SessionName failed strict health; leaving session intact."
+
+        Write-ServerWatchdogEvent -ProjectDir $projectDir -SessionName $SessionName `
+            -Event 'server.healthcheck_failed' `
+            -Message $result.Message `
+            -Status 'warning' `
+            -ExitReason 'healthcheck_failed' `
+            -Data ([ordered]@{
+                attempt_count          = $activeAttempts.Count
+                max_restart_attempts   = [int]$State.MaxRestartAttempts
+                restart_window_minutes = [int]$State.RestartWindowMinutes
+                health_status          = $healthStatus
+            }) | Out-Null
+
+        return $result
+    }
+
     $result['SessionAlive'] = $false
-    $exitReason = if ($healthStatus -eq 'Unhealthy') { 'healthcheck_failed' } else { 'session_missing' }
+    $exitReason = 'session_missing'
 
     if ($activeAttempts.Count -ge [int]$State.MaxRestartAttempts) {
         $State['Degraded'] = $true
