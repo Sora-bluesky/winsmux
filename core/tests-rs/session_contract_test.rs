@@ -112,7 +112,6 @@ mod windows_session_contract {
             registry["session"].as_str(),
             Some(fixture.base(session).as_str())
         );
-        assert_eq!(registry["state"].as_str(), Some("ready"));
         assert!(
             registry["server_pid"].as_u64().is_some_and(|pid| pid > 0),
             "registry must include server_pid: {registry:?}"
@@ -123,10 +122,6 @@ mod windows_session_contract {
                 .is_some_and(|nonce| !nonce.trim().is_empty()),
             "registry must include instance_nonce: {registry:?}"
         );
-        assert!(
-            registry["ready_at"].as_u64().is_some(),
-            "registry must include ready_at after startup: {registry:?}"
-        );
 
         let has_session = fixture.run(&["-L", &fixture.namespace, "-t", session, "has-session"]);
         assert!(
@@ -134,6 +129,13 @@ mod windows_session_contract {
             "has-session should authenticate and return success\nstdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&has_session.stdout),
             String::from_utf8_lossy(&has_session.stderr)
+        );
+
+        let registry = wait_for_registry_state(&fixture.registry_path(session), "ready")
+            .expect("has-session should leave registry in ready state");
+        assert!(
+            registry["ready_at"].as_u64().is_some(),
+            "registry must include ready_at after startup: {registry:?}"
         );
 
         let list_panes = fixture.run(&[
@@ -158,6 +160,23 @@ mod windows_session_contract {
     fn read_registry(path: &Path) -> Option<Value> {
         let bytes = fs::read(path).ok()?;
         serde_json::from_slice(&bytes).ok()
+    }
+
+    fn wait_for_registry_state(path: &Path, state: &str) -> Option<Value> {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut last = None;
+        while Instant::now() < deadline {
+            last = read_registry(path);
+            if last
+                .as_ref()
+                .and_then(|registry| registry["state"].as_str())
+                == Some(state)
+            {
+                return last;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        last
     }
 
     fn unique_id(prefix: &str) -> String {
