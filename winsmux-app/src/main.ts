@@ -12940,11 +12940,20 @@ function detectComposerModelFromOperatorText(text: string): ComposerModelId | nu
     return null;
   }
 
-  const statusLineMatches = Array.from(normalized.matchAll(/(?:^|\n)\s*(Opus 4\.8|Opus 4\.7|Opus 4\.6|Sonnet 4\.6|Haiku 4\.5)\s*(?:\||$)/gm));
-  const statusLineMatch = statusLineMatches[statusLineMatches.length - 1];
-  if (statusLineMatch?.[1]) {
-    const label = statusLineMatch[1];
-    return composerModelOptions.find((item) => !item.disabled && (item.label === label || item.labelJa === label))?.value ?? null;
+  const runtimeModelCandidates: Array<{ index: number; value: ComposerModelId }> = [];
+  const modelLabels = composerModelOptions
+    .filter((item) => !item.disabled)
+    .flatMap((item) => [item.label, item.labelJa])
+    .filter((label, index, labels) => Boolean(label) && labels.indexOf(label) === index)
+    .map(escapeRegExp)
+    .join("|");
+  const statusLinePattern = new RegExp(`(?:^|\\n)[^\\n]{0,40}\\b(${modelLabels})\\b\\s*(?:\\||ctx\\b|コンテキスト\\b)`, "gm");
+  for (const match of normalized.matchAll(statusLinePattern)) {
+    const label = match[1];
+    const option = composerModelOptions.find((item) => !item.disabled && (item.label === label || item.labelJa === label));
+    if (option) {
+      runtimeModelCandidates.push({ index: match.index ?? 0, value: option.value });
+    }
   }
 
   for (const option of composerModelOptions) {
@@ -12953,13 +12962,14 @@ function detectComposerModelFromOperatorText(text: string): ComposerModelId | nu
     }
     const cliPattern = escapeRegExp(option.cliModel);
     const labelPattern = escapeRegExp(option.label);
-    const modelLine = new RegExp(`\\bmodel\\s*:\\s*(?:${cliPattern}|${labelPattern})\\b`, "i");
-    if (modelLine.test(normalized)) {
-      return option.value;
+    const modelLine = new RegExp(`\\bmodel\\s*:\\s*(?:${cliPattern}|${labelPattern})\\b`, "gi");
+    for (const match of normalized.matchAll(modelLine)) {
+      runtimeModelCandidates.push({ index: match.index ?? 0, value: option.value });
     }
   }
 
-  return null;
+  runtimeModelCandidates.sort((left, right) => left.index - right.index);
+  return runtimeModelCandidates[runtimeModelCandidates.length - 1]?.value ?? null;
 }
 
 function updateObservedOperatorRuntimeModelFromOutput(text: string) {

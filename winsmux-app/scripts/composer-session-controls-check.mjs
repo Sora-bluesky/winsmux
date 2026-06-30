@@ -42,8 +42,10 @@ assert.match(
 
 assert.ok(
   mainSource.includes("function detectComposerModelFromOperatorText(text: string)")
-    && mainSource.includes("Opus 4\\.7")
-    && mainSource.includes("new RegExp(`\\\\bmodel\\\\s*:\\\\s*"),
+    && mainSource.includes("runtimeModelCandidates")
+    && mainSource.includes("statusLinePattern")
+    && mainSource.includes("new RegExp(`\\\\bmodel\\\\s*:\\\\s*")
+    && mainSource.includes("runtimeModelCandidates[runtimeModelCandidates.length - 1]?.value"),
   "Operator PTY output must be able to report the current runtime model, including Opus 4.7.",
 );
 
@@ -63,6 +65,12 @@ assert.match(
   mainSource,
   /setOperatorRuntimeOutputForTest:[\s\S]*?updateObservedOperatorRuntimeModelFromOutput\(value\)/,
   "Viewport harness must expose a test hook for operator runtime model observations.",
+);
+
+assert.match(
+  mainSource,
+  /function appendOperatorPtyOutput\(data: string\)[\s\S]*?updateObservedOperatorRuntimeModelFromOutput\(body\)/,
+  "Real operator PTY output must update the observed runtime model, not only the viewport test hook.",
 );
 
 assert.doesNotMatch(
