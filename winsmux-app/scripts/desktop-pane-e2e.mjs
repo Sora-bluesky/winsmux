@@ -296,12 +296,15 @@ async function waitForCdp(debugPort, child, timeoutMs = 180_000) {
   throw new Error(`WebView2 remote debugging did not start within ${timeoutMs}ms on port ${debugPort}`);
 }
 
-async function resolveAppPage(browser, timeoutMs = 60_000) {
+async function resolveAppPage(browser, timeoutMs = 60_000, { allowDevServer = true } = {}) {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
     for (const context of browser.contexts()) {
       for (const page of context.pages()) {
         if (APP_URL_PATTERN.test(page.url())) {
+          if (!allowDevServer) {
+            throw new Error(`Packaged desktop resolved to the Tauri dev server URL instead of the production page: ${page.url()}`);
+          }
           return page;
         }
         const hasAppShell = await page.evaluate(() => Boolean(document.querySelector("#app-shell"))).catch(() => false);
@@ -2132,7 +2135,7 @@ async function main() {
     });
 
     browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`);
-    page = await resolveAppPage(browser);
+    page = await resolveAppPage(browser, 60_000, { allowDevServer: !RELEASE_POPOUT_ONLY });
     attachPageErrorCapture(page);
 
     await runStep("wait for desktop app chrome", async () => {
