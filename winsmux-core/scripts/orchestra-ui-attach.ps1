@@ -574,6 +574,10 @@ function Get-OrchestraVisibleAttachHostCandidates {
     $terminalInfo = Get-OrchestraWindowsTerminalInfo
     $windowsTerminalAvailable = [bool]$terminalInfo.Available
     $windowsTerminalReason = [string]$terminalInfo.Reason
+    if (Test-OrchestraTruthyEnvValue -Value $env:WINSMUX_ORCHESTRA_DISABLE_WINDOWS_TERMINAL_ATTACH) {
+        $windowsTerminalAvailable = $false
+        $windowsTerminalReason = 'windows_terminal_attach_disabled'
+    }
     if ([string]$terminalInfo.PathSource -eq 'appx') {
         $windowsTerminalAvailable = $false
         $windowsTerminalReason = 'wt_appx_direct_launch_unsupported'
