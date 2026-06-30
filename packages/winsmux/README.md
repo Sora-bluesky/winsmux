@@ -53,6 +53,19 @@ winsmux update --profile orchestra
 `install.ps1` accepts the same profile names through `-Profile`. The package
 entrypoint forwards `--profile` to that script as `-Profile`.
 
+After installation, start winsmux from the project directory that agents should
+work in:
+
+```powershell
+cd <project>
+winsmux init
+winsmux launch
+```
+
+`winsmux launch` is the public CLI startup path for the npm package. It is
+separate from the desktop installer path, where users install the desktop app
+from GitHub Releases and choose the same project folder in the app.
+
 Updates keep the previously recorded profile when no new profile is supplied.
 Each install or update records the selected shape in:
 

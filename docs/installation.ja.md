@@ -35,6 +35,15 @@ winsmux version
 winsmux doctor
 ```
 
+その後、エージェントに作業させたいプロジェクトへ移動し、その場所から
+CLI で管理するワークスペースを起動します。
+
+```powershell
+cd <project>
+winsmux init
+winsmux launch
+```
+
 ## デスクトップアプリのインストーラー
 
 デスクトップアプリを使う場合は、対象の GitHub Release から Windows 用インストーラーを取得します。
@@ -70,6 +79,20 @@ winsmux install --profile full
 ```
 
 npm コマンドは同梱されたインストーラーに処理を渡します。インストーラーは npm パッケージと同じ Git tag に固定されます。
+
+インストール後は、作業対象のプロジェクトディレクトリへ移動して、管理対象
+ワークスペースを起動します。
+
+```powershell
+cd <project>
+winsmux init
+winsmux launch
+```
+
+`winsmux launch` が CLI 経路の公開起動コマンドです。初回確認を行い、
+管理された Windows Terminal ワークスペースを起動します。デスクトップアプリは
+別経路です。GitHub Release からデスクトップアプリを入れた場合は、アプリを開き、
+同じプロジェクトフォルダーを選択して画面上の管制面を使います。
 
 ## インストールプロファイル
 

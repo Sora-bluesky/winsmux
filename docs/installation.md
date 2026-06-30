@@ -35,6 +35,15 @@ winsmux version
 winsmux doctor
 ```
 
+Then open the project you want agents to work in and start the CLI-managed
+workspace from that project directory:
+
+```powershell
+cd <project>
+winsmux init
+winsmux launch
+```
+
 ## Desktop app installer
 
 For the desktop app, download the Windows installer from the matching GitHub Release:
@@ -73,6 +82,20 @@ winsmux install --profile full
 ```
 
 The npm command delegates to the bundled installer and pins the installer to the same release tag as the npm package.
+
+After the package install finishes, move to the project directory and launch the
+managed workspace:
+
+```powershell
+cd <project>
+winsmux init
+winsmux launch
+```
+
+`winsmux launch` is the public CLI startup path. It runs the first-run checks
+and starts the managed Windows Terminal workspace. The desktop app installer is
+separate: install the desktop app from GitHub Releases, open it, and choose the
+same project folder there when you want the graphical control surface.
 
 ## Installer profiles
 
