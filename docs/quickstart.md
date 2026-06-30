@@ -1,6 +1,6 @@
 # Quickstart
 
-This guide takes a new Windows user from install to a first managed pane run.
+This guide takes a new Windows user from install to a first managed pane run. The recommended path is the desktop app. Use the CLI path only when you want a scripted, headless, or terminal-first workflow.
 
 ## 1. Check requirements
 
@@ -14,9 +14,14 @@ Install these first:
 
 ## 2. Install winsmux
 
-For the desktop app, download `winsmux_<version>_x64-setup.exe` from the matching GitHub Release and run it. After launch, choose the project folder you want agents to work in.
+Recommended desktop app path:
 
-For CLI-first setups, install the npm package:
+1. Download `winsmux_<version>_x64-setup.exe` from the matching GitHub Release.
+2. Run the installer.
+3. Open the installed winsmux desktop app.
+4. Choose the project folder you want agents to work in.
+
+CLI-first package path:
 
 ```powershell
 npm install -g winsmux
@@ -44,13 +49,19 @@ winsmux init
 
 The default workspace lifecycle is `managed-worktree`, which keeps worker file changes separated.
 
-## 4. Launch the workspace
+## 4. Launch winsmux
+
+Recommended desktop app path:
+
+Open the installed winsmux app and select the project folder. Use the desktop app as the graphical control surface for the operator and worker panes.
+
+CLI-managed workspace path:
 
 ```powershell
 winsmux launch
 ```
 
-This starts the managed Windows Terminal workspace. In the desktop app, use the project selector to open the same project and inspect the operator and worker panes from the control plane. The operator remains responsible for reading pane output and deciding what to accept.
+`winsmux launch` starts the managed Windows Terminal workspace for the npm/CLI package path. It does not open the desktop app. The operator remains responsible for reading pane output and deciding what to accept.
 
 Check the configured workers before sending work:
 

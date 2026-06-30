@@ -4,6 +4,11 @@ Use this guide when winsmux install, launch, panes, credentials, or release chec
 
 ## Startup problems
 
+The `winsmux launch` commands in this section refer to the npm/CLI package path.
+They start the managed Windows Terminal workspace. They do not open the desktop
+app; use the installed desktop app directly when troubleshooting the graphical
+control surface.
+
 ### `Orchestra already starting (lock exists)`
 
 Cause: a previous startup ended before removing the lock file.

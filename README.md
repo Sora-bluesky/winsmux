@@ -69,9 +69,9 @@ Rust is only needed when you build the runtime from source.
 
 ## Get Started
 
-For the desktop app, download `winsmux_<version>_x64-setup.exe` from the matching GitHub Release, run it, and choose the project folder you want agents to work in.
+For most users, start with the desktop app. Download `winsmux_<version>_x64-setup.exe` from the matching GitHub Release, run it, open the installed winsmux app, and choose the project folder you want agents to work in.
 
-For CLI-first setups, the fastest path is:
+Use the npm package when you want a CLI-first, scripted, or headless setup. This path starts a managed Windows Terminal workspace; it does not open the desktop app.
 
 ```powershell
 npm install -g winsmux
@@ -81,7 +81,7 @@ winsmux launch
 ```
 
 See [Quickstart](docs/quickstart.md) for a guided first run.
-See [Installation](docs/installation.md) for desktop installers, CLI profiles, updates, and uninstall steps.
+See [Installation](docs/installation.md) for the recommended desktop installer path, CLI profiles, updates, and uninstall steps.
 See [Customization](docs/customization.md) for launcher presets, worktree policy, slots, credentials, and desktop settings.
 See [Public Distribution Boundary](docs/source-access.md) for the `v1.0.0` public distribution and redistribution boundary.
 See [External control plane API](docs/external-control-plane.md) for the local named-pipe JSON-RPC contract used by external automation clients.
@@ -115,7 +115,7 @@ winsmux skills --json
 | Command | Purpose |
 | ------- | ------- |
 | `winsmux init` | Create the default project config |
-| `winsmux launch` | Run checks and start the default managed workspace |
+| `winsmux launch` | Run CLI checks and start the default managed Windows Terminal workspace; it does not open the desktop app |
 | `winsmux launcher presets` | Show launcher presets and pair templates |
 | `winsmux launcher lifecycle` | Choose the workspace lifecycle policy |
 | `winsmux workers status` | Show backend, state, GPU, session, and last command for worker slots |
