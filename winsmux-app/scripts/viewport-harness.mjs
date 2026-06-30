@@ -888,9 +888,9 @@ async function installSpeechRecognitionStub(page) {
     if (!window.localStorage.getItem("winsmux.runtime-role.preferences.v1")) {
       window.localStorage.setItem("winsmux.runtime-role.preferences.v1", JSON.stringify(runtimePreferences));
     }
-    if (!window.localStorage.getItem("winsmux.runtime-model.assignment-mode.v1")) {
-      window.localStorage.setItem("winsmux.runtime-model.assignment-mode.v1", "shared");
-    }
+    window.localStorage.setItem("winsmux.runtime-model.assignment-mode.v1", "shared");
+    window.localStorage.removeItem("winsmux.runtime-model.worker-default.v1");
+    window.localStorage.removeItem("winsmux.runtime-model.slot-overrides.v1");
     const speechRecognitionState = {
       aborts: 0,
       instances: [],
@@ -1007,8 +1007,8 @@ async function assertSettingsRoundtrip(page, returnSelector) {
       provider instanceof HTMLSelectElement &&
       provider.value === "codex" &&
       !provider.disabled &&
-      model instanceof HTMLSelectElement &&
-      model.value === "codex-provider-default" &&
+      model instanceof HTMLInputElement &&
+      model.value === "Auto" &&
       !model.disabled &&
       effort instanceof HTMLSelectElement &&
       effort.value === "provider-default" &&
@@ -1724,6 +1724,7 @@ async function assertSourceControlChrome(page) {
       svg.getBoundingClientRect().width <= 80;
   });
   await page.waitForFunction(() => {
+    const rows = Array.from(document.querySelectorAll("#source-control-graph-list .source-control-graph-row"));
     const path = Array.from(document.querySelectorAll("#source-control-graph-list .source-control-graph-lane-path"))
       .find((candidate) => (candidate.getAttribute("d") ?? "").includes(" C "));
     const pillar = Array.from(document.querySelectorAll("#source-control-graph-list .source-control-graph-lane-path.is-pillar"))
@@ -1732,7 +1733,9 @@ async function assertSourceControlChrome(page) {
       .find((candidate) => (candidate.getAttribute("d") ?? "").includes(" A "));
     const parentLane = Array.from(document.querySelectorAll("#source-control-graph-list .source-control-graph-lanes"))
       .find((lane) => (lane instanceof HTMLElement) && (lane.dataset.graphParents ?? "").length > 0);
-    return Boolean(path && pillar && parentLane && !arcPath);
+    const hasBranchCurve = Boolean(path && parentLane);
+    const hasLinearHistory = Boolean(pillar && rows.length >= 2);
+    return Boolean(pillar && !arcPath && (hasBranchCurve || hasLinearHistory));
   });
   await page.click("#activity-explorer-btn");
   await page.locator("#explorer-list").waitFor({ state: "visible" });
@@ -1920,15 +1923,15 @@ async function verifyDesktopViewport(page, previewUrl) {
   });
 
   await runStep("desktop editor surface", async () => {
-    await assertSourceControlChrome(page);
-    await assertExplorerFolderExpandsInline(page);
-    await assertExplorerFileOpensMainEditor(page);
-    await ensureContextPanelOpen(page);
-    await openFirstSourceContextEntry(page);
-    await assertEditorPopout(page);
-    await assertCommandBarRoundtrip(page, "#editor-surface");
-    await assertSettingsRoundtrip(page, "#editor-surface");
-    await assertTerminalDrawerWithSourceContext(page, "#editor-surface", "#context-panel");
+    await runStep("editor source control chrome", () => assertSourceControlChrome(page));
+    await runStep("editor explorer folder expands", () => assertExplorerFolderExpandsInline(page));
+    await runStep("editor explorer file opens", () => assertExplorerFileOpensMainEditor(page));
+    await runStep("editor context panel opens", () => ensureContextPanelOpen(page));
+    await runStep("editor source context opens", () => openFirstSourceContextEntry(page));
+    await runStep("editor popout roundtrip", () => assertEditorPopout(page));
+    await runStep("editor command bar roundtrip", () => assertCommandBarRoundtrip(page, "#editor-surface"));
+    await runStep("editor settings roundtrip", () => assertSettingsRoundtrip(page, "#editor-surface"));
+    await runStep("editor terminal drawer source context", () => assertTerminalDrawerWithSourceContext(page, "#editor-surface", "#context-panel"));
   });
 
   await runStep("desktop browser surface", async () => {

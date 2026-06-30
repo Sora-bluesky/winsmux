@@ -10449,6 +10449,158 @@ function createRuntimeSelect<T extends string>(
   return group;
 }
 
+function getRuntimeReasoningOptionHelp(value: RuntimeReasoningEffort, provider: RuntimeProviderId, japanese: boolean) {
+  if (provider !== "claude") {
+    return "";
+  }
+  const descriptions: Record<RuntimeReasoningEffort, { label: string; labelJa: string }> = {
+    "provider-default": {
+      label: "Use the Claude Code account default.",
+      labelJa: "Claude Code 側の既定値を使います。",
+    },
+    low: {
+      label: "Fastest responses with lighter reasoning.",
+      labelJa: "速さを優先した軽い推論です。",
+    },
+    medium: {
+      label: "Balanced speed and reasoning depth.",
+      labelJa: "速さと思考量のバランスを取ります。",
+    },
+    high: {
+      label: "Use deeper reasoning for complex work.",
+      labelJa: "複雑な作業向けに深く考えます。",
+    },
+    max: {
+      label: "Use a very high reasoning budget.",
+      labelJa: "より大きい思考量を使います。",
+    },
+    xhigh: {
+      label: "Use the maximum available Claude Code effort.",
+      labelJa: "Claude Code で利用できる最大の思考量を使います。",
+    },
+  };
+  return japanese ? descriptions[value].labelJa : descriptions[value].label;
+}
+
+function createRuntimeEffortControl(
+  id: string,
+  label: string,
+  provider: RuntimeProviderId,
+  entry: RuntimeModelCatalogEntry | undefined | null,
+  value: RuntimeReasoningEffort,
+  japanese: boolean,
+  onChange: (value: RuntimeReasoningEffort) => void,
+  controlOptions: { disabled?: boolean; title?: string } = {},
+) {
+  const options = getRuntimeReasoningOptionsForEntry(provider, entry);
+  const normalizedValue = normalizeRuntimeReasoningForEntry(provider, entry, value);
+  const selectOptions = options.map((option) => ({
+    value: option.value,
+    label: getRuntimeReasoningOptionLabel(option, provider, false),
+    labelJa: getRuntimeReasoningOptionLabel(option, provider, true),
+  }));
+  if (provider !== "claude" || options.length <= 1) {
+    return createRuntimeSelect(
+      id,
+      label,
+      normalizedValue,
+      selectOptions,
+      japanese,
+      onChange,
+      controlOptions,
+    );
+  }
+
+  const group = document.createElement("div");
+  group.className = `runtime-control-group runtime-effort-control runtime-effort-control-claude ${controlOptions.disabled ? "is-disabled" : ""}`;
+  group.dataset.provider = provider;
+  group.dataset.value = normalizedValue;
+  if (controlOptions.title) {
+    group.setAttribute("title", controlOptions.title);
+  }
+
+  const header = document.createElement("div");
+  header.className = "runtime-effort-header";
+  const caption = document.createElement("span");
+  caption.className = "runtime-control-caption";
+  caption.textContent = label;
+  const current = document.createElement("span");
+  current.className = "runtime-effort-current";
+  header.append(caption, current);
+  group.appendChild(header);
+
+  const scaleLabels = document.createElement("div");
+  scaleLabels.className = "runtime-effort-scale-labels";
+  const fastLabel = document.createElement("span");
+  fastLabel.textContent = japanese ? "速い" : "Faster";
+  const deepLabel = document.createElement("span");
+  deepLabel.textContent = japanese ? "賢い" : "Deeper";
+  scaleLabels.append(fastLabel, deepLabel);
+  group.appendChild(scaleLabels);
+
+  const range = document.createElement("input");
+  range.id = id;
+  range.className = "runtime-effort-range";
+  range.type = "range";
+  range.min = "0";
+  range.max = String(options.length - 1);
+  range.step = "1";
+  range.disabled = Boolean(controlOptions.disabled);
+  range.setAttribute("aria-label", label);
+  group.appendChild(range);
+
+  const steps = document.createElement("div");
+  steps.className = "runtime-effort-steps";
+  const stepButtons = new Map<RuntimeReasoningEffort, HTMLButtonElement>();
+  for (const option of options) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "runtime-effort-step";
+    button.dataset.effort = option.value;
+    button.disabled = Boolean(controlOptions.disabled);
+    button.textContent = getRuntimeReasoningOptionLabel(option, provider, japanese);
+    button.title = getRuntimeReasoningOptionHelp(option.value, provider, japanese);
+    button.addEventListener("click", () => {
+      setSelected(option.value);
+      onChange(option.value);
+    });
+    stepButtons.set(option.value, button);
+    steps.appendChild(button);
+  }
+  group.appendChild(steps);
+
+  const help = document.createElement("div");
+  help.className = "runtime-effort-help";
+  group.appendChild(help);
+
+  function setSelected(nextValue: RuntimeReasoningEffort) {
+    const normalized = normalizeRuntimeReasoningForEntry(provider, entry, nextValue);
+    const selectedIndex = Math.max(0, options.findIndex((option) => option.value === normalized));
+    range.value = String(selectedIndex);
+    group.dataset.value = normalized;
+    const selectedOption = options[selectedIndex] ?? options[0];
+    current.textContent = selectedOption
+      ? getRuntimeReasoningOptionLabel(selectedOption, provider, japanese)
+      : "";
+    help.textContent = selectedOption
+      ? getRuntimeReasoningOptionHelp(selectedOption.value, provider, japanese)
+      : "";
+    for (const [effort, button] of stepButtons) {
+      const selected = effort === normalized;
+      button.classList.toggle("is-selected", selected);
+      button.setAttribute("aria-pressed", selected ? "true" : "false");
+    }
+  }
+
+  range.addEventListener("input", () => {
+    const next = options[Number(range.value)]?.value ?? normalizedValue;
+    setSelected(next);
+    onChange(next);
+  });
+  setSelected(normalizedValue);
+  return group;
+}
+
 function findRuntimeModelCatalogEntry(id: string) {
   if (!id) {
     return null;
@@ -10938,6 +11090,25 @@ function getRuntimeModelSelectEntries(
   return limited;
 }
 
+function getRuntimeModelFilterText(
+  inputValue: string,
+  selectedEntry: RuntimeModelCatalogEntry,
+  japanese: boolean,
+) {
+  const trimmed = inputValue.trim();
+  if (!trimmed) {
+    return "";
+  }
+  const selectedLabels = [
+    getRuntimeCatalogOptionLabel(selectedEntry, japanese),
+    selectedEntry.label,
+    selectedEntry.labelJa,
+    selectedEntry.model,
+    selectedEntry.id,
+  ].filter(Boolean).map((label) => label.toLowerCase());
+  return selectedLabels.includes(trimmed.toLowerCase()) ? "" : trimmed;
+}
+
 function getRuntimeModelSourceDisplayLabel(source: string, japanese: boolean) {
   const normalized = source.trim().toLowerCase();
   const option = runtimeModelSourceOptions.find((item) => item.value === normalized);
@@ -11019,14 +11190,6 @@ function getRuntimeReasoningOptionsForEntry(provider: RuntimeProviderId, entry?:
     provider,
     runtimeReasoningOptions.filter((item) => allowed.includes(item.value)),
   );
-}
-
-function getRuntimeReasoningSelectOptionsForProvider(provider: RuntimeProviderId, japanese: boolean) {
-  return getRuntimeReasoningOptionsForProvider(provider).map((option) => ({
-    value: option.value,
-    label: getRuntimeReasoningOptionLabel(option, provider, false),
-    labelJa: getRuntimeReasoningOptionLabel(option, provider, japanese),
-  }));
 }
 
 function normalizeRuntimeReasoningForEntry(provider: RuntimeProviderId, entry: RuntimeModelCatalogEntry | undefined | null, effort: string | undefined) {
@@ -11282,7 +11445,12 @@ function renderRuntimeWorkerDefaultControls(japanese: boolean, disabled = false)
     }) ?? selectedEntry;
   };
   const renderSharedModelOptions = () => {
-    const displayEntries = getRuntimeModelSelectEntries(entries, selectedEntry, modelInput.value, japanese);
+    const displayEntries = getRuntimeModelSelectEntries(
+      entries,
+      selectedEntry,
+      getRuntimeModelFilterText(modelInput.value, selectedEntry, japanese),
+      japanese,
+    );
     modelOptions.innerHTML = "";
     for (const entry of displayEntries) {
       const option = document.createElement("option");
@@ -11306,11 +11474,12 @@ function renderRuntimeWorkerDefaultControls(japanese: boolean, disabled = false)
   modelField.append(modelCaption, modelInput, modelOptions);
   controls.appendChild(modelField);
 
-  controls.appendChild(createRuntimeSelect(
+  controls.appendChild(createRuntimeEffortControl(
     "runtime-worker-default-effort",
     japanese ? "思考量" : "Effort",
+    selectedProvider,
+    selectedEntry,
     normalizeRuntimeReasoningForEntry(selectedProvider, selectedEntry, preference.reasoningEffort),
-    getRuntimeReasoningSelectOptionsForProvider(selectedProvider, japanese),
     japanese,
     (reasoningEffort) => updateRuntimeRoleDraft("worker", { reasoningEffort }),
     { disabled, title: disabledTitle },
@@ -11468,15 +11637,8 @@ function renderWorkerModelAssignmentPanel(japanese: boolean) {
     modelOptions.id = modelOptionsId;
     modelField.append(modelCaption, modelInput, modelOptions);
 
-    const effortField = document.createElement("label");
-    effortField.className = "runtime-model-slot-field";
-    const effortCaption = document.createElement("span");
-    effortCaption.className = "runtime-control-caption";
-    effortCaption.textContent = japanese ? "思考量" : "Effort";
-    const effortSelect = document.createElement("select");
-    effortSelect.className = "runtime-control-select runtime-model-slot-effort";
-    effortSelect.setAttribute("aria-label", japanese ? `${slotId} の思考量` : `${slotId} effort`);
-    effortField.append(effortCaption, effortSelect);
+    const effortField = document.createElement("div");
+    effortField.className = "runtime-model-slot-field runtime-model-slot-effort-host";
 
     const control = document.createElement("div");
     control.className = "runtime-model-slot-control";
@@ -11498,21 +11660,31 @@ function renderWorkerModelAssignmentPanel(japanese: boolean) {
       : (japanese ? "適用" : "Apply");
 
     let currentEntries: RuntimeModelCatalogEntry[] = [];
+    let selectedRuntimeEffort: RuntimeReasoningEffort = "provider-default";
     const renderEffortOptions = (provider: RuntimeProviderId, entry?: RuntimeModelCatalogEntry | null, preferredEffort?: RuntimeReasoningEffort) => {
       const options = getRuntimeReasoningOptionsForEntry(provider, entry);
-      const normalizedEffort = normalizeRuntimeReasoningForEntry(provider, entry, preferredEffort ?? effortSelect.value);
-      effortSelect.innerHTML = "";
-      for (const option of options) {
-        const element = document.createElement("option");
-        element.value = option.value;
-        element.textContent = getRuntimeReasoningOptionLabel(option, provider, japanese);
-        element.selected = option.value === normalizedEffort;
-        effortSelect.appendChild(element);
-      }
-      effortSelect.disabled = Boolean(workerProviderSwitchInFlight) || options.length <= 1;
-      effortSelect.title = options.length <= 1
+      selectedRuntimeEffort = normalizeRuntimeReasoningForEntry(provider, entry, preferredEffort ?? selectedRuntimeEffort);
+      const disabledReason = options.length <= 1
         ? (japanese ? "このプロバイダーは思考量の明示指定に未対応です。" : "This provider does not expose a supported effort override.")
         : "";
+      const effortControl = createRuntimeEffortControl(
+        `runtime-model-slot-effort-${slotId}`,
+        japanese ? "思考量" : "Effort",
+        provider,
+        entry,
+        selectedRuntimeEffort,
+        japanese,
+        (reasoningEffort) => {
+          selectedRuntimeEffort = reasoningEffort;
+          updateActionState();
+        },
+        {
+          disabled: Boolean(workerProviderSwitchInFlight) || options.length <= 1,
+          title: disabledReason,
+        },
+      );
+      effortControl.classList.add("runtime-model-slot-effort");
+      effortField.replaceChildren(effortControl);
     };
     const findModelEntryFromInput = (provider: RuntimeProviderId, inputValue: string) => {
       const normalizedValue = inputValue.trim().toLowerCase();
@@ -11528,7 +11700,12 @@ function renderWorkerModelAssignmentPanel(japanese: boolean) {
       }) ?? createRuntimeCustomModelEntry(provider, inputValue.trim());
     };
     const renderModelOptionList = (selectedEntry: RuntimeModelCatalogEntry) => {
-      const displayEntries = getRuntimeModelSelectEntries(currentEntries, selectedEntry, modelInput.value, japanese);
+      const displayEntries = getRuntimeModelSelectEntries(
+        currentEntries,
+        selectedEntry,
+        getRuntimeModelFilterText(modelInput.value, selectedEntry, japanese),
+        japanese,
+      );
       modelOptions.innerHTML = "";
       for (const entry of displayEntries) {
         const option = document.createElement("option");
@@ -11540,7 +11717,7 @@ function renderWorkerModelAssignmentPanel(japanese: boolean) {
     const resolveSelection = (): RuntimePaneModelSelection | null => {
       const provider = normalizeRuntimeProviderId(providerSelect.value) ?? inferredProvider;
       const entry = findModelEntryFromInput(provider, modelInput.value);
-      const effort = normalizeRuntimeReasoningForEntry(provider, entry, effortSelect.value || entry.reasoningEffort);
+      const effort = normalizeRuntimeReasoningForEntry(provider, entry, selectedRuntimeEffort || entry.reasoningEffort);
       return { entry, reasoningEffort: effort };
     };
 
@@ -11622,7 +11799,6 @@ function renderWorkerModelAssignmentPanel(japanese: boolean) {
       }
       updateActionState();
     });
-    effortSelect.addEventListener("change", updateActionState);
     action.addEventListener("click", () => {
       const selection = resolveSelection();
       if (selection) {

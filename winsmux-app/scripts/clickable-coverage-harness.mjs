@@ -630,7 +630,7 @@ async function testPaneModelSettings(page) {
     const model = document.querySelector("#runtime-worker-default-model");
     const effort = document.querySelector("#runtime-worker-default-effort");
     return provider instanceof HTMLSelectElement && provider.disabled
-      && model instanceof HTMLSelectElement && model.disabled
+      && model instanceof HTMLInputElement && model.disabled
       && effort instanceof HTMLSelectElement && effort.disabled;
   });
   await page.waitForFunction(() => {
@@ -657,7 +657,7 @@ async function testPaneModelSettings(page) {
     return perPane instanceof HTMLElement
       && perPane.getAttribute("aria-pressed") === "true"
       && provider instanceof HTMLSelectElement && provider.disabled
-      && model instanceof HTMLSelectElement && model.disabled
+      && model instanceof HTMLInputElement && model.disabled
       && effort instanceof HTMLSelectElement && effort.disabled;
   });
 
@@ -670,10 +670,77 @@ async function testPaneModelSettings(page) {
     const provider = document.querySelector("#runtime-worker-default-provider");
     const model = document.querySelector("#runtime-worker-default-model");
     const effort = document.querySelector("#runtime-worker-default-effort");
+    const modelOptionsId = model instanceof HTMLInputElement ? model.getAttribute("list") : "";
+    const modelOptions = modelOptionsId ? document.getElementById(modelOptionsId) : null;
     return provider instanceof HTMLSelectElement && !provider.disabled
-      && model instanceof HTMLSelectElement && !model.disabled
+      && model instanceof HTMLInputElement && !model.disabled
+      && modelOptions instanceof HTMLDataListElement
       && effort instanceof HTMLSelectElement && !effort.disabled
       && document.querySelectorAll(".runtime-model-slot-row").length === 0;
+  }).catch(async (error) => {
+    const state = await page.evaluate(() => {
+      const model = document.querySelector("#runtime-worker-default-model");
+      const provider = document.querySelector("#runtime-worker-default-provider");
+      const effort = document.querySelector("#runtime-worker-default-effort");
+      const modelOptionsId = model instanceof HTMLInputElement ? model.getAttribute("list") : "";
+      const modelOptions = modelOptionsId ? document.getElementById(modelOptionsId) : null;
+      return {
+        modeButtons: Array.from(document.querySelectorAll(".runtime-model-mode-option")).map((button) => ({
+          text: button.textContent,
+          pressed: button.getAttribute("aria-pressed"),
+          selected: button instanceof HTMLElement ? button.dataset.selected : undefined,
+        })),
+        providerDisabled: provider instanceof HTMLSelectElement ? provider.disabled : undefined,
+        modelTag: model?.tagName,
+        modelDisabled: model instanceof HTMLInputElement ? model.disabled : undefined,
+        modelList: modelOptionsId,
+        modelOptionCount: modelOptions?.querySelectorAll("option").length,
+        effortTag: effort?.tagName,
+        effortDisabled: effort instanceof HTMLSelectElement || effort instanceof HTMLInputElement ? effort.disabled : undefined,
+        slotRows: document.querySelectorAll(".runtime-model-slot-row").length,
+        emptyText: document.querySelector(".runtime-model-empty")?.textContent,
+      };
+    });
+    throw new Error(`settings pane model shared mode did not expose shared controls: ${JSON.stringify(state)}: ${error.message}`);
+  });
+
+  await page.locator("#runtime-worker-default-provider").selectOption("claude");
+  recordClick("settings pane model shared provider claude");
+  await page.waitForFunction(() => {
+    const provider = document.querySelector("#runtime-worker-default-provider");
+    const model = document.querySelector("#runtime-worker-default-model");
+    const modelOptionsId = model instanceof HTMLInputElement ? model.getAttribute("list") : "";
+    const modelOptions = modelOptionsId ? document.getElementById(modelOptionsId) : null;
+    const effort = document.querySelector("#runtime-worker-default-effort");
+    const claudeEffort = document.querySelector(".runtime-effort-control-claude");
+    return provider instanceof HTMLSelectElement
+      && provider.value === "claude"
+      && model instanceof HTMLInputElement
+      && modelOptions instanceof HTMLDataListElement
+      && Array.from(modelOptions.querySelectorAll("option")).some((option) => /Opus 4\.8/.test(option.value))
+      && effort instanceof HTMLInputElement
+      && effort.classList.contains("runtime-effort-range")
+      && claudeEffort instanceof HTMLElement
+      && claudeEffort.dataset.value;
+  });
+  await clickSelector(page, '.runtime-effort-step[data-effort="xhigh"]', "settings pane model shared claude ultra effort", { settleMs: 100 });
+  await page.waitForFunction(() => {
+    const effort = document.querySelector("#runtime-worker-default-effort");
+    const claudeEffort = document.querySelector(".runtime-effort-control-claude");
+    return effort instanceof HTMLInputElement
+      && claudeEffort instanceof HTMLElement
+      && claudeEffort.dataset.value === "xhigh";
+  });
+  await page.locator("#runtime-worker-default-provider").selectOption("codex");
+  recordClick("settings pane model shared provider codex restore");
+  await page.waitForFunction(() => {
+    const provider = document.querySelector("#runtime-worker-default-provider");
+    const effort = document.querySelector("#runtime-worker-default-effort");
+    return provider instanceof HTMLSelectElement
+      && provider.value === "codex"
+      && effort instanceof HTMLSelectElement
+      && effort.value === "provider-default"
+      && !document.querySelector(".runtime-effort-control-claude");
   });
 }
 

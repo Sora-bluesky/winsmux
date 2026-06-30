@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 
 const mainSource = await readFile("src/main.ts", "utf8");
 const viewportHarness = await readFile("scripts/viewport-harness.mjs", "utf8");
+const modelCapabilitiesSource = await readFile("src/modelCapabilities.ts", "utf8");
 
 assert.match(
   mainSource,
@@ -108,6 +109,46 @@ assert.match(
   /function renderOperatorApprovalModePanel\(japanese: boolean\)[\s\S]*?composerPermissionModeOptions[\s\S]*?setComposerPermissionMode\(option\.value\)/,
   "Settings must expose the same operator approval mode options as the composer footer.",
 );
+
+assert.match(
+  mainSource,
+  /function createRuntimeEffortControl\([\s\S]*?runtime-effort-control-claude[\s\S]*?runtime-effort-range[\s\S]*?runtime-effort-step/,
+  "Settings must expose a Claude-specific effort control instead of a plain select-only UI.",
+);
+
+assert.match(
+  mainSource,
+  /claude:\s*\["provider-default",\s*"low",\s*"medium",\s*"high",\s*"max",\s*"xhigh"\]/,
+  "Claude runtime effort order must keep Ultra/xhigh as the highest option.",
+);
+
+assert.match(
+  mainSource,
+  /codex:\s*\["provider-default",\s*"low",\s*"medium",\s*"high",\s*"xhigh"\]/,
+  "Codex runtime effort choices must not expose Claude-only Max.",
+);
+
+for (const provider of ["antigravity", "grok-build", "openrouter"]) {
+  assert.match(
+    mainSource,
+    new RegExp(`["']?${provider.replace("-", "\\-")}["']?:\\s*\\["provider-default"\\]`),
+    `${provider} must stay provider-default only in desktop runtime effort filtering.`,
+  );
+}
+
+assert.match(
+  modelCapabilitiesSource,
+  /id:\s*"claude"[\s\S]*?supportedEffortIds:\s*\["provider-default",\s*"low",\s*"medium",\s*"high",\s*"max",\s*"xhigh"\]/,
+  "Claude provider capabilities must include Max and Ultra/xhigh only for Claude.",
+);
+
+for (const provider of ["antigravity", "grok-build", "openrouter"]) {
+  assert.match(
+    modelCapabilitiesSource,
+    new RegExp(`id:\\s*"${provider}"[\\s\\S]*?supportedEffortIds:\\s*\\["provider-default"\\]`),
+    `${provider} capabilities must not claim explicit effort overrides.`,
+  );
+}
 
 assert.match(
   viewportHarness,
