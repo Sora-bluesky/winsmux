@@ -1352,6 +1352,17 @@ async function assertComposerSessionControls(page, previewUrl) {
     throw new Error("Unavailable Fable 5 composer state did not fall back to the Opus 4.8 startup model");
   }
 
+  await page.evaluate(() => {
+    window.__winsmuxViewportHarness?.setOperatorRuntimeOutputForTest("\nOpus 4.7 | ctx 12% | 5h | 1% | 7d\n");
+  });
+  await page.locator(".composer-session-trigger-model", { hasText: "Opus 4.7・Running" }).waitFor();
+  const runtimeLabel = await page.evaluate(() => window.__winsmuxViewportHarness?.getComposerModelControlLabelForTest());
+  if (runtimeLabel !== "Opus 4.7・Running") {
+    throw new Error(`Operator runtime model label did not reflect the observed runtime model: ${runtimeLabel}`);
+  }
+  await page.reload({ waitUntil: "networkidle" });
+  await page.locator(".composer-session-trigger-model", { hasText: "Opus 4.8" }).waitFor();
+
   await page.click(".composer-session-trigger-permission");
   await page.locator("#composer-permission-menu", { hasText: "Mode" }).waitFor();
   await page.locator("#composer-permission-menu .composer-session-option", { hasText: "Plan mode" }).click();

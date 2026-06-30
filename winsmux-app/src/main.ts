@@ -274,6 +274,8 @@ declare global {
       setTerminalDrawer: (open: boolean) => void;
       getOperatorStartupInput: () => string;
       setOperatorStartupInputForTest: (value: string | null) => void;
+      setOperatorRuntimeOutputForTest: (value: string) => void;
+      getComposerModelControlLabelForTest: () => string;
       refreshWorkerStatusRowsForTest: () => Promise<DesktopWorkerStatusRow[]>;
       setVoiceNow: (timestamp: number | null) => void;
     };
@@ -652,6 +654,7 @@ let activeComposerMode: ComposerMode = "dispatch";
 let activeComposerPermissionMode: ComposerPermissionMode = "acceptEdits";
 let activeComposerModel: ComposerModelId = "opus-4.8";
 let activeComposerEffort: ComposerEffortLevel = "xhigh";
+let observedOperatorRuntimeModel: ComposerModelId | null = null;
 let activeVoiceDraftMode: VoiceDraftMode = "raw";
 let activeComposerFastModeEnabled = false;
 let activeComposerFastModeTogglePending = false;
@@ -1760,6 +1763,7 @@ function markOperatorPtyStartedFromExternalEvent() {
 function markOperatorPtyStoppedFromExternalEvent() {
   operatorPtyStarted = false;
   operatorPtyStarting = null;
+  clearObservedOperatorRuntimeModel();
   operatorAttentionFingerprint = "";
   operatorClaudeSessionId = createOperatorSessionId();
   setOperatorRequestActive(false);
@@ -12915,6 +12919,53 @@ function getComposerModelOption(model: ComposerModelId = activeComposerModel) {
     ?? composerModelOptions[0];
 }
 
+function detectComposerModelFromOperatorText(text: string): ComposerModelId | null {
+  const normalized = stripTerminalControlSequences(text).replace(/\u00a0/g, " ");
+  if (!normalized) {
+    return null;
+  }
+
+  const statusLineMatches = Array.from(normalized.matchAll(/(?:^|\n)\s*(Opus 4\.8|Opus 4\.7|Opus 4\.6|Sonnet 4\.6|Haiku 4\.5)\s*(?:\||$)/gm));
+  const statusLineMatch = statusLineMatches[statusLineMatches.length - 1];
+  if (statusLineMatch?.[1]) {
+    const label = statusLineMatch[1];
+    return composerModelOptions.find((item) => !item.disabled && (item.label === label || item.labelJa === label))?.value ?? null;
+  }
+
+  for (const option of composerModelOptions) {
+    if (option.disabled) {
+      continue;
+    }
+    const cliPattern = escapeRegExp(option.cliModel);
+    const labelPattern = escapeRegExp(option.label);
+    const modelLine = new RegExp(`\\bmodel\\s*:\\s*(?:${cliPattern}|${labelPattern})\\b`, "i");
+    if (modelLine.test(normalized)) {
+      return option.value;
+    }
+  }
+
+  return null;
+}
+
+function updateObservedOperatorRuntimeModelFromOutput(text: string) {
+  const detected = detectComposerModelFromOperatorText(text);
+  if (!detected || detected === observedOperatorRuntimeModel) {
+    return;
+  }
+  observedOperatorRuntimeModel = detected;
+  renderComposerSessionControls();
+  renderFooterLane();
+}
+
+function clearObservedOperatorRuntimeModel() {
+  if (!observedOperatorRuntimeModel) {
+    return;
+  }
+  observedOperatorRuntimeModel = null;
+  renderComposerSessionControls();
+  renderFooterLane();
+}
+
 function isComposerFastModeCompatible(model: ComposerModelId = activeComposerModel) {
   return !composerModelOptions.find((item) => item.value === model)?.disabled;
 }
@@ -12986,7 +13037,7 @@ function createComposerShortcut(label: string) {
   return shortcut;
 }
 
-function createComposerSessionControl(kind: "permission" | "model" | "voice", selectedLabel: string) {
+function createComposerSessionControl(kind: "permission" | "model" | "voice", selectedLabel: string, title?: string) {
   const group = document.createElement("div");
   group.className = `composer-session-control composer-session-control-${kind}`;
 
@@ -12996,6 +13047,9 @@ function createComposerSessionControl(kind: "permission" | "model" | "voice", se
   button.setAttribute("aria-expanded", openComposerSessionMenu === kind ? "true" : "false");
   button.setAttribute("aria-haspopup", "menu");
   button.setAttribute("aria-controls", `composer-${kind}-menu`);
+  if (title) {
+    button.title = title;
+  }
   button.replaceChildren(createTextElement("span", "composer-session-value", selectedLabel));
   button.addEventListener("click", (event) => {
     event.stopPropagation();
@@ -13147,11 +13201,30 @@ function createComposerVoiceDraftMenu() {
   return group;
 }
 
+function getComposerModelControlDisplay() {
+  const japanese = themeState.language === "ja";
+  const configuredOption = getComposerModelOption();
+  const runtimeOption = observedOperatorRuntimeModel ? getComposerModelOption(observedOperatorRuntimeModel) : null;
+  const fastSuffix = activeComposerFastModeEnabled ? (japanese ? "・高速" : "・Fast") : "";
+  const configuredLabel = japanese ? configuredOption.labelJa : configuredOption.label;
+  if (runtimeOption && runtimeOption.value !== configuredOption.value) {
+    const runtimeLabel = japanese ? runtimeOption.labelJa : runtimeOption.label;
+    return {
+      label: `${runtimeLabel}${japanese ? "・実行中" : "・Running"}`,
+      title: japanese
+        ? `現在のoperator実行モデル: ${runtimeLabel}。次回起動設定: ${configuredLabel}${fastSuffix}。`
+        : `Current operator runtime model: ${runtimeLabel}. Next startup setting: ${configuredLabel}${fastSuffix}.`,
+    };
+  }
+  return {
+    label: `${configuredLabel}${fastSuffix}`,
+    title: undefined,
+  };
+}
+
 function createComposerModelMenu() {
-  const modelOption = getComposerModelOption();
-  const fastSuffix = activeComposerFastModeEnabled ? (themeState.language === "ja" ? "・高速" : "・Fast") : "";
-  const selectedLabel = `${themeState.language === "ja" ? modelOption.labelJa : modelOption.label}${fastSuffix}`;
-  const group = createComposerSessionControl("model", selectedLabel);
+  const display = getComposerModelControlDisplay();
+  const group = createComposerSessionControl("model", display.label, display.title);
   if (openComposerSessionMenu !== "model") {
     return group;
   }
@@ -13159,6 +13232,21 @@ function createComposerModelMenu() {
   const japanese = themeState.language === "ja";
   const menu = createComposerMenu("composer-model-menu", "composer-session-menu-model");
   appendComposerMenuHeading(menu, japanese ? "モデル" : "Model");
+  if (observedOperatorRuntimeModel && observedOperatorRuntimeModel !== activeComposerModel) {
+    const runtimeOption = getComposerModelOption(observedOperatorRuntimeModel);
+    const configuredOption = getComposerModelOption();
+    const runtimeLabel = japanese ? runtimeOption.labelJa : runtimeOption.label;
+    const description = createTextElement(
+      "div",
+      "composer-session-option-description",
+      japanese
+        ? `現在のoperatorは${runtimeLabel}で実行中です。ここで選ぶモデルは次回起動設定です。`
+        : `The operator is currently running ${runtimeLabel}. Choices here change the next startup setting.`,
+    );
+    description.dataset.currentRuntimeModel = runtimeOption.value;
+    description.dataset.nextStartupModel = configuredOption.value;
+    menu.appendChild(description);
+  }
   for (const option of composerModelOptions.filter((item) => item.group !== "other")) {
     appendComposerOptionButton(menu, option, activeComposerModel, setComposerModel);
   }
@@ -15496,6 +15584,7 @@ function appendOperatorPtyOutput(data: string) {
     if (!body) {
       return;
     }
+    updateObservedOperatorRuntimeModelFromOutput(body);
     if (operatorRequestActive && isClaudeOperatorReadyText(body)) {
       setOperatorRequestActive(false);
     }
@@ -16587,6 +16676,12 @@ function installViewportHarnessHooks() {
     setOperatorStartupInputForTest: (value: string | null) => {
       viewportHarnessOperatorStartupInputOverride = value;
     },
+    setOperatorRuntimeOutputForTest: (value: string) => {
+      updateObservedOperatorRuntimeModelFromOutput(value);
+    },
+    getComposerModelControlLabelForTest: () => (
+      document.querySelector(".composer-session-trigger-model .composer-session-value")?.textContent ?? ""
+    ),
     refreshWorkerStatusRowsForTest: async () => {
       await refreshWorkerStatusSurface();
       return getWorkerStatusRowsForSurface();
