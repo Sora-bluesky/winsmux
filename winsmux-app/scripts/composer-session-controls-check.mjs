@@ -6,6 +6,24 @@ const viewportHarness = await readFile("scripts/viewport-harness.mjs", "utf8");
 
 assert.match(
   mainSource,
+  /type ComposerPermissionMode = "auto" \| "default" \| "acceptEdits" \| "plan" \| "bypassPermissions";/,
+  "Composer permission modes must stay aligned with Claude Code CLI permission-mode values.",
+);
+
+assert.match(
+  mainSource,
+  /function defaultComposerSessionControls\(\): ComposerSessionControlState \{[\s\S]*?permissionMode:\s*"auto"/,
+  "New operator sessions must default to Claude Code auto permission mode.",
+);
+
+assert.doesNotMatch(
+  mainSource,
+  /value === "auto"[\s\S]*?return "default"/,
+  "Stored auto permission mode must not be normalized back to default.",
+);
+
+assert.match(
+  mainSource,
   /value:\s*"opus-4\.7"[\s\S]*?cliModel:\s*"claude-opus-4-7"/,
   "Opus 4.7 must remain a selectable Claude Code model with its CLI model id.",
 );
@@ -57,6 +75,24 @@ assert.match(
   viewportHarness,
   /model:\s*"opus-4\.7"[\s\S]*?--model claude-opus-4-7/,
   "Viewport harness must verify that stored Opus 4.7 reaches operator startup input.",
+);
+
+assert.match(
+  viewportHarness,
+  /permissionMode:\s*"auto"[\s\S]*?--permission-mode auto/,
+  "Viewport harness must verify that auto permission mode reaches operator startup input.",
+);
+
+assert.match(
+  viewportHarness,
+  /permissionMode:\s*"default"[\s\S]*?--permission-mode default/,
+  "Viewport harness must verify that confirm-permissions mode reaches operator startup input.",
+);
+
+assert.match(
+  viewportHarness,
+  /Plan mode[\s\S]*?--permission-mode plan/,
+  "Viewport harness must verify that Plan mode reaches operator startup input.",
 );
 
 assert.match(

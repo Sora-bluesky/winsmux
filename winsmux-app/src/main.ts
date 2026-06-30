@@ -383,7 +383,7 @@ type RuntimeModelAssignmentMode = "shared" | "per-pane";
 type RuntimeModelCatalogStatus = "selectable" | "candidate" | "setup-required" | "runnable" | "blocked" | "reference-only" | "unavailable";
 type RuntimeModelWorkerReadinessState = "runnable" | "setup-required" | "blocked";
 type RuntimeModelBenchmarkFamily = "agent-arena" | "code-arena" | "winsmux-local";
-type ComposerPermissionMode = "auto" | "default" | "acceptEdits" | "plan";
+type ComposerPermissionMode = "auto" | "default" | "acceptEdits" | "plan" | "bypassPermissions";
 type ComposerEffortLevel = "auto" | "low" | "medium" | "high" | "xhigh" | "max";
 type ComposerModelId = "fable-5" | "opus-4.8" | "opus-4.7" | "opus-4.7-1m" | "opus-4.6" | "sonnet-4.6" | "haiku-4.5";
 type VoiceDraftMode = "raw" | "cleaned" | "operator_request";
@@ -651,7 +651,7 @@ let detachedSurfaceRunLabel = "";
 let detachedSurfaceSession: DetachedSurfaceSessionState | null = null;
 let detachedSurfacePollTimer: number | null = null;
 let activeComposerMode: ComposerMode = "dispatch";
-let activeComposerPermissionMode: ComposerPermissionMode = "acceptEdits";
+let activeComposerPermissionMode: ComposerPermissionMode = "auto";
 let activeComposerModel: ComposerModelId = "opus-4.8";
 let activeComposerEffort: ComposerEffortLevel = "xhigh";
 let observedOperatorRuntimeModel: ComposerModelId | null = null;
@@ -899,14 +899,15 @@ const composerPermissionModeOptions: Array<{
   description: string;
   descriptionJa: string;
   shortcut: string;
+  shortcutJa?: string;
 }> = [
   {
     value: "default",
-    label: "Ask before edits",
-    labelJa: "編集前に確認",
-    description: "Ask before file edits while keeping normal conversation flow.",
-    descriptionJa: "通常の会話を保ちながら、ファイル編集前に確認します。",
-    shortcut: "0",
+    label: "Confirm permissions",
+    labelJa: "許可を確認",
+    description: "Ask before commands, tools, or edits that require permission.",
+    descriptionJa: "許可が必要なコマンド、ツール、編集の前に確認します。",
+    shortcut: "1",
   },
   {
     value: "acceptEdits",
@@ -914,7 +915,7 @@ const composerPermissionModeOptions: Array<{
     labelJa: "編集を承認",
     description: "Allow Claude to edit without prompting for each change.",
     descriptionJa: "変更ごとの確認を省き、編集を承認します。",
-    shortcut: "1",
+    shortcut: "2",
   },
   {
     value: "plan",
@@ -922,7 +923,24 @@ const composerPermissionModeOptions: Array<{
     labelJa: "プランモード",
     description: "Explore and prepare a plan before editing.",
     descriptionJa: "編集前に調査し、計画を作ります。",
-    shortcut: "2",
+    shortcut: "3",
+  },
+  {
+    value: "auto",
+    label: "Auto mode",
+    labelJa: "自動モード",
+    description: "Let Claude decide when a tool or edit needs confirmation.",
+    descriptionJa: "ツール実行や編集で確認が必要かをClaudeに判断させます。",
+    shortcut: "4",
+  },
+  {
+    value: "bypassPermissions",
+    label: "Bypass permissions",
+    labelJa: "許可をバイパス",
+    description: "Skip permission prompts only when the user explicitly enables it.",
+    descriptionJa: "ユーザーが明示的に有効化した場合のみ、許可確認を省略します。",
+    shortcut: "Enable",
+    shortcutJa: "有効にする",
   },
 ];
 
@@ -9440,7 +9458,7 @@ function persistRuntimeModelAssignmentMode() {
 
 function defaultComposerSessionControls(): ComposerSessionControlState {
   return {
-    permissionMode: "acceptEdits",
+    permissionMode: "auto",
     model: "opus-4.8",
     effort: "xhigh",
     voiceDraftMode: "raw",
@@ -9477,9 +9495,6 @@ function normalizeComposerSessionControls(value: Partial<ComposerSessionControlS
 }
 
 function normalizeComposerPermissionMode(value: string | null | undefined, fallback: ComposerPermissionMode) {
-  if (value === "auto" || value === "default") {
-    return "default";
-  }
   return composerPermissionModeOptions.find((item) => item.value === value)?.value ?? fallback;
 }
 
@@ -13083,7 +13098,7 @@ function appendComposerMenuSeparator(menu: HTMLElement) {
 
 function appendComposerOptionButton<T extends string>(
   menu: HTMLElement,
-  option: { value: T; label: string; labelJa: string; description?: string; descriptionJa?: string; shortcut?: string; disabled?: boolean },
+  option: { value: T; label: string; labelJa: string; description?: string; descriptionJa?: string; shortcut?: string; shortcutJa?: string; disabled?: boolean },
   selectedValue: T,
   onSelect: (value: T) => void,
 ) {
@@ -13107,8 +13122,9 @@ function appendComposerOptionButton<T extends string>(
   label.className = "composer-session-option-label";
   label.textContent = japanese ? option.labelJa : option.label;
   labelRow.appendChild(label);
-  if (option.shortcut) {
-    labelRow.appendChild(createComposerShortcut(option.shortcut));
+  const shortcut = japanese && option.shortcutJa ? option.shortcutJa : option.shortcut;
+  if (shortcut) {
+    labelRow.appendChild(createComposerShortcut(shortcut));
   } else if (option.value === selectedValue && !option.disabled) {
     labelRow.appendChild(createComposerShortcut("✓"));
   }

@@ -1296,8 +1296,12 @@ async function setShellLanguage(page, language) {
 
 async function assertComposerSessionControls(page, previewUrl) {
   await page.locator("#composer-mode-row").waitFor({ state: "hidden" });
-  await page.locator(".composer-session-trigger-permission", { hasText: "Approve edits" }).waitFor();
+  await page.locator(".composer-session-trigger-permission", { hasText: "Auto mode" }).waitFor();
   await page.locator(".composer-session-trigger-model", { hasText: "Opus 4.8" }).waitFor();
+  const defaultStartupInput = await page.evaluate(() => window.__winsmuxViewportHarness?.getOperatorStartupInput());
+  if (!String(defaultStartupInput).includes("--permission-mode auto")) {
+    throw new Error("Default composer permission mode did not start the operator in auto mode");
+  }
 
   await page.evaluate(() => {
     localStorage.setItem("winsmux.composer-session.v1", JSON.stringify({
@@ -1308,7 +1312,11 @@ async function assertComposerSessionControls(page, previewUrl) {
     }));
   });
   await page.reload({ waitUntil: "networkidle" });
-  await page.locator(".composer-session-trigger-permission", { hasText: "Ask before edits" }).waitFor();
+  await page.locator(".composer-session-trigger-permission", { hasText: "Confirm permissions" }).waitFor();
+  const confirmStartupInput = await page.evaluate(() => window.__winsmuxViewportHarness?.getOperatorStartupInput());
+  if (!String(confirmStartupInput).includes("--permission-mode default")) {
+    throw new Error("Confirm permissions composer state did not persist into the operator startup mode");
+  }
 
   await page.evaluate(() => {
     localStorage.setItem("winsmux.composer-session.v1", JSON.stringify({
@@ -1319,7 +1327,11 @@ async function assertComposerSessionControls(page, previewUrl) {
     }));
   });
   await page.reload({ waitUntil: "networkidle" });
-  await page.locator(".composer-session-trigger-permission", { hasText: "Ask before edits" }).waitFor();
+  await page.locator(".composer-session-trigger-permission", { hasText: "Auto mode" }).waitFor();
+  const autoStartupInput = await page.evaluate(() => window.__winsmuxViewportHarness?.getOperatorStartupInput());
+  if (!String(autoStartupInput).includes("--permission-mode auto")) {
+    throw new Error("Auto mode composer state did not persist into the operator startup mode");
+  }
 
   await page.evaluate(() => {
     localStorage.setItem("winsmux.composer-session.v1", JSON.stringify({
@@ -1365,8 +1377,15 @@ async function assertComposerSessionControls(page, previewUrl) {
 
   await page.click(".composer-session-trigger-permission");
   await page.locator("#composer-permission-menu", { hasText: "Mode" }).waitFor();
+  await page.locator("#composer-permission-menu .composer-session-option", { hasText: "Auto mode" }).waitFor();
+  await page.locator("#composer-permission-menu .composer-session-option", { hasText: "Confirm permissions" }).waitFor();
+  await page.locator("#composer-permission-menu .composer-session-option", { hasText: "Bypass permissions" }).waitFor();
   await page.locator("#composer-permission-menu .composer-session-option", { hasText: "Plan mode" }).click();
   await page.locator(".composer-session-trigger-permission", { hasText: "Plan mode" }).waitFor();
+  const planStartupInput = await page.evaluate(() => window.__winsmuxViewportHarness?.getOperatorStartupInput());
+  if (!String(planStartupInput).includes("--permission-mode plan")) {
+    throw new Error("Plan mode composer state did not persist into the operator startup mode");
+  }
 
   await page.click(".composer-session-trigger-model");
   await page.locator("#composer-model-menu", { hasText: "Model" }).waitFor();
