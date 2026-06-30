@@ -1365,12 +1365,28 @@ async function assertComposerSessionControls(page, previewUrl) {
   }
 
   await page.evaluate(() => {
-    window.__winsmuxViewportHarness?.setOperatorRuntimeOutputForTest("\nOpus 4.7 | ctx 12% | 5h | 1% | 7d\n");
+    localStorage.setItem("winsmux.composer-session.v1", JSON.stringify({
+      permissionMode: "acceptEdits",
+      model: "opus-4.8",
+      effort: "xhigh",
+      fastModeEnabled: false,
+    }));
+  });
+  await page.reload({ waitUntil: "networkidle" });
+  await page.locator(".composer-session-trigger-model", { hasText: "Opus 4.8" }).waitFor();
+  await page.evaluate(() => {
+    window.__winsmuxViewportHarness?.setOperatorRuntimeOutputForTest(
+      "\x1b[2KOpus 4.8 | ctx 10% | 5h | 1% | 7d\r\x1b[2K› Opus 4.7 | ctx 12% | 5h | 1% | 7d",
+    );
   });
   await page.locator(".composer-session-trigger-model", { hasText: "Opus 4.7・Running" }).waitFor();
   const runtimeLabel = await page.evaluate(() => window.__winsmuxViewportHarness?.getComposerModelControlLabelForTest());
   if (runtimeLabel !== "Opus 4.7・Running") {
     throw new Error(`Operator runtime model label did not reflect the observed runtime model: ${runtimeLabel}`);
+  }
+  const runtimeStoredState = await page.evaluate(() => JSON.parse(localStorage.getItem("winsmux.composer-session.v1") || "{}"));
+  if (runtimeStoredState?.model !== "opus-4.8") {
+    throw new Error("Operator runtime observation must not rewrite the next startup model setting");
   }
   await page.reload({ waitUntil: "networkidle" });
   await page.locator(".composer-session-trigger-model", { hasText: "Opus 4.8" }).waitFor();
