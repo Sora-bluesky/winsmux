@@ -1302,7 +1302,7 @@ async function assertComposerSessionControls(page, previewUrl) {
   await page.evaluate(() => {
     localStorage.setItem("winsmux.composer-session.v1", JSON.stringify({
       permissionMode: "default",
-      model: "opus-4.7-1m",
+      model: "opus-4.7",
       effort: "xhigh",
       fastModeEnabled: false,
     }));
@@ -1313,7 +1313,7 @@ async function assertComposerSessionControls(page, previewUrl) {
   await page.evaluate(() => {
     localStorage.setItem("winsmux.composer-session.v1", JSON.stringify({
       permissionMode: "auto",
-      model: "opus-4.7-1m",
+      model: "opus-4.7",
       effort: "xhigh",
       fastModeEnabled: false,
     }));
@@ -1324,17 +1324,32 @@ async function assertComposerSessionControls(page, previewUrl) {
   await page.evaluate(() => {
     localStorage.setItem("winsmux.composer-session.v1", JSON.stringify({
       permissionMode: "acceptEdits",
-      model: "opus-4.7-1m",
+      model: "opus-4.7",
       effort: "xhigh",
       fastModeEnabled: false,
     }));
   });
   await page.reload({ waitUntil: "networkidle" });
   await page.locator(".composer-session-trigger-permission", { hasText: "Approve edits" }).waitFor();
+  await page.locator(".composer-session-trigger-model", { hasText: "Opus 4.7" }).waitFor();
+  const restoredStartupInput = await page.evaluate(() => window.__winsmuxViewportHarness?.getOperatorStartupInput());
+  if (!String(restoredStartupInput).includes("--model claude-opus-4-7")) {
+    throw new Error("Opus 4.7 composer state did not persist into the operator startup model");
+  }
+
+  await page.evaluate(() => {
+    localStorage.setItem("winsmux.composer-session.v1", JSON.stringify({
+      permissionMode: "acceptEdits",
+      model: "fable-5",
+      effort: "xhigh",
+      fastModeEnabled: false,
+    }));
+  });
+  await page.reload({ waitUntil: "networkidle" });
   await page.locator(".composer-session-trigger-model", { hasText: "Opus 4.8" }).waitFor();
-  const migratedStartupInput = await page.evaluate(() => window.__winsmuxViewportHarness?.getOperatorStartupInput());
-  if (!String(migratedStartupInput).includes("--model claude-opus-4-8")) {
-    throw new Error("Legacy Opus 4.7 composer state did not migrate to Opus 4.8 startup model");
+  const unavailableStartupInput = await page.evaluate(() => window.__winsmuxViewportHarness?.getOperatorStartupInput());
+  if (!String(unavailableStartupInput).includes("--model claude-opus-4-8")) {
+    throw new Error("Unavailable Fable 5 composer state did not fall back to the Opus 4.8 startup model");
   }
 
   await page.click(".composer-session-trigger-permission");

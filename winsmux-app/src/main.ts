@@ -9449,10 +9449,8 @@ function defaultComposerSessionControls(): ComposerSessionControlState {
 function normalizeComposerSessionControls(value: Partial<ComposerSessionControlState> | null | undefined) {
   const fallback = defaultComposerSessionControls();
   const storedModel = value?.model;
-  const migratedModel = storedModel === "opus-4.7" || storedModel === "opus-4.7-1m" || storedModel === "fable-5"
-    ? fallback.model
-    : storedModel;
-  const model = composerModelOptions.find((item) => item.value === migratedModel && !item.disabled)?.value ?? fallback.model;
+  const storedModelOption = composerModelOptions.find((item) => item.value === storedModel);
+  const model = storedModelOption && !storedModelOption.disabled ? storedModelOption.value : fallback.model;
   const fastModeCompatible = isComposerFastModeCompatible(model);
   const storedFastModeEnabled =
     typeof value?.fastModeEnabled === "boolean" ? value.fastModeEnabled : fallback.fastModeEnabled;
