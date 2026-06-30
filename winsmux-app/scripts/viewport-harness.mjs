@@ -1403,6 +1403,27 @@ async function assertComposerSessionControls(page, previewUrl) {
     throw new Error("Plan mode composer state did not persist into the operator startup mode");
   }
 
+  await page.click("#activity-settings-btn");
+  await page.locator("#settings-sheet").waitFor({ state: "visible" });
+  await page.click("#settings-nav-chat");
+  await page.locator(".runtime-operator-approval-panel", { hasText: "Operator approval mode" }).waitFor();
+  await page.locator(".runtime-operator-approval-panel .settings-option-chip", { hasText: "Bypass permissions" }).click();
+  await page.locator(".composer-session-trigger-permission", { hasText: "Bypass permissions" }).waitFor();
+  const bypassStartupInput = await page.evaluate(() => window.__winsmuxViewportHarness?.getOperatorStartupInput());
+  if (!String(bypassStartupInput).includes("--permission-mode bypassPermissions")) {
+    throw new Error("Settings approval mode did not persist Bypass permissions into the operator startup mode");
+  }
+  await page.locator(".runtime-operator-approval-panel .settings-option-chip[aria-checked='true']", { hasText: "Bypass permissions" }).waitFor();
+  await page.locator(".runtime-operator-approval-panel .settings-option-chip", { hasText: "Plan mode" }).click();
+  await page.locator(".composer-session-trigger-permission", { hasText: "Plan mode" }).waitFor();
+  const settingsPlanStartupInput = await page.evaluate(() => window.__winsmuxViewportHarness?.getOperatorStartupInput());
+  if (!String(settingsPlanStartupInput).includes("--permission-mode plan")) {
+    throw new Error("Settings approval mode did not restore Plan mode into the operator startup mode");
+  }
+  await page.locator(".runtime-operator-approval-panel .settings-option-chip[aria-checked='true']", { hasText: "Plan mode" }).waitFor();
+  await page.click("#close-settings-btn");
+  await page.locator("#settings-sheet").waitFor({ state: "hidden" });
+
   await page.click(".composer-session-trigger-model");
   await page.locator("#composer-model-menu", { hasText: "Model" }).waitFor();
   await page.locator("#composer-model-menu", { hasText: "Fast mode" }).waitFor();

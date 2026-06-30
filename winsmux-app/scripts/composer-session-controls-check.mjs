@@ -104,6 +104,18 @@ assert.match(
 );
 
 assert.match(
+  mainSource,
+  /function renderOperatorApprovalModePanel\(japanese: boolean\)[\s\S]*?composerPermissionModeOptions[\s\S]*?setComposerPermissionMode\(option\.value\)/,
+  "Settings must expose the same operator approval mode options as the composer footer.",
+);
+
+assert.match(
+  viewportHarness,
+  /Bypass permissions[\s\S]*?--permission-mode bypassPermissions/,
+  "Viewport harness must verify that Settings can persist Bypass permissions into operator startup input.",
+);
+
+assert.match(
   viewportHarness,
   /model:\s*"fable-5"[\s\S]*?--model claude-opus-4-8/,
   "Viewport harness must verify that unavailable Fable 5 falls back to Opus 4.8.",
