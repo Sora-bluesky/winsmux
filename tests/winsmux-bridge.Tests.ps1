@@ -7003,12 +7003,30 @@ Describe 'orchestra-start session reuse contract' {
         $rollbackIndex | Should -BeGreaterThan $sessionReadyLogIndex
     }
 
-    It 'checks the expected pane count before layout without requiring strict health metadata' {
+    It 'attaches UI and checks session liveness before layout creates worker panes' {
+        $script:orchestraStartContent | Should -Match 'refusing to create worker panes'
+
+        $preLayoutAttachIndex = $script:orchestraStartContent.IndexOf('$preLayoutUiAttachResult = Try-StartOrchestraUiAttach -SessionName $sessionName')
+        $livenessIndex = $script:orchestraStartContent.IndexOf('if (-not (Test-OrchestraServerSession -SessionName $sessionName)) {')
+        $layoutIndex = $script:orchestraStartContent.IndexOf('$layout = . $layoutScript -SessionName $sessionName')
+        $paneNameIndex = $script:orchestraStartContent.IndexOf("Invoke-Bridge -Arguments @('name', `$paneId, `$label)")
+        $postLayoutAttachIndex = $script:orchestraStartContent.LastIndexOf('$uiAttachResult = Try-StartOrchestraUiAttach -SessionName $sessionName')
+
+        $preLayoutAttachIndex | Should -BeGreaterThan -1
+        $livenessIndex | Should -BeGreaterThan $preLayoutAttachIndex
+        $layoutIndex | Should -BeGreaterThan $livenessIndex
+        $paneNameIndex | Should -BeGreaterThan $layoutIndex
+        $postLayoutAttachIndex | Should -BeGreaterThan $paneNameIndex
+    }
+
+    It 'checks the expected pane count before layout and requires a pre-layout liveness gate' {
         $script:orchestraStartContent | Should -Match '\$expectedPaneCount\s*=\s*Get-OrchestraExpectedPaneCount -LayoutSettings \$layoutSettings'
         $script:orchestraStartContent | Should -Match '\$bootstrapPaneCount\s*=\s*1'
         $script:orchestraStartContent | Should -Match 'Test-OrchestraServerHealth -SessionName \$sessionName -WinsmuxBin \$winsmuxBin -ExpectedPaneCount \$expectedPaneCount'
         $script:orchestraStartContent | Should -Match 'Reset-OrchestraServerSession -SessionName \$sessionName -WinsmuxBin \$winsmuxBin -ProjectDir \$projectDir -GitWorktreeDir \$gitWorktreeDir -BridgeScript \$bridgeScript -Reason ''healthy_existing_session'' -ExpectedPaneCount \$bootstrapPaneCount'
-        $script:orchestraStartContent | Should -Match 'proceeding without strict pre-layout health metadata gate'
+        $script:orchestraStartContent | Should -Match 'strict health metadata wait is unavailable, so session liveness will be verified before layout'
+        $script:orchestraStartContent | Should -Not -Match 'proceeding without strict pre-layout health metadata gate'
+        $script:orchestraStartContent | Should -Not -Match 'skipping strict pre-layout health wait'
     }
 
     It 'uses pane capture evidence when pane_current_path lags behind the builder worktree' {

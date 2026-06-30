@@ -345,9 +345,9 @@ function Reset-OrchestraServerSession {
     }
     $health = 'BootstrapOnly'
     if ($bootstrapMode -eq 'detached_fallback') {
-        Write-Warning "Reset-OrchestraServerSession: detached bootstrap fallback used for $SessionName; skipping strict health wait and continuing to layout startup."
+        Write-Warning "Reset-OrchestraServerSession: detached bootstrap fallback used for $SessionName; strict health metadata wait is unavailable, so session liveness will be verified before layout."
     } else {
-        Write-Warning "Reset-OrchestraServerSession: bootstrap mode $bootstrapMode used for $SessionName; skipping strict pre-layout health wait and continuing to layout startup."
+        Write-Warning "Reset-OrchestraServerSession: bootstrap mode $bootstrapMode used for $SessionName; strict health metadata wait is unavailable, so session liveness will be verified before layout."
     }
 
     return [PSCustomObject][ordered]@{
@@ -2255,9 +2255,9 @@ if ($MyInvocation.InvocationName -ne '.') {
             'windows_terminal'
         }
         if ($bootstrapMode -eq 'detached_fallback') {
-            Write-Warning "Preflight: detached bootstrap fallback active for $sessionName; proceeding without strict pre-layout health metadata gate."
+            Write-Warning "Preflight: detached bootstrap fallback active for $sessionName; strict health metadata wait is unavailable, so session liveness will be verified before layout."
         } else {
-            Write-Warning "Preflight: bootstrap mode $bootstrapMode active for $sessionName; proceeding without strict pre-layout health metadata gate."
+            Write-Warning "Preflight: bootstrap mode $bootstrapMode active for $sessionName; strict health metadata wait is unavailable, so session liveness will be verified before layout."
         }
         Write-WinsmuxLog -Level INFO -Event 'preflight.session.reuse' -Message "Reusing server-created session $sessionName." -Data ([ordered]@{
             session_name    = $sessionName
@@ -2303,6 +2303,19 @@ if ($MyInvocation.InvocationName -ne '.') {
         }
         Set-OrchestraSessionEnvironment -SessionName $sessionName -Name 'GIT_EDITOR' -Value 'true'
         Write-WinsmuxLog -Level INFO -Event 'preflight.session_env.git_editor_set' -Message 'Set GIT_EDITOR=true for orchestra session.' -Data ([ordered]@{ session_name = $sessionName; key = 'GIT_EDITOR'; value = 'true' }) | Out-Null
+
+    $successfulAttachStatuses = @('attach_confirmed', 'attach_already_present')
+    $preLayoutUiAttachResult = Try-StartOrchestraUiAttach -SessionName $sessionName
+    if ($successfulAttachStatuses -notcontains [string]$preLayoutUiAttachResult.Status) {
+        Write-Warning "Pre-layout orchestra UI attach status for ${sessionName}: $($preLayoutUiAttachResult.Status) ($($preLayoutUiAttachResult.Reason))"
+    }
+    if (-not (Test-OrchestraServerSession -SessionName $sessionName)) {
+        throw "Orchestra session '$sessionName' is not alive after pre-layout UI attach; refusing to create worker panes."
+    }
+    Write-WinsmuxLog -Level INFO -Event 'preflight.session.pre_layout_liveness' -Message "Verified session $sessionName is alive before layout." -Data ([ordered]@{
+        session_name      = $sessionName
+        ui_attach_status = [string]$preLayoutUiAttachResult.Status
+    }) | Out-Null
 
     $previousTargetSession = $env:WINSMUX_ORCHESTRA_SESSION
     $previousProjectDir = $env:WINSMUX_ORCHESTRA_PROJECT_DIR
@@ -2608,7 +2621,6 @@ if ($MyInvocation.InvocationName -ne '.') {
     Assert-OrchestraBootstrapVerification -PaneSummaries @($paneSummaries) -InvalidCount $invalidCount -ReadyCount $readyCount
 
     $uiAttachResult = Try-StartOrchestraUiAttach -SessionName $sessionName
-    $successfulAttachStatuses = @('attach_confirmed', 'attach_already_present')
     if ($successfulAttachStatuses -notcontains [string]$uiAttachResult.Status) {
         Write-Warning "Orchestra UI attach status for ${sessionName}: $($uiAttachResult.Status) ($($uiAttachResult.Reason))"
     }
