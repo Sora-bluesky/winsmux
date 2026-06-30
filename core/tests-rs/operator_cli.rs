@@ -1676,17 +1676,11 @@ fn operator_cli_skills_json_exposes_quality_workflow_templates() {
     assert_eq!(docs_pack["metadata"]["status"], "template");
     assert_eq!(docs_pack["metadata"]["review_role"], "writer");
     assert_eq!(docs_pack["required_evidence_fields"][0], "changed_docs");
-    assert_eq!(
-        docs_pack["expected_result_fields"][3],
-        "doc_update_summary"
-    );
+    assert_eq!(docs_pack["expected_result_fields"][3], "doc_update_summary");
 
     let ci_pack = find_pack("ci-diagnosis");
     assert_eq!(ci_pack["evidence_requirements"][0], "failing_check");
-    assert_eq!(
-        ci_pack["required_evidence_fields"][4],
-        "next_verification"
-    );
+    assert_eq!(ci_pack["required_evidence_fields"][4], "next_verification");
 
     let issue_pack = find_pack("issue-dedupe");
     assert_eq!(
@@ -1723,13 +1717,7 @@ fn operator_cli_skills_json_exposes_quality_workflow_templates() {
     }
 
     let catalog = serde_json::to_string(&json).expect("catalog should serialize");
-    for forbidden in [
-        "Visual Studio Code",
-        "VS Code",
-        "Cursor",
-        "C:\\",
-        "/Users/",
-    ] {
+    for forbidden in ["Visual Studio Code", "VS Code", "Cursor", "C:\\", "/Users/"] {
         assert!(
             !catalog.contains(forbidden),
             "quality workflow templates should stay public-safe: {forbidden}"
@@ -1961,7 +1949,10 @@ fn operator_cli_manual_checklist_json_reports_release_gate() {
             "meta_plan_multi_pane_flow_recorded",
         ),
         ("clipboard_image_input", "clipboard_image_flow_recorded"),
-        ("settings_language_control", "settings_language_flow_recorded"),
+        (
+            "settings_language_control",
+            "settings_language_flow_recorded",
+        ),
         ("status_bar_fit", "status_bar_fit_recorded"),
         (
             "native_voice_dictation_or_fallback_contract",
@@ -2018,7 +2009,11 @@ fn operator_cli_manual_checklist_json_reports_release_gate() {
             "fallback_contract",
             None,
         ),
-        ("status_bar_fit", "dogfood_task_class", Some("status_bar_fit")),
+        (
+            "status_bar_fit",
+            "dogfood_task_class",
+            Some("status_bar_fit"),
+        ),
     ] {
         let item = json["desktop_manual_items"]
             .as_array()
@@ -2113,10 +2108,7 @@ fn operator_cli_manual_checklist_json_reports_release_gate() {
         json["blocking_conditions"][6],
         "missing_native_voice_dictation_or_fallback_contract"
     );
-    assert_eq!(
-        json["blocking_condition_scope"],
-        "release_blocker_classes"
-    );
+    assert_eq!(json["blocking_condition_scope"], "release_blocker_classes");
     assert!(json["blocking_condition_note"]
         .as_str()
         .unwrap_or_default()
