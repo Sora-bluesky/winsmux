@@ -981,6 +981,30 @@ fn capture_pty(
     }))
 }
 
+fn submit_operator_text_with(
+    mut write: impl FnMut(&str) -> Result<(), String>,
+    text: &str,
+    submit_after_paste: bool,
+) -> Result<(), String> {
+    write(text)?;
+    if submit_after_paste {
+        write("\r")?;
+    }
+    Ok(())
+}
+
+fn submit_operator_text(
+    app: &AppHandle,
+    text: &str,
+    submit_after_paste: bool,
+) -> Result<(), String> {
+    submit_operator_text_with(
+        |data| write_pty(app, pty_backend::OPERATOR_PANE_ID, data),
+        text,
+        submit_after_paste,
+    )
+}
+
 fn respawn_pty(app: &AppHandle, pane_id: &str) -> Result<(), String> {
     let manager = app.state::<PtyManager>();
     let (cols, rows) = {
@@ -1184,8 +1208,11 @@ impl PtyCommandTransport for TauriPtyTransport {
             PtyCommand::OperatorSnapshot { lines } => {
                 capture_pty(&self.app, pty_backend::OPERATOR_PANE_ID, *lines)
             }
-            PtyCommand::OperatorSubmit { text } => {
-                write_pty(&self.app, pty_backend::OPERATOR_PANE_ID, text)?;
+            PtyCommand::OperatorSubmit {
+                text,
+                submit_after_paste,
+            } => {
+                submit_operator_text(&self.app, text, *submit_after_paste)?;
                 Ok(serde_json::json!({
                     "paneId": pty_backend::OPERATOR_PANE_ID,
                     "submitted": true
@@ -1355,6 +1382,62 @@ mod tests {
         let output = limit_pty_capture_output("one\ntwo\nthree\nfour\n", Some(2));
 
         assert_eq!(output, "three\nfour");
+    }
+
+    #[test]
+    fn submit_operator_text_writes_single_line_as_one_submit_write() {
+        let mut writes = Vec::new();
+
+        submit_operator_text_with(
+            |data| {
+                writes.push(data.to_string());
+                Ok(())
+            },
+            "Continue with option 1\r",
+            false,
+        )
+        .expect("single line submit should write");
+
+        assert_eq!(writes, ["Continue with option 1\r"]);
+    }
+
+    #[test]
+    fn submit_operator_text_writes_multiline_paste_then_enter() {
+        let mut writes = Vec::new();
+
+        submit_operator_text_with(
+            |data| {
+                writes.push(data.to_string());
+                Ok(())
+            },
+            "\x1b[200~Line one\nLine two\x1b[201~",
+            true,
+        )
+        .expect("multiline submit should write paste and enter");
+
+        assert_eq!(writes, ["\x1b[200~Line one\nLine two\x1b[201~", "\r"]);
+    }
+
+    #[test]
+    fn submit_operator_text_returns_error_when_enter_write_fails() {
+        let mut writes = Vec::new();
+
+        let err = submit_operator_text_with(
+            |data| {
+                writes.push(data.to_string());
+                if data == "\r" {
+                    Err("enter write failed".to_string())
+                } else {
+                    Ok(())
+                }
+            },
+            "\x1b[200~Line one\nLine two\x1b[201~",
+            true,
+        )
+        .expect_err("enter failure should fail submit");
+
+        assert_eq!(err, "enter write failed");
+        assert_eq!(writes, ["\x1b[200~Line one\nLine two\x1b[201~", "\r"]);
     }
 
     #[test]
