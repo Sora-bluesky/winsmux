@@ -210,6 +210,159 @@ function Wait-RepoWinsmuxDesktopApp {
     throw "winsmux desktop app did not start within $TimeoutSeconds seconds."
 }
 
+function Invoke-WebViewDevToolsRuntimeExpression {
+    param(
+        [Parameter(Mandatory = $true)][string]$WebSocketDebuggerUrl,
+        [Parameter(Mandatory = $true)][string]$Expression,
+        [int]$TimeoutSeconds = 5
+    )
+
+    $socket = [System.Net.WebSockets.ClientWebSocket]::new()
+    $cancellation = [System.Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds($TimeoutSeconds))
+    try {
+        $socket.ConnectAsync([Uri]$WebSocketDebuggerUrl, $cancellation.Token).GetAwaiter().GetResult()
+        $request = @{
+            id = 1
+            method = 'Runtime.evaluate'
+            params = @{
+                expression = $Expression
+                returnByValue = $true
+                awaitPromise = $true
+            }
+        } | ConvertTo-Json -Depth 12 -Compress
+        $requestBytes = [System.Text.Encoding]::UTF8.GetBytes($request)
+        $sendBuffer = [ArraySegment[byte]]::new($requestBytes)
+        $socket.SendAsync($sendBuffer, [System.Net.WebSockets.WebSocketMessageType]::Text, $true, $cancellation.Token).GetAwaiter().GetResult()
+
+        $receiveBytes = New-Object byte[] 65536
+        while ($true) {
+            $chunks = [System.Collections.Generic.List[byte]]::new()
+            do {
+                $receiveBuffer = [ArraySegment[byte]]::new($receiveBytes)
+                $receiveResult = $socket.ReceiveAsync($receiveBuffer, $cancellation.Token).GetAwaiter().GetResult()
+                if ($receiveResult.MessageType -eq [System.Net.WebSockets.WebSocketMessageType]::Close) {
+                    throw 'DevTools runtime websocket closed before an evaluation response was received.'
+                }
+                for ($index = 0; $index -lt $receiveResult.Count; $index++) {
+                    $chunks.Add($receiveBytes[$index])
+                }
+            } while (-not $receiveResult.EndOfMessage)
+
+            if ($chunks.Count -eq 0) {
+                continue
+            }
+
+            $responseText = [System.Text.Encoding]::UTF8.GetString($chunks.ToArray())
+            $response = $responseText | ConvertFrom-Json -Depth 100
+            $idProperty = $response.PSObject.Properties['id']
+            if ($null -eq $idProperty -or [int]$idProperty.Value -ne 1) {
+                continue
+            }
+
+            $errorProperty = $response.PSObject.Properties['error']
+            if ($null -ne $errorProperty -and $null -ne $errorProperty.Value) {
+                $errorMessageProperty = $errorProperty.Value.PSObject.Properties['message']
+                $errorMessage = if ($null -ne $errorMessageProperty) { [string]$errorMessageProperty.Value } else { 'unknown error' }
+                throw "DevTools runtime evaluation failed: $errorMessage"
+            }
+            $resultProperty = $response.PSObject.Properties['result']
+            if ($null -eq $resultProperty -or $null -eq $resultProperty.Value) {
+                throw 'DevTools runtime evaluation did not return a result envelope.'
+            }
+            $resultEnvelope = $resultProperty.Value
+            $exceptionProperty = $resultEnvelope.PSObject.Properties['exceptionDetails']
+            if ($null -ne $exceptionProperty -and $null -ne $exceptionProperty.Value) {
+                $exceptionTextProperty = $exceptionProperty.Value.PSObject.Properties['text']
+                $exceptionText = if ($null -ne $exceptionTextProperty) { [string]$exceptionTextProperty.Value } else { 'unknown exception' }
+                throw "DevTools runtime evaluation threw an exception: $exceptionText"
+            }
+            $runtimeResultProperty = $resultEnvelope.PSObject.Properties['result']
+            if ($null -eq $runtimeResultProperty -or $null -eq $runtimeResultProperty.Value) {
+                throw 'DevTools runtime evaluation did not return a runtime result.'
+            }
+            $valueProperty = $runtimeResultProperty.Value.PSObject.Properties['value']
+            if ($null -eq $valueProperty) {
+                throw 'DevTools runtime evaluation did not return a by-value result.'
+            }
+
+            return $valueProperty.Value
+        }
+    } finally {
+        if ($socket.State -eq [System.Net.WebSockets.WebSocketState]::Open) {
+            try {
+                $socket.CloseAsync([System.Net.WebSockets.WebSocketCloseStatus]::NormalClosure, 'done', [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+            } catch {
+            }
+        }
+        $socket.Dispose()
+        $cancellation.Dispose()
+    }
+}
+
+function Test-DesktopOperatorSurface {
+    param([Parameter(Mandatory = $true)]$Page)
+
+    $webSocketDebuggerUrlProperty = $Page.PSObject.Properties['webSocketDebuggerUrl']
+    $webSocketDebuggerUrl = if ($null -ne $webSocketDebuggerUrlProperty) { [string]$webSocketDebuggerUrlProperty.Value } else { '' }
+    if ([string]::IsNullOrWhiteSpace($webSocketDebuggerUrl)) {
+        throw 'Production desktop page does not expose a DevTools websocket URL.'
+    }
+
+    $expression = @'
+(() => {
+  const requiredSelectors = [
+    "#app-shell",
+    "#workspace",
+    "#operator-terminal-panel",
+    "#composer",
+    "#composer-input",
+    "#panes-container"
+  ];
+  const missingSelectors = requiredSelectors.filter((selector) => !document.querySelector(selector));
+  const title = document.title || "";
+  const href = location.href || "";
+  const bodyText = ((document.body && document.body.innerText) || "").slice(0, 4000);
+  const browserErrorPattern = /(ERR_CONNECTION_REFUSED|refused to connect|This site can't be reached|This site cannot be reached|localhost:1420|127\.0\.0\.1:1420)/i;
+  const hasBrowserError = browserErrorPattern.test(title) || browserErrorPattern.test(bodyText);
+  const tauriInvokeAvailable = Boolean(window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke);
+  return {
+    ok: document.readyState !== "loading" && missingSelectors.length === 0 && !hasBrowserError && tauriInvokeAvailable,
+    readyState: document.readyState,
+    title,
+    href,
+    missingSelectors,
+    hasBrowserError,
+    browserErrorSnippet: hasBrowserError ? bodyText.slice(0, 300) : "",
+    tauriInvokeAvailable
+  };
+})()
+'@
+
+    $surface = Invoke-WebViewDevToolsRuntimeExpression -WebSocketDebuggerUrl $webSocketDebuggerUrl -Expression $expression
+    if (-not [bool]$surface.ok) {
+        $reasons = @()
+        if ([string]$surface.readyState -eq 'loading') {
+            $reasons += 'readyState=loading'
+        }
+        $missingSelectors = @($surface.missingSelectors)
+        if ($missingSelectors.Count -gt 0) {
+            $reasons += "missingSelectors=$($missingSelectors -join ',')"
+        }
+        if (-not [bool]$surface.tauriInvokeAvailable) {
+            $reasons += 'tauriInvokeAvailable=false'
+        }
+        if ([bool]$surface.hasBrowserError) {
+            $reasons += "browserError=$($surface.browserErrorSnippet)"
+        }
+        if ($reasons.Count -eq 0) {
+            $reasons += 'unknown'
+        }
+        throw "winsmux desktop page is not a usable operator UI yet. $($reasons -join '; ') location=$($surface.href) title=$($surface.title)"
+    }
+
+    return $surface
+}
+
 function Assert-ProductionDesktopPage {
     param([int]$Port, [int]$TimeoutSeconds = 30)
 
@@ -218,26 +371,51 @@ function Assert-ProductionDesktopPage {
     do {
         try {
             $pages = @(Invoke-RestMethod -Uri "http://127.0.0.1:$Port/json/list" -TimeoutSec 2)
-            $urls = @($pages | ForEach-Object { [string]$_.url })
-            if ($urls.Count -gt 0) {
-                if ($urls | Where-Object { $_ -match '^http://(localhost|127\.0\.0\.1):1420/?' }) {
-                    throw 'winsmux desktop is using the Tauri dev server URL instead of the production page.'
-                }
-                if (-not ($urls | Where-Object { $_ -match 'tauri\.localhost|tauri://localhost' })) {
-                    throw "winsmux desktop did not expose a production Tauri page. urls=$($urls -join ', ')"
-                }
-                return @{
-                    mode = 'production'
-                    urls = $urls
-                }
-            }
         } catch {
             $lastError = $_.Exception.Message
+            Start-Sleep -Milliseconds 500
+            continue
+        }
+
+        $urls = @($pages | ForEach-Object {
+                $urlProperty = $_.PSObject.Properties['url']
+                if ($null -ne $urlProperty) {
+                    [string]$urlProperty.Value
+                }
+            })
+        if ($urls.Count -gt 0) {
+            if ($urls | Where-Object { $_ -match '^http://(localhost|127\.0\.0\.1):1420/?' }) {
+                throw 'winsmux desktop is using the Tauri dev server URL instead of the production page.'
+            }
+
+            $productionPages = @($pages | Where-Object {
+                    $urlProperty = $_.PSObject.Properties['url']
+                    $null -ne $urlProperty -and [string]$urlProperty.Value -match 'tauri\.localhost|tauri://localhost'
+                })
+            if ($productionPages.Count -gt 0) {
+                foreach ($productionPage in $productionPages) {
+                    try {
+                        $operatorSurface = Test-DesktopOperatorSurface -Page $productionPage
+                        return @{
+                            mode = 'production'
+                            urls = $urls
+                            operatorSurface = $operatorSurface
+                        }
+                    } catch {
+                        $lastError = $_.Exception.Message
+                        if ($lastError -match 'ERR_CONNECTION_REFUSED|refused to connect|browserError=') {
+                            throw $lastError
+                        }
+                    }
+                }
+            } else {
+                $lastError = "winsmux desktop did not expose a production Tauri page. urls=$($urls -join ', ')"
+            }
         }
         Start-Sleep -Milliseconds 500
     } while ((Get-Date) -lt $deadline)
 
-    throw "Could not verify the production desktop page on port $Port. Last error: $lastError"
+    throw "Could not verify the production desktop operator UI on port $Port. Last error: $lastError"
 }
 
 function Get-WindowMetrics {
