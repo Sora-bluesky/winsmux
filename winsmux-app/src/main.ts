@@ -11328,6 +11328,53 @@ function renderRuntimeWorkerDefaultControls(japanese: boolean, disabled = false)
   return panel;
 }
 
+function renderOperatorApprovalModePanel(japanese: boolean) {
+  const panel = document.createElement("section");
+  panel.className = "runtime-model-panel runtime-operator-approval-panel";
+
+  const title = document.createElement("div");
+  title.className = "runtime-role-title";
+  title.textContent = japanese ? "オペレーター承認モード" : "Operator approval mode";
+  const description = document.createElement("div");
+  description.className = "runtime-role-description";
+  description.textContent = japanese
+    ? "オペレーターペインのcomposerと同じ承認モードを設定します。次回operator起動時の --permission-mode に反映されます。"
+    : "Uses the same approval mode as the operator composer. The next operator launch receives the matching --permission-mode value.";
+  panel.append(title, description);
+
+  const row = document.createElement("div");
+  row.className = "settings-option-row operator-approval-mode-row";
+  row.setAttribute("role", "radiogroup");
+  row.setAttribute("aria-label", japanese ? "オペレーター承認モード" : "Operator approval mode");
+  for (const option of composerPermissionModeOptions) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `settings-option-chip ${option.value === activeComposerPermissionMode ? "is-active" : ""}`;
+    button.dataset.permissionMode = option.value;
+    button.setAttribute("role", "radio");
+    button.setAttribute("aria-checked", option.value === activeComposerPermissionMode ? "true" : "false");
+
+    const label = document.createElement("span");
+    label.className = "settings-option-label";
+    label.textContent = japanese ? option.labelJa : option.label;
+    const details = document.createElement("span");
+    details.className = "settings-option-description";
+    details.textContent = japanese ? option.descriptionJa : option.description;
+    button.append(label, details);
+    button.addEventListener("click", () => setComposerPermissionMode(option.value));
+    row.appendChild(button);
+  }
+  panel.appendChild(row);
+
+  const note = document.createElement("div");
+  note.className = "runtime-access-note";
+  note.textContent = japanese
+    ? "この設定はworkerペインのモデル割り当てとは独立しています。実行中のClaude Code内で一時的に変更した場合は、winsmux側の次回起動設定とは分けて扱います。"
+    : "This setting is independent from worker pane model assignment. Temporary in-session Claude Code changes remain separate from the next winsmux startup setting.";
+  panel.appendChild(note);
+  return panel;
+}
+
 function renderWorkerModelAssignmentPanel(japanese: boolean) {
   const panel = document.createElement("section");
   panel.className = "runtime-model-panel runtime-model-assignment-panel";
@@ -11605,6 +11652,7 @@ function renderRuntimeRoleControls() {
   const japanese = (settingsDraftState?.language ?? themeState.language) === "ja";
   root.innerHTML = "";
 
+  root.appendChild(renderOperatorApprovalModePanel(japanese));
   root.appendChild(renderWorkerModelAssignmentPanel(japanese));
 }
 
@@ -13014,6 +13062,9 @@ function setComposerPermissionMode(mode: ComposerPermissionMode) {
   persistComposerSessionControls();
   openComposerSessionMenu = null;
   renderComposerSessionControls();
+  if (settingsSheetOpen) {
+    renderSettingsControls();
+  }
 }
 
 function setComposerModel(model: ComposerModelId) {
