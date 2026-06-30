@@ -66,9 +66,9 @@ Rust は、ランタイムをソースからビルドする時だけ必要です
 
 ## 始め方
 
-デスクトップアプリを使う場合は、対象の GitHub Release から `winsmux_<version>_x64-setup.exe` を取得し、実行します。起動後は、エージェントに作業させたいプロジェクトフォルダーを選択します。
+通常はデスクトップアプリから始めます。対象の GitHub Release から `winsmux_<version>_x64-setup.exe` を取得して実行し、インストール済みの winsmux アプリを開いて、エージェントに作業させたいプロジェクトフォルダーを選択します。
 
-CLI 中心で使う場合の最短手順は次の 4 コマンドです。
+CLI 中心、スクリプト実行、ヘッドレス運用で使う場合は npm パッケージを使います。この経路は管理対象の Windows Terminal ワークスペースを起動します。デスクトップアプリは開きません。
 
 ```powershell
 npm install -g winsmux
@@ -78,7 +78,7 @@ winsmux launch
 ```
 
 初回の流れは [クイックスタート](docs/quickstart.ja.md) を参照してください。
-デスクトップインストーラー、CLI プロファイル、更新、アンインストールは [インストール](docs/installation.ja.md) にまとめています。
+推奨するデスクトップインストーラー経路、CLI プロファイル、更新、アンインストールは [インストール](docs/installation.ja.md) にまとめています。
 起動プリセット、ワークツリー方針、スロット、資格情報、デスクトップ設定は [カスタマイズ](docs/customization.ja.md) を参照してください。
 `v1.0.0` 以降の公開配布と再配布の境界は [公開配布の境界](docs/source-access.ja.md) を参照してください。
 
@@ -111,7 +111,7 @@ winsmux skills --json
 | コマンド | 用途 |
 | ------- | ------- |
 | `winsmux init` | 既定のプロジェクト設定を作成 |
-| `winsmux launch` | 確認を通し、管理対象ワークスペースを起動 |
+| `winsmux launch` | CLI の確認を通し、管理対象の Windows Terminal ワークスペースを起動。デスクトップアプリは開きません |
 | `winsmux launcher presets` | 起動プリセットとペア構成テンプレートを表示 |
 | `winsmux launcher lifecycle` | ワークスペースのライフサイクル方針を選択 |
 | `winsmux workers status` | ワーカースロットのバックエンド、状態、GPU、セッション、直近コマンドを表示 |

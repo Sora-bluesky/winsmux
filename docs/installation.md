@@ -1,9 +1,11 @@
 # Installation
 
-`winsmux` is distributed for Windows in two ways:
+`winsmux` is distributed for Windows in two ways. Use the desktop app installer
+for the normal graphical operator/worker experience. Use the npm package for
+CLI-first, scripted, or headless setups.
 
-- a desktop app installer from GitHub Releases
-- a Windows-first npm package for CLI-first setups and scripted installs
+- recommended: a desktop app installer from GitHub Releases
+- separate CLI path: a Windows-first npm package for CLI-first setups and scripted installs
 
 ## Requirements
 
@@ -24,7 +26,7 @@ Desktop app:
 
 1. Download `winsmux_<version>_x64-setup.exe` from the matching GitHub Release.
 2. Verify `SHA256SUMS-desktop` when Windows shows a publisher or SmartScreen warning.
-3. Run the installer and choose the project folder after launch.
+3. Run the installer, open the installed winsmux app, and choose the project folder after launch.
 
 CLI package:
 
@@ -36,7 +38,7 @@ winsmux doctor
 ```
 
 Then open the project you want agents to work in and start the CLI-managed
-workspace from that project directory:
+workspace from that project directory. This does not open the desktop app:
 
 ```powershell
 cd <project>
@@ -46,7 +48,7 @@ winsmux launch
 
 ## Desktop app installer
 
-For the desktop app, download the Windows installer from the matching GitHub Release:
+For the recommended desktop app path, download the Windows installer from the matching GitHub Release:
 
 - `winsmux_<version>_x64-setup.exe` for the standard guided installer
 - `winsmux_<version>_x64_en-US.msi` for MSI-based deployment

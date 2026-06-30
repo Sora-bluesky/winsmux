@@ -1,6 +1,8 @@
 # winsmux npm package
 
-This directory is the public npm install surface for `winsmux`.
+This directory is the public npm install surface for `winsmux`. It covers the
+CLI package path. The recommended graphical desktop app path is the GitHub
+Release installer, not this npm package.
 
 The npm package name is `winsmux`.
 Repository publishing is tag-driven and uses the staged package from
@@ -12,7 +14,8 @@ Install it on Windows with:
 npm install -g winsmux
 ```
 
-The `winsmux` npm command proxies to the bundled Windows installer flow.
+The `winsmux` npm command proxies to the bundled Windows installer flow for the
+CLI package. It does not install or open the desktop app.
 
 User-facing setup docs:
 
@@ -53,8 +56,8 @@ winsmux update --profile orchestra
 `install.ps1` accepts the same profile names through `-Profile`. The package
 entrypoint forwards `--profile` to that script as `-Profile`.
 
-After installation, start winsmux from the project directory that agents should
-work in:
+After installation, start the CLI-managed workspace from the project directory
+that agents should work in:
 
 ```powershell
 cd <project>
@@ -62,9 +65,10 @@ winsmux init
 winsmux launch
 ```
 
-`winsmux launch` is the public CLI startup path for the npm package. It is
-separate from the desktop installer path, where users install the desktop app
-from GitHub Releases and choose the same project folder in the app.
+`winsmux launch` is the public CLI startup path for the npm package. It starts
+the managed Windows Terminal workspace. It does not open the desktop app. For
+the graphical desktop app, install the desktop app from GitHub Releases and
+choose the project folder in that app.
 
 Updates keep the previously recorded profile when no new profile is supplied.
 Each install or update records the selected shape in:
