@@ -155,8 +155,8 @@ if (-not (Get-Command Get-WinsmuxBin -ErrorAction SilentlyContinue)) {
 
         $repoRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
         foreach ($candidatePath in @(
-            (Join-Path $repoRoot 'target\debug\winsmux.exe'),
-            (Join-Path $repoRoot 'target\release\winsmux.exe')
+            (Join-Path $repoRoot 'target\release\winsmux.exe'),
+            (Join-Path $repoRoot 'target\debug\winsmux.exe')
         )) {
             if (Test-Path -LiteralPath $candidatePath -PathType Leaf) {
                 return [System.IO.Path]::GetFullPath($candidatePath)

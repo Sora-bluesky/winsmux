@@ -39,11 +39,49 @@ const PROVIDER_SWITCH_SELECTOR_PARAM_KEYS: &[&str] = &[
 ];
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+const WINSMUX_ATTACH_MODE_ENV: &str = "WINSMUX_ORCHESTRA_ATTACH_MODE";
+const WINSMUX_DESKTOP_APP_PID_ENV: &str = "WINSMUX_DESKTOP_APP_PID";
+const WINSMUX_DISABLE_POWERSHELL_ATTACH_ENV: &str = "WINSMUX_ORCHESTRA_DISABLE_POWERSHELL_ATTACH";
+const WINSMUX_DISABLE_WINDOWS_TERMINAL_ATTACH_ENV: &str =
+    "WINSMUX_ORCHESTRA_DISABLE_WINDOWS_TERMINAL_ATTACH";
+const WINSMUX_BIN_ENV: &str = "WINSMUX_BIN";
+const WINSMUX_RAW_EXE_ENV: &str = "WINSMUX_RAW_EXE";
 
 fn hide_subprocess_window(command: &mut Command) {
     #[cfg(windows)]
     {
         command.creation_flags(CREATE_NO_WINDOW);
+    }
+}
+
+fn resolve_companion_winsmux_cli_from_exe_path(current_exe: &Path) -> Option<PathBuf> {
+    let parent = current_exe.parent()?;
+    let candidate = parent.join("winsmux.exe");
+    candidate.is_file().then_some(candidate)
+}
+
+fn resolve_companion_winsmux_cli() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|current_exe| resolve_companion_winsmux_cli_from_exe_path(&current_exe))
+}
+
+fn apply_desktop_winsmux_child_env(
+    command: &mut Command,
+    companion_cli: Option<&Path>,
+    app_pid: u32,
+) {
+    command
+        .env(WINSMUX_ATTACH_MODE_ENV, "desktop-app")
+        .env(WINSMUX_DESKTOP_APP_PID_ENV, app_pid.to_string())
+        .env(WINSMUX_DISABLE_POWERSHELL_ATTACH_ENV, "1")
+        .env(WINSMUX_DISABLE_WINDOWS_TERMINAL_ATTACH_ENV, "1");
+
+    if let Some(path) = companion_cli {
+        let path_value = path.to_string_lossy().to_string();
+        command
+            .env(WINSMUX_BIN_ENV, &path_value)
+            .env(WINSMUX_RAW_EXE_ENV, path_value);
     }
 }
 
@@ -2061,6 +2099,8 @@ where
     let script_path = repo_root.join("scripts").join("winsmux-core.ps1");
     let command_text = build_winsmux_command_text(&script_path, &command.winsmux_args());
     let source = command.source_name().to_string();
+    let companion_cli = resolve_companion_winsmux_cli();
+    let app_pid = std::process::id();
 
     thread::spawn(move || {
         let mut quick_failure_count = 0usize;
@@ -2077,6 +2117,7 @@ where
                 .env("WINSMUX_DESKTOP_SUMMARY_STREAM_POLL_SECONDS", "5")
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
+            apply_desktop_winsmux_child_env(&mut process, companion_cli.as_deref(), app_pid);
             hide_subprocess_window(&mut process);
 
             let mut child = match process.spawn() {
@@ -2509,6 +2550,7 @@ fn run_winsmux_json(project_dir: Option<String>, args: &[String]) -> Result<Valu
     let effective_project_dir = resolve_effective_project_dir(project_dir)?;
     let script_path = repo_root.join("scripts").join("winsmux-core.ps1");
     let command_text = build_winsmux_command_text(&script_path, args);
+    let companion_cli = resolve_companion_winsmux_cli();
 
     let mut command = Command::new("pwsh");
     command
@@ -2518,6 +2560,7 @@ fn run_winsmux_json(project_dir: Option<String>, args: &[String]) -> Result<Valu
         .arg("-Command")
         .arg(command_text)
         .current_dir(&effective_project_dir);
+    apply_desktop_winsmux_child_env(&mut command, companion_cli.as_deref(), std::process::id());
     hide_subprocess_window(&mut command);
 
     let output = command
@@ -2617,6 +2660,64 @@ mod tests {
                 "consultation_ref": ".winsmux/consultations/consult-result-__ID__.json"
             }
         })
+    }
+
+    fn command_env_value(command: &Command, key: &str) -> Option<String> {
+        command
+            .get_envs()
+            .find(|(name, _)| name.to_string_lossy() == key)
+            .and_then(|(_, value)| value.map(|value| value.to_string_lossy().to_string()))
+    }
+
+    #[test]
+    fn companion_winsmux_cli_resolves_next_to_desktop_exe() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("winsmux-companion-cli-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+        let cli_path = temp_dir.join("winsmux.exe");
+        fs::write(&cli_path, b"").unwrap();
+
+        let desktop_exe = temp_dir.join("winsmux-app.exe");
+        assert_eq!(
+            resolve_companion_winsmux_cli_from_exe_path(&desktop_exe),
+            Some(cli_path)
+        );
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn desktop_winsmux_children_disable_external_attach_hosts_and_pin_companion_cli() {
+        let companion = PathBuf::from(r"C:\repo\target\release\winsmux.exe");
+        let mut command = Command::new("pwsh");
+
+        apply_desktop_winsmux_child_env(&mut command, Some(&companion), 4242);
+
+        assert_eq!(
+            command_env_value(&command, WINSMUX_ATTACH_MODE_ENV).as_deref(),
+            Some("desktop-app")
+        );
+        assert_eq!(
+            command_env_value(&command, WINSMUX_DESKTOP_APP_PID_ENV).as_deref(),
+            Some("4242")
+        );
+        assert_eq!(
+            command_env_value(&command, WINSMUX_DISABLE_POWERSHELL_ATTACH_ENV).as_deref(),
+            Some("1")
+        );
+        assert_eq!(
+            command_env_value(&command, WINSMUX_DISABLE_WINDOWS_TERMINAL_ATTACH_ENV).as_deref(),
+            Some("1")
+        );
+        assert_eq!(
+            command_env_value(&command, WINSMUX_BIN_ENV).as_deref(),
+            Some(r"C:\repo\target\release\winsmux.exe")
+        );
+        assert_eq!(
+            command_env_value(&command, WINSMUX_RAW_EXE_ENV).as_deref(),
+            Some(r"C:\repo\target\release\winsmux.exe")
+        );
     }
 
     fn desktop_compare_runs_payload() -> Value {
@@ -5233,9 +5334,7 @@ mod tests {
             DesktopJsonRpcResponse::Success { result, .. } => {
                 assert_eq!(result["path"], "tasks/cli-bakeoff/v1/benchmark-pack.json");
                 assert_eq!(result["truncated"], true);
-                assert!(
-                    result["content"].as_str().unwrap_or_default().len() < large_content.len()
-                );
+                assert!(result["content"].as_str().unwrap_or_default().len() < large_content.len());
             }
             DesktopJsonRpcResponse::Error { error, .. } => {
                 panic!("expected preview success, got {:?}", error);

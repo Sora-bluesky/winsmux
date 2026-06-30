@@ -35,8 +35,8 @@ function Resolve-WinsmuxRawCommand {
 
     $repoRoot = Split-Path $PSScriptRoot -Parent
     foreach ($candidate in @(
-        (Join-Path $repoRoot 'target\debug\winsmux.exe'),
-        (Join-Path $repoRoot 'target\release\winsmux.exe')
+        (Join-Path $repoRoot 'target\release\winsmux.exe'),
+        (Join-Path $repoRoot 'target\debug\winsmux.exe')
     )) {
         if (Test-Path -LiteralPath $candidate -PathType Leaf) {
             return [System.IO.Path]::GetFullPath($candidate)

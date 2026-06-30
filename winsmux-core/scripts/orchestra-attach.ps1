@@ -17,6 +17,7 @@ $ProjectDir = [System.IO.Path]::GetFullPath($ProjectDir)
 $scriptsRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 . (Join-Path $scriptsRoot 'orchestra-ui-attach.ps1')
+. (Join-Path $scriptsRoot 'settings.ps1')
 
 function New-OrchestraAttachResult {
     param(
@@ -56,7 +57,12 @@ function New-OrchestraAttachResult {
     }
 }
 
-$winsmuxPath = Get-Command 'winsmux' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue
+$winsmuxPath = ''
+try {
+    $winsmuxPath = Get-WinsmuxBin
+} catch {
+    $winsmuxPath = ''
+}
 $result = $null
 if ([string]::IsNullOrWhiteSpace($winsmuxPath)) {
     $result = New-OrchestraAttachResult -SessionName $SessionName -SessionExists $false -RequiresStartup $true -Attempted $false -Launched $false -Attached $false -Status 'winsmux_unresolved' -Reason 'winsmux executable could not be resolved.'

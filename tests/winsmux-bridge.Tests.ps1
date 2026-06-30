@@ -21667,3 +21667,39 @@ Describe 'watermark helpers' {
         (Test-WatermarkChanged -PaneId '%7' -CurrentContent 'updated') | Should -Be $true
     }
 }
+
+Describe 'desktop orchestra launcher contracts' {
+    BeforeAll {
+        $script:repoRoot = Split-Path -Parent $PSScriptRoot
+        $script:settingsContent = Get-Content -LiteralPath (Join-Path $script:repoRoot 'winsmux-core\scripts\settings.ps1') -Raw -Encoding UTF8
+        $script:bridgeContent = Get-Content -LiteralPath (Join-Path $script:repoRoot 'scripts\winsmux-core.ps1') -Raw -Encoding UTF8
+        $script:attachContent = Get-Content -LiteralPath (Join-Path $script:repoRoot 'winsmux-core\scripts\orchestra-attach.ps1') -Raw -Encoding UTF8
+        $script:uiAttachContent = Get-Content -LiteralPath (Join-Path $script:repoRoot 'winsmux-core\scripts\orchestra-ui-attach.ps1') -Raw -Encoding UTF8
+    }
+
+    It 'prefers the release winsmux executable before debug fallback' {
+        $settingsReleaseIndex = $script:settingsContent.IndexOf("target\release\winsmux.exe")
+        $settingsDebugIndex = $script:settingsContent.IndexOf("target\debug\winsmux.exe")
+        $bridgeReleaseIndex = $script:bridgeContent.IndexOf("target\release\winsmux.exe")
+        $bridgeDebugIndex = $script:bridgeContent.IndexOf("target\debug\winsmux.exe")
+
+        $settingsReleaseIndex | Should -BeGreaterThan -1
+        $settingsDebugIndex | Should -BeGreaterThan -1
+        $settingsReleaseIndex | Should -BeLessThan $settingsDebugIndex
+        $bridgeReleaseIndex | Should -BeGreaterThan -1
+        $bridgeDebugIndex | Should -BeGreaterThan -1
+        $bridgeReleaseIndex | Should -BeLessThan $bridgeDebugIndex
+    }
+
+    It 'uses the shared winsmux executable resolver for orchestra attach' {
+        $script:attachContent | Should -Match "\. \(Join-Path [`$]scriptsRoot 'settings\.ps1'\)"
+        $script:attachContent | Should -Match '\$winsmuxPath\s*=\s*Get-WinsmuxBin'
+        $script:attachContent | Should -Not -Match "Get-Command 'winsmux'"
+    }
+
+    It 'can disable Windows Terminal visible attach from desktop child processes' {
+        $script:uiAttachContent | Should -Match 'WINSMUX_ORCHESTRA_DISABLE_WINDOWS_TERMINAL_ATTACH'
+        $script:uiAttachContent | Should -Match 'windows_terminal_attach_disabled'
+        $script:uiAttachContent | Should -Match 'WINSMUX_ORCHESTRA_DISABLE_POWERSHELL_ATTACH'
+    }
+}
