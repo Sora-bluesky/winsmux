@@ -431,18 +431,26 @@ $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$DebugPort
 $env:WEBVIEW2_USER_DATA_FOLDER = $webviewUserData
 $env:NO_COLOR = '1'
 
-$launcherProcess = Start-Process -FilePath $releaseApp -ArgumentList @('--project-dir', $resolvedProjectDir) -WorkingDirectory $RepoRoot -PassThru
-$app = Wait-RepoWinsmuxDesktopApp -ExpectedProcessId ([int]$launcherProcess.Id)
-$page = Assert-ProductionDesktopPage -Port $DebugPort
-$metricsBeforeMove = Get-WindowMetrics -ProcessId ([int]$app.ProcessId)
-if (-not $NoMoveToExtendedDisplay) {
-    $metricsAfterMove = Move-WindowToVisibleWorkspace -ProcessId ([int]$app.ProcessId) -Width $VisibleWidth -Height $VisibleHeight
-} else {
-    $metricsAfterMove = $metricsBeforeMove
-}
+$launcherProcess = $null
+$app = $null
+try {
+    $launcherProcess = Start-Process -FilePath $releaseApp -ArgumentList @('--project-dir', $resolvedProjectDir) -WorkingDirectory $RepoRoot -PassThru
+    $app = Wait-RepoWinsmuxDesktopApp -ExpectedProcessId ([int]$launcherProcess.Id)
+    $page = Assert-ProductionDesktopPage -Port $DebugPort
+    $metricsBeforeMove = Get-WindowMetrics -ProcessId ([int]$app.ProcessId)
+    if (-not $NoMoveToExtendedDisplay) {
+        $metricsAfterMove = Move-WindowToVisibleWorkspace -ProcessId ([int]$app.ProcessId) -Width $VisibleWidth -Height $VisibleHeight
+    } else {
+        $metricsAfterMove = $metricsBeforeMove
+    }
 
-if ([int]$metricsAfterMove.width -lt $VisibleWidth -or [int]$metricsAfterMove.height -lt $VisibleHeight) {
-    throw "winsmux desktop window is smaller than required after launch: $($metricsAfterMove.width)x$($metricsAfterMove.height)"
+    if ([int]$metricsAfterMove.width -lt $VisibleWidth -or [int]$metricsAfterMove.height -lt $VisibleHeight) {
+        throw "winsmux desktop window is smaller than required after launch: $($metricsAfterMove.width)x$($metricsAfterMove.height)"
+    }
+} catch {
+    $reason = $_.Exception.Message
+    Stop-RepoWinsmuxDesktopTree
+    throw "winsmux desktop launch failed before a usable operator UI was verified. The repo-built desktop process tree was stopped to avoid leaving a frozen WebView window. Reason: $reason"
 }
 
 $result = [pscustomobject]@{

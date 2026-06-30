@@ -187,6 +187,22 @@ Describe 'CLI bakeoff evidence harness' {
         $scriptText | Should -Match 'allowDevServer: !RELEASE_POPOUT_ONLY'
     }
 
+    It 'stops the repo desktop when launch readiness fails before the operator UI is usable' {
+        $scriptText = Get-Content -LiteralPath $script:DesktopStartScript -Raw -Encoding UTF8
+        $launchIndex = $scriptText.IndexOf('$launcherProcess = Start-Process -FilePath $releaseApp')
+        $pageCheckIndex = $scriptText.IndexOf('$page = Assert-ProductionDesktopPage -Port $DebugPort', $launchIndex)
+        $readinessCatchIndex = $scriptText.IndexOf('winsmux desktop launch failed before a usable operator UI was verified', $pageCheckIndex)
+        $cleanupIndex = $scriptText.IndexOf('Stop-RepoWinsmuxDesktopTree', $pageCheckIndex)
+        $resultIndex = $scriptText.IndexOf('$result = [pscustomobject]@{', $pageCheckIndex)
+
+        ($launchIndex -ge 0) | Should -BeTrue
+        ($pageCheckIndex -gt $launchIndex) | Should -BeTrue
+        ($readinessCatchIndex -gt $pageCheckIndex) | Should -BeTrue
+        ($cleanupIndex -gt $pageCheckIndex) | Should -BeTrue
+        ($cleanupIndex -lt $resultIndex) | Should -BeTrue
+        $scriptText | Should -Match 'frozen WebView window'
+    }
+
     It 'filters content-clean status noise before enforcing the candidate clean gate' {
         $scriptText = Get-Content -LiteralPath $script:PreflightScript -Raw -Encoding UTF8
         $scriptText | Should -Match 'function Get-GitContentDirtyStatus'
