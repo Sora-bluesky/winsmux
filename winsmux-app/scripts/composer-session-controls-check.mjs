@@ -22,6 +22,31 @@ assert.match(
   "Stored composer models must be accepted when they are present and not disabled.",
 );
 
+assert.ok(
+  mainSource.includes("function detectComposerModelFromOperatorText(text: string)")
+    && mainSource.includes("Opus 4\\.7")
+    && mainSource.includes("new RegExp(`\\\\bmodel\\\\s*:\\\\s*"),
+  "Operator PTY output must be able to report the current runtime model, including Opus 4.7.",
+);
+
+assert.match(
+  mainSource,
+  /observedOperatorRuntimeModel[\s\S]*?Current operator runtime model[\s\S]*?Next startup setting/,
+  "Composer model display must distinguish current operator runtime from the next startup setting.",
+);
+
+assert.match(
+  mainSource,
+  /function markOperatorPtyStoppedFromExternalEvent\(\)[\s\S]*?clearObservedOperatorRuntimeModel\(\);/,
+  "Observed operator runtime model must be cleared when the operator PTY stops.",
+);
+
+assert.match(
+  mainSource,
+  /setOperatorRuntimeOutputForTest:[\s\S]*?updateObservedOperatorRuntimeModelFromOutput\(value\)/,
+  "Viewport harness must expose a test hook for operator runtime model observations.",
+);
+
 assert.doesNotMatch(
   mainSource,
   /storedModel === "opus-4\.7"/,
