@@ -149,6 +149,17 @@
         "docs/project/powershell-adapter-inventory.md",
         "scripts/validate-legacy-compat-inventory.ps1"
       ]
+    },
+    {
+      "class": "intentional-shim",
+      "owner": "v0.36.23 session readiness gate",
+      "surface": "detached session readiness incident evidence and verification script",
+      "reason": "The incident record and readiness script intentionally reference tmux-compatible command behavior while proving detached session startup remains observable before benchmark work starts.",
+      "target": "keep until the v0.36.23 benchmark readiness gate no longer depends on this evidence packet",
+      "paths": [
+        "docs/incidents/v03623-session-readiness/00-incident-record.md",
+        "scripts/test-v03623-session-readiness.ps1"
+      ]
     }
   ]
 }

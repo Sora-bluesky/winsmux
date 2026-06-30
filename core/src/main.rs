@@ -1656,31 +1656,37 @@ fn run_main() -> io::Result<()> {
                         let addr = format!("127.0.0.1:{}", port);
                         // Actually authenticate and query the server to ensure it's healthy
                         let session_key = read_session_key(&target).unwrap_or_default();
-                        if let Ok(mut s) = std::net::TcpStream::connect_timeout(
-                            &addr.parse().unwrap(),
-                            Duration::from_millis(500)
-                        ) {
-                            let _ = s.set_read_timeout(Some(Duration::from_millis(500)));
-                            let _ = write!(s, "AUTH {}\n", session_key);
-                            let _ = write!(s, "session-info\n");
-                            let _ = s.flush();
-                            let mut buf = [0u8; 256];
-                            if let Ok(n) = std::io::Read::read(&mut s, &mut buf) {
-                                if n > 0 {
-                                    let resp = String::from_utf8_lossy(&buf[..n]);
-                                    if resp.contains("OK") {
-                                        std::process::exit(0);
+                        let deadline = std::time::Instant::now() + Duration::from_millis(2_000);
+                        loop {
+                            if let Ok(mut s) = std::net::TcpStream::connect_timeout(
+                                &addr.parse().unwrap(),
+                                Duration::from_millis(500)
+                            ) {
+                                let _ = s.set_read_timeout(Some(Duration::from_millis(500)));
+                                let _ = write!(s, "AUTH {}\n", session_key);
+                                let _ = write!(s, "session-info\n");
+                                let _ = s.flush();
+                                let mut buf = [0u8; 256];
+                                if let Ok(n) = std::io::Read::read(&mut s, &mut buf) {
+                                    if n > 0 {
+                                        let resp = String::from_utf8_lossy(&buf[..n]);
+                                        if resp.contains("OK") {
+                                            std::process::exit(0);
+                                        }
                                     }
                                 }
+                                // Fallback: connection succeeded so session likely exists.
+                                std::process::exit(0);
                             }
-                            // Fallback: connection succeeded so session likely exists
-                            std::process::exit(0);
-                        } else {
-                            // Avoid deleting a just-created detached session whose server is
-                            // still becoming responsive.  Centralized cleanup checks the
-                            // versioned registry before removing any state files.
-                            cleanup_stale_port_files();
+                            if std::time::Instant::now() >= deadline {
+                                break;
+                            }
+                            std::thread::sleep(Duration::from_millis(50));
                         }
+                        // Avoid deleting a just-created detached session whose server is
+                        // still becoming responsive. Centralized cleanup checks the
+                        // versioned registry before removing any state files.
+                        cleanup_stale_port_files();
                     }
                 }
                 std::process::exit(1);
