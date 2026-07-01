@@ -527,6 +527,33 @@ Describe 'CLI bakeoff evidence harness' {
         $styles | Should -Not -Match '--ws-panel-bg'
     }
 
+    It 'gates desktop releases on signed updater artifacts' {
+        $workflow = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.github\workflows\release-desktop.yml') -Raw -Encoding UTF8
+        $releaseGate = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'docs\project\v1-release-gate.md') -Raw -Encoding UTF8
+
+        $workflow | Should -Match 'Require desktop updater signing secrets'
+        $workflow | Should -Match 'WINDOWS_SIGNING_CERTIFICATE_BASE64'
+        $workflow | Should -Match 'WINDOWS_SIGNING_CERTIFICATE_PASSWORD'
+        $workflow | Should -Match 'TAURI_UPDATER_PRIVATE_KEY'
+        $workflow | Should -Match 'TAURI_UPDATER_PRIVATE_KEY_PASSWORD'
+        $workflow | Should -Match 'Sign desktop installer assets'
+        $workflow | Should -Match 'signtool\.exe'
+        $workflow | Should -Match 'Get-AuthenticodeSignature'
+        $workflow | Should -Match 'latest\.json'
+        $workflow | Should -Match '\.sig'
+        $workflow | Should -Match 'Required signed updater metadata'
+        $workflow | Should -Match 'not Authenticode signed with a valid signature'
+
+        $releaseGate | Should -Match 'TASK-720'
+        $releaseGate | Should -Match 'signed desktop updater release assets'
+        $releaseGate | Should -Match 'latest\.json'
+        $releaseGate | Should -Match '\.sig'
+        $releaseGate | Should -Match 'WINDOWS_SIGNING_CERTIFICATE_BASE64'
+        $releaseGate | Should -Match 'TAURI_UPDATER_PRIVATE_KEY'
+        $releaseGate | Should -Match 'unsigned installer'
+        $releaseGate | Should -Match 'must\s+not\s+be\s+published'
+    }
+
     It 'filters content-clean status noise before enforcing the candidate clean gate' {
         $scriptText = Get-Content -LiteralPath $script:PreflightScript -Raw -Encoding UTF8
         $scriptText | Should -Match 'function Get-GitContentDirtyStatus'

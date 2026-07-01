@@ -12,6 +12,8 @@ Required public artifacts:
 - `winsmux_<version>_x64-setup.exe` as the normal installer
 - `winsmux_<version>_x64_en-US.msi` for MSI deployment tooling
 - `SHA256SUMS-desktop` for checksum verification
+- signed updater metadata, including `latest.json` and at least one `.sig`
+  file next to the desktop release assets
 - npm package and CLI installer path for CLI-first users
 - release notes that state the signing posture and update path
 - English and Japanese installer UI for the setup executable, with the language
@@ -23,9 +25,18 @@ binary or the npm package.
 
 ## Signing and update posture
 
-Until a stable code-signing certificate is available, every release note must
-state the signing posture. Users should verify installer downloads against
-`SHA256SUMS-desktop` when Windows shows publisher or SmartScreen warnings.
+`TASK-720` is the signed desktop updater release assets gate. Starting with
+`v0.36.23`, the release workflow must require signing secrets
+`WINDOWS_SIGNING_CERTIFICATE_BASE64`, `WINDOWS_SIGNING_CERTIFICATE_PASSWORD`,
+`TAURI_UPDATER_PRIVATE_KEY`, and `TAURI_UPDATER_PRIVATE_KEY_PASSWORD` before it
+uploads desktop bundles to a GitHub Release. The normal setup executable and MSI
+must be Authenticode signed, and the updater metadata must include `latest.json`
+plus `.sig` files. An unsigned installer or missing signed updater metadata must
+not be published as a release artifact.
+
+Each release note must still state the signing posture. Users should verify
+installer downloads against `SHA256SUMS-desktop` when Windows shows publisher or
+SmartScreen warnings.
 
 The desktop update path is installing the newer desktop release over the
 existing installation. This keeps project repositories, agent CLI
