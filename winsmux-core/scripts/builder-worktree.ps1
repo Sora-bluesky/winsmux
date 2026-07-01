@@ -156,19 +156,108 @@ function Get-OrchestraBuilderWorktreeInventory {
     }
 }
 
+function Get-BuilderWorktreeLockDiagnosticText {
+    param(
+        [Parameter(Mandatory = $true)][string]$WorktreePath,
+        [Parameter(Mandatory = $true)][string]$ProjectDir
+    )
+
+    $resolvedWorktreePath = [System.IO.Path]::GetFullPath($WorktreePath).TrimEnd('\', '/')
+    $resolvedProjectDir = [System.IO.Path]::GetFullPath($ProjectDir).TrimEnd('\', '/')
+    $worktreeSlashPath = $resolvedWorktreePath -replace '\\', '/'
+    $leafName = Split-Path -Leaf $resolvedWorktreePath
+    $builderIndex = ''
+    if ($leafName -match '^builder-(\d+)$') {
+        $builderIndex = $Matches[1]
+    }
+    $branchName = if ([string]::IsNullOrWhiteSpace($builderIndex)) { '' } else { "worktree-builder-$builderIndex" }
+
+    try {
+        $processes = @(Get-CimInstance Win32_Process -OperationTimeoutSec 10)
+    } catch {
+        return "owner candidates unavailable: $($_.Exception.Message)"
+    }
+
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    $excludedPollers = 0
+    foreach ($process in $processes) {
+        $commandLine = [string]$process.CommandLine
+        if ([string]::IsNullOrWhiteSpace($commandLine)) {
+            continue
+        }
+
+        $matchesWorktree =
+            $commandLine.IndexOf($resolvedWorktreePath, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+            $commandLine.IndexOf($worktreeSlashPath, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+            ((-not [string]::IsNullOrWhiteSpace($branchName)) -and $commandLine.IndexOf($branchName, [System.StringComparison]::OrdinalIgnoreCase) -ge 0)
+
+        $matchesLivePoller =
+            $commandLine.IndexOf($resolvedProjectDir, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -and
+            ($commandLine.IndexOf('desktop-summary', [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+                ($commandLine.IndexOf('workers', [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -and
+                    $commandLine.IndexOf('status', [System.StringComparison]::OrdinalIgnoreCase) -ge 0))
+
+        if (-not $matchesWorktree) {
+            if ($matchesLivePoller) {
+                $excludedPollers++
+            }
+            continue
+        }
+
+        $pidText = [string]$process.ProcessId
+        $nameText = [string]$process.Name
+        $reason = if (-not [string]::IsNullOrWhiteSpace($branchName) -and $commandLine.IndexOf($branchName, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            'branch_or_worktree_marker'
+        } else {
+            'command_line_matches_worktree'
+        }
+        $candidates.Add("pid=$pidText name=$nameText reason=$reason") | Out-Null
+    }
+
+    if ($candidates.Count -gt 0) {
+        return "owner candidates: $($candidates -join '; ')"
+    }
+
+    if ($excludedPollers -gt 0) {
+        return "owner candidates: none by command line; excluded live desktop poller count=$excludedPollers; lock may be a process current directory or open file handle"
+    }
+
+    return 'owner candidates: none by command line; lock may be a process current directory or open file handle'
+}
+
+function Format-BuilderWorktreeCleanupError {
+    param(
+        [Parameter(Mandatory = $true)][string]$Prefix,
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Message,
+        [Parameter(Mandatory = $true)][string]$ProjectDir
+    )
+
+    $diagnostic = Get-BuilderWorktreeLockDiagnosticText -WorktreePath $Path -ProjectDir $ProjectDir
+    return "${Prefix}: $Message ($diagnostic)"
+}
+
 function Invoke-StaleBuilderWorktreeCleanup {
     param([Parameter(Mandatory = $true)][string]$ProjectDir)
 
     $worktreeRoot = Join-Path $ProjectDir '.worktrees'
     $resolvedProjectDir = [System.IO.Path]::GetFullPath($ProjectDir).TrimEnd('\', '/')
 
-    Invoke-BuilderWorktreeGit -ProjectDir $ProjectDir -Arguments @('worktree', 'prune') | Out-Null
+    $pruneResult = Invoke-BuilderWorktreeGit -ProjectDir $ProjectDir -Arguments @('worktree', 'prune') -AllowFailure
+    $cleanupErrors = [System.Collections.Generic.List[string]]::new()
+    if ($pruneResult.ExitCode -ne 0) {
+        $message = if ([string]::IsNullOrWhiteSpace($pruneResult.Output)) {
+            'unknown git worktree prune error'
+        } else {
+            $pruneResult.Output
+        }
+        $cleanupErrors.Add("worktree prune failed: $message") | Out-Null
+    }
     $inventory = Get-OrchestraBuilderWorktreeInventory -ProjectDir $ProjectDir
 
     $removedWorktreePaths = [System.Collections.Generic.List[string]]::new()
     $removedDirectoryPaths = [System.Collections.Generic.List[string]]::new()
     $removedBranches = [System.Collections.Generic.List[string]]::new()
-    $cleanupErrors = [System.Collections.Generic.List[string]]::new()
 
     foreach ($entry in @($inventory.RegisteredWorktrees | Sort-Object WorktreePath -Unique)) {
         $worktreePath = [System.IO.Path]::GetFullPath($entry.WorktreePath)
@@ -191,7 +280,7 @@ function Invoke-StaleBuilderWorktreeCleanup {
                 } else {
                     $removeResult.Output
                 }
-                $cleanupErrors.Add("worktree remove $worktreePath failed: $message") | Out-Null
+                $cleanupErrors.Add((Format-BuilderWorktreeCleanupError -Prefix "worktree remove $worktreePath failed" -Path $worktreePath -Message $message -ProjectDir $ProjectDir)) | Out-Null
             }
         }
 
@@ -221,7 +310,7 @@ function Invoke-StaleBuilderWorktreeCleanup {
                 Remove-Item -LiteralPath $resolvedDirectoryPath -Recurse -Force
                 $removedDirectoryPaths.Add($resolvedDirectoryPath) | Out-Null
             } catch {
-                $cleanupErrors.Add("directory remove $resolvedDirectoryPath failed: $($_.Exception.Message)") | Out-Null
+                $cleanupErrors.Add((Format-BuilderWorktreeCleanupError -Prefix "directory remove $resolvedDirectoryPath failed" -Path $resolvedDirectoryPath -Message $_.Exception.Message -ProjectDir $ProjectDir)) | Out-Null
             }
         }
     }

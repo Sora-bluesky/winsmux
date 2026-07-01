@@ -2194,7 +2194,19 @@ if ($MyInvocation.InvocationName -ne '.') {
         $zombieCleanup = Remove-OrchestraZombieProcesses -SessionName $sessionName -ProjectDir $projectDir -GitWorktreeDir $gitWorktreeDir -BridgeScript $bridgeScript -WinsmuxBin $winsmuxBin
         if (@($zombieCleanup.Killed).Count -gt 0) {
             Write-WinsmuxLog -Level INFO -Event 'preflight.git_worktree.prune_after_zombie_cleanup' -Message 'Pruning git worktree metadata after zombie cleanup.' -Data @{ killed_count = @($zombieCleanup.Killed).Count } | Out-Null
-            Invoke-BuilderWorktreeGit -ProjectDir $projectDir -Arguments @('worktree', 'prune') | Out-Null
+            $postZombiePrune = Invoke-BuilderWorktreeGit -ProjectDir $projectDir -Arguments @('worktree', 'prune') -AllowFailure
+            if ($postZombiePrune.ExitCode -ne 0) {
+                $message = if ([string]::IsNullOrWhiteSpace($postZombiePrune.Output)) {
+                    'unknown git worktree prune error'
+                } else {
+                    $postZombiePrune.Output
+                }
+                Write-Warning "Preflight: git worktree prune after zombie cleanup skipped: $message"
+                Write-WinsmuxLog -Level WARN -Event 'preflight.git_worktree.prune_after_zombie_cleanup.failed' -Message 'Git worktree prune after zombie cleanup failed without aborting orchestra startup.' -Data ([ordered]@{
+                    killed_count = @($zombieCleanup.Killed).Count
+                    error        = $message
+                }) | Out-Null
+            }
         }
 
         $sessionServerCleanup = Remove-OrchestraSessionServerProcesses -SessionName $sessionName -WinsmuxBin $winsmuxBin -IncludeExpectedBinary
