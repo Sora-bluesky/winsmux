@@ -110,5 +110,9 @@ worker-pane child processes.
   console window. A version number is not required in Windows Search; version
   evidence belongs in the installer asset, app metadata, or Installed apps
   details.
+- Desktop installer evidence must come from the installed Windows app. Repo-local
+  `target\debug`, repo-local `target\release`, and `.local\bin` wrapper paths
+  are developer evidence only and must not be accepted as desktop installer
+  registration or normal-launch proof.
 - Issue `#751` can be closed because the installer decision is recorded.
 - Issue `#967` can be closed after the cleanup implementation is merged.
