@@ -5834,11 +5834,22 @@ Describe 'orchestra-start server bootstrap' {
             $global:LASTEXITCODE = 0
         }
 
+        Mock Get-CimInstance {
+            @(
+                [PSCustomObject]@{
+                    ProcessId   = 12345
+                    Name        = 'pwsh.exe'
+                    CommandLine = "pwsh -NoProfile -File worker.ps1 -ProjectDir `"$lockedWorktreePath`""
+                }
+            )
+        }
+
         try {
             $cleanup = Invoke-StaleBuilderWorktreeCleanup -ProjectDir $testProjectDir
 
             @($cleanup.RemovedWorktreePaths).Count | Should -Be 0
             @($cleanup.CleanupErrors | Where-Object { $_ -like "worktree remove $lockedWorktreePath failed:*" }).Count | Should -Be 1
+            @($cleanup.CleanupErrors | Where-Object { $_ -like '*owner candidates: pid=12345 name=pwsh.exe reason=command_line_matches_worktree*' }).Count | Should -Be 1
             @($cleanup.CleanupErrors | Where-Object { $_ -like 'branch delete worktree-builder-1 failed:*' }).Count | Should -Be 1
             (Test-Path -LiteralPath $lockedWorktreePath) | Should -Be $true
         } finally {
