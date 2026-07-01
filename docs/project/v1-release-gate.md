@@ -31,11 +31,12 @@ The desktop update path is installing the newer desktop release over the
 existing installation. This keeps project repositories, agent CLI
 authentication, and external provider credentials outside the app uninstaller.
 
-Automatic in-app update detection is a `v0.36.23` release requirement tracked by
-issue `#1082`. `v0.36.23` cannot ship until update check, download prompt,
-installer handoff, progress state, and restart behavior are implemented and
-verified. Published builds before `v0.36.23` must document the
-installer-over-existing-install update path instead.
+Automatic in-app update detection is delivered in the `v0.36.23` desktop app
+and tracked by issue `#1082`. The release gate verifies the update check,
+download prompt, installer handoff, progress state, checksum verification when
+release metadata provides a digest, and restart guidance. Published builds
+before `v0.36.23` must still document the installer-over-existing-install
+update path.
 
 The visible desktop UX must match the Codex-style update affordance: a compact
 persistent status/action in the main chrome that distinguishes download progress

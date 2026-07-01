@@ -7,7 +7,9 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { WebviewWindow, getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   applyDesktopRuntimeRolePreferences,
+  checkDesktopUpdate,
   compareDesktopRuns,
+  downloadDesktopUpdateInstaller,
   getDesktopEditorFile,
   getDesktopFullFile,
   getDesktopInitialProjectDir,
@@ -19,7 +21,9 @@ import {
   pickDesktopRunWinner,
   promoteDesktopRunTactic,
   recordDesktopDogfoodEvent,
+  launchDesktopUpdateInstaller,
   subscribeToDesktopSummaryRefresh,
+  subscribeToDesktopUpdateProgress,
   switchDesktopProvider,
   type DesktopCompareRunsResult,
   type DesktopBoardPane,
@@ -33,6 +37,7 @@ import {
   type DesktopWorkerApprovalDifference,
   type DesktopWorkerLaunchApproval,
   type DesktopWorkerStatusRow,
+  type DesktopUpdateCheck,
   type DesktopVoiceCaptureStatus,
 } from "./desktopClient";
 import { getEditorFileKey, getSourceChangeKey, pickEditorPathCandidate, pickSourceChangeKeyCandidate } from "./editorTargets";
@@ -320,7 +325,7 @@ interface FooterStatusItem {
   label: string;
   value?: string;
   tone?: SurfaceTone;
-  action?: "open-actions" | "open-settings" | "toggle-worker-panes";
+  action?: "open-actions" | "open-settings" | "toggle-worker-panes" | "open-update-dialog";
 }
 
 interface HandoffDecisionItem {
@@ -614,6 +619,24 @@ interface CommandAction {
   run: () => void;
 }
 
+type DesktopUpdateState =
+  | "idle"
+  | "checking"
+  | "available"
+  | "downloading"
+  | "downloaded"
+  | "installing"
+  | "error";
+
+interface DesktopUpdateUiState {
+  state: DesktopUpdateState;
+  check: DesktopUpdateCheck | null;
+  installerPath: string;
+  installerSha256: string;
+  progressPercent: number | null;
+  message: string;
+}
+
 const panes = new Map<string, PaneEntry>();
 let terminalDrawerOpen = true;
 let contextPanelOpen = false;
@@ -715,6 +738,17 @@ let voiceCaptureStatusRefreshStarted = false;
 let voiceSessionStartedAt = 0;
 let voiceSessionWarningTimer: number | null = null;
 let viewportHarnessVoiceNow: number | null = null;
+let desktopUpdateState: DesktopUpdateUiState = {
+  state: "idle",
+  check: null,
+  installerPath: "",
+  installerSha256: "",
+  progressPercent: null,
+  message: "",
+};
+let desktopUpdateInitialized = false;
+let desktopUpdateDialogOpen = false;
+let desktopUpdateInstallInFlight = false;
 const detectedPreviewTargets = new Map<string, PreviewTarget>();
 const PREVIEW_FRESHNESS_WINDOW_MS = 30_000;
 const PANE_META_REFRESH_INTERVAL_MS = 30_000;
@@ -9303,6 +9337,301 @@ function getFooterContextItem(settingsStatus: string): FooterStatusItem {
   };
 }
 
+function getDesktopUpdateFooterItem(): FooterStatusItem | null {
+  if (desktopUpdateState.state === "idle") {
+    return null;
+  }
+  if (desktopUpdateState.state === "checking") {
+    return {
+      label: getLanguageText("Update", "更新"),
+      value: getLanguageText("Checking", "確認中"),
+      tone: "info",
+      action: "open-update-dialog",
+    };
+  }
+  if (desktopUpdateState.state === "available") {
+    return {
+      label: getLanguageText("Update", "更新"),
+      value: getLanguageText("Update", "更新する"),
+      tone: "focus",
+      action: "open-update-dialog",
+    };
+  }
+  if (desktopUpdateState.state === "downloading") {
+    const percent = desktopUpdateState.progressPercent === null
+      ? ""
+      : ` ${Math.round(desktopUpdateState.progressPercent)}%`;
+    return {
+      label: getLanguageText("Update", "更新"),
+      value: `${getLanguageText("Downloading", "ダウンロード中")}${percent}`,
+      tone: "info",
+      action: "open-update-dialog",
+    };
+  }
+  if (desktopUpdateState.state === "installing") {
+    return {
+      label: getLanguageText("Update", "更新"),
+      value: getLanguageText("Installing", "アップデートをインストール中"),
+      tone: "warning",
+      action: "open-update-dialog",
+    };
+  }
+  if (desktopUpdateState.state === "downloaded") {
+    return {
+      label: getLanguageText("Update", "更新"),
+      value: getLanguageText("Ready", "インストール準備完了"),
+      tone: "success",
+      action: "open-update-dialog",
+    };
+  }
+  return {
+    label: getLanguageText("Update", "更新"),
+    value: getLanguageText("Error", "更新エラー"),
+    tone: "danger",
+    action: "open-update-dialog",
+  };
+}
+
+function setDesktopUpdateState(nextState: Partial<DesktopUpdateUiState>) {
+  desktopUpdateState = {
+    ...desktopUpdateState,
+    ...nextState,
+  };
+  renderFooterLane();
+  if (desktopUpdateDialogOpen) {
+    renderDesktopUpdateDialog();
+  }
+}
+
+async function initializeDesktopUpdateState() {
+  if (desktopUpdateInitialized || !isTauri()) {
+    return;
+  }
+  desktopUpdateInitialized = true;
+
+  try {
+    await subscribeToDesktopUpdateProgress((event) => {
+      const percent = typeof event.percent === "number" ? event.percent : null;
+      if (event.stage === "downloading") {
+        setDesktopUpdateState({
+          state: "downloading",
+          progressPercent: percent,
+          message: getLanguageText("Downloading the update installer.", "アップデートのインストーラーをダウンロードしています。"),
+        });
+      } else if (event.stage === "downloaded") {
+        setDesktopUpdateState({
+          state: "downloaded",
+          progressPercent: 100,
+          message: getLanguageText("Download complete. Starting the installer.", "ダウンロードが完了しました。インストーラーを起動します。"),
+        });
+      }
+    });
+  } catch (error) {
+    console.warn("Failed to subscribe to desktop update progress", error);
+  }
+
+  await refreshDesktopUpdateState();
+}
+
+async function refreshDesktopUpdateState() {
+  if (!isTauri()) {
+    return;
+  }
+  setDesktopUpdateState({
+    state: "checking",
+    message: getLanguageText("Checking for desktop updates.", "デスクトップアプリの更新を確認しています。"),
+  });
+  try {
+    const result = await checkDesktopUpdate();
+    if (!result.available) {
+      setDesktopUpdateState({
+        state: "idle",
+        check: result,
+        message: "",
+        progressPercent: null,
+      });
+      return;
+    }
+    if (!result.installer_name || !result.installer_url) {
+      setDesktopUpdateState({
+        state: "error",
+        check: result,
+        message: result.reason || getLanguageText("The latest release does not contain a desktop installer.", "最新リリースにデスクトップインストーラーが見つかりません。"),
+      });
+      return;
+    }
+    setDesktopUpdateState({
+      state: "available",
+      check: result,
+      progressPercent: null,
+      message: getLanguageText(
+        `winsmux ${result.latest_version} is ready to install.`,
+        `winsmux ${result.latest_version} をインストールできます。`,
+      ),
+    });
+  } catch (error) {
+    setDesktopUpdateState({
+      state: "error",
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function ensureDesktopUpdateDialog() {
+  let overlay = document.getElementById("desktop-update-dialog");
+  if (overlay) {
+    return overlay;
+  }
+
+  overlay = document.createElement("div");
+  overlay.id = "desktop-update-dialog";
+  overlay.className = "desktop-update-dialog";
+  overlay.setAttribute("role", "presentation");
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay && !desktopUpdateInstallInFlight) {
+      closeDesktopUpdateDialog();
+    }
+  });
+  document.body.appendChild(overlay);
+  return overlay;
+}
+
+function openDesktopUpdateDialog() {
+  desktopUpdateDialogOpen = true;
+  renderDesktopUpdateDialog();
+}
+
+function closeDesktopUpdateDialog() {
+  if (desktopUpdateInstallInFlight) {
+    return;
+  }
+  desktopUpdateDialogOpen = false;
+  const overlay = document.getElementById("desktop-update-dialog");
+  overlay?.classList.remove("open");
+}
+
+function renderDesktopUpdateDialog() {
+  if (!desktopUpdateDialogOpen) {
+    return;
+  }
+  const overlay = ensureDesktopUpdateDialog();
+  const latestVersion = desktopUpdateState.check?.latest_version || "";
+  const title = desktopUpdateState.state === "installing" || desktopUpdateState.state === "downloading"
+    ? getLanguageText("Installing update", "アップデートをインストール中")
+    : getLanguageText("Update winsmux now?", "今すぐ winsmux を更新しますか？");
+  const body = desktopUpdateState.state === "installing" || desktopUpdateState.state === "downloading"
+    ? getLanguageText(
+      "winsmux will restart after the installer finishes.",
+      "インストールが完了すると、winsmux が再起動します。",
+    )
+    : getLanguageText(
+      `The desktop installer for winsmux ${latestVersion} will be downloaded and started. Active local sessions on this machine may be interrupted.`,
+      `winsmux ${latestVersion} のデスクトップインストーラーをダウンロードして起動します。このマシンで実行中のローカルセッションは中断される場合があります。`,
+    );
+  const progress = Math.max(0, Math.min(100, desktopUpdateState.progressPercent ?? 0));
+  const showProgress = desktopUpdateState.state === "downloading"
+    || desktopUpdateState.state === "downloaded"
+    || desktopUpdateState.state === "installing";
+  const canInstall = desktopUpdateState.state === "available"
+    && Boolean(desktopUpdateState.check?.installer_url)
+    && Boolean(desktopUpdateState.check?.installer_name);
+
+  const panel = document.createElement("div");
+  panel.className = "desktop-update-dialog-panel";
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute("aria-modal", "true");
+  panel.setAttribute("aria-label", title);
+
+  const content = document.createElement("div");
+  content.className = "desktop-update-dialog-content";
+  content.replaceChildren(
+    createTextElement("h2", "desktop-update-dialog-title", title),
+    createTextElement("p", "desktop-update-dialog-body", body),
+  );
+
+  if (desktopUpdateState.message) {
+    content.appendChild(createTextElement("p", "desktop-update-dialog-status", desktopUpdateState.message));
+  }
+  if (showProgress) {
+    const progressTrack = document.createElement("div");
+    progressTrack.className = "desktop-update-progress";
+    const progressBar = document.createElement("div");
+    progressBar.className = "desktop-update-progress-bar";
+    progressBar.style.width = `${progress}%`;
+    progressTrack.appendChild(progressBar);
+    content.appendChild(progressTrack);
+    content.appendChild(createTextElement("span", "desktop-update-progress-label", `${Math.round(progress)}%`));
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "desktop-update-dialog-actions";
+  const cancelButton = document.createElement("button");
+  cancelButton.type = "button";
+  cancelButton.className = "desktop-update-dialog-cancel";
+  cancelButton.textContent = getLanguageText("Cancel", "キャンセル");
+  cancelButton.disabled = desktopUpdateInstallInFlight;
+  cancelButton.addEventListener("click", () => closeDesktopUpdateDialog());
+
+  const updateButton = document.createElement("button");
+  updateButton.type = "button";
+  updateButton.className = "desktop-update-dialog-primary";
+  updateButton.textContent = desktopUpdateInstallInFlight
+    ? getLanguageText("Installing", "インストール中")
+    : getLanguageText("Update", "更新する");
+  updateButton.disabled = !canInstall || desktopUpdateInstallInFlight;
+  updateButton.addEventListener("click", () => {
+    void startDesktopUpdateInstall();
+  });
+  actions.replaceChildren(cancelButton, updateButton);
+
+  panel.replaceChildren(content, actions);
+  overlay.replaceChildren(panel);
+  overlay.classList.add("open");
+}
+
+async function startDesktopUpdateInstall() {
+  const update = desktopUpdateState.check;
+  if (!update?.installer_url || !update.installer_name || desktopUpdateInstallInFlight) {
+    return;
+  }
+  desktopUpdateInstallInFlight = true;
+  setDesktopUpdateState({
+    state: "downloading",
+    progressPercent: 0,
+    message: getLanguageText("Downloading the update installer.", "アップデートのインストーラーをダウンロードしています。"),
+  });
+  try {
+    const downloaded = await downloadDesktopUpdateInstaller(
+      update.installer_url,
+      update.installer_name,
+      update.expected_sha256,
+    );
+    setDesktopUpdateState({
+      state: "installing",
+      installerPath: downloaded.installer_path,
+      installerSha256: downloaded.sha256,
+      progressPercent: 100,
+      message: getLanguageText(
+        "Installing the update. winsmux will restart after the installer finishes.",
+        "アップデートをインストール中です。インストールが完了すると winsmux が再起動します。",
+      ),
+    });
+    await launchDesktopUpdateInstaller(downloaded.installer_path, downloaded.sha256);
+  } catch (error) {
+    desktopUpdateInstallInFlight = false;
+    setDesktopUpdateState({
+      state: "available",
+      installerPath: "",
+      installerSha256: "",
+      progressPercent: null,
+      message: getLanguageText(
+        `Update failed. You can retry from this dialog. ${error instanceof Error ? error.message : String(error)}`,
+        `更新に失敗しました。このダイアログから再試行できます。${error instanceof Error ? error.message : String(error)}`,
+      ),
+    });
+  }
+}
+
 function getFooterItems(): { left: FooterStatusItem[]; right: FooterStatusItem[] } {
   const selectedProjection = getPrimaryRunProjection();
   const modeLabel = getComposerModeLabel(activeComposerMode);
@@ -9321,6 +9650,17 @@ function getFooterItems(): { left: FooterStatusItem[]; right: FooterStatusItem[]
     : (settingsSheetOpen ? "Editing" : "Saved");
   const surfaceStatus = getFooterSurfaceStatus();
   const contextItem = getFooterContextItem(settingsStatus);
+  const updateItem = getDesktopUpdateFooterItem();
+  const rightItems: FooterStatusItem[] = [
+    { label: "Run", value: runStatus },
+    { label: "Operator", value: operatorStatus.label, tone: operatorStatus.tone },
+    { label: "Review", value: reviewStatus, tone: getFooterReviewTone(selectedProjection?.review_state) },
+    { label: "Next", value: nextStatus, tone: getFooterNextTone(selectedProjection?.next_action) },
+    { label: getLanguageText("Notifications", "通知"), value: notificationStatus, tone: getFooterNotificationTone(inboxCount) },
+  ];
+  if (updateItem) {
+    rightItems.push(updateItem);
+  }
 
   return {
     left: [
@@ -9329,13 +9669,7 @@ function getFooterItems(): { left: FooterStatusItem[]; right: FooterStatusItem[]
       contextItem,
       { label: "Settings", value: settingsStatus, tone: getFooterSettingsTone(settingsStatus) },
     ],
-    right: [
-      { label: "Run", value: runStatus },
-      { label: "Operator", value: operatorStatus.label, tone: operatorStatus.tone },
-      { label: "Review", value: reviewStatus, tone: getFooterReviewTone(selectedProjection?.review_state) },
-      { label: "Next", value: nextStatus, tone: getFooterNextTone(selectedProjection?.next_action) },
-      { label: getLanguageText("Notifications", "通知"), value: notificationStatus, tone: getFooterNotificationTone(inboxCount) },
-    ],
+    right: rightItems,
   };
 }
 
@@ -11905,6 +12239,12 @@ function renderFooterLane() {
     }
     if (item.action === "open-settings") {
       button.addEventListener("click", () => setSettingsSheet(true));
+      return button;
+    }
+    if (item.action === "open-update-dialog") {
+      button.title = getLanguageText("Open update dialog", "更新ダイアログを開く");
+      button.setAttribute("aria-label", button.title);
+      button.addEventListener("click", () => openDesktopUpdateDialog());
       return button;
     }
     if (item.action === "toggle-worker-panes") {
@@ -18150,6 +18490,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   renderEditorSurface();
   setEditorSurface(false);
   setTerminalDrawer(true);
+  void initializeDesktopUpdateState();
   window.setTimeout(() => {
     void applyInitialProjectDirFromLaunchArgs();
   }, 0);
