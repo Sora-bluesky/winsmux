@@ -1,152 +1,70 @@
-# Quickstart
+# Quickstart: Desktop app
 
-This guide takes a new Windows user from install to a first managed pane run. The recommended path is the desktop app. Use the CLI path only when you want a scripted, headless, or terminal-first workflow.
+This guide is for a first-time Windows user who wants to install the `winsmux` desktop app and open the first project.
 
-## 1. Check requirements
+For normal use, start with the desktop app. If you want a CLI-first, headless, or scripted workflow, use the separate CLI path in [Installation](installation.md#cli-package-install) instead of following this page.
 
-Install these first:
+## 1. Prepare prerequisites
 
 - Windows 10 or Windows 11
 - PowerShell 7+
 - Windows Terminal
-- Node.js with `npm`
-- The official agent CLIs you want to run, such as Codex, Claude Code, or Antigravity CLI
+- The official agent CLIs you want to use, such as Claude Code, Codex, Antigravity, or Grok Build
 
-## 2. Install winsmux
+`winsmux` does not sign in to AI services for you. Each agent CLI keeps using its own official sign-in or API key setup.
 
-Recommended desktop app path:
+## 2. Install the desktop app
 
-1. Download `winsmux_<version>_x64-setup.exe` from the matching GitHub Release.
-2. Run the installer.
-3. Open the installed winsmux desktop app.
-4. Choose the project folder you want agents to work in.
+1. Open the [latest release](https://github.com/Sora-bluesky/winsmux/releases/latest).
+2. Download the `winsmux_..._x64-setup.exe` asset from Assets.
+3. Run the installer.
+4. After installation, open `winsmux` from Windows Search or the Start menu.
 
-CLI-first package path:
+Windows Search or the Start menu does not need to show the app version. What matters is that `winsmux` appears as a normal Windows app and opens.
 
-```powershell
-npm install -g winsmux
-winsmux install --profile full
+## 3. Open a project folder
+
+When the desktop app starts, choose the project folder you want agents to work in.
+
+You do not need to run CLI initialization commands by hand for the desktop path. In the desktop app, choose the project in the UI, then use the operator and worker panes.
+
+## 4. Start from the operator
+
+Type your first instruction in the operator pane.
+
+Example:
+
+```text
+Inspect this repository and suggest the next safe task.
 ```
 
-The `full` profile installs the terminal runtime, orchestration scripts, Windows Terminal profile, vault support, and audit-oriented helpers.
+In `winsmux`, the operator watches the worker panes and sends instructions as needed. Do not accept worker output blindly; compare changes, command results, and review evidence before deciding what to keep.
 
-Quick install:
+## 5. Use worker panes
 
-```powershell
-npm install -g winsmux
-winsmux install --profile full
-winsmux version
-winsmux doctor
-```
+If worker panes are configured, the operator can route work to them.
 
-## 3. Create project settings
+Worker panes can use Claude Code, Codex, Antigravity, Grok Build, OpenRouter-backed models, and other supported providers. Check the desktop app Settings screen to confirm which model is assigned to each pane.
 
-From the repository or project you want agents to work in:
+## 6. If the app does not open correctly
 
-```powershell
-winsmux init
-```
+These states are not a successful desktop launch:
 
-The default workspace lifecycle is `managed-worktree`, which keeps worker file changes separated.
+- a `localhost` connection error
+- only a black PowerShell or Windows Terminal window
+- a blank window, or an extremely small leftover window
 
-## 4. Launch winsmux
+See [Troubleshooting](TROUBLESHOOTING.md) for recovery steps.
 
-Recommended desktop app path:
+## If you want the CLI path
 
-Open the installed winsmux app and select the project folder. Use the desktop app as the graphical control surface for the operator and worker panes.
+For CLI-first, headless, or scripted operation, use the npm package. That path starts a managed Windows Terminal workspace; it does not open the desktop app.
 
-CLI-managed workspace path:
-
-```powershell
-winsmux launch
-```
-
-`winsmux launch` starts the managed Windows Terminal workspace for the npm/CLI package path. It does not open the desktop app. The operator remains responsible for reading pane output and deciding what to accept.
-
-Check the configured workers before sending work:
-
-```powershell
-winsmux workers status
-winsmux workers attach w2
-winsmux workers doctor
-```
-
-For Colab-backed worker slots, run one file-backed task and inspect its log:
-
-```powershell
-winsmux workers exec w2 --script workers/colab/impl_worker.py --run-id demo-1 -- --task-json-inline '{"task_id":"demo-1","title":"Implement this change"}' --worker-id worker-2 --run-id demo-1
-winsmux workers logs w2
-```
-
-For Antigravity CLI one-shot worker slots, configure `worker-backend:
-antigravity` and run a file-backed prompt. winsmux calls `agy --print`, records
-the response artifact, and does not log the prompt body:
-
-```powershell
-winsmux workers exec w1 --script tasks/antigravity-worker-task.md --run-id agy-demo-1 --json
-winsmux workers logs w1 --run-id agy-demo-1
-```
-
-The tracked templates in `workers/colab/` cover implementation, critique,
-repository scouting, test execution planning, and heavy second-opinion work.
-They emit structured JSON and write artifacts under
-`/content/winsmux_artifacts/<worker_id>/<run_id>/` by default.
-
-Uploads are intentionally constrained. Explicit files are allowed, while
-directory uploads require `--allow-dir` and still exclude `.git`, secrets,
-`node_modules`, virtual environments, build outputs, coverage, and oversized
-files by default.
-
-For Colab-backed model work, prepare a Colab notebook or an adapter-managed
-equivalent connected to `H100` or `A100`. winsmux records model metadata such
-as `model_family` and `model_id`, but the task script loads the exact model,
-including Gemma, Llama, Mistral, Qwen, DeepSeek, Kimi/Moonshot, and distilled
-variants.
-
-Before spending Colab compute units, run the installed-product check:
-
-```powershell
-winsmux workers doctor
-```
-
-When you are validating a source checkout instead of an installed package, the
-repository also includes a mock acceptance gate:
-
-```powershell
-Invoke-Pester -Path tests/ColabAcceptance.Tests.ps1 -PassThru
-```
-
-## 5. Read and send
-
-Check a pane before sending instructions:
-
-```powershell
-winsmux list
-winsmux read worker-1 30
-winsmux send worker-1 "Inspect the current branch and report the next safe step."
-```
-
-The final number for `winsmux read` is the number of tail lines to capture.
-
-## 6. Resume a recorded session
-
-In the desktop app, open Agent Vault from the right sidebar, search or filter the recorded sessions, and drag the session card into an available worker pane. winsmux uses the recorded provider metadata to start the matching resume command for Claude Code, Codex, or OpenCode.
-
-If the pane is already starting a restore, wait for it to finish before dropping another session onto the same pane.
-
-## 7. Compare work
-
-After two recorded runs exist, compare them before choosing a winner:
-
-```powershell
-winsmux compare runs <left_run_id> <right_run_id>
-winsmux compare promote <run_id>
-```
+The steps are separated in [Installation](installation.md#cli-package-install). Do not mix them into the desktop app first-run flow.
 
 ## Next steps
 
-- Choose install profiles and update behavior in [Installation](installation.md).
-- Customize launcher presets, worktree policy, slots, and credentials in [Customization](customization.md).
-- Review authentication boundaries in [Authentication support](authentication-support.md).
-- Review model and runtime policy in [Provider and model support](provider-and-model-support.md).
-- Prepare GPU-backed one-shot execution in [Google Colab workers](google-colab-workers.md).
+- Desktop installer, CLI path, updates, and uninstall: [Installation](installation.md)
+- Launcher presets, worktree policy, slots, and credentials: [Customization](customization.md)
+- Authentication boundaries: [Authentication support](authentication-support.md)
+- Model and runtime policy: [Provider and model support](provider-and-model-support.md)

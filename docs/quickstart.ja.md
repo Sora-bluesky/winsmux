@@ -1,151 +1,70 @@
-# クイックスタート
+# クイックスタート: デスクトップアプリ
 
-このガイドでは、Windows 上で winsmux をインストールし、最初の管理ペインを動かすところまで進めます。通常はデスクトップアプリから始めます。スクリプト実行、ヘッドレス運用、ターミナル中心の運用では CLI 経路を使います。
+このガイドは、初めて `winsmux` を使う人がデスクトップアプリを起動し、最初のプロジェクトを開くまでの手順です。
 
-## 1. 動作要件を確認する
+通常の利用では、デスクトップアプリを使います。CLI 中心、ヘッドレス、スクリプト運用で使う場合は、このページではなく [インストール](installation.ja.md#cli-パッケージでのインストール) の CLI 経路を参照してください。
 
-先に次を用意してください。
+## 1. 事前に用意するもの
 
 - Windows 10 または Windows 11
 - PowerShell 7+
 - Windows Terminal
-- `npm` を含む Node.js
-- 実行したい公式エージェント CLI。例: Codex、Claude Code、Antigravity CLI
+- 使いたいエージェントの公式 CLI。例: Claude Code、Codex、Antigravity、Grok Build
 
-## 2. winsmux をインストールする
+`winsmux` が AI サービスへ代理ログインすることはありません。各エージェント CLI は、それぞれ自分のログイン状態や API キー設定を使います。
 
-推奨するデスクトップアプリ経路:
+## 2. デスクトップアプリをインストールする
 
-1. 対象の GitHub Release から `winsmux_<version>_x64-setup.exe` を取得します。
-2. インストーラーを実行します。
-3. インストール済みの winsmux デスクトップアプリを開きます。
-4. エージェントに作業させたいプロジェクトフォルダーを選択します。
+1. [最新リリース](https://github.com/Sora-bluesky/winsmux/releases/latest) を開きます。
+2. Assets から `winsmux_..._x64-setup.exe` という名前のインストーラーをダウンロードします。
+3. インストーラーを実行します。
+4. インストールが終わったら、Windows の検索またはスタートメニューから `winsmux` を開きます。
 
-CLI パッケージ経路:
+Windows の検索結果やスタートメニューにバージョン番号が表示される必要はありません。通常の Windows アプリとして `winsmux` が表示され、開けることが重要です。
 
-```powershell
-npm install -g winsmux
-winsmux install --profile full
+## 3. プロジェクトフォルダーを開く
+
+デスクトップアプリが起動したら、エージェントに作業させたいプロジェクトフォルダーを選択します。
+
+CLI 用の初期化コマンドを手で実行する必要はありません。デスクトップアプリでは、画面上でプロジェクトを選び、オペレーターとワーカーペインを使います。
+
+## 4. オペレーターから作業を始める
+
+左側のオペレーターペインに、最初の指示を入力します。
+
+例:
+
+```text
+このリポジトリの現在の状態を確認し、次に安全に進める作業を提案してください。
 ```
 
-`full` プロファイルは、ターミナルランタイム、オーケストレーション用スクリプト、Windows Terminal プロファイル、vault、監査用の支援機能を入れます。
+`winsmux` では、オペレーターがワーカーペインを見ながら指示を出します。ワーカーの結果をそのまま採用するのではなく、変更内容、実行結果、レビュー証跡を確認してから判断します。
 
-クイックインストール:
+## 5. ワーカーペインを使う
 
-```powershell
-npm install -g winsmux
-winsmux install --profile full
-winsmux version
-winsmux doctor
-```
+設定済みのワーカーペインがある場合、オペレーターは必要に応じて各ワーカーへ作業を振り分けます。
 
-## 3. プロジェクト設定を作る
+ワーカーペインには、Claude Code、Codex、Antigravity、Grok Build、OpenRouter 経由のモデルなどを割り当てられます。どのモデルをどのペインで使うかは、デスクトップアプリの設定画面で確認してください。
 
-エージェントに作業させたいリポジトリまたはプロジェクトで実行します。
+## 6. うまく開かない場合
 
-```powershell
-winsmux init
-```
+次の状態は正常な起動ではありません。
 
-既定のワークスペース方針は `managed-worktree` です。ワーカーごとのファイル変更を分けて扱えます。
+- `localhost` への接続エラーが表示される
+- 黒い PowerShell や Windows Terminal だけが表示される
+- 画面が真っ白、または極端に小さいウィンドウだけが残る
 
-## 4. winsmux を起動する
+この場合は [トラブルシューティング](TROUBLESHOOTING.ja.md) を参照してください。
 
-推奨するデスクトップアプリ経路:
+## CLI で使いたい場合
 
-インストール済みの winsmux アプリを開き、プロジェクトフォルダーを選択します。オペレーターとワーカーのペインを操作する画面上の管制面として、デスクトップアプリを使います。
+CLI 中心、ヘッドレス、スクリプト運用では npm パッケージを使います。この経路はデスクトップアプリではなく、管理対象の Windows Terminal ワークスペースを起動します。
 
-CLI で管理するワークスペース経路:
-
-```powershell
-winsmux launch
-```
-
-`winsmux launch` は npm/CLI パッケージ経路の管理対象 Windows Terminal ワークスペースを起動します。デスクトップアプリは開きません。ペイン出力を読み、採用するかどうかを決める責任はオペレーターに残ります。
-
-作業を送る前に、設定済みのワーカーを確認します。
-
-```powershell
-winsmux workers status
-winsmux workers attach w2
-winsmux workers doctor
-```
-
-Colab 対応ワーカースロットでは、ファイルを指定して単発実行し、ログを確認できます。
-
-```powershell
-winsmux workers exec w2 --script workers/colab/impl_worker.py --run-id demo-1 -- --task-json-inline '{"task_id":"demo-1","title":"この変更を実装する"}' --worker-id worker-2 --run-id demo-1
-winsmux workers logs w2
-```
-
-Antigravity CLI の一回実行ワーカーを使う場合は、`worker-backend:
-antigravity` を設定し、ファイル化したプロンプトを実行します。winsmux は
-`agy --print` を呼び出し、応答を成果物として保存します。プロンプト本文はログに残しません。
-
-```powershell
-winsmux workers exec w1 --script tasks/antigravity-worker-task.md --run-id agy-demo-1 --json
-winsmux workers logs w1 --run-id agy-demo-1
-```
-
-`workers/colab/` の追跡済みテンプレートは、実装、批評、リポジトリ調査、
-テスト実行計画、重い再判定を扱います。各テンプレートは構造化 JSON を出力し、
-既定では `/content/winsmux_artifacts/<worker_id>/<run_id>/` に成果物を書き込みます。
-
-アップロードは安全側に制限しています。明示したファイルは対象にできますが、
-ディレクトリを送る場合は `--allow-dir` が必要です。その場合も `.git`、秘密情報、
-`node_modules`、仮想環境、ビルド成果物、coverage、サイズが大きすぎるファイルは
-既定で除外します。
-
-Colab 対応のモデル作業では、`H100` または `A100` へ接続した Colab ノートブック、
-またはアダプターが管理する同等の実行環境を先に用意します。winsmux は
-`model_family` や `model_id` などのモデルメタデータを記録しますが、正確なモデルを
-読み込む責任はタスクスクリプト側にあります。対象には Gemma、Llama、Mistral、Qwen、
-DeepSeek、Kimi/Moonshot、蒸留モデルの変種を含められます。
-
-Colab の実行リソースを使う前に、インストール済み環境で確認します。
-
-```powershell
-winsmux workers doctor
-```
-
-インストール済みパッケージではなく、ソースから検証している場合は、
-リポジトリ内のモック受け入れ確認も使えます。
-
-```powershell
-Invoke-Pester -Path tests/ColabAcceptance.Tests.ps1 -PassThru
-```
-
-## 5. 読み取りと送信を試す
-
-指示を送る前に、対象ペインの出力を確認します。
-
-```powershell
-winsmux list
-winsmux read worker-1 30
-winsmux send worker-1 "現在のブランチを確認し、次の安全な手順を報告してください。"
-```
-
-`winsmux read` の最後の数値は、読み取る末尾行数です。
-
-## 6. 記録済みセッションを復元する
-
-デスクトップアプリでは、右サイドバーの Agent Vault を開きます。記録済みセッションを検索または絞り込み、セッションカードを空いているワーカーペインへドラッグします。winsmux は記録されたプロバイダーメタデータを使い、Claude Code、Codex、OpenCode に合った再開コマンドを起動します。
-
-同じペインですでに復元を開始している場合は、その処理が終わるまで待ってから次のセッションをドロップしてください。
-
-## 7. 実行結果を比較する
-
-2 つの記録済み実行ができたら、採用前に比較します。
-
-```powershell
-winsmux compare runs <left_run_id> <right_run_id>
-winsmux compare promote <run_id>
-```
+手順は [インストール](installation.ja.md#cli-パッケージでのインストール) に分けています。デスクトップアプリの初回手順とは混ぜないでください。
 
 ## 次に読む
 
-- インストールプロファイルと更新は [インストール](installation.ja.md) を参照してください。
-- 起動プリセット、ワークツリー方針、スロット、資格情報は [カスタマイズ](customization.ja.md) を参照してください。
-- 認証の境界は [認証方針](authentication-support.ja.md) を参照してください。
-- モデルとランタイムの方針は [プロバイダーとモデルの対応方針](provider-and-model-support.ja.md) を参照してください。
-- GPU 付き単発実行は [Google Colab ワーカー](google-colab-workers.ja.md) を参照してください。
+- デスクトップインストーラー、CLI 経路、更新、アンインストール: [インストール](installation.ja.md)
+- 起動プリセット、ワークツリー方針、スロット、資格情報: [カスタマイズ](customization.ja.md)
+- 認証の境界: [認証方針](authentication-support.ja.md)
+- モデルとランタイムの方針: [プロバイダーとモデルの対応方針](provider-and-model-support.ja.md)

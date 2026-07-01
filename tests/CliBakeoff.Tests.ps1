@@ -348,19 +348,107 @@ Describe 'CLI bakeoff evidence harness' {
         $troubleshooting = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'docs\TROUBLESHOOTING.md') -Raw -Encoding UTF8
         $troubleshootingJa = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'docs\TROUBLESHOOTING.ja.md') -Raw -Encoding UTF8
         $installation = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'docs\installation.md') -Raw -Encoding UTF8
+        $installationJa = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'docs\installation.ja.md') -Raw -Encoding UTF8
+        $readme = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'README.md') -Raw -Encoding UTF8
+        $readmeJa = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'README.ja.md') -Raw -Encoding UTF8
+        $quickstart = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'docs\quickstart.md') -Raw -Encoding UTF8
+        $quickstartJa = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'docs\quickstart.ja.md') -Raw -Encoding UTF8
+        $packageReadme = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'packages\winsmux\README.md') -Raw -Encoding UTF8
+        $releaseGate = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'docs\project\v1-release-gate.md') -Raw -Encoding UTF8
+        $operatorModel = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'docs\operator-model.md') -Raw -Encoding UTF8
+        $readmeBeforeCommands = ($readme -split '(?m)^## Main Commands')[0]
+        $readmeJaBeforeCommands = ($readmeJa -split '(?m)^## 主要コマンド')[0]
+        $publicInstallDocs = @(
+            $readme,
+            $readmeJa,
+            $quickstart,
+            $quickstartJa,
+            $installation,
+            $installationJa,
+            $troubleshooting,
+            $troubleshootingJa,
+            $packageReadme,
+            $operatorModel
+        ) -join "`n"
 
         $troubleshooting | Should -Match 'Desktop app opens to a localhost connection error'
-        $troubleshooting | Should -Match 'winsmux_<version>_x64-setup\.exe'
+        $troubleshooting | Should -Match 'https://github\.com/Sora-bluesky/winsmux/releases/latest'
+        $troubleshooting | Should -Match 'winsmux_\.\.\._x64-setup\.exe'
+        $troubleshooting | Should -Match 'Start menu or desktop shortcut'
         $troubleshooting | Should -Match 'Get-Process winsmux-app'
         $troubleshooting | Should -Match 'black PowerShell, Windows Terminal, or WebView2 console window'
         $troubleshooting | Should -Not -Match 'Get-Process node,cargo,winsmux-app'
         $troubleshooting | Should -Not -Match '\\target\\'
         $troubleshootingJa | Should -Match 'デスクトップアプリが localhost 接続エラー'
+        $troubleshootingJa | Should -Match 'https://github\.com/Sora-bluesky/winsmux/releases/latest'
         $troubleshootingJa | Should -Match 'Get-Process winsmux-app'
         $troubleshootingJa | Should -Not -Match 'Get-Process node,cargo,winsmux-app'
         $troubleshootingJa | Should -Not -Match '\\target\\'
         $installation | Should -Match 'External automation against the desktop operator'
+        $installation | Should -Match 'https://github\.com/Sora-bluesky/winsmux/releases/latest'
+        $installation | Should -Match 'winsmux_\.\.\._x64-setup\.exe'
         $installation | Should -Match 'winsmux launch.*does not open\s+the desktop app'
+        $installation | Should -Match 'Windows Search'
+        $installation | Should -Match 'Installed apps'
+        $installation | Should -Match 'does not need to show a version number'
+        $installation | Should -Match 'Desktop automatic update detection is a `v0\.36\.23` release requirement'
+        $installation | Should -Match 'The `v0\.36\.23` release cannot ship until'
+        $installation | Should -Match 'Published\s+builds before `v0\.36\.23`'
+        $installationJa | Should -Match 'Windows 検索'
+        $installationJa | Should -Match 'https://github\.com/Sora-bluesky/winsmux/releases/latest'
+        $installationJa | Should -Match 'winsmux_\.\.\._x64-setup\.exe'
+        $installationJa | Should -Match 'インストールされているアプリ'
+        $installationJa | Should -Match 'バージョン番号が出る必要はありません'
+        $installationJa | Should -Match '自動更新検知は、`v0\.36\.23` のリリース条件です'
+        $installationJa | Should -Match '`v0\.36\.23` は、この実装と検証が終わるまでリリースしません'
+        $readme | Should -Match 'For most users, start with the desktop app'
+        $readme | Should -Match 'https://github\.com/Sora-bluesky/winsmux/releases/latest'
+        $readme | Should -Match 'Use the npm package only when you want a CLI-first'
+        $readmeBeforeCommands | Should -Not -Match 'winsmux init'
+        $readmeBeforeCommands | Should -Not -Match 'winsmux launch'
+        $readmeJa | Should -Match '通常はデスクトップアプリから始めます'
+        $readmeJa | Should -Match 'CLI 中心、スクリプト実行、ヘッドレス運用で使う場合だけ'
+        $readmeJa | Should -Match 'https://github\.com/Sora-bluesky/winsmux/releases/latest'
+        $readmeJaBeforeCommands | Should -Not -Match 'winsmux init'
+        $readmeJaBeforeCommands | Should -Not -Match 'winsmux launch'
+        $quickstart | Should -Match '# Quickstart: Desktop app'
+        $quickstart | Should -Match 'https://github\.com/Sora-bluesky/winsmux/releases/latest'
+        $quickstart | Should -Match 'You do not need to run CLI initialization commands by hand for the desktop path'
+        $quickstart | Should -Not -Match 'npm install -g winsmux|winsmux init|winsmux launch|Create project settings'
+        $quickstartJa | Should -Match '# クイックスタート: デスクトップアプリ'
+        $quickstartJa | Should -Match 'https://github\.com/Sora-bluesky/winsmux/releases/latest'
+        $quickstartJa | Should -Match 'CLI 用の初期化コマンドを手で実行する必要はありません'
+        $quickstartJa | Should -Not -Match 'npm install -g winsmux|winsmux init|winsmux launch|プロジェクト設定を作る'
+        $publicInstallDocs | Should -Not -Match 'winsmux_0\.\d+\.\d+_x64-setup\.exe'
+        $packageReadme | Should -Match 'It does not install or open the desktop app'
+        $packageReadme | Should -Match 'https://github\.com/Sora-bluesky/winsmux/releases/latest'
+        $packageReadme | Should -Match 'CLI package path'
+        $releaseGate | Should -Match 'Windows Search finds the app by'
+        $releaseGate | Should -Match 'Installed apps'
+        $releaseGate | Should -Match 'version number is not required in Windows Search'
+        $releaseGate | Should -Match 'releases/latest'
+        $releaseGate | Should -Match 'version-neutral installer example'
+        $releaseGate | Should -Match 'winsmux_\.\.\._x64-setup\.exe'
+        $releaseGate | Should -Match 'must fail if public install\s+docs contain a fixed release asset name'
+        $releaseGate | Should -Match 'winsmux_0\.x\.y_x64-setup\.exe'
+        $releaseGate | Should -Match 'Quickstart must stay desktop-app first'
+        $releaseGate | Should -Match 'README, Quickstart, Installation, Troubleshooting'
+        $releaseGate | Should -Match 'packages/winsmux/README\.md'
+        $releaseGate | Should -Match 'Automatic in-app update detection is a `v0\.36\.23` release requirement'
+        $releaseGate | Should -Match '`v0\.36\.23` cannot ship until update check'
+        $releaseGate | Should -Match 'installer-over-existing-install update path'
+        $releaseGate | Should -Match 'compact\s+persistent status/action'
+        $releaseGate | Should -Match 'download\s+progress\s+from the final update action'
+        $releaseGate | Should -Match 'post-install restart guidance'
+        $releaseGate | Should -Match 'confirmation dialog'
+        $releaseGate | Should -Match 'local active sessions may be interrupted'
+        $releaseGate | Should -Match 'installing state with progress text'
+        $releaseGate | Should -Match 'Clicking `Cancel` or outside the dialog closes the dialog'
+        $releaseGate | Should -Match 'Silent background replacement without user-visible state is not\s+accepted'
+        $operatorModel | Should -Match 'https://github\.com/Sora-bluesky/winsmux/releases/latest'
+        $operatorModel | Should -Match 'winsmux_\.\.\._x64-setup\.exe'
+        $operatorModel | Should -Match 'The desktop path is\s+the recommended first-run path'
+        $operatorModel | Should -Match 'must not be presented as required\s+desktop app setup'
     }
 
     It 'filters content-clean status noise before enforcing the candidate clean gate' {

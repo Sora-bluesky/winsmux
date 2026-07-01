@@ -10,10 +10,14 @@ Windows Terminal ワークスペースを起動します。デスクトップア
 
 ### デスクトップアプリが localhost 接続エラー、空白画面、またはフリーズになる
 
-通常のグラフィカルな入口はデスクトップアプリです。対象の GitHub Release から
-`winsmux_<version>_x64-setup.exe` をインストールし、スタートメニューまたは
+通常のグラフィカルな入口はデスクトップアプリです。[最新リリース](https://github.com/Sora-bluesky/winsmux/releases/latest) の
+Assets から `winsmux_..._x64-setup.exe` をインストールし、スタートメニューまたは
 デスクトップショートカットから `winsmux` アプリを開きます。`winsmux launch` は
 CLI の入口であり、デスクトップアプリは開きません。
+
+インストール後は、Windows 検索で `winsmux` というアプリ名が見つかれば十分です。
+Windows 検索にバージョン番号が出る必要はありません。インストール情報を確認する場合は、
+Windows の「設定」>「アプリ」>「インストールされているアプリ」を確認します。
 
 デスクトップアプリが localhost 接続エラー、空白画面、または応答なしになる場合:
 
@@ -27,7 +31,7 @@ CLI の入口であり、デスクトップアプリは開きません。
 
 3. 表示されたプロセスが、いま開いたインストール済みの winsmux デスクトップアプリであると確認できる場合だけ、Windows タスク マネージャーから終了して、もう一度 winsmux を開きます。
 4. デスクトップアプリと一緒に黒い PowerShell、Windows Terminal、または WebView2 のコンソールウィンドウが出る場合は、winsmux を閉じて Issue を作成してください。通常のデスクトップ起動で見えるウィンドウは winsmux 本体だけです。
-5. Windows 再起動後も再現する場合は、同じ GitHub Release の最新版デスクトップインストーラーを再インストールし、`.winsmux/startup-journal.log`、`.winsmux/manifest.yaml`、インストーラーのバージョン、スクリーンショットを添えて報告してください。
+5. Windows 再起動後も再現する場合、通常の復旧では [最新リリース](https://github.com/Sora-bluesky/winsmux/releases/latest) のデスクトップインストーラーを再インストールします。特定バージョンの不具合を再現している場合は、その対象リリースのインストーラーを使います。`.winsmux/startup-journal.log`、`.winsmux/manifest.yaml`、インストーラーのバージョン、スクリーンショットを添えて報告してください。
 
 ### `Orchestra already starting (lock exists)`
 

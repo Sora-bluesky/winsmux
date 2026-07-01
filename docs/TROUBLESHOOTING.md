@@ -12,9 +12,13 @@ control surface.
 ### Desktop app opens to a localhost connection error, blank page, or frozen window
 
 The desktop app is the recommended graphical entrypoint. Open the installed
-`winsmux` app from the Start menu or desktop shortcut after installing
-`winsmux_<version>_x64-setup.exe` from the matching GitHub Release.
+`winsmux` app from the Start menu or desktop shortcut after installing the
+`winsmux_..._x64-setup.exe` asset from the [latest release](https://github.com/Sora-bluesky/winsmux/releases/latest).
 `winsmux launch` is a CLI entrypoint and does not open the desktop app.
+
+After installation, Windows Search should find the app by the name `winsmux`.
+Windows Search does not have to show the version number. When you need install
+metadata, check Windows Settings > Apps > Installed apps.
 
 If the desktop app opens but shows a localhost connection error, a blank page, or
 stops responding:
@@ -32,8 +36,10 @@ stops responding:
 4. If a black PowerShell, Windows Terminal, or WebView2 console window appears
    with the desktop app, close winsmux and file an issue. A normal desktop
    startup should show the winsmux window only.
-5. If the issue repeats after a reboot, reinstall the current desktop installer
-   from the same GitHub Release and attach `.winsmux/startup-journal.log`,
+5. If the issue repeats after a reboot, reinstall the desktop installer from
+   the [latest release](https://github.com/Sora-bluesky/winsmux/releases/latest)
+   for normal recovery. If you are reproducing a bug tied to a specific version,
+   reinstall that exact release instead. Attach `.winsmux/startup-journal.log`,
    `.winsmux/manifest.yaml`, the installer version, and a screenshot.
 
 ### `Orchestra already starting (lock exists)`

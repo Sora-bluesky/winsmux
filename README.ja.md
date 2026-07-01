@@ -10,7 +10,7 @@
 
 エージェントをブラックボックス化せず、各ワーカーを実際のペインで見せ、ファイル変更を git worktree で分離し、必要なペインへ指示を送り、中断できます。完了後は、変更ファイルの重なり、レビュー状態、検証状態、チェックポイントなどの証跡を見ながら、どの結果を採用するか決められます。
 
-Claude Code、Codex、Antigravity CLI、Grok Build、または互換目的で残した Gemini を 1 つずつ手で眺める段階を越えたい。ただし、クラウド任せにも、特定ベンダー任せにもしたくない。`winsmux` はそのためのローカル管制面です。
+Claude Code、Codex、Antigravity、Grok Build、または既存の Gemini CLI セッションを 1 つずつ手で眺める段階を越えたい。ただし、クラウド任せにも、特定ベンダー任せにもしたくない。`winsmux` はそのためのローカル管制面です。
 
 たとえば、同じタスクを 2 つのエージェントに並走させ、両方のペインを見ながら、逸れた片方だけを止め、最後に証跡を比較して採用する結果を選べます。
 
@@ -66,16 +66,9 @@ Rust は、ランタイムをソースからビルドする時だけ必要です
 
 ## 始め方
 
-通常はデスクトップアプリから始めます。対象の GitHub Release から `winsmux_<version>_x64-setup.exe` を取得して実行し、インストール済みの winsmux アプリを開いて、エージェントに作業させたいプロジェクトフォルダーを選択します。
+通常はデスクトップアプリから始めます。まず [最新リリース](https://github.com/Sora-bluesky/winsmux/releases/latest) を開き、Assets から `winsmux_..._x64-setup.exe` という名前のインストーラーをダウンロードして実行します。インストール後は Windows の `winsmux` アプリを開き、エージェントに作業させたいプロジェクトフォルダーを選択します。過去版が必要な場合は [Releases 一覧](https://github.com/Sora-bluesky/winsmux/releases) から対象の版を選びます。
 
-CLI 中心、スクリプト実行、ヘッドレス運用で使う場合は npm パッケージを使います。この経路は管理対象の Windows Terminal ワークスペースを起動します。デスクトップアプリは開きません。
-
-```powershell
-npm install -g winsmux
-winsmux install --profile full
-winsmux init
-winsmux launch
-```
+CLI 中心、スクリプト実行、ヘッドレス運用で使う場合だけ npm パッケージを使います。この経路は `npm install -g winsmux` で始め、続けて `winsmux install --profile full` を実行します。管理対象の Windows Terminal ワークスペースを起動しますが、デスクトップアプリは開きません。初めて使う人がアプリを開く前にプロジェクト初期化コマンドを実行しないよう、デスクトップの初回手順と CLI の設定手順は分けています。
 
 初回の流れは [クイックスタート](docs/quickstart.ja.md) を参照してください。
 推奨するデスクトップインストーラー経路、CLI プロファイル、更新、アンインストールは [インストール](docs/installation.ja.md) にまとめています。
