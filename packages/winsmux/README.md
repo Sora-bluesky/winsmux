@@ -8,6 +8,11 @@ The npm package name is `winsmux`.
 Repository publishing is tag-driven and uses the staged package from
 `scripts/stage-npm-release.mjs`.
 
+The source directory is not the publish artifact. Do not publish
+`packages/winsmux` directly from a checkout. The published npm tarball is
+produced by `scripts/stage-npm-release.mjs`; `install.ps1` is added during
+staging and pinned to the same release tag as the npm package.
+
 Install it on Windows with:
 
 ```powershell
@@ -33,6 +38,8 @@ User-facing setup docs:
 - `winsmux version`
 - `winsmux help`
 - the npm package version will pin `install.ps1` to the same GitHub release tag
+- the package source directory is not the publish artifact; the staged package
+  contains the generated release-pinned `install.ps1`
 
 ## Installer profiles
 

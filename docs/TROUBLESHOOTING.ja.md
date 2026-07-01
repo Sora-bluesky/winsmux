@@ -8,6 +8,27 @@ winsmux のインストール、起動、ペイン、資格情報、リリース
 Windows Terminal ワークスペースを起動します。デスクトップアプリは開きません。
 画面上の管制面を確認する場合は、インストール済みのデスクトップアプリを直接開きます。
 
+### デスクトップアプリが localhost 接続エラー、空白画面、またはフリーズになる
+
+通常のグラフィカルな入口はデスクトップアプリです。対象の GitHub Release から
+`winsmux_<version>_x64-setup.exe` をインストールし、スタートメニューまたは
+デスクトップショートカットから `winsmux` アプリを開きます。`winsmux launch` は
+CLI の入口であり、デスクトップアプリは開きません。
+
+デスクトップアプリが localhost 接続エラー、空白画面、または応答なしになる場合:
+
+1. `winsmux` デスクトップウィンドウを閉じます。
+2. 古いデスクトッププロセスが残っていないか確認します。
+
+   ```powershell
+   Get-Process winsmux-app -ErrorAction SilentlyContinue |
+     Select-Object Id,ProcessName,Path,StartTime
+   ```
+
+3. 表示されたプロセスが、いま開いたインストール済みの winsmux デスクトップアプリであると確認できる場合だけ、Windows タスク マネージャーから終了して、もう一度 winsmux を開きます。
+4. デスクトップアプリと一緒に黒い PowerShell、Windows Terminal、または WebView2 のコンソールウィンドウが出る場合は、winsmux を閉じて Issue を作成してください。通常のデスクトップ起動で見えるウィンドウは winsmux 本体だけです。
+5. Windows 再起動後も再現する場合は、同じ GitHub Release の最新版デスクトップインストーラーを再インストールし、`.winsmux/startup-journal.log`、`.winsmux/manifest.yaml`、インストーラーのバージョン、スクリーンショットを添えて報告してください。
+
 ### `Orchestra already starting (lock exists)`
 
 原因: 前回の起動がロックファイルを消す前に終了しました。
@@ -15,10 +36,18 @@ Windows Terminal ワークスペースを起動します。デスクトップア
 対処:
 
 ```powershell
+winsmux list
+Get-Process winsmux-app -ErrorAction SilentlyContinue |
+  Select-Object Id,ProcessName,Path,StartTime
+```
+
+このプロジェクトの winsmux セッションが生きておらず、同じプロジェクトを使っているデスクトップアプリも起動していないと確認できた場合だけ、ロックを削除します。
+
+```powershell
 Remove-Item .winsmux/orchestra.lock -Force
 ```
 
-その後、再起動します。
+その後、CLI ワークスペースを再起動します。
 
 ```powershell
 winsmux launch
@@ -102,11 +131,11 @@ sandbox = "unelevated"
 漏れを調べる場合は、停止する前に winsmux が起動したプロセスだけを確認してください。
 
 ```powershell
-Get-Process node,cargo,winsmux-app -ErrorAction SilentlyContinue |
-  Where-Object { $_.Path -like "*winsmux*" -or $_.Path -like "*\\target\\*" }
+Get-Process winsmux-app -ErrorAction SilentlyContinue |
+  Select-Object Id,ProcessName,Path,StartTime
 ```
 
-現在の winsmux デスクトップセッションが起動したと判断できるプロセスだけを停止してください。他のプロジェクトの `node` や `cargo` は停止しないでください。
+現在の winsmux デスクトップセッションだと判断できるプロセスだけを停止してください。無関係なターミナル、パッケージマネージャー、他プロジェクトの開発ツールは停止しないでください。
 
 ## 資格情報の問題
 

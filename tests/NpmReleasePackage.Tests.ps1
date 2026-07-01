@@ -140,6 +140,9 @@ Describe 'winsmux npm release package contract' {
         $packageReadme | Should -Match 'winsmux version'
         $packageReadme | Should -Match 'winsmux help'
         $packageReadme | Should -Match 'same GitHub release tag'
+        $packageReadme | Should -Match 'source directory is not the publish artifact'
+        $packageReadme | Should -Match 'staged package'
+        $packageReadme | Should -Match 'added during\s+staging'
         $packageReadme | Should -Match '## Installer profiles'
         $packageReadme | Should -Match 'winsmux install --profile full'
         $packageReadme | Should -Match 'winsmux update --profile orchestra'
@@ -175,6 +178,17 @@ Describe 'winsmux npm release package contract' {
         $releaseWorkflow | Should -Match 'name:\s+Skip existing npm version'
         $releaseWorkflow | Should -Match 'if:\s+steps\.npm-version\.outputs\.exists != ''true'''
         $releaseWorkflow | Should -Match 'NODE_AUTH_TOKEN:\s+\$\{\{\s*secrets\.NPM_TOKEN\s*\}\}'
+    }
+
+    It 'keeps the package source and staged publish artifact separate' {
+        $packageReadme = Get-Content -LiteralPath $script:PackageReadmePath -Raw -Encoding UTF8
+        $stageScript = Get-Content -LiteralPath $script:StageScriptPath -Raw -Encoding UTF8
+
+        Test-Path -LiteralPath (Join-Path $script:PackageRoot 'install.ps1') | Should -BeFalse
+        $stageScript | Should -Match 'installScriptSource = path\.join\(repoRoot, "install\.ps1"\)'
+        $stageScript | Should -Match 'fs\.writeFileSync\(path\.join\(targetDir, "install\.ps1"\), versionPatched\)'
+        $packageReadme | Should -Match 'source directory is not the publish artifact'
+        $packageReadme | Should -Match 'published npm tarball is\s+produced by'
     }
 
     It 'skips staging only if the package source is explicitly gated' {
@@ -234,6 +248,8 @@ Describe 'winsmux npm release package contract' {
         $stagedReadme | Should -Match 'winsmux version'
         $stagedReadme | Should -Match 'winsmux help'
         $stagedReadme | Should -Match 'same GitHub release tag'
+        $stagedReadme | Should -Match 'source directory is not the publish artifact'
+        $stagedReadme | Should -Match 'added during\s+staging'
         $stagedReadme | Should -Match '## Installer profiles'
         $stagedReadme | Should -Match 'winsmux install --profile full'
         $stagedReadme | Should -Match 'winsmux update --profile orchestra'

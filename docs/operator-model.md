@@ -42,6 +42,21 @@ being appended to only some product names.
 
 The important abstraction is the **channel boundary**, not Telegram, Discord, or another single product.
 
+### Public entrypoints
+
+The operator model is shared by the desktop app, CLI workspace, and automation
+API, but their startup paths are separate:
+
+| Entry point | How users start it | What it opens | Primary validation |
+| --- | --- | --- | --- |
+| Desktop app | Install `winsmux_<version>_x64-setup.exe`, open the installed `winsmux` app, then choose a project folder | Graphical operator and worker pane surface | visible winsmux window, rendered operator UI, and reachable local operator control API |
+| npm/CLI workspace | `npm install -g winsmux`, `winsmux install --profile full`, `winsmux init`, then `winsmux launch` in a project directory | Managed Windows Terminal workspace | CLI doctor checks, project manifest, and pane session state |
+| External automation | Connect to the local control pipe after the desktop app starts | Programmatic operator snapshot/submit and desktop control methods | authenticated control pipe, `desktop.operator.snapshot`, and `desktop.operator.submit` |
+
+`winsmux launch` does not open the desktop app. A desktop smoke test is not
+complete until the installed or repo-built desktop app has a visible main
+window, no visible helper console window, and a reachable operator API.
+
 In the standard winsmux operating model, the operator is responsible for:
 
 - decomposition
