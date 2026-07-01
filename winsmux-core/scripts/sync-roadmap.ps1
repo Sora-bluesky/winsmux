@@ -190,7 +190,7 @@ function Get-RoadmapLocalizationMap {
         }
     }
 
-    $data = Import-PowerShellDataFile -LiteralPath $Path
+    $data = Import-PowerShellDataFile -LiteralPath $Path -SkipLimitCheck -ErrorAction Stop
     return @{
         VersionTitles = if ($null -ne $data.VersionTitles) { $data.VersionTitles } else { @{} }
         TaskTitles    = if ($null -ne $data.TaskTitles) { $data.TaskTitles } else { @{} }
