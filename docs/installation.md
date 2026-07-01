@@ -141,14 +141,16 @@ winsmux update --profile orchestra
 
 When no profile is supplied, `winsmux update` keeps the previously recorded profile. When the profile changes, scripts outside the selected profile are removed from the installed support directory.
 
-For the desktop app, download the newer release installer and run it over the existing install. This does not remove project repositories, agent CLIs, or their authentication storage.
+For the desktop app, builds starting with `v0.36.23` check GitHub Releases for
+a newer Windows setup installer. When an update is available, the desktop app
+shows a compact update action, opens a confirmation dialog, downloads the
+installer with progress, verifies the checksum when release metadata provides
+one, starts the installer, and exits so the installer can replace the running
+app. Published builds before `v0.36.23` are updated by running the newer
+installer over the existing install.
 
-Desktop automatic update detection is a `v0.36.23` release requirement tracked
-by issue `#1082`. The `v0.36.23` release cannot ship until the desktop app
-detects available updates, shows the in-app update prompt, hands off to the
-installer, reports install progress, and guides the restart flow. Published
-builds before `v0.36.23` are updated by running the newer installer over the
-existing install.
+This update flow does not remove project repositories, agent CLIs, or their
+authentication storage.
 
 ## Uninstall
 

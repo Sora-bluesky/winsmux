@@ -14,9 +14,12 @@ use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use pty_backend::{
     handle_pty_json_rpc, PtyCommand, PtyCommandTransport, PtyJsonRpcRequest, PtyJsonRpcResponse,
 };
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -38,6 +41,9 @@ const PTY_CAPTURE_LIMIT: usize = 64 * 1024;
 const PTY_CLOSE_WAIT_MS: u64 = 250;
 const DESKTOP_SHUTDOWN_PTY_WAIT_MS: u64 = 750;
 const DESKTOP_SHUTDOWN_VOICE_WAIT_MS: u64 = 3_000;
+const DESKTOP_UPDATE_PROGRESS_EVENT: &str = "desktop-update-progress";
+const WINSMUX_RELEASE_API_URL: &str =
+    "https://api.github.com/repos/Sora-bluesky/winsmux/releases/latest";
 const NATIVE_VOICE_METER_ONLY_REASON: &str =
     "Native microphone capture is available for metering only; desktop dictation still uses the documented text fallback.";
 const NATIVE_VOICE_DICTATION_FALLBACK_REASON: &str =
@@ -113,6 +119,374 @@ fn desktop_initial_project_dir() -> Option<String> {
 #[tauri::command]
 fn desktop_control_pipe_enabled() -> bool {
     std::env::var_os(WINSMUX_CONTROL_PIPE_TOKEN_ENV).is_some()
+}
+
+#[derive(Debug, Deserialize)]
+struct GitHubReleaseAsset {
+    name: String,
+    browser_download_url: String,
+    digest: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitHubRelease {
+    tag_name: String,
+    html_url: String,
+    assets: Vec<GitHubReleaseAsset>,
+}
+
+#[derive(Debug, Serialize)]
+struct DesktopUpdateCheck {
+    available: bool,
+    current_version: String,
+    latest_version: String,
+    release_url: String,
+    installer_name: Option<String>,
+    installer_url: Option<String>,
+    expected_sha256: Option<String>,
+    reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct DesktopUpdateProgress {
+    stage: String,
+    downloaded: u64,
+    total: Option<u64>,
+    percent: Option<f64>,
+}
+
+#[derive(Debug, Serialize)]
+struct DesktopUpdateDownloadResult {
+    installer_path: String,
+    installer_name: String,
+    sha256: String,
+}
+
+fn normalize_release_version(value: &str) -> String {
+    value.trim().trim_start_matches('v').trim().to_string()
+}
+
+fn parse_version_segments(value: &str) -> Vec<u64> {
+    normalize_release_version(value)
+        .split('.')
+        .map(|segment| {
+            segment
+                .chars()
+                .take_while(|character| character.is_ascii_digit())
+                .collect::<String>()
+                .parse::<u64>()
+                .unwrap_or(0)
+        })
+        .collect()
+}
+
+fn is_newer_version(latest: &str, current: &str) -> bool {
+    let mut left = parse_version_segments(latest);
+    let mut right = parse_version_segments(current);
+    let length = left.len().max(right.len()).max(3);
+    left.resize(length, 0);
+    right.resize(length, 0);
+    left > right
+}
+
+fn strip_sha256_digest(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            value
+                .strip_prefix("sha256:")
+                .unwrap_or(value)
+                .to_ascii_lowercase()
+        })
+}
+
+fn fetch_latest_github_release() -> Result<GitHubRelease, String> {
+    ureq::get(WINSMUX_RELEASE_API_URL)
+        .set("Accept", "application/vnd.github+json")
+        .set("User-Agent", "winsmux-desktop-updater")
+        .call()
+        .map_err(|err| format!("failed to fetch latest release metadata: {err}"))?
+        .into_json::<GitHubRelease>()
+        .map_err(|err| format!("failed to parse latest release metadata: {err}"))
+}
+
+fn select_windows_setup_asset<'a>(
+    release: &'a GitHubRelease,
+    latest_version: &str,
+) -> Option<&'a GitHubReleaseAsset> {
+    let expected_name = format!("winsmux_{latest_version}_x64-setup.exe");
+    release
+        .assets
+        .iter()
+        .find(|asset| asset.name == expected_name)
+        .or_else(|| {
+            release
+                .assets
+                .iter()
+                .find(|asset| asset.name.ends_with("_x64-setup.exe"))
+        })
+}
+
+#[tauri::command]
+fn desktop_update_check() -> Result<DesktopUpdateCheck, String> {
+    let current_version = env!("CARGO_PKG_VERSION").to_string();
+
+    #[cfg(not(windows))]
+    {
+        return Ok(DesktopUpdateCheck {
+            available: false,
+            latest_version: current_version.clone(),
+            current_version,
+            release_url: "https://github.com/Sora-bluesky/winsmux/releases/latest".to_string(),
+            installer_name: None,
+            installer_url: None,
+            expected_sha256: None,
+            reason: Some(
+                "Desktop in-app updates are supported only for Windows setup installer builds."
+                    .to_string(),
+            ),
+        });
+    }
+
+    #[cfg(windows)]
+    {
+        let release = fetch_latest_github_release()?;
+        let latest_version = normalize_release_version(&release.tag_name);
+        let installer = select_windows_setup_asset(&release, &latest_version);
+        let available = is_newer_version(&latest_version, &current_version);
+
+        Ok(DesktopUpdateCheck {
+            available,
+            current_version,
+            latest_version,
+            release_url: release.html_url.clone(),
+            installer_name: installer.map(|asset| asset.name.clone()),
+            installer_url: installer.map(|asset| asset.browser_download_url.clone()),
+            expected_sha256: installer
+                .and_then(|asset| strip_sha256_digest(asset.digest.as_deref())),
+            reason: if installer.is_some() {
+                None
+            } else {
+                Some("Latest release does not contain a Windows setup installer asset.".to_string())
+            },
+        })
+    }
+}
+
+fn emit_desktop_update_progress(app: &AppHandle, stage: &str, downloaded: u64, total: Option<u64>) {
+    let percent = total
+        .filter(|total| *total > 0)
+        .map(|total| (downloaded as f64 / total as f64 * 100.0).min(100.0));
+    let _ = app.emit(
+        DESKTOP_UPDATE_PROGRESS_EVENT,
+        DesktopUpdateProgress {
+            stage: stage.to_string(),
+            downloaded,
+            total,
+            percent,
+        },
+    );
+}
+
+fn sanitize_installer_name(name: &str) -> Result<String, String> {
+    let file_name = Path::new(name)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "installer name must be a file name".to_string())?;
+    if !file_name.ends_with(".exe") || !file_name.starts_with("winsmux_") {
+        return Err("installer name must be a winsmux setup executable".to_string());
+    }
+    Ok(file_name.to_string())
+}
+
+fn hex_digest(bytes: impl AsRef<[u8]>) -> String {
+    bytes
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
+}
+
+fn hash_file_sha256(path: &Path) -> Result<String, String> {
+    let mut file = std::fs::File::open(path)
+        .map_err(|err| format!("failed to open update installer for verification: {err}"))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|err| format!("failed to read update installer for verification: {err}"))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hex_digest(hasher.finalize()))
+}
+
+#[tauri::command]
+fn desktop_update_download_installer(
+    app: AppHandle,
+    installer_url: String,
+    installer_name: String,
+    expected_sha256: Option<String>,
+) -> Result<DesktopUpdateDownloadResult, String> {
+    #[cfg(not(windows))]
+    {
+        let _ = (app, installer_url, installer_name, expected_sha256);
+        Err("Desktop installer updates are supported only on Windows.".to_string())
+    }
+
+    #[cfg(windows)]
+    {
+        let installer_name = sanitize_installer_name(&installer_name)?;
+        let updates_dir = std::env::temp_dir().join("winsmux-updates");
+        std::fs::create_dir_all(&updates_dir)
+            .map_err(|err| format!("failed to create update download directory: {err}"))?;
+        let installer_path = updates_dir.join(&installer_name);
+        let response = ureq::get(&installer_url)
+            .set("User-Agent", "winsmux-desktop-updater")
+            .call()
+            .map_err(|err| format!("failed to download update installer: {err}"))?;
+        let total = response
+            .header("Content-Length")
+            .and_then(|value| value.parse::<u64>().ok());
+        let mut reader = response.into_reader();
+        let mut file = std::fs::File::create(&installer_path)
+            .map_err(|err| format!("failed to create update installer file: {err}"))?;
+        let mut hasher = Sha256::new();
+        let mut downloaded = 0_u64;
+        let mut buffer = [0_u8; 64 * 1024];
+
+        emit_desktop_update_progress(&app, "downloading", downloaded, total);
+        loop {
+            let read = reader
+                .read(&mut buffer)
+                .map_err(|err| format!("failed to read update installer response: {err}"))?;
+            if read == 0 {
+                break;
+            }
+            file.write_all(&buffer[..read])
+                .map_err(|err| format!("failed to write update installer file: {err}"))?;
+            hasher.update(&buffer[..read]);
+            downloaded += read as u64;
+            emit_desktop_update_progress(&app, "downloading", downloaded, total);
+        }
+
+        let actual_sha256 = hex_digest(hasher.finalize());
+        if let Some(expected) = expected_sha256 {
+            let expected = expected.to_ascii_lowercase();
+            if expected != actual_sha256 {
+                let _ = std::fs::remove_file(&installer_path);
+                return Err(format!(
+                    "downloaded installer checksum mismatch: expected {expected}, got {actual_sha256}"
+                ));
+            }
+        }
+        emit_desktop_update_progress(&app, "downloaded", downloaded, total);
+
+        Ok(DesktopUpdateDownloadResult {
+            installer_path: installer_path.to_string_lossy().to_string(),
+            installer_name,
+            sha256: actual_sha256,
+        })
+    }
+}
+
+#[tauri::command]
+fn desktop_update_launch_installer(
+    app: AppHandle,
+    installer_path: String,
+    expected_sha256: String,
+) -> Result<(), String> {
+    let path = PathBuf::from(installer_path.trim());
+    if !path.is_file() {
+        return Err("update installer file does not exist".to_string());
+    }
+    if path.extension().and_then(|value| value.to_str()) != Some("exe") {
+        return Err("update installer must be a Windows executable".to_string());
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = (app, path, expected_sha256);
+        return Err("Desktop installer updates are supported only on Windows.".to_string());
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        let updates_dir = std::env::temp_dir()
+            .join("winsmux-updates")
+            .canonicalize()
+            .map_err(|err| format!("failed to verify update download directory: {err}"))?;
+        let canonical_path = path
+            .canonicalize()
+            .map_err(|err| format!("failed to verify update installer path: {err}"))?;
+        if !canonical_path.starts_with(&updates_dir) {
+            return Err(
+                "update installer must be launched from the winsmux update download directory"
+                    .to_string(),
+            );
+        }
+        let file_name = canonical_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| "update installer file name is invalid".to_string())?;
+        let _ = sanitize_installer_name(file_name)?;
+        let expected = strip_sha256_digest(Some(&expected_sha256))
+            .ok_or_else(|| "update installer checksum is required before launch".to_string())?;
+        let actual = hash_file_sha256(&canonical_path)?;
+        if actual != expected {
+            return Err(format!(
+                "update installer checksum changed before launch: expected {expected}, got {actual}"
+            ));
+        }
+        let app_path = std::env::current_exe()
+            .map_err(|err| format!("failed to resolve current winsmux executable: {err}"))?;
+        let restart_script_path = std::env::temp_dir()
+            .join("winsmux-updates")
+            .join("winsmux-update-restart.ps1");
+        let restart_script = r#"
+param(
+  [Parameter(Mandatory=$true)][string]$InstallerPath,
+  [Parameter(Mandatory=$true)][string]$AppPath
+)
+$ErrorActionPreference = 'Stop'
+$installer = Start-Process -FilePath $InstallerPath -PassThru
+Wait-Process -Id $installer.Id
+Start-Sleep -Milliseconds 500
+Start-Process -FilePath $AppPath | Out-Null
+"#;
+        std::fs::write(&restart_script_path, restart_script)
+            .map_err(|err| format!("failed to write update restart helper: {err}"))?;
+        Command::new("powershell.exe")
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-WindowStyle",
+                "Hidden",
+                "-File",
+            ])
+            .arg(&restart_script_path)
+            .arg("-InstallerPath")
+            .creation_flags(CREATE_NO_WINDOW)
+            .arg(&canonical_path)
+            .arg("-AppPath")
+            .arg(&app_path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|err| format!("failed to launch update restart helper: {err}"))?;
+        app.exit(0);
+    }
+
+    Ok(())
 }
 
 struct SinglePty {
@@ -1268,6 +1642,9 @@ pub fn run() {
             desktop_voice_capture_stop,
             desktop_initial_project_dir,
             desktop_control_pipe_enabled,
+            desktop_update_check,
+            desktop_update_download_installer,
+            desktop_update_launch_installer,
             pty_json_rpc,
             pty_spawn,
             pty_write,

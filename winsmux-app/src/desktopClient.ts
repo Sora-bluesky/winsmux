@@ -14,6 +14,9 @@ type DesktopCommandName =
   | "desktop_voice_capture_status"
   | "desktop_voice_capture_start"
   | "desktop_voice_capture_stop"
+  | "desktop_update_check"
+  | "desktop_update_download_installer"
+  | "desktop_update_launch_installer"
   | "desktop_dogfood_event"
   | "desktop_editor_read"
   | "desktop_file_read_full"
@@ -98,6 +101,30 @@ export interface DesktopVoiceCaptureStatus {
   native: DesktopVoiceCaptureNativeStatus;
   browser_fallback: DesktopVoiceCaptureBrowserFallbackStatus;
   state_contract: DesktopVoiceCaptureState[];
+}
+
+export interface DesktopUpdateCheck {
+  available: boolean;
+  current_version: string;
+  latest_version: string;
+  release_url: string;
+  installer_name: string | null;
+  installer_url: string | null;
+  expected_sha256: string | null;
+  reason: string | null;
+}
+
+export interface DesktopUpdateDownloadResult {
+  installer_path: string;
+  installer_name: string;
+  sha256: string;
+}
+
+export interface DesktopUpdateProgressEvent {
+  stage: "downloading" | "downloaded" | string;
+  downloaded: number;
+  total: number | null;
+  percent: number | null;
 }
 
 export interface DesktopBoardSummary {
@@ -820,6 +847,9 @@ function getDesktopJsonRpcMethod(command: DesktopCommandName): DesktopJsonRpcMet
       return "desktop.voice.capture_status";
     case "desktop_voice_capture_start":
     case "desktop_voice_capture_stop":
+    case "desktop_update_check":
+    case "desktop_update_download_installer":
+    case "desktop_update_launch_installer":
       throw new Error(`${command} does not use the desktop JSON-RPC transport`);
     case "desktop_dogfood_event":
       return "desktop.dogfood.event";
@@ -896,6 +926,15 @@ export function createTauriDesktopCommandTransport(
       }
       if (command === "desktop_voice_capture_stop") {
         return await invokeCommand<TResponse>("desktop_voice_capture_stop", payload);
+      }
+      if (command === "desktop_update_check") {
+        return await invokeCommand<TResponse>("desktop_update_check");
+      }
+      if (command === "desktop_update_download_installer") {
+        return await invokeCommand<TResponse>("desktop_update_download_installer", payload);
+      }
+      if (command === "desktop_update_launch_installer") {
+        return await invokeCommand<TResponse>("desktop_update_launch_installer", payload);
       }
       return await jsonRpcTransport.request<TResponse>(command, payload);
     },
@@ -1088,6 +1127,42 @@ export async function stopDesktopVoiceCapture(cancelled = false) {
   }
 }
 
+export async function checkDesktopUpdate() {
+  try {
+    return await desktopCommandTransport.request<DesktopUpdateCheck>(
+      "desktop_update_check",
+    );
+  } catch (error) {
+    throw normalizeDesktopError("desktop_update_check", error);
+  }
+}
+
+export async function downloadDesktopUpdateInstaller(
+  installerUrl: string,
+  installerName: string,
+  expectedSha256?: string | null,
+) {
+  try {
+    return await desktopCommandTransport.request<DesktopUpdateDownloadResult>(
+      "desktop_update_download_installer",
+      { installerUrl, installerName, expectedSha256: expectedSha256 ?? null },
+    );
+  } catch (error) {
+    throw normalizeDesktopError("desktop_update_download_installer", error);
+  }
+}
+
+export async function launchDesktopUpdateInstaller(installerPath: string, expectedSha256: string) {
+  try {
+    return await desktopCommandTransport.request<Record<string, never>>(
+      "desktop_update_launch_installer",
+      { installerPath, expectedSha256 },
+    );
+  } catch (error) {
+    throw normalizeDesktopError("desktop_update_launch_installer", error);
+  }
+}
+
 export async function recordDesktopDogfoodEvent(
   event: DesktopDogfoodEventInput,
   projectDir?: string | null,
@@ -1176,6 +1251,29 @@ export async function subscribeToDesktopSummaryRefresh(
       }
 
       onRefresh(event.payload ?? {});
+    },
+  );
+}
+
+export async function subscribeToDesktopUpdateProgress(
+  onProgress: (event: DesktopUpdateProgressEvent) => void,
+): Promise<UnlistenFn> {
+  if (!isTauri()) {
+    return async () => {};
+  }
+
+  return listen<DesktopUpdateProgressEvent | string>(
+    "desktop-update-progress",
+    (event) => {
+      if (typeof event.payload === "string") {
+        try {
+          onProgress(JSON.parse(event.payload) as DesktopUpdateProgressEvent);
+          return;
+        } catch {
+          return;
+        }
+      }
+      onProgress(event.payload);
     },
   );
 }

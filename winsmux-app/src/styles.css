@@ -2994,6 +2994,119 @@ body[data-popout-surface="1"] #editor-surface {
   text-overflow: ellipsis;
 }
 
+.desktop-update-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.24);
+  backdrop-filter: blur(2px);
+}
+
+.desktop-update-dialog.open {
+  display: flex;
+}
+
+.desktop-update-dialog-panel {
+  width: min(520px, calc(100vw - 48px));
+  max-width: 100%;
+  border: 1px solid var(--border-muted);
+  border-radius: 18px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.3);
+  padding: 24px;
+}
+
+.desktop-update-dialog-content {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.desktop-update-dialog-title {
+  margin: 0;
+  font-size: 22px;
+  line-height: 1.25;
+  letter-spacing: 0;
+  color: var(--text-primary);
+}
+
+.desktop-update-dialog-body,
+.desktop-update-dialog-status {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  letter-spacing: 0;
+  color: var(--text-secondary);
+}
+
+.desktop-update-dialog-status {
+  color: var(--text-muted);
+}
+
+.desktop-update-progress {
+  position: relative;
+  overflow: hidden;
+  height: 8px;
+  margin-top: 6px;
+  border-radius: 999px;
+  background: var(--ws-bg-subtle);
+}
+
+.desktop-update-progress-bar {
+  height: 100%;
+  min-width: 0;
+  border-radius: inherit;
+  background: var(--accent-blue);
+  transition: width 160ms ease;
+}
+
+.desktop-update-progress-label {
+  align-self: flex-end;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.desktop-update-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 22px;
+}
+
+.desktop-update-dialog-cancel,
+.desktop-update-dialog-primary {
+  border: 0;
+  border-radius: 999px;
+  padding: 9px 16px;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  letter-spacing: 0;
+  cursor: pointer;
+}
+
+.desktop-update-dialog-cancel {
+  background: var(--ws-bg-subtle);
+  color: var(--text-primary);
+}
+
+.desktop-update-dialog-primary {
+  background: var(--text-primary);
+  color: var(--ws-bg);
+}
+
+.desktop-update-dialog-cancel:disabled,
+.desktop-update-dialog-primary:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
 #editor-surface,
 #context-panel {
   min-width: 0;
