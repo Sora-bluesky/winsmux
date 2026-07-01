@@ -5,6 +5,14 @@
 - 推奨経路: GitHub Release から入手するデスクトップアプリのインストーラー
 - 別経路: CLI 中心の利用やスクリプト導入に使う Windows 向け npm パッケージ
 
+| 用途 | インストール経路 | 起動経路 |
+| --- | --- | --- |
+| 通常の画面操作でオペレーターとワーカーを使う | GitHub Release の `winsmux_<version>_x64-setup.exe` を実行 | インストール済みの `winsmux` デスクトップアプリを開き、プロジェクトフォルダーを選択 |
+| CLI 中心、ヘッドレス、スクリプト運用 | `npm install -g winsmux` の後に `winsmux install --profile full` | プロジェクトディレクトリで `winsmux init` と `winsmux launch` を実行 |
+| デスクトップオペレーターを外部自動化から使う | 先にデスクトップアプリをインストールして起動 | デスクトップオペレーターが表示された後、ローカル control pipe に接続 |
+
+`winsmux launch` は管理対象の Windows Terminal ワークスペースを起動します。デスクトップアプリは開きません。
+
 ## 動作要件
 
 - Windows 10 または Windows 11
@@ -78,7 +86,7 @@ npm install -g winsmux
 winsmux install --profile full
 ```
 
-npm コマンドは同梱されたインストーラーに処理を渡します。インストーラーは npm パッケージと同じ Git tag に固定されます。
+npm コマンドは同梱されたインストーラーに処理を渡します。インストーラーは npm パッケージと同じ Git tag に固定されます。リポジトリ内の `packages/winsmux` ディレクトリを直接 publish するのではなく、リリース時に `scripts/stage-npm-release.mjs` が npm 用 tarball を作成し、その段階で release tag に固定した `install.ps1` を追加します。
 
 インストール後は、作業対象のプロジェクトディレクトリへ移動して、管理対象
 ワークスペースを起動します。

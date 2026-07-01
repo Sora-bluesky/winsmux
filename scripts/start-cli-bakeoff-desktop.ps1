@@ -418,23 +418,34 @@ function Assert-ProductionDesktopPage {
     throw "Could not verify the production desktop operator UI on port $Port. Last error: $lastError"
 }
 
-function Get-WindowMetrics {
-    param([Parameter(Mandatory = $true)][int]$ProcessId)
-
+function Initialize-WinsmuxBenchmarkUser32 {
     Add-Type -AssemblyName System.Windows.Forms
     if (-not ('WinsmuxBenchmarkUser32' -as [type])) {
         Add-Type @"
 using System;
 using System.Runtime.InteropServices;
+using System.Text;
 public static class WinsmuxBenchmarkUser32 {
+  public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
   [StructLayout(LayoutKind.Sequential)]
   public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc enumProc, IntPtr lParam);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out int processId);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr hWnd, StringBuilder text, int count);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
   [DllImport("user32.dll")] public static extern bool MoveWindow(IntPtr hWnd, int X, int Y, int nWidth, int nHeight, bool bRepaint);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 }
 "@
     }
+}
+
+function Get-WindowMetrics {
+    param([Parameter(Mandatory = $true)][int]$ProcessId)
+
+    Initialize-WinsmuxBenchmarkUser32
 
     $deadline = (Get-Date).AddSeconds(30)
     $handle = [IntPtr]::Zero
@@ -463,6 +474,155 @@ public static class WinsmuxBenchmarkUser32 {
         width = [int]($rect.Right - $rect.Left)
         height = [int]($rect.Bottom - $rect.Top)
     }
+}
+
+function Get-ProcessTreeIds {
+    param([Parameter(Mandatory = $true)][int]$RootProcessId)
+
+    $processes = @(Get-CimInstance Win32_Process)
+    $ids = [System.Collections.Generic.HashSet[int]]::new()
+    [void]$ids.Add($RootProcessId)
+
+    $changed = $true
+    while ($changed) {
+        $changed = $false
+        foreach ($process in $processes) {
+            if ($null -ne $process.ParentProcessId -and $ids.Contains([int]$process.ParentProcessId)) {
+                if ($ids.Add([int]$process.ProcessId)) {
+                    $changed = $true
+                }
+            }
+        }
+    }
+
+    return @($ids)
+}
+
+function Get-VisibleTopLevelWindowsForProcessTree {
+    param([Parameter(Mandatory = $true)][int[]]$ProcessIds)
+
+    Initialize-WinsmuxBenchmarkUser32
+
+    $processIdSet = [System.Collections.Generic.HashSet[int]]::new()
+    foreach ($processId in $ProcessIds) {
+        [void]$processIdSet.Add([int]$processId)
+    }
+
+    $processNames = @{}
+    foreach ($processId in $ProcessIds) {
+        $process = Get-Process -Id $processId -ErrorAction SilentlyContinue
+        if ($null -ne $process) {
+            $processNames[[int]$processId] = [string]$process.ProcessName
+        }
+    }
+
+    $windows = [System.Collections.Generic.List[object]]::new()
+    $callback = [WinsmuxBenchmarkUser32+EnumWindowsProc]{
+        param([IntPtr]$hWnd, [IntPtr]$lParam)
+
+        if (-not [WinsmuxBenchmarkUser32]::IsWindowVisible($hWnd)) {
+            return $true
+        }
+
+        $windowProcessId = 0
+        [void][WinsmuxBenchmarkUser32]::GetWindowThreadProcessId($hWnd, [ref]$windowProcessId)
+        if (-not $processIdSet.Contains([int]$windowProcessId)) {
+            return $true
+        }
+
+        $titleBuilder = [System.Text.StringBuilder]::new(512)
+        $classBuilder = [System.Text.StringBuilder]::new(256)
+        [void][WinsmuxBenchmarkUser32]::GetWindowText($hWnd, $titleBuilder, $titleBuilder.Capacity)
+        [void][WinsmuxBenchmarkUser32]::GetClassName($hWnd, $classBuilder, $classBuilder.Capacity)
+        $rect = New-Object WinsmuxBenchmarkUser32+RECT
+        [void][WinsmuxBenchmarkUser32]::GetWindowRect($hWnd, [ref]$rect)
+
+        $processName = ''
+        if ($processNames.ContainsKey([int]$windowProcessId)) {
+            $processName = $processNames[[int]$windowProcessId]
+        }
+
+        $windows.Add([pscustomobject]@{
+            processId = [int]$windowProcessId
+            processName = $processName
+            handle = $hWnd.ToInt64()
+            title = $titleBuilder.ToString()
+            className = $classBuilder.ToString()
+            x = [int]$rect.Left
+            y = [int]$rect.Top
+            width = [int]($rect.Right - $rect.Left)
+            height = [int]($rect.Bottom - $rect.Top)
+        }) | Out-Null
+
+        return $true
+    }
+
+    [void][WinsmuxBenchmarkUser32]::EnumWindows($callback, [IntPtr]::Zero)
+    return @($windows)
+}
+
+function Assert-NoVisibleDesktopHelperWindows {
+    param(
+        [Parameter(Mandatory = $true)][int]$RootProcessId,
+        [Parameter(Mandatory = $true)][int]$MainProcessId
+    )
+
+    $processIds = [System.Collections.Generic.HashSet[int]]::new()
+    foreach ($processId in @(Get-ProcessTreeIds -RootProcessId $RootProcessId)) {
+        [void]$processIds.Add([int]$processId)
+    }
+    [void]$processIds.Add($MainProcessId)
+
+    $visibleWindows = @(Get-VisibleTopLevelWindowsForProcessTree -ProcessIds @($processIds))
+    $unexpected = @(
+        $visibleWindows |
+            Where-Object {
+                [int]$_.processId -ne $MainProcessId -and (
+                    [string]$_.processName -match 'msedgewebview2|pwsh|powershell|windowsterminal|conhost|cmd' -or
+                    [string]$_.className -match 'ConsoleWindowClass|CASCADIA_HOSTING_WINDOW_CLASS'
+                )
+            }
+    )
+
+    if ($unexpected.Count -gt 0) {
+        $summary = ($unexpected | ForEach-Object { "pid=$($_.processId) process=$($_.processName) title=$($_.title) class=$($_.className)" }) -join '; '
+        throw "winsmux desktop opened visible helper windows during launch readiness: $summary"
+    }
+
+    return $visibleWindows
+}
+
+function Assert-WebViewArgumentsDoNotOpenConsole {
+    param([Parameter(Mandatory = $true)][string]$Arguments)
+
+    if ($Arguments -match '--enable-logging|--v=') {
+        throw "WebView2 launch arguments would open or amplify diagnostic console output: $Arguments"
+    }
+}
+
+function Assert-DesktopOperatorControlPipe {
+    param([int]$TimeoutSeconds = 30)
+
+    $coreScript = Join-Path $RepoRoot 'scripts\winsmux-core.ps1'
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $lastOutput = ''
+
+    do {
+        $output = (& pwsh -NoProfile -ExecutionPolicy Bypass -File $coreScript operator-snapshot --lines 5 2>&1 | Out-String).Trim()
+        $exitCode = $LASTEXITCODE
+        if ($exitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($output)) {
+            $normalizedOutput = $output -replace '\s+', ' '
+            return [pscustomobject]@{
+                ok = $true
+                command = 'operator-snapshot --lines 5'
+                outputSnippet = $normalizedOutput.Substring(0, [Math]::Min(240, $normalizedOutput.Length))
+            }
+        }
+        $lastOutput = $output
+        Start-Sleep -Milliseconds 500
+    } while ((Get-Date) -lt $deadline)
+
+    throw "winsmux desktop operator API was not reachable through the control pipe. Last output: $lastOutput"
 }
 
 function Move-WindowToVisibleWorkspace {
@@ -605,7 +765,9 @@ $env:WINSMUX_BIN = $releaseCli
 $env:WINSMUX_ORCHESTRA_PROJECT_DIR = $resolvedProjectDir
 $env:WINSMUX_ORCHESTRA_ATTACH_MODE = 'desktop-app'
 $env:WINSMUX_ORCHESTRA_DISABLE_POWERSHELL_ATTACH = '1'
+$env:WINSMUX_CONTROL_PIPE_TOKEN = "winsmux-desktop-launch-$([guid]::NewGuid().ToString('N'))"
 $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$DebugPort --remote-allow-origins=*"
+Assert-WebViewArgumentsDoNotOpenConsole -Arguments $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
 $env:WEBVIEW2_USER_DATA_FOLDER = $webviewUserData
 $env:NO_COLOR = '1'
 
@@ -615,6 +777,7 @@ try {
     $launcherProcess = Start-Process -FilePath $releaseApp -ArgumentList @('--project-dir', $resolvedProjectDir) -WorkingDirectory $RepoRoot -PassThru
     $app = Wait-RepoWinsmuxDesktopApp -ExpectedProcessId ([int]$launcherProcess.Id)
     $page = Assert-ProductionDesktopPage -Port $DebugPort
+    $operatorControlPipe = Assert-DesktopOperatorControlPipe
     $metricsBeforeMove = Get-WindowMetrics -ProcessId ([int]$app.ProcessId)
     if (-not $NoMoveToExtendedDisplay) {
         $metricsAfterMove = Move-WindowToVisibleWorkspace -ProcessId ([int]$app.ProcessId) -Width $VisibleWidth -Height $VisibleHeight
@@ -625,6 +788,7 @@ try {
     if ([int]$metricsAfterMove.width -lt $VisibleWidth -or [int]$metricsAfterMove.height -lt $VisibleHeight) {
         throw "winsmux desktop window is smaller than required after launch: $($metricsAfterMove.width)x$($metricsAfterMove.height)"
     }
+    $visibleWindows = Assert-NoVisibleDesktopHelperWindows -RootProcessId ([int]$launcherProcess.Id) -MainProcessId ([int]$app.ProcessId)
 } catch {
     $reason = $_.Exception.Message
     Stop-RepoWinsmuxDesktopTree
@@ -643,8 +807,10 @@ $result = [pscustomobject]@{
     desktopFreshness = $desktopFreshness
     debugPort = $DebugPort
     page = $page
+    operatorControlPipe = $operatorControlPipe
     windowBeforeMove = $metricsBeforeMove
     windowAfterMove = $metricsAfterMove
+    visibleWindows = $visibleWindows
     attachMode = $env:WINSMUX_ORCHESTRA_ATTACH_MODE
     powershellAttach = 'disabled'
     preflight = $preflight

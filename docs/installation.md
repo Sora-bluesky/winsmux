@@ -7,6 +7,15 @@ CLI-first, scripted, or headless setups.
 - recommended: a desktop app installer from GitHub Releases
 - separate CLI path: a Windows-first npm package for CLI-first setups and scripted installs
 
+| Use case | Install path | Startup path |
+| --- | --- | --- |
+| Normal graphical operator/worker use | Download and run `winsmux_<version>_x64-setup.exe` from GitHub Releases | Open the installed `winsmux` desktop app and choose the project folder |
+| CLI-first or headless orchestration | `npm install -g winsmux`, then `winsmux install --profile full` | Run `winsmux init` and `winsmux launch` from the project directory |
+| External automation against the desktop operator | Install and open the desktop app first | Use the local control pipe after the desktop operator is visible |
+
+`winsmux launch` starts the managed Windows Terminal workspace. It does not open
+the desktop app.
+
 ## Requirements
 
 - Windows 10 or Windows 11
@@ -84,6 +93,9 @@ winsmux install --profile full
 ```
 
 The npm command delegates to the bundled installer and pins the installer to the same release tag as the npm package.
+The repository `packages/winsmux` directory is not published directly. Release
+automation stages the npm tarball with `scripts/stage-npm-release.mjs`, which
+adds the release-pinned `install.ps1` before publication.
 
 After the package install finishes, move to the project directory and launch the
 managed workspace:

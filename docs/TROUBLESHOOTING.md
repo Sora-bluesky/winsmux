@@ -9,6 +9,33 @@ They start the managed Windows Terminal workspace. They do not open the desktop
 app; use the installed desktop app directly when troubleshooting the graphical
 control surface.
 
+### Desktop app opens to a localhost connection error, blank page, or frozen window
+
+The desktop app is the recommended graphical entrypoint. Open the installed
+`winsmux` app from the Start menu or desktop shortcut after installing
+`winsmux_<version>_x64-setup.exe` from the matching GitHub Release.
+`winsmux launch` is a CLI entrypoint and does not open the desktop app.
+
+If the desktop app opens but shows a localhost connection error, a blank page, or
+stops responding:
+
+1. Close the `winsmux` desktop window.
+2. Check whether an old desktop process is still running:
+
+   ```powershell
+   Get-Process winsmux-app -ErrorAction SilentlyContinue |
+     Select-Object Id,ProcessName,Path,StartTime
+   ```
+
+3. If the listed process is the installed winsmux desktop app you just opened,
+   close it from Windows Task Manager and open winsmux again.
+4. If a black PowerShell, Windows Terminal, or WebView2 console window appears
+   with the desktop app, close winsmux and file an issue. A normal desktop
+   startup should show the winsmux window only.
+5. If the issue repeats after a reboot, reinstall the current desktop installer
+   from the same GitHub Release and attach `.winsmux/startup-journal.log`,
+   `.winsmux/manifest.yaml`, the installer version, and a screenshot.
+
 ### `Orchestra already starting (lock exists)`
 
 Cause: a previous startup ended before removing the lock file.
@@ -16,10 +43,19 @@ Cause: a previous startup ended before removing the lock file.
 Fix:
 
 ```powershell
+winsmux list
+Get-Process winsmux-app -ErrorAction SilentlyContinue |
+  Select-Object Id,ProcessName,Path,StartTime
+```
+
+Only remove the lock when there is no live winsmux session for this project and
+no running desktop app using it:
+
+```powershell
 Remove-Item .winsmux/orchestra.lock -Force
 ```
 
-Then run:
+Then run the CLI workspace startup again:
 
 ```powershell
 winsmux launch
@@ -109,11 +145,13 @@ When debugging a suspected leak, check for winsmux-owned processes before
 killing anything:
 
 ```powershell
-Get-Process node,cargo,winsmux-app -ErrorAction SilentlyContinue |
-  Where-Object { $_.Path -like "*winsmux*" -or $_.Path -like "*\\target\\*" }
+Get-Process winsmux-app -ErrorAction SilentlyContinue |
+  Select-Object Id,ProcessName,Path,StartTime
 ```
 
-Stop only the processes you can identify as started by the current winsmux desktop session. Do not stop unrelated `node` or `cargo` processes from other projects.
+Stop only the process you can identify as the current winsmux desktop session.
+Do not stop unrelated terminals, package manager processes, or other projects'
+development tools.
 
 ## Credential problems
 

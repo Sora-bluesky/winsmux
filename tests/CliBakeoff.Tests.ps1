@@ -83,6 +83,34 @@ Describe 'CLI bakeoff evidence harness' {
         $warningFunction | Should -Match 'usage\\s\+limit\\s\+resets'
     }
 
+    It 'keeps the operator runtime model and next startup setting distinct in the composer UI' {
+        $mainTs = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'winsmux-app\src\main.ts') -Raw -Encoding UTF8
+        $detectIndex = $mainTs.IndexOf('function detectComposerModelFromOperatorText')
+        $observeIndex = $mainTs.IndexOf('function updateObservedOperatorRuntimeModelFromOutput')
+        $displayIndex = $mainTs.IndexOf('function getComposerModelControlDisplay')
+        $menuIndex = $mainTs.IndexOf('function createComposerModelMenu')
+        $persistIndex = $mainTs.IndexOf('function persistComposerSessionControls')
+        $startupModelOptionIndex = $mainTs.IndexOf('const modelOption = getComposerModelOption()')
+        $startupArgsIndex = $mainTs.IndexOf('args.push("--model", modelOption.cliModel)', $startupModelOptionIndex)
+
+        ($detectIndex -ge 0) | Should -BeTrue
+        ($observeIndex -gt $detectIndex) | Should -BeTrue
+        ($displayIndex -gt $observeIndex) | Should -BeTrue
+        ($menuIndex -gt $displayIndex) | Should -BeTrue
+        ($persistIndex -ge 0) | Should -BeTrue
+        ($startupModelOptionIndex -ge 0) | Should -BeTrue
+        ($startupArgsIndex -gt $startupModelOptionIndex) | Should -BeTrue
+        $mainTs | Should -Match 'observedOperatorRuntimeModel'
+        $mainTs | Should -Match 'Current operator runtime model'
+        $mainTs | Should -Match 'Next startup setting'
+        $mainTs | Should -Match 'The operator is currently running'
+        $mainTs | Should -Match 'Choices here change the next startup setting'
+        $mainTs | Should -Match 'activeComposerModel'
+        $mainTs | Should -Match 'activeComposerEffort'
+        $mainTs | Should -Match 'args\.push\("--model", modelOption\.cliModel\)'
+        $mainTs | Should -Match 'args\.push\("--effort", activeComposerEffort\)'
+    }
+
     It 'benchmark_readiness_gate_rejects_mismatched_candidate_identity' {
         $missingDesktopBinary = Join-Path $TestDrive 'missing-winsmux-app.exe'
         $missingCliBinary = Join-Path $TestDrive 'missing-winsmux.exe'
@@ -224,6 +252,71 @@ Describe 'CLI bakeoff evidence harness' {
         $scriptText | Should -Match 'ERR_CONNECTION_REFUSED'
         $scriptText | Should -Match 'browserError='
         $scriptText | Should -Match 'operatorSurface = \$operatorSurface'
+    }
+
+    It 'requires desktop operator API reachability before desktop launch readiness passes' {
+        $scriptText = Get-Content -LiteralPath $script:DesktopStartScript -Raw -Encoding UTF8
+        $launchIndex = $scriptText.IndexOf('$launcherProcess = Start-Process -FilePath $releaseApp')
+        $tokenEnvIndex = $scriptText.IndexOf('$env:WINSMUX_CONTROL_PIPE_TOKEN =')
+        $pageCheckIndex = $scriptText.IndexOf('$page = Assert-ProductionDesktopPage -Port $DebugPort', $launchIndex)
+        $controlFunctionIndex = $scriptText.IndexOf('function Assert-DesktopOperatorControlPipe')
+        $snapshotMethodIndex = $scriptText.IndexOf('operator-snapshot', $controlFunctionIndex)
+        $controlCheckIndex = $scriptText.IndexOf('$operatorControlPipe = Assert-DesktopOperatorControlPipe', $pageCheckIndex)
+        $windowMetricsIndex = $scriptText.IndexOf('$metricsBeforeMove = Get-WindowMetrics -ProcessId ([int]$app.ProcessId)', $controlCheckIndex)
+
+        ($launchIndex -ge 0) | Should -BeTrue
+        ($tokenEnvIndex -ge 0) | Should -BeTrue
+        ($launchIndex -gt $tokenEnvIndex) | Should -BeTrue
+        ($pageCheckIndex -gt $launchIndex) | Should -BeTrue
+        ($controlFunctionIndex -ge 0) | Should -BeTrue
+        ($snapshotMethodIndex -gt $controlFunctionIndex) | Should -BeTrue
+        ($controlCheckIndex -gt $pageCheckIndex) | Should -BeTrue
+        ($controlCheckIndex -lt $windowMetricsIndex) | Should -BeTrue
+        $scriptText | Should -Match 'desktop operator API was not reachable'
+        $scriptText | Should -Match 'operatorControlPipe = \$operatorControlPipe'
+    }
+
+    It 'rejects visible helper windows and WebView console logging before desktop readiness passes' {
+        $scriptText = Get-Content -LiteralPath $script:DesktopStartScript -Raw -Encoding UTF8
+        $windowEnumerationIndex = $scriptText.IndexOf('function Get-VisibleTopLevelWindowsForProcessTree')
+        $helperFunctionIndex = $scriptText.IndexOf('function Assert-NoVisibleDesktopHelperWindows')
+        $webviewArgsIndex = $scriptText.IndexOf('$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS =')
+        $webviewArgGuardIndex = $scriptText.IndexOf('Assert-WebViewArgumentsDoNotOpenConsole', $webviewArgsIndex)
+        $moveIndex = $scriptText.IndexOf('$metricsAfterMove = Move-WindowToVisibleWorkspace')
+        $helperCheckIndex = $scriptText.IndexOf('$visibleWindows = Assert-NoVisibleDesktopHelperWindows', $moveIndex)
+        $resultIndex = $scriptText.IndexOf('$result = [pscustomobject]@{', $helperCheckIndex)
+
+        ($windowEnumerationIndex -ge 0) | Should -BeTrue
+        ($helperFunctionIndex -gt $windowEnumerationIndex) | Should -BeTrue
+        ($webviewArgsIndex -ge 0) | Should -BeTrue
+        ($webviewArgGuardIndex -gt $webviewArgsIndex) | Should -BeTrue
+        ($moveIndex -ge 0) | Should -BeTrue
+        ($helperCheckIndex -gt $moveIndex) | Should -BeTrue
+        ($helperCheckIndex -lt $resultIndex) | Should -BeTrue
+        $scriptText | Should -Match 'visible helper windows'
+        $scriptText | Should -Match 'msedgewebview2|pwsh|powershell|windowsterminal|conhost|cmd'
+        $scriptText | Should -Not -Match 'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS\s*=\s*".*--enable-logging'
+        $scriptText | Should -Not -Match 'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS\s*=\s*".*--v='
+        $scriptText | Should -Match 'visibleWindows = \$visibleWindows'
+    }
+
+    It 'documents public desktop startup troubleshooting without repo-build process assumptions' {
+        $troubleshooting = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'docs\TROUBLESHOOTING.md') -Raw -Encoding UTF8
+        $troubleshootingJa = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'docs\TROUBLESHOOTING.ja.md') -Raw -Encoding UTF8
+        $installation = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'docs\installation.md') -Raw -Encoding UTF8
+
+        $troubleshooting | Should -Match 'Desktop app opens to a localhost connection error'
+        $troubleshooting | Should -Match 'winsmux_<version>_x64-setup\.exe'
+        $troubleshooting | Should -Match 'Get-Process winsmux-app'
+        $troubleshooting | Should -Match 'black PowerShell, Windows Terminal, or WebView2 console window'
+        $troubleshooting | Should -Not -Match 'Get-Process node,cargo,winsmux-app'
+        $troubleshooting | Should -Not -Match '\\target\\'
+        $troubleshootingJa | Should -Match 'デスクトップアプリが localhost 接続エラー'
+        $troubleshootingJa | Should -Match 'Get-Process winsmux-app'
+        $troubleshootingJa | Should -Not -Match 'Get-Process node,cargo,winsmux-app'
+        $troubleshootingJa | Should -Not -Match '\\target\\'
+        $installation | Should -Match 'External automation against the desktop operator'
+        $installation | Should -Match 'winsmux launch.*does not open\s+the desktop app'
     }
 
     It 'filters content-clean status noise before enforcing the candidate clean gate' {
