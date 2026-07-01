@@ -9,7 +9,7 @@ CLI-first, scripted, or headless setups.
 
 | Use case | Install path | Startup path |
 | --- | --- | --- |
-| Normal graphical operator/worker use | Download and run `winsmux_<version>_x64-setup.exe` from GitHub Releases | Open the installed `winsmux` desktop app and choose the project folder |
+| Normal graphical operator/worker use | Download and run `winsmux_..._x64-setup.exe` from the [latest release](https://github.com/Sora-bluesky/winsmux/releases/latest) | Open the installed `winsmux` desktop app and choose the project folder |
 | CLI-first or headless orchestration | `npm install -g winsmux`, then `winsmux install --profile full` | Run `winsmux init` and `winsmux launch` from the project directory |
 | External automation against the desktop operator | Install and open the desktop app first | Use the local control pipe after the desktop operator is visible |
 
@@ -33,9 +33,21 @@ not need a local LLM runtime for that path.
 
 Desktop app:
 
-1. Download `winsmux_<version>_x64-setup.exe` from the matching GitHub Release.
-2. Verify `SHA256SUMS-desktop` when Windows shows a publisher or SmartScreen warning.
-3. Run the installer, open the installed winsmux app, and choose the project folder after launch.
+1. Open the [latest release](https://github.com/Sora-bluesky/winsmux/releases/latest).
+2. Download the `winsmux_..._x64-setup.exe` asset.
+3. Verify `SHA256SUMS-desktop` from the same release when Windows shows a publisher or SmartScreen warning.
+4. Run the installer, open the installed winsmux app, and choose the project folder after launch.
+
+Verify the desktop install as a Windows app install:
+
+- Windows Search finds the app by name as `winsmux`.
+- Windows Settings > Apps > Installed apps lists `winsmux` with the publisher,
+  install date, and size fields that Windows provides.
+- Windows Search does not need to show a version number. Check the version from
+  the app, the installer file, or Windows Installed apps details when a version
+  value is needed.
+- Opening the installed app shows the winsmux desktop control surface, not a
+  localhost connection error or a separate console window.
 
 CLI package:
 
@@ -57,10 +69,10 @@ winsmux launch
 
 ## Desktop app installer
 
-For the recommended desktop app path, download the Windows installer from the matching GitHub Release:
+For the recommended desktop app path, download the Windows installer from the [latest release](https://github.com/Sora-bluesky/winsmux/releases/latest). Use the [Releases page](https://github.com/Sora-bluesky/winsmux/releases) when you need a specific older version:
 
-- `winsmux_<version>_x64-setup.exe` for the standard guided installer
-- `winsmux_<version>_x64_en-US.msi` for MSI-based deployment
+- `winsmux_..._x64-setup.exe` for the standard guided installer
+- `winsmux_..._x64_en-US.msi` for MSI-based deployment
 - `SHA256SUMS-desktop` for checksum verification
 
 Use the setup executable for a normal single-user install. Use the MSI when your deployment tooling expects MSI packages.
@@ -72,8 +84,8 @@ If Windows shows a publisher or SmartScreen warning, verify the downloaded file 
 
 The desktop packaging policy, effective for the `v1.0.0` release line, is:
 
-- primary artifact: `winsmux_<version>_x64-setup.exe`
-- deployment artifact: `winsmux_<version>_x64_en-US.msi`
+- primary artifact: `winsmux_..._x64-setup.exe`
+- deployment artifact: `winsmux_..._x64_en-US.msi`
 - verification artifact: `SHA256SUMS-desktop`
 - setup executable languages: English and Japanese, with the language selector enabled
 - signing posture: documented per release until a stable signing certificate is available
@@ -130,6 +142,13 @@ winsmux update --profile orchestra
 When no profile is supplied, `winsmux update` keeps the previously recorded profile. When the profile changes, scripts outside the selected profile are removed from the installed support directory.
 
 For the desktop app, download the newer release installer and run it over the existing install. This does not remove project repositories, agent CLIs, or their authentication storage.
+
+Desktop automatic update detection is a `v0.36.23` release requirement tracked
+by issue `#1082`. The `v0.36.23` release cannot ship until the desktop app
+detects available updates, shows the in-app update prompt, hands off to the
+installer, reports install progress, and guides the restart flow. Published
+builds before `v0.36.23` are updated by running the newer installer over the
+existing install.
 
 ## Uninstall
 

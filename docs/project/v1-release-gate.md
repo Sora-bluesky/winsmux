@@ -31,6 +31,32 @@ The desktop update path is installing the newer desktop release over the
 existing installation. This keeps project repositories, agent CLI
 authentication, and external provider credentials outside the app uninstaller.
 
+Automatic in-app update detection is a `v0.36.23` release requirement tracked by
+issue `#1082`. `v0.36.23` cannot ship until update check, download prompt,
+installer handoff, progress state, and restart behavior are implemented and
+verified. Published builds before `v0.36.23` must document the
+installer-over-existing-install update path instead.
+
+The visible desktop UX must match the Codex-style update affordance: a compact
+persistent status/action in the main chrome that distinguishes download progress
+from the final update action. The gate must verify at least `downloading`,
+`update available`, install handoff, and post-install restart guidance states
+before `v0.36.23` release publication.
+
+The expected desktop update flow is:
+
+- When a newer release is detected, the persistent update action changes to an
+  update-ready state such as `Update`.
+- Clicking the update action opens a confirmation dialog that explains the app
+  will close during installation and local active sessions may be interrupted.
+- Clicking `Update` inside the dialog starts installation and changes the dialog
+  to an installing state with progress text and progress indication.
+- Clicking `Cancel` or outside the dialog closes the dialog without starting the
+  installer.
+- After installation completes, the app restarts or shows an explicit restart
+  action. Silent background replacement without user-visible state is not
+  accepted.
+
 ## Public distribution boundary
 
 The `v1.0.0` release gate verifies the public binary distribution boundary
@@ -65,5 +91,23 @@ worker-pane child processes.
   notes text.
 - Post-release smoke checks verify that published installers, checksums, npm
   package metadata, and public docs are reachable from the GitHub Release.
+- Public install docs must link to the GitHub `releases/latest` route for the
+  normal path and use the version-neutral installer example
+  `winsmux_..._x64-setup.exe`. Release publication must fail if public install
+  docs contain a fixed release asset name such as
+  `winsmux_0.x.y_x64-setup.exe`.
+- Quickstart must stay desktop-app first. It must not include npm installation,
+  `winsmux init`, or `winsmux launch` commands. CLI-first setup belongs in the
+  Installation CLI section and in the npm package README.
+- Each release must verify README, Quickstart, Installation, Troubleshooting,
+  and `packages/winsmux/README.md` together so the latest-release link,
+  version-neutral installer name, desktop-first path, and CLI-only npm boundary
+  stay synchronized.
+- Desktop installer smoke checks verify that Windows Search finds the app by
+  name, Windows Installed apps shows the installed app entry, and the installed
+  app opens the desktop control surface without a localhost error or extra
+  console window. A version number is not required in Windows Search; version
+  evidence belongs in the installer asset, app metadata, or Installed apps
+  details.
 - Issue `#751` can be closed because the installer decision is recorded.
 - Issue `#967` can be closed after the cleanup implementation is merged.

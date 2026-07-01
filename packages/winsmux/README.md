@@ -4,6 +4,11 @@ This directory is the public npm install surface for `winsmux`. It covers the
 CLI package path. The recommended graphical desktop app path is the GitHub
 Release installer, not this npm package.
 
+For the recommended desktop app, open the latest GitHub Release and download
+the `winsmux_..._x64-setup.exe` installer:
+
+- https://github.com/Sora-bluesky/winsmux/releases/latest
+
 The npm package name is `winsmux`.
 Repository publishing is tag-driven and uses the staged package from
 `scripts/stage-npm-release.mjs`.
@@ -13,14 +18,14 @@ The source directory is not the publish artifact. Do not publish
 produced by `scripts/stage-npm-release.mjs`; `install.ps1` is added during
 staging and pinned to the same release tag as the npm package.
 
-Install it on Windows with:
+Install the CLI package on Windows with:
 
 ```powershell
 npm install -g winsmux
 ```
 
 The `winsmux` npm command proxies to the bundled Windows installer flow for the
-CLI package. It does not install or open the desktop app.
+CLI package path. It does not install or open the desktop app.
 
 User-facing setup docs:
 

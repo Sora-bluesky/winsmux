@@ -49,7 +49,7 @@ API, but their startup paths are separate:
 
 | Entry point | How users start it | What it opens | Primary validation |
 | --- | --- | --- | --- |
-| Desktop app | Install `winsmux_<version>_x64-setup.exe`, open the installed `winsmux` app, then choose a project folder | Graphical operator and worker pane surface | visible winsmux window, rendered operator UI, and reachable local operator control API |
+| Desktop app | Download `winsmux_..._x64-setup.exe` from the [latest release](https://github.com/Sora-bluesky/winsmux/releases/latest), install it, open the installed `winsmux` app, then choose a project folder | Graphical operator and worker pane surface | visible winsmux window, rendered operator UI, and reachable local operator control API |
 | npm/CLI workspace | `npm install -g winsmux`, `winsmux install --profile full`, `winsmux init`, then `winsmux launch` in a project directory | Managed Windows Terminal workspace | CLI doctor checks, project manifest, and pane session state |
 | External automation | Connect to the local control pipe after the desktop app starts | Programmatic operator snapshot/submit and desktop control methods | authenticated control pipe, `desktop.operator.snapshot`, and `desktop.operator.submit` |
 
@@ -230,7 +230,10 @@ The public product-facing operator contract is centered on:
 - `README.md`
 - this file
 
-The public first-run entrypoints now converge on:
+The public first-run entrypoints are split by user path. The desktop path is
+the recommended first-run path for normal graphical use. The CLI commands below
+belong to the npm/CLI workspace path and must not be presented as required
+desktop app setup:
 
 - `winsmux init`
 - `winsmux launch`

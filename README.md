@@ -69,16 +69,13 @@ Rust is only needed when you build the runtime from source.
 
 ## Get Started
 
-For most users, start with the desktop app. Download `winsmux_<version>_x64-setup.exe` from the matching GitHub Release, run it, open the installed winsmux app, and choose the project folder you want agents to work in.
+For most users, start with the desktop app. Open the [latest release](https://github.com/Sora-bluesky/winsmux/releases/latest), download the `winsmux_..._x64-setup.exe` asset, run it, open the installed `winsmux` app, and choose the project folder you want agents to work in. Use the [Releases page](https://github.com/Sora-bluesky/winsmux/releases) when you need a specific older version.
 
-Use the npm package when you want a CLI-first, scripted, or headless setup. This path starts a managed Windows Terminal workspace; it does not open the desktop app.
-
-```powershell
-npm install -g winsmux
-winsmux install --profile full
-winsmux init
-winsmux launch
-```
+Use the npm package only when you want a CLI-first, scripted, or headless setup.
+That path starts with `npm install -g winsmux`, then `winsmux install --profile full`.
+It starts a managed Windows Terminal workspace; it does not open the desktop app.
+Keep the desktop first-run flow and the CLI setup flow separate so new users do
+not run project initialization commands before they have opened the app.
 
 See [Quickstart](docs/quickstart.md) for a guided first run.
 See [Installation](docs/installation.md) for the recommended desktop installer path, CLI profiles, updates, and uninstall steps.
