@@ -208,6 +208,45 @@ Describe 'CLI bakeoff evidence harness' {
         $scriptText | Should -Match 'newestDistUtc'
     }
 
+    It 'requires packaged desktop asset URLs to be relative and present' {
+        $viteConfig = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'winsmux-app\vite.config.ts') -Raw -Encoding UTF8
+        $indexHtml = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'winsmux-app\index.html') -Raw -Encoding UTF8
+        $scriptText = Get-Content -LiteralPath $script:DesktopStartScript -Raw -Encoding UTF8
+
+        $viteConfig | Should -Match 'base:\s*"\./"'
+        $indexHtml | Should -Not -Match '(?:src|href)="/(?:assets/|src/|startup\.css|favicon\.|apple-touch-icon\.png)'
+        $indexHtml | Should -Match 'href="\./startup\.css"'
+        $indexHtml | Should -Match 'href="\./src/styles\.css"'
+        $indexHtml | Should -Match 'src="\./src/main\.ts"'
+        $scriptText | Should -Match 'function Assert-DesktopDistAssetIntegrity'
+        $scriptText | Should -Match 'root-anchored asset URLs'
+        $scriptText | Should -Match 'references missing packaged assets'
+        $scriptText | Should -Match 'distAssetReferenceCount'
+    }
+
+    It 'normalizes WebView DevTools page arrays before desktop launch verification' {
+        $scriptText = Get-Content -LiteralPath $script:DesktopStartScript -Raw -Encoding UTF8
+
+        $scriptText | Should -Match 'function Convert-ToFlatObjectArray'
+        $scriptText | Should -Match 'Convert-ToFlatObjectArray\s+\(Invoke-RestMethod'
+        $scriptText | Should -Match 'winsmux desktop DevTools endpoint returned no page URLs'
+    }
+
+    It 'reads WebView operator surface results without direct dynamic property assumptions' {
+        $scriptText = Get-Content -LiteralPath $script:DesktopStartScript -Raw -Encoding UTF8
+
+        $scriptText | Should -Match 'function Get-ObjectPropertyValue'
+        $scriptText | Should -Match '\[void\]\$socket\.ConnectAsync'
+        $scriptText | Should -Match '\[void\]\$socket\.SendAsync'
+        $scriptText | Should -Match '\[void\]\$socket\.CloseAsync'
+        $scriptText | Should -Match '\[void\]\$chunks\.Add\(\$receiveBytes\[\$index\]\)'
+        $scriptText | Should -Match 'JSON\.stringify'
+        $scriptText | Should -Match 'ConvertFrom-Json -Depth 20'
+        $scriptText | Should -Match 'Get-ObjectPropertyValue -Object \$surface -Name ''ok'''
+        $scriptText | Should -Match 'did not return an ok property'
+        $scriptText | Should -Not -Match '\$surface\.ok'
+    }
+
     It 'rejects the Tauri dev server URL during packaged desktop E2E' {
         $scriptText = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'winsmux-app\scripts\desktop-pane-e2e.mjs') -Raw -Encoding UTF8
         $scriptText | Should -Match 'allowDevServer'
@@ -280,6 +319,7 @@ Describe 'CLI bakeoff evidence harness' {
         $scriptText = Get-Content -LiteralPath $script:DesktopStartScript -Raw -Encoding UTF8
         $windowEnumerationIndex = $scriptText.IndexOf('function Get-VisibleTopLevelWindowsForProcessTree')
         $helperFunctionIndex = $scriptText.IndexOf('function Assert-NoVisibleDesktopHelperWindows')
+        $helperHandleParamIndex = $scriptText.IndexOf('[Parameter(Mandatory = $true)][Int64]$MainWindowHandle', $helperFunctionIndex)
         $webviewArgsIndex = $scriptText.IndexOf('$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS =')
         $webviewArgGuardIndex = $scriptText.IndexOf('Assert-WebViewArgumentsDoNotOpenConsole', $webviewArgsIndex)
         $moveIndex = $scriptText.IndexOf('$metricsAfterMove = Move-WindowToVisibleWorkspace')
@@ -288,12 +328,16 @@ Describe 'CLI bakeoff evidence harness' {
 
         ($windowEnumerationIndex -ge 0) | Should -BeTrue
         ($helperFunctionIndex -gt $windowEnumerationIndex) | Should -BeTrue
+        ($helperHandleParamIndex -gt $helperFunctionIndex) | Should -BeTrue
         ($webviewArgsIndex -ge 0) | Should -BeTrue
         ($webviewArgGuardIndex -gt $webviewArgsIndex) | Should -BeTrue
         ($moveIndex -ge 0) | Should -BeTrue
         ($helperCheckIndex -gt $moveIndex) | Should -BeTrue
         ($helperCheckIndex -lt $resultIndex) | Should -BeTrue
         $scriptText | Should -Match 'visible helper windows'
+        $scriptText | Should -Match '\$isExpectedMainWindow'
+        $scriptText | Should -Match '\$isTinyUntitledWindow'
+        $scriptText | Should -Match '-MainWindowHandle \(\[Int64\]\$metricsAfterMove\.handle\)'
         $scriptText | Should -Match 'msedgewebview2|pwsh|powershell|windowsterminal|conhost|cmd'
         $scriptText | Should -Not -Match 'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS\s*=\s*".*--enable-logging'
         $scriptText | Should -Not -Match 'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS\s*=\s*".*--v='

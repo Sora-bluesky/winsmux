@@ -99,10 +99,59 @@ function Assert-DesktopExecutableFreshForDist {
         throw "Production desktop executable is older than winsmux-app/dist. Rebuild the desktop app before launch. exeUtc=$($desktopFile.LastWriteTimeUtc.ToString('o')) newestDistUtc=$($newestDistFile.LastWriteTimeUtc.ToString('o')) newestDistFile=$($newestDistFile.FullName)"
     }
 
+    $assetIntegrity = Assert-DesktopDistAssetIntegrity -DistDir $DistDir
+
     return [pscustomobject]@{
         desktopExecutableUtc = $desktopFile.LastWriteTimeUtc.ToString('o')
         newestDistUtc = $newestDistFile.LastWriteTimeUtc.ToString('o')
         newestDistFile = $newestDistFile.FullName
+        distIndexHtml = $assetIntegrity.indexHtml
+        distAssetReferenceCount = $assetIntegrity.assetReferenceCount
+    }
+}
+
+function Assert-DesktopDistAssetIntegrity {
+    param([Parameter(Mandatory = $true)][string]$DistDir)
+
+    $indexHtmlPath = Join-Path $DistDir 'index.html'
+    if (-not (Test-Path -LiteralPath $indexHtmlPath -PathType Leaf)) {
+        throw "Desktop dist index.html was not found: $indexHtmlPath"
+    }
+
+    $html = Get-Content -LiteralPath $indexHtmlPath -Raw -Encoding UTF8
+    $matches = [regex]::Matches($html, '(?i)\b(?:src|href)=["'']([^"'']+)["'']')
+    $references = @($matches | ForEach-Object { [string]$_.Groups[1].Value } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $appReferences = @($references | Where-Object {
+            $_ -match '^\.?/?(?:assets/|startup\.css|favicon\.(?:svg|ico)|apple-touch-icon\.png)'
+        })
+
+    $rootAnchoredReferences = @($appReferences | Where-Object { $_ -match '^/' })
+    if ($rootAnchoredReferences.Count -gt 0) {
+        throw "Desktop dist index.html contains root-anchored asset URLs that can render as a blank packaged Tauri page: $($rootAnchoredReferences -join ', ')"
+    }
+
+    $missingReferences = @()
+    foreach ($reference in $appReferences) {
+        $pathPart = ($reference -replace '[?#].*$', '')
+        $relativePath = $pathPart -replace '^\./', ''
+        if ($relativePath -match '^\.\./') {
+            $missingReferences += $reference
+            continue
+        }
+
+        $assetPath = Join-Path $DistDir ($relativePath -replace '/', [System.IO.Path]::DirectorySeparatorChar)
+        if (-not (Test-Path -LiteralPath $assetPath -PathType Leaf)) {
+            $missingReferences += $reference
+        }
+    }
+
+    if ($missingReferences.Count -gt 0) {
+        throw "Desktop dist index.html references missing packaged assets: $($missingReferences -join ', ')"
+    }
+
+    return [pscustomobject]@{
+        indexHtml = $indexHtmlPath
+        assetReferenceCount = $appReferences.Count
     }
 }
 
@@ -220,7 +269,7 @@ function Invoke-WebViewDevToolsRuntimeExpression {
     $socket = [System.Net.WebSockets.ClientWebSocket]::new()
     $cancellation = [System.Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds($TimeoutSeconds))
     try {
-        $socket.ConnectAsync([Uri]$WebSocketDebuggerUrl, $cancellation.Token).GetAwaiter().GetResult()
+        [void]$socket.ConnectAsync([Uri]$WebSocketDebuggerUrl, $cancellation.Token).GetAwaiter().GetResult()
         $request = @{
             id = 1
             method = 'Runtime.evaluate'
@@ -232,7 +281,7 @@ function Invoke-WebViewDevToolsRuntimeExpression {
         } | ConvertTo-Json -Depth 12 -Compress
         $requestBytes = [System.Text.Encoding]::UTF8.GetBytes($request)
         $sendBuffer = [ArraySegment[byte]]::new($requestBytes)
-        $socket.SendAsync($sendBuffer, [System.Net.WebSockets.WebSocketMessageType]::Text, $true, $cancellation.Token).GetAwaiter().GetResult()
+        [void]$socket.SendAsync($sendBuffer, [System.Net.WebSockets.WebSocketMessageType]::Text, $true, $cancellation.Token).GetAwaiter().GetResult()
 
         $receiveBytes = New-Object byte[] 65536
         while ($true) {
@@ -244,7 +293,7 @@ function Invoke-WebViewDevToolsRuntimeExpression {
                     throw 'DevTools runtime websocket closed before an evaluation response was received.'
                 }
                 for ($index = 0; $index -lt $receiveResult.Count; $index++) {
-                    $chunks.Add($receiveBytes[$index])
+                    [void]$chunks.Add($receiveBytes[$index])
                 }
             } while (-not $receiveResult.EndOfMessage)
 
@@ -290,13 +339,59 @@ function Invoke-WebViewDevToolsRuntimeExpression {
     } finally {
         if ($socket.State -eq [System.Net.WebSockets.WebSocketState]::Open) {
             try {
-                $socket.CloseAsync([System.Net.WebSockets.WebSocketCloseStatus]::NormalClosure, 'done', [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
+                [void]$socket.CloseAsync([System.Net.WebSockets.WebSocketCloseStatus]::NormalClosure, 'done', [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
             } catch {
             }
         }
         $socket.Dispose()
         $cancellation.Dispose()
     }
+}
+
+function Convert-ToFlatObjectArray {
+    param([AllowNull()]$Value)
+
+    if ($null -eq $Value) {
+        return @()
+    }
+
+    $items = [System.Collections.Generic.List[object]]::new()
+    if ($Value -is [System.Array]) {
+        foreach ($item in $Value) {
+            foreach ($flatItem in @(Convert-ToFlatObjectArray $item)) {
+                $null = $items.Add($flatItem)
+            }
+        }
+    } else {
+        $null = $items.Add($Value)
+    }
+
+    return @($items)
+}
+
+function Get-ObjectPropertyValue {
+    param(
+        [AllowNull()]$Object,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    if ($null -eq $Object) {
+        return $null
+    }
+
+    if ($Object -is [System.Collections.IDictionary]) {
+        if ($Object.Contains($Name)) {
+            return $Object[$Name]
+        }
+        return $null
+    }
+
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -ne $property) {
+        return $property.Value
+    }
+
+    return $null
 }
 
 function Test-DesktopOperatorSurface {
@@ -325,7 +420,7 @@ function Test-DesktopOperatorSurface {
   const browserErrorPattern = /(ERR_CONNECTION_REFUSED|refused to connect|This site can't be reached|This site cannot be reached|localhost:1420|127\.0\.0\.1:1420)/i;
   const hasBrowserError = browserErrorPattern.test(title) || browserErrorPattern.test(bodyText);
   const tauriInvokeAvailable = Boolean(window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke);
-  return {
+  return JSON.stringify({
     ok: document.readyState !== "loading" && missingSelectors.length === 0 && !hasBrowserError && tauriInvokeAvailable,
     readyState: document.readyState,
     title,
@@ -334,30 +429,51 @@ function Test-DesktopOperatorSurface {
     hasBrowserError,
     browserErrorSnippet: hasBrowserError ? bodyText.slice(0, 300) : "",
     tauriInvokeAvailable
-  };
+  });
 })()
 '@
 
-    $surface = Invoke-WebViewDevToolsRuntimeExpression -WebSocketDebuggerUrl $webSocketDebuggerUrl -Expression $expression
-    if (-not [bool]$surface.ok) {
+    $surfaceJson = [string](Invoke-WebViewDevToolsRuntimeExpression -WebSocketDebuggerUrl $webSocketDebuggerUrl -Expression $expression)
+    if ([string]::IsNullOrWhiteSpace($surfaceJson)) {
+        throw 'DevTools operator surface evaluation returned an empty result.'
+    }
+    try {
+        $surface = $surfaceJson | ConvertFrom-Json -Depth 20
+    } catch {
+        $surfaceSnippet = $surfaceJson.Substring(0, [Math]::Min(200, $surfaceJson.Length))
+        throw "DevTools operator surface evaluation did not return valid JSON. snippet=$surfaceSnippet error=$($_.Exception.Message)"
+    }
+    $surfaceOk = Get-ObjectPropertyValue -Object $surface -Name 'ok'
+    if ($null -eq $surfaceOk) {
+        $properties = @($surface.PSObject.Properties | ForEach-Object { $_.Name })
+        throw "DevTools operator surface evaluation did not return an ok property. properties=$($properties -join ',')"
+    }
+
+    if (-not [bool]$surfaceOk) {
         $reasons = @()
-        if ([string]$surface.readyState -eq 'loading') {
+        $readyState = [string](Get-ObjectPropertyValue -Object $surface -Name 'readyState')
+        if ($readyState -eq 'loading') {
             $reasons += 'readyState=loading'
         }
-        $missingSelectors = @($surface.missingSelectors)
+        $missingSelectors = @(Get-ObjectPropertyValue -Object $surface -Name 'missingSelectors')
         if ($missingSelectors.Count -gt 0) {
             $reasons += "missingSelectors=$($missingSelectors -join ',')"
         }
-        if (-not [bool]$surface.tauriInvokeAvailable) {
+        $tauriInvokeAvailable = Get-ObjectPropertyValue -Object $surface -Name 'tauriInvokeAvailable'
+        if (-not [bool]$tauriInvokeAvailable) {
             $reasons += 'tauriInvokeAvailable=false'
         }
-        if ([bool]$surface.hasBrowserError) {
-            $reasons += "browserError=$($surface.browserErrorSnippet)"
+        $hasBrowserError = Get-ObjectPropertyValue -Object $surface -Name 'hasBrowserError'
+        if ([bool]$hasBrowserError) {
+            $browserErrorSnippet = Get-ObjectPropertyValue -Object $surface -Name 'browserErrorSnippet'
+            $reasons += "browserError=$browserErrorSnippet"
         }
         if ($reasons.Count -eq 0) {
             $reasons += 'unknown'
         }
-        throw "winsmux desktop page is not a usable operator UI yet. $($reasons -join '; ') location=$($surface.href) title=$($surface.title)"
+        $href = Get-ObjectPropertyValue -Object $surface -Name 'href'
+        $title = Get-ObjectPropertyValue -Object $surface -Name 'title'
+        throw "winsmux desktop page is not a usable operator UI yet. $($reasons -join '; ') location=$href title=$title"
     }
 
     return $surface
@@ -370,7 +486,7 @@ function Assert-ProductionDesktopPage {
     $lastError = ''
     do {
         try {
-            $pages = @(Invoke-RestMethod -Uri "http://127.0.0.1:$Port/json/list" -TimeoutSec 2)
+            $pages = @(Convert-ToFlatObjectArray (Invoke-RestMethod -Uri "http://127.0.0.1:$Port/json/list" -TimeoutSec 2))
         } catch {
             $lastError = $_.Exception.Message
             Start-Sleep -Milliseconds 500
@@ -411,6 +527,8 @@ function Assert-ProductionDesktopPage {
             } else {
                 $lastError = "winsmux desktop did not expose a production Tauri page. urls=$($urls -join ', ')"
             }
+        } else {
+            $lastError = 'winsmux desktop DevTools endpoint returned no page URLs.'
         }
         Start-Sleep -Milliseconds 500
     } while ((Get-Date) -lt $deadline)
@@ -564,7 +682,8 @@ function Get-VisibleTopLevelWindowsForProcessTree {
 function Assert-NoVisibleDesktopHelperWindows {
     param(
         [Parameter(Mandatory = $true)][int]$RootProcessId,
-        [Parameter(Mandatory = $true)][int]$MainProcessId
+        [Parameter(Mandatory = $true)][int]$MainProcessId,
+        [Parameter(Mandatory = $true)][Int64]$MainWindowHandle
     )
 
     $processIds = [System.Collections.Generic.HashSet[int]]::new()
@@ -577,9 +696,13 @@ function Assert-NoVisibleDesktopHelperWindows {
     $unexpected = @(
         $visibleWindows |
             Where-Object {
-                [int]$_.processId -ne $MainProcessId -and (
+                $isExpectedMainWindow = [int]$_.processId -eq $MainProcessId -and [Int64]$_.handle -eq $MainWindowHandle
+                $isTinyUntitledWindow = [string]::IsNullOrWhiteSpace([string]$_.title) -and ([int]$_.width -lt 160 -or [int]$_.height -lt 120)
+                -not $isExpectedMainWindow -and (
+                    [int]$_.processId -ne $MainProcessId -or
+                    $isTinyUntitledWindow -or
                     [string]$_.processName -match 'msedgewebview2|pwsh|powershell|windowsterminal|conhost|cmd' -or
-                    [string]$_.className -match 'ConsoleWindowClass|CASCADIA_HOSTING_WINDOW_CLASS'
+                    [string]$_.className -match 'ConsoleWindowClass|CASCADIA_HOSTING_WINDOW_CLASS|Chrome_WidgetWin'
                 )
             }
     )
@@ -788,7 +911,7 @@ try {
     if ([int]$metricsAfterMove.width -lt $VisibleWidth -or [int]$metricsAfterMove.height -lt $VisibleHeight) {
         throw "winsmux desktop window is smaller than required after launch: $($metricsAfterMove.width)x$($metricsAfterMove.height)"
     }
-    $visibleWindows = Assert-NoVisibleDesktopHelperWindows -RootProcessId ([int]$launcherProcess.Id) -MainProcessId ([int]$app.ProcessId)
+    $visibleWindows = Assert-NoVisibleDesktopHelperWindows -RootProcessId ([int]$launcherProcess.Id) -MainProcessId ([int]$app.ProcessId) -MainWindowHandle ([Int64]$metricsAfterMove.handle)
 } catch {
     $reason = $_.Exception.Message
     Stop-RepoWinsmuxDesktopTree
