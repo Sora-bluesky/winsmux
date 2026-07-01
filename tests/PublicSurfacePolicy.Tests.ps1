@@ -168,6 +168,12 @@ Describe 'Public surface policy' {
         $syncInternalDocs | Should -Match 'tasks/roadmap-title-ja\.example\.psd1'
     }
 
+    It 'loads roadmap title localization with skip-limit and fail-fast diagnostics' {
+        foreach ($syncScript in @($syncRoadmap, $syncInternalDocs)) {
+            $syncScript | Should -Match 'Import-PowerShellDataFile\s+-LiteralPath\s+\$Path\s+-SkipLimitCheck\s+-ErrorAction\s+Stop'
+        }
+    }
+
     It 'keeps the tracked roadmap title example scrubbed of live planning data' {
         $example = Get-Content (Join-Path $repoRoot 'tasks/roadmap-title-ja.example.psd1') -Raw
 
