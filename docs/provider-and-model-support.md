@@ -8,7 +8,7 @@ worker slots, and evidence collection. It is not itself an LLM runtime and it
 does not promise that one specific provider, model, or endpoint will always be
 available.
 
-Last reviewed against current upstream documentation: 2026-06-20.
+Last reviewed against current upstream documentation: 2026-07-02.
 
 ## Naming policy
 
@@ -231,16 +231,15 @@ tracked [CLI comparison bakeoff](cli-comparison-bakeoff.md) task pack and
 preflight gates. A run without publishable desktop recording evidence is useful
 as operational evidence, but it must not change the default worker assignment.
 
-`Claude Fable 5` is currently treated as `unavailable`. Anthropic announced on
-2026-06-12 that Claude Fable 5 and Claude Mythos 5 access was suspended, and
-the Claude Fable product page states that Claude Fable 5 is currently
-unavailable. winsmux may keep Fable 5 in benchmark reference rows, but it must
-not offer it as a selectable worker model until official availability returns
-and the provider/API path is verified again.
+`Claude Fable 5` is treated as `selectable` again. Anthropic announced that
+Fable 5 access was restored for Claude Platform, Claude.ai, Claude Code, and
+Claude Cowork starting 2026-07-01. Pro, Max, Team, and select Enterprise plans
+include Fable 5 usage within up to 50% of weekly usage limits through
+2026-07-07. After that date, Fable 5 usage requires usage credits.
 
-This availability decision was rechecked against Anthropic's official Fable
-page and Claude app release notes on 2026-06-20. Recheck those official pages
-before changing Fable 5 from `unavailable` to `selectable`.
+winsmux may offer Fable 5 in the Claude Code model picker when the local Claude
+Code account exposes the model. Long benchmark or worker runs should still
+confirm account quota and credit availability before dispatch.
 
 ## Current Colab model target
 
@@ -389,5 +388,6 @@ manual pane tool rather than a first-class worker backend.
 - [Kimi K2.7 Code model overview](https://platform.kimi.ai/docs/guide/kimi-k2-7-code-quickstart)
 - [OpenRouter Kimi K2.7 Code](https://openrouter.ai/moonshotai/kimi-k2.7-code)
 - [OpenRouter GLM 5.2](https://openrouter.ai/z-ai/glm-5.2)
+- [Anthropic Fable 5 redeployment notice](https://www.anthropic.com/news/redeploying-fable-5)
 - [Claude Fable availability](https://www.anthropic.com/claude/fable)
 - [Claude apps release notes](https://docs.anthropic.com/en/release-notes/claude-apps)

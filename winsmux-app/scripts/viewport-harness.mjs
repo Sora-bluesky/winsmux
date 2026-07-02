@@ -1358,10 +1358,10 @@ async function assertComposerSessionControls(page, previewUrl) {
     }));
   });
   await page.reload({ waitUntil: "networkidle" });
-  await page.locator(".composer-session-trigger-model", { hasText: "Opus 4.8" }).waitFor();
-  const unavailableStartupInput = await page.evaluate(() => window.__winsmuxViewportHarness?.getOperatorStartupInput());
-  if (!String(unavailableStartupInput).includes("--model claude-opus-4-8")) {
-    throw new Error("Unavailable Fable 5 composer state did not fall back to the Opus 4.8 startup model");
+  await page.locator(".composer-session-trigger-model", { hasText: "Fable 5" }).waitFor();
+  const fableStartupInput = await page.evaluate(() => window.__winsmuxViewportHarness?.getOperatorStartupInput());
+  if (!String(fableStartupInput).includes("--model claude-fable-5")) {
+    throw new Error("Fable 5 composer state did not persist into the Claude Code startup model");
   }
 
   await page.evaluate(() => {
@@ -1432,13 +1432,13 @@ async function assertComposerSessionControls(page, previewUrl) {
   }
   await page.locator("#composer-model-menu .composer-session-submenu-trigger", { hasText: "Other models" }).waitFor();
   await page.locator("#composer-model-menu .composer-session-option", { hasText: "Opus 4.8" }).waitFor();
-  const fableDisabled = await page.evaluate(() => {
+  const fableSelectable = await page.evaluate(() => {
     const buttons = Array.from(document.querySelectorAll("#composer-model-menu .composer-session-option"));
-    const fable = buttons.find((button) => button.textContent?.includes("Fable 5 Currently unavailable"));
-    return fable instanceof HTMLButtonElement && fable.disabled && fable.getAttribute("aria-disabled") === "true";
+    const fable = buttons.find((button) => button.textContent?.trim() === "Fable 5");
+    return fable instanceof HTMLButtonElement && !fable.disabled && fable.getAttribute("aria-disabled") !== "true";
   });
-  if (!fableDisabled) {
-    throw new Error("Fable 5 must be shown as currently unavailable and disabled in the composer model menu");
+  if (!fableSelectable) {
+    throw new Error("Fable 5 must be selectable in the composer model menu after official redeployment");
   }
   await page.locator("#composer-model-menu .composer-session-submenu-trigger", { hasText: "Other models" }).hover();
   await page.locator("#composer-other-models-menu .composer-session-option", { hasText: "Opus 4.7" }).waitFor();

@@ -31,8 +31,14 @@ assert.match(
 
 assert.match(
   mainSource,
-  /value:\s*"fable-5"[\s\S]*?disabled:\s*true/,
-  "Fable 5 must stay visible but disabled while it is unavailable.",
+  /value:\s*"fable-5"[\s\S]*?cliModel:\s*"claude-fable-5"/,
+  "Fable 5 must remain selectable with the Claude Code CLI model id.",
+);
+
+assert.doesNotMatch(
+  mainSource,
+  /\{\s*value:\s*"fable-5"[^}\n]*disabled:\s*true/,
+  "Fable 5 must not remain disabled after Anthropic restored official access.",
 );
 
 assert.match(
@@ -158,8 +164,8 @@ assert.match(
 
 assert.match(
   viewportHarness,
-  /model:\s*"fable-5"[\s\S]*?--model claude-opus-4-8/,
-  "Viewport harness must verify that unavailable Fable 5 falls back to Opus 4.8.",
+  /model:\s*"fable-5"[\s\S]*?--model claude-fable-5/,
+  "Viewport harness must verify that selectable Fable 5 persists into the Claude Code startup model.",
 );
 
 console.log("composer-session-controls-check: ok");
