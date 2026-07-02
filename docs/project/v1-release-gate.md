@@ -28,11 +28,13 @@ binary or the npm package.
 `TASK-720` is the signed desktop updater release assets gate. Starting with
 `v0.36.23`, the release workflow must require signing secrets
 `WINDOWS_SIGNING_CERTIFICATE_BASE64`, `WINDOWS_SIGNING_CERTIFICATE_PASSWORD`,
-`TAURI_UPDATER_PRIVATE_KEY`, and `TAURI_UPDATER_PRIVATE_KEY_PASSWORD` before it
-uploads desktop bundles to a GitHub Release. The normal setup executable and MSI
-must be Authenticode signed, and the updater metadata must include `latest.json`
-plus `.sig` files. An unsigned installer or missing signed updater metadata must
-not be published as a release artifact.
+`TAURI_SIGNING_PRIVATE_KEY`, and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` before it
+builds desktop bundles for GitHub Release upload. The normal setup executable
+and MSI must be Authenticode signed before updater signatures and release
+metadata are finalized. The updater metadata must include `latest.json` plus
+`.sig` files generated for the final release assets. An unsigned installer,
+missing updater signature, or missing `latest.json` must not be published as a
+release artifact.
 
 Each release note must still state the signing posture. Users should verify
 installer downloads against `SHA256SUMS-desktop` when Windows shows publisher or

@@ -530,26 +530,59 @@ Describe 'CLI bakeoff evidence harness' {
     It 'gates desktop releases on signed updater artifacts' {
         $workflow = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.github\workflows\release-desktop.yml') -Raw -Encoding UTF8
         $releaseGate = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'docs\project\v1-release-gate.md') -Raw -Encoding UTF8
+        $tauriCiConfig = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'winsmux-app\src-tauri\tauri.ci.conf.json') -Raw -Encoding UTF8
+        $signScript = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'winsmux-app\src-tauri\scripts\sign-windows-bundle.ps1') -Raw -Encoding UTF8
 
-        $workflow | Should -Match 'Require desktop updater signing secrets'
+        $secretGateIndex = $workflow.IndexOf('Require desktop release signing secrets', [StringComparison]::Ordinal)
+        $buildIndex = $workflow.IndexOf('Build desktop bundles', [StringComparison]::Ordinal)
+        $latestJsonIndex = $workflow.IndexOf('Create desktop updater latest.json', [StringComparison]::Ordinal)
+        $collectIndex = $workflow.IndexOf('Collect desktop release assets', [StringComparison]::Ordinal)
+        $verifySignaturesIndex = $workflow.IndexOf('Verify desktop installer signatures', [StringComparison]::Ordinal)
+        $uploadArtifactIndex = $workflow.IndexOf('Upload desktop artifact', [StringComparison]::Ordinal)
+        $uploadReleaseIndex = $workflow.IndexOf('Upload desktop bundles to release', [StringComparison]::Ordinal)
+
+        $secretGateIndex | Should -BeGreaterThan -1
+        $buildIndex | Should -BeGreaterThan -1
+        $secretGateIndex | Should -BeLessThan $buildIndex
+        $latestJsonIndex | Should -BeGreaterThan $buildIndex
+        $latestJsonIndex | Should -BeLessThan $collectIndex
+        $verifySignaturesIndex | Should -BeGreaterThan $collectIndex
+        $verifySignaturesIndex | Should -BeLessThan $uploadArtifactIndex
+        $verifySignaturesIndex | Should -BeLessThan $uploadReleaseIndex
+
+        $workflow | Should -Match 'Require desktop release signing secrets'
         $workflow | Should -Match 'WINDOWS_SIGNING_CERTIFICATE_BASE64'
         $workflow | Should -Match 'WINDOWS_SIGNING_CERTIFICATE_PASSWORD'
-        $workflow | Should -Match 'TAURI_UPDATER_PRIVATE_KEY'
-        $workflow | Should -Match 'TAURI_UPDATER_PRIVATE_KEY_PASSWORD'
-        $workflow | Should -Match 'Sign desktop installer assets'
+        $workflow | Should -Match 'TAURI_SIGNING_PRIVATE_KEY'
+        $workflow | Should -Match 'TAURI_SIGNING_PRIVATE_KEY_PASSWORD'
+        $workflow | Should -Not -Match 'TAURI_UPDATER_PRIVATE_KEY'
+        $workflow | Should -Not -Match 'TAURI_UPDATER_PRIVATE_KEY_PASSWORD'
+        $workflow | Should -Not -Match 'Sign desktop installer assets'
+        $workflow | Should -Match 'tauri\.ci\.conf\.json'
         $workflow | Should -Match 'signtool\.exe'
         $workflow | Should -Match 'Get-AuthenticodeSignature'
         $workflow | Should -Match 'latest\.json'
         $workflow | Should -Match '\.sig'
         $workflow | Should -Match 'Required signed updater metadata'
         $workflow | Should -Match 'not Authenticode signed with a valid signature'
+        $workflow | Should -Match 'Unable to locate updater signature next to'
+
+        $tauriCiConfig | Should -Match '"createUpdaterArtifacts"\s*:\s*true'
+        $tauriCiConfig | Should -Match '"signCommand"'
+        $tauriCiConfig | Should -Match 'sign-windows-bundle\.ps1'
+        $tauriCiConfig | Should -Match '\./scripts/sign-windows-bundle\.ps1'
+        $tauriCiConfig | Should -Not -Match '\./src-tauri/scripts/sign-windows-bundle\.ps1'
+        $signScript | Should -Match 'WINSMUX_WINDOWS_SIGNING_CERTIFICATE_PATH'
+        $signScript | Should -Match 'WINDOWS_SIGNING_CERTIFICATE_PASSWORD'
+        $signScript | Should -Match 'signtool sign'
 
         $releaseGate | Should -Match 'TASK-720'
         $releaseGate | Should -Match 'signed desktop updater release assets'
         $releaseGate | Should -Match 'latest\.json'
         $releaseGate | Should -Match '\.sig'
         $releaseGate | Should -Match 'WINDOWS_SIGNING_CERTIFICATE_BASE64'
-        $releaseGate | Should -Match 'TAURI_UPDATER_PRIVATE_KEY'
+        $releaseGate | Should -Match 'TAURI_SIGNING_PRIVATE_KEY'
+        $releaseGate | Should -Not -Match 'TAURI_UPDATER_PRIVATE_KEY'
         $releaseGate | Should -Match 'unsigned installer'
         $releaseGate | Should -Match 'must\s+not\s+be\s+published'
     }
