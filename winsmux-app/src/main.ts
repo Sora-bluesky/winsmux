@@ -988,7 +988,7 @@ const composerModelOptions: Array<{
   disabled?: boolean;
   group?: "primary" | "other";
 }> = [
-  { value: "fable-5", label: "Fable 5 Currently unavailable", labelJa: "Fable 5 Currently unavailable", cliModel: "claude-fable-5", disabled: true },
+  { value: "fable-5", label: "Fable 5", labelJa: "Fable 5", cliModel: "claude-fable-5" },
   { value: "opus-4.8", label: "Opus 4.8", labelJa: "Opus 4.8", cliModel: "claude-opus-4-8", shortcut: "1" },
   { value: "sonnet-4.6", label: "Sonnet 4.6", labelJa: "Sonnet 4.6", cliModel: "sonnet", shortcut: "2" },
   { value: "haiku-4.5", label: "Haiku 4.5", labelJa: "Haiku 4.5", cliModel: "haiku", shortcut: "3" },
