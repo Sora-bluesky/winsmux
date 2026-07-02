@@ -140,7 +140,10 @@ function Test-AgentPromptText {
             }
         }
         'openai-compatible' {
-            if ($normalizedTailText -match '(?im)api_llm\[[^\]]+\]>') {
+            # Anchored to the end of the whitespace-normalized capture so a
+            # busy pane (`api_llm[worker-1]> exec ...`) is not treated as an
+            # idle prompt waiting for input.
+            if ($normalizedTailText -match '(?i)api_llm\[[^\]]+\]>$') {
                 return $true
             }
 

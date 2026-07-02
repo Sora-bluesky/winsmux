@@ -80,6 +80,27 @@ Describe 'agent readiness prompt detection' {
 
             Test-AgentPromptText -Text $text -Agent 'openai-compatible' | Should -BeFalse
         }
+
+        It 'rejects a busy pane where the prompt is followed by an executing command' {
+            # Codex review P1 on PR #1106: while a command runs, the pane
+            # still contains the submitted `api_llm[worker-1]> exec ...` line
+            # because api-llm-pane-worker.ps1 reads input after printing the
+            # prompt and runs the command synchronously. A prompt that is not
+            # at the end of the capture must not count as ready. Task output
+            # has scrolled the startup banner out of the recent-line window.
+            $text = @(
+                'commands: exec <task-packet-path> [task-id] [run-id], status, help, quit'
+                'api_llm[worker-1]> exec C:\packets\task-001.json'
+                '[worker-1] loading packet task-001'
+                '[worker-1] contacting provider openrouter'
+                '[worker-1] streaming response tokens'
+                '[worker-1] writing structured result'
+                '[worker-1] run 1 of 1 in progress'
+                '[worker-1] elapsed 00:12'
+            ) -join "`n"
+
+            Test-AgentPromptText -Text $text -Agent 'openai-compatible' | Should -BeFalse
+        }
     }
 
     Context 'existing agent detection is unaffected (no cross-agent regression)' {
