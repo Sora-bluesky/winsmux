@@ -50,7 +50,7 @@ function ConvertTo-ReadinessAgentName {
     param([AllowNull()][string]$Value)
 
     $lowered = if ($null -eq $Value) { '' } else { $Value.Trim().ToLowerInvariant() }
-    foreach ($name in @('codex', 'claude', 'gemini')) {
+    foreach ($name in @('codex', 'claude', 'gemini', 'openai-compatible')) {
         if ($lowered -eq $name `
             -or $lowered.StartsWith("${name}:") `
             -or $lowered.StartsWith("${name}-") `

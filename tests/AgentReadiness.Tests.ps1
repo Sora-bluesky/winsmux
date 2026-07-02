@@ -5,6 +5,24 @@ Describe 'agent readiness prompt detection' {
         . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\agent-readiness.ps1')
     }
 
+    Context 'readiness agent name normalization' {
+        It 'round-trips the openai-compatible adapter through ConvertTo-ReadinessAgentName' {
+            # Codex review P2 (third pass) on PR #1106: the manifest-driven
+            # CLI paths (wait-ready, health-check, status) normalize the
+            # adapter before the prompt check; openai-compatible must survive
+            # that normalization or the api_llm switch case never fires there.
+            ConvertTo-ReadinessAgentName -Value 'openai-compatible' | Should -Be 'openai-compatible'
+        }
+
+        It 'normalizes case and surrounding whitespace for openai-compatible' {
+            ConvertTo-ReadinessAgentName -Value '  OpenAI-Compatible  ' | Should -Be 'openai-compatible'
+        }
+
+        It 'still returns codex for codex-prefixed values' {
+            ConvertTo-ReadinessAgentName -Value 'codex-gpt-5.5' | Should -Be 'codex'
+        }
+    }
+
     Context 'openai-compatible (api_llm) banner' {
         It 'accepts an unwrapped api_llm ready banner' {
             $text = @(
