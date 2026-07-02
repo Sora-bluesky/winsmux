@@ -39,16 +39,66 @@ jobs:
         working-directory: winsmux-app
         run: npm run tauri -- build
 
+      - name: Require desktop updater signing secrets
+        if: github.event_name == 'push' || inputs.release_tag != ''
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_BASE64 }}
+          WINDOWS_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_PASSWORD }}
+          TAURI_UPDATER_PRIVATE_KEY: ${{ secrets.TAURI_UPDATER_PRIVATE_KEY }}
+          TAURI_UPDATER_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_UPDATER_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $requiredSecrets = @(
+            'WINDOWS_SIGNING_CERTIFICATE_BASE64',
+            'WINDOWS_SIGNING_CERTIFICATE_PASSWORD',
+            'TAURI_UPDATER_PRIVATE_KEY',
+            'TAURI_UPDATER_PRIVATE_KEY_PASSWORD'
+          )
+          foreach ($name in $requiredSecrets) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              throw "Missing required desktop updater signing secret: $name"
+            }
+          }
+
+      - name: Sign desktop installer assets
+        if: github.event_name == 'push' || inputs.release_tag != ''
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_BASE64 }}
+          WINDOWS_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_PASSWORD }}
+        run: |
+          $certPath = Join-Path $env:RUNNER_TEMP "winsmux-signing.pfx"
+          [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($env:WINDOWS_SIGNING_CERTIFICATE_BASE64))
+          $signtool = Get-ChildItem -Path "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe |
+            Where-Object { $_.FullName -match '\\x64\\signtool\.exe$' } |
+            Select-Object -First 1 -ExpandProperty FullName
+          if ([string]::IsNullOrWhiteSpace($signtool)) {
+            throw "signtool.exe was not found on the GitHub Actions runner"
+          }
+          $assets = @(
+            Get-ChildItem -LiteralPath target/release/bundle/nsis -Filter *.exe -File
+            Get-ChildItem -LiteralPath target/release/bundle/msi -Filter *.msi -File
+          )
+          foreach ($asset in $assets) {
+            & $signtool sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /f $certPath /p $env:WINDOWS_SIGNING_CERTIFICATE_PASSWORD $asset.FullName
+            if ($LASTEXITCODE -ne 0) {
+              throw "signtool failed for $($asset.Name)"
+            }
+          }
+
       - name: Collect desktop release assets
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path output/desktop-release | Out-Null
           Copy-Item target/release/bundle/msi/*.msi output/desktop-release/
           Copy-Item target/release/bundle/nsis/*.exe output/desktop-release/
+          Copy-Item target/release/bundle/nsis/*.sig output/desktop-release/ -ErrorAction SilentlyContinue
+          Copy-Item target/release/bundle/latest.json output/desktop-release/ -ErrorAction SilentlyContinue
           $version = (Get-Content -LiteralPath VERSION -Raw).Trim()
           $requiredAssets = @(
             "winsmux_${version}_x64-setup.exe",
-            "winsmux_${version}_x64_en-US.msi"
+            "winsmux_${version}_x64_en-US.msi",
+            "latest.json"
           )
           foreach ($assetName in $requiredAssets) {
             $assetPath = Join-Path "output/desktop-release" $assetName
@@ -56,6 +106,10 @@ jobs:
               $actualAssets = @(Get-ChildItem -LiteralPath output/desktop-release -File | Select-Object -ExpandProperty Name)
               throw "Required desktop release asset '$assetName' was not collected. Actual assets: $($actualAssets -join ', ')"
             }
+          }
+          $signatureAssets = @(Get-ChildItem -LiteralPath output/desktop-release -Filter *.sig -File)
+          if ($signatureAssets.Count -eq 0) {
+            throw "Required signed updater metadata was not collected. Expected at least one .sig file next to the desktop release assets."
           }
           Push-Location output/desktop-release
           Get-ChildItem -File |
@@ -65,6 +119,19 @@ jobs:
               "$hash  $($_.Name)"
             } | Set-Content -Encoding ascii SHA256SUMS-desktop
           Pop-Location
+
+      - name: Verify desktop installer signatures
+        if: github.event_name == 'push' || inputs.release_tag != ''
+        shell: pwsh
+        run: |
+          $assets = Get-ChildItem -LiteralPath output/desktop-release -File |
+            Where-Object { $_.Extension -in @('.exe', '.msi') }
+          foreach ($asset in $assets) {
+            $signature = Get-AuthenticodeSignature -LiteralPath $asset.FullName
+            if ($signature.Status -ne 'Valid') {
+              throw "Desktop release asset '$($asset.Name)' is not Authenticode signed with a valid signature. Status: $($signature.Status)"
+            }
+          }
 
       - name: Upload desktop artifact
         uses: actions/upload-artifact@v7
