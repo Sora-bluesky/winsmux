@@ -30,6 +30,7 @@ async function loadWorkerStartPlanningModule() {
 const {
   classifyRestoredWorkerDrift,
   hasWorkerLaunchApprovalDrift,
+  isWorkerStatusRowRunning,
   selectConfiguredWorkerStartRoster,
 } = await loadWorkerStartPlanningModule();
 
@@ -40,6 +41,18 @@ assert.equal(
   hasWorkerLaunchApprovalDrift({ approval_differences: [{ field: "model", approved: "gpt-5", current: "gpt-5.1" }] }),
   true,
 );
+
+// isWorkerStatusRowRunning: #1111 follow-up -- the backend row's own
+// state/pane_state/heartbeat fields must be recognized as "running" even
+// when nothing has been observed locally yet.
+assert.equal(isWorkerStatusRowRunning({ state: "running" }), true);
+assert.equal(isWorkerStatusRowRunning({ pane_state: "healthy" }), true);
+assert.equal(isWorkerStatusRowRunning({ heartbeat_state: "RUNNING" }), true);
+assert.equal(isWorkerStatusRowRunning({ heartbeat_health: "Healthy" }), true);
+assert.equal(isWorkerStatusRowRunning({ heartbeat: { state: "running" } }), true);
+assert.equal(isWorkerStatusRowRunning({ heartbeat: { health: "healthy" } }), true);
+assert.equal(isWorkerStatusRowRunning({ state: "stopped", pane_state: "not_launched" }), false);
+assert.equal(isWorkerStatusRowRunning({}), false);
 
 // classifyRestoredWorkerDrift: #1111 -- a restored, already-running pane whose
 // settings have drifted must be flagged as requiring re-approval, but a
@@ -61,6 +74,30 @@ assert.equal(stoppedDrifted.requiresReapproval, false);
 const runningClean = classifyRestoredWorkerDrift(cleanRow, "worker-5", true);
 assert.equal(runningClean.drifted, false);
 assert.equal(runningClean.requiresReapproval, false);
+
+// classifyRestoredWorkerDrift: #1111 P2 follow-up -- a restored pane that is
+// idle from this webview's point of view (isRunning=false, e.g. it has not
+// produced any PTY output yet after restore) must still be flagged when the
+// backend status row itself reports it as running/healthy and drifted.
+const idleButBackendRunningDrifted = {
+  approval_differences: [{ field: "model", approved: "gpt-5", current: "gpt-5.1" }],
+  state: "running",
+  pane_state: "healthy",
+};
+const idleBackendRunning = classifyRestoredWorkerDrift(idleButBackendRunningDrifted, "worker-6", false);
+assert.equal(idleBackendRunning.drifted, true);
+assert.equal(idleBackendRunning.requiresReapproval, true);
+
+// A stopped pane (backend and locally) with drift must stay unaffected --
+// stopped panes are caught by the ordinary start-time approval gate, not by
+// the restore-time reapproval warning.
+const stoppedEverywhereDrifted = {
+  approval_differences: [{ field: "model", approved: "gpt-5", current: "gpt-5.1" }],
+  state: "stopped",
+  pane_state: "not_launched",
+};
+const stoppedEverywhere = classifyRestoredWorkerDrift(stoppedEverywhereDrifted, "worker-2", false);
+assert.equal(stoppedEverywhere.requiresReapproval, false);
 
 // selectConfiguredWorkerStartRoster: #1112 -- the roster must cover every
 // configured pane id, not only whichever pane happens to be focused.
@@ -85,5 +122,37 @@ const cleanRoster = selectConfiguredWorkerStartRoster(configuredIds, cleanRowsBy
 assert.equal(cleanRoster.startable.length, 6);
 assert.equal(cleanRoster.blockedBySettings.length, 0);
 assert.equal(cleanRoster.missingTargets.length, 0);
+
+// selectConfiguredWorkerStartRoster: #1112 P2 -- a project configured with
+// fewer than the maximum worker count must resolve entirely from its own
+// actually-configured slots (i.e. candidateIds derived from the backend
+// status rows) instead of a fixed worker-1..worker-6 list. The unconfigured
+// higher slots must never appear as missingTargets and must never block the
+// Start action for the slots that do exist.
+const twoWorkerRowsByTarget = new Map([
+  ["worker-1", { slot_id: "worker-1", approval_differences: [] }],
+  ["worker-2", { slot_id: "worker-2", approval_differences: [] }],
+]);
+const twoWorkerRoster = selectConfiguredWorkerStartRoster(
+  Array.from(twoWorkerRowsByTarget.keys()),
+  twoWorkerRowsByTarget,
+);
+assert.deepEqual(twoWorkerRoster.startable.map((row) => row.slot_id), ["worker-1", "worker-2"]);
+assert.deepEqual(twoWorkerRoster.blockedBySettings, []);
+assert.deepEqual(twoWorkerRoster.missingTargets, []);
+
+const fourWorkerRowsByTarget = new Map([
+  ["worker-1", { slot_id: "worker-1", approval_differences: [] }],
+  ["worker-2", { slot_id: "worker-2", approval_differences: [{ field: "model", approved: "a", current: "b" }] }],
+  ["worker-3", { slot_id: "worker-3", approval_differences: [] }],
+  ["worker-4", { slot_id: "worker-4", approval_differences: [] }],
+]);
+const fourWorkerRoster = selectConfiguredWorkerStartRoster(
+  Array.from(fourWorkerRowsByTarget.keys()),
+  fourWorkerRowsByTarget,
+);
+assert.deepEqual(fourWorkerRoster.startable.map((row) => row.slot_id), ["worker-1", "worker-3", "worker-4"]);
+assert.deepEqual(fourWorkerRoster.blockedBySettings.map((row) => row.slot_id), ["worker-2"]);
+assert.deepEqual(fourWorkerRoster.missingTargets, []);
 
 console.log("worker-start-planning-check: ok");
