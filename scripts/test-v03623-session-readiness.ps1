@@ -35,9 +35,9 @@ function Get-WinsmuxExe {
     }
     Push-Location $repoRoot
     try {
-        & cargo @cargoArgs | Out-Null
+        $cargoOutput = & cargo @cargoArgs 2>&1
         if ($LASTEXITCODE -ne 0) {
-            throw "cargo $($cargoArgs -join ' ') failed with exit code $LASTEXITCODE"
+            throw "cargo $($cargoArgs -join ' ') failed with exit code $LASTEXITCODE`n$(($cargoOutput | Out-String).Trim())"
         }
     } finally {
         Pop-Location
