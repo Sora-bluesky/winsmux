@@ -80,6 +80,7 @@ function Test-AgentPromptText {
     }
 
     $tailText = $recentLines -join [Environment]::NewLine
+    $normalizedTailText = ($tailText -replace '\s+', '')
     $blockedPatterns = @(
         '(?im)\bmissing api key\b',
         '(?im)\brun /login\b',
@@ -135,6 +136,15 @@ function Test-AgentPromptText {
             }
 
             if ($tailText -match '(?im)\bgemini-[A-Za-z0-9._-]+\b.*\b\d+%\s+context\s+left\b') {
+                return $true
+            }
+        }
+        'openai-compatible' {
+            if ($normalizedTailText -match '(?im)api_llm\[[^\]]+\]>') {
+                return $true
+            }
+
+            if ($tailText -match '(?im)^\s*status:\s*ready\s*$') {
                 return $true
             }
         }
