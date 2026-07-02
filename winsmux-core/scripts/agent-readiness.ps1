@@ -147,7 +147,12 @@ function Test-AgentPromptText {
                 return $true
             }
 
-            if ($tailText -match '(?im)^\s*status:\s*ready\s*$') {
+            # The status: ready line is only trustworthy while no command has
+            # been submitted after a prompt in the same capture window; right
+            # after a dispatch the startup banner can still be visible while
+            # the worker is busy.
+            $promptFollowedByInput = $normalizedTailText -match '(?i)api_llm\[[^\]]+\]>.'
+            if (-not $promptFollowedByInput -and $tailText -match '(?im)^\s*status:\s*ready\s*$') {
                 return $true
             }
         }

@@ -101,6 +101,23 @@ Describe 'agent readiness prompt detection' {
 
             Test-AgentPromptText -Text $text -Agent 'openai-compatible' | Should -BeFalse
         }
+
+        It 'rejects a just-dispatched pane while the startup banner is still visible' {
+            # Codex review P1 (second pass) on PR #1106: immediately after a
+            # dispatch, the banner's 'status: ready' line can still sit inside
+            # the recent-line window while the worker runs its first command.
+            # The fallback must not mark such a pane idle.
+            $text = @(
+                'provider: openrouter'
+                'model: z-ai/glm-5.2'
+                'project: C:\repo'
+                'status: ready'
+                'commands: exec <task-packet-path> [task-id] [run-id], status, help, quit'
+                'api_llm[worker-1]> exec C:\packets\task-001.json'
+            ) -join "`n"
+
+            Test-AgentPromptText -Text $text -Agent 'openai-compatible' | Should -BeFalse
+        }
     }
 
     Context 'existing agent detection is unaffected (no cross-agent regression)' {
