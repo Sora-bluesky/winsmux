@@ -161,7 +161,7 @@ jobs:
           - name: shell-support
             result: shell-support
             timeout_minutes: 15
-            paths: tests/BuilderWorktree.Tests.ps1;tests/codex-subagent-worktree-guard.Tests.ps1;tests/OrchestraPreflight.Tests.ps1;tests/PaneBorder.Tests.ps1;tests/V03618ReleaseHardening.Tests.ps1
+            paths: tests/BuilderWorktree.Tests.ps1;tests/codex-subagent-worktree-guard.Tests.ps1;tests/OrchestraPreflight.Tests.ps1;tests/PaneBorder.Tests.ps1;tests/V03618ReleaseHardening.Tests.ps1;tests/AgentReadiness.Tests.ps1
             full_name: ""
           - name: repo-audit-v03619
             result: repo-audit-v03619
