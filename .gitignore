@@ -104,6 +104,7 @@ tests/*
 !tests/V03618ReleaseHardening.Tests.ps1
 !tests/CliBakeoff.Tests.ps1
 !tests/ThreatModelContract.Tests.ps1
+!tests/AgentReadiness.Tests.ps1
 !tests/README.md
 !tests/fixtures/
 tests/fixtures/*

@@ -50,7 +50,7 @@ function ConvertTo-ReadinessAgentName {
     param([AllowNull()][string]$Value)
 
     $lowered = if ($null -eq $Value) { '' } else { $Value.Trim().ToLowerInvariant() }
-    foreach ($name in @('codex', 'claude', 'gemini')) {
+    foreach ($name in @('codex', 'claude', 'gemini', 'openai-compatible')) {
         if ($lowered -eq $name `
             -or $lowered.StartsWith("${name}:") `
             -or $lowered.StartsWith("${name}-") `
@@ -80,6 +80,7 @@ function Test-AgentPromptText {
     }
 
     $tailText = $recentLines -join [Environment]::NewLine
+    $normalizedTailText = ($tailText -replace '\s+', '')
     $blockedPatterns = @(
         '(?im)\bmissing api key\b',
         '(?im)\brun /login\b',
@@ -135,6 +136,23 @@ function Test-AgentPromptText {
             }
 
             if ($tailText -match '(?im)\bgemini-[A-Za-z0-9._-]+\b.*\b\d+%\s+context\s+left\b') {
+                return $true
+            }
+        }
+        'openai-compatible' {
+            # Anchored to the end of the whitespace-normalized capture so a
+            # busy pane (`api_llm[worker-1]> exec ...`) is not treated as an
+            # idle prompt waiting for input.
+            if ($normalizedTailText -match '(?i)api_llm\[[^\]]+\]>$') {
+                return $true
+            }
+
+            # The status: ready line is only trustworthy while no command has
+            # been submitted after a prompt in the same capture window; right
+            # after a dispatch the startup banner can still be visible while
+            # the worker is busy.
+            $promptFollowedByInput = $normalizedTailText -match '(?i)api_llm\[[^\]]+\]>.'
+            if (-not $promptFollowedByInput -and $tailText -match '(?im)^\s*status:\s*ready\s*$') {
                 return $true
             }
         }
