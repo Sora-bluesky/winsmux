@@ -5082,6 +5082,7 @@ function resetDesktopProjectState() {
   pickingWinnerRunIds.clear();
   pendingPromotedRunRefreshIds.clear();
   comparingRunPairKeys.clear();
+  workerSettingsDriftNotifiedTargets.clear();
   backendConversation.splice(0, backendConversation.length);
 }
 
