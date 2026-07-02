@@ -4326,7 +4326,13 @@ async function startAllWorkersFromOperatorCommand(timestamp: string): Promise<bo
   try {
     const statusPayload = await getDesktopWorkersStatus("all", activeProjectDir);
     const rowsByTarget = getWorkerRowsByTarget(statusPayload.workers);
-    const targets = getConfiguredWorkerPaneIds();
+    // #1112 P2: derive the toolbar/operator "start all" roster from the
+    // project's *actual* configured slots (the backend status rows), not a
+    // fixed worker-1..worker-6 list. Projects configured with fewer than the
+    // maximum worker count never have status rows for the unconfigured higher
+    // slots, so using the fixed list here would report them as missing and
+    // block the Start button entirely.
+    const targets = Array.from(rowsByTarget.keys());
     const roster = selectConfiguredWorkerStartRoster(targets, rowsByTarget);
     if (roster.missingTargets.length > 0) {
       appendRuntimeConversation({
