@@ -55,6 +55,10 @@ import {
   findBoardPaneForWorkbenchPane as findBoardPaneForWorkbenchPaneFromRows,
   resolveWorkbenchPaneIdForBackendPaneId as resolveWorkbenchPaneIdFromRows,
 } from "./workerPaneRouting";
+import {
+  classifyRestoredWorkerDrift,
+  selectConfiguredWorkerStartRoster,
+} from "./workerStartPlanning";
 
 interface PaneEntry {
   terminal: Terminal;
@@ -896,6 +900,7 @@ let workerStatusRows: DesktopWorkerStatusRow[] = [];
 let workerStatusError = "";
 let workerStatusRefreshInFlight: Promise<void> | null = null;
 let workerStatusRefreshSequence = 0;
+const workerSettingsDriftNotifiedTargets = new Set<string>();
 let preferredWideSidebarOpen = true;
 let preferredWideContextOpen = false;
 let workerStatusStripVisible = false;
@@ -2760,6 +2765,7 @@ async function refreshWorkerStatusSurface() {
       }
       workerStatusRows = payload.workers;
       workerStatusError = payload.manifest_error ?? "";
+      surfaceRestoredWorkerSettingsDrift(payload.workers);
     })
     .catch((error) => {
       if (!isCurrentWorkerStatusRequest()) {
@@ -3621,6 +3627,49 @@ function appendWorkerLaunchConversation(
   renderConversation(getConversationItems());
 }
 
+/**
+ * #1111: a worker pane restored/reattached from a previous session keeps
+ * running with whatever launch config it was originally approved with. If
+ * Settings (per-pane provider/model assignment) changed since then, the pane
+ * silently keeps running the stale config and nothing proactively tells the
+ * user. This surfaces one warning per drifted+running pane instead of
+ * leaving it to a subtle status-row tone the user may never look at, and it
+ * never auto-restarts the pane -- restart still requires the existing
+ * approval-differences gate used by the manual start actions.
+ */
+function surfaceRestoredWorkerSettingsDrift(rows: DesktopWorkerStatusRow[]) {
+  const stillDrifted = new Set<string>();
+  for (const row of rows) {
+    const target = getWorkerStatusTarget(row);
+    if (!target) {
+      continue;
+    }
+    const isRunning = Boolean(panes.get(target)?.ptyStarted);
+    const classification = classifyRestoredWorkerDrift(row, target, isRunning);
+    if (!classification.requiresReapproval) {
+      continue;
+    }
+    stillDrifted.add(target);
+    if (workerSettingsDriftNotifiedTargets.has(target)) {
+      continue;
+    }
+    workerSettingsDriftNotifiedTargets.add(target);
+    appendWorkerLaunchConversation(
+      row,
+      getLanguageText(
+        "Restored worker settings no longer match",
+        "復元されたワーカーの設定が一致しません",
+      ),
+      "warning",
+    );
+  }
+  for (const target of Array.from(workerSettingsDriftNotifiedTargets)) {
+    if (!stillDrifted.has(target)) {
+      workerSettingsDriftNotifiedTargets.delete(target);
+    }
+  }
+}
+
 function appendWorkerStartResultConversation(
   result: { slot_id: string; status: string; reason?: string; failed_stage?: string; recovery_action?: string; approval_differences?: DesktopWorkerApprovalDifference[] },
   row?: DesktopWorkerStatusRow,
@@ -3710,7 +3759,11 @@ async function startDesktopWorkerPaneWithLaunchCommand(target: string, row: Desk
   appendWorkerStartResultConversation({ slot_id: target, status: "started" }, row);
 }
 
-async function startFocusedWorkerFromDesktop() {
+// Kept as a callable single-pane starter (still exercised by the roster
+// loop above whenever it resolves to exactly one remaining target) so a
+// future per-row restart affordance can target one worker without
+// re-approving/restarting the rest of the roster.
+export async function startFocusedWorkerFromDesktop() {
   const target = getWorkerStartTarget();
   if (!target) {
     return;
@@ -4214,6 +4267,21 @@ async function waitForWorkerPaneReadiness(
   });
 }
 
+/**
+ * #1112: the toolbar "Start" button used to only start the currently
+ * focused worker pane, leaving the rest of the configured 6-pane roster
+ * stopped. This starts every configured pane that is not blocked by a
+ * settings-approval difference, reusing the same roster selection,
+ * per-pane progress reporting, and approval gate as the operator "start
+ * all" command so the two surfaces cannot drift apart again. Starting a
+ * single still-stopped pane keeps working exactly as before: it is simply
+ * the case where the roster resolves to one remaining target.
+ */
+async function startAllConfiguredWorkersFromDesktop(): Promise<boolean> {
+  const timestamp = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+  return startAllWorkersFromOperatorCommand(timestamp);
+}
+
 async function startAllWorkersFromOperatorCommand(timestamp: string): Promise<boolean> {
   if (workerStartTarget) {
     appendRuntimeConversation({
@@ -4259,8 +4327,8 @@ async function startAllWorkersFromOperatorCommand(timestamp: string): Promise<bo
     const statusPayload = await getDesktopWorkersStatus("all", activeProjectDir);
     const rowsByTarget = getWorkerRowsByTarget(statusPayload.workers);
     const targets = getConfiguredWorkerPaneIds();
-    const missingTargets = targets.filter((target) => !rowsByTarget.has(target));
-    if (missingTargets.length > 0) {
+    const roster = selectConfiguredWorkerStartRoster(targets, rowsByTarget);
+    if (roster.missingTargets.length > 0) {
       appendRuntimeConversation({
         type: "system",
         category: "attention",
@@ -4268,8 +4336,8 @@ async function startAllWorkersFromOperatorCommand(timestamp: string): Promise<bo
         actor: "winsmux",
         title: getLanguageText("Worker start blocked", "ワーカー起動を停止"),
         body: getLanguageText(
-          `Missing worker status rows: ${missingTargets.join(", ")}`,
-          `ワーカー状態行が不足しています: ${missingTargets.join(", ")}`,
+          `Missing worker status rows: ${roster.missingTargets.join(", ")}`,
+          `ワーカー状態行が不足しています: ${roster.missingTargets.join(", ")}`,
         ),
         tone: "warning",
       });
@@ -4277,8 +4345,7 @@ async function startAllWorkersFromOperatorCommand(timestamp: string): Promise<bo
       return true;
     }
 
-    const rows = targets.map((target) => rowsByTarget.get(target)!);
-    const blockedRows = rows.filter((row) => (row.approval_differences ?? []).length > 0);
+    const rows = [...roster.startable, ...roster.blockedBySettings];
     for (const row of rows) {
       appendWorkerLaunchConversation(
         row,
@@ -4286,7 +4353,7 @@ async function startAllWorkersFromOperatorCommand(timestamp: string): Promise<bo
         (row.approval_differences ?? []).length > 0 ? "warning" : "info",
       );
     }
-    if (blockedRows.length > 0) {
+    if (roster.blockedBySettings.length > 0) {
       appendRuntimeConversation({
         type: "system",
         category: "attention",
@@ -4294,8 +4361,8 @@ async function startAllWorkersFromOperatorCommand(timestamp: string): Promise<bo
         actor: "winsmux",
         title: getLanguageText("All-worker start blocked", "全ワーカー起動を停止"),
         body: getLanguageText(
-          `${blockedRows.length} worker panes have launch approval differences. Review settings before starting.`,
-          `${blockedRows.length} 件のワーカーペインに起動承認との差分があります。設定を確認してから起動してください。`,
+          `${roster.blockedBySettings.length} worker panes have launch approval differences. Review settings before starting.`,
+          `${roster.blockedBySettings.length} 件のワーカーペインに起動承認との差分があります。設定を確認してから起動してください。`,
         ),
         tone: "warning",
       });
@@ -4303,7 +4370,7 @@ async function startAllWorkersFromOperatorCommand(timestamp: string): Promise<bo
       return true;
     }
 
-    for (const row of rows) {
+    for (const row of roster.startable) {
       const target = getWorkerStatusTarget(row);
       if (target) {
         await startDesktopWorkerPaneWithLaunchCommand(target, row);
@@ -18571,7 +18638,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   });
 
   document.getElementById("start-worker-btn")?.addEventListener("click", () => {
-    void startFocusedWorkerFromDesktop();
+    void startAllConfiguredWorkersFromDesktop();
   });
 
   document.getElementById("browser-reload-btn")?.addEventListener("click", () => {
