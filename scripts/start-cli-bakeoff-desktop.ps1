@@ -74,6 +74,24 @@ function Invoke-CheckedCommand {
     }
 }
 
+function Assert-DesktopBuildToolsAvailable {
+    $npm = Get-Command npm -ErrorAction SilentlyContinue
+    if ($null -eq $npm) {
+        throw 'npm is required to build the desktop app, but it was not found on PATH.'
+    }
+
+    $localTauri = Join-Path $RepoRoot 'winsmux-app\node_modules\.bin\tauri.cmd'
+    $pathTauri = Get-Command tauri -ErrorAction SilentlyContinue
+    if (-not (Test-Path -LiteralPath $localTauri -PathType Leaf) -and $null -eq $pathTauri) {
+        throw "Tauri CLI is required before the desktop release build starts. Run npm ci in winsmux-app or add @tauri-apps/cli to PATH. Missing: $localTauri"
+    }
+
+    return [pscustomobject]@{
+        npm = [string]$npm.Source
+        tauri = if (Test-Path -LiteralPath $localTauri -PathType Leaf) { $localTauri } else { [string]$pathTauri.Source }
+    }
+}
+
 function Assert-DesktopExecutableFreshForDist {
     param(
         [Parameter(Mandatory = $true)][string]$DesktopExecutable,
@@ -697,18 +715,21 @@ function Assert-NoVisibleDesktopHelperWindows {
         $visibleWindows |
             Where-Object {
                 $isExpectedMainWindow = [int]$_.processId -eq $MainProcessId -and [Int64]$_.handle -eq $MainWindowHandle
-                $isTinyUntitledWindow = [string]::IsNullOrWhiteSpace([string]$_.title) -and ([int]$_.width -lt 160 -or [int]$_.height -lt 120)
+                $isMainTaoEventTarget = [int]$_.processId -eq $MainProcessId -and
+                    [string]::IsNullOrWhiteSpace([string]$_.title) -and
+                    [string]$_.className -eq 'Tao Thread Event Target'
                 -not $isExpectedMainWindow -and (
+                    -not $isMainTaoEventTarget -and (
                     [int]$_.processId -ne $MainProcessId -or
-                    $isTinyUntitledWindow -or
                     [string]$_.processName -match 'msedgewebview2|pwsh|powershell|windowsterminal|conhost|cmd' -or
                     [string]$_.className -match 'ConsoleWindowClass|CASCADIA_HOSTING_WINDOW_CLASS|Chrome_WidgetWin'
+                    )
                 )
             }
     )
 
     if ($unexpected.Count -gt 0) {
-        $summary = ($unexpected | ForEach-Object { "pid=$($_.processId) process=$($_.processName) title=$($_.title) class=$($_.className)" }) -join '; '
+        $summary = ($unexpected | ForEach-Object { "pid=$($_.processId) process=$($_.processName) title=$($_.title) class=$($_.className) bounds=$($_.x),$($_.y),$($_.width)x$($_.height)" }) -join '; '
         throw "winsmux desktop opened visible helper windows during launch readiness: $summary"
     }
 
@@ -810,7 +831,9 @@ $head = (& git -C $RepoRoot rev-parse HEAD | Out-String).Trim()
 New-Item -ItemType Directory -Path $resolvedProjectDir -Force | Out-Null
 Copy-BenchmarkTaskPack -SourceDir $canonicalTaskDir -DestinationDir $projectTaskDir
 
+$desktopBuildTools = $null
 if (-not $SkipBuild) {
+    $desktopBuildTools = Assert-DesktopBuildToolsAvailable
     Stop-RepoWinsmuxDesktopTree
     Invoke-CheckedCommand -FilePath 'cargo' -ArgumentList @('build', '--release', '-p', 'winsmux') -WorkingDirectory $RepoRoot
     Invoke-CheckedCommand -FilePath 'npm' -ArgumentList @('run', 'tauri', '--', 'build', '--no-bundle') -WorkingDirectory (Join-Path $RepoRoot 'winsmux-app')
@@ -860,6 +883,7 @@ if ($NoLaunch) {
         gitHead = $head
         releaseCli = $releaseCli
         releaseApp = $releaseApp
+        desktopBuildTools = $desktopBuildTools
         desktopFreshness = $desktopFreshness
         preflight = $preflight
     }

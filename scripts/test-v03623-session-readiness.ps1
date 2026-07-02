@@ -4,13 +4,17 @@ param(
     [ValidateSet('debug', 'release')]
     [string[]]$Build = @('debug', 'release'),
     [ValidateSet('on', 'off')]
-    [string[]]$Warm = @('on', 'off'),
+    [string[]]$Warm = @('on'),
     [ValidateSet('default', 'pwsh-no-profile-no-exit', 'cmd-keep-open')]
-    [string[]]$Shell = @('default', 'pwsh-no-profile-no-exit', 'cmd-keep-open'),
+    [string[]]$Shell = @('default'),
     [ValidateSet('fresh', 'stale', 'orphan-key', 'orphan-port')]
-    [string[]]$Registry = @('fresh', 'stale', 'orphan-key', 'orphan-port'),
+    [string[]]$Registry = @('fresh'),
     [ValidateSet('normal', 'early-child-exit', 'forced-server-kill')]
-    [string[]]$Exit = @('normal', 'early-child-exit', 'forced-server-kill'),
+    [string[]]$Exit = @('normal'),
+    [ValidateRange(1, 1000)]
+    [int]$MaxRuns = 24,
+    [ValidateRange(5, 300)]
+    [int]$CommandTimeoutSeconds = 30,
     [switch]$KeepArtifacts
 )
 
@@ -70,27 +74,21 @@ function Invoke-IsolatedWinsmux {
         [Parameter(Mandatory = $true)][string]$Exe,
         [Parameter(Mandatory = $true)][string]$FixtureHome,
         [Parameter(Mandatory = $true)][string[]]$Arguments,
-        [Parameter(Mandatory = $true)][bool]$WarmEnabled
+        [Parameter(Mandatory = $true)][bool]$WarmEnabled,
+        [Parameter(Mandatory = $true)][int]$TimeoutSeconds
     )
 
-    $envNames = @(
-        'USERPROFILE',
-        'HOME',
-        'PSMUX_CONFIG_FILE',
-        'PSMUX_NO_WARM',
-        'PSMUX_ALLOW_NESTING',
-        'PSMUX_TARGET_SESSION',
-        'PSMUX_TARGET_FULL',
-        'PSMUX_ACTIVE',
-        'PSMUX_SESSION',
-        'TMUX'
-    )
-    $saved = @{}
-    foreach ($name in $envNames) {
-        $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
-    }
+    $argumentsJson = @($Arguments) | ConvertTo-Json -Compress
 
-    try {
+    $job = Start-Job -ScriptBlock {
+        param($Exe, $FixtureHome, $ArgumentsJson, $WarmEnabled)
+
+        $ErrorActionPreference = 'Stop'
+        $Arguments = @($ArgumentsJson | ConvertFrom-Json)
+        if ($Arguments.Count -eq 1 -and $Arguments[0] -is [array]) {
+            $Arguments = @($Arguments[0])
+        }
+
         $env:USERPROFILE = $FixtureHome
         $env:HOME = $FixtureHome
         $env:PSMUX_CONFIG_FILE = 'NUL'
@@ -104,20 +102,78 @@ function Invoke-IsolatedWinsmux {
             Remove-Item "Env:$name" -ErrorAction SilentlyContinue
         }
 
-        $output = & $Exe @Arguments 2>&1
-        $exitCode = $LASTEXITCODE
-        return [PSCustomObject][ordered]@{
-            exit_code = $exitCode
-            output = (($output | Out-String).Trim())
-            args = @($Arguments)
-        }
-    } finally {
-        foreach ($name in $envNames) {
-            if ($null -eq $saved[$name]) {
-                Remove-Item "Env:$name" -ErrorAction SilentlyContinue
-            } else {
-                [Environment]::SetEnvironmentVariable($name, [string]$saved[$name], 'Process')
+        try {
+            $output = & $Exe @Arguments 2>&1
+            $exitCode = $LASTEXITCODE
+            return [PSCustomObject][ordered]@{
+                exit_code = $exitCode
+                output = (($output | Out-String).Trim())
+                args = @($Arguments)
+                timed_out = $false
             }
+        } catch {
+            return [PSCustomObject][ordered]@{
+                exit_code = 125
+                output = $_.Exception.Message
+                args = @($Arguments)
+                timed_out = $false
+            }
+        }
+    } -ArgumentList $Exe, $FixtureHome, $argumentsJson, $WarmEnabled
+
+    try {
+        if (-not (Wait-Job -Job $job -Timeout $TimeoutSeconds)) {
+            Stop-Job -Job $job -ErrorAction SilentlyContinue
+            return [PSCustomObject][ordered]@{
+                exit_code = 124
+                output = "timed out after $TimeoutSeconds seconds"
+                args = @($Arguments)
+                timed_out = $true
+            }
+        }
+
+        $result = Receive-Job -Job $job -ErrorAction SilentlyContinue | Select-Object -Last 1
+        if ($null -eq $result) {
+            return [PSCustomObject][ordered]@{
+                exit_code = 126
+                output = 'no command result was returned'
+                args = @($Arguments)
+                timed_out = $false
+            }
+        }
+        return $result
+    } finally {
+        Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Get-ChildProcessIds {
+    param([Parameter(Mandatory = $true)][int]$ParentProcessId)
+
+    $children = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.ParentProcessId -eq $ParentProcessId })
+    foreach ($child in $children) {
+        [int]$child.ProcessId
+        Get-ChildProcessIds -ParentProcessId ([int]$child.ProcessId)
+    }
+}
+
+function Stop-OwnedWinsmuxProcesses {
+    param(
+        [Parameter(Mandatory = $true)][string]$Exe,
+        [Parameter(Mandatory = $true)][string]$Namespace
+    )
+
+    $exeName = [System.IO.Path]::GetFileName($Exe)
+    $matches = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.Name -eq $exeName -and
+        $_.CommandLine -and
+        $_.CommandLine -like "*$Namespace*"
+    })
+
+    foreach ($process in $matches) {
+        $ids = @([int]$process.ProcessId) + @(Get-ChildProcessIds -ParentProcessId ([int]$process.ProcessId))
+        foreach ($id in ($ids | Sort-Object -Unique -Descending)) {
+            Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
         }
     }
 }
@@ -290,10 +346,11 @@ function Invoke-Probe {
         [Parameter(Mandatory = $true)][string]$Namespace,
         [Parameter(Mandatory = $true)][string]$SessionName,
         [Parameter(Mandatory = $true)][string[]]$Arguments,
-        [Parameter(Mandatory = $true)][bool]$WarmEnabled
+        [Parameter(Mandatory = $true)][bool]$WarmEnabled,
+        [Parameter(Mandatory = $true)][int]$TimeoutSeconds
     )
 
-    return Invoke-IsolatedWinsmux -Exe $Exe -FixtureHome $FixtureHome -WarmEnabled $WarmEnabled -Arguments (@('-L', $Namespace, '-t', $SessionName) + $Arguments)
+    return Invoke-IsolatedWinsmux -Exe $Exe -FixtureHome $FixtureHome -WarmEnabled $WarmEnabled -TimeoutSeconds $TimeoutSeconds -Arguments (@('-L', $Namespace, '-t', $SessionName) + $Arguments)
 }
 
 function Get-Observation {
@@ -303,7 +360,8 @@ function Get-Observation {
         [Parameter(Mandatory = $true)][string]$Namespace,
         [Parameter(Mandatory = $true)][string]$SessionName,
         [Parameter(Mandatory = $true)][int]$DelayMs,
-        [Parameter(Mandatory = $true)][bool]$WarmEnabled
+        [Parameter(Mandatory = $true)][bool]$WarmEnabled,
+        [Parameter(Mandatory = $true)][int]$TimeoutSeconds
     )
 
     $base = "$Namespace`__$SessionName"
@@ -345,8 +403,8 @@ function Get-Observation {
         }
     }
 
-    $hasSession = Invoke-Probe -Exe $Exe -FixtureHome $FixtureHome -Namespace $Namespace -SessionName $SessionName -WarmEnabled $WarmEnabled -Arguments @('has-session')
-    $listPanes = Invoke-Probe -Exe $Exe -FixtureHome $FixtureHome -Namespace $Namespace -SessionName $SessionName -WarmEnabled $WarmEnabled -Arguments @('list-panes', '-a', '-F', '#{pane_id} #{pane_pid} #{pane_current_command}')
+    $hasSession = Invoke-Probe -Exe $Exe -FixtureHome $FixtureHome -Namespace $Namespace -SessionName $SessionName -WarmEnabled $WarmEnabled -TimeoutSeconds $TimeoutSeconds -Arguments @('has-session')
+    $listPanes = Invoke-Probe -Exe $Exe -FixtureHome $FixtureHome -Namespace $Namespace -SessionName $SessionName -WarmEnabled $WarmEnabled -TimeoutSeconds $TimeoutSeconds -Arguments @('list-panes', '-a', '-F', '#{pane_id} #{pane_pid} #{pane_current_command}')
 
     $paneChildren = @()
     if (-not [string]::IsNullOrWhiteSpace($listPanes.output)) {
@@ -389,7 +447,7 @@ function Stop-SessionServer {
         [Parameter(Mandatory = $true)][string]$Namespace,
         [Parameter(Mandatory = $true)][bool]$WarmEnabled
     )
-    Invoke-IsolatedWinsmux -Exe $Exe -FixtureHome $FixtureHome -WarmEnabled $WarmEnabled -Arguments @('-L', $Namespace, 'kill-server') | Out-Null
+    Invoke-IsolatedWinsmux -Exe $Exe -FixtureHome $FixtureHome -WarmEnabled $WarmEnabled -TimeoutSeconds $CommandTimeoutSeconds -Arguments @('-L', $Namespace, 'kill-server') | Out-Null
 }
 
 function Stop-ObservedServer {
@@ -413,7 +471,7 @@ function Start-WarmSeed {
     )
 
     $seed = 'warmseed'
-    $created = Invoke-IsolatedWinsmux -Exe $Exe -FixtureHome $FixtureHome -WarmEnabled $true -Arguments @('-L', $Namespace, 'new-session', '-d', '-s', $seed)
+    $created = Invoke-IsolatedWinsmux -Exe $Exe -FixtureHome $FixtureHome -WarmEnabled $true -TimeoutSeconds $CommandTimeoutSeconds -Arguments @('-L', $Namespace, 'new-session', '-d', '-s', $seed)
     $warmBase = "$Namespace`____warm__"
     $warmPort = Join-Path (Join-Path $FixtureHome '.psmux') "$warmBase.port"
     $deadline = (Get-Date).AddSeconds(5)
@@ -424,6 +482,11 @@ function Start-WarmSeed {
         command = $created
         warm_port_exists = (Test-Path -LiteralPath $warmPort -PathType Leaf)
     }
+}
+
+$plannedRuns = @($Build).Count * @($Warm).Count * @($Shell).Count * @($Registry).Count * @($Exit).Count
+if ($plannedRuns -gt $MaxRuns) {
+    throw "readiness matrix has $plannedRuns runs, exceeding MaxRuns=$MaxRuns. Narrow -Warm/-Shell/-Registry/-Exit or raise -MaxRuns explicitly."
 }
 
 $binaryByBuild = [ordered]@{}
@@ -469,13 +532,13 @@ foreach ($buildKind in $Build) {
                         $sessionArgs = Get-SessionCommandArgs -Namespace $namespace -SessionName $session -ShellKind $shellKind -ExitKind $exitKind
                         $startedAt = Get-Date
                         $sw = [System.Diagnostics.Stopwatch]::StartNew()
-                        $createResult = Invoke-IsolatedWinsmux -Exe $exe -FixtureHome $fixtureHome -WarmEnabled $warmEnabled -Arguments $sessionArgs
+                        $createResult = Invoke-IsolatedWinsmux -Exe $exe -FixtureHome $fixtureHome -WarmEnabled $warmEnabled -TimeoutSeconds $CommandTimeoutSeconds -Arguments $sessionArgs
                         foreach ($delay in @(250, 1000, 3000)) {
                             $remaining = $delay - [int]$sw.ElapsedMilliseconds
                             if ($remaining -gt 0) {
                                 Start-Sleep -Milliseconds $remaining
                             }
-                            $observation = Get-Observation -Exe $exe -FixtureHome $fixtureHome -Namespace $namespace -SessionName $session -DelayMs $delay -WarmEnabled $warmEnabled
+                            $observation = Get-Observation -Exe $exe -FixtureHome $fixtureHome -Namespace $namespace -SessionName $session -DelayMs $delay -WarmEnabled $warmEnabled -TimeoutSeconds $CommandTimeoutSeconds
                             $observations += $observation
                             if ($exitKind -eq 'forced-server-kill' -and -not $forcedKilled -and $delay -eq 250) {
                                 $forcedKilled = Stop-ObservedServer -Observation $observation
@@ -530,6 +593,7 @@ foreach ($buildKind in $Build) {
                         }
                     } finally {
                         Stop-SessionServer -Exe $exe -FixtureHome $fixtureHome -Namespace $namespace -WarmEnabled $warmEnabled
+                        Stop-OwnedWinsmuxProcesses -Exe $exe -Namespace $namespace
                         if (-not $KeepArtifacts) {
                             Remove-Item -LiteralPath $fixtureHome -Recurse -Force -ErrorAction SilentlyContinue
                         }

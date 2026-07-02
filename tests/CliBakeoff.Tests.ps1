@@ -10,6 +10,7 @@ Describe 'CLI bakeoff evidence harness' {
         $script:PreflightScript = Join-Path $script:RepoRoot 'scripts\test-cli-bakeoff-preflight.ps1'
         $script:SummaryScript = Join-Path $script:RepoRoot 'scripts\summarize-cli-bakeoff.ps1'
         $script:DesktopStartScript = Join-Path $script:RepoRoot 'scripts\start-cli-bakeoff-desktop.ps1'
+        $script:SessionReadinessScript = Join-Path $script:RepoRoot 'scripts\test-v03623-session-readiness.ps1'
         $script:PackPath = Join-Path $script:RepoRoot 'tasks\cli-bakeoff\v1\benchmark-pack.json'
     }
 
@@ -181,16 +182,34 @@ Describe 'CLI bakeoff evidence harness' {
     It 'stops an existing repo desktop before rebuilding the release desktop executable' {
         $scriptText = Get-Content -LiteralPath $script:DesktopStartScript -Raw -Encoding UTF8
         $buildBlockIndex = $scriptText.IndexOf('if (-not $SkipBuild) {')
+        $toolCheckIndex = $scriptText.IndexOf('$desktopBuildTools = Assert-DesktopBuildToolsAvailable', $buildBlockIndex)
         $buildStopIndex = $scriptText.IndexOf('Stop-RepoWinsmuxDesktopTree', $buildBlockIndex)
         $cargoBuildIndex = $scriptText.IndexOf("Invoke-CheckedCommand -FilePath 'cargo'", $buildBlockIndex)
         $tauriBuildIndex = $scriptText.IndexOf("Invoke-CheckedCommand -FilePath 'npm'", $buildBlockIndex)
 
         ($buildBlockIndex -ge 0) | Should -BeTrue
+        ($toolCheckIndex -gt $buildBlockIndex) | Should -BeTrue
+        ($toolCheckIndex -lt $buildStopIndex) | Should -BeTrue
         ($cargoBuildIndex -ge 0) | Should -BeTrue
         ($tauriBuildIndex -ge 0) | Should -BeTrue
         ($buildStopIndex -gt $buildBlockIndex) | Should -BeTrue
         ($buildStopIndex -lt $cargoBuildIndex) | Should -BeTrue
         ($buildStopIndex -lt $tauriBuildIndex) | Should -BeTrue
+    }
+
+    It 'fails the desktop build gate before release compilation when Tauri CLI is unavailable' {
+        $scriptText = Get-Content -LiteralPath $script:DesktopStartScript -Raw -Encoding UTF8
+        $toolFunctionIndex = $scriptText.IndexOf('function Assert-DesktopBuildToolsAvailable')
+        $buildBlockIndex = $scriptText.IndexOf('if (-not $SkipBuild) {')
+        $toolCheckIndex = $scriptText.IndexOf('$desktopBuildTools = Assert-DesktopBuildToolsAvailable', $buildBlockIndex)
+        $cargoBuildIndex = $scriptText.IndexOf("Invoke-CheckedCommand -FilePath 'cargo'", $buildBlockIndex)
+
+        ($toolFunctionIndex -ge 0) | Should -BeTrue
+        ($toolCheckIndex -gt $buildBlockIndex) | Should -BeTrue
+        ($toolCheckIndex -lt $cargoBuildIndex) | Should -BeTrue
+        $scriptText | Should -Match 'Tauri CLI is required before the desktop release build starts'
+        $scriptText | Should -Match 'Run npm ci in winsmux-app or add @tauri-apps/cli to PATH'
+        $scriptText | Should -Match 'desktopBuildTools = \$desktopBuildTools'
     }
 
     It 'rejects stale desktop executables before benchmark preflight or launch' {
@@ -206,6 +225,44 @@ Describe 'CLI bakeoff evidence harness' {
         ($launchIndex -gt $freshnessCallIndex) | Should -BeTrue
         $scriptText | Should -Match 'Production desktop executable is older than winsmux-app/dist'
         $scriptText | Should -Match 'newestDistUtc'
+    }
+
+    It 'keeps the v0.36.23 session readiness gate bounded by default' {
+        $scriptText = Get-Content -LiteralPath $script:SessionReadinessScript -Raw -Encoding UTF8
+        $maxRunsParamIndex = $scriptText.IndexOf('[int]$MaxRuns = 24')
+        $timeoutParamIndex = $scriptText.IndexOf('[int]$CommandTimeoutSeconds = 30')
+        $plannedRunsIndex = $scriptText.IndexOf('$plannedRuns = @($Build).Count * @($Warm).Count * @($Shell).Count * @($Registry).Count * @($Exit).Count')
+        $buildIndex = $scriptText.IndexOf('$binaryByBuild = [ordered]@{}')
+
+        ($maxRunsParamIndex -ge 0) | Should -BeTrue
+        ($timeoutParamIndex -ge 0) | Should -BeTrue
+        ($plannedRunsIndex -gt $timeoutParamIndex) | Should -BeTrue
+        ($buildIndex -gt $plannedRunsIndex) | Should -BeTrue
+        $scriptText | Should -Match '\[string\[\]\]\$Warm = @\(''on''\)'
+        $scriptText | Should -Match '\[string\[\]\]\$Shell = @\(''default''\)'
+        $scriptText | Should -Match '\[string\[\]\]\$Registry = @\(''fresh''\)'
+        $scriptText | Should -Match '\[string\[\]\]\$Exit = @\(''normal''\)'
+        $scriptText | Should -Match 'readiness matrix has \$plannedRuns runs'
+        $scriptText | Should -Match 'raise -MaxRuns explicitly'
+    }
+
+    It 'bounds every v0.36.23 session readiness winsmux command and cleans owned processes' {
+        $scriptText = Get-Content -LiteralPath $script:SessionReadinessScript -Raw -Encoding UTF8
+
+        $scriptText | Should -Match 'function Invoke-IsolatedWinsmux'
+        $scriptText | Should -Match '\[int\]\$TimeoutSeconds'
+        $scriptText | Should -Match 'Wait-Job -Job \$job -Timeout \$TimeoutSeconds'
+        $scriptText | Should -Match 'exit_code = 124'
+        $scriptText | Should -Match 'timed_out = \$true'
+        $scriptText | Should -Match 'function Stop-OwnedWinsmuxProcesses'
+        $scriptText | Should -Match 'CommandLine -like "\*\$Namespace\*"'
+        $scriptText | Should -Match 'Stop-OwnedWinsmuxProcesses -Exe \$exe -Namespace \$namespace'
+
+        $invokeCalls = [regex]::Matches($scriptText, '(?m)^\s*(?:\$\w+\s*=\s*)?(?:return\s+)?Invoke-IsolatedWinsmux\s+-[^\r\n]+')
+        $invokeCalls.Count | Should -BeGreaterThan 3
+        foreach ($call in $invokeCalls) {
+            $call.Value | Should -Match '-TimeoutSeconds '
+        }
     }
 
     It 'requires packaged desktop asset URLs to be relative and present' {
@@ -336,7 +393,9 @@ Describe 'CLI bakeoff evidence harness' {
         ($helperCheckIndex -lt $resultIndex) | Should -BeTrue
         $scriptText | Should -Match 'visible helper windows'
         $scriptText | Should -Match '\$isExpectedMainWindow'
-        $scriptText | Should -Match '\$isTinyUntitledWindow'
+        $scriptText | Should -Match '\$isMainTaoEventTarget'
+        $scriptText | Should -Match 'Tao Thread Event Target'
+        $scriptText | Should -Match 'bounds=\$\(\$_.x\),\$\(\$_.y\),\$\(\$_.width\)x\$\(\$_.height\)'
         $scriptText | Should -Match '-MainWindowHandle \(\[Int64\]\$metricsAfterMove\.handle\)'
         $scriptText | Should -Match 'msedgewebview2|pwsh|powershell|windowsterminal|conhost|cmd'
         $scriptText | Should -Not -Match 'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS\s*=\s*".*--enable-logging'
