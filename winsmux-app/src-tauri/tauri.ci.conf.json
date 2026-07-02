@@ -1,0 +1,8 @@
+{
+  "bundle": {
+    "createUpdaterArtifacts": true,
+    "windows": {
+      "signCommand": "pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/sign-windows-bundle.ps1 %1"
+    }
+  }
+}
