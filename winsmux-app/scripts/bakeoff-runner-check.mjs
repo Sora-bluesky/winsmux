@@ -19,6 +19,9 @@ import {
   buildCommandRow,
   buildHarnessPromptMirror,
   extractLatestSha256,
+  classifyCliOutcome,
+  countSha256Occurrences,
+  countDispatchBlockedNotices,
 } from "./bakeoff-runner-lib.mjs";
 
 // --- parseManifestPaneIds ---------------------------------------------
@@ -84,15 +87,17 @@ assert.deepEqual(collectReadyWorkers(undefined), new Set(), "collectReadyWorkers
 
 // --- countEndMarkers -------------------------------------------------------
 //
-// Strategy note (round-7 fix): completion detection is no longer line-shape
-// filtering. Every packet instructs the worker to return a numbered list
-// whose item 5 IS the round END marker (e.g. "5. BAKEOFF_ROUND_A_END",
-// often backtick-wrapped) -- a compliant completion is therefore
-// indistinguishable, by line shape, from the dispatch echo of that same
-// packet text. countEndMarkers is now an honest raw substring occurrence
-// count; echo disambiguation happens in the RUNNER by seeding its baseline
-// AFTER a successful dispatch submit (once the echo is already on screen,
-// see POST_DISPATCH_BASELINE_SETTLE_MS in run-cli-bakeoff.mjs), not by
+// Strategy note (round-7 fix, baseline-timing updated round-8): completion
+// detection is no longer line-shape filtering. Every packet instructs the
+// worker to return a numbered list whose item 5 IS the round END marker
+// (e.g. "5. BAKEOFF_ROUND_A_END", often backtick-wrapped) -- a compliant
+// completion is therefore indistinguishable, by line shape, from the
+// dispatch echo of that same packet text. countEndMarkers is now an honest
+// raw substring occurrence count; echo disambiguation happens in the RUNNER
+// by seeding its baseline AFTER dispatch has been CONFIRMED via the
+// conversation-panel poll (countSha256Occurrences /
+// countDispatchBlockedNotices, plus ECHO_RENDER_SETTLE_MS in
+// run-cli-bakeoff.mjs), once the echo is already on screen -- not by
 // filtering line shapes here. Do not reintroduce line filtering in this
 // function.
 
@@ -563,5 +568,88 @@ assert.equal(
 );
 assert.equal(extractLatestSha256(""), "", "extractLatestSha256 must return empty string for empty input");
 assert.equal(extractLatestSha256(undefined), "", "extractLatestSha256 must tolerate non-string input");
+
+// --- classifyCliOutcome -----------------------------------------------
+
+assert.equal(
+  classifyCliOutcome("completed", true),
+  "completed",
+  "classifyCliOutcome must classify completed+beginObserved=true as completed",
+);
+assert.equal(
+  classifyCliOutcome("completed", false),
+  "invalid_output",
+  "classifyCliOutcome must downgrade completed+beginObserved=false to invalid_output (END marker seen but BEGIN marker never observed)",
+);
+assert.equal(
+  classifyCliOutcome("pending", false),
+  "pending",
+  "classifyCliOutcome must pass through pending unchanged regardless of beginObserved",
+);
+assert.equal(
+  classifyCliOutcome("timeout", false),
+  "timeout",
+  "classifyCliOutcome must pass through timeout unchanged regardless of beginObserved",
+);
+assert.equal(
+  classifyCliOutcome("timeout", true),
+  "timeout",
+  "classifyCliOutcome must pass through timeout unchanged even when beginObserved=true",
+);
+
+// --- countSha256Occurrences ------------------------------------------------
+
+assert.equal(countSha256Occurrences(""), 0, "countSha256Occurrences must return 0 for empty text");
+assert.equal(countSha256Occurrences("nothing hashy here"), 0, "countSha256Occurrences must return 0 when no sha256-labeled hash is present");
+assert.equal(
+  countSha256Occurrences(`sha256: ${"a".repeat(64)}`),
+  1,
+  "countSha256Occurrences must count a single sha256-labeled hash",
+);
+assert.equal(
+  countSha256Occurrences(`sha256: ${"a".repeat(64)}\nsha256   ${"b".repeat(64)}`),
+  2,
+  "countSha256Occurrences must count multiple sha256-labeled hashes",
+);
+assert.equal(
+  countSha256Occurrences(undefined),
+  0,
+  "countSha256Occurrences must tolerate non-string input",
+);
+
+// --- countDispatchBlockedNotices ---------------------------------------
+
+assert.equal(countDispatchBlockedNotices(""), 0, "countDispatchBlockedNotices must return 0 for empty text");
+assert.equal(countDispatchBlockedNotices("all clear"), 0, "countDispatchBlockedNotices must return 0 when no blocked/failed notice title is present");
+assert.equal(
+  countDispatchBlockedNotices("Benchmark dispatch blocked: missing worker status rows"),
+  1,
+  "countDispatchBlockedNotices must match the English 'Benchmark dispatch blocked' title",
+);
+assert.equal(
+  countDispatchBlockedNotices("ベンチ課題投入を停止しました"),
+  1,
+  "countDispatchBlockedNotices must match the localized 'ベンチ課題投入を停止' title",
+);
+assert.equal(
+  countDispatchBlockedNotices("Benchmark dispatch failed: unexpected error"),
+  1,
+  "countDispatchBlockedNotices must match the English 'Benchmark dispatch failed' title",
+);
+assert.equal(
+  countDispatchBlockedNotices("ベンチ課題投入に失敗しました"),
+  1,
+  "countDispatchBlockedNotices must match the localized 'ベンチ課題投入に失敗' title",
+);
+assert.equal(
+  countDispatchBlockedNotices("Benchmark dispatch blocked\nベンチ課題投入を停止\nBenchmark dispatch failed\nベンチ課題投入に失敗"),
+  4,
+  "countDispatchBlockedNotices must count multiple distinct notice titles in the same text",
+);
+assert.equal(
+  countDispatchBlockedNotices(undefined),
+  0,
+  "countDispatchBlockedNotices must tolerate non-string input",
+);
 
 console.log("bakeoff-runner-check: ok");

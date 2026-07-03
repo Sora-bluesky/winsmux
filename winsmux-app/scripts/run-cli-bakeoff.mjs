@@ -40,6 +40,7 @@ import {
   classifyApiOutcome,
   getPacketMarkers,
   classifyCliWorker,
+  classifyCliOutcome,
   selectNewRunDir,
   buildReadyCheckCommand,
   buildDispatchCommand,
@@ -50,23 +51,61 @@ import {
   buildCommandRow,
   buildHarnessPromptMirror,
   extractLatestSha256,
+  countSha256Occurrences,
+  countDispatchBlockedNotices,
 } from "./bakeoff-runner-lib.mjs";
 
 function sha256Hex(text) {
   return createHash("sha256").update(text, "utf8").digest("hex");
 }
 
-// How long to wait, after a dispatch submit succeeds, before capturing each
-// CLI pane to seed that task's marker-count baseline. This lets the echoed
-// task packet (which the desktop writes into the pane verbatim as part of
-// dispatch) finish rendering so it is INCLUDED in the seeded baseline --
-// countEndMarkers() no longer filters the echo out by line shape (see its
-// doc comment in bakeoff-runner-lib.mjs), so the baseline itself must
-// already contain the echoed marker occurrence before polling starts. Real
-// bench tasks take minutes to finish, so a genuine completion cannot land
-// inside this short settle window and be wrongly excluded from the count
-// that becomes "prior".
-const POST_DISPATCH_BASELINE_SETTLE_MS = 10000;
+// FIX A (round-8): dispatch-confirmation gating replaces the old fixed
+// settle sleep.
+//
+// submitComposerCommand's click-and-return only proves the composer send
+// button was clicked; it resolves ~300ms later (its own internal settle,
+// see the function body below) and says nothing about whether the desktop
+// actually dispatched a benchmark task packet. Per
+// dispatchBenchmarkTaskFromOperatorCommand (winsmux-app/src/main.ts
+// ~4577-4760), after the composer command is handled the desktop still has
+// to: start every worker pane, run waitForWorkerPaneReadiness (up to
+// WORKER_READINESS_TIMEOUT_MS = 90_000ms, winsmux-app/src/main.ts ~3883),
+// and only THEN call writeWorkerBenchmarkSubmission to actually send the
+// packet -- with the "Benchmark task packet dispatched" / JP "ベンチ課題を
+// 投入しました" success conversation entry (with its sha256 detail) appended
+// only AFTER that submission succeeds. A fixed 10s sleep after the composer
+// click could seed baselines long before this echo ever renders (or before
+// the dispatch is blocked/fails), which is exactly the false-completion
+// bug this fix removes: seeding a baseline that never included the true
+// echo lets a stale leftover marker misread as this task's own completion.
+//
+// The runner now polls the conversation panel itself (readConversationText)
+// until it observes ONE of three terminal signals for this dispatch
+// attempt, instead of guessing a fixed wait:
+//   - success:  countSha256Occurrences(text) increased vs the pre-submit
+//               snapshot -- a NEW dispatch success entry rendered.
+//   - blocked:  countDispatchBlockedNotices(text) increased -- the desktop
+//               itself rejected or failed this dispatch (missing worker
+//               rows, launch-approval differences, readiness timeout, or an
+//               unhandled dispatch exception).
+//   - timeout:  neither signal appeared within DISPATCH_CONFIRM_TIMEOUT_MS.
+//               Treated the same as blocked (dispatch_failed) -- never
+//               guess that an unconfirmed dispatch actually succeeded.
+//
+// DISPATCH_CONFIRM_TIMEOUT_MS is WORKER_READINESS_TIMEOUT_MS (90_000, cited
+// above) PLUS 60_000ms of headroom for the rest of the dispatch flow
+// (worker start loop, packet load, submission writes) that runs before and
+// after that readiness wait.
+const DISPATCH_CONFIRM_POLL_MS = 3000;
+const DISPATCH_CONFIRM_TIMEOUT_MS = 90_000 + 60_000; // WORKER_READINESS_TIMEOUT_MS (90_000) + 60_000 headroom
+// Small settle window AFTER dispatch confirmation, before the first pane
+// capture that seeds the CLI marker-count baseline. Per the main.ts flow
+// cited above, the echoed packet text is written into each pane BEFORE the
+// success conversation entry is appended, so by the time this runner has
+// observed the success entry the echo is already on screen -- this sleep is
+// only to let that terminal render settle, not to wait out the dispatch
+// itself (that waiting is now done by the confirmation poll above).
+const ECHO_RENDER_SETTLE_MS = 3000;
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, "..", "..");
@@ -614,16 +653,33 @@ async function main() {
 
     const dispatchStartMs = Date.now();
     const dispatchStartIso = nowIso();
+
+    // FIX A: snapshot the conversation panel BEFORE submitting, so the
+    // post-submit confirmation poll below can detect a NEW success/blocked
+    // notice by comparing counts against this pre-submit baseline rather
+    // than against whatever unrelated notices already happened to be on
+    // screen from a previous task.
+    let preConversationText = "";
+    try {
+      preConversationText = await readConversationText(args.port);
+    } catch {
+      preConversationText = "";
+    }
+    const preSha256Count = countSha256Occurrences(preConversationText);
+    const preBlockedCount = countDispatchBlockedNotices(preConversationText);
+
     const submitResult = await submitComposerCommand(args.port, buildDispatchCommand(taskId));
-    if (!submitResult.ok) {
+
+    async function emitDispatchFailedArtifacts(dispatchFailReason) {
       anyFailure = true;
       await appendLogLine(logPath, {
         event: "task_dispatch",
         ts: dispatchStartIso,
         taskId,
         endMarker,
-        submitOk: false,
-        submitReason: submitResult.reason,
+        submitOk: submitResult.ok,
+        submitReason: submitResult.ok ? undefined : submitResult.reason,
+        dispatchFailReason,
       });
       await appendLogLine(logPath, { event: "task_result", ts: nowIso(), taskId, status: "dispatch_failed" });
       // Emit the same summarize-compatible artifacts with every worker
@@ -645,25 +701,72 @@ async function main() {
         perWorkerElapsedSeconds: failedElapsed,
         perWorkerEndMarkerPresent: failedMarkers,
         executionStatus: "dispatch_failed",
-        // Baseline seeding (and thus hash verification, which happens after
-        // a SUCCESSFUL submit) never ran on this path -- honestly false
-        // rather than fabricated.
+        // Baseline seeding (and thus hash verification, which only happens
+        // after a CONFIRMED successful dispatch) never ran on this path --
+        // honestly false rather than fabricated.
         packetHashMatch: false,
       });
+    }
+
+    if (!submitResult.ok) {
+      await appendLogLine(logPath, { event: "dispatch_blocked", ts: nowIso(), taskId, reason: `composer submit failed: ${submitResult.reason}` });
+      await emitDispatchFailedArtifacts(`composer submit failed: ${submitResult.reason}`);
       continue;
     }
 
-    // Dispatch submit succeeded. Let the echoed packet text render in each
-    // CLI pane before seeding the baseline marker count -- see
-    // POST_DISPATCH_BASELINE_SETTLE_MS's doc comment. Seeding AFTER dispatch
-    // (rather than before, as the previous strategy did) is what lets the
-    // baseline already include the echo, so only the worker's OWN completion
-    // output can push the count past it.
-    await sleep(POST_DISPATCH_BASELINE_SETTLE_MS);
+    // FIX A: dispatch-confirmation gating. The composer click succeeding
+    // only means the send button was clicked -- it says nothing about
+    // whether the desktop actually started workers, passed readiness, and
+    // sent the packet (see DISPATCH_CONFIRM_TIMEOUT_MS's doc comment above
+    // for the full main.ts flow this is gating on). Poll the conversation
+    // panel until this dispatch's own success or blocked/failed notice
+    // renders, or until DISPATCH_CONFIRM_TIMEOUT_MS elapses.
+    let confirmOutcome = "unconfirmed";
+    const confirmDeadlineMs = Date.now() + DISPATCH_CONFIRM_TIMEOUT_MS;
+    while (Date.now() < confirmDeadlineMs) {
+      await sleep(DISPATCH_CONFIRM_POLL_MS);
+      let text = "";
+      try {
+        text = await readConversationText(args.port);
+      } catch {
+        text = "";
+      }
+      if (countDispatchBlockedNotices(text) > preBlockedCount) {
+        confirmOutcome = "blocked";
+        break;
+      }
+      if (countSha256Occurrences(text) > preSha256Count) {
+        confirmOutcome = "success";
+        break;
+      }
+    }
 
-    // Also read the desktop-displayed sha256 for this dispatch now, while
-    // the conversation entry is fresh, and compare it to our independently
-    // computed expectedSha.
+    if (confirmOutcome === "blocked") {
+      await appendLogLine(logPath, { event: "dispatch_blocked", ts: nowIso(), taskId, reason: "desktop conversation showed a dispatch blocked/failed notice" });
+      await emitDispatchFailedArtifacts("desktop conversation showed a dispatch blocked/failed notice");
+      continue;
+    }
+    if (confirmOutcome === "unconfirmed") {
+      // Timeout without either signal: treated as failed, never guessed as
+      // a success. This is the same fail-closed posture as the blocked
+      // path above -- an unconfirmed dispatch must not seed baselines or
+      // enter the completion poll loop.
+      await appendLogLine(logPath, { event: "dispatch_unconfirmed", ts: nowIso(), taskId, reason: `no success or blocked notice within ${DISPATCH_CONFIRM_TIMEOUT_MS}ms` });
+      await emitDispatchFailedArtifacts(`dispatch unconfirmed within ${DISPATCH_CONFIRM_TIMEOUT_MS}ms`);
+      continue;
+    }
+
+    // Dispatch confirmed successful (this dispatch's own success entry
+    // rendered). Per the main.ts flow, the echoed packet text is written
+    // into each pane BEFORE that success entry is appended, so the echo is
+    // already on screen -- this sleep only lets the terminal render settle,
+    // it is not waiting out the dispatch itself anymore (see
+    // ECHO_RENDER_SETTLE_MS's doc comment above).
+    await sleep(ECHO_RENDER_SETTLE_MS);
+
+    // Read the desktop-displayed sha256 for this dispatch now that success
+    // is confirmed, and compare it to our independently computed
+    // expectedSha.
     let displayedSha = "";
     try {
       const conversationText = await readConversationText(args.port);
@@ -674,21 +777,33 @@ async function main() {
     const packetHashMatch = expectedSha !== "" && displayedSha !== "" && displayedSha === expectedSha;
 
     // Seed the baseline marker count for this task's own round marker AFTER
-    // dispatch settle. This is required both to cross round boundaries (e.g.
-    // WB-009 -> WB-010 switches from counting BAKEOFF_ROUND_A_END to
-    // BAKEOFF_ROUND_B_END) and to make sure the echoed packet text (which
-    // itself contains the marker literal, per every packet's step 5) is
-    // already folded into the baseline before polling starts. A failed
-    // capture must NOT seed 0: if the pane still visibly holds markers, a 0
-    // baseline would let the next successful poll misread them as an
-    // instant completion. null marks "baseline unknown -- adopt the first
-    // successful poll observation as the baseline instead".
+    // dispatch confirmation + settle. This is required both to cross round
+    // boundaries (e.g. WB-009 -> WB-010 switches from counting
+    // BAKEOFF_ROUND_A_END to BAKEOFF_ROUND_B_END) and to make sure the
+    // echoed packet text (which itself contains the marker literal, per
+    // every packet's step 5) is already folded into the baseline before
+    // polling starts. A failed capture must NOT seed 0: if the pane still
+    // visibly holds markers, a 0 baseline would let the next successful
+    // poll misread them as an instant completion. null marks "baseline
+    // unknown -- adopt the first successful poll observation as the
+    // baseline instead".
+    //
+    // FIX B: also seed a begin-marker baseline in parallel (same null
+    // semantics), used below to gate CLI completion on BOTH round markers
+    // having been observed, mirroring classifyApiOutcome's both-markers
+    // contract for the api_llm path.
     const priorMarkerCounts = {};
+    const priorBeginCounts = {};
+    const beginObserved = {};
     for (const w of CLI_WORKERS) {
       const captured = await capturePane(paneIds[w]);
       priorMarkerCounts[w] = typeof captured === "string"
         ? countEndMarkers(captured, endMarker)
         : null;
+      priorBeginCounts[w] = typeof captured === "string" && packetMarkers.begin
+        ? countEndMarkers(captured, packetMarkers.begin)
+        : (typeof captured === "string" ? 0 : null);
+      beginObserved[w] = false;
     }
 
     await appendLogLine(logPath, {
@@ -697,6 +812,7 @@ async function main() {
       taskId,
       endMarker,
       priorMarkerCounts,
+      priorBeginCounts,
       submitOk: true,
       expectedSha,
       displayedSha,
@@ -729,6 +845,29 @@ async function main() {
         }
         const paneText = captured;
         const currCount = countEndMarkers(paneText, endMarker);
+
+        // FIX B: track the begin-marker running-minimum in parallel with
+        // the end-marker one above, using the identical scroll-off-tolerant
+        // logic, and set the sticky beginObserved[w] flag whenever a
+        // successful capture shows the begin count rise above its running
+        // minimum. packetMarkers.begin === "" means this packet had no
+        // extractable begin-marker literal at all (see getPacketMarkers) --
+        // beginObserved can then never become true, which is intentional
+        // (see classifyCliOutcome's doc comment).
+        if (packetMarkers.begin) {
+          const currBeginCount = countEndMarkers(paneText, packetMarkers.begin);
+          if (priorBeginCounts[w] === null) {
+            priorBeginCounts[w] = currBeginCount;
+          } else {
+            if (currBeginCount < priorBeginCounts[w]) {
+              priorBeginCounts[w] = currBeginCount;
+            }
+            if (currBeginCount > priorBeginCounts[w]) {
+              beginObserved[w] = true;
+            }
+          }
+        }
+
         if (priorMarkerCounts[w] === null) {
           // Baseline capture failed at dispatch time. Adopt the first
           // successful observation as the baseline: a leftover marker and
@@ -744,7 +883,12 @@ async function main() {
           // this task's own marker still registers as an increase.
           priorMarkerCounts[w] = currCount;
         }
-        const status = classifyCliWorker(priorMarkerCounts[w], currCount, elapsedSeconds, defaultTimeout);
+        const endStatus = classifyCliWorker(priorMarkerCounts[w], currCount, elapsedSeconds, defaultTimeout);
+        // FIX B: gate CLI completion on BOTH round markers, mirroring
+        // classifyApiOutcome's both-markers contract for the api_llm path.
+        // An END-increment alone (begin never observed) downgrades to
+        // invalid_output instead of being accepted as completed.
+        const status = classifyCliOutcome(endStatus, beginObserved[w]);
         if (status === "completed") {
           perWorkerStatus[w] = "completed";
           perWorkerElapsedSeconds[w] = elapsedSeconds;
@@ -753,6 +897,15 @@ async function main() {
           // observed -- this is the "CLI: completion marker line observed"
           // verification path called out for evidence.end_marker_present.
           perWorkerEndMarkerPresent[w] = true;
+          const capturePath = path.join(runEvidenceDir, `${w}-task-${taskId}.txt`);
+          await writeFile(capturePath, paneText, "utf8");
+        } else if (status === "invalid_output") {
+          // END marker was seen but the BEGIN marker never was -- terminal,
+          // already counted as a failure by taskFailed's status check below
+          // and by mapRunnerStatusToCommandStatus's status mapping.
+          perWorkerStatus[w] = "invalid_output";
+          perWorkerElapsedSeconds[w] = elapsedSeconds;
+          perWorkerEndMarkerPresent[w] = false;
           const capturePath = path.join(runEvidenceDir, `${w}-task-${taskId}.txt`);
           await writeFile(capturePath, paneText, "utf8");
         } else if (status === "timeout") {

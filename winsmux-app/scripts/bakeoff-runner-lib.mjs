@@ -127,13 +127,14 @@ export function taskIdToEndMarker(taskId) {
  * completion output, which is why that strategy is gone.
  *
  * Echo disambiguation is handled by the CALLER, not by this function: the
- * runner seeds its baseline count AFTER a successful dispatch submit, once
- * the echoed packet text is already on screen (see
- * POST_DISPATCH_BASELINE_SETTLE_MS in run-cli-bakeoff.mjs). Because the
- * echo is already included in the seeded baseline, only a marker occurrence
- * beyond that baseline -- i.e. the worker's own completion output -- can
- * register as an increase. This function's only job is an honest raw count;
- * do not reintroduce line-shape filtering here.
+ * runner seeds its baseline count AFTER dispatch has been CONFIRMED (via the
+ * conversation-panel poll gating on countSha256Occurrences /
+ * countDispatchBlockedNotices, plus ECHO_RENDER_SETTLE_MS in
+ * run-cli-bakeoff.mjs), once the echoed packet text is already on screen.
+ * Because the echo is already included in the seeded baseline, only a
+ * marker occurrence beyond that baseline -- i.e. the worker's own
+ * completion output -- can register as an increase. This function's only
+ * job is an honest raw count; do not reintroduce line-shape filtering here.
  *
  * @param {string} paneText
  * @param {string} [marker] defaults to BAKEOFF_ROUND_A_END for callers that
@@ -260,9 +261,10 @@ export function classifyApiOutcome(runJsonText, responseText, markers) {
  * completion.
  *
  * @param {number} minObservedCount lowest marker count observed since the
- *   baseline was seeded (after the dispatch settle window -- see
- *   POST_DISPATCH_BASELINE_SETTLE_MS in run-cli-bakeoff.mjs -- and lowered
- *   by the caller whenever a successful poll observes a smaller count)
+ *   baseline was seeded (after dispatch confirmation + the short echo
+ *   render settle -- see DISPATCH_CONFIRM_TIMEOUT_MS / ECHO_RENDER_SETTLE_MS
+ *   in run-cli-bakeoff.mjs -- and lowered by the caller whenever a
+ *   successful poll observes a smaller count)
  * @param {number} currCount marker count observed at the current poll tick
  * @param {number} elapsedSeconds seconds since this task was dispatched
  * @param {number} timeoutSeconds this task's configured timeout
@@ -390,6 +392,92 @@ export function extractLatestSha256(conversationText) {
   }
 
   return "";
+}
+
+/**
+ * Classify a CLI worker's full outcome once the round-end marker count has
+ * been observed to increase, mirroring classifyApiOutcome's both-markers
+ * contract (see its doc comment) for the CLI dispatch path: the packet
+ * contract requires BOTH the round begin marker and the round end marker to
+ * be present, and a completion that only shows the END marker (begin never
+ * observed) must be downgraded the same way a succeeded-but-marker-missing
+ * api_llm run is downgraded, not silently accepted as completed.
+ *
+ * `endStatus` is the caller's classifyCliWorker result for the END marker's
+ * own running-minimum comparison (see that function) -- this function only
+ * adds the begin-marker gate on top of an already-"completed" endStatus.
+ * Any other endStatus ("pending"/"timeout") passes through unchanged: the
+ * begin-marker gate only matters once completion is otherwise being
+ * declared.
+ *
+ * Edge case: if packetMarkers.begin is "" (the packet text had no
+ * extractable begin-marker literal -- see getPacketMarkers), beginObserved
+ * can never become true for that task, so a completed endStatus always
+ * downgrades to invalid_output here. This deliberately mirrors
+ * classifyApiOutcome's own no-extractable-markers branch (both return
+ * invalid_output when the packet itself yielded no marker literal to check
+ * against), rather than treating an unextractable marker as an automatic
+ * pass.
+ *
+ * @param {"completed"|"pending"|"timeout"} endStatus classifyCliWorker's
+ *   result for the END marker
+ * @param {boolean} beginObserved sticky flag: true once any successful
+ *   capture for this task showed the begin-marker running count rise above
+ *   its seeded baseline (mirrors how the END marker's own baseline/minimum
+ *   is tracked)
+ * @returns {"completed"|"invalid_output"|"pending"|"timeout"}
+ */
+export function classifyCliOutcome(endStatus, beginObserved) {
+  if (endStatus !== "completed") return endStatus;
+  return beginObserved ? "completed" : "invalid_output";
+}
+
+/**
+ * Count occurrences of a "sha256"-labeled 64-hex-char run in a
+ * conversation-panel innerText blob. Used by the runner's dispatch-confirm
+ * poll (FIX A) to detect that a NEW dispatch success entry rendered: the
+ * poll compares this count against a pre-submit snapshot count and treats
+ * any increase as "this dispatch's success entry appeared", without needing
+ * to know the specific new hash value in advance (extractLatestSha256 is
+ * used separately, after confirmation, to actually read/compare the hash).
+ *
+ * Deliberately mirrors extractLatestSha256's tolerant "sha256" + nearby
+ * 64-hex-char run matching so the two functions never disagree about what
+ * counts as a sha256 occurrence.
+ *
+ * @param {string} text
+ * @returns {number}
+ */
+export function countSha256Occurrences(text) {
+  const s = typeof text === "string" ? text : "";
+  if (!s) return 0;
+  const matches = [...s.matchAll(/sha256[^0-9a-fA-F]{0,20}([0-9a-fA-F]{64})/g)];
+  return matches.length;
+}
+
+/**
+ * Count occurrences of a dispatch-blocked or dispatch-failed conversation
+ * notice title in a conversation-panel innerText blob, across both
+ * localizations the desktop renders via getLanguageText
+ * (dispatchBenchmarkTaskFromOperatorCommand, winsmux-app/src/main.ts):
+ * "Benchmark dispatch blocked" / "ベンチ課題投入を停止" and
+ * "Benchmark dispatch failed" / "ベンチ課題投入に失敗".
+ *
+ * Used by the runner's dispatch-confirm poll (FIX A) to detect that the
+ * desktop itself rejected or failed this dispatch attempt (missing worker
+ * status rows, launch-approval differences, worker-readiness timeout, or an
+ * unhandled exception in the dispatch handler), as an alternative terminal
+ * signal to the sha256-count-increase success signal.
+ *
+ * @param {string} text
+ * @returns {number}
+ */
+export function countDispatchBlockedNotices(text) {
+  const s = typeof text === "string" ? text : "";
+  if (!s) return 0;
+  const titleRe = /Benchmark dispatch blocked|ベンチ課題投入を停止|Benchmark dispatch failed|ベンチ課題投入に失敗/g;
+  const matches = s.match(titleRe);
+  return matches ? matches.length : 0;
 }
 
 /**
