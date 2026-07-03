@@ -80,3 +80,47 @@ export function hasWorkerReadyPrompt(text: string): boolean {
     && hasCodexIdleStatusLine(lastLine)
     && !hasPendingWorkerLaunchMarker(recentLines);
 }
+
+/**
+ * #1115 (root cause confirmed against a real capture, comment 4872058128):
+ * inspectWorkerPaneReadiness in main.ts builds its readiness text by joining
+ * three capture sources -- entry.outputBuffer, the live xterm DOM snapshot
+ * from getWorkerPaneVisibleText, and the freshest capturePtyPane(...).output
+ * -- with "\n" and then handing the whole blob to hasWorkerReadyPrompt, which
+ * only inspects the trailing 10 non-empty lines of that combined text.
+ *
+ * capturePtyPane(...).output is always the LAST of the three sources in the
+ * join, i.e. always closest to the tail. When the pane's own launch command
+ * is long (absolute -C/--add-dir paths make it so) and the terminal keeps
+ * re-drawing that command line in place, that freshest capture can by itself
+ * span many more than 10 physical terminal rows: once ANSI control
+ * sequences are stripped, one repaint glues directly onto the next with no
+ * separating whitespace (e.g. "...--add-dir DIRcodex -c model=gpt-5.5..."),
+ * but the repaint is still wrapped across several real rows, so it still
+ * contains real "\n" boundaries internally. Once that alone exceeds 10
+ * lines, the trailing-10 window is 100% redraw noise and can never see the
+ * idle banner that getWorkerPaneVisibleText correctly holds in the *middle*
+ * source, so the pane is stuck reporting "not ready" forever even though it
+ * plainly is (worker-2/Codex in the reported capture).
+ *
+ * The fix: evaluate hasWorkerReadyPrompt against each source on its own
+ * (each source gets its own trailing-10-lines window) instead of only
+ * against the naive full join. This strictly generalizes the prior
+ * behavior: whatever the joined-text window could ever see was, at most,
+ * the tail of whichever source happens to dominate it, and per-source
+ * evaluation of that same source covers that with an equal-or-larger
+ * window, while also independently covering the other two sources -- so a
+ * genuinely idle banner sitting in one source is never hidden by unrelated
+ * redraw noise dominating a different source.
+ *
+ * This intentionally leaves the launch-pending/blocked guards in main.ts
+ * (detectWorkerReadinessBlocker, detectWorkerReadinessPendingReason,
+ * detectWorkerLaunchPendingReason) evaluating the combined text exactly as
+ * before, and does not weaken the launch-marker guards already inside
+ * hasWorkerReadyPrompt itself (isWorkerLaunchCommandEcho,
+ * hasPendingWorkerLaunchMarker) -- every source is still run through the
+ * exact same hasWorkerReadyPrompt check, marker guards included.
+ */
+export function hasWorkerReadyPromptInAnySource(sources: readonly string[]): boolean {
+  return sources.some((source) => Boolean(source) && hasWorkerReadyPrompt(source));
+}
