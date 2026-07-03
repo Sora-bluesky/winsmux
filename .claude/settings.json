@@ -2,6 +2,7 @@
   "permissions": {
     "deny": [
       "Edit(**/backlog.yaml)",
+      "MultiEdit(**/backlog.yaml)",
       "Write(**/backlog.yaml)"
     ]
   },
