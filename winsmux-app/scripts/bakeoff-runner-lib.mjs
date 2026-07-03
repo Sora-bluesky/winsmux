@@ -88,15 +88,35 @@ export function collectReadyWorkers(headTexts) {
 }
 
 /**
- * Count occurrences of the BAKEOFF_ROUND_A_END marker in a captured pane
- * text blob.
+ * Map a benchmark-pack task id to the round-end marker string its packet
+ * instructs the worker to print at completion. Task ids WB-001..WB-009 are
+ * round A, WB-010..WB-018 are round B, and WB-019..WB-027 are round C, per
+ * the `tasks/cli-bakeoff/v1/WB-*.md` packets (each packet's step 5 names its
+ * round's END marker literally).
+ *
+ * @param {string} taskId
+ * @returns {"BAKEOFF_ROUND_A_END"|"BAKEOFF_ROUND_B_END"|"BAKEOFF_ROUND_C_END"}
+ */
+export function taskIdToEndMarker(taskId) {
+  const match = typeof taskId === "string" ? taskId.match(/^WB-(\d+)/) : null;
+  const num = match ? Number(match[1]) : NaN;
+  if (Number.isFinite(num) && num >= 19) return "BAKEOFF_ROUND_C_END";
+  if (Number.isFinite(num) && num >= 10) return "BAKEOFF_ROUND_B_END";
+  return "BAKEOFF_ROUND_A_END";
+}
+
+/**
+ * Count occurrences of a round-end marker in a captured pane text blob.
  *
  * @param {string} paneText
+ * @param {string} [marker] defaults to BAKEOFF_ROUND_A_END for callers that
+ *   have not been updated to pass a task-specific marker.
  * @returns {number}
  */
-export function countEndMarkers(paneText) {
+export function countEndMarkers(paneText, marker = "BAKEOFF_ROUND_A_END") {
   if (!paneText) return 0;
-  const matches = paneText.match(/BAKEOFF_ROUND_A_END/g);
+  const escaped = String(marker).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const matches = paneText.match(new RegExp(escaped, "g"));
   return matches ? matches.length : 0;
 }
 
