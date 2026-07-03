@@ -516,7 +516,20 @@ async function main() {
     }
 
     for (const w of WORKER_LABELS) {
-      if (perWorkerStatus[w] === "pending") perWorkerStatus[w] = "timeout";
+      if (perWorkerStatus[w] !== "pending") continue;
+      // The poll loop exits at the deadline before an in-loop tick can
+      // observe elapsedSeconds >= timeoutSeconds (ticks only run while
+      // now < deadline), so this sweep is the real timeout path. Record a
+      // final pane capture here -- without it a timed-out worker loses the
+      // per-task artifact needed to audit or exclude the result. api_llm
+      // workers are included: a timed-out api worker has no run.json
+      // either, so its pane capture is the only artifact of the attempt.
+      perWorkerStatus[w] = "timeout";
+      const captured = await capturePane(paneIds[w]);
+      if (typeof captured === "string") {
+        const capturePath = path.join(runEvidenceDir, `${w}-task-${taskId}.txt`);
+        await writeFile(capturePath, captured, "utf8");
+      }
     }
     const taskFailed = Object.values(perWorkerStatus).some((s) => s === "timeout" || s === "failed" || s === "blocked");
     if (taskFailed) anyFailure = true;
