@@ -59,6 +59,7 @@ import {
   classifyRestoredWorkerDrift,
   selectConfiguredWorkerStartRoster,
 } from "./workerStartPlanning";
+import { hasWorkerReadyPrompt } from "./workerReadinessPrompt";
 
 interface PaneEntry {
   terminal: Terminal;
@@ -3984,26 +3985,6 @@ function detectWorkerLaunchPendingReason(text: string) {
   ];
 
   return checks.find((check) => check.pattern.test(text) || check.compactPattern.test(compactText))?.reason ?? "";
-}
-
-function isWorkerLaunchCommandEcho(line: string) {
-  return /^[>›❯]\s*(?:claude|codex|agy|grok|pwsh|powershell)\b/i.test(line)
-    || /^PS\s+.+>\s*(?:claude|codex|agy|grok|pwsh|powershell)\b/i.test(line);
-}
-
-function hasWorkerReadyPrompt(text: string) {
-  const recentLines = text
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .slice(-10);
-  const hasGrokInputBox = recentLines.some((line) => /^│\s*>\s*│?$/.test(line))
-    && recentLines.some((line) => /Grok\s+Build/i.test(line));
-  return hasGrokInputBox
-    || recentLines.some((line) => !isWorkerLaunchCommandEcho(line)
-      && (/^api_llm\[[a-z0-9._-]+\]>\s*$/i.test(line)
-        || /^(?:[>›❯])\s*$/.test(line)
-        || /^(?:[>›❯])\s*(?!(?:claude|codex|agy|grok|pwsh|powershell)\b)\S/i.test(line)));
 }
 
 async function inspectWorkerPaneReadiness(
