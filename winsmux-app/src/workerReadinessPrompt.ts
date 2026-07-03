@@ -120,7 +120,28 @@ export function hasWorkerReadyPrompt(text: string): boolean {
  * hasWorkerReadyPrompt itself (isWorkerLaunchCommandEcho,
  * hasPendingWorkerLaunchMarker) -- every source is still run through the
  * exact same hasWorkerReadyPrompt check, marker guards included.
+ *
+ * #1115 (P2 follow-up, Codex review): per-source evaluation alone is not a
+ * strict superset of the old joined-text check for multi-line signals whose
+ * parts can legitimately land in *different* capture sources. The Grok
+ * ghost-input-box signal (hasGrokInputBox in hasWorkerReadyPrompt) needs both
+ * a "Grok Build" banner line and a "│ > │" input-box line inside the same
+ * trailing-10-lines window; if one part is captured by
+ * getWorkerPaneVisibleText and the other by capturePtyPane's freshest
+ * output, neither source alone contains both lines, so per-source
+ * evaluation alone would report not-ready for a pane the old join-then-check
+ * behavior would have correctly reported ready.
+ *
+ * The fix: also evaluate hasWorkerReadyPrompt against the sources joined
+ * with "\n" (the exact old behavior) and OR it with the per-source result.
+ * This makes the combined check a guaranteed superset of both the prior
+ * joined-only behavior and the per-source behavior above -- it can only
+ * additionally resolve to ready in cases neither one alone would catch, and
+ * never resolves to not-ready in a case either one alone would call ready.
  */
 export function hasWorkerReadyPromptInAnySource(sources: readonly string[]): boolean {
+  if (hasWorkerReadyPrompt(sources.filter(Boolean).join("\n"))) {
+    return true;
+  }
   return sources.some((source) => Boolean(source) && hasWorkerReadyPrompt(source));
 }
