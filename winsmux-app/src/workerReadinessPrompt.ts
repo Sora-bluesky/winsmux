@@ -30,6 +30,19 @@ export function hasCodexIdleStatusLine(line: string): boolean {
   return /^(?:gpt|codex|gpt-oss|o[0-9])[A-Za-z0-9._/-]*\s+(?:provider-default|low|medium|high|xhigh|max)\s+(?:minimal|low|medium|high|fast|turbo|slow)\b/i.test(line);
 }
 
+/**
+ * #1115 (P2 follow-up): a pane that is still mid-launch can print the launch
+ * command echo (`> codex --model ...`) and/or a "Starting Codex..." style
+ * marker *above* the eventual idle footer line within the same captured
+ * window. If any recent line still shows that pending/mid-launch shape, the
+ * footer line must not be trusted as idle evidence yet, even though the
+ * footer text itself matches the idle-status shape.
+ */
+function hasPendingWorkerLaunchMarker(lines: readonly string[]): boolean {
+  return lines.some((line) => isWorkerLaunchCommandEcho(line)
+    || /\b(?:starting|launching|initializing)\b/i.test(line));
+}
+
 export function hasWorkerReadyPrompt(text: string): boolean {
   const recentLines = text
     .split("\n")
@@ -50,5 +63,7 @@ export function hasWorkerReadyPrompt(text: string): boolean {
     return true;
   }
   const lastLine = recentLines[recentLines.length - 1];
-  return Boolean(lastLine) && hasCodexIdleStatusLine(lastLine) && !isWorkerLaunchCommandEcho(lastLine);
+  return Boolean(lastLine)
+    && hasCodexIdleStatusLine(lastLine)
+    && !hasPendingWorkerLaunchMarker(recentLines);
 }
