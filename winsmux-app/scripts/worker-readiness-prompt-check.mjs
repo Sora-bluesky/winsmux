@@ -74,4 +74,21 @@ const midLaunchBanner = [
 ].join("\n");
 assert.equal(hasWorkerReadyPrompt(midLaunchBanner), false, "mid-launch banner must not classify as ready");
 
+// #1115 (P2 follow-up): the launch command echo and the "Starting Codex..."
+// marker can still be present in the recent-lines window *alongside* an
+// eventual idle-shaped footer line (e.g. capture happened to land right as
+// the footer first rendered, before the echo/marker scrolled out of the
+// tail window). The footer text alone must not be trusted while a
+// pending-launch marker is still visible -- this must remain not-ready.
+const midLaunchBannerWithTrailingIdleFooter = [
+  "> codex --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox",
+  "Starting Codex...",
+  "gpt-5.5 xhigh fast",
+].join("\n");
+assert.equal(
+  hasWorkerReadyPrompt(midLaunchBannerWithTrailingIdleFooter),
+  false,
+  "mid-launch banner with a trailing idle-shaped footer line must not classify as ready",
+);
+
 console.log("worker-readiness-prompt-check: ok");
