@@ -4,7 +4,8 @@
 // six worker panes are reachable, runs a ready-check, dispatches each
 // benchmark-pack task, polls every worker to completion or timeout, appends
 // one JSON line per task to a runner log under
-// .winsmux/evidence/cli-bakeoff/runner-<UTC>/, and writes a
+// .winsmux/evidence/cli-bakeoff-runner-logs/runner-<UTC>/ (kept outside the
+// summarize scan root -- see the runEvidenceDir comment below), and writes a
 // summarize-cli-bakeoff.ps1-compatible run directory (manifest.json +
 // commands.jsonl) per task under .winsmux/evidence/cli-bakeoff/<run_id>/.
 //
@@ -371,7 +372,13 @@ async function main() {
 
   const evidenceProjectRoot = args.projectDir;
   const runDirName = `runner-${runDirTimestamp()}`;
-  const runEvidenceDir = path.join(REPO_ROOT, ".winsmux", "evidence", "cli-bakeoff", runDirName);
+  // Supplementary logs/captures live OUTSIDE the summarize scan root:
+  // summarize-cli-bakeoff.ps1 (lines ~175-178) scans every child directory
+  // of .winsmux/evidence/cli-bakeoff except `summary` and reports any dir
+  // without a manifest.json as a manifest_missing run, so parking this
+  // runner's own log dir there would add a bogus failed row to every
+  // official summary.
+  const runEvidenceDir = path.join(REPO_ROOT, ".winsmux", "evidence", "cli-bakeoff-runner-logs", runDirName);
   const logPath = path.join(runEvidenceDir, "runner-log.jsonl");
 
   if (args.dryRun) {
@@ -458,6 +465,65 @@ async function main() {
     workerMeta[w] = { cli: "unknown", model: "unknown", role: "unknown", pane: paneIds[w] || "unknown" };
   }
 
+  // Shared writer for the summarize-compatible per-task run directory.
+  // Called from BOTH the normal completion path and the dispatch-failed
+  // path: the official summary reads only these run dirs (not
+  // runner-log.jsonl), so a task whose composer submit failed must still
+  // produce failed rows here or it silently vanishes from the benchmark
+  // matrix.
+  async function writeSummarizeArtifacts({
+    taskId,
+    taskClass,
+    perWorkerStatus,
+    perWorkerElapsedSeconds,
+    perWorkerEndMarkerPresent,
+    executionStatus,
+  }) {
+    const runId = buildRunId(runTimestampSlug, taskId);
+    const taskRunDir = path.join(bakeoffEvidenceRoot, runId);
+    const activeWorkers = WORKER_LABELS.map((w) => ({
+      worker: w,
+      cli: workerMeta[w].cli,
+      model: workerMeta[w].model,
+      role: workerMeta[w].role,
+      pane: workerMeta[w].pane,
+      status: mapRunnerStatusToCommandStatus(perWorkerStatus[w]),
+    }));
+    const allEndMarkersPresent = WORKER_LABELS.every((w) => perWorkerEndMarkerPresent[w]);
+    const manifest = buildRunManifest({
+      runId,
+      taskId,
+      taskClass,
+      activeWorkers,
+      endMarkerPresent: allEndMarkersPresent,
+      recordingStatus: args.recordingStatus,
+      recordingPublishable: args.recordingPublishable,
+      executionStatus,
+      generatedAtIso: nowIso(),
+    });
+    const commandRows = WORKER_LABELS.map((w) => buildCommandRow({
+      worker: w,
+      cli: workerMeta[w].cli,
+      model: workerMeta[w].model,
+      role: workerMeta[w].role,
+      pane: workerMeta[w].pane,
+      taskId,
+      taskClass,
+      runnerStatus: perWorkerStatus[w],
+      elapsedSeconds: perWorkerElapsedSeconds[w],
+      endMarkerPresent: perWorkerEndMarkerPresent[w],
+    }));
+
+    await mkdir(taskRunDir, { recursive: true });
+    await writeFile(path.join(taskRunDir, "manifest.json"), JSON.stringify(manifest, null, 2), "utf8");
+    await writeFile(
+      path.join(taskRunDir, "commands.jsonl"),
+      commandRows.map((row) => JSON.stringify(row)).join("\n") + "\n",
+      "utf8",
+    );
+    await appendLogLine(logPath, { event: "summarize_artifacts_written", ts: nowIso(), taskId, runId, runDir: taskRunDir });
+  }
+
   // 5. Run each task.
   let anyFailure = false;
 
@@ -511,6 +577,26 @@ async function main() {
     if (!submitResult.ok) {
       anyFailure = true;
       await appendLogLine(logPath, { event: "task_result", ts: nowIso(), taskId, status: "dispatch_failed" });
+      // Emit the same summarize-compatible artifacts with every worker
+      // marked dispatch_failed (mapped to 'failed' in commands.jsonl):
+      // without them this task would be missing from the official summary
+      // entirely instead of showing failed rows.
+      const failedStatus = {};
+      const failedElapsed = {};
+      const failedMarkers = {};
+      for (const w of WORKER_LABELS) {
+        failedStatus[w] = "dispatch_failed";
+        failedElapsed[w] = null;
+        failedMarkers[w] = false;
+      }
+      await writeSummarizeArtifacts({
+        taskId,
+        taskClass,
+        perWorkerStatus: failedStatus,
+        perWorkerElapsedSeconds: failedElapsed,
+        perWorkerEndMarkerPresent: failedMarkers,
+        executionStatus: "dispatch_failed",
+      });
       continue;
     }
 
@@ -630,54 +716,14 @@ async function main() {
       elapsedSeconds: (Date.now() - dispatchStartMs) / 1000,
     });
 
-    // Emit the summarize-cli-bakeoff.ps1-compatible run directory for this
-    // task: manifest.json + commands.jsonl, one command row per worker.
-    // This is written in addition to (not instead of) runner-log.jsonl and
-    // the per-worker pane-capture .txt files above, which remain
-    // supplementary evidence.
-    const runId = buildRunId(runTimestampSlug, taskId);
-    const taskRunDir = path.join(bakeoffEvidenceRoot, runId);
-    const activeWorkers = WORKER_LABELS.map((w) => ({
-      worker: w,
-      cli: workerMeta[w].cli,
-      model: workerMeta[w].model,
-      role: workerMeta[w].role,
-      pane: workerMeta[w].pane,
-      status: mapRunnerStatusToCommandStatus(perWorkerStatus[w]),
-    }));
-    const allEndMarkersPresent = WORKER_LABELS.every((w) => perWorkerEndMarkerPresent[w]);
-    const manifest = buildRunManifest({
-      runId,
+    await writeSummarizeArtifacts({
       taskId,
       taskClass,
-      activeWorkers,
-      endMarkerPresent: allEndMarkersPresent,
-      recordingStatus: args.recordingStatus,
-      recordingPublishable: args.recordingPublishable,
+      perWorkerStatus,
+      perWorkerElapsedSeconds,
+      perWorkerEndMarkerPresent,
       executionStatus: taskFailed ? "completed_with_failures" : "completed",
-      generatedAtIso: nowIso(),
     });
-    const commandRows = WORKER_LABELS.map((w) => buildCommandRow({
-      worker: w,
-      cli: workerMeta[w].cli,
-      model: workerMeta[w].model,
-      role: workerMeta[w].role,
-      pane: workerMeta[w].pane,
-      taskId,
-      taskClass,
-      runnerStatus: perWorkerStatus[w],
-      elapsedSeconds: perWorkerElapsedSeconds[w],
-      endMarkerPresent: perWorkerEndMarkerPresent[w],
-    }));
-
-    await mkdir(taskRunDir, { recursive: true });
-    await writeFile(path.join(taskRunDir, "manifest.json"), JSON.stringify(manifest, null, 2), "utf8");
-    await writeFile(
-      path.join(taskRunDir, "commands.jsonl"),
-      commandRows.map((row) => JSON.stringify(row)).join("\n") + "\n",
-      "utf8",
-    );
-    await appendLogLine(logPath, { event: "summarize_artifacts_written", ts: nowIso(), taskId, runId, runDir: taskRunDir });
   }
 
   await appendLogLine(logPath, { event: "run_end", ts: nowIso(), anyFailure });
