@@ -12,7 +12,16 @@
 //
 // Usage:
 //   node scripts/run-cli-bakeoff.mjs [--port 9237] [--tasks WB-001,WB-002]
-//     [--timeout 3600] [--poll 25] [--dry-run]
+//     [--timeout 3600] [--poll 25] [--project-dir <path>] [--dry-run]
+//
+// --project-dir defaults to the same path
+// scripts/start-cli-bakeoff-desktop.ps1 launches the desktop app with
+// (.winsmux/evidence/v03623-coordination-benchmark-project, repo-root
+// relative). The desktop app is started with that directory as its
+// --project-dir, so its manifest.yaml and per-worker worker-runs live under
+// <project-dir>/.winsmux/, not under the repo root's own .winsmux/. Passing
+// a stale/repo-root path here would read a manifest.yaml the running
+// desktop app never wrote (see #1109).
 
 import { mkdir, appendFile, writeFile, readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
@@ -21,6 +30,7 @@ import {
   parseManifestPaneIds,
   collectReadyWorkers,
   countEndMarkers,
+  taskIdToEndMarker,
   classifyApiRun,
   classifyCliWorker,
   selectNewRunDir,
@@ -32,7 +42,8 @@ import {
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, "..", "..");
 const BENCHMARK_PACK_PATH = path.join(REPO_ROOT, "tasks", "cli-bakeoff", "v1", "benchmark-pack.json");
-const MANIFEST_PATH = path.join(REPO_ROOT, ".winsmux", "manifest.yaml");
+// Must match the -ProjectDir default in scripts/start-cli-bakeoff-desktop.ps1.
+const DEFAULT_PROJECT_DIR = path.join(REPO_ROOT, ".winsmux", "evidence", "v03623-coordination-benchmark-project");
 const WORKER_LABELS = ["worker-1", "worker-2", "worker-3", "worker-4", "worker-5", "worker-6"];
 const API_LLM_WORKERS = new Set(["worker-5", "worker-6"]);
 const CLI_WORKERS = new Set(["worker-1", "worker-2", "worker-3", "worker-4"]);
@@ -48,6 +59,7 @@ function parseArgs(argv) {
     tasks: undefined,
     timeout: 3600,
     poll: 25,
+    projectDir: DEFAULT_PROJECT_DIR,
     dryRun: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -60,6 +72,8 @@ function parseArgs(argv) {
       args.timeout = Number(argv[++i]);
     } else if (arg === "--poll") {
       args.poll = Number(argv[++i]);
+    } else if (arg === "--project-dir") {
+      args.projectDir = path.resolve(REPO_ROOT, argv[++i]);
     } else if (arg === "--dry-run") {
       args.dryRun = true;
     }
@@ -284,8 +298,9 @@ async function main() {
     console.log(JSON.stringify({ result: "desktop not up", reason: `cannot read benchmark pack: ${err.message}` }));
     process.exit(EXIT_DESKTOP_NOT_UP);
   }
+  const manifestPath = path.join(args.projectDir, ".winsmux", "manifest.yaml");
   try {
-    manifestText = await readFile(MANIFEST_PATH, "utf8");
+    manifestText = await readFile(manifestPath, "utf8");
   } catch (err) {
     console.log(JSON.stringify({ result: "desktop not up", reason: `cannot read manifest: ${err.message}` }));
     process.exit(EXIT_DESKTOP_NOT_UP);
@@ -324,7 +339,7 @@ async function main() {
     process.exit(EXIT_DESKTOP_NOT_UP);
   }
 
-  const evidenceProjectRoot = path.dirname(path.dirname(MANIFEST_PATH));
+  const evidenceProjectRoot = args.projectDir;
   const runDirName = `runner-${runDirTimestamp()}`;
   const runEvidenceDir = path.join(REPO_ROOT, ".winsmux", "evidence", "cli-bakeoff", runDirName);
   const logPath = path.join(runEvidenceDir, "runner-log.jsonl");
@@ -337,6 +352,8 @@ async function main() {
       workersPlanned: WORKER_LABELS,
       timeoutSeconds: defaultTimeout,
       pollSeconds: args.poll,
+      projectDir: args.projectDir,
+      manifestPath,
       paneIds,
       evidenceDir: runEvidenceDir,
     }, null, 2));
@@ -392,12 +409,24 @@ async function main() {
   }
 
   // 5. Run each task.
-  const priorMarkerCounts = {};
-  for (const w of CLI_WORKERS) priorMarkerCounts[w] = 0;
-
   let anyFailure = false;
 
   for (const taskId of taskIds) {
+    const endMarker = taskIdToEndMarker(taskId);
+
+    // Seed the baseline marker count for this task's own round marker
+    // immediately before dispatch. This is required both to cross round
+    // boundaries (e.g. WB-009 -> WB-010 switches from counting
+    // BAKEOFF_ROUND_A_END to BAKEOFF_ROUND_B_END) and to avoid misreading
+    // leftover markers from a previous run as an instant completion for the
+    // very first task of a round.
+    const priorMarkerCounts = {};
+    for (const w of CLI_WORKERS) {
+      const captured = await capturePane(paneIds[w]);
+      const paneText = typeof captured === "string" ? captured : "";
+      priorMarkerCounts[w] = countEndMarkers(paneText, endMarker);
+    }
+
     const dispatchStartMs = Date.now();
     const dispatchStartIso = nowIso();
     const submitResult = await submitComposerCommand(args.port, buildDispatchCommand(taskId));
@@ -405,6 +434,8 @@ async function main() {
       event: "task_dispatch",
       ts: dispatchStartIso,
       taskId,
+      endMarker,
+      priorMarkerCounts,
       submitOk: !!submitResult.ok,
       submitReason: submitResult.reason,
     });
@@ -425,11 +456,10 @@ async function main() {
         if (perWorkerStatus[w] !== "pending") continue;
         const captured = await capturePane(paneIds[w]);
         const paneText = typeof captured === "string" ? captured : "";
-        const currCount = countEndMarkers(paneText);
+        const currCount = countEndMarkers(paneText, endMarker);
         const status = classifyCliWorker(priorMarkerCounts[w], currCount, elapsedSeconds, defaultTimeout);
         if (status === "completed") {
           perWorkerStatus[w] = "completed";
-          priorMarkerCounts[w] = currCount;
           const capturePath = path.join(runEvidenceDir, `${w}-task-${taskId}.txt`);
           await writeFile(capturePath, paneText, "utf8");
         } else if (status === "timeout") {
