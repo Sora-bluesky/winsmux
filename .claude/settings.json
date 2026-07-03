@@ -1,4 +1,10 @@
 {
+  "permissions": {
+    "deny": [
+      "Edit(**/backlog.yaml)",
+      "Write(**/backlog.yaml)"
+    ]
+  },
   "hooks": {
     "SessionStart": [
       {
