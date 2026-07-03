@@ -1,0 +1,999 @@
+// Durable CLI Bakeoff runner (#1120).
+//
+// Drives a live winsmux desktop session end-to-end over CDP: confirms the
+// six worker panes are reachable, runs a ready-check, dispatches each
+// benchmark-pack task, polls every worker to completion or timeout, appends
+// one JSON line per task to a runner log under
+// .winsmux/evidence/cli-bakeoff-runner-logs/runner-<UTC>/ (kept outside the
+// summarize scan root -- see the runEvidenceDir comment below), and writes a
+// summarize-cli-bakeoff.ps1-compatible run directory (manifest.json +
+// commands.jsonl) per task under .winsmux/evidence/cli-bakeoff/<run_id>/.
+//
+// This script only talks to an already-running desktop app over CDP -- it
+// does not build, launch, or install anything. If the desktop app is not
+// up, it exits cleanly with code 2 instead of throwing.
+//
+// Usage:
+//   node scripts/run-cli-bakeoff.mjs [--port 9237] [--tasks WB-001,WB-002]
+//     [--timeout 3600] [--poll 25] [--project-dir <path>] [--dry-run]
+//     [--recording-status <status>] [--recording-publishable]
+//
+// --project-dir defaults to the same path
+// scripts/start-cli-bakeoff-desktop.ps1 launches the desktop app with
+// (.winsmux/evidence/v03623-coordination-benchmark-project, repo-root
+// relative). The desktop app is started with that directory as its
+// --project-dir, so its manifest.yaml and per-worker worker-runs live under
+// <project-dir>/.winsmux/, not under the repo root's own .winsmux/. Passing
+// a stale/repo-root path here would read a manifest.yaml the running
+// desktop app never wrote (see #1109).
+
+import { mkdir, appendFile, writeFile, readFile, readdir, stat } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
+import {
+  parseManifestPaneIds,
+  collectReadyWorkers,
+  countEndMarkers,
+  taskIdToEndMarker,
+  classifyApiRun,
+  classifyApiOutcome,
+  getPacketMarkers,
+  classifyCliWorker,
+  classifyCliOutcome,
+  selectNewRunDir,
+  buildReadyCheckCommand,
+  buildDispatchCommand,
+  resolveTaskSelection,
+  buildRunId,
+  mapRunnerStatusToCommandStatus,
+  buildRunManifest,
+  buildCommandRow,
+  buildHarnessPromptMirror,
+  extractLatestSha256,
+  countSha256Occurrences,
+  countDispatchBlockedNotices,
+} from "./bakeoff-runner-lib.mjs";
+
+function sha256Hex(text) {
+  return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+// FIX A (round-8): dispatch-confirmation gating replaces the old fixed
+// settle sleep.
+//
+// submitComposerCommand's click-and-return only proves the composer send
+// button was clicked; it resolves ~300ms later (its own internal settle,
+// see the function body below) and says nothing about whether the desktop
+// actually dispatched a benchmark task packet. Per
+// dispatchBenchmarkTaskFromOperatorCommand (winsmux-app/src/main.ts
+// ~4577-4760), after the composer command is handled the desktop still has
+// to: start every worker pane, run waitForWorkerPaneReadiness (up to
+// WORKER_READINESS_TIMEOUT_MS = 90_000ms, winsmux-app/src/main.ts ~3883),
+// and only THEN call writeWorkerBenchmarkSubmission to actually send the
+// packet -- with the "Benchmark task packet dispatched" / JP "ベンチ課題を
+// 投入しました" success conversation entry (with its sha256 detail) appended
+// only AFTER that submission succeeds. A fixed 10s sleep after the composer
+// click could seed baselines long before this echo ever renders (or before
+// the dispatch is blocked/fails), which is exactly the false-completion
+// bug this fix removes: seeding a baseline that never included the true
+// echo lets a stale leftover marker misread as this task's own completion.
+//
+// The runner now polls the conversation panel itself (readConversationText)
+// until it observes ONE of three terminal signals for this dispatch
+// attempt, instead of guessing a fixed wait:
+//   - success:  countSha256Occurrences(text) increased vs the pre-submit
+//               snapshot -- a NEW dispatch success entry rendered.
+//   - blocked:  countDispatchBlockedNotices(text) increased -- the desktop
+//               itself rejected or failed this dispatch (missing worker
+//               rows, launch-approval differences, readiness timeout, or an
+//               unhandled dispatch exception).
+//   - timeout:  neither signal appeared within DISPATCH_CONFIRM_TIMEOUT_MS.
+//               Treated the same as blocked (dispatch_failed) -- never
+//               guess that an unconfirmed dispatch actually succeeded.
+//
+// DISPATCH_CONFIRM_TIMEOUT_MS is WORKER_READINESS_TIMEOUT_MS (90_000, cited
+// above) PLUS 60_000ms of headroom for the rest of the dispatch flow
+// (worker start loop, packet load, submission writes) that runs before and
+// after that readiness wait.
+const DISPATCH_CONFIRM_POLL_MS = 3000;
+const DISPATCH_CONFIRM_TIMEOUT_MS = 90_000 + 60_000; // WORKER_READINESS_TIMEOUT_MS (90_000) + 60_000 headroom
+// Small settle window AFTER dispatch confirmation, before the first pane
+// capture that seeds the CLI marker-count baseline. Per the main.ts flow
+// cited above, the echoed packet text is written into each pane BEFORE the
+// success conversation entry is appended, so by the time this runner has
+// observed the success entry the echo is already on screen -- this sleep is
+// only to let that terminal render settle, not to wait out the dispatch
+// itself (that waiting is now done by the confirmation poll above).
+const ECHO_RENDER_SETTLE_MS = 3000;
+
+const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(SCRIPT_DIR, "..", "..");
+const BENCHMARK_PACK_PATH = path.join(REPO_ROOT, "tasks", "cli-bakeoff", "v1", "benchmark-pack.json");
+// Must match the -ProjectDir default in scripts/start-cli-bakeoff-desktop.ps1.
+const DEFAULT_PROJECT_DIR = path.join(REPO_ROOT, ".winsmux", "evidence", "v03623-coordination-benchmark-project");
+const WORKER_LABELS = ["worker-1", "worker-2", "worker-3", "worker-4", "worker-5", "worker-6"];
+const API_LLM_WORKERS = new Set(["worker-5", "worker-6"]);
+const CLI_WORKERS = new Set(["worker-1", "worker-2", "worker-3", "worker-4"]);
+
+const EXIT_OK = 0;
+const EXIT_TASK_FAILURES = 1;
+const EXIT_DESKTOP_NOT_UP = 2;
+const EXIT_BAD_ARGS = 3;
+
+function parseArgs(argv) {
+  const args = {
+    port: 9237,
+    tasks: undefined,
+    timeout: 3600,
+    poll: 25,
+    projectDir: DEFAULT_PROJECT_DIR,
+    dryRun: false,
+    // Mirrors run-cli-bakeoff-openrouter.ps1's manifest defaults: a run is
+    // "not_declared"/not publishable until an operator explicitly marks it,
+    // never defaulted to true.
+    recordingStatus: "not_declared",
+    recordingPublishable: false,
+  };
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === "--port") {
+      args.port = Number(argv[++i]);
+    } else if (arg === "--tasks") {
+      args.tasks = argv[++i];
+    } else if (arg === "--timeout") {
+      args.timeout = Number(argv[++i]);
+    } else if (arg === "--poll") {
+      args.poll = Number(argv[++i]);
+    } else if (arg === "--project-dir") {
+      args.projectDir = path.resolve(REPO_ROOT, argv[++i]);
+    } else if (arg === "--dry-run") {
+      args.dryRun = true;
+    } else if (arg === "--recording-status") {
+      args.recordingStatus = argv[++i];
+    } else if (arg === "--recording-publishable") {
+      args.recordingPublishable = true;
+    }
+  }
+  return args;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function runDirTimestamp() {
+  // Filesystem-safe UTC timestamp, e.g. 20260703T041530Z.
+  return new Date().toISOString().replace(/[:.]/g, "-").replace(/-Z$/, "Z");
+}
+
+async function fetchCdpPages(port) {
+  const res = await fetch(`http://127.0.0.1:${port}/json`, { signal: AbortSignal.timeout(5000) });
+  if (!res.ok) throw new Error(`CDP /json returned ${res.status}`);
+  return res.json();
+}
+
+async function getCdpPageWebSocketUrl(port) {
+  const pages = await fetchCdpPages(port);
+  const page = pages.find((p) => p.type === "page") || pages[0];
+  if (!page || !page.webSocketDebuggerUrl) throw new Error("no CDP page with webSocketDebuggerUrl");
+  return page.webSocketDebuggerUrl;
+}
+
+/**
+ * Evaluate a JS expression in the winsmux webview via CDP Runtime.evaluate.
+ * Opens and closes a fresh WebSocket connection per call -- calls are
+ * infrequent enough (once per poll tick) that connection reuse is not
+ * worth the added complexity here.
+ */
+async function cdpEvaluate(port, expression, timeoutMs = 20000) {
+  const wsUrl = await getCdpPageWebSocketUrl(port);
+  const ws = new WebSocket(wsUrl);
+  const id = 1;
+
+  const result = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      try { ws.close(); } catch { /* ignore */ }
+      reject(new Error("cdp evaluate timeout"));
+    }, timeoutMs);
+
+    ws.addEventListener("open", () => {
+      ws.send(JSON.stringify({
+        id,
+        method: "Runtime.evaluate",
+        params: { expression, returnByValue: true, awaitPromise: true, userGesture: true },
+      }));
+    });
+    ws.addEventListener("message", (ev) => {
+      const msg = JSON.parse(ev.data);
+      if (msg.id !== id) return;
+      clearTimeout(timer);
+      if (msg.result && msg.result.exceptionDetails) {
+        reject(new Error(msg.result.exceptionDetails.text || "cdp evaluate exception"));
+      } else {
+        resolve(msg.result && msg.result.result ? msg.result.result.value : null);
+      }
+      try { ws.close(); } catch { /* ignore */ }
+    });
+    ws.addEventListener("error", () => {
+      clearTimeout(timer);
+      reject(new Error("cdp websocket error"));
+    });
+  });
+
+  return result;
+}
+
+/**
+ * Read the composer/pane-header state without submitting anything.
+ * Returns the array of pane-header innerText strings currently in the DOM.
+ */
+async function readPaneHeaderTexts(port) {
+  const expr = `(() => {
+    const nodes = document.querySelectorAll('[class*="pane-header"],[class*="worker-header"],[class*="status-band"]');
+    const out = [];
+    nodes.forEach((n) => { if (n && n.innerText) out.push(n.innerText); });
+    return JSON.stringify(out);
+  })()`;
+  const raw = await cdpEvaluate(port, expr);
+  try {
+    return JSON.parse(raw) || [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Read the conversation panel's innerText, used to recover the
+ * desktop-displayed "sha256" detail for packet-hash verification. The
+ * conversation timeline renders into #conversation-timeline (see
+ * renderConversation in winsmux-app/src/main.ts); the broader selector list
+ * is kept as a fallback in case that id is renamed, mirroring the tolerant
+ * style of readPaneHeaderTexts above.
+ */
+async function readConversationText(port) {
+  const expr = `(() => {
+    const el = document.getElementById('conversation-timeline')
+      || document.querySelector('[class*="conversation"],[class*="runtime"],[id*="conversation"]');
+    return JSON.stringify(el && el.innerText ? el.innerText : "");
+  })()`;
+  const raw = await cdpEvaluate(port, expr);
+  try {
+    return JSON.parse(raw) || "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Submit a command string through the composer textarea + send button.
+ * Mirrors the verified cdp-submit.mjs reference implementation.
+ */
+async function submitComposerCommand(port, commandText) {
+  const b64 = Buffer.from(commandText, "utf8").toString("base64");
+  const expr = `(async () => {
+    const cmd = decodeURIComponent(escape(atob(${JSON.stringify(b64)})));
+    const ta = document.getElementById('composer-input');
+    if (!ta) return JSON.stringify({ ok:false, reason:'no composer-input' });
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+    setter.call(ta, cmd);
+    ta.dispatchEvent(new Event('input', { bubbles:true }));
+    ta.focus();
+
+    const deadline = Date.now() + 120000;
+    let btn = document.getElementById('send-btn');
+    while (btn && btn.disabled && Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 500));
+      btn = document.getElementById('send-btn');
+    }
+    if (!btn) return JSON.stringify({ ok:false, reason:'no send-btn' });
+    if (btn.disabled) return JSON.stringify({ ok:false, reason:'send-btn stayed disabled for 120s' });
+
+    btn.click();
+    await new Promise(r => setTimeout(r, 300));
+    return JSON.stringify({ ok:true, valueAfter: ta.value });
+  })()`;
+  const raw = await cdpEvaluate(port, expr, 130000);
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    parsed = { ok: false, reason: "unparsable submit response" };
+  }
+  return parsed;
+}
+
+async function capturePane(paneId) {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const execFileAsync = promisify(execFile);
+  try {
+    const { stdout } = await execFileAsync("winsmux", ["capture-pane", "-t", paneId, "-p"], {
+      windowsHide: true,
+      maxBuffer: 32 * 1024 * 1024,
+    });
+    return stdout || "";
+  } catch (err) {
+    return { error: err.message || String(err) };
+  }
+}
+
+async function preflightCapturePaneIds(paneIds) {
+  const results = {};
+  for (const [worker, paneId] of Object.entries(paneIds)) {
+    const captured = await capturePane(paneId);
+    results[worker] = typeof captured === "string" ? { ok: true } : { ok: false, error: captured.error };
+  }
+  return results;
+}
+
+async function findNewestRunDirSince(runsDir, sinceEpochMs) {
+  let entries;
+  try {
+    entries = await readdir(runsDir);
+  } catch {
+    return null;
+  }
+  const withMtime = [];
+  for (const name of entries) {
+    if (!name.startsWith("dispatch-")) continue;
+    try {
+      const st = await stat(path.join(runsDir, name));
+      withMtime.push({ name, mtimeMs: st.mtimeMs });
+    } catch {
+      withMtime.push({ name, mtimeMs: undefined });
+    }
+  }
+  return selectNewRunDir(withMtime, sinceEpochMs);
+}
+
+async function readRunJsonForTask(evidenceProjectRoot, workerLabel, sinceEpochMs) {
+  const runsDir = path.join(evidenceProjectRoot, ".winsmux", "worker-runs", workerLabel);
+  const dirName = await findNewestRunDirSince(runsDir, sinceEpochMs);
+  if (!dirName) return { found: false };
+  const runJsonPath = path.join(runsDir, dirName, "run.json");
+  let text;
+  try {
+    text = await readFile(runJsonPath, "utf8");
+  } catch {
+    return { found: false };
+  }
+  // response.txt lives alongside run.json in the same dispatch dir (see
+  // run-cli-bakeoff-openrouter.ps1, which resolves $runJson.response
+  // relative to the project dir). Reading it here, from the same run dir
+  // run.json was found in, keeps marker validation honestly tied to the
+  // exact run that produced the status this poll tick is classifying.
+  let responseText = "";
+  try {
+    responseText = await readFile(path.join(runsDir, dirName, "response.txt"), "utf8");
+  } catch {
+    responseText = "";
+  }
+  return { found: true, dirName, text, responseText };
+}
+
+async function appendLogLine(logPath, obj) {
+  await appendFile(logPath, `${JSON.stringify(obj)}\n`, "utf8");
+}
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+  if (!Number.isFinite(args.port) || !Number.isFinite(args.timeout) || !Number.isFinite(args.poll)) {
+    console.error("run-cli-bakeoff: invalid --port/--timeout/--poll value");
+    process.exit(EXIT_BAD_ARGS);
+  }
+
+  // 1. CDP connectivity check.
+  let pages;
+  try {
+    pages = await fetchCdpPages(args.port);
+  } catch (err) {
+    console.log(JSON.stringify({ result: "desktop not up", reason: err.message, port: args.port }));
+    process.exit(EXIT_DESKTOP_NOT_UP);
+  }
+  if (!Array.isArray(pages) || pages.length === 0) {
+    console.log(JSON.stringify({ result: "desktop not up", reason: "no CDP pages", port: args.port }));
+    process.exit(EXIT_DESKTOP_NOT_UP);
+  }
+
+  // 2. Load benchmark pack + manifest.
+  let packText;
+  let manifestText;
+  try {
+    packText = await readFile(BENCHMARK_PACK_PATH, "utf8");
+  } catch (err) {
+    console.log(JSON.stringify({ result: "desktop not up", reason: `cannot read benchmark pack: ${err.message}` }));
+    process.exit(EXIT_DESKTOP_NOT_UP);
+  }
+  const manifestPath = path.join(args.projectDir, ".winsmux", "manifest.yaml");
+  try {
+    manifestText = await readFile(manifestPath, "utf8");
+  } catch (err) {
+    console.log(JSON.stringify({ result: "desktop not up", reason: `cannot read manifest: ${err.message}` }));
+    process.exit(EXIT_DESKTOP_NOT_UP);
+  }
+
+  const pack = JSON.parse(packText);
+  const allTaskIds = pack.tasks.map((t) => t.task_id);
+  const defaultTimeout = args.timeout || pack.default_timeout_seconds || 3600;
+  const { taskIds, unknown } = resolveTaskSelection(allTaskIds, args.tasks);
+  if (unknown.length > 0) {
+    console.error(`run-cli-bakeoff: ignoring unknown task ids: ${unknown.join(", ")}`);
+  }
+  if (taskIds.length === 0) {
+    console.error("run-cli-bakeoff: no valid task ids to run");
+    process.exit(EXIT_BAD_ARGS);
+  }
+
+  const paneIds = parseManifestPaneIds(manifestText);
+  const missingPaneWorkers = WORKER_LABELS.filter((w) => !paneIds[w]);
+  if (missingPaneWorkers.length > 0) {
+    console.log(JSON.stringify({
+      result: "desktop not up",
+      reason: `manifest missing pane_id for: ${missingPaneWorkers.join(", ")}`,
+    }));
+    process.exit(EXIT_DESKTOP_NOT_UP);
+  }
+
+  // 3. Preflight capture-pane for every worker.
+  const preflight = await preflightCapturePaneIds(paneIds);
+  const unreachable = Object.entries(preflight).filter(([, v]) => !v.ok).map(([w]) => w);
+  if (unreachable.length > 0) {
+    console.log(JSON.stringify({
+      result: "desktop not up",
+      reason: `capture-pane failed for: ${unreachable.join(", ")}`,
+    }));
+    process.exit(EXIT_DESKTOP_NOT_UP);
+  }
+
+  const evidenceProjectRoot = args.projectDir;
+  const runDirName = `runner-${runDirTimestamp()}`;
+  // Supplementary logs/captures live OUTSIDE the summarize scan root:
+  // summarize-cli-bakeoff.ps1 (lines ~175-178) scans every child directory
+  // of .winsmux/evidence/cli-bakeoff except `summary` and reports any dir
+  // without a manifest.json as a manifest_missing run, so parking this
+  // runner's own log dir there would add a bogus failed row to every
+  // official summary.
+  const runEvidenceDir = path.join(REPO_ROOT, ".winsmux", "evidence", "cli-bakeoff-runner-logs", runDirName);
+  const logPath = path.join(runEvidenceDir, "runner-log.jsonl");
+
+  if (args.dryRun) {
+    console.log(JSON.stringify({
+      result: "dry-run ok",
+      port: args.port,
+      tasksPlanned: taskIds,
+      workersPlanned: WORKER_LABELS,
+      timeoutSeconds: defaultTimeout,
+      pollSeconds: args.poll,
+      projectDir: args.projectDir,
+      manifestPath,
+      paneIds,
+      evidenceDir: runEvidenceDir,
+    }, null, 2));
+    process.exit(EXIT_OK);
+  }
+
+  await mkdir(runEvidenceDir, { recursive: true });
+  await writeFile(logPath, "", "utf8");
+  await appendLogLine(logPath, {
+    event: "run_start",
+    ts: nowIso(),
+    port: args.port,
+    tasks: taskIds,
+    timeoutSeconds: defaultTimeout,
+    pollSeconds: args.poll,
+  });
+
+  // 4. Ready-check: submit and poll for up to ~30s, one retry on shortfall.
+  async function runReadyCheck() {
+    const submitResult = await submitComposerCommand(args.port, buildReadyCheckCommand());
+    if (!submitResult.ok) return { readyWorkers: new Set(), submitResult };
+    let readyWorkers = new Set();
+    const deadline = Date.now() + 30000;
+    while (Date.now() < deadline && readyWorkers.size < WORKER_LABELS.length) {
+      await sleep(2000);
+      const headTexts = await readPaneHeaderTexts(args.port);
+      const found = collectReadyWorkers(headTexts);
+      for (const w of found) readyWorkers.add(w);
+    }
+    return { readyWorkers, submitResult };
+  }
+
+  let { readyWorkers } = await runReadyCheck();
+  if (readyWorkers.size < WORKER_LABELS.length) {
+    const retry = await runReadyCheck();
+    for (const w of retry.readyWorkers) readyWorkers.add(w);
+  }
+  const notReady = WORKER_LABELS.filter((w) => !readyWorkers.has(w));
+  await appendLogLine(logPath, {
+    event: "ready_check",
+    ts: nowIso(),
+    readyWorkers: [...readyWorkers],
+    notReady,
+  });
+  if (notReady.length > 0) {
+    console.log(JSON.stringify({
+      result: "ready-check incomplete",
+      readyWorkers: [...readyWorkers],
+      notReady,
+      logPath,
+    }));
+    process.exit(EXIT_TASK_FAILURES);
+  }
+
+  // Per-run evidence dir that satisfies summarize-cli-bakeoff.ps1's contract
+  // (manifest.json + commands.jsonl per dispatched task), written alongside
+  // the supplementary runner-log.jsonl / pane-capture evidence above. See
+  // .winsmux/evidence/cli-bakeoff/<runDirName>-<taskId>/ per task.
+  const runTimestampSlug = runDirName;
+  const bakeoffEvidenceRoot = path.join(REPO_ROOT, ".winsmux", "evidence", "cli-bakeoff");
+
+  // cli/model/role metadata for commands.jsonl: this runner only has
+  // manifest.yaml's pane_id per worker (parseManifestPaneIds) -- unlike
+  // run-cli-bakeoff-openrouter.ps1, it does not fetch worker rows (cli,
+  // display_model, role) from the benchmark pack's `default_workers` list,
+  // because those rows are not attached to CDP-dispatched desktop workers
+  // the way they are to `workers exec` invocations. Emitting 'unknown'
+  // here is intentional and honest rather than inventing a cli/model
+  // pairing this runner cannot verify from its available inputs.
+  const workerMeta = {};
+  for (const w of WORKER_LABELS) {
+    workerMeta[w] = { cli: "unknown", model: "unknown", role: "unknown", pane: paneIds[w] || "unknown" };
+  }
+
+  // Shared writer for the summarize-compatible per-task run directory.
+  // Called from BOTH the normal completion path and the dispatch-failed
+  // path: the official summary reads only these run dirs (not
+  // runner-log.jsonl), so a task whose composer submit failed must still
+  // produce failed rows here or it silently vanishes from the benchmark
+  // matrix.
+  async function writeSummarizeArtifacts({
+    taskId,
+    taskClass,
+    perWorkerStatus,
+    perWorkerElapsedSeconds,
+    perWorkerEndMarkerPresent,
+    executionStatus,
+    packetHashMatch,
+  }) {
+    const runId = buildRunId(runTimestampSlug, taskId);
+    const taskRunDir = path.join(bakeoffEvidenceRoot, runId);
+    const activeWorkers = WORKER_LABELS.map((w) => ({
+      worker: w,
+      cli: workerMeta[w].cli,
+      model: workerMeta[w].model,
+      role: workerMeta[w].role,
+      pane: workerMeta[w].pane,
+      status: mapRunnerStatusToCommandStatus(perWorkerStatus[w]),
+    }));
+    const allEndMarkersPresent = WORKER_LABELS.every((w) => perWorkerEndMarkerPresent[w]);
+    const manifest = buildRunManifest({
+      runId,
+      taskId,
+      taskClass,
+      activeWorkers,
+      endMarkerPresent: allEndMarkersPresent,
+      packetHashMatch: !!packetHashMatch,
+      recordingStatus: args.recordingStatus,
+      recordingPublishable: args.recordingPublishable,
+      executionStatus,
+      generatedAtIso: nowIso(),
+    });
+    const commandRows = WORKER_LABELS.map((w) => buildCommandRow({
+      worker: w,
+      cli: workerMeta[w].cli,
+      model: workerMeta[w].model,
+      role: workerMeta[w].role,
+      pane: workerMeta[w].pane,
+      taskId,
+      taskClass,
+      runnerStatus: perWorkerStatus[w],
+      elapsedSeconds: perWorkerElapsedSeconds[w],
+      endMarkerPresent: perWorkerEndMarkerPresent[w],
+      packetHashMatch: !!packetHashMatch,
+    }));
+
+    await mkdir(taskRunDir, { recursive: true });
+    await writeFile(path.join(taskRunDir, "manifest.json"), JSON.stringify(manifest, null, 2), "utf8");
+    await writeFile(
+      path.join(taskRunDir, "commands.jsonl"),
+      commandRows.map((row) => JSON.stringify(row)).join("\n") + "\n",
+      "utf8",
+    );
+    await appendLogLine(logPath, { event: "summarize_artifacts_written", ts: nowIso(), taskId, runId, runDir: taskRunDir });
+  }
+
+  // 5. Run each task.
+  let anyFailure = false;
+
+  for (const taskId of taskIds) {
+    const endMarker = taskIdToEndMarker(taskId);
+    const taskEntry = pack.tasks.find((t) => t.task_id === taskId);
+    const taskClass = taskEntry && typeof taskEntry.task_class === "string" ? taskEntry.task_class : "unknown";
+
+    // Packet text (and therefore round markers AND the hash-mirror
+    // Instructions body) is read from THE PROJECT DIR
+    // (<project-dir>/tasks/cli-bakeoff/v1/...), not the repo root: that is
+    // what the running desktop app itself reads (getDesktopFullFile with
+    // activeProjectDir in winsmux-app/src/main.ts). A repo-root copy can
+    // drift from what the live desktop session actually has on disk (see
+    // #1109), which would silently desync markers/hash from the real
+    // dispatch. Both packetMarkers and the hash mirror below are derived
+    // from this SAME read so they can never disagree with each other over
+    // which packet text was used.
+    let packetText = null;
+    let packetMarkers = { begin: "", end: "" };
+    if (taskEntry && typeof taskEntry.packet_path === "string") {
+      try {
+        packetText = await readFile(
+          path.join(args.projectDir, "tasks", "cli-bakeoff", "v1", taskEntry.packet_path),
+          "utf8",
+        );
+        packetMarkers = getPacketMarkers(packetText);
+      } catch (err) {
+        console.log(JSON.stringify({
+          result: "desktop not up",
+          reason: `cannot read project pack: ${err.message}`,
+        }));
+        process.exit(EXIT_DESKTOP_NOT_UP);
+      }
+    }
+
+    // Independently reconstruct the exact prompt the desktop builds and
+    // hashes for this dispatch (buildHarnessTaskPrompt mirror), then hash it
+    // ourselves. Compared below (after dispatch) against the sha256 the
+    // desktop itself displays in the conversation panel.
+    const expectedSha = packetText !== null
+      ? sha256Hex(buildHarnessPromptMirror(pack, taskEntry || {}, packetText))
+      : "";
+
+    const dispatchStartMs = Date.now();
+    const dispatchStartIso = nowIso();
+
+    // FIX A: snapshot the conversation panel BEFORE submitting, so the
+    // post-submit confirmation poll below can detect a NEW success/blocked
+    // notice by comparing counts against this pre-submit baseline rather
+    // than against whatever unrelated notices already happened to be on
+    // screen from a previous task.
+    let preConversationText = "";
+    try {
+      preConversationText = await readConversationText(args.port);
+    } catch {
+      preConversationText = "";
+    }
+    const preSha256Count = countSha256Occurrences(preConversationText);
+    const preBlockedCount = countDispatchBlockedNotices(preConversationText);
+
+    const submitResult = await submitComposerCommand(args.port, buildDispatchCommand(taskId));
+
+    async function emitDispatchFailedArtifacts(dispatchFailReason) {
+      anyFailure = true;
+      await appendLogLine(logPath, {
+        event: "task_dispatch",
+        ts: dispatchStartIso,
+        taskId,
+        endMarker,
+        submitOk: submitResult.ok,
+        submitReason: submitResult.ok ? undefined : submitResult.reason,
+        dispatchFailReason,
+      });
+      await appendLogLine(logPath, { event: "task_result", ts: nowIso(), taskId, status: "dispatch_failed" });
+      // Emit the same summarize-compatible artifacts with every worker
+      // marked dispatch_failed (mapped to 'failed' in commands.jsonl):
+      // without them this task would be missing from the official summary
+      // entirely instead of showing failed rows.
+      const failedStatus = {};
+      const failedElapsed = {};
+      const failedMarkers = {};
+      for (const w of WORKER_LABELS) {
+        failedStatus[w] = "dispatch_failed";
+        failedElapsed[w] = null;
+        failedMarkers[w] = false;
+      }
+      await writeSummarizeArtifacts({
+        taskId,
+        taskClass,
+        perWorkerStatus: failedStatus,
+        perWorkerElapsedSeconds: failedElapsed,
+        perWorkerEndMarkerPresent: failedMarkers,
+        executionStatus: "dispatch_failed",
+        // Baseline seeding (and thus hash verification, which only happens
+        // after a CONFIRMED successful dispatch) never ran on this path --
+        // honestly false rather than fabricated.
+        packetHashMatch: false,
+      });
+    }
+
+    if (!submitResult.ok) {
+      await appendLogLine(logPath, { event: "dispatch_blocked", ts: nowIso(), taskId, reason: `composer submit failed: ${submitResult.reason}` });
+      await emitDispatchFailedArtifacts(`composer submit failed: ${submitResult.reason}`);
+      continue;
+    }
+
+    // FIX A: dispatch-confirmation gating. The composer click succeeding
+    // only means the send button was clicked -- it says nothing about
+    // whether the desktop actually started workers, passed readiness, and
+    // sent the packet (see DISPATCH_CONFIRM_TIMEOUT_MS's doc comment above
+    // for the full main.ts flow this is gating on). Poll the conversation
+    // panel until this dispatch's own success or blocked/failed notice
+    // renders, or until DISPATCH_CONFIRM_TIMEOUT_MS elapses.
+    let confirmOutcome = "unconfirmed";
+    const confirmDeadlineMs = Date.now() + DISPATCH_CONFIRM_TIMEOUT_MS;
+    while (Date.now() < confirmDeadlineMs) {
+      await sleep(DISPATCH_CONFIRM_POLL_MS);
+      let text = "";
+      try {
+        text = await readConversationText(args.port);
+      } catch {
+        text = "";
+      }
+      if (countDispatchBlockedNotices(text) > preBlockedCount) {
+        confirmOutcome = "blocked";
+        break;
+      }
+      if (countSha256Occurrences(text) > preSha256Count) {
+        confirmOutcome = "success";
+        break;
+      }
+    }
+
+    if (confirmOutcome === "blocked") {
+      await appendLogLine(logPath, { event: "dispatch_blocked", ts: nowIso(), taskId, reason: "desktop conversation showed a dispatch blocked/failed notice" });
+      await emitDispatchFailedArtifacts("desktop conversation showed a dispatch blocked/failed notice");
+      continue;
+    }
+    if (confirmOutcome === "unconfirmed") {
+      // Timeout without either signal: treated as failed, never guessed as
+      // a success. This is the same fail-closed posture as the blocked
+      // path above -- an unconfirmed dispatch must not seed baselines or
+      // enter the completion poll loop.
+      await appendLogLine(logPath, { event: "dispatch_unconfirmed", ts: nowIso(), taskId, reason: `no success or blocked notice within ${DISPATCH_CONFIRM_TIMEOUT_MS}ms` });
+      await emitDispatchFailedArtifacts(`dispatch unconfirmed within ${DISPATCH_CONFIRM_TIMEOUT_MS}ms`);
+      continue;
+    }
+
+    // Dispatch confirmed successful (this dispatch's own success entry
+    // rendered). Per the main.ts flow, the echoed packet text is written
+    // into each pane BEFORE that success entry is appended, so the echo is
+    // already on screen -- this sleep only lets the terminal render settle,
+    // it is not waiting out the dispatch itself anymore (see
+    // ECHO_RENDER_SETTLE_MS's doc comment above).
+    await sleep(ECHO_RENDER_SETTLE_MS);
+
+    // Read the desktop-displayed sha256 for this dispatch now that success
+    // is confirmed, and compare it to our independently computed
+    // expectedSha.
+    let displayedSha = "";
+    try {
+      const conversationText = await readConversationText(args.port);
+      displayedSha = extractLatestSha256(conversationText);
+    } catch {
+      displayedSha = "";
+    }
+    const packetHashMatch = expectedSha !== "" && displayedSha !== "" && displayedSha === expectedSha;
+
+    // Seed the baseline marker count for this task's own round marker AFTER
+    // dispatch confirmation + settle. This is required both to cross round
+    // boundaries (e.g. WB-009 -> WB-010 switches from counting
+    // BAKEOFF_ROUND_A_END to BAKEOFF_ROUND_B_END) and to make sure the
+    // echoed packet text (which itself contains the marker literal, per
+    // every packet's step 5) is already folded into the baseline before
+    // polling starts. A failed capture must NOT seed 0: if the pane still
+    // visibly holds markers, a 0 baseline would let the next successful
+    // poll misread them as an instant completion. null marks "baseline
+    // unknown -- adopt the first successful poll observation as the
+    // baseline instead".
+    //
+    // FIX B: also seed a begin-marker baseline in parallel (same null
+    // semantics), used below to gate CLI completion on BOTH round markers
+    // having been observed, mirroring classifyApiOutcome's both-markers
+    // contract for the api_llm path.
+    const priorMarkerCounts = {};
+    const priorBeginCounts = {};
+    const beginObserved = {};
+    for (const w of CLI_WORKERS) {
+      const captured = await capturePane(paneIds[w]);
+      priorMarkerCounts[w] = typeof captured === "string"
+        ? countEndMarkers(captured, endMarker)
+        : null;
+      priorBeginCounts[w] = typeof captured === "string" && packetMarkers.begin
+        ? countEndMarkers(captured, packetMarkers.begin)
+        : (typeof captured === "string" ? 0 : null);
+      beginObserved[w] = false;
+    }
+
+    await appendLogLine(logPath, {
+      event: "task_dispatch",
+      ts: dispatchStartIso,
+      taskId,
+      endMarker,
+      priorMarkerCounts,
+      priorBeginCounts,
+      submitOk: true,
+      expectedSha,
+      displayedSha,
+      packetHashMatch,
+    });
+
+    const perWorkerStatus = {};
+    const perWorkerElapsedSeconds = {};
+    const perWorkerEndMarkerPresent = {};
+    for (const w of WORKER_LABELS) {
+      perWorkerStatus[w] = "pending";
+      perWorkerElapsedSeconds[w] = null;
+      perWorkerEndMarkerPresent[w] = false;
+    }
+
+    const deadlineMs = dispatchStartMs + defaultTimeout * 1000;
+    while (Date.now() < deadlineMs) {
+      const elapsedSeconds = (Date.now() - dispatchStartMs) / 1000;
+
+      for (const w of CLI_WORKERS) {
+        if (perWorkerStatus[w] !== "pending") continue;
+        const captured = await capturePane(paneIds[w]);
+        if (typeof captured !== "string") {
+          // Transient capture failure: skip this tick rather than treating
+          // the miss as an empty pane. An empty read would wrongly lower
+          // the running-minimum baseline (or instantly complete against a
+          // null baseline). The loop deadline still bounds the task and the
+          // post-loop sweep marks still-pending workers as timeout.
+          continue;
+        }
+        const paneText = captured;
+        const currCount = countEndMarkers(paneText, endMarker);
+
+        // FIX B: track the begin-marker running-minimum in parallel with
+        // the end-marker one above, using the identical scroll-off-tolerant
+        // logic, and set the sticky beginObserved[w] flag whenever a
+        // successful capture shows the begin count rise above its running
+        // minimum. packetMarkers.begin === "" means this packet had no
+        // extractable begin-marker literal at all (see getPacketMarkers) --
+        // beginObserved can then never become true, which is intentional
+        // (see classifyCliOutcome's doc comment).
+        if (packetMarkers.begin) {
+          const currBeginCount = countEndMarkers(paneText, packetMarkers.begin);
+          if (priorBeginCounts[w] === null) {
+            priorBeginCounts[w] = currBeginCount;
+          } else {
+            if (currBeginCount < priorBeginCounts[w]) {
+              priorBeginCounts[w] = currBeginCount;
+            }
+            if (currBeginCount > priorBeginCounts[w]) {
+              beginObserved[w] = true;
+            }
+          }
+        }
+
+        if (priorMarkerCounts[w] === null) {
+          // Baseline capture failed at dispatch time. Adopt the first
+          // successful observation as the baseline: a leftover marker and
+          // this task's own marker are indistinguishable here, so require a
+          // further increase before declaring completion (conservative --
+          // the worst case is a timeout, never a false completion).
+          priorMarkerCounts[w] = currCount;
+          continue;
+        }
+        if (currCount < priorMarkerCounts[w]) {
+          // A leftover marker from the previous task scrolled off the
+          // visible screen; adopt the smaller count as the new baseline so
+          // this task's own marker still registers as an increase.
+          priorMarkerCounts[w] = currCount;
+        }
+        const endStatus = classifyCliWorker(priorMarkerCounts[w], currCount, elapsedSeconds, defaultTimeout);
+        // FIX B: gate CLI completion on BOTH round markers, mirroring
+        // classifyApiOutcome's both-markers contract for the api_llm path.
+        // An END-increment alone (begin never observed) downgrades to
+        // invalid_output instead of being accepted as completed.
+        const status = classifyCliOutcome(endStatus, beginObserved[w]);
+        if (status === "completed") {
+          perWorkerStatus[w] = "completed";
+          perWorkerElapsedSeconds[w] = elapsedSeconds;
+          // The CLI completion check is the round-marker line appearing in
+          // the pane transcript itself, i.e. the end marker was directly
+          // observed -- this is the "CLI: completion marker line observed"
+          // verification path called out for evidence.end_marker_present.
+          perWorkerEndMarkerPresent[w] = true;
+          const capturePath = path.join(runEvidenceDir, `${w}-task-${taskId}.txt`);
+          await writeFile(capturePath, paneText, "utf8");
+        } else if (status === "invalid_output") {
+          // END marker was seen but the BEGIN marker never was -- terminal,
+          // already counted as a failure by taskFailed's status check below
+          // and by mapRunnerStatusToCommandStatus's status mapping.
+          perWorkerStatus[w] = "invalid_output";
+          perWorkerElapsedSeconds[w] = elapsedSeconds;
+          perWorkerEndMarkerPresent[w] = false;
+          const capturePath = path.join(runEvidenceDir, `${w}-task-${taskId}.txt`);
+          await writeFile(capturePath, paneText, "utf8");
+        } else if (status === "timeout") {
+          perWorkerStatus[w] = "timeout";
+          perWorkerElapsedSeconds[w] = elapsedSeconds;
+          const capturePath = path.join(runEvidenceDir, `${w}-task-${taskId}.txt`);
+          await writeFile(capturePath, paneText, "utf8");
+        }
+      }
+
+      for (const w of API_LLM_WORKERS) {
+        if (perWorkerStatus[w] !== "pending") continue;
+        const runInfo = await readRunJsonForTask(evidenceProjectRoot, w, dispatchStartMs);
+        if (runInfo.found) {
+          const cls = classifyApiOutcome(runInfo.text, runInfo.responseText, packetMarkers);
+          if (cls === "completed" || cls === "failed" || cls === "blocked" || cls === "invalid_output") {
+            perWorkerStatus[w] = cls;
+            perWorkerElapsedSeconds[w] = elapsedSeconds;
+            // Only a fully-validated completed outcome (run.json succeeded
+            // AND both round markers found in response.txt) counts as the
+            // marker having been verified present; invalid_output means the
+            // markers were checked and found missing, so it must stay
+            // false.
+            perWorkerEndMarkerPresent[w] = cls === "completed";
+          }
+        }
+        if (perWorkerStatus[w] === "pending" && elapsedSeconds >= defaultTimeout) {
+          perWorkerStatus[w] = "timeout";
+          perWorkerElapsedSeconds[w] = elapsedSeconds;
+        }
+      }
+
+      if (Object.values(perWorkerStatus).every((s) => s !== "pending")) break;
+      await sleep(args.poll * 1000);
+    }
+
+    for (const w of WORKER_LABELS) {
+      if (perWorkerStatus[w] !== "pending") continue;
+      // The poll loop exits at the deadline before an in-loop tick can
+      // observe elapsedSeconds >= timeoutSeconds (ticks only run while
+      // now < deadline), so this sweep is the real timeout path. Record a
+      // final pane capture here -- without it a timed-out worker loses the
+      // per-task artifact needed to audit or exclude the result. api_llm
+      // workers are included: a timed-out api worker has no run.json
+      // either, so its pane capture is the only artifact of the attempt.
+      perWorkerStatus[w] = "timeout";
+      perWorkerElapsedSeconds[w] = (Date.now() - dispatchStartMs) / 1000;
+      const captured = await capturePane(paneIds[w]);
+      if (typeof captured === "string") {
+        const capturePath = path.join(runEvidenceDir, `${w}-task-${taskId}.txt`);
+        await writeFile(capturePath, captured, "utf8");
+      }
+    }
+    const taskFailed = Object.values(perWorkerStatus).some(
+      (s) => s === "timeout" || s === "failed" || s === "blocked" || s === "invalid_output",
+    );
+    if (taskFailed) anyFailure = true;
+
+    await appendLogLine(logPath, {
+      event: "task_result",
+      ts: nowIso(),
+      taskId,
+      perWorkerStatus,
+      elapsedSeconds: (Date.now() - dispatchStartMs) / 1000,
+    });
+
+    await writeSummarizeArtifacts({
+      taskId,
+      taskClass,
+      perWorkerStatus,
+      perWorkerElapsedSeconds,
+      perWorkerEndMarkerPresent,
+      executionStatus: taskFailed ? "completed_with_failures" : "completed",
+      packetHashMatch,
+    });
+  }
+
+  await appendLogLine(logPath, { event: "run_end", ts: nowIso(), anyFailure });
+
+  console.log(JSON.stringify({
+    result: anyFailure ? "completed with failures" : "completed",
+    logPath,
+    evidenceDir: runEvidenceDir,
+  }));
+  process.exit(anyFailure ? EXIT_TASK_FAILURES : EXIT_OK);
+}
+
+main().catch((err) => {
+  console.error(`run-cli-bakeoff: unhandled error: ${err.stack || err.message || err}`);
+  process.exit(EXIT_DESKTOP_NOT_UP);
+});
