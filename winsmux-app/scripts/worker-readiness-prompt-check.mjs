@@ -27,7 +27,23 @@ async function loadWorkerReadinessPromptModule() {
   }
 }
 
-const { hasWorkerReadyPrompt } = await loadWorkerReadinessPromptModule();
+const { hasWorkerReadyPrompt, hasWorkerReadyPromptInAnySource } = await loadWorkerReadinessPromptModule();
+
+/**
+ * Test-only helper: simulate a fixed-width terminal column wrap. This
+ * mirrors how a real pty-capture source turns a very long, in-place
+ * re-drawn command line (no newline between repaints once ANSI control
+ * sequences are stripped) into many real physical terminal rows -- each
+ * row is still "\n"-joined normally, but adjacent repaints glue directly
+ * onto each other with no separating whitespace at the wrap seam.
+ */
+function wrapIntoFixedWidthLines(text, width) {
+  const lines = [];
+  for (let i = 0; i < text.length; i += width) {
+    lines.push(text.slice(i, i + width));
+  }
+  return lines;
+}
 
 // #1115: the exact idle banner captured from a real six-pane Harness Bench
 // attempt where worker-2 (Codex/gpt-5.5) was stuck "checking readiness"
@@ -116,6 +132,115 @@ assert.equal(
   hasWorkerReadyPrompt(staleLaunchMarkerWithIdleFooterAfterScrollback),
   true,
   "idle footer must classify as ready once a stale launch marker has scrolled out of the near-footer window",
+);
+
+// #1115 comment 4872058128 (root cause, Fixture A): a real six-pane Harness
+// Bench capture of worker-2 (Codex/gpt-5.5) reproduced this exact shape.
+// inspectWorkerPaneReadiness in main.ts joins three capture sources with
+// "\n" -- entry.outputBuffer, the live getWorkerPaneVisibleText DOM
+// snapshot, and the freshest capturePtyPane(...).output, in that order --
+// and only the LAST 10 non-empty lines of the combined blob were inspected
+// for readiness. capturePtyPane(...).output is always the last (most
+// tail-dominant) source. Here the pane's own launch command is long
+// (absolute -C/--add-dir paths), the terminal keeps re-drawing it in
+// place, and once ANSI control sequences are stripped, six repaints glue
+// directly onto each other with no separating whitespace at the seam
+// (".../workdircodex -c model=gpt-5.5...") while still wrapping across
+// many real terminal rows. That alone produces far more than 10 physical
+// lines, so the naive trailing-10-line window over the full join is 100%
+// redraw noise and never sees the idle banner
+// (getWorkerPaneVisibleText correctly holds it in the *middle* source).
+const codexWorker2VisibleIdleBanner = [
+  "Tip: Try the Codex App. Run codex app or visit https://chatgpt.com/codex?app-landing-page=true",
+  "- You have 3 usage limit resets available. Run /usage to use one.",
+  "› Explain this codebase",
+  "gpt-5.5 xhigh fast",
+].join("\n");
+
+const codexWorker2LaunchCommand =
+  "codex -c model=gpt-5.5 -c model_reasoning_effort=xhigh --disable plugins "
+  + "-c mcp_servers.playwright.enabled=false --sandbox danger-full-access "
+  + "-C /workdir --add-dir /workdir";
+
+// Six in-place repaints, glued with zero separating characters, then
+// hard-wrapped into ~30-column terminal rows -- comfortably more than the
+// 10-line trailing window inspected by hasWorkerReadyPrompt.
+const codexWorker2PtyCaptureRedrawSource = wrapIntoFixedWidthLines(
+  codexWorker2LaunchCommand.repeat(6),
+  30,
+).join("\n");
+
+const codexWorker2JoinedText = [
+  "", // entry.outputBuffer: empty scrollback at this point in the fixture
+  codexWorker2VisibleIdleBanner,
+  codexWorker2PtyCaptureRedrawSource,
+].filter(Boolean).join("\n");
+
+assert.equal(
+  hasWorkerReadyPrompt(codexWorker2JoinedText),
+  false,
+  "naive tail-10-line window over the joined 3-source blob must reproduce the #1115 comment 4872058128 bug: the in-place redraw run in the pty-capture source dominates the window and hides the idle banner sitting in the visible source",
+);
+assert.equal(
+  hasWorkerReadyPromptInAnySource([
+    "",
+    codexWorker2VisibleIdleBanner,
+    codexWorker2PtyCaptureRedrawSource,
+  ]),
+  true,
+  "per-source readiness must find the idle banner in the visible source even though the pty-capture source is dominated by an in-place redraw run",
+);
+
+// #1115 comment 4872058128 (Fixture B, regression): none of the three
+// sources shows any ready shape at all -- only launch-command noise -- so
+// per-source evaluation must still resolve to not-ready. This guards
+// against a change that makes hasWorkerReadyPromptInAnySource too
+// permissive (e.g. matching on the mere presence of "codex" in any source).
+const noReadyBannerVisibleSource = "> codex --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox";
+const noReadyBannerPtyCaptureSource = wrapIntoFixedWidthLines(
+  codexWorker2LaunchCommand.repeat(3),
+  30,
+).join("\n");
+assert.equal(
+  hasWorkerReadyPromptInAnySource([
+    "",
+    noReadyBannerVisibleSource,
+    noReadyBannerPtyCaptureSource,
+  ]),
+  false,
+  "per-source readiness must stay not-ready when no source shows an idle banner, even with launch-command redraw noise present",
+);
+
+// #1115 (P2 follow-up, Codex review): the Grok ghost-input-box signal needs
+// two lines -- a "Grok Build" banner line and a "│ > │" input-box line --
+// inside the same trailing-10-lines window (see hasGrokInputBox in
+// hasWorkerReadyPrompt). If the two lines land in *different* capture
+// sources (e.g. the banner in getWorkerPaneVisibleText, the input box in
+// the freshest capturePtyPane output), neither source alone contains both
+// lines, so per-source evaluation alone would (incorrectly) report
+// not-ready. hasWorkerReadyPromptInAnySource must also check the sources
+// joined together so this cross-source case still resolves to ready.
+const grokBannerOnlySource = [
+  "Grok Build v1.4.2",
+  "Ready.",
+].join("\n");
+const grokInputBoxOnlySource = [
+  "│ > │",
+].join("\n");
+assert.equal(
+  hasWorkerReadyPrompt(grokBannerOnlySource),
+  false,
+  "Grok banner line alone (no input-box line) must not classify as ready",
+);
+assert.equal(
+  hasWorkerReadyPrompt(grokInputBoxOnlySource),
+  false,
+  "Grok input-box line alone (no banner line) must not classify as ready",
+);
+assert.equal(
+  hasWorkerReadyPromptInAnySource([grokBannerOnlySource, grokInputBoxOnlySource]),
+  true,
+  "Grok ready signal split across two sources must still resolve to ready via the joined-sources fallback",
 );
 
 console.log("worker-readiness-prompt-check: ok");

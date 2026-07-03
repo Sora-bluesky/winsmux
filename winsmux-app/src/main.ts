@@ -59,7 +59,7 @@ import {
   classifyRestoredWorkerDrift,
   selectConfiguredWorkerStartRoster,
 } from "./workerStartPlanning";
-import { hasWorkerReadyPrompt } from "./workerReadinessPrompt";
+import { hasWorkerReadyPromptInAnySource } from "./workerReadinessPrompt";
 
 interface PaneEntry {
   terminal: Terminal;
@@ -4010,12 +4010,19 @@ async function inspectWorkerPaneReadiness(
   }
 
   let output = "";
+  let normalizedSources: string[] = [];
   try {
-    output = [
+    // #1115 (comment 4872058128): keep the raw sources around individually
+    // (not just joined) so readiness can also be evaluated per-source below
+    // -- see hasWorkerReadyPromptInAnySource in workerReadinessPrompt.ts for
+    // why the naive full join alone is not reliable here.
+    const readinessSources = [
       entry.outputBuffer,
       getWorkerPaneVisibleText(entry),
       (await capturePtyPane(target)).output,
-    ].filter(Boolean).join("\n");
+    ];
+    output = readinessSources.filter(Boolean).join("\n");
+    normalizedSources = readinessSources.map((source) => normalizeWorkerReadinessOutput(source));
   } catch (error) {
     return {
       target,
@@ -4048,7 +4055,12 @@ async function inspectWorkerPaneReadiness(
     return { target, state: "pending", reason: pendingReason, evidence, warnings };
   }
 
-  if (hasWorkerReadyPrompt(text)) {
+  // #1115 (comment 4872058128): evaluate readiness against each capture
+  // source on its own so an in-place redraw run dominating the freshest
+  // source (capturePtyPane output) cannot push a genuinely idle banner
+  // sitting in a different source (e.g. getWorkerPaneVisibleText) out of
+  // the trailing-lines window. See workerReadinessPrompt.ts.
+  if (hasWorkerReadyPromptInAnySource(normalizedSources)) {
     return {
       target,
       state: "ready",
