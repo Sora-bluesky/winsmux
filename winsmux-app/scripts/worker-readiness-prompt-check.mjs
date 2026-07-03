@@ -211,4 +211,36 @@ assert.equal(
   "per-source readiness must stay not-ready when no source shows an idle banner, even with launch-command redraw noise present",
 );
 
+// #1115 (P2 follow-up, Codex review): the Grok ghost-input-box signal needs
+// two lines -- a "Grok Build" banner line and a "│ > │" input-box line --
+// inside the same trailing-10-lines window (see hasGrokInputBox in
+// hasWorkerReadyPrompt). If the two lines land in *different* capture
+// sources (e.g. the banner in getWorkerPaneVisibleText, the input box in
+// the freshest capturePtyPane output), neither source alone contains both
+// lines, so per-source evaluation alone would (incorrectly) report
+// not-ready. hasWorkerReadyPromptInAnySource must also check the sources
+// joined together so this cross-source case still resolves to ready.
+const grokBannerOnlySource = [
+  "Grok Build v1.4.2",
+  "Ready.",
+].join("\n");
+const grokInputBoxOnlySource = [
+  "│ > │",
+].join("\n");
+assert.equal(
+  hasWorkerReadyPrompt(grokBannerOnlySource),
+  false,
+  "Grok banner line alone (no input-box line) must not classify as ready",
+);
+assert.equal(
+  hasWorkerReadyPrompt(grokInputBoxOnlySource),
+  false,
+  "Grok input-box line alone (no banner line) must not classify as ready",
+);
+assert.equal(
+  hasWorkerReadyPromptInAnySource([grokBannerOnlySource, grokInputBoxOnlySource]),
+  true,
+  "Grok ready signal split across two sources must still resolve to ready via the joined-sources fallback",
+);
+
 console.log("worker-readiness-prompt-check: ok");
