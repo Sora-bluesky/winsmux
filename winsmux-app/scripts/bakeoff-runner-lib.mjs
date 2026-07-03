@@ -106,25 +106,52 @@ export function taskIdToEndMarker(taskId) {
 }
 
 /**
- * Count occurrences of a round-end marker in a captured pane text blob.
+ * Count the lines in a captured pane blob where a round-end marker appears
+ * as worker-printed completion output.
+ *
+ * Dispatch echoes the full task packet into the worker pane, and every
+ * packet names its round's END marker literally (step 5, backtick-wrapped),
+ * so a raw substring count would read the echoed instructions as an instant
+ * completion. A line only counts here when the marker stands alone on it:
+ * any letter, digit, or backtick elsewhere on the line (instruction step
+ * numbers, inline-code backticks, surrounding prose such as the worker
+ * narrating its plan) disqualifies it, while bare TUI decoration around the
+ * marker (prompt chevrons, list bullets, whitespace, trailing punctuation)
+ * is allowed.
  *
  * @param {string} paneText
  * @param {string} [marker] defaults to BAKEOFF_ROUND_A_END for callers that
  *   have not been updated to pass a task-specific marker.
  * @returns {number}
  */
-export function countEndMarkers(paneText, marker = "BAKEOFF_ROUND_A_END") {
+export function countCompletionMarkerLines(paneText, marker = "BAKEOFF_ROUND_A_END") {
   if (!paneText) return 0;
-  const escaped = String(marker).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const matches = paneText.match(new RegExp(escaped, "g"));
-  return matches ? matches.length : 0;
+  const target = String(marker);
+  if (!target) return 0;
+  let count = 0;
+  for (const line of String(paneText).split(/\r?\n/)) {
+    const idx = line.indexOf(target);
+    if (idx === -1) continue;
+    const prefix = line.slice(0, idx);
+    const suffix = line.slice(idx + target.length);
+    if (/[A-Za-z0-9`]/.test(prefix) || /[A-Za-z0-9`]/.test(suffix)) continue;
+    count += 1;
+  }
+  return count;
 }
 
 /**
  * Classify an api_llm worker's run.json content for a single task.
  *
+ * `workers exec` initializes the api_llm run status to 'blocked' and only
+ * upgrades it after a successful provider call (scripts/winsmux-core.ps1),
+ * so a run.json persisted with status 'blocked' (missing API key,
+ * unconfigured runner metadata) is a finished non-runnable outcome, not an
+ * in-progress one. It is returned as terminal 'blocked' so the runner can
+ * record it immediately instead of waiting out the full task timeout.
+ *
  * @param {string} runJsonText
- * @returns {"completed"|"failed"|"pending"}
+ * @returns {"completed"|"failed"|"blocked"|"pending"}
  */
 export function classifyApiRun(runJsonText) {
   if (!runJsonText) return "pending";
@@ -141,21 +168,33 @@ export function classifyApiRun(runJsonText) {
   if (status === "failed" || status === "error" || status === "errored") {
     return "failed";
   }
+  if (status === "blocked") {
+    return "blocked";
+  }
   return "pending";
 }
 
 /**
  * Classify a CLI worker's progress on a single dispatched task by comparing
- * the BAKEOFF_ROUND_A_END marker count before and after dispatch.
+ * the completion-marker line count against the lowest count observed since
+ * immediately before dispatch.
  *
- * @param {number} prevCount marker count observed before this task's dispatch
- * @param {number} currCount marker count observed at the current poll tick
+ * The caller must maintain `minObservedCount` as a running minimum: pane
+ * capture only returns visible rows, so a leftover marker from the previous
+ * task can scroll off mid-task. Lowering the baseline when that happens is
+ * what lets this task's own marker (count rising back above the minimum)
+ * register as completion instead of reading as "no change" and timing out.
+ *
+ * @param {number} minObservedCount lowest marker-line count observed since
+ *   immediately before this task's dispatch (seeded pre-dispatch, lowered by
+ *   the caller whenever a poll observes a smaller count)
+ * @param {number} currCount marker-line count observed at the current poll tick
  * @param {number} elapsedSeconds seconds since this task was dispatched
  * @param {number} timeoutSeconds this task's configured timeout
  * @returns {"completed"|"pending"|"timeout"}
  */
-export function classifyCliWorker(prevCount, currCount, elapsedSeconds, timeoutSeconds) {
-  const prev = Number.isFinite(prevCount) ? prevCount : 0;
+export function classifyCliWorker(minObservedCount, currCount, elapsedSeconds, timeoutSeconds) {
+  const prev = Number.isFinite(minObservedCount) ? minObservedCount : 0;
   const curr = Number.isFinite(currCount) ? currCount : 0;
   if (curr > prev) return "completed";
   if (Number.isFinite(elapsedSeconds) && Number.isFinite(timeoutSeconds) && elapsedSeconds >= timeoutSeconds) {

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import {
   parseManifestPaneIds,
   collectReadyWorkers,
-  countEndMarkers,
+  countCompletionMarkerLines,
   taskIdToEndMarker,
   classifyApiRun,
   classifyCliWorker,
@@ -72,29 +72,49 @@ assert.deepEqual(
 assert.deepEqual(collectReadyWorkers([]), new Set(), "collectReadyWorkers must return empty set for empty input");
 assert.deepEqual(collectReadyWorkers(undefined), new Set(), "collectReadyWorkers must tolerate non-array input");
 
-// --- countEndMarkers ------------------------------------------------------
+// --- countCompletionMarkerLines -------------------------------------------
 
-assert.equal(countEndMarkers(""), 0, "countEndMarkers must return 0 for empty text");
-assert.equal(countEndMarkers("no marker here"), 0, "countEndMarkers must return 0 when marker absent");
+assert.equal(countCompletionMarkerLines(""), 0, "countCompletionMarkerLines must return 0 for empty text");
+assert.equal(countCompletionMarkerLines("no marker here"), 0, "countCompletionMarkerLines must return 0 when marker absent");
 assert.equal(
-  countEndMarkers("task 1 done\nBAKEOFF_ROUND_A_END\nmore text"),
+  countCompletionMarkerLines("task 1 done\nBAKEOFF_ROUND_A_END\nmore text"),
   1,
-  "countEndMarkers must count a single marker occurrence",
+  "countCompletionMarkerLines must count a bare worker-printed marker line",
 );
 assert.equal(
-  countEndMarkers("BAKEOFF_ROUND_A_END\nsome output\nBAKEOFF_ROUND_A_END"),
+  countCompletionMarkerLines("> BAKEOFF_ROUND_A_END"),
+  1,
+  "countCompletionMarkerLines must allow bare TUI decoration (prompt chevron) around the marker",
+);
+assert.equal(
+  countCompletionMarkerLines("5. `BAKEOFF_ROUND_A_END`"),
+  0,
+  "countCompletionMarkerLines must not count the packet's backtick-wrapped instruction line echoed into the pane at dispatch",
+);
+assert.equal(
+  countCompletionMarkerLines("  5. BAKEOFF_ROUND_A_END"),
+  0,
+  "countCompletionMarkerLines must not count a numbered instruction step even when a TUI strips the backticks",
+);
+assert.equal(
+  countCompletionMarkerLines("I will print BAKEOFF_ROUND_A_END when finished"),
+  0,
+  "countCompletionMarkerLines must not count the worker narrating the marker inside prose",
+);
+assert.equal(
+  countCompletionMarkerLines("Pack: winsmux-cli-bakeoff-v1\n5. `BAKEOFF_ROUND_A_END`\nwork output\nBAKEOFF_ROUND_A_END"),
+  1,
+  "countCompletionMarkerLines must count only the worker's own completion line when the echoed packet is also visible",
+);
+assert.equal(
+  countCompletionMarkerLines("BAKEOFF_ROUND_A_END\nsome output\nBAKEOFF_ROUND_A_END"),
   2,
-  "countEndMarkers must count multiple marker occurrences across a growing pane transcript",
+  "countCompletionMarkerLines must count multiple worker-printed marker lines across a pane transcript",
 );
 assert.equal(
-  countEndMarkers("BAKEOFF_ROUND_B_END\nBAKEOFF_ROUND_A_END", "BAKEOFF_ROUND_B_END"),
+  countCompletionMarkerLines("BAKEOFF_ROUND_B_END\nBAKEOFF_ROUND_A_END", "BAKEOFF_ROUND_B_END"),
   1,
-  "countEndMarkers must count only the requested marker, ignoring other rounds' markers in the same blob",
-);
-assert.equal(
-  countEndMarkers("BAKEOFF_ROUND_C_END\nBAKEOFF_ROUND_C_END\nBAKEOFF_ROUND_C_END", "BAKEOFF_ROUND_C_END"),
-  3,
-  "countEndMarkers must count multiple occurrences of an explicitly requested marker",
+  "countCompletionMarkerLines must count only the requested round's marker, ignoring other rounds' markers",
 );
 
 // --- taskIdToEndMarker -----------------------------------------------------
@@ -148,6 +168,11 @@ assert.equal(
   "classifyApiRun must classify status=failed as failed",
 );
 assert.equal(
+  classifyApiRun(JSON.stringify({ status: "blocked", reason: "api_llm_runner_unconfigured" })),
+  "blocked",
+  "classifyApiRun must classify a persisted status=blocked run.json (missing key / unconfigured runner) as terminal blocked, not pending",
+);
+assert.equal(
   classifyApiRun(JSON.stringify({ status: "running" })),
   "pending",
   "classifyApiRun must classify an in-progress status as pending",
@@ -176,15 +201,36 @@ assert.equal(
   classifyCliWorker(5, 5, 5, 3600),
   "pending",
   "classifyCliWorker must stay pending immediately after dispatch when the baseline was seeded from " +
-    "leftover markers from a previous run (prevCount=5 carried over, currCount unchanged) -- it must not " +
+    "leftover markers from a previous run (minObservedCount=5 carried over, currCount unchanged) -- it must not " +
     "misread stale markers as this task's own completion",
 );
 assert.equal(
   classifyCliWorker(5, 6, 5, 3600),
   "completed",
   "classifyCliWorker must classify completion correctly once the marker count rises above a seeded " +
-    "non-zero baseline (prevCount=5 from leftover markers, currCount=6 after this task's own marker)",
+    "non-zero baseline (minObservedCount=5 from leftover markers, currCount=6 after this task's own marker)",
 );
+
+// P1 scroll-off scenario (visible-rows-only capture): the previous task's
+// marker is on screen at dispatch (baseline 1), scrolls off mid-task (the
+// runner lowers the baseline to the observed 0), then this task's own marker
+// appears and must register against the lowered baseline.
+assert.equal(
+  classifyCliWorker(1, 1, 30, 3600),
+  "pending",
+  "classifyCliWorker must stay pending while only the previous task's marker is visible",
+);
+assert.equal(
+  classifyCliWorker(0, 0, 300, 3600),
+  "pending",
+  "classifyCliWorker must stay pending after the leftover marker scrolled off and the caller lowered the baseline",
+);
+assert.equal(
+  classifyCliWorker(0, 1, 600, 3600),
+  "completed",
+  "classifyCliWorker must classify this task's own marker as completed against the lowered baseline",
+);
+
 assert.equal(
   classifyCliWorker(1, 1, 3600, 3600),
   "timeout",

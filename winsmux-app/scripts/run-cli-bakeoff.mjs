@@ -29,7 +29,7 @@ import { fileURLToPath } from "node:url";
 import {
   parseManifestPaneIds,
   collectReadyWorkers,
-  countEndMarkers,
+  countCompletionMarkerLines,
   taskIdToEndMarker,
   classifyApiRun,
   classifyCliWorker,
@@ -414,17 +414,20 @@ async function main() {
   for (const taskId of taskIds) {
     const endMarker = taskIdToEndMarker(taskId);
 
-    // Seed the baseline marker count for this task's own round marker
+    // Seed the baseline marker-line count for this task's own round marker
     // immediately before dispatch. This is required both to cross round
     // boundaries (e.g. WB-009 -> WB-010 switches from counting
     // BAKEOFF_ROUND_A_END to BAKEOFF_ROUND_B_END) and to avoid misreading
     // leftover markers from a previous run as an instant completion for the
-    // very first task of a round.
+    // very first task of a round. The poll loop below additionally lowers
+    // this baseline whenever a smaller count is observed: capture-pane only
+    // returns visible rows, so a previous task's marker scrolling off
+    // mid-task must shrink the baseline rather than permanently inflate it.
     const priorMarkerCounts = {};
     for (const w of CLI_WORKERS) {
       const captured = await capturePane(paneIds[w]);
       const paneText = typeof captured === "string" ? captured : "";
-      priorMarkerCounts[w] = countEndMarkers(paneText, endMarker);
+      priorMarkerCounts[w] = countCompletionMarkerLines(paneText, endMarker);
     }
 
     const dispatchStartMs = Date.now();
@@ -456,7 +459,13 @@ async function main() {
         if (perWorkerStatus[w] !== "pending") continue;
         const captured = await capturePane(paneIds[w]);
         const paneText = typeof captured === "string" ? captured : "";
-        const currCount = countEndMarkers(paneText, endMarker);
+        const currCount = countCompletionMarkerLines(paneText, endMarker);
+        if (currCount < priorMarkerCounts[w]) {
+          // A leftover marker from the previous task scrolled off the
+          // visible screen; adopt the smaller count as the new baseline so
+          // this task's own marker still registers as an increase.
+          priorMarkerCounts[w] = currCount;
+        }
         const status = classifyCliWorker(priorMarkerCounts[w], currCount, elapsedSeconds, defaultTimeout);
         if (status === "completed") {
           perWorkerStatus[w] = "completed";
@@ -476,6 +485,7 @@ async function main() {
           const cls = classifyApiRun(runInfo.text);
           if (cls === "completed") perWorkerStatus[w] = "completed";
           else if (cls === "failed") perWorkerStatus[w] = "failed";
+          else if (cls === "blocked") perWorkerStatus[w] = "blocked";
         }
         if (perWorkerStatus[w] === "pending" && elapsedSeconds >= defaultTimeout) {
           perWorkerStatus[w] = "timeout";
@@ -489,7 +499,7 @@ async function main() {
     for (const w of WORKER_LABELS) {
       if (perWorkerStatus[w] === "pending") perWorkerStatus[w] = "timeout";
     }
-    const taskFailed = Object.values(perWorkerStatus).some((s) => s === "timeout" || s === "failed");
+    const taskFailed = Object.values(perWorkerStatus).some((s) => s === "timeout" || s === "failed" || s === "blocked");
     if (taskFailed) anyFailure = true;
 
     await appendLogLine(logPath, {
