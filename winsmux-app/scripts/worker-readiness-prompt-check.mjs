@@ -91,4 +91,31 @@ assert.equal(
   "mid-launch banner with a trailing idle-shaped footer line must not classify as ready",
 );
 
+// #1115 (P3 follow-up): once enough ordinary lines have scrolled between a
+// stale launch echo/"Starting Codex..." marker and the current footer, the
+// pane must resolve to ready again. hasPendingWorkerLaunchMarker must only
+// suppress readiness for a marker near the footer (a genuine fresh launch),
+// not for a marker still technically present somewhere in the buffered
+// scrollback history that inspectWorkerPaneReadiness feeds in ahead of the
+// live capture (see entry.outputBuffer in main.ts). Simulate 7 ordinary
+// dialogue lines (a normal assistant response) scrolling past between the
+// stale echo/marker and the eventual idle footer.
+const staleLaunchMarkerWithIdleFooterAfterScrollback = [
+  "> codex --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox",
+  "Starting Codex...",
+  "I looked at the repository structure and found the entry point.",
+  "The main module wires up the CLI argument parser first.",
+  "Then it loads the configuration file from the working directory.",
+  "After that it initializes the worker pool for parallel tasks.",
+  "Finally it prints a short summary of what changed.",
+  "Let me know if you would like me to explain any part in more detail.",
+  "Is there anything else you would like me to look into?",
+  "gpt-5.5 xhigh fast",
+].join("\n");
+assert.equal(
+  hasWorkerReadyPrompt(staleLaunchMarkerWithIdleFooterAfterScrollback),
+  true,
+  "idle footer must classify as ready once a stale launch marker has scrolled out of the near-footer window",
+);
+
 console.log("worker-readiness-prompt-check: ok");
