@@ -2,9 +2,11 @@
 //
 // Drives a live winsmux desktop session end-to-end over CDP: confirms the
 // six worker panes are reachable, runs a ready-check, dispatches each
-// benchmark-pack task, polls every worker to completion or timeout, and
-// appends one JSON line per task to a runner log under
-// .winsmux/evidence/cli-bakeoff/runner-<UTC>/.
+// benchmark-pack task, polls every worker to completion or timeout, appends
+// one JSON line per task to a runner log under
+// .winsmux/evidence/cli-bakeoff/runner-<UTC>/, and writes a
+// summarize-cli-bakeoff.ps1-compatible run directory (manifest.json +
+// commands.jsonl) per task under .winsmux/evidence/cli-bakeoff/<run_id>/.
 //
 // This script only talks to an already-running desktop app over CDP -- it
 // does not build, launch, or install anything. If the desktop app is not
@@ -13,6 +15,7 @@
 // Usage:
 //   node scripts/run-cli-bakeoff.mjs [--port 9237] [--tasks WB-001,WB-002]
 //     [--timeout 3600] [--poll 25] [--project-dir <path>] [--dry-run]
+//     [--recording-status <status>] [--recording-publishable]
 //
 // --project-dir defaults to the same path
 // scripts/start-cli-bakeoff-desktop.ps1 launches the desktop app with
@@ -32,11 +35,17 @@ import {
   countCompletionMarkerLines,
   taskIdToEndMarker,
   classifyApiRun,
+  classifyApiOutcome,
+  getPacketMarkers,
   classifyCliWorker,
   selectNewRunDir,
   buildReadyCheckCommand,
   buildDispatchCommand,
   resolveTaskSelection,
+  buildRunId,
+  mapRunnerStatusToCommandStatus,
+  buildRunManifest,
+  buildCommandRow,
 } from "./bakeoff-runner-lib.mjs";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -61,6 +70,11 @@ function parseArgs(argv) {
     poll: 25,
     projectDir: DEFAULT_PROJECT_DIR,
     dryRun: false,
+    // Mirrors run-cli-bakeoff-openrouter.ps1's manifest defaults: a run is
+    // "not_declared"/not publishable until an operator explicitly marks it,
+    // never defaulted to true.
+    recordingStatus: "not_declared",
+    recordingPublishable: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -76,6 +90,10 @@ function parseArgs(argv) {
       args.projectDir = path.resolve(REPO_ROOT, argv[++i]);
     } else if (arg === "--dry-run") {
       args.dryRun = true;
+    } else if (arg === "--recording-status") {
+      args.recordingStatus = argv[++i];
+    } else if (arg === "--recording-publishable") {
+      args.recordingPublishable = true;
     }
   }
   return args;
@@ -257,12 +275,24 @@ async function readRunJsonForTask(evidenceProjectRoot, workerLabel, sinceEpochMs
   const dirName = await findNewestRunDirSince(runsDir, sinceEpochMs);
   if (!dirName) return { found: false };
   const runJsonPath = path.join(runsDir, dirName, "run.json");
+  let text;
   try {
-    const text = await readFile(runJsonPath, "utf8");
-    return { found: true, dirName, text };
+    text = await readFile(runJsonPath, "utf8");
   } catch {
     return { found: false };
   }
+  // response.txt lives alongside run.json in the same dispatch dir (see
+  // run-cli-bakeoff-openrouter.ps1, which resolves $runJson.response
+  // relative to the project dir). Reading it here, from the same run dir
+  // run.json was found in, keeps marker validation honestly tied to the
+  // exact run that produced the status this poll tick is classifying.
+  let responseText = "";
+  try {
+    responseText = await readFile(path.join(runsDir, dirName, "response.txt"), "utf8");
+  } catch {
+    responseText = "";
+  }
+  return { found: true, dirName, text, responseText };
 }
 
 async function appendLogLine(logPath, obj) {
@@ -408,11 +438,45 @@ async function main() {
     process.exit(EXIT_TASK_FAILURES);
   }
 
+  // Per-run evidence dir that satisfies summarize-cli-bakeoff.ps1's contract
+  // (manifest.json + commands.jsonl per dispatched task), written alongside
+  // the supplementary runner-log.jsonl / pane-capture evidence above. See
+  // .winsmux/evidence/cli-bakeoff/<runDirName>-<taskId>/ per task.
+  const runTimestampSlug = runDirName;
+  const bakeoffEvidenceRoot = path.join(REPO_ROOT, ".winsmux", "evidence", "cli-bakeoff");
+
+  // cli/model/role metadata for commands.jsonl: this runner only has
+  // manifest.yaml's pane_id per worker (parseManifestPaneIds) -- unlike
+  // run-cli-bakeoff-openrouter.ps1, it does not fetch worker rows (cli,
+  // display_model, role) from the benchmark pack's `default_workers` list,
+  // because those rows are not attached to CDP-dispatched desktop workers
+  // the way they are to `workers exec` invocations. Emitting 'unknown'
+  // here is intentional and honest rather than inventing a cli/model
+  // pairing this runner cannot verify from its available inputs.
+  const workerMeta = {};
+  for (const w of WORKER_LABELS) {
+    workerMeta[w] = { cli: "unknown", model: "unknown", role: "unknown", pane: paneIds[w] || "unknown" };
+  }
+
   // 5. Run each task.
   let anyFailure = false;
 
   for (const taskId of taskIds) {
     const endMarker = taskIdToEndMarker(taskId);
+    const taskEntry = pack.tasks.find((t) => t.task_id === taskId);
+    const taskClass = taskEntry && typeof taskEntry.task_class === "string" ? taskEntry.task_class : "unknown";
+    let packetMarkers = { begin: "", end: "" };
+    if (taskEntry && typeof taskEntry.packet_path === "string") {
+      try {
+        const packetText = await readFile(
+          path.join(REPO_ROOT, "tasks", "cli-bakeoff", "v1", taskEntry.packet_path),
+          "utf8",
+        );
+        packetMarkers = getPacketMarkers(packetText);
+      } catch {
+        packetMarkers = { begin: "", end: "" };
+      }
+    }
 
     // Seed the baseline marker-line count for this task's own round marker
     // immediately before dispatch. This is required both to cross round
@@ -451,7 +515,13 @@ async function main() {
     }
 
     const perWorkerStatus = {};
-    for (const w of WORKER_LABELS) perWorkerStatus[w] = "pending";
+    const perWorkerElapsedSeconds = {};
+    const perWorkerEndMarkerPresent = {};
+    for (const w of WORKER_LABELS) {
+      perWorkerStatus[w] = "pending";
+      perWorkerElapsedSeconds[w] = null;
+      perWorkerEndMarkerPresent[w] = false;
+    }
 
     const deadlineMs = dispatchStartMs + defaultTimeout * 1000;
     while (Date.now() < deadlineMs) {
@@ -488,10 +558,17 @@ async function main() {
         const status = classifyCliWorker(priorMarkerCounts[w], currCount, elapsedSeconds, defaultTimeout);
         if (status === "completed") {
           perWorkerStatus[w] = "completed";
+          perWorkerElapsedSeconds[w] = elapsedSeconds;
+          // The CLI completion check is the round-marker line appearing in
+          // the pane transcript itself, i.e. the end marker was directly
+          // observed -- this is the "CLI: completion marker line observed"
+          // verification path called out for evidence.end_marker_present.
+          perWorkerEndMarkerPresent[w] = true;
           const capturePath = path.join(runEvidenceDir, `${w}-task-${taskId}.txt`);
           await writeFile(capturePath, paneText, "utf8");
         } else if (status === "timeout") {
           perWorkerStatus[w] = "timeout";
+          perWorkerElapsedSeconds[w] = elapsedSeconds;
           const capturePath = path.join(runEvidenceDir, `${w}-task-${taskId}.txt`);
           await writeFile(capturePath, paneText, "utf8");
         }
@@ -501,13 +578,21 @@ async function main() {
         if (perWorkerStatus[w] !== "pending") continue;
         const runInfo = await readRunJsonForTask(evidenceProjectRoot, w, dispatchStartMs);
         if (runInfo.found) {
-          const cls = classifyApiRun(runInfo.text);
-          if (cls === "completed") perWorkerStatus[w] = "completed";
-          else if (cls === "failed") perWorkerStatus[w] = "failed";
-          else if (cls === "blocked") perWorkerStatus[w] = "blocked";
+          const cls = classifyApiOutcome(runInfo.text, runInfo.responseText, packetMarkers);
+          if (cls === "completed" || cls === "failed" || cls === "blocked" || cls === "invalid_output") {
+            perWorkerStatus[w] = cls;
+            perWorkerElapsedSeconds[w] = elapsedSeconds;
+            // Only a fully-validated completed outcome (run.json succeeded
+            // AND both round markers found in response.txt) counts as the
+            // marker having been verified present; invalid_output means the
+            // markers were checked and found missing, so it must stay
+            // false.
+            perWorkerEndMarkerPresent[w] = cls === "completed";
+          }
         }
         if (perWorkerStatus[w] === "pending" && elapsedSeconds >= defaultTimeout) {
           perWorkerStatus[w] = "timeout";
+          perWorkerElapsedSeconds[w] = elapsedSeconds;
         }
       }
 
@@ -525,13 +610,16 @@ async function main() {
       // workers are included: a timed-out api worker has no run.json
       // either, so its pane capture is the only artifact of the attempt.
       perWorkerStatus[w] = "timeout";
+      perWorkerElapsedSeconds[w] = (Date.now() - dispatchStartMs) / 1000;
       const captured = await capturePane(paneIds[w]);
       if (typeof captured === "string") {
         const capturePath = path.join(runEvidenceDir, `${w}-task-${taskId}.txt`);
         await writeFile(capturePath, captured, "utf8");
       }
     }
-    const taskFailed = Object.values(perWorkerStatus).some((s) => s === "timeout" || s === "failed" || s === "blocked");
+    const taskFailed = Object.values(perWorkerStatus).some(
+      (s) => s === "timeout" || s === "failed" || s === "blocked" || s === "invalid_output",
+    );
     if (taskFailed) anyFailure = true;
 
     await appendLogLine(logPath, {
@@ -541,6 +629,55 @@ async function main() {
       perWorkerStatus,
       elapsedSeconds: (Date.now() - dispatchStartMs) / 1000,
     });
+
+    // Emit the summarize-cli-bakeoff.ps1-compatible run directory for this
+    // task: manifest.json + commands.jsonl, one command row per worker.
+    // This is written in addition to (not instead of) runner-log.jsonl and
+    // the per-worker pane-capture .txt files above, which remain
+    // supplementary evidence.
+    const runId = buildRunId(runTimestampSlug, taskId);
+    const taskRunDir = path.join(bakeoffEvidenceRoot, runId);
+    const activeWorkers = WORKER_LABELS.map((w) => ({
+      worker: w,
+      cli: workerMeta[w].cli,
+      model: workerMeta[w].model,
+      role: workerMeta[w].role,
+      pane: workerMeta[w].pane,
+      status: mapRunnerStatusToCommandStatus(perWorkerStatus[w]),
+    }));
+    const allEndMarkersPresent = WORKER_LABELS.every((w) => perWorkerEndMarkerPresent[w]);
+    const manifest = buildRunManifest({
+      runId,
+      taskId,
+      taskClass,
+      activeWorkers,
+      endMarkerPresent: allEndMarkersPresent,
+      recordingStatus: args.recordingStatus,
+      recordingPublishable: args.recordingPublishable,
+      executionStatus: taskFailed ? "completed_with_failures" : "completed",
+      generatedAtIso: nowIso(),
+    });
+    const commandRows = WORKER_LABELS.map((w) => buildCommandRow({
+      worker: w,
+      cli: workerMeta[w].cli,
+      model: workerMeta[w].model,
+      role: workerMeta[w].role,
+      pane: workerMeta[w].pane,
+      taskId,
+      taskClass,
+      runnerStatus: perWorkerStatus[w],
+      elapsedSeconds: perWorkerElapsedSeconds[w],
+      endMarkerPresent: perWorkerEndMarkerPresent[w],
+    }));
+
+    await mkdir(taskRunDir, { recursive: true });
+    await writeFile(path.join(taskRunDir, "manifest.json"), JSON.stringify(manifest, null, 2), "utf8");
+    await writeFile(
+      path.join(taskRunDir, "commands.jsonl"),
+      commandRows.map((row) => JSON.stringify(row)).join("\n") + "\n",
+      "utf8",
+    );
+    await appendLogLine(logPath, { event: "summarize_artifacts_written", ts: nowIso(), taskId, runId, runDir: taskRunDir });
   }
 
   await appendLogLine(logPath, { event: "run_end", ts: nowIso(), anyFailure });

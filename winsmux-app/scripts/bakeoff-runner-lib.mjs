@@ -156,6 +156,14 @@ export function countCompletionMarkerLines(paneText, marker = "BAKEOFF_ROUND_A_E
  * in-progress one. It is returned as terminal 'blocked' so the runner can
  * record it immediately instead of waiting out the full task timeout.
  *
+ * NOTE: this function only inspects run.json's own status field. It does NOT
+ * validate round begin/end markers in the response body -- callers that need
+ * marker validation on a succeeded/completed run must use
+ * classifyApiOutcome (below), which wraps this function and additionally
+ * checks response text against the pack's markers, exactly mirroring
+ * run-cli-bakeoff-openrouter.ps1's succeeded-but-no-marker downgrade to
+ * invalid_output.
+ *
  * @param {string} runJsonText
  * @returns {"completed"|"failed"|"blocked"|"pending"}
  */
@@ -178,6 +186,59 @@ export function classifyApiRun(runJsonText) {
     return "blocked";
   }
   return "pending";
+}
+
+/**
+ * Extract a task packet's round begin/end marker literals, mirroring
+ * Get-PacketMarkers in run-cli-bakeoff-openrouter.ps1 (regex
+ * `BAKEOFF_[A-Z_]+_BEGIN` / `BAKEOFF_[A-Z_]+_END` against the packet text).
+ *
+ * @param {string} packetText
+ * @returns {{begin: string, end: string}}
+ */
+export function getPacketMarkers(packetText) {
+  const text = typeof packetText === "string" ? packetText : "";
+  const beginMatch = text.match(/BAKEOFF_[A-Z_]+_BEGIN/);
+  const endMatch = text.match(/BAKEOFF_[A-Z_]+_END/);
+  return {
+    begin: beginMatch ? beginMatch[0] : "",
+    end: endMatch ? endMatch[0] : "",
+  };
+}
+
+/**
+ * Classify an api_llm worker's full outcome for a single task: run.json
+ * status PLUS (for a succeeded/completed run) round begin/end marker
+ * presence in the response text.
+ *
+ * Mirrors run-cli-bakeoff-openrouter.ps1 lines ~289-304: a run.json that
+ * reports success is only trusted as 'completed' when BOTH the round begin
+ * marker and the round end marker are found verbatim in the response body.
+ * A succeeded run.json missing either marker is downgraded to terminal
+ * 'invalid_output' (counted the same as a task failure), never silently
+ * accepted as completed and never left pending.
+ *
+ * blocked/failed/pending pass through unchanged from classifyApiRun --
+ * marker validation only applies to a run that otherwise looks successful.
+ *
+ * @param {string} runJsonText
+ * @param {string} responseText contents of the run's response.txt (or "" if
+ *   not present/not read)
+ * @param {{begin: string, end: string}} markers from getPacketMarkers
+ * @returns {"completed"|"failed"|"blocked"|"pending"|"invalid_output"}
+ */
+export function classifyApiOutcome(runJsonText, responseText, markers) {
+  const base = classifyApiRun(runJsonText);
+  if (base !== "completed") return base;
+
+  const text = typeof responseText === "string" ? responseText : "";
+  const begin = markers && typeof markers.begin === "string" ? markers.begin : "";
+  const end = markers && typeof markers.end === "string" ? markers.end : "";
+  const hasBegin = begin.length > 0 && text.includes(begin);
+  const hasEnd = end.length > 0 && text.includes(end);
+
+  if (hasBegin && hasEnd) return "completed";
+  return "invalid_output";
 }
 
 /**
@@ -299,4 +360,181 @@ export function resolveTaskSelection(allTaskIds, requested) {
     }
   }
   return { taskIds, unknown };
+}
+
+/**
+ * Build a filesystem-safe, deterministic run_id for a single dispatched
+ * task's summarize-compatible run directory, derived from the runner run
+ * timestamp (already filesystem-safe, e.g. "runner-20260703T041530Z") and the
+ * task id. Deterministic so re-running summarize against the same runner
+ * output always resolves the same run_id / directory name.
+ *
+ * @param {string} runTimestampSlug e.g. "runner-20260703T041530Z"
+ * @param {string} taskId e.g. "WB-001"
+ * @returns {string}
+ */
+export function buildRunId(runTimestampSlug, taskId) {
+  const ts = typeof runTimestampSlug === "string" ? runTimestampSlug : "runner-unknown";
+  const task = typeof taskId === "string" ? taskId : "unknown-task";
+  const slug = `${ts}-${task}`.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+  return slug || "runner-unknown-task";
+}
+
+/**
+ * Map the runner's internal per-worker poll status
+ * (completed/timeout/failed/blocked/invalid_output/pending/dispatch_failed)
+ * into the summarize-consumer status vocabulary used by
+ * run-cli-bakeoff-openrouter.ps1's commands.jsonl `status` field and by
+ * Get-ScoreabilityDecision in summarize-cli-bakeoff.ps1 (see status literals
+ * checked there: 'completed', 'timeout'/'timed_out', 'crash'/'crashed',
+ * 'invalid_output'/'invalid_json'/'malformed', otherwise not_completed).
+ *
+ * The runner's own vocabulary is already aligned with the consumer's for
+ * every value it can produce except 'dispatch_failed' (runner-only, meaning
+ * the composer submit itself failed before any worker could run) and
+ * 'pending' (should never reach this mapping -- a run that finishes the
+ * poll loop without a terminal per-worker status is a runner bug, not a
+ * task outcome). Both are mapped to 'failed' as the safe non-completed
+ * fallback rather than silently passing through an unrecognized status
+ * string summarize would otherwise report as 'unknown'.
+ *
+ * @param {string} runnerStatus
+ * @returns {"completed"|"timeout"|"failed"|"blocked"|"invalid_output"}
+ */
+export function mapRunnerStatusToCommandStatus(runnerStatus) {
+  switch (runnerStatus) {
+    case "completed":
+    case "timeout":
+    case "failed":
+    case "blocked":
+    case "invalid_output":
+      return runnerStatus;
+    case "dispatch_failed":
+    case "pending":
+    default:
+      return "failed";
+  }
+}
+
+/**
+ * Build the summarize-compatible manifest.json object for one dispatched
+ * task's run directory, mirroring the field shapes written by
+ * run-cli-bakeoff-openrouter.ps1's final manifest (run_id, task_class,
+ * recording, evidence, active_workers, execution) as read by
+ * summarize-cli-bakeoff.ps1 (lines ~160-260).
+ *
+ * cli/model metadata is not knowable to this runner today: worker rows are
+ * parsed from manifest.yaml (pane_id only) rather than fetched from the
+ * benchmark pack's `default_workers` list the way the openrouter runner
+ * does, so active_workers entries here honestly report 'unknown' rather
+ * than inventing a cli/model pairing. See run-cli-bakeoff.mjs's call site
+ * for the code comment tracking this gap.
+ *
+ * packet_hash_match is honestly reported as false: this runner dispatches
+ * through the desktop app's composer rather than copying/hashing the packet
+ * file itself (unlike the openrouter runner, which reads and hashes the
+ * packet it copies into the project dir), so it has no verified hash to
+ * compare and must not fabricate a true.
+ *
+ * @param {{
+ *   runId: string,
+ *   taskId: string,
+ *   taskClass: string,
+ *   activeWorkers: Array<{worker: string, cli: string, model: string, role: string, pane: string}>,
+ *   endMarkerPresent: boolean,
+ *   recordingStatus: string,
+ *   recordingPublishable: boolean,
+ *   executionStatus: string,
+ *   generatedAtIso: string,
+ * }} input
+ * @returns {object}
+ */
+export function buildRunManifest(input) {
+  const {
+    runId,
+    taskId,
+    taskClass,
+    activeWorkers,
+    endMarkerPresent,
+    recordingStatus,
+    recordingPublishable,
+    executionStatus,
+    generatedAtIso,
+  } = input || {};
+
+  return {
+    run_id: runId,
+    task_id: taskId,
+    task_class: taskClass || "unknown",
+    generated_at_utc: generatedAtIso,
+    active_workers: Array.isArray(activeWorkers) ? activeWorkers : [],
+    recording: {
+      status: recordingStatus || "not_declared",
+      publishable: !!recordingPublishable,
+    },
+    evidence: {
+      // Honest per-run rollup: true only when every worker's own
+      // end_marker_present (in commands.jsonl) is true. The runner passes
+      // the already-aggregated boolean in rather than recomputing it here
+      // to keep this function a pure mirror of its single input.
+      end_marker_present: !!endMarkerPresent,
+      // Never fabricated true -- see function doc comment above.
+      packet_hash_match: false,
+    },
+    execution: {
+      status: executionStatus || "unknown",
+    },
+  };
+}
+
+/**
+ * Build one commands.jsonl row (a single worker's outcome for a single
+ * task), mirroring the openrouter runner's per-worker $command object
+ * shape (cli, model, role, pane, task_id, task_class, status,
+ * elapsed_seconds, end_marker_present, packet_hash_match).
+ *
+ * @param {{
+ *   worker: string,
+ *   cli: string,
+ *   model: string,
+ *   role: string,
+ *   pane: string,
+ *   taskId: string,
+ *   taskClass: string,
+ *   runnerStatus: string,
+ *   elapsedSeconds: number,
+ *   endMarkerPresent: boolean,
+ * }} input
+ * @returns {object}
+ */
+export function buildCommandRow(input) {
+  const {
+    worker,
+    cli,
+    model,
+    role,
+    pane,
+    taskId,
+    taskClass,
+    runnerStatus,
+    elapsedSeconds,
+    endMarkerPresent,
+  } = input || {};
+
+  return {
+    worker: worker || "unknown",
+    cli: cli || "unknown",
+    model: model || "unknown",
+    role: role || "unknown",
+    pane: pane || "unknown",
+    task_id: taskId,
+    task_class: taskClass || "unknown",
+    status: mapRunnerStatusToCommandStatus(runnerStatus),
+    elapsed_seconds: Number.isFinite(elapsedSeconds) ? Math.round(elapsedSeconds * 1000) / 1000 : null,
+    end_marker_present: !!endMarkerPresent,
+    // Never fabricated true -- this runner does not hash the dispatched
+    // packet the way the openrouter runner does, so it has nothing
+    // verifiable to compare. See buildRunManifest's doc comment.
+    packet_hash_match: false,
+  };
 }

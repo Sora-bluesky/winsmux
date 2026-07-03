@@ -5,11 +5,17 @@ import {
   countCompletionMarkerLines,
   taskIdToEndMarker,
   classifyApiRun,
+  classifyApiOutcome,
+  getPacketMarkers,
   classifyCliWorker,
   selectNewRunDir,
   buildReadyCheckCommand,
   buildDispatchCommand,
   resolveTaskSelection,
+  buildRunId,
+  mapRunnerStatusToCommandStatus,
+  buildRunManifest,
+  buildCommandRow,
 } from "./bakeoff-runner-lib.mjs";
 
 // --- parseManifestPaneIds ---------------------------------------------
@@ -316,5 +322,169 @@ assert.deepEqual(
   { taskIds: ["WB-001"], unknown: [] },
   "resolveTaskSelection must de-duplicate repeated requested ids",
 );
+
+// --- getPacketMarkers -----------------------------------------------------
+
+assert.deepEqual(
+  getPacketMarkers("1. `BAKEOFF_ROUND_A_BEGIN`\n...\n5. `BAKEOFF_ROUND_A_END`"),
+  { begin: "BAKEOFF_ROUND_A_BEGIN", end: "BAKEOFF_ROUND_A_END" },
+  "getPacketMarkers must extract both begin and end marker literals from packet text",
+);
+assert.deepEqual(
+  getPacketMarkers(""),
+  { begin: "", end: "" },
+  "getPacketMarkers must return empty strings for empty input",
+);
+assert.deepEqual(
+  getPacketMarkers("no markers here"),
+  { begin: "", end: "" },
+  "getPacketMarkers must return empty strings when no marker literals are present",
+);
+
+// --- classifyApiOutcome ----------------------------------------------------
+
+const markersA = { begin: "BAKEOFF_ROUND_A_BEGIN", end: "BAKEOFF_ROUND_A_END" };
+
+assert.equal(
+  classifyApiOutcome(
+    JSON.stringify({ status: "succeeded" }),
+    "BAKEOFF_ROUND_A_BEGIN\nsome work\nBAKEOFF_ROUND_A_END",
+    markersA,
+  ),
+  "completed",
+  "classifyApiOutcome must classify succeeded + both markers present as completed",
+);
+assert.equal(
+  classifyApiOutcome(
+    JSON.stringify({ status: "succeeded" }),
+    "BAKEOFF_ROUND_A_BEGIN\nsome work only, no end marker",
+    markersA,
+  ),
+  "invalid_output",
+  "classifyApiOutcome must downgrade succeeded + missing end marker to invalid_output",
+);
+assert.equal(
+  classifyApiOutcome(
+    JSON.stringify({ status: "succeeded" }),
+    "no markers at all in this response",
+    markersA,
+  ),
+  "invalid_output",
+  "classifyApiOutcome must downgrade succeeded + missing both markers to invalid_output",
+);
+assert.equal(
+  classifyApiOutcome(JSON.stringify({ status: "blocked", reason: "api_llm_runner_unconfigured" }), "", markersA),
+  "blocked",
+  "classifyApiOutcome must pass through blocked unchanged regardless of response text/markers",
+);
+assert.equal(
+  classifyApiOutcome(JSON.stringify({ status: "failed" }), "", markersA),
+  "failed",
+  "classifyApiOutcome must pass through failed unchanged regardless of response text/markers",
+);
+assert.equal(
+  classifyApiOutcome(JSON.stringify({ status: "running" }), "", markersA),
+  "pending",
+  "classifyApiOutcome must pass through pending unchanged",
+);
+assert.equal(
+  classifyApiOutcome(
+    JSON.stringify({ status: "succeeded" }),
+    "BAKEOFF_ROUND_A_BEGIN\nBAKEOFF_ROUND_A_END",
+    { begin: "", end: "" },
+  ),
+  "invalid_output",
+  "classifyApiOutcome must downgrade to invalid_output when the packet itself had no extractable markers",
+);
+
+// --- buildRunId -------------------------------------------------------
+
+assert.equal(
+  buildRunId("runner-20260703T041530Z", "WB-001"),
+  "runner-20260703t041530z-wb-001",
+  "buildRunId must produce a deterministic, filesystem-safe, lowercased slug from runner timestamp + task id",
+);
+assert.equal(
+  buildRunId("runner-20260703T041530Z", "WB-001"),
+  buildRunId("runner-20260703T041530Z", "WB-001"),
+  "buildRunId must be deterministic for identical inputs",
+);
+assert.notEqual(
+  buildRunId("runner-20260703T041530Z", "WB-001"),
+  buildRunId("runner-20260703T041530Z", "WB-002"),
+  "buildRunId must differ for different task ids",
+);
+
+// --- mapRunnerStatusToCommandStatus ----------------------------------------
+
+assert.equal(mapRunnerStatusToCommandStatus("completed"), "completed", "mapRunnerStatusToCommandStatus must pass through completed");
+assert.equal(mapRunnerStatusToCommandStatus("timeout"), "timeout", "mapRunnerStatusToCommandStatus must pass through timeout");
+assert.equal(mapRunnerStatusToCommandStatus("failed"), "failed", "mapRunnerStatusToCommandStatus must pass through failed");
+assert.equal(mapRunnerStatusToCommandStatus("blocked"), "blocked", "mapRunnerStatusToCommandStatus must pass through blocked");
+assert.equal(mapRunnerStatusToCommandStatus("invalid_output"), "invalid_output", "mapRunnerStatusToCommandStatus must pass through invalid_output");
+assert.equal(mapRunnerStatusToCommandStatus("dispatch_failed"), "failed", "mapRunnerStatusToCommandStatus must map runner-only dispatch_failed to failed");
+assert.equal(mapRunnerStatusToCommandStatus("pending"), "failed", "mapRunnerStatusToCommandStatus must map a leftover pending status (runner bug guard) to failed");
+assert.equal(mapRunnerStatusToCommandStatus("something-unrecognized"), "failed", "mapRunnerStatusToCommandStatus must map any unrecognized status to failed as the safe fallback");
+
+// --- buildRunManifest -------------------------------------------------
+
+const manifestObj = buildRunManifest({
+  runId: "runner-20260703t041530z-wb-001",
+  taskId: "WB-001",
+  taskClass: "investigation_design",
+  activeWorkers: [
+    { worker: "worker-1", cli: "unknown", model: "unknown", role: "unknown", pane: "%2", status: "completed" },
+  ],
+  endMarkerPresent: true,
+  recordingStatus: "not_declared",
+  recordingPublishable: false,
+  executionStatus: "completed",
+  generatedAtIso: "2026-07-03T04:15:30.000Z",
+});
+assert.equal(manifestObj.run_id, "runner-20260703t041530z-wb-001", "buildRunManifest must set run_id from input");
+assert.equal(manifestObj.task_class, "investigation_design", "buildRunManifest must set task_class from input");
+assert.deepEqual(manifestObj.recording, { status: "not_declared", publishable: false }, "buildRunManifest must build recording object with input status/publishable");
+assert.equal(manifestObj.evidence.end_marker_present, true, "buildRunManifest must set evidence.end_marker_present from input");
+assert.equal(manifestObj.evidence.packet_hash_match, false, "buildRunManifest must never fabricate packet_hash_match=true");
+assert.equal(manifestObj.execution.status, "completed", "buildRunManifest must set execution.status from input");
+assert.equal(manifestObj.active_workers.length, 1, "buildRunManifest must carry through active_workers array");
+
+const manifestDefaults = buildRunManifest({ runId: "r", taskId: "WB-001" });
+assert.equal(manifestDefaults.task_class, "unknown", "buildRunManifest must default task_class to unknown when absent");
+assert.equal(manifestDefaults.recording.status, "not_declared", "buildRunManifest must default recording.status to not_declared");
+assert.equal(manifestDefaults.recording.publishable, false, "buildRunManifest must default recording.publishable to false");
+assert.equal(manifestDefaults.execution.status, "unknown", "buildRunManifest must default execution.status to unknown");
+assert.deepEqual(manifestDefaults.active_workers, [], "buildRunManifest must default active_workers to an empty array");
+
+// --- buildCommandRow ----------------------------------------------------
+
+const commandRow = buildCommandRow({
+  worker: "worker-1",
+  cli: "unknown",
+  model: "unknown",
+  role: "unknown",
+  pane: "%2",
+  taskId: "WB-001",
+  taskClass: "investigation_design",
+  runnerStatus: "completed",
+  elapsedSeconds: 12.3456,
+  endMarkerPresent: true,
+});
+assert.equal(commandRow.status, "completed", "buildCommandRow must map runnerStatus through mapRunnerStatusToCommandStatus");
+assert.equal(commandRow.elapsed_seconds, 12.346, "buildCommandRow must round elapsed_seconds to 3 decimal places");
+assert.equal(commandRow.end_marker_present, true, "buildCommandRow must carry through end_marker_present");
+assert.equal(commandRow.packet_hash_match, false, "buildCommandRow must never fabricate packet_hash_match=true");
+assert.equal(commandRow.task_id, "WB-001", "buildCommandRow must carry through task_id");
+
+const commandRowTimeout = buildCommandRow({
+  worker: "worker-2",
+  taskId: "WB-001",
+  runnerStatus: "timeout",
+  elapsedSeconds: null,
+  endMarkerPresent: false,
+});
+assert.equal(commandRowTimeout.status, "timeout", "buildCommandRow must map timeout status through");
+assert.equal(commandRowTimeout.elapsed_seconds, null, "buildCommandRow must pass through null elapsed_seconds rather than coercing to 0/NaN");
+assert.equal(commandRowTimeout.cli, "unknown", "buildCommandRow must default cli to unknown when absent");
 
 console.log("bakeoff-runner-check: ok");
