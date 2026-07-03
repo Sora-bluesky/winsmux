@@ -3,6 +3,7 @@ import {
   parseManifestPaneIds,
   collectReadyWorkers,
   countEndMarkers,
+  taskIdToEndMarker,
   classifyApiRun,
   classifyCliWorker,
   selectNewRunDir,
@@ -85,6 +86,54 @@ assert.equal(
   2,
   "countEndMarkers must count multiple marker occurrences across a growing pane transcript",
 );
+assert.equal(
+  countEndMarkers("BAKEOFF_ROUND_B_END\nBAKEOFF_ROUND_A_END", "BAKEOFF_ROUND_B_END"),
+  1,
+  "countEndMarkers must count only the requested marker, ignoring other rounds' markers in the same blob",
+);
+assert.equal(
+  countEndMarkers("BAKEOFF_ROUND_C_END\nBAKEOFF_ROUND_C_END\nBAKEOFF_ROUND_C_END", "BAKEOFF_ROUND_C_END"),
+  3,
+  "countEndMarkers must count multiple occurrences of an explicitly requested marker",
+);
+
+// --- taskIdToEndMarker -----------------------------------------------------
+
+assert.equal(
+  taskIdToEndMarker("WB-001"),
+  "BAKEOFF_ROUND_A_END",
+  "taskIdToEndMarker must map the first round-A task id to BAKEOFF_ROUND_A_END",
+);
+assert.equal(
+  taskIdToEndMarker("WB-009"),
+  "BAKEOFF_ROUND_A_END",
+  "taskIdToEndMarker must map the last round-A task id (WB-009) to BAKEOFF_ROUND_A_END",
+);
+assert.equal(
+  taskIdToEndMarker("WB-010"),
+  "BAKEOFF_ROUND_B_END",
+  "taskIdToEndMarker must map the first round-B task id (WB-010) to BAKEOFF_ROUND_B_END",
+);
+assert.equal(
+  taskIdToEndMarker("WB-018"),
+  "BAKEOFF_ROUND_B_END",
+  "taskIdToEndMarker must map the last round-B task id (WB-018) to BAKEOFF_ROUND_B_END",
+);
+assert.equal(
+  taskIdToEndMarker("WB-019"),
+  "BAKEOFF_ROUND_C_END",
+  "taskIdToEndMarker must map the first round-C task id (WB-019) to BAKEOFF_ROUND_C_END",
+);
+assert.equal(
+  taskIdToEndMarker("WB-027"),
+  "BAKEOFF_ROUND_C_END",
+  "taskIdToEndMarker must map the last round-C task id (WB-027) to BAKEOFF_ROUND_C_END",
+);
+assert.equal(
+  taskIdToEndMarker("bogus"),
+  "BAKEOFF_ROUND_A_END",
+  "taskIdToEndMarker must fall back to round A for an unparsable task id rather than throwing",
+);
 
 // --- classifyApiRun ---------------------------------------------------
 
@@ -122,6 +171,19 @@ assert.equal(
   classifyCliWorker(1, 1, 30, 3600),
   "pending",
   "classifyCliWorker must classify no marker-count change (well under timeout) as pending",
+);
+assert.equal(
+  classifyCliWorker(5, 5, 5, 3600),
+  "pending",
+  "classifyCliWorker must stay pending immediately after dispatch when the baseline was seeded from " +
+    "leftover markers from a previous run (prevCount=5 carried over, currCount unchanged) -- it must not " +
+    "misread stale markers as this task's own completion",
+);
+assert.equal(
+  classifyCliWorker(5, 6, 5, 3600),
+  "completed",
+  "classifyCliWorker must classify completion correctly once the marker count rises above a seeded " +
+    "non-zero baseline (prevCount=5 from leftover markers, currCount=6 after this task's own marker)",
 );
 assert.equal(
   classifyCliWorker(1, 1, 3600, 3600),
