@@ -112,38 +112,41 @@ export function taskIdToEndMarker(taskId) {
 }
 
 /**
- * Count the lines in a captured pane blob where a round-end marker appears
- * as worker-printed completion output.
+ * Count the raw occurrences of a round-end marker anywhere in a captured
+ * pane blob (plain substring count, regex-escaped marker).
  *
- * Dispatch echoes the full task packet into the worker pane, and every
- * packet names its round's END marker literally (step 5, backtick-wrapped),
- * so a raw substring count would read the echoed instructions as an instant
- * completion. A line only counts here when the marker stands alone on it:
- * any letter, digit, or backtick elsewhere on the line (instruction step
- * numbers, inline-code backticks, surrounding prose such as the worker
- * narrating its plan) disqualifies it, while bare TUI decoration around the
- * marker (prompt chevrons, list bullets, whitespace, trailing punctuation)
- * is allowed.
+ * Every `tasks/cli-bakeoff/v1/WB-*.md` packet instructs the worker to
+ * "Return exactly this structure" -- a numbered list whose item 5 IS the
+ * round END marker, e.g. `5. BAKEOFF_ROUND_A_END` (often with surrounding
+ * digits/backticks, since the worker is following a numbered-list
+ * instruction literally). A compliant completion is therefore
+ * indistinguishable, by line shape alone, from the dispatch echo of the same
+ * packet text: both are a numbered line containing the bare marker. Trying
+ * to filter out the echo by rejecting digits/backticks around the marker
+ * (the previous strategy here) also rejects every compliant worker's actual
+ * completion output, which is why that strategy is gone.
+ *
+ * Echo disambiguation is handled by the CALLER, not by this function: the
+ * runner seeds its baseline count AFTER a successful dispatch submit, once
+ * the echoed packet text is already on screen (see
+ * POST_DISPATCH_BASELINE_SETTLE_MS in run-cli-bakeoff.mjs). Because the
+ * echo is already included in the seeded baseline, only a marker occurrence
+ * beyond that baseline -- i.e. the worker's own completion output -- can
+ * register as an increase. This function's only job is an honest raw count;
+ * do not reintroduce line-shape filtering here.
  *
  * @param {string} paneText
  * @param {string} [marker] defaults to BAKEOFF_ROUND_A_END for callers that
  *   have not been updated to pass a task-specific marker.
  * @returns {number}
  */
-export function countCompletionMarkerLines(paneText, marker = "BAKEOFF_ROUND_A_END") {
+export function countEndMarkers(paneText, marker = "BAKEOFF_ROUND_A_END") {
   if (!paneText) return 0;
   const target = String(marker);
   if (!target) return 0;
-  let count = 0;
-  for (const line of String(paneText).split(/\r?\n/)) {
-    const idx = line.indexOf(target);
-    if (idx === -1) continue;
-    const prefix = line.slice(0, idx);
-    const suffix = line.slice(idx + target.length);
-    if (/[A-Za-z0-9`]/.test(prefix) || /[A-Za-z0-9`]/.test(suffix)) continue;
-    count += 1;
-  }
-  return count;
+  const escaped = target.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const matches = String(paneText).match(new RegExp(escaped, "g"));
+  return matches ? matches.length : 0;
 }
 
 /**
@@ -243,22 +246,24 @@ export function classifyApiOutcome(runJsonText, responseText, markers) {
 
 /**
  * Classify a CLI worker's progress on a single dispatched task by comparing
- * the completion-marker line count against the lowest count observed since
- * immediately before dispatch.
+ * the current marker occurrence count against the lowest count observed
+ * since the post-dispatch baseline was seeded.
  *
  * The caller must maintain `minObservedCount` as a running minimum over
  * SUCCESSFUL captures only: pane capture returns visible rows only, so a
- * leftover marker from the previous task can scroll off mid-task, and
- * lowering the baseline when that happens is what lets this task's own
- * marker (count rising back above the minimum) register as completion
- * instead of reading as "no change" and timing out. A failed capture must
- * never feed this function -- an empty read would wrongly lower the
- * baseline and turn a stale marker into a false completion.
+ * leftover marker (previous task's output, or this dispatch's own echo) can
+ * scroll off mid-task, and lowering the baseline when that happens is what
+ * lets this task's own marker (count rising back above the minimum)
+ * register as completion instead of reading as "no change" and timing out.
+ * A failed capture must never feed this function -- an empty read would
+ * wrongly lower the baseline and turn a stale marker into a false
+ * completion.
  *
- * @param {number} minObservedCount lowest marker-line count observed since
- *   immediately before this task's dispatch (seeded pre-dispatch, lowered by
- *   the caller whenever a successful poll observes a smaller count)
- * @param {number} currCount marker-line count observed at the current poll tick
+ * @param {number} minObservedCount lowest marker count observed since the
+ *   baseline was seeded (after the dispatch settle window -- see
+ *   POST_DISPATCH_BASELINE_SETTLE_MS in run-cli-bakeoff.mjs -- and lowered
+ *   by the caller whenever a successful poll observes a smaller count)
+ * @param {number} currCount marker count observed at the current poll tick
  * @param {number} elapsedSeconds seconds since this task was dispatched
  * @param {number} timeoutSeconds this task's configured timeout
  * @returns {"completed"|"pending"|"timeout"}
@@ -312,6 +317,79 @@ export function selectNewRunDir(entries, sinceEpochMs) {
   // listing order is not guaranteed to be creation order.
   const sorted = [...candidates].sort((a, b) => (a.name < b.name ? 1 : a.name > b.name ? -1 : 0));
   return sorted[0].name;
+}
+
+/**
+ * Reproduce, byte-for-byte, the prompt string the desktop app builds and
+ * hashes for a benchmark task dispatch (buildHarnessTaskPrompt in
+ * winsmux-app/src/main.ts, ~lines 4143-4157). The desktop computes
+ * packet.sha256 = sha256 hex over exactly this string and shows it in the
+ * dispatch conversation entry (writeWorkerBenchmarkSubmission /
+ * dispatchBenchmarkTaskFromOperatorCommand, ~lines 4703-4740) under a detail
+ * labeled "sha256". This function must be kept byte-for-byte in sync with
+ * that upstream implementation -- any drift (header order, join character,
+ * trim behavior) silently breaks hash verification.
+ *
+ * Pure/dependency-free by design: the actual sha256 digest is computed by
+ * the CALLER (run-cli-bakeoff.mjs) using node:crypto, not here, so this
+ * module keeps no runtime dependency beyond string formatting.
+ *
+ * @param {{pack_id?: string, default_timeout_seconds?: number}} pack
+ * @param {{task_id?: string, title?: string, timeout_seconds?: number}} task
+ * @param {string} packetContent
+ * @returns {string}
+ */
+export function buildHarnessPromptMirror(pack, task, packetContent) {
+  const packId = String((pack && pack.pack_id) || "winsmux-cli-bakeoff-v1");
+  const taskId = String((task && task.task_id) || "").trim();
+  const taskTitle = String((task && task.title) || taskId).trim();
+  const timeoutSeconds = Number(
+    (task && task.timeout_seconds) || (pack && pack.default_timeout_seconds) || 3600,
+  );
+  return [
+    `Harness Bench task packet`,
+    `Pack: ${packId}`,
+    `Task: ${taskId}`,
+    `Title: ${taskTitle}`,
+    `Timeout seconds: ${Number.isFinite(timeoutSeconds) ? timeoutSeconds : 3600}`,
+    "",
+    "Instructions:",
+    String(packetContent || "").trim(),
+    "",
+  ].join("\n");
+}
+
+/**
+ * Extract the last 64-char lowercase hex string appearing near a "sha256"
+ * label in a conversation-panel innerText blob, mirroring how the desktop
+ * displays the dispatch packet's hash as a labeled conversation detail
+ * (`{ label: "sha256", value: packet.sha256 }`).
+ *
+ * Deliberately liberal: tries a "sha256" label followed (within a short
+ * distance) by a 64-hex-char run first; if that finds nothing, falls back to
+ * the LAST bare 64-hex-char run anywhere in the text (covers layout/label
+ * text differences without over-fitting to one exact DOM shape). Returns ""
+ * when nothing matches -- callers must treat "" as "hash not found", never
+ * as a valid comparison value.
+ *
+ * @param {string} conversationText
+ * @returns {string}
+ */
+export function extractLatestSha256(conversationText) {
+  const text = typeof conversationText === "string" ? conversationText : "";
+  if (!text) return "";
+
+  const labeled = [...text.matchAll(/sha256[^0-9a-fA-F]{0,20}([0-9a-fA-F]{64})/g)];
+  if (labeled.length > 0) {
+    return labeled[labeled.length - 1][1].toLowerCase();
+  }
+
+  const bare = [...text.matchAll(/\b([0-9a-fA-F]{64})\b/g)];
+  if (bare.length > 0) {
+    return bare[bare.length - 1][1].toLowerCase();
+  }
+
+  return "";
 }
 
 /**
@@ -430,11 +508,14 @@ export function mapRunnerStatusToCommandStatus(runnerStatus) {
  * than inventing a cli/model pairing. See run-cli-bakeoff.mjs's call site
  * for the code comment tracking this gap.
  *
- * packet_hash_match is honestly reported as false: this runner dispatches
- * through the desktop app's composer rather than copying/hashing the packet
- * file itself (unlike the openrouter runner, which reads and hashes the
- * packet it copies into the project dir), so it has no verified hash to
- * compare and must not fabricate a true.
+ * packet_hash_match is now a genuinely verified value (round-7 fix): the
+ * runner independently reconstructs the exact dispatch prompt via
+ * buildHarnessPromptMirror, hashes it with node:crypto, reads the
+ * desktop-displayed sha256 out of the conversation panel via
+ * extractLatestSha256, and passes in the equality result. true means the
+ * desktop-displayed sha256 equals the independently reconstructed prompt
+ * hash; false means either they differ or the desktop hash could not be
+ * read at all. It is never fabricated true.
  *
  * @param {{
  *   runId: string,
@@ -442,6 +523,7 @@ export function mapRunnerStatusToCommandStatus(runnerStatus) {
  *   taskClass: string,
  *   activeWorkers: Array<{worker: string, cli: string, model: string, role: string, pane: string}>,
  *   endMarkerPresent: boolean,
+ *   packetHashMatch: boolean,
  *   recordingStatus: string,
  *   recordingPublishable: boolean,
  *   executionStatus: string,
@@ -456,6 +538,7 @@ export function buildRunManifest(input) {
     taskClass,
     activeWorkers,
     endMarkerPresent,
+    packetHashMatch,
     recordingStatus,
     recordingPublishable,
     executionStatus,
@@ -478,8 +561,10 @@ export function buildRunManifest(input) {
       // the already-aggregated boolean in rather than recomputing it here
       // to keep this function a pure mirror of its single input.
       end_marker_present: !!endMarkerPresent,
-      // Never fabricated true -- see function doc comment above.
-      packet_hash_match: false,
+      // Verified = desktop-displayed sha256 equals the independently
+      // reconstructed prompt hash; false when the desktop hash could not be
+      // read. See function doc comment above.
+      packet_hash_match: !!packetHashMatch,
     },
     execution: {
       status: executionStatus || "unknown",
@@ -504,6 +589,7 @@ export function buildRunManifest(input) {
  *   runnerStatus: string,
  *   elapsedSeconds: number,
  *   endMarkerPresent: boolean,
+ *   packetHashMatch: boolean,
  * }} input
  * @returns {object}
  */
@@ -519,6 +605,7 @@ export function buildCommandRow(input) {
     runnerStatus,
     elapsedSeconds,
     endMarkerPresent,
+    packetHashMatch,
   } = input || {};
 
   return {
@@ -532,9 +619,9 @@ export function buildCommandRow(input) {
     status: mapRunnerStatusToCommandStatus(runnerStatus),
     elapsed_seconds: Number.isFinite(elapsedSeconds) ? Math.round(elapsedSeconds * 1000) / 1000 : null,
     end_marker_present: !!endMarkerPresent,
-    // Never fabricated true -- this runner does not hash the dispatched
-    // packet the way the openrouter runner does, so it has nothing
-    // verifiable to compare. See buildRunManifest's doc comment.
-    packet_hash_match: false,
+    // Verified = desktop-displayed sha256 equals the independently
+    // reconstructed prompt hash; false when the desktop hash could not be
+    // read. Never fabricated true. See buildRunManifest's doc comment.
+    packet_hash_match: !!packetHashMatch,
   };
 }

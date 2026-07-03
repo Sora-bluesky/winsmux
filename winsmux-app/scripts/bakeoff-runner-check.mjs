@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
   parseManifestPaneIds,
   collectReadyWorkers,
-  countCompletionMarkerLines,
+  countEndMarkers,
   taskIdToEndMarker,
   classifyApiRun,
   classifyApiOutcome,
@@ -16,6 +17,8 @@ import {
   mapRunnerStatusToCommandStatus,
   buildRunManifest,
   buildCommandRow,
+  buildHarnessPromptMirror,
+  extractLatestSha256,
 } from "./bakeoff-runner-lib.mjs";
 
 // --- parseManifestPaneIds ---------------------------------------------
@@ -79,49 +82,51 @@ assert.deepEqual(
 assert.deepEqual(collectReadyWorkers([]), new Set(), "collectReadyWorkers must return empty set for empty input");
 assert.deepEqual(collectReadyWorkers(undefined), new Set(), "collectReadyWorkers must tolerate non-array input");
 
-// --- countCompletionMarkerLines -------------------------------------------
+// --- countEndMarkers -------------------------------------------------------
+//
+// Strategy note (round-7 fix): completion detection is no longer line-shape
+// filtering. Every packet instructs the worker to return a numbered list
+// whose item 5 IS the round END marker (e.g. "5. BAKEOFF_ROUND_A_END",
+// often backtick-wrapped) -- a compliant completion is therefore
+// indistinguishable, by line shape, from the dispatch echo of that same
+// packet text. countEndMarkers is now an honest raw substring occurrence
+// count; echo disambiguation happens in the RUNNER by seeding its baseline
+// AFTER a successful dispatch submit (once the echo is already on screen,
+// see POST_DISPATCH_BASELINE_SETTLE_MS in run-cli-bakeoff.mjs), not by
+// filtering line shapes here. Do not reintroduce line filtering in this
+// function.
 
-assert.equal(countCompletionMarkerLines(""), 0, "countCompletionMarkerLines must return 0 for empty text");
-assert.equal(countCompletionMarkerLines("no marker here"), 0, "countCompletionMarkerLines must return 0 when marker absent");
+assert.equal(countEndMarkers(""), 0, "countEndMarkers must return 0 for empty text");
+assert.equal(countEndMarkers("no marker here"), 0, "countEndMarkers must return 0 when marker absent");
 assert.equal(
-  countCompletionMarkerLines("task 1 done\nBAKEOFF_ROUND_A_END\nmore text"),
+  countEndMarkers("task 1 done\nBAKEOFF_ROUND_A_END\nmore text"),
   1,
-  "countCompletionMarkerLines must count a bare worker-printed marker line",
+  "countEndMarkers must count a bare marker occurrence",
 );
 assert.equal(
-  countCompletionMarkerLines("> BAKEOFF_ROUND_A_END"),
+  countEndMarkers("5. BAKEOFF_ROUND_A_END"),
   1,
-  "countCompletionMarkerLines must allow bare TUI decoration (prompt chevron) around the marker",
+  "countEndMarkers must count a compliant numbered-list completion line (digits present)",
 );
 assert.equal(
-  countCompletionMarkerLines("5. `BAKEOFF_ROUND_A_END`"),
-  0,
-  "countCompletionMarkerLines must not count the packet's backtick-wrapped instruction line echoed into the pane at dispatch",
-);
-assert.equal(
-  countCompletionMarkerLines("  5. BAKEOFF_ROUND_A_END"),
-  0,
-  "countCompletionMarkerLines must not count a numbered instruction step even when a TUI strips the backticks",
-);
-assert.equal(
-  countCompletionMarkerLines("I will print BAKEOFF_ROUND_A_END when finished"),
-  0,
-  "countCompletionMarkerLines must not count the worker narrating the marker inside prose",
-);
-assert.equal(
-  countCompletionMarkerLines("Pack: winsmux-cli-bakeoff-v1\n5. `BAKEOFF_ROUND_A_END`\nwork output\nBAKEOFF_ROUND_A_END"),
+  countEndMarkers("5. `BAKEOFF_ROUND_A_END`"),
   1,
-  "countCompletionMarkerLines must count only the worker's own completion line when the echoed packet is also visible",
+  "countEndMarkers must count a backtick-wrapped marker occurrence (digits and backticks no longer disqualify)",
 );
 assert.equal(
-  countCompletionMarkerLines("BAKEOFF_ROUND_A_END\nsome output\nBAKEOFF_ROUND_A_END"),
+  countEndMarkers("5. `BAKEOFF_ROUND_A_END`\nwork output\nBAKEOFF_ROUND_A_END"),
   2,
-  "countCompletionMarkerLines must count multiple worker-printed marker lines across a pane transcript",
+  "countEndMarkers must count every occurrence, including both an echoed instruction line and a later bare line",
 );
 assert.equal(
-  countCompletionMarkerLines("BAKEOFF_ROUND_B_END\nBAKEOFF_ROUND_A_END", "BAKEOFF_ROUND_B_END"),
+  countEndMarkers("BAKEOFF_ROUND_A_END\nsome output\nBAKEOFF_ROUND_A_END"),
+  2,
+  "countEndMarkers must count multiple marker occurrences across a pane transcript",
+);
+assert.equal(
+  countEndMarkers("BAKEOFF_ROUND_B_END\nBAKEOFF_ROUND_A_END", "BAKEOFF_ROUND_B_END"),
   1,
-  "countCompletionMarkerLines must count only the requested round's marker, ignoring other rounds' markers",
+  "countEndMarkers must count only the requested round's marker, ignoring other rounds' markers",
 );
 
 // --- taskIdToEndMarker -----------------------------------------------------
@@ -445,9 +450,16 @@ assert.equal(manifestObj.run_id, "runner-20260703t041530z-wb-001", "buildRunMani
 assert.equal(manifestObj.task_class, "investigation_design", "buildRunManifest must set task_class from input");
 assert.deepEqual(manifestObj.recording, { status: "not_declared", publishable: false }, "buildRunManifest must build recording object with input status/publishable");
 assert.equal(manifestObj.evidence.end_marker_present, true, "buildRunManifest must set evidence.end_marker_present from input");
-assert.equal(manifestObj.evidence.packet_hash_match, false, "buildRunManifest must never fabricate packet_hash_match=true");
+assert.equal(manifestObj.evidence.packet_hash_match, false, "buildRunManifest must default packet_hash_match to false when not passed true");
 assert.equal(manifestObj.execution.status, "completed", "buildRunManifest must set execution.status from input");
 assert.equal(manifestObj.active_workers.length, 1, "buildRunManifest must carry through active_workers array");
+
+const manifestHashTrue = buildRunManifest({
+  runId: "r",
+  taskId: "WB-001",
+  packetHashMatch: true,
+});
+assert.equal(manifestHashTrue.evidence.packet_hash_match, true, "buildRunManifest must pass through a genuinely verified packetHashMatch=true");
 
 const manifestDefaults = buildRunManifest({ runId: "r", taskId: "WB-001" });
 assert.equal(manifestDefaults.task_class, "unknown", "buildRunManifest must default task_class to unknown when absent");
@@ -473,8 +485,18 @@ const commandRow = buildCommandRow({
 assert.equal(commandRow.status, "completed", "buildCommandRow must map runnerStatus through mapRunnerStatusToCommandStatus");
 assert.equal(commandRow.elapsed_seconds, 12.346, "buildCommandRow must round elapsed_seconds to 3 decimal places");
 assert.equal(commandRow.end_marker_present, true, "buildCommandRow must carry through end_marker_present");
-assert.equal(commandRow.packet_hash_match, false, "buildCommandRow must never fabricate packet_hash_match=true");
+assert.equal(commandRow.packet_hash_match, false, "buildCommandRow must default packet_hash_match to false when not passed true");
 assert.equal(commandRow.task_id, "WB-001", "buildCommandRow must carry through task_id");
+
+const commandRowHashTrue = buildCommandRow({
+  worker: "worker-1",
+  taskId: "WB-001",
+  runnerStatus: "completed",
+  elapsedSeconds: 1,
+  endMarkerPresent: true,
+  packetHashMatch: true,
+});
+assert.equal(commandRowHashTrue.packet_hash_match, true, "buildCommandRow must pass through a genuinely verified packetHashMatch=true");
 
 const commandRowTimeout = buildCommandRow({
   worker: "worker-2",
@@ -486,5 +508,60 @@ const commandRowTimeout = buildCommandRow({
 assert.equal(commandRowTimeout.status, "timeout", "buildCommandRow must map timeout status through");
 assert.equal(commandRowTimeout.elapsed_seconds, null, "buildCommandRow must pass through null elapsed_seconds rather than coercing to 0/NaN");
 assert.equal(commandRowTimeout.cli, "unknown", "buildCommandRow must default cli to unknown when absent");
+
+// --- buildHarnessPromptMirror / extractLatestSha256 -------------------
+
+const mirrorPack = { pack_id: "winsmux-cli-bakeoff-v1", default_timeout_seconds: 3600 };
+const mirrorTask = { task_id: "WB-001", title: "Sample Task", timeout_seconds: 1800 };
+const mirrorPrompt = buildHarnessPromptMirror(mirrorPack, mirrorTask, "  Do the thing.  \n");
+assert.equal(
+  mirrorPrompt,
+  [
+    "Harness Bench task packet",
+    "Pack: winsmux-cli-bakeoff-v1",
+    "Task: WB-001",
+    "Title: Sample Task",
+    "Timeout seconds: 1800",
+    "",
+    "Instructions:",
+    "Do the thing.",
+    "",
+  ].join("\n"),
+  "buildHarnessPromptMirror must reproduce the exact desktop prompt string (header lines + trimmed packet content + trailing blank line)",
+);
+
+// The check file (not the pure lib) is allowed to compute sha256 itself, to
+// avoid ever hardcoding an expected hash by hand.
+const mirrorSha = createHash("sha256").update(mirrorPrompt, "utf8").digest("hex");
+assert.equal(mirrorSha.length, 64, "sanity: computed sha256 hex digest must be 64 chars");
+
+assert.equal(
+  extractLatestSha256(`sha256: ${mirrorSha}`),
+  mirrorSha,
+  "extractLatestSha256 must extract a 64-hex value following a sha256 label",
+);
+assert.equal(
+  extractLatestSha256(`some other detail\nsha256   ${mirrorSha}\nmore text`),
+  mirrorSha,
+  "extractLatestSha256 must tolerate whitespace/punctuation between the sha256 label and the hex value",
+);
+const otherHash = "a".repeat(64);
+assert.equal(
+  extractLatestSha256(`sha256: ${otherHash}\nsha256: ${mirrorSha}`),
+  mirrorSha,
+  "extractLatestSha256 must return the LAST labeled sha256 match when multiple are present",
+);
+assert.equal(
+  extractLatestSha256(`no label here, just a bare hex run ${mirrorSha} in the middle of text`),
+  mirrorSha,
+  "extractLatestSha256 must fall back to the last bare 64-hex-char run when no sha256 label is found",
+);
+assert.equal(
+  extractLatestSha256("nothing hashy here"),
+  "",
+  "extractLatestSha256 must return empty string when no hash-shaped text is found",
+);
+assert.equal(extractLatestSha256(""), "", "extractLatestSha256 must return empty string for empty input");
+assert.equal(extractLatestSha256(undefined), "", "extractLatestSha256 must tolerate non-string input");
 
 console.log("bakeoff-runner-check: ok");

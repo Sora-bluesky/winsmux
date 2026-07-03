@@ -30,10 +30,11 @@
 import { mkdir, appendFile, writeFile, readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 import {
   parseManifestPaneIds,
   collectReadyWorkers,
-  countCompletionMarkerLines,
+  countEndMarkers,
   taskIdToEndMarker,
   classifyApiRun,
   classifyApiOutcome,
@@ -47,7 +48,25 @@ import {
   mapRunnerStatusToCommandStatus,
   buildRunManifest,
   buildCommandRow,
+  buildHarnessPromptMirror,
+  extractLatestSha256,
 } from "./bakeoff-runner-lib.mjs";
+
+function sha256Hex(text) {
+  return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+// How long to wait, after a dispatch submit succeeds, before capturing each
+// CLI pane to seed that task's marker-count baseline. This lets the echoed
+// task packet (which the desktop writes into the pane verbatim as part of
+// dispatch) finish rendering so it is INCLUDED in the seeded baseline --
+// countEndMarkers() no longer filters the echo out by line shape (see its
+// doc comment in bakeoff-runner-lib.mjs), so the baseline itself must
+// already contain the echoed marker occurrence before polling starts. Real
+// bench tasks take minutes to finish, so a genuine completion cannot land
+// inside this short settle window and be wrongly excluded from the count
+// that becomes "prior".
+const POST_DISPATCH_BASELINE_SETTLE_MS = 10000;
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, "..", "..");
@@ -186,6 +205,28 @@ async function readPaneHeaderTexts(port) {
     return JSON.parse(raw) || [];
   } catch {
     return [];
+  }
+}
+
+/**
+ * Read the conversation panel's innerText, used to recover the
+ * desktop-displayed "sha256" detail for packet-hash verification. The
+ * conversation timeline renders into #conversation-timeline (see
+ * renderConversation in winsmux-app/src/main.ts); the broader selector list
+ * is kept as a fallback in case that id is renamed, mirroring the tolerant
+ * style of readPaneHeaderTexts above.
+ */
+async function readConversationText(port) {
+  const expr = `(() => {
+    const el = document.getElementById('conversation-timeline')
+      || document.querySelector('[class*="conversation"],[class*="runtime"],[id*="conversation"]');
+    return JSON.stringify(el && el.innerText ? el.innerText : "");
+  })()`;
+  const raw = await cdpEvaluate(port, expr);
+  try {
+    return JSON.parse(raw) || "";
+  } catch {
+    return "";
   }
 }
 
@@ -478,6 +519,7 @@ async function main() {
     perWorkerElapsedSeconds,
     perWorkerEndMarkerPresent,
     executionStatus,
+    packetHashMatch,
   }) {
     const runId = buildRunId(runTimestampSlug, taskId);
     const taskRunDir = path.join(bakeoffEvidenceRoot, runId);
@@ -496,6 +538,7 @@ async function main() {
       taskClass,
       activeWorkers,
       endMarkerPresent: allEndMarkersPresent,
+      packetHashMatch: !!packetHashMatch,
       recordingStatus: args.recordingStatus,
       recordingPublishable: args.recordingPublishable,
       executionStatus,
@@ -512,6 +555,7 @@ async function main() {
       runnerStatus: perWorkerStatus[w],
       elapsedSeconds: perWorkerElapsedSeconds[w],
       endMarkerPresent: perWorkerEndMarkerPresent[w],
+      packetHashMatch: !!packetHashMatch,
     }));
 
     await mkdir(taskRunDir, { recursive: true });
@@ -531,51 +575,56 @@ async function main() {
     const endMarker = taskIdToEndMarker(taskId);
     const taskEntry = pack.tasks.find((t) => t.task_id === taskId);
     const taskClass = taskEntry && typeof taskEntry.task_class === "string" ? taskEntry.task_class : "unknown";
+
+    // Packet text (and therefore round markers AND the hash-mirror
+    // Instructions body) is read from THE PROJECT DIR
+    // (<project-dir>/tasks/cli-bakeoff/v1/...), not the repo root: that is
+    // what the running desktop app itself reads (getDesktopFullFile with
+    // activeProjectDir in winsmux-app/src/main.ts). A repo-root copy can
+    // drift from what the live desktop session actually has on disk (see
+    // #1109), which would silently desync markers/hash from the real
+    // dispatch. Both packetMarkers and the hash mirror below are derived
+    // from this SAME read so they can never disagree with each other over
+    // which packet text was used.
+    let packetText = null;
     let packetMarkers = { begin: "", end: "" };
     if (taskEntry && typeof taskEntry.packet_path === "string") {
       try {
-        const packetText = await readFile(
-          path.join(REPO_ROOT, "tasks", "cli-bakeoff", "v1", taskEntry.packet_path),
+        packetText = await readFile(
+          path.join(args.projectDir, "tasks", "cli-bakeoff", "v1", taskEntry.packet_path),
           "utf8",
         );
         packetMarkers = getPacketMarkers(packetText);
-      } catch {
-        packetMarkers = { begin: "", end: "" };
+      } catch (err) {
+        console.log(JSON.stringify({
+          result: "desktop not up",
+          reason: `cannot read project pack: ${err.message}`,
+        }));
+        process.exit(EXIT_DESKTOP_NOT_UP);
       }
     }
 
-    // Seed the baseline marker-line count for this task's own round marker
-    // immediately before dispatch. This is required both to cross round
-    // boundaries (e.g. WB-009 -> WB-010 switches from counting
-    // BAKEOFF_ROUND_A_END to BAKEOFF_ROUND_B_END) and to avoid misreading
-    // leftover markers from a previous run as an instant completion for the
-    // very first task of a round. A failed capture must NOT seed 0: if the
-    // pane still visibly holds a previous task's marker, a 0 baseline would
-    // let the next successful poll misread that stale marker as this task's
-    // completion. null marks "baseline unknown -- adopt the first successful
-    // poll observation as the baseline instead".
-    const priorMarkerCounts = {};
-    for (const w of CLI_WORKERS) {
-      const captured = await capturePane(paneIds[w]);
-      priorMarkerCounts[w] = typeof captured === "string"
-        ? countCompletionMarkerLines(captured, endMarker)
-        : null;
-    }
+    // Independently reconstruct the exact prompt the desktop builds and
+    // hashes for this dispatch (buildHarnessTaskPrompt mirror), then hash it
+    // ourselves. Compared below (after dispatch) against the sha256 the
+    // desktop itself displays in the conversation panel.
+    const expectedSha = packetText !== null
+      ? sha256Hex(buildHarnessPromptMirror(pack, taskEntry || {}, packetText))
+      : "";
 
     const dispatchStartMs = Date.now();
     const dispatchStartIso = nowIso();
     const submitResult = await submitComposerCommand(args.port, buildDispatchCommand(taskId));
-    await appendLogLine(logPath, {
-      event: "task_dispatch",
-      ts: dispatchStartIso,
-      taskId,
-      endMarker,
-      priorMarkerCounts,
-      submitOk: !!submitResult.ok,
-      submitReason: submitResult.reason,
-    });
     if (!submitResult.ok) {
       anyFailure = true;
+      await appendLogLine(logPath, {
+        event: "task_dispatch",
+        ts: dispatchStartIso,
+        taskId,
+        endMarker,
+        submitOk: false,
+        submitReason: submitResult.reason,
+      });
       await appendLogLine(logPath, { event: "task_result", ts: nowIso(), taskId, status: "dispatch_failed" });
       // Emit the same summarize-compatible artifacts with every worker
       // marked dispatch_failed (mapped to 'failed' in commands.jsonl):
@@ -596,9 +645,63 @@ async function main() {
         perWorkerElapsedSeconds: failedElapsed,
         perWorkerEndMarkerPresent: failedMarkers,
         executionStatus: "dispatch_failed",
+        // Baseline seeding (and thus hash verification, which happens after
+        // a SUCCESSFUL submit) never ran on this path -- honestly false
+        // rather than fabricated.
+        packetHashMatch: false,
       });
       continue;
     }
+
+    // Dispatch submit succeeded. Let the echoed packet text render in each
+    // CLI pane before seeding the baseline marker count -- see
+    // POST_DISPATCH_BASELINE_SETTLE_MS's doc comment. Seeding AFTER dispatch
+    // (rather than before, as the previous strategy did) is what lets the
+    // baseline already include the echo, so only the worker's OWN completion
+    // output can push the count past it.
+    await sleep(POST_DISPATCH_BASELINE_SETTLE_MS);
+
+    // Also read the desktop-displayed sha256 for this dispatch now, while
+    // the conversation entry is fresh, and compare it to our independently
+    // computed expectedSha.
+    let displayedSha = "";
+    try {
+      const conversationText = await readConversationText(args.port);
+      displayedSha = extractLatestSha256(conversationText);
+    } catch {
+      displayedSha = "";
+    }
+    const packetHashMatch = expectedSha !== "" && displayedSha !== "" && displayedSha === expectedSha;
+
+    // Seed the baseline marker count for this task's own round marker AFTER
+    // dispatch settle. This is required both to cross round boundaries (e.g.
+    // WB-009 -> WB-010 switches from counting BAKEOFF_ROUND_A_END to
+    // BAKEOFF_ROUND_B_END) and to make sure the echoed packet text (which
+    // itself contains the marker literal, per every packet's step 5) is
+    // already folded into the baseline before polling starts. A failed
+    // capture must NOT seed 0: if the pane still visibly holds markers, a 0
+    // baseline would let the next successful poll misread them as an
+    // instant completion. null marks "baseline unknown -- adopt the first
+    // successful poll observation as the baseline instead".
+    const priorMarkerCounts = {};
+    for (const w of CLI_WORKERS) {
+      const captured = await capturePane(paneIds[w]);
+      priorMarkerCounts[w] = typeof captured === "string"
+        ? countEndMarkers(captured, endMarker)
+        : null;
+    }
+
+    await appendLogLine(logPath, {
+      event: "task_dispatch",
+      ts: dispatchStartIso,
+      taskId,
+      endMarker,
+      priorMarkerCounts,
+      submitOk: true,
+      expectedSha,
+      displayedSha,
+      packetHashMatch,
+    });
 
     const perWorkerStatus = {};
     const perWorkerElapsedSeconds = {};
@@ -625,7 +728,7 @@ async function main() {
           continue;
         }
         const paneText = captured;
-        const currCount = countCompletionMarkerLines(paneText, endMarker);
+        const currCount = countEndMarkers(paneText, endMarker);
         if (priorMarkerCounts[w] === null) {
           // Baseline capture failed at dispatch time. Adopt the first
           // successful observation as the baseline: a leftover marker and
@@ -723,6 +826,7 @@ async function main() {
       perWorkerElapsedSeconds,
       perWorkerEndMarkerPresent,
       executionStatus: taskFailed ? "completed_with_failures" : "completed",
+      packetHashMatch,
     });
   }
 
