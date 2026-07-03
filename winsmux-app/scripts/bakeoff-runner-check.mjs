@@ -62,12 +62,13 @@ const headTexts = [
   "worker-1 Claude Code / Claude Opus 4.8 ready for benchmark",
   "worker-2 Codex / gpt-5.5",
   "worker-3 Antigravity CLI ready for benchmark",
+  "worker-4 Gemini CLI ベンチ投入可能",
   "",
 ];
 assert.deepEqual(
   collectReadyWorkers(headTexts),
-  new Set(["worker-1", "worker-3"]),
-  "collectReadyWorkers must only include workers whose header text contains the ready phrase",
+  new Set(["worker-1", "worker-3", "worker-4"]),
+  "collectReadyWorkers must match both the English and the localized (Japanese) ready badge, and only for workers whose header shows one",
 );
 assert.deepEqual(collectReadyWorkers([]), new Set(), "collectReadyWorkers must return empty set for empty input");
 assert.deepEqual(collectReadyWorkers(undefined), new Set(), "collectReadyWorkers must tolerate non-array input");

@@ -419,15 +419,17 @@ async function main() {
     // boundaries (e.g. WB-009 -> WB-010 switches from counting
     // BAKEOFF_ROUND_A_END to BAKEOFF_ROUND_B_END) and to avoid misreading
     // leftover markers from a previous run as an instant completion for the
-    // very first task of a round. The poll loop below additionally lowers
-    // this baseline whenever a smaller count is observed: capture-pane only
-    // returns visible rows, so a previous task's marker scrolling off
-    // mid-task must shrink the baseline rather than permanently inflate it.
+    // very first task of a round. A failed capture must NOT seed 0: if the
+    // pane still visibly holds a previous task's marker, a 0 baseline would
+    // let the next successful poll misread that stale marker as this task's
+    // completion. null marks "baseline unknown -- adopt the first successful
+    // poll observation as the baseline instead".
     const priorMarkerCounts = {};
     for (const w of CLI_WORKERS) {
       const captured = await capturePane(paneIds[w]);
-      const paneText = typeof captured === "string" ? captured : "";
-      priorMarkerCounts[w] = countCompletionMarkerLines(paneText, endMarker);
+      priorMarkerCounts[w] = typeof captured === "string"
+        ? countCompletionMarkerLines(captured, endMarker)
+        : null;
     }
 
     const dispatchStartMs = Date.now();
@@ -458,8 +460,25 @@ async function main() {
       for (const w of CLI_WORKERS) {
         if (perWorkerStatus[w] !== "pending") continue;
         const captured = await capturePane(paneIds[w]);
-        const paneText = typeof captured === "string" ? captured : "";
+        if (typeof captured !== "string") {
+          // Transient capture failure: skip this tick rather than treating
+          // the miss as an empty pane. An empty read would wrongly lower
+          // the running-minimum baseline (or instantly complete against a
+          // null baseline). The loop deadline still bounds the task and the
+          // post-loop sweep marks still-pending workers as timeout.
+          continue;
+        }
+        const paneText = captured;
         const currCount = countCompletionMarkerLines(paneText, endMarker);
+        if (priorMarkerCounts[w] === null) {
+          // Baseline capture failed at dispatch time. Adopt the first
+          // successful observation as the baseline: a leftover marker and
+          // this task's own marker are indistinguishable here, so require a
+          // further increase before declaring completion (conservative --
+          // the worst case is a timeout, never a false completion).
+          priorMarkerCounts[w] = currCount;
+          continue;
+        }
         if (currCount < priorMarkerCounts[w]) {
           // A leftover marker from the previous task scrolled off the
           // visible screen; adopt the smaller count as the new baseline so

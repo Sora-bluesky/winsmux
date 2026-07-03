@@ -65,6 +65,12 @@ export function parseManifestPaneIds(yamlText) {
  * return the set of worker labels ("worker-1".."worker-6") whose header
  * text contains the "ready for benchmark" badge.
  *
+ * The desktop renders the badge through getLanguageText("ready for
+ * benchmark", "ベンチ投入可能") (winsmux-app/src/main.ts), so a
+ * Japanese-language desktop shows the localized text. Both localizations
+ * must match here; otherwise a JP-UI desktop passes its readiness check
+ * while the runner reports every worker not ready.
+ *
  * @param {string[]} headTexts
  * @returns {Set<string>}
  */
@@ -73,7 +79,7 @@ export function collectReadyWorkers(headTexts) {
   if (!Array.isArray(headTexts)) return ready;
 
   const workerLabelRe = /worker-(\d+)/i;
-  const readyPhraseRe = /ready for benchmark/i;
+  const readyPhraseRe = /ready for benchmark|ベンチ投入可能/i;
 
   for (const text of headTexts) {
     if (typeof text !== "string") continue;
@@ -179,15 +185,18 @@ export function classifyApiRun(runJsonText) {
  * the completion-marker line count against the lowest count observed since
  * immediately before dispatch.
  *
- * The caller must maintain `minObservedCount` as a running minimum: pane
- * capture only returns visible rows, so a leftover marker from the previous
- * task can scroll off mid-task. Lowering the baseline when that happens is
- * what lets this task's own marker (count rising back above the minimum)
- * register as completion instead of reading as "no change" and timing out.
+ * The caller must maintain `minObservedCount` as a running minimum over
+ * SUCCESSFUL captures only: pane capture returns visible rows only, so a
+ * leftover marker from the previous task can scroll off mid-task, and
+ * lowering the baseline when that happens is what lets this task's own
+ * marker (count rising back above the minimum) register as completion
+ * instead of reading as "no change" and timing out. A failed capture must
+ * never feed this function -- an empty read would wrongly lower the
+ * baseline and turn a stale marker into a false completion.
  *
  * @param {number} minObservedCount lowest marker-line count observed since
  *   immediately before this task's dispatch (seeded pre-dispatch, lowered by
- *   the caller whenever a poll observes a smaller count)
+ *   the caller whenever a successful poll observes a smaller count)
  * @param {number} currCount marker-line count observed at the current poll tick
  * @param {number} elapsedSeconds seconds since this task was dispatched
  * @param {number} timeoutSeconds this task's configured timeout
