@@ -33,14 +33,27 @@ export function hasCodexIdleStatusLine(line: string): boolean {
 /**
  * #1115 (P2 follow-up): a pane that is still mid-launch can print the launch
  * command echo (`> codex --model ...`) and/or a "Starting Codex..." style
- * marker *above* the eventual idle footer line within the same captured
- * window. If any recent line still shows that pending/mid-launch shape, the
- * footer line must not be trusted as idle evidence yet, even though the
- * footer text itself matches the idle-status shape.
+ * marker line before the eventual idle footer line appears. Within a single
+ * fresh-launch sequence (echo -> "Starting..." -> spinner frames -> footer)
+ * that marker always lands within a few lines of the footer, so only the
+ * near-footer window needs to be inspected for it.
+ *
+ * #1115 (P3 follow-up): this must NOT scan the entire recent-lines window.
+ * `recentLines` mixes buffered scrollback history with the current capture
+ * (see inspectWorkerPaneReadiness in main.ts), so a launch echo/marker from
+ * a much earlier launch can still be sitting many lines above an otherwise
+ * genuinely idle footer. Scanning the full window would keep treating that
+ * pane as not-ready forever. Limiting the scan to the trailing lines next
+ * to the footer keeps the fresh-launch suppression intact while letting
+ * stale history age out once enough lines have scrolled past it.
  */
+const PENDING_LAUNCH_MARKER_WINDOW = 6;
+
 function hasPendingWorkerLaunchMarker(lines: readonly string[]): boolean {
-  return lines.some((line) => isWorkerLaunchCommandEcho(line)
-    || /\b(?:starting|launching|initializing)\b/i.test(line));
+  return lines
+    .slice(-PENDING_LAUNCH_MARKER_WINDOW)
+    .some((line) => isWorkerLaunchCommandEcho(line)
+      || /\b(?:starting|launching|initializing)\b/i.test(line));
 }
 
 export function hasWorkerReadyPrompt(text: string): boolean {
