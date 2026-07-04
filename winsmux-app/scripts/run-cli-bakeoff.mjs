@@ -1,9 +1,11 @@
 // Durable CLI Bakeoff runner (#1120).
 //
-// Drives a live winsmux desktop session end-to-end over CDP: confirms the
-// six worker panes are reachable, runs a ready-check, dispatches each
-// benchmark-pack task, polls every worker to completion or timeout, appends
-// one JSON line per task to a runner log under
+// Drives a live winsmux desktop session end-to-end over CDP: runs a
+// ready-check (which is also what starts the six worker PTYs on a fresh
+// desktop launch -- see the ordering note below), THEN confirms the six
+// worker panes are reachable, dispatches each benchmark-pack task, polls
+// every worker to completion or timeout, appends one JSON line per task to a
+// runner log under
 // .winsmux/evidence/cli-bakeoff-runner-logs/runner-<UTC>/ (kept outside the
 // summarize scan root -- see the runEvidenceDir comment below), and writes a
 // summarize-cli-bakeoff.ps1-compatible run directory (manifest.json +
@@ -43,6 +45,22 @@
 // `paneId`), so the invoke payload is `{ paneId, lines }`. `lines` is an
 // optional u16 cap on how much scrollback is returned; this runner passes
 // a generous value since it greps the whole capture for markers.
+//
+// Preflight ordering (fresh-launch fix): the pty_capture reachability
+// preflight runs AFTER the ready-check confirms all six workers, not
+// before. On a documented fresh desktop launch, worker PTYs are not started
+// until runBenchmarkReadyCheckFromOperatorCommand (winsmux-app/src/main.ts)
+// expands the six panes and calls ensurePanePtyStarted -- which happens
+// during the ready-check itself. Probing pty_capture before the ready-check
+// runs would fail on a clean launch every time, and only appeared to work
+// previously when the panes had already been started by hand ahead of time.
+// --dry-run does not run the ready-check or the capture preflight at all:
+// it only verifies CDP connectivity, the benchmark pack/manifest, and the
+// planned task/worker set, since panes are not guaranteed to exist yet at
+// that point. A real (non-dry-run) invocation still hard-requires every
+// worker to be capturable, right after the ready-check succeeds and before
+// any task is dispatched -- this ordering fix does not weaken that
+// guarantee, it only moves the check to where it can actually pass.
 //
 // Usage:
 //   node scripts/run-cli-bakeoff.mjs [--port 9237] [--tasks WB-001,WB-002]
@@ -510,17 +528,17 @@ async function main() {
     console.error(`run-cli-bakeoff: warning: manifest pane roster missing pane_id for: ${missingPaneWorkers.join(", ")} (informational; capture uses worker slot ids, not pane_ids)`);
   }
 
-  // 3. Preflight pty_capture for every worker, over CDP, addressed by worker
-  // slot label (see the header comment's "Pane-capture story").
-  const preflight = await preflightCapturePorts(args.port, WORKER_LABELS);
-  const unreachable = Object.entries(preflight).filter(([, v]) => !v.ok).map(([w]) => w);
-  if (unreachable.length > 0) {
-    console.log(JSON.stringify({
-      result: "desktop not up",
-      reason: `pty_capture failed for: ${unreachable.join(", ")}`,
-    }));
-    process.exit(EXIT_DESKTOP_NOT_UP);
-  }
+  // NOTE: the pty_capture reachability preflight used to run here, before the
+  // ready-check. That ordering is wrong on a documented FRESH desktop launch:
+  // the worker PTYs are not spawned until
+  // runBenchmarkReadyCheckFromOperatorCommand (winsmux-app/src/main.ts)
+  // expands the six panes and calls ensurePanePtyStarted, which happens
+  // DURING the ready-check below. Running pty_capture before that point can
+  // never succeed on a clean launch -- it only appeared to work when the
+  // panes had already been started by hand ahead of time. The preflight is
+  // now run AFTER the ready-check has confirmed all six workers are ready
+  // (step 4 below), so it is meaningful for both a fresh launch and an
+  // already-started desktop.
 
   const evidenceProjectRoot = args.projectDir;
   const runDirName = `runner-${runDirTimestamp()}`;
@@ -534,6 +552,14 @@ async function main() {
   const logPath = path.join(runEvidenceDir, "runner-log.jsonl");
 
   if (args.dryRun) {
+    // Dry-run intentionally verifies CDP connectivity + the benchmark
+    // pack/manifest + the planned task/worker set only -- it does NOT run
+    // the ready-check and does NOT probe pty_capture reachability. On a
+    // fresh desktop launch the worker PTYs are not started yet (they only
+    // come up during the ready-check's pane expansion, see the ordering
+    // note above), so requiring capturable panes here would make --dry-run
+    // fail on the exact case it exists to validate ahead of time. This
+    // reports intent, not live pane state.
     console.log(JSON.stringify({
       result: "dry-run ok",
       port: args.port,
@@ -545,6 +571,7 @@ async function main() {
       manifestPath,
       paneIds,
       evidenceDir: runEvidenceDir,
+      note: "dry-run does not run the ready-check or verify pty_capture reachability; panes may not be started yet on a fresh desktop launch",
     }, null, 2));
     process.exit(EXIT_OK);
   }
@@ -595,6 +622,31 @@ async function main() {
       logPath,
     }));
     process.exit(EXIT_TASK_FAILURES);
+  }
+
+  // Preflight pty_capture for every worker, over CDP, addressed by worker
+  // slot label (see the header comment's "Pane-capture story"). This MUST
+  // run after the ready-check above, not before: on a fresh desktop launch
+  // the worker PTYs are not spawned until the ready-check's pane expansion
+  // (ensurePanePtyStarted in winsmux-app/src/main.ts) has run, so pty_capture
+  // cannot succeed until that point regardless of pane_id correctness. Real
+  // runs still hard-require every worker to be capturable before any task is
+  // dispatched -- this is not weakened, just moved to after the point where
+  // it can actually succeed.
+  const preflight = await preflightCapturePorts(args.port, WORKER_LABELS);
+  const unreachable = Object.entries(preflight).filter(([, v]) => !v.ok).map(([w]) => w);
+  await appendLogLine(logPath, {
+    event: "capture_preflight",
+    ts: nowIso(),
+    unreachable,
+  });
+  if (unreachable.length > 0) {
+    console.log(JSON.stringify({
+      result: "desktop not up",
+      reason: `pty_capture failed for: ${unreachable.join(", ")}`,
+      logPath,
+    }));
+    process.exit(EXIT_DESKTOP_NOT_UP);
   }
 
   // Per-run evidence dir that satisfies summarize-cli-bakeoff.ps1's contract
