@@ -469,6 +469,21 @@ async function main() {
     process.exit(EXIT_BAD_ARGS);
   }
 
+  // --project-dir is later used verbatim to poll <projectDir>/.winsmux/worker-runs/<worker>
+  // for API workers (see readRunJsonForTask). A stale/mistyped project dir must fail fast
+  // here, not surface as a misleading one-hour worker timeout during polling: the manifest
+  // read below is intentionally non-fatal (informational only), but the project directory
+  // itself existing is a hard precondition for that later poll to mean anything.
+  try {
+    const projectDirStat = await stat(args.projectDir);
+    if (!projectDirStat.isDirectory()) {
+      throw new Error("not a directory");
+    }
+  } catch (err) {
+    console.error(`run-cli-bakeoff: --project-dir does not exist or is not a directory: ${args.projectDir} (${err.message})`);
+    process.exit(EXIT_BAD_ARGS);
+  }
+
   // 1. CDP connectivity check.
   let pages;
   try {
