@@ -9,6 +9,16 @@
  * YAML dump (no multi-line scalars inside the panes block), so a line-based
  * regex walk is reliable and avoids taking a YAML parser dependency.
  *
+ * NOTE (round-9 fix): the returned pane_id values are INFORMATIONAL ONLY --
+ * used for commands.jsonl/manifest.json metadata and for a startup warning
+ * when the roster is incomplete. They are psmux SERVER session pane
+ * identifiers (see core/src/session.rs), which are a disjoint address space
+ * from the desktop app's in-process Tauri PTYs. The runner's actual capture
+ * path (pty_capture over CDP, run-cli-bakeoff.mjs's capturePane) addresses
+ * panes by worker SLOT id ("worker-1".."worker-6"), never by a pane_id
+ * returned from this function. Do not wire this map's values into any new
+ * capture call.
+ *
  * @param {string} yamlText
  * @returns {Record<string, string>}
  */
@@ -712,4 +722,29 @@ export function buildCommandRow(input) {
     // read. Never fabricated true. See buildRunManifest's doc comment.
     packet_hash_match: !!packetHashMatch,
   };
+}
+
+/**
+ * Extract the captured pane text out of a `pty_capture` Tauri command
+ * result value (round-9 fix, see run-cli-bakeoff.mjs's capturePane).
+ *
+ * The command (capture_pty in winsmux-app/src-tauri/src/lib.rs:1336-1356)
+ * returns `serde_json::json!({ "paneId": pane_id, "output": output })`,
+ * which is also PtyCaptureResult's shape on the TypeScript side
+ * (winsmux-app/src/ptyClient.ts:49-52: `{ paneId: string; output: string }`).
+ * Over CDP's Runtime.evaluate this arrives already deserialized as a plain
+ * JS object (not a JSON string needing a second parse), so this function
+ * takes the parsed value directly and just reads its `output` field.
+ *
+ * Returns null (not "") when the field is missing/not a string, so callers
+ * can distinguish "genuinely empty pane" from "unexpected result shape" and
+ * treat the latter as a capture failure rather than an empty pane.
+ *
+ * @param {unknown} resultValue the `result` field of the invoke response
+ * @returns {string|null}
+ */
+export function extractPtyCaptureText(resultValue) {
+  if (!resultValue || typeof resultValue !== "object") return null;
+  const output = resultValue.output;
+  return typeof output === "string" ? output : null;
 }

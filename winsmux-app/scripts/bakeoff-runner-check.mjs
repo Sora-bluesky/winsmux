@@ -22,6 +22,7 @@ import {
   classifyCliOutcome,
   countSha256Occurrences,
   countDispatchBlockedNotices,
+  extractPtyCaptureText,
 } from "./bakeoff-runner-lib.mjs";
 
 // --- parseManifestPaneIds ---------------------------------------------
@@ -651,5 +652,31 @@ assert.equal(
   0,
   "countDispatchBlockedNotices must tolerate non-string input",
 );
+
+// --- extractPtyCaptureText -------------------------------------------
+
+assert.equal(
+  extractPtyCaptureText({ paneId: "worker-1", output: "hello pane text" }),
+  "hello pane text",
+  "extractPtyCaptureText must extract the output field from a pty_capture result object",
+);
+assert.equal(
+  extractPtyCaptureText({ paneId: "worker-1", output: "" }),
+  "",
+  "extractPtyCaptureText must return an empty string for a genuinely empty pane, not null",
+);
+assert.equal(
+  extractPtyCaptureText({ paneId: "worker-1" }),
+  null,
+  "extractPtyCaptureText must return null when the output field is missing",
+);
+assert.equal(
+  extractPtyCaptureText({ paneId: "worker-1", output: 12345 }),
+  null,
+  "extractPtyCaptureText must return null when output is not a string",
+);
+assert.equal(extractPtyCaptureText(null), null, "extractPtyCaptureText must return null for null input");
+assert.equal(extractPtyCaptureText(undefined), null, "extractPtyCaptureText must return null for undefined input");
+assert.equal(extractPtyCaptureText("not an object"), null, "extractPtyCaptureText must return null for non-object input");
 
 console.log("bakeoff-runner-check: ok");
