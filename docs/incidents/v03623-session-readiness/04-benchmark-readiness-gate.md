@@ -19,7 +19,7 @@ Formal benchmark packets must not be distributed until every item is satisfied.
 
 Stopping rule: keep formal worker packets blocked while any `PENDING` or `FAIL` item remains.
 
-Gate sync: 2026-07-02, all rows verified against #1097 evidence chain. Formal bench start remains gated on a live visible-desktop route run (start-cli-bakeoff-desktop.ps1) with the user present.
+Gate sync: 2026-07-02, all rows except the two 2026-07-05 FAIL rows verified against the #1097 evidence chain. 2026-07-05: the two FAIL rows were added from the 2026-07-05 bring-up run evidence (runner logs cited in the addendum below; decision recorded in #1097 comment 4885627496), not from the July 2 verification. Formal bench start remains gated on a live visible-desktop route run (start-cli-bakeoff-desktop.ps1) with the user present.
 
 ## 2026-07-05 bring-up runs and formal-bench re-scope
 
