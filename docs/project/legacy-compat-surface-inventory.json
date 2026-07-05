@@ -160,6 +160,17 @@
         "docs/incidents/v03623-session-readiness/00-incident-record.md",
         "scripts/test-v03623-session-readiness.ps1"
       ]
+    },
+    {
+      "class": "intentional-shim",
+      "owner": "harness bench runner documentation",
+      "surface": "desktop bench runner capture-architecture notes",
+      "reason": "The durable bench runner documents why the external psmux capture-pane path cannot read desktop Tauri worker panes and routes capture over the in-app pty_capture command instead; the legacy term appears only in explanatory comments and diagnostics, not as a runtime alias surface.",
+      "target": "keep while the durable bench runner documents the desktop capture path",
+      "paths": [
+        "winsmux-app/scripts/bakeoff-runner-lib.mjs",
+        "winsmux-app/scripts/run-cli-bakeoff.mjs"
+      ]
     }
   ]
 }
