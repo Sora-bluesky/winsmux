@@ -1,9 +1,11 @@
 // Durable CLI Bakeoff runner (#1120).
 //
-// Drives a live winsmux desktop session end-to-end over CDP: confirms the
-// six worker panes are reachable, runs a ready-check, dispatches each
-// benchmark-pack task, polls every worker to completion or timeout, appends
-// one JSON line per task to a runner log under
+// Drives a live winsmux desktop session end-to-end over CDP: runs a
+// ready-check (which is also what starts the six worker PTYs on a fresh
+// desktop launch -- see the ordering note below), THEN confirms the six
+// worker panes are reachable, dispatches each benchmark-pack task, polls
+// every worker to completion or timeout, appends one JSON line per task to a
+// runner log under
 // .winsmux/evidence/cli-bakeoff-runner-logs/runner-<UTC>/ (kept outside the
 // summarize scan root -- see the runEvidenceDir comment below), and writes a
 // summarize-cli-bakeoff.ps1-compatible run directory (manifest.json +
@@ -12,6 +14,53 @@
 // This script only talks to an already-running desktop app over CDP -- it
 // does not build, launch, or install anything. If the desktop app is not
 // up, it exits cleanly with code 2 instead of throwing.
+//
+// Pane-capture story (fixed round-9, first-source verified):
+//
+// The desktop app's worker panes are IN-PROCESS Tauri PTYs, spawned via
+// spawn_pty/openpty (winsmux-app/src-tauri/src/lib.rs:1105, ~1175) and held
+// in the PtyManager's in-memory `panes` map keyed by pane_id (worker slot
+// label, e.g. "worker-1"). The external `winsmux capture-pane` CLI command
+// only reads psmux SERVER sessions discovered via
+// %USERPROFILE%\.psmux\<session>.port (core/src/session.rs:584) -- a
+// completely disjoint process/session universe from the desktop app's
+// in-memory PTYs. On a machine where no separate psmux server session is
+// running (the normal case for a desktop-only bakeoff), `winsmux
+// capture-pane -t <pane_id>` can NEVER read a desktop worker pane, no matter
+// how correct the pane_id is. This is why the previous execFile-based
+// capturePane() always failed here.
+//
+// The correct read path is the SAME one the app's own worker-readiness logic
+// uses (see capturePtyPane(target) in winsmux-app/src/main.ts:4022, called
+// with `target` being the worker slot id): capturePtyPane(paneId) ->
+// pty.capture -> the Tauri command `pty_capture(pane_id, lines)`
+// (winsmux-app/src-tauri/src/lib.rs:1087-1093, which reads directly out of
+// the in-process PtyManager via capture_pty at lib.rs:1336-1356). This
+// runner now calls that same command directly over CDP
+// (window.__TAURI__.core.invoke), instead of going through psmux at all.
+//
+// capturePane's signature is therefore capturePane(port, workerId): the
+// worker SLOT id ("worker-1".."worker-6"), not a manifest pane_id. Tauri v2
+// camelCases command args in JS invocations (Rust `pane_id` -> JS
+// `paneId`), so the invoke payload is `{ paneId, lines }`. `lines` is an
+// optional u16 cap on how much scrollback is returned; this runner passes
+// a generous value since it greps the whole capture for markers.
+//
+// Preflight ordering (fresh-launch fix): the pty_capture reachability
+// preflight runs AFTER the ready-check confirms all six workers, not
+// before. On a documented fresh desktop launch, worker PTYs are not started
+// until runBenchmarkReadyCheckFromOperatorCommand (winsmux-app/src/main.ts)
+// expands the six panes and calls ensurePanePtyStarted -- which happens
+// during the ready-check itself. Probing pty_capture before the ready-check
+// runs would fail on a clean launch every time, and only appeared to work
+// previously when the panes had already been started by hand ahead of time.
+// --dry-run does not run the ready-check or the capture preflight at all:
+// it only verifies CDP connectivity, the benchmark pack/manifest, and the
+// planned task/worker set, since panes are not guaranteed to exist yet at
+// that point. A real (non-dry-run) invocation still hard-requires every
+// worker to be capturable, right after the ready-check succeeds and before
+// any task is dispatched -- this ordering fix does not weaken that
+// guarantee, it only moves the check to where it can actually pass.
 //
 // Usage:
 //   node scripts/run-cli-bakeoff.mjs [--port 9237] [--tasks WB-001,WB-002]
@@ -53,6 +102,7 @@ import {
   extractLatestSha256,
   countSha256Occurrences,
   countDispatchBlockedNotices,
+  extractPtyCaptureText,
 } from "./bakeoff-runner-lib.mjs";
 
 function sha256Hex(text) {
@@ -307,25 +357,57 @@ async function submitComposerCommand(port, commandText) {
   return parsed;
 }
 
-async function capturePane(paneId) {
-  const { execFile } = await import("node:child_process");
-  const { promisify } = await import("node:util");
-  const execFileAsync = promisify(execFile);
+/**
+ * Capture a worker pane's PTY output via the Tauri `pty_capture` command,
+ * invoked directly in the desktop webview over CDP -- see the header
+ * comment's "Pane-capture story" for why the external `winsmux capture-pane`
+ * CLI cannot reach these panes at all.
+ *
+ * @param {number} port CDP port of the running desktop app.
+ * @param {string} workerId worker SLOT id ("worker-1".."worker-6"), NOT a
+ *   manifest pane_id.
+ * @returns {Promise<string|{error: string}>} captured text, or an error
+ *   object on invoke failure/missing __TAURI__ (same failed-capture contract
+ *   callers already handle: null baselines, tick skipping, sweep captures).
+ */
+async function capturePane(port, workerId) {
+  const expr = `(async () => {
+    try {
+      if (!window.__TAURI__ || !window.__TAURI__.core || !window.__TAURI__.core.invoke) {
+        return JSON.stringify({ error: '__TAURI__.core.invoke unavailable' });
+      }
+      const r = await window.__TAURI__.core.invoke('pty_capture', { paneId: ${JSON.stringify(workerId)}, lines: 2000 });
+      return JSON.stringify({ ok: true, result: r });
+    } catch (e) {
+      return JSON.stringify({ error: (e && e.message) ? e.message : String(e) });
+    }
+  })()`;
+  let raw;
   try {
-    const { stdout } = await execFileAsync("winsmux", ["capture-pane", "-t", paneId, "-p"], {
-      windowsHide: true,
-      maxBuffer: 32 * 1024 * 1024,
-    });
-    return stdout || "";
+    raw = await cdpEvaluate(port, expr);
   } catch (err) {
     return { error: err.message || String(err) };
   }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { error: "unparsable pty_capture response" };
+  }
+  if (!parsed || parsed.error) {
+    return { error: (parsed && parsed.error) || "pty_capture invoke failed" };
+  }
+  const text = extractPtyCaptureText(parsed.result);
+  if (text === null) {
+    return { error: "pty_capture result missing output field" };
+  }
+  return text;
 }
 
-async function preflightCapturePaneIds(paneIds) {
+async function preflightCapturePorts(port, workerLabels) {
   const results = {};
-  for (const [worker, paneId] of Object.entries(paneIds)) {
-    const captured = await capturePane(paneId);
+  for (const worker of workerLabels) {
+    const captured = await capturePane(port, worker);
     results[worker] = typeof captured === "string" ? { ok: true } : { ok: false, error: captured.error };
   }
   return results;
@@ -387,6 +469,21 @@ async function main() {
     process.exit(EXIT_BAD_ARGS);
   }
 
+  // --project-dir is later used verbatim to poll <projectDir>/.winsmux/worker-runs/<worker>
+  // for API workers (see readRunJsonForTask). A stale/mistyped project dir must fail fast
+  // here, not surface as a misleading one-hour worker timeout during polling: the manifest
+  // read below is intentionally non-fatal (informational only), but the project directory
+  // itself existing is a hard precondition for that later poll to mean anything.
+  try {
+    const projectDirStat = await stat(args.projectDir);
+    if (!projectDirStat.isDirectory()) {
+      throw new Error("not a directory");
+    }
+  } catch (err) {
+    console.error(`run-cli-bakeoff: --project-dir does not exist or is not a directory: ${args.projectDir} (${err.message})`);
+    process.exit(EXIT_BAD_ARGS);
+  }
+
   // 1. CDP connectivity check.
   let pages;
   try {
@@ -409,12 +506,18 @@ async function main() {
     console.log(JSON.stringify({ result: "desktop not up", reason: `cannot read benchmark pack: ${err.message}` }));
     process.exit(EXIT_DESKTOP_NOT_UP);
   }
+  // manifest.yaml is read for session sanity / informational pane_id
+  // reporting only -- it is no longer the capture target roster (see the
+  // header comment's "Pane-capture story"). A missing/stale manifest must
+  // not hard-fail the run anymore: pty_capture is addressed by worker slot
+  // label, not by a manifest pane_id, so this file's absence says nothing
+  // about whether pty_capture will succeed.
   const manifestPath = path.join(args.projectDir, ".winsmux", "manifest.yaml");
   try {
     manifestText = await readFile(manifestPath, "utf8");
   } catch (err) {
-    console.log(JSON.stringify({ result: "desktop not up", reason: `cannot read manifest: ${err.message}` }));
-    process.exit(EXIT_DESKTOP_NOT_UP);
+    console.error(`run-cli-bakeoff: warning: cannot read manifest (informational only): ${err.message}`);
+    manifestText = "";
   }
 
   const pack = JSON.parse(packText);
@@ -429,26 +532,28 @@ async function main() {
     process.exit(EXIT_BAD_ARGS);
   }
 
+  // paneIds is informational only now (manifest pane_id roster for
+  // logging/commands.jsonl metadata) -- it is never used to address a
+  // capture call. Warn (do not fail) when the manifest's roster does not
+  // cover worker-1..6, since that's still a useful signal that the manifest
+  // is stale even though it no longer blocks capture.
   const paneIds = parseManifestPaneIds(manifestText);
   const missingPaneWorkers = WORKER_LABELS.filter((w) => !paneIds[w]);
   if (missingPaneWorkers.length > 0) {
-    console.log(JSON.stringify({
-      result: "desktop not up",
-      reason: `manifest missing pane_id for: ${missingPaneWorkers.join(", ")}`,
-    }));
-    process.exit(EXIT_DESKTOP_NOT_UP);
+    console.error(`run-cli-bakeoff: warning: manifest pane roster missing pane_id for: ${missingPaneWorkers.join(", ")} (informational; capture uses worker slot ids, not pane_ids)`);
   }
 
-  // 3. Preflight capture-pane for every worker.
-  const preflight = await preflightCapturePaneIds(paneIds);
-  const unreachable = Object.entries(preflight).filter(([, v]) => !v.ok).map(([w]) => w);
-  if (unreachable.length > 0) {
-    console.log(JSON.stringify({
-      result: "desktop not up",
-      reason: `capture-pane failed for: ${unreachable.join(", ")}`,
-    }));
-    process.exit(EXIT_DESKTOP_NOT_UP);
-  }
+  // NOTE: the pty_capture reachability preflight used to run here, before the
+  // ready-check. That ordering is wrong on a documented FRESH desktop launch:
+  // the worker PTYs are not spawned until
+  // runBenchmarkReadyCheckFromOperatorCommand (winsmux-app/src/main.ts)
+  // expands the six panes and calls ensurePanePtyStarted, which happens
+  // DURING the ready-check below. Running pty_capture before that point can
+  // never succeed on a clean launch -- it only appeared to work when the
+  // panes had already been started by hand ahead of time. The preflight is
+  // now run AFTER the ready-check has confirmed all six workers are ready
+  // (step 4 below), so it is meaningful for both a fresh launch and an
+  // already-started desktop.
 
   const evidenceProjectRoot = args.projectDir;
   const runDirName = `runner-${runDirTimestamp()}`;
@@ -462,6 +567,14 @@ async function main() {
   const logPath = path.join(runEvidenceDir, "runner-log.jsonl");
 
   if (args.dryRun) {
+    // Dry-run intentionally verifies CDP connectivity + the benchmark
+    // pack/manifest + the planned task/worker set only -- it does NOT run
+    // the ready-check and does NOT probe pty_capture reachability. On a
+    // fresh desktop launch the worker PTYs are not started yet (they only
+    // come up during the ready-check's pane expansion, see the ordering
+    // note above), so requiring capturable panes here would make --dry-run
+    // fail on the exact case it exists to validate ahead of time. This
+    // reports intent, not live pane state.
     console.log(JSON.stringify({
       result: "dry-run ok",
       port: args.port,
@@ -473,6 +586,7 @@ async function main() {
       manifestPath,
       paneIds,
       evidenceDir: runEvidenceDir,
+      note: "dry-run does not run the ready-check or verify pty_capture reachability; panes may not be started yet on a fresh desktop launch",
     }, null, 2));
     process.exit(EXIT_OK);
   }
@@ -523,6 +637,31 @@ async function main() {
       logPath,
     }));
     process.exit(EXIT_TASK_FAILURES);
+  }
+
+  // Preflight pty_capture for every worker, over CDP, addressed by worker
+  // slot label (see the header comment's "Pane-capture story"). This MUST
+  // run after the ready-check above, not before: on a fresh desktop launch
+  // the worker PTYs are not spawned until the ready-check's pane expansion
+  // (ensurePanePtyStarted in winsmux-app/src/main.ts) has run, so pty_capture
+  // cannot succeed until that point regardless of pane_id correctness. Real
+  // runs still hard-require every worker to be capturable before any task is
+  // dispatched -- this is not weakened, just moved to after the point where
+  // it can actually succeed.
+  const preflight = await preflightCapturePorts(args.port, WORKER_LABELS);
+  const unreachable = Object.entries(preflight).filter(([, v]) => !v.ok).map(([w]) => w);
+  await appendLogLine(logPath, {
+    event: "capture_preflight",
+    ts: nowIso(),
+    unreachable,
+  });
+  if (unreachable.length > 0) {
+    console.log(JSON.stringify({
+      result: "desktop not up",
+      reason: `pty_capture failed for: ${unreachable.join(", ")}`,
+      logPath,
+    }));
+    process.exit(EXIT_DESKTOP_NOT_UP);
   }
 
   // Per-run evidence dir that satisfies summarize-cli-bakeoff.ps1's contract
@@ -796,7 +935,7 @@ async function main() {
     const priorBeginCounts = {};
     const beginObserved = {};
     for (const w of CLI_WORKERS) {
-      const captured = await capturePane(paneIds[w]);
+      const captured = await capturePane(args.port, w);
       priorMarkerCounts[w] = typeof captured === "string"
         ? countEndMarkers(captured, endMarker)
         : null;
@@ -834,7 +973,7 @@ async function main() {
 
       for (const w of CLI_WORKERS) {
         if (perWorkerStatus[w] !== "pending") continue;
-        const captured = await capturePane(paneIds[w]);
+        const captured = await capturePane(args.port, w);
         if (typeof captured !== "string") {
           // Transient capture failure: skip this tick rather than treating
           // the miss as an empty pane. An empty read would wrongly lower
@@ -953,7 +1092,7 @@ async function main() {
       // either, so its pane capture is the only artifact of the attempt.
       perWorkerStatus[w] = "timeout";
       perWorkerElapsedSeconds[w] = (Date.now() - dispatchStartMs) / 1000;
-      const captured = await capturePane(paneIds[w]);
+      const captured = await capturePane(args.port, w);
       if (typeof captured === "string") {
         const capturePath = path.join(runEvidenceDir, `${w}-task-${taskId}.txt`);
         await writeFile(capturePath, captured, "utf8");
