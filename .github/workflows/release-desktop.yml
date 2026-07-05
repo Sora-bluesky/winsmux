@@ -61,10 +61,23 @@ jobs:
         shell: pwsh
         env:
           WINDOWS_SIGNING_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_BASE64 }}
+          WINDOWS_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_PASSWORD }}
         run: |
           $certPath = Join-Path $env:RUNNER_TEMP "winsmux-signing.pfx"
           [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($env:WINDOWS_SIGNING_CERTIFICATE_BASE64))
           "WINSMUX_WINDOWS_SIGNING_CERTIFICATE_PATH=$certPath" | Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8
+          # Trust the release signing certificate on this ephemeral runner so
+          # the later Authenticode verification can validate the chain to a
+          # trusted root. Required while the release is signed with a
+          # self-signed certificate (#1140); harmless for a CA-issued
+          # certificate. The later verification still rejects unsigned or
+          # tampered assets because the Authenticode check covers integrity,
+          # not only trust.
+          $pfxPassword = ConvertTo-SecureString $env:WINDOWS_SIGNING_CERTIFICATE_PASSWORD -AsPlainText -Force
+          $imported = Import-PfxCertificate -FilePath $certPath -CertStoreLocation Cert:\LocalMachine\My -Password $pfxPassword
+          $publicCertPath = Join-Path $env:RUNNER_TEMP "winsmux-signing.cer"
+          Export-Certificate -Cert $imported -FilePath $publicCertPath | Out-Null
+          Import-Certificate -FilePath $publicCertPath -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
           $signtool = Get-ChildItem -Path "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe |
             Where-Object { $_.FullName -match '\\x64\\signtool\.exe$' } |
             Select-Object -First 1 -ExpandProperty FullName
