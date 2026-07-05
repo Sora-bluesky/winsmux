@@ -14,6 +14,8 @@ Formal benchmark packets must not be distributed until every item is satisfied.
 | A/B/A/B root-cause proof complete | PASS (bounded substitution) | baseline failure recorded in #1097 comment 4861527487; fix merged via PR #1101 (#1098 closed); revert-cycle intentionally not run (destructive git on merged fix prohibited; handoff hard-stop rule); patch success proven by mainline gate pass + 4 bounded runs |
 | Opus 4.8 read-only review complete | PASS | 2026-07-02 read-only review verdict GO_PREPARE_FORMAL_BENCH (debug/release rows justified, bounded substitution acceptable, Run1 anomaly documented-ok); required follow-ups listed in 05-run1-transient-note.md |
 | Secrets/privacy scan for benchmark packet | PASS | #1097 comment 4862982215 (exit 0, total 337, failed 0, secret_checks 27, private_path_checks 27) |
+| Runner classifies CLI completions trustworthily | FAIL | #1134: echo-race in the runner's marker baseline seeding classifies CLI workers as terminal ~30s after dispatch while panes are still working (both 2026-07-05 runs); fix tracked in the v0.36.39 Harness Bench productization lane |
+| Codex pane executes dispatched packets | FAIL | #1135: the WB-001 packet stayed in the Codex composer and never executed (2026-07-05 run), serializing a full per-task timeout into every task; fix tracked in the v0.36.39 Harness Bench productization lane |
 
 Stopping rule: keep formal worker packets blocked while any `PENDING` or `FAIL` item remains.
 
@@ -48,9 +50,12 @@ make CLI-worker scoring evidence untrustworthy:
   submission stays in the composer), which serializes a full per-task timeout
   into every one of the 27 tasks.
 
+These two defects are recorded as explicit `FAIL` rows in the gate table
+above, so the stopping rule itself keeps formal worker packets blocked until
+both rows turn `PASS` on the productized harness.
+
 Decision (user-approved, 2026-07-05): the formal recorded 27-task bench is
 re-scheduled to a GA-readiness bench milestone that runs after the Harness
 Bench productization lane (v0.36.39), where #1134 and #1135 are tracked. The
-v0.36.23 release gate is re-scoped to the bring-up evidence listed above.
-Formal worker packet distribution remains blocked under the stopping rule
-until the GA-readiness bench executes on the productized harness.
+v0.36.23 release gate is re-scoped to the bring-up evidence listed above; the
+`FAIL` rows gate the formal bench, not the re-scoped v0.36.23 release.
