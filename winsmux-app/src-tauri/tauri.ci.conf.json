@@ -4,5 +4,13 @@
     "windows": {
       "signCommand": "pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/sign-windows-bundle.ps1 %1"
     }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDEyODk5MUU5NUU1NDk4NDcKUldSSG1GUmU2WkdKRXZRbFphL1RWWkhVZ2hrbzFVZnVnRlU3RUhnYjgxVXNQQ3JBNnB3Qy9tU3kK",
+      "endpoints": [
+        "https://github.com/Sora-bluesky/winsmux/releases/latest/download/latest.json"
+      ]
+    }
   }
 }
