@@ -5,9 +5,13 @@ Claude Code, Codex, Antigravity CLI, and OpenRouter-backed open-weight LLM
 workers as winsmux worker-pane candidates.
 
 `v0.36.17` ships the model setup, readiness, and desktop reliability groundwork.
-The official six-pane benchmark run and Japanese HTML result report belong to
-`v0.36.23`, after the context-continuity, process-lifecycle, audit,
-coordinator, and router groundwork has stabilized.
+`v0.36.23` ships the six-pane bring-up: the durable runner, the CDP pane-capture
+path, and live dispatch-to-exec evidence across all six workers. The official
+recorded 27-task benchmark run and Japanese HTML result report are re-scheduled
+to a GA-readiness bench milestone that runs after the Harness Bench
+productization lane (`v0.36.39`), where the harness defects found during the
+2026-07-05 bring-up runs (#1134, #1135) are tracked. The decision record lives
+in `docs/incidents/v03623-session-readiness/04-benchmark-readiness-gate.md`.
 
 The bakeoff is not a model leaderboard. It is an operator evidence workflow for
 deciding which CLI is suitable for a task class inside winsmux.
@@ -73,10 +77,17 @@ cleanup after every run, zero owned orphan processes, and zero stale session
 state files. The evidence file stays local under `.winsmux/evidence/` and is not
 committed.
 
-Before publishing v0.36.23, the official benchmark evidence must additionally
-come from the visible winsmux desktop app. The operator pane must manage all six
-worker panes, including the OpenRouter workers through the in-app `api_llm`
-pane route. App-external batch runs are retained only as reference evidence.
+Before publishing v0.36.23, the six-pane bring-up evidence must come from the
+visible winsmux desktop app: ready-check reporting all six workers, the
+pty_capture preflight reaching every pane, the dispatch-to-exec loop delivering
+a packet with a matching displayed hash, and the `api_llm` workers completing
+end-to-end through the in-app pane route.
+
+The official benchmark evidence requirement moves with the benchmark itself to
+the GA-readiness bench milestone: that run must come from the visible winsmux
+desktop app, with the operator pane managing all six worker panes, including
+the OpenRouter workers through the in-app `api_llm` pane route. App-external
+batch runs are retained only as reference evidence.
 
 After a local evidence run:
 
