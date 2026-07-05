@@ -67,10 +67,10 @@ jobs:
           [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($env:WINDOWS_SIGNING_CERTIFICATE_BASE64))
           "WINSMUX_WINDOWS_SIGNING_CERTIFICATE_PATH=$certPath" | Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8
           # Trust the release signing certificate on this ephemeral runner so
-          # the "Verify desktop installer signatures" step can validate the
-          # chain to a trusted root. Required while the release is signed with
-          # a self-signed certificate (#1140); harmless for a CA-issued
-          # certificate. The verification step still rejects unsigned or
+          # the later Authenticode verification can validate the chain to a
+          # trusted root. Required while the release is signed with a
+          # self-signed certificate (#1140); harmless for a CA-issued
+          # certificate. The later verification still rejects unsigned or
           # tampered assets because the Authenticode check covers integrity,
           # not only trust.
           $pfxPassword = ConvertTo-SecureString $env:WINDOWS_SIGNING_CERTIFICATE_PASSWORD -AsPlainText -Force
