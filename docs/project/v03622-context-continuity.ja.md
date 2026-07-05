@@ -35,10 +35,10 @@ v0.36.22 で残すのは、正式6ペインベンチマーク前の軽量baselin
 | 項目 | v0.36.22 のbaseline | 境界 |
 |---|---|---|
 | オペレーターへ渡す要約量 | Context Capsule の項目に収まる形へ制限します。 | ワーカーの生ログやプロンプト本文は capsule へコピーしません。 |
-| ワーカー出力量 | ルーティング用artifactとして永続化しません。 | ワーカーごとの出力byte数は v0.36.23 の正式ベンチマークへ移します。 |
+| ワーカー出力量 | ルーティング用artifactとして永続化しません。 | ワーカーごとの出力byte数は GA-readiness bench レーン(v0.36.43。2026-07-05 に v0.36.23 から再スコープ)の正式ベンチマークへ移します。 |
 | 手作業のペイン間転送 | Reliable Mailbox v2 のメタデータで監査可能なメッセージへ置き換えます。 | message write 成功だけでは delivery 成功とみなしません。 |
 | 引き継ぎと再開 | Checkpoint package v1 に resume handle、次の一手、source SHA、未処理メッセージ、未解決質問を残します。 | provider固有のcompact hookへ依存しません。 |
 | タスク分割判断 | split-worthiness は提案に限定し、retry cost、context pressure、write conflict risk、unhealthy scope を根拠にします。 | 自動でペインを作成したり、オペレーター判断を迂回したりしません。 |
 | 今回の検証コスト | `ledger_contract` 80件、mailbox/runs/explain対象Pester 5件、planning sync互換Pester 3件、desktop production buildが通過済みです。 | これは契約とbuildの確認であり、live providerや正式ベンチマークの測定ではありません。 |
 
-正式ベンチマークは、これらの連携契約がデスクトップの標準経路で使えることを公開前ゲートで確認した後、v0.36.23 のレーンで実行します。
+正式ベンチマークは、これらの連携契約がデスクトップの標準経路で使えることを公開前ゲートで確認した後、GA-readiness bench レーン(v0.36.43。v0.36.39 の Harness Bench 製品化レーン完了後。決定記録: `docs/incidents/v03623-session-readiness/04-benchmark-readiness-gate.md`)で実行します。

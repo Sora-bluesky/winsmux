@@ -26,3 +26,24 @@ This note records only the public-safe outcome of the pre-GA v10 planning sync.
 - Treat browser previews, desktop E2E, packaged-app E2E, and official benchmark results as separate evidence.
 - Do not mix mock runs or diagnostic overrides into official benchmark results.
 - Do not include raw prompts, secrets, private environment paths, or raw logs in public artifacts.
+
+## 2026-07-05 Re-scope Update
+
+The Release Sequence section above records the original v10 sync snapshot. The
+following changes were applied on 2026-07-05 (user-approved; decision record:
+`docs/incidents/v03623-session-readiness/04-benchmark-readiness-gate.md`,
+PR #1136):
+
+- `v0.36.23` was re-scoped to the six-pane bring-up release (generated-roadmap
+  title updated accordingly). `TASK-618` remains its release gate, re-scoped
+  to the bring-up evidence.
+- `TASK-575` and `TASK-576` (the official 27-task Harness Bench measurement
+  and the Japanese HTML report) moved to the new `v0.36.43` GA-readiness bench
+  lane, which depends on the `v0.36.39` Harness Bench productization gate
+  (`TASK-737`).
+- The `v0.36.39` lane gained `TASK-765` through `TASK-768` (bench-runner
+  echo-race fix #1134, Codex-pane dispatch fix #1135, desktop PTY child
+  cleanup #1137, one-click bench launch #1139); `TASK-737` now depends on
+  them.
+- The roadmap was regenerated from the canonical backlog after the change;
+  the title and consistency gates passed.
