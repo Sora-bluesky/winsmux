@@ -212,7 +212,7 @@ assert.equal(
 );
 
 // #1115 (P2 follow-up, Codex review): the Grok ghost-input-box signal needs
-// two lines -- a "Grok Build" banner line and a "│ > │" input-box line --
+// two lines -- a "Grok Build" banner line and a "│ > │" / "│ ❯ │" input-box line --
 // inside the same trailing-10-lines window (see hasGrokInputBox in
 // hasWorkerReadyPrompt). If the two lines land in *different* capture
 // sources (e.g. the banner in getWorkerPaneVisibleText, the input box in
@@ -241,6 +241,31 @@ assert.equal(
   hasWorkerReadyPromptInAnySource([grokBannerOnlySource, grokInputBoxOnlySource]),
   true,
   "Grok ready signal split across two sources must still resolve to ready via the joined-sources fallback",
+);
+
+// #1130: Grok Build 0.2.82 (Composer 2.5 UI) renders the idle composer
+// prompt character as "❯" (U+276F) instead of the ">" older builds used.
+// The input-box regex must accept both glyphs, or a genuinely idle Grok
+// pane is reported not-ready forever. Fixture shape taken from the real
+// v0.36.23 bench bring-up capture in issue #1130.
+const grokChevronIdleBanner = [
+  "◆ session_start  [hooks: 1]",
+  "╭──────────────────────────────────────────╮",
+  "│ ❯                                        │",
+  "╰──────────── Grok Build · always-approve ─╯",
+  "Shift+Tab:mode  │  Ctrl+x:shortcuts",
+].join("\n");
+assert.equal(
+  hasWorkerReadyPrompt(grokChevronIdleBanner),
+  true,
+  "Grok Build ❯ composer row plus banner line must classify as ready (#1130)",
+);
+
+const grokChevronInputBoxOnlySource = "│ ❯                                        │";
+assert.equal(
+  hasWorkerReadyPrompt(grokChevronInputBoxOnlySource),
+  false,
+  "Grok ❯ input-box line alone (no banner line) must not classify as ready",
 );
 
 console.log("worker-readiness-prompt-check: ok");

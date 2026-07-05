@@ -62,7 +62,10 @@ export function hasWorkerReadyPrompt(text: string): boolean {
     .map((line) => line.trim())
     .filter(Boolean)
     .slice(-10);
-  const hasGrokInputBox = recentLines.some((line) => /^│\s*>\s*│?$/.test(line))
+  // #1130: Grok Build 0.2.82 (Composer 2.5 UI) renders the idle composer
+  // prompt character as "❯" (U+276F); older builds rendered ">" (U+003E).
+  // Accept both glyphs, or a genuinely idle Grok pane never gets ready.
+  const hasGrokInputBox = recentLines.some((line) => /^│\s*[>❯]\s*│?$/.test(line))
     && recentLines.some((line) => /Grok\s+Build/i.test(line));
   if (hasGrokInputBox) {
     return true;
@@ -125,8 +128,8 @@ export function hasWorkerReadyPrompt(text: string): boolean {
  * strict superset of the old joined-text check for multi-line signals whose
  * parts can legitimately land in *different* capture sources. The Grok
  * ghost-input-box signal (hasGrokInputBox in hasWorkerReadyPrompt) needs both
- * a "Grok Build" banner line and a "│ > │" input-box line inside the same
- * trailing-10-lines window; if one part is captured by
+ * a "Grok Build" banner line and a "│ > │" / "│ ❯ │" input-box line inside
+ * the same trailing-10-lines window; if one part is captured by
  * getWorkerPaneVisibleText and the other by capturePtyPane's freshest
  * output, neither source alone contains both lines, so per-source
  * evaluation alone would report not-ready for a pane the old join-then-check
