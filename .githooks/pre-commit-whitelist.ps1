@@ -74,6 +74,7 @@ $whitelistPatterns = @(
     'docs/project/component-map.md',
     'docs/project/contract-source-of-truth-inventory.md',
     'docs/project/metrics-baseline.md',
+    'docs/project/compatibility-deprecation-policy.md',
     'docs/project/local-first-ui-contract.md',
     'docs/project/review-latency-hardening.md',
     'docs/project/upstream-reevaluation-gate.md',
