@@ -61,8 +61,10 @@ Three duplications have already diverged in the tree today:
    `local, codex, colab_cli, api_llm, noop` — **no `antigravity`**. So
    `antigravity` is a valid bridge `worker_backend` the Rust contract does not
    list, and `noop` is in both concrete enums but not in the TS capability enum.
-   A design-freeze assertion of "provider `requiredBackend` exists in
-   `WORKER_BACKENDS`" would fail today for the antigravity provider.
+   And `requiredBackend` (`modelCapabilities.ts:96`, typed `BackendCapabilityId`)
+   holds capability categories (`any`, `agent-cli`, ...), not concrete
+   worker-backends — so `requiredBackend` and `WORKER_BACKENDS` can only be
+   related through an explicit capability→backend map, never a membership check.
 
 ## Per-contract inventory
 
@@ -77,8 +79,8 @@ Three duplications have already diverged in the tree today:
   (`WORKER_BACKENDS`), `winsmux-core.ps1:9888-9987` (OpenRouter base URL / env /
   endpoint validation).
 - **Top drift risks:** the provider membership list (6+ hand-maintained copies);
-  per-provider `authMode`; per-provider `requiredBackend` (declared in TS, not
-  enforced by the Rust backend contract); OpenRouter base URL + `OPENROUTER_API_KEY`
+  per-provider `authMode`; per-provider `requiredBackend` (a capability category,
+  not enforced against a concrete backend); OpenRouter base URL + `OPENROUTER_API_KEY`
   hardcoded in four places; the Agent Vault subset maintained by hand.
 
 ### Worker readiness heuristics
@@ -151,11 +153,12 @@ Three duplications have already diverged in the tree today:
   `ledger.rs:3478-3569` (counts mailbox events, generates team_memory refs),
   `main.ts:8436` (surfaces `pending_mailbox_count`).
 - **Top drift risks:** the producer always sets `mailbox_version=2` but the
-  consumer defaults to `1` when the field is missing; v2 validation checks key
-  *presence*, not non-emptiness, so an empty `message_id` passes; `message_id`
-  is non-deterministic (timestamp-based) while `idempotency_key` is deterministic
-  — dedup relies on the consumer's fallback logic staying in sync with the
-  producer.
+  consumer defaults to `1` when the field is missing, so a v2 message that lost
+  its version field would skip v2 validation entirely; `message_id` is
+  non-deterministic (timestamp-based) while `idempotency_key` is deterministic —
+  dedup relies on the consumer's fallback (`correlation_id` ← `message_id`)
+  staying in sync with the producer. (The v2 required-field check *does* enforce
+  non-emptiness via `IsNullOrWhiteSpace`, `operator-poll.ps1:478-486`.)
 
 ### Settings schema / enums
 
@@ -182,12 +185,12 @@ Facts duplicated across more than one contract area, most drift-prone first:
 | Reasoning-effort enum | provider, settings, readiness, route, manifest | `modelCapabilities.ts:16-22` | Export `REASONING_EFFORT_VALUES`; codegen/assert the PS + Rust validators from it; sync the Codex footer regex |
 | Role taxonomy (dispatch vs coordinator vs canonical) | route, manifest, machine-contract | `machine_contract.rs:107-128` | Define an explicit dispatch↔coordinator↔canonical map; reject cross-taxonomy role strings; test PS `Get-DispatchRouterCanonicalRole` against Rust `canonical_role_for()` |
 | Auth-mode per provider | provider, settings, route | `modelCapabilities.ts` (`authMode`) | Generate the settings.ps1 + operator_cli parsing from a canonical provider→authMode map |
-| Required-backend per provider | provider, readiness, settings | `modelCapabilities.ts` (`requiredBackend`) | Export `providerRequiredBackendMap`; assert `requiredBackend` maps to a concrete worker-backend — currently the antigravity provider fails this (see Confirmed drift #3) |
+| Required-backend per provider (capability category) | provider, readiness, settings | `modelCapabilities.ts` (`requiredBackend: BackendCapabilityId`) | `requiredBackend` holds capability categories (`any`/`agent-cli`/...), NOT concrete backends — define a capability→worker-backend map, not a direct membership check against `WORKER_BACKENDS` (see Confirmed drift #3) |
 | OpenRouter base URL + `OPENROUTER_API_KEY` | provider, settings, readiness | `modelCapabilities.ts:180` + per-model `requiredEnv` | Single `openrouter-config` constant imported by settings.ps1, agent-monitor.ps1, main.ts; test all three use identical values |
 | Backend *capability* categories (TS `BackendCapabilityId`: `any/agent-cli/antigravity/api_llm/colab_cli`) | provider, settings | `modelCapabilities.ts:24-29` | Keep distinct from the concrete worker-backend enum below — this is the abstract per-provider category, not an execution context |
 | Concrete *worker-backend* enum (`local/codex/colab_cli/api_llm/antigravity/noop`) | settings, manifest, machine-contract | `machine_contract.rs` `WORKER_BACKENDS` | Single-source it: PS `BridgeWorkerBackendKinds` lists `antigravity`, Rust `WORKER_BACKENDS` does not (Confirmed drift #3); pick one and assert the other matches |
 | Readiness marker chars / badge strings / blocker keywords | readiness, settings, UI | `workerReadinessPrompt.ts` | Export the badge strings + blocker regex as constants; have the runner import instead of re-matching; per-CLI regression fixtures |
-| Mailbox v2 envelope | mailbox, machine-contract | `agent-monitor.ps1:643-667` | Mirror the v2 schema in a Rust `mailbox-contract`; test producer output conforms; non-empty checks on required fields |
+| Mailbox v2 envelope | mailbox, machine-contract | `agent-monitor.ps1:643-667` | Mirror the v2 schema in a Rust `mailbox-contract`; test producer output conforms to it |
 | Manifest version + `pane_id` semantics | manifest, mailbox | `manifest_contract.rs` | Add the informational-only `pane_id` caveat to the Rust struct docs; keep the version literal single-sourced |
 
 ## Additional contract surfaces to bring into scope
@@ -198,8 +201,10 @@ hand-declared copies): the **ledger review-state / verdict vocabulary**
 (`ledger.rs`, literal `PENDING/PASS/FAIL` strings, no canonical enum); the
 **worker-backend adapter contract** (`machine_contract.rs:32-38`
 `WorkerBackendContract`, no cross-layer validation); the **`model_source` enum**
-(the Confirmed-drift case); the **transport enum** (`argv|file|stdin`, TS-only,
-unvalidated in PS/Rust); the **evidence-record kind** enum; and the **Agent
+(the Confirmed-drift case); the **transport enum** (`argv|file|stdin` — validated
+in all three layers: TS type, `settings.ps1:662/821`, `operator_cli.rs:2081/3191`,
+but the allowed-set literal is hand-duplicated in each); the **evidence-record
+kind** enum; and the **Agent
 Vault provider subset** (implicit — only `claude/codex/opencode`, no canonical
 definition).
 
@@ -211,8 +216,9 @@ definition).
 2. Make the three Confirmed-drift cases hard failures the design-freeze gate
    (TASK-632) checks: (a) all Rust `model_source` validators accept the same set;
    (b) an explicit role-taxonomy map exists and PS/Rust normalization agree;
-   (c) the concrete worker-backend enum matches between `BridgeWorkerBackendKinds`
-   and `WORKER_BACKENDS`, and every provider `requiredBackend` is a member.
+   (c) an explicit capability→worker-backend map exists (`requiredBackend` holds
+   capability categories, not concrete backends), and the concrete worker-backend
+   enum matches between `BridgeWorkerBackendKinds` and `WORKER_BACKENDS`.
 3. Prefer a single machine-readable contract emitted by the Rust core (via the
    operator CLI as JSON) that PowerShell and TypeScript consume, over N
    hand-maintained copies — the recurring root cause across all six areas.
@@ -225,9 +231,10 @@ definition).
 - Hand-verified before publishing: the role-taxonomy split
   (`dispatch-router.ps1:5`, `coordinator-router.ps1:103`, `machine_contract.rs`
   has no Thinker/Verifier/Researcher); the `model_source` disagreement
-  (`operator_cli.rs:2692` = 4 values vs `:3036` = 5); and the backend-enum split
+  (`operator_cli.rs:2692` = 4 values vs `:3036` = 5); the backend-enum split
   (`BackendCapabilityId` = `any/agent-cli/antigravity/api_llm/colab_cli`;
   `BridgeWorkerBackendKinds` includes `antigravity` + `noop`; `WORKER_BACKENDS`
-  has `noop` but not `antigravity`).
+  has `noop` but not `antigravity`); and (from review) that mailbox v2 already
+  enforces non-emptiness and the transport enum is validated in PS + Rust.
 - This is a design-debt inventory, not a behavioral spec; TASK-631/632 should
   re-confirm each `file:line` before acting on it.
