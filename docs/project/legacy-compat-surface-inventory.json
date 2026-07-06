@@ -171,6 +171,16 @@
         "winsmux-app/scripts/bakeoff-runner-lib.mjs",
         "winsmux-app/scripts/run-cli-bakeoff.mjs"
       ]
+    },
+    {
+      "class": "intentional-shim",
+      "owner": "design-debt component map",
+      "surface": "architecture map psmux/tmux references",
+      "reason": "The TASK-628 component map documents core's tmux-compatible runtime and the psmux-server-session vs in-process Tauri PTY distinction (the #1128 capture boundary); the legacy terms appear only as architectural description, not as a runtime alias surface.",
+      "target": "keep while the component map documents the runtime and capture boundary",
+      "paths": [
+        "docs/project/component-map.md"
+      ]
     }
   ]
 }

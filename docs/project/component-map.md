@@ -3,29 +3,31 @@
 TASK-628 deliverable for the v0.36.24 design-debt inventory lane. This maps
 every tracked top-level component to an owner surface, shows the dependency
 edges between them, and records the orphan-subsystem check. Counts come from
-`git ls-files` grouped by top-level path on 2026-07-06 (main at `b4f1343d`);
-regenerate the same way when re-auditing.
+`git ls-files` grouped by top-level path on 2026-07-06 (main at `b4f1343d`).
+Every edge below was verified against tracked source with `git grep` /
+file reads (see the Method section); the cited `file:line` refs are the proof,
+not the doc's own assertion.
 
 ## Ownership map
 
 | Component | Language / kind | Tracked files | Responsibility | Primary consumers |
 | --- | --- | --- | --- | --- |
-| `core/` | Rust (workspace member) | 299 | The `winsmux` CLI/server binary: tmux-compatible runtime, sessions, panes, operator CLI contracts. Vendors `core/crates/vt100-winsmux` and `core/crates/portable-pty-winsmux`. Contract tests live in `core/tests-rs/`. | `scripts/winsmux-core.ps1`, `winsmux-core/` scripts, release binaries, npm package |
-| `winsmux-app/` | TypeScript + Rust (Tauri) | 75 | Desktop app: `src/` webview frontend (xterm panes, operator composer), `src-tauri/` Rust shell (workspace member; in-process PTY manager, `pty_capture`/`pty_write` commands), `scripts/` durable bench runner (Node), npm-script E2E tests. | End users, bench runner over CDP, release desktop workflow |
-| `winsmux-core/` | PowerShell + Node | 65 | Operator/orchestra layer: `scripts/` (54 files: orchestra-start, settings, sync-roadmap, planning-paths...), `psmux-bridge.ps1`, `mcp-server.js`, `agents/`, `router/`. | Operator sessions, `scripts/winsmux-core.ps1` bridge |
-| `.claude/` | Markdown + JS + JSON | 41 | Claude Code operator harness: the repo-safe operator contract (`.claude/CLAUDE.md`), dispatch rules (`.claude/rules/`), and PreToolUse gate hooks (e.g. `sh-orchestra-gate.js`) that enforce the operator boundary. | Operator sessions; asserted by gate-enforcement Pester tests and the legacy-compat inventory |
-| `scripts/` | PowerShell | 29 | Repo-level entry points and gates: `winsmux-core.ps1` (bridge CLI), `start-cli-bakeoff-desktop.ps1`, `summarize-cli-bakeoff.ps1`, `audit-public-surface.ps1`, `git-guard.ps1`, `validate-legacy-compat-inventory.ps1`, focused test drivers. | Operators, CI workflows |
-| `tests/` | PowerShell (Pester) | 46 | The CI Pester suite matrix (bridge, worker, benchmark, public-surface, version-surface policies). | `.github/workflows` test matrix |
+| `core/` | Rust (workspace member) | 299 | The `winsmux` CLI/server binary: tmux-compatible runtime, sessions, panes, operator CLI contracts. Vendors `core/crates/vt100-winsmux` and `core/crates/portable-pty-winsmux`. Contract tests live in `core/tests-rs/`. | `scripts/winsmux-core.ps1` and `winsmux-core/` scripts (invoke the binary), npm package (downloads it) |
+| `winsmux-app/` | TypeScript + Rust (Tauri) | 75 | Desktop app: `src/` webview frontend (xterm panes, operator composer), `src-tauri/` Rust shell (workspace member; in-process PTY manager, `pty_capture`/`pty_write` commands), `scripts/` durable bench runner (Node), npm-script E2E tests. Note: `src-tauri` does NOT depend on the `core` crate — it reaches core functionality by shelling out to the PowerShell bridge (see the boundary note below). | End users, bench runner over CDP, release desktop workflow |
+| `winsmux-core/` | PowerShell + Node | 65 | Operator/orchestra layer: `scripts/` (54 files: orchestra-start, settings, sync-roadmap, planning-paths, dispatch-router...), `psmux-bridge.ps1`, `mcp-server.js` (the SDK's entry point), `agents/`, `router/`. | Operator sessions, `scripts/winsmux-core.ps1` bridge, SDK stubs |
+| `.claude/` | Markdown + JS + JSON | 41 | Claude Code operator harness: the repo-safe operator contract (`.claude/CLAUDE.md`), dispatch rules (`.claude/rules/`), and PreToolUse gate hooks (`.claude/hooks/sh-orchestra-gate.js`, registered in `.claude/settings.json`) that enforce the operator boundary. | Operator sessions; asserted by `tests/Integration.GateEnforcement.Tests.ps1` |
+| `scripts/` | PowerShell | 29 | Repo-level entry points and gates: `winsmux-core.ps1` (the bridge CLI that resolves and invokes the `winsmux` binary), `start-cli-bakeoff-desktop.ps1`, `summarize-cli-bakeoff.ps1`, `audit-public-surface.ps1`, `git-guard.ps1`, `validate-legacy-compat-inventory.ps1`, focused test drivers. | Operators, CI, the desktop app (via pwsh), `winsmux-core/mcp-server.js` |
+| `tests/` | PowerShell (Pester) | 46 | The CI Pester suite matrix (bridge, worker, benchmark, public-surface, version-surface policies, gate-enforcement). | `.github/workflows` test matrix |
 | `docs/` | Markdown/HTML | 57 | Public docs, project planning notes, incident records, benchmark contract, generated internal inventories (`docs/internal/`, written by sync-roadmap). | Users, release reviewers, gates that assert on doc content |
-| `tasks/` | Markdown/JSON | 30 | Harness Bench task pack (`tasks/cli-bakeoff/v1`: benchmark-pack.json + WB-*.md packets). | Bench runner, preflight/summarize scripts |
+| `tasks/` | Markdown/JSON | 30 | Harness Bench task pack (`tasks/cli-bakeoff/v1`: benchmark-pack.json + WB-*.md packets). | Bench runner, preflight/summarize scripts, `tests/CliBakeoff.Tests.ps1` |
 | `.github/` | YAML | 10 | CI: build-core/build-desktop/tests matrices, release workflows (core/desktop/npm), Gitleaks, public-surface audit, merge gate. | Every PR and release |
-| `git-graph/` | Rust (workspace member) | 9 | Standalone git history graph crate. Built as a workspace member, but no in-repo code imports or invokes it (only workspace membership and a git-hook whitelist reference exist). | None in-repo (standalone/manual tooling — see orphan check) |
-| `packages/winsmux` | npm package | 3 | npm distribution wrapper for the CLI binaries. | `Release npm Package` workflow, npm users |
-| `sdk/` | Python + TypeScript | 3 | Client SDK reference stubs (`sdk/python/winsmux.py`, `sdk/typescript/winsmux.ts`). | Reference only (see orphan check) |
+| `git-graph/` | Rust (workspace member) | 9 | Standalone git history graph crate. Built as a workspace member, but no in-repo code imports or invokes it (only workspace membership and a git-hook whitelist reference it). | None in-repo — standalone/manual tooling (see orphan check) |
+| `packages/winsmux` | npm package | 3 | npm distribution wrapper. Does NOT bundle binaries; `index.mjs` spawns `install.ps1`, which downloads `winsmux-x64.exe`/`winsmux-arm64.exe` from the GitHub Release assets at install time. | `Release npm Package` workflow, npm users |
+| `sdk/` | Python + TypeScript | 3 | Client SDK stubs. `sdk/python/winsmux.py` and `sdk/typescript/winsmux.ts` spawn `node winsmux-core/mcp-server.js` at runtime; they do NOT import the Rust `core` crate. No CI coverage asserts they still match the surface. | Reference / external SDK users (see orphan check) |
 | `workers/colab` | Python | 5 | Colab worker templates (scout/impl/test/critic/heavy-judge). | Enumerated and executed by `tests/ColabWorkerTemplates.Tests.ps1` in the `worker-benchmark` CI matrix |
 | `.agents/` | Markdown | 1 | Agent workspace README placeholder. | Reference only (see orphan check) |
 | `.githooks/` | Shell/PS | 3 | Local git hooks (guard scripts, pre-commit whitelist). | Contributor machines |
-| Root files | — | ~15 | `VERSION` (version surface), `install.ps1` (installer), READMEs (en/ja), policies (SECURITY, CONTRIBUTING, GUARDRAILS), agent contracts (AGENT*.md, GEMINI.md). | Users, gates (VersionSurface tests) |
+| Root files | — | ~15 | `VERSION` (version surface), `install.ps1` (installer that downloads the release binaries), READMEs (en/ja), policies (SECURITY, CONTRIBUTING, GUARDRAILS), agent contracts (AGENT*.md, GEMINI.md). | Users, `packages/winsmux`, gates (VersionSurface tests) |
 
 Untracked-by-design: `.winsmux/` (local evidence), `.worktrees/`, `target/`, `node_modules/`, `output/`, `HANDOFF.md` and other local operator state. These are runtime/products, not components.
 
@@ -34,32 +36,37 @@ Untracked-by-design: `.winsmux/` (local evidence), `.worktrees/`, `target/`, `no
 ```mermaid
 graph TD
     subgraph rust["Cargo workspace"]
-      core["core/<br/>winsmux CLI+server"]
+      core["core/<br/>winsmux CLI+server binary"]
       crates["core/crates/<br/>vt100 + portable-pty"]
       gitgraph["git-graph/<br/>(standalone)"]
       tauri["winsmux-app/src-tauri/<br/>desktop shell + PTY manager"]
     end
     frontend["winsmux-app/src/<br/>webview frontend"]
-    runner["winsmux-app/scripts/<br/>bench runner (Node)"]
+    runner["winsmux-app/scripts/<br/>bench runner + E2E (Node)"]
     wcore["winsmux-core/<br/>operator scripts"]
+    mcpserver["winsmux-core/mcp-server.js"]
     claude[".claude/<br/>operator harness"]
     bridge["scripts/winsmux-core.ps1<br/>+ repo gates"]
     pester["tests/ (Pester)"]
     ci[".github/workflows"]
     pack["tasks/cli-bakeoff"]
     npmpkg["packages/winsmux (npm)"]
+    installer["install.ps1"]
     docs["docs/"]
     sdk["sdk/ (reference)"]
     colab["workers/colab"]
 
     core --> crates
-    tauri --> core
-    frontend --> tauri
+    frontend -->|Tauri invoke| tauri
     runner -->|CDP / pty_capture| tauri
     runner --> pack
-    bridge --> core
+    runner -->|pwsh| bridge
+    tauri -->|pwsh: desktop_backend.rs| bridge
+    bridge -->|winsmux binary| core
     bridge --> wcore
-    wcore --> core
+    wcore -->|winsmux binary| core
+    mcpserver -->|pwsh| bridge
+    sdk -->|node| mcpserver
     pester --> bridge
     pester --> wcore
     pester --> pack
@@ -68,32 +75,51 @@ graph TD
     ci --> core
     ci --> frontend
     ci --> npmpkg
-    npmpkg --> core
+    npmpkg --> installer
+    installer -->|downloads at runtime| core
     claude -.->|governs operator sessions| bridge
-    docs -.->|content asserted by| pester
     pester -.->|gate-enforcement asserts| claude
-    sdk -.-> core
+    docs -.->|content asserted by| pester
 ```
 
 Solid edges are build/runtime dependencies; dotted edges are reference or
-assertion relationships. Two runtime universes coexist deliberately: `core`'s
-psmux server sessions and the desktop app's in-process Tauri PTYs (the
-distinction that produced #1128's capture fix); the bench runner reaches the
-latter only through CDP.
+assertion relationships. Every non-core surface that needs the runtime reaches
+it through the PowerShell bridge (`scripts/winsmux-core.ps1`), which is the one
+component that resolves and invokes the `winsmux` binary: the desktop Tauri
+shell (`desktop_backend.rs`), the Node bench runner/E2E scripts, and the SDK's
+`mcp-server.js` all shell out to it rather than linking the Rust crate.
+
+## Architectural boundary note (input to TASK-631 / TASK-632)
+
+The boundary between the desktop app and the Rust core is a **process boundary
+(the PowerShell bridge), not a Rust API**: `winsmux-app/src-tauri` declares no
+dependency on the `core` crate and contains zero `use winsmux::` imports; it
+invokes `scripts/winsmux-core.ps1` via `pwsh` (`desktop_backend.rs`:
+`spawn_desktop_summary_refresh_stream`, `run_winsmux_json`). Two runtime
+universes also coexist deliberately: `core`'s psmux-compatible server sessions
+and the desktop app's in-process Tauri PTYs (the distinction behind the #1128
+capture fix — the bench runner reaches the latter only via CDP `pty_capture`,
+never through psmux). The design-freeze work should treat "the bridge command
+surface" as the contract the desktop and SDK depend on, and should decide
+whether that indirection is intended or a debt to collapse.
 
 ## Orphan-subsystem check
 
 Verdict: no undocumented orphan subsystems; three components need explicit
 classification in the follow-up inventory tasks.
 
-- `sdk/` and `.agents/` are reference material with no CI coverage and no
-  build wiring; nothing asserts they still match the CLI surface.
-- `git-graph/` builds as a workspace member but has no in-repo consumers —
-  it is effectively standalone tooling that every workspace build pays for.
+- `git-graph/` builds as a workspace member but has NO in-repo consumers
+  (verified: outside its own directory the name appears only in root
+  `Cargo.toml`/`Cargo.lock` workspace membership and
+  `.githooks/pre-commit-whitelist.ps1`). Effectively standalone tooling that
+  every workspace build still compiles.
+- `sdk/` has a runtime path to core (`node mcp-server.js` -> bridge -> binary)
+  but NO CI coverage asserts the stubs still match the CLI surface.
+- `.agents/` is a single README placeholder with no consumers.
 - Action carried into TASK-629 (contract/source-of-truth inventory) and
-  TASK-631 (compatibility/deprecation policy): classify `sdk/`, `.agents/`,
-  and `git-graph/` as maintained-contract, reference-only, or
-  removal-candidate before v1.0.0.
+  TASK-631 (compatibility/deprecation policy): classify `git-graph/`, `sdk/`,
+  and `.agents/` as maintained-contract, reference-only, or removal-candidate
+  before v1.0.0.
 - `workers/colab` is NOT an orphan: `tests/ColabWorkerTemplates.Tests.ps1`
   (worker-benchmark CI matrix) enumerates and executes every
   `workers/colab/*_worker.py` template.
@@ -106,10 +132,19 @@ classification in the follow-up inventory tasks.
 - File counts: `git ls-files` grouped by first path segment (2026-07-06).
 - Workspace membership: root `Cargo.toml` (`core`, `git-graph`,
   `winsmux-app/src-tauri`).
-- Frontend/tooling edges: `winsmux-app/package.json` scripts and
-  dependencies; `winsmux-core/` and `scripts/` inventories.
-- Consumer verification for the orphan check: `git grep` for each candidate
-  component name outside its own directory (e.g. `git-graph` matches only
-  workspace metadata and a hook whitelist).
+- Every dependency edge was verified against tracked source before being drawn.
+  Representative proofs:
+  - `tauri` has no `core` dependency: `winsmux-app/src-tauri/Cargo.toml` deps +
+    zero `use winsmux::` in `winsmux-app/src-tauri/src/`.
+  - `tauri -> bridge`: `winsmux-app/src-tauri/src/desktop_backend.rs`
+    (`spawn_desktop_summary_refresh_stream` ~L2099, `run_winsmux_json` ~L2551
+    build `repo_root/scripts/winsmux-core.ps1` and spawn `pwsh`).
+  - `bridge -> core`: `scripts/winsmux-core.ps1` `Resolve-WinsmuxRawCommand` /
+    `Invoke-WinsmuxRaw` resolve and run `target/release/winsmux.exe`.
+  - `sdk -> mcp-server -> bridge`: `sdk/python/winsmux.py` and
+    `sdk/typescript/winsmux.ts` spawn `node winsmux-core/mcp-server.js`, which
+    `execFileSync("pwsh", ...)` the bridge script.
+  - `npm -> installer -> core`: `packages/winsmux/index.mjs` spawns
+    `install.ps1`, which downloads the release binaries.
 - This is a module-level map on purpose; per-file fan-in/fan-out metrics are
   TASK-630's scope.
