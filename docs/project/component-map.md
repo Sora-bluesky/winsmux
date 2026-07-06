@@ -23,7 +23,7 @@ not the doc's own assertion.
 | `.github/` | YAML | 10 | CI: build-core/build-desktop/tests matrices, release workflows (core/desktop/npm), Gitleaks, public-surface audit, merge gate. | Every PR and release |
 | `git-graph/` | Rust (workspace member) | 9 | Standalone git history graph crate. Built as a workspace member, but no in-repo code imports or invokes it (only workspace membership and a git-hook whitelist reference it). | None in-repo — standalone/manual tooling (see orphan check) |
 | `packages/winsmux` | npm package | 3 | npm distribution wrapper. Does NOT bundle binaries; `index.mjs` spawns `install.ps1`, which downloads `winsmux-x64.exe`/`winsmux-arm64.exe` from the GitHub Release assets at install time. | `Release npm Package` workflow, npm users |
-| `sdk/` | Python + TypeScript | 3 | Client SDK stubs. `sdk/python/winsmux.py` and `sdk/typescript/winsmux.ts` spawn `node winsmux-core/mcp-server.js` at runtime; they do NOT import the Rust `core` crate. No CI coverage asserts they still match the surface. | Reference / external SDK users (see orphan check) |
+| `sdk/` | Python + TypeScript | 3 | Client SDK stubs. Intended chain: `node winsmux-core/mcp-server.js` -> bridge -> core (they do NOT import the Rust `core` crate). The DEFAULT server path is currently mis-resolved to a non-existent `<repo>/winsmux/mcp-server.js` (should be `winsmux-core/`) — bug #1144; only a caller passing an explicit server path reaches mcp-server today. No CI coverage. | Reference / external SDK users (see orphan check) |
 | `workers/colab` | Python | 5 | Colab worker templates (scout/impl/test/critic/heavy-judge). | Enumerated and executed by `tests/ColabWorkerTemplates.Tests.ps1` in the `worker-benchmark` CI matrix |
 | `.agents/` | Markdown | 1 | Agent workspace README placeholder. | Reference only (see orphan check) |
 | `.githooks/` | Shell/PS | 3 | Local git hooks (guard scripts, pre-commit whitelist). | Contributor machines |
@@ -66,7 +66,7 @@ graph TD
     bridge --> wcore
     wcore -->|winsmux binary| core
     mcpserver -->|pwsh| bridge
-    sdk -->|node| mcpserver
+    sdk -->|node; default path broken #1144| mcpserver
     pester --> bridge
     pester --> wcore
     pester --> pack
@@ -84,10 +84,15 @@ graph TD
 
 Solid edges are build/runtime dependencies; dotted edges are reference or
 assertion relationships. Every non-core surface that needs the runtime reaches
-it through the PowerShell bridge (`scripts/winsmux-core.ps1`), which is the one
-component that resolves and invokes the `winsmux` binary: the desktop Tauri
-shell (`desktop_backend.rs`), the Node bench runner/E2E scripts, and the SDK's
-`mcp-server.js` all shell out to it rather than linking the Rust crate.
+it through a PowerShell layer rather than by linking the Rust crate: the
+desktop Tauri shell (`desktop_backend.rs`), the Node bench runner/E2E scripts,
+and the SDK's `mcp-server.js` all shell out to PowerShell. Resolving and
+invoking the `winsmux` binary is NOT centralized in a single script — it
+happens in `scripts/winsmux-core.ps1` (the main bridge, `Resolve-WinsmuxRawCommand`),
+in `winsmux-core/scripts/settings.ps1` (`Get-WinsmuxBin`), and in
+`winsmux-core/psmux-bridge.ps1` (`Get-Command winsmux`). The contract those
+surfaces depend on is "a PowerShell process that shells to the binary", not one
+resolver.
 
 ## Architectural boundary note (input to TASK-631 / TASK-632)
 
@@ -113,8 +118,10 @@ classification in the follow-up inventory tasks.
   `Cargo.toml`/`Cargo.lock` workspace membership and
   `.githooks/pre-commit-whitelist.ps1`). Effectively standalone tooling that
   every workspace build still compiles.
-- `sdk/` has a runtime path to core (`node mcp-server.js` -> bridge -> binary)
-  but NO CI coverage asserts the stubs still match the CLI surface.
+- `sdk/` has an intended runtime path to core (`node mcp-server.js` -> bridge
+  -> binary), but its default server path is broken (points to a non-existent
+  `winsmux/mcp-server.js`, bug #1144) and NO CI coverage asserts the stubs
+  match the surface — a concrete instance of the missing-coverage debt.
 - `.agents/` is a single README placeholder with no consumers.
 - Action carried into TASK-629 (contract/source-of-truth inventory) and
   TASK-631 (compatibility/deprecation policy): classify `git-graph/`, `sdk/`,
@@ -142,8 +149,10 @@ classification in the follow-up inventory tasks.
   - `bridge -> core`: `scripts/winsmux-core.ps1` `Resolve-WinsmuxRawCommand` /
     `Invoke-WinsmuxRaw` resolve and run `target/release/winsmux.exe`.
   - `sdk -> mcp-server -> bridge`: `sdk/python/winsmux.py` and
-    `sdk/typescript/winsmux.ts` spawn `node winsmux-core/mcp-server.js`, which
-    `execFileSync("pwsh", ...)` the bridge script.
+    `sdk/typescript/winsmux.ts` spawn `node <path>/mcp-server.js`, which
+    `execFileSync("pwsh", ...)` the bridge script. The default `<path>` is
+    currently the non-existent `winsmux/` (bug #1144); the intended target is
+    `winsmux-core/mcp-server.js`.
   - `npm -> installer -> core`: `packages/winsmux/index.mjs` spawns
     `install.ps1`, which downloads the release binaries.
 - This is a module-level map on purpose; per-file fan-in/fan-out metrics are
