@@ -461,7 +461,14 @@ Describe 'Public surface policy' {
         $designFreezeGate | Should -Match 'scripts/audit-public-surface\.ps1'
         $designFreezeGate | Should -Match 'tests/PublicSurfacePolicy\.Tests\.ps1'
         $designFreezeGate | Should -Match '\.githooks/pre-commit-whitelist\.ps1'
-        $designFreezeGate | Should -Match 'rg -n "\(ps\|pm\|t\)\[m\]ux" docs/project/design-freeze-gate\.md'
+        $designFreezeGate | Should -Match 'rg -n "([^"]+)" docs/project/design-freeze-gate\.md'
+        $legacyLiteralPattern = [regex]::Match($designFreezeGate, 'rg -n "([^"]+)" docs/project/design-freeze-gate\.md').Groups[1].Value
+        foreach ($legacyLiteral in @('ps' + 'mux', 'pm' + 'ux', 't' + 'mux')) {
+            $legacyLiteral | Should -Match $legacyLiteralPattern
+        }
+        foreach ($nonLegacyLiteral in @('psux', 'pmmux')) {
+            $nonLegacyLiteral | Should -Not -Match $legacyLiteralPattern
+        }
     }
 
     It 'keeps desktop E2E control-pipe calls authenticated' {

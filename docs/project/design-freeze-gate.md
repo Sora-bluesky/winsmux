@@ -109,7 +109,7 @@ Run these checks for this gate itself:
 pwsh -NoProfile -Command "Import-Module Pester -MinimumVersion 5.0; Invoke-Pester -Path tests/PublicSurfacePolicy.Tests.ps1 -FullName '*design-freeze gate*' -PassThru"
 pwsh -NoProfile -File scripts/audit-public-surface.ps1
 pwsh -NoProfile -File .githooks/pre-commit-whitelist.ps1
-rg -n "(ps|pm|t)[m]ux" docs/project/design-freeze-gate.md
+rg -n "p(s)?mux|t[m]ux" docs/project/design-freeze-gate.md
 ```
 
 Expected result: the first three commands succeed, and the `rg` command returns
