@@ -41,7 +41,7 @@ it:
 
 | Fact | Canonical source | Classification for v0.36.24 | Policy |
 | --- | --- | --- | --- |
-| Provider ID list | `winsmux-app/src/modelCapabilities.ts` | `validated-against` | PowerShell, Rust, JSON, and UI references must be members of the canonical TypeScript provider set. |
+| Runtime provider ID list | `winsmux-app/src/modelCapabilities.ts` | `validated-against` | PowerShell, Rust, JSON, and runtime-provider UI references must be members of the canonical TypeScript provider set. Agent Vault command providers are a separate vocabulary covered by the shim below. |
 | Reasoning effort enum | `modelCapabilities.ts` | `validated-against` | Add or remove values only when PowerShell and Rust validators are updated or generated in the same change. |
 | Provider auth mode | `modelCapabilities.ts` provider metadata | `validated-against` | Settings, readiness, and route code must agree on auth mode for every provider. |
 | Backend capability category | `modelCapabilities.ts` | `validated-against` | Keep capability categories distinct from concrete worker-backend values. |
@@ -73,10 +73,11 @@ patterns or adding new drift in the same mechanisms is a release blocker.
 
 ## Compatibility shims
 
-The canonical decisions table uses `compat-shim` only for three current surfaces:
+The canonical decisions table uses `compat-shim` only for four current surfaces:
 
 | Shim | Owner | Support window | Removal condition |
 | --- | --- | --- | --- |
+| Agent Vault provider vocabulary | Desktop Agent Vault owner (`winsmux-app/src/main.ts`) | v0.36.x only | Either promote every Agent Vault provider, including `opencode`, into `modelCapabilities.ts` with runtime metadata, or keep Agent Vault as an explicit command-provider schema that TASK-632 gates separately from runtime provider IDs. |
 | Route role taxonomy aliases | Core route-contract owner (`core/src/machine_contract.rs`) | v0.36.x only | Replace aliases with an explicit dispatch/coordinator map, then reject cross-taxonomy role strings in the gate. |
 | Concrete worker-backend bridge enum | Core worker-backend contract owner (`core/src/machine_contract.rs`) | v0.36.x only | Remove bridge-only concrete backend values or add them to Rust through the same PR; after that, `BridgeWorkerBackendKinds` must match Rust `WORKER_BACKENDS` exactly. |
 | Mailbox envelope producer-first contract | Monitor mailbox producer owner (`winsmux-core/scripts/agent-monitor.ps1`) | v0.36.x only | Add a Rust mirror or generated schema, producer fixture, consumer validation, and idempotency behavior before expanding mailbox versions. |
