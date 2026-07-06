@@ -232,9 +232,10 @@ the desktop job is split or shortened.
 ## PR and release density
 
 The density windows use 2026-07-06 as the measurement date. PR density counts
-merged PRs by merge date. Release density counts GitHub Releases by publish
-date. The 90-day release count was computed with paginated release reads, not a
-single 100-item page.
+merged PRs by merge date, bounded to merges on or before 2026-07-06. Release
+density counts GitHub Releases by publish date, bounded to releases published on
+or before 2026-07-06. The 90-day release count was computed with paginated
+release reads, not a single 100-item page.
 
 | Window | Merged PRs | PRs/day | Releases | Releases/day |
 | --- | ---: | ---: | ---: | ---: |
@@ -255,19 +256,21 @@ recorded here.
 
 Regex family counted: PowerShell `Start-Process` / job starts / .NET process
 types, Node `child_process` / spawn / exec helpers, Rust `Command::new`, and
-Python `subprocess` / `Popen`.
+Python `subprocess` / `Popen`. The Node helper pattern excludes method calls
+such as `.exec(...)` so ordinary `RegExp.prototype.exec` parser calls do not
+inflate the process-launch surface count.
 
 | Metric | Count |
 | --- | ---: |
-| Matching lines | 652 |
-| Files with matches | 167 |
+| Matching lines | 609 |
+| Files with matches | 163 |
 
 | Top-level path | Matching lines | Files |
 | --- | ---: | ---: |
-| `core/` | 474 | 126 |
+| `core/` | 457 | 124 |
 | `tests/` | 62 | 8 |
-| `winsmux-app/` | 49 | 11 |
-| `.claude/` | 37 | 10 |
+| `winsmux-app/` | 38 | 9 |
+| `.claude/` | 22 | 10 |
 | `sdk/` | 11 | 2 |
 | `winsmux-core/` | 10 | 4 |
 | `scripts/` | 7 | 5 |
@@ -277,16 +280,16 @@ Top process-launch surfaces:
 
 | File | Matching lines |
 | --- | ---: |
-| `core/tests-rs/operator_cli.rs` | 130 |
+| `core/tests-rs/operator_cli.rs` | 126 |
 | `tests/Integration.GateEnforcement.Tests.ps1` | 32 |
-| `.claude/hooks/sh-orchestra-gate.js` | 19 |
 | `core/tests/test_issues_107_109_110.ps1` | 18 |
 | `core/tests/test_theme_rendering.ps1` | 15 |
-| `core/tests/test_warm_pane.ps1` | 14 |
 | `tests/winsmux-bridge.Tests.ps1` | 14 |
-| `core/src/main.rs` | 14 |
-| `core/src/server/mod.rs` | 10 |
-| `winsmux-app/src-tauri/src/desktop_backend.rs` | 9 |
+| `core/tests/test_warm_pane.ps1` | 14 |
+| `core/src/main.rs` | 13 |
+| `core/tests/test_issue105_plugin_env_leak.ps1` | 9 |
+| `core/tests/test_github_issues_all.ps1` | 9 |
+| `winsmux-app/scripts/desktop-pane-e2e.mjs` | 9 |
 
 Interpretation for design freeze: process spawning is primarily a Rust runtime
 and test-suite concern, but the desktop shell, operator hooks, SDK stubs, and
@@ -325,14 +328,17 @@ PR and release density:
 
 ```powershell
 gh api graphql -f query='query($q:String!){ search(query:$q, type:ISSUE, first:1) { issueCount } }' `
-  -f q='repo:Sora-bluesky/winsmux is:pr is:merged merged:>=2026-06-06'
-gh api --paginate 'repos/Sora-bluesky/winsmux/releases?per_page=100'
+  -f q='repo:Sora-bluesky/winsmux is:pr is:merged merged:>=2026-06-06 merged:<=2026-07-06'
+$measurementDate = [datetimeoffset]'2026-07-06T23:59:59Z'
+gh api --paginate 'repos/Sora-bluesky/winsmux/releases?per_page=100' |
+  ConvertFrom-Json |
+  Where-Object { [datetimeoffset]$_.published_at -le $measurementDate }
 ```
 
 Process-launch surface count:
 
 ```powershell
-$regex = 'Start-Process|Start-Job|Start-ThreadJob|System\.Diagnostics\.Process|ProcessStartInfo|child_process|\bspawn(?:Sync)?\s*\(|\bexec(?:File|FileSync|Sync)?\s*\(|\bfork\s*\(|Command::new|std::process::Command|subprocess\.|\bPopen\s*\('
+$regex = 'Start-Process|Start-Job|Start-ThreadJob|System\.Diagnostics\.Process|ProcessStartInfo|child_process|(?<![\w.])spawn(?:Sync)?\s*\(|(?<![\w.])exec(?:File|FileSync|Sync)?\s*\(|(?<![\w.])fork\s*\(|Command::new|std::process::Command|subprocess\.|(?<![\w.])Popen\s*\('
 # Apply the regex to tracked .ps1, .psm1, .js, .mjs, .ts, .rs, and .py files.
 ```
 
