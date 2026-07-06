@@ -26,11 +26,11 @@ TASK-631/632, not as a frozen spec.
 The headline: **there is no single-source enforcement across languages.** The
 same enum or list is hand-declared in TypeScript, PowerShell, Rust, and JSON,
 kept in sync only by convention. No codegen, no shared schema, and the
-per-layer copies have already drifted in at least two confirmed cases (below).
+per-layer copies have already drifted in at least three confirmed cases (below).
 
 ## Confirmed drift (hand-verified)
 
-Two duplications have already diverged in the tree today:
+Three duplications have already diverged in the tree today:
 
 1. **`model_source` enum disagrees inside one Rust file.**
    `core/src/operator_cli.rs:2692` accepts four values
@@ -48,6 +48,21 @@ Two duplications have already diverged in the tree today:
    `Verifier`, or `Researcher`. Only `Worker` is common to all three. Nothing
    maps one taxonomy to another, and the Rust `canonical_role_for()`
    normalization has no PowerShell equivalent that calls it.
+
+3. **Backend enums: two vocabularies are conflated, and the concrete lists
+   disagree.** There are two *different* enums. The TypeScript
+   `BackendCapabilityId` (`any | agent-cli | antigravity | api_llm | colab_cli`,
+   `modelCapabilities.ts:24-29`) is an abstract *capability category* — what
+   kind of backend a provider needs. The concrete *worker-backend* enum is the
+   actual execution context, and its two copies do not match:
+   `settings.ps1:20` `BridgeWorkerBackendKinds` =
+   `local, codex, colab_cli, api_llm, antigravity, noop`, but
+   `machine_contract.rs` `WORKER_BACKENDS` =
+   `local, codex, colab_cli, api_llm, noop` — **no `antigravity`**. So
+   `antigravity` is a valid bridge `worker_backend` the Rust contract does not
+   list, and `noop` is in both concrete enums but not in the TS capability enum.
+   A design-freeze assertion of "provider `requiredBackend` exists in
+   `WORKER_BACKENDS`" would fail today for the antigravity provider.
 
 ## Per-contract inventory
 
@@ -167,9 +182,10 @@ Facts duplicated across more than one contract area, most drift-prone first:
 | Reasoning-effort enum | provider, settings, readiness, route, manifest | `modelCapabilities.ts:16-22` | Export `REASONING_EFFORT_VALUES`; codegen/assert the PS + Rust validators from it; sync the Codex footer regex |
 | Role taxonomy (dispatch vs coordinator vs canonical) | route, manifest, machine-contract | `machine_contract.rs:107-128` | Define an explicit dispatch↔coordinator↔canonical map; reject cross-taxonomy role strings; test PS `Get-DispatchRouterCanonicalRole` against Rust `canonical_role_for()` |
 | Auth-mode per provider | provider, settings, route | `modelCapabilities.ts` (`authMode`) | Generate the settings.ps1 + operator_cli parsing from a canonical provider→authMode map |
-| Required-backend per provider | provider, readiness, settings | `modelCapabilities.ts` (`requiredBackend`) | Export `providerRequiredBackendMap`; assert `requiredBackend` values exist in `WORKER_BACKENDS` |
+| Required-backend per provider | provider, readiness, settings | `modelCapabilities.ts` (`requiredBackend`) | Export `providerRequiredBackendMap`; assert `requiredBackend` maps to a concrete worker-backend — currently the antigravity provider fails this (see Confirmed drift #3) |
 | OpenRouter base URL + `OPENROUTER_API_KEY` | provider, settings, readiness | `modelCapabilities.ts:180` + per-model `requiredEnv` | Single `openrouter-config` constant imported by settings.ps1, agent-monitor.ps1, main.ts; test all three use identical values |
-| Worker-backend enum (incl. `noop` in TS but not PS) | settings, provider, manifest | `modelCapabilities.ts:24-29` | Derive the PS `BridgeWorkerBackendKinds` list via test assertion; document why `noop` is TS-only |
+| Backend *capability* categories (TS `BackendCapabilityId`: `any/agent-cli/antigravity/api_llm/colab_cli`) | provider, settings | `modelCapabilities.ts:24-29` | Keep distinct from the concrete worker-backend enum below — this is the abstract per-provider category, not an execution context |
+| Concrete *worker-backend* enum (`local/codex/colab_cli/api_llm/antigravity/noop`) | settings, manifest, machine-contract | `machine_contract.rs` `WORKER_BACKENDS` | Single-source it: PS `BridgeWorkerBackendKinds` lists `antigravity`, Rust `WORKER_BACKENDS` does not (Confirmed drift #3); pick one and assert the other matches |
 | Readiness marker chars / badge strings / blocker keywords | readiness, settings, UI | `workerReadinessPrompt.ts` | Export the badge strings + blocker regex as constants; have the runner import instead of re-matching; per-CLI regression fixtures |
 | Mailbox v2 envelope | mailbox, machine-contract | `agent-monitor.ps1:643-667` | Mirror the v2 schema in a Rust `mailbox-contract`; test producer output conforms; non-empty checks on required fields |
 | Manifest version + `pane_id` semantics | manifest, mailbox | `manifest_contract.rs` | Add the informational-only `pane_id` caveat to the Rust struct docs; keep the version literal single-sourced |
@@ -192,9 +208,11 @@ definition).
 1. Designate the source-of-truth files above as authoritative in the
    compatibility policy (TASK-631), and mark every re-declaration as either
    *generated-from* (must add codegen) or *validated-against* (must add a test).
-2. Make the two Confirmed-drift cases hard failures the design-freeze gate
+2. Make the three Confirmed-drift cases hard failures the design-freeze gate
    (TASK-632) checks: (a) all Rust `model_source` validators accept the same set;
-   (b) an explicit role-taxonomy map exists and PS/Rust normalization agree.
+   (b) an explicit role-taxonomy map exists and PS/Rust normalization agree;
+   (c) the concrete worker-backend enum matches between `BridgeWorkerBackendKinds`
+   and `WORKER_BACKENDS`, and every provider `requiredBackend` is a member.
 3. Prefer a single machine-readable contract emitted by the Rust core (via the
    operator CLI as JSON) that PowerShell and TypeScript consume, over N
    hand-maintained copies — the recurring root cause across all six areas.
@@ -206,7 +224,10 @@ definition).
   main `3aea74df`).
 - Hand-verified before publishing: the role-taxonomy split
   (`dispatch-router.ps1:5`, `coordinator-router.ps1:103`, `machine_contract.rs`
-  has no Thinker/Verifier/Researcher) and the `model_source` disagreement
-  (`operator_cli.rs:2692` = 4 values vs `:3036` = 5).
+  has no Thinker/Verifier/Researcher); the `model_source` disagreement
+  (`operator_cli.rs:2692` = 4 values vs `:3036` = 5); and the backend-enum split
+  (`BackendCapabilityId` = `any/agent-cli/antigravity/api_llm/colab_cli`;
+  `BridgeWorkerBackendKinds` includes `antigravity` + `noop`; `WORKER_BACKENDS`
+  has `noop` but not `antigravity`).
 - This is a design-debt inventory, not a behavioral spec; TASK-631/632 should
   re-confirm each `file:line` before acting on it.
