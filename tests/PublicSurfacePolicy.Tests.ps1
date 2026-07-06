@@ -14,6 +14,7 @@ Describe 'Public surface policy' {
         $docsIndexJa = Get-Content (Join-Path $repoRoot 'docs/README.ja.md') -Raw
         $operatorModel = Get-Content (Join-Path $repoRoot 'docs/operator-model.md') -Raw
         $surfacePolicy = Get-Content (Join-Path $repoRoot 'docs/repo-surface-policy.md') -Raw
+        $designFreezeGate = Get-Content (Join-Path $repoRoot 'docs/project/design-freeze-gate.md') -Raw
         $gitignore = Get-Content (Join-Path $repoRoot '.gitignore') -Raw
         $claudeContract = Get-Content (Join-Path $repoRoot '.claude/CLAUDE.md') -Raw
         $thirdPartyNotices = Get-Content (Join-Path $repoRoot 'THIRD_PARTY_NOTICES.md') -Raw
@@ -420,6 +421,54 @@ Describe 'Public surface policy' {
         )
 
         @($unsafeAssignments).Count | Should -Be 0
+    }
+
+    It 'keeps the v0.36.24 design-freeze gate anchored to required surfaces' {
+        foreach ($source in @(
+                'docs/project/component-map.md',
+                'docs/project/contract-source-of-truth-inventory.md',
+                'docs/project/metrics-baseline.md',
+                'docs/project/compatibility-deprecation-policy.md'
+            )) {
+            $designFreezeGate | Should -Match ([Regex]::Escape($source))
+        }
+
+        foreach ($heading in @(
+                '## Frozen module boundaries',
+                '## Contract freeze',
+                '## Size and coupling budget',
+                '## No-go conditions',
+                '## Release blockers',
+                '## Verification',
+                '## TASK-723 handoff'
+            )) {
+            $designFreezeGate | Should -Match ([Regex]::Escape($heading))
+        }
+
+        foreach ($surface in @(
+                'scripts/winsmux-core.ps1',
+                'winsmux-app/src/main.ts',
+                'core/src/operator_cli.rs',
+                'winsmux-app/src-tauri/src/desktop_backend.rs',
+                'Agent Vault provider vocabulary',
+                'Route role taxonomy',
+                'Concrete worker-backend',
+                'Mailbox envelope'
+            )) {
+            $designFreezeGate | Should -Match ([Regex]::Escape($surface))
+        }
+
+        $designFreezeGate | Should -Match 'scripts/audit-public-surface\.ps1'
+        $designFreezeGate | Should -Match 'tests/PublicSurfacePolicy\.Tests\.ps1'
+        $designFreezeGate | Should -Match '\.githooks/pre-commit-whitelist\.ps1'
+        $designFreezeGate | Should -Match 'rg -n "([^"]+)" docs/project/design-freeze-gate\.md'
+        $legacyLiteralPattern = [regex]::Match($designFreezeGate, 'rg -n "([^"]+)" docs/project/design-freeze-gate\.md').Groups[1].Value
+        foreach ($legacyLiteral in @('ps' + 'mux', 'pm' + 'ux', 't' + 'mux')) {
+            $legacyLiteral | Should -Match $legacyLiteralPattern
+        }
+        foreach ($nonLegacyLiteral in @('psux', 'pmmux')) {
+            $nonLegacyLiteral | Should -Not -Match $legacyLiteralPattern
+        }
     }
 
     It 'keeps desktop E2E control-pipe calls authenticated' {
