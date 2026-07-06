@@ -20,7 +20,7 @@ in file counts but excluded from line counts.
 | Physical text lines | 324,429 | LF-based line count, non-binary tracked files |
 | Full path-reference edges | 1,029 | exact tracked-path string references across all text files |
 | Source-only path-reference edges | 169 | same method, limited to source/test/tooling components |
-| Static process-launch match lines | 652 | process-spawn regex over source/test/tooling files |
+| Static process-launch match lines | 609 | process-spawn regex over source/test/tooling files |
 | Latest `Tests` workflow wall time | 670 seconds | GitHub Actions run `28778182895` |
 | Latest `Tests` workflow max job | 662 seconds | `Desktop Build and Test` in run `28778182895` |
 | Merged PRs in last 30 days | 104 | GitHub GraphQL search, merged since 2026-06-06 |
@@ -329,10 +329,16 @@ PR and release density:
 ```powershell
 gh api graphql -f query='query($q:String!){ search(query:$q, type:ISSUE, first:1) { issueCount } }' `
   -f q='repo:Sora-bluesky/winsmux is:pr is:merged merged:>=2026-06-06 merged:<=2026-07-06'
+gh api graphql -f query='query($q:String!){ search(query:$q, type:ISSUE, first:1) { issueCount } }' `
+  -f q='repo:Sora-bluesky/winsmux is:pr is:merged merged:>=2026-04-07 merged:<=2026-07-06'
+$windowStart30 = [datetimeoffset]'2026-06-06T00:00:00Z'
+$windowStart90 = [datetimeoffset]'2026-04-07T00:00:00Z'
 $measurementDate = [datetimeoffset]'2026-07-06T23:59:59Z'
-gh api --paginate 'repos/Sora-bluesky/winsmux/releases?per_page=100' |
+$releases = gh api --paginate 'repos/Sora-bluesky/winsmux/releases?per_page=100' |
   ConvertFrom-Json |
   Where-Object { [datetimeoffset]$_.published_at -le $measurementDate }
+@($releases | Where-Object { [datetimeoffset]$_.published_at -ge $windowStart30 }).Count
+@($releases | Where-Object { [datetimeoffset]$_.published_at -ge $windowStart90 }).Count
 ```
 
 Process-launch surface count:
