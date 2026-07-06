@@ -72,6 +72,7 @@ $whitelistPatterns = @(
     'docs/project/powershell-adapter-inventory.md',
     'docs/project/rust-schema-freeze-inventory.md',
     'docs/project/component-map.md',
+    'docs/project/contract-source-of-truth-inventory.md',
     'docs/project/local-first-ui-contract.md',
     'docs/project/review-latency-hardening.md',
     'docs/project/upstream-reevaluation-gate.md',
