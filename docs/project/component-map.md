@@ -25,7 +25,7 @@ not the doc's own assertion.
 | `packages/winsmux` | npm package | 3 | npm distribution wrapper. Does NOT bundle binaries; `index.mjs` spawns `install.ps1`, which downloads `winsmux-x64.exe`/`winsmux-arm64.exe` from the GitHub Release assets at install time. | `Release npm Package` workflow, npm users |
 | `sdk/` | Python + TypeScript | 3 | Client SDK stubs. Intended chain: `node winsmux-core/mcp-server.js` -> bridge -> core (they do NOT import the Rust `core` crate). The DEFAULT server path is currently mis-resolved to a non-existent `<repo>/winsmux/mcp-server.js` (should be `winsmux-core/`) — bug #1144; only a caller passing an explicit server path reaches mcp-server today. No CI coverage. | Reference / external SDK users (see orphan check) |
 | `workers/colab` | Python | 5 | Colab worker templates (scout/impl/test/critic/heavy-judge). | Enumerated and executed by `tests/ColabWorkerTemplates.Tests.ps1` in the `worker-benchmark` CI matrix |
-| `.agents/` | Markdown | 1 | Agent workspace README placeholder. | Reference only (see orphan check) |
+| `.agents/` | Markdown | 1 | Agent workspace README (`.agents/README.md`; `.agents/skills/` is gitignored). | Desktop file explorer default seed (`fallbackExplorerPaths`, `winsmux-app/src/main.ts:1428`); asserted by the viewport-harness E2E (`winsmux-app/scripts/viewport-harness.mjs:1745`) |
 | `.githooks/` | Shell/PS | 3 | Local git hooks (guard scripts, pre-commit whitelist). | Contributor machines |
 | Root files | — | ~15 | `VERSION` (version surface), `install.ps1` (installer that downloads the release binaries), READMEs (en/ja), policies (SECURITY, CONTRIBUTING, GUARDRAILS), agent contracts (AGENT*.md, GEMINI.md). | Users, `packages/winsmux`, gates (VersionSurface tests) |
 
@@ -55,9 +55,12 @@ graph TD
     docs["docs/"]
     sdk["sdk/ (reference)"]
     colab["workers/colab"]
+    agents[".agents/README.md"]
 
     core --> crates
     frontend -->|Tauri invoke| tauri
+    frontend -->|explorer seed| agents
+    runner -.->|viewport-harness asserts| agents
     runner -->|CDP / pty_capture| tauri
     runner --> pack
     runner -->|pwsh| bridge
@@ -110,7 +113,7 @@ whether that indirection is intended or a debt to collapse.
 
 ## Orphan-subsystem check
 
-Verdict: no undocumented orphan subsystems; three components need explicit
+Verdict: no undocumented orphan subsystems; two components need explicit
 classification in the follow-up inventory tasks.
 
 - `git-graph/` builds as a workspace member but has NO in-repo consumers
@@ -122,11 +125,14 @@ classification in the follow-up inventory tasks.
   -> binary), but its default server path is broken (points to a non-existent
   `winsmux/mcp-server.js`, bug #1144) and NO CI coverage asserts the stubs
   match the surface — a concrete instance of the missing-coverage debt.
-- `.agents/` is a single README placeholder with no consumers.
+- `.agents/` is NOT an orphan: the desktop file explorer seeds
+  `.agents/README.md` in `fallbackExplorerPaths` (`winsmux-app/src/main.ts:1428`,
+  consumed at :5748) and the viewport-harness E2E
+  (`winsmux-app/scripts/viewport-harness.mjs:1745`) asserts the folder expands —
+  removing it would break both.
 - Action carried into TASK-629 (contract/source-of-truth inventory) and
-  TASK-631 (compatibility/deprecation policy): classify `git-graph/`, `sdk/`,
-  and `.agents/` as maintained-contract, reference-only, or removal-candidate
-  before v1.0.0.
+  TASK-631 (compatibility/deprecation policy): classify `git-graph/` and `sdk/`
+  as maintained-contract, reference-only, or removal-candidate before v1.0.0.
 - `workers/colab` is NOT an orphan: `tests/ColabWorkerTemplates.Tests.ps1`
   (worker-benchmark CI matrix) enumerates and executes every
   `workers/colab/*_worker.py` template.
@@ -155,5 +161,9 @@ classification in the follow-up inventory tasks.
     `winsmux-core/mcp-server.js`.
   - `npm -> installer -> core`: `packages/winsmux/index.mjs` spawns
     `install.ps1`, which downloads the release binaries.
+  - `.agents` is consumed (not an orphan): `.agents/README.md` is in
+    `fallbackExplorerPaths` (`winsmux-app/src/main.ts:1427-1428`, used at :5748)
+    and asserted by `winsmux-app/scripts/viewport-harness.mjs` (~L1745).
+    Cross-checked that `git-graph/` and `sdk/` have no such desktop-UI seed.
 - This is a module-level map on purpose; per-file fan-in/fan-out metrics are
   TASK-630's scope.
