@@ -604,6 +604,12 @@ foreach ($worker in $workerSet) {
     $preflight[[string]$worker.pane] = New-PreflightResult -Worker $worker -RunDir $runDir
 }
 
+$runGovernance = [ordered]@{
+    messaging_state              = 'worker_to_worker_disabled'
+    operator_intervention_count  = 0
+    execution_surface            = 'local_cli_batch'
+}
+
 $manifest = [ordered]@{
     run_id             = $runIdSlug
     pack_id            = [string]$pack.pack_id
@@ -628,6 +634,7 @@ $manifest = [ordered]@{
     preflight          = $preflight
     workspace_policy   = $pack.workspace_policy
     operator           = $pack.operator
+    run_governance     = $runGovernance
 }
 Write-JsonFile -Path (Join-Path $runDir 'manifest.json') -Data $manifest
 

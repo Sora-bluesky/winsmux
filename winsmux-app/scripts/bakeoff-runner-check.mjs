@@ -13,6 +13,7 @@ import {
   buildReadyCheckCommand,
   buildDispatchCommand,
   resolveTaskSelection,
+  isOfficialTaskSelection,
   buildRunId,
   mapRunnerStatusToCommandStatus,
   buildRunManifest,
@@ -333,6 +334,16 @@ assert.deepEqual(
   { taskIds: ["WB-001"], unknown: [] },
   "resolveTaskSelection must de-duplicate repeated requested ids",
 );
+assert.equal(
+  isOfficialTaskSelection(["WB-003", "WB-001", "WB-002"], allTaskIds),
+  true,
+  "isOfficialTaskSelection must accept an explicit full-task selection regardless of order",
+);
+assert.equal(
+  isOfficialTaskSelection(["WB-001", "WB-002"], allTaskIds),
+  false,
+  "isOfficialTaskSelection must reject partial task selections",
+);
 
 // --- getPacketMarkers -----------------------------------------------------
 
@@ -458,6 +469,15 @@ assert.deepEqual(manifestObj.recording, { status: "not_declared", publishable: f
 assert.equal(manifestObj.evidence.end_marker_present, true, "buildRunManifest must set evidence.end_marker_present from input");
 assert.equal(manifestObj.evidence.packet_hash_match, false, "buildRunManifest must default packet_hash_match to false when not passed true");
 assert.equal(manifestObj.execution.status, "completed", "buildRunManifest must set execution.status from input");
+assert.deepEqual(
+  manifestObj.run_governance,
+  {
+    messaging_state: "worker_to_worker_disabled",
+    operator_intervention_count: 0,
+    execution_surface: "visible_desktop_worker_panes",
+  },
+  "buildRunManifest must disclose run governance fields for external audit",
+);
 assert.equal(manifestObj.active_workers.length, 1, "buildRunManifest must carry through active_workers array");
 
 const manifestHashTrue = buildRunManifest({
@@ -472,7 +492,19 @@ assert.equal(manifestDefaults.task_class, "unknown", "buildRunManifest must defa
 assert.equal(manifestDefaults.recording.status, "not_declared", "buildRunManifest must default recording.status to not_declared");
 assert.equal(manifestDefaults.recording.publishable, false, "buildRunManifest must default recording.publishable to false");
 assert.equal(manifestDefaults.execution.status, "unknown", "buildRunManifest must default execution.status to unknown");
+assert.equal(manifestDefaults.run_governance.operator_intervention_count, 0, "buildRunManifest must default operator_intervention_count to zero");
 assert.deepEqual(manifestDefaults.active_workers, [], "buildRunManifest must default active_workers to an empty array");
+
+const partialManifest = buildRunManifest({
+  runId: "partial",
+  taskId: "WB-001",
+  scoreableGovernance: false,
+});
+assert.equal(
+  partialManifest.run_governance.execution_surface,
+  "partial_visible_desktop_worker_panes",
+  "buildRunManifest must withhold scoreable execution_surface for partial or custom desktop runs",
+);
 
 // --- buildCommandRow ----------------------------------------------------
 

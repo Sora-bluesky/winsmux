@@ -44,9 +44,13 @@
   "qc_gates": [
     "same_task_packet_sha256_for_all_workers",
     "same_timeout_for_all_workers",
+    "same_workspace_for_all_workers",
     "preflight_all_pass_before_recording",
     "desktop_app_screen_recording_required",
     "visible_worker_pane_required_for_every_scored_worker",
+    "operator_intervention_zero_required",
+    "worker_to_worker_messaging_disabled",
+    "run_governance_fields_required",
     "non_completed_worker_results_excluded_from_scoring",
     "antigravity_empty_stdout_excluded_from_machine_scoring",
     "harness_bench_27_tasks_required",
@@ -56,6 +60,19 @@
     "missing_key_timeout_crash_empty_stdout_invalid_output_excluded_from_scoring"
   ],
   "default_timeout_seconds": 3600,
+  "run_governance": {
+    "same_task_set_for_all_workers": true,
+    "same_timeout_for_all_workers": true,
+    "same_workspace_for_all_workers": true,
+    "operator_intervention_limit": 0,
+    "worker_to_worker_messaging": "disabled",
+    "execution_surface": "visible_desktop_worker_panes",
+    "required_run_fields": [
+      "messaging_state",
+      "operator_intervention_count",
+      "execution_surface"
+    ]
+  },
   "default_workers": [
     {
       "pane": "worker-1",

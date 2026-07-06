@@ -94,6 +94,7 @@ import {
   buildReadyCheckCommand,
   buildDispatchCommand,
   resolveTaskSelection,
+  isOfficialTaskSelection,
   buildRunId,
   mapRunnerStatusToCommandStatus,
   buildRunManifest,
@@ -522,7 +523,8 @@ async function main() {
 
   const pack = JSON.parse(packText);
   const allTaskIds = pack.tasks.map((t) => t.task_id);
-  const defaultTimeout = args.timeout || pack.default_timeout_seconds || 3600;
+  const packDefaultTimeout = Number(pack.default_timeout_seconds || 3600);
+  const defaultTimeout = args.timeout || packDefaultTimeout;
   const { taskIds, unknown } = resolveTaskSelection(allTaskIds, args.tasks);
   if (unknown.length > 0) {
     console.error(`run-cli-bakeoff: ignoring unknown task ids: ${unknown.join(", ")}`);
@@ -531,6 +533,7 @@ async function main() {
     console.error("run-cli-bakeoff: no valid task ids to run");
     process.exit(EXIT_BAD_ARGS);
   }
+  const scoreableGovernance = isOfficialTaskSelection(taskIds, allTaskIds) && defaultTimeout === packDefaultTimeout;
 
   // paneIds is informational only now (manifest pane_id roster for
   // logging/commands.jsonl metadata) -- it is never used to address a
@@ -721,6 +724,7 @@ async function main() {
       recordingPublishable: args.recordingPublishable,
       executionStatus,
       generatedAtIso: nowIso(),
+      scoreableGovernance,
     });
     const commandRows = WORKER_LABELS.map((w) => buildCommandRow({
       worker: w,

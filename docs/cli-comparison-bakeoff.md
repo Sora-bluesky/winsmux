@@ -23,11 +23,20 @@ The tracked task pack lives in `tasks/cli-bakeoff/v1/`.
 - `benchmark-pack.json` defines workers, task classes, scoring axes, and quality gates.
 - `WB-*.md` files are shared task packets.
 - Every worker in a run must receive the same task packet content.
+- Every scored worker must use the same task set, timeout, and workspace
+  baseline; per-worker task, timeout, or workspace overrides fail preflight.
 - A worker result is scoreable only when it completed and the desktop recording evidence is publishable.
 - The official task target is 27 tasks with a 60 minute timeout per task.
 - The operator is not scored. The operator may assign panes, run commands,
   collect logs, mark exclusions, update reports, and manage release gates, but
   must not improve a worker answer mid-run.
+- Worker-to-worker messaging is disabled for official runs. Run manifests must
+  disclose the messaging state, operator intervention count, and execution
+  surface so the run can be audited after collection.
+- Official scoreable evidence must report
+  `run_governance.execution_surface = "visible_desktop_worker_panes"` together
+  with publishable desktop worker-pane recording evidence. App-external API or
+  local CLI batch outputs are reference evidence only.
 - Blocked runs, missing API keys, timeouts, crashes, empty stdout, invalid
   output, missing end markers, packet hash mismatches, and missing recordings
   are kept as evidence but are excluded from model scoring.

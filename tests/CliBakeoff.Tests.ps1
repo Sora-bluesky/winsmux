@@ -12,6 +12,39 @@ Describe 'CLI bakeoff evidence harness' {
         $script:DesktopStartScript = Join-Path $script:RepoRoot 'scripts\start-cli-bakeoff-desktop.ps1'
         $script:SessionReadinessScript = Join-Path $script:RepoRoot 'scripts\test-v03623-session-readiness.ps1'
         $script:PackPath = Join-Path $script:RepoRoot 'tasks\cli-bakeoff\v1\benchmark-pack.json'
+
+        function Copy-TrackedBakeoffPack {
+            Get-Content -LiteralPath $script:PackPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 80
+        }
+
+        function Write-PackFixture {
+            param(
+                [Parameter(Mandatory = $true)][object]$Pack,
+                [Parameter(Mandatory = $true)][string]$Name
+            )
+            $fixtureRoot = Join-Path $TestDrive $Name
+            New-Item -ItemType Directory -Path $fixtureRoot -Force | Out-Null
+            $fixturePath = Join-Path $fixtureRoot 'benchmark-pack.json'
+            $Pack | ConvertTo-Json -Depth 80 | Set-Content -LiteralPath $fixturePath -Encoding UTF8
+            return $fixturePath
+        }
+
+        function Invoke-PreflightFixture {
+            param(
+                [Parameter(Mandatory = $true)][string]$PackPath,
+                [string]$RunDir = ''
+            )
+            $taskRoot = Split-Path $script:PackPath -Parent
+            $args = @('-NoProfile', '-File', $script:PreflightScript, '-PackPath', $PackPath, '-TaskRoot', $taskRoot, '-Json')
+            if (-not [string]::IsNullOrWhiteSpace($RunDir)) {
+                $args += @('-RunDir', $RunDir)
+            }
+            $output = & pwsh @args 2>$null
+            return [pscustomobject]@{
+                ExitCode = $LASTEXITCODE
+                Result   = ($output | ConvertFrom-Json -Depth 80)
+            }
+        }
     }
 
     It 'validates the tracked bakeoff task pack' {
@@ -24,9 +57,300 @@ Describe 'CLI bakeoff evidence harness' {
         ($result.checks | Where-Object { $_.name -eq 'official Harness Bench task count is met' }).pass | Should -BeTrue
         ($result.checks | Where-Object { $_.name -eq 'default timeout is 3600 seconds' }).pass | Should -BeTrue
         ($result.checks | Where-Object { $_.name -eq 'operator is not scored' }).pass | Should -BeTrue
+        ($result.checks | Where-Object { $_.name -eq 'run governance requires same task set' }).pass | Should -BeTrue
+        ($result.checks | Where-Object { $_.name -eq 'scored workers do not override task set' }).pass | Should -BeTrue
+        ($result.checks | Where-Object { $_.name -eq 'scored workers do not override timeout' }).pass | Should -BeTrue
+        ($result.checks | Where-Object { $_.name -eq 'scored workers do not override workspace' }).pass | Should -BeTrue
+        ($result.checks | Where-Object { $_.name -eq 'operator intervention limit is zero' }).pass | Should -BeTrue
+        ($result.checks | Where-Object { $_.name -eq 'worker-to-worker messaging is disabled' }).pass | Should -BeTrue
+        ($result.checks | Where-Object { $_.name -eq 'run governance field messaging_state is required' }).pass | Should -BeTrue
+        ($result.checks | Where-Object { $_.name -eq 'run governance field operator_intervention_count is required' }).pass | Should -BeTrue
+        ($result.checks | Where-Object { $_.name -eq 'run governance field execution_surface is required' }).pass | Should -BeTrue
         ($result.checks | Where-Object { $_.name -eq 'OpenRouter Sakana Fugu Ultra worker profile exists' }).pass | Should -BeTrue
         ($result.checks | Where-Object { $_.name -eq 'OpenRouter GLM worker profile exists' }).pass | Should -BeTrue
         ($output -join "`n") | Should -Not -Match 'C:\\Users\\'
+    }
+
+    It 'rejects a scored operator in the benchmark pack' {
+        $pack = Copy-TrackedBakeoffPack
+        $pack.operator.scored = $true
+        $fixturePath = Write-PackFixture -Pack $pack -Name 'operator-scored-pack'
+
+        $result = Invoke-PreflightFixture -PackPath $fixturePath
+        $result.ExitCode | Should -Be 1
+        $result.Result.all_pass | Should -BeFalse
+        ($result.Result.checks | Where-Object { $_.name -eq 'operator is not scored' }).pass | Should -BeFalse
+    }
+
+    It 'rejects per-worker task timeout and workspace overrides' {
+        $pack = Copy-TrackedBakeoffPack
+        $pack.default_workers[0] | Add-Member -NotePropertyName task_ids -NotePropertyValue @('WB-001') -Force
+        $pack.default_workers[1] | Add-Member -NotePropertyName timeout_seconds -NotePropertyValue 1800 -Force
+        $pack.default_workers[2] | Add-Member -NotePropertyName workspace_root -NotePropertyValue 'different-workspace' -Force
+        $fixturePath = Write-PackFixture -Pack $pack -Name 'worker-override-pack'
+
+        $result = Invoke-PreflightFixture -PackPath $fixturePath
+        $result.ExitCode | Should -Be 1
+        ($result.Result.checks | Where-Object { $_.name -eq 'scored workers do not override task set' }).pass | Should -BeFalse
+        ($result.Result.checks | Where-Object { $_.name -eq 'scored workers do not override timeout' }).pass | Should -BeFalse
+        ($result.Result.checks | Where-Object { $_.name -eq 'scored workers do not override workspace' }).pass | Should -BeFalse
+    }
+
+    It 'rejects per-worker worktree workspace overrides' {
+        $pack = Copy-TrackedBakeoffPack
+        $pack.default_workers[0] | Add-Member -NotePropertyName worktree -NotePropertyValue 'worker-a' -Force
+        $pack.default_workers[1] | Add-Member -NotePropertyName worktree_path -NotePropertyValue 'C:\tmp\worker-b' -Force
+        $fixturePath = Write-PackFixture -Pack $pack -Name 'worker-worktree-override-pack'
+
+        $result = Invoke-PreflightFixture -PackPath $fixturePath
+        $result.ExitCode | Should -Be 1
+        ($result.Result.checks | Where-Object { $_.name -eq 'scored workers do not override workspace' }).pass | Should -BeFalse
+    }
+
+    It 'rejects overrides on workers that omit scored and are scoreable by default' {
+        $pack = Copy-TrackedBakeoffPack
+        $pack.default_workers[0].PSObject.Properties.Remove('scored')
+        $pack.default_workers[0] | Add-Member -NotePropertyName task_ids -NotePropertyValue @('WB-001') -Force
+        $fixturePath = Write-PackFixture -Pack $pack -Name 'worker-override-scored-default-pack'
+
+        $result = Invoke-PreflightFixture -PackPath $fixturePath
+        $result.ExitCode | Should -Be 1
+        ($result.Result.checks | Where-Object { $_.name -eq 'scored workers do not override task set' }).pass | Should -BeFalse
+    }
+
+    It 'rejects nonzero operator intervention in the benchmark governance policy' {
+        $pack = Copy-TrackedBakeoffPack
+        $pack.run_governance.operator_intervention_limit = 1
+        $fixturePath = Write-PackFixture -Pack $pack -Name 'operator-intervention-pack'
+
+        $result = Invoke-PreflightFixture -PackPath $fixturePath
+        $result.ExitCode | Should -Be 1
+        ($result.Result.checks | Where-Object { $_.name -eq 'operator intervention limit is zero' }).pass | Should -BeFalse
+    }
+
+    It 'rejects nonnumeric operator intervention limits in the benchmark governance policy' {
+        $pack = Copy-TrackedBakeoffPack
+        $pack.run_governance.operator_intervention_limit = $null
+        $nullFixturePath = Write-PackFixture -Pack $pack -Name 'operator-intervention-null-pack'
+
+        $nullResult = Invoke-PreflightFixture -PackPath $nullFixturePath
+        $nullResult.ExitCode | Should -Be 1
+        ($nullResult.Result.checks | Where-Object { $_.name -eq 'operator intervention limit is zero' }).pass | Should -BeFalse
+
+        $pack = Copy-TrackedBakeoffPack
+        $pack.run_governance.operator_intervention_limit = ''
+        $blankFixturePath = Write-PackFixture -Pack $pack -Name 'operator-intervention-blank-pack'
+
+        $blankResult = Invoke-PreflightFixture -PackPath $blankFixturePath
+        $blankResult.ExitCode | Should -Be 1
+        ($blankResult.Result.checks | Where-Object { $_.name -eq 'operator intervention limit is zero' }).pass | Should -BeFalse
+    }
+
+    It 'rejects worker-to-worker messaging in the benchmark governance policy' {
+        $pack = Copy-TrackedBakeoffPack
+        $pack.run_governance.worker_to_worker_messaging = 'enabled'
+        $fixturePath = Write-PackFixture -Pack $pack -Name 'worker-messaging-pack'
+
+        $result = Invoke-PreflightFixture -PackPath $fixturePath
+        $result.ExitCode | Should -Be 1
+        ($result.Result.checks | Where-Object { $_.name -eq 'worker-to-worker messaging is disabled' }).pass | Should -BeFalse
+    }
+
+    It 'reports missing governance policy fields as structured preflight failures' {
+        $pack = Copy-TrackedBakeoffPack
+        $pack.PSObject.Properties.Remove('run_governance')
+        $missingPolicyPath = Write-PackFixture -Pack $pack -Name 'missing-governance-policy-pack'
+
+        $missingPolicyResult = Invoke-PreflightFixture -PackPath $missingPolicyPath
+        $missingPolicyResult.ExitCode | Should -Be 1
+        $missingPolicyResult.Result.all_pass | Should -BeFalse
+        ($missingPolicyResult.Result.checks | Where-Object { $_.name -eq 'run governance policy exists' }).pass | Should -BeFalse
+
+        $pack = Copy-TrackedBakeoffPack
+        $pack.run_governance.PSObject.Properties.Remove('same_task_set_for_all_workers')
+        $pack.run_governance.PSObject.Properties.Remove('same_timeout_for_all_workers')
+        $pack.run_governance.PSObject.Properties.Remove('same_workspace_for_all_workers')
+        $missingBooleanPath = Write-PackFixture -Pack $pack -Name 'missing-governance-booleans-pack'
+
+        $missingBooleanResult = Invoke-PreflightFixture -PackPath $missingBooleanPath
+        $missingBooleanResult.ExitCode | Should -Be 1
+        $missingBooleanResult.Result.all_pass | Should -BeFalse
+        ($missingBooleanResult.Result.checks | Where-Object { $_.name -eq 'run governance requires same task set' }).pass | Should -BeFalse
+        ($missingBooleanResult.Result.checks | Where-Object { $_.name -eq 'run governance requires same timeout' }).pass | Should -BeFalse
+        ($missingBooleanResult.Result.checks | Where-Object { $_.name -eq 'run governance requires same workspace' }).pass | Should -BeFalse
+    }
+
+    It 'rejects non-boolean governance invariants in the benchmark policy' {
+        $pack = Copy-TrackedBakeoffPack
+        $pack.run_governance.same_task_set_for_all_workers = 'false'
+        $pack.run_governance.same_timeout_for_all_workers = 'false'
+        $pack.run_governance.same_workspace_for_all_workers = 'false'
+        $fixturePath = Write-PackFixture -Pack $pack -Name 'string-governance-booleans-pack'
+
+        $result = Invoke-PreflightFixture -PackPath $fixturePath
+        $result.ExitCode | Should -Be 1
+        $result.Result.all_pass | Should -BeFalse
+        ($result.Result.checks | Where-Object { $_.name -eq 'run governance requires same task set' }).pass | Should -BeFalse
+        ($result.Result.checks | Where-Object { $_.name -eq 'run governance requires same timeout' }).pass | Should -BeFalse
+        ($result.Result.checks | Where-Object { $_.name -eq 'run governance requires same workspace' }).pass | Should -BeFalse
+    }
+
+    It 'validates run governance disclosure fields for a completed run directory' {
+        $runDir = Join-Path $TestDrive 'governed-run'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Value @'
+{
+  "version": 1,
+  "run_id": "governed-run",
+  "task_class": "readonly_diagnostic",
+  "recording": {
+    "status": "visible_desktop_worker_pane_recording",
+    "publishable": true
+  },
+  "run_governance": {
+    "messaging_state": "worker_to_worker_disabled",
+    "operator_intervention_count": 0,
+    "execution_surface": "visible_desktop_worker_panes"
+  }
+}
+'@ -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'commands.jsonl') -Value @'
+{"cli":"Codex","model":"gpt-5.5","status":"completed","end_marker_present":true,"packet_hash_match":true,"stdout_empty":false}
+'@ -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'scorecard.md') -Value '# Scorecard' -Encoding UTF8
+
+        $result = Invoke-PreflightFixture -PackPath $script:PackPath -RunDir $runDir
+        $result.ExitCode | Should -Be 0
+        ($result.Result.checks | Where-Object { $_.name -eq 'run governance fields are disclosed' }).pass | Should -BeTrue
+        ($result.Result.checks | Where-Object { $_.name -eq 'run operator intervention count is zero' }).pass | Should -BeTrue
+        ($result.Result.checks | Where-Object { $_.name -eq 'run messaging state disables worker-to-worker' }).pass | Should -BeTrue
+        ($result.Result.checks | Where-Object { $_.name -eq 'run execution surface is visible desktop worker panes' }).pass | Should -BeTrue
+        ($result.Result.checks | Where-Object { $_.name -eq 'run recording evidence is publishable desktop worker pane evidence' }).pass | Should -BeTrue
+    }
+
+    It 'rejects run governance disclosure violations in a run directory' {
+        $runDir = Join-Path $TestDrive 'bad-governed-run'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Value @'
+{
+  "version": 1,
+  "run_id": "bad-governed-run",
+  "task_class": "readonly_diagnostic",
+  "recording": {
+    "status": "api_worker_redacted_artifact",
+    "publishable": true
+  },
+  "run_governance": {
+    "messaging_state": "worker_to_worker_enabled",
+    "operator_intervention_count": 1,
+    "execution_surface": "hidden_batch_runner"
+  }
+}
+'@ -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'commands.jsonl') -Value @'
+{"cli":"Codex","model":"gpt-5.5","status":"completed","end_marker_present":true,"packet_hash_match":true,"stdout_empty":false}
+'@ -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'scorecard.md') -Value '# Scorecard' -Encoding UTF8
+
+        $result = Invoke-PreflightFixture -PackPath $script:PackPath -RunDir $runDir
+        $result.ExitCode | Should -Be 1
+        ($result.Result.checks | Where-Object { $_.name -eq 'run messaging state disables worker-to-worker' }).pass | Should -BeFalse
+        ($result.Result.checks | Where-Object { $_.name -eq 'run operator intervention count is zero' }).pass | Should -BeFalse
+        ($result.Result.checks | Where-Object { $_.name -eq 'run execution surface is visible desktop worker panes' }).pass | Should -BeFalse
+        ($result.Result.checks | Where-Object { $_.name -eq 'run recording evidence is publishable desktop worker pane evidence' }).pass | Should -BeFalse
+    }
+
+    It 'reports missing run governance fields as structured run directory failures' {
+        $runDir = Join-Path $TestDrive 'missing-run-governance-fields'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Value @'
+{
+  "version": 1,
+  "run_id": "missing-run-governance-fields",
+  "task_class": "readonly_diagnostic",
+  "recording": {
+    "status": "visible_desktop_worker_pane_recording",
+    "publishable": true
+  },
+  "run_governance": {
+    "operator_intervention_count": 0
+  }
+}
+'@ -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'commands.jsonl') -Value @'
+{"cli":"Codex","model":"gpt-5.5","status":"completed","end_marker_present":true,"packet_hash_match":true,"stdout_empty":false}
+'@ -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'scorecard.md') -Value '# Scorecard' -Encoding UTF8
+
+        $result = Invoke-PreflightFixture -PackPath $script:PackPath -RunDir $runDir
+        $result.ExitCode | Should -Be 1
+        ($result.Result.checks | Where-Object { $_.name -eq 'run governance fields are disclosed' }).pass | Should -BeTrue
+        ($result.Result.checks | Where-Object { $_.name -eq 'run messaging state disables worker-to-worker' }).pass | Should -BeFalse
+        ($result.Result.checks | Where-Object { $_.name -eq 'run operator intervention count is zero' }).pass | Should -BeTrue
+        ($result.Result.checks | Where-Object { $_.name -eq 'run execution surface is visible desktop worker panes' }).pass | Should -BeFalse
+    }
+
+    It 'rejects API artifact evidence that claims the visible desktop worker pane surface' {
+        $runDir = Join-Path $TestDrive 'contradictory-api-run'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Value @'
+{
+  "version": 1,
+  "run_id": "contradictory-api-run",
+  "task_class": "readonly_diagnostic",
+  "recording": {
+    "status": "api_worker_redacted_artifact",
+    "publishable": true
+  },
+  "run_governance": {
+    "messaging_state": "worker_to_worker_disabled",
+    "operator_intervention_count": 0,
+    "execution_surface": "visible_desktop_worker_panes"
+  }
+}
+'@ -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'commands.jsonl') -Value @'
+{"cli":"Codex","model":"gpt-5.5","status":"completed","end_marker_present":true,"packet_hash_match":true,"stdout_empty":false}
+'@ -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'scorecard.md') -Value '# Scorecard' -Encoding UTF8
+
+        $result = Invoke-PreflightFixture -PackPath $script:PackPath -RunDir $runDir
+        $result.ExitCode | Should -Be 1
+        ($result.Result.checks | Where-Object { $_.name -eq 'run messaging state disables worker-to-worker' }).pass | Should -BeTrue
+        ($result.Result.checks | Where-Object { $_.name -eq 'run operator intervention count is zero' }).pass | Should -BeTrue
+        ($result.Result.checks | Where-Object { $_.name -eq 'run execution surface is visible desktop worker panes' }).pass | Should -BeTrue
+        ($result.Result.checks | Where-Object { $_.name -eq 'run recording evidence is publishable desktop worker pane evidence' }).pass | Should -BeFalse
+    }
+
+    It 'rejects nonnumeric operator intervention counts in a run directory' {
+        $runDir = Join-Path $TestDrive 'bad-count-run'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Value @'
+{
+  "version": 1,
+  "run_id": "bad-count-run",
+  "task_class": "readonly_diagnostic",
+  "recording": {
+    "status": "visible_desktop_worker_pane_recording",
+    "publishable": true
+  },
+  "run_governance": {
+    "messaging_state": "worker_to_worker_disabled",
+    "operator_intervention_count": "",
+    "execution_surface": "visible_desktop_worker_panes"
+  }
+}
+'@ -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'commands.jsonl') -Value @'
+{"cli":"Codex","model":"gpt-5.5","status":"completed","end_marker_present":true,"packet_hash_match":true,"stdout_empty":false}
+'@ -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'scorecard.md') -Value '# Scorecard' -Encoding UTF8
+
+        $result = Invoke-PreflightFixture -PackPath $script:PackPath -RunDir $runDir
+        $result.ExitCode | Should -Be 1
+        ($result.Result.checks | Where-Object { $_.name -eq 'run messaging state disables worker-to-worker' }).pass | Should -BeTrue
+        ($result.Result.checks | Where-Object { $_.name -eq 'run operator intervention count is zero' }).pass | Should -BeFalse
+        ($result.Result.checks | Where-Object { $_.name -eq 'run execution surface is visible desktop worker panes' }).pass | Should -BeTrue
     }
 
     It 'resolves the benchmark pack when given the repository root' {
@@ -823,8 +1147,13 @@ BAKEOFF_ROUND_A_END
   "run_id": "sample-run",
   "task_class": "readonly_diagnostic",
   "recording": {
-    "status": "publishable",
+    "status": "visible_desktop_worker_pane_recording",
     "publishable": true
+  },
+  "run_governance": {
+    "messaging_state": "worker_to_worker_disabled",
+    "operator_intervention_count": 0,
+    "execution_surface": "visible_desktop_worker_panes"
   },
   "active_workers": [
     {
@@ -855,6 +1184,76 @@ BAKEOFF_ROUND_A_END
         $combined | Should -Match '"overall","100","scoreable"'
         $combined | Should -Not -Match [regex]::Escape($TestDrive)
         $combined | Should -Not -Match '[A-Za-z]:\\Users\\'
+    }
+
+    It 'excludes non-desktop governance surfaces from model scoring' {
+        $runRoot = Join-Path $TestDrive 'runs-nondesktop'
+        $runDir = Join-Path $runRoot 'api-batch-run'
+        $outputDir = Join-Path $TestDrive 'summary-nondesktop'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Value @'
+{
+  "version": 1,
+  "run_id": "api-batch-run",
+  "task_class": "readonly_diagnostic",
+  "recording": {
+    "status": "api_worker_redacted_artifact",
+    "publishable": true
+  },
+  "run_governance": {
+    "messaging_state": "worker_to_worker_disabled",
+    "operator_intervention_count": 0,
+    "execution_surface": "api_worker_batch"
+  }
+}
+'@ -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'commands.jsonl') -Value @'
+{"cli":"OpenRouter API","model":"OpenRouter / GLM-5.2","status":"completed","end_marker_present":true,"packet_hash_match":true,"stdout_empty":false}
+'@ -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:SummaryScript -RunRoot $runRoot -OutputDir $outputDir -PackPath $script:PackPath -Json
+        $LASTEXITCODE | Should -Be 0
+        $result = $output | ConvertFrom-Json -Depth 20
+        $result.scoreable_runs | Should -Be 0
+
+        $raw = Get-Content -LiteralPath (Join-Path $outputDir 'raw-score-matrix.csv') -Raw -Encoding UTF8
+        $raw | Should -Match 'non_desktop_execution_surface'
+        $raw | Should -Match 'api_worker_batch'
+    }
+
+    It 'excludes non-desktop recording statuses from model scoring' {
+        $runRoot = Join-Path $TestDrive 'runs-nondesktop-recording'
+        $runDir = Join-Path $runRoot 'api-recording-run'
+        $outputDir = Join-Path $TestDrive 'summary-nondesktop-recording'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $runDir 'manifest.json') -Value @'
+{
+  "version": 1,
+  "run_id": "api-recording-run",
+  "task_class": "readonly_diagnostic",
+  "recording": {
+    "status": "api_worker_redacted_artifact",
+    "publishable": true
+  },
+  "run_governance": {
+    "messaging_state": "worker_to_worker_disabled",
+    "operator_intervention_count": 0,
+    "execution_surface": "visible_desktop_worker_panes"
+  }
+}
+'@ -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $runDir 'commands.jsonl') -Value @'
+{"cli":"OpenRouter API","model":"OpenRouter / GLM-5.2","status":"completed","end_marker_present":true,"packet_hash_match":true,"stdout_empty":false}
+'@ -Encoding UTF8
+
+        $output = & pwsh -NoProfile -File $script:SummaryScript -RunRoot $runRoot -OutputDir $outputDir -PackPath $script:PackPath -Json
+        $LASTEXITCODE | Should -Be 0
+        $result = $output | ConvertFrom-Json -Depth 20
+        $result.scoreable_runs | Should -Be 0
+
+        $raw = Get-Content -LiteralPath (Join-Path $outputDir 'raw-score-matrix.csv') -Raw -Encoding UTF8
+        $raw | Should -Match 'non_desktop_recording_status'
+        $raw | Should -Match 'api_worker_redacted_artifact'
     }
 
     It 'excludes incomplete scoreability evidence from model scoring' {
