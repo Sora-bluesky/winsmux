@@ -22,8 +22,8 @@ export const effortCapabilityIds = [
   "low",
   "medium",
   "high",
-  "xhigh",
   "max",
+  "xhigh",
 ] as const;
 export type EffortCapabilityId = typeof effortCapabilityIds[number];
 
