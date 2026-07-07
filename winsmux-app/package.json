@@ -17,6 +17,7 @@
     "test:desktop-status-e2e": "node ./scripts/desktop-pane-e2e.mjs --stop-after-worker-status",
     "test:desktop-summary-scheduler": "node --experimental-strip-types ./scripts/desktop-summary-scheduler-check.mjs",
     "test:editor-targets": "node ./scripts/editor-targets-check.mjs",
+    "test:settings-preference-options": "node --experimental-strip-types ./scripts/settings-preference-options-check.mjs",
     "test:worker-pane-routing": "node ./scripts/worker-pane-routing-check.mjs",
     "test:worker-readiness-prompt": "node ./scripts/worker-readiness-prompt-check.mjs",
     "generate:common-contract-bindings": "node ./scripts/generate-common-contract-bindings.mjs",
