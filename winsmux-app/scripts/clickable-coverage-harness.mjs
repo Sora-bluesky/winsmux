@@ -9,6 +9,7 @@ import { chromium } from "playwright";
 const OUTPUT_DIR = path.join(process.cwd(), "output", "playwright", "clickable-coverage");
 const HARNESS_QUERY = "?viewport-harness=1";
 const PROJECT_DIR = path.resolve(process.cwd(), "..").replace(/\\/g, "/");
+const CHROMIUM_EXECUTABLE_PATH = (process.env.WINSMUX_PLAYWRIGHT_CHROMIUM_EXECUTABLE || "").trim();
 const DEFAULT_RUNTIME_ROLE_PREFERENCES = [
   {
     roleId: "operator",
@@ -43,6 +44,14 @@ const observed = [];
 const consoleErrors = [];
 const pageErrors = [];
 let currentViewportName = "default";
+
+function chromiumLaunchOptions() {
+  const options = { headless: true };
+  if (CHROMIUM_EXECUTABLE_PATH) {
+    options.executablePath = CHROMIUM_EXECUTABLE_PATH;
+  }
+  return options;
+}
 
 function scopedLabel(label) {
   return `${currentViewportName}: ${label}`;
@@ -932,7 +941,7 @@ async function run() {
   let browser;
   try {
     await waitForPreviewServer(previewUrl);
-    browser = await chromium.launch({ headless: true });
+    browser = await chromium.launch(chromiumLaunchOptions());
     for (const viewport of VIEWPORTS) {
       currentViewportName = viewport.name;
       process.stdout.write(`[clickable] viewport ${viewport.name} ${viewport.width}x${viewport.height}\n`);
