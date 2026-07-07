@@ -1,0 +1,27 @@
+{
+  "version": "0.36.25",
+  "fixtures": [
+    {
+      "id": "model-readiness-worker-pane-conflation",
+      "description": "Worker pane readiness must not copy the model availability vocabulary.",
+      "mutation": {
+        "copyVocabularyValues": {
+          "from": "modelReadiness",
+          "to": "workerPaneReadiness"
+        }
+      },
+      "expectedError": "model readiness and worker pane readiness must stay separate"
+    },
+    {
+      "id": "runtime-worker-repair-action-missing",
+      "description": "Runtime worker readiness must keep the blocked repair-action state.",
+      "mutation": {
+        "removeVocabularyValue": {
+          "vocabulary": "runtimeWorkerReadiness",
+          "value": "blocked"
+        }
+      },
+      "expectedError": "runtime worker readiness diverged"
+    }
+  ]
+}

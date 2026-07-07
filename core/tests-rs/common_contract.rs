@@ -25,6 +25,13 @@ fn previous_fixture_value() -> Value {
     .expect("previous fixture should be valid JSON")
 }
 
+fn readiness_vocabulary_fixture_value() -> Value {
+    serde_json::from_str(include_str!(
+        "../../tests/fixtures/rust-parity/common-contract-readiness-vocabulary-fixtures.json"
+    ))
+    .expect("readiness vocabulary fixtures should be valid JSON")
+}
+
 fn parse_value(value: Value) -> CommonContractPackage {
     CommonContractPackage::from_json(&value.to_string()).expect("contract should parse")
 }
@@ -33,6 +40,38 @@ fn parse_error(value: Value) -> String {
     CommonContractPackage::from_json(&value.to_string())
         .expect_err("contract should fail to parse")
         .to_string()
+}
+
+fn apply_readiness_vocabulary_mutation(mut package: Value, mutation: &Value) -> Value {
+    if let Some(copy) = mutation.get("copyVocabularyValues") {
+        let from = copy["from"]
+            .as_str()
+            .expect("copyVocabularyValues.from should be a string");
+        let to = copy["to"]
+            .as_str()
+            .expect("copyVocabularyValues.to should be a string");
+        let values = package["vocabularies"][from]["values"].clone();
+        package["vocabularies"][to]["values"] = values;
+        return package;
+    }
+
+    if let Some(remove) = mutation.get("removeVocabularyValue") {
+        let vocabulary = remove["vocabulary"]
+            .as_str()
+            .expect("removeVocabularyValue.vocabulary should be a string");
+        let value = remove["value"]
+            .as_str()
+            .expect("removeVocabularyValue.value should be a string");
+        let values = package["vocabularies"][vocabulary]["values"]
+            .as_array_mut()
+            .expect("readiness vocabulary values should be an array");
+        let before = values.len();
+        values.retain(|item| item.as_str() != Some(value));
+        assert_ne!(before, values.len(), "fixture should remove {}", value);
+        return package;
+    }
+
+    panic!("unsupported readiness vocabulary mutation: {}", mutation);
 }
 
 #[test]
@@ -130,6 +169,36 @@ fn common_contract_rejects_conflated_readiness_vocabularies() {
         .validate()
         .expect_err("worker pane readiness must not copy model readiness");
     assert!(error.contains("must stay separate"));
+}
+
+#[test]
+fn common_contract_rejects_task722_readiness_vocabulary_fixtures() {
+    let fixtures = readiness_vocabulary_fixture_value();
+    assert_eq!(fixtures["version"], "0.36.25");
+
+    for fixture in fixtures["fixtures"]
+        .as_array()
+        .expect("fixtures should be an array")
+    {
+        let id = fixture["id"]
+            .as_str()
+            .expect("fixture id should be a string");
+        let expected_error = fixture["expectedError"]
+            .as_str()
+            .expect("fixture expectedError should be a string");
+        let mutated = apply_readiness_vocabulary_mutation(fixture_value(), &fixture["mutation"]);
+        let contract = parse_value(mutated);
+        let error = contract
+            .validate()
+            .expect_err("readiness vocabulary fixture should fail validation");
+        assert!(
+            error.contains(expected_error),
+            "{} expected error containing {:?}, got {:?}",
+            id,
+            expected_error,
+            error
+        );
+    }
 }
 
 #[test]
