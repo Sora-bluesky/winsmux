@@ -78,6 +78,17 @@ import {
   DesktopSummaryRefreshScheduler,
   type DesktopSummaryRefreshContext,
 } from "./desktopSummaryScheduler";
+import {
+  renderSettingsPreferenceOptions,
+  type SettingsPreferenceOption,
+} from "./settingsPreferenceOptions";
+import {
+  filterSettingsSections,
+  getSettingsSectionScope,
+  getSettingsTabScope,
+  shouldDisableSettingsNavItem,
+  type SettingsScope,
+} from "./settingsNavigation";
 
 interface PaneEntry {
   terminal: Terminal;
@@ -401,7 +412,6 @@ type WrapMode = "balanced" | "compact";
 type CodeFontMode = "system" | "google-sans-code" | "jetbrains-mono";
 type FocusMode = "standard" | "focused";
 type LanguageMode = "en" | "ja";
-type SettingsScope = "user" | "workspace";
 type WorkbenchLayoutMode = "2x2" | "3x2" | "focus";
 type RuntimeRoleId = "operator" | "worker" | "reviewer";
 type RuntimeProviderId = ProviderCapabilityId;
@@ -1315,34 +1325,34 @@ const timelineFilterLabelsJa: Record<TimelineFilter, string> = {
   activity: "活動",
 };
 
-const themeOptions: Array<{ value: ThemeMode; label: string; description: string; labelJa?: string; descriptionJa?: string }> = [
+const themeOptions: SettingsPreferenceOption<ThemeMode>[] = [
   { value: "system", label: "System", labelJa: "システム", description: "Follow the operating system appearance.", descriptionJa: "OS の外観設定に合わせます。" },
   { value: "light", label: "Light", labelJa: "ライト", description: "Use a bright Codex-style workspace.", descriptionJa: "明るい Codex 風の作業領域にします。" },
   { value: "dark", label: "Dark", labelJa: "ダーク", description: "Use a dark Codex-style workspace.", descriptionJa: "暗い Codex 風の作業領域にします。" },
 ];
 
-const densityOptions: Array<{ value: DensityMode; label: string; description: string; labelJa?: string; descriptionJa?: string }> = [
+const densityOptions: SettingsPreferenceOption<DensityMode>[] = [
   { value: "comfortable", label: "Comfortable", labelJa: "標準", description: "Default shell spacing for conversation and context.", descriptionJa: "会話と文脈パネルを読みやすくする標準の余白。" },
   { value: "compact", label: "Compact", labelJa: "コンパクト", description: "Tighter panel spacing and smaller composer height.", descriptionJa: "パネル間隔と入力欄を詰めた表示。" },
 ];
 
-const wrapOptions: Array<{ value: WrapMode; label: string; description: string; labelJa?: string; descriptionJa?: string }> = [
+const wrapOptions: SettingsPreferenceOption<WrapMode>[] = [
   { value: "balanced", label: "Balanced", labelJa: "読みやすさ優先", description: "Preferred readability for timeline, code, and footer lanes.", descriptionJa: "タイムライン、コード、下部ステータスを読みやすく折り返します。" },
   { value: "compact", label: "Compact", labelJa: "密度優先", description: "Denser wrapping for narrow windows and long traces.", descriptionJa: "狭い画面や長いログで情報量を優先します。" },
 ];
 
-const codeFontOptions: Array<{ value: CodeFontMode; label: string; description: string; labelJa?: string; descriptionJa?: string }> = [
+const codeFontOptions: SettingsPreferenceOption<CodeFontMode>[] = [
   { value: "system", label: "Consolas / Courier New", labelJa: "Consolas / Courier New", description: "Windows developer default: Consolas, 'Courier New', monospace.", descriptionJa: "Windows 開発環境の既定値: Consolas, 'Courier New', monospace。" },
   { value: "google-sans-code", label: "Google Sans Code", labelJa: "Google Sans Code", description: "Use Google Sans Code when it is installed.", descriptionJa: "インストール済みの時に Google Sans Code を使います。" },
   { value: "jetbrains-mono", label: "JetBrains Mono", labelJa: "JetBrains Mono", description: "Use JetBrains Mono when it is installed.", descriptionJa: "インストール済みの時に JetBrains Mono を使います。" },
 ];
 
-const focusModeOptions: Array<{ value: FocusMode; label: string; description: string; labelJa?: string; descriptionJa?: string }> = [
+const focusModeOptions: SettingsPreferenceOption<FocusMode>[] = [
   { value: "standard", label: "Standard", labelJa: "標準", description: "Show timeline detail chips on every event.", descriptionJa: "すべての出来事に詳細チップを表示します。" },
   { value: "focused", label: "Focus", labelJa: "集中", description: "Keep details for selected, review, and attention events.", descriptionJa: "選択中、レビュー、注意が必要な出来事だけ詳細を残します。" },
 ];
 
-const languageOptions: Array<{ value: LanguageMode; label: string; description: string; labelJa?: string; descriptionJa?: string }> = [
+const languageOptions: SettingsPreferenceOption<LanguageMode>[] = [
   { value: "en", label: "English", labelJa: "English", description: "Use English for the workspace chrome and controls.", descriptionJa: "作業領域と操作部品を英語で表示します。" },
   { value: "ja", label: "Japanese", labelJa: "日本語", description: "Use Japanese for the main workspace chrome and settings.", descriptionJa: "主要な操作部品と設定を日本語で表示します。" },
 ];
@@ -10532,29 +10542,13 @@ function applyCodeFontToPanes(state: ThemeState = themeState) {
 
 function renderPreferenceOptions<T extends string>(
   rootId: string,
-  options: Array<{ value: T; label: string; description: string; labelJa?: string; descriptionJa?: string }>,
+  options: readonly SettingsPreferenceOption<T>[],
   selected: T,
   onSelect: (value: T) => void,
 ) {
   const root = document.getElementById(rootId);
-  if (!root) {
-    return;
-  }
-
-  root.innerHTML = "";
   const japanese = (settingsDraftState?.language ?? themeState.language) === "ja";
-  for (const option of options) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = `settings-option-chip ${option.value === selected ? "is-active" : ""}`;
-    button.setAttribute("aria-pressed", option.value === selected ? "true" : "false");
-    button.replaceChildren(
-      createTextElement("span", "settings-option-label", japanese ? (option.labelJa ?? option.label) : option.label),
-      createTextElement("span", "settings-option-description", japanese ? (option.descriptionJa ?? option.description) : option.description),
-    );
-    button.addEventListener("click", () => onSelect(option.value));
-    root.appendChild(button);
-  }
+  renderSettingsPreferenceOptions(root, options, selected, japanese, onSelect);
 }
 
 function getSettingsDraftState() {
@@ -17065,13 +17059,9 @@ function getSettingsSections() {
   return Array.from(document.querySelectorAll<HTMLElement>("#settings-content .settings-section"));
 }
 
-function getSettingsSectionScope(sectionId: string): SettingsScope {
-  return sectionId === "settings-section-workspace" ? "workspace" : "user";
-}
-
 function syncSettingsScopeControls() {
   document.querySelectorAll<HTMLButtonElement>(".settings-tab").forEach((button) => {
-    const scope: SettingsScope = button.id === "settings-tab-workspace" ? "workspace" : "user";
+    const scope = getSettingsTabScope(button.id);
     const selected = scope === settingsScope;
     button.classList.toggle("is-active", selected);
     button.setAttribute("aria-selected", selected ? "true" : "false");
@@ -17099,29 +17089,33 @@ function updateSettingsSearchFilter() {
   const input = document.getElementById("settings-search-input") as HTMLInputElement | null;
   const query = input?.value.trim().toLowerCase() ?? "";
   const sections = getSettingsSections();
-  let firstVisibleId = "";
+  const visibility = filterSettingsSections(
+    sections.map((section) => ({
+      id: section.id,
+      text: section.textContent ?? "",
+    })),
+    settingsScope,
+    query,
+  );
+  const visibilityById = new Map(visibility.items.map((item) => [item.id, item]));
   for (const section of sections) {
-    const text = section.textContent?.toLowerCase() ?? "";
-    const inScope = getSettingsSectionScope(section.id) === settingsScope;
-    const visible = inScope && (!query || text.includes(query));
-    section.hidden = !visible;
-    if (visible && !firstVisibleId) {
-      firstVisibleId = section.id;
-    }
+    section.hidden = !visibilityById.get(section.id)?.visible;
   }
 
   document.querySelectorAll<HTMLButtonElement>(".settings-nav-item").forEach((button) => {
     const targetId = button.dataset.settingsTarget ?? "";
     const target = document.getElementById(targetId);
-    const inScope = getSettingsSectionScope(targetId) === settingsScope;
+    const targetScope = getSettingsSectionScope(targetId);
+    const inScope = targetScope === settingsScope;
     button.hidden = !inScope;
-    const disabled = inScope && Boolean(query && target instanceof HTMLElement && target.hidden);
+    const targetHidden = target instanceof HTMLElement ? Boolean(target.hidden) : false;
+    const disabled = shouldDisableSettingsNavItem(targetScope, settingsScope, query, targetHidden);
     button.disabled = disabled;
     button.setAttribute("aria-disabled", disabled ? "true" : "false");
   });
 
-  if (firstVisibleId) {
-    setActiveSettingsNav(firstVisibleId);
+  if (visibility.firstVisibleId) {
+    setActiveSettingsNav(visibility.firstVisibleId);
   }
 }
 
@@ -17194,7 +17188,7 @@ function initializeSettingsDialogControls() {
 
   document.querySelectorAll<HTMLButtonElement>(".settings-tab").forEach((button) => {
     button.addEventListener("click", () => {
-      setSettingsScope(button.id === "settings-tab-workspace" ? "workspace" : "user");
+      setSettingsScope(getSettingsTabScope(button.id));
     });
   });
 }
