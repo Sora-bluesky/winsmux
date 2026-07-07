@@ -55,6 +55,11 @@ function assertDivergenceIsDetected(name, actual, expected) {
   );
 }
 
+async function loadRustParityFixture() {
+  const fixturePath = path.resolve("..", "tests", "fixtures", "rust-parity", "common-contract-package.json");
+  return JSON.parse(await readFile(fixturePath, "utf8"));
+}
+
 const {
   agentVaultCommandProviderIds,
   backendCapabilityIds,
@@ -175,5 +180,7 @@ assertDivergenceIsDetected(
   runtimeWorkerReadinessStates.filter((state) => state !== "blocked"),
   runtimeWorkerReadinessStates,
 );
+
+assert.deepEqual(await loadRustParityFixture(), commonContractPackage);
 
 console.log("common-contract-package-check: ok");
