@@ -3805,6 +3805,179 @@ Describe 'logger helpers' {
         $records[1].data.finding_count | Should -Be 2
     }
 
+    It 'rotates before append and keeps retained records as valid jsonl' {
+        $logPath = Initialize-OrchestraLogger -ProjectDir $script:loggerTempRoot -SessionName 'session-rotation'
+
+        1..8 | ForEach-Object {
+            Write-OrchestraLog -ProjectDir $script:loggerTempRoot -SessionName 'session-rotation' -Event 'rotation.boundary' -Message ('x' * 180) -Data ([ordered]@{ index = $_; payload = ('y' * 180) }) -MaxBytes 700 -RetentionCount 20 | Out-Null
+        }
+
+        $rotatedFiles = @(Get-OrchestraLogRotatedFiles -Path $logPath)
+        ($rotatedFiles.Count -gt 0) | Should -Be $true
+        ((Get-Item -LiteralPath $logPath).Length -le 700) | Should -Be $true
+
+        $allRecords = @()
+        $allPaths = @($rotatedFiles | Sort-Object Name | ForEach-Object { $_.FullName }) + @($logPath)
+        foreach ($path in $allPaths) {
+            foreach ($line in (Get-Content -LiteralPath $path -Encoding UTF8 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+                $allRecords += ($line | ConvertFrom-Json -ErrorAction Stop)
+            }
+        }
+
+        $allRecords.Count | Should -Be 8
+        @($allRecords | Where-Object { $_.event -eq 'rotation.boundary' }).Count | Should -Be 8
+
+        $readRecords = Read-OrchestraLog -ProjectDir $script:loggerTempRoot -SessionName 'session-rotation'
+        $readRecords.Count | Should -Be 8
+        @($readRecords | ForEach-Object { [int]$_.data.index }) | Should -Be @(1, 2, 3, 4, 5, 6, 7, 8)
+    }
+
+    It 'does not treat similarly named active session logs as rotations' {
+        $baseSession = 'session-cross'
+        $lookalikeSession = 'session-cross.rotated.20260707221249000.000000'
+        $baseLogPath = Initialize-OrchestraLogger -ProjectDir $script:loggerTempRoot -SessionName $baseSession
+        Write-OrchestraLog -ProjectDir $script:loggerTempRoot -SessionName $baseSession -Event 'base.tail' | Out-Null
+        Write-OrchestraLog -ProjectDir $script:loggerTempRoot -SessionName $lookalikeSession -Event 'other.active' | Out-Null
+
+        $lookalikeLogPath = Get-OrchestraLogPath -ProjectDir $script:loggerTempRoot -SessionName $lookalikeSession
+        Invoke-OrchestraLogRetentionPrune -Path $baseLogPath -RetentionCount 0
+
+        Test-Path -LiteralPath $lookalikeLogPath -PathType Leaf | Should -Be $true
+        @(Get-OrchestraLogRotatedFiles -Path $baseLogPath | ForEach-Object { $_.FullName }) | Should -Not -Contain $lookalikeLogPath
+        @(Read-OrchestraLog -ProjectDir $script:loggerTempRoot -SessionName $baseSession | ForEach-Object { $_.event }) | Should -Not -Contain 'other.active'
+    }
+
+    It 'preserves order for same-millisecond rotated logs' {
+        $logPath = Initialize-OrchestraLogger -ProjectDir $script:loggerTempRoot -SessionName 'session-same-millisecond'
+        $fixedTime = [datetime]'2026-07-07T22:12:49.000Z'
+        $firstRotatedPath = New-OrchestraLogRotatedPath -Path $logPath -Now $fixedTime
+        '{"event":"rotated.first","data":{"index":1}}' | Set-Content -Path $firstRotatedPath -Encoding UTF8
+        $secondRotatedPath = New-OrchestraLogRotatedPath -Path $logPath -Now $fixedTime
+        '{"event":"rotated.second","data":{"index":2}}' | Set-Content -Path $secondRotatedPath -Encoding UTF8
+        Write-OrchestraLog -ProjectDir $script:loggerTempRoot -SessionName 'session-same-millisecond' -Event 'active.tail' -Data ([ordered]@{ index = 3 }) | Out-Null
+
+        $records = Read-OrchestraLog -ProjectDir $script:loggerTempRoot -SessionName 'session-same-millisecond'
+        @($records | ForEach-Object { [int]$_.data.index }) | Should -Be @(1, 2, 3)
+    }
+
+    It 'reads rotated and active logs under the writer file lock' {
+        $logPath = Initialize-OrchestraLogger -ProjectDir $script:loggerTempRoot -SessionName 'session-read-lock'
+        Write-OrchestraLog -ProjectDir $script:loggerTempRoot -SessionName 'session-read-lock' -Event 'read.locked' | Out-Null
+        $script:readLockPath = $null
+        Mock Invoke-WinsmuxWithFileLock {
+            param(
+                [string]$Path,
+                [scriptblock]$Action
+            )
+
+            $script:readLockPath = $Path
+            & $Action
+        }
+
+        $records = Read-OrchestraLog -ProjectDir $script:loggerTempRoot -SessionName 'session-read-lock'
+
+        $records.Count | Should -Be 1
+        $records[0].event | Should -Be 'read.locked'
+        $script:readLockPath | Should -Be $logPath
+        Assert-MockCalled Invoke-WinsmuxWithFileLock -Times 1 -Exactly
+    }
+
+    It 'skips rotated logs pruned between enumeration and read' {
+        $logPath = Initialize-OrchestraLogger -ProjectDir $script:loggerTempRoot -SessionName 'session-read-pruned'
+        Write-OrchestraLog -ProjectDir $script:loggerTempRoot -SessionName 'session-read-pruned' -Event 'read.tail' -Data ([ordered]@{ index = 2 }) | Out-Null
+
+        $missingRotatedPath = New-OrchestraLogRotatedPath -Path $logPath -Now (Get-Date).AddSeconds(-1)
+        '{"event":"read.rotated","data":{"index":1}}' | Set-Content -Path $missingRotatedPath -Encoding UTF8
+        $missingRotatedFile = Get-Item -LiteralPath $missingRotatedPath
+        Remove-Item -LiteralPath $missingRotatedPath -Force
+        Mock Get-OrchestraLogRotatedFiles { @($missingRotatedFile) }
+
+        $records = Read-OrchestraLog -ProjectDir $script:loggerTempRoot -SessionName 'session-read-pruned'
+        $records.Count | Should -Be 1
+        $records[0].event | Should -Be 'read.tail'
+    }
+
+    It 'prunes rotated logs to the configured retention count' {
+        $logPath = Initialize-OrchestraLogger -ProjectDir $script:loggerTempRoot -SessionName 'session-retention'
+
+        1..10 | ForEach-Object {
+            Write-OrchestraLog -ProjectDir $script:loggerTempRoot -SessionName 'session-retention' -Event 'rotation.retention' -Message ('r' * 180) -Data ([ordered]@{ index = $_; payload = ('s' * 180) }) -MaxBytes 700 -RetentionCount 1 | Out-Null
+        }
+
+        $rotatedFiles = @(Get-OrchestraLogRotatedFiles -Path $logPath)
+        $rotatedFiles.Count | Should -Be 1
+        Test-Path -LiteralPath $logPath -PathType Leaf | Should -Be $true
+    }
+
+    It 'does not truncate an active log created while initialization waits for the file lock' {
+        $logPath = Get-OrchestraLogPath -ProjectDir $script:loggerTempRoot -SessionName 'session-init-race'
+        $logDir = Split-Path -Parent $logPath
+        New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+
+        $lockDir = Get-WinsmuxFileLockDir -Path $logPath
+        New-Item -ItemType Directory -Path $lockDir -Force | Out-Null
+
+        $workerScriptPath = Join-Path $script:loggerTempRoot 'init-worker.ps1'
+        $loggerPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\logger.ps1'
+        $workerScript = (@'
+param(
+    [Parameter(Mandatory = $true)][string]$ProjectDir
+)
+
+. '{0}'
+Initialize-OrchestraLogger -ProjectDir $ProjectDir -SessionName 'session-init-race' | Out-Null
+'@) -f ($loggerPath -replace "'", "''")
+
+        Set-Content -Path $workerScriptPath -Value $workerScript -Encoding UTF8
+        $process = Start-Process -FilePath $script:loggerPwshPath -ArgumentList @('-NoProfile', '-File', $workerScriptPath, '-ProjectDir', $script:loggerTempRoot) -PassThru -WindowStyle Hidden
+
+        Start-Sleep -Milliseconds 500
+        Set-Content -Path $logPath -Value 'preserve-this-line' -Encoding UTF8
+        Remove-WinsmuxFileLock -Path $logPath
+
+        $process.WaitForExit(180000) | Should -Be $true
+        $process.ExitCode | Should -Be 0
+
+        $lines = @(Get-Content -Path $logPath -Encoding UTF8 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        $lines.Count | Should -Be 1
+        $lines[0] | Should -Be 'preserve-this-line'
+    }
+
+    It 'appends to the active log when rotation rename is blocked by a reader' {
+        $logPath = Initialize-OrchestraLogger -ProjectDir $script:loggerTempRoot -SessionName 'session-rename-blocked'
+        Write-OrchestraLog -ProjectDir $script:loggerTempRoot -SessionName 'session-rename-blocked' -Event 'rotation.seed' -Message ('a' * 180) -Data ([ordered]@{ index = 1 }) -MaxBytes 1000 | Out-Null
+
+        $stream = [System.IO.File]::Open($logPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        try {
+            Write-OrchestraLog -ProjectDir $script:loggerTempRoot -SessionName 'session-rename-blocked' -Event 'rotation.rename_blocked' -Message ('b' * 180) -Data ([ordered]@{ index = 2 }) -MaxBytes 100 -RetentionCount 1 | Out-Null
+        } finally {
+            $stream.Dispose()
+        }
+
+        $records = Read-OrchestraLog -ProjectDir $script:loggerTempRoot -SessionName 'session-rename-blocked'
+        $records.Count | Should -Be 2
+        $records[1].event | Should -Be 'rotation.rename_blocked'
+        @(Get-OrchestraLogRotatedFiles -Path $logPath).Count | Should -Be 0
+    }
+
+    It 'keeps the current record when retention pruning cannot delete a rotated log' {
+        $logPath = Initialize-OrchestraLogger -ProjectDir $script:loggerTempRoot -SessionName 'session-prune-blocked'
+        Write-OrchestraLog -ProjectDir $script:loggerTempRoot -SessionName 'session-prune-blocked' -Event 'rotation.seed' -Message ('c' * 180) -Data ([ordered]@{ index = 1 }) -MaxBytes 1000 | Out-Null
+
+        $lockedRotatedPath = New-OrchestraLogRotatedPath -Path $logPath -Now (Get-Date).AddSeconds(-1)
+        '{"event":"locked"}' | Set-Content -Path $lockedRotatedPath -Encoding UTF8
+        $stream = [System.IO.File]::Open($lockedRotatedPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        try {
+            Write-OrchestraLog -ProjectDir $script:loggerTempRoot -SessionName 'session-prune-blocked' -Event 'rotation.prune_blocked' -Message ('d' * 180) -Data ([ordered]@{ index = 2 }) -MaxBytes 100 -RetentionCount 0 | Out-Null
+        } finally {
+            $stream.Dispose()
+        }
+
+        $records = Read-OrchestraLog -ProjectDir $script:loggerTempRoot -SessionName 'session-prune-blocked'
+        ($records.Count -ge 2) | Should -Be $true
+        $records[-1].event | Should -Be 'rotation.prune_blocked'
+    }
+
     It 'serializes concurrent jsonl appends across multiple PowerShell processes' {
         $logPath = Join-Path $script:loggerTempRoot '.winsmux\logs\concurrent.jsonl'
         $workerScriptPath = Join-Path $script:loggerTempRoot 'append-worker.ps1'
