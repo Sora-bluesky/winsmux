@@ -57,6 +57,15 @@ import {
   type ProjectExplorerTreeNode,
 } from "./projectExplorerTree";
 import {
+  buildDesktopSummaryConversation,
+  getVisibleConversationItems,
+  shouldShowTimelineDetails,
+  type ChipAction,
+  type ConversationDetail,
+  type ConversationItem,
+  type TimelineFilter,
+} from "./conversationTimeline";
+import {
   getRuntimeCatalogEntries,
   openRouterModelsApiUrl,
   type AgentVaultCommandProviderId,
@@ -132,20 +141,6 @@ interface HarnessBenchmarkTaskPacket {
   sha256: string;
 }
 
-type ChipAction =
-  | "open-explain"
-  | "open-editor"
-  | "open-source-context"
-  | "toggle-context"
-  | "open-terminal";
-
-interface ConversationChip {
-  label: string;
-  action: ChipAction;
-}
-
-type TimelineFilter = "all" | "attention" | "review" | "activity";
-type ConversationCategory = "user" | "attention" | "review" | "activity";
 type WorkPipelineStage = "open" | "triaged" | "planning" | "implementing" | "reviewing" | "shipped";
 
 interface WorkDashboardRecord {
@@ -161,26 +156,6 @@ interface WorkDashboardRecord {
   traceRefs: string[];
   summary: string;
   tone: SurfaceTone;
-}
-
-interface ConversationDetail {
-  label: string;
-  value: string;
-}
-
-interface ConversationItem {
-  type: "user" | "operator" | "system";
-  category: ConversationCategory;
-  timestamp: string;
-  actor: string;
-  title?: string;
-  body: string;
-  details?: ConversationDetail[];
-  chips?: ConversationChip[];
-  attachments?: Array<{ name: string; kind: "image" | "file"; sizeLabel: string }>;
-  tone?: SurfaceTone;
-  runId?: string;
-  statusLabel?: string;
 }
 
 interface SessionItem {
@@ -14128,31 +14103,6 @@ async function readClipboardImageFiles() {
   }
 }
 
-function getVisibleConversationItems(items: ConversationItem[]) {
-  switch (activeTimelineFilter) {
-    case "attention":
-      return items.filter((item) => item.category === "attention");
-    case "review":
-      return items.filter((item) => item.category === "review");
-    case "activity":
-      return items.filter((item) => item.category === "activity" || item.type === "operator");
-    default:
-      return items;
-  }
-}
-
-function shouldShowTimelineDetails(item: ConversationItem) {
-  if (themeState.focusMode !== "focused") {
-    return true;
-  }
-
-  if (item.category === "attention" || item.category === "review") {
-    return true;
-  }
-
-  return Boolean(item.runId && item.runId === getSelectedRunId());
-}
-
 function updateTimelineFeedHint() {
   const hint = document.getElementById("timeline-feed-hint");
   if (!hint) {
@@ -14472,7 +14422,7 @@ function renderConversation(items: ConversationItem[]) {
   syncTimelineFeedVisibility();
 
   timeline.innerHTML = "";
-  const visibleItems = getVisibleConversationItems(items);
+  const visibleItems = getVisibleConversationItems(items, activeTimelineFilter);
 
   if (visibleItems.length === 0) {
     const empty = document.createElement("div");
@@ -14518,7 +14468,7 @@ function renderConversation(items: ConversationItem[]) {
     body.textContent = item.body;
     article.appendChild(body);
 
-    if (item.details?.length && shouldShowTimelineDetails(item)) {
+    if (item.details?.length && shouldShowTimelineDetails(item, themeState.focusMode, getSelectedRunId())) {
       const detailRow = document.createElement("div");
       detailRow.className = "timeline-detail-row";
       for (const detail of item.details) {
@@ -17826,74 +17776,6 @@ function inferLanguageFromPath(path: string) {
     return "YAML";
   }
   return "Text";
-}
-
-function buildDesktopSummaryConversation(snapshot: DesktopSummarySnapshot): ConversationItem[] {
-  const board = snapshot.board.summary;
-  const digest = snapshot.digest.summary;
-  const inbox = snapshot.inbox.summary;
-  const topInboxItems = snapshot.inbox.items.slice(0, 2);
-  const topDigestItems = snapshot.run_projections.slice(0, 3);
-
-  const items: ConversationItem[] = [
-    {
-      type: "operator",
-      category: "activity",
-      timestamp: new Date(snapshot.generated_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
-      actor: "Operator",
-      title: "Summary stream connected",
-      body: "Tauri is reading board, notifications, and digest surfaces from the backend adapter instead of treating raw PTY output as the primary UI source.",
-      details: [
-        { label: "panes", value: `${board.pane_count}` },
-        { label: "notifications", value: `${inbox.item_count}` },
-        { label: "runs", value: `${digest.item_count}` },
-      ],
-      tone: "info",
-    },
-  ];
-
-  for (const topInboxItem of topInboxItems) {
-    items.push({
-      type: "system",
-      category: "attention",
-      timestamp: new Date(snapshot.generated_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
-      actor: topInboxItem.label || topInboxItem.pane_id || "System",
-      title: `Notification: ${topInboxItem.kind}`,
-      body: topInboxItem.message,
-      details: [
-        { label: "branch", value: topInboxItem.branch || "no branch" },
-        { label: "review", value: topInboxItem.review_state || "n/a" },
-        { label: "task", value: topInboxItem.task_state || "n/a" },
-      ],
-      tone: "warning",
-      statusLabel: topInboxItem.kind,
-    });
-  }
-
-  for (const digestItem of topDigestItems) {
-    items.push({
-      type: "operator",
-      category: digestItem.review_state === "PENDING" || digestItem.review_state === "FAIL" || digestItem.review_state === "FAILED" ? "review" : "activity",
-      timestamp: new Date(snapshot.generated_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
-      actor: digestItem.label || digestItem.pane_id || "Operator",
-      title: digestItem.task || "Projected run",
-      body: `Next ${digestItem.next_action || "idle"} · ${digestItem.changed_files.length} changed files · review ${digestItem.review_state || "n/a"}.`,
-      details: [
-        { label: "run", value: digestItem.run_id },
-        { label: "branch", value: digestItem.branch || "no branch" },
-        { label: "verify", value: digestItem.verification_outcome || "n/a" },
-      ],
-      tone: digestItem.review_state === "PASS" ? "success" : digestItem.review_state === "PENDING" ? "warning" : "info",
-      runId: digestItem.run_id,
-      statusLabel: digestItem.review_state || digestItem.next_action || undefined,
-      chips: [
-        { label: "Open Explain", action: "open-explain" },
-        { label: "Source Context", action: "open-source-context" },
-      ],
-    });
-  }
-
-  return items;
 }
 
 function pruneExplainCache(snapshot: DesktopSummarySnapshot, preservedRunId?: string | null) {
