@@ -38,7 +38,7 @@ impl CommonContractPackage {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        if self.version != "0.36.25" {
+        if self.version != "0.36.26" {
             return Err(format!(
                 "unsupported common contract version: {}",
                 self.version
