@@ -17105,9 +17105,11 @@ function updateSettingsSearchFilter() {
   document.querySelectorAll<HTMLButtonElement>(".settings-nav-item").forEach((button) => {
     const targetId = button.dataset.settingsTarget ?? "";
     const target = document.getElementById(targetId);
-    const inScope = getSettingsSectionScope(targetId) === settingsScope;
+    const targetScope = getSettingsSectionScope(targetId);
+    const inScope = targetScope === settingsScope;
     button.hidden = !inScope;
-    const disabled = shouldDisableSettingsNavItem(getSettingsSectionScope(targetId), settingsScope, query, target instanceof HTMLElement && target.hidden);
+    const targetHidden = target instanceof HTMLElement ? Boolean(target.hidden) : false;
+    const disabled = shouldDisableSettingsNavItem(targetScope, settingsScope, query, targetHidden);
     button.disabled = disabled;
     button.setAttribute("aria-disabled", disabled ? "true" : "false");
   });
