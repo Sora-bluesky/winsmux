@@ -67,9 +67,60 @@ function assertDivergenceIsDetected(name, actual, expected) {
   );
 }
 
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 async function loadRustParityFixture(name = "common-contract-package.json") {
   const fixturePath = path.resolve("..", "tests", "fixtures", "rust-parity", name);
   return JSON.parse(await readFile(fixturePath, "utf8"));
+}
+
+function readinessVocabularyValues(contractPackage, vocabulary) {
+  const values = contractPackage.vocabularies?.[vocabulary]?.values;
+  assert.ok(Array.isArray(values), `Expected ${vocabulary} values`);
+  return values;
+}
+
+function assertReadinessVocabularyContract(contractPackage) {
+  const modelReadiness = readinessVocabularyValues(contractPackage, "modelReadiness");
+  const runtimeWorkerReadiness = readinessVocabularyValues(contractPackage, "runtimeWorkerReadiness");
+  const workerPaneReadiness = readinessVocabularyValues(contractPackage, "workerPaneReadiness");
+
+  for (const state of runtimeWorkerReadiness) {
+    assert.ok(modelReadiness.includes(state), `Runtime worker readiness ${state} must remain a model-readiness subset`);
+  }
+  if (JSON.stringify(modelReadiness) === JSON.stringify(workerPaneReadiness)) {
+    throw new Error("model readiness and worker pane readiness must stay separate");
+  }
+  if (modelReadiness.includes("ready")) {
+    throw new Error("model readiness must not contain pane state ready");
+  }
+  if (workerPaneReadiness.includes("selectable")) {
+    throw new Error("worker pane readiness must not contain model state selectable");
+  }
+
+  assertSameVocabulary("model readiness", modelReadiness, modelReadinessStates);
+  assertSameVocabulary("runtime worker readiness", runtimeWorkerReadiness, runtimeWorkerReadinessStates);
+  assertSameVocabulary("worker pane readiness", workerPaneReadiness, workerPaneReadinessStates);
+}
+
+function applyReadinessVocabularyMutation(contractPackage, mutation) {
+  const mutated = JSON.parse(JSON.stringify(contractPackage));
+  if (mutation.copyVocabularyValues) {
+    const { from, to } = mutation.copyVocabularyValues;
+    mutated.vocabularies[to].values = [...readinessVocabularyValues(mutated, from)];
+    return mutated;
+  }
+  if (mutation.removeVocabularyValue) {
+    const { vocabulary, value } = mutation.removeVocabularyValue;
+    const values = readinessVocabularyValues(mutated, vocabulary);
+    const nextValues = values.filter((item) => item !== value);
+    assert.notEqual(nextValues.length, values.length, `${vocabulary} fixture must remove ${value}`);
+    mutated.vocabularies[vocabulary].values = nextValues;
+    return mutated;
+  }
+  throw new Error(`Unsupported readiness vocabulary mutation: ${JSON.stringify(mutation)}`);
 }
 
 const {
@@ -161,12 +212,7 @@ assert.equal(parsePropertyType(mainSource, "requiredBackend"), "BackendCapabilit
 assert.equal(parseTypeAlias(mainSource, "WorkerPaneReadinessState"), "CommonWorkerPaneReadinessState");
 assert.equal(parseTypeAlias(mainSource, "AgentVaultProviderId"), "AgentVaultCommandProviderId");
 
-for (const state of runtimeWorkerReadinessStates) {
-  assert.ok(modelReadinessStates.includes(state), `Runtime worker readiness ${state} must remain a model-readiness subset`);
-}
-assert.notDeepEqual(modelReadinessStates, workerPaneReadinessStates);
-assert.equal(modelReadinessStates.includes("ready"), false);
-assert.equal(workerPaneReadinessStates.includes("selectable"), false);
+assertReadinessVocabularyContract(commonContractPackage);
 
 assertDivergenceIsDetected(
   "model readiness divergence fixture",
@@ -188,6 +234,17 @@ assertDivergenceIsDetected(
   runtimeWorkerReadinessStates.filter((state) => state !== "blocked"),
   runtimeWorkerReadinessStates,
 );
+
+const readinessVocabularyFixtures = await loadRustParityFixture("common-contract-readiness-vocabulary-fixtures.json");
+assert.equal(readinessVocabularyFixtures.version, commonContractPackageVersion);
+for (const fixture of readinessVocabularyFixtures.fixtures) {
+  const mutated = applyReadinessVocabularyMutation(commonContractPackage, fixture.mutation);
+  assert.throws(
+    () => assertReadinessVocabularyContract(mutated),
+    new RegExp(escapeRegExp(fixture.expectedError)),
+    `${fixture.id} should fail with ${fixture.expectedError}`,
+  );
+}
 
 assert.deepEqual(await loadRustParityFixture(), commonContractPackage);
 assert.deepEqual(await loadRustParityFixture("common-contract-package-v0.36.25.json"), commonContractPackage);

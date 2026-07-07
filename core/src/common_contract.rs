@@ -85,6 +85,29 @@ impl CommonContractPackage {
                 "worker pane readiness must not contain model state selectable".to_string(),
             );
         }
+        assert_exact_values(
+            "model readiness",
+            model_readiness,
+            &[
+                "selectable",
+                "candidate",
+                "setup-required",
+                "runnable",
+                "blocked",
+                "reference-only",
+                "unavailable",
+            ],
+        )?;
+        assert_exact_values(
+            "runtime worker readiness",
+            runtime_worker,
+            &["runnable", "setup-required", "blocked"],
+        )?;
+        assert_exact_values(
+            "worker pane readiness",
+            worker_pane,
+            &["ready", "blocked", "pending"],
+        )?;
 
         assert_order(
             "reasoning efforts",

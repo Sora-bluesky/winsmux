@@ -35,6 +35,12 @@ exports `commonContractPackage`. The drift gate is
 PowerShell bindings, Rust parity fixtures, and the previous-version fixture
 against that source before merge or release.
 
+Update for TASK-722: `tests/fixtures/rust-parity/common-contract-readiness-vocabulary-fixtures.json`
+keeps two negative readiness fixtures tied to the common package. One fixture
+copies the model availability vocabulary into worker-pane readiness; the other
+removes the runtime worker `blocked` repair-action state. Both the JS drift
+check and Rust validator must reject those mutations.
+
 ## Confirmed drift (hand-verified)
 
 Three duplications have already diverged in the tree today:
@@ -120,6 +126,10 @@ Three duplications have already diverged in the tree today:
   pane idle) vs `modelCapabilities.ts` `ReadinessState`
   (`selectable|candidate|setup-required|runnable|blocked|reference-only|unavailable`,
   is the model available).
+- **TASK-722 fixture gate:** the named readiness fixture file above is the
+  regression input for this split. It prevents a future edit from treating pane
+  idle-state labels as model availability, and it prevents dropping the
+  `blocked` runtime worker state that carries the remediation path.
 
 ### Manifest schema
 
