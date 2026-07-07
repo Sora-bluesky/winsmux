@@ -16,6 +16,8 @@
     "test:desktop-operator-snapshot-e2e": "node ./scripts/desktop-pane-e2e.mjs --operator-snapshot-only",
     "test:desktop-release-popout-e2e": "node ./scripts/desktop-pane-e2e.mjs --release-popout-only",
     "test:desktop-status-e2e": "node ./scripts/desktop-pane-e2e.mjs --stop-after-worker-status",
+    "test:desktop-split-static": "pwsh -NoProfile -File ../scripts/test-v03626-desktop-split-gate.ps1 -Json",
+    "test:desktop-split-gate": "pwsh -NoProfile -File ../scripts/test-v03626-desktop-split-gate.ps1 -Json -RequireEvidence",
     "test:desktop-summary-scheduler": "node --experimental-strip-types ./scripts/desktop-summary-scheduler-check.mjs",
     "test:editor-targets": "node ./scripts/editor-targets-check.mjs",
     "test:project-explorer-tree": "node ./scripts/project-explorer-tree-check.mjs",

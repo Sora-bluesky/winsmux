@@ -199,6 +199,11 @@ jobs:
             timeout_minutes: 12
             paths: tests/V03621LocalRouterShadow.Tests.ps1
             full_name: ""
+          - name: desktop-split-v03626
+            result: desktop-split-v03626
+            timeout_minutes: 12
+            paths: tests/V03626DesktopSplitGate.Tests.ps1
+            full_name: ""
     steps:
       - uses: actions/checkout@v6
 

@@ -292,8 +292,8 @@ export default defineConfig(async () => ({
         }
       : undefined,
     watch: {
-      // 3. tell Vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
+      // 3. tell Vite to ignore native sources and local E2E artifacts.
+      ignored: ["**/src-tauri/**", "**/output/**"],
     },
   },
   plugins: [{

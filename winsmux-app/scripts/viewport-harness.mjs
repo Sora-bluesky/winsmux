@@ -9,6 +9,7 @@ import { chromium } from "playwright";
 const OUTPUT_DIR = path.join(process.cwd(), "output", "playwright", "viewport-harness");
 const HARNESS_QUERY = "?viewport-harness=1";
 const APP_DIR = process.cwd();
+const CHROMIUM_EXECUTABLE_PATH = (process.env.WINSMUX_PLAYWRIGHT_CHROMIUM_EXECUTABLE || "").trim();
 const DEFAULT_RUNTIME_ROLE_PREFERENCES = [
   {
     roleId: "operator",
@@ -32,6 +33,14 @@ const DEFAULT_RUNTIME_ROLE_PREFERENCES = [
     reasoningEffort: "high",
   },
 ];
+
+function chromiumLaunchOptions() {
+  const options = { headless: true };
+  if (CHROMIUM_EXECUTABLE_PATH) {
+    options.executablePath = CHROMIUM_EXECUTABLE_PATH;
+  }
+  return options;
+}
 
 async function assertOperatorChatContractSource() {
   const source = await fs.readFile(path.join(APP_DIR, "src", "main.ts"), "utf8");
@@ -2111,7 +2120,7 @@ async function run() {
 
   try {
     await waitForPreviewServer(previewUrl);
-    browser = await chromium.launch({ headless: true });
+    browser = await chromium.launch(chromiumLaunchOptions());
     const page = await browser.newPage();
     await installSpeechRecognitionStub(page);
 
