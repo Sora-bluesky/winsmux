@@ -50,7 +50,20 @@ import {
   writePtyData,
 } from "./ptyClient";
 import { isComposerCommandText, normalizeComposerPlainTextPaste } from "./composerText";
-import { getRuntimeCatalogEntries, openRouterModelsApiUrl } from "./modelCapabilities";
+import {
+  getRuntimeCatalogEntries,
+  openRouterModelsApiUrl,
+  type AgentVaultCommandProviderId,
+  type BackendCapabilityId,
+  type BenchmarkFamily,
+  type EffortCapabilityId,
+  type ModelSource,
+  type ProviderCapabilityId,
+  type ReadinessState,
+  type RuntimeWorkerReadinessState as CommonRuntimeWorkerReadinessState,
+  type TransportCapabilityId,
+  type WorkerPaneReadinessState as CommonWorkerPaneReadinessState,
+} from "./modelCapabilities";
 import {
   findBoardPaneForWorkbenchPane as findBoardPaneForWorkbenchPaneFromRows,
   resolveWorkbenchPaneIdForBackendPaneId as resolveWorkbenchPaneIdFromRows,
@@ -386,13 +399,13 @@ type LanguageMode = "en" | "ja";
 type SettingsScope = "user" | "workspace";
 type WorkbenchLayoutMode = "2x2" | "3x2" | "focus";
 type RuntimeRoleId = "operator" | "worker" | "reviewer";
-type RuntimeProviderId = "provider-default" | "codex" | "claude" | "antigravity" | "grok-build" | "openrouter";
-type RuntimeModelSource = "provider-default" | "cli-discovery" | "provider-api" | "official-doc" | "operator-override";
-type RuntimeReasoningEffort = "provider-default" | "low" | "medium" | "high" | "max" | "xhigh";
+type RuntimeProviderId = ProviderCapabilityId;
+type RuntimeModelSource = ModelSource;
+type RuntimeReasoningEffort = EffortCapabilityId;
 type RuntimeModelAssignmentMode = "shared" | "per-pane";
-type RuntimeModelCatalogStatus = "selectable" | "candidate" | "setup-required" | "runnable" | "blocked" | "reference-only" | "unavailable";
-type RuntimeModelWorkerReadinessState = "runnable" | "setup-required" | "blocked";
-type RuntimeModelBenchmarkFamily = "agent-arena" | "code-arena" | "winsmux-local";
+type RuntimeModelCatalogStatus = ReadinessState;
+type RuntimeModelWorkerReadinessState = CommonRuntimeWorkerReadinessState;
+type RuntimeModelBenchmarkFamily = BenchmarkFamily;
 type ComposerPermissionMode = "auto" | "default" | "acceptEdits" | "plan" | "bypassPermissions";
 type ComposerEffortLevel = "auto" | "low" | "medium" | "high" | "xhigh" | "max";
 type ComposerModelId = "fable-5" | "opus-4.8" | "opus-4.7" | "opus-4.7-1m" | "opus-4.6" | "sonnet-4.6" | "haiku-4.5";
@@ -442,10 +455,10 @@ interface RuntimeModelCatalogEntry {
   modelSource: RuntimeModelSource;
   reasoningEffort: RuntimeReasoningEffort;
   supportedReasoningEfforts?: readonly RuntimeReasoningEffort[];
-  promptTransport: "argv" | "file" | "stdin";
+  promptTransport: TransportCapabilityId;
   authMode: string;
   requiredEnv?: string;
-  requiredBackend: "any" | "agent-cli" | "antigravity" | "api_llm" | "colab_cli";
+  requiredBackend: BackendCapabilityId;
   status: RuntimeModelCatalogStatus;
   family: RuntimeModelBenchmarkFamily;
   speed: string;
@@ -562,7 +575,7 @@ type ComposerMode = "ask" | "dispatch" | "review";
 type DogfoodInputSource = DesktopDogfoodEventInput["inputSource"];
 type DogfoodActionType = DesktopDogfoodEventInput["actionType"];
 type SidebarMode = "explorer" | "source" | "evidence" | "workspace";
-type AgentVaultProviderId = "claude" | "codex" | "opencode";
+type AgentVaultProviderId = AgentVaultCommandProviderId;
 type AgentVaultProviderFilter = "all" | AgentVaultProviderId;
 
 interface AgentVaultProviderDefinition {
@@ -3870,7 +3883,7 @@ function getConfiguredWorkerPaneIds() {
   return Array.from({ length: MAX_WORKBENCH_PANES }, (_, index) => `worker-${index + 1}`);
 }
 
-type WorkerPaneReadinessState = "ready" | "blocked" | "pending";
+type WorkerPaneReadinessState = CommonWorkerPaneReadinessState;
 
 interface WorkerPaneReadiness {
   target: string;

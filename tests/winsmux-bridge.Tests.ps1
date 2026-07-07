@@ -1010,6 +1010,48 @@ agent-slots:
         }
     }
 
+    It 'uses the generated common contract binding for provider selector vocabularies' {
+        $script:BridgeCommonContractPackageVersion | Should -Be '0.36.25'
+        Get-BridgeCommonContractVocabularyValues -Name 'modelSources' | Should -Be @('provider-default', 'cli-discovery', 'provider-api', 'official-doc', 'operator-override')
+        Get-BridgeCommonContractVocabularyValues -Name 'reasoningEfforts' | Should -Be @('provider-default', 'low', 'medium', 'high', 'max', 'xhigh')
+        Get-BridgeCommonContractVocabularyValues -Name 'promptTransports' | Should -Be @('argv', 'file', 'stdin')
+
+        Test-BridgeReasoningEffortValue -Value 'MAX' | Should -Be $true
+        Get-BridgeCommonContractSupportedValuesText -Name 'reasoningEfforts' | Should -Be 'provider-default, low, medium, high, max, xhigh'
+
+        $runtimePreferences = Write-BridgeRuntimeRolePreferences -RootPath $script:settingsTempRoot -Roles @(
+            [ordered]@{
+                role_id         = 'worker'
+                modelSource     = 'official-doc'
+                reasoningEffort = 'MAX'
+                promptTransport = 'STDIN'
+            }
+        )
+        $runtimePreferences.roles.worker.model_source | Should -Be 'official-doc'
+        $runtimePreferences.roles.worker.reasoning_effort | Should -Be 'max'
+        $runtimePreferences.roles.worker.prompt_transport | Should -Be 'stdin'
+        {
+            Write-BridgeRuntimeRolePreferences -RootPath $script:settingsTempRoot -Roles @(
+                [ordered]@{
+                    role_id         = 'worker'
+                    promptTransport = 'socket'
+                }
+            )
+        } | Should -Throw '*runtime role preference prompt_transport*'
+
+        $registryEntry = Write-BridgeProviderRegistryEntry `
+            -RootPath $script:settingsTempRoot `
+            -SlotId 'worker-1' `
+            -Agent 'claude' `
+            -ModelSource 'official-doc' `
+            -ReasoningEffort 'max' `
+            -PromptTransport 'stdin'
+
+        $registryEntry.model_source | Should -Be 'official-doc'
+        $registryEntry.reasoning_effort | Should -Be 'max'
+        $registryEntry.prompt_transport | Should -Be 'stdin'
+    }
+
     It 'overlays ignored runtime role preferences on project role defaults' {
 @'
 agent: codex

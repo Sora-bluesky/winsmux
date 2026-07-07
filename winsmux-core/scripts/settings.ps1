@@ -17,6 +17,11 @@ $script:BridgeSettingsFileName = '.winsmux.yaml'
 $script:BridgeProviderRegistryFileName = 'provider-registry.json'
 $script:BridgeProviderCapabilityRegistryFileName = 'provider-capabilities.json'
 $script:BridgeRuntimeRolePreferencesFileName = 'runtime-role-preferences.json'
+$script:BridgeCommonContractBindingPath = Join-Path $PSScriptRoot 'common-contract.generated.ps1'
+if (-not (Test-Path -LiteralPath $script:BridgeCommonContractBindingPath -PathType Leaf)) {
+    throw "Missing generated common contract binding: $script:BridgeCommonContractBindingPath"
+}
+. $script:BridgeCommonContractBindingPath
 $script:BridgeWorkerBackendKinds = @('local', 'codex', 'colab_cli', 'api_llm', 'antigravity', 'noop')
 $script:BridgeExecutionProfileKinds = @('local-windows', 'isolated-enterprise')
 $script:BridgeSlotScalarKeys = @(
@@ -422,11 +427,7 @@ function Test-BridgeExecutionProfileKind {
 function Test-BridgeReasoningEffortValue {
     param([AllowNull()][string]$Value)
 
-    if ([string]::IsNullOrWhiteSpace($Value)) {
-        return $false
-    }
-
-    return ($Value.Trim().ToLowerInvariant() -in @('provider-default', 'low', 'medium', 'high', 'xhigh', 'max'))
+    return (Test-BridgeCommonContractVocabularyValue -Name 'reasoningEfforts' -Value $Value)
 }
 
 function Test-BridgeMcpModeValue {
@@ -490,7 +491,7 @@ function ConvertTo-BridgeSlotEntry {
             }
             if ($key -eq 'reasoning_effort') {
                 if (-not (Test-BridgeReasoningEffortValue -Value $text)) {
-                    throw "Invalid agent_slots configuration: unsupported reasoning_effort '$text' for slot '$($slot.slot_id)'. Supported values: provider-default, low, medium, high, xhigh, max."
+                    throw "Invalid agent_slots configuration: unsupported reasoning_effort '$text' for slot '$($slot.slot_id)'. Supported values: $(Get-BridgeCommonContractSupportedValuesText -Name 'reasoningEfforts')."
                 }
                 $text = $text.Trim().ToLowerInvariant()
             }
@@ -659,13 +660,13 @@ function ConvertTo-BridgeProviderRegistryEntry {
             continue
         }
 
-        if ($key -eq 'prompt_transport' -and $text -notin @('argv', 'file', 'stdin')) {
+        if ($key -eq 'prompt_transport' -and -not (Test-BridgeCommonContractVocabularyValue -Name 'promptTransports' -Value $text)) {
             throw "Invalid provider registry prompt_transport '$text'."
         }
-        if ($key -eq 'model_source' -and $text -notin @('provider-default', 'cli-discovery', 'provider-api', 'official-doc', 'operator-override')) {
+        if ($key -eq 'model_source' -and -not (Test-BridgeCommonContractVocabularyValue -Name 'modelSources' -Value $text)) {
             throw "Invalid provider registry model_source '$text'."
         }
-        if ($key -eq 'reasoning_effort' -and $text -notin @('provider-default', 'low', 'medium', 'high', 'xhigh', 'max')) {
+        if ($key -eq 'reasoning_effort' -and -not (Test-BridgeCommonContractVocabularyValue -Name 'reasoningEfforts' -Value $text)) {
             throw "Invalid provider registry reasoning_effort '$text'."
         }
 
@@ -798,7 +799,7 @@ function Write-BridgeProviderRegistryEntry {
     }
     if (-not [string]::IsNullOrWhiteSpace($ModelSource)) {
         $normalizedModelSource = $ModelSource.Trim()
-        if ($normalizedModelSource -notin @('provider-default', 'cli-discovery', 'provider-api', 'official-doc', 'operator-override')) {
+        if (-not (Test-BridgeCommonContractVocabularyValue -Name 'modelSources' -Value $normalizedModelSource)) {
             throw "Invalid provider registry model_source '$ModelSource'."
         }
         $entry.model_source = $normalizedModelSource
@@ -811,14 +812,14 @@ function Write-BridgeProviderRegistryEntry {
     }
     if (-not [string]::IsNullOrWhiteSpace($ReasoningEffort)) {
         $normalizedEffort = $ReasoningEffort.Trim().ToLowerInvariant()
-        if ($normalizedEffort -notin @('provider-default', 'low', 'medium', 'high', 'xhigh', 'max')) {
+        if (-not (Test-BridgeCommonContractVocabularyValue -Name 'reasoningEfforts' -Value $normalizedEffort)) {
             throw "Invalid provider registry reasoning_effort '$ReasoningEffort'."
         }
         $entry.reasoning_effort = $normalizedEffort
     }
     if (-not [string]::IsNullOrWhiteSpace($PromptTransport)) {
         $normalizedTransport = $PromptTransport.Trim().ToLowerInvariant()
-        if ($normalizedTransport -notin @('argv', 'file', 'stdin')) {
+        if (-not (Test-BridgeCommonContractVocabularyValue -Name 'promptTransports' -Value $normalizedTransport)) {
             throw "Invalid provider registry prompt_transport '$PromptTransport'."
         }
         $entry.prompt_transport = $normalizedTransport
@@ -925,6 +926,7 @@ function ConvertTo-BridgeRuntimeRoleConfig {
             'provider' { $key = 'agent' }
             'modelSource' { $key = 'model_source' }
             'reasoningEffort' { $key = 'reasoning_effort' }
+            'promptTransport' { $key = 'prompt_transport' }
             default { }
         }
 
@@ -948,13 +950,19 @@ function ConvertTo-BridgeRuntimeRoleConfig {
             continue
         }
 
-        if ($key -eq 'model_source' -and $text -notin @('provider-default', 'cli-discovery', 'provider-api', 'official-doc', 'operator-override')) {
+        if ($key -eq 'model_source' -and -not (Test-BridgeCommonContractVocabularyValue -Name 'modelSources' -Value $text)) {
             throw "Invalid runtime role preference model_source '$text'."
         }
         if ($key -eq 'reasoning_effort') {
             $text = $text.Trim().ToLowerInvariant()
-            if ($text -notin @('provider-default', 'low', 'medium', 'high', 'xhigh', 'max')) {
+            if (-not (Test-BridgeCommonContractVocabularyValue -Name 'reasoningEfforts' -Value $text)) {
                 throw "Invalid runtime role preference reasoning_effort '$text'."
+            }
+        }
+        if ($key -eq 'prompt_transport') {
+            $text = $text.Trim().ToLowerInvariant()
+            if (-not (Test-BridgeCommonContractVocabularyValue -Name 'promptTransports' -Value $text)) {
+                throw "Invalid runtime role preference prompt_transport '$text'."
             }
         }
 
@@ -1229,7 +1237,7 @@ function ConvertTo-BridgeProviderCapabilityEntry {
                 }
 
                 $text = $text.ToLowerInvariant()
-                if ($text -notin @('argv', 'file', 'stdin')) {
+                if (-not (Test-BridgeCommonContractVocabularyValue -Name 'promptTransports' -Value $text)) {
                     throw "Invalid provider capability prompt transport '$text'."
                 }
 
@@ -1256,10 +1264,10 @@ function ConvertTo-BridgeProviderCapabilityEntry {
                 }
 
                 $normalizedText = $text.Trim().ToLowerInvariant()
-                if ($key -eq 'model_sources' -and $normalizedText -notin @('provider-default', 'cli-discovery', 'provider-api', 'official-doc', 'operator-override')) {
+                if ($key -eq 'model_sources' -and -not (Test-BridgeCommonContractVocabularyValue -Name 'modelSources' -Value $normalizedText)) {
                     throw "Invalid provider capability field '$key'."
                 }
-                if ($key -eq 'reasoning_efforts' -and $normalizedText -notin @('provider-default', 'low', 'medium', 'high', 'xhigh', 'max')) {
+                if ($key -eq 'reasoning_efforts' -and -not (Test-BridgeCommonContractVocabularyValue -Name 'reasoningEfforts' -Value $normalizedText)) {
                     throw "Invalid provider capability field '$key'."
                 }
 
@@ -1359,7 +1367,7 @@ function ConvertTo-BridgeProviderModelOption {
         }
         if ($key -eq 'source') {
             $text = $text.Trim().ToLowerInvariant()
-            if ($text -notin @('provider-default', 'cli-discovery', 'provider-api', 'official-doc', 'operator-override')) {
+            if (-not (Test-BridgeCommonContractVocabularyValue -Name 'modelSources' -Value $text)) {
                 throw "Invalid provider capability field 'model_options'."
             }
         }
@@ -2273,23 +2281,13 @@ function Test-BridgeSettingValue {
                 return $false
             }
 
-            switch ($text.Trim().ToLowerInvariant()) {
-                'argv' {
-                    $NormalizedValue.Value = 'argv'
-                    return $true
-                }
-                'file' {
-                    $NormalizedValue.Value = 'file'
-                    return $true
-                }
-                'stdin' {
-                    $NormalizedValue.Value = 'stdin'
-                    return $true
-                }
-                default {
-                    return $false
-                }
+            $normalizedText = $text.Trim().ToLowerInvariant()
+            if (-not (Test-BridgeCommonContractVocabularyValue -Name 'promptTransports' -Value $normalizedText)) {
+                return $false
             }
+
+            $NormalizedValue.Value = $normalizedText
+            return $true
         }
         'workerbackend' {
             $text = ConvertFrom-BridgeYamlScalar $Value
@@ -2408,7 +2406,7 @@ function Test-BridgeSettingValue {
                     }
                     if ($propertyKey -eq 'reasoning_effort') {
                         if (-not (Test-BridgeReasoningEffortValue -Value $text)) {
-                            throw "Invalid roles configuration: unsupported reasoning_effort '$text' for role '$roleKey'. Supported values: provider-default, low, medium, high, xhigh, max."
+                            throw "Invalid roles configuration: unsupported reasoning_effort '$text' for role '$roleKey'. Supported values: $(Get-BridgeCommonContractSupportedValuesText -Name 'reasoningEfforts')."
                         }
                         $text = $text.Trim().ToLowerInvariant()
                     }
@@ -2582,7 +2580,7 @@ function Get-BridgeSettings {
 
     if ($rawProjectSettings -is [System.Collections.IDictionary] -and ($rawProjectSettings.Contains('reasoning_effort') -or $rawProjectSettings.Contains('reasoning-effort')) -and -not $projectSettings.Contains('reasoning_effort')) {
         $rawReasoningEffort = if ($rawProjectSettings.Contains('reasoning_effort')) { $rawProjectSettings['reasoning_effort'] } else { $rawProjectSettings['reasoning-effort'] }
-        throw "Invalid reasoning_effort configuration: unsupported value '$rawReasoningEffort'. Supported values: provider-default, low, medium, high, xhigh, max."
+        throw "Invalid reasoning_effort configuration: unsupported value '$rawReasoningEffort'. Supported values: $(Get-BridgeCommonContractSupportedValuesText -Name 'reasoningEfforts')."
     }
 
     if ($rawProjectSettings -is [System.Collections.IDictionary] -and $rawProjectSettings.Contains('agent_slots')) {
