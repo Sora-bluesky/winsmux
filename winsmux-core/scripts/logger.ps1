@@ -12,6 +12,8 @@ param(
     [string]$PaneId,
     [string]$Target,
     [string]$DataJson,
+    [long]$MaxBytes = 0,
+    [int]$RetentionCount = -1,
     [switch]$AsJson
 )
 
@@ -22,8 +24,14 @@ Set-StrictMode -Version Latest
 
 $script:OrchestraLogDirName = '.winsmux\logs'
 $script:OrchestraLogExtension = '.jsonl'
+$script:OrchestraLogDefaultMaxBytes = 10MB
+$script:OrchestraLogDefaultRetentionCount = 5
 $script:WinsmuxLogProjectDir = (Get-Location).Path
 $script:WinsmuxLogSessionName = 'winsmux-orchestra'
+
+# Consumer contract: writers may rotate the active session log to a per-session
+# history directory before an append. Consumers should keep tailing the active
+# <session>.jsonl path and use Read-OrchestraLog when retained history is needed.
 
 function Get-OrchestraLogDir {
     param([Parameter(Mandatory = $true)][string]$ProjectDir)
@@ -46,6 +54,146 @@ function Get-OrchestraLogPath {
     return Join-Path (Get-OrchestraLogDir -ProjectDir $ProjectDir) ($safeSessionName + $script:OrchestraLogExtension)
 }
 
+function Get-OrchestraLogMaxBytes {
+    param([long]$MaxBytes = 0)
+
+    if ($MaxBytes -gt 0) {
+        return $MaxBytes
+    }
+
+    $parsed = 0L
+    if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_ORCHESTRA_LOG_MAX_BYTES) -and [long]::TryParse($env:WINSMUX_ORCHESTRA_LOG_MAX_BYTES, [ref]$parsed) -and $parsed -gt 0) {
+        return $parsed
+    }
+
+    return $script:OrchestraLogDefaultMaxBytes
+}
+
+function Get-OrchestraLogRetentionCount {
+    param([int]$RetentionCount = -1)
+
+    if ($RetentionCount -ge 0) {
+        return $RetentionCount
+    }
+
+    $parsed = 0
+    if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_ORCHESTRA_LOG_RETENTION_COUNT) -and [int]::TryParse($env:WINSMUX_ORCHESTRA_LOG_RETENTION_COUNT, [ref]$parsed) -and $parsed -ge 0) {
+        return $parsed
+    }
+
+    return $script:OrchestraLogDefaultRetentionCount
+}
+
+function Test-OrchestraLogRotationNeeded {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [long]$MaxBytes = 0,
+        [AllowEmptyString()][string]$PendingContent = ''
+    )
+
+    $resolvedMaxBytes = Get-OrchestraLogMaxBytes -MaxBytes $MaxBytes
+    if ($resolvedMaxBytes -le 0 -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $false
+    }
+
+    $currentLength = (Get-Item -LiteralPath $Path).Length
+    if ($currentLength -le 0) {
+        return $false
+    }
+
+    $pendingBytes = 0
+    if (-not [string]::IsNullOrEmpty($PendingContent)) {
+        $pendingBytes = [System.Text.Encoding]::UTF8.GetByteCount($PendingContent) + 2
+    }
+
+    return (($currentLength + $pendingBytes) -gt $resolvedMaxBytes)
+}
+
+function Get-OrchestraLogRotationDir {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $directory = Split-Path -Parent $Path
+    $activeFileName = [System.IO.Path]::GetFileName($Path)
+    return Join-Path (Join-Path $directory '.rotated') $activeFileName
+}
+
+function New-OrchestraLogRotatedPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [datetime]$Now = (Get-Date)
+    )
+
+    $directory = Get-OrchestraLogRotationDir -Path $Path
+    $extension = [System.IO.Path]::GetExtension($Path)
+    $stamp = $Now.ToString('yyyyMMddHHmmssfff')
+
+    if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    }
+
+    for ($sequence = 0; $sequence -lt 1000000; $sequence++) {
+        $candidate = Join-Path $directory ('{0}.{1:D6}{2}' -f $stamp, $sequence, $extension)
+        if (-not (Test-Path -LiteralPath $candidate)) {
+            return $candidate
+        }
+    }
+
+    throw "Unable to allocate rotated log path for $Path at $stamp."
+}
+
+function Get-OrchestraLogRotatedFiles {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $directory = Get-OrchestraLogRotationDir -Path $Path
+    if ([string]::IsNullOrWhiteSpace($directory) -or -not (Test-Path -LiteralPath $directory -PathType Container)) {
+        return @()
+    }
+
+    $extension = [regex]::Escape([System.IO.Path]::GetExtension($Path))
+    $namePattern = '^\d{17}\.\d{6}' + $extension + '$'
+
+    return @(Get-ChildItem -LiteralPath $directory -File | Where-Object { $_.Name -match $namePattern } | Sort-Object -Property @{ Expression = 'Name'; Descending = $true })
+}
+
+function Invoke-OrchestraLogRetentionPrune {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [int]$RetentionCount = -1
+    )
+
+    $resolvedRetentionCount = Get-OrchestraLogRetentionCount -RetentionCount $RetentionCount
+    $rotatedFiles = @(Get-OrchestraLogRotatedFiles -Path $Path)
+    if ($resolvedRetentionCount -lt 0 -or $rotatedFiles.Count -le $resolvedRetentionCount) {
+        return
+    }
+
+    $rotatedFiles | Select-Object -Skip $resolvedRetentionCount | ForEach-Object {
+        Remove-Item -LiteralPath $_.FullName -Force
+    }
+}
+
+function Invoke-OrchestraLogRotationIfNeeded {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [long]$MaxBytes = 0,
+        [int]$RetentionCount = -1,
+        [AllowEmptyString()][string]$PendingContent = ''
+    )
+
+    if (-not (Test-OrchestraLogRotationNeeded -Path $Path -MaxBytes $MaxBytes -PendingContent $PendingContent)) {
+        return $null
+    }
+
+    $rotatedPath = New-OrchestraLogRotatedPath -Path $Path
+    try {
+        Move-Item -LiteralPath $Path -Destination $rotatedPath -Force -ErrorAction Stop
+    } catch {
+        return $null
+    }
+
+    return $rotatedPath
+}
+
 function Initialize-OrchestraLogger {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -59,7 +207,15 @@ function Initialize-OrchestraLogger {
 
     $logPath = Get-OrchestraLogPath -ProjectDir $ProjectDir -SessionName $SessionName
     if (-not (Test-Path $logPath)) {
-        Write-WinsmuxTextFile -Path $logPath -Content ''
+        $escapedPath = $logPath -replace '"', '""'
+        Invoke-WinsmuxWithFileLock -Path $logPath -Action {
+            if (-not (Test-Path -LiteralPath $logPath -PathType Leaf)) {
+                cmd /d /c ('type nul > "{0}"' -f $escapedPath) | Out-Null
+                if ($LASTEXITCODE -ne 0) {
+                    throw "cmd.exe failed to initialize active log $logPath"
+                }
+            }
+        }
     }
 
     return $logPath
@@ -144,13 +300,31 @@ function Write-OrchestraLog {
         [string]$Role,
         [string]$PaneId,
         [string]$Target,
-        [AllowNull()]$Data
+        [AllowNull()]$Data,
+        [long]$MaxBytes = 0,
+        [int]$RetentionCount = -1
     )
 
     $logPath = Initialize-OrchestraLogger -ProjectDir $ProjectDir -SessionName $SessionName
     $record = New-OrchestraLogRecord -SessionName $SessionName -Event $Event -Level $Level -Message $Message -Role $Role -PaneId $PaneId -Target $Target -Data $Data
     $line = ($record | ConvertTo-Json -Compress -Depth 10)
-    Write-WinsmuxTextFile -Path $logPath -Content $line -Append
+    $escapedPath = $logPath -replace '"', '""'
+    Invoke-WinsmuxWithFileLock -Path $logPath -Action {
+        $rotatedPath = Invoke-OrchestraLogRotationIfNeeded -Path $logPath -MaxBytes $MaxBytes -RetentionCount $RetentionCount -PendingContent $line
+        $line | cmd /d /c ('more >> "{0}"' -f $escapedPath) | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "cmd.exe failed to append $logPath"
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($rotatedPath)) {
+            try {
+                Invoke-OrchestraLogRetentionPrune -Path $logPath -RetentionCount $RetentionCount
+            } catch {
+                # Retention cleanup must not drop the current log record.
+            }
+        }
+    }
+
     return [PSCustomObject]$record
 }
 
@@ -164,7 +338,9 @@ function Write-WinsmuxLog {
         [string]$Target,
         [AllowNull()]$Data,
         [string]$ProjectDir,
-        [string]$SessionName
+        [string]$SessionName,
+        [long]$MaxBytes = 0,
+        [int]$RetentionCount = -1
     )
 
     $resolvedProjectDir = if ([string]::IsNullOrWhiteSpace($ProjectDir)) {
@@ -188,7 +364,7 @@ function Write-WinsmuxLog {
         default { throw "Unsupported log level: $Level" }
     }
 
-    return Write-OrchestraLog -ProjectDir $resolvedProjectDir -SessionName $resolvedSessionName -Event $Event -Level $normalizedLevel -Message $Message -Role $Role -PaneId $PaneId -Target $Target -Data $Data
+    return Write-OrchestraLog -ProjectDir $resolvedProjectDir -SessionName $resolvedSessionName -Event $Event -Level $normalizedLevel -Message $Message -Role $Role -PaneId $PaneId -Target $Target -Data $Data -MaxBytes $MaxBytes -RetentionCount $RetentionCount
 }
 
 function Read-OrchestraLog {
@@ -197,18 +373,38 @@ function Read-OrchestraLog {
         [string]$SessionName = 'winsmux-orchestra'
     )
 
-    $logPath = Get-OrchestraLogPath -ProjectDir $ProjectDir -SessionName $SessionName
-    if (-not (Test-Path $logPath -PathType Leaf)) {
-        return @()
-    }
-
     $records = [System.Collections.Generic.List[object]]::new()
-    foreach ($line in (Get-Content -Path $logPath -Encoding UTF8)) {
-        if ([string]::IsNullOrWhiteSpace($line)) {
-            continue
+    $logPath = Get-OrchestraLogPath -ProjectDir $ProjectDir -SessionName $SessionName
+    Invoke-WinsmuxWithFileLock -Path $logPath -Action {
+        $readPaths = @(
+            Get-OrchestraLogRotatedFiles -Path $logPath |
+                Sort-Object -Property @{ Expression = 'Name'; Descending = $false } |
+                ForEach-Object { $_.FullName }
+        )
+
+        if (Test-Path -LiteralPath $logPath -PathType Leaf) {
+            $readPaths += $logPath
         }
 
-        $records.Add(($line | ConvertFrom-Json -ErrorAction Stop)) | Out-Null
+        foreach ($path in $readPaths) {
+            try {
+                $lines = @(Get-Content -LiteralPath $path -Encoding UTF8 -ErrorAction Stop)
+            } catch [System.Management.Automation.ItemNotFoundException] {
+                continue
+            } catch [System.IO.FileNotFoundException] {
+                continue
+            } catch [System.IO.DirectoryNotFoundException] {
+                continue
+            }
+
+            foreach ($line in $lines) {
+                if ([string]::IsNullOrWhiteSpace($line)) {
+                    continue
+                }
+
+                $records.Add(($line | ConvertFrom-Json -ErrorAction Stop)) | Out-Null
+            }
+        }
     }
 
     return @($records)
@@ -243,7 +439,7 @@ if ($MyInvocation.InvocationName -ne '.') {
         }
         'write' {
             $data = ConvertFrom-OrchestraLogDataJson -DataJson $DataJson
-            $record = Write-OrchestraLog -ProjectDir $ProjectDir -SessionName $SessionName -Event $Event -Level $Level -Message $Message -Role $Role -PaneId $PaneId -Target $Target -Data $data
+            $record = Write-OrchestraLog -ProjectDir $ProjectDir -SessionName $SessionName -Event $Event -Level $Level -Message $Message -Role $Role -PaneId $PaneId -Target $Target -Data $data -MaxBytes $MaxBytes -RetentionCount $RetentionCount
             if ($AsJson) {
                 $record | ConvertTo-Json -Depth 10
             } else {
