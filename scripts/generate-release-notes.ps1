@@ -229,6 +229,9 @@ function ConvertTo-UserBenefit {
         'gate enforcement tests|test: move fixture temp dirs out of repo root|fix\(tests\): harden PowerShell native-exit handling' {
             return 'Improved CI and test stability while preventing temporary test artifacts from polluting the repo root'
         }
+        'add desktop split release gate|desktop split release gate' {
+            return 'Desktop split release readiness now requires captured evidence instead of static wiring alone'
+        }
         'runtime state machine|closed-loop dispatch/review/commit|closed-loop orchestra startup' {
             return 'Established the closed-loop runtime required for dispatch -> review -> commit orchestration'
         }
@@ -670,7 +673,14 @@ $highlightItems = @($features + $fixes + $documentation | Where-Object { -not [s
 if ($highlightItems.Count -eq 0) {
     $highlightItems = @('Prepared the release from the recorded task and commit history')
 }
-if ($Version -eq 'v0.36.22') {
+if ($Version -eq 'v0.36.26') {
+    $highlightItems = @(
+        'Split desktop summary scheduling, settings navigation, explorer tree construction, and conversation timeline helpers out of the large desktop entrypoint',
+        'Added a desktop split release gate that requires visual, accessibility, desktop E2E, module budget, performance, and evidence checks before release',
+        'Connected the common-contract package to v0.36.26 parity fixtures across TypeScript, Rust, PowerShell, and JSON surfaces',
+        'Generated release notes now describe the desktop maintainability work in public English wording'
+    )
+} elseif ($Version -eq 'v0.36.22') {
     $v03622Highlights = @(
         'Context Capsule v1 carries bounded summary, decisions, evidence references, verification digest, risks, next action, claim level, source SHA, and freshness fields without storing raw terminal transcripts',
         'Reliable Mailbox v2 records message, correlation, causation, idempotency, TTL, acknowledgement, processing, completion, failure, expiry, and malformed payload rejection so a pane write is not treated as delivery success',
@@ -697,7 +707,15 @@ Add-Section -Builder $builder -Title 'Highlights' -Items $highlightItems -Seen $
 
 $changeItems = @($features + $fixes + $documentation + $chores | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
 $changeItems = @(Remove-ExistingBenefits -Items $changeItems -Existing $highlightItems | Select-Object -First 8)
-if ($Version -eq 'v0.36.22') {
+if ($Version -eq 'v0.36.26') {
+    $changeItems = @(
+        'Desktop summary scheduling now has a smaller module boundary for refresh queue and live/fallback update behavior',
+        'Settings preference rendering and navigation predicates are covered by focused module checks',
+        'Project explorer tree building and conversation timeline normalization are covered outside the desktop entrypoint',
+        'The release gate distinguishes static CI wiring from required evidence mode so release readiness cannot pass without captured evidence',
+        'Common-contract compatibility fixtures now keep v0.36.25 as the previous-version fixture while v0.36.26 is the active package version'
+    )
+} elseif ($Version -eq 'v0.36.22') {
     $changeItems = @(
         'The release extends existing ledger, checkpoint, mailbox, handoff, and desktop surfaces instead of introducing an isolated coordination subsystem',
         'Formal six-pane model benchmarking remains outside this release; v0.36.22 records only the lightweight baseline and public boundary needed for the later benchmark lane',

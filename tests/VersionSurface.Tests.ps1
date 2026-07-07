@@ -235,6 +235,69 @@ This release body intentionally includes enough context for operators to underst
         $body | Should -Not -Match 'source of truth'
     }
 
+    It 'generates v0.36.26 release notes without private planning wording' {
+        $generator = Join-Path $script:RepoRoot 'scripts\generate-release-notes.ps1'
+        $qualityScript = Join-Path $script:RepoRoot 'scripts\assert-release-notes-quality.ps1'
+        $generatedBody = Join-Path $TestDrive 'generated-v03626-release-body.md'
+        $backlog = Join-Path $TestDrive 'backlog.yaml'
+        $gitShimDir = Join-Path $TestDrive 'bin-v03626'
+        New-Item -ItemType Directory -Path $gitShimDir -Force | Out-Null
+        Set-Content -LiteralPath $backlog -Value @'
+- id: TASK-639
+    title: デスクトップ分割と保守性改善の親タスク
+    status: done
+    priority: P0
+    target_version: v0.36.26
+- id: TASK-644
+    title: デスクトップ分割ゲート
+    status: done
+    priority: P0
+    target_version: v0.36.26
+'@ -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $gitShimDir 'git.cmd') -Value @'
+@echo off
+if "%~1"=="rev-parse" (
+  echo %* | findstr /C:"v0.36.26" >nul
+  if not errorlevel 1 exit /b 1
+  exit /b 0
+)
+if "%~1"=="tag" (
+  echo v0.36.25
+  echo v0.36.24
+  exit /b 0
+)
+if "%~1"=="log" (
+  echo test^(app^): add desktop split release gate ^(#1164^)
+  exit /b 0
+)
+exit /b 1
+'@ -Encoding ascii
+
+        $previousPath = $env:PATH
+        try {
+            $env:PATH = "$gitShimDir;$previousPath"
+            $generateOutput = @(& pwsh -NoProfile -File $generator -Version 'v0.36.26' -BacklogPath $backlog -OutputPath $generatedBody 2>&1)
+            $LASTEXITCODE | Should -Be 0
+            ($generateOutput -join "`n") | Should -Match 'release-notes.*wrote'
+
+            $qualityOutput = @(& pwsh -NoProfile -File $qualityScript -ReleaseNotesPath $generatedBody 2>&1)
+            $LASTEXITCODE | Should -Be 0
+            ($qualityOutput -join "`n") | Should -Match 'release-notes-quality.*passed'
+        } finally {
+            $env:PATH = $previousPath
+        }
+
+        $body = Get-Content -LiteralPath $generatedBody -Raw -Encoding UTF8
+        $body | Should -Match 'desktop maintainability'
+        $body | Should -Match 'https://github\.com/Sora-bluesky/winsmux/(compare|releases/tag)/'
+        $body | Should -Not -Match '[\p{IsHiragana}\p{IsKatakana}\p{IsCJKUnifiedIdeographs}]'
+        $body | Should -Not -Match 'TASK-'
+        $body | Should -Not -Match 'HANDOFF'
+        $maintainerLocalPathPattern = ([regex]::Escape(('C:' + '\Users\'))) + '|Main' + 'Vault|iCloud' + 'Drive'
+        $body | Should -Not -Match $maintainerLocalPathPattern
+        $body | Should -Not -Match '(?i)\bplanning\b|private planning|planning labels'
+    }
+
     It 'generates release notes from public git history when backlog is unavailable' {
         $generator = Join-Path $script:RepoRoot 'scripts\generate-release-notes.ps1'
         $qualityScript = Join-Path $script:RepoRoot 'scripts\assert-release-notes-quality.ps1'
