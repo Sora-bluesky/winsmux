@@ -211,6 +211,8 @@ Describe 'Public surface policy' {
         $installer | Should -Match 'winsmux-core/scripts/orchestra-state\.ps1'
         $installer | Should -Match 'winsmux-core/scripts/server-watchdog\.ps1'
         $installer | Should -Match 'winsmux-core/scripts/pane-border\.ps1'
+        $installer | Should -Match 'winsmux-core/scripts/common-contract\.generated\.ps1'
+        $installer | Should -Match '"common-contract\.generated\.ps1"'
     }
 
     It 'keeps public install and OAuth wording aligned with the current policy' {

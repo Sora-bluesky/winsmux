@@ -33,10 +33,22 @@ function parseStringUnion(source, typeName) {
   return Array.from(match[1].matchAll(/"([^"]+)"/g), (item) => item[1]);
 }
 
+function parseTypeAlias(source, typeName) {
+  const match = new RegExp(`type\\s+${typeName}\\s*=\\s*([^;]+);`).exec(source);
+  assert.ok(match, `Expected to find type ${typeName}`);
+  return match[1].trim();
+}
+
 function parsePropertyStringUnion(source, propertyName) {
   const match = new RegExp(`\\b${propertyName}\\??:\\s*([^;]+);`).exec(source);
   assert.ok(match, `Expected to find property ${propertyName}`);
   return Array.from(match[1].matchAll(/"([^"]+)"/g), (item) => item[1]);
+}
+
+function parsePropertyType(source, propertyName) {
+  const match = new RegExp(`\\b${propertyName}\\??:\\s*([^;]+);`).exec(source);
+  assert.ok(match, `Expected to find property ${propertyName}`);
+  return match[1].trim();
 }
 
 function assertSameVocabulary(name, actual, expected) {
@@ -138,20 +150,16 @@ assertSameVocabulary(
 );
 
 const mainSource = await readFile(path.resolve("src/main.ts"), "utf8");
-assertSameVocabulary("main.ts RuntimeProviderId", parseStringUnion(mainSource, "RuntimeProviderId"), providerCapabilityIds);
-assertSameVocabulary("main.ts RuntimeModelSource", parseStringUnion(mainSource, "RuntimeModelSource"), modelSourceIds);
-assertSameVocabulary("main.ts RuntimeReasoningEffort", parseStringUnion(mainSource, "RuntimeReasoningEffort"), effortCapabilityIds);
-assertSameVocabulary("main.ts RuntimeModelCatalogStatus", parseStringUnion(mainSource, "RuntimeModelCatalogStatus"), modelReadinessStates);
-assertSameVocabulary(
-  "main.ts RuntimeModelWorkerReadinessState",
-  parseStringUnion(mainSource, "RuntimeModelWorkerReadinessState"),
-  runtimeWorkerReadinessStates,
-);
-assertSameVocabulary("main.ts RuntimeModelBenchmarkFamily", parseStringUnion(mainSource, "RuntimeModelBenchmarkFamily"), benchmarkFamilies);
-assertSameVocabulary("main.ts promptTransport", parsePropertyStringUnion(mainSource, "promptTransport"), transportCapabilityIds);
-assertSameVocabulary("main.ts requiredBackend", parsePropertyStringUnion(mainSource, "requiredBackend"), backendCapabilityIds);
-assertSameVocabulary("main.ts WorkerPaneReadinessState", parseStringUnion(mainSource, "WorkerPaneReadinessState"), workerPaneReadinessStates);
-assertSameVocabulary("main.ts AgentVaultProviderId", parseStringUnion(mainSource, "AgentVaultProviderId"), agentVaultCommandProviderIds);
+assert.equal(parseTypeAlias(mainSource, "RuntimeProviderId"), "ProviderCapabilityId");
+assert.equal(parseTypeAlias(mainSource, "RuntimeModelSource"), "ModelSource");
+assert.equal(parseTypeAlias(mainSource, "RuntimeReasoningEffort"), "EffortCapabilityId");
+assert.equal(parseTypeAlias(mainSource, "RuntimeModelCatalogStatus"), "ReadinessState");
+assert.equal(parseTypeAlias(mainSource, "RuntimeModelWorkerReadinessState"), "CommonRuntimeWorkerReadinessState");
+assert.equal(parseTypeAlias(mainSource, "RuntimeModelBenchmarkFamily"), "BenchmarkFamily");
+assert.equal(parsePropertyType(mainSource, "promptTransport"), "TransportCapabilityId");
+assert.equal(parsePropertyType(mainSource, "requiredBackend"), "BackendCapabilityId");
+assert.equal(parseTypeAlias(mainSource, "WorkerPaneReadinessState"), "CommonWorkerPaneReadinessState");
+assert.equal(parseTypeAlias(mainSource, "AgentVaultProviderId"), "AgentVaultCommandProviderId");
 
 for (const state of runtimeWorkerReadinessStates) {
   assert.ok(modelReadinessStates.includes(state), `Runtime worker readiness ${state} must remain a model-readiness subset`);
