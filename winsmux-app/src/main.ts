@@ -388,7 +388,7 @@ type WorkbenchLayoutMode = "2x2" | "3x2" | "focus";
 type RuntimeRoleId = "operator" | "worker" | "reviewer";
 type RuntimeProviderId = "provider-default" | "codex" | "claude" | "antigravity" | "grok-build" | "openrouter";
 type RuntimeModelSource = "provider-default" | "cli-discovery" | "provider-api" | "official-doc" | "operator-override";
-type RuntimeReasoningEffort = "provider-default" | "low" | "medium" | "high" | "max" | "xhigh";
+type RuntimeReasoningEffort = "provider-default" | "low" | "medium" | "high" | "xhigh" | "max";
 type RuntimeModelAssignmentMode = "shared" | "per-pane";
 type RuntimeModelCatalogStatus = "selectable" | "candidate" | "setup-required" | "runnable" | "blocked" | "reference-only" | "unavailable";
 type RuntimeModelWorkerReadinessState = "runnable" | "setup-required" | "blocked";
@@ -445,7 +445,7 @@ interface RuntimeModelCatalogEntry {
   promptTransport: "argv" | "file" | "stdin";
   authMode: string;
   requiredEnv?: string;
-  requiredBackend: "any" | "api_llm" | "antigravity" | "agent-cli" | "colab_cli";
+  requiredBackend: "any" | "agent-cli" | "antigravity" | "api_llm" | "colab_cli";
   status: RuntimeModelCatalogStatus;
   family: RuntimeModelBenchmarkFamily;
   speed: string;

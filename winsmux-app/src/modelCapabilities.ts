@@ -1,45 +1,77 @@
-export type ProviderCapabilityId =
-  | "provider-default"
-  | "codex"
-  | "claude"
-  | "antigravity"
-  | "grok-build"
-  | "openrouter";
+export const providerCapabilityIds = [
+  "provider-default",
+  "codex",
+  "claude",
+  "antigravity",
+  "grok-build",
+  "openrouter",
+] as const;
+export type ProviderCapabilityId = typeof providerCapabilityIds[number];
 
-export type ModelSource =
-  | "provider-default"
-  | "cli-discovery"
-  | "provider-api"
-  | "official-doc"
-  | "operator-override";
+export const modelSourceIds = [
+  "provider-default",
+  "cli-discovery",
+  "provider-api",
+  "official-doc",
+  "operator-override",
+] as const;
+export type ModelSource = typeof modelSourceIds[number];
 
-export type EffortCapabilityId =
-  | "provider-default"
-  | "low"
-  | "medium"
-  | "high"
-  | "xhigh"
-  | "max";
+export const effortCapabilityIds = [
+  "provider-default",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const;
+export type EffortCapabilityId = typeof effortCapabilityIds[number];
 
-export type BackendCapabilityId =
-  | "any"
-  | "agent-cli"
-  | "antigravity"
-  | "api_llm"
-  | "colab_cli";
+export const backendCapabilityIds = [
+  "any",
+  "agent-cli",
+  "antigravity",
+  "api_llm",
+  "colab_cli",
+] as const;
+export type BackendCapabilityId = typeof backendCapabilityIds[number];
 
-export type TransportCapabilityId = "argv" | "file" | "stdin";
+export const transportCapabilityIds = ["argv", "file", "stdin"] as const;
+export type TransportCapabilityId = typeof transportCapabilityIds[number];
 
-export type ReadinessState =
-  | "selectable"
-  | "candidate"
-  | "setup-required"
-  | "runnable"
-  | "blocked"
-  | "reference-only"
-  | "unavailable";
+export const modelReadinessStates = [
+  "selectable",
+  "candidate",
+  "setup-required",
+  "runnable",
+  "blocked",
+  "reference-only",
+  "unavailable",
+] as const;
+export type ReadinessState = typeof modelReadinessStates[number];
 
-export type BenchmarkFamily = "agent-arena" | "code-arena" | "winsmux-local";
+export const runtimeWorkerReadinessStates = ["runnable", "setup-required", "blocked"] as const;
+export type RuntimeWorkerReadinessState = typeof runtimeWorkerReadinessStates[number];
+
+export const workerPaneReadinessStates = ["ready", "blocked", "pending"] as const;
+export type WorkerPaneReadinessState = typeof workerPaneReadinessStates[number];
+
+export const agentVaultCommandProviderIds = ["claude", "codex", "opencode"] as const;
+export type AgentVaultCommandProviderId = typeof agentVaultCommandProviderIds[number];
+
+export const benchmarkFamilies = ["agent-arena", "code-arena", "winsmux-local"] as const;
+export type BenchmarkFamily = typeof benchmarkFamilies[number];
+
+export const commonContractSurfaceIds = [
+  "provider",
+  "readiness",
+  "manifest",
+  "route",
+  "capsule",
+  "mailbox",
+  "settings",
+] as const;
+export type CommonContractSurfaceId = typeof commonContractSurfaceIds[number];
 
 export interface Readiness {
   state: ReadinessState;
@@ -178,6 +210,60 @@ export interface CapabilityValidationIssue {
 }
 
 export const openRouterModelsApiUrl = "https://openrouter.ai/api/v1/models";
+
+export const commonContractPackageVersion = "0.36.25";
+
+export const commonContractPackage = {
+  version: commonContractPackageVersion,
+  surfaces: commonContractSurfaceIds,
+  vocabularies: {
+    runtimeProviderIds: {
+      owner: "winsmux-app/src/modelCapabilities.ts",
+      values: providerCapabilityIds,
+    },
+    modelSources: {
+      owner: "winsmux-app/src/modelCapabilities.ts",
+      values: modelSourceIds,
+    },
+    reasoningEfforts: {
+      owner: "winsmux-app/src/modelCapabilities.ts",
+      values: effortCapabilityIds,
+    },
+    backendCapabilities: {
+      owner: "winsmux-app/src/modelCapabilities.ts",
+      values: backendCapabilityIds,
+      note: "Capability categories, not concrete worker_backend values.",
+    },
+    promptTransports: {
+      owner: "winsmux-app/src/modelCapabilities.ts",
+      values: transportCapabilityIds,
+    },
+    modelReadiness: {
+      owner: "winsmux-app/src/modelCapabilities.ts",
+      values: modelReadinessStates,
+      note: "Model availability vocabulary. Do not merge with worker pane readiness.",
+    },
+    runtimeWorkerReadiness: {
+      owner: "winsmux-app/src/main.ts",
+      values: runtimeWorkerReadinessStates,
+      note: "Startability summary derived from model availability plus credential/backend state.",
+    },
+    workerPaneReadiness: {
+      owner: "winsmux-app/src/main.ts",
+      values: workerPaneReadinessStates,
+      note: "Pane idle-state vocabulary. Do not merge with model availability.",
+    },
+    agentVaultCommandProviders: {
+      owner: "winsmux-app/src/main.ts",
+      values: agentVaultCommandProviderIds,
+      note: "Command-provider vocabulary kept separate from runtime provider IDs.",
+    },
+    benchmarkFamilies: {
+      owner: "winsmux-app/src/modelCapabilities.ts",
+      values: benchmarkFamilies,
+    },
+  },
+} as const;
 
 export const effortCapabilities: readonly EffortCapability[] = [
   { id: "provider-default", label: "Auto", labelJa: "自動" },
