@@ -50,4 +50,52 @@ Describe 'winsmux MCP server contract' {
         $responses[0].result._meta.'winsmux/adapterBoundary'.transport | Should -Be 'stdio'
         $responses[1].result.tools.name | Should -Contain 'winsmux_assign'
     }
+
+    It 'resolves the Python SDK default server path to the tracked MCP server' {
+        $python = @'
+import sys
+from pathlib import Path
+
+repo_root = Path(sys.argv[1])
+sys.path.insert(0, str(repo_root / "sdk" / "python"))
+
+from winsmux import WinsmuxClient
+
+print(WinsmuxClient._resolve_default_server_path())
+'@
+
+        $output = & python -c $python $script:RepoRoot
+        $LASTEXITCODE | Should -Be 0
+
+        $resolvedPath = ($output | Select-Object -Last 1).Trim()
+        (Split-Path -Leaf $resolvedPath) | Should -Be 'mcp-server.js'
+        (Split-Path -Leaf (Split-Path -Parent $resolvedPath)) | Should -Be 'winsmux-core'
+        (Test-Path -LiteralPath $resolvedPath -PathType Leaf) | Should -BeTrue
+    }
+
+    It 'resolves the TypeScript SDK default server path to the tracked MCP server' {
+        $typescriptSdk = Join-Path $script:RepoRoot 'sdk\typescript\winsmux.ts'
+        $content = Get-Content -LiteralPath $typescriptSdk -Raw -Encoding UTF8
+        $content | Should -Match 'fileURLToPath\(import\.meta\.url\)'
+        $resolver = [Regex]::Match(
+            $content,
+            'return resolve\(moduleDir,\s*(?<segments>[^;]+)\);'
+        )
+        $resolver.Success | Should -BeTrue
+
+        $segments = @(
+            [Regex]::Matches($resolver.Groups['segments'].Value, '"(?<segment>[^"]+)"') |
+                ForEach-Object { $_.Groups['segment'].Value }
+        )
+        $segments | Should -Be @('..', '..', 'winsmux-core', 'mcp-server.js')
+
+        $resolvedPath = Split-Path -Parent $typescriptSdk
+        foreach ($segment in $segments) {
+            $resolvedPath = Join-Path $resolvedPath $segment
+        }
+        $resolvedPath = [System.IO.Path]::GetFullPath($resolvedPath)
+        (Split-Path -Leaf $resolvedPath) | Should -Be 'mcp-server.js'
+        (Split-Path -Leaf (Split-Path -Parent $resolvedPath)) | Should -Be 'winsmux-core'
+        (Test-Path -LiteralPath $resolvedPath -PathType Leaf) | Should -BeTrue
+    }
 }
