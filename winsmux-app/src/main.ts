@@ -31,6 +31,7 @@ import {
   type DesktopEditorFilePayload,
   type DesktopExplorerEntry,
   type DesktopExplainPayload,
+  type DesktopSummaryRefreshEvent,
   type DesktopRunProjection,
   type DesktopSummarySnapshot,
   type DesktopRuntimeRolePreference,
@@ -73,6 +74,10 @@ import {
   selectConfiguredWorkerStartRoster,
 } from "./workerStartPlanning";
 import { hasWorkerReadyPromptInAnySource } from "./workerReadinessPrompt";
+import {
+  DesktopSummaryRefreshScheduler,
+  type DesktopSummaryRefreshContext,
+} from "./desktopSummaryScheduler";
 
 interface PaneEntry {
   terminal: Terminal;
@@ -771,17 +776,6 @@ const detectedPreviewTargets = new Map<string, PreviewTarget>();
 const PREVIEW_FRESHNESS_WINDOW_MS = 30_000;
 const PANE_META_REFRESH_INTERVAL_MS = 30_000;
 let desktopSummarySnapshot: DesktopSummarySnapshot | null = null;
-let desktopSummaryRefreshInFlight: Promise<void> | null = null;
-let desktopSummaryRefreshInFlightProjectKey = "";
-let desktopSummaryRefreshTimeout: number | null = null;
-let desktopSummaryQueuedRunId: string | null = null;
-let desktopSummaryRefreshRequestedVersion = 0;
-let desktopSummaryRefreshRunningVersion = 0;
-let desktopSummaryRefreshSequence = 0;
-let desktopSummaryFallbackRefreshRegistered = false;
-let desktopSummaryLiveRefreshAvailable = false;
-let desktopSummaryLastSuccessfulRefreshAt = 0;
-let desktopSummaryLastStreamSignalAt = 0;
 let desktopSummaryRefreshSerial = 0;
 const desktopExplainCache = new Map<string, DesktopExplainPayload>();
 const desktopRunCompareCache = new Map<string, DesktopCompareRunsResult>();
@@ -816,6 +810,23 @@ const backendConversation: ConversationItem[] = [];
 const runtimeConversation: ConversationItem[] = [];
 const DESKTOP_SUMMARY_REFRESH_FALLBACK_INTERVAL_MS = 15_000;
 const DESKTOP_SUMMARY_STREAM_STALE_MS = 60_000;
+const desktopSummaryRefreshScheduler = new DesktopSummaryRefreshScheduler<DesktopSummaryRefreshEvent>({
+  window,
+  document,
+  fallbackIntervalMs: DESKTOP_SUMMARY_REFRESH_FALLBACK_INTERVAL_MS,
+  streamStaleMs: DESKTOP_SUMMARY_STREAM_STALE_MS,
+  getRefreshTarget: () => {
+    const projectDir = getActiveProjectDirPayload();
+    return {
+      projectDir: projectDir ?? null,
+      projectKey: normalizeProjectDirInput(projectDir) || "",
+    };
+  },
+  refresh: refreshDesktopSummaryFromScheduler,
+  subscribe: subscribeToDesktopSummaryRefresh,
+  handleLiveEvent: handleDesktopSummaryLiveRefreshEvent,
+  logger: console,
+});
 const MAX_RUNTIME_CONVERSATION_ITEMS = 80;
 const OPERATOR_PTY_ID = "operator";
 const OPERATOR_PTY_COLS = 120;
@@ -18121,22 +18132,22 @@ function renderPaneMetadata() {
   });
 }
 
-async function refreshDesktopSummary(forceExplainRunId?: string | null) {
-  const requestProjectDir = getActiveProjectDirPayload();
-  const requestProjectKey = normalizeProjectDirInput(requestProjectDir) || "";
-  if (desktopSummaryRefreshInFlight && desktopSummaryRefreshInFlightProjectKey === requestProjectKey) {
-    return desktopSummaryRefreshInFlight;
-  }
+function refreshDesktopSummary(forceExplainRunId?: string | null) {
+  return desktopSummaryRefreshScheduler.refresh(forceExplainRunId);
+}
 
-  const requestSequence = ++desktopSummaryRefreshSequence;
-  desktopSummaryRefreshInFlightProjectKey = requestProjectKey;
-  desktopSummaryRefreshInFlight = (async () => {
+async function refreshDesktopSummaryFromScheduler(context: DesktopSummaryRefreshContext) {
   try {
+    const {
+      forceExplainRunId,
+      requestProjectDir,
+      requestProjectKey,
+    } = context;
     const previousSnapshot = desktopSummarySnapshot;
     const previousSelectedRunId = selectedRunId;
     const snapshot = await getDesktopSummarySnapshot(requestProjectDir);
     const currentProjectKey = normalizeProjectDirInput(getActiveProjectDirPayload()) || "";
-    if (requestSequence !== desktopSummaryRefreshSequence || currentProjectKey !== requestProjectKey) {
+    if (!context.isCurrent(currentProjectKey)) {
       return;
     }
     const snapshotProjectKey = normalizeProjectDirInput(snapshot.project_dir) || "";
@@ -18172,7 +18183,7 @@ async function refreshDesktopSummary(forceExplainRunId?: string | null) {
     }
     desktopSummaryRefreshSerial += 1;
     desktopSummarySnapshot = snapshot;
-    desktopSummaryLastSuccessfulRefreshAt = Date.now();
+    context.markSuccessfulRefresh();
     selectedRunId = resolveSelectedRunId(snapshot, forceExplainRunId);
     pruneExplainCache(snapshot, forceExplainRunId);
     const selectedRunHasMaterialChange = Boolean(
@@ -18207,133 +18218,36 @@ async function refreshDesktopSummary(forceExplainRunId?: string | null) {
     }
     renderDesktopSurfaces();
     void refreshWorkerStatusSurface();
-    } catch (error) {
-      console.warn("Failed to load desktop summary snapshot", error);
-    } finally {
-      if (requestSequence !== desktopSummaryRefreshSequence) {
-        return;
-      }
-      desktopSummaryRefreshInFlight = null;
-      desktopSummaryRefreshInFlightProjectKey = "";
-      if (desktopSummaryRefreshRunningVersion < desktopSummaryRefreshRequestedVersion) {
-        flushDesktopSummaryRefreshQueue();
-      }
-    }
-  })();
-
-  return desktopSummaryRefreshInFlight;
-}
-
-function flushDesktopSummaryRefreshQueue() {
-  if (desktopSummaryRefreshInFlight) {
-    return;
+  } catch (error) {
+    console.warn("Failed to load desktop summary snapshot", error);
   }
-
-  if (desktopSummaryRefreshRunningVersion >= desktopSummaryRefreshRequestedVersion) {
-    return;
-  }
-
-  const queuedRunId = desktopSummaryQueuedRunId;
-  desktopSummaryQueuedRunId = null;
-  desktopSummaryRefreshRunningVersion = desktopSummaryRefreshRequestedVersion;
-  void refreshDesktopSummary(queuedRunId);
 }
 
 function requestDesktopSummaryRefresh(forceExplainRunId?: string | null, delayMs = 150) {
-  desktopSummaryRefreshRequestedVersion += 1;
-  if (forceExplainRunId) {
-    desktopSummaryQueuedRunId = forceExplainRunId;
-  }
-  if (desktopSummaryRefreshTimeout !== null) {
-    window.clearTimeout(desktopSummaryRefreshTimeout);
-  }
-
-  desktopSummaryRefreshTimeout = window.setTimeout(() => {
-    desktopSummaryRefreshTimeout = null;
-    if (desktopSummaryRefreshInFlight) {
-      return;
-    }
-    flushDesktopSummaryRefreshQueue();
-  }, delayMs);
+  desktopSummaryRefreshScheduler.request(forceExplainRunId, delayMs);
 }
 
-function shouldRunDesktopSummaryFallbackRefresh(now = Date.now()) {
-  if (!desktopSummaryLiveRefreshAvailable) {
-    return true;
+function handleDesktopSummaryLiveRefreshEvent(event: DesktopSummaryRefreshEvent) {
+  if (event.source === "pty" && event.pane_id) {
+    if (event.pane_id === OPERATOR_PTY_ID) {
+      if (event.reason === "pty.close") {
+        markOperatorPtyStoppedFromExternalEvent();
+      } else if (event.reason === "pty.spawn" || event.reason === "pty.respawn") {
+        markOperatorPtyStartedFromExternalEvent();
+      }
+    } else {
+      const workbenchPaneId = resolveWorkbenchPaneIdForBackendPaneId(event.pane_id);
+      if (workbenchPaneId && event.reason === "pty.close") {
+        markPanePtyStoppedFromExternalEvent(workbenchPaneId);
+      } else if (workbenchPaneId && (event.reason === "pty.spawn" || event.reason === "pty.respawn")) {
+        markPanePtyStartedFromExternalEvent(workbenchPaneId);
+      }
+    }
   }
-
-  const lastLiveActivityAt = Math.max(
-    desktopSummaryLastSuccessfulRefreshAt,
-    desktopSummaryLastStreamSignalAt,
-  );
-  return now - lastLiveActivityAt >= DESKTOP_SUMMARY_STREAM_STALE_MS;
-}
-
-function registerDesktopSummaryFallbackRefresh() {
-  if (desktopSummaryFallbackRefreshRegistered) {
-    return;
-  }
-
-  desktopSummaryFallbackRefreshRegistered = true;
-
-  window.setInterval(() => {
-    if (document.visibilityState !== "visible") {
-      return;
-    }
-    if (!shouldRunDesktopSummaryFallbackRefresh()) {
-      return;
-    }
-    requestDesktopSummaryRefresh(undefined, 0);
-  }, DESKTOP_SUMMARY_REFRESH_FALLBACK_INTERVAL_MS);
-
-  window.addEventListener("focus", () => {
-    if (!shouldRunDesktopSummaryFallbackRefresh()) {
-      return;
-    }
-    requestDesktopSummaryRefresh(undefined, 0);
-  });
-
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState !== "visible") {
-      return;
-    }
-    if (!shouldRunDesktopSummaryFallbackRefresh()) {
-      return;
-    }
-    requestDesktopSummaryRefresh(undefined, 0);
-  });
 }
 
 function registerDesktopSummaryLiveRefresh() {
-  registerDesktopSummaryFallbackRefresh();
-
-  void subscribeToDesktopSummaryRefresh((event) => {
-    if (event.source === "pty" && event.pane_id) {
-      if (event.pane_id === OPERATOR_PTY_ID) {
-        if (event.reason === "pty.close") {
-          markOperatorPtyStoppedFromExternalEvent();
-        } else if (event.reason === "pty.spawn" || event.reason === "pty.respawn") {
-          markOperatorPtyStartedFromExternalEvent();
-        }
-      } else {
-        const workbenchPaneId = resolveWorkbenchPaneIdForBackendPaneId(event.pane_id);
-        if (workbenchPaneId && event.reason === "pty.close") {
-          markPanePtyStoppedFromExternalEvent(workbenchPaneId);
-        } else if (workbenchPaneId && (event.reason === "pty.spawn" || event.reason === "pty.respawn")) {
-          markPanePtyStartedFromExternalEvent(workbenchPaneId);
-        }
-      }
-    }
-    if (event.source !== "pty") {
-      desktopSummaryLastStreamSignalAt = Date.now();
-    }
-    requestDesktopSummaryRefresh(event.run_id, 0);
-  }).then(() => {
-    desktopSummaryLiveRefreshAvailable = true;
-  }).catch((error) => {
-    console.warn("Failed to subscribe to desktop summary refresh events", error);
-    desktopSummaryLiveRefreshAvailable = false;
-  });
+  desktopSummaryRefreshScheduler.registerLiveRefresh();
 }
 
 function initializeSidebarResize() {
