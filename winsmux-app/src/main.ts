@@ -445,7 +445,7 @@ interface RuntimeModelCatalogEntry {
   promptTransport: "argv" | "file" | "stdin";
   authMode: string;
   requiredEnv?: string;
-  requiredBackend: "any" | "api_llm" | "antigravity" | "agent-cli" | "colab_cli";
+  requiredBackend: "any" | "agent-cli" | "antigravity" | "api_llm" | "colab_cli";
   status: RuntimeModelCatalogStatus;
   family: RuntimeModelBenchmarkFamily;
   speed: string;
