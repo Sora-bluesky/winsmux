@@ -35,6 +35,10 @@ jobs:
         working-directory: winsmux-app
         run: npm ci
 
+      - name: Check common contract package drift
+        working-directory: winsmux-app
+        run: npm run test:common-contract-package
+
       - name: Require desktop release signing secrets
         if: github.event_name == 'push' || inputs.release_tag != ''
         shell: pwsh
