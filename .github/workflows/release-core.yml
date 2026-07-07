@@ -41,10 +41,21 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: winsmux-app/package-lock.json
       - uses: actions/download-artifact@v8
       - name: Bootstrap repo hooks
         shell: pwsh
         run: ./scripts/bootstrap-git-guard.ps1
+      - name: Install frontend dependencies
+        working-directory: winsmux-app
+        run: npm ci
+      - name: Check common contract package drift
+        working-directory: winsmux-app
+        run: npm run test:common-contract-package
       - name: Create Release Assets
         run: |
           mkdir -p release

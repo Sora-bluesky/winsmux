@@ -28,6 +28,14 @@ jobs:
         with:
           node-version: 24
 
+      - name: Install frontend dependencies
+        working-directory: winsmux-app
+        run: npm ci
+
+      - name: Check common contract package drift
+        working-directory: winsmux-app
+        run: npm run test:common-contract-package
+
       - name: Stage npm package
         id: stage
         shell: pwsh

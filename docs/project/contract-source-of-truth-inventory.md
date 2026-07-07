@@ -28,6 +28,13 @@ same enum or list is hand-declared in TypeScript, PowerShell, Rust, and JSON,
 kept in sync only by convention. No codegen, no shared schema, and the
 per-layer copies have already drifted in at least three confirmed cases (below).
 
+Update for v0.36.25: the common provider/readiness/manifest/route/capsule/mailbox/settings
+payload now has one public payload source: `winsmux-app/src/modelCapabilities.ts`
+exports `commonContractPackage`. The drift gate is
+`npm run test:common-contract-package` in `winsmux-app`; it checks generated
+PowerShell bindings, Rust parity fixtures, and the previous-version fixture
+against that source before merge or release.
+
 ## Confirmed drift (hand-verified)
 
 Three duplications have already diverged in the tree today:

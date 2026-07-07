@@ -64,6 +64,27 @@ jobs:
         shell: pwsh
         run: pwsh -NoProfile -File scripts/audit-public-surface.ps1
 
+  common-contract-drift:
+    name: Common Contract Drift Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: winsmux-app/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: winsmux-app
+        run: npm ci
+
+      - name: Check common contract package drift
+        working-directory: winsmux-app
+        run: npm run test:common-contract-package
+
   pester:
     name: Pester Tests (${{ matrix.name }})
     runs-on: windows-latest
@@ -361,6 +382,7 @@ jobs:
     needs:
       - secret-scan
       - public-surface
+      - common-contract-drift
       - pester
       - core-build-test
       - desktop-build-test
@@ -373,6 +395,7 @@ jobs:
           for result in \
             "${{ needs.secret-scan.result }}" \
             "${{ needs.public-surface.result }}" \
+            "${{ needs.common-contract-drift.result }}" \
             "${{ needs.pester.result }}" \
             "${{ needs.core-build-test.result }}" \
             "${{ needs.desktop-build-test.result }}"; do

@@ -132,6 +132,7 @@ Core contract change:
 ```powershell
 git diff --check
 cargo test --manifest-path core\Cargo.toml
+cmd /c "cd winsmux-app && npm run test:common-contract-package"
 pwsh -NoProfile -File scripts\audit-public-surface.ps1
 pwsh -NoProfile -File scripts\git-guard.ps1 -Mode full
 ```
@@ -153,6 +154,7 @@ git diff --check
 Invoke-Pester -Path tests\winsmux-bridge.Tests.ps1 -PassThru
 Invoke-Pester -Path tests\PublicSurfacePolicy.Tests.ps1 -PassThru
 cargo test --manifest-path core\Cargo.toml
+cmd /c "cd winsmux-app && npm run test:common-contract-package"
 cmd /c npm run build
 cargo check --manifest-path winsmux-app\src-tauri\Cargo.toml --locked
 pwsh -NoProfile -File scripts\audit-public-surface.ps1
