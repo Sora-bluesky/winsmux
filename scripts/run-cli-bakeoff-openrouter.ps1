@@ -199,6 +199,12 @@ $scorecardLines.Add('| Worker | Task | Status | Deterministic score | Tokens | E
 $scorecardLines.Add('| --- | --- | --- | ---: | ---: | --- |') | Out-Null
 [System.IO.File]::WriteAllLines($scorecardPath, $scorecardLines, [System.Text.UTF8Encoding]::new($false))
 
+$runGovernance = [ordered]@{
+    messaging_state              = 'worker_to_worker_disabled'
+    operator_intervention_count  = 0
+    execution_surface            = 'api_worker_batch'
+}
+
 $initialManifest = [ordered]@{
     run_id                = $runIdSlug
     pack_id               = [string]$pack.pack_id
@@ -224,6 +230,7 @@ $initialManifest = [ordered]@{
     worker_assignments    = $workerAssignments
     workspace_policy      = $pack.workspace_policy
     operator              = $pack.operator
+    run_governance        = $runGovernance
 }
 Write-JsonFile -Path (Join-Path $runDir 'manifest.json') -Data $initialManifest
 
@@ -371,6 +378,7 @@ $manifest = [ordered]@{
     worker_assignments    = $workerAssignments
     workspace_policy      = $pack.workspace_policy
     operator              = $pack.operator
+    run_governance        = $runGovernance
 }
 Write-JsonFile -Path (Join-Path $runDir 'manifest.json') -Data $manifest
 $commands | ForEach-Object { $_ | ConvertTo-Json -Depth 40 -Compress } | Set-Content -LiteralPath (Join-Path $runDir 'commands.jsonl') -Encoding UTF8

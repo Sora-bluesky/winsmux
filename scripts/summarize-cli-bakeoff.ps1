@@ -89,6 +89,19 @@ function ConvertTo-NormalizedReason {
     return ([string]$Value).Trim().ToLowerInvariant() -replace '[\s-]+', '_'
 }
 
+function Test-NumericZero {
+    param([AllowNull()][object]$Value)
+
+    if ($null -eq $Value) { return $false }
+    if ($Value -is [string] -or $Value -is [char] -or $Value -is [bool]) { return $false }
+
+    try {
+        return [decimal]$Value -eq 0
+    } catch {
+        return $false
+    }
+}
+
 function Get-ScoreabilityDecision {
     param(
         [Parameter(Mandatory = $true)][string]$Cli,
@@ -97,6 +110,10 @@ function Get-ScoreabilityDecision {
         [Parameter(Mandatory = $true)][bool]$EndMarkerPresent,
         [Parameter(Mandatory = $true)][bool]$PacketHashMatch,
         [Parameter(Mandatory = $true)][bool]$StdoutEmpty,
+        [AllowEmptyString()][string]$RecordingStatus = '',
+        [AllowEmptyString()][string]$MessagingState = '',
+        [AllowNull()][object]$OperatorInterventionCount = $null,
+        [AllowEmptyString()][string]$ExecutionSurface = '',
         [bool]$OperatorRun = $false,
         [AllowEmptyString()][string]$FailureClass = '',
         [AllowEmptyString()][string]$ExclusionReason = '',
@@ -117,6 +134,10 @@ function Get-ScoreabilityDecision {
     if ($InvalidOutput -or $normalizedStatus -in @('invalid_output', 'invalid_json', 'malformed') -or $normalizedFailureClass -in @('invalid_output', 'invalid_json', 'malformed') -or $normalizedExclusionReason -in @('invalid_output', 'invalid_json', 'malformed')) { $reasons.Add('invalid_output') | Out-Null }
     if ($Status -ne 'completed') { $reasons.Add('not_completed') | Out-Null }
     if (-not $RecordingPublishable) { $reasons.Add('recording_not_publishable') | Out-Null }
+    if ($RecordingStatus -notin @('desktop_app_screen_recording', 'visible_desktop_worker_pane_recording', 'manual_desktop_worker_pane_recording')) { $reasons.Add('non_desktop_recording_status') | Out-Null }
+    if ($MessagingState -ne 'worker_to_worker_disabled') { $reasons.Add('worker_to_worker_messaging_not_disabled') | Out-Null }
+    if (-not (Test-NumericZero -Value $OperatorInterventionCount)) { $reasons.Add('operator_intervention_nonzero') | Out-Null }
+    if ($ExecutionSurface -ne 'visible_desktop_worker_panes') { $reasons.Add('non_desktop_execution_surface') | Out-Null }
     if (-not $EndMarkerPresent) { $reasons.Add('missing_end_marker') | Out-Null }
     if (-not $PacketHashMatch) { $reasons.Add('packet_hash_mismatch') | Out-Null }
     if ($StdoutEmpty) { $reasons.Add('empty_stdout') | Out-Null }
@@ -188,6 +209,9 @@ if (Test-Path -LiteralPath $resolvedRunRoot -PathType Container) {
                 packet_hash_match     = $false
                 stdout_empty          = $false
                 operator_run          = $false
+                messaging_state       = ''
+                operator_intervention_count = ''
+                execution_surface     = ''
                 scoreable             = $false
                 score_exclusion       = $manifestResult.error
                 axis_scores           = @{}
@@ -200,8 +224,12 @@ if (Test-Path -LiteralPath $resolvedRunRoot -PathType Container) {
         $taskClassValue = Get-ObjectProperty $manifest 'task_class' ''
         $recording = Get-ObjectProperty $manifest 'recording' $null
         $evidence = Get-ObjectProperty $manifest 'evidence' $null
+        $runGovernance = Get-ObjectProperty $manifest 'run_governance' $null
         $runId = if (-not [string]::IsNullOrWhiteSpace([string]$runIdValue)) { [string]$runIdValue } else { $dir.Name }
         $taskClass = if (-not [string]::IsNullOrWhiteSpace([string]$taskClassValue)) { [string]$taskClassValue } else { 'unknown' }
+        $messagingState = [string](Get-ObjectProperty $runGovernance 'messaging_state' '')
+        $operatorInterventionCount = Get-ObjectProperty $runGovernance 'operator_intervention_count' ''
+        $executionSurface = [string](Get-ObjectProperty $runGovernance 'execution_surface' '')
         $recordingStatusValue = Get-ObjectProperty $recording 'status' ''
         $recordingStatus = if (-not [string]::IsNullOrWhiteSpace([string]$recordingStatusValue)) { [string]$recordingStatusValue } else { 'not_declared' }
         $recordingPublishable = $false
@@ -263,6 +291,10 @@ if (Test-Path -LiteralPath $resolvedRunRoot -PathType Container) {
                 -EndMarkerPresent $endMarkerPresent `
                 -PacketHashMatch $packetHashMatch `
                 -StdoutEmpty $stdoutEmpty `
+                -RecordingStatus $recordingStatus `
+                -MessagingState $messagingState `
+                -OperatorInterventionCount $operatorInterventionCount `
+                -ExecutionSurface $executionSurface `
                 -OperatorRun $operatorRun `
                 -FailureClass ([string](Get-ObjectProperty $command 'failure_class' '')) `
                 -ExclusionReason ([string](Get-ObjectProperty $command 'exclusion_reason' '')) `
@@ -287,6 +319,9 @@ if (Test-Path -LiteralPath $resolvedRunRoot -PathType Container) {
                 packet_hash_match     = $packetHashMatch
                 stdout_empty          = $stdoutEmpty
                 operator_run          = $operatorRun
+                messaging_state       = $messagingState
+                operator_intervention_count = $operatorInterventionCount
+                execution_surface     = $executionSurface
                 scoreable             = $decision.scoreable
                 score_exclusion       = $decision.reason
                 axis_scores           = $axisScores
@@ -298,7 +333,7 @@ if (Test-Path -LiteralPath $resolvedRunRoot -PathType Container) {
 New-Item -ItemType Directory -Path $resolvedOutputDir -Force | Out-Null
 
 $csvLines = [System.Collections.Generic.List[string]]::new()
-$csvLines.Add('"run_id","cli","model","task_class","axis","score","verdict","recording_status","recording_publishable","score_exclusion"') | Out-Null
+$csvLines.Add('"run_id","cli","model","task_class","axis","score","verdict","recording_status","recording_publishable","score_exclusion","messaging_state","operator_intervention_count","execution_surface"') | Out-Null
 foreach ($run in $runs) {
     foreach ($axis in $allAxes) {
         $verdict = if ($run.scoreable) { 'scoreable' } elseif ($run.status -ne 'completed') { 'blocked' } else { 'evidence_incomplete' }
@@ -312,7 +347,10 @@ foreach ($run in $runs) {
             (ConvertTo-CsvCell $verdict),
             (ConvertTo-CsvCell $run.recording_status),
             (ConvertTo-CsvCell $run.recording_publishable),
-            (ConvertTo-CsvCell $run.score_exclusion)
+            (ConvertTo-CsvCell $run.score_exclusion),
+            (ConvertTo-CsvCell $run.messaging_state),
+            (ConvertTo-CsvCell $run.operator_intervention_count),
+            (ConvertTo-CsvCell $run.execution_surface)
         ) -join ',')) | Out-Null
     }
 }

@@ -539,6 +539,22 @@ export function resolveTaskSelection(allTaskIds, requested) {
 }
 
 /**
+ * True when the resolved task selection contains the complete official task set,
+ * regardless of the order requested on the command line.
+ *
+ * @param {string[]} taskIds
+ * @param {string[]} allTaskIds
+ * @returns {boolean}
+ */
+export function isOfficialTaskSelection(taskIds, allTaskIds) {
+  if (!Array.isArray(taskIds) || !Array.isArray(allTaskIds) || taskIds.length !== allTaskIds.length) {
+    return false;
+  }
+  const selected = new Set(taskIds);
+  return selected.size === allTaskIds.length && allTaskIds.every((id) => selected.has(id));
+}
+
+/**
  * Build a filesystem-safe, deterministic run_id for a single dispatched
  * task's summarize-compatible run directory, derived from the runner run
  * timestamp (already filesystem-safe, e.g. "runner-20260703T041530Z") and the
@@ -596,7 +612,7 @@ export function mapRunnerStatusToCommandStatus(runnerStatus) {
  * Build the summarize-compatible manifest.json object for one dispatched
  * task's run directory, mirroring the field shapes written by
  * run-cli-bakeoff-openrouter.ps1's final manifest (run_id, task_class,
- * recording, evidence, active_workers, execution) as read by
+ * recording, evidence, active_workers, execution, run_governance) as read by
  * summarize-cli-bakeoff.ps1 (lines ~160-260).
  *
  * cli/model metadata is not knowable to this runner today: worker rows are
@@ -626,6 +642,7 @@ export function mapRunnerStatusToCommandStatus(runnerStatus) {
  *   recordingPublishable: boolean,
  *   executionStatus: string,
  *   generatedAtIso: string,
+ *   scoreableGovernance: boolean,
  * }} input
  * @returns {object}
  */
@@ -641,7 +658,11 @@ export function buildRunManifest(input) {
     recordingPublishable,
     executionStatus,
     generatedAtIso,
+    scoreableGovernance = true,
   } = input || {};
+  const governanceExecutionSurface = scoreableGovernance
+    ? "visible_desktop_worker_panes"
+    : "partial_visible_desktop_worker_panes";
 
   return {
     run_id: runId,
@@ -666,6 +687,11 @@ export function buildRunManifest(input) {
     },
     execution: {
       status: executionStatus || "unknown",
+    },
+    run_governance: {
+      messaging_state: "worker_to_worker_disabled",
+      operator_intervention_count: 0,
+      execution_surface: governanceExecutionSurface,
     },
   };
 }

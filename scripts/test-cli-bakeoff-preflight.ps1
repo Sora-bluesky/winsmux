@@ -130,6 +130,81 @@ function Add-Check {
     $script:checks.Add([pscustomobject]@{ name = $Name; pass = $Pass; detail = (ConvertTo-SafeDetail $Detail) }) | Out-Null
 }
 
+function Test-JsonProperty {
+    param(
+        [AllowNull()][object]$InputObject,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+    return $null -ne $InputObject -and $InputObject.PSObject.Properties.Name -contains $Name
+}
+
+function Get-JsonProperty {
+    param(
+        [AllowNull()][object]$InputObject,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [AllowNull()][object]$Default = $null
+    )
+    if (Test-JsonProperty -InputObject $InputObject -Name $Name) {
+        return $InputObject.$Name
+    }
+    return $Default
+}
+
+function Test-JsonBooleanTrue {
+    param([AllowNull()][object]$Value)
+
+    return $Value -is [bool] -and $Value
+}
+
+function Test-JsonNumericZero {
+    param([AllowNull()][object]$Value)
+
+    if ($null -eq $Value) {
+        return $false
+    }
+
+    if ($Value -is [string] -or $Value -is [char] -or $Value -is [bool]) {
+        return $false
+    }
+
+    $numericTypes = @(
+        'System.Byte',
+        'System.SByte',
+        'System.Int16',
+        'System.UInt16',
+        'System.Int32',
+        'System.UInt32',
+        'System.Int64',
+        'System.UInt64',
+        'System.Single',
+        'System.Double',
+        'System.Decimal'
+    )
+    if ($Value.GetType().FullName -notin $numericTypes) {
+        return $false
+    }
+
+    try {
+        return [decimal]$Value -eq 0
+    } catch {
+        return $false
+    }
+}
+
+function Test-ScoredWorker {
+    param([AllowNull()][object]$Worker)
+
+    if ($null -eq $Worker) {
+        return $false
+    }
+
+    if (Test-JsonProperty -InputObject $Worker -Name 'scored') {
+        return [bool]$Worker.scored
+    }
+
+    return $true
+}
+
 function Get-GitOutput {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
     try {
@@ -374,8 +449,12 @@ if ($null -ne $pack) {
     $requiredGates = @(
         'same_task_packet_sha256_for_all_workers',
         'same_timeout_for_all_workers',
+        'same_workspace_for_all_workers',
         'preflight_all_pass_before_recording',
         'desktop_app_screen_recording_required',
+        'operator_intervention_zero_required',
+        'worker_to_worker_messaging_disabled',
+        'run_governance_fields_required',
         'non_completed_worker_results_excluded_from_scoring',
         'antigravity_empty_stdout_excluded_from_machine_scoring',
         'harness_bench_27_tasks_required',
@@ -447,10 +526,54 @@ if ($null -ne $pack) {
     Add-Check 'operator role is declared' ($null -ne $operator)
     Add-Check 'operator is not scored' ($null -ne $operator -and -not [bool]$operator.scored)
 
+    $governance = Get-JsonProperty -InputObject $pack -Name 'run_governance' -Default $null
+    $sameTaskSetForAllWorkers = Get-JsonProperty -InputObject $governance -Name 'same_task_set_for_all_workers' -Default $null
+    $sameTimeoutForAllWorkers = Get-JsonProperty -InputObject $governance -Name 'same_timeout_for_all_workers' -Default $null
+    $sameWorkspaceForAllWorkers = Get-JsonProperty -InputObject $governance -Name 'same_workspace_for_all_workers' -Default $null
+    $workerToWorkerMessaging = Get-JsonProperty -InputObject $governance -Name 'worker_to_worker_messaging' -Default ''
+    $executionSurface = Get-JsonProperty -InputObject $governance -Name 'execution_surface' -Default ''
+    Add-Check 'run governance policy exists' ($null -ne $governance)
+    Add-Check 'run governance requires same task set' ($null -ne $governance -and (Test-JsonProperty -InputObject $governance -Name 'same_task_set_for_all_workers') -and (Test-JsonBooleanTrue -Value $sameTaskSetForAllWorkers))
+    Add-Check 'run governance requires same timeout' ($null -ne $governance -and (Test-JsonProperty -InputObject $governance -Name 'same_timeout_for_all_workers') -and (Test-JsonBooleanTrue -Value $sameTimeoutForAllWorkers))
+    Add-Check 'run governance requires same workspace' ($null -ne $governance -and (Test-JsonProperty -InputObject $governance -Name 'same_workspace_for_all_workers') -and (Test-JsonBooleanTrue -Value $sameWorkspaceForAllWorkers))
+    $operatorInterventionLimit = Get-JsonProperty -InputObject $governance -Name 'operator_intervention_limit' -Default $null
+    Add-Check 'operator intervention limit is zero' ($null -ne $governance -and (Test-JsonProperty -InputObject $governance -Name 'operator_intervention_limit') -and (Test-JsonNumericZero -Value $operatorInterventionLimit)) "limit=$operatorInterventionLimit"
+    Add-Check 'worker-to-worker messaging is disabled' ($null -ne $governance -and (Test-JsonProperty -InputObject $governance -Name 'worker_to_worker_messaging') -and [string]$workerToWorkerMessaging -eq 'disabled') "messaging=$workerToWorkerMessaging"
+    Add-Check 'execution surface is visible desktop worker panes' ($null -ne $governance -and (Test-JsonProperty -InputObject $governance -Name 'execution_surface') -and [string]$executionSurface -eq 'visible_desktop_worker_panes') "surface=$executionSurface"
+    $requiredRunFields = @('messaging_state', 'operator_intervention_count', 'execution_surface')
+    $declaredRunFields = if ($null -ne $governance) { @((Get-JsonProperty -InputObject $governance -Name 'required_run_fields' -Default @()) | ForEach-Object { [string]$_ }) } else { @() }
+    foreach ($field in $requiredRunFields) {
+        Add-Check "run governance field $field is required" ($declaredRunFields -contains $field) ($declaredRunFields -join ',')
+    }
+
     $workspacePolicy = $pack.workspace_policy
     Add-Check 'sanitized workspace policy exists' ($null -ne $workspacePolicy -and [bool]$workspacePolicy.sanitized_workspace_required)
     Add-Check 'same workspace conditions required' ($null -ne $workspacePolicy -and [bool]$workspacePolicy.same_workspace_conditions_for_all_workers)
     Add-Check 'default timeout is 3600 seconds' ([int]$pack.default_timeout_seconds -eq 3600) "timeout=$($pack.default_timeout_seconds)"
+    $scoredWorkersWithTaskOverrides = @($workers | Where-Object {
+        (Test-ScoredWorker -Worker $_) -and (
+            (Test-JsonProperty -InputObject $_ -Name 'task_ids') -or
+            (Test-JsonProperty -InputObject $_ -Name 'task_filter') -or
+            (Test-JsonProperty -InputObject $_ -Name 'tasks')
+        )
+    })
+    $scoredWorkersWithTimeoutOverrides = @($workers | Where-Object {
+        (Test-ScoredWorker -Worker $_) -and (Test-JsonProperty -InputObject $_ -Name 'timeout_seconds')
+    })
+    $scoredWorkersWithWorkspaceOverrides = @($workers | Where-Object {
+        (Test-ScoredWorker -Worker $_) -and (
+            (Test-JsonProperty -InputObject $_ -Name 'workspace') -or
+            (Test-JsonProperty -InputObject $_ -Name 'workspace_root') -or
+            (Test-JsonProperty -InputObject $_ -Name 'project_dir') -or
+            (Test-JsonProperty -InputObject $_ -Name 'worktree') -or
+            (Test-JsonProperty -InputObject $_ -Name 'worktree_root') -or
+            (Test-JsonProperty -InputObject $_ -Name 'worktree_path') -or
+            (Test-JsonProperty -InputObject $_ -Name 'worktree_dir')
+        )
+    })
+    Add-Check 'scored workers do not override task set' ($scoredWorkersWithTaskOverrides.Count -eq 0) ((@($scoredWorkersWithTaskOverrides | ForEach-Object { [string]$_.pane }) | Sort-Object) -join ',')
+    Add-Check 'scored workers do not override timeout' ($scoredWorkersWithTimeoutOverrides.Count -eq 0) ((@($scoredWorkersWithTimeoutOverrides | ForEach-Object { [string]$_.pane }) | Sort-Object) -join ',')
+    Add-Check 'scored workers do not override workspace' ($scoredWorkersWithWorkspaceOverrides.Count -eq 0) ((@($scoredWorkersWithWorkspaceOverrides | ForEach-Object { [string]$_.pane }) | Sort-Object) -join ',')
 
     $tasks = @($pack.tasks)
     $minimumTaskCount = [int]$pack.minimum_task_count_for_directional_findings
@@ -505,6 +628,32 @@ if (-not [string]::IsNullOrWhiteSpace($RunDir)) {
     Add-Check 'run dir exists' (Test-Path -LiteralPath $resolvedRunDir -PathType Container) $resolvedRunDir
     foreach ($requiredFile in @('manifest.json', 'commands.jsonl', 'scorecard.md')) {
         Add-Check "run file $requiredFile" (Test-Path -LiteralPath (Join-Path $resolvedRunDir $requiredFile) -PathType Leaf)
+    }
+
+    $manifestPath = Join-Path $resolvedRunDir 'manifest.json'
+    if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
+        try {
+            $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 80
+            $recording = Get-JsonProperty -InputObject $manifest -Name 'recording' -Default $null
+            $recordingStatus = [string](Get-JsonProperty -InputObject $recording -Name 'status' -Default '')
+            $recordingPublishable = Get-JsonProperty -InputObject $recording -Name 'publishable' -Default $false
+            $desktopRecordingStatuses = @(
+                'desktop_app_screen_recording',
+                'visible_desktop_worker_pane_recording',
+                'manual_desktop_worker_pane_recording'
+            )
+            $runGovernance = Get-JsonProperty -InputObject $manifest -Name 'run_governance' -Default $null
+            $runMessagingState = Get-JsonProperty -InputObject $runGovernance -Name 'messaging_state' -Default ''
+            $runExecutionSurface = Get-JsonProperty -InputObject $runGovernance -Name 'execution_surface' -Default ''
+            Add-Check 'run governance fields are disclosed' ($null -ne $runGovernance)
+            Add-Check 'run messaging state disables worker-to-worker' ($null -ne $runGovernance -and (Test-JsonProperty -InputObject $runGovernance -Name 'messaging_state') -and [string]$runMessagingState -eq 'worker_to_worker_disabled') "messaging_state=$runMessagingState"
+            $operatorInterventionCount = Get-JsonProperty -InputObject $runGovernance -Name 'operator_intervention_count' -Default $null
+            Add-Check 'run operator intervention count is zero' ($null -ne $runGovernance -and (Test-JsonProperty -InputObject $runGovernance -Name 'operator_intervention_count') -and (Test-JsonNumericZero -Value $operatorInterventionCount)) "operator_intervention_count=$operatorInterventionCount"
+            Add-Check 'run execution surface is visible desktop worker panes' ($null -ne $runGovernance -and (Test-JsonProperty -InputObject $runGovernance -Name 'execution_surface') -and [string]$runExecutionSurface -eq 'visible_desktop_worker_panes') "execution_surface=$runExecutionSurface"
+            Add-Check 'run recording evidence is publishable desktop worker pane evidence' ($null -ne $recording -and $desktopRecordingStatuses -contains $recordingStatus -and [bool]$recordingPublishable) "recording_status=$recordingStatus; publishable=$recordingPublishable"
+        } catch {
+            Add-Check 'run manifest is valid JSON' $false $manifestPath
+        }
     }
 }
 
