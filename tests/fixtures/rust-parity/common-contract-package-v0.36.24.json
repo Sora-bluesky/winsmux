@@ -1,0 +1,113 @@
+{
+  "version": "0.36.24",
+  "surfaces": [
+    "provider",
+    "readiness",
+    "manifest",
+    "route",
+    "capsule",
+    "mailbox",
+    "settings"
+  ],
+  "vocabularies": {
+    "runtimeProviderIds": {
+      "owner": "winsmux-app/src/modelCapabilities.ts",
+      "values": [
+        "provider-default",
+        "codex",
+        "claude",
+        "antigravity",
+        "grok-build",
+        "openrouter"
+      ]
+    },
+    "modelSources": {
+      "owner": "winsmux-app/src/modelCapabilities.ts",
+      "values": [
+        "provider-default",
+        "cli-discovery",
+        "provider-api",
+        "official-doc",
+        "operator-override"
+      ]
+    },
+    "reasoningEfforts": {
+      "owner": "winsmux-app/src/modelCapabilities.ts",
+      "values": [
+        "provider-default",
+        "low",
+        "medium",
+        "high",
+        "max",
+        "xhigh"
+      ]
+    },
+    "backendCapabilities": {
+      "owner": "winsmux-app/src/modelCapabilities.ts",
+      "values": [
+        "any",
+        "agent-cli",
+        "antigravity",
+        "api_llm",
+        "colab_cli"
+      ],
+      "note": "Capability categories, not concrete worker_backend values."
+    },
+    "promptTransports": {
+      "owner": "winsmux-app/src/modelCapabilities.ts",
+      "values": [
+        "argv",
+        "file",
+        "stdin"
+      ]
+    },
+    "modelReadiness": {
+      "owner": "winsmux-app/src/modelCapabilities.ts",
+      "values": [
+        "selectable",
+        "candidate",
+        "setup-required",
+        "runnable",
+        "blocked",
+        "reference-only",
+        "unavailable"
+      ],
+      "note": "Model availability vocabulary. Do not merge with worker pane readiness."
+    },
+    "runtimeWorkerReadiness": {
+      "owner": "winsmux-app/src/main.ts",
+      "values": [
+        "runnable",
+        "setup-required",
+        "blocked"
+      ],
+      "note": "Startability summary derived from model availability plus credential/backend state."
+    },
+    "workerPaneReadiness": {
+      "owner": "winsmux-app/src/main.ts",
+      "values": [
+        "ready",
+        "blocked",
+        "pending"
+      ],
+      "note": "Pane idle-state vocabulary. Do not merge with model availability."
+    },
+    "agentVaultCommandProviders": {
+      "owner": "winsmux-app/src/main.ts",
+      "values": [
+        "claude",
+        "codex",
+        "opencode"
+      ],
+      "note": "Command-provider vocabulary kept separate from runtime provider IDs."
+    },
+    "benchmarkFamilies": {
+      "owner": "winsmux-app/src/modelCapabilities.ts",
+      "values": [
+        "agent-arena",
+        "code-arena",
+        "winsmux-local"
+      ]
+    }
+  }
+}

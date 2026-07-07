@@ -11,14 +11,90 @@ fn fixture_value() -> Value {
     .expect("fixture should be valid JSON")
 }
 
+fn versioned_fixture_value() -> Value {
+    serde_json::from_str(include_str!(
+        "../../tests/fixtures/rust-parity/common-contract-package-v0.36.25.json"
+    ))
+    .expect("versioned fixture should be valid JSON")
+}
+
+fn previous_fixture_value() -> Value {
+    serde_json::from_str(include_str!(
+        "../../tests/fixtures/rust-parity/common-contract-package-v0.36.24.json"
+    ))
+    .expect("previous fixture should be valid JSON")
+}
+
 fn parse_value(value: Value) -> CommonContractPackage {
     CommonContractPackage::from_json(&value.to_string()).expect("contract should parse")
+}
+
+fn parse_error(value: Value) -> String {
+    CommonContractPackage::from_json(&value.to_string())
+        .expect_err("contract should fail to parse")
+        .to_string()
 }
 
 #[test]
 fn common_contract_fixture_deserializes_and_validates() {
     let contract = parse_value(fixture_value());
     contract.validate().expect("contract should validate");
+}
+
+#[test]
+fn common_contract_versioned_fixture_matches_baseline() {
+    assert_eq!(versioned_fixture_value(), fixture_value());
+    let contract = parse_value(versioned_fixture_value());
+    contract
+        .validate()
+        .expect("versioned contract fixture should validate");
+}
+
+#[test]
+fn common_contract_previous_fixture_only_differs_by_version() {
+    let mut previous = previous_fixture_value();
+    let current = versioned_fixture_value();
+    previous["version"] = current["version"].clone();
+    assert_eq!(previous, current);
+}
+
+#[test]
+fn common_contract_rejects_previous_version_without_migration() {
+    let contract = parse_value(previous_fixture_value());
+    let error = contract
+        .validate()
+        .expect_err("previous version must not migrate implicitly");
+    assert!(error.contains("unsupported common contract version: 0.36.24"));
+}
+
+#[test]
+fn common_contract_rejects_unknown_top_level_field() {
+    let mut fixture = fixture_value();
+    fixture["unexpected"] = json!(true);
+    let error = parse_error(fixture);
+    assert!(error.contains("unknown field"));
+    assert!(error.contains("unexpected"));
+}
+
+#[test]
+fn common_contract_rejects_unknown_vocabulary_collection() {
+    let mut fixture = fixture_value();
+    fixture["vocabularies"]["unexpectedVocabulary"] = json!({
+        "owner": "tests",
+        "values": ["unexpected"]
+    });
+    let error = parse_error(fixture);
+    assert!(error.contains("unknown field"));
+    assert!(error.contains("unexpectedVocabulary"));
+}
+
+#[test]
+fn common_contract_rejects_unknown_vocabulary_field() {
+    let mut fixture = fixture_value();
+    fixture["vocabularies"]["modelReadiness"]["unexpected"] = json!("field");
+    let error = parse_error(fixture);
+    assert!(error.contains("unknown field"));
+    assert!(error.contains("unexpected"));
 }
 
 #[test]

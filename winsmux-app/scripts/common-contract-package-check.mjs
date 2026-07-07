@@ -67,8 +67,8 @@ function assertDivergenceIsDetected(name, actual, expected) {
   );
 }
 
-async function loadRustParityFixture() {
-  const fixturePath = path.resolve("..", "tests", "fixtures", "rust-parity", "common-contract-package.json");
+async function loadRustParityFixture(name = "common-contract-package.json") {
+  const fixturePath = path.resolve("..", "tests", "fixtures", "rust-parity", name);
   return JSON.parse(await readFile(fixturePath, "utf8"));
 }
 
@@ -190,5 +190,10 @@ assertDivergenceIsDetected(
 );
 
 assert.deepEqual(await loadRustParityFixture(), commonContractPackage);
+assert.deepEqual(await loadRustParityFixture("common-contract-package-v0.36.25.json"), commonContractPackage);
+
+const previousFixture = await loadRustParityFixture("common-contract-package-v0.36.24.json");
+assert.equal(previousFixture.version, "0.36.24");
+assert.deepEqual({ ...previousFixture, version: commonContractPackageVersion }, commonContractPackage);
 
 console.log("common-contract-package-check: ok");
