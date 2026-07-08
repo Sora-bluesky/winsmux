@@ -25,6 +25,24 @@ the desktop app.
 
 Rust is only required when building the runtime from source.
 
+### Source build prerequisites on Windows
+
+Windows source builds also require [Visual Studio Build Tools](https://learn.microsoft.com/en-us/visualstudio/install/use-command-line-parameters-to-install-visual-studio?view=vs-2022)
+with the [Desktop development with C++](https://learn.microsoft.com/en-us/visualstudio/install/workload-component-id-vs-build-tools?view=vs-2022)
+workload. Rust's default MSVC toolchain uses the MSVC linker and Windows SDK
+when building native Windows artifacts.
+
+Install the Build Tools workload from Visual Studio Installer, or use `winget`
+with the official workload ID:
+
+```powershell
+winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+```
+
+Run `cargo build` or `npm run tauri build` from PowerShell or `cmd`, not Git
+Bash or another MSYS shell. MSYS environments can put their own `link` command
+before MSVC `link.exe` on `PATH`, which causes confusing linker failures.
+
 For Colab-backed model workers, also prepare a Colab notebook or an
 adapter-managed equivalent connected to `H100` or `A100`. The Windows PC does
 not need a local LLM runtime for that path.
