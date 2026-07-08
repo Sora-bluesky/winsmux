@@ -85,6 +85,10 @@ jobs:
         working-directory: winsmux-app
         run: npm run test:common-contract-package
 
+      - name: Check automation driver pool
+        working-directory: winsmux-app
+        run: npm run test:automation-driver-pool
+
   pester:
     name: Pester Tests (${{ matrix.name }})
     runs-on: windows-latest

@@ -5916,6 +5916,7 @@ Describe 'orchestra-start watchdog contract' {
 
     It 'persists the supervisor pid and prints cleanup guidance' {
         $script:orchestraStartContent | Should -Match 'supervisor_pid\s*=\s*\$SupervisorPid'
+        $script:orchestraStartContent | Should -Match 'process_registry\s*=\s*\$processRegistry'
         $script:orchestraStartContent | Should -Match 'Supervisor PID: \$\(\$supervisorProcess\.Id\)'
         $script:orchestraStartContent | Should -Match 'Stop-Process -Id \{0\}'
     }
@@ -6121,6 +6122,39 @@ Describe 'orchestra-start server bootstrap' {
         $pane.worktree_git_dir | Should -Be 'C:\repo\.git\worktrees\worker-1'
         $pane.expected_origin | Should -Be 'https://github.com/example/repo.git'
         $pane.supports_context_reset | Should -Be $false
+    }
+
+    It 'persists background process registry entries with owner lease and recovery policy' {
+        $script:savedManifest = $null
+        Mock Save-WinsmuxManifest {
+            param([string]$ProjectDir, $Manifest)
+            $script:savedManifest = $Manifest
+        }
+
+        Save-OrchestraSessionState `
+            -ProjectDir 'C:\repo' `
+            -SessionName 'winsmux-orchestra' `
+            -Settings ([ordered]@{ agent = 'codex'; model = 'gpt-5.4' }) `
+            -GitWorktreeDir 'C:\repo\.git\worktrees' `
+            -PaneSummaries @() `
+            -StartupToken 'token-123' `
+            -SupervisorPid 707 `
+            -IdleThreshold 180 `
+            -MaxRestartAttempts 4 `
+            -RestartWindowMinutes 12 | Out-Null
+
+        $registry = $script:savedManifest.session.process_registry
+        $registry.version | Should -Be 1
+        @($registry.entries).Count | Should -Be 1
+        $entry = @($registry.entries)[0]
+        $entry.label | Should -Be 'supervisor_pid'
+        $entry.pid | Should -Be 707
+        $entry.owner | Should -Be 'orchestra-start'
+        $entry.lease.token | Should -Be 'token-123'
+        $entry.lease.session_name | Should -Be 'winsmux-orchestra'
+        $entry.lease.manifest_path | Should -Be 'C:\repo\.winsmux\manifest.yaml'
+        $entry.idle.timeout_seconds | Should -Be 0
+        $entry.crash_recovery.policy | Should -Be 'fail_closed'
     }
 
     It 'returns success when the server session already exists' {
@@ -7238,6 +7272,81 @@ Describe 'orchestra-start server bootstrap' {
         @($result.Stopped).Count | Should -Be 3
         @($result.Errors).Count | Should -Be 0
         $script:stoppedProcessIds | Should -Be @(101, 202, 303)
+    }
+
+    It 'stops stale background processes recorded in process_registry before legacy pid fields' {
+        Mock Get-WinsmuxManifest {
+            [PSCustomObject]@{
+                session = [PSCustomObject]@{
+                    startup_token = 'token-123'
+                    supervisor_pid = '999'
+                    process_registry = [PSCustomObject]@{
+                        entries = @(
+                            [PSCustomObject]@{
+                                label = 'supervisor_pid'
+                                pid = 707
+                                script = 'orchestra-supervisor.ps1'
+                            }
+                        )
+                    }
+                }
+            }
+        }
+
+        $script:stoppedProcessIds = @()
+        Mock Get-ProcessSnapshot {
+            [PSCustomObject]@{
+                ById = @{
+                    707 = [PSCustomObject]@{ ProcessId = 707; ParentProcessId = 1; CommandLine = 'pwsh -NoProfile -File orchestra-supervisor.ps1 -ManifestPath C:\repo\.winsmux\manifest.yaml -SessionName winsmux-orchestra -StartupToken token-123'; Name = 'pwsh.exe' }
+                    999 = [PSCustomObject]@{ ProcessId = 999; ParentProcessId = 1; CommandLine = 'pwsh -NoProfile -File old-supervisor.ps1 -ManifestPath C:\repo\.winsmux\manifest.yaml -SessionName winsmux-orchestra -StartupToken token-123'; Name = 'pwsh.exe' }
+                }
+            }
+        }
+        Mock Stop-Process { $script:stoppedProcessIds += $Id }
+
+        $result = Stop-OrchestraBackgroundProcessesFromManifest -ProjectDir 'C:\repo' -GitWorktreeDir 'C:\repo\.git' -BridgeScript 'C:\repo\scripts\winsmux-core.ps1' -SessionName 'winsmux-orchestra'
+
+        @($result.Stopped).Count | Should -Be 1
+        $result.Stopped[0].label | Should -Be 'supervisor_pid'
+        $result.Stopped[0].pid | Should -Be 707
+        @($result.Errors).Count | Should -Be 1
+        $result.Errors[0] | Should -Match '999'
+        $script:stoppedProcessIds | Should -Be @(707)
+    }
+
+    It 'stops process_registry entries after a manifest save and read round trip' {
+        $testProjectDir = Join-Path $TestDrive 'process-registry-roundtrip'
+        New-Item -ItemType Directory -Path $testProjectDir -Force | Out-Null
+
+        Save-OrchestraSessionState `
+            -ProjectDir $testProjectDir `
+            -SessionName 'winsmux-orchestra' `
+            -Settings ([ordered]@{ agent = 'codex'; model = 'gpt-5.4' }) `
+            -GitWorktreeDir (Join-Path $testProjectDir '.git\worktrees') `
+            -PaneSummaries @() `
+            -StartupToken 'token-123' `
+            -SupervisorPid 707 `
+            -IdleThreshold 180 | Out-Null
+
+        $manifestPath = Join-Path $testProjectDir '.winsmux\manifest.yaml'
+        (Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8) | Should -Match 'process_registry:'
+
+        $script:stoppedProcessIds = @()
+        Mock Get-ProcessSnapshot {
+            [PSCustomObject]@{
+                ById = @{
+                    707 = [PSCustomObject]@{ ProcessId = 707; ParentProcessId = 1; CommandLine = "pwsh -NoProfile -File orchestra-supervisor.ps1 -ManifestPath $manifestPath -SessionName winsmux-orchestra -StartupToken token-123"; Name = 'pwsh.exe' }
+                }
+            }
+        }
+        Mock Stop-Process { $script:stoppedProcessIds += $Id }
+
+        $result = Stop-OrchestraBackgroundProcessesFromManifest -ProjectDir $testProjectDir -GitWorktreeDir (Join-Path $testProjectDir '.git') -BridgeScript (Join-Path $testProjectDir 'scripts\winsmux-core.ps1') -SessionName 'winsmux-orchestra'
+
+        @($result.Stopped).Count | Should -Be 1
+        $result.Stopped[0].pid | Should -Be 707
+        @($result.Errors).Count | Should -Be 0
+        $script:stoppedProcessIds | Should -Be @(707)
     }
 
     It 'treats legacy commander_poll_pid as the operator poll process during manifest cleanup' {

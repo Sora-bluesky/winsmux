@@ -1,5 +1,12 @@
 import { chromium } from "playwright";
 import { spawn } from "node:child_process";
+import {
+  DEFAULT_DRIVER_IDLE_TIMEOUT_MS,
+  acquireAutomationDriverLease,
+  getDefaultAutomationDriverPoolPath,
+  releaseAutomationDriverLease,
+  tryHeartbeatAutomationDriverLease,
+} from "./automation-driver-pool.mjs";
 
 const DEFAULT_URL = "http://127.0.0.1:5173/";
 const DEFAULT_WINDOW_WIDTH = 2048;
@@ -51,6 +58,15 @@ const height = parsePositiveInteger(
 const headless = hasFlag("headless") || process.env.WINSMUX_DEV_BROWSER_HEADLESS === "1";
 const closeAfterProbe = hasFlag("probe");
 const skipServer = hasFlag("no-server") || process.env.WINSMUX_DEV_BROWSER_NO_SERVER === "1";
+const driverPoolPath = readOption("driver-pool") || process.env.WINSMUX_AUTOMATION_DRIVER_POOL_PATH || getDefaultAutomationDriverPoolPath();
+const driverIdleTimeoutMs = parsePositiveInteger(
+  readOption("driver-idle-timeout-ms") || process.env.WINSMUX_AUTOMATION_DRIVER_IDLE_TIMEOUT_MS,
+  DEFAULT_DRIVER_IDLE_TIMEOUT_MS,
+);
+const driverMaxActiveLeases = parsePositiveInteger(
+  readOption("driver-max-active") || process.env.WINSMUX_AUTOMATION_DRIVER_MAX_ACTIVE,
+  4,
+);
 
 async function canReachDevServer(targetUrl) {
   try {
@@ -130,23 +146,73 @@ async function stopDevServer(child) {
   ]);
 }
 
+let driverLease = null;
+let driverLeaseHeartbeat = null;
+let driverLeaseHeartbeatWarningLogged = false;
 let devServer = null;
-if (!(await canReachDevServer(url))) {
-  devServer = startDevServerIfNeeded(url);
-  if (!devServer) {
-    throw new Error(`Dev server is not reachable at ${url}`);
-  }
-  try {
-    await waitForDevServer(url, devServer);
-  } catch (err) {
-    await stopDevServer(devServer);
-    throw err;
-  }
-}
-
 let browser = null;
 
-try {
+main: try {
+  const leaseResult = acquireAutomationDriverLease({
+    poolPath: driverPoolPath,
+    owner: "open-dev-browser",
+    target: url,
+    headless,
+    idleTimeoutMs: driverIdleTimeoutMs,
+    maxActiveLeases: driverMaxActiveLeases,
+  });
+  if (!leaseResult.acquired) {
+    const reason = closeAfterProbe && leaseResult.reason === "active_lease"
+      ? "active_lease_probe_requires_metrics"
+      : leaseResult.reason;
+    console.log(JSON.stringify({
+      url,
+      headless,
+      driverPoolPath,
+      reusedExistingDriver: reason === "active_lease",
+      blocked: reason === "pool_full" || reason === "active_lease_probe_requires_metrics",
+      reason,
+      lease: leaseResult.lease,
+    }, null, 2));
+    process.exitCode = reason === "active_lease" ? 0 : 1;
+    break main;
+  }
+  driverLease = leaseResult.lease;
+  driverLeaseHeartbeat = setInterval(() => {
+    tryHeartbeatAutomationDriverLease({
+      poolPath: driverPoolPath,
+      leaseId: driverLease?.lease_id,
+      idleTimeoutMs: driverIdleTimeoutMs,
+    }, {
+      onError: (error) => {
+        if (driverLeaseHeartbeatWarningLogged) {
+          return;
+        }
+        driverLeaseHeartbeatWarningLogged = true;
+        console.warn(JSON.stringify({
+          event: "automation_driver_heartbeat_failed",
+          driverPoolPath,
+          leaseId: driverLease?.lease_id ?? null,
+          error: error?.message ?? String(error),
+        }));
+      },
+    });
+  }, Math.min(60_000, Math.max(5_000, Math.floor(driverIdleTimeoutMs / 3))));
+  driverLeaseHeartbeat.unref?.();
+
+  if (!(await canReachDevServer(url))) {
+    devServer = startDevServerIfNeeded(url);
+    if (!devServer) {
+      throw new Error(`Dev server is not reachable at ${url}`);
+    }
+    try {
+      await waitForDevServer(url, devServer);
+    } catch (err) {
+      await stopDevServer(devServer);
+      throw err;
+    }
+  }
+
   browser = await chromium.launch({
     headless,
     args: headless ? [] : [`--window-size=${width},${height}`],
@@ -170,7 +236,16 @@ try {
     };
   });
 
-  console.log(JSON.stringify({ url, headless, startedServer: Boolean(devServer), width, height, metrics }, null, 2));
+  console.log(JSON.stringify({
+    url,
+    headless,
+    startedServer: Boolean(devServer),
+    width,
+    height,
+    driverPoolPath,
+    driverLease,
+    metrics,
+  }, null, 2));
 
   if (closeAfterProbe) {
     await browser.close();
@@ -178,8 +253,12 @@ try {
     await new Promise((resolve) => browser.on("disconnected", resolve));
   }
 } finally {
+  if (driverLeaseHeartbeat) {
+    clearInterval(driverLeaseHeartbeat);
+  }
   if (browser) {
     await browser.close().catch(() => {});
   }
   await stopDevServer(devServer);
+  releaseAutomationDriverLease({ poolPath: driverPoolPath, leaseId: driverLease?.lease_id });
 }
