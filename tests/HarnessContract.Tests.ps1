@@ -909,8 +909,252 @@ panes:
 
             $sessionPath = Join-Path $shieldDir 'session.json'
             $session = Get-Content -LiteralPath $sessionPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
-            $session.token_budget.session_limit | Should -Be 200000
+            $session.token_budget.PSObject.Properties.Name | Should -Contain 'session_limit'
+            $session.token_budget.session_limit | Should -Be $null
+            $session.token_budget.tool_output_limit | Should -Be 50000
+            $session.token_budget.used | Should -Be 0
             $session.winsmux_resume.manifest_path | Should -Match 'manifest\.yaml$'
+        } finally {
+            if (Test-Path -LiteralPath $fixture.Root) {
+                Remove-Item -LiteralPath $fixture.Root -Recurse -Force
+            }
+        }
+    }
+
+    It 'preserves an explicitly configured token budget during SessionStart' {
+        $fixture = New-SessionStartFixture
+        try {
+            $shieldDir = Join-Path $fixture.Root '.shield-harness'
+            New-Item -ItemType Directory -Path $shieldDir -Force | Out-Null
+            Write-TestFileWithCmd -Path (Join-Path $shieldDir 'session.json') -Content (@{
+                token_budget = @{
+                    session_limit     = 123456
+                    tool_output_limit = 50000
+                    used              = 789
+                }
+            } | ConvertTo-Json -Compress)
+
+            $result = Invoke-NodeHookJson -RepoRoot $fixture.Root -HookRelativePath '.claude\hooks\sh-session-start.js' -Payload ([ordered]@{
+                session_id      = 'session-start-explicit-budget'
+                hook_event_name = 'SessionStart'
+            }) -EnvironmentVariables @{
+                WINSMUX_BACKLOG_PATH = $fixture.BacklogPath
+            }
+
+            $result.ExitCode | Should -Be 0
+            $result.StdErr | Should -Be ''
+
+            $sessionPath = Join-Path $shieldDir 'session.json'
+            $session = Get-Content -LiteralPath $sessionPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
+            $session.token_budget.session_limit | Should -Be 123456
+            $session.token_budget.tool_output_limit | Should -Be 50000
+            $session.token_budget.used | Should -Be 789
+            $session.winsmux_resume.manifest_path | Should -Match 'manifest\.yaml$'
+        } finally {
+            if (Test-Path -LiteralPath $fixture.Root) {
+                Remove-Item -LiteralPath $fixture.Root -Recurse -Force
+            }
+        }
+    }
+
+    It 'preserves an existing 200000 token budget during SessionStart' {
+        $fixture = New-SessionStartFixture
+        try {
+            $shieldDir = Join-Path $fixture.Root '.shield-harness'
+            New-Item -ItemType Directory -Path $shieldDir -Force | Out-Null
+            Write-TestFileWithCmd -Path (Join-Path $shieldDir 'session.json') -Content (@{
+                token_budget = @{
+                    session_limit     = 200000
+                    tool_output_limit = 40000
+                    used              = 789
+                }
+            } | ConvertTo-Json -Compress)
+
+            $result = Invoke-NodeHookJson -RepoRoot $fixture.Root -HookRelativePath '.claude\hooks\sh-session-start.js' -Payload ([ordered]@{
+                session_id      = 'session-start-legacy-default-budget'
+                hook_event_name = 'SessionStart'
+            }) -EnvironmentVariables @{
+                WINSMUX_BACKLOG_PATH = $fixture.BacklogPath
+            }
+
+            $result.ExitCode | Should -Be 0
+            $result.StdErr | Should -Be ''
+
+            $sessionPath = Join-Path $shieldDir 'session.json'
+            $session = Get-Content -LiteralPath $sessionPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
+            $session.token_budget.session_limit | Should -Be 200000
+            $session.token_budget.tool_output_limit | Should -Be 40000
+            $session.token_budget.used | Should -Be 789
+        } finally {
+            if (Test-Path -LiteralPath $fixture.Root) {
+                Remove-Item -LiteralPath $fixture.Root -Recurse -Force
+            }
+        }
+    }
+
+    It 'defaults a missing session limit to null during SessionStart' {
+        $fixture = New-SessionStartFixture
+        try {
+            $shieldDir = Join-Path $fixture.Root '.shield-harness'
+            New-Item -ItemType Directory -Path $shieldDir -Force | Out-Null
+            Write-TestFileWithCmd -Path (Join-Path $shieldDir 'session.json') -Content (@{
+                token_budget = @{
+                    tool_output_limit = 40000
+                    used              = 789
+                }
+                session_id      = 'session-start-missing-session-limit'
+                hook_event_name = 'SessionStart'
+            } | ConvertTo-Json -Compress)
+
+            $result = Invoke-NodeHookJson -RepoRoot $fixture.Root -HookRelativePath '.claude\hooks\sh-session-start.js' -Payload ([ordered]@{
+                session_id      = 'session-start-missing-session-limit'
+                hook_event_name = 'SessionStart'
+            })
+
+            $result.ExitCode | Should -Be 0
+            $result.StdErr | Should -Be ''
+
+            $sessionPath = Join-Path $shieldDir 'session.json'
+            $session = Get-Content -LiteralPath $sessionPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
+            $session.token_budget.session_limit | Should -Be $null
+            $session.token_budget.tool_output_limit | Should -Be 40000
+            $session.token_budget.used | Should -Be 789
+        } finally {
+            if (Test-Path -LiteralPath $fixture.Root) {
+                Remove-Item -LiteralPath $fixture.Root -Recurse -Force
+            }
+        }
+    }
+
+    It 'does not inject a subagent token budget when the session limit is opt-in' {
+        $fixture = New-SessionStartFixture
+        try {
+            $hooksDir = Join-Path $fixture.Root '.claude\hooks'
+            $shieldDir = Join-Path $fixture.Root '.shield-harness'
+            Copy-Item -LiteralPath (Join-Path $script:RepoRoot '.claude\hooks\sh-subagent.js') -Destination (Join-Path $hooksDir 'sh-subagent.js') -Force
+            New-Item -ItemType Directory -Path $shieldDir -Force | Out-Null
+            Write-TestFileWithCmd -Path (Join-Path $shieldDir 'session.json') -Content (@{
+                token_budget = @{
+                    session_limit     = $null
+                    tool_output_limit = 50000
+                    used              = 0
+                }
+            } | ConvertTo-Json -Compress)
+
+            $result = Invoke-NodeHookJson -RepoRoot $fixture.Root -HookRelativePath '.claude\hooks\sh-subagent.js' -Payload ([ordered]@{
+                session_id      = 'subagent-start-no-session-limit'
+                hook_event_name = 'SubagentStart'
+            })
+
+            $result.ExitCode | Should -Be 0
+            $result.StdErr | Should -Be ''
+            $context = [string]$result.Json.hookSpecificOutput.additionalContext
+            $context | Should -Match 'トークン予算: 未設定'
+            $context | Should -Not -Match '50,000 tokens'
+        } finally {
+            if (Test-Path -LiteralPath $fixture.Root) {
+                Remove-Item -LiteralPath $fixture.Root -Recurse -Force
+            }
+        }
+    }
+
+    It 'injects the subagent token budget when the session limit is explicit' {
+        $fixture = New-SessionStartFixture
+        try {
+            $hooksDir = Join-Path $fixture.Root '.claude\hooks'
+            $shieldDir = Join-Path $fixture.Root '.shield-harness'
+            Copy-Item -LiteralPath (Join-Path $script:RepoRoot '.claude\hooks\sh-subagent.js') -Destination (Join-Path $hooksDir 'sh-subagent.js') -Force
+            New-Item -ItemType Directory -Path $shieldDir -Force | Out-Null
+            Write-TestFileWithCmd -Path (Join-Path $shieldDir 'session.json') -Content (@{
+                token_budget = @{
+                    session_limit     = 200000
+                    tool_output_limit = 50000
+                    used              = 40000
+                }
+            } | ConvertTo-Json -Compress)
+
+            $result = Invoke-NodeHookJson -RepoRoot $fixture.Root -HookRelativePath '.claude\hooks\sh-subagent.js' -Payload ([ordered]@{
+                session_id      = 'subagent-start-explicit-session-limit'
+                hook_event_name = 'SubagentStart'
+            })
+
+            $result.ExitCode | Should -Be 0
+            $result.StdErr | Should -Be ''
+            $context = [string]$result.Json.hookSpecificOutput.additionalContext
+            $context | Should -Match '40,000 tokens'
+        } finally {
+            if (Test-Path -LiteralPath $fixture.Root) {
+                Remove-Item -LiteralPath $fixture.Root -Recurse -Force
+            }
+        }
+    }
+
+    It 'continues token usage accounting when the session limit is opt-in' {
+        $fixture = New-SessionStartFixture
+        try {
+            $hooksDir = Join-Path $fixture.Root '.claude\hooks'
+            $shieldDir = Join-Path $fixture.Root '.shield-harness'
+            Copy-Item -LiteralPath (Join-Path $script:RepoRoot '.claude\hooks\sh-output-control.js') -Destination (Join-Path $hooksDir 'sh-output-control.js') -Force
+            New-Item -ItemType Directory -Path $shieldDir -Force | Out-Null
+            Write-TestFileWithCmd -Path (Join-Path $shieldDir 'session.json') -Content (@{
+                token_budget = @{
+                    session_limit     = $null
+                    tool_output_limit = 50000
+                    used              = 10
+                }
+            } | ConvertTo-Json -Compress)
+
+            $result = Invoke-NodeHookJson -RepoRoot $fixture.Root -HookRelativePath '.claude\hooks\sh-output-control.js' -Payload ([ordered]@{
+                session_id      = 'output-control-no-session-limit'
+                hook_event_name = 'PostToolUse'
+                tool_name       = 'Bash'
+                tool_response   = 'abcd'
+            })
+
+            $result.ExitCode | Should -Be 0
+            $result.StdErr | Should -Be ''
+            $result.StdOut | Should -Be ''
+
+            $session = Get-Content -LiteralPath (Join-Path $shieldDir 'session.json') -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
+            $session.token_budget.session_limit | Should -Be $null
+            $session.token_budget.used | Should -Be 11
+        } finally {
+            if (Test-Path -LiteralPath $fixture.Root) {
+                Remove-Item -LiteralPath $fixture.Root -Recurse -Force
+            }
+        }
+    }
+
+    It 'keeps token limit warnings gated by an explicit session limit' {
+        $fixture = New-SessionStartFixture
+        try {
+            $hooksDir = Join-Path $fixture.Root '.claude\hooks'
+            $shieldDir = Join-Path $fixture.Root '.shield-harness'
+            Copy-Item -LiteralPath (Join-Path $script:RepoRoot '.claude\hooks\sh-output-control.js') -Destination (Join-Path $hooksDir 'sh-output-control.js') -Force
+            New-Item -ItemType Directory -Path $shieldDir -Force | Out-Null
+            Write-TestFileWithCmd -Path (Join-Path $shieldDir 'session.json') -Content (@{
+                token_budget = @{
+                    session_limit     = 12
+                    tool_output_limit = 50000
+                    used              = 10
+                }
+            } | ConvertTo-Json -Compress)
+
+            $result = Invoke-NodeHookJson -RepoRoot $fixture.Root -HookRelativePath '.claude\hooks\sh-output-control.js' -Payload ([ordered]@{
+                session_id      = 'output-control-explicit-session-limit'
+                hook_event_name = 'PostToolUse'
+                tool_name       = 'Bash'
+                tool_response   = 'abcdefgh'
+            })
+
+            $result.ExitCode | Should -Be 0
+            $result.StdErr | Should -Be ''
+            $context = [string]$result.Json.hookSpecificOutput.additionalContext
+            $context | Should -Match '12/12 tokens'
+
+            $session = Get-Content -LiteralPath (Join-Path $shieldDir 'session.json') -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
+            $session.token_budget.session_limit | Should -Be 12
+            $session.token_budget.used | Should -Be 12
         } finally {
             if (Test-Path -LiteralPath $fixture.Root) {
                 Remove-Item -LiteralPath $fixture.Root -Recurse -Force
