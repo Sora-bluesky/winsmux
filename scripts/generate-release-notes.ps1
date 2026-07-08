@@ -673,7 +673,14 @@ $highlightItems = @($features + $fixes + $documentation | Where-Object { -not [s
 if ($highlightItems.Count -eq 0) {
     $highlightItems = @('Prepared the release from the recorded task and commit history')
 }
-if ($Version -eq 'v0.36.26') {
+if ($Version -eq 'v0.36.27') {
+    $highlightItems = @(
+        'Split the control-plane dispatch path, command result handlers, workers workspace helpers, and run ledger payload builders into smaller module boundaries while preserving the existing CLI entrypoints',
+        'Added shared Rust read-path projections for status, board, inbox, digest, desktop summary, runs, explain, and compare flows',
+        'Introduced process registry and automation driver pool gates for owner tracking, leases, heartbeat, release, idle cleanup, and crash recovery behavior',
+        'Added a v0.36.27 compatibility and performance release gate that requires captured evidence before release readiness is true'
+    )
+} elseif ($Version -eq 'v0.36.26') {
     $highlightItems = @(
         'Split desktop summary scheduling, settings navigation, explorer tree construction, and conversation timeline helpers out of the large desktop entrypoint',
         'Added a desktop split release gate that requires visual, accessibility, desktop E2E, module budget, performance, and evidence checks before release',
@@ -707,7 +714,15 @@ Add-Section -Builder $builder -Title 'Highlights' -Items $highlightItems -Seen $
 
 $changeItems = @($features + $fixes + $documentation + $chores | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
 $changeItems = @(Remove-ExistingBenefits -Items $changeItems -Existing $highlightItems | Select-Object -First 8)
-if ($Version -eq 'v0.36.26') {
+if ($Version -eq 'v0.36.27') {
+    $changeItems = @(
+        'The root control-plane script delegates dispatch adapters to the extracted control-plane dispatch module instead of carrying the full implementation inline',
+        'Command result handling, workers workspace operations, and run ledger payload creation now have focused module tests around their boundaries',
+        'Shared Rust read-path tests guard the JSON and CLI projection behavior used by status, digest, explain, compare, search, and desktop summary commands',
+        'Process registry and automation driver pool checks cover lease ownership, stale lock handling, heartbeat refresh, and release behavior before the desktop automation path is treated as reusable',
+        'The v0.36.27 release gate distinguishes static CI wiring from evidence-required mode so release readiness cannot pass without the old CLI fixture, PowerShell 5 and 7, bakeoff preflight, desktop status, automation driver, and common-contract evidence'
+    )
+} elseif ($Version -eq 'v0.36.26') {
     $changeItems = @(
         'Desktop summary scheduling now has a smaller module boundary for refresh queue and live/fallback update behavior',
         'Settings preference rendering and navigation predicates are covered by focused module checks',
@@ -736,6 +751,12 @@ foreach ($item in @($security + $chores)) {
     if (-not [string]::IsNullOrWhiteSpace($item)) {
         $safetyItems.Add($item)
     }
+}
+if ($Version -eq 'v0.36.27') {
+    $safetyItems.Clear()
+    $safetyItems.Add('Compatibility and performance readiness now depends on evidence-required gate output instead of static file presence alone')
+    $safetyItems.Add('Process registry and automation driver checks keep stale locks, orphaned leases, and cleanup behavior visible before release')
+    $safetyItems.Add('PowerShell 5 and PowerShell 7 checks remain part of the release gate so compatibility is not inferred from one shell alone')
 }
 $safetyItems.Add('Release notes are checked by the public-surface audit before GitHub Release publication')
 $safetyItems.Add('Secret-like values, local private paths, and provider request metadata remain blocked from release materials')

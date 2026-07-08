@@ -241,18 +241,18 @@ Add-ContainsAllCheck 'CI keeps full core and desktop backend cargo tests in rele
 ) '.github/workflows/test.yml'
 
 Add-ContainsAllCheck 'old CLI fixture package keeps current and previous contract fixtures' $commonContractCheck @(
+    'common-contract-package-v0\.36\.27\.json',
     'common-contract-package-v0\.36\.26\.json',
-    'common-contract-package-v0\.36\.25\.json',
     'previousFixture\.version',
     'assert\.deepEqual\(\{ \.\.\.previousFixture, version: commonContractPackageVersion \}, commonContractPackage\)'
 ) 'winsmux-app/scripts/common-contract-package-check.mjs'
 
 Add-ContainsAllCheck 'Rust common-contract test rejects previous version without implicit migration' $commonContractRust @(
+    'common-contract-package-v0\.36\.27\.json',
     'common-contract-package-v0\.36\.26\.json',
-    'common-contract-package-v0\.36\.25\.json',
     'common_contract_previous_fixture_only_differs_by_version',
     'common_contract_rejects_previous_version_without_migration',
-    'unsupported common contract version: 0\.36\.25'
+    'unsupported common contract version: 0\.36\.26'
 ) 'core/tests-rs/common_contract.rs'
 
 Add-ContainsAllCheck 'Rust projection fixtures compare against the PowerShell golden corpus' $fixtureComparison @(
@@ -337,8 +337,8 @@ Add-Check 'gitignore allows the v0.36.27 compat performance Pester wrapper' ($gi
 
 foreach ($path in @(
     'tests/fixtures/rust-parity/common-contract-package.json',
+    'tests/fixtures/rust-parity/common-contract-package-v0.36.27.json',
     'tests/fixtures/rust-parity/common-contract-package-v0.36.26.json',
-    'tests/fixtures/rust-parity/common-contract-package-v0.36.25.json',
     'tasks/cli-bakeoff/v1/benchmark-pack.json'
 )) {
     Add-ExistingFileCheck $path

@@ -13,14 +13,14 @@ fn fixture_value() -> Value {
 
 fn versioned_fixture_value() -> Value {
     serde_json::from_str(include_str!(
-        "../../tests/fixtures/rust-parity/common-contract-package-v0.36.26.json"
+        "../../tests/fixtures/rust-parity/common-contract-package-v0.36.27.json"
     ))
     .expect("versioned fixture should be valid JSON")
 }
 
 fn previous_fixture_value() -> Value {
     serde_json::from_str(include_str!(
-        "../../tests/fixtures/rust-parity/common-contract-package-v0.36.25.json"
+        "../../tests/fixtures/rust-parity/common-contract-package-v0.36.26.json"
     ))
     .expect("previous fixture should be valid JSON")
 }
@@ -103,7 +103,7 @@ fn common_contract_rejects_previous_version_without_migration() {
     let error = contract
         .validate()
         .expect_err("previous version must not migrate implicitly");
-    assert!(error.contains("unsupported common contract version: 0.36.25"));
+    assert!(error.contains("unsupported common contract version: 0.36.26"));
 }
 
 #[test]
@@ -174,7 +174,7 @@ fn common_contract_rejects_conflated_readiness_vocabularies() {
 #[test]
 fn common_contract_rejects_task722_readiness_vocabulary_fixtures() {
     let fixtures = readiness_vocabulary_fixture_value();
-    assert_eq!(fixtures["version"], "0.36.26");
+    assert_eq!(fixtures["version"], "0.36.27");
 
     for fixture in fixtures["fixtures"]
         .as_array()

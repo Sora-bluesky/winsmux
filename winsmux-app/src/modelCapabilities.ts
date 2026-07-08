@@ -211,7 +211,7 @@ export interface CapabilityValidationIssue {
 
 export const openRouterModelsApiUrl = "https://openrouter.ai/api/v1/models";
 
-export const commonContractPackageVersion = "0.36.26";
+export const commonContractPackageVersion = "0.36.27";
 
 export const commonContractPackage = {
   version: commonContractPackageVersion,
