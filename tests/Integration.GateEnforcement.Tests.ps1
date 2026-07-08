@@ -195,6 +195,54 @@ panes:
             }
         }
 
+        function New-GateTargetRepo {
+            param(
+                [Parameter(Mandatory = $true)][string]$Root,
+                [string]$Branch = 'feature/review-gate-target',
+                [string]$Name = ''
+            )
+
+            $repoRoot = if ([string]::IsNullOrEmpty($Name)) {
+                Join-Path $Root ([guid]::NewGuid().ToString('N'))
+            } else {
+                Join-Path $Root $Name
+            }
+            New-Item -ItemType Directory -Path $repoRoot -Force | Out-Null
+            Write-GateTestFile -Path (Join-Path $repoRoot 'README.md') -Content 'target fixture'
+
+            & git -C $repoRoot init | Out-Null
+            & git -C $repoRoot add .
+            & git -C $repoRoot -c user.name='Test User' -c user.email='test@example.com' commit -m 'init' | Out-Null
+            & git -C $repoRoot checkout -b $Branch | Out-Null
+            New-Item -ItemType Directory -Path (Join-Path $repoRoot '.winsmux') -Force | Out-Null
+
+            return [PSCustomObject]@{
+                RepoRoot = $repoRoot
+                Branch   = $Branch
+            }
+        }
+
+        function New-GateLinkedWorktree {
+            param(
+                [Parameter(Mandatory = $true)][string]$SourceRepoRoot,
+                [Parameter(Mandatory = $true)][string]$Root,
+                [string]$Branch = 'feature/review-gate-linked'
+            )
+
+            $null = $SourceRepoRoot
+            $target = New-GateTargetRepo -Root $Root -Branch $Branch
+            $dotGitPath = Join-Path $target.RepoRoot '.git'
+            $actualGitDir = Join-Path $Root ([guid]::NewGuid().ToString('N'))
+            Move-Item -LiteralPath $dotGitPath -Destination $actualGitDir
+            Write-GateTestFile -Path $dotGitPath -Content ('gitdir: {0}' -f $actualGitDir)
+            & git --git-dir $actualGitDir config core.worktree $target.RepoRoot
+            if ($LASTEXITCODE -ne 0) {
+                throw "unable to configure pointer gitdir $actualGitDir"
+            }
+
+            return $target
+        }
+
         function Get-GateFixtureHeadSha {
             param([Parameter(Mandatory = $true)][string]$RepoRoot)
 
@@ -1152,6 +1200,7 @@ EOF
                 'git update-index --add README.md',
                 'git checkout-index -f README.md',
                 'git notes add -m note',
+                '(true; git add README.md)',
                 'git -c alias.ci=commit ci -m x',
                 'git config user.name Worker',
                 'git diff --output=C:/repo/README.md',
@@ -1536,6 +1585,3121 @@ EOF
         $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
             command = 'git commit -m "feat: approved"'
         }
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'uses tool input cwd for review-gated git lifecycle checks' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = 'git commit -m "feat: approved-target-cwd"'
+            cwd     = $target.RepoRoot
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'uses tool input cwd for review-gated shell function lifecycle checks' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = 'g() { git "$@"; }; g commit -m "feat: approved-target-wrapper"'
+            cwd     = $target.RepoRoot
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'uses Start-Process WorkingDirectory for review-gated lifecycle checks' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('pwsh -Command "Start-Process git -ArgumentList ''commit -m start-process-approved'' -WorkingDirectory ''{0}'' -Wait"' -f $target.RepoRoot)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'uses Start-Process WorkingDirectory for dynamic review-gated lifecycle checks' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('pwsh -Command "Start-Process (Get-Command git) -ArgumentList ''commit -m start-process-dynamic-approved'' -WorkingDirectory ''{0}'' -Wait"' -f $target.RepoRoot)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'does not allow root PASS to satisfy a Start-Process WorkingDirectory lifecycle target' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('pwsh -Command "Start-Process git -ArgumentList ''commit -m start-process-denied'' -WorkingDirectory ''{0}'' -Wait"' -f $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'does not allow root PASS to satisfy a dynamic Start-Process WorkingDirectory target' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('pwsh -Command "Start-Process (Get-Command git) -ArgumentList ''commit -m start-process-dynamic-denied'' -WorkingDirectory ''{0}'' -Wait"' -f $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'uses caller cwd when WorkingDirectory appears only inside Start-Process ArgumentList' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('pwsh -Command "Start-Process git -ArgumentList ''commit'', ''-m'', ''-WorkingDirectory:{0}'' -Wait"' -f $target.RepoRoot)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'does not allow ArgumentList WorkingDirectory text to satisfy Start-Process cwd' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('pwsh -Command "Start-Process git -ArgumentList ''commit'', ''-m'', ''-WorkingDirectory:{0}'' -Wait"' -f $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'honors inline Start-Process WorkingDirectory after ArgumentList' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('pwsh -Command "Start-Process git -ArgumentList commit -WorkingDirectory:{0} -Wait"' -f $target.RepoRoot)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'does not allow caller PASS to satisfy inline Start-Process WorkingDirectory after ArgumentList' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('pwsh -Command "Start-Process git -ArgumentList commit -WorkingDirectory:{0} -Wait"' -f $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'uses shell function body targets for review-gated lifecycle checks' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('g() {{ git -C "{0}" "$@"; }}; g commit -m "feat: approved-function-target"' -f $target.RepoRoot)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'does not require caller PASS for a parsed shell function target' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'FAIL'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('g() {{ git -C "{0}" "$@"; }}; g commit -m "feat: approved-function-target-only"' -f $target.RepoRoot)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'does not allow root PASS to satisfy a shell function body lifecycle target' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('g() {{ git -C "{0}" "$@"; }}; g commit -m "feat: denied-function-target"' -f $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'uses the call-site cwd for shell function forwarding lifecycle checks' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('cd "{0}"; g() {{ git "$@"; }}; g commit -m "feat: approved-function-cd"' -f $target.RepoRoot)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'does not allow root PASS to satisfy shell function forwarding after cd' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('cd "{0}"; g() {{ git "$@"; }}; g commit -m "feat: denied-function-cd"' -f $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'uses the current cwd for review-gated shell command substitutions' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('cd "{0}" && echo $(git commit -m "feat: approved-substitution-cd")' -f $target.RepoRoot)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'does not allow root PASS to satisfy a review-gated shell command substitution after cd' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('cd "{0}" && echo $(git commit -m "feat: denied-substitution-cd")' -f $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'requires current repo PASS for review-gated backtick command substitutions' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('git -C "{0}" commit -m `git commit -m "feat: denied-inner-backtick"`' -f $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'allows review-gated backtick command substitutions when each repo has PASS' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('git -C "{0}" commit -m `git commit -m "feat: approved-inner-backtick"`' -f $target.RepoRoot)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'ignores single-quoted shell command substitutions when selecting review targets' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('git commit -m ''$(git -C "{0}" commit -m "feat: ignored-substitution")''' -f $target.RepoRoot)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'does not allow root review PASS to satisfy a target cwd git lifecycle check' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = 'git commit -m "feat: denied-target-cwd"'
+            cwd     = $target.RepoRoot
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'ignores unrelated git -C stages when selecting the review-gated repo root' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('git -C "{0}" status; git commit -m "feat: denied-target-cwd"' -f $fixture.RepoRoot)
+            cwd     = $target.RepoRoot
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'uses git -C target for review-gated git lifecycle checks' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('git -C "{0}" commit -m "feat: approved-target-c" ' -f $target.RepoRoot)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'does not resolve shell-expanded git cwd tokens as literal repo paths' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $literalTarget = New-GateTargetRepo -Root $fixture.RepoRoot -Name '$TARGET' -Branch 'feature/review-gate-literal-target'
+        $literalHeadSha = Get-GateFixtureHeadSha -RepoRoot $literalTarget.RepoRoot
+
+        Set-GateReviewState -RepoRoot $literalTarget.RepoRoot -Branch $literalTarget.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $literalHeadSha
+            request   = [ordered]@{
+                branch                  = $literalTarget.Branch
+                head_sha                = $literalHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = 'git -C $TARGET commit -m "feat: denied-expanded-cwd"'
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'does not resolve home-shortcut git cwd tokens as literal repo paths' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $literalTarget = New-GateTargetRepo -Root $fixture.RepoRoot -Name '~\repo' -Branch 'feature/review-gate-literal-home'
+        $literalHeadSha = Get-GateFixtureHeadSha -RepoRoot $literalTarget.RepoRoot
+
+        Set-GateReviewState -RepoRoot $literalTarget.RepoRoot -Branch $literalTarget.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $literalHeadSha
+            request   = [ordered]@{
+                branch                  = $literalTarget.Branch
+                head_sha                = $literalHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = 'git -C ~/repo commit -m "feat: denied-home-shortcut-cwd"'
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'does not resolve cmd-expanded git cwd tokens as literal repo paths' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $literalTarget = New-GateTargetRepo -Root $fixture.RepoRoot -Name '%TARGET%' -Branch 'feature/review-gate-literal-cmd'
+        $literalHeadSha = Get-GateFixtureHeadSha -RepoRoot $literalTarget.RepoRoot
+
+        Set-GateReviewState -RepoRoot $literalTarget.RepoRoot -Branch $literalTarget.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $literalHeadSha
+            request   = [ordered]@{
+                branch                  = $literalTarget.Branch
+                head_sha                = $literalHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = 'cmd /c git -C %TARGET% commit -m "feat: denied-cmd-expanded-cwd"'
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'uses the effective final git -C path when multiple cwd options are present' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+        $targetRelativeFromRoot = [System.IO.Path]::GetRelativePath($fixture.RepoRoot, $target.RepoRoot)
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('git -C "{0}" -C "{1}" commit -m "feat: approved-final-cwd"' -f $fixture.RepoRoot, $targetRelativeFromRoot)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'preserves the prior git -C path when a later cwd option is empty' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('git -C "{0}" -C "" commit -m "feat: approved-empty-cwd"' -f $target.RepoRoot)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'does not allow root PASS to satisfy a git -C target followed by an empty cwd option' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('git -C "{0}" -C "" commit -m "feat: denied-empty-cwd"' -f $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'does not allow the first git -C PASS to satisfy a later git -C lifecycle target' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+        $targetRelativeFromRoot = [System.IO.Path]::GetRelativePath($fixture.RepoRoot, $target.RepoRoot)
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('git -C "{0}" -C "{1}" commit -m "feat: denied-final-cwd"' -f $fixture.RepoRoot, $targetRelativeFromRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'uses xargs git -C target for review-gated lifecycle checks' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('printf ''commit -m x\n'' | xargs git -C "{0}"' -f $target.RepoRoot)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'does not allow root PASS to satisfy an xargs git -C lifecycle target' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('printf ''commit -m x\n'' | xargs git -C "{0}"' -f $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'requires PASS for every git -C lifecycle target in the same command' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('git -C "{0}" commit -m "feat: approved-first"; git -C "{1}" commit -m "feat: denied-second"' -f $fixture.RepoRoot, $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'allows multiple git -C lifecycle targets only when each target has PASS' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('git -C "{0}" commit -m "feat: approved-first"; git -C "{1}" commit -m "feat: approved-second"' -f $fixture.RepoRoot, $target.RepoRoot)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'does not let non-executed git text steer review-gated target selection' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('echo git -C "{0}" commit; git -C "{1}" commit -m "feat: denied-actual-target"' -f $fixture.RepoRoot, $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'uses git shell alias body targets for review-gated lifecycle checks' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('git -c "alias.cm=!git -C ''{0}'' commit --allow-empty -m alias-target" cm' -f $target.RepoRoot)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'does not allow root PASS to satisfy a git shell alias target lifecycle' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('git -c "alias.cm=!git -C ''{0}'' commit --allow-empty -m alias-target-denied" cm' -f $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'requires current repo PASS when a grouped git lifecycle follows a git target command' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('git -C "{0}" commit -m "feat: approved-target"; (git commit -m "feat: denied-grouped-base")' -f $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'allows a grouped git lifecycle only when target and current repos have PASS' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('git -C "{0}" commit -m "feat: approved-target"; (git commit -m "feat: approved-grouped-base")' -f $target.RepoRoot)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'requires current repo PASS when a grouped command mixes target and current git lifecycles' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('(git -C "{0}" commit -m "feat: approved-target"; git commit -m "feat: denied-grouped-current")' -f $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'allows grouped mixed git lifecycles only when target and current repos have PASS' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('(git -C "{0}" commit -m "feat: approved-target"; git commit -m "feat: approved-grouped-current")' -f $target.RepoRoot)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'requires current repo PASS when git target commands are mixed with gh pr merge' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('git -C "{0}" commit -m "feat: approved-target"; gh pr merge 123 --squash' -f $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'allows mixed git target and gh pr merge only when each repo has PASS' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('git -C "{0}" commit -m "feat: approved-target"; gh pr merge 123 --squash' -f $target.RepoRoot)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'requires current repo PASS when git target commands are mixed with gh api merge' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('git -C "{0}" commit -m "feat: approved-target"; gh api repos/Sora-bluesky/winsmux/pulls/123/merge -X PUT' -f $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'requires current repo PASS when an unparsed git alias follows a git target command' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('g() {{ git "$@"; }}; git -C "{0}" commit -m "feat: approved-target"; g commit -m "feat: denied-current"' -f $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'requires current repo PASS when a timed git lifecycle follows a git target command' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('git -C "{0}" commit -m "feat: approved-target"; time git commit -m "feat: denied-current"' -f $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'allows mixed git target and timed git lifecycle only when each repo has PASS' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('git -C "{0}" commit -m "feat: approved-target"; time git commit -m "feat: approved-current"' -f $target.RepoRoot)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'requires current repo PASS when a control-flow git lifecycle follows a git target command' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('git -C "{0}" commit -m "feat: approved-target"; if true; then git commit -m "feat: denied-current"; fi' -f $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'allows mixed git target and control-flow git lifecycle only when each repo has PASS' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('git -C "{0}" commit -m "feat: approved-target"; if true; then git commit -m "feat: approved-current"; fi' -f $target.RepoRoot)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'keeps scanning git global options with values before lifecycle -C paths' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('git --namespace "review-test" -C "{0}" commit -m "feat: approved-option-cwd"' -f $target.RepoRoot)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'does not fall back to root PASS when git global options precede a target -C path' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('git --namespace "review-test" -C "{0}" commit -m "feat: denied-option-cwd"' -f $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'uses a later git -C path when resolving relative --work-tree targets' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('git --work-tree "." -C "{0}" commit -m "feat: approved-later-cwd-work-tree"' -f $target.RepoRoot)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'does not allow root PASS when a later git -C path rebases --work-tree' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('git --work-tree "." -C "{0}" commit -m "feat: denied-later-cwd-work-tree"' -f $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'uses the current repo when only a Git work tree is supplied' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        foreach ($command in @(
+                ('git --work-tree "{0}" commit -m "feat: approved-current-work-tree-only"' -f $target.RepoRoot),
+                ('GIT_WORK_TREE="{0}" git commit -m "feat: approved-current-env-work-tree-only"' -f $target.RepoRoot)
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+                command = $command
+            })
+
+            $result.ExitCode | Should -Be 0
+            $result.StdErr | Should -Be ''
+        }
+    }
+
+    It 'does not allow work-tree PASS when only a Git work tree is supplied' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        foreach ($command in @(
+                ('git --work-tree "{0}" commit -m "feat: denied-current-work-tree-only"' -f $target.RepoRoot),
+                ('GIT_WORK_TREE="{0}" git commit -m "feat: denied-current-env-work-tree-only"' -f $target.RepoRoot)
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+                command = $command
+            })
+
+            & $script:AssertDenyResult -Result $result
+            $result.OutputObject.systemMessage | Should -Match 'review-approve'
+            $result.OutputObject.systemMessage | Should -Match 'review-request'
+        }
+    }
+
+    It 'uses git -C repo when only inline Git work tree is supplied' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $workTree = New-GateTargetRepo -Root $fixture.Root -Name 'approved-work-tree' -Branch 'feature/review-gate-work-tree'
+        $target = New-GateTargetRepo -Root $fixture.Root -Name 'target' -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('GIT_WORK_TREE="{0}" git -C "{1}" commit -m "feat: approved-work-tree-with-c"' -f $workTree.RepoRoot, $target.RepoRoot)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'does not allow caller PASS for inline Git work tree with git -C target' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $workTree = New-GateTargetRepo -Root $fixture.Root -Name 'approved-work-tree' -Branch 'feature/review-gate-work-tree'
+        $target = New-GateTargetRepo -Root $fixture.Root -Name 'target' -Branch 'feature/review-gate-target'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('GIT_WORK_TREE="{0}" git -C "{1}" commit -m "feat: denied-work-tree-with-c"' -f $workTree.RepoRoot, $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'uses git --work-tree as the review-gated lifecycle target' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+        $targetGitDir = Join-Path $target.RepoRoot '.git'
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('git --git-dir "{0}" --work-tree "{1}" commit -m "feat: approved-work-tree"' -f $targetGitDir, $target.RepoRoot)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'does not allow root PASS to satisfy a git --work-tree lifecycle target' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+        $targetGitDir = Join-Path $target.RepoRoot '.git'
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('git --git-dir "{0}" --work-tree "{1}" commit -m "feat: denied-work-tree"' -f $targetGitDir, $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'uses git --git-dir as the review-gated lifecycle target when work-tree points elsewhere' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $repoTarget = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $workTreeTarget = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-worktree'
+        $repoTargetHeadSha = Get-GateFixtureHeadSha -RepoRoot $repoTarget.RepoRoot
+        $repoTargetGitDir = Join-Path $repoTarget.RepoRoot '.git'
+
+        Set-GateReviewState -RepoRoot $repoTarget.RepoRoot -Branch $repoTarget.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $repoTargetHeadSha
+            request   = [ordered]@{
+                branch                  = $repoTarget.Branch
+                head_sha                = $repoTargetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('git --git-dir "{0}" --work-tree "{1}" commit -m "feat: approved-git-dir-over-work-tree"' -f $repoTargetGitDir, $workTreeTarget.RepoRoot)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'does not allow work-tree PASS to satisfy a different git-dir lifecycle target' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $repoTarget = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $workTreeTarget = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-worktree'
+        $workTreeTargetHeadSha = Get-GateFixtureHeadSha -RepoRoot $workTreeTarget.RepoRoot
+        $repoTargetGitDir = Join-Path $repoTarget.RepoRoot '.git'
+
+        Set-GateReviewState -RepoRoot $workTreeTarget.RepoRoot -Branch $workTreeTarget.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $workTreeTargetHeadSha
+            request   = [ordered]@{
+                branch                  = $workTreeTarget.Branch
+                head_sha                = $workTreeTargetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('git --git-dir "{0}" --work-tree "{1}" commit -m "feat: denied-work-tree-over-git-dir"' -f $repoTargetGitDir, $workTreeTarget.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'uses git --git-dir as the review-gated lifecycle target' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+        $targetGitDir = Join-Path $target.RepoRoot '.git'
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('git --git-dir "{0}" commit -m "feat: approved-git-dir"' -f $targetGitDir)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'does not allow root PASS to satisfy a git --git-dir lifecycle target' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+        $targetGitDir = Join-Path $target.RepoRoot '.git'
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('git --git-dir "{0}" commit -m "feat: denied-git-dir"' -f $targetGitDir)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'uses linked worktree .git pointer files as review-gated lifecycle targets' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateLinkedWorktree -SourceRepoRoot $fixture.RepoRoot -Root $fixture.Root -Branch 'feature/review-gate-linked'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+        $targetGitDir = Join-Path $target.RepoRoot '.git'
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        (Get-Item -LiteralPath $targetGitDir).PSIsContainer | Should -Be $false
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('git --git-dir "{0}" --work-tree "{1}" commit -m "feat: approved-linked-git-dir"' -f $targetGitDir, $target.RepoRoot)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'does not allow root PASS to satisfy a linked worktree .git pointer target' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateLinkedWorktree -SourceRepoRoot $fixture.RepoRoot -Root $fixture.Root -Branch 'feature/review-gate-linked'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+        $targetGitDir = Join-Path $target.RepoRoot '.git'
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        (Get-Item -LiteralPath $targetGitDir).PSIsContainer | Should -Be $false
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('git --git-dir "{0}" --work-tree "{1}" commit -m "feat: denied-linked-git-dir"' -f $targetGitDir, $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'uses linked worktree git-dir paths as review-gated lifecycle targets' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateLinkedWorktree -SourceRepoRoot $fixture.RepoRoot -Root $fixture.Root -Branch 'feature/review-gate-linked'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+        $targetGitPointer = Join-Path $target.RepoRoot '.git'
+        $actualGitDir = ((Get-Content -LiteralPath $targetGitPointer -Raw -Encoding UTF8) -replace '^gitdir:\s*', '').Trim()
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        Test-Path -LiteralPath $actualGitDir | Should -Be $true
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('git --git-dir "{0}" --work-tree "{1}" commit -m "feat: approved-linked-git-dir-path"' -f $actualGitDir, $target.RepoRoot)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'does not allow root PASS to satisfy a linked worktree git-dir path target' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateLinkedWorktree -SourceRepoRoot $fixture.RepoRoot -Root $fixture.Root -Branch 'feature/review-gate-linked'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+        $targetGitPointer = Join-Path $target.RepoRoot '.git'
+        $actualGitDir = ((Get-Content -LiteralPath $targetGitPointer -Raw -Encoding UTF8) -replace '^gitdir:\s*', '').Trim()
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        Test-Path -LiteralPath $actualGitDir | Should -Be $true
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('git --git-dir "{0}" --work-tree "{1}" commit -m "feat: denied-linked-git-dir-path"' -f $actualGitDir, $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'uses inline Git environment work tree as the review-gated lifecycle target' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+        $targetGitDir = Join-Path $target.RepoRoot '.git'
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('GIT_DIR="{0}" GIT_WORK_TREE="{1}" git commit -m "feat: approved-env-work-tree"' -f $targetGitDir, $target.RepoRoot)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'does not allow root PASS to satisfy an inline Git environment work tree target' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+        $targetGitDir = Join-Path $target.RepoRoot '.git'
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('GIT_DIR="{0}" GIT_WORK_TREE="{1}" git commit -m "feat: denied-env-work-tree"' -f $targetGitDir, $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'uses env split-string Git environment targets for review-gated lifecycle checks' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+        $targetGitDir = Join-Path $target.RepoRoot '.git'
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('env -S "GIT_DIR=''{0}'' GIT_WORK_TREE=''{1}'' git commit -m approved-env-split"' -f $targetGitDir, $target.RepoRoot)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'does not allow root PASS to satisfy env split-string Git environment targets' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+        $targetGitDir = Join-Path $target.RepoRoot '.git'
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('env -S "GIT_DIR=''{0}'' GIT_WORK_TREE=''{1}'' git commit -m denied-env-split"' -f $targetGitDir, $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'uses inline GIT_DIR as the review-gated lifecycle target' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+        $targetGitDir = Join-Path $target.RepoRoot '.git'
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('GIT_DIR="{0}" git commit -m "feat: approved-env-git-dir"' -f $targetGitDir)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'does not allow root PASS to satisfy an inline GIT_DIR target' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+        $targetGitDir = Join-Path $target.RepoRoot '.git'
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('GIT_DIR="{0}" git commit -m "feat: denied-env-git-dir"' -f $targetGitDir)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'uses caller repo when env unsets prefixed Git directory' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+        $targetGitDir = Join-Path $target.RepoRoot '.git'
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        foreach ($command in @(
+                ('GIT_DIR="{0}" env -u GIT_DIR git commit -m "feat: approved-env-unset-git-dir"' -f $targetGitDir),
+                ('GIT_DIR="{0}" env -i git commit -m "feat: approved-env-ignore-git-dir"' -f $targetGitDir)
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+                command = $command
+            })
+
+            $result.ExitCode | Should -Be 0
+            $result.StdErr | Should -Be ''
+        }
+    }
+
+    It 'does not allow discarded Git env PASS after env unset or ignore-environment' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+        $targetGitDir = Join-Path $target.RepoRoot '.git'
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        foreach ($command in @(
+                ('GIT_DIR="{0}" env -u GIT_DIR git commit -m "feat: denied-env-unset-git-dir"' -f $targetGitDir),
+                ('GIT_DIR="{0}" env -i git commit -m "feat: denied-env-ignore-git-dir"' -f $targetGitDir)
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+                command = $command
+            })
+
+            & $script:AssertDenyResult -Result $result
+            $result.OutputObject.systemMessage | Should -Match 'review-approve'
+            $result.OutputObject.systemMessage | Should -Match 'review-request'
+        }
+    }
+
+    It 'resolves relative inline Git environment paths after git -C' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $launcher = New-GateTargetRepo -Root $fixture.RepoRoot -Name 'launcher' -Branch 'feature/review-gate-launcher'
+        $target = New-GateTargetRepo -Root $fixture.RepoRoot -Name 'target' -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('GIT_DIR="../target/.git" GIT_WORK_TREE="../target" git -C "{0}" commit -m "feat: approved-env-after-c"' -f $launcher.RepoRoot)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'does not allow root PASS to satisfy inline Git environment paths rebased by git -C' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $launcher = New-GateTargetRepo -Root $fixture.RepoRoot -Name 'launcher' -Branch 'feature/review-gate-launcher'
+        New-GateTargetRepo -Root $fixture.RepoRoot -Name 'target' -Branch 'feature/review-gate-target' | Out-Null
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('GIT_DIR="../target/.git" GIT_WORK_TREE="../target" git -C "{0}" commit -m "feat: denied-env-after-c"' -f $launcher.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'uses env chdir as the review-gated lifecycle base cwd' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('env -C "{0}" git commit -m "feat: approved-env-chdir"' -f $target.RepoRoot)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'does not allow root PASS to satisfy an env chdir target' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('env -C "{0}" git commit -m "feat: denied-env-chdir"' -f $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'uses env chdir as the review-gated base cwd for nested shell commands' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('env -C "{0}" bash -lc "git commit -m ''feat: approved-env-shell''"' -f $target.RepoRoot)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'does not allow root PASS to satisfy an env chdir nested shell lifecycle target' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('env -C "{0}" bash -lc "git commit -m ''feat: denied-env-shell''"' -f $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'uses shell cd as the review-gated base cwd for following git lifecycle commands' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('cd "{0}" && git commit -m "feat: approved-shell-cd"' -f $target.RepoRoot)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'does not allow root PASS to satisfy a shell cd git lifecycle target' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('cd "{0}" && git commit -m "feat: denied-shell-cd"' -f $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'fails closed for previous-directory shell cd before lifecycle commands' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        foreach ($command in @(
+                'cd -; git commit -m "feat: denied-previous-cd"',
+                'cd -- -; git commit -m "feat: denied-previous-cd-after-options"'
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+                command = $command
+            })
+
+            & $script:AssertDenyResult -Result $result
+            $result.OutputObject.systemMessage | Should -Match 'review-approve'
+            $result.OutputObject.systemMessage | Should -Match 'review-request'
+        }
+    }
+
+    It 'uses control-flow shell cd as the review-gated base cwd for following lifecycle commands' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('if true; then cd "{0}"; git commit -m "feat: approved-control-flow-cd"; fi' -f $target.RepoRoot)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'does not allow root PASS to satisfy a control-flow shell cd lifecycle target' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('if true; then cd "{0}"; git commit -m "feat: denied-control-flow-cd"; fi' -f $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'preserves nested control-flow shell cd for following lifecycle commands in the outer branch' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('if true; then if true; then cd "{0}"; fi; git commit -m "feat: approved-nested-control-flow-cd"; fi' -f $target.RepoRoot)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'does not allow root PASS to satisfy a nested control-flow shell cd lifecycle target' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('if true; then if true; then cd "{0}"; fi; git commit -m "feat: denied-nested-control-flow-cd"; fi' -f $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'preserves an executed control-flow shell cd after the block closes' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('if true; then cd "{0}"; fi; git commit -m "feat: approved-post-block-control-flow-cd"' -f $target.RepoRoot)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'does not allow root PASS to satisfy an executed post-block control-flow shell cd lifecycle target' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('if true; then cd "{0}"; fi; git commit -m "feat: denied-post-block-control-flow-cd"' -f $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'uses the outer cwd after a closed control-flow shell cd block' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('if false; then cd "{0}"; fi; git commit -m "feat: approved-after-closed-control-flow"' -f $target.RepoRoot)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'does not allow target PASS to satisfy a lifecycle after a closed control-flow shell cd block' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('if false; then cd "{0}"; fi; git commit -m "feat: denied-after-closed-control-flow"' -f $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'uses shell brace group cd as the review-gated base cwd for lifecycle commands' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('{{ cd "{0}"; git commit -m "feat: approved-brace-cd"; }}' -f $target.RepoRoot)
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'does not allow root PASS to satisfy a shell brace group cd lifecycle target' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $rootHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('{{ cd "{0}"; git commit -m "feat: denied-brace-cd"; }}' -f $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'does not treat conditionally skipped shell cd as an executed lifecycle target cwd' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('false && cd "{0}"; git commit -m "feat: denied-conditional-cd"' -f $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'does not treat shell cd before an or-else lifecycle as the lifecycle cwd' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('cd "{0}" || git commit -m "feat: denied-or-else-cd"' -f $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'does not treat backgrounded shell cd as the lifecycle cwd' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('cd "{0}" & git commit -m "feat: denied-backgrounded-cd"' -f $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'prefers inline Git environment targets over bare git chdir cwd' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $approved = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-approved'
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $approvedHeadSha = Get-GateFixtureHeadSha -RepoRoot $approved.RepoRoot
+        $targetGitDir = Join-Path $target.RepoRoot '.git'
+
+        Set-GateReviewState -RepoRoot $approved.RepoRoot -Branch $approved.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $approvedHeadSha
+            request   = [ordered]@{
+                branch                  = $approved.Branch
+                head_sha                = $approvedHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('GIT_DIR="{0}" GIT_WORK_TREE="{1}" git -C "{2}" commit -m "feat: denied-env-over-chdir"' -f $targetGitDir, $target.RepoRoot, $approved.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'allows inline Git environment targets with bare git chdir when target has PASS' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $launcher = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-launcher'
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+        $targetGitDir = Join-Path $target.RepoRoot '.git'
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            request   = [ordered]@{
+                branch                  = $target.Branch
+                head_sha                = $targetHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('GIT_DIR="{0}" GIT_WORK_TREE="{1}" git -C "{2}" commit -m "feat: approved-env-over-chdir"' -f $targetGitDir, $target.RepoRoot, $launcher.RepoRoot)
+        })
 
         $result.ExitCode | Should -Be 0
         $result.StdErr | Should -Be ''

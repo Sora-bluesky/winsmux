@@ -197,14 +197,20 @@ try {
   // Rule 13: Block review-gated commit/merge commands without valid Reviewer PASS for the current HEAD (#279)
   if (toolName === "Bash") {
     if (isReviewGatedCommand(bashCommand) && !/bump-version|chore:\s*bump/.test(bashCommand)) {
-      const reviewStatePath = path.join(process.cwd(), ".winsmux", "review-state.json");
       const denyMessage = "Review required. Flow: 1) a review-capable pane runs winsmux review-request, 2) that pane reviews, 3) it runs winsmux review-approve or winsmux review-fail.";
       try {
-        const currentBranch = getCurrentBranch(process.cwd());
-        const currentHeadSha = getCurrentHeadSha(process.cwd());
-        const reviewState = JSON.parse(fs.readFileSync(reviewStatePath, "utf8"));
-        if (!currentBranch || !hasValidReviewerPass(reviewState[currentBranch], currentHeadSha)) {
+        const reviewRepoRoots = resolveReviewGateRepoRoots(toolInput, bashCommand);
+        if (reviewRepoRoots.length === 0) {
           deny(denyMessage);
+        }
+        for (const reviewRepoRoot of reviewRepoRoots) {
+          const reviewStatePath = path.join(reviewRepoRoot, ".winsmux", "review-state.json");
+          const currentBranch = getCurrentBranch(reviewRepoRoot);
+          const currentHeadSha = getCurrentHeadSha(reviewRepoRoot);
+          const reviewState = JSON.parse(fs.readFileSync(reviewStatePath, "utf8"));
+          if (!currentBranch || !hasValidReviewerPass(reviewState[currentBranch], currentHeadSha)) {
+            deny(denyMessage);
+          }
         }
       } catch (e) {
         deny(denyMessage);
@@ -525,6 +531,54 @@ function unwrapPowerShellCommandWrapper(segment) {
   return current;
 }
 
+function unwrapShellGroupingWrapper(segment) {
+  let current = typeof segment === "string" ? segment.trim() : "";
+
+  while (isFullyWrappedShellGroup(current)) {
+    current = current.slice(1, -1).trim();
+  }
+
+  return current;
+}
+
+function isFullyWrappedShellGroup(value) {
+  const source = typeof value === "string" ? value.trim() : "";
+  if (!source.startsWith("(") || !source.endsWith(")")) {
+    return false;
+  }
+
+  let quote = "";
+  let parenDepth = 0;
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    if (quote) {
+      if (char === quote && source[index - 1] !== "\\") {
+        quote = "";
+      }
+      continue;
+    }
+
+    if (char === "'" || char === "\"") {
+      quote = char;
+      continue;
+    }
+
+    if (char === "(") {
+      parenDepth += 1;
+      continue;
+    }
+
+    if (char === ")" && parenDepth > 0) {
+      parenDepth -= 1;
+      if (parenDepth === 0 && index < source.length - 1) {
+        return false;
+      }
+    }
+  }
+
+  return parenDepth === 0;
+}
+
 function hasAllowedWinsmuxDiagnosticCommand(tokens, startIndex) {
   return hasStandaloneCommandToken(tokens, "has-session", startIndex) ||
          hasStandaloneCommandToken(tokens, "list-panes", startIndex) ||
@@ -617,7 +671,15 @@ function isOperatorOnlyGitLifecycleCommand(command) {
   }
 
   return splitCommandSegments(command).some((segment) =>
-    splitCommandPipelineStages(segment).some(isOperatorOnlyGitLifecycleSegment));
+    splitCommandPipelineStages(segment).some((stage) => {
+      const powerShellStage = unwrapPowerShellCommandWrapper(stage);
+      const groupedStage = unwrapShellGroupingWrapper(powerShellStage);
+      if (groupedStage !== powerShellStage.trim()) {
+        return isOperatorOnlyGitLifecycleCommand(groupedStage);
+      }
+
+      return isOperatorOnlyGitLifecycleSegment(stage);
+    }));
 }
 
 function hasPowerShellScriptBlockGitLifecycleCommand(command) {
@@ -916,7 +978,7 @@ function hasPowerShellStartProcessLifecycleHint(segment) {
   }
 
   return hasGitLifecycleHint(source) &&
-    /(?:\(\s*get-command\b|\$env:comspec\b|\bpwsh\b|\bpowershell\b|\bcmd\b|['"]g['"]\s*\+\s*['"](?:it|h)['"])/iu.test(source);
+    /(?:\(\s*get-command\b|\$env:comspec\b|\bpwsh\b|\bpowershell\b|\bcmd\b|['"]g['"]\s*\+\s*['"](?:it|h)['"]|\bstart-process\s+(?:['"]?git(?:\.exe)?['"]?|['"]?gh(?:\.exe)?['"]?))/iu.test(source);
 }
 
 function hasGitLifecycleHint(source) {
@@ -1129,19 +1191,12 @@ function findGitSubcommandIndex(tokens) {
       continue;
     }
 
-    if (normalizedToken === "-c" ||
-        normalizedToken === "-C" ||
-        normalizedToken === "--git-dir" ||
-        normalizedToken === "--work-tree" ||
-        normalizedToken === "--namespace") {
+    if (isGitGlobalOptionWithSeparateValue(normalizedToken)) {
       index += 1;
       continue;
     }
 
-    if (normalizedToken.startsWith("-c=") ||
-        normalizedToken.startsWith("--git-dir=") ||
-        normalizedToken.startsWith("--work-tree=") ||
-        normalizedToken.startsWith("--namespace=")) {
+    if (isGitGlobalOptionWithInlineValue(normalizedToken)) {
       continue;
     }
 
@@ -1155,6 +1210,22 @@ function findGitSubcommandIndex(tokens) {
   return -1;
 }
 
+function isGitGlobalOptionWithSeparateValue(normalizedToken) {
+  return normalizedToken === "-c" ||
+         normalizedToken === "--config-env" ||
+         normalizedToken === "--git-dir" ||
+         normalizedToken === "--work-tree" ||
+         normalizedToken === "--namespace";
+}
+
+function isGitGlobalOptionWithInlineValue(normalizedToken) {
+  return normalizedToken.startsWith("-c=") ||
+         normalizedToken.startsWith("--config-env=") ||
+         normalizedToken.startsWith("--git-dir=") ||
+         normalizedToken.startsWith("--work-tree=") ||
+         normalizedToken.startsWith("--namespace=");
+}
+
 function getGitSubcommandName(tokens, subcommandIndex) {
   const subcommand = normalizeAgentValue(stripOuterQuotes(tokens[subcommandIndex]));
   const aliasSubcommand = getGitAliasSubcommandName(tokens, subcommandIndex, subcommand);
@@ -1162,6 +1233,35 @@ function getGitSubcommandName(tokens, subcommandIndex) {
 }
 
 function getGitAliasSubcommandName(tokens, subcommandIndex, subcommand) {
+  const aliasValue = getGitAliasConfigValue(tokens, subcommandIndex, subcommand);
+  if (!aliasValue) {
+    return "";
+  }
+
+  const aliasTokens = tokenizeCommandLine(aliasValue);
+  if (aliasTokens.length === 0) {
+    return "";
+  }
+
+  const delegatedSubcommand = getGitShellAliasDelegatedSubcommand(aliasTokens);
+  if (delegatedSubcommand) {
+    return delegatedSubcommand;
+  }
+
+  return normalizeAgentValue(stripOuterQuotes(aliasTokens[0]));
+}
+
+function getGitShellAliasCommand(tokens, subcommandIndex, subcommand) {
+  const aliasValue = getGitAliasConfigValue(tokens, subcommandIndex, subcommand);
+  const trimmedAliasValue = typeof aliasValue === "string" ? aliasValue.trim() : "";
+  if (!trimmedAliasValue.startsWith("!")) {
+    return "";
+  }
+
+  return trimmedAliasValue.slice(1).trim();
+}
+
+function getGitAliasConfigValue(tokens, subcommandIndex, subcommand) {
   for (let index = 1; index < subcommandIndex; index += 1) {
     const token = stripOuterQuotes(tokens[index]);
     const normalizedToken = normalizeAgentValue(token);
@@ -1183,17 +1283,7 @@ function getGitAliasSubcommandName(tokens, subcommandIndex, subcommand) {
       continue;
     }
 
-    const aliasTokens = tokenizeCommandLine(aliasMatch[2]);
-    if (aliasTokens.length === 0) {
-      continue;
-    }
-
-    const delegatedSubcommand = getGitShellAliasDelegatedSubcommand(aliasTokens);
-    if (delegatedSubcommand) {
-      return delegatedSubcommand;
-    }
-
-    return normalizeAgentValue(stripOuterQuotes(aliasTokens[0]));
+    return aliasMatch[2] || "";
   }
 
   return "";
@@ -1239,7 +1329,8 @@ function isGitLifecycleSubcommandName(value) {
   ].includes(normalizeAgentValue(value));
 }
 
-function hasPowerShellGitAliasLifecycleCommand(command, reviewOnly) {
+function hasPowerShellGitAliasLifecycleCommand(command, reviewOnly, options = {}) {
+  const includeFunctionCommands = options.includeFunctionCommands !== false;
   const aliases = new Map();
   const ghAliases = new Map();
 
@@ -1305,13 +1396,13 @@ function hasPowerShellGitAliasLifecycleCommand(command, reviewOnly) {
     }
   }
 
-  if (hasShellFunctionLifecycleCommand(command, reviewOnly)) {
+  if (includeFunctionCommands && hasShellFunctionLifecycleCommand(command, reviewOnly)) {
     return true;
   }
-  if (hasPowerShellFunctionLifecycleCommand(command, reviewOnly)) {
+  if (includeFunctionCommands && hasPowerShellFunctionLifecycleCommand(command, reviewOnly)) {
     return true;
   }
-  if (hasAliasFunctionLifecycleCommand(command, reviewOnly, aliases, ghAliases)) {
+  if (includeFunctionCommands && hasAliasFunctionLifecycleCommand(command, reviewOnly, aliases, ghAliases)) {
     return true;
   }
 
@@ -1431,10 +1522,12 @@ function hasShellForwardingFunctionLifecycleCommand(command, reviewOnly) {
     }
 
     const callTokens = unwrapEnvCommandTokens(tokenizeCommandLine(match[3] || ""));
-    if (isGitTokenLifecycleCommand(callTokens, reviewOnly)) {
+    if (isGitTokenLifecycleCommand(callTokens, reviewOnly) ||
+        (/\bgit\b/u.test(body) && isGitTokenLifecycleCommand(["git", ...callTokens], reviewOnly))) {
       return true;
     }
-    if (isGhTokenLifecycleCommand(callTokens)) {
+    if (isGhTokenLifecycleCommand(callTokens) ||
+        (/\bgh\b/u.test(body) && isGhTokenLifecycleCommand(["gh", ...callTokens]))) {
       return true;
     }
   }
@@ -1873,9 +1966,28 @@ function isReviewerOnlySegment(segment) {
 }
 
 function splitCommandSegments(command) {
+  return splitCommandSegmentsWithSeparators(command).map((entry) => entry.segment);
+}
+
+function splitCommandSegmentsWithSeparators(command) {
   const segments = [];
   let current = "";
   let quote = "";
+  let parenDepth = 0;
+  let braceDepth = 0;
+  let separatorBefore = "";
+
+  const pushSegment = (separatorAfter) => {
+    if (current.trim() !== "") {
+      segments.push({
+        segment: current.trim(),
+        separatorBefore,
+        separatorAfter,
+      });
+    }
+    current = "";
+    separatorBefore = separatorAfter;
+  };
 
   for (let index = 0; index < command.length; index += 1) {
     const char = command[index];
@@ -1895,37 +2007,50 @@ function splitCommandSegments(command) {
       continue;
     }
 
-    if (char === "\r" || char === "\n" || char === ";") {
-      if (current.trim() !== "") {
-        segments.push(current.trim());
-      }
-      current = "";
+    if (char === "(") {
+      parenDepth += 1;
+      current += char;
       continue;
     }
 
-    if ((char === "&" && nextChar === "&") || (char === "|" && nextChar === "|")) {
-      if (current.trim() !== "") {
-        segments.push(current.trim());
-      }
-      current = "";
+    if (char === ")" && parenDepth > 0) {
+      parenDepth -= 1;
+      current += char;
+      continue;
+    }
+
+    if (char === "{" && command[index - 1] !== "$") {
+      braceDepth += 1;
+      current += char;
+      continue;
+    }
+
+    if (char === "}" && braceDepth > 0) {
+      braceDepth -= 1;
+      current += char;
+      continue;
+    }
+
+    if ((char === "\r" || char === "\n" || char === ";") && parenDepth === 0 && braceDepth === 0) {
+      pushSegment(";");
+      continue;
+    }
+
+    if (((char === "&" && nextChar === "&") || (char === "|" && nextChar === "|")) && parenDepth === 0 && braceDepth === 0) {
+      pushSegment(char + nextChar);
       index += 1;
       continue;
     }
 
-    if (char === "&" && command[index - 1] !== ">") {
-      if (current.trim() !== "") {
-        segments.push(current.trim());
-      }
-      current = "";
+    if (char === "&" && command[index - 1] !== ">" && parenDepth === 0 && braceDepth === 0) {
+      pushSegment("&");
       continue;
     }
 
     current += char;
   }
 
-  if (current.trim() !== "") {
-    segments.push(current.trim());
-  }
+  pushSegment("");
 
   return segments;
 }
@@ -1934,6 +2059,8 @@ function splitCommandPipelineStages(command) {
   const segments = [];
   let current = "";
   let quote = "";
+  let parenDepth = 0;
+  let braceDepth = 0;
 
   for (let index = 0; index < command.length; index += 1) {
     const char = command[index];
@@ -1953,7 +2080,31 @@ function splitCommandPipelineStages(command) {
       continue;
     }
 
-    if (char === "|" && nextChar !== "|") {
+    if (char === "(") {
+      parenDepth += 1;
+      current += char;
+      continue;
+    }
+
+    if (char === ")" && parenDepth > 0) {
+      parenDepth -= 1;
+      current += char;
+      continue;
+    }
+
+    if (char === "{" && command[index - 1] !== "$") {
+      braceDepth += 1;
+      current += char;
+      continue;
+    }
+
+    if (char === "}" && braceDepth > 0) {
+      braceDepth -= 1;
+      current += char;
+      continue;
+    }
+
+    if (char === "|" && nextChar !== "|" && parenDepth === 0 && braceDepth === 0) {
       if (current.trim() !== "") {
         segments.push(current.trim());
       }
@@ -1975,6 +2126,7 @@ function tokenizeCommandLine(command) {
   const tokens = [];
   let current = "";
   let quote = "";
+  let tokenStarted = false;
 
   for (let index = 0; index < command.length; index += 1) {
     const char = command[index];
@@ -1990,21 +2142,24 @@ function tokenizeCommandLine(command) {
 
     if (char === "'" || char === "\"") {
       quote = char;
+      tokenStarted = true;
       continue;
     }
 
     if (/\s/.test(char)) {
-      if (current !== "") {
+      if (tokenStarted) {
         tokens.push(current);
         current = "";
+        tokenStarted = false;
       }
       continue;
     }
 
     current += char;
+    tokenStarted = true;
   }
 
-  if (current !== "") {
+  if (tokenStarted) {
     tokens.push(current);
   }
 
@@ -2122,6 +2277,68 @@ function hasShellWrappedXargsLifecycleCommand(tokens, source, reviewOnly) {
     : isOperatorOnlyGitLifecycleCommand(nestedCommand) || hasXargsLifecycleArgumentHint(source, false);
 }
 
+function getReviewGatedXargsCommandTargets(tokens, source, baseCwd, depth) {
+  const nestedTokens = getNormalizedXargsCommandTokens(tokens);
+  const lifecycleHint = hasXargsLifecycleArgumentHint(source, true);
+  const nestedExecutable = normalizeExecutableName(nestedTokens[0] || "");
+  const fallbackTarget = baseCwd || process.cwd();
+
+  if (nestedExecutable === "git") {
+    const subcommandIndex = findGitSubcommandIndex(nestedTokens);
+    const subcommand = subcommandIndex >= 0
+      ? getGitSubcommandName(nestedTokens, subcommandIndex)
+      : "";
+    if (subcommand === "commit" || subcommand === "merge" || lifecycleHint) {
+      const targetCwd = getGitGlobalCwdOption(nestedTokens, 0, baseCwd, {}) || fallbackTarget;
+      return { targetCwds: [targetCwd || "\0unresolved-xargs-git-target"], requiresBaseCwd: false, matched: true };
+    }
+  }
+
+  if (nestedExecutable === "gh") {
+    if (isGhPrMergeTokenCommand(nestedTokens) ||
+        isGhApiMergeCommand(nestedTokens) ||
+        isGhApiRefWriteCommand(nestedTokens) ||
+        hasGhLifecycleArgumentHint(source)) {
+      return { targetCwds: [fallbackTarget], requiresBaseCwd: false, matched: true };
+    }
+  }
+
+  if (isShellCommandExecutable(nestedExecutable)) {
+    const nestedCommand = getShellCommandArgument(nestedTokens);
+    if (nestedCommand) {
+      const nestedTargets = getReviewGatedCommandTargets(nestedCommand, baseCwd, depth + 1);
+      if (nestedTargets.targetCwds.length > 0 || nestedTargets.requiresBaseCwd) {
+        return { ...nestedTargets, matched: true };
+      }
+
+      if (lifecycleHint) {
+        const materializedCommand = materializeXargsLifecyclePlaceholders(nestedCommand);
+        const materializedTargets = getReviewGatedCommandTargets(materializedCommand, baseCwd, depth + 1);
+        if (materializedTargets.targetCwds.length > 0 || materializedTargets.requiresBaseCwd) {
+          return { ...materializedTargets, matched: true };
+        }
+      }
+    }
+  }
+
+  if (isGitTokenLifecycleCommand(nestedTokens, true) ||
+      isGhTokenLifecycleCommand(nestedTokens) ||
+      hasShellWrappedXargsLifecycleCommand(nestedTokens, source, true) ||
+      lifecycleHint) {
+    return { targetCwds: ["\0unresolved-xargs-review-target"], requiresBaseCwd: false, matched: true };
+  }
+
+  return { targetCwds: [], requiresBaseCwd: false, matched: false };
+}
+
+function materializeXargsLifecyclePlaceholders(command) {
+  return String(command || "")
+    .replace(/(["'])\{\}\1/gu, "commit")
+    .replace(/\{\}/gu, "commit")
+    .replace(/(["'])\$@\1/gu, "commit")
+    .replace(/\$@/gu, "commit");
+}
+
 function hasXargsLifecycleArgumentHint(source, reviewOnly) {
   const normalized = normalizeAgentValue(String(source || ""));
   const hasXargsGit = /\bxargs\b[\s\S]*\bgit\b/u.test(normalized);
@@ -2140,16 +2357,26 @@ function isPowerShellStartProcessExecutable(executable) {
   return normalized === "start-process" || normalized === "saps" || normalized === "start";
 }
 
-function getPowerShellStartProcessCommand(tokens) {
+function getPowerShellStartProcessInvocation(tokens) {
   if (tokens.length < 2) {
-    return "";
+    return { command: "", workingDirectory: "" };
   }
 
   let filePath = "";
+  const workingDirectory = getPowerShellStartProcessWorkingDirectory(tokens);
   const argumentList = [];
   for (let index = 1; index < tokens.length; index += 1) {
     const rawToken = stripOuterQuotes(tokens[index]);
     const token = normalizeAgentValue(rawToken);
+    if (isPowerShellStartProcessWorkingDirectoryToken(token)) {
+      index += 1;
+      continue;
+    }
+
+    if (getInlinePowerShellStartProcessWorkingDirectory(rawToken)) {
+      continue;
+    }
+
     if ((token === "-filepath" || token === "-file") && index + 1 < tokens.length) {
       filePath = stripOuterQuotes(tokens[index + 1]);
       index += 1;
@@ -2164,6 +2391,14 @@ function getPowerShellStartProcessCommand(tokens) {
 
     if ((token === "-argumentlist" || token === "-args") && index + 1 < tokens.length) {
       for (let argumentIndex = index + 1; argumentIndex < tokens.length; argumentIndex += 1) {
+        const argumentToken = normalizeAgentValue(stripOuterQuotes(tokens[argumentIndex]));
+        if (isPowerShellStartProcessWorkingDirectoryToken(argumentToken)) {
+          argumentIndex += 1;
+          continue;
+        }
+        if (getInlinePowerShellStartProcessWorkingDirectory(stripOuterQuotes(tokens[argumentIndex]))) {
+          continue;
+        }
         for (const argument of cleanPowerShellStartProcessArguments(tokens[argumentIndex])) {
           argumentList.push(argument);
         }
@@ -2177,6 +2412,14 @@ function getPowerShellStartProcessCommand(tokens) {
         argumentList.push(inlineArgument);
       }
       for (let argumentIndex = index + 1; argumentIndex < tokens.length; argumentIndex += 1) {
+        const argumentToken = normalizeAgentValue(stripOuterQuotes(tokens[argumentIndex]));
+        if (isPowerShellStartProcessWorkingDirectoryToken(argumentToken)) {
+          argumentIndex += 1;
+          continue;
+        }
+        if (getInlinePowerShellStartProcessWorkingDirectory(stripOuterQuotes(tokens[argumentIndex]))) {
+          continue;
+        }
         for (const argument of cleanPowerShellStartProcessArguments(tokens[argumentIndex])) {
           argumentList.push(argument);
         }
@@ -2199,14 +2442,92 @@ function getPowerShellStartProcessCommand(tokens) {
   const joinedArguments = argumentList.filter(Boolean).join(" ").trim();
   if (isPowerShellVariableReference(filePath)) {
     if (hasGhLifecycleArgumentHint(joinedArguments)) {
-      return ["gh", joinedArguments].filter(Boolean).join(" ").trim();
+      return {
+        command: ["gh", joinedArguments].filter(Boolean).join(" ").trim(),
+        workingDirectory,
+      };
     }
     if (hasGitLifecycleArgumentHint(joinedArguments)) {
-      return ["git", joinedArguments].filter(Boolean).join(" ").trim();
+      return {
+        command: ["git", joinedArguments].filter(Boolean).join(" ").trim(),
+        workingDirectory,
+      };
     }
   }
 
-  return [filePath, joinedArguments].filter(Boolean).join(" ").trim();
+  return {
+    command: [filePath, joinedArguments].filter(Boolean).join(" ").trim(),
+    workingDirectory,
+  };
+}
+
+function getPowerShellStartProcessCommand(tokens) {
+  return getPowerShellStartProcessInvocation(tokens).command;
+}
+
+function getPowerShellStartProcessWorkingDirectory(tokens) {
+  let argumentListSeen = false;
+  let argumentListIsArrayLike = false;
+  for (let index = 1; index < tokens.length; index += 1) {
+    const originalToken = tokens[index];
+    if (isQuotedCommandToken(originalToken)) {
+      if (argumentListSeen) {
+        argumentListIsArrayLike = true;
+      }
+      continue;
+    }
+    const rawToken = stripOuterQuotes(originalToken);
+    const token = normalizeAgentValue(rawToken);
+    if (token === "-argumentlist" || token === "-args") {
+      argumentListSeen = true;
+      continue;
+    }
+    if (token.startsWith("-argumentlist:") || token.startsWith("-argumentlist=") ||
+        token.startsWith("-args:") || token.startsWith("-args=")) {
+      argumentListSeen = true;
+      argumentListIsArrayLike = true;
+      continue;
+    }
+    if (isPowerShellStartProcessWorkingDirectoryToken(token) && index + 1 < tokens.length) {
+      return cleanPowerShellStartProcessArgument(tokens[index + 1]);
+    }
+
+    const inlineWorkingDirectory = getInlinePowerShellStartProcessWorkingDirectory(rawToken);
+    if (argumentListSeen && argumentListIsArrayLike && inlineWorkingDirectory) {
+      continue;
+    }
+    if (inlineWorkingDirectory) {
+      return inlineWorkingDirectory;
+    }
+
+    if (argumentListSeen && /,+$/u.test(String(originalToken || "").trim())) {
+      argumentListIsArrayLike = true;
+    }
+  }
+
+  return "";
+}
+
+function isQuotedCommandToken(value) {
+  const token = String(value || "").trim().replace(/,+$/u, "");
+  return token.length >= 2 &&
+    ((token.startsWith("'") && token.endsWith("'")) ||
+     (token.startsWith('"') && token.endsWith('"')));
+}
+
+function isPowerShellStartProcessWorkingDirectoryToken(token) {
+  return expandPowerShellOptionPrefixes(["-workingdirectory"]).includes(normalizeAgentValue(token));
+}
+
+function getInlinePowerShellStartProcessWorkingDirectory(token) {
+  const normalizedToken = normalizeAgentValue(token);
+  for (const optionName of expandPowerShellOptionPrefixes(["-workingdirectory"])) {
+    if (normalizedToken.startsWith(optionName + ":") || normalizedToken.startsWith(optionName + "=")) {
+      return cleanPowerShellStartProcessArgument(token.slice(optionName.length + 1));
+    }
+  }
+
+  return "";
 }
 
 function cleanPowerShellStartProcessArguments(value) {
@@ -2356,6 +2677,19 @@ function stripShellCommandBuiltinPrefixes(tokens) {
   let index = 0;
   while (index < tokens.length) {
     const executable = normalizeAgentValue(getExecutableBasename(tokens[index]));
+    if (executable === "time") {
+      index += 1;
+      while (index < tokens.length) {
+        const option = normalizeAgentValue(stripOuterQuotes(tokens[index]));
+        if (option === "-p" || option === "--portability") {
+          index += 1;
+          continue;
+        }
+        break;
+      }
+      continue;
+    }
+
     if (executable !== "command" && executable !== "exec" && executable !== "builtin") {
       break;
     }
@@ -3201,7 +3535,11 @@ function getPowerShellMutationExecutableNames() {
 function collectPowerShellOptionValues(tokens, optionPrefixes) {
   const values = [];
   for (let index = 1; index < tokens.length; index += 1) {
-    const token = stripOuterQuotes(tokens[index]);
+    const originalToken = tokens[index];
+    if (isQuotedCommandToken(originalToken)) {
+      continue;
+    }
+    const token = stripOuterQuotes(originalToken);
     const normalizedToken = normalizeAgentValue(token);
     if (optionPrefixes.includes(normalizedToken)) {
       if (index + 1 < tokens.length) {
@@ -3781,6 +4119,1228 @@ function getReviewStateHeadSha(reviewStateEntry) {
   }
 
   return "";
+}
+
+function resolveReviewGateRepoRoots(toolInput, command) {
+  const toolInputCwd = typeof toolInput?.cwd === "string" ? toolInput.cwd : "";
+  const baseCwd = toolInputCwd || process.cwd();
+  const commandTargets = getReviewGatedCommandTargets(command, baseCwd);
+  const candidates = commandTargets.targetCwds.length > 0
+    ? [
+        ...commandTargets.targetCwds,
+        ...(commandTargets.requiresBaseCwd ? [baseCwd] : []),
+      ]
+    : [baseCwd];
+  const repoRoots = [];
+  const seen = new Set();
+
+  for (const candidate of candidates) {
+    const repoRoot = resolveGitTopLevel(candidate);
+    if (!repoRoot) {
+      return [];
+    }
+    if (repoRoot && !seen.has(repoRoot)) {
+      repoRoots.push(repoRoot);
+      seen.add(repoRoot);
+    }
+  }
+
+  return repoRoots;
+}
+
+function resolveGitTopLevel(candidate) {
+  if (typeof candidate !== "string" || candidate.trim() === "" || candidate.includes("\0")) {
+    return "";
+  }
+
+  const resolved = path.resolve(process.cwd(), stripOuterQuotes(candidate.trim()));
+  try {
+    return execFileSync("git", ["-C", resolved, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
+  } catch {
+    return "";
+  }
+}
+
+function getReviewGatedCommandTargets(command, baseCwd, depth = 0) {
+  if (depth > 5) {
+    return { targetCwds: [], requiresBaseCwd: true };
+  }
+
+  const targetCwds = [];
+  let requiresBaseCwd = false;
+  let parsedSeparatedFunctionWrapper = false;
+  let parsedXargsWrapper = false;
+  const shellForwardingFunctions = getSeparatedForwardingFunctionDefinitions(command);
+  let effectiveBaseCwd = baseCwd || process.cwd();
+  let controlFlowLocalOuterCwd = "";
+  let controlFlowDepth = 0;
+  const controlFlowExecutionStack = [];
+  for (const commandSegment of splitCommandSegmentsWithSeparators(command)) {
+    const segment = commandSegment.segment;
+    const controlFlowBoundary = getShellControlFlowBoundary(segment);
+    const nextControlFlowDepth = Math.max(0, controlFlowDepth + getShellControlFlowDepthChange(segment));
+    if (controlFlowBoundary === "branch") {
+      updateShellControlFlowBranchExecution(controlFlowExecutionStack, segment);
+    }
+    if (controlFlowLocalOuterCwd && controlFlowBoundary === "branch") {
+      effectiveBaseCwd = controlFlowLocalOuterCwd;
+      controlFlowLocalOuterCwd = "";
+    }
+
+    const segmentBaseCwd = effectiveBaseCwd;
+    const controlFlowExecutionState = getShellControlFlowExecutionState(controlFlowExecutionStack);
+    for (const stage of splitCommandPipelineStages(segment)) {
+      const powerShellStage = unwrapPowerShellCommandWrapper(stage);
+      if (powerShellStage !== stage.trim()) {
+        const nestedTargets = getReviewGatedCommandTargets(powerShellStage, segmentBaseCwd, depth + 1);
+        targetCwds.push(...nestedTargets.targetCwds);
+        requiresBaseCwd = requiresBaseCwd || nestedTargets.requiresBaseCwd;
+        continue;
+      }
+
+      const groupedStage = unwrapShellGroupingWrapper(powerShellStage);
+      if (groupedStage !== powerShellStage.trim()) {
+        const nestedTargets = getReviewGatedCommandTargets(groupedStage, segmentBaseCwd, depth + 1);
+        targetCwds.push(...nestedTargets.targetCwds);
+        requiresBaseCwd = requiresBaseCwd || nestedTargets.requiresBaseCwd;
+        continue;
+      }
+
+      const normalizedStage = groupedStage;
+      for (const substitutionCommand of getShellCommandSubstitutionCommands(normalizedStage)) {
+        if (!isReviewGatedCommand(substitutionCommand)) {
+          continue;
+        }
+
+        const substitutionTargets = getReviewGatedCommandTargets(substitutionCommand, segmentBaseCwd, depth + 1);
+        if (substitutionTargets.targetCwds.length === 0 && !substitutionTargets.requiresBaseCwd) {
+          targetCwds.push(segmentBaseCwd || process.cwd());
+        } else {
+          targetCwds.push(...substitutionTargets.targetCwds);
+          requiresBaseCwd = requiresBaseCwd || substitutionTargets.requiresBaseCwd;
+        }
+      }
+
+      const rawTokens = tokenizeCommandLine(normalizedStage);
+      const gitEnvContext = getGitInlineEnvironmentContext(rawTokens, segmentBaseCwd);
+      const gitCommandBaseCwd = gitEnvContext.baseCwd || segmentBaseCwd;
+      const tokens = unwrapEnvCommandTokens(rawTokens);
+      if (tokens.length === 0) {
+        continue;
+      }
+
+      const executable = getExecutableBasename(tokens[0]);
+      const forwardingFunctionCommand = getForwardingFunctionInvocationCommand(tokens, shellForwardingFunctions);
+      if (forwardingFunctionCommand) {
+        parsedSeparatedFunctionWrapper = true;
+        const nestedTargets = getReviewGatedCommandTargets(forwardingFunctionCommand, gitCommandBaseCwd, depth + 1);
+        targetCwds.push(...nestedTargets.targetCwds);
+        requiresBaseCwd = requiresBaseCwd || nestedTargets.requiresBaseCwd;
+        continue;
+      }
+
+      if (executable === "cmd" || executable === "cmd.exe") {
+        const nestedCommand = getCmdShellArgument(tokens);
+        const nestedTargets = getReviewGatedCommandTargets(nestedCommand || "", gitCommandBaseCwd, depth + 1);
+        targetCwds.push(...nestedTargets.targetCwds);
+        requiresBaseCwd = requiresBaseCwd || nestedTargets.requiresBaseCwd;
+        continue;
+      }
+
+      if (isPowerShellExecutable(executable)) {
+        const nestedCommand = getOptionRemainderValue(tokens, ["-command", "-c"]);
+        const nestedTargets = getReviewGatedCommandTargets(nestedCommand || "", gitCommandBaseCwd, depth + 1);
+        targetCwds.push(...nestedTargets.targetCwds);
+        requiresBaseCwd = requiresBaseCwd || nestedTargets.requiresBaseCwd;
+        continue;
+      }
+
+      if (isShellCommandExecutable(executable)) {
+        const nestedCommand = getShellCommandArgument(tokens);
+        const nestedTargets = getReviewGatedCommandTargets(nestedCommand || "", gitCommandBaseCwd, depth + 1);
+        targetCwds.push(...nestedTargets.targetCwds);
+        requiresBaseCwd = requiresBaseCwd || nestedTargets.requiresBaseCwd;
+        continue;
+      }
+
+      if (isPowerShellStartProcessExecutable(executable)) {
+        const invocation = getPowerShellStartProcessInvocation(tokens);
+        const startProcessBaseCwd = invocation.workingDirectory
+          ? resolveGitCwdOption(gitCommandBaseCwd, "", invocation.workingDirectory)
+          : gitCommandBaseCwd;
+        const nestedTargets = getReviewGatedCommandTargets(invocation.command || "", startProcessBaseCwd, depth + 1);
+        if (nestedTargets.targetCwds.length === 0 &&
+            !nestedTargets.requiresBaseCwd &&
+            hasPowerShellStartProcessLifecycleHint(normalizedStage)) {
+          targetCwds.push(startProcessBaseCwd || "\0unresolved-start-process-working-directory");
+        } else {
+          targetCwds.push(...nestedTargets.targetCwds);
+          requiresBaseCwd = requiresBaseCwd || nestedTargets.requiresBaseCwd;
+        }
+        continue;
+      }
+
+      if (executable === "xargs" || executable === "xargs.exe") {
+        const xargsTargets = getReviewGatedXargsCommandTargets(tokens, segment, gitCommandBaseCwd, depth);
+        if (xargsTargets.matched) {
+          parsedXargsWrapper = true;
+          targetCwds.push(...xargsTargets.targetCwds);
+          requiresBaseCwd = requiresBaseCwd || xargsTargets.requiresBaseCwd;
+        }
+        continue;
+      }
+
+      if (isGhExecutableToken(stripOuterQuotes(tokens[0]))) {
+        if (isGhPrMergeTokenCommand(tokens) || isGhApiMergeCommand(tokens) || isGhApiRefWriteCommand(tokens)) {
+          targetCwds.push(gitCommandBaseCwd || process.cwd());
+        }
+        continue;
+      }
+
+      if (!isGitExecutableToken(stripOuterQuotes(tokens[0]))) {
+        continue;
+      }
+
+      const gitSubcommandIndex = findGitSubcommandIndex(tokens);
+      if (gitSubcommandIndex < 0) {
+        continue;
+      }
+
+      const gitSubcommand = getGitSubcommandName(tokens, gitSubcommandIndex);
+      if (gitSubcommand !== "commit" && gitSubcommand !== "merge") {
+        continue;
+      }
+
+      const rawGitSubcommand = normalizeAgentValue(stripOuterQuotes(tokens[gitSubcommandIndex]));
+      const gitBaseCwd = getGitGlobalCwdOption(tokens, 0, gitCommandBaseCwd, gitEnvContext) || gitCommandBaseCwd || process.cwd();
+      const shellAliasCommand = getGitShellAliasCommand(tokens, gitSubcommandIndex, rawGitSubcommand);
+      if (shellAliasCommand) {
+        const aliasTargets = getReviewGatedCommandTargets(shellAliasCommand, gitBaseCwd, depth + 1);
+        if (aliasTargets.targetCwds.length === 0 && !aliasTargets.requiresBaseCwd) {
+          targetCwds.push("\0unresolved-git-alias");
+          continue;
+        }
+
+        targetCwds.push(...aliasTargets.targetCwds);
+        requiresBaseCwd = requiresBaseCwd || aliasTargets.requiresBaseCwd;
+        continue;
+      }
+
+      targetCwds.push(gitBaseCwd);
+    }
+
+    const cwdChange = getShellCwdChange(segment, segmentBaseCwd);
+    const nextBaseCwd = cwdChange.target;
+    if (nextBaseCwd) {
+      const skipCwdChange = cwdChange.controlFlowPrefixed && controlFlowExecutionState === "inactive";
+      if (!skipCwdChange && cwdChange.controlFlowPrefixed && controlFlowExecutionState === "unknown") {
+        requiresBaseCwd = true;
+      }
+      effectiveBaseCwd = skipCwdChange
+        ? effectiveBaseCwd
+        : hasConditionalCwdChangeBoundary(commandSegment)
+        ? "\0unresolved-conditional-cwd-change"
+        : nextBaseCwd;
+      if (!skipCwdChange && cwdChange.controlFlowPrefixed && !controlFlowLocalOuterCwd && effectiveBaseCwd === nextBaseCwd) {
+        controlFlowLocalOuterCwd = segmentBaseCwd;
+      }
+    }
+    controlFlowDepth = nextControlFlowDepth;
+    updateShellControlFlowDepthExecution(controlFlowExecutionStack, segment);
+    if (controlFlowDepth === 0 && controlFlowExecutionStack.length === 0) {
+      controlFlowLocalOuterCwd = "";
+    }
+  }
+
+  if (targetCwds.length > 0 && hasUnparsedBaseScopedReviewGatedCommand(command, parsedSeparatedFunctionWrapper, parsedXargsWrapper)) {
+    requiresBaseCwd = true;
+  }
+
+  return { targetCwds, requiresBaseCwd };
+}
+
+function hasConditionalCwdChangeBoundary(commandSegment) {
+  return commandSegment?.separatorBefore === "&&" ||
+         commandSegment?.separatorBefore === "||" ||
+         commandSegment?.separatorAfter === "||" ||
+         commandSegment?.separatorAfter === "&";
+}
+
+function getShellCwdChange(segment, baseCwd) {
+  const normalizedSegment = unwrapPowerShellCommandWrapper(segment);
+  const stages = splitCommandPipelineStages(normalizedSegment);
+  if (stages.length !== 1) {
+    return { target: "", controlFlowPrefixed: false };
+  }
+
+  const rawTokens = stripInlineEnvironmentPrefixes(tokenizeCommandLine(stages[0]));
+  const controlFlowPrefixed = hasShellControlFlowPrefix(rawTokens);
+  const tokens = stripShellCommandBuiltinPrefixes(stripShellControlFlowPrefixes(rawTokens));
+  if (tokens.length === 0) {
+    return { target: "", controlFlowPrefixed };
+  }
+
+  const executable = normalizeAgentValue(getExecutableBasename(tokens[0]));
+  if (!["cd", "chdir", "pushd", "set-location", "sl", "push-location"].includes(executable)) {
+    if (["popd", "pop-location"].includes(executable)) {
+      return { target: "\0unresolved-cwd-change", controlFlowPrefixed };
+    }
+    return { target: "", controlFlowPrefixed };
+  }
+
+  const target = getShellCwdChangeArgument(tokens);
+  if (!target || target.includes("\0")) {
+    return { target: "\0unresolved-cwd-change", controlFlowPrefixed };
+  }
+
+  return {
+    target: resolveGitCwdOption(baseCwd || process.cwd(), "", target) || "\0unresolved-cwd-change",
+    controlFlowPrefixed,
+  };
+}
+
+function getShellCwdChangeArgument(tokens) {
+  let optionsTerminated = false;
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = stripOuterQuotes(tokens[index]);
+    const normalizedToken = normalizeAgentValue(token);
+    if (!optionsTerminated && normalizedToken === "--") {
+      optionsTerminated = true;
+      continue;
+    }
+
+    if (token === "-") {
+      return "\0unresolved-cwd-change";
+    }
+
+    if (!optionsTerminated && normalizedToken === "/d") {
+      continue;
+    }
+
+    if (!optionsTerminated && (normalizedToken === "-path" ||
+        normalizedToken === "-literalpath" ||
+        normalizedToken === "-pspath")) {
+      return index + 1 < tokens.length ? stripOuterQuotes(tokens[index + 1]) : "";
+    }
+
+    if (!optionsTerminated && (normalizedToken.startsWith("-path:") ||
+        normalizedToken.startsWith("-literalpath:") ||
+        normalizedToken.startsWith("-pspath:"))) {
+      return token.slice(token.indexOf(":") + 1);
+    }
+
+    if (!optionsTerminated && token.startsWith("-")) {
+      continue;
+    }
+
+    return token;
+  }
+
+  return os.homedir();
+}
+
+function hasUnparsedBaseScopedReviewGatedCommand(command, parsedSeparatedFunctionWrapper = false, parsedXargsWrapper = false) {
+  return hasPowerShellGitAliasLifecycleCommand(command, true, { includeFunctionCommands: false }) ||
+         (!parsedXargsWrapper && hasXargsGitLifecycleCommand(command, true)) ||
+         (!parsedSeparatedFunctionWrapper && hasShellFunctionLifecycleCommand(command, true)) ||
+         hasPowerShellFunctionLifecycleCommand(command, true) ||
+         hasControlFlowReviewGatedCommand(command) ||
+         (!parsedSeparatedFunctionWrapper && hasSeparatedShellFunctionReviewLifecycleCommand(command)) ||
+         hasSeparatedPowerShellFunctionReviewLifecycleCommand(command);
+}
+
+function hasControlFlowReviewGatedCommand(command) {
+  const source = String(command || "");
+  for (const segment of splitCommandSegments(source)) {
+    for (const stage of splitCommandPipelineStages(segment)) {
+      const normalizedStage = unwrapShellGroupingWrapper(unwrapPowerShellCommandWrapper(stage));
+      const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(normalizedStage));
+      if (!tokens.some((token) => isShellControlFlowToken(token))) {
+        continue;
+      }
+
+      if (hasControlFlowLifecycleTokens(tokens)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function hasControlFlowLifecycleTokens(tokens) {
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (!isAfterControlFlowExecutionBoundary(tokens, index)) {
+      continue;
+    }
+
+    const effectiveTokens = stripShellCommandBuiltinPrefixes(stripInlineEnvironmentPrefixes(tokens.slice(index)));
+    if (effectiveTokens.length === 0) {
+      continue;
+    }
+
+    const executable = stripOuterQuotes(effectiveTokens[0]);
+    if (isGitExecutableToken(executable)) {
+      const gitSubcommandIndex = findGitSubcommandIndex(effectiveTokens);
+      if (gitSubcommandIndex >= 0) {
+        const gitSubcommand = getGitSubcommandName(effectiveTokens, gitSubcommandIndex);
+        if (gitSubcommand === "commit" || gitSubcommand === "merge") {
+          return true;
+        }
+      }
+    }
+
+    if (isGhExecutableToken(executable)) {
+      if (isGhPrMergeTokenCommand(effectiveTokens) ||
+          isGhApiMergeCommand(effectiveTokens) ||
+          isGhApiRefWriteCommand(effectiveTokens)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function isAfterControlFlowExecutionBoundary(tokens, index) {
+  const previousToken = getPreviousMeaningfulControlFlowToken(tokens, index);
+  if (!previousToken) {
+    return false;
+  }
+
+  return previousToken === "{" || isShellControlFlowToken(previousToken);
+}
+
+function getPreviousMeaningfulControlFlowToken(tokens, index) {
+  for (let currentIndex = index - 1; currentIndex >= 0; currentIndex -= 1) {
+    const token = normalizeAgentValue(stripOuterQuotes(tokens[currentIndex] || ""));
+    if (!token || token === "(" || token === ")" || token === ";") {
+      continue;
+    }
+
+    return token;
+  }
+
+  return "";
+}
+
+function isShellControlFlowToken(token) {
+  const normalized = normalizeAgentValue(stripOuterQuotes(token || "")).replace(/^[()]+|[()]+$/gu, "");
+  return [
+    "if",
+    "then",
+    "else",
+    "elif",
+    "while",
+    "until",
+    "for",
+    "do",
+    "case",
+    "try",
+    "catch",
+    "finally",
+    "switch",
+    "foreach",
+  ].includes(normalized);
+}
+
+function hasShellControlFlowPrefix(tokens) {
+  for (const token of tokens) {
+    const normalized = normalizeAgentValue(stripOuterQuotes(token || ""));
+    if (!normalized) {
+      continue;
+    }
+
+    return normalized === "{" || isShellControlFlowToken(normalized);
+  }
+
+  return false;
+}
+
+function getShellControlFlowBoundary(segment) {
+  const normalizedSegment = unwrapPowerShellCommandWrapper(segment);
+  const stages = splitCommandPipelineStages(normalizedSegment);
+  if (stages.length !== 1) {
+    return "";
+  }
+
+  const tokens = stripShellCommandBuiltinPrefixes(stripInlineEnvironmentPrefixes(tokenizeCommandLine(stages[0])));
+  for (const token of tokens) {
+    const normalized = normalizeAgentValue(stripOuterQuotes(token || "")).replace(/^[()]+|[()]+$/gu, "");
+    if (!normalized || normalized === "{" || normalized === "}") {
+      continue;
+    }
+
+    if (["else", "elif", "catch", "finally"].includes(normalized)) {
+      return "branch";
+    }
+
+    if (["fi", "done", "esac"].includes(normalized)) {
+      return "end";
+    }
+
+    return "";
+  }
+
+  return "";
+}
+
+function getShellControlFlowDepthChange(segment) {
+  const normalizedSegment = unwrapPowerShellCommandWrapper(segment);
+  const stages = splitCommandPipelineStages(normalizedSegment);
+  if (stages.length !== 1) {
+    return 0;
+  }
+
+  const tokens = stripShellCommandBuiltinPrefixes(stripInlineEnvironmentPrefixes(tokenizeCommandLine(stages[0])));
+  let sawControlFlowPrefix = false;
+  let depthChange = 0;
+  for (const token of tokens) {
+    const normalized = normalizeAgentValue(stripOuterQuotes(token || "")).replace(/^[()]+|[()]+$/gu, "");
+    if (!normalized || normalized === "{" || normalized === "}") {
+      continue;
+    }
+
+    if (!sawControlFlowPrefix) {
+      if (!isShellControlFlowToken(normalized) && !isShellControlFlowEndToken(normalized)) {
+        return 0;
+      }
+      sawControlFlowPrefix = true;
+    }
+
+    if (["if", "while", "until", "for", "case"].includes(normalized)) {
+      depthChange += 1;
+    } else if (isShellControlFlowEndToken(normalized)) {
+      depthChange -= 1;
+    }
+  }
+
+  return depthChange;
+}
+
+function isShellControlFlowEndToken(token) {
+  const normalized = normalizeAgentValue(stripOuterQuotes(token || "")).replace(/^[()]+|[()]+$/gu, "");
+  return ["fi", "done", "esac"].includes(normalized);
+}
+
+function getShellControlFlowExecutionState(stack) {
+  if (!Array.isArray(stack) || stack.length === 0) {
+    return "active";
+  }
+
+  if (stack.includes("inactive")) {
+    return "inactive";
+  }
+
+  if (stack.includes("unknown")) {
+    return "unknown";
+  }
+
+  return "active";
+}
+
+function updateShellControlFlowBranchExecution(stack, segment) {
+  if (!Array.isArray(stack) || stack.length === 0) {
+    return;
+  }
+
+  const branchToken = getShellControlFlowBranchToken(segment);
+  if (branchToken === "else") {
+    const current = stack.pop();
+    stack.push(current === "active" ? "inactive" : current === "inactive" ? "active" : "unknown");
+  } else if (branchToken === "elif") {
+    const current = stack.pop();
+    stack.push(current === "active" ? "inactive" : getShellControlFlowConditionState(segment, "elif"));
+  } else {
+    stack.pop();
+    stack.push("unknown");
+  }
+}
+
+function updateShellControlFlowDepthExecution(stack, segment) {
+  if (!Array.isArray(stack)) {
+    return;
+  }
+
+  for (const action of getShellControlFlowExecutionActions(segment)) {
+    if (action.type === "open") {
+      stack.push(action.state);
+    } else if (action.type === "end" && stack.length > 0) {
+      stack.pop();
+    }
+  }
+}
+
+function getShellControlFlowExecutionActions(segment) {
+  const normalizedSegment = unwrapPowerShellCommandWrapper(segment);
+  const stages = splitCommandPipelineStages(normalizedSegment);
+  if (stages.length !== 1) {
+    return [];
+  }
+
+  const tokens = stripShellCommandBuiltinPrefixes(stripInlineEnvironmentPrefixes(tokenizeCommandLine(stages[0])));
+  if (!tokensHaveShellControlFlowPrefix(tokens)) {
+    return [];
+  }
+
+  const actions = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const normalized = normalizeAgentValue(stripOuterQuotes(tokens[index] || "")).replace(/^[()]+|[()]+$/gu, "");
+    if (["if", "while", "until", "for", "case"].includes(normalized)) {
+      actions.push({ type: "open", state: normalized === "if" ? getShellControlFlowConditionStateFromTokens(tokens, index) : "unknown" });
+    } else if (isShellControlFlowEndToken(normalized)) {
+      actions.push({ type: "end" });
+    }
+  }
+
+  return actions;
+}
+
+function tokensHaveShellControlFlowPrefix(tokens) {
+  for (const token of tokens) {
+    const normalized = normalizeAgentValue(stripOuterQuotes(token || "")).replace(/^[()]+|[()]+$/gu, "");
+    if (!normalized || normalized === "{" || normalized === "}") {
+      continue;
+    }
+
+    return isShellControlFlowToken(normalized) || isShellControlFlowEndToken(normalized);
+  }
+
+  return false;
+}
+
+function getShellControlFlowBranchToken(segment) {
+  const normalizedSegment = unwrapPowerShellCommandWrapper(segment);
+  const stages = splitCommandPipelineStages(normalizedSegment);
+  if (stages.length !== 1) {
+    return "";
+  }
+
+  const tokens = stripShellCommandBuiltinPrefixes(stripInlineEnvironmentPrefixes(tokenizeCommandLine(stages[0])));
+  for (const token of tokens) {
+    const normalized = normalizeAgentValue(stripOuterQuotes(token || "")).replace(/^[()]+|[()]+$/gu, "");
+    if (!normalized || normalized === "{" || normalized === "}") {
+      continue;
+    }
+
+    return ["else", "elif", "catch", "finally"].includes(normalized) ? normalized : "";
+  }
+
+  return "";
+}
+
+function getShellControlFlowConditionState(segment, keyword) {
+  const tokens = stripShellCommandBuiltinPrefixes(stripInlineEnvironmentPrefixes(tokenizeCommandLine(unwrapPowerShellCommandWrapper(segment))));
+  const targetKeyword = normalizeAgentValue(keyword || "if");
+  for (let index = 0; index < tokens.length; index += 1) {
+    const normalized = normalizeAgentValue(stripOuterQuotes(tokens[index] || "")).replace(/^[()]+|[()]+$/gu, "");
+    if (normalized === targetKeyword) {
+      return getShellControlFlowConditionStateFromTokens(tokens, index);
+    }
+  }
+
+  return "unknown";
+}
+
+function getShellControlFlowConditionStateFromTokens(tokens, keywordIndex) {
+  for (let index = keywordIndex + 1; index < tokens.length; index += 1) {
+    const normalized = normalizeAgentValue(stripOuterQuotes(tokens[index] || "")).replace(/^[()]+|[()]+$/gu, "");
+    if (!normalized || normalized === "{" || normalized === "}" || normalized === ";") {
+      continue;
+    }
+
+    if (normalized === "true" || normalized === ":") {
+      return "active";
+    }
+    if (normalized === "false") {
+      return "inactive";
+    }
+    return "unknown";
+  }
+
+  return "unknown";
+}
+
+function stripShellControlFlowPrefixes(tokens) {
+  let index = 0;
+  while (index < tokens.length) {
+    const token = normalizeAgentValue(stripOuterQuotes(tokens[index] || ""));
+    if (token === "{" || isShellControlFlowToken(token)) {
+      index += 1;
+      continue;
+    }
+
+    break;
+  }
+
+  return tokens.slice(index);
+}
+
+function getSeparatedForwardingFunctionDefinitions(command) {
+  const source = String(command || "");
+  const functions = new Map();
+  const functionPattern = /(?:^|[;&])\s*([A-Za-z_][A-Za-z0-9_-]*)\s*\(\)\s*\{([^}]*)\}/giu;
+  const forwardingPattern = /(?:^|[\s;|&])(?:command\s+|exec\s+|builtin\s+)?["']?\$@["']?(?:$|[\s;|&])/u;
+
+  for (const match of source.matchAll(functionPattern)) {
+    const functionName = normalizeAgentValue(match[1] || "");
+    const body = match[2] || "";
+    if (!functionName || !forwardingPattern.test(body) || !/\b(?:git|gh)\b/u.test(body)) {
+      continue;
+    }
+
+    functions.set(functionName, body);
+  }
+
+  return functions;
+}
+
+function getForwardingFunctionInvocationCommand(tokens, functions) {
+  if (!functions || functions.size === 0 || tokens.length === 0) {
+    return "";
+  }
+
+  const commandName = normalizeAgentValue(getExecutableBasename(tokens[0]));
+  const body = functions.get(commandName);
+  if (!body) {
+    return "";
+  }
+
+  const callArguments = tokens.slice(1).join(" ");
+  const nestedCommand = body.replace(/["']?\$@["']?/gu, callArguments).trim();
+  return nestedCommand && isReviewGatedCommand(nestedCommand) ? nestedCommand : "";
+}
+
+function getShellCommandSubstitutionCommands(stage) {
+  const source = String(stage || "");
+  const commands = [];
+  let inSingleQuote = false;
+  for (let index = 0; index < source.length - 1; index += 1) {
+    if (inSingleQuote) {
+      if (source[index] === "'") {
+        inSingleQuote = false;
+      }
+      continue;
+    }
+
+    if (source[index] === "'") {
+      inSingleQuote = true;
+      continue;
+    }
+
+    if (source[index] === "`" && source[index - 1] !== "\\") {
+      let depthIndex = index + 1;
+      let command = "";
+      while (depthIndex < source.length) {
+        if (source[depthIndex] === "`" && source[depthIndex - 1] !== "\\") {
+          break;
+        }
+
+        command += source[depthIndex];
+        depthIndex += 1;
+      }
+
+      if (depthIndex < source.length && command.trim()) {
+        commands.push(command.trim());
+        index = depthIndex;
+      }
+      continue;
+    }
+
+    if (source[index] !== "$" || source[index + 1] !== "(") {
+      continue;
+    }
+
+    const parsed = readBalancedShellCommandSubstitution(source, index + 2);
+    if (parsed.command.trim() !== "") {
+      commands.push(parsed.command.trim());
+    }
+    index = parsed.endIndex;
+  }
+
+  return commands;
+}
+
+function readBalancedShellCommandSubstitution(source, startIndex) {
+  let depth = 1;
+  let quote = "";
+  let command = "";
+  for (let index = startIndex; index < source.length; index += 1) {
+    const char = source[index];
+    if (quote) {
+      if (char === quote && source[index - 1] !== "\\") {
+        quote = "";
+      }
+      command += char;
+      continue;
+    }
+
+    if (char === "'" || char === "\"") {
+      quote = char;
+      command += char;
+      continue;
+    }
+
+    if (char === "(") {
+      depth += 1;
+      command += char;
+      continue;
+    }
+
+    if (char === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        return { command, endIndex: index };
+      }
+      command += char;
+      continue;
+    }
+
+    command += char;
+  }
+
+  return { command: "", endIndex: source.length - 1 };
+}
+
+function hasSeparatedShellFunctionReviewLifecycleCommand(command) {
+  return hasSeparatedForwardingFunctionReviewLifecycleCommand(
+    command,
+    /(?:^|[;&])\s*([A-Za-z_][A-Za-z0-9_-]*)\s*\(\)\s*\{([^}]*)\}/giu,
+    "$@");
+}
+
+function hasSeparatedPowerShellFunctionReviewLifecycleCommand(command) {
+  return hasSeparatedForwardingFunctionReviewLifecycleCommand(
+    command,
+    /(?:^|[;&])\s*function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\{([^}]*)\}/giu,
+    "$args");
+}
+
+function hasSeparatedForwardingFunctionReviewLifecycleCommand(command, functionPattern, forwardingToken) {
+  const source = String(command || "");
+  const gitFunctions = new Set();
+  const ghFunctions = new Set();
+  const forwardingPattern = new RegExp(`(?:^|[\\s;|&])(?:command\\s+|exec\\s+|builtin\\s+)?["']?\\${forwardingToken}["']?(?:$|[\\s;|&])`, "u");
+
+  for (const match of source.matchAll(functionPattern)) {
+    const functionName = normalizeAgentValue(match[1] || "");
+    const body = match[2] || "";
+    if (!functionName || !forwardingPattern.test(body)) {
+      continue;
+    }
+
+    if (/\bgit\b/u.test(body)) {
+      gitFunctions.add(functionName);
+    }
+    if (/\bgh\b/u.test(body)) {
+      ghFunctions.add(functionName);
+    }
+  }
+
+  if (gitFunctions.size === 0 && ghFunctions.size === 0) {
+    return false;
+  }
+
+  for (const segment of splitCommandSegments(source)) {
+    for (const stage of splitCommandPipelineStages(segment)) {
+      const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(unwrapPowerShellCommandWrapper(stage)));
+      if (tokens.length === 0) {
+        continue;
+      }
+
+      const commandName = normalizeAgentValue(getExecutableBasename(tokens[0]));
+      if (gitFunctions.has(commandName)) {
+        const subcommand = normalizeAgentValue(stripOuterQuotes(tokens[1] || ""));
+        if (subcommand === "commit" || subcommand === "merge") {
+          return true;
+        }
+      }
+
+      if (ghFunctions.has(commandName)) {
+        const effectiveTokens = ["gh", ...tokens.slice(1)];
+        if (isGhPrMergeTokenCommand(effectiveTokens) || isGhApiMergeCommand(effectiveTokens) || isGhApiRefWriteCommand(effectiveTokens)) {
+          return true;
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
+function isGitExecutableToken(token) {
+  const normalized = normalizeAgentValue(token).replace(/\\/g, "/");
+  return normalized === "git" || normalized === "git.exe" || normalized.endsWith("/git") || normalized.endsWith("/git.exe");
+}
+
+function isGhExecutableToken(token) {
+  const normalized = normalizeAgentValue(token).replace(/\\/g, "/");
+  return normalized === "gh" || normalized === "gh.exe" || normalized.endsWith("/gh") || normalized.endsWith("/gh.exe");
+}
+
+function isGhPrMergeTokenCommand(tokens) {
+  return tokens.some((token, index) =>
+    normalizeAgentValue(stripOuterQuotes(token)) === "pr" &&
+    tokens.slice(index + 1).some((nextToken) =>
+      normalizeAgentValue(stripOuterQuotes(nextToken)) === "merge"));
+}
+
+function getGitGlobalCwdOption(tokens, gitIndex, baseCwd, gitEnvContext = {}) {
+  let effectiveCwd = "";
+  let effectiveGitDir = null;
+  let effectiveWorkTree = null;
+
+  for (let i = gitIndex + 1; i < tokens.length; i++) {
+    const token = stripOuterQuotes(tokens[i]);
+    const normalizedToken = normalizeAgentValue(token);
+    if (token === "-C") {
+      if (i + 1 >= tokens.length) {
+        return "";
+      }
+      effectiveCwd = resolveGitCwdOption(baseCwd, effectiveCwd, stripOuterQuotes(tokens[i + 1]));
+      i++;
+      continue;
+    }
+
+    if (token.startsWith("-C") && token.length > 2) {
+      effectiveCwd = resolveGitCwdOption(baseCwd, effectiveCwd, token.slice(2));
+      continue;
+    }
+
+    if (normalizedToken === "--git-dir") {
+      if (i + 1 >= tokens.length) {
+        return "";
+      }
+      effectiveGitDir = stripOuterQuotes(tokens[i + 1]);
+      i++;
+      continue;
+    }
+
+    if (normalizedToken.startsWith("--git-dir=")) {
+      effectiveGitDir = token.slice("--git-dir=".length);
+      continue;
+    }
+
+    if (normalizedToken === "--work-tree") {
+      if (i + 1 >= tokens.length) {
+        return "";
+      }
+      effectiveWorkTree = stripOuterQuotes(tokens[i + 1]);
+      i++;
+      continue;
+    }
+
+    if (normalizedToken.startsWith("--work-tree=")) {
+      effectiveWorkTree = token.slice("--work-tree=".length);
+      continue;
+    }
+
+    if (isGitGlobalOptionWithSeparateValue(normalizedToken)) {
+      i++;
+      continue;
+    }
+
+    if (isGitGlobalOptionWithInlineValue(normalizedToken)) {
+      continue;
+    }
+
+    if (!token.startsWith("-")) {
+      return resolveGitGlobalTargetCwd(baseCwd, effectiveCwd, effectiveGitDir, effectiveWorkTree, gitEnvContext);
+    }
+  }
+
+  return resolveGitGlobalTargetCwd(baseCwd, effectiveCwd, effectiveGitDir, effectiveWorkTree, gitEnvContext);
+}
+
+function resolveGitGlobalTargetCwd(baseCwd, effectiveCwd, gitDirOption, workTreeOption, gitEnvContext = {}) {
+  const envGitDir = typeof gitEnvContext?.gitDir === "string" ? gitEnvContext.gitDir : null;
+  const envWorkTree = typeof gitEnvContext?.workTree === "string" ? gitEnvContext.workTree : null;
+  const envTargetCwd = typeof gitEnvContext?.targetCwd === "string" ? gitEnvContext.targetCwd : "";
+  const finalGitDir = gitDirOption === null ? envGitDir : gitDirOption;
+  const finalWorkTree = workTreeOption === null ? envWorkTree : workTreeOption;
+  const fallbackCwd = typeof finalGitDir === "string" && finalGitDir !== ""
+    ? (envTargetCwd || effectiveCwd)
+    : (effectiveCwd || envTargetCwd);
+  return resolveGitRepositoryTargetCwd(baseCwd, effectiveCwd, finalGitDir, finalWorkTree, fallbackCwd);
+}
+
+function resolveGitPathOption(baseCwd, effectiveCwd, optionValue) {
+  if (typeof optionValue !== "string") {
+    return "";
+  }
+
+  return resolveGitCwdOption(baseCwd, effectiveCwd, optionValue);
+}
+
+function getGitInlineEnvironmentContext(tokens, baseCwd) {
+  const effectiveTokens = stripShellCommandBuiltinPrefixes(tokens);
+  let commandBaseCwd = baseCwd || process.cwd();
+  let gitDir = null;
+  let workTree = null;
+  let clearedGitDir = false;
+  let clearedWorkTree = false;
+
+  for (let index = 0; index < effectiveTokens.length; index += 1) {
+    const token = stripOuterQuotes(effectiveTokens[index]);
+    const executable = normalizeAgentValue(getExecutableBasename(token));
+    if (executable === "env" || executable === "env.exe") {
+      index += 1;
+      while (index < effectiveTokens.length) {
+        const envToken = stripOuterQuotes(effectiveTokens[index]);
+        const normalizedEnvToken = normalizeAgentValue(envToken);
+        if (isInlineEnvironmentAssignment(envToken)) {
+          const separatorIndex = envToken.indexOf("=");
+          const name = envToken.slice(0, separatorIndex).toUpperCase();
+          const value = envToken.slice(separatorIndex + 1);
+          if (name === "GIT_WORK_TREE") {
+            workTree = value;
+            clearedWorkTree = false;
+          } else if (name === "GIT_DIR") {
+            gitDir = value;
+            clearedGitDir = false;
+          }
+          index += 1;
+          continue;
+        }
+
+        if ((normalizedEnvToken === "-c" || normalizedEnvToken === "--chdir") && index + 1 < effectiveTokens.length) {
+          commandBaseCwd = resolveGitCwdOption(commandBaseCwd, "", stripOuterQuotes(effectiveTokens[index + 1]));
+          index += 2;
+          continue;
+        }
+
+        if ((normalizedEnvToken === "-s" || normalizedEnvToken === "--split-string") && index + 1 < effectiveTokens.length) {
+          const splitTokens = tokenizeCommandLine(stripOuterQuotes(effectiveTokens[index + 1]));
+          return mergeGitInlineEnvironmentContext(
+            { baseCwd: commandBaseCwd, gitDir, workTree },
+            getGitInlineEnvironmentContext([...splitTokens, ...effectiveTokens.slice(index + 2)], commandBaseCwd),
+          );
+        }
+
+        if (normalizedEnvToken.startsWith("--chdir=")) {
+          commandBaseCwd = resolveGitCwdOption(commandBaseCwd, "", envToken.slice(envToken.indexOf("=") + 1));
+          index += 1;
+          continue;
+        }
+
+        if (normalizedEnvToken.startsWith("--split-string=")) {
+          const splitValue = envToken.slice(envToken.indexOf("=") + 1);
+          const splitTokens = tokenizeCommandLine(stripOuterQuotes(splitValue));
+          return mergeGitInlineEnvironmentContext(
+            { baseCwd: commandBaseCwd, gitDir, workTree },
+            getGitInlineEnvironmentContext([...splitTokens, ...effectiveTokens.slice(index + 1)], commandBaseCwd),
+          );
+        }
+
+        if (normalizedEnvToken === "--") {
+          index += 1;
+          break;
+        }
+
+        if (normalizedEnvToken === "-u" || normalizedEnvToken === "--unset") {
+          const unsetName = index + 1 < effectiveTokens.length
+            ? normalizeAgentValue(stripOuterQuotes(effectiveTokens[index + 1])).toUpperCase()
+            : "";
+          if (unsetName === "GIT_DIR") {
+            gitDir = null;
+            clearedGitDir = true;
+          } else if (unsetName === "GIT_WORK_TREE") {
+            workTree = null;
+            clearedWorkTree = true;
+          }
+          index += 2;
+          continue;
+        }
+
+        if (normalizedEnvToken.startsWith("--unset=")) {
+          const unsetName = normalizeAgentValue(envToken.slice(envToken.indexOf("=") + 1)).toUpperCase();
+          if (unsetName === "GIT_DIR") {
+            gitDir = null;
+            clearedGitDir = true;
+          } else if (unsetName === "GIT_WORK_TREE") {
+            workTree = null;
+            clearedWorkTree = true;
+          }
+          index += 1;
+          continue;
+        }
+
+        if (normalizedEnvToken === "-i" ||
+            normalizedEnvToken === "--ignore-environment") {
+          gitDir = null;
+          workTree = null;
+          clearedGitDir = true;
+          clearedWorkTree = true;
+          index += 1;
+          continue;
+        }
+
+        if (normalizedEnvToken === "-0" ||
+            normalizedEnvToken === "--null") {
+          index += 1;
+          continue;
+        }
+
+        break;
+      }
+      index -= 1;
+      continue;
+    }
+
+    const assignment = stripOuterQuotes(token);
+    if (!isInlineEnvironmentAssignment(assignment)) {
+      break;
+    }
+
+    const separatorIndex = assignment.indexOf("=");
+    const name = assignment.slice(0, separatorIndex).toUpperCase();
+    const value = assignment.slice(separatorIndex + 1);
+    if (name === "GIT_WORK_TREE") {
+      workTree = value;
+      clearedWorkTree = false;
+    } else if (name === "GIT_DIR") {
+      gitDir = value;
+      clearedGitDir = false;
+    }
+  }
+
+  return {
+    baseCwd: commandBaseCwd,
+    gitDir,
+    workTree,
+    clearedGitDir,
+    clearedWorkTree,
+    targetCwd: resolveGitRepositoryTargetCwd(commandBaseCwd, "", gitDir, workTree, ""),
+  };
+}
+
+function mergeGitInlineEnvironmentContext(prefixContext, nestedContext) {
+  const baseCwd = nestedContext?.baseCwd || prefixContext?.baseCwd || process.cwd();
+  const nestedHasGitDir = nestedContext?.gitDir !== null && typeof nestedContext?.gitDir === "string";
+  const nestedHasWorkTree = nestedContext?.workTree !== null && typeof nestedContext?.workTree === "string";
+  const gitDir = nestedHasGitDir
+    ? nestedContext.gitDir
+    : nestedContext?.clearedGitDir
+      ? null
+      : prefixContext?.gitDir;
+  const workTree = nestedHasWorkTree
+    ? nestedContext.workTree
+    : nestedContext?.clearedWorkTree
+      ? null
+      : prefixContext?.workTree;
+  const clearedGitDir = nestedHasGitDir
+    ? false
+    : Boolean(nestedContext?.clearedGitDir || prefixContext?.clearedGitDir);
+  const clearedWorkTree = nestedHasWorkTree
+    ? false
+    : Boolean(nestedContext?.clearedWorkTree || prefixContext?.clearedWorkTree);
+
+  return {
+    baseCwd,
+    gitDir,
+    workTree,
+    clearedGitDir,
+    clearedWorkTree,
+    targetCwd: resolveGitRepositoryTargetCwd(baseCwd, "", gitDir, workTree, ""),
+  };
+}
+
+function resolveGitRepositoryTargetCwd(baseCwd, effectiveCwd, gitDirOption, workTreeOption, fallbackCwd = "") {
+  const resolvedGitDir = resolveGitPathOption(baseCwd, effectiveCwd, gitDirOption);
+  const resolvedWorkTree = resolveGitPathOption(baseCwd, effectiveCwd, workTreeOption);
+  if (resolvedGitDir) {
+    const gitDirTarget = resolveGitDirTargetCwd(resolvedGitDir);
+    if (gitDirTarget && !gitDirTarget.includes("\0")) {
+      return gitDirTarget;
+    }
+
+    return resolveGitDirWorkTreeTargetCwd(resolvedGitDir, resolvedWorkTree) || gitDirTarget;
+  }
+
+  if (resolvedWorkTree) {
+    return fallbackCwd || effectiveCwd || baseCwd || process.cwd();
+  }
+
+  return fallbackCwd;
+}
+
+function resolveGitDirTargetCwd(gitDir) {
+  if (typeof gitDir !== "string" || gitDir.trim() === "" || gitDir.includes("\0")) {
+    return "";
+  }
+
+  const resolvedGitDir = path.resolve(process.cwd(), stripOuterQuotes(gitDir.trim()));
+  try {
+    const stat = fs.statSync(resolvedGitDir);
+    if ((stat.isDirectory() || stat.isFile()) && path.basename(resolvedGitDir).toLowerCase() === ".git") {
+      return path.dirname(resolvedGitDir);
+    }
+  } catch {
+    return "\0unresolved-git-dir";
+  }
+
+  return "\0unresolved-git-dir";
+}
+
+function resolveGitDirWorkTreeTargetCwd(gitDir, workTree) {
+  if (typeof gitDir !== "string" ||
+      typeof workTree !== "string" ||
+      gitDir.trim() === "" ||
+      workTree.trim() === "" ||
+      gitDir.includes("\0") ||
+      workTree.includes("\0")) {
+    return "";
+  }
+
+  const gitDirPath = stripOuterQuotes(gitDir.trim());
+  const workTreePath = stripOuterQuotes(workTree.trim());
+  if (!fs.existsSync(gitDirPath) || !fs.existsSync(workTreePath)) {
+    return "";
+  }
+
+  try {
+    return execFileSync("git", [
+      "--git-dir",
+      gitDirPath,
+      "--work-tree",
+      workTreePath,
+      "rev-parse",
+      "--show-toplevel",
+    ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch {
+    return "";
+  }
+}
+
+function resolveGitCwdOption(baseCwd, currentCwd, nextCwd) {
+  if (typeof nextCwd !== "string" || nextCwd.includes("\0")) {
+    return "";
+  }
+
+  const normalizedNextCwd = stripOuterQuotes(nextCwd);
+  if (normalizedNextCwd === "") {
+    return currentCwd || baseCwd || process.cwd();
+  }
+
+  if (normalizedNextCwd.trim() === "") {
+    return "";
+  }
+
+  const trimmedNextCwd = normalizedNextCwd.trim();
+  if (hasShellExpandedPathToken(trimmedNextCwd)) {
+    return "\0unresolved-shell-expanded-cwd";
+  }
+
+  const base = currentCwd || baseCwd || process.cwd();
+  return path.resolve(base, trimmedNextCwd);
+}
+
+function hasShellExpandedPathToken(value) {
+  if (typeof value !== "string" || value === "") {
+    return false;
+  }
+
+  return /(?:^~(?:$|[\\/])|\$[A-Za-z_][A-Za-z0-9_]*|\$\{[^}]+\}|%[^%\s]+%|![^!\s]+!|`|\$\(|[?*[\]{}])/.test(value);
 }
 
 function getCurrentBranch(repoRoot) {
