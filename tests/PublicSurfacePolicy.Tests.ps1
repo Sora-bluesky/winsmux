@@ -204,6 +204,7 @@ Describe 'Public surface policy' {
         $installer | Should -Match 'winsmux-core/scripts/control-plane-commands\.ps1'
         $installer | Should -Match 'winsmux-core/scripts/control-plane-dispatch\.ps1'
         $installer | Should -Match 'winsmux-core/scripts/control-plane-workers\.ps1'
+        $installer | Should -Match 'winsmux-core/scripts/control-plane-ledger\.ps1'
         $installer | Should -Match 'function Test-RemoteFileExists'
         $installer | Should -Match 'function Download-OptionalFile'
         $installer | Should -Match 'Skipping optional \$relativeUrl'
@@ -211,6 +212,7 @@ Describe 'Public surface policy' {
         $coreSupportFiles.Success | Should -BeTrue
         $coreSupportFiles.Groups['files'].Value | Should -Match 'Download-OptionalFile'
         $coreSupportFiles.Groups['files'].Value | Should -Not -Match 'Download-File "winsmux-core/scripts/control-plane-workers\.ps1"'
+        $coreSupportFiles.Groups['files'].Value | Should -Not -Match 'Download-File "winsmux-core/scripts/control-plane-ledger\.ps1"'
         $installer | Should -Match 'winsmux-core/scripts/orchestra-smoke\.ps1'
         $installer | Should -Match 'winsmux-core/scripts/doctor\.ps1'
         $installer | Should -Match 'winsmux-core/scripts/orchestra-attach-confirm\.ps1'
@@ -228,6 +230,7 @@ Describe 'Public surface policy' {
         $orchestrationRemovalFiles = [regex]::Match($installer, '(?s)Content = "orchestration_scripts".*?Files = @\((?<files>.*?)\)\s*\}')
         $orchestrationRemovalFiles.Success | Should -BeTrue
         $orchestrationRemovalFiles.Groups['files'].Value | Should -Not -Match '"control-plane-workers\.ps1"'
+        $orchestrationRemovalFiles.Groups['files'].Value | Should -Not -Match '"control-plane-ledger\.ps1"'
     }
 
     It 'keeps public install and OAuth wording aligned with the current policy' {
