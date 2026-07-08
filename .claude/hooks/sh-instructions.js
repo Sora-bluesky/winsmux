@@ -15,7 +15,8 @@ const {
 } = require("./lib/sh-utils");
 
 const HOOK_NAME = "sh-instructions";
-const CLAUDE_MD = "CLAUDE.md";
+const CLAUDE_MD = path.join(".claude", "CLAUDE.md");
+const CLAUDE_MD_LABEL = ".claude/CLAUDE.md";
 const RULES_DIR = path.join(".claude", "rules");
 const HASHES_FILE = path.join(".claude", "logs", "instructions-hashes.json");
 
@@ -43,9 +44,9 @@ function hashFile(filePath) {
 function collectCurrentHashes() {
   const hashes = {};
 
-  // CLAUDE.md
+  // Project instructions contract.
   if (fs.existsSync(CLAUDE_MD)) {
-    hashes[CLAUDE_MD] = hashFile(CLAUDE_MD);
+    hashes[CLAUDE_MD_LABEL] = hashFile(CLAUDE_MD);
   }
 
   // .claude/rules/*.md

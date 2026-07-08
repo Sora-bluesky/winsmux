@@ -41,6 +41,18 @@ Describe 'harness-check contract' {
             [System.IO.File]::WriteAllText($Path, $Content, $utf8NoBom)
         }
 
+        function Get-TestSha256 {
+            param([Parameter(Mandatory = $true)][string]$Content)
+
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes($Content)
+            $sha256 = [System.Security.Cryptography.SHA256]::Create()
+            try {
+                return -join ($sha256.ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') })
+            } finally {
+                $sha256.Dispose()
+            }
+        }
+
         function Remove-TestSettingsLocal {
             if (Test-Path -LiteralPath $script:SettingsLocalPath -PathType Leaf) {
                 Remove-Item -LiteralPath $script:SettingsLocalPath -Force
@@ -177,7 +189,7 @@ Describe 'harness-check contract' {
             Copy-Item -LiteralPath (Join-Path $script:RepoRoot '.claude\hooks\sh-session-start.js') -Destination (Join-Path $hooksDir 'sh-session-start.js') -Force
             Copy-Item -LiteralPath (Join-Path $script:RepoRoot '.claude\hooks\lib\sh-utils.js') -Destination (Join-Path $libDir 'sh-utils.js') -Force
 
-            Write-TestFileWithCmd -Path (Join-Path $fixtureRoot 'CLAUDE.md') -Content '# Fixture'
+            Write-TestFileWithCmd -Path (Join-Path $fixtureRoot '.claude\CLAUDE.md') -Content '# Fixture'
             Write-TestFileWithCmd -Path (Join-Path $fixtureRoot '.claude\settings.json') -Content '{"permissions":{"deny":["backlog.yaml"]}}'
             Write-TestFileWithCmd -Path (Join-Path $patternsDir 'injection-patterns.json') -Content '{}'
             Write-TestFileWithCmd -Path (Join-Path $winsmuxDir 'manifest.yaml') -Content @"
@@ -703,6 +715,80 @@ require("./sh-session-end-real.js");
             $context | Should -Match '\[winsmux-resume\] Managed panes: 1'
             $context | Should -Match '\[winsmux-resume\] Pane: builder-1 TASK-154 in_progress - Resume session context'
             $context | Should -Match '\[winsmux-resume\] Planning: TASK-154 v0.24.1 - Manifest-aware session resume / context injection'
+            $context | Should -Match '\[gate-check\] \.claude/CLAUDE\.md baseline:'
+            $context | Should -Not -Match 'WARNING: CLAUDE\.md not found'
+        } finally {
+            if (Test-Path -LiteralPath $fixture.Root) {
+                Remove-Item -LiteralPath $fixture.Root -Recurse -Force
+            }
+        }
+    }
+
+    It 'uses .claude/CLAUDE.md for instruction hashes without treating the contract as removed' {
+        $fixture = New-SessionStartFixture
+        try {
+            $hooksDir = Join-Path $fixture.Root '.claude\hooks'
+            Copy-Item -LiteralPath (Join-Path $script:RepoRoot '.claude\hooks\sh-instructions.js') -Destination (Join-Path $hooksDir 'sh-instructions.js') -Force
+
+            $payload = [ordered]@{
+                session_id      = 'session-start-instruction-hashes'
+                hook_event_name = 'SessionStart'
+            }
+
+            $startResult = Invoke-NodeHookJson -RepoRoot $fixture.Root -HookRelativePath '.claude\hooks\sh-session-start.js' -Payload $payload -EnvironmentVariables @{
+                WINSMUX_BACKLOG_PATH = $fixture.BacklogPath
+            }
+            $startResult.ExitCode | Should -Be 0
+
+            $hashesPath = Join-Path $fixture.Root '.claude\logs\instructions-hashes.json'
+            $hashes = Get-Content -LiteralPath $hashesPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
+            $hashNames = @($hashes.PSObject.Properties.Name)
+            $hashNames | Should -Contain '.claude/CLAUDE.md'
+            $hashNames | Should -Not -Contain 'CLAUDE.md'
+
+            $sessionPath = Join-Path $fixture.Root '.shield-harness\session.json'
+            $session = Get-Content -LiteralPath $sessionPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
+            $session.claude_md_hash | Should -Be (Get-TestSha256 -Content '# Fixture')
+
+            $instructionResult = Invoke-NodeHookJson -RepoRoot $fixture.Root -HookRelativePath '.claude\hooks\sh-instructions.js' -Payload ([ordered]@{
+                session_id      = 'instructions-loaded-no-removal'
+                hook_event_name = 'InstructionsLoaded'
+            })
+
+            $instructionResult.ExitCode | Should -Be 0
+            $instructionResult.StdErr | Should -Be ''
+            $instructionResult.StdOut | Should -Be ''
+        } finally {
+            if (Test-Path -LiteralPath $fixture.Root) {
+                Remove-Item -LiteralPath $fixture.Root -Recurse -Force
+            }
+        }
+    }
+
+    It 'verifies .claude/CLAUDE.md integrity during PostCompact' {
+        $fixture = New-SessionStartFixture
+        try {
+            $hooksDir = Join-Path $fixture.Root '.claude\hooks'
+            Copy-Item -LiteralPath (Join-Path $script:RepoRoot '.claude\hooks\sh-postcompact.js') -Destination (Join-Path $hooksDir 'sh-postcompact.js') -Force
+
+            $contractContent = '# Fixture'
+            $contractHash = Get-TestSha256 -Content $contractContent
+
+            Write-TestFileWithCmd -Path (Join-Path $fixture.Root '.shield-harness\session.json') -Content (@{
+                claude_md_hash = $contractHash
+            } | ConvertTo-Json -Compress)
+
+            $result = Invoke-NodeHookJson -RepoRoot $fixture.Root -HookRelativePath '.claude\hooks\sh-postcompact.js' -Payload ([ordered]@{
+                session_id      = 'postcompact-contract-hash'
+                hook_event_name = 'PostCompact'
+            })
+
+            $result.ExitCode | Should -Be 0
+            $result.StdErr | Should -Be ''
+            $context = [string]$result.Json.hookSpecificOutput.additionalContext
+            $context | Should -Match '\.claude/CLAUDE\.md integrity verified'
+            $context | Should -Match '  - \.claude/CLAUDE\.md \(project instructions\)'
+            $context | Should -Not -Match 'CLAUDE\.md not found'
         } finally {
             if (Test-Path -LiteralPath $fixture.Root) {
                 Remove-Item -LiteralPath $fixture.Root -Recurse -Force
