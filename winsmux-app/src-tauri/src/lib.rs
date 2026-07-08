@@ -21,6 +21,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
@@ -38,6 +39,10 @@ use windows_sys::Win32::Media::{
 
 const DESKTOP_SUMMARY_REFRESH_EVENT: &str = "desktop-summary-refresh";
 const PTY_CAPTURE_LIMIT: usize = 64 * 1024;
+const PTY_READ_BUFFER_BYTES: usize = 4096;
+const PTY_OUTPUT_BATCH_LIMIT: usize = 16 * 1024;
+const PTY_OUTPUT_BATCH_INTERVAL_MS: u64 = 16;
+const PTY_OUTPUT_QUEUE_CAPACITY: usize = 128;
 const PTY_CLOSE_WAIT_MS: u64 = 250;
 const DESKTOP_SHUTDOWN_PTY_WAIT_MS: u64 = 750;
 const DESKTOP_SHUTDOWN_VOICE_WAIT_MS: u64 = 3_000;
@@ -1224,39 +1229,232 @@ fn start_pty_reader(
     panes: Arc<Mutex<HashMap<String, SinglePty>>>,
 ) {
     let app_handle = app.clone();
+    let (output_tx, output_rx) = mpsc::sync_channel::<String>(PTY_OUTPUT_QUEUE_CAPACITY);
+    start_pty_output_flusher(
+        app_handle,
+        pane_id.clone(),
+        alive.clone(),
+        generation,
+        panes.clone(),
+        output_rx,
+    );
     std::thread::spawn(move || {
-        let mut buf = [0u8; 4096];
+        let mut buf = [0u8; PTY_READ_BUFFER_BYTES];
+        let mut pending_utf8 = Vec::new();
         loop {
-            if !alive.load(Ordering::SeqCst) {
+            if !is_current_pty(&panes, &pane_id, generation, &alive) {
                 break;
             }
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    let data = String::from_utf8_lossy(&buf[..n]).to_string();
-                    let Ok(current_panes) = panes.lock() else {
-                        break;
-                    };
-                    let is_current = current_panes
-                        .get(&pane_id)
-                        .map(|pty| pty.generation == generation && Arc::ptr_eq(&pty.alive, &alive))
-                        .unwrap_or(false);
-                    if !is_current || !alive.load(Ordering::SeqCst) {
-                        break;
+                    let data = decode_pty_reader_bytes(&buf[..n], &mut pending_utf8);
+                    if data.is_empty() {
+                        continue;
                     }
                     if let Ok(mut history) = output_history.lock() {
-                        history.push_str(&data);
-                        trim_pty_history(&mut history);
+                        append_pty_history(&mut history, &data);
                     }
-                    let _ = app_handle.emit(
-                        "pty-output",
-                        serde_json::json!({"pane_id": pane_id, "data": data}),
-                    );
+                    if output_tx.send(data).is_err() {
+                        break;
+                    }
                 }
                 Err(_) => break,
             }
         }
+
+        if is_current_pty(&panes, &pane_id, generation, &alive) {
+            let _ = publish_pending_pty_utf8(&mut pending_utf8, &output_history, &output_tx);
+        }
     });
+}
+
+struct PtyOutputBatch {
+    data: String,
+    first_output_at: Instant,
+}
+
+impl PtyOutputBatch {
+    fn new(now: Instant) -> Self {
+        Self {
+            data: String::new(),
+            first_output_at: now,
+        }
+    }
+
+    fn push(&mut self, data: &str, now: Instant) {
+        if self.data.is_empty() {
+            self.first_output_at = now;
+        }
+        self.data.push_str(data);
+    }
+
+    fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+
+    fn should_flush(&self, now: Instant) -> bool {
+        !self.data.is_empty()
+            && (self.data.len() >= PTY_OUTPUT_BATCH_LIMIT
+                || now.duration_since(self.first_output_at)
+                    >= Duration::from_millis(PTY_OUTPUT_BATCH_INTERVAL_MS))
+    }
+
+    fn recv_timeout(&self, now: Instant) -> Duration {
+        if self.data.is_empty() {
+            return Duration::from_millis(PTY_OUTPUT_BATCH_INTERVAL_MS);
+        }
+
+        let flush_interval = Duration::from_millis(PTY_OUTPUT_BATCH_INTERVAL_MS);
+        (self.first_output_at + flush_interval)
+            .checked_duration_since(now)
+            .unwrap_or(Duration::from_millis(0))
+    }
+
+    fn take(&mut self, now: Instant) -> String {
+        self.first_output_at = now;
+        std::mem::take(&mut self.data)
+    }
+}
+
+fn start_pty_output_flusher(
+    app_handle: AppHandle,
+    pane_id: String,
+    alive: Arc<AtomicBool>,
+    generation: u64,
+    panes: Arc<Mutex<HashMap<String, SinglePty>>>,
+    output_rx: Receiver<String>,
+) {
+    std::thread::spawn(move || {
+        let mut batch = PtyOutputBatch::new(Instant::now());
+
+        loop {
+            if !is_current_pty(&panes, &pane_id, generation, &alive) {
+                break;
+            }
+
+            match output_rx.recv_timeout(batch.recv_timeout(Instant::now())) {
+                Ok(data) => {
+                    let now = Instant::now();
+                    batch.push(&data, now);
+                    if batch.should_flush(now) {
+                        if !is_current_pty(&panes, &pane_id, generation, &alive) {
+                            break;
+                        }
+                        emit_pty_output_batch(&app_handle, &pane_id, &mut batch, now);
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    let now = Instant::now();
+                    if batch.should_flush(now) {
+                        if !is_current_pty(&panes, &pane_id, generation, &alive) {
+                            break;
+                        }
+                        emit_pty_output_batch(&app_handle, &pane_id, &mut batch, now);
+                    }
+                }
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+        }
+
+        if is_current_pty(&panes, &pane_id, generation, &alive) && !batch.is_empty() {
+            emit_pty_output_batch(&app_handle, &pane_id, &mut batch, Instant::now());
+        }
+    });
+}
+
+fn emit_pty_output_batch(
+    app_handle: &AppHandle,
+    pane_id: &str,
+    batch: &mut PtyOutputBatch,
+    now: Instant,
+) {
+    let data = batch.take(now);
+    if data.is_empty() {
+        return;
+    }
+
+    let _ = app_handle.emit(
+        "pty-output",
+        serde_json::json!({"pane_id": pane_id, "data": data}),
+    );
+}
+
+fn is_current_pty(
+    panes: &Arc<Mutex<HashMap<String, SinglePty>>>,
+    pane_id: &str,
+    generation: u64,
+    alive: &Arc<AtomicBool>,
+) -> bool {
+    if !alive.load(Ordering::SeqCst) {
+        return false;
+    }
+
+    let Ok(current_panes) = panes.lock() else {
+        return false;
+    };
+    current_panes
+        .get(pane_id)
+        .map(|pty| pty.generation == generation && Arc::ptr_eq(&pty.alive, alive))
+        .unwrap_or(false)
+}
+
+fn decode_pty_reader_bytes(bytes: &[u8], pending_utf8: &mut Vec<u8>) -> String {
+    let mut combined = Vec::with_capacity(pending_utf8.len() + bytes.len());
+    combined.append(pending_utf8);
+    combined.extend_from_slice(bytes);
+
+    let mut output = String::new();
+    let mut remaining = combined.as_slice();
+    loop {
+        match std::str::from_utf8(remaining) {
+            Ok(valid) => {
+                output.push_str(valid);
+                break;
+            }
+            Err(error) => {
+                let valid_up_to = error.valid_up_to();
+                if valid_up_to > 0 {
+                    if let Ok(valid) = std::str::from_utf8(&remaining[..valid_up_to]) {
+                        output.push_str(valid);
+                    }
+                }
+
+                let rest = &remaining[valid_up_to..];
+                let Some(error_len) = error.error_len() else {
+                    pending_utf8.extend_from_slice(rest);
+                    break;
+                };
+                output.push('\u{fffd}');
+                remaining = &rest[error_len..];
+            }
+        }
+    }
+
+    output
+}
+
+fn publish_pending_pty_utf8(
+    pending_utf8: &mut Vec<u8>,
+    output_history: &Arc<Mutex<String>>,
+    output_tx: &SyncSender<String>,
+) -> bool {
+    if pending_utf8.is_empty() {
+        return true;
+    }
+
+    let data = String::from_utf8_lossy(pending_utf8).to_string();
+    pending_utf8.clear();
+    if let Ok(mut history) = output_history.lock() {
+        append_pty_history(&mut history, &data);
+    }
+
+    output_tx.send(data).is_ok()
+}
+
+fn append_pty_history(history: &mut String, data: &str) {
+    history.push_str(data);
+    trim_pty_history(history);
 }
 
 fn trim_pty_history(history: &mut String) {
@@ -1730,6 +1928,102 @@ mod tests {
         assert!(history.len() <= PTY_CAPTURE_LIMIT);
         assert!(history.is_char_boundary(0));
         assert!(history.ends_with('あ'));
+    }
+
+    #[test]
+    fn append_pty_history_keeps_recent_ring_contents() {
+        let mut history = "old-output\n".to_string();
+        let recent = format!("{}recent-marker", "x".repeat(PTY_CAPTURE_LIMIT + 32));
+
+        append_pty_history(&mut history, &recent);
+
+        assert!(history.len() <= PTY_CAPTURE_LIMIT);
+        assert!(history.ends_with("recent-marker"));
+        assert!(!history.contains("old-output"));
+        assert!(history.is_char_boundary(0));
+    }
+
+    #[test]
+    fn decode_pty_reader_bytes_preserves_split_utf8() {
+        let mut pending = Vec::new();
+        let character = "あ".as_bytes();
+
+        let first = decode_pty_reader_bytes(&character[..1], &mut pending);
+        let second = decode_pty_reader_bytes(&character[1..], &mut pending);
+
+        assert_eq!(first, "");
+        assert_eq!(second, "あ");
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn decode_pty_reader_bytes_replaces_invalid_utf8() {
+        let mut pending = Vec::new();
+
+        let decoded = decode_pty_reader_bytes(&[0xff, b'o', b'k'], &mut pending);
+
+        assert_eq!(decoded, "\u{fffd}ok");
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn publish_pending_pty_utf8_updates_history_and_output() {
+        let mut pending = vec![0xe3, 0x81];
+        let history = Arc::new(Mutex::new(String::from("prefix")));
+        let (tx, rx) = mpsc::sync_channel::<String>(1);
+
+        assert!(publish_pending_pty_utf8(&mut pending, &history, &tx));
+
+        assert!(pending.is_empty());
+        assert_eq!(rx.try_recv().unwrap(), "\u{fffd}");
+        assert_eq!(history.lock().unwrap().as_str(), "prefix\u{fffd}");
+    }
+
+    #[test]
+    fn pty_output_batch_flushes_on_size_limit() {
+        let now = Instant::now();
+        let mut batch = PtyOutputBatch::new(now);
+
+        batch.push(&"x".repeat(PTY_OUTPUT_BATCH_LIMIT - 1), now);
+        assert!(!batch.should_flush(now));
+
+        batch.push("x", now);
+        assert!(batch.should_flush(now));
+        assert_eq!(batch.take(now).len(), PTY_OUTPUT_BATCH_LIMIT);
+        assert!(batch.is_empty());
+    }
+
+    #[test]
+    fn pty_output_batch_flushes_on_interval() {
+        let now = Instant::now();
+        let mut batch = PtyOutputBatch::new(now);
+
+        batch.push("ready", now);
+
+        assert!(!batch.should_flush(now + Duration::from_millis(PTY_OUTPUT_BATCH_INTERVAL_MS - 1)));
+        assert!(batch.should_flush(now + Duration::from_millis(PTY_OUTPUT_BATCH_INTERVAL_MS)));
+    }
+
+    #[test]
+    fn pty_output_batch_recv_timeout_uses_remaining_interval() {
+        let now = Instant::now();
+        let mut batch = PtyOutputBatch::new(now);
+
+        assert_eq!(
+            batch.recv_timeout(now),
+            Duration::from_millis(PTY_OUTPUT_BATCH_INTERVAL_MS)
+        );
+
+        batch.push("ready", now);
+
+        assert_eq!(
+            batch.recv_timeout(now + Duration::from_millis(5)),
+            Duration::from_millis(PTY_OUTPUT_BATCH_INTERVAL_MS - 5)
+        );
+        assert_eq!(
+            batch.recv_timeout(now + Duration::from_millis(PTY_OUTPUT_BATCH_INTERVAL_MS + 1)),
+            Duration::from_millis(0)
+        );
     }
 
     #[test]
