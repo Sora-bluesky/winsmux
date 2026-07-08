@@ -16945,6 +16945,35 @@ Describe 'winsmux task-run command' {
     }
 }
 
+Describe 'winsmux control-plane dispatch module' {
+    BeforeAll {
+        $script:winsmuxCoreDispatchRawPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $script:winsmuxCoreDispatchRawContent = Get-Content -Path $script:winsmuxCoreDispatchRawPath -Raw -Encoding UTF8
+        $script:controlPlaneDispatchPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\control-plane-dispatch.ps1'
+        $script:controlPlaneDispatchContent = Get-Content -Path $script:controlPlaneDispatchPath -Raw -Encoding UTF8
+    }
+
+    It 'loads the dispatch adapter module from the bridge script' {
+        $script:winsmuxCoreDispatchRawContent | Should -Match 'control-plane-dispatch\.ps1'
+        $script:winsmuxCoreDispatchRawContent | Should -Match '\. \$ControlPlaneDispatchScript'
+    }
+
+    It 'keeps external script adapter parsing outside the top-level command table' {
+        $script:winsmuxCoreDispatchRawContent | Should -Match "'github-preflight'\s*\{\s*Invoke-WinsmuxGithubPreflightCommand"
+        $script:winsmuxCoreDispatchRawContent | Should -Match "'dispatch-task'\s*\{\s*Invoke-WinsmuxDispatchTaskCommand"
+        $script:winsmuxCoreDispatchRawContent | Should -Match "'task-split'\s*\{\s*Invoke-WinsmuxTaskSplitCommand"
+        $script:winsmuxCoreDispatchRawContent | Should -Match "'builder-queue'\s*\{\s*Invoke-WinsmuxBuilderQueueCommand"
+        $script:winsmuxCoreDispatchRawContent | Should -Match "'orchestra-smoke'\s*\{\s*Invoke-WinsmuxOrchestraSmokeCommand"
+        $script:winsmuxCoreDispatchRawContent | Should -Match "'harness-check'\s*\{\s*Invoke-WinsmuxHarnessCheckCommand"
+        $script:winsmuxCoreDispatchRawContent | Should -Match "'assign'\s*\{\s*Invoke-WinsmuxAssignCommand"
+        $script:controlPlaneDispatchContent | Should -Match 'function Invoke-WinsmuxGithubPreflightCommand'
+        $script:controlPlaneDispatchContent | Should -Match 'function Invoke-WinsmuxDispatchTaskCommand'
+        $script:controlPlaneDispatchContent | Should -Match 'function Get-DispatchTaskAvailableTargets'
+        $script:controlPlaneDispatchContent | Should -Match 'function Invoke-WinsmuxBuilderQueueCommand'
+        $script:controlPlaneDispatchContent | Should -Match 'function Invoke-WinsmuxShadowCutoverGateCommand'
+    }
+}
+
 Describe 'winsmux profile command' {
     BeforeAll {
         $script:winsmuxCoreRawPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
@@ -21346,6 +21375,7 @@ Describe 'deferred worker startup' {
         $bridgePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
         $null = . $bridgePath version
         $script:deferredCoreContent = Get-Content -LiteralPath $bridgePath -Raw -Encoding UTF8
+        $script:deferredControlPlaneDispatchContent = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\control-plane-dispatch.ps1') -Raw -Encoding UTF8
         $script:deferredMonitorContent = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\agent-monitor.ps1') -Raw -Encoding UTF8
     }
 
@@ -21592,7 +21622,8 @@ Describe 'deferred worker startup' {
     It 'keeps send, dispatch-task, and monitor paths aware of deferred panes' {
         $script:deferredCoreContent | Should -Match 'function Start-DeferredPaneFromManifestEntry'
         $script:deferredCoreContent | Should -Match 'Start-DeferredPaneFromManifestEntry -ProjectDir \$projectDir -ManifestEntry \$context'
-        $script:deferredCoreContent | Should -Match 'Start-DeferredPaneFromManifestEntry -ProjectDir \$projectDir -ManifestEntry \$manifestEntry'
+        $script:deferredCoreContent | Should -Match 'Invoke-WinsmuxDispatchTaskCommand'
+        $script:deferredControlPlaneDispatchContent | Should -Match 'Start-DeferredPaneFromManifestEntry -ProjectDir \$projectDir -ManifestEntry \$manifestEntry'
         $script:deferredCoreContent | Should -Match 'backend_degraded'
         $script:deferredCoreContent | Should -Match 'deferred_starting'
         $script:deferredMonitorContent | Should -Match 'deferred_start_failed'

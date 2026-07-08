@@ -68,6 +68,12 @@ $ClmSafeIoScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\wi
 $PaneEnvScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\pane-env.ps1'))
 $PublicFirstRunScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\public-first-run.ps1'))
 $ConflictPreflightScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\conflict-preflight.ps1'))
+$ControlPlaneDispatchScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\control-plane-dispatch.ps1'))
+
+# Adapter module owns external script calls: github-write-preflight.ps1, dispatch-router.ps1,
+# task-splitter.ps1, team-pipeline.ps1, builder-queue.ps1, orchestra-smoke.ps1,
+# orchestra-attach.ps1, harness-check.ps1, shadow-cutover-gate.ps1,
+# powershell-deescalation.ps1, assignment-policy.ps1.
 
 if (Test-Path $BridgeSettingsScript -PathType Leaf) {
     . $BridgeSettingsScript
@@ -103,6 +109,10 @@ if (Test-Path $PublicFirstRunScript -PathType Leaf) {
 
 if (Test-Path $ConflictPreflightScript -PathType Leaf) {
     . $ConflictPreflightScript
+}
+
+if (Test-Path $ControlPlaneDispatchScript -PathType Leaf) {
+    . $ControlPlaneDispatchScript
 }
 
 # --- Windows Credential Manager P/Invoke ---
@@ -2161,9 +2171,13 @@ function Invoke-WinsmuxSendKeys {
 
     $arguments += $Keys
     $output = Invoke-WinsmuxRaw -Arguments $arguments 2>&1
+    $exitCode = Get-SafeLastExitCode
+    if ($null -eq $exitCode) {
+        $exitCode = 0
+    }
 
     return [ordered]@{
-        ExitCode = $LASTEXITCODE
+        ExitCode = $exitCode
         Output   = ($output | Out-String).Trim()
         Target   = $Target
     }
@@ -2182,9 +2196,13 @@ function Invoke-WinsmuxSendPaste {
     $encoded = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($Text))
     $arguments = @('send-paste', '-t', $Target, $encoded)
     $output = Invoke-WinsmuxRaw -Arguments $arguments 2>&1
+    $exitCode = Get-SafeLastExitCode
+    if ($null -eq $exitCode) {
+        $exitCode = 0
+    }
 
     return [ordered]@{
-        ExitCode = $LASTEXITCODE
+        ExitCode = $exitCode
         Output   = ($output | Out-String).Trim()
         Target   = $Target
     }
@@ -18177,129 +18195,6 @@ function Invoke-DispatchReview {
     Write-Output "PENDING confirmed. $reviewRole pane will run review-approve or review-fail. Monitor review-state.json for result."
 }
 
-function Get-DispatchTaskManifestEntry {
-    param(
-        [Parameter(Mandatory = $true)][string]$ProjectDir,
-        [Parameter(Mandatory = $true)][string]$Label
-    )
-
-    if (Get-Command Get-PaneControlManifestEntries -ErrorAction SilentlyContinue) {
-        $entry = @(Get-PaneControlManifestEntries -ProjectDir $ProjectDir | Where-Object { [string]$_.Label -eq $Label } | Select-Object -First 1)[0]
-        if ($null -ne $entry) {
-            return $entry
-        }
-    }
-
-    $labels = Get-Labels
-    if ($labels.ContainsKey($Label)) {
-        return [PSCustomObject]@{
-            Label  = $Label
-            PaneId = [string]$labels[$Label]
-            Role   = ''
-        }
-    }
-
-    return $null
-}
-
-function Test-DispatchTaskReviewerManifestEntry {
-    param([AllowNull()]$Entry = $null)
-
-    if ($null -eq $Entry) {
-        return $false
-    }
-
-    $role = [string](Get-SendConfigValue -InputObject $Entry -Name 'Role' -Default '')
-    $workerRole = [string](Get-SendConfigValue -InputObject $Entry -Name 'WorkerRole' -Default '')
-    $agentRole = [string](Get-SendConfigValue -InputObject $Entry -Name 'AgentRole' -Default '')
-
-    return (
-        [string]::Equals($role, 'Reviewer', [System.StringComparison]::OrdinalIgnoreCase) -or
-        [string]::Equals($workerRole, 'reviewer', [System.StringComparison]::OrdinalIgnoreCase) -or
-        [string]::Equals($agentRole, 'reviewer', [System.StringComparison]::OrdinalIgnoreCase)
-    )
-}
-
-function Get-DispatchTaskAvailableTargets {
-    param([Parameter(Mandatory = $true)][string]$ProjectDir)
-
-    $availableTargets = @()
-    $manifestTargetsResolved = $false
-    if (Get-Command Get-PaneControlManifestEntries -ErrorAction SilentlyContinue) {
-        try {
-            $manifestEntries = @(Get-PaneControlManifestEntries -ProjectDir $ProjectDir)
-            $manifestTargetsResolved = $true
-            $availableTargets = @(
-                $manifestEntries |
-                    Where-Object { -not (Test-DispatchTaskReviewerManifestEntry -Entry $_) } |
-                    ForEach-Object { [string]$_.Label } |
-                    Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-            )
-        } catch {
-            $manifestTargetsResolved = $false
-        }
-    }
-    if (-not $manifestTargetsResolved -and $availableTargets.Count -eq 0) {
-        $availableTargets = @((Get-Labels).Keys | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-    }
-
-    return @($availableTargets)
-}
-
-function Invoke-DispatchTask {
-    $parts = @(
-        @($Target) + @($Rest) |
-            Where-Object { $_ } |
-            ForEach-Object { $_.Trim() } |
-            Where-Object { $_ }
-    )
-    if ($parts.Count -lt 1) {
-        Stop-WithError "usage: winsmux dispatch-task <text>"
-    }
-
-    $taskText = $parts -join ' '
-    $projectDir = (Get-Location).Path
-    $routerScript = Join-Path $PSScriptRoot '..\winsmux-core\scripts\dispatch-router.ps1'
-    if (-not (Test-Path -LiteralPath $routerScript -PathType Leaf)) {
-        Stop-WithError "dispatch router not found: $routerScript"
-    }
-
-    . $routerScript
-
-    $availableTargets = @(Get-DispatchTaskAvailableTargets -ProjectDir $projectDir)
-
-    $route = Get-DispatchRoute -Text $taskText -AvailableTargets $availableTargets -DefaultRole 'Worker'
-    if ($route.HandleLocally) {
-        Stop-WithError "dispatch-task routed to Operator. Refine the task text so it can be delegated to a managed pane."
-    }
-
-    $selectedLabel = [string]$route.SelectedTarget
-    $paneId = ''
-    $resolvedRole = [string]$route.SelectedRole
-
-    if ($resolvedRole -eq 'Reviewer') {
-        $reviewEntry = Get-PreferredReviewPaneEntry -ProjectDir $projectDir
-        if ($null -eq $reviewEntry) {
-            Stop-WithError "No review-capable pane found in manifest."
-        }
-
-        $selectedLabel = [string]$reviewEntry.Label
-        $paneId = [string]$reviewEntry.PaneId
-        Start-DeferredPaneFromManifestEntry -ProjectDir $projectDir -ManifestEntry $reviewEntry | Out-Null
-    } else {
-        $manifestEntry = Get-DispatchTaskManifestEntry -ProjectDir $projectDir -Label $selectedLabel
-        if ($null -eq $manifestEntry -or [string]::IsNullOrWhiteSpace([string]$manifestEntry.PaneId)) {
-            Stop-WithError "dispatch-task could not resolve target '$selectedLabel' to a pane."
-        }
-
-        $paneId = [string]$manifestEntry.PaneId
-        Start-DeferredPaneFromManifestEntry -ProjectDir $projectDir -ManifestEntry $manifestEntry | Out-Null
-    }
-
-    Send-TextToPane -PaneId $paneId -CommandText $taskText
-    Write-Output ("Dispatched to {0} [{1}] as {2}. {3}" -f $selectedLabel, $paneId, $resolvedRole, [string]$route.Reason)
-}
-
 function Invoke-ReviewRequest {
     if ($Target -or ($Rest -and $Rest.Count -gt 0)) {
         Stop-WithError "usage: winsmux review-request"
@@ -19643,248 +19538,19 @@ switch ($Command) {
     'lock'            { Invoke-Lock }
     'unlock'          { Invoke-Unlock }
     'locks'           { Invoke-Locks }
-    'github-preflight' {
-        $preflightScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\github-write-preflight.ps1'))
-        $preflightArgs = @()
-        $remaining = @(@($Target) + @($Rest) | Where-Object { $_ })
-        for ($index = 0; $index -lt $remaining.Count; $index++) {
-            switch ($remaining[$index]) {
-                '--repo' {
-                    if ($index + 1 -ge $remaining.Count) {
-                        Stop-WithError "usage: winsmux github-preflight [--repo <owner/name>] [--json] [--connector-available] [--require-gh]"
-                    }
-                    $preflightArgs += @('-Repository', $remaining[$index + 1])
-                    $index++
-                }
-                '--json' { $preflightArgs += '-Json' }
-                '--connector-available' { $preflightArgs += '-ConnectorAvailable' }
-                '--require-gh' { $preflightArgs += '-RequireGh' }
-                default {
-                    Stop-WithError "usage: winsmux github-preflight [--repo <owner/name>] [--json] [--connector-available] [--require-gh]"
-                }
-            }
-        }
-        & pwsh -NoProfile -File $preflightScript @preflightArgs
-        $preflightExitCode = Get-SafeLastExitCode
-        if ($null -ne $preflightExitCode -and $preflightExitCode -ne 0) {
-            exit $preflightExitCode
-        }
-    }
+    'github-preflight' { Invoke-WinsmuxGithubPreflightCommand -BridgeScriptRoot $PSScriptRoot -CommandTarget $Target -CommandRest $Rest }
     'verify'          { Invoke-Verify }
-    'dispatch-task'   { Invoke-DispatchTask }
-    'dispatch-route'  {
-        $routerScript = Join-Path $PSScriptRoot '..\winsmux-core\scripts\dispatch-router.ps1'
-        $fullText = @($Target) + @($Rest) | Where-Object { $_ } | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-        & $routerScript -Text ($fullText -join ' ')
-    }
-    'task-split' {
-        $splitterScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\task-splitter.ps1'))
-        $taskText = (@($Target) + @($Rest) | Where-Object { $_ } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) -join ' '
-        if (-not $taskText) {
-            Stop-WithError "usage: winsmux task-split <task text>"
-        }
-
-        & pwsh -NoProfile -File $splitterScript -Task $taskText -AsJson
-    }
-    'pipeline' {
-        $pipelineScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\team-pipeline.ps1'))
-        $taskText = (@($Target) + @($Rest) | Where-Object { $_ } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) -join ' '
-        if ($taskText) {
-            & pwsh -NoProfile -File $pipelineScript -Task $taskText
-        } else {
-            & pwsh -NoProfile -File $pipelineScript
-        }
-    }
-    'task-run' {
-        $pipelineScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\team-pipeline.ps1'))
-        $taskText = (@($Target) + @($Rest) | Where-Object { $_ } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) -join ' '
-        if ($taskText) {
-            & pwsh -NoProfile -File $pipelineScript -Task $taskText
-        } else {
-            & pwsh -NoProfile -File $pipelineScript
-        }
-    }
-    'builder-queue' {
-        $queueScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\builder-queue.ps1'))
-        switch ($Target) {
-            'add' {
-                if (-not $Rest -or $Rest.Count -lt 2) {
-                    Stop-WithError "usage: winsmux builder-queue add <builder-label> <task>"
-                }
-
-                $builderLabel = $Rest[0]
-                $taskText = (@($Rest | Select-Object -Skip 1) | Where-Object { $_ } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) -join ' '
-                & pwsh -NoProfile -File $queueScript -Action add -ProjectDir (Get-Location).Path -BuilderLabel $builderLabel -Task $taskText
-            }
-            'list' {
-                $builderLabel = if ($Rest -and $Rest.Count -gt 0) { $Rest[0] } else { '' }
-                & pwsh -NoProfile -File $queueScript -Action list -ProjectDir (Get-Location).Path -BuilderLabel $builderLabel
-            }
-            'dispatch-next' {
-                if (-not $Rest -or $Rest.Count -lt 1) {
-                    Stop-WithError "usage: winsmux builder-queue dispatch-next <builder-label>"
-                }
-
-                & pwsh -NoProfile -File $queueScript -Action 'dispatch-next' -ProjectDir (Get-Location).Path -BuilderLabel $Rest[0]
-            }
-            'complete' {
-                if (-not $Rest -or $Rest.Count -lt 1) {
-                    Stop-WithError "usage: winsmux builder-queue complete <builder-label> [task]"
-                }
-
-                $builderLabel = $Rest[0]
-                $taskText = (@($Rest | Select-Object -Skip 1) | Where-Object { $_ } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) -join ' '
-                if ($taskText) {
-                    & pwsh -NoProfile -File $queueScript -Action complete -ProjectDir (Get-Location).Path -BuilderLabel $builderLabel -Task $taskText
-                } else {
-                    & pwsh -NoProfile -File $queueScript -Action complete -ProjectDir (Get-Location).Path -BuilderLabel $builderLabel
-                }
-            }
-            default {
-                Stop-WithError "usage: winsmux builder-queue [add|list|dispatch-next|complete] ..."
-            }
-        }
-    }
-    'orchestra-smoke' {
-        $smokeScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\orchestra-smoke.ps1'))
-        $remaining = @(@($Target) + @($Rest) | Where-Object { $_ })
-        $smokeArgs = @()
-        for ($index = 0; $index -lt $remaining.Count; $index++) {
-            switch ($remaining[$index]) {
-                '--json' {
-                    $smokeArgs += '-AsJson'
-                }
-                '--project-dir' {
-                    if ($index + 1 -ge $remaining.Count) {
-                    Stop-WithError "usage: winsmux orchestra-smoke [--json] [--auto-start] [--project-dir <path>]"
-                }
-
-                $smokeArgs += @('-ProjectDir', $remaining[$index + 1])
-                $index++
-            }
-                '--auto-start' {
-                    $smokeArgs += '-AutoStart'
-                }
-                default {
-                    Stop-WithError "usage: winsmux orchestra-smoke [--json] [--auto-start] [--project-dir <path>]"
-                }
-            }
-        }
-        & pwsh -NoProfile -File $smokeScript @smokeArgs
-    }
-    'orchestra-attach' {
-        $attachScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\orchestra-attach.ps1'))
-        $attachArgs = @()
-        $remaining = @(@($Target) + @($Rest) | Where-Object { $_ })
-        for ($index = 0; $index -lt $remaining.Count; $index++) {
-            switch ($remaining[$index]) {
-                '--json' {
-                    $attachArgs += '-AsJson'
-                }
-                '--project-dir' {
-                    if ($index + 1 -ge $remaining.Count) {
-                        Stop-WithError "usage: winsmux orchestra-attach [--json] [--project-dir <path>]"
-                    }
-
-                    $attachArgs += @('-ProjectDir', $remaining[$index + 1])
-                    $index++
-                }
-                default {
-                    Stop-WithError "usage: winsmux orchestra-attach [--json] [--project-dir <path>]"
-                }
-            }
-        }
-        & pwsh -NoProfile -File $attachScript @attachArgs
-    }
-    'harness-check' {
-        $checkScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\harness-check.ps1'))
-        $checkArgs = @()
-        $remaining = @(@($Target) + @($Rest) | Where-Object { $_ })
-        for ($index = 0; $index -lt $remaining.Count; $index++) {
-            switch ($remaining[$index]) {
-                '--json' {
-                    $checkArgs += '-AsJson'
-                }
-                '--project-dir' {
-                    if ($index + 1 -ge $remaining.Count) {
-                        Stop-WithError "usage: winsmux harness-check [--json] [--project-dir <path>]"
-                    }
-
-                    $checkArgs += @('-ProjectDir', $remaining[$index + 1])
-                    $index++
-                }
-                default {
-                    Stop-WithError "usage: winsmux harness-check [--json] [--project-dir <path>]"
-                }
-            }
-        }
-        & pwsh -NoProfile -File $checkScript @checkArgs
-    }
-    'shadow-cutover-gate' {
-        $gateScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\shadow-cutover-gate.ps1'))
-        $remaining = @(@($Target) + @($Rest) | Where-Object { $_ })
-        $expectedPath = ''
-        $actualPath = ''
-        $surface = 'unspecified'
-        $asJson = $false
-        for ($index = 0; $index -lt $remaining.Count; $index++) {
-            switch ($remaining[$index]) {
-                '--expected' {
-                    if ($index + 1 -ge $remaining.Count) {
-                        Stop-WithError "usage: winsmux shadow-cutover-gate --expected <path> --actual <path> [--surface <name>] [--json]"
-                    }
-                    $expectedPath = $remaining[$index + 1]
-                    $index++
-                }
-                '--actual' {
-                    if ($index + 1 -ge $remaining.Count) {
-                        Stop-WithError "usage: winsmux shadow-cutover-gate --expected <path> --actual <path> [--surface <name>] [--json]"
-                    }
-                    $actualPath = $remaining[$index + 1]
-                    $index++
-                }
-                '--surface' {
-                    if ($index + 1 -ge $remaining.Count) {
-                        Stop-WithError "usage: winsmux shadow-cutover-gate --expected <path> --actual <path> [--surface <name>] [--json]"
-                    }
-                    $surface = $remaining[$index + 1]
-                    $index++
-                }
-                '--json' {
-                    $asJson = $true
-                }
-                default {
-                    Stop-WithError "usage: winsmux shadow-cutover-gate --expected <path> --actual <path> [--surface <name>] [--json]"
-                }
-            }
-        }
-
-        if ([string]::IsNullOrWhiteSpace($expectedPath) -or [string]::IsNullOrWhiteSpace($actualPath)) {
-            Stop-WithError "usage: winsmux shadow-cutover-gate --expected <path> --actual <path> [--surface <name>] [--json]"
-        }
-
-        $gateArgs = @('-ExpectedPath', $expectedPath, '-ActualPath', $actualPath, '-Surface', $surface)
-        if ($asJson) {
-            $gateArgs += '-AsJson'
-        }
-        & pwsh -NoProfile -File $gateScript @gateArgs
-    }
-    'powershell-deescalation' {
-        $contractScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\powershell-deescalation.ps1'))
-        $remaining = @(@($Target) + @($Rest) | Where-Object { $_ })
-        $contractArgs = @()
-        foreach ($argument in $remaining) {
-            switch ($argument) {
-                '--json' {
-                    $contractArgs += '-AsJson'
-                }
-                default {
-                    Stop-WithError "usage: winsmux powershell-deescalation [--json]"
-                }
-            }
-        }
-        & pwsh -NoProfile -File $contractScript @contractArgs
-    }
+    'dispatch-task'   { Invoke-WinsmuxDispatchTaskCommand -BridgeScriptRoot $PSScriptRoot -CommandTarget $Target -CommandRest $Rest }
+    'dispatch-route'  { Invoke-WinsmuxDispatchRouteCommand -BridgeScriptRoot $PSScriptRoot -CommandTarget $Target -CommandRest $Rest }
+    'task-split'      { Invoke-WinsmuxTaskSplitCommand -BridgeScriptRoot $PSScriptRoot -CommandTarget $Target -CommandRest $Rest }
+    'pipeline'        { Invoke-WinsmuxTeamPipelineCommand -BridgeScriptRoot $PSScriptRoot -CommandTarget $Target -CommandRest $Rest }
+    'task-run'        { Invoke-WinsmuxTeamPipelineCommand -BridgeScriptRoot $PSScriptRoot -CommandTarget $Target -CommandRest $Rest }
+    'builder-queue'   { Invoke-WinsmuxBuilderQueueCommand -BridgeScriptRoot $PSScriptRoot -CommandTarget $Target -CommandRest $Rest }
+    'orchestra-smoke' { Invoke-WinsmuxOrchestraSmokeCommand -BridgeScriptRoot $PSScriptRoot -CommandTarget $Target -CommandRest $Rest }
+    'orchestra-attach' { Invoke-WinsmuxOrchestraAttachCommand -BridgeScriptRoot $PSScriptRoot -CommandTarget $Target -CommandRest $Rest }
+    'harness-check'   { Invoke-WinsmuxHarnessCheckCommand -BridgeScriptRoot $PSScriptRoot -CommandTarget $Target -CommandRest $Rest }
+    'shadow-cutover-gate' { Invoke-WinsmuxShadowCutoverGateCommand -BridgeScriptRoot $PSScriptRoot -CommandTarget $Target -CommandRest $Rest }
+    'powershell-deescalation' { Invoke-WinsmuxPowerShellDeescalationCommand -BridgeScriptRoot $PSScriptRoot -CommandTarget $Target -CommandRest $Rest }
     'vault'           {
         switch ($Target) {
             'set'    { $Target = $Rest[0]; $Rest = @($Rest | Select-Object -Skip 1); Invoke-VaultSet }
@@ -19948,38 +19614,7 @@ switch ($Command) {
     'manual-checklist' { Invoke-ManualChecklist }
     'legacy-compat-gate' { Invoke-LegacyCompatGate }
     'guard' { Invoke-Guard }
-    'assign' {
-        $assignScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\assignment-policy.ps1'))
-        $assignArgs = @()
-        $remaining = @(@($Target) + @($Rest) | Where-Object { $_ })
-        for ($index = 0; $index -lt $remaining.Count; $index++) {
-            switch ($remaining[$index]) {
-                '--task' {
-                    if ($index + 1 -ge $remaining.Count) {
-                        Stop-WithError "usage: winsmux assign --task <TASK-ID> [--json] [--text <text>]"
-                    }
-                    $assignArgs += @('-TaskId', $remaining[$index + 1])
-                    $index++
-                }
-                '--text' {
-                    if ($index + 1 -ge $remaining.Count) {
-                        Stop-WithError "usage: winsmux assign --task <TASK-ID> [--json] [--text <text>]"
-                    }
-                    $assignArgs += @('-Text', $remaining[$index + 1])
-                    $index++
-                }
-                '--json' { $assignArgs += '-Json' }
-                default {
-                    Stop-WithError "usage: winsmux assign --task <TASK-ID> [--json] [--text <text>]"
-                }
-            }
-        }
-        & pwsh -NoProfile -File $assignScript @assignArgs
-        $assignExitCode = Get-SafeLastExitCode
-        if ($null -ne $assignExitCode -and $assignExitCode -ne 0) {
-            exit $assignExitCode
-        }
-    }
+    'assign' { Invoke-WinsmuxAssignCommand -BridgeScriptRoot $PSScriptRoot -CommandTarget $Target -CommandRest $Rest }
     'provider-switch' { Invoke-ProviderSwitch }
     'runtime-roles' { Invoke-RuntimeRoles }
     'rebind-worktree' { Invoke-RebindWorktree }
