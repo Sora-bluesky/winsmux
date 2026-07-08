@@ -111,6 +111,10 @@ function Write-InstallProfileManifest {
     $manifest | ConvertTo-Json -Depth 8 | Set-Content -Path $PROFILE_MANIFEST_FILE -Encoding UTF8
 }
 
+function Install-CoreSupportScripts {
+    Download-OptionalFile "winsmux-core/scripts/control-plane-workers.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "control-plane-workers.ps1")
+}
+
 function Install-OrchestraSupportScripts {
     Download-File "winsmux-core/scripts/agent-launch.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "agent-launch.ps1")
     Download-File "winsmux-core/scripts/agent-monitor.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "agent-monitor.ps1")
@@ -424,6 +428,32 @@ function Download-File($relativeUrl, $destPath) {
     }
 }
 
+function Test-RemoteFileExists($relativeUrl) {
+    $url = "$BASE_URL/$relativeUrl"
+    try {
+        Invoke-WebRequest -Uri $url -Method Head -UseBasicParsing -ErrorAction Stop | Out-Null
+        return $true
+    } catch {
+        $statusCode = $null
+        if ($_.Exception.Response -and $_.Exception.Response.StatusCode) {
+            $statusCode = [int]$_.Exception.Response.StatusCode
+        }
+        if ($statusCode -eq 404 -or $_.Exception.Message -match '404|Not Found') {
+            return $false
+        }
+        Write-Error "[winsmux] Failed to probe $url : $_"
+        exit 1
+    }
+}
+
+function Download-OptionalFile($relativeUrl, $destPath) {
+    if (Test-RemoteFileExists $relativeUrl) {
+        Download-File $relativeUrl $destPath
+        return
+    }
+    Write-Status "Skipping optional $relativeUrl; it is not present in $RELEASE_LABEL."
+}
+
 # ---------------------------------------------------------------------------
 # Actions
 # ---------------------------------------------------------------------------
@@ -461,6 +491,8 @@ function Invoke-Install {
 
     # winsmux.ps1 CLI
     Download-File "winsmux.ps1" (Join-Path $BIN_DIR "winsmux.ps1")
+
+    Install-CoreSupportScripts
 
     if (Test-InstallProfileContent -Profile $resolvedInstallProfile -Content "orchestration_scripts") {
         Install-OrchestraSupportScripts
