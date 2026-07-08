@@ -56,10 +56,18 @@ const MIN_HOOK_COUNT = 10; // Wave 0+1+2 = 10 hooks minimum
 
 // Token budget defaults (§5.1.2, ADR-026)
 const DEFAULT_TOKEN_BUDGET = {
-  session_limit: 200000,
+  session_limit: null,
   tool_output_limit: 50000,
   used: 0,
 };
+
+function normalizeTokenBudget(tokenBudget) {
+  return (
+    tokenBudget && typeof tokenBudget === "object" && !Array.isArray(tokenBudget)
+      ? { ...DEFAULT_TOKEN_BUDGET, ...tokenBudget }
+      : { ...DEFAULT_TOKEN_BUDGET }
+  );
+}
 
 function findUpFile(startDir, relativeSegments) {
   if (!startDir) {
@@ -343,9 +351,7 @@ try {
     rawSession && typeof rawSession === "object" && !Array.isArray(rawSession)
       ? rawSession
       : {};
-  if (!session.token_budget) {
-    session.token_budget = { ...DEFAULT_TOKEN_BUDGET };
-  }
+  session.token_budget = normalizeTokenBudget(session.token_budget);
   session.session_start = new Date().toISOString();
   session.retry_count = 0;
   session.stop_hook_active = false;
@@ -377,7 +383,7 @@ try {
       ? winsmuxResumeContext.planningState.backlogPath
       : null;
   }
-  contextParts.push("[env-check] Session initialized, token budget set");
+  contextParts.push("[env-check] Session initialized, token budget config loaded");
   contextParts.push(
     `[winsmux] Hook profile: ${winsmuxHookProfile}, governance mode: ${winsmuxGovernanceMode}`,
   );

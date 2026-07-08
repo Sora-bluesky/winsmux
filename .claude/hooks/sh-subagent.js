@@ -24,12 +24,17 @@ const SUBAGENT_BUDGET_RATIO = 0.25; // 25% cap per subagent
 /**
  * Calculate subagent token budget from session state.
  * @param {Object} session
- * @returns {number}
+ * @returns {number|null}
  */
 function calculateSubagentBudget(session) {
-  const budget =
-    (session.token_budget && session.token_budget.session_limit) || 200000;
-  const used = (session.token_budget && session.token_budget.used) || 0;
+  const budget = Number(
+    session && session.token_budget && session.token_budget.session_limit,
+  );
+  if (!Number.isFinite(budget) || budget <= 0) {
+    return null;
+  }
+
+  const used = Number((session.token_budget && session.token_budget.used) || 0);
   const remaining = Math.max(0, budget - used);
   return Math.floor(remaining * SUBAGENT_BUDGET_RATIO);
 }
@@ -48,6 +53,10 @@ try {
   const session = readSession();
 
   const subagentBudget = calculateSubagentBudget(session);
+  const budgetText =
+    subagentBudget === null
+      ? "未設定（セッション予算の制約なし）"
+      : `${subagentBudget.toLocaleString()} tokens（セッション残量の 25%）`;
 
   // Record evidence
   try {
@@ -65,7 +74,7 @@ try {
   // Inject constraints via additionalContext
   const constraints = [
     "【Shield Harness サブエージェント制約】",
-    `- トークン予算: ${subagentBudget.toLocaleString()} tokens（セッション残量の 25%）`,
+    `- トークン予算: ${budgetText}`,
     "- ファイル書込: プロジェクトルート内のみ",
     "- ネットワーク: 禁止（WebFetch 不可）",
     "- 他のサブエージェント起動: 禁止",
