@@ -5,9 +5,12 @@
  * No external dependencies.
  */
 
-import { spawn, ChildProcess } from "child_process";
+import { spawn, type ChildProcess } from "child_process";
 import { resolve, dirname } from "path";
-import { createInterface, Interface } from "readline";
+import { fileURLToPath } from "url";
+import { createInterface, type Interface } from "readline";
+
+const moduleDir = dirname(fileURLToPath(import.meta.url));
 
 interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -103,7 +106,7 @@ export class WinsmuxClient {
 
   private resolveDefaultServerPath(): string {
     // Relative to this file: ../../winsmux-core/mcp-server.js
-    return resolve(dirname(__filename), "..", "..", "winsmux", "mcp-server.js");
+    return resolve(moduleDir, "..", "..", "winsmux-core", "mcp-server.js");
   }
 
   private ensureProcess(): void {
