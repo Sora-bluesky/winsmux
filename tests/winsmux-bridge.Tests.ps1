@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 
 function script:Write-PsmuxBridgeTestFile {
     param(
@@ -16982,6 +16982,8 @@ Describe 'winsmux control-plane command module' {
         $script:controlPlaneCommandsContent = Get-Content -Path $script:controlPlaneCommandsPath -Raw -Encoding UTF8
         $script:controlPlaneWorkersPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\control-plane-workers.ps1'
         $script:controlPlaneWorkersContent = Get-Content -Path $script:controlPlaneWorkersPath -Raw -Encoding UTF8
+        $script:controlPlaneLedgerPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\control-plane-ledger.ps1'
+        $script:controlPlaneLedgerContent = Get-Content -Path $script:controlPlaneLedgerPath -Raw -Encoding UTF8
         . $script:controlPlaneCommandsPath
     }
 
@@ -17005,6 +17007,19 @@ Describe 'winsmux control-plane command module' {
         $script:controlPlaneWorkersContent | Should -Match 'function Invoke-WinsmuxWorkersWorkspacePrepare'
         $script:controlPlaneWorkersContent | Should -Match 'function Invoke-WinsmuxWorkersWorkspaceCleanup'
         $script:controlPlaneWorkersContent | Should -Match 'function Invoke-WinsmuxWorkersWorkspaceCommand'
+    }
+
+    It 'keeps run ledger payload builders in the ledger command module' {
+        $script:winsmuxCoreCommandRawContent | Should -Match 'control-plane-ledger\.ps1'
+        $script:winsmuxCoreCommandRawContent | Should -Match '\. \$ControlPlaneLedgerScript'
+        $script:winsmuxCoreCommandRawContent | Should -Not -Match 'function Get-RunsPayload\s*\{'
+        $script:winsmuxCoreCommandRawContent | Should -Not -Match 'function Get-ExplainPayload\s*\{'
+        $script:winsmuxCoreCommandRawContent | Should -Not -Match 'function ConvertTo-CompareRunsPayload\s*\{'
+        $script:winsmuxCoreCommandRawContent | Should -Not -Match 'function Get-PromoteTacticPayload\s*\{'
+        $script:controlPlaneLedgerContent | Should -Match 'function Get-RunsPayload'
+        $script:controlPlaneLedgerContent | Should -Match 'function Get-ExplainPayload'
+        $script:controlPlaneLedgerContent | Should -Match 'function ConvertTo-CompareRunsPayload'
+        $script:controlPlaneLedgerContent | Should -Match 'function Get-PromoteTacticPayload'
     }
 
     It 'keeps launcher and provider command parsing outside the top-level command table' {

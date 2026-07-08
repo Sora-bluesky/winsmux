@@ -113,6 +113,7 @@ function Write-InstallProfileManifest {
 
 function Install-CoreSupportScripts {
     Download-OptionalFile "winsmux-core/scripts/control-plane-workers.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "control-plane-workers.ps1")
+    Download-OptionalFile "winsmux-core/scripts/control-plane-ledger.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "control-plane-ledger.ps1")
 }
 
 function Install-OrchestraSupportScripts {
