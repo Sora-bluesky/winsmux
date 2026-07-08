@@ -896,6 +896,27 @@ function Get-OrchestraObjectPropertyValue {
     return $Default
 }
 
+function ConvertFrom-OrchestraProcessRegistryValue {
+    param([AllowNull()]$Value)
+
+    if ($null -eq $Value) {
+        return $null
+    }
+
+    if ($Value -is [string]) {
+        $text = $Value.Trim()
+        if ([string]::IsNullOrWhiteSpace($text)) {
+            return $null
+        }
+
+        if ($text.StartsWith('{') -or $text.StartsWith('[')) {
+            return ($text | ConvertFrom-Json)
+        }
+    }
+
+    return $Value
+}
+
 function Test-OrchestraProviderInterruptAvailable {
     param([AllowNull()]$SlotAgentConfig)
 
@@ -1253,6 +1274,87 @@ function Get-OrchestraManifestPath {
     return (Join-Path (Join-Path $ProjectDir '.winsmux') 'manifest.yaml')
 }
 
+function New-OrchestraProcessRegistryEntry {
+    param(
+        [Parameter(Mandatory = $true)][string]$Label,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$ScriptName,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Owner,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$SessionName,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$StartupToken,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$ManifestPath,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$StartedAt,
+        [Nullable[int]]$ProcessId = $null,
+        [int]$IdleTimeoutSeconds = 0,
+        [ValidateSet('none', 'stop_after_idle')][string]$IdlePolicy = 'none',
+        [ValidateSet('none', 'restart', 'fail_closed')][string]$CrashRecoveryPolicy = 'none',
+        [int]$MaxRestartAttempts = 0,
+        [int]$RestartWindowMinutes = 0
+    )
+
+    if ($null -eq $ProcessId -or [int]$ProcessId -lt 1) {
+        return $null
+    }
+
+    return [PSCustomObject][ordered]@{
+        label          = $Label
+        name           = $Name
+        kind           = 'background_process'
+        pid            = [int]$ProcessId
+        owner          = $Owner
+        script         = $ScriptName
+        status         = 'running'
+        lease          = [PSCustomObject][ordered]@{
+            token         = $StartupToken
+            session_name  = $SessionName
+            manifest_path = $ManifestPath
+            acquired_at   = $StartedAt
+        }
+        idle           = [PSCustomObject][ordered]@{
+            timeout_seconds = $IdleTimeoutSeconds
+            policy          = $IdlePolicy
+        }
+        crash_recovery = [PSCustomObject][ordered]@{
+            policy         = $CrashRecoveryPolicy
+            max_attempts   = $MaxRestartAttempts
+            window_minutes = $RestartWindowMinutes
+        }
+    }
+}
+
+function New-OrchestraProcessRegistry {
+    param(
+        [Parameter(Mandatory = $true)][string]$SessionName,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$StartupToken,
+        [Parameter(Mandatory = $true)][string]$ManifestPath,
+        [Parameter(Mandatory = $true)][string]$SavedAt,
+        [Nullable[int]]$OperatorPollPid = $null,
+        [Nullable[int]]$WatchdogPid = $null,
+        [Nullable[int]]$ServerWatchdogPid = $null,
+        [Nullable[int]]$SupervisorPid = $null,
+        [int]$IdleThreshold = 120,
+        [int]$MaxRestartAttempts = 3,
+        [int]$RestartWindowMinutes = 10
+    )
+
+    $entries = [System.Collections.Generic.List[object]]::new()
+    foreach ($entry in @(
+            (New-OrchestraProcessRegistryEntry -Label 'operator_poll_pid' -Name 'operator-poll' -ScriptName 'operator-poll.ps1' -Owner 'orchestra-supervisor' -SessionName $SessionName -StartupToken $StartupToken -ManifestPath $ManifestPath -StartedAt $SavedAt -ProcessId $OperatorPollPid -IdleTimeoutSeconds $IdleThreshold -IdlePolicy 'none' -CrashRecoveryPolicy 'restart' -MaxRestartAttempts $MaxRestartAttempts -RestartWindowMinutes $RestartWindowMinutes),
+            (New-OrchestraProcessRegistryEntry -Label 'watchdog_pid' -Name 'agent-watchdog' -ScriptName 'agent-watchdog.ps1' -Owner 'orchestra-supervisor' -SessionName $SessionName -StartupToken $StartupToken -ManifestPath $ManifestPath -StartedAt $SavedAt -ProcessId $WatchdogPid -IdleTimeoutSeconds $IdleThreshold -IdlePolicy 'none' -CrashRecoveryPolicy 'restart' -MaxRestartAttempts $MaxRestartAttempts -RestartWindowMinutes $RestartWindowMinutes),
+            (New-OrchestraProcessRegistryEntry -Label 'server_watchdog_pid' -Name 'server-watchdog' -ScriptName 'server-watchdog.ps1' -Owner 'orchestra-supervisor' -SessionName $SessionName -StartupToken $StartupToken -ManifestPath $ManifestPath -StartedAt $SavedAt -ProcessId $ServerWatchdogPid -IdleTimeoutSeconds 0 -IdlePolicy 'none' -CrashRecoveryPolicy 'restart' -MaxRestartAttempts $MaxRestartAttempts -RestartWindowMinutes $RestartWindowMinutes),
+            (New-OrchestraProcessRegistryEntry -Label 'supervisor_pid' -Name 'orchestra-supervisor' -ScriptName 'orchestra-supervisor.ps1' -Owner 'orchestra-start' -SessionName $SessionName -StartupToken $StartupToken -ManifestPath $ManifestPath -StartedAt $SavedAt -ProcessId $SupervisorPid -IdleTimeoutSeconds 0 -IdlePolicy 'none' -CrashRecoveryPolicy 'fail_closed' -MaxRestartAttempts 0 -RestartWindowMinutes 0)
+        )) {
+        if ($null -ne $entry) {
+            $entries.Add($entry) | Out-Null
+        }
+    }
+
+    return [PSCustomObject][ordered]@{
+        version = 1
+        entries = @($entries)
+    }
+}
+
 function Save-OrchestraSessionState {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -1274,10 +1376,15 @@ function Save-OrchestraSessionState {
         [AllowEmptyString()][string]$UiAttachSource = 'none',
         [AllowEmptyString()][string]$UiHostKind = '',
         [AllowEmptyString()][string]$AttachRequestId = '',
-        [AllowEmptyCollection()]$AttachAdapterTrace = @()
+        [AllowEmptyCollection()]$AttachAdapterTrace = @(),
+        [int]$IdleThreshold = 120,
+        [int]$MaxRestartAttempts = 3,
+        [int]$RestartWindowMinutes = 10
     )
 
     $manifestPath = Get-OrchestraManifestPath -ProjectDir $ProjectDir
+    $savedAt = Get-Date -Format o
+    $processRegistry = New-OrchestraProcessRegistry -SessionName $SessionName -StartupToken $StartupToken -ManifestPath $manifestPath -SavedAt $savedAt -OperatorPollPid $OperatorPollPid -WatchdogPid $WatchdogPid -ServerWatchdogPid $ServerWatchdogPid -SupervisorPid $SupervisorPid -IdleThreshold $IdleThreshold -MaxRestartAttempts $MaxRestartAttempts -RestartWindowMinutes $RestartWindowMinutes
     $paneMap = [ordered]@{}
     foreach ($paneSummary in @($PaneSummaries)) {
         $paneEntry = [PSCustomObject]@{
@@ -1318,7 +1425,7 @@ function Save-OrchestraSessionState {
 
     $manifest = [PSCustomObject]@{
         version  = 1
-        saved_at = (Get-Date -Format o)
+        saved_at = $savedAt
         session  = [PSCustomObject]@{
             name                = $SessionName
             status              = 'running'
@@ -1331,6 +1438,7 @@ function Save-OrchestraSessionState {
             watchdog_pid        = $WatchdogPid
             server_watchdog_pid = $ServerWatchdogPid
             supervisor_pid      = $SupervisorPid
+            process_registry    = $processRegistry
             bootstrap_mode      = $BootstrapMode
             session_ready       = $SessionReady
             ui_attach_launched  = $UiAttachLaunched
@@ -1391,32 +1499,56 @@ function Stop-OrchestraBackgroundProcessesFromManifest {
     }
 
     $pidMap = [ordered]@{}
-    foreach ($propertyName in @('supervisor_pid', 'operator_poll_pid', 'commander_poll_pid', 'watchdog_pid', 'server_watchdog_pid')) {
-        $rawPid = $null
-        if ($manifest.session -is [System.Collections.IDictionary]) {
-            if ($manifest.session.Contains($propertyName)) {
-                $rawPid = $manifest.session[$propertyName]
-            }
-        } elseif ($null -ne $manifest.session.PSObject -and $manifest.session.PSObject.Properties.Name -contains $propertyName) {
-            $rawPid = $manifest.session.$propertyName
-        }
-
+    function Add-OrchestraBackgroundPidMapEntry {
+        param(
+            $RawPid,
+            [Parameter(Mandatory = $true)][string]$Label,
+            [AllowEmptyString()][string]$RequiredScript = ''
+        )
         $resolvedPid = 0
-        if ($null -eq $rawPid -or -not [int]::TryParse(([string]$rawPid), [ref]$resolvedPid) -or $resolvedPid -lt 1) {
-            continue
+        if ($null -eq $RawPid -or -not [int]::TryParse(([string]$RawPid), [ref]$resolvedPid) -or $resolvedPid -lt 1) {
+            return
         }
 
         $resolvedPidKey = [string]$resolvedPid
         if (-not $pidMap.Contains($resolvedPidKey)) {
-            $pidMap[$resolvedPidKey] = if ($propertyName -eq 'commander_poll_pid') { 'operator_poll_pid' } else { $propertyName }
+            $pidMap[$resolvedPidKey] = [PSCustomObject][ordered]@{
+                Label          = if ($Label -eq 'commander_poll_pid') { 'operator_poll_pid' } else { $Label }
+                RequiredScript = $RequiredScript
+            }
         }
+    }
+
+    $registry = ConvertFrom-OrchestraProcessRegistryValue -Value (Get-OrchestraObjectPropertyValue -InputObject $manifest.session -Name 'process_registry' -Default $null)
+    $registryEntries = @(Get-OrchestraObjectPropertyValue -InputObject $registry -Name 'entries' -Default @())
+    foreach ($registryEntry in $registryEntries) {
+        $registryPid = Get-OrchestraObjectPropertyValue -InputObject $registryEntry -Name 'pid' -Default $null
+        $registryLabel = [string](Get-OrchestraObjectPropertyValue -InputObject $registryEntry -Name 'label' -Default '')
+        $registryScript = [string](Get-OrchestraObjectPropertyValue -InputObject $registryEntry -Name 'script' -Default '')
+        if ([string]::IsNullOrWhiteSpace($registryLabel)) {
+            continue
+        }
+        Add-OrchestraBackgroundPidMapEntry -RawPid $registryPid -Label $registryLabel -RequiredScript $registryScript
+    }
+
+    foreach ($propertyName in @('supervisor_pid', 'operator_poll_pid', 'commander_poll_pid', 'watchdog_pid', 'server_watchdog_pid')) {
+        $rawPid = Get-OrchestraObjectPropertyValue -InputObject $manifest.session -Name $propertyName -Default $null
+        $requiredScript = switch ($propertyName) {
+            'supervisor_pid' { 'orchestra-supervisor.ps1' }
+            'operator_poll_pid' { 'operator-poll.ps1' }
+            'commander_poll_pid' { 'operator-poll.ps1' }
+            'watchdog_pid' { 'agent-watchdog.ps1' }
+            'server_watchdog_pid' { 'server-watchdog.ps1' }
+            default { '' }
+        }
+        Add-OrchestraBackgroundPidMapEntry -RawPid $rawPid -Label $propertyName -RequiredScript $requiredScript
     }
 
     $manifestPath = Get-OrchestraManifestPath -ProjectDir $ProjectDir
     $snapshot = Get-ProcessSnapshot
     foreach ($entry in $pidMap.GetEnumerator()) {
         $processId = [int]$entry.Key
-        $label = [string]$entry.Value
+        $label = [string]$entry.Value.Label
         try {
             if (-not $snapshot.ById.ContainsKey($processId)) {
                 continue
@@ -1424,13 +1556,7 @@ function Stop-OrchestraBackgroundProcessesFromManifest {
 
             $process = $snapshot.ById[$processId]
             $commandLine = [string]$process.CommandLine
-            $requiredScript = switch ($label) {
-                'supervisor_pid' { 'orchestra-supervisor.ps1' }
-                'operator_poll_pid' { 'operator-poll.ps1' }
-                'watchdog_pid' { 'agent-watchdog.ps1' }
-                'server_watchdog_pid' { 'server-watchdog.ps1' }
-                default { '' }
-            }
+            $requiredScript = [string]$entry.Value.RequiredScript
             $matchesExactMarkers = -not [string]::IsNullOrWhiteSpace($commandLine)
             foreach ($marker in @($requiredScript, $manifestPath, $SessionName, $startupToken) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) {
                 if ($commandLine.IndexOf($marker, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
