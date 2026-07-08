@@ -1011,7 +1011,7 @@ agent-slots:
     }
 
     It 'uses the generated common contract binding for provider selector vocabularies' {
-        $script:BridgeCommonContractPackageVersion | Should -Be '0.36.26'
+        $script:BridgeCommonContractPackageVersion | Should -Be '0.36.27'
         Get-BridgeCommonContractVocabularyValues -Name 'modelSources' | Should -Be @('provider-default', 'cli-discovery', 'provider-api', 'official-doc', 'operator-override')
         Get-BridgeCommonContractVocabularyValues -Name 'reasoningEfforts' | Should -Be @('provider-default', 'low', 'medium', 'high', 'max', 'xhigh')
         Get-BridgeCommonContractVocabularyValues -Name 'promptTransports' | Should -Be @('argv', 'file', 'stdin')

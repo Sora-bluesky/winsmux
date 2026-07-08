@@ -139,7 +139,7 @@ const {
   workerPaneReadinessStates,
 } = await loadModelCapabilitiesModule();
 
-assert.equal(commonContractPackageVersion, "0.36.26");
+assert.equal(commonContractPackageVersion, "0.36.27");
 assertSameVocabulary("contract surfaces", commonContractPackage.surfaces, commonContractSurfaceIds);
 assert.ok(commonContractPackage.surfaces.includes("provider"));
 assert.ok(commonContractPackage.surfaces.includes("readiness"));
@@ -247,10 +247,10 @@ for (const fixture of readinessVocabularyFixtures.fixtures) {
 }
 
 assert.deepEqual(await loadRustParityFixture(), commonContractPackage);
-assert.deepEqual(await loadRustParityFixture("common-contract-package-v0.36.26.json"), commonContractPackage);
+assert.deepEqual(await loadRustParityFixture("common-contract-package-v0.36.27.json"), commonContractPackage);
 
-const previousFixture = await loadRustParityFixture("common-contract-package-v0.36.25.json");
-assert.equal(previousFixture.version, "0.36.25");
+const previousFixture = await loadRustParityFixture("common-contract-package-v0.36.26.json");
+assert.equal(previousFixture.version, "0.36.26");
 assert.deepEqual({ ...previousFixture, version: commonContractPackageVersion }, commonContractPackage);
 
 console.log("common-contract-package-check: ok");

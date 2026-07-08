@@ -47,6 +47,16 @@ Describe 'winsmux version surface' {
         $coreLock | Should -Match ('(?ms)^name\s*=\s*"winsmux"\s*\r?\nversion\s*=\s*"{0}"' -f [regex]::Escape($script:ProductVersion))
     }
 
+    It 'keeps Windows PowerShell bridge script UTF-8 BOM encoded' {
+        $bridgeScriptPath = Join-Path $script:RepoRoot 'scripts\winsmux-core.ps1'
+        $bytes = [System.IO.File]::ReadAllBytes($bridgeScriptPath)
+
+        $bytes.Length | Should -BeGreaterThan 3
+        $bytes[0] | Should -Be 0xEF
+        $bytes[1] | Should -Be 0xBB
+        $bytes[2] | Should -Be 0xBF
+    }
+
     It 'uses latest release resolution for tagless install and update actions' {
         $installScript = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'install.ps1') -Raw -Encoding UTF8
 
@@ -289,6 +299,76 @@ exit /b 1
 
         $body = Get-Content -LiteralPath $generatedBody -Raw -Encoding UTF8
         $body | Should -Match 'desktop maintainability'
+        $body | Should -Match 'https://github\.com/Sora-bluesky/winsmux/(compare|releases/tag)/'
+        $body | Should -Not -Match '[\p{IsHiragana}\p{IsKatakana}\p{IsCJKUnifiedIdeographs}]'
+        $body | Should -Not -Match 'TASK-'
+        $body | Should -Not -Match 'HANDOFF'
+        $maintainerLocalPathPattern = ([regex]::Escape(('C:' + '\Users\'))) + '|Main' + 'Vault|iCloud' + 'Drive'
+        $body | Should -Not -Match $maintainerLocalPathPattern
+        $body | Should -Not -Match '(?i)\bplanning\b|private planning|planning labels'
+    }
+
+    It 'generates v0.36.27 release notes without private planning wording' {
+        $generator = Join-Path $script:RepoRoot 'scripts\generate-release-notes.ps1'
+        $qualityScript = Join-Path $script:RepoRoot 'scripts\assert-release-notes-quality.ps1'
+        $generatedBody = Join-Path $TestDrive 'generated-v03627-release-body.md'
+        $backlog = Join-Path $TestDrive 'backlog.yaml'
+        $gitShimDir = Join-Path $TestDrive 'bin-v03627'
+        New-Item -ItemType Directory -Path $gitShimDir -Force | Out-Null
+        Set-Content -LiteralPath $backlog -Value @'
+- id: TASK-645
+    title: 制御プレーン分割とプロセスプールの親タスク
+    status: done
+    priority: P0
+    target_version: v0.36.27
+- id: TASK-650
+    title: 互換性・性能ゲート
+    status: done
+    priority: P0
+    target_version: v0.36.27
+'@ -Encoding UTF8
+        Set-Content -LiteralPath (Join-Path $gitShimDir 'git.cmd') -Value @'
+@echo off
+if "%~1"=="rev-parse" (
+  echo %* | findstr /C:"v0.36.27" >nul
+  if not errorlevel 1 exit /b 1
+  exit /b 0
+)
+if "%~1"=="tag" (
+  echo v0.36.26
+  echo v0.36.25
+  exit /b 0
+)
+if "%~1"=="log" (
+  echo refactor^(core^): split control-plane dispatch adapters ^(#1170^)
+  echo refactor^(core^): extract command result handlers ^(#1172^)
+  echo refactor^(core^): extract workers workspace command module ^(#1173^)
+  echo refactor^(core^): extract run ledger module ^(#1174^)
+  echo feat^(core^): add shared Rust read path ^(#1175^)
+  echo feat^(core^): add process registry and automation driver pool ^(#1176^)
+  echo test^(release^): add v0.36.27 compat performance gate ^(#1177^)
+  exit /b 0
+)
+exit /b 1
+'@ -Encoding ascii
+
+        $previousPath = $env:PATH
+        try {
+            $env:PATH = "$gitShimDir;$previousPath"
+            $generateOutput = @(& pwsh -NoProfile -File $generator -Version 'v0.36.27' -BacklogPath $backlog -OutputPath $generatedBody 2>&1)
+            $LASTEXITCODE | Should -Be 0
+            ($generateOutput -join "`n") | Should -Match 'release-notes.*wrote'
+
+            $qualityOutput = @(& pwsh -NoProfile -File $qualityScript -ReleaseNotesPath $generatedBody 2>&1)
+            $LASTEXITCODE | Should -Be 0
+            ($qualityOutput -join "`n") | Should -Match 'release-notes-quality.*passed'
+        } finally {
+            $env:PATH = $previousPath
+        }
+
+        $body = Get-Content -LiteralPath $generatedBody -Raw -Encoding UTF8
+        $body | Should -Match 'control-plane dispatch path'
+        $body | Should -Match 'compatibility and performance release gate'
         $body | Should -Match 'https://github\.com/Sora-bluesky/winsmux/(compare|releases/tag)/'
         $body | Should -Not -Match '[\p{IsHiragana}\p{IsKatakana}\p{IsCJKUnifiedIdeographs}]'
         $body | Should -Not -Match 'TASK-'
