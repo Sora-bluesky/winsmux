@@ -208,6 +208,11 @@ jobs:
             timeout_minutes: 12
             paths: tests/V03626DesktopSplitGate.Tests.ps1
             full_name: ""
+          - name: compat-performance-v03627
+            result: compat-performance-v03627
+            timeout_minutes: 12
+            paths: tests/V03627CompatPerformanceGate.Tests.ps1
+            full_name: ""
     steps:
       - uses: actions/checkout@v6
 

@@ -96,6 +96,7 @@ tests/*
 !tests/V03620CoordinatorFoundation.Tests.ps1
 !tests/V03621LocalRouterShadow.Tests.ps1
 !tests/V03626DesktopSplitGate.Tests.ps1
+!tests/V03627CompatPerformanceGate.Tests.ps1
 !tests/BuilderWorktree.Tests.ps1
 !tests/codex-subagent-worktree-guard.Tests.ps1
 !tests/PublicSurfacePolicy.Tests.ps1
