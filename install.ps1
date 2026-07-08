@@ -112,7 +112,7 @@ function Write-InstallProfileManifest {
 }
 
 function Install-CoreSupportScripts {
-    Download-File "winsmux-core/scripts/control-plane-workers.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "control-plane-workers.ps1")
+    Download-OptionalFile "winsmux-core/scripts/control-plane-workers.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "control-plane-workers.ps1")
 }
 
 function Install-OrchestraSupportScripts {
@@ -426,6 +426,32 @@ function Download-File($relativeUrl, $destPath) {
         Write-Error "[winsmux] Failed to download $url : $_"
         exit 1
     }
+}
+
+function Test-RemoteFileExists($relativeUrl) {
+    $url = "$BASE_URL/$relativeUrl"
+    try {
+        Invoke-WebRequest -Uri $url -Method Head -UseBasicParsing -ErrorAction Stop | Out-Null
+        return $true
+    } catch {
+        $statusCode = $null
+        if ($_.Exception.Response -and $_.Exception.Response.StatusCode) {
+            $statusCode = [int]$_.Exception.Response.StatusCode
+        }
+        if ($statusCode -eq 404 -or $_.Exception.Message -match '404|Not Found') {
+            return $false
+        }
+        Write-Error "[winsmux] Failed to probe $url : $_"
+        exit 1
+    }
+}
+
+function Download-OptionalFile($relativeUrl, $destPath) {
+    if (Test-RemoteFileExists $relativeUrl) {
+        Download-File $relativeUrl $destPath
+        return
+    }
+    Write-Status "Skipping optional $relativeUrl; it is not present in $RELEASE_LABEL."
 }
 
 # ---------------------------------------------------------------------------
