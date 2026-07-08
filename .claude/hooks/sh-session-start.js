@@ -28,7 +28,8 @@ try { checkPolicyDrift = require("./lib/policy-drift").checkPolicyDrift; } catch
 try { detectAutoMode = require("./lib/automode-detect").detectAutoMode; } catch {}
 
 const HOOK_NAME = "sh-session-start";
-const CLAUDE_MD = "CLAUDE.md";
+const CLAUDE_MD = path.join(".claude", "CLAUDE.md");
+const CLAUDE_MD_LABEL = ".claude/CLAUDE.md";
 const SETTINGS_FILE = path.join(".claude", "settings.json");
 const RULES_DIR = path.join(".claude", "rules");
 const HOOKS_DIR = path.join(".claude", "hooks");
@@ -241,16 +242,16 @@ try {
 
   // --- Module 1: Gate Check (§5.1.1) ---
 
-  // 1a: CLAUDE.md baseline hash
+  // 1a: .claude/CLAUDE.md baseline hash
   let claudeMdHash = null;
   if (fs.existsSync(CLAUDE_MD)) {
     const content = fs.readFileSync(CLAUDE_MD, "utf8");
     claudeMdHash = sha256(content);
     contextParts.push(
-      `[gate-check] CLAUDE.md baseline: ${claudeMdHash.slice(0, 12)}...`,
+      `[gate-check] ${CLAUDE_MD_LABEL} baseline: ${claudeMdHash.slice(0, 12)}...`,
     );
   } else {
-    contextParts.push("[gate-check] WARNING: CLAUDE.md not found");
+    contextParts.push(`[gate-check] WARNING: ${CLAUDE_MD_LABEL} not found`);
   }
 
   // 1b: settings.json deny rules check
@@ -349,6 +350,7 @@ try {
   session.retry_count = 0;
   session.stop_hook_active = false;
   session.deny_tracker = {};
+  session.claude_md_hash = claudeMdHash;
   session.winsmux_contract = {
     hook_profile: winsmuxHookProfile,
     governance_mode: winsmuxGovernanceMode,
@@ -516,7 +518,7 @@ try {
   // Store baseline hashes for instructions monitoring
   const hashes = {};
   if (fs.existsSync(CLAUDE_MD)) {
-    hashes[CLAUDE_MD] = claudeMdHash;
+    hashes[CLAUDE_MD_LABEL] = claudeMdHash;
   }
   if (fs.existsSync(RULES_DIR)) {
     try {

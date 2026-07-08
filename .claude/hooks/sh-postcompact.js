@@ -23,7 +23,8 @@ const {
 const HOOK_NAME = "sh-postcompact";
 const SAFE_SH_DIR = typeof SH_DIR === "string" && SH_DIR ? SH_DIR : os.tmpdir();
 const BACKUP_DIR = path.join(SAFE_SH_DIR, "compact-backup");
-const CLAUDE_MD = "CLAUDE.md";
+const CLAUDE_MD = path.join(".claude", "CLAUDE.md");
+const CLAUDE_MD_LABEL = ".claude/CLAUDE.md";
 const BACKLOG_FILE = getBacklogPath();
 
 // ---------------------------------------------------------------------------
@@ -58,13 +59,13 @@ function restoreSessionState() {
 }
 
 /**
- * Verify CLAUDE.md integrity after compaction.
+ * Verify .claude/CLAUDE.md integrity after compaction.
  * @param {Object} session - Session with baseline hash
  * @returns {{ valid: boolean, message: string }}
  */
 function verifyCLAUDEMD(session) {
   if (!fs.existsSync(CLAUDE_MD)) {
-    return { valid: false, message: "CLAUDE.md not found" };
+    return { valid: false, message: `${CLAUDE_MD_LABEL} not found` };
   }
 
   const currentHash = sha256(fs.readFileSync(CLAUDE_MD, "utf8"));
@@ -73,18 +74,18 @@ function verifyCLAUDEMD(session) {
   if (!session.claude_md_hash) {
     return {
       valid: true,
-      message: `CLAUDE.md hash recorded: ${currentHash.slice(0, 12)}...`,
+      message: `${CLAUDE_MD_LABEL} hash recorded: ${currentHash.slice(0, 12)}...`,
     };
   }
 
   if (currentHash !== session.claude_md_hash) {
     return {
       valid: false,
-      message: `WARNING: CLAUDE.md has been modified since session start! Expected: ${session.claude_md_hash.slice(0, 12)}..., Got: ${currentHash.slice(0, 12)}...`,
+      message: `WARNING: ${CLAUDE_MD_LABEL} has been modified since session start! Expected: ${session.claude_md_hash.slice(0, 12)}..., Got: ${currentHash.slice(0, 12)}...`,
     };
   }
 
-  return { valid: true, message: "CLAUDE.md integrity verified" };
+  return { valid: true, message: `${CLAUDE_MD_LABEL} integrity verified` };
 }
 
 /**
@@ -118,7 +119,7 @@ function buildRestorationContext(session, integrityCheck) {
   // Key reminders
   parts.push("");
   parts.push("Key files to re-read if needed:");
-  parts.push("  - CLAUDE.md (project instructions)");
+  parts.push(`  - ${CLAUDE_MD_LABEL} (project instructions)`);
   parts.push("  - .claude/rules/ (security & coding rules)");
   if (fs.existsSync(BACKLOG_FILE)) {
     parts.push(`  - ${BACKLOG_FILE} (planning backlog SoT)`);
@@ -142,7 +143,7 @@ try {
   // Restore session state from backup
   const session = restoreSessionState();
 
-  // Verify CLAUDE.md integrity
+  // Verify .claude/CLAUDE.md integrity
   const integrityCheck = verifyCLAUDEMD(session);
 
   // Update and save session
