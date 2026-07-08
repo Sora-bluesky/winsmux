@@ -69,11 +69,14 @@ $PaneEnvScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\wins
 $PublicFirstRunScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\public-first-run.ps1'))
 $ConflictPreflightScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\conflict-preflight.ps1'))
 $ControlPlaneDispatchScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\control-plane-dispatch.ps1'))
+$ControlPlaneCommandsScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\control-plane-commands.ps1'))
 
 # Adapter module owns external script calls: github-write-preflight.ps1, dispatch-router.ps1,
 # task-splitter.ps1, team-pipeline.ps1, builder-queue.ps1, orchestra-smoke.ps1,
 # orchestra-attach.ps1, harness-check.ps1, shadow-cutover-gate.ps1,
 # powershell-deescalation.ps1, assignment-policy.ps1.
+# Command module owns typed command result helpers and command argument/output handling
+# for launcher, provider-capabilities, and provider-switch.
 
 if (Test-Path $BridgeSettingsScript -PathType Leaf) {
     . $BridgeSettingsScript
@@ -113,6 +116,10 @@ if (Test-Path $ConflictPreflightScript -PathType Leaf) {
 
 if (Test-Path $ControlPlaneDispatchScript -PathType Leaf) {
     . $ControlPlaneDispatchScript
+}
+
+if (Test-Path $ControlPlaneCommandsScript -PathType Leaf) {
+    . $ControlPlaneCommandsScript
 }
 
 # --- Windows Credential Manager P/Invoke ---
@@ -4863,143 +4870,6 @@ function Get-LauncherTemplateListPayload {
         template_count = @($store.templates).Count
         templates      = @($store.templates)
     }
-}
-
-function Invoke-Launcher {
-    $tokens = @(@($Target) + @($Rest) | Where-Object { $_ })
-    $mode = 'presets'
-    $templateName = ''
-    $lifecyclePreset = ''
-    $clearLifecycleOverride = $false
-    $jsonOutput = $false
-
-    for ($index = 0; $index -lt $tokens.Count; $index++) {
-        switch ($tokens[$index]) {
-            '--json' {
-                $jsonOutput = $true
-            }
-            '--clear' {
-                $clearLifecycleOverride = $true
-            }
-            '--lifecycle' {
-                $index++
-                if ($index -ge $tokens.Count -or [string]::IsNullOrWhiteSpace([string]$tokens[$index])) {
-                    Stop-WithError "usage: winsmux launcher <presets|lifecycle|list|save> [name] [--lifecycle <preset>] [--json]"
-                }
-
-                $lifecyclePreset = [string]$tokens[$index]
-            }
-            'presets' {
-                $mode = 'presets'
-            }
-            'lifecycle' {
-                $mode = 'lifecycle'
-            }
-            'list' {
-                $mode = 'list'
-            }
-            'save' {
-                $mode = 'save'
-            }
-            default {
-                if ([string]::Equals($mode, 'save', [System.StringComparison]::OrdinalIgnoreCase) -and [string]::IsNullOrWhiteSpace($templateName)) {
-                    $templateName = [string]$tokens[$index]
-                } elseif ([string]::Equals($mode, 'lifecycle', [System.StringComparison]::OrdinalIgnoreCase) -and [string]::IsNullOrWhiteSpace($lifecyclePreset)) {
-                    $lifecyclePreset = [string]$tokens[$index]
-                } else {
-                    Stop-WithError "usage: winsmux launcher <presets|lifecycle|list|save> [name] [--lifecycle <preset>] [--json]"
-                }
-            }
-        }
-    }
-
-    if ($clearLifecycleOverride -and -not [string]::Equals($mode, 'lifecycle', [System.StringComparison]::OrdinalIgnoreCase)) {
-        Stop-WithError "usage: winsmux launcher lifecycle [preset|--clear] [--json]"
-    }
-
-    if ($clearLifecycleOverride -and -not [string]::IsNullOrWhiteSpace($lifecyclePreset)) {
-        Stop-WithError "usage: winsmux launcher lifecycle [preset|--clear] [--json]"
-    }
-
-    $projectDir = (Get-Location).Path
-    if ([string]::Equals($mode, 'save', [System.StringComparison]::OrdinalIgnoreCase)) {
-        if ([string]::IsNullOrWhiteSpace($templateName)) {
-            Stop-WithError "usage: winsmux launcher save <name> [--json]"
-        }
-
-        $saveResult = Save-LauncherTemplate -ProjectDir $projectDir -Name $templateName -LifecyclePreset $lifecyclePreset
-        if ($jsonOutput) {
-            $saveResult | ConvertTo-Json -Depth 32 -Compress | Write-Output
-            return
-        }
-
-        Write-Output "launcher template saved: $($saveResult.name)"
-        Write-Output "templates: $($saveResult.templates_path)"
-        return
-    }
-
-    if ([string]::Equals($mode, 'list', [System.StringComparison]::OrdinalIgnoreCase)) {
-        $listResult = Get-LauncherTemplateListPayload -ProjectDir $projectDir
-        if ($jsonOutput) {
-            $listResult | ConvertTo-Json -Depth 32 -Compress | Write-Output
-            return
-        }
-
-        Write-Output "launcher templates: $($listResult.template_count)"
-        foreach ($template in @($listResult.templates)) {
-            Write-Output "  $($template.name)"
-        }
-        Write-Output "templates: $($listResult.templates_path)"
-        return
-    }
-
-    if ([string]::Equals($mode, 'lifecycle', [System.StringComparison]::OrdinalIgnoreCase)) {
-        if ($clearLifecycleOverride) {
-            $clearedPath = Clear-LauncherWorkspaceLifecycleOverride -ProjectDir $projectDir
-            $lifecycleResult = Get-LauncherWorkspaceLifecyclePayload -ProjectDir $projectDir
-            $lifecycleResult['override_cleared'] = $true
-            $lifecycleResult['cleared_path'] = $clearedPath
-        } elseif (-not [string]::IsNullOrWhiteSpace($lifecyclePreset)) {
-            $lifecycleResult = Get-LauncherWorkspaceLifecyclePayload -ProjectDir $projectDir -SelectedPreset $lifecyclePreset
-            $overridePath = Set-LauncherWorkspaceLifecycleOverride -ProjectDir $projectDir -Preset $lifecyclePreset
-            $lifecycleResult['override_saved'] = $true
-            $lifecycleResult['saved_path'] = $overridePath
-        } else {
-            $lifecycleResult = Get-LauncherWorkspaceLifecyclePayload -ProjectDir $projectDir
-        }
-
-        if ($jsonOutput) {
-            $lifecycleResult | ConvertTo-Json -Depth 32 -Compress | Write-Output
-            return
-        }
-
-        Write-Output "workspace lifecycle presets: $(@($lifecycleResult.presets).Count)"
-        Write-Output "selected: $($lifecycleResult.selected_preset)"
-        foreach ($preset in @($lifecycleResult.presets)) {
-            Write-Output "  $($preset.name): setup=$($preset.setup_policy) teardown=$($preset.teardown_policy)"
-        }
-        Write-Output "project default: $($lifecycleResult.project_default)"
-        Write-Output "user override: $($lifecycleResult.user_override)"
-        Write-Output "override path: $($lifecycleResult.override_path)"
-        return
-    }
-
-    $result = Get-LauncherPresetPayload -ProjectDir $projectDir -LifecyclePreset $lifecyclePreset
-    if ($jsonOutput) {
-        $result | ConvertTo-Json -Depth 16 -Compress | Write-Output
-        return
-    }
-
-    Write-Output "launcher presets: $(@($result.presets).Count)"
-    foreach ($preset in @($result.presets)) {
-        Write-Output "  $($preset.name): $($preset.slot_ids -join ',')"
-    }
-    Write-Output "pair templates: $(@($result.pair_templates).Count)"
-    foreach ($pair in @($result.pair_templates)) {
-        Write-Output "  $($pair.name): $($pair.left_slot_id),$($pair.right_slot_id)"
-    }
-    Write-Output "workspace lifecycle: $($result.workspace_lifecycle.selected_preset)"
-    Write-Output "templates: $($result.templates_path)"
 }
 
 function Invoke-ImeInput {
@@ -18427,77 +18297,6 @@ function Invoke-ConsultError {
     Write-ConsultationCommandRecord -Kind 'consult_error' -Mode ([string]$args.mode) -Message ([string]$args.message) -TargetSlot ([string]$args.target_slot)
 }
 
-function Invoke-ProviderCapabilities {
-    $tokens = @(@($Target) + @($Rest) | Where-Object { $_ })
-    $providerId = ''
-    $jsonOutput = $false
-
-    for ($index = 0; $index -lt $tokens.Count; $index++) {
-        switch ($tokens[$index]) {
-            '--json' {
-                $jsonOutput = $true
-            }
-            default {
-                if ([string]::IsNullOrWhiteSpace($providerId)) {
-                    $providerId = [string]$tokens[$index]
-                    continue
-                }
-
-                Stop-WithError "usage: winsmux provider-capabilities [provider] [--json]"
-            }
-        }
-    }
-
-    $projectDir = (Get-Location).Path
-    $registry = Read-BridgeProviderCapabilityRegistry -RootPath $projectDir
-    if (-not [string]::IsNullOrWhiteSpace($providerId)) {
-        $capabilities = Get-BridgeProviderCapability -RootPath $projectDir -ProviderId $providerId
-        if ($null -eq $capabilities) {
-            Stop-WithError "provider capability '$providerId' was not found."
-        }
-
-        $result = [ordered]@{
-            provider_id   = $providerId
-            capabilities  = $capabilities
-            registry_path = Get-BridgeProviderCapabilityRegistryPath -RootPath $projectDir
-        }
-        if ($jsonOutput) {
-            $result | ConvertTo-Json -Depth 16 -Compress | Write-Output
-            return
-        }
-
-        Write-Output "provider capability $providerId"
-        foreach ($property in $capabilities.GetEnumerator()) {
-            $value = $property.Value
-            if ($value -is [System.Array]) {
-                $value = ($value -join ',')
-            }
-            Write-Output "  $($property.Key): $value"
-        }
-        return
-    }
-
-    $result = [ordered]@{
-        version       = [int]$registry.version
-        registry_path = Get-BridgeProviderCapabilityRegistryPath -RootPath $projectDir
-        providers     = $registry.providers
-    }
-    if ($jsonOutput) {
-        $result | ConvertTo-Json -Depth 16 -Compress | Write-Output
-        return
-    }
-
-    if ($registry.providers.Count -lt 1) {
-        Write-Output 'provider capabilities: none'
-        return
-    }
-
-    Write-Output 'provider capabilities'
-    foreach ($entry in $registry.providers.GetEnumerator()) {
-        Write-Output "  $($entry.Key)"
-    }
-}
-
 function Invoke-MetaPlan {
     param(
         [AllowNull()][string]$MetaPlanTarget = $Target,
@@ -18725,195 +18524,6 @@ function Invoke-Guard {
     }
 
     $output | Write-Output
-}
-
-function Invoke-ProviderSwitch {
-    $tokens = @(@($Target) + @($Rest) | Where-Object { $_ })
-    if ($tokens.Count -lt 1) {
-        Stop-WithError "usage: winsmux provider-switch <slot> [--agent <name>] [--model <name>] [--model-source <source>] [--reasoning-effort <level>] [--prompt-transport <argv|file|stdin>] [--auth-mode <mode>] [--reason <text>] [--restart] [--clear] [--json]"
-    }
-
-    $slotId = [string]$tokens[0]
-    $agent = ''
-    $model = ''
-    $modelSource = ''
-    $reasoningEffort = ''
-    $promptTransport = ''
-    $authMode = ''
-    $reason = ''
-    $restartRequested = $false
-    $clearRequested = $false
-    $jsonOutput = $false
-
-    for ($index = 1; $index -lt $tokens.Count; $index++) {
-        switch ($tokens[$index]) {
-            '--agent' {
-                if ($index + 1 -ge $tokens.Count) {
-                    Stop-WithError '--agent requires a value'
-                }
-                $agent = [string]$tokens[$index + 1]
-                $index++
-            }
-            '--model' {
-                if ($index + 1 -ge $tokens.Count) {
-                    Stop-WithError '--model requires a value'
-                }
-                $model = [string]$tokens[$index + 1]
-                $index++
-            }
-            '--model-source' {
-                if ($index + 1 -ge $tokens.Count) {
-                    Stop-WithError '--model-source requires a value'
-                }
-                $modelSource = [string]$tokens[$index + 1]
-                $index++
-            }
-            '--reasoning-effort' {
-                if ($index + 1 -ge $tokens.Count) {
-                    Stop-WithError '--reasoning-effort requires a value'
-                }
-                $reasoningEffort = [string]$tokens[$index + 1]
-                $index++
-            }
-            '--prompt-transport' {
-                if ($index + 1 -ge $tokens.Count) {
-                    Stop-WithError '--prompt-transport requires a value'
-                }
-                $promptTransport = [string]$tokens[$index + 1]
-                $index++
-            }
-            '--auth-mode' {
-                if ($index + 1 -ge $tokens.Count) {
-                    Stop-WithError '--auth-mode requires a value'
-                }
-                $authMode = [string]$tokens[$index + 1]
-                $index++
-            }
-            '--reason' {
-                if ($index + 1 -ge $tokens.Count) {
-                    Stop-WithError '--reason requires a value'
-                }
-                $reason = [string]$tokens[$index + 1]
-                $index++
-            }
-            '--json' {
-                $jsonOutput = $true
-            }
-            '--restart' {
-                $restartRequested = $true
-            }
-            '--clear' {
-                $clearRequested = $true
-            }
-            default {
-                Stop-WithError "usage: winsmux provider-switch <slot> [--agent <name>] [--model <name>] [--model-source <source>] [--reasoning-effort <level>] [--prompt-transport <argv|file|stdin>] [--auth-mode <mode>] [--reason <text>] [--restart] [--clear] [--json]"
-            }
-        }
-    }
-
-    if ($clearRequested -and (-not [string]::IsNullOrWhiteSpace($agent) -or -not [string]::IsNullOrWhiteSpace($model) -or -not [string]::IsNullOrWhiteSpace($modelSource) -or -not [string]::IsNullOrWhiteSpace($reasoningEffort) -or -not [string]::IsNullOrWhiteSpace($promptTransport) -or -not [string]::IsNullOrWhiteSpace($authMode))) {
-        Stop-WithError 'provider-switch --clear cannot be combined with --agent, --model, --model-source, --reasoning-effort, --prompt-transport, or --auth-mode.'
-    }
-
-    $projectDir = (Get-Location).Path
-    $settings = Get-BridgeSettings -RootPath $projectDir
-    $knownSlot = $false
-    foreach ($slot in @($settings.agent_slots)) {
-        if ([string]::Equals([string]$slot.slot_id, $slotId, [System.StringComparison]::OrdinalIgnoreCase)) {
-            $knownSlot = $true
-            break
-        }
-    }
-    if (-not $knownSlot) {
-        Stop-WithError "provider-switch target slot '$slotId' is not present in agent_slots."
-    }
-
-    $restartPaneId = ''
-    if ($restartRequested) {
-        $manifestEntry = @(Get-PaneControlManifestEntries -ProjectDir $projectDir | Where-Object {
-            [string]::Equals([string]$_.Label, $slotId, [System.StringComparison]::OrdinalIgnoreCase)
-        } | Select-Object -First 1)
-
-        if ($manifestEntry.Count -lt 1) {
-            Stop-WithError "provider-switch --restart target slot '$slotId' is not present in the orchestra manifest."
-        }
-
-        $restartPaneId = Confirm-Target ([string]$manifestEntry[0].PaneId)
-    }
-
-    $entry = $null
-    $cleared = $false
-    if ($clearRequested) {
-        $clearResult = Remove-BridgeProviderRegistryEntry -RootPath $projectDir -SlotId $slotId
-        $cleared = [bool]$clearResult.Removed
-    } else {
-        $candidateInput = [ordered]@{}
-        if (-not [string]::IsNullOrWhiteSpace($agent)) { $candidateInput.agent = $agent }
-        if (-not [string]::IsNullOrWhiteSpace($model)) { $candidateInput.model = $model }
-        if (-not [string]::IsNullOrWhiteSpace($modelSource)) { $candidateInput.model_source = $modelSource }
-        if (-not [string]::IsNullOrWhiteSpace($reasoningEffort)) { $candidateInput.reasoning_effort = $reasoningEffort }
-        if (-not [string]::IsNullOrWhiteSpace($promptTransport)) { $candidateInput.prompt_transport = $promptTransport }
-        if (-not [string]::IsNullOrWhiteSpace($authMode)) { $candidateInput.auth_mode = $authMode }
-        $candidateEntry = ConvertTo-BridgeProviderRegistryEntry $candidateInput
-        $null = Get-SlotAgentConfig -Role 'Worker' -SlotId $slotId -Settings $settings -RootPath $projectDir -ProviderRegistryEntryOverride $candidateEntry
-        $entry = Write-BridgeProviderRegistryEntry -RootPath $projectDir -SlotId $slotId -Agent $agent -Model $model -ModelSource $modelSource -ReasoningEffort $reasoningEffort -PromptTransport $promptTransport -AuthMode $authMode -Reason $reason
-    }
-    $effective = Get-SlotAgentConfig -Role 'Worker' -SlotId $slotId -Settings $settings -RootPath $projectDir
-    $result = [ordered]@{
-        slot_id                    = $slotId
-        agent                      = [string]$effective.Agent
-        model                      = [string]$effective.Model
-        model_source               = [string]$effective.ModelSource
-        reasoning_effort           = [string]$effective.ReasoningEffort
-        prompt_transport           = [string]$effective.PromptTransport
-        auth_mode                  = [string]$effective.AuthMode
-        auth_policy                = [string]$effective.AuthPolicy
-        local_access_note          = [string]$effective.LocalAccessNote
-        harness_availability       = [string]$effective.HarnessAvailability
-        credential_requirements    = [string]$effective.CredentialRequirements
-        execution_backend          = [string]$effective.ExecutionBackend
-        api_base_url               = [string]$effective.ApiBaseUrl
-        api_key_env                = [string]$effective.ApiKeyEnv
-        runtime_requirements       = [string]$effective.RuntimeRequirements
-        analysis_posture           = [string]$effective.AnalysisPosture
-        source                     = [string]$effective.Source
-        capability_adapter         = [string]$effective.CapabilityAdapter
-        capability_command         = [string]$effective.CapabilityCommand
-        supports_parallel_runs     = [bool]$effective.SupportsParallelRuns
-        supports_interrupt         = [bool]$effective.SupportsInterrupt
-        supports_structured_result = [bool]$effective.SupportsStructuredResult
-        supports_file_edit         = [bool]$effective.SupportsFileEdit
-        supports_subagents         = [bool]$effective.SupportsSubagents
-        supports_verification      = [bool]$effective.SupportsVerification
-        supports_consultation      = [bool]$effective.SupportsConsultation
-        supports_context_reset     = [bool]$effective.SupportsContextReset
-        registry_path              = Get-BridgeProviderRegistryPath -RootPath $projectDir
-        updated_at_utc             = if ($clearRequested) { [string]$clearResult.UpdatedAtUtc } else { [string]$entry.updated_at_utc }
-        reason                     = if ((-not $clearRequested) -and $entry.Contains('reason')) { [string]$entry.reason } else { '' }
-        clear_requested            = $clearRequested
-        cleared                    = $cleared
-        restart_requested          = $restartRequested
-        restarted                  = $false
-        restart_pane_id            = ''
-    }
-
-    if ($restartRequested) {
-        $restartResult = Invoke-RestartPane -PaneId $restartPaneId -ProjectDir $projectDir
-        $result['restarted'] = $true
-        $result['restart_pane_id'] = [string]$restartResult.PaneId
-    }
-
-    if ($jsonOutput) {
-        $result | ConvertTo-Json -Depth 8 -Compress | Write-Output
-        return
-    }
-
-    if ($clearRequested) {
-        Write-Output "provider switch cleared for ${slotId}: $($result.agent) / $($result.model) ($($result.prompt_transport), $($result.auth_policy))"
-        return
-    }
-
-    Write-Output "provider switched for ${slotId}: $($result.agent) / $($result.model) ($($result.prompt_transport), $($result.auth_policy))"
 }
 
 function Invoke-RuntimeRoles {
@@ -19604,9 +19214,9 @@ switch ($Command) {
     'consult-request' { Invoke-ConsultRequest }
     'consult-result'  { Invoke-ConsultResult }
     'consult-error'   { Invoke-ConsultError }
-    'launcher'        { Invoke-Launcher }
+    'launcher'        { Invoke-WinsmuxLauncherCommand -CommandTarget $Target -CommandRest $Rest }
     'meta-plan'       { Invoke-MetaPlan }
-    'provider-capabilities' { Invoke-ProviderCapabilities }
+    'provider-capabilities' { Invoke-WinsmuxProviderCapabilitiesCommand -CommandTarget $Target -CommandRest $Rest }
     'skills' { Invoke-Skills }
     'machine-contract' { Invoke-MachineContract }
     'rust-canary' { Invoke-RustCanary }
@@ -19615,7 +19225,7 @@ switch ($Command) {
     'legacy-compat-gate' { Invoke-LegacyCompatGate }
     'guard' { Invoke-Guard }
     'assign' { Invoke-WinsmuxAssignCommand -BridgeScriptRoot $PSScriptRoot -CommandTarget $Target -CommandRest $Rest }
-    'provider-switch' { Invoke-ProviderSwitch }
+    'provider-switch' { Invoke-WinsmuxProviderSwitchCommand -CommandTarget $Target -CommandRest $Rest }
     'runtime-roles' { Invoke-RuntimeRoles }
     'rebind-worktree' { Invoke-RebindWorktree }
     ''                { Show-Usage }
