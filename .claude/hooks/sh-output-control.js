@@ -109,6 +109,15 @@ function estimateTokens(charCount) {
   return Math.ceil(charCount / CHARS_PER_TOKEN);
 }
 
+function getExplicitBudgetLimit(tokenBudget) {
+  const limit = Number(tokenBudget.session_limit);
+  if (!Number.isFinite(limit) || limit <= 0) {
+    return null;
+  }
+
+  return limit;
+}
+
 /**
  * Track token budget and return warning context if thresholds are crossed.
  * @param {number} outputSize - Size of tool output in characters
@@ -118,10 +127,10 @@ function trackTokenBudget(outputSize) {
   try {
     const session = readSession();
     const tokenBudget = session.token_budget;
-    if (!tokenBudget || !tokenBudget.session_limit) return null; // No budget configured
+    if (!tokenBudget || typeof tokenBudget !== "object") return null;
 
-    const budgetLimit = tokenBudget.session_limit;
-    const currentUsage = tokenBudget.used || 0;
+    const budgetLimit = getExplicitBudgetLimit(tokenBudget);
+    const currentUsage = Number(tokenBudget.used) || 0;
     const newTokens = estimateTokens(outputSize);
     const updatedUsage = currentUsage + newTokens;
 
@@ -133,6 +142,10 @@ function trackTokenBudget(outputSize) {
         used: updatedUsage,
       },
     });
+
+    if (budgetLimit === null) {
+      return null;
+    }
 
     const ratio = updatedUsage / budgetLimit;
 
@@ -235,6 +248,7 @@ module.exports = {
   truncateOutput,
   estimateTokens,
   getLimits,
+  getExplicitBudgetLimit,
   trackTokenBudget,
   isMcpTool,
 };

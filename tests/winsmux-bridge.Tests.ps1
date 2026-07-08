@@ -16945,6 +16945,81 @@ Describe 'winsmux task-run command' {
     }
 }
 
+Describe 'winsmux control-plane dispatch module' {
+    BeforeAll {
+        $script:winsmuxCoreDispatchRawPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $script:winsmuxCoreDispatchRawContent = Get-Content -Path $script:winsmuxCoreDispatchRawPath -Raw -Encoding UTF8
+        $script:controlPlaneDispatchPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\control-plane-dispatch.ps1'
+        $script:controlPlaneDispatchContent = Get-Content -Path $script:controlPlaneDispatchPath -Raw -Encoding UTF8
+    }
+
+    It 'loads the dispatch adapter module from the bridge script' {
+        $script:winsmuxCoreDispatchRawContent | Should -Match 'control-plane-dispatch\.ps1'
+        $script:winsmuxCoreDispatchRawContent | Should -Match '\. \$ControlPlaneDispatchScript'
+    }
+
+    It 'keeps external script adapter parsing outside the top-level command table' {
+        $script:winsmuxCoreDispatchRawContent | Should -Match "'github-preflight'\s*\{\s*Invoke-WinsmuxGithubPreflightCommand"
+        $script:winsmuxCoreDispatchRawContent | Should -Match "'dispatch-task'\s*\{\s*Invoke-WinsmuxDispatchTaskCommand"
+        $script:winsmuxCoreDispatchRawContent | Should -Match "'task-split'\s*\{\s*Invoke-WinsmuxTaskSplitCommand"
+        $script:winsmuxCoreDispatchRawContent | Should -Match "'builder-queue'\s*\{\s*Invoke-WinsmuxBuilderQueueCommand"
+        $script:winsmuxCoreDispatchRawContent | Should -Match "'orchestra-smoke'\s*\{\s*Invoke-WinsmuxOrchestraSmokeCommand"
+        $script:winsmuxCoreDispatchRawContent | Should -Match "'harness-check'\s*\{\s*Invoke-WinsmuxHarnessCheckCommand"
+        $script:winsmuxCoreDispatchRawContent | Should -Match "'assign'\s*\{\s*Invoke-WinsmuxAssignCommand"
+        $script:controlPlaneDispatchContent | Should -Match 'function Invoke-WinsmuxGithubPreflightCommand'
+        $script:controlPlaneDispatchContent | Should -Match 'function Invoke-WinsmuxDispatchTaskCommand'
+        $script:controlPlaneDispatchContent | Should -Match 'function Get-DispatchTaskAvailableTargets'
+        $script:controlPlaneDispatchContent | Should -Match 'function Invoke-WinsmuxBuilderQueueCommand'
+        $script:controlPlaneDispatchContent | Should -Match 'function Invoke-WinsmuxShadowCutoverGateCommand'
+    }
+}
+
+Describe 'winsmux control-plane command module' {
+    BeforeAll {
+        $script:winsmuxCoreCommandRawPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $script:winsmuxCoreCommandRawContent = Get-Content -Path $script:winsmuxCoreCommandRawPath -Raw -Encoding UTF8
+        $script:controlPlaneCommandsPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\control-plane-commands.ps1'
+        $script:controlPlaneCommandsContent = Get-Content -Path $script:controlPlaneCommandsPath -Raw -Encoding UTF8
+        . $script:controlPlaneCommandsPath
+    }
+
+    It 'loads typed command helpers from the bridge script' {
+        $script:winsmuxCoreCommandRawContent | Should -Match 'control-plane-commands\.ps1'
+        $script:winsmuxCoreCommandRawContent | Should -Match '\. \$ControlPlaneCommandsScript'
+        $script:controlPlaneCommandsContent | Should -Match 'function New-WinsmuxCommandResult'
+        $script:controlPlaneCommandsContent | Should -Match 'function New-WinsmuxCommandError'
+        $script:controlPlaneCommandsContent | Should -Match 'function Write-WinsmuxCommandResult'
+    }
+
+    It 'keeps launcher and provider command parsing outside the top-level command table' {
+        $script:winsmuxCoreCommandRawContent | Should -Match "'launcher'\s*\{\s*Invoke-WinsmuxLauncherCommand"
+        $script:winsmuxCoreCommandRawContent | Should -Match "'provider-capabilities'\s*\{\s*Invoke-WinsmuxProviderCapabilitiesCommand"
+        $script:winsmuxCoreCommandRawContent | Should -Match "'provider-switch'\s*\{\s*Invoke-WinsmuxProviderSwitchCommand"
+        $script:winsmuxCoreCommandRawContent | Should -Not -Match 'function Invoke-Launcher\s*\{'
+        $script:winsmuxCoreCommandRawContent | Should -Not -Match 'function Invoke-ProviderCapabilities\s*\{'
+        $script:winsmuxCoreCommandRawContent | Should -Not -Match 'function Invoke-ProviderSwitch\s*\{'
+        $script:controlPlaneCommandsContent | Should -Match 'function Invoke-WinsmuxLauncherCommand'
+        $script:controlPlaneCommandsContent | Should -Match 'function Invoke-WinsmuxProviderCapabilitiesCommand'
+        $script:controlPlaneCommandsContent | Should -Match 'function Invoke-WinsmuxProviderSwitchCommand'
+    }
+
+    It 'creates typed command result and error envelopes without changing public payload shape' {
+        $result = New-WinsmuxCommandResult -CommandName 'provider-switch' -Status 'updated' -Data ([ordered]@{ slot_id = 'worker-1'; model = 'gpt-5.4' })
+        $result.command | Should -Be 'provider-switch'
+        $result.ok | Should -Be $true
+        $result.status | Should -Be 'updated'
+        $result.exit_code | Should -Be 0
+        $result.data.slot_id | Should -Be 'worker-1'
+
+        $error = New-WinsmuxCommandError -CommandName 'launcher' -Reason 'invalid_argument' -Message 'usage: winsmux launcher'
+        $error.command | Should -Be 'launcher'
+        $error.ok | Should -Be $false
+        $error.status | Should -Be 'error'
+        $error.reason | Should -Be 'invalid_argument'
+        $error.exit_code | Should -Be 1
+    }
+}
+
 Describe 'winsmux profile command' {
     BeforeAll {
         $script:winsmuxCoreRawPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
@@ -17986,6 +18061,7 @@ Describe 'winsmux provider-switch command' {
     BeforeAll {
         $script:winsmuxCoreRawPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
         $script:winsmuxCoreRawContent = Get-Content -Path $script:winsmuxCoreRawPath -Raw -Encoding UTF8
+        $script:controlPlaneProviderSwitchCommandsContent = Get-Content -Path (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\control-plane-commands.ps1') -Raw -Encoding UTF8
     }
 
     BeforeEach {
@@ -18257,18 +18333,18 @@ agent-slots:
     }
 
     It 'documents provider-switch restart and routes it through the manifest-backed restart helper' {
-        $script:winsmuxCoreRawContent | Should -Match "'--restart'\s*\{"
-        $script:winsmuxCoreRawContent | Should -Match "'--clear'\s*\{"
-        $script:winsmuxCoreRawContent | Should -Match 'Get-PaneControlManifestEntries -ProjectDir \$projectDir'
-        $script:winsmuxCoreRawContent | Should -Match 'Confirm-Target \(\[string\]\$manifestEntry\[0\]\.PaneId\)'
+        $script:controlPlaneProviderSwitchCommandsContent | Should -Match "'--restart'\s*\{"
+        $script:controlPlaneProviderSwitchCommandsContent | Should -Match "'--clear'\s*\{"
+        $script:controlPlaneProviderSwitchCommandsContent | Should -Match 'Get-PaneControlManifestEntries -ProjectDir \$projectDir'
+        $script:controlPlaneProviderSwitchCommandsContent | Should -Match 'Confirm-Target \(\[string\]\$manifestEntry\[0\]\.PaneId\)'
         $script:winsmuxCoreRawContent | Should -Match 'Invoke-RestartPane -PaneId'
         $script:winsmuxCoreRawContent | Should -Match '\$restartReadinessAgent\s*=\s*Get-RestartReadinessAgentName -Plan \$plan'
         $script:winsmuxCoreRawContent | Should -Match 'Test-AgentReadyPrompt -PaneId \$PaneId -Agent \$restartReadinessAgent'
         $script:winsmuxCoreRawContent | Should -Not -Match 'timed out waiting for Codex after restart'
-        $script:winsmuxCoreRawContent | Should -Match 'Remove-BridgeProviderRegistryEntry -RootPath \$projectDir -SlotId \$slotId'
-        $script:winsmuxCoreRawContent | Should -Match 'clear_requested'
-        $script:winsmuxCoreRawContent | Should -Match 'restart_requested'
-        $script:winsmuxCoreRawContent | Should -Match 'restart_pane_id'
+        $script:controlPlaneProviderSwitchCommandsContent | Should -Match 'Remove-BridgeProviderRegistryEntry -RootPath \$projectDir -SlotId \$slotId'
+        $script:controlPlaneProviderSwitchCommandsContent | Should -Match 'clear_requested'
+        $script:controlPlaneProviderSwitchCommandsContent | Should -Match 'restart_requested'
+        $script:controlPlaneProviderSwitchCommandsContent | Should -Match 'restart_pane_id'
     }
 
     It 'keeps Confirm-Target compatible with whitespace-separated pane lists' {
@@ -21346,6 +21422,7 @@ Describe 'deferred worker startup' {
         $bridgePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
         $null = . $bridgePath version
         $script:deferredCoreContent = Get-Content -LiteralPath $bridgePath -Raw -Encoding UTF8
+        $script:deferredControlPlaneDispatchContent = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\control-plane-dispatch.ps1') -Raw -Encoding UTF8
         $script:deferredMonitorContent = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\agent-monitor.ps1') -Raw -Encoding UTF8
     }
 
@@ -21592,7 +21669,8 @@ Describe 'deferred worker startup' {
     It 'keeps send, dispatch-task, and monitor paths aware of deferred panes' {
         $script:deferredCoreContent | Should -Match 'function Start-DeferredPaneFromManifestEntry'
         $script:deferredCoreContent | Should -Match 'Start-DeferredPaneFromManifestEntry -ProjectDir \$projectDir -ManifestEntry \$context'
-        $script:deferredCoreContent | Should -Match 'Start-DeferredPaneFromManifestEntry -ProjectDir \$projectDir -ManifestEntry \$manifestEntry'
+        $script:deferredCoreContent | Should -Match 'Invoke-WinsmuxDispatchTaskCommand'
+        $script:deferredControlPlaneDispatchContent | Should -Match 'Start-DeferredPaneFromManifestEntry -ProjectDir \$projectDir -ManifestEntry \$manifestEntry'
         $script:deferredCoreContent | Should -Match 'backend_degraded'
         $script:deferredCoreContent | Should -Match 'deferred_starting'
         $script:deferredMonitorContent | Should -Match 'deferred_start_failed'
