@@ -22,6 +22,20 @@
 
 Rust は、ランタイムをソースからビルドする時だけ必要です。
 
+### Windows でソースからビルドする場合の前提条件
+
+Windows でソースからビルドする場合は、[Visual Studio Build Tools](https://learn.microsoft.com/en-us/visualstudio/install/use-command-line-parameters-to-install-visual-studio?view=vs-2022)
+と [Desktop development with C++](https://learn.microsoft.com/en-us/visualstudio/install/workload-component-id-vs-build-tools?view=vs-2022)
+ワークロードも必要です。Rust の既定の MSVC toolchain は、Windows 向けのネイティブ成果物をビルドする時に MSVC の linker と Windows SDK を使います。
+
+Visual Studio Installer からこのワークロードを入れるか、workload ID を使って `winget` で入れます。
+
+```powershell
+winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+```
+
+`cargo build` や `npm run tauri build` は、Git Bash などの MSYS shell ではなく、PowerShell または `cmd` から実行してください。MSYS 環境では MSVC の `link.exe` より前に別の `link` コマンドが `PATH` に入ることがあり、原因が分かりにくいリンカーエラーにつながります。
+
 Colab 対応のモデルワーカーを使う場合は、`H100` または `A100` へ接続した
 Colab ノートブック、またはアダプターが管理する同等の実行環境も用意します。
 この経路では、Windows PC 側にローカル LLM ランタイムは不要です。

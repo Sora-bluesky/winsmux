@@ -65,7 +65,10 @@ If you only need a terminal multiplexer, see the runtime docs under [`core/docs`
 - Windows Terminal
 - The official agent CLIs you want to run, such as Claude Code, Codex, Antigravity CLI, or Grok Build
 
-Rust is only needed when you build the runtime from source.
+Rust is only needed when you build the runtime from source. On Windows, source
+builds also need Visual Studio Build Tools with the Desktop development with C++
+workload; see [Installation](docs/installation.md#source-build-prerequisites-on-windows)
+for the install command and shell notes.
 
 ## Get Started
 
