@@ -9731,7 +9731,7 @@ agent-slots:
         $script:winsmuxWorkersCoreRawContent | Should -Match "'exec'\s*\{\s*Invoke-WorkersExec\s*\}"
         $script:winsmuxWorkersCoreRawContent | Should -Match "'attach'\s*\{\s*Invoke-WorkersAttach\s*\}"
         $script:winsmuxWorkersCoreRawContent | Should -Match "'download'\s*\{\s*Invoke-WorkersDownload\s*\}"
-        $script:winsmuxWorkersCoreRawContent | Should -Match "'workspace'\s*\{\s*Invoke-WorkersWorkspace\s*\}"
+        $script:winsmuxWorkersCoreRawContent | Should -Match "'workspace'\s*\{\s*Invoke-WinsmuxWorkersWorkspaceCommand"
         $script:winsmuxWorkersCoreRawContent | Should -Match "'secrets'\s*\{\s*Invoke-WorkersSecrets\s*\}"
         $script:winsmuxWorkersCoreRawContent | Should -Match "'heartbeat'\s*\{\s*Invoke-WorkersHeartbeat\s*\}"
         $script:winsmuxWorkersCoreRawContent | Should -Match "'sandbox'\s*\{\s*Invoke-WorkersSandbox\s*\}"
@@ -16980,6 +16980,8 @@ Describe 'winsmux control-plane command module' {
         $script:winsmuxCoreCommandRawContent = Get-Content -Path $script:winsmuxCoreCommandRawPath -Raw -Encoding UTF8
         $script:controlPlaneCommandsPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\control-plane-commands.ps1'
         $script:controlPlaneCommandsContent = Get-Content -Path $script:controlPlaneCommandsPath -Raw -Encoding UTF8
+        $script:controlPlaneWorkersPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\control-plane-workers.ps1'
+        $script:controlPlaneWorkersContent = Get-Content -Path $script:controlPlaneWorkersPath -Raw -Encoding UTF8
         . $script:controlPlaneCommandsPath
     }
 
@@ -16989,6 +16991,20 @@ Describe 'winsmux control-plane command module' {
         $script:controlPlaneCommandsContent | Should -Match 'function New-WinsmuxCommandResult'
         $script:controlPlaneCommandsContent | Should -Match 'function New-WinsmuxCommandError'
         $script:controlPlaneCommandsContent | Should -Match 'function Write-WinsmuxCommandResult'
+    }
+
+    It 'keeps workers workspace parsing in the workers command module' {
+        $script:winsmuxCoreCommandRawContent | Should -Match 'control-plane-workers\.ps1'
+        $script:winsmuxCoreCommandRawContent | Should -Match '\. \$ControlPlaneWorkersScript'
+        $script:winsmuxCoreCommandRawContent | Should -Match "'workspace'\s*\{\s*Invoke-WinsmuxWorkersWorkspaceCommand"
+        $script:winsmuxCoreCommandRawContent | Should -Not -Match 'function Read-WorkersWorkspaceOptions\s*\{'
+        $script:winsmuxCoreCommandRawContent | Should -Not -Match 'function Invoke-WorkersWorkspacePrepare\s*\{'
+        $script:winsmuxCoreCommandRawContent | Should -Not -Match 'function Invoke-WorkersWorkspaceCleanup\s*\{'
+        $script:winsmuxCoreCommandRawContent | Should -Not -Match 'function Invoke-WorkersWorkspace\s*\{'
+        $script:controlPlaneWorkersContent | Should -Match 'function Read-WinsmuxWorkersWorkspaceOptions'
+        $script:controlPlaneWorkersContent | Should -Match 'function Invoke-WinsmuxWorkersWorkspacePrepare'
+        $script:controlPlaneWorkersContent | Should -Match 'function Invoke-WinsmuxWorkersWorkspaceCleanup'
+        $script:controlPlaneWorkersContent | Should -Match 'function Invoke-WinsmuxWorkersWorkspaceCommand'
     }
 
     It 'keeps launcher and provider command parsing outside the top-level command table' {

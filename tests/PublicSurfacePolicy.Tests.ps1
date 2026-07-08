@@ -202,6 +202,7 @@ Describe 'Public surface policy' {
         $installer | Should -Match 'winsmux-core/scripts/public-first-run\.ps1'
         $installer | Should -Match 'winsmux-core/scripts/control-plane-commands\.ps1'
         $installer | Should -Match 'winsmux-core/scripts/control-plane-dispatch\.ps1'
+        $installer | Should -Match 'winsmux-core/scripts/control-plane-workers\.ps1'
         $installer | Should -Match 'winsmux-core/scripts/orchestra-smoke\.ps1'
         $installer | Should -Match 'winsmux-core/scripts/doctor\.ps1'
         $installer | Should -Match 'winsmux-core/scripts/orchestra-attach-confirm\.ps1'
@@ -215,6 +216,7 @@ Describe 'Public surface policy' {
         $installer | Should -Match 'winsmux-core/scripts/pane-border\.ps1'
         $installer | Should -Match 'winsmux-core/scripts/common-contract\.generated\.ps1'
         $installer | Should -Match '"control-plane-commands\.ps1"'
+        $installer | Should -Match '"control-plane-workers\.ps1"'
         $installer | Should -Match '"common-contract\.generated\.ps1"'
     }
 

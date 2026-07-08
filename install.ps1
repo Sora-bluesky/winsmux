@@ -122,6 +122,7 @@ function Install-OrchestraSupportScripts {
     Download-File "winsmux-core/scripts/common-contract.generated.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "common-contract.generated.ps1")
     Download-File "winsmux-core/scripts/control-plane-commands.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "control-plane-commands.ps1")
     Download-File "winsmux-core/scripts/control-plane-dispatch.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "control-plane-dispatch.ps1")
+    Download-File "winsmux-core/scripts/control-plane-workers.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "control-plane-workers.ps1")
     Download-File "winsmux-core/scripts/operator-poll.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "operator-poll.ps1")
     Download-File "winsmux-core/scripts/doctor.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "doctor.ps1")
     Download-File "winsmux-core/scripts/logger.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "logger.ps1")
@@ -166,6 +167,7 @@ function Remove-ProfileExcludedSupportScripts {
                 "common-contract.generated.ps1",
                 "control-plane-commands.ps1",
                 "control-plane-dispatch.ps1",
+                "control-plane-workers.ps1",
                 "operator-poll.ps1",
                 "doctor.ps1",
                 "logger.ps1",
