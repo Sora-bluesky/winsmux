@@ -23,6 +23,7 @@ mod terminal_engine;
 mod manifest_contract;
 mod event_contract;
 mod ledger;
+mod read_path;
 mod search_ledger;
 mod dogfood;
 mod machine_contract;
