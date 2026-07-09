@@ -17,6 +17,7 @@ token.json
 # =========================
 # Internal dev (NEVER commit)
 # =========================
+.codex/
 docs/internal/
 docs/handoff.md
 docs/audits/
@@ -99,6 +100,7 @@ tests/*
 !tests/V03627CompatPerformanceGate.Tests.ps1
 !tests/V03628RaceAbnormalSoak.Tests.ps1
 !tests/V03628RuntimeReliabilityGate.Tests.ps1
+!tests/V03628PackagedRestoreGate.Tests.ps1
 !tests/BuilderWorktree.Tests.ps1
 !tests/codex-subagent-worktree-guard.Tests.ps1
 !tests/PublicSurfacePolicy.Tests.ps1

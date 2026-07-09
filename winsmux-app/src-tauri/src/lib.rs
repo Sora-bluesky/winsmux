@@ -1,5 +1,6 @@
 mod control_pipe;
 mod desktop_backend;
+mod desktop_session_restore;
 mod pty_backend;
 
 use control_pipe::{start_control_pipe_server, WINSMUX_CONTROL_PIPE_TOKEN_ENV};
