@@ -96,6 +96,42 @@ function Test-IntegerAtLeast {
     return ([math]::Abs($number - [math]::Round($number)) -lt 0.0000001 -and [int64]$number -ge $Minimum)
 }
 
+function ConvertTo-JsonValueArray {
+    param([Parameter(Mandatory = $false)]$Value)
+
+    if ($null -eq $Value) {
+        return @()
+    }
+    if ($Value -is [string]) {
+        return @($Value)
+    }
+    if ($Value -is [System.Array]) {
+        return @($Value)
+    }
+    if ($Value -is [System.Collections.IEnumerable]) {
+        return @($Value)
+    }
+    return @($Value)
+}
+
+function Test-JsonValuesAllEqual {
+    param(
+        [Parameter(Mandatory = $false)]$Value,
+        [Parameter(Mandatory = $true)][string]$Expected
+    )
+
+    $values = @(ConvertTo-JsonValueArray $Value)
+    if ($values.Count -lt 1) {
+        return $false
+    }
+    foreach ($item in $values) {
+        if ($item -isnot [string] -or $item -ne $Expected) {
+            return $false
+        }
+    }
+    return $true
+}
+
 $checks = @()
 
 function Add-Check {
@@ -159,6 +195,13 @@ function Test-RestoreSnapshot {
     $restoreCandidateCount = Get-JsonPropertyValue -InputObject $Snapshot -Name 'restoreCandidateCount' -Default $null
     $restoreCandidateTransport = Get-JsonPropertyValue -InputObject $Snapshot -Name 'restoreCandidateTransport' -Default ''
     $candidate = Get-JsonPropertyValue -InputObject $Snapshot -Name 'restoreCandidate' -Default $null
+    $candidateRestoreState = Get-JsonPropertyValue -InputObject $candidate -Name 'restoreState' -Default ''
+    $setupRequiredCandidateCount = Get-JsonPropertyValue -InputObject $Snapshot -Name 'setupRequiredCandidateCount' -Default $null
+    $setupRequiredCandidate = Get-JsonPropertyValue -InputObject $Snapshot -Name 'setupRequiredCandidate' -Default $null
+    $setupRequiredRestoreState = Get-JsonPropertyValue -InputObject $setupRequiredCandidate -Name 'restoreState' -Default ''
+    $setupRequiredReason = Get-JsonPropertyValue -InputObject $setupRequiredCandidate -Name 'setupRequiredReason' -Default ''
+    $setupRequiredPaneStates = Get-JsonPropertyValue -InputObject $setupRequiredCandidate -Name 'paneRestoreStates' -Default @()
+    $setupRequiredPaneReasons = Get-JsonPropertyValue -InputObject $setupRequiredCandidate -Name 'setupRequiredReasons' -Default @()
     $transcriptRing = Get-JsonPropertyValue -InputObject $candidate -Name 'transcriptRingSummary' -Default $null
     $privacy = Get-JsonPropertyValue -InputObject $candidate -Name 'privacy' -Default $null
     $workerOne = Get-WorkerAssignment -Snapshot $Snapshot -SlotId 'worker-1'
@@ -176,6 +219,9 @@ function Test-RestoreSnapshot {
     Add-Check "$Phase snapshot keeps focus layout and focused pane" ($shellLayout -eq 'focus' -and $shellFocusedPaneId -eq 'worker-2') 'packagedRestore'
     Add-Check "$Phase snapshot keeps a typed restore candidate" (Test-IntegerAtLeast $restoreCandidateCount 1) 'packagedRestore'
     Add-Check "$Phase snapshot reads restore candidate through desktop JSON-RPC" ($restoreCandidateTransport -eq 'desktop.session.restore_candidates' -and (Get-JsonPropertyValue -InputObject $candidate -Name 'source' -Default '') -eq 'desktop.session.restore_candidates') 'packagedRestore'
+    Add-Check "$Phase snapshot keeps the normal restore candidate in candidate state" ($candidateRestoreState -eq 'candidate') 'packagedRestore'
+    Add-Check "$Phase snapshot marks expired restore candidates as setup-required" ((Test-IntegerAtLeast $setupRequiredCandidateCount 1) -and $setupRequiredRestoreState -eq 'setup-required' -and $setupRequiredReason -eq 'agent-session-expired' -and (Test-JsonValuesAllEqual $setupRequiredPaneStates 'setup-required') -and (Test-JsonValuesAllEqual $setupRequiredPaneReasons 'agent-session-expired')) 'packagedRestore'
+    Add-Check "$Phase snapshot does not show expired restore candidates as ready" ($setupRequiredRestoreState -ne 'ready' -and $setupRequiredRestoreState -ne 'candidate') 'packagedRestore'
     Add-Check "$Phase snapshot keeps worker-1 model assignment" ($workerOneModel -match 'gpt-5\.4') 'packagedRestore'
     Add-Check "$Phase snapshot keeps worker-2 Grok model assignment" ($workerTwoModel -match 'grok-4\.5') 'packagedRestore'
     Add-Check "$Phase restore candidate carries context and checkpoint refs" ((Test-NonEmptyString $contextCapsule) -and (Test-NonEmptyString $checkpoint)) 'packagedRestore'
@@ -207,6 +253,9 @@ Add-ContainsAllCheck 'desktop E2E records restart restore metadata without raw o
     'preRestart',
     'postRestart',
     'restoreCandidate',
+    'setupRequiredCandidate',
+    'setup-required',
+    'agent-session-expired',
     '.psmux',
     'transcriptRingSummary',
     'raw_transcript_stored',
@@ -265,6 +314,7 @@ $requiredEvidenceClasses = @(
     'restart-state',
     'model-assignment',
     'restore-candidate',
+    'setup-required-restore',
     'privacy'
 )
 
@@ -294,6 +344,13 @@ $releaseGateInputs = @(
         class                 = 'restore-candidate'
         command               = 'pwsh -NoProfile -File scripts/test-v03628-packaged-restore-gate.ps1 -Json -RequireEvidence'
         evidence              = 'desktop.session.restore_candidates typed candidate payload'
+        required_for_release  = $true
+        validated_in_this_run = [bool]$RequireEvidence
+    },
+    [ordered]@{
+        class                 = 'setup-required-restore'
+        command               = 'pwsh -NoProfile -File scripts/test-v03628-packaged-restore-gate.ps1 -Json -RequireEvidence'
+        evidence              = 'expired restore candidate is setup-required and not ready'
         required_for_release  = $true
         validated_in_this_run = [bool]$RequireEvidence
     },

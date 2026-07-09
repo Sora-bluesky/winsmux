@@ -1908,6 +1908,7 @@ async function writePackagedRestoreProject(projectDir) {
   await fs.mkdir(registryDir, { recursive: true });
   const registryRunId = `${process.pid}_${Date.now()}`;
   const sessionName = `ops__packaged_restore_e2e_${registryRunId}`;
+  const setupRequiredSessionName = `ops__setup_required_${registryRunId}`;
   const legacySessionName = `ops__legacy_${registryRunId}`;
   const warmSessionName = `ops_${registryRunId}____warm__`;
   const panes = [
@@ -1950,6 +1951,27 @@ async function writePackagedRestoreProject(projectDir) {
         restore_state: "candidate",
       },
   ];
+  const setupRequiredPanes = [
+    {
+      pane_id: "worker-3",
+      window_id: "window-1",
+      window_index: 0,
+      pane_index: 0,
+      agent_cli_session_id: "worker-3",
+      transcript_ring_summary: {
+        state: "captured",
+        byte_count: 32,
+        sha256: transcriptDigest,
+        raw_transcript_stored: false,
+      },
+      provider_target: "codex:gpt-5.4",
+      model: "gpt-5.4",
+      model_source: "operator-override",
+      context_capsule_ref: "capsule:desktop-packaged-restore-expired",
+      checkpoint_ref: "checkpoint:desktop-packaged-restore-expired",
+      restore_state: "pane_exited",
+    },
+  ];
   const registry = {
     protocol_version: 1,
     session: sessionName,
@@ -1969,8 +1991,28 @@ async function writePackagedRestoreProject(projectDir) {
       panes,
     },
   };
+  const setupRequiredRegistry = {
+    protocol_version: 1,
+    session: setupRequiredSessionName,
+    namespace: "ops",
+    server_pid: 4243,
+    process_started_at: 1783580000000,
+    server_exe: "winsmux.exe",
+    instance_nonce: "desktop-packaged-restore-setup-required",
+    port: 42129,
+    state: "ready",
+    owner: "normal",
+    created_at: 1783580001100,
+    ready_at: 1783580002100,
+    restore: {
+      restore_metadata_version: 1,
+      layer: "session_persistence_layer1",
+      panes: setupRequiredPanes,
+    },
+  };
   const registryFiles = [
     path.join(registryDir, `${sessionName}.registry.json`),
+    path.join(registryDir, `${setupRequiredSessionName}.registry.json`),
     path.join(registryDir, `${legacySessionName}.registry.json`),
     path.join(registryDir, `${warmSessionName}.registry.json`),
   ];
@@ -1981,6 +2023,11 @@ async function writePackagedRestoreProject(projectDir) {
   );
   await fs.writeFile(
     registryFiles[1],
+    JSON.stringify(setupRequiredRegistry, null, 2),
+    "utf8",
+  );
+  await fs.writeFile(
+    registryFiles[2],
     JSON.stringify({
       protocol_version: 1,
       session: legacySessionName,
@@ -1993,7 +2040,7 @@ async function writePackagedRestoreProject(projectDir) {
     "utf8",
   );
   await fs.writeFile(
-    registryFiles[2],
+    registryFiles[3],
     JSON.stringify({
       protocol_version: 1,
       session: warmSessionName,
@@ -2014,6 +2061,8 @@ async function writePackagedRestoreProject(projectDir) {
     session: registry.session,
     paneIds: panes.map((pane) => pane.pane_id),
     assignmentTargets: panes.map((pane) => pane.provider_target),
+    setupRequiredSession: setupRequiredRegistry.session,
+    setupRequiredPaneIds: setupRequiredPanes.map((pane) => pane.pane_id),
     contextCapsuleRef: panes[0].context_capsule_ref,
     checkpointRef: panes[0].checkpoint_ref,
     transcriptDigest,
@@ -2120,7 +2169,9 @@ async function collectPackagedRestoreSnapshot(page, projectDir, phase, expectedC
   const restorePayload = await invokeDesktop(page, "desktop.session.restore_candidates", { projectDir });
   const candidates = Array.isArray(restorePayload?.candidates) ? restorePayload.candidates : [];
   const candidate = candidates.find((item) => item?.session === expectedCandidate.session);
+  const setupRequiredCandidate = candidates.find((item) => item?.session === expectedCandidate.setupRequiredSession);
   const candidatePanes = Array.isArray(candidate?.panes) ? candidate.panes : [];
+  const setupRequiredPanes = Array.isArray(setupRequiredCandidate?.panes) ? setupRequiredCandidate.panes : [];
   const assignmentTargets = candidatePanes.map((pane) => pane?.provider_target ?? "").filter(Boolean);
   const transcriptRing = candidatePanes.find((pane) => pane?.pane_id === "worker-2")?.transcript_ring_summary
     ?? candidatePanes[0]?.transcript_ring_summary
@@ -2160,8 +2211,18 @@ async function collectPackagedRestoreSnapshot(page, projectDir, phase, expectedC
         raw_transcript_stored: transcriptRing?.raw_transcript_stored ?? null,
         local_reference_paths_stored: false,
       },
-      restoreState: candidatePanes.every((pane) => pane?.restore_state === "candidate") ? "candidate" : "invalid",
+      restoreState: candidate?.restore_state ?? (candidatePanes.every((pane) => pane?.restore_state === "candidate") ? "candidate" : "invalid"),
       panes: candidatePanes,
+    },
+    setupRequiredCandidateCount: setupRequiredCandidate ? 1 : 0,
+    setupRequiredCandidate: {
+      source: "desktop.session.restore_candidates",
+      session: setupRequiredCandidate?.session ?? "",
+      restoreState: setupRequiredCandidate?.restore_state ?? "",
+      setupRequiredReason: setupRequiredCandidate?.setup_required_reason ?? "",
+      paneRestoreStates: setupRequiredPanes.map((pane) => pane?.restore_state ?? ""),
+      setupRequiredReasons: setupRequiredPanes.map((pane) => pane?.setup_required_reason ?? ""),
+      panes: setupRequiredPanes,
     },
   };
 
@@ -2173,6 +2234,15 @@ async function collectPackagedRestoreSnapshot(page, projectDir, phase, expectedC
   }
   if (snapshot.restoreCandidateCount !== 1) {
     throw new Error(`packaged restore ${phase} did not retain the typed restore candidate`);
+  }
+  if (snapshot.restoreCandidate.restoreState !== "candidate") {
+    throw new Error(`packaged restore ${phase} normal candidate must remain candidate: ${JSON.stringify(snapshot.restoreCandidate)}`);
+  }
+  if (snapshot.setupRequiredCandidateCount !== 1 || snapshot.setupRequiredCandidate.restoreState !== "setup-required" || snapshot.setupRequiredCandidate.setupRequiredReason !== "agent-session-expired") {
+    throw new Error(`packaged restore ${phase} expired pane must be visible as setup-required: ${JSON.stringify(snapshot.setupRequiredCandidate)}`);
+  }
+  if (snapshot.setupRequiredCandidate.paneRestoreStates.some((state) => state === "candidate" || state === "ready")) {
+    throw new Error(`packaged restore ${phase} expired pane must not be shown as ready or candidate: ${JSON.stringify(snapshot.setupRequiredCandidate)}`);
   }
   if (!workerAssignments.some((row) => row.slotId === "worker-1" && /gpt-5\.4/i.test(`${row.provider} ${row.model}`))) {
     throw new Error(`packaged restore ${phase} did not retain worker-1 model assignment: ${JSON.stringify({ workerAssignments, workerStatusRows })}`);

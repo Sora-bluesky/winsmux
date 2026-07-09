@@ -227,9 +227,17 @@ fn collect_session_registry_pane_restore_metadata(
                 context_capsule_ref: None,
                 checkpoint_ref: None,
                 restore_state: if pane.dead {
-                    "pane_exited".to_string()
+                    crate::session::SESSION_RESTORE_STATE_SETUP_REQUIRED.to_string()
                 } else {
-                    "candidate".to_string()
+                    crate::session::SESSION_RESTORE_STATE_CANDIDATE.to_string()
+                },
+                setup_required_reason: if pane.dead {
+                    Some(
+                        crate::session::SESSION_RESTORE_SETUP_REASON_AGENT_SESSION_EXPIRED
+                            .to_string(),
+                    )
+                } else {
+                    None
                 },
             });
         }

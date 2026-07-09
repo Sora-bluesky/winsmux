@@ -26,8 +26,12 @@ fn psmux_dir() -> Option<std::path::PathBuf> {
 }
 
 pub const SESSION_REGISTRY_PROTOCOL_VERSION: u32 = 1;
+pub const SESSION_RESTORE_STATE_CANDIDATE: &str = "candidate";
+pub const SESSION_RESTORE_STATE_SETUP_REQUIRED: &str = "setup-required";
+pub const SESSION_RESTORE_SETUP_REASON_AGENT_SESSION_EXPIRED: &str = "agent-session-expired";
 const SESSION_REGISTRY_STARTUP_DEADLINE: Duration = Duration::from_secs(60);
 const LEGACY_PORT_FILE_STARTUP_GRACE: Duration = Duration::from_secs(5);
+const LEGACY_SESSION_RESTORE_STATE_PANE_EXITED: &str = "pane_exited";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SessionRegistryTranscriptRingSummary {
@@ -63,6 +67,8 @@ pub struct SessionRegistryPaneRestoreMetadata {
     #[serde(default)]
     pub checkpoint_ref: Option<String>,
     pub restore_state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_required_reason: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -287,7 +293,11 @@ pub fn enumerate_session_restore_candidates_in_dir(
         let Some(created_at) = registry_u128(&registry, "created_at") else {
             continue;
         };
-        let mut panes = restore.panes;
+        let mut panes: Vec<SessionRegistryPaneRestoreMetadata> = restore
+            .panes
+            .into_iter()
+            .map(normalize_session_registry_pane_restore_metadata)
+            .collect();
         panes.sort_by(|left, right| {
             (
                 left.window_index,
@@ -313,6 +323,30 @@ pub fn enumerate_session_restore_candidates_in_dir(
     }
 
     candidates
+}
+
+pub fn normalize_session_registry_pane_restore_metadata(
+    mut pane: SessionRegistryPaneRestoreMetadata,
+) -> SessionRegistryPaneRestoreMetadata {
+    if pane.restore_state == SESSION_RESTORE_STATE_CANDIDATE {
+        pane.setup_required_reason = None;
+        return pane;
+    }
+
+    if pane.setup_required_reason.is_none() {
+        pane.setup_required_reason = Some(match pane.restore_state.as_str() {
+            LEGACY_SESSION_RESTORE_STATE_PANE_EXITED => {
+                SESSION_RESTORE_SETUP_REASON_AGENT_SESSION_EXPIRED
+            }
+            SESSION_RESTORE_STATE_SETUP_REQUIRED => {
+                SESSION_RESTORE_SETUP_REASON_AGENT_SESSION_EXPIRED
+            }
+            _ => SESSION_RESTORE_SETUP_REASON_AGENT_SESSION_EXPIRED,
+        }
+        .to_string());
+    }
+    pane.restore_state = SESSION_RESTORE_STATE_SETUP_REQUIRED.to_string();
+    pane
 }
 
 fn registry_u128(registry: &serde_json::Value, key: &str) -> Option<u128> {
@@ -2075,6 +2109,44 @@ mod tests {
         assert_eq!(pane_ids, vec!["%2", "%3", "%4"]);
     }
 
+    #[test]
+    fn enumerate_session_restore_candidates_marks_expired_panes_setup_required() {
+        let dir = make_temp_psmux_dir("session-restore-expired-pane");
+        let created_at = 1_782_196_350_000_u128;
+        let process_started_at = created_at.saturating_sub(10_000);
+        let mut pane =
+            sample_pane_restore_metadata("%2", 0, 0, None, Some("checkpoint:task-759:expired"));
+        pane.restore_state = "pane_exited".to_string();
+        let restore = sample_restore_metadata(vec![pane]);
+
+        write_session_registry_with_restore_metadata(
+            &dir,
+            "ops__expired",
+            42130,
+            "normal",
+            "ready",
+            "nonce-expired",
+            process_started_at,
+            created_at,
+            Some(created_at + 250),
+            Some(&restore),
+        )
+        .expect("expired pane registry should be written");
+
+        let candidates = enumerate_session_restore_candidates_in_dir(&dir);
+        let _ = std::fs::remove_dir_all(dir.parent().expect("temp dir should have parent"));
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(
+            candidates[0].panes[0].restore_state,
+            SESSION_RESTORE_STATE_SETUP_REQUIRED
+        );
+        assert_eq!(
+            candidates[0].panes[0].setup_required_reason.as_deref(),
+            Some(SESSION_RESTORE_SETUP_REASON_AGENT_SESSION_EXPIRED)
+        );
+    }
+
     fn sample_restore_metadata(
         panes: Vec<SessionRegistryPaneRestoreMetadata>,
     ) -> SessionRegistryRestoreMetadata {
@@ -2111,6 +2183,7 @@ mod tests {
             context_capsule_ref: context_capsule_ref.map(str::to_string),
             checkpoint_ref: checkpoint_ref.map(str::to_string),
             restore_state: "candidate".to_string(),
+            setup_required_reason: None,
         }
     }
 
