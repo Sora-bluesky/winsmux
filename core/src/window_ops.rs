@@ -1213,10 +1213,12 @@ fn respawn_pane_at_path(app: &mut AppState, pty_system_ref: Option<&dyn portable
     let bell_writer = bell_pending.clone();
     
     let output_ring = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
-    crate::pane::spawn_reader_thread(reader, term_reader, dv_writer, cs_writer, bell_writer, output_ring.clone());
+    let restore_output_ring = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
+    crate::pane::spawn_reader_thread(reader, term_reader, dv_writer, cs_writer, bell_writer, output_ring.clone(), restore_output_ring.clone());
     let win = &mut app.windows[window_idx];
     let Some(pane) = active_pane_mut(&mut win.root, &pane_path) else { return Ok(()); };
     pane.output_ring = output_ring;
+    pane.restore_output_ring = restore_output_ring;
     
     let mut pty_writer = pair.master.take_writer().map_err(|e| io::Error::new(io::ErrorKind::Other, format!("take writer error: {e}")))?;
     crate::pane::conpty_preemptive_dsr_response(&mut *pty_writer);

@@ -140,6 +140,9 @@ pub struct Pane {
     /// Per-pane output ring buffer for control mode %output notifications.
     /// Filled by the PTY reader thread, drained by the server loop.
     pub output_ring: Arc<Mutex<VecDeque<u8>>>,
+    /// Per-pane output ring buffer for session restore metadata.
+    /// Filled by the PTY reader thread and not drained by control-mode output delivery.
+    pub restore_output_ring: Arc<Mutex<VecDeque<u8>>>,
 }
 
 /// Pre-spawned shell ready to be transplanted into a new window instantly.
@@ -159,6 +162,7 @@ pub struct WarmPane {
     pub rows: u16,
     pub cols: u16,
     pub output_ring: Arc<Mutex<VecDeque<u8>>>,
+    pub restore_output_ring: Arc<Mutex<VecDeque<u8>>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

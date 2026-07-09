@@ -123,6 +123,7 @@ pub fn create_popup_pane(
         pane_style: None,
         squelch_until: None,
         output_ring: std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
+        restore_output_ring: std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
     })
 }
 

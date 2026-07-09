@@ -12,9 +12,10 @@ use std::net::TcpListener;
 
 use portable_pty::native_pty_system;
 use ratatui::prelude::Rect;
+use sha2::{Digest, Sha256};
 
 use crate::types::{AppState, CtrlReq, Mode, FocusDir, LayoutKind, PipePaneState, VERSION,
-    WaitChannel, WaitForOp, Node, Action, Bind};
+    WaitChannel, WaitForOp, Node, Action, Bind, Window};
 use crate::platform::install_console_ctrl_handler;
 use crate::pane::{create_window, create_window_raw, split_active_with_command, kill_active_pane, kill_pane_by_id, spawn_warm_pane};
 use crate::tree::{self, active_pane, active_pane_mut, resize_all_panes, kill_all_children,
@@ -120,7 +121,8 @@ fn write_current_session_registry(
     };
     let dir = psmux_registry_dir()?;
     let base = app.port_file_base();
-    crate::session::write_session_registry(
+    let restore = collect_session_registry_restore_metadata(app);
+    crate::session::write_session_registry_with_restore_metadata(
         &dir,
         &base,
         port,
@@ -130,7 +132,139 @@ fn write_current_session_registry(
         process_started_at,
         created_at,
         ready_at,
+        restore.as_ref(),
     )
+}
+
+fn ctrl_req_refreshes_session_registry_restore_metadata(req: &CtrlReq) -> bool {
+    matches!(
+        req,
+        CtrlReq::NewWindow(..)
+            | CtrlReq::NewWindowPrint(..)
+            | CtrlReq::SplitWindow(..)
+            | CtrlReq::SplitWindowPrint(..)
+            | CtrlReq::KillPane
+            | CtrlReq::KillPaneById(_)
+            | CtrlReq::KillWindow
+            | CtrlReq::BreakPane
+            | CtrlReq::JoinPane(_)
+            | CtrlReq::MovePane(_)
+            | CtrlReq::MoveWindow(_)
+            | CtrlReq::SwapWindow(_)
+            | CtrlReq::LinkWindow(..)
+            | CtrlReq::UnlinkWindow
+            | CtrlReq::SwapPane(_)
+            | CtrlReq::RotateWindow(_)
+            | CtrlReq::SelectLayout(_)
+            | CtrlReq::NextLayout
+            | CtrlReq::PrevLayout
+            | CtrlReq::RespawnPane { .. }
+            | CtrlReq::RespawnWindow
+    )
+}
+
+fn session_registry_restore_refresh_due(
+    dirty: bool,
+    force: bool,
+    last_refresh: Instant,
+    now: Instant,
+    min_interval: Duration,
+) -> bool {
+    dirty && (force || now.duration_since(last_refresh) >= min_interval)
+}
+
+fn collect_session_registry_restore_metadata(
+    app: &AppState,
+) -> Option<crate::session::SessionRegistryRestoreMetadata> {
+    let mut panes = Vec::new();
+    for (window_index, window) in app.windows.iter().enumerate() {
+        let mut pane_index = 0;
+        collect_session_registry_pane_restore_metadata(
+            &window.root,
+            window,
+            window_index,
+            &mut pane_index,
+            &mut panes,
+        );
+    }
+    if panes.is_empty() {
+        None
+    } else {
+        Some(crate::session::SessionRegistryRestoreMetadata {
+            restore_metadata_version: 1,
+            layer: "session_persistence_layer1".to_string(),
+            panes,
+        })
+    }
+}
+
+fn collect_session_registry_pane_restore_metadata(
+    node: &Node,
+    window: &Window,
+    window_index: usize,
+    pane_index: &mut usize,
+    panes: &mut Vec<crate::session::SessionRegistryPaneRestoreMetadata>,
+) {
+    match node {
+        Node::Leaf(pane) => {
+            let current_pane_index = *pane_index;
+            *pane_index += 1;
+            let pane_id = format!("%{}", pane.id);
+            panes.push(crate::session::SessionRegistryPaneRestoreMetadata {
+                pane_id: pane_id.clone(),
+                window_id: window.id.to_string(),
+                window_index,
+                pane_index: current_pane_index,
+                agent_cli_session_id: Some(pane_id),
+                transcript_ring_summary: session_registry_transcript_ring_summary(
+                    &pane.restore_output_ring,
+                ),
+                worktree: None,
+                branch: None,
+                provider_target: None,
+                model: None,
+                model_source: None,
+                context_capsule_ref: None,
+                checkpoint_ref: None,
+                restore_state: if pane.dead {
+                    "pane_exited".to_string()
+                } else {
+                    "candidate".to_string()
+                },
+            });
+        }
+        Node::Split { children, .. } => {
+            for child in children {
+                collect_session_registry_pane_restore_metadata(
+                    child,
+                    window,
+                    window_index,
+                    pane_index,
+                    panes,
+                );
+            }
+        }
+    }
+}
+
+fn session_registry_transcript_ring_summary(
+    ring: &std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<u8>>>,
+) -> crate::session::SessionRegistryTranscriptRingSummary {
+    let bytes = ring
+        .lock()
+        .map(|ring| ring.iter().copied().collect::<Vec<u8>>())
+        .unwrap_or_default();
+    let sha256 = if bytes.is_empty() {
+        None
+    } else {
+        Some(format!("{:x}", Sha256::digest(&bytes)))
+    };
+
+    crate::session::SessionRegistryTranscriptRingSummary {
+        byte_count: bytes.len() as u64,
+        sha256,
+        raw_transcript_stored: false,
+    }
 }
 
 fn remove_current_session_state(app: &AppState) {
@@ -373,10 +507,11 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
     log_registry_debug("registry: resolving home");
     let dir = psmux_registry_dir()?;
     log_registry_debug(&format!("registry: create dir {}", dir.display()));
-    let registry_created_at = crate::session::session_registry_now_millis();
+    let mut registry_created_at = crate::session::session_registry_now_millis();
     let registry_process_started_at =
         crate::session::current_process_started_at_millis().unwrap_or(registry_created_at);
-    let registry_instance_nonce = crate::session::new_session_instance_nonce();
+    let mut registry_instance_nonce = crate::session::new_session_instance_nonce();
+    let mut registry_ready_at = None;
 
     // Generate a random session key for security
     let session_key: String = {
@@ -403,7 +538,7 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
         &registry_instance_nonce,
         registry_process_started_at,
         registry_created_at,
-        None,
+        registry_ready_at,
     )?;
 
     // Expose the server identity via env var so that child processes spawned
@@ -580,13 +715,14 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
         create_window(&*pty_system, &mut app, initial_command.as_deref(), None)?;
     }
     if let Some(prev) = saved_dir { env::set_current_dir(prev).ok(); }
+    registry_ready_at = Some(crate::session::session_registry_now_millis());
     write_current_session_registry(
         &app,
         "ready",
         &registry_instance_nonce,
         registry_process_started_at,
         registry_created_at,
-        Some(crate::session::session_registry_now_millis()),
+        registry_ready_at,
     )?;
     // Apply window name if specified via -n
     if let Some(n) = window_name { app.windows.last_mut().map(|w| w.name = n); }
@@ -632,6 +768,11 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
     let mut cached_pred_dim: bool = false;
     let mut cached_status_style = String::new();
     let mut cached_bindings_json = String::from("[]");
+    let mut registry_restore_dirty = false;
+    let mut registry_restore_force_refresh = false;
+    let registry_restore_refresh_min_interval = Duration::from_millis(1000);
+    let mut last_registry_restore_refresh =
+        Instant::now() - registry_restore_refresh_min_interval;
     // Reusable buffer for building the combined JSON envelope.
     let mut combined_buf = String::with_capacity(32768);
 
@@ -668,6 +809,7 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
         let data_ready = crate::types::PTY_DATA_READY.swap(false, std::sync::atomic::Ordering::AcqRel);
         if data_ready {
             state_dirty = true;
+            registry_restore_dirty = true;
             // Drain output ring buffers and send %output notifications to control clients
             if !app.control_clients.is_empty() {
                 // Collect output from all panes first, then dispatch to clients
@@ -759,6 +901,7 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
                 // frame instead of "NC".
                 if crate::types::PTY_DATA_READY.swap(false, std::sync::atomic::Ordering::AcqRel) {
                     state_dirty = true;
+                    registry_restore_dirty = true;
                 }
                 // Process key/command inputs BEFORE dump-state requests.
                 // This ensures ConPTY receives keystrokes before we serialize
@@ -789,6 +932,8 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
                     let mut hook_event: Option<&str> = None;
                     // Track active_idx changes for debugging window-switch issues
                     let _prev_active_idx = app.active_idx;
+                    let refresh_registry_restore_after_req =
+                        ctrl_req_refreshes_session_registry_restore_metadata(&req);
                     let _req_tag: &str = match &req {
                         CtrlReq::NextWindow => "NextWindow",
                         CtrlReq::PrevWindow => "PrevWindow",
@@ -2169,14 +2314,16 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
                     }
                     app.session_name = name;
                     let renamed_at = crate::session::session_registry_now_millis();
-                    let renamed_nonce = crate::session::new_session_instance_nonce();
+                    registry_created_at = renamed_at;
+                    registry_ready_at = Some(renamed_at);
+                    registry_instance_nonce = crate::session::new_session_instance_nonce();
                     let _ = write_current_session_registry(
                         &app,
                         "ready",
-                        &renamed_nonce,
+                        &registry_instance_nonce,
                         registry_process_started_at,
-                        renamed_at,
-                        Some(renamed_at),
+                        registry_created_at,
+                        registry_ready_at,
                     );
                     // Update env so run-shell/hooks from this server target the new name
                     env::set_var("PSMUX_TARGET_SESSION", app.port_file_base());
@@ -2209,14 +2356,16 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
                     }
                     app.session_name = name;
                     let claimed_at = crate::session::session_registry_now_millis();
-                    let claimed_nonce = crate::session::new_session_instance_nonce();
+                    registry_created_at = claimed_at;
+                    registry_ready_at = Some(claimed_at);
+                    registry_instance_nonce = crate::session::new_session_instance_nonce();
                     let _ = write_current_session_registry(
                         &app,
                         "ready",
-                        &claimed_nonce,
+                        &registry_instance_nonce,
                         registry_process_started_at,
-                        claimed_at,
-                        Some(claimed_at),
+                        registry_created_at,
+                        registry_ready_at,
                     );
                     // Update env so run-shell/hooks from this server target the new name
                     env::set_var("PSMUX_TARGET_SESSION", app.port_file_base());
@@ -3738,12 +3887,41 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
             if mutates_state {
                 state_dirty = true;
             }
+            if refresh_registry_restore_after_req {
+                registry_restore_dirty = true;
+                registry_restore_force_refresh = true;
+            }
         }
                 // No trailing cleanup: temp_focus_restore persists across
                 // batch boundaries so the actual command that follows in a
                 // later batch can still benefit from the temp focus (and
                 // will restore when it processes as a non-temp-focus req).
             }
+        }
+        let registry_restore_now = Instant::now();
+        if session_registry_restore_refresh_due(
+            registry_restore_dirty,
+            registry_restore_force_refresh,
+            last_registry_restore_refresh,
+            registry_restore_now,
+            registry_restore_refresh_min_interval,
+        ) {
+            if let Err(err) = write_current_session_registry(
+                &app,
+                "ready",
+                &registry_instance_nonce,
+                registry_process_started_at,
+                registry_created_at,
+                registry_ready_at,
+            ) {
+                eprintln!("winsmux: session registry refresh failed: {err}");
+                registry_restore_force_refresh = false;
+            }
+            else {
+                registry_restore_dirty = false;
+                registry_restore_force_refresh = false;
+            }
+            last_registry_restore_refresh = registry_restore_now;
         }
         // ── Server-push: proactively send frames to attached clients ──
         // Instead of waiting for clients to poll dump-state, serialize
@@ -3976,6 +4154,8 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
                 resize_all_panes(&mut app);
                 state_dirty = true;
                 meta_dirty = true;
+                registry_restore_dirty = true;
+                registry_restore_force_refresh = true;
                 // Fire pane-died / pane-exited hooks
                 if let Some(cmds) = app.hooks.get("pane-died") { let cmds = cmds.clone(); for cmd in &cmds { let _ = execute_command_string(&mut app, cmd); } }
                 if let Some(cmds) = app.hooks.get("pane-exited") { let cmds = cmds.clone(); for cmd in &cmds { let _ = execute_command_string(&mut app, cmd); } }

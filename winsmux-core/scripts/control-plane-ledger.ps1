@@ -314,6 +314,7 @@ function Get-RunsPayload {
     foreach ($run in @($runs)) {
         $run['run_packet'] = New-RunPacketFromRun -Run $run
     }
+    $restoreCandidates = @(Get-RunRestoreCandidates -Runs $runs)
 
     return [ordered]@{
         generated_at = (Get-Date).ToString('o')
@@ -324,9 +325,128 @@ function Get-RunsPayload {
             review_pending     = @($runs | Where-Object { [string]$_.review_state -eq 'PENDING' }).Count
             dirty_runs         = @($runs | Where-Object { [int]$_.changed_file_count -gt 0 }).Count
             action_item_count  = @($runs | ForEach-Object { @($_.action_items).Count } | Measure-Object -Sum).Sum
+            restore_candidate_count = $restoreCandidates.Count
         }
+        restore_candidates = @($restoreCandidates)
         runs         = @($runs | Sort-Object @{ Expression = { [string]$_.last_event_at }; Descending = $true }, @{ Expression = { [string]$_.run_id } })
     }
+}
+
+function Test-RunRestoreCandidateEligible {
+    param([Parameter(Mandatory = $true)]$Run)
+
+    $checkpoint = Get-RunContractField -InputObject $Run -Name 'checkpoint_package'
+    $resumePolicy = Get-RunContractField -InputObject $checkpoint -Name 'resume_policy'
+    $contextContract = Get-RunContractField -InputObject $Run -Name 'context_contract'
+    $contextCapsule = Get-RunContractField -InputObject $contextContract -Name 'context_capsule'
+    $capsuleValidation = Get-RunContractField -InputObject $contextCapsule -Name 'validation'
+    $summaryQualityGate = Get-RunContractField -InputObject $checkpoint -Name 'summary_quality_gate'
+    $worktreeRef = [string](Get-RunContractField -InputObject $checkpoint -Name 'assigned_worktree')
+    $resumeHandle = [string](Get-RunContractField -InputObject $checkpoint -Name 'resume_handle')
+    $taskState = ([string](Get-RunContractField -InputObject $Run -Name 'task_state')).ToLowerInvariant()
+    $reviewState = ([string](Get-RunContractField -InputObject $Run -Name 'review_state')).ToUpperInvariant()
+
+    if ($taskState -in @('completed', 'task_completed', 'commit_ready', 'done')) {
+        return $false
+    }
+    if ($reviewState -eq 'PASS') {
+        return $false
+    }
+    if ([bool](Get-RunContractField -InputObject $resumePolicy -Name 'completed_task_resume_rejected')) {
+        return $false
+    }
+    if (-not [bool](Get-RunContractField -InputObject $resumePolicy -Name 'resume_allowed')) {
+        return $false
+    }
+    if ([string]::IsNullOrWhiteSpace($resumeHandle) -or [string]::IsNullOrWhiteSpace($worktreeRef)) {
+        return $false
+    }
+    if (-not [bool](Get-RunContractField -InputObject $capsuleValidation -Name 'valid')) {
+        return $false
+    }
+    if (-not [bool](Get-RunContractField -InputObject $summaryQualityGate -Name 'valid')) {
+        return $false
+    }
+
+    return $true
+}
+
+function New-RunRestoreCandidate {
+    param([Parameter(Mandatory = $true)]$Run)
+
+    $checkpoint = Get-RunContractField -InputObject $Run -Name 'checkpoint_package'
+    $contextContract = Get-RunContractField -InputObject $Run -Name 'context_contract'
+    $contextCapsule = Get-RunContractField -InputObject $contextContract -Name 'context_capsule'
+    $capsuleValidation = Get-RunContractField -InputObject $contextCapsule -Name 'validation'
+    $capsulePrivacy = Get-RunContractField -InputObject $contextCapsule -Name 'privacy'
+    $resumePolicy = Get-RunContractField -InputObject $checkpoint -Name 'resume_policy'
+    $checkpointFreshness = Get-RunContractField -InputObject $checkpoint -Name 'checkpoint_freshness'
+    $contextPressureStatus = Get-RunContractField -InputObject $checkpoint -Name 'context_pressure_status'
+    $summaryQualityGate = Get-RunContractField -InputObject $checkpoint -Name 'summary_quality_gate'
+    $providerTarget = [string](Get-RunContractField -InputObject $Run -Name 'provider_target')
+    $providerParts = @($providerTarget -split ':', 2)
+    $agentKind = if (@($providerParts).Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($providerParts[0])) { $providerParts[0].Trim().ToLowerInvariant() } else { 'unknown' }
+    $agentModel = if (@($providerParts).Count -gt 1 -and -not [string]::IsNullOrWhiteSpace($providerParts[1])) { $providerParts[1].Trim() } else { $null }
+    $paneId = [string](Get-RunContractField -InputObject $Run -Name 'primary_pane_id')
+
+    return [ordered]@{
+        candidate_version          = 1
+        candidate_id               = ('restore:{0}:{1}' -f (ConvertTo-RunStableRefFragment -Value ([string](Get-RunContractField -InputObject $Run -Name 'run_id'))), (ConvertTo-RunStableRefFragment -Value ([string](Get-RunContractField -InputObject $Run -Name 'head_sha'))))
+        run_id                     = [string](Get-RunContractField -InputObject $Run -Name 'run_id')
+        task_id                    = [string](Get-RunContractField -InputObject $Run -Name 'task_id')
+        source_slot                = [string](Get-RunContractField -InputObject $Run -Name 'primary_label')
+        agent_cli_session_id       = if ([string]::IsNullOrWhiteSpace($paneId)) { $null } else { $paneId }
+        agent_cli_session_id_source = if ([string]::IsNullOrWhiteSpace($paneId)) { 'not_recorded' } else { 'pane_id' }
+        resume_handle              = [string](Get-RunContractField -InputObject $checkpoint -Name 'resume_handle')
+        next_exact_step            = [string](Get-RunContractField -InputObject $checkpoint -Name 'next_exact_step')
+        claim_level                = [string](Get-RunContractField -InputObject $checkpoint -Name 'claim_level')
+        branch                     = [string](Get-RunContractField -InputObject $checkpoint -Name 'branch')
+        head_sha                   = [string](Get-RunContractField -InputObject $checkpoint -Name 'head_sha')
+        assigned_worktree          = [string](Get-RunContractField -InputObject $checkpoint -Name 'assigned_worktree')
+        session_type               = [string](Get-RunContractField -InputObject $checkpoint -Name 'session_type')
+        assignment                 = [ordered]@{
+            worktree        = [string](Get-RunContractField -InputObject $checkpoint -Name 'assigned_worktree')
+            branch          = [string](Get-RunContractField -InputObject $checkpoint -Name 'branch')
+            head_sha        = [string](Get-RunContractField -InputObject $checkpoint -Name 'head_sha')
+            provider_target = $providerTarget
+            agent_kind      = $agentKind
+            agent_model     = $agentModel
+            agent_role      = [string](Get-RunContractField -InputObject $Run -Name 'agent_role')
+        }
+        context_capsule_id         = [string](Get-RunContractField -InputObject $contextCapsule -Name 'capsule_id')
+        context_capsule_valid      = [bool](Get-RunContractField -InputObject $capsuleValidation -Name 'valid')
+        summary_quality_valid      = [bool](Get-RunContractField -InputObject $summaryQualityGate -Name 'valid')
+        checkpoint_freshness_state = [string](Get-RunContractField -InputObject $checkpointFreshness -Name 'state')
+        context_pressure_state     = [string](Get-RunContractField -InputObject $contextPressureStatus -Name 'state')
+        resume_policy              = $resumePolicy
+        transcript_ring_summary    = [ordered]@{
+            state                 = 'not_captured'
+            byte_count            = $null
+            sha256                = $null
+            summary_ref           = $null
+            raw_transcript_stored = $false
+            private_content_stored = $false
+        }
+        privacy                    = [ordered]@{
+            raw_transcript_stored       = $false
+            prompt_body_stored          = $false
+            private_content_stored      = $false
+            local_reference_paths_stored = $false
+            context_capsule_raw_transcript_stored = [bool](Get-RunContractField -InputObject $capsulePrivacy -Name 'raw_transcript_stored')
+        }
+    }
+}
+
+function Get-RunRestoreCandidates {
+    param([AllowEmptyCollection()][object[]]$Runs = @())
+
+    return @(
+        foreach ($run in @($Runs)) {
+            if (Test-RunRestoreCandidateEligible -Run $run) {
+                New-RunRestoreCandidate -Run $run
+            }
+        }
+    )
 }
 
 function Get-RunFromPayload {
