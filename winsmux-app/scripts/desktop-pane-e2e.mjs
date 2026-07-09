@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import fs from "node:fs/promises";
 import net from "node:net";
@@ -11,6 +11,8 @@ const LAUNCH_PROJECT_ONLY = process.argv.includes("--launch-project-only")
   || process.env.WINSMUX_DESKTOP_E2E_LAUNCH_PROJECT_ONLY === "1";
 const RELEASE_POPOUT_ONLY = process.argv.includes("--release-popout-only")
   || process.env.WINSMUX_DESKTOP_E2E_RELEASE_POPOUT_ONLY === "1";
+const PACKAGED_RESTORE_ONLY = process.argv.includes("--packaged-restore-only")
+  || process.env.WINSMUX_DESKTOP_E2E_PACKAGED_RESTORE_ONLY === "1";
 const WORKER_START_ONLY = process.argv.includes("--worker-start-only")
   || process.env.WINSMUX_DESKTOP_E2E_WORKER_START_ONLY === "1";
 const COMPOSER_ONLY = process.argv.includes("--composer-only")
@@ -29,6 +31,8 @@ const OUTPUT_DIR = path.join(
     ? "desktop-composer-e2e"
     : OPERATOR_SNAPSHOT_ONLY
     ? "desktop-operator-snapshot-e2e"
+    : PACKAGED_RESTORE_ONLY
+    ? "desktop-packaged-restore-e2e"
     : RELEASE_POPOUT_ONLY
     ? "desktop-release-popout-e2e"
     : LAUNCH_PROJECT_ONLY
@@ -425,6 +429,36 @@ async function waitForWorkerModelAssignment(page, slotId, expectedModelPattern) 
   }, { slotId, expectedModelPattern });
   await page.click("#close-settings-btn");
   await page.locator("#settings-sheet").waitFor({ state: "hidden", timeout: 60_000 });
+}
+
+async function waitForWorkerStatusModelAssignment(page, slotId, expectedModelPattern) {
+  const deadline = Date.now() + 60_000;
+  let lastRows = null;
+  while (Date.now() < deadline) {
+    const rows = await page.evaluate(async () => {
+      const refreshedRows = await window.__winsmuxViewportHarness?.refreshWorkerStatusRowsForTest?.();
+      if (!Array.isArray(refreshedRows)) {
+        return null;
+      }
+      return refreshedRows.map((item) => ({
+        slotId: item?.slot_id ?? item?.slot ?? item?.pane_id ?? "",
+        provider: item?.provider ?? "",
+        model: item?.model ?? "",
+        modelSource: item?.model_source ?? item?.modelSource ?? "",
+        reasoningEffort: item?.reasoning_effort ?? item?.reasoningEffort ?? "",
+      }));
+    });
+    lastRows = rows;
+    if (Array.isArray(rows)) {
+      const row = rows.find((item) => item?.slotId === slotId);
+      const text = `${row?.provider ?? ""} ${row?.model ?? ""} ${row?.reasoningEffort ?? ""}`;
+      if (row && new RegExp(expectedModelPattern, "i").test(text)) {
+        return rows;
+      }
+    }
+    await page.waitForTimeout(500);
+  }
+  throw new Error(`worker ${slotId} model assignment did not match ${expectedModelPattern}: ${JSON.stringify(lastRows)}`);
 }
 
 async function reloadAppPage(page) {
@@ -1583,9 +1617,29 @@ async function exerciseTauriNativeSurface(page, browser) {
 
 async function writeEvidence(ok, extra = {}) {
   await ensureOutputDir();
+  const repoRoot = (() => {
+    const result = spawnSync("git", ["-C", process.cwd(), "rev-parse", "--show-toplevel"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    return result.status === 0 ? result.stdout.trim() : "";
+  })();
+  const gitHead = repoRoot
+    ? spawnSync("git", ["-C", repoRoot, "rev-parse", "HEAD"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      }).stdout.trim()
+    : "";
   const evidence = {
     ok,
     timestamp: new Date().toISOString(),
+    source: {
+      git_head: gitHead,
+      command: PACKAGED_RESTORE_ONLY
+        ? "npm --prefix winsmux-app run test:desktop-packaged-restore-e2e"
+        : `node ./scripts/desktop-pane-e2e.mjs ${process.argv.slice(2).join(" ")}`.trim(),
+      generated_at_utc: new Date().toISOString(),
+    },
     steps,
     consoleErrors,
     pageErrors,
@@ -1755,6 +1809,453 @@ async function exerciseWorkerStartButton(page) {
     conversationTail: text.slice(-1_200),
     launchCommand,
     workerOutput: workerOutput.slice(-1_200),
+  };
+}
+
+function toStorageProjectPath(projectDir) {
+  return projectDir.replace(/\\/g, "/").replace(/\/+$/, "");
+}
+
+function compactWorkerAssignment(row) {
+  return {
+    slotId: String(row?.slotId ?? row?.slot_id ?? row?.slot ?? row?.pane_id ?? ""),
+    provider: String(row?.provider ?? ""),
+    model: String(row?.model ?? ""),
+    modelSource: String(row?.model_source ?? row?.modelSource ?? ""),
+    reasoningEffort: String(row?.reasoning_effort ?? row?.reasoningEffort ?? ""),
+  };
+}
+
+function resolvePackagedRestoreRegistryDir() {
+  const homeDir = process.env.USERPROFILE || process.env.HOME;
+  if (!homeDir) {
+    throw new Error("packaged restore E2E requires USERPROFILE or HOME to locate the default .psmux registry");
+  }
+  return path.join(homeDir, ".psmux");
+}
+
+async function cleanupPackagedRestoreRegistryFiles(registryFiles) {
+  for (const file of registryFiles) {
+    await fs.rm(file, { force: true }).catch(() => {});
+  }
+}
+
+async function writePackagedRestoreProject(projectDir) {
+  await fs.rm(projectDir, { recursive: true, force: true });
+  await fs.mkdir(path.join(projectDir, ".winsmux"), { recursive: true });
+  await fs.writeFile(
+    path.join(projectDir, ".winsmux.yaml"),
+    [
+      "agent: codex",
+      "model: gpt-5.4",
+      "agent-slots:",
+      "  - slot-id: worker-1",
+      "    runtime-role: worker",
+      "    worker-backend: local",
+      "    agent: codex",
+      "    model: gpt-5.4",
+      "    model-source: operator-override",
+      "    reasoning-effort: high",
+      "    worktree-mode: managed",
+      "  - slot-id: worker-2",
+      "    runtime-role: worker",
+      "    worker-backend: local",
+      "    agent: grok-build",
+      "    model: grok-4.5",
+      "    model-source: operator-override",
+      "    reasoning-effort: high",
+      "    worktree-mode: managed",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  await fs.writeFile(
+    path.join(projectDir, ".winsmux", "provider-capabilities.json"),
+    JSON.stringify({
+      version: 1,
+      providers: {
+        codex: {
+          adapter: "codex",
+          command: "codex",
+          prompt_transports: ["argv"],
+          auth_modes: ["default"],
+          model_sources: ["provider-default", "operator-override"],
+          reasoning_efforts: ["provider-default", "high"],
+          credential_requirements: "none",
+          execution_backend: "local-cli",
+          analysis_posture: "write",
+        },
+        "grok-build": {
+          adapter: "grok-build",
+          command: "grok",
+          prompt_transports: ["argv"],
+          auth_modes: ["default"],
+          model_sources: ["operator-override"],
+          reasoning_efforts: ["provider-default", "high"],
+          credential_requirements: "none",
+          execution_backend: "local-cli",
+          analysis_posture: "write",
+        },
+      },
+    }, null, 2),
+    "utf8",
+  );
+
+  const transcriptDigest = createHash("sha256")
+    .update("winsmux packaged restore e2e transcript ring summary", "utf8")
+    .digest("hex");
+  const registryDir = resolvePackagedRestoreRegistryDir();
+  await fs.mkdir(registryDir, { recursive: true });
+  const registryRunId = `${process.pid}_${Date.now()}`;
+  const sessionName = `ops__packaged_restore_e2e_${registryRunId}`;
+  const legacySessionName = `ops__legacy_${registryRunId}`;
+  const warmSessionName = `ops_${registryRunId}____warm__`;
+  const panes = [
+    {
+        pane_id: "worker-1",
+        window_id: "window-1",
+        window_index: 0,
+        pane_index: 0,
+        agent_cli_session_id: "worker-1",
+        transcript_ring_summary: {
+          state: "captured",
+          byte_count: 64,
+          sha256: transcriptDigest,
+          raw_transcript_stored: false,
+        },
+        provider_target: "codex:gpt-5.4",
+        model: "gpt-5.4",
+        model_source: "operator-override",
+        context_capsule_ref: "capsule:desktop-packaged-restore-e2e",
+        checkpoint_ref: "checkpoint:desktop-packaged-restore-e2e",
+        restore_state: "candidate",
+      },
+      {
+        pane_id: "worker-2",
+        window_id: "window-1",
+        window_index: 0,
+        pane_index: 1,
+        agent_cli_session_id: "worker-2",
+        transcript_ring_summary: {
+          state: "captured",
+          byte_count: 128,
+          sha256: transcriptDigest,
+          raw_transcript_stored: false,
+        },
+        provider_target: "grok-build:grok-4.5",
+        model: "grok-4.5",
+        model_source: "operator-override",
+        context_capsule_ref: "capsule:desktop-packaged-restore-e2e",
+        checkpoint_ref: "checkpoint:desktop-packaged-restore-e2e",
+        restore_state: "candidate",
+      },
+  ];
+  const registry = {
+    protocol_version: 1,
+    session: sessionName,
+    namespace: "ops",
+    server_pid: 4242,
+    process_started_at: 1783580000000,
+    server_exe: "winsmux.exe",
+    instance_nonce: "desktop-packaged-restore-e2e",
+    port: 42125,
+    state: "ready",
+    owner: "normal",
+    created_at: 1783580001000,
+    ready_at: 1783580002000,
+    restore: {
+      restore_metadata_version: 1,
+      layer: "session_persistence_layer1",
+      panes,
+    },
+  };
+  const registryFiles = [
+    path.join(registryDir, `${sessionName}.registry.json`),
+    path.join(registryDir, `${legacySessionName}.registry.json`),
+    path.join(registryDir, `${warmSessionName}.registry.json`),
+  ];
+  await fs.writeFile(
+    registryFiles[0],
+    JSON.stringify(registry, null, 2),
+    "utf8",
+  );
+  await fs.writeFile(
+    registryFiles[1],
+    JSON.stringify({
+      protocol_version: 1,
+      session: legacySessionName,
+      namespace: "ops",
+      port: 42126,
+      state: "ready",
+      owner: "normal",
+      created_at: 1783580001000,
+    }, null, 2),
+    "utf8",
+  );
+  await fs.writeFile(
+    registryFiles[2],
+    JSON.stringify({
+      protocol_version: 1,
+      session: warmSessionName,
+      namespace: "ops",
+      port: 42127,
+      state: "ready",
+      owner: "warm",
+      created_at: 1783580001000,
+      restore: {
+        restore_metadata_version: 1,
+        layer: "session_persistence_layer1",
+        panes,
+      },
+    }, null, 2),
+    "utf8",
+  );
+  return {
+    session: registry.session,
+    paneIds: panes.map((pane) => pane.pane_id),
+    assignmentTargets: panes.map((pane) => pane.provider_target),
+    contextCapsuleRef: panes[0].context_capsule_ref,
+    checkpointRef: panes[0].checkpoint_ref,
+    transcriptDigest,
+    registryFiles,
+  };
+}
+
+async function seedPackagedRestoreBrowserState(page, projectDir) {
+  const storageProjectDir = toStorageProjectPath(projectDir);
+  await page.evaluate(({ projectDir: normalizedProjectDir }) => {
+    localStorage.setItem("winsmux.active-project.v1", normalizedProjectDir);
+    localStorage.setItem("winsmux.project-sessions.v1", JSON.stringify([
+      {
+        path: normalizedProjectDir,
+        name: "packaged-restore-e2e",
+        lastOpenedAt: "2026-07-09T00:00:00.000Z",
+      },
+    ]));
+    localStorage.setItem("winsmux.runtime-model.assignment-mode.v1", "per-pane");
+    localStorage.setItem("winsmux.runtime-role.preferences.v1", JSON.stringify([
+      {
+        roleId: "operator",
+        provider: "claude",
+        model: "provider-default",
+        modelSource: "provider-default",
+        reasoningEffort: "provider-default",
+      },
+      {
+        roleId: "worker",
+        provider: "codex",
+        model: "gpt-5.4",
+        modelSource: "operator-override",
+        reasoningEffort: "high",
+      },
+      {
+        roleId: "reviewer",
+        provider: "grok-build",
+        model: "grok-4.5",
+        modelSource: "operator-override",
+        reasoningEffort: "high",
+      },
+    ]));
+    localStorage.setItem("winsmux.shell.preferences.v1", JSON.stringify({
+      theme: "system",
+      uiVersion: 4,
+      density: "comfortable",
+      wrapMode: "balanced",
+      codeFont: "system",
+      codeFontFamily: "",
+      editorFontSize: 14,
+      voiceShortcut: "Ctrl+Alt+Space",
+      persistVoiceDraftLocally: false,
+      focusMode: "standard",
+      language: "en",
+      sidebarWidth: 320,
+      workbenchWidth: 720,
+      wideSidebarOpen: true,
+      wideContextOpen: false,
+      agentVaultOpen: false,
+      workbenchOpen: true,
+      workerStatusStripVisible: false,
+      workbenchLayout: "focus",
+      focusedWorkbenchPaneId: "worker-2",
+    }));
+  }, { projectDir: storageProjectDir });
+  await reloadAppPage(page);
+  await waitForAppReady(page);
+}
+
+async function collectPackagedRestoreSnapshot(page, projectDir, phase, expectedCandidate) {
+  await enableViewportHarness(page);
+  await waitForWorkerStatusModelAssignment(page, "worker-1", "gpt-5\\.4");
+  const workerStatusRows = await waitForWorkerStatusModelAssignment(page, "worker-2", "grok-4\\.5");
+  const storageProjectDir = toStorageProjectPath(projectDir);
+  const uiState = await page.evaluate(async ({ expectedProjectDir }) => {
+    const parseJson = (key, fallback) => {
+      try {
+        const raw = localStorage.getItem(key);
+        return raw ? JSON.parse(raw) : fallback;
+      } catch {
+        return fallback;
+      }
+    };
+    const activeProjectDir = localStorage.getItem("winsmux.active-project.v1");
+    const sessions = parseJson("winsmux.project-sessions.v1", []);
+    const shellPrefs = parseJson("winsmux.shell.preferences.v1", {});
+    return {
+      activeProjectMatches: activeProjectDir === expectedProjectDir,
+      projectSessionRecorded: Array.isArray(sessions) && sessions.some((entry) => entry?.path === expectedProjectDir),
+      runtimeAssignmentMode: localStorage.getItem("winsmux.runtime-model.assignment-mode.v1"),
+      shellLayout: shellPrefs?.workbenchLayout ?? null,
+      shellFocusedPaneId: shellPrefs?.focusedWorkbenchPaneId ?? null,
+      drawerLayout: document.querySelector("#terminal-drawer")?.getAttribute("data-layout") ?? null,
+      drawerFocusedPaneId: document.querySelector("#terminal-drawer")?.getAttribute("data-focused-pane") ?? null,
+      paneCount: document.querySelectorAll("#panes-container .pane").length,
+      visiblePaneIds: Array.from(document.querySelectorAll("#panes-container .pane:not([hidden])"))
+        .map((pane) => pane.id.replace(/^pane-/, "")),
+    };
+  }, { expectedProjectDir: storageProjectDir });
+
+  const workerAssignments = (Array.isArray(workerStatusRows) ? workerStatusRows : [])
+    .map(compactWorkerAssignment)
+    .filter((row) => row.slotId === "worker-1" || row.slotId === "worker-2");
+  const restorePayload = await invokeDesktop(page, "desktop.session.restore_candidates", { projectDir });
+  const candidates = Array.isArray(restorePayload?.candidates) ? restorePayload.candidates : [];
+  const candidate = candidates.find((item) => item?.session === expectedCandidate.session);
+  const candidatePanes = Array.isArray(candidate?.panes) ? candidate.panes : [];
+  const assignmentTargets = candidatePanes.map((pane) => pane?.provider_target ?? "").filter(Boolean);
+  const transcriptRing = candidatePanes.find((pane) => pane?.pane_id === "worker-2")?.transcript_ring_summary
+    ?? candidatePanes[0]?.transcript_ring_summary
+    ?? {};
+  const candidateMatches = Boolean(candidate)
+    && JSON.stringify(candidatePanes.map((pane) => pane.pane_id)) === JSON.stringify(expectedCandidate.paneIds)
+    && JSON.stringify(assignmentTargets) === JSON.stringify(expectedCandidate.assignmentTargets);
+  const snapshot = {
+    phase,
+    activeProjectMatches: uiState.activeProjectMatches,
+    projectSessionRecorded: uiState.projectSessionRecorded,
+    runtimeAssignmentMode: uiState.runtimeAssignmentMode,
+    shellLayout: uiState.shellLayout,
+    shellFocusedPaneId: uiState.shellFocusedPaneId,
+    drawerLayout: uiState.drawerLayout,
+    drawerFocusedPaneId: uiState.drawerFocusedPaneId,
+    paneCount: uiState.paneCount,
+    visiblePaneIds: uiState.visiblePaneIds,
+    workerAssignments,
+    restoreCandidateCount: candidateMatches ? 1 : 0,
+    restoreCandidateTransport: "desktop.session.restore_candidates",
+    restoreCandidate: {
+      candidateVersion: restorePayload?.version ?? null,
+      source: "desktop.session.restore_candidates",
+      session: candidate?.session ?? "",
+      registryDir: restorePayload?.registry_dir ?? "",
+      paneLayout: {
+        layout: "focus",
+        focused_pane_id: "worker-2",
+        pane_order: candidatePanes.map((pane) => pane?.pane_id ?? ""),
+      },
+      assignmentTargets,
+      contextCapsuleRef: candidatePanes.find((pane) => pane?.context_capsule_ref)?.context_capsule_ref ?? "",
+      checkpointRef: candidatePanes.find((pane) => pane?.checkpoint_ref)?.checkpoint_ref ?? "",
+      transcriptRingSummary: transcriptRing,
+      privacy: {
+        raw_transcript_stored: transcriptRing?.raw_transcript_stored ?? null,
+        local_reference_paths_stored: false,
+      },
+      restoreState: candidatePanes.every((pane) => pane?.restore_state === "candidate") ? "candidate" : "invalid",
+      panes: candidatePanes,
+    },
+  };
+
+  if (!snapshot.activeProjectMatches || !snapshot.projectSessionRecorded) {
+    throw new Error(`packaged restore ${phase} did not retain active project state: ${JSON.stringify(snapshot)}`);
+  }
+  if (snapshot.shellLayout !== "focus" || snapshot.shellFocusedPaneId !== "worker-2") {
+    throw new Error(`packaged restore ${phase} did not retain workbench focus state: ${JSON.stringify(snapshot)}`);
+  }
+  if (snapshot.restoreCandidateCount !== 1) {
+    throw new Error(`packaged restore ${phase} did not retain the typed restore candidate`);
+  }
+  if (!workerAssignments.some((row) => row.slotId === "worker-1" && /gpt-5\.4/i.test(`${row.provider} ${row.model}`))) {
+    throw new Error(`packaged restore ${phase} did not retain worker-1 model assignment: ${JSON.stringify({ workerAssignments, workerStatusRows })}`);
+  }
+  if (!workerAssignments.some((row) => row.slotId === "worker-2" && /grok-4\.5/i.test(`${row.provider} ${row.model}`))) {
+    throw new Error(`packaged restore ${phase} did not retain worker-2 model assignment: ${JSON.stringify({ workerAssignments, workerStatusRows })}`);
+  }
+  if (snapshot.restoreCandidate.transcriptRingSummary?.raw_transcript_stored !== false || snapshot.restoreCandidate.privacy?.raw_transcript_stored !== false) {
+    throw new Error(`packaged restore ${phase} candidate must not store raw transcript`);
+  }
+  return snapshot;
+}
+
+async function launchPackagedRestoreApp(debugPort, userDataDir, projectDir) {
+  const appArgs = projectDir ? ["--project-dir", projectDir] : [];
+  const child = startPackagedDesktopApp(debugPort, userDataDir, appArgs);
+  let browser;
+  try {
+    await waitForCdp(debugPort, child, Number.isFinite(CDP_TIMEOUT_MS) ? CDP_TIMEOUT_MS : 300000);
+    browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`);
+    const page = await resolveAppPage(browser, 60_000, { allowDevServer: false });
+    attachPageErrorCapture(page);
+    await waitForAppReady(page);
+    return { browser, child, page };
+  } catch (error) {
+    await browser?.close().catch(() => {});
+    await stopProcessTree(child);
+    throw error;
+  }
+}
+
+async function exercisePackagedRestartRestore(debugPort, userDataDir) {
+  const projectDir = path.join(OUTPUT_DIR, "packaged-restore-project");
+  const expectedCandidate = await writePackagedRestoreProject(projectDir);
+  let preRestart;
+  let postRestart;
+  let restartDebugPort;
+  try {
+    let firstLaunch;
+    await runStep("packaged restore first launch opens the target project", async () => {
+      firstLaunch = await launchPackagedRestoreApp(debugPort, userDataDir, projectDir);
+      return { debugPort, projectDir: "<packaged-restore-e2e-project>" };
+    });
+    try {
+      preRestart = await runStep("packaged restore first launch records restart inputs", async () => {
+        await seedPackagedRestoreBrowserState(firstLaunch.page, projectDir);
+        return await collectPackagedRestoreSnapshot(firstLaunch.page, projectDir, "pre-restart", expectedCandidate);
+      });
+    } finally {
+      await firstLaunch.browser?.close().catch(() => {});
+      await stopProcessTree(firstLaunch.child);
+    }
+
+    restartDebugPort = await getAvailablePort();
+    let secondLaunch;
+    await runStep("packaged restore second launch reuses WebView2 profile", async () => {
+      secondLaunch = await launchPackagedRestoreApp(restartDebugPort, userDataDir);
+      return { debugPort: restartDebugPort, projectDir: "<packaged-restore-e2e-project>" };
+    });
+    try {
+      postRestart = await runStep("packaged restore second launch reloads restart inputs", async () => {
+        return await collectPackagedRestoreSnapshot(secondLaunch.page, projectDir, "post-restart", expectedCandidate);
+      });
+      await secondLaunch.page.screenshot({ path: path.join(OUTPUT_DIR, "desktop-packaged-restore-e2e-success.png"), fullPage: true });
+    } finally {
+      await secondLaunch.browser?.close().catch(() => {});
+      await stopProcessTree(secondLaunch.child);
+    }
+  } finally {
+    await cleanupPackagedRestoreRegistryFiles(expectedCandidate.registryFiles);
+  }
+
+  return {
+    debugPorts: [debugPort, restartDebugPort],
+    webviewUserData: "<isolated-webview2-user-data>",
+    projectDir: "<packaged-restore-e2e-project>",
+    preRestart,
+    postRestart,
+    privacy: {
+      evidence_redacts_local_paths: true,
+      raw_transcript_stored: false,
+      local_reference_paths_stored: false,
+    },
   };
 }
 
@@ -2117,6 +2618,32 @@ async function main() {
   await writeOperatorPipeScript(scriptPath);
   await fs.writeFile(attachmentPath, "desktop composer attachment e2e\n", "utf8");
   assertNoExistingWinsmuxAppBeforeLaunch();
+
+  if (PACKAGED_RESTORE_ONLY) {
+    const evidencePath = path.join(OUTPUT_DIR, "desktop-pane-e2e.json");
+    await fs.rm(evidencePath, { force: true }).catch(() => {});
+    try {
+      const packagedRestore = await exercisePackagedRestartRestore(debugPort, userDataDir);
+      await writeEvidence(true, {
+        debugPort,
+        mode: "packaged-restore-only",
+        tauriOutputTail: "<omitted-for-packaged-restore-privacy>",
+        tauriErrorTail: "<omitted-for-packaged-restore-privacy>",
+        packagedRestore,
+      });
+      process.stdout.write(`[desktop-pane-e2e] PASS packaged-restore-only evidence=${evidencePath}\n`);
+      return;
+    } catch (error) {
+      await writeEvidence(false, {
+        debugPort,
+        mode: "packaged-restore-only",
+        error: error instanceof Error ? error.message : String(error),
+        tauriOutputTail: "<omitted-for-packaged-restore-privacy>",
+        tauriErrorTail: "<omitted-for-packaged-restore-privacy>",
+      });
+      throw error;
+    }
+  }
 
   let browser;
   let page;

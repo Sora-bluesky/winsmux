@@ -1,3 +1,4 @@
+use crate::desktop_session_restore::json_rpc as session_restore_rpc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -18,12 +19,12 @@ use windows_sys::Win32::Media::Audio::{waveInGetDevCapsW, waveInGetNumDevs, WAVE
 #[cfg(windows)]
 use windows_sys::Win32::Media::MMSYSERR_NOERROR;
 
-const DESKTOP_JSON_RPC_VERSION: &str = "2.0";
+pub(crate) const DESKTOP_JSON_RPC_VERSION: &str = "2.0";
 const JSON_RPC_INVALID_REQUEST: i32 = -32600;
 const JSON_RPC_METHOD_NOT_FOUND: i32 = -32601;
 const JSON_RPC_INVALID_PARAMS: i32 = -32602;
-const JSON_RPC_INTERNAL_ERROR: i32 = -32603;
-const JSON_RPC_SERVER_ERROR: i32 = -32000;
+pub(crate) const JSON_RPC_INTERNAL_ERROR: i32 = -32603;
+pub(crate) const JSON_RPC_SERVER_ERROR: i32 = -32000;
 const PROVIDER_SWITCH_SELECTOR_PARAM_KEYS: &[&str] = &[
     "agent",
     "provider",
@@ -1575,6 +1576,7 @@ pub fn handle_desktop_json_rpc(
                     "desktop.runtime.roles.apply",
                     "desktop.voice.capture_status",
                     "desktop.dogfood.event",
+                    "desktop.session.restore_candidates",
                     "desktop.explorer.list",
                     "desktop.editor.read",
                     "desktop.file.read_full",
@@ -1899,6 +1901,9 @@ pub fn handle_desktop_json_rpc(
                 },
                 Err(err) => json_rpc_error(request_id, JSON_RPC_SERVER_ERROR, err),
             }
+        }
+        "desktop.session.restore_candidates" => {
+            session_restore_rpc(request_id, resolved_project_dir, params)
         }
         _ => json_rpc_error(
             request_id,
@@ -5444,24 +5449,19 @@ mod tests {
                 let methods = result["methods"]
                     .as_array()
                     .expect("contract methods must be an array");
-                assert!(methods
-                    .iter()
-                    .any(|method| { method.as_str() == Some("desktop.runtime.roles.apply") }));
-                assert!(methods
-                    .iter()
-                    .any(|method| { method.as_str() == Some("desktop.workers.status") }));
-                assert!(methods
-                    .iter()
-                    .any(|method| { method.as_str() == Some("desktop.workers.start") }));
-                assert!(methods
-                    .iter()
-                    .any(|method| { method.as_str() == Some("desktop.provider.switch") }));
-                assert!(methods
-                    .iter()
-                    .any(|method| { method.as_str() == Some("desktop.dogfood.event") }));
-                assert!(methods
-                    .iter()
-                    .any(|method| { method.as_str() == Some("desktop.voice.capture_status") }));
+                for required_method in [
+                    "desktop.runtime.roles.apply",
+                    "desktop.workers.status",
+                    "desktop.workers.start",
+                    "desktop.provider.switch",
+                    "desktop.dogfood.event",
+                    "desktop.voice.capture_status",
+                    "desktop.session.restore_candidates",
+                ] {
+                    assert!(methods
+                        .iter()
+                        .any(|method| method.as_str() == Some(required_method)));
+                }
             }
             DesktopJsonRpcResponse::Error { error, .. } => {
                 panic!("expected success, got {:?}", error);

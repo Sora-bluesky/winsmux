@@ -80,13 +80,17 @@
       "target": "replace only after migration or explicit no-migration decision exists",
       "paths": [
         ".winsmux.conf",
+        "scripts/test-v03628-packaged-restore-gate.ps1",
         "tests/OrchestraPreflight.Tests.ps1",
+        "tests/V03628PackagedRestoreGate.Tests.ps1",
         "winsmux-core/scripts/operator-poll.ps1",
         "winsmux-core/scripts/orchestra-preflight.ps1",
         "winsmux-core/scripts/orchestra-smoke.ps1",
         "winsmux-core/scripts/orchestra-start.ps1",
         "winsmux-core/scripts/settings.ps1",
-        "winsmux-core/scripts/setup-wizard.ps1"
+        "winsmux-core/scripts/setup-wizard.ps1",
+        "winsmux-app/scripts/desktop-pane-e2e.mjs",
+        "winsmux-app/src-tauri/src/desktop_session_restore.rs"
       ]
     },
     {
