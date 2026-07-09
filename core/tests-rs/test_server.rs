@@ -1,7 +1,13 @@
 use super::build_server_info_text;
+use super::ctrl_req_refreshes_session_registry_restore_metadata;
+use super::session_registry_transcript_ring_summary;
+use super::session_registry_restore_refresh_due;
 use super::should_spawn_warm_server;
 use super::helpers::combined_data_version;
-use crate::types::AppState;
+use crate::types::{AppState, CtrlReq, LayoutKind};
+use std::collections::VecDeque;
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::{Duration, Instant};
 
 // ── Hook set/replace/unset tests (issue #133) ───────────────────
 
@@ -163,6 +169,120 @@ fn server_info_text_uses_winsmux_branding() {
     assert!(text.contains("session: demo"));
     assert!(text.contains("windows: 1"));
     assert!(!text.contains("psmux "));
+}
+
+#[test]
+fn restore_registry_refreshes_after_topology_requests() {
+    let (split_tx, _split_rx) = mpsc::channel::<String>();
+    let (split_print_tx, _split_print_rx) = mpsc::channel::<String>();
+    let (new_print_tx, _new_print_rx) = mpsc::channel::<String>();
+
+    assert!(ctrl_req_refreshes_session_registry_restore_metadata(
+        &CtrlReq::NewWindow(None, None, false, None)
+    ));
+    assert!(ctrl_req_refreshes_session_registry_restore_metadata(
+        &CtrlReq::NewWindowPrint(None, None, false, None, None, new_print_tx)
+    ));
+    assert!(ctrl_req_refreshes_session_registry_restore_metadata(
+        &CtrlReq::SplitWindow(LayoutKind::Horizontal, None, false, None, None, split_tx)
+    ));
+    assert!(ctrl_req_refreshes_session_registry_restore_metadata(
+        &CtrlReq::SplitWindowPrint(
+            LayoutKind::Vertical,
+            None,
+            false,
+            None,
+            None,
+            None,
+            split_print_tx,
+        )
+    ));
+    assert!(ctrl_req_refreshes_session_registry_restore_metadata(&CtrlReq::KillPane));
+    assert!(ctrl_req_refreshes_session_registry_restore_metadata(
+        &CtrlReq::KillPaneById(7)
+    ));
+    assert!(ctrl_req_refreshes_session_registry_restore_metadata(
+        &CtrlReq::KillWindow
+    ));
+    assert!(ctrl_req_refreshes_session_registry_restore_metadata(
+        &CtrlReq::RespawnPane {
+            pane_id: Some(7),
+            start_dir: None,
+        }
+    ));
+    assert!(ctrl_req_refreshes_session_registry_restore_metadata(
+        &CtrlReq::RespawnWindow
+    ));
+}
+
+#[test]
+fn restore_registry_ignores_non_topology_metadata_requests() {
+    let (dump_tx, _dump_rx) = mpsc::channel::<String>();
+
+    assert!(!ctrl_req_refreshes_session_registry_restore_metadata(
+        &CtrlReq::RenameWindow("renamed".to_string())
+    ));
+    assert!(!ctrl_req_refreshes_session_registry_restore_metadata(
+        &CtrlReq::FocusWindow(0)
+    ));
+    assert!(!ctrl_req_refreshes_session_registry_restore_metadata(
+        &CtrlReq::DumpState(dump_tx, false)
+    ));
+    assert!(!ctrl_req_refreshes_session_registry_restore_metadata(
+        &CtrlReq::RefreshClient
+    ));
+}
+
+#[test]
+fn restore_registry_refresh_due_throttles_output_but_not_forced_changes() {
+    let now = Instant::now();
+    let min_interval = Duration::from_secs(1);
+
+    assert!(!session_registry_restore_refresh_due(
+        false,
+        true,
+        now - Duration::from_secs(10),
+        now,
+        min_interval,
+    ));
+    assert!(!session_registry_restore_refresh_due(
+        true,
+        false,
+        now - Duration::from_millis(250),
+        now,
+        min_interval,
+    ));
+    assert!(session_registry_restore_refresh_due(
+        true,
+        false,
+        now - min_interval,
+        now,
+        min_interval,
+    ));
+    assert!(session_registry_restore_refresh_due(
+        true,
+        true,
+        now - Duration::from_millis(1),
+        now,
+        min_interval,
+    ));
+}
+
+#[test]
+fn restore_registry_transcript_summary_survives_control_output_drain() {
+    let control_output_ring = Arc::new(Mutex::new(VecDeque::from(Vec::from(b"control output"))));
+    let restore_output_ring = Arc::new(Mutex::new(VecDeque::from(Vec::from(
+        b"restore metadata output",
+    ))));
+
+    control_output_ring.lock().unwrap().clear();
+
+    let summary = session_registry_transcript_ring_summary(&restore_output_ring);
+
+    assert_eq!(summary.byte_count, b"restore metadata output".len() as u64);
+    assert!(summary.sha256.is_some());
+    assert!(!summary.raw_transcript_stored);
+    assert!(control_output_ring.lock().unwrap().is_empty());
 }
 
 // ── Options get/set tests ───────────────────────────────────────

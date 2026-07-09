@@ -13996,6 +13996,31 @@ panes:
         $result.runs[0].checkpoint_package.project_root_stored | Should -Be $false
         $result.runs[0].checkpoint_package.local_reference_paths_stored | Should -Be $false
         $result.runs[0].checkpoint_package.worker_git_write_allowed | Should -Be $false
+        $result.summary.restore_candidate_count | Should -Be 1
+        $result.restore_candidates.Count | Should -Be 1
+        $result.restore_candidates[0].candidate_version | Should -Be 1
+        $result.restore_candidates[0].run_id | Should -Be 'task:task-256'
+        $result.restore_candidates[0].task_id | Should -Be 'task-256'
+        $result.restore_candidates[0].source_slot | Should -Be 'builder-1'
+        $result.restore_candidates[0].agent_cli_session_id | Should -Be '%2'
+        $result.restore_candidates[0].agent_cli_session_id_source | Should -Be 'pane_id'
+        $result.restore_candidates[0].resume_handle | Should -Be 'checkpoint:task-task-256:abc1234def5678'
+        $result.restore_candidates[0].next_exact_step | Should -Be 'review_pending'
+        $result.restore_candidates[0].assigned_worktree | Should -Be '.worktrees/builder-1'
+        $result.restore_candidates[0].assignment.provider_target | Should -Be 'codex:gpt-5.4'
+        $result.restore_candidates[0].assignment.agent_kind | Should -Be 'codex'
+        $result.restore_candidates[0].assignment.agent_model | Should -Be 'gpt-5.4'
+        $result.restore_candidates[0].assignment.agent_role | Should -Be 'worker'
+        $result.restore_candidates[0].context_capsule_id | Should -Be 'capsule:task-task-256:abc1234def5678'
+        $result.restore_candidates[0].context_capsule_valid | Should -Be $true
+        $result.restore_candidates[0].summary_quality_valid | Should -Be $true
+        $result.restore_candidates[0].resume_policy.resume_allowed | Should -Be $true
+        $result.restore_candidates[0].transcript_ring_summary.state | Should -Be 'not_captured'
+        $result.restore_candidates[0].transcript_ring_summary.raw_transcript_stored | Should -Be $false
+        $result.restore_candidates[0].privacy.raw_transcript_stored | Should -Be $false
+        $result.restore_candidates[0].privacy.local_reference_paths_stored | Should -Be $false
+        ($result.restore_candidates[0] | ConvertTo-Json -Depth 8) | Should -Not -Match 'Users'
+        ($result.restore_candidates[0] | ConvertTo-Json -Depth 8) | Should -Not -Match 'private next action'
         $result.runs[0].run_packet.context_contract.context_pack_id | Should -Be 'ctx-runs'
         $result.runs[0].run_packet.team_memory.team_memory_refs | Should -Contain 'team-memory:task-256:operator-standard'
         $result.runs[0].run_packet.team_memory.team_memory_refs | Should -Contain 'team-memory:task:task-256:event-3'
@@ -14062,6 +14087,48 @@ panes:
         $result.runs[0].run_packet.draft_pr_gate.handoff_package.suggested_next_action | Should -Be 'rerun_verify'
         $result.runs[0].Contains('observation_pack') | Should -Be $false
         $result.runs[0].Contains('consultation_packet') | Should -Be $false
+    }
+
+    It 'excludes completed or review-passed runs from restore candidates' {
+        $run = [ordered]@{
+            run_id             = 'task:task-done'
+            task_id            = 'task-done'
+            task_state         = 'completed'
+            review_state       = 'PASS'
+            primary_label      = 'builder-1'
+            primary_pane_id    = '%2'
+            provider_target    = 'codex:gpt-5.4'
+            agent_role         = 'worker'
+            branch             = 'worktree-done'
+            head_sha           = 'done1234'
+            checkpoint_package = [ordered]@{
+                resume_handle          = 'checkpoint:task-task-done:done1234'
+                next_exact_step        = 'done'
+                claim_level            = 'PASS'
+                assigned_worktree      = '.worktrees/builder-1'
+                branch                 = 'worktree-done'
+                head_sha               = 'done1234'
+                session_type           = 'managed_worktree'
+                checkpoint_freshness   = [ordered]@{ state = 'fresh' }
+                context_pressure_status = [ordered]@{ state = 'healthy' }
+                summary_quality_gate   = [ordered]@{ valid = $true }
+                resume_policy          = [ordered]@{
+                    resume_allowed                 = $false
+                    completed_task_resume_rejected = $true
+                    requires_same_head_sha         = $true
+                    requires_operator_control      = $true
+                }
+            }
+            context_contract   = [ordered]@{
+                context_capsule = [ordered]@{
+                    capsule_id = 'capsule:task-task-done:done1234'
+                    validation = [ordered]@{ valid = $true }
+                    privacy    = [ordered]@{ raw_transcript_stored = $false }
+                }
+            }
+        }
+
+        @(Get-RunRestoreCandidates -Runs @($run)).Count | Should -Be 0
     }
 
     It 'blocks draft PR gate when draft PR evidence exists without verification evidence' {

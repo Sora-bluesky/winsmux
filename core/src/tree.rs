@@ -644,6 +644,13 @@ pub fn count_panes(node: &Node) -> usize {
     }
 }
 
+fn count_dead_panes(node: &Node) -> usize {
+    match node {
+        Node::Leaf(p) => usize::from(p.dead),
+        Node::Split { children, .. } => children.iter().map(count_dead_panes).sum(),
+    }
+}
+
 /// Immutable reference to the active pane (follows path through splits).
 pub fn active_pane<'a>(node: &'a Node, path: &[usize]) -> Option<&'a Pane> {
     match node {
@@ -704,13 +711,17 @@ pub fn reap_children(app: &mut AppState) -> io::Result<(bool, bool)> {
             continue;
         }
         let leaves_before = count_panes(&app.windows[i].root);
+        let dead_before = count_dead_panes(&app.windows[i].root);
         let active_pane_id = get_active_pane_id(&app.windows[i].root, &app.windows[i].active_path);
         let root = std::mem::replace(&mut app.windows[i].root, Node::Split { kind: LayoutKind::Horizontal, sizes: vec![], children: vec![] });
         match prune_exited(root, remain) {
             Some(new_root) => {
                 let leaves_after = count_panes(&new_root);
-                if leaves_after < leaves_before {
+                let dead_after = count_dead_panes(&new_root);
+                if leaves_after < leaves_before || dead_after > dead_before {
                     any_pruned = true;
+                }
+                if leaves_after < leaves_before {
                     // Clean up MRU: remove IDs of panes that no longer exist
                     let surviving_ids = collect_pane_ids(&new_root);
                     app.windows[i].pane_mru.retain(|id| surviving_ids.contains(id));

@@ -1,7 +1,9 @@
-use std::io::{self, Write};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::env;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use serde::{Deserialize, Serialize};
 
 /// Returns true if this port-file base name belongs to a warm (standby) server.
 /// Warm sessions should be hidden from user-facing lists and never auto-attached.
@@ -26,6 +28,62 @@ fn psmux_dir() -> Option<std::path::PathBuf> {
 pub const SESSION_REGISTRY_PROTOCOL_VERSION: u32 = 1;
 const SESSION_REGISTRY_STARTUP_DEADLINE: Duration = Duration::from_secs(60);
 const LEGACY_PORT_FILE_STARTUP_GRACE: Duration = Duration::from_secs(5);
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionRegistryTranscriptRingSummary {
+    #[serde(default)]
+    pub byte_count: u64,
+    #[serde(default)]
+    pub sha256: Option<String>,
+    #[serde(default)]
+    pub raw_transcript_stored: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionRegistryPaneRestoreMetadata {
+    pub pane_id: String,
+    pub window_id: String,
+    pub window_index: usize,
+    pub pane_index: usize,
+    #[serde(default)]
+    pub agent_cli_session_id: Option<String>,
+    pub transcript_ring_summary: SessionRegistryTranscriptRingSummary,
+    #[serde(default)]
+    pub worktree: Option<String>,
+    #[serde(default)]
+    pub branch: Option<String>,
+    #[serde(default)]
+    pub provider_target: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub model_source: Option<String>,
+    #[serde(default)]
+    pub context_capsule_ref: Option<String>,
+    #[serde(default)]
+    pub checkpoint_ref: Option<String>,
+    pub restore_state: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionRegistryRestoreMetadata {
+    pub restore_metadata_version: u32,
+    pub layer: String,
+    #[serde(default)]
+    pub panes: Vec<SessionRegistryPaneRestoreMetadata>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionRestoreCandidate {
+    pub session: String,
+    pub namespace: Option<String>,
+    pub owner: String,
+    pub state: String,
+    pub port: u16,
+    pub created_at: u128,
+    pub ready_at: Option<u128>,
+    pub panes: Vec<SessionRegistryPaneRestoreMetadata>,
+}
 
 pub fn session_registry_now_millis() -> u128 {
     SystemTime::now()
@@ -86,13 +144,39 @@ pub fn write_session_registry(
     created_at: u128,
     ready_at: Option<u128>,
 ) -> io::Result<()> {
+    write_session_registry_with_restore_metadata(
+        psmux_dir,
+        base,
+        port,
+        owner,
+        state,
+        instance_nonce,
+        process_started_at,
+        created_at,
+        ready_at,
+        None,
+    )
+}
+
+pub fn write_session_registry_with_restore_metadata(
+    psmux_dir: &Path,
+    base: &str,
+    port: u16,
+    owner: &str,
+    state: &str,
+    instance_nonce: &str,
+    process_started_at: u128,
+    created_at: u128,
+    ready_at: Option<u128>,
+    restore: Option<&SessionRegistryRestoreMetadata>,
+) -> io::Result<()> {
     let namespace = session_namespace_from_base(base);
     let registry_path = session_registry_path(psmux_dir, base);
     let tmp_path = psmux_dir.join(format!("{base}.registry.json.tmp"));
     let server_exe = env::current_exe()
         .ok()
         .map(|path| normalize_socket_selector_path(&path));
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "protocol_version": SESSION_REGISTRY_PROTOCOL_VERSION,
         "session": base,
         "namespace": namespace,
@@ -106,6 +190,17 @@ pub fn write_session_registry(
         "created_at": created_at,
         "ready_at": ready_at
     });
+    if let Some(restore) = restore {
+        let restore_value = serde_json::to_value(restore).map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("failed to serialize session restore metadata: {err}"),
+            )
+        })?;
+        if let Some(payload) = payload.as_object_mut() {
+            payload.insert("restore".to_string(), restore_value);
+        }
+    }
     let bytes = serde_json::to_vec_pretty(&payload).map_err(|err| {
         io::Error::new(
             io::ErrorKind::InvalidData,
@@ -129,6 +224,95 @@ fn session_namespace_from_base(base: &str) -> Option<&str> {
 fn read_session_registry(psmux_dir: &Path, base: &str) -> Option<serde_json::Value> {
     let text = std::fs::read_to_string(session_registry_path(psmux_dir, base)).ok()?;
     serde_json::from_str(&text).ok()
+}
+
+fn registry_base_from_path(path: &Path) -> Option<String> {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .and_then(|name| name.strip_suffix(".registry.json"))
+        .map(str::to_string)
+}
+
+pub fn enumerate_session_restore_candidates_in_dir(
+    psmux_dir: &Path,
+) -> Vec<SessionRestoreCandidate> {
+    let Ok(entries) = std::fs::read_dir(psmux_dir) else {
+        return Vec::new();
+    };
+    let mut paths: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| registry_base_from_path(path).is_some())
+        .collect();
+    paths.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
+
+    let mut candidates = Vec::new();
+    for path in paths {
+        let Some(base) = registry_base_from_path(&path) else {
+            continue;
+        };
+        if is_warm_session(&base) {
+            continue;
+        }
+        let Some(registry) = read_session_registry(psmux_dir, &base) else {
+            continue;
+        };
+        if !registry_is_for_base(&registry, &base) || !registry_owner_matches_base(&registry, &base)
+        {
+            continue;
+        }
+        let Some(restore_value) = registry.get("restore").cloned() else {
+            continue;
+        };
+        let Ok(restore) =
+            serde_json::from_value::<SessionRegistryRestoreMetadata>(restore_value)
+        else {
+            continue;
+        };
+        if restore.panes.is_empty() {
+            continue;
+        }
+        let Some(port) = registry["port"]
+            .as_u64()
+            .and_then(|value| u16::try_from(value).ok())
+        else {
+            continue;
+        };
+        let Some(owner) = registry["owner"].as_str() else {
+            continue;
+        };
+        let Some(state) = registry["state"].as_str() else {
+            continue;
+        };
+        let Some(created_at) = registry_u128(&registry, "created_at") else {
+            continue;
+        };
+        let mut panes = restore.panes;
+        panes.sort_by(|left, right| {
+            (
+                left.window_index,
+                left.pane_index,
+                left.pane_id.as_str(),
+            )
+                .cmp(&(
+                    right.window_index,
+                    right.pane_index,
+                    right.pane_id.as_str(),
+                ))
+        });
+        candidates.push(SessionRestoreCandidate {
+            session: base,
+            namespace: registry["namespace"].as_str().map(str::to_string),
+            owner: owner.to_string(),
+            state: state.to_string(),
+            port,
+            created_at,
+            ready_at: registry_u128(&registry, "ready_at"),
+            panes,
+        });
+    }
+
+    candidates
 }
 
 fn registry_u128(registry: &serde_json::Value, key: &str) -> Option<u128> {
@@ -1696,6 +1880,238 @@ mod tests {
             !text.contains("secret"),
             "session registry metadata must not contain credential material"
         );
+    }
+
+    #[test]
+    fn write_session_registry_publishes_restore_metadata_without_secret_material() {
+        let dir = make_temp_psmux_dir("session-registry-restore-metadata");
+        let created_at = 1_782_196_100_000_u128;
+        let process_started_at = created_at.saturating_sub(10_000);
+        let restore = sample_restore_metadata(vec![sample_pane_restore_metadata(
+            "%2",
+            0,
+            0,
+            Some("context-capsule:task-757:abc123"),
+            Some("checkpoint:task-757:abc123"),
+        )]);
+
+        write_session_registry_with_restore_metadata(
+            &dir,
+            "ops__restore",
+            42124,
+            "normal",
+            "ready",
+            "nonce-for-restore-test",
+            process_started_at,
+            created_at,
+            Some(created_at + 250),
+            Some(&restore),
+        )
+        .expect("test should write session registry restore metadata");
+
+        let path = session_registry_path(&dir, "ops__restore");
+        let text = std::fs::read_to_string(&path).expect("test should read registry");
+        let json: serde_json::Value =
+            serde_json::from_str(&text).expect("registry should be valid JSON");
+        let _ = std::fs::remove_dir_all(dir.parent().expect("temp dir should have parent"));
+
+        assert_eq!(
+            json["protocol_version"].as_u64(),
+            Some(SESSION_REGISTRY_PROTOCOL_VERSION as u64)
+        );
+        assert_eq!(json["restore"]["restore_metadata_version"], 1);
+        assert_eq!(json["restore"]["layer"], "session_persistence_layer1");
+        assert_eq!(json["restore"]["panes"][0]["pane_id"], "%2");
+        assert_eq!(
+            json["restore"]["panes"][0]["transcript_ring_summary"]["raw_transcript_stored"],
+            false
+        );
+        assert!(
+            !text.contains("secret") && !text.contains("token") && !text.contains("Users"),
+            "restore metadata must not contain secret material or private local paths"
+        );
+    }
+
+    #[test]
+    fn enumerate_session_restore_candidates_filters_warm_and_legacy_registry() {
+        let dir = make_temp_psmux_dir("session-restore-candidates");
+        let created_at = 1_782_196_200_000_u128;
+        let process_started_at = created_at.saturating_sub(10_000);
+        let restore = sample_restore_metadata(vec![sample_pane_restore_metadata(
+            "%2",
+            0,
+            0,
+            Some("context-capsule:task-757:abc123"),
+            Some("checkpoint:task-757:abc123"),
+        )]);
+
+        write_session_registry_with_restore_metadata(
+            &dir,
+            "ops__restore",
+            42125,
+            "normal",
+            "ready",
+            "nonce-restore",
+            process_started_at,
+            created_at,
+            Some(created_at + 250),
+            Some(&restore),
+        )
+        .expect("restore candidate registry should be written");
+        write_session_registry(
+            &dir,
+            "ops__legacy",
+            42126,
+            "normal",
+            "ready",
+            "nonce-legacy",
+            process_started_at,
+            created_at,
+            Some(created_at + 250),
+        )
+        .expect("legacy registry should be written");
+        write_session_registry_with_restore_metadata(
+            &dir,
+            &warm_session_base(Some("ops")),
+            42127,
+            "warm",
+            "ready",
+            "nonce-warm",
+            process_started_at,
+            created_at,
+            Some(created_at + 250),
+            Some(&restore),
+        )
+        .expect("warm registry should be written");
+
+        let candidates = enumerate_session_restore_candidates_in_dir(&dir);
+        let _ = std::fs::remove_dir_all(dir.parent().expect("temp dir should have parent"));
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].session, "ops__restore");
+        assert_eq!(candidates[0].namespace.as_deref(), Some("ops"));
+        assert_eq!(candidates[0].owner, "normal");
+        assert_eq!(candidates[0].state, "ready");
+        assert_eq!(candidates[0].port, 42125);
+        assert_eq!(candidates[0].panes[0].pane_id, "%2");
+    }
+
+    #[test]
+    fn enumerate_session_restore_candidates_skips_malformed_restore_metadata() {
+        let dir = make_temp_psmux_dir("session-restore-malformed");
+        let created_at = 1_782_196_250_000_u128;
+        let process_started_at = created_at.saturating_sub(10_000);
+        let malformed = serde_json::json!({
+            "protocol_version": SESSION_REGISTRY_PROTOCOL_VERSION,
+            "session": "ops__restore",
+            "namespace": "ops",
+            "server_pid": std::process::id(),
+            "process_started_at": process_started_at,
+            "server_exe": env::current_exe()
+                .ok()
+                .map(|path| normalize_socket_selector_path(&path)),
+            "instance_nonce": "nonce-malformed",
+            "port": 42129,
+            "state": "ready",
+            "owner": "normal",
+            "created_at": created_at,
+            "ready_at": created_at + 250,
+            "restore": {
+                "restore_metadata_version": 1,
+                "layer": "session_persistence_layer1",
+                "panes": [
+                    {
+                        "pane_id": "%2"
+                    }
+                ]
+            }
+        });
+        let text = serde_json::to_vec_pretty(&malformed).expect("test JSON should serialize");
+        std::fs::write(session_registry_path(&dir, "ops__restore"), text)
+            .expect("test should write malformed registry");
+
+        let candidates = enumerate_session_restore_candidates_in_dir(&dir);
+        let _ = std::fs::remove_dir_all(dir.parent().expect("temp dir should have parent"));
+
+        assert!(
+            candidates.is_empty(),
+            "malformed restore metadata must fail closed instead of becoming a candidate"
+        );
+    }
+
+    #[test]
+    fn enumerate_session_restore_candidates_preserves_pane_order() {
+        let dir = make_temp_psmux_dir("session-restore-pane-order");
+        let created_at = 1_782_196_300_000_u128;
+        let process_started_at = created_at.saturating_sub(10_000);
+        let restore = sample_restore_metadata(vec![
+            sample_pane_restore_metadata("%4", 1, 1, None, Some("checkpoint:task-757:def456")),
+            sample_pane_restore_metadata("%3", 0, 1, None, Some("checkpoint:task-757:abc124")),
+            sample_pane_restore_metadata("%2", 0, 0, None, Some("checkpoint:task-757:abc123")),
+        ]);
+
+        write_session_registry_with_restore_metadata(
+            &dir,
+            "ops__restore",
+            42128,
+            "normal",
+            "ready",
+            "nonce-restore-order",
+            process_started_at,
+            created_at,
+            Some(created_at + 250),
+            Some(&restore),
+        )
+        .expect("restore candidate registry should be written");
+
+        let candidates = enumerate_session_restore_candidates_in_dir(&dir);
+        let _ = std::fs::remove_dir_all(dir.parent().expect("temp dir should have parent"));
+
+        let pane_ids: Vec<&str> = candidates[0]
+            .panes
+            .iter()
+            .map(|pane| pane.pane_id.as_str())
+            .collect();
+        assert_eq!(pane_ids, vec!["%2", "%3", "%4"]);
+    }
+
+    fn sample_restore_metadata(
+        panes: Vec<SessionRegistryPaneRestoreMetadata>,
+    ) -> SessionRegistryRestoreMetadata {
+        SessionRegistryRestoreMetadata {
+            restore_metadata_version: 1,
+            layer: "session_persistence_layer1".to_string(),
+            panes,
+        }
+    }
+
+    fn sample_pane_restore_metadata(
+        pane_id: &str,
+        window_index: usize,
+        pane_index: usize,
+        context_capsule_ref: Option<&str>,
+        checkpoint_ref: Option<&str>,
+    ) -> SessionRegistryPaneRestoreMetadata {
+        SessionRegistryPaneRestoreMetadata {
+            pane_id: pane_id.to_string(),
+            window_id: "window-1".to_string(),
+            window_index,
+            pane_index,
+            agent_cli_session_id: Some(pane_id.to_string()),
+            transcript_ring_summary: SessionRegistryTranscriptRingSummary {
+                byte_count: 256,
+                sha256: Some("abc123".to_string()),
+                raw_transcript_stored: false,
+            },
+            worktree: Some(".worktrees/builder-1".to_string()),
+            branch: Some("codex/task-757".to_string()),
+            provider_target: Some("codex:gpt-5.5".to_string()),
+            model: Some("gpt-5.5".to_string()),
+            model_source: Some("provider_target".to_string()),
+            context_capsule_ref: context_capsule_ref.map(str::to_string),
+            checkpoint_ref: checkpoint_ref.map(str::to_string),
+            restore_state: "candidate".to_string(),
+        }
     }
 
     fn make_temp_psmux_dir(name: &str) -> std::path::PathBuf {
