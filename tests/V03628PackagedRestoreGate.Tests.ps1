@@ -69,6 +69,32 @@ Describe 'v0.36.28 packaged restore gate' {
                         local_reference_paths_stored = $false
                     }
                     restoreState         = 'candidate'
+                    panes                = @(
+                        [ordered]@{
+                            pane_id       = 'worker-1'
+                            restore_state = 'candidate'
+                        },
+                        [ordered]@{
+                            pane_id       = 'worker-2'
+                            restore_state = 'candidate'
+                        }
+                    )
+                }
+                setupRequiredCandidateCount = 1
+                setupRequiredCandidate = [ordered]@{
+                    source               = 'desktop.session.restore_candidates'
+                    session              = 'ops__setup_required_e2e'
+                    restoreState         = 'setup-required'
+                    setupRequiredReason  = 'agent-session-expired'
+                    paneRestoreStates    = @('setup-required')
+                    setupRequiredReasons = @('agent-session-expired')
+                    panes                = @(
+                        [ordered]@{
+                            pane_id               = 'worker-3'
+                            restore_state         = 'setup-required'
+                            setup_required_reason = 'agent-session-expired'
+                        }
+                    )
                 }
             }
         }
@@ -139,6 +165,7 @@ Describe 'v0.36.28 packaged restore gate' {
         @($result.required_evidence_classes) | Should -Contain 'packaged-restore-e2e'
         @($result.required_evidence_classes) | Should -Contain 'restart-state'
         @($result.required_evidence_classes) | Should -Contain 'model-assignment'
+        @($result.required_evidence_classes) | Should -Contain 'setup-required-restore'
         @($result.required_evidence_classes) | Should -Contain 'privacy'
     }
 
@@ -175,6 +202,31 @@ Describe 'v0.36.28 packaged restore gate' {
             $modelResult = ($modelOutput | Out-String | ConvertFrom-Json)
             $modelResult.release_ready | Should -Be $false
             @($modelResult.checks | Where-Object { $_.name -eq 'post-restart snapshot keeps worker-2 Grok model assignment' }).pass | Should -Contain $false
+
+            Write-TestEvidence -RelativePath $evidenceRelative -Evidence (New-PackagedRestoreEvidence -Mutate {
+                param($evidence)
+                $evidence.packagedRestore.postRestart.setupRequiredCandidate.restoreState = 'candidate'
+                $evidence.packagedRestore.postRestart.setupRequiredCandidate.setupRequiredReason = ''
+                $evidence.packagedRestore.postRestart.setupRequiredCandidate.paneRestoreStates = @('candidate')
+            })
+
+            $setupRequiredOutput = & pwsh -NoProfile -File $script:gateScript -Json -RequireEvidence -EvidencePath $evidenceRelative
+            $LASTEXITCODE | Should -Be 1
+            $setupRequiredResult = ($setupRequiredOutput | Out-String | ConvertFrom-Json)
+            $setupRequiredResult.release_ready | Should -Be $false
+            @($setupRequiredResult.checks | Where-Object { $_.name -eq 'post-restart snapshot marks expired restore candidates as setup-required' }).pass | Should -Contain $false
+
+            Write-TestEvidence -RelativePath $evidenceRelative -Evidence (New-PackagedRestoreEvidence -Mutate {
+                param($evidence)
+                $evidence.packagedRestore.postRestart.setupRequiredCandidate.paneRestoreStates = @('candidate')
+                $evidence.packagedRestore.postRestart.setupRequiredCandidate.setupRequiredReasons = @()
+            })
+
+            $paneSetupRequiredOutput = & pwsh -NoProfile -File $script:gateScript -Json -RequireEvidence -EvidencePath $evidenceRelative
+            $LASTEXITCODE | Should -Be 1
+            $paneSetupRequiredResult = ($paneSetupRequiredOutput | Out-String | ConvertFrom-Json)
+            $paneSetupRequiredResult.release_ready | Should -Be $false
+            @($paneSetupRequiredResult.checks | Where-Object { $_.name -eq 'post-restart snapshot marks expired restore candidates as setup-required' }).pass | Should -Contain $false
 
             Write-TestEvidence -RelativePath $evidenceRelative -Evidence (New-PackagedRestoreEvidence -Mutate {
                 param($evidence)

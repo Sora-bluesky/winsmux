@@ -8,6 +8,11 @@ use crate::desktop_backend::{
     JSON_RPC_INTERNAL_ERROR, JSON_RPC_SERVER_ERROR,
 };
 
+const DESKTOP_SESSION_RESTORE_STATE_CANDIDATE: &str = "candidate";
+const DESKTOP_SESSION_RESTORE_STATE_SETUP_REQUIRED: &str = "setup-required";
+const DESKTOP_SESSION_RESTORE_SETUP_REASON_AGENT_SESSION_EXPIRED: &str = "agent-session-expired";
+const LEGACY_DESKTOP_SESSION_RESTORE_STATE_PANE_EXITED: &str = "pane_exited";
+
 #[derive(Serialize, Deserialize)]
 pub(crate) struct DesktopSessionRestoreCandidatePayload {
     pub(crate) version: u16,
@@ -25,6 +30,9 @@ pub(crate) struct DesktopSessionRestoreCandidate {
     pub(crate) port: u16,
     pub(crate) created_at: u64,
     pub(crate) ready_at: Option<u64>,
+    pub(crate) restore_state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) setup_required_reason: Option<String>,
     pub(crate) panes: Vec<DesktopSessionRestorePane>,
 }
 
@@ -52,6 +60,8 @@ pub(crate) struct DesktopSessionRestorePane {
     #[serde(default)]
     pub(crate) checkpoint_ref: Option<String>,
     pub(crate) restore_state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) setup_required_reason: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -215,6 +225,47 @@ fn desktop_registry_owner_matches_base(registry: &Value, base: &str) -> bool {
     registry["owner"].as_str() == Some(expected_owner)
 }
 
+fn normalize_desktop_session_restore_pane(pane: &mut DesktopSessionRestorePane) {
+    if pane.restore_state == DESKTOP_SESSION_RESTORE_STATE_CANDIDATE {
+        pane.setup_required_reason = None;
+        return;
+    }
+
+    if pane.setup_required_reason.is_none() {
+        pane.setup_required_reason = Some(
+            match pane.restore_state.as_str() {
+                LEGACY_DESKTOP_SESSION_RESTORE_STATE_PANE_EXITED => {
+                    DESKTOP_SESSION_RESTORE_SETUP_REASON_AGENT_SESSION_EXPIRED
+                }
+                DESKTOP_SESSION_RESTORE_STATE_SETUP_REQUIRED => {
+                    DESKTOP_SESSION_RESTORE_SETUP_REASON_AGENT_SESSION_EXPIRED
+                }
+                _ => DESKTOP_SESSION_RESTORE_SETUP_REASON_AGENT_SESSION_EXPIRED,
+            }
+            .to_string(),
+        );
+    }
+    pane.restore_state = DESKTOP_SESSION_RESTORE_STATE_SETUP_REQUIRED.to_string();
+}
+
+fn desktop_session_restore_candidate_state(
+    panes: &[DesktopSessionRestorePane],
+) -> (String, Option<String>) {
+    if let Some(pane) = panes
+        .iter()
+        .find(|pane| pane.restore_state != DESKTOP_SESSION_RESTORE_STATE_CANDIDATE)
+    {
+        return (
+            DESKTOP_SESSION_RESTORE_STATE_SETUP_REQUIRED.to_string(),
+            pane.setup_required_reason.clone().or_else(|| {
+                Some(DESKTOP_SESSION_RESTORE_SETUP_REASON_AGENT_SESSION_EXPIRED.to_string())
+            }),
+        );
+    }
+
+    (DESKTOP_SESSION_RESTORE_STATE_CANDIDATE.to_string(), None)
+}
+
 fn read_desktop_session_restore_candidate(
     path: &Path,
     base: &str,
@@ -252,6 +303,10 @@ fn read_desktop_session_restore_candidate(
             right.pane_id.as_str(),
         ))
     });
+    for pane in &mut panes {
+        normalize_desktop_session_restore_pane(pane);
+    }
+    let (restore_state, setup_required_reason) = desktop_session_restore_candidate_state(&panes);
 
     Some(DesktopSessionRestoreCandidate {
         session: base.to_string(),
@@ -264,6 +319,8 @@ fn read_desktop_session_restore_candidate(
         port,
         created_at: registry["created_at"].as_u64()?,
         ready_at: registry["ready_at"].as_u64(),
+        restore_state,
+        setup_required_reason,
         panes,
     })
 }
@@ -443,6 +500,7 @@ mod tests {
         assert_eq!(result["candidates"][0]["session"], "ops__packaged");
         assert_eq!(result["candidates"][0]["owner"], "normal");
         assert_eq!(result["candidates"][0]["namespace"], "ops");
+        assert_eq!(result["candidates"][0]["restore_state"], "candidate");
         assert_eq!(result["candidates"][0]["panes"][0]["pane_id"], "worker-1");
         assert_eq!(result["candidates"][0]["panes"][1]["pane_id"], "worker-2");
         assert_eq!(
@@ -452,6 +510,84 @@ mod tests {
         assert_eq!(
             result["candidates"][0]["panes"][1]["transcript_ring_summary"]["raw_transcript_stored"],
             false
+        );
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn load_desktop_session_restore_candidates_marks_expired_panes_setup_required() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "winsmux-desktop-session-restore-expired-{}",
+            std::process::id()
+        ));
+        let registry_dir = temp_dir.join(".psmux");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&registry_dir).unwrap();
+        std::fs::write(
+            registry_dir.join("ops__expired.registry.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "protocol_version": 1,
+                "session": "ops__expired",
+                "namespace": "ops",
+                "server_pid": 1234,
+                "process_started_at": 1783580000000_u64,
+                "server_exe": "winsmux.exe",
+                "instance_nonce": "nonce-expired",
+                "port": 42129,
+                "state": "ready",
+                "owner": "normal",
+                "created_at": 1783580001000_u64,
+                "ready_at": 1783580002000_u64,
+                "restore": {
+                    "restore_metadata_version": 1,
+                    "layer": "session_persistence_layer1",
+                    "panes": [
+                        {
+                            "pane_id": "worker-3",
+                            "window_id": "window-1",
+                            "window_index": 0,
+                            "pane_index": 0,
+                            "agent_cli_session_id": "worker-3",
+                            "transcript_ring_summary": {
+                                "byte_count": 32,
+                                "raw_transcript_stored": false
+                            },
+                            "provider_target": "codex:gpt-5.4",
+                            "model": "gpt-5.4",
+                            "model_source": "operator-override",
+                            "context_capsule_ref": "capsule:expired",
+                            "checkpoint_ref": "checkpoint:expired",
+                            "restore_state": "pane_exited"
+                        }
+                    ]
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let payload = load_desktop_session_restore_candidates(
+            Some(temp_dir.to_string_lossy().to_string()),
+            Some(".psmux".to_string()),
+        )
+        .unwrap();
+        let result = serde_json::to_value(payload).unwrap();
+
+        assert_eq!(result["candidates"].as_array().unwrap().len(), 1);
+        assert_eq!(result["candidates"][0]["restore_state"], "setup-required");
+        assert_eq!(
+            result["candidates"][0]["setup_required_reason"],
+            "agent-session-expired"
+        );
+        assert_eq!(
+            result["candidates"][0]["panes"][0]["restore_state"],
+            "setup-required"
+        );
+        assert_eq!(
+            result["candidates"][0]["panes"][0]["setup_required_reason"],
+            "agent-session-expired"
         );
 
         let _ = std::fs::remove_dir_all(temp_dir);
