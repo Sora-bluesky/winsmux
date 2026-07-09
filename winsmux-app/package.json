@@ -20,6 +20,8 @@
     "test:desktop-split-gate": "pwsh -NoProfile -File ../scripts/test-v03626-desktop-split-gate.ps1 -Json -RequireEvidence",
     "test:v03627-compat-performance-static": "pwsh -NoProfile -File ../scripts/test-v03627-compat-performance-gate.ps1 -Json",
     "test:v03627-compat-performance-gate": "pwsh -NoProfile -File ../scripts/test-v03627-compat-performance-gate.ps1 -Json -RequireEvidence",
+    "test:v03628-runtime-reliability-static": "pwsh -NoProfile -File ../scripts/test-v03628-runtime-reliability-gate.ps1 -Json",
+    "test:v03628-runtime-reliability-gate": "pwsh -NoProfile -File ../scripts/test-v03628-runtime-reliability-gate.ps1 -Json -RequireEvidence",
     "test:automation-driver-pool": "node ./scripts/automation-driver-pool-check.mjs",
     "test:desktop-summary-scheduler": "node --experimental-strip-types ./scripts/desktop-summary-scheduler-check.mjs",
     "test:editor-targets": "node ./scripts/editor-targets-check.mjs",

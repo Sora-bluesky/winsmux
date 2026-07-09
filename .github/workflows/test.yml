@@ -218,6 +218,11 @@ jobs:
             timeout_minutes: 12
             paths: tests/V03628RaceAbnormalSoak.Tests.ps1
             full_name: ""
+          - name: runtime-reliability-v03628
+            result: runtime-reliability-v03628
+            timeout_minutes: 12
+            paths: tests/V03628RuntimeReliabilityGate.Tests.ps1
+            full_name: ""
     steps:
       - uses: actions/checkout@v6
 
