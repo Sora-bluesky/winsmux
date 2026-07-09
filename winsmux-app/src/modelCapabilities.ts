@@ -453,7 +453,7 @@ export const modelCapabilities: readonly ModelCapability[] = [
     labelJa: "GPT-5.6 Sol",
     model: "gpt-5.6-sol",
     modelSource: "cli-discovery",
-    defaultEffortId: "medium",
+    defaultEffortId: "xhigh",
     supportedEffortIds: ["low", "medium", "high", "xhigh"],
     promptTransport: "file",
     authMode: "codex-chatgpt-local",
