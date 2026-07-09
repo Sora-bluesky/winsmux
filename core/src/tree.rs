@@ -369,11 +369,12 @@ pub fn prune_exited(n: Node, remain_on_exit: bool) -> Option<Node> {
             if p.dead { return Some(Node::Leaf(p)); }
             match p.child.try_wait() {
                 Ok(Some(_)) => {
-                    if remain_on_exit {
-                        p.dead = true;
-                        Some(Node::Leaf(p))
-                    } else {
-                        None
+                    match crate::shell_lifecycle::classify_pane_exit(remain_on_exit) {
+                        crate::shell_lifecycle::PaneExitAction::MarkDeadPane => {
+                            p.dead = true;
+                            Some(Node::Leaf(p))
+                        }
+                        crate::shell_lifecycle::PaneExitAction::PrunePane => None,
                     }
                 }
                 _ => Some(Node::Leaf(p)),

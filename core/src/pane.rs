@@ -7,6 +7,7 @@ use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
 use crate::types::{AppState, Pane, Node, LayoutKind, Window};
 use crate::tree::{replace_leaf_with_split, active_pane_mut, kill_leaf};
+use crate::shell_lifecycle::ShellSpawnRoute;
 
 /// Sentinel value for cursor_shape: means "no DECSCUSR received from child yet".
 /// When ConPTY passthrough mode is unavailable, DECSCUSR sequences from child
@@ -68,10 +69,16 @@ fn default_shell_name(command: Option<&str>, configured_shell: Option<&str>) -> 
 }
 
 pub fn create_window(pty_system: &dyn portable_pty::PtySystem, app: &mut AppState, command: Option<&str>, start_dir: Option<&str>) -> io::Result<()> {
+    let should_use_warm_pane = crate::shell_lifecycle::should_transplant_warm_default_shell(
+        command.is_some(),
+        start_dir.is_some(),
+        app.warm_pane.is_some(),
+    );
+
     // ── Fast path: use pre-spawned warm pane when creating a default shell ──
     // The warm pane has its shell already loaded (~470ms for pwsh), so the
     // prompt appears instantly — matching wezterm's "instant tab" feel.
-    if command.is_none() && start_dir.is_none() && app.warm_pane.is_some() {
+    if should_use_warm_pane {
         let wp = app.warm_pane.take().unwrap();
         // Resize to current terminal dimensions if they changed since pre-spawn
         let area = app.last_window_area;
@@ -111,14 +118,20 @@ pub fn create_window(pty_system: &dyn portable_pty::PtySystem, app: &mut AppStat
 
     // When no explicit command is given, use the configured default-shell
     // (from `set -g default-shell` / `default-command`).
-    // Expand format variables like #{pane_current_path} at spawn time (#111).
+    // Expand only on the cold path: the warm path returns with an already
+    // spawned shell and must not re-run #() substitutions.
     let expanded_shell = crate::format::expand_format(&app.default_shell, app);
-    let mut shell_cmd = if command.is_some() {
-        build_command(command, app.env_shim, app.allow_predictions)
-    } else if !expanded_shell.is_empty() {
-        build_default_shell(&expanded_shell, app.env_shim, app.allow_predictions)
-    } else {
-        build_command(None, app.env_shim, app.allow_predictions)
+    let spawn_route = crate::shell_lifecycle::classify_shell_spawn(
+        command.is_some(),
+        !expanded_shell.is_empty(),
+        start_dir.is_some(),
+        false,
+    );
+    let mut shell_cmd = match spawn_route {
+        ShellSpawnRoute::ExplicitCommand => build_command(command, app.env_shim, app.allow_predictions),
+        ShellSpawnRoute::ConfiguredDefaultShell => build_default_shell(&expanded_shell, app.env_shim, app.allow_predictions),
+        ShellSpawnRoute::FreshDefaultShell => build_command(None, app.env_shim, app.allow_predictions),
+        ShellSpawnRoute::WarmDefaultShell => unreachable!("warm default shell route returns before cold spawn"),
     };
     // Override CWD if -c start_dir was specified
     if let Some(dir) = start_dir {
@@ -345,6 +358,11 @@ pub fn split_active_with_command(app: &mut AppState, kind: LayoutKind, command: 
         }
     };
     let size = PtySize { rows, cols, pixel_width: 0, pixel_height: 0 };
+    let should_use_warm_pane = crate::shell_lifecycle::should_transplant_warm_default_shell(
+        command.is_some(),
+        start_dir.is_some(),
+        app.warm_pane.is_some(),
+    );
 
     // ── Fast path: transplant warm pane for default-shell splits ─────
     // The warm pane has its shell already loaded (~470ms for pwsh).  Even
@@ -353,7 +371,7 @@ pub fn split_active_with_command(app: &mut AppState, kind: LayoutKind, command: 
     // cold spawn (~500ms).  Net result: split feels nearly instant.
     // Skip warm pane when start_dir is set — the warm pane was spawned
     // in the server's CWD, not the requested directory (#107).
-    if command.is_none() && start_dir.is_none() && app.warm_pane.is_some() {
+    if should_use_warm_pane {
         let wp = app.warm_pane.take().unwrap();
         // Resize ConPTY + parser to the split dimensions
         if rows != wp.rows || cols != wp.cols {
@@ -379,14 +397,20 @@ pub fn split_active_with_command(app: &mut AppState, kind: LayoutKind, command: 
     // ── Normal path: cold-spawn a new ConPTY + shell ────────────────
     let pair = pty_system.openpty(size).map_err(|e| io::Error::new(io::ErrorKind::Other, format!("openpty error: {e}")))?;
     // When no explicit command is given, use the configured default-shell.
-    // Expand format variables like #{pane_current_path} at spawn time (#111).
+    // Expand only on the cold path: the warm path returns with an already
+    // spawned shell and must not re-run #() substitutions.
     let expanded_shell = crate::format::expand_format(&app.default_shell, app);
-    let mut shell_cmd = if command.is_some() {
-        build_command(command, app.env_shim, app.allow_predictions)
-    } else if !expanded_shell.is_empty() {
-        build_default_shell(&expanded_shell, app.env_shim, app.allow_predictions)
-    } else {
-        build_command(None, app.env_shim, app.allow_predictions)
+    let spawn_route = crate::shell_lifecycle::classify_shell_spawn(
+        command.is_some(),
+        !expanded_shell.is_empty(),
+        start_dir.is_some(),
+        false,
+    );
+    let mut shell_cmd = match spawn_route {
+        ShellSpawnRoute::ExplicitCommand => build_command(command, app.env_shim, app.allow_predictions),
+        ShellSpawnRoute::ConfiguredDefaultShell => build_default_shell(&expanded_shell, app.env_shim, app.allow_predictions),
+        ShellSpawnRoute::FreshDefaultShell => build_command(None, app.env_shim, app.allow_predictions),
+        ShellSpawnRoute::WarmDefaultShell => unreachable!("warm default shell route returns before cold spawn"),
     };
     // Override CWD if -c start_dir was specified
     if let Some(dir) = start_dir {
@@ -1008,7 +1032,7 @@ pub fn spawn_reader_thread(
         // If parser is still in alt-screen the TUI crashed without
         // sending RMCUP — force cleanup now (TUI is guaranteed dead).
         if let Ok(mut parser) = term_reader.lock() {
-            if parser.screen().alternate_screen() {
+            if crate::shell_lifecycle::should_restore_terminal_after_reader_exit(parser.screen().alternate_screen()) {
                 parser.process(b"\x1b[?25h\x1b[?1049l");
                 cursor_shape.store(0, std::sync::atomic::Ordering::Release);
                 dv_writer.fetch_add(1, std::sync::atomic::Ordering::Release);
