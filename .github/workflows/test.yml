@@ -213,6 +213,11 @@ jobs:
             timeout_minutes: 12
             paths: tests/V03627CompatPerformanceGate.Tests.ps1
             full_name: ""
+          - name: race-abnormal-soak-v03628
+            result: race-abnormal-soak-v03628
+            timeout_minutes: 12
+            paths: tests/V03628RaceAbnormalSoak.Tests.ps1
+            full_name: ""
     steps:
       - uses: actions/checkout@v6
 

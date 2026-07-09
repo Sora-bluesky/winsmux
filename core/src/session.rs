@@ -1258,6 +1258,112 @@ mod tests {
     }
 
     #[test]
+    fn cleanup_stale_port_files_tolerates_concurrent_startup_cleanup_passes() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let old_userprofile = env::var_os("USERPROFILE");
+        let old_home = env::var_os("HOME");
+        let temp_home = make_temp_psmux_home("concurrent-startup-cleanup");
+        let psmux_dir = temp_home.join(".psmux");
+        let starting_port_path = psmux_dir.join("starting-race.port");
+        let starting_key_path = psmux_dir.join("starting-race.key");
+        let starting_registry_path = session_registry_path(&psmux_dir, "starting-race");
+
+        std::fs::write(&starting_port_path, "not-a-port")
+            .expect("test should write starting port file");
+        std::fs::write(&starting_key_path, "secret")
+            .expect("test should write starting key file");
+        let created_at = session_registry_now_millis();
+        let process_started_at = current_process_started_at_millis().unwrap_or(created_at);
+        write_session_registry(
+            &psmux_dir,
+            "starting-race",
+            42131,
+            "normal",
+            "starting",
+            "starting-race-nonce",
+            process_started_at,
+            created_at,
+            None,
+        )
+        .expect("test should write starting registry");
+
+        for index in 0..12 {
+            let base = format!("dead-race-{index}");
+            let port_path = psmux_dir.join(format!("{base}.port"));
+            let key_path = psmux_dir.join(format!("{base}.key"));
+            let registry_path = session_registry_path(&psmux_dir, &base);
+            let old_created_at = created_at.saturating_sub(120_000 + index);
+
+            std::fs::write(&port_path, "not-a-port")
+                .expect("test should write dead race port file");
+            std::fs::write(&key_path, "secret").expect("test should write dead race key file");
+            write_session_registry(
+                &psmux_dir,
+                &base,
+                42140 + index as u16,
+                "normal",
+                "ready",
+                &format!("dead-race-nonce-{index}"),
+                old_created_at,
+                old_created_at,
+                Some(old_created_at + 250),
+            )
+            .expect("test should write dead race registry");
+            let mut registry: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(&registry_path).expect("test should read dead race registry"),
+            )
+            .expect("test registry should be valid JSON");
+            registry["server_pid"] = serde_json::json!(u32::MAX);
+            std::fs::write(
+                &registry_path,
+                serde_json::to_vec_pretty(&registry)
+                    .expect("test should serialize dead race registry"),
+            )
+            .expect("test should rewrite dead race registry");
+        }
+
+        env::set_var("USERPROFILE", &temp_home);
+        env::set_var("HOME", &temp_home);
+        let handles: Vec<_> = (0..8)
+            .map(|_| std::thread::spawn(cleanup_stale_port_files))
+            .collect();
+        for handle in handles {
+            handle
+                .join()
+                .expect("cleanup worker should not panic during race soak");
+        }
+
+        restore_env("USERPROFILE", old_userprofile);
+        restore_env("HOME", old_home);
+        let starting_port_exists = starting_port_path.exists();
+        let starting_key_exists = starting_key_path.exists();
+        let starting_registry_exists = starting_registry_path.exists();
+        let dead_entries: Vec<_> = std::fs::read_dir(&psmux_dir)
+            .expect("test should read psmux dir")
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("dead-race-"))
+            .collect();
+        let _ = std::fs::remove_dir_all(&temp_home);
+
+        assert!(
+            starting_port_exists,
+            "concurrent cleanup must preserve recent starting .port evidence"
+        );
+        assert!(
+            starting_key_exists,
+            "concurrent cleanup must preserve recent starting .key evidence"
+        );
+        assert!(
+            starting_registry_exists,
+            "concurrent cleanup must preserve recent starting registry evidence"
+        );
+        assert!(
+            dead_entries.is_empty(),
+            "concurrent cleanup should remove all dead race fixtures"
+        );
+    }
+
+    #[test]
     fn cleanup_stale_port_files_preserves_mismatched_registry_files() {
         let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
         let old_userprofile = env::var_os("USERPROFILE");
