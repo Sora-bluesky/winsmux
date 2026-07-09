@@ -2521,7 +2521,10 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
                     apply_set_option(&mut app, &option, &value, quiet);
                     // If default-shell changed, kill the warm pane so the next
                     // new-window spawns the correct shell (fixes #99).
-                    if app.default_shell != old_shell {
+                    if crate::shell_lifecycle::should_reset_warm_pane_after_default_shell_change(
+                        &old_shell,
+                        &app.default_shell,
+                    ) {
                         if let Some(mut wp) = app.warm_pane.take() {
                             wp.child.kill().ok();
                         }
@@ -3977,7 +3980,7 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
                 if let Some(cmds) = app.hooks.get("pane-died") { let cmds = cmds.clone(); for cmd in &cmds { let _ = execute_command_string(&mut app, cmd); } }
                 if let Some(cmds) = app.hooks.get("pane-exited") { let cmds = cmds.clone(); for cmd in &cmds { let _ = execute_command_string(&mut app, cmd); } }
             }
-            if app.exit_empty && all_empty {
+            if crate::shell_lifecycle::should_stop_server_after_reap(app.exit_empty, all_empty) {
                 remove_current_session_state(&app);
                 crate::types::shutdown_persistent_streams();
                 // Kill warm pane's child (process::exit skips Drop)

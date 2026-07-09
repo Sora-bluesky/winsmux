@@ -9,6 +9,7 @@ mod style;
 mod rendering;
 mod config;
 mod commands;
+mod shell_lifecycle;
 mod pane;
 mod popup;
 mod copy_mode;
