@@ -34,6 +34,19 @@ pub fn session_registry_now_millis() -> u128 {
         .unwrap_or_default()
 }
 
+#[cfg(windows)]
+pub fn current_process_started_at_millis() -> Option<u128> {
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+    let handle = unsafe { GetCurrentProcess() };
+    process_started_at_millis_for_handle(handle)
+}
+
+#[cfg(not(windows))]
+pub fn current_process_started_at_millis() -> Option<u128> {
+    None
+}
+
 pub fn new_session_instance_nonce() -> String {
     use std::collections::hash_map::RandomState;
     use std::hash::{BuildHasher, Hasher};
@@ -69,6 +82,7 @@ pub fn write_session_registry(
     owner: &str,
     state: &str,
     instance_nonce: &str,
+    process_started_at: u128,
     created_at: u128,
     ready_at: Option<u128>,
 ) -> io::Result<()> {
@@ -83,7 +97,7 @@ pub fn write_session_registry(
         "session": base,
         "namespace": namespace,
         "server_pid": std::process::id(),
-        "process_started_at": created_at,
+        "process_started_at": process_started_at,
         "server_exe": server_exe,
         "instance_nonce": instance_nonce,
         "port": port,
@@ -139,8 +153,18 @@ fn registry_server_exe_matches_current(registry: &serde_json::Value) -> bool {
     server_exe == current_exe
 }
 
+fn registry_owner_matches_base(registry: &serde_json::Value, base: &str) -> bool {
+    let expected_owner = if is_warm_session(base) {
+        "warm"
+    } else {
+        "normal"
+    };
+    registry["owner"].as_str() == Some(expected_owner)
+}
+
 fn registry_has_cleanup_ownership_evidence(registry: &serde_json::Value, base: &str) -> bool {
     registry_is_for_base(registry, base)
+        && registry_owner_matches_base(registry, base)
         && registry["server_pid"].as_u64().is_some_and(|pid| pid > 0)
         && registry_u128(registry, "process_started_at").is_some()
         && registry["instance_nonce"]
@@ -150,11 +174,38 @@ fn registry_has_cleanup_ownership_evidence(registry: &serde_json::Value, base: &
 }
 
 fn registry_server_pid(registry: &serde_json::Value, base: &str) -> Option<u32> {
-    if !registry_is_for_base(registry, base) || !registry_server_exe_matches_current(registry) {
+    if !registry_is_for_base(registry, base)
+        || !registry_owner_matches_base(registry, base)
+        || !registry_server_exe_matches_current(registry)
+    {
         return None;
     }
     let pid = registry["server_pid"].as_u64()?;
-    u32::try_from(pid).ok().filter(|pid| *pid > 0)
+    let pid = u32::try_from(pid).ok().filter(|pid| *pid > 0)?;
+    if !registry_process_started_at_matches_pid(registry, pid) {
+        return None;
+    }
+    Some(pid)
+}
+
+fn registry_process_started_at_matches_pid(registry: &serde_json::Value, pid: u32) -> bool {
+    let Some(expected_started_at) = registry_u128(registry, "process_started_at") else {
+        return false;
+    };
+    let Some(actual_started_at) = process_started_at_millis_for_pid(pid) else {
+        return process_started_at_unavailable_matches_pid(pid);
+    };
+    actual_started_at == expected_started_at
+}
+
+#[cfg(windows)]
+fn process_started_at_unavailable_matches_pid(_pid: u32) -> bool {
+    false
+}
+
+#[cfg(not(windows))]
+fn process_started_at_unavailable_matches_pid(pid: u32) -> bool {
+    process_id_is_alive(pid)
 }
 
 #[cfg(windows)]
@@ -185,13 +236,77 @@ fn process_id_is_alive(pid: u32) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(windows)]
+fn process_started_at_millis_for_pid(pid: u32) -> Option<u128> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        return None;
+    }
+    let started_at = process_started_at_millis_for_handle(handle);
+    unsafe {
+        let _ = CloseHandle(handle);
+    }
+    started_at
+}
+
+#[cfg(windows)]
+fn process_started_at_millis_for_handle(
+    handle: windows_sys::Win32::Foundation::HANDLE,
+) -> Option<u128> {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Threading::GetProcessTimes;
+
+    let mut created = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let mut exited = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let mut kernel = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let mut user = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let ok = unsafe { GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user) };
+    if ok == 0 {
+        return None;
+    }
+    filetime_to_unix_millis(created)
+}
+
+#[cfg(windows)]
+fn filetime_to_unix_millis(value: windows_sys::Win32::Foundation::FILETIME) -> Option<u128> {
+    let ticks = ((value.dwHighDateTime as u64) << 32) | u64::from(value.dwLowDateTime);
+    let unix_ticks = ticks.checked_sub(116_444_736_000_000_000)?;
+    Some(u128::from(unix_ticks / 10_000))
+}
+
+#[cfg(not(windows))]
+fn process_started_at_millis_for_pid(_pid: u32) -> Option<u128> {
+    None
+}
+
 fn registry_is_within_startup_deadline(registry: &serde_json::Value, base: &str) -> bool {
-    if !registry_is_for_base(registry, base) || registry["state"].as_str() != Some("starting") {
+    if !registry_is_for_base(registry, base)
+        || !registry_owner_matches_base(registry, base)
+        || registry["state"].as_str() != Some("starting")
+    {
         return false;
     }
     let Some(created_at) = registry_u128(registry, "created_at") else {
         return false;
     };
+    if registry_server_pid(registry, base).is_none() {
+        return false;
+    }
     let elapsed_ms = session_registry_now_millis().saturating_sub(created_at);
     elapsed_ms < SESSION_REGISTRY_STARTUP_DEADLINE.as_millis()
 }
@@ -1015,6 +1130,7 @@ mod tests {
             .expect("test should write warm port file");
         std::fs::write(dir.join("preview____warm__.key"), "secret")
             .expect("test should write warm key file");
+        let process_started_at = session_registry_now_millis().saturating_sub(120_000);
         write_session_registry(
             &dir,
             "preview____warm__",
@@ -1022,7 +1138,8 @@ mod tests {
             "warm",
             "ready",
             "warm-cleanup-nonce",
-            session_registry_now_millis().saturating_sub(120_000),
+            process_started_at,
+            process_started_at,
             Some(session_registry_now_millis().saturating_sub(119_000)),
         )
         .expect("test should write warm registry file");
@@ -1054,6 +1171,8 @@ mod tests {
             .expect("test should write recent port file");
         std::fs::write(&key_path, "secret")
             .expect("test should write recent key file");
+        let created_at = session_registry_now_millis();
+        let process_started_at = current_process_started_at_millis().unwrap_or(created_at);
         write_session_registry(
             &psmux_dir,
             "starting",
@@ -1061,7 +1180,8 @@ mod tests {
             "normal",
             "starting",
             "fresh-starting-nonce",
-            session_registry_now_millis(),
+            process_started_at,
+            created_at,
             None,
         )
         .expect("test should write starting registry");
@@ -1102,6 +1222,7 @@ mod tests {
             "normal",
             "ready",
             "old-dead-nonce",
+            created_at,
             created_at,
             Some(created_at + 250),
         )
@@ -1201,6 +1322,7 @@ mod tests {
         let key_path = psmux_dir.join("live.key");
         let registry_path = session_registry_path(&psmux_dir, "live");
         let created_at = session_registry_now_millis().saturating_sub(120_000);
+        let process_started_at = current_process_started_at_millis().unwrap_or(created_at);
         let server_exe = env::current_exe()
             .ok()
             .map(|path| normalize_socket_selector_path(&path));
@@ -1213,7 +1335,7 @@ mod tests {
             "session": "live",
             "namespace": null,
             "server_pid": std::process::id(),
-            "process_started_at": created_at,
+            "process_started_at": process_started_at,
             "server_exe": server_exe,
             "instance_nonce": "live-registry-nonce",
             "port": 42126,
@@ -1244,10 +1366,183 @@ mod tests {
         assert!(registry_exists, "live registry process must preserve registry");
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn cleanup_stale_port_files_removes_reused_pid_registry_when_start_time_differs() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let old_userprofile = env::var_os("USERPROFILE");
+        let old_home = env::var_os("HOME");
+        let temp_home = make_temp_psmux_home("reused-pid-registry");
+        let psmux_dir = temp_home.join(".psmux");
+        let port_path = psmux_dir.join("reused.port");
+        let key_path = psmux_dir.join("reused.key");
+        let registry_path = session_registry_path(&psmux_dir, "reused");
+        let created_at = session_registry_now_millis().saturating_sub(120_000);
+        let actual_started_at = current_process_started_at_millis().unwrap_or(created_at);
+        let stale_started_at = actual_started_at.saturating_sub(1);
+        let server_exe = env::current_exe()
+            .ok()
+            .map(|path| normalize_socket_selector_path(&path));
+
+        std::fs::write(&port_path, "not-a-port")
+            .expect("test should write reused pid port file");
+        std::fs::write(&key_path, "secret").expect("test should write reused pid key file");
+        let registry = serde_json::json!({
+            "protocol_version": SESSION_REGISTRY_PROTOCOL_VERSION,
+            "session": "reused",
+            "namespace": null,
+            "server_pid": std::process::id(),
+            "process_started_at": stale_started_at,
+            "server_exe": server_exe,
+            "instance_nonce": "reused-pid-nonce",
+            "port": 42127,
+            "state": "ready",
+            "owner": "normal",
+            "created_at": created_at,
+            "ready_at": created_at + 250
+        });
+        std::fs::write(
+            &registry_path,
+            serde_json::to_vec_pretty(&registry).expect("test should serialize registry"),
+        )
+        .expect("test should write reused pid registry");
+
+        env::set_var("USERPROFILE", &temp_home);
+        env::set_var("HOME", &temp_home);
+        cleanup_stale_port_files();
+
+        restore_env("USERPROFILE", old_userprofile);
+        restore_env("HOME", old_home);
+        let port_exists = port_path.exists();
+        let key_exists = key_path.exists();
+        let registry_exists = registry_path.exists();
+        let _ = std::fs::remove_dir_all(&temp_home);
+
+        assert!(
+            !port_exists,
+            "reused pid registry must not preserve stale .port"
+        );
+        assert!(
+            !key_exists,
+            "reused pid registry must not preserve stale .key"
+        );
+        assert!(
+            !registry_exists,
+            "reused pid registry must not preserve registry"
+        );
+    }
+
+    #[test]
+    fn registry_owner_must_match_base_for_cleanup_and_liveness_evidence() {
+        let created_at = session_registry_now_millis();
+        let process_started_at = current_process_started_at_millis().unwrap_or(created_at);
+        let server_exe = env::current_exe()
+            .ok()
+            .map(|path| normalize_socket_selector_path(&path));
+        let normal_registry = serde_json::json!({
+            "protocol_version": SESSION_REGISTRY_PROTOCOL_VERSION,
+            "session": "normal",
+            "namespace": null,
+            "server_pid": std::process::id(),
+            "process_started_at": process_started_at,
+            "server_exe": server_exe,
+            "instance_nonce": "normal-owner-nonce",
+            "port": 42128,
+            "state": "ready",
+            "owner": "normal",
+            "created_at": created_at,
+            "ready_at": created_at + 250
+        });
+        let mut warm_owned_normal_registry = normal_registry.clone();
+        warm_owned_normal_registry["owner"] = serde_json::json!("warm");
+
+        assert!(registry_has_cleanup_ownership_evidence(
+            &normal_registry,
+            "normal"
+        ));
+        assert!(registry_server_pid(&normal_registry, "normal").is_some());
+        assert!(
+            !registry_has_cleanup_ownership_evidence(&warm_owned_normal_registry, "normal"),
+            "warm owner metadata must not authorize normal session cleanup"
+        );
+        assert!(
+            registry_server_pid(&warm_owned_normal_registry, "normal").is_none(),
+            "warm owner metadata must not preserve normal session liveness"
+        );
+    }
+
+    #[test]
+    fn registry_owner_must_match_base_for_startup_deadline_evidence() {
+        let created_at = session_registry_now_millis();
+        let process_started_at = current_process_started_at_millis().unwrap_or(created_at);
+        let server_exe = env::current_exe()
+            .ok()
+            .map(|path| normalize_socket_selector_path(&path));
+        let normal_starting_registry = serde_json::json!({
+            "protocol_version": SESSION_REGISTRY_PROTOCOL_VERSION,
+            "session": "normal-starting",
+            "namespace": null,
+            "server_pid": std::process::id(),
+            "process_started_at": process_started_at,
+            "server_exe": server_exe,
+            "instance_nonce": "normal-starting-nonce",
+            "port": 42129,
+            "state": "starting",
+            "owner": "normal",
+            "created_at": created_at,
+            "ready_at": null
+        });
+        let mut warm_owned_starting_registry = normal_starting_registry.clone();
+        warm_owned_starting_registry["owner"] = serde_json::json!("warm");
+
+        assert!(registry_is_within_startup_deadline(
+            &normal_starting_registry,
+            "normal-starting"
+        ));
+        assert!(
+            !registry_is_within_startup_deadline(
+                &warm_owned_starting_registry,
+                "normal-starting"
+            ),
+            "warm owner metadata must not preserve normal starting files"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn startup_deadline_requires_matching_process_start_time() {
+        let created_at = session_registry_now_millis();
+        let actual_started_at = current_process_started_at_millis().unwrap_or(created_at);
+        let stale_started_at = actual_started_at.saturating_sub(120_000);
+        let server_exe = env::current_exe()
+            .ok()
+            .map(|path| normalize_socket_selector_path(&path));
+        let stale_starting_registry = serde_json::json!({
+            "protocol_version": SESSION_REGISTRY_PROTOCOL_VERSION,
+            "session": "starting-reused",
+            "namespace": null,
+            "server_pid": std::process::id(),
+            "process_started_at": stale_started_at,
+            "server_exe": server_exe,
+            "instance_nonce": "starting-reused-nonce",
+            "port": 42130,
+            "state": "starting",
+            "owner": "normal",
+            "created_at": created_at,
+            "ready_at": null
+        });
+
+        assert!(
+            !registry_is_within_startup_deadline(&stale_starting_registry, "starting-reused"),
+            "starting registry grace must not bypass PID reuse protection"
+        );
+    }
+
     #[test]
     fn write_session_registry_publishes_versioned_non_secret_metadata() {
         let dir = make_temp_psmux_dir("session-registry-metadata");
         let created_at = 1_782_196_000_000_u128;
+        let process_started_at = created_at.saturating_sub(10_000);
         let ready_at = Some(created_at + 250);
         let nonce = "nonce-for-test";
 
@@ -1258,6 +1553,7 @@ mod tests {
             "normal",
             "ready",
             nonce,
+            process_started_at,
             created_at,
             ready_at,
         )
@@ -1284,6 +1580,10 @@ mod tests {
         assert_eq!(json["port"], 42123);
         assert_eq!(json["state"], "ready");
         assert_eq!(json["owner"], "normal");
+        assert_eq!(
+            json["process_started_at"].as_u64(),
+            Some(process_started_at as u64)
+        );
         assert_eq!(json["created_at"].as_u64(), Some(created_at as u64));
         assert_eq!(json["ready_at"].as_u64(), Some(ready_at.unwrap() as u64));
         assert!(

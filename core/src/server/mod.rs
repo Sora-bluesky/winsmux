@@ -111,6 +111,7 @@ fn write_current_session_registry(
     app: &AppState,
     state: &str,
     instance_nonce: &str,
+    process_started_at: u128,
     created_at: u128,
     ready_at: Option<u128>,
 ) -> io::Result<()> {
@@ -126,6 +127,7 @@ fn write_current_session_registry(
         session_registry_owner(&base),
         state,
         instance_nonce,
+        process_started_at,
         created_at,
         ready_at,
     )
@@ -372,6 +374,8 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
     let dir = psmux_registry_dir()?;
     log_registry_debug(&format!("registry: create dir {}", dir.display()));
     let registry_created_at = crate::session::session_registry_now_millis();
+    let registry_process_started_at =
+        crate::session::current_process_started_at_millis().unwrap_or(registry_created_at);
     let registry_instance_nonce = crate::session::new_session_instance_nonce();
 
     // Generate a random session key for security
@@ -397,6 +401,7 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
         &app,
         "starting",
         &registry_instance_nonce,
+        registry_process_started_at,
         registry_created_at,
         None,
     )?;
@@ -579,6 +584,7 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
         &app,
         "ready",
         &registry_instance_nonce,
+        registry_process_started_at,
         registry_created_at,
         Some(crate::session::session_registry_now_millis()),
     )?;
@@ -2168,6 +2174,7 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
                         &app,
                         "ready",
                         &renamed_nonce,
+                        registry_process_started_at,
                         renamed_at,
                         Some(renamed_at),
                     );
@@ -2207,6 +2214,7 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
                         &app,
                         "ready",
                         &claimed_nonce,
+                        registry_process_started_at,
                         claimed_at,
                         Some(claimed_at),
                     );
