@@ -10,13 +10,34 @@ use crate::util::base64_decode;
 use crate::control;
 
 static NEXT_CLIENT_ID: AtomicU64 = AtomicU64::new(1);
-const CONTROL_COMMAND_ERROR_SENTINEL: &str = "\u{1e}winsmux-error:";
 const NON_PERSISTENT_BATCH_READ_TIMEOUT: Duration = Duration::from_millis(10);
 use crate::commands::{
     encode_safe_environment_error, encode_safe_environment_response, parse_command_line,
     SHOW_ENVIRONMENT_SAFE_CAPABILITY_FLAG, SHOW_ENVIRONMENT_SAFE_RESPONSE_FLAG,
 };
 use super::helpers::TMUX_COMMANDS;
+
+#[derive(Debug, Eq, PartialEq)]
+enum ControlCommandResult {
+    Success(String),
+    Error(String),
+}
+
+struct ControlCommandResponseSender(mpsc::Sender<ControlCommandResult>);
+
+impl ControlCommandResponseSender {
+    fn new(sender: mpsc::Sender<ControlCommandResult>) -> Self {
+        Self(sender)
+    }
+
+    fn send(&self, response: String) -> Result<(), mpsc::SendError<ControlCommandResult>> {
+        self.0.send(ControlCommandResult::Success(response))
+    }
+
+    fn send_error(&self, error: String) -> Result<(), mpsc::SendError<ControlCommandResult>> {
+        self.0.send(ControlCommandResult::Error(error))
+    }
+}
 
 /// Handle a single TCP connection from a client.
 /// Parses auth, optional TARGET/PERSISTENT flags, then dispatches commands
@@ -332,9 +353,9 @@ if control_echo || control_noecho {
         }
 
         // Dispatch command (use a oneshot for the response)
-        let (resp_s, resp_r) = mpsc::channel::<String>();
+        let (resp_s, resp_r) = mpsc::channel::<ControlCommandResult>();
         let dispatched = dispatch_control_command(
-            cmd_name, &filtered_args, &tx_ctrl, resp_s,
+            cmd_name, &filtered_args, &tx_ctrl, ControlCommandResponseSender::new(resp_s),
             safe_environment_capability_negotiated,
             ctrl_target_pane, ctrl_pane_is_id, ctrl_raw_target.as_deref(),
             ctrl_client_id,
@@ -343,22 +364,21 @@ if control_echo || control_noecho {
         if dispatched {
             // Wait for response with timeout
             match resp_r.recv_timeout(Duration::from_secs(5)) {
-                Ok(response) => {
-                    if let Some(error) = response.strip_prefix(CONTROL_COMMAND_ERROR_SENTINEL) {
-                        let _ = write!(write_stream, "{error}");
-                        if !error.ends_with('\n') {
+                Ok(ControlCommandResult::Error(error)) => {
+                    let _ = write!(write_stream, "{error}");
+                    if !error.ends_with('\n') {
+                        let _ = writeln!(write_stream);
+                    }
+                    let _ = writeln!(write_stream, "{}", control::format_error(ts, cmd_counter));
+                }
+                Ok(ControlCommandResult::Success(response)) => {
+                    if !response.is_empty() {
+                        let _ = write!(write_stream, "{}", response);
+                        if !response.ends_with('\n') {
                             let _ = writeln!(write_stream);
                         }
-                        let _ = writeln!(write_stream, "{}", control::format_error(ts, cmd_counter));
-                    } else {
-                        if !response.is_empty() {
-                            let _ = write!(write_stream, "{}", response);
-                            if !response.ends_with('\n') {
-                                let _ = writeln!(write_stream);
-                            }
-                        }
-                        let _ = writeln!(write_stream, "{}", control::format_end(ts, cmd_counter));
                     }
+                    let _ = writeln!(write_stream, "{}", control::format_end(ts, cmd_counter));
                 }
                 Err(_) => {
                     let _ = writeln!(write_stream, "command timed out");
@@ -1914,7 +1934,7 @@ fn dispatch_control_command(
     cmd: &str,
     args: &[&str],
     tx: &mpsc::Sender<CtrlReq>,
-    resp_tx: mpsc::Sender<String>,
+    resp_tx: ControlCommandResponseSender,
     safe_environment_capability_negotiated: bool,
     target_pane: Option<usize>,
     pane_is_id: bool,
@@ -2315,18 +2335,20 @@ fn dispatch_control_command(
             let (rtx, rrx) = mpsc::channel::<Result<String, String>>();
             let _ = tx.send(CtrlReq::ShowEnvironment(requested_name, rtx));
             if let Ok(result) = rrx.recv_timeout(Duration::from_secs(5)) {
-                let response = match result {
+                match result {
                     Ok(text) if safe_response_requested => {
-                        encode_safe_environment_response(&text)
+                        let _ = resp_tx.send(encode_safe_environment_response(&text));
                     }
-                    Ok(text) => text,
-                    Err(error) if safe_response_requested => format!(
-                        "{CONTROL_COMMAND_ERROR_SENTINEL}{}",
-                        encode_safe_environment_error(&error)
-                    ),
-                    Err(error) => format!("{CONTROL_COMMAND_ERROR_SENTINEL}{error}"),
-                };
-                let _ = resp_tx.send(response);
+                    Ok(text) => {
+                        let _ = resp_tx.send(text);
+                    }
+                    Err(error) if safe_response_requested => {
+                        let _ = resp_tx.send_error(encode_safe_environment_error(&error));
+                    }
+                    Err(error) => {
+                        let _ = resp_tx.send_error(error);
+                    }
+                }
             }
             true
         }
@@ -2576,6 +2598,23 @@ mod tests {
         }
     }
 
+    fn enter_control_mode(
+        client: &mut std::net::TcpStream,
+        reader: &mut BufReader<std::net::TcpStream>,
+        request_rx: &mpsc::Receiver<CtrlReq>,
+    ) {
+        writeln!(client, "CONTROL_NOECHO").unwrap();
+        client.flush().unwrap();
+
+        let mut ready = String::new();
+        reader.read_line(&mut ready).unwrap();
+        assert_eq!(ready, "\n");
+        assert!(matches!(
+            request_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            CtrlReq::ControlRegister { echo: false, .. }
+        ));
+    }
+
     fn synthetic_full_environment_output() -> String {
         let mut environment = HashMap::new();
         environment.insert(
@@ -2721,7 +2760,7 @@ mod tests {
                 "show-environment",
                 &["TARGET_VAR"],
                 &request_tx,
-                response_tx,
+                ControlCommandResponseSender::new(response_tx),
                 true,
                 None,
                 false,
@@ -2731,7 +2770,10 @@ mod tests {
         });
 
         answer_show_environment(&request_rx, Some("TARGET_VAR"), Ok(expected.clone()));
-        let response = response_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let response = match response_rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+            ControlCommandResult::Success(response) => response,
+            ControlCommandResult::Error(error) => panic!("unexpected control error: {error}"),
+        };
         assert_eq!(
             crate::commands::decode_safe_environment_response(&response).unwrap(),
             crate::commands::SafeEnvironmentResponse::Ok(expected)
@@ -2749,7 +2791,7 @@ mod tests {
                 "show-environment",
                 &[],
                 &request_tx,
-                response_tx,
+                ControlCommandResponseSender::new(response_tx),
                 true,
                 None,
                 false,
@@ -2759,7 +2801,10 @@ mod tests {
         });
 
         answer_show_environment(&request_rx, None, Ok(expected.clone()));
-        let response = response_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let response = match response_rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+            ControlCommandResult::Success(response) => response,
+            ControlCommandResult::Error(error) => panic!("unexpected control error: {error}"),
+        };
         assert_eq!(
             crate::commands::decode_safe_environment_response(&response).unwrap(),
             crate::commands::SafeEnvironmentResponse::Ok(expected)
@@ -2777,7 +2822,7 @@ mod tests {
                 "show-environment",
                 &["MISSING_VAR"],
                 &request_tx,
-                response_tx,
+                ControlCommandResponseSender::new(response_tx),
                 true,
                 None,
                 false,
@@ -2791,10 +2836,12 @@ mod tests {
             Some("MISSING_VAR"),
             Err("unknown variable: MISSING_VAR".to_string()),
         );
-        let response = response_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-        let response = response
-            .strip_prefix(CONTROL_COMMAND_ERROR_SENTINEL)
-            .expect("negotiated control errors must retain control error status");
+        let response = match response_rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+            ControlCommandResult::Error(response) => response,
+            ControlCommandResult::Success(response) => {
+                panic!("expected control error, got success: {response}")
+            }
+        };
         assert_eq!(
             crate::commands::decode_safe_environment_response(&response).unwrap(),
             crate::commands::SafeEnvironmentResponse::Error(
@@ -2802,6 +2849,70 @@ mod tests {
             )
         );
         assert!(dispatcher.join().unwrap());
+    }
+
+    #[test]
+    fn control_output_starting_with_former_error_sentinel_is_success() {
+        let (address, request_rx, server) = spawn_test_server();
+        let (mut client, mut reader) = authenticate(address);
+        enter_control_mode(&mut client, &mut reader, &request_rx);
+
+        writeln!(client, "show-buffer").unwrap();
+        client.flush().unwrap();
+
+        let mut begin = String::new();
+        reader.read_line(&mut begin).unwrap();
+        assert!(begin.starts_with("%begin "), "unexpected begin line: {begin:?}");
+
+        let expected = "\u{1e}winsmux-error:synthetic successful output";
+        match request_rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+            CtrlReq::ShowBuffer(sender) => sender.send(expected.to_string()).unwrap(),
+            _ => panic!("expected show-buffer request"),
+        }
+
+        let mut output = String::new();
+        reader.read_line(&mut output).unwrap();
+        assert_eq!(output, format!("{expected}\n"));
+
+        let mut footer = String::new();
+        reader.read_line(&mut footer).unwrap();
+        assert!(footer.starts_with("%end "), "unexpected footer: {footer:?}");
+
+        drop(reader);
+        drop(client);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn control_command_error_still_emits_error_footer() {
+        let (address, request_rx, server) = spawn_test_server();
+        let (mut client, mut reader) = authenticate(address);
+        enter_control_mode(&mut client, &mut reader, &request_rx);
+
+        writeln!(client, "show-environment SYNTHETIC_MISSING_VAR").unwrap();
+        client.flush().unwrap();
+
+        let mut begin = String::new();
+        reader.read_line(&mut begin).unwrap();
+        assert!(begin.starts_with("%begin "), "unexpected begin line: {begin:?}");
+
+        answer_show_environment(
+            &request_rx,
+            Some("SYNTHETIC_MISSING_VAR"),
+            Err("unknown variable: SYNTHETIC_MISSING_VAR".to_string()),
+        );
+
+        let mut error = String::new();
+        reader.read_line(&mut error).unwrap();
+        assert_eq!(error, "unknown variable: SYNTHETIC_MISSING_VAR\n");
+
+        let mut footer = String::new();
+        reader.read_line(&mut footer).unwrap();
+        assert!(footer.starts_with("%error "), "unexpected footer: {footer:?}");
+
+        drop(reader);
+        drop(client);
+        server.join().unwrap();
     }
 
     #[test]
