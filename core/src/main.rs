@@ -56,7 +56,7 @@ use crate::platform::enable_virtual_terminal_processing;
 use crate::cli::{print_help, print_version, print_commands};
 use crate::session::{cleanup_stale_port_files, read_session_key, send_control,
     send_control_with_response, resolve_last_session_name, resolve_default_session_name,
-    require_safe_environment_connection,
+    require_safe_environment_control_connection,
     kill_remaining_server_processes, request_server_shutdown,
     cleanup_warm_server_for_socket, resolve_last_session_name_with_prefix,
     socket_path_session_base, normalize_socket_selector, remove_session_state_files};
@@ -3196,22 +3196,18 @@ fn run_control_mode(mode: u8) -> io::Result<()> {
     let mut write_stream = reader.get_ref().try_clone()?;
     // Reject stale servers before entering control mode. This protects both named
     // lookups and no-argument full listings without content-sniffing streamed output.
-    require_safe_environment_connection(&mut reader, &mut write_stream)?;
+    require_safe_environment_control_connection(&mut reader, &mut write_stream)?;
 
     // Send CONTROL or CONTROL_NOECHO
     let mode_str = if mode == 1 { "CONTROL" } else { "CONTROL_NOECHO" };
     write!(write_stream, "{}\n", mode_str)?;
     write_stream.flush()?;
 
-    let response_filter = std::sync::Arc::new(std::sync::Mutex::new(
-        crate::control::ControlClientResponseFilter::default(),
-    ));
-
     // Spawn a thread to read server responses/notifications and print to stdout
     let reader_stream = reader.get_ref().try_clone()?;
-    let reader_response_filter = response_filter.clone();
     let reader_thread = std::thread::spawn(move || {
         let mut br = io::BufReader::new(reader_stream);
+        let mut response_filter = crate::control::ControlClientResponseFilter::default();
         let mut line = String::new();
         let stdout = io::stdout();
         loop {
@@ -3219,10 +3215,7 @@ fn run_control_mode(mode: u8) -> io::Result<()> {
             match br.read_line(&mut line) {
                 Ok(0) | Err(_) => break,
                 Ok(_) => {
-                    let output = reader_response_filter
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .filter_server_line(&line);
+                    let output = response_filter.filter_server_line(&line);
                     let mut out = stdout.lock();
                     let _ = out.write_all(output.as_bytes());
                     let _ = out.flush();
@@ -3240,10 +3233,6 @@ fn run_control_mode(mode: u8) -> io::Result<()> {
             Ok(0) => break, // EOF
             Err(_) => break,
             Ok(_) => {
-                response_filter
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .record_command(&stdin_line);
                 if write!(write_stream, "{}", stdin_line).is_err() { break; }
                 if write_stream.flush().is_err() { break; }
             }

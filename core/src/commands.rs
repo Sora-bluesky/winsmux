@@ -49,6 +49,8 @@ pub(crate) const SHOW_ENVIRONMENT_SAFE_RESPONSE_FLAG: &str =
     "--winsmux-safe-environment-response-v1";
 pub(crate) const SHOW_ENVIRONMENT_SAFE_CAPABILITY_FLAG: &str =
     "--winsmux-safe-environment-capability-v1";
+pub(crate) const SHOW_ENVIRONMENT_CONTROL_SIGNAL_CAPABILITY_FLAG: &str =
+    "--winsmux-control-safe-environment-signal-v1";
 pub(crate) const SHOW_ENVIRONMENT_SAFE_RESPONSE_PREFIX: &str =
     "\0winsmux-safe-environment-response-v1 ";
 const INCOMPATIBLE_ENVIRONMENT_RESPONSE_ERROR: &str =

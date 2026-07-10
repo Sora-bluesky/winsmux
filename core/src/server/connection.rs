@@ -13,7 +13,8 @@ static NEXT_CLIENT_ID: AtomicU64 = AtomicU64::new(1);
 const NON_PERSISTENT_BATCH_READ_TIMEOUT: Duration = Duration::from_millis(10);
 use crate::commands::{
     encode_safe_environment_error, encode_safe_environment_response, parse_command_line,
-    SHOW_ENVIRONMENT_SAFE_CAPABILITY_FLAG, SHOW_ENVIRONMENT_SAFE_RESPONSE_FLAG,
+    SHOW_ENVIRONMENT_CONTROL_SIGNAL_CAPABILITY_FLAG, SHOW_ENVIRONMENT_SAFE_CAPABILITY_FLAG,
+    SHOW_ENVIRONMENT_SAFE_RESPONSE_FLAG,
 };
 use super::helpers::TMUX_COMMANDS;
 
@@ -96,6 +97,7 @@ let mut global_target_pane: Option<usize> = None;
 let mut global_pane_is_id = false;
 let mut line = String::new();
 let mut safe_environment_capability_negotiated = false;
+let mut safe_environment_control_signal_negotiated = false;
 if r.read_line(&mut line).is_err() {
     return;
 }
@@ -103,8 +105,15 @@ if r.read_line(&mut line).is_err() {
 let safe_capability_command = format!(
     "show-environment {SHOW_ENVIRONMENT_SAFE_CAPABILITY_FLAG}"
 );
-if line.trim() == safe_capability_command {
+let safe_control_capability_command = format!(
+    "{safe_capability_command} {SHOW_ENVIRONMENT_CONTROL_SIGNAL_CAPABILITY_FLAG}"
+);
+if matches!(
+    line.trim(),
+    command if command == safe_capability_command || command == safe_control_capability_command
+) {
     safe_environment_capability_negotiated = true;
+    safe_environment_control_signal_negotiated = line.trim() == safe_control_capability_command;
     let _ = write!(write_stream, "{}", encode_safe_environment_response(""));
     let _ = write_stream.flush();
     line.clear();
@@ -234,16 +243,22 @@ if control_echo || control_noecho {
             let _ = write_stream.flush();
         }
 
-        // Send %begin
-        let _ = writeln!(write_stream, "{}", control::format_begin(ts, cmd_counter));
-        let _ = write_stream.flush();
-
         // Dispatch the command
         let parsed = parse_command_line(trimmed);
         let raw_cmd = parsed.first().map(|s| s.as_str()).unwrap_or("");
 
         if raw_cmd.is_empty() {
-            let _ = writeln!(write_stream, "{}", control::format_end(ts, cmd_counter));
+            let flags = control::CONTROL_RESPONSE_DEFAULT_FLAGS;
+            let _ = writeln!(
+                write_stream,
+                "{}",
+                control::format_begin(ts, cmd_counter, flags)
+            );
+            let _ = writeln!(
+                write_stream,
+                "{}",
+                control::format_end(ts, cmd_counter, flags)
+            );
             let _ = write_stream.flush();
             continue;
         }
@@ -261,6 +276,23 @@ if control_echo || control_noecho {
         } else {
             (raw_cmd, parsed.iter().skip(1).map(|s| s.as_str()).collect())
         };
+
+        // This bit is the server's authoritative classification after alias
+        // expansion. The client does not mirror command parsing or dispatch.
+        let response_flags = control::CONTROL_RESPONSE_DEFAULT_FLAGS
+            | if safe_environment_control_signal_negotiated
+                && matches!(cmd_name, "show-environment" | "showenv")
+            {
+                control::CONTROL_RESPONSE_SAFE_ENVIRONMENT_FLAG
+            } else {
+                0
+            };
+        let _ = writeln!(
+            write_stream,
+            "{}",
+            control::format_begin(ts, cmd_counter, response_flags)
+        );
+        let _ = write_stream.flush();
 
         // Parse -t from command args
         let mut ctrl_target_win: Option<usize> = None;
@@ -315,7 +347,7 @@ if control_echo || control_noecho {
                     let _ = tx_ctrl.send(CtrlReq::FocusPaneChecked(pid, rtx));
                     if !rrx.recv_timeout(Duration::from_millis(2000)).unwrap_or(false) {
                         let _ = writeln!(write_stream, "can't find pane: {}", pid);
-                        let _ = writeln!(write_stream, "{}", control::format_error(ts, cmd_counter));
+                        let _ = writeln!(write_stream, "{}", control::format_error(ts, cmd_counter, response_flags));
                         let _ = write_stream.flush();
                         continue;
                     }
@@ -324,7 +356,7 @@ if control_echo || control_noecho {
                     let _ = tx_ctrl.send(CtrlReq::FocusPaneByIndexChecked(pid, rtx));
                     if !rrx.recv_timeout(Duration::from_millis(2000)).unwrap_or(false) {
                         let _ = writeln!(write_stream, "can't find pane index: {}", pid);
-                        let _ = writeln!(write_stream, "{}", control::format_error(ts, cmd_counter));
+                        let _ = writeln!(write_stream, "{}", control::format_error(ts, cmd_counter, response_flags));
                         let _ = write_stream.flush();
                         continue;
                     }
@@ -335,7 +367,7 @@ if control_echo || control_noecho {
                     let _ = tx_ctrl.send(CtrlReq::FocusPaneTemp(pid, rtx));
                     if !rrx.recv_timeout(Duration::from_millis(2000)).unwrap_or(false) {
                         let _ = writeln!(write_stream, "can't find pane: {}", pid);
-                        let _ = writeln!(write_stream, "{}", control::format_error(ts, cmd_counter));
+                        let _ = writeln!(write_stream, "{}", control::format_error(ts, cmd_counter, response_flags));
                         let _ = write_stream.flush();
                         continue;
                     }
@@ -344,7 +376,7 @@ if control_echo || control_noecho {
                     let _ = tx_ctrl.send(CtrlReq::FocusPaneByIndexTemp(pid, rtx));
                     if !rrx.recv_timeout(Duration::from_millis(2000)).unwrap_or(false) {
                         let _ = writeln!(write_stream, "can't find pane index: {}", pid);
-                        let _ = writeln!(write_stream, "{}", control::format_error(ts, cmd_counter));
+                        let _ = writeln!(write_stream, "{}", control::format_error(ts, cmd_counter, response_flags));
                         let _ = write_stream.flush();
                         continue;
                     }
@@ -369,7 +401,7 @@ if control_echo || control_noecho {
                     if !error.ends_with('\n') {
                         let _ = writeln!(write_stream);
                     }
-                    let _ = writeln!(write_stream, "{}", control::format_error(ts, cmd_counter));
+                    let _ = writeln!(write_stream, "{}", control::format_error(ts, cmd_counter, response_flags));
                 }
                 Ok(ControlCommandResult::Success(response)) => {
                     if !response.is_empty() {
@@ -378,16 +410,16 @@ if control_echo || control_noecho {
                             let _ = writeln!(write_stream);
                         }
                     }
-                    let _ = writeln!(write_stream, "{}", control::format_end(ts, cmd_counter));
+                    let _ = writeln!(write_stream, "{}", control::format_end(ts, cmd_counter, response_flags));
                 }
                 Err(_) => {
                     let _ = writeln!(write_stream, "command timed out");
-                    let _ = writeln!(write_stream, "{}", control::format_error(ts, cmd_counter));
+                    let _ = writeln!(write_stream, "{}", control::format_error(ts, cmd_counter, response_flags));
                 }
             }
         } else {
             // Command dispatched without response channel (fire and forget)
-            let _ = writeln!(write_stream, "{}", control::format_end(ts, cmd_counter));
+            let _ = writeln!(write_stream, "{}", control::format_end(ts, cmd_counter, response_flags));
         }
         let _ = write_stream.flush();
     }
@@ -2555,6 +2587,16 @@ mod tests {
         mpsc::Receiver<CtrlReq>,
         std::thread::JoinHandle<()>,
     ) {
+        spawn_test_server_with_aliases(HashMap::new())
+    }
+
+    fn spawn_test_server_with_aliases(
+        aliases: HashMap<String, String>,
+    ) -> (
+        std::net::SocketAddr,
+        mpsc::Receiver<CtrlReq>,
+        std::thread::JoinHandle<()>,
+    ) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let (request_tx, request_rx) = mpsc::channel();
@@ -2564,7 +2606,7 @@ mod tests {
                 stream,
                 request_tx,
                 "synthetic-session-key",
-                Arc::new(RwLock::new(HashMap::new())),
+                Arc::new(RwLock::new(aliases)),
             );
         });
         (address, request_rx, server)
@@ -2613,6 +2655,41 @@ mod tests {
             request_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
             CtrlReq::ControlRegister { echo: false, .. }
         ));
+    }
+
+    fn negotiate_safe_environment_capability(
+        client: &mut std::net::TcpStream,
+        reader: &mut BufReader<std::net::TcpStream>,
+        control_signal: bool,
+    ) {
+        if control_signal {
+            writeln!(
+                client,
+                "show-environment {SHOW_ENVIRONMENT_SAFE_CAPABILITY_FLAG} {SHOW_ENVIRONMENT_CONTROL_SIGNAL_CAPABILITY_FLAG}"
+            )
+            .unwrap();
+        } else {
+            writeln!(
+                client,
+                "show-environment {SHOW_ENVIRONMENT_SAFE_CAPABILITY_FLAG}"
+            )
+            .unwrap();
+        }
+        client.flush().unwrap();
+
+        let mut capability = String::new();
+        reader.read_line(&mut capability).unwrap();
+        assert_eq!(
+            crate::commands::decode_safe_environment_response(&capability).unwrap(),
+            crate::commands::SafeEnvironmentResponse::Ok(String::new())
+        );
+    }
+
+    fn control_block_flags(line: &str, expected_marker: &str) -> u64 {
+        let fields = line.split_ascii_whitespace().collect::<Vec<_>>();
+        assert_eq!(fields.len(), 4, "unexpected control line: {line:?}");
+        assert_eq!(fields[0], expected_marker, "unexpected control line: {line:?}");
+        fields[3].parse().unwrap()
     }
 
     fn synthetic_full_environment_output() -> String {
@@ -2849,6 +2926,109 @@ mod tests {
             )
         );
         assert!(dispatcher.join().unwrap());
+    }
+
+    #[test]
+    fn control_safe_environment_signal_covers_server_dispatch_reach_paths() {
+        let aliases = HashMap::from([
+            (
+                "synthetic-alias".to_string(),
+                "show-environment".to_string(),
+            ),
+            ("Synthetic-Case-Alias".to_string(), "showenv".to_string()),
+        ]);
+        let (address, request_rx, server) = spawn_test_server_with_aliases(aliases);
+        let (mut client, mut reader) = authenticate(address);
+        negotiate_safe_environment_capability(&mut client, &mut reader, true);
+        enter_control_mode(&mut client, &mut reader, &request_rx);
+
+        let cases = [
+            ("synthetic-alias SYNTHETIC_ALIAS", "SYNTHETIC_ALIAS"),
+            ("showenv SYNTHETIC_SHORTHAND", "SYNTHETIC_SHORTHAND"),
+            (
+                "show-environment -g SYNTHETIC_DUPLICATE SYNTHETIC_DUPLICATE",
+                "SYNTHETIC_DUPLICATE",
+            ),
+            (
+                "   show-environment SYNTHETIC_WHITESPACE",
+                "SYNTHETIC_WHITESPACE",
+            ),
+            ("Synthetic-Case-Alias SYNTHETIC_CASE", "SYNTHETIC_CASE"),
+        ];
+
+        for (command, expected_name) in cases {
+            writeln!(client, "{command}").unwrap();
+            client.flush().unwrap();
+
+            let mut begin = String::new();
+            reader.read_line(&mut begin).unwrap();
+            assert_eq!(
+                control_block_flags(&begin, "%begin"),
+                control::CONTROL_RESPONSE_DEFAULT_FLAGS
+                    | control::CONTROL_RESPONSE_SAFE_ENVIRONMENT_FLAG,
+                "server did not mark resolved show-environment dispatch: {command:?}"
+            );
+
+            let expected_output = format!("{expected_name}=synthetic-value\n");
+            answer_show_environment(&request_rx, Some(expected_name), Ok(expected_output.clone()));
+
+            let mut response = String::new();
+            reader.read_line(&mut response).unwrap();
+            assert_eq!(
+                crate::commands::decode_safe_environment_response(&response).unwrap(),
+                crate::commands::SafeEnvironmentResponse::Ok(expected_output)
+            );
+
+            let mut footer = String::new();
+            reader.read_line(&mut footer).unwrap();
+            assert_eq!(
+                control_block_flags(&footer, "%end"),
+                control::CONTROL_RESPONSE_DEFAULT_FLAGS
+                    | control::CONTROL_RESPONSE_SAFE_ENVIRONMENT_FLAG
+            );
+        }
+
+        drop(reader);
+        drop(client);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn control_v1_capability_preserves_legacy_control_flags() {
+        let (address, request_rx, server) = spawn_test_server();
+        let (mut client, mut reader) = authenticate(address);
+        negotiate_safe_environment_capability(&mut client, &mut reader, false);
+        enter_control_mode(&mut client, &mut reader, &request_rx);
+
+        writeln!(client, "show-environment SYNTHETIC_LEGACY").unwrap();
+        client.flush().unwrap();
+
+        let mut begin = String::new();
+        reader.read_line(&mut begin).unwrap();
+        assert_eq!(
+            control_block_flags(&begin, "%begin"),
+            control::CONTROL_RESPONSE_DEFAULT_FLAGS
+        );
+
+        answer_show_environment(
+            &request_rx,
+            Some("SYNTHETIC_LEGACY"),
+            Ok("SYNTHETIC_LEGACY=synthetic-value\n".to_string()),
+        );
+        let mut response = String::new();
+        reader.read_line(&mut response).unwrap();
+        assert!(crate::commands::decode_safe_environment_response(&response).is_ok());
+
+        let mut footer = String::new();
+        reader.read_line(&mut footer).unwrap();
+        assert_eq!(
+            control_block_flags(&footer, "%end"),
+            control::CONTROL_RESPONSE_DEFAULT_FLAGS
+        );
+
+        drop(reader);
+        drop(client);
+        server.join().unwrap();
     }
 
     #[test]
