@@ -513,6 +513,7 @@ if !skip_pane_focus && targeted_kill_pane_id.is_none() {
                         let _ = write!(write_stream, "can't find pane: {}\n", pid);
                         let _ = write_stream.flush();
                         if !persistent { break; }
+                        line.clear();
                         continue;
                     }
                 } else {
@@ -522,6 +523,7 @@ if !skip_pane_focus && targeted_kill_pane_id.is_none() {
                         let _ = write!(write_stream, "can't find pane index: {}\n", pid);
                         let _ = write_stream.flush();
                         if !persistent { break; }
+                        line.clear();
                         continue;
                     }
                 }
@@ -533,6 +535,7 @@ if !skip_pane_focus && targeted_kill_pane_id.is_none() {
                         let _ = write!(write_stream, "can't find pane: {}\n", pid);
                         let _ = write_stream.flush();
                         if !persistent { break; }
+                        line.clear();
                         continue;
                     }
                 } else {
@@ -542,6 +545,7 @@ if !skip_pane_focus && targeted_kill_pane_id.is_none() {
                         let _ = write!(write_stream, "can't find pane index: {}\n", pid);
                         let _ = write_stream.flush();
                         if !persistent { break; }
+                        line.clear();
                         continue;
                     }
                 }
@@ -1429,6 +1433,7 @@ match cmd {
         if args.contains(&SHOW_ENVIRONMENT_SAFE_CAPABILITY_FLAG) {
             let _ = write!(write_stream, "{}", encode_safe_environment_response(""));
             let _ = write_stream.flush();
+            line.clear();
             continue;
         }
         let safe_response_requested = args.contains(&SHOW_ENVIRONMENT_SAFE_RESPONSE_FLAG);
@@ -2797,6 +2802,128 @@ mod tests {
             )
         );
         assert!(dispatcher.join().unwrap());
+    }
+
+    #[test]
+    fn persistent_in_loop_capability_probe_is_consumed_once() {
+        let (address, request_rx, server) = spawn_test_server();
+        let (mut client, mut reader) = authenticate(address);
+        reader
+            .get_mut()
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+
+        write!(
+            client,
+            "PERSISTENT\nshow-environment {SHOW_ENVIRONMENT_SAFE_CAPABILITY_FLAG}\n"
+        )
+        .unwrap();
+        client.flush().unwrap();
+
+        let mut capability = String::new();
+        reader.read_line(&mut capability).unwrap();
+        assert_eq!(
+            crate::commands::decode_safe_environment_response(&capability).unwrap(),
+            crate::commands::SafeEnvironmentResponse::Ok(String::new())
+        );
+
+        reader
+            .get_mut()
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        let mut repeated_capability = String::new();
+        let second_read = reader.read_line(&mut repeated_capability);
+        assert!(
+            matches!(
+                &second_read,
+                Err(error)
+                    if error.kind() == io::ErrorKind::WouldBlock
+                        || error.kind() == io::ErrorKind::TimedOut
+            ),
+            "capability probe must produce exactly one response while the client is idle: {second_read:?}, {} unexpected bytes",
+            repeated_capability.len()
+        );
+        assert!(
+            repeated_capability.is_empty(),
+            "idle connection received {} partial capability bytes",
+            repeated_capability.len()
+        );
+
+        writeln!(client, "client-attach").unwrap();
+        client.flush().unwrap();
+        assert!(matches!(
+            request_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            CtrlReq::ClientAttach(_)
+        ));
+
+        drop(reader);
+        drop(client);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn persistent_focus_failure_lines_are_consumed_before_retry() {
+        let cases = [
+            ("select-pane -t %901", true, true, 901),
+            ("select-pane -t .902", true, false, 902),
+            ("synthetic-noop -t %903", false, true, 903),
+            ("synthetic-noop -t .904", false, false, 904),
+        ];
+
+        for (command, focus_command, pane_is_id, expected_pane) in cases {
+            let (address, request_rx, server) = spawn_test_server();
+            let (mut client, mut reader) = authenticate(address);
+
+            write!(client, "PERSISTENT\n{command}\n").unwrap();
+            client.flush().unwrap();
+
+            let focus_request = request_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            match (focus_command, pane_is_id, focus_request) {
+                (true, true, CtrlReq::FocusPaneChecked(pane, response)) => {
+                    assert_eq!(pane, expected_pane);
+                    response.send(false).unwrap();
+                }
+                (true, false, CtrlReq::FocusPaneByIndexChecked(pane, response)) => {
+                    assert_eq!(pane, expected_pane);
+                    response.send(false).unwrap();
+                }
+                (false, true, CtrlReq::FocusPaneTemp(pane, response)) => {
+                    assert_eq!(pane, expected_pane);
+                    response.send(false).unwrap();
+                }
+                (false, false, CtrlReq::FocusPaneByIndexTemp(pane, response)) => {
+                    assert_eq!(pane, expected_pane);
+                    response.send(false).unwrap();
+                }
+                _ => panic!("unexpected synthetic focus request for {command}"),
+            }
+
+            let mut error_line = String::new();
+            reader.read_line(&mut error_line).unwrap();
+            assert_eq!(
+                error_line,
+                if pane_is_id {
+                    format!("can't find pane: {expected_pane}\n")
+                } else {
+                    format!("can't find pane index: {expected_pane}\n")
+                }
+            );
+            assert!(matches!(
+                request_rx.recv_timeout(Duration::from_millis(100)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ));
+
+            writeln!(client, "client-attach").unwrap();
+            client.flush().unwrap();
+            assert!(matches!(
+                request_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+                CtrlReq::ClientAttach(_)
+            ));
+
+            drop(reader);
+            drop(client);
+            server.join().unwrap();
+        }
     }
 
     #[test]
