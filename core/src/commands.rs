@@ -132,7 +132,7 @@ fn is_sensitive_environment_name(name: &str) -> bool {
                     Some("config" | "header" | "key" | "password" | "secret" | "token")
                 ))
     });
-    let has_compact_sensitive_suffix = [
+    let compact_sensitive_markers = [
         "secret",
         "token",
         "password",
@@ -140,6 +140,7 @@ fn is_sensitive_environment_name(name: &str) -> bool {
         "passphrase",
         "credential",
         "credentials",
+        "secretkey",
         "privatekey",
         "sshkey",
         "signingkey",
@@ -149,16 +150,17 @@ fn is_sensitive_environment_name(name: &str) -> bool {
         "authheader",
         "authorization",
         "bearer",
-    ]
-    .iter()
-    .any(|suffix| compact == *suffix || compact.ends_with(suffix));
+    ];
+    let has_compact_sensitive_marker = compact_sensitive_markers.iter().any(|marker| {
+        compact.ends_with(marker) || words.iter().any(|word| word == marker)
+    });
 
     has_sensitive_word
         || has_password_alias
         || has_standalone_credential_alias
         || has_sensitive_key_kind
         || has_auth_material
-        || has_compact_sensitive_suffix
+        || has_compact_sensitive_marker
         || compact == "key"
 }
 

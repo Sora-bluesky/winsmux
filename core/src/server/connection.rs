@@ -40,6 +40,26 @@ impl ControlCommandResponseSender {
     }
 }
 
+fn write_control_pre_dispatch_error(
+    write_stream: &mut TcpStream,
+    error: &str,
+    timestamp: i64,
+    command_number: u64,
+    response_flags: u64,
+) {
+    if response_flags & control::CONTROL_RESPONSE_SAFE_ENVIRONMENT_FLAG != 0 {
+        let _ = write!(write_stream, "{}", encode_safe_environment_error(error));
+    } else {
+        let _ = writeln!(write_stream, "{error}");
+    }
+    let _ = writeln!(
+        write_stream,
+        "{}",
+        control::format_error(timestamp, command_number, response_flags)
+    );
+    let _ = write_stream.flush();
+}
+
 /// Handle a single TCP connection from a client.
 /// Parses auth, optional TARGET/PERSISTENT flags, then dispatches commands
 /// to the main server event loop via the `tx` channel.
@@ -346,18 +366,26 @@ if control_echo || control_noecho {
                     let (rtx, rrx) = mpsc::channel::<bool>();
                     let _ = tx_ctrl.send(CtrlReq::FocusPaneChecked(pid, rtx));
                     if !rrx.recv_timeout(Duration::from_millis(2000)).unwrap_or(false) {
-                        let _ = writeln!(write_stream, "can't find pane: {}", pid);
-                        let _ = writeln!(write_stream, "{}", control::format_error(ts, cmd_counter, response_flags));
-                        let _ = write_stream.flush();
+                        write_control_pre_dispatch_error(
+                            &mut write_stream,
+                            &format!("can't find pane: {pid}"),
+                            ts,
+                            cmd_counter,
+                            response_flags,
+                        );
                         continue;
                     }
                 } else {
                     let (rtx, rrx) = mpsc::channel::<bool>();
                     let _ = tx_ctrl.send(CtrlReq::FocusPaneByIndexChecked(pid, rtx));
                     if !rrx.recv_timeout(Duration::from_millis(2000)).unwrap_or(false) {
-                        let _ = writeln!(write_stream, "can't find pane index: {}", pid);
-                        let _ = writeln!(write_stream, "{}", control::format_error(ts, cmd_counter, response_flags));
-                        let _ = write_stream.flush();
+                        write_control_pre_dispatch_error(
+                            &mut write_stream,
+                            &format!("can't find pane index: {pid}"),
+                            ts,
+                            cmd_counter,
+                            response_flags,
+                        );
                         continue;
                     }
                 }
@@ -366,18 +394,26 @@ if control_echo || control_noecho {
                     let (rtx, rrx) = mpsc::channel::<bool>();
                     let _ = tx_ctrl.send(CtrlReq::FocusPaneTemp(pid, rtx));
                     if !rrx.recv_timeout(Duration::from_millis(2000)).unwrap_or(false) {
-                        let _ = writeln!(write_stream, "can't find pane: {}", pid);
-                        let _ = writeln!(write_stream, "{}", control::format_error(ts, cmd_counter, response_flags));
-                        let _ = write_stream.flush();
+                        write_control_pre_dispatch_error(
+                            &mut write_stream,
+                            &format!("can't find pane: {pid}"),
+                            ts,
+                            cmd_counter,
+                            response_flags,
+                        );
                         continue;
                     }
                 } else {
                     let (rtx, rrx) = mpsc::channel::<bool>();
                     let _ = tx_ctrl.send(CtrlReq::FocusPaneByIndexTemp(pid, rtx));
                     if !rrx.recv_timeout(Duration::from_millis(2000)).unwrap_or(false) {
-                        let _ = writeln!(write_stream, "can't find pane index: {}", pid);
-                        let _ = writeln!(write_stream, "{}", control::format_error(ts, cmd_counter, response_flags));
-                        let _ = write_stream.flush();
+                        write_control_pre_dispatch_error(
+                            &mut write_stream,
+                            &format!("can't find pane index: {pid}"),
+                            ts,
+                            cmd_counter,
+                            response_flags,
+                        );
                         continue;
                     }
                 }
@@ -2987,6 +3023,54 @@ mod tests {
                     | control::CONTROL_RESPONSE_SAFE_ENVIRONMENT_FLAG
             );
         }
+
+        drop(reader);
+        drop(client);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn control_safe_environment_target_failure_surfaces_real_error() {
+        let (address, request_rx, server) = spawn_test_server();
+        let (mut client, mut reader) = authenticate(address);
+        negotiate_safe_environment_capability(&mut client, &mut reader, true);
+        enter_control_mode(&mut client, &mut reader, &request_rx);
+
+        writeln!(
+            client,
+            "show-environment -t %999 SYNTHETIC_TARGET"
+        )
+        .unwrap();
+        client.flush().unwrap();
+
+        let mut filter = control::ControlClientResponseFilter::default();
+        let mut begin = String::new();
+        reader.read_line(&mut begin).unwrap();
+        assert_eq!(
+            control_block_flags(&begin, "%begin"),
+            control::CONTROL_RESPONSE_DEFAULT_FLAGS
+                | control::CONTROL_RESPONSE_SAFE_ENVIRONMENT_FLAG
+        );
+        assert_eq!(filter.filter_server_line(&begin), begin);
+
+        match request_rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+            CtrlReq::FocusPaneTemp(pane, response) => {
+                assert_eq!(pane, 999);
+                response.send(false).unwrap();
+            }
+            _ => panic!("expected synthetic temporary pane focus request"),
+        }
+
+        let mut error = String::new();
+        reader.read_line(&mut error).unwrap();
+        let visible_error = filter.filter_server_line(&error);
+        assert_eq!(visible_error, "can't find pane: 999\n");
+        assert!(!visible_error.contains("restart"));
+
+        let mut footer = String::new();
+        reader.read_line(&mut footer).unwrap();
+        assert!(footer.starts_with("%error "), "unexpected footer: {footer:?}");
+        assert_eq!(filter.filter_server_line(&footer), footer);
 
         drop(reader);
         drop(client);

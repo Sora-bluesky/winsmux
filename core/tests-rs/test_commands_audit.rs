@@ -239,6 +239,38 @@ fn show_environment_redacts_sensitive_values() {
 }
 
 #[test]
+fn show_environment_redacts_compact_key_markers_before_qualifiers() {
+    let mut app = mock_app_with_window();
+    app.environment.insert(
+        "APIKEY_PROD".to_string(),
+        "synthetic-api-key-value".to_string(),
+    );
+    app.environment.insert(
+        "PRIVATEKEY_PEM".to_string(),
+        "synthetic-private-key-value".to_string(),
+    );
+    app.environment.insert(
+        "SECRETKEY_ROTATION".to_string(),
+        "synthetic-secret-key-value".to_string(),
+    );
+    app.environment.insert(
+        "API_KEYBOARD_LAYOUT".to_string(),
+        "synthetic-keyboard-layout".to_string(),
+    );
+
+    execute_command_string(&mut app, "show-environment").unwrap();
+    let (_, out) = extract_popup(&app);
+
+    assert!(out.contains("APIKEY_PROD=[redacted]"));
+    assert!(out.contains("PRIVATEKEY_PEM=[redacted]"));
+    assert!(out.contains("SECRETKEY_ROTATION=[redacted]"));
+    assert!(out.contains("API_KEYBOARD_LAYOUT=synthetic-keyboard-layout"));
+    assert!(!out.contains("synthetic-api-key-value"));
+    assert!(!out.contains("synthetic-private-key-value"));
+    assert!(!out.contains("synthetic-secret-key-value"));
+}
+
+#[test]
 fn showenv_named_secret_query_is_redacted() {
     let mut app = mock_app_with_window();
     app.environment.insert("SESSION_SECRET".to_string(), "synthetic-secret-value".to_string());
