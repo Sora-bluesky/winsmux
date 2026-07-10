@@ -40,11 +40,9 @@ impl ControlCommandResponseSender {
     }
 }
 
-fn write_control_pre_dispatch_error(
+fn write_control_error_payload(
     write_stream: &mut TcpStream,
     error: &str,
-    timestamp: i64,
-    command_number: u64,
     response_flags: u64,
 ) {
     if response_flags & control::CONTROL_RESPONSE_SAFE_ENVIRONMENT_FLAG != 0 {
@@ -52,6 +50,16 @@ fn write_control_pre_dispatch_error(
     } else {
         let _ = writeln!(write_stream, "{error}");
     }
+}
+
+fn write_control_pre_dispatch_error(
+    write_stream: &mut TcpStream,
+    error: &str,
+    timestamp: i64,
+    command_number: u64,
+    response_flags: u64,
+) {
+    write_control_error_payload(write_stream, error, response_flags);
     let _ = writeln!(
         write_stream,
         "{}",
@@ -449,7 +457,11 @@ if control_echo || control_noecho {
                     let _ = writeln!(write_stream, "{}", control::format_end(ts, cmd_counter, response_flags));
                 }
                 Err(_) => {
-                    let _ = writeln!(write_stream, "command timed out");
+                    write_control_error_payload(
+                        &mut write_stream,
+                        "command timed out",
+                        response_flags,
+                    );
                     let _ = writeln!(write_stream, "{}", control::format_error(ts, cmd_counter, response_flags));
                 }
             }
@@ -3065,6 +3077,99 @@ mod tests {
         reader.read_line(&mut error).unwrap();
         let visible_error = filter.filter_server_line(&error);
         assert_eq!(visible_error, "can't find pane: 999\n");
+        assert!(!visible_error.contains("restart"));
+
+        let mut footer = String::new();
+        reader.read_line(&mut footer).unwrap();
+        assert!(footer.starts_with("%error "), "unexpected footer: {footer:?}");
+        assert_eq!(filter.filter_server_line(&footer), footer);
+
+        drop(reader);
+        drop(client);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn control_safe_environment_timeout_surfaces_real_error() {
+        let (address, request_rx, server) = spawn_test_server();
+        let (mut client, mut reader) = authenticate(address);
+        negotiate_safe_environment_capability(&mut client, &mut reader, true);
+        enter_control_mode(&mut client, &mut reader, &request_rx);
+        reader
+            .get_mut()
+            .set_read_timeout(Some(Duration::from_secs(7)))
+            .unwrap();
+
+        writeln!(client, "show-environment SYNTHETIC_TIMEOUT").unwrap();
+        client.flush().unwrap();
+
+        let mut filter = control::ControlClientResponseFilter::default();
+        let mut begin = String::new();
+        reader.read_line(&mut begin).unwrap();
+        assert_eq!(
+            control_block_flags(&begin, "%begin"),
+            control::CONTROL_RESPONSE_DEFAULT_FLAGS
+                | control::CONTROL_RESPONSE_SAFE_ENVIRONMENT_FLAG
+        );
+        assert_eq!(filter.filter_server_line(&begin), begin);
+
+        let _held_response_sender =
+            match request_rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+                CtrlReq::ShowEnvironment(name, sender) => {
+                    assert_eq!(name.as_deref(), Some("SYNTHETIC_TIMEOUT"));
+                    sender
+                }
+                _ => panic!("expected synthetic show-environment request"),
+            };
+
+        let mut error = String::new();
+        reader.read_line(&mut error).unwrap();
+        let visible_error = filter.filter_server_line(&error);
+        assert_eq!(visible_error, "command timed out\n");
+        assert!(!visible_error.contains("restart"));
+
+        let mut footer = String::new();
+        reader.read_line(&mut footer).unwrap();
+        assert!(footer.starts_with("%error "), "unexpected footer: {footer:?}");
+        assert_eq!(filter.filter_server_line(&footer), footer);
+
+        drop(reader);
+        drop(client);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn control_safe_environment_response_disconnect_surfaces_real_error() {
+        let (address, request_rx, server) = spawn_test_server();
+        let (mut client, mut reader) = authenticate(address);
+        negotiate_safe_environment_capability(&mut client, &mut reader, true);
+        enter_control_mode(&mut client, &mut reader, &request_rx);
+
+        writeln!(client, "show-environment SYNTHETIC_DISCONNECT").unwrap();
+        client.flush().unwrap();
+
+        let mut filter = control::ControlClientResponseFilter::default();
+        let mut begin = String::new();
+        reader.read_line(&mut begin).unwrap();
+        assert_eq!(
+            control_block_flags(&begin, "%begin"),
+            control::CONTROL_RESPONSE_DEFAULT_FLAGS
+                | control::CONTROL_RESPONSE_SAFE_ENVIRONMENT_FLAG
+        );
+        assert_eq!(filter.filter_server_line(&begin), begin);
+
+        match request_rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+            CtrlReq::ShowEnvironment(name, sender) => {
+                assert_eq!(name.as_deref(), Some("SYNTHETIC_DISCONNECT"));
+                drop(sender);
+            }
+            _ => panic!("expected synthetic show-environment request"),
+        }
+
+        let mut error = String::new();
+        reader.read_line(&mut error).unwrap();
+        let visible_error = filter.filter_server_line(&error);
+        assert_eq!(visible_error, "command timed out\n");
         assert!(!visible_error.contains("restart"));
 
         let mut footer = String::new();
