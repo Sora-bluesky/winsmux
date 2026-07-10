@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Position=0)][string]$Command,
     [Parameter(Position=1)][string]$Target,
     [Parameter(Position=2, ValueFromRemainingArguments=$true)][string[]]$Rest
