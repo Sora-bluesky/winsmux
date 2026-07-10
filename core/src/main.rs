@@ -3203,8 +3203,13 @@ fn run_control_mode(mode: u8) -> io::Result<()> {
     write!(write_stream, "{}\n", mode_str)?;
     write_stream.flush()?;
 
+    let response_filter = std::sync::Arc::new(std::sync::Mutex::new(
+        crate::control::ControlClientResponseFilter::default(),
+    ));
+
     // Spawn a thread to read server responses/notifications and print to stdout
     let reader_stream = reader.get_ref().try_clone()?;
+    let reader_response_filter = response_filter.clone();
     let reader_thread = std::thread::spawn(move || {
         let mut br = io::BufReader::new(reader_stream);
         let mut line = String::new();
@@ -3214,19 +3219,10 @@ fn run_control_mode(mode: u8) -> io::Result<()> {
             match br.read_line(&mut line) {
                 Ok(0) | Err(_) => break,
                 Ok(_) => {
-                    let output = if line.starts_with(
-                        crate::commands::SHOW_ENVIRONMENT_SAFE_RESPONSE_PREFIX,
-                    ) {
-                        match crate::commands::decode_safe_environment_response(&line) {
-                            Ok(crate::commands::SafeEnvironmentResponse::Ok(output)) => output,
-                            Ok(crate::commands::SafeEnvironmentResponse::Error(error)) => {
-                                format!("{error}\n")
-                            }
-                            Err(error) => format!("{error}\n"),
-                        }
-                    } else {
-                        line.clone()
-                    };
+                    let output = reader_response_filter
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .filter_server_line(&line);
                     let mut out = stdout.lock();
                     let _ = out.write_all(output.as_bytes());
                     let _ = out.flush();
@@ -3244,6 +3240,10 @@ fn run_control_mode(mode: u8) -> io::Result<()> {
             Ok(0) => break, // EOF
             Err(_) => break,
             Ok(_) => {
+                response_filter
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .record_command(&stdin_line);
                 if write!(write_stream, "{}", stdin_line).is_err() { break; }
                 if write_stream.flush().is_err() { break; }
             }

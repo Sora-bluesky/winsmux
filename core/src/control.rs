@@ -1,4 +1,136 @@
 use crate::types::{AppState, ControlNotification};
+use std::collections::HashMap;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ControlClientCommandKind {
+    Ordinary,
+    ShowEnvironment,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ActiveControlClientResponse {
+    command_number: u64,
+    kind: ControlClientCommandKind,
+    payload_handled: bool,
+}
+
+#[derive(Default)]
+pub(crate) struct ControlClientResponseFilter {
+    next_command_number: u64,
+    pending_commands: HashMap<u64, ControlClientCommandKind>,
+    active_response: Option<ActiveControlClientResponse>,
+    deferred_notifications: String,
+}
+
+impl ControlClientResponseFilter {
+    pub(crate) fn record_command(&mut self, command_line: &str) {
+        let parsed = crate::commands::parse_command_line(command_line.trim());
+        let Some(command_name) = parsed.first() else {
+            return;
+        };
+
+        self.next_command_number += 1;
+        let kind = match command_name.as_str() {
+            "show-environment" | "showenv" => ControlClientCommandKind::ShowEnvironment,
+            _ => ControlClientCommandKind::Ordinary,
+        };
+        self.pending_commands
+            .insert(self.next_command_number, kind);
+    }
+
+    pub(crate) fn filter_server_line(&mut self, line: &str) -> String {
+        if let Some(command_number) = control_block_command_number(line, "%begin") {
+            self.deferred_notifications.clear();
+            self.active_response = self.pending_commands.remove(&command_number).map(|kind| {
+                ActiveControlClientResponse {
+                    command_number,
+                    kind,
+                    payload_handled: false,
+                }
+            });
+            return line.to_string();
+        }
+
+        if let Some(command_number) = control_block_command_number(line, "%end")
+            .or_else(|| control_block_command_number(line, "%error"))
+        {
+            let missing_show_environment_frame = self.active_response.is_some_and(|response| {
+                response.command_number == command_number
+                    && response.kind == ControlClientCommandKind::ShowEnvironment
+                    && !response.payload_handled
+            });
+            if self
+                .active_response
+                .is_some_and(|response| response.command_number == command_number)
+            {
+                self.active_response = None;
+            }
+            self.deferred_notifications.clear();
+            if missing_show_environment_frame {
+                return format!(
+                    "{}\n{}",
+                    crate::commands::incompatible_environment_response_error(),
+                    line
+                );
+            }
+            return line.to_string();
+        }
+
+        let Some(response) = self.active_response else {
+            return line.to_string();
+        };
+        if response.kind != ControlClientCommandKind::ShowEnvironment {
+            return line.to_string();
+        }
+        if !response.payload_handled && line.starts_with('%') {
+            self.deferred_notifications.push_str(line);
+            return String::new();
+        }
+        if response.payload_handled {
+            return if line.starts_with('%') {
+                line.to_string()
+            } else {
+                String::new()
+            };
+        }
+
+        // User-controlled output can start with the safe-frame marker, so only
+        // decode payload in the numbered reply block for a pending show-environment.
+        self.active_response
+            .as_mut()
+            .expect("active response was checked above")
+            .payload_handled = true;
+        match crate::commands::decode_safe_environment_response(line) {
+            Ok(crate::commands::SafeEnvironmentResponse::Ok(output)) => {
+                format!("{}{}", std::mem::take(&mut self.deferred_notifications), output)
+            }
+            Ok(crate::commands::SafeEnvironmentResponse::Error(error)) => {
+                format!(
+                    "{}{error}\n",
+                    std::mem::take(&mut self.deferred_notifications)
+                )
+            }
+            Err(error) => {
+                self.deferred_notifications.clear();
+                format!("{error}\n")
+            }
+        }
+    }
+}
+
+fn control_block_command_number(line: &str, marker: &str) -> Option<u64> {
+    let mut fields = line.trim_end_matches(['\r', '\n']).split_ascii_whitespace();
+    if fields.next()? != marker {
+        return None;
+    }
+    fields.next()?.parse::<i64>().ok()?;
+    let command_number = fields.next()?.parse::<u64>().ok()?;
+    fields.next()?.parse::<u64>().ok()?;
+    if fields.next().is_some() {
+        return None;
+    }
+    Some(command_number)
+}
 
 /// Format a control mode notification as a tmux wire-compatible line.
 pub fn format_notification(notif: &ControlNotification) -> String {
@@ -164,6 +296,63 @@ mod tests {
         assert_eq!(format_begin(1700000000, 1), "%begin 1700000000 1 1");
         assert_eq!(format_end(1700000000, 1), "%end 1700000000 1 1");
         assert_eq!(format_error(1700000000, 1), "%error 1700000000 1 1");
+    }
+
+    #[test]
+    fn control_client_preserves_safe_environment_prefix_for_show_buffer() {
+        let mut filter = ControlClientResponseFilter::default();
+        filter.record_command("show-buffer");
+
+        assert_eq!(
+            filter.filter_server_line("%begin 1700000000 1 1\n"),
+            "%begin 1700000000 1 1\n"
+        );
+        let output = format!(
+            "{}synthetic buffer payload\n",
+            crate::commands::SHOW_ENVIRONMENT_SAFE_RESPONSE_PREFIX
+        );
+        assert_eq!(filter.filter_server_line(&output), output);
+        assert_eq!(
+            filter.filter_server_line("%end 1700000000 1 1\n"),
+            "%end 1700000000 1 1\n"
+        );
+    }
+
+    #[test]
+    fn control_client_decodes_framed_show_environment_reply() {
+        let mut filter = ControlClientResponseFilter::default();
+        filter.record_command("show-environment SYNTHETIC_TARGET");
+        filter.filter_server_line("%begin 1700000000 1 1\n");
+
+        let frame = crate::commands::encode_safe_environment_response(
+            "SYNTHETIC_TARGET=synthetic-value\n",
+        );
+        assert_eq!(
+            filter.filter_server_line(&frame),
+            "SYNTHETIC_TARGET=synthetic-value\n"
+        );
+    }
+
+    #[test]
+    fn control_client_refuses_unframed_show_environment_reply() {
+        let mut filter = ControlClientResponseFilter::default();
+        filter.record_command("show-environment SYNTHETIC_TARGET");
+        filter.filter_server_line("%begin 1700000000 1 1\n");
+
+        let output = filter.filter_server_line(
+            "SYNTHETIC_TARGET=synthetic-value-that-must-not-print\n",
+        );
+        assert_eq!(
+            output,
+            format!(
+                "{}\n",
+                crate::commands::incompatible_environment_response_error()
+            )
+        );
+        assert_eq!(
+            filter.filter_server_line("SYNTHETIC_SECOND=also-must-not-print\n"),
+            ""
+        );
     }
 
     #[test]
