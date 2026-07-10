@@ -11,6 +11,7 @@ use crate::control;
 
 static NEXT_CLIENT_ID: AtomicU64 = AtomicU64::new(1);
 const CONTROL_COMMAND_ERROR_SENTINEL: &str = "\u{1e}winsmux-error:";
+const NON_PERSISTENT_BATCH_READ_TIMEOUT: Duration = Duration::from_millis(10);
 use crate::commands::{
     encode_safe_environment_error, encode_safe_environment_response, parse_command_line,
     SHOW_ENVIRONMENT_SAFE_CAPABILITY_FLAG, SHOW_ENVIRONMENT_SAFE_RESPONSE_FLAG,
@@ -375,6 +376,14 @@ if control_echo || control_noecho {
     let _ = tx.send(CtrlReq::ControlDeregister { client_id: ctrl_client_id });
     drop(notif_thread);
     return;
+}
+
+// Capability and mode negotiation is complete. Restore the short batching
+// timeout only for one-shot connections; persistent mode keeps its 5s timeout.
+if !persistent {
+    let _ = r
+        .get_ref()
+        .set_read_timeout(Some(NON_PERSISTENT_BATCH_READ_TIMEOUT));
 }
 
 // Check if this line is a TARGET specification
@@ -2819,5 +2828,60 @@ mod tests {
         drop(reader);
         drop(client);
         server.join().unwrap();
+    }
+
+    #[test]
+    fn capability_probe_restores_short_timeout_for_non_persistent_batching() {
+        let (address, request_rx, server) = spawn_test_server();
+        let (mut client, mut reader) = authenticate(address);
+
+        writeln!(
+            client,
+            "show-environment {SHOW_ENVIRONMENT_SAFE_CAPABILITY_FLAG}"
+        )
+        .unwrap();
+        client.flush().unwrap();
+        let mut capability = String::new();
+        reader.read_line(&mut capability).unwrap();
+        assert_eq!(
+            crate::commands::decode_safe_environment_response(&capability).unwrap(),
+            crate::commands::SafeEnvironmentResponse::Ok(String::new())
+        );
+
+        std::thread::sleep(Duration::from_millis(50));
+        writeln!(
+            client,
+            "set-environment SYNTHETIC_TIMEOUT_KEY synthetic-timeout-value"
+        )
+        .unwrap();
+        client.flush().unwrap();
+        match request_rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+            CtrlReq::SetEnvironment(name, value) => {
+                assert_eq!(name, "SYNTHETIC_TIMEOUT_KEY");
+                assert_eq!(value, "synthetic-timeout-value");
+            }
+            _ => panic!("expected set-environment request"),
+        }
+
+        reader
+            .get_mut()
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .unwrap();
+        let mut trailing_output = String::new();
+        let batching_result = reader.read_to_string(&mut trailing_output);
+
+        drop(reader);
+        drop(client);
+        server.join().unwrap();
+
+        let batching_closed = match &batching_result {
+            Ok(_) => true,
+            Err(error) => error.kind() == std::io::ErrorKind::ConnectionReset,
+        };
+        assert!(
+            batching_closed,
+            "non-persistent batching should close before the 500ms client timeout: {batching_result:?}"
+        );
+        assert!(trailing_output.is_empty());
     }
 }
