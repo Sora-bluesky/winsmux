@@ -10,7 +10,7 @@ use ratatui::widgets::*;
 use crate::layout::LayoutJson;
 use crate::help;
 use crate::util::{WinTree, base64_encode, quote_arg};
-use crate::session::read_session_key;
+use crate::session::{read_session_key, require_safe_environment_connection};
 use crate::rendering::{dim_predictions_enabled, map_color, dim_color, centered_rect, fix_border_intersections};
 use crate::style::parse_tmux_style_components;
 use crate::config::{parse_key_string, normalize_key_for_binding};
@@ -326,6 +326,7 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
     if !auth_line.trim().starts_with("OK") {
         return Err(io::Error::new(io::ErrorKind::PermissionDenied, "auth failed"));
     }
+    require_safe_environment_connection(&mut reader, &mut writer)?;
 
     // Enter persistent mode + attach
     let _ = writer.write_all(b"PERSISTENT\n");

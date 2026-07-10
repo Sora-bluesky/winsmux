@@ -1,5 +1,8 @@
+use std::collections::HashMap;
 use std::io;
 use std::time::Instant;
+
+use serde::{Deserialize, Serialize};
 
 use std::io::Write;
 use crate::types::{AppState, Mode, Action, FocusDir, LayoutKind, MenuItem, Menu, Node};
@@ -39,6 +42,217 @@ fn show_output_popup(app: &mut AppState, title: &str, output: String) {
         popup_pane: None,
         scroll_offset: 0,
     };
+}
+
+const REDACTED_ENVIRONMENT_VALUE: &str = "[redacted]";
+pub(crate) const SHOW_ENVIRONMENT_SAFE_RESPONSE_FLAG: &str =
+    "--winsmux-safe-environment-response-v1";
+pub(crate) const SHOW_ENVIRONMENT_SAFE_CAPABILITY_FLAG: &str =
+    "--winsmux-safe-environment-capability-v1";
+pub(crate) const SHOW_ENVIRONMENT_CONTROL_SIGNAL_CAPABILITY_FLAG: &str =
+    "--winsmux-control-safe-environment-signal-v1";
+pub(crate) const SHOW_ENVIRONMENT_SAFE_RESPONSE_PREFIX: &str =
+    "\0winsmux-safe-environment-response-v1 ";
+const INCOMPATIBLE_ENVIRONMENT_RESPONSE_ERROR: &str =
+    "the running server does not support safe show-environment responses; restart the server and retry";
+
+#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "status", content = "payload", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum SafeEnvironmentResponse {
+    Ok(String),
+    Error(String),
+}
+
+pub(crate) fn parse_show_environment_name(args: &[&str]) -> Option<String> {
+    let mut index = 0;
+    while index < args.len() {
+        match args[index] {
+            "-t" => index += 2,
+            "-g" | "-h" | "-s" => index += 1,
+            "--" => return args.get(index + 1).map(|value| (*value).to_string()),
+            value if value.starts_with('-') => index += 1,
+            value => return Some(value.to_string()),
+        }
+    }
+    None
+}
+
+fn is_sensitive_environment_name(name: &str) -> bool {
+    let normalized = name.to_ascii_lowercase();
+    let compact = normalized
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect::<String>();
+    let words = normalized
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>();
+    let has_password_alias = words.len() > 1
+        && words
+            .iter()
+            .any(|word| matches!(*word, "pass" | "pwd"));
+    let has_standalone_credential_alias = words.len() == 1
+        && matches!(words[0], "pass" | "pw" | "pin" | "psk" | "otp" | "totp" | "hotp");
+    let has_sensitive_word = words.iter().any(|word| {
+        matches!(
+            *word,
+            "secret"
+                | "secrets"
+                | "token"
+                | "tokens"
+                | "password"
+                | "passwords"
+                | "passwd"
+                | "passphrase"
+                | "passphrases"
+                | "credential"
+                | "credentials"
+                | "authorization"
+                | "bearer"
+                | "jwt"
+                | "pat"
+        )
+    });
+    let has_sensitive_key_kind = words.windows(2).any(|pair| {
+        matches!(
+            (pair[0], pair[1]),
+            ("api", "key")
+                | ("access", "key")
+                | ("private", "key")
+                | ("ssh", "key")
+                | ("signing", "key")
+                | ("session", "key")
+        )
+    });
+    let has_auth_material = words.iter().enumerate().any(|(index, word)| {
+        *word == "auth"
+            && (index + 1 == words.len()
+                || matches!(
+                    words.get(index + 1).copied(),
+                    Some("config" | "header" | "key" | "password" | "secret" | "token")
+                ))
+    });
+    let compact_sensitive_markers = [
+        "secret",
+        "token",
+        "password",
+        "passwd",
+        "passphrase",
+        "credential",
+        "credentials",
+        "secretkey",
+        "privatekey",
+        "sshkey",
+        "signingkey",
+        "accesskey",
+        "apikey",
+        "sessionkey",
+        "authheader",
+        "authorization",
+        "bearer",
+    ];
+    let has_compact_sensitive_marker = compact_sensitive_markers.iter().any(|&marker| {
+        compact.ends_with(marker) || words.iter().any(|word| *word == marker)
+    });
+    let compact_key_markers = [
+        "secretkey",
+        "privatekey",
+        "sshkey",
+        "signingkey",
+        "accesskey",
+        "apikey",
+        "sessionkey",
+    ];
+    let benign_compact_key_continuations = [("apikey", "board")];
+    let has_separatorless_compact_key_marker = words.iter().any(|word| {
+        compact_key_markers.iter().any(|&marker| {
+            word.match_indices(marker).any(|(index, _)| {
+                let qualifier = &word[index + marker.len()..];
+                !qualifier.is_empty()
+                    && !benign_compact_key_continuations.iter().any(
+                        |&(benign_marker, continuation)| {
+                            marker == benign_marker && qualifier.starts_with(continuation)
+                        },
+                    )
+            })
+        })
+    });
+
+    has_sensitive_word
+        || has_password_alias
+        || has_standalone_credential_alias
+        || has_sensitive_key_kind
+        || has_auth_material
+        || has_compact_sensitive_marker
+        || has_separatorless_compact_key_marker
+        || compact == "key"
+}
+
+pub(crate) fn encode_safe_environment_response(response: &str) -> String {
+    encode_safe_environment_frame(&SafeEnvironmentResponse::Ok(response.to_string()))
+}
+
+pub(crate) fn encode_safe_environment_error(error: &str) -> String {
+    encode_safe_environment_frame(&SafeEnvironmentResponse::Error(error.to_string()))
+}
+
+fn encode_safe_environment_frame(response: &SafeEnvironmentResponse) -> String {
+    let payload = serde_json::to_string(response)
+        .expect("safe environment response serialization must succeed");
+    format!("{SHOW_ENVIRONMENT_SAFE_RESPONSE_PREFIX}{payload}\n")
+}
+
+pub(crate) fn decode_safe_environment_response(
+    response: &str,
+) -> Result<SafeEnvironmentResponse, String> {
+    // An older server ignores the private safe-response/name flags and writes its
+    // ordinary `NAME=value` lines (potentially the full environment). That legacy
+    // output cannot be confused with this NUL-prefixed, versioned JSON frame.
+    // Do not inspect payload lines here: legitimate values may contain newlines,
+    // `ERROR:` prefixes, CRLF, empty strings, or multibyte UTF-8.
+    let frame = response
+        .strip_prefix(SHOW_ENVIRONMENT_SAFE_RESPONSE_PREFIX)
+        .ok_or_else(|| INCOMPATIBLE_ENVIRONMENT_RESPONSE_ERROR.to_string())?;
+    let frame = frame
+        .strip_suffix("\r\n")
+        .or_else(|| frame.strip_suffix('\n'))
+        .ok_or_else(|| INCOMPATIBLE_ENVIRONMENT_RESPONSE_ERROR.to_string())?;
+    if frame.contains(['\r', '\n']) {
+        return Err(INCOMPATIBLE_ENVIRONMENT_RESPONSE_ERROR.to_string());
+    }
+    serde_json::from_str(frame)
+        .map_err(|_| INCOMPATIBLE_ENVIRONMENT_RESPONSE_ERROR.to_string())
+}
+
+pub(crate) fn incompatible_environment_response_error() -> &'static str {
+    INCOMPATIBLE_ENVIRONMENT_RESPONSE_ERROR
+}
+
+pub(crate) fn format_environment_output(
+    environment: &HashMap<String, String>,
+    requested_name: Option<&str>,
+) -> Result<String, String> {
+    let mut names = match requested_name {
+        Some(name) if environment.contains_key(name) => vec![name.to_string()],
+        Some(name) => return Err(format!("unknown variable: {name}")),
+        None => environment.keys().cloned().collect::<Vec<_>>(),
+    };
+    names.sort();
+
+    if names.is_empty() {
+        return Ok("(no environment variables)\n".to_string());
+    }
+
+    let mut output = String::new();
+    for name in names {
+        let value = if is_sensitive_environment_name(&name) {
+            REDACTED_ENVIRONMENT_VALUE
+        } else {
+            environment.get(&name).map(String::as_str).unwrap_or_default()
+        };
+        output.push_str(&format!("{name}={value}\n"));
+    }
+    Ok(output)
 }
 
 /// Generate list-windows output from AppState (tmux-compatible format).
@@ -1153,11 +1367,12 @@ pub fn execute_command_string(app: &mut AppState, cmd: &str) -> io::Result<()> {
             if let Some(port) = app.control_port {
                 let _ = send_control_to_port(port, &format!("{}\n", cmd), &app.session_key);
             } else {
-                let mut output = String::new();
-                for (key, value) in &app.environment {
-                    output.push_str(&format!("{}={}\n", key, value));
-                }
-                if output.is_empty() { output.push_str("(no environment variables)\n"); }
+                let requested_name = parse_show_environment_name(&parts[1..]);
+                let output = format_environment_output(
+                    &app.environment,
+                    requested_name.as_deref(),
+                )
+                .map_err(|error| io::Error::new(io::ErrorKind::NotFound, error))?;
                 show_output_popup(app, "show-environment", output);
             }
         }

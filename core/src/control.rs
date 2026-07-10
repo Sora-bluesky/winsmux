@@ -1,5 +1,120 @@
 use crate::types::{AppState, ControlNotification};
 
+// Preserve winsmux's existing tmux-compatible flags value and reserve one
+// negotiated bit for server-authored safe-environment response metadata.
+pub(crate) const CONTROL_RESPONSE_DEFAULT_FLAGS: u64 = 1;
+pub(crate) const CONTROL_RESPONSE_SAFE_ENVIRONMENT_FLAG: u64 = 1 << 1;
+
+#[derive(Clone, Copy, Debug)]
+struct ActiveControlClientResponse {
+    command_number: u64,
+    safe_environment: bool,
+    payload_handled: bool,
+}
+
+#[derive(Default)]
+pub(crate) struct ControlClientResponseFilter {
+    active_response: Option<ActiveControlClientResponse>,
+    deferred_notifications: String,
+}
+
+impl ControlClientResponseFilter {
+    pub(crate) fn filter_server_line(&mut self, line: &str) -> String {
+        if self.active_response.is_none() {
+            let Some((command_number, flags)) = control_block_metadata(line, "%begin") else {
+                return line.to_string();
+            };
+            self.deferred_notifications.clear();
+            self.active_response = Some(ActiveControlClientResponse {
+                command_number,
+                safe_environment: flags & CONTROL_RESPONSE_SAFE_ENVIRONMENT_FLAG != 0,
+                payload_handled: false,
+            });
+            return line.to_string();
+        }
+
+        if let Some((command_number, _)) = control_block_metadata(line, "%end")
+            .or_else(|| control_block_metadata(line, "%error"))
+        {
+            let missing_show_environment_frame = self.active_response.is_some_and(|response| {
+                response.command_number == command_number
+                    && response.safe_environment
+                    && !response.payload_handled
+            });
+            if self
+                .active_response
+                .is_some_and(|response| response.command_number == command_number)
+            {
+                self.active_response = None;
+            }
+            self.deferred_notifications.clear();
+            if missing_show_environment_frame {
+                return format!(
+                    "{}\n{}",
+                    crate::commands::incompatible_environment_response_error(),
+                    line
+                );
+            }
+            return line.to_string();
+        }
+
+        let Some(response) = self.active_response else {
+            return line.to_string();
+        };
+        if !response.safe_environment {
+            return line.to_string();
+        }
+        if !response.payload_handled && line.starts_with('%') {
+            self.deferred_notifications.push_str(line);
+            return String::new();
+        }
+        if response.payload_handled {
+            return if line.starts_with('%') {
+                line.to_string()
+            } else {
+                String::new()
+            };
+        }
+
+        // The server sets the safe-environment bit only after resolving dispatch
+        // semantics. User-controlled output can match the frame prefix, so the
+        // client must never infer this state from payload or command text.
+        self.active_response
+            .as_mut()
+            .expect("active response was checked above")
+            .payload_handled = true;
+        match crate::commands::decode_safe_environment_response(line) {
+            Ok(crate::commands::SafeEnvironmentResponse::Ok(output)) => {
+                format!("{}{}", std::mem::take(&mut self.deferred_notifications), output)
+            }
+            Ok(crate::commands::SafeEnvironmentResponse::Error(error)) => {
+                format!(
+                    "{}{error}\n",
+                    std::mem::take(&mut self.deferred_notifications)
+                )
+            }
+            Err(error) => {
+                self.deferred_notifications.clear();
+                format!("{error}\n")
+            }
+        }
+    }
+}
+
+fn control_block_metadata(line: &str, marker: &str) -> Option<(u64, u64)> {
+    let mut fields = line.trim_end_matches(['\r', '\n']).split_ascii_whitespace();
+    if fields.next()? != marker {
+        return None;
+    }
+    fields.next()?.parse::<i64>().ok()?;
+    let command_number = fields.next()?.parse::<u64>().ok()?;
+    let flags = fields.next()?.parse::<u64>().ok()?;
+    if fields.next().is_some() {
+        return None;
+    }
+    Some((command_number, flags))
+}
+
 /// Format a control mode notification as a tmux wire-compatible line.
 pub fn format_notification(notif: &ControlNotification) -> String {
     match notif {
@@ -94,18 +209,18 @@ pub fn escape_output(data: &str) -> String {
 }
 
 /// Format the %begin header for a command response.
-pub fn format_begin(timestamp: i64, cmd_number: u64) -> String {
-    format!("%begin {} {} 1", timestamp, cmd_number)
+pub fn format_begin(timestamp: i64, cmd_number: u64, flags: u64) -> String {
+    format!("%begin {} {} {}", timestamp, cmd_number, flags)
 }
 
 /// Format the %end footer for a successful command response.
-pub fn format_end(timestamp: i64, cmd_number: u64) -> String {
-    format!("%end {} {} 1", timestamp, cmd_number)
+pub fn format_end(timestamp: i64, cmd_number: u64, flags: u64) -> String {
+    format!("%end {} {} {}", timestamp, cmd_number, flags)
 }
 
 /// Format the %error footer for a failed command response.
-pub fn format_error(timestamp: i64, cmd_number: u64) -> String {
-    format!("%error {} {} 1", timestamp, cmd_number)
+pub fn format_error(timestamp: i64, cmd_number: u64, flags: u64) -> String {
+    format!("%error {} {} {}", timestamp, cmd_number, flags)
 }
 
 /// Emit a control notification to all connected control mode clients.
@@ -161,9 +276,72 @@ mod tests {
 
     #[test]
     fn test_format_begin_end_error() {
-        assert_eq!(format_begin(1700000000, 1), "%begin 1700000000 1 1");
-        assert_eq!(format_end(1700000000, 1), "%end 1700000000 1 1");
-        assert_eq!(format_error(1700000000, 1), "%error 1700000000 1 1");
+        assert_eq!(
+            format_begin(1700000000, 1, CONTROL_RESPONSE_DEFAULT_FLAGS),
+            "%begin 1700000000 1 1"
+        );
+        assert_eq!(
+            format_end(1700000000, 1, CONTROL_RESPONSE_DEFAULT_FLAGS),
+            "%end 1700000000 1 1"
+        );
+        assert_eq!(
+            format_error(1700000000, 1, CONTROL_RESPONSE_DEFAULT_FLAGS),
+            "%error 1700000000 1 1"
+        );
+    }
+
+    #[test]
+    fn control_client_preserves_safe_environment_prefix_for_show_buffer() {
+        let mut filter = ControlClientResponseFilter::default();
+
+        assert_eq!(
+            filter.filter_server_line("%begin 1700000000 1 1\n"),
+            "%begin 1700000000 1 1\n"
+        );
+        let output = format!(
+            "{}synthetic buffer payload\n",
+            crate::commands::SHOW_ENVIRONMENT_SAFE_RESPONSE_PREFIX
+        );
+        assert_eq!(filter.filter_server_line(&output), output);
+        assert_eq!(
+            filter.filter_server_line("%end 1700000000 1 1\n"),
+            "%end 1700000000 1 1\n"
+        );
+    }
+
+    #[test]
+    fn control_client_decodes_framed_show_environment_reply() {
+        let mut filter = ControlClientResponseFilter::default();
+        filter.filter_server_line("%begin 1700000000 1 3\n");
+
+        let frame = crate::commands::encode_safe_environment_response(
+            "SYNTHETIC_TARGET=synthetic-value\n",
+        );
+        assert_eq!(
+            filter.filter_server_line(&frame),
+            "SYNTHETIC_TARGET=synthetic-value\n"
+        );
+    }
+
+    #[test]
+    fn control_client_refuses_unframed_show_environment_reply() {
+        let mut filter = ControlClientResponseFilter::default();
+        filter.filter_server_line("%begin 1700000000 1 3\n");
+
+        let output = filter.filter_server_line(
+            "SYNTHETIC_TARGET=synthetic-value-that-must-not-print\n",
+        );
+        assert_eq!(
+            output,
+            format!(
+                "{}\n",
+                crate::commands::incompatible_environment_response_error()
+            )
+        );
+        assert_eq!(
+            filter.filter_server_line("SYNTHETIC_SECOND=also-must-not-print\n"),
+            ""
+        );
     }
 
     #[test]

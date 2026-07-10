@@ -10,8 +10,63 @@ use crate::util::base64_decode;
 use crate::control;
 
 static NEXT_CLIENT_ID: AtomicU64 = AtomicU64::new(1);
-use crate::commands::parse_command_line;
+const NON_PERSISTENT_BATCH_READ_TIMEOUT: Duration = Duration::from_millis(10);
+use crate::commands::{
+    encode_safe_environment_error, encode_safe_environment_response, parse_command_line,
+    SHOW_ENVIRONMENT_CONTROL_SIGNAL_CAPABILITY_FLAG, SHOW_ENVIRONMENT_SAFE_CAPABILITY_FLAG,
+    SHOW_ENVIRONMENT_SAFE_RESPONSE_FLAG,
+};
 use super::helpers::TMUX_COMMANDS;
+
+#[derive(Debug, Eq, PartialEq)]
+enum ControlCommandResult {
+    Success(String),
+    Error(String),
+}
+
+struct ControlCommandResponseSender(mpsc::Sender<ControlCommandResult>);
+
+impl ControlCommandResponseSender {
+    fn new(sender: mpsc::Sender<ControlCommandResult>) -> Self {
+        Self(sender)
+    }
+
+    fn send(&self, response: String) -> Result<(), mpsc::SendError<ControlCommandResult>> {
+        self.0.send(ControlCommandResult::Success(response))
+    }
+
+    fn send_error(&self, error: String) -> Result<(), mpsc::SendError<ControlCommandResult>> {
+        self.0.send(ControlCommandResult::Error(error))
+    }
+}
+
+fn write_control_error_payload(
+    write_stream: &mut TcpStream,
+    error: &str,
+    response_flags: u64,
+) {
+    if response_flags & control::CONTROL_RESPONSE_SAFE_ENVIRONMENT_FLAG != 0 {
+        let _ = write!(write_stream, "{}", encode_safe_environment_error(error));
+    } else {
+        let _ = writeln!(write_stream, "{error}");
+    }
+}
+
+fn write_control_pre_dispatch_error(
+    write_stream: &mut TcpStream,
+    error: &str,
+    timestamp: i64,
+    command_number: u64,
+    response_flags: u64,
+) {
+    write_control_error_payload(write_stream, error, response_flags);
+    let _ = writeln!(
+        write_stream,
+        "{}",
+        control::format_error(timestamp, command_number, response_flags)
+    );
+    let _ = write_stream.flush();
+}
 
 /// Handle a single TCP connection from a client.
 /// Parses auth, optional TARGET/PERSISTENT flags, then dispatches commands
@@ -59,8 +114,8 @@ if provided_key != session_key {
 let _ = write_stream.write_all(b"OK\n");
 let _ = write_stream.flush();
 
-// Set short read timeout for batched command processing
-let _ = r.get_ref().set_read_timeout(Some(Duration::from_millis(10)));
+// Keep the authentication-scale timeout through capability and mode negotiation.
+// Persistent and control modes install their own steady-state timeout below.
 
 // Check for PERSISTENT flag and optional TARGET line
 let mut persistent = false;
@@ -69,8 +124,30 @@ let mut global_target_win: Option<usize> = None;
 let mut global_target_pane: Option<usize> = None;
 let mut global_pane_is_id = false;
 let mut line = String::new();
+let mut safe_environment_capability_negotiated = false;
+let mut safe_environment_control_signal_negotiated = false;
 if r.read_line(&mut line).is_err() {
     return;
+}
+
+let safe_capability_command = format!(
+    "show-environment {SHOW_ENVIRONMENT_SAFE_CAPABILITY_FLAG}"
+);
+let safe_control_capability_command = format!(
+    "{safe_capability_command} {SHOW_ENVIRONMENT_CONTROL_SIGNAL_CAPABILITY_FLAG}"
+);
+if matches!(
+    line.trim(),
+    command if command == safe_capability_command || command == safe_control_capability_command
+) {
+    safe_environment_capability_negotiated = true;
+    safe_environment_control_signal_negotiated = line.trim() == safe_control_capability_command;
+    let _ = write!(write_stream, "{}", encode_safe_environment_response(""));
+    let _ = write_stream.flush();
+    line.clear();
+    if r.read_line(&mut line).is_err() {
+        return;
+    }
 }
 
 // Check if client requests persistent connection mode
@@ -194,16 +271,22 @@ if control_echo || control_noecho {
             let _ = write_stream.flush();
         }
 
-        // Send %begin
-        let _ = writeln!(write_stream, "{}", control::format_begin(ts, cmd_counter));
-        let _ = write_stream.flush();
-
         // Dispatch the command
         let parsed = parse_command_line(trimmed);
         let raw_cmd = parsed.first().map(|s| s.as_str()).unwrap_or("");
 
         if raw_cmd.is_empty() {
-            let _ = writeln!(write_stream, "{}", control::format_end(ts, cmd_counter));
+            let flags = control::CONTROL_RESPONSE_DEFAULT_FLAGS;
+            let _ = writeln!(
+                write_stream,
+                "{}",
+                control::format_begin(ts, cmd_counter, flags)
+            );
+            let _ = writeln!(
+                write_stream,
+                "{}",
+                control::format_end(ts, cmd_counter, flags)
+            );
             let _ = write_stream.flush();
             continue;
         }
@@ -221,6 +304,23 @@ if control_echo || control_noecho {
         } else {
             (raw_cmd, parsed.iter().skip(1).map(|s| s.as_str()).collect())
         };
+
+        // This bit is the server's authoritative classification after alias
+        // expansion. The client does not mirror command parsing or dispatch.
+        let response_flags = control::CONTROL_RESPONSE_DEFAULT_FLAGS
+            | if safe_environment_control_signal_negotiated
+                && matches!(cmd_name, "show-environment" | "showenv")
+            {
+                control::CONTROL_RESPONSE_SAFE_ENVIRONMENT_FLAG
+            } else {
+                0
+            };
+        let _ = writeln!(
+            write_stream,
+            "{}",
+            control::format_begin(ts, cmd_counter, response_flags)
+        );
+        let _ = write_stream.flush();
 
         // Parse -t from command args
         let mut ctrl_target_win: Option<usize> = None;
@@ -274,18 +374,26 @@ if control_echo || control_noecho {
                     let (rtx, rrx) = mpsc::channel::<bool>();
                     let _ = tx_ctrl.send(CtrlReq::FocusPaneChecked(pid, rtx));
                     if !rrx.recv_timeout(Duration::from_millis(2000)).unwrap_or(false) {
-                        let _ = writeln!(write_stream, "can't find pane: {}", pid);
-                        let _ = writeln!(write_stream, "{}", control::format_error(ts, cmd_counter));
-                        let _ = write_stream.flush();
+                        write_control_pre_dispatch_error(
+                            &mut write_stream,
+                            &format!("can't find pane: {pid}"),
+                            ts,
+                            cmd_counter,
+                            response_flags,
+                        );
                         continue;
                     }
                 } else {
                     let (rtx, rrx) = mpsc::channel::<bool>();
                     let _ = tx_ctrl.send(CtrlReq::FocusPaneByIndexChecked(pid, rtx));
                     if !rrx.recv_timeout(Duration::from_millis(2000)).unwrap_or(false) {
-                        let _ = writeln!(write_stream, "can't find pane index: {}", pid);
-                        let _ = writeln!(write_stream, "{}", control::format_error(ts, cmd_counter));
-                        let _ = write_stream.flush();
+                        write_control_pre_dispatch_error(
+                            &mut write_stream,
+                            &format!("can't find pane index: {pid}"),
+                            ts,
+                            cmd_counter,
+                            response_flags,
+                        );
                         continue;
                     }
                 }
@@ -294,18 +402,26 @@ if control_echo || control_noecho {
                     let (rtx, rrx) = mpsc::channel::<bool>();
                     let _ = tx_ctrl.send(CtrlReq::FocusPaneTemp(pid, rtx));
                     if !rrx.recv_timeout(Duration::from_millis(2000)).unwrap_or(false) {
-                        let _ = writeln!(write_stream, "can't find pane: {}", pid);
-                        let _ = writeln!(write_stream, "{}", control::format_error(ts, cmd_counter));
-                        let _ = write_stream.flush();
+                        write_control_pre_dispatch_error(
+                            &mut write_stream,
+                            &format!("can't find pane: {pid}"),
+                            ts,
+                            cmd_counter,
+                            response_flags,
+                        );
                         continue;
                     }
                 } else {
                     let (rtx, rrx) = mpsc::channel::<bool>();
                     let _ = tx_ctrl.send(CtrlReq::FocusPaneByIndexTemp(pid, rtx));
                     if !rrx.recv_timeout(Duration::from_millis(2000)).unwrap_or(false) {
-                        let _ = writeln!(write_stream, "can't find pane index: {}", pid);
-                        let _ = writeln!(write_stream, "{}", control::format_error(ts, cmd_counter));
-                        let _ = write_stream.flush();
+                        write_control_pre_dispatch_error(
+                            &mut write_stream,
+                            &format!("can't find pane index: {pid}"),
+                            ts,
+                            cmd_counter,
+                            response_flags,
+                        );
                         continue;
                     }
                 }
@@ -313,9 +429,10 @@ if control_echo || control_noecho {
         }
 
         // Dispatch command (use a oneshot for the response)
-        let (resp_s, resp_r) = mpsc::channel::<String>();
+        let (resp_s, resp_r) = mpsc::channel::<ControlCommandResult>();
         let dispatched = dispatch_control_command(
-            cmd_name, &filtered_args, &tx_ctrl, resp_s,
+            cmd_name, &filtered_args, &tx_ctrl, ControlCommandResponseSender::new(resp_s),
+            safe_environment_capability_negotiated,
             ctrl_target_pane, ctrl_pane_is_id, ctrl_raw_target.as_deref(),
             ctrl_client_id,
         );
@@ -323,23 +440,34 @@ if control_echo || control_noecho {
         if dispatched {
             // Wait for response with timeout
             match resp_r.recv_timeout(Duration::from_secs(5)) {
-                Ok(response) => {
+                Ok(ControlCommandResult::Error(error)) => {
+                    let _ = write!(write_stream, "{error}");
+                    if !error.ends_with('\n') {
+                        let _ = writeln!(write_stream);
+                    }
+                    let _ = writeln!(write_stream, "{}", control::format_error(ts, cmd_counter, response_flags));
+                }
+                Ok(ControlCommandResult::Success(response)) => {
                     if !response.is_empty() {
                         let _ = write!(write_stream, "{}", response);
                         if !response.ends_with('\n') {
                             let _ = writeln!(write_stream);
                         }
                     }
-                    let _ = writeln!(write_stream, "{}", control::format_end(ts, cmd_counter));
+                    let _ = writeln!(write_stream, "{}", control::format_end(ts, cmd_counter, response_flags));
                 }
                 Err(_) => {
-                    let _ = writeln!(write_stream, "command timed out");
-                    let _ = writeln!(write_stream, "{}", control::format_error(ts, cmd_counter));
+                    write_control_error_payload(
+                        &mut write_stream,
+                        "command timed out",
+                        response_flags,
+                    );
+                    let _ = writeln!(write_stream, "{}", control::format_error(ts, cmd_counter, response_flags));
                 }
             }
         } else {
             // Command dispatched without response channel (fire and forget)
-            let _ = writeln!(write_stream, "{}", control::format_end(ts, cmd_counter));
+            let _ = writeln!(write_stream, "{}", control::format_end(ts, cmd_counter, response_flags));
         }
         let _ = write_stream.flush();
     }
@@ -348,6 +476,14 @@ if control_echo || control_noecho {
     let _ = tx.send(CtrlReq::ControlDeregister { client_id: ctrl_client_id });
     drop(notif_thread);
     return;
+}
+
+// Capability and mode negotiation is complete. Restore the short batching
+// timeout only for one-shot connections; persistent mode keeps its 5s timeout.
+if !persistent {
+    let _ = r
+        .get_ref()
+        .set_read_timeout(Some(NON_PERSISTENT_BATCH_READ_TIMEOUT));
 }
 
 // Check if this line is a TARGET specification
@@ -477,6 +613,7 @@ if !skip_pane_focus && targeted_kill_pane_id.is_none() {
                         let _ = write!(write_stream, "can't find pane: {}\n", pid);
                         let _ = write_stream.flush();
                         if !persistent { break; }
+                        line.clear();
                         continue;
                     }
                 } else {
@@ -486,6 +623,7 @@ if !skip_pane_focus && targeted_kill_pane_id.is_none() {
                         let _ = write!(write_stream, "can't find pane index: {}\n", pid);
                         let _ = write_stream.flush();
                         if !persistent { break; }
+                        line.clear();
                         continue;
                     }
                 }
@@ -497,6 +635,7 @@ if !skip_pane_focus && targeted_kill_pane_id.is_none() {
                         let _ = write!(write_stream, "can't find pane: {}\n", pid);
                         let _ = write_stream.flush();
                         if !persistent { break; }
+                        line.clear();
                         continue;
                     }
                 } else {
@@ -506,6 +645,7 @@ if !skip_pane_focus && targeted_kill_pane_id.is_none() {
                         let _ = write!(write_stream, "can't find pane index: {}\n", pid);
                         let _ = write_stream.flush();
                         if !persistent { break; }
+                        line.clear();
                         continue;
                     }
                 }
@@ -1390,13 +1530,48 @@ match cmd {
         }
     }
     "show-environment" | "showenv" => {
-        let (rtx, rrx) = mpsc::channel::<String>();
-        let _ = tx.send(CtrlReq::ShowEnvironment(rtx));
-        if let Ok(text) = rrx.recv() {
-            if persistent {
-                let _ = tx.send(CtrlReq::ShowTextPopup("show-environment".to_string(), text));
-            } else {
-                let _ = write!(write_stream, "{}\n", text); let _ = write_stream.flush();
+        if args.contains(&SHOW_ENVIRONMENT_SAFE_CAPABILITY_FLAG) {
+            let _ = write!(write_stream, "{}", encode_safe_environment_response(""));
+            let _ = write_stream.flush();
+            line.clear();
+            continue;
+        }
+        let safe_response_requested = args.contains(&SHOW_ENVIRONMENT_SAFE_RESPONSE_FLAG);
+        let requested_name = crate::commands::parse_show_environment_name(&args);
+        let (rtx, rrx) = mpsc::channel::<Result<String, String>>();
+        let _ = tx.send(CtrlReq::ShowEnvironment(requested_name, rtx));
+        if let Ok(result) = rrx.recv() {
+            match result {
+                Ok(text) if persistent => {
+                    // Persistent clients already passed the structured capability
+                    // handshake before entering this mode. Keep popup text raw so
+                    // multiline values render normally instead of exposing a wire frame.
+                    let _ = tx.send(CtrlReq::ShowTextPopup("show-environment".to_string(), text));
+                }
+                Ok(text) => {
+                    if safe_response_requested {
+                        let response = encode_safe_environment_response(&text);
+                        let _ = write!(write_stream, "{response}");
+                    } else {
+                        let _ = write!(write_stream, "{}\n", text);
+                    }
+                    let _ = write_stream.flush();
+                }
+                Err(error) if persistent => {
+                    let _ = tx.send(CtrlReq::ShowTextPopup(
+                        "show-environment".to_string(),
+                        format!("error: {error}\n"),
+                    ));
+                }
+                Err(error) => {
+                    let response = if safe_response_requested {
+                        encode_safe_environment_error(&error)
+                    } else {
+                        format!("ERROR: {error}\n")
+                    };
+                    let _ = write!(write_stream, "{response}");
+                    let _ = write_stream.flush();
+                }
             }
         }
         if !persistent { break; }
@@ -1839,7 +2014,8 @@ fn dispatch_control_command(
     cmd: &str,
     args: &[&str],
     tx: &mpsc::Sender<CtrlReq>,
-    resp_tx: mpsc::Sender<String>,
+    resp_tx: ControlCommandResponseSender,
+    safe_environment_capability_negotiated: bool,
     target_pane: Option<usize>,
     pane_is_id: bool,
     _raw_target: Option<&str>,
@@ -2227,10 +2403,32 @@ fn dispatch_control_command(
             true
         }
         "show-environment" | "showenv" => {
-            let (rtx, rrx) = mpsc::channel::<String>();
-            let _ = tx.send(CtrlReq::ShowEnvironment(rtx));
-            if let Ok(text) = rrx.recv_timeout(Duration::from_secs(5)) {
-                let _ = resp_tx.send(text);
+            if args.contains(&SHOW_ENVIRONMENT_SAFE_CAPABILITY_FLAG) {
+                let _ = resp_tx.send(encode_safe_environment_response(""));
+                return true;
+            }
+            // Negotiation covers both named lookups and no-argument full listings.
+            // Neither response may fall back to an unframed client-visible payload.
+            let safe_response_requested = safe_environment_capability_negotiated
+                || args.contains(&SHOW_ENVIRONMENT_SAFE_RESPONSE_FLAG);
+            let requested_name = crate::commands::parse_show_environment_name(args);
+            let (rtx, rrx) = mpsc::channel::<Result<String, String>>();
+            let _ = tx.send(CtrlReq::ShowEnvironment(requested_name, rtx));
+            if let Ok(result) = rrx.recv_timeout(Duration::from_secs(5)) {
+                match result {
+                    Ok(text) if safe_response_requested => {
+                        let _ = resp_tx.send(encode_safe_environment_response(&text));
+                    }
+                    Ok(text) => {
+                        let _ = resp_tx.send(text);
+                    }
+                    Err(error) if safe_response_requested => {
+                        let _ = resp_tx.send_error(encode_safe_environment_error(&error));
+                    }
+                    Err(error) => {
+                        let _ = resp_tx.send_error(error);
+                    }
+                }
             }
             true
         }
@@ -2422,5 +2620,875 @@ fn dispatch_control_command(
             let _ = resp_tx.send(format!("unknown command: {}", cmd));
             true
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::sync::{Arc, RwLock};
+
+    fn spawn_test_server() -> (
+        std::net::SocketAddr,
+        mpsc::Receiver<CtrlReq>,
+        std::thread::JoinHandle<()>,
+    ) {
+        spawn_test_server_with_aliases(HashMap::new())
+    }
+
+    fn spawn_test_server_with_aliases(
+        aliases: HashMap<String, String>,
+    ) -> (
+        std::net::SocketAddr,
+        mpsc::Receiver<CtrlReq>,
+        std::thread::JoinHandle<()>,
+    ) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (request_tx, request_rx) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            handle_connection(
+                stream,
+                request_tx,
+                "synthetic-session-key",
+                Arc::new(RwLock::new(aliases)),
+            );
+        });
+        (address, request_rx, server)
+    }
+
+    fn authenticate(address: std::net::SocketAddr) -> (std::net::TcpStream, BufReader<std::net::TcpStream>) {
+        let mut client = std::net::TcpStream::connect(address).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut reader = BufReader::new(client.try_clone().unwrap());
+        writeln!(client, "AUTH synthetic-session-key").unwrap();
+        client.flush().unwrap();
+        let mut auth = String::new();
+        reader.read_line(&mut auth).unwrap();
+        assert_eq!(auth, "OK\n");
+        (client, reader)
+    }
+
+    fn answer_show_environment(
+        request_rx: &mpsc::Receiver<CtrlReq>,
+        expected_name: Option<&str>,
+        response: Result<String, String>,
+    ) {
+        match request_rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+            CtrlReq::ShowEnvironment(name, sender) => {
+                assert_eq!(name.as_deref(), expected_name);
+                sender.send(response).unwrap();
+            }
+            _ => panic!("expected show-environment request"),
+        }
+    }
+
+    fn enter_control_mode(
+        client: &mut std::net::TcpStream,
+        reader: &mut BufReader<std::net::TcpStream>,
+        request_rx: &mpsc::Receiver<CtrlReq>,
+    ) {
+        writeln!(client, "CONTROL_NOECHO").unwrap();
+        client.flush().unwrap();
+
+        let mut ready = String::new();
+        reader.read_line(&mut ready).unwrap();
+        assert_eq!(ready, "\n");
+        assert!(matches!(
+            request_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            CtrlReq::ControlRegister { echo: false, .. }
+        ));
+    }
+
+    fn negotiate_safe_environment_capability(
+        client: &mut std::net::TcpStream,
+        reader: &mut BufReader<std::net::TcpStream>,
+        control_signal: bool,
+    ) {
+        if control_signal {
+            writeln!(
+                client,
+                "show-environment {SHOW_ENVIRONMENT_SAFE_CAPABILITY_FLAG} {SHOW_ENVIRONMENT_CONTROL_SIGNAL_CAPABILITY_FLAG}"
+            )
+            .unwrap();
+        } else {
+            writeln!(
+                client,
+                "show-environment {SHOW_ENVIRONMENT_SAFE_CAPABILITY_FLAG}"
+            )
+            .unwrap();
+        }
+        client.flush().unwrap();
+
+        let mut capability = String::new();
+        reader.read_line(&mut capability).unwrap();
+        assert_eq!(
+            crate::commands::decode_safe_environment_response(&capability).unwrap(),
+            crate::commands::SafeEnvironmentResponse::Ok(String::new())
+        );
+    }
+
+    fn control_block_flags(line: &str, expected_marker: &str) -> u64 {
+        let fields = line.split_ascii_whitespace().collect::<Vec<_>>();
+        assert_eq!(fields.len(), 4, "unexpected control line: {line:?}");
+        assert_eq!(fields[0], expected_marker, "unexpected control line: {line:?}");
+        fields[3].parse().unwrap()
+    }
+
+    fn synthetic_full_environment_output() -> String {
+        let mut environment = HashMap::new();
+        environment.insert(
+            "SAFE_VAR".to_string(),
+            "first line\r\nsecond 行 🚀\n".to_string(),
+        );
+        environment.insert(
+            "GH_TOKEN".to_string(),
+            "synthetic-secret-value".to_string(),
+        );
+        let output = crate::commands::format_environment_output(&environment, None).unwrap();
+        assert!(output.contains("SAFE_VAR=first line\r\nsecond 行 🚀\n"));
+        assert!(output.contains("GH_TOKEN=[redacted]"));
+        assert!(!output.contains("synthetic-secret-value"));
+        output
+    }
+
+    #[test]
+    fn direct_named_environment_frame_round_trips_multiline_utf8() {
+        let (address, request_rx, server) = spawn_test_server();
+        let (mut client, mut reader) = authenticate(address);
+        let expected = "TARGET_VAR=first line\r\nsecond 行 🚀\n\n".to_string();
+
+        writeln!(
+            client,
+            "show-environment {SHOW_ENVIRONMENT_SAFE_RESPONSE_FLAG} TARGET_VAR"
+        )
+        .unwrap();
+        client.flush().unwrap();
+        answer_show_environment(&request_rx, Some("TARGET_VAR"), Ok(expected.clone()));
+
+        let mut response = String::new();
+        reader.read_to_string(&mut response).unwrap();
+        assert_eq!(
+            crate::commands::decode_safe_environment_response(&response).unwrap(),
+            crate::commands::SafeEnvironmentResponse::Ok(expected)
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn direct_full_environment_frame_round_trips_redacted_multiline_utf8() {
+        let (address, request_rx, server) = spawn_test_server();
+        let (mut client, mut reader) = authenticate(address);
+        let expected = synthetic_full_environment_output();
+
+        writeln!(
+            client,
+            "show-environment {SHOW_ENVIRONMENT_SAFE_RESPONSE_FLAG}"
+        )
+        .unwrap();
+        client.flush().unwrap();
+        answer_show_environment(&request_rx, None, Ok(expected.clone()));
+
+        let mut response = String::new();
+        reader.read_to_string(&mut response).unwrap();
+        assert_eq!(
+            crate::commands::decode_safe_environment_response(&response).unwrap(),
+            crate::commands::SafeEnvironmentResponse::Ok(expected)
+        );
+        assert!(!response.contains("synthetic-secret-value"));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn persistent_named_environment_popup_round_trips_multiline_utf8() {
+        let (address, request_rx, server) = spawn_test_server();
+        let (mut client, mut reader) = authenticate(address);
+        let expected = "TARGET_VAR=first line\nsecond 行 🚀\n".to_string();
+
+        writeln!(
+            client,
+            "show-environment {SHOW_ENVIRONMENT_SAFE_CAPABILITY_FLAG}"
+        )
+        .unwrap();
+        client.flush().unwrap();
+        let mut capability = String::new();
+        reader.read_line(&mut capability).unwrap();
+        assert_eq!(
+            crate::commands::decode_safe_environment_response(&capability).unwrap(),
+            crate::commands::SafeEnvironmentResponse::Ok(String::new())
+        );
+
+        write!(client, "PERSISTENT\nshow-environment TARGET_VAR\n").unwrap();
+        client.flush().unwrap();
+        answer_show_environment(&request_rx, Some("TARGET_VAR"), Ok(expected.clone()));
+        match request_rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+            CtrlReq::ShowTextPopup(title, text) => {
+                assert_eq!(title, "show-environment");
+                assert_eq!(text, expected);
+            }
+            _ => panic!("expected persistent show-environment popup"),
+        }
+
+        drop(reader);
+        drop(client);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn persistent_full_environment_popup_uses_redacted_server_output() {
+        let (address, request_rx, server) = spawn_test_server();
+        let (mut client, mut reader) = authenticate(address);
+        let expected = synthetic_full_environment_output();
+
+        writeln!(
+            client,
+            "show-environment {SHOW_ENVIRONMENT_SAFE_CAPABILITY_FLAG}"
+        )
+        .unwrap();
+        client.flush().unwrap();
+        let mut capability = String::new();
+        reader.read_line(&mut capability).unwrap();
+        assert_eq!(
+            crate::commands::decode_safe_environment_response(&capability).unwrap(),
+            crate::commands::SafeEnvironmentResponse::Ok(String::new())
+        );
+
+        write!(client, "PERSISTENT\nshow-environment\n").unwrap();
+        client.flush().unwrap();
+        answer_show_environment(&request_rx, None, Ok(expected.clone()));
+        match request_rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+            CtrlReq::ShowTextPopup(title, text) => {
+                assert_eq!(title, "show-environment");
+                assert_eq!(text, expected);
+                assert!(!text.contains("synthetic-secret-value"));
+            }
+            _ => panic!("expected persistent show-environment popup"),
+        }
+
+        drop(reader);
+        drop(client);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn control_named_environment_frame_round_trips_multiline_utf8() {
+        let (request_tx, request_rx) = mpsc::channel();
+        let (response_tx, response_rx) = mpsc::channel();
+        let expected = "TARGET_VAR=first line\nsecond 行 🚀\n".to_string();
+        let dispatcher = std::thread::spawn(move || {
+            dispatch_control_command(
+                "show-environment",
+                &["TARGET_VAR"],
+                &request_tx,
+                ControlCommandResponseSender::new(response_tx),
+                true,
+                None,
+                false,
+                None,
+                1,
+            )
+        });
+
+        answer_show_environment(&request_rx, Some("TARGET_VAR"), Ok(expected.clone()));
+        let response = match response_rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+            ControlCommandResult::Success(response) => response,
+            ControlCommandResult::Error(error) => panic!("unexpected control error: {error}"),
+        };
+        assert_eq!(
+            crate::commands::decode_safe_environment_response(&response).unwrap(),
+            crate::commands::SafeEnvironmentResponse::Ok(expected)
+        );
+        assert!(dispatcher.join().unwrap());
+    }
+
+    #[test]
+    fn control_full_environment_frame_round_trips_redacted_multiline_utf8() {
+        let (request_tx, request_rx) = mpsc::channel();
+        let (response_tx, response_rx) = mpsc::channel();
+        let expected = synthetic_full_environment_output();
+        let dispatcher = std::thread::spawn(move || {
+            dispatch_control_command(
+                "show-environment",
+                &[],
+                &request_tx,
+                ControlCommandResponseSender::new(response_tx),
+                true,
+                None,
+                false,
+                None,
+                1,
+            )
+        });
+
+        answer_show_environment(&request_rx, None, Ok(expected.clone()));
+        let response = match response_rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+            ControlCommandResult::Success(response) => response,
+            ControlCommandResult::Error(error) => panic!("unexpected control error: {error}"),
+        };
+        assert_eq!(
+            crate::commands::decode_safe_environment_response(&response).unwrap(),
+            crate::commands::SafeEnvironmentResponse::Ok(expected)
+        );
+        assert!(!response.contains("synthetic-secret-value"));
+        assert!(dispatcher.join().unwrap());
+    }
+
+    #[test]
+    fn control_named_environment_error_uses_structured_status() {
+        let (request_tx, request_rx) = mpsc::channel();
+        let (response_tx, response_rx) = mpsc::channel();
+        let dispatcher = std::thread::spawn(move || {
+            dispatch_control_command(
+                "show-environment",
+                &["MISSING_VAR"],
+                &request_tx,
+                ControlCommandResponseSender::new(response_tx),
+                true,
+                None,
+                false,
+                None,
+                1,
+            )
+        });
+
+        answer_show_environment(
+            &request_rx,
+            Some("MISSING_VAR"),
+            Err("unknown variable: MISSING_VAR".to_string()),
+        );
+        let response = match response_rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+            ControlCommandResult::Error(response) => response,
+            ControlCommandResult::Success(response) => {
+                panic!("expected control error, got success: {response}")
+            }
+        };
+        assert_eq!(
+            crate::commands::decode_safe_environment_response(&response).unwrap(),
+            crate::commands::SafeEnvironmentResponse::Error(
+                "unknown variable: MISSING_VAR".to_string()
+            )
+        );
+        assert!(dispatcher.join().unwrap());
+    }
+
+    #[test]
+    fn control_safe_environment_signal_covers_server_dispatch_reach_paths() {
+        let aliases = HashMap::from([
+            (
+                "synthetic-alias".to_string(),
+                "show-environment".to_string(),
+            ),
+            ("Synthetic-Case-Alias".to_string(), "showenv".to_string()),
+        ]);
+        let (address, request_rx, server) = spawn_test_server_with_aliases(aliases);
+        let (mut client, mut reader) = authenticate(address);
+        negotiate_safe_environment_capability(&mut client, &mut reader, true);
+        enter_control_mode(&mut client, &mut reader, &request_rx);
+
+        let cases = [
+            ("synthetic-alias SYNTHETIC_ALIAS", "SYNTHETIC_ALIAS"),
+            ("showenv SYNTHETIC_SHORTHAND", "SYNTHETIC_SHORTHAND"),
+            (
+                "show-environment -g SYNTHETIC_DUPLICATE SYNTHETIC_DUPLICATE",
+                "SYNTHETIC_DUPLICATE",
+            ),
+            (
+                "   show-environment SYNTHETIC_WHITESPACE",
+                "SYNTHETIC_WHITESPACE",
+            ),
+            ("Synthetic-Case-Alias SYNTHETIC_CASE", "SYNTHETIC_CASE"),
+        ];
+
+        for (command, expected_name) in cases {
+            writeln!(client, "{command}").unwrap();
+            client.flush().unwrap();
+
+            let mut begin = String::new();
+            reader.read_line(&mut begin).unwrap();
+            assert_eq!(
+                control_block_flags(&begin, "%begin"),
+                control::CONTROL_RESPONSE_DEFAULT_FLAGS
+                    | control::CONTROL_RESPONSE_SAFE_ENVIRONMENT_FLAG,
+                "server did not mark resolved show-environment dispatch: {command:?}"
+            );
+
+            let expected_output = format!("{expected_name}=synthetic-value\n");
+            answer_show_environment(&request_rx, Some(expected_name), Ok(expected_output.clone()));
+
+            let mut response = String::new();
+            reader.read_line(&mut response).unwrap();
+            assert_eq!(
+                crate::commands::decode_safe_environment_response(&response).unwrap(),
+                crate::commands::SafeEnvironmentResponse::Ok(expected_output)
+            );
+
+            let mut footer = String::new();
+            reader.read_line(&mut footer).unwrap();
+            assert_eq!(
+                control_block_flags(&footer, "%end"),
+                control::CONTROL_RESPONSE_DEFAULT_FLAGS
+                    | control::CONTROL_RESPONSE_SAFE_ENVIRONMENT_FLAG
+            );
+        }
+
+        drop(reader);
+        drop(client);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn control_safe_environment_target_failure_surfaces_real_error() {
+        let (address, request_rx, server) = spawn_test_server();
+        let (mut client, mut reader) = authenticate(address);
+        negotiate_safe_environment_capability(&mut client, &mut reader, true);
+        enter_control_mode(&mut client, &mut reader, &request_rx);
+
+        writeln!(
+            client,
+            "show-environment -t %999 SYNTHETIC_TARGET"
+        )
+        .unwrap();
+        client.flush().unwrap();
+
+        let mut filter = control::ControlClientResponseFilter::default();
+        let mut begin = String::new();
+        reader.read_line(&mut begin).unwrap();
+        assert_eq!(
+            control_block_flags(&begin, "%begin"),
+            control::CONTROL_RESPONSE_DEFAULT_FLAGS
+                | control::CONTROL_RESPONSE_SAFE_ENVIRONMENT_FLAG
+        );
+        assert_eq!(filter.filter_server_line(&begin), begin);
+
+        match request_rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+            CtrlReq::FocusPaneTemp(pane, response) => {
+                assert_eq!(pane, 999);
+                response.send(false).unwrap();
+            }
+            _ => panic!("expected synthetic temporary pane focus request"),
+        }
+
+        let mut error = String::new();
+        reader.read_line(&mut error).unwrap();
+        let visible_error = filter.filter_server_line(&error);
+        assert_eq!(visible_error, "can't find pane: 999\n");
+        assert!(!visible_error.contains("restart"));
+
+        let mut footer = String::new();
+        reader.read_line(&mut footer).unwrap();
+        assert!(footer.starts_with("%error "), "unexpected footer: {footer:?}");
+        assert_eq!(filter.filter_server_line(&footer), footer);
+
+        drop(reader);
+        drop(client);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn control_safe_environment_timeout_surfaces_real_error() {
+        let (address, request_rx, server) = spawn_test_server();
+        let (mut client, mut reader) = authenticate(address);
+        negotiate_safe_environment_capability(&mut client, &mut reader, true);
+        enter_control_mode(&mut client, &mut reader, &request_rx);
+        reader
+            .get_mut()
+            .set_read_timeout(Some(Duration::from_secs(7)))
+            .unwrap();
+
+        writeln!(client, "show-environment SYNTHETIC_TIMEOUT").unwrap();
+        client.flush().unwrap();
+
+        let mut filter = control::ControlClientResponseFilter::default();
+        let mut begin = String::new();
+        reader.read_line(&mut begin).unwrap();
+        assert_eq!(
+            control_block_flags(&begin, "%begin"),
+            control::CONTROL_RESPONSE_DEFAULT_FLAGS
+                | control::CONTROL_RESPONSE_SAFE_ENVIRONMENT_FLAG
+        );
+        assert_eq!(filter.filter_server_line(&begin), begin);
+
+        let _held_response_sender =
+            match request_rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+                CtrlReq::ShowEnvironment(name, sender) => {
+                    assert_eq!(name.as_deref(), Some("SYNTHETIC_TIMEOUT"));
+                    sender
+                }
+                _ => panic!("expected synthetic show-environment request"),
+            };
+
+        let mut error = String::new();
+        reader.read_line(&mut error).unwrap();
+        let visible_error = filter.filter_server_line(&error);
+        assert_eq!(visible_error, "command timed out\n");
+        assert!(!visible_error.contains("restart"));
+
+        let mut footer = String::new();
+        reader.read_line(&mut footer).unwrap();
+        assert!(footer.starts_with("%error "), "unexpected footer: {footer:?}");
+        assert_eq!(filter.filter_server_line(&footer), footer);
+
+        drop(reader);
+        drop(client);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn control_safe_environment_response_disconnect_surfaces_real_error() {
+        let (address, request_rx, server) = spawn_test_server();
+        let (mut client, mut reader) = authenticate(address);
+        negotiate_safe_environment_capability(&mut client, &mut reader, true);
+        enter_control_mode(&mut client, &mut reader, &request_rx);
+
+        writeln!(client, "show-environment SYNTHETIC_DISCONNECT").unwrap();
+        client.flush().unwrap();
+
+        let mut filter = control::ControlClientResponseFilter::default();
+        let mut begin = String::new();
+        reader.read_line(&mut begin).unwrap();
+        assert_eq!(
+            control_block_flags(&begin, "%begin"),
+            control::CONTROL_RESPONSE_DEFAULT_FLAGS
+                | control::CONTROL_RESPONSE_SAFE_ENVIRONMENT_FLAG
+        );
+        assert_eq!(filter.filter_server_line(&begin), begin);
+
+        match request_rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+            CtrlReq::ShowEnvironment(name, sender) => {
+                assert_eq!(name.as_deref(), Some("SYNTHETIC_DISCONNECT"));
+                drop(sender);
+            }
+            _ => panic!("expected synthetic show-environment request"),
+        }
+
+        let mut error = String::new();
+        reader.read_line(&mut error).unwrap();
+        let visible_error = filter.filter_server_line(&error);
+        assert_eq!(visible_error, "command timed out\n");
+        assert!(!visible_error.contains("restart"));
+
+        let mut footer = String::new();
+        reader.read_line(&mut footer).unwrap();
+        assert!(footer.starts_with("%error "), "unexpected footer: {footer:?}");
+        assert_eq!(filter.filter_server_line(&footer), footer);
+
+        drop(reader);
+        drop(client);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn control_v1_capability_preserves_legacy_control_flags() {
+        let (address, request_rx, server) = spawn_test_server();
+        let (mut client, mut reader) = authenticate(address);
+        negotiate_safe_environment_capability(&mut client, &mut reader, false);
+        enter_control_mode(&mut client, &mut reader, &request_rx);
+
+        writeln!(client, "show-environment SYNTHETIC_LEGACY").unwrap();
+        client.flush().unwrap();
+
+        let mut begin = String::new();
+        reader.read_line(&mut begin).unwrap();
+        assert_eq!(
+            control_block_flags(&begin, "%begin"),
+            control::CONTROL_RESPONSE_DEFAULT_FLAGS
+        );
+
+        answer_show_environment(
+            &request_rx,
+            Some("SYNTHETIC_LEGACY"),
+            Ok("SYNTHETIC_LEGACY=synthetic-value\n".to_string()),
+        );
+        let mut response = String::new();
+        reader.read_line(&mut response).unwrap();
+        assert!(crate::commands::decode_safe_environment_response(&response).is_ok());
+
+        let mut footer = String::new();
+        reader.read_line(&mut footer).unwrap();
+        assert_eq!(
+            control_block_flags(&footer, "%end"),
+            control::CONTROL_RESPONSE_DEFAULT_FLAGS
+        );
+
+        drop(reader);
+        drop(client);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn control_output_starting_with_former_error_sentinel_is_success() {
+        let (address, request_rx, server) = spawn_test_server();
+        let (mut client, mut reader) = authenticate(address);
+        enter_control_mode(&mut client, &mut reader, &request_rx);
+
+        writeln!(client, "show-buffer").unwrap();
+        client.flush().unwrap();
+
+        let mut begin = String::new();
+        reader.read_line(&mut begin).unwrap();
+        assert!(begin.starts_with("%begin "), "unexpected begin line: {begin:?}");
+
+        let expected = "\u{1e}winsmux-error:synthetic successful output";
+        match request_rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+            CtrlReq::ShowBuffer(sender) => sender.send(expected.to_string()).unwrap(),
+            _ => panic!("expected show-buffer request"),
+        }
+
+        let mut output = String::new();
+        reader.read_line(&mut output).unwrap();
+        assert_eq!(output, format!("{expected}\n"));
+
+        let mut footer = String::new();
+        reader.read_line(&mut footer).unwrap();
+        assert!(footer.starts_with("%end "), "unexpected footer: {footer:?}");
+
+        drop(reader);
+        drop(client);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn control_command_error_still_emits_error_footer() {
+        let (address, request_rx, server) = spawn_test_server();
+        let (mut client, mut reader) = authenticate(address);
+        enter_control_mode(&mut client, &mut reader, &request_rx);
+
+        writeln!(client, "show-environment SYNTHETIC_MISSING_VAR").unwrap();
+        client.flush().unwrap();
+
+        let mut begin = String::new();
+        reader.read_line(&mut begin).unwrap();
+        assert!(begin.starts_with("%begin "), "unexpected begin line: {begin:?}");
+
+        answer_show_environment(
+            &request_rx,
+            Some("SYNTHETIC_MISSING_VAR"),
+            Err("unknown variable: SYNTHETIC_MISSING_VAR".to_string()),
+        );
+
+        let mut error = String::new();
+        reader.read_line(&mut error).unwrap();
+        assert_eq!(error, "unknown variable: SYNTHETIC_MISSING_VAR\n");
+
+        let mut footer = String::new();
+        reader.read_line(&mut footer).unwrap();
+        assert!(footer.starts_with("%error "), "unexpected footer: {footer:?}");
+
+        drop(reader);
+        drop(client);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn persistent_in_loop_capability_probe_is_consumed_once() {
+        let (address, request_rx, server) = spawn_test_server();
+        let (mut client, mut reader) = authenticate(address);
+        reader
+            .get_mut()
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+
+        write!(
+            client,
+            "PERSISTENT\nshow-environment {SHOW_ENVIRONMENT_SAFE_CAPABILITY_FLAG}\n"
+        )
+        .unwrap();
+        client.flush().unwrap();
+
+        let mut capability = String::new();
+        reader.read_line(&mut capability).unwrap();
+        assert_eq!(
+            crate::commands::decode_safe_environment_response(&capability).unwrap(),
+            crate::commands::SafeEnvironmentResponse::Ok(String::new())
+        );
+
+        reader
+            .get_mut()
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        let mut repeated_capability = String::new();
+        let second_read = reader.read_line(&mut repeated_capability);
+        assert!(
+            matches!(
+                &second_read,
+                Err(error)
+                    if error.kind() == io::ErrorKind::WouldBlock
+                        || error.kind() == io::ErrorKind::TimedOut
+            ),
+            "capability probe must produce exactly one response while the client is idle: {second_read:?}, {} unexpected bytes",
+            repeated_capability.len()
+        );
+        assert!(
+            repeated_capability.is_empty(),
+            "idle connection received {} partial capability bytes",
+            repeated_capability.len()
+        );
+
+        writeln!(client, "client-attach").unwrap();
+        client.flush().unwrap();
+        assert!(matches!(
+            request_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            CtrlReq::ClientAttach(_)
+        ));
+
+        drop(reader);
+        drop(client);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn persistent_focus_failure_lines_are_consumed_before_retry() {
+        let cases = [
+            ("select-pane -t %901", true, true, 901),
+            ("select-pane -t .902", true, false, 902),
+            ("synthetic-noop -t %903", false, true, 903),
+            ("synthetic-noop -t .904", false, false, 904),
+        ];
+
+        for (command, focus_command, pane_is_id, expected_pane) in cases {
+            let (address, request_rx, server) = spawn_test_server();
+            let (mut client, mut reader) = authenticate(address);
+
+            write!(client, "PERSISTENT\n{command}\n").unwrap();
+            client.flush().unwrap();
+
+            let focus_request = request_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            match (focus_command, pane_is_id, focus_request) {
+                (true, true, CtrlReq::FocusPaneChecked(pane, response)) => {
+                    assert_eq!(pane, expected_pane);
+                    response.send(false).unwrap();
+                }
+                (true, false, CtrlReq::FocusPaneByIndexChecked(pane, response)) => {
+                    assert_eq!(pane, expected_pane);
+                    response.send(false).unwrap();
+                }
+                (false, true, CtrlReq::FocusPaneTemp(pane, response)) => {
+                    assert_eq!(pane, expected_pane);
+                    response.send(false).unwrap();
+                }
+                (false, false, CtrlReq::FocusPaneByIndexTemp(pane, response)) => {
+                    assert_eq!(pane, expected_pane);
+                    response.send(false).unwrap();
+                }
+                _ => panic!("unexpected synthetic focus request for {command}"),
+            }
+
+            let mut error_line = String::new();
+            reader.read_line(&mut error_line).unwrap();
+            assert_eq!(
+                error_line,
+                if pane_is_id {
+                    format!("can't find pane: {expected_pane}\n")
+                } else {
+                    format!("can't find pane index: {expected_pane}\n")
+                }
+            );
+            assert!(matches!(
+                request_rx.recv_timeout(Duration::from_millis(100)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ));
+
+            writeln!(client, "client-attach").unwrap();
+            client.flush().unwrap();
+            assert!(matches!(
+                request_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+                CtrlReq::ClientAttach(_)
+            ));
+
+            drop(reader);
+            drop(client);
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn capability_probe_allows_delayed_persistent_mode_negotiation() {
+        let (address, request_rx, server) = spawn_test_server();
+        let (mut client, mut reader) = authenticate(address);
+
+        writeln!(
+            client,
+            "show-environment {SHOW_ENVIRONMENT_SAFE_CAPABILITY_FLAG}"
+        )
+        .unwrap();
+        client.flush().unwrap();
+        let mut capability = String::new();
+        reader.read_line(&mut capability).unwrap();
+        assert_eq!(
+            crate::commands::decode_safe_environment_response(&capability).unwrap(),
+            crate::commands::SafeEnvironmentResponse::Ok(String::new())
+        );
+
+        std::thread::sleep(Duration::from_millis(50));
+        write!(client, "PERSISTENT\nclient-attach\n").unwrap();
+        client.flush().unwrap();
+        assert!(matches!(
+            request_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            CtrlReq::ClientAttach(_)
+        ));
+
+        drop(reader);
+        drop(client);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn capability_probe_restores_short_timeout_for_non_persistent_batching() {
+        let (address, request_rx, server) = spawn_test_server();
+        let (mut client, mut reader) = authenticate(address);
+
+        writeln!(
+            client,
+            "show-environment {SHOW_ENVIRONMENT_SAFE_CAPABILITY_FLAG}"
+        )
+        .unwrap();
+        client.flush().unwrap();
+        let mut capability = String::new();
+        reader.read_line(&mut capability).unwrap();
+        assert_eq!(
+            crate::commands::decode_safe_environment_response(&capability).unwrap(),
+            crate::commands::SafeEnvironmentResponse::Ok(String::new())
+        );
+
+        std::thread::sleep(Duration::from_millis(50));
+        writeln!(
+            client,
+            "set-environment SYNTHETIC_TIMEOUT_KEY synthetic-timeout-value"
+        )
+        .unwrap();
+        client.flush().unwrap();
+        match request_rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+            CtrlReq::SetEnvironment(name, value) => {
+                assert_eq!(name, "SYNTHETIC_TIMEOUT_KEY");
+                assert_eq!(value, "synthetic-timeout-value");
+            }
+            _ => panic!("expected set-environment request"),
+        }
+
+        reader
+            .get_mut()
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .unwrap();
+        let mut trailing_output = String::new();
+        let batching_result = reader.read_to_string(&mut trailing_output);
+
+        drop(reader);
+        drop(client);
+        server.join().unwrap();
+
+        let batching_closed = match &batching_result {
+            Ok(_) => true,
+            Err(error) => error.kind() == std::io::ErrorKind::ConnectionReset,
+        };
+        assert!(
+            batching_closed,
+            "non-persistent batching should close before the 500ms client timeout: {batching_result:?}"
+        );
+        assert!(trailing_output.is_empty());
     }
 }

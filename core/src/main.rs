@@ -56,6 +56,7 @@ use crate::platform::enable_virtual_terminal_processing;
 use crate::cli::{print_help, print_version, print_commands};
 use crate::session::{cleanup_stale_port_files, read_session_key, send_control,
     send_control_with_response, resolve_last_session_name, resolve_default_session_name,
+    require_safe_environment_control_connection,
     kill_remaining_server_processes, request_server_shutdown,
     cleanup_warm_server_for_socket, resolve_last_session_name_with_prefix,
     socket_path_session_base, normalize_socket_selector, remove_session_state_files};
@@ -2543,7 +2544,12 @@ fn run_main() -> io::Result<()> {
             }
             // show-environment / showenv - Show environment variables
             "show-environment" | "showenv" => {
-                let mut cmd = "show-environment".to_string();
+                // The framing flag is unconditional: a no-argument full listing must
+                // have the same structural legacy-server boundary as a named lookup.
+                let mut cmd = format!(
+                    "show-environment {}",
+                    crate::commands::SHOW_ENVIRONMENT_SAFE_RESPONSE_FLAG
+                );
                 let mut i = 1;
                 while i < cmd_args.len() {
                     match cmd_args[i].as_str() {
@@ -2563,7 +2569,15 @@ fn run_main() -> io::Result<()> {
                 }
                 cmd.push('\n');
                 let resp = send_control_with_response(cmd)?;
-                print!("{}", resp);
+                let safe_response = crate::commands::decode_safe_environment_response(&resp)
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+                match safe_response {
+                    crate::commands::SafeEnvironmentResponse::Ok(output) => print!("{output}"),
+                    crate::commands::SafeEnvironmentResponse::Error(error) => return Err(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        error,
+                    )),
+                }
                 return Ok(());
             }
             // load-buffer - Load a paste buffer from a file
@@ -3179,9 +3193,13 @@ fn run_control_mode(mode: u8) -> io::Result<()> {
         return Err(io::Error::new(io::ErrorKind::PermissionDenied, format!("auth failed: {}", ok_line.trim())));
     }
 
+    let mut write_stream = reader.get_ref().try_clone()?;
+    // Reject stale servers before entering control mode. This protects both named
+    // lookups and no-argument full listings without content-sniffing streamed output.
+    require_safe_environment_control_connection(&mut reader, &mut write_stream)?;
+
     // Send CONTROL or CONTROL_NOECHO
     let mode_str = if mode == 1 { "CONTROL" } else { "CONTROL_NOECHO" };
-    let mut write_stream = reader.get_ref().try_clone()?;
     write!(write_stream, "{}\n", mode_str)?;
     write_stream.flush()?;
 
@@ -3189,6 +3207,7 @@ fn run_control_mode(mode: u8) -> io::Result<()> {
     let reader_stream = reader.get_ref().try_clone()?;
     let reader_thread = std::thread::spawn(move || {
         let mut br = io::BufReader::new(reader_stream);
+        let mut response_filter = crate::control::ControlClientResponseFilter::default();
         let mut line = String::new();
         let stdout = io::stdout();
         loop {
@@ -3196,8 +3215,9 @@ fn run_control_mode(mode: u8) -> io::Result<()> {
             match br.read_line(&mut line) {
                 Ok(0) | Err(_) => break,
                 Ok(_) => {
+                    let output = response_filter.filter_server_line(&line);
                     let mut out = stdout.lock();
-                    let _ = out.write_all(line.as_bytes());
+                    let _ = out.write_all(output.as_bytes());
                     let _ = out.flush();
                 }
             }

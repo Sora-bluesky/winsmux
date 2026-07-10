@@ -978,6 +978,53 @@ pub fn send_control_with_response(line: String) -> io::Result<String> {
     Ok(result)
 }
 
+pub fn require_safe_environment_connection(
+    reader: &mut impl io::BufRead,
+    writer: &mut impl Write,
+) -> io::Result<()> {
+    require_safe_environment_capabilities(reader, writer, None)
+}
+
+pub fn require_safe_environment_control_connection(
+    reader: &mut impl io::BufRead,
+    writer: &mut impl Write,
+) -> io::Result<()> {
+    require_safe_environment_capabilities(
+        reader,
+        writer,
+        Some(crate::commands::SHOW_ENVIRONMENT_CONTROL_SIGNAL_CAPABILITY_FLAG),
+    )
+}
+
+fn require_safe_environment_capabilities(
+    reader: &mut impl io::BufRead,
+    writer: &mut impl Write,
+    additional_capability: Option<&str>,
+) -> io::Result<()> {
+    let additional_capability = additional_capability
+        .map(|capability| format!(" {capability}"))
+        .unwrap_or_default();
+    writeln!(
+        writer,
+        "show-environment {}{}",
+        crate::commands::SHOW_ENVIRONMENT_SAFE_CAPABILITY_FLAG,
+        additional_capability,
+    )?;
+    writer.flush()?;
+
+    let mut response = String::new();
+    reader.read_line(&mut response)?;
+    let decoded = crate::commands::decode_safe_environment_response(&response)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    if decoded != crate::commands::SafeEnvironmentResponse::Ok(String::new()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            crate::commands::incompatible_environment_response_error(),
+        ));
+    }
+    Ok(())
+}
+
 /// Send a control message to a specific port with authentication
 pub fn send_control_to_port(port: u16, msg: &str, session_key: &str) -> io::Result<()> {
     let addr = format!("127.0.0.1:{}", port);
@@ -1266,6 +1313,88 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn serve_capability_probe(
+        response: String,
+        expected_additional_capability: Option<&'static str>,
+    ) -> (u16, std::thread::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut auth = String::new();
+            let mut command = String::new();
+            std::io::BufRead::read_line(&mut reader, &mut auth).unwrap();
+            write!(stream, "OK\n").unwrap();
+            stream.flush().unwrap();
+            std::io::BufRead::read_line(&mut reader, &mut command).unwrap();
+            assert_eq!(auth, "AUTH synthetic-session-key\n");
+            assert!(command.contains(crate::commands::SHOW_ENVIRONMENT_SAFE_CAPABILITY_FLAG));
+            if let Some(capability) = expected_additional_capability {
+                assert!(command.contains(capability));
+            }
+            write!(stream, "{response}").unwrap();
+            stream.flush().unwrap();
+        });
+        (port, handle)
+    }
+
+    #[test]
+    fn safe_environment_capability_probe_accepts_marked_server() {
+        let (port, server) = serve_capability_probe(
+            crate::commands::encode_safe_environment_response(""),
+            None,
+        );
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        write!(stream, "AUTH synthetic-session-key\n").unwrap();
+        stream.flush().unwrap();
+        let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+        let mut auth = String::new();
+        std::io::BufRead::read_line(&mut reader, &mut auth).unwrap();
+        assert_eq!(auth, "OK\n");
+        require_safe_environment_connection(&mut reader, &mut stream).unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn control_capability_probe_requests_server_classification_signal() {
+        let (port, server) = serve_capability_probe(
+            crate::commands::encode_safe_environment_response(""),
+            Some(crate::commands::SHOW_ENVIRONMENT_CONTROL_SIGNAL_CAPABILITY_FLAG),
+        );
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        write!(stream, "AUTH synthetic-session-key\n").unwrap();
+        stream.flush().unwrap();
+        let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+        let mut auth = String::new();
+        std::io::BufRead::read_line(&mut reader, &mut auth).unwrap();
+        assert_eq!(auth, "OK\n");
+        require_safe_environment_control_connection(&mut reader, &mut stream).unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn safe_environment_capability_probe_refuses_unmarked_legacy_output() {
+        let (port, server) = serve_capability_probe(
+            "TARGET_VAR=synthetic-target\nSECRET_VAR=synthetic-secret\n".to_string(),
+            None,
+        );
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        write!(stream, "AUTH synthetic-session-key\n").unwrap();
+        stream.flush().unwrap();
+        let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+        let mut auth = String::new();
+        std::io::BufRead::read_line(&mut reader, &mut auth).unwrap();
+        assert_eq!(auth, "OK\n");
+        let error = require_safe_environment_connection(&mut reader, &mut stream)
+            .expect_err("an unmarked legacy response must be refused");
+        server.join().unwrap();
+
+        assert!(error.to_string().contains("restart"));
+        assert!(!error.to_string().contains("synthetic-target"));
+        assert!(!error.to_string().contains("synthetic-secret"));
+    }
 
     #[test]
     fn warm_session_base_matches_namespace_encoding() {
