@@ -271,6 +271,92 @@ fn show_environment_redacts_compact_key_markers_before_qualifiers() {
 }
 
 #[test]
+fn show_environment_compact_marker_acceptance_matrix() {
+    let mut app = mock_app_with_window();
+    let redacted_names = [
+        "APIKEYPROD",
+        "PRIVATEKEYPEM",
+        "SECRETKEYV2",
+        "APIKEY_PROD",
+        "PRIVATEKEY_PEM",
+        "PASS",
+    ];
+    let visible_names = [
+        "TOKENIZERS_PARALLELISM",
+        "TOKENIZERS",
+        "API_KEYBOARD_LAYOUT",
+        "PWD",
+        "SSH_AUTH_SOCK",
+    ];
+
+    for name in redacted_names {
+        app.environment
+            .insert(name.to_string(), format!("synthetic-{name}-value"));
+    }
+    for name in visible_names {
+        app.environment
+            .insert(name.to_string(), format!("synthetic-{name}-value"));
+    }
+
+    execute_command_string(&mut app, "show-environment").unwrap();
+    let (_, out) = extract_popup(&app);
+
+    for name in redacted_names {
+        assert!(out.contains(&format!("{name}=[redacted]")));
+        assert!(!out.contains(&format!("synthetic-{name}-value")));
+    }
+    for name in visible_names {
+        assert!(out.contains(&format!("{name}=synthetic-{name}-value")));
+    }
+}
+
+#[test]
+fn show_environment_redacts_separatorless_compact_markers_in_other_positions() {
+    let mut app = mock_app_with_window();
+    let redacted_names = [
+        "SERVICEAPIKEY",
+        "SERVICEAPIKEYPROD",
+        "APIKEYPROD1",
+        "PRIVATEKEYPEM01",
+        "SECRETKEYV2026",
+        "TOKENIZERSSECRETKEYV2",
+        "SERVICE_APIKEYPROD",
+        "APIKEYPROD_SERVICE",
+        "SERVICE_APIKEYPROD1",
+        "APIKEYPROD1_SERVICE",
+    ];
+    for name in redacted_names {
+        app.environment
+            .insert(name.to_string(), format!("synthetic-{name}-value"));
+    }
+
+    execute_command_string(&mut app, "show-environment").unwrap();
+    let (_, out) = extract_popup(&app);
+
+    for name in redacted_names {
+        assert!(out.contains(&format!("{name}=[redacted]")));
+        assert!(!out.contains(&format!("synthetic-{name}-value")));
+    }
+}
+
+#[test]
+fn show_environment_keeps_benign_single_token_marker_continuations_visible() {
+    let mut app = mock_app_with_window();
+    let visible_names = ["TOKENIZERS", "SECRETARY", "APIKEYBOARD"];
+    for name in visible_names {
+        app.environment
+            .insert(name.to_string(), format!("synthetic-{name}-value"));
+    }
+
+    execute_command_string(&mut app, "show-environment").unwrap();
+    let (_, out) = extract_popup(&app);
+
+    for name in visible_names {
+        assert!(out.contains(&format!("{name}=synthetic-{name}-value")));
+    }
+}
+
+#[test]
 fn showenv_named_secret_query_is_redacted() {
     let mut app = mock_app_with_window();
     app.environment.insert("SESSION_SECRET".to_string(), "synthetic-secret-value".to_string());

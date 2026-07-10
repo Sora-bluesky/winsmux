@@ -151,8 +151,31 @@ fn is_sensitive_environment_name(name: &str) -> bool {
         "authorization",
         "bearer",
     ];
-    let has_compact_sensitive_marker = compact_sensitive_markers.iter().any(|marker| {
-        compact.ends_with(marker) || words.iter().any(|word| word == marker)
+    let has_compact_sensitive_marker = compact_sensitive_markers.iter().any(|&marker| {
+        compact.ends_with(marker) || words.iter().any(|word| *word == marker)
+    });
+    let compact_key_markers = [
+        "secretkey",
+        "privatekey",
+        "sshkey",
+        "signingkey",
+        "accesskey",
+        "apikey",
+        "sessionkey",
+    ];
+    let benign_compact_key_continuations = [("apikey", "board")];
+    let has_separatorless_compact_key_marker = words.iter().any(|word| {
+        compact_key_markers.iter().any(|&marker| {
+            word.match_indices(marker).any(|(index, _)| {
+                let qualifier = &word[index + marker.len()..];
+                !qualifier.is_empty()
+                    && !benign_compact_key_continuations.iter().any(
+                        |&(benign_marker, continuation)| {
+                            marker == benign_marker && qualifier.starts_with(continuation)
+                        },
+                    )
+            })
+        })
     });
 
     has_sensitive_word
@@ -161,6 +184,7 @@ fn is_sensitive_environment_name(name: &str) -> bool {
         || has_sensitive_key_kind
         || has_auth_material
         || has_compact_sensitive_marker
+        || has_separatorless_compact_key_marker
         || compact == "key"
 }
 
