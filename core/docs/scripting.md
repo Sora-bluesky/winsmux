@@ -129,7 +129,10 @@ winsmux set-environment -gu MY_VAR
 # Show all environment variables
 winsmux show-environment
 winsmux show-environment -g
+winsmux show-environment MY_VAR
 ```
+
+Named queries return only the requested variable and fail when it is not defined. Values for secret-like names, including tokens, passwords, passphrases, credentials, and API keys, are displayed as `[redacted]`.
 
 ## Format Variables
 

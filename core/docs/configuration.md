@@ -250,9 +250,13 @@ winsmux set-environment -gu MY_VAR
 # Show all environment variables
 winsmux show-environment
 winsmux show-environment -g
+
+# Show one environment variable
+winsmux show-environment MY_VAR
 ```
 
 Environment variables set this way are injected at the process level when new panes spawn, so they are completely invisible (no commands echoed in the shell).
+When output is displayed, values for secret-like names such as tokens, passwords, passphrases, credentials, and API keys are replaced with `[redacted]`. A named query returns only the requested variable and exits with an error when that variable is not defined.
 
 ## PSReadLine Predictions (Intellisense / Autocompletion)
 

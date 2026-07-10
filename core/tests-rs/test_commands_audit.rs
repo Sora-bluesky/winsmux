@@ -173,6 +173,255 @@ fn show_environment_displays_vars_in_popup() {
 }
 
 #[test]
+fn show_environment_named_query_returns_only_requested_variable() {
+    let mut app = mock_app_with_window();
+    app.environment.insert("TARGET_VAR".to_string(), "target-value".to_string());
+    app.environment.insert("OTHER_VAR".to_string(), "other-value".to_string());
+    execute_command_string(&mut app, "show-environment -g -t test-session TARGET_VAR").unwrap();
+    let (_, out) = extract_popup(&app);
+    assert_eq!(out, "TARGET_VAR=target-value\n");
+    assert!(!out.contains("OTHER_VAR"));
+    assert!(!out.contains("other-value"));
+}
+
+#[test]
+fn show_environment_named_query_preserves_multiline_utf8_value() {
+    let mut app = mock_app_with_window();
+    app.environment.insert(
+        "TARGET_VAR".to_string(),
+        "first line\r\nsecond 行 🚀\n".to_string(),
+    );
+
+    execute_command_string(&mut app, "show-environment TARGET_VAR").unwrap();
+    let (_, out) = extract_popup(&app);
+
+    assert_eq!(out, "TARGET_VAR=first line\r\nsecond 行 🚀\n\n");
+}
+
+#[test]
+fn show_environment_redacts_sensitive_values() {
+    let mut app = mock_app_with_window();
+    app.environment.insert("SAFE_VAR".to_string(), "visible-value".to_string());
+    app.environment.insert("GH_TOKEN".to_string(), "synthetic-token-value".to_string());
+    app.environment.insert("SERVICE_API_KEY".to_string(), "synthetic-key-value".to_string());
+    app.environment.insert("LOGIN_PASSWORD".to_string(), "synthetic-password-value".to_string());
+    app.environment.insert("MYSQL_PWD".to_string(), "synthetic-mysql-password".to_string());
+    app.environment.insert("DB_PASS".to_string(), "synthetic-db-password".to_string());
+    app.environment.insert("SSH_PASSPHRASE".to_string(), "synthetic-passphrase".to_string());
+    app.environment.insert("GITHUB_PAT".to_string(), "synthetic-pat-value".to_string());
+    app.environment.insert("CI_JOB_JWT".to_string(), "synthetic-jwt-value".to_string());
+    app.environment.insert("NPM_CONFIG__AUTH".to_string(), "synthetic-auth-value".to_string());
+    app.environment.insert("TOKENIZERS_PARALLELISM".to_string(), "false".to_string());
+    app.environment.insert("SSH_AUTH_SOCK".to_string(), "synthetic-socket-path".to_string());
+    execute_command_string(&mut app, "show-environment").unwrap();
+    let (_, out) = extract_popup(&app);
+    assert!(out.contains("SAFE_VAR=visible-value"));
+    assert!(out.contains("GH_TOKEN=[redacted]"));
+    assert!(out.contains("SERVICE_API_KEY=[redacted]"));
+    assert!(out.contains("LOGIN_PASSWORD=[redacted]"));
+    assert!(out.contains("MYSQL_PWD=[redacted]"));
+    assert!(out.contains("DB_PASS=[redacted]"));
+    assert!(out.contains("SSH_PASSPHRASE=[redacted]"));
+    assert!(out.contains("GITHUB_PAT=[redacted]"));
+    assert!(out.contains("CI_JOB_JWT=[redacted]"));
+    assert!(out.contains("NPM_CONFIG__AUTH=[redacted]"));
+    assert!(out.contains("TOKENIZERS_PARALLELISM=false"));
+    assert!(out.contains("SSH_AUTH_SOCK=synthetic-socket-path"));
+    assert!(!out.contains("synthetic-token-value"));
+    assert!(!out.contains("synthetic-key-value"));
+    assert!(!out.contains("synthetic-password-value"));
+    assert!(!out.contains("synthetic-mysql-password"));
+    assert!(!out.contains("synthetic-db-password"));
+    assert!(!out.contains("synthetic-passphrase"));
+    assert!(!out.contains("synthetic-pat-value"));
+    assert!(!out.contains("synthetic-jwt-value"));
+    assert!(!out.contains("synthetic-auth-value"));
+}
+
+#[test]
+fn showenv_named_secret_query_is_redacted() {
+    let mut app = mock_app_with_window();
+    app.environment.insert("SESSION_SECRET".to_string(), "synthetic-secret-value".to_string());
+    app.environment.insert("OTHER_VAR".to_string(), "other-value".to_string());
+    execute_command_string(&mut app, "showenv SESSION_SECRET").unwrap();
+    let (cmd, out) = extract_popup(&app);
+    assert_eq!(cmd, "show-environment");
+    assert_eq!(out, "SESSION_SECRET=[redacted]\n");
+    assert!(!out.contains("synthetic-secret-value"));
+    assert!(!out.contains("OTHER_VAR"));
+}
+
+#[test]
+fn show_environment_named_password_alias_is_redacted() {
+    let mut app = mock_app_with_window();
+    app.environment.insert("MYSQL_PWD".to_string(), "synthetic-mysql-password".to_string());
+    execute_command_string(&mut app, "show-environment MYSQL_PWD").unwrap();
+    let (_, out) = extract_popup(&app);
+    assert_eq!(out, "MYSQL_PWD=[redacted]\n");
+    assert!(!out.contains("synthetic-mysql-password"));
+}
+
+#[test]
+fn show_environment_standalone_pass_is_redacted_but_pwd_remains_visible() {
+    let mut app = mock_app_with_window();
+    app.environment
+        .insert("PASS".to_string(), "synthetic-pass-value".to_string());
+    app.environment
+        .insert("PWD".to_string(), "C:\\synthetic\\workspace".to_string());
+    for name in ["PW", "PIN", "PSK", "OTP", "TOTP", "HOTP"] {
+        app.environment
+            .insert(name.to_string(), format!("synthetic-{name}-value"));
+    }
+
+    execute_command_string(&mut app, "show-environment").unwrap();
+    let (_, out) = extract_popup(&app);
+
+    assert!(out.contains("PASS=[redacted]"));
+    assert!(out.contains("PWD=C:\\synthetic\\workspace"));
+    assert!(!out.contains("synthetic-pass-value"));
+    for name in ["PW", "PIN", "PSK", "OTP", "TOTP", "HOTP"] {
+        assert!(out.contains(&format!("{name}=[redacted]")));
+        assert!(!out.contains(&format!("synthetic-{name}-value")));
+    }
+}
+
+#[test]
+fn show_environment_safe_response_refuses_unframed_named_response() {
+    let error = decode_safe_environment_response("TARGET_VAR=synthetic-target\n")
+        .expect_err("an unframed legacy named response must be refused");
+
+    assert!(error.contains("restart"));
+    assert!(!error.contains("synthetic-target"));
+}
+
+#[test]
+fn show_environment_safe_response_refuses_unframed_full_listing() {
+    let response = "SAFE_VAR=synthetic-visible\nGH_TOKEN=synthetic-secret\n";
+    let error = decode_safe_environment_response(response)
+        .expect_err("an unframed legacy full listing must be refused");
+
+    assert!(error.contains("restart"));
+    assert!(!error.contains("synthetic-visible"));
+    assert!(!error.contains("synthetic-secret"));
+}
+
+#[test]
+fn show_environment_safe_response_rejects_unmarked_error_payload() {
+    let error = decode_safe_environment_response("ERROR: GH_TOKEN=synthetic-secret-value\n")
+    .expect_err("an unmarked legacy error-shaped response must be refused");
+
+    assert!(error.contains("restart"));
+    assert!(!error.contains("synthetic-secret-value"));
+}
+
+#[test]
+fn show_environment_safe_response_accepts_framed_server_error() {
+    let response = encode_safe_environment_error("unknown variable: MISSING_VAR");
+    assert_eq!(
+        decode_safe_environment_response(&response).unwrap(),
+        SafeEnvironmentResponse::Error("unknown variable: MISSING_VAR".to_string())
+    );
+}
+
+#[test]
+fn show_environment_safe_response_accepts_exact_marked_named_result() {
+    let response = encode_safe_environment_response("TARGET_VAR=synthetic-target\n");
+
+    assert_eq!(
+        decode_safe_environment_response(&response).unwrap(),
+        SafeEnvironmentResponse::Ok("TARGET_VAR=synthetic-target\n".to_string())
+    );
+}
+
+#[test]
+fn show_environment_safe_response_round_trips_named_value_edge_cases() {
+    let payloads = [
+        "TARGET_VAR=first line\nsecond line\n",
+        "TARGET_VAR=ERROR: synthetic value\n",
+        "TARGET_VAR=\n",
+        "TARGET_VAR=synthetic value\n\n",
+        "TARGET_VAR=first line\r\nsecond line\r\n",
+        "TARGET_VAR=synthetic-値-🚀\n",
+    ];
+
+    for payload in payloads {
+        let response = encode_safe_environment_response(payload);
+        assert_eq!(
+            decode_safe_environment_response(&response).unwrap(),
+            SafeEnvironmentResponse::Ok(payload.to_string())
+        );
+    }
+}
+
+#[test]
+fn show_environment_safe_response_round_trips_redacted_full_listing_with_multiline_utf8() {
+    let mut environment = HashMap::new();
+    environment.insert(
+        "SAFE_VAR".to_string(),
+        "first line\r\nsecond 行 🚀\n".to_string(),
+    );
+    environment.insert(
+        "GH_TOKEN".to_string(),
+        "synthetic-secret-value".to_string(),
+    );
+    let listing = format_environment_output(&environment, None).unwrap();
+    let response = encode_safe_environment_response(&listing);
+
+    assert!(listing.contains("SAFE_VAR=first line\r\nsecond 行 🚀\n"));
+    assert!(listing.contains("GH_TOKEN=[redacted]"));
+    assert!(!listing.contains("synthetic-secret-value"));
+    assert_eq!(
+        decode_safe_environment_response(&response).unwrap(),
+        SafeEnvironmentResponse::Ok(listing)
+    );
+}
+
+#[test]
+fn show_environment_safe_response_rejects_malformed_frames() {
+    let responses = [
+        format!("{SHOW_ENVIRONMENT_SAFE_RESPONSE_PREFIX}not-json\n"),
+        format!("{SHOW_ENVIRONMENT_SAFE_RESPONSE_PREFIX}{{\"status\":\"unknown\",\"payload\":\"value\"}}\n"),
+        format!("{SHOW_ENVIRONMENT_SAFE_RESPONSE_PREFIX}{{\"status\":\"ok\",\"payload\":\"value\",\"extra\":true}}\n"),
+        format!("{SHOW_ENVIRONMENT_SAFE_RESPONSE_PREFIX}{{\"status\":\"ok\",\"payload\":\"value\"}}\ntrailing-data"),
+    ];
+
+    for response in responses {
+        let error = decode_safe_environment_response(&response)
+            .expect_err("malformed response frames must fail closed");
+        assert!(error.contains("restart"));
+        assert!(!error.contains("TARGET_VAR=value"));
+    }
+}
+
+#[test]
+fn show_environment_safe_response_preserves_equals_and_accepts_crlf_header() {
+    let response = encode_safe_environment_response("TARGET_VAR=value=with=equals\r\n\r\n")
+        .replacen('\n', "\r\n", 1);
+    assert_eq!(
+        decode_safe_environment_response(&response).unwrap(),
+        SafeEnvironmentResponse::Ok("TARGET_VAR=value=with=equals\r\n\r\n".to_string())
+    );
+}
+
+#[test]
+fn show_environment_missing_named_query_returns_error() {
+    let mut app = mock_app_with_window();
+    let error = execute_command_string(&mut app, "show-environment MISSING_VAR")
+        .expect_err("a missing named variable must fail");
+    assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    assert_eq!(error.to_string(), "unknown variable: MISSING_VAR");
+}
+
+#[test]
+fn show_environment_name_parser_skips_supported_flags_and_target_value() {
+    assert_eq!(
+        parse_show_environment_name(&["-h", "-s", "-t", "test-session", "TARGET_VAR"]),
+        Some("TARGET_VAR".to_string())
+    );
+    assert_eq!(parse_show_environment_name(&["-g"]), None);
+}
+
+#[test]
 fn show_environment_empty_shows_message() {
     let mut app = mock_app_with_window();
     execute_command_string(&mut app, "show-environment").unwrap();

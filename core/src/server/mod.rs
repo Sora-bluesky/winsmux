@@ -40,7 +40,10 @@ use crate::window_ops::{toggle_zoom, remote_mouse_down, remote_mouse_drag, remot
     handle_pane_mouse, handle_pane_scroll, handle_split_set_sizes, handle_split_resize_done};
 use crate::config::{load_config, parse_key_string, format_key_binding, normalize_key_for_binding,
     parse_config_content};
-use crate::commands::{parse_command_to_action, format_action, parse_menu_definition, execute_command_string};
+use crate::commands::{
+    execute_command_string, format_action, format_environment_output, parse_command_to_action,
+    parse_menu_definition,
+};
 use crate::util::{list_windows_json, list_tree_json, list_windows_tmux, base64_encode};
 use crate::control;
 use crate::format::{expand_format, format_list_windows, format_list_panes, set_buffer_idx_override};
@@ -3221,18 +3224,18 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
                         }
                     }
                 }
-                CtrlReq::ShowEnvironment(resp) => {
-                    let mut output = String::new();
-                    // Show psmux/tmux-specific environment vars
-                    for (key, value) in &app.environment {
-                        output.push_str(&format!("{}={}\n", key, value));
-                    }
+                CtrlReq::ShowEnvironment(requested_name, resp) => {
+                    let mut display_environment = app.environment.clone();
                     // Also show inherited PSMUX_/TMUX_ vars from process env
                     for (key, value) in env::vars() {
-                        if (key.starts_with("PSMUX") || key.starts_with("TMUX")) && !app.environment.contains_key(&key) {
-                            output.push_str(&format!("{}={}\n", key, value));
+                        if key.starts_with("PSMUX") || key.starts_with("TMUX") {
+                            display_environment.entry(key).or_insert(value);
                         }
                     }
+                    let output = format_environment_output(
+                        &display_environment,
+                        requested_name.as_deref(),
+                    );
                     let _ = resp.send(output);
                 }
                 CtrlReq::SetHook(hook, cmd) => {
