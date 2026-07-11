@@ -796,6 +796,13 @@ function New-SendDispatchPointerText {
     return "Read the full prompt from '$promptRef' and follow it exactly. This pointer was sent because the original prompt exceeded the send buffer."
 }
 
+function New-SendLaunchPointerText {
+    param([Parameter(Mandatory = $true)][string]$CommandPath)
+
+    $pathLiteral = ConvertTo-DispatchPowerShellLiteral -Value $CommandPath
+    return "& ([scriptblock]::Create([System.IO.File]::ReadAllText($pathLiteral, [System.Text.Encoding]::UTF8)))"
+}
+
 function Get-SupportedPromptTransportValues {
     return @('argv', 'file', 'stdin')
 }
@@ -3475,9 +3482,13 @@ function Wait-DeferredPaneReady {
 }
 
 function Test-SendTransportRequiresPointerReadiness {
-    param([Parameter(Mandatory = $true)]$TransportPlan)
+    param(
+        [Parameter(Mandatory = $true)]$TransportPlan,
+        [ValidateSet('prompt', 'launch')][string]$DeliveryClass = 'prompt'
+    )
 
     return (
+        $DeliveryClass -eq 'prompt' -and
         [string]$TransportPlan['Mode'] -eq 'pointer' -and
         [string]$TransportPlan['FallbackMode'] -eq 'pointer' -and
         [string]$TransportPlan['PromptTransport'] -eq 'argv' -and
@@ -3505,6 +3516,85 @@ function Send-PromptPointerWhenAgentReady {
 
     $readinessName = if ([string]::IsNullOrWhiteSpace($Agent)) { 'configured agent' } else { $Agent }
     Stop-WithError "timed out waiting for $readinessName readiness before sending prompt pointer to $PaneId"
+}
+
+function Send-ResolvedTransportPlan {
+    param(
+        [Parameter(Mandatory = $true)][string]$PaneId,
+        [Parameter(Mandatory = $true)]$TransportPlan,
+        [ValidateSet('prompt', 'launch')][string]$DeliveryClass = 'prompt',
+        [Parameter(Mandatory = $true)][string]$Target,
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)]$AgentConfig
+    )
+
+    if (Test-SendTransportRequiresPointerReadiness -TransportPlan $TransportPlan -DeliveryClass $DeliveryClass) {
+        $pointerReadinessAgent = Get-PaneReadinessAgent -Target $Target -PaneId $PaneId -ProjectDir $ProjectDir
+        if ([string]::IsNullOrWhiteSpace($pointerReadinessAgent)) {
+            $pointerReadinessAgent = ConvertTo-ReadinessAgentName ([string](Get-SendConfigValue -InputObject $AgentConfig -Name 'CapabilityAdapter' -Default $AgentConfig.Agent))
+        }
+
+        return Send-PromptPointerWhenAgentReady `
+            -PaneId $PaneId `
+            -PointerText ([string]$TransportPlan['TextToSend']) `
+            -Agent $pointerReadinessAgent `
+            -PromptTransport ([string]$TransportPlan['PromptTransport'])
+    }
+
+    $commandText = [string]$TransportPlan['TextToSend']
+    if ($DeliveryClass -eq 'launch' -and [bool]$TransportPlan['IsFileBacked']) {
+        $commandPath = [string]$TransportPlan['PromptPath']
+        if ([string]::IsNullOrWhiteSpace($commandPath)) {
+            Stop-WithError 'launch transport plan is file-backed but has no command path'
+        }
+        $commandText = New-SendLaunchPointerText -CommandPath $commandPath
+    }
+
+    return Send-TextToPane `
+        -PaneId $PaneId `
+        -CommandText $commandText `
+        -PromptTransport ([string]$TransportPlan['PromptTransport'])
+}
+
+function Resolve-SendInvocationArguments {
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+
+    $taskSlug = ''
+    $deliveryClass = 'prompt'
+    $messageParts = New-Object System.Collections.Generic.List[string]
+    for ($index = 0; $index -lt $Arguments.Count; $index++) {
+        $token = [string]$Arguments[$index]
+        if ($token -eq '--task-slug') {
+            if ($index + 1 -ge $Arguments.Count) {
+                Stop-WithError "--task-slug requires a value"
+            }
+
+            $index++
+            $taskSlug = [string]$Arguments[$index]
+            continue
+        }
+
+        if ($token -eq '--delivery-class') {
+            if ($index + 1 -ge $Arguments.Count) {
+                Stop-WithError "--delivery-class requires a value"
+            }
+
+            $index++
+            $deliveryClass = ([string]$Arguments[$index]).Trim().ToLowerInvariant()
+            if ($deliveryClass -notin @('prompt', 'launch')) {
+                Stop-WithError "--delivery-class must be prompt or launch"
+            }
+            continue
+        }
+
+        $messageParts.Add($token) | Out-Null
+    }
+
+    return [ordered]@{
+        TaskSlug      = $taskSlug
+        DeliveryClass = $deliveryClass
+        MessageParts  = @($messageParts)
+    }
 }
 
 function Start-DeferredPaneFromManifestEntry {
@@ -3606,22 +3696,10 @@ function Invoke-Send {
     if (-not $Target) { Stop-WithError "usage: winsmux send <target> <text>" }
     if (-not $Rest -or $Rest.Count -eq 0) { Stop-WithError "usage: winsmux send <target> <text>" }
 
-    $taskSlug = ''
-    $messageParts = New-Object System.Collections.Generic.List[string]
-    for ($index = 0; $index -lt $Rest.Count; $index++) {
-        $token = [string]$Rest[$index]
-        if ($token -eq '--task-slug') {
-            if ($index + 1 -ge $Rest.Count) {
-                Stop-WithError "--task-slug requires a value"
-            }
-
-            $index++
-            $taskSlug = [string]$Rest[$index]
-            continue
-        }
-
-        $messageParts.Add($token) | Out-Null
-    }
+    $sendArguments = Resolve-SendInvocationArguments -Arguments $Rest
+    $taskSlug = [string]$sendArguments['TaskSlug']
+    $deliveryClass = [string]$sendArguments['DeliveryClass']
+    $messageParts = @($sendArguments['MessageParts'])
 
     if ($messageParts.Count -lt 1) {
         Stop-WithError "usage: winsmux send <target> <text>"
@@ -3768,21 +3846,13 @@ function Invoke-Send {
         Write-Warning ("send target '{0}' used prompt_transport={1}; wrote full text to {2} and sent a prompt-file pointer instead." -f $Target, $transportPlan['PromptTransport'], $transportPlan['PromptPath'])
     }
 
-    if (Test-SendTransportRequiresPointerReadiness -TransportPlan $transportPlan) {
-        $pointerReadinessAgent = Get-PaneReadinessAgent -Target $Target -PaneId $paneId -ProjectDir $projectDir
-        if ([string]::IsNullOrWhiteSpace($pointerReadinessAgent)) {
-            $pointerReadinessAgent = ConvertTo-ReadinessAgentName ([string](Get-SendConfigValue -InputObject $agentConfig -Name 'CapabilityAdapter' -Default $agentConfig.Agent))
-        }
-
-        Send-PromptPointerWhenAgentReady `
-            -PaneId $paneId `
-            -PointerText ([string]$transportPlan['TextToSend']) `
-            -Agent $pointerReadinessAgent `
-            -PromptTransport ([string]$transportPlan['PromptTransport'])
-        return
-    }
-
-    Send-TextToPane -PaneId $paneId -CommandText ([string]$transportPlan['TextToSend']) -PromptTransport ([string]$transportPlan['PromptTransport'])
+    Send-ResolvedTransportPlan `
+        -PaneId $paneId `
+        -TransportPlan $transportPlan `
+        -DeliveryClass $deliveryClass `
+        -Target $Target `
+        -ProjectDir $projectDir `
+        -AgentConfig $agentConfig
 }
 
 function Invoke-Name {

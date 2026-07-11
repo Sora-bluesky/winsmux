@@ -508,14 +508,31 @@ function Wait-MonitorPaneShellReady {
     throw "Timed out waiting for pane $PaneId shell prompt after respawn."
 }
 
+function New-MonitorBridgeSendArguments {
+    param(
+        [Parameter(Mandatory = $true)][string]$PaneId,
+        [Parameter(Mandatory = $true)][string]$Text,
+        [ValidateSet('prompt', 'launch')][string]$DeliveryClass = 'prompt'
+    )
+
+    $arguments = @('send', $PaneId)
+    if ($DeliveryClass -eq 'launch') {
+        $arguments += @('--delivery-class', 'launch')
+    }
+    $arguments += $Text
+    return $arguments
+}
+
 function Send-MonitorBridgeCommand {
     param(
         [Parameter(Mandatory = $true)][string]$PaneId,
-        [Parameter(Mandatory = $true)][string]$Text
+        [Parameter(Mandatory = $true)][string]$Text,
+        [ValidateSet('prompt', 'launch')][string]$DeliveryClass = 'prompt'
     )
 
     $bridgeScript = [System.IO.Path]::GetFullPath((Join-Path $scriptDir '..\..\scripts\winsmux-core.ps1'))
-    & pwsh -NoProfile -File $bridgeScript 'send' $PaneId $Text 2>&1 | Out-Null
+    $arguments = @(New-MonitorBridgeSendArguments -PaneId $PaneId -Text $Text -DeliveryClass $DeliveryClass)
+    & pwsh -NoProfile -File $bridgeScript @arguments 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to send command to pane $PaneId"
     }
@@ -1059,7 +1076,7 @@ function Invoke-AgentRespawn {
         Invoke-MonitorWinsmux -Arguments @('respawn-pane', '-k', '-t', $PaneId, '-c', $ProjectDir)
         Wait-MonitorPaneShellReady -PaneId $PaneId
         if (-not $paneExecMode) {
-            Send-MonitorBridgeCommand -PaneId $PaneId -Text $launchCommand
+            Send-MonitorBridgeCommand -PaneId $PaneId -Text $launchCommand -DeliveryClass 'launch'
         }
     } catch {
         return [ordered]@{

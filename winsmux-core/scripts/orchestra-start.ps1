@@ -764,10 +764,17 @@ function Clear-OrchestraSessionEnvironment {
 function Send-OrchestraBridgeCommand {
     param(
         [Parameter(Mandatory = $true)][string]$Target,
-        [Parameter(Mandatory = $true)][string]$Text
+        [Parameter(Mandatory = $true)][string]$Text,
+        [ValidateSet('prompt', 'launch')][string]$DeliveryClass = 'prompt'
     )
 
-    Invoke-Bridge -Arguments @('send', $Target, $Text)
+    $arguments = @('send', $Target)
+    if ($DeliveryClass -eq 'launch') {
+        $arguments += @('--delivery-class', 'launch')
+    }
+    $arguments += $Text
+
+    Invoke-Bridge -Arguments $arguments
 }
 
 function New-OrchestraWorkerLaunchApproval {
@@ -870,7 +877,10 @@ function Start-OrchestraPaneBootstrap {
         Invoke-Bridge -Arguments @('keys', $PaneId, 'C-c') -AllowFailure | Out-Null
         Start-Sleep -Milliseconds 200
     }
-    Send-OrchestraBridgeCommand -Target $PaneId -Text ("pwsh -NoProfile -File {0} -PlanFile {1}" -f (ConvertTo-PowerShellLiteral -Value $bootstrapScriptPath), (ConvertTo-PowerShellLiteral -Value $PlanPath))
+    Send-OrchestraBridgeCommand `
+        -Target $PaneId `
+        -Text ("pwsh -NoProfile -File {0} -PlanFile {1}" -f (ConvertTo-PowerShellLiteral -Value $bootstrapScriptPath), (ConvertTo-PowerShellLiteral -Value $PlanPath)) `
+        -DeliveryClass 'launch'
     Start-Sleep -Milliseconds 500
 }
 

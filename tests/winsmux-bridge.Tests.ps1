@@ -4159,6 +4159,21 @@ Describe 'agent-monitor helpers' {
         $eligible | Should -Be $false
     }
 
+    It 'splats monitor launch delivery metadata before the launch command' {
+        $arguments = @(New-MonitorBridgeSendArguments `
+            -PaneId '%2' `
+            -Text 'codex -C C:\repo' `
+            -DeliveryClass 'launch')
+
+        $arguments | Should -Be @(
+            'send',
+            '%2',
+            '--delivery-class',
+            'launch',
+            'codex -C C:\repo'
+        )
+    }
+
     It 'respawns the pane in the launch directory before sending the agent command' {
         Mock Invoke-MonitorWinsmux { } -ParameterFilter {
             $Arguments[0] -eq 'respawn-pane'
@@ -4195,7 +4210,8 @@ Describe 'agent-monitor helpers' {
         }
         Should -Invoke Send-MonitorBridgeCommand -Times 1 -Exactly -ParameterFilter {
             $PaneId -eq '%2' -and
-            $Text -eq "codex -c 'model=gpt-5.4' --sandbox danger-full-access -C 'C:\repo\.worktrees\builder-1' --add-dir 'C:\repo\.git\worktrees\builder-1'"
+            $Text -eq "codex -c 'model=gpt-5.4' --sandbox danger-full-access -C 'C:\repo\.worktrees\builder-1' --add-dir 'C:\repo\.git\worktrees\builder-1'" -and
+            $DeliveryClass -eq 'launch'
         }
     }
 
@@ -4252,7 +4268,8 @@ Describe 'agent-monitor helpers' {
             $result.Success | Should -Be $true
             Should -Invoke Send-MonitorBridgeCommand -Times 1 -Exactly -ParameterFilter {
                 $PaneId -eq '%2' -and
-                $Text -match "^codex-nightly -c 'model=gpt-5\.4-nightly'"
+                $Text -match "^codex-nightly -c 'model=gpt-5\.4-nightly'" -and
+                $DeliveryClass -eq 'launch'
             }
             Should -Invoke Get-PaneAgentStatus -Times 1 -Exactly -ParameterFilter {
                 $PaneId -eq '%2' -and $Agent -eq 'codex'
@@ -7849,8 +7866,19 @@ Describe 'orchestra-start rollback helpers' {
         }
     }
 
+    It 'marks launch commands for bridge delivery without prompt readiness' {
+        Mock Invoke-Bridge { }
+
+        Send-OrchestraBridgeCommand -Target '%2' -Text 'pwsh -NoProfile -File bootstrap.ps1' -DeliveryClass 'launch'
+
+        Should -Invoke Invoke-Bridge -Times 1 -Exactly -ParameterFilter {
+            (@($Arguments) -join '|') -eq 'send|%2|--delivery-class|launch|pwsh -NoProfile -File bootstrap.ps1'
+        }
+    }
+
     It 'writes a pane bootstrap plan and launches it with a single bootstrap command after respawn' {
         $sentCommands = [System.Collections.Generic.List[string]]::new()
+        $sentDeliveryClasses = [System.Collections.Generic.List[string]]::new()
         $bridgeCalls = [System.Collections.Generic.List[object]]::new()
         $planRoot = Join-Path $script:orchestraStartTempRoot '.winsmux\orchestra-bootstrap'
         $cleanPtyEnv = [PSCustomObject]@{
@@ -7896,6 +7924,7 @@ Describe 'orchestra-start rollback helpers' {
         }
         Mock Send-OrchestraBridgeCommand {
             $sentCommands.Add($Text) | Out-Null
+            $sentDeliveryClasses.Add($DeliveryClass) | Out-Null
         }
 
         $planPath = New-OrchestraPaneBootstrapPlan `
@@ -7934,6 +7963,7 @@ Describe 'orchestra-start rollback helpers' {
         $sentCommands.Count | Should -Be 1
         $sentCommands[0] | Should -Match 'orchestra-pane-bootstrap\.ps1'
         $sentCommands[0] | Should -Match '-PlanFile'
+        $sentDeliveryClasses | Should -Be @('launch')
     }
 
     It 'does not send an interrupt key when the provider cannot interrupt' {
@@ -17009,6 +17039,86 @@ Describe 'winsmux send dispatch payload' {
             $CommandText -like "Read the full prompt from*" -and
             $PromptTransport -eq 'argv'
         }
+    }
+
+    It 'delivers an oversized launch pointer immediately without agent readiness' {
+        $launchMarkerPath = Join-Path $script:sendTempRoot 'launch-ran.txt'
+        $launchCommand = "[System.IO.File]::WriteAllText(" +
+            (ConvertTo-DispatchPowerShellLiteral -Value $launchMarkerPath) +
+            ", 'launched', [System.Text.UTF8Encoding]::new(`$false))`n# " + ('a' * 4001)
+        $overflowPlan = Resolve-SendTransportPlan `
+            -Text $launchCommand `
+            -ProjectDir $script:sendTempRoot `
+            -LengthLimit 4000 `
+            -PromptTransport 'argv'
+
+        Mock Get-PaneReadinessAgent { throw 'launch delivery must not resolve agent readiness' }
+        Mock Send-PromptPointerWhenAgentReady { throw 'launch delivery must not wait for agent readiness' }
+        Mock Send-TextToPane {
+            & ([scriptblock]::Create($CommandText))
+            return "sent to $PaneId"
+        }
+
+        $result = Send-ResolvedTransportPlan `
+            -PaneId '%2' `
+            -TransportPlan $overflowPlan `
+            -DeliveryClass 'launch' `
+            -Target 'worker-1' `
+            -ProjectDir $script:sendTempRoot `
+            -AgentConfig ([ordered]@{ Agent = 'codex'; CapabilityAdapter = 'codex' })
+
+        $result | Should -Be 'sent to %2'
+        Should -Invoke Get-PaneReadinessAgent -Times 0 -Exactly
+        Should -Invoke Send-PromptPointerWhenAgentReady -Times 0 -Exactly
+        Should -Invoke Send-TextToPane -Times 1 -Exactly -ParameterFilter {
+            $PaneId -eq '%2' -and
+            $CommandText -match 'ReadAllText' -and
+            $CommandText -notmatch 'Read the full prompt from' -and
+            $PromptTransport -eq 'argv'
+        }
+        Get-Content -Raw -LiteralPath $launchMarkerPath -Encoding UTF8 | Should -BeExactly 'launched'
+    }
+
+    It 'parses an explicit launch delivery class without consuming the launch command' {
+        $parsed = Resolve-SendInvocationArguments -Arguments @(
+            '--delivery-class',
+            'launch',
+            'pwsh -NoProfile -File bootstrap.ps1 -PlanFile plan.json'
+        )
+
+        $parsed['DeliveryClass'] | Should -Be 'launch'
+        $parsed['TaskSlug'] | Should -Be ''
+        @($parsed['MessageParts']) | Should -Be @('pwsh -NoProfile -File bootstrap.ps1 -PlanFile plan.json')
+    }
+
+    It 'routes an oversized prompt pointer through agent readiness' {
+        $overflowPlan = Resolve-SendTransportPlan `
+            -Text ('a' * 4001) `
+            -ProjectDir $script:sendTempRoot `
+            -LengthLimit 4000 `
+            -PromptTransport 'argv'
+
+        Mock Get-PaneReadinessAgent { return 'codex' }
+        Mock Send-PromptPointerWhenAgentReady { return "sent to $PaneId" }
+        Mock Send-TextToPane { throw 'oversized prompt delivery must use agent readiness' }
+
+        $result = Send-ResolvedTransportPlan `
+            -PaneId '%2' `
+            -TransportPlan $overflowPlan `
+            -DeliveryClass 'prompt' `
+            -Target 'worker-1' `
+            -ProjectDir $script:sendTempRoot `
+            -AgentConfig ([ordered]@{ Agent = 'codex'; CapabilityAdapter = 'codex' })
+
+        $result | Should -Be 'sent to %2'
+        Should -Invoke Get-PaneReadinessAgent -Times 1 -Exactly
+        Should -Invoke Send-PromptPointerWhenAgentReady -Times 1 -Exactly -ParameterFilter {
+            $PaneId -eq '%2' -and
+            $PointerText -like "Read the full prompt from*" -and
+            $Agent -eq 'codex' -and
+            $PromptTransport -eq 'argv'
+        }
+        Should -Invoke Send-TextToPane -Times 0 -Exactly
     }
 
     It 'keeps non-oversized send transports outside the pointer readiness gate' {
