@@ -130,8 +130,14 @@ assert.match(
 
 assert.match(
   mainSource,
-  /codex:\s*\["provider-default",\s*"low",\s*"medium",\s*"high",\s*"xhigh"\]/,
-  "Codex runtime effort choices must not expose Claude-only Max.",
+  /function getRuntimeReasoningOrderForProvider\([\s\S]*?codex:\s*\["provider-default",\s*"low",\s*"medium",\s*"high",\s*"max",\s*"xhigh"\]/,
+  "Codex runtime effort order must keep Max immediately before xhigh.",
+);
+
+assert.match(
+  mainSource,
+  /function getRuntimeReasoningOptionsForProvider\([\s\S]*?codex:\s*\["provider-default",\s*"low",\s*"medium",\s*"high",\s*"max",\s*"xhigh"\]/,
+  "Codex provider fallback effort choices must accept Max before xhigh.",
 );
 
 for (const provider of ["antigravity", "grok-build", "openrouter"]) {
@@ -145,7 +151,13 @@ for (const provider of ["antigravity", "grok-build", "openrouter"]) {
 assert.match(
   modelCapabilitiesSource,
   /id:\s*"claude"[\s\S]*?supportedEffortIds:\s*\["provider-default",\s*"low",\s*"medium",\s*"high",\s*"max",\s*"xhigh"\]/,
-  "Claude provider capabilities must include Max and Ultra/xhigh only for Claude.",
+  "Claude provider capabilities must retain Max and Ultra/xhigh.",
+);
+
+assert.match(
+  modelCapabilitiesSource,
+  /id:\s*"codex"[\s\S]*?supportedEffortIds:\s*\["provider-default",\s*"low",\s*"medium",\s*"high",\s*"max",\s*"xhigh"\]/,
+  "Codex provider capabilities must accept Max before xhigh.",
 );
 
 for (const provider of ["antigravity", "grok-build", "openrouter"]) {

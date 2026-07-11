@@ -131,9 +131,11 @@ const {
   commonContractPackageVersion,
   commonContractSurfaceIds,
   effortCapabilityIds,
+  modelCapabilities,
   modelReadinessStates,
   modelSourceIds,
   providerCapabilityIds,
+  providerCapabilities,
   runtimeWorkerReadinessStates,
   transportCapabilityIds,
   workerPaneReadinessStates,
@@ -211,6 +213,30 @@ assert.equal(parsePropertyType(mainSource, "promptTransport"), "TransportCapabil
 assert.equal(parsePropertyType(mainSource, "requiredBackend"), "BackendCapabilityId");
 assert.equal(parseTypeAlias(mainSource, "WorkerPaneReadinessState"), "CommonWorkerPaneReadinessState");
 assert.equal(parseTypeAlias(mainSource, "AgentVaultProviderId"), "AgentVaultCommandProviderId");
+
+const expectedCodexEfforts = ["provider-default", "low", "medium", "high", "max", "xhigh"];
+const expectedGpt56Efforts = ["low", "medium", "high", "max", "xhigh"];
+const gpt56CodexModelIds = [
+  "codex-gpt-5-6-sol",
+  "codex-gpt-5-6-terra",
+  "codex-gpt-5-6-luna",
+];
+const codexProvider = providerCapabilities.find((provider) => provider.id === "codex");
+assert.ok(codexProvider, "Expected Codex provider capability");
+assert.deepEqual(codexProvider.supportedEffortIds, expectedCodexEfforts);
+
+for (const modelId of gpt56CodexModelIds) {
+  const model = modelCapabilities.find((entry) => entry.id === modelId);
+  assert.ok(model, "Expected GPT-5.6 model capability " + modelId);
+  assert.equal(model.defaultEffortId, "medium", modelId + " must retain the medium default");
+  assert.deepEqual(model.supportedEffortIds, expectedGpt56Efforts, modelId + " must retain max before xhigh");
+}
+
+for (const model of modelCapabilities) {
+  if (model.providerId === "codex" && !gpt56CodexModelIds.includes(model.id)) {
+    assert.ok(!model.supportedEffortIds.includes("max"), model.id + " must not claim GPT-5.6 max support");
+  }
+}
 
 assertReadinessVocabularyContract(commonContractPackage);
 

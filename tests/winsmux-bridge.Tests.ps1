@@ -1844,6 +1844,18 @@ agent-slots:
         $command | Should -Match "-C 'C:\\Project Root'"
         $command | Should -Match "--add-dir 'C:\\Project Root\\.git\\worktrees\\worker-1'"
 
+        $maxCommand = Get-BridgeProviderLaunchCommand `
+            -ProviderId 'codex-local' `
+            -Model 'gpt-5.6-terra' `
+            -ModelSource 'cli-discovery' `
+            -ReasoningEffort 'max' `
+            -ProjectDir 'C:\Project Root' `
+            -GitWorktreeDir 'C:\Project Root\.git\worktrees\worker-1' `
+            -RootPath $script:settingsTempRoot
+
+        $maxCommand | Should -Match "-c 'model=gpt-5\.6-terra'"
+        $maxCommand | Should -Match "-c 'model_reasoning_effort=max'"
+
         $providerDefaultCommand = Get-BridgeProviderLaunchCommand `
             -ProviderId 'codex-local' `
             -Model 'provider-default' `
@@ -18468,6 +18480,38 @@ agent-slots:
         [string]::Join("`n", @($reasoningOutput)) | Should -Match "does not support reasoning_effort 'max'"
         $registryPath = Join-Path $script:providerSwitchTempRoot '.winsmux\provider-registry.json'
         Test-Path $registryPath | Should -BeFalse
+    }
+
+    It 'accepts configured GPT-5.6 max effort before writing the provider registry' {
+        $capabilityPath = Join-Path $script:providerSwitchTempRoot '.winsmux\provider-capabilities.json'
+        $capabilities = Get-Content -LiteralPath $capabilityPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $capabilities.providers.codex.reasoning_efforts = @('provider-default', 'low', 'medium', 'high', 'max', 'xhigh')
+        $capabilities.providers.codex.model_options = @(
+            $capabilities.providers.codex.model_options
+            [PSCustomObject]@{
+                id           = 'gpt-5.6-terra'
+                label        = 'GPT-5.6 Terra'
+                source       = 'cli-discovery'
+                availability = 'local-account'
+            }
+        )
+        $capabilities | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $capabilityPath -Encoding UTF8
+
+        Push-Location $script:providerSwitchTempRoot
+        try {
+            $output = & pwsh -NoProfile -File $script:winsmuxCoreRawPath provider-switch worker-1 --agent codex --model gpt-5.6-terra --model-source cli-discovery --reasoning-effort max --prompt-transport file --auth-mode codex-chatgpt-local --json
+        } finally {
+            Pop-Location
+        }
+
+        $result = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $result.agent | Should -Be 'codex'
+        $result.model | Should -Be 'gpt-5.6-terra'
+        $result.reasoning_effort | Should -Be 'max'
+
+        $registryPath = Join-Path $script:providerSwitchTempRoot '.winsmux\provider-registry.json'
+        $registry = Get-Content -LiteralPath $registryPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $registry.slots.'worker-1'.reasoning_effort | Should -Be 'max'
     }
 
     It 'uses the built-in OpenRouter capability without a private capability file entry' {

@@ -11457,7 +11457,7 @@ function getRuntimeReasoningOrderForProvider(provider: RuntimeProviderId) {
   const orderByProvider: Partial<Record<RuntimeProviderId, RuntimeReasoningEffort[]>> = {
     claude: ["provider-default", "low", "medium", "high", "max", "xhigh"],
     "grok-build": ["provider-default"],
-    codex: ["provider-default", "low", "medium", "high", "xhigh"],
+    codex: ["provider-default", "low", "medium", "high", "max", "xhigh"],
     openrouter: ["provider-default"],
     antigravity: ["provider-default"],
   };
@@ -11495,7 +11495,7 @@ function getRuntimeReasoningOptionsForProvider(provider: RuntimeProviderId) {
   const allowedByProvider: Record<RuntimeProviderId, RuntimeReasoningEffort[]> = {
     "provider-default": ["provider-default"],
     claude: ["provider-default", "low", "medium", "high", "max", "xhigh"],
-    codex: ["provider-default", "low", "medium", "high", "xhigh"],
+    codex: ["provider-default", "low", "medium", "high", "max", "xhigh"],
     antigravity: ["provider-default"],
     "grok-build": ["provider-default"],
     openrouter: ["provider-default"],
