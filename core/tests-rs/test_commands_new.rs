@@ -4,6 +4,40 @@
 
 use super::*;
 use crossterm::event::{KeyCode, KeyModifiers};
+use std::sync::{Mutex, MutexGuard};
+use std::time::{Duration, Instant};
+
+static RUN_SHELL_TEST_MUTEX: Mutex<()> = Mutex::new(());
+
+fn lock_run_shell_test() -> MutexGuard<'static, ()> {
+    RUN_SHELL_TEST_MUTEX.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[cfg(windows)]
+fn quote_run_shell_marker(path: &std::path::Path) -> String {
+    format!("'{}'", path.display().to_string().replace('\'', "''"))
+}
+
+#[cfg(not(windows))]
+fn quote_run_shell_marker(path: &std::path::Path) -> String {
+    format!("'{}'", path.display().to_string().replace('\'', "'\"'\"'"))
+}
+
+fn wait_for_run_shell_marker(path: &std::path::Path) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if matches!(std::fs::read_to_string(path).as_deref(), Ok("background-test")) {
+            std::fs::remove_file(path).expect("run-shell marker should be removable");
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "background run-shell did not complete before timeout: {}",
+            path.display()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
 
 fn mock_app() -> AppState {
     let mut app = AppState::new("test_session".to_string());
@@ -1602,6 +1636,7 @@ fn window_index_prompt_accepts_digits_only() {
 
 #[test]
 fn run_shell_captures_and_displays_output() {
+    let _guard = lock_run_shell_test();
     let mut app = mock_app();
     // Use a simple echo command that produces stdout
     #[cfg(windows)]
@@ -1629,24 +1664,47 @@ fn run_shell_captures_and_displays_output() {
 
 #[test]
 fn run_shell_background_does_not_show_popup() {
+    let _guard = lock_run_shell_test();
     let mut app = mock_app();
-    // With -b flag: should NOT enter PopupMode
+    // The unique TempDir makes this completion marker invocation-specific across
+    // test processes, and remains alive until the detached child has completed.
+    let marker_dir = tempfile::Builder::new()
+        .prefix("winsmux-run-shell-")
+        .tempdir()
+        .expect("run-shell test marker directory should be creatable");
+    let marker = marker_dir.path().join("background-complete.marker");
+    let marker_arg = quote_run_shell_marker(&marker);
+    // With -b flag: should NOT enter PopupMode. The marker lets this test wait
+    // for the detached child instead of leaking it into the next run-shell test.
     #[cfg(windows)]
-    let cmd = r#"run-shell -b "Write-Output 'background-test'""#;
+    let cmd = format!(
+        r#"run-shell -b "Write-Output 'background-test' | Out-Null; Set-Content -LiteralPath {} -Value 'background-test' -NoNewline""#,
+        marker_arg
+    );
     #[cfg(not(windows))]
-    let cmd = r#"run-shell -b "echo background-test""#;
+    let cmd = format!(
+        r#"run-shell -b "printf '%s' background-test > {}""#,
+        marker_arg
+    );
 
-    let _ = execute_command_string(&mut app, cmd);
+    assert!(
+        !marker.exists(),
+        "fresh run-shell marker must not exist before spawning: {}",
+        marker.display()
+    );
+    let _ = execute_command_string(&mut app, &cmd);
 
     assert!(
         !matches!(app.mode, Mode::PopupMode { .. }),
         "run-shell -b should NOT produce a popup, mode = {:?}",
         std::mem::discriminant(&app.mode)
     );
+    wait_for_run_shell_marker(&marker);
 }
 
 #[test]
 fn run_shell_alias_captures_output() {
+    let _guard = lock_run_shell_test();
     let mut app = mock_app();
     // "run" is the short alias for "run-shell"
     #[cfg(windows)]
@@ -1673,6 +1731,7 @@ fn run_shell_alias_captures_output() {
 
 #[test]
 fn run_shell_stderr_is_captured() {
+    let _guard = lock_run_shell_test();
     let mut app = mock_app();
     // Use a command that writes to stderr
     #[cfg(windows)]
@@ -1699,6 +1758,7 @@ fn run_shell_stderr_is_captured() {
 
 #[test]
 fn run_shell_empty_output_no_popup() {
+    let _guard = lock_run_shell_test();
     let mut app = mock_app();
     // A command that produces no output should not show a popup
     #[cfg(windows)]

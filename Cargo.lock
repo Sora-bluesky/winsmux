@@ -6378,6 +6378,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2",
+ "tempfile",
  "unicode-width",
  "vt100-winsmux",
  "which",
