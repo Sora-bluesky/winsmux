@@ -4159,19 +4159,53 @@ Describe 'agent-monitor helpers' {
         $eligible | Should -Be $false
     }
 
-    It 'splats monitor launch delivery metadata before the launch command' {
+    It 'keeps caller-facing monitor bridge arguments at prompt delivery' {
         $arguments = @(New-MonitorBridgeSendArguments `
             -PaneId '%2' `
-            -Text 'codex -C C:\repo' `
-            -DeliveryClass 'launch')
+            -Text 'codex -C C:\repo')
 
         $arguments | Should -Be @(
             'send',
             '%2',
-            '--delivery-class',
-            'launch',
             'codex -C C:\repo'
         )
+        $arguments | Should -Not -Contain '--delivery-class'
+    }
+
+    It 'delivers monitor launch commands in-process without bridge argv' {
+        Mock Invoke-MonitorWinsmux { }
+
+        Send-MonitorBridgeCommand `
+            -PaneId '%2' `
+            -Text 'codex -C C:\repo' `
+            -DeliveryClass 'launch'
+
+        Should -Invoke Invoke-MonitorWinsmux -Times 1 -Exactly -ParameterFilter {
+            @($Arguments) -join '|' -eq 'send-keys|-t|%2|-l|--|codex -C C:\repo'
+        }
+        Should -Invoke Invoke-MonitorWinsmux -Times 1 -Exactly -ParameterFilter {
+            @($Arguments) -join '|' -eq 'send-keys|-t|%2|Enter'
+        }
+    }
+
+    It 'chunks oversized monitor launch commands before one immediate submit' {
+        $script:monitorLaunchCalls = [System.Collections.Generic.List[object]]::new()
+        $launchCommand = 'codex ' + ('x' * 4001)
+        Mock New-MonitorBridgeSendArguments { throw 'launch delivery must not build public bridge argv' }
+        Mock Invoke-MonitorWinsmux {
+            $script:monitorLaunchCalls.Add(@($Arguments)) | Out-Null
+        }
+
+        Send-MonitorBridgeCommand `
+            -PaneId '%2' `
+            -Text $launchCommand `
+            -DeliveryClass 'launch'
+
+        $literalCalls = @($script:monitorLaunchCalls | Where-Object { $_[3] -eq '-l' })
+        $literalCalls.Count | Should -BeGreaterThan 1
+        (($literalCalls | ForEach-Object { [string]$_[5] }) -join '') | Should -BeExactly $launchCommand
+        @($script:monitorLaunchCalls[-1]) | Should -Be @('send-keys', '-t', '%2', 'Enter')
+        Should -Invoke New-MonitorBridgeSendArguments -Times 0 -Exactly
     }
 
     It 'respawns the pane in the launch directory before sending the agent command' {
@@ -7866,13 +7900,24 @@ Describe 'orchestra-start rollback helpers' {
         }
     }
 
-    It 'marks launch commands for bridge delivery without prompt readiness' {
-        Mock Invoke-Bridge { }
+    It 'delivers launch commands in-process without public bridge argv' {
+        Mock Invoke-Winsmux { }
+        Mock Invoke-Bridge { throw 'launch delivery must not use public bridge argv' }
 
-        Send-OrchestraBridgeCommand -Target '%2' -Text 'pwsh -NoProfile -File bootstrap.ps1' -DeliveryClass 'launch'
+        Send-OrchestraBridgeCommand `
+            -Target '%2' `
+            -Text 'pwsh -NoProfile -File bootstrap.ps1' `
+            -DeliveryClass 'launch' `
+            -SessionName 'winsmux-orchestra'
 
-        Should -Invoke Invoke-Bridge -Times 1 -Exactly -ParameterFilter {
-            (@($Arguments) -join '|') -eq 'send|%2|--delivery-class|launch|pwsh -NoProfile -File bootstrap.ps1'
+        Should -Invoke Invoke-Bridge -Times 0 -Exactly
+        Should -Invoke Invoke-Winsmux -Times 1 -Exactly -ParameterFilter {
+            @($Arguments) -join '|' -eq 'send-keys|-t|%2|-l|--|pwsh -NoProfile -File bootstrap.ps1' -and
+            $TargetSessionName -eq 'winsmux-orchestra'
+        }
+        Should -Invoke Invoke-Winsmux -Times 1 -Exactly -ParameterFilter {
+            @($Arguments) -join '|' -eq 'send-keys|-t|%2|Enter' -and
+            $TargetSessionName -eq 'winsmux-orchestra'
         }
     }
 
@@ -17132,16 +17177,14 @@ Describe 'winsmux send dispatch payload' {
         Get-Content -Raw -LiteralPath $launchMarkerPath -Encoding UTF8 | Should -BeExactly 'launched'
     }
 
-    It 'parses an explicit launch delivery class without consuming the launch command' {
-        $parsed = Resolve-SendInvocationArguments -Arguments @(
-            '--delivery-class',
-            'launch',
-            'pwsh -NoProfile -File bootstrap.ps1 -PlanFile plan.json'
-        )
-
-        $parsed['DeliveryClass'] | Should -Be 'launch'
-        $parsed['TaskSlug'] | Should -Be ''
-        @($parsed['MessageParts']) | Should -Be @('pwsh -NoProfile -File bootstrap.ps1 -PlanFile plan.json')
+    It 'rejects an argv-supplied launch delivery class' {
+        {
+            Resolve-SendInvocationArguments -Arguments @(
+                '--delivery-class',
+                'launch',
+                'pwsh -NoProfile -File bootstrap.ps1 -PlanFile plan.json'
+            )
+        } | Should -Throw '*--delivery-class is internal-only*'
     }
 
     It 'routes an oversized prompt pointer through agent readiness' {
@@ -21869,11 +21912,17 @@ Describe 'deferred worker startup' {
 
         Mock Wait-PaneShellReady { }
         Mock Invoke-Send {
-            param([string]$SendTarget, [string[]]$SendArguments, [switch]$SkipDeferredPaneStart)
+            param(
+                [string]$SendTarget,
+                [string[]]$SendArguments,
+                [ValidateSet('prompt', 'launch')][string]$DeliveryClass,
+                [switch]$SkipDeferredPaneStart
+            )
             $script:deferredSendCommands.Add([string]$SendArguments[-1]) | Out-Null
             $script:deferredCanonicalSendCalls.Add([PSCustomObject]@{
                 Target                = $SendTarget
                 Arguments             = @($SendArguments)
+                DeliveryClass         = $DeliveryClass
                 SkipDeferredPaneStart = [bool]$SkipDeferredPaneStart
             }) | Out-Null
             return "sent to $SendTarget"
@@ -21927,7 +21976,8 @@ Describe 'deferred worker startup' {
         $script:deferredSendCommands[0] | Should -Match '-PlanFile'
         $script:deferredCanonicalSendCalls.Count | Should -Be 1
         $script:deferredCanonicalSendCalls[0].Target | Should -Be '%3'
-        @($script:deferredCanonicalSendCalls[0].Arguments)[0..1] | Should -Be @('--delivery-class', 'launch')
+        @($script:deferredCanonicalSendCalls[0].Arguments) | Should -Be @($script:deferredSendCommands[0])
+        $script:deferredCanonicalSendCalls[0].DeliveryClass | Should -Be 'launch'
         $script:deferredCanonicalSendCalls[0].SkipDeferredPaneStart | Should -Be $true
         Should -Invoke Send-TextToPane -Times 0 -Exactly
         $script:deferredStatusWrites | Should -Be @('deferred_starting', 'ready')
@@ -21971,7 +22021,8 @@ Describe 'deferred worker startup' {
         $script:deferredSendCommands[0] | Should -Match 'orchestra-pane-bootstrap\.ps1'
         $script:deferredCanonicalSendCalls.Count | Should -Be 1
         $script:deferredCanonicalSendCalls[0].Target | Should -Be '%3'
-        @($script:deferredCanonicalSendCalls[0].Arguments)[0..1] | Should -Be @('--delivery-class', 'launch')
+        @($script:deferredCanonicalSendCalls[0].Arguments) | Should -Be @($script:deferredSendCommands[0])
+        $script:deferredCanonicalSendCalls[0].DeliveryClass | Should -Be 'launch'
         $script:deferredCanonicalSendCalls[0].SkipDeferredPaneStart | Should -Be $true
         Should -Invoke Send-TextToPane -Times 0 -Exactly
         $script:deferredStatusWrites | Should -Be @('deferred_starting', 'ready')

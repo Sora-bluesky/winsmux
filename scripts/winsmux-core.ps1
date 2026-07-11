@@ -3560,7 +3560,6 @@ function Resolve-SendInvocationArguments {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
 
     $taskSlug = ''
-    $deliveryClass = 'prompt'
     $messageParts = New-Object System.Collections.Generic.List[string]
     for ($index = 0; $index -lt $Arguments.Count; $index++) {
         $token = [string]$Arguments[$index]
@@ -3575,25 +3574,15 @@ function Resolve-SendInvocationArguments {
         }
 
         if ($token -eq '--delivery-class') {
-            if ($index + 1 -ge $Arguments.Count) {
-                Stop-WithError "--delivery-class requires a value"
-            }
-
-            $index++
-            $deliveryClass = ([string]$Arguments[$index]).Trim().ToLowerInvariant()
-            if ($deliveryClass -notin @('prompt', 'launch')) {
-                Stop-WithError "--delivery-class must be prompt or launch"
-            }
-            continue
+            throw '--delivery-class is internal-only and cannot be supplied through argv'
         }
 
         $messageParts.Add($token) | Out-Null
     }
 
     return [ordered]@{
-        TaskSlug      = $taskSlug
-        DeliveryClass = $deliveryClass
-        MessageParts  = @($messageParts)
+        TaskSlug     = $taskSlug
+        MessageParts = @($messageParts)
     }
 }
 
@@ -3676,7 +3665,8 @@ function Start-DeferredPaneFromManifestEntry {
         Wait-PaneShellReady -PaneId $paneId -TimeoutSeconds 30
         Invoke-Send `
             -SendTarget $paneId `
-            -SendArguments @('--delivery-class', 'launch', $bootstrapCommand) `
+            -SendArguments @($bootstrapCommand) `
+            -DeliveryClass 'launch' `
             -SkipDeferredPaneStart | Out-Null
     }
 
@@ -3699,6 +3689,7 @@ function Invoke-Send {
     param(
         [AllowEmptyString()][string]$SendTarget = $Target,
         [AllowNull()][string[]]$SendArguments = $Rest,
+        [ValidateSet('prompt', 'launch')][string]$DeliveryClass = 'prompt',
         [switch]$SkipDeferredPaneStart
     )
 
@@ -3707,7 +3698,6 @@ function Invoke-Send {
 
     $resolvedSendArguments = Resolve-SendInvocationArguments -Arguments $SendArguments
     $taskSlug = [string]$resolvedSendArguments['TaskSlug']
-    $deliveryClass = [string]$resolvedSendArguments['DeliveryClass']
     $messageParts = @($resolvedSendArguments['MessageParts'])
 
     if ($messageParts.Count -lt 1) {
@@ -3860,7 +3850,7 @@ function Invoke-Send {
     Send-ResolvedTransportPlan `
         -PaneId $paneId `
         -TransportPlan $transportPlan `
-        -DeliveryClass $deliveryClass `
+        -DeliveryClass $DeliveryClass `
         -Target $SendTarget `
         -ProjectDir $projectDir `
         -AgentConfig $agentConfig

@@ -761,20 +761,45 @@ function Clear-OrchestraSessionEnvironment {
     Invoke-Winsmux -Arguments @('set-environment', '-u', '-t', $SessionName, $Name)
 }
 
+function Split-OrchestraBridgeLiteralChunks {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text,
+        [ValidateRange(1, 4000)][int]$ChunkSize = 900
+    )
+
+    $chunks = [System.Collections.Generic.List[string]]::new()
+    for ($index = 0; $index -lt $Text.Length; $index += $ChunkSize) {
+        $length = [Math]::Min($ChunkSize, $Text.Length - $index)
+        $chunks.Add($Text.Substring($index, $length)) | Out-Null
+    }
+
+    if ($chunks.Count -eq 0) {
+        $chunks.Add('') | Out-Null
+    }
+    return @($chunks)
+}
+
 function Send-OrchestraBridgeCommand {
     param(
         [Parameter(Mandatory = $true)][string]$Target,
         [Parameter(Mandatory = $true)][string]$Text,
-        [ValidateSet('prompt', 'launch')][string]$DeliveryClass = 'prompt'
+        [ValidateSet('prompt', 'launch')][string]$DeliveryClass = 'prompt',
+        [AllowEmptyString()][string]$SessionName = ''
     )
 
-    $arguments = @('send', $Target)
     if ($DeliveryClass -eq 'launch') {
-        $arguments += @('--delivery-class', 'launch')
+        foreach ($chunk in @(Split-OrchestraBridgeLiteralChunks -Text $Text)) {
+            Invoke-Winsmux `
+                -Arguments @('send-keys', '-t', $Target, '-l', '--', $chunk) `
+                -TargetSessionName $SessionName
+        }
+        Invoke-Winsmux `
+            -Arguments @('send-keys', '-t', $Target, 'Enter') `
+            -TargetSessionName $SessionName
+        return
     }
-    $arguments += $Text
 
-    Invoke-Bridge -Arguments $arguments
+    Invoke-Bridge -Arguments @('send', $Target, $Text)
 }
 
 function New-OrchestraWorkerLaunchApproval {
@@ -880,7 +905,8 @@ function Start-OrchestraPaneBootstrap {
     Send-OrchestraBridgeCommand `
         -Target $PaneId `
         -Text ("pwsh -NoProfile -File {0} -PlanFile {1}" -f (ConvertTo-PowerShellLiteral -Value $bootstrapScriptPath), (ConvertTo-PowerShellLiteral -Value $PlanPath)) `
-        -DeliveryClass 'launch'
+        -DeliveryClass 'launch' `
+        -SessionName $SessionName
     Start-Sleep -Milliseconds 500
 }
 
