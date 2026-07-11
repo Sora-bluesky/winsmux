@@ -90,6 +90,10 @@ import {
   getPacketMarkers,
   classifyCliWorker,
   classifyCliOutcome,
+  buildCliDispatchEchoMarker,
+  extractLatestDispatchId,
+  countCliMarkersAfterEchoReceipt,
+  hasTaskTimedOut,
   selectNewRunDir,
   buildReadyCheckCommand,
   buildDispatchCommand,
@@ -149,14 +153,11 @@ function sha256Hex(text) {
 // after that readiness wait.
 const DISPATCH_CONFIRM_POLL_MS = 3000;
 const DISPATCH_CONFIRM_TIMEOUT_MS = 90_000 + 60_000; // WORKER_READINESS_TIMEOUT_MS (90_000) + 60_000 headroom
-// Small settle window AFTER dispatch confirmation, before the first pane
-// capture that seeds the CLI marker-count baseline. Per the main.ts flow
-// cited above, the echoed packet text is written into each pane BEFORE the
-// success conversation entry is appended, so by the time this runner has
-// observed the success entry the echo is already on screen -- this sleep is
-// only to let that terminal render settle, not to wait out the dispatch
-// itself (that waiting is now done by the confirmation poll above).
-const ECHO_RENDER_SETTLE_MS = 3000;
+// Dispatch confirmation proves the desktop accepted the packet, but does not
+// prove the pane echo has finished rendering. Poll each CLI pane at this
+// cadence until its exact per-dispatch echo receipt appears before allowing
+// completion classification.
+const ECHO_BASELINE_SETTLE_POLL_MS = 3000;
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, "..", "..");
@@ -786,12 +787,12 @@ async function main() {
       }
     }
 
-    // Independently reconstruct the exact prompt the desktop builds and
-    // hashes for this dispatch (buildHarnessTaskPrompt mirror), then hash it
-    // ourselves. Compared below (after dispatch) against the sha256 the
-    // desktop itself displays in the conversation panel.
-    const expectedSha = packetText !== null
-      ? sha256Hex(buildHarnessPromptMirror(pack, taskEntry || {}, packetText))
+    // Independently reconstruct the base prompt the desktop builds for this
+    // dispatch. After confirmation exposes the per-dispatch echo receipt,
+    // append that exact receipt and hash the full interactive prompt for the
+    // comparison against the desktop conversation entry below.
+    const expectedPrompt = packetText !== null
+      ? buildHarnessPromptMirror(pack, taskEntry || {}, packetText)
       : "";
 
     const dispatchStartMs = Date.now();
@@ -810,7 +811,6 @@ async function main() {
     }
     const preSha256Count = countSha256Occurrences(preConversationText);
     const preBlockedCount = countDispatchBlockedNotices(preConversationText);
-
     const submitResult = await submitComposerCommand(args.port, buildDispatchCommand(taskId));
 
     async function emitDispatchFailedArtifacts(dispatchFailReason) {
@@ -899,61 +899,54 @@ async function main() {
       continue;
     }
 
-    // Dispatch confirmed successful (this dispatch's own success entry
-    // rendered). Per the main.ts flow, the echoed packet text is written
-    // into each pane BEFORE that success entry is appended, so the echo is
-    // already on screen -- this sleep only lets the terminal render settle,
-    // it is not waiting out the dispatch itself anymore (see
-    // ECHO_RENDER_SETTLE_MS's doc comment above).
-    await sleep(ECHO_RENDER_SETTLE_MS);
-
     // Read the desktop-displayed sha256 for this dispatch now that success
     // is confirmed, and compare it to our independently computed
     // expectedSha.
     let displayedSha = "";
+    let dispatchId = "";
     try {
       const conversationText = await readConversationText(args.port);
       displayedSha = extractLatestSha256(conversationText);
+      dispatchId = extractLatestDispatchId(conversationText);
     } catch {
       displayedSha = "";
+      dispatchId = "";
     }
+    if (!dispatchId) {
+      const reason = "confirmed dispatch did not expose a dispatch_id receipt";
+      await appendLogLine(logPath, { event: "dispatch_unconfirmed", ts: nowIso(), taskId, reason });
+      await emitDispatchFailedArtifacts(reason);
+      continue;
+    }
+    const expectedSha = expectedPrompt
+      ? sha256Hex(`${expectedPrompt}\n\n${buildCliDispatchEchoMarker(dispatchId)}`)
+      : "";
     const packetHashMatch = expectedSha !== "" && displayedSha !== "" && displayedSha === expectedSha;
 
-    // Seed the baseline marker count for this task's own round marker AFTER
-    // dispatch confirmation + settle. This is required both to cross round
-    // boundaries (e.g. WB-009 -> WB-010 switches from counting
-    // BAKEOFF_ROUND_A_END to BAKEOFF_ROUND_B_END) and to make sure the
-    // echoed packet text (which itself contains the marker literal, per
-    // every packet's step 5) is already folded into the baseline before
-    // polling starts. A failed capture must NOT seed 0: if the pane still
-    // visibly holds markers, a 0 baseline would let the next successful
-    // poll misread them as an instant completion. null marks "baseline
-    // unknown -- adopt the first successful poll observation as the
-    // baseline instead".
-    //
-    // FIX B: also seed a begin-marker baseline in parallel (same null
-    // semantics), used below to gate CLI completion on BOTH round markers
-    // having been observed, mirroring classifyApiOutcome's both-markers
-    // contract for the api_llm path.
+    // A dispatch-confirmed echo can still be streaming. A worker gets a
+    // baseline only after its exact per-dispatch echo receipt appears. The
+    // receipt is appended after the full packet, so it is a stronger settle
+    // proof than a timing guess. Each worker still progresses independently
+    // through this state in the normal poll loop.
     const priorMarkerCounts = {};
     const priorBeginCounts = {};
+    const dispatchEchoMarkers = {};
     const beginObserved = {};
     for (const w of CLI_WORKERS) {
-      const captured = await capturePane(args.port, w);
-      priorMarkerCounts[w] = typeof captured === "string"
-        ? countEndMarkers(captured, endMarker)
-        : null;
-      priorBeginCounts[w] = typeof captured === "string" && packetMarkers.begin
-        ? countEndMarkers(captured, packetMarkers.begin)
-        : (typeof captured === "string" ? 0 : null);
+      priorMarkerCounts[w] = null;
+      priorBeginCounts[w] = null;
+      dispatchEchoMarkers[w] = buildCliDispatchEchoMarker(dispatchId);
       beginObserved[w] = false;
     }
+
+    const deadlineMs = dispatchStartMs + defaultTimeout * 1000;
 
     await appendLogLine(logPath, {
       event: "task_dispatch",
       ts: dispatchStartIso,
       taskId,
       endMarker,
+      dispatchId,
       priorMarkerCounts,
       priorBeginCounts,
       submitOk: true,
@@ -971,7 +964,6 @@ async function main() {
       perWorkerEndMarkerPresent[w] = false;
     }
 
-    const deadlineMs = dispatchStartMs + defaultTimeout * 1000;
     while (Date.now() < deadlineMs) {
       const elapsedSeconds = (Date.now() - dispatchStartMs) / 1000;
 
@@ -988,50 +980,67 @@ async function main() {
         }
         const paneText = captured;
         const currCount = countEndMarkers(paneText, endMarker);
+        const currBeginCount = packetMarkers.begin
+          ? countEndMarkers(paneText, packetMarkers.begin)
+          : 0;
 
-        // FIX B: track the begin-marker running-minimum in parallel with
-        // the end-marker one above, using the identical scroll-off-tolerant
-        // logic, and set the sticky beginObserved[w] flag whenever a
-        // successful capture shows the begin count rise above its running
-        // minimum. packetMarkers.begin === "" means this packet had no
-        // extractable begin-marker literal at all (see getPacketMarkers) --
-        // beginObserved can then never become true, which is intentional
-        // (see classifyCliOutcome's doc comment).
-        if (packetMarkers.begin) {
-          const currBeginCount = countEndMarkers(paneText, packetMarkers.begin);
-          if (priorBeginCounts[w] === null) {
-            priorBeginCounts[w] = currBeginCount;
-          } else {
-            if (currBeginCount < priorBeginCounts[w]) {
-              priorBeginCounts[w] = currBeginCount;
-            }
-            if (currBeginCount > priorBeginCounts[w]) {
-              beginObserved[w] = true;
-            }
+        let status = null;
+        if (priorMarkerCounts[w] === null || priorBeginCounts[w] === null) {
+          const receiptMarkerCounts = countCliMarkersAfterEchoReceipt(
+            paneText,
+            dispatchEchoMarkers[w],
+            packetMarkers.begin,
+            endMarker,
+          );
+          if (receiptMarkerCounts === null) {
+            continue;
           }
-        }
+          if (receiptMarkerCounts.endCount > 0) {
+            // The receipt is appended after the packet echo. An END marker
+            // after it is therefore real worker output, including a worker
+            // that completed before a second settle sample was available.
+            status = classifyCliOutcome(
+              "completed",
+              receiptMarkerCounts.beginCount > 0,
+            );
+          } else {
+            // The receipt follows the entire packet echo, so this first
+            // receipt-visible capture is the echo-safe baseline. Do not
+            // classify it: any later marker increase is worker output.
+            priorBeginCounts[w] = currBeginCount;
+            priorMarkerCounts[w] = currCount;
+            beginObserved[w] = receiptMarkerCounts.beginCount > 0;
+            continue;
+          }
+        } else {
+          // FIX B: track the begin-marker running-minimum in parallel with
+          // the end-marker one above, using the identical scroll-off-tolerant
+          // logic, and set the sticky beginObserved[w] flag whenever a
+          // successful capture shows the begin count rise above its running
+          // minimum. packetMarkers.begin === "" means this packet had no
+          // extractable begin-marker literal at all (see getPacketMarkers) --
+          // beginObserved can then never become true, which is intentional
+          // (see classifyCliOutcome's doc comment).
+          if (currBeginCount < priorBeginCounts[w]) {
+            priorBeginCounts[w] = currBeginCount;
+          }
+          if (currBeginCount > priorBeginCounts[w]) {
+            beginObserved[w] = true;
+          }
 
-        if (priorMarkerCounts[w] === null) {
-          // Baseline capture failed at dispatch time. Adopt the first
-          // successful observation as the baseline: a leftover marker and
-          // this task's own marker are indistinguishable here, so require a
-          // further increase before declaring completion (conservative --
-          // the worst case is a timeout, never a false completion).
-          priorMarkerCounts[w] = currCount;
-          continue;
+          if (currCount < priorMarkerCounts[w]) {
+            // A leftover marker from the previous task scrolled off the
+            // visible screen; adopt the smaller count as the new baseline so
+            // this task's own marker still registers as an increase.
+            priorMarkerCounts[w] = currCount;
+          }
+          const endStatus = classifyCliWorker(priorMarkerCounts[w], currCount, elapsedSeconds, defaultTimeout);
+          // FIX B: gate CLI completion on BOTH round markers, mirroring
+          // classifyApiOutcome's both-markers contract for the api_llm path.
+          // An END-increment alone (begin never observed) downgrades to
+          // invalid_output instead of being accepted as completed.
+          status = classifyCliOutcome(endStatus, beginObserved[w]);
         }
-        if (currCount < priorMarkerCounts[w]) {
-          // A leftover marker from the previous task scrolled off the
-          // visible screen; adopt the smaller count as the new baseline so
-          // this task's own marker still registers as an increase.
-          priorMarkerCounts[w] = currCount;
-        }
-        const endStatus = classifyCliWorker(priorMarkerCounts[w], currCount, elapsedSeconds, defaultTimeout);
-        // FIX B: gate CLI completion on BOTH round markers, mirroring
-        // classifyApiOutcome's both-markers contract for the api_llm path.
-        // An END-increment alone (begin never observed) downgrades to
-        // invalid_output instead of being accepted as completed.
-        const status = classifyCliOutcome(endStatus, beginObserved[w]);
         if (status === "completed") {
           perWorkerStatus[w] = "completed";
           perWorkerElapsedSeconds[w] = elapsedSeconds;
@@ -1061,12 +1070,24 @@ async function main() {
 
       for (const w of API_LLM_WORKERS) {
         if (perWorkerStatus[w] !== "pending") continue;
+        let apiElapsedSeconds = (Date.now() - dispatchStartMs) / 1000;
+        if (hasTaskTimedOut(apiElapsedSeconds, defaultTimeout)) {
+          perWorkerStatus[w] = "timeout";
+          perWorkerElapsedSeconds[w] = apiElapsedSeconds;
+          continue;
+        }
         const runInfo = await readRunJsonForTask(evidenceProjectRoot, w, dispatchStartMs);
+        apiElapsedSeconds = (Date.now() - dispatchStartMs) / 1000;
+        if (hasTaskTimedOut(apiElapsedSeconds, defaultTimeout)) {
+          perWorkerStatus[w] = "timeout";
+          perWorkerElapsedSeconds[w] = apiElapsedSeconds;
+          continue;
+        }
         if (runInfo.found) {
           const cls = classifyApiOutcome(runInfo.text, runInfo.responseText, packetMarkers);
           if (cls === "completed" || cls === "failed" || cls === "blocked" || cls === "invalid_output") {
             perWorkerStatus[w] = cls;
-            perWorkerElapsedSeconds[w] = elapsedSeconds;
+            perWorkerElapsedSeconds[w] = apiElapsedSeconds;
             // Only a fully-validated completed outcome (run.json succeeded
             // AND both round markers found in response.txt) counts as the
             // marker having been verified present; invalid_output means the
@@ -1075,14 +1096,13 @@ async function main() {
             perWorkerEndMarkerPresent[w] = cls === "completed";
           }
         }
-        if (perWorkerStatus[w] === "pending" && elapsedSeconds >= defaultTimeout) {
-          perWorkerStatus[w] = "timeout";
-          perWorkerElapsedSeconds[w] = elapsedSeconds;
-        }
       }
 
       if (Object.values(perWorkerStatus).every((s) => s !== "pending")) break;
-      await sleep(args.poll * 1000);
+      const pollDelayMs = [...CLI_WORKERS].some((w) => priorMarkerCounts[w] === null)
+        ? ECHO_BASELINE_SETTLE_POLL_MS
+        : args.poll * 1000;
+      await sleep(pollDelayMs);
     }
 
     for (const w of WORKER_LABELS) {

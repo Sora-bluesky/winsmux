@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import {
   parseManifestPaneIds,
   collectReadyWorkers,
@@ -9,6 +10,10 @@ import {
   classifyApiOutcome,
   getPacketMarkers,
   classifyCliWorker,
+  buildCliDispatchEchoMarker,
+  extractLatestDispatchId,
+  countCliMarkersAfterEchoReceipt,
+  hasTaskTimedOut,
   selectNewRunDir,
   buildReadyCheckCommand,
   buildDispatchCommand,
@@ -89,19 +94,16 @@ assert.deepEqual(collectReadyWorkers(undefined), new Set(), "collectReadyWorkers
 
 // --- countEndMarkers -------------------------------------------------------
 //
-// Strategy note (round-7 fix, baseline-timing updated round-8): completion
-// detection is no longer line-shape filtering. Every packet instructs the
+// Strategy note (round-7 fix, baseline-timing updated round-8/#1134):
+// completion detection is no longer line-shape filtering. Every packet instructs the
 // worker to return a numbered list whose item 5 IS the round END marker
 // (e.g. "5. BAKEOFF_ROUND_A_END", often backtick-wrapped) -- a compliant
 // completion is therefore indistinguishable, by line shape, from the
 // dispatch echo of that same packet text. countEndMarkers is now an honest
 // raw substring occurrence count; echo disambiguation happens in the RUNNER
-// by seeding its baseline AFTER dispatch has been CONFIRMED via the
-// conversation-panel poll (countSha256Occurrences /
-// countDispatchBlockedNotices, plus ECHO_RENDER_SETTLE_MS in
-// run-cli-bakeoff.mjs), once the echo is already on screen -- not by
-// filtering line shapes here. Do not reintroduce line filtering in this
-// function.
+// by seeding its baseline only after dispatch has been confirmed and its
+// exact receipt appears at the end of the packet echo. Do not reintroduce
+// line filtering in this function.
 
 assert.equal(countEndMarkers(""), 0, "countEndMarkers must return 0 for empty text");
 assert.equal(countEndMarkers("no marker here"), 0, "countEndMarkers must return 0 when marker absent");
@@ -264,6 +266,95 @@ assert.equal(
   classifyCliWorker(1, 2, 3700, 3600),
   "completed",
   "classifyCliWorker must prefer completed over timeout when the marker count did increase, even past the timeout boundary",
+);
+assert.equal(hasTaskTimedOut(3599.9, 3600), false, "hasTaskTimedOut must keep a task active before its deadline");
+assert.equal(hasTaskTimedOut(3600, 3600), true, "hasTaskTimedOut must reject an outcome first observed at its deadline");
+
+// --- CLI dispatch echo receipt ------------------------------------------
+
+const dispatchReceipt = buildCliDispatchEchoMarker("dispatch-abc123");
+
+assert.equal(
+  dispatchReceipt,
+  "WINSMUX_BENCH_DISPATCH dispatch-abc123",
+  "buildCliDispatchEchoMarker must create the exact receipt appended after a CLI prompt",
+);
+assert.equal(
+  extractLatestDispatchId("dispatch-old\ndispatch-new42"),
+  "dispatch-new42",
+  "extractLatestDispatchId must select the latest desktop dispatch receipt",
+);
+assert.equal(
+  extractLatestDispatchId("no receipt"),
+  "",
+  "extractLatestDispatchId must return empty when the desktop did not expose a receipt",
+);
+const desktopMainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+const runnerSource = readFileSync(new URL("./run-cli-bakeoff.mjs", import.meta.url), "utf8");
+assert.ok(
+    desktopMainSource.includes("WINSMUX_BENCH_DISPATCH ${dispatchId}") &&
+    desktopMainSource.includes("const promptWithDispatchReceipt") &&
+    desktopMainSource.includes("const cliDispatchPromptSha = await sha256Hex") &&
+    desktopMainSource.includes('`${packet.prompt}\\n\\n${buildCliBenchmarkDispatchEchoMarker(probeId)}`') &&
+    desktopMainSource.includes('{ label: "dispatch_id", value: probeId }'),
+  "main.ts must emit the same receipt, publish dispatch_id, and hash the receipt-inclusive CLI prompt",
+);
+assert.ok(
+  runnerSource.includes("countCliMarkersAfterEchoReceipt") &&
+    runnerSource.includes("beginObserved[w] = receiptMarkerCounts.beginCount > 0"),
+  "run-cli-bakeoff must preserve a receipt-observed BEGIN before a later END",
+);
+const fastWorkerMarkers = countCliMarkersAfterEchoReceipt(
+  `${dispatchReceipt}\nBAKEOFF_ROUND_A_BEGIN\nwork complete\nBAKEOFF_ROUND_A_END`,
+  dispatchReceipt,
+  "BAKEOFF_ROUND_A_BEGIN",
+  "BAKEOFF_ROUND_A_END",
+);
+assert.deepEqual(
+  fastWorkerMarkers,
+  { beginCount: 1, endCount: 1 },
+  "countCliMarkersAfterEchoReceipt must isolate a fast worker result printed after the echo receipt",
+);
+assert.equal(
+  classifyCliOutcome("completed", fastWorkerMarkers.beginCount > 0),
+  "completed",
+  "a fast completion after the receipt must be terminal instead of becoming a baseline",
+);
+const beginBeforeEndMarkers = countCliMarkersAfterEchoReceipt(
+  `${dispatchReceipt}\nBAKEOFF_ROUND_A_BEGIN\nworking`,
+  dispatchReceipt,
+  "BAKEOFF_ROUND_A_BEGIN",
+  "BAKEOFF_ROUND_A_END",
+);
+assert.deepEqual(
+  beginBeforeEndMarkers,
+  { beginCount: 1, endCount: 0 },
+  "countCliMarkersAfterEchoReceipt must preserve a BEGIN printed before a later END",
+);
+assert.equal(
+  classifyCliOutcome("completed", beginBeforeEndMarkers.beginCount > 0),
+  "completed",
+  "a BEGIN observed after the receipt must remain valid when the END arrives later",
+);
+assert.equal(
+  countCliMarkersAfterEchoReceipt(
+    "BAKEOFF_ROUND_A_BEGIN\nBAKEOFF_ROUND_A_END",
+    dispatchReceipt,
+    "BAKEOFF_ROUND_A_BEGIN",
+    "BAKEOFF_ROUND_A_END",
+  ),
+  null,
+  "countCliMarkersAfterEchoReceipt must not treat markers from before this dispatch's receipt as completion",
+);
+assert.deepEqual(
+  countCliMarkersAfterEchoReceipt(
+      `${dispatchReceipt}\npacket echo only`,
+      dispatchReceipt,
+      "BAKEOFF_ROUND_A_BEGIN",
+      "BAKEOFF_ROUND_A_END",
+    ),
+  { beginCount: 0, endCount: 0 },
+  "the receipt itself must establish a no-completion baseline after the full packet echo",
 );
 
 // --- selectNewRunDir ------------------------------------------------------

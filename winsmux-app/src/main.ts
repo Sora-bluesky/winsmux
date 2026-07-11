@@ -4206,6 +4206,10 @@ function getBenchmarkSubmissionRunId(dispatchId: string, target: string) {
   return `${dispatchId}-${target}`.replace(/[^A-Za-z0-9._-]/g, "-");
 }
 
+function buildCliBenchmarkDispatchEchoMarker(dispatchId: string) {
+  return `WINSMUX_BENCH_DISPATCH ${dispatchId}`;
+}
+
 async function writeWorkerBenchmarkSubmission(
   target: string,
   row: DesktopWorkerStatusRow,
@@ -4224,7 +4228,11 @@ async function writeWorkerBenchmarkSubmission(
     return "api_llm exec";
   }
 
-  await writePtyData(target, encodePtySubmission(packet.prompt));
+  // Keep this receipt at the end of the interactive prompt so a bounded PTY
+  // tail can prove that this exact dispatch's echo finished rendering. The
+  // runner matches the same literal via buildCliDispatchEchoMarker.
+  const promptWithDispatchReceipt = `${packet.prompt}\n\n${buildCliBenchmarkDispatchEchoMarker(dispatchId)}`;
+  await writePtyData(target, encodePtySubmission(promptWithDispatchReceipt));
   if (packet.prompt.includes("\n")) {
     await waitForOperatorSubmitDelay();
     await writePtyData(target, "\r");
@@ -4706,6 +4714,9 @@ async function dispatchBenchmarkTaskFromOperatorCommand(
     }
 
     const packet = await loadHarnessBenchmarkTaskPacket(taskId);
+    const cliDispatchPromptSha = await sha256Hex(
+      `${packet.prompt}\n\n${buildCliBenchmarkDispatchEchoMarker(probeId)}`,
+    );
     const submissionDetails: ConversationDetail[] = [];
     for (const row of rows) {
       const target = getWorkerStatusTarget(row);
@@ -4731,9 +4742,10 @@ async function dispatchBenchmarkTaskFromOperatorCommand(
       ),
       details: [
         { label: getLanguageText("task", "課題"), value: `${packet.taskId} - ${packet.taskTitle}` },
+        { label: "dispatch_id", value: probeId },
         { label: getLanguageText("pack", "パック"), value: packet.packId },
         { label: getLanguageText("packet", "課題ファイル"), value: packet.packetPath },
-        { label: "sha256", value: packet.sha256 },
+        { label: "sha256", value: cliDispatchPromptSha },
         { label: getLanguageText("worker panes", "ワーカーペイン"), value: targets.join(", ") },
         { label: getLanguageText("timeout", "制限時間"), value: `${packet.timeoutSeconds}s` },
         ...submissionDetails,
