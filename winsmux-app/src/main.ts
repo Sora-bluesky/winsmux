@@ -9740,12 +9740,17 @@ function normalizeRuntimeRolePreference(value: Partial<RuntimeRolePreference>, f
   const modelSource = runtimeModelSourceOptions.find((item) => item.value === value.modelSource)?.value ?? fallback.modelSource;
   const reasoningEffort = runtimeReasoningOptions.find((item) => item.value === value.reasoningEffort)?.value ?? fallback.reasoningEffort;
   const model = typeof value.model === "string" && value.model.trim() ? value.model.trim() : fallback.model;
-  return {
+  const preference: RuntimeRolePreference = {
     roleId: fallback.roleId,
     provider,
     model,
     modelSource,
     reasoningEffort,
+  };
+  const { entry } = getRuntimePreferenceSelectedEntry(preference);
+  return {
+    ...preference,
+    reasoningEffort: normalizeRuntimeReasoningForEntry(provider, entry, reasoningEffort),
   };
 }
 
@@ -11495,7 +11500,7 @@ function getRuntimeReasoningOptionsForProvider(provider: RuntimeProviderId) {
   const allowedByProvider: Record<RuntimeProviderId, RuntimeReasoningEffort[]> = {
     "provider-default": ["provider-default"],
     claude: ["provider-default", "low", "medium", "high", "max", "xhigh"],
-    codex: ["provider-default", "low", "medium", "high", "max", "xhigh"],
+    codex: ["provider-default", "low", "medium", "high", "xhigh"],
     antigravity: ["provider-default"],
     "grok-build": ["provider-default"],
     openrouter: ["provider-default"],

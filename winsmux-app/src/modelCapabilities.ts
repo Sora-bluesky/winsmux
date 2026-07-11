@@ -329,7 +329,7 @@ export const providerCapabilities: readonly ProviderCapability[] = [
     commandName: "codex",
     defaultModelId: "codex-gpt-5-5",
     defaultEffortId: "medium",
-    supportedEffortIds: ["provider-default", "low", "medium", "high", "max", "xhigh"],
+    supportedEffortIds: ["provider-default", "low", "medium", "high", "xhigh"],
     supportedModelSources: ["cli-discovery", "operator-override"],
     supportedTransportIds: ["file"],
     requiredBackend: "agent-cli",

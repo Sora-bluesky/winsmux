@@ -214,7 +214,7 @@ assert.equal(parsePropertyType(mainSource, "requiredBackend"), "BackendCapabilit
 assert.equal(parseTypeAlias(mainSource, "WorkerPaneReadinessState"), "CommonWorkerPaneReadinessState");
 assert.equal(parseTypeAlias(mainSource, "AgentVaultProviderId"), "AgentVaultCommandProviderId");
 
-const expectedCodexEfforts = ["provider-default", "low", "medium", "high", "max", "xhigh"];
+const expectedCodexEfforts = ["provider-default", "low", "medium", "high", "xhigh"];
 const expectedGpt56Efforts = ["low", "medium", "high", "max", "xhigh"];
 const gpt56CodexModelIds = [
   "codex-gpt-5-6-sol",

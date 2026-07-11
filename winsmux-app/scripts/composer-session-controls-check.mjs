@@ -136,8 +136,8 @@ assert.match(
 
 assert.match(
   mainSource,
-  /function getRuntimeReasoningOptionsForProvider\([\s\S]*?codex:\s*\["provider-default",\s*"low",\s*"medium",\s*"high",\s*"max",\s*"xhigh"\]/,
-  "Codex provider fallback effort choices must accept Max before xhigh.",
+  /function getRuntimeReasoningOptionsForProvider\([\s\S]*?codex:\s*\["provider-default",\s*"low",\s*"medium",\s*"high",\s*"xhigh"\]/,
+  "Codex provider fallback effort choices must exclude Max while retaining xhigh.",
 );
 
 for (const provider of ["antigravity", "grok-build", "openrouter"]) {
@@ -156,8 +156,22 @@ assert.match(
 
 assert.match(
   modelCapabilitiesSource,
-  /id:\s*"codex"[\s\S]*?supportedEffortIds:\s*\["provider-default",\s*"low",\s*"medium",\s*"high",\s*"max",\s*"xhigh"\]/,
-  "Codex provider capabilities must accept Max before xhigh.",
+  /id:\s*"codex"[\s\S]*?supportedEffortIds:\s*\["provider-default",\s*"low",\s*"medium",\s*"high",\s*"xhigh"\]/,
+  "Codex provider capabilities must exclude Max while retaining xhigh.",
+);
+
+for (const modelId of ["codex-gpt-5-6-sol", "codex-gpt-5-6-terra", "codex-gpt-5-6-luna"]) {
+  assert.match(
+    modelCapabilitiesSource,
+    new RegExp(`id:\\s*"${modelId}"[\\s\\S]*?supportedEffortIds:\\s*\\["low",\\s*"medium",\\s*"high",\\s*"max",\\s*"xhigh"\\]`),
+    `${modelId} must retain the GPT-5.6-only Max effort capability.`,
+  );
+}
+
+assert.match(
+  mainSource,
+  /function normalizeRuntimeRolePreference\([\s\S]*?getRuntimePreferenceSelectedEntry\(preference\)[\s\S]*?normalizeRuntimeReasoningForEntry\(provider, entry, reasoningEffort\)/,
+  "Stored runtime preferences must clamp an unsupported effort before desktop launch.",
 );
 
 for (const provider of ["antigravity", "grok-build", "openrouter"]) {
