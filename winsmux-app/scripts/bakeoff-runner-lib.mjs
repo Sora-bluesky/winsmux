@@ -136,13 +136,11 @@ export function taskIdToEndMarker(taskId) {
  * (the previous strategy here) also rejects every compliant worker's actual
  * completion output, which is why that strategy is gone.
  *
- * Echo disambiguation is handled by the CALLER, not by this function: the
- * runner seeds its baseline count AFTER dispatch has been CONFIRMED (via the
- * conversation-panel poll gating on countSha256Occurrences /
- * countDispatchBlockedNotices, plus ECHO_RENDER_SETTLE_MS in
- * run-cli-bakeoff.mjs), once the echoed packet text is already on screen.
- * Because the echo is already included in the seeded baseline, only a
- * marker occurrence beyond that baseline -- i.e. the worker's own
+ * Echo disambiguation is handled by the CALLER, not by this function: after
+ * dispatch confirmation, the runner waits until an exact, per-dispatch echo
+ * receipt is visible before it seeds a baseline. The receipt is appended
+ * after the complete packet, so the echo is already included in that
+ * baseline; only a later marker occurrence -- i.e. the worker's own
  * completion output -- can register as an increase. This function's only
  * job is an honest raw count; do not reintroduce line-shape filtering here.
  *
@@ -158,6 +156,54 @@ export function countEndMarkers(paneText, marker = "BAKEOFF_ROUND_A_END") {
   const escaped = target.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const matches = String(paneText).match(new RegExp(escaped, "g"));
   return matches ? matches.length : 0;
+}
+
+/**
+ * Build the exact per-dispatch receipt appended after a CLI packet's prompt.
+ * This must stay in sync with writeWorkerBenchmarkSubmission in main.ts.
+ *
+ * @param {string} dispatchId
+ * @returns {string}
+ */
+export function buildCliDispatchEchoMarker(dispatchId) {
+  const id = typeof dispatchId === "string" ? dispatchId.trim() : "";
+  return id ? `WINSMUX_BENCH_DISPATCH ${id}` : "";
+}
+
+/**
+ * Extract the latest desktop-generated dispatch id from conversation text.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+export function extractLatestDispatchId(text) {
+  const matches = [...String(text || "").matchAll(/\bdispatch-[0-9a-z]+\b/gi)];
+  return matches.length > 0 ? matches[matches.length - 1][0] : "";
+}
+
+/**
+ * Count packet markers that appear after this dispatch's receipt in a pane
+ * capture. The receipt is appended after the echoed packet, so markers in
+ * the suffix after its last visible copy are worker output rather than
+ * repeated echoed instructions.
+ *
+ * @param {string} paneText
+ * @param {string} receipt
+ * @param {string} beginMarker
+ * @param {string} endMarker
+ * @returns {{beginCount: number, endCount: number}|null}
+ */
+export function countCliMarkersAfterEchoReceipt(paneText, receipt, beginMarker, endMarker) {
+  const text = typeof paneText === "string" ? paneText : "";
+  const marker = typeof receipt === "string" ? receipt : "";
+  const receiptIndex = marker ? text.lastIndexOf(marker) : -1;
+  if (receiptIndex < 0) return null;
+
+  const suffix = text.slice(receiptIndex + marker.length);
+  return {
+    beginCount: beginMarker ? countEndMarkers(suffix, beginMarker) : 0,
+    endCount: countEndMarkers(suffix, endMarker),
+  };
 }
 
 /**
@@ -256,6 +302,20 @@ export function classifyApiOutcome(runJsonText, responseText, markers) {
 }
 
 /**
+ * Return true when an outcome is first observed at or after its configured
+ * task deadline.
+ *
+ * @param {number} elapsedSeconds
+ * @param {number} timeoutSeconds
+ * @returns {boolean}
+ */
+export function hasTaskTimedOut(elapsedSeconds, timeoutSeconds) {
+  return Number.isFinite(elapsedSeconds) &&
+    Number.isFinite(timeoutSeconds) &&
+    elapsedSeconds >= timeoutSeconds;
+}
+
+/**
  * Classify a CLI worker's progress on a single dispatched task by comparing
  * the current marker occurrence count against the lowest count observed
  * since the post-dispatch baseline was seeded.
@@ -271,10 +331,9 @@ export function classifyApiOutcome(runJsonText, responseText, markers) {
  * completion.
  *
  * @param {number} minObservedCount lowest marker count observed since the
- *   baseline was seeded (after dispatch confirmation + the short echo
- *   render settle -- see DISPATCH_CONFIRM_TIMEOUT_MS / ECHO_RENDER_SETTLE_MS
- *   in run-cli-bakeoff.mjs -- and lowered by the caller whenever a
- *   successful poll observes a smaller count)
+ *   baseline was seeded after dispatch confirmation and its exact echo
+ *   receipt, then lowered by the caller whenever a successful poll observes
+ *   a smaller count)
  * @param {number} currCount marker count observed at the current poll tick
  * @param {number} elapsedSeconds seconds since this task was dispatched
  * @param {number} timeoutSeconds this task's configured timeout
@@ -284,7 +343,7 @@ export function classifyCliWorker(minObservedCount, currCount, elapsedSeconds, t
   const prev = Number.isFinite(minObservedCount) ? minObservedCount : 0;
   const curr = Number.isFinite(currCount) ? currCount : 0;
   if (curr > prev) return "completed";
-  if (Number.isFinite(elapsedSeconds) && Number.isFinite(timeoutSeconds) && elapsedSeconds >= timeoutSeconds) {
+  if (hasTaskTimedOut(elapsedSeconds, timeoutSeconds)) {
     return "timeout";
   }
   return "pending";
@@ -332,15 +391,13 @@ export function selectNewRunDir(entries, sinceEpochMs) {
 }
 
 /**
- * Reproduce, byte-for-byte, the prompt string the desktop app builds and
- * hashes for a benchmark task dispatch (buildHarnessTaskPrompt in
- * winsmux-app/src/main.ts, ~lines 4143-4157). The desktop computes
- * packet.sha256 = sha256 hex over exactly this string and shows it in the
- * dispatch conversation entry (writeWorkerBenchmarkSubmission /
- * dispatchBenchmarkTaskFromOperatorCommand, ~lines 4703-4740) under a detail
- * labeled "sha256". This function must be kept byte-for-byte in sync with
- * that upstream implementation -- any drift (header order, join character,
- * trim behavior) silently breaks hash verification.
+ * Reproduce, byte-for-byte, the base prompt the desktop app builds for a
+ * benchmark task dispatch (buildHarnessTaskPrompt in
+ * winsmux-app/src/main.ts, ~lines 4143-4157). The desktop then appends its
+ * per-dispatch echo receipt before hashing and sending the interactive CLI
+ * prompt; the runner obtains that receipt from the confirmed conversation
+ * entry and appends the same value before comparing the displayed sha256.
+ * This function must stay in sync with the base app-side builder.
  *
  * Pure/dependency-free by design: the actual sha256 digest is computed by
  * the CALLER (run-cli-bakeoff.mjs) using node:crypto, not here, so this
@@ -374,8 +431,8 @@ export function buildHarnessPromptMirror(pack, task, packetContent) {
 /**
  * Extract the last 64-char lowercase hex string appearing near a "sha256"
  * label in a conversation-panel innerText blob, mirroring how the desktop
- * displays the dispatch packet's hash as a labeled conversation detail
- * (`{ label: "sha256", value: packet.sha256 }`).
+ * displays the full interactive prompt hash as a labeled conversation detail
+ * (`{ label: "sha256", value: cliDispatchPromptSha }`).
  *
  * Deliberately liberal: tries a "sha256" label followed (within a short
  * distance) by a 64-hex-char run first; if that finds nothing, falls back to
