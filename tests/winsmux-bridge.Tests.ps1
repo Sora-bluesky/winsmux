@@ -9030,6 +9030,59 @@ panes:
         }
     }
 
+    It 'classes an oversized add-Builder agent command as launch delivery' {
+        @"
+version: 1
+saved_at: 2026-04-05T10:00:00+09:00
+session:
+  name: winsmux-orchestra
+  project_dir: $script:paneScalerTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    launch_dir: $script:paneScalerTempRoot
+"@ | Set-Content -Path $script:paneScalerManifestPath -Encoding UTF8
+
+        $script:oversizedPaneScalerLaunchCommand = 'codex ' + ('x' * 4001)
+        Mock New-PaneScalerBuilderWorktree {
+            [PSCustomObject]@{
+                BranchName     = 'worktree-builder-2'
+                WorktreePath   = Join-Path $script:paneScalerTempRoot '.worktrees\builder-2'
+                GitWorktreeDir = Join-Path $script:paneScalerTempRoot '.git\worktrees\builder-2'
+            }
+        }
+        Mock Invoke-MonitorWinsmux {
+            if ($Arguments -contains '-F') {
+                return '%3'
+            }
+            return ''
+        }
+        Mock Wait-MonitorPaneShellReady { }
+        Mock Get-PaneScalerLaunchCommand { return $script:oversizedPaneScalerLaunchCommand }
+        Mock Send-MonitorBridgeCommand { }
+
+        $settings = [ordered]@{
+            agent = 'codex'
+            model = 'gpt-5.4'
+            roles = [ordered]@{
+                builder = [ordered]@{
+                    agent = 'codex'
+                    model = 'gpt-5.4'
+                }
+            }
+        }
+
+        Add-OrchestraPane -ManifestPath $script:paneScalerManifestPath -Settings $settings | Out-Null
+
+        $script:oversizedPaneScalerLaunchCommand.Length | Should -BeGreaterThan 4000
+        Should -Invoke Send-MonitorBridgeCommand -Times 1 -Exactly -ParameterFilter {
+            $PaneId -eq '%3' -and
+            $Text -eq $script:oversizedPaneScalerLaunchCommand -and
+            $DeliveryClass -eq 'launch'
+        }
+    }
+
     It 'scales up when workload exceeds the threshold' {
         $manifest = [PSCustomObject]@{
             Panes = [ordered]@{
