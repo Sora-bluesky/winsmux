@@ -5,7 +5,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { readHookInput, allow, failClosed } = require("./lib/sh-utils");
+const { readHookInput, allow } = require("./lib/sh-utils");
 
 const HOOK_NAME = "sh-operator-playbook";
 const PLAYBOOK_PATH = path.join("docs", "operator-playbook.md");
@@ -42,12 +42,22 @@ function buildOperatorPlaybookContext(repoRoot = process.cwd()) {
   ].join("\n");
 }
 
+function buildOperatorPlaybookBlockedContext(error) {
+  const reason = error instanceof Error ? error.message : String(error);
+  return [
+    `[operator-playbook] BLOCKED: ${reason}.`,
+    `Restore or repair ${PLAYBOOK_LABEL} before decomposing or dispatching work.`,
+  ].join("\n");
+}
+
 function main() {
   try {
     readHookInput();
     allow(buildOperatorPlaybookContext());
   } catch (error) {
-    failClosed(`[${HOOK_NAME}] ${error.message}`);
+    // SessionStart cannot deny a tool call. Keep startup available for transient
+    // recovery, but inject a distinct blocked state rather than success context.
+    allow(buildOperatorPlaybookBlockedContext(error));
   }
 }
 
@@ -61,4 +71,5 @@ module.exports = {
   SUMMARY_HEADING,
   extractPlaybookSummary,
   buildOperatorPlaybookContext,
+  buildOperatorPlaybookBlockedContext,
 };

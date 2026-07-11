@@ -20,6 +20,8 @@ The durable operator contract in this file is repo-safe and tracked.
 If a local-only live handoff exists at `.claude/local/operator-handoff.md`, read it after this file and treat it as ignored operator state, not as public repository documentation.
 Before decomposing or dispatching work, the operator MUST consult `docs/operator-playbook.md`,
 the operational companion to this authority contract.
+If the SessionStart context reports `[operator-playbook] BLOCKED`, restore or repair that file
+before decomposing or dispatching work; this blocks the workflow without preventing session recovery.
 
 ## Role definition
 

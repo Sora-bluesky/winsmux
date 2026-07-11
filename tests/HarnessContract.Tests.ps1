@@ -219,6 +219,30 @@ tasks:
                 BacklogPath = $backlogPath
             }
         }
+
+        function New-OperatorPlaybookFixture {
+            $fixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("winsmux-operator-playbook-" + [guid]::NewGuid().ToString('N'))
+            $hooksDir = Join-Path $fixtureRoot '.claude\hooks'
+            $libDir = Join-Path $hooksDir 'lib'
+
+            New-Item -ItemType Directory -Path $libDir -Force | Out-Null
+            Copy-Item -LiteralPath (Join-Path $script:RepoRoot '.claude\hooks\sh-operator-playbook.js') -Destination (Join-Path $hooksDir 'sh-operator-playbook.js') -Force
+            Copy-Item -LiteralPath (Join-Path $script:RepoRoot '.claude\hooks\lib\sh-utils.js') -Destination (Join-Path $libDir 'sh-utils.js') -Force
+
+            $playbookPath = Join-Path $fixtureRoot 'docs\operator-playbook.md'
+            Write-TestFileWithCmd -Path $playbookPath -Content @"
+# Fixture operator playbook
+
+### One-paragraph summary for a new operator
+
+Fixture summary for structured SessionStart contract coverage.
+"@
+
+            return [PSCustomObject]@{
+                Root         = $fixtureRoot
+                PlaybookPath = $playbookPath
+            }
+        }
     }
 
     It 'passes shadow cutover gate when only human-readable text changes' {
@@ -725,6 +749,76 @@ require("./sh-session-end-real.js");
             $context | Should -Match '\[winsmux-resume\] Planning: TASK-154 v0.24.1 - Manifest-aware session resume / context injection'
             $context | Should -Match '\[gate-check\] \.claude/CLAUDE\.md baseline:'
             $context | Should -Not -Match 'WARNING: CLAUDE\.md not found'
+        } finally {
+            if (Test-Path -LiteralPath $fixture.Root) {
+                Remove-Item -LiteralPath $fixture.Root -Recurse -Force
+            }
+        }
+    }
+
+    It 'emits a valid operator playbook SessionStart success contract' {
+        $fixture = New-OperatorPlaybookFixture
+        try {
+            $result = Invoke-NodeHookJson -RepoRoot $fixture.Root -HookRelativePath '.claude\hooks\sh-operator-playbook.js' -Payload ([ordered]@{
+                session_id      = 'operator-playbook-success'
+                hook_event_name = 'SessionStart'
+            })
+
+            $result.ExitCode | Should -Be 0
+            $result.StdErr | Should -Be ''
+            $result.Json.hookSpecificOutput.hookEventName | Should -Be 'SessionStart'
+            $context = [string]$result.Json.hookSpecificOutput.additionalContext
+            $context | Should -Match '\[operator-playbook\] Before decomposing or dispatching work, consult docs/operator-playbook\.md\.'
+            $context | Should -Match 'Summary: Fixture summary for structured SessionStart contract coverage\.'
+        } finally {
+            if (Test-Path -LiteralPath $fixture.Root) {
+                Remove-Item -LiteralPath $fixture.Root -Recurse -Force
+            }
+        }
+    }
+
+    It 'emits a blocked SessionStart contract when the operator playbook is missing' {
+        $fixture = New-OperatorPlaybookFixture
+        try {
+            Remove-Item -LiteralPath $fixture.PlaybookPath -Force
+
+            $result = Invoke-NodeHookJson -RepoRoot $fixture.Root -HookRelativePath '.claude\hooks\sh-operator-playbook.js' -Payload ([ordered]@{
+                session_id      = 'operator-playbook-missing'
+                hook_event_name = 'SessionStart'
+            })
+
+            $result.ExitCode | Should -Be 0
+            $result.StdErr | Should -Be ''
+            $result.Json.hookSpecificOutput.hookEventName | Should -Be 'SessionStart'
+            $context = [string]$result.Json.hookSpecificOutput.additionalContext
+            $context | Should -Match '\[operator-playbook\] BLOCKED: docs/operator-playbook\.md not found\.'
+            $context | Should -Match 'Restore or repair docs/operator-playbook\.md before decomposing or dispatching work\.'
+            $context | Should -Not -Match 'Before decomposing or dispatching work, consult'
+            $context | Should -Not -Match 'Summary:'
+        } finally {
+            if (Test-Path -LiteralPath $fixture.Root) {
+                Remove-Item -LiteralPath $fixture.Root -Recurse -Force
+            }
+        }
+    }
+
+    It 'emits a blocked SessionStart contract when the operator playbook is malformed' {
+        $fixture = New-OperatorPlaybookFixture
+        try {
+            Write-TestFileWithCmd -Path $fixture.PlaybookPath -Content '# Fixture operator playbook without the required summary'
+
+            $result = Invoke-NodeHookJson -RepoRoot $fixture.Root -HookRelativePath '.claude\hooks\sh-operator-playbook.js' -Payload ([ordered]@{
+                session_id      = 'operator-playbook-malformed'
+                hook_event_name = 'SessionStart'
+            })
+
+            $result.ExitCode | Should -Be 0
+            $result.StdErr | Should -Be ''
+            $result.Json.hookSpecificOutput.hookEventName | Should -Be 'SessionStart'
+            $context = [string]$result.Json.hookSpecificOutput.additionalContext
+            $context | Should -Match '\[operator-playbook\] BLOCKED: missing summary heading in docs/operator-playbook\.md\.'
+            $context | Should -Not -Match 'Before decomposing or dispatching work, consult'
+            $context | Should -Not -Match 'Summary:'
         } finally {
             if (Test-Path -LiteralPath $fixture.Root) {
                 Remove-Item -LiteralPath $fixture.Root -Recurse -Force
