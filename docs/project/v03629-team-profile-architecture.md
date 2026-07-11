@@ -13,7 +13,9 @@ models, or make repository instruction files into mutable settings stores.
 
 The project-level `.winsmux.yaml` file is the source of truth for the selected
 Team Profile and project-owned slot overrides. A versioned, package-owned
-preset supplies defaults. The effective team is derived as follows:
+preset supplies defaults only after the project explicitly opts in by defining
+`team-profile`. For an opted-in project, the effective team is derived as
+follows:
 
 1. Load the built-in preset named by `team-profile.preset`.
 2. Match `agent-slots` entries to preset entries by `slot-id`.
@@ -23,9 +25,12 @@ preset supplies defaults. The effective team is derived as follows:
 5. At pane launch, project each validated slot into a runtime prompt bundle and
    `.winsmux/manifest.yaml`.
 
-The built-in preset and project overrides remain separate. Applying or
-upgrading a preset never silently deletes a project override. Resetting a field,
-slot, or whole team to preset values is a distinct, explicit user action.
+When `team-profile` is absent, this preset resolver does not run: an existing
+`agent-slots` list is the complete roster, not a sparse override list. The
+built-in preset and project overrides remain separate. Applying or upgrading a
+preset in an opted-in project never silently deletes a project override.
+Resetting a field, slot, or whole team to preset values is a distinct, explicit
+user action.
 
 The authoritative existing surfaces that this design extends are:
 
@@ -153,10 +158,12 @@ worker-backend: local
 roles: {}
 ```
 
-The example intentionally shows only two override entries. The resolved team
-still has six slots because the remaining four come from the selected preset.
-An override may be sparse down to `slot-id`; omission means "inherit this field
-from the preset," not "use an implicit provider default."
+The example explicitly opts into `team-profile` and intentionally shows only two
+override entries. Its resolved team still has six slots because the remaining
+four come from the selected preset. Within an opted-in configuration, an
+override may be sparse down to `slot-id`; omission means "inherit this field
+from the preset," not "use an implicit provider default." This backfill rule
+does not apply to a legacy configuration with no `team-profile`.
 
 ### Lane B schema
 
@@ -190,29 +197,40 @@ the existing `agent` field is a migration alias. The resolver maps the stable
 model capability ID to that catalog entry's provider launch value only after
 validation. It does not infer a provider by sniffing model text.
 
-The resolved configuration must contain exactly six unique slots. A project
-override list does not need six entries, but it may not introduce a seventh
-slot or delete a preset slot in v1.
+When `team-profile` is present, the resolved configuration must contain exactly
+six unique slots. Its project override list does not need six entries, but it
+may not introduce a seventh slot or delete a preset slot in v1. When
+`team-profile` is absent, `agent-slots` remains the complete legacy roster and
+may contain fewer than six entries.
 
 ### Load, validate, and save
 
-The TASK-715 settings service follows one deterministic path:
+The TASK-715 settings service follows two deterministic paths. It first parses
+the entire YAML document and rejects duplicate mapping keys. If `team-profile`
+is absent, it validates and preserves the existing `agent-slots` list as the
+complete roster. It must not load or overlay `official-balanced-v1` (or any
+other default), backfill missing slot IDs or fields, or rewrite the file merely
+by reading it. In this legacy path, `worker_count` continues to derive from the
+actual slot count (`winsmux-core/scripts/settings.ps1:2669-2670`), and desktop
+start planning continues to target only the project's configured slots
+(`winsmux-app/src/workerStartPlanning.ts:118-124`).
 
-1. Parse the entire YAML document and reject duplicate mapping keys.
-2. Validate `config-version` and the Lane B `schema-version`.
-3. Load the named package preset and verify its declared digest and six unique
+If `team-profile` is present, the opted-in preset path is:
+
+1. Validate `config-version` and the Lane B `schema-version`.
+2. Load the named package preset and verify its declared digest and six unique
    slot IDs.
-4. Normalize supported legacy spellings without modifying the source file.
-5. Overlay project slot fields by exact `slot-id` and produce six resolved
+3. Normalize supported legacy spellings without modifying the source file.
+4. Overlay project slot fields by exact `slot-id` and produce six resolved
    immutable slot records.
-6. Validate structural fields, then catalog relationships, then instruction-pack
+5. Validate structural fields, then catalog relationships, then instruction-pack
    references. Return structured issues with slot ID, field, code, severity,
    and remediation. Never silently substitute a provider, model, effort, role,
    lifecycle, or task class.
-7. On save, edit only `team-profile` and the changed Lane B fields in the
+6. On save, edit only `team-profile` and the changed Lane B fields in the
    matching `agent-slots` entry. Preserve all Lane A and unknown subtrees and
    all existing non-Lane-B slot fields.
-8. Write to a sibling temporary file, parse and validate it again, then replace
+7. Write to a sibling temporary file, parse and validate it again, then replace
    `.winsmux.yaml` atomically. A failed validation leaves the original file
    unchanged.
 
@@ -220,11 +238,14 @@ When the user changes a field, save the explicit override. When the user resets
 that field to preset, remove only that field from the project entry. Remove an
 empty slot entry only when it has no other existing execution fields. Selecting
 or refreshing a preset changes `team-profile` metadata and inherited values;
-it does not erase explicit fields under `agent-slots`.
+it does not erase explicit fields under `agent-slots`. These preset operations
+are available only after explicit `team-profile` opt-in.
 
-The settings UI may display a resolved six-row table, but it must retain the
-distinction between inherited and overridden values. Generated resolved state
-must not be written as a second authority under `.winsmux/`.
+For an opted-in project, the settings UI may display a resolved six-row table,
+but it must retain the distinction between inherited and overridden values. A
+legacy project with no `team-profile` must display its actual roster without
+synthesizing additional rows. Generated resolved state must not be written as a
+second authority under `.winsmux/`.
 
 ## Static instruction packs
 
@@ -293,8 +314,9 @@ append to, or use them as storage for Team Profile state.
 
 ## Runtime prompt-bundle projection
 
-TASK-717 resolves a slot immediately before worker-pane launch and builds one
-deterministic prompt bundle in this order:
+For a project that has opted into `team-profile`, TASK-717 resolves a slot
+immediately before worker-pane launch and builds one deterministic prompt bundle
+in this order:
 
 1. `base.md`;
 2. the exact provider template;
@@ -310,9 +332,10 @@ The bundle is written atomically beneath
 runtime state and must be ignored by Git. It contains no credential values,
 raw transcript, browser state, or unrelated private context.
 
-The manifest session records the resolved Team Profile ID, preset revision,
-source configuration digest, and instruction-pack registry digest. Each pane
-entry adds structured data rather than encoding state in a prompt string:
+For that opted-in path, the manifest session records the resolved Team Profile
+ID, preset revision, source configuration digest, and instruction-pack registry
+digest. Each pane entry adds structured data rather than encoding state in a
+prompt string:
 
 ```yaml
 session:
@@ -368,22 +391,25 @@ fallbacks.
 | Dynamic catalog refresh is unavailable | Preserve the saved ID and show stale/unverified state. | Reject unless a still-valid, locally verified catalog entry and runtime probe both pass. |
 | User overrides differ from a newly available preset revision | Mark fields as retained overrides and offer explicit reset controls. | Use the retained override if otherwise runnable. |
 
-Fail-closed is transactional. For a fresh orchestra start, all six resolved
-slots must pass before any new worker pane is created. For reconfiguration of a
-running orchestra, a rejected candidate configuration leaves the current team
-running and records the candidate validation failure; it does not partially
-replace slots. There is no automatic fallback to `provider-default`, a
-different model, a `fallback-model`, or a less expensive effort.
+Fail-closed is transactional. For a fresh orchestra start that has opted into
+`team-profile`, all six resolved slots must pass before any new worker pane is
+created. For reconfiguration of a running orchestra, a rejected candidate
+configuration leaves the current team running and records the candidate
+validation failure; it does not partially replace slots. There is no automatic
+fallback to `provider-default`, a different model, a `fallback-model`, or a less
+expensive effort.
 
 Warnings are advisory only while editing. A yellow warning must never be
 interpreted as launch authorization. The runtime readiness gate is the final
 authority because credentials and executable availability can change after
 save.
 
-TASK-718 wires these rules into the v0.36.29 pre-release gate. The gate must
-cover the default preset, every mismatch class above, the six-slot atomic start
-rule, user-override retention, settings/CLI/runtime display parity, prompt
-privacy, public documentation, public-surface audit, and the full Git guard.
+TASK-718 wires these rules into the v0.36.29 pre-release gate. For explicitly
+opted-in Team Profiles, the gate must cover the default preset, every mismatch
+class above, the six-slot atomic start rule, user-override retention,
+settings/CLI/runtime display parity, prompt privacy, public documentation,
+public-surface audit, and the full Git guard. The gate must also preserve the
+legacy no-`team-profile` roster invariant.
 
 ## Child task contracts
 
@@ -408,18 +434,21 @@ benchmark-measurement model set and measurements are unchanged.
 
 ### TASK-715: per-worker assignment schema
 
-**Scope.** Implement the `team-profile` and Lane B `agent-slots` schema, preset
-overlay, load/normalize/validate/save service, migration aliases, and explicit
-override reset semantics described above.
+**Scope.** Implement the `team-profile` and Lane B `agent-slots` schema,
+opt-in-only preset overlay, load/normalize/validate/save service, migration
+aliases, and explicit override reset semantics described above.
 
 **Boundary.** TASK-715 owns persisted user intent and resolved slot records. It
 does not add catalog entries, author instruction templates, launch panes,
 generate prompt bundles, or implement the settings screen. It must preserve
 Lane A namespaces and existing backend/worktree slot fields.
 
-**Acceptance gate.** Fixtures cover empty project defaults, sparse overrides,
-all six full overrides, legacy aliases, duplicate keys/slots, missing slots in
-the preset, a seventh slot, invalid enums, and catalog mismatches. Round-trip
+**Acceptance gate.** Fixtures cover a newly opted-in project with an empty
+override list, sparse overrides under `team-profile`, all six full overrides,
+legacy aliases, duplicate keys/slots, missing slots in the preset, a seventh
+slot, invalid enums, and catalog mismatches. They must include the exact upgrade
+case: "legacy sparse agent-slots without team-profile → roster unchanged
+after upgrade". Round-trip
 tests prove that saving a Lane B field leaves `workspace`, `workflows`,
 `context-packs`, unknown keys, and non-Lane-B slot fields semantically unchanged.
 Preset revision tests prove that explicit overrides survive apply/upgrade and
@@ -479,8 +508,9 @@ child and still requires the release-level approval contract.
 **Acceptance gate.** UI and CLI tests cover all mismatch rows in the policy
 table, default/inherited/overridden rendering, keyboard-accessible reset
 confirmation, save/reload retention, and settings/runtime parity. End-to-end
-fixtures prove a valid six-slot start and transactional refusal for each
-non-runnable condition. Documentation examples parse against the real schema.
+fixtures prove a valid opted-in six-slot start and transactional refusal for
+each non-runnable condition. Documentation examples parse against the real
+schema.
 The v0.36.29 pre-release gate includes focused tests, common-contract parity,
 public-surface audit, `git diff --check`, and
 `scripts/git-guard.ps1 -Mode full`.
@@ -488,10 +518,14 @@ public-surface audit, `git diff --check`, and
 ## Evidence, migration, and rollback
 
 TASK-713 changes documentation only. Child implementations must preserve the
-current external-operator path when `team-profile` is absent: resolve
-`official-balanced-v1` in memory and do not rewrite the project file merely by
-reading it. Existing `agent-slots` provider fields are migrated through the
-TASK-715 compatibility path, with an explicit diagnostic for ambiguous raw
+current external-operator path when `team-profile` is absent: the exact existing
+`agent-slots` roster remains authoritative, no preset is resolved or backfilled,
+and `worker_count` remains the actual slot count. Upgrading such a project must
+not add panes or providers. This is a backward-compatibility invariant, grounded
+in `winsmux-core/scripts/settings.ps1:2669-2670` and
+`winsmux-app/src/workerStartPlanning.ts:118-124`. Existing `agent-slots`
+provider fields are migrated through the TASK-715 compatibility path only after
+explicit `team-profile` opt-in, with an explicit diagnostic for ambiguous raw
 model values.
 
 Completion evidence for the child sequence is more than passing exit codes. It
