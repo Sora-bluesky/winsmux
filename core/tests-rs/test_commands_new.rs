@@ -4,23 +4,13 @@
 
 use super::*;
 use crossterm::event::{KeyCode, KeyModifiers};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 static RUN_SHELL_TEST_MUTEX: Mutex<()> = Mutex::new(());
-static RUN_SHELL_MARKER_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 fn lock_run_shell_test() -> MutexGuard<'static, ()> {
     RUN_SHELL_TEST_MUTEX.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
-fn unique_run_shell_marker() -> std::path::PathBuf {
-    let sequence = RUN_SHELL_MARKER_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!(
-        "winsmux-run-shell-{}-{sequence}.marker",
-        std::process::id()
-    ))
 }
 
 #[cfg(windows)]
@@ -1676,7 +1666,13 @@ fn run_shell_captures_and_displays_output() {
 fn run_shell_background_does_not_show_popup() {
     let _guard = lock_run_shell_test();
     let mut app = mock_app();
-    let marker = unique_run_shell_marker();
+    // The unique TempDir makes this completion marker invocation-specific across
+    // test processes, and remains alive until the detached child has completed.
+    let marker_dir = tempfile::Builder::new()
+        .prefix("winsmux-run-shell-")
+        .tempdir()
+        .expect("run-shell test marker directory should be creatable");
+    let marker = marker_dir.path().join("background-complete.marker");
     let marker_arg = quote_run_shell_marker(&marker);
     // With -b flag: should NOT enter PopupMode. The marker lets this test wait
     // for the detached child instead of leaking it into the next run-shell test.
@@ -1691,6 +1687,11 @@ fn run_shell_background_does_not_show_popup() {
         marker_arg
     );
 
+    assert!(
+        !marker.exists(),
+        "fresh run-shell marker must not exist before spawning: {}",
+        marker.display()
+    );
     let _ = execute_command_string(&mut app, &cmd);
 
     assert!(
