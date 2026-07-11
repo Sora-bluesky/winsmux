@@ -4,7 +4,7 @@ import {
   resetTerminalMouseTracking,
 } from "../src/terminalMouseTracking.ts";
 
-const MOUSE_TRACKING_RESET_SEQUENCE = "\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
+const MOUSE_TRACKING_RESET_SEQUENCE = "\x1b[?1015l\x1b[?1006l\x1b[?1005l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?9l";
 
 class FakeTerminal {
   writes = [];
