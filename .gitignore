@@ -55,6 +55,7 @@ docs/project/*
 !docs/project/v03622-context-continuity.md
 !docs/project/v03622-context-continuity.ja.md
 !docs/project/v03629-team-profile-architecture.md
+!docs/project/v03629-declarative-workspace-architecture.md
 # Public-safe planning sync notes may be referenced from release history.
 !docs/project/pre-ga-v10-planning-sync.md
 docs/*-research*.md
