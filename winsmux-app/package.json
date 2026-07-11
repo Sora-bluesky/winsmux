@@ -27,6 +27,7 @@
     "test:v03628-packaged-restore-gate": "pwsh -NoProfile -File ../scripts/test-v03628-packaged-restore-gate.ps1 -Json -RequireEvidence",
     "test:automation-driver-pool": "node ./scripts/automation-driver-pool-check.mjs",
     "test:desktop-summary-scheduler": "node --experimental-strip-types ./scripts/desktop-summary-scheduler-check.mjs",
+    "test:terminal-mouse-tracking": "node --experimental-strip-types ./scripts/terminal-mouse-tracking-check.mjs",
     "test:editor-targets": "node ./scripts/editor-targets-check.mjs",
     "test:project-explorer-tree": "node ./scripts/project-explorer-tree-check.mjs",
     "test:settings-preference-options": "node --experimental-strip-types ./scripts/settings-preference-options-check.mjs",
