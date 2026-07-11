@@ -440,7 +440,7 @@ function Add-OrchestraPane {
         Invoke-MonitorWinsmux -Arguments @('select-pane', '-t', $newPaneId, '-T', $newLabel) | Out-Null
 
         Wait-MonitorPaneShellReady -PaneId $newPaneId
-        Send-MonitorBridgeCommand -PaneId $newPaneId -Text (Get-PaneScalerLaunchCommand -Agent ([string]$roleAgentConfig.Agent) -Model ([string]$roleAgentConfig.Model) -ModelSource ([string]$roleAgentConfig.ModelSource) -ReasoningEffort ([string]$roleAgentConfig.ReasoningEffort) -McpMode ([string]$roleAgentConfig.McpMode) -SlotId $newLabel -ProjectDir $worktree.WorktreePath -GitWorktreeDir $worktree.GitWorktreeDir -RootPath $projectDir)
+        Send-MonitorBridgeCommand -PaneId $newPaneId -Text (Get-PaneScalerLaunchCommand -Agent ([string]$roleAgentConfig.Agent) -Model ([string]$roleAgentConfig.Model) -ModelSource ([string]$roleAgentConfig.ModelSource) -ReasoningEffort ([string]$roleAgentConfig.ReasoningEffort) -McpMode ([string]$roleAgentConfig.McpMode) -SlotId $newLabel -ProjectDir $worktree.WorktreePath -GitWorktreeDir $worktree.GitWorktreeDir -RootPath $projectDir) -DeliveryClass 'launch'
 
         $newPane = [ordered]@{
             label                = $newLabel

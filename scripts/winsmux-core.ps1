@@ -796,6 +796,13 @@ function New-SendDispatchPointerText {
     return "Read the full prompt from '$promptRef' and follow it exactly. This pointer was sent because the original prompt exceeded the send buffer."
 }
 
+function New-SendLaunchPointerText {
+    param([Parameter(Mandatory = $true)][string]$CommandPath)
+
+    $pathLiteral = ConvertTo-DispatchPowerShellLiteral -Value $CommandPath
+    return "& ([scriptblock]::Create([System.IO.File]::ReadAllText($pathLiteral, [System.Text.Encoding]::UTF8)))"
+}
+
 function Get-SupportedPromptTransportValues {
     return @('argv', 'file', 'stdin')
 }
@@ -3474,6 +3481,111 @@ function Wait-DeferredPaneReady {
     Stop-WithError "timed out waiting for deferred pane $PaneId to become ready"
 }
 
+function Test-SendTransportRequiresPointerReadiness {
+    param(
+        [Parameter(Mandatory = $true)]$TransportPlan,
+        [ValidateSet('prompt', 'launch')][string]$DeliveryClass = 'prompt'
+    )
+
+    return (
+        $DeliveryClass -eq 'prompt' -and
+        [string]$TransportPlan['Mode'] -eq 'pointer' -and
+        [string]$TransportPlan['FallbackMode'] -eq 'pointer' -and
+        [string]$TransportPlan['PromptTransport'] -eq 'argv' -and
+        [int]$TransportPlan['TextLength'] -gt [int]$TransportPlan['LengthLimit']
+    )
+}
+
+function Send-PromptPointerWhenAgentReady {
+    param(
+        [Parameter(Mandatory = $true)][string]$PaneId,
+        [Parameter(Mandatory = $true)][string]$PointerText,
+        [AllowEmptyString()][string]$Agent = '',
+        [string]$PromptTransport = 'argv',
+        [int]$TimeoutSeconds = 60
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        if (Test-AgentReadyPrompt -PaneId $PaneId -Agent $Agent) {
+            return Send-TextToPane -PaneId $PaneId -CommandText $PointerText -PromptTransport $PromptTransport
+        }
+
+        Start-Sleep -Milliseconds 250
+    }
+
+    $readinessName = if ([string]::IsNullOrWhiteSpace($Agent)) { 'configured agent' } else { $Agent }
+    Stop-WithError "timed out waiting for $readinessName readiness before sending prompt pointer to $PaneId"
+}
+
+function Send-ResolvedTransportPlan {
+    param(
+        [Parameter(Mandatory = $true)][string]$PaneId,
+        [Parameter(Mandatory = $true)]$TransportPlan,
+        [ValidateSet('prompt', 'launch')][string]$DeliveryClass = 'prompt',
+        [Parameter(Mandatory = $true)][string]$Target,
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)]$AgentConfig
+    )
+
+    if (Test-SendTransportRequiresPointerReadiness -TransportPlan $TransportPlan -DeliveryClass $DeliveryClass) {
+        $pointerReadinessAgent = Get-PaneReadinessAgent -Target $Target -PaneId $PaneId -ProjectDir $ProjectDir
+        if ([string]::IsNullOrWhiteSpace($pointerReadinessAgent)) {
+            $pointerReadinessAgent = ConvertTo-ReadinessAgentName ([string](Get-SendConfigValue -InputObject $AgentConfig -Name 'CapabilityAdapter' -Default $AgentConfig.Agent))
+        }
+
+        return Send-PromptPointerWhenAgentReady `
+            -PaneId $PaneId `
+            -PointerText ([string]$TransportPlan['TextToSend']) `
+            -Agent $pointerReadinessAgent `
+            -PromptTransport ([string]$TransportPlan['PromptTransport'])
+    }
+
+    $commandText = [string]$TransportPlan['TextToSend']
+    if ($DeliveryClass -eq 'launch' -and [bool]$TransportPlan['IsFileBacked']) {
+        $commandPath = [string]$TransportPlan['PromptPath']
+        if ([string]::IsNullOrWhiteSpace($commandPath)) {
+            Stop-WithError 'launch transport plan is file-backed but has no command path'
+        }
+        $commandText = New-SendLaunchPointerText -CommandPath $commandPath
+    }
+
+    return Send-TextToPane `
+        -PaneId $PaneId `
+        -CommandText $commandText `
+        -PromptTransport ([string]$TransportPlan['PromptTransport'])
+}
+
+function Resolve-SendInvocationArguments {
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+
+    $taskSlug = ''
+    $messageParts = New-Object System.Collections.Generic.List[string]
+    for ($index = 0; $index -lt $Arguments.Count; $index++) {
+        $token = [string]$Arguments[$index]
+        if ($token -eq '--task-slug') {
+            if ($index + 1 -ge $Arguments.Count) {
+                Stop-WithError "--task-slug requires a value"
+            }
+
+            $index++
+            $taskSlug = [string]$Arguments[$index]
+            continue
+        }
+
+        if ($token -eq '--delivery-class') {
+            throw '--delivery-class is internal-only and cannot be supplied through argv'
+        }
+
+        $messageParts.Add($token) | Out-Null
+    }
+
+    return [ordered]@{
+        TaskSlug     = $taskSlug
+        MessageParts = @($messageParts)
+    }
+}
+
 function Start-DeferredPaneFromManifestEntry {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -3551,7 +3663,11 @@ function Start-DeferredPaneFromManifestEntry {
             (ConvertTo-DispatchPowerShellLiteral -Value $planPath)
 
         Wait-PaneShellReady -PaneId $paneId -TimeoutSeconds 30
-        Send-TextToPane -PaneId $paneId -CommandText $bootstrapCommand | Out-Null
+        Invoke-Send `
+            -SendTarget $paneId `
+            -SendArguments @($bootstrapCommand) `
+            -DeliveryClass 'launch' `
+            -SkipDeferredPaneStart | Out-Null
     }
 
     if ([string]::IsNullOrWhiteSpace($readinessAgent)) {
@@ -3570,25 +3686,19 @@ function Start-DeferredPaneFromManifestEntry {
 }
 
 function Invoke-Send {
-    if (-not $Target) { Stop-WithError "usage: winsmux send <target> <text>" }
-    if (-not $Rest -or $Rest.Count -eq 0) { Stop-WithError "usage: winsmux send <target> <text>" }
+    param(
+        [AllowEmptyString()][string]$SendTarget = $Target,
+        [AllowNull()][string[]]$SendArguments = $Rest,
+        [ValidateSet('prompt', 'launch')][string]$DeliveryClass = 'prompt',
+        [switch]$SkipDeferredPaneStart
+    )
 
-    $taskSlug = ''
-    $messageParts = New-Object System.Collections.Generic.List[string]
-    for ($index = 0; $index -lt $Rest.Count; $index++) {
-        $token = [string]$Rest[$index]
-        if ($token -eq '--task-slug') {
-            if ($index + 1 -ge $Rest.Count) {
-                Stop-WithError "--task-slug requires a value"
-            }
+    if (-not $SendTarget) { Stop-WithError "usage: winsmux send <target> <text>" }
+    if (-not $SendArguments -or $SendArguments.Count -eq 0) { Stop-WithError "usage: winsmux send <target> <text>" }
 
-            $index++
-            $taskSlug = [string]$Rest[$index]
-            continue
-        }
-
-        $messageParts.Add($token) | Out-Null
-    }
+    $resolvedSendArguments = Resolve-SendInvocationArguments -Arguments $SendArguments
+    $taskSlug = [string]$resolvedSendArguments['TaskSlug']
+    $messageParts = @($resolvedSendArguments['MessageParts'])
 
     if ($messageParts.Count -lt 1) {
         Stop-WithError "usage: winsmux send <target> <text>"
@@ -3597,7 +3707,7 @@ function Invoke-Send {
     # Normalize Git Bash /tmp paths before dispatching PowerShell-oriented commands.
     $text = Normalize-DispatchText -Text ($messageParts -join ' ')
     $projectDir = (Get-Location).Path
-    $paneId = Resolve-Target $Target
+    $paneId = Resolve-Target $SendTarget
     if ((Resolve-TerminalBackend) -eq 'cli') {
         $paneId = Confirm-Target $paneId
     }
@@ -3684,7 +3794,7 @@ function Invoke-Send {
                     allow       = @($policyViolation['allow'])
                     block       = @($policyViolation['block'])
                     next_action = [string]$policyViolation['next_action']
-                    target      = $Target
+                    target      = $SendTarget
                 }
             }
             Write-BridgeEventRecord -ProjectDir $projectDir -EventRecord $eventRecord | Out-Null
@@ -3692,7 +3802,9 @@ function Invoke-Send {
         }
     }
 
-    Start-DeferredPaneFromManifestEntry -ProjectDir $projectDir -ManifestEntry $context | Out-Null
+    if (-not $SkipDeferredPaneStart) {
+        Start-DeferredPaneFromManifestEntry -ProjectDir $projectDir -ManifestEntry $context | Out-Null
+    }
 
     $contextLaunchDir = $projectDir
     $contextGitWorktreeDir = ''
@@ -3732,10 +3844,16 @@ function Invoke-Send {
     }
 
     if ($transportPlan['IsFileBacked']) {
-        Write-Warning ("send target '{0}' used prompt_transport={1}; wrote full text to {2} and sent a prompt-file pointer instead." -f $Target, $transportPlan['PromptTransport'], $transportPlan['PromptPath'])
+        Write-Warning ("send target '{0}' used prompt_transport={1}; wrote full text to {2} and sent a prompt-file pointer instead." -f $SendTarget, $transportPlan['PromptTransport'], $transportPlan['PromptPath'])
     }
 
-    Send-TextToPane -PaneId $paneId -CommandText ([string]$transportPlan['TextToSend']) -PromptTransport ([string]$transportPlan['PromptTransport'])
+    Send-ResolvedTransportPlan `
+        -PaneId $paneId `
+        -TransportPlan $transportPlan `
+        -DeliveryClass $DeliveryClass `
+        -Target $SendTarget `
+        -ProjectDir $projectDir `
+        -AgentConfig $agentConfig
 }
 
 function Invoke-Name {
