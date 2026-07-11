@@ -26,6 +26,7 @@ static ATOMIC_WRITE_COUNTER: AtomicU32 = AtomicU32::new(0);
 const FILE_LOCK_TIMEOUT: Duration = Duration::from_millis(120_000);
 const FILE_LOCK_STALE_AFTER: Duration = Duration::from_secs(60);
 const FILE_LOCK_RETRY_DELAY: Duration = Duration::from_millis(50);
+const CODEX_MAX_REASONING_MODELS: [&str; 3] = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
 
 pub fn is_operator_status_invocation(args: &[&String]) -> bool {
     args.iter()
@@ -2980,9 +2981,30 @@ fn normalize_provider_model_option(value: &Value) -> io::Result<Value> {
     for (field, field_value) in entry {
         if !matches!(
             field.as_str(),
-            "id" | "label" | "source" | "availability" | "notes"
+            "id" | "label" | "source" | "availability" | "notes" | "reasoning_efforts"
         ) {
             return Err(invalid_provider_capability_field("model_options"));
+        }
+        if field == "reasoning_efforts" {
+            let Some(efforts) = field_value.as_array() else {
+                return Err(invalid_provider_capability_field("model_options"));
+            };
+            if efforts.is_empty() {
+                return Err(invalid_provider_capability_field("model_options"));
+            }
+            let mut normalized_efforts = Vec::new();
+            for effort in efforts {
+                let Some(text) = effort.as_str() else {
+                    return Err(invalid_provider_capability_field("model_options"));
+                };
+                let normalized_effort = text.trim().to_ascii_lowercase();
+                if normalized_effort.is_empty() || !valid_reasoning_effort(&normalized_effort) {
+                    return Err(invalid_provider_capability_field("model_options"));
+                }
+                normalized_efforts.push(Value::String(normalized_effort));
+            }
+            normalized.insert(field.clone(), Value::Array(normalized_efforts));
+            continue;
         }
         let Some(text) = field_value.as_str() else {
             return Err(invalid_provider_capability_field("model_options"));
@@ -3773,13 +3795,7 @@ fn finalize_slot_agent_config(
         "model_source",
         &model_source,
     )?;
-    assert_provider_capability_selection(
-        capability.as_ref(),
-        &agent,
-        "reasoning_efforts",
-        "reasoning_effort",
-        &reasoning_effort,
-    )?;
+    assert_provider_model_reasoning_effort(capability.as_ref(), &agent, &model, &reasoning_effort)?;
     Ok(SlotAgentConfig {
         auth_policy: provider_auth_policy(capability.as_ref(), &auth_mode),
         capability_adapter: capability_string(capability.as_ref(), "adapter"),
@@ -4189,6 +4205,79 @@ fn assert_provider_capability_selection(
             io::ErrorKind::InvalidInput,
             format!(
                 "Provider capability '{provider_id}' does not support {selector_name} '{requested}'. Supported values: {}.",
+                supported.join(", ")
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn assert_provider_model_reasoning_effort(
+    capability: Option<&Value>,
+    provider_id: &str,
+    model: &str,
+    reasoning_effort: &str,
+) -> io::Result<()> {
+    if provider_default_reasoning_effort(reasoning_effort) {
+        return Ok(());
+    }
+
+    let requested = reasoning_effort.trim().to_ascii_lowercase();
+    let Some(capability) = capability else {
+        if requested == "max" && provider_adapter_from_agent(provider_id) == "codex" {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "Provider capability '{provider_id}' model '{model}' does not support reasoning_effort '{requested}'. Supported values: provider-default."
+                ),
+            ));
+        }
+        return Ok(());
+    };
+
+    let model_capability = capability
+        .get("model_options")
+        .and_then(Value::as_array)
+        .and_then(|options| {
+            options.iter().find(|option| {
+                option
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| id.trim().eq_ignore_ascii_case(model.trim()))
+            })
+        });
+    let mut supported = vec!["provider-default".to_string()];
+    if let Some(efforts) = model_capability
+        .and_then(|option| option.get("reasoning_efforts"))
+        .and_then(Value::as_array)
+    {
+        for effort in efforts {
+            let Some(text) = effort.as_str() else {
+                return Err(invalid_provider_capability_field("model_options"));
+            };
+            let normalized = text.trim().to_ascii_lowercase();
+            if !normalized.is_empty() && !supported.iter().any(|item| item == &normalized) {
+                supported.push(normalized);
+            }
+        }
+    }
+
+    let adapter = capability
+        .get("adapter")
+        .and_then(Value::as_str)
+        .unwrap_or(provider_id)
+        .trim();
+    let normalized_model = model.trim().to_ascii_lowercase();
+    let codex_max_model = CODEX_MAX_REASONING_MODELS.contains(&normalized_model.as_str());
+    if requested == "max" && adapter.eq_ignore_ascii_case("codex") && !codex_max_model {
+        supported.retain(|effort| effort != "max");
+    }
+
+    if !supported.iter().any(|effort| effort == &requested) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "Provider capability '{provider_id}' model '{model}' does not support reasoning_effort '{requested}'. Supported values: {}.",
                 supported.join(", ")
             ),
         ));
@@ -7805,6 +7894,10 @@ fn build_provider_launch_command(
     launch_dir: &str,
     git_worktree_dir: &str,
 ) -> io::Result<String> {
+    let capability_registry =
+        read_provider_capability_registry(&provider_capability_registry_path(project_dir))?;
+    let capability = find_provider_capability(&capability_registry, agent).cloned();
+    assert_provider_model_reasoning_effort(capability.as_ref(), agent, model, reasoning_effort)?;
     let model_override = provider_model_override(model, model_source);
     let effort_override = !provider_default_reasoning_effort(reasoning_effort);
     match capability_adapter.trim().to_ascii_lowercase().as_str() {

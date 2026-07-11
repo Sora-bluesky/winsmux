@@ -24,6 +24,7 @@ if (-not (Test-Path -LiteralPath $script:BridgeCommonContractBindingPath -PathTy
 . $script:BridgeCommonContractBindingPath
 $script:BridgeWorkerBackendKinds = @('local', 'codex', 'colab_cli', 'api_llm', 'antigravity', 'noop')
 $script:BridgeExecutionProfileKinds = @('local-windows', 'isolated-enterprise')
+$script:BridgeCodexMaxReasoningModels = @('gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna')
 $script:BridgeSlotScalarKeys = @(
     'slot_id',
     'runtime_role',
@@ -1352,8 +1353,31 @@ function ConvertTo-BridgeProviderModelOption {
     $option = [ordered]@{}
     foreach ($property in (Get-BridgeProviderRegistryObjectProperties $Value)) {
         $key = $property.Name.ToString()
-        if ($key -notin @('id', 'label', 'source', 'availability', 'notes')) {
+        if ($key -notin @('id', 'label', 'source', 'availability', 'notes', 'reasoning_efforts')) {
             throw "Invalid provider capability field 'model_options'."
+        }
+        if ($key -eq 'reasoning_efforts') {
+            if ($property.Value -isnot [System.Collections.IEnumerable] -or $property.Value -is [string]) {
+                throw "Invalid provider capability field 'model_options'."
+            }
+
+            $efforts = @()
+            foreach ($effort in @($property.Value)) {
+                $text = ConvertFrom-BridgeYamlScalar $effort
+                if ([string]::IsNullOrWhiteSpace($text)) {
+                    throw "Invalid provider capability field 'model_options'."
+                }
+                $normalizedEffort = $text.Trim().ToLowerInvariant()
+                if (-not (Test-BridgeCommonContractVocabularyValue -Name 'reasoningEfforts' -Value $normalizedEffort)) {
+                    throw "Invalid provider capability field 'model_options'."
+                }
+                $efforts += $normalizedEffort
+            }
+            if ($efforts.Count -lt 1) {
+                throw "Invalid provider capability field 'model_options'."
+            }
+            $option[$key] = @($efforts)
+            continue
         }
         if (-not (Test-BridgeProviderRegistryScalarValue $property.Value)) {
             throw "Invalid provider capability field 'model_options'."
@@ -1821,6 +1845,71 @@ function Assert-BridgeProviderCapabilitySelection {
     }
 }
 
+function Get-BridgeProviderModelCapability {
+    param(
+        [AllowNull()]$Capability,
+        [AllowNull()][string]$Model
+    )
+
+    if ($null -eq $Capability -or [string]::IsNullOrWhiteSpace($Model)) {
+        return $null
+    }
+
+    foreach ($option in @(Get-BridgeProviderCapabilityValue -Capability $Capability -Name 'model_options' -Default @())) {
+        $optionId = [string](Get-BridgeProviderCapabilityValue -Capability $option -Name 'id' -Default '')
+        if ([string]::Equals($optionId.Trim(), $Model.Trim(), [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $option
+        }
+    }
+
+    return $null
+}
+
+function Assert-BridgeProviderModelReasoningEffort {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProviderId,
+        [AllowNull()]$Capability,
+        [AllowNull()][string]$Model,
+        [AllowNull()][string]$ReasoningEffort
+    )
+
+    if (Test-BridgeProviderDefaultReasoningEffort -ReasoningEffort $ReasoningEffort) {
+        return
+    }
+
+    $requested = $ReasoningEffort.Trim().ToLowerInvariant()
+    if ($null -eq $Capability) {
+        if ($requested -eq 'max' -and $ProviderId.Trim().ToLowerInvariant().StartsWith('codex')) {
+            throw "Provider capability '$ProviderId' model '$Model' does not support reasoning_effort '$requested'. Supported values: provider-default."
+        }
+        return
+    }
+
+    $modelCapability = Get-BridgeProviderModelCapability -Capability $Capability -Model $Model
+    $supported = @('provider-default')
+    if ($null -ne $modelCapability -and (Test-BridgeProviderCapabilityField -Capability $modelCapability -Name 'reasoning_efforts')) {
+        $supported += @(
+            Get-BridgeProviderCapabilityValue -Capability $modelCapability -Name 'reasoning_efforts' -Default @() |
+                ForEach-Object { ([string]$_).Trim().ToLowerInvariant() } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
+        $supported = @($supported | Select-Object -Unique)
+    }
+
+    $adapter = [string](Get-BridgeProviderCapabilityValue -Capability $Capability -Name 'adapter' -Default $ProviderId)
+    if (
+        $requested -eq 'max' -and
+        [string]::Equals($adapter.Trim(), 'codex', [System.StringComparison]::OrdinalIgnoreCase) -and
+        $Model.Trim().ToLowerInvariant() -notin $script:BridgeCodexMaxReasoningModels
+    ) {
+        $supported = @($supported | Where-Object { $_ -ne 'max' })
+    }
+
+    if ($requested -notin $supported) {
+        throw "Provider capability '$ProviderId' model '$Model' does not support reasoning_effort '$requested'. Supported values: $($supported -join ', ')."
+    }
+}
+
 function Get-BridgeCodexMcpServerNamesToDisable {
     param([Parameter(Mandatory = $true)][string]$Command)
 
@@ -1901,6 +1990,11 @@ function Get-BridgeProviderLaunchCommand {
         $adapter = [string]$capability.adapter
         $command = [string]$capability.command
     }
+    Assert-BridgeProviderModelReasoningEffort `
+        -ProviderId $provider `
+        -Capability $capability `
+        -Model $Model `
+        -ReasoningEffort $ReasoningEffort
 
     $adapterKey = $adapter.Trim().ToLowerInvariant()
     $commandInvocation = ConvertTo-BridgePowerShellCommandInvocation -Value $command
@@ -3173,7 +3267,7 @@ function Get-SlotAgentConfig {
         Assert-BridgeProviderCapabilityAuthMode -ProviderId $agent -AuthMode $authMode -RootPath $RootPath
         $providerCapability = Resolve-BridgeProviderCapability -ProviderId $agent -RootPath $RootPath -RequireWhenRegistryPresent
         Assert-BridgeProviderCapabilitySelection -ProviderId $agent -Capability $providerCapability -FieldName 'model_sources' -SelectorName 'model_source' -Value $modelSource
-        Assert-BridgeProviderCapabilitySelection -ProviderId $agent -Capability $providerCapability -FieldName 'reasoning_efforts' -SelectorName 'reasoning_effort' -Value $reasoningEffort
+        Assert-BridgeProviderModelReasoningEffort -ProviderId $agent -Capability $providerCapability -Model $model -ReasoningEffort $reasoningEffort
     }
 
     return [PSCustomObject]@{

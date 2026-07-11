@@ -1503,8 +1503,9 @@ agent-slots:
       "adapter": "codex",
       "command": "codex",
       "model_options": [
-        {"id": "provider-default", "label": "Provider default", "source": "provider-default"},
-        {"id": "gpt-5.3-codex-spark", "label": "GPT-5.3-Codex-Spark", "source": "cli-discovery", "availability": "local-account"}
+        {"id": "provider-default", "label": "Provider default", "source": "provider-default", "reasoning_efforts": ["provider-default"]},
+        {"id": "gpt-5.3-codex-spark", "label": "GPT-5.3-Codex-Spark", "source": "cli-discovery", "availability": "local-account", "reasoning_efforts": ["low", "medium", "high", "xhigh"]},
+        {"id": "gpt-5.4", "label": "GPT-5.4", "source": "cli-discovery", "reasoning_efforts": ["low", "medium", "high", "xhigh"]}
       ],
       "model_sources": ["provider-default", "cli-discovery"],
       "reasoning_efforts": ["provider-default", "low", "medium", "high", "xhigh"],
@@ -1554,6 +1555,7 @@ agent-slots:
         $config.ModelSource | Should -Be 'cli-discovery'
         $config.ReasoningEffort | Should -Be 'high'
         $config.ModelOptions[1].source | Should -Be 'cli-discovery'
+        $config.ModelOptions[2].reasoning_efforts | Should -Be @('low', 'medium', 'high', 'xhigh')
         $config.ModelSources | Should -Be @('provider-default', 'cli-discovery')
         $config.ReasoningEfforts | Should -Be @('provider-default', 'low', 'medium', 'high', 'xhigh')
         $config.LocalAccessNote | Should -Be 'Local Codex CLI catalog and ChatGPT account access.'
@@ -1574,6 +1576,107 @@ agent-slots:
         $config.SupportsConsultation | Should -Be $false
         $config.SupportsContextReset | Should -Be $true
         $config.SupportsContextResetDeclared | Should -Be $true
+    }
+
+    It 'validates max reasoning effort against the specific model before launcher command construction' {
+        $registryPath = Get-BridgeProviderCapabilityRegistryPath -RootPath $script:settingsTempRoot
+        $registryDir = Split-Path -Parent $registryPath
+        New-Item -ItemType Directory -Path $registryDir -Force | Out-Null
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "adapter": "codex",
+      "command": "codex",
+      "model_options": [
+        {"id": "provider-default", "label": "Provider default", "source": "provider-default", "reasoning_efforts": ["provider-default"]},
+        {"id": "gpt-5.4", "label": "GPT-5.4", "source": "cli-discovery", "reasoning_efforts": ["low", "medium", "high", "xhigh"]},
+        {"id": "gpt-5.6-sol", "label": "GPT-5.6 Sol", "source": "cli-discovery", "reasoning_efforts": ["low", "medium", "high", "max", "xhigh"]},
+        {"id": "gpt-5.6-terra", "label": "GPT-5.6 Terra", "source": "cli-discovery", "reasoning_efforts": ["low", "medium", "high", "max", "xhigh"]},
+        {"id": "gpt-5.6-luna", "label": "GPT-5.6 Luna", "source": "cli-discovery", "reasoning_efforts": ["low", "medium", "high", "max", "xhigh"]},
+        {"id": "custom-operator-model", "label": "Custom operator model", "source": "operator-override", "reasoning_efforts": ["max"]}
+      ],
+      "model_sources": ["provider-default", "cli-discovery", "operator-override"],
+      "reasoning_efforts": ["provider-default", "low", "medium", "high", "max", "xhigh"],
+      "prompt_transports": ["argv", "file"]
+    }
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+
+        {
+            Get-BridgeProviderLaunchCommand `
+                -ProviderId 'codex' `
+                -Model 'provider-default' `
+                -ModelSource 'provider-default' `
+                -ReasoningEffort 'max' `
+                -ProjectDir 'C:\Project Root' `
+                -GitWorktreeDir 'C:\Project Root\.git\worktrees\worker-1' `
+                -RootPath $script:settingsTempRoot
+        } | Should -Throw "*model 'provider-default' does not support reasoning_effort 'max'*"
+
+        {
+            Get-BridgeProviderLaunchCommand `
+                -ProviderId 'codex' `
+                -Model 'custom-operator-model' `
+                -ModelSource 'operator-override' `
+                -ReasoningEffort 'max' `
+                -ProjectDir 'C:\Project Root' `
+                -GitWorktreeDir 'C:\Project Root\.git\worktrees\worker-1' `
+                -RootPath $script:settingsTempRoot
+        } | Should -Throw "*model 'custom-operator-model' does not support reasoning_effort 'max'*"
+
+@'
+agent: codex
+model: gpt-5.4
+model-source: cli-discovery
+reasoning-effort: high
+prompt-transport: argv
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+        $settings = Get-BridgeSettings -RootPath $script:settingsTempRoot
+        Write-BridgeProviderRegistryEntry `
+            -RootPath $script:settingsTempRoot `
+            -SlotId 'worker-1' `
+            -Model 'gpt-5.4' `
+            -ModelSource 'cli-discovery' `
+            -ReasoningEffort 'max' | Out-Null
+
+        {
+            Get-SlotAgentConfig `
+                -Role 'Worker' `
+                -SlotId 'worker-1' `
+                -Settings $settings `
+                -RootPath $script:settingsTempRoot
+        } | Should -Throw "*model 'gpt-5.4' does not support reasoning_effort 'max'*"
+
+        $gpt56Settings = Get-BridgeSettings -RootPath $script:settingsTempRoot
+        $gpt56Config = Get-SlotAgentConfig `
+            -Role 'Worker' `
+            -SlotId 'worker-1' `
+            -Settings $gpt56Settings `
+            -RootPath $script:settingsTempRoot `
+            -ProviderRegistryEntryOverride ([ordered]@{
+                model = 'gpt-5.6-terra'
+                model_source = 'cli-discovery'
+                reasoning_effort = 'max'
+            })
+        $gpt56Command = Get-BridgeProviderLaunchCommand `
+            -ProviderId $gpt56Config.Agent `
+            -Model $gpt56Config.Model `
+            -ModelSource $gpt56Config.ModelSource `
+            -ReasoningEffort $gpt56Config.ReasoningEffort `
+            -ProjectDir 'C:\Project Root' `
+            -GitWorktreeDir 'C:\Project Root\.git\worktrees\worker-1' `
+            -RootPath $script:settingsTempRoot
+
+        $gpt56Command | Should -Match "-c 'model=gpt-5\.6-terra'.*-c 'model_reasoning_effort=max'"
     }
 
     It 'distinguishes a missing interrupt capability from an explicit false value' {
@@ -1823,6 +1926,11 @@ agent-slots:
     "codex-local": {
       "adapter": "codex",
       "command": "codex-beta",
+      "model_options": [
+        {"id": "gpt-5.4", "label": "GPT-5.4", "source": "cli-discovery", "reasoning_efforts": ["low", "medium", "high", "xhigh"]},
+        {"id": "gpt-5.5", "label": "GPT-5.5", "source": "cli-discovery", "reasoning_efforts": ["low", "medium", "high", "xhigh"]},
+        {"id": "gpt-5.6-terra", "label": "GPT-5.6 Terra", "source": "cli-discovery", "reasoning_efforts": ["low", "medium", "high", "max", "xhigh"]}
+      ],
       "prompt_transports": ["argv", "file"]
     }
   }
@@ -1860,12 +1968,12 @@ agent-slots:
             -ProviderId 'codex-local' `
             -Model 'provider-default' `
             -ModelSource 'provider-default' `
-            -ReasoningEffort 'high' `
+            -ReasoningEffort 'provider-default' `
             -ProjectDir 'C:\Project Root' `
             -GitWorktreeDir 'C:\Project Root\.git\worktrees\worker-1' `
             -RootPath $script:settingsTempRoot
 
-        $providerDefaultCommand | Should -Match "-c 'model_reasoning_effort=high'"
+        $providerDefaultCommand | Should -Not -Match 'model_reasoning_effort='
         $providerDefaultCommand | Should -Not -Match 'model=provider-default'
 
         $providerDefaultSourceCommand = Get-BridgeProviderLaunchCommand `
@@ -18308,8 +18416,12 @@ agent-slots:
       "adapter": "codex",
       "command": "codex",
       "model_options": [
-        {"id": "provider-default", "label": "Provider default", "source": "provider-default"},
-        {"id": "gpt-5.3-codex-spark", "label": "GPT-5.3-Codex-Spark", "source": "cli-discovery", "availability": "local-account"}
+        {"id": "provider-default", "label": "Provider default", "source": "provider-default", "reasoning_efforts": ["provider-default"]},
+        {"id": "gpt-5.3-codex-spark", "label": "GPT-5.3-Codex-Spark", "source": "cli-discovery", "availability": "local-account", "reasoning_efforts": ["low", "medium", "high", "xhigh"]},
+        {"id": "gpt-5.4", "label": "GPT-5.4", "source": "cli-discovery", "reasoning_efforts": ["low", "medium", "high", "xhigh"]},
+        {"id": "gpt-5.6-sol", "label": "GPT-5.6 Sol", "source": "cli-discovery", "reasoning_efforts": ["low", "medium", "high", "max", "xhigh"]},
+        {"id": "gpt-5.6-terra", "label": "GPT-5.6 Terra", "source": "cli-discovery", "reasoning_efforts": ["low", "medium", "high", "max", "xhigh"]},
+        {"id": "gpt-5.6-luna", "label": "GPT-5.6 Luna", "source": "cli-discovery", "reasoning_efforts": ["low", "medium", "high", "max", "xhigh"]}
       ],
       "model_sources": ["provider-default", "cli-discovery"],
       "reasoning_efforts": ["provider-default", "low", "medium", "high", "xhigh"],
@@ -18335,10 +18447,10 @@ agent-slots:
       "adapter": "claude",
       "command": "claude",
       "model_options": [
-        {"id": "provider-default", "label": "Provider default", "source": "provider-default"},
-        {"id": "sonnet", "label": "Sonnet", "source": "official-doc"},
-        {"id": "opus", "label": "Opus", "source": "official-doc"},
-        {"id": "opusplan", "label": "Opus Plan", "source": "official-doc"}
+        {"id": "provider-default", "label": "Provider default", "source": "provider-default", "reasoning_efforts": ["provider-default"]},
+        {"id": "sonnet", "label": "Sonnet", "source": "official-doc", "reasoning_efforts": ["low", "medium", "high", "max", "xhigh"]},
+        {"id": "opus", "label": "Opus", "source": "official-doc", "reasoning_efforts": ["low", "medium", "high", "max", "xhigh"]},
+        {"id": "opusplan", "label": "Opus Plan", "source": "official-doc", "reasoning_efforts": ["low", "medium", "high", "max", "xhigh"]}
       ],
       "model_sources": ["provider-default", "official-doc", "operator-override"],
       "reasoning_efforts": ["provider-default", "low", "medium", "high", "xhigh", "max"],
@@ -18486,15 +18598,6 @@ agent-slots:
         $capabilityPath = Join-Path $script:providerSwitchTempRoot '.winsmux\provider-capabilities.json'
         $capabilities = Get-Content -LiteralPath $capabilityPath -Raw -Encoding UTF8 | ConvertFrom-Json
         $capabilities.providers.codex.reasoning_efforts = @('provider-default', 'low', 'medium', 'high', 'max', 'xhigh')
-        $capabilities.providers.codex.model_options = @(
-            $capabilities.providers.codex.model_options
-            [PSCustomObject]@{
-                id           = 'gpt-5.6-terra'
-                label        = 'GPT-5.6 Terra'
-                source       = 'cli-discovery'
-                availability = 'local-account'
-            }
-        )
         $capabilities | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $capabilityPath -Encoding UTF8
 
         Push-Location $script:providerSwitchTempRoot

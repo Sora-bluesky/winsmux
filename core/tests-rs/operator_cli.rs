@@ -1361,8 +1361,12 @@ fn operator_cli_provider_capabilities_json_reads_registry() {
       "adapter": "codex",
       "command": "codex",
       "model_options": [
-        {"id": "provider-default", "label": "Provider default", "source": "provider-default"},
-        {"id": "gpt-5.3-codex-spark", "label": "GPT-5.3-Codex-Spark", "source": "cli-discovery", "availability": "local-account"}
+        {"id": "provider-default", "label": "Provider default", "source": "provider-default", "reasoning_efforts": ["provider-default"]},
+        {"id": "gpt-5.3-codex-spark", "label": "GPT-5.3-Codex-Spark", "source": "cli-discovery", "availability": "local-account", "reasoning_efforts": ["low", "medium", "high", "xhigh"]},
+        {"id": "gpt-5.4", "label": "GPT-5.4", "source": "cli-discovery", "reasoning_efforts": ["low", "medium", "high", "xhigh"]},
+        {"id": "gpt-5.6-sol", "label": "GPT-5.6 Sol", "source": "cli-discovery", "reasoning_efforts": ["low", "medium", "high", "max", "xhigh"]},
+        {"id": "gpt-5.6-terra", "label": "GPT-5.6 Terra", "source": "cli-discovery", "reasoning_efforts": ["low", "medium", "high", "max", "xhigh"]},
+        {"id": "gpt-5.6-luna", "label": "GPT-5.6 Luna", "source": "cli-discovery", "reasoning_efforts": ["low", "medium", "high", "max", "xhigh"]}
       ],
       "model_sources": ["provider-default", "cli-discovery"],
       "reasoning_efforts": ["provider-default", "low", "medium", "high", "xhigh"],
@@ -1426,6 +1430,10 @@ fn operator_cli_provider_capabilities_json_reads_registry() {
     assert_eq!(
         registry["providers"]["codex"]["model_options"][1]["source"],
         "cli-discovery"
+    );
+    assert_eq!(
+        registry["providers"]["codex"]["model_options"][4]["reasoning_efforts"][3],
+        "max"
     );
     assert_eq!(
         registry["providers"]["codex"]["reasoning_efforts"][4],
@@ -2793,6 +2801,146 @@ fn operator_cli_provider_switch_rejects_capability_selector_mismatch_before_writ
 }
 
 #[test]
+fn operator_cli_provider_switch_validates_reasoning_effort_against_specific_model() {
+    let project_dir = make_temp_project_dir("provider-switch-model-effort");
+    write_provider_switch_fixture(&project_dir);
+    let capability_path = project_dir
+        .join(".winsmux")
+        .join("provider-capabilities.json");
+    let mut capabilities = read_json_file(&capability_path);
+    capabilities["providers"]["codex"]["model_sources"] =
+        serde_json::json!(["provider-default", "cli-discovery", "operator-override"]);
+    capabilities["providers"]["codex"]["reasoning_efforts"] =
+        serde_json::json!(["provider-default", "low", "medium", "high", "max", "xhigh"]);
+    capabilities["providers"]["codex"]["model_options"]
+        .as_array_mut()
+        .expect("Codex model options should be an array")
+        .push(serde_json::json!({
+            "id": "custom-operator-model",
+            "label": "Custom operator model",
+            "source": "operator-override",
+            "reasoning_efforts": ["max"]
+        }));
+    fs::write(
+        &capability_path,
+        serde_json::to_vec_pretty(&capabilities).expect("capabilities should serialize"),
+    )
+    .expect("test should update provider capabilities");
+
+    let run_switch = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_winsmux"))
+            .args(args)
+            .current_dir(&project_dir)
+            .output()
+            .expect("winsmux command should run")
+    };
+
+    let provider_default = run_switch(&[
+        "provider-switch",
+        "worker-1",
+        "--model",
+        "provider-default",
+        "--model-source",
+        "provider-default",
+        "--reasoning-effort",
+        "max",
+        "--json",
+    ]);
+    assert!(!provider_default.status.success());
+    assert!(
+        String::from_utf8_lossy(&provider_default.stderr)
+            .contains("model 'provider-default' does not support reasoning_effort 'max'"),
+        "provider-default model must reject max"
+    );
+
+    let custom_override = run_switch(&[
+        "provider-switch",
+        "worker-1",
+        "--model",
+        "custom-operator-model",
+        "--model-source",
+        "operator-override",
+        "--reasoning-effort",
+        "max",
+        "--json",
+    ]);
+    assert!(!custom_override.status.success());
+    assert!(
+        String::from_utf8_lossy(&custom_override.stderr)
+            .contains("model 'custom-operator-model' does not support reasoning_effort 'max'"),
+        "custom operator override model must reject max"
+    );
+
+    let registry_path = project_dir.join(".winsmux").join("provider-registry.json");
+    fs::write(
+        &registry_path,
+        r#"{"version":1,"slots":{"worker-1":{"model":"gpt-5.4","model_source":"cli-discovery","reasoning_effort":"max"}}}"#,
+    )
+    .expect("test should write stale provider registry");
+    fs::write(
+        project_dir.join(".winsmux").join("manifest.yaml"),
+        format!(
+            r#"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: {}
+panes:
+  worker-1:
+    pane_id: "%2"
+    role: Worker
+    launch_dir: {}
+"#,
+            project_dir.display(),
+            project_dir.display()
+        ),
+    )
+    .expect("test should write restart manifest");
+    let (winsmux_bin, restart_log) =
+        write_fake_winsmux_restart(&project_dir, Some("winsmux-orchestra"), &["%2"]);
+    let stale_persisted = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["restart", "worker-1"])
+        .env("WINSMUX_BIN", winsmux_bin)
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux restart command should run");
+    assert!(!stale_persisted.status.success());
+    assert!(
+        String::from_utf8_lossy(&stale_persisted.stderr)
+            .contains("model 'gpt-5.4' does not support reasoning_effort 'max'"),
+        "stale persisted max must be rejected before rewrite or launch"
+    );
+    assert!(
+        !fs::read_to_string(restart_log)
+            .unwrap_or_default()
+            .contains("send-keys"),
+        "stale persisted max must not reach launcher dispatch"
+    );
+
+    fs::remove_file(&registry_path).expect("test should remove stale provider registry");
+    let gpt56 = run_switch(&[
+        "provider-switch",
+        "worker-1",
+        "--model",
+        "gpt-5.6-terra",
+        "--model-source",
+        "cli-discovery",
+        "--reasoning-effort",
+        "max",
+        "--json",
+    ]);
+    assert!(
+        gpt56.status.success(),
+        "GPT-5.6 Terra max should pass: {}",
+        String::from_utf8_lossy(&gpt56.stderr)
+    );
+    let payload: serde_json::Value = serde_json::from_slice(&gpt56.stdout)
+        .expect("successful provider-switch output should be JSON");
+    assert_eq!(payload["model"], "gpt-5.6-terra");
+    assert_eq!(payload["reasoning_effort"], "max");
+}
+
+#[test]
 fn operator_cli_provider_switch_validates_candidate_before_write() {
     let project_dir = make_temp_project_dir("provider-switch-candidate-before-write");
     write_provider_switch_fixture(&project_dir);
@@ -3148,7 +3296,7 @@ panes:
             "--model",
             "provider-default",
             "--reasoning-effort",
-            "xhigh",
+            "provider-default",
             "--restart",
             "--json",
         ])
@@ -3165,9 +3313,10 @@ panes:
     let payload: serde_json::Value =
         serde_json::from_slice(&result.stdout).expect("stdout should be JSON");
     assert_eq!(payload["model"], "provider-default");
-    assert_eq!(payload["reasoning_effort"], "xhigh");
+    assert_eq!(payload["reasoning_effort"], "provider-default");
     let log = fs::read_to_string(&log_path).expect("fake winsmux log should exist");
-    assert!(log.contains("send-keys -t \"%2\" -l -- \"codex -c 'model_reasoning_effort=xhigh'"));
+    assert!(log.contains("send-keys -t \"%2\" -l -- \"codex --sandbox"));
+    assert!(!log.contains("model_reasoning_effort="));
     assert!(!log.contains("model=provider-default"));
 }
 
@@ -6746,8 +6895,12 @@ agent-slots:
       "adapter": "codex",
       "command": "codex",
       "model_options": [
-        {"id": "provider-default", "label": "Provider default", "source": "provider-default"},
-        {"id": "gpt-5.3-codex-spark", "label": "GPT-5.3-Codex-Spark", "source": "cli-discovery", "availability": "local-account"}
+        {"id": "provider-default", "label": "Provider default", "source": "provider-default", "reasoning_efforts": ["provider-default"]},
+        {"id": "gpt-5.3-codex-spark", "label": "GPT-5.3-Codex-Spark", "source": "cli-discovery", "availability": "local-account", "reasoning_efforts": ["low", "medium", "high", "xhigh"]},
+        {"id": "gpt-5.4", "label": "GPT-5.4", "source": "cli-discovery", "reasoning_efforts": ["low", "medium", "high", "xhigh"]},
+        {"id": "gpt-5.6-sol", "label": "GPT-5.6 Sol", "source": "cli-discovery", "reasoning_efforts": ["low", "medium", "high", "max", "xhigh"]},
+        {"id": "gpt-5.6-terra", "label": "GPT-5.6 Terra", "source": "cli-discovery", "reasoning_efforts": ["low", "medium", "high", "max", "xhigh"]},
+        {"id": "gpt-5.6-luna", "label": "GPT-5.6 Luna", "source": "cli-discovery", "reasoning_efforts": ["low", "medium", "high", "max", "xhigh"]}
       ],
       "model_sources": ["provider-default", "cli-discovery"],
       "reasoning_efforts": ["provider-default", "low", "medium", "high", "xhigh"],
@@ -6772,10 +6925,10 @@ agent-slots:
       "adapter": "claude",
       "command": "claude",
       "model_options": [
-        {"id": "provider-default", "label": "Provider default", "source": "provider-default"},
-        {"id": "sonnet", "label": "Sonnet", "source": "official-doc"},
-        {"id": "opus", "label": "Opus", "source": "official-doc"},
-        {"id": "opusplan", "label": "Opus Plan", "source": "official-doc"}
+        {"id": "provider-default", "label": "Provider default", "source": "provider-default", "reasoning_efforts": ["provider-default"]},
+        {"id": "sonnet", "label": "Sonnet", "source": "official-doc", "reasoning_efforts": ["low", "medium", "high", "max", "xhigh"]},
+        {"id": "opus", "label": "Opus", "source": "official-doc", "reasoning_efforts": ["low", "medium", "high", "max", "xhigh"]},
+        {"id": "opusplan", "label": "Opus Plan", "source": "official-doc", "reasoning_efforts": ["low", "medium", "high", "max", "xhigh"]}
       ],
       "model_sources": ["provider-default", "official-doc", "operator-override"],
       "reasoning_efforts": ["provider-default", "low", "medium", "high", "xhigh", "max"],
