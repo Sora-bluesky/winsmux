@@ -50,6 +50,7 @@ import {
   subscribeToPtyOutput,
   writePtyData,
 } from "./ptyClient";
+import { installTerminalMouseTrackingReset, resetTerminalMouseTracking } from "./terminalMouseTracking";
 import { isComposerCommandText, normalizeComposerPlainTextPaste } from "./composerText";
 import {
   buildProjectExplorerTree,
@@ -1732,6 +1733,8 @@ function createWorkbenchTerminal(options?: { cursorBlink?: boolean; scrollback?:
     scrollback: options?.scrollback ?? 1000,
     theme: getWorkbenchTerminalTheme(),
   });
+  // createWorkbenchTerminal is shared by the operator and every worker pane.
+  installTerminalMouseTrackingReset(terminal);
   attachTerminalCopySelectionGuard(terminal);
   return terminal;
 }
@@ -1816,6 +1819,19 @@ function writeOperatorTerminal(data: string) {
     return;
   }
   operatorTerminal.write(data);
+}
+
+function resetOperatorTerminalMouseTracking() {
+  if (operatorTerminal) {
+    resetTerminalMouseTracking(operatorTerminal);
+  }
+}
+
+function resetPaneTerminalMouseTracking(paneId: string) {
+  const entry = panes.get(paneId);
+  if (entry) {
+    resetTerminalMouseTracking(entry.terminal);
+  }
 }
 
 function markOperatorPtyStartedFromExternalEvent() {
@@ -18038,15 +18054,23 @@ function handleDesktopSummaryLiveRefreshEvent(event: DesktopSummaryRefreshEvent)
   if (event.source === "pty" && event.pane_id) {
     if (event.pane_id === OPERATOR_PTY_ID) {
       if (event.reason === "pty.close") {
+        resetOperatorTerminalMouseTracking();
         markOperatorPtyStoppedFromExternalEvent();
       } else if (event.reason === "pty.spawn" || event.reason === "pty.respawn") {
+        if (event.reason === "pty.respawn") {
+          resetOperatorTerminalMouseTracking();
+        }
         markOperatorPtyStartedFromExternalEvent();
       }
     } else {
       const workbenchPaneId = resolveWorkbenchPaneIdForBackendPaneId(event.pane_id);
       if (workbenchPaneId && event.reason === "pty.close") {
+        resetPaneTerminalMouseTracking(workbenchPaneId);
         markPanePtyStoppedFromExternalEvent(workbenchPaneId);
       } else if (workbenchPaneId && (event.reason === "pty.spawn" || event.reason === "pty.respawn")) {
+        if (event.reason === "pty.respawn") {
+          resetPaneTerminalMouseTracking(workbenchPaneId);
+        }
         markPanePtyStartedFromExternalEvent(workbenchPaneId);
       }
     }
