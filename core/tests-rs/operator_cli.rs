@@ -2941,6 +2941,71 @@ panes:
 }
 
 #[test]
+fn operator_cli_provider_switch_uses_provider_efforts_for_models_without_per_model_declaration() {
+    let project_dir = make_temp_project_dir("provider-switch-provider-effort-fallback");
+    write_provider_switch_fixture(&project_dir);
+    let capability_path = project_dir
+        .join(".winsmux")
+        .join("provider-capabilities.json");
+    let mut capabilities = read_json_file(&capability_path);
+    capabilities["providers"]["codex"]["model_options"]
+        .as_array_mut()
+        .expect("Codex model options should be an array")
+        .push(serde_json::json!({
+            "id": "legacy-codex",
+            "label": "Legacy Codex",
+            "source": "cli-discovery"
+        }));
+    fs::write(
+        &capability_path,
+        serde_json::to_vec_pretty(&capabilities).expect("capabilities should serialize"),
+    )
+    .expect("test should update provider capabilities");
+
+    let run_switch = |model: &str, reasoning_effort: &str| {
+        Command::new(env!("CARGO_BIN_EXE_winsmux"))
+            .args([
+                "provider-switch",
+                "worker-1",
+                "--model",
+                model,
+                "--model-source",
+                "cli-discovery",
+                "--reasoning-effort",
+                reasoning_effort,
+                "--json",
+            ])
+            .current_dir(&project_dir)
+            .output()
+            .expect("winsmux command should run")
+    };
+
+    for effort in ["low", "medium", "high", "xhigh"] {
+        let output = run_switch("legacy-codex", effort);
+        assert!(
+            output.status.success(),
+            "legacy Codex model should accept {effort}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let legacy_max = run_switch("legacy-codex", "max");
+    assert!(!legacy_max.status.success());
+    assert!(
+        String::from_utf8_lossy(&legacy_max.stderr)
+            .contains("model 'legacy-codex' does not support reasoning_effort 'max'"),
+        "legacy Codex model must still reject max"
+    );
+
+    let gpt56_max = run_switch("gpt-5.6-terra", "max");
+    assert!(
+        gpt56_max.status.success(),
+        "GPT-5.6 Terra max should pass: {}",
+        String::from_utf8_lossy(&gpt56_max.stderr)
+    );
+}
+
+#[test]
 fn operator_cli_provider_switch_validates_candidate_before_write() {
     let project_dir = make_temp_project_dir("provider-switch-candidate-before-write");
     write_provider_switch_fixture(&project_dir);

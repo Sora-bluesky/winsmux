@@ -4247,13 +4247,26 @@ fn assert_provider_model_reasoning_effort(
             })
         });
     let mut supported = vec!["provider-default".to_string()];
-    if let Some(efforts) = model_capability
-        .and_then(|option| option.get("reasoning_efforts"))
-        .and_then(Value::as_array)
-    {
+    if let Some(efforts) = model_capability.and_then(|option| option.get("reasoning_efforts")) {
+        let Some(efforts) = efforts.as_array() else {
+            return Err(invalid_provider_capability_field("model_options"));
+        };
         for effort in efforts {
             let Some(text) = effort.as_str() else {
                 return Err(invalid_provider_capability_field("model_options"));
+            };
+            let normalized = text.trim().to_ascii_lowercase();
+            if !normalized.is_empty() && !supported.iter().any(|item| item == &normalized) {
+                supported.push(normalized);
+            }
+        }
+    } else if let Some(efforts) = capability.get("reasoning_efforts") {
+        let Some(efforts) = efforts.as_array() else {
+            return Err(invalid_provider_capability_field("reasoning_efforts"));
+        };
+        for effort in efforts {
+            let Some(text) = effort.as_str() else {
+                return Err(invalid_provider_capability_field("reasoning_efforts"));
             };
             let normalized = text.trim().to_ascii_lowercase();
             if !normalized.is_empty() && !supported.iter().any(|item| item == &normalized) {
