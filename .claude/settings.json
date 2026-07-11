@@ -17,6 +17,10 @@
           },
           {
             "type": "command",
+            "command": "node .claude/hooks/sh-operator-playbook.js"
+          },
+          {
+            "type": "command",
             "command": "node .claude/hooks/sh-plugin-loader.js"
           }
         ]

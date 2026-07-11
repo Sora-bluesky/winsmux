@@ -489,6 +489,14 @@ manual flow
         @($result.Json.results.name) | Should -Contain 'startup-attach-consistency'
     }
 
+    It 'routes live orchestra checks through the git common root from worktrees' {
+        $content = Get-Content -LiteralPath $script:HarnessCheckPath -Raw -Encoding UTF8
+
+        $content | Should -Match 'function\s+Resolve-HarnessRuntimeProjectDir'
+        $content | Should -Match 'Test-HarnessSmokeContract\s+-CodeRoot\s+\$ProjectDir\s+-RuntimeProjectDir\s+\$runtimeProjectDir'
+        $content | Should -Match 'Ensure-OrchestraAttachProfile\s+-ProjectDir\s+\$runtimeProjectDir'
+    }
+
     It 'keeps critical .claude files trimmed to a single final newline' {
         foreach ($relativePath in @(
             '.claude\hooks\lib\sh-utils.js',
@@ -1197,7 +1205,8 @@ exit /b 0
                     command = 'gh pr merge 424 --repo Sora-bluesky/winsmux'
                 }
             }) -EnvironmentVariables @{
-                PATH = "$fakeBinDir;$env:PATH"
+                PATH         = "$fakeBinDir;$env:PATH"
+                WINSMUX_ROLE = 'Operator'
             }
 
             $result.ExitCode | Should -Be 0
@@ -1246,7 +1255,8 @@ exit /b 0
                     command = 'pwsh -NoProfile -File winsmux-core/scripts/orchestra-start.ps1'
                 }
             }) -EnvironmentVariables @{
-                PATH = "$fakeBinDir;$env:PATH"
+                PATH         = "$fakeBinDir;$env:PATH"
+                WINSMUX_ROLE = 'Operator'
             }
 
             $result.ExitCode | Should -Be 0
