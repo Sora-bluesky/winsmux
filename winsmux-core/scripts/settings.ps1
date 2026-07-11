@@ -1893,8 +1893,14 @@ function Assert-BridgeProviderModelReasoningEffort {
                 ForEach-Object { ([string]$_).Trim().ToLowerInvariant() } |
                 Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
         )
-        $supported = @($supported | Select-Object -Unique)
+    } else {
+        $supported += @(
+            Get-BridgeProviderCapabilityValue -Capability $Capability -Name 'reasoning_efforts' -Default @() |
+                ForEach-Object { ([string]$_).Trim().ToLowerInvariant() } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
     }
+    $supported = @($supported | Select-Object -Unique)
 
     $adapter = [string](Get-BridgeProviderCapabilityValue -Capability $Capability -Name 'adapter' -Default $ProviderId)
     if (

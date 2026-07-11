@@ -1596,6 +1596,7 @@ agent-slots:
         {"id": "gpt-5.6-sol", "label": "GPT-5.6 Sol", "source": "cli-discovery", "reasoning_efforts": ["low", "medium", "high", "max", "xhigh"]},
         {"id": "gpt-5.6-terra", "label": "GPT-5.6 Terra", "source": "cli-discovery", "reasoning_efforts": ["low", "medium", "high", "max", "xhigh"]},
         {"id": "gpt-5.6-luna", "label": "GPT-5.6 Luna", "source": "cli-discovery", "reasoning_efforts": ["low", "medium", "high", "max", "xhigh"]},
+        {"id": "legacy-codex-model", "label": "Legacy Codex model", "source": "cli-discovery"},
         {"id": "custom-operator-model", "label": "Custom operator model", "source": "operator-override", "reasoning_efforts": ["max"]}
       ],
       "model_sources": ["provider-default", "cli-discovery", "operator-override"],
@@ -1627,6 +1628,30 @@ agent-slots:
                 -GitWorktreeDir 'C:\Project Root\.git\worktrees\worker-1' `
                 -RootPath $script:settingsTempRoot
         } | Should -Throw "*model 'custom-operator-model' does not support reasoning_effort 'max'*"
+
+        foreach ($effort in @('low', 'medium', 'high', 'xhigh')) {
+            {
+                Get-BridgeProviderLaunchCommand `
+                    -ProviderId 'codex' `
+                    -Model 'legacy-codex-model' `
+                    -ModelSource 'cli-discovery' `
+                    -ReasoningEffort $effort `
+                    -ProjectDir 'C:\Project Root' `
+                    -GitWorktreeDir 'C:\Project Root\.git\worktrees\worker-1' `
+                    -RootPath $script:settingsTempRoot
+            } | Should -Not -Throw
+        }
+
+        {
+            Get-BridgeProviderLaunchCommand `
+                -ProviderId 'codex' `
+                -Model 'legacy-codex-model' `
+                -ModelSource 'cli-discovery' `
+                -ReasoningEffort 'max' `
+                -ProjectDir 'C:\Project Root' `
+                -GitWorktreeDir 'C:\Project Root\.git\worktrees\worker-1' `
+                -RootPath $script:settingsTempRoot
+        } | Should -Throw "*model 'legacy-codex-model' does not support reasoning_effort 'max'*"
 
 @'
 agent: codex
