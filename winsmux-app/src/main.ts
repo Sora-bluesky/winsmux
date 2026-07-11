@@ -11654,12 +11654,19 @@ function getRuntimeWorkerDefaultPreference() {
     ?? defaultRuntimeRolePreferences().find((item) => item.roleId === "worker")!;
 }
 
+function runtimePreferenceProjectsModel(preference: RuntimeRolePreference) {
+  return preference.model.trim().toLowerCase() !== "provider-default"
+    && preference.modelSource.trim().toLowerCase() !== "provider-default";
+}
+
 function getRuntimePreferenceSelectedEntry(preference: RuntimeRolePreference) {
   const entries = getRuntimePaneModelEntries(preference.provider);
-  const directMatch = entries.find((entry) => {
-    const current = preference.model.trim().toLowerCase();
-    return entry.id.toLowerCase() === current || entry.model.toLowerCase() === current;
-  });
+  const directMatch = runtimePreferenceProjectsModel(preference)
+    ? entries.find((entry) => {
+        const current = preference.model.trim().toLowerCase();
+        return entry.id.toLowerCase() === current || entry.model.toLowerCase() === current;
+      })
+    : undefined;
   if (directMatch) {
     return { entry: directMatch, entries };
   }
@@ -17132,10 +17139,9 @@ async function applySettingsDraft() {
     persistThemeState();
   }
   if (runtimeRoleDraftState) {
-    runtimeRolePreferences = cloneRuntimeRolePreferences(runtimeRoleDraftState);
-    persistRuntimeRolePreferences();
+    const nextRuntimeRolePreferences = cloneRuntimeRolePreferences(runtimeRoleDraftState);
     try {
-      await applyRuntimeRolePreferencesToDesktop(runtimeRolePreferences);
+      await applyRuntimeRolePreferencesToDesktop(nextRuntimeRolePreferences);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       appendRuntimeConversation({
@@ -17143,12 +17149,16 @@ async function applySettingsDraft() {
         category: "attention",
         timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
         actor: "winsmux",
-        title: getLanguageText("Runtime settings were saved locally", "実行環境設定はローカルに保存しました"),
+        title: getLanguageText("Runtime settings were not saved", "実行環境設定は保存されませんでした"),
         body: message,
         tone: "warning",
       });
       console.warn("Failed to apply runtime role preferences to desktop runtime", error);
+      renderConversation(getConversationItems());
+      return;
     }
+    runtimeRolePreferences = nextRuntimeRolePreferences;
+    persistRuntimeRolePreferences();
   }
   if (runtimeModelAssignmentModeDraft) {
     runtimeModelAssignmentMode = runtimeModelAssignmentModeDraft;

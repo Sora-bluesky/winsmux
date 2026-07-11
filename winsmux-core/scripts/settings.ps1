@@ -1102,6 +1102,47 @@ function Read-BridgeRuntimeRolePreferences {
     return $preferences
 }
 
+function Assert-BridgeRuntimeRolePreferences {
+    param(
+        [Parameter(Mandatory = $true)][System.Collections.IDictionary]$RoleMap,
+        [string]$RootPath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($RootPath)) {
+        $RootPath = (Get-Location).Path
+    }
+    $settings = Get-BridgeSettings -RootPath $RootPath
+    foreach ($role in $RoleMap.GetEnumerator()) {
+        $candidate = Get-RoleAgentConfig -Role ([string]$role.Key) -Settings $settings
+        $config = $role.Value
+        $provider = [string]$candidate.Agent
+        $model = [string]$candidate.Model
+        $modelSource = [string]$candidate.ModelSource
+        $reasoningEffort = [string]$candidate.ReasoningEffort
+        if ($config.Contains('agent')) {
+            $provider = [string]$config.agent
+        }
+        if ($config.Contains('model')) {
+            $model = [string]$config.model
+        }
+        if ($config.Contains('model_source')) {
+            $modelSource = [string]$config.model_source
+        }
+        if ($config.Contains('reasoning_effort')) {
+            $reasoningEffort = [string]$config.reasoning_effort
+        }
+
+        $capability = Resolve-BridgeProviderCapability -ProviderId $provider -RootPath $RootPath -RequireWhenRegistryPresent
+        Assert-BridgeProviderCapabilitySelection -ProviderId $provider -Capability $capability -FieldName 'model_sources' -SelectorName 'model_source' -Value $modelSource
+        Assert-BridgeProviderModelReasoningEffort `
+            -ProviderId $provider `
+            -Capability $capability `
+            -Model $model `
+            -ModelSource $modelSource `
+            -ReasoningEffort $reasoningEffort
+    }
+}
+
 function Write-BridgeRuntimeRolePreferences {
     param(
         [Parameter(Mandatory = $true)]$Roles,
@@ -1109,6 +1150,7 @@ function Write-BridgeRuntimeRolePreferences {
     )
 
     $roleMap = ConvertTo-BridgeRuntimeRolePreferencesMap $Roles
+    Assert-BridgeRuntimeRolePreferences -RoleMap $roleMap -RootPath $RootPath
     $payload = [ordered]@{
         version        = 1
         updated_at_utc = (Get-Date).ToUniversalTime().ToString('o')

@@ -174,6 +174,30 @@ assert.match(
   "Stored runtime preferences must clamp an unsupported effort before desktop launch.",
 );
 
+assert.match(
+  mainSource,
+  /function runtimePreferenceProjectsModel\([\s\S]*?model[\s\S]*?provider-default[\s\S]*?modelSource[\s\S]*?provider-default/,
+  "Runtime preference capability selection must treat provider-default model sources as unprojected.",
+);
+
+assert.match(
+  mainSource,
+  /const directMatch = runtimePreferenceProjectsModel\(preference\)\s*\?\s*entries\.find/,
+  "A GPT-5.6 catalog label must not retain Max when its model source is provider-default.",
+);
+
+assert.match(
+  mainSource,
+  /if \(runtimeRoleDraftState\) \{[\s\S]*?const nextRuntimeRolePreferences = cloneRuntimeRolePreferences\(runtimeRoleDraftState\);[\s\S]*?await applyRuntimeRolePreferencesToDesktop\(nextRuntimeRolePreferences\);[\s\S]*?runtimeRolePreferences = nextRuntimeRolePreferences;[\s\S]*?persistRuntimeRolePreferences\(\);/,
+  "Runtime role preferences must be finalized locally only after desktop apply succeeds.",
+);
+
+assert.doesNotMatch(
+  mainSource,
+  /runtimeRolePreferences = cloneRuntimeRolePreferences\(runtimeRoleDraftState\);[\s\S]*?persistRuntimeRolePreferences\(\);[\s\S]*?await applyRuntimeRolePreferencesToDesktop/,
+  "Runtime role preferences must not be persisted before desktop apply.",
+);
+
 for (const provider of ["antigravity", "grok-build", "openrouter"]) {
   assert.match(
     modelCapabilitiesSource,

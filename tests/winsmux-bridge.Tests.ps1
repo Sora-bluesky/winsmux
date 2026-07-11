@@ -1022,6 +1022,8 @@ agent-slots:
         $runtimePreferences = Write-BridgeRuntimeRolePreferences -RootPath $script:settingsTempRoot -Roles @(
             [ordered]@{
                 role_id         = 'worker'
+                provider        = 'claude'
+                model           = 'opus'
                 modelSource     = 'official-doc'
                 reasoningEffort = 'MAX'
                 promptTransport = 'STDIN'
@@ -18694,6 +18696,46 @@ agent-slots:
         $result.roles.worker.model_source | Should -Be 'cli-discovery'
         $result.roles.worker.reasoning_effort | Should -Be 'high'
         Test-Path -LiteralPath (Join-Path $script:providerSwitchTempRoot '.winsmux\runtime-role-preferences.json') | Should -Be $true
+    }
+
+    It 'rejects invalid runtime role max before changing preferences or provider registry' {
+        $preferencesPath = Join-Path $script:providerSwitchTempRoot '.winsmux\runtime-role-preferences.json'
+        $registryPath = Join-Path $script:providerSwitchTempRoot '.winsmux\provider-registry.json'
+        '{"version":1,"updated_at_utc":"2026-07-12T00:00:00Z","roles":{"worker":{"agent":"codex","model":"gpt-5.4","model_source":"cli-discovery","reasoning_effort":"high"}}}' |
+            Set-Content -LiteralPath $preferencesPath -Encoding UTF8 -NoNewline
+        '{"version":1,"slots":{"worker-1":{"agent":"codex","model":"gpt-5.4","model_source":"cli-discovery","reasoning_effort":"high"}}}' |
+            Set-Content -LiteralPath $registryPath -Encoding UTF8 -NoNewline
+        $preferencesBefore = [Convert]::ToBase64String([IO.File]::ReadAllBytes($preferencesPath))
+        $registryBefore = [Convert]::ToBase64String([IO.File]::ReadAllBytes($registryPath))
+        $rolesJson = @(
+            [ordered]@{
+                role_id          = 'worker'
+                provider         = 'codex'
+                model            = 'gpt-5.6-terra'
+                model_source     = 'provider-default'
+                reasoning_effort = 'max'
+            },
+            [ordered]@{
+                role_id          = 'operator'
+                provider         = 'claude'
+                model            = 'provider-default'
+                model_source     = 'provider-default'
+                reasoning_effort = 'provider-default'
+            }
+        ) | ConvertTo-Json -Compress -Depth 8
+
+        Push-Location $script:providerSwitchTempRoot
+        try {
+            $output = & pwsh -NoProfile -File $script:winsmuxCoreRawPath runtime-roles apply --roles-json $rolesJson --json 2>&1
+            $exitCode = $LASTEXITCODE
+        } finally {
+            Pop-Location
+        }
+
+        $exitCode | Should -Not -Be 0
+        [string]::Join("`n", @($output)) | Should -Match "model 'gpt-5.6-terra' does not support reasoning_effort 'max'"
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($preferencesPath)) | Should -BeExactly $preferencesBefore
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($registryPath)) | Should -BeExactly $registryBefore
     }
 
     It 'rejects provider-switch blocked auth modes before writing the provider registry' {

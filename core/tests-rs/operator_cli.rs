@@ -3457,6 +3457,71 @@ panes:
 }
 
 #[test]
+fn operator_cli_provider_switch_restart_projects_gpt56_model_and_max_effort() {
+    let project_dir = make_temp_project_dir("provider-switch-restart-gpt56-max");
+    write_provider_switch_fixture(&project_dir);
+    fs::write(
+        project_dir.join(".winsmux").join("manifest.yaml"),
+        format!(
+            r#"
+session:
+  name: winsmux-orchestra
+  project_dir: {}
+panes:
+  worker-1:
+    pane_id: "%2"
+    role: Builder
+    launch_dir: {}
+    capability_adapter: codex
+"#,
+            project_dir.display(),
+            project_dir.display()
+        ),
+    )
+    .expect("test should write manifest");
+    let (winsmux_bin, log_path) =
+        write_fake_winsmux_restart(&project_dir, Some("winsmux-orchestra"), &["%2"]);
+
+    let result = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args([
+            "provider-switch",
+            "worker-1",
+            "--model",
+            "gpt-5.6-terra",
+            "--model-source",
+            "cli-discovery",
+            "--reasoning-effort",
+            "max",
+            "--restart",
+            "--json",
+        ])
+        .env("WINSMUX_BIN", winsmux_bin)
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(
+        result.status.success(),
+        "winsmux command failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let launch = fs::read_to_string(&log_path)
+        .expect("fake winsmux log should exist")
+        .lines()
+        .find(|line| line.contains("send-keys"))
+        .expect("restart should send a launch command")
+        .to_string();
+    assert!(
+        launch.contains("model=gpt-5.6-terra"),
+        "restart launch must project the concrete model: {launch}"
+    );
+    assert!(
+        launch.contains("model_reasoning_effort=max"),
+        "restart launch must project max effort: {launch}"
+    );
+}
+
+#[test]
 fn operator_cli_provider_switch_restart_skips_provider_default_model() {
     let project_dir = make_temp_project_dir("provider-switch-restart-provider-default");
     write_provider_switch_fixture(&project_dir);
