@@ -146,6 +146,7 @@ agent-slots:
   - slot-id: worker-6
     provider: openrouter
     model: openrouter-glm-5-2
+    worker-backend: api_llm
     reasoning-effort: provider-default
     role-profile: maintainer
     lifecycle: task
@@ -196,6 +197,8 @@ preserve them. The new `provider` field is canonical for Team Profile selection;
 the existing `agent` field is a migration alias. The resolver maps the stable
 model capability ID to that catalog entry's provider launch value only after
 validation. It does not infer a provider by sniffing model text.
+A slot-level `worker-backend` is a permitted override; it must match the model's
+required backend, and TASK-715 validation enforces this match.
 
 When `team-profile` is present, the resolved configuration must contain exactly
 six unique slots. Its project override list does not need six entries, but it
