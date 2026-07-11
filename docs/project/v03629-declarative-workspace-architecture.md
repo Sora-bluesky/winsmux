@@ -121,18 +121,23 @@ gate complete until TASK-718 has verified the combined desktop/CLI behavior.
 ### 3.2 Schema sketch
 
 Public YAML uses the repository's existing hyphenated spelling; normalized
-runtime objects use snake_case. The sketch is illustrative, but the ownership,
-reference, and fail-closed rules are normative.
+runtime objects use snake_case. The following is a valid configuration fragment;
+the ownership, reference, and fail-closed rules are normative.
 
 ```yaml
 config-version: 1
 
-# Lane B-owned; shown only to make the reference boundary explicit.
-team-profile: default
+# Lane B-owned; shown only to make the reference boundary explicit. The selected
+# preset supplies the remaining resolved slots with concrete provider/model IDs.
+team-profile:
+  schema-version: 1
+  preset: official-balanced-v1
+  preset-revision: 1
+  update-policy: retain-overrides
 agent-slots:
   - slot-id: worker-1
-    provider: provider-default
-    model: provider-default
+    provider: codex
+    model: codex-gpt-5-6-sol
 
 # Lane A-owned.
 workspace-recipes:
