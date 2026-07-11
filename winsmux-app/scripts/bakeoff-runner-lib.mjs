@@ -184,7 +184,8 @@ export function extractLatestDispatchId(text) {
 /**
  * Count packet markers that appear after this dispatch's receipt in a pane
  * capture. The receipt is appended after the echoed packet, so markers in
- * this suffix are worker output rather than echoed instructions.
+ * the suffix after its last visible copy are worker output rather than
+ * repeated echoed instructions.
  *
  * @param {string} paneText
  * @param {string} receipt
@@ -195,7 +196,7 @@ export function extractLatestDispatchId(text) {
 export function countCliMarkersAfterEchoReceipt(paneText, receipt, beginMarker, endMarker) {
   const text = typeof paneText === "string" ? paneText : "";
   const marker = typeof receipt === "string" ? receipt : "";
-  const receiptIndex = marker ? text.indexOf(marker) : -1;
+  const receiptIndex = marker ? text.lastIndexOf(marker) : -1;
   if (receiptIndex < 0) return null;
 
   const suffix = text.slice(receiptIndex + marker.length);

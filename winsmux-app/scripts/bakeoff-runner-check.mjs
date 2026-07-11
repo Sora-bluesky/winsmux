@@ -356,6 +356,16 @@ assert.deepEqual(
   { beginCount: 0, endCount: 0 },
   "the receipt itself must establish a no-completion baseline after the full packet echo",
 );
+assert.deepEqual(
+  countCliMarkersAfterEchoReceipt(
+    `BAKEOFF_ROUND_A_BEGIN\nBAKEOFF_ROUND_A_END\n${dispatchReceipt}\nBAKEOFF_ROUND_A_BEGIN\nBAKEOFF_ROUND_A_END\n${dispatchReceipt}\nwaiting for worker output`,
+    dispatchReceipt,
+    "BAKEOFF_ROUND_A_BEGIN",
+    "BAKEOFF_ROUND_A_END",
+  ),
+  { beginCount: 0, endCount: 0 },
+  "a repeated dispatch echo must anchor the suffix on the last receipt, not treat the earlier echoed END marker as worker output",
+);
 
 // --- selectNewRunDir ------------------------------------------------------
 
