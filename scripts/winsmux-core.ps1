@@ -3474,6 +3474,39 @@ function Wait-DeferredPaneReady {
     Stop-WithError "timed out waiting for deferred pane $PaneId to become ready"
 }
 
+function Test-SendTransportRequiresPointerReadiness {
+    param([Parameter(Mandatory = $true)]$TransportPlan)
+
+    return (
+        [string]$TransportPlan['Mode'] -eq 'pointer' -and
+        [string]$TransportPlan['FallbackMode'] -eq 'pointer' -and
+        [string]$TransportPlan['PromptTransport'] -eq 'argv' -and
+        [int]$TransportPlan['TextLength'] -gt [int]$TransportPlan['LengthLimit']
+    )
+}
+
+function Send-PromptPointerWhenAgentReady {
+    param(
+        [Parameter(Mandatory = $true)][string]$PaneId,
+        [Parameter(Mandatory = $true)][string]$PointerText,
+        [AllowEmptyString()][string]$Agent = '',
+        [string]$PromptTransport = 'argv',
+        [int]$TimeoutSeconds = 60
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        if (Test-AgentReadyPrompt -PaneId $PaneId -Agent $Agent) {
+            return Send-TextToPane -PaneId $PaneId -CommandText $PointerText -PromptTransport $PromptTransport
+        }
+
+        Start-Sleep -Milliseconds 250
+    }
+
+    $readinessName = if ([string]::IsNullOrWhiteSpace($Agent)) { 'configured agent' } else { $Agent }
+    Stop-WithError "timed out waiting for $readinessName readiness before sending prompt pointer to $PaneId"
+}
+
 function Start-DeferredPaneFromManifestEntry {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -3733,6 +3766,20 @@ function Invoke-Send {
 
     if ($transportPlan['IsFileBacked']) {
         Write-Warning ("send target '{0}' used prompt_transport={1}; wrote full text to {2} and sent a prompt-file pointer instead." -f $Target, $transportPlan['PromptTransport'], $transportPlan['PromptPath'])
+    }
+
+    if (Test-SendTransportRequiresPointerReadiness -TransportPlan $transportPlan) {
+        $pointerReadinessAgent = Get-PaneReadinessAgent -Target $Target -PaneId $paneId -ProjectDir $projectDir
+        if ([string]::IsNullOrWhiteSpace($pointerReadinessAgent)) {
+            $pointerReadinessAgent = ConvertTo-ReadinessAgentName ([string](Get-SendConfigValue -InputObject $agentConfig -Name 'CapabilityAdapter' -Default $agentConfig.Agent))
+        }
+
+        Send-PromptPointerWhenAgentReady `
+            -PaneId $paneId `
+            -PointerText ([string]$transportPlan['TextToSend']) `
+            -Agent $pointerReadinessAgent `
+            -PromptTransport ([string]$transportPlan['PromptTransport'])
+        return
     }
 
     Send-TextToPane -PaneId $paneId -CommandText ([string]$transportPlan['TextToSend']) -PromptTransport ([string]$transportPlan['PromptTransport'])

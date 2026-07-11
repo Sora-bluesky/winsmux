@@ -16979,6 +16979,60 @@ Describe 'winsmux send dispatch payload' {
         $payload['TextToSend'] | Should -Match ([regex]::Escape($payload['PromptReference']))
     }
 
+    It 'defers an oversized prompt pointer until the agent prompt is ready' {
+        $script:pointerReadinessProbes = 0
+        $script:pointerProbeCountAtSend = 0
+
+        Mock Test-AgentReadyPrompt {
+            $script:pointerReadinessProbes++
+            return $script:pointerReadinessProbes -ge 2
+        }
+        Mock Start-Sleep { }
+        Mock Send-TextToPane {
+            $script:pointerProbeCountAtSend = $script:pointerReadinessProbes
+            return "sent to $PaneId"
+        }
+
+        $result = Send-PromptPointerWhenAgentReady `
+            -PaneId '%2' `
+            -PointerText "Read the full prompt from '.winsmux/dispatch-prompts/race.txt' and follow it exactly." `
+            -Agent 'codex' `
+            -PromptTransport 'argv' `
+            -TimeoutSeconds 5
+
+        $result | Should -Be 'sent to %2'
+        $script:pointerReadinessProbes | Should -Be 2
+        $script:pointerProbeCountAtSend | Should -Be 2
+        Should -Invoke Start-Sleep -Times 1 -Exactly -ParameterFilter { $Milliseconds -eq 250 }
+        Should -Invoke Send-TextToPane -Times 1 -Exactly -ParameterFilter {
+            $PaneId -eq '%2' -and
+            $CommandText -like "Read the full prompt from*" -and
+            $PromptTransport -eq 'argv'
+        }
+    }
+
+    It 'keeps non-oversized send transports outside the pointer readiness gate' {
+        $inlinePlan = Resolve-SendTransportPlan `
+            -Text 'Write-Host short' `
+            -ProjectDir $script:sendTempRoot `
+            -LengthLimit 4000 `
+            -PromptTransport 'argv'
+        $configuredFilePlan = Resolve-SendTransportPlan `
+            -Text 'Write-Host short' `
+            -ProjectDir $script:sendTempRoot `
+            -LengthLimit 4000 `
+            -PromptTransport 'file'
+        $overflowPlan = Resolve-SendTransportPlan `
+            -Text ('a' * 4001) `
+            -ProjectDir $script:sendTempRoot `
+            -LengthLimit 4000 `
+            -PromptTransport 'argv'
+
+        Test-SendTransportRequiresPointerReadiness -TransportPlan $inlinePlan | Should -BeFalse
+        Test-SendTransportRequiresPointerReadiness -TransportPlan $configuredFilePlan | Should -BeFalse
+        Test-SendTransportRequiresPointerReadiness -TransportPlan $overflowPlan | Should -BeTrue
+    }
+
     It 'always writes a dispatch file when prompt_transport is file' {
         $payload = Resolve-SendDispatchPayload -Text 'Write-Host short' -ProjectDir $script:sendTempRoot -LengthLimit 4000 -PromptTransport 'file'
 
