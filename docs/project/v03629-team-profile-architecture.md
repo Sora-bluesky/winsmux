@@ -88,7 +88,7 @@ Lane A and Lane B compose in one YAML document with disjoint top-level keys:
 | Top-level key | Owner | Purpose |
 |---|---|---|
 | `config-version` | shared settings loader | Version of the containing settings document; remains `1` for these additive namespaces. |
-| `workspace` | Lane A / TASK-658 | Layout selection, pane placement, worktree policy, recipes, and startup actions. |
+| `workspace-recipes` | Lane A / TASK-658 | Versioned layout, pane placement, worktree policy, recipes, and startup actions. |
 | `workflows` | Lane A / TASK-659 | Versioned resumable workflow and pipeline definitions. |
 | `context-packs` | Lane A / TASK-660 | Bounded repository-context package definitions and references. |
 | `team-profile` | Lane B / TASK-715 | Base Team Profile selection and preset update policy. |
@@ -96,7 +96,7 @@ Lane A and Lane B compose in one YAML document with disjoint top-level keys:
 | Existing keys such as `external-operator`, `worker-backend`, `execution-profile`, `roles`, and `vault-keys` | existing settings contract | Preserved until their own migration contract deprecates them. |
 
 Lane A writers must not rewrite `team-profile` or `agent-slots`. Lane B writers
-must not rewrite `workspace`, `workflows`, or `context-packs`. Both lanes use a
+must not rewrite `workspace-recipes`, `workflows`, or `context-packs`. Both lanes use a
 read-modify-write path that preserves unknown top-level keys. A save operation
 that parses only its own subtree and serializes a replacement root document is
 not acceptable.
@@ -111,20 +111,15 @@ unrelated legacy keys merely to normalize formatting.
 ```yaml
 config-version: 1
 
-workspace:
-  schema-version: 1
-  layout: six-managed-workers
-  recipe: default
-  worktree-policy: managed
-  startup-actions: []
+workspace-recipes:
+  default:
+    schema-version: 1
+    panes: []
+    startup-actions: []
 
-workflows:
-  schema-version: 1
-  definitions: {}
+workflows: {}
 
-context-packs:
-  schema-version: 1
-  definitions: {}
+context-packs: {}
 
 team-profile:
   schema-version: 1
@@ -467,7 +462,7 @@ legacy aliases, duplicate keys/slots, missing slots in the preset, a seventh
 slot, invalid enums, and catalog mismatches. They must include the exact upgrade
 case: "legacy sparse agent-slots without team-profile → roster unchanged
 after upgrade". Round-trip
-tests prove that saving a Lane B field leaves `workspace`, `workflows`,
+tests prove that saving a Lane B field leaves `workspace-recipes`, `workflows`,
 `context-packs`, unknown keys, and non-Lane-B slot fields semantically unchanged.
 Preset revision tests prove that explicit overrides survive apply/upgrade and
 are removed only by an explicit reset. Failed validation and failed atomic
