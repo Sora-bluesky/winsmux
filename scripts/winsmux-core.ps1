@@ -3674,7 +3674,10 @@ function Start-DeferredPaneFromManifestEntry {
             (ConvertTo-DispatchPowerShellLiteral -Value $planPath)
 
         Wait-PaneShellReady -PaneId $paneId -TimeoutSeconds 30
-        Send-TextToPane -PaneId $paneId -CommandText $bootstrapCommand | Out-Null
+        Invoke-Send `
+            -SendTarget $paneId `
+            -SendArguments @('--delivery-class', 'launch', $bootstrapCommand) `
+            -SkipDeferredPaneStart | Out-Null
     }
 
     if ([string]::IsNullOrWhiteSpace($readinessAgent)) {
@@ -3693,13 +3696,19 @@ function Start-DeferredPaneFromManifestEntry {
 }
 
 function Invoke-Send {
-    if (-not $Target) { Stop-WithError "usage: winsmux send <target> <text>" }
-    if (-not $Rest -or $Rest.Count -eq 0) { Stop-WithError "usage: winsmux send <target> <text>" }
+    param(
+        [AllowEmptyString()][string]$SendTarget = $Target,
+        [AllowNull()][string[]]$SendArguments = $Rest,
+        [switch]$SkipDeferredPaneStart
+    )
 
-    $sendArguments = Resolve-SendInvocationArguments -Arguments $Rest
-    $taskSlug = [string]$sendArguments['TaskSlug']
-    $deliveryClass = [string]$sendArguments['DeliveryClass']
-    $messageParts = @($sendArguments['MessageParts'])
+    if (-not $SendTarget) { Stop-WithError "usage: winsmux send <target> <text>" }
+    if (-not $SendArguments -or $SendArguments.Count -eq 0) { Stop-WithError "usage: winsmux send <target> <text>" }
+
+    $resolvedSendArguments = Resolve-SendInvocationArguments -Arguments $SendArguments
+    $taskSlug = [string]$resolvedSendArguments['TaskSlug']
+    $deliveryClass = [string]$resolvedSendArguments['DeliveryClass']
+    $messageParts = @($resolvedSendArguments['MessageParts'])
 
     if ($messageParts.Count -lt 1) {
         Stop-WithError "usage: winsmux send <target> <text>"
@@ -3708,7 +3717,7 @@ function Invoke-Send {
     # Normalize Git Bash /tmp paths before dispatching PowerShell-oriented commands.
     $text = Normalize-DispatchText -Text ($messageParts -join ' ')
     $projectDir = (Get-Location).Path
-    $paneId = Resolve-Target $Target
+    $paneId = Resolve-Target $SendTarget
     if ((Resolve-TerminalBackend) -eq 'cli') {
         $paneId = Confirm-Target $paneId
     }
@@ -3795,7 +3804,7 @@ function Invoke-Send {
                     allow       = @($policyViolation['allow'])
                     block       = @($policyViolation['block'])
                     next_action = [string]$policyViolation['next_action']
-                    target      = $Target
+                    target      = $SendTarget
                 }
             }
             Write-BridgeEventRecord -ProjectDir $projectDir -EventRecord $eventRecord | Out-Null
@@ -3803,7 +3812,9 @@ function Invoke-Send {
         }
     }
 
-    Start-DeferredPaneFromManifestEntry -ProjectDir $projectDir -ManifestEntry $context | Out-Null
+    if (-not $SkipDeferredPaneStart) {
+        Start-DeferredPaneFromManifestEntry -ProjectDir $projectDir -ManifestEntry $context | Out-Null
+    }
 
     $contextLaunchDir = $projectDir
     $contextGitWorktreeDir = ''
@@ -3843,14 +3854,14 @@ function Invoke-Send {
     }
 
     if ($transportPlan['IsFileBacked']) {
-        Write-Warning ("send target '{0}' used prompt_transport={1}; wrote full text to {2} and sent a prompt-file pointer instead." -f $Target, $transportPlan['PromptTransport'], $transportPlan['PromptPath'])
+        Write-Warning ("send target '{0}' used prompt_transport={1}; wrote full text to {2} and sent a prompt-file pointer instead." -f $SendTarget, $transportPlan['PromptTransport'], $transportPlan['PromptPath'])
     }
 
     Send-ResolvedTransportPlan `
         -PaneId $paneId `
         -TransportPlan $transportPlan `
         -DeliveryClass $deliveryClass `
-        -Target $Target `
+        -Target $SendTarget `
         -ProjectDir $projectDir `
         -AgentConfig $agentConfig
 }

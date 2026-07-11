@@ -21860,6 +21860,7 @@ Describe 'deferred worker startup' {
             ready_marker_path = $script:deferredMarkerPath
         } | ConvertTo-Json -Depth 6) | Set-Content -Path $script:deferredPlanPath -Encoding UTF8
         $script:deferredSendCommands = [System.Collections.Generic.List[string]]::new()
+        $script:deferredCanonicalSendCalls = [System.Collections.Generic.List[object]]::new()
         $script:deferredStatusWrites = [System.Collections.Generic.List[string]]::new()
         $script:deferredPropertyWrites = [System.Collections.Generic.List[object]]::new()
         $script:deferredReadyProbeCount = 0
@@ -21867,11 +21868,17 @@ Describe 'deferred worker startup' {
         $script:deferredPreRetryReady = $false
 
         Mock Wait-PaneShellReady { }
-        Mock Send-TextToPane {
-            param([string]$PaneId, [string]$CommandText)
-            $script:deferredSendCommands.Add($CommandText) | Out-Null
-            return "sent to $PaneId"
+        Mock Invoke-Send {
+            param([string]$SendTarget, [string[]]$SendArguments, [switch]$SkipDeferredPaneStart)
+            $script:deferredSendCommands.Add([string]$SendArguments[-1]) | Out-Null
+            $script:deferredCanonicalSendCalls.Add([PSCustomObject]@{
+                Target                = $SendTarget
+                Arguments             = @($SendArguments)
+                SkipDeferredPaneStart = [bool]$SkipDeferredPaneStart
+            }) | Out-Null
+            return "sent to $SendTarget"
         }
+        Mock Send-TextToPane { throw 'deferred bootstrap must use canonical Invoke-Send delivery' }
         Mock Test-AgentReadyPrompt {
             $script:deferredReadyProbeCount++
             if ($script:deferredReadyProbeCount -eq 1 -and $script:deferredPreRetryProbeApplies) {
@@ -21918,6 +21925,11 @@ Describe 'deferred worker startup' {
         $script:deferredSendCommands.Count | Should -Be 1
         $script:deferredSendCommands[0] | Should -Match 'orchestra-pane-bootstrap\.ps1'
         $script:deferredSendCommands[0] | Should -Match '-PlanFile'
+        $script:deferredCanonicalSendCalls.Count | Should -Be 1
+        $script:deferredCanonicalSendCalls[0].Target | Should -Be '%3'
+        @($script:deferredCanonicalSendCalls[0].Arguments)[0..1] | Should -Be @('--delivery-class', 'launch')
+        $script:deferredCanonicalSendCalls[0].SkipDeferredPaneStart | Should -Be $true
+        Should -Invoke Send-TextToPane -Times 0 -Exactly
         $script:deferredStatusWrites | Should -Be @('deferred_starting', 'ready')
     }
 
@@ -21957,6 +21969,11 @@ Describe 'deferred worker startup' {
         Should -Invoke Wait-PaneShellReady -Times 1 -Exactly -ParameterFilter { $PaneId -eq '%3' }
         $script:deferredSendCommands.Count | Should -Be 1
         $script:deferredSendCommands[0] | Should -Match 'orchestra-pane-bootstrap\.ps1'
+        $script:deferredCanonicalSendCalls.Count | Should -Be 1
+        $script:deferredCanonicalSendCalls[0].Target | Should -Be '%3'
+        @($script:deferredCanonicalSendCalls[0].Arguments)[0..1] | Should -Be @('--delivery-class', 'launch')
+        $script:deferredCanonicalSendCalls[0].SkipDeferredPaneStart | Should -Be $true
+        Should -Invoke Send-TextToPane -Times 0 -Exactly
         $script:deferredStatusWrites | Should -Be @('deferred_starting', 'ready')
     }
 
