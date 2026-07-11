@@ -160,9 +160,12 @@ roles: {}
 ```
 
 The example explicitly opts into `team-profile` and intentionally shows only two
-override entries. Its resolved team still has six slots because the remaining
-four come from the selected preset. Within an opted-in configuration, an
-override may be sparse down to `slot-id`; omission means "inherit this field
+override entries. Its OpenRouter override uses `worker-backend: api_llm` because
+`openrouter-glm-5-2` requires the `api_llm` backend capability, whose
+`assignableBackends` set contains `api_llm`; this is a capability-mapping check,
+not a string-equality rule. Its resolved team still has six slots because the
+remaining four come from the selected preset. Within an opted-in configuration,
+an override may be sparse down to `slot-id`; omission means "inherit this field
 from the preset," not "use an implicit provider default." This backfill rule
 does not apply to a legacy configuration with no `team-profile`.
 
@@ -183,12 +186,20 @@ fields:
 | Field | Resolved requirement | Contract |
 |---|---|---|
 | `slot-id` | required | One of `worker-1` through `worker-6`; unique, stable identity. |
-| `provider` | required | A `ProviderCapabilityId` from `modelCapabilities.ts`. |
-| `model` | required | Stable `ModelCapability.id`, not the provider's raw CLI argument. |
+| `provider` | required | A concrete `ProviderCapabilityId` from `modelCapabilities.ts`, never `provider-default`. |
+| `model` | required | Concrete stable `ModelCapability.id`, never `provider-default`, not the provider's raw CLI argument. |
 | `reasoning-effort` | required | Supported by both the selected provider and model. |
 | `role-profile` | required | ID in the static role-profile registry. |
 | `lifecycle` | required | `session`, `task`, or `one-shot`. |
 | `task-classes` | required | Non-empty, duplicate-free ordered list of registered task-class IDs. |
+
+Every resolved Team Profile slot must carry concrete `provider` and `model`
+values. The `provider-default` provider/model sentinel is reserved for
+legacy/no-profile behavior and explicit reset semantics only; it must not remain
+in a resolved Team Profile slot. If either field is still `provider-default`
+after overlay and resolution, resolution fails closed and rejects the candidate
+configuration. This rule applies to provider/model IDs; `reasoning-effort`
+continues to use its separate supported-effort contract.
 
 Existing execution fields in `agent-slots`, including `runtime-role`,
 `worktree-mode`, `worker-backend`, `execution-profile`, `prompt-transport`, and
@@ -197,8 +208,12 @@ preserve them. The new `provider` field is canonical for Team Profile selection;
 the existing `agent` field is a migration alias. The resolver maps the stable
 model capability ID to that catalog entry's provider launch value only after
 validation. It does not infer a provider by sniffing model text.
-A slot-level `worker-backend` is a permitted override; it must match the model's
-required backend, and TASK-715 validation enforces this match.
+A slot-level `worker-backend` is a permitted override. Its concrete value is
+valid when it is a member of the `assignableBackends` set for the backend
+capability named by the model's `requiredBackend`; TASK-715 validates this
+capability mapping, not string equality. Thus a model requiring `agent-cli` may
+use `local`, `codex`, or `claude`, while a model requiring `api_llm` uses
+`api_llm`.
 
 When `team-profile` is present, the resolved configuration must contain exactly
 six unique slots. Its project override list does not need six entries, but it
