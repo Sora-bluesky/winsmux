@@ -1870,6 +1870,7 @@ function Assert-BridgeProviderModelReasoningEffort {
         [Parameter(Mandatory = $true)][string]$ProviderId,
         [AllowNull()]$Capability,
         [AllowNull()][string]$Model,
+        [AllowNull()][string]$ModelSource,
         [AllowNull()][string]$ReasoningEffort
     )
 
@@ -1879,7 +1880,14 @@ function Assert-BridgeProviderModelReasoningEffort {
 
     $requested = $ReasoningEffort.Trim().ToLowerInvariant()
     if ($null -eq $Capability) {
-        if ($requested -eq 'max' -and $ProviderId.Trim().ToLowerInvariant().StartsWith('codex')) {
+        if (
+            $requested -eq 'max' -and
+            $ProviderId.Trim().ToLowerInvariant().StartsWith('codex') -and
+            (
+                $Model.Trim().ToLowerInvariant() -notin $script:BridgeCodexMaxReasoningModels -or
+                -not (Test-BridgeProviderModelOverride -Model $Model -ModelSource $ModelSource)
+            )
+        ) {
             throw "Provider capability '$ProviderId' model '$Model' does not support reasoning_effort '$requested'. Supported values: provider-default."
         }
         return
@@ -1906,7 +1914,10 @@ function Assert-BridgeProviderModelReasoningEffort {
     if (
         $requested -eq 'max' -and
         [string]::Equals($adapter.Trim(), 'codex', [System.StringComparison]::OrdinalIgnoreCase) -and
-        $Model.Trim().ToLowerInvariant() -notin $script:BridgeCodexMaxReasoningModels
+        (
+            $Model.Trim().ToLowerInvariant() -notin $script:BridgeCodexMaxReasoningModels -or
+            -not (Test-BridgeProviderModelOverride -Model $Model -ModelSource $ModelSource)
+        )
     ) {
         $supported = @($supported | Where-Object { $_ -ne 'max' })
     }
@@ -2000,6 +2011,7 @@ function Get-BridgeProviderLaunchCommand {
         -ProviderId $provider `
         -Capability $capability `
         -Model $Model `
+        -ModelSource $ModelSource `
         -ReasoningEffort $ReasoningEffort
 
     $adapterKey = $adapter.Trim().ToLowerInvariant()
@@ -3273,7 +3285,7 @@ function Get-SlotAgentConfig {
         Assert-BridgeProviderCapabilityAuthMode -ProviderId $agent -AuthMode $authMode -RootPath $RootPath
         $providerCapability = Resolve-BridgeProviderCapability -ProviderId $agent -RootPath $RootPath -RequireWhenRegistryPresent
         Assert-BridgeProviderCapabilitySelection -ProviderId $agent -Capability $providerCapability -FieldName 'model_sources' -SelectorName 'model_source' -Value $modelSource
-        Assert-BridgeProviderModelReasoningEffort -ProviderId $agent -Capability $providerCapability -Model $model -ReasoningEffort $reasoningEffort
+        Assert-BridgeProviderModelReasoningEffort -ProviderId $agent -Capability $providerCapability -Model $model -ModelSource $modelSource -ReasoningEffort $reasoningEffort
     }
 
     return [PSCustomObject]@{

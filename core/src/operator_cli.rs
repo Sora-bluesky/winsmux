@@ -3795,7 +3795,13 @@ fn finalize_slot_agent_config(
         "model_source",
         &model_source,
     )?;
-    assert_provider_model_reasoning_effort(capability.as_ref(), &agent, &model, &reasoning_effort)?;
+    assert_provider_model_reasoning_effort(
+        capability.as_ref(),
+        &agent,
+        &model,
+        &model_source,
+        &reasoning_effort,
+    )?;
     Ok(SlotAgentConfig {
         auth_policy: provider_auth_policy(capability.as_ref(), &auth_mode),
         capability_adapter: capability_string(capability.as_ref(), "adapter"),
@@ -4216,6 +4222,7 @@ fn assert_provider_model_reasoning_effort(
     capability: Option<&Value>,
     provider_id: &str,
     model: &str,
+    model_source: &str,
     reasoning_effort: &str,
 ) -> io::Result<()> {
     if provider_default_reasoning_effort(reasoning_effort) {
@@ -4223,8 +4230,14 @@ fn assert_provider_model_reasoning_effort(
     }
 
     let requested = reasoning_effort.trim().to_ascii_lowercase();
+    let normalized_model = model.trim().to_ascii_lowercase();
+    let codex_max_model = CODEX_MAX_REASONING_MODELS.contains(&normalized_model.as_str())
+        && provider_model_override(model, model_source);
     let Some(capability) = capability else {
-        if requested == "max" && provider_adapter_from_agent(provider_id) == "codex" {
+        if requested == "max"
+            && provider_adapter_from_agent(provider_id) == "codex"
+            && !codex_max_model
+        {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!(
@@ -4280,8 +4293,6 @@ fn assert_provider_model_reasoning_effort(
         .and_then(Value::as_str)
         .unwrap_or(provider_id)
         .trim();
-    let normalized_model = model.trim().to_ascii_lowercase();
-    let codex_max_model = CODEX_MAX_REASONING_MODELS.contains(&normalized_model.as_str());
     if requested == "max" && adapter.eq_ignore_ascii_case("codex") && !codex_max_model {
         supported.retain(|effort| effort != "max");
     }
@@ -7910,7 +7921,13 @@ fn build_provider_launch_command(
     let capability_registry =
         read_provider_capability_registry(&provider_capability_registry_path(project_dir))?;
     let capability = find_provider_capability(&capability_registry, agent).cloned();
-    assert_provider_model_reasoning_effort(capability.as_ref(), agent, model, reasoning_effort)?;
+    assert_provider_model_reasoning_effort(
+        capability.as_ref(),
+        agent,
+        model,
+        model_source,
+        reasoning_effort,
+    )?;
     let model_override = provider_model_override(model, model_source);
     let effort_override = !provider_default_reasoning_effort(reasoning_effort);
     match capability_adapter.trim().to_ascii_lowercase().as_str() {

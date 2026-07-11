@@ -2941,6 +2941,134 @@ panes:
 }
 
 #[test]
+fn operator_cli_provider_switch_allows_only_exact_gpt56_max_without_capabilities() {
+    let write_settings = |project_dir: &std::path::Path| {
+        fs::write(
+            project_dir.join(".winsmux.yaml"),
+            r#"
+agent: codex
+model: gpt-5.4
+model-source: cli-discovery
+prompt-transport: argv
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    agent: codex
+    model: gpt-5.4
+    model-source: cli-discovery
+    prompt-transport: argv
+"#,
+        )
+        .expect("test should write settings");
+    };
+    let run_switch = |project_dir: &std::path::Path, model: &str, model_source: &str| {
+        Command::new(env!("CARGO_BIN_EXE_winsmux"))
+            .args([
+                "provider-switch",
+                "worker-1",
+                "--model",
+                model,
+                "--model-source",
+                model_source,
+                "--reasoning-effort",
+                "max",
+                "--json",
+            ])
+            .current_dir(project_dir)
+            .output()
+            .expect("winsmux command should run")
+    };
+
+    for model in ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] {
+        let project_dir =
+            make_temp_project_dir(&format!("provider-switch-no-capabilities-{model}"));
+        write_settings(&project_dir);
+
+        let output = run_switch(&project_dir, model, "cli-discovery");
+        assert!(
+            output.status.success(),
+            "{model} max should pass without capabilities: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let payload: serde_json::Value = serde_json::from_slice(&output.stdout)
+            .expect("successful provider-switch output should be JSON");
+        assert_eq!(payload["model"], model);
+        assert_eq!(payload["reasoning_effort"], "max");
+    }
+
+    for model in [
+        "gpt-5.5",
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.3-codex-spark",
+        "provider-default",
+        "gpt-5.6-terra-preview",
+    ] {
+        let project_dir =
+            make_temp_project_dir(&format!("provider-switch-no-capabilities-reject-{model}"));
+        write_settings(&project_dir);
+
+        let output = run_switch(&project_dir, model, "cli-discovery");
+        assert!(!output.status.success(), "{model} max must be rejected");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(&format!(
+                "model '{model}' does not support reasoning_effort 'max'"
+            )),
+            "stderr should explain unsupported max for {model}"
+        );
+        assert!(
+            !project_dir
+                .join(".winsmux")
+                .join("provider-registry.json")
+                .exists(),
+            "{model} max must be rejected before provider registry write"
+        );
+    }
+
+    let project_dir = make_temp_project_dir("provider-switch-empty-capabilities");
+    write_settings(&project_dir);
+    let capabilities_dir = project_dir.join(".winsmux");
+    fs::create_dir_all(&capabilities_dir).expect("test should create capabilities directory");
+    fs::write(
+        capabilities_dir.join("provider-capabilities.json"),
+        r#"{"version":1,"providers":{}}"#,
+    )
+    .expect("test should write empty capabilities registry");
+
+    let output = run_switch(&project_dir, "gpt-5.6-terra", "cli-discovery");
+    assert!(
+        output.status.success(),
+        "GPT-5.6 Terra max should pass with an empty capabilities registry: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let payload: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .expect("successful provider-switch output should be JSON");
+    assert_eq!(payload["model"], "gpt-5.6-terra");
+    assert_eq!(payload["reasoning_effort"], "max");
+
+    let project_dir =
+        make_temp_project_dir("provider-switch-no-capabilities-provider-default-source");
+    write_settings(&project_dir);
+    let output = run_switch(&project_dir, "gpt-5.6-terra", "provider-default");
+    assert!(
+        !output.status.success(),
+        "max must be rejected when provider-default suppresses the concrete GPT-5.6 model"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("model 'gpt-5.6-terra' does not support reasoning_effort 'max'"),
+        "stderr should explain that an unprojected model cannot use max"
+    );
+    assert!(
+        !project_dir
+            .join(".winsmux")
+            .join("provider-registry.json")
+            .exists(),
+        "provider-default max must be rejected before provider registry write"
+    );
+}
+
+#[test]
 fn operator_cli_provider_switch_uses_provider_efforts_for_models_without_per_model_declaration() {
     let project_dir = make_temp_project_dir("provider-switch-provider-effort-fallback");
     write_provider_switch_fixture(&project_dir);
@@ -3439,6 +3567,63 @@ panes:
     let log = fs::read_to_string(&log_path).expect("fake winsmux log should exist");
     assert!(log.contains("send-keys -t \"%2\" -l -- \"codex --sandbox"));
     assert!(!log.contains("model=gpt-5.4"));
+}
+
+#[test]
+fn operator_cli_restart_rejects_unprojected_gpt56_max_before_launch() {
+    let project_dir = make_temp_project_dir("restart-unprojected-gpt56-max");
+    write_provider_switch_fixture(&project_dir);
+    fs::remove_file(
+        project_dir
+            .join(".winsmux")
+            .join("provider-capabilities.json"),
+    )
+    .expect("test should remove capability registry");
+    fs::write(
+        project_dir.join(".winsmux").join("manifest.yaml"),
+        format!(
+            r#"
+session:
+  name: winsmux-orchestra
+  project_dir: {}
+panes:
+  worker-1:
+    pane_id: "%2"
+    role: Builder
+    launch_dir: {}
+    capability_adapter: codex
+"#,
+            project_dir.display(),
+            project_dir.display()
+        ),
+    )
+    .expect("test should write manifest");
+    fs::write(
+        project_dir.join(".winsmux").join("provider-registry.json"),
+        r#"{"version":1,"slots":{"worker-1":{"agent":"codex","model":"gpt-5.6-terra","model_source":"provider-default","reasoning_effort":"max","updated_at_utc":"2026-07-12T00:00:00Z"}}}"#,
+    )
+    .expect("test should write persisted provider override");
+    let (winsmux_bin, log_path) =
+        write_fake_winsmux_restart(&project_dir, Some("winsmux-orchestra"), &["%2"]);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["restart", "worker-1"])
+        .env("WINSMUX_BIN", winsmux_bin)
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("model 'gpt-5.6-terra' does not support reasoning_effort 'max'"),
+        "restart must reject max when the concrete model is not projected"
+    );
+    let log = fs::read_to_string(&log_path).unwrap_or_default();
+    assert!(
+        !log.contains("send-keys"),
+        "restart must not launch an unprojected max configuration: {log}"
+    );
 }
 
 #[test]

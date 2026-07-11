@@ -1704,6 +1704,111 @@ agent-slots:
         $gpt56Command | Should -Match "-c 'model=gpt-5\.6-terra'.*-c 'model_reasoning_effort=max'"
     }
 
+    It 'allows max for only exact GPT-5.6 Codex models without configured capabilities' {
+        foreach ($model in @('gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna')) {
+            $command = Get-BridgeProviderLaunchCommand `
+                -ProviderId 'codex' `
+                -Model $model `
+                -ModelSource 'cli-discovery' `
+                -ReasoningEffort 'max' `
+                -ProjectDir 'C:\Project Root' `
+                -GitWorktreeDir 'C:\Project Root\.git\worktrees\worker-1' `
+                -RootPath $script:settingsTempRoot
+
+            $command | Should -Match "-c 'model=$model'.*-c 'model_reasoning_effort=max'"
+        }
+
+        foreach ($model in @('gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex-spark', 'provider-default', 'gpt-5.6-terra-preview')) {
+            {
+                Get-BridgeProviderLaunchCommand `
+                    -ProviderId 'codex' `
+                    -Model $model `
+                    -ModelSource 'cli-discovery' `
+                    -ReasoningEffort 'max' `
+                    -ProjectDir 'C:\Project Root' `
+                    -GitWorktreeDir 'C:\Project Root\.git\worktrees\worker-1' `
+                    -RootPath $script:settingsTempRoot
+            } | Should -Throw "*model '$model' does not support reasoning_effort 'max'*"
+        }
+
+@'
+agent: codex
+model: gpt-5.4
+model-source: cli-discovery
+reasoning-effort: high
+prompt-transport: argv
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+        $settings = Get-BridgeSettings -RootPath $script:settingsTempRoot
+        $gpt56Config = Get-SlotAgentConfig `
+            -Role 'Worker' `
+            -SlotId 'worker-1' `
+            -Settings $settings `
+            -RootPath $script:settingsTempRoot `
+            -ProviderRegistryEntryOverride ([ordered]@{
+                model = 'gpt-5.6-terra'
+                model_source = 'cli-discovery'
+                reasoning_effort = 'max'
+            })
+        $gpt56Config.Model | Should -Be 'gpt-5.6-terra'
+        $gpt56Config.ReasoningEffort | Should -Be 'max'
+
+        {
+            Get-SlotAgentConfig `
+                -Role 'Worker' `
+                -SlotId 'worker-1' `
+                -Settings $settings `
+                -RootPath $script:settingsTempRoot `
+                -ProviderRegistryEntryOverride ([ordered]@{
+                    model = 'gpt-5.6-terra'
+                    model_source = 'provider-default'
+                    reasoning_effort = 'max'
+                })
+        } | Should -Throw "*model 'gpt-5.6-terra' does not support reasoning_effort 'max'*"
+
+        {
+            Get-SlotAgentConfig `
+                -Role 'Worker' `
+                -SlotId 'worker-1' `
+                -Settings $settings `
+                -RootPath $script:settingsTempRoot `
+                -ProviderRegistryEntryOverride ([ordered]@{
+                    model = 'gpt-5.5'
+                    model_source = 'cli-discovery'
+                    reasoning_effort = 'max'
+                })
+        } | Should -Throw "*model 'gpt-5.5' does not support reasoning_effort 'max'*"
+
+        $registryPath = Get-BridgeProviderCapabilityRegistryPath -RootPath $script:settingsTempRoot
+        $registryDir = Split-Path -Parent $registryPath
+        New-Item -ItemType Directory -Path $registryDir -Force | Out-Null
+        '{"version":1,"providers":{}}' | Set-Content -Path $registryPath -Encoding UTF8
+        $emptyRegistryCommand = Get-BridgeProviderLaunchCommand `
+            -ProviderId 'codex' `
+            -Model 'gpt-5.6-terra' `
+            -ModelSource 'cli-discovery' `
+            -ReasoningEffort 'max' `
+            -ProjectDir 'C:\Project Root' `
+            -GitWorktreeDir 'C:\Project Root\.git\worktrees\worker-1' `
+            -RootPath $script:settingsTempRoot
+        $emptyRegistryCommand | Should -Match "-c 'model=gpt-5\.6-terra'.*-c 'model_reasoning_effort=max'"
+
+        {
+            Get-BridgeProviderLaunchCommand `
+                -ProviderId 'codex' `
+                -Model 'gpt-5.6-terra' `
+                -ModelSource 'provider-default' `
+                -ReasoningEffort 'max' `
+                -ProjectDir 'C:\Project Root' `
+                -GitWorktreeDir 'C:\Project Root\.git\worktrees\worker-1' `
+                -RootPath $script:settingsTempRoot
+        } | Should -Throw "*model 'gpt-5.6-terra' does not support reasoning_effort 'max'*"
+    }
+
     It 'distinguishes a missing interrupt capability from an explicit false value' {
         $registryPath = Get-BridgeProviderCapabilityRegistryPath -RootPath $script:settingsTempRoot
         $registryDir = Split-Path -Parent $registryPath
@@ -18640,6 +18745,25 @@ agent-slots:
         $registryPath = Join-Path $script:providerSwitchTempRoot '.winsmux\provider-registry.json'
         $registry = Get-Content -LiteralPath $registryPath -Raw -Encoding UTF8 | ConvertFrom-Json
         $registry.slots.'worker-1'.reasoning_effort | Should -Be 'max'
+    }
+
+    It 'rejects unprojected GPT-5.6 max before provider-switch writes the registry' {
+        Remove-Item -LiteralPath (Join-Path $script:providerSwitchTempRoot '.winsmux\provider-capabilities.json') -Force
+        $registryPath = Join-Path $script:providerSwitchTempRoot '.winsmux\provider-registry.json'
+        $registryBefore = '{"version":1,"slots":{"worker-9":{"agent":"claude","model":"opus","updated_at_utc":"2026-07-12T00:00:00Z"}}}'
+        Set-Content -LiteralPath $registryPath -Value $registryBefore -Encoding UTF8 -NoNewline
+
+        Push-Location $script:providerSwitchTempRoot
+        try {
+            $output = & pwsh -NoProfile -File $script:winsmuxCoreRawPath provider-switch worker-1 --agent codex --model gpt-5.6-terra --model-source provider-default --reasoning-effort max --json 2>&1
+            $exitCode = $LASTEXITCODE
+        } finally {
+            Pop-Location
+        }
+
+        $exitCode | Should -Be 1
+        [string]::Join("`n", @($output)) | Should -Match "model 'gpt-5.6-terra' does not support reasoning_effort 'max'"
+        (Get-Content -LiteralPath $registryPath -Raw -Encoding UTF8) | Should -Be $registryBefore
     }
 
     It 'uses the built-in OpenRouter capability without a private capability file entry' {
