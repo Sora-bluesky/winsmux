@@ -52,7 +52,7 @@ const REQUIRED_DENY_PATTERNS = [
 ];
 
 // Expected minimum hook count
-const MIN_HOOK_COUNT = 10; // Wave 0+1+2 = 10 hooks minimum
+const MIN_HOOK_COUNT = 29; // Tracked sh-* hooks, including operator playbook injection
 
 // Token budget defaults (§5.1.2, ADR-026)
 const DEFAULT_TOKEN_BUDGET = {

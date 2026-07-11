@@ -25,6 +25,7 @@ const SAFE_SH_DIR = typeof SH_DIR === "string" && SH_DIR ? SH_DIR : os.tmpdir();
 const BACKUP_DIR = path.join(SAFE_SH_DIR, "compact-backup");
 const CLAUDE_MD = path.join(".claude", "CLAUDE.md");
 const CLAUDE_MD_LABEL = ".claude/CLAUDE.md";
+const OPERATOR_PLAYBOOK_LABEL = "docs/operator-playbook.md";
 const BACKLOG_FILE = getBacklogPath();
 
 // ---------------------------------------------------------------------------
@@ -120,6 +121,7 @@ function buildRestorationContext(session, integrityCheck) {
   parts.push("");
   parts.push("Key files to re-read if needed:");
   parts.push(`  - ${CLAUDE_MD_LABEL} (project instructions)`);
+  parts.push(`  - ${OPERATOR_PLAYBOOK_LABEL} (operator procedures)`);
   parts.push("  - .claude/rules/ (security & coding rules)");
   if (fs.existsSync(BACKLOG_FILE)) {
     parts.push(`  - ${BACKLOG_FILE} (planning backlog SoT)`);

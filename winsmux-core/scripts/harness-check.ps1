@@ -93,6 +93,33 @@ function Test-HarnessSettingsLocalTracked {
     return ($LASTEXITCODE -eq 0)
 }
 
+function Resolve-HarnessRuntimeProjectDir {
+    param([Parameter(Mandatory = $true)][string]$CodeRoot)
+
+    $localManifestPath = Join-Path $CodeRoot '.winsmux\manifest.yaml'
+    if (Test-Path -LiteralPath $localManifestPath -PathType Leaf) {
+        return $CodeRoot
+    }
+
+    $commonGitDirOutput = & git -C $CodeRoot rev-parse --path-format=absolute --git-common-dir 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        return $CodeRoot
+    }
+
+    $commonGitDir = ($commonGitDirOutput | Out-String).Trim()
+    if ([string]::IsNullOrWhiteSpace($commonGitDir)) {
+        return $CodeRoot
+    }
+
+    $commonProjectDir = Split-Path -Parent ([System.IO.Path]::GetFullPath($commonGitDir))
+    $commonManifestPath = Join-Path $commonProjectDir '.winsmux\manifest.yaml'
+    if (Test-Path -LiteralPath $commonManifestPath -PathType Leaf) {
+        return $commonProjectDir
+    }
+
+    return $CodeRoot
+}
+
 function Test-HarnessSettingsHasHookCommand {
     param(
         [AllowNull()]$SettingsObject,
@@ -171,7 +198,8 @@ function Get-HarnessHookSignatureViolations {
         '.claude/hooks/sh-permission.js',
         '.claude/hooks/sh-gate.js',
         '.claude/hooks/sh-elicitation.js',
-        '.claude/hooks/sh-orchestra-gate.js'
+        '.claude/hooks/sh-orchestra-gate.js',
+        '.claude/hooks/sh-operator-playbook.js'
     )
 
     foreach ($relativePath in $hookFiles) {
@@ -211,10 +239,13 @@ function Get-HarnessHookSignatureViolations {
 }
 
 function Test-HarnessSmokeContract {
-    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+    param(
+        [Parameter(Mandatory = $true)][string]$CodeRoot,
+        [Parameter(Mandatory = $true)][string]$RuntimeProjectDir
+    )
 
-    $smokeScript = Join-Path $RepoRoot 'winsmux-core\scripts\orchestra-smoke.ps1'
-    $stdout = & pwsh -NoProfile -File $smokeScript -ProjectDir $RepoRoot -AsJson 2>&1
+    $smokeScript = Join-Path $CodeRoot 'winsmux-core\scripts\orchestra-smoke.ps1'
+    $stdout = & pwsh -NoProfile -File $smokeScript -ProjectDir $RuntimeProjectDir -AsJson 2>&1
     $exitCode = $LASTEXITCODE
     $raw = ($stdout | Out-String).Trim()
     $parsed = $null
@@ -237,6 +268,7 @@ function Test-HarnessSmokeContract {
 }
 
 $results = [System.Collections.Generic.List[object]]::new()
+$runtimeProjectDir = Resolve-HarnessRuntimeProjectDir -CodeRoot $ProjectDir
 
 $settingsPath = Join-Path $ProjectDir '.claude\settings.json'
 $settingsLocalPath = Join-Path $ProjectDir '.claude\settings.local.json'
@@ -246,6 +278,10 @@ $settingsLocal = Get-HarnessSettingsObject -Path $settingsLocalPath
 $settingsExists = Test-Path -LiteralPath $settingsPath -PathType Leaf
 $settingsMessage = if ($settingsExists) { 'Project settings.json found.' } else { 'Missing .claude/settings.json.' }
 $results.Add((New-HarnessCheckRecord -Name 'settings-json-exists' -Passed $settingsExists -Message $settingsMessage -Data $settingsPath)) | Out-Null
+
+$operatorPlaybookHook = Test-HarnessSettingsHasHookCommand -SettingsObject $settings -EventName 'SessionStart' -Matcher '' -Command 'node .claude/hooks/sh-operator-playbook.js'
+$operatorPlaybookHookMessage = if ($operatorPlaybookHook) { 'Project settings.json registers the operator playbook SessionStart hook.' } else { 'settings.json must register node .claude/hooks/sh-operator-playbook.js in the empty-matcher SessionStart group.' }
+$results.Add((New-HarnessCheckRecord -Name 'settings-registers-operator-playbook' -Passed $operatorPlaybookHook -Message $operatorPlaybookHookMessage -Data $settingsPath)) | Out-Null
 
 $sharedOrchestraGate = Test-HarnessSettingsHasHookCommand -SettingsObject $settings -EventName 'PreToolUse' -Matcher '' -Command 'node .claude/hooks/sh-orchestra-gate.js'
 $sharedOrchestraGateMessage = if ($sharedOrchestraGate) { 'Project settings.json registers the orchestra gate hook in the empty-matcher PreToolUse group.' } else { 'settings.json must register node .claude/hooks/sh-orchestra-gate.js in the empty-matcher PreToolUse group.' }
@@ -277,7 +313,7 @@ $profileCheckPassed = $false
 $profileCheckData = $null
 $profileCheckMessage = ''
 try {
-    $profile = Ensure-OrchestraAttachProfile -ProjectDir $ProjectDir
+    $profile = Ensure-OrchestraAttachProfile -ProjectDir $runtimeProjectDir
     $profileCheckPassed = Test-Path -LiteralPath $profile.FragmentPath -PathType Leaf
     $profileCheckData = $profile
     $profileCheckMessage = if ($profileCheckPassed) { 'Windows Terminal attach profile is registered.' } else { 'Attach profile fragment was not created.' }
@@ -291,7 +327,7 @@ $attachPathWritable = Test-HarnessWritableFile -Path $attachProbePath
 $attachWritableMessage = if ($attachPathWritable) { 'Attach handshake path is writable.' } else { 'Attach handshake path is not writable.' }
 $results.Add((New-HarnessCheckRecord -Name 'attach-handshake-path-writable' -Passed $attachPathWritable -Message $attachWritableMessage -Data $attachProbePath)) | Out-Null
 
-$hostCandidates = @(Get-OrchestraVisibleAttachHostCandidates -ProjectDir $ProjectDir)
+$hostCandidates = @(Get-OrchestraVisibleAttachHostCandidates -ProjectDir $runtimeProjectDir)
 $availableHostCandidates = @($hostCandidates | Where-Object { [bool]$_.Available })
 $hostAdapterPassed = ($availableHostCandidates.Count -gt 0)
 $hostAdapterMessage = if ($hostAdapterPassed) {
@@ -310,7 +346,7 @@ $results.Add((New-HarnessCheckRecord -Name 'visible-attach-host-adapters' -Passe
     }
 ))) | Out-Null
 
-$smokeProbe = Test-HarnessSmokeContract -RepoRoot $ProjectDir
+$smokeProbe = Test-HarnessSmokeContract -CodeRoot $ProjectDir -RuntimeProjectDir $runtimeProjectDir
 $smokePassed = $false
 $smokeMessage = ''
 $attachRegistryPassed = $false
@@ -396,10 +432,11 @@ $results.Add((New-HarnessCheckRecord -Name 'startup-attach-consistency' -Passed 
 
 $passed = (@($results | Where-Object { -not $_.passed }).Count -eq 0)
 $summary = [ordered]@{
-    checked_at = (Get-Date).ToString('o')
-    project_dir = $ProjectDir
-    passed = $passed
-    results = @($results)
+    checked_at         = (Get-Date).ToString('o')
+    project_dir        = $ProjectDir
+    runtime_project_dir = $runtimeProjectDir
+    passed             = $passed
+    results            = @($results)
 }
 
 if ($AsJson) {
