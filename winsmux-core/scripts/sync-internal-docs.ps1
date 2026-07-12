@@ -249,18 +249,40 @@ function Get-RoadmapLocalizationMap {
     }
 }
 
+function ConvertFrom-PlanningVersion {
+    param([AllowNull()][string]$Version)
+
+    if ($Version -notmatch '^v(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)(?:\.(?<revision>\d+))?$') {
+        return $null
+    }
+
+    $revision = 0
+    if (-not [string]::IsNullOrWhiteSpace($Matches['revision'])) {
+        $revision = [int]$Matches['revision']
+    }
+
+    return [pscustomobject]@{
+        Major    = [int]$Matches['major']
+        Minor    = [int]$Matches['minor']
+        Patch    = [int]$Matches['patch']
+        Revision = $revision
+        Raw      = $Version
+    }
+}
+
 function Get-VersionSortTuple {
     param([AllowNull()][string]$Version)
 
-    if ($Version -match '^v(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)$') {
-        return @([int]$Matches['major'], [int]$Matches['minor'], [int]$Matches['patch'], $Version)
+    $parsedVersion = ConvertFrom-PlanningVersion -Version $Version
+    if ($null -ne $parsedVersion) {
+        return @($parsedVersion.Major, $parsedVersion.Minor, $parsedVersion.Patch, $parsedVersion.Revision, $parsedVersion.Raw)
     }
 
     if ($Version -eq 'pending') {
-        return @(9998, 0, 0, $Version)
+        return @(9998, 0, 0, 0, $Version)
     }
 
-    return @(9997, 0, 0, (ConvertTo-StringOrEmpty -Value $Version))
+    return @(9997, 0, 0, 0, (ConvertTo-StringOrEmpty -Value $Version))
 }
 
 function Get-PlanningState {

@@ -449,6 +449,7 @@ manual flow
         }
     )
 }
+
 '@
 
             $output = & $script:PwshPath -NoProfile -File $script:SyncInternalDocsPath `
@@ -464,6 +465,25 @@ manual flow
             $manualChecklist = Get-Content -LiteralPath $manualChecklistPath -Raw -Encoding UTF8
             $manualChecklist | Should -Match '\| v1\.0\.0: Release gate \| 進行中 \| partial release gate \| mixed task states \| \[ \] 未 \| \[ \] \| partial \|'
             $manualChecklist | Should -Match '\| v1\.0\.1 \| 公開済み \| complete release gate \| all task states are done \| \[ \] 未 \| \[ \] \| complete \|'
+
+            $sortedVersions = & {
+                . $script:SyncInternalDocsPath `
+                    -BacklogPath $backlogPath `
+                    -RoadmapTitleJaPath $roadmapTitlePath `
+                    -FeatureInventoryPath $featureInventoryPath `
+                    -ManualChecklistPath $manualChecklistPath `
+                    -MetaPath $metaPath | Out-Null
+
+                @('v0.36.29', 'v0.36.28.1', 'v0.36.28') |
+                    Sort-Object `
+                        @{ Expression = { (Get-VersionSortTuple -Version $_)[0] } }, `
+                        @{ Expression = { (Get-VersionSortTuple -Version $_)[1] } }, `
+                        @{ Expression = { (Get-VersionSortTuple -Version $_)[2] } }, `
+                        @{ Expression = { (Get-VersionSortTuple -Version $_)[3] } }
+            }
+            $sortedVersions[0] | Should -Be 'v0.36.28'
+            $sortedVersions[1] | Should -Be 'v0.36.28.1'
+            $sortedVersions[2] | Should -Be 'v0.36.29'
         } finally {
             Remove-Item -LiteralPath $fixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
         }
@@ -1389,5 +1409,206 @@ Describe 'desktop PTY event payload contract' {
         $client | Should -Match 'normalizePtyOutputEventPayload\(event\.payload\)'
         $client | Should -Match 'typeof payload === "string"'
         $client | Should -Match 'typeof payload\?\.data === "string"'
+    }
+}
+
+Describe 'sync-roadmap semantic version ordering' {
+    BeforeAll {
+        $repoRoot = Split-Path -Parent $PSScriptRoot
+        $fixtureRoot = Join-Path $TestDrive 'roadmap-fixture'
+        $fixtureScriptRoot = Join-Path $fixtureRoot 'scripts'
+        $backlogPath = Join-Path $fixtureRoot 'backlog.yaml'
+        $roadmapPath = Join-Path $fixtureRoot 'ROADMAP.md'
+        $titlePath = Join-Path $fixtureRoot 'roadmap-title-ja.psd1'
+
+        New-Item -ItemType Directory -Path $fixtureScriptRoot -Force | Out-Null
+        Copy-Item -LiteralPath (Join-Path $repoRoot 'winsmux-core\scripts\sync-roadmap.ps1') -Destination $fixtureScriptRoot
+        Copy-Item -LiteralPath (Join-Path $repoRoot 'winsmux-core\scripts\planning-paths.ps1') -Destination $fixtureScriptRoot
+        Set-Content -LiteralPath (Join-Path $fixtureScriptRoot 'sync-internal-docs.ps1') -Encoding utf8NoBOM -Value @'
+param([string]$BacklogPath, [string]$RoadmapTitleJaPath)
+'@
+        $script:RoadmapFixtureScriptPath = Join-Path $fixtureScriptRoot 'sync-roadmap.ps1'
+
+        Set-Content -LiteralPath $backlogPath -Encoding utf8NoBOM -Value @'
+version: 3
+tasks:
+  # === v0.19.9.1: Four-part backlog heading ===
+  - id: TASK-FOUR-HEADING
+    title: Four-part heading task
+    status: todo
+    priority: P0
+    target_version: "v0.19.9.1"
+    repo: winsmux
+  # === v0.36.28: Three-part current release ===
+  - id: TASK-THREE-CURRENT
+    title: Three-part current task
+    status: todo
+    priority: P0
+    target_version: "v0.36.28"
+    repo: winsmux
+  # === v0.36.28.1: Four-part patch release ===
+  - id: TASK-FOUR-PATCH
+    title: Four-part patch task
+    status: todo
+    priority: P0
+    target_version: "v0.36.28.1"
+    repo: winsmux
+  # === v0.36.29: Three-part next release ===
+  - id: TASK-THREE-NEXT
+    title: Three-part next task
+    status: todo
+    priority: P0
+    target_version: "v0.36.29"
+    repo: winsmux
+'@
+
+        Set-Content -LiteralPath $titlePath -Encoding utf8NoBOM -Value @'
+@{
+    VersionTitles = @{
+        'v0.36.28' = '3要素の現行版'
+        'v0.36.28.1' = '4要素の修正版'
+        'v0.36.29' = '3要素の次版'
+    }
+    TaskTitles = @{
+        'TASK-THREE-CURRENT' = '3要素の現行タスク'
+        'TASK-FOUR-PATCH' = '4要素の修正タスク'
+        'TASK-THREE-NEXT' = '3要素の次タスク'
+    }
+}
+'@
+
+        $syncOutput = @(& pwsh -NoProfile -File $script:RoadmapFixtureScriptPath `
+                -BacklogPath $backlogPath `
+                -RoadmapPath $roadmapPath `
+                -RoadmapTitleJaPath $titlePath 2>&1)
+        $script:SyncExitCode = $LASTEXITCODE
+        $script:SyncOutput = $syncOutput -join "`n"
+        $script:RoadmapLines = @(Get-Content -LiteralPath $roadmapPath -Encoding UTF8)
+    }
+
+    It 'includes a four-component release in the focus detail section' {
+        $script:SyncExitCode | Should -Be 0 -Because $script:SyncOutput
+        $script:RoadmapLines | Should -Contain '### v0.36.28.1: 4要素の修正版'
+        $script:RoadmapLines | Should -Contain '| [ ] | TASK-FOUR-PATCH | 4要素の修正タスク | P0 最優先 | winsmux | todo |'
+        $script:RoadmapLines | Should -Not -Contain '| v0.36.28.1 | TASK-FOUR-PATCH | 4要素の修正タスク | P0 最優先 | winsmux | todo |'
+    }
+
+    It 'discovers a four-component title from the backlog heading without an override' {
+        $script:RoadmapLines | Should -Contain '| v0.19.9.1 | Four-part backlog heading | 1 | [--------------------] 0% (0/1) |'
+    }
+
+    It 'requires a Japanese version-title override for a valid four-component release' {
+        $fixtureRoot = Join-Path $TestDrive 'missing-four-part-version-title'
+        $backlogPath = Join-Path $fixtureRoot 'backlog.yaml'
+        $roadmapPath = Join-Path $fixtureRoot 'ROADMAP.md'
+        $titlePath = Join-Path $fixtureRoot 'roadmap-title-ja.psd1'
+        New-Item -ItemType Directory -Path $fixtureRoot -Force | Out-Null
+        Set-Content -LiteralPath $backlogPath -Encoding utf8NoBOM -Value @'
+version: 3
+tasks:
+  - id: TASK-MISSING-VERSION-TITLE
+    title: Missing version title
+    status: todo
+    priority: P0
+    target_version: "v0.36.28.1"
+    repo: winsmux
+'@
+        Set-Content -LiteralPath $titlePath -Encoding utf8NoBOM -Value @'
+@{
+    VersionTitles = @{}
+    TaskTitles = @{
+        'TASK-MISSING-VERSION-TITLE' = '版タイトル不足の検証'
+    }
+}
+'@
+
+        $output = @(& pwsh -NoProfile -File $script:RoadmapFixtureScriptPath `
+                -BacklogPath $backlogPath `
+                -RoadmapPath $roadmapPath `
+                -RoadmapTitleJaPath $titlePath 2>&1)
+        $LASTEXITCODE | Should -Be 1
+        $expectedError = "Roadmap Japanese version-title gate failed. Add version title overrides to $titlePath for: v0.36.28.1"
+        ($output | Out-String) | Should -Match ([regex]::Escape($expectedError))
+    }
+
+    It 'keeps invalid version shapes out of numeric focus ordering and title gates' {
+        $fixtureRoot = Join-Path $TestDrive 'invalid-roadmap-versions'
+        $backlogPath = Join-Path $fixtureRoot 'backlog.yaml'
+        $roadmapPath = Join-Path $fixtureRoot 'ROADMAP.md'
+        $titlePath = Join-Path $fixtureRoot 'roadmap-title-ja.psd1'
+        New-Item -ItemType Directory -Path $fixtureRoot -Force | Out-Null
+        Set-Content -LiteralPath $backlogPath -Encoding utf8NoBOM -Value @'
+version: 3
+tasks:
+  - id: TASK-VALID
+    title: Valid version task
+    status: todo
+    priority: P0
+    target_version: "v0.36.29"
+    repo: winsmux
+  - id: TASK-TOO-MANY
+    title: Too many version parts
+    status: todo
+    priority: P0
+    target_version: "v0.36.28.1.2"
+    repo: winsmux
+  - id: TASK-PRERELEASE
+    title: Prerelease version
+    status: todo
+    priority: P0
+    target_version: "v0.36.28-alpha"
+    repo: winsmux
+  - id: TASK-TRAILING-DOT
+    title: Trailing dot version
+    status: todo
+    priority: P0
+    target_version: "v0.36.28."
+    repo: winsmux
+'@
+        Set-Content -LiteralPath $titlePath -Encoding utf8NoBOM -Value @'
+@{
+    VersionTitles = @{
+        'v0.36.29' = '有効な版'
+    }
+    TaskTitles = @{
+        'TASK-VALID' = '有効な版のタスク'
+    }
+}
+'@
+
+        $output = @(& pwsh -NoProfile -File $script:RoadmapFixtureScriptPath `
+                -BacklogPath $backlogPath `
+                -RoadmapPath $roadmapPath `
+                -RoadmapTitleJaPath $titlePath 2>&1)
+        $LASTEXITCODE | Should -Be 0 -Because ($output | Out-String)
+        $roadmapLines = @(Get-Content -LiteralPath $roadmapPath -Encoding UTF8)
+        foreach ($invalidVersion in @('v0.36.28.1.2', 'v0.36.28-alpha', 'v0.36.28.')) {
+            @($roadmapLines | Where-Object { $_ -like "### ${invalidVersion}*" }).Count | Should -Be 0
+        }
+
+        $validIndex = [Array]::FindIndex($roadmapLines, [Predicate[string]] { param($line) $line -like '| v0.36.29 |*' })
+        foreach ($invalidVersion in @('v0.36.28.1.2', 'v0.36.28-alpha', 'v0.36.28.')) {
+            $invalidIndex = [Array]::FindIndex($roadmapLines, [Predicate[string]] { param($line) $line -like "| ${invalidVersion} |*" })
+            $invalidIndex | Should -BeGreaterThan $validIndex
+        }
+    }
+
+    It 'orders a four-component patch release between adjacent three-component releases' {
+        $currentIndex = [Array]::IndexOf($script:RoadmapLines, '| v0.36.28 | 3要素の現行版 | 1 | [--------------------] 0% (0/1) |')
+        $patchIndex = [Array]::IndexOf($script:RoadmapLines, '| v0.36.28.1 | 4要素の修正版 | 1 | [--------------------] 0% (0/1) |')
+        $nextIndex = [Array]::IndexOf($script:RoadmapLines, '| v0.36.29 | 3要素の次版 | 1 | [--------------------] 0% (0/1) |')
+
+        $currentIndex | Should -BeGreaterOrEqual 0
+        $patchIndex | Should -BeGreaterThan $currentIndex
+        $patchIndex | Should -BeLessThan $nextIndex
+    }
+
+    It 'preserves focus details and ordering for three-component releases' {
+        $script:RoadmapLines | Should -Contain '### v0.36.28: 3要素の現行版'
+        $script:RoadmapLines | Should -Contain '### v0.36.29: 3要素の次版'
+
+        $currentDetailIndex = [Array]::IndexOf($script:RoadmapLines, '### v0.36.28: 3要素の現行版')
+        $nextDetailIndex = [Array]::IndexOf($script:RoadmapLines, '### v0.36.29: 3要素の次版')
+        $nextDetailIndex | Should -BeGreaterThan $currentDetailIndex
     }
 }

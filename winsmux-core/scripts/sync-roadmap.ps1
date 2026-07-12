@@ -169,8 +169,12 @@ function Get-VersionTitleMap {
     $versionTitles = [ordered]@{}
 
     foreach ($line in ($normalized -split "`n")) {
-        if ($line -match '^[ \t]*#[ \t]*===[ \t]*(?<version>v\d+\.\d+\.\d+):[ \t]*(?<title>.+?)[ \t]*===[ \t]*$') {
-            $versionTitles[$Matches['version']] = $Matches['title'].Trim()
+        if ($line -match '^[ \t]*#[ \t]*===[ \t]*(?<version>v[^:\s]+):[ \t]*(?<title>.+?)[ \t]*===[ \t]*$') {
+            $version = $Matches['version']
+            $title = $Matches['title'].Trim()
+            if ($null -ne (ConvertFrom-PlanningVersion -Version $version)) {
+                $versionTitles[$version] = $title
+            }
         }
     }
 
@@ -197,17 +201,42 @@ function Get-RoadmapLocalizationMap {
     }
 }
 
+function ConvertFrom-PlanningVersion {
+    param(
+        [AllowNull()]
+        [string]$Version
+    )
+
+    if ($Version -notmatch '^v(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)(?:\.(?<revision>\d+))?$') {
+        return $null
+    }
+
+    $revision = 0
+    if (-not [string]::IsNullOrWhiteSpace($Matches['revision'])) {
+        $revision = [int]$Matches['revision']
+    }
+
+    return [pscustomobject]@{
+        Major    = [int]$Matches['major']
+        Minor    = [int]$Matches['minor']
+        Patch    = [int]$Matches['patch']
+        Revision = $revision
+        Raw      = $Version
+    }
+}
+
 function Get-VersionSortTuple {
     param(
         [AllowNull()]
         [string]$Version
     )
 
-    if ($Version -match '^v(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)$') {
-        return @([int]$Matches['major'], [int]$Matches['minor'], [int]$Matches['patch'])
+    $parsedVersion = ConvertFrom-PlanningVersion -Version $Version
+    if ($null -ne $parsedVersion) {
+        return @($parsedVersion.Major, $parsedVersion.Minor, $parsedVersion.Patch, $parsedVersion.Revision)
     }
 
-    return @([int]::MaxValue, [int]::MaxValue, [int]::MaxValue)
+    return
 }
 
 function Test-VersionGreaterOrEqual {
@@ -219,10 +248,13 @@ function Test-VersionGreaterOrEqual {
         [string]$MinimumVersion
     )
 
-    $left = Get-VersionSortTuple -Version $Version
-    $right = Get-VersionSortTuple -Version $MinimumVersion
+    $left = @(Get-VersionSortTuple -Version $Version)
+    $right = @(Get-VersionSortTuple -Version $MinimumVersion)
+    if ($left.Count -ne 4 -or $right.Count -ne 4) {
+        return $false
+    }
 
-    for ($index = 0; $index -lt 3; $index++) {
+    for ($index = 0; $index -lt 4; $index++) {
         if ($left[$index] -gt $right[$index]) {
             return $true
         }
@@ -245,7 +277,7 @@ function Test-RequiresJapaneseVersionTitle {
         return $true
     }
 
-    if ($Version -match '^v\d+\.\d+\.\d+$') {
+    if ($null -ne (ConvertFrom-PlanningVersion -Version $Version)) {
         return Test-VersionGreaterOrEqual -Version $Version -MinimumVersion 'v0.20.0'
     }
 
@@ -687,7 +719,7 @@ function Test-RoadmapVersionInFocusRange {
         [string]$Version
     )
 
-    if (-not ($Version -match '^v\d+\.\d+\.\d+$')) {
+    if ($null -eq (ConvertFrom-PlanningVersion -Version $Version)) {
         return $false
     }
 
@@ -701,20 +733,23 @@ function Get-VersionSortKey {
         [string]$Version
     )
 
-    if ($Version -match '^v(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)$') {
+    $parsedVersion = ConvertFrom-PlanningVersion -Version $Version
+    if ($null -ne $parsedVersion) {
         return [pscustomobject]@{
-            Major = [int]$Matches['major']
-            Minor = [int]$Matches['minor']
-            Patch = [int]$Matches['patch']
-            Raw   = $Version
+            Major    = $parsedVersion.Major
+            Minor    = $parsedVersion.Minor
+            Patch    = $parsedVersion.Patch
+            Revision = $parsedVersion.Revision
+            Raw      = $parsedVersion.Raw
         }
     }
 
     return [pscustomobject]@{
-        Major = [int]::MaxValue
-        Minor = [int]::MaxValue
-        Patch = [int]::MaxValue
-        Raw   = (ConvertTo-StringOrEmpty -Value $Version)
+        Major    = [int]::MaxValue
+        Minor    = [int]::MaxValue
+        Patch    = [int]::MaxValue
+        Revision = [int]::MaxValue
+        Raw      = (ConvertTo-StringOrEmpty -Value $Version)
     }
 }
 
@@ -853,7 +888,7 @@ foreach ($version in $versionTitles.Keys) {
 }
 
 $versionGroups = @($versionGroupMap.Values) |
-    Sort-Object @{ Expression = { (Get-VersionSortKey -Version $_.Name).Major } }, @{ Expression = { (Get-VersionSortKey -Version $_.Name).Minor } }, @{ Expression = { (Get-VersionSortKey -Version $_.Name).Patch } }, @{ Expression = { (Get-VersionSortKey -Version $_.Name).Raw } }
+    Sort-Object @{ Expression = { (Get-VersionSortKey -Version $_.Name).Major } }, @{ Expression = { (Get-VersionSortKey -Version $_.Name).Minor } }, @{ Expression = { (Get-VersionSortKey -Version $_.Name).Patch } }, @{ Expression = { (Get-VersionSortKey -Version $_.Name).Revision } }, @{ Expression = { (Get-VersionSortKey -Version $_.Name).Raw } }
 
 $builder = [System.Text.StringBuilder]::new()
 
