@@ -1531,6 +1531,159 @@ tasks:
         ($output | Out-String) | Should -Match ([regex]::Escape($expectedError))
     }
 
+    It 'requires Japanese version-title overrides for supported symbolic release slugs' {
+        $fixtureRoot = Join-Path $TestDrive 'missing-symbolic-version-titles'
+        $backlogPath = Join-Path $fixtureRoot 'backlog.yaml'
+        $roadmapPath = Join-Path $fixtureRoot 'ROADMAP.md'
+        $titlePath = Join-Path $fixtureRoot 'roadmap-title-ja.psd1'
+        New-Item -ItemType Directory -Path $fixtureRoot -Force | Out-Null
+        Set-Content -LiteralPath $backlogPath -Encoding utf8NoBOM -Value @'
+version: 3
+tasks:
+  - id: TASK-GOVERNANCE
+    title: Governance task
+    status: todo
+    priority: P0
+    target_version: "post-v1.0.0-governance"
+    repo: winsmux
+  - id: TASK-SECURITY-HARDENING
+    title: Security hardening task
+    status: todo
+    priority: P0
+    target_version: "post-v1.0.0-security-hardening"
+    repo: winsmux
+'@
+        Set-Content -LiteralPath $titlePath -Encoding utf8NoBOM -Value @'
+@{
+    VersionTitles = @{}
+    TaskTitles = @{
+        'TASK-GOVERNANCE' = 'ガバナンス対応'
+        'TASK-SECURITY-HARDENING' = 'セキュリティ強化'
+    }
+}
+'@
+
+        $output = @(& pwsh -NoProfile -File $script:RoadmapFixtureScriptPath `
+                -BacklogPath $backlogPath `
+                -RoadmapPath $roadmapPath `
+                -RoadmapTitleJaPath $titlePath 2>&1)
+        $LASTEXITCODE | Should -Be 1
+        $expectedError = "Roadmap Japanese version-title gate failed. Add version title overrides to $titlePath for: post-v1.0.0-governance, post-v1.0.0-security-hardening"
+        ($output | Out-String) | Should -Match ([regex]::Escape($expectedError))
+    }
+
+    It 'requires Japanese task-title overrides for supported symbolic release slugs' {
+        $fixtureRoot = Join-Path $TestDrive 'missing-symbolic-task-titles'
+        $backlogPath = Join-Path $fixtureRoot 'backlog.yaml'
+        $roadmapPath = Join-Path $fixtureRoot 'ROADMAP.md'
+        $titlePath = Join-Path $fixtureRoot 'roadmap-title-ja.psd1'
+        New-Item -ItemType Directory -Path $fixtureRoot -Force | Out-Null
+        Set-Content -LiteralPath $backlogPath -Encoding utf8NoBOM -Value @'
+version: 3
+tasks:
+  - id: TASK-GOVERNANCE
+    title: Governance task
+    status: todo
+    priority: P0
+    target_version: "post-v1.0.0-governance"
+    repo: winsmux
+  - id: TASK-SECURITY-HARDENING
+    title: Security hardening task
+    status: todo
+    priority: P0
+    target_version: "post-v1.0.0-security-hardening"
+    repo: winsmux
+'@
+        Set-Content -LiteralPath $titlePath -Encoding utf8NoBOM -Value @'
+@{
+    VersionTitles = @{
+        'post-v1.0.0-governance' = 'ガバナンス版'
+        'post-v1.0.0-security-hardening' = 'セキュリティ強化版'
+    }
+    TaskTitles = @{}
+}
+'@
+
+        $output = @(& pwsh -NoProfile -File $script:RoadmapFixtureScriptPath `
+                -BacklogPath $backlogPath `
+                -RoadmapPath $roadmapPath `
+                -RoadmapTitleJaPath $titlePath 2>&1)
+        $LASTEXITCODE | Should -Be 1
+        $expectedError = "Roadmap Japanese title gate failed. Add task title overrides to $titlePath for: TASK-GOVERNANCE (Governance task), TASK-SECURITY-HARDENING (Security hardening task)"
+        ($output | Out-String) | Should -Match ([regex]::Escape($expectedError))
+    }
+
+    It 'requires a Japanese task-title override for a supported post-v1 bucket' {
+        $fixtureRoot = Join-Path $TestDrive 'missing-post-v1-task-title'
+        $backlogPath = Join-Path $fixtureRoot 'backlog.yaml'
+        $roadmapPath = Join-Path $fixtureRoot 'ROADMAP.md'
+        $titlePath = Join-Path $fixtureRoot 'roadmap-title-ja.psd1'
+        New-Item -ItemType Directory -Path $fixtureRoot -Force | Out-Null
+        Set-Content -LiteralPath $backlogPath -Encoding utf8NoBOM -Value @'
+version: 3
+tasks:
+  - id: TASK-POST-V1
+    title: Post v1 task title
+    status: todo
+    priority: P0
+    target_version: "post-v1.0.0-fixture"
+    repo: winsmux
+'@
+        Set-Content -LiteralPath $titlePath -Encoding utf8NoBOM -Value @'
+@{
+    VersionTitles = @{
+        'post-v1.0.0-fixture' = 'v1以降の対応版'
+    }
+    TaskTitles = @{}
+}
+'@
+
+        $output = @(& pwsh -NoProfile -File $script:RoadmapFixtureScriptPath `
+                -BacklogPath $backlogPath `
+                -RoadmapPath $roadmapPath `
+                -RoadmapTitleJaPath $titlePath 2>&1)
+        $LASTEXITCODE | Should -Be 1
+        $expectedError = "Roadmap Japanese title gate failed. Add task title overrides to $titlePath for: TASK-POST-V1 (Post v1 task title)"
+        ($output | Out-String) | Should -Match ([regex]::Escape($expectedError))
+    }
+
+    It 'preserves an explicit Japanese version title for an all-done post-v1 bucket' {
+        $fixtureRoot = Join-Path $TestDrive 'completed-post-v1-title'
+        $backlogPath = Join-Path $fixtureRoot 'backlog.yaml'
+        $roadmapPath = Join-Path $fixtureRoot 'ROADMAP.md'
+        $titlePath = Join-Path $fixtureRoot 'roadmap-title-ja.psd1'
+        New-Item -ItemType Directory -Path $fixtureRoot -Force | Out-Null
+        Set-Content -LiteralPath $backlogPath -Encoding utf8NoBOM -Value @'
+version: 3
+tasks:
+  - id: TASK-POST-V1-DONE
+    title: Completed post v1 task
+    status: done
+    priority: P0
+    target_version: "post-v1.0.0-completed"
+    repo: winsmux
+'@
+        Set-Content -LiteralPath $titlePath -Encoding utf8NoBOM -Value @'
+@{
+    VersionTitles = @{
+        'post-v1.0.0-completed' = 'v1以降の完了版'
+    }
+    TaskTitles = @{
+        'TASK-POST-V1-DONE' = 'v1以降の完了タスク'
+    }
+}
+'@
+
+        $output = @(& pwsh -NoProfile -File $script:RoadmapFixtureScriptPath `
+                -BacklogPath $backlogPath `
+                -RoadmapPath $roadmapPath `
+                -RoadmapTitleJaPath $titlePath 2>&1)
+        $LASTEXITCODE | Should -Be 0 -Because ($output | Out-String)
+        $roadmapLines = @(Get-Content -LiteralPath $roadmapPath -Encoding UTF8)
+        $roadmapLines | Should -Contain '| post-v1.0.0-completed | v1以降の完了版 | 1 | [====================] 100% (1/1) |'
+        $roadmapLines | Should -Not -Contain '| post-v1.0.0-completed | 完了済み | 1 | [====================] 100% (1/1) |'
+    }
+
     It 'keeps invalid version shapes out of numeric focus ordering and title gates' {
         $fixtureRoot = Join-Path $TestDrive 'invalid-roadmap-versions'
         $backlogPath = Join-Path $fixtureRoot 'backlog.yaml'
@@ -1564,6 +1717,42 @@ tasks:
     priority: P0
     target_version: "v0.36.28."
     repo: winsmux
+  - id: TASK-SYMBOLIC-MISSING-SLUG
+    title: Symbolic version without a slug
+    status: todo
+    priority: P0
+    target_version: "post-v1.0.0"
+    repo: winsmux
+  - id: TASK-SYMBOLIC-EMPTY-SLUG
+    title: Symbolic version with an empty slug
+    status: todo
+    priority: P0
+    target_version: "post-v1.0.0-"
+    repo: winsmux
+  - id: TASK-SYMBOLIC-MISSING-SEPARATOR
+    title: Symbolic version without a separator
+    status: todo
+    priority: P0
+    target_version: "post-v1.0.0oops"
+    repo: winsmux
+  - id: TASK-SYMBOLIC-DOUBLE-HYPHEN
+    title: Symbolic version with a double hyphen
+    status: todo
+    priority: P0
+    target_version: "post-v1.0.0--bad"
+    repo: winsmux
+  - id: TASK-SYMBOLIC-UPPERCASE
+    title: Symbolic version with uppercase letters
+    status: todo
+    priority: P0
+    target_version: "post-v1.0.0-Governance"
+    repo: winsmux
+  - id: TASK-SYMBOLIC-PREFIX-SMUGGLING
+    title: Symbolic version with a smuggled prefix
+    status: todo
+    priority: P0
+    target_version: "xpost-v1.0.0-governance"
+    repo: winsmux
 '@
         Set-Content -LiteralPath $titlePath -Encoding utf8NoBOM -Value @'
 @{
@@ -1581,13 +1770,25 @@ tasks:
                 -RoadmapPath $roadmapPath `
                 -RoadmapTitleJaPath $titlePath 2>&1)
         $LASTEXITCODE | Should -Be 0 -Because ($output | Out-String)
+        ($output | Out-String) | Should -Not -Match 'Roadmap Japanese (version-)?title gate failed'
         $roadmapLines = @(Get-Content -LiteralPath $roadmapPath -Encoding UTF8)
-        foreach ($invalidVersion in @('v0.36.28.1.2', 'v0.36.28-alpha', 'v0.36.28.')) {
+        $invalidVersions = @(
+            'v0.36.28.1.2',
+            'v0.36.28-alpha',
+            'v0.36.28.',
+            'post-v1.0.0',
+            'post-v1.0.0-',
+            'post-v1.0.0oops',
+            'post-v1.0.0--bad',
+            'post-v1.0.0-Governance',
+            'xpost-v1.0.0-governance'
+        )
+        foreach ($invalidVersion in $invalidVersions) {
             @($roadmapLines | Where-Object { $_ -like "### ${invalidVersion}*" }).Count | Should -Be 0
         }
 
         $validIndex = [Array]::FindIndex($roadmapLines, [Predicate[string]] { param($line) $line -like '| v0.36.29 |*' })
-        foreach ($invalidVersion in @('v0.36.28.1.2', 'v0.36.28-alpha', 'v0.36.28.')) {
+        foreach ($invalidVersion in $invalidVersions) {
             $invalidIndex = [Array]::FindIndex($roadmapLines, [Predicate[string]] { param($line) $line -like "| ${invalidVersion} |*" })
             $invalidIndex | Should -BeGreaterThan $validIndex
         }

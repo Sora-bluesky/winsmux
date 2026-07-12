@@ -273,7 +273,7 @@ function Test-RequiresJapaneseVersionTitle {
         [string]$Version
     )
 
-    if ($Version -like 'post-v1.0.0*') {
+    if ($Version -cmatch '\Apost-v1[.]0[.]0-[a-z0-9]+(?:-[a-z0-9]+)*\z') {
         return $true
     }
 
@@ -915,7 +915,7 @@ foreach ($versionGroup in $versionGroups) {
     $progress = New-ProgressBar -DoneCount $doneCount -TotalCount $totalCount
     $defaultVersionTitle = if ($versionTitles.Contains($versionGroup.Name)) { $versionTitles[$versionGroup.Name] } else { '' }
     $localizedVersionTitle = Get-RoadmapVersionTitle -Version $versionGroup.Name -DefaultTitle $defaultVersionTitle -Localization $roadmapLocalization.VersionTitles
-    if ($doneCount -eq $totalCount -and -not (Test-VersionGreaterOrEqual -Version $versionGroup.Name -MinimumVersion 'v0.20.0')) {
+    if ($doneCount -eq $totalCount -and -not (Test-RequiresJapaneseVersionTitle -Version $versionGroup.Name)) {
         $localizedVersionTitle = '完了済み'
     }
     [void]$builder.AppendLine(('| {0} | {1} | {2} | {3} |' -f $versionGroup.Name, $localizedVersionTitle, $totalCount, $progress))
@@ -1008,7 +1008,7 @@ foreach ($warning in $validationWarnings) {
 }
 
 foreach ($task in $tasksWithTargetVersion) {
-    if (-not (Test-VersionGreaterOrEqual -Version $task.TargetVersion -MinimumVersion 'v0.20.0')) {
+    if (-not (Test-RequiresJapaneseVersionTitle -Version $task.TargetVersion)) {
         continue
     }
 
