@@ -11984,7 +11984,7 @@ agent-slots:
         } | ConvertTo-Json -Depth 12 | Set-Content -Path (Join-Path $runDir 'heartbeat.json') -Encoding UTF8
 
         Mock Wait-PaneShellReady { }
-        Mock Send-TextToPane { return $true }
+        Mock Invoke-Send { return $true }
         Mock Wait-DeferredPaneReady { }
 
         $Rest = @('worker-1', '--json', '--project-dir', $script:workersTempRoot)
@@ -11997,6 +11997,14 @@ agent-slots:
         $entry.Status | Should -Be 'ready'
         [string](Get-SendConfigValue -InputObject $entry -Name 'LastHeartbeatRunId' -Default '') | Should -Be ''
         [string](Get-SendConfigValue -InputObject $entry -Name 'LastHeartbeatProfile' -Default '') | Should -Be ''
+        Should -Invoke Invoke-Send -Times 1 -Exactly -ParameterFilter {
+            $SendTarget -eq '%2' -and
+            @($SendArguments).Count -eq 1 -and
+            $SendArguments[0] -match 'orchestra-pane-bootstrap\.ps1' -and
+            $SendArguments[0] -match '-PlanFile' -and
+            $DeliveryClass -eq 'launch' -and
+            $SkipDeferredPaneStart
+        }
 
         $Rest = @('worker-1', '--json', '--project-dir', $script:workersTempRoot)
         $statusOutput = Invoke-WorkersStatus
