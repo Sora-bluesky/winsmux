@@ -5300,6 +5300,7 @@ fn operator_cli_dispatch_review_sends_review_request_to_preferred_pane() {
         .env("WINSMUX_ROLE", "Operator")
         .env("WINSMUX_ROLE_MAP", r#"{"%1":"Operator"}"#)
         .env("WINSMUX_DISPATCH_REVIEW_POLL_ATTEMPTS", "0")
+        .env("WINSMUX_DISABLE_CORE_BRIDGE", "1")
         .current_dir(&project_dir)
         .output()
         .expect("winsmux command should run");
@@ -5310,14 +5311,13 @@ fn operator_cli_dispatch_review_sends_review_request_to_preferred_pane() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("Dispatching review to reviewer-1 [%3]"),
-        "unexpected stdout: {stdout}"
-    );
-    assert!(
-        stdout.contains("PENDING confirmed. Reviewer pane will run review-approve or review-fail."),
-        "unexpected stdout: {stdout}"
-    );
+    let receipt: serde_json::Value = serde_json::from_str(stdout.trim()).expect("typed receipt");
+    assert_eq!(receipt["protocol_version"], 1);
+    assert_eq!(receipt["kind"], "review");
+    assert_eq!(receipt["status"], "accepted");
+    assert_eq!(receipt["backend"], "local");
+    assert_eq!(receipt["target"]["label"], "reviewer-1");
+    assert_eq!(receipt["acknowledgement"]["type"], "review_pending_state");
 
     let log = fs::read_to_string(log_path).expect("test should read fake winsmux log");
     assert!(
@@ -5381,6 +5381,7 @@ panes:
         .env("WINSMUX_ROLE", "Operator")
         .env("WINSMUX_ROLE_MAP", r#"{"%1":"Operator"}"#)
         .env("WINSMUX_DISPATCH_REVIEW_POLL_ATTEMPTS", "0")
+        .env("WINSMUX_DISABLE_CORE_BRIDGE", "1")
         .current_dir(&project_dir)
         .output()
         .expect("winsmux command should run");
@@ -5391,10 +5392,9 @@ panes:
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("Dispatching review to reviewer-1 [%3]"),
-        "unexpected stdout: {stdout}"
-    );
+    let receipt: serde_json::Value = serde_json::from_str(stdout.trim()).expect("typed receipt");
+    assert_eq!(receipt["status"], "accepted");
+    assert_eq!(receipt["target"]["label"], "reviewer-1");
     let log = fs::read_to_string(log_path).expect("test should read fake winsmux log");
     assert!(
         log.contains("send-keys") && log.contains("%3") && log.contains("winsmux review-request"),
@@ -5438,11 +5438,19 @@ fn operator_cli_dispatch_review_rejects_stale_pending_review_state() {
         .env("WINSMUX_ROLE", "Operator")
         .env("WINSMUX_ROLE_MAP", r#"{"%1":"Operator"}"#)
         .env("WINSMUX_DISPATCH_REVIEW_POLL_ATTEMPTS", "0")
+        .env("WINSMUX_DISABLE_CORE_BRIDGE", "1")
         .current_dir(&project_dir)
         .output()
         .expect("winsmux command should run");
 
     assert!(!output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let receipt: serde_json::Value = serde_json::from_str(stdout.trim()).expect("typed refusal");
+    assert_eq!(receipt["status"], "rejected");
+    assert_eq!(
+        receipt["reason_code"],
+        "review_pending_acknowledgement_missing"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("review-request was not recorded after 0 attempts"),
@@ -5460,6 +5468,7 @@ fn operator_cli_dispatch_review_rejects_non_operator_role() {
         .env("WINSMUX_PANE_ID", "%2")
         .env("WINSMUX_ROLE", "Worker")
         .env("WINSMUX_ROLE_MAP", r#"{"%2":"Worker"}"#)
+        .env("WINSMUX_DISABLE_CORE_BRIDGE", "1")
         .current_dir(&project_dir)
         .output()
         .expect("winsmux command should run");

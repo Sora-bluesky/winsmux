@@ -95,9 +95,13 @@ function Get-DispatchTaskManifestEntry {
     )
 
     if (Get-Command Get-PaneControlManifestEntries -ErrorAction SilentlyContinue) {
-        $entry = @(Get-PaneControlManifestEntries -ProjectDir $ProjectDir | Where-Object { [string]$_.Label -eq $Label } | Select-Object -First 1)[0]
-        if ($null -ne $entry) {
-            return $entry
+        try {
+            $entry = @(Get-PaneControlManifestEntries -ProjectDir $ProjectDir | Where-Object { [string]$_.Label -eq $Label } | Select-Object -First 1)[0]
+            if ($null -ne $entry) {
+                return $entry
+            }
+        } catch {
+            return $null
         }
     }
 
@@ -147,7 +151,9 @@ function Get-DispatchTaskAvailableTargets {
                     Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
             )
         } catch {
-            $manifestTargetsResolved = $false
+            # A missing or malformed manifest is an explicit unavailable state.
+            # Do not fall back to process-global labels from another workspace.
+            $manifestTargetsResolved = $true
         }
     }
     if (-not $manifestTargetsResolved -and $availableTargets.Count -eq 0) {
@@ -174,6 +180,7 @@ function Invoke-WinsmuxDispatchTaskCommand {
     }
 
     $taskText = $parts -join ' '
+    $submissionId = 'submission-' + [guid]::NewGuid().ToString('N')
     $projectDir = (Get-Location).Path
     $routerScript = Get-WinsmuxControlPlaneScriptPath -BridgeScriptRoot $BridgeScriptRoot -ScriptName 'dispatch-router.ps1'
     if (-not (Test-Path -LiteralPath $routerScript -PathType Leaf)) {
@@ -186,34 +193,57 @@ function Invoke-WinsmuxDispatchTaskCommand {
 
     $route = Get-DispatchRoute -Text $taskText -AvailableTargets $availableTargets -DefaultRole 'Worker'
     if ($route.HandleLocally) {
-        Stop-WithError "dispatch-task routed to Operator. Refine the task text so it can be delegated to a managed pane."
+        $receipt = New-WinsmuxRouterRefusalReceipt -Kind task -Route $route -SubmissionId $submissionId
+        ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $receipt | Write-Output
+        exit 1
     }
 
     $selectedLabel = [string]$route.SelectedTarget
     $paneId = ''
     $resolvedRole = [string]$route.SelectedRole
 
+    $manifestEntry = $null
     if ($resolvedRole -eq 'Reviewer') {
-        $reviewEntry = Get-PreferredReviewPaneEntry -ProjectDir $projectDir
-        if ($null -eq $reviewEntry) {
-            Stop-WithError "No review-capable pane found in manifest."
+        $manifestEntry = Get-PreferredReviewPaneEntry -ProjectDir $projectDir
+        if ($null -eq $manifestEntry) {
+            $receipt = New-WinsmuxSubmissionReceipt -Kind task -Status unavailable -Backend noop -SubmissionId $submissionId -ReasonCode 'review_target_unavailable' -Diagnostic 'No review-capable pane was found in the manifest.'
+            ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $receipt | Write-Output
+            exit 1
         }
 
-        $selectedLabel = [string]$reviewEntry.Label
-        $paneId = [string]$reviewEntry.PaneId
-        Start-DeferredPaneFromManifestEntry -ProjectDir $projectDir -ManifestEntry $reviewEntry | Out-Null
+        $selectedLabel = [string]$manifestEntry.Label
+        $paneId = [string]$manifestEntry.PaneId
     } else {
         $manifestEntry = Get-DispatchTaskManifestEntry -ProjectDir $projectDir -Label $selectedLabel
         if ($null -eq $manifestEntry -or [string]::IsNullOrWhiteSpace([string]$manifestEntry.PaneId)) {
-            Stop-WithError "dispatch-task could not resolve target '$selectedLabel' to a pane."
+            $receipt = New-WinsmuxSubmissionReceipt -Kind task -Status unavailable -Backend noop -SubmissionId $submissionId -ReasonCode 'target_unavailable' -Diagnostic "dispatch-task could not resolve target '$selectedLabel' to a pane."
+            ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $receipt | Write-Output
+            exit 1
         }
 
         $paneId = [string]$manifestEntry.PaneId
-        Start-DeferredPaneFromManifestEntry -ProjectDir $projectDir -ManifestEntry $manifestEntry | Out-Null
     }
 
-    Send-TextToPane -PaneId $paneId -CommandText $taskText
-    Write-Output ("Dispatched to {0} [{1}] as {2}. {3}" -f $selectedLabel, $paneId, $resolvedRole, [string]$route.Reason)
+    try {
+        Start-DeferredPaneFromManifestEntry -ProjectDir $projectDir -ManifestEntry $manifestEntry | Out-Null
+    } catch {
+        $backend = [string](Get-WinsmuxSubmissionValue -InputObject $manifestEntry -Name 'WorkerBackend' -Default 'local')
+        if ($backend -notin @('local', 'codex', 'api_llm', 'antigravity', 'colab_cli', 'noop')) { $backend = 'noop' }
+        $receipt = New-WinsmuxSubmissionReceipt -Kind task -Status unavailable -Backend $backend -SubmissionId $submissionId -ReasonCode 'deferred_start_failed' -Diagnostic $_.Exception.Message -Target ([ordered]@{ label = $selectedLabel; pane_id = $paneId; role = $resolvedRole })
+        ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $receipt | Write-Output
+        exit 1
+    }
+
+    $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $projectDir -ManifestEntry $manifestEntry -Kind task -Content $taskText -SubmissionId $submissionId
+    $receipt.routing = [ordered]@{
+        matched_rule   = if (@($route.MatchedKeywords).Count -gt 0) { @($route.MatchedKeywords) -join ',' } else { 'default_role' }
+        expected_owner = $resolvedRole
+        next_shape     = ''
+    }
+    ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $receipt | Write-Output
+    if ($receipt.status -ne 'accepted') {
+        exit 1
+    }
 }
 
 function Invoke-WinsmuxTaskSplitCommand {

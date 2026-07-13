@@ -4757,19 +4757,56 @@ pub fn run_dispatch_review_command(args: &[&String]) -> io::Result<()> {
     let branch = current_git_branch(&project_dir)?;
     let head_sha = current_git_head(&project_dir)?;
     let context = preferred_review_pane_context(&project_dir)?;
-    let short_head = short_head_sha(&head_sha);
-    println!(
-        "Dispatching review to {} [{}] for branch {} ({})",
-        context.label, context.pane_id, branch, short_head
-    );
+    let submission_id = format!("submission-{}", Utc::now().timestamp_millis());
+    let backend = context.worker_backend.trim().to_ascii_lowercase();
+    let receipt_backend = match backend.as_str() {
+        "local" | "codex" | "api_llm" | "antigravity" | "colab_cli" | "noop" => {
+            backend.as_str()
+        }
+        _ => "noop",
+    };
+    if !matches!(backend.as_str(), "local" | "codex") {
+        let receipt = submission_receipt(
+            &submission_id,
+            "review",
+            "unsupported",
+            receipt_backend,
+            "backend_requires_packet_adapter",
+            &context,
+            Value::Null,
+        );
+        println!("{}", serde_json::to_string(&receipt).unwrap_or_default());
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "dispatch-review requires the packet adapter for this backend",
+        ));
+    }
 
-    send_review_request_to_pane(&context.pane_id)?;
-    println!(
-        "review-request sent to {}. Waiting for PENDING state...",
-        context.label
-    );
+    if let Err(error) = send_review_request_to_pane(&context.pane_id) {
+        let receipt = submission_receipt(
+            &submission_id,
+            "review",
+            "unavailable",
+            receipt_backend,
+            "pane_send_failed",
+            &context,
+            Value::Null,
+        );
+        println!("{}", serde_json::to_string(&receipt).unwrap_or_default());
+        return Err(error);
+    }
 
     if !wait_for_pending_review_state(&project_dir, &branch, &head_sha)? {
+        let receipt = submission_receipt(
+            &submission_id,
+            "review",
+            "rejected",
+            receipt_backend,
+            "review_pending_acknowledgement_missing",
+            &context,
+            Value::Null,
+        );
+        println!("{}", serde_json::to_string(&receipt).unwrap_or_default());
         return Err(io::Error::new(
             io::ErrorKind::TimedOut,
             format!(
@@ -4780,11 +4817,48 @@ pub fn run_dispatch_review_command(args: &[&String]) -> io::Result<()> {
         ));
     }
 
-    println!(
-        "PENDING confirmed. {} pane will run review-approve or review-fail. Monitor review-state.json for result.",
-        context.role
+    let receipt = submission_receipt(
+        &submission_id,
+        "review",
+        "accepted",
+        receipt_backend,
+        "",
+        &context,
+        json!({
+            "type": "review_pending_state",
+            "branch": branch,
+            "head_sha": head_sha,
+        }),
     );
+    println!("{}", serde_json::to_string(&receipt).unwrap_or_default());
     Ok(())
+}
+
+fn submission_receipt(
+    submission_id: &str,
+    kind: &str,
+    status: &str,
+    backend: &str,
+    reason_code: &str,
+    context: &ReviewPaneContext,
+    acknowledgement: Value,
+) -> Value {
+    json!({
+        "protocol_version": 1,
+        "submission_id": submission_id,
+        "kind": kind,
+        "status": status,
+        "backend": backend,
+        "reason_code": reason_code,
+        "diagnostic": "",
+        "target": {
+            "label": context.label,
+            "pane_id": context.pane_id,
+            "role": context.role,
+        },
+        "routing": Value::Null,
+        "acknowledgement": acknowledgement,
+    })
 }
 
 pub fn run_review_approve_command(args: &[&String]) -> io::Result<()> {
@@ -6849,6 +6923,7 @@ struct ReviewPaneContext {
     label: String,
     pane_id: String,
     role: String,
+    worker_backend: String,
 }
 
 #[derive(Clone)]
@@ -7141,6 +7216,14 @@ fn review_pane_context_from_value(
         label,
         pane_id: actual,
         role: canonical_role.unwrap_or_default(),
+        worker_backend: {
+            let backend = manifest_string(map, "worker_backend");
+            if backend.trim().is_empty() {
+                "local".to_string()
+            } else {
+                backend
+            }
+        },
     })
 }
 

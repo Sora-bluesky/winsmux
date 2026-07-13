@@ -69,6 +69,7 @@ $PaneEnvScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\wins
 $PublicFirstRunScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\public-first-run.ps1'))
 $ConflictPreflightScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\conflict-preflight.ps1'))
 $ControlPlaneDispatchScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\control-plane-dispatch.ps1'))
+$SubmissionContractScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\submission-contract.ps1'))
 $ControlPlaneCommandsScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\control-plane-commands.ps1'))
 $ControlPlaneWorkersScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\control-plane-workers.ps1'))
 $ControlPlaneLedgerScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\control-plane-ledger.ps1'))
@@ -116,6 +117,10 @@ if (Test-Path $PublicFirstRunScript -PathType Leaf) {
 
 if (Test-Path $ConflictPreflightScript -PathType Leaf) {
     . $ConflictPreflightScript
+}
+
+if (Test-Path $SubmissionContractScript -PathType Leaf) {
+    . $SubmissionContractScript
 }
 
 if (Test-Path $ControlPlaneDispatchScript -PathType Leaf) {
@@ -3599,7 +3604,7 @@ function Start-DeferredPaneFromManifestEntry {
     $label = [string](Get-SendConfigValue -InputObject $ManifestEntry -Name 'Label' -Default '')
     $paneId = [string](Get-SendConfigValue -InputObject $ManifestEntry -Name 'PaneId' -Default '')
     if ([string]::IsNullOrWhiteSpace($paneId)) {
-        Stop-WithError "deferred pane '$label' is missing pane id"
+        throw "deferred pane '$label' is missing pane id"
     }
 
     $status = [string](Get-SendConfigValue -InputObject $ManifestEntry -Name 'Status' -Default '')
@@ -3611,7 +3616,7 @@ function Start-DeferredPaneFromManifestEntry {
             $reason = 'backend_degraded'
         }
         Set-DeferredPaneStartStatus -ProjectDir $ProjectDir -PaneId $paneId -Status 'backend_degraded' -FailedStage 'backend_preflight' -FailureReason $reason -RecoveryAction 'inspect-backend-and-rerun-workers-start'
-        Stop-WithError "worker backend for '$label' is degraded: $reason"
+        throw "worker backend for '$label' is degraded: $reason"
     }
 
     $readinessAgent = ConvertTo-ReadinessAgentName ([string](Get-SendConfigValue -InputObject $ManifestEntry -Name 'CapabilityAdapter' -Default ''))
@@ -3633,14 +3638,14 @@ function Start-DeferredPaneFromManifestEntry {
     $planPath = [string](Get-SendConfigValue -InputObject $ManifestEntry -Name 'BootstrapPlanPath' -Default '')
     if ([string]::IsNullOrWhiteSpace($planPath)) {
         Set-DeferredPaneStartStatus -ProjectDir $ProjectDir -PaneId $paneId -Status 'deferred_start_failed' -FailedStage 'bootstrap_plan_missing' -FailureReason "missing bootstrap plan path"
-        Stop-WithError "deferred pane '$label' is missing bootstrap plan path"
+        throw "deferred pane '$label' is missing bootstrap plan path"
     }
     if (-not [System.IO.Path]::IsPathRooted($planPath)) {
         $planPath = [System.IO.Path]::GetFullPath((Join-Path $ProjectDir $planPath))
     }
     if (-not (Test-Path -LiteralPath $planPath -PathType Leaf)) {
         Set-DeferredPaneStartStatus -ProjectDir $ProjectDir -PaneId $paneId -Status 'deferred_start_failed' -FailedStage 'bootstrap_plan_not_found' -FailureReason "bootstrap plan not found: $planPath"
-        Stop-WithError "deferred pane '$label' bootstrap plan not found: $planPath"
+        throw "deferred pane '$label' bootstrap plan not found: $planPath"
     }
 
     $plan = Get-Content -LiteralPath $planPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 8
@@ -3650,7 +3655,7 @@ function Start-DeferredPaneFromManifestEntry {
     if ($approvalDifferences.Count -gt 0) {
         $mismatchReason = Format-WorkersLaunchApprovalMismatch -Differences $approvalDifferences
         Set-DeferredPaneStartStatus -ProjectDir $ProjectDir -PaneId $paneId -Status 'deferred_start_failed' -FailedStage 'launch_approval' -FailureReason $mismatchReason -RecoveryAction 'review-worker-settings-and-rerun-launch'
-        Stop-WithError $mismatchReason
+        throw $mismatchReason
     }
 
     $markerPath = [string](Get-SendConfigValue -InputObject $plan -Name 'ready_marker_path' -Default '')
@@ -16659,20 +16664,42 @@ function Invoke-DispatchReview {
     $projectDir = (Get-Location).Path
     $branch = Get-CurrentGitBranch -ProjectDir $projectDir
     $headSha = Get-CurrentGitHead -ProjectDir $projectDir
+    $submissionId = 'submission-' + [guid]::NewGuid().ToString('N')
 
     $reviewPaneEntry = Get-PreferredReviewPaneEntry -ProjectDir $projectDir
     if ($null -eq $reviewPaneEntry) {
-        Stop-WithError "No review-capable pane found in manifest."
+        $receipt = New-WinsmuxSubmissionReceipt -Kind review -Status unavailable -Backend noop -SubmissionId $submissionId -ReasonCode 'review_target_unavailable' -Diagnostic 'No review-capable pane was found in the manifest.'
+        ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $receipt | Write-Output
+        exit 1
     }
 
     $reviewPaneId = [string]$reviewPaneEntry.PaneId
     $reviewLabel = [string]$reviewPaneEntry.Label
     $reviewRole = [string]$reviewPaneEntry.Role
-    Write-Output "Dispatching review to $reviewLabel [$reviewPaneId] for branch $branch ($($headSha.Substring(0,7)))"
+    $reviewBackend = [string](Get-WinsmuxSubmissionValue -InputObject $reviewPaneEntry -Name 'WorkerBackend' -Default 'local')
+    $reviewBackend = $reviewBackend.Trim().ToLowerInvariant()
 
-    Send-TextToPane -PaneId $reviewPaneId -CommandText "winsmux review-request"
+    if ($reviewBackend -notin @('local', 'codex')) {
+        $reviewPacket = [ordered]@{
+            branch   = $branch
+            head_sha = $headSha
+            request  = 'Review the synthetic or repository change described by this packet. Do not issue PASS or commit authority.'
+        } | ConvertTo-Json -Depth 4 -Compress
+        $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $projectDir -ManifestEntry $reviewPaneEntry -Kind review -Content $reviewPacket -SubmissionId $submissionId
+        ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $receipt | Write-Output
+        if ($receipt.status -ne 'accepted') {
+            exit 1
+        }
+        return
+    }
 
-    Write-Output "review-request sent to $reviewLabel. Waiting for PENDING state..."
+    try {
+        Send-TextToPane -PaneId $reviewPaneId -CommandText "winsmux review-request"
+    } catch {
+        $receipt = New-WinsmuxSubmissionReceipt -Kind review -Status unavailable -Backend $reviewBackend -SubmissionId $submissionId -ReasonCode 'pane_send_failed' -Diagnostic $_.Exception.Message -Target ([ordered]@{ label = $reviewLabel; pane_id = $reviewPaneId; role = $reviewRole })
+        ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $receipt | Write-Output
+        exit 1
+    }
 
     # Poll for PENDING state (up to 30 seconds)
     $maxAttempts = 10
@@ -16683,7 +16710,8 @@ function Invoke-DispatchReview {
         if ($state.Contains($branch)) {
             $stateEntry = ConvertTo-ReviewStateValue -Value $state[$branch]
             $status = [string](Get-ReviewStatePropertyValue -InputObject $stateEntry -Name 'status')
-            if ($status -eq 'PENDING') {
+            $pendingHead = [string](Get-ReviewStatePropertyValue -InputObject $stateEntry -Name 'head_sha')
+            if ($status -eq 'PENDING' -and $pendingHead -eq $headSha) {
                 $pending = $true
                 break
             }
@@ -16691,10 +16719,13 @@ function Invoke-DispatchReview {
     }
 
     if (-not $pending) {
-        Stop-WithError "review-request was not recorded after ${maxAttempts} attempts. Check review pane $reviewPaneId."
+        $receipt = New-WinsmuxSubmissionReceipt -Kind review -Status rejected -Backend $reviewBackend -SubmissionId $submissionId -ReasonCode 'review_pending_acknowledgement_missing' -Diagnostic "review-request was not recorded for the current head after ${maxAttempts} attempts." -Target ([ordered]@{ label = $reviewLabel; pane_id = $reviewPaneId; role = $reviewRole })
+        ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $receipt | Write-Output
+        exit 1
     }
 
-    Write-Output "PENDING confirmed. $reviewRole pane will run review-approve or review-fail. Monitor review-state.json for result."
+    $receipt = New-WinsmuxSubmissionReceipt -Kind review -Status accepted -Backend $reviewBackend -SubmissionId $submissionId -Target ([ordered]@{ label = $reviewLabel; pane_id = $reviewPaneId; role = $reviewRole }) -Acknowledgement ([ordered]@{ type = 'review_pending_state'; branch = $branch; head_sha = $headSha })
+    ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $receipt | Write-Output
 }
 
 function Invoke-ReviewRequest {

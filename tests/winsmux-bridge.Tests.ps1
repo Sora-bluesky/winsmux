@@ -15942,6 +15942,121 @@ Describe 'winsmux dispatch-task routing' {
         $targets.Count | Should -Be 0
         $route.HandleLocally | Should -Be $true
     }
+
+    It 'validates only protocol-v1 submission receipts with the fixed vocabulary' {
+        $receipt = New-WinsmuxSubmissionReceipt -Kind task -Status accepted -Backend codex -SubmissionId 'submission-test-1'
+
+        (Test-WinsmuxSubmissionReceipt -Receipt $receipt) | Should -Be $true
+        $receipt.protocol_version = 2
+        (Test-WinsmuxSubmissionReceipt -Receipt $receipt) | Should -Be $false
+        $receipt.protocol_version = 1
+        $receipt.status = 'complete'
+        (Test-WinsmuxSubmissionReceipt -Receipt $receipt) | Should -Be $false
+        $receipt.status = 'accepted'
+        $receipt.backend = 'unknown'
+        (Test-WinsmuxSubmissionReceipt -Receipt $receipt) | Should -Be $false
+    }
+
+    It 'does not accept shell or Codex send success without a backend acknowledgement marker' {
+        $entry = [PSCustomObject]@{ Label = 'worker-2'; PaneId = '%2'; Role = 'Worker'; WorkerBackend = 'codex' }
+        $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir 'C:\repo' -ManifestEntry $entry -Kind task -Content 'implement the focused change' -SubmissionId 'submission-test-2' `
+            -SendAction { param($paneId, $commandText) } `
+            -CaptureAction { param($paneId) 'prompt returned without acknowledgement' }
+
+        $receipt.status | Should -Be 'rejected'
+        $receipt.reason_code | Should -Be 'backend_acknowledgement_missing'
+    }
+
+    It 'accepts shell or Codex only after the backend acknowledgement marker' {
+        $entry = [PSCustomObject]@{ Label = 'worker-2'; PaneId = '%2'; Role = 'Worker'; WorkerBackend = 'local' }
+        $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir 'C:\repo' -ManifestEntry $entry -Kind task -Content 'implement the focused change' -SubmissionId 'submission-test-3' `
+            -SendAction { param($paneId, $commandText) } `
+            -CaptureAction { param($paneId) '[winsmux-submission-accepted:submission-test-3]' }
+
+        $receipt.status | Should -Be 'accepted'
+        $receipt.acknowledgement.type | Should -Be 'backend_marker'
+    }
+
+    It 'sends api_llm an exec packet and converts runner refusal to typed rejected' {
+        $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-submission-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+        try {
+            $script:apiLlmCommand = ''
+            $entry = [PSCustomObject]@{ Label = 'worker-5'; PaneId = '%5'; Role = 'Worker'; WorkerBackend = 'api_llm' }
+            $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $tempRoot -ManifestEntry $entry -Kind review -Content 'review synthetic change' -SubmissionId 'submission-test-4' `
+                -SendAction { param($paneId, $commandText) $script:apiLlmCommand = $commandText } `
+                -RunResultAction { param($projectDir, $slotId, $runId) [ordered]@{ status = 'failed'; reason = 'runner_rejected_packet'; exit_code = 1; run_id = $runId } }
+
+            $receipt.status | Should -Be 'rejected'
+            $receipt.reason_code | Should -Be 'runner_rejected_packet'
+            $script:apiLlmCommand | Should -Match '^exec \.winsmux[\\/]submissions[\\/]submission-test-4\.json submission-test-4 submission-test-4$'
+            $script:apiLlmCommand | Should -Not -Match 'review synthetic change'
+        } finally {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'returns unavailable for a CLI backend without a runnable command' {
+        $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-submission-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+        try {
+            $entry = [PSCustomObject]@{ Label = 'worker-3'; PaneId = '%3'; Role = 'Worker'; WorkerBackend = 'antigravity' }
+            $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $tempRoot -ManifestEntry $entry -Kind task -Content 'analyze synthetic input' -SubmissionId 'submission-test-5' `
+                -CliRunAction { param($projectDir, $slotId, $packetPath, $submissionId) [ordered]@{ status = 'unavailable'; reason = 'cli_command_missing'; exit_code = 1 } }
+
+            $receipt.status | Should -Be 'unavailable'
+            $receipt.reason_code | Should -Be 'cli_command_missing'
+        } finally {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'accepts a CLI backend only from a confirmed started or completed run receipt' {
+        $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-submission-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+        try {
+            $entry = [PSCustomObject]@{ Label = 'worker-3'; PaneId = '%3'; Role = 'Worker'; WorkerBackend = 'colab_cli' }
+            $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $tempRoot -ManifestEntry $entry -Kind review -Content 'review synthetic input' -SubmissionId 'submission-test-7' `
+                -CliRunAction { param($projectDir, $slotId, $packetPath, $submissionId) [ordered]@{ status = 'started'; reason = ''; exit_code = 0; run_id = $submissionId } }
+
+            $receipt.status | Should -Be 'accepted'
+            $receipt.acknowledgement.type | Should -Be 'run_receipt'
+            $receipt.acknowledgement.run_id | Should -Be 'submission-test-7'
+        } finally {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'fails closed without a manifest or configured worker target' {
+        $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-submission-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+        try {
+            Push-Location $tempRoot
+            $output = & pwsh -NoProfile -File $script:dispatchCorePath dispatch-task implement synthetic change 2>&1
+            $exitCode = $LASTEXITCODE
+            Pop-Location
+
+            $exitCode | Should -Be 1
+            $receipt = @($output | ForEach-Object { [string]$_ } | Where-Object { $_.TrimStart().StartsWith('{') } | Select-Object -Last 1)[0] | ConvertFrom-Json
+            $receipt.protocol_version | Should -Be 1
+            $receipt.status | Should -Be 'rejected'
+            $receipt.status | Should -Not -Be 'accepted'
+        } finally {
+            if ((Get-Location).Path -eq $tempRoot) { Pop-Location }
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'returns typed router ownership context instead of free-text success' {
+        $route = [PSCustomObject]@{ SelectedRole = 'Operator'; SelectedTarget = $null; MatchedKeywords = @('commit'); Reason = 'operator owned'; HandleLocally = $true }
+        $receipt = New-WinsmuxRouterRefusalReceipt -Kind task -Route $route -SubmissionId 'submission-test-6'
+
+        $receipt.status | Should -Be 'rejected'
+        $receipt.reason_code | Should -Be 'router_operator_owned'
+        $receipt.routing.expected_owner | Should -Be 'Operator'
+        $receipt.routing.matched_rule | Should -Be 'commit'
+        $receipt.routing.next_shape | Should -Not -BeNullOrEmpty
+    }
 }
 
 Describe 'winsmux explain command' {

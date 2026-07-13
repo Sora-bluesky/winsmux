@@ -184,6 +184,7 @@ fn is_winsmux_core_bridge_command(command: &str) -> bool {
             | "github-preflight"
             | "verify"
             | "dispatch-task"
+            | "dispatch-review"
             | "dispatch-route"
             | "task-split"
             | "pipeline"
@@ -214,6 +215,9 @@ fn is_winsmux_core_bridge_command(command: &str) -> bool {
 }
 
 fn find_winsmux_core_script() -> Option<PathBuf> {
+    if env::var("WINSMUX_DISABLE_CORE_BRIDGE").as_deref() == Ok("1") {
+        return None;
+    }
     let mut candidates: Vec<PathBuf> = Vec::new();
 
     if let Ok(path) = env::var("WINSMUX_CORE_SCRIPT") {
@@ -386,6 +390,12 @@ mod tests {
     #[test]
     fn workers_command_is_forwarded_to_core_bridge() {
         assert!(is_winsmux_core_bridge_command("workers"));
+    }
+
+    #[test]
+    fn typed_submission_commands_are_forwarded_to_the_shared_core_bridge() {
+        assert!(is_winsmux_core_bridge_command("dispatch-task"));
+        assert!(is_winsmux_core_bridge_command("dispatch-review"));
     }
 
     #[cfg(windows)]
