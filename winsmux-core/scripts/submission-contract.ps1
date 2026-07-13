@@ -89,6 +89,18 @@ function ConvertTo-WinsmuxSubmissionStringArray {
     )
 }
 
+function Get-WinsmuxSubmissionRequestDigest {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Request)
+
+    $algorithm = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = $algorithm.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Request))
+        return ([System.BitConverter]::ToString($hash).Replace('-', '').ToLowerInvariant())
+    } finally {
+        $algorithm.Dispose()
+    }
+}
+
 function New-WinsmuxSubmissionPacketData {
     param(
         [Parameter(Mandatory = $true)][ValidateSet('task', 'review')][string]$Kind,
@@ -124,6 +136,7 @@ function New-WinsmuxSubmissionPacketData {
     if ([string]::IsNullOrWhiteSpace($request)) {
         $request = $title
     }
+    $requestDigest = Get-WinsmuxSubmissionRequestDigest -Request $request
 
     return [ordered]@{
         protocol_version = 1
@@ -134,6 +147,7 @@ function New-WinsmuxSubmissionPacketData {
         target           = $TargetLabel
         title            = $title
         request          = $request
+        request_digest   = $requestDigest
         files            = @($files)
         tests            = @($tests)
         constraints      = @($constraints)
@@ -155,6 +169,7 @@ function Test-WinsmuxSubmissionPacket {
     $targetValue = Get-WinsmuxSubmissionRawValue -InputObject $Packet -Name 'target' -Default $null
     $titleValue = Get-WinsmuxSubmissionRawValue -InputObject $Packet -Name 'title' -Default $null
     $requestValue = Get-WinsmuxSubmissionRawValue -InputObject $Packet -Name 'request' -Default $null
+    $requestDigestValue = Get-WinsmuxSubmissionRawValue -InputObject $Packet -Name 'request_digest' -Default $null
     $branchValue = Get-WinsmuxSubmissionRawValue -InputObject $Packet -Name 'branch' -Default $null
     $headShaValue = Get-WinsmuxSubmissionRawValue -InputObject $Packet -Name 'head_sha' -Default $null
     $submissionId = if ($submissionIdValue -is [string]) { $submissionIdValue } else { '' }
@@ -171,6 +186,8 @@ function Test-WinsmuxSubmissionPacket {
     if ([string]::IsNullOrWhiteSpace($titleValue)) { return $false }
     if ($requestValue -isnot [string]) { return $false }
     if ([string]::IsNullOrWhiteSpace($requestValue)) { return $false }
+    if ($requestDigestValue -isnot [string] -or $requestDigestValue -cnotmatch '^[0-9a-f]{64}$') { return $false }
+    if ($requestDigestValue -cne (Get-WinsmuxSubmissionRequestDigest -Request $requestValue)) { return $false }
     foreach ($fieldName in @('files', 'tests', 'constraints')) {
         $fieldValue = Get-WinsmuxSubmissionRawValue -InputObject $Packet -Name $fieldName -Default $null
         if (-not (Test-WinsmuxSubmissionStringArray -Value $fieldValue)) { return $false }
@@ -233,6 +250,7 @@ function New-WinsmuxSubmissionRunRecord {
         [Parameter(Mandatory = $true)][string]$SlotId,
         [Parameter(Mandatory = $true)][ValidateSet('local', 'codex', 'api_llm', 'antigravity', 'colab_cli')][string]$Backend,
         [Parameter(Mandatory = $true)][ValidateSet('started', 'running', 'succeeded', 'failed')][string]$Status,
+        [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{64}$')][string]$RequestDigest,
         [switch]$RequestConsumed,
         [AllowEmptyString()][string]$Reason = ''
     )
@@ -251,6 +269,7 @@ function New-WinsmuxSubmissionRunRecord {
         status           = $Status
         backend_owned    = $true
         request_consumed = [bool]$RequestConsumed
+        request_digest   = $RequestDigest
         reason           = $Reason
         exit_code        = if ($Status -eq 'failed') { 1 } else { 0 }
         generated_at     = (Get-Date).ToUniversalTime().ToString('o')
@@ -263,7 +282,8 @@ function Test-WinsmuxSubmissionRunRecord {
         [Parameter(Mandatory = $true)][string]$SubmissionId,
         [Parameter(Mandatory = $true)][ValidateSet('task', 'review')][string]$Kind,
         [Parameter(Mandatory = $true)][string]$Backend,
-        [string]$ExpectedSlotId = ''
+        [string]$ExpectedSlotId = '',
+        [string]$ExpectedRequestDigest = ''
     )
 
     if ($null -eq $Record) { return $false }
@@ -275,6 +295,7 @@ function Test-WinsmuxSubmissionRunRecord {
     $recordSlotId = Get-WinsmuxSubmissionValue -InputObject $Record -Name 'slot_id' -Default $null
     $backendOwned = Get-WinsmuxSubmissionValue -InputObject $Record -Name 'backend_owned' -Default $null
     $requestConsumed = Get-WinsmuxSubmissionValue -InputObject $Record -Name 'request_consumed' -Default $null
+    $requestDigest = Get-WinsmuxSubmissionValue -InputObject $Record -Name 'request_digest' -Default $null
     $exitCode = Get-WinsmuxSubmissionRawValue -InputObject $Record -Name 'exit_code' -Default $null
     return (
         [int64]$version -eq 1 -and
@@ -291,7 +312,62 @@ function Test-WinsmuxSubmissionRunRecord {
         [string](Get-WinsmuxSubmissionValue -InputObject $Record -Name 'status' -Default '') -cin $script:WinsmuxSubmissionRunStatuses -and
         ($backendOwned -is [bool]) -and $backendOwned -eq $true -and
         ($requestConsumed -is [bool]) -and $requestConsumed -eq $true -and
+        ($requestDigest -is [string]) -and $requestDigest -cmatch '^[0-9a-f]{64}$' -and
+        ([string]::IsNullOrWhiteSpace($ExpectedRequestDigest) -or $requestDigest -ceq $ExpectedRequestDigest) -and
         (Test-WinsmuxSubmissionInteger -Value $exitCode) -and [int64]$exitCode -eq 0
+    )
+}
+
+function ConvertTo-WinsmuxPublicAcknowledgement {
+    param([AllowNull()]$Acknowledgement)
+
+    if ($null -eq $Acknowledgement) { return $null }
+    return [ordered]@{
+        type             = [string](Get-WinsmuxSubmissionValue -InputObject $Acknowledgement -Name 'type' -Default '')
+        protocol_version = Get-WinsmuxSubmissionRawValue -InputObject $Acknowledgement -Name 'protocol_version' -Default $null
+        status           = [string](Get-WinsmuxSubmissionValue -InputObject $Acknowledgement -Name 'status' -Default '')
+        submission_id    = [string](Get-WinsmuxSubmissionValue -InputObject $Acknowledgement -Name 'submission_id' -Default '')
+        run_id           = [string](Get-WinsmuxSubmissionValue -InputObject $Acknowledgement -Name 'run_id' -Default '')
+        kind             = [string](Get-WinsmuxSubmissionValue -InputObject $Acknowledgement -Name 'kind' -Default '')
+        backend          = [string](Get-WinsmuxSubmissionValue -InputObject $Acknowledgement -Name 'backend' -Default '')
+        slot_id          = [string](Get-WinsmuxSubmissionValue -InputObject $Acknowledgement -Name 'slot_id' -Default '')
+        worker_kind      = [string](Get-WinsmuxSubmissionValue -InputObject $Acknowledgement -Name 'worker_kind' -Default '')
+        request_digest   = [string](Get-WinsmuxSubmissionValue -InputObject $Acknowledgement -Name 'request_digest' -Default '')
+    }
+}
+
+function Test-WinsmuxPublicAcknowledgement {
+    param(
+        [AllowNull()]$Acknowledgement,
+        [Parameter(Mandatory = $true)][string]$SubmissionId,
+        [Parameter(Mandatory = $true)][ValidateSet('task', 'review')][string]$Kind,
+        [Parameter(Mandatory = $true)][string]$Backend,
+        [Parameter(Mandatory = $true)][string]$ExpectedSlotId
+    )
+
+    if ($null -eq $Acknowledgement) { return $false }
+    $allowedNames = @('type', 'protocol_version', 'status', 'submission_id', 'run_id', 'kind', 'backend', 'slot_id', 'worker_kind', 'request_digest')
+    $actualNames = if ($Acknowledgement -is [System.Collections.IDictionary]) {
+        @($Acknowledgement.Keys | ForEach-Object { [string]$_ })
+    } else {
+        @($Acknowledgement.PSObject.Properties.Name)
+    }
+    if ($actualNames.Count -ne $allowedNames.Count -or @($actualNames | Where-Object { $_ -cnotin $allowedNames }).Count -gt 0) {
+        return $false
+    }
+    $version = Get-WinsmuxSubmissionRawValue -InputObject $Acknowledgement -Name 'protocol_version' -Default $null
+    $workerKind = if ($Kind -eq 'review') { 'critic' } else { 'implementation' }
+    return (
+        (Test-WinsmuxSubmissionInteger -Value $version) -and [int64]$version -eq 1 -and
+        [string](Get-WinsmuxSubmissionValue -InputObject $Acknowledgement -Name 'type' -Default '') -ceq 'backend_run_record' -and
+        [string](Get-WinsmuxSubmissionValue -InputObject $Acknowledgement -Name 'status' -Default '') -cin $script:WinsmuxSubmissionRunStatuses -and
+        [string](Get-WinsmuxSubmissionValue -InputObject $Acknowledgement -Name 'submission_id' -Default '') -ceq $SubmissionId -and
+        [string](Get-WinsmuxSubmissionValue -InputObject $Acknowledgement -Name 'run_id' -Default '') -ceq $SubmissionId -and
+        [string](Get-WinsmuxSubmissionValue -InputObject $Acknowledgement -Name 'kind' -Default '') -ceq $Kind -and
+        [string](Get-WinsmuxSubmissionValue -InputObject $Acknowledgement -Name 'backend' -Default '') -ceq $Backend -and
+        [string](Get-WinsmuxSubmissionValue -InputObject $Acknowledgement -Name 'slot_id' -Default '') -ceq $ExpectedSlotId -and
+        [string](Get-WinsmuxSubmissionValue -InputObject $Acknowledgement -Name 'worker_kind' -Default '') -ceq $workerKind -and
+        [string](Get-WinsmuxSubmissionValue -InputObject $Acknowledgement -Name 'request_digest' -Default '') -cmatch '^[0-9a-f]{64}$'
     )
 }
 
@@ -318,7 +394,7 @@ function New-WinsmuxSubmissionReceipt {
         diagnostic       = ConvertTo-WinsmuxSubmissionDiagnostic -Text $Diagnostic
         target           = $Target
         routing          = $Routing
-        acknowledgement  = $Acknowledgement
+        acknowledgement  = ConvertTo-WinsmuxPublicAcknowledgement -Acknowledgement $Acknowledgement
     }
 }
 
@@ -346,7 +422,7 @@ function Test-WinsmuxSubmissionReceipt {
         $target = Get-WinsmuxSubmissionValue -InputObject $Receipt -Name 'target' -Default $null
         $targetLabel = [string](Get-WinsmuxSubmissionValue -InputObject $target -Name 'label' -Default '')
         if (-not (Test-WinsmuxSubmissionIdentifier -Value $targetLabel)) { return $false }
-        return Test-WinsmuxSubmissionRunRecord -Record $evidence -SubmissionId $submissionId -Kind $kind -Backend $backend -ExpectedSlotId $targetLabel
+        return Test-WinsmuxPublicAcknowledgement -Acknowledgement $evidence -SubmissionId $submissionId -Kind $kind -Backend $backend -ExpectedSlotId $targetLabel
     }
     return $true
 }
@@ -447,32 +523,8 @@ function Invoke-WinsmuxSubmissionAcknowledge {
         [Parameter(Mandatory = $true)][ValidateSet('local', 'codex')][string]$Backend
     )
 
-    $packetPath = Join-Path (Join-Path (Join-Path $ProjectDir '.winsmux') 'submissions') ($SubmissionId + '.json')
-    $packet = Read-WinsmuxSubmissionPacket -Path $packetPath
-    if ([string]$packet.submission_id -cne $SubmissionId -or [string]$packet.run_id -cne $RunId -or [string]$packet.kind -cne $Kind) {
-        throw 'submission acknowledgement does not match the packet id, run id, or kind'
-    }
-    if ([string]$packet.target -cne $SlotId) {
-        throw 'submission acknowledgement slot does not match the packet target'
-    }
-    if ([string]::IsNullOrWhiteSpace($env:WINSMUX_PANE_ID)) {
-        throw 'submission acknowledgement requires WINSMUX_PANE_ID'
-    }
-    $manifestEntry = @(Get-PaneControlManifestEntries -ProjectDir $ProjectDir | Where-Object { [string]$_.Label -ceq $SlotId }) | Select-Object -First 1
-    if ($null -eq $manifestEntry -or [string]$manifestEntry.PaneId -cne [string]$env:WINSMUX_PANE_ID) {
-        throw 'submission acknowledgement caller does not match the manifest target pane'
-    }
-    $manifestBackend = ([string]$manifestEntry.WorkerBackend).Trim().ToLowerInvariant()
-    if ($manifestBackend -cne $Backend) {
-        throw 'submission acknowledgement backend does not match the manifest target backend'
-    }
-    $runPath = Get-WinsmuxSubmissionRunPath -ProjectDir $ProjectDir -SlotId $SlotId -RunId $RunId
-    if (Test-Path -LiteralPath $runPath -PathType Leaf) {
-        throw 'submission acknowledgement run record already exists'
-    }
-    $record = New-WinsmuxSubmissionRunRecord -SubmissionId $SubmissionId -RunId $RunId -Kind $Kind -TaskTitle ([string]$packet.title) -SlotId $SlotId -Backend $Backend -Status started -RequestConsumed
-    Write-WinsmuxSubmissionRunRecord -ProjectDir $ProjectDir -SlotId $SlotId -Record $record | Out-Null
-    return $record
+    return New-WinsmuxSubmissionReceipt -Kind $Kind -Status unavailable -Backend $Backend -SubmissionId $SubmissionId `
+        -ReasonCode 'caller_identity_unavailable' -Target ([ordered]@{ label = $SlotId })
 }
 
 function Invoke-WinsmuxSubmissionCliRun {
@@ -535,18 +587,7 @@ function Invoke-WinsmuxSubmissionAdapter {
         return New-WinsmuxSubmissionReceipt -Kind $Kind -Status rejected -Backend $backend -SubmissionId $SubmissionId -ReasonCode 'run_record_already_exists' -Target $target
     }
     if ($backend -in @('local', 'codex')) {
-        if ([string]::IsNullOrWhiteSpace($paneId)) {
-            return New-WinsmuxSubmissionReceipt -Kind $Kind -Status unavailable -Backend $backend -SubmissionId $SubmissionId -ReasonCode 'pane_unavailable' -Target $target
-        }
-        $ackCommand = "winsmux submission-ack --submission-id $SubmissionId --run-id $SubmissionId --kind $Kind --backend $backend --slot $label"
-        $commandText = "Read and validate the version-1 submission packet at '$($packet.RelativePath)'. Before other work, execute: $ackCommand"
-        try {
-            if ($null -ne $SendAction) { & $SendAction $paneId $commandText | Out-Null }
-            else { Send-TextToPane -PaneId $paneId -CommandText $commandText | Out-Null }
-        } catch {
-            return New-WinsmuxSubmissionReceipt -Kind $Kind -Status unavailable -Backend $backend -SubmissionId $SubmissionId -ReasonCode 'pane_send_failed' -Diagnostic $_.Exception.Message -Target $target
-        }
-        $runner = if ($null -ne $RunResultAction) { & $RunResultAction $ProjectDir $label $SubmissionId } else { Get-WinsmuxSubmissionRunResult -ProjectDir $ProjectDir -SlotId $label -RunId $SubmissionId }
+        return New-WinsmuxSubmissionReceipt -Kind $Kind -Status unavailable -Backend $backend -SubmissionId $SubmissionId -ReasonCode 'caller_identity_unavailable' -Target $target
     } elseif ($backend -eq 'api_llm') {
         if ([string]::IsNullOrWhiteSpace($paneId)) {
             return New-WinsmuxSubmissionReceipt -Kind $Kind -Status unavailable -Backend $backend -SubmissionId $SubmissionId -ReasonCode 'pane_unavailable' -Target $target
@@ -563,7 +604,7 @@ function Invoke-WinsmuxSubmissionAdapter {
         $runner = if ($null -ne $CliRunAction) { & $CliRunAction $ProjectDir $label $packet.RelativePath $SubmissionId $backend $Kind } else { Invoke-WinsmuxSubmissionCliRun -ProjectDir $ProjectDir -SlotId $label -PacketPath $packet.RelativePath -SubmissionId $SubmissionId -Backend $backend -Kind $Kind }
     }
 
-    if (Test-WinsmuxSubmissionRunRecord -Record $runner -SubmissionId $SubmissionId -Kind $Kind -Backend $backend -ExpectedSlotId $label) {
+    if (Test-WinsmuxSubmissionRunRecord -Record $runner -SubmissionId $SubmissionId -Kind $Kind -Backend $backend -ExpectedSlotId $label -ExpectedRequestDigest ([string]$packet.Packet.request_digest)) {
         return New-WinsmuxSubmissionReceipt -Kind $Kind -Status accepted -Backend $backend -SubmissionId $SubmissionId -Target $target -Acknowledgement $runner
     }
     $runnerStatus = [string](Get-WinsmuxSubmissionValue -InputObject $runner -Name 'status' -Default '')

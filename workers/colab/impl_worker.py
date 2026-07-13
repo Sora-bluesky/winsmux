@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -15,7 +16,7 @@ from typing import Any
 
 SCHEMA_VERSION = "winsmux.colab.worker.result.v1"
 DEFAULT_ARTIFACT_ROOT = "/content/winsmux_artifacts"
-WORKER_KIND = "impl"
+WORKER_KIND = "implementation"
 ARTIFACT_FILE = "implementation-plan.md"
 ACTIONS = ["inspect target files", "make the smallest useful code change", "run focused verification"]
 RISKS = ["template does not execute model inference by itself"]
@@ -56,6 +57,17 @@ def task_title(task: dict[str, Any]) -> str:
 
 def task_id(task: dict[str, Any], fallback: str = "") -> str:
     return text_field(task, "task_id", "id", default=fallback)
+
+
+def task_request(task: dict[str, Any]) -> str:
+    value = task.get("request")
+    if isinstance(value, str) and value:
+        return value
+    return task_title(task)
+
+
+def request_digest(task: dict[str, Any]) -> str:
+    return hashlib.sha256(task_request(task).encode("utf-8")).hexdigest()
 
 
 def unique_text_items(task: dict[str, Any], keys: tuple[str, ...]) -> list[str]:
@@ -141,6 +153,10 @@ def render_artifact(task: dict[str, Any]) -> str:
 
 {task_title(task)}
 
+## Complete Request
+
+{task_request(task)}
+
 ## Target Files
 
 {bullet_list(files)}
@@ -164,6 +180,7 @@ def success_payload(args: argparse.Namespace, worker_id: str, run_id: str, task:
         "worker_kind": WORKER_KIND,
         "worker_id": worker_id,
         "run_id": run_id,
+        "request_digest": request_digest(task),
         "task": {"id": task_id(task, args.task_id), "title": task_title(task)},
         "summary": "prepared an implementation plan template",
         "actions": ACTIONS,

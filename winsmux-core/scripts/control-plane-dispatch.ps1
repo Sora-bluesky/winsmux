@@ -117,8 +117,9 @@ function Invoke-WinsmuxSubmissionAckCommand {
     }
     $projectDir = [string]$env:WINSMUX_ORCHESTRA_PROJECT_DIR
     if ([string]::IsNullOrWhiteSpace($projectDir)) { $projectDir = (Get-Location).Path }
-    $record = Invoke-WinsmuxSubmissionAcknowledge -ProjectDir $projectDir -SlotId $values.slot -SubmissionId $values.submission_id -RunId $values.run_id -Kind $values.kind -Backend $values.backend
-    $record | ConvertTo-Json -Depth 8 -Compress | Write-Output
+    $receipt = Invoke-WinsmuxSubmissionAcknowledge -ProjectDir $projectDir -SlotId $values.slot -SubmissionId $values.submission_id -RunId $values.run_id -Kind $values.kind -Backend $values.backend
+    ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $receipt | Write-Output
+    if ([string]$receipt.status -ne 'accepted') { exit 1 }
 }
 
 function Get-DispatchTaskManifestEntry {
@@ -342,7 +343,7 @@ function Invoke-WinsmuxBuilderQueueCommand {
                 Stop-WithError "usage: winsmux builder-queue dispatch-next <builder-label>"
             }
 
-            Invoke-WinsmuxControlPlaneScript -ScriptPath $queueScript -Arguments @('-Action', 'dispatch-next', '-ProjectDir', $projectDir, '-BuilderLabel', $CommandRest[0])
+            Invoke-WinsmuxControlPlaneScript -ScriptPath $queueScript -Arguments @('-Action', 'dispatch-next', '-ProjectDir', $projectDir, '-BuilderLabel', $CommandRest[0]) -PropagateExitCode
         }
         'complete' {
             if (-not $CommandRest -or $CommandRest.Count -lt 1) {

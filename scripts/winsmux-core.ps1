@@ -6326,10 +6326,20 @@ function ConvertTo-WorkersSafeLogText {
     $safe = [regex]::Replace($safe, '(?i)(?<![A-Za-z0-9_])(["'']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|oauth[_-]?token|token|password|passwd|secret|credential|credentials)["'']?\s*[:=]\s*["'']?)[^\s"'',;}]+', '$1[REDACTED]')
     $safe = [regex]::Replace($safe, '(?i)(?<![A-Za-z0-9_])(["'']?(?:x-request-id|request[_-]?id|provider[_-]?response[_-]?id)["'']?\s*[:=]\s*["'']?)[^\s"'',;}]+', '$1[REDACTED]')
     $safe = [regex]::Replace($safe, '(?i)/content/drive/(?:MyDrive|Shareddrives)(?:/[^\s"'']*)?', '[DRIVE_PATH_REDACTED]')
-    $safe = [regex]::Replace($safe, '(?i)\\\\[^\\\s]+\\[^\s"'',;}\r\n]+(?:\\[^\s"'',;}\r\n]+)*', '[NETWORK_PATH_REDACTED]')
-    $safe = [regex]::Replace($safe, '(?i)\b[A-Z]:\\[^"'',;}\r\n]+', '[LOCAL_PATH_REDACTED]')
-    $safe = [regex]::Replace($safe, '(?i)(?<![:A-Za-z0-9])/(?:home|users|tmp|var|opt|workspace|private)(?:/[^\s"'',;}\r\n]+)+', '[UNIX_PATH_REDACTED]')
+    $pathBoundary = '(?=\s+(?=(?:[A-Z]:\\|\\\\|/[A-Za-z0-9._~-]+/|[A-Za-z][A-Za-z0-9+.-]*://))|[,;}\r\n]|$)'
+    $safe = [regex]::Replace($safe, '(?i)\\\\[^\\\s]+\\[^"'',;}\r\n]*?' + $pathBoundary, '[NETWORK_PATH_REDACTED]')
+    $safe = [regex]::Replace($safe, '(?i)\b[A-Z]:\\[^"'',;}\r\n]*?' + $pathBoundary, '[LOCAL_PATH_REDACTED]')
+    $safe = [regex]::Replace($safe, '(?i)(?<![:/A-Za-z0-9])/(?!/)[A-Za-z0-9._~-]+(?:/[^\s"'',;}\r\n]+)+', '[UNIX_PATH_REDACTED]')
     return $safe
+}
+
+function ConvertTo-WorkersSafeRemotePath {
+    param([Parameter(Mandatory = $true)][string]$RemotePath)
+
+    if ($RemotePath -match '(?i)^/content/(?!drive(?:/|$))') {
+        return $RemotePath
+    }
+    return ConvertTo-WorkersSafeLogText -Text $RemotePath
 }
 
 function ConvertTo-WorkersSafeArgumentArray {
@@ -9995,7 +10005,7 @@ function Invoke-WorkersApiLlmExec {
         } else {
             try {
                 if ($null -ne $submissionPacket) {
-                    $startedRecord = New-WinsmuxSubmissionRunRecord -SubmissionId ([string]$submissionPacket.submission_id) -RunId $runId -Kind ([string]$submissionPacket.kind) -TaskTitle ([string]$submissionPacket.title) -SlotId ([string]$Worker.Row.SlotId) -Backend api_llm -Status started -RequestConsumed
+                    $startedRecord = New-WinsmuxSubmissionRunRecord -SubmissionId ([string]$submissionPacket.submission_id) -RunId $runId -Kind ([string]$submissionPacket.kind) -TaskTitle ([string]$submissionPacket.title) -SlotId ([string]$Worker.Row.SlotId) -Backend api_llm -Status started -RequestConsumed -RequestDigest ([string]$submissionPacket.request_digest)
                     Write-WorkersJsonArtifact -Path $runJsonPath -Data $startedRecord | Out-Null
                 }
                 $network = 'started'
@@ -10060,6 +10070,7 @@ function Invoke-WorkersApiLlmExec {
         worker_kind    = if ($null -ne $submissionPacket -and [string]$submissionPacket.kind -eq 'review') { 'critic' } elseif ($null -ne $submissionPacket) { 'implementation' } else { '' }
         backend_owned  = $true
         request_consumed = ($null -ne $submissionPacket)
+        request_digest = if ($null -ne $submissionPacket) { [string]$submissionPacket.request_digest } else { '' }
         project_dir    = $Options.ProjectDir
         generated_at   = (Get-Date).ToUniversalTime().ToString('o')
         command        = 'workers.exec'
@@ -10347,7 +10358,7 @@ function Invoke-WorkersAntigravityExec {
             try {
                 $process = 'started'
                 if ($null -ne $submissionPacket) {
-                    $startedRecord = New-WinsmuxSubmissionRunRecord -SubmissionId ([string]$submissionPacket.submission_id) -RunId $runId -Kind ([string]$submissionPacket.kind) -TaskTitle ([string]$submissionPacket.title) -SlotId ([string]$Worker.Row.SlotId) -Backend antigravity -Status started -RequestConsumed
+                    $startedRecord = New-WinsmuxSubmissionRunRecord -SubmissionId ([string]$submissionPacket.submission_id) -RunId $runId -Kind ([string]$submissionPacket.kind) -TaskTitle ([string]$submissionPacket.title) -SlotId ([string]$Worker.Row.SlotId) -Backend antigravity -Status started -RequestConsumed -RequestDigest ([string]$submissionPacket.request_digest)
                     Write-WorkersJsonArtifact -Path $runJsonPath -Data $startedRecord | Out-Null
                 }
                 $cli = Invoke-WorkersAntigravityCli -Arguments $arguments -WorkingDirectory ([string]$Options.ProjectDir)
@@ -10405,6 +10416,7 @@ function Invoke-WorkersAntigravityExec {
         worker_kind    = if ($null -ne $submissionPacket -and [string]$submissionPacket.kind -eq 'review') { 'critic' } elseif ($null -ne $submissionPacket) { 'implementation' } else { '' }
         backend_owned  = $true
         request_consumed = ($null -ne $submissionPacket)
+        request_digest = if ($null -ne $submissionPacket) { [string]$submissionPacket.request_digest } else { '' }
         project_dir    = $Options.ProjectDir
         generated_at   = (Get-Date).ToUniversalTime().ToString('o')
         command        = 'workers.exec'
@@ -10546,7 +10558,8 @@ function Test-WorkersColabSubmissionResult {
         [string]$candidate.worker_kind -ceq $expectedWorkerKind -and
         [string]$candidate.run_id -ceq $RunId -and
         [string]$candidate.task.id -ceq [string]$Packet.task_id -and
-        [string]$candidate.task.title -ceq [string]$Packet.title
+        [string]$candidate.task.title -ceq [string]$Packet.title -and
+        [string]$candidate.request_digest -ceq [string]$Packet.request_digest
     )
 }
 
@@ -10625,6 +10638,7 @@ function Invoke-WorkersExec {
         backend        = 'colab_cli'
         backend_owned  = $true
         request_consumed = ($null -ne $submissionPacket -and $status -eq 'succeeded')
+        request_digest = if ($null -ne $submissionPacket -and $status -eq 'succeeded') { [string]$submissionPacket.request_digest } else { '' }
         project_dir    = $options.ProjectDir
         generated_at   = (Get-Date).ToUniversalTime().ToString('o')
         command        = 'workers.exec'
@@ -10795,7 +10809,7 @@ function Invoke-WorkersUpload {
         run_id       = $runId
         slot_id      = [string]$worker.Row.SlotId
         source       = [string]$source.RelativePath
-        remote       = ConvertTo-WorkersSafeLogText -Text $remote
+        remote       = ConvertTo-WorkersSafeRemotePath -RemotePath $remote
         max_bytes    = [long]$options.MaxBytes
         files        = @($manifestEntries.Files)
         excluded     = @($manifestEntries.Excluded)
@@ -10811,7 +10825,7 @@ function Invoke-WorkersUpload {
     $stagedSourceLocationKind = if ([bool]$uploadSource.Staged) { 'local_directory' } else { $sourceLocationKind }
     $stagedSourceAccessMethod = if ([bool]$uploadSource.Staged) { 'runtime_staging' } else { 'project_path' }
     $stagedSourceProvenance = if ([bool]$uploadSource.Staged) { 'workers.upload.staged_source' } else { 'workers.upload.source' }
-    $safeRemote = ConvertTo-WorkersSafeLogText -Text $remote
+    $safeRemote = ConvertTo-WorkersSafeRemotePath -RemotePath $remote
     $manifestReference = Get-WorkersArtifactReference -ProjectDir $options.ProjectDir -Path $manifestPath
     $arguments = @('upload', '--session', [string]$worker.Session, '--source', [string]$uploadSource.FullPath, '--dest', $remote, '--manifest', $manifestPath, '--run-id', $runId)
     $cli = Invoke-WorkersColabCli -Arguments $arguments
@@ -10889,7 +10903,7 @@ function Invoke-WorkersDownload {
     $arguments = @('download', '--session', [string]$worker.Session, '--source', $remote, '--dest', [string]$outputInfo.FullPath, '--run-id', $runId)
     $cli = Invoke-WorkersColabCli -Arguments $arguments
     $status = if ([int]$cli.ExitCode -eq 0) { 'succeeded' } else { 'failed' }
-    $safeRemote = ConvertTo-WorkersSafeLogText -Text $remote
+    $safeRemote = ConvertTo-WorkersSafeRemotePath -RemotePath $remote
     $outputReference = Get-WorkersArtifactReference -ProjectDir $options.ProjectDir -Path ([string]$outputInfo.FullPath)
     $outputLocationKind = if ($downloadToDirectory) { 'local_directory' } else { 'local_file' }
     $payload = [ordered]@{

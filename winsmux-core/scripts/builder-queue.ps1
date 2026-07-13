@@ -14,6 +14,7 @@ Set-StrictMode -Version Latest
 
 . (Join-Path $PSScriptRoot 'manifest.ps1')
 . (Join-Path $PSScriptRoot 'clm-safe-io.ps1')
+. (Join-Path $PSScriptRoot 'submission-contract.ps1')
 $script:BuilderQueuePaneControlScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'pane-control.ps1'))
 if (Test-Path $script:BuilderQueuePaneControlScript -PathType Leaf) {
     . $script:BuilderQueuePaneControlScript
@@ -429,33 +430,58 @@ STATUS: BLOCKED
 
 function Invoke-BuilderQueueDispatch {
     param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)][string]$BuilderLabel,
         [Parameter(Mandatory = $true)][string]$Task,
         [Parameter(Mandatory = $true)][string]$Prompt
     )
 
-    if (-not (Test-Path $script:BuilderQueueBridgeScript -PathType Leaf)) {
-        throw "Bridge CLI script not found: $script:BuilderQueueBridgeScript"
+    $manifestEntry = @(Get-PaneControlManifestEntries -ProjectDir $ProjectDir | Where-Object { [string]$_.Label -ceq $BuilderLabel } | Select-Object -First 1)[0]
+    if ($null -eq $manifestEntry) {
+        return New-WinsmuxSubmissionReceipt -Kind task -Status unavailable -Backend noop -SubmissionId $Task `
+            -ReasonCode 'target_manifest_missing' -Target ([ordered]@{ label = $BuilderLabel })
     }
+    return Invoke-WinsmuxSubmissionAdapter -ProjectDir $ProjectDir -ManifestEntry $manifestEntry -Kind task -Content $Prompt -SubmissionId $Task
+}
 
-    $output = & pwsh -NoProfile -File $script:BuilderQueueBridgeScript send $BuilderLabel $Prompt 2>&1
-    $exitCode = $LASTEXITCODE
-    $text = ($output | Out-String).TrimEnd()
+function Test-BuilderQueueDispatchEvidence {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$BuilderLabel,
+        [Parameter(Mandatory = $true)][string]$TaskId,
+        [Parameter(Mandatory = $true)]$Receipt
+    )
 
-    if ($exitCode -ne 0) {
-        if ([string]::IsNullOrWhiteSpace($text)) {
-            $text = 'unknown winsmux error'
-        }
-
-        throw "Failed to dispatch queued task to ${BuilderLabel}: $text"
+    $target = Get-WinsmuxSubmissionValue -InputObject $Receipt -Name 'target' -Default $null
+    if (
+        [string](Get-WinsmuxSubmissionValue -InputObject $Receipt -Name 'submission_id' -Default '') -cne $TaskId -or
+        [string](Get-WinsmuxSubmissionValue -InputObject $Receipt -Name 'kind' -Default '') -cne 'task' -or
+        [string](Get-WinsmuxSubmissionValue -InputObject $target -Name 'label' -Default '') -cne $BuilderLabel
+    ) {
+        return $false
     }
-
-    return [PSCustomObject]@{
-        BuilderLabel = $BuilderLabel
-        Task         = $Task
-        Prompt       = $Prompt
-        Output       = $text
+    $packetPath = Join-Path (Join-Path (Join-Path $ProjectDir '.winsmux') 'submissions') ($TaskId + '.json')
+    $runPath = Get-WinsmuxSubmissionRunPath -ProjectDir $ProjectDir -SlotId $BuilderLabel -RunId $TaskId
+    if (-not (Test-Path -LiteralPath $packetPath -PathType Leaf) -or -not (Test-Path -LiteralPath $runPath -PathType Leaf)) {
+        return $false
     }
+    try {
+        $packet = Read-WinsmuxSubmissionPacket -Path $packetPath
+        $runRecord = Get-Content -LiteralPath $runPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 16
+    } catch {
+        return $false
+    }
+    if (
+        [string]$packet.submission_id -cne $TaskId -or
+        [string]$packet.run_id -cne $TaskId -or
+        [string]$packet.task_id -cne $TaskId -or
+        [string]$packet.kind -cne 'task' -or
+        [string]$packet.target -cne $BuilderLabel
+    ) {
+        return $false
+    }
+    return Test-WinsmuxSubmissionRunRecord -Record $runRecord -SubmissionId $TaskId -Kind task `
+        -Backend ([string](Get-WinsmuxSubmissionValue -InputObject $Receipt -Name 'backend' -Default '')) -ExpectedSlotId $BuilderLabel -ExpectedRequestDigest ([string]$packet.request_digest)
 }
 
 function Dispatch-NextBuilderQueueTask {
@@ -507,14 +533,37 @@ function Dispatch-NextBuilderQueueTask {
         $dispatchResult = if ($null -ne $DispatchAction) {
             & $DispatchAction $BuilderLabel $nextEntry.Task $prompt
         } else {
-            Invoke-BuilderQueueDispatch -BuilderLabel $BuilderLabel -Task $nextEntry.Task -Prompt $prompt
+            Invoke-BuilderQueueDispatch -ProjectDir $ProjectDir -BuilderLabel $BuilderLabel -Task $nextEntry.TaskId -Prompt $prompt
         }
     } catch {
         Unlock-DispatchFiles -TaskId $nextEntry.TaskId -ProjectDir $ProjectDir | Out-Null
         throw
     }
 
-    $manifest.tasks.queued = (Remove-BuilderQueueRawEntry -Entries $manifest.tasks.queued -RawEntry $nextEntry.RawEntry)
+    $receiptValid = Test-WinsmuxSubmissionReceipt -Receipt $dispatchResult
+    $accepted = $receiptValid -and [string]$dispatchResult.status -ceq 'accepted'
+    $evidenceValid = $accepted -and (Test-BuilderQueueDispatchEvidence -ProjectDir $ProjectDir -BuilderLabel $BuilderLabel -TaskId $nextEntry.TaskId -Receipt $dispatchResult)
+    if (-not $accepted -or -not $evidenceValid) {
+        Unlock-DispatchFiles -TaskId $nextEntry.TaskId -ProjectDir $ProjectDir | Out-Null
+        $reason = if (-not $accepted -and $receiptValid -and -not [string]::IsNullOrWhiteSpace([string]$dispatchResult.reason_code)) {
+            [string]$dispatchResult.reason_code
+        } else {
+            'runner_evidence_invalid'
+        }
+        return [PSCustomObject]@{
+            BuilderLabel   = $BuilderLabel
+            Dispatched     = $false
+            Reason         = $reason
+            CurrentTask    = $nextEntry.Task
+            DispatchFiles  = @($dispatchFiles)
+            DispatchResult = $dispatchResult
+        }
+    }
+
+    $manifest.tasks.queued = @(
+        @($manifest.tasks.queued) |
+            Where-Object { (ConvertFrom-BuilderQueueEntry -Entry ([string]$_)).TaskId -cne $nextEntry.TaskId }
+    )
     $manifest.tasks.in_progress = (@($manifest.tasks.in_progress) + @($nextEntry.RawEntry))
     Save-BuilderQueueManifest -ProjectDir $ProjectDir -Manifest $manifest
     Update-BuilderQueuePaneState -ProjectDir $ProjectDir -BuilderLabel $BuilderLabel -Properties ([ordered]@{
@@ -630,5 +679,8 @@ if ($MyInvocation.InvocationName -ne '.') {
         $result | ConvertTo-Json -Depth 8
     } else {
         $result
+    }
+    if ($Action -eq 'dispatch-next' -and -not [bool]$result.Dispatched -and [string]$result.Reason -notin @('already_in_progress', 'queue_empty')) {
+        exit 1
     }
 }

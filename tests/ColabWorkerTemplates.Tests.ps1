@@ -13,7 +13,7 @@ Describe 'Colab worker templates' {
         }
         $script:PythonCommand = if ($null -ne $pythonCommand) { $pythonCommand.Source } else { '' }
         $script:Templates = @(
-            @{ Path = 'workers\colab\impl_worker.py'; Kind = 'impl'; Artifact = 'implementation-plan.md' },
+            @{ Path = 'workers\colab\impl_worker.py'; Kind = 'implementation'; Artifact = 'implementation-plan.md' },
             @{ Path = 'workers\colab\critic_worker.py'; Kind = 'critic'; Artifact = 'critic-notes.md' },
             @{ Path = 'workers\colab\scout_worker.py'; Kind = 'scout'; Artifact = 'scout-plan.md' },
             @{ Path = 'workers\colab\test_worker.py'; Kind = 'test'; Artifact = 'test-plan.md' },

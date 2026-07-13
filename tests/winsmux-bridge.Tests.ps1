@@ -15978,7 +15978,7 @@ Describe 'winsmux dispatch-task routing' {
     }
 
     It 'validates only protocol-v1 submission receipts with the fixed vocabulary' {
-        $evidence = New-WinsmuxSubmissionRunRecord -SubmissionId 'submission-test-1' -RunId 'submission-test-1' -Kind task -TaskTitle 'Test task' -SlotId worker-1 -Backend codex -Status started -RequestConsumed
+        $evidence = New-WinsmuxSubmissionRunRecord -SubmissionId 'submission-test-1' -RunId 'submission-test-1' -Kind task -TaskTitle 'Test task' -SlotId worker-1 -Backend codex -Status started -RequestConsumed -RequestDigest ('a' * 64)
         $receipt = New-WinsmuxSubmissionReceipt -Kind task -Status accepted -Backend codex -SubmissionId 'submission-test-1' -Target ([ordered]@{ label = 'worker-1' }) -Acknowledgement $evidence
 
         (Test-WinsmuxSubmissionReceipt -Receipt $receipt) | Should -Be $true
@@ -15998,18 +15998,18 @@ Describe 'winsmux dispatch-task routing' {
             -SendAction { param($paneId, $commandText) } `
             -RunResultAction { param($projectDir, $slotId, $runId) $null }
 
-        $receipt.status | Should -Be 'rejected'
-        $receipt.reason_code | Should -Be 'backend_acknowledgement_missing'
+        $receipt.status | Should -Be 'unavailable'
+        $receipt.reason_code | Should -Be 'caller_identity_unavailable'
     }
 
-    It 'accepts shell or Codex only after a matching backend run record' {
+    It 'refuses shell or Codex even when mutable local evidence claims a matching run record' {
         $entry = [PSCustomObject]@{ Label = 'worker-2'; PaneId = '%2'; Role = 'Worker'; WorkerBackend = 'local' }
         $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir 'C:\repo' -ManifestEntry $entry -Kind task -Content 'implement the focused change' -SubmissionId 'submission-test-3' `
             -SendAction { param($paneId, $commandText) } `
-            -RunResultAction { param($projectDir, $slotId, $runId) New-WinsmuxSubmissionRunRecord -SubmissionId $runId -RunId $runId -Kind task -TaskTitle 'Test task' -SlotId $slotId -Backend local -Status started -RequestConsumed }
+            -RunResultAction { param($projectDir, $slotId, $runId) New-WinsmuxSubmissionRunRecord -SubmissionId $runId -RunId $runId -Kind task -TaskTitle 'Test task' -SlotId $slotId -Backend local -Status started -RequestConsumed -RequestDigest (Get-WinsmuxSubmissionRequestDigest -Request 'implement the focused change') }
 
-        $receipt.status | Should -Be 'accepted'
-        $receipt.acknowledgement.type | Should -Be 'backend_run_record'
+        $receipt.status | Should -Be 'unavailable'
+        $receipt.reason_code | Should -Be 'caller_identity_unavailable'
     }
 
     It 'sends api_llm an exec packet and converts runner refusal to typed rejected' {
@@ -16052,7 +16052,7 @@ Describe 'winsmux dispatch-task routing' {
         try {
             $entry = [PSCustomObject]@{ Label = 'worker-3'; PaneId = '%3'; Role = 'Worker'; WorkerBackend = 'colab_cli' }
             $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $tempRoot -ManifestEntry $entry -Kind review -Content 'review synthetic input' -SubmissionId 'submission-test-7' `
-                -CliRunAction { param($projectDir, $slotId, $packetPath, $submissionId) New-WinsmuxSubmissionRunRecord -SubmissionId $submissionId -RunId $submissionId -Kind review -TaskTitle 'Review test' -SlotId $slotId -Backend colab_cli -Status started -RequestConsumed }
+                -CliRunAction { param($projectDir, $slotId, $packetPath, $submissionId) New-WinsmuxSubmissionRunRecord -SubmissionId $submissionId -RunId $submissionId -Kind review -TaskTitle 'Review test' -SlotId $slotId -Backend colab_cli -Status started -RequestConsumed -RequestDigest (Get-WinsmuxSubmissionRequestDigest -Request 'review synthetic input') }
 
             $receipt.status | Should -Be 'accepted'
             $receipt.acknowledgement.type | Should -Be 'backend_run_record'
@@ -16096,12 +16096,15 @@ Describe 'winsmux dispatch-task routing' {
 
 Describe 'TASK-780 typed submission review fixes' {
     BeforeAll {
+        $script:task780RepoRoot = Split-Path -Parent $PSScriptRoot
         $script:task780CorePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
         $script:task780ApiWorkerPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\api-llm-pane-worker.ps1'
         $script:task780RouterPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\dispatch-router.ps1'
+        $script:task780BuilderQueuePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\builder-queue.ps1'
         $script:task780RustMainPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'core\src\main.rs'
         . $script:task780CorePath 'version' *> $null
         . $script:task780RouterPath
+        . $script:task780BuilderQueuePath
     }
 
     BeforeEach {
@@ -16115,7 +16118,7 @@ Describe 'TASK-780 typed submission review fixes' {
         }
     }
 
-    It 'P1 rejects pane input echo without a backend-owned run record' {
+    It 'P1 refuses pane input echo when strong caller identity is unavailable' {
         $entry = [PSCustomObject]@{ Label = 'worker-2'; PaneId = '%2'; Role = 'Worker'; WorkerBackend = 'codex' }
         $script:echoedPrompt = ''
         $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $script:task780TempRoot -ManifestEntry $entry -Kind task -Content 'synthetic implementation request' -SubmissionId 'submission-review-echo' `
@@ -16124,8 +16127,8 @@ Describe 'TASK-780 typed submission review fixes' {
             -RunResultAction { param($projectDir, $slotId, $runId) $null }
 
         $receipt.GetType().Name | Should -Not -Be 'Object[]'
-        $receipt.status | Should -Be 'rejected'
-        $receipt.reason_code | Should -Be 'backend_acknowledgement_missing'
+        $receipt.status | Should -Be 'unavailable'
+        $receipt.reason_code | Should -Be 'caller_identity_unavailable'
     }
 
     It 'P1 rejects unsafe target labels before composing a pane command' {
@@ -16153,21 +16156,23 @@ Describe 'TASK-780 typed submission review fixes' {
             (Test-WinsmuxSubmissionReceipt -Receipt $receipt) | Should -Be $false
         }
 
-        $validEvidence = New-WinsmuxSubmissionRunRecord -SubmissionId 'submission-review-evidence' -RunId 'submission-review-evidence' -Kind task -TaskTitle 'Review evidence test' -SlotId worker-1 -Backend codex -Status started -RequestConsumed
+        $validEvidence = New-WinsmuxSubmissionRunRecord -SubmissionId 'submission-review-evidence' -RunId 'submission-review-evidence' -Kind task -TaskTitle 'Review evidence test' -SlotId worker-1 -Backend codex -Status started -RequestConsumed -RequestDigest ('b' * 64)
         $validReceipt = New-WinsmuxSubmissionReceipt -Kind task -Status accepted -Backend codex -SubmissionId 'submission-review-evidence' -Target ([ordered]@{ label = 'worker-1' }) -Acknowledgement $validEvidence
         (Test-WinsmuxSubmissionReceipt -Receipt $validReceipt) | Should -Be $true
         foreach ($evidenceMutation in @(
-            [ordered]@{ name = 'task_id'; value = 'other-task' },
-            [ordered]@{ name = 'task_title'; value = '' },
+            [ordered]@{ name = 'type'; value = 'unknown' },
+            [ordered]@{ name = 'protocol_version'; value = 2 },
+            [ordered]@{ name = 'status'; value = 'failed' },
+            [ordered]@{ name = 'submission_id'; value = 'other-task' },
+            [ordered]@{ name = 'run_id'; value = 'other-run' },
+            [ordered]@{ name = 'kind'; value = 'review' },
+            [ordered]@{ name = 'backend'; value = 'local' },
             [ordered]@{ name = 'worker_kind'; value = 'critic' },
             [ordered]@{ name = 'slot_id'; value = '../escape' },
             [ordered]@{ name = 'slot_id'; value = 'worker-2' },
-            [ordered]@{ name = 'backend_owned'; value = 'false' },
-            [ordered]@{ name = 'request_consumed'; value = 'false' },
-            [ordered]@{ name = 'exit_code'; value = 1 },
-            [ordered]@{ name = 'exit_code'; value = '0' }
+            [ordered]@{ name = 'request_digest'; value = ('c' * 63) }
         )) {
-            $invalidEvidence = New-WinsmuxSubmissionRunRecord -SubmissionId 'submission-review-evidence' -RunId 'submission-review-evidence' -Kind task -TaskTitle 'Review evidence test' -SlotId worker-1 -Backend codex -Status started -RequestConsumed
+            $invalidEvidence = New-WinsmuxSubmissionRunRecord -SubmissionId 'submission-review-evidence' -RunId 'submission-review-evidence' -Kind task -TaskTitle 'Review evidence test' -SlotId worker-1 -Backend codex -Status started -RequestConsumed -RequestDigest ('b' * 64)
             $invalidEvidence[$evidenceMutation.name] = $evidenceMutation.value
             $invalidReceipt = New-WinsmuxSubmissionReceipt -Kind task -Status accepted -Backend codex -SubmissionId 'submission-review-evidence' -Target ([ordered]@{ label = 'worker-1' }) -Acknowledgement $invalidEvidence
             (Test-WinsmuxSubmissionReceipt -Receipt $invalidReceipt) | Should -Be $false
@@ -16227,7 +16232,7 @@ Describe 'TASK-780 typed submission review fixes' {
         }
     }
 
-    It 'P1 binds local acknowledgement to packet target manifest backend and current pane' {
+    It 'P1 refuses local acknowledgement until strong caller authority is available' {
         $manifestDir = Join-Path $script:task780TempRoot '.winsmux'
         New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
         [IO.File]::WriteAllText((Join-Path $manifestDir 'manifest.yaml'), @'
@@ -16244,15 +16249,16 @@ panes:
         $previousPaneId = $env:WINSMUX_PANE_ID
         try {
             $env:WINSMUX_PANE_ID = '%2'
-            $record = Invoke-WinsmuxSubmissionAcknowledge -ProjectDir $script:task780TempRoot -SlotId worker-1 -SubmissionId 'submission-ack-bound' -RunId 'submission-ack-bound' -Kind task -Backend codex
-            $record.slot_id | Should -Be 'worker-1'
+            $receipt = Invoke-WinsmuxSubmissionAcknowledge -ProjectDir $script:task780TempRoot -SlotId worker-1 -SubmissionId 'submission-ack-bound' -RunId 'submission-ack-bound' -Kind task -Backend codex
+            $receipt.status | Should -Be 'unavailable'
+            $receipt.reason_code | Should -Be 'caller_identity_unavailable'
 
             New-WinsmuxSubmissionPacket -ProjectDir $script:task780TempRoot -Kind task -Content ([ordered]@{ title = 'Wrong pane'; request = 'Reject wrong pane.' }) -SubmissionId 'submission-ack-wrong-pane' -TargetLabel worker-1 | Out-Null
             $env:WINSMUX_PANE_ID = '%9'
-            { Invoke-WinsmuxSubmissionAcknowledge -ProjectDir $script:task780TempRoot -SlotId worker-1 -SubmissionId 'submission-ack-wrong-pane' -RunId 'submission-ack-wrong-pane' -Kind task -Backend codex } | Should -Throw '*caller does not match*'
+            (Invoke-WinsmuxSubmissionAcknowledge -ProjectDir $script:task780TempRoot -SlotId worker-1 -SubmissionId 'submission-ack-wrong-pane' -RunId 'submission-ack-wrong-pane' -Kind task -Backend codex).status | Should -Be 'unavailable'
 
             $env:WINSMUX_PANE_ID = '%2'
-            { Invoke-WinsmuxSubmissionAcknowledge -ProjectDir $script:task780TempRoot -SlotId worker-1 -SubmissionId 'submission-ack-wrong-pane' -RunId 'submission-ack-wrong-pane' -Kind task -Backend local } | Should -Throw '*backend does not match*'
+            (Invoke-WinsmuxSubmissionAcknowledge -ProjectDir $script:task780TempRoot -SlotId worker-1 -SubmissionId 'submission-ack-wrong-pane' -RunId 'submission-ack-wrong-pane' -Kind task -Backend local).reason_code | Should -Be 'caller_identity_unavailable'
         } finally {
             $env:WINSMUX_PANE_ID = $previousPaneId
         }
@@ -16260,7 +16266,7 @@ panes:
 
     It 'P1 rejects a pre-existing run record instead of reusing it as acceptance' {
         $entry = [PSCustomObject]@{ Label = 'worker-1'; PaneId = '%2'; Role = 'Worker'; WorkerBackend = 'codex' }
-        $stale = New-WinsmuxSubmissionRunRecord -SubmissionId 'submission-stale-run' -RunId 'submission-stale-run' -Kind task -TaskTitle 'Stale run' -SlotId worker-1 -Backend codex -Status started -RequestConsumed
+        $stale = New-WinsmuxSubmissionRunRecord -SubmissionId 'submission-stale-run' -RunId 'submission-stale-run' -Kind task -TaskTitle 'Stale run' -SlotId worker-1 -Backend codex -Status started -RequestConsumed -RequestDigest ('d' * 64)
         Write-WinsmuxSubmissionRunRecord -ProjectDir $script:task780TempRoot -SlotId worker-1 -Record $stale | Out-Null
         $script:staleRunSendCalled = $false
         $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $script:task780TempRoot -ManifestEntry $entry -Kind task -Content 'new request' -SubmissionId 'submission-stale-run' `
@@ -16296,7 +16302,7 @@ panes:
     }
 
     It 'P1 requires a durable api_llm started record before accepting a long execution' {
-        $evidence = New-WinsmuxSubmissionRunRecord -SubmissionId 'submission-review-api-start' -RunId 'submission-review-api-start' -Kind task -TaskTitle 'API start test' -SlotId worker-1 -Backend api_llm -Status started -RequestConsumed
+        $evidence = New-WinsmuxSubmissionRunRecord -SubmissionId 'submission-review-api-start' -RunId 'submission-review-api-start' -Kind task -TaskTitle 'API start test' -SlotId worker-1 -Backend api_llm -Status started -RequestConsumed -RequestDigest ('e' * 64)
 
         $evidence.protocol_version | Should -Be 1
         $evidence.status | Should -Be 'started'
@@ -16420,12 +16426,198 @@ agent-slots:
     }
 
     It 'P2 redacts arbitrary Windows UNC and Unix absolute paths from diagnostics' {
-        $diagnostic = ConvertTo-WinsmuxSubmissionDiagnostic -Text 'D:\workspace\secret\file.txt C:\tmp\private.json \\server\share\private.md /home/alice/private.txt'
+        $diagnostic = ConvertTo-WinsmuxSubmissionDiagnostic -Text 'C:\Users\Jane Doe\repo\secret.txt D:\workspace\secret\file.txt C:\tmp\private.json \\server\share\private.md /home/alice/private.txt /srv/private/file /mnt/c/private/file /root/private/file https://example.test/srv/public'
 
         $diagnostic | Should -Not -Match 'D:\\workspace'
         $diagnostic | Should -Not -Match 'C:\\tmp'
         $diagnostic | Should -Not -Match '\\\\server\\share'
         $diagnostic | Should -Not -Match '/home/alice'
+        $diagnostic | Should -Not -Match '/srv/private'
+        $diagnostic | Should -Not -Match '/mnt/c/private'
+        $diagnostic | Should -Not -Match '/root/private'
+        $diagnostic | Should -Not -Match 'Jane Doe|Doe\\repo'
+        $diagnostic | Should -Match 'https://example\.test/srv/public'
+        (ConvertTo-WorkersSafeRemotePath -RemotePath '/content/inputs') | Should -Be '/content/inputs'
+        (ConvertTo-WorkersSafeRemotePath -RemotePath '/content/drive/MyDrive/private/file.txt') | Should -Be '[DRIVE_PATH_REDACTED]'
+        (ConvertTo-WorkersSafeRemotePath -RemotePath '/root/private/file.txt') | Should -Be '[UNIX_PATH_REDACTED]'
+    }
+
+    It 'ROUND2 P1 keeps builder queue queued after raw send success and advances only for a validated receipt' {
+        $queuedEntry = ConvertTo-BuilderQueueEntry -BuilderLabel builder-1 -Task 'Implement typed queue dispatch' -TaskId task-round2-queue
+        $script:round2Manifest = [PSCustomObject]@{
+            tasks = [PSCustomObject]@{ queued = @($queuedEntry); in_progress = @(); completed = @() }
+            panes = [PSCustomObject]@{}
+        }
+        Mock Get-BuilderQueueManifest { $script:round2Manifest }
+        $script:round2SavedManifest = $null
+        Mock Save-BuilderQueueManifest { param($ProjectDir, $Manifest) $script:round2SavedManifest = $Manifest }
+        Mock Get-BuilderQueueTaskFiles { @() }
+        Mock Lock-DispatchFiles { $true }
+        Mock Unlock-DispatchFiles { $true }
+        Mock Update-BuilderQueuePaneState {}
+
+        $rawOutcome = Dispatch-NextBuilderQueueTask -ProjectDir $script:task780TempRoot -BuilderLabel builder-1 -DispatchAction {
+            [PSCustomObject]@{ Output = 'raw bridge send succeeded' }
+        }
+        $rawOutcome.Dispatched | Should -Be $false
+        $rawOutcome.Reason | Should -Be 'runner_evidence_invalid'
+        @($script:round2Manifest.tasks.queued).Count | Should -Be 1
+        @($script:round2Manifest.tasks.in_progress).Count | Should -Be 0
+        Assert-MockCalled Save-BuilderQueueManifest -Times 0 -Exactly
+
+        $request = New-BuilderQueueDispatchPrompt -Task 'Implement typed queue dispatch'
+        $packet = New-WinsmuxSubmissionPacket -ProjectDir $script:task780TempRoot -Kind task -Content $request -SubmissionId task-round2-queue -TargetLabel builder-1
+        $digest = [string]$packet.Packet.request_digest
+        foreach ($mutation in @(
+            [ordered]@{ name = 'backend_owned'; value = $false },
+            [ordered]@{ name = 'request_consumed'; value = $false },
+            [ordered]@{ name = 'task_id'; value = 'other-task' },
+            [ordered]@{ name = 'exit_code'; value = 1 },
+            [ordered]@{ name = 'request_digest'; value = ('0' * 64) }
+        )) {
+            $invalidEvidence = New-WinsmuxSubmissionRunRecord -SubmissionId task-round2-queue -RunId task-round2-queue -Kind task -TaskTitle 'Implement typed queue dispatch' -SlotId builder-1 -Backend api_llm -Status started -RequestConsumed -RequestDigest $digest
+            $invalidEvidence[$mutation.name] = $mutation.value
+            Write-WinsmuxSubmissionRunRecord -ProjectDir $script:task780TempRoot -SlotId builder-1 -Record $invalidEvidence | Out-Null
+            $invalidReceipt = New-WinsmuxSubmissionReceipt -Kind task -Status accepted -Backend api_llm -SubmissionId task-round2-queue -Target ([ordered]@{ label = 'builder-1' }) -Acknowledgement $invalidEvidence
+            $invalidOutcome = Dispatch-NextBuilderQueueTask -ProjectDir $script:task780TempRoot -BuilderLabel builder-1 -DispatchAction { $invalidReceipt }
+            $invalidOutcome.Dispatched | Should -Be $false
+            $invalidOutcome.Reason | Should -Be 'runner_evidence_invalid'
+            Assert-MockCalled Save-BuilderQueueManifest -Times 0 -Exactly
+        }
+
+        $evidence = New-WinsmuxSubmissionRunRecord -SubmissionId task-round2-queue -RunId task-round2-queue -Kind task -TaskTitle 'Implement typed queue dispatch' -SlotId builder-1 -Backend api_llm -Status started -RequestConsumed -RequestDigest $digest
+        Write-WinsmuxSubmissionRunRecord -ProjectDir $script:task780TempRoot -SlotId builder-1 -Record $evidence | Out-Null
+        $receipt = New-WinsmuxSubmissionReceipt -Kind task -Status accepted -Backend api_llm -SubmissionId task-round2-queue -Target ([ordered]@{ label = 'builder-1' }) -Acknowledgement $evidence
+        $acceptedOutcome = Dispatch-NextBuilderQueueTask -ProjectDir $script:task780TempRoot -BuilderLabel builder-1 -DispatchAction { $receipt }
+        $acceptedOutcome.Dispatched | Should -Be $true
+        Assert-MockCalled Save-BuilderQueueManifest -Times 1 -Exactly -ParameterFilter {
+            @($Manifest.tasks.queued).Count -eq 0 -and @($Manifest.tasks.in_progress).Count -eq 1
+        }
+    }
+
+    It 'ROUND2 P1 runs the real implementation worker through the adapter with canonical worker kind' {
+        $entry = [PSCustomObject]@{ Label = 'worker-3'; PaneId = ''; Role = 'Worker'; WorkerBackend = 'colab_cli' }
+        $implPath = Join-Path $script:task780RepoRoot 'workers\colab\impl_worker.py'
+        $cliAction = {
+            param($projectDir, $slotId, $packetPath, $submissionId, $backend, $kind)
+            $fullPacketPath = Join-Path $projectDir $packetPath
+            $artifactRoot = Join-Path $projectDir 'round2-colab-artifacts'
+            $workerOutput = & python $implPath --task-json $fullPacketPath --task-id $submissionId --run-id $submissionId --worker-id $slotId --artifact-root $artifactRoot
+            $worker = $workerOutput | ConvertFrom-Json
+            $packet = Get-Content -LiteralPath $fullPacketPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            return [ordered]@{
+                protocol_version = 1; type = 'backend_run_record'; submission_id = $submissionId; run_id = $submissionId
+                kind = $kind; task_id = $submissionId; task_title = [string]$packet.title; worker_kind = [string]$worker.worker_kind
+                slot_id = $slotId; backend = $backend; status = 'succeeded'; backend_owned = $true; request_consumed = $true
+                request_digest = [string]$worker.request_digest; exit_code = 0
+            }
+        }
+        $valid = Invoke-WinsmuxSubmissionAdapter -ProjectDir $script:task780TempRoot -ManifestEntry $entry -Kind task -Content 'Implement canonical worker kind.' -SubmissionId submission-round2-real-impl -CliRunAction $cliAction
+        $valid.status | Should -Be 'accepted'
+        $valid.acknowledgement.worker_kind | Should -Be 'implementation'
+
+        $wrongKindAction = {
+            param($projectDir, $slotId, $packetPath, $submissionId, $backend, $kind)
+            $record = & $cliAction $projectDir $slotId $packetPath $submissionId $backend $kind
+            $record.worker_kind = 'impl'
+            return $record
+        }
+        $invalid = Invoke-WinsmuxSubmissionAdapter -ProjectDir $script:task780TempRoot -ManifestEntry $entry -Kind task -Content 'Reject wrong worker kind.' -SubmissionId submission-round2-wrong-kind -CliRunAction $wrongKindAction
+        $invalid.status | Should -Be 'rejected'
+    }
+
+    It 'ROUND2 P1 proves real task and review workers consume request tails and bind their digest' {
+        foreach ($case in @(
+            [ordered]@{ kind = 'task'; script = 'workers\colab\impl_worker.py'; worker_kind = 'implementation' },
+            [ordered]@{ kind = 'review'; script = 'workers\colab\critic_worker.py'; worker_kind = 'critic' }
+        )) {
+            $marker = 'ROUND2-TAIL-' + $case.kind.ToUpperInvariant()
+            $request = "  `n" + ('x' * 140) + $marker + "`n  "
+            $submissionId = 'submission-round2-tail-' + $case.kind
+            $packetRef = New-WinsmuxSubmissionPacket -ProjectDir $script:task780TempRoot -Kind $case.kind -Content ([ordered]@{ title = "Whitespace $($case.kind) request"; request = $request }) -SubmissionId $submissionId -TargetLabel worker-3
+            $artifactRoot = Join-Path $script:task780TempRoot ('round2-tail-' + $case.kind)
+            $output = & python (Join-Path $script:task780RepoRoot $case.script) --task-json $packetRef.FullPath --task-id $submissionId --run-id $submissionId --worker-id worker-3 --artifact-root $artifactRoot
+            $LASTEXITCODE | Should -Be 0
+            $payload = $output | ConvertFrom-Json
+            $payload.worker_kind | Should -Be $case.worker_kind
+            $payload.request_digest | Should -Be $packetRef.Packet.request_digest
+            (Get-Content -LiteralPath ([string]$payload.artifacts[0].path) -Raw -Encoding UTF8) | Should -Match $marker
+        }
+    }
+
+    It 'ROUND2 P1 projects accepted acknowledgement through a strict public allowlist' {
+        $digest = ('a' * 64)
+        $record = New-WinsmuxSubmissionRunRecord -SubmissionId submission-round2-public -RunId submission-round2-public -Kind task -TaskTitle 'SECRET REQUEST C:\private\task.txt' -SlotId worker-1 -Backend api_llm -Status started -RequestConsumed -RequestDigest $digest
+        $record['request'] = 'SECRET BODY /srv/private/body.txt'
+        $record['project_dir'] = 'D:\private\repo'
+        $record['command'] = '\\server\share\private.cmd'
+        $record['transcript'] = '/mnt/c/private/transcript.txt'
+        $record['exception'] = '/root/private/error.txt'
+        $record['provider_payload'] = '/home/private/provider.json'
+        $receipt = New-WinsmuxSubmissionReceipt -Kind task -Status accepted -Backend api_llm -SubmissionId submission-round2-public -Target ([ordered]@{ label = 'worker-1' }) -Acknowledgement $record
+        $json = ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $receipt
+        foreach ($secret in @('SECRET', 'task_title', 'project_dir', 'command', 'transcript', 'exception', 'provider_payload', 'C:\\', 'D:\\', '\\\\server', '/home', '/srv', '/mnt', '/root')) {
+            $json | Should -Not -Match ([regex]::Escape($secret))
+        }
+        @($receipt.acknowledgement.Keys) | Should -Be @('type', 'protocol_version', 'status', 'submission_id', 'run_id', 'kind', 'backend', 'slot_id', 'worker_kind', 'request_digest')
+    }
+
+    It 'ROUND2 P2 refuses forged local or Codex pane identity until TASK-781 authority exists' {
+        $previousPaneId = $env:WINSMUX_PANE_ID
+        try {
+            $env:WINSMUX_PANE_ID = '%2'
+            $entry = [PSCustomObject]@{ Label = 'worker-1'; PaneId = '%2'; Role = 'Worker'; WorkerBackend = 'codex' }
+            $script:round2LocalSendCalled = $false
+            $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $script:task780TempRoot -ManifestEntry $entry -Kind task -Content 'Do not trust mutable pane identity.' -SubmissionId submission-round2-forged-local `
+                -SendAction { $script:round2LocalSendCalled = $true } `
+                -RunResultAction { throw 'must not request optimistic evidence' }
+            $receipt.status | Should -Be 'unavailable'
+            $receipt.reason_code | Should -Be 'caller_identity_unavailable'
+            $script:round2LocalSendCalled | Should -Be $false
+        } finally {
+            $env:WINSMUX_PANE_ID = $previousPaneId
+        }
+    }
+
+    It 'ROUND2 P2 rejects matching run identifiers with a different complete-request digest' {
+        $entry = [PSCustomObject]@{ Label = 'worker-1'; PaneId = '%2'; Role = 'Worker'; WorkerBackend = 'api_llm' }
+        $content = 'Complete request identity must match exactly.'
+        $wrong = Invoke-WinsmuxSubmissionAdapter -ProjectDir $script:task780TempRoot -ManifestEntry $entry -Kind task -Content $content -SubmissionId submission-round2-digest-wrong `
+            -SendAction { 'sent' } `
+            -RunResultAction {
+                param($projectDir, $slotId, $runId)
+                New-WinsmuxSubmissionRunRecord -SubmissionId $runId -RunId $runId -Kind task -TaskTitle 'same non-empty title' -SlotId $slotId -Backend api_llm -Status started -RequestConsumed -RequestDigest ('0' * 64)
+            }
+        $wrong.status | Should -Be 'rejected'
+
+        $expectedDigest = Get-WinsmuxSubmissionRequestDigest -Request $content
+        $exact = Invoke-WinsmuxSubmissionAdapter -ProjectDir $script:task780TempRoot -ManifestEntry $entry -Kind task -Content $content -SubmissionId submission-round2-digest-exact `
+            -SendAction { 'sent' } `
+            -RunResultAction {
+                param($projectDir, $slotId, $runId)
+                New-WinsmuxSubmissionRunRecord -SubmissionId $runId -RunId $runId -Kind task -TaskTitle 'different title is not authority' -SlotId $slotId -Backend api_llm -Status started -RequestConsumed -RequestDigest $expectedDigest
+            }
+        $exact.status | Should -Be 'accepted'
+    }
+
+    It 'ROUND2 P1 returns a process-level typed queue refusal with nonzero exit and retained state' {
+        $manifest = New-WinsmuxManifest -ProjectDir $script:task780TempRoot
+        $manifest.panes['builder-1'] = [PSCustomObject]@{ pane_id = '%2'; role = 'Builder'; worker_backend = 'codex' }
+        $manifest.tasks.queued = @(ConvertTo-BuilderQueueEntry -BuilderLabel builder-1 -Task 'Keep queued without TASK-781 authority' -TaskId task-round2-cli)
+        Save-WinsmuxManifest -ProjectDir $script:task780TempRoot -Manifest $manifest
+
+        $output = & pwsh -NoProfile -File $script:task780BuilderQueuePath -Action dispatch-next -ProjectDir $script:task780TempRoot -BuilderLabel builder-1 -AsJson 2>&1
+        $exitCode = $LASTEXITCODE
+        $payload = ($output | Out-String) | ConvertFrom-Json
+        $saved = Get-WinsmuxManifest -ProjectDir $script:task780TempRoot
+
+        $exitCode | Should -Be 1
+        $payload.Dispatched | Should -Be $false
+        $payload.DispatchResult.status | Should -Be 'unavailable'
+        $payload.DispatchResult.reason_code | Should -Be 'caller_identity_unavailable'
+        @($saved.tasks.queued).Count | Should -Be 1
+        @($saved.tasks.in_progress).Count | Should -Be 0
+        @(Get-DispatchLedger -ProjectDir $script:task780TempRoot).Count | Should -Be 0
     }
 }
 

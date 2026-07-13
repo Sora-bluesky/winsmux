@@ -5269,7 +5269,7 @@ fn operator_cli_review_request_records_pending_state_and_manifest_pane() {
 }
 
 #[test]
-fn operator_cli_dispatch_review_does_not_accept_send_without_run_record() {
+fn operator_cli_dispatch_review_refuses_without_strong_caller_identity() {
     let project_dir = make_temp_project_dir("dispatch-review");
     write_manifest(&project_dir);
     init_git_branch(
@@ -5309,20 +5309,11 @@ fn operator_cli_dispatch_review_does_not_accept_send_without_run_record() {
     let receipt: serde_json::Value = serde_json::from_str(stdout.trim()).expect("typed receipt");
     assert_eq!(receipt["protocol_version"], 1);
     assert_eq!(receipt["kind"], "review");
-    assert_eq!(receipt["status"], "rejected");
+    assert_eq!(receipt["status"], "unavailable");
     assert_eq!(receipt["backend"], "local");
     assert_eq!(receipt["target"]["label"], "reviewer-1");
-    assert_eq!(receipt["reason_code"], "backend_acknowledgement_missing");
-
-    let log = fs::read_to_string(log_path).expect("test should read fake winsmux log");
-    assert!(
-        log.contains("send-keys") && log.contains("%3") && log.contains("submission-ack"),
-        "unexpected fake winsmux log: {log}"
-    );
-    assert!(
-        log.contains("send-keys") && log.contains("%3") && log.contains("Enter"),
-        "unexpected fake winsmux log: {log}"
-    );
+    assert_eq!(receipt["reason_code"], "caller_identity_unavailable");
+    assert!(!log_path.exists(), "refusal must happen before pane send");
 }
 
 #[test]
@@ -5383,17 +5374,10 @@ panes:
     assert!(!output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     let receipt: serde_json::Value = serde_json::from_str(stdout.trim()).expect("typed receipt");
-    assert_eq!(receipt["status"], "rejected");
+    assert_eq!(receipt["status"], "unavailable");
     assert_eq!(receipt["target"]["label"], "reviewer-1");
-    let log = fs::read_to_string(log_path).expect("test should read fake winsmux log");
-    assert!(
-        log.contains("send-keys") && log.contains("%3") && log.contains("submission-ack"),
-        "unexpected fake winsmux log: {log}"
-    );
-    assert!(
-        !log.contains("send-keys -t %2"),
-        "review request should not be sent to the worker pane: {log}"
-    );
+    assert_eq!(receipt["reason_code"], "caller_identity_unavailable");
+    assert!(!log_path.exists(), "refusal must happen before pane send");
 }
 
 #[test]
@@ -5435,8 +5419,8 @@ fn operator_cli_dispatch_review_does_not_accept_stale_pending_review_state() {
     assert!(!output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     let receipt: serde_json::Value = serde_json::from_str(stdout.trim()).expect("typed refusal");
-    assert_eq!(receipt["status"], "rejected");
-    assert_eq!(receipt["reason_code"], "backend_acknowledgement_missing");
+    assert_eq!(receipt["status"], "unavailable");
+    assert_eq!(receipt["reason_code"], "caller_identity_unavailable");
 }
 
 #[test]
