@@ -79,6 +79,35 @@ Describe 'Get-BridgeSettings defaults' {
     }
 }
 
+Describe 'tracked worker-1 defaults' {
+    BeforeAll {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\settings.ps1')
+        $script:repositoryRoot = Split-Path -Parent $PSScriptRoot
+    }
+
+    It 'matches the canonical managed Codex reviewer contract' {
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        Test-Path -LiteralPath (Join-Path $script:repositoryRoot '.winsmux.yaml') | Should -BeTrue
+
+        $settings = Get-BridgeSettings -RootPath $script:repositoryRoot
+        $actualWorkers = @($settings.agent_slots | Where-Object { $_.slot_id -eq 'worker-1' })
+        $canonicalWorker = @(New-BridgeManagedAgentSlots -Count 1 -Agent 'claude' -Model 'opus')[0]
+
+        $actualWorkers.Count | Should -Be 1
+        $actualKeys = @($actualWorkers[0].Keys | ForEach-Object { $_.ToString().Trim().ToLowerInvariant() } | Sort-Object -Unique)
+        $canonicalKeys = @($canonicalWorker.Keys | ForEach-Object { $_.ToString().Trim().ToLowerInvariant() } | Sort-Object -Unique)
+        $missingKeys = @($canonicalKeys | Where-Object { $_ -notin $actualKeys })
+        $extraKeys = @($actualKeys | Where-Object { $_ -notin $canonicalKeys })
+
+        $missingKeys.Count | Should -Be 0
+        $extraKeys.Count | Should -Be 0
+        foreach ($key in $canonicalWorker.Keys) {
+            $actualWorkers[0][$key] | Should -Be $canonicalWorker[$key]
+        }
+    }
+}
+
 Describe 'Get-RoleAgentConfig with fallback' {
     BeforeAll {
         . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\settings.ps1')

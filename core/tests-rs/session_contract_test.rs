@@ -106,8 +106,12 @@ mod windows_session_contract {
             fixture.port_path(session).exists(),
             "detached session should publish a port file"
         );
-        let registry = read_registry(&fixture.registry_path(session))
-            .expect("detached session should publish registry json");
+        let registry = wait_for_registry(
+            &fixture.registry_path(session),
+            "contain valid JSON",
+            |_| true,
+        )
+        .expect("detached session should publish registry json");
         assert_eq!(
             registry["session"].as_str(),
             Some(fixture.base(session).as_str())
@@ -157,26 +161,63 @@ mod windows_session_contract {
         );
     }
 
-    fn read_registry(path: &Path) -> Option<Value> {
-        let bytes = fs::read(path).ok()?;
-        serde_json::from_slice(&bytes).ok()
+    fn wait_for_registry(
+        path: &Path,
+        expectation: &str,
+        matches: impl Fn(&Value) -> bool,
+    ) -> Result<Value, String> {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let poll_interval = Duration::from_millis(25);
+        let mut attempts = 0;
+
+        let last_diagnostic = loop {
+            attempts += 1;
+            let diagnostic = match fs::read(path) {
+                Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
+                    Ok(registry) if matches(&registry) => return Ok(registry),
+                    Ok(registry) => {
+                        format!("valid JSON did not match ({})", registry_summary(&registry))
+                    }
+                    Err(error) => format!(
+                        "JSON parse error at line {} column {}: {:?}",
+                        error.line(),
+                        error.column(),
+                        error.classify()
+                    ),
+                },
+                Err(error) => format!("I/O error ({:?}): {error}", error.kind()),
+            };
+
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break diagnostic;
+            }
+            thread::sleep(poll_interval.min(remaining));
+        };
+
+        Err(format!(
+            "timed out waiting for registry path={} expectation={expectation:?} attempts={attempts}; last observation: {last_diagnostic}",
+            path.display()
+        ))
     }
 
-    fn wait_for_registry_state(path: &Path, state: &str) -> Option<Value> {
-        let deadline = Instant::now() + Duration::from_secs(3);
-        let mut last = None;
-        while Instant::now() < deadline {
-            last = read_registry(path);
-            if last
-                .as_ref()
-                .and_then(|registry| registry["state"].as_str())
-                == Some(state)
-            {
-                return last;
-            }
-            thread::sleep(Duration::from_millis(25));
-        }
-        last
+    fn wait_for_registry_state(path: &Path, state: &str) -> Result<Value, String> {
+        wait_for_registry(path, &format!("reach state {state:?}"), |registry| {
+            registry["state"].as_str() == Some(state)
+        })
+    }
+
+    fn registry_summary(registry: &Value) -> String {
+        let session = registry["session"]
+            .as_str()
+            .unwrap_or("<missing-or-non-string>");
+        let state = registry["state"]
+            .as_str()
+            .unwrap_or("<missing-or-non-string>");
+        let server_pid = registry["server_pid"]
+            .as_u64()
+            .map_or_else(|| "<missing-or-non-u64>".to_string(), |pid| pid.to_string());
+        format!("session={session:?}, state={state:?}, server_pid={server_pid}")
     }
 
     fn unique_id(prefix: &str) -> String {

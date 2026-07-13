@@ -5,7 +5,13 @@ worker-backend: local
 agent-slots:
   - slot-id: worker-1
     runtime-role: worker
-    worker-backend: local
+    agent: codex
+    model: provider-default
+    model-source: provider-default
+    worker-backend: codex
+    worker-role: reviewer
+    fallback-model: gpt-5.3-codex-spark
+    pane-title: W1 Codex Reviewer
     worktree-mode: managed
   - slot-id: worker-2
     runtime-role: worker
