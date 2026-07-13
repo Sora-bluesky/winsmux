@@ -433,15 +433,16 @@ function Invoke-BuilderQueueDispatch {
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)][string]$BuilderLabel,
         [Parameter(Mandatory = $true)][string]$Task,
+        [Parameter(Mandatory = $true)][string]$AttemptId,
         [Parameter(Mandatory = $true)][string]$Prompt
     )
 
     $manifestEntry = @(Get-PaneControlManifestEntries -ProjectDir $ProjectDir | Where-Object { [string]$_.Label -ceq $BuilderLabel } | Select-Object -First 1)[0]
     if ($null -eq $manifestEntry) {
-        return New-WinsmuxSubmissionReceipt -Kind task -Status unavailable -Backend noop -SubmissionId $Task `
+        return New-WinsmuxSubmissionReceipt -Kind task -Status unavailable -Backend noop -SubmissionId $AttemptId `
             -ReasonCode 'target_manifest_missing' -Target ([ordered]@{ label = $BuilderLabel })
     }
-    return Invoke-WinsmuxSubmissionAdapter -ProjectDir $ProjectDir -ManifestEntry $manifestEntry -Kind task -Content $Prompt -SubmissionId $Task
+    return Invoke-WinsmuxSubmissionAdapter -ProjectDir $ProjectDir -ManifestEntry $manifestEntry -Kind task -Content $Prompt -SubmissionId $AttemptId -TaskId $Task
 }
 
 function Test-BuilderQueueDispatchEvidence {
@@ -449,19 +450,20 @@ function Test-BuilderQueueDispatchEvidence {
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)][string]$BuilderLabel,
         [Parameter(Mandatory = $true)][string]$TaskId,
+        [Parameter(Mandatory = $true)][string]$AttemptId,
         [Parameter(Mandatory = $true)]$Receipt
     )
 
     $target = Get-WinsmuxSubmissionValue -InputObject $Receipt -Name 'target' -Default $null
     if (
-        [string](Get-WinsmuxSubmissionValue -InputObject $Receipt -Name 'submission_id' -Default '') -cne $TaskId -or
+        [string](Get-WinsmuxSubmissionValue -InputObject $Receipt -Name 'submission_id' -Default '') -cne $AttemptId -or
         [string](Get-WinsmuxSubmissionValue -InputObject $Receipt -Name 'kind' -Default '') -cne 'task' -or
         [string](Get-WinsmuxSubmissionValue -InputObject $target -Name 'label' -Default '') -cne $BuilderLabel
     ) {
         return $false
     }
-    $packetPath = Join-Path (Join-Path (Join-Path $ProjectDir '.winsmux') 'submissions') ($TaskId + '.json')
-    $runPath = Get-WinsmuxSubmissionRunPath -ProjectDir $ProjectDir -SlotId $BuilderLabel -RunId $TaskId
+    $packetPath = Join-Path (Join-Path (Join-Path $ProjectDir '.winsmux') 'submissions') ($AttemptId + '.json')
+    $runPath = Get-WinsmuxSubmissionRunPath -ProjectDir $ProjectDir -SlotId $BuilderLabel -RunId $AttemptId
     if (-not (Test-Path -LiteralPath $packetPath -PathType Leaf) -or -not (Test-Path -LiteralPath $runPath -PathType Leaf)) {
         return $false
     }
@@ -472,16 +474,16 @@ function Test-BuilderQueueDispatchEvidence {
         return $false
     }
     if (
-        [string]$packet.submission_id -cne $TaskId -or
-        [string]$packet.run_id -cne $TaskId -or
+        [string]$packet.submission_id -cne $AttemptId -or
+        [string]$packet.run_id -cne $AttemptId -or
         [string]$packet.task_id -cne $TaskId -or
         [string]$packet.kind -cne 'task' -or
         [string]$packet.target -cne $BuilderLabel
     ) {
         return $false
     }
-    return Test-WinsmuxSubmissionRunRecord -Record $runRecord -SubmissionId $TaskId -Kind task `
-        -Backend ([string](Get-WinsmuxSubmissionValue -InputObject $Receipt -Name 'backend' -Default '')) -ExpectedSlotId $BuilderLabel -ExpectedRequestDigest ([string]$packet.request_digest)
+    return Test-WinsmuxSubmissionRunRecord -Record $runRecord -SubmissionId $AttemptId -Kind task `
+        -Backend ([string](Get-WinsmuxSubmissionValue -InputObject $Receipt -Name 'backend' -Default '')) -ExpectedSlotId $BuilderLabel -ExpectedRequestDigest ([string]$packet.request_digest) -ExpectedTaskId $TaskId
 }
 
 function Dispatch-NextBuilderQueueTask {
@@ -515,6 +517,7 @@ function Dispatch-NextBuilderQueueTask {
     }
 
     $nextEntry = $queued[0]
+    $attemptId = 'attempt-' + [guid]::NewGuid().ToString('N')
     $dispatchFiles = @(Get-BuilderQueueTaskFiles -ProjectDir $ProjectDir -Task $nextEntry.Task)
     $locked = Lock-DispatchFiles -TaskId $nextEntry.TaskId -BuilderLabel $BuilderLabel -Files $dispatchFiles -ProjectDir $ProjectDir
     if (-not $locked) {
@@ -531,9 +534,9 @@ function Dispatch-NextBuilderQueueTask {
     $prompt = New-BuilderQueueDispatchPrompt -Task $nextEntry.Task
     try {
         $dispatchResult = if ($null -ne $DispatchAction) {
-            & $DispatchAction $BuilderLabel $nextEntry.Task $prompt
+            & $DispatchAction $BuilderLabel $nextEntry.Task $prompt $nextEntry.TaskId $attemptId
         } else {
-            Invoke-BuilderQueueDispatch -ProjectDir $ProjectDir -BuilderLabel $BuilderLabel -Task $nextEntry.TaskId -Prompt $prompt
+            Invoke-BuilderQueueDispatch -ProjectDir $ProjectDir -BuilderLabel $BuilderLabel -Task $nextEntry.TaskId -AttemptId $attemptId -Prompt $prompt
         }
     } catch {
         Unlock-DispatchFiles -TaskId $nextEntry.TaskId -ProjectDir $ProjectDir | Out-Null
@@ -542,7 +545,7 @@ function Dispatch-NextBuilderQueueTask {
 
     $receiptValid = Test-WinsmuxSubmissionReceipt -Receipt $dispatchResult
     $accepted = $receiptValid -and [string]$dispatchResult.status -ceq 'accepted'
-    $evidenceValid = $accepted -and (Test-BuilderQueueDispatchEvidence -ProjectDir $ProjectDir -BuilderLabel $BuilderLabel -TaskId $nextEntry.TaskId -Receipt $dispatchResult)
+    $evidenceValid = $accepted -and (Test-BuilderQueueDispatchEvidence -ProjectDir $ProjectDir -BuilderLabel $BuilderLabel -TaskId $nextEntry.TaskId -AttemptId $attemptId -Receipt $dispatchResult)
     if (-not $accepted -or -not $evidenceValid) {
         Unlock-DispatchFiles -TaskId $nextEntry.TaskId -ProjectDir $ProjectDir | Out-Null
         $reason = if (-not $accepted -and $receiptValid -and -not [string]::IsNullOrWhiteSpace([string]$dispatchResult.reason_code)) {
