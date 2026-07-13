@@ -204,6 +204,22 @@ function Test-WinsmuxSubmissionPacket {
     return $true
 }
 
+function Resolve-WinsmuxSubmissionPacketPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$SubmissionId
+    )
+
+    if (-not (Test-WinsmuxSubmissionIdentifier -Value $SubmissionId)) {
+        throw 'submission packet path contains an unsupported submission id'
+    }
+    $relativePath = Join-Path (Join-Path '.winsmux' 'submissions') ($SubmissionId + '.json')
+    return [PSCustomObject]@{
+        RelativePath = $relativePath
+        FullPath     = [System.IO.Path]::GetFullPath((Join-Path $ProjectDir $relativePath))
+    }
+}
+
 function New-WinsmuxSubmissionPacket {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -215,13 +231,21 @@ function New-WinsmuxSubmissionPacket {
     )
 
     $packet = New-WinsmuxSubmissionPacketData -Kind $Kind -Content $Content -SubmissionId $SubmissionId -TargetLabel $TargetLabel -TaskId $TaskId
-    $relativePath = Join-Path (Join-Path '.winsmux' 'submissions') ($SubmissionId + '.json')
-    $fullPath = [System.IO.Path]::GetFullPath((Join-Path $ProjectDir $relativePath))
+    $packetPath = Resolve-WinsmuxSubmissionPacketPath -ProjectDir $ProjectDir -SubmissionId $SubmissionId
+    $relativePath = [string]$packetPath.RelativePath
+    $fullPath = [string]$packetPath.FullPath
     $directory = Split-Path -Parent $fullPath
     if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
         New-Item -ItemType Directory -Path $directory -Force | Out-Null
     }
-    [System.IO.File]::WriteAllText($fullPath, ($packet | ConvertTo-Json -Depth 8), [System.Text.UTF8Encoding]::new($false))
+    $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes(($packet | ConvertTo-Json -Depth 8))
+    $stream = $null
+    try {
+        $stream = [System.IO.File]::Open($fullPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        $stream.Write($bytes, 0, $bytes.Length)
+    } finally {
+        if ($null -ne $stream) { $stream.Dispose() }
+    }
     return [PSCustomObject]@{ FullPath = $fullPath; RelativePath = $relativePath; Packet = $packet }
 }
 
@@ -617,15 +641,15 @@ function Invoke-WinsmuxSubmissionAdapter {
     $backend = ([string](Get-WinsmuxSubmissionValue -InputObject $ManifestEntry -Name 'WorkerBackend' -Default 'local')).Trim().ToLowerInvariant()
     $target = [ordered]@{ label = $label; pane_id = $paneId; role = $role }
 
+    if ($backend -notin $script:WinsmuxSubmissionBackends -or $backend -eq 'noop') {
+        return New-WinsmuxSubmissionReceipt -Kind $Kind -Status unsupported -Backend noop -SubmissionId $SubmissionId -ReasonCode 'backend_unsupported' -Target $target
+    }
     if ([string]::IsNullOrWhiteSpace($TaskId)) { $TaskId = $SubmissionId }
     if (-not (Test-WinsmuxSubmissionIdentifier -Value $TaskId)) {
         return New-WinsmuxSubmissionReceipt -Kind $Kind -Status rejected -Backend $backend -SubmissionId $SubmissionId -ReasonCode 'task_identifier_invalid' -Target $target
     }
     if (-not (Test-WinsmuxSubmissionIdentifier -Value $label)) {
         return New-WinsmuxSubmissionReceipt -Kind $Kind -Status rejected -Backend noop -SubmissionId $SubmissionId -ReasonCode 'target_identifier_invalid' -Target $target
-    }
-    if ($backend -notin $script:WinsmuxSubmissionBackends -or $backend -eq 'noop') {
-        return New-WinsmuxSubmissionReceipt -Kind $Kind -Status unsupported -Backend noop -SubmissionId $SubmissionId -ReasonCode 'backend_unsupported' -Target $target
     }
 
     $existingRunPath = Get-WinsmuxSubmissionRunPath -ProjectDir $ProjectDir -SlotId $label -RunId $SubmissionId
@@ -635,7 +659,18 @@ function Invoke-WinsmuxSubmissionAdapter {
     if ($backend -in @('local', 'codex')) {
         return New-WinsmuxSubmissionReceipt -Kind $Kind -Status unavailable -Backend $backend -SubmissionId $SubmissionId -ReasonCode 'caller_identity_unavailable' -Target $target
     }
-    $packet = New-WinsmuxSubmissionPacket -ProjectDir $ProjectDir -Kind $Kind -Content $Content -SubmissionId $SubmissionId -TargetLabel $label -TaskId $TaskId
+    $packetPath = (Resolve-WinsmuxSubmissionPacketPath -ProjectDir $ProjectDir -SubmissionId $SubmissionId).FullPath
+    if (Test-Path -LiteralPath $packetPath -PathType Leaf) {
+        return New-WinsmuxSubmissionReceipt -Kind $Kind -Status rejected -Backend $backend -SubmissionId $SubmissionId -ReasonCode 'run_record_already_exists' -Target $target
+    }
+    try {
+        $packet = New-WinsmuxSubmissionPacket -ProjectDir $ProjectDir -Kind $Kind -Content $Content -SubmissionId $SubmissionId -TargetLabel $label -TaskId $TaskId
+    } catch [System.IO.IOException] {
+        if (Test-Path -LiteralPath $packetPath -PathType Leaf) {
+            return New-WinsmuxSubmissionReceipt -Kind $Kind -Status rejected -Backend $backend -SubmissionId $SubmissionId -ReasonCode 'run_record_already_exists' -Target $target
+        }
+        throw
+    }
     if ($backend -eq 'api_llm') {
         if ([string]::IsNullOrWhiteSpace($paneId)) {
             return New-WinsmuxSubmissionReceipt -Kind $Kind -Status unavailable -Backend $backend -SubmissionId $SubmissionId -ReasonCode 'pane_unavailable' -Target $target

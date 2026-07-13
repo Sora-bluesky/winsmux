@@ -16951,6 +16951,69 @@ agent-slots:
         $packetAfterDuplicate.request_digest | Should -BeExactly $originalPacket.request_digest
     }
 
+    It 'ROUND3 P2 rejects a packet-only retry without overwriting the original request' {
+        $taskId = 'task-round3-packet-only-retry'
+        $attemptId = 'attempt-round3-packet-only-retry-1'
+        $entry = [PSCustomObject]@{ Label = 'worker-1'; PaneId = '%1'; Role = 'Worker'; WorkerBackend = 'api_llm' }
+        $firstContent = [ordered]@{ title = 'Original packet'; request = 'Keep this request after send failure.' }
+        $script:task780PacketRetrySendCount = 0
+
+        $first = Invoke-WinsmuxSubmissionAdapter -ProjectDir $script:task780TempRoot -ManifestEntry $entry -Kind task -Content $firstContent `
+            -SubmissionId $attemptId -TaskId $taskId `
+            -SendAction { $script:task780PacketRetrySendCount++; throw 'synthetic packet send failure' } `
+            -RunResultAction { throw 'send failure must stop before runner polling' }
+        $packetPath = Join-Path $script:task780TempRoot ".winsmux\submissions\$attemptId.json"
+        $runPath = Get-WinsmuxSubmissionRunPath -ProjectDir $script:task780TempRoot -SlotId worker-1 -RunId $attemptId
+        $originalPacketText = Get-Content -LiteralPath $packetPath -Raw -Encoding UTF8
+        $originalPacket = $originalPacketText | ConvertFrom-Json
+
+        $duplicate = Invoke-WinsmuxSubmissionAdapter -ProjectDir $script:task780TempRoot -ManifestEntry $entry -Kind task `
+            -Content ([ordered]@{ title = 'Replacement packet'; request = 'This request must not replace the original.' }) `
+            -SubmissionId $attemptId -TaskId $taskId `
+            -SendAction { $script:task780PacketRetrySendCount++; throw 'duplicate retry must stop before sending' } `
+            -RunResultAction { throw 'duplicate retry must stop before runner polling' }
+        $packetAfterRetryText = Get-Content -LiteralPath $packetPath -Raw -Encoding UTF8
+        $packetAfterRetry = $packetAfterRetryText | ConvertFrom-Json
+
+        $first.status | Should -Be 'unavailable'
+        $first.reason_code | Should -Be 'packet_repl_unavailable'
+        $duplicate.status | Should -Be 'rejected'
+        $duplicate.reason_code | Should -Be 'run_record_already_exists'
+        (Test-WinsmuxSubmissionReceipt -Receipt $duplicate) | Should -Be $true
+        { ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $duplicate | Out-Null } | Should -Not -Throw
+        $script:task780PacketRetrySendCount | Should -Be 1
+        (Test-Path -LiteralPath $runPath -PathType Leaf) | Should -Be $false
+        $packetAfterRetryText | Should -BeExactly $originalPacketText
+        $packetAfterRetry.request | Should -BeExactly $originalPacket.request
+        $packetAfterRetry.request_digest | Should -BeExactly $originalPacket.request_digest
+    }
+
+    It 'ROUND3 P2 converts an atomic packet-create collision to typed duplicate refusal' {
+        $attemptId = 'attempt-round3-atomic-packet-race-1'
+        $entry = [PSCustomObject]@{ Label = 'worker-1'; PaneId = '%1'; Role = 'Worker'; WorkerBackend = 'api_llm' }
+        $packetPath = (Resolve-WinsmuxSubmissionPacketPath -ProjectDir $script:task780TempRoot -SubmissionId $attemptId).FullPath
+        New-Item -ItemType Directory -Path (Split-Path -Parent $packetPath) -Force | Out-Null
+        $script:task780AtomicPacketPath = $packetPath
+        $script:task780AtomicSendCalled = $false
+        Mock New-WinsmuxSubmissionPacket {
+            [System.IO.File]::WriteAllText($script:task780AtomicPacketPath, 'race winner packet', [System.Text.UTF8Encoding]::new($false))
+            throw [System.IO.IOException]::new('synthetic CreateNew collision')
+        }
+
+        $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $script:task780TempRoot -ManifestEntry $entry -Kind task -Content 'Atomic retry loser' `
+            -SubmissionId $attemptId -TaskId 'task-round3-atomic-packet-race' `
+            -SendAction { $script:task780AtomicSendCalled = $true } `
+            -RunResultAction { throw 'atomic collision must stop before runner polling' }
+
+        $receipt.status | Should -Be 'rejected'
+        $receipt.reason_code | Should -Be 'run_record_already_exists'
+        (Test-WinsmuxSubmissionReceipt -Receipt $receipt) | Should -Be $true
+        { ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $receipt | Out-Null } | Should -Not -Throw
+        $script:task780AtomicSendCalled | Should -Be $false
+        (Get-Content -LiteralPath $packetPath -Raw -Encoding UTF8) | Should -BeExactly 'race winner packet'
+        Should -Invoke New-WinsmuxSubmissionPacket -Times 1 -Exactly
+    }
+
     It 'ROUND3 P1 exposes only the finite unavailable and rejected reason allowlists' {
         $cases = @(
             [ordered]@{ backend = 'antigravity'; status = 'blocked'; reason = 'antigravity_cli_missing'; receipt_status = 'unavailable'; expected = 'antigravity_cli_missing' },
@@ -16977,6 +17040,53 @@ agent-slots:
             $receipt.reason_code | Should -Be $case.expected
             $receipt.reason_code | Should -Match '^[a-z][a-z0-9_]*$'
             $json | Should -Not -Match 'sk_synthetic_secret_cli_missing|private_provider_payload'
+        }
+    }
+
+    It 'ROUND3 P2 keeps backend and task-id refusal combinations typed and serializable' {
+        $cases = @(
+            [ordered]@{
+                name             = 'known-backend-invalid-task'
+                backend          = 'antigravity'
+                task_id          = 'invalid task id'
+                expected_status  = 'rejected'
+                expected_backend = 'antigravity'
+                expected_reason  = 'task_identifier_invalid'
+            },
+            [ordered]@{
+                name             = 'unknown-backend-valid-task'
+                backend          = 'unknown_backend'
+                task_id          = 'valid-task-id'
+                expected_status  = 'unsupported'
+                expected_backend = 'noop'
+                expected_reason  = 'backend_unsupported'
+            },
+            [ordered]@{
+                name             = 'unknown-backend-invalid-task'
+                backend          = 'unknown_backend'
+                task_id          = 'invalid task id'
+                expected_status  = 'unsupported'
+                expected_backend = 'noop'
+                expected_reason  = 'backend_unsupported'
+            }
+        )
+
+        foreach ($case in $cases) {
+            $entry = [PSCustomObject]@{ Label = 'worker-3'; PaneId = ''; Role = 'Worker'; WorkerBackend = $case.backend }
+            $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $script:task780TempRoot -ManifestEntry $entry -Kind task -Content 'Input validation matrix' `
+                -SubmissionId ('submission-' + $case.name) -TaskId $case.task_id -CliRunAction { throw 'input refusal must stop before runner invocation' }
+
+            $receipt.status | Should -Be $case.expected_status
+            $receipt.backend | Should -Be $case.expected_backend
+            $receipt.reason_code | Should -Be $case.expected_reason
+            (Test-WinsmuxSubmissionReceipt -Receipt $receipt) | Should -Be $true
+            { ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $receipt | Out-Null } | Should -Not -Throw
+
+            $parsed = ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $receipt | ConvertFrom-Json
+            $parsed.protocol_version | Should -Be 1
+            $parsed.status | Should -Be $case.expected_status
+            $parsed.backend | Should -Be $case.expected_backend
+            $parsed.reason_code | Should -Be $case.expected_reason
         }
     }
 
