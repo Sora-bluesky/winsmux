@@ -88,6 +88,39 @@ function Invoke-WinsmuxDispatchRouteCommand {
     & $routerScript -Text $fullText
 }
 
+function Invoke-WinsmuxSubmissionAckCommand {
+    param(
+        [AllowNull()][string]$CommandTarget,
+        [AllowNull()][string[]]$CommandRest
+    )
+
+    $usage = 'usage: winsmux submission-ack --submission-id <id> --run-id <id> --kind <task|review> --backend <local|codex> --slot <slot>'
+    $tokens = @(@($CommandTarget) + @($CommandRest) | Where-Object { $_ })
+    $values = [ordered]@{ submission_id = ''; run_id = ''; kind = ''; backend = ''; slot = '' }
+    for ($index = 0; $index -lt $tokens.Count; $index++) {
+        $name = switch ([string]$tokens[$index]) {
+            '--submission-id' { 'submission_id' }
+            '--run-id' { 'run_id' }
+            '--kind' { 'kind' }
+            '--backend' { 'backend' }
+            '--slot' { 'slot' }
+            default { '' }
+        }
+        if ([string]::IsNullOrWhiteSpace($name) -or $index + 1 -ge $tokens.Count) {
+            Stop-WithError $usage
+        }
+        $index++
+        $values[$name] = [string]$tokens[$index]
+    }
+    foreach ($required in $values.Keys) {
+        if ([string]::IsNullOrWhiteSpace([string]$values[$required])) { Stop-WithError $usage }
+    }
+    $projectDir = [string]$env:WINSMUX_ORCHESTRA_PROJECT_DIR
+    if ([string]::IsNullOrWhiteSpace($projectDir)) { $projectDir = (Get-Location).Path }
+    $record = Invoke-WinsmuxSubmissionAcknowledge -ProjectDir $projectDir -SlotId $values.slot -SubmissionId $values.submission_id -RunId $values.run_id -Kind $values.kind -Backend $values.backend
+    $record | ConvertTo-Json -Depth 8 -Compress | Write-Output
+}
+
 function Get-DispatchTaskManifestEntry {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -236,7 +269,7 @@ function Invoke-WinsmuxDispatchTaskCommand {
 
     $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $projectDir -ManifestEntry $manifestEntry -Kind task -Content $taskText -SubmissionId $submissionId
     $receipt.routing = [ordered]@{
-        matched_rule   = if (@($route.MatchedKeywords).Count -gt 0) { @($route.MatchedKeywords) -join ',' } else { 'default_role' }
+        matched_rule   = [string]$route.RuleId
         expected_owner = $resolvedRole
         next_shape     = ''
     }

@@ -4752,86 +4752,21 @@ pub fn run_dispatch_review_command(args: &[&String]) -> io::Result<()> {
         ));
     }
     assert_dispatch_review_role_permission("dispatch-review")?;
-
-    let project_dir = env::current_dir()?;
-    let branch = current_git_branch(&project_dir)?;
-    let head_sha = current_git_head(&project_dir)?;
-    let context = preferred_review_pane_context(&project_dir)?;
     let submission_id = format!("submission-{}", Utc::now().timestamp_millis());
-    let backend = context.worker_backend.trim().to_ascii_lowercase();
-    let receipt_backend = match backend.as_str() {
-        "local" | "codex" | "api_llm" | "antigravity" | "colab_cli" | "noop" => {
-            backend.as_str()
-        }
-        _ => "noop",
-    };
-    if !matches!(backend.as_str(), "local" | "codex") {
-        let receipt = submission_receipt(
-            &submission_id,
-            "review",
-            "unsupported",
-            receipt_backend,
-            "backend_requires_packet_adapter",
-            &context,
-            Value::Null,
-        );
-        println!("{}", serde_json::to_string(&receipt).unwrap_or_default());
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "dispatch-review requires the packet adapter for this backend",
-        ));
-    }
-
-    if let Err(error) = send_review_request_to_pane(&context.pane_id) {
-        let receipt = submission_receipt(
-            &submission_id,
-            "review",
-            "unavailable",
-            receipt_backend,
-            "pane_send_failed",
-            &context,
-            Value::Null,
-        );
-        println!("{}", serde_json::to_string(&receipt).unwrap_or_default());
-        return Err(error);
-    }
-
-    if !wait_for_pending_review_state(&project_dir, &branch, &head_sha)? {
-        let receipt = submission_receipt(
-            &submission_id,
-            "review",
-            "rejected",
-            receipt_backend,
-            "review_pending_acknowledgement_missing",
-            &context,
-            Value::Null,
-        );
-        println!("{}", serde_json::to_string(&receipt).unwrap_or_default());
-        return Err(io::Error::new(
-            io::ErrorKind::TimedOut,
-            format!(
-                "review-request was not recorded after {} attempts. Check review pane {}.",
-                dispatch_review_poll_attempts(),
-                context.pane_id
-            ),
-        ));
-    }
-
     let receipt = submission_receipt(
         &submission_id,
         "review",
-        "accepted",
-        receipt_backend,
-        "",
-        &context,
-        json!({
-            "type": "review_pending_state",
-            "branch": branch,
-            "head_sha": head_sha,
-        }),
+        "unavailable",
+        "noop",
+        "shared_submission_bridge_unavailable",
+        None,
+        Value::Null,
     );
     println!("{}", serde_json::to_string(&receipt).unwrap_or_default());
-    Ok(())
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "shared submission bridge is unavailable",
+    ))
 }
 
 fn submission_receipt(
@@ -4840,9 +4775,16 @@ fn submission_receipt(
     status: &str,
     backend: &str,
     reason_code: &str,
-    context: &ReviewPaneContext,
+    context: Option<&ReviewPaneContext>,
     acknowledgement: Value,
 ) -> Value {
+    let target = context.map_or(Value::Null, |context| {
+        json!({
+            "label": context.label,
+            "pane_id": context.pane_id,
+            "role": context.role,
+        })
+    });
     json!({
         "protocol_version": 1,
         "submission_id": submission_id,
@@ -4851,11 +4793,7 @@ fn submission_receipt(
         "backend": backend,
         "reason_code": reason_code,
         "diagnostic": "",
-        "target": {
-            "label": context.label,
-            "pane_id": context.pane_id,
-            "role": context.role,
-        },
+        "target": target,
         "routing": Value::Null,
         "acknowledgement": acknowledgement,
     })
@@ -6923,7 +6861,6 @@ struct ReviewPaneContext {
     label: String,
     pane_id: String,
     role: String,
-    worker_backend: String,
 }
 
 #[derive(Clone)]
@@ -7216,69 +7153,7 @@ fn review_pane_context_from_value(
         label,
         pane_id: actual,
         role: canonical_role.unwrap_or_default(),
-        worker_backend: {
-            let backend = manifest_string(map, "worker_backend");
-            if backend.trim().is_empty() {
-                "local".to_string()
-            } else {
-                backend
-            }
-        },
     })
-}
-
-fn send_review_request_to_pane(pane_id: &str) -> io::Result<()> {
-    let command_text = "winsmux review-request";
-    let pre_send_text = capture_pane_tail(pane_id)?;
-    run_winsmux_command(&["send-keys", "-t", pane_id, "-l", "--", command_text])?;
-    thread::sleep(Duration::from_millis(300));
-    let typed_text = capture_pane_tail(pane_id)?;
-    if typed_text == pre_send_text {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("pane buffer did not change after typing review request into {pane_id}"),
-        ));
-    }
-    if !typed_text.contains(command_text) {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("typed review request was not observed in {pane_id}"),
-        ));
-    }
-    run_winsmux_command(&["send-keys", "-t", pane_id, "Enter"])
-}
-
-fn wait_for_pending_review_state(
-    project_dir: &Path,
-    branch: &str,
-    head_sha: &str,
-) -> io::Result<bool> {
-    let attempts = dispatch_review_poll_attempts();
-    for attempt in 0..=attempts {
-        let state = load_review_state(project_dir)?;
-        if review_state_is_pending_for_head(&state, branch, head_sha) {
-            return Ok(true);
-        }
-        if attempt < attempts {
-            thread::sleep(dispatch_review_poll_delay());
-        }
-    }
-    Ok(false)
-}
-
-fn dispatch_review_poll_attempts() -> usize {
-    env::var("WINSMUX_DISPATCH_REVIEW_POLL_ATTEMPTS")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(10)
-}
-
-fn dispatch_review_poll_delay() -> Duration {
-    env::var("WINSMUX_DISPATCH_REVIEW_POLL_INTERVAL_MS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .map(Duration::from_millis)
-        .unwrap_or_else(|| Duration::from_secs(3))
 }
 
 fn review_state_is_pending_for_head(

@@ -6326,7 +6326,9 @@ function ConvertTo-WorkersSafeLogText {
     $safe = [regex]::Replace($safe, '(?i)(?<![A-Za-z0-9_])(["'']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|oauth[_-]?token|token|password|passwd|secret|credential|credentials)["'']?\s*[:=]\s*["'']?)[^\s"'',;}]+', '$1[REDACTED]')
     $safe = [regex]::Replace($safe, '(?i)(?<![A-Za-z0-9_])(["'']?(?:x-request-id|request[_-]?id|provider[_-]?response[_-]?id)["'']?\s*[:=]\s*["'']?)[^\s"'',;}]+', '$1[REDACTED]')
     $safe = [regex]::Replace($safe, '(?i)/content/drive/(?:MyDrive|Shareddrives)(?:/[^\s"'']*)?', '[DRIVE_PATH_REDACTED]')
+    $safe = [regex]::Replace($safe, '(?i)\\\\[^\\\s]+\\[^\s"'',;}\r\n]+(?:\\[^\s"'',;}\r\n]+)*', '[NETWORK_PATH_REDACTED]')
     $safe = [regex]::Replace($safe, '(?i)\b[A-Z]:\\[^"'',;}\r\n]+', '[LOCAL_PATH_REDACTED]')
+    $safe = [regex]::Replace($safe, '(?i)(?<![:A-Za-z0-9])/(?:home|users|tmp|var|opt|workspace|private)(?:/[^\s"'',;}\r\n]+)+', '[UNIX_PATH_REDACTED]')
     return $safe
 }
 
@@ -6548,6 +6550,7 @@ function Resolve-WorkersProjectPath {
         [switch]$AllowFile,
         [switch]$AllowDirectory,
         [switch]$AllowRuntimePath,
+        [switch]$AllowSubmissionPacket,
         [long]$MaxBytes = 0
     )
 
@@ -6573,6 +6576,9 @@ function Resolve-WorkersProjectPath {
     }
 
     $reason = Get-WorkersPathExclusionReason -RelativePath $relative
+    if ($AllowSubmissionPacket -and $reason -eq 'excluded_segment:.winsmux' -and $relative.Replace('\', '/') -match '^\.winsmux/submissions/[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\.json$') {
+        $reason = ''
+    }
     if ($AllowRuntimePath -and $reason -eq 'excluded_segment:.winsmux') {
         $reason = ''
     }
@@ -9898,10 +9904,20 @@ function Invoke-WorkersApiLlmExec {
         Stop-WithError 'api_llm workers exec requires --task-json or --script'
     }
 
-    $inputInfo = Resolve-WorkersProjectPath -ProjectDir $Options.ProjectDir -Path $inputPath -MustExist -AllowFile -MaxBytes (Get-WorkersUploadMaxBytes)
+    $inputInfo = Resolve-WorkersProjectPath -ProjectDir $Options.ProjectDir -Path $inputPath -MustExist -AllowFile -AllowSubmissionPacket:($inputKind -eq 'task_json') -MaxBytes (Get-WorkersUploadMaxBytes)
     $inputContent = Get-Content -LiteralPath ([string]$inputInfo.FullPath) -Raw -Encoding UTF8
     if ($null -eq $inputContent) {
         $inputContent = ''
+    }
+    $submissionPacket = $null
+    if ($inputKind -eq 'task_json') {
+        $submissionPacket = Read-WinsmuxSubmissionPacketIfPresent -Path ([string]$inputInfo.FullPath)
+    }
+    $taskId = [string]$Options.TaskId
+    $requestedRunId = [string]$Options.RunId
+    if ($null -ne $submissionPacket) {
+        if ([string]::IsNullOrWhiteSpace($taskId)) { $taskId = [string]$submissionPacket.task_id }
+        if ([string]::IsNullOrWhiteSpace($requestedRunId)) { $requestedRunId = [string]$submissionPacket.run_id }
     }
 
     $safetyInput = [System.Collections.Generic.List[string]]::new()
@@ -9914,19 +9930,26 @@ function Invoke-WorkersApiLlmExec {
     if (-not [string]::IsNullOrWhiteSpace([string]$env:WINSMUX_TASK_JSON)) {
         $safetyInput.Add([string]$env:WINSMUX_TASK_JSON) | Out-Null
     }
-    if (-not [string]::IsNullOrWhiteSpace([string]$Options.TaskId)) {
-        $safetyInput.Add([string]$Options.TaskId) | Out-Null
+    if (-not [string]::IsNullOrWhiteSpace($taskId)) {
+        $safetyInput.Add($taskId) | Out-Null
     }
     Assert-WorkersApiLlmSafetyInput -Values @($safetyInput)
 
-    $runId = Assert-WorkersRunId -RunId ([string]$Options.RunId)
+    $runId = Assert-WorkersRunId -RunId $requestedRunId
     if ([string]::IsNullOrWhiteSpace($runId)) {
         $runId = New-WorkersRunId -SlotId ([string]$Worker.Row.SlotId)
+    }
+    if ($null -ne $submissionPacket -and (
+        [string]$submissionPacket.task_id -cne $taskId -or
+        [string]$submissionPacket.run_id -cne $runId
+    )) {
+        Stop-WithError 'api_llm submission packet id does not match task-id or run-id'
     }
     $runDir = Get-WorkersRunDirectory -ProjectDir $Options.ProjectDir -SlotId ([string]$Worker.Row.SlotId) -RunId $runId
     if (-not (Test-Path -LiteralPath $runDir -PathType Container)) {
         New-Item -ItemType Directory -Path $runDir -Force | Out-Null
     }
+    $runJsonPath = Join-Path $runDir 'run.json'
 
     $metadata = New-WorkersApiLlmMetadata -Worker $Worker
     $logPath = Join-Path $runDir 'stdout.log'
@@ -9971,6 +9994,10 @@ function Invoke-WorkersApiLlmExec {
             $reason = 'api_llm_api_key_env_missing'
         } else {
             try {
+                if ($null -ne $submissionPacket) {
+                    $startedRecord = New-WinsmuxSubmissionRunRecord -SubmissionId ([string]$submissionPacket.submission_id) -RunId $runId -Kind ([string]$submissionPacket.kind) -TaskTitle ([string]$submissionPacket.title) -SlotId ([string]$Worker.Row.SlotId) -Backend api_llm -Status started -RequestConsumed
+                    Write-WorkersJsonArtifact -Path $runJsonPath -Data $startedRecord | Out-Null
+                }
                 $network = 'started'
                 $completion = Invoke-WorkersOpenAiCompatibleChatCompletion -RuntimeConfig $runtime -Metadata $metadata -InputKind $inputKind -InputContent ([string]$inputContent) -ApiKey ([string]$credential.ApiKey)
                 $network = 'completed'
@@ -10025,6 +10052,14 @@ function Invoke-WorkersApiLlmExec {
     Write-ClmSafeTextFile -Path $logPath -Content (ConvertTo-WorkersSafeLogText -Text ($logLines -join [Environment]::NewLine))
 
     $payload = [ordered]@{
+        protocol_version = if ($null -ne $submissionPacket) { 1 } else { 0 }
+        type           = if ($null -ne $submissionPacket) { 'backend_run_record' } else { '' }
+        submission_id  = if ($null -ne $submissionPacket) { [string]$submissionPacket.submission_id } else { '' }
+        kind           = if ($null -ne $submissionPacket) { [string]$submissionPacket.kind } else { '' }
+        task_title     = if ($null -ne $submissionPacket) { [string]$submissionPacket.title } else { '' }
+        worker_kind    = if ($null -ne $submissionPacket -and [string]$submissionPacket.kind -eq 'review') { 'critic' } elseif ($null -ne $submissionPacket) { 'implementation' } else { '' }
+        backend_owned  = $true
+        request_consumed = ($null -ne $submissionPacket)
         project_dir    = $Options.ProjectDir
         generated_at   = (Get-Date).ToUniversalTime().ToString('o')
         command        = 'workers.exec'
@@ -10034,7 +10069,7 @@ function Invoke-WorkersApiLlmExec {
         slot           = [string]$Worker.Row.Slot
         slot_id        = [string]$Worker.Row.SlotId
         run_id         = $runId
-        task_id        = [string]$Options.TaskId
+        task_id        = $taskId
         input          = [string]$inputInfo.RelativePath
         input_kind     = $inputKind
         script         = if ($inputKind -eq 'script') { [string]$inputInfo.RelativePath } else { '' }
@@ -10057,7 +10092,6 @@ function Invoke-WorkersApiLlmExec {
     if (-not [string]::IsNullOrWhiteSpace($responseReference)) {
         $payload.locations['response'] = New-WinsmuxLocationIdentity -Kind 'local_file' -DisplayName 'response.txt' -Backend 'local-windows' -AccessMethod 'artifact_ref' -Reference $responseReference -Provenance 'workers.exec.response'
     }
-    $runJsonPath = Join-Path $runDir 'run.json'
     $payload['run_json'] = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $runJsonPath
     Write-WorkersJsonArtifact -Path $runJsonPath -Data $payload | Out-Null
     if ($null -ne $Worker.Entry) {
@@ -10238,10 +10272,14 @@ function Invoke-WorkersAntigravityExec {
         Stop-WithError 'antigravity workers exec requires --task-json or --script'
     }
 
-    $inputInfo = Resolve-WorkersProjectPath -ProjectDir $Options.ProjectDir -Path $inputPath -MustExist -AllowFile -MaxBytes (Get-WorkersUploadMaxBytes)
+    $inputInfo = Resolve-WorkersProjectPath -ProjectDir $Options.ProjectDir -Path $inputPath -MustExist -AllowFile -AllowSubmissionPacket:($inputKind -eq 'task_json') -MaxBytes (Get-WorkersUploadMaxBytes)
     $inputContent = Get-Content -LiteralPath ([string]$inputInfo.FullPath) -Raw -Encoding UTF8
     if ($null -eq $inputContent) {
         $inputContent = ''
+    }
+    $submissionPacket = $null
+    if ($inputKind -eq 'task_json') {
+        $submissionPacket = Read-WinsmuxSubmissionPacketIfPresent -Path ([string]$inputInfo.FullPath)
     }
 
     $safetyInput = [System.Collections.Generic.List[string]]::new()
@@ -10263,10 +10301,17 @@ function Invoke-WorkersAntigravityExec {
     if ([string]::IsNullOrWhiteSpace($runId)) {
         $runId = New-WorkersRunId -SlotId ([string]$Worker.Row.SlotId)
     }
+    if ($null -ne $submissionPacket -and (
+        [string]$submissionPacket.submission_id -cne [string]$Options.TaskId -or
+        [string]$submissionPacket.run_id -cne $runId
+    )) {
+        Stop-WithError 'antigravity submission packet id does not match task-id or run-id'
+    }
     $runDir = Get-WorkersRunDirectory -ProjectDir $Options.ProjectDir -SlotId ([string]$Worker.Row.SlotId) -RunId $runId
     if (-not (Test-Path -LiteralPath $runDir -PathType Container)) {
         New-Item -ItemType Directory -Path $runDir -Force | Out-Null
     }
+    $runJsonPath = Join-Path $runDir 'run.json'
 
     $metadata = New-WorkersAntigravityMetadata -Worker $Worker
     $logPath = Join-Path $runDir 'stdout.log'
@@ -10301,6 +10346,10 @@ function Invoke-WorkersAntigravityExec {
             $arguments += @($Options.ScriptArgs)
             try {
                 $process = 'started'
+                if ($null -ne $submissionPacket) {
+                    $startedRecord = New-WinsmuxSubmissionRunRecord -SubmissionId ([string]$submissionPacket.submission_id) -RunId $runId -Kind ([string]$submissionPacket.kind) -TaskTitle ([string]$submissionPacket.title) -SlotId ([string]$Worker.Row.SlotId) -Backend antigravity -Status started -RequestConsumed
+                    Write-WorkersJsonArtifact -Path $runJsonPath -Data $startedRecord | Out-Null
+                }
                 $cli = Invoke-WorkersAntigravityCli -Arguments $arguments -WorkingDirectory ([string]$Options.ProjectDir)
                 $cliCommand = ConvertTo-WorkersSafeLogText -Text ([string]$cli.Command)
                 $recordedArguments = @(ConvertTo-WorkersAntigravityRecordedArguments -Arguments @($cli.Arguments))
@@ -10348,6 +10397,14 @@ function Invoke-WorkersAntigravityExec {
     Write-ClmSafeTextFile -Path $logPath -Content (ConvertTo-WorkersSafeLogText -Text ($logLines -join [Environment]::NewLine))
 
     $payload = [ordered]@{
+        protocol_version = if ($null -ne $submissionPacket) { 1 } else { 0 }
+        type           = if ($null -ne $submissionPacket) { 'backend_run_record' } else { '' }
+        submission_id  = if ($null -ne $submissionPacket) { [string]$submissionPacket.submission_id } else { '' }
+        kind           = if ($null -ne $submissionPacket) { [string]$submissionPacket.kind } else { '' }
+        task_title     = if ($null -ne $submissionPacket) { [string]$submissionPacket.title } else { '' }
+        worker_kind    = if ($null -ne $submissionPacket -and [string]$submissionPacket.kind -eq 'review') { 'critic' } elseif ($null -ne $submissionPacket) { 'implementation' } else { '' }
+        backend_owned  = $true
+        request_consumed = ($null -ne $submissionPacket)
         project_dir    = $Options.ProjectDir
         generated_at   = (Get-Date).ToUniversalTime().ToString('o')
         command        = 'workers.exec'
@@ -10379,7 +10436,6 @@ function Invoke-WorkersAntigravityExec {
     if (-not [string]::IsNullOrWhiteSpace($responseReference)) {
         $payload.locations['response'] = New-WinsmuxLocationIdentity -Kind 'local_file' -DisplayName 'response.txt' -Backend 'local-windows' -AccessMethod 'artifact_ref' -Reference $responseReference -Provenance 'workers.exec.response'
     }
-    $runJsonPath = Join-Path $runDir 'run.json'
     $payload['run_json'] = Get-WorkersArtifactReference -ProjectDir $Options.ProjectDir -Path $runJsonPath
     Write-WorkersJsonArtifact -Path $runJsonPath -Data $payload | Out-Null
     if ($null -ne $Worker.Entry) {
@@ -10472,6 +10528,28 @@ function Invoke-WorkersAntigravityLogs {
     Write-WorkersOperationOutput -Payload $payload -Json:([bool]$Options.Json) -Text $content
 }
 
+function Test-WorkersColabSubmissionResult {
+    param(
+        [Parameter(Mandatory = $true)][string]$Output,
+        [Parameter(Mandatory = $true)]$Packet,
+        [Parameter(Mandatory = $true)][string]$RunId
+    )
+
+    $candidate = $null
+    foreach ($line in @($Output -split "`r?`n" | Where-Object { $_.TrimStart().StartsWith('{') } | Select-Object -Last 1)) {
+        try { $candidate = $line | ConvertFrom-Json -Depth 16 } catch { $candidate = $null }
+    }
+    if ($null -eq $candidate) { return $false }
+    $expectedWorkerKind = if ([string]$Packet.kind -eq 'review') { 'critic' } else { 'implementation' }
+    return (
+        [string]$candidate.status -ceq 'succeeded' -and
+        [string]$candidate.worker_kind -ceq $expectedWorkerKind -and
+        [string]$candidate.run_id -ceq $RunId -and
+        [string]$candidate.task.id -ceq [string]$Packet.task_id -and
+        [string]$candidate.task.title -ceq [string]$Packet.title
+    )
+}
+
 function Invoke-WorkersExec {
     $usage = "usage: winsmux workers exec <slot> --script <path> [--task-json <path>] [--task-id <id>] [--run-id <id>] [--json] [--project-dir <path>]; api_llm and antigravity accept exactly one input: --script or --task-json"
     $options = Read-WorkersExecOptions -Usage $usage
@@ -10513,8 +10591,16 @@ function Invoke-WorkersExec {
     if (-not [string]::IsNullOrWhiteSpace([string]$options.TaskId)) {
         $arguments += @('--task-id', [string]$options.TaskId)
     }
+    $submissionPacket = $null
     if (-not [string]::IsNullOrWhiteSpace([string]$options.TaskJsonPath)) {
-        $taskJsonInfo = Resolve-WorkersProjectPath -ProjectDir $options.ProjectDir -Path ([string]$options.TaskJsonPath) -MustExist -AllowFile -MaxBytes (Get-WorkersUploadMaxBytes)
+        $taskJsonInfo = Resolve-WorkersProjectPath -ProjectDir $options.ProjectDir -Path ([string]$options.TaskJsonPath) -MustExist -AllowFile -AllowSubmissionPacket -MaxBytes (Get-WorkersUploadMaxBytes)
+        $submissionPacket = Read-WinsmuxSubmissionPacketIfPresent -Path ([string]$taskJsonInfo.FullPath)
+        if ($null -ne $submissionPacket -and (
+            [string]$submissionPacket.submission_id -cne [string]$options.TaskId -or
+            [string]$submissionPacket.run_id -cne $runId
+        )) {
+            Stop-WithError 'colab_cli submission packet id does not match task-id or run-id'
+        }
         $arguments += @('--task-json', [string]$taskJsonInfo.FullPath)
     }
     $arguments += @($options.ScriptArgs)
@@ -10523,12 +10609,27 @@ function Invoke-WorkersExec {
     $logPath = Join-Path $runDir 'stdout.log'
     Write-ClmSafeTextFile -Path $logPath -Content $safeCliOutput
     $status = if ([int]$cli.ExitCode -eq 0) { 'succeeded' } else { 'failed' }
+    $reason = ''
+    if ($null -ne $submissionPacket -and $status -eq 'succeeded' -and -not (Test-WorkersColabSubmissionResult -Output ([string]$cli.Output) -Packet $submissionPacket -RunId $runId)) {
+        $status = 'failed'
+        $reason = 'colab_worker_evidence_invalid'
+    }
 
     $payload = [ordered]@{
+        protocol_version = if ($null -ne $submissionPacket) { 1 } else { 0 }
+        type           = if ($null -ne $submissionPacket) { 'backend_run_record' } else { '' }
+        submission_id  = if ($null -ne $submissionPacket) { [string]$submissionPacket.submission_id } else { '' }
+        kind           = if ($null -ne $submissionPacket) { [string]$submissionPacket.kind } else { '' }
+        task_title     = if ($null -ne $submissionPacket) { [string]$submissionPacket.title } else { '' }
+        worker_kind    = if ($null -ne $submissionPacket -and [string]$submissionPacket.kind -eq 'review') { 'critic' } elseif ($null -ne $submissionPacket) { 'implementation' } else { '' }
+        backend        = 'colab_cli'
+        backend_owned  = $true
+        request_consumed = ($null -ne $submissionPacket -and $status -eq 'succeeded')
         project_dir    = $options.ProjectDir
         generated_at   = (Get-Date).ToUniversalTime().ToString('o')
         command        = 'workers.exec'
         status         = $status
+        reason         = $reason
         slot           = [string]$worker.Row.Slot
         slot_id        = [string]$worker.Row.SlotId
         session        = [string]$worker.Session
@@ -16662,70 +16763,36 @@ function Invoke-DispatchReview {
     Assert-WinsmuxRolePermission -CommandName 'dispatch-review'
 
     $projectDir = (Get-Location).Path
-    $branch = Get-CurrentGitBranch -ProjectDir $projectDir
-    $headSha = Get-CurrentGitHead -ProjectDir $projectDir
     $submissionId = 'submission-' + [guid]::NewGuid().ToString('N')
 
-    $reviewPaneEntry = Get-PreferredReviewPaneEntry -ProjectDir $projectDir
+    try {
+        $reviewPaneEntry = Get-PreferredReviewPaneEntry -ProjectDir $projectDir
+    } catch {
+        $receipt = New-WinsmuxSubmissionReceipt -Kind review -Status unavailable -Backend noop -SubmissionId $submissionId -ReasonCode 'review_target_unavailable'
+        ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $receipt | Write-Output
+        exit 1
+    }
     if ($null -eq $reviewPaneEntry) {
         $receipt = New-WinsmuxSubmissionReceipt -Kind review -Status unavailable -Backend noop -SubmissionId $submissionId -ReasonCode 'review_target_unavailable' -Diagnostic 'No review-capable pane was found in the manifest.'
         ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $receipt | Write-Output
         exit 1
     }
 
-    $reviewPaneId = [string]$reviewPaneEntry.PaneId
-    $reviewLabel = [string]$reviewPaneEntry.Label
-    $reviewRole = [string]$reviewPaneEntry.Role
-    $reviewBackend = [string](Get-WinsmuxSubmissionValue -InputObject $reviewPaneEntry -Name 'WorkerBackend' -Default 'local')
-    $reviewBackend = $reviewBackend.Trim().ToLowerInvariant()
+    $branch = Get-CurrentGitBranch -ProjectDir $projectDir
+    $headSha = Get-CurrentGitHead -ProjectDir $projectDir
 
-    if ($reviewBackend -notin @('local', 'codex')) {
-        $reviewPacket = [ordered]@{
-            branch   = $branch
-            head_sha = $headSha
-            request  = 'Review the synthetic or repository change described by this packet. Do not issue PASS or commit authority.'
-        } | ConvertTo-Json -Depth 4 -Compress
-        $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $projectDir -ManifestEntry $reviewPaneEntry -Kind review -Content $reviewPacket -SubmissionId $submissionId
-        ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $receipt | Write-Output
-        if ($receipt.status -ne 'accepted') {
-            exit 1
-        }
-        return
+    $reviewPacket = [ordered]@{
+        title      = "Review branch $branch"
+        request    = 'Review the bounded change described by this packet. Do not issue PASS or commit authority.'
+        files      = @()
+        tests      = @()
+        constraints = @('Review acceptance is not review approval authority.')
+        branch     = $branch
+        head_sha   = $headSha
     }
-
-    try {
-        Send-TextToPane -PaneId $reviewPaneId -CommandText "winsmux review-request"
-    } catch {
-        $receipt = New-WinsmuxSubmissionReceipt -Kind review -Status unavailable -Backend $reviewBackend -SubmissionId $submissionId -ReasonCode 'pane_send_failed' -Diagnostic $_.Exception.Message -Target ([ordered]@{ label = $reviewLabel; pane_id = $reviewPaneId; role = $reviewRole })
-        ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $receipt | Write-Output
-        exit 1
-    }
-
-    # Poll for PENDING state (up to 30 seconds)
-    $maxAttempts = 10
-    $pending = $false
-    for ($i = 0; $i -lt $maxAttempts; $i++) {
-        Start-Sleep -Seconds 3
-        $state = Get-ReviewState -ProjectDir $projectDir
-        if ($state.Contains($branch)) {
-            $stateEntry = ConvertTo-ReviewStateValue -Value $state[$branch]
-            $status = [string](Get-ReviewStatePropertyValue -InputObject $stateEntry -Name 'status')
-            $pendingHead = [string](Get-ReviewStatePropertyValue -InputObject $stateEntry -Name 'head_sha')
-            if ($status -eq 'PENDING' -and $pendingHead -eq $headSha) {
-                $pending = $true
-                break
-            }
-        }
-    }
-
-    if (-not $pending) {
-        $receipt = New-WinsmuxSubmissionReceipt -Kind review -Status rejected -Backend $reviewBackend -SubmissionId $submissionId -ReasonCode 'review_pending_acknowledgement_missing' -Diagnostic "review-request was not recorded for the current head after ${maxAttempts} attempts." -Target ([ordered]@{ label = $reviewLabel; pane_id = $reviewPaneId; role = $reviewRole })
-        ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $receipt | Write-Output
-        exit 1
-    }
-
-    $receipt = New-WinsmuxSubmissionReceipt -Kind review -Status accepted -Backend $reviewBackend -SubmissionId $submissionId -Target ([ordered]@{ label = $reviewLabel; pane_id = $reviewPaneId; role = $reviewRole }) -Acknowledgement ([ordered]@{ type = 'review_pending_state'; branch = $branch; head_sha = $headSha })
+    $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $projectDir -ManifestEntry $reviewPaneEntry -Kind review -Content $reviewPacket -SubmissionId $submissionId
     ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $receipt | Write-Output
+    if ($receipt.status -ne 'accepted') { exit 1 }
 }
 
 function Invoke-ReviewRequest {
@@ -17870,6 +17937,7 @@ switch ($Command) {
     'kill'            { Invoke-Kill }
     'restart'         { Invoke-Restart }
     'dispatch-review' { Invoke-DispatchReview }
+    'submission-ack'  { Invoke-WinsmuxSubmissionAckCommand -CommandTarget $Target -CommandRest $Rest }
     'review-request'  { Invoke-ReviewRequest }
     'review-approve'  { Invoke-ReviewApprove }
     'review-fail'     { Invoke-ReviewFail }

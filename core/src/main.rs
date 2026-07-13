@@ -185,6 +185,7 @@ fn is_winsmux_core_bridge_command(command: &str) -> bool {
             | "verify"
             | "dispatch-task"
             | "dispatch-review"
+            | "submission-ack"
             | "dispatch-route"
             | "task-split"
             | "pipeline"
@@ -215,9 +216,6 @@ fn is_winsmux_core_bridge_command(command: &str) -> bool {
 }
 
 fn find_winsmux_core_script() -> Option<PathBuf> {
-    if env::var("WINSMUX_DISABLE_CORE_BRIDGE").as_deref() == Ok("1") {
-        return None;
-    }
     let mut candidates: Vec<PathBuf> = Vec::new();
 
     if let Ok(path) = env::var("WINSMUX_CORE_SCRIPT") {
