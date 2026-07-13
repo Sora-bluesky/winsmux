@@ -418,29 +418,54 @@ function Test-WinsmuxSubmissionReceipt {
     param([AllowNull()]$Receipt)
 
     if ($null -eq $Receipt) { return $false }
+    $allowedNames = @('protocol_version', 'submission_id', 'kind', 'status', 'backend', 'reason_code', 'diagnostic', 'target', 'routing', 'acknowledgement')
+    $actualNames = @(
+        if ($Receipt -is [System.Collections.IDictionary]) {
+            $Receipt.Keys | ForEach-Object { [string]$_ }
+        } else {
+            $Receipt.PSObject.Properties.Name
+        }
+    )
+    if ($actualNames.Count -ne $allowedNames.Count -or @($actualNames | Where-Object { $_ -cnotin $allowedNames }).Count -gt 0) {
+        return $false
+    }
     $version = Get-WinsmuxSubmissionRawValue -InputObject $Receipt -Name 'protocol_version' -Default $null
     if (-not (Test-WinsmuxSubmissionInteger -Value $version)) { return $false }
     $status = [string](Get-WinsmuxSubmissionValue -InputObject $Receipt -Name 'status' -Default '')
     $kind = [string](Get-WinsmuxSubmissionValue -InputObject $Receipt -Name 'kind' -Default '')
     $backend = [string](Get-WinsmuxSubmissionValue -InputObject $Receipt -Name 'backend' -Default '')
     $submissionId = [string](Get-WinsmuxSubmissionValue -InputObject $Receipt -Name 'submission_id' -Default '')
+    $reasonCodeValue = Get-WinsmuxSubmissionRawValue -InputObject $Receipt -Name 'reason_code' -Default $null
+    $diagnosticValue = Get-WinsmuxSubmissionRawValue -InputObject $Receipt -Name 'diagnostic' -Default $null
+    $acknowledgement = Get-WinsmuxSubmissionRawValue -InputObject $Receipt -Name 'acknowledgement' -Default $null
     if (
         [int64]$version -ne 1 -or
         $status -cnotin $script:WinsmuxSubmissionStatuses -or
         $kind -cnotin $script:WinsmuxSubmissionKinds -or
         $backend -cnotin $script:WinsmuxSubmissionBackends -or
-        -not (Test-WinsmuxSubmissionIdentifier -Value $submissionId)
+        -not (Test-WinsmuxSubmissionIdentifier -Value $submissionId) -or
+        $reasonCodeValue -isnot [string] -or
+        $diagnosticValue -isnot [string]
     ) {
         return $false
     }
+    $reasonCode = [string]$reasonCodeValue
+    $diagnostic = [string]$diagnosticValue
     if ($status -eq 'accepted') {
-        $evidence = Get-WinsmuxSubmissionValue -InputObject $Receipt -Name 'acknowledgement' -Default $null
+        if ($reasonCode -cne '') { return $false }
+    } elseif ($reasonCode -cnotmatch '^[a-z][a-z0-9_]*$') {
+        return $false
+    }
+    if ($diagnostic -cne (ConvertTo-WinsmuxSubmissionDiagnostic -Text $diagnostic)) {
+        return $false
+    }
+    if ($status -eq 'accepted') {
         $target = Get-WinsmuxSubmissionValue -InputObject $Receipt -Name 'target' -Default $null
         $targetLabel = [string](Get-WinsmuxSubmissionValue -InputObject $target -Name 'label' -Default '')
         if (-not (Test-WinsmuxSubmissionIdentifier -Value $targetLabel)) { return $false }
-        return Test-WinsmuxPublicAcknowledgement -Acknowledgement $evidence -SubmissionId $submissionId -Kind $kind -Backend $backend -ExpectedSlotId $targetLabel
+        return Test-WinsmuxPublicAcknowledgement -Acknowledgement $acknowledgement -SubmissionId $submissionId -Kind $kind -Backend $backend -ExpectedSlotId $targetLabel
     }
-    return $true
+    return $null -eq $acknowledgement
 }
 
 function ConvertTo-WinsmuxSubmissionReceiptJson {
@@ -549,6 +574,7 @@ function Invoke-WinsmuxSubmissionCliRun {
         [Parameter(Mandatory = $true)][string]$SlotId,
         [Parameter(Mandatory = $true)][string]$PacketPath,
         [Parameter(Mandatory = $true)][string]$SubmissionId,
+        [Parameter(Mandatory = $true)][string]$TaskId,
         [Parameter(Mandatory = $true)][string]$Backend,
         [Parameter(Mandatory = $true)][ValidateSet('task', 'review')][string]$Kind
     )
@@ -560,7 +586,7 @@ function Invoke-WinsmuxSubmissionCliRun {
     } else {
         $workerArguments += @('--task-json', $PacketPath)
     }
-    $workerArguments += @('--task-id', $SubmissionId, '--run-id', $SubmissionId, '--json', '--project-dir', $ProjectDir)
+    $workerArguments += @('--task-id', $TaskId, '--run-id', $SubmissionId, '--json', '--project-dir', $ProjectDir)
     $output = & pwsh -NoProfile -File $script:WinsmuxSubmissionBridgeScript @workerArguments 2>&1
     $exitCode = $LASTEXITCODE
     $jsonLine = @($output | ForEach-Object { [string]$_ } | Where-Object { $_.TrimStart().StartsWith('{') } | Select-Object -Last 1)
@@ -602,14 +628,15 @@ function Invoke-WinsmuxSubmissionAdapter {
         return New-WinsmuxSubmissionReceipt -Kind $Kind -Status unsupported -Backend noop -SubmissionId $SubmissionId -ReasonCode 'backend_unsupported' -Target $target
     }
 
-    $packet = New-WinsmuxSubmissionPacket -ProjectDir $ProjectDir -Kind $Kind -Content $Content -SubmissionId $SubmissionId -TargetLabel $label -TaskId $TaskId
     $existingRunPath = Get-WinsmuxSubmissionRunPath -ProjectDir $ProjectDir -SlotId $label -RunId $SubmissionId
     if (Test-Path -LiteralPath $existingRunPath -PathType Leaf) {
         return New-WinsmuxSubmissionReceipt -Kind $Kind -Status rejected -Backend $backend -SubmissionId $SubmissionId -ReasonCode 'run_record_already_exists' -Target $target
     }
     if ($backend -in @('local', 'codex')) {
         return New-WinsmuxSubmissionReceipt -Kind $Kind -Status unavailable -Backend $backend -SubmissionId $SubmissionId -ReasonCode 'caller_identity_unavailable' -Target $target
-    } elseif ($backend -eq 'api_llm') {
+    }
+    $packet = New-WinsmuxSubmissionPacket -ProjectDir $ProjectDir -Kind $Kind -Content $Content -SubmissionId $SubmissionId -TargetLabel $label -TaskId $TaskId
+    if ($backend -eq 'api_llm') {
         if ([string]::IsNullOrWhiteSpace($paneId)) {
             return New-WinsmuxSubmissionReceipt -Kind $Kind -Status unavailable -Backend $backend -SubmissionId $SubmissionId -ReasonCode 'pane_unavailable' -Target $target
         }
@@ -622,7 +649,7 @@ function Invoke-WinsmuxSubmissionAdapter {
         }
         $runner = if ($null -ne $RunResultAction) { & $RunResultAction $ProjectDir $label $SubmissionId } else { Get-WinsmuxSubmissionRunResult -ProjectDir $ProjectDir -SlotId $label -RunId $SubmissionId }
     } else {
-        $runner = if ($null -ne $CliRunAction) { & $CliRunAction $ProjectDir $label $packet.RelativePath $SubmissionId $backend $Kind } else { Invoke-WinsmuxSubmissionCliRun -ProjectDir $ProjectDir -SlotId $label -PacketPath $packet.RelativePath -SubmissionId $SubmissionId -Backend $backend -Kind $Kind }
+        $runner = if ($null -ne $CliRunAction) { & $CliRunAction $ProjectDir $label $packet.RelativePath $SubmissionId $backend $Kind } else { Invoke-WinsmuxSubmissionCliRun -ProjectDir $ProjectDir -SlotId $label -PacketPath $packet.RelativePath -SubmissionId $SubmissionId -TaskId $TaskId -Backend $backend -Kind $Kind }
     }
 
     if (Test-WinsmuxSubmissionRunRecord -Record $runner -SubmissionId $SubmissionId -Kind $Kind -Backend $backend -ExpectedSlotId $label -ExpectedRequestDigest ([string]$packet.Packet.request_digest) -ExpectedTaskId ([string]$packet.Packet.task_id)) {
@@ -630,9 +657,9 @@ function Invoke-WinsmuxSubmissionAdapter {
     }
     $runnerStatus = [string](Get-WinsmuxSubmissionValue -InputObject $runner -Name 'status' -Default '')
     $runnerReason = [string](Get-WinsmuxSubmissionValue -InputObject $runner -Name 'reason' -Default '')
-    $unavailableAllow = '^(backend_unavailable|cli_command_missing|cli_receipt_malformed|[a-z0-9]+(_[a-z0-9]+)*_cli_missing|[a-z0-9]+(_[a-z0-9]+)*_runner_unconfigured|api_llm_api_key_env_missing)$'
+    $unavailableAllow = '^(backend_unavailable|cli_command_missing|cli_receipt_malformed|api_llm_runner_unconfigured|api_llm_api_key_env_missing|antigravity_runner_unconfigured|antigravity_cli_missing)$'
     $rejectedAllow = '^(runner_rejected_packet|runner_receipt_malformed|runner_acknowledgement_missing|backend_acknowledgement_missing|run_record_already_exists)$'
-    if ($runnerStatus -eq 'unavailable') {
+    if ($runnerStatus -in @('unavailable', 'blocked')) {
         $reasonCode = if ($runnerReason -cmatch $unavailableAllow) { $runnerReason } else { 'backend_unavailable' }
         return New-WinsmuxSubmissionReceipt -Kind $Kind -Status unavailable -Backend $backend -SubmissionId $SubmissionId -ReasonCode $reasonCode -Target $target
     }

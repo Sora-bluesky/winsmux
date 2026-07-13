@@ -9950,6 +9950,7 @@ function Invoke-WorkersApiLlmExec {
         $runId = New-WorkersRunId -SlotId ([string]$Worker.Row.SlotId)
     }
     if ($null -ne $submissionPacket -and (
+        [string]$submissionPacket.submission_id -cne $runId -or
         [string]$submissionPacket.task_id -cne $taskId -or
         [string]$submissionPacket.run_id -cne $runId
     )) {
@@ -10005,7 +10006,7 @@ function Invoke-WorkersApiLlmExec {
         } else {
             try {
                 if ($null -ne $submissionPacket) {
-                    $startedRecord = New-WinsmuxSubmissionRunRecord -SubmissionId ([string]$submissionPacket.submission_id) -RunId $runId -Kind ([string]$submissionPacket.kind) -TaskTitle ([string]$submissionPacket.title) -SlotId ([string]$Worker.Row.SlotId) -Backend api_llm -Status started -RequestConsumed -RequestDigest ([string]$submissionPacket.request_digest)
+                    $startedRecord = New-WinsmuxSubmissionRunRecord -SubmissionId ([string]$submissionPacket.submission_id) -RunId $runId -TaskId $taskId -Kind ([string]$submissionPacket.kind) -TaskTitle ([string]$submissionPacket.title) -SlotId ([string]$Worker.Row.SlotId) -Backend api_llm -Status started -RequestConsumed -RequestDigest ([string]$submissionPacket.request_digest)
                     Write-WorkersJsonArtifact -Path $runJsonPath -Data $startedRecord | Out-Null
                 }
                 $network = 'started'
@@ -10313,8 +10314,9 @@ function Invoke-WorkersAntigravityExec {
         $runId = New-WorkersRunId -SlotId ([string]$Worker.Row.SlotId)
     }
     if ($null -ne $submissionPacket -and (
-        [string]$submissionPacket.submission_id -cne [string]$Options.TaskId -or
-        [string]$submissionPacket.run_id -cne $runId
+        [string]$submissionPacket.submission_id -cne $runId -or
+        [string]$submissionPacket.run_id -cne $runId -or
+        [string]$submissionPacket.task_id -cne [string]$Options.TaskId
     )) {
         Stop-WithError 'antigravity submission packet id does not match task-id or run-id'
     }
@@ -10358,7 +10360,7 @@ function Invoke-WorkersAntigravityExec {
             try {
                 $process = 'started'
                 if ($null -ne $submissionPacket) {
-                    $startedRecord = New-WinsmuxSubmissionRunRecord -SubmissionId ([string]$submissionPacket.submission_id) -RunId $runId -Kind ([string]$submissionPacket.kind) -TaskTitle ([string]$submissionPacket.title) -SlotId ([string]$Worker.Row.SlotId) -Backend antigravity -Status started -RequestConsumed -RequestDigest ([string]$submissionPacket.request_digest)
+                    $startedRecord = New-WinsmuxSubmissionRunRecord -SubmissionId ([string]$submissionPacket.submission_id) -RunId $runId -TaskId ([string]$Options.TaskId) -Kind ([string]$submissionPacket.kind) -TaskTitle ([string]$submissionPacket.title) -SlotId ([string]$Worker.Row.SlotId) -Backend antigravity -Status started -RequestConsumed -RequestDigest ([string]$submissionPacket.request_digest)
                     Write-WorkersJsonArtifact -Path $runJsonPath -Data $startedRecord | Out-Null
                 }
                 $cli = Invoke-WorkersAntigravityCli -Arguments $arguments -WorkingDirectory ([string]$Options.ProjectDir)
@@ -10580,8 +10582,19 @@ function Invoke-WorkersExec {
         Stop-WithError 'colab_cli workers exec requires --script'
     }
     $scriptInfo = Resolve-WorkersProjectPath -ProjectDir $options.ProjectDir -Path $options.ScriptPath -MustExist -AllowFile -MaxBytes (Get-WorkersUploadMaxBytes)
+    $taskJsonInfo = $null
+    $submissionPacket = $null
+    $taskJsonContent = ''
+    if (-not [string]::IsNullOrWhiteSpace([string]$options.TaskJsonPath)) {
+        $taskJsonInfo = Resolve-WorkersProjectPath -ProjectDir $options.ProjectDir -Path ([string]$options.TaskJsonPath) -MustExist -AllowFile -AllowSubmissionPacket -MaxBytes (Get-WorkersUploadMaxBytes)
+        $taskJsonContent = Get-Content -LiteralPath ([string]$taskJsonInfo.FullPath) -Raw -Encoding UTF8
+        $submissionPacket = Read-WinsmuxSubmissionPacketIfPresent -Path ([string]$taskJsonInfo.FullPath)
+    }
     $safetyInput = [System.Collections.Generic.List[string]]::new()
-    foreach ($value in @(Get-WorkersExecSafetyInputValues -ProjectDir $options.ProjectDir -ScriptArgs @($options.ScriptArgs) -TaskJsonPath ([string]$options.TaskJsonPath))) {
+    if (-not [string]::IsNullOrWhiteSpace([string]$taskJsonContent)) {
+        $safetyInput.Add([string]$taskJsonContent) | Out-Null
+    }
+    foreach ($value in @(Get-WorkersExecSafetyInputValues -ProjectDir $options.ProjectDir -ScriptArgs @($options.ScriptArgs))) {
         $safetyInput.Add([string]$value) | Out-Null
     }
     if (-not [string]::IsNullOrWhiteSpace([string]$env:WINSMUX_TASK_JSON)) {
@@ -10604,13 +10617,11 @@ function Invoke-WorkersExec {
     if (-not [string]::IsNullOrWhiteSpace([string]$options.TaskId)) {
         $arguments += @('--task-id', [string]$options.TaskId)
     }
-    $submissionPacket = $null
-    if (-not [string]::IsNullOrWhiteSpace([string]$options.TaskJsonPath)) {
-        $taskJsonInfo = Resolve-WorkersProjectPath -ProjectDir $options.ProjectDir -Path ([string]$options.TaskJsonPath) -MustExist -AllowFile -AllowSubmissionPacket -MaxBytes (Get-WorkersUploadMaxBytes)
-        $submissionPacket = Read-WinsmuxSubmissionPacketIfPresent -Path ([string]$taskJsonInfo.FullPath)
+    if ($null -ne $taskJsonInfo) {
         if ($null -ne $submissionPacket -and (
-            [string]$submissionPacket.submission_id -cne [string]$options.TaskId -or
-            [string]$submissionPacket.run_id -cne $runId
+            [string]$submissionPacket.submission_id -cne $runId -or
+            [string]$submissionPacket.run_id -cne $runId -or
+            [string]$submissionPacket.task_id -cne [string]$options.TaskId
         )) {
             Stop-WithError 'colab_cli submission packet id does not match task-id or run-id'
         }

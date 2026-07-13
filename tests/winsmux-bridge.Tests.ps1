@@ -12418,6 +12418,118 @@ worker-backend: colab_cli
         $payload.request_consumed | Should -Be $true
     }
 
+    It 'ROUND3 P1 keeps stable task identity through the real api_llm exec path with only the provider call stubbed' {
+        Write-WorkersApiLlmProjectConfig
+        $taskId = 'task-round3-api-stable'
+        $attemptId = 'attempt-round3-api-1'
+        $packetRef = New-WinsmuxSubmissionPacket -ProjectDir $script:workersTempRoot -Kind task -Content ([ordered]@{ title = 'Synthetic API task'; request = 'Consume the API packet.' }) -SubmissionId $attemptId -TaskId $taskId -TargetLabel 'worker-1'
+        $env:OPENROUTER_API_KEY = 'test-openrouter-key'
+        $script:round3ApiStartedTaskId = ''
+
+        Mock Invoke-RestMethod {
+            $runPath = Join-Path $script:workersTempRoot ".winsmux\worker-runs\worker-1\$attemptId\run.json"
+            $started = Get-Content -LiteralPath $runPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            $script:round3ApiStartedTaskId = [string]$started.task_id
+            return [pscustomobject]@{
+                id = 'chatcmpl-round3-api'
+                choices = @([pscustomobject]@{ message = [pscustomobject]@{ content = 'Synthetic API response.' } })
+                usage = [pscustomobject]@{ prompt_tokens = 1; completion_tokens = 1; total_tokens = 2 }
+            }
+        }
+
+        $Rest = @('w1', '--task-json', $packetRef.RelativePath, '--task-id', $taskId, '--run-id', $attemptId, '--json', '--project-dir', $script:workersTempRoot)
+        $payload = (Invoke-WorkersExec | Select-Object -Last 1) | ConvertFrom-Json
+        $runPath = Join-Path $script:workersTempRoot ".winsmux\worker-runs\worker-1\$attemptId\run.json"
+        $run = Get-Content -LiteralPath $runPath -Raw -Encoding UTF8 | ConvertFrom-Json
+
+        $payload.status | Should -Be 'succeeded'
+        $payload.submission_id | Should -Be $attemptId
+        $payload.run_id | Should -Be $attemptId
+        $payload.task_id | Should -Be $taskId
+        $script:round3ApiStartedTaskId | Should -Be $taskId
+        $run.submission_id | Should -Be $attemptId
+        $run.run_id | Should -Be $attemptId
+        $run.task_id | Should -Be $taskId
+        Should -Invoke Invoke-RestMethod -Times 1 -Exactly
+    }
+
+    It 'ROUND3 P1 keeps stable task identity through the real antigravity exec path with only the CLI call stubbed' {
+        Write-WorkersAntigravityProjectConfig
+        New-WorkersFakeAntigravityCli | Out-Null
+        $taskId = 'task-round3-antigravity-stable'
+        $attemptId = 'attempt-round3-antigravity-1'
+        $packetRef = New-WinsmuxSubmissionPacket -ProjectDir $script:workersTempRoot -Kind task -Content ([ordered]@{ title = 'Synthetic Antigravity task'; request = 'Consume the Antigravity packet.' }) -SubmissionId $attemptId -TaskId $taskId -TargetLabel 'worker-1'
+        $script:round3AntigravityStartedTaskId = ''
+
+        Mock Invoke-WorkersAntigravityCli {
+            param([string[]]$Arguments, [string]$WorkingDirectory)
+            $runPath = Join-Path $script:workersTempRoot ".winsmux\worker-runs\worker-1\$attemptId\run.json"
+            $started = Get-Content -LiteralPath $runPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            $script:round3AntigravityStartedTaskId = [string]$started.task_id
+            return [pscustomobject]@{ Command = 'agy'; Arguments = @($Arguments); ExitCode = 0; Output = 'Synthetic Antigravity response.' }
+        }
+
+        $Rest = @('w1', '--task-json', $packetRef.RelativePath, '--task-id', $taskId, '--run-id', $attemptId, '--json', '--project-dir', $script:workersTempRoot)
+        $payload = (Invoke-WorkersExec | Select-Object -Last 1) | ConvertFrom-Json
+        $runPath = Join-Path $script:workersTempRoot ".winsmux\worker-runs\worker-1\$attemptId\run.json"
+        $run = Get-Content -LiteralPath $runPath -Raw -Encoding UTF8 | ConvertFrom-Json
+
+        $payload.status | Should -Be 'succeeded'
+        $payload.submission_id | Should -Be $attemptId
+        $payload.run_id | Should -Be $attemptId
+        $payload.task_id | Should -Be $taskId
+        $script:round3AntigravityStartedTaskId | Should -Be $taskId
+        $run.submission_id | Should -Be $attemptId
+        $run.run_id | Should -Be $attemptId
+        $run.task_id | Should -Be $taskId
+        Should -Invoke Invoke-WorkersAntigravityCli -Times 1 -Exactly
+    }
+
+    It 'ROUND3 P1 keeps stable task identity through the real colab_cli exec path with only the CLI call stubbed' {
+        Write-WorkersColabProjectConfig
+        New-WorkersFakeColabCli | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $script:workersTempRoot 'workers\colab') -Force | Out-Null
+        'print("round3")' | Set-Content -Path (Join-Path $script:workersTempRoot 'workers\colab\impl_worker.py') -Encoding UTF8
+        $taskId = 'task-round3-colab-stable'
+        $attemptId = 'attempt-round3-colab-1'
+        $packetRef = New-WinsmuxSubmissionPacket -ProjectDir $script:workersTempRoot -Kind task -Content ([ordered]@{ title = 'Synthetic Colab task'; request = 'Consume the Colab packet.' }) -SubmissionId $attemptId -TaskId $taskId -TargetLabel 'worker-2'
+        $script:round3ColabArguments = @()
+        $script:round3ColabPacket = $packetRef.Packet
+
+        Mock Invoke-WorkersColabCli {
+            param([string[]]$Arguments)
+            $script:round3ColabArguments = @($Arguments)
+            $workerOutput = [ordered]@{
+                status = 'succeeded'
+                worker_kind = 'implementation'
+                run_id = $attemptId
+                task = [ordered]@{ id = $taskId; title = [string]$script:round3ColabPacket.title }
+                request_digest = [string]$script:round3ColabPacket.request_digest
+            }
+            return [pscustomobject]@{ Command = 'google-colab-cli'; Arguments = @($Arguments); ExitCode = 0; Output = ($workerOutput | ConvertTo-Json -Compress -Depth 8) }
+        }
+
+        $Rest = @('w2', '--script', 'workers/colab/impl_worker.py', '--task-json', $packetRef.RelativePath, '--task-id', $taskId, '--run-id', $attemptId, '--json', '--project-dir', $script:workersTempRoot)
+        $payload = (Invoke-WorkersExec | Select-Object -Last 1) | ConvertFrom-Json
+        $taskIdIndex = [array]::IndexOf([object[]]$script:round3ColabArguments, '--task-id')
+        $runIdIndex = [array]::IndexOf([object[]]$script:round3ColabArguments, '--run-id')
+        $runPath = Join-Path $script:workersTempRoot ".winsmux\worker-runs\worker-2\$attemptId\run.json"
+        $run = Get-Content -LiteralPath $runPath -Raw -Encoding UTF8 | ConvertFrom-Json
+
+        $payload.status | Should -Be 'succeeded'
+        $payload.submission_id | Should -Be $attemptId
+        $payload.run_id | Should -Be $attemptId
+        $payload.task_id | Should -Be $taskId
+        $taskIdIndex | Should -BeGreaterOrEqual 0
+        $script:round3ColabArguments[$taskIdIndex + 1] | Should -Be $taskId
+        $runIdIndex | Should -BeGreaterOrEqual 0
+        $script:round3ColabArguments[$runIdIndex + 1] | Should -Be $attemptId
+        $run.submission_id | Should -Be $attemptId
+        $run.run_id | Should -Be $attemptId
+        $run.task_id | Should -Be $taskId
+        Should -Invoke Invoke-WorkersColabCli -Times 1 -Exactly
+    }
+
     It 'accepts task-json as the api_llm exec input contract' {
         Write-WorkersApiLlmProjectConfig
         '{"task_id":"api-task-json","title":"Summarize release state"}' | Set-Content -Path (Join-Path $script:workersTempRoot 'task.json') -Encoding UTF8
@@ -16768,6 +16880,148 @@ agent-slots:
         $accepted.status | Should -Be 'accepted'
         @($accepted.acknowledgement.Keys) | Should -Be @('type', 'protocol_version', 'status', 'submission_id', 'run_id', 'task_id', 'kind', 'backend', 'slot_id', 'worker_kind', 'request_digest')
         @($accepted.Keys) | Should -Be @('protocol_version', 'submission_id', 'kind', 'status', 'backend', 'reason_code', 'diagnostic', 'target', 'routing', 'acknowledgement')
+    }
+
+    It 'ROUND3 P1 forwards stable task and attempt identities through the default CLI adapter path' {
+        $taskId = 'task-round3-default-cli'
+        $attemptId = 'attempt-round3-default-cli-1'
+        $entry = [PSCustomObject]@{ Label = 'worker-3'; PaneId = ''; Role = 'Worker'; WorkerBackend = 'colab_cli' }
+        $script:round3BridgeArguments = @()
+
+        function global:pwsh {
+            $script:round3BridgeArguments = @($args)
+            $taskIdIndex = [array]::IndexOf([object[]]$script:round3BridgeArguments, '--task-id')
+            $runIdIndex = [array]::IndexOf([object[]]$script:round3BridgeArguments, '--run-id')
+            $packetIndex = [array]::IndexOf([object[]]$script:round3BridgeArguments, '--task-json')
+            $projectIndex = [array]::IndexOf([object[]]$script:round3BridgeArguments, '--project-dir')
+            $workersIndex = [array]::IndexOf([object[]]$script:round3BridgeArguments, 'workers')
+            $packet = Read-WinsmuxSubmissionPacket -Path (Join-Path $script:round3BridgeArguments[$projectIndex + 1] $script:round3BridgeArguments[$packetIndex + 1])
+            $record = New-WinsmuxSubmissionRunRecord -SubmissionId $script:round3BridgeArguments[$runIdIndex + 1] -RunId $script:round3BridgeArguments[$runIdIndex + 1] `
+                -TaskId $script:round3BridgeArguments[$taskIdIndex + 1] -Kind task -TaskTitle ([string]$packet.title) -SlotId $script:round3BridgeArguments[$workersIndex + 2] `
+                -Backend colab_cli -Status started -RequestConsumed -RequestDigest ([string]$packet.request_digest)
+            return ($record | ConvertTo-Json -Compress -Depth 12)
+        }
+
+        try {
+            $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $script:task780TempRoot -ManifestEntry $entry -Kind task -Content 'Default CLI identity forwarding' -SubmissionId $attemptId -TaskId $taskId
+        } finally {
+            Remove-Item function:\pwsh -ErrorAction SilentlyContinue
+        }
+
+        $taskIdIndex = [array]::IndexOf([object[]]$script:round3BridgeArguments, '--task-id')
+        $runIdIndex = [array]::IndexOf([object[]]$script:round3BridgeArguments, '--run-id')
+        $taskIdIndex | Should -BeGreaterOrEqual 0
+        $script:round3BridgeArguments[$taskIdIndex + 1] | Should -Be $taskId
+        $runIdIndex | Should -BeGreaterOrEqual 0
+        $script:round3BridgeArguments[$runIdIndex + 1] | Should -Be $attemptId
+        $receipt.status | Should -Be 'accepted'
+        $receipt.submission_id | Should -Be $attemptId
+        $receipt.acknowledgement.task_id | Should -Be $taskId
+    }
+
+    It 'ROUND3 P1 rejects duplicate attempts before rewriting the original submission packet' {
+        $taskId = 'task-round3-immutable-packet'
+        $attemptId = 'attempt-round3-immutable-packet-1'
+        $entry = [PSCustomObject]@{ Label = 'worker-3'; PaneId = ''; Role = 'Worker'; WorkerBackend = 'colab_cli' }
+        $firstContent = [ordered]@{ title = 'Original packet'; request = 'Keep this original request.' }
+        $firstAction = {
+            param($projectDir, $slotId, $packetPath, $runId, $backend, $kind)
+            $packet = Read-WinsmuxSubmissionPacket -Path (Join-Path $projectDir $packetPath)
+            $record = New-WinsmuxSubmissionRunRecord -SubmissionId $runId -RunId $runId -TaskId ([string]$packet.task_id) -Kind $kind -TaskTitle ([string]$packet.title) `
+                -SlotId $slotId -Backend $backend -Status failed -RequestConsumed -RequestDigest ([string]$packet.request_digest) -Reason 'runner_rejected_packet'
+            Write-WinsmuxSubmissionRunRecord -ProjectDir $projectDir -SlotId $slotId -Record $record | Out-Null
+            return $record
+        }
+
+        $first = Invoke-WinsmuxSubmissionAdapter -ProjectDir $script:task780TempRoot -ManifestEntry $entry -Kind task -Content $firstContent -SubmissionId $attemptId -TaskId $taskId -CliRunAction $firstAction
+        $packetPath = Join-Path $script:task780TempRoot ".winsmux\submissions\$attemptId.json"
+        $originalPacketText = Get-Content -LiteralPath $packetPath -Raw -Encoding UTF8
+        $originalPacket = $originalPacketText | ConvertFrom-Json
+
+        $duplicate = Invoke-WinsmuxSubmissionAdapter -ProjectDir $script:task780TempRoot -ManifestEntry $entry -Kind task -Content ([ordered]@{ title = 'Replacement packet'; request = 'This must not overwrite the original.' }) `
+            -SubmissionId $attemptId -TaskId $taskId -CliRunAction { throw 'duplicate attempt must stop before runner invocation' }
+        $packetAfterDuplicateText = Get-Content -LiteralPath $packetPath -Raw -Encoding UTF8
+        $packetAfterDuplicate = $packetAfterDuplicateText | ConvertFrom-Json
+
+        $first.reason_code | Should -Be 'runner_rejected_packet'
+        $duplicate.status | Should -Be 'rejected'
+        $duplicate.reason_code | Should -Be 'run_record_already_exists'
+        $packetAfterDuplicateText | Should -BeExactly $originalPacketText
+        $packetAfterDuplicate.request | Should -BeExactly $originalPacket.request
+        $packetAfterDuplicate.request_digest | Should -BeExactly $originalPacket.request_digest
+    }
+
+    It 'ROUND3 P1 exposes only the finite unavailable and rejected reason allowlists' {
+        $cases = @(
+            [ordered]@{ backend = 'antigravity'; status = 'blocked'; reason = 'antigravity_cli_missing'; receipt_status = 'unavailable'; expected = 'antigravity_cli_missing' },
+            [ordered]@{ backend = 'colab_cli'; status = 'unavailable'; reason = 'cli_command_missing'; receipt_status = 'unavailable'; expected = 'cli_command_missing' },
+            [ordered]@{ backend = 'colab_cli'; status = 'unavailable'; reason = 'sk_synthetic_secret_cli_missing'; receipt_status = 'unavailable'; expected = 'backend_unavailable' },
+            [ordered]@{ backend = 'colab_cli'; status = 'blocked'; reason = 'private_provider_payload_cli_missing'; receipt_status = 'unavailable'; expected = 'backend_unavailable' },
+            [ordered]@{ backend = 'colab_cli'; status = 'failed'; reason = 'runner_rejected_packet'; receipt_status = 'rejected'; expected = 'runner_rejected_packet' },
+            [ordered]@{ backend = 'colab_cli'; status = 'failed'; reason = 'private_provider_payload'; receipt_status = 'rejected'; expected = 'runner_evidence_invalid' }
+        )
+
+        $index = 0
+        foreach ($case in $cases) {
+            $index++
+            $entry = [PSCustomObject]@{ Label = 'worker-3'; PaneId = ''; Role = 'Worker'; WorkerBackend = $case.backend }
+            $runnerAction = {
+                param($projectDir, $slotId, $packetPath, $runId, $backend, $kind)
+                return [ordered]@{ status = $case.status; reason = $case.reason; exit_code = 1; run_id = $runId }
+            }
+            $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $script:task780TempRoot -ManifestEntry $entry -Kind task -Content 'Finite reason mapping' `
+                -SubmissionId "attempt-round3-reason-$index" -TaskId "task-round3-reason-$index" -CliRunAction $runnerAction
+            $json = ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $receipt
+
+            $receipt.status | Should -Be $case.receipt_status
+            $receipt.reason_code | Should -Be $case.expected
+            $receipt.reason_code | Should -Match '^[a-z][a-z0-9_]*$'
+            $json | Should -Not -Match 'sk_synthetic_secret_cli_missing|private_provider_payload'
+        }
+    }
+
+    It 'ROUND3 P1 validates the complete public receipt shape for all four statuses' {
+        $submissionId = 'submission-round3-receipt-shape'
+        $record = New-WinsmuxSubmissionRunRecord -SubmissionId $submissionId -RunId $submissionId -TaskId 'task-round3-receipt-shape' -Kind task -TaskTitle 'Receipt shape' `
+            -SlotId worker-1 -Backend api_llm -Status started -RequestConsumed -RequestDigest ('d' * 64)
+        $statuses = @('accepted', 'rejected', 'unavailable', 'unsupported')
+
+        foreach ($status in $statuses) {
+            $receipt = if ($status -eq 'accepted') {
+                New-WinsmuxSubmissionReceipt -Kind task -Status accepted -Backend api_llm -SubmissionId $submissionId -Target ([ordered]@{ label = 'worker-1' }) -Acknowledgement $record
+            } else {
+                New-WinsmuxSubmissionReceipt -Kind task -Status $status -Backend api_llm -SubmissionId $submissionId -ReasonCode ($status + '_test')
+            }
+            (Test-WinsmuxSubmissionReceipt -Receipt $receipt) | Should -Be $true
+            { ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $receipt } | Should -Not -Throw
+
+            $invalidReason = ($receipt | ConvertTo-Json -Depth 12 | ConvertFrom-Json -AsHashtable)
+            $invalidReason['reason_code'] = 'token=sk-synthetic-secret-value'
+            (Test-WinsmuxSubmissionReceipt -Receipt $invalidReason) | Should -Be $false
+            { ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $invalidReason } | Should -Throw
+
+            $invalidDiagnostic = ($receipt | ConvertTo-Json -Depth 12 | ConvertFrom-Json -AsHashtable)
+            $invalidDiagnostic['diagnostic'] = 'token=sk-synthetic-secret-value'
+            (Test-WinsmuxSubmissionReceipt -Receipt $invalidDiagnostic) | Should -Be $false
+            { ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $invalidDiagnostic } | Should -Throw
+
+            $missingAcknowledgement = ($receipt | ConvertTo-Json -Depth 12 | ConvertFrom-Json -AsHashtable)
+            $missingAcknowledgement.Remove('acknowledgement')
+            (Test-WinsmuxSubmissionReceipt -Receipt $missingAcknowledgement) | Should -Be $false
+            { ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $missingAcknowledgement } | Should -Throw
+
+            $extraField = ($receipt | ConvertTo-Json -Depth 12 | ConvertFrom-Json -AsHashtable)
+            $extraField['provider_payload'] = 'private-provider-data'
+            (Test-WinsmuxSubmissionReceipt -Receipt $extraField) | Should -Be $false
+            { ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $extraField } | Should -Throw
+
+            if ($status -ne 'accepted') {
+                $nonNullAcknowledgement = ($receipt | ConvertTo-Json -Depth 12 | ConvertFrom-Json -AsHashtable)
+                $nonNullAcknowledgement['acknowledgement'] = ConvertTo-WinsmuxPublicAcknowledgement -Acknowledgement $record
+                (Test-WinsmuxSubmissionReceipt -Receipt $nonNullAcknowledgement) | Should -Be $false
+                { ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $nonNullAcknowledgement } | Should -Throw
+            }
+        }
     }
 }
 
