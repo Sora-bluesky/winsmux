@@ -4752,39 +4752,51 @@ pub fn run_dispatch_review_command(args: &[&String]) -> io::Result<()> {
         ));
     }
     assert_dispatch_review_role_permission("dispatch-review")?;
-
-    let project_dir = env::current_dir()?;
-    let branch = current_git_branch(&project_dir)?;
-    let head_sha = current_git_head(&project_dir)?;
-    let context = preferred_review_pane_context(&project_dir)?;
-    let short_head = short_head_sha(&head_sha);
-    println!(
-        "Dispatching review to {} [{}] for branch {} ({})",
-        context.label, context.pane_id, branch, short_head
+    let submission_id = format!("submission-{}", Utc::now().timestamp_millis());
+    let receipt = submission_receipt(
+        &submission_id,
+        "review",
+        "unavailable",
+        "noop",
+        "shared_submission_bridge_unavailable",
+        None,
+        Value::Null,
     );
+    println!("{}", serde_json::to_string(&receipt).unwrap_or_default());
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "shared submission bridge is unavailable",
+    ))
+}
 
-    send_review_request_to_pane(&context.pane_id)?;
-    println!(
-        "review-request sent to {}. Waiting for PENDING state...",
-        context.label
-    );
-
-    if !wait_for_pending_review_state(&project_dir, &branch, &head_sha)? {
-        return Err(io::Error::new(
-            io::ErrorKind::TimedOut,
-            format!(
-                "review-request was not recorded after {} attempts. Check review pane {}.",
-                dispatch_review_poll_attempts(),
-                context.pane_id
-            ),
-        ));
-    }
-
-    println!(
-        "PENDING confirmed. {} pane will run review-approve or review-fail. Monitor review-state.json for result.",
-        context.role
-    );
-    Ok(())
+fn submission_receipt(
+    submission_id: &str,
+    kind: &str,
+    status: &str,
+    backend: &str,
+    reason_code: &str,
+    context: Option<&ReviewPaneContext>,
+    acknowledgement: Value,
+) -> Value {
+    let target = context.map_or(Value::Null, |context| {
+        json!({
+            "label": context.label,
+            "pane_id": context.pane_id,
+            "role": context.role,
+        })
+    });
+    json!({
+        "protocol_version": 1,
+        "submission_id": submission_id,
+        "kind": kind,
+        "status": status,
+        "backend": backend,
+        "reason_code": reason_code,
+        "diagnostic": "",
+        "target": target,
+        "routing": Value::Null,
+        "acknowledgement": acknowledgement,
+    })
 }
 
 pub fn run_review_approve_command(args: &[&String]) -> io::Result<()> {
@@ -7142,60 +7154,6 @@ fn review_pane_context_from_value(
         pane_id: actual,
         role: canonical_role.unwrap_or_default(),
     })
-}
-
-fn send_review_request_to_pane(pane_id: &str) -> io::Result<()> {
-    let command_text = "winsmux review-request";
-    let pre_send_text = capture_pane_tail(pane_id)?;
-    run_winsmux_command(&["send-keys", "-t", pane_id, "-l", "--", command_text])?;
-    thread::sleep(Duration::from_millis(300));
-    let typed_text = capture_pane_tail(pane_id)?;
-    if typed_text == pre_send_text {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("pane buffer did not change after typing review request into {pane_id}"),
-        ));
-    }
-    if !typed_text.contains(command_text) {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("typed review request was not observed in {pane_id}"),
-        ));
-    }
-    run_winsmux_command(&["send-keys", "-t", pane_id, "Enter"])
-}
-
-fn wait_for_pending_review_state(
-    project_dir: &Path,
-    branch: &str,
-    head_sha: &str,
-) -> io::Result<bool> {
-    let attempts = dispatch_review_poll_attempts();
-    for attempt in 0..=attempts {
-        let state = load_review_state(project_dir)?;
-        if review_state_is_pending_for_head(&state, branch, head_sha) {
-            return Ok(true);
-        }
-        if attempt < attempts {
-            thread::sleep(dispatch_review_poll_delay());
-        }
-    }
-    Ok(false)
-}
-
-fn dispatch_review_poll_attempts() -> usize {
-    env::var("WINSMUX_DISPATCH_REVIEW_POLL_ATTEMPTS")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(10)
-}
-
-fn dispatch_review_poll_delay() -> Duration {
-    env::var("WINSMUX_DISPATCH_REVIEW_POLL_INTERVAL_MS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .map(Duration::from_millis)
-        .unwrap_or_else(|| Duration::from_secs(3))
 }
 
 fn review_state_is_pending_for_head(

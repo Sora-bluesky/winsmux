@@ -168,11 +168,22 @@ function Get-DispatchRoute {
         $reason = "$reason Handle this task locally as Operator."
     }
 
+    $ruleId = if ($bestRole -eq 'Operator') {
+        'route.operator_owned.v1'
+    } elseif ($null -eq $selectedTarget) {
+        'route.no_available_target.v1'
+    } elseif ($bestScore -gt 0) {
+        'route.keyword_match.v1'
+    } else {
+        'route.default_role.v1'
+    }
+
     return [PSCustomObject]@{
         Text = $Text
         SelectedRole = $bestRole
         SelectedTarget = $selectedTarget
         HandleLocally = $handleLocally
+        RuleId = $ruleId
         MatchedKeywords = @($bestMatches)
         Scores = $scoreTable
         Reason = $reason

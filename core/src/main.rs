@@ -184,6 +184,8 @@ fn is_winsmux_core_bridge_command(command: &str) -> bool {
             | "github-preflight"
             | "verify"
             | "dispatch-task"
+            | "dispatch-review"
+            | "submission-ack"
             | "dispatch-route"
             | "task-split"
             | "pipeline"
@@ -386,6 +388,12 @@ mod tests {
     #[test]
     fn workers_command_is_forwarded_to_core_bridge() {
         assert!(is_winsmux_core_bridge_command("workers"));
+    }
+
+    #[test]
+    fn typed_submission_commands_are_forwarded_to_the_shared_core_bridge() {
+        assert!(is_winsmux_core_bridge_command("dispatch-task"));
+        assert!(is_winsmux_core_bridge_command("dispatch-review"));
     }
 
     #[cfg(windows)]

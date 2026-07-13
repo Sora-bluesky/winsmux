@@ -41,21 +41,13 @@ function Write-ApiLlmPanePrompt {
 function Invoke-ApiLlmPaneExec {
     param([Parameter(Mandatory = $true)][string[]]$Tokens)
 
-    if ($Tokens.Count -lt 1) {
-        Write-Host 'usage: exec <task-packet-path> [task-id] [run-id]'
+    if ($Tokens.Count -ne 1) {
+        Write-Host 'usage: exec <task-packet-path>'
         return
     }
 
-    $scriptPath = $Tokens[0]
-    $taskId = if ($Tokens.Count -ge 2) { $Tokens[1] } else { '' }
-    $runId = if ($Tokens.Count -ge 3) { $Tokens[2] } else { '' }
-    $args = @('workers', 'exec', $slotId, '--script', $scriptPath, '--json', '--project-dir', $projectRoot)
-    if (-not [string]::IsNullOrWhiteSpace($taskId)) {
-        $args += @('--task-id', $taskId)
-    }
-    if (-not [string]::IsNullOrWhiteSpace($runId)) {
-        $args += @('--run-id', $runId)
-    }
+    $packetPath = $Tokens[0]
+    $args = @('workers', 'exec', $slotId, '--task-json', $packetPath, '--json', '--project-dir', $projectRoot)
 
     & $coreScript @args
 }
@@ -66,7 +58,7 @@ Write-Host ("provider: {0}" -f $(if ([string]::IsNullOrWhiteSpace($Provider)) { 
 Write-Host ("model: {0}" -f $(if ([string]::IsNullOrWhiteSpace($Model)) { 'provider-default' } else { $Model }))
 Write-Host ("project: {0}" -f $projectRoot)
 Write-Host 'status: ready'
-Write-Host 'commands: exec <task-packet-path> [task-id] [run-id], status, help, quit'
+Write-Host 'commands: exec <task-packet-path>, status, help, quit'
 
 while ($true) {
     Write-ApiLlmPanePrompt
@@ -90,8 +82,8 @@ while ($true) {
     }
 
     if ($trimmed -eq 'help') {
-        Write-Host 'exec <task-packet-path> [task-id] [run-id]'
-        Write-Host 'Example: exec tasks/cli-bakeoff/v1/WB-010-openrouter-api-worker-readiness.md WB-010 v03617-w5-wb010'
+        Write-Host 'exec <task-packet-path>'
+        Write-Host 'Example: exec .winsmux/submissions/submission-123.json'
         continue
     }
 
