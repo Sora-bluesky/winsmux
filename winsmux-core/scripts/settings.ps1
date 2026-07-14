@@ -1935,7 +1935,11 @@ function Assert-BridgeProviderModelReasoningEffort {
         return
     }
 
-    $modelCapability = Get-BridgeProviderModelCapability -Capability $Capability -Model $Model
+    $modelCapability = $null
+    if (Test-BridgeProviderModelOverride -Model $Model -ModelSource $ModelSource) {
+        $modelCapability = Get-BridgeProviderModelCapability -Capability $Capability -Model $Model
+    }
+    $adapter = [string](Get-BridgeProviderCapabilityValue -Capability $Capability -Name 'adapter' -Default $ProviderId)
     $supported = @('provider-default')
     if ($null -ne $modelCapability -and (Test-BridgeProviderCapabilityField -Capability $modelCapability -Name 'reasoning_efforts')) {
         $supported += @(
@@ -1943,22 +1947,39 @@ function Assert-BridgeProviderModelReasoningEffort {
                 ForEach-Object { ([string]$_).Trim().ToLowerInvariant() } |
                 Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
         )
-    } else {
+    } elseif (Test-BridgeProviderCapabilityField -Capability $Capability -Name 'reasoning_efforts') {
         $supported += @(
             Get-BridgeProviderCapabilityValue -Capability $Capability -Name 'reasoning_efforts' -Default @() |
                 ForEach-Object { ([string]$_).Trim().ToLowerInvariant() } |
                 Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
         )
+    } elseif ([string]::Equals($adapter.Trim(), 'codex', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $supported = @(
+            Get-BridgeCommonContractVocabularyValues -Name 'reasoningEfforts' |
+                Where-Object { $_ -ne 'max' }
+        )
+    } elseif ($null -ne $modelCapability) {
+        $supported = @(Get-BridgeCommonContractVocabularyValues -Name 'reasoningEfforts')
     }
     $supported = @($supported | Select-Object -Unique)
 
-    $adapter = [string](Get-BridgeProviderCapabilityValue -Capability $Capability -Name 'adapter' -Default $ProviderId)
+    if (
+        [string]::Equals($adapter.Trim(), 'codex', [System.StringComparison]::OrdinalIgnoreCase) -and
+        $Model.Trim().ToLowerInvariant() -in $script:BridgeCodexMaxReasoningModels -and
+        (Test-BridgeProviderModelOverride -Model $Model -ModelSource $ModelSource) -and
+        $null -ne $modelCapability -and
+        -not (Test-BridgeProviderCapabilityField -Capability $modelCapability -Name 'reasoning_efforts') -and
+        'max' -notin $supported
+    ) {
+        $supported += 'max'
+    }
     if (
         $requested -eq 'max' -and
         [string]::Equals($adapter.Trim(), 'codex', [System.StringComparison]::OrdinalIgnoreCase) -and
         (
             $Model.Trim().ToLowerInvariant() -notin $script:BridgeCodexMaxReasoningModels -or
-            -not (Test-BridgeProviderModelOverride -Model $Model -ModelSource $ModelSource)
+            -not (Test-BridgeProviderModelOverride -Model $Model -ModelSource $ModelSource) -or
+            $null -eq $modelCapability
         )
     ) {
         $supported = @($supported | Where-Object { $_ -ne 'max' })

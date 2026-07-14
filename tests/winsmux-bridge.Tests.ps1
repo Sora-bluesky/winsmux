@@ -18789,6 +18789,135 @@ agent-slots:
         $registry.slots.'worker-1'.reasoning_effort | Should -Be 'max'
     }
 
+    It 'uses provider-level efforts for unprojected provider-default model selections' {
+        $capabilityPath = Join-Path $script:providerSwitchTempRoot '.winsmux\provider-capabilities.json'
+        $capabilities = Get-Content -LiteralPath $capabilityPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $capabilities.providers.codex.model_options = @($capabilities.providers.codex.model_options) + [pscustomobject][ordered]@{
+            id                = 'custom-operator-model'
+            label             = 'Custom operator model'
+            source            = 'operator-override'
+            reasoning_efforts = @('max')
+        }
+        $capabilities | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $capabilityPath -Encoding UTF8
+
+        Push-Location $script:providerSwitchTempRoot
+        try {
+            $codexDefaultOutput = & pwsh -NoProfile -File $script:winsmuxCoreRawPath provider-switch worker-1 --agent codex --model provider-default --model-source provider-default --reasoning-effort xhigh --prompt-transport argv --json
+            $unprojectedCustomOutput = & pwsh -NoProfile -File $script:winsmuxCoreRawPath provider-switch worker-1 --agent codex --model custom-operator-model --model-source provider-default --reasoning-effort high --prompt-transport argv --json
+            $claudeDefaultOutput = & pwsh -NoProfile -File $script:winsmuxCoreRawPath provider-switch worker-1 --agent claude --model provider-default --model-source provider-default --reasoning-effort max --prompt-transport file --json
+        } finally {
+            Pop-Location
+        }
+
+        $codexDefault = ($codexDefaultOutput | Select-Object -Last 1) | ConvertFrom-Json
+        $codexDefault.model | Should -Be 'provider-default'
+        $codexDefault.reasoning_effort | Should -Be 'xhigh'
+
+        $unprojectedCustom = ($unprojectedCustomOutput | Select-Object -Last 1) | ConvertFrom-Json
+        $unprojectedCustom.model | Should -Be 'custom-operator-model'
+        $unprojectedCustom.model_source | Should -Be 'provider-default'
+        $unprojectedCustom.reasoning_effort | Should -Be 'high'
+
+        $claudeDefault = ($claudeDefaultOutput | Select-Object -Last 1) | ConvertFrom-Json
+        $claudeDefault.model | Should -Be 'provider-default'
+        $claudeDefault.reasoning_effort | Should -Be 'max'
+    }
+
+    It 'backfills common efforts for legacy capabilities while restricting max to exact GPT-5.6 models' {
+        $capabilityPath = Join-Path $script:providerSwitchTempRoot '.winsmux\provider-capabilities.json'
+        $capabilities = Get-Content -LiteralPath $capabilityPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        foreach ($option in @($capabilities.providers.codex.model_options)) {
+            if ($option.id -in @('gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna')) {
+                $option.PSObject.Properties.Remove('reasoning_efforts')
+            }
+        }
+        $capabilities.providers.codex.model_options = @($capabilities.providers.codex.model_options) + [pscustomobject][ordered]@{
+            id = 'legacy-codex'; label = 'Legacy Codex'; source = 'cli-discovery'
+        }
+        $capabilities.providers.codex.PSObject.Properties.Remove('reasoning_efforts')
+        $claudeOpus = @($capabilities.providers.claude.model_options | Where-Object id -eq 'opus')[0]
+        $claudeOpus.PSObject.Properties.Remove('reasoning_efforts')
+        $capabilities.providers.claude.PSObject.Properties.Remove('reasoning_efforts')
+        $capabilities | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $capabilityPath -Encoding UTF8
+
+        Push-Location $script:providerSwitchTempRoot
+        try {
+            foreach ($model in @('gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna')) {
+                $output = & pwsh -NoProfile -File $script:winsmuxCoreRawPath provider-switch worker-1 --agent codex --model $model --model-source cli-discovery --reasoning-effort max --json
+                $LASTEXITCODE | Should -Be 0
+                (($output | Select-Object -Last 1) | ConvertFrom-Json).reasoning_effort | Should -Be 'max'
+            }
+
+            $legacyHighOutput = & pwsh -NoProfile -File $script:winsmuxCoreRawPath provider-switch worker-1 --agent codex --model legacy-codex --model-source cli-discovery --reasoning-effort high --json 2>&1
+            $legacyHighExit = $LASTEXITCODE
+            $gpt56XhighOutput = & pwsh -NoProfile -File $script:winsmuxCoreRawPath provider-switch worker-1 --agent codex --model gpt-5.6-terra --model-source cli-discovery --reasoning-effort xhigh --json 2>&1
+            $gpt56XhighExit = $LASTEXITCODE
+            $legacyProviderDefaultHighOutput = & pwsh -NoProfile -File $script:winsmuxCoreRawPath provider-switch worker-1 --agent codex --model legacy-codex --model-source provider-default --reasoning-effort high --json 2>&1
+            $legacyProviderDefaultHighExit = $LASTEXITCODE
+            $gpt56ProviderDefaultXhighOutput = & pwsh -NoProfile -File $script:winsmuxCoreRawPath provider-switch worker-1 --agent codex --model gpt-5.6-terra --model-source provider-default --reasoning-effort xhigh --json 2>&1
+            $gpt56ProviderDefaultXhighExit = $LASTEXITCODE
+            $legacyHighExit | Should -Be 0 -Because ([string]::Join("`n", @($legacyHighOutput)))
+            $gpt56XhighExit | Should -Be 0 -Because ([string]::Join("`n", @($gpt56XhighOutput)))
+            $legacyProviderDefaultHighExit | Should -Be 0 -Because ([string]::Join("`n", @($legacyProviderDefaultHighOutput)))
+            $gpt56ProviderDefaultXhighExit | Should -Be 0 -Because ([string]::Join("`n", @($gpt56ProviderDefaultXhighOutput)))
+
+            $registryPath = Join-Path $script:providerSwitchTempRoot '.winsmux\provider-registry.json'
+            foreach ($case in @(
+                @{ model = 'legacy-codex'; source = 'cli-discovery' },
+                @{ model = 'legacy-codex'; source = 'provider-default' },
+                @{ model = 'gpt-5.6-terra'; source = 'provider-default' }
+            )) {
+                $before = [Convert]::ToBase64String([IO.File]::ReadAllBytes($registryPath))
+                $failure = & pwsh -NoProfile -File $script:winsmuxCoreRawPath provider-switch worker-1 --agent codex --model $case.model --model-source $case.source --reasoning-effort max --json 2>&1
+                $LASTEXITCODE | Should -Be 1
+                [string]::Join("`n", @($failure)) | Should -Match "does not support reasoning_effort 'max'"
+                [Convert]::ToBase64String([IO.File]::ReadAllBytes($registryPath)) | Should -BeExactly $before
+            }
+
+            $capabilities.providers.codex.model_options = @($capabilities.providers.codex.model_options | Where-Object id -ne 'gpt-5.6-terra')
+            $capabilities.providers.codex | Add-Member -NotePropertyName reasoning_efforts -NotePropertyValue @('provider-default', 'low', 'medium', 'high', 'xhigh', 'max') -Force
+            $capabilities | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $capabilityPath -Encoding UTF8
+            $before = [Convert]::ToBase64String([IO.File]::ReadAllBytes($registryPath))
+            $failure = & pwsh -NoProfile -File $script:winsmuxCoreRawPath provider-switch worker-1 --agent codex --model gpt-5.6-terra --model-source cli-discovery --reasoning-effort max --json 2>&1
+            $LASTEXITCODE | Should -Be 1
+            [Convert]::ToBase64String([IO.File]::ReadAllBytes($registryPath)) | Should -BeExactly $before
+
+            $luna = @($capabilities.providers.codex.model_options | Where-Object id -eq 'gpt-5.6-luna')[0]
+            $luna | Add-Member -NotePropertyName reasoning_efforts -NotePropertyValue @('low', 'medium', 'high', 'xhigh') -Force
+            $capabilities | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $capabilityPath -Encoding UTF8
+            $before = [Convert]::ToBase64String([IO.File]::ReadAllBytes($registryPath))
+            $failure = & pwsh -NoProfile -File $script:winsmuxCoreRawPath provider-switch worker-1 --agent codex --model gpt-5.6-luna --model-source cli-discovery --reasoning-effort max --json 2>&1
+            $LASTEXITCODE | Should -Be 1
+            [Convert]::ToBase64String([IO.File]::ReadAllBytes($registryPath)) | Should -BeExactly $before
+
+            $claudeLegacyMaxOutput = & pwsh -NoProfile -File $script:winsmuxCoreRawPath provider-switch worker-1 --agent claude --model opus --model-source official-doc --reasoning-effort max --prompt-transport file --json 2>&1
+            $claudeLegacyMaxExit = $LASTEXITCODE
+            $beforeMissing = [Convert]::ToBase64String([IO.File]::ReadAllBytes($registryPath))
+            $claudeMissingHighOutput = & pwsh -NoProfile -File $script:winsmuxCoreRawPath provider-switch worker-1 --agent claude --model missing-claude --model-source operator-override --reasoning-effort high --prompt-transport file --json 2>&1
+            $claudeMissingHighExit = $LASTEXITCODE
+            $missingUnchanged = [Convert]::ToBase64String([IO.File]::ReadAllBytes($registryPath)) -eq $beforeMissing
+            $beforeProviderDefault = [Convert]::ToBase64String([IO.File]::ReadAllBytes($registryPath))
+            $claudeProviderDefaultHighOutput = & pwsh -NoProfile -File $script:winsmuxCoreRawPath provider-switch worker-1 --agent claude --model opus --model-source provider-default --reasoning-effort high --prompt-transport file --json 2>&1
+            $claudeProviderDefaultHighExit = $LASTEXITCODE
+            $providerDefaultUnchanged = [Convert]::ToBase64String([IO.File]::ReadAllBytes($registryPath)) -eq $beforeProviderDefault
+            $nonCodexLegacyContract = (
+                $claudeLegacyMaxExit -eq 0 -and
+                $claudeMissingHighExit -eq 1 -and
+                $missingUnchanged -and
+                [string]::Join("`n", @($claudeMissingHighOutput)) -match "does not support reasoning_effort 'high'" -and
+                $claudeProviderDefaultHighExit -eq 1 -and
+                $providerDefaultUnchanged -and
+                [string]::Join("`n", @($claudeProviderDefaultHighOutput)) -match "does not support reasoning_effort 'high'"
+            )
+            $nonCodexLegacyContract | Should -BeTrue -Because (
+                "matching max exit=$claudeLegacyMaxExit; missing high exit=$claudeMissingHighExit unchanged=$missingUnchanged; provider-default high exit=$claudeProviderDefaultHighExit unchanged=$providerDefaultUnchanged; errors: " +
+                [string]::Join("`n", @($claudeLegacyMaxOutput) + @($claudeMissingHighOutput) + @($claudeProviderDefaultHighOutput))
+            )
+        } finally {
+            Pop-Location
+        }
+    }
+
     It 'rejects unprojected GPT-5.6 max before provider-switch writes the registry' {
         Remove-Item -LiteralPath (Join-Path $script:providerSwitchTempRoot '.winsmux\provider-capabilities.json') -Force
         $registryPath = Join-Path $script:providerSwitchTempRoot '.winsmux\provider-registry.json'

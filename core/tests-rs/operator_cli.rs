@@ -2871,6 +2871,69 @@ fn operator_cli_provider_switch_validates_reasoning_effort_against_specific_mode
         "custom operator override model must reject max"
     );
 
+    let provider_default_xhigh = run_switch(&[
+        "provider-switch",
+        "worker-1",
+        "--agent",
+        "codex",
+        "--model",
+        "provider-default",
+        "--model-source",
+        "provider-default",
+        "--reasoning-effort",
+        "xhigh",
+        "--prompt-transport",
+        "argv",
+        "--json",
+    ]);
+    assert!(
+        provider_default_xhigh.status.success(),
+        "provider-default Codex model must inherit provider-level xhigh: {}",
+        String::from_utf8_lossy(&provider_default_xhigh.stderr)
+    );
+
+    let unprojected_custom_high = run_switch(&[
+        "provider-switch",
+        "worker-1",
+        "--agent",
+        "codex",
+        "--model",
+        "custom-operator-model",
+        "--model-source",
+        "provider-default",
+        "--reasoning-effort",
+        "high",
+        "--prompt-transport",
+        "argv",
+        "--json",
+    ]);
+    assert!(
+        unprojected_custom_high.status.success(),
+        "a provider-default model source must inherit provider-level efforts: {}",
+        String::from_utf8_lossy(&unprojected_custom_high.stderr)
+    );
+
+    let claude_provider_default_max = run_switch(&[
+        "provider-switch",
+        "worker-1",
+        "--agent",
+        "claude",
+        "--model",
+        "provider-default",
+        "--model-source",
+        "provider-default",
+        "--reasoning-effort",
+        "max",
+        "--prompt-transport",
+        "file",
+        "--json",
+    ]);
+    assert!(
+        claude_provider_default_max.status.success(),
+        "provider-default Claude model must inherit provider-level max: {}",
+        String::from_utf8_lossy(&claude_provider_default_max.stderr)
+    );
+
     let registry_path = project_dir.join(".winsmux").join("provider-registry.json");
     fs::write(
         &registry_path,
@@ -3130,6 +3193,197 @@ fn operator_cli_provider_switch_uses_provider_efforts_for_models_without_per_mod
         gpt56_max.status.success(),
         "GPT-5.6 Terra max should pass: {}",
         String::from_utf8_lossy(&gpt56_max.stderr)
+    );
+}
+
+#[test]
+fn operator_cli_provider_switch_backfills_common_efforts_for_legacy_capabilities() {
+    let project_dir = make_temp_project_dir("provider-switch-legacy-gpt56-effort");
+    write_provider_switch_fixture(&project_dir);
+    let capability_path = project_dir
+        .join(".winsmux")
+        .join("provider-capabilities.json");
+    let mut capabilities = read_json_file(&capability_path);
+    let options = capabilities["providers"]["codex"]["model_options"]
+        .as_array_mut()
+        .expect("Codex model options should be an array");
+    for option in options.iter_mut() {
+        if ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
+            .contains(&option["id"].as_str().unwrap_or_default())
+        {
+            option.as_object_mut().unwrap().remove("reasoning_efforts");
+        }
+    }
+    options.push(serde_json::json!({
+        "id": "legacy-codex",
+        "label": "Legacy Codex",
+        "source": "cli-discovery"
+    }));
+    capabilities["providers"]["codex"]
+        .as_object_mut()
+        .unwrap()
+        .remove("reasoning_efforts");
+    {
+        let claude = capabilities["providers"]["claude"]
+            .as_object_mut()
+            .expect("Claude capability should be an object");
+        let opus = claude["model_options"]
+            .as_array_mut()
+            .expect("Claude model options should be an array")
+            .iter_mut()
+            .find(|option| option["id"] == "opus")
+            .expect("Claude opus option should exist");
+        opus.as_object_mut().unwrap().remove("reasoning_efforts");
+        claude.remove("reasoning_efforts");
+    }
+    fs::write(
+        &capability_path,
+        serde_json::to_vec_pretty(&capabilities).unwrap(),
+    )
+    .unwrap();
+
+    let run_switch = |model: &str, source: &str, effort: &str| {
+        Command::new(env!("CARGO_BIN_EXE_winsmux"))
+            .args([
+                "provider-switch",
+                "worker-1",
+                "--model",
+                model,
+                "--model-source",
+                source,
+                "--reasoning-effort",
+                effort,
+                "--json",
+            ])
+            .current_dir(&project_dir)
+            .output()
+            .expect("winsmux command should run")
+    };
+
+    for model in ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] {
+        let output = run_switch(model, "cli-discovery", "max");
+        assert!(
+            output.status.success(),
+            "legacy {model} max should pass: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let legacy_high = run_switch("legacy-codex", "cli-discovery", "high");
+    let gpt56_xhigh = run_switch("gpt-5.6-terra", "cli-discovery", "xhigh");
+    let legacy_provider_default_high = run_switch("legacy-codex", "provider-default", "high");
+    let gpt56_provider_default_xhigh = run_switch("gpt-5.6-terra", "provider-default", "xhigh");
+    assert!(
+        legacy_high.status.success()
+            && gpt56_xhigh.status.success()
+            && legacy_provider_default_high.status.success()
+            && gpt56_provider_default_xhigh.status.success(),
+        "legacy common efforts should pass regardless of model source (legacy high: {}; GPT-5.6 xhigh: {}; provider-default legacy high: {}; provider-default GPT-5.6 xhigh: {}):\n{}\n{}\n{}\n{}",
+        legacy_high.status,
+        gpt56_xhigh.status,
+        legacy_provider_default_high.status,
+        gpt56_provider_default_xhigh.status,
+        String::from_utf8_lossy(&legacy_high.stderr),
+        String::from_utf8_lossy(&gpt56_xhigh.stderr),
+        String::from_utf8_lossy(&legacy_provider_default_high.stderr),
+        String::from_utf8_lossy(&gpt56_provider_default_xhigh.stderr)
+    );
+
+    let assert_rejected_without_write = |model: &str, source: &str| {
+        let registry_path = project_dir.join(".winsmux").join("provider-registry.json");
+        let before = fs::read(&registry_path).expect("successful setup should create registry");
+        let output = run_switch(model, source, "max");
+        assert!(
+            !output.status.success(),
+            "{model} with {source} must reject max"
+        );
+        assert!(String::from_utf8_lossy(&output.stderr)
+            .contains("does not support reasoning_effort 'max'"));
+        assert_eq!(
+            fs::read(&registry_path).unwrap(),
+            before,
+            "rejection must precede registry write"
+        );
+    };
+    assert_rejected_without_write("legacy-codex", "cli-discovery");
+    assert_rejected_without_write("legacy-codex", "provider-default");
+    assert_rejected_without_write("gpt-5.6-terra", "provider-default");
+
+    capabilities["providers"]["codex"]["model_options"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|option| option["id"] != "gpt-5.6-terra");
+    capabilities["providers"]["codex"]["reasoning_efforts"] =
+        serde_json::json!(["provider-default", "low", "medium", "high", "xhigh", "max"]);
+    fs::write(
+        &capability_path,
+        serde_json::to_vec_pretty(&capabilities).unwrap(),
+    )
+    .unwrap();
+    assert_rejected_without_write("gpt-5.6-terra", "cli-discovery");
+
+    let luna = capabilities["providers"]["codex"]["model_options"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|option| option["id"] == "gpt-5.6-luna")
+        .unwrap();
+    luna["reasoning_efforts"] = serde_json::json!(["low", "medium", "high", "xhigh"]);
+    fs::write(
+        &capability_path,
+        serde_json::to_vec_pretty(&capabilities).unwrap(),
+    )
+    .unwrap();
+    assert_rejected_without_write("gpt-5.6-luna", "cli-discovery");
+
+    let run_claude_switch = |model: &str, source: &str, effort: &str| {
+        Command::new(env!("CARGO_BIN_EXE_winsmux"))
+            .args([
+                "provider-switch",
+                "worker-1",
+                "--agent",
+                "claude",
+                "--model",
+                model,
+                "--model-source",
+                source,
+                "--reasoning-effort",
+                effort,
+                "--prompt-transport",
+                "file",
+                "--json",
+            ])
+            .current_dir(&project_dir)
+            .output()
+            .expect("winsmux command should run")
+    };
+    let claude_legacy_max = run_claude_switch("opus", "official-doc", "max");
+    let registry_path = project_dir.join(".winsmux").join("provider-registry.json");
+    let before_missing = fs::read(&registry_path).unwrap();
+    let claude_missing_high = run_claude_switch("missing-claude", "operator-override", "high");
+    let missing_unchanged = fs::read(&registry_path).unwrap() == before_missing;
+    let before_provider_default = fs::read(&registry_path).unwrap();
+    let claude_provider_default_high = run_claude_switch("opus", "provider-default", "high");
+    let provider_default_unchanged = fs::read(&registry_path).unwrap() == before_provider_default;
+    assert!(
+        claude_legacy_max.status.success()
+            && !claude_missing_high.status.success()
+            && missing_unchanged
+            && String::from_utf8_lossy(&claude_missing_high.stderr)
+                .contains("does not support reasoning_effort 'high'")
+            && !claude_provider_default_high.status.success()
+            && provider_default_unchanged
+            && String::from_utf8_lossy(&claude_provider_default_high.stderr)
+                .contains("does not support reasoning_effort 'high'"),
+        "non-Codex legacy fallback must preserve the matching-option boundary (matching max: {}; missing high: {}, unchanged: {}; provider-default high: {}, unchanged: {}):\n{}\n{}\n{}",
+        claude_legacy_max.status,
+        claude_missing_high.status,
+        missing_unchanged,
+        claude_provider_default_high.status,
+        provider_default_unchanged,
+        String::from_utf8_lossy(&claude_legacy_max.stderr),
+        String::from_utf8_lossy(&claude_missing_high.stderr),
+        String::from_utf8_lossy(&claude_provider_default_high.stderr)
     );
 }
 

@@ -27,6 +27,8 @@ const FILE_LOCK_TIMEOUT: Duration = Duration::from_millis(120_000);
 const FILE_LOCK_STALE_AFTER: Duration = Duration::from_secs(60);
 const FILE_LOCK_RETRY_DELAY: Duration = Duration::from_millis(50);
 const CODEX_MAX_REASONING_MODELS: [&str; 3] = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
+const LEGACY_CAPABILITY_REASONING_EFFORTS: [&str; 6] =
+    ["provider-default", "low", "medium", "high", "max", "xhigh"];
 
 pub fn is_operator_status_invocation(args: &[&String]) -> bool {
     args.iter()
@@ -4248,17 +4250,26 @@ fn assert_provider_model_reasoning_effort(
         return Ok(());
     };
 
-    let model_capability = capability
-        .get("model_options")
-        .and_then(Value::as_array)
-        .and_then(|options| {
-            options.iter().find(|option| {
-                option
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .is_some_and(|id| id.trim().eq_ignore_ascii_case(model.trim()))
+    let model_capability = if provider_model_override(model, model_source) {
+        capability
+            .get("model_options")
+            .and_then(Value::as_array)
+            .and_then(|options| {
+                options.iter().find(|option| {
+                    option
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .is_some_and(|id| id.trim().eq_ignore_ascii_case(model.trim()))
+                })
             })
-        });
+    } else {
+        None
+    };
+    let adapter = capability
+        .get("adapter")
+        .and_then(Value::as_str)
+        .unwrap_or(provider_id)
+        .trim();
     let mut supported = vec!["provider-default".to_string()];
     if let Some(efforts) = model_capability.and_then(|option| option.get("reasoning_efforts")) {
         let Some(efforts) = efforts.as_array() else {
@@ -4286,14 +4297,31 @@ fn assert_provider_model_reasoning_effort(
                 supported.push(normalized);
             }
         }
+    } else if adapter.eq_ignore_ascii_case("codex") {
+        supported = LEGACY_CAPABILITY_REASONING_EFFORTS
+            .iter()
+            .filter(|effort| **effort != "max")
+            .map(|effort| (*effort).to_string())
+            .collect();
+    } else if model_capability.is_some() {
+        supported = LEGACY_CAPABILITY_REASONING_EFFORTS
+            .iter()
+            .map(|effort| (*effort).to_string())
+            .collect();
     }
 
-    let adapter = capability
-        .get("adapter")
-        .and_then(Value::as_str)
-        .unwrap_or(provider_id)
-        .trim();
-    if requested == "max" && adapter.eq_ignore_ascii_case("codex") && !codex_max_model {
+    if adapter.eq_ignore_ascii_case("codex")
+        && codex_max_model
+        && model_capability
+            .is_some_and(|option| option.get("reasoning_efforts").is_none())
+        && !supported.iter().any(|effort| effort == "max")
+    {
+        supported.push("max".to_string());
+    }
+    if requested == "max"
+        && adapter.eq_ignore_ascii_case("codex")
+        && (!codex_max_model || model_capability.is_none())
+    {
         supported.retain(|effort| effort != "max");
     }
 

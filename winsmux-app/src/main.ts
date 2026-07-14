@@ -11146,6 +11146,13 @@ function createRuntimeCustomModelEntry(provider: RuntimeProviderId, model: strin
   });
 }
 
+function createRuntimeCurrentModelEntry(provider: RuntimeProviderId, model: string, modelSource: string) {
+  const entry = createRuntimeCustomModelEntry(provider, model);
+  const normalizedSource = modelSource.trim().toLowerCase();
+  const preservedSource = runtimeModelSourceOptions.find((option) => option.value === normalizedSource)?.value;
+  return preservedSource ? { ...entry, modelSource: preservedSource } : entry;
+}
+
 function getRuntimePaneModelEntries(provider: RuntimeProviderId): RuntimeModelCatalogEntry[] {
   const entries = new Map<string, RuntimeModelCatalogEntry>();
   entries.set("provider-default", getRuntimeProviderDefaultEntry(provider));
@@ -11654,14 +11661,14 @@ function getRuntimeWorkerDefaultPreference() {
     ?? defaultRuntimeRolePreferences().find((item) => item.roleId === "worker")!;
 }
 
-function runtimePreferenceProjectsModel(preference: RuntimeRolePreference) {
-  return preference.model.trim().toLowerCase() !== "provider-default"
-    && preference.modelSource.trim().toLowerCase() !== "provider-default";
+function runtimeModelSelectionProjectsModel(model: string, modelSource: string) {
+  return model.trim().toLowerCase() !== "provider-default"
+    && modelSource.trim().toLowerCase() !== "provider-default";
 }
 
 function getRuntimePreferenceSelectedEntry(preference: RuntimeRolePreference) {
   const entries = getRuntimePaneModelEntries(preference.provider);
-  const directMatch = runtimePreferenceProjectsModel(preference)
+  const directMatch = runtimeModelSelectionProjectsModel(preference.model, preference.modelSource)
     ? entries.find((entry) => {
         const current = preference.model.trim().toLowerCase();
         return entry.id.toLowerCase() === current || entry.model.toLowerCase() === current;
@@ -11674,7 +11681,7 @@ function getRuntimePreferenceSelectedEntry(preference: RuntimeRolePreference) {
   if (!preference.model || preference.model === "provider-default") {
     return { entry: providerDefault, entries };
   }
-  const customEntry = createRuntimeCustomModelEntry(preference.provider, preference.model);
+  const customEntry = createRuntimeCurrentModelEntry(preference.provider, preference.model, preference.modelSource);
   return { entry: customEntry, entries: [customEntry, ...entries] };
 }
 
@@ -12085,20 +12092,27 @@ function renderWorkerModelAssignmentPanel(japanese: boolean) {
     const renderModelOptions = (requestedModel?: string) => {
       const provider = normalizeRuntimeProviderId(providerSelect.value) ?? inferredProvider;
       currentEntries = getRuntimePaneModelEntries(provider);
-      let selectedEntry = currentEntries.find((entry) => {
-        const requestedValue = requestedModel?.trim().toLowerCase() ?? "";
-        return requestedValue
-          && (entry.model.toLowerCase() === requestedValue || entry.id.toLowerCase() === requestedValue);
-      }) ?? null;
-      if (!selectedEntry && currentCatalogEntry && currentCatalogEntry.agent === provider) {
+      const projectsCurrentModel = runtimeModelSelectionProjectsModel(getWorkerModel(row), getWorkerModelSource(row));
+      let selectedEntry = projectsCurrentModel
+        ? currentEntries.find((entry) => {
+            const requestedValue = requestedModel?.trim().toLowerCase() ?? "";
+            return requestedValue
+              && (entry.model.toLowerCase() === requestedValue || entry.id.toLowerCase() === requestedValue);
+          }) ?? null
+        : null;
+      if (projectsCurrentModel && !selectedEntry && currentCatalogEntry && currentCatalogEntry.agent === provider) {
         selectedEntry = currentEntries.find((entry) => entry.id === currentCatalogEntry.id || entry.model === currentCatalogEntry.model) ?? null;
       }
-      if (!selectedEntry && normalizeRuntimeProviderId(getWorkerProvider(row)) === provider && getWorkerModel(row)) {
+      if (projectsCurrentModel && !selectedEntry && normalizeRuntimeProviderId(getWorkerProvider(row)) === provider && getWorkerModel(row)) {
         const currentModel = getWorkerModel(row).toLowerCase();
         selectedEntry = currentEntries.find((entry) => entry.model.toLowerCase() === currentModel || entry.id.toLowerCase() === currentModel) ?? null;
       }
       if (!selectedEntry && requestedModel && requestedModel !== "provider-default") {
-        selectedEntry = createRuntimeCustomModelEntry(provider, requestedModel);
+        const representsCurrentModel = normalizeRuntimeProviderId(getWorkerProvider(row)) === provider
+          && getWorkerModel(row).trim().toLowerCase() === requestedModel.trim().toLowerCase();
+        selectedEntry = representsCurrentModel
+          ? createRuntimeCurrentModelEntry(provider, requestedModel, getWorkerModelSource(row))
+          : createRuntimeCustomModelEntry(provider, requestedModel);
         currentEntries = [selectedEntry, ...currentEntries];
       }
       if (!selectedEntry) {
@@ -17138,7 +17152,7 @@ async function applySettingsDraft() {
     applyThemeState(settingsDraftState);
     persistThemeState();
   }
-  if (runtimeRoleDraftState) {
+  if (runtimeRoleDraftState && !runtimeRolePreferencesEqual(runtimeRoleDraftState, runtimeRolePreferences)) {
     const nextRuntimeRolePreferences = cloneRuntimeRolePreferences(runtimeRoleDraftState);
     try {
       await applyRuntimeRolePreferencesToDesktop(nextRuntimeRolePreferences);

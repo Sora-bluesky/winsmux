@@ -176,20 +176,106 @@ assert.match(
 
 assert.match(
   mainSource,
-  /function runtimePreferenceProjectsModel\([\s\S]*?model[\s\S]*?provider-default[\s\S]*?modelSource[\s\S]*?provider-default/,
+  /function runtimeModelSelectionProjectsModel\(model: string, modelSource: string\)[\s\S]*?model[\s\S]*?provider-default[\s\S]*?modelSource[\s\S]*?provider-default/,
   "Runtime preference capability selection must treat provider-default model sources as unprojected.",
+);
+
+const projectionFunctionSource = mainSource.match(
+  /function runtimeModelSelectionProjectsModel\(model: string, modelSource: string\) \{[\s\S]*?\n\}/,
+)?.[0];
+assert.ok(projectionFunctionSource, "The shared runtime model projection predicate must remain executable by this contract.");
+const projectsRuntimeModel = Function(
+  `${projectionFunctionSource.replaceAll(": string", "")}; return runtimeModelSelectionProjectsModel;`,
+)();
+assert.equal(
+  projectsRuntimeModel("gpt-5.6-sol", "provider-default"),
+  false,
+  "A concrete provider-default-source model must preserve provider-level effort capabilities.",
+);
+assert.equal(
+  projectsRuntimeModel("gpt-5.6-sol", "cli-discovery"),
+  true,
+  "An explicitly discovered GPT-5.6 model must retain its catalog-specific Max capability.",
+);
+assert.equal(
+  projectsRuntimeModel("gpt-5.6-sol", "configured"),
+  true,
+  "An explicitly configured GPT-5.6 model must retain its catalog-specific Max capability.",
+);
+
+const currentModelEntryFunctionSource = mainSource.match(
+  /function createRuntimeCurrentModelEntry\(provider: RuntimeProviderId, model: string, modelSource: string\) \{[\s\S]*?\n\}/,
+)?.[0];
+assert.ok(
+  currentModelEntryFunctionSource,
+  "Current concrete model values must have an executable source-preserving entry constructor.",
+);
+const createCurrentModelEntry = Function(
+  "createRuntimeCustomModelEntry",
+  "runtimeModelSourceOptions",
+  `${currentModelEntryFunctionSource
+    .replace(": RuntimeProviderId", "")
+    .replaceAll(": string", "")}; return createRuntimeCurrentModelEntry;`,
+)(
+  (provider, model) => ({ agent: provider, model, modelSource: "operator-override" }),
+  [
+    { value: "provider-default" },
+    { value: "cli-discovery" },
+    { value: "provider-api" },
+    { value: "official-doc" },
+    { value: "operator-override" },
+  ],
+);
+assert.equal(
+  createCurrentModelEntry("codex", "gpt-5.6-sol", "provider-default").modelSource,
+  "provider-default",
+  "C13: applying an unchanged concrete pane model must preserve its provider-default source.",
+);
+assert.equal(
+  createCurrentModelEntry("codex", "gpt-5.6-sol", "provider-default").modelSource,
+  "provider-default",
+  "C14: an unchanged concrete shared worker model must preserve its provider-default source.",
+);
+assert.equal(
+  createCurrentModelEntry("codex", "gpt-new", "untrusted-source").modelSource,
+  "operator-override",
+  "An unvalidated source must not escape the normal operator-override custom-input path.",
 );
 
 assert.match(
   mainSource,
-  /const directMatch = runtimePreferenceProjectsModel\(preference\)\s*\?\s*entries\.find/,
+  /const directMatch = runtimeModelSelectionProjectsModel\(preference\.model, preference\.modelSource\)\s*\?\s*entries\.find/,
   "A GPT-5.6 catalog label must not retain Max when its model source is provider-default.",
 );
 
 assert.match(
   mainSource,
-  /if \(runtimeRoleDraftState\) \{[\s\S]*?const nextRuntimeRolePreferences = cloneRuntimeRolePreferences\(runtimeRoleDraftState\);[\s\S]*?await applyRuntimeRolePreferencesToDesktop\(nextRuntimeRolePreferences\);[\s\S]*?runtimeRolePreferences = nextRuntimeRolePreferences;[\s\S]*?persistRuntimeRolePreferences\(\);/,
-  "Runtime role preferences must be finalized locally only after desktop apply succeeds.",
+  /const renderModelOptions = \(requestedModel\?: string\)[\s\S]*?const projectsCurrentModel = runtimeModelSelectionProjectsModel\(getWorkerModel\(row\), getWorkerModelSource\(row\)\);[\s\S]*?let selectedEntry = projectsCurrentModel\s*\?[\s\S]*?if \(projectsCurrentModel && !selectedEntry && currentCatalogEntry/,
+  "Per-pane rendering must gate catalog reclassification with the shared model-source projection predicate.",
+);
+
+assert.match(
+  mainSource,
+  /const customEntry = createRuntimeCurrentModelEntry\(preference\.provider, preference\.model, preference\.modelSource\);/,
+  "C14: the shared current-model synthetic entry must inherit the validated stored source.",
+);
+
+assert.match(
+  mainSource,
+  /const representsCurrentModel = [\s\S]*?createRuntimeCurrentModelEntry\(provider, requestedModel, getWorkerModelSource\(row\)\)[\s\S]*?: createRuntimeCustomModelEntry\(provider, requestedModel\)/,
+  "C13: only a per-pane synthetic entry representing the unchanged current model may inherit its source.",
+);
+
+assert.match(
+  mainSource,
+  /if \(runtimeRoleDraftState\s*&&\s*!runtimeRolePreferencesEqual\(runtimeRoleDraftState,\s*runtimeRolePreferences\)\) \{[\s\S]*?const nextRuntimeRolePreferences = cloneRuntimeRolePreferences\(runtimeRoleDraftState\);[\s\S]*?await applyRuntimeRolePreferencesToDesktop\(nextRuntimeRolePreferences\);[\s\S]*?runtimeRolePreferences = nextRuntimeRolePreferences;[\s\S]*?persistRuntimeRolePreferences\(\);/,
+  "Runtime role preferences must be applied and finalized only when the draft actually changed.",
+);
+
+assert.doesNotMatch(
+  mainSource,
+  /if \(runtimeRoleDraftState\) \{\s*const nextRuntimeRolePreferences = cloneRuntimeRolePreferences\(runtimeRoleDraftState\);/,
+  "An unchanged runtime role draft must not block unrelated settings saves with a desktop apply.",
 );
 
 assert.doesNotMatch(
