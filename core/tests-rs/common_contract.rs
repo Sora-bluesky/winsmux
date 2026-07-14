@@ -11,18 +11,18 @@ fn fixture_value() -> Value {
     .expect("fixture should be valid JSON")
 }
 
-fn versioned_fixture_value() -> Value {
+fn current_versioned_fixture_value() -> Value {
     serde_json::from_str(include_str!(
-        "../../tests/fixtures/rust-parity/common-contract-package-v0.36.27.json"
+        "../../tests/fixtures/rust-parity/common-contract-package-v0.36.28.json"
     ))
     .expect("versioned fixture should be valid JSON")
 }
 
-fn previous_fixture_value() -> Value {
+fn backend_migration_fixture_value() -> Value {
     serde_json::from_str(include_str!(
-        "../../tests/fixtures/rust-parity/common-contract-package-v0.36.26.json"
+        "../../tests/fixtures/rust-parity/common-contract-backend-migration-v0.36.28.json"
     ))
-    .expect("previous fixture should be valid JSON")
+    .expect("backend migration fixture should be valid JSON")
 }
 
 fn readiness_vocabulary_fixture_value() -> Value {
@@ -81,29 +81,62 @@ fn common_contract_fixture_deserializes_and_validates() {
 }
 
 #[test]
-fn common_contract_versioned_fixture_matches_baseline() {
-    assert_eq!(versioned_fixture_value(), fixture_value());
-    let contract = parse_value(versioned_fixture_value());
+fn common_contract_v03628_fixture_matches_current_baseline() {
+    assert_eq!(current_versioned_fixture_value(), fixture_value());
+    let contract = parse_value(current_versioned_fixture_value());
     contract
         .validate()
         .expect("versioned contract fixture should validate");
 }
 
 #[test]
-fn common_contract_previous_fixture_only_differs_by_version() {
-    let mut previous = previous_fixture_value();
-    let current = versioned_fixture_value();
-    previous["version"] = current["version"].clone();
-    assert_eq!(previous, current);
+fn common_contract_v03628_records_breaking_backend_migration() {
+    let migration = backend_migration_fixture_value();
+    let current = current_versioned_fixture_value();
+    assert_eq!(
+        migration["from_versions"],
+        json!(["0.36.24", "0.36.25", "0.36.26", "0.36.27"])
+    );
+    assert_eq!(migration["to_version"], current["version"]);
+    assert_eq!(migration["prior_backend_count"], 5);
+    assert_eq!(migration["current_backend_count"], 4);
+    assert_eq!(migration["removed_count"], 1);
+    assert_eq!(migration["breaking"], true);
+    assert_eq!(migration["source_commit"], "59f7ade8");
+    assert_eq!(
+        migration["prior_backend_count"].as_u64(),
+        migration["current_backend_count"]
+            .as_u64()
+            .map(|value| value + 1)
+    );
 }
 
 #[test]
-fn common_contract_rejects_previous_version_without_migration() {
-    let contract = parse_value(previous_fixture_value());
+fn common_contract_rejects_older_versions_without_implicit_migration() {
+    for version in ["0.36.24", "0.36.25", "0.36.26", "0.36.27"] {
+        let mut older = current_versioned_fixture_value();
+        older["version"] = json!(version);
+        let contract = parse_value(older);
+        let error = contract
+            .validate()
+            .expect_err("older versions must not migrate implicitly");
+        assert!(error.contains(&format!("unsupported common contract version: {}", version)));
+    }
+}
+
+#[test]
+fn common_contract_rejects_an_unexpected_backend_capability() {
+    let mut fixture = fixture_value();
+    fixture["vocabularies"]["backendCapabilities"]["values"]
+        .as_array_mut()
+        .expect("backend capabilities should be an array")
+        .push(json!("unexpected-capability"));
+
+    let contract = parse_value(fixture);
     let error = contract
         .validate()
-        .expect_err("previous version must not migrate implicitly");
-    assert!(error.contains("unsupported common contract version: 0.36.26"));
+        .expect_err("an unexpected backend capability must fail validation");
+    assert!(error.contains("backend capabilities diverged"));
 }
 
 #[test]
@@ -174,7 +207,7 @@ fn common_contract_rejects_conflated_readiness_vocabularies() {
 #[test]
 fn common_contract_rejects_task722_readiness_vocabulary_fixtures() {
     let fixtures = readiness_vocabulary_fixture_value();
-    assert_eq!(fixtures["version"], "0.36.27");
+    assert_eq!(fixtures["version"], "0.36.28");
 
     for fixture in fixtures["fixtures"]
         .as_array()

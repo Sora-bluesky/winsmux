@@ -123,7 +123,6 @@ function Install-OrchestraSupportScripts {
     Download-File "winsmux-core/scripts/agent-watchdog.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "agent-watchdog.ps1")
     Download-File "winsmux-core/scripts/builder-worktree.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "builder-worktree.ps1")
     Download-File "winsmux-core/scripts/clm-safe-io.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "clm-safe-io.ps1")
-    Download-File "winsmux-core/scripts/colab-backend.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "colab-backend.ps1")
     Download-File "winsmux-core/scripts/common-contract.generated.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "common-contract.generated.ps1")
     Download-File "winsmux-core/scripts/control-plane-commands.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "control-plane-commands.ps1")
     Download-File "winsmux-core/scripts/control-plane-dispatch.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "control-plane-dispatch.ps1")
@@ -167,7 +166,6 @@ function Remove-ProfileExcludedSupportScripts {
                 "agent-watchdog.ps1",
                 "builder-worktree.ps1",
                 "clm-safe-io.ps1",
-                "colab-backend.ps1",
                 "common-contract.generated.ps1",
                 "control-plane-commands.ps1",
                 "control-plane-dispatch.ps1",

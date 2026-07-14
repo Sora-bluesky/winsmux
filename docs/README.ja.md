@@ -8,13 +8,12 @@
 - [インストール](installation.ja.md) - 動作要件、推奨するデスクトップインストーラー経路、CLI プロファイル、更新、アンインストール、パッケージの扱いを説明します。
 - [カスタマイズ](customization.ja.md) - 起動プリセット、ワークツリー方針、エージェントスロット、資格情報、デスクトップ設定を調整します。
 - [公開配布の境界](source-access.ja.md) - `v1.0.0` 以降の公開配布と再配布の境界を説明します。
-- [Google Colab ワーカー](google-colab-workers.ja.md) - `H100` / `A100` での単発ワーカー実行、アップロード、ダウンロード、モデルメタデータを準備します。
 
 ## 仕組みを理解する
 
 - [オペレーターモデル](operator-model.md) - オペレーター層、管理ペイン層、証跡契約、デスクトップ方針を説明します。
 - [認証方針](authentication-support.ja.md) - 対応する認証方式と、同じ PC 上での対話利用に限る認証の境界を説明します。
-- [プロバイダーとモデルの対応方針](provider-and-model-support.ja.md) - クラウド型エージェント CLI、Colab 上のモデル対象、将来のローカル LLM、モデルファミリーのメタデータを説明します。
+- [プロバイダーとモデルの対応方針](provider-and-model-support.ja.md) - クラウド型エージェント CLI、将来のローカル LLM、モデルファミリーのメタデータを説明します。
 - [外部コントロールプレーン API](external-control-plane.ja.md) - 外部自動化クライアント向けのローカル named pipe JSON-RPC 契約を説明します。
 - [リポジトリの公開面ポリシー](repo-surface-policy.md) - 追跡対象ファイルの公開面、実行時契約面、コントリビューター向け面を分けます。
 - [v0.36.22 コンテキスト継続性](project/v03622-context-continuity.ja.md) - Context Capsule、メールボックス、チェックポイント、圧迫状態、要約品質、分割判断の契約を説明します。

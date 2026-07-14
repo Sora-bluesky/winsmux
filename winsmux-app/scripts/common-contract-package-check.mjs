@@ -139,7 +139,7 @@ const {
   workerPaneReadinessStates,
 } = await loadModelCapabilitiesModule();
 
-assert.equal(commonContractPackageVersion, "0.36.27");
+assert.equal(commonContractPackageVersion, "0.36.28");
 assertSameVocabulary("contract surfaces", commonContractPackage.surfaces, commonContractSurfaceIds);
 assert.ok(commonContractPackage.surfaces.includes("provider"));
 assert.ok(commonContractPackage.surfaces.includes("readiness"));
@@ -247,10 +247,15 @@ for (const fixture of readinessVocabularyFixtures.fixtures) {
 }
 
 assert.deepEqual(await loadRustParityFixture(), commonContractPackage);
-assert.deepEqual(await loadRustParityFixture("common-contract-package-v0.36.27.json"), commonContractPackage);
+assert.deepEqual(await loadRustParityFixture("common-contract-package-v0.36.28.json"), commonContractPackage);
 
-const previousFixture = await loadRustParityFixture("common-contract-package-v0.36.26.json");
-assert.equal(previousFixture.version, "0.36.26");
-assert.deepEqual({ ...previousFixture, version: commonContractPackageVersion }, commonContractPackage);
+const backendMigration = await loadRustParityFixture("common-contract-backend-migration-v0.36.28.json");
+assert.deepEqual(backendMigration.from_versions, ["0.36.24", "0.36.25", "0.36.26", "0.36.27"]);
+assert.equal(backendMigration.to_version, commonContractPackageVersion);
+assert.equal(backendMigration.current_backend_count, backendCapabilityIds.length);
+assert.equal(backendMigration.prior_backend_count, backendMigration.current_backend_count + backendMigration.removed_count);
+assert.equal(backendMigration.removed_count, 1);
+assert.equal(backendMigration.breaking, true);
+assert.equal(backendMigration.source_commit, "59f7ade8");
 
 console.log("common-contract-package-check: ok");

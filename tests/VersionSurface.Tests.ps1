@@ -30,7 +30,6 @@ Describe 'winsmux version surface' {
         $installScript | Should -Match 'version = \$ResolvedVersion'
         $installScript | Should -Match '\$ResolvedVersion \| Set-Content \$VERSION_FILE'
         $installScript | Should -Match 'function Get-WinsmuxCommandVersion'
-        $installScript | Should -Match 'winsmux-core/scripts/colab-backend\.ps1'
         $installScript | Should -Match 'does not match release version'
         $installScript | Should -Match 'Reinstalling release binary'
         $installScript | Should -Match 'SHA256SUMS asset not found in release'
@@ -163,7 +162,7 @@ Describe 'winsmux version surface' {
 ## Highlights
 
 - Adds the api_llm worker backend for hosted OpenAI-compatible providers.
-- Keeps hosted API workers separate from local and Colab worker backends.
+- Keeps hosted API workers separate from local and CLI worker backends.
 - Validates a hosted provider path with explicit provider and model metadata.
 - Publishes release binaries, desktop installers, and npm package artifacts.
 

@@ -15,7 +15,6 @@ $scriptDir = $PSScriptRoot
 . "$scriptDir/manifest.ps1"
 . "$scriptDir/pane-env.ps1"
 . "$scriptDir/orchestra-ui-attach.ps1"
-. "$scriptDir/colab-backend.ps1"
 
 Set-StrictMode -Version Latest
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -1015,7 +1014,7 @@ function Test-OrchestraPaneBootstrapVerificationDeferred {
         return $false
     }
 
-    return @('deferred_start', 'deferred_starting', 'backend_degraded', 'api_llm_runner_unconfigured', 'antigravity_runner_unconfigured') -contains $status.Trim().ToLowerInvariant()
+    return @('deferred_start', 'deferred_starting', 'api_llm_runner_unconfigured', 'antigravity_runner_unconfigured') -contains $status.Trim().ToLowerInvariant()
 }
 
 function Get-AgentLaunchCommand {
@@ -1451,7 +1450,6 @@ function Save-OrchestraSessionState {
             bootstrap_marker_path      = [string](Get-OrchestraObjectPropertyValue -InputObject $paneSummary -Name 'BootstrapMarkerPath' -Default '')
             task                       = $null
             status                     = if ($paneSummary.Status) { $paneSummary.Status } else { 'ready' }
-            colab_session              = (Get-OrchestraObjectPropertyValue -InputObject $paneSummary -Name 'ColabSessionState' -Default $null)
         }
         if ($paneSummary.Contains('BootstrapFailures') -and $paneSummary['BootstrapFailures']) {
             $paneEntry | Add-Member -NotePropertyName 'bootstrap_failures' -NotePropertyValue $paneSummary['BootstrapFailures']
@@ -2236,8 +2234,6 @@ if ($MyInvocation.InvocationName -ne '.') {
     $createdPaneIds = @()
     $bootstrapPaneId = $null
     $createdWorktrees = @()
-    $colabSessionState = $null
-    $colabSessionMap = @{}
     try {
         Enable-OrchestraManagedWarmSuppression
         $script:winsmuxBin = Get-WinsmuxBin
@@ -2269,34 +2265,6 @@ if ($MyInvocation.InvocationName -ne '.') {
             researchers        = $layoutSettings.Researchers
             reviewers          = $layoutSettings.Reviewers
         } | Out-Null
-        try {
-            $colabSessionState = Update-WinsmuxColabSessionState -ProjectDir $projectDir -Settings $settings
-            foreach ($entry in @($colabSessionState.active_sessions)) {
-                $slotId = [string](Get-WinsmuxColabValue -InputObject $entry -Name 'slot_id' -Default '')
-                if (-not [string]::IsNullOrWhiteSpace($slotId)) {
-                    $colabSessionMap[$slotId] = $entry
-                }
-            }
-            if (@($colabSessionState.active_sessions).Count -gt 0) {
-                Write-WinsmuxLog -Level INFO -Event 'preflight.colab_backend.state' -Message 'Updated Colab backend session state.' -Data ([ordered]@{
-                    state_path      = [string]$colabSessionState.path
-                    active_sessions = @($colabSessionState.active_sessions).Count
-                    degraded_count  = [int]$colabSessionState.degraded_count
-                }) | Out-Null
-            }
-        } catch {
-            Write-Warning "Colab backend state update failed: $($_.Exception.Message)"
-            foreach ($entry in @(New-WinsmuxColabStateUpdateFailureRecords -ProjectDir $projectDir -Settings $settings -Reason 'colab_state_update_failed')) {
-                $slotId = [string](Get-WinsmuxColabValue -InputObject $entry -Name 'slot_id' -Default '')
-                if (-not [string]::IsNullOrWhiteSpace($slotId)) {
-                    $colabSessionMap[$slotId] = $entry
-                }
-            }
-            Write-WinsmuxLog -Level WARN -Event 'preflight.colab_backend.state_failed' -Message 'Colab backend session state update failed.' -Data ([ordered]@{
-                error = $_.Exception.Message
-                degraded_count = [int]$colabSessionMap.Count
-            }) | Out-Null
-        }
         Write-WinsmuxLog -Level INFO -Event 'preflight.winsmux_bin.ready' -Message "Using winsmux binary: $winsmuxBin." -Data @{ winsmux_bin = $winsmuxBin } | Out-Null
         Write-WinsmuxLog -Level INFO -Event 'preflight.bridge_script.ready' -Message "Using bridge script: $bridgeScript." -Data @{ bridge_script = $bridgeScript } | Out-Null
         Write-WinsmuxLog -Level INFO -Event 'preflight.project_dir.resolved' -Message "Resolved project directory: $projectDir." -Data @{ project_dir = $projectDir } | Out-Null
@@ -2603,7 +2571,6 @@ if ($MyInvocation.InvocationName -ne '.') {
         $supportsInterrupt = Test-OrchestraProviderInterruptAvailable -SlotAgentConfig $slotAgentConfig
         $deferPaneStart = Test-OrchestraPaneDeferredStart -Label $label -Role $canonicalRole -LayoutSettings $layoutSettings
         $deferredPaneStatus = 'deferred_start'
-        $colabSessionEntry = $null
         $apiLlmPaneStartDeferred = [string]::Equals(([string]$slotAgentConfig.WorkerBackend), 'api_llm', [System.StringComparison]::OrdinalIgnoreCase) -and
             (-not [string]::Equals(([string]$slotAgentConfig.CapabilityAdapter), 'openai-compatible', [System.StringComparison]::OrdinalIgnoreCase))
         $antigravityPaneStartDeferred = [string]::Equals(([string]$slotAgentConfig.WorkerBackend), 'antigravity', [System.StringComparison]::OrdinalIgnoreCase) -and
@@ -2621,14 +2588,6 @@ if ($MyInvocation.InvocationName -ne '.') {
         if (-not $oneShotPaneStartDeferred) {
             $launchCommand = Get-AgentLaunchCommand -Agent $slotAgentConfig.Agent -Model $slotAgentConfig.Model -ModelSource $slotAgentConfig.ModelSource -ReasoningEffort $slotAgentConfig.ReasoningEffort -McpMode $slotAgentConfig.McpMode -SlotId $label -ProjectDir $launchDir -GitWorktreeDir $launchGitWorktreeDir -RootPath $projectDir -ExecMode $false
         }
-        if ([string]::Equals(([string]$slotAgentConfig.WorkerBackend), 'colab_cli', [System.StringComparison]::OrdinalIgnoreCase) -and $colabSessionMap.ContainsKey($label)) {
-            $colabSessionEntry = $colabSessionMap[$label]
-            if ([bool](Get-WinsmuxColabValue -InputObject $colabSessionEntry -Name 'degraded' -Default $false)) {
-                $deferPaneStart = $true
-                $deferredPaneStatus = 'backend_degraded'
-            }
-        }
-
         Invoke-Bridge -Arguments @('name', $paneId, $label)
         $approvedLaunch = $null
         try {
@@ -2646,10 +2605,7 @@ if ($MyInvocation.InvocationName -ne '.') {
             if ([string]::IsNullOrWhiteSpace($launchCommand)) {
                 if ($deferPaneStart) {
                     $paneStatus = $deferredPaneStatus
-                    if ($paneStatus -eq 'backend_degraded') {
-                        $eventName = 'preflight.worker.backend_degraded'
-                        $eventMessage = "Colab backend is degraded for $label."
-                    } elseif ($paneStatus -eq 'api_llm_runner_unconfigured') {
+                    if ($paneStatus -eq 'api_llm_runner_unconfigured') {
                         $eventName = 'preflight.worker.api_llm_runner_unconfigured'
                         $eventMessage = "API LLM worker runner is not configured for $label."
                     } elseif ($paneStatus -eq 'antigravity_runner_unconfigured') {
@@ -2664,7 +2620,6 @@ if ($MyInvocation.InvocationName -ne '.') {
                         pane_id             = $paneId
                         bootstrap_plan_path = $bootstrapPlanPath
                         worker_backend      = [string]$slotAgentConfig.WorkerBackend
-                        degraded_reason     = if ($null -ne $colabSessionEntry) { [string](Get-WinsmuxColabValue -InputObject $colabSessionEntry -Name 'degraded_reason' -Default '') } else { '' }
                     }) | Out-Null
                 } else {
                     Write-Warning "TASK-231: empty launch command for pane $paneId ($label, role=$canonicalRole, execMode=$execMode). Agent will not start automatically."
@@ -2685,10 +2640,7 @@ if ($MyInvocation.InvocationName -ne '.') {
                     -ApprovedLaunch $approvedLaunch
                 if ($deferPaneStart) {
                     $paneStatus = $deferredPaneStatus
-                    if ($paneStatus -eq 'backend_degraded') {
-                        $eventName = 'preflight.worker.backend_degraded'
-                        $eventMessage = "Colab backend is degraded for $label."
-                    } elseif ($paneStatus -eq 'api_llm_runner_unconfigured') {
+                    if ($paneStatus -eq 'api_llm_runner_unconfigured') {
                         $eventName = 'preflight.worker.api_llm_runner_unconfigured'
                         $eventMessage = "API LLM worker runner is not configured for $label."
                     } elseif ($paneStatus -eq 'antigravity_runner_unconfigured') {
@@ -2703,7 +2655,6 @@ if ($MyInvocation.InvocationName -ne '.') {
                         pane_id             = $paneId
                         bootstrap_plan_path = $bootstrapPlanPath
                         worker_backend      = [string]$slotAgentConfig.WorkerBackend
-                        degraded_reason     = if ($null -ne $colabSessionEntry) { [string](Get-WinsmuxColabValue -InputObject $colabSessionEntry -Name 'degraded_reason' -Default '') } else { '' }
                     }) | Out-Null
                 } else {
                     Start-OrchestraPaneBootstrap -PaneId $paneId -PlanPath $bootstrapPlanPath -SessionName $sessionName
@@ -2732,7 +2683,6 @@ if ($MyInvocation.InvocationName -ne '.') {
             Role = $canonicalRole
             WorkerBackend = [string]$slotAgentConfig.WorkerBackend
             WorkerRole = [string]$slotAgentConfig.WorkerRole
-            ColabSessionState = $colabSessionEntry
             Agent = [string]$slotAgentConfig.Agent
             Model = [string]$slotAgentConfig.Model
             CapabilityAdapter = [string]$slotAgentConfig.CapabilityAdapter

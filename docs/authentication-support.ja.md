@@ -30,9 +30,9 @@ Gemini Code Assist for individuals、Google AI Pro、Google AI Ultra からの
 この sunset 対象として扱いません。
 
 Gemma、Llama、Mistral、Qwen、DeepSeek、Kimi などのモデルファミリーは、
-それ自体を認証プロバイダーとして扱いません。Colab ワーカーでは、公式のモデル配布元、
-またはホストエンドポイントへの認証を Colab 側またはアダプター側のフローで完了し、
-winsmux の証跡には秘密情報を含まないモデルメタデータだけを記録します。
+それ自体を認証プロバイダーとして扱いません。外部モデルのワーカーでは、
+プロバイダーが文書化したエンドポイントの認証経路を使い、winsmux の証跡には
+秘密情報を含まないモデルメタデータだけを記録します。
 
 ## 用語の意味
 

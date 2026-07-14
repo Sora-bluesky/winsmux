@@ -43,10 +43,6 @@ Run `cargo build` or `npm run tauri build` from PowerShell or `cmd`, not Git
 Bash or another MSYS shell. MSYS environments can put their own `link` command
 before MSVC `link.exe` on `PATH`, which causes confusing linker failures.
 
-For Colab-backed model workers, also prepare a Colab notebook or an
-adapter-managed equivalent connected to `H100` or `A100`. The Windows PC does
-not need a local LLM runtime for that path.
-
 ## Quick install
 
 Desktop app:
@@ -189,12 +185,11 @@ winsmux doctor
 
 Use `winsmux doctor` after install or update to confirm PowerShell startup, repository configuration, process pressure, and workspace prerequisites.
 
-For Colab-backed worker slots, also run:
+For `api_llm` and Antigravity worker slots, also run:
 
 ```powershell
 winsmux workers doctor
 ```
 
-The Colab doctor path reports missing adapter commands, missing authentication,
-and `H100` / `A100` runtime mismatches as worker state instead of silently
-falling back to a local model runtime.
+The worker doctor reports missing hosted API metadata, credentials, and
+Antigravity CLI support before execution.

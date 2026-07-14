@@ -323,7 +323,7 @@ function ConvertTo-UserBenefit {
             return 'Captured hosted API worker E2E evidence and tied it to the release review path'
         }
         'Hosted open-model API E2E release lane' {
-            return 'Made hosted open-model execution the v0.36.9 release lane instead of the deferred Colab local-model path'
+            return 'Made hosted open-model execution the v0.36.9 release lane'
         }
         'Persist winsmux planning source-of-truth paths locally' {
             return $null
@@ -336,9 +336,6 @@ function ConvertTo-UserBenefit {
         }
         'require explicit api_llm provider metadata|expose api_llm in machine contract|tighten api_llm exec contract' {
             return 'Required explicit provider, model, adapter, and execution metadata for api_llm workers'
-        }
-        'preserve colab task-json forwarding' {
-            return 'Preserved existing Colab task-json forwarding while adding the hosted worker path'
         }
         'refresh public docs for v0\.36\.8' {
             return 'Refreshed public setup documentation for the hosted API worker release'

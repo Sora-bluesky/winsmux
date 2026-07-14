@@ -68,7 +68,7 @@ function Test-IsTrackedTextSurface {
     if ($normalized -match '^\.claude/logs/') { return $false }
     if ($normalized -match '^docs/internal/') { return $false }
     if ($normalized -eq 'docs/brand-hero.svg') { return $true }
-    return $normalized -match '(^README(\.ja)?\.md$)|(^AGENTS?(-BASE)?\.md$)|(^GEMINI\.md$)|(^docs/.+\.md$)|(^\.claude/CLAUDE\.md$)|(^\.agents/.+\.md$)|(^tests/.+\.(ps1|md|json|txt)$)|(^workers/colab/.+\.py$)|(^\.github/workflows/.+\.ya?ml$)|(^\.githooks/.+$)|(^scripts/.+\.ps1$)'
+    return $normalized -match '(^README(\.ja)?\.md$)|(^AGENTS?(-BASE)?\.md$)|(^GEMINI\.md$)|(^docs/.+\.md$)|(^\.claude/CLAUDE\.md$)|(^\.agents/.+\.md$)|(^tests/.+\.(ps1|md|json|txt)$)|(^\.github/workflows/.+\.ya?ml$)|(^\.githooks/.+$)|(^scripts/.+\.ps1$)'
 }
 
 function Test-IsPublicMaterialScanSurface {
@@ -280,7 +280,8 @@ $failures = New-Object System.Collections.Generic.List[string]
 $trackedIgnored = @(
     & git ls-files -ci --exclude-standard 2>$null |
         ForEach-Object { $_.Trim() } |
-        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }
 )
 if ($LASTEXITCODE -ne 0) {
     throw 'audit-public-surface: failed to evaluate tracked/ignore overlap.'
@@ -290,6 +291,7 @@ if ($trackedIgnored.Count -gt 0) {
 }
 
 $trackedFiles = Get-TrackedFiles
+$existingTrackedFiles = @($trackedFiles | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
 
 $forbiddenTracked = @(
     'HANDOFF.md',
@@ -333,7 +335,7 @@ $personalPathPatterns = @(
     'iCloudDrive',
     'MainVault'
 )
-foreach ($file in ($trackedFiles | Where-Object { Test-IsMaintainerPathScanSurface -Path $_ })) {
+foreach ($file in ($existingTrackedFiles | Where-Object { Test-IsMaintainerPathScanSurface -Path $_ })) {
     $content = Get-Content -LiteralPath $file -Raw -ErrorAction Stop
     foreach ($pattern in $personalPathPatterns) {
         if ($content -match [Regex]::Escape($pattern)) {
@@ -347,7 +349,7 @@ $personalIdentityPatterns = @(
     'iCloudDrive',
     'MainVault'
 )
-foreach ($file in ($trackedFiles | Where-Object { Test-IsMaintainerIdentityScanSurface -Path $_ })) {
+foreach ($file in ($existingTrackedFiles | Where-Object { Test-IsMaintainerIdentityScanSurface -Path $_ })) {
     $content = Get-Content -LiteralPath $file -Raw -ErrorAction Stop
     foreach ($pattern in $personalIdentityPatterns) {
         if ($content -match [Regex]::Escape($pattern)) {
@@ -373,7 +375,7 @@ $forbiddenPublicProductFragments = @(
     'Repository-operated',
     'contributor/runtime'
 )
-foreach ($file in ($trackedFiles | Where-Object { Test-IsPublicDoc -Path $_ })) {
+foreach ($file in ($existingTrackedFiles | Where-Object { Test-IsPublicDoc -Path $_ })) {
     $content = Get-Content -LiteralPath $file -Raw -ErrorAction Stop
     foreach ($reference in $forbiddenPublicRefs) {
         if ($content -match [Regex]::Escape($reference)) {
@@ -388,19 +390,19 @@ foreach ($file in ($trackedFiles | Where-Object { Test-IsPublicDoc -Path $_ })) 
 
 }
 
-foreach ($file in ($trackedFiles | Where-Object { Test-IsExternalProductReferenceAuditSurface -Path $_ })) {
+foreach ($file in ($existingTrackedFiles | Where-Object { Test-IsExternalProductReferenceAuditSurface -Path $_ })) {
     Add-ForbiddenExternalProductReferenceFailures -Path $file -Surface 'public doc'
 }
 
-foreach ($file in ($trackedFiles | Where-Object { Test-IsPublicMaterialScanSurface -Path $_ })) {
+foreach ($file in ($existingTrackedFiles | Where-Object { Test-IsPublicMaterialScanSurface -Path $_ })) {
     Add-ForbiddenPaidSourceDisclosureFailures -Path $file -Surface 'public material'
 }
 
-foreach ($file in ($trackedFiles | Where-Object { Test-IsHostedApiRuntimeScanSurface -Path $_ })) {
+foreach ($file in ($existingTrackedFiles | Where-Object { Test-IsHostedApiRuntimeScanSurface -Path $_ })) {
     Add-ForbiddenHostedApiRuntimeFailures -Path $file -Surface 'public/release surface'
 }
 
-foreach ($file in ($trackedFiles | Where-Object { Test-IsEvidenceAuthScanSurface -Path $_ })) {
+foreach ($file in ($existingTrackedFiles | Where-Object { Test-IsEvidenceAuthScanSurface -Path $_ })) {
     Add-ForbiddenEvidenceAuthFailures -Path $file -Surface 'evidence/auth surface'
 }
 

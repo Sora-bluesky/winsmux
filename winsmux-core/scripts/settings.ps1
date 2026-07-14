@@ -22,7 +22,7 @@ if (-not (Test-Path -LiteralPath $script:BridgeCommonContractBindingPath -PathTy
     throw "Missing generated common contract binding: $script:BridgeCommonContractBindingPath"
 }
 . $script:BridgeCommonContractBindingPath
-$script:BridgeWorkerBackendKinds = @('local', 'codex', 'colab_cli', 'api_llm', 'antigravity', 'noop')
+$script:BridgeWorkerBackendKinds = @('local', 'codex', 'api_llm', 'antigravity', 'noop')
 $script:BridgeExecutionProfileKinds = @('local-windows', 'isolated-enterprise')
 $script:BridgeSlotScalarKeys = @(
     'slot_id',
@@ -39,12 +39,9 @@ $script:BridgeSlotScalarKeys = @(
     'execution_profile',
     'worker_role',
     'pane_title',
-    'session_name',
-    'fallback_model',
-    'bootstrap',
-    'task_script'
+    'fallback_model'
 )
-$script:BridgeSlotListKeys = @('gpu_preference', 'packages')
+$script:BridgeSlotListKeys = @()
 $script:BridgeSettingsSchema = [ordered]@{
     config_version      = @{ Type = 'int';      Default = 1;             Option = $null }
     agent               = @{ Type = 'string';   Default = 'codex';       Option = '@bridge-agent' }
@@ -2895,12 +2892,7 @@ function Get-SlotAgentConfig {
     }
     $workerRole = ''
     $paneTitle = ''
-    $sessionName = ''
     $fallbackModel = ''
-    $bootstrap = ''
-    $taskScript = ''
-    $gpuPreference = @()
-    $packages = @()
     $source = 'role'
 
     if (-not [string]::IsNullOrWhiteSpace($SlotId)) {
@@ -2930,12 +2922,7 @@ function Get-SlotAgentConfig {
             $slotExecutionProfile = ''
             $slotWorkerRole = ''
             $slotPaneTitle = ''
-            $slotSessionName = ''
             $slotFallbackModel = ''
-            $slotBootstrap = ''
-            $slotTaskScript = ''
-            $slotGpuPreference = @()
-            $slotPackages = @()
             $slotModelSet = $false
             $slotModelSourceSet = $false
 
@@ -2978,23 +2965,8 @@ function Get-SlotAgentConfig {
                 if ($slot.Contains('pane_title')) {
                     $slotPaneTitle = [string]$slot['pane_title']
                 }
-                if ($slot.Contains('session_name')) {
-                    $slotSessionName = [string]$slot['session_name']
-                }
                 if ($slot.Contains('fallback_model')) {
                     $slotFallbackModel = [string]$slot['fallback_model']
-                }
-                if ($slot.Contains('bootstrap')) {
-                    $slotBootstrap = [string]$slot['bootstrap']
-                }
-                if ($slot.Contains('task_script')) {
-                    $slotTaskScript = [string]$slot['task_script']
-                }
-                if ($slot.Contains('gpu_preference')) {
-                    $slotGpuPreference = @(ConvertTo-BridgeStringArray $slot['gpu_preference'])
-                }
-                if ($slot.Contains('packages')) {
-                    $slotPackages = @(ConvertTo-BridgeStringArray $slot['packages'])
                 }
             } elseif ($null -ne $slot.PSObject) {
                 if ($slot.PSObject.Properties.Name -contains 'slot_id') {
@@ -3035,23 +3007,8 @@ function Get-SlotAgentConfig {
                 if ($slot.PSObject.Properties.Name -contains 'pane_title') {
                     $slotPaneTitle = [string]$slot.pane_title
                 }
-                if ($slot.PSObject.Properties.Name -contains 'session_name') {
-                    $slotSessionName = [string]$slot.session_name
-                }
                 if ($slot.PSObject.Properties.Name -contains 'fallback_model') {
                     $slotFallbackModel = [string]$slot.fallback_model
-                }
-                if ($slot.PSObject.Properties.Name -contains 'bootstrap') {
-                    $slotBootstrap = [string]$slot.bootstrap
-                }
-                if ($slot.PSObject.Properties.Name -contains 'task_script') {
-                    $slotTaskScript = [string]$slot.task_script
-                }
-                if ($slot.PSObject.Properties.Name -contains 'gpu_preference') {
-                    $slotGpuPreference = @(ConvertTo-BridgeStringArray $slot.gpu_preference)
-                }
-                if ($slot.PSObject.Properties.Name -contains 'packages') {
-                    $slotPackages = @(ConvertTo-BridgeStringArray $slot.packages)
                 }
             }
 
@@ -3110,23 +3067,8 @@ function Get-SlotAgentConfig {
             if (-not [string]::IsNullOrWhiteSpace($slotPaneTitle)) {
                 $paneTitle = $slotPaneTitle
             }
-            if (-not [string]::IsNullOrWhiteSpace($slotSessionName)) {
-                $sessionName = $slotSessionName
-            }
             if (-not [string]::IsNullOrWhiteSpace($slotFallbackModel)) {
                 $fallbackModel = $slotFallbackModel
-            }
-            if (-not [string]::IsNullOrWhiteSpace($slotBootstrap)) {
-                $bootstrap = $slotBootstrap
-            }
-            if (-not [string]::IsNullOrWhiteSpace($slotTaskScript)) {
-                $taskScript = $slotTaskScript
-            }
-            if ($slotGpuPreference.Count -gt 0) {
-                $gpuPreference = @($slotGpuPreference)
-            }
-            if ($slotPackages.Count -gt 0) {
-                $packages = @($slotPackages)
             }
 
             break
@@ -3182,12 +3124,7 @@ function Get-SlotAgentConfig {
         ExecutionProfile         = [string]$executionProfile
         WorkerRole               = [string]$workerRole
         PaneTitle                = [string]$paneTitle
-        SessionName              = [string]$sessionName
         FallbackModel            = [string]$fallbackModel
-        GpuPreference            = @($gpuPreference)
-        Packages                 = @($packages)
-        Bootstrap                = [string]$bootstrap
-        TaskScript               = [string]$taskScript
         Agent                    = [string]$agent
         Model                    = [string]$model
         ModelSource              = [string]$modelSource

@@ -1,6 +1,6 @@
 # Provider and Model Support
 
-This page describes how winsmux treats AI providers, model names, Google Colab
+This page describes how winsmux treats AI providers, model names, hosted model
 workers, and future local LLM runtimes.
 
 winsmux is a local-first control plane. It starts and supervises agent CLIs,
@@ -31,11 +31,10 @@ column.
 | Official hosted agent CLIs | Supported as pane agents | The CLI owns its own sign-in or API key flow. |
 | `local` worker backend | Supported | Runs normal managed panes on this PC. |
 | `codex` worker backend | Metadata today | Used to describe Codex-capable worker or review slots. |
-| `api_llm` worker backend | Supported contract for hosted OpenAI-compatible model workers | Uses provider-owned API access such as OpenRouter. The public setup path is the runtime environment variable; winsmux records only redacted run metadata and does not fall back to local or Colab LLM backends. |
+| `api_llm` worker backend | Supported contract for hosted OpenAI-compatible model workers | Uses provider-owned API access such as OpenRouter. The public setup path is the runtime environment variable; winsmux records only redacted run metadata and does not fall back to another backend. |
 | `antigravity` worker backend | Supported for Antigravity CLI one-shot workers | Uses the local `agy` command in print mode. The CLI owns sign-in and model access; winsmux records redacted run metadata and does not log the prompt body. |
-| `colab_cli` worker backend | Supported for status, doctor, one-shot execution, logs, upload, and download | Requires a `google-colab-cli` compatible adapter and is intended for H100 or A100 Colab-backed work. |
-| Major open model families | Supported as Colab model targets when the task script and runtime provide them | Examples include Gemma, Llama, Mistral, Qwen, DeepSeek, and Kimi/Moonshot. Treat the model family as workload metadata, not as a provider. |
-| Local LLM runtimes | Planned adapter family | Not a `v0.32.x` Colab-lane runtime requirement. Today, run them as normal local tools or behind an agent CLI that can use a local endpoint. |
+| Major open model families | Supported through hosted or future local runtimes when the provider and runtime expose them | Examples include Gemma, Llama, Mistral, Qwen, DeepSeek, and Kimi/Moonshot. Treat the model family as workload metadata, not as a provider. |
+| Local LLM runtimes | Planned adapter family | Today, run them as normal local tools or behind an agent CLI that can use a local endpoint. |
 | `noop` worker backend | Supported placeholder | Keeps a slot declared but inactive. |
 
 ## Provider capability catalog
@@ -51,8 +50,8 @@ Provider entries may declare:
   adapter, or a manual pane tool.
 - `credential_requirements`: who owns sign-in, API keys, endpoint secrets, and
   token storage.
-- `execution_backend`: the runtime path, such as an agent CLI, Colab worker, or
-  OpenAI-compatible local endpoint.
+- `execution_backend`: the runtime path, such as an agent CLI, hosted API
+  worker, or OpenAI-compatible local endpoint.
 - `runtime_requirements`: endpoint, executable, GPU, CPU, memory, OS, or remote
   runtime expectations.
 - `model_catalog_source` and `model_options`: where model names come from and
@@ -153,11 +152,11 @@ Do not store the key in shell startup files, command history, repo-local `.env`
 files, public docs, PR text, generated reports, worker logs, or release
 evidence.
 
-`api_llm` is intentionally separate from `local_llm`, `colab_llm`, and
-`colab_cli`. If the API key environment variable is missing or the provider
+`api_llm` is intentionally separate from local and CLI-managed backends. If the
+API key environment variable is missing or the provider
 endpoint is invalid, winsmux reports a diagnostic reason such as
 `api_llm_api_key_env_missing` before network access instead of silently
-switching to a local or Colab runtime.
+switching to another backend.
 
 ## Execution profile policy
 
@@ -219,7 +218,7 @@ The desktop runtime settings surface separates model entries into six classes:
 | `setup-required` | Shown when a normal worker path exists but setup is incomplete. For example, OpenRouter entries require an `api_llm` slot and `OPENROUTER_API_KEY` in the runtime environment. | Excluded from scoring until a local run id, latency, cost, failure reason, and reproducibility data are recorded. |
 | `runnable` | Can be assigned to a compatible worker slot after backend and credential checks pass. | Shown with winsmux-local run evidence when available. |
 | `blocked` | Disabled because the provider, endpoint, or local runner cannot currently satisfy the contract. | Kept as evidence with an explicit reason and excluded from scoring. |
-| `reference-only` | Shown for comparison context but not selectable from the desktop picker. | Can show Agent Arena, Code Arena, or Colab model-plan reference data, but must not imply that winsmux can run the model locally. |
+| `reference-only` | Shown for comparison context but not selectable from the desktop picker. | Can show Agent Arena or Code Arena reference data, but must not imply that winsmux can run the model locally. |
 | `unavailable` | Disabled until the upstream provider restores official access. | Kept only to explain external benchmark rows. |
 
 Reference benchmarks are advisory. They do not directly change `winsmux
@@ -240,35 +239,6 @@ include Fable 5 usage within up to 50% of weekly usage limits through
 winsmux may offer Fable 5 in the Claude Code model picker when the local Claude
 Code account exposes the model. Long benchmark or worker runs should still
 confirm account quota and credit availability before dispatch.
-
-## Current Colab model target
-
-The `v0.32.x` Colab lane is aimed at Google Colab execution, not local LLM serving. For model
-workloads, the expected accelerator target is:
-
-- preferred: `H100`
-- acceptable: `A100`
-
-Other GPU types may be useful for smaller experiments, but they are not the
-normal operating target for this release lane. If the configured Colab worker
-cannot confirm `H100` or `A100`, winsmux should report the state and let the
-operator decide whether to continue.
-
-Major open model families are supported as Colab workload targets when the task
-script can load the exact model id. winsmux should record the selected
-`model_family` and `model_id`, but it should not hard-code a loader for one
-vendor or one release name.
-
-| Model family | Colab target posture | Access and license notes |
-| ------------ | -------------------- | ------------------------ |
-| Gemma | Supported when the notebook installs the required Google/Kaggle or Hugging Face path. Examples include Gemma 4 31B and Gemma 4 26B A4B when the runtime can fit them. | Accept the Gemma terms through the model source before first use. |
-| Llama | Supported when the notebook can access Meta Llama weights and the selected variant fits the runtime. Examples include Llama 4 Scout and Llama 4 Maverick. | Accept the Meta license and acceptable use policy through Meta, Hugging Face, Kaggle, or another official partner path. |
-| Mistral / Ministral / Devstral | Supported when the notebook uses official Mistral weights or a supported cloud/model hub path. Examples include Mistral, Ministral, Magistral, and Devstral variants. | Check the license for the exact model. Mistral publishes both open and restricted-license weights. |
-| Qwen | Supported when the notebook uses Qwen open weights through a supported framework such as Transformers. Examples include Qwen3.6-27B and its quantized or served variants. | Check the exact model card and license. Qwen includes dense and mixture-of-experts model families. |
-| DeepSeek | Supported when the notebook uses official DeepSeek weights, hosted API-compatible targets, or distill variants that fit the runtime. Examples include DeepSeek V4 Pro and DeepSeek V4 Flash. | Check the exact license and base-model terms, especially for distill models derived from Llama or Qwen. |
-| Kimi / Moonshot | Supported when the notebook can access an official open-weight release or an approved hosted endpoint. Examples include Kimi K2.6. | Confirm the official source, model license, and any hosted API terms before use. |
-| Other compatible families | Supported when they have a trusted source, an allowed license, and a runtime path that fits `H100` / `A100`. | Do not treat community names, merges, or quantizations as approved without checking their model card and base model lineage. |
-
 ## Variant and distillation metadata
 
 Do not make the support matrix depend on every model marketing name. New model
@@ -302,21 +272,10 @@ This lets winsmux track `Kimi K2.6`, `DeepSeek V4 Pro / Flash`,
 `Qwen3.6-27B`, `Gemma 4 31B / 26B A4B`, `Llama 4 Scout / Maverick`, and later
 families without changing the CLI contract for every new checkpoint.
 
-The task script remains responsible for:
-
-- accepting or verifying model access before loading
-- installing packages such as `torch`, `transformers`, `accelerate`, `vllm`,
-  `sglang`, or another supported runtime
-- resolving the exact model id from an allowlisted source
-- selecting quantization or precision
-- recording derived or distilled model lineage when applicable
-- checking whether the exact variant fits the `H100` / `A100` runtime
-
 ## Future local LLM landscape
 
 Local model support is moving quickly. The following information is included to
-guide future adapters and documentation. It is not a `v0.32.x` Colab-lane runtime
-requirement.
+guide future adapters and documentation.
 
 | Runtime | Windows posture | Practical role for winsmux |
 | ------- | --------------- | -------------------------- |
@@ -337,7 +296,6 @@ quantization, context length, tool use, and the runtime.
 | Windows PC with 8 to 12 GB VRAM and 32 GB system RAM | Many 7B/8B class quantized models, light coding assistance, local review experiments | This is the most practical consumer tier. |
 | Windows PC with 16 to 24 GB VRAM and 64 GB system RAM | Larger quantized models and longer context experiments | Still runtime-specific. Check the model card and runtime memory estimator. |
 | WSL/Linux server with datacenter GPU | vLLM-style serving and multi-user or high-throughput jobs | Treat as a remote or WSL endpoint, not a native Windows pane. |
-| Colab or Colab Enterprise runtime with H100 or A100 | GPU-backed one-shot worker execution without local VRAM | This is the current target for `colab_cli` model work. Availability, quota, IAM, and runtime startup are owned by Google/Colab, not winsmux. |
 
 ## Security and privacy rules
 
@@ -376,7 +334,6 @@ manual pane tool rather than a first-class worker backend.
 - [Windows ML ONNX Runtime GenAI preview](https://learn.microsoft.com/en-us/windows/ai/new-windows-ml/run-genai-onnx-models)
 - [Gemma get started](https://ai.google.dev/gemma/docs/get_started)
 - [Gemma setup](https://ai.google.dev/gemma/docs/setup)
-- [Gemma and LangChain Colab guide](https://ai.google.dev/gemma/docs/integrations/langchain)
 - [Gemma 4 31B model card](https://huggingface.co/google/gemma-4-31B)
 - [Gemma 4 26B A4B model card](https://huggingface.co/google/gemma-4-26B-A4B-it)
 - [Llama official docs](https://ai.meta.com/llama/get-started/)

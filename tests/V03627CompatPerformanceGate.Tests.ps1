@@ -44,7 +44,7 @@ Describe 'v0.36.27 compat performance gate' {
         $result = ($output | Out-String | ConvertFrom-Json)
         $classes = @($result.release_gate_inputs | ForEach-Object { $_.class })
 
-        foreach ($requiredClass in @('old-cli-fixture', 'powershell-5', 'powershell-7', 'latency', 'process-benchmark', 'worker-benchmark')) {
+        foreach ($requiredClass in @('current-contract-migration', 'powershell-5', 'powershell-7', 'latency', 'process-benchmark', 'worker-benchmark')) {
             $classes | Should -Contain $requiredClass
         }
 
@@ -75,6 +75,22 @@ Describe 'v0.36.27 compat performance gate' {
         $content | Should -Match 'missing_release_gate_inputs'
         $content | Should -Match 'powershell-5'
         $content | Should -Match 'process-benchmark'
+    }
+
+    It 'keeps the five required worker execution FullName filters bidirectional' {
+        $workflow = Get-Content -LiteralPath (Join-Path $script:repoRoot '.github/workflows/test.yml') -Raw
+        $workflow | Should -Match 'Assert-PesterCategoryRequiredFilters'
+        $workflow | Should -Match 'missing required FullName filters'
+
+        foreach ($requiredFilter in @(
+            '*uses the worker input byte limit contract*',
+            '*classifies JSON-formatted secret task fields*',
+            '*keeps empty stored worker logs local*',
+            '*propagates stored failed run status from local logs*',
+            '*returns failing process exit codes when the antigravity adapter fails*'
+        )) {
+            [regex]::Matches($workflow, [regex]::Escape($requiredFilter)).Count | Should -BeGreaterOrEqual 2
+        }
     }
 
     It 'does not mark failed desktop evidence as release ready and passes the advertised gate with complete evidence' {
@@ -151,7 +167,7 @@ exit /b 0
             $successResult.release_ready | Should -Be $true
             $successResult.release_gate_inputs_complete | Should -Be $true
             @($successResult.missing_release_gate_inputs).Count | Should -Be 0
-            @($successResult.release_command_results | Where-Object { $_.class -eq 'old-cli-fixture' -and -not $_.passed }).Count | Should -Be 0
+            @($successResult.release_command_results | Where-Object { $_.class -eq 'current-contract-migration' -and -not $_.passed }).Count | Should -Be 0
             @($successResult.release_command_results | Where-Object { $_.class -eq 'process-benchmark' -and -not $_.passed }).Count | Should -Be 0
             @($successResult.release_command_results | Where-Object { $_.class -eq 'worker-benchmark' -and -not $_.passed }).Count | Should -Be 0
 

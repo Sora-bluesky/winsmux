@@ -36,10 +36,6 @@ winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait
 
 `cargo build` や `npm run tauri build` は、Git Bash などの MSYS shell ではなく、PowerShell または `cmd` から実行してください。MSYS 環境では MSVC の `link.exe` より前に別の `link` コマンドが `PATH` に入ることがあり、原因が分かりにくいリンカーエラーにつながります。
 
-Colab 対応のモデルワーカーを使う場合は、`H100` または `A100` へ接続した
-Colab ノートブック、またはアダプターが管理する同等の実行環境も用意します。
-この経路では、Windows PC 側にローカル LLM ランタイムは不要です。
-
 ## クイックインストール
 
 デスクトップアプリ:
@@ -165,12 +161,11 @@ winsmux doctor
 
 インストール後または更新後は `winsmux doctor` を実行してください。PowerShell の起動、リポジトリ設定、プロセス数、ワークスペースの前提条件を確認できます。
 
-Colab 対応ワーカースロットでは、次も実行します。
+`api_llm` または Antigravity のワーカースロットでは、次も実行します。
 
 ```powershell
 winsmux workers doctor
 ```
 
-Colab の診断では、アダプターコマンドの不在、認証不足、`H100` / `A100`
-ランタイム不一致をワーカー状態として表示します。ローカル LLM ランタイムへ
-黙って切り替えることはしません。
+ワーカー診断では、外部 API のメタデータや認証情報、Antigravity CLI の不足を
+実行前に表示します。
