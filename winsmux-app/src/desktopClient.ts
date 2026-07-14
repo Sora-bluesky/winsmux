@@ -746,10 +746,6 @@ export interface DesktopWorkerStatusRow {
   credential_status?: string;
   execution_backend?: string;
   analysis_posture?: string;
-  session: string;
-  requested_gpu: string;
-  actual_gpu: string;
-  degraded_reason: string;
   failed_stage?: string;
   failure_reason?: string;
   recovery_action?: string;
@@ -774,7 +770,6 @@ export interface DesktopWorkersStatusResult {
   project_dir: string;
   generated_at: string;
   manifest_error?: string;
-  colab_state?: Record<string, unknown>;
   workers: DesktopWorkerStatusRow[];
 }
 

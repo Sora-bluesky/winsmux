@@ -32,7 +32,7 @@ Most tools solve only one part of this workflow.
 - Lets an operator read, send, interrupt, and check pane health.
 - Initializes six managed worker slots by default, with a worker backend
   contract for local, Codex, Antigravity, Grok Build, hosted API models via OpenRouter,
-  Google Colab, and placeholder workers. The first generated slot is a Codex reviewer
+  and placeholder workers. The first generated slot is a Codex reviewer
   slot; the remaining slots keep the selected worker backend.
 - Keeps worker agents in separate git worktrees when isolation is enabled.
 - Compares recorded runs and highlights shared changed files before you choose a winner.
@@ -96,9 +96,6 @@ winsmux health-check
 winsmux workers status
 winsmux workers doctor
 winsmux workers exec w1 --task-json tasks/api-worker-task.json --run-id api-demo-1 --json
-winsmux workers exec w2 --script workers/colab/impl_worker.py --run-id demo-1 -- --task-json-inline '{"task_id":"demo-1","title":"Implement this change"}' --worker-id worker-2 --run-id demo-1
-winsmux workers upload w2 data/input.json --remote /content/input.json
-winsmux workers download w2 /content/output.json
 winsmux workers sandbox baseline w2 --run-id demo-1 --json
 winsmux workers broker baseline w2 --run-id demo-1 --endpoint https://broker.example.invalid/worker --json
 winsmux workers broker token issue w2 --run-id demo-1 --ttl-seconds 900 --json
@@ -118,13 +115,10 @@ winsmux skills --json
 | `winsmux launch` | Run CLI checks and start the default managed Windows Terminal workspace; it does not open the desktop app |
 | `winsmux launcher presets` | Show launcher presets and pair templates |
 | `winsmux launcher lifecycle` | Choose the workspace lifecycle policy |
-| `winsmux workers status` | Show backend, state, GPU, session, and last command for worker slots |
-| `winsmux workers attach` | Prepare a Colab-backed worker slot for desktop visibility without starting an unbounded loop |
-| `winsmux workers doctor` | Diagnose worker config, Colab CLI, auth, uv, and session-state paths |
-| `winsmux workers exec` | Run Colab-backed tasks, hosted `api_llm` tasks, or Antigravity CLI one-shot workers; missing API key env vars stop before network access |
-| `winsmux workers logs` | Read the stored log for a worker run, or ask the Colab CLI for it |
-| `winsmux workers upload` | Upload explicit files or allowlisted directories while excluding unsafe paths |
-| `winsmux workers download` | Download a remote artifact into a project-local output directory |
+| `winsmux workers status` | Show backend, state, provider, model, and last command for worker slots |
+| `winsmux workers doctor` | Diagnose worker config, hosted API metadata, Antigravity CLI, credentials, uv, and state paths |
+| `winsmux workers exec` | Run hosted `api_llm` tasks or Antigravity CLI one-shot workers; missing API key env vars stop before network access |
+| `winsmux workers logs` | Read the stored log for an `api_llm` or Antigravity worker run |
 | `winsmux workers sandbox baseline` | Define the restricted-token and ACL baseline for a prepared isolated run |
 | `winsmux workers broker baseline` | Define the single external broker node contract for a prepared isolated run |
 | `winsmux workers broker token` | Issue or check short-lived broker run tokens without printing token values |
@@ -163,9 +157,8 @@ Use `winsmux` for scripts and docs. This does not remove tmux-compatible configu
 Google's published migration notice says Gemini CLI and Gemini Code Assist IDE extensions stopped serving requests for Gemini Code Assist for individuals, Google AI Pro, and Google AI Ultra on 2026-06-18. Affected users should use Antigravity CLI; Google AI Standard and Enterprise tiers are not treated as sunset by this winsmux policy.
 
 See [Authentication Support](docs/authentication-support.md) for the full policy.
-See [Provider and Model Support](docs/provider-and-model-support.md) for hosted, Colab, and future local LLM runtime policy.
+See [Provider and Model Support](docs/provider-and-model-support.md) for hosted and future local LLM runtime policy.
 See [CLI comparison bakeoff](docs/cli-comparison-bakeoff.md) for Claude Code, Codex, and Antigravity CLI evidence gates.
-See [Google Colab Workers](docs/google-colab-workers.md) for the H100/A100 worker setup.
 
 ## Security Notes
 
@@ -187,7 +180,6 @@ See [Google Colab Workers](docs/google-colab-workers.md) for the H100/A100 worke
 - [Provider and model support](docs/provider-and-model-support.md)
 - [CLI comparison bakeoff](docs/cli-comparison-bakeoff.md)
 - [External control plane API](docs/external-control-plane.md)
-- [Google Colab workers](docs/google-colab-workers.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Repository surface policy](docs/repo-surface-policy.md)
 - [Runtime features](core/docs/features.md)

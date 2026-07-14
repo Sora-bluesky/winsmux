@@ -32,7 +32,6 @@ export const backendCapabilityIds = [
   "agent-cli",
   "antigravity",
   "api_llm",
-  "colab_cli",
 ] as const;
 export type BackendCapabilityId = typeof backendCapabilityIds[number];
 
@@ -211,7 +210,7 @@ export interface CapabilityValidationIssue {
 
 export const openRouterModelsApiUrl = "https://openrouter.ai/api/v1/models";
 
-export const commonContractPackageVersion = "0.36.27";
+export const commonContractPackageVersion = "0.36.28";
 
 export const commonContractPackage = {
   version: commonContractPackageVersion,
@@ -285,7 +284,6 @@ export const backendCapabilities: readonly BackendCapability[] = [
   { id: "agent-cli", label: "Agent CLI", labelJa: "エージェント CLI", assignableBackends: ["", "local", "codex", "claude"] },
   { id: "antigravity", label: "Antigravity", labelJa: "Antigravity", assignableBackends: ["antigravity"] },
   { id: "api_llm", label: "OpenAI-compatible API", labelJa: "OpenAI 互換 API", assignableBackends: ["api_llm"] },
-  { id: "colab_cli", label: "Colab CLI", labelJa: "Colab CLI", assignableBackends: ["colab_cli"] },
 ];
 
 export const transportCapabilities: readonly TransportCapability[] = [

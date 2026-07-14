@@ -219,11 +219,11 @@ and each slot can override it with one of the contract values:
 - `local`: current local managed pane behavior
 - `codex`: Codex reviewer or worker metadata
 - `api_llm`: hosted OpenAI-compatible model worker metadata and run artifacts
-- `colab_cli`: `google-colab-cli` worker state metadata
+- `antigravity`: Antigravity CLI one-shot worker metadata and run artifacts
 - `noop`: disabled or placeholder worker metadata
 
-`api_llm` slots keep hosted model execution separate from local and Colab
-workers. They may declare a provider such as `openrouter`, a model id such as
+`api_llm` slots keep hosted model execution separate from local workers. They
+may declare a provider such as `openrouter`, a model id such as
 `z-ai/glm-5.2`, `prompt-transport: file`, and `auth-mode: api-key-env`.
 Environment-based OpenRouter authentication uses `OPENROUTER_API_KEY`.
 Public setup should use the provider-native name. Store it as a Windows user environment variable, then open a new PowerShell
@@ -263,55 +263,8 @@ winsmux workers logs w1 --run-id api-demo-1 --json
 If the API key environment variable is missing or the endpoint is invalid,
 `workers exec` returns a blocked result such as
 `api_llm_api_key_env_missing` before network access instead of falling back to
-`local_llm`, `colab_llm`, or `colab_cli`.
-
-Starting in `v0.32.4`, winsmux records Colab backend availability under
-`.winsmux/state/colab_sessions.json`. Missing `google-colab-cli`, missing auth,
-and unavailable `H100` / `A100` GPUs are recorded as degraded worker state.
-Renamed sessions are marked stale. winsmux does not silently fall back to a
-local CPU or local LLM runtime for Colab model work.
-Use `winsmux workers status`, `winsmux workers attach`, `winsmux workers start`,
-`winsmux workers stop`, and `winsmux workers doctor` to inspect and control the
-six configured worker slots.
-
-Colab-backed slots also support file-backed one-shot execution and safe artifact
-movement:
-
-```powershell
-winsmux workers exec w2 --script workers/colab/impl_worker.py --run-id demo-1 -- --task-json-inline '{"task_id":"demo-1","title":"Implement this change"}' --worker-id worker-2 --run-id demo-1
-winsmux workers logs w2 --run-id <run_id>
-winsmux workers upload w2 data/input.json --remote /content/input.json
-winsmux workers upload w2 data --remote /content/data --allow-dir data
-winsmux workers download w2 /content/output.json --output artifacts/worker-output
-```
-
-The tracked templates under `workers/colab/` are:
-
-- `impl_worker.py`
-- `critic_worker.py`
-- `scout_worker.py`
-- `test_worker.py`
-- `heavy_judge_worker.py`
-
-Each template accepts task JSON through `--task-json`, `--task-json-inline`, or
-`WINSMUX_TASK_JSON`. It writes a role-specific artifact under
-`/content/winsmux_artifacts/<worker_id>/<run_id>/` by default and prints a
-structured JSON result. Pass the same `--run-id` after the script-argument
-delimiter so remote artifacts stay aligned with the winsmux run metadata.
-Invalid input exits non-zero and still returns `status: failed` with an `errors`
-array.
-
-Directory uploads require `--allow-dir`. The upload manifest excludes `.git`,
-secret-like files, `node_modules`, virtual environments, build outputs,
-coverage, and oversized files by default. Automatic `colab repl` or
-`colab console` loops are intentionally out of scope; workers run one command at
-a time through the configured `google-colab-cli`-compatible adapter.
-
-Colab worker commands reject task input with secret-like values or prohibited
-automation patterns before invoking the adapter. Stored adapter output and
-`cli_arguments` metadata redact secret-like values, Google Drive paths, and
-local absolute paths so review packets and release-gate evidence stay shareable.
-
+another worker backend.
+Use `winsmux workers status`, `winsmux workers start`, `winsmux workers stop`, and `winsmux workers doctor` to inspect and control the six configured worker slots.
 Before handing a worker result to the Codex reviewer slot, use
 `winsmux review-pack <run_id> --json`. The command writes a bounded packet under
 `.winsmux/review-packs` with changed files, test results, critic objections,
@@ -350,14 +303,13 @@ agent-slots:
     worktree-mode: managed
   - slot-id: worker-3
     runtime-role: worker
-    worker-backend: colab_cli
-    execution-profile: isolated-enterprise
+    worker-backend: antigravity
+    execution-profile: local-windows
     worker-role: impl
-    session-name: "{{project_slug}}_w2_impl"
-    gpu-preference: [H100, A100]
-    packages: [torch, transformers, accelerate]
-    bootstrap: workers/colab/bootstrap_impl.py
-    task-script: workers/colab/impl_worker.py
+    agent: antigravity
+    model: provider-default
+    model-source: provider-default
+    prompt-transport: file
     worktree-mode: managed
 ```
 

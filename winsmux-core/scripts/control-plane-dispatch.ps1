@@ -262,7 +262,7 @@ function Invoke-WinsmuxDispatchTaskCommand {
         Start-DeferredPaneFromManifestEntry -ProjectDir $projectDir -ManifestEntry $manifestEntry | Out-Null
     } catch {
         $backend = [string](Get-WinsmuxSubmissionValue -InputObject $manifestEntry -Name 'WorkerBackend' -Default 'local')
-        if ($backend -notin @('local', 'codex', 'api_llm', 'antigravity', 'colab_cli', 'noop')) { $backend = 'noop' }
+        if ($backend -notin @('local', 'codex', 'api_llm', 'antigravity', 'noop')) { $backend = 'noop' }
         $receipt = New-WinsmuxSubmissionReceipt -Kind task -Status unavailable -Backend $backend -SubmissionId $submissionId -ReasonCode 'deferred_start_failed' -Diagnostic $_.Exception.Message -Target ([ordered]@{ label = $selectedLabel; pane_id = $paneId; role = $resolvedRole })
         ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $receipt | Write-Output
         exit 1

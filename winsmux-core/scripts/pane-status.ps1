@@ -310,7 +310,6 @@ function Get-PaneStatusRecords {
             TimeoutPolicy   = $entry.TimeoutPolicy
             HandoffRefs     = @($entry.HandoffRefs)
             SecurityPolicy  = $entry.SecurityPolicy
-            ColabSession    = $entry.ColabSession
         }
     }
 

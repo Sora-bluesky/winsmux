@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-pub const MACHINE_CONTRACT_VERSION: &str = "0.33.0";
+pub const MACHINE_CONTRACT_VERSION: &str = "0.36.28";
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 pub struct MachineContractCatalog<'a> {
@@ -224,22 +224,23 @@ const WORKER_BACKENDS: &[WorkerBackendContract<'static>] = &[
         config_fields: &["worker_backend", "model", "fallback_model", "pane_title"],
     },
     WorkerBackendContract {
-        id: "colab_cli",
-        description: "google-colab-cli worker backend state layer with install detection, session reuse metadata, GPU fallback, and degraded-state reporting",
+        id: "api_llm",
+        description: "hosted OpenAI-compatible API model worker contract with provider metadata, task JSON input, and redacted run artifacts",
         runtime_available: true,
         config_fields: &[
             "worker_backend",
             "worker_role",
-            "session_name",
-            "gpu_preference",
-            "packages",
-            "bootstrap",
-            "task_script",
+            "agent",
+            "model",
+            "model_source",
+            "prompt_transport",
+            "auth_mode",
+            "pane_title",
         ],
     },
     WorkerBackendContract {
-        id: "api_llm",
-        description: "hosted OpenAI-compatible API model worker contract with provider metadata, task JSON input, and redacted run artifacts",
+        id: "antigravity",
+        description: "Antigravity CLI worker contract with explicit model metadata and one-shot task execution",
         runtime_available: true,
         config_fields: &[
             "worker_backend",

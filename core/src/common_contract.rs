@@ -38,7 +38,7 @@ impl CommonContractPackage {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        if self.version != "0.36.27" {
+        if self.version != "0.36.28" {
             return Err(format!(
                 "unsupported common contract version: {}",
                 self.version
@@ -60,6 +60,11 @@ impl CommonContractPackage {
         )?;
 
         self.vocabularies.validate()?;
+        assert_exact_values(
+            "backend capabilities",
+            &self.vocabularies.backend_capabilities.values,
+            &["any", "agent-cli", "antigravity", "api_llm"],
+        )?;
 
         let model_readiness = &self.vocabularies.model_readiness.values;
         let runtime_worker = &self.vocabularies.runtime_worker_readiness.values;

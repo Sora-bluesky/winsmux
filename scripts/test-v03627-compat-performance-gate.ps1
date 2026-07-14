@@ -197,7 +197,7 @@ if ($null -eq $packageJson) {
 $packageScripts = Get-JsonPropertyValue -InputObject $packageJson -Name 'scripts'
 
 $requiredPackageScripts = @(
-    [ordered]@{ name = 'test:common-contract-package'; patterns = @('generate-common-contract-bindings\.mjs --check', 'common-contract-package-check\.mjs'); evidence = 'common contract package drift and previous-version fixture parity' },
+    [ordered]@{ name = 'test:common-contract-package'; patterns = @('generate-common-contract-bindings\.mjs --check', 'common-contract-package-check\.mjs'); evidence = 'common contract package drift and current-contract-migration metadata' },
     [ordered]@{ name = 'test:automation-driver-pool'; patterns = @('automation-driver-pool-check\.mjs'); evidence = 'process registry automation driver pool check' },
     [ordered]@{ name = 'test:bakeoff-runner'; patterns = @('bakeoff-runner-check\.mjs'); evidence = 'benchmark runner latency and command-row contract check' },
     [ordered]@{ name = 'test:v03627-compat-performance-static'; patterns = @('test-v03627-compat-performance-gate\.ps1'); evidence = 'v0.36.27 static release gate aggregator' },
@@ -240,19 +240,21 @@ Add-ContainsAllCheck 'CI keeps full core and desktop backend cargo tests in rele
     'cargo test --manifest-path winsmux-app/src-tauri/Cargo\.toml'
 ) '.github/workflows/test.yml'
 
-Add-ContainsAllCheck 'old CLI fixture package keeps current and previous contract fixtures' $commonContractCheck @(
-    'common-contract-package-v0\.36\.27\.json',
-    'common-contract-package-v0\.36\.26\.json',
-    'previousFixture\.version',
-    'assert\.deepEqual\(\{ \.\.\.previousFixture, version: commonContractPackageVersion \}, commonContractPackage\)'
+Add-ContainsAllCheck 'common contract package keeps current fixture and breaking migration metadata' $commonContractCheck @(
+    'common-contract-package-v0\.36\.28\.json',
+    'common-contract-backend-migration-v0\.36\.28\.json',
+    'backendMigration\.from_versions',
+    'backendMigration\.breaking',
+    'backendMigration\.source_commit'
 ) 'winsmux-app/scripts/common-contract-package-check.mjs'
 
-Add-ContainsAllCheck 'Rust common-contract test rejects previous version without implicit migration' $commonContractRust @(
-    'common-contract-package-v0\.36\.27\.json',
-    'common-contract-package-v0\.36\.26\.json',
-    'common_contract_previous_fixture_only_differs_by_version',
-    'common_contract_rejects_previous_version_without_migration',
-    'unsupported common contract version: 0\.36\.26'
+Add-ContainsAllCheck 'Rust common-contract test validates current-contract-migration boundaries' $commonContractRust @(
+    'common-contract-package-v0\.36\.28\.json',
+    'common-contract-backend-migration-v0\.36\.28\.json',
+    'common_contract_v03628_records_breaking_backend_migration',
+    'common_contract_rejects_older_versions_without_implicit_migration',
+    'common_contract_rejects_an_unexpected_backend_capability',
+    '0\.36\.24.*0\.36\.25.*0\.36\.26.*0\.36\.27'
 ) 'core/tests-rs/common_contract.rs'
 
 Add-ContainsAllCheck 'Rust projection fixtures compare against the PowerShell golden corpus' $fixtureComparison @(
@@ -337,8 +339,8 @@ Add-Check 'gitignore allows the v0.36.27 compat performance Pester wrapper' ($gi
 
 foreach ($path in @(
     'tests/fixtures/rust-parity/common-contract-package.json',
-    'tests/fixtures/rust-parity/common-contract-package-v0.36.27.json',
-    'tests/fixtures/rust-parity/common-contract-package-v0.36.26.json',
+    'tests/fixtures/rust-parity/common-contract-package-v0.36.28.json',
+    'tests/fixtures/rust-parity/common-contract-backend-migration-v0.36.28.json',
     'tasks/cli-bakeoff/v1/benchmark-pack.json'
 )) {
     Add-ExistingFileCheck $path
@@ -361,9 +363,9 @@ $powershell5Validated = (
 $releaseCommandResults = @()
 
 if ($RequireEvidence) {
-    $releaseCommandResults += , (Invoke-ReleaseInputCommand 'old-cli-fixture' 'npm.cmd' @('--prefix', 'winsmux-app', 'run', 'test:common-contract-package') 'npm --prefix winsmux-app run test:common-contract-package')
-    $releaseCommandResults += , (Invoke-ReleaseInputCommand 'old-cli-fixture' 'cargo' @('test', '--manifest-path', 'core/Cargo.toml', '--test', 'common_contract') 'cargo test --manifest-path core/Cargo.toml --test common_contract')
-    $releaseCommandResults += , (Invoke-ReleaseInputCommand 'old-cli-fixture' 'cargo' @('test', '--manifest-path', 'core/Cargo.toml', '--test', 'fixture_comparison') 'cargo test --manifest-path core/Cargo.toml --test fixture_comparison')
+    $releaseCommandResults += , (Invoke-ReleaseInputCommand 'current-contract-migration' 'npm.cmd' @('--prefix', 'winsmux-app', 'run', 'test:common-contract-package') 'npm --prefix winsmux-app run test:common-contract-package')
+    $releaseCommandResults += , (Invoke-ReleaseInputCommand 'current-contract-migration' 'cargo' @('test', '--manifest-path', 'core/Cargo.toml', '--test', 'common_contract') 'cargo test --manifest-path core/Cargo.toml --test common_contract')
+    $releaseCommandResults += , (Invoke-ReleaseInputCommand 'current-contract-migration' 'cargo' @('test', '--manifest-path', 'core/Cargo.toml', '--test', 'fixture_comparison') 'cargo test --manifest-path core/Cargo.toml --test fixture_comparison')
     $releaseCommandResults += , (Invoke-ReleaseInputCommand 'latency' 'npm.cmd' @('--prefix', 'winsmux-app', 'run', 'test:bakeoff-runner') 'npm --prefix winsmux-app run test:bakeoff-runner')
     $releaseCommandResults += , (Invoke-ReleaseInputCommand 'latency' 'npm.cmd' @('--prefix', 'winsmux-app', 'run', 'test:desktop-status-e2e') 'npm --prefix winsmux-app run test:desktop-status-e2e')
     $releaseCommandResults += , (Invoke-ReleaseInputCommand 'process-benchmark' 'npm.cmd' @('--prefix', 'winsmux-app', 'run', 'test:automation-driver-pool') 'npm --prefix winsmux-app run test:automation-driver-pool')
@@ -401,11 +403,11 @@ $latencyEvidencePassed = (
 
 $releaseGateInputs = @(
     [ordered]@{
-        class                 = 'old-cli-fixture'
+        class                 = 'current-contract-migration'
         command               = 'npm --prefix winsmux-app run test:common-contract-package; cargo test --manifest-path core/Cargo.toml --test common_contract; cargo test --manifest-path core/Cargo.toml --test fixture_comparison'
-        evidence              = 'common contract current/previous fixtures and Rust PowerShell golden corpus comparison'
+        evidence              = 'current-contract-migration validation for the current fixture and explicit metadata, plus Rust PowerShell golden corpus comparison'
         required_for_release  = $true
-        validated_in_this_run = (Test-ReleaseCommandClassPassed 'old-cli-fixture')
+        validated_in_this_run = (Test-ReleaseCommandClassPassed 'current-contract-migration')
     },
     [ordered]@{
         class                 = 'powershell-7'

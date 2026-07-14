@@ -2253,10 +2253,6 @@ function getFallbackWorkerStatusRows(): DesktopWorkerStatusRow[] {
       manifest_status: "",
       backend: "local",
       role: "worker",
-      session: "desktop",
-      requested_gpu: "none",
-      actual_gpu: "none",
-      degraded_reason: "",
       last_command: "",
       last_command_at: "",
       approved_launch: null,
@@ -2380,7 +2376,7 @@ function getWorkerPolicyState(row: DesktopWorkerStatusRow) {
 function hasWorkerCredentialRefreshWait(row: DesktopWorkerStatusRow) {
   const token = row.broker?.token;
   const statusText = [
-    row.degraded_reason,
+    row.failure_reason,
     row.heartbeat?.reason,
     row.heartbeat?.message,
     token?.status,
@@ -2432,7 +2428,7 @@ function getWorkerRecoveryAction(row: DesktopWorkerStatusRow) {
   return "monitor";
 }
 
-const WORKER_LAUNCH_PRIORITY_STATES = new Set(["backend_degraded", "deferred_start_failed", "deferred_start", "deferred_starting"]);
+const WORKER_LAUNCH_PRIORITY_STATES = new Set(["deferred_start_failed", "deferred_start", "deferred_starting"]);
 
 function getPriorityWorkerLifecycleState(...values: Array<string | null | undefined>) {
   for (const value of values) {
@@ -2454,23 +2450,16 @@ function getWorkerLaunchState(row: DesktopWorkerStatusRow) {
 
 function getWorkerRemoteState(row: DesktopWorkerStatusRow) {
   const launch = getWorkerStatusLaunch(row);
-  const executionBackend = getLaunchApprovalField(launch, "execution_backend") || (row.execution_backend || "").trim() || row.session || "local";
-  const requestedGpu = (row.requested_gpu || "none").trim();
-  const actualGpu = (row.actual_gpu || requestedGpu || "none").trim();
-  if (requestedGpu && requestedGpu !== "none" && actualGpu !== requestedGpu) {
-    return `${executionBackend} gpu:${actualGpu || "none"}`;
-  }
-  if (actualGpu && actualGpu !== "none") {
-    return `${executionBackend} gpu:${actualGpu}`;
-  }
-  return executionBackend;
+  return getLaunchApprovalField(launch, "execution_backend")
+    || (row.execution_backend || "").trim()
+    || (row.backend || "").trim()
+    || "local";
 }
 
 function isWorkerStatusBlocked(row: DesktopWorkerStatusRow) {
   const heartbeatText = `${getWorkerHeartbeatHealth(row)} ${getWorkerHeartbeatState(row)}`.toLowerCase();
   const stateText = `${heartbeatText} ${row.state} ${row.pane_state} ${row.manifest_status}`.toLowerCase();
-  return Boolean(row.degraded_reason)
-    || (row.approval_differences ?? []).length > 0
+  return (row.approval_differences ?? []).length > 0
     || heartbeatText.includes("blocked")
     || heartbeatText.includes("approval_waiting")
     || heartbeatText.includes("stalled")
@@ -2613,7 +2602,7 @@ function getWorkerStatusPillTitle(row: DesktopWorkerStatusRow, target: string) {
     `policy=${getWorkerPolicyState(row)}`,
     `recovery=${getWorkerRecoveryAction(row)}`,
     `elapsed=${formatWorkerCommandElapsed(row.last_command_at)}`,
-    isWorkerStatusBlocked(row) ? `blocked=${row.degraded_reason || "requires attention"}` : "blocked=no",
+    isWorkerStatusBlocked(row) ? `blocked=${row.failure_reason || "requires attention"}` : "blocked=no",
   ].join(" · ");
 }
 
@@ -3011,13 +3000,13 @@ function buildAgentVaultEntries() {
     if (!target) {
       continue;
     }
-    const runId = row.heartbeat?.run_id || row.workspace?.run_id || row.secret_projection?.run_id || row.policy?.run_id || row.session || target;
+    const runId = row.heartbeat?.run_id || row.workspace?.run_id || row.secret_projection?.run_id || row.policy?.run_id || target;
     const existing = Array.from(entries.values()).some((entry) => entry.runId === runId || entry.paneId === target);
     if (existing) {
       continue;
     }
     const launch = getWorkerStatusLaunch(row);
-    const provider = inferAgentVaultProvider(row.backend, row.role, row.session, getLaunchApprovalField(launch, "agent"));
+    const provider = inferAgentVaultProvider(row.backend, row.role, getWorkerProvider(row), getLaunchApprovalField(launch, "agent"));
     const workspacePath = row.workspace?.workspace || activeProjectDir || desktopSummarySnapshot?.project_dir || "";
     const base: Omit<AgentVaultSessionEntry, "searchText"> = {
       id: `worker:${target}`,
@@ -3031,7 +3020,7 @@ function buildAgentVaultEntries() {
       lastSeen: getAgentVaultLastSeen(row.heartbeat?.heartbeat_at || row.last_command_at, desktopSummarySnapshot?.generated_at),
       state: normalizeAgentVaultText(row.heartbeat_state || row.state || row.pane_state, "worker"),
       reviewState: normalizeAgentVaultText(row.heartbeat_health || row.manifest_status, "n/a"),
-      summary: truncateAgentVaultText(row.degraded_reason || row.heartbeat?.message || row.last_command || row.backend || row.role, 140),
+      summary: truncateAgentVaultText(row.failure_reason || row.heartbeat?.message || row.last_command || row.backend || row.role, 140),
       thisProject: isAgentVaultThisProject(workspacePath, desktopSummarySnapshot?.project_dir),
       source: "worker",
     };
@@ -3087,9 +3076,9 @@ function buildAgentVaultFeedEntries(): AgentVaultFeedEntry[] {
       id: `worker:${target}:${row.state}:${row.heartbeat_state}`,
       tone: isWorkerStatusBlocked(row) ? "danger" : "warning",
       label: target || row.slot || "worker",
-      body: truncateAgentVaultText(row.degraded_reason || row.heartbeat?.reason || row.heartbeat?.message || getWorkerRecoveryAction(row), 110),
+      body: truncateAgentVaultText(row.failure_reason || row.heartbeat?.reason || row.heartbeat?.message || getWorkerRecoveryAction(row), 110),
       paneId: target,
-      runId: row.heartbeat?.run_id || row.workspace?.run_id || row.session,
+      runId: row.heartbeat?.run_id || row.workspace?.run_id,
     });
   }
   return entries.slice(0, 5);

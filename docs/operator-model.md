@@ -145,18 +145,17 @@ eventually be hosted. The current public values are:
 
 - `local`
 - `codex`
-- `colab_cli`
+- `api_llm`
+- `antigravity`
 - `noop`
 
-`local` preserves the existing managed pane behavior. `colab_cli` now records a
-worker state layer for `google-colab-cli` detection, session reuse metadata,
-stale-session marking, GPU fallback, and degraded-state reporting. The
-`winsmux workers` commands report, start, stop, diagnose, run one-shot
-file-backed jobs, read logs, and move artifacts for the six configured worker
-slots. `codex` and `noop` remain contract metadata until their later
-release lanes add execution behavior. A standard initialized project keeps six
-managed worker slots, and `agent-slots` remains the source of truth when
-present.
+`local` preserves the existing managed pane behavior. `api_llm` and
+`antigravity` provide one-shot execution and stored logs through their owned
+provider paths. The `winsmux workers` commands report, start, stop, and diagnose
+the six configured worker slots. `codex` and `noop` remain contract metadata
+until their later release lanes add execution behavior. A standard initialized
+project keeps six managed worker slots, and `agent-slots` remains the source of
+truth when present.
 
 The execution profile is a separate run-policy contract. `local-windows` is the
 default profile and preserves the normal managed-pane behavior. The
@@ -241,7 +240,7 @@ desktop app setup:
 - `winsmux launcher presets [--json]`
 - `winsmux launcher lifecycle [preset|--clear] [--json]`
 - `winsmux workers <status|start|stop|doctor> [slot|all] [--json]`
-- `winsmux workers <exec|logs|upload|download> <slot> ... [--json]`
+- `winsmux workers <exec|logs> <slot> ... [--json]`
 - `winsmux workers heartbeat <mark|check> <slot> [--run-id <id>] ... [--json]`
 - `winsmux workers workspace <prepare|cleanup> <slot> ... [--json]`
 - `winsmux workers secrets project <slot> --run-id <id> ... [--json]`

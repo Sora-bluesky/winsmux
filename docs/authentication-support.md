@@ -30,10 +30,9 @@ Antigravity CLI. Google AI Standard and Enterprise tiers are not treated as
 sunset by this winsmux policy.
 
 Model families such as Gemma, Llama, Mistral, Qwen, DeepSeek, and Kimi are not
-authentication providers by themselves. For Colab workers, authenticate the
-official model source or hosted endpoint inside the Colab-owned or
-adapter-owned flow, and record only non-secret model metadata in winsmux
-evidence.
+authentication providers by themselves. For hosted model workers, authenticate
+through the provider's documented endpoint flow and record only non-secret
+model metadata in winsmux evidence.
 
 ## What the terms mean
 

@@ -137,17 +137,12 @@ jobs:
             result: bridge-worker-heartbeat-start
             timeout_minutes: 12
             paths: tests/winsmux-bridge.Tests.ps1
-            full_name: "*marks and checks local worker heartbeats*;*keeps child run waiting separate*;*marks isolated worker heartbeats*;*includes worker heartbeat health*;*does not let stale worker heartbeat*;*does not let orphan heartbeat artifacts*;*expires self-reported stalled heartbeats*;*returns offline heartbeat status*;*rejects unsupported latest heartbeat profile*;*rejects heartbeat mark profile mismatches*;*honors latest heartbeat check thresholds*;*reports the default six worker slots*;*reports api_llm worker status*;*adds api_llm diagnostics*;*reports antigravity worker status*;*adds antigravity diagnostics*;*fails api_llm diagnostics*;*stops one worker by slot alias*;*blocks start for a degraded Colab worker*;*blocks start for an api_llm worker*;*blocks start for an antigravity worker*;*blocks start when the manifest approval*;*clears stale heartbeat binding*;*keeps a ready deferred worker idempotent*;*attaches a degraded Colab worker*;*prints worker doctor checks*"
+            full_name: "*marks and checks local worker heartbeats*;*keeps child run waiting separate*;*marks isolated worker heartbeats*;*includes worker heartbeat health*;*does not let stale worker heartbeat*;*does not let orphan heartbeat artifacts*;*expires self-reported stalled heartbeats*;*returns offline heartbeat status*;*rejects unsupported latest heartbeat profile*;*rejects heartbeat mark profile mismatches*;*honors latest heartbeat check thresholds*;*reports the default six worker slots*;*reports api_llm worker status*;*adds api_llm diagnostics*;*reports antigravity worker status*;*adds antigravity diagnostics*;*fails api_llm diagnostics*;*stops one worker by slot alias*;*blocks start for an api_llm worker*;*blocks start for an antigravity worker*;*blocks start when the manifest approval*;*clears stale heartbeat binding*;*keeps a ready deferred worker idempotent*;*prints worker doctor checks*"
           - name: bridge-worker-api-agy-exec
             result: bridge-worker-api-agy-exec
             timeout_minutes: 12
             paths: tests/winsmux-bridge.Tests.ps1
-            full_name: "*records blocked api_llm exec artifacts*;*rejects OpenRouter endpoint overrides*;*rejects unsupported and unsafe api_llm runtime metadata*;*marks empty provider completions as malformed*;*redacts provider request ids*;*runs api_llm exec through OpenAI-compatible chat completions*;*accepts task-json as the api_llm exec input contract*;*rejects ambiguous api_llm script*;*rejects secret-like api_llm prompt input*;*records blocked antigravity exec artifacts*;*runs antigravity exec through agy print mode*;*marks antigravity exec with empty stdout*;*accepts task-json as the antigravity exec input contract*;*rejects ambiguous antigravity script*;*rejects secret-like antigravity prompt input*"
-          - name: bridge-worker-colab-transfer
-            result: bridge-worker-colab-transfer
-            timeout_minutes: 12
-            paths: tests/winsmux-bridge.Tests.ps1
-            full_name: "*runs a one-shot Colab worker script*;*passes top-level task-json to the Colab adapter*;*lets the Colab adapter handle authentication*;*rejects prohibited Colab task input*;*classifies JSON-formatted Colab secret task fields*;*rejects WINSMUX_TASK_JSON Colab task input*;*redacts secrets and Drive paths from stored Colab logs*;*uploads only allowed files*;*keeps unstaged file upload locations typed*;*keeps empty stored worker logs local*;*ignores transfer artifacts when selecting the latest stored worker log*;*propagates stored failed run status*;*rejects unsafe run ids*;*rejects reparse points in worker transfer paths*;*excludes build outputs and oversized files*;*rejects directory uploads without an allowlisted directory*;*downloads a remote artifact*;*treats a new explicit download output as a file path*;*rejects explicit download outputs under the winsmux runtime directory*;*returns failing process exit codes when the Colab adapter fails*"
+            full_name: "*records blocked api_llm exec artifacts*;*rejects OpenRouter endpoint overrides*;*rejects unsupported and unsafe api_llm runtime metadata*;*marks empty provider completions as malformed*;*redacts provider request ids*;*runs api_llm exec through OpenAI-compatible chat completions*;*accepts task-json as the api_llm exec input contract*;*rejects ambiguous api_llm script*;*rejects secret-like api_llm prompt input*;*records blocked antigravity exec artifacts*;*runs antigravity exec through agy print mode*;*marks antigravity exec with empty stdout*;*accepts task-json as the antigravity exec input contract*;*rejects ambiguous antigravity script*;*rejects secret-like antigravity prompt input*;*uses the worker input byte limit contract*;*classifies JSON-formatted secret task fields*;*keeps empty stored worker logs local*;*propagates stored failed run status from local logs*;*returns failing process exit codes when the antigravity adapter fails*"
           - name: bridge-command-queue-reporting
             result: bridge-command-queue-reporting
             timeout_minutes: 12
@@ -176,7 +171,7 @@ jobs:
           - name: worker-benchmark
             result: worker-benchmark
             timeout_minutes: 20
-            paths: tests/CliBakeoff.Tests.ps1;tests/HarnessContract.Tests.ps1;tests/ColabAcceptance.Tests.ps1;tests/ColabWorkerTemplates.Tests.ps1;tests/Runtime.VaultInject.Tests.ps1
+            paths: tests/CliBakeoff.Tests.ps1;tests/HarnessContract.Tests.ps1;tests/Runtime.VaultInject.Tests.ps1
             full_name: ""
           - name: release-public
             result: release-public
@@ -274,6 +269,15 @@ jobs:
             throw "No Pester test files matched for category '${{ matrix.name }}'."
           }
           $fullNameFilters = @('${{ matrix.full_name }}' -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+          $requiredFullNameFiltersByCategory = @{
+            'bridge-worker-api-agy-exec' = @(
+              '*uses the worker input byte limit contract*'
+              '*classifies JSON-formatted secret task fields*'
+              '*keeps empty stored worker logs local*'
+              '*propagates stored failed run status from local logs*'
+              '*returns failing process exit codes when the antigravity adapter fails*'
+            )
+          }
 
           function Convert-PesterFullNameFilterToContentRegex {
             param([Parameter(Mandatory = $true)][string]$Filter)
@@ -289,6 +293,19 @@ jobs:
             }
 
             return [Regex]::Escape($literal).Replace('\*', '.*')
+          }
+
+          function Assert-PesterCategoryRequiredFilters {
+            param(
+              [Parameter(Mandatory = $true)][string]$Category,
+              [Parameter(Mandatory = $true)][string[]]$Filters,
+              [Parameter(Mandatory = $true)][string[]]$RequiredFilters
+            )
+
+            $missing = @($RequiredFilters | Where-Object { $Filters -cnotcontains $_ })
+            if ($missing.Count -gt 0) {
+              throw "Pester category '$Category' is missing required FullName filters: $($missing -join '; ')"
+            }
           }
 
           function Assert-PesterCategoryFilterCoverage {
@@ -322,8 +339,12 @@ jobs:
             }
           }
 
+          $categoryName = '${{ matrix.name }}'
+          if ($requiredFullNameFiltersByCategory.ContainsKey($categoryName)) {
+            Assert-PesterCategoryRequiredFilters -Category $categoryName -Filters $fullNameFilters -RequiredFilters @($requiredFullNameFiltersByCategory[$categoryName])
+          }
           if ($fullNameFilters.Count -gt 0) {
-            Assert-PesterCategoryFilterCoverage -Category '${{ matrix.name }}' -Paths $resolvedPaths -Filters $fullNameFilters
+            Assert-PesterCategoryFilterCoverage -Category $categoryName -Paths $resolvedPaths -Filters $fullNameFilters
           }
 
           Write-Host "::group::Pester category ${{ matrix.name }} targets"

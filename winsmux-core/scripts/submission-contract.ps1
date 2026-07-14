@@ -3,7 +3,7 @@ $ErrorActionPreference = 'Stop'
 $script:WinsmuxSubmissionProtocolVersion = 1
 $script:WinsmuxSubmissionStatuses = @('accepted', 'rejected', 'unsupported', 'unavailable')
 $script:WinsmuxSubmissionKinds = @('task', 'review')
-$script:WinsmuxSubmissionBackends = @('local', 'codex', 'api_llm', 'antigravity', 'colab_cli', 'noop')
+$script:WinsmuxSubmissionBackends = @('local', 'codex', 'api_llm', 'antigravity', 'noop')
 $script:WinsmuxSubmissionEvidenceTypes = @('backend_run_record')
 $script:WinsmuxSubmissionRunStatuses = @('started', 'running', 'succeeded')
 $script:WinsmuxSubmissionBridgeScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\scripts\winsmux-core.ps1'))
@@ -279,7 +279,7 @@ function New-WinsmuxSubmissionRunRecord {
         [Parameter(Mandatory = $true)][ValidateSet('task', 'review')][string]$Kind,
         [Parameter(Mandatory = $true)][string]$TaskTitle,
         [Parameter(Mandatory = $true)][string]$SlotId,
-        [Parameter(Mandatory = $true)][ValidateSet('local', 'codex', 'api_llm', 'antigravity', 'colab_cli')][string]$Backend,
+        [Parameter(Mandatory = $true)][ValidateSet('local', 'codex', 'api_llm', 'antigravity')][string]$Backend,
         [Parameter(Mandatory = $true)][ValidateSet('started', 'running', 'succeeded', 'failed')][string]$Status,
         [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{64}$')][string]$RequestDigest,
         [switch]$RequestConsumed,
@@ -603,13 +603,7 @@ function Invoke-WinsmuxSubmissionCliRun {
         [Parameter(Mandatory = $true)][ValidateSet('task', 'review')][string]$Kind
     )
 
-    $workerArguments = @('workers', 'exec', $SlotId)
-    if ([string]::Equals($Backend, 'colab_cli', [System.StringComparison]::OrdinalIgnoreCase)) {
-        $workerScript = if ($Kind -eq 'review') { 'workers/colab/critic_worker.py' } else { 'workers/colab/impl_worker.py' }
-        $workerArguments += @('--script', $workerScript, '--task-json', $PacketPath)
-    } else {
-        $workerArguments += @('--task-json', $PacketPath)
-    }
+    $workerArguments = @('workers', 'exec', $SlotId, '--task-json', $PacketPath)
     $workerArguments += @('--task-id', $TaskId, '--run-id', $SubmissionId, '--json', '--project-dir', $ProjectDir)
     $output = & pwsh -NoProfile -File $script:WinsmuxSubmissionBridgeScript @workerArguments 2>&1
     $exitCode = $LASTEXITCODE

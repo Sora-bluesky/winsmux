@@ -1,5 +1,5 @@
 {
-  "version": "0.36.24",
+  "version": "0.36.28",
   "surfaces": [
     "provider",
     "readiness",
@@ -48,8 +48,7 @@
         "any",
         "agent-cli",
         "antigravity",
-        "api_llm",
-        "colab_cli"
+        "api_llm"
       ],
       "note": "Capability categories, not concrete worker_backend values."
     },

@@ -215,7 +215,6 @@ Longest jobs:
 | `Core Build and Test` | 379 |
 | `Pester Tests (bridge-worker-policy)` | 233 |
 | `Pester Tests (bridge-worker-heartbeat-start)` | 226 |
-| `Pester Tests (bridge-worker-colab-transfer)` | 204 |
 | `Pester Tests (bridge-worker-broker-token)` | 167 |
 | `Pester Tests (worker-benchmark)` | 166 |
 | `Pester Tests (bridge-provider-commands)` | 155 |
@@ -223,6 +222,11 @@ Longest jobs:
 | `Pester Tests (bridge-worker-secrets-status)` | 115 |
 | `Pester Tests (bridge-worker-api-agy-exec)` | 111 |
 | `Pester Tests (integration)` | 110 |
+
+The source run contains one additional 204-second Pester job whose original
+label names a retired worker surface. It is intentionally omitted from the
+exact-label table above; the 21-job count and 2,135-second sum remain the
+recorded source-run values.
 
 Interpretation for release load: total workflow time is bounded by the desktop
 job, while most test breadth lives in the Pester matrix. Optimizing only the

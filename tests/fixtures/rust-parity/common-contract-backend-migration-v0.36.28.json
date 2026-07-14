@@ -1,0 +1,15 @@
+{
+  "migration_id": "common-contract-backend-migration-v0.36.28",
+  "from_versions": [
+    "0.36.24",
+    "0.36.25",
+    "0.36.26",
+    "0.36.27"
+  ],
+  "prior_backend_count": 5,
+  "to_version": "0.36.28",
+  "current_backend_count": 4,
+  "removed_count": 1,
+  "breaking": true,
+  "source_commit": "59f7ade8"
+}

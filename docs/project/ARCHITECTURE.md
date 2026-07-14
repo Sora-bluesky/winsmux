@@ -116,7 +116,7 @@ flowchart LR
     subgraph Workers["Managed execution"]
         Slots["agent slots"]
         Heartbeat["worker heartbeat"]
-        Backends["local / codex / colab_cli / noop"]
+        Backends["local / codex / api_llm / antigravity / noop"]
     end
 
     Main --> Client

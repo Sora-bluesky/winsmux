@@ -158,11 +158,11 @@ winsmux はベンダーごとに固定された役割ではなく、スロット
 - `local`: 現在のローカル管理ペイン
 - `codex`: Codex レビュー用、またはワーカー用のメタデータ
 - `api_llm`: OpenAI 互換の外部APIモデルワーカー用メタデータと実行証跡
-- `colab_cli`: `google-colab-cli` ワーカー用の状態メタデータ
+- `antigravity`: Antigravity CLI の一回実行ワーカー用メタデータと実行証跡
 - `noop`: 無効化または仮置きのワーカー用メタデータ
 
-`api_llm` スロットは、外部APIモデル実行をローカルワーカーや Colab ワーカーと
-分けて扱います。たとえば provider に `openrouter`、model に `z-ai/glm-5.2`、
+`api_llm` スロットは、外部APIモデル実行をローカルワーカーと分けて扱います。
+たとえば provider に `openrouter`、model に `z-ai/glm-5.2`、
 `prompt-transport: file`、`auth-mode: api-key-env` を指定できます。
 OpenRouter を環境変数で使う場合の既定名は `OPENROUTER_API_KEY` です。
 公開リポジトリの標準手順では provider 側の自然な名前を使います。Windows の
@@ -201,56 +201,8 @@ winsmux workers logs w1 --run-id api-demo-1 --json
 
 API key の環境変数がない場合や、エンドポイント設定が不正な場合、`workers exec`
 は通信前に `api_llm_api_key_env_missing` などの診断理由付きで停止します。
-`local_llm`、`colab_llm`、`colab_cli` へ黙って切り替えません。
-
-`v0.32.4` 以降では、Colab バックエンドの状態を
-`.winsmux/state/colab_sessions.json` に保存します。`google-colab-cli` の
-不在、認証を確認できない状態、`H100` / `A100` GPU を使えない状態のいずれかが発生した場合は、
-ワーカーを `degraded` 状態として記録します。セッション名が変わった既存記録は
-`stale` として残します。Colab のモデル作業では、ローカル CPU やローカル LLM
-ランタイムへ黙って切り替えません。
-
-`winsmux workers status`、`winsmux workers attach`、`winsmux workers start`、
-`winsmux workers stop`、`winsmux workers doctor` で、6 つの設定済みワーカースロットを
-確認、デスクトップ表示へ準備、起動、停止、診断できます。
-
-Colab 対応スロットでは、ファイルを指定した単発実行と成果物の受け渡しも使えます。
-
-```powershell
-winsmux workers exec w2 --script workers/colab/impl_worker.py --run-id demo-1 -- --task-json-inline '{"task_id":"demo-1","title":"この変更を実装する"}' --worker-id worker-2 --run-id demo-1
-winsmux workers logs w2 --run-id <run_id>
-winsmux workers upload w2 data/input.json --remote /content/input.json
-winsmux workers upload w2 data --remote /content/data --allow-dir data
-winsmux workers download w2 /content/output.json --output artifacts/worker-output
-```
-
-`workers/colab/` には次の追跡済みテンプレートがあります。
-
-- `impl_worker.py`
-- `critic_worker.py`
-- `scout_worker.py`
-- `test_worker.py`
-- `heavy_judge_worker.py`
-
-各テンプレートは `--task-json`、`--task-json-inline`、または
-`WINSMUX_TASK_JSON` からタスク JSON を受け取ります。既定では
-`/content/winsmux_artifacts/<worker_id>/<run_id>/` にロール別の成果物を書き込み、
-構造化 JSON を出力します。リモート成果物と winsmux 側の実行メタデータを揃えるため、
-スクリプト引数の区切りの後にも同じ `--run-id` を渡してください。入力が不正な場合は
-非ゼロで終了し、`status: failed` と `errors` 配列を返します。
-
-ディレクトリをアップロードする場合は `--allow-dir` が必要です。アップロード用の
-manifest では、`.git`、秘密情報らしいファイル、`node_modules`、仮想環境、
-ビルド成果物、coverage、サイズが大きすぎるファイルを既定で除外します。
-`colab repl` や `colab console` のような自動対話ループは対象外です。設定された
-`google-colab-cli` 互換 adapter に対して、1 回ずつコマンドを実行します。
-
-Colab ワーカーコマンドは、秘密情報らしい値や禁止された自動化パターンを含む
-タスク入力を、アダプター呼び出し前に拒否します。保存するアダプター出力と
-`cli_arguments` メタデータでは、秘密情報らしい値、Google Drive パス、
-ローカル絶対パスを伏せ字にします。これにより、レビューパックとリリースゲートの
-証跡を共有しやすくします。
-
+別のワーカーバックエンドへ黙って切り替えません。
+`winsmux workers status`、`winsmux workers start`、`winsmux workers stop`、`winsmux workers doctor`で、6つの設定済みワーカースロットを確認、起動、停止、診断できます。
 ワーカーの結果を Codex レビュースロットへ渡す前に、
 `winsmux review-pack <run_id> --json` を使います。このコマンドは
 `.winsmux/review-packs` に、変更ファイル、テスト結果、レビュー上の懸念、
@@ -289,14 +241,13 @@ agent-slots:
     worktree-mode: managed
   - slot-id: worker-3
     runtime-role: worker
-    worker-backend: colab_cli
-    execution-profile: isolated-enterprise
+    worker-backend: antigravity
+    execution-profile: local-windows
     worker-role: impl
-    session-name: "{{project_slug}}_w2_impl"
-    gpu-preference: [H100, A100]
-    packages: [torch, transformers, accelerate]
-    bootstrap: workers/colab/bootstrap_impl.py
-    task-script: workers/colab/impl_worker.py
+    agent: antigravity
+    model: provider-default
+    model-source: provider-default
+    prompt-transport: file
     worktree-mode: managed
 ```
 
