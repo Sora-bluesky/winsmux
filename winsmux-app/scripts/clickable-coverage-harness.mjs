@@ -10,6 +10,7 @@ const OUTPUT_DIR = path.join(process.cwd(), "output", "playwright", "clickable-c
 const HARNESS_QUERY = "?viewport-harness=1";
 const PROJECT_DIR = path.resolve(process.cwd(), "..").replace(/\\/g, "/");
 const CHROMIUM_EXECUTABLE_PATH = (process.env.WINSMUX_PLAYWRIGHT_CHROMIUM_EXECUTABLE || "").trim();
+const PANE_MODEL_ONLY = process.argv.includes("--pane-model-only");
 const DEFAULT_RUNTIME_ROLE_PREFERENCES = [
   {
     roleId: "operator",
@@ -751,6 +752,36 @@ async function testPaneModelSettings(page) {
       && effort.value === "provider-default"
       && !document.querySelector(".runtime-effort-control-claude");
   });
+
+  const codexModel = page.locator("#runtime-worker-default-model");
+  await codexModel.fill("GPT-5.6 Terra");
+  await codexModel.dispatchEvent("change");
+  recordClick("settings pane model shared GPT-5.6 Terra");
+  await page.waitForFunction(() => {
+    const model = document.querySelector("#runtime-worker-default-model");
+    const effort = document.querySelector("#runtime-worker-default-effort");
+    return model instanceof HTMLInputElement
+      && model.value === "GPT-5.6 Terra"
+      && effort instanceof HTMLSelectElement
+      && Array.from(effort.options, (option) => option.value).join(",") === "low,medium,high,max,xhigh"
+      && effort.value === "medium";
+  });
+  await page.locator("#runtime-worker-default-effort").selectOption("max");
+  recordClick("settings pane model shared GPT-5.6 Terra max effort");
+  await page.waitForFunction(() => {
+    const effort = document.querySelector("#runtime-worker-default-effort");
+    return effort instanceof HTMLSelectElement && effort.value === "max";
+  });
+
+  await codexModel.fill("GPT-5.5");
+  await codexModel.dispatchEvent("change");
+  recordClick("settings pane model shared GPT-5.5 scope check");
+  await page.waitForFunction(() => {
+    const effort = document.querySelector("#runtime-worker-default-effort");
+    return effort instanceof HTMLSelectElement
+      && Array.from(effort.options, (option) => option.value).join(",") === "low,medium,high,xhigh"
+      && effort.value === "medium";
+  });
 }
 
 async function testSettings(page) {
@@ -942,7 +973,8 @@ async function run() {
   try {
     await waitForPreviewServer(previewUrl);
     browser = await chromium.launch(chromiumLaunchOptions());
-    for (const viewport of VIEWPORTS) {
+    const activeViewports = PANE_MODEL_ONLY ? [VIEWPORTS[0]] : VIEWPORTS;
+    for (const viewport of activeViewports) {
       currentViewportName = viewport.name;
       process.stdout.write(`[clickable] viewport ${viewport.name} ${viewport.width}x${viewport.height}\n`);
       const page = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
@@ -950,20 +982,28 @@ async function run() {
       await installBrowserStubs(page);
       await page.goto(`${previewUrl}${HARNESS_QUERY}`, { waitUntil: "networkidle" });
       await waitForAppReady(page);
-      await runStep(`${viewport.name}: initial default chrome`, () => testInitialDefaultChrome(page));
-      await recordVisibleInteractives(page, "initial");
+      if (PANE_MODEL_ONLY) {
+        await runStep(`${viewport.name}: GPT-5.6 max pane model settings`, async () => {
+          await clickSelector(page, "#activity-settings-btn", "settings open for focused pane model test");
+          await page.locator("#settings-sheet").waitFor({ state: "visible" });
+          await testPaneModelSettings(page);
+        });
+      } else {
+        await runStep(`${viewport.name}: initial default chrome`, () => testInitialDefaultChrome(page));
+        await recordVisibleInteractives(page, "initial");
 
-      await runStep(`${viewport.name}: view menu stateful toggles`, () => testViewMenuStateful(page));
-      await runStep(`${viewport.name}: top menus`, () => testTopMenus(page));
-      await recordVisibleInteractives(page, "after-top-menus");
-      await runStep(`${viewport.name}: navigation and footer`, () => testNavigationAndFooter(page));
-      await runStep(`${viewport.name}: command bar`, () => testCommandBar(page));
-      await runStep(`${viewport.name}: settings`, () => testSettings(page));
-      await runStep(`${viewport.name}: source, evidence, explorer`, () => testSourceAndExplorer(page));
-      await runStep(`${viewport.name}: editor and browser`, () => testEditorAndBrowser(page, previewUrl));
-      await runStep(`${viewport.name}: workbench`, () => testWorkbench(page));
-      await runStep(`${viewport.name}: composer`, () => testComposer(page));
-      await recordVisibleInteractives(page, "final");
+        await runStep(`${viewport.name}: view menu stateful toggles`, () => testViewMenuStateful(page));
+        await runStep(`${viewport.name}: top menus`, () => testTopMenus(page));
+        await recordVisibleInteractives(page, "after-top-menus");
+        await runStep(`${viewport.name}: navigation and footer`, () => testNavigationAndFooter(page));
+        await runStep(`${viewport.name}: command bar`, () => testCommandBar(page));
+        await runStep(`${viewport.name}: settings`, () => testSettings(page));
+        await runStep(`${viewport.name}: source, evidence, explorer`, () => testSourceAndExplorer(page));
+        await runStep(`${viewport.name}: editor and browser`, () => testEditorAndBrowser(page, previewUrl));
+        await runStep(`${viewport.name}: workbench`, () => testWorkbench(page));
+        await runStep(`${viewport.name}: composer`, () => testComposer(page));
+        await recordVisibleInteractives(page, "final");
+      }
       await page.close().catch(() => {});
     }
 
@@ -974,7 +1014,7 @@ async function run() {
           ok: true,
           generatedAt: new Date().toISOString(),
           previewUrl,
-          viewports: VIEWPORTS,
+          viewports: activeViewports,
           clicked,
           skipped,
           observed,
@@ -1003,7 +1043,7 @@ async function run() {
           ok: false,
           generatedAt: new Date().toISOString(),
           previewUrl,
-          viewports: VIEWPORTS,
+          viewports: PANE_MODEL_ONLY ? [VIEWPORTS[0]] : VIEWPORTS,
           error: error instanceof Error ? error.message : String(error),
           clicked,
           skipped,

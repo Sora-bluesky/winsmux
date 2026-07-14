@@ -9757,12 +9757,17 @@ function normalizeRuntimeRolePreference(value: Partial<RuntimeRolePreference>, f
   const modelSource = runtimeModelSourceOptions.find((item) => item.value === value.modelSource)?.value ?? fallback.modelSource;
   const reasoningEffort = runtimeReasoningOptions.find((item) => item.value === value.reasoningEffort)?.value ?? fallback.reasoningEffort;
   const model = typeof value.model === "string" && value.model.trim() ? value.model.trim() : fallback.model;
-  return {
+  const preference: RuntimeRolePreference = {
     roleId: fallback.roleId,
     provider,
     model,
     modelSource,
     reasoningEffort,
+  };
+  const { entry } = getRuntimePreferenceSelectedEntry(preference);
+  return {
+    ...preference,
+    reasoningEffort: normalizeRuntimeReasoningForEntry(provider, entry, reasoningEffort),
   };
 }
 
@@ -11158,6 +11163,13 @@ function createRuntimeCustomModelEntry(provider: RuntimeProviderId, model: strin
   });
 }
 
+function createRuntimeCurrentModelEntry(provider: RuntimeProviderId, model: string, modelSource: string) {
+  const entry = createRuntimeCustomModelEntry(provider, model);
+  const normalizedSource = modelSource.trim().toLowerCase();
+  const preservedSource = runtimeModelSourceOptions.find((option) => option.value === normalizedSource)?.value;
+  return preservedSource ? { ...entry, modelSource: preservedSource } : entry;
+}
+
 function getRuntimePaneModelEntries(provider: RuntimeProviderId): RuntimeModelCatalogEntry[] {
   const entries = new Map<string, RuntimeModelCatalogEntry>();
   entries.set("provider-default", getRuntimeProviderDefaultEntry(provider));
@@ -11474,7 +11486,7 @@ function getRuntimeReasoningOrderForProvider(provider: RuntimeProviderId) {
   const orderByProvider: Partial<Record<RuntimeProviderId, RuntimeReasoningEffort[]>> = {
     claude: ["provider-default", "low", "medium", "high", "max", "xhigh"],
     "grok-build": ["provider-default"],
-    codex: ["provider-default", "low", "medium", "high", "xhigh"],
+    codex: ["provider-default", "low", "medium", "high", "max", "xhigh"],
     openrouter: ["provider-default"],
     antigravity: ["provider-default"],
   };
@@ -11666,12 +11678,19 @@ function getRuntimeWorkerDefaultPreference() {
     ?? defaultRuntimeRolePreferences().find((item) => item.roleId === "worker")!;
 }
 
+function runtimeModelSelectionProjectsModel(model: string, modelSource: string) {
+  return model.trim().toLowerCase() !== "provider-default"
+    && modelSource.trim().toLowerCase() !== "provider-default";
+}
+
 function getRuntimePreferenceSelectedEntry(preference: RuntimeRolePreference) {
   const entries = getRuntimePaneModelEntries(preference.provider);
-  const directMatch = entries.find((entry) => {
-    const current = preference.model.trim().toLowerCase();
-    return entry.id.toLowerCase() === current || entry.model.toLowerCase() === current;
-  });
+  const directMatch = runtimeModelSelectionProjectsModel(preference.model, preference.modelSource)
+    ? entries.find((entry) => {
+        const current = preference.model.trim().toLowerCase();
+        return entry.id.toLowerCase() === current || entry.model.toLowerCase() === current;
+      })
+    : undefined;
   if (directMatch) {
     return { entry: directMatch, entries };
   }
@@ -11679,7 +11698,7 @@ function getRuntimePreferenceSelectedEntry(preference: RuntimeRolePreference) {
   if (!preference.model || preference.model === "provider-default") {
     return { entry: providerDefault, entries };
   }
-  const customEntry = createRuntimeCustomModelEntry(preference.provider, preference.model);
+  const customEntry = createRuntimeCurrentModelEntry(preference.provider, preference.model, preference.modelSource);
   return { entry: customEntry, entries: [customEntry, ...entries] };
 }
 
@@ -12090,20 +12109,27 @@ function renderWorkerModelAssignmentPanel(japanese: boolean) {
     const renderModelOptions = (requestedModel?: string) => {
       const provider = normalizeRuntimeProviderId(providerSelect.value) ?? inferredProvider;
       currentEntries = getRuntimePaneModelEntries(provider);
-      let selectedEntry = currentEntries.find((entry) => {
-        const requestedValue = requestedModel?.trim().toLowerCase() ?? "";
-        return requestedValue
-          && (entry.model.toLowerCase() === requestedValue || entry.id.toLowerCase() === requestedValue);
-      }) ?? null;
-      if (!selectedEntry && currentCatalogEntry && currentCatalogEntry.agent === provider) {
+      const projectsCurrentModel = runtimeModelSelectionProjectsModel(getWorkerModel(row), getWorkerModelSource(row));
+      let selectedEntry = projectsCurrentModel
+        ? currentEntries.find((entry) => {
+            const requestedValue = requestedModel?.trim().toLowerCase() ?? "";
+            return requestedValue
+              && (entry.model.toLowerCase() === requestedValue || entry.id.toLowerCase() === requestedValue);
+          }) ?? null
+        : null;
+      if (projectsCurrentModel && !selectedEntry && currentCatalogEntry && currentCatalogEntry.agent === provider) {
         selectedEntry = currentEntries.find((entry) => entry.id === currentCatalogEntry.id || entry.model === currentCatalogEntry.model) ?? null;
       }
-      if (!selectedEntry && normalizeRuntimeProviderId(getWorkerProvider(row)) === provider && getWorkerModel(row)) {
+      if (projectsCurrentModel && !selectedEntry && normalizeRuntimeProviderId(getWorkerProvider(row)) === provider && getWorkerModel(row)) {
         const currentModel = getWorkerModel(row).toLowerCase();
         selectedEntry = currentEntries.find((entry) => entry.model.toLowerCase() === currentModel || entry.id.toLowerCase() === currentModel) ?? null;
       }
       if (!selectedEntry && requestedModel && requestedModel !== "provider-default") {
-        selectedEntry = createRuntimeCustomModelEntry(provider, requestedModel);
+        const representsCurrentModel = normalizeRuntimeProviderId(getWorkerProvider(row)) === provider
+          && getWorkerModel(row).trim().toLowerCase() === requestedModel.trim().toLowerCase();
+        selectedEntry = representsCurrentModel
+          ? createRuntimeCurrentModelEntry(provider, requestedModel, getWorkerModelSource(row))
+          : createRuntimeCustomModelEntry(provider, requestedModel);
         currentEntries = [selectedEntry, ...currentEntries];
       }
       if (!selectedEntry) {
@@ -17143,11 +17169,10 @@ async function applySettingsDraft() {
     applyThemeState(settingsDraftState);
     persistThemeState();
   }
-  if (runtimeRoleDraftState) {
-    runtimeRolePreferences = cloneRuntimeRolePreferences(runtimeRoleDraftState);
-    persistRuntimeRolePreferences();
+  if (runtimeRoleDraftState && !runtimeRolePreferencesEqual(runtimeRoleDraftState, runtimeRolePreferences)) {
+    const nextRuntimeRolePreferences = cloneRuntimeRolePreferences(runtimeRoleDraftState);
     try {
-      await applyRuntimeRolePreferencesToDesktop(runtimeRolePreferences);
+      await applyRuntimeRolePreferencesToDesktop(nextRuntimeRolePreferences);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       appendRuntimeConversation({
@@ -17155,12 +17180,16 @@ async function applySettingsDraft() {
         category: "attention",
         timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
         actor: "winsmux",
-        title: getLanguageText("Runtime settings were saved locally", "実行環境設定はローカルに保存しました"),
+        title: getLanguageText("Runtime settings were not saved", "実行環境設定は保存されませんでした"),
         body: message,
         tone: "warning",
       });
       console.warn("Failed to apply runtime role preferences to desktop runtime", error);
+      renderConversation(getConversationItems());
+      return;
     }
+    runtimeRolePreferences = nextRuntimeRolePreferences;
+    persistRuntimeRolePreferences();
   }
   if (runtimeModelAssignmentModeDraft) {
     runtimeModelAssignmentMode = runtimeModelAssignmentModeDraft;

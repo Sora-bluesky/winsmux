@@ -1361,8 +1361,12 @@ fn operator_cli_provider_capabilities_json_reads_registry() {
       "adapter": "codex",
       "command": "codex",
       "model_options": [
-        {"id": "provider-default", "label": "Provider default", "source": "provider-default"},
-        {"id": "gpt-5.3-codex-spark", "label": "GPT-5.3-Codex-Spark", "source": "cli-discovery", "availability": "local-account"}
+        {"id": "provider-default", "label": "Provider default", "source": "provider-default", "reasoning_efforts": ["provider-default"]},
+        {"id": "gpt-5.3-codex-spark", "label": "GPT-5.3-Codex-Spark", "source": "cli-discovery", "availability": "local-account", "reasoning_efforts": ["low", "medium", "high", "xhigh"]},
+        {"id": "gpt-5.4", "label": "GPT-5.4", "source": "cli-discovery", "reasoning_efforts": ["low", "medium", "high", "xhigh"]},
+        {"id": "gpt-5.6-sol", "label": "GPT-5.6 Sol", "source": "cli-discovery", "reasoning_efforts": ["low", "medium", "high", "max", "xhigh"]},
+        {"id": "gpt-5.6-terra", "label": "GPT-5.6 Terra", "source": "cli-discovery", "reasoning_efforts": ["low", "medium", "high", "max", "xhigh"]},
+        {"id": "gpt-5.6-luna", "label": "GPT-5.6 Luna", "source": "cli-discovery", "reasoning_efforts": ["low", "medium", "high", "max", "xhigh"]}
       ],
       "model_sources": ["provider-default", "cli-discovery"],
       "reasoning_efforts": ["provider-default", "low", "medium", "high", "xhigh"],
@@ -1426,6 +1430,10 @@ fn operator_cli_provider_capabilities_json_reads_registry() {
     assert_eq!(
         registry["providers"]["codex"]["model_options"][1]["source"],
         "cli-discovery"
+    );
+    assert_eq!(
+        registry["providers"]["codex"]["model_options"][4]["reasoning_efforts"][3],
+        "max"
     );
     assert_eq!(
         registry["providers"]["codex"]["reasoning_efforts"][4],
@@ -2793,6 +2801,593 @@ fn operator_cli_provider_switch_rejects_capability_selector_mismatch_before_writ
 }
 
 #[test]
+fn operator_cli_provider_switch_validates_reasoning_effort_against_specific_model() {
+    let project_dir = make_temp_project_dir("provider-switch-model-effort");
+    write_provider_switch_fixture(&project_dir);
+    let capability_path = project_dir
+        .join(".winsmux")
+        .join("provider-capabilities.json");
+    let mut capabilities = read_json_file(&capability_path);
+    capabilities["providers"]["codex"]["model_sources"] =
+        serde_json::json!(["provider-default", "cli-discovery", "operator-override"]);
+    capabilities["providers"]["codex"]["reasoning_efforts"] =
+        serde_json::json!(["provider-default", "low", "medium", "high", "max", "xhigh"]);
+    capabilities["providers"]["codex"]["model_options"]
+        .as_array_mut()
+        .expect("Codex model options should be an array")
+        .push(serde_json::json!({
+            "id": "custom-operator-model",
+            "label": "Custom operator model",
+            "source": "operator-override",
+            "reasoning_efforts": ["max"]
+        }));
+    fs::write(
+        &capability_path,
+        serde_json::to_vec_pretty(&capabilities).expect("capabilities should serialize"),
+    )
+    .expect("test should update provider capabilities");
+
+    let run_switch = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_winsmux"))
+            .args(args)
+            .current_dir(&project_dir)
+            .output()
+            .expect("winsmux command should run")
+    };
+
+    let provider_default = run_switch(&[
+        "provider-switch",
+        "worker-1",
+        "--model",
+        "provider-default",
+        "--model-source",
+        "provider-default",
+        "--reasoning-effort",
+        "max",
+        "--json",
+    ]);
+    assert!(!provider_default.status.success());
+    assert!(
+        String::from_utf8_lossy(&provider_default.stderr)
+            .contains("model 'provider-default' does not support reasoning_effort 'max'"),
+        "provider-default model must reject max"
+    );
+
+    let custom_override = run_switch(&[
+        "provider-switch",
+        "worker-1",
+        "--model",
+        "custom-operator-model",
+        "--model-source",
+        "operator-override",
+        "--reasoning-effort",
+        "max",
+        "--json",
+    ]);
+    assert!(!custom_override.status.success());
+    assert!(
+        String::from_utf8_lossy(&custom_override.stderr)
+            .contains("model 'custom-operator-model' does not support reasoning_effort 'max'"),
+        "custom operator override model must reject max"
+    );
+
+    let provider_default_xhigh = run_switch(&[
+        "provider-switch",
+        "worker-1",
+        "--agent",
+        "codex",
+        "--model",
+        "provider-default",
+        "--model-source",
+        "provider-default",
+        "--reasoning-effort",
+        "xhigh",
+        "--prompt-transport",
+        "argv",
+        "--json",
+    ]);
+    assert!(
+        provider_default_xhigh.status.success(),
+        "provider-default Codex model must inherit provider-level xhigh: {}",
+        String::from_utf8_lossy(&provider_default_xhigh.stderr)
+    );
+
+    let unprojected_custom_high = run_switch(&[
+        "provider-switch",
+        "worker-1",
+        "--agent",
+        "codex",
+        "--model",
+        "custom-operator-model",
+        "--model-source",
+        "provider-default",
+        "--reasoning-effort",
+        "high",
+        "--prompt-transport",
+        "argv",
+        "--json",
+    ]);
+    assert!(
+        unprojected_custom_high.status.success(),
+        "a provider-default model source must inherit provider-level efforts: {}",
+        String::from_utf8_lossy(&unprojected_custom_high.stderr)
+    );
+
+    let claude_provider_default_max = run_switch(&[
+        "provider-switch",
+        "worker-1",
+        "--agent",
+        "claude",
+        "--model",
+        "provider-default",
+        "--model-source",
+        "provider-default",
+        "--reasoning-effort",
+        "max",
+        "--prompt-transport",
+        "file",
+        "--json",
+    ]);
+    assert!(
+        claude_provider_default_max.status.success(),
+        "provider-default Claude model must inherit provider-level max: {}",
+        String::from_utf8_lossy(&claude_provider_default_max.stderr)
+    );
+
+    let registry_path = project_dir.join(".winsmux").join("provider-registry.json");
+    fs::write(
+        &registry_path,
+        r#"{"version":1,"slots":{"worker-1":{"model":"gpt-5.4","model_source":"cli-discovery","reasoning_effort":"max"}}}"#,
+    )
+    .expect("test should write stale provider registry");
+    fs::write(
+        project_dir.join(".winsmux").join("manifest.yaml"),
+        format!(
+            r#"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: {}
+panes:
+  worker-1:
+    pane_id: "%2"
+    role: Worker
+    launch_dir: {}
+"#,
+            project_dir.display(),
+            project_dir.display()
+        ),
+    )
+    .expect("test should write restart manifest");
+    let (winsmux_bin, restart_log) =
+        write_fake_winsmux_restart(&project_dir, Some("winsmux-orchestra"), &["%2"]);
+    let stale_persisted = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["restart", "worker-1"])
+        .env("WINSMUX_BIN", winsmux_bin)
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux restart command should run");
+    assert!(!stale_persisted.status.success());
+    assert!(
+        String::from_utf8_lossy(&stale_persisted.stderr)
+            .contains("model 'gpt-5.4' does not support reasoning_effort 'max'"),
+        "stale persisted max must be rejected before rewrite or launch"
+    );
+    assert!(
+        !fs::read_to_string(restart_log)
+            .unwrap_or_default()
+            .contains("send-keys"),
+        "stale persisted max must not reach launcher dispatch"
+    );
+
+    fs::remove_file(&registry_path).expect("test should remove stale provider registry");
+    let gpt56 = run_switch(&[
+        "provider-switch",
+        "worker-1",
+        "--model",
+        "gpt-5.6-terra",
+        "--model-source",
+        "cli-discovery",
+        "--reasoning-effort",
+        "max",
+        "--json",
+    ]);
+    assert!(
+        gpt56.status.success(),
+        "GPT-5.6 Terra max should pass: {}",
+        String::from_utf8_lossy(&gpt56.stderr)
+    );
+    let payload: serde_json::Value = serde_json::from_slice(&gpt56.stdout)
+        .expect("successful provider-switch output should be JSON");
+    assert_eq!(payload["model"], "gpt-5.6-terra");
+    assert_eq!(payload["reasoning_effort"], "max");
+}
+
+#[test]
+fn operator_cli_provider_switch_allows_only_exact_gpt56_max_without_capabilities() {
+    let write_settings = |project_dir: &std::path::Path| {
+        fs::write(
+            project_dir.join(".winsmux.yaml"),
+            r#"
+agent: codex
+model: gpt-5.4
+model-source: cli-discovery
+prompt-transport: argv
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    agent: codex
+    model: gpt-5.4
+    model-source: cli-discovery
+    prompt-transport: argv
+"#,
+        )
+        .expect("test should write settings");
+    };
+    let run_switch = |project_dir: &std::path::Path, model: &str, model_source: &str| {
+        Command::new(env!("CARGO_BIN_EXE_winsmux"))
+            .args([
+                "provider-switch",
+                "worker-1",
+                "--model",
+                model,
+                "--model-source",
+                model_source,
+                "--reasoning-effort",
+                "max",
+                "--json",
+            ])
+            .current_dir(project_dir)
+            .output()
+            .expect("winsmux command should run")
+    };
+
+    for model in ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] {
+        let project_dir =
+            make_temp_project_dir(&format!("provider-switch-no-capabilities-{model}"));
+        write_settings(&project_dir);
+
+        let output = run_switch(&project_dir, model, "cli-discovery");
+        assert!(
+            output.status.success(),
+            "{model} max should pass without capabilities: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let payload: serde_json::Value = serde_json::from_slice(&output.stdout)
+            .expect("successful provider-switch output should be JSON");
+        assert_eq!(payload["model"], model);
+        assert_eq!(payload["reasoning_effort"], "max");
+    }
+
+    for model in [
+        "gpt-5.5",
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.3-codex-spark",
+        "provider-default",
+        "gpt-5.6-terra-preview",
+    ] {
+        let project_dir =
+            make_temp_project_dir(&format!("provider-switch-no-capabilities-reject-{model}"));
+        write_settings(&project_dir);
+
+        let output = run_switch(&project_dir, model, "cli-discovery");
+        assert!(!output.status.success(), "{model} max must be rejected");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(&format!(
+                "model '{model}' does not support reasoning_effort 'max'"
+            )),
+            "stderr should explain unsupported max for {model}"
+        );
+        assert!(
+            !project_dir
+                .join(".winsmux")
+                .join("provider-registry.json")
+                .exists(),
+            "{model} max must be rejected before provider registry write"
+        );
+    }
+
+    let project_dir = make_temp_project_dir("provider-switch-empty-capabilities");
+    write_settings(&project_dir);
+    let capabilities_dir = project_dir.join(".winsmux");
+    fs::create_dir_all(&capabilities_dir).expect("test should create capabilities directory");
+    fs::write(
+        capabilities_dir.join("provider-capabilities.json"),
+        r#"{"version":1,"providers":{}}"#,
+    )
+    .expect("test should write empty capabilities registry");
+
+    let output = run_switch(&project_dir, "gpt-5.6-terra", "cli-discovery");
+    assert!(
+        output.status.success(),
+        "GPT-5.6 Terra max should pass with an empty capabilities registry: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let payload: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .expect("successful provider-switch output should be JSON");
+    assert_eq!(payload["model"], "gpt-5.6-terra");
+    assert_eq!(payload["reasoning_effort"], "max");
+
+    let project_dir =
+        make_temp_project_dir("provider-switch-no-capabilities-provider-default-source");
+    write_settings(&project_dir);
+    let output = run_switch(&project_dir, "gpt-5.6-terra", "provider-default");
+    assert!(
+        !output.status.success(),
+        "max must be rejected when provider-default suppresses the concrete GPT-5.6 model"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("model 'gpt-5.6-terra' does not support reasoning_effort 'max'"),
+        "stderr should explain that an unprojected model cannot use max"
+    );
+    assert!(
+        !project_dir
+            .join(".winsmux")
+            .join("provider-registry.json")
+            .exists(),
+        "provider-default max must be rejected before provider registry write"
+    );
+}
+
+#[test]
+fn operator_cli_provider_switch_uses_provider_efforts_for_models_without_per_model_declaration() {
+    let project_dir = make_temp_project_dir("provider-switch-provider-effort-fallback");
+    write_provider_switch_fixture(&project_dir);
+    let capability_path = project_dir
+        .join(".winsmux")
+        .join("provider-capabilities.json");
+    let mut capabilities = read_json_file(&capability_path);
+    capabilities["providers"]["codex"]["model_options"]
+        .as_array_mut()
+        .expect("Codex model options should be an array")
+        .push(serde_json::json!({
+            "id": "legacy-codex",
+            "label": "Legacy Codex",
+            "source": "cli-discovery"
+        }));
+    fs::write(
+        &capability_path,
+        serde_json::to_vec_pretty(&capabilities).expect("capabilities should serialize"),
+    )
+    .expect("test should update provider capabilities");
+
+    let run_switch = |model: &str, reasoning_effort: &str| {
+        Command::new(env!("CARGO_BIN_EXE_winsmux"))
+            .args([
+                "provider-switch",
+                "worker-1",
+                "--model",
+                model,
+                "--model-source",
+                "cli-discovery",
+                "--reasoning-effort",
+                reasoning_effort,
+                "--json",
+            ])
+            .current_dir(&project_dir)
+            .output()
+            .expect("winsmux command should run")
+    };
+
+    for effort in ["low", "medium", "high", "xhigh"] {
+        let output = run_switch("legacy-codex", effort);
+        assert!(
+            output.status.success(),
+            "legacy Codex model should accept {effort}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let legacy_max = run_switch("legacy-codex", "max");
+    assert!(!legacy_max.status.success());
+    assert!(
+        String::from_utf8_lossy(&legacy_max.stderr)
+            .contains("model 'legacy-codex' does not support reasoning_effort 'max'"),
+        "legacy Codex model must still reject max"
+    );
+
+    let gpt56_max = run_switch("gpt-5.6-terra", "max");
+    assert!(
+        gpt56_max.status.success(),
+        "GPT-5.6 Terra max should pass: {}",
+        String::from_utf8_lossy(&gpt56_max.stderr)
+    );
+}
+
+#[test]
+fn operator_cli_provider_switch_backfills_common_efforts_for_legacy_capabilities() {
+    let project_dir = make_temp_project_dir("provider-switch-legacy-gpt56-effort");
+    write_provider_switch_fixture(&project_dir);
+    let capability_path = project_dir
+        .join(".winsmux")
+        .join("provider-capabilities.json");
+    let mut capabilities = read_json_file(&capability_path);
+    let options = capabilities["providers"]["codex"]["model_options"]
+        .as_array_mut()
+        .expect("Codex model options should be an array");
+    for option in options.iter_mut() {
+        if ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
+            .contains(&option["id"].as_str().unwrap_or_default())
+        {
+            option.as_object_mut().unwrap().remove("reasoning_efforts");
+        }
+    }
+    options.push(serde_json::json!({
+        "id": "legacy-codex",
+        "label": "Legacy Codex",
+        "source": "cli-discovery"
+    }));
+    capabilities["providers"]["codex"]
+        .as_object_mut()
+        .unwrap()
+        .remove("reasoning_efforts");
+    {
+        let claude = capabilities["providers"]["claude"]
+            .as_object_mut()
+            .expect("Claude capability should be an object");
+        let opus = claude["model_options"]
+            .as_array_mut()
+            .expect("Claude model options should be an array")
+            .iter_mut()
+            .find(|option| option["id"] == "opus")
+            .expect("Claude opus option should exist");
+        opus.as_object_mut().unwrap().remove("reasoning_efforts");
+        claude.remove("reasoning_efforts");
+    }
+    fs::write(
+        &capability_path,
+        serde_json::to_vec_pretty(&capabilities).unwrap(),
+    )
+    .unwrap();
+
+    let run_switch = |model: &str, source: &str, effort: &str| {
+        Command::new(env!("CARGO_BIN_EXE_winsmux"))
+            .args([
+                "provider-switch",
+                "worker-1",
+                "--model",
+                model,
+                "--model-source",
+                source,
+                "--reasoning-effort",
+                effort,
+                "--json",
+            ])
+            .current_dir(&project_dir)
+            .output()
+            .expect("winsmux command should run")
+    };
+
+    for model in ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] {
+        let output = run_switch(model, "cli-discovery", "max");
+        assert!(
+            output.status.success(),
+            "legacy {model} max should pass: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let legacy_high = run_switch("legacy-codex", "cli-discovery", "high");
+    let gpt56_xhigh = run_switch("gpt-5.6-terra", "cli-discovery", "xhigh");
+    let legacy_provider_default_high = run_switch("legacy-codex", "provider-default", "high");
+    let gpt56_provider_default_xhigh = run_switch("gpt-5.6-terra", "provider-default", "xhigh");
+    assert!(
+        legacy_high.status.success()
+            && gpt56_xhigh.status.success()
+            && legacy_provider_default_high.status.success()
+            && gpt56_provider_default_xhigh.status.success(),
+        "legacy common efforts should pass regardless of model source (legacy high: {}; GPT-5.6 xhigh: {}; provider-default legacy high: {}; provider-default GPT-5.6 xhigh: {}):\n{}\n{}\n{}\n{}",
+        legacy_high.status,
+        gpt56_xhigh.status,
+        legacy_provider_default_high.status,
+        gpt56_provider_default_xhigh.status,
+        String::from_utf8_lossy(&legacy_high.stderr),
+        String::from_utf8_lossy(&gpt56_xhigh.stderr),
+        String::from_utf8_lossy(&legacy_provider_default_high.stderr),
+        String::from_utf8_lossy(&gpt56_provider_default_xhigh.stderr)
+    );
+
+    let assert_rejected_without_write = |model: &str, source: &str| {
+        let registry_path = project_dir.join(".winsmux").join("provider-registry.json");
+        let before = fs::read(&registry_path).expect("successful setup should create registry");
+        let output = run_switch(model, source, "max");
+        assert!(
+            !output.status.success(),
+            "{model} with {source} must reject max"
+        );
+        assert!(String::from_utf8_lossy(&output.stderr)
+            .contains("does not support reasoning_effort 'max'"));
+        assert_eq!(
+            fs::read(&registry_path).unwrap(),
+            before,
+            "rejection must precede registry write"
+        );
+    };
+    assert_rejected_without_write("legacy-codex", "cli-discovery");
+    assert_rejected_without_write("legacy-codex", "provider-default");
+    assert_rejected_without_write("gpt-5.6-terra", "provider-default");
+
+    capabilities["providers"]["codex"]["model_options"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|option| option["id"] != "gpt-5.6-terra");
+    capabilities["providers"]["codex"]["reasoning_efforts"] =
+        serde_json::json!(["provider-default", "low", "medium", "high", "xhigh", "max"]);
+    fs::write(
+        &capability_path,
+        serde_json::to_vec_pretty(&capabilities).unwrap(),
+    )
+    .unwrap();
+    assert_rejected_without_write("gpt-5.6-terra", "cli-discovery");
+
+    let luna = capabilities["providers"]["codex"]["model_options"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|option| option["id"] == "gpt-5.6-luna")
+        .unwrap();
+    luna["reasoning_efforts"] = serde_json::json!(["low", "medium", "high", "xhigh"]);
+    fs::write(
+        &capability_path,
+        serde_json::to_vec_pretty(&capabilities).unwrap(),
+    )
+    .unwrap();
+    assert_rejected_without_write("gpt-5.6-luna", "cli-discovery");
+
+    let run_claude_switch = |model: &str, source: &str, effort: &str| {
+        Command::new(env!("CARGO_BIN_EXE_winsmux"))
+            .args([
+                "provider-switch",
+                "worker-1",
+                "--agent",
+                "claude",
+                "--model",
+                model,
+                "--model-source",
+                source,
+                "--reasoning-effort",
+                effort,
+                "--prompt-transport",
+                "file",
+                "--json",
+            ])
+            .current_dir(&project_dir)
+            .output()
+            .expect("winsmux command should run")
+    };
+    let claude_legacy_max = run_claude_switch("opus", "official-doc", "max");
+    let registry_path = project_dir.join(".winsmux").join("provider-registry.json");
+    let before_missing = fs::read(&registry_path).unwrap();
+    let claude_missing_high = run_claude_switch("missing-claude", "operator-override", "high");
+    let missing_unchanged = fs::read(&registry_path).unwrap() == before_missing;
+    let before_provider_default = fs::read(&registry_path).unwrap();
+    let claude_provider_default_high = run_claude_switch("opus", "provider-default", "high");
+    let provider_default_unchanged = fs::read(&registry_path).unwrap() == before_provider_default;
+    assert!(
+        claude_legacy_max.status.success()
+            && !claude_missing_high.status.success()
+            && missing_unchanged
+            && String::from_utf8_lossy(&claude_missing_high.stderr)
+                .contains("does not support reasoning_effort 'high'")
+            && !claude_provider_default_high.status.success()
+            && provider_default_unchanged
+            && String::from_utf8_lossy(&claude_provider_default_high.stderr)
+                .contains("does not support reasoning_effort 'high'"),
+        "non-Codex legacy fallback must preserve the matching-option boundary (matching max: {}; missing high: {}, unchanged: {}; provider-default high: {}, unchanged: {}):\n{}\n{}\n{}",
+        claude_legacy_max.status,
+        claude_missing_high.status,
+        missing_unchanged,
+        claude_provider_default_high.status,
+        provider_default_unchanged,
+        String::from_utf8_lossy(&claude_legacy_max.stderr),
+        String::from_utf8_lossy(&claude_missing_high.stderr),
+        String::from_utf8_lossy(&claude_provider_default_high.stderr)
+    );
+}
+
+#[test]
 fn operator_cli_provider_switch_validates_candidate_before_write() {
     let project_dir = make_temp_project_dir("provider-switch-candidate-before-write");
     write_provider_switch_fixture(&project_dir);
@@ -3116,6 +3711,71 @@ panes:
 }
 
 #[test]
+fn operator_cli_provider_switch_restart_projects_gpt56_model_and_max_effort() {
+    let project_dir = make_temp_project_dir("provider-switch-restart-gpt56-max");
+    write_provider_switch_fixture(&project_dir);
+    fs::write(
+        project_dir.join(".winsmux").join("manifest.yaml"),
+        format!(
+            r#"
+session:
+  name: winsmux-orchestra
+  project_dir: {}
+panes:
+  worker-1:
+    pane_id: "%2"
+    role: Builder
+    launch_dir: {}
+    capability_adapter: codex
+"#,
+            project_dir.display(),
+            project_dir.display()
+        ),
+    )
+    .expect("test should write manifest");
+    let (winsmux_bin, log_path) =
+        write_fake_winsmux_restart(&project_dir, Some("winsmux-orchestra"), &["%2"]);
+
+    let result = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args([
+            "provider-switch",
+            "worker-1",
+            "--model",
+            "gpt-5.6-terra",
+            "--model-source",
+            "cli-discovery",
+            "--reasoning-effort",
+            "max",
+            "--restart",
+            "--json",
+        ])
+        .env("WINSMUX_BIN", winsmux_bin)
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(
+        result.status.success(),
+        "winsmux command failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let launch = fs::read_to_string(&log_path)
+        .expect("fake winsmux log should exist")
+        .lines()
+        .find(|line| line.contains("send-keys"))
+        .expect("restart should send a launch command")
+        .to_string();
+    assert!(
+        launch.contains("model=gpt-5.6-terra"),
+        "restart launch must project the concrete model: {launch}"
+    );
+    assert!(
+        launch.contains("model_reasoning_effort=max"),
+        "restart launch must project max effort: {launch}"
+    );
+}
+
+#[test]
 fn operator_cli_provider_switch_restart_skips_provider_default_model() {
     let project_dir = make_temp_project_dir("provider-switch-restart-provider-default");
     write_provider_switch_fixture(&project_dir);
@@ -3148,7 +3808,7 @@ panes:
             "--model",
             "provider-default",
             "--reasoning-effort",
-            "xhigh",
+            "provider-default",
             "--restart",
             "--json",
         ])
@@ -3165,9 +3825,10 @@ panes:
     let payload: serde_json::Value =
         serde_json::from_slice(&result.stdout).expect("stdout should be JSON");
     assert_eq!(payload["model"], "provider-default");
-    assert_eq!(payload["reasoning_effort"], "xhigh");
+    assert_eq!(payload["reasoning_effort"], "provider-default");
     let log = fs::read_to_string(&log_path).expect("fake winsmux log should exist");
-    assert!(log.contains("send-keys -t \"%2\" -l -- \"codex -c 'model_reasoning_effort=xhigh'"));
+    assert!(log.contains("send-keys -t \"%2\" -l -- \"codex --sandbox"));
+    assert!(!log.contains("model_reasoning_effort="));
     assert!(!log.contains("model=provider-default"));
 }
 
@@ -3225,6 +3886,63 @@ panes:
     let log = fs::read_to_string(&log_path).expect("fake winsmux log should exist");
     assert!(log.contains("send-keys -t \"%2\" -l -- \"codex --sandbox"));
     assert!(!log.contains("model=gpt-5.4"));
+}
+
+#[test]
+fn operator_cli_restart_rejects_unprojected_gpt56_max_before_launch() {
+    let project_dir = make_temp_project_dir("restart-unprojected-gpt56-max");
+    write_provider_switch_fixture(&project_dir);
+    fs::remove_file(
+        project_dir
+            .join(".winsmux")
+            .join("provider-capabilities.json"),
+    )
+    .expect("test should remove capability registry");
+    fs::write(
+        project_dir.join(".winsmux").join("manifest.yaml"),
+        format!(
+            r#"
+session:
+  name: winsmux-orchestra
+  project_dir: {}
+panes:
+  worker-1:
+    pane_id: "%2"
+    role: Builder
+    launch_dir: {}
+    capability_adapter: codex
+"#,
+            project_dir.display(),
+            project_dir.display()
+        ),
+    )
+    .expect("test should write manifest");
+    fs::write(
+        project_dir.join(".winsmux").join("provider-registry.json"),
+        r#"{"version":1,"slots":{"worker-1":{"agent":"codex","model":"gpt-5.6-terra","model_source":"provider-default","reasoning_effort":"max","updated_at_utc":"2026-07-12T00:00:00Z"}}}"#,
+    )
+    .expect("test should write persisted provider override");
+    let (winsmux_bin, log_path) =
+        write_fake_winsmux_restart(&project_dir, Some("winsmux-orchestra"), &["%2"]);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["restart", "worker-1"])
+        .env("WINSMUX_BIN", winsmux_bin)
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("model 'gpt-5.6-terra' does not support reasoning_effort 'max'"),
+        "restart must reject max when the concrete model is not projected"
+    );
+    let log = fs::read_to_string(&log_path).unwrap_or_default();
+    assert!(
+        !log.contains("send-keys"),
+        "restart must not launch an unprojected max configuration: {log}"
+    );
 }
 
 #[test]
@@ -6710,8 +7428,12 @@ agent-slots:
       "adapter": "codex",
       "command": "codex",
       "model_options": [
-        {"id": "provider-default", "label": "Provider default", "source": "provider-default"},
-        {"id": "gpt-5.3-codex-spark", "label": "GPT-5.3-Codex-Spark", "source": "cli-discovery", "availability": "local-account"}
+        {"id": "provider-default", "label": "Provider default", "source": "provider-default", "reasoning_efforts": ["provider-default"]},
+        {"id": "gpt-5.3-codex-spark", "label": "GPT-5.3-Codex-Spark", "source": "cli-discovery", "availability": "local-account", "reasoning_efforts": ["low", "medium", "high", "xhigh"]},
+        {"id": "gpt-5.4", "label": "GPT-5.4", "source": "cli-discovery", "reasoning_efforts": ["low", "medium", "high", "xhigh"]},
+        {"id": "gpt-5.6-sol", "label": "GPT-5.6 Sol", "source": "cli-discovery", "reasoning_efforts": ["low", "medium", "high", "max", "xhigh"]},
+        {"id": "gpt-5.6-terra", "label": "GPT-5.6 Terra", "source": "cli-discovery", "reasoning_efforts": ["low", "medium", "high", "max", "xhigh"]},
+        {"id": "gpt-5.6-luna", "label": "GPT-5.6 Luna", "source": "cli-discovery", "reasoning_efforts": ["low", "medium", "high", "max", "xhigh"]}
       ],
       "model_sources": ["provider-default", "cli-discovery"],
       "reasoning_efforts": ["provider-default", "low", "medium", "high", "xhigh"],
@@ -6736,10 +7458,10 @@ agent-slots:
       "adapter": "claude",
       "command": "claude",
       "model_options": [
-        {"id": "provider-default", "label": "Provider default", "source": "provider-default"},
-        {"id": "sonnet", "label": "Sonnet", "source": "official-doc"},
-        {"id": "opus", "label": "Opus", "source": "official-doc"},
-        {"id": "opusplan", "label": "Opus Plan", "source": "official-doc"}
+        {"id": "provider-default", "label": "Provider default", "source": "provider-default", "reasoning_efforts": ["provider-default"]},
+        {"id": "sonnet", "label": "Sonnet", "source": "official-doc", "reasoning_efforts": ["low", "medium", "high", "max", "xhigh"]},
+        {"id": "opus", "label": "Opus", "source": "official-doc", "reasoning_efforts": ["low", "medium", "high", "max", "xhigh"]},
+        {"id": "opusplan", "label": "Opus Plan", "source": "official-doc", "reasoning_efforts": ["low", "medium", "high", "max", "xhigh"]}
       ],
       "model_sources": ["provider-default", "official-doc", "operator-override"],
       "reasoning_efforts": ["provider-default", "low", "medium", "high", "xhigh", "max"],
