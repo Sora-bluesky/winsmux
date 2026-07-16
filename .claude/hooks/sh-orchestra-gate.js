@@ -20,6 +20,10 @@ try {
   const toolInput = event.tool_input || {};
   const rawCommand = typeof toolInput.command === "string" ? toolInput.command : "";
   const bashCommand = toolName === "Bash" ? stripHeredocBodies(rawCommand) : "";
+  const reviewCommand = toolName === "Bash" ? rawCommand : "";
+  const reviewDetectionCommand = toolName === "Bash"
+    ? [bashCommand, ...getExecutableHeredocBodies(reviewCommand)].filter(Boolean).join("\n")
+    : "";
   const currentRole = normalizeAgentValue(process.env.WINSMUX_ROLE);
 
   logCommand(toolName, rawCommand);
@@ -108,7 +112,7 @@ try {
 
   // Rule 7: No direct Codex dispatch outside winsmux send
   if (toolName === "Bash") {
-    if (isDirectCodexDispatch(bashCommand)) {
+    if (isDirectCodexDispatch(reviewCommand)) {
       deny("Use winsmux send to dispatch Codex to panes");
     }
   }
@@ -196,11 +200,17 @@ try {
 
   // Rule 13: Block review-gated commit/merge commands without valid Reviewer PASS for the current HEAD (#279)
   if (toolName === "Bash") {
-    if (isReviewGatedCommand(bashCommand) && !/bump-version|chore:\s*bump/.test(bashCommand)) {
+    const reviewBaseCwd = typeof toolInput.cwd === "string" && toolInput.cwd.trim() !== ""
+      ? toolInput.cwd
+      : process.cwd();
+    if (isReviewGatedCommand(reviewDetectionCommand) || hasConfiguredGitReviewLifecycleAlias(reviewDetectionCommand, reviewBaseCwd)) {
       const denyMessage = "Review required. Flow: 1) a review-capable pane runs winsmux review-request, 2) that pane reviews, 3) it runs winsmux review-approve or winsmux review-fail.";
       try {
-        const reviewRepoRoots = resolveReviewGateRepoRoots(toolInput, bashCommand);
-        if (reviewRepoRoots.length === 0) {
+        if (hasForeignGitHubLifecycleTarget(reviewDetectionCommand, reviewBaseCwd)) {
+          deny(denyMessage);
+        }
+        const reviewRepoRoots = resolveReviewGateRepoRoots(toolInput, reviewCommand);
+        if (reviewRepoRoots === null) {
           deny(denyMessage);
         }
         for (const reviewRepoRoot of reviewRepoRoots) {
@@ -264,6 +274,44 @@ function stripHeredocBodies(command) {
   }
 
   return output.join("\n");
+}
+
+function getExecutableHeredocBodies(command) {
+  if (typeof command !== "string" || !command.includes("<<")) {
+    return [];
+  }
+
+  const lines = command.split(/\r?\n/);
+  const bodies = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = /<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/u.exec(lines[index]);
+    if (!match) {
+      continue;
+    }
+
+    const prefix = lines[index].slice(0, match.index).trim();
+    const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(tokenizeCommandLine(prefix)));
+    const executable = normalizeExecutableName(execution.tokens[0] || "");
+    if (!isShellCommandExecutable(executable) &&
+        !isPowerShellExecutable(executable) &&
+        !["node", "python", "python3"].includes(executable)) {
+      continue;
+    }
+
+    const body = [];
+    for (let bodyIndex = index + 1; bodyIndex < lines.length; bodyIndex += 1) {
+      if (lines[bodyIndex].trim() === match[2]) {
+        index = bodyIndex;
+        break;
+      }
+      body.push(lines[bodyIndex]);
+    }
+    if (body.length > 0) {
+      bodies.push(body.join("\n"));
+    }
+  }
+
+  return bodies;
 }
 
 function isStartupDiagnosisSubagent(toolInput) {
@@ -710,7 +758,11 @@ function hasXargsGitLifecycleCommand(command, reviewOnly) {
   return splitCommandSegments(source).some((segment) =>
     splitCommandPipelineStages(segment).some((stage) => {
       const normalizedStage = unwrapPowerShellCommandWrapper(stage);
-      const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(normalizedStage));
+      const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(tokenizeCommandLine(normalizedStage)));
+      if (execution.nestedCommand) {
+        return isReviewGatedCommand(execution.nestedCommand);
+      }
+      const tokens = execution.tokens;
       if (tokens.length === 0 || normalizeExecutableName(tokens[0]) !== "xargs") {
         return false;
       }
@@ -904,6 +956,57 @@ function hasInterpreterGitLifecycleCommand(segment, tokens) {
     : hasPythonGitLifecycleCommand(segment);
 }
 
+function hasInterpreterReviewGatedGitLifecycleCommand(segment, tokens) {
+  const literalCommands = getInterpreterLiteralGitCommands(segment, tokens);
+  if (literalCommands.some((command) => isReviewGatedCommand(command))) {
+    return true;
+  }
+
+  return literalCommands.length === 0 &&
+    hasDynamicInterpreterLifecycleHint(segment) &&
+    /\b(?:commit|merge|push|update-ref|branch|tag)\b/iu.test(String(segment || ""));
+}
+
+function getInterpreterLiteralGitCommands(segment, tokens) {
+  const interpreterKind = getShellInterpreterKind(tokens);
+  if (!interpreterKind) {
+    return [];
+  }
+
+  const source = String(segment || "");
+  const commands = [];
+  const stringPatterns = interpreterKind === "node"
+    ? [/\b(?:execsync|exec)\s*\(\s*(?:"([^"]*\b(?:git|gh)\b[^"]*)"|'([^']*\b(?:git|gh)\b[^']*)')/giu]
+    : [/\b(?:subprocess\.(?:run|call|check_call|check_output|popen)|os\.system)\s*\(\s*(?:"([^"]*\b(?:git|gh)\b[^"]*)"|'([^']*\b(?:git|gh)\b[^']*)')/giu];
+  for (const pattern of stringPatterns) {
+    for (const match of source.matchAll(pattern)) {
+      commands.push(match[1] || match[2] || "");
+    }
+  }
+
+  const arrayPattern = interpreterKind === "node"
+    ? /\b(?:execfilesync|execfile|spawnsync|spawn)\s*\(\s*(?:"(git|gh)(?:\.exe)?"|'(git|gh)(?:\.exe)?')\s*,\s*\[([^\]]*)\]/giu
+    : /\b(?:subprocess\.(?:run|call|check_call|check_output|popen))\s*\(\s*\[([^\]]*)\]/giu;
+  for (const match of source.matchAll(arrayPattern)) {
+    if (interpreterKind === "node") {
+      const tool = match[1] || match[2] || "";
+      const args = extractQuotedArguments(match[3] || "");
+      if (tool) {
+        commands.push([tool, ...args].join(" "));
+      }
+      continue;
+    }
+
+    const args = extractQuotedArguments(match[1] || "");
+    const tool = normalizeExecutableName(args[0] || "");
+    if (tool === "git" || tool === "gh") {
+      commands.push(args.join(" "));
+    }
+  }
+
+  return commands.filter(Boolean);
+}
+
 function hasPythonGitLifecycleCommand(segment) {
   const source = String(segment || "");
   const literalCommandPatterns = [
@@ -1046,6 +1149,110 @@ function isGhApiRefWriteCommand(tokens) {
   }
 
   return hasGhApiWriteMethod(args) || hasGhApiWriteField(args);
+}
+
+function hasForeignGitHubLifecycleTarget(command, baseCwd, depth = 0) {
+  if (depth > 5) {
+    return true;
+  }
+
+  const currentRepo = getGitHubRepositorySlug(baseCwd);
+  let ghRepoEnvironmentTarget = "";
+  for (const segment of splitCommandSegments(command)) {
+    const segmentGhRepo = getConstantGhRepoAssignment(segment);
+    if (segmentGhRepo) {
+      ghRepoEnvironmentTarget = segmentGhRepo;
+    }
+    for (const stage of splitCommandPipelineStages(segment)) {
+      const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(tokenizeCommandLine(stage)));
+      if (execution.nestedCommand && hasForeignGitHubLifecycleTarget(execution.nestedCommand, baseCwd, depth + 1)) {
+        return true;
+      }
+      const tokens = execution.tokens;
+      if (tokens.length === 0) {
+        continue;
+      }
+      const executable = normalizeExecutableName(tokens[0]);
+      if (isShellCommandExecutable(executable) || isPowerShellExecutable(executable)) {
+        const nestedCommand = isShellCommandExecutable(executable)
+          ? getShellCommandArgument(tokens)
+          : getPowerShellNestedCommand(tokens);
+        if (nestedCommand && hasForeignGitHubLifecycleTarget(nestedCommand, baseCwd, depth + 1)) {
+          return true;
+        }
+        continue;
+      }
+      if (!isGhExecutableToken(tokens[0])) {
+        continue;
+      }
+      if (isGhApiGraphqlRefMutation(tokens.map((token) => normalizeAgentValue(stripOuterQuotes(token))))) {
+        return true;
+      }
+
+      let explicitRepo = "";
+      for (let index = 1; index < tokens.length; index += 1) {
+        const token = stripOuterQuotes(tokens[index]);
+        const normalized = normalizeAgentValue(token);
+        if ((normalized === "-r" || normalized === "--repo") && index + 1 < tokens.length) {
+          explicitRepo = normalizeAgentValue(stripOuterQuotes(tokens[index + 1]));
+          break;
+        }
+        if (normalized.startsWith("--repo=")) {
+          explicitRepo = normalizeAgentValue(token.slice(token.indexOf("=") + 1));
+          break;
+        }
+        if (normalized.startsWith("-r=") || (/^-r[^-]/u.test(normalized) && normalized.length > 2)) {
+          explicitRepo = normalizeAgentValue(token.slice(token.startsWith("-R=") || token.startsWith("-r=") ? 3 : 2));
+          break;
+        }
+        const pullUrlRepo = /^(?:https?:\/\/)?(?:www\.)?github\.com\/([^/]+\/[^/]+)\/pull\/\d+(?:[/?#]|$)/iu.exec(token);
+        if (pullUrlRepo) {
+          explicitRepo = normalizeAgentValue(pullUrlRepo[1]);
+          break;
+        }
+        const apiRepo = /(?:^|\/)repos\/([^/]+\/[^/]+)(?:\/|$)/iu.exec(token);
+        if (apiRepo) {
+          explicitRepo = normalizeAgentValue(apiRepo[1]);
+          break;
+        }
+      }
+
+      if (!explicitRepo && ghRepoEnvironmentTarget) {
+        explicitRepo = ghRepoEnvironmentTarget;
+      }
+
+      if (explicitRepo && (!currentRepo || explicitRepo !== currentRepo)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function getConstantGhRepoAssignment(source) {
+  let value = "";
+  const pattern = /(?:^|[\s;])(?:export\s+)?(?:\$env:)?gh_repo\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s;]+))/giu;
+  for (const match of String(source || "").matchAll(pattern)) {
+    value = match[1] || match[2] || match[3] || "";
+  }
+  return normalizeAgentValue(stripOuterQuotes(value));
+}
+
+function getGitHubRepositorySlug(repoCwd) {
+  const repoRoot = resolveGitTopLevel(repoCwd);
+  if (!repoRoot) {
+    return "";
+  }
+  try {
+    const remote = execFileSync("git", ["-C", repoRoot, "config", "--get", "remote.origin.url"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim().replace(/\\/gu, "/");
+    const match = /(?:github\.com[:/])([^/]+\/[^/]+)$/iu.exec(remote);
+    return match ? normalizeAgentValue(match[1]).replace(/\.git$/u, "") : "";
+  } catch {
+    return "";
+  }
 }
 
 function isGhApiGraphqlRefMutation(args) {
@@ -1230,6 +1437,101 @@ function getGitSubcommandName(tokens, subcommandIndex) {
   const subcommand = normalizeAgentValue(stripOuterQuotes(tokens[subcommandIndex]));
   const aliasSubcommand = getGitAliasSubcommandName(tokens, subcommandIndex, subcommand);
   return aliasSubcommand || subcommand;
+}
+
+function isReviewGatedGitSubcommand(subcommand, tokens = [], subcommandIndex = -1) {
+  const normalized = normalizeAgentValue(subcommand);
+  if (["commit", "merge", "push", "update-ref"].includes(normalized)) {
+    return true;
+  }
+
+  if (normalized === "branch") {
+    return !isReadOnlyGitBranchCommand(tokens, subcommandIndex);
+  }
+
+  if (normalized === "tag") {
+    return !isReadOnlyGitTagCommand(tokens, subcommandIndex);
+  }
+
+  return false;
+}
+
+function getConfiguredGitAliasSubcommand(aliasValue) {
+  if (typeof aliasValue !== "string" || aliasValue.trim() === "" || aliasValue.trim().startsWith("!")) {
+    return "";
+  }
+
+  const aliasTokens = tokenizeCommandLine(aliasValue);
+  return aliasTokens.length > 0 ? normalizeAgentValue(stripOuterQuotes(aliasTokens[0])) : "";
+}
+
+function getConfiguredGitAliasValue(repoCwd, aliasName) {
+  const normalizedAlias = normalizeAgentValue(aliasName);
+  if (!repoCwd || !/^[a-z0-9._-]+$/u.test(normalizedAlias)) {
+    return "";
+  }
+
+  try {
+    return execFileSync("git", ["-C", repoCwd, "config", "--get", `alias.${normalizedAlias}`], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return "";
+  }
+}
+
+function hasConfiguredGitReviewLifecycleAlias(command, baseCwd, depth = 0) {
+  if (depth > 5) {
+    return false;
+  }
+
+  for (const segment of splitCommandSegments(command)) {
+    for (const stage of splitCommandPipelineStages(segment)) {
+      const rawTokens = tokenizeCommandLine(stage);
+      const gitEnvContext = getGitInlineEnvironmentContext(rawTokens, baseCwd);
+      const commandBaseCwd = gitEnvContext.baseCwd || baseCwd;
+      const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(rawTokens));
+      if (execution.nestedCommand && hasConfiguredGitReviewLifecycleAlias(execution.nestedCommand, baseCwd, depth + 1)) {
+        return true;
+      }
+      const tokens = execution.tokens;
+      if (tokens.length === 0) {
+        continue;
+      }
+
+      const executable = normalizeExecutableName(tokens[0]);
+      if (isShellCommandExecutable(executable) || isPowerShellExecutable(executable)) {
+        const nestedCommand = isShellCommandExecutable(executable)
+          ? getShellCommandArgument(tokens)
+          : getPowerShellNestedCommand(tokens);
+        if (nestedCommand && hasConfiguredGitReviewLifecycleAlias(nestedCommand, baseCwd, depth + 1)) {
+          return true;
+        }
+        continue;
+      }
+
+      if (!isGitExecutableToken(tokens[0])) {
+        continue;
+      }
+      const subcommandIndex = findGitSubcommandIndex(tokens);
+      if (subcommandIndex < 0) {
+        continue;
+      }
+      const rawSubcommand = normalizeAgentValue(stripOuterQuotes(tokens[subcommandIndex]));
+      const gitBaseCwd = getGitGlobalCwdOption(tokens, 0, commandBaseCwd, gitEnvContext) || commandBaseCwd || process.cwd();
+      const aliasValue = getConfiguredGitAliasValue(gitBaseCwd, rawSubcommand);
+      const aliasSubcommand = getConfiguredGitAliasSubcommand(aliasValue);
+      if (isReviewGatedGitSubcommand(aliasSubcommand)) {
+        return true;
+      }
+      if (aliasValue.trim().startsWith("!") && isReviewGatedCommand(aliasValue.trim().slice(1))) {
+        return true;
+      }
+    }
+  }
+
+  return false;
 }
 
 function getGitAliasSubcommandName(tokens, subcommandIndex, subcommand) {
@@ -1772,6 +2074,28 @@ function isReadOnlyGitWorktreeCommand(tokens, subcommandIndex) {
 }
 
 function isReviewGatedCommand(command) {
+  const materializedCommand = materializeConstantExecutableSubstitutions(command);
+  if (materializedCommand !== command && isGitCommitOrMergeCommandLine(materializedCommand)) {
+    return true;
+  }
+
+  const groupedCommand = unwrapShellGroupingWrapper(command);
+  if (groupedCommand !== String(command || "").trim() && isReviewGatedCommand(groupedCommand)) {
+    return true;
+  }
+
+  for (const blockBody of getBraceBlockBodies(command)) {
+    if (isReviewGatedCommand(blockBody)) {
+      return true;
+    }
+  }
+
+  for (const substitutionCommand of getShellCommandSubstitutionCommands(command)) {
+    if (isReviewGatedCommand(substitutionCommand)) {
+      return true;
+    }
+  }
+
   if (hasPowerShellGitAliasLifecycleCommand(command, true)) {
     return true;
   }
@@ -1780,19 +2104,41 @@ function isReviewGatedCommand(command) {
     return true;
   }
 
+  for (const indirectCommand of getConstantShellStdinCommands(command)) {
+    if (isReviewGatedCommand(indirectCommand)) {
+      return true;
+    }
+  }
+
   return isGitCommitOrMergeCommandLine(command) ||
-         isGitCommitCommand(command) ||
-         isGitMergeCommand(command) ||
          isGhPrMergeCommandLine(command) ||
-         isGhPrMergeCommand(command) ||
          isGhApiMergeCommandLine(command);
+}
+
+function getConstantShellStdinCommands(command) {
+  const source = String(command || "");
+  const commands = [];
+  const pipePattern = /\b(?:echo|printf(?:\s+%s)?)\s+(['"])([\s\S]*?)\1\s*\|\s*(?:bash|sh|zsh|pwsh|powershell)(?:\.exe)?\b/giu;
+  const hereStringPattern = /\b(?:bash|sh|zsh)(?:\.exe)?\b[^;\r\n]*?<<<\s*(['"])([\s\S]*?)\1/giu;
+  for (const pattern of [pipePattern, hereStringPattern]) {
+    for (const match of source.matchAll(pattern)) {
+      if (match[2]) {
+        commands.push(match[2]);
+      }
+    }
+  }
+  return commands;
 }
 
 function isGitCommitOrMergeCommandLine(command) {
   return splitCommandSegments(command).some((segment) =>
     splitCommandPipelineStages(segment).some((stage) => {
       const normalizedStage = unwrapPowerShellCommandWrapper(stage);
-      const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(normalizedStage));
+      const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(tokenizeCommandLine(normalizedStage)));
+      if (execution.nestedCommand) {
+        return isReviewGatedCommand(execution.nestedCommand);
+      }
+      const tokens = execution.tokens;
       if (tokens.length === 0) {
         return false;
       }
@@ -1804,8 +2150,10 @@ function isGitCommitOrMergeCommandLine(command) {
       }
 
       if (isPowerShellExecutable(executable)) {
-        const nestedCommand = getOptionRemainderValue(tokens, ["-command", "-c"]);
-        return nestedCommand ? isReviewGatedCommand(nestedCommand) : false;
+        const nestedCommand = getPowerShellNestedCommand(tokens);
+        return nestedCommand
+          ? isReviewGatedCommand(nestedCommand) || getBraceBlockBodies(nestedCommand).some(isReviewGatedCommand)
+          : false;
       }
 
       if (isShellCommandExecutable(executable)) {
@@ -1821,6 +2169,10 @@ function isGitCommitOrMergeCommandLine(command) {
         return nestedCommand ? isReviewGatedCommand(nestedCommand) : false;
       }
 
+      if (hasInterpreterReviewGatedGitLifecycleCommand(normalizedStage, tokens)) {
+        return true;
+      }
+
       if (executable !== "git" && executable !== "git.exe") {
         return false;
       }
@@ -1831,7 +2183,7 @@ function isGitCommitOrMergeCommandLine(command) {
       }
 
       const gitSubcommand = getGitSubcommandName(tokens, gitSubcommandIndex);
-      return gitSubcommand === "commit" || gitSubcommand === "merge";
+      return isReviewGatedGitSubcommand(gitSubcommand, tokens, gitSubcommandIndex);
     }));
 }
 
@@ -2170,18 +2522,18 @@ function getCmdShellArgument(tokens) {
   for (let index = 1; index < tokens.length; index += 1) {
     const token = normalizeAgentValue(tokens[index]);
     if (token === "/c" || token === "/k") {
-      return unescapeCmdCaretEscapes(tokens.slice(index + 1).join(" "));
+      return stripLeadingCmdCallBuiltins(unescapeCmdCaretEscapes(tokens.slice(index + 1).join(" ")));
     }
 
     if (token.startsWith("/c") || token.startsWith("/k")) {
       const inlineCommand = tokens[index].slice(2);
-      return unescapeCmdCaretEscapes([inlineCommand, ...tokens.slice(index + 1)].filter(Boolean).join(" "));
+      return stripLeadingCmdCallBuiltins(unescapeCmdCaretEscapes([inlineCommand, ...tokens.slice(index + 1)].filter(Boolean).join(" ")));
     }
 
     const inlineSwitchIndex = Math.max(token.lastIndexOf("/c"), token.lastIndexOf("/k"));
     if (inlineSwitchIndex > 0) {
       const inlineCommand = tokens[index].slice(inlineSwitchIndex + 2);
-      return unescapeCmdCaretEscapes([inlineCommand, ...tokens.slice(index + 1)].filter(Boolean).join(" "));
+      return stripLeadingCmdCallBuiltins(unescapeCmdCaretEscapes([inlineCommand, ...tokens.slice(index + 1)].filter(Boolean).join(" ")));
     }
   }
 
@@ -2377,6 +2729,12 @@ function getPowerShellStartProcessInvocation(tokens) {
       continue;
     }
 
+    if (!filePath && /^\(?get-command$/u.test(token) && index + 1 < tokens.length) {
+      filePath = stripOuterQuotes(tokens[index + 1]).replace(/\)+$/u, "");
+      index += 1;
+      continue;
+    }
+
     if ((token === "-filepath" || token === "-file") && index + 1 < tokens.length) {
       filePath = stripOuterQuotes(tokens[index + 1]);
       index += 1;
@@ -2506,6 +2864,18 @@ function getPowerShellStartProcessWorkingDirectory(tokens) {
   }
 
   return "";
+}
+
+function stripLeadingCmdCallBuiltins(command) {
+  let remaining = String(command || "").trim();
+  for (let depth = 0; depth < 8; depth += 1) {
+    const stripped = remaining.replace(/^@?call(?:\.exe)?\s+/iu, "").trim();
+    if (stripped === remaining) {
+      break;
+    }
+    remaining = stripped;
+  }
+  return remaining;
 }
 
 function isQuotedCommandToken(value) {
@@ -2714,6 +3084,91 @@ function stripShellCommandBuiltinPrefixes(tokens) {
   }
 
   return tokens.slice(index);
+}
+
+function unwrapReviewGateExecutionTokens(tokens) {
+  let remaining = stripShellCommandBuiltinPrefixes(tokens);
+  for (let depth = 0; depth < 8 && remaining.length > 0; depth += 1) {
+    const executable = normalizeExecutableName(remaining[0]);
+    if (executable === "eval") {
+      return { tokens: [], nestedCommand: remaining.slice(1).join(" ") };
+    }
+
+    if (executable === "script") {
+      for (let index = 1; index < remaining.length; index += 1) {
+        const option = normalizeAgentValue(stripOuterQuotes(remaining[index]));
+        if ((option === "-c" || option === "--command") && index + 1 < remaining.length) {
+          return { tokens: [], nestedCommand: stripOuterQuotes(remaining[index + 1]) };
+        }
+        if (option.startsWith("--command=")) {
+          return { tokens: [], nestedCommand: stripOuterQuotes(remaining[index].slice(remaining[index].indexOf("=") + 1)) };
+        }
+      }
+      return { tokens: [], nestedCommand: "" };
+    }
+
+    if (executable === "timeout") {
+      let index = 1;
+      while (index < remaining.length) {
+        const option = stripOuterQuotes(remaining[index]);
+        if (option === "--") {
+          index += 1;
+          break;
+        }
+        if (!option.startsWith("-")) {
+          break;
+        }
+        index += reviewGateWrapperOptionConsumesNextValue(executable, option) ? 2 : 1;
+      }
+      if (index < remaining.length) {
+        index += 1;
+      }
+      remaining = remaining.slice(index);
+      continue;
+    }
+
+    if (["nohup", "stdbuf", "nice", "ionice", "setsid", "sudo"].includes(executable)) {
+      let index = 1;
+      while (index < remaining.length) {
+        const option = stripOuterQuotes(remaining[index]);
+        if (option === "--") {
+          index += 1;
+          break;
+        }
+        if (!option.startsWith("-")) {
+          break;
+        }
+        index += reviewGateWrapperOptionConsumesNextValue(executable, option) ? 2 : 1;
+      }
+      remaining = remaining.slice(index);
+      continue;
+    }
+
+    const stripped = stripShellCommandBuiltinPrefixes(remaining);
+    if (stripped.length !== remaining.length) {
+      remaining = stripped;
+      continue;
+    }
+    break;
+  }
+
+  return { tokens: remaining, nestedCommand: "" };
+}
+
+function reviewGateWrapperOptionConsumesNextValue(executable, option) {
+  const normalizedOption = normalizeAgentValue(stripOuterQuotes(option));
+  const valueOptions = {
+    timeout: new Set(["-k", "--kill-after", "-s", "--signal"]),
+    stdbuf: new Set(["-i", "--input", "-o", "--output", "-e", "--error"]),
+    nice: new Set(["-n", "--adjustment"]),
+    ionice: new Set(["-c", "--class", "-n", "--classdata", "-p", "--pid", "-p", "--pgid", "-u", "--uid"]),
+    sudo: new Set([
+      "-u", "--user", "-g", "--group", "-h", "--host", "-p", "--prompt",
+      "-c", "--close-from", "-r", "--role", "-t", "--type",
+      "--command-timeout", "-d", "--chdir",
+    ]),
+  };
+  return Boolean(valueOptions[executable]?.has(normalizedOption));
 }
 
 function stripInlineEnvironmentPrefixes(tokens) {
@@ -4076,14 +4531,88 @@ function isSettingsLocalHookMutation(command) {
   );
 }
 
-function isDirectCodexDispatch(command) {
-  const codexDispatchPattern = /\bcodex\b(?:\s+(?:exec|e)\b|\s+--sandbox\b)/i;
-  return (
-    codexDispatchPattern.test(command) &&
-    !/\bwinsmux\s+send\b/i.test(command) &&
-    !/\bwinsmux-core\b/i.test(command) &&
-    !/^\s*gh\s+/i.test(command)
-  );
+function isDirectCodexDispatch(command, depth = 0) {
+  if (depth > 6 || typeof command !== "string" || command.trim() === "") {
+    return false;
+  }
+
+  const materializedCommand = materializeConstantExecutableSubstitutions(command);
+  if (materializedCommand !== command && isDirectCodexDispatch(materializedCommand, depth + 1)) {
+    return true;
+  }
+
+  for (const heredocBody of getExecutableHeredocBodies(command)) {
+    if (isDirectCodexDispatch(heredocBody, depth + 1)) {
+      return true;
+    }
+  }
+
+  for (const segment of splitCommandSegments(command)) {
+    for (const stage of splitCommandPipelineStages(segment)) {
+      for (const substitution of getShellCommandSubstitutionCommands(stage)) {
+        if (isDirectCodexDispatch(substitution, depth + 1)) {
+          return true;
+        }
+      }
+
+      const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(tokenizeCommandLine(stage)));
+      if (execution.nestedCommand && isDirectCodexDispatch(execution.nestedCommand, depth + 1)) {
+        return true;
+      }
+      const tokens = execution.tokens;
+      if (tokens.length === 0) {
+        continue;
+      }
+
+      const executable = normalizeExecutableName(tokens[0]);
+      if (executable === "codex") {
+        const args = tokens.slice(1).map((token) => normalizeAgentValue(stripOuterQuotes(token)));
+        if (args.some((arg) => arg === "exec" || arg === "e" || arg === "--sandbox" || arg.startsWith("--sandbox="))) {
+          return true;
+        }
+      }
+
+      if (isPowerShellStartProcessExecutable(executable)) {
+        const nestedCommand = getPowerShellStartProcessCommand(tokens);
+        if (nestedCommand && isDirectCodexDispatch(nestedCommand, depth + 1)) {
+          return true;
+        }
+      } else if (executable === "cmd") {
+        const nestedCommand = getCmdShellArgument(tokens);
+        if (nestedCommand && isDirectCodexDispatch(nestedCommand, depth + 1)) {
+          return true;
+        }
+      } else if (isPowerShellExecutable(executable)) {
+        const nestedCommand = getPowerShellNestedCommand(tokens);
+        if (nestedCommand && isDirectCodexDispatch(nestedCommand, depth + 1)) {
+          return true;
+        }
+      } else if (isShellCommandExecutable(executable)) {
+        const nestedCommand = getShellCommandArgument(tokens);
+        if (nestedCommand && isDirectCodexDispatch(nestedCommand, depth + 1)) {
+          return true;
+        }
+      } else if (["node", "python", "python3"].includes(executable) && hasInterpreterCodexDispatch(stage)) {
+        return true;
+      } else if (executable === "xargs") {
+        const nestedTokens = getNormalizedXargsCommandTokens(tokens);
+        if (nestedTokens.length > 0 && isDirectCodexDispatch(nestedTokens.join(" "), depth + 1)) {
+          return true;
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
+function hasInterpreterCodexDispatch(source) {
+  const text = String(source || "");
+  const inlineCommand = /\b(?:exec|execsync|spawn|spawnsync|system|popen|run|call|check_call|check_output)\s*\([^)]*['"]codex(?:\.exe)?(?:\s+(?:exec|e)\b|\s+--sandbox\b)/iu;
+  const nodeArgv = /\b(?:spawn|spawnsync|execfile|execfilesync)\s*\(\s*['"]codex(?:\.exe)?['"]\s*,\s*\[\s*['"](?:exec|e|--sandbox(?:=[^'"]*)?)['"]/iu;
+  const pythonArgv = /\b(?:run|call|check_call|check_output|popen)\s*\(\s*(?:\[|\()\s*['"]codex(?:\.exe)?['"]\s*,\s*['"](?:exec|e|--sandbox(?:=[^'"]*)?)['"]/iu;
+  const pythonExecArgv = /\bexec(?:v|ve|vp|vpe)?\s*\(\s*['"]codex(?:\.exe)?['"]\s*,\s*(?:\[|\()\s*(?:['"]codex(?:\.exe)?['"]\s*,\s*)?['"](?:exec|e|--sandbox(?:=[^'"]*)?)['"]/iu;
+  return inlineCommand.test(text) || nodeArgv.test(text) || pythonArgv.test(text) || pythonExecArgv.test(text);
 }
 
 function isWriteCapableAgentMode(mode) {
@@ -4124,6 +4653,7 @@ function getReviewStateHeadSha(reviewStateEntry) {
 function resolveReviewGateRepoRoots(toolInput, command) {
   const toolInputCwd = typeof toolInput?.cwd === "string" ? toolInput.cwd : "";
   const baseCwd = toolInputCwd || process.cwd();
+  const baseRepoRoot = resolveGitTopLevel(baseCwd);
   const commandTargets = getReviewGatedCommandTargets(command, baseCwd);
   const candidates = commandTargets.targetCwds.length > 0
     ? [
@@ -4137,15 +4667,49 @@ function resolveReviewGateRepoRoots(toolInput, command) {
   for (const candidate of candidates) {
     const repoRoot = resolveGitTopLevel(candidate);
     if (!repoRoot) {
-      return [];
+      return null;
     }
-    if (repoRoot && !seen.has(repoRoot)) {
+    if (repoRoot && isManagedReviewGateRepo(repoRoot, baseRepoRoot) && !seen.has(repoRoot)) {
       repoRoots.push(repoRoot);
       seen.add(repoRoot);
     }
   }
 
   return repoRoots;
+}
+
+function isManagedReviewGateRepo(repoRoot, baseRepoRoot) {
+  if (!repoRoot) {
+    return false;
+  }
+
+  if (baseRepoRoot && normalizeComparablePath(repoRoot) === normalizeComparablePath(baseRepoRoot)) {
+    return true;
+  }
+
+  const repoCommonDir = getGitCommonDir(repoRoot);
+  const baseCommonDir = getGitCommonDir(baseRepoRoot);
+  if (repoCommonDir && baseCommonDir && normalizeComparablePath(repoCommonDir) === normalizeComparablePath(baseCommonDir)) {
+    return true;
+  }
+
+  return fs.existsSync(path.join(repoRoot, ".winsmux"));
+}
+
+function getGitCommonDir(repoRoot) {
+  if (!repoRoot) {
+    return "";
+  }
+
+  try {
+    const commonDir = execFileSync("git", ["-C", repoRoot, "rev-parse", "--git-common-dir"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return commonDir ? path.resolve(repoRoot, commonDir) : "";
+  } catch {
+    return "";
+  }
 }
 
 function resolveGitTopLevel(candidate) {
@@ -4175,6 +4739,28 @@ function getReviewGatedCommandTargets(command, baseCwd, depth = 0) {
   let controlFlowLocalOuterCwd = "";
   let controlFlowDepth = 0;
   const controlFlowExecutionStack = [];
+  const materializedCommand = materializeConstantExecutableSubstitutions(command);
+  if (materializedCommand !== command && isReviewGatedCommand(materializedCommand)) {
+    const materializedTargets = getReviewGatedCommandTargets(materializedCommand, baseCwd, depth + 1);
+    targetCwds.push(...materializedTargets.targetCwds);
+    requiresBaseCwd = requiresBaseCwd || materializedTargets.requiresBaseCwd;
+  }
+  for (const indirectCommand of getConstantShellStdinCommands(command)) {
+    if (!isReviewGatedCommand(indirectCommand)) {
+      continue;
+    }
+    const indirectTargets = getReviewGatedCommandTargets(indirectCommand, baseCwd, depth + 1);
+    targetCwds.push(...indirectTargets.targetCwds);
+    requiresBaseCwd = requiresBaseCwd || indirectTargets.requiresBaseCwd;
+  }
+  for (const heredocBody of getExecutableHeredocBodies(command)) {
+    if (!isReviewGatedCommand(heredocBody) && !hasConfiguredGitReviewLifecycleAlias(heredocBody, baseCwd)) {
+      continue;
+    }
+    const nestedTargets = getReviewGatedCommandTargets(heredocBody, baseCwd, depth + 1);
+    targetCwds.push(...nestedTargets.targetCwds);
+    requiresBaseCwd = requiresBaseCwd || nestedTargets.requiresBaseCwd;
+  }
   for (const commandSegment of splitCommandSegmentsWithSeparators(command)) {
     const segment = commandSegment.segment;
     const controlFlowBoundary = getShellControlFlowBoundary(segment);
@@ -4224,7 +4810,14 @@ function getReviewGatedCommandTargets(command, baseCwd, depth = 0) {
       const rawTokens = tokenizeCommandLine(normalizedStage);
       const gitEnvContext = getGitInlineEnvironmentContext(rawTokens, segmentBaseCwd);
       const gitCommandBaseCwd = gitEnvContext.baseCwd || segmentBaseCwd;
-      const tokens = unwrapEnvCommandTokens(rawTokens);
+      const unwrappedExecution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(rawTokens));
+      if (unwrappedExecution.nestedCommand) {
+        const nestedTargets = getReviewGatedCommandTargets(unwrappedExecution.nestedCommand, gitCommandBaseCwd, depth + 1);
+        targetCwds.push(...nestedTargets.targetCwds);
+        requiresBaseCwd = requiresBaseCwd || nestedTargets.requiresBaseCwd;
+        continue;
+      }
+      const tokens = unwrappedExecution.tokens;
       if (tokens.length === 0) {
         continue;
       }
@@ -4248,10 +4841,15 @@ function getReviewGatedCommandTargets(command, baseCwd, depth = 0) {
       }
 
       if (isPowerShellExecutable(executable)) {
-        const nestedCommand = getOptionRemainderValue(tokens, ["-command", "-c"]);
+        const nestedCommand = getPowerShellNestedCommand(tokens);
         const nestedTargets = getReviewGatedCommandTargets(nestedCommand || "", gitCommandBaseCwd, depth + 1);
         targetCwds.push(...nestedTargets.targetCwds);
         requiresBaseCwd = requiresBaseCwd || nestedTargets.requiresBaseCwd;
+        for (const blockBody of getBraceBlockBodies(nestedCommand)) {
+          const blockTargets = getReviewGatedCommandTargets(blockBody, gitCommandBaseCwd, depth + 1);
+          targetCwds.push(...blockTargets.targetCwds);
+          requiresBaseCwd = requiresBaseCwd || blockTargets.requiresBaseCwd;
+        }
         continue;
       }
 
@@ -4277,6 +4875,21 @@ function getReviewGatedCommandTargets(command, baseCwd, depth = 0) {
           targetCwds.push(...nestedTargets.targetCwds);
           requiresBaseCwd = requiresBaseCwd || nestedTargets.requiresBaseCwd;
         }
+        continue;
+      }
+
+      const interpreterCommands = getInterpreterLiteralGitCommands(normalizedStage, tokens)
+        .filter((interpreterCommand) => isReviewGatedCommand(interpreterCommand));
+      if (interpreterCommands.length > 0) {
+        for (const interpreterCommand of interpreterCommands) {
+          const interpreterTargets = getReviewGatedCommandTargets(interpreterCommand, gitCommandBaseCwd, depth + 1);
+          targetCwds.push(...interpreterTargets.targetCwds);
+          requiresBaseCwd = requiresBaseCwd || interpreterTargets.requiresBaseCwd;
+        }
+        continue;
+      }
+      if (hasInterpreterReviewGatedGitLifecycleCommand(normalizedStage, tokens)) {
+        targetCwds.push("\0unresolved-interpreter-review-target");
         continue;
       }
 
@@ -4306,13 +4919,26 @@ function getReviewGatedCommandTargets(command, baseCwd, depth = 0) {
         continue;
       }
 
-      const gitSubcommand = getGitSubcommandName(tokens, gitSubcommandIndex);
-      if (gitSubcommand !== "commit" && gitSubcommand !== "merge") {
+      const rawGitSubcommand = normalizeAgentValue(stripOuterQuotes(tokens[gitSubcommandIndex]));
+      const gitBaseCwd = getGitGlobalCwdOption(tokens, 0, gitCommandBaseCwd, gitEnvContext) || gitCommandBaseCwd || process.cwd();
+      const configuredAliasValue = getConfiguredGitAliasValue(gitBaseCwd, rawGitSubcommand);
+      if (configuredAliasValue && configuredAliasValue.trim().startsWith("!")) {
+        const aliasTargets = getReviewGatedCommandTargets(configuredAliasValue.trim().slice(1), gitBaseCwd, depth + 1);
+        if (aliasTargets.targetCwds.length === 0 && !aliasTargets.requiresBaseCwd) {
+          targetCwds.push("\0unresolved-configured-git-alias");
+        } else {
+          targetCwds.push(...aliasTargets.targetCwds);
+          requiresBaseCwd = requiresBaseCwd || aliasTargets.requiresBaseCwd;
+        }
         continue;
       }
 
-      const rawGitSubcommand = normalizeAgentValue(stripOuterQuotes(tokens[gitSubcommandIndex]));
-      const gitBaseCwd = getGitGlobalCwdOption(tokens, 0, gitCommandBaseCwd, gitEnvContext) || gitCommandBaseCwd || process.cwd();
+      const gitSubcommand = getConfiguredGitAliasSubcommand(configuredAliasValue) ||
+        getGitSubcommandName(tokens, gitSubcommandIndex);
+      if (!isReviewGatedGitSubcommand(gitSubcommand, tokens, gitSubcommandIndex)) {
+        continue;
+      }
+
       const shellAliasCommand = getGitShellAliasCommand(tokens, gitSubcommandIndex, rawGitSubcommand);
       if (shellAliasCommand) {
         const aliasTargets = getReviewGatedCommandTargets(shellAliasCommand, gitBaseCwd, depth + 1);
@@ -4466,6 +5092,72 @@ function hasControlFlowReviewGatedCommand(command) {
   }
 
   return false;
+}
+
+function getPowerShellNestedCommand(tokens) {
+  const plainCommand = getOptionRemainderValue(tokens, ["-command", "-c"]);
+  if (plainCommand) {
+    return plainCommand;
+  }
+
+  const encodedOptionPrefixes = expandPowerShellOptionPrefixes(["-encodedcommand"]);
+  for (let index = 1; index < tokens.length; index += 1) {
+    const rawToken = stripOuterQuotes(tokens[index]);
+    const normalizedToken = normalizeAgentValue(rawToken);
+    let encodedValue = "";
+    if (encodedOptionPrefixes.includes(normalizedToken) && index + 1 < tokens.length) {
+      encodedValue = stripOuterQuotes(tokens[index + 1]);
+    } else {
+      for (const optionName of encodedOptionPrefixes) {
+        if (normalizedToken.startsWith(optionName + "=") || normalizedToken.startsWith(optionName + ":")) {
+          encodedValue = rawToken.slice(optionName.length + 1);
+          break;
+        }
+      }
+    }
+
+    if (!encodedValue || !/^[A-Za-z0-9+/]+={0,2}$/u.test(encodedValue)) {
+      continue;
+    }
+    try {
+      return Buffer.from(encodedValue, "base64").toString("utf16le").replace(/^\uFEFF/u, "");
+    } catch {
+      return "";
+    }
+  }
+
+  return "";
+}
+
+function getBraceBlockBodies(command) {
+  const source = String(command || "");
+  const bodies = [];
+  const stack = [];
+  let quote = "";
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    if (quote) {
+      if (char === quote && source[index - 1] !== "\\") {
+        quote = "";
+      }
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (char === "{") {
+      stack.push(index + 1);
+      continue;
+    }
+    if (char === "}" && stack.length > 0) {
+      const start = stack.pop();
+      if (stack.length === 0 && start < index) {
+        bodies.push(source.slice(start, index).trim());
+      }
+    }
+  }
+  return bodies.filter(Boolean);
 }
 
 function hasControlFlowLifecycleTokens(tokens) {
@@ -4859,6 +5551,12 @@ function getShellCommandSubstitutionCommands(stage) {
   }
 
   return commands;
+}
+
+function materializeConstantExecutableSubstitutions(command) {
+  return String(command || "")
+    .replace(/\$\(\s*(?:echo|printf(?:\s+['"]?%s['"]?)?)\s+['"]?(git|codex)['"]?\s*\)/giu, "$1")
+    .replace(/`\s*(?:echo|printf(?:\s+['"]?%s['"]?)?)\s+['"]?(git|codex)['"]?\s*`/giu, "$1");
 }
 
 function readBalancedShellCommandSubstitution(source, startIndex) {

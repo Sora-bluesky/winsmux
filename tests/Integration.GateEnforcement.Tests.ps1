@@ -137,6 +137,10 @@ Describe 'sh-orchestra-gate integration' {
             foreach ($entry in $Environment.GetEnumerator()) {
                 $startInfo.Environment[$entry.Key] = [string]$entry.Value
             }
+            $fixtureBin = Join-Path $RepoRoot '.winsmux-test-bin'
+            if (Test-Path -LiteralPath $fixtureBin -PathType Container) {
+                $startInfo.Environment['PATH'] = $fixtureBin + [System.IO.Path]::PathSeparator + $startInfo.Environment['PATH']
+            }
             if ($DisableStartupGate) {
                 $startInfo.Environment['WINSMUX_DISABLE_ORCHESTRA_STARTUP_GATE'] = '1'
             }
@@ -178,15 +182,70 @@ Describe 'sh-orchestra-gate integration' {
             & git -C $repoRoot -c user.name='Test User' -c user.email='test@example.com' commit -m 'init' | Out-Null
             & git -C $repoRoot checkout -b 'feature/review-gate' | Out-Null
             New-Item -ItemType Directory -Path (Join-Path $repoRoot '.winsmux') -Force | Out-Null
+            $fixtureBin = Join-Path $repoRoot '.winsmux-test-bin'
+            New-Item -ItemType Directory -Path $fixtureBin -Force | Out-Null
+            Write-GateTestFile -Path (Join-Path $fixtureBin 'winsmux.cmd') -Content @'
+@echo off
+pwsh -NoProfile -Command "$t=[char]9; [Console]::WriteLine(([char]36).ToString()+'1'+$t+'winsmux-gate'+$t+([char]37).ToString()+'1'+$t+'Bootstrap'); [Console]::WriteLine(([char]36).ToString()+'1'+$t+'winsmux-gate'+$t+([char]37).ToString()+'4'+$t+'Reviewer Pane')"
+'@
+
+            $generationId = 'gate-generation'
+            $serverSessionId = '$1'
+            $bootstrapPid = $PID
+            $bootstrapProcess = Get-CimInstance -ClassName Win32_Process -Filter ("ProcessId = {0}" -f $bootstrapPid) -ErrorAction Stop
+            $bootstrapStartedAt = ([datetime]$bootstrapProcess.CreationDate).ToUniversalTime().ToString('o')
+            $markerPath = Join-Path $repoRoot '.winsmux\reviewer-bootstrap.json'
+            $marker = [ordered]@{
+                state = 'ready'; generation_id = $generationId; server_session_id = $serverSessionId
+                slot_id = 'reviewer-1'; pane_id = '%4'; backend = 'local'; role = 'reviewer'; title = 'Reviewer Pane'
+                bootstrap_pid = $bootstrapPid; bootstrap_process_started_at = $bootstrapStartedAt
+            }
+            Write-GateTestFile -Path $markerPath -Content ($marker | ConvertTo-Json -Depth 8)
+
+            $approvedLaunch = ([ordered]@{ agent = 'local-reviewer'; worker_backend = 'local'; worker_role = 'reviewer' } | ConvertTo-Json -Compress)
             Write-GateTestFile -Path (Join-Path $repoRoot '.winsmux\manifest.yaml') -Content @"
+version: 2
 session:
-  name: 'winsmux-orchestra'
+  name: 'winsmux-gate'
   project_dir: '$repoRoot'
+  generation_id: '$generationId'
+  server_session_id: '$serverSessionId'
+  bootstrap_pane_id: '%1'
+  expected_pane_count: 1
+  session_ready: 'true'
 panes:
   reviewer-1:
+    slot_id: 'reviewer-1'
     pane_id: '%4'
-    role: Reviewer
+    worker_backend: 'local'
+    worker_role: 'reviewer'
+    role: 'Reviewer'
+    title: 'Reviewer Pane'
+    status: 'ready'
+    runtime_ready: 'true'
+    bootstrap_marker_path: '$markerPath'
+    approved_launch: '$approvedLaunch'
+tasks:
+  queued: []
+  in_progress: []
+  completed: []
+worktrees: {}
 "@
+
+            $now = (Get-Date).ToUniversalTime()
+            $registry = [ordered]@{
+                schema_version = 1; status = 'active'; session_name = 'winsmux-gate'; server_session_id = $serverSessionId
+                bootstrap_pane_id = '%1'; generation_id = $generationId; expected_pane_count = 1
+                supervisor = [ordered]@{ pid = $bootstrapPid; process_started_at = $bootstrapStartedAt }
+                lease = [ordered]@{ state = 'active'; expires_at = $now.AddMinutes(5).ToString('o') }
+                panes = @([ordered]@{
+                    label = 'reviewer-1'; slot_id = 'reviewer-1'; pane_id = '%4'; backend = 'local'; role = 'reviewer'
+                    title = 'Reviewer Pane'; state = 'live'; bootstrap_pid = $bootstrapPid
+                    bootstrap_process_started_at = $bootstrapStartedAt; marker_path = $markerPath
+                })
+                updated_at = $now.ToString('o')
+            }
+            Write-GateTestFile -Path (Join-Path $repoRoot '.winsmux\runtime-registry.json') -Content ($registry | ConvertTo-Json -Depth 12)
 
             return [PSCustomObject]@{
                 Root     = $fixtureRoot
@@ -270,6 +329,29 @@ panes:
             Write-GateTestFile -Path $reviewStatePath -Content ($state | ConvertTo-Json -Depth 10)
 
             return $reviewStatePath
+        }
+
+        function Set-GatePass {
+            param(
+                [Parameter(Mandatory = $true)][string]$RepoRoot,
+                [Parameter(Mandatory = $true)][string]$Branch
+            )
+
+            $headSha = Get-GateFixtureHeadSha -RepoRoot $RepoRoot
+            Set-GateReviewState -RepoRoot $RepoRoot -Branch $Branch -Entry ([ordered]@{
+                status   = 'PASS'
+                head_sha = $headSha
+                request  = [ordered]@{
+                    branch                  = $Branch
+                    head_sha                = $headSha
+                    target_reviewer_pane_id = '%4'
+                }
+                reviewer = [ordered]@{
+                    role    = 'Reviewer'
+                    pane_id = '%4'
+                }
+                updatedAt = '2026-07-16T19:30:00.0000000+09:00'
+            }) | Out-Null
         }
     }
 
@@ -1550,9 +1632,15 @@ EOF
         $result.OutputObject.systemMessage | Should -Match 'review-approve'
     }
 
-    It 'allows git commit after review-approve records PASS for the current branch' {
+    It 'allows and creates one-file git commit after same-head review PASS' {
         $fixture = New-GateFixture
         $script:FixtureRoot = $fixture.Root
+
+        $winsmuxProbe = @(& (Join-Path $fixture.RepoRoot '.winsmux-test-bin\winsmux.cmd') 'list-panes')
+        $winsmuxProbe | Should -Be @(
+            ('$1' + "`t" + 'winsmux-gate' + "`t" + '%1' + "`t" + 'Bootstrap'),
+            ('$1' + "`t" + 'winsmux-gate' + "`t" + '%4' + "`t" + 'Reviewer Pane')
+        )
 
         $reviewerEnv = @{
             WINSMUX_ROLE      = 'Reviewer'
@@ -1561,18 +1649,26 @@ EOF
             WINSMUX_AGENT_NAME = 'codex'
         }
 
+        Write-GateTestFile -Path (Join-Path $fixture.RepoRoot 'approved-change.txt') -Content 'approved change'
+        & git -C $fixture.RepoRoot add -- approved-change.txt
+        $LASTEXITCODE | Should -Be 0
+        @(& git -C $fixture.RepoRoot diff --cached --name-only) | Should -Be @('approved-change.txt')
+
         $requestResult = & $script:InvokeWinsmuxCore -RepoRoot $fixture.RepoRoot -Arguments @('review-request') -Environment $reviewerEnv
-        $requestResult.ExitCode | Should -Be 0
+        $requestResult.ExitCode | Should -Be 0 -Because $requestResult.StdErr
 
         $approveResult = & $script:InvokeWinsmuxCore -RepoRoot $fixture.RepoRoot -Arguments @('review-approve') -Environment $reviewerEnv
-        $approveResult.ExitCode | Should -Be 0
+        $approveResult.ExitCode | Should -Be 0 -Because $approveResult.StdErr
 
         $reviewStatePath = Join-Path $fixture.RepoRoot '.winsmux\review-state.json'
         Test-Path -LiteralPath $reviewStatePath | Should -Be $true
         $reviewState = Get-Content -LiteralPath $reviewStatePath -Raw -Encoding UTF8 | ConvertFrom-Json
         $reviewState.'feature/review-gate'.status | Should -Be 'PASS'
-        $reviewState.'feature/review-gate'.reviewer.role | Should -Be 'Reviewer'
+        $reviewState.'feature/review-gate'.reviewer.role | Should -Be 'reviewer'
         $reviewState.'feature/review-gate'.reviewer.pane_id | Should -Be '%4'
+        $reviewState.'feature/review-gate'.reviewer.agent_name | Should -Be 'local-reviewer'
+        $reviewState.'feature/review-gate'.reviewer.backend | Should -Be 'local'
+        $reviewState.'feature/review-gate'.reviewer.generation_id | Should -Be 'gate-generation'
         $reviewState.'feature/review-gate'.request.head_sha | Should -Not -BeNullOrEmpty
         $reviewState.'feature/review-gate'.request.target_reviewer_pane_id | Should -Be '%4'
         $reviewState.'feature/review-gate'.request.review_contract.source_task | Should -Be 'TASK-210'
@@ -1581,6 +1677,8 @@ EOF
         $reviewState.'feature/review-gate'.evidence.approved_at | Should -Not -BeNullOrEmpty
         $reviewState.'feature/review-gate'.evidence.approved_via | Should -Be 'winsmux review-approve'
         $reviewState.'feature/review-gate'.evidence.review_contract_snapshot.required_scope | Should -Be @('design_impact', 'replacement_coverage', 'orphaned_artifacts', 'pathspec_completeness')
+        $reviewedHead = [string]$reviewState.'feature/review-gate'.request.head_sha
+        $reviewedHead | Should -Be (Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot)
 
         $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
             command = 'git commit -m "feat: approved"'
@@ -1588,6 +1686,66 @@ EOF
 
         $result.ExitCode | Should -Be 0
         $result.StdErr | Should -Be ''
+
+        & git -C $fixture.RepoRoot -c user.name='Test User' -c user.email='test@example.com' commit -m 'feat: approved'
+        $LASTEXITCODE | Should -Be 0
+
+        $committedHead = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+        $committedHead | Should -Not -Be $reviewedHead
+        (& git -C $fixture.RepoRoot rev-parse "$committedHead^").Trim() | Should -Be $reviewedHead
+        @(& git -C $fixture.RepoRoot diff-tree --no-commit-id --name-only -r $committedHead) | Should -Be @('approved-change.txt')
+    }
+
+    It 'rejects approval from a different pane without changing PENDING or HEAD' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $reviewerEnv = @{
+            WINSMUX_ROLE = 'Reviewer'; WINSMUX_PANE_ID = '%4'; WINSMUX_ROLE_MAP = '{"%4":"Reviewer"}'
+            WINSMUX_AGENT_NAME = 'spoofed-agent'
+        }
+        $requestResult = & $script:InvokeWinsmuxCore -RepoRoot $fixture.RepoRoot -Arguments @('review-request') -Environment $reviewerEnv
+        $requestResult.ExitCode | Should -Be 0 -Because $requestResult.StdErr
+
+        $reviewStatePath = Join-Path $fixture.RepoRoot '.winsmux\review-state.json'
+        $beforeState = [Convert]::ToBase64String([IO.File]::ReadAllBytes($reviewStatePath))
+        $beforeHead = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+        $otherPaneEnv = @{
+            WINSMUX_ROLE = 'Reviewer'; WINSMUX_PANE_ID = '%9'; WINSMUX_ROLE_MAP = '{"%9":"Reviewer"}'
+            WINSMUX_AGENT_NAME = 'local-reviewer'
+        }
+
+        $approveResult = & $script:InvokeWinsmuxCore -RepoRoot $fixture.RepoRoot -Arguments @('review-approve') -Environment $otherPaneEnv
+        $approveResult.ExitCode | Should -Be 1
+        $approveResult.StdErr | Should -Match 'Pane %9 was not found'
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($reviewStatePath)) | Should -Be $beforeState
+        (Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot) | Should -Be $beforeHead
+    }
+
+    It 'rejects approval after HEAD changes without changing PENDING or the new HEAD' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $reviewerEnv = @{
+            WINSMUX_ROLE = 'Reviewer'; WINSMUX_PANE_ID = '%4'; WINSMUX_ROLE_MAP = '{"%4":"Reviewer"}'
+            WINSMUX_AGENT_NAME = 'spoofed-agent'
+        }
+        $requestResult = & $script:InvokeWinsmuxCore -RepoRoot $fixture.RepoRoot -Arguments @('review-request') -Environment $reviewerEnv
+        $requestResult.ExitCode | Should -Be 0 -Because $requestResult.StdErr
+
+        Write-GateTestFile -Path (Join-Path $fixture.RepoRoot 'head-change.txt') -Content 'new head'
+        & git -C $fixture.RepoRoot add -- head-change.txt
+        $LASTEXITCODE | Should -Be 0
+        $noHooks = Join-Path $fixture.RepoRoot '.git\no-hooks'
+        & git -C $fixture.RepoRoot -c "core.hooksPath=$noHooks" -c user.name='Test User' -c user.email='test@example.com' commit -m 'test: advance head'
+        $LASTEXITCODE | Should -Be 0
+
+        $reviewStatePath = Join-Path $fixture.RepoRoot '.winsmux\review-state.json'
+        $beforeState = [Convert]::ToBase64String([IO.File]::ReadAllBytes($reviewStatePath))
+        $advancedHead = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+        $approveResult = & $script:InvokeWinsmuxCore -RepoRoot $fixture.RepoRoot -Arguments @('review-approve') -Environment $reviewerEnv
+        $approveResult.ExitCode | Should -Be 1
+        $approveResult.StdErr | Should -Match 'head mismatch'
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($reviewStatePath)) | Should -Be $beforeState
+        (Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot) | Should -Be $advancedHead
     }
 
     It 'uses tool input cwd for review-gated git lifecycle checks' {
@@ -4858,5 +5016,321 @@ EOF
         $reviewState.'feature/review-gate'.evidence.failed_at | Should -Not -BeNullOrEmpty
         $reviewState.'feature/review-gate'.evidence.failed_via | Should -Be 'winsmux review-fail'
         $reviewState.'feature/review-gate'.evidence.review_contract_snapshot.required_scope | Should -Be @('design_impact', 'replacement_coverage', 'orphaned_artifacts', 'pathspec_completeness')
+    }
+
+    It 'TASK-783 C03 allows lifecycle commands that resolve only to an unrelated repository' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Name 'unrelated-repo'
+        Remove-Item -LiteralPath (Join-Path $target.RepoRoot '.winsmux') -Recurse -Force
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+            command = ('git -C "{0}" commit -m unrelated' -f $target.RepoRoot)
+        }
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+        $result.OutputObject | Should -BeNullOrEmpty
+    }
+
+    It 'TASK-783 C08 denies constant wrapper lifecycle bypasses for an unreviewed managed target' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Name 'managed-target'
+        Set-GatePass -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch
+
+        $commands = @(
+            'time git -C "{0}" commit -m x',
+            'command git -C "{0}" commit -m x',
+            'exec git -C "{0}" commit -m x',
+            'nohup git -C "{0}" commit -m x',
+            'nohup -- git -C "{0}" commit -m x',
+            'timeout 10 git -C "{0}" commit -m x',
+            'timeout -k 2 10 git -C "{0}" commit -m x',
+            'stdbuf -oL git -C "{0}" commit -m x',
+            'stdbuf -o L git -C "{0}" commit -m x',
+            'nice git -C "{0}" commit -m x',
+            'nice -n 5 git -C "{0}" commit -m x',
+            'ionice git -C "{0}" commit -m x',
+            'ionice -c 2 -n 7 git -C "{0}" commit -m x',
+            'setsid git -C "{0}" commit -m x',
+            'setsid -f git -C "{0}" commit -m x',
+            'sudo git -C "{0}" commit -m x',
+            'sudo -u root git -C "{0}" commit -m x',
+            'eval ''git -C "{0}" commit -m x''',
+            'script -q -c ''git -C "{0}" commit -m x'' /dev/null'
+        )
+        $allowed = @()
+        foreach ($template in $commands) {
+            $command = $template -f $target.RepoRoot
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
+            if ($null -eq $result.OutputObject -or $result.OutputObject.hookSpecificOutput.permissionDecision -ne 'deny') {
+                $allowed += $command
+            }
+        }
+
+        ($allowed -join "`n") | Should -Be ''
+    }
+
+    It 'TASK-783 C10 denies constant command-substitution Git executables for an unreviewed managed target' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Name 'substitution-target'
+        Set-GatePass -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch
+        $commands = @(
+            ('$(echo git) -C "{0}" commit -m substitution-bypass' -f $target.RepoRoot),
+            ('`echo git` -C "{0}" commit -m backtick-bypass' -f $target.RepoRoot)
+        )
+        $allowed = @()
+        foreach ($command in $commands) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
+            if ($null -eq $result.OutputObject -or $result.OutputObject.hookSpecificOutput.permissionDecision -ne 'deny') {
+                $allowed += $command
+            }
+        }
+
+        ($allowed -join "`n") | Should -Be ''
+    }
+
+    It 'TASK-783 C12 denies an executable heredoc lifecycle body without PASS' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $command = @'
+bash <<'EOF'
+git commit -m heredoc-bypass
+EOF
+'@
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
+        & $script:AssertDenyResult -Result $result
+
+        $target = New-GateTargetRepo -Root $fixture.Root -Name 'heredoc-target'
+        Set-GatePass -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch
+        $targetCommand = "bash <<'EOF'`ngit -C `"$($target.RepoRoot)`" commit -m heredoc-target-bypass`nEOF"
+        $targetResult = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $targetCommand }
+        & $script:AssertDenyResult -Result $targetResult
+
+        $literalResult = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = @'
+cat <<'EOF'
+git commit -m literal-only
+EOF
+'@ }
+        $literalResult.OutputObject | Should -BeNullOrEmpty
+    }
+
+    It 'TASK-783 C13 denies a repository gitconfig commit alias without PASS' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        & git -C $fixture.RepoRoot config alias.cm commit
+        if ($LASTEXITCODE -ne 0) { throw 'unable to configure synthetic Git alias' }
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'git cm -m alias-bypass' }
+        & $script:AssertDenyResult -Result $result
+
+        $globalConfig = Join-Path $fixture.Root 'synthetic-global-gitconfig'
+        & git config --file $globalConfig alias.gcm commit
+        if ($LASTEXITCODE -ne 0) { throw 'unable to configure synthetic global Git alias' }
+        $globalAlias = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'git gcm -m global-alias-bypass' } -Environment @{
+            GIT_CONFIG_GLOBAL = $globalConfig
+        }
+        & $script:AssertDenyResult -Result $globalAlias
+
+        Set-GatePass -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch
+        $approved = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'git cm -m alias-approved' }
+        $approved.OutputObject | Should -BeNullOrEmpty
+
+        $target = New-GateTargetRepo -Root $fixture.Root -Name 'alias-target'
+        & git -C $target.RepoRoot config alias.cm commit
+        $targetDenied = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+            command = ('env -C "{0}" git cm -m target-alias-bypass' -f $target.RepoRoot)
+        }
+        & $script:AssertDenyResult -Result $targetDenied
+
+        Set-GatePass -RepoRoot $target.RepoRoot -Branch $target.Branch
+        $targetApproved = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+            command = ('env -C "{0}" git cm -m target-alias-approved' -f $target.RepoRoot)
+        }
+        $targetApproved.OutputObject | Should -BeNullOrEmpty
+    }
+
+    It 'TASK-783 C14 denies constant indirect interpreter lifecycle payloads without PASS' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $commands = @(
+            'echo ''git commit -m pipe-bypass'' | bash',
+            'bash -s <<< ''git commit -m here-string-bypass''',
+            'node -e "require(''child_process'').execSync(''git commit -m node-bypass'')"',
+            'python -c "import os; os.system(''git commit -m python-bypass'')"'
+        )
+        $allowed = @()
+        foreach ($command in $commands) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
+            if ($null -eq $result.OutputObject -or $result.OutputObject.hookSpecificOutput.permissionDecision -ne 'deny') {
+                $allowed += $command
+            }
+        }
+
+        ($allowed -join "`n") | Should -Be ''
+
+        $target = New-GateTargetRepo -Root $fixture.Root -Name 'interpreter-target'
+        Set-GatePass -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch
+        $targetPath = $target.RepoRoot.Replace('\', '/')
+        $targetCommand = 'node -e "require(''child_process'').execSync(''git -C {0} commit -m interpreter-target-bypass'')"' -f $targetPath
+        $targetResult = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $targetCommand }
+        & $script:AssertDenyResult -Result $targetResult
+
+        $readOnlyResult = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+            command = 'node -e "require(''child_process'').execSync(''git status --short'')"'
+        }
+        $readOnlyResult.OutputObject | Should -BeNullOrEmpty
+
+    }
+
+    It 'TASK-783 C15 denies PowerShell EncodedCommand lifecycle payloads without PASS' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes('git commit -m encoded-bypass'))
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+            command = "pwsh -EncodedCommand $encoded"
+        }
+
+        & $script:AssertDenyResult -Result $result
+    }
+
+    It 'TASK-783 C16 denies GitHub merge and ref writes explicitly targeting another repository' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        Set-GatePass -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch
+        $commands = @(
+            'gh pr merge 1 -R other/repo --squash',
+            'gh pr merge https://github.com/other/repo/pull/1 --squash',
+            'GH_REPO=other/repo gh pr merge 1 --squash',
+            'env GH_REPO=other/repo gh pr merge 1 --squash',
+            'pwsh -Command "$env:GH_REPO=''other/repo''; gh pr merge 1 --squash"',
+            'gh api -X PUT repos/other/repo/pulls/1/merge',
+            'gh api -X PATCH repos/other/repo/git/refs/heads/main'
+        )
+        $allowed = @()
+        foreach ($command in $commands) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
+            if ($null -eq $result.OutputObject -or $result.OutputObject.hookSpecificOutput.permissionDecision -ne 'deny') {
+                $allowed += $command
+            }
+        }
+
+        ($allowed -join "`n") | Should -Be ''
+
+        & git -C $fixture.RepoRoot remote add origin https://github.com/Sora-bluesky/winsmux.git
+        if ($LASTEXITCODE -ne 0) { throw 'unable to configure synthetic origin' }
+        foreach ($command in @(
+                'gh pr merge 1 -R Sora-bluesky/winsmux --squash',
+                'gh pr merge https://github.com/Sora-bluesky/winsmux/pull/1 --squash',
+                'GH_REPO=Sora-bluesky/winsmux gh pr merge 1 --squash',
+                'env GH_REPO=Sora-bluesky/winsmux gh pr merge 1 --squash',
+                'pwsh -Command "$env:GH_REPO=''Sora-bluesky/winsmux''; gh pr merge 1 --squash"',
+                'gh api -X PUT repos/Sora-bluesky/winsmux/pulls/1/merge'
+            )) {
+            $approved = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
+            $approved.OutputObject | Should -BeNullOrEmpty
+        }
+    }
+
+    It 'TASK-783 C17 requires PASS for managed repository ref writes' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $commands = @(
+            'git push origin feature/review-gate',
+            'git push origin feature/review-gate # bump-version',
+            'git commit -m "chore: bump version to 0.0.0"',
+            'cmd /c call git push origin feature/review-gate',
+            'cmd /c @call gh pr merge 1 --squash',
+            'git update-ref refs/heads/demo HEAD',
+            'git branch -f demo HEAD',
+            'git branch demo HEAD',
+            'git tag -f demo HEAD'
+        )
+        $allowed = @()
+        foreach ($command in $commands) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
+            if ($null -eq $result.OutputObject -or $result.OutputObject.hookSpecificOutput.permissionDecision -ne 'deny') {
+                $allowed += $command
+            }
+        }
+
+        ($allowed -join "`n") | Should -Be ''
+
+        foreach ($command in @('git branch --list', 'git tag --list', 'rg -n ''git push'' docs')) {
+            $readOnly = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
+            $readOnly.OutputObject | Should -BeNullOrEmpty
+        }
+
+        Set-GatePass -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch
+        foreach ($command in $commands) {
+            $approved = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
+            $approved.OutputObject | Should -BeNullOrEmpty
+        }
+    }
+
+    It 'TASK-783 C19 denies executable-position Codex dispatches across constant wrappers' {
+        $commands = @(
+            'codex exec review',
+            'env codex exec review',
+            'command codex exec review',
+            'bash -lc ''codex exec review''',
+            'pwsh -Command "codex exec review"',
+            'pwsh -Command "Start-Process codex -ArgumentList exec"',
+            'pwsh -Command "saps codex -Args exec"',
+            'pwsh -Command "Start-Process (Get-Command codex) -ArgumentList exec"',
+            'cmd /c call codex exec review',
+            'cmd /c @call codex exec review',
+            '$(echo codex) exec review',
+            '`echo codex` exec review',
+            "bash <<'EOF'`ncodex exec review`nEOF",
+            'node -e "require(''child_process'').execSync(''codex exec review'')"',
+            'node -e "require(''child_process'').spawnSync(''codex'', [''exec'', ''review''])"',
+            'python -c "import subprocess; subprocess.run([''codex'', ''exec'', ''review''])"',
+            'python -c "import subprocess; subprocess.run((''codex'', ''exec'', ''review''))"'
+        )
+        $allowed = @()
+        foreach ($command in $commands) {
+            $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{ command = $command }
+            if ($null -eq $result.OutputObject -or $result.OutputObject.hookSpecificOutput.permissionDecision -ne 'deny') {
+                $allowed += $command
+            }
+        }
+
+        ($allowed -join "`n") | Should -Be ''
+    }
+
+    It 'TASK-783 C20-C21 allows read-only Codex text and sanctioned companion-shaped input without name allowlists' {
+        foreach ($command in @(
+                'rg -n ''codex exec'' docs',
+                'git grep ''codex exec'' -- docs',
+                'rg -n ''git commit'' docs',
+                'git grep ''gh pr merge'' -- docs',
+                'node companion-runtime.js --payload ''codex exec review''',
+                'node -e "require(''child_process'').spawnSync(''helper'', [''codex'', ''exec''])"',
+                'python -c "import subprocess; subprocess.run([''helper'', ''codex'', ''exec''])"',
+                'python -c "import subprocess; subprocess.run((''helper'', ''codex'', ''exec''))"',
+                'pwsh -Command "Start-Process helper -ArgumentList codex,exec"',
+                'cmd /c echo call codex exec review'
+            )) {
+            $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{ command = $command }
+            $result.ExitCode | Should -Be 0
+            $result.StdErr | Should -Be ''
+            $result.OutputObject | Should -BeNullOrEmpty
+        }
+    }
+
+    It 'TASK-783 C09 denies PowerShell block cwd changes to an unreviewed managed target' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Name 'powershell-target'
+        Set-GatePass -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+            command = ('pwsh -Command "if ($true) {{ Set-Location ''{0}''; git commit -m x }}"' -f $target.RepoRoot)
+        }
+
+        & $script:AssertDenyResult -Result $result
     }
 }
