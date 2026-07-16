@@ -77,8 +77,11 @@ function Get-PaneControlValue {
         return $InputObject[$Name]
     }
 
-    if ($null -ne $InputObject.PSObject -and $InputObject.PSObject.Properties.Name -contains $Name) {
-        return $InputObject.$Name
+    if ($null -ne $InputObject.PSObject) {
+        $property = $InputObject.PSObject.Properties[$Name]
+        if ($null -ne $property) {
+            return $property.Value
+        }
     }
 
     return $Default
@@ -576,6 +579,71 @@ function Get-PaneControlManifestContext {
 
     $manifestPath = Join-Path (Join-Path $ProjectDir '.winsmux') 'manifest.yaml'
     throw "Pane $PaneId was not found in manifest: $manifestPath"
+}
+
+function Get-PaneControlVerifiedReviewIdentity {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$PaneId,
+        [AllowEmptyString()][string]$ExpectedGenerationId = ''
+    )
+
+    $manifestEntry = Get-PaneControlManifestContext -ProjectDir $ProjectDir -PaneId $PaneId
+    $runtimeValidation = Test-PaneControlRuntimeContext -ProjectDir $ProjectDir -ManifestEntry $manifestEntry -Operation caller_ack
+    if ($null -eq $runtimeValidation -or -not [bool](Get-PaneControlValue -InputObject $runtimeValidation -Name 'valid' -Default $false)) {
+        $reasonCode = [string](Get-PaneControlValue -InputObject $runtimeValidation -Name 'reason_code' -Default 'caller_identity_mismatch')
+        $diagnostic = [string](Get-PaneControlValue -InputObject $runtimeValidation -Name 'diagnostic' -Default 'Review caller identity could not be verified.')
+        throw ("review identity refused ({0}): {1}" -f $reasonCode, $diagnostic)
+    }
+
+    $runtime = Get-PaneControlValue -InputObject $runtimeValidation -Name 'context' -Default $null
+    $generationId = [string](Get-PaneControlValue -InputObject $runtime -Name 'generation_id' -Default '')
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedGenerationId) -and
+        -not [string]::Equals($generationId, $ExpectedGenerationId, [System.StringComparison]::Ordinal)) {
+        throw 'review identity refused (caller_identity_mismatch): Runtime generation changed before the review-state write.'
+    }
+
+    $runtimeRole = ([string](Get-PaneControlValue -InputObject $runtime -Name 'role' -Default '')).Trim().ToLowerInvariant()
+    if ($runtimeRole -notin @('reviewer', 'worker')) {
+        throw "review identity refused (caller_identity_mismatch): Pane $PaneId is not review-capable in the live runtime."
+    }
+
+    $approvedLaunch = Get-PaneControlValue -InputObject $manifestEntry -Name 'ApprovedLaunch' -Default $null
+    $agentName = ([string](Get-PaneControlValue -InputObject $approvedLaunch -Name 'agent' -Default '')).Trim()
+    if ([string]::IsNullOrWhiteSpace($agentName)) {
+        throw "review identity refused (manifest_regeneration_required): Pane $PaneId has no approved-launch agent identity."
+    }
+
+    $backend = ([string](Get-PaneControlValue -InputObject $runtime -Name 'backend' -Default '')).Trim().ToLowerInvariant()
+    if ($backend -notin @('local', 'codex')) {
+        throw "review identity refused (caller_identity_mismatch): Backend '$backend' has no authenticated caller-ancestry contract."
+    }
+    $approvedBackend = ([string](Get-PaneControlValue -InputObject $approvedLaunch -Name 'worker_backend' -Default '')).Trim().ToLowerInvariant()
+    if (-not [string]::IsNullOrWhiteSpace($approvedBackend) -and $approvedBackend -cne $backend) {
+        throw 'review identity refused (runtime_target_mismatch): Approved-launch backend does not match the live runtime.'
+    }
+    $approvedRole = ([string](Get-PaneControlValue -InputObject $approvedLaunch -Name 'worker_role' -Default '')).Trim().ToLowerInvariant()
+    if (-not [string]::IsNullOrWhiteSpace($approvedRole) -and $approvedRole -cne $runtimeRole) {
+        throw 'review identity refused (runtime_target_mismatch): Approved-launch role does not match the live runtime.'
+    }
+
+    return [PSCustomObject][ordered]@{
+        ManifestPath        = [string](Get-PaneControlValue -InputObject $manifestEntry -Name 'ManifestPath' -Default '')
+        GenerationId        = $generationId
+        ServerSessionId     = [string](Get-PaneControlValue -InputObject $runtime -Name 'server_session_id' -Default '')
+        ProjectDir          = [string](Get-PaneControlValue -InputObject $manifestEntry -Name 'ProjectDir' -Default $ProjectDir)
+        Label               = [string](Get-PaneControlValue -InputObject $manifestEntry -Name 'Label' -Default '')
+        SlotId              = [string](Get-PaneControlValue -InputObject $runtime -Name 'slot_id' -Default '')
+        PaneId              = [string](Get-PaneControlValue -InputObject $runtime -Name 'pane_id' -Default '')
+        Role                = $runtimeRole
+        CanonicalRole       = [string](Get-PaneControlValue -InputObject $manifestEntry -Name 'Role' -Default '')
+        AgentName           = $agentName
+        Backend             = $backend
+        Title               = [string](Get-PaneControlValue -InputObject $runtime -Name 'title' -Default '')
+        LaunchDir           = [string](Get-PaneControlValue -InputObject $manifestEntry -Name 'LaunchDir' -Default '')
+        BuilderWorktreePath = [string](Get-PaneControlValue -InputObject $manifestEntry -Name 'BuilderWorktreePath' -Default '')
+        GitWorktreeDir      = [string](Get-PaneControlValue -InputObject $manifestEntry -Name 'GitWorktreeDir' -Default '')
+    }
 }
 
 function Get-PaneControlManifestGenerationId {
