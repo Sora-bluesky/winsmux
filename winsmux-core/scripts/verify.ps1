@@ -17,11 +17,30 @@ Write-Host "[verify] Running Pester tests..." -ForegroundColor Cyan
 try {
     $testDir = Join-Path $ProjectDir 'tests'
     if (Test-Path $testDir -PathType Container) {
-        $pesterResult = Invoke-Pester -Path $testDir -Output Minimal -PassThru
-        if ($pesterResult.FailedCount -eq 0) {
-            $checks += [PSCustomObject]@{ Name = 'Pester'; Status = 'PASS'; Detail = "$($pesterResult.PassedCount) passed" }
+        $runnerPath = Join-Path $ProjectDir 'scripts\run-tests.ps1'
+        if (-not (Test-Path -LiteralPath $runnerPath -PathType Leaf)) {
+            throw "Pester runner not found: $runnerPath"
+        }
+        $verifyResults = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-verify-' + [guid]::NewGuid().ToString('N'))
+        try {
+            $pwsh = Get-Command pwsh -ErrorAction Stop | Select-Object -First 1
+            & $pwsh.Source -NoProfile -File $runnerPath -ResultsDirectory $verifyResults
+            $runnerExitCode = $LASTEXITCODE
+            $summaryPath = Join-Path $verifyResults 'summary.json'
+            if (-not (Test-Path -LiteralPath $summaryPath -PathType Leaf)) {
+                throw 'Pester runner did not produce summary.json.'
+            }
+            $pesterSummary = Get-Content -LiteralPath $summaryPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+        } finally {
+            if (Test-Path -LiteralPath $verifyResults) {
+                Remove-Item -LiteralPath $verifyResults -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+
+        if (($runnerExitCode -eq 0) -and ([int]$pesterSummary.failed -eq 0)) {
+            $checks += [PSCustomObject]@{ Name = 'Pester'; Status = 'PASS'; Detail = "$($pesterSummary.passed) passed" }
         } else {
-            $checks += [PSCustomObject]@{ Name = 'Pester'; Status = 'FAIL'; Detail = "$($pesterResult.FailedCount) failed" }
+            $checks += [PSCustomObject]@{ Name = 'Pester'; Status = 'FAIL'; Detail = "$($pesterSummary.failed) failed (runner exit $runnerExitCode)" }
             $allPassed = $false
         }
     } else {

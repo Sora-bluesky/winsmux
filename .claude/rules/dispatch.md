@@ -56,7 +56,16 @@ User-facing progress updates must use **operator**. `Operator` is an internal ro
 
 ## Post-Review Commit
 1. Verify `review-state.json` has PASS
-2. Run: `NO_COLOR=1 pwsh -Command "Invoke-Pester tests/ -Output Minimal"`
+2. Run the parallel gate with repo-external results, then clean the temporary evidence directory:
+   ```powershell
+   $testResults = Join-Path ([IO.Path]::GetTempPath()) ('winsmux-post-review-' + [guid]::NewGuid().ToString('N'))
+   try {
+       & pwsh -NoProfile -File scripts/run-tests.ps1 -ResultsDirectory $testResults
+       if ($LASTEXITCODE -ne 0) { throw "Pester gate failed with exit code $LASTEXITCODE" }
+   } finally {
+       if (Test-Path -LiteralPath $testResults) { Remove-Item -LiteralPath $testResults -Recurse -Force }
+   }
+   ```
 3. Collect worktree changes, commit with conventional message
 
 ## Prohibited
