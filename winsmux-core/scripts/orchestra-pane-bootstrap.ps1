@@ -6,13 +6,13 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-. (Join-Path $PSScriptRoot 'clm-safe-io.ps1')
+. (Join-Path $PSScriptRoot 'manifest.ps1')
 
 if (-not (Test-Path -LiteralPath $PlanFile)) {
     throw "Orchestra pane bootstrap plan not found: $PlanFile"
 }
 
-$plan = Get-Content -LiteralPath $PlanFile -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 8
+$plan = Get-Content -LiteralPath $PlanFile -Raw -Encoding UTF8 | ConvertFrom-Json
 
 if ([string]::IsNullOrWhiteSpace([string]$plan.launch_dir)) {
     throw "launch_dir missing in orchestra pane bootstrap plan: $PlanFile"
@@ -60,11 +60,19 @@ if (-not [string]::IsNullOrWhiteSpace($readyMarkerPath)) {
     }
 
     $markerJson = ([ordered]@{
-        pane_id       = [string]$plan.pane_id
-        startup_token = [string]$plan.startup_token
-        launch_dir    = $launchDir
-        current_dir   = (Get-Location).Path
-        written_at    = (Get-Date).ToString('o')
+        state                       = 'bootstrap_pending'
+        generation_id               = [string]$plan.generation_id
+        server_session_id           = [string]$plan.server_session_id
+        slot_id                      = [string]$plan.slot_id
+        pane_id                      = [string]$plan.pane_id
+        backend                      = [string]$plan.worker_backend
+        role                         = [string]$plan.worker_role
+        title                        = [string]$plan.pane_title
+        bootstrap_pid                = $PID
+        bootstrap_process_started_at = Get-WinsmuxRuntimeProcessStartedAt -ProcessId $PID
+        launch_dir                   = $launchDir
+        current_dir                  = (Get-Location).Path
+        written_at                   = (Get-Date).ToUniversalTime().ToString('o', [System.Globalization.CultureInfo]::InvariantCulture)
     } | ConvertTo-Json -Depth 6)
     Write-WinsmuxTextFile -Path $readyMarkerPath -Content $markerJson
 }

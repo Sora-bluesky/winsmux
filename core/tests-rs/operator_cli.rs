@@ -5987,7 +5987,7 @@ fn operator_cli_review_request_records_pending_state_and_manifest_pane() {
 }
 
 #[test]
-fn operator_cli_dispatch_review_refuses_without_strong_caller_identity() {
+fn operator_cli_dispatch_review_requires_runtime_manifest_regeneration_before_pane_send() {
     let project_dir = make_temp_project_dir("dispatch-review");
     write_manifest(&project_dir);
     init_git_branch(
@@ -6030,12 +6030,18 @@ fn operator_cli_dispatch_review_refuses_without_strong_caller_identity() {
     assert_eq!(receipt["status"], "unavailable");
     assert_eq!(receipt["backend"], "local");
     assert_eq!(receipt["target"]["label"], "reviewer-1");
-    assert_eq!(receipt["reason_code"], "caller_identity_unavailable");
+    assert_eq!(receipt["reason_code"], "manifest_regeneration_required");
+    assert!(
+        receipt["diagnostic"]
+            .as_str()
+            .is_some_and(|diagnostic| diagnostic.contains("regenerate")),
+        "runtime refusal should explain that regeneration is required: {receipt}"
+    );
     assert!(!log_path.exists(), "refusal must happen before pane send");
 }
 
 #[test]
-fn operator_cli_dispatch_review_prefers_reviewer_for_typed_packet() {
+fn operator_cli_dispatch_review_retains_reviewer_target_in_runtime_regeneration_receipt() {
     let project_dir = make_temp_project_dir("dispatch-review-prefers-reviewer-role");
     write_manifest(&project_dir);
     let manifest_path = project_dir.join(".winsmux").join("manifest.yaml");
@@ -6094,12 +6100,18 @@ panes:
     let receipt: serde_json::Value = serde_json::from_str(stdout.trim()).expect("typed receipt");
     assert_eq!(receipt["status"], "unavailable");
     assert_eq!(receipt["target"]["label"], "reviewer-1");
-    assert_eq!(receipt["reason_code"], "caller_identity_unavailable");
+    assert_eq!(receipt["reason_code"], "manifest_regeneration_required");
+    assert!(
+        receipt["diagnostic"]
+            .as_str()
+            .is_some_and(|diagnostic| diagnostic.contains("regenerate")),
+        "runtime refusal should explain that regeneration is required: {receipt}"
+    );
     assert!(!log_path.exists(), "refusal must happen before pane send");
 }
 
 #[test]
-fn operator_cli_dispatch_review_does_not_accept_stale_pending_review_state() {
+fn operator_cli_dispatch_review_refuses_before_review_state_dispatch_when_runtime_is_stale() {
     let project_dir = make_temp_project_dir("dispatch-review-stale");
     write_manifest(&project_dir);
     init_git_branch(
@@ -6121,7 +6133,7 @@ fn operator_cli_dispatch_review_does_not_accept_stale_pending_review_state() {
   }
 }"#,
     );
-    let (winsmux_bin, _log_path) = write_fake_winsmux_dispatch_review(&project_dir);
+    let (winsmux_bin, log_path) = write_fake_winsmux_dispatch_review(&project_dir);
 
     let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
         .arg("dispatch-review")
@@ -6138,7 +6150,15 @@ fn operator_cli_dispatch_review_does_not_accept_stale_pending_review_state() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let receipt: serde_json::Value = serde_json::from_str(stdout.trim()).expect("typed refusal");
     assert_eq!(receipt["status"], "unavailable");
-    assert_eq!(receipt["reason_code"], "caller_identity_unavailable");
+    assert_eq!(receipt["target"]["label"], "reviewer-1");
+    assert_eq!(receipt["reason_code"], "manifest_regeneration_required");
+    assert!(
+        receipt["diagnostic"]
+            .as_str()
+            .is_some_and(|diagnostic| diagnostic.contains("regenerate")),
+        "runtime refusal should explain that regeneration is required: {receipt}"
+    );
+    assert!(!log_path.exists(), "refusal must happen before pane send");
 }
 
 #[test]

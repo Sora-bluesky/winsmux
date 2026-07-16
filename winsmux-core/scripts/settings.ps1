@@ -13,6 +13,8 @@ Dot-source this script to load the helpers:
     . "$PSScriptRoot/settings.ps1"
 #>
 
+. (Join-Path $PSScriptRoot 'json-compat.ps1')
+
 $script:BridgeSettingsFileName = '.winsmux.yaml'
 $script:BridgeProviderRegistryFileName = 'provider-registry.json'
 $script:BridgeProviderCapabilityRegistryFileName = 'provider-capabilities.json'
@@ -704,7 +706,7 @@ function Read-BridgeProviderRegistry {
     }
 
     try {
-        $parsed = $raw | ConvertFrom-Json -Depth 16 -ErrorAction Stop
+        $parsed = $raw | ConvertFrom-WinsmuxJson -Depth 16 -ErrorAction Stop
     } catch {
         throw "Invalid provider registry JSON at '$path'."
     }
@@ -1076,7 +1078,7 @@ function Read-BridgeRuntimeRolePreferences {
     }
 
     try {
-        $parsed = $raw | ConvertFrom-Json -Depth 16 -ErrorAction Stop
+        $parsed = $raw | ConvertFrom-WinsmuxJson -Depth 16 -ErrorAction Stop
     } catch {
         throw "Invalid runtime role preferences JSON at '$path'."
     }
@@ -1596,7 +1598,7 @@ function Read-BridgeProviderCapabilityRegistry {
     }
 
     try {
-        $parsed = $raw | ConvertFrom-Json -Depth 16 -ErrorAction Stop
+        $parsed = $raw | ConvertFrom-WinsmuxJson -Depth 16 -ErrorAction Stop
     } catch {
         throw "Invalid provider capability registry JSON at '$path'."
     }

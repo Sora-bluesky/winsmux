@@ -15,6 +15,8 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
+. (Join-Path $PSScriptRoot 'json-compat.ps1')
+
 function Stop-GateError {
     param([Parameter(Mandatory = $true)][string]$Message)
 
@@ -35,7 +37,7 @@ function Read-GateJson {
     }
 
     try {
-        return ($raw | ConvertFrom-Json -Depth 64)
+        return ($raw | ConvertFrom-WinsmuxJson -Depth 64)
     } catch {
         Stop-GateError "shadow-cutover-gate input is not valid JSON: $Path"
     }

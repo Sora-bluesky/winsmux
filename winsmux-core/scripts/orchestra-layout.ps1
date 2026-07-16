@@ -25,6 +25,31 @@ if (-not $script:winsmuxBin) {
 function Invoke-OrchestraLayoutWinsmux {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
 
+    function Resolve-OrchestraLayoutTargetArguments {
+        param([Parameter(Mandatory = $true)][string[]]$InputArguments)
+
+        $resolved = @($InputArguments)
+        $namespaceActive = -not [string]::IsNullOrWhiteSpace($env:WINSMUX_BRIDGE_SESSION_NAMESPACE) -or
+            -not [string]::IsNullOrWhiteSpace($env:WINSMUX_BRIDGE_NAMESPACE_L) -or
+            -not [string]::IsNullOrWhiteSpace($env:WINSMUX_BRIDGE_SOCKET_S)
+        if (-not $namespaceActive -or [string]::IsNullOrWhiteSpace($SessionName)) {
+            return @($resolved)
+        }
+
+        for ($index = 0; $index -lt ($resolved.Count - 1); $index++) {
+            if ($resolved[$index] -ne '-t') {
+                continue
+            }
+
+            $target = [string]$resolved[$index + 1]
+            if ($target -match '^[%@]') {
+                $resolved[$index + 1] = "${SessionName}:$target"
+            }
+            break
+        }
+        return @($resolved)
+    }
+
     function Test-OrchestraLayoutRetrySafeCommand {
         param([Parameter(Mandatory = $true)][string[]]$InputArguments)
 
@@ -32,9 +57,10 @@ function Invoke-OrchestraLayoutWinsmux {
             return $false
         }
 
-        return $InputArguments[0] -in @('display-message', 'has-session', 'list-panes', 'select-pane')
+        return $InputArguments[0] -in @('display-message', 'has-session', 'list-panes')
     }
 
+    $effectiveArguments = @(Resolve-OrchestraLayoutTargetArguments -InputArguments $Arguments)
     $previousPsmuxTargetSession = $env:PSMUX_TARGET_SESSION
     $previousWinsmuxTargetSession = $env:WINSMUX_TARGET_SESSION
     try {
@@ -43,9 +69,9 @@ function Invoke-OrchestraLayoutWinsmux {
             $env:WINSMUX_TARGET_SESSION = $SessionName
         }
 
-        $attemptLimit = if (Test-OrchestraLayoutRetrySafeCommand -InputArguments $Arguments) { 5 } else { 1 }
+        $attemptLimit = if (Test-OrchestraLayoutRetrySafeCommand -InputArguments $effectiveArguments) { 5 } else { 1 }
         for ($attempt = 1; $attempt -le $attemptLimit; $attempt++) {
-            $output = Invoke-WinsmuxBridgeCommand -WinsmuxBin $script:winsmuxBin -Arguments $Arguments 2>&1
+            $output = Invoke-WinsmuxBridgeCommand -WinsmuxBin $script:winsmuxBin -Arguments $effectiveArguments 2>&1
             if ($LASTEXITCODE -eq 0) {
                 return $output
             }
@@ -55,13 +81,13 @@ function Invoke-OrchestraLayoutWinsmux {
                 $message = 'unknown winsmux error'
             }
 
-            $retryable = $message -match 'connection timed out|no server running'
+            $retryable = $message -match 'connection timed out|no server running|os error 10061'
             if ($attempt -lt $attemptLimit -and $retryable) {
                 Start-Sleep -Milliseconds (250 * $attempt)
                 continue
             }
 
-            throw "winsmux $($Arguments -join ' ') failed: $message"
+            throw "winsmux $($effectiveArguments -join ' ') failed: $message"
         }
     } finally {
         if ($null -eq $previousPsmuxTargetSession) {
@@ -226,7 +252,14 @@ if ($newPaneId -notmatch '^%\d+$') {
     throw "winsmux new-window returned an unexpected pane id: '$newPaneId'."
 }
 
-if (-not (Set-OrchestraPaneBorderOptions -WindowId $newWindowId -WinsmuxBin $script:winsmuxBin)) {
+$borderWindowTarget = $newWindowId
+$namespaceActive = -not [string]::IsNullOrWhiteSpace($env:WINSMUX_BRIDGE_SESSION_NAMESPACE) -or
+    -not [string]::IsNullOrWhiteSpace($env:WINSMUX_BRIDGE_NAMESPACE_L) -or
+    -not [string]::IsNullOrWhiteSpace($env:WINSMUX_BRIDGE_SOCKET_S)
+if ($namespaceActive) {
+    $borderWindowTarget = "${SessionName}:$newWindowId"
+}
+if (-not (Set-OrchestraPaneBorderOptions -WindowId $borderWindowTarget -WinsmuxBin $script:winsmuxBin)) {
     Write-Warning "Could not enable pane border labels for window $newWindowId."
 }
 

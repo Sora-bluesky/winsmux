@@ -12,6 +12,7 @@ Set-StrictMode -Version Latest
 $scriptsRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $scriptsRoot 'settings.ps1')
 . (Join-Path $scriptsRoot 'manifest.ps1')
+. (Join-Path $scriptsRoot 'pane-control.ps1')
 . (Join-Path $scriptsRoot 'orchestra-ui-attach.ps1')
 . (Join-Path $scriptsRoot 'worker-isolation.ps1')
 
@@ -77,6 +78,80 @@ function ConvertTo-OrchestraSmokeBoolean {
         '0' { return $false }
         '' { return $false }
         default { return [bool]$Value }
+    }
+}
+
+function Get-OrchestraSmokeRuntimeValidity {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][int]$ExpectedPaneCount
+    )
+
+    $entryResults = [System.Collections.Generic.List[object]]::new()
+    try {
+        $entries = @(Get-PaneControlManifestEntries -ProjectDir $ProjectDir)
+    } catch {
+        return [ordered]@{
+            valid        = $false
+            reason_code  = 'manifest_regeneration_required'
+            diagnostic   = 'Runtime manifest is unavailable or malformed; regenerate the orchestra session.'
+            expected     = $ExpectedPaneCount
+            verified     = 0
+            entries      = @()
+        }
+    }
+
+    foreach ($entry in $entries) {
+        $status = [string](Get-PaneControlValue -InputObject $entry -Name 'Status' -Default '')
+        $operation = [string](Get-WinsmuxRuntimeStatusClassification -Status $status).RuntimeOperation
+        try {
+            $validation = Test-PaneControlRuntimeContext -ProjectDir $ProjectDir -ManifestEntry $entry -Operation $operation
+        } catch {
+            $validation = New-WinsmuxRuntimeValidationResult -Valid $false -ReasonCode 'manifest_regeneration_required' -Diagnostic 'Runtime identity evidence is unavailable; regenerate the orchestra session.'
+        }
+        $entryResults.Add([ordered]@{
+            slot_id      = [string](Get-PaneControlValue -InputObject $entry -Name 'SlotId' -Default '')
+            pane_id      = [string](Get-PaneControlValue -InputObject $entry -Name 'PaneId' -Default '')
+            backend      = [string](Get-PaneControlValue -InputObject $entry -Name 'WorkerBackend' -Default '')
+            role         = [string](Get-PaneControlValue -InputObject $entry -Name 'Role' -Default '')
+            title        = [string](Get-PaneControlValue -InputObject $entry -Name 'Title' -Default '')
+            valid        = [bool]$validation.valid
+            reason_code  = [string]$validation.reason_code
+            diagnostic   = [string]$validation.diagnostic
+        }) | Out-Null
+    }
+
+    $invalidEntries = @($entryResults | Where-Object { -not [bool]$_.valid })
+    $verifiedCount = @($entryResults | Where-Object { [bool]$_.valid }).Count
+    $countMatches = $entryResults.Count -eq $ExpectedPaneCount
+    $overallValid = $countMatches -and $invalidEntries.Count -eq 0
+    $reasonCode = ''
+    $diagnostic = 'Every expected runtime slot is bound to the live supervisor registry and server observation.'
+    if (-not $overallValid) {
+        $reasonCodes = @($invalidEntries | ForEach-Object { [string]$_.reason_code })
+        if ($reasonCodes -contains 'invalid_supervisor_identity') {
+            $reasonCode = 'invalid_supervisor_identity'
+        } elseif ($reasonCodes -contains 'manifest_regeneration_required' -or -not $countMatches) {
+            $reasonCode = 'manifest_regeneration_required'
+        } elseif ($reasonCodes -contains 'caller_identity_mismatch') {
+            $reasonCode = 'caller_identity_mismatch'
+        } else {
+            $reasonCode = 'runtime_target_mismatch'
+        }
+        $diagnostic = if (-not $countMatches) {
+            "Runtime registry verification covered $($entryResults.Count) entries; expected $ExpectedPaneCount."
+        } else {
+            'One or more runtime identities failed supervisor, generation, server, or pane mapping validation.'
+        }
+    }
+
+    return [ordered]@{
+        valid        = $overallValid
+        reason_code  = $reasonCode
+        diagnostic   = $diagnostic
+        expected     = $ExpectedPaneCount
+        verified     = $verifiedCount
+        entries      = @($entryResults)
     }
 }
 
@@ -603,6 +678,7 @@ function Get-OrchestraSmokeProbeState {
             $manifestReadError = $_.Exception.Message
         }
     }
+    $runtimeIdentity = Get-OrchestraSmokeRuntimeValidity -ProjectDir $ProjectDir -ExpectedPaneCount $ExpectedPaneCount
 
     return [ordered]@{
         ManifestPath      = $manifestPath
@@ -613,6 +689,8 @@ function Get-OrchestraSmokeProbeState {
         PaneProbeOk       = $paneProbeOk
         PaneProbeError    = $paneProbeError
         SessionReady      = $sessionReady
+        RuntimeValid      = [bool]$runtimeIdentity.valid
+        RuntimeIdentity   = $runtimeIdentity
         UiAttachLaunched  = $uiAttachLaunched
         UiAttached        = $uiAttached
         UiAttachStatus    = $uiAttachStatus
@@ -635,7 +713,7 @@ function Wait-OrchestraSmokeConvergence {
     )
 
     $state = Get-OrchestraSmokeProbeState -ProjectDir $ProjectDir -SessionName $SessionName -ExpectedPaneCount $ExpectedPaneCount -WinsmuxBin $WinsmuxBin
-    $needsConvergence = (-not $state.ManifestFound) -or (-not $state.ManifestReadable) -or (-not $state.SessionReady) -or ((-not [string]::IsNullOrWhiteSpace($WinsmuxBin)) -and ((-not $state.PaneProbeOk) -or ($state.PaneCount -lt $ExpectedPaneCount)))
+    $needsConvergence = (-not $state.ManifestFound) -or (-not $state.ManifestReadable) -or (-not $state.SessionReady) -or (-not $state.RuntimeValid) -or ((-not [string]::IsNullOrWhiteSpace($WinsmuxBin)) -and ((-not $state.PaneProbeOk) -or ($state.PaneCount -lt $ExpectedPaneCount)))
     if (-not $needsConvergence) {
         return $state
     }
@@ -644,7 +722,7 @@ function Wait-OrchestraSmokeConvergence {
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Seconds 1
         $state = Get-OrchestraSmokeProbeState -ProjectDir $ProjectDir -SessionName $SessionName -ExpectedPaneCount $ExpectedPaneCount -WinsmuxBin $WinsmuxBin
-        if ($state.ManifestFound -and $state.ManifestReadable -and $state.SessionReady -and $state.PaneProbeOk -and $state.PaneCount -ge $ExpectedPaneCount) {
+        if ($state.ManifestFound -and $state.ManifestReadable -and $state.SessionReady -and $state.RuntimeValid -and $state.PaneProbeOk -and $state.PaneCount -ge $ExpectedPaneCount) {
             return $state
         }
     }
@@ -796,7 +874,7 @@ $attachedClientCount = [int]$clientSnapshot.Count
 
 $startOutput = ''
 $startExitCode = 0
-$sessionAlreadyHealthy = $paneProbeOk -and $paneCount -ge $expectedPaneCount -and $manifestFound -and $manifestReadable
+$sessionAlreadyHealthy = $paneProbeOk -and $paneCount -ge $expectedPaneCount -and $manifestFound -and $manifestReadable -and [bool]$probeState.SessionReady -and [bool]$probeState.RuntimeValid
 if ($sessionAlreadyHealthy) {
     $startOutput = 'Skipped orchestra-start; existing orchestra session already meets the smoke prerequisites.'
 } elseif ($AutoStart) {
@@ -830,6 +908,8 @@ $clientProbeError = [string]$clientSnapshot.Error
 $attachedClientCount = [int]$clientSnapshot.Count
 
 $sessionReady = [bool]$probeState.SessionReady
+$runtimeIdentity = $probeState.RuntimeIdentity
+$runtimeValid = [bool]$probeState.RuntimeValid
 $uiAttachLaunched = [bool]$probeState.UiAttachLaunched
 $attachState = Read-OrchestraAttachState -SessionName $SessionName
 $attachResolution = Resolve-OrchestraSmokeAttachState -ProbeState ([pscustomobject]@{
@@ -877,6 +957,9 @@ if (-not $manifestFound) {
     $smokeErrors.Add("manifest read failed during startup convergence: $manifestReadError") | Out-Null
 }
 if (-not $sessionReady) { $smokeErrors.Add('session_ready is false.') | Out-Null }
+if (-not $runtimeValid) {
+    $smokeErrors.Add(("runtime identity invalid ({0}): {1}" -f [string]$runtimeIdentity.reason_code, [string]$runtimeIdentity.diagnostic)) | Out-Null
+}
 if (-not $paneProbeOk) { $smokeErrors.Add("pane probe failed: $paneProbeError") | Out-Null }
 if ($paneProbeOk -and $paneCount -lt $expectedPaneCount) { $smokeErrors.Add("pane count $paneCount is below expected $expectedPaneCount.") | Out-Null }
 if (-not [bool]$workerIsolation.ok) {
@@ -929,6 +1012,8 @@ $result = [ordered]@{
     expected_pane_count = $expectedPaneCount
     manifest_found      = $manifestFound
     session_ready       = $sessionReady
+    runtime_valid       = $runtimeValid
+    runtime_identity    = $runtimeIdentity
     ui_attach_launched  = $uiAttachLaunched
     ui_attached         = $uiAttached
     ui_attach_status    = $uiAttachStatus

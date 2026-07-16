@@ -737,11 +737,23 @@ function Invoke-DoctorOrchestraSmokeJson {
         }
     }
 
+    $smokeOk = [bool](Get-DoctorObjectPropertyValue -InputObject $data -Name 'smoke_ok' -Default $false)
+    $runtimeValid = [bool](Get-DoctorObjectPropertyValue -InputObject $data -Name 'runtime_valid' -Default $false)
+    $resultOk = $exitCode -eq 0 -and $smokeOk -and $runtimeValid
+    $resultError = if ($exitCode -ne 0) {
+        "orchestra-smoke exited with code $exitCode"
+    } elseif (-not $smokeOk) {
+        'orchestra-smoke reported smoke_ok=false'
+    } elseif (-not $runtimeValid) {
+        'orchestra-smoke did not verify the supervisor-owned runtime identity registry'
+    } else {
+        ''
+    }
     return [PSCustomObject]@{
-        Ok       = $true
+        Ok       = $resultOk
         ExitCode = $exitCode
         Data     = $data
-        Error    = ''
+        Error    = $resultError
     }
 }
 
@@ -780,7 +792,8 @@ function New-OrchestraProcessContractDoctorResult {
 function Test-OrchestraProcessContractCheck {
     $smoke = Invoke-DoctorOrchestraSmokeJson
     if (-not [bool]$smoke.Ok) {
-        return New-DoctorResult -Status warn -Label 'Orchestra process contract' -Detail "unavailable; $($smoke.Error)"
+        $status = if ($null -ne $smoke.Data) { 'fail' } else { 'warn' }
+        return New-DoctorResult -Status $status -Label 'Orchestra process contract' -Detail "unavailable; $($smoke.Error)"
     }
 
     $contract = Get-DoctorObjectPropertyValue -InputObject $smoke.Data -Name 'process_contract'

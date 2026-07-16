@@ -1015,6 +1015,7 @@ function Invoke-AgentRespawn {
         [Parameter(Mandatory = $true)][string]$GitWorktreeDir,
         [string]$RootPath = '',
         [string]$ManifestPath = '',
+        [AllowEmptyString()][string]$ExpectedGenerationId = '',
         [int]$ReadyTimeoutSeconds = 60
     )
 
@@ -1118,7 +1119,8 @@ function Invoke-AgentRespawn {
                 try {
                     $paneLabel = Get-MonitorPaneTitle -PaneId $PaneId
                     if (-not [string]::IsNullOrWhiteSpace($paneLabel)) {
-                        Update-MonitorManifestPaneLabel -ManifestPath $ManifestPath -PaneId $PaneId -Label $paneLabel | Out-Null
+                        Update-MonitorManifestPaneLabel -ManifestPath $ManifestPath -PaneId $PaneId -Label $paneLabel `
+                            -ExpectedGenerationId $ExpectedGenerationId | Out-Null
                     }
                 } catch {
                 }
@@ -1196,7 +1198,8 @@ function Update-MonitorManifestPaneLabel {
     param(
         [Parameter(Mandatory = $true)][string]$ManifestPath,
         [Parameter(Mandatory = $true)][string]$PaneId,
-        [Parameter(Mandatory = $true)][string]$Label
+        [Parameter(Mandatory = $true)][string]$Label,
+        [AllowEmptyString()][string]$ExpectedGenerationId = ''
     )
 
     if ([string]::IsNullOrWhiteSpace($Label) -or -not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) {
@@ -1204,7 +1207,8 @@ function Update-MonitorManifestPaneLabel {
     }
 
     try {
-        Set-PaneControlManifestPaneProperties -ManifestPath $ManifestPath -PaneId $PaneId -Properties ([ordered]@{ label = $Label })
+        Set-PaneControlManifestPaneProperties -ManifestPath $ManifestPath -PaneId $PaneId `
+            -Properties ([ordered]@{ label = $Label }) -ExpectedGenerationId $ExpectedGenerationId
         return $true
     } catch {
         return $false
@@ -1245,6 +1249,7 @@ function Invoke-AgentMonitorCycle {
 
     # Parse manifest (orchestra-start format: session + panes list)
     $manifest = ConvertFrom-MonitorManifest -Content $content
+    $expectedGenerationId = [string](Get-MonitorPropertyValue -InputObject $manifest.Session -Name 'generation_id' -Default '')
 
     if ($null -eq $manifest -or $manifest.Panes.Count -eq 0) {
         return [ordered]@{
@@ -1636,7 +1641,8 @@ function Invoke-AgentMonitorCycle {
                 -ProjectDir $launchDir `
                 -GitWorktreeDir $launchGitWorktreeDir `
                 -RootPath $projectDir `
-                -ManifestPath $ManifestPath
+                -ManifestPath $ManifestPath `
+                -ExpectedGenerationId $expectedGenerationId
 
             $result['Respawned'] = $respawnResult.Success
             $result['Message'] = $respawnResult.Message

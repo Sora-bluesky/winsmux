@@ -1,6 +1,7 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+. (Join-Path $PSScriptRoot 'json-compat.ps1')
 . (Join-Path $PSScriptRoot 'clm-safe-io.ps1')
 if (-not (Get-Command Invoke-WinsmuxBridgeCommand -ErrorAction SilentlyContinue)) {
     $settingsScript = Join-Path $PSScriptRoot 'settings.ps1'
@@ -72,7 +73,7 @@ function Read-OrchestraAttachState {
     }
 
     try {
-        return $raw | ConvertFrom-Json -Depth 8
+        return $raw | ConvertFrom-WinsmuxJson -Depth 8
     } catch {
         return $null
     }
@@ -504,7 +505,7 @@ function Get-OrchestraAttachTraceEntries {
             $rawText = ([string]$rawEntry).Trim()
             if (-not [string]::IsNullOrWhiteSpace($rawText) -and $rawText.StartsWith('{') -and $rawText.EndsWith('}')) {
                 try {
-                    $jsonEntry = $rawText | ConvertFrom-Json -Depth 8
+                    $jsonEntry = $rawText | ConvertFrom-WinsmuxJson -Depth 8
                     foreach ($property in $jsonEntry.PSObject.Properties) {
                         $normalized[$property.Name] = $property.Value
                     }

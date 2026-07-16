@@ -94,9 +94,9 @@ function Invoke-WinsmuxSubmissionAckCommand {
         [AllowNull()][string[]]$CommandRest
     )
 
-    $usage = 'usage: winsmux submission-ack --submission-id <id> --run-id <id> --kind <task|review> --backend <local|codex> --slot <slot>'
+    $usage = 'usage: winsmux submission-ack --submission-id <id> --run-id <id> --kind <task|review> --backend <local|codex> --slot <slot> --ack-pipe <pipe> --challenge <hex>'
     $tokens = @(@($CommandTarget) + @($CommandRest) | Where-Object { $_ })
-    $values = [ordered]@{ submission_id = ''; run_id = ''; kind = ''; backend = ''; slot = '' }
+    $values = [ordered]@{ submission_id = ''; run_id = ''; kind = ''; backend = ''; slot = ''; ack_pipe = ''; challenge = '' }
     for ($index = 0; $index -lt $tokens.Count; $index++) {
         $name = switch ([string]$tokens[$index]) {
             '--submission-id' { 'submission_id' }
@@ -104,20 +104,29 @@ function Invoke-WinsmuxSubmissionAckCommand {
             '--kind' { 'kind' }
             '--backend' { 'backend' }
             '--slot' { 'slot' }
+            '--ack-pipe' { 'ack_pipe' }
+            '--challenge' { 'challenge' }
             default { '' }
         }
         if ([string]::IsNullOrWhiteSpace($name) -or $index + 1 -ge $tokens.Count) {
             Stop-WithError $usage
         }
+        if (-not [string]::IsNullOrWhiteSpace([string]$values[$name])) { Stop-WithError $usage }
         $index++
         $values[$name] = [string]$tokens[$index]
     }
     foreach ($required in $values.Keys) {
         if ([string]::IsNullOrWhiteSpace([string]$values[$required])) { Stop-WithError $usage }
     }
+    if (-not (Test-WinsmuxSubmissionAckPipeName -Value $values.ack_pipe) -or
+        -not (Test-WinsmuxSubmissionAckChallenge -Value $values.challenge)) {
+        Stop-WithError $usage
+    }
     $projectDir = [string]$env:WINSMUX_ORCHESTRA_PROJECT_DIR
     if ([string]::IsNullOrWhiteSpace($projectDir)) { $projectDir = (Get-Location).Path }
-    $receipt = Invoke-WinsmuxSubmissionAcknowledge -ProjectDir $projectDir -SlotId $values.slot -SubmissionId $values.submission_id -RunId $values.run_id -Kind $values.kind -Backend $values.backend
+    $receipt = Invoke-WinsmuxSubmissionAcknowledge -ProjectDir $projectDir -SlotId $values.slot `
+        -SubmissionId $values.submission_id -RunId $values.run_id -Kind $values.kind -Backend $values.backend `
+        -AckPipe $values.ack_pipe -Challenge $values.challenge
     ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $receipt | Write-Output
     if ([string]$receipt.status -ne 'accepted') { exit 1 }
 }
@@ -258,14 +267,43 @@ function Invoke-WinsmuxDispatchTaskCommand {
         $paneId = [string]$manifestEntry.PaneId
     }
 
+    $entryStatus = [string](Get-WinsmuxSubmissionValue -InputObject $manifestEntry -Name 'Status' -Default '')
+    $runtimeOperation = [string](Get-WinsmuxRuntimeStatusClassification -Status $entryStatus).RuntimeOperation
+    $runtimeResult = Test-PaneControlRuntimeContext -ProjectDir $projectDir -ManifestEntry $manifestEntry -Operation $runtimeOperation
+    if (-not $runtimeResult.valid) {
+        $backend = [string](Get-WinsmuxSubmissionValue -InputObject $manifestEntry -Name 'WorkerBackend' -Default 'local')
+        if ($backend -notin @('local', 'codex', 'api_llm', 'antigravity', 'noop')) { $backend = 'noop' }
+        $receipt = New-WinsmuxSubmissionReceipt -Kind task -Status unavailable -Backend $backend -SubmissionId $submissionId `
+            -ReasonCode ([string]$runtimeResult.reason_code) -Diagnostic ([string]$runtimeResult.diagnostic) `
+            -Target ([ordered]@{ label = $selectedLabel; pane_id = $paneId; role = $resolvedRole })
+        ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $receipt | Write-Output
+        exit 1
+    }
+
     try {
-        Start-DeferredPaneFromManifestEntry -ProjectDir $projectDir -ManifestEntry $manifestEntry | Out-Null
+        Start-DeferredPaneFromManifestEntry -ProjectDir $projectDir -ManifestEntry $manifestEntry `
+            -ExpectedGenerationId ([string](Get-WinsmuxSubmissionValue -InputObject $runtimeResult.context -Name 'generation_id' -Default '')) | Out-Null
     } catch {
         $backend = [string](Get-WinsmuxSubmissionValue -InputObject $manifestEntry -Name 'WorkerBackend' -Default 'local')
         if ($backend -notin @('local', 'codex', 'api_llm', 'antigravity', 'noop')) { $backend = 'noop' }
-        $receipt = New-WinsmuxSubmissionReceipt -Kind task -Status unavailable -Backend $backend -SubmissionId $submissionId -ReasonCode 'deferred_start_failed' -Diagnostic $_.Exception.Message -Target ([ordered]@{ label = $selectedLabel; pane_id = $paneId; role = $resolvedRole })
+        $receipt = New-WinsmuxDeferredStartFailureReceipt -Kind task -Backend $backend -SubmissionId $submissionId `
+            -PaneId $paneId -Failure $_ -Target ([ordered]@{ label = $selectedLabel; pane_id = $paneId; role = $resolvedRole })
         ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $receipt | Write-Output
         exit 1
+    }
+
+    if ($runtimeOperation -ceq 'start_deferred') {
+        $manifestEntry = Get-DispatchTaskManifestEntry -ProjectDir $projectDir -Label $selectedLabel
+        $runtimeResult = Wait-PaneControlRuntimeContext -ProjectDir $projectDir -ManifestEntry $manifestEntry -Operation dispatch
+        if (-not $runtimeResult.valid) {
+            $backend = [string](Get-WinsmuxSubmissionValue -InputObject $manifestEntry -Name 'WorkerBackend' -Default 'local')
+            if ($backend -notin @('local', 'codex', 'api_llm', 'antigravity', 'noop')) { $backend = 'noop' }
+            $receipt = New-WinsmuxSubmissionReceipt -Kind task -Status unavailable -Backend $backend -SubmissionId $submissionId `
+                -ReasonCode ([string]$runtimeResult.reason_code) -Diagnostic ([string]$runtimeResult.diagnostic) `
+                -Target ([ordered]@{ label = $selectedLabel; pane_id = $paneId; role = $resolvedRole })
+            ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $receipt | Write-Output
+            exit 1
+        }
     }
 
     $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $projectDir -ManifestEntry $manifestEntry -Kind task -Content $taskText -SubmissionId $submissionId
@@ -452,7 +490,8 @@ function Invoke-WinsmuxHarnessCheckCommand {
 
     Invoke-WinsmuxControlPlaneScript `
         -ScriptPath (Get-WinsmuxControlPlaneScriptPath -BridgeScriptRoot $BridgeScriptRoot -ScriptName 'harness-check.ps1') `
-        -Arguments $checkArgs
+        -Arguments $checkArgs `
+        -PropagateExitCode
 }
 
 function Invoke-WinsmuxShadowCutoverGateCommand {

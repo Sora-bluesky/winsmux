@@ -1,3 +1,4 @@
+. (Join-Path $PSScriptRoot 'json-compat.ps1')
 . (Join-Path $PSScriptRoot 'settings.ps1')
 . (Join-Path $PSScriptRoot 'manifest.ps1')
 
@@ -255,6 +256,8 @@ function ConvertFrom-PaneControlManifestContent {
 
     $parsed = ConvertFrom-ManifestYaml -Content $Content
     return [ordered]@{
+        version = $parsed.version
+        saved_at = $parsed.saved_at
         Session = $parsed.session
         Panes   = $parsed.panes
         Tasks   = $parsed.tasks
@@ -285,7 +288,7 @@ function ConvertFrom-PaneControlSecurityPolicy {
 
     foreach ($candidate in $parseCandidates | Select-Object -Unique) {
         try {
-            return ($candidate | ConvertFrom-Json -AsHashtable -Depth 8)
+            return ($candidate | ConvertFrom-WinsmuxJson -AsHashtable -Depth 8)
         } catch {
         }
     }
@@ -307,6 +310,8 @@ function Get-PaneControlManifestEntries {
     }
 
     $manifest = ConvertFrom-PaneControlManifestContent -Content $content
+    $manifestVersion = ConvertTo-WinsmuxRuntimeInteger -Value (Get-PaneControlValue -InputObject $manifest -Name 'Version' -Default $null)
+    $manifestGenerationId = [string](Get-PaneControlValue -InputObject $manifest.Session -Name 'generation_id' -Default '')
     $projectRoot = [string](Get-PaneControlValue -InputObject $manifest.Session -Name 'project_dir' -Default '')
     if ([string]::IsNullOrWhiteSpace($projectRoot)) {
         $projectRoot = $ProjectDir
@@ -351,12 +356,17 @@ function Get-PaneControlManifestEntries {
 
         $entries += [PSCustomObject][ordered]@{
             ManifestPath        = $manifestPath
+            ManifestVersion     = $manifestVersion
+            GenerationId        = $manifestGenerationId
             ProjectDir          = $projectRoot
             Label               = $label
+            SlotId              = [string](Get-PaneControlValue -InputObject $pane -Name 'slot_id' -Default $label)
             PaneId              = [string](Get-PaneControlValue -InputObject $pane -Name 'pane_id' -Default '')
             WorkerBackend       = [string](Get-PaneControlValue -InputObject $pane -Name 'worker_backend' -Default 'local')
             WorkerRole          = [string](Get-PaneControlValue -InputObject $pane -Name 'worker_role' -Default '')
             Role                = $role
+            Title               = [string](Get-PaneControlValue -InputObject $pane -Name 'title' -Default '')
+            RuntimeReady        = ConvertFrom-PaneControlBoolean -Value (Get-PaneControlValue -InputObject $pane -Name 'runtime_ready' -Default $false) -Default $false
             LaunchDir           = $launchDir
             BuilderBranch       = $builderBranch
             BuilderWorktreePath = $builderWorktreePath
@@ -440,6 +450,115 @@ function Get-PaneControlManifestEntries {
     return @($entries)
 }
 
+function Test-PaneControlRuntimeContext {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)]$ManifestEntry,
+        [ValidateSet('dispatch', 'start_deferred', 'caller_ack', 'stop_transition')][string]$Operation = 'dispatch',
+        [AllowNull()]$CallerIdentity = $null,
+        [AllowNull()][scriptblock]$ProcessResolver = $null
+    )
+
+    try {
+        $manifest = Get-WinsmuxManifest -ProjectDir $ProjectDir
+        $registry = Read-WinsmuxRuntimeRegistry -ProjectDir $ProjectDir
+    } catch {
+        return New-WinsmuxRuntimeValidationResult -Valid $false -ReasonCode 'manifest_regeneration_required' `
+            -Diagnostic 'Runtime manifest or registry is missing or malformed; regenerate the orchestra session.'
+    }
+    if ($null -eq $registry) {
+        return New-WinsmuxRuntimeValidationResult -Valid $false -ReasonCode 'manifest_regeneration_required' `
+            -Diagnostic 'Runtime registry is missing; regenerate the orchestra session.'
+    }
+
+    $sessionName = [string](Get-WinsmuxRuntimeValue -InputObject $registry -Name 'session_name' -Default '')
+    $serverSessionId = [string](Get-WinsmuxRuntimeValue -InputObject $registry -Name 'server_session_id' -Default '')
+    if ([string]::IsNullOrWhiteSpace($sessionName) -or $serverSessionId -cnotmatch '^\$[0-9]+$') {
+        return New-WinsmuxRuntimeValidationResult -Valid $false -ReasonCode 'manifest_regeneration_required' `
+            -Diagnostic 'Runtime registry session identity is malformed; regenerate the orchestra session.'
+    }
+
+    try {
+        $format = "#{session_id}`t#{session_name}`t#{pane_id}`t#{pane_title}"
+        $snapshotOutput = Invoke-PaneControlWinsmux -Arguments @('list-panes', '-a', '-t', $sessionName, '-F', $format)
+        $observedPanes = [System.Collections.Generic.List[object]]::new()
+        $observedSessionId = ''
+        foreach ($line in @((($snapshotOutput | Out-String).Trim()) -split "\r?\n")) {
+            if ([string]::IsNullOrWhiteSpace($line)) { continue }
+            $parts = $line -split "`t", 4
+            if ($parts.Count -ne 4 -or $parts[0] -cnotmatch '^\$[0-9]+$' -or $parts[1] -cne $sessionName -or
+                [string]::IsNullOrWhiteSpace($parts[2]) -or [string]::IsNullOrWhiteSpace($parts[3])) {
+                throw 'server pane snapshot is malformed or belongs to another session'
+            }
+            if ([string]::IsNullOrWhiteSpace($observedSessionId)) { $observedSessionId = $parts[0] }
+            if ($observedSessionId -cne $parts[0]) { throw 'server pane snapshot mixes session identities' }
+            $observedPanes.Add([PSCustomObject]@{ pane_id = $parts[2]; title = $parts[3] }) | Out-Null
+        }
+        if ([string]::IsNullOrWhiteSpace($observedSessionId)) { throw 'server pane snapshot is empty' }
+    } catch {
+        return New-WinsmuxRuntimeValidationResult -Valid $false -ReasonCode 'manifest_regeneration_required' `
+            -Diagnostic 'Live server session evidence is unavailable; regenerate the orchestra session.'
+    }
+
+    $marker = $null
+    $markerPath = [string](Get-PaneControlValue -InputObject $ManifestEntry -Name 'BootstrapMarkerPath' -Default '')
+    if (-not [string]::IsNullOrWhiteSpace($markerPath) -and (Test-Path -LiteralPath $markerPath -PathType Leaf)) {
+        try { $marker = Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8 | ConvertFrom-Json }
+        catch {
+            return New-WinsmuxRuntimeValidationResult -Valid $false -ReasonCode 'runtime_target_mismatch' `
+                -Diagnostic 'Pane bootstrap marker is malformed.'
+        }
+    }
+
+    $backend = ([string](Get-PaneControlValue -InputObject $ManifestEntry -Name 'WorkerBackend' -Default '')).Trim().ToLowerInvariant()
+    if ($null -eq $ProcessResolver) {
+        try { $ProcessResolver = New-WinsmuxProcessSnapshotResolver }
+        catch {
+            $reasonCode = if ($Operation -ceq 'caller_ack') { 'caller_identity_mismatch' } else { 'invalid_supervisor_identity' }
+            return New-WinsmuxRuntimeValidationResult -Valid $false -ReasonCode $reasonCode `
+                -Diagnostic 'OS process identity evidence is unavailable.'
+        }
+    }
+    if ($null -eq $CallerIdentity -and $Operation -ceq 'caller_ack' -and $backend -in @('local', 'codex')) {
+        $callerSnapshot = & $ProcessResolver $PID
+        $callerStartedAt = ConvertTo-WinsmuxRuntimeUtcIdentity -Value (Get-WinsmuxRuntimeValue -InputObject $callerSnapshot -Name 'StartTime' -Default (Get-WinsmuxRuntimeValue -InputObject $callerSnapshot -Name 'CreationDate' -Default ''))
+        $CallerIdentity = [PSCustomObject][ordered]@{
+            process_id        = $PID
+            process_started_at = $callerStartedAt
+            generation_id    = [string](Get-WinsmuxRuntimeValue -InputObject $registry -Name 'generation_id' -Default '')
+            server_session_id = $serverSessionId
+            slot_id          = [string](Get-PaneControlValue -InputObject $ManifestEntry -Name 'SlotId' -Default '')
+            pane_id          = [string](Get-PaneControlValue -InputObject $ManifestEntry -Name 'PaneId' -Default '')
+            backend          = $backend
+        }
+    }
+
+    return Test-WinsmuxRuntimeContext -Manifest $manifest -Registry $registry -ObservedServerSessionId $observedSessionId `
+        -ObservedPanes @($observedPanes) -ManifestEntry $ManifestEntry -PaneMarker $marker -CallerIdentity $CallerIdentity `
+        -ProcessResolver $ProcessResolver -Operation $Operation
+}
+
+function Wait-PaneControlRuntimeContext {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)]$ManifestEntry,
+        [ValidateSet('dispatch', 'start_deferred', 'caller_ack', 'stop_transition')][string]$Operation = 'dispatch',
+        [int]$TimeoutSeconds = 15
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $lastResult = $null
+    do {
+        $lastResult = Test-PaneControlRuntimeContext -ProjectDir $ProjectDir -ManifestEntry $ManifestEntry -Operation $Operation
+        if ($lastResult.valid) { return $lastResult }
+        if ($lastResult.reason_code -notin @('runtime_target_mismatch', 'manifest_regeneration_required')) {
+            return $lastResult
+        }
+        Start-Sleep -Milliseconds 200
+    } while ((Get-Date) -lt $deadline)
+    return $lastResult
+}
+
 function Get-PaneControlManifestContext {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -459,11 +578,131 @@ function Get-PaneControlManifestContext {
     throw "Pane $PaneId was not found in manifest: $manifestPath"
 }
 
+function Get-PaneControlManifestGenerationId {
+    param([Parameter(Mandatory = $true)][string]$ManifestPath)
+
+    if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) {
+        throw "Manifest not found: $ManifestPath"
+    }
+    $projectDir = Split-Path (Split-Path $ManifestPath -Parent) -Parent
+    $manifest = Get-WinsmuxManifest -ProjectDir $projectDir
+    $version = ConvertTo-WinsmuxRuntimeInteger -Value (Get-WinsmuxRuntimeValue -InputObject $manifest -Name 'version' -Default $null)
+    if ($version -ne 2) { return '' }
+
+    $session = Get-WinsmuxRuntimeValue -InputObject $manifest -Name 'session' -Default $null
+    $generationId = [string](Get-WinsmuxRuntimeValue -InputObject $session -Name 'generation_id' -Default '')
+    if ([string]::IsNullOrWhiteSpace($generationId)) {
+        throw 'runtime dispatch refused (manifest_regeneration_required): v2 manifest generation_id is missing.'
+    }
+    return $generationId
+}
+
+function Save-PaneControlManifestDocument {
+    param(
+        [Parameter(Mandatory = $true)][string]$ManifestPath,
+        [Parameter(Mandatory = $true)]$Manifest,
+        [AllowEmptyString()][string]$ExpectedGenerationId = '',
+        [AllowEmptyString()][string]$RuntimePaneId = '',
+        [ValidateSet('auto', 'dispatch', 'start_deferred', 'caller_ack', 'stop_transition')][string]$RuntimeOperation = 'auto'
+    )
+
+    $projectDir = Split-Path (Split-Path $ManifestPath -Parent) -Parent
+    $nextVersion = ConvertTo-WinsmuxRuntimeInteger -Value (Get-WinsmuxRuntimeValue -InputObject $Manifest -Name 'version' -Default $null)
+    if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) {
+        if ($nextVersion -eq 2) {
+            throw "Manifest not found: $ManifestPath"
+        }
+        Save-WinsmuxManifest -ProjectDir $projectDir -Manifest $Manifest
+        return
+    }
+
+    $currentManifest = Get-WinsmuxManifest -ProjectDir $projectDir
+    $currentVersion = ConvertTo-WinsmuxRuntimeInteger -Value (Get-WinsmuxRuntimeValue -InputObject $currentManifest -Name 'version' -Default $null)
+    if ($currentVersion -ne 2) {
+        $isPureV1Save = $currentVersion -eq 1 -and
+            $nextVersion -eq 1 -and
+            [string]::IsNullOrWhiteSpace($ExpectedGenerationId)
+        if (-not $isPureV1Save) {
+            throw 'runtime dispatch refused (manifest_regeneration_required): Current manifest schema is not v2 for a guarded v2 document mutation.'
+        }
+        Save-WinsmuxManifest -ProjectDir $projectDir -Manifest $Manifest
+        return
+    }
+
+    if ([string]::IsNullOrWhiteSpace($ExpectedGenerationId)) {
+        throw 'runtime dispatch refused (invalid_supervisor_identity): ExpectedGenerationId is required for a v2 manifest mutation.'
+    }
+
+    $currentSession = Get-WinsmuxRuntimeValue -InputObject $currentManifest -Name 'session' -Default $null
+    $currentGenerationId = [string](Get-WinsmuxRuntimeValue -InputObject $currentSession -Name 'generation_id' -Default '')
+    if (-not [string]::Equals($currentGenerationId, $ExpectedGenerationId, [System.StringComparison]::Ordinal)) {
+        throw 'runtime dispatch refused (invalid_supervisor_identity): Runtime generation changed before the manifest mutation began.'
+    }
+
+    $bootstrapPaneId = [string](Get-WinsmuxRuntimeValue -InputObject $currentSession -Name 'bootstrap_pane_id' -Default '')
+    $paneMap = ConvertTo-ManifestPropertyMap -Value (Get-WinsmuxRuntimeValue -InputObject $currentManifest -Name 'panes' -Default $null)
+    $managedPaneIds = [System.Collections.Generic.List[string]]::new()
+    $seenPaneIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    foreach ($label in @($paneMap.Keys | Sort-Object)) {
+        $paneId = [string](Get-WinsmuxRuntimeValue -InputObject $paneMap[$label] -Name 'pane_id' -Default '')
+        if ($paneId -cnotmatch '^%[0-9]+$' -or
+            [string]::Equals($paneId, $bootstrapPaneId, [System.StringComparison]::Ordinal)) {
+            continue
+        }
+        if (-not $seenPaneIds.Add($paneId)) {
+            throw 'runtime dispatch refused (runtime_target_mismatch): Managed runtime pane IDs must be unique for a v2 manifest mutation.'
+        }
+        $managedPaneIds.Add($paneId) | Out-Null
+    }
+
+    if ([string]::IsNullOrWhiteSpace($RuntimePaneId)) {
+        if ($managedPaneIds.Count -eq 0) {
+            throw 'runtime dispatch refused (runtime_target_mismatch): A live managed runtime pane is required for a v2 manifest mutation.'
+        }
+        $RuntimePaneId = $managedPaneIds[0]
+    } elseif ($RuntimePaneId -cnotmatch '^%[0-9]+$' -or -not $seenPaneIds.Contains($RuntimePaneId)) {
+        throw 'runtime dispatch refused (runtime_target_mismatch): RuntimePaneId must identify a managed non-bootstrap pane in the current v2 manifest.'
+    }
+
+    $manifestEntry = Get-PaneControlManifestContext -ProjectDir $projectDir -PaneId $RuntimePaneId
+    $effectiveOperation = $RuntimeOperation
+    if ($effectiveOperation -ceq 'auto') {
+        $status = [string](Get-PaneControlValue -InputObject $manifestEntry -Name 'Status' -Default '')
+        $effectiveOperation = [string](Get-WinsmuxRuntimeStatusClassification -Status $status).RuntimeOperation
+    }
+    $runtimeValidation = Test-PaneControlRuntimeContext -ProjectDir $projectDir -ManifestEntry $manifestEntry -Operation $effectiveOperation
+    if ($null -eq $runtimeValidation -or -not [bool]$runtimeValidation.valid) {
+        $reasonCode = [string](Get-PaneControlValue -InputObject $runtimeValidation -Name 'reason_code' -Default 'invalid_supervisor_identity')
+        $diagnostic = [string](Get-PaneControlValue -InputObject $runtimeValidation -Name 'diagnostic' -Default 'Runtime identity validation failed immediately before manifest save.')
+        throw ("runtime dispatch refused ({0}): {1}" -f $reasonCode, $diagnostic)
+    }
+    $validatedGenerationId = [string](Get-PaneControlValue -InputObject $runtimeValidation.context -Name 'generation_id' -Default '')
+    if (-not [string]::Equals($validatedGenerationId, $ExpectedGenerationId, [System.StringComparison]::Ordinal)) {
+        throw 'runtime dispatch refused (invalid_supervisor_identity): Runtime generation changed immediately before manifest save.'
+    }
+
+    $freshManifest = Get-WinsmuxManifest -ProjectDir $projectDir
+    $freshVersion = ConvertTo-WinsmuxRuntimeInteger -Value (Get-WinsmuxRuntimeValue -InputObject $freshManifest -Name 'version' -Default $null)
+    $freshSession = Get-WinsmuxRuntimeValue -InputObject $freshManifest -Name 'session' -Default $null
+    $freshGenerationId = [string](Get-WinsmuxRuntimeValue -InputObject $freshSession -Name 'generation_id' -Default '')
+    $nextIdentity = Get-WinsmuxVerifiedManifestIdentity -Manifest $Manifest
+    if ($freshVersion -ne 2 -or
+        -not [string]::Equals($freshGenerationId, $ExpectedGenerationId, [System.StringComparison]::Ordinal) -or
+        $null -eq $nextIdentity -or
+        -not [string]::Equals([string]$nextIdentity.generation_id, $ExpectedGenerationId, [System.StringComparison]::Ordinal)) {
+        throw 'runtime dispatch refused (invalid_supervisor_identity): Runtime generation changed immediately before manifest save.'
+    }
+
+    Save-WinsmuxManifest -ProjectDir $projectDir -Manifest $Manifest -ExpectedGenerationId $ExpectedGenerationId
+}
+
 function Set-PaneControlManifestPaneProperties {
     param(
         [Parameter(Mandatory = $true)][string]$ManifestPath,
         [Parameter(Mandatory = $true)][string]$PaneId,
-        [Parameter(Mandatory = $true)][System.Collections.IDictionary]$Properties
+        [Parameter(Mandatory = $true)][System.Collections.IDictionary]$Properties,
+        [AllowEmptyString()][string]$ExpectedGenerationId = '',
+        [ValidateSet('auto', 'dispatch', 'start_deferred', 'caller_ack', 'stop_transition')][string]$RuntimeOperation = 'auto'
     )
 
     if (-not (Test-Path $ManifestPath -PathType Leaf)) {
@@ -474,6 +713,45 @@ function Set-PaneControlManifestPaneProperties {
     $manifest = Get-WinsmuxManifest -ProjectDir $projectDir
     if ($null -eq $manifest) {
         throw "Pane $PaneId was not found in manifest: $ManifestPath"
+    }
+
+    $manifestVersion = ConvertTo-WinsmuxRuntimeInteger -Value (Get-WinsmuxRuntimeValue -InputObject $manifest -Name 'version' -Default $null)
+    if ($manifestVersion -eq 2) {
+        if ([string]::IsNullOrWhiteSpace($ExpectedGenerationId)) {
+            throw 'runtime dispatch refused (invalid_supervisor_identity): ExpectedGenerationId is required for a v2 manifest mutation.'
+        }
+
+        $manifestSession = Get-WinsmuxRuntimeValue -InputObject $manifest -Name 'session' -Default $null
+        $initialGenerationId = [string](Get-WinsmuxRuntimeValue -InputObject $manifestSession -Name 'generation_id' -Default '')
+        if (-not [string]::Equals($initialGenerationId, $ExpectedGenerationId, [System.StringComparison]::Ordinal)) {
+            throw 'runtime dispatch refused (invalid_supervisor_identity): Runtime generation changed before the manifest mutation began.'
+        }
+
+        $manifestEntry = Get-PaneControlManifestContext -ProjectDir $projectDir -PaneId $PaneId
+        $effectiveOperation = $RuntimeOperation
+        if ($effectiveOperation -ceq 'auto') {
+            $status = [string](Get-PaneControlValue -InputObject $manifestEntry -Name 'Status' -Default '')
+            $effectiveOperation = [string](Get-WinsmuxRuntimeStatusClassification -Status $status).RuntimeOperation
+        }
+        $runtimeValidation = Test-PaneControlRuntimeContext -ProjectDir $projectDir -ManifestEntry $manifestEntry -Operation $effectiveOperation
+        if ($null -eq $runtimeValidation -or -not [bool]$runtimeValidation.valid) {
+            $reasonCode = [string](Get-PaneControlValue -InputObject $runtimeValidation -Name 'reason_code' -Default 'invalid_supervisor_identity')
+            $diagnostic = [string](Get-PaneControlValue -InputObject $runtimeValidation -Name 'diagnostic' -Default 'Runtime identity validation failed immediately before manifest save.')
+            throw ("runtime dispatch refused ({0}): {1}" -f $reasonCode, $diagnostic)
+        }
+        $validatedGenerationId = [string](Get-PaneControlValue -InputObject $runtimeValidation.context -Name 'generation_id' -Default '')
+        if (-not [string]::Equals($validatedGenerationId, $ExpectedGenerationId, [System.StringComparison]::Ordinal)) {
+            throw 'runtime dispatch refused (invalid_supervisor_identity): Runtime generation changed immediately before manifest save.'
+        }
+
+        # Re-read after runtime validation so a concurrent generation replacement cannot be overwritten by an older document.
+        $manifest = Get-WinsmuxManifest -ProjectDir $projectDir
+        $freshVersion = ConvertTo-WinsmuxRuntimeInteger -Value (Get-WinsmuxRuntimeValue -InputObject $manifest -Name 'version' -Default $null)
+        $freshSession = Get-WinsmuxRuntimeValue -InputObject $manifest -Name 'session' -Default $null
+        $freshGenerationId = [string](Get-WinsmuxRuntimeValue -InputObject $freshSession -Name 'generation_id' -Default '')
+        if ($freshVersion -ne 2 -or -not [string]::Equals($freshGenerationId, $ExpectedGenerationId, [System.StringComparison]::Ordinal)) {
+            throw 'runtime dispatch refused (invalid_supervisor_identity): Runtime generation changed immediately before manifest save.'
+        }
     }
 
     $originalLabel = $null
@@ -510,7 +788,8 @@ function Set-PaneControlManifestPaneProperties {
     }
 
     $manifest.panes = $updatedPanes
-    Save-WinsmuxManifest -ProjectDir $projectDir -Manifest $manifest
+    Save-PaneControlManifestDocument -ManifestPath $ManifestPath -Manifest $manifest `
+        -ExpectedGenerationId $ExpectedGenerationId -RuntimePaneId $PaneId -RuntimeOperation $RuntimeOperation
 }
 
 function Get-PaneControlPaneTitle {
@@ -545,7 +824,9 @@ function Update-PaneControlManifestPaneLabel {
     $properties = [ordered]@{
         label = $resolvedLabel
     }
-    Set-PaneControlManifestPaneProperties -ManifestPath $context.ManifestPath -PaneId $PaneId -Properties $properties
+    $expectedGenerationId = [string]$context.GenerationId
+    Set-PaneControlManifestPaneProperties -ManifestPath $context.ManifestPath -PaneId $PaneId -Properties $properties `
+        -ExpectedGenerationId $expectedGenerationId
     return $true
 }
 
@@ -557,7 +838,8 @@ function Set-PaneControlManifestPanePaths {
         [AllowNull()][string]$BuilderWorktreePath = $null
     )
 
-    $manifestPath = Join-Path (Join-Path $ProjectDir '.winsmux') 'manifest.yaml'
+    $context = Get-PaneControlManifestContext -ProjectDir $ProjectDir -PaneId $PaneId
+    $manifestPath = [string]$context.ManifestPath
     $properties = [ordered]@{
         launch_dir = $LaunchDir
     }
@@ -566,7 +848,9 @@ function Set-PaneControlManifestPanePaths {
         $properties['builder_worktree_path'] = $BuilderWorktreePath
     }
 
-    Set-PaneControlManifestPaneProperties -ManifestPath $manifestPath -PaneId $PaneId -Properties $properties
+    $expectedGenerationId = [string]$context.GenerationId
+    Set-PaneControlManifestPaneProperties -ManifestPath $manifestPath -PaneId $PaneId -Properties $properties `
+        -ExpectedGenerationId $expectedGenerationId
 }
 
 function Get-PaneControlRestartPlan {
@@ -605,6 +889,7 @@ function Get-PaneControlRestartPlan {
 
     return [ordered]@{
         PaneId         = $context.PaneId
+        GenerationId   = [string]$context.GenerationId
         Label          = $context.Label
         Role           = $context.Role
         ProjectDir     = $context.ProjectDir

@@ -184,6 +184,7 @@ function Write-WinsmuxTextFile {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
         [AllowEmptyString()][string]$Content = '',
+        [AllowNull()][scriptblock]$ValidateLocked = $null,
         [switch]$Append
     )
 
@@ -194,6 +195,10 @@ function Write-WinsmuxTextFile {
 
     $escapedPath = $Path -replace '"', '""'
     Invoke-WinsmuxWithFileLock -Path $Path -Action {
+        if ($null -ne $ValidateLocked) {
+            & $ValidateLocked
+        }
+
         if ($Append) {
             if ([string]::IsNullOrEmpty($Content)) {
                 return
