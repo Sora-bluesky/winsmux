@@ -292,10 +292,192 @@ function Remove-OrchestraZombieProcesses {
     }
 }
 
+function Get-OrchestraBridgeSessionNamespace {
+    $namespace = $env:WINSMUX_BRIDGE_SESSION_NAMESPACE
+    if ([string]::IsNullOrWhiteSpace($namespace)) {
+        if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_BRIDGE_SOCKET_S)) {
+            $namespace = Get-WinsmuxSocketNamespaceBase -SocketSelector $env:WINSMUX_BRIDGE_SOCKET_S
+        } elseif (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_BRIDGE_NAMESPACE_L)) {
+            $namespace = $env:WINSMUX_BRIDGE_NAMESPACE_L
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($namespace)) {
+        return ''
+    }
+    return $namespace.Trim()
+}
+
+function ConvertFrom-OrchestraCommandLineTokens {
+    param([Parameter(Mandatory = $true)][string]$CommandLine)
+
+    $tokens = [System.Collections.Generic.List[string]]::new()
+    $token = [System.Text.StringBuilder]::new()
+    $quote = [char]0
+    $tokenWasQuoted = $false
+    $malformed = $false
+    $optionParsingStopped = $false
+
+    for ($index = 0; $index -lt $CommandLine.Length; $index++) {
+        $character = $CommandLine[$index]
+        if ($quote -ne [char]0) {
+            if ($character -eq $quote) {
+                $quote = [char]0
+                $tokenWasQuoted = $true
+                continue
+            }
+            if ($quote -eq '"' -and $character -eq '\' -and $index + 1 -lt $CommandLine.Length -and
+                $CommandLine[$index + 1] -eq '"') {
+                [void]$token.Append('"')
+                $index++
+                continue
+            }
+            [void]$token.Append($character)
+            continue
+        }
+
+        if ($character -eq '"' -or $character -eq "'") {
+            $quote = $character
+            $tokenWasQuoted = $true
+            continue
+        }
+        if ([char]::IsWhiteSpace($character)) {
+            if ($token.Length -eq 0 -and -not $tokenWasQuoted) {
+                continue
+            }
+            $value = $token.ToString()
+            if (-not $optionParsingStopped -and -not $tokenWasQuoted -and
+                [string]::Equals($value, '--', [System.StringComparison]::Ordinal)) {
+                $optionParsingStopped = $true
+            } elseif (-not $optionParsingStopped) {
+                $tokens.Add($value) | Out-Null
+            }
+            [void]$token.Clear()
+            $tokenWasQuoted = $false
+            continue
+        }
+        [void]$token.Append($character)
+    }
+
+    if ($quote -ne [char]0) {
+        $malformed = $true
+    } elseif ($token.Length -gt 0 -or $tokenWasQuoted) {
+        $value = $token.ToString()
+        if (-not $optionParsingStopped -and -not $tokenWasQuoted -and
+            [string]::Equals($value, '--', [System.StringComparison]::Ordinal)) {
+            $optionParsingStopped = $true
+        } elseif (-not $optionParsingStopped) {
+            $tokens.Add($value) | Out-Null
+        }
+    }
+
+    return [PSCustomObject]@{ Tokens = @($tokens); Malformed = $malformed }
+}
+
+function Get-OrchestraServerCommandSelectors {
+    param([Parameter(Mandatory = $true)][string]$CommandLine)
+
+    $tokenization = ConvertFrom-OrchestraCommandLineTokens -CommandLine $CommandLine
+    $tokens = @($tokenization.Tokens)
+
+    $serverCount = 0
+    $sessions = [System.Collections.Generic.List[string]]::new()
+    $namespaces = [System.Collections.Generic.List[object]]::new()
+    $malformed = [bool]$tokenization.Malformed
+    for ($index = 0; $index -lt $tokens.Count; $index++) {
+        $token = [string]$tokens[$index]
+        if ([string]::Equals($token, 'server', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $serverCount++
+            continue
+        }
+
+        $kind = ''
+        $value = $null
+        if ([string]::Equals($token, '-s', [System.StringComparison]::Ordinal) -or
+            [string]::Equals($token, '--session', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $kind = 'session'
+        } elseif ($token.StartsWith('-s=', [System.StringComparison]::Ordinal)) {
+            $kind = 'session'; $value = $token.Substring(3)
+        } elseif ($token.StartsWith('--session=', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $kind = 'session'; $value = $token.Substring('--session='.Length)
+        } elseif ([string]::Equals($token, '-S', [System.StringComparison]::Ordinal)) {
+            $kind = 'socket'
+        } elseif ($token.StartsWith('-S=', [System.StringComparison]::Ordinal)) {
+            $kind = 'socket'; $value = $token.Substring(3)
+        } elseif ([string]::Equals($token, '-L', [System.StringComparison]::Ordinal)) {
+            $kind = 'literal'
+        } elseif ($token.StartsWith('-L=', [System.StringComparison]::Ordinal)) {
+            $kind = 'literal'; $value = $token.Substring(3)
+        } else {
+            continue
+        }
+
+        if ($null -eq $value) {
+            if ($index + 1 -ge $tokens.Count) {
+                $malformed = $true
+                break
+            }
+            $index++
+            $value = [string]$tokens[$index]
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$value)) {
+            $malformed = $true
+            break
+        }
+        if ($kind -eq 'session') {
+            $sessions.Add([string]$value) | Out-Null
+        } else {
+            $namespaces.Add([PSCustomObject]@{ Kind = $kind; Value = [string]$value }) | Out-Null
+        }
+    }
+
+    return [PSCustomObject]@{
+        Malformed = $malformed
+        ServerCount = $serverCount
+        Sessions = @($sessions)
+        Namespaces = @($namespaces)
+    }
+}
+
+function Test-OrchestraServerProcessNamespace {
+    param(
+        [Parameter(Mandatory = $true)][string]$CommandLine,
+        [AllowEmptyString()][string]$Namespace = ''
+    )
+
+    $selectors = Get-OrchestraServerCommandSelectors -CommandLine $CommandLine
+    if ([bool]$selectors.Malformed) {
+        return $false
+    }
+    $namespaceSelectors = @($selectors.Namespaces)
+    if ([string]::IsNullOrWhiteSpace($Namespace)) {
+        return $namespaceSelectors.Count -eq 0
+    }
+    if ($namespaceSelectors.Count -ne 1) {
+        return $false
+    }
+
+    $selector = $namespaceSelectors[0]
+    if ([string]$selector.Kind -eq 'socket') {
+        $socketNamespace = Get-WinsmuxSocketNamespaceBase -SocketSelector ([string]$selector.Value)
+        return [string]::Equals(
+            [string]$socketNamespace,
+            $Namespace.Trim(),
+            [System.StringComparison]::OrdinalIgnoreCase
+        )
+    }
+    return [string]::Equals(
+        [string]$selector.Value,
+        $Namespace.Trim(),
+        [System.StringComparison]::OrdinalIgnoreCase
+    )
+}
+
 function Test-OrchestraSessionServerProcess {
     param(
         [AllowNull()]$Process,
-        [Parameter(Mandatory = $true)][string]$SessionName
+        [Parameter(Mandatory = $true)][string]$SessionName,
+        [AllowEmptyString()][string]$Namespace = (Get-OrchestraBridgeSessionNamespace)
     )
 
     if ($null -eq $Process) {
@@ -312,25 +494,17 @@ function Test-OrchestraSessionServerProcess {
         return $false
     }
 
-    if ($commandLine.IndexOf(' server', [System.StringComparison]::OrdinalIgnoreCase) -lt 0 -and
-        $commandLine.IndexOf('"server"', [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
+    $selectors = Get-OrchestraServerCommandSelectors -CommandLine $commandLine
+    if ([bool]$selectors.Malformed -or [int]$selectors.ServerCount -ne 1) {
+        return $false
+    }
+    $sessions = @($selectors.Sessions)
+    if ($sessions.Count -ne 1 -or
+        -not [string]::Equals([string]$sessions[0], $SessionName, [System.StringComparison]::Ordinal)) {
         return $false
     }
 
-    foreach ($marker in @(
-        "-s $SessionName",
-        "-s `"$SessionName`"",
-        "-s '$SessionName'",
-        "--session $SessionName",
-        "--session `"$SessionName`"",
-        "--session '$SessionName'"
-    )) {
-        if ($commandLine.IndexOf($marker, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
-            return $true
-        }
-    }
-
-    return $false
+    return Test-OrchestraServerProcessNamespace -CommandLine $commandLine -Namespace $Namespace
 }
 
 function Remove-OrchestraSessionServerProcesses {
@@ -338,7 +512,10 @@ function Remove-OrchestraSessionServerProcesses {
         [Parameter(Mandatory = $true)][string]$SessionName,
         [Parameter(Mandatory = $true)][string]$WinsmuxBin,
         [switch]$IncludeExpectedBinary,
-        [AllowNull()]$ProcessSnapshot = $null
+        [AllowNull()]$ProcessSnapshot = $null,
+        [scriptblock]$PostStopSnapshotResolver = { Get-ProcessSnapshot },
+        [ValidateRange(1, 100)][int]$VerificationAttempts = 20,
+        [ValidateRange(0, 5000)][int]$VerificationIntervalMilliseconds = 100
     )
 
     $snapshot = if ($null -ne $ProcessSnapshot) { $ProcessSnapshot } else { Get-ProcessSnapshot }
@@ -356,14 +533,33 @@ function Remove-OrchestraSessionServerProcesses {
         }
     }
 
+    $sessionNamespace = Get-OrchestraBridgeSessionNamespace
+    $selectRetirementCandidates = {
+        param([Parameter(Mandatory = $true)]$InputSnapshot)
+
+        return @(
+            $InputSnapshot.Processes |
+                Where-Object { Test-OrchestraSessionServerProcess -Process $_ -SessionName $SessionName -Namespace $sessionNamespace } |
+                Where-Object {
+                    $candidatePath = if ($null -ne $_.PSObject.Properties['ExecutablePath']) { [string]$_.ExecutablePath } else { '' }
+                    $isExpectedBinary = -not [string]::IsNullOrWhiteSpace($candidatePath) -and
+                        -not [string]::IsNullOrWhiteSpace($expectedWinsmuxPath) -and
+                        [string]::Equals($candidatePath, $expectedWinsmuxPath, [System.StringComparison]::OrdinalIgnoreCase)
+                    return ($IncludeExpectedBinary -or -not $isExpectedBinary)
+                } |
+                Sort-Object -Property ProcessId
+        )
+    }
     $serverProcesses = @(
         $snapshot.Processes |
-            Where-Object { Test-OrchestraSessionServerProcess -Process $_ -SessionName $SessionName } |
+            Where-Object { Test-OrchestraSessionServerProcess -Process $_ -SessionName $SessionName -Namespace $sessionNamespace } |
             Sort-Object -Property ProcessId
     )
+    $retirementCandidates = @(& $selectRetirementCandidates $snapshot)
     $killed = [System.Collections.Generic.List[object]]::new()
+    $stopErrors = [System.Collections.Generic.List[string]]::new()
 
-    foreach ($serverProcess in $serverProcesses) {
+    foreach ($serverProcess in $retirementCandidates) {
         $serverPid = [int]$serverProcess.ProcessId
         if ($protectedIds.Contains($serverPid)) {
             continue
@@ -373,13 +569,6 @@ function Remove-OrchestraSessionServerProcesses {
         if ($null -ne $serverProcess.PSObject.Properties['ExecutablePath']) {
             $actualPath = [string]$serverProcess.ExecutablePath
         }
-        $matchesExpectedPath = -not [string]::IsNullOrWhiteSpace($actualPath) -and
-            -not [string]::IsNullOrWhiteSpace($expectedWinsmuxPath) -and
-            [string]::Equals($actualPath, $expectedWinsmuxPath, [System.StringComparison]::OrdinalIgnoreCase)
-        if ($matchesExpectedPath -and -not $IncludeExpectedBinary) {
-            continue
-        }
-
         $idsToStop = @(Get-DescendantProcessIds -Snapshot $snapshot -RootProcessIds @($serverPid)) |
             Sort-Object -Descending
         foreach ($processId in $idsToStop) {
@@ -405,14 +594,45 @@ function Remove-OrchestraSessionServerProcesses {
                     } | Out-Null
                 }
             } catch {
+                $stopError = "process $([int]$processId): $($_.Exception.Message)"
+                $stopErrors.Add($stopError) | Out-Null
                 Write-Warning ("Preflight: failed to kill stale session process {0}: {1}" -f [int]$processId, $_.Exception.Message)
             }
         }
     }
 
+    $remaining = @()
+    foreach ($attempt in 1..$VerificationAttempts) {
+        $postStopSnapshot = & $PostStopSnapshotResolver
+        if ($null -eq $postStopSnapshot) {
+            throw 'Preflight: post-stop process snapshot is unavailable.'
+        }
+        $remaining = @(& $selectRetirementCandidates $postStopSnapshot)
+        if ($remaining.Count -eq 0) {
+            break
+        }
+        if ($attempt -lt $VerificationAttempts -and $VerificationIntervalMilliseconds -gt 0) {
+            Start-Sleep -Milliseconds $VerificationIntervalMilliseconds
+        }
+    }
+
+    if ($stopErrors.Count -gt 0 -or $remaining.Count -gt 0) {
+        $parts = [System.Collections.Generic.List[string]]::new()
+        if ($stopErrors.Count -gt 0) {
+            $parts.Add('stop failures: ' + ($stopErrors -join '; ')) | Out-Null
+        }
+        if ($remaining.Count -gt 0) {
+            $remainingIds = @($remaining | ForEach-Object { [string][int]$_.ProcessId }) -join ', '
+            $parts.Add("server processes remain after retirement: $remainingIds") | Out-Null
+        }
+        throw ('Preflight: session server retirement incomplete: ' + ($parts -join ' | '))
+    }
+
     return [PSCustomObject]@{
-        SessionProcesses = @($serverProcesses)
-        Killed           = @($killed)
+        SessionProcesses         = @($serverProcesses)
+        Killed                   = @($killed)
+        RemainingSessionProcesses = @($remaining)
+        Errors                   = @($stopErrors)
     }
 }
 
@@ -545,14 +765,7 @@ function Get-WinsmuxSocketNamespaceBase {
 function Get-OrchestraSessionRegistryBaseName {
     param([Parameter(Mandatory = $true)][string]$SessionName)
 
-    $namespace = $env:WINSMUX_BRIDGE_SESSION_NAMESPACE
-    if ([string]::IsNullOrWhiteSpace($namespace)) {
-        if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_BRIDGE_SOCKET_S)) {
-            $namespace = Get-WinsmuxSocketNamespaceBase -SocketSelector $env:WINSMUX_BRIDGE_SOCKET_S
-        } elseif (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_BRIDGE_NAMESPACE_L)) {
-            $namespace = $env:WINSMUX_BRIDGE_NAMESPACE_L.Trim()
-        }
-    }
+    $namespace = Get-OrchestraBridgeSessionNamespace
 
     if ([string]::IsNullOrWhiteSpace($namespace)) {
         return $SessionName

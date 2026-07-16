@@ -2345,6 +2345,42 @@ Describe 'Vault helpers' {
         }
 
         . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\vault.ps1')
+
+        if (-not ('WinsmuxVaultTestCleanupNative' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class WinsmuxVaultTestCleanupNative {
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    public static extern bool CredEnumerate(string filter, uint flags, out int count, out IntPtr credentials);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    public static extern bool CredDelete(string target, uint type, uint flags);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    public static extern bool CredFree(IntPtr credential);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct CREDENTIAL {
+        public uint Flags;
+        public uint Type;
+        public string TargetName;
+        public string Comment;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;
+        public int CredentialBlobSize;
+        public IntPtr CredentialBlob;
+        public uint Persist;
+        public int AttributeCount;
+        public IntPtr Attributes;
+        public string TargetAlias;
+        public string UserName;
+    }
+
+    public const uint CRED_TYPE_GENERIC = 1;
+}
+'@ -ErrorAction Stop
+        }
     }
 
     BeforeEach {
@@ -2363,17 +2399,17 @@ Describe 'Vault helpers' {
         $count = 0
         $credsPtr = [IntPtr]::Zero
 
-        $ok = [WinCred]::CredEnumerate($filter, 0, [ref]$count, [ref]$credsPtr)
+        $ok = [WinsmuxVaultTestCleanupNative]::CredEnumerate($filter, 0, [ref]$count, [ref]$credsPtr)
         if ($ok) {
             try {
                 $ptrSize = [Runtime.InteropServices.Marshal]::SizeOf([Type][IntPtr])
                 for ($i = 0; $i -lt $count; $i++) {
                     $entryPtr = [Runtime.InteropServices.Marshal]::ReadIntPtr($credsPtr, $i * $ptrSize)
-                    $cred = [Runtime.InteropServices.Marshal]::PtrToStructure($entryPtr, [Type][WinCred+CREDENTIAL])
-                    [WinCred]::CredDelete($cred.TargetName, [WinCred]::CRED_TYPE_GENERIC, 0) | Out-Null
+                    $cred = [Runtime.InteropServices.Marshal]::PtrToStructure($entryPtr, [Type][WinsmuxVaultTestCleanupNative+CREDENTIAL])
+                    [WinsmuxVaultTestCleanupNative]::CredDelete($cred.TargetName, [WinsmuxVaultTestCleanupNative]::CRED_TYPE_GENERIC, 0) | Out-Null
                 }
             } finally {
-                [WinCred]::CredFree($credsPtr) | Out-Null
+                [WinsmuxVaultTestCleanupNative]::CredFree($credsPtr) | Out-Null
             }
         }
 
@@ -3030,6 +3066,1796 @@ Describe 'manifest worker isolation metadata' {
     }
 }
 
+Describe 'TASK781 runtime identity registry' {
+    BeforeAll {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\manifest.ps1')
+
+        function New-Task781RuntimeFixture {
+            $supervisorStart = '2026-07-15T00:00:00.0000000Z'
+            $bootstrapStart = '2026-07-15T00:00:01.0000000Z'
+            return [PSCustomObject]@{
+                Manifest = [PSCustomObject]@{
+                    version = 2
+                    session = [PSCustomObject]@{
+                        name              = 'winsmux-task781-test'
+                        generation_id     = 'generation-1'
+                        server_session_id = '$9'
+                        bootstrap_pane_id = '%1'
+                        expected_pane_count = 1
+                        session_ready     = $true
+                    }
+                    panes = [ordered]@{
+                        'worker-1' = [ordered]@{
+                            slot_id        = 'worker-1'
+                            pane_id        = '%2'
+                            worker_backend = 'codex'
+                            worker_role    = 'reviewer'
+                            role           = 'Reviewer'
+                            title          = 'W1 Codex Reviewer'
+                            status         = 'ready'
+                        }
+                    }
+                }
+                Registry = [PSCustomObject]@{
+                    schema_version    = 1
+                    status            = 'active'
+                    session_name      = 'winsmux-task781-test'
+                    generation_id     = 'generation-1'
+                    server_session_id = '$9'
+                    bootstrap_pane_id = '%1'
+                    supervisor        = [PSCustomObject]@{
+                        pid                = 4100
+                        process_started_at = $supervisorStart
+                    }
+                    lease = [PSCustomObject]@{
+                        state      = 'active'
+                        expires_at = '2026-07-15T00:10:00.0000000Z'
+                    }
+                    expected_pane_count = 1
+                    panes = @(
+                        [PSCustomObject]@{
+                            label                        = 'worker-1'
+                            slot_id                      = 'worker-1'
+                            pane_id                      = '%2'
+                            backend                      = 'codex'
+                            role                         = 'reviewer'
+                            title                        = 'W1 Codex Reviewer'
+                            state                        = 'live'
+                            bootstrap_pid                = 4200
+                            bootstrap_process_started_at = $bootstrapStart
+                        }
+                    )
+                }
+                Entry = [PSCustomObject]@{
+                    Label         = 'worker-1'
+                    SlotId        = 'worker-1'
+                    PaneId        = '%2'
+                    WorkerBackend = 'codex'
+                    WorkerRole    = 'reviewer'
+                    Role          = 'Reviewer'
+                    Title         = 'W1 Codex Reviewer'
+                    Status        = 'ready'
+                }
+                Marker = [PSCustomObject]@{
+                    generation_id             = 'generation-1'
+                    server_session_id         = '$9'
+                    slot_id                   = 'worker-1'
+                    pane_id                   = '%2'
+                    backend                   = 'codex'
+                    role                      = 'reviewer'
+                    title                     = 'W1 Codex Reviewer'
+                    bootstrap_pid             = 4200
+                    bootstrap_process_started_at = $bootstrapStart
+                }
+                Caller = [PSCustomObject]@{
+                    process_id                   = 4300
+                    process_started_at           = '2026-07-15T00:00:02.0000000Z'
+                    generation_id                = 'generation-1'
+                    server_session_id            = '$9'
+                    slot_id                      = 'worker-1'
+                    pane_id                      = '%2'
+                    backend                      = 'codex'
+                    ancestry                     = @(
+                        [PSCustomObject]@{ pid = 4300; process_started_at = '2026-07-15T00:00:02.0000000Z' }
+                        [PSCustomObject]@{ pid = 4200; process_started_at = $bootstrapStart }
+                    )
+                }
+                ObservedPanes = @(
+                    [PSCustomObject]@{ pane_id = '%2'; title = 'W1 Codex Reviewer' }
+                    [PSCustomObject]@{ pane_id = '%1'; title = 'winsmux-orchestra-bootstrap' }
+                )
+                ProcessResolver = {
+                    param([int]$Id)
+                    switch ($Id) {
+                        4100 { return [PSCustomObject]@{ Id = 4100; StartTime = [datetime]'2026-07-15T00:00:00Z'; ParentProcessId = 1; Name = 'pwsh.exe' } }
+                        4200 { return [PSCustomObject]@{ Id = 4200; StartTime = [datetime]'2026-07-15T00:00:01Z'; ParentProcessId = 1; Name = 'pwsh.exe' } }
+                        4300 { return [PSCustomObject]@{ Id = 4300; StartTime = [datetime]'2026-07-15T00:00:02Z'; ParentProcessId = 4200; Name = 'codex.exe' } }
+                        default { return $null }
+                    }
+                }
+            }
+        }
+
+        function Invoke-Task781RuntimeFixture {
+            param(
+                [Parameter(Mandatory = $true)]$Fixture,
+                [ValidateSet('dispatch', 'start_deferred', 'caller_ack', 'stop_transition')][string]$Operation = 'dispatch'
+            )
+
+            return Test-WinsmuxRuntimeContext -Manifest $Fixture.Manifest -Registry $Fixture.Registry `
+                -ObservedServerSessionId '$9' -ObservedPanes $Fixture.ObservedPanes `
+                -ManifestEntry $Fixture.Entry -PaneMarker $Fixture.Marker `
+                -CallerIdentity $Fixture.Caller -ProcessResolver $Fixture.ProcessResolver `
+                -Operation $Operation -Now ([datetime]'2026-07-15T00:05:00Z')
+        }
+
+        function Add-Task781UnrelatedRuntimeSlot {
+            param([Parameter(Mandatory = $true)]$Fixture)
+
+            $Fixture.Manifest.panes['worker-2'] = [ordered]@{
+                slot_id        = 'worker-2'
+                pane_id        = '%3'
+                worker_backend = 'api_llm'
+                worker_role    = 'worker'
+                role           = 'Worker'
+                title          = 'W2 API Worker'
+                status         = 'ready'
+            }
+            $Fixture.Registry.panes += [PSCustomObject]@{
+                label                        = 'worker-2'
+                slot_id                      = 'worker-2'
+                pane_id                      = '%3'
+                backend                      = 'api_llm'
+                role                         = 'worker'
+                title                        = 'W2 API Worker'
+                state                        = 'live'
+                bootstrap_pid                = 4400
+                bootstrap_process_started_at = '2026-07-15T00:00:04.0000000Z'
+            }
+            $Fixture.ObservedPanes += [PSCustomObject]@{ pane_id = '%3'; title = 'W2 API Worker' }
+            $Fixture.Manifest.session.expected_pane_count = 2
+            $Fixture.Registry.expected_pane_count = 2
+            return $Fixture
+        }
+    }
+
+    BeforeEach {
+        $script:task781TempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-task781-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path (Join-Path $script:task781TempRoot '.winsmux') -Force | Out-Null
+    }
+
+    AfterEach {
+        if ($script:task781TempRoot -and (Test-Path -LiteralPath $script:task781TempRoot)) {
+            Remove-Item -LiteralPath $script:task781TempRoot -Recurse -Force
+        }
+    }
+
+    It 'TASK781 refuses invalid supervisor identity' {
+        $fixture = New-Task781RuntimeFixture
+        $fixture.Registry.supervisor.process_started_at = '2026-07-15T00:00:05.0000000Z'
+
+        $result = Test-WinsmuxRuntimeContext -Manifest $fixture.Manifest -Registry $fixture.Registry `
+            -ObservedServerSessionId '$9' -ManifestEntry $fixture.Entry -PaneMarker $fixture.Marker `
+            -CallerIdentity $fixture.Caller -ObservedPanes $fixture.ObservedPanes -ProcessResolver $fixture.ProcessResolver `
+            -Operation caller_ack -Now ([datetime]'2026-07-15T00:05:00Z')
+
+        $result.valid | Should -BeFalse
+        $result.reason_code | Should -Be 'invalid_supervisor_identity'
+    }
+
+    It 'TASK781 requires manifest regeneration for unverified or stale session' {
+        $fixture = New-Task781RuntimeFixture
+        $fixture.Manifest.version = 1
+
+        $result = Test-WinsmuxRuntimeContext -Manifest $fixture.Manifest -Registry $fixture.Registry `
+            -ObservedServerSessionId '$9' -ManifestEntry $fixture.Entry -PaneMarker $fixture.Marker `
+            -CallerIdentity $fixture.Caller -ObservedPanes $fixture.ObservedPanes -ProcessResolver $fixture.ProcessResolver `
+            -Now ([datetime]'2026-07-15T00:05:00Z')
+
+        $result.valid | Should -BeFalse
+        $result.reason_code | Should -Be 'manifest_regeneration_required'
+    }
+
+    It 'TASK781 refuses mismatched runtime target before deferred start' {
+        $fixture = New-Task781RuntimeFixture
+        $fixture.Registry.panes[0].backend = 'api_llm'
+
+        $result = Test-WinsmuxRuntimeContext -Manifest $fixture.Manifest -Registry $fixture.Registry `
+            -ObservedServerSessionId '$9' -ManifestEntry $fixture.Entry -PaneMarker $fixture.Marker `
+            -CallerIdentity $fixture.Caller -ObservedPanes $fixture.ObservedPanes -ProcessResolver $fixture.ProcessResolver `
+            -Now ([datetime]'2026-07-15T00:05:00Z')
+
+        $result.valid | Should -BeFalse
+        $result.reason_code | Should -Be 'runtime_target_mismatch'
+    }
+
+    It 'TASK781 C42 refuses a consistently incomplete runtime pane set' {
+        $fixture = New-Task781RuntimeFixture
+        $fixture.Manifest.session.expected_pane_count = 6
+        $fixture.Registry.expected_pane_count = 6
+
+        $result = Invoke-Task781RuntimeFixture -Fixture $fixture
+
+        $result.valid | Should -BeFalse
+        $result.reason_code | Should -Be 'runtime_target_mismatch'
+        $result.diagnostic | Should -Match 'pane sets do not match exactly'
+    }
+
+    It 'TASK781 C42 requires matching authoritative expected pane counts for <Mode>' -ForEach @(
+        @{ Mode = 'missing_manifest_count' }
+        @{ Mode = 'registry_count_mismatch' }
+    ) {
+        $fixture = New-Task781RuntimeFixture
+        if ($Mode -eq 'missing_manifest_count') {
+            $fixture.Manifest.session.PSObject.Properties.Remove('expected_pane_count')
+        } else {
+            $fixture.Registry.expected_pane_count = 2
+        }
+
+        $result = Invoke-Task781RuntimeFixture -Fixture $fixture
+
+        $result.valid | Should -BeFalse
+        $result.reason_code | Should -Be 'manifest_regeneration_required'
+    }
+
+    It 'TASK781 refuses spoofed local or Codex caller' {
+        $fixture = New-Task781RuntimeFixture
+        $fixture.Caller.process_id = 4999
+
+        $result = Test-WinsmuxRuntimeContext -Manifest $fixture.Manifest -Registry $fixture.Registry `
+            -ObservedServerSessionId '$9' -ManifestEntry $fixture.Entry -PaneMarker $fixture.Marker `
+            -CallerIdentity $fixture.Caller -ObservedPanes $fixture.ObservedPanes -ProcessResolver $fixture.ProcessResolver `
+            -Operation caller_ack -Now ([datetime]'2026-07-15T00:05:00Z')
+
+        $result.valid | Should -BeFalse
+        $result.reason_code | Should -Be 'caller_identity_mismatch'
+    }
+
+    It 'TASK781 accepts fully matched live runtime context' {
+        $fixture = New-Task781RuntimeFixture
+
+        $result = Test-WinsmuxRuntimeContext -Manifest $fixture.Manifest -Registry $fixture.Registry `
+            -ObservedServerSessionId '$9' -ManifestEntry $fixture.Entry -PaneMarker $fixture.Marker `
+            -CallerIdentity $fixture.Caller -ObservedPanes $fixture.ObservedPanes -ProcessResolver $fixture.ProcessResolver `
+            -Now ([datetime]'2026-07-15T00:05:00Z')
+
+        $result.valid | Should -BeTrue
+        $result.reason_code | Should -Be 'live_runtime_verified'
+        $result.context.pane_id | Should -Be '%2'
+        $result.context.generation_id | Should -Be 'generation-1'
+    }
+
+    It 'TASK781 C46 authorizes an intentional stop transition without the terminated bootstrap process' {
+        $fixture = New-Task781RuntimeFixture
+        $fixture.ProcessResolver = {
+            param([int]$Id)
+            if ($Id -eq 4100) {
+                return [PSCustomObject]@{ Id = 4100; StartTime = [datetime]'2026-07-15T00:00:00Z'; ParentProcessId = 1; Name = 'pwsh.exe' }
+            }
+            return $null
+        }
+
+        $transition = Invoke-Task781RuntimeFixture -Fixture $fixture -Operation stop_transition
+        $dispatch = Invoke-Task781RuntimeFixture -Fixture $fixture -Operation dispatch
+
+        $transition.valid | Should -BeTrue
+        $transition.reason_code | Should -Be 'stop_transition_verified'
+        $transition.context.generation_id | Should -Be 'generation-1'
+        $dispatch.valid | Should -BeFalse
+        $dispatch.reason_code | Should -Be 'runtime_target_mismatch'
+    }
+
+    It 'TASK781 C49 rejects duplicate v2 pane labels' {
+        $content = @'
+version: 2
+saved_at: '2026-07-15T00:00:00Z'
+session:
+  name: 'winsmux-orchestra'
+panes:
+  worker-1:
+    pane_id: '%2'
+  worker-1:
+    pane_id: '%3'
+'@
+
+        { ConvertFrom-ManifestYaml -Content $content } | Should -Throw '*duplicate*panes.worker-1*'
+    }
+
+    It 'TASK781 C49 rejects duplicate v2 pane identity properties' {
+        $content = @'
+version: 2
+saved_at: '2026-07-15T00:00:00Z'
+session:
+  name: 'winsmux-orchestra'
+panes:
+  worker-1:
+    pane_id: '%2'
+    pane_id: '%3'
+'@
+
+        { ConvertFrom-ManifestYaml -Content $content } | Should -Throw '*duplicate*panes.worker-1.pane_id*'
+    }
+
+    It 'TASK781 C58 rejects case-variant v2 duplicate <Case>' -ForEach @(
+        @{
+            Case = 'top-level section'
+            Content = @'
+version: 2
+session:
+  name: winsmux-orchestra
+Session:
+  generation_id: generation-58
+'@
+        }
+        @{
+            Case = 'session property'
+            Content = @'
+version: 2
+session:
+  name: winsmux-orchestra
+  Name: overwritten
+'@
+        }
+        @{
+            Case = 'pane label'
+            Content = @'
+version: 2
+panes:
+  worker-1:
+    pane_id: '%2'
+  Worker-1:
+    pane_id: '%3'
+'@
+        }
+        @{
+            Case = 'pane property'
+            Content = @'
+version: 2
+panes:
+  worker-1:
+    pane_id: '%2'
+    PANE_ID: '%3'
+'@
+        }
+        @{
+            Case = 'worktree label'
+            Content = @'
+version: 2
+worktrees:
+  worker-1:
+    path: C:\repo\one
+  Worker-1:
+    path: C:\repo\two
+'@
+        }
+        @{
+            Case = 'worktree property'
+            Content = @'
+version: 2
+worktrees:
+  worker-1:
+    path: C:\repo\one
+    PATH: C:\repo\two
+'@
+        }
+    ) {
+        { ConvertFrom-ManifestYaml -Content $Content } | Should -Throw '*duplicate manifest key*'
+    }
+
+    It 'TASK781 C58 preserves case-insensitive last-value parsing for legacy v1 diagnostics' {
+        $content = @'
+version: 1
+panes:
+  worker-1:
+    pane_id: '%2'
+    PANE_ID: '%3'
+'@
+
+        $legacy = ConvertFrom-ManifestYaml -Content $content
+
+        $legacy.version | Should -Be 1
+        $legacy.panes['worker-1'].pane_id | Should -Be '%3'
+    }
+
+    It 'TASK781 C49 preserves v1 diagnostic parsing when a legacy property is duplicated' {
+        $content = @'
+version: 1
+saved_at: '2026-07-15T00:00:00Z'
+session:
+  name: 'winsmux-orchestra'
+panes:
+  worker-1:
+    pane_id: '%2'
+    pane_id: '%3'
+'@
+
+        $legacy = ConvertFrom-ManifestYaml -Content $content
+
+        $legacy.version | Should -Be 1
+        $legacy.panes['worker-1'].pane_id | Should -Be '%3'
+    }
+
+    It 'TASK781 enforces the full desired runtime and observed pane set for <Mode>' -ForEach @(
+        @{ Mode = 'registry_missing' }
+        @{ Mode = 'registry_extra' }
+        @{ Mode = 'backend_drift' }
+        @{ Mode = 'role_drift' }
+        @{ Mode = 'title_drift' }
+        @{ Mode = 'pane_drift' }
+        @{ Mode = 'observed_missing' }
+        @{ Mode = 'observed_extra' }
+        @{ Mode = 'observed_title_drift' }
+        @{ Mode = 'bootstrap_missing' }
+        @{ Mode = 'bootstrap_duplicate' }
+        @{ Mode = 'canonical' }
+    ) {
+        $fixture = Add-Task781UnrelatedRuntimeSlot -Fixture (New-Task781RuntimeFixture)
+        switch ($Mode) {
+            'registry_missing'     { $fixture.Registry.panes = @($fixture.Registry.panes[0]) }
+            'registry_extra'       {
+                $extra = $fixture.Registry.panes[1].PSObject.Copy()
+                $extra.label = 'worker-3'; $extra.slot_id = 'worker-3'; $extra.pane_id = '%4'
+                $fixture.Registry.panes += $extra
+            }
+            'backend_drift'        { $fixture.Registry.panes[1].backend = 'codex' }
+            'role_drift'           { $fixture.Registry.panes[1].role = 'reviewer' }
+            'title_drift'          { $fixture.Registry.panes[1].title = 'wrong title' }
+            'pane_drift'           { $fixture.Registry.panes[1].pane_id = '%7' }
+            'observed_missing'     { $fixture.ObservedPanes = @($fixture.ObservedPanes[0]) }
+            'observed_extra'       { $fixture.ObservedPanes += [PSCustomObject]@{ pane_id = '%9'; title = 'unexpected pane' } }
+            'observed_title_drift' { @($fixture.ObservedPanes | Where-Object pane_id -EQ '%3')[0].title = 'wrong title' }
+            'bootstrap_missing'    { $fixture.ObservedPanes = @($fixture.ObservedPanes | Where-Object pane_id -NE '%1') }
+            'bootstrap_duplicate'  { $fixture.ObservedPanes += [PSCustomObject]@{ pane_id = '%1'; title = 'duplicate bootstrap' } }
+        }
+
+        $result = Invoke-Task781RuntimeFixture -Fixture $fixture
+        if ($Mode -eq 'canonical') {
+            $result.valid | Should -BeTrue
+            $result.reason_code | Should -Be 'live_runtime_verified'
+        } else {
+            $result.valid | Should -BeFalse
+            $result.reason_code | Should -Be 'runtime_target_mismatch'
+        }
+    }
+
+    It 'TASK781 requires matching manifest and registry bootstrap pane identity' {
+        $fixture = New-Task781RuntimeFixture
+        $fixture.Registry.bootstrap_pane_id = '%8'
+
+        $result = Invoke-Task781RuntimeFixture -Fixture $fixture
+
+        $result.valid | Should -BeFalse
+        $result.reason_code | Should -Be 'manifest_regeneration_required'
+    }
+
+    It 'TASK781 preserves a verified v2 manifest against <Mode> replacement' -ForEach @(
+        @{ Mode = 'schema_downgrade' }
+        @{ Mode = 'generation_drift' }
+    ) {
+        $current = (New-Task781RuntimeFixture).Manifest
+        Save-WinsmuxManifest -ProjectDir $script:task781TempRoot -Manifest $current
+        $path = Get-ManifestPath -ProjectDir $script:task781TempRoot
+        $before = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+        $replacement = ConvertFrom-ManifestYaml -Content (ConvertTo-ManifestYaml -Manifest $current)
+        if ($Mode -eq 'schema_downgrade') {
+            $replacement.version = 1
+        } else {
+            $replacement.session.generation_id = 'generation-stale'
+        }
+
+        { Save-WinsmuxManifest -ProjectDir $script:task781TempRoot -Manifest $replacement } | Should -Throw '*Refusing to replace a verified v2 runtime manifest*'
+
+        (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash | Should -Be $before
+        (Get-WinsmuxManifest -ProjectDir $script:task781TempRoot).version | Should -Be 2
+    }
+
+    It 'TASK781 refuses a missing supervisor process' {
+        $fixture = New-Task781RuntimeFixture
+        $fixture.Registry.supervisor.pid = 4999
+
+        $result = Invoke-Task781RuntimeFixture -Fixture $fixture -Operation caller_ack
+
+        $result.valid | Should -BeFalse
+        $result.reason_code | Should -Be 'invalid_supervisor_identity'
+    }
+
+    It 'TASK781 refuses missing or malformed supervisor StartTime' -ForEach @('', 'not-a-time') {
+        $fixture = New-Task781RuntimeFixture
+        $fixture.Registry.supervisor.process_started_at = $_
+
+        $result = Invoke-Task781RuntimeFixture -Fixture $fixture -Operation caller_ack
+
+        $result.valid | Should -BeFalse
+        $result.reason_code | Should -Be 'invalid_supervisor_identity'
+    }
+
+    It 'TASK781 refuses an expired supervisor lease' {
+        $fixture = New-Task781RuntimeFixture
+        $fixture.Registry.lease.expires_at = '2026-07-15T00:04:59.0000000Z'
+
+        $result = Invoke-Task781RuntimeFixture -Fixture $fixture -Operation caller_ack
+
+        $result.valid | Should -BeFalse
+        $result.reason_code | Should -Be 'invalid_supervisor_identity'
+    }
+
+    It 'TASK781 requires regeneration when the registry is missing' {
+        $fixture = New-Task781RuntimeFixture
+        $fixture.Registry = $null
+
+        $result = Invoke-Task781RuntimeFixture -Fixture $fixture -Operation caller_ack
+
+        $result.valid | Should -BeFalse
+        $result.reason_code | Should -Be 'manifest_regeneration_required'
+    }
+
+    It 'TASK781 requires regeneration for a stale generation' {
+        $fixture = New-Task781RuntimeFixture
+        $fixture.Registry.generation_id = 'generation-old'
+
+        $result = Invoke-Task781RuntimeFixture -Fixture $fixture -Operation caller_ack
+
+        $result.valid | Should -BeFalse
+        $result.reason_code | Should -Be 'manifest_regeneration_required'
+    }
+
+    It 'TASK781 requires regeneration for a stale observed server session' {
+        $fixture = New-Task781RuntimeFixture
+
+        $result = Test-WinsmuxRuntimeContext -Manifest $fixture.Manifest -Registry $fixture.Registry `
+            -ObservedServerSessionId '$8' -ObservedPanes $fixture.ObservedPanes `
+            -ManifestEntry $fixture.Entry -PaneMarker $fixture.Marker `
+            -CallerIdentity $fixture.Caller -ProcessResolver $fixture.ProcessResolver `
+            -Now ([datetime]'2026-07-15T00:05:00Z')
+
+        $result.valid | Should -BeFalse
+        $result.reason_code | Should -Be 'manifest_regeneration_required'
+    }
+
+    It 'TASK781 refuses duplicate runtime slots' {
+        $fixture = New-Task781RuntimeFixture
+        $fixture.Registry.panes = @($fixture.Registry.panes[0], $fixture.Registry.panes[0].PSObject.Copy())
+        $fixture.Registry.panes[1].pane_id = '%3'
+
+        $result = Invoke-Task781RuntimeFixture -Fixture $fixture -Operation caller_ack
+
+        $result.valid | Should -BeFalse
+        $result.reason_code | Should -Be 'runtime_target_mismatch'
+    }
+
+    It 'TASK781 refuses duplicate runtime panes' {
+        $fixture = New-Task781RuntimeFixture
+        $fixture.Registry.panes = @($fixture.Registry.panes[0], $fixture.Registry.panes[0].PSObject.Copy())
+        $fixture.Registry.panes[1].label = 'worker-2'
+        $fixture.Registry.panes[1].slot_id = 'worker-2'
+
+        $result = Invoke-Task781RuntimeFixture -Fixture $fixture
+
+        $result.valid | Should -BeFalse
+        $result.reason_code | Should -Be 'runtime_target_mismatch'
+    }
+
+    It 'TASK781 refuses pane role title or live-state drift' -ForEach @(
+        @{ Property = 'pane_id'; Value = '%7' }
+        @{ Property = 'role'; Value = 'builder' }
+        @{ Property = 'title'; Value = 'wrong title' }
+        @{ Property = 'state'; Value = 'deferred' }
+    ) {
+        $fixture = New-Task781RuntimeFixture
+        $fixture.Registry.panes[0].$($_.Property) = $_.Value
+
+        $result = Invoke-Task781RuntimeFixture -Fixture $fixture
+
+        $result.valid | Should -BeFalse
+        $result.reason_code | Should -Be 'runtime_target_mismatch'
+    }
+
+    It 'TASK781 refuses a marker from an old generation' {
+        $fixture = New-Task781RuntimeFixture
+        $fixture.Marker.generation_id = 'generation-old'
+
+        $result = Invoke-Task781RuntimeFixture -Fixture $fixture
+
+        $result.valid | Should -BeFalse
+        $result.reason_code | Should -Be 'runtime_target_mismatch'
+    }
+
+    It 'TASK781 refuses environment-only caller evidence' {
+        $fixture = New-Task781RuntimeFixture
+        $fixture.Caller = [PSCustomObject]@{ pane_id = '%2'; backend = 'codex' }
+
+        $result = Invoke-Task781RuntimeFixture -Fixture $fixture -Operation caller_ack
+
+        $result.valid | Should -BeFalse
+        $result.reason_code | Should -Be 'caller_identity_mismatch'
+    }
+
+    It 'TASK781 refuses a caller with the same PID and a different StartTime' {
+        $fixture = New-Task781RuntimeFixture
+        $fixture.Caller.process_started_at = '2026-07-15T00:00:03.0000000Z'
+
+        $result = Invoke-Task781RuntimeFixture -Fixture $fixture -Operation caller_ack
+
+        $result.valid | Should -BeFalse
+        $result.reason_code | Should -Be 'caller_identity_mismatch'
+    }
+
+    It 'TASK781 refuses a caller from another backend or generation' -ForEach @(
+        @{ Property = 'backend'; Value = 'api_llm' }
+        @{ Property = 'generation_id'; Value = 'generation-old' }
+    ) {
+        $fixture = New-Task781RuntimeFixture
+        $fixture.Caller.$($_.Property) = $_.Value
+
+        $result = Invoke-Task781RuntimeFixture -Fixture $fixture -Operation caller_ack
+
+        $result.valid | Should -BeFalse
+        $result.reason_code | Should -Be 'caller_identity_mismatch'
+    }
+
+    It 'TASK781 accepts six of six uniquely matched live slots' {
+        $fixture = New-Task781RuntimeFixture
+        $fixture.Manifest.panes = [ordered]@{}
+        $fixture.Registry.panes = @()
+        $fixture.Manifest.session.expected_pane_count = 6
+        $fixture.Registry.expected_pane_count = 6
+        $fixture.ObservedPanes = @([PSCustomObject]@{ pane_id = '%1'; title = 'winsmux-orchestra-bootstrap' })
+        $processes = @{
+            4100 = [PSCustomObject]@{ Id = 4100; StartTime = [datetime]'2026-07-15T00:00:00Z'; ParentProcessId = 1; Name = 'pwsh.exe' }
+        }
+
+        foreach ($index in 1..6) {
+            $label = "worker-$index"
+            $paneId = "%$($index + 1)"
+            $title = "W$index Codex Reviewer"
+            $bootstrapPid = 4200 + $index
+            $callerPid = 4300 + $index
+            $bootstrapStartedAt = "2026-07-15T00:00:$('{0:D2}' -f $index).0000000Z"
+            $callerStartedAt = "2026-07-15T00:01:$('{0:D2}' -f $index).0000000Z"
+            $fixture.Manifest.panes[$label] = [ordered]@{
+                slot_id = $label; pane_id = $paneId; worker_backend = 'codex'; worker_role = 'reviewer'
+                role = 'Reviewer'; title = $title; status = 'ready'
+            }
+            $fixture.Registry.panes += [PSCustomObject]@{
+                label = $label; slot_id = $label; pane_id = $paneId; backend = 'codex'; role = 'reviewer'
+                title = $title; state = 'live'; bootstrap_pid = $bootstrapPid
+                bootstrap_process_started_at = $bootstrapStartedAt
+            }
+            $fixture.ObservedPanes += [PSCustomObject]@{ pane_id = $paneId; title = $title }
+            $processes[$bootstrapPid] = [PSCustomObject]@{ Id = $bootstrapPid; StartTime = [datetime]$bootstrapStartedAt; ParentProcessId = 1; Name = 'pwsh.exe' }
+            $processes[$callerPid] = [PSCustomObject]@{ Id = $callerPid; StartTime = [datetime]$callerStartedAt; ParentProcessId = $bootstrapPid; Name = 'codex.exe' }
+        }
+        $fixture.ProcessResolver = { param([int]$Id) return $processes[$Id] }
+
+        $verified = 0
+        foreach ($index in 1..6) {
+            $label = "worker-$index"
+            $pane = $fixture.Manifest.panes[$label]
+            $runtimePane = $fixture.Registry.panes[$index - 1]
+            $callerPid = 4300 + $index
+            $callerStartedAt = "2026-07-15T00:01:$('{0:D2}' -f $index).0000000Z"
+            $fixture.Entry = [PSCustomObject]@{
+                Label = $label; SlotId = $label; PaneId = $pane.pane_id; WorkerBackend = 'codex'
+                WorkerRole = 'reviewer'; Role = 'Reviewer'; Title = $pane.title; Status = 'ready'
+            }
+            $fixture.Marker = [PSCustomObject]@{
+                generation_id = 'generation-1'; server_session_id = '$9'; slot_id = $label
+                pane_id = $pane.pane_id; backend = 'codex'; role = 'reviewer'; title = $pane.title
+                bootstrap_pid = $runtimePane.bootstrap_pid
+                bootstrap_process_started_at = $runtimePane.bootstrap_process_started_at
+            }
+            $fixture.Caller = [PSCustomObject]@{
+                process_id = $callerPid; process_started_at = $callerStartedAt; generation_id = 'generation-1'
+                server_session_id = '$9'; slot_id = $label; pane_id = $pane.pane_id; backend = 'codex'
+                ancestry = @(
+                    [PSCustomObject]@{ pid = $callerPid; process_started_at = $callerStartedAt }
+                    [PSCustomObject]@{ pid = $runtimePane.bootstrap_pid; process_started_at = $runtimePane.bootstrap_process_started_at }
+                )
+            }
+
+            $result = Invoke-Task781RuntimeFixture -Fixture $fixture
+            if ($result.valid) { $verified++ }
+        }
+
+        $verified | Should -Be 6
+        (($verified / 6) * 100) | Should -Be 100
+    }
+
+    It 'TASK781 rejects unknown future and malformed manifest schemas without throwing' -ForEach @(3, 'future') {
+        $fixture = New-Task781RuntimeFixture
+        $fixture.Manifest.version = $_
+
+        $result = Invoke-Task781RuntimeFixture -Fixture $fixture
+
+        $result.valid | Should -BeFalse
+        $result.reason_code | Should -Be 'manifest_regeneration_required'
+    }
+
+    It 'TASK781 refuses supervisor identity when process observation throws' {
+        $fixture = New-Task781RuntimeFixture
+        $fixture.ProcessResolver = { param([int]$Id) throw "process unavailable: $Id" }
+
+        $result = Invoke-Task781RuntimeFixture -Fixture $fixture
+
+        $result.valid | Should -BeFalse
+        $result.reason_code | Should -Be 'invalid_supervisor_identity'
+    }
+
+    It 'TASK781 writes and reads a separate supervisor-owned runtime registry' {
+        $fixture = New-Task781RuntimeFixture
+        $registry = New-WinsmuxRuntimeRegistryDocument -SessionName 'winsmux-task781-test' -ServerSessionId '$9' `
+            -GenerationId 'generation-1' -SupervisorPid 4100 `
+            -SupervisorProcessStartedAt '2026-07-15T00:00:00.0000000Z' -ExpectedPaneCount 1 -Panes $fixture.Registry.panes `
+            -Now ([datetime]'2026-07-15T00:05:00Z') -LeaseSeconds 15
+
+        $path = Save-WinsmuxRuntimeRegistry -ProjectDir $script:task781TempRoot -Registry $registry
+        $read = Read-WinsmuxRuntimeRegistry -ProjectDir $script:task781TempRoot
+
+        $path | Should -Be (Join-Path $script:task781TempRoot '.winsmux\runtime-registry.json')
+        $read.schema_version | Should -Be 1
+        $read.generation_id | Should -Be 'generation-1'
+        $read.expected_pane_count | Should -Be 1
+        $read.supervisor.process_started_at | Should -Be '2026-07-15T00:00:00.0000000Z'
+        ($read | ConvertTo-Json -Depth 20) | Should -Not -Match 'startup_token|credential|launch_command'
+    }
+
+    It 'TASK781 refreshes only the exact generation owner and closes its lease' {
+        $fixture = New-Task781RuntimeFixture
+        $registry = New-WinsmuxRuntimeRegistryDocument -SessionName 'winsmux-task781-test' -ServerSessionId '$9' `
+            -GenerationId 'generation-1' -SupervisorPid 4100 `
+            -SupervisorProcessStartedAt '2026-07-15T00:00:00.0000000Z' -ExpectedPaneCount 1 -Panes $fixture.Registry.panes `
+            -Now ([datetime]'2026-07-15T00:05:00Z') -LeaseSeconds 15
+        Save-WinsmuxRuntimeRegistry -ProjectDir $script:task781TempRoot -Registry $registry | Out-Null
+
+        { Update-WinsmuxRuntimeRegistryLease -ProjectDir $script:task781TempRoot -GenerationId 'generation-old' `
+            -SupervisorPid 4100 -SupervisorProcessStartedAt '2026-07-15T00:00:00.0000000Z' `
+            -Now ([datetime]'2026-07-15T00:05:05Z') } | Should -Throw '*does not own this generation*'
+
+        $refreshed = Update-WinsmuxRuntimeRegistryLease -ProjectDir $script:task781TempRoot -GenerationId 'generation-1' `
+            -SupervisorPid 4100 -SupervisorProcessStartedAt '2026-07-15T00:00:00.0000000Z' `
+            -Now ([datetime]'2026-07-15T00:05:05Z') -LeaseSeconds 15
+        $refreshed.lease.expires_at | Should -Be '2026-07-15T00:05:20.0000000Z'
+
+        $closed = Close-WinsmuxRuntimeRegistry -ProjectDir $script:task781TempRoot -GenerationId 'generation-1' `
+            -SupervisorPid 4100 -SupervisorProcessStartedAt '2026-07-15T00:00:00.0000000Z' `
+            -Now ([datetime]'2026-07-15T00:05:06Z')
+        $closed | Should -BeTrue
+        $ended = Read-WinsmuxRuntimeRegistry -ProjectDir $script:task781TempRoot
+        $ended.status | Should -Be 'ended'
+        $ended.lease.state | Should -Be 'ended'
+        $ended.lease.expires_at | Should -Be '2026-07-15T00:05:06.0000000Z'
+    }
+
+    It 'TASK781 allows operator dispatch without treating the operator PID as the pane caller' {
+        $fixture = New-Task781RuntimeFixture
+        $fixture.Caller = $null
+
+        $result = Invoke-Task781RuntimeFixture -Fixture $fixture -Operation dispatch
+
+        $result.valid | Should -BeTrue
+        $result.reason_code | Should -Be 'live_runtime_verified'
+    }
+
+    It 'TASK781 accepts caller acknowledgement only with observed ancestry to the bootstrap' {
+        $fixture = New-Task781RuntimeFixture
+
+        $result = Invoke-Task781RuntimeFixture -Fixture $fixture -Operation caller_ack
+
+        $result.valid | Should -BeTrue
+        $result.reason_code | Should -Be 'live_runtime_verified'
+    }
+
+    It 'TASK781 ignores self-reported ancestry when the OS parent chain does not reach bootstrap' {
+        $fixture = New-Task781RuntimeFixture
+        $fixture.ProcessResolver = {
+            param([int]$Id)
+            switch ($Id) {
+                4100 { [PSCustomObject]@{ Id = 4100; StartTime = [datetime]'2026-07-15T00:00:00Z'; ParentProcessId = 1; Name = 'pwsh.exe' } }
+                4200 { [PSCustomObject]@{ Id = 4200; StartTime = [datetime]'2026-07-15T00:00:01Z'; ParentProcessId = 1; Name = 'pwsh.exe' } }
+                4300 { [PSCustomObject]@{ Id = 4300; StartTime = [datetime]'2026-07-15T00:00:02Z'; ParentProcessId = 4999; Name = 'codex.exe' } }
+                default { $null }
+            }
+        }
+
+        $result = Invoke-Task781RuntimeFixture -Fixture $fixture -Operation caller_ack
+
+        $result.valid | Should -BeFalse
+        $result.reason_code | Should -Be 'caller_identity_mismatch'
+    }
+
+    It 'TASK781 refuses Codex acknowledgement without a Codex process in the observed chain' {
+        $fixture = New-Task781RuntimeFixture
+        $fixture.ProcessResolver = {
+            param([int]$Id)
+            switch ($Id) {
+                4100 { [PSCustomObject]@{ Id = 4100; StartTime = [datetime]'2026-07-15T00:00:00Z'; ParentProcessId = 1; Name = 'pwsh.exe' } }
+                4200 { [PSCustomObject]@{ Id = 4200; StartTime = [datetime]'2026-07-15T00:00:01Z'; ParentProcessId = 1; Name = 'pwsh.exe' } }
+                4300 { [PSCustomObject]@{ Id = 4300; StartTime = [datetime]'2026-07-15T00:00:02Z'; ParentProcessId = 4200; Name = 'pwsh.exe' } }
+                default { $null }
+            }
+        }
+
+        $result = Invoke-Task781RuntimeFixture -Fixture $fixture -Operation caller_ack
+
+        $result.valid | Should -BeFalse
+        $result.reason_code | Should -Be 'caller_identity_mismatch'
+    }
+
+    It 'TASK781 allows deferred start only for a verified deferred registry entry' {
+        $fixture = New-Task781RuntimeFixture
+        $fixture.Registry.panes[0].state = 'deferred'
+        $fixture.Registry.panes[0].bootstrap_pid = 0
+        $fixture.Registry.panes[0].bootstrap_process_started_at = ''
+        $fixture.Manifest.panes['worker-1'].status = 'deferred_start'
+        $fixture.Entry.Status = 'deferred_start'
+        $fixture.Marker = $null
+
+        $result = Invoke-Task781RuntimeFixture -Fixture $fixture -Operation start_deferred
+
+        $result.valid | Should -BeTrue
+        $result.reason_code | Should -Be 'deferred_runtime_verified'
+    }
+
+    It 'TASK781 C15 allows retry start for a verified failed deferred registry entry' {
+        $fixture = New-Task781RuntimeFixture
+        $fixture.Registry.panes[0].state = 'deferred'
+        $fixture.Registry.panes[0].bootstrap_pid = 0
+        $fixture.Registry.panes[0].bootstrap_process_started_at = ''
+        $fixture.Manifest.panes['worker-1'].status = 'deferred_start_failed'
+        $fixture.Entry.Status = 'deferred_start_failed'
+        $fixture.Marker = $null
+
+        $result = Invoke-Task781RuntimeFixture -Fixture $fixture -Operation start_deferred
+
+        $result.reason_code | Should -Be 'deferred_runtime_verified'
+        $result.valid | Should -BeTrue
+        $fixture.Registry.lease.state | Should -Be 'active'
+        $fixture.Registry.panes[0].state | Should -Be 'deferred'
+    }
+
+    It 'TASK781 C32 allows an authenticated current-generation failed marker to be reused without duplicate bootstrap' {
+        $fixture = New-Task781RuntimeFixture
+        $fixture.Registry.panes[0].state = 'deferred'
+        $fixture.Registry.panes[0].bootstrap_pid = 0
+        $fixture.Registry.panes[0].bootstrap_process_started_at = ''
+        $fixture.Manifest.panes['worker-1'].status = 'deferred_start_failed'
+        $fixture.Entry.Status = 'deferred_start_failed'
+        $fixture.Marker | Add-Member -NotePropertyName state -NotePropertyValue 'bootstrap_pending'
+
+        $result = Invoke-Task781RuntimeFixture -Fixture $fixture -Operation start_deferred
+
+        $result.valid | Should -BeTrue
+        $result.reason_code | Should -Be 'deferred_retry_marker_verified'
+        [string]$result.context.retry_marker_state | Should -Be 'live'
+        $fixture.Registry.panes[0].state | Should -Be 'deferred'
+    }
+
+    It 'TASK781 C32 refuses a failed deferred retry marker with a different generation' {
+        $fixture = New-Task781RuntimeFixture
+        $fixture.Registry.panes[0].state = 'deferred'
+        $fixture.Registry.panes[0].bootstrap_pid = 0
+        $fixture.Registry.panes[0].bootstrap_process_started_at = ''
+        $fixture.Manifest.panes['worker-1'].status = 'deferred_start_failed'
+        $fixture.Entry.Status = 'deferred_start_failed'
+        $fixture.Marker | Add-Member -NotePropertyName state -NotePropertyValue 'bootstrap_pending'
+        $fixture.Marker.generation_id = 'generation-stale'
+
+        $result = Invoke-Task781RuntimeFixture -Fixture $fixture -Operation start_deferred
+
+        $result.valid | Should -BeFalse
+        $result.reason_code | Should -Be 'runtime_target_mismatch'
+    }
+
+    It 'TASK781 keeps bootstrap-pending panes unavailable to dispatch' {
+        $fixture = New-Task781RuntimeFixture
+        $fixture.Registry.panes[0].state = 'bootstrap_pending'
+
+        $result = Invoke-Task781RuntimeFixture -Fixture $fixture -Operation dispatch
+
+        $result.valid | Should -BeFalse
+        $result.reason_code | Should -Be 'runtime_target_mismatch'
+    }
+
+    It 'TASK781 refuses live registry overwrite and permits only ended or expired-dead replacement' {
+        $fixture = New-Task781RuntimeFixture
+        (Test-WinsmuxRuntimeRegistryReplacementAllowed -Registry $fixture.Registry -ProcessResolver $fixture.ProcessResolver `
+            -Now ([datetime]'2026-07-15T00:05:00Z')) | Should -BeFalse
+
+        $fixture.Registry.lease.expires_at = '2026-07-15T00:04:00.0000000Z'
+        (Test-WinsmuxRuntimeRegistryReplacementAllowed -Registry $fixture.Registry -ProcessResolver $fixture.ProcessResolver `
+            -Now ([datetime]'2026-07-15T00:05:00Z')) | Should -BeFalse
+
+        $fixture.Registry.supervisor.pid = 4999
+        (Test-WinsmuxRuntimeRegistryReplacementAllowed -Registry $fixture.Registry -ProcessResolver $fixture.ProcessResolver `
+            -Now ([datetime]'2026-07-15T00:05:00Z')) | Should -BeTrue
+
+        $fixture.Registry.status = 'ended'
+        (Test-WinsmuxRuntimeRegistryReplacementAllowed -Registry $fixture.Registry -ProcessResolver $fixture.ProcessResolver `
+            -Now ([datetime]'2026-07-15T00:05:00Z')) | Should -BeTrue
+    }
+
+    It 'TASK781 builds an ancestry resolver from a single secret-free CIM snapshot' {
+        $resolver = New-WinsmuxProcessSnapshotResolver -Snapshots @(
+            [PSCustomObject]@{ ProcessId = 4200; ParentProcessId = 1; CreationDate = [datetime]'2026-07-15T00:00:01Z'; Name = 'pwsh.exe' }
+            [PSCustomObject]@{ ProcessId = 4300; ParentProcessId = 4200; CreationDate = [datetime]'2026-07-15T00:00:02Z'; Name = 'codex.exe' }
+        )
+
+        $snapshot = & $resolver 4300
+        $snapshot.Id | Should -Be 4300
+        $snapshot.ParentProcessId | Should -Be 4200
+        $snapshot.StartTime | Should -Be '2026-07-15T00:00:02.0000000Z'
+        ($snapshot.PSObject.Properties.Name) | Should -Not -Contain 'CommandLine'
+    }
+
+    It 'TASK781 normalizes six default worker roles identically across manifest marker and registry' {
+        $roles = foreach ($index in 1..6) {
+            Resolve-WinsmuxRuntimeRole -WorkerRole '' -CanonicalRole 'Worker'
+        }
+
+        $roles.Count | Should -Be 6
+        @($roles | Where-Object { $_ -cne 'worker' }).Count | Should -Be 0
+    }
+
+    It 'TASK781 skips unrelated incomplete process rows but rejects duplicate process IDs' {
+        $resolver = New-WinsmuxProcessSnapshotResolver -Snapshots @(
+            [PSCustomObject]@{ ProcessId = 999; ParentProcessId = $null; CreationDate = $null; Name = '' }
+            [PSCustomObject]@{ ProcessId = 4300; ParentProcessId = 4200; CreationDate = [datetime]'2026-07-15T00:00:02Z'; Name = 'codex.exe' }
+        )
+        (& $resolver 4300).Id | Should -Be 4300
+        (& $resolver 999) | Should -BeNullOrEmpty
+
+        { New-WinsmuxProcessSnapshotResolver -Snapshots @(
+                [PSCustomObject]@{ ProcessId = 4300; ParentProcessId = 4200; CreationDate = [datetime]'2026-07-15T00:00:02Z'; Name = 'codex.exe' }
+                [PSCustomObject]@{ ProcessId = 4300; ParentProcessId = 1; CreationDate = [datetime]'2026-07-15T00:00:03Z'; Name = 'codex.exe' }
+            ) } | Should -Throw '*duplicate process identity*'
+    }
+}
+
+Describe 'TASK781 supervisor deferred runtime promotion' {
+    BeforeAll {
+        $script:task781SupervisorPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\orchestra-supervisor.ps1'
+        $script:task781SupervisorContent = Get-Content -LiteralPath $script:task781SupervisorPath -Raw -Encoding UTF8
+        . $script:task781SupervisorPath -ManifestPath 'synthetic-manifest' -GenerationId 'generation-1' -ServerSessionId '$9'
+    }
+
+    BeforeEach {
+        $script:task781PromotionRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-task781-promotion-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:task781PromotionRoot -Force | Out-Null
+        $script:task781PromotionMarkerPath = Join-Path $script:task781PromotionRoot 'worker-1.ready.json'
+        $script:task781PromotionManifest = [PSCustomObject]@{
+            panes = [ordered]@{
+                'worker-1' = [ordered]@{
+                    slot_id = 'worker-1'; pane_id = '%2'; worker_backend = 'codex'; worker_role = 'reviewer'
+                    role = 'Reviewer'; title = 'W1 Codex Reviewer'; status = 'deferred_starting'; runtime_ready = $false
+                    bootstrap_marker_path = $script:task781PromotionMarkerPath
+                }
+            }
+        }
+        $script:task781PromotionProcessResolver = {
+            param([int]$Id)
+            if ($Id -eq 4200) {
+                return [PSCustomObject]@{
+                    Id = 4200; StartTime = [datetime]'2026-07-15T00:00:01Z'; ParentProcessId = 1; Name = 'pwsh.exe'
+                }
+            }
+            return $null
+        }
+    }
+
+    AfterEach {
+        Remove-Item -LiteralPath $script:task781PromotionRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'TASK781 C42 carries the manifest expected pane count into the supervisor registry' {
+        $script:task781SupervisorContent | Should -Match "-Name 'expected_pane_count'"
+        $script:task781SupervisorContent | Should -Match '-ExpectedPaneCount \$expectedPaneCount -Panes \$runtimePanes'
+    }
+
+    It 'TASK781 C29 keeps deferred_starting deferred until its marker exists' {
+        $panes = @(New-OrchestraSupervisorRuntimePanes -Manifest $script:task781PromotionManifest `
+            -GenerationId 'generation-1' -ServerSessionId '$9' -ProcessResolver $script:task781PromotionProcessResolver)
+
+        $panes.Count | Should -Be 1
+        $panes[0].state | Should -Be 'deferred'
+        $panes[0].bootstrap_pid | Should -Be 0
+    }
+
+    It 'TASK781 C29 promotes deferred_starting only from an authenticated current-generation marker' {
+        ([ordered]@{
+            state = 'bootstrap_pending'; generation_id = 'generation-1'; server_session_id = '$9'
+            slot_id = 'worker-1'; pane_id = '%2'; backend = 'codex'; role = 'reviewer'; title = 'W1 Codex Reviewer'
+            bootstrap_pid = 4200; bootstrap_process_started_at = '2026-07-15T00:00:01.0000000Z'
+        } | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $script:task781PromotionMarkerPath -Encoding UTF8
+
+        $panes = @(New-OrchestraSupervisorRuntimePanes -Manifest $script:task781PromotionManifest `
+            -GenerationId 'generation-1' -ServerSessionId '$9' -ProcessResolver $script:task781PromotionProcessResolver)
+
+        $panes.Count | Should -Be 1
+        $panes[0].state | Should -Be 'live'
+        $panes[0].bootstrap_pid | Should -Be 4200
+        $panes[0].bootstrap_process_started_at | Should -Be '2026-07-15T00:00:01.0000000Z'
+    }
+
+    It 'TASK781 C29 rejects a stale marker instead of publishing a live registry row' {
+        ([ordered]@{
+            state = 'bootstrap_pending'; generation_id = 'generation-old'; server_session_id = '$9'
+            slot_id = 'worker-1'; pane_id = '%2'; backend = 'codex'; role = 'reviewer'; title = 'W1 Codex Reviewer'
+            bootstrap_pid = 4200; bootstrap_process_started_at = '2026-07-15T00:00:01.0000000Z'
+        } | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $script:task781PromotionMarkerPath -Encoding UTF8
+
+        {
+            New-OrchestraSupervisorRuntimePanes -Manifest $script:task781PromotionManifest `
+                -GenerationId 'generation-1' -ServerSessionId '$9' -ProcessResolver $script:task781PromotionProcessResolver
+        } | Should -Throw '*marker identity does not match*'
+    }
+
+    It 'TASK781 C47 contains a transient dead-marker snapshot without terminating the supervisor loop' {
+        ([ordered]@{
+            state = 'bootstrap_pending'; generation_id = 'generation-1'; server_session_id = '$9'
+            slot_id = 'worker-1'; pane_id = '%2'; backend = 'codex'; role = 'reviewer'; title = 'W1 Codex Reviewer'
+            bootstrap_pid = 4200; bootstrap_process_started_at = '2026-07-15T00:00:01.0000000Z'
+        } | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $script:task781PromotionMarkerPath -Encoding UTF8
+        $deadProcessResolver = { param([int]$Id) return $null }
+
+        $contained = Get-OrchestraSupervisorRuntimePaneSnapshot -Manifest $script:task781PromotionManifest `
+            -GenerationId 'generation-1' -ServerSessionId '$9' -ProcessResolver $deadProcessResolver
+        $healthy = Get-OrchestraSupervisorRuntimePaneSnapshot -Manifest $script:task781PromotionManifest `
+            -GenerationId 'generation-1' -ServerSessionId '$9' -ProcessResolver $script:task781PromotionProcessResolver
+
+        $contained.valid | Should -BeFalse
+        $contained.panes.Count | Should -Be 0
+        $contained.diagnostic | Should -Match 'marker identity does not match'
+        $healthy.valid | Should -BeTrue
+        $healthy.panes.Count | Should -Be 1
+    }
+}
+
+Describe 'TASK781 caller acknowledgement side effects' {
+    BeforeAll {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\pane-control.ps1')
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\submission-contract.ps1')
+
+        function Send-TextToPane {
+            param(
+                [string]$PaneId,
+                [string]$CommandText,
+                [string]$PromptTransport = 'argv',
+                [string]$RuntimeProjectDir = '',
+                [string]$RuntimeOperation = 'dispatch',
+                [string]$ExpectedGenerationId = ''
+            )
+        }
+
+        function New-Task781SyntheticAckCandidate {
+            param(
+                [Parameter(Mandatory = $true)][string]$ProjectDir,
+                [Parameter(Mandatory = $true)][string]$SubmissionId,
+                [Parameter(Mandatory = $true)][string]$Challenge
+            )
+            $packet = Read-WinsmuxSubmissionPacket -Path (Join-Path $ProjectDir ".winsmux\submissions\$SubmissionId.json")
+            $record = New-WinsmuxSubmissionRunRecord -SubmissionId $SubmissionId -RunId $SubmissionId `
+                -TaskId ([string]$packet.task_id) -Kind task -TaskTitle ([string]$packet.title) -SlotId worker-1 `
+                -Backend codex -Status started -RequestConsumed -RequestDigest ([string]$packet.request_digest)
+            $receipt = New-WinsmuxSubmissionReceipt -Kind task -Status accepted -Backend codex -SubmissionId $SubmissionId `
+                -Target ([ordered]@{ label = 'worker-1'; pane_id = '%2'; role = 'Worker' }) -Acknowledgement $record
+            return [PSCustomObject]@{
+                record = $record
+                receipt = $receipt
+                envelope = New-WinsmuxSubmissionAcknowledgementEnvelope -Phase candidate -Challenge $Challenge -Receipt $receipt
+            }
+        }
+    }
+
+    BeforeEach {
+        $script:task781AckRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-task781-ack-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path (Join-Path $script:task781AckRoot '.winsmux') -Force | Out-Null
+        $script:task781AckEntry = [PSCustomObject]@{
+            Label = 'worker-1'; SlotId = 'worker-1'; PaneId = '%2'; Role = 'Worker'; WorkerRole = 'worker'
+            WorkerBackend = 'codex'; Title = 'W1 Codex Reviewer'; Status = 'ready'
+        }
+        $script:task781AckPipeState = [PSCustomObject]@{
+            pipe_name = 'winsmux-submission-ack-33333333333333333333333333333333'
+            challenge = ('c' * 64)
+            server = $null
+        }
+        Mock Get-PaneControlManifestEntries { @($script:task781AckEntry) }
+        Mock New-WinsmuxSubmissionAcknowledgementServer { $script:task781AckPipeState }
+        Mock Complete-WinsmuxSubmissionAcknowledgement { $true }
+        Mock Write-WinsmuxSubmissionAcknowledgementControl { }
+        Mock Test-PaneControlRuntimeContext {
+            param($ProjectDir, $ManifestEntry, $Operation, $CallerIdentity, $ProcessResolver)
+            $context = [PSCustomObject]@{
+                generation_id = 'generation-1'; server_session_id = '$9'; slot_id = 'worker-1'
+                pane_id = '%2'; backend = 'codex'
+            }
+            New-WinsmuxRuntimeValidationResult -Valid $true -ReasonCode 'live_runtime_verified' -Diagnostic 'verified' -Context $context
+        }
+        Mock New-WinsmuxSubmissionPipeCallerEvidence {
+            [PSCustomObject]@{
+                caller_identity = [PSCustomObject]@{
+                    process_id = 4300; process_started_at = '2026-07-15T00:00:02.0000000Z'
+                    generation_id = 'generation-1'; server_session_id = '$9'; slot_id = 'worker-1'
+                    pane_id = '%2'; backend = 'codex'
+                }
+                process_resolver = { param([int]$Id) $null }
+            }
+        }
+    }
+
+    AfterEach {
+        if ($script:task781AckRoot -and (Test-Path -LiteralPath $script:task781AckRoot)) {
+            Remove-Item -LiteralPath $script:task781AckRoot -Recurse -Force
+        }
+    }
+
+    It 'TASK781 refuses spoofed caller acknowledgement before any run record write' {
+        Mock Test-PaneControlRuntimeContext {
+            New-WinsmuxRuntimeValidationResult -Valid $false -ReasonCode 'caller_identity_mismatch' -Diagnostic 'synthetic caller mismatch'
+        }
+        Mock Write-WinsmuxSubmissionRunRecord { throw 'run record write must not occur' }
+
+        $receipt = Invoke-WinsmuxSubmissionAcknowledge -ProjectDir $script:task781AckRoot -SlotId worker-1 `
+            -SubmissionId submission-task781-refused -RunId submission-task781-refused -Kind task -Backend codex
+
+        $receipt.status | Should -Be 'unavailable'
+        $receipt.reason_code | Should -Be 'caller_identity_mismatch'
+        Assert-MockCalled Write-WinsmuxSubmissionRunRecord -Times 0 -Exactly
+        (Test-Path -LiteralPath (Join-Path $script:task781AckRoot '.winsmux\worker-runs\worker-1\submission-task781-refused\run.json')) | Should -BeFalse
+    }
+
+    It 'TASK781 keeps a strong caller acknowledgement in memory until commit authorization' {
+        Mock Test-PaneControlRuntimeContext {
+            New-WinsmuxRuntimeValidationResult -Valid $true -ReasonCode 'live_runtime_verified' -Diagnostic 'verified'
+        }
+        New-WinsmuxSubmissionPacket -ProjectDir $script:task781AckRoot -Kind task `
+            -Content ([ordered]@{ title = 'TASK781 ack'; request = 'Consume only after caller validation.' }) `
+            -SubmissionId submission-task781-accepted -TargetLabel worker-1 | Out-Null
+
+        $receipt = Invoke-WinsmuxSubmissionAcknowledge -ProjectDir $script:task781AckRoot -SlotId worker-1 `
+            -SubmissionId submission-task781-accepted -RunId submission-task781-accepted -Kind task -Backend codex
+
+        $receipt.status | Should -Be 'accepted'
+        $receipt.reason_code | Should -Be ''
+        $receipt.acknowledgement.slot_id | Should -Be 'worker-1'
+        (Test-Path -LiteralPath (Join-Path $script:task781AckRoot '.winsmux\worker-runs\worker-1\submission-task781-accepted\run.json')) | Should -BeFalse
+    }
+
+    It 'TASK781 completes the canonical Codex packet to strong acknowledgement path' {
+        Mock Test-PaneControlRuntimeContext {
+            param($ProjectDir, $ManifestEntry, $Operation, $CallerIdentity, $ProcessResolver)
+            $context = [PSCustomObject]@{
+                generation_id = 'generation-1'; server_session_id = '$9'; slot_id = 'worker-1'
+                pane_id = '%2'; backend = 'codex'
+            }
+            New-WinsmuxRuntimeValidationResult -Valid $true -ReasonCode 'live_runtime_verified' -Diagnostic 'verified' -Context $context
+        }
+        Mock New-WinsmuxSubmissionPipeCallerEvidence {
+            [PSCustomObject]@{
+                caller_identity = [PSCustomObject]@{
+                    process_id = 4300; process_started_at = '2026-07-15T00:00:02.0000000Z'
+                    generation_id = 'generation-1'; server_session_id = '$9'; slot_id = 'worker-1'
+                    pane_id = '%2'; backend = 'codex'
+                }
+                process_resolver = { param([int]$Id) $null }
+            }
+        }
+        $script:task781DispatchPrompt = ''
+        $script:task781AckReceiveCount = 0
+        $script:task781CandidateRecord = $null
+        $script:task781CandidateReceipt = $null
+        $sendAction = {
+            param([string]$PaneId, [string]$Text)
+            $script:task781DispatchPrompt = $Text
+        }
+        Mock Receive-WinsmuxSubmissionAcknowledgement {
+            $script:task781AckReceiveCount++
+            if ($script:task781AckReceiveCount -eq 1) {
+                $packet = Read-WinsmuxSubmissionPacket -Path (Join-Path $script:task781AckRoot '.winsmux\submissions\submission-task781-e2e.json')
+                $script:task781CandidateRecord = New-WinsmuxSubmissionRunRecord -SubmissionId submission-task781-e2e `
+                    -RunId submission-task781-e2e -TaskId ([string]$packet.task_id) -Kind task -TaskTitle ([string]$packet.title) `
+                    -SlotId worker-1 -Backend codex -Status started -RequestConsumed -RequestDigest ([string]$packet.request_digest)
+                $script:task781CandidateReceipt = New-WinsmuxSubmissionReceipt -Kind task -Status accepted -Backend codex `
+                    -SubmissionId submission-task781-e2e -Target ([ordered]@{ label = 'worker-1'; pane_id = '%2'; role = 'Worker' }) `
+                    -Acknowledgement $script:task781CandidateRecord
+                return [PSCustomObject]@{
+                    client_process_id = 4300
+                    payload = New-WinsmuxSubmissionAcknowledgementEnvelope -Phase candidate `
+                        -Challenge $script:task781AckPipeState.challenge -Receipt $script:task781CandidateReceipt
+                }
+            }
+            return [PSCustomObject]@{
+                client_process_id = 4300
+                payload = New-WinsmuxSubmissionAcknowledgementEnvelope -Phase committed `
+                    -Challenge $script:task781AckPipeState.challenge -Receipt $script:task781CandidateReceipt
+            }
+        }
+        Mock Write-WinsmuxSubmissionAcknowledgementControl { }
+
+        $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $script:task781AckRoot -ManifestEntry $script:task781AckEntry `
+            -Kind task -Content ([ordered]@{ title = 'TASK781 canonical ack'; request = 'Use the typed packet and acknowledge it.' }) `
+            -SubmissionId submission-task781-e2e -SendAction $sendAction
+
+        $receipt.status | Should -Be 'accepted'
+        $receipt.acknowledgement.status | Should -Be 'started'
+        $persistedRun = Get-Content -LiteralPath (Get-WinsmuxSubmissionRunPath -ProjectDir $script:task781AckRoot -SlotId worker-1 -RunId submission-task781-e2e) -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 16
+        $persistedRun.request_consumed | Should -BeTrue
+        $script:task781DispatchPrompt | Should -Match "\.winsmux[/\\]submissions[/\\]submission-task781-e2e\.json"
+        $script:task781DispatchPrompt | Should -Match 'winsmux submission-ack --submission-id submission-task781-e2e'
+        $script:task781DispatchPrompt | Should -Match '--ack-pipe winsmux-submission-ack-33333333333333333333333333333333'
+        $script:task781AckReceiveCount | Should -Be 2
+        Should -Invoke Write-WinsmuxSubmissionAcknowledgementControl -Times 1 -Exactly -ParameterFilter { $Status -eq 'commit' }
+        Should -Invoke Complete-WinsmuxSubmissionAcknowledgement -Times 1 -Exactly -ParameterFilter { $Verified }
+    }
+
+    It 'TASK781 C34 binds the canonical Codex production send to the captured generation lease' {
+        $script:c34ReceiveCount = 0
+        Mock Send-TextToPane {
+            param($PaneId, $CommandText, $PromptTransport, $RuntimeProjectDir, $RuntimeOperation, $ExpectedGenerationId)
+            if ($RuntimeProjectDir -cne $script:task781AckRoot -or $RuntimeOperation -cne 'dispatch' -or
+                $ExpectedGenerationId -cne 'generation-1') {
+                throw 'production submission send omitted the captured runtime lease'
+            }
+        }
+        Mock Receive-WinsmuxSubmissionAcknowledgement {
+            $script:c34ReceiveCount++
+            $candidate = New-Task781SyntheticAckCandidate -ProjectDir $script:task781AckRoot `
+                -SubmissionId submission-task781-c34-codex -Challenge $script:task781AckPipeState.challenge
+            if ($script:c34ReceiveCount -eq 1) {
+                return [PSCustomObject]@{ client_process_id = 4300; payload = $candidate.envelope }
+            }
+            return [PSCustomObject]@{
+                client_process_id = 4300
+                payload = New-WinsmuxSubmissionAcknowledgementEnvelope -Phase committed `
+                    -Challenge $script:task781AckPipeState.challenge -Receipt $candidate.receipt
+            }
+        }
+
+        $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $script:task781AckRoot -ManifestEntry $script:task781AckEntry `
+            -Kind task -Content 'Bind the production send to generation one.' -SubmissionId submission-task781-c34-codex
+
+        $receipt.status | Should -Be 'accepted'
+        Should -Invoke Send-TextToPane -Times 1 -Exactly -ParameterFilter {
+            $PaneId -eq '%2' -and $RuntimeProjectDir -ceq $script:task781AckRoot -and
+            $RuntimeOperation -ceq 'dispatch' -and $ExpectedGenerationId -ceq 'generation-1'
+        }
+    }
+
+    It 'TASK781 C34 binds the api_llm production send to the captured generation lease' {
+        $entry = [PSCustomObject]@{
+            Label = 'worker-1'; SlotId = 'worker-1'; PaneId = '%2'; Role = 'Worker'; WorkerRole = 'worker'
+            WorkerBackend = 'api_llm'; Title = 'W1 API Reviewer'; Status = 'ready'
+        }
+        Mock Send-TextToPane {
+            param($PaneId, $CommandText, $PromptTransport, $RuntimeProjectDir, $RuntimeOperation, $ExpectedGenerationId)
+            if ($RuntimeProjectDir -cne $script:task781AckRoot -or $RuntimeOperation -cne 'dispatch' -or
+                $ExpectedGenerationId -cne 'generation-1') {
+                throw 'api_llm production send omitted the captured runtime lease'
+            }
+        }
+        $runResultAction = {
+            param($ProjectDir, $SlotId, $RunId)
+            $packet = Read-WinsmuxSubmissionPacket -Path (Join-Path $ProjectDir ".winsmux\submissions\$RunId.json")
+            New-WinsmuxSubmissionRunRecord -SubmissionId $RunId -RunId $RunId -TaskId ([string]$packet.task_id) `
+                -Kind task -TaskTitle ([string]$packet.title) -SlotId $SlotId -Backend api_llm -Status started `
+                -RequestConsumed -RequestDigest ([string]$packet.request_digest)
+        }
+
+        $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $script:task781AckRoot -ManifestEntry $entry `
+            -Kind task -Content 'Bind api_llm production send to generation one.' `
+            -SubmissionId submission-task781-c34-api -RunResultAction $runResultAction
+
+        $receipt.status | Should -Be 'accepted'
+        Should -Invoke Send-TextToPane -Times 1 -Exactly -ParameterFilter {
+            $PaneId -eq '%2' -and $RuntimeProjectDir -ceq $script:task781AckRoot -and
+            $RuntimeOperation -ceq 'dispatch' -and $ExpectedGenerationId -ceq 'generation-1'
+        }
+    }
+
+    It 'TASK781 accepts only with an adapter-owned durable run when final control delivery fails' {
+        $script:task781FinalControlReceiveCount = 0
+        Mock Receive-WinsmuxSubmissionAcknowledgement {
+            $script:task781FinalControlReceiveCount++
+            $candidate = New-Task781SyntheticAckCandidate -ProjectDir $script:task781AckRoot `
+                -SubmissionId submission-task781-final-control-failure -Challenge $script:task781AckPipeState.challenge
+            if ($script:task781FinalControlReceiveCount -eq 1) {
+                return [PSCustomObject]@{ client_process_id = 4300; payload = $candidate.envelope }
+            }
+            return [PSCustomObject]@{
+                client_process_id = 4300
+                payload = New-WinsmuxSubmissionAcknowledgementEnvelope -Phase committed `
+                    -Challenge $script:task781AckPipeState.challenge -Receipt $candidate.receipt
+            }
+        }
+        Mock Complete-WinsmuxSubmissionAcknowledgement { $false }
+
+        $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $script:task781AckRoot -ManifestEntry $script:task781AckEntry `
+            -Kind task -Content 'Final control delivery is not the durable authorization boundary.' `
+            -SubmissionId submission-task781-final-control-failure -SendAction { param($PaneId, $Text) }
+        $runPath = Get-WinsmuxSubmissionRunPath -ProjectDir $script:task781AckRoot -SlotId worker-1 `
+            -RunId submission-task781-final-control-failure
+
+        $receipt.status | Should -Be 'accepted'
+        Test-Path -LiteralPath $runPath -PathType Leaf | Should -BeTrue
+        Test-WinsmuxSubmissionRunRecord -Record (
+            Get-Content -LiteralPath $runPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 16
+        ) -SubmissionId submission-task781-final-control-failure -Kind task -Backend codex `
+            -ExpectedSlotId worker-1 | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $script:task781AckRoot '.winsmux\submissions\submission-task781-final-control-failure.json') `
+            -PathType Leaf | Should -BeTrue
+        Should -Invoke Complete-WinsmuxSubmissionAcknowledgement -Times 1 -Exactly -ParameterFilter { $Verified }
+    }
+
+    It 'TASK781 leaves no run record when the acknowledgement pipe times out' {
+        Mock Receive-WinsmuxSubmissionAcknowledgement { throw 'synthetic pipe timeout' }
+
+        $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $script:task781AckRoot -ManifestEntry $script:task781AckEntry `
+            -Kind task -Content 'Timeout must not authorize a run.' -SubmissionId submission-task781-timeout `
+            -SendAction { param($PaneId, $Text) }
+
+        $receipt.status | Should -Be 'rejected'
+        $receipt.reason_code | Should -Be 'backend_acknowledgement_missing'
+        (Test-Path -LiteralPath (Get-WinsmuxSubmissionRunPath -ProjectDir $script:task781AckRoot -SlotId worker-1 -RunId submission-task781-timeout)) | Should -BeFalse
+        (Test-Path -LiteralPath (Join-Path $script:task781AckRoot '.winsmux\submissions\submission-task781-timeout.json')) | Should -BeTrue
+        Should -Invoke Write-WinsmuxSubmissionAcknowledgementControl -Times 0 -Exactly
+        Should -Invoke Complete-WinsmuxSubmissionAcknowledgement -Times 1 -Exactly -ParameterFilter { -not $Verified }
+    }
+
+    It 'TASK781 rejects a mismatched challenge before commit and leaves no run record' {
+        Mock Receive-WinsmuxSubmissionAcknowledgement {
+            $candidate = New-Task781SyntheticAckCandidate -ProjectDir $script:task781AckRoot `
+                -SubmissionId submission-task781-wrong-challenge -Challenge ('d' * 64)
+            [PSCustomObject]@{ client_process_id = 4300; payload = $candidate.envelope }
+        }
+
+        $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $script:task781AckRoot -ManifestEntry $script:task781AckEntry `
+            -Kind task -Content 'Wrong challenge must fail.' -SubmissionId submission-task781-wrong-challenge `
+            -SendAction { param($PaneId, $Text) }
+
+        $receipt.status | Should -Be 'rejected'
+        $receipt.reason_code | Should -Be 'runner_evidence_invalid'
+        (Test-Path -LiteralPath (Get-WinsmuxSubmissionRunPath -ProjectDir $script:task781AckRoot -SlotId worker-1 -RunId submission-task781-wrong-challenge)) | Should -BeFalse
+        (Test-Path -LiteralPath (Join-Path $script:task781AckRoot '.winsmux\submissions\submission-task781-wrong-challenge.json')) | Should -BeTrue
+        Should -Invoke Write-WinsmuxSubmissionAcknowledgementControl -Times 0 -Exactly
+    }
+
+    It 'TASK781 rejects a different pipe client PID before commit and leaves no run record' {
+        Mock Receive-WinsmuxSubmissionAcknowledgement {
+            $candidate = New-Task781SyntheticAckCandidate -ProjectDir $script:task781AckRoot `
+                -SubmissionId submission-task781-wrong-pid -Challenge $script:task781AckPipeState.challenge
+            [PSCustomObject]@{ client_process_id = 4999; payload = $candidate.envelope }
+        }
+        Mock New-WinsmuxSubmissionPipeCallerEvidence {
+            [PSCustomObject]@{
+                caller_identity = [PSCustomObject]@{
+                    process_id = 4999; process_started_at = '2026-07-15T00:00:03.0000000Z'
+                    generation_id = 'generation-1'; server_session_id = '$9'; slot_id = 'worker-1'
+                    pane_id = '%2'; backend = 'codex'
+                }
+                process_resolver = { param([int]$Id) $null }
+            }
+        }
+        Mock Test-PaneControlRuntimeContext {
+            param($ProjectDir, $ManifestEntry, $Operation, $CallerIdentity, $ProcessResolver)
+            if ($Operation -eq 'caller_ack') {
+                return New-WinsmuxRuntimeValidationResult -Valid $false -ReasonCode 'caller_identity_mismatch' -Diagnostic 'different pipe client'
+            }
+            $context = [PSCustomObject]@{
+                generation_id = 'generation-1'; server_session_id = '$9'; slot_id = 'worker-1'; pane_id = '%2'; backend = 'codex'
+            }
+            New-WinsmuxRuntimeValidationResult -Valid $true -ReasonCode 'live_runtime_verified' -Diagnostic 'verified' -Context $context
+        }
+
+        $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $script:task781AckRoot -ManifestEntry $script:task781AckEntry `
+            -Kind task -Content 'Different PID must fail.' -SubmissionId submission-task781-wrong-pid `
+            -SendAction { param($PaneId, $Text) }
+
+        $receipt.status | Should -Be 'unavailable'
+        $receipt.reason_code | Should -Be 'caller_identity_mismatch'
+        (Test-Path -LiteralPath (Get-WinsmuxSubmissionRunPath -ProjectDir $script:task781AckRoot -SlotId worker-1 -RunId submission-task781-wrong-pid)) | Should -BeFalse
+        (Test-Path -LiteralPath (Join-Path $script:task781AckRoot '.winsmux\submissions\submission-task781-wrong-pid.json')) | Should -BeTrue
+        Should -Invoke Write-WinsmuxSubmissionAcknowledgementControl -Times 0 -Exactly
+    }
+
+    It 'TASK781 rejects a stale caller generation before commit and leaves no run record' {
+        Mock Receive-WinsmuxSubmissionAcknowledgement {
+            $candidate = New-Task781SyntheticAckCandidate -ProjectDir $script:task781AckRoot `
+                -SubmissionId submission-task781-stale-generation -Challenge $script:task781AckPipeState.challenge
+            [PSCustomObject]@{ client_process_id = 4300; payload = $candidate.envelope }
+        }
+        Mock New-WinsmuxSubmissionPipeCallerEvidence {
+            [PSCustomObject]@{
+                caller_identity = [PSCustomObject]@{
+                    process_id = 4300; process_started_at = '2026-07-15T00:00:02.0000000Z'
+                    generation_id = 'generation-old'; server_session_id = '$9'; slot_id = 'worker-1'
+                    pane_id = '%2'; backend = 'codex'
+                }
+                process_resolver = { param([int]$Id) $null }
+            }
+        }
+        Mock Test-PaneControlRuntimeContext {
+            param($ProjectDir, $ManifestEntry, $Operation, $CallerIdentity, $ProcessResolver)
+            if ($Operation -eq 'caller_ack') {
+                return New-WinsmuxRuntimeValidationResult -Valid $false -ReasonCode 'caller_identity_mismatch' -Diagnostic 'stale generation'
+            }
+            $context = [PSCustomObject]@{
+                generation_id = 'generation-1'; server_session_id = '$9'; slot_id = 'worker-1'; pane_id = '%2'; backend = 'codex'
+            }
+            New-WinsmuxRuntimeValidationResult -Valid $true -ReasonCode 'live_runtime_verified' -Diagnostic 'verified' -Context $context
+        }
+
+        $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $script:task781AckRoot -ManifestEntry $script:task781AckEntry `
+            -Kind task -Content 'Stale generation must fail.' -SubmissionId submission-task781-stale-generation `
+            -SendAction { param($PaneId, $Text) }
+
+        $receipt.status | Should -Be 'unavailable'
+        $receipt.reason_code | Should -Be 'caller_identity_mismatch'
+        (Test-Path -LiteralPath (Get-WinsmuxSubmissionRunPath -ProjectDir $script:task781AckRoot -SlotId worker-1 -RunId submission-task781-stale-generation)) | Should -BeFalse
+        (Test-Path -LiteralPath (Join-Path $script:task781AckRoot '.winsmux\submissions\submission-task781-stale-generation.json')) | Should -BeTrue
+        Should -Invoke Write-WinsmuxSubmissionAcknowledgementControl -Times 0 -Exactly
+    }
+
+    It 'TASK781 rejects a pipe-only acknowledgement when no committed frame or run record arrives' {
+        $script:task781PipeOnlyReceiveCount = 0
+        Mock Receive-WinsmuxSubmissionAcknowledgement {
+            $script:task781PipeOnlyReceiveCount++
+            if ($script:task781PipeOnlyReceiveCount -eq 1) {
+                $candidate = New-Task781SyntheticAckCandidate -ProjectDir $script:task781AckRoot `
+                    -SubmissionId submission-task781-pipe-only -Challenge $script:task781AckPipeState.challenge
+                return [PSCustomObject]@{ client_process_id = 4300; payload = $candidate.envelope }
+            }
+            throw 'synthetic committed frame timeout'
+        }
+        Mock Write-WinsmuxSubmissionAcknowledgementControl { }
+
+        $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $script:task781AckRoot -ManifestEntry $script:task781AckEntry `
+            -Kind task -Content 'Pipe candidate alone must fail.' -SubmissionId submission-task781-pipe-only `
+            -SendAction { param($PaneId, $Text) }
+
+        $receipt.status | Should -Be 'rejected'
+        $receipt.reason_code | Should -Be 'runner_evidence_invalid'
+        (Test-Path -LiteralPath (Get-WinsmuxSubmissionRunPath -ProjectDir $script:task781AckRoot -SlotId worker-1 -RunId submission-task781-pipe-only)) | Should -BeFalse
+        (Test-Path -LiteralPath (Join-Path $script:task781AckRoot '.winsmux\submissions\submission-task781-pipe-only.json')) | Should -BeTrue
+        Should -Invoke Write-WinsmuxSubmissionAcknowledgementControl -Times 1 -Exactly -ParameterFilter { $Status -eq 'commit' }
+        Should -Invoke Complete-WinsmuxSubmissionAcknowledgement -Times 1 -Exactly -ParameterFilter { -not $Verified }
+    }
+
+    It 'TASK781 revalidates runtime after commit and retains the committed packet on expired lease' {
+        $script:task781PostCommitReceiveCount = 0
+        $script:task781PostCommitCallerChecks = 0
+        Mock Receive-WinsmuxSubmissionAcknowledgement {
+            $script:task781PostCommitReceiveCount++
+            $candidate = New-Task781SyntheticAckCandidate -ProjectDir $script:task781AckRoot `
+                -SubmissionId submission-task781-post-commit-expiry -Challenge $script:task781AckPipeState.challenge
+            if ($script:task781PostCommitReceiveCount -eq 1) {
+                return [PSCustomObject]@{ client_process_id = 4300; payload = $candidate.envelope }
+            }
+            return [PSCustomObject]@{
+                client_process_id = 4300
+                payload = New-WinsmuxSubmissionAcknowledgementEnvelope -Phase committed `
+                    -Challenge $script:task781AckPipeState.challenge -Receipt $candidate.receipt
+            }
+        }
+        Mock Test-PaneControlRuntimeContext {
+            param($ProjectDir, $ManifestEntry, $Operation, $CallerIdentity, $ProcessResolver)
+            $context = [PSCustomObject]@{
+                generation_id = 'generation-1'; server_session_id = '$9'; slot_id = 'worker-1'; pane_id = '%2'; backend = 'codex'
+            }
+            if ($Operation -eq 'caller_ack') {
+                $script:task781PostCommitCallerChecks++
+                if ($script:task781PostCommitCallerChecks -gt 1) {
+                    return New-WinsmuxRuntimeValidationResult -Valid $false -ReasonCode 'invalid_supervisor_identity' -Diagnostic 'lease expired after commit'
+                }
+            }
+            New-WinsmuxRuntimeValidationResult -Valid $true -ReasonCode 'live_runtime_verified' -Diagnostic 'verified' -Context $context
+        }
+        Mock Write-WinsmuxSubmissionRunRecord { throw 'adapter write must not occur after failed fresh caller validation' }
+        Mock Write-WinsmuxSubmissionAcknowledgementControl { }
+
+        $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $script:task781AckRoot -ManifestEntry $script:task781AckEntry `
+            -Kind task -Content 'Lease expiry after commit must revoke acceptance.' `
+            -SubmissionId submission-task781-post-commit-expiry -SendAction { param($PaneId, $Text) }
+
+        $receipt.status | Should -Be 'unavailable'
+        $receipt.reason_code | Should -Be 'invalid_supervisor_identity'
+        $script:task781PostCommitCallerChecks | Should -Be 2
+        (Test-Path -LiteralPath (Get-WinsmuxSubmissionRunPath -ProjectDir $script:task781AckRoot -SlotId worker-1 -RunId submission-task781-post-commit-expiry)) | Should -BeFalse
+        (Test-Path -LiteralPath (Join-Path $script:task781AckRoot '.winsmux\submissions\submission-task781-post-commit-expiry.json')) | Should -BeTrue
+        Should -Invoke Write-WinsmuxSubmissionRunRecord -Times 0 -Exactly
+        Should -Invoke Complete-WinsmuxSubmissionAcknowledgement -Times 1 -Exactly -ParameterFilter { -not $Verified }
+    }
+
+    It 'TASK781 preserves a racing run record and returns typed commit conflict without overwrite' {
+        $script:task781ConflictReceiveCount = 0
+        Mock Receive-WinsmuxSubmissionAcknowledgement {
+            $script:task781ConflictReceiveCount++
+            $candidate = New-Task781SyntheticAckCandidate -ProjectDir $script:task781AckRoot `
+                -SubmissionId submission-task781-commit-conflict -Challenge $script:task781AckPipeState.challenge
+            if ($script:task781ConflictReceiveCount -eq 1) {
+                return [PSCustomObject]@{ client_process_id = 4300; payload = $candidate.envelope }
+            }
+            $runPath = Get-WinsmuxSubmissionRunPath -ProjectDir $script:task781AckRoot -SlotId worker-1 -RunId submission-task781-commit-conflict
+            New-Item -ItemType Directory -Path (Split-Path -Parent $runPath) -Force | Out-Null
+            [IO.File]::WriteAllText($runPath, 'race-winner', [Text.UTF8Encoding]::new($false))
+            return [PSCustomObject]@{
+                client_process_id = 4300
+                payload = New-WinsmuxSubmissionAcknowledgementEnvelope -Phase committed `
+                    -Challenge $script:task781AckPipeState.challenge -Receipt $candidate.receipt
+            }
+        }
+        Mock Write-WinsmuxSubmissionAcknowledgementControl { }
+
+        $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $script:task781AckRoot -ManifestEntry $script:task781AckEntry `
+            -Kind task -Content 'A racing record must win without overwrite.' -SubmissionId submission-task781-commit-conflict `
+            -SendAction { param($PaneId, $Text) }
+        $runPath = Get-WinsmuxSubmissionRunPath -ProjectDir $script:task781AckRoot -SlotId worker-1 -RunId submission-task781-commit-conflict
+
+        $receipt.status | Should -Be 'rejected'
+        $receipt.reason_code | Should -Be 'run_record_already_exists'
+        (Get-Content -LiteralPath $runPath -Raw -Encoding UTF8) | Should -BeExactly 'race-winner'
+        (Test-Path -LiteralPath (Join-Path $script:task781AckRoot '.winsmux\submissions\submission-task781-commit-conflict.json')) | Should -BeTrue
+        Should -Invoke Complete-WinsmuxSubmissionAcknowledgement -Times 1 -Exactly -ParameterFilter { -not $Verified }
+    }
+
+    It 'TASK781 creates no packet when runtime identity expires before publication' {
+        $script:task781DispatchValidationCount = 0
+        Mock Test-PaneControlRuntimeContext {
+            $script:task781DispatchValidationCount++
+            if ($script:task781DispatchValidationCount -eq 1) {
+                return New-WinsmuxRuntimeValidationResult -Valid $true -ReasonCode 'live_runtime_verified' -Diagnostic 'verified'
+            }
+            return New-WinsmuxRuntimeValidationResult -Valid $false -ReasonCode 'invalid_supervisor_identity' -Diagnostic 'lease expired before send'
+        }
+        $script:task781UnexpectedSendCount = 0
+        $sendAction = {
+            param([string]$PaneId, [string]$Text)
+            $script:task781UnexpectedSendCount++
+            throw 'send must not occur'
+        }
+
+        $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $script:task781AckRoot -ManifestEntry $script:task781AckEntry `
+            -Kind task -Content ([ordered]@{ title = 'TASK781 stale lease'; request = 'Do not send after lease expiry.' }) `
+            -SubmissionId submission-task781-stale-before-send -SendAction $sendAction
+
+        $receipt.status | Should -Be 'unavailable'
+        $receipt.reason_code | Should -Be 'invalid_supervisor_identity'
+        $script:task781UnexpectedSendCount | Should -Be 0
+        (Test-Path -LiteralPath (Join-Path $script:task781AckRoot '.winsmux\submissions\submission-task781-stale-before-send.json')) | Should -BeFalse
+    }
+}
+
+Describe 'TASK781 acknowledgement pipe integration' {
+    BeforeAll {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\pane-control.ps1')
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\submission-contract.ps1')
+        $script:task781PipeContractPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\submission-contract.ps1'
+    }
+
+    BeforeEach {
+        $script:task781PipeRoot = Join-Path ([IO.Path]::GetTempPath()) ('winsmux-task781-pipe-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:task781PipeRoot -Force | Out-Null
+        $script:task781PipeClientScript = Join-Path $script:task781PipeRoot 'ack-client.ps1'
+        $script:task781PipeClient = $null
+        $script:task781PipeCallerChecks = 0
+        $script:task781PipeObservedPids = [Collections.Generic.List[int]]::new()
+        $script:task781PipePreviousTimeout = $env:WINSMUX_SUBMISSION_ACK_TIMEOUT_MS
+        $env:WINSMUX_SUBMISSION_ACK_TIMEOUT_MS = '10000'
+        [IO.File]::WriteAllText($script:task781PipeClientScript, @'
+param(
+    [string]$ContractPath,
+    [string]$PipeName,
+    [string]$Challenge,
+    [string]$SubmissionId,
+    [string]$RequestDigest,
+    [switch]$DisconnectBeforeFinal
+)
+$ErrorActionPreference = 'Stop'
+. $ContractPath
+$record = New-WinsmuxSubmissionRunRecord -SubmissionId $SubmissionId -RunId $SubmissionId -Kind task `
+    -TaskTitle 'Actual pipe client' -SlotId worker-1 -Backend local -Status started -RequestConsumed -RequestDigest $RequestDigest
+$receipt = New-WinsmuxSubmissionReceipt -Kind task -Status accepted -Backend local -SubmissionId $SubmissionId `
+    -Target ([ordered]@{ label = 'worker-1'; pane_id = '%2'; role = 'Worker' }) -Acknowledgement $record
+if ($DisconnectBeforeFinal) {
+    $client = [System.IO.Pipes.NamedPipeClientStream]::new(
+        '.', $PipeName, [System.IO.Pipes.PipeDirection]::InOut, [System.IO.Pipes.PipeOptions]::Asynchronous
+    )
+    try {
+        $client.Connect(10000)
+        $candidate = New-WinsmuxSubmissionAcknowledgementEnvelope -Phase candidate -Challenge $Challenge -Receipt $receipt
+        Write-WinsmuxSubmissionPipeFrame -Stream $client -Json ($candidate | ConvertTo-Json -Depth 14 -Compress)
+        $control = Read-WinsmuxSubmissionPipeJson -Stream $client -TimeoutMilliseconds 10000
+        if (-not (Test-WinsmuxSubmissionAcknowledgementControl -Control $control -ExpectedStatus commit)) { exit 2 }
+        $committed = New-WinsmuxSubmissionAcknowledgementEnvelope -Phase committed -Challenge $Challenge -Receipt $receipt
+        Write-WinsmuxSubmissionPipeFrame -Stream $client -Json ($committed | ConvertTo-Json -Depth 14 -Compress)
+    } finally {
+        $client.Dispose()
+    }
+    Start-Sleep -Milliseconds 2000
+    exit 0
+}
+$result = Invoke-WinsmuxSubmissionAcknowledgementClientHandshake `
+    -PipeName $PipeName -Challenge $Challenge -Receipt $receipt
+if ([string]$result.status -eq 'accepted') { exit 0 }
+exit 1
+'@, [Text.UTF8Encoding]::new($false))
+    }
+
+    AfterEach {
+        if ($null -ne $script:task781PipeClient -and -not $script:task781PipeClient.HasExited) {
+            Stop-Process -Id $script:task781PipeClient.Id -Force -ErrorAction SilentlyContinue
+        }
+        if ($null -eq $script:task781PipePreviousTimeout) {
+            Remove-Item Env:WINSMUX_SUBMISSION_ACK_TIMEOUT_MS -ErrorAction SilentlyContinue
+        } else {
+            $env:WINSMUX_SUBMISSION_ACK_TIMEOUT_MS = $script:task781PipePreviousTimeout
+        }
+        if ($script:task781PipeRoot -and (Test-Path -LiteralPath $script:task781PipeRoot)) {
+            Remove-Item -LiteralPath $script:task781PipeRoot -Recurse -Force
+        }
+    }
+
+    It 'TASK781 uses an actual <ClientHost> pipe client for <Mode>' -ForEach @(
+        @{ ClientHost = 'pwsh'; Mode = 'success' }
+        @{ ClientHost = 'powershell.exe'; Mode = 'success' }
+        @{ ClientHost = 'pwsh'; Mode = 'post_commit_reject' }
+        @{ ClientHost = 'powershell.exe'; Mode = 'post_commit_reject' }
+        @{ ClientHost = 'pwsh'; Mode = 'create_new_conflict' }
+        @{ ClientHost = 'pwsh'; Mode = 'client_receive_failure' }
+    ) {
+        $script:task781PipeMode = $Mode
+        $clientHolder = [PSCustomObject]@{ Process = $null }
+        $clientScriptPath = $script:task781PipeClientScript
+        $contractPath = $script:task781PipeContractPath
+        $clientHost = $ClientHost
+        $submissionId = 'submission-task781-actual-' + ($Mode -replace '_', '-') + '-' + ($ClientHost -replace '[^A-Za-z0-9]', '-')
+        $request = 'Actual two-phase pipe request for ' + $Mode + ' on ' + $ClientHost
+        $requestDigest = Get-WinsmuxSubmissionRequestDigest -Request $request
+        $entry = [PSCustomObject]@{
+            Label = 'worker-1'; SlotId = 'worker-1'; PaneId = '%2'; Role = 'Worker'; WorkerRole = 'worker'
+            WorkerBackend = 'local'; Title = 'W1 Local Worker'; Status = 'ready'
+        }
+        Mock Test-PaneControlRuntimeContext {
+            param($ProjectDir, $ManifestEntry, $Operation, $CallerIdentity, $ProcessResolver)
+            $context = [PSCustomObject]@{
+                generation_id = 'generation-actual'; server_session_id = '$9'; slot_id = 'worker-1'
+                pane_id = '%2'; backend = 'local'
+            }
+            if ($Operation -eq 'caller_ack') {
+                $script:task781PipeCallerChecks++
+                $script:task781PipeObservedPids.Add([int]$CallerIdentity.process_id) | Out-Null
+                if ($script:task781PipeMode -eq 'create_new_conflict' -and $script:task781PipeCallerChecks -eq 1) {
+                    $racePath = Get-WinsmuxSubmissionRunPath -ProjectDir $script:task781PipeRoot -SlotId worker-1 -RunId $submissionId
+                    New-Item -ItemType Directory -Path (Split-Path -Parent $racePath) -Force | Out-Null
+                    [IO.File]::WriteAllText($racePath, 'race-winner', [Text.UTF8Encoding]::new($false))
+                }
+                if ($script:task781PipeMode -eq 'post_commit_reject' -and $script:task781PipeCallerChecks -gt 1) {
+                    return New-WinsmuxRuntimeValidationResult -Valid $false -ReasonCode 'invalid_supervisor_identity' -Diagnostic 'synthetic post-commit expiry'
+                }
+            }
+            New-WinsmuxRuntimeValidationResult -Valid $true -ReasonCode 'live_runtime_verified' -Diagnostic 'verified' -Context $context
+        }
+        $sendAction = {
+            param([string]$PaneId, [string]$Text)
+            if ($Text -notmatch '--ack-pipe (?<pipe>winsmux-submission-ack-[0-9a-f]{32}) --challenge (?<challenge>[0-9a-f]{64})') {
+                throw 'actual acknowledgement command is missing pipe identity'
+            }
+            $arguments = @(
+                '-NoProfile', '-File', $clientScriptPath,
+                '-ContractPath', $contractPath,
+                '-PipeName', $Matches.pipe,
+                '-Challenge', $Matches.challenge,
+                '-SubmissionId', $submissionId,
+                '-RequestDigest', $requestDigest
+            )
+            if ($Mode -eq 'client_receive_failure') { $arguments += '-DisconnectBeforeFinal' }
+            $clientHolder.Process = Start-Process -FilePath $clientHost `
+                -ArgumentList $arguments -PassThru -WindowStyle Hidden
+        }.GetNewClosure()
+
+        $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $script:task781PipeRoot -ManifestEntry $entry `
+            -Kind task -Content $request -SubmissionId $submissionId -SendAction $sendAction
+        $script:task781PipeClient = $clientHolder.Process
+        $script:task781PipeClient | Should -Not -BeNullOrEmpty -Because (
+            'the adapter receipt was {0}/{1}' -f [string]$receipt.status, [string]$receipt.reason_code)
+        $script:task781PipeClient.WaitForExit(15000) | Should -BeTrue
+        $runPath = Get-WinsmuxSubmissionRunPath -ProjectDir $script:task781PipeRoot -SlotId worker-1 -RunId $submissionId
+        $packetPath = Join-Path $script:task781PipeRoot ".winsmux\submissions\$submissionId.json"
+
+        @($script:task781PipeObservedPids | Select-Object -Unique) | Should -Be @($script:task781PipeClient.Id)
+        if ($Mode -in @('success', 'client_receive_failure')) {
+            $receipt.status | Should -Be 'accepted' -Because (
+                'the acknowledgement reason was {0}: {1}' -f [string]$receipt.reason_code, [string]$receipt.diagnostic)
+            $script:task781PipeClient.ExitCode | Should -Be 0
+            Test-Path -LiteralPath $runPath -PathType Leaf | Should -BeTrue
+            Test-Path -LiteralPath $packetPath -PathType Leaf | Should -BeTrue
+            $script:task781PipeCallerChecks | Should -Be 2
+        } elseif ($Mode -eq 'post_commit_reject') {
+            $receipt.status | Should -Be 'unavailable'
+            $receipt.reason_code | Should -Be 'invalid_supervisor_identity'
+            $script:task781PipeClient.ExitCode | Should -Be 1
+            Test-Path -LiteralPath $runPath -PathType Leaf | Should -BeFalse
+            Test-Path -LiteralPath $packetPath -PathType Leaf | Should -BeTrue
+            $committedPacketText = Get-Content -LiteralPath $packetPath -Raw -Encoding UTF8
+            $duplicate = Invoke-WinsmuxSubmissionAdapter -ProjectDir $script:task781PipeRoot -ManifestEntry $entry `
+                -Kind task -Content 'replacement must not overwrite committed packet' -SubmissionId $submissionId `
+                -SendAction { throw 'duplicate must stop before delivery' }
+            $duplicate.status | Should -Be 'rejected'
+            $duplicate.reason_code | Should -Be 'run_record_already_exists'
+            (Get-Content -LiteralPath $packetPath -Raw -Encoding UTF8) | Should -BeExactly $committedPacketText
+            $script:task781PipeCallerChecks | Should -Be 2
+        } else {
+            $receipt.status | Should -Be 'rejected'
+            $receipt.reason_code | Should -Be 'run_record_already_exists'
+            $script:task781PipeClient.ExitCode | Should -Be 1
+            (Get-Content -LiteralPath $runPath -Raw -Encoding UTF8) | Should -BeExactly 'race-winner'
+            Test-Path -LiteralPath $packetPath -PathType Leaf | Should -BeTrue
+            $committedPacketText = Get-Content -LiteralPath $packetPath -Raw -Encoding UTF8
+            $duplicate = Invoke-WinsmuxSubmissionAdapter -ProjectDir $script:task781PipeRoot -ManifestEntry $entry `
+                -Kind task -Content 'replacement must not overwrite committed packet' -SubmissionId $submissionId `
+                -SendAction { throw 'duplicate must stop before delivery' }
+            $duplicate.status | Should -Be 'rejected'
+            $duplicate.reason_code | Should -Be 'run_record_already_exists'
+            (Get-Content -LiteralPath $packetPath -Raw -Encoding UTF8) | Should -BeExactly $committedPacketText
+            $script:task781PipeCallerChecks | Should -Be 2
+        }
+        @(Get-ChildItem -LiteralPath (Join-Path $script:task781PipeRoot '.winsmux') -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '\.(tmp|partial)$' }).Count | Should -Be 0
+    }
+}
+
+Describe 'TASK781 atomic acknowledgement run records' {
+    BeforeAll {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\submission-contract.ps1')
+    }
+
+    BeforeEach {
+        $script:task781AtomicRoot = Join-Path ([IO.Path]::GetTempPath()) ('winsmux-task781-atomic-' + [guid]::NewGuid().ToString('N'))
+        $script:task781AtomicId = 'submission-task781-atomic'
+        $script:task781AtomicRecord = New-WinsmuxSubmissionRunRecord -SubmissionId $script:task781AtomicId `
+            -RunId $script:task781AtomicId -Kind task -TaskTitle 'Atomic acknowledgement record' -SlotId worker-1 `
+            -Backend codex -Status started -RequestConsumed -RequestDigest ('a' * 64)
+    }
+
+    AfterEach {
+        Remove-Item -LiteralPath $script:task781AtomicRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'TASK781 leaves no partial run artifact after <Mode>' -ForEach @(
+        @{ Mode = 'write_failure' }
+        @{ Mode = 'flush_failure' }
+        @{ Mode = 'move_failure' }
+        @{ Mode = 'existing_winner' }
+    ) {
+        $runPath = Get-WinsmuxSubmissionRunPath -ProjectDir $script:task781AtomicRoot -SlotId worker-1 `
+            -RunId $script:task781AtomicId
+        if ($Mode -in @('write_failure', 'flush_failure')) {
+            Mock Write-WinsmuxSubmissionRunRecordTempFile {
+                param([string]$Path, [byte[]]$Bytes)
+                $length = if ($Mode -eq 'write_failure') { [Math]::Min(8, $Bytes.Length) } else { $Bytes.Length }
+                [IO.File]::WriteAllBytes($Path, $Bytes[0..($length - 1)])
+                throw "synthetic $Mode"
+            }
+        } elseif ($Mode -eq 'move_failure') {
+            Mock Move-WinsmuxSubmissionRunRecordFile { throw 'synthetic move failure' }
+        } else {
+            New-Item -ItemType Directory -Path (Split-Path -Parent $runPath) -Force | Out-Null
+            [IO.File]::WriteAllText($runPath, 'race-winner', [Text.UTF8Encoding]::new($false))
+        }
+
+        {
+            Write-WinsmuxSubmissionRunRecord -ProjectDir $script:task781AtomicRoot -SlotId worker-1 `
+                -Record $script:task781AtomicRecord
+        } | Should -Throw
+
+        if ($Mode -eq 'existing_winner') {
+            (Get-Content -LiteralPath $runPath -Raw -Encoding UTF8) | Should -BeExactly 'race-winner'
+        } else {
+            Test-Path -LiteralPath $runPath -PathType Leaf | Should -BeFalse
+        }
+        @(Get-ChildItem -LiteralPath (Split-Path -Parent $runPath) -Filter '.run-*.tmp' -File `
+            -ErrorAction SilentlyContinue).Count | Should -Be 0
+    }
+}
+
 Describe 'winsmux pane env contract' {
     BeforeAll {
         . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\pane-env.ps1')
@@ -3514,6 +5340,63 @@ panes:
         $manifestContent | Should -Match $([regex]::Escape("'builder-2':"))
     }
 
+    It 'TASK781 C19 threads the generation captured with the label context into the setter' {
+        $script:capturedWrapperGeneration = ''
+        Mock Get-PaneControlManifestContext {
+            [pscustomobject]@{
+                ManifestPath = 'C:\repo\.winsmux\manifest.yaml'
+                Label = 'builder-1'
+                GenerationId = 'generation-initial'
+            }
+        }
+        Mock Get-PaneControlPaneTitle { 'builder-2' }
+        Mock Get-PaneControlManifestGenerationId { 'generation-replacement' }
+        Mock Set-PaneControlManifestPaneProperties {
+            param($ManifestPath, $PaneId, $Properties, $ExpectedGenerationId)
+            $script:capturedWrapperGeneration = [string]$ExpectedGenerationId
+        }
+
+        Update-PaneControlManifestPaneLabel -ProjectDir 'C:\repo' -PaneId '%2' | Should -BeTrue
+
+        $script:capturedWrapperGeneration | Should -BeExactly 'generation-initial'
+        Should -Invoke Get-PaneControlManifestGenerationId -Times 0 -Exactly
+    }
+
+    It 'TASK781 C19 threads the generation captured with the path context into the setter' {
+        $script:capturedWrapperGeneration = ''
+        Mock Get-PaneControlManifestContext {
+            [pscustomobject]@{
+                ManifestPath = 'C:\repo\.winsmux\manifest.yaml'
+                GenerationId = 'generation-initial'
+            }
+        }
+        Mock Get-PaneControlManifestGenerationId { 'generation-replacement' }
+        Mock Set-PaneControlManifestPaneProperties {
+            param($ManifestPath, $PaneId, $Properties, $ExpectedGenerationId)
+            $script:capturedWrapperGeneration = [string]$ExpectedGenerationId
+        }
+
+        Set-PaneControlManifestPanePaths -ProjectDir 'C:\repo' -PaneId '%2' `
+            -LaunchDir 'C:\repo\.worktrees\builder-9'
+
+        $script:capturedWrapperGeneration | Should -BeExactly 'generation-initial'
+        Should -Invoke Get-PaneControlManifestGenerationId -Times 0 -Exactly
+    }
+
+    It 'TASK781 C19 forbids generation recapture in manifest mutation callers' {
+        $repoRoot = Split-Path -Parent $PSScriptRoot
+        foreach ($relativePath in @(
+            'scripts\winsmux-core.ps1',
+            'winsmux-core\scripts\agent-monitor.ps1',
+            'winsmux-core\scripts\builder-queue.ps1',
+            'winsmux-core\scripts\operator-poll.ps1',
+            'winsmux-core\scripts\pane-scaler.ps1'
+        )) {
+            $source = Get-Content -LiteralPath (Join-Path $repoRoot $relativePath) -Raw -Encoding UTF8
+            $source | Should -Not -Match '\bGet-PaneControlManifestGenerationId\b' -Because "$relativePath must thread the generation captured with its manifest snapshot"
+        }
+    }
+
     It 'reads pane titles through the pane-control winsmux wrapper' {
         Mock Invoke-PaneControlWinsmux { @('ignored', 'builder-7') } -ParameterFilter {
             $Arguments.Count -eq 5 -and
@@ -3573,6 +5456,275 @@ panes:
         $entry.SecurityPolicy.mode | Should -Be 'blocklist'
         @($entry.SecurityPolicy.allow_patterns) | Should -Be @('Invoke-Pester')
         @($entry.SecurityPolicy.block_patterns) | Should -Be @('git reset --hard')
+    }
+
+    It 'TASK781 C48 refuses a stale v2 manifest mutation before Save-WinsmuxManifest' {
+        $manifestPath = Join-Path $script:paneControlManifestDir 'manifest.yaml'
+        'synthetic v2 manifest' | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+        $manifest = [PSCustomObject]@{
+            version = 2
+            session = [PSCustomObject]@{ generation_id = 'generation-1' }
+            panes = [ordered]@{
+                'worker-1' = [ordered]@{
+                    slot_id = 'worker-1'; pane_id = '%2'; worker_backend = 'codex'; worker_role = 'reviewer'
+                    role = 'Reviewer'; title = 'W1 Codex Reviewer'; status = 'ready'
+                }
+            }
+        }
+        $entry = [PSCustomObject]@{
+            Label = 'worker-1'; SlotId = 'worker-1'; PaneId = '%2'; WorkerBackend = 'codex'
+            WorkerRole = 'reviewer'; Role = 'Reviewer'; Title = 'W1 Codex Reviewer'; Status = 'ready'
+        }
+        Mock Get-WinsmuxManifest { $manifest }
+        Mock Get-PaneControlManifestContext { $entry }
+        Mock Test-PaneControlRuntimeContext {
+            New-WinsmuxRuntimeValidationResult -Valid $false -ReasonCode 'invalid_supervisor_identity' `
+                -Diagnostic 'generation expired immediately before manifest save'
+        }
+        Mock Save-WinsmuxManifest { throw 'save must not run after lease expiry' }
+
+        {
+            Set-PaneControlManifestPaneProperties -ManifestPath $manifestPath -PaneId '%2' `
+                -Properties ([ordered]@{ status = 'ready' }) -ExpectedGenerationId 'generation-1'
+        } | Should -Throw '*invalid_supervisor_identity*generation expired immediately before manifest save*'
+
+        Assert-MockCalled Save-WinsmuxManifest -Times 0 -Exactly
+    }
+
+    It 'TASK781 C48 requires a captured generation for every v2 manifest mutation' {
+        $manifestPath = Join-Path $script:paneControlManifestDir 'manifest.yaml'
+        'synthetic v2 manifest' | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+        $manifest = [PSCustomObject]@{
+            version = 2
+            session = [PSCustomObject]@{ generation_id = 'generation-1' }
+            panes = [ordered]@{
+                'worker-1' = [ordered]@{ pane_id = '%2'; status = 'ready' }
+            }
+        }
+        Mock Get-WinsmuxManifest { $manifest }
+        Mock Save-WinsmuxManifest { throw 'save must not run without a captured generation' }
+
+        {
+            Set-PaneControlManifestPaneProperties -ManifestPath $manifestPath -PaneId '%2' `
+                -Properties ([ordered]@{ status = 'ready' })
+        } | Should -Throw '*ExpectedGenerationId is required*'
+
+        Assert-MockCalled Save-WinsmuxManifest -Times 0 -Exactly
+    }
+
+    It 'TASK781 C52 validates the captured v2 generation and live lease in the shared document save path' {
+        $manifestPath = Join-Path $script:paneControlManifestDir 'manifest.yaml'
+        'synthetic v2 manifest' | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+        $manifest = [PSCustomObject]@{
+            version = 2
+            session = [PSCustomObject]@{
+                name = 'winsmux-orchestra'; generation_id = 'generation-52'; server_session_id = '$52'; bootstrap_pane_id = '%1'
+            }
+            panes = [ordered]@{
+                'worker-1' = [ordered]@{ pane_id = '%2'; status = 'ready' }
+            }
+        }
+        $entry = [PSCustomObject]@{
+            Label = 'worker-1'; SlotId = 'worker-1'; PaneId = '%2'; WorkerBackend = 'codex'; Status = 'ready'
+        }
+        Mock Get-WinsmuxManifest { $manifest }
+        Mock Get-PaneControlManifestContext { $entry }
+        Mock Test-PaneControlRuntimeContext {
+            [PSCustomObject]@{
+                valid = $true
+                reason_code = 'runtime_valid'
+                diagnostic = 'synthetic live lease'
+                context = [PSCustomObject]@{ generation_id = 'generation-52' }
+            }
+        }
+        Mock Save-WinsmuxManifest {}
+
+        Save-PaneControlManifestDocument -ManifestPath $manifestPath -Manifest $manifest -ExpectedGenerationId 'generation-52'
+
+        Assert-MockCalled Test-PaneControlRuntimeContext -Times 1 -Exactly -ParameterFilter {
+            $ProjectDir -eq $script:paneControlTempRoot -and $ManifestEntry.PaneId -eq '%2'
+        }
+        Assert-MockCalled Save-WinsmuxManifest -Times 1 -Exactly
+    }
+
+    It 'TASK781 C57 refuses a guarded v2 document save after current manifest becomes <Case>' -ForEach @(
+        @{ Case = 'v1'; CurrentManifest = [PSCustomObject]@{ version = 1; panes = [ordered]@{} } }
+        @{ Case = 'unknown schema'; CurrentManifest = [PSCustomObject]@{ version = 99; panes = [ordered]@{} } }
+        @{ Case = 'empty'; CurrentManifest = $null }
+    ) {
+        $manifestPath = Join-Path $script:paneControlManifestDir 'manifest.yaml'
+        'synthetic manifest' | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+        $nextManifest = [PSCustomObject]@{
+            version = 2
+            session = [PSCustomObject]@{
+                name = 'winsmux-orchestra'; generation_id = 'generation-57'; server_session_id = '$57'; bootstrap_pane_id = '%1'
+            }
+            panes = [ordered]@{
+                'worker-1' = [ordered]@{ pane_id = '%2'; status = 'ready' }
+            }
+        }
+        $script:c57CurrentManifest = $CurrentManifest
+        Mock Get-WinsmuxManifest { $script:c57CurrentManifest }
+        Mock Save-WinsmuxManifest { throw 'save must not run after a guarded v2 schema transition' }
+
+        {
+            Save-PaneControlManifestDocument -ManifestPath $manifestPath -Manifest $nextManifest `
+                -ExpectedGenerationId 'generation-57'
+        } | Should -Throw '*manifest_regeneration_required*'
+
+        Assert-MockCalled Save-WinsmuxManifest -Times 0 -Exactly
+    }
+
+    It 'TASK781 C57 preserves an unguarded pure v1 document save' {
+        $manifestPath = Join-Path $script:paneControlManifestDir 'manifest.yaml'
+        'synthetic v1 manifest' | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+        $v1Manifest = [PSCustomObject]@{ version = 1; panes = [ordered]@{} }
+        Mock Get-WinsmuxManifest { $v1Manifest }
+        Mock Save-WinsmuxManifest {}
+
+        Save-PaneControlManifestDocument -ManifestPath $manifestPath -Manifest $v1Manifest
+
+        Assert-MockCalled Save-WinsmuxManifest -Times 1 -Exactly
+    }
+
+    It 'TASK781 C60 rejects a guarded v2 save when the locked document becomes <Case>' -ForEach @(
+        @{ Case = 'v1'; ExpectedReason = 'manifest_regeneration_required' }
+        @{ Case = 'unknown schema'; ExpectedReason = 'manifest_regeneration_required' }
+        @{ Case = 'empty'; ExpectedReason = 'manifest_regeneration_required' }
+        @{ Case = 'deleted'; ExpectedReason = 'manifest_regeneration_required' }
+        @{ Case = 'another generation'; ExpectedReason = 'invalid_supervisor_identity' }
+    ) {
+        $current = [ordered]@{
+            version = 2
+            saved_at = '2026-07-15T19:40:00+09:00'
+            session = [ordered]@{
+                name = 'winsmux-orchestra'
+                generation_id = 'generation-1'
+                server_session_id = '$60'
+                bootstrap_pane_id = '%1'
+                expected_pane_count = 1
+            }
+            panes = [ordered]@{
+                'worker-1' = [ordered]@{ pane_id = '%2'; slot_id = 'worker-1'; status = 'ready' }
+            }
+            tasks = [ordered]@{ queued = @(); in_progress = @(); completed = @() }
+            worktrees = [ordered]@{}
+        }
+        Save-WinsmuxManifest -ProjectDir $script:paneControlTempRoot -Manifest $current
+        $path = Get-ManifestPath -ProjectDir $script:paneControlTempRoot
+        $next = ConvertFrom-ManifestYaml -Content (ConvertTo-ManifestYaml -Manifest $current)
+
+        switch ($Case) {
+            'v1' { $script:c60CompetingContent = "version: 1`nsession:`n  name: legacy`n" }
+            'unknown schema' { $script:c60CompetingContent = "version: 99`nsession:`n  name: unknown`n" }
+            'empty' { $script:c60CompetingContent = '' }
+            'deleted' { $script:c60CompetingContent = $null }
+            'another generation' {
+                $competing = ConvertFrom-ManifestYaml -Content (ConvertTo-ManifestYaml -Manifest $current)
+                $competing.session.generation_id = 'generation-competing'
+                $script:c60CompetingContent = ConvertTo-ManifestYaml -Manifest $competing
+            }
+        }
+
+        Mock Invoke-WinsmuxWithFileLock {
+            param([string]$Path, [scriptblock]$Action)
+            if ($null -eq $script:c60CompetingContent) {
+                Remove-Item -LiteralPath $Path -Force
+            } else {
+                [System.IO.File]::WriteAllText($Path, [string]$script:c60CompetingContent, [System.Text.UTF8Encoding]::new($false))
+            }
+            & $Action
+        }
+
+        {
+            Save-WinsmuxManifest -ProjectDir $script:paneControlTempRoot -Manifest $next `
+                -ExpectedGenerationId 'generation-1'
+        } | Should -Throw ('*' + $ExpectedReason + '*')
+
+        if ($null -eq $script:c60CompetingContent) {
+            Test-Path -LiteralPath $path | Should -BeFalse
+        } else {
+            [System.IO.File]::ReadAllText($path) | Should -Be ([string]$script:c60CompetingContent)
+        }
+    }
+
+    It 'TASK781 C60 atomically saves a same-generation v2 document with an explicit guard' {
+        $current = [ordered]@{
+            version = 2
+            saved_at = '2026-07-15T19:40:00+09:00'
+            session = [ordered]@{
+                name = 'winsmux-orchestra'
+                generation_id = 'generation-1'
+                server_session_id = '$60'
+                bootstrap_pane_id = '%1'
+                expected_pane_count = 1
+            }
+            panes = [ordered]@{
+                'worker-1' = [ordered]@{ pane_id = '%2'; slot_id = 'worker-1'; status = 'ready' }
+            }
+            tasks = [ordered]@{ queued = @(); in_progress = @(); completed = @() }
+            worktrees = [ordered]@{}
+        }
+        Save-WinsmuxManifest -ProjectDir $script:paneControlTempRoot -Manifest $current
+        $next = ConvertFrom-ManifestYaml -Content (ConvertTo-ManifestYaml -Manifest $current)
+        $next.saved_at = '2026-07-15T19:45:00+09:00'
+
+        Save-WinsmuxManifest -ProjectDir $script:paneControlTempRoot -Manifest $next `
+            -ExpectedGenerationId 'generation-1'
+
+        (Get-WinsmuxManifest -ProjectDir $script:paneControlTempRoot).saved_at | Should -Be '2026-07-15T19:45:00+09:00'
+    }
+
+    It 'TASK781 C60 preserves an unguarded first-write v2 diagnostic document' {
+        $diagnostic = [ordered]@{
+            version = 2
+            saved_at = '2026-07-15T19:46:00+09:00'
+            session = [ordered]@{ name = 'diagnostic-only' }
+            panes = [ordered]@{}
+            tasks = [ordered]@{ queued = @(); in_progress = @(); completed = @() }
+            worktrees = [ordered]@{}
+        }
+
+        Save-WinsmuxManifest -ProjectDir $script:paneControlTempRoot -Manifest $diagnostic
+
+        $saved = Get-WinsmuxManifest -ProjectDir $script:paneControlTempRoot
+        $saved.version | Should -Be 2
+        $saved.session.name | Should -Be 'diagnostic-only'
+    }
+
+    It 'TASK781 C54 refuses a v2 whole-document save when no managed runtime pane exists' {
+        $manifestPath = Join-Path $script:paneControlManifestDir 'manifest.yaml'
+        'synthetic v2 manifest' | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+        $manifest = [PSCustomObject]@{
+            version = 2
+            session = [PSCustomObject]@{
+                name = 'winsmux-orchestra'; generation_id = 'generation-54'; server_session_id = '$54'; bootstrap_pane_id = '%1'
+            }
+            panes = [ordered]@{}
+        }
+        Mock Get-WinsmuxManifest { $manifest }
+        Mock Get-PaneControlManifestContext { throw 'bootstrap pane must not be selected as a managed runtime pane' }
+        Mock Save-WinsmuxManifest { throw 'save must not run without a managed runtime pane' }
+
+        {
+            Save-PaneControlManifestDocument -ManifestPath $manifestPath -Manifest $manifest -ExpectedGenerationId 'generation-54'
+        } | Should -Throw '*managed runtime pane*'
+
+        Assert-MockCalled Get-PaneControlManifestContext -Times 0 -Exactly
+        Assert-MockCalled Save-WinsmuxManifest -Times 0 -Exactly
+    }
+
+    It 'TASK781 C52 routes every production whole-document mutation caller through the guarded save path' {
+        $repoRoot = Split-Path -Parent $PSScriptRoot
+        foreach ($relativePath in @(
+            'winsmux-core\scripts\orchestra-state.ps1',
+            'winsmux-core\scripts\builder-queue.ps1',
+            'winsmux-core\scripts\pane-scaler.ps1'
+        )) {
+            $content = Get-Content -LiteralPath (Join-Path $repoRoot $relativePath) -Raw -Encoding UTF8
+            $content | Should -Match 'Save-PaneControlManifestDocument'
+            $content | Should -Not -Match '(?m)^\s*Save-WinsmuxManifest\s'
+        }
     }
 
 }
@@ -3906,6 +6058,54 @@ Describe 'agent-monitor helpers' {
 
     BeforeEach {
         Mock Send-MonitorOperatorMailboxMessage { return $true }
+    }
+
+    It 'TASK781 C19 threads the respawn snapshot generation into its label update' {
+        $script:capturedMonitorGeneration = ''
+        Mock Test-Path { $true }
+        Mock Get-PaneControlManifestContext {
+            [pscustomobject]@{ GenerationId = 'generation-replacement' }
+        }
+        Mock Set-PaneControlManifestPaneProperties {
+            param($ManifestPath, $PaneId, $Properties, $ExpectedGenerationId)
+            $script:capturedMonitorGeneration = [string]$ExpectedGenerationId
+        }
+
+        Update-MonitorManifestPaneLabel -ManifestPath 'C:\repo\.winsmux\manifest.yaml' -PaneId '%2' `
+            -Label 'builder-2' -ExpectedGenerationId 'generation-initial' | Should -BeTrue
+
+        $script:capturedMonitorGeneration | Should -BeExactly 'generation-initial'
+        Should -Invoke Get-PaneControlManifestContext -Times 0 -Exactly
+    }
+
+    It 'TASK781 C19 carries the cycle generation through the production respawn caller' {
+        $manifestPath = Join-Path $TestDrive 'respawn-manifest.yaml'
+        'invalid-but-existing' | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+        $script:respawnCallerGeneration = ''
+        Mock Invoke-MonitorWinsmux { }
+        Mock Wait-MonitorPaneShellReady { }
+        Mock Send-MonitorBridgeCommand { }
+        Mock Start-Sleep { }
+        Mock Get-PaneAgentStatus {
+            [pscustomobject]@{ Status = 'ready'; PaneId = '%2'; SnapshotTail = ''; ExitReason = '' }
+        }
+        Mock Get-MonitorPaneTitle { 'builder-2' }
+        Mock Get-PaneControlManifestContext {
+            [pscustomobject]@{ GenerationId = 'generation-replacement' }
+        }
+        Mock Update-MonitorManifestPaneLabel {
+            $script:respawnCallerGeneration = [string]$ExpectedGenerationId
+            return $true
+        }
+
+        $result = Invoke-AgentRespawn -PaneId '%2' -Agent 'codex' -Model 'gpt-5.4' `
+            -ProjectDir $TestDrive -GitWorktreeDir (Join-Path $TestDrive '.git\worktrees\builder-2') `
+            -RootPath $TestDrive -ManifestPath $manifestPath -ExpectedGenerationId 'generation-initial' `
+            -ReadyTimeoutSeconds 1
+
+        $result.Success | Should -BeTrue
+        $script:respawnCallerGeneration | Should -BeExactly 'generation-initial'
+        Should -Invoke Get-PaneControlManifestContext -Times 0 -Exactly
     }
 
     It 'builds v2 mailbox envelope metadata before sending monitor messages' {
@@ -5550,6 +7750,217 @@ session:
 Describe 'orchestra-preflight health contract' {
     BeforeAll {
         . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\orchestra-preflight.ps1')
+
+        function New-C66ServerProcessSnapshot {
+            param([switch]$IncludeServer)
+
+            $processes = @()
+            $byId = @{}
+            if ($IncludeServer) {
+                $server = [PSCustomObject]@{
+                    ProcessId       = 41001
+                    ParentProcessId = 0
+                    Name            = 'winsmux.exe'
+                    CommandLine     = 'winsmux server -s winsmux-orchestra'
+                    ExecutablePath  = 'C:\tools\winsmux.exe'
+                }
+                $processes = @($server)
+                $byId[41001] = $server
+            }
+            return [PSCustomObject]@{
+                Processes        = $processes
+                ById             = $byId
+                ChildrenByParent = @{}
+            }
+        }
+    }
+
+    It 'TASK781 C66 propagates a matched server stop failure even when the session is absent' {
+        $snapshot = New-C66ServerProcessSnapshot -IncludeServer
+        Mock Stop-Process { throw 'synthetic access denied' }
+
+        {
+            Remove-OrchestraSessionServerProcesses `
+                -SessionName 'winsmux-orchestra' `
+                -WinsmuxBin 'C:\tools\winsmux.exe' `
+                -IncludeExpectedBinary `
+                -ProcessSnapshot $snapshot `
+                -PostStopSnapshotResolver { New-C66ServerProcessSnapshot }
+        } | Should -Throw '*synthetic access denied*'
+    }
+
+    It 'TASK781 C66 rejects a matched server that remains after a successful stop request' {
+        $snapshot = New-C66ServerProcessSnapshot -IncludeServer
+        Mock Stop-Process { }
+
+        {
+            Remove-OrchestraSessionServerProcesses `
+                -SessionName 'winsmux-orchestra' `
+                -WinsmuxBin 'C:\tools\winsmux.exe' `
+                -IncludeExpectedBinary `
+                -ProcessSnapshot $snapshot `
+                -PostStopSnapshotResolver { New-C66ServerProcessSnapshot -IncludeServer } `
+                -VerificationAttempts 1 `
+                -VerificationIntervalMilliseconds 0
+        } | Should -Throw '*server processes remain*'
+    }
+
+    It 'TASK781 C66 rejects a matching server that appears after an initially empty snapshot' {
+        Mock Stop-Process { throw 'no stop should occur for the empty initial snapshot' }
+
+        {
+            Remove-OrchestraSessionServerProcesses `
+                -SessionName 'winsmux-orchestra' `
+                -WinsmuxBin 'C:\tools\winsmux.exe' `
+                -IncludeExpectedBinary `
+                -ProcessSnapshot (New-C66ServerProcessSnapshot) `
+                -PostStopSnapshotResolver { New-C66ServerProcessSnapshot -IncludeServer } `
+                -VerificationAttempts 1 `
+                -VerificationIntervalMilliseconds 0
+        } | Should -Throw '*server processes remain*'
+    }
+
+    It 'TASK781 C66 succeeds only after a fresh snapshot proves matching server absence' {
+        $snapshot = New-C66ServerProcessSnapshot -IncludeServer
+        Mock Stop-Process { }
+
+        $result = Remove-OrchestraSessionServerProcesses `
+            -SessionName 'winsmux-orchestra' `
+            -WinsmuxBin 'C:\tools\winsmux.exe' `
+            -IncludeExpectedBinary `
+            -ProcessSnapshot $snapshot `
+            -PostStopSnapshotResolver { New-C66ServerProcessSnapshot } `
+            -VerificationAttempts 1 `
+            -VerificationIntervalMilliseconds 0
+
+        @($result.SessionProcesses).Count | Should -Be 1
+        @($result.Killed).Count | Should -Be 1
+        @($result.RemainingSessionProcesses).Count | Should -Be 0
+        @($result.Errors).Count | Should -Be 0
+    }
+
+    It 'isolates stale session server matching to the resolved bridge namespace' {
+        $previousNamespace = $env:WINSMUX_BRIDGE_NAMESPACE_L
+        $previousSocket = $env:WINSMUX_BRIDGE_SOCKET_S
+        $previousSessionNamespace = $env:WINSMUX_BRIDGE_SESSION_NAMESPACE
+        try {
+            $env:WINSMUX_BRIDGE_SESSION_NAMESPACE = 'task781-smoke-20260715'
+            $env:WINSMUX_BRIDGE_SOCKET_S = 'lower-priority-socket'
+            $env:WINSMUX_BRIDGE_NAMESPACE_L = 'lower-priority-L'
+            $matching = [pscustomobject]@{ Name = 'winsmux.exe'; CommandLine = 'winsmux server -s winsmux-orchestra -L task781-smoke-20260715' }
+            $different = [pscustomobject]@{ Name = 'winsmux.exe'; CommandLine = 'winsmux server -s winsmux-orchestra -L other-namespace' }
+            $missing = [pscustomobject]@{ Name = 'winsmux.exe'; CommandLine = 'winsmux server -s winsmux-orchestra' }
+
+            (Test-OrchestraSessionServerProcess -Process $matching -SessionName 'winsmux-orchestra') | Should -BeTrue
+            (Test-OrchestraSessionServerProcess -Process $different -SessionName 'winsmux-orchestra') | Should -BeFalse
+            (Test-OrchestraSessionServerProcess -Process $missing -SessionName 'winsmux-orchestra') | Should -BeFalse
+
+            Remove-Item Env:\WINSMUX_BRIDGE_SESSION_NAMESPACE -ErrorAction SilentlyContinue
+            Remove-Item Env:\WINSMUX_BRIDGE_SOCKET_S -ErrorAction SilentlyContinue
+            Remove-Item Env:\WINSMUX_BRIDGE_NAMESPACE_L -ErrorAction SilentlyContinue
+            (Test-OrchestraSessionServerProcess -Process $missing -SessionName 'winsmux-orchestra') | Should -BeTrue
+            (Test-OrchestraSessionServerProcess -Process $matching -SessionName 'winsmux-orchestra') | Should -BeFalse
+        } finally {
+            if ($null -eq $previousNamespace) { Remove-Item Env:\WINSMUX_BRIDGE_NAMESPACE_L -ErrorAction SilentlyContinue } else { $env:WINSMUX_BRIDGE_NAMESPACE_L = $previousNamespace }
+            if ($null -eq $previousSocket) { Remove-Item Env:\WINSMUX_BRIDGE_SOCKET_S -ErrorAction SilentlyContinue } else { $env:WINSMUX_BRIDGE_SOCKET_S = $previousSocket }
+            if ($null -eq $previousSessionNamespace) { Remove-Item Env:\WINSMUX_BRIDGE_SESSION_NAMESPACE -ErrorAction SilentlyContinue } else { $env:WINSMUX_BRIDGE_SESSION_NAMESPACE = $previousSessionNamespace }
+        }
+    }
+
+    It 'TASK781 C41 resolves server socket selectors before namespace comparison' {
+        $matchingNamespace = Get-WinsmuxSocketNamespaceBase -SocketSelector 'C:\tmp\task781.sock'
+
+        (Test-OrchestraServerProcessNamespace `
+            -CommandLine 'winsmux -S "C:\tmp\task781.sock" server -s winsmux-orchestra' `
+            -Namespace $matchingNamespace) | Should -BeTrue
+        (Test-OrchestraServerProcessNamespace `
+            -CommandLine 'winsmux -S "C:\tmp\other.sock" server -s winsmux-orchestra' `
+            -Namespace $matchingNamespace) | Should -BeFalse
+        (Test-OrchestraServerProcessNamespace `
+            -CommandLine 'winsmux -S "C:\tmp\task781.sock" server -s winsmux-orchestra' `
+            -Namespace '') | Should -BeFalse
+        (Test-OrchestraServerProcessNamespace `
+            -CommandLine 'winsmux server -s winsmux-orchestra -- tool -S "C:\tmp\task781.sock"' `
+            -Namespace '') | Should -BeTrue
+    }
+
+    It 'rejects server option lookalike <Case>' -ForEach @(
+        @{
+            Case = 'namespace option after raw command separator'
+            CommandLine = 'winsmux server -s winsmux-orchestra -- tool -L task781-smoke-20260715'
+        }
+        @{
+            Case = 'session name prefix collision'
+            CommandLine = 'winsmux server -s winsmux-orchestra-other -L task781-smoke-20260715'
+        }
+        @{
+            Case = 'server subcommand prefix collision'
+            CommandLine = 'winsmux server-helper -s winsmux-orchestra -L task781-smoke-20260715'
+        }
+        @{
+            Case = 'duplicate identical session selectors'
+            CommandLine = 'winsmux server -s winsmux-orchestra --session winsmux-orchestra -L task781-smoke-20260715'
+        }
+        @{
+            Case = 'conflicting session selectors'
+            CommandLine = 'winsmux server -s winsmux-orchestra --session other-session -L task781-smoke-20260715'
+        }
+        @{
+            Case = 'conflicting socket and literal namespace selectors'
+            CommandLine = 'winsmux -S task781-smoke-20260715 -L task781-smoke-20260715 server -s winsmux-orchestra'
+        }
+        @{
+            Case = 'duplicate literal namespace selectors'
+            CommandLine = 'winsmux server -s winsmux-orchestra -L task781-smoke-20260715 -L task781-smoke-20260715'
+        }
+        @{
+            Case = 'quoted raw separator text before a conflicting selector'
+            CommandLine = 'winsmux server -s winsmux-orchestra -L task781-smoke-20260715 --flag "value -- payload" --session other-session'
+        }
+        @{
+            Case = 'unmatched quote after raw command separator'
+            CommandLine = 'winsmux server -s winsmux-orchestra -L task781-smoke-20260715 -- tool "unterminated'
+        }
+    ) {
+        $previousNamespace = $env:WINSMUX_BRIDGE_SESSION_NAMESPACE
+        $previousSocket = $env:WINSMUX_BRIDGE_SOCKET_S
+        $previousNamespaceL = $env:WINSMUX_BRIDGE_NAMESPACE_L
+        try {
+            $env:WINSMUX_BRIDGE_SESSION_NAMESPACE = 'task781-smoke-20260715'
+            Remove-Item Env:\WINSMUX_BRIDGE_SOCKET_S -ErrorAction SilentlyContinue
+            Remove-Item Env:\WINSMUX_BRIDGE_NAMESPACE_L -ErrorAction SilentlyContinue
+            $process = [pscustomobject]@{ Name = 'winsmux.exe'; CommandLine = $CommandLine }
+
+            (Test-OrchestraSessionServerProcess -Process $process -SessionName 'winsmux-orchestra') | Should -BeFalse
+        } finally {
+            if ($null -eq $previousNamespace) { Remove-Item Env:\WINSMUX_BRIDGE_SESSION_NAMESPACE -ErrorAction SilentlyContinue } else { $env:WINSMUX_BRIDGE_SESSION_NAMESPACE = $previousNamespace }
+            if ($null -eq $previousSocket) { Remove-Item Env:\WINSMUX_BRIDGE_SOCKET_S -ErrorAction SilentlyContinue } else { $env:WINSMUX_BRIDGE_SOCKET_S = $previousSocket }
+            if ($null -eq $previousNamespaceL) { Remove-Item Env:\WINSMUX_BRIDGE_NAMESPACE_L -ErrorAction SilentlyContinue } else { $env:WINSMUX_BRIDGE_NAMESPACE_L = $previousNamespaceL }
+        }
+    }
+
+    It 'TASK781 C41 never stops a server hidden by quoted raw separator text' {
+        $previousNamespace = $env:WINSMUX_BRIDGE_SESSION_NAMESPACE
+        $server = [pscustomobject]@{
+            ProcessId = 41002; ParentProcessId = 0; Name = 'winsmux.exe'
+            CommandLine = 'winsmux server -s winsmux-orchestra -L task781-smoke-20260715 --flag "value -- payload" --session other-session'
+            ExecutablePath = 'C:\tools\winsmux.exe'
+        }
+        $snapshot = [pscustomobject]@{ Processes = @($server); ById = @{ 41002 = $server }; ChildrenByParent = @{} }
+        Mock Stop-Process { }
+        try {
+            $env:WINSMUX_BRIDGE_SESSION_NAMESPACE = 'task781-smoke-20260715'
+            $result = Remove-OrchestraSessionServerProcesses -SessionName 'winsmux-orchestra' `
+                -WinsmuxBin 'C:\tools\winsmux.exe' -IncludeExpectedBinary -ProcessSnapshot $snapshot `
+                -PostStopSnapshotResolver { New-C66ServerProcessSnapshot } -VerificationAttempts 1 `
+                -VerificationIntervalMilliseconds 0
+
+            @($result.SessionProcesses).Count | Should -Be 0
+            Should -Invoke Stop-Process -Times 0 -Exactly
+        } finally {
+            if ($null -eq $previousNamespace) { Remove-Item Env:\WINSMUX_BRIDGE_SESSION_NAMESPACE -ErrorAction SilentlyContinue }
+            else { $env:WINSMUX_BRIDGE_SESSION_NAMESPACE = $previousNamespace }
+        }
     }
 
     It 'uses the plain session registry path when no bridge namespace is selected' {
@@ -5989,9 +8400,11 @@ Describe 'orchestra-start server bootstrap' {
                 SupportsSubagents      = $true
                 SupportsVerification   = $true
                 SupportsConsultation   = $true
-            }) | Out-Null
+            }) `
+            -ExpectedPaneCount 1 | Out-Null
 
         $script:savedManifest | Should -Not -BeNullOrEmpty
+        $script:savedManifest.session.expected_pane_count | Should -Be 1
         $pane = $script:savedManifest.panes.'worker-1'
         $pane.slot_id | Should -Be 'worker-1'
         $pane.project_dir | Should -Be 'C:\repo'
@@ -6013,6 +8426,7 @@ Describe 'orchestra-start server bootstrap' {
             -Settings ([ordered]@{ agent = 'codex'; model = 'gpt-5.4' }) `
             -GitWorktreeDir 'C:\repo\.git\worktrees' `
             -PaneSummaries @() `
+            -ExpectedPaneCount 1 `
             -StartupToken 'token-123' `
             -SupervisorPid 707 `
             -IdleThreshold 180 `
@@ -6925,6 +9339,134 @@ Describe 'orchestra-start server bootstrap' {
         $script:ensureExpectedPaneCount | Should -Be 1
     }
 
+    It 'TASK781 C66 routes manifest-owning reset through fail-closed retirement before bootstrap' {
+        Mock Test-OrchestraServerSession { $true }
+        Mock Invoke-Winsmux { throw 'manifest-owning reset must not kill outside the retirement helper' }
+        Mock Wait-OrchestraServerSessionAbsent { throw 'manifest-owning reset must not wait outside the retirement helper' }
+        Mock Clear-OrchestraManifestAfterServerRetirement {
+            param($ProjectDir, $GitWorktreeDir, $BridgeScript, $SessionName, $WinsmuxBin)
+            $WinsmuxBin | Should -BeExactly 'winsmux'
+            [PSCustomObject]@{ Stopped = @(); Errors = @(); Cleared = $true }
+        }
+        Mock Stop-OrchestraBackgroundProcessesFromManifest { throw 'direct background cleanup is forbidden' }
+        Mock Clear-WinsmuxManifest { throw 'direct manifest clear is forbidden' }
+        Mock Clear-OrchestraSessionRegistration { }
+        Mock Ensure-OrchestraBootstrapSession {
+            [PSCustomObject]@{
+                SessionName = 'winsmux-orchestra'; BootstrapReady = $true
+                StartupReady = $false; BootstrapMode = 'detached_primary'
+            }
+        }
+
+        $result = Reset-OrchestraServerSession -SessionName 'winsmux-orchestra' -WinsmuxBin 'winsmux' `
+            -ProjectDir 'C:\project' -GitWorktreeDir 'C:\project' `
+            -BridgeScript 'C:\project\scripts\winsmux-core.ps1' -Reason 'test'
+
+        $result.BootstrapReady | Should -BeTrue
+        Should -Invoke Clear-OrchestraManifestAfterServerRetirement -Times 1 -Exactly
+        Should -Invoke Invoke-Winsmux -Times 0 -Exactly
+        Should -Invoke Wait-OrchestraServerSessionAbsent -Times 0 -Exactly
+        Should -Invoke Stop-OrchestraBackgroundProcessesFromManifest -Times 0 -Exactly
+        Should -Invoke Clear-WinsmuxManifest -Times 0 -Exactly
+        Should -Invoke Ensure-OrchestraBootstrapSession -Times 1 -Exactly
+    }
+
+    It 'TASK781 C66 does not bootstrap reset when fail-closed retirement fails' {
+        Mock Test-OrchestraServerSession { $false }
+        Mock Clear-OrchestraManifestAfterServerRetirement { throw 'synthetic reset retirement failure' }
+        Mock Clear-OrchestraSessionRegistration { }
+        Mock Ensure-OrchestraBootstrapSession { throw 'replacement bootstrap must not run' }
+
+        {
+            Reset-OrchestraServerSession -SessionName 'winsmux-orchestra' -WinsmuxBin 'winsmux' `
+                -ProjectDir 'C:\project' -GitWorktreeDir 'C:\project' `
+                -BridgeScript 'C:\project\scripts\winsmux-core.ps1' -Reason 'test'
+        } | Should -Throw '*reset retirement failure*'
+
+        Should -Invoke Ensure-OrchestraBootstrapSession -Times 0 -Exactly
+    }
+
+    It 'retires background state and deletes the old manifest before replacement generation creation' {
+        $script:retiredManifestSequence = [System.Collections.Generic.List[string]]::new()
+        Mock Remove-OrchestraSessionServerProcesses {
+            $script:retiredManifestSequence.Add('matched-processes-retired') | Out-Null
+            return [PSCustomObject]@{ SessionProcesses = @(); Killed = @(); RemainingSessionProcesses = @(); Errors = @() }
+        }
+        Mock Wait-OrchestraServerSessionAbsent {
+            $script:retiredManifestSequence.Add('server-absent') | Out-Null
+            return [PSCustomObject]@{ Ready = $true; PollAttempt = 1 }
+        }
+        Mock Stop-OrchestraBackgroundProcessesFromManifest {
+            $script:retiredManifestSequence.Add('backgrounds-retired') | Out-Null
+            return [PSCustomObject]@{ Stopped = @([PSCustomObject]@{ pid = 42 }); Errors = @() }
+        }
+        Mock Clear-WinsmuxManifest {
+            $script:retiredManifestSequence.Add('manifest-cleared') | Out-Null
+            return $true
+        }
+
+        $result = Clear-OrchestraManifestAfterServerRetirement `
+            -ProjectDir 'C:\project' -GitWorktreeDir 'C:\project' `
+            -BridgeScript 'C:\project\scripts\winsmux-core.ps1' -SessionName 'winsmux-orchestra' -WinsmuxBin 'winsmux'
+
+        @($script:retiredManifestSequence) | Should -Be @('matched-processes-retired', 'server-absent', 'backgrounds-retired', 'manifest-cleared')
+        $result.Cleared | Should -BeTrue
+        @($result.Stopped).Count | Should -Be 1
+        @($result.Errors).Count | Should -Be 0
+    }
+
+    It 'does not clear the old manifest while the retired server remains observable' {
+        Mock Remove-OrchestraSessionServerProcesses {
+            [PSCustomObject]@{ SessionProcesses = @(); Killed = @(); RemainingSessionProcesses = @(); Errors = @() }
+        }
+        Mock Wait-OrchestraServerSessionAbsent { throw 'synthetic server still present' }
+        Mock Stop-OrchestraBackgroundProcessesFromManifest { throw 'must not inspect backgrounds before server absence' }
+        Mock Clear-WinsmuxManifest { throw 'must not clear manifest before server absence' }
+
+        {
+            Clear-OrchestraManifestAfterServerRetirement `
+                -ProjectDir 'C:\project' -GitWorktreeDir 'C:\project' `
+                -BridgeScript 'C:\project\scripts\winsmux-core.ps1' -SessionName 'winsmux-orchestra' -WinsmuxBin 'winsmux'
+        } | Should -Throw '*server still present*'
+        Should -Invoke Stop-OrchestraBackgroundProcessesFromManifest -Times 0 -Exactly
+        Should -Invoke Clear-WinsmuxManifest -Times 0 -Exactly
+    }
+
+    It 'does not clear the old manifest when owned background retirement is incomplete' {
+        Mock Remove-OrchestraSessionServerProcesses {
+            [PSCustomObject]@{ SessionProcesses = @(); Killed = @(); RemainingSessionProcesses = @(); Errors = @() }
+        }
+        Mock Wait-OrchestraServerSessionAbsent { [PSCustomObject]@{ Ready = $true; PollAttempt = 1 } }
+        Mock Stop-OrchestraBackgroundProcessesFromManifest {
+            [PSCustomObject]@{ Stopped = @(); Errors = @('supervisor identity could not be retired') }
+        }
+        Mock Clear-WinsmuxManifest { throw 'must not clear manifest with unresolved background ownership' }
+
+        {
+            Clear-OrchestraManifestAfterServerRetirement `
+                -ProjectDir 'C:\project' -GitWorktreeDir 'C:\project' `
+                -BridgeScript 'C:\project\scripts\winsmux-core.ps1' -SessionName 'winsmux-orchestra' -WinsmuxBin 'winsmux'
+        } | Should -Throw '*background cleanup is incomplete*'
+        Should -Invoke Clear-WinsmuxManifest -Times 0 -Exactly
+    }
+
+    It 'TASK781 C66 keeps the old manifest when complete server-process retirement fails' {
+        Mock Remove-OrchestraSessionServerProcesses { throw 'synthetic matched server remains' }
+        Mock Wait-OrchestraServerSessionAbsent { throw 'logical-session check must not run' }
+        Mock Stop-OrchestraBackgroundProcessesFromManifest { throw 'background cleanup must not run' }
+        Mock Clear-WinsmuxManifest { throw 'old manifest must be preserved' }
+
+        {
+            Clear-OrchestraManifestAfterServerRetirement `
+                -ProjectDir 'C:\project' -GitWorktreeDir 'C:\project' `
+                -BridgeScript 'C:\project\scripts\winsmux-core.ps1' -SessionName 'winsmux-orchestra' -WinsmuxBin 'winsmux'
+        } | Should -Throw '*matched server remains*'
+
+        Should -Invoke Wait-OrchestraServerSessionAbsent -Times 0 -Exactly
+        Should -Invoke Stop-OrchestraBackgroundProcessesFromManifest -Times 0 -Exactly
+        Should -Invoke Clear-WinsmuxManifest -Times 0 -Exactly
+    }
+
     It 'throws when the layout leaves the session below the expected pane count' {
         Mock Get-OrchestraSessionPaneIds { @('%1') }
 
@@ -7200,6 +9742,7 @@ Describe 'orchestra-start server bootstrap' {
             -Settings ([ordered]@{ agent = 'codex'; model = 'gpt-5.4' }) `
             -GitWorktreeDir (Join-Path $testProjectDir '.git\worktrees') `
             -PaneSummaries @() `
+            -ExpectedPaneCount 1 `
             -StartupToken 'token-123' `
             -SupervisorPid 707 `
             -IdleThreshold 180 | Out-Null
@@ -7301,6 +9844,14 @@ Describe 'orchestra-start session reuse contract' {
         $script:orchestraStartContent | Should -Match 'Save-OrchestraSessionState[^\r\n]+SupervisorPid \$supervisorProcess\.Id[^\r\n]+SessionReady \$true'
     }
 
+    It 'TASK781 C42 persists the authoritative expected pane count in both runtime manifests' {
+        $script:orchestraStartContent | Should -Match 'expected_pane_count\s*=\s*\$ExpectedPaneCount'
+        ([regex]::Matches(
+            $script:orchestraStartContent,
+            'Save-OrchestraSessionState[^\r\n]+-ExpectedPaneCount \$expectedPaneCount'
+        )).Count | Should -Be 2
+    }
+
     It 'keeps detached startup on the session-ready path even when visible attach still needs retry' {
         $script:orchestraStartContent | Should -Match '\$successfulAttachStatuses\s*=\s*@\(''attach_confirmed'', ''attach_already_present''\)'
         $script:orchestraStartContent | Should -Match 'if \(\$successfulAttachStatuses -notcontains \[string\]\$uiAttachResult\.Status\) \{\s*Write-Warning'
@@ -7331,14 +9882,85 @@ Describe 'orchestra-start session reuse contract' {
         $preLayoutAttachIndex = $script:orchestraStartContent.IndexOf('$preLayoutUiAttachResult = Try-StartOrchestraUiAttach -SessionName $sessionName')
         $livenessIndex = $script:orchestraStartContent.IndexOf('if (-not (Test-OrchestraServerSession -SessionName $sessionName)) {')
         $layoutIndex = $script:orchestraStartContent.IndexOf('$layout = . $layoutScript -SessionName $sessionName')
-        $paneNameIndex = $script:orchestraStartContent.IndexOf("Invoke-Bridge -Arguments @('name', `$paneId, `$label)")
+        $rawPaneTitleIndex = $script:orchestraStartContent.IndexOf("Invoke-Winsmux -Arguments @('select-pane', '-t', [string]`$paneSummary.PaneId, '-T', [string]`$paneSummary.Title) -TargetSessionName `$sessionName")
         $postLayoutAttachIndex = $script:orchestraStartContent.LastIndexOf('$uiAttachResult = Try-StartOrchestraUiAttach -SessionName $sessionName')
 
         $preLayoutAttachIndex | Should -BeGreaterThan -1
         $livenessIndex | Should -BeGreaterThan $preLayoutAttachIndex
         $layoutIndex | Should -BeGreaterThan $livenessIndex
-        $paneNameIndex | Should -BeGreaterThan $layoutIndex
-        $postLayoutAttachIndex | Should -BeGreaterThan $paneNameIndex
+        $postLayoutAttachIndex | Should -BeGreaterThan $layoutIndex
+        $rawPaneTitleIndex | Should -BeGreaterThan $postLayoutAttachIndex
+    }
+
+    It 'publishes all orchestra labels with one atomic map update while preserving existing labels' {
+        $tempAppData = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-label-publish-' + [guid]::NewGuid().ToString('N'))
+        $previousAppData = $env:APPDATA
+        try {
+            $env:APPDATA = $tempAppData
+            $labelsPath = Join-Path $tempAppData 'winsmux\labels.json'
+            New-Item -ItemType Directory -Path (Split-Path -Parent $labelsPath) -Force | Out-Null
+            [System.IO.File]::WriteAllText($labelsPath, '{"existing":"%9"}', [System.Text.UTF8Encoding]::new($false))
+
+            $result = Publish-OrchestraPaneLabels -PaneSummaries @(
+                [ordered]@{ PaneId = '%2'; Title = 'W1 Codex Reviewer' }
+                [ordered]@{ PaneId = '%3'; Title = 'worker-2' }
+            )
+            $published = Get-Content -LiteralPath $labelsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+
+            $result.PublishedCount | Should -Be 2
+            $published.existing | Should -Be '%9'
+            $published.'W1 Codex Reviewer' | Should -Be '%2'
+            $published.'worker-2' | Should -Be '%3'
+        } finally {
+            $env:APPDATA = $previousAppData
+            if (Test-Path -LiteralPath $tempAppData) { Remove-Item -LiteralPath $tempAppData -Recurse -Force }
+        }
+    }
+
+    It 'rejects duplicate orchestra titles before creating a label file' {
+        $tempAppData = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-label-reject-' + [guid]::NewGuid().ToString('N'))
+        $previousAppData = $env:APPDATA
+        try {
+            $env:APPDATA = $tempAppData
+            {
+                Publish-OrchestraPaneLabels -PaneSummaries @(
+                    [ordered]@{ PaneId = '%2'; Title = 'worker' }
+                    [ordered]@{ PaneId = '%3'; Title = 'worker' }
+                )
+            } | Should -Throw '*unique non-empty titles*'
+            Test-Path -LiteralPath (Join-Path $tempAppData 'winsmux\labels.json') | Should -BeFalse
+        } finally {
+            $env:APPDATA = $previousAppData
+            if (Test-Path -LiteralPath $tempAppData) { Remove-Item -LiteralPath $tempAppData -Recurse -Force }
+        }
+    }
+
+    It 'publishes the complete label map atomically only after runtime freshness is established' {
+        $bootstrapVerificationIndex = $script:orchestraStartContent.IndexOf('Assert-OrchestraBootstrapVerification -PaneSummaries @($paneSummaries) -InvalidCount $invalidCount -ReadyCount $readyCount')
+        $rawPaneTitleIndex = $script:orchestraStartContent.IndexOf("Invoke-Winsmux -Arguments @('select-pane', '-t', [string]`$paneSummary.PaneId, '-T', [string]`$paneSummary.Title) -TargetSessionName `$sessionName")
+        $pendingManifestIndex = $script:orchestraStartContent.IndexOf('Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $validPaneSummaries -GenerationId $runtimeGenerationId -ServerSessionId $serverSessionId -BootstrapPaneId $bootstrapPaneId -StartupToken $startupToken -BootstrapMode ([string]$orchestraServer.BootstrapMode) -SessionReady $false')
+        $registryReadyIndex = $script:orchestraStartContent.IndexOf('Wait-OrchestraRuntimeRegistryReady -ProjectDir $projectDir')
+        $sessionReadyManifestIndex = $script:orchestraStartContent.IndexOf('Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $validPaneSummaries -GenerationId $runtimeGenerationId -ServerSessionId $serverSessionId -BootstrapPaneId $bootstrapPaneId -StartupToken $startupToken -SupervisorPid $supervisorProcess.Id -BootstrapMode ([string]$orchestraServer.BootstrapMode) -SessionReady $true')
+        $labelPublicationIndex = $script:orchestraStartContent.IndexOf('Publish-OrchestraPaneLabels -PaneSummaries $validPaneSummaries')
+        $sessionReadyLogIndex = $script:orchestraStartContent.IndexOf("Write-WinsmuxLog -Level INFO -Event 'orchestra.startup.session_ready'")
+
+        $bootstrapVerificationIndex | Should -BeGreaterThan -1
+        $rawPaneTitleIndex | Should -BeGreaterThan $bootstrapVerificationIndex
+        $pendingManifestIndex | Should -BeGreaterThan $rawPaneTitleIndex
+        $registryReadyIndex | Should -BeGreaterThan $pendingManifestIndex
+        $sessionReadyManifestIndex | Should -BeGreaterThan $registryReadyIndex
+        $labelPublicationIndex | Should -BeGreaterThan $sessionReadyManifestIndex
+        $sessionReadyLogIndex | Should -BeGreaterThan $labelPublicationIndex
+        $script:orchestraStartContent | Should -Not -Match "Invoke-Bridge -Arguments @\('name'"
+        $script:orchestraStartContent | Should -Not -Match '\$env:WINSMUX_[A-Z0-9_]*(?:BOOTSTRAP|BYPASS)[A-Z0-9_]*'
+    }
+
+    It 'excludes exactly one known bootstrap pane from the runtime worker handshake' {
+        $script:orchestraStartContent | Should -Match '\[Parameter\(Mandatory = \$true\)\]\[string\]\$BootstrapPaneId'
+        $script:orchestraStartContent | Should -Match '\$bootstrapMatches\s*=\s*@\(\$serverPanes \| Where-Object \{ \[string\]\$_\.pane_id -ceq \$BootstrapPaneId \}\)'
+        $script:orchestraStartContent | Should -Match '\$observedPanes\s*=\s*@\(\$serverPanes \| Where-Object \{ \[string\]\$_\.pane_id -cne \$BootstrapPaneId \}\)'
+        $script:orchestraStartContent | Should -Match '\$bootstrapMatches\.Count -ne 1 -or \$serverPanes\.Count -ne \(\$summaries\.Count \+ 1\)'
+        $script:orchestraStartContent | Should -Match '-BootstrapPaneId \$bootstrapPaneId -SupervisorProcess \$supervisorProcess'
     }
 
     It 'checks the expected pane count before layout and requires a pre-layout liveness gate' {
@@ -7359,26 +9981,30 @@ Describe 'orchestra-start session reuse contract' {
         $script:orchestraStartContent | Should -Match 'BootstrapMarkerPath'
     }
 
-    It 'clears stale manifest state before zombie cleanup and bootstrap' {
+    It 'TASK781 C66 routes every replacement startup through one fail-closed retirement helper' {
         $script:orchestraStartContent | Should -Match 'Acquire-OrchestraStartupLock -ProjectDir \$projectDir -SessionName \$sessionName'
-        $script:orchestraStartContent | Should -Match 'Stop-OrchestraBackgroundProcessesFromManifest -ProjectDir \$projectDir -GitWorktreeDir \$gitWorktreeDir -BridgeScript \$bridgeScript -SessionName \$sessionName'
-        $script:orchestraStartContent | Should -Match 'if \(Clear-WinsmuxManifest -ProjectDir \$projectDir\)'
         $script:orchestraStartContent | Should -Match 'startup_token\s*=\s*\$StartupToken'
 
         $lockAcquireIndex = $script:orchestraStartContent.IndexOf('$startupLock = Acquire-OrchestraStartupLock -ProjectDir $projectDir -SessionName $sessionName')
-        $manifestCleanupIndex = $script:orchestraStartContent.IndexOf('$manifestBackgroundCleanup = Stop-OrchestraBackgroundProcessesFromManifest -ProjectDir $projectDir -GitWorktreeDir $gitWorktreeDir -BridgeScript $bridgeScript -SessionName $sessionName')
-        $clearManifestIndex = $script:orchestraStartContent.IndexOf('if (Clear-WinsmuxManifest -ProjectDir $projectDir) {')
-        $zombieCleanupIndex = $script:orchestraStartContent.IndexOf('$zombieCleanup = Remove-OrchestraZombieProcesses -SessionName $sessionName -ProjectDir $projectDir -GitWorktreeDir $gitWorktreeDir -BridgeScript $bridgeScript -WinsmuxBin $winsmuxBin')
         $sessionExistsIndex = $script:orchestraStartContent.IndexOf('$sessionExistedAtStart = Test-OrchestraServerSession -SessionName $sessionName')
+        $retiredManifestIndex = $script:orchestraStartContent.IndexOf('$retiredManifest = Clear-OrchestraManifestAfterServerRetirement')
+        $replacementBootstrapIndex = $script:orchestraStartContent.IndexOf('$orchestraServer = Ensure-OrchestraBootstrapSession -SessionName $sessionName -TimeoutSeconds 60')
         $lockAcquireIndex | Should -BeGreaterThan -1
-        $manifestCleanupIndex | Should -BeGreaterThan -1
-        $clearManifestIndex | Should -BeGreaterThan -1
-        $zombieCleanupIndex | Should -BeGreaterThan -1
         $sessionExistsIndex | Should -BeGreaterThan -1
+        $retiredManifestIndex | Should -BeGreaterThan $sessionExistsIndex
+        $replacementBootstrapIndex | Should -BeGreaterThan $retiredManifestIndex
         $lockAcquireIndex | Should -BeLessThan $sessionExistsIndex
-        $sessionExistsIndex | Should -BeLessThan $manifestCleanupIndex
-        $manifestCleanupIndex | Should -BeLessThan $clearManifestIndex
-        $clearManifestIndex | Should -BeLessThan $zombieCleanupIndex
+
+        $startupSequence = $script:orchestraStartContent.Substring(
+            $sessionExistsIndex,
+            $replacementBootstrapIndex - $sessionExistsIndex
+        )
+        $startupSequence | Should -Not -Match 'Stop-OrchestraBackgroundProcessesFromManifest'
+        $startupSequence | Should -Not -Match 'Clear-WinsmuxManifest'
+        $startupSequence | Should -Not -Match 'Remove-OrchestraSessionServerProcesses'
+        $startupSequence | Should -Not -Match '\$requiresManifestRetirement'
+        ([regex]::Matches($startupSequence, 'Clear-OrchestraManifestAfterServerRetirement')).Count | Should -Be 1
+        $script:orchestraStartContent | Should -Match '(?s)function Clear-OrchestraManifestAfterServerRetirement.*?Remove-OrchestraSessionServerProcesses.*?Wait-OrchestraServerSessionAbsent.*?Stop-OrchestraBackgroundProcessesFromManifest.*?Clear-WinsmuxManifest'
     }
 
     It 'suppresses warm servers and trims excess warm processes during managed startup' {
@@ -7474,9 +10100,113 @@ Describe 'orchestra-start session reuse contract' {
     }
 }
 
+Describe 'TASK781 C18 startup token diagnostic boundary' {
+    BeforeAll {
+        $script:c18RepoRoot = Split-Path -Parent $PSScriptRoot
+        $script:c18OrchestraStartPath = Join-Path $script:c18RepoRoot 'winsmux-core\scripts\orchestra-start.ps1'
+        . $script:c18OrchestraStartPath
+
+        function New-Task781C18BootstrapPlan {
+            param(
+                [Parameter(Mandatory = $true)][string]$ProjectDir,
+                [Parameter(Mandatory = $true)][string]$StartupToken
+            )
+
+            New-OrchestraPaneBootstrapPlan `
+                -ProjectDir $ProjectDir `
+                -PaneId '%2' `
+                -Label 'worker-1' `
+                -SlotId 'worker-1' `
+                -Role 'Worker' `
+                -WorkerBackend 'local' `
+                -WorkerRole 'worker' `
+                -PaneTitle 'worker-1' `
+                -GenerationId 'generation-c18-safe' `
+                -ServerSessionId '$18' `
+                -Agent 'codex' `
+                -Model 'gpt-5.4' `
+                -StartupToken $StartupToken `
+                -LaunchDir $ProjectDir `
+                -CleanPtyEnv ([pscustomobject]@{ Environment = [ordered]@{} }) `
+                -LaunchCommand 'codex --help'
+        }
+    }
+
+    BeforeEach {
+        $script:c18StartupToken = 'C18-STARTUP-TOKEN-SENTINEL'
+        $script:c18TempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-c18-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:c18TempRoot -Force | Out-Null
+    }
+
+    AfterEach {
+        if ($script:c18TempRoot -and (Test-Path -LiteralPath $script:c18TempRoot)) {
+            Remove-Item -LiteralPath $script:c18TempRoot -Recurse -Force
+        }
+    }
+
+    It 'TASK781 C18 keeps the generated bootstrap marker path on the safe generation identity' {
+        $planPath = New-Task781C18BootstrapPlan -ProjectDir $script:c18TempRoot -StartupToken $script:c18StartupToken
+        $planText = Get-Content -LiteralPath $planPath -Raw -Encoding UTF8
+        $plan = $planText | ConvertFrom-Json
+
+        [System.IO.Path]::GetFileName([string]$plan.ready_marker_path) | Should -Be '2-generation-c18-safe.ready.json'
+    }
+
+    It 'TASK781 C18 keeps the runtime registry JSON free of the startup token' {
+        $planPath = New-Task781C18BootstrapPlan -ProjectDir $script:c18TempRoot -StartupToken $script:c18StartupToken
+        $plan = Get-Content -LiteralPath $planPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $registry = New-WinsmuxRuntimeRegistryDocument `
+            -SessionName 'winsmux-c18' `
+            -ServerSessionId '$18' `
+            -GenerationId 'generation-c18-safe' `
+            -SupervisorPid 1818 `
+            -SupervisorProcessStartedAt '2026-07-15T00:00:00.0000000Z' `
+            -ExpectedPaneCount 1 `
+            -Panes @([pscustomobject][ordered]@{
+                slot_id = 'worker-1'; pane_id = '%2'; backend = 'local'; role = 'worker'; title = 'worker-1'
+                state = 'bootstrap_pending'; bootstrap_pid = 1819; bootstrap_process_started_at = '2026-07-15T00:00:01.0000000Z'
+                marker_path = [string]$plan.ready_marker_path
+            })
+
+        ($registry | ConvertTo-Json -Depth 20) | Should -Not -Match ([regex]::Escape($script:c18StartupToken))
+    }
+
+    It 'TASK781 C18 keeps smoke doctor and harness diagnostic serialization token free' {
+        $diagnosticSurfaces = [ordered]@{
+            smoke = [ordered]@{
+                runtime_valid = $true
+                runtime_identity = [ordered]@{ valid = $true; expected = 1; verified = 1; entries = @() }
+            }
+            doctor = [ordered]@{ status = 'pass'; label = 'Orchestra process contract'; detail = 'runtime identity registry verified' }
+            harness = [ordered]@{ passed = $true; message = 'orchestra smoke contract verified' }
+        }
+
+        ($diagnosticSurfaces | ConvertTo-Json -Depth 12) | Should -Not -Match ([regex]::Escape($script:c18StartupToken))
+        foreach ($relativePath in @(
+            'winsmux-core\scripts\orchestra-smoke.ps1',
+            'winsmux-core\scripts\doctor.ps1',
+            'winsmux-core\scripts\harness-check.ps1'
+        )) {
+            (Get-Content -LiteralPath (Join-Path $script:c18RepoRoot $relativePath) -Raw -Encoding UTF8) | Should -Not -Match '(?i)startup_token'
+        }
+    }
+
+    It 'TASK781 C18 keeps startup log and journal Data free of the startup token' {
+        $source = Get-Content -LiteralPath $script:c18OrchestraStartPath -Raw -Encoding UTF8
+        $logCall = [regex]::Match(
+            $source,
+            "(?m)^\s*Write-WinsmuxLog -Level INFO -Event 'preflight\.startup_lock\.acquired'.*$"
+        )
+
+        $logCall.Success | Should -BeTrue
+        $logCall.Value | Should -Not -Match 'startup_token'
+    }
+}
+
 Describe 'orchestra-start rollback helpers' {
     BeforeAll {
-        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\orchestra-start.ps1')
+        $script:orchestraStartPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\orchestra-start.ps1'
+        . $script:orchestraStartPath
     }
 
     BeforeEach {
@@ -7568,7 +10298,7 @@ Describe 'orchestra-start rollback helpers' {
         $events[0].data.removed_worktrees[0].BranchName | Should -Be 'worktree-builder-1'
     }
 
-    It 'clears a stale manifest when startup rollback runs' {
+    It 'TASK781 C66 preserves a retired or competing manifest when rollback did not publish a generation' {
         $manifestDir = Join-Path $script:orchestraStartTempRoot '.winsmux'
         New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
         Set-Content -Path (Join-Path $manifestDir 'manifest.yaml') -Value "version: '1'" -Encoding UTF8
@@ -7591,7 +10321,93 @@ Describe 'orchestra-start rollback helpers' {
             -FailureMessage 'health timeout'
 
         $rollback.RollbackErrors.Count | Should -Be 0
-        (Test-Path (Join-Path $manifestDir 'manifest.yaml')) | Should -Be $false
+        (Test-Path (Join-Path $manifestDir 'manifest.yaml')) | Should -Be $true
+    }
+
+    It 'TASK781 C66 clears only the manifest generation published by this startup attempt' {
+        Mock Invoke-Winsmux { @('%1') } -ParameterFilter {
+            $Arguments[0] -eq 'list-panes'
+        }
+        Mock Invoke-Winsmux { } -ParameterFilter {
+            $Arguments[0] -eq 'respawn-pane'
+        }
+        Mock Wait-PaneShellReady { }
+        Mock Remove-OrchestraCreatedWorktrees { @() }
+        Mock Clear-WinsmuxManifest { $true }
+
+        $rollback = Invoke-OrchestraStartupRollback `
+            -ProjectDir $script:orchestraStartTempRoot `
+            -SessionName 'winsmux-orchestra' `
+            -BootstrapPaneId '%1' `
+            -CreatedPaneIds @('%1') `
+            -CreatedWorktrees @() `
+            -FailureMessage 'post-publication failure' `
+            -ManifestPublished `
+            -OwnedGenerationId 'owned-generation'
+
+        $rollback.RollbackErrors.Count | Should -Be 0
+        Should -Invoke Clear-WinsmuxManifest -Times 1 -Exactly -ParameterFilter {
+            $ProjectDir -eq $script:orchestraStartTempRoot -and
+            $ExpectedGenerationId -ceq 'owned-generation'
+        }
+    }
+
+    It 'TASK781 C66 guarded manifest clear preserves a competing generation' {
+        $manifest = [PSCustomObject][ordered]@{
+            version = 2
+            session = [PSCustomObject][ordered]@{
+                name              = 'winsmux-orchestra'
+                generation_id     = 'competing-generation'
+                server_session_id = '$9'
+                bootstrap_pane_id = '%1'
+            }
+            panes = [ordered]@{}
+        }
+        Save-WinsmuxManifest -ProjectDir $script:orchestraStartTempRoot -Manifest $manifest
+        $manifestPath = Get-ManifestPath -ProjectDir $script:orchestraStartTempRoot
+
+        { Clear-WinsmuxManifest -ProjectDir $script:orchestraStartTempRoot -ExpectedGenerationId 'owned-generation' } |
+            Should -Throw '*generation changed*'
+        (Test-Path -LiteralPath $manifestPath -PathType Leaf) | Should -BeTrue
+        (Get-WinsmuxVerifiedManifestIdentity -Manifest (Get-WinsmuxManifest -ProjectDir $script:orchestraStartTempRoot)).generation_id |
+            Should -BeExactly 'competing-generation'
+    }
+
+    It 'TASK781 C66 guarded manifest clear deletes the exactly owned generation' {
+        $manifest = [PSCustomObject][ordered]@{
+            version = 2
+            session = [PSCustomObject][ordered]@{
+                name              = 'winsmux-orchestra'
+                generation_id     = 'owned-generation'
+                server_session_id = '$9'
+                bootstrap_pane_id = '%1'
+            }
+            panes = [ordered]@{}
+        }
+        Save-WinsmuxManifest -ProjectDir $script:orchestraStartTempRoot -Manifest $manifest
+        $manifestPath = Get-ManifestPath -ProjectDir $script:orchestraStartTempRoot
+
+        (Clear-WinsmuxManifest -ProjectDir $script:orchestraStartTempRoot -ExpectedGenerationId 'owned-generation') |
+            Should -BeTrue
+        (Test-Path -LiteralPath $manifestPath -PathType Leaf) | Should -BeFalse
+    }
+
+    It 'TASK781 C66 guarded manifest clear preserves an unverifiable manifest' {
+        $manifestDir = Join-Path $script:orchestraStartTempRoot '.winsmux'
+        New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
+        $manifestPath = Join-Path $manifestDir 'manifest.yaml'
+        [System.IO.File]::WriteAllText($manifestPath, "version: '1'`n", [System.Text.UTF8Encoding]::new($false))
+
+        { Clear-WinsmuxManifest -ProjectDir $script:orchestraStartTempRoot -ExpectedGenerationId 'owned-generation' } |
+            Should -Throw '*cannot be verified*'
+        (Test-Path -LiteralPath $manifestPath -PathType Leaf) | Should -BeTrue
+    }
+
+    It 'TASK781 C66 passes published-generation ownership into startup rollback' {
+        $source = [System.IO.File]::ReadAllText($script:orchestraStartPath, [System.Text.Encoding]::UTF8)
+        $source | Should -Match '\$manifestPublished\s*=\s*\$false'
+        $source | Should -Match '\$manifestPublished\s*=\s*\$true'
+        $source | Should -Match 'Invoke-OrchestraStartupRollback[^\r\n]+-ManifestPublished:\$manifestPublished[^\r\n]+-OwnedGenerationId \$runtimeGenerationId'
     }
 
     It 'continues rollback when listing session panes fails and still removes created non-bootstrap panes' {
@@ -7801,7 +10617,13 @@ Describe 'orchestra-start rollback helpers' {
             -ProjectDir $script:orchestraStartTempRoot `
             -PaneId '%2' `
             -Label 'worker-1' `
+            -SlotId 'worker-1' `
             -Role 'Worker' `
+            -WorkerBackend 'local' `
+            -WorkerRole 'worker' `
+            -PaneTitle 'worker-1' `
+            -GenerationId 'generation-bootstrap-123' `
+            -ServerSessionId '$123' `
             -Agent 'codex' `
             -Model 'gpt-5.4' `
             -StartupToken 'token-123' `
@@ -7827,7 +10649,7 @@ Describe 'orchestra-start rollback helpers' {
         [string]$plan.approved_launch.model | Should -Be 'gpt-5.4'
         [string]$plan.approved_launch.execution_profile | Should -Be 'local-windows'
         [string]$plan.startup_token | Should -Be 'token-123'
-        [string]$plan.ready_marker_path | Should -Match '[\\/]2-token-123\.ready\.json$'
+        [string]$plan.ready_marker_path | Should -Match '[\\/]2-generation-bootstrap-123\.ready\.json$'
         $bridgeCalls.Count | Should -Be 1
         @($bridgeCalls[0].Arguments) | Should -Be @('keys', '%2', 'C-c')
         $sentCommands.Count | Should -Be 1
@@ -7869,7 +10691,13 @@ Describe 'orchestra-start rollback helpers' {
             -ProjectDir $script:orchestraStartTempRoot `
             -PaneId '%2' `
             -Label 'worker-1' `
+            -SlotId 'worker-1' `
             -Role 'Worker' `
+            -WorkerBackend 'example' `
+            -WorkerRole 'worker' `
+            -PaneTitle 'worker-1' `
+            -GenerationId 'generation-bootstrap-456' `
+            -ServerSessionId '$456' `
             -Agent 'example' `
             -Model 'example-model' `
             -StartupToken 'token-456' `
@@ -8093,6 +10921,26 @@ Describe 'doctor bridge config metadata check' {
         $result.Detail | Should -Match 'stale_processes=1/0'
         $result.Detail | Should -Match 'worker shell count 7 exceeds budget 6'
         $result.Detail | Should -Match 'stale managed process count 1 exceeds budget 0'
+    }
+
+    It 'TASK781 fails a parsed orchestra smoke result with invalid runtime identity' {
+        Mock Invoke-DoctorOrchestraSmokeJson {
+            [pscustomobject]@{
+                Ok       = $false
+                ExitCode = 0
+                Error    = 'orchestra-smoke did not verify the supervisor-owned runtime identity registry'
+                Data     = [pscustomobject]@{
+                    smoke_ok      = $true
+                    runtime_valid = $false
+                }
+            }
+        }
+
+        $result = Test-OrchestraProcessContractCheck
+
+        $result.Status | Should -Be 'fail'
+        $result.Label | Should -Be 'Orchestra process contract'
+        $result.Detail | Should -Match 'runtime identity registry'
     }
 
     It 'handles a single orchestra process contract warning from smoke' {
@@ -8527,6 +11375,185 @@ Describe 'pane scaler helpers' {
     AfterEach {
         if ($script:paneScalerTempRoot -and (Test-Path $script:paneScalerTempRoot)) {
             Remove-Item -Path $script:paneScalerTempRoot -Recurse -Force
+        }
+    }
+
+    It 'TASK781 C56 refuses v2 pane-count changes before any pane worktree or manifest mutation' {
+        @"
+version: 2
+saved_at: 2026-07-15T17:30:00+09:00
+session:
+  name: winsmux-orchestra
+  project_dir: $script:paneScalerTempRoot
+  generation_id: generation-56
+  server_session_id: `$56
+  bootstrap_pane_id: '%1'
+  expected_pane_count: 3
+panes:
+  builder-1:
+    slot_id: builder-1
+    pane_id: '%2'
+    role: Builder
+    worker_role: builder
+    worker_backend: codex
+    title: Builder-1
+  builder-2:
+    slot_id: builder-2
+    pane_id: '%3'
+    role: Builder
+    worker_role: builder
+    worker_backend: codex
+    title: Builder-2
+  builder-3:
+    slot_id: builder-3
+    pane_id: '%4'
+    role: Builder
+    worker_role: builder
+    worker_backend: codex
+    title: Builder-3
+"@ | Set-Content -LiteralPath $script:paneScalerManifestPath -Encoding UTF8
+
+        Mock New-PaneScalerBuilderWorktree { throw 'worktree creation must not run for v2 scaling' }
+        Mock Get-PaneWorkload { throw 'workload probing must not run before the v2 scaling refusal' }
+        Mock Invoke-MonitorWinsmux { throw 'pane mutation must not run for v2 scaling' }
+        Mock Remove-PaneScalerBuilderWorktree { throw 'worktree removal must not run for v2 scaling' }
+        Mock Save-PaneScalerManifest { throw 'manifest save must not run for v2 scaling' }
+
+        { Add-OrchestraPane -ManifestPath $script:paneScalerManifestPath } |
+            Should -Throw '*manifest_regeneration_required*supervisor-owned*'
+        { Remove-OrchestraPane -ManifestPath $script:paneScalerManifestPath } |
+            Should -Throw '*manifest_regeneration_required*supervisor-owned*'
+
+        Should -Invoke New-PaneScalerBuilderWorktree -Times 0 -Exactly
+        Should -Invoke Get-PaneWorkload -Times 0 -Exactly
+        Should -Invoke Invoke-MonitorWinsmux -Times 0 -Exactly
+        Should -Invoke Remove-PaneScalerBuilderWorktree -Times 0 -Exactly
+        Should -Invoke Save-PaneScalerManifest -Times 0 -Exactly
+    }
+
+    It 'TASK781 C59 persists a v1 scale-down transition before destructive cleanup' {
+        @"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:paneScalerTempRoot
+panes:
+  builder-1:
+    pane_id: '%2'
+"@ | Set-Content -LiteralPath $script:paneScalerManifestPath -Encoding UTF8
+        $manifest = [PSCustomObject]@{
+            Version = 1
+            SavedAt = '2026-07-15T19:45:00+09:00'
+            Session = [PSCustomObject]@{ project_dir = $script:paneScalerTempRoot }
+            Panes = [ordered]@{
+                'builder-1' = [ordered]@{ pane_id = '%2' }
+                'builder-2' = [ordered]@{ pane_id = '%3' }
+                'builder-3' = [ordered]@{ pane_id = '%4' }
+                'builder-4' = [ordered]@{
+                    pane_id = '%5'
+                    builder_worktree_path = (Join-Path $script:paneScalerTempRoot '.worktrees\builder-4')
+                    builder_branch = 'worktree-builder-4'
+                }
+            }
+        }
+        Mock Get-PaneWorkload {
+            [PSCustomObject]@{
+                BuilderCount = 4
+                Results = @(
+                    [PSCustomObject]@{ Label = 'builder-1'; Status = 'busy' }
+                    [PSCustomObject]@{ Label = 'builder-2'; Status = 'ready' }
+                    [PSCustomObject]@{ Label = 'builder-3'; Status = 'ready' }
+                    [PSCustomObject]@{ Label = 'builder-4'; Status = 'ready' }
+                )
+                Manifest = $manifest
+                ProjectDir = $script:paneScalerTempRoot
+            }
+        }
+        Mock Get-PaneControlManifestGenerationId { '' }
+        Mock Save-PaneScalerManifest { throw 'injected manifest save failure' }
+        Mock Invoke-MonitorWinsmux { throw 'pane kill must not run before a successful save' }
+        Mock Remove-PaneScalerBuilderWorktree { throw 'worktree cleanup must not run before a successful save' }
+
+        { Remove-OrchestraPane -ManifestPath $script:paneScalerManifestPath } |
+            Should -Throw '*injected manifest save failure*'
+
+        Should -Invoke Save-PaneScalerManifest -Times 1 -Exactly
+        Should -Invoke Invoke-MonitorWinsmux -Times 0 -Exactly
+        Should -Invoke Remove-PaneScalerBuilderWorktree -Times 0 -Exactly
+    }
+
+    It 'TASK781 C59 orders a successful v1 scale-down as save then kill then cleanup' {
+        @"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:paneScalerTempRoot
+panes:
+  builder-1:
+    pane_id: '%2'
+"@ | Set-Content -LiteralPath $script:paneScalerManifestPath -Encoding UTF8
+        $manifest = [PSCustomObject]@{
+            Version = 1
+            SavedAt = '2026-07-15T19:45:00+09:00'
+            Session = [PSCustomObject]@{ project_dir = $script:paneScalerTempRoot }
+            Panes = [ordered]@{
+                'builder-1' = [ordered]@{ pane_id = '%2' }
+                'builder-2' = [ordered]@{ pane_id = '%3' }
+                'builder-3' = [ordered]@{ pane_id = '%4' }
+                'builder-4' = [ordered]@{
+                    pane_id = '%5'
+                    builder_worktree_path = (Join-Path $script:paneScalerTempRoot '.worktrees\builder-4')
+                    builder_branch = 'worktree-builder-4'
+                }
+            }
+        }
+        Mock Get-PaneWorkload {
+            [PSCustomObject]@{
+                BuilderCount = 4
+                Results = @(
+                    [PSCustomObject]@{ Label = 'builder-1'; Status = 'busy' }
+                    [PSCustomObject]@{ Label = 'builder-2'; Status = 'ready' }
+                    [PSCustomObject]@{ Label = 'builder-3'; Status = 'ready' }
+                    [PSCustomObject]@{ Label = 'builder-4'; Status = 'ready' }
+                )
+                Manifest = $manifest
+                ProjectDir = $script:paneScalerTempRoot
+            }
+        }
+        $script:c59Order = [System.Collections.Generic.List[string]]::new()
+        Mock Get-PaneControlManifestGenerationId { '' }
+        Mock Save-PaneScalerManifest { $script:c59Order.Add('save') | Out-Null }
+        Mock Invoke-MonitorWinsmux { $script:c59Order.Add('kill') | Out-Null }
+        Mock Remove-PaneScalerBuilderWorktree { $script:c59Order.Add('cleanup') | Out-Null }
+
+        $result = Remove-OrchestraPane -ManifestPath $script:paneScalerManifestPath
+
+        $result.Changed | Should -BeTrue
+        @($script:c59Order) | Should -Be @('save', 'kill', 'cleanup')
+    }
+
+    It 'TASK781 C56 preserves a dirty Builder worktree and never force-deletes its branch' {
+        $worktreePath = Join-Path $script:paneScalerTempRoot '.worktrees\builder-9'
+        New-Item -ItemType Directory -Path $worktreePath -Force | Out-Null
+        $paneScalerSource = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\pane-scaler.ps1') -Raw -Encoding UTF8
+        $paneScalerSource.Contains("'--force'") | Should -BeFalse
+        $paneScalerSource.Contains("'-D'") | Should -BeFalse
+        Mock Invoke-BuilderWorktreeGit {
+            param($ProjectDir, $Arguments, [switch]$AllowFailure)
+            if ($ProjectDir -eq $worktreePath -and $Arguments[0] -eq 'status') {
+                return [PSCustomObject]@{ ExitCode = 0; Output = ' M user-owned.txt'; Lines = @(' M user-owned.txt') }
+            }
+            throw 'destructive git cleanup must not run for a dirty worktree'
+        }
+
+        {
+            Remove-PaneScalerBuilderWorktree -ProjectDir $script:paneScalerTempRoot `
+                -WorktreePath $worktreePath -BranchName 'worktree-builder-9'
+        } | Should -Throw '*uncommitted changes*'
+
+        Test-Path -LiteralPath $worktreePath -PathType Container | Should -Be $true
+        Should -Invoke Invoke-BuilderWorktreeGit -Times 1 -Exactly -ParameterFilter {
+            $ProjectDir -eq $worktreePath -and $Arguments[0] -eq 'status'
         }
     }
 
@@ -9396,15 +12423,63 @@ panes:
     }
 }
 
+Describe 'orchestra-start namespaced object targeting' {
+    BeforeAll {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\orchestra-start.ps1')
+        $script:previousStartWinsmuxBin = $script:winsmuxBin
+        $script:previousStartBridgeNamespace = $env:WINSMUX_BRIDGE_NAMESPACE_L
+    }
+
+    BeforeEach {
+        $script:winsmuxBin = 'winsmux'
+        $env:WINSMUX_BRIDGE_NAMESPACE_L = 'task781-start-test'
+        $global:startWinsmuxCalls = [System.Collections.Generic.List[string]]::new()
+        function global:winsmux {
+            $global:LASTEXITCODE = 0
+            $global:startWinsmuxCalls.Add((($args | ForEach-Object { [string]$_ }) -join ' ')) | Out-Null
+            return 'ok'
+        }
+    }
+
+    AfterEach {
+        $script:winsmuxBin = $script:previousStartWinsmuxBin
+        if ($null -ne $script:previousStartBridgeNamespace) {
+            $env:WINSMUX_BRIDGE_NAMESPACE_L = $script:previousStartBridgeNamespace
+        } else {
+            Remove-Item Env:\WINSMUX_BRIDGE_NAMESPACE_L -ErrorAction SilentlyContinue
+        }
+        Remove-Item Function:\global:winsmux -ErrorAction SilentlyContinue
+    }
+
+    It 'qualifies a pane target before invoking the namespaced CLI' {
+        $result = Invoke-Winsmux -Arguments @('display-message', '-t', '%2', '-p', '#{pane_id}') -CaptureOutput -TargetSessionName 'winsmux-orchestra'
+
+        $result | Should -Be 'ok'
+        @($global:startWinsmuxCalls) | Should -Be @('-L task781-start-test display-message -t winsmux-orchestra:%2 -p #{pane_id}')
+    }
+
+    It 'preserves explicit session and already-qualified targets' {
+        Invoke-Winsmux -Arguments @('has-session', '-t', 'winsmux-orchestra') -TargetSessionName 'winsmux-orchestra'
+        Invoke-Winsmux -Arguments @('display-message', '-t', 'winsmux-orchestra:%2', '-p', '#{pane_id}') -TargetSessionName 'winsmux-orchestra'
+
+        @($global:startWinsmuxCalls) | Should -Be @(
+            '-L task781-start-test has-session -t winsmux-orchestra',
+            '-L task781-start-test display-message -t winsmux-orchestra:%2 -p #{pane_id}'
+        )
+    }
+}
+
 Describe 'orchestra layout script' {
     BeforeAll {
         $script:orchestraLayoutPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\orchestra-layout.ps1'
         $script:previousWinsmuxBinForLayout = $env:WINSMUX_BIN
+        $script:previousBridgeNamespaceForLayout = $env:WINSMUX_BRIDGE_NAMESPACE_L
     }
 
     BeforeEach {
         Mock Start-Sleep { }
         $env:WINSMUX_BIN = 'winsmux'
+        Remove-Item Env:\WINSMUX_BRIDGE_NAMESPACE_L -ErrorAction SilentlyContinue
     }
 
     AfterEach {
@@ -9415,6 +12490,11 @@ Describe 'orchestra layout script' {
         }
 
         Remove-Item Function:\global:winsmux -ErrorAction SilentlyContinue
+        if ($null -ne $script:previousBridgeNamespaceForLayout) {
+            $env:WINSMUX_BRIDGE_NAMESPACE_L = $script:previousBridgeNamespaceForLayout
+        } else {
+            Remove-Item Env:\WINSMUX_BRIDGE_NAMESPACE_L -ErrorAction SilentlyContinue
+        }
     }
 
     It 'creates a single labeled pane through the orchestra wrapper' {
@@ -9486,6 +12566,96 @@ Describe 'orchestra layout script' {
         @($global:winsmuxCalls) | Should -Contain 'split-window -t %2 -h -p 50'
         @($global:winsmuxCalls) | Should -Contain 'select-pane -t %3 -T Builder-2'
     }
+
+    It 'qualifies pane and window targets when a bridge namespace is active' {
+        $env:WINSMUX_BRIDGE_NAMESPACE_L = 'task781-layout-test'
+        $global:winsmuxCalls = [System.Collections.Generic.List[string]]::new()
+        $global:layoutPaneIds = @('%2')
+
+        function global:winsmux {
+            $global:LASTEXITCODE = 0
+            $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+            $global:winsmuxCalls.Add($commandLine) | Out-Null
+
+            switch -Regex ($commandLine) {
+                '^-L task781-layout-test has-session ' { return @() }
+                '^-L task781-layout-test new-window ' { return '@1 %2' }
+                '^-L task781-layout-test set-option ' { return @() }
+                '^-L task781-layout-test display-message -t winsmux-orchestra:%2 -p #\{window_id\}$' { return '@1' }
+                '^-L task781-layout-test display-message -t winsmux-orchestra:%2 -p #\{pane_width\}x#\{pane_height\}$' { return '120x40' }
+                '^-L task781-layout-test split-window -t winsmux-orchestra:%2 -h -p 50$' {
+                    $global:layoutPaneIds = @('%2', '%3')
+                    return @()
+                }
+                '^-L task781-layout-test list-panes -t winsmux-orchestra:@1 -F #\{pane_id\}$' { return $global:layoutPaneIds }
+                '^-L task781-layout-test select-pane -t winsmux-orchestra:%2$' { return @() }
+                '^-L task781-layout-test select-pane -t winsmux-orchestra:%2 -T Builder-1$' { return @() }
+                '^-L task781-layout-test select-pane -t winsmux-orchestra:%3 -T Builder-2$' { return @() }
+                default { throw "unexpected winsmux call: $commandLine" }
+            }
+        }
+
+        $result = & $script:orchestraLayoutPath -SessionName 'winsmux-orchestra' -Builders 2
+
+        $result.Total | Should -Be 2
+        @($global:winsmuxCalls) | Should -Contain '-L task781-layout-test display-message -t winsmux-orchestra:%2 -p #{window_id}'
+        @($global:winsmuxCalls) | Should -Contain '-L task781-layout-test list-panes -t winsmux-orchestra:@1 -F #{pane_id}'
+        @($global:winsmuxCalls | Where-Object { $_ -match ' -t [%@]' }).Count | Should -Be 0
+    }
+
+    It 'retries Windows connection refused for a read-only layout query' {
+        $global:layoutWindowQueryCalls = 0
+        $global:layoutPaneIds = @('%2')
+        function global:winsmux {
+            $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+            switch -Regex ($commandLine) {
+                '^has-session ' { $global:LASTEXITCODE = 0; return @() }
+                '^new-window ' { $global:LASTEXITCODE = 0; return '@1 %2' }
+                '^set-option ' { $global:LASTEXITCODE = 0; return @() }
+                '^display-message -t %2 -p #\{window_id\}$' {
+                    $global:layoutWindowQueryCalls++
+                    if ($global:layoutWindowQueryCalls -eq 1) {
+                        $global:LASTEXITCODE = 1
+                        return '対象のコンピューターによって拒否されました。 (os error 10061)'
+                    }
+                    $global:LASTEXITCODE = 0
+                    return '@1'
+                }
+                '^display-message -t %2 -p #\{pane_width\}x#\{pane_height\}$' { $global:LASTEXITCODE = 0; return '120x40' }
+                '^split-window -t %2 -h -p 50$' { $global:LASTEXITCODE = 0; $global:layoutPaneIds = @('%2', '%3'); return @() }
+                '^list-panes -t @1 -F #\{pane_id\}$' { $global:LASTEXITCODE = 0; return $global:layoutPaneIds }
+                '^select-pane ' { $global:LASTEXITCODE = 0; return @() }
+                default { throw "unexpected winsmux call: $commandLine" }
+            }
+        }
+
+        $result = & $script:orchestraLayoutPath -SessionName 'winsmux-orchestra' -Builders 2
+
+        $result.Total | Should -Be 2
+        $global:layoutWindowQueryCalls | Should -Be 2
+    }
+
+    It 'does not retry a mutating layout command after Windows connection refused' {
+        $global:layoutMutationCalls = 0
+        function global:winsmux {
+            $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+            switch -Regex ($commandLine) {
+                '^has-session ' { $global:LASTEXITCODE = 0; return @() }
+                '^new-window ' { $global:LASTEXITCODE = 0; return '@1 %2' }
+                '^list-panes -t @1 -F #\{pane_id\}$' { $global:LASTEXITCODE = 0; return '%2' }
+                '^set-option ' { $global:LASTEXITCODE = 0; return @() }
+                '^select-pane ' {
+                    $global:layoutMutationCalls++
+                    $global:LASTEXITCODE = 1
+                    return 'connection refused (os error 10061)'
+                }
+                default { throw "unexpected winsmux call: $commandLine" }
+            }
+        }
+
+        { & $script:orchestraLayoutPath -SessionName 'winsmux-orchestra' -Builders 1 } | Should -Throw '*os error 10061*'
+        $global:layoutMutationCalls | Should -Be 1
+    }
 }
 
 Describe 'winsmux status command' {
@@ -9515,7 +12685,8 @@ Describe 'winsmux status command' {
 
     It 'parses both list and dictionary pane formats' {
         $manifest = ConvertFrom-PaneControlManifestContent -Content @'
-version: 1
+version: 2
+saved_at: '2026-07-15T00:00:00Z'
 session:
   project_dir: C:\repo
 panes:
@@ -9527,6 +12698,8 @@ panes:
     role: Reviewer
 '@
 
+        $manifest.version | Should -Be 2
+        $manifest.saved_at | Should -Be '2026-07-15T00:00:00Z'
         $manifest.Session.project_dir | Should -Be 'C:\repo'
         $manifest.Panes['builder-1'].pane_id | Should -Be '%2'
         $manifest.Panes['reviewer'].role | Should -Be 'Reviewer'
@@ -9601,6 +12774,32 @@ Describe 'winsmux workers command' {
         $script:winsmuxWorkersCorePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
         $script:winsmuxWorkersCoreRawContent = Get-Content -LiteralPath $script:winsmuxWorkersCorePath -Raw -Encoding UTF8
         . $script:winsmuxWorkersCorePath 'version' *> $null
+
+        function New-Task781WorkersStopFixture {
+            param([Parameter(Mandatory = $true)][string]$ProjectDir)
+
+            $bootstrapRoot = Join-Path (Join-Path $ProjectDir '.winsmux') 'orchestra-bootstrap'
+            New-Item -ItemType Directory -Path $bootstrapRoot -Force | Out-Null
+            $planPath = Join-Path $bootstrapRoot '_2.json'
+            $markerPath = Join-Path $bootstrapRoot '_2-synthetic.ready.json'
+            '{}' | Set-Content -LiteralPath $planPath -Encoding UTF8
+            '{}' | Set-Content -LiteralPath $markerPath -Encoding UTF8
+
+            $entry = [PSCustomObject]@{
+                Label = 'worker-1'; SlotId = 'worker-1'; PaneId = '%2'; Status = 'ready'; RuntimeReady = $true
+                ManifestPath = 'synthetic-manifest'; BootstrapPlanPath = $planPath; BootstrapMarkerPath = $markerPath
+            }
+            $row = [PSCustomObject]@{
+                Slot = 'w1'; SlotId = 'worker-1'; PaneId = '%2'; Backend = 'codex'; State = 'ready'
+                LastFailureStage = ''; RecoveryAction = ''; ApprovedLaunch = $null; CurrentLaunch = $null; ApprovalDifferences = @()
+            }
+            $entriesBySlot = @{}
+            $entriesBySlot['worker-1'] = $entry
+
+            return [PSCustomObject]@{
+                Entry = $entry; Row = $row; EntriesBySlot = $entriesBySlot; MarkerPath = $markerPath
+            }
+        }
     }
 
     BeforeEach {
@@ -9614,6 +12813,705 @@ Describe 'winsmux workers command' {
         $env:OPENROUTER_API_KEY = ''
         $env:WINSMUX_ANTIGRAVITY_CLI = ''
         $env:WINSMUX_ANTIGRAVITY_PRINT_TIMEOUT = ''
+        Mock Test-PaneControlRuntimeContext {
+            param($ProjectDir, $ManifestEntry, $Operation)
+            New-WinsmuxRuntimeValidationResult -Valid $true -ReasonCode ("{0}_verified" -f $Operation) `
+                -Diagnostic 'synthetic worker runtime verified' -Context ([ordered]@{ generation_id = 'generation-workers' })
+        }
+        Mock Assert-WinsmuxTargetRuntimeWriteAllowed {
+            [PSCustomObject]@{ Managed = $true; Operation = 'dispatch'; GenerationId = 'generation-workers' }
+        }
+    }
+
+    It 'TASK781 C55 passes the initially captured generation and operation to every workers-start lifecycle write' {
+        $startIndex = $script:winsmuxWorkersCoreRawContent.IndexOf('function Invoke-WorkersStart {', [System.StringComparison]::Ordinal)
+        $stopIndex = $script:winsmuxWorkersCoreRawContent.IndexOf('function Invoke-WorkersStop {', [System.StringComparison]::Ordinal)
+        $startIndex | Should -BeGreaterOrEqual 0
+        $stopIndex | Should -BeGreaterThan $startIndex
+        $functionText = $script:winsmuxWorkersCoreRawContent.Substring($startIndex, $stopIndex - $startIndex)
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseInput($functionText, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+        $commands = @($ast.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.CommandAst] -and
+                $node.GetCommandName() -ceq 'Set-WorkersManifestLifecycleCommand'
+        }, $true))
+
+        $commands.Count | Should -Be 4
+        foreach ($command in $commands) {
+            $command.Extent.Text | Should -Match '-ExpectedGenerationId\s+\$runtimeGenerationId'
+            $command.Extent.Text | Should -Match '-RuntimeOperation\s+(?:\$runtimeOperation|dispatch)'
+        }
+    }
+
+    It 'TASK781 blocks workers start before pane launch or manifest writes when runtime identity is invalid' {
+        $entry = [PSCustomObject]@{ Label = 'worker-1'; SlotId = 'worker-1'; PaneId = '%2'; Status = 'deferred_start'; ManifestPath = 'synthetic-manifest' }
+        $row = [PSCustomObject]@{
+            Slot = 'w1'; SlotId = 'worker-1'; PaneId = '%2'; Backend = 'codex'; State = 'deferred_start'
+            LastFailureStage = ''; RecoveryAction = ''; ApprovedLaunch = $null; CurrentLaunch = $null; ApprovalDifferences = @()
+        }
+        $entriesBySlot = @{}; $entriesBySlot['worker-1'] = $entry
+        Mock Read-WorkersOptions { [PSCustomObject]@{ ProjectDir = $script:workersTempRoot; Target = 'all'; Json = $true } }
+        Mock Get-WorkersLifecycleContext { [PSCustomObject]@{ ProjectDir = $script:workersTempRoot; EntriesBySlot = $entriesBySlot } }
+        Mock Get-WorkersStatusRows { @($row) }
+        Mock Test-PaneControlRuntimeContext { New-WinsmuxRuntimeValidationResult -Valid $false -ReasonCode 'invalid_supervisor_identity' -Diagnostic 'stale supervisor' }
+        Mock Start-DeferredPaneFromManifestEntry { throw 'pane start must not occur' }
+        Mock Set-WorkersManifestLifecycleCommand { throw 'manifest write must not occur' }
+        Mock Write-WorkersLifecycleOutput { param($ProjectDir, $Results, [switch]$Json) $script:task781WorkersResult = @($Results) }
+
+        Invoke-WorkersStart
+
+        $script:task781WorkersResult.Count | Should -Be 1
+        $script:task781WorkersResult[0].status | Should -Be 'blocked'
+        $script:task781WorkersResult[0].reason_code | Should -Be 'invalid_supervisor_identity'
+        Assert-MockCalled Start-DeferredPaneFromManifestEntry -Times 0 -Exactly
+        Assert-MockCalled Set-WorkersManifestLifecycleCommand -Times 0 -Exactly
+    }
+
+    It 'TASK781 C29 preserves a runtime refusal from deferred workers start without repair metadata writes' {
+        $entry = [PSCustomObject]@{
+            Label = 'worker-1'; SlotId = 'worker-1'; PaneId = '%2'; Status = 'deferred_start'; ManifestPath = 'synthetic-manifest'
+        }
+        $row = [PSCustomObject]@{
+            Slot = 'w1'; SlotId = 'worker-1'; PaneId = '%2'; Backend = 'codex'; State = 'deferred_start'
+            LastFailureStage = ''; RecoveryAction = ''; ApprovedLaunch = $null; CurrentLaunch = $null; ApprovalDifferences = @()
+        }
+        $entriesBySlot = @{}; $entriesBySlot['worker-1'] = $entry
+        $script:task781WorkersStartWrites = 0
+        Mock Read-WorkersOptions { [PSCustomObject]@{ ProjectDir = $script:workersTempRoot; Target = 'all'; Json = $true } }
+        Mock Get-WorkersLifecycleContext { [PSCustomObject]@{ ProjectDir = $script:workersTempRoot; EntriesBySlot = $entriesBySlot } }
+        Mock Get-WorkersStatusRows { @($row) }
+        Mock Start-DeferredPaneFromManifestEntry {
+            throw 'runtime dispatch refused (invalid_supervisor_identity): generation expired during deferred startup'
+        }
+        Mock Set-WorkersManifestLifecycleCommand { $script:task781WorkersStartWrites++ }
+        Mock Write-WorkersLifecycleOutput {
+            param($ProjectDir, $Results, [switch]$Json)
+            $script:task781WorkersResult = @($Results)
+        }
+
+        Invoke-WorkersStart
+
+        $script:task781WorkersResult.Count | Should -Be 1
+        $script:task781WorkersResult[0].status | Should -Be 'blocked'
+        $script:task781WorkersResult[0].reason_code | Should -Be 'invalid_supervisor_identity'
+        $script:task781WorkersResult[0].diagnostic | Should -Be 'generation expired during deferred startup'
+        $script:task781WorkersStartWrites | Should -Be 0
+    }
+
+    It 'TASK781 blocks workers stop before respawn or manifest writes when runtime identity is invalid' {
+        $entry = [PSCustomObject]@{ Label = 'worker-1'; SlotId = 'worker-1'; PaneId = '%2'; Status = 'ready'; ManifestPath = 'synthetic-manifest' }
+        $row = [PSCustomObject]@{
+            Slot = 'w1'; SlotId = 'worker-1'; PaneId = '%2'; Backend = 'codex'; State = 'ready'
+            LastFailureStage = ''; RecoveryAction = ''; ApprovedLaunch = $null; CurrentLaunch = $null; ApprovalDifferences = @()
+        }
+        $entriesBySlot = @{}; $entriesBySlot['worker-1'] = $entry
+        Mock Read-WorkersOptions { [PSCustomObject]@{ ProjectDir = $script:workersTempRoot; Target = 'all'; Json = $true } }
+        Mock Get-WorkersLifecycleContext { [PSCustomObject]@{ ProjectDir = $script:workersTempRoot; EntriesBySlot = $entriesBySlot } }
+        Mock Get-WorkersStatusRows { @($row) }
+        Mock Test-PaneControlRuntimeContext { New-WinsmuxRuntimeValidationResult -Valid $false -ReasonCode 'runtime_target_mismatch' -Diagnostic 'stale pane mapping' }
+        Mock Invoke-WinsmuxRaw { throw 'respawn must not occur' }
+        Mock Set-WorkersManifestLifecycleCommand { throw 'manifest write must not occur' }
+        Mock Write-WorkersLifecycleOutput { param($ProjectDir, $Results, [switch]$Json) $script:task781WorkersResult = @($Results) }
+
+        Invoke-WorkersStop
+
+        $script:task781WorkersResult.Count | Should -Be 1
+        $script:task781WorkersResult[0].status | Should -Be 'blocked'
+        $script:task781WorkersResult[0].reason_code | Should -Be 'runtime_target_mismatch'
+        Assert-MockCalled Invoke-WinsmuxRaw -Times 0 -Exactly
+        Assert-MockCalled Set-WorkersManifestLifecycleCommand -Times 0 -Exactly
+    }
+
+    It 'TASK781 C28 blocks workers stop when the runtime generation expires immediately before respawn' {
+        $fixture = New-Task781WorkersStopFixture -ProjectDir $script:workersTempRoot
+        $script:c28Results = @()
+
+        Mock Read-WorkersOptions { [PSCustomObject]@{ ProjectDir = $script:workersTempRoot; Target = 'all'; Json = $true } }
+        Mock Get-WorkersLifecycleContext {
+            [PSCustomObject]@{ ProjectDir = $script:workersTempRoot; EntriesBySlot = $fixture.EntriesBySlot }
+        }
+        Mock Get-WorkersStatusRows { @($fixture.Row) }
+        Mock Assert-WinsmuxTargetRuntimeWriteAllowed {
+            throw 'runtime dispatch refused (invalid_supervisor_identity): generation expired before workers stop respawn'
+        }
+        Mock Invoke-WinsmuxRaw { throw 'respawn must not occur after lease expiry' }
+        Mock Set-WorkersManifestLifecycleCommand { throw 'manifest write must not occur after lease expiry' }
+        Mock Write-WorkersLifecycleOutput {
+            param($ProjectDir, $Results, [switch]$Json)
+            $script:c28Results = @($Results)
+        }
+
+        Invoke-WorkersStop
+
+        $script:c28Results.Count | Should -Be 1
+        $script:c28Results[0].status | Should -Be 'blocked'
+        $script:c28Results[0].reason_code | Should -Be 'invalid_supervisor_identity'
+        $script:c28Results[0].diagnostic | Should -Be 'generation expired before workers stop respawn'
+        Assert-MockCalled Assert-WinsmuxTargetRuntimeWriteAllowed -Times 1 -Exactly -ParameterFilter {
+            $PaneId -eq '%2' -and
+            $CurrentProjectDir -eq $script:workersTempRoot -and
+            $Operation -eq 'dispatch' -and
+            $ExpectedGenerationId -eq 'generation-workers'
+        }
+        Assert-MockCalled Invoke-WinsmuxRaw -Times 0 -Exactly
+        Assert-MockCalled Set-WorkersManifestLifecycleCommand -Times 0 -Exactly
+    }
+
+    It 'TASK781 C43 blocks the marker-cleanup failure write when the generation expires after respawn' {
+        $fixture = New-Task781WorkersStopFixture -ProjectDir $script:workersTempRoot
+        $script:c43GuardCount = 0
+        $script:c43LifecycleWriteCount = 0
+        $script:c43Results = @()
+
+        Mock Read-WorkersOptions { [PSCustomObject]@{ ProjectDir = $script:workersTempRoot; Target = 'all'; Json = $true } }
+        Mock Get-WorkersLifecycleContext {
+            [PSCustomObject]@{ ProjectDir = $script:workersTempRoot; EntriesBySlot = $fixture.EntriesBySlot }
+        }
+        Mock Get-WorkersStatusRows { @($fixture.Row) }
+        Mock Assert-WinsmuxTargetRuntimeWriteAllowed {
+            $script:c43GuardCount++
+            if ($script:c43GuardCount -eq 3) {
+                throw 'runtime dispatch refused (invalid_supervisor_identity): generation expired before marker-failure state write'
+            }
+            [PSCustomObject]@{ Managed = $true; Operation = 'dispatch'; GenerationId = 'generation-workers' }
+        }
+        Mock Invoke-WinsmuxRaw { $null }
+        Mock Get-SafeLastExitCode { 0 }
+        Mock Remove-WorkersStoppedBootstrapMarker { throw 'synthetic marker cleanup failure' }
+        Mock Set-WorkersManifestLifecycleCommand { $script:c43LifecycleWriteCount++ }
+        Mock Write-WorkersLifecycleOutput {
+            param($ProjectDir, $Results, [switch]$Json)
+            $script:c43Results = @($Results)
+        }
+
+        Invoke-WorkersStop
+
+        $script:c43GuardCount | Should -Be 3
+        $script:c43LifecycleWriteCount | Should -Be 0
+        $script:c43Results.Count | Should -Be 1
+        $script:c43Results[0].status | Should -Be 'failed'
+        $script:c43Results[0].reason | Should -Match 'generation expired before marker-failure state write'
+        Assert-MockCalled Invoke-WinsmuxRaw -Times 1 -Exactly
+    }
+
+    It 'TASK781 C43 blocks the deferred-state write when the generation expires after marker cleanup' {
+        $fixture = New-Task781WorkersStopFixture -ProjectDir $script:workersTempRoot
+        $script:c43GuardCount = 0
+        $script:c43LifecycleWriteCount = 0
+        $script:c43Results = @()
+
+        Mock Read-WorkersOptions { [PSCustomObject]@{ ProjectDir = $script:workersTempRoot; Target = 'all'; Json = $true } }
+        Mock Get-WorkersLifecycleContext {
+            [PSCustomObject]@{ ProjectDir = $script:workersTempRoot; EntriesBySlot = $fixture.EntriesBySlot }
+        }
+        Mock Get-WorkersStatusRows { @($fixture.Row) }
+        Mock Assert-WinsmuxTargetRuntimeWriteAllowed {
+            $script:c43GuardCount++
+            if ($script:c43GuardCount -eq 3) {
+                throw 'runtime dispatch refused (invalid_supervisor_identity): generation expired before deferred-state write'
+            }
+            [PSCustomObject]@{ Managed = $true; Operation = 'dispatch'; GenerationId = 'generation-workers' }
+        }
+        Mock Invoke-WinsmuxRaw { $null }
+        Mock Get-SafeLastExitCode { 0 }
+        Mock Remove-WorkersStoppedBootstrapMarker { $true }
+        Mock Set-WorkersManifestLifecycleCommand { $script:c43LifecycleWriteCount++ }
+        Mock Write-WorkersLifecycleOutput {
+            param($ProjectDir, $Results, [switch]$Json)
+            $script:c43Results = @($Results)
+        }
+
+        Invoke-WorkersStop
+
+        $script:c43GuardCount | Should -Be 3
+        $script:c43LifecycleWriteCount | Should -Be 0
+        $script:c43Results.Count | Should -Be 1
+        $script:c43Results[0].status | Should -Be 'failed'
+        $script:c43Results[0].reason | Should -Match 'generation expired before deferred-state write'
+    }
+
+    It 'TASK781 C43 revalidates separately before read-mark and watermark cleanup' {
+        $fixture = New-Task781WorkersStopFixture -ProjectDir $script:workersTempRoot
+        $script:c43GuardCount = 0
+        $script:c43LifecycleWriteCount = 0
+        $script:c43ReadClearCount = 0
+        $script:c43WatermarkClearCount = 0
+        $script:c43Results = @()
+
+        Mock Read-WorkersOptions { [PSCustomObject]@{ ProjectDir = $script:workersTempRoot; Target = 'all'; Json = $true } }
+        Mock Get-WorkersLifecycleContext {
+            [PSCustomObject]@{ ProjectDir = $script:workersTempRoot; EntriesBySlot = $fixture.EntriesBySlot }
+        }
+        Mock Get-WorkersStatusRows { @($fixture.Row) }
+        Mock Assert-WinsmuxTargetRuntimeWriteAllowed {
+            $script:c43GuardCount++
+            if ($script:c43GuardCount -eq 5) {
+                throw 'runtime dispatch refused (invalid_supervisor_identity): generation expired before watermark cleanup'
+            }
+            [PSCustomObject]@{ Managed = $true; Operation = 'dispatch'; GenerationId = 'generation-workers' }
+        }
+        Mock Invoke-WinsmuxRaw { $null }
+        Mock Get-SafeLastExitCode { 0 }
+        Mock Remove-WorkersStoppedBootstrapMarker { $true }
+        Mock Set-WorkersManifestLifecycleCommand { $script:c43LifecycleWriteCount++ }
+        Mock Get-PaneControlManifestContext { $fixture.Entry }
+        Mock Wait-PaneControlRuntimeContext {
+            New-WinsmuxRuntimeValidationResult -Valid $true -ReasonCode 'start_deferred_verified' `
+                -Diagnostic 'synthetic deferred runtime verified' -Context ([ordered]@{ generation_id = 'generation-workers' })
+        }
+        Mock Clear-ReadMark { $script:c43ReadClearCount++ }
+        Mock Clear-Watermark { $script:c43WatermarkClearCount++ }
+        Mock Write-WorkersLifecycleOutput {
+            param($ProjectDir, $Results, [switch]$Json)
+            $script:c43Results = @($Results)
+        }
+
+        Invoke-WorkersStop
+
+        $script:c43GuardCount | Should -Be 5
+        $script:c43LifecycleWriteCount | Should -Be 1
+        $script:c43ReadClearCount | Should -Be 1
+        $script:c43WatermarkClearCount | Should -Be 0
+        $script:c43Results.Count | Should -Be 1
+        $script:c43Results[0].status | Should -Be 'failed'
+        $script:c43Results[0].reason | Should -Match 'generation expired before watermark cleanup'
+    }
+
+    It 'TASK781 C46 uses stop-transition guards only after respawn and deferred guards after the manifest transition' {
+        $fixture = New-Task781WorkersStopFixture -ProjectDir $script:workersTempRoot
+        $script:c46Operations = [System.Collections.Generic.List[string]]::new()
+        $script:c46Results = @()
+
+        Mock Read-WorkersOptions { [PSCustomObject]@{ ProjectDir = $script:workersTempRoot; Target = 'all'; Json = $true } }
+        Mock Get-WorkersLifecycleContext {
+            [PSCustomObject]@{ ProjectDir = $script:workersTempRoot; EntriesBySlot = $fixture.EntriesBySlot }
+        }
+        Mock Get-WorkersStatusRows { @($fixture.Row) }
+        Mock Assert-WinsmuxTargetRuntimeWriteAllowed {
+            param($PaneId, $CurrentProjectDir, $Operation, $ExpectedGenerationId)
+            $script:c46Operations.Add([string]$Operation)
+            [PSCustomObject]@{
+                Managed = $true
+                Operation = [string]$Operation
+                GenerationId = 'generation-workers'
+            }
+        }
+        Mock Invoke-WinsmuxRaw { $null }
+        Mock Get-SafeLastExitCode { 0 }
+        Mock Remove-WorkersStoppedBootstrapMarker { $true }
+        Mock Set-WorkersManifestLifecycleCommand {}
+        Mock Get-PaneControlManifestContext { $fixture.Entry }
+        Mock Wait-PaneControlRuntimeContext {
+            New-WinsmuxRuntimeValidationResult -Valid $true -ReasonCode 'start_deferred_verified' `
+                -Diagnostic 'synthetic deferred runtime verified' -Context ([ordered]@{ generation_id = 'generation-workers' })
+        }
+        Mock Clear-ReadMark {}
+        Mock Clear-Watermark {}
+        Mock Write-WorkersLifecycleOutput {
+            param($ProjectDir, $Results, [switch]$Json)
+            $script:c46Results = @($Results)
+        }
+
+        Invoke-WorkersStop
+
+        ($script:c46Operations.ToArray() | ConvertTo-Json -Compress) |
+            Should -Be ((@('dispatch', 'stop_transition', 'stop_transition', 'start_deferred', 'start_deferred') | ConvertTo-Json -Compress))
+        $script:c46Results.Count | Should -Be 1
+        $script:c46Results[0].status | Should -Be 'stopped'
+    }
+
+    It 'TASK781 C13 preserves ready state when workers stop respawn fails before the stop boundary' {
+        $fixture = New-Task781WorkersStopFixture -ProjectDir $script:workersTempRoot
+        $script:c13LifecycleWrites = [System.Collections.Generic.List[object]]::new()
+        $script:c13ReadClearCount = 0
+        $script:c13WatermarkClearCount = 0
+        $script:c13Results = @()
+
+        Mock Read-WorkersOptions { [PSCustomObject]@{ ProjectDir = $script:workersTempRoot; Target = 'all'; Json = $true } }
+        Mock Get-WorkersLifecycleContext {
+            [PSCustomObject]@{ ProjectDir = $script:workersTempRoot; EntriesBySlot = $fixture.EntriesBySlot }
+        }
+        Mock Get-WorkersStatusRows { @($fixture.Row) }
+        Mock Set-WorkersManifestLifecycleCommand {
+            param($Entry, $CommandName, $Status, $ExtraProperties)
+            $runtimeReady = if ($null -ne $ExtraProperties -and $ExtraProperties.Contains('runtime_ready')) {
+                [bool]$ExtraProperties['runtime_ready']
+            } else {
+                $null
+            }
+            $script:c13LifecycleWrites.Add([PSCustomObject][ordered]@{
+                command_name = [string]$CommandName
+                status = [string]$Status
+                runtime_ready = $runtimeReady
+            }) | Out-Null
+            if (-not [string]::IsNullOrWhiteSpace([string]$Status)) {
+                $Entry.Status = [string]$Status
+            }
+            if ($null -ne $runtimeReady) {
+                $Entry.RuntimeReady = [bool]$runtimeReady
+            }
+        }
+        Mock Invoke-WinsmuxRaw { throw 'synthetic respawn failure before stop boundary' }
+        Mock Clear-ReadMark { $script:c13ReadClearCount++ }
+        Mock Clear-Watermark { $script:c13WatermarkClearCount++ }
+        Mock Write-WorkersLifecycleOutput {
+            param($ProjectDir, $Results, [switch]$Json)
+            $script:c13Results = @($Results)
+        }
+
+        Invoke-WorkersStop
+
+        $actual = [ordered]@{
+            result_status = [string]$script:c13Results[0].status
+            reason = [string]$script:c13Results[0].reason
+            failed_stage = [string]$script:c13Results[0].failed_stage
+            recovery_action = [string]$script:c13Results[0].recovery_action
+            lifecycle_writes = @($script:c13LifecycleWrites)
+            entry_status = [string]$fixture.Entry.Status
+            runtime_ready = [bool]$fixture.Entry.RuntimeReady
+            marker_exists = Test-Path -LiteralPath $fixture.MarkerPath -PathType Leaf
+            read_clears = $script:c13ReadClearCount
+            watermark_clears = $script:c13WatermarkClearCount
+        }
+        $expected = [ordered]@{
+            result_status = 'failed'
+            reason = 'stop_respawn_failed'
+            failed_stage = 'pane_stop'
+            recovery_action = 'inspect-pane-and-rerun-workers-stop'
+            lifecycle_writes = @()
+            entry_status = 'ready'
+            runtime_ready = $true
+            marker_exists = $true
+            read_clears = 0
+            watermark_clears = 0
+        }
+        ($actual | ConvertTo-Json -Depth 8 -Compress) | Should -Be ($expected | ConvertTo-Json -Depth 8 -Compress)
+    }
+
+    It 'TASK781 C13 records explicit failed state when marker cleanup fails after the stop boundary' {
+        $fixture = New-Task781WorkersStopFixture -ProjectDir $script:workersTempRoot
+        $script:c13LifecycleWrites = [System.Collections.Generic.List[object]]::new()
+        $script:c13WaitCount = 0
+        $script:c13ReadClearCount = 0
+        $script:c13WatermarkClearCount = 0
+        $script:c13Results = @()
+
+        Mock Read-WorkersOptions { [PSCustomObject]@{ ProjectDir = $script:workersTempRoot; Target = 'all'; Json = $true } }
+        Mock Get-WorkersLifecycleContext {
+            [PSCustomObject]@{ ProjectDir = $script:workersTempRoot; EntriesBySlot = $fixture.EntriesBySlot }
+        }
+        Mock Get-WorkersStatusRows { @($fixture.Row) }
+        Mock Set-WorkersManifestLifecycleCommand {
+            param($Entry, $CommandName, $Status, $ExtraProperties)
+            $runtimeReady = if ($null -ne $ExtraProperties -and $ExtraProperties.Contains('runtime_ready')) {
+                [bool]$ExtraProperties['runtime_ready']
+            } else {
+                $null
+            }
+            $failureStage = if ($null -ne $ExtraProperties -and $ExtraProperties.Contains('last_failure_stage')) {
+                [string]$ExtraProperties['last_failure_stage']
+            } else {
+                ''
+            }
+            $recoveryAction = if ($null -ne $ExtraProperties -and $ExtraProperties.Contains('recovery_action')) {
+                [string]$ExtraProperties['recovery_action']
+            } else {
+                ''
+            }
+            $script:c13LifecycleWrites.Add([PSCustomObject][ordered]@{
+                command_name = [string]$CommandName
+                status = [string]$Status
+                runtime_ready = $runtimeReady
+                last_failure_stage = $failureStage
+                recovery_action = $recoveryAction
+            }) | Out-Null
+            if (-not [string]::IsNullOrWhiteSpace([string]$Status)) {
+                $Entry.Status = [string]$Status
+            }
+            if ($null -ne $runtimeReady) {
+                $Entry.RuntimeReady = [bool]$runtimeReady
+            }
+        }
+        Mock Invoke-WinsmuxRaw { @() }
+        Mock Get-SafeLastExitCode { 0 }
+        Mock Remove-WorkersStoppedBootstrapMarker { throw 'synthetic marker cleanup failure after stop boundary' }
+        Mock Wait-PaneControlRuntimeContext {
+            $script:c13WaitCount++
+            throw 'deferred runtime wait must not occur after marker cleanup failure'
+        }
+        Mock Clear-ReadMark { $script:c13ReadClearCount++ }
+        Mock Clear-Watermark { $script:c13WatermarkClearCount++ }
+        Mock Write-WorkersLifecycleOutput {
+            param($ProjectDir, $Results, [switch]$Json)
+            $script:c13Results = @($Results)
+        }
+
+        Invoke-WorkersStop
+
+        $actual = [ordered]@{
+            result_status = [string]$script:c13Results[0].status
+            reason = [string]$script:c13Results[0].reason
+            failed_stage = [string]$script:c13Results[0].failed_stage
+            recovery_action = [string]$script:c13Results[0].recovery_action
+            lifecycle_writes = @($script:c13LifecycleWrites)
+            entry_status = [string]$fixture.Entry.Status
+            runtime_ready = [bool]$fixture.Entry.RuntimeReady
+            runtime_waits = $script:c13WaitCount
+            read_clears = $script:c13ReadClearCount
+            watermark_clears = $script:c13WatermarkClearCount
+        }
+        $expected = [ordered]@{
+            result_status = 'failed'
+            reason = 'stop_marker_cleanup_failed'
+            failed_stage = 'marker_cleanup'
+            recovery_action = 'inspect-bootstrap-marker-and-rerun-workers-stop'
+            lifecycle_writes = @([PSCustomObject][ordered]@{
+                command_name = 'workers.stop'
+                status = 'deferred_start_failed'
+                runtime_ready = $false
+                last_failure_stage = 'marker_cleanup'
+                recovery_action = 'inspect-bootstrap-marker-and-rerun-workers-stop'
+            })
+            entry_status = 'deferred_start_failed'
+            runtime_ready = $false
+            runtime_waits = 0
+            read_clears = 0
+            watermark_clears = 0
+        }
+        ($actual | ConvertTo-Json -Depth 8 -Compress) | Should -Be ($expected | ConvertTo-Json -Depth 8 -Compress)
+    }
+
+    It 'TASK781 removes the stopped bootstrap marker and permits the default stop then start sequence' {
+        $bootstrapRoot = Join-Path (Join-Path $script:workersTempRoot '.winsmux') 'orchestra-bootstrap'
+        New-Item -ItemType Directory -Path $bootstrapRoot -Force | Out-Null
+        $planPath = Join-Path $bootstrapRoot '_2.json'
+        $markerPath = Join-Path $bootstrapRoot '_2-synthetic.ready.json'
+        '{}' | Set-Content -LiteralPath $planPath -Encoding UTF8
+        '{}' | Set-Content -LiteralPath $markerPath -Encoding UTF8
+
+        $entry = [PSCustomObject]@{
+            Label = 'worker-1'; SlotId = 'worker-1'; PaneId = '%2'; Status = 'ready'; RuntimeReady = $true
+            ManifestPath = 'synthetic-manifest'; BootstrapPlanPath = $planPath; BootstrapMarkerPath = $markerPath
+        }
+        $row = [PSCustomObject]@{
+            Slot = 'w1'; SlotId = 'worker-1'; PaneId = '%2'; Backend = 'codex'; State = 'ready'
+            LastFailureStage = ''; RecoveryAction = ''; ApprovedLaunch = $null; CurrentLaunch = $null; ApprovalDifferences = @()
+        }
+        $entriesBySlot = @{}; $entriesBySlot['worker-1'] = $entry
+        $script:task781RuntimeOperations = [System.Collections.Generic.List[string]]::new()
+        $script:task781LifecycleStatuses = [System.Collections.Generic.List[string]]::new()
+        $script:task781StartSawMarkerAbsent = $false
+        Mock Read-WorkersOptions { [PSCustomObject]@{ ProjectDir = $script:workersTempRoot; Target = 'all'; Json = $true } }
+        Mock Get-WorkersLifecycleContext { [PSCustomObject]@{ ProjectDir = $script:workersTempRoot; EntriesBySlot = $entriesBySlot } }
+        Mock Get-WorkersStatusRows { @($row) }
+        Mock Test-PaneControlRuntimeContext {
+            param($ProjectDir, $ManifestEntry, $Operation)
+            $script:task781RuntimeOperations.Add([string]$Operation) | Out-Null
+            New-WinsmuxRuntimeValidationResult -Valid $true -ReasonCode ("{0}_verified" -f $Operation) `
+                -Diagnostic 'verified' -Context ([ordered]@{ generation_id = 'generation-workers' })
+        }
+        Mock Set-WorkersManifestLifecycleCommand {
+            param($Entry, $CommandName, $Status, $ExtraProperties)
+            if (-not [string]::IsNullOrWhiteSpace([string]$Status)) {
+                $Entry.Status = [string]$Status
+                $script:task781LifecycleStatuses.Add([string]$Status) | Out-Null
+            }
+            if ($null -ne $ExtraProperties -and $ExtraProperties.Contains('runtime_ready')) {
+                $Entry.RuntimeReady = [bool]$ExtraProperties['runtime_ready']
+            }
+        }
+        Mock Invoke-WinsmuxRaw { @() }
+        Mock Get-SafeLastExitCode { 0 }
+        Mock Get-PaneControlManifestContext { $entry }
+        Mock Clear-ReadMark {}
+        Mock Clear-Watermark {}
+        Mock Start-DeferredPaneFromManifestEntry {
+            $script:task781StartSawMarkerAbsent = -not (Test-Path -LiteralPath $markerPath -PathType Leaf)
+            $entry.Status = 'ready'
+            $entry.RuntimeReady = $true
+            return $true
+        }
+        Mock Write-WorkersLifecycleOutput {}
+
+        Invoke-WorkersStop
+        $runtimeReadyAfterStop = $entry.RuntimeReady
+        Invoke-WorkersStart
+
+        Test-Path -LiteralPath $markerPath -PathType Leaf | Should -BeFalse
+        $script:task781StartSawMarkerAbsent | Should -BeTrue
+        @($script:task781RuntimeOperations) | Should -Be @('dispatch', 'start_deferred', 'start_deferred', 'dispatch')
+        @($script:task781LifecycleStatuses) | Should -Be @('deferred_start', 'ready')
+        $runtimeReadyAfterStop | Should -BeFalse
+        $entry.RuntimeReady | Should -BeTrue
+        Assert-MockCalled Invoke-WinsmuxRaw -Times 1 -Exactly -ParameterFilter { $Arguments[0] -eq 'respawn-pane' }
+        Assert-MockCalled Start-DeferredPaneFromManifestEntry -Times 1 -Exactly
+    }
+
+    It 'TASK781 rejects bootstrap marker cleanup outside the managed bootstrap directory' {
+        $bootstrapRoot = Join-Path (Join-Path $script:workersTempRoot '.winsmux') 'orchestra-bootstrap'
+        New-Item -ItemType Directory -Path $bootstrapRoot -Force | Out-Null
+        $planPath = Join-Path $bootstrapRoot '_2.json'
+        $outsideMarker = Join-Path $script:workersTempRoot '_2-synthetic.ready.json'
+        '{}' | Set-Content -LiteralPath $planPath -Encoding UTF8
+        '{}' | Set-Content -LiteralPath $outsideMarker -Encoding UTF8
+        $entry = [pscustomobject]@{
+            BootstrapPlanPath = $planPath
+            BootstrapMarkerPath = $outsideMarker
+        }
+
+        { Resolve-WorkersStoppedBootstrapMarkerPath -ProjectDir $script:workersTempRoot -Entry $entry } |
+            Should -Throw '*escaped the orchestra bootstrap directory*'
+        Test-Path -LiteralPath $outsideMarker -PathType Leaf | Should -BeTrue
+    }
+
+    It 'TASK781 C12 returns process exit <ExpectedExitCode> for workers <Action> with <RuntimeState> runtime and parseable <OutputMode> output' -ForEach @(
+        @{ Action = 'status'; RuntimeValid = $false; RuntimeState = 'invalid'; OutputMode = 'json'; ExpectedExitCode = 1 }
+        @{ Action = 'status'; RuntimeValid = $true; RuntimeState = 'valid'; OutputMode = 'text'; ExpectedExitCode = 0 }
+        @{ Action = 'doctor'; RuntimeValid = $false; RuntimeState = 'invalid'; OutputMode = 'json'; ExpectedExitCode = 1 }
+        @{ Action = 'doctor'; RuntimeValid = $true; RuntimeState = 'valid'; OutputMode = 'text'; ExpectedExitCode = 0 }
+    ) {
+        $dispatchMarker = '# --- Dispatch ---'
+        ([regex]::Matches($script:winsmuxWorkersCoreRawContent, [regex]::Escape($dispatchMarker))).Count | Should -Be 1
+        $syntheticOverrides = @'
+$script:syntheticRuntimeValid = [bool]::Parse([string]$env:WINSMUX_C12_RUNTIME_VALID)
+$script:syntheticRow = [pscustomobject][ordered]@{
+    Slot                   = 'w1'
+    SlotId                 = 'worker-1'
+    PaneId                 = '%2'
+    State                  = 'ready'
+    PaneState              = 'ready'
+    ManifestStatus         = 'ready'
+    Backend                = 'codex'
+    Role                   = 'reviewer'
+    ExecutionProfile       = 'local-windows'
+    Provider               = 'codex'
+    Model                  = 'gpt-5.5'
+    ModelSource            = 'operator-override'
+    ReasoningEffort        = 'high'
+    PromptTransport        = 'argv'
+    McpMode                = ''
+    AuthMode               = 'local-cli'
+    AuthPolicy             = ''
+    CapabilityAdapter      = ''
+    CredentialRequirements = 'local-cli-owned'
+    ExecutionBackend       = 'local'
+    ApiBaseUrl             = ''
+    ApiKeyEnv              = ''
+    ApiKeyEnvStatus        = ''
+    CredentialStatus       = ''
+    AnalysisPosture        = 'read-only-review'
+    LastFailureStage       = ''
+    LastFailureReason      = ''
+    RecoveryAction         = ''
+    LastCommand            = ''
+    LastCommandAt          = ''
+    ApprovedLaunch         = $null
+    CurrentLaunch          = $null
+    ApprovalDifferences    = @()
+    LaunchCommand          = ''
+    LaunchCommandStatus    = 'available'
+    LaunchCommandError     = ''
+    Heartbeat              = $null
+    HeartbeatHealth        = ''
+    HeartbeatState         = ''
+    Workspace              = $null
+    SecretProjection       = $null
+    Broker                 = $null
+    Policy                 = $null
+}
+
+function Read-WorkersOptions {
+    param([string[]]$Tokens, [string]$Usage, [string]$DefaultTarget)
+
+    return [pscustomobject]@{
+        ProjectDir = 'C:\synthetic-winsmux'
+        Target     = if ([string]::IsNullOrWhiteSpace($DefaultTarget)) { '' } else { $DefaultTarget }
+        Json       = @($Tokens) -contains '--json'
+    }
+}
+
+function Get-WorkersLifecycleContext {
+    param([string]$ProjectDir)
+
+    return [pscustomobject]@{
+        ProjectDir    = $ProjectDir
+        Slots         = @()
+        EntriesBySlot = @{}
+        ManifestError = ''
+    }
+}
+
+function Get-WorkersStatusRows {
+    param($Context)
+    return @($script:syntheticRow)
+}
+
+function Add-WorkersRuntimeValidity {
+    param($Context, [object[]]$Rows)
+
+    $reasonCode = if ($script:syntheticRuntimeValid) { 'dispatch_verified' } else { 'invalid_supervisor_identity' }
+    $diagnostic = if ($script:syntheticRuntimeValid) { 'synthetic runtime verified' } else { 'synthetic supervisor is stale' }
+    foreach ($row in @($Rows)) {
+        $row | Add-Member -NotePropertyName RuntimeValid -NotePropertyValue $script:syntheticRuntimeValid -Force
+        $row | Add-Member -NotePropertyName RuntimeState -NotePropertyValue $(if ($script:syntheticRuntimeValid) { [string]$row.State } else { 'runtime_invalid' }) -Force
+        $row | Add-Member -NotePropertyName RuntimeReasonCode -NotePropertyValue $reasonCode -Force
+        $row | Add-Member -NotePropertyName RuntimeDiagnostic -NotePropertyValue $diagnostic -Force
+    }
+    return @($Rows)
+}
+'@
+        $syntheticCorePath = Join-Path (
+            Split-Path -Parent $script:winsmuxWorkersCorePath
+        ) ('winsmux-core.c12-' + [guid]::NewGuid().ToString('N') + '.ps1')
+        $syntheticCoreContent = $script:winsmuxWorkersCoreRawContent.Replace(
+            $dispatchMarker,
+            "$syntheticOverrides`r`n$dispatchMarker"
+        )
+        $previousRuntimeValid = $env:WINSMUX_C12_RUNTIME_VALID
+        try {
+            [IO.File]::WriteAllText($syntheticCorePath, $syntheticCoreContent, [Text.UTF8Encoding]::new($false))
+            $env:WINSMUX_C12_RUNTIME_VALID = ([bool]$RuntimeValid).ToString()
+            $childArguments = @('-NoProfile', '-File', $syntheticCorePath, 'workers', $Action)
+            if ($OutputMode -eq 'json') {
+                $childArguments += '--json'
+            }
+            $output = @(& pwsh @childArguments 2>&1 | ForEach-Object { [string]$_ })
+            $exitCode = $LASTEXITCODE
+        } finally {
+            $env:WINSMUX_C12_RUNTIME_VALID = $previousRuntimeValid
+            Remove-Item -LiteralPath $syntheticCorePath -Force -ErrorAction SilentlyContinue
+        }
+
+        $outputText = ($output -join "`n").Trim()
+        if ($OutputMode -eq 'json') {
+            $payload = $outputText | ConvertFrom-Json -ErrorAction Stop
+            [bool]$payload.runtime_valid | Should -Be ([bool]$RuntimeValid)
+            if ($Action -eq 'status') {
+                @($payload.workers).Count | Should -Be 1
+                [bool]$payload.workers[0].runtime_valid | Should -Be ([bool]$RuntimeValid)
+            } else {
+                $runtimeCheck = @($payload.checks | Where-Object { $_.label -eq 'runtime identity' })
+                $runtimeCheck.Count | Should -Be 1
+                $runtimeCheck[0].status | Should -Be $(if ($RuntimeValid) { 'pass' } else { 'fail' })
+            }
+        } elseif ($Action -eq 'status') {
+            $lines = @($outputText -split '\r?\n')
+            @($lines | Where-Object { $_ -match '^Slot\s+SlotId\s+RuntimeState\s+' }).Count | Should -Be 1
+            $workerLine = @($lines | Where-Object { $_ -match '^w1\s+worker-1\s+' })
+            $workerLine.Count | Should -Be 1
+            $workerLine[0] | Should -Match '\sTrue(?:\s|$)'
+        } else {
+            $lines = @($outputText -split '\r?\n')
+            $lines[0] | Should -Be '=== winsmux workers doctor ==='
+            $runtimeLine = @($lines | Where-Object { $_ -match '^\[PASS\] runtime identity: ' })
+            $runtimeLine.Count | Should -Be 1
+            $runtimeLine[0] | Should -Match '1 worker runtime identities verified$'
+        }
+
+        $exitCode | Should -Be $ExpectedExitCode -Because "$Action with $RuntimeState runtime emitted parseable $OutputMode output: $outputText"
     }
 
     AfterEach {
@@ -11354,13 +15252,23 @@ agent-slots:
     worktree-mode: managed
 '@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
         New-Item -ItemType Directory -Path (Join-Path $script:workersTempRoot '.winsmux') -Force | Out-Null
+        $bootstrapRoot = Join-Path (Join-Path $script:workersTempRoot '.winsmux') 'orchestra-bootstrap'
+        New-Item -ItemType Directory -Path $bootstrapRoot -Force | Out-Null
+        $planPath = Join-Path $bootstrapRoot '_2.json'
+        $markerPath = Join-Path $bootstrapRoot '_2-test.ready.json'
+        '{}' | Set-Content -LiteralPath $planPath -Encoding UTF8
+        '{}' | Set-Content -LiteralPath $markerPath -Encoding UTF8
         Save-WinsmuxManifest -ProjectDir $script:workersTempRoot -Manifest ([ordered]@{
-            version = 1
+            version = 2
             saved_at = '2026-05-13T00:00:00Z'
             session = [ordered]@{
                 name = 'winsmux-orchestra'
                 project_dir = $script:workersTempRoot
                 git_worktree_dir = (Join-Path $script:workersTempRoot '.git')
+                generation_id = 'generation-workers'
+                server_session_id = '$workers'
+                bootstrap_pane_id = '%1'
+                expected_pane_count = 1
             }
             panes = [ordered]@{
                 'worker-1' = [ordered]@{
@@ -11371,6 +15279,9 @@ agent-slots:
                     exec_mode = $false
                     launch_dir = $script:workersTempRoot
                     status = 'ready'
+                    runtime_ready = $true
+                    bootstrap_plan_path = $planPath
+                    bootstrap_marker_path = $markerPath
                     task = $null
                 }
             }
@@ -11398,7 +15309,9 @@ agent-slots:
         $payload.results[0].slot_id | Should -Be 'worker-1'
         $payload.results[0].status | Should -Be 'stopped'
         $entry.Status | Should -Be 'deferred_start'
+        $entry.RuntimeReady | Should -BeFalse
         $entry.LastCommand | Should -Be 'workers.stop'
+        Test-Path -LiteralPath $markerPath -PathType Leaf | Should -BeFalse
         Should -Invoke Invoke-WinsmuxRaw -Times 1 -Exactly -ParameterFilter {
             $Arguments[0] -eq 'respawn-pane' -and $Arguments -contains '%2'
         }
@@ -11453,6 +15366,8 @@ agent-slots:
 
         Mock Send-TextToPane { throw 'bootstrap should not be dispatched' }
 
+        $manifestPath = Join-Path $script:workersTempRoot '.winsmux\manifest.yaml'
+        $manifestHashBefore = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash
         $Rest = @('worker-1', '--json', '--project-dir', $script:workersTempRoot)
         $output = Invoke-WorkersStart
         $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
@@ -11464,10 +15379,11 @@ agent-slots:
         $payload.results[0].failed_stage | Should -Be 'runner_config'
         $payload.results[0].recovery_action | Should -Be 'set-api-llm-slot-and-api-key-env'
         $entry.Status | Should -Be 'api_llm_runner_unconfigured'
-        $entry.LastCommand | Should -Be 'workers.start'
-        $entry.LastFailureStage | Should -Be 'runner_config'
-        $entry.LastFailureReason | Should -Be 'api_llm_runner_unconfigured'
-        $entry.RecoveryAction | Should -Be 'set-api-llm-slot-and-api-key-env'
+        $entry.LastCommand | Should -BeNullOrEmpty
+        $entry.LastFailureStage | Should -BeNullOrEmpty
+        $entry.LastFailureReason | Should -BeNullOrEmpty
+        $entry.RecoveryAction | Should -BeNullOrEmpty
+        (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash | Should -Be $manifestHashBefore
         Should -Invoke Send-TextToPane -Times 0 -Exactly
     }
 
@@ -11520,6 +15436,8 @@ agent-slots:
 
         Mock Send-TextToPane { throw 'bootstrap should not be dispatched' }
 
+        $manifestPath = Join-Path $script:workersTempRoot '.winsmux\manifest.yaml'
+        $manifestHashBefore = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash
         $Rest = @('worker-1', '--json', '--project-dir', $script:workersTempRoot)
         $output = Invoke-WorkersStart
         $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
@@ -11531,10 +15449,11 @@ agent-slots:
         $payload.results[0].failed_stage | Should -Be 'runner_config'
         $payload.results[0].recovery_action | Should -Be 'install-or-configure-antigravity-cli'
         $entry.Status | Should -Be 'antigravity_runner_unconfigured'
-        $entry.LastCommand | Should -Be 'workers.start'
-        $entry.LastFailureStage | Should -Be 'runner_config'
-        $entry.LastFailureReason | Should -Be 'antigravity_runner_unconfigured'
-        $entry.RecoveryAction | Should -Be 'install-or-configure-antigravity-cli'
+        $entry.LastCommand | Should -BeNullOrEmpty
+        $entry.LastFailureStage | Should -BeNullOrEmpty
+        $entry.LastFailureReason | Should -BeNullOrEmpty
+        $entry.RecoveryAction | Should -BeNullOrEmpty
+        (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash | Should -Be $manifestHashBefore
         Should -Invoke Send-TextToPane -Times 0 -Exactly
     }
 
@@ -11556,12 +15475,16 @@ agent-slots:
         New-Item -ItemType Directory -Path (Join-Path $script:workersTempRoot '.winsmux') -Force | Out-Null
         $planPath = Join-Path $script:workersTempRoot 'worker-1.json'
         Save-WinsmuxManifest -ProjectDir $script:workersTempRoot -Manifest ([ordered]@{
-            version = 1
+            version = 2
             saved_at = '2026-05-13T00:00:00Z'
             session = [ordered]@{
                 name = 'winsmux-orchestra'
                 project_dir = $script:workersTempRoot
                 git_worktree_dir = (Join-Path $script:workersTempRoot '.git')
+                generation_id = 'generation-workers'
+                server_session_id = '$workers'
+                bootstrap_pane_id = '%1'
+                expected_pane_count = 1
             }
             panes = [ordered]@{
                 'worker-1' = [ordered]@{
@@ -11654,12 +15577,16 @@ agent-slots:
         New-Item -ItemType Directory -Path (Join-Path $script:workersTempRoot '.winsmux') -Force | Out-Null
         $planPath = Join-Path $script:workersTempRoot 'worker-1.json'
         Save-WinsmuxManifest -ProjectDir $script:workersTempRoot -Manifest ([ordered]@{
-            version = 1
+            version = 2
             saved_at = '2026-05-13T00:00:00Z'
             session = [ordered]@{
                 name = 'winsmux-orchestra'
                 project_dir = $script:workersTempRoot
                 git_worktree_dir = (Join-Path $script:workersTempRoot '.git')
+                generation_id = 'generation-workers'
+                server_session_id = '$workers'
+                bootstrap_pane_id = '%1'
+                expected_pane_count = 1
             }
             panes = [ordered]@{
                 'worker-1' = [ordered]@{
@@ -11708,6 +15635,18 @@ agent-slots:
         Mock Wait-PaneShellReady { }
         Mock Invoke-Send { return $true }
         Mock Wait-DeferredPaneReady { }
+        Mock Assert-WinsmuxTargetRuntimeWriteAllowed {
+            [pscustomobject]@{
+                Managed      = $true
+                ProjectDir   = $script:workersTempRoot
+                GenerationId = 'generation-workers-stale-heartbeat'
+                Validation   = [pscustomobject]@{
+                    valid       = $true
+                    reason_code = 'dispatch_verified'
+                    diagnostic  = 'synthetic deferred worker runtime verified'
+                }
+            }
+        }
 
         $Rest = @('worker-1', '--json', '--project-dir', $script:workersTempRoot)
         $output = Invoke-WorkersStart
@@ -11755,12 +15694,16 @@ agent-slots:
 '@ | Set-Content -Path (Join-Path $script:workersTempRoot '.winsmux.yaml') -Encoding UTF8
         New-Item -ItemType Directory -Path (Join-Path $script:workersTempRoot '.winsmux') -Force | Out-Null
         Save-WinsmuxManifest -ProjectDir $script:workersTempRoot -Manifest ([ordered]@{
-            version = 1
+            version = 2
             saved_at = '2026-05-13T00:00:00Z'
             session = [ordered]@{
                 name = 'winsmux-orchestra'
                 project_dir = $script:workersTempRoot
                 git_worktree_dir = (Join-Path $script:workersTempRoot '.git')
+                generation_id = 'generation-workers'
+                server_session_id = '$workers'
+                bootstrap_pane_id = '%1'
+                expected_pane_count = 1
             }
             panes = [ordered]@{
                 'worker-1' = [ordered]@{
@@ -15251,6 +19194,27 @@ Describe 'winsmux dispatch-task routing' {
         . $script:dispatchRouterPath
     }
 
+    BeforeEach {
+        $script:dispatchTaskTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-dispatch-task-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:dispatchTaskTempRoot -Force | Out-Null
+        Mock Test-PaneControlRuntimeContext {
+            param($ProjectDir, $ManifestEntry, $Operation)
+            New-WinsmuxRuntimeValidationResult -Valid $true -ReasonCode ("{0}_verified" -f $Operation) `
+                -Diagnostic 'synthetic dispatch runtime verified' -Context ([ordered]@{ generation_id = 'generation-dispatch' })
+        }
+        Mock New-WinsmuxSubmissionAcknowledgementServer {
+            [PSCustomObject]@{ pipe_name = 'winsmux-submission-ack-11111111111111111111111111111111'; challenge = ('a' * 64); server = $null }
+        }
+        Mock Receive-WinsmuxSubmissionAcknowledgement { throw 'synthetic acknowledgement absent' }
+        Mock Complete-WinsmuxSubmissionAcknowledgement { $true }
+    }
+
+    AfterEach {
+        if ($script:dispatchTaskTempRoot -and (Test-Path -LiteralPath $script:dispatchTaskTempRoot -PathType Container)) {
+            Remove-Item -LiteralPath $script:dispatchTaskTempRoot -Recurse -Force
+        }
+    }
+
     It 'keeps reviewer worker slots out of generic worker dispatch targets' {
         Mock Get-PaneControlManifestEntries {
             @(
@@ -15299,22 +19263,25 @@ Describe 'winsmux dispatch-task routing' {
 
     It 'does not accept shell or Codex send success without a backend run record' {
         $entry = [PSCustomObject]@{ Label = 'worker-2'; PaneId = '%2'; Role = 'Worker'; WorkerBackend = 'codex' }
-        $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir 'C:\repo' -ManifestEntry $entry -Kind task -Content 'implement the focused change' -SubmissionId 'submission-test-2' `
+        $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $script:dispatchTaskTempRoot -ManifestEntry $entry -Kind task -Content 'implement the focused change' -SubmissionId 'submission-test-2' `
             -SendAction { param($paneId, $commandText) } `
             -RunResultAction { param($projectDir, $slotId, $runId) $null }
 
-        $receipt.status | Should -Be 'unavailable'
-        $receipt.reason_code | Should -Be 'caller_identity_unavailable'
+        $receipt.status | Should -Be 'rejected'
+        $receipt.reason_code | Should -Be 'backend_acknowledgement_missing'
     }
 
     It 'refuses shell or Codex even when mutable local evidence claims a matching run record' {
         $entry = [PSCustomObject]@{ Label = 'worker-2'; PaneId = '%2'; Role = 'Worker'; WorkerBackend = 'local' }
-        $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir 'C:\repo' -ManifestEntry $entry -Kind task -Content 'implement the focused change' -SubmissionId 'submission-test-3' `
+        $script:mutableRunResultRead = $false
+        $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $script:dispatchTaskTempRoot -ManifestEntry $entry -Kind task -Content 'implement the focused change' -SubmissionId 'submission-test-3' `
             -SendAction { param($paneId, $commandText) } `
-            -RunResultAction { param($projectDir, $slotId, $runId) New-WinsmuxSubmissionRunRecord -SubmissionId $runId -RunId $runId -Kind task -TaskTitle 'Test task' -SlotId $slotId -Backend local -Status started -RequestConsumed -RequestDigest (Get-WinsmuxSubmissionRequestDigest -Request 'implement the focused change') }
+            -RunResultAction { param($projectDir, $slotId, $runId) $script:mutableRunResultRead = $true; New-WinsmuxSubmissionRunRecord -SubmissionId $runId -RunId $runId -Kind task -TaskTitle 'Test task' -SlotId $slotId -Backend local -Status started -RequestConsumed -RequestDigest (Get-WinsmuxSubmissionRequestDigest -Request 'implement the focused change') }
 
-        $receipt.status | Should -Be 'unavailable'
-        $receipt.reason_code | Should -Be 'caller_identity_unavailable'
+        $receipt.status | Should -Be 'rejected'
+        $receipt.reason_code | Should -Be 'backend_acknowledgement_missing'
+        $receipt.acknowledgement | Should -BeNullOrEmpty
+        $script:mutableRunResultRead | Should -BeFalse
     }
 
     It 'sends api_llm an exec packet and converts runner refusal to typed rejected' {
@@ -15397,6 +19364,33 @@ Describe 'winsmux dispatch-task routing' {
         $receipt.routing.rule_id | Should -Be 'route.operator_owned.v1'
         $receipt.routing.next_shape | Should -Not -BeNullOrEmpty
     }
+
+    It 'TASK781 C50/C51 preserves typed deferred runtime refusals for task and review receipts' {
+        $taskReceipt = New-WinsmuxDeferredStartFailureReceipt -Kind task -SubmissionId 'submission-task-c50' `
+            -PaneId '%2' -Failure ([System.InvalidOperationException]::new(
+                'runtime dispatch refused (invalid_supervisor_identity): generation expired before deferred start'))
+        $reviewReceipt = New-WinsmuxDeferredStartFailureReceipt -Kind review -SubmissionId 'submission-review-c51' `
+            -PaneId '%3' -Failure ([System.InvalidOperationException]::new(
+                'runtime dispatch refused (runtime_target_mismatch): deferred pane belongs to another session'))
+        $genericReceipt = New-WinsmuxDeferredStartFailureReceipt -Kind task -SubmissionId 'submission-task-generic' `
+            -PaneId '%4' -Failure ([System.InvalidOperationException]::new('synthetic untyped failure'))
+
+        $taskReceipt.status | Should -Be 'unavailable'
+        $taskReceipt.reason_code | Should -Be 'invalid_supervisor_identity'
+        $taskReceipt.diagnostic | Should -Be 'generation expired before deferred start'
+        $reviewReceipt.status | Should -Be 'unavailable'
+        $reviewReceipt.reason_code | Should -Be 'runtime_target_mismatch'
+        $reviewReceipt.diagnostic | Should -Be 'deferred pane belongs to another session'
+        $genericReceipt.reason_code | Should -Be 'deferred_start_failed'
+        $genericReceipt.diagnostic | Should -Be 'synthetic untyped failure'
+
+        $controlPlaneContent = Get-Content -LiteralPath (
+            Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\control-plane-dispatch.ps1'
+        ) -Raw -Encoding UTF8
+        $coreContent = Get-Content -LiteralPath $script:dispatchCorePath -Raw -Encoding UTF8
+        $controlPlaneContent | Should -Match 'New-WinsmuxDeferredStartFailureReceipt\s+-Kind\s+task'
+        $coreContent | Should -Match 'New-WinsmuxDeferredStartFailureReceipt\s+-Kind\s+review'
+    }
 }
 
 Describe 'TASK-780 typed submission review fixes' {
@@ -15415,12 +19409,95 @@ Describe 'TASK-780 typed submission review fixes' {
     BeforeEach {
         $script:task780TempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-task780-review-' + [guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $script:task780TempRoot -Force | Out-Null
+        Mock Test-PaneControlRuntimeContext {
+            param($ProjectDir, $ManifestEntry, $Operation)
+            if ([string]$Operation -ceq 'caller_ack') {
+                return New-WinsmuxRuntimeValidationResult -Valid $false -ReasonCode 'caller_identity_mismatch' -Diagnostic 'synthetic caller ancestry is not authoritative'
+            }
+            return New-WinsmuxRuntimeValidationResult -Valid $true -ReasonCode 'dispatch_runtime_verified' `
+                -Diagnostic 'synthetic dispatch runtime verified' -Context ([ordered]@{ generation_id = 'generation-1' })
+        }
+        Mock New-WinsmuxSubmissionAcknowledgementServer {
+            [PSCustomObject]@{ pipe_name = 'winsmux-submission-ack-22222222222222222222222222222222'; challenge = ('b' * 64); server = $null }
+        }
+        Mock Receive-WinsmuxSubmissionAcknowledgement { throw 'synthetic acknowledgement absent' }
+        Mock Complete-WinsmuxSubmissionAcknowledgement { $true }
     }
 
     AfterEach {
         if ($script:task780TempRoot -and (Test-Path -LiteralPath $script:task780TempRoot)) {
             Remove-Item -LiteralPath $script:task780TempRoot -Recurse -Force
         }
+    }
+
+    It 'TASK781 C19 derives the builder queue write guard from the loaded manifest snapshot' {
+        $manifest = [PSCustomObject]@{
+            session = [PSCustomObject]@{ generation_id = 'generation-initial' }
+        }
+        Mock Get-PaneControlManifestGenerationId { 'generation-replacement' }
+
+        Get-BuilderQueueExpectedGenerationId -Manifest $manifest | Should -BeExactly 'generation-initial'
+
+        Should -Invoke Get-PaneControlManifestGenerationId -Times 0 -Exactly
+    }
+
+    It 'TASK781 C19 threads the queue snapshot through its pane state follow-up' {
+        $snapshot = [ordered]@{
+            ManifestPath = 'C:\repo\.winsmux\manifest.yaml'
+            PaneId = '%2'
+            GenerationId = 'generation-initial'
+        }
+        $script:capturedQueueGeneration = ''
+        Mock Get-PaneControlManifestEntries {
+            @([pscustomobject]@{ ManifestPath = 'replacement'; PaneId = '%9'; GenerationId = 'generation-replacement' })
+        }
+        Mock Set-PaneControlManifestPaneProperties {
+            param($ManifestPath, $PaneId, $Properties, $ExpectedGenerationId)
+            $script:capturedQueueGeneration = [string]$ExpectedGenerationId
+        }
+
+        Update-BuilderQueuePaneState -PaneContext $snapshot -Properties ([ordered]@{ task_state = 'completed' })
+
+        $script:capturedQueueGeneration | Should -BeExactly 'generation-initial'
+        Should -Invoke Get-PaneControlManifestEntries -Times 0 -Exactly
+    }
+
+    It 'TASK781 C19 carries the loaded generation through the production queue completion caller' {
+        $rawEntry = 'task-301|builder-1|bounded queue task'
+        $manifest = [pscustomobject]@{
+            session = [pscustomobject]@{ generation_id = 'generation-initial' }
+            panes = [ordered]@{ 'builder-1' = [pscustomobject]@{ pane_id = '%2' } }
+            tasks = [pscustomobject]@{ queued = @(); in_progress = @($rawEntry); completed = @() }
+        }
+        $script:queueCallerGeneration = ''
+        Mock Get-BuilderQueueManifest { $manifest }
+        Mock Get-BuilderQueueEntries {
+            if ($State -ceq 'in_progress') {
+                return @([pscustomobject]@{
+                    TaskId = 'task-301'
+                    BuilderLabel = 'builder-1'
+                    Task = 'bounded queue task'
+                    RawEntry = $rawEntry
+                })
+            }
+            return @()
+        }
+        Mock Save-BuilderQueueManifest { }
+        Mock Unlock-DispatchFiles { $true }
+        Mock Set-PaneControlManifestPaneProperties {
+            $script:queueCallerGeneration = [string]$ExpectedGenerationId
+        }
+        Mock Get-PaneControlManifestGenerationId { 'generation-replacement' }
+        Mock Dispatch-NextBuilderQueueTask {
+            [pscustomobject]@{ Dispatched = $false; CurrentTask = $null }
+        }
+        Mock Get-BuilderQueueSnapshot { [pscustomobject]@{} }
+
+        $result = Complete-BuilderQueueTask -ProjectDir $script:task780TempRoot -BuilderLabel 'builder-1'
+
+        $result.CompletedTask | Should -BeExactly 'bounded queue task'
+        $script:queueCallerGeneration | Should -BeExactly 'generation-initial'
+        Should -Invoke Get-PaneControlManifestGenerationId -Times 0 -Exactly
     }
 
     It 'P1 refuses pane input echo when strong caller identity is unavailable' {
@@ -15432,8 +19509,10 @@ Describe 'TASK-780 typed submission review fixes' {
             -RunResultAction { param($projectDir, $slotId, $runId) $null }
 
         $receipt.GetType().Name | Should -Not -Be 'Object[]'
-        $receipt.status | Should -Be 'unavailable'
-        $receipt.reason_code | Should -Be 'caller_identity_unavailable'
+        $receipt.status | Should -Be 'rejected'
+        $receipt.reason_code | Should -Be 'backend_acknowledgement_missing'
+        $script:echoedPrompt | Should -Match 'typed submission packet'
+        $script:echoedPrompt | Should -Not -Match 'synthetic implementation request'
     }
 
     It 'P1 rejects unsafe target labels before composing a pane command' {
@@ -15557,14 +19636,14 @@ panes:
             $env:WINSMUX_PANE_ID = '%2'
             $receipt = Invoke-WinsmuxSubmissionAcknowledge -ProjectDir $script:task780TempRoot -SlotId worker-1 -SubmissionId 'submission-ack-bound' -RunId 'submission-ack-bound' -Kind task -Backend codex
             $receipt.status | Should -Be 'unavailable'
-            $receipt.reason_code | Should -Be 'caller_identity_unavailable'
+            $receipt.reason_code | Should -Be 'caller_identity_mismatch'
 
             New-WinsmuxSubmissionPacket -ProjectDir $script:task780TempRoot -Kind task -Content ([ordered]@{ title = 'Wrong pane'; request = 'Reject wrong pane.' }) -SubmissionId 'submission-ack-wrong-pane' -TargetLabel worker-1 | Out-Null
             $env:WINSMUX_PANE_ID = '%9'
             (Invoke-WinsmuxSubmissionAcknowledge -ProjectDir $script:task780TempRoot -SlotId worker-1 -SubmissionId 'submission-ack-wrong-pane' -RunId 'submission-ack-wrong-pane' -Kind task -Backend codex).status | Should -Be 'unavailable'
 
             $env:WINSMUX_PANE_ID = '%2'
-            (Invoke-WinsmuxSubmissionAcknowledge -ProjectDir $script:task780TempRoot -SlotId worker-1 -SubmissionId 'submission-ack-wrong-pane' -RunId 'submission-ack-wrong-pane' -Kind task -Backend local).reason_code | Should -Be 'caller_identity_unavailable'
+            (Invoke-WinsmuxSubmissionAcknowledge -ProjectDir $script:task780TempRoot -SlotId worker-1 -SubmissionId 'submission-ack-wrong-pane' -RunId 'submission-ack-wrong-pane' -Kind task -Backend local).reason_code | Should -Be 'caller_identity_mismatch'
         } finally {
             $env:WINSMUX_PANE_ID = $previousPaneId
         }
@@ -15797,6 +19876,9 @@ agent-slots:
     It 'ROUND2 P2 refuses forged local or Codex pane identity until TASK-781 authority exists' {
         $previousPaneId = $env:WINSMUX_PANE_ID
         try {
+            Mock Test-PaneControlRuntimeContext {
+                New-WinsmuxRuntimeValidationResult -Valid $false -ReasonCode 'caller_identity_mismatch' -Diagnostic 'synthetic mutable pane identity is not authoritative'
+            }
             $env:WINSMUX_PANE_ID = '%2'
             $entry = [PSCustomObject]@{ Label = 'worker-1'; PaneId = '%2'; Role = 'Worker'; WorkerBackend = 'codex' }
             $script:round2LocalSendCalled = $false
@@ -15804,7 +19886,7 @@ agent-slots:
                 -SendAction { $script:round2LocalSendCalled = $true } `
                 -RunResultAction { throw 'must not request optimistic evidence' }
             $receipt.status | Should -Be 'unavailable'
-            $receipt.reason_code | Should -Be 'caller_identity_unavailable'
+            $receipt.reason_code | Should -Be 'caller_identity_mismatch'
             $script:round2LocalSendCalled | Should -Be $false
         } finally {
             $env:WINSMUX_PANE_ID = $previousPaneId
@@ -15846,7 +19928,7 @@ agent-slots:
         $exitCode | Should -Be 1
         $payload.Dispatched | Should -Be $false
         $payload.DispatchResult.status | Should -Be 'unavailable'
-        $payload.DispatchResult.reason_code | Should -Be 'caller_identity_unavailable'
+        $payload.DispatchResult.reason_code | Should -Be 'manifest_regeneration_required'
         @($saved.tasks.queued).Count | Should -Be 1
         @($saved.tasks.in_progress).Count | Should -Be 0
         @(Get-DispatchLedger -ProjectDir $script:task780TempRoot).Count | Should -Be 0
@@ -16102,6 +20184,160 @@ agent-slots:
         $packetAfterRetryText | Should -BeExactly $originalPacketText
         $packetAfterRetry.request | Should -BeExactly $originalPacket.request
         $packetAfterRetry.request_digest | Should -BeExactly $originalPacket.request_digest
+    }
+
+    It 'TASK781 preserves a local packet when delivery commits before post-Enter failure' {
+        $taskId = 'task-task781-local-committed-packet'
+        $attemptId = 'attempt-task781-local-committed-packet-1'
+        $entry = [PSCustomObject]@{ Label = 'worker-1'; PaneId = '%2'; Role = 'Worker'; WorkerBackend = 'codex' }
+        Mock Test-PaneControlRuntimeContext {
+            [PSCustomObject]@{
+                valid = $true
+                reason_code = 'dispatch_runtime_verified'
+                diagnostic = ''
+                context = [PSCustomObject]@{ generation_id = 'generation-task781' }
+            }
+        }
+        Mock Send-TextToPane {
+            $DeliveryState['SubmissionCommitted'] = $true
+            throw 'synthetic post-Enter watermark failure'
+        }
+
+        $first = Invoke-WinsmuxSubmissionAdapter -ProjectDir $script:task780TempRoot -ManifestEntry $entry -Kind task `
+            -Content 'Preserve the exact committed packet.' -SubmissionId $attemptId -TaskId $taskId
+        $packetPath = Join-Path $script:task780TempRoot ".winsmux\submissions\$attemptId.json"
+        $originalPacketText = Get-Content -LiteralPath $packetPath -Raw -Encoding UTF8
+
+        $duplicate = Invoke-WinsmuxSubmissionAdapter -ProjectDir $script:task780TempRoot -ManifestEntry $entry -Kind task `
+            -Content 'Do not replace the committed packet.' -SubmissionId $attemptId -TaskId $taskId `
+            -SendAction { throw 'duplicate must stop before delivery' }
+
+        $first.status | Should -Be 'unavailable'
+        $first.reason_code | Should -Be 'packet_repl_unavailable'
+        $duplicate.status | Should -Be 'rejected'
+        $duplicate.reason_code | Should -Be 'run_record_already_exists'
+        (Get-Content -LiteralPath $packetPath -Raw -Encoding UTF8) | Should -BeExactly $originalPacketText
+        Should -Invoke Send-TextToPane -Times 1 -Exactly -ParameterFilter {
+            $null -ne $DeliveryState -and [bool]$DeliveryState['SubmissionCommitted']
+        }
+    }
+
+    It 'TASK781 C19 refuses stale runtime before creating a submission packet' {
+        $attemptId = 'attempt-task781-prepublication-refusal-1'
+        $entry = [PSCustomObject]@{ Label = 'worker-1'; PaneId = '%2'; Role = 'Worker'; WorkerBackend = 'api_llm' }
+        $script:task781PrepublicationChecks = 0
+        Mock Test-PaneControlRuntimeContext {
+            $script:task781PrepublicationChecks++
+            if ($script:task781PrepublicationChecks -eq 1) {
+                return [PSCustomObject]@{
+                    valid = $true
+                    reason_code = 'dispatch_runtime_verified'
+                    diagnostic = ''
+                    context = [PSCustomObject]@{ generation_id = 'generation-before-publication' }
+                }
+            }
+            return New-WinsmuxRuntimeValidationResult -Valid $false `
+                -ReasonCode 'invalid_supervisor_identity' -Diagnostic 'synthetic lease expired before packet publication'
+        }
+        Mock New-WinsmuxSubmissionPacket { throw 'packet creation must not be reached' }
+
+        $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $script:task780TempRoot -ManifestEntry $entry -Kind task `
+            -Content 'Never persist this request after lease expiry.' -SubmissionId $attemptId -TaskId 'task-task781-prepublication-refusal' `
+            -SendAction { throw 'send must not be reached' } -RunResultAction { throw 'run polling must not be reached' }
+
+        $receipt.status | Should -Be 'unavailable'
+        $receipt.reason_code | Should -Be 'invalid_supervisor_identity'
+        $script:task781PrepublicationChecks | Should -Be 2
+        Should -Invoke New-WinsmuxSubmissionPacket -Times 0 -Exactly
+        Test-Path -LiteralPath (Join-Path $script:task780TempRoot ".winsmux\submissions\$attemptId.json") | Should -BeFalse
+    }
+
+    It 'TASK781 C19 refuses a missing captured generation before creating a submission packet' {
+        $attemptId = 'attempt-task781-missing-generation-refusal-1'
+        $entry = [PSCustomObject]@{ Label = 'worker-1'; PaneId = '%2'; Role = 'Worker'; WorkerBackend = 'api_llm' }
+        $script:task781MissingGenerationChecks = 0
+        Mock Test-PaneControlRuntimeContext {
+            $script:task781MissingGenerationChecks++
+            $generationId = if ($script:task781MissingGenerationChecks -eq 1) { '' } else { 'generation-fresh' }
+            return [PSCustomObject]@{
+                valid = $true
+                reason_code = 'dispatch_runtime_verified'
+                diagnostic = ''
+                context = [PSCustomObject]@{ generation_id = $generationId }
+            }
+        }
+        Mock New-WinsmuxSubmissionPacket { throw 'packet creation must not be reached' }
+
+        $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $script:task780TempRoot -ManifestEntry $entry -Kind task `
+            -Content 'Never persist this request without an exact generation.' -SubmissionId $attemptId `
+            -TaskId 'task-task781-missing-generation-refusal' -SendAction { throw 'send must not be reached' } `
+            -RunResultAction { throw 'run polling must not be reached' }
+
+        $receipt.status | Should -Be 'unavailable'
+        $receipt.reason_code | Should -Be 'manifest_regeneration_required'
+        $script:task781MissingGenerationChecks | Should -Be 2
+        Should -Invoke New-WinsmuxSubmissionPacket -Times 0 -Exactly
+        Test-Path -LiteralPath (Join-Path $script:task780TempRoot ".winsmux\submissions\$attemptId.json") | Should -BeFalse
+    }
+
+    It 'TASK781 C19 refuses a missing fresh generation before creating a submission packet' {
+        $attemptId = 'attempt-task781-missing-fresh-generation-refusal-1'
+        $entry = [PSCustomObject]@{ Label = 'worker-1'; PaneId = '%2'; Role = 'Worker'; WorkerBackend = 'api_llm' }
+        $script:task781MissingFreshGenerationChecks = 0
+        Mock Test-PaneControlRuntimeContext {
+            $script:task781MissingFreshGenerationChecks++
+            $generationId = if ($script:task781MissingFreshGenerationChecks -eq 1) { 'generation-captured' } else { '' }
+            return [PSCustomObject]@{
+                valid = $true
+                reason_code = 'dispatch_runtime_verified'
+                diagnostic = ''
+                context = [PSCustomObject]@{ generation_id = $generationId }
+            }
+        }
+        Mock New-WinsmuxSubmissionPacket { throw 'packet creation must not be reached' }
+
+        $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $script:task780TempRoot -ManifestEntry $entry -Kind task `
+            -Content 'Never persist this request without a fresh generation.' -SubmissionId $attemptId `
+            -TaskId 'task-task781-missing-fresh-generation-refusal' -SendAction { throw 'send must not be reached' } `
+            -RunResultAction { throw 'run polling must not be reached' }
+
+        $receipt.status | Should -Be 'unavailable'
+        $receipt.reason_code | Should -Be 'manifest_regeneration_required'
+        $script:task781MissingFreshGenerationChecks | Should -Be 2
+        Should -Invoke New-WinsmuxSubmissionPacket -Times 0 -Exactly
+        Test-Path -LiteralPath (Join-Path $script:task780TempRoot ".winsmux\submissions\$attemptId.json") | Should -BeFalse
+    }
+
+    It 'TASK781 C19 uses ordinal generation identity before creating a submission packet' {
+        $attemptId = 'attempt-task781-ordinal-generation-refusal-1'
+        $entry = [PSCustomObject]@{ Label = 'worker-1'; PaneId = '%2'; Role = 'Worker'; WorkerBackend = 'api_llm' }
+        $script:task781OrdinalGenerationChecks = 0
+        Mock Test-PaneControlRuntimeContext {
+            $script:task781OrdinalGenerationChecks++
+            $generationId = if ($script:task781OrdinalGenerationChecks -eq 1) {
+                "generation-$([char]0x00E9)"
+            } else {
+                "generation-e$([char]0x0301)"
+            }
+            return [PSCustomObject]@{
+                valid = $true
+                reason_code = 'dispatch_runtime_verified'
+                diagnostic = ''
+                context = [PSCustomObject]@{ generation_id = $generationId }
+            }
+        }
+        Mock New-WinsmuxSubmissionPacket { throw 'packet creation must not be reached' }
+
+        $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $script:task780TempRoot -ManifestEntry $entry -Kind task `
+            -Content 'Never persist this request for a non-ordinal generation match.' -SubmissionId $attemptId `
+            -TaskId 'task-task781-ordinal-generation-refusal' -SendAction { throw 'send must not be reached' } `
+            -RunResultAction { throw 'run polling must not be reached' }
+
+        $receipt.status | Should -Be 'unavailable'
+        $receipt.reason_code | Should -Be 'invalid_supervisor_identity'
+        $script:task781OrdinalGenerationChecks | Should -Be 2
+        Should -Invoke New-WinsmuxSubmissionPacket -Times 0 -Exactly
+        Test-Path -LiteralPath (Join-Path $script:task780TempRoot ".winsmux\submissions\$attemptId.json") | Should -BeFalse
     }
 
     It 'ROUND3 P2 converts an atomic packet-create collision to typed duplicate refusal' {
@@ -17363,6 +21599,641 @@ panes:
     }
 }
 
+Describe 'TASK781 managed target mutation guard' {
+    BeforeAll {
+        $script:c08CorePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $null = . $script:c08CorePath version
+        $script:c08CoreContent = Get-Content -LiteralPath $script:c08CorePath -Raw -Encoding UTF8
+    }
+
+    BeforeEach {
+        $script:c08Root = Join-Path ([IO.Path]::GetTempPath()) ('winsmux-c08-' + [guid]::NewGuid().ToString('N'))
+        $script:c08ManagedA = Join-Path $script:c08Root 'managed-a'
+        $script:c08ManagedB = Join-Path $script:c08Root 'managed-b'
+        $script:c08Unmanaged = Join-Path $script:c08Root 'unmanaged'
+        foreach ($root in @($script:c08ManagedA, $script:c08ManagedB)) {
+            New-Item -ItemType Directory -Path (Join-Path $root '.winsmux') -Force | Out-Null
+            Save-WinsmuxManifest -ProjectDir $root -Manifest ([ordered]@{
+                version = 2
+                session = [ordered]@{ name = 'winsmux-c08'; generation_id = 'generation-c08'; server_session_id = '$80'; session_ready = $true }
+                panes = [ordered]@{
+                    'worker-1' = [ordered]@{ slot_id = 'worker-1'; pane_id = '%2'; worker_backend = 'codex'; role = 'Worker'; title = 'W1'; status = 'ready'; runtime_ready = $true }
+                }
+                tasks = [ordered]@{ queued = @(); in_progress = @(); completed = @() }
+                worktrees = [ordered]@{}
+            })
+            '{}' | Set-Content -LiteralPath (Join-Path $root '.winsmux\runtime-registry.json') -Encoding UTF8
+        }
+        New-Item -ItemType Directory -Path $script:c08Unmanaged -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $script:c08ManagedA 'nested\work') -Force | Out-Null
+
+        $script:c08PreviousProjectDir = $env:WINSMUX_ORCHESTRA_PROJECT_DIR
+        Remove-Item Env:WINSMUX_ORCHESTRA_PROJECT_DIR -ErrorAction SilentlyContinue
+        $script:c08SessionProjectDir = $script:c08ManagedA
+        $script:c08MissingContext = $false
+        $script:c08SecurityPolicy = $null
+        $script:c08SideEffects = 0
+        $script:c08Trace = [Collections.Generic.List[string]]::new()
+        $script:c08StatusWrites = 0
+        $script:c08ValidationCount = 0
+        $script:Target = '%2'
+        $script:Rest = @('payload')
+
+        Mock Stop-WithError { param([string]$Message) throw $Message }
+        Mock Resolve-Target { '%2' }
+        Mock Confirm-Target { '%2' }
+        Mock Resolve-TerminalBackend { 'tauri' }
+        Mock Get-Labels { @{} }
+        Mock Save-Labels { $script:c08Trace.Add('mutation') | Out-Null; $script:c08SideEffects++ }
+        Mock Clear-ReadMark { }
+        Mock Clear-Watermark { }
+        Mock Assert-ReadMark {
+            $script:c08Trace.Add('mutation') | Out-Null
+            $script:c08SideEffects++
+            throw 'synthetic downstream side effect'
+        }
+        Mock Get-SlotAgentConfig {
+            [pscustomobject]@{ Agent = 'codex'; Model = ''; PromptTransport = 'argv'; CapabilityAdapter = 'codex'; CapabilityCommand = 'codex' }
+        }
+        Mock Get-PaneControlManifestContext {
+            param([string]$ProjectDir, [string]$PaneId)
+            if ($script:c08MissingContext) { throw 'managed pane context missing' }
+            [pscustomobject]@{
+                ManifestPath = Join-Path $ProjectDir '.winsmux\manifest.yaml'
+                ProjectDir = $ProjectDir; SessionName = 'winsmux-c08'; Label = 'worker-1'; PaneId = $PaneId
+                Role = 'Worker'; Status = 'ready'; SecurityPolicy = $script:c08SecurityPolicy
+                LaunchDir = $ProjectDir; GitWorktreeDir = (Join-Path $ProjectDir '.git')
+                Branch = 'codex/task-781'; HeadSha = 'abc781'
+            }
+        }
+        Mock Test-PaneControlRuntimeContext {
+            $script:c08ValidationCount++
+            $script:c08Trace.Add('runtime') | Out-Null
+            New-WinsmuxRuntimeValidationResult -Valid $false -ReasonCode 'invalid_supervisor_identity' -Diagnostic 'synthetic stale managed runtime'
+        }
+        Mock Write-BridgeEventRecord {
+            $script:c08Trace.Add('policy_event') | Out-Null
+            $script:c08SideEffects++
+        }
+        Mock Set-PaneControlManifestPaneProperties { $script:c08StatusWrites++; $script:c08SideEffects++ }
+        Mock Wait-PaneShellReady { }
+        Mock Test-AgentReadyPrompt { $true }
+        Mock Invoke-WinsmuxRaw {
+            param([string[]]$Arguments)
+            switch ([string]$Arguments[0]) {
+                'display-message' {
+                    if ($Arguments[-1] -eq '#{session_name}') { return 'winsmux-c08' }
+                    if ($Arguments[-1] -like '*pane_id*') { return '%1' }
+                    return 'winsmux-c08:0.0'
+                }
+                'show-environment' {
+                    if ([string]::IsNullOrWhiteSpace($script:c08SessionProjectDir)) { return @() }
+                    return "WINSMUX_ORCHESTRA_PROJECT_DIR=$script:c08SessionProjectDir"
+                }
+                'list-panes' { return '%2' }
+                default {
+                    $script:c08Trace.Add('mutation') | Out-Null
+                    $script:c08SideEffects++
+                    return @()
+                }
+            }
+        }
+    }
+
+    AfterEach {
+        if ($null -eq $script:c08PreviousProjectDir) {
+            Remove-Item Env:WINSMUX_ORCHESTRA_PROJECT_DIR -ErrorAction SilentlyContinue
+        } else {
+            $env:WINSMUX_ORCHESTRA_PROJECT_DIR = $script:c08PreviousProjectDir
+        }
+        Remove-Item -LiteralPath $script:c08Root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'TASK781 C08 blocks stale managed target from <Name> cwd' -ForEach @(
+        @{ Name = 'root'; Kind = 'root' }
+        @{ Name = 'subdirectory'; Kind = 'subdir' }
+        @{ Name = 'unrelated'; Kind = 'unrelated' }
+    ) {
+        $Target = '%2'
+        $Rest = @('payload')
+        $cwd = switch ($Kind) {
+            'root' { $script:c08ManagedA }
+            'subdir' { Join-Path $script:c08ManagedA 'nested\work' }
+            default { $script:c08Unmanaged }
+        }
+        $errorText = ''
+        Push-Location $cwd
+        try { Invoke-Type } catch { $errorText = [string]$_.Exception.Message } finally { Pop-Location }
+
+        $script:c08SideEffects | Should -Be 0
+        $errorText | Should -Match 'invalid_supervisor_identity'
+    }
+
+    It 'TASK781 C08 refuses conflicting managed root candidates' {
+        $Target = '%2'
+        $Rest = @('payload')
+        $env:WINSMUX_ORCHESTRA_PROJECT_DIR = $script:c08ManagedB
+        $errorText = ''
+        Push-Location $script:c08Unmanaged
+        try { Invoke-Type } catch { $errorText = [string]$_.Exception.Message } finally { Pop-Location }
+
+        $script:c08SideEffects | Should -Be 0
+        $errorText | Should -Match 'manifest_regeneration_required'
+    }
+
+    It 'TASK781 C08 refuses a managed session root with missing pane context' {
+        $Target = '%2'
+        $Rest = @('payload')
+        $script:c08MissingContext = $true
+        $errorText = ''
+        Push-Location $script:c08Unmanaged
+        try { Invoke-Type } catch { $errorText = [string]$_.Exception.Message } finally { Pop-Location }
+
+        $script:c08SideEffects | Should -Be 0
+        $errorText | Should -Match 'manifest_regeneration_required'
+    }
+
+    It 'TASK781 C16 refuses managed writes when runtime freshness validators are unavailable' {
+        $script:c16TransportPlans = 0
+        $script:c16ResolvedSends = 0
+        $script:c16TextSends = 0
+        Mock Get-Command { $null } -ParameterFilter {
+            $Name -contains 'Get-PaneControlManifestContext' -or
+            $Name -contains 'Test-PaneControlRuntimeContext'
+        }
+        Mock Resolve-SendTransportPlan { $script:c16TransportPlans++ }
+        Mock Send-ResolvedTransportPlan { $script:c16ResolvedSends++ }
+        Mock Send-TextToPane { $script:c16TextSends++ }
+
+        $errorText = ''
+        Push-Location $script:c08Unmanaged
+        try {
+            try {
+                Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId '%2' -CurrentProjectDir $script:c08Unmanaged -Operation dispatch | Out-Null
+            } catch {
+                $errorText = [string]$_.Exception.Message
+            }
+        } finally {
+            Pop-Location
+        }
+
+        $promptDir = Join-Path (Join-Path $script:c08ManagedA '.winsmux') 'dispatch-prompts'
+        $actual = [ordered]@{
+            error = $errorText
+            mutation_side_effects = $script:c08SideEffects
+            manifest_status_writes = $script:c08StatusWrites
+            validator_calls = $script:c08ValidationCount
+            transport_plans = $script:c16TransportPlans
+            resolved_sends = $script:c16ResolvedSends
+            text_sends = $script:c16TextSends
+            prompt_dir_exists = Test-Path -LiteralPath $promptDir -PathType Container
+        }
+        $expected = [ordered]@{
+            error = 'runtime dispatch refused (manifest_regeneration_required): Runtime identity validation is unavailable; regenerate the orchestra session.'
+            mutation_side_effects = 0
+            manifest_status_writes = 0
+            validator_calls = 0
+            transport_plans = 0
+            resolved_sends = 0
+            text_sends = 0
+            prompt_dir_exists = $false
+        }
+        ($actual | ConvertTo-Json -Compress) | Should -Be ($expected | ConvertTo-Json -Compress)
+    }
+
+    It 'TASK781 C09 preserves plain unmanaged delivery when no managed candidate exists' {
+        $Target = '%2'
+        $Rest = @('payload')
+        $script:c08SessionProjectDir = ''
+        Mock Assert-ReadMark { }
+        Push-Location $script:c08Unmanaged
+        try { Invoke-Type } finally { Pop-Location }
+
+        $script:c08SideEffects | Should -Be 1
+        $script:c08ValidationCount | Should -Be 0
+    }
+
+    It 'TASK781 C19 keeps a captured managed write managed when every current candidate disappears' {
+        $script:c08SessionProjectDir = ''
+
+        $resolution = Resolve-WinsmuxManagedTargetContext -PaneId '%2' `
+            -CurrentProjectDir $script:c08Unmanaged -Operation dispatch `
+            -ExpectedGenerationId 'generation-c08'
+
+        $resolution.Managed | Should -BeTrue
+        $resolution.Validation.valid | Should -BeFalse
+        $resolution.Validation.reason_code | Should -Be 'invalid_supervisor_identity'
+    }
+
+    It 'TASK781 C09 ignores cwd and process managed roots that do not map the target pane' {
+        $Target = '%99'
+        $Rest = @('payload')
+        $script:c08SessionProjectDir = ''
+        $env:WINSMUX_ORCHESTRA_PROJECT_DIR = $script:c08ManagedB
+        Mock Resolve-Target { '%99' }
+        Mock Confirm-Target { '%99' }
+        Mock Assert-ReadMark { }
+
+        Push-Location $script:c08ManagedA
+        try { Invoke-Type } finally { Pop-Location }
+
+        $script:c08SideEffects | Should -Be 1
+        $script:c08ValidationCount | Should -Be 0
+    }
+
+    It 'TASK781 C15 maps failed deferred target auto validation to start_deferred' {
+        $script:c15RuntimeOperation = ''
+        Mock Get-PaneControlManifestContext {
+            param([string]$ProjectDir, [string]$PaneId)
+            [pscustomobject]@{
+                ManifestPath = Join-Path $ProjectDir '.winsmux\manifest.yaml'
+                ProjectDir = $ProjectDir; SessionName = 'winsmux-c08'; Label = 'worker-1'; PaneId = $PaneId
+                Role = 'Worker'; Status = 'deferred_start_failed'; SecurityPolicy = $null
+                LaunchDir = $ProjectDir; GitWorktreeDir = (Join-Path $ProjectDir '.git')
+                Branch = 'codex/task-781'; HeadSha = 'abc781'
+            }
+        }
+        Mock Test-PaneControlRuntimeContext {
+            param([string]$ProjectDir, $ManifestEntry, [string]$Operation)
+            $script:c15RuntimeOperation = $Operation
+            New-WinsmuxRuntimeValidationResult -Valid $true -ReasonCode 'deferred_runtime_verified' -Diagnostic 'synthetic failed deferred runtime verified'
+        }
+
+        $resolution = Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId '%2' `
+            -CurrentProjectDir $script:c08ManagedA -Operation auto
+
+        $script:c15RuntimeOperation | Should -Be 'start_deferred'
+        $resolution.Operation | Should -Be 'start_deferred'
+    }
+
+    It 'TASK781 C10 blocks invalid managed <CommandName> before any side effect' -ForEach @(
+        @{ CommandName = 'send' }
+        @{ CommandName = 'type' }
+        @{ CommandName = 'keys' }
+        @{ CommandName = 'message' }
+        @{ CommandName = 'ime' }
+        @{ CommandName = 'image' }
+        @{ CommandName = 'clipboard' }
+        @{ CommandName = 'vault' }
+    ) {
+        $Target = '%2'
+        $Rest = @('payload')
+        $errorText = ''
+        Push-Location $script:c08ManagedA
+        try {
+            switch ($CommandName) {
+                'send' { Invoke-Send -SendTarget '%2' -SendArguments @('payload') }
+                'type' { Invoke-Type }
+                'keys' { $Rest = @('Enter'); Invoke-Keys }
+                'message' { Invoke-Message }
+                'ime' { Invoke-ImeInput }
+                'image' { Invoke-ImagePaste }
+                'clipboard' { Invoke-ClipboardPaste }
+                'vault' { Invoke-VaultInject }
+            }
+        } catch { $errorText = [string]$_.Exception.Message } finally { Pop-Location }
+
+        $script:c08SideEffects | Should -Be 0
+        $errorText | Should -Match 'invalid_supervisor_identity'
+    }
+
+    It 'TASK781 C28 revalidates <CommandName> after preparation and refuses an expired generation before pane mutation' -ForEach @(
+        @{ CommandName = 'type' }
+        @{ CommandName = 'keys' }
+        @{ CommandName = 'message' }
+    ) {
+        $Target = '%2'
+        if ($CommandName -eq 'keys') {
+            $Rest = @('Enter')
+        } else {
+            $Rest = @('payload')
+        }
+        $script:c28GuardCount = 0
+        $script:c28PaneMutationCount = 0
+        Mock Assert-ReadMark { }
+        Mock Assert-WinsmuxTargetRuntimeWriteAllowed {
+            param($PaneId, $CurrentProjectDir, $Operation, $ExpectedGenerationId)
+            $script:c28GuardCount++
+            if ($script:c28GuardCount -eq 1) {
+                return [PSCustomObject]@{ Managed = $true; Operation = 'dispatch'; GenerationId = 'generation-c08' }
+            }
+            throw 'runtime dispatch refused (invalid_supervisor_identity): generation expired after command preparation'
+        }
+        Mock Invoke-WinsmuxRaw {
+            param([string[]]$Arguments)
+            if ($Arguments[0] -eq 'display-message') {
+                if ($Arguments -contains '#{pane_id}') { return '%1' }
+                return 'winsmux-c08:0.0'
+            }
+            $script:c28PaneMutationCount++
+        }
+
+        $errorText = ''
+        Push-Location $script:c08ManagedA
+        try {
+            switch ($CommandName) {
+                'type' { Invoke-Type }
+                'keys' { Invoke-Keys }
+                'message' { Invoke-Message }
+            }
+        } catch {
+            $errorText = [string]$_.Exception.Message
+        } finally {
+            Pop-Location
+        }
+
+        $errorText | Should -Match 'invalid_supervisor_identity'
+        $script:c28GuardCount | Should -Be 2
+        $script:c28PaneMutationCount | Should -Be 0
+    }
+
+    It 'TASK781 C28 revalidates every interactive pane mutation with the original generation' {
+        foreach ($functionName in @('Invoke-Type', 'Invoke-Keys', 'Invoke-Message', 'Invoke-ImeInput', 'Invoke-ImagePaste', 'Invoke-ClipboardPaste')) {
+            $functionSource = [regex]::Match(
+                $script:c08CoreContent,
+                ('(?s)function {0} \{{.*?(?=\r?\nfunction |\z)' -f [regex]::Escape($functionName))
+            ).Value
+            $functionSource | Should -Not -BeNullOrEmpty
+            ([regex]::Matches($functionSource, 'Assert-WinsmuxTargetRuntimeWriteAllowed')).Count | Should -BeGreaterOrEqual 2
+            $functionSource | Should -Match ([regex]::Escape('-ExpectedGenerationId ([string]$runtimeAccess.GenerationId)'))
+            $sendIndex = $functionSource.LastIndexOf("Invoke-WinsmuxRaw -Arguments @('send-keys'", [System.StringComparison]::Ordinal)
+            $sendIndex | Should -BeGreaterThan 0
+            $sourceBeforeSend = $functionSource.Substring(0, $sendIndex)
+            $sendGuardIndex = $sourceBeforeSend.LastIndexOf('Assert-WinsmuxTargetRuntimeWriteAllowed', [System.StringComparison]::Ordinal)
+            $sendGuardIndex | Should -BeGreaterThan 0
+            $sendGuardIndex | Should -BeLessThan $sendIndex
+        }
+    }
+
+    It 'TASK781 C44 revalidates after pane send and refuses read-mark cleanup on lease expiry' {
+        $Target = '%2'
+        $Rest = @('payload')
+        $script:c44GuardCount = 0
+        $script:c44PaneSends = 0
+        $script:c44ReadClears = 0
+        Mock Assert-ReadMark { }
+        Mock Assert-WinsmuxTargetRuntimeWriteAllowed {
+            $script:c44GuardCount++
+            if ($script:c44GuardCount -eq 1) {
+                return [pscustomobject]@{ Managed = $true; Operation = 'dispatch'; GenerationId = 'generation-c08' }
+            }
+            if ($script:c44GuardCount -eq 3) {
+                throw 'runtime dispatch refused (invalid_supervisor_identity): generation expired before read-mark cleanup'
+            }
+            return [pscustomobject]@{ Managed = $true; Operation = 'dispatch'; GenerationId = 'generation-c08' }
+        }
+        Mock Invoke-WinsmuxRaw { $script:c44PaneSends++ }
+        Mock Clear-ReadMark { $script:c44ReadClears++ }
+
+        $errorText = ''
+        Push-Location $script:c08ManagedA
+        try { Invoke-Type } catch { $errorText = [string]$_.Exception.Message } finally { Pop-Location }
+
+        $script:c44GuardCount | Should -Be 3
+        $script:c44PaneSends | Should -Be 1
+        $script:c44ReadClears | Should -Be 0
+        $errorText | Should -Match 'invalid_supervisor_identity'
+    }
+
+    It 'TASK781 C44 places the captured-generation guard immediately before every interactive read-mark cleanup' {
+        foreach ($functionName in @('Invoke-Type', 'Invoke-Keys', 'Invoke-Message', 'Invoke-ImeInput', 'Invoke-ImagePaste', 'Invoke-ClipboardPaste', 'Invoke-VaultInject')) {
+            $functionSource = [regex]::Match(
+                $script:c08CoreContent,
+                ('(?s)function {0} \{{.*?(?=\r?\nfunction |\z)' -f [regex]::Escape($functionName))
+            ).Value
+            $functionSource | Should -Not -BeNullOrEmpty
+            $functionSource | Should -Match '(?s)Assert-WinsmuxTargetRuntimeWriteAllowed.*?-ExpectedGenerationId.*?\| Out-Null\s*Clear-ReadMark'
+        }
+    }
+
+    It 'TASK781 C11 validates then blocks managed <CommandName> without identity mutation' -ForEach @(
+        @{ CommandName = 'role' }
+        @{ CommandName = 'restart' }
+        @{ CommandName = 'name' }
+        @{ CommandName = 'kill' }
+    ) {
+        $Target = '%2'
+        $Rest = @('payload')
+        Mock Test-PaneControlRuntimeContext {
+            $script:c08Trace.Add('runtime') | Out-Null
+            New-WinsmuxRuntimeValidationResult -Valid $true -ReasonCode 'valid' -Diagnostic 'runtime valid'
+        }
+        $errorText = ''
+        Push-Location $script:c08ManagedA
+        try {
+            switch ($CommandName) {
+                'role' { $Rest = @('worker'); Invoke-Role }
+                'restart' { $Rest = @(); Invoke-Restart }
+                'name' { $Rest = @('renamed'); Invoke-Name }
+                'kill' { $Rest = @(); Invoke-Kill }
+            }
+        } catch { $errorText = [string]$_.Exception.Message } finally { Pop-Location }
+
+        @($script:c08Trace) | Should -Be @('runtime')
+        $script:c08SideEffects | Should -Be 0
+        $errorText | Should -Match 'manifest_regeneration_required'
+    }
+
+    It 'TASK781 C19 validates runtime before emitting a security BLOCK event' {
+        $script:c08SecurityPolicy = [ordered]@{ mode = 'enforce' }
+        Mock Find-SendSecurityPolicyViolation {
+            [ordered]@{ verdict = 'BLOCK'; reason = 'synthetic policy block'; pattern = 'payload'; mode = 'enforce'; allow = @(); block = @('payload'); next_action = 'stop' }
+        }
+        $errorText = ''
+        Push-Location $script:c08ManagedA
+        try { Invoke-Send -SendTarget '%2' -SendArguments @('payload') } catch { $errorText = [string]$_.Exception.Message } finally { Pop-Location }
+
+        $script:c08SideEffects | Should -Be 0
+        @($script:c08Trace) | Should -Be @('runtime')
+        $errorText | Should -Match 'invalid_supervisor_identity'
+    }
+
+    It 'TASK781 C33 revalidates the captured generation immediately before persisting a security BLOCK event' {
+        $script:c08SecurityPolicy = [ordered]@{ mode = 'enforce' }
+        Mock Find-SendSecurityPolicyViolation {
+            [ordered]@{ verdict = 'BLOCK'; reason = 'synthetic policy block'; pattern = 'payload'; mode = 'enforce'; allow = @(); block = @('payload'); next_action = 'stop' }
+        }
+        Mock Test-PaneControlRuntimeContext {
+            $script:c08ValidationCount++
+            $script:c08Trace.Add('runtime') | Out-Null
+            if ($script:c08ValidationCount -eq 1) {
+                return New-WinsmuxRuntimeValidationResult -Valid $true -ReasonCode 'live_runtime_verified' `
+                    -Diagnostic 'synthetic initial runtime' -Context ([ordered]@{ generation_id = 'generation-c08' })
+            }
+            return New-WinsmuxRuntimeValidationResult -Valid $false -ReasonCode 'invalid_supervisor_identity' `
+                -Diagnostic 'generation changed before security event persistence'
+        }
+        $errorText = ''
+        Push-Location $script:c08ManagedA
+        try { Invoke-Send -SendTarget '%2' -SendArguments @('payload') } catch { $errorText = [string]$_.Exception.Message } finally { Pop-Location }
+
+        @($script:c08Trace) | Should -Be @('runtime', 'runtime')
+        $script:c08SideEffects | Should -Be 0
+        Should -Invoke Write-BridgeEventRecord -Times 0 -Exactly
+        $errorText | Should -Match 'invalid_supervisor_identity'
+    }
+
+    It 'TASK781 C33 persists exactly one security BLOCK event when both runtime validations remain current' {
+        $script:c08SecurityPolicy = [ordered]@{ mode = 'enforce' }
+        Mock Find-SendSecurityPolicyViolation {
+            [ordered]@{ verdict = 'BLOCK'; reason = 'synthetic policy block'; pattern = 'payload'; mode = 'enforce'; allow = @(); block = @('payload'); next_action = 'stop' }
+        }
+        Mock Test-PaneControlRuntimeContext {
+            $script:c08ValidationCount++
+            $script:c08Trace.Add('runtime') | Out-Null
+            New-WinsmuxRuntimeValidationResult -Valid $true -ReasonCode 'live_runtime_verified' `
+                -Diagnostic 'synthetic current runtime' -Context ([ordered]@{ generation_id = 'generation-c08' })
+        }
+        $errorText = ''
+        Push-Location $script:c08ManagedA
+        try { Invoke-Send -SendTarget '%2' -SendArguments @('payload') } catch { $errorText = [string]$_.Exception.Message } finally { Pop-Location }
+
+        @($script:c08Trace) | Should -Be @('runtime', 'runtime', 'policy_event')
+        $script:c08SideEffects | Should -Be 1
+        Should -Invoke Write-BridgeEventRecord -Times 1 -Exactly
+        $errorText | Should -Match 'synthetic policy block'
+    }
+
+    It 'TASK781 C19 revalidates deferred start immediately before its first persistent mutation' {
+        $planPath = Join-Path $script:c08ManagedA 'worker-1.json'
+        ([ordered]@{ agent = 'codex'; ready_marker_path = (Join-Path $script:c08ManagedA 'worker-1.ready.json') } | ConvertTo-Json) |
+            Set-Content -LiteralPath $planPath -Encoding UTF8
+        $entry = [pscustomobject]@{
+            Label = 'worker-1'; PaneId = '%2'; Status = 'deferred_start'; BootstrapPlanPath = $planPath
+            CapabilityAdapter = 'codex'; ProviderTarget = ''; ApprovedLaunch = $null
+        }
+        Mock Test-PaneControlRuntimeContext {
+            $script:c08ValidationCount++
+            if ($script:c08ValidationCount -eq 1) { return New-WinsmuxRuntimeValidationResult -Valid $true -ReasonCode 'valid' -Diagnostic 'runtime valid' }
+            return New-WinsmuxRuntimeValidationResult -Valid $false -ReasonCode 'invalid_supervisor_identity' -Diagnostic 'generation changed before deferred mutation'
+        }
+        $initial = Test-PaneControlRuntimeContext -ProjectDir $script:c08ManagedA -ManifestEntry $entry -Operation start_deferred
+        $initial.valid | Should -BeTrue
+        $errorText = ''
+        Push-Location $script:c08ManagedA
+        try { Start-DeferredPaneFromManifestEntry -ProjectDir $script:c08ManagedA -ManifestEntry $entry } catch { $errorText = [string]$_.Exception.Message } finally { Pop-Location }
+
+        $script:c08StatusWrites | Should -Be 0
+        $script:c08SideEffects | Should -Be 0
+        $errorText | Should -Match 'invalid_supervisor_identity'
+    }
+
+    It 'TASK781 C19 does not enumerate vault credential names or values when initial runtime validation fails' {
+        $Target = '%2'
+        Mock Get-WinsmuxVaultCredentialNamesInternal { throw 'credential name enumeration must not run' }
+        Mock Get-WinsmuxVaultCredentialValueInternal { throw 'credential value read must not run' }
+        $errorText = ''
+
+        Push-Location $script:c08ManagedA
+        try { Invoke-VaultInject } catch { $errorText = [string]$_.Exception.Message } finally { Pop-Location }
+
+        Should -Invoke Get-WinsmuxVaultCredentialNamesInternal -Times 0 -Exactly
+        Should -Invoke Get-WinsmuxVaultCredentialValueInternal -Times 0 -Exactly
+        $script:c08SideEffects | Should -Be 0
+        $errorText | Should -Match 'invalid_supervisor_identity'
+    }
+
+    It 'TASK781 C40 stops vault injection before reading a second secret when the generation changes' {
+        $Target = '%2'
+        $script:c19GuardCalls = 0
+        $script:c19VaultSends = [Collections.Generic.List[string]]::new()
+        $script:c19SecretReads = [Collections.Generic.List[string]]::new()
+        Mock Assert-ReadMark { }
+        Mock Start-Sleep { }
+        Mock Get-WinsmuxVaultCredentialNamesInternal { @('SYNTH_ONE', 'SYNTH_TWO') }
+        Mock Get-WinsmuxVaultCredentialValueInternal {
+            param([string]$Name)
+            $script:c19SecretReads.Add($Name) | Out-Null
+            if ($Name -eq 'SYNTH_ONE') { return 'synthetic-value-one' }
+            return 'synthetic-value-two'
+        }
+        Mock Assert-WinsmuxTargetRuntimeWriteAllowed {
+            param([string]$PaneId, [string]$CurrentProjectDir, [string]$Operation, [string]$ExpectedGenerationId)
+            $script:c19GuardCalls++
+            if ($script:c19GuardCalls -eq 5) {
+                throw 'runtime dispatch refused (invalid_supervisor_identity): generation changed before second secret read'
+            }
+            [pscustomobject]@{ Managed = $true; ProjectDir = $CurrentProjectDir; GenerationId = 'generation-G1' }
+        }
+        Mock Invoke-WinsmuxRaw {
+            param([string[]]$Arguments)
+            if ($Arguments[0] -ne 'send-keys') { throw "unexpected vault command: $($Arguments -join ' ')" }
+            $script:c19VaultSends.Add(($Arguments -join '|')) | Out-Null
+        }
+        $errorText = ''
+
+        Push-Location $script:c08ManagedA
+        try { Invoke-VaultInject } catch { $errorText = [string]$_.Exception.Message } finally { Pop-Location }
+
+        $script:c19GuardCalls | Should -Be 5
+        @($script:c19SecretReads) | Should -Be @('SYNTH_ONE')
+        $script:c19VaultSends.Count | Should -Be 2
+        $script:c19VaultSends[0] | Should -Match 'SYNTH_ONE'
+        $script:c19VaultSends[0] | Should -Not -Match 'SYNTH_TWO'
+        $script:c19VaultSends[1] | Should -Match 'Enter$'
+        $errorText | Should -Match 'invalid_supervisor_identity'
+    }
+
+    It 'TASK781 C35 revalidates the captured generation immediately before Vault Enter' {
+        $Target = '%2'
+        $script:c35GuardCalls = 0
+        $script:c35VaultSends = [Collections.Generic.List[string]]::new()
+        Mock Assert-ReadMark { }
+        Mock Start-Sleep { }
+        Mock Get-WinsmuxVaultCredentialNamesInternal { @('SYNTH_ONE') }
+        Mock Get-WinsmuxVaultCredentialValueInternal { 'synthetic-value-one' }
+        Mock Assert-WinsmuxTargetRuntimeWriteAllowed {
+            param([string]$PaneId, [string]$CurrentProjectDir, [string]$Operation, [string]$ExpectedGenerationId)
+            $script:c35GuardCalls++
+            if ($script:c35GuardCalls -eq 4) {
+                throw 'runtime dispatch refused (invalid_supervisor_identity): generation changed before Vault Enter'
+            }
+            [pscustomobject]@{ Managed = $true; ProjectDir = $CurrentProjectDir; GenerationId = 'generation-G1' }
+        }
+        Mock Invoke-WinsmuxRaw {
+            param([string[]]$Arguments)
+            if ($Arguments[0] -ne 'send-keys') { throw "unexpected vault command: $($Arguments -join ' ')" }
+            $script:c35VaultSends.Add(($Arguments -join '|')) | Out-Null
+        }
+        $errorText = ''
+
+        Push-Location $script:c08ManagedA
+        try { Invoke-VaultInject } catch { $errorText = [string]$_.Exception.Message } finally { Pop-Location }
+
+        $script:c35GuardCalls | Should -Be 4
+        $script:c35VaultSends.Count | Should -Be 1
+        $script:c35VaultSends[0] | Should -Match 'SYNTH_ONE'
+        $script:c35VaultSends | Should -Not -Match 'Enter'
+        $errorText | Should -Match 'invalid_supervisor_identity'
+    }
+
+    It 'TASK781 C37 creates collision-proof owned image artifacts without overwriting a sibling' {
+        $imageDir = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-c37-images-' + [guid]::NewGuid().ToString('N'))
+        Add-Type -AssemblyName System.Drawing
+        $imageA = [System.Drawing.Bitmap]::new(1, 1)
+        $imageB = [System.Drawing.Bitmap]::new(1, 1)
+        try {
+            $artifactA = Write-WinsmuxClipboardImageArtifact -Image $imageA -DirectoryPath $imageDir
+            $artifactB = Write-WinsmuxClipboardImageArtifact -Image $imageB -DirectoryPath $imageDir
+
+            $artifactA.Path | Should -Not -BeExactly $artifactB.Path
+            Test-Path -LiteralPath $artifactA.Path -PathType Leaf | Should -BeTrue
+            Test-Path -LiteralPath $artifactB.Path -PathType Leaf | Should -BeTrue
+            $artifactA.Owned | Should -BeTrue
+            $artifactB.Owned | Should -BeTrue
+            $writerSource = [regex]::Match(
+                $script:c08CoreContent,
+                '(?s)function Write-WinsmuxClipboardImageArtifact \{.*?(?=\r?\nfunction |\z)'
+            ).Value
+            $writerSource | Should -Match '\[System\.IO\.FileMode\]::CreateNew'
+        } finally {
+            $imageA.Dispose()
+            $imageB.Dispose()
+            Remove-Item -LiteralPath $imageDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 Describe 'winsmux send dispatch payload' {
     BeforeAll {
         $script:winsmuxCorePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
@@ -17373,9 +22244,33 @@ Describe 'winsmux send dispatch payload' {
     BeforeEach {
         $script:sendTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-send-tests-' + [guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $script:sendTempRoot -Force | Out-Null
+        $script:sendHadPreviousProjectDir = Test-Path Env:WINSMUX_ORCHESTRA_PROJECT_DIR
+        $script:sendPreviousProjectDir = [string]$env:WINSMUX_ORCHESTRA_PROJECT_DIR
+        Remove-Item Env:WINSMUX_ORCHESTRA_PROJECT_DIR -ErrorAction SilentlyContinue
+        $script:sendSessionProjectDir = ''
+        Mock Invoke-WinsmuxRaw {
+            param([string[]]$Arguments)
+
+            if ($Arguments[0] -eq 'display-message' -and $Arguments[-1] -eq '#{session_name}') {
+                return 'winsmux-send-tests'
+            }
+            if ($Arguments[0] -eq 'show-environment') {
+                if (-not [string]::IsNullOrWhiteSpace($script:sendSessionProjectDir)) {
+                    return "WINSMUX_ORCHESTRA_PROJECT_DIR=$($script:sendSessionProjectDir)"
+                }
+                return @()
+            }
+
+            throw "unexpected Invoke-WinsmuxRaw arguments: $($Arguments -join ' ')"
+        }
     }
 
     AfterEach {
+        if ($script:sendHadPreviousProjectDir) {
+            $env:WINSMUX_ORCHESTRA_PROJECT_DIR = $script:sendPreviousProjectDir
+        } else {
+            Remove-Item Env:WINSMUX_ORCHESTRA_PROJECT_DIR -ErrorAction SilentlyContinue
+        }
         if ($script:sendTempRoot -and (Test-Path $script:sendTempRoot)) {
             Remove-Item -Path $script:sendTempRoot -Recurse -Force
         }
@@ -17395,6 +22290,477 @@ Describe 'winsmux send dispatch payload' {
         $script:winsmuxCoreSendRawContent | Should -Match 'Provider capability'
         $script:winsmuxCoreSendRawContent | Should -Match 'CapabilityAdapter'
         $script:winsmuxCoreSendRawContent | Should -Match 'CapabilityCommand'
+    }
+
+    It 'TASK781 resolves a managed slot target from the nearest ancestor manifest for <Name>' -ForEach @(
+        @{ Name = 'project root'; RelativeCwd = '.' }
+        @{ Name = 'project subdirectory'; RelativeCwd = 'nested\work' }
+    ) {
+        New-Item -ItemType Directory -Path (Join-Path $script:sendTempRoot '.winsmux') -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $script:sendTempRoot 'nested\work') -Force | Out-Null
+        Save-WinsmuxManifest -ProjectDir $script:sendTempRoot -Manifest ([ordered]@{
+            version = 2
+            session = [ordered]@{ name = 'winsmux-orchestra'; generation_id = 'generation-send'; server_session_id = '$41'; session_ready = $true }
+            panes = [ordered]@{
+                'worker-1' = [ordered]@{ slot_id = 'worker-1'; pane_id = '%2'; worker_backend = 'codex'; worker_role = 'reviewer'; role = 'Worker'; title = 'W1 Codex Reviewer'; status = 'ready'; runtime_ready = $true }
+            }
+            tasks = [ordered]@{ queued = @(); in_progress = @(); completed = @() }
+            worktrees = [ordered]@{}
+        })
+        Mock Get-Labels { @{} }
+
+        Push-Location (Join-Path $script:sendTempRoot $RelativeCwd)
+        try {
+            Resolve-Target 'worker-1' | Should -BeExactly '%2'
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'TASK781 C27 prefers the nearest managed manifest over a stale global label mapping' {
+        New-Item -ItemType Directory -Path (Join-Path $script:sendTempRoot '.winsmux') -Force | Out-Null
+        Save-WinsmuxManifest -ProjectDir $script:sendTempRoot -Manifest ([ordered]@{
+            version = 2
+            session = [ordered]@{ name = 'winsmux-orchestra'; generation_id = 'generation-send'; server_session_id = '$41'; session_ready = $true }
+            panes = [ordered]@{
+                'worker-1' = [ordered]@{ slot_id = 'worker-1'; pane_id = '%2'; worker_backend = 'codex'; worker_role = 'reviewer'; role = 'Worker'; title = 'W1 Codex Reviewer'; status = 'ready'; runtime_ready = $true }
+            }
+            tasks = [ordered]@{ queued = @(); in_progress = @(); completed = @() }
+            worktrees = [ordered]@{}
+        })
+        Mock Get-Labels { @{ 'worker-1' = '%99' } }
+
+        Push-Location $script:sendTempRoot
+        try {
+            Resolve-Target 'worker-1' | Should -BeExactly '%2'
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'TASK781 C27 refuses a label omitted by the nearest managed manifest instead of returning the raw target' {
+        New-Item -ItemType Directory -Path (Join-Path $script:sendTempRoot '.winsmux') -Force | Out-Null
+        Save-WinsmuxManifest -ProjectDir $script:sendTempRoot -Manifest ([ordered]@{
+            version = 2
+            session = [ordered]@{ name = 'winsmux-orchestra'; generation_id = 'generation-send'; server_session_id = '$41'; session_ready = $true }
+            panes = [ordered]@{
+                'worker-2' = [ordered]@{ slot_id = 'worker-2'; pane_id = '%3'; worker_backend = 'codex'; role = 'Worker'; title = 'W2'; status = 'ready'; runtime_ready = $true }
+            }
+            tasks = [ordered]@{ queued = @(); in_progress = @(); completed = @() }
+            worktrees = [ordered]@{}
+        })
+        Mock Get-Labels { @{ 'worker-1' = '%99' } }
+
+        Push-Location $script:sendTempRoot
+        try {
+            { Resolve-Target 'worker-1' } | Should -Throw '*managed manifest does not contain target*'
+        } finally {
+            Pop-Location
+        }
+    }
+
+    It 'TASK781 C38 refuses an omitted managed label before creating an artifact or sending' {
+        New-Item -ItemType Directory -Path (Join-Path $script:sendTempRoot '.winsmux') -Force | Out-Null
+        Save-WinsmuxManifest -ProjectDir $script:sendTempRoot -Manifest ([ordered]@{
+            version = 2
+            session = [ordered]@{ name = 'winsmux-orchestra'; generation_id = 'generation-send'; server_session_id = '$41'; session_ready = $true }
+            panes = [ordered]@{
+                'worker-2' = [ordered]@{ slot_id = 'worker-2'; pane_id = '%3'; worker_backend = 'codex'; role = 'Worker'; title = 'W2'; status = 'ready'; runtime_ready = $true }
+            }
+            tasks = [ordered]@{ queued = @(); in_progress = @(); completed = @() }
+            worktrees = [ordered]@{}
+        })
+        Mock Get-Labels { @{ 'worker-1' = '%99' } }
+        Mock Resolve-TerminalBackend { 'tauri' }
+        Mock Stop-WithError { param([string]$Message) throw $Message }
+        Mock Send-ResolvedTransportPlan { throw 'send must not occur' }
+
+        Push-Location $script:sendTempRoot
+        try {
+            { Invoke-Send -SendTarget 'worker-1' -SendArguments @(('x' * 5000)) } |
+                Should -Throw '*managed manifest does not contain target*'
+        } finally {
+            Pop-Location
+        }
+
+        Test-Path -LiteralPath (Join-Path $script:sendTempRoot '.winsmux\dispatch-prompts') | Should -BeFalse
+        Assert-MockCalled Send-ResolvedTransportPlan -Times 0 -Exactly
+    }
+
+    It 'TASK781 C39 refuses a stale role label before pane or persistent-state mutation' {
+        New-Item -ItemType Directory -Path (Join-Path $script:sendTempRoot '.winsmux') -Force | Out-Null
+        Save-WinsmuxManifest -ProjectDir $script:sendTempRoot -Manifest ([ordered]@{
+            version = 2
+            session = [ordered]@{ name = 'winsmux-orchestra'; generation_id = 'generation-role'; server_session_id = '$41'; session_ready = $true }
+            panes = [ordered]@{
+                'worker-2' = [ordered]@{ slot_id = 'worker-2'; pane_id = '%3'; worker_backend = 'codex'; role = 'Worker'; title = 'W2'; status = 'ready'; runtime_ready = $true }
+            }
+            tasks = [ordered]@{ queued = @(); in_progress = @(); completed = @() }
+            worktrees = [ordered]@{}
+        })
+        $script:c39MutationAttempts = 0
+        Mock Get-Labels { @{ 'worker-1' = '%99' } }
+        Mock Stop-WithError { param([string]$Message) throw $Message }
+        Mock Get-ManagedPaneLifecycleMutationRefusal { $null }
+        Mock Get-BridgeSettings { [ordered]@{} }
+        Mock Get-SlotAgentConfig {
+            [pscustomobject]@{
+                Agent = 'codex'; Model = ''; ModelSource = 'provider-default'; ReasoningEffort = '';
+                McpMode = ''; CapabilityAdapter = 'codex'; CapabilityCommand = 'codex';
+                HarnessAvailability = ''; CredentialRequirements = ''; ExecutionBackend = '';
+                RuntimeRequirements = ''; AnalysisPosture = ''; SupportsParallelRuns = $false;
+                SupportsInterrupt = $false; SupportsStructuredResult = $false; SupportsFileEdit = $true;
+                SupportsSubagents = $false; SupportsVerification = $true; SupportsConsultation = $false;
+                SupportsContextReset = $false
+            }
+        }
+        Mock Get-BridgeProviderLaunchCommand { 'codex' }
+        Mock Invoke-WinsmuxRaw {
+            $script:c39MutationAttempts++
+            throw 'pane mutation must not occur'
+        }
+        Mock Save-Labels {
+            $script:c39MutationAttempts++
+            throw 'label mutation must not occur'
+        }
+        Mock Set-PaneControlManifestPaneProperties {
+            $script:c39MutationAttempts++
+            throw 'manifest mutation must not occur'
+        }
+
+        $Target = 'worker-1'
+        $Rest = @('reviewer')
+        Push-Location $script:sendTempRoot
+        try {
+            { Invoke-Role } | Should -Throw '*managed manifest does not contain target*'
+        } finally {
+            Pop-Location
+        }
+
+        $script:c39MutationAttempts | Should -Be 0
+        Assert-MockCalled Save-Labels -Times 0 -Exactly
+        Assert-MockCalled Set-PaneControlManifestPaneProperties -Times 0 -Exactly
+    }
+
+    It 'TASK781 refuses a managed direct pane send when manifest context does not resolve' {
+        $script:sendSessionProjectDir = $script:sendTempRoot
+        New-Item -ItemType Directory -Path (Join-Path $script:sendTempRoot '.winsmux') -Force | Out-Null
+        Save-WinsmuxManifest -ProjectDir $script:sendTempRoot -Manifest ([ordered]@{
+            version = 2
+            session = [ordered]@{ name = 'winsmux-orchestra'; generation_id = 'generation-send'; server_session_id = '$41'; session_ready = $true }
+            panes = [ordered]@{
+                'worker-1' = [ordered]@{ slot_id = 'worker-1'; pane_id = '%2'; worker_backend = 'codex'; role = 'Worker'; title = 'W1'; status = 'ready'; runtime_ready = $true }
+            }
+            tasks = [ordered]@{ queued = @(); in_progress = @(); completed = @() }
+            worktrees = [ordered]@{}
+        })
+        Mock Resolve-Target { '%99' }
+        Mock Resolve-TerminalBackend { 'tauri' }
+        Mock Stop-WithError { param([string]$Message) throw $Message }
+        Mock Send-ResolvedTransportPlan { throw 'send must not occur' }
+
+        Push-Location $script:sendTempRoot
+        try {
+            { Invoke-Send -SendTarget '%99' -SendArguments @('typed payload') } | Should -Throw '*manifest_regeneration_required*'
+        } finally {
+            Pop-Location
+        }
+        Assert-MockCalled Send-ResolvedTransportPlan -Times 0 -Exactly
+    }
+
+    It 'TASK781 revalidates deferred bootstrap delivery even when recursive start is skipped' {
+        $script:sendSessionProjectDir = $script:sendTempRoot
+        New-Item -ItemType Directory -Path (Join-Path $script:sendTempRoot '.winsmux') -Force | Out-Null
+        Save-WinsmuxManifest -ProjectDir $script:sendTempRoot -Manifest ([ordered]@{
+            version = 2
+            session = [ordered]@{ name = 'winsmux-orchestra'; generation_id = 'generation-send'; server_session_id = '$41'; session_ready = $true }
+            panes = [ordered]@{
+                'worker-1' = [ordered]@{ slot_id = 'worker-1'; pane_id = '%2'; worker_backend = 'codex'; role = 'Worker'; title = 'W1'; status = 'deferred_starting'; runtime_ready = $false }
+            }
+            tasks = [ordered]@{ queued = @(); in_progress = @(); completed = @() }
+            worktrees = [ordered]@{}
+        })
+        Mock Resolve-Target { '%2' }
+        Mock Resolve-TerminalBackend { 'tauri' }
+        Mock Get-SlotAgentConfig { [PSCustomObject]@{ Agent = 'codex'; Model = 'gpt-5.5'; PromptTransport = 'argv'; CapabilityAdapter = 'codex'; CapabilityCommand = 'codex' } }
+        Mock Test-PaneControlRuntimeContext { New-WinsmuxRuntimeValidationResult -Valid $false -ReasonCode 'invalid_supervisor_identity' -Diagnostic 'lease expired before bootstrap delivery' }
+        Mock Stop-WithError { param([string]$Message) throw $Message }
+        Mock Send-ResolvedTransportPlan { throw 'send must not occur' }
+
+        Push-Location $script:sendTempRoot
+        try {
+            { Invoke-Send -SendTarget '%2' -SendArguments @('bootstrap') -DeliveryClass launch -SkipDeferredPaneStart } | Should -Throw '*invalid_supervisor_identity*'
+        } finally {
+            Pop-Location
+        }
+        Assert-MockCalled Send-ResolvedTransportPlan -Times 0 -Exactly
+    }
+
+    It 'TASK781 C14 validates final runtime before creating a long prompt artifact' {
+        $script:sendSessionProjectDir = $script:sendTempRoot
+        New-Item -ItemType Directory -Path (Join-Path $script:sendTempRoot '.winsmux') -Force | Out-Null
+        Save-WinsmuxManifest -ProjectDir $script:sendTempRoot -Manifest ([ordered]@{
+            version = 2
+            session = [ordered]@{ name = 'winsmux-orchestra'; generation_id = 'G1'; server_session_id = '$41'; session_ready = $true }
+            panes = [ordered]@{
+                'worker-1' = [ordered]@{
+                    slot_id = 'worker-1'; pane_id = '%2'; worker_backend = 'codex'; role = 'Worker'; title = 'W1'
+                    status = 'ready'; runtime_ready = $true; exec_mode = $false
+                }
+            }
+            tasks = [ordered]@{ queued = @(); in_progress = @(); completed = @() }
+            worktrees = [ordered]@{}
+        })
+        $manifestPath = Join-Path (Join-Path $script:sendTempRoot '.winsmux') 'manifest.yaml'
+        $script:c14Context = [PSCustomObject]@{
+            ManifestPath = $manifestPath; ProjectDir = $script:sendTempRoot; SessionName = 'winsmux-orchestra'
+            Label = 'worker-1'; PaneId = '%2'; Role = 'Worker'; Status = 'ready'; SecurityPolicy = $null
+            LaunchDir = $script:sendTempRoot; GitWorktreeDir = (Join-Path $script:sendTempRoot '.git')
+            Branch = 'codex/task-781'; HeadSha = 'abc781'
+        }
+        $script:c14GuardCalls = [System.Collections.Generic.List[object]]::new()
+        $script:c14DeferredStartCalls = 0
+        $script:c14ResolvedSendCount = 0
+        $script:c14TextSendCount = 0
+        $script:c14RestoreCalls = 0
+        $taskPromptPath = Get-TaskPromptPath -TaskSlug 'lease-before-materialization' -ProjectDir $script:sendTempRoot
+        Write-ClmSafeTextFile -Path $taskPromptPath -Content 'existing prompt evidence'
+        $taskPromptHashBefore = (Get-FileHash -LiteralPath $taskPromptPath -Algorithm SHA256).Hash
+        $taskPromptMtimeBefore = (Get-Item -LiteralPath $taskPromptPath).LastWriteTimeUtc
+
+        Mock Resolve-Target { '%2' }
+        Mock Resolve-TerminalBackend { 'tauri' }
+        Mock Get-SlotAgentConfig {
+            [PSCustomObject]@{
+                Agent = 'codex'; Model = 'gpt-5.5'; PromptTransport = 'argv'
+                CapabilityAdapter = 'codex'; CapabilityCommand = 'codex'
+            }
+        }
+        Mock Get-RoleAgentConfig {
+            [PSCustomObject]@{
+                Agent = 'codex'; Model = 'gpt-5.5'; PromptTransport = 'argv'
+                CapabilityAdapter = 'codex'; CapabilityCommand = 'codex'
+            }
+        }
+        Mock Assert-WinsmuxTargetRuntimeWriteAllowed {
+            param($PaneId, $CurrentProjectDir, $Operation, $ExpectedGenerationId)
+            $script:c14GuardCalls.Add([PSCustomObject][ordered]@{
+                operation = [string]$Operation
+                expected_generation_id = [string]$ExpectedGenerationId
+            }) | Out-Null
+            if ($script:c14GuardCalls.Count -le 2) {
+                return [PSCustomObject]@{
+                    Managed = $true; ProjectDir = $script:sendTempRoot; Context = $script:c14Context
+                    Operation = 'dispatch'; GenerationId = 'G1'
+                    Validation = (New-WinsmuxRuntimeValidationResult -Valid $true -ReasonCode 'dispatch_verified' -Diagnostic 'synthetic runtime verified')
+                }
+            }
+            throw 'runtime dispatch refused (invalid_supervisor_identity): lease expired before final send validation'
+        }
+        Mock Start-DeferredPaneFromManifestEntry {
+            $script:c14DeferredStartCalls++
+            return $false
+        }
+        Mock Send-ResolvedTransportPlan { $script:c14ResolvedSendCount++ }
+        Mock Send-TextToPane { $script:c14TextSendCount++ }
+        Mock Restore-SendPromptArtifactCheckpoint { $script:c14RestoreCalls++ }
+
+        $errorText = ''
+        Push-Location $script:sendTempRoot
+        try {
+            try {
+                Invoke-Send -SendTarget '%2' -SendArguments @('--task-slug', 'lease-before-materialization', ('x' * 5000))
+            } catch {
+                $errorText = [string]$_.Exception.Message
+            }
+        } finally {
+            Pop-Location
+        }
+
+        $invokeSendSource = [regex]::Match(
+            $script:winsmuxCoreSendRawContent,
+            '(?s)function Invoke-Send \{.*?\r?\n\}\r?\n\r?\nfunction Invoke-Name'
+        ).Value
+        $transportIntentIndex = $invokeSendSource.IndexOf('Resolve-SendTransportIntent', [System.StringComparison]::Ordinal)
+        $transportMaterializationIndex = $invokeSendSource.IndexOf('New-SendTransportPlan', [System.StringComparison]::Ordinal)
+        $checkpointIndex = $invokeSendSource.IndexOf('New-SendPromptArtifactCheckpoint', [System.StringComparison]::Ordinal)
+        $postCheckpointGuardIndex = $invokeSendSource.IndexOf('Assert-SendPaneRuntimeLease', $checkpointIndex, [System.StringComparison]::Ordinal)
+        $promptDir = Join-Path (Join-Path $script:sendTempRoot '.winsmux') 'dispatch-prompts'
+        $actual = [ordered]@{
+            error = $errorText
+            prompt_dir_exists = Test-Path -LiteralPath $promptDir -PathType Container
+            resolved_send_count = $script:c14ResolvedSendCount
+            text_send_count = $script:c14TextSendCount
+            guard_calls = $script:c14GuardCalls.Count
+            guard_sequence = @($script:c14GuardCalls)
+            deferred_start_calls = $script:c14DeferredStartCalls
+            restore_calls = $script:c14RestoreCalls
+            prompt_hash_unchanged = ((Get-FileHash -LiteralPath $taskPromptPath -Algorithm SHA256).Hash -ceq $taskPromptHashBefore)
+            prompt_mtime_unchanged = ((Get-Item -LiteralPath $taskPromptPath).LastWriteTimeUtc -eq $taskPromptMtimeBefore)
+            pure_intent_precedes_checkpoint = (
+                $transportIntentIndex -ge 0 -and $checkpointIndex -ge 0 -and $transportIntentIndex -lt $checkpointIndex
+            )
+            checkpoint_guard_precedes_materialization = (
+                $checkpointIndex -ge 0 -and $postCheckpointGuardIndex -gt $checkpointIndex -and
+                $transportMaterializationIndex -gt $postCheckpointGuardIndex
+            )
+        }
+        $expected = [ordered]@{
+            error = 'runtime dispatch refused (invalid_supervisor_identity): lease expired before final send validation'
+            prompt_dir_exists = $false
+            resolved_send_count = 0
+            text_send_count = 0
+            guard_calls = 3
+            guard_sequence = @(
+                [PSCustomObject][ordered]@{ operation = 'auto'; expected_generation_id = '' }
+                [PSCustomObject][ordered]@{ operation = 'dispatch'; expected_generation_id = 'G1' }
+                [PSCustomObject][ordered]@{ operation = 'dispatch'; expected_generation_id = 'G1' }
+            )
+            deferred_start_calls = 1
+            restore_calls = 0
+            prompt_hash_unchanged = $true
+            prompt_mtime_unchanged = $true
+            pure_intent_precedes_checkpoint = $true
+            checkpoint_guard_precedes_materialization = $true
+        }
+        ($actual | ConvertTo-Json -Depth 8 -Compress) | Should -Be ($expected | ConvertTo-Json -Depth 8 -Compress)
+    }
+
+    It 'TASK781 C29 restores an existing task prompt when the lease expires after materialization' {
+        $script:sendSessionProjectDir = $script:sendTempRoot
+        New-Item -ItemType Directory -Path (Join-Path $script:sendTempRoot '.winsmux') -Force | Out-Null
+        Save-WinsmuxManifest -ProjectDir $script:sendTempRoot -Manifest ([ordered]@{
+            version = 2
+            session = [ordered]@{ name = 'winsmux-orchestra'; generation_id = 'G1'; server_session_id = '$41'; session_ready = $true }
+            panes = [ordered]@{
+                'worker-1' = [ordered]@{
+                    slot_id = 'worker-1'; pane_id = '%2'; worker_backend = 'codex'; role = 'Worker'; title = 'W1'
+                    status = 'ready'; runtime_ready = $true; exec_mode = $false
+                }
+            }
+            tasks = [ordered]@{ queued = @(); in_progress = @(); completed = @() }
+            worktrees = [ordered]@{}
+        })
+        $manifestPath = Join-Path (Join-Path $script:sendTempRoot '.winsmux') 'manifest.yaml'
+        $script:c29SendContext = [PSCustomObject]@{
+            ManifestPath = $manifestPath; ProjectDir = $script:sendTempRoot; SessionName = 'winsmux-orchestra'
+            Label = 'worker-1'; PaneId = '%2'; Role = 'Worker'; Status = 'ready'; SecurityPolicy = $null
+            LaunchDir = $script:sendTempRoot; GitWorktreeDir = (Join-Path $script:sendTempRoot '.git')
+            Branch = 'codex/task-781'; HeadSha = 'abc781'
+        }
+        $taskPromptPath = Get-TaskPromptPath -TaskSlug 'lease-rollback' -ProjectDir $script:sendTempRoot
+        Write-ClmSafeTextFile -Path $taskPromptPath -Content 'previous prompt evidence'
+        $taskPromptHashBefore = (Get-FileHash -LiteralPath $taskPromptPath -Algorithm SHA256).Hash
+        $script:c29SendGuardCalls = 0
+
+        Mock Resolve-Target { '%2' }
+        Mock Resolve-TerminalBackend { 'tauri' }
+        Mock Get-SlotAgentConfig {
+            [PSCustomObject]@{
+                Agent = 'codex'; Model = 'gpt-5.5'; PromptTransport = 'argv'
+                CapabilityAdapter = 'codex'; CapabilityCommand = 'codex'
+            }
+        }
+        Mock Assert-WinsmuxTargetRuntimeWriteAllowed {
+            param($PaneId, $CurrentProjectDir, $Operation, $ExpectedGenerationId)
+            $script:c29SendGuardCalls++
+            if ($script:c29SendGuardCalls -eq 1) {
+                return [PSCustomObject]@{
+                    Managed = $true; ProjectDir = $script:sendTempRoot; Context = $script:c29SendContext
+                    Operation = 'dispatch'; GenerationId = 'G1'
+                }
+            }
+            if ($script:c29SendGuardCalls -eq 2) {
+                return [PSCustomObject]@{ Managed = $true; ProjectDir = $script:sendTempRoot; Operation = 'dispatch'; GenerationId = 'G1' }
+            }
+            throw 'runtime dispatch refused (invalid_supervisor_identity): generation expired after prompt materialization'
+        }
+        Mock Start-DeferredPaneFromManifestEntry { return $false }
+        Mock Send-ResolvedTransportPlan {
+            throw 'runtime dispatch refused (invalid_supervisor_identity): generation expired after prompt materialization'
+        }
+
+        $errorText = ''
+        Push-Location $script:sendTempRoot
+        try {
+            try {
+                Invoke-Send -SendTarget '%2' -SendArguments @('--task-slug', 'lease-rollback', 'replacement prompt')
+            } catch {
+                $errorText = [string]$_.Exception.Message
+            }
+        } finally {
+            Pop-Location
+        }
+
+        $errorText | Should -Match 'invalid_supervisor_identity'
+        $script:c29SendGuardCalls | Should -BeGreaterOrEqual 3
+        (Get-Content -LiteralPath $taskPromptPath -Raw -Encoding UTF8).TrimEnd("`r", "`n") | Should -BeExactly 'previous prompt evidence'
+        (Get-FileHash -LiteralPath $taskPromptPath -Algorithm SHA256).Hash | Should -Be $taskPromptHashBefore
+        Test-Path -LiteralPath ($taskPromptPath + '.tmp') | Should -BeFalse
+    }
+
+    It 'TASK781 C29 removes a newly materialized unique prompt artifact during rollback' {
+        $intent = Resolve-SendTransportIntent -Text ('x' * 5000) -ProjectDir $script:sendTempRoot `
+            -LengthLimit 4000 -PromptTransport argv
+        $checkpoint = New-SendPromptArtifactCheckpoint -ProjectDir $script:sendTempRoot -Intent $intent
+        $plan = New-SendTransportPlan -Text ('x' * 5000) -ProjectDir $script:sendTempRoot `
+            -LengthLimit 4000 -PromptTransport argv -Intent $intent
+        $promptDir = Get-DispatchPromptDirectory -ProjectDir $script:sendTempRoot
+
+        Test-Path -LiteralPath ([string]$plan['PromptPath']) -PathType Leaf | Should -BeTrue
+        Restore-SendPromptArtifactCheckpoint -Checkpoint $checkpoint -MaterializedPromptPath ([string]$plan['PromptPath'])
+
+        Test-Path -LiteralPath ([string]$plan['PromptPath']) | Should -BeFalse
+        Test-Path -LiteralPath $promptDir | Should -BeFalse
+    }
+
+    It 'TASK781 C29 refuses rollback cleanup outside its dispatch prompt directory' {
+        $intent = Resolve-SendTransportIntent -Text ('x' * 5000) -ProjectDir $script:sendTempRoot `
+            -LengthLimit 4000 -PromptTransport argv
+        $checkpoint = New-SendPromptArtifactCheckpoint -ProjectDir $script:sendTempRoot -Intent $intent
+        $outsidePath = Join-Path $script:sendTempRoot 'outside-evidence.txt'
+        Write-ClmSafeTextFile -Path $outsidePath -Content 'preserve outside evidence'
+
+        {
+            Restore-SendPromptArtifactCheckpoint -Checkpoint $checkpoint -MaterializedPromptPath $outsidePath
+        } | Should -Throw '*outside its rollback checkpoint*'
+
+        (Get-Content -LiteralPath $outsidePath -Raw -Encoding UTF8).TrimEnd("`r", "`n") | Should -BeExactly 'preserve outside evidence'
+    }
+
+    It 'TASK781 C53 serializes same-slug materialization and makes an expired rollback ownership-safe' {
+        $taskPromptPath = Get-TaskPromptPath -TaskSlug 'concurrent-owner' -ProjectDir $script:sendTempRoot
+        Write-ClmSafeTextFile -Path $taskPromptPath -Content 'original evidence'
+        $intent = Resolve-SendTransportIntent -Text 'first materialization' -ProjectDir $script:sendTempRoot `
+            -LengthLimit 4000 -PromptTransport argv -TaskSlug 'concurrent-owner'
+        $firstCheckpoint = New-SendPromptArtifactCheckpoint -ProjectDir $script:sendTempRoot -Intent $intent
+        $firstPlan = New-SendTransportPlan -Text 'first materialization' -ProjectDir $script:sendTempRoot `
+            -LengthLimit 4000 -PromptTransport argv -TaskSlug 'concurrent-owner' -Intent $intent
+
+        {
+            $competingLease = [System.IO.File]::Open(
+                [string]$firstCheckpoint.LeasePath,
+                [System.IO.FileMode]::OpenOrCreate,
+                [System.IO.FileAccess]::ReadWrite,
+                [System.IO.FileShare]::None
+            )
+            $competingLease.Dispose()
+        } | Should -Throw
+
+        Restore-SendPromptArtifactCheckpoint -Checkpoint $firstCheckpoint -MaterializedPromptPath ([string]$firstPlan['PromptPath'])
+
+        $secondIntent = Resolve-SendTransportIntent -Text 'second materialization' -ProjectDir $script:sendTempRoot `
+            -LengthLimit 4000 -PromptTransport argv -TaskSlug 'concurrent-owner'
+        $secondCheckpoint = New-SendPromptArtifactCheckpoint -ProjectDir $script:sendTempRoot -Intent $secondIntent
+        $secondPlan = New-SendTransportPlan -Text 'second materialization' -ProjectDir $script:sendTempRoot `
+            -LengthLimit 4000 -PromptTransport argv -TaskSlug 'concurrent-owner' -Intent $secondIntent
+
+        Restore-SendPromptArtifactCheckpoint -Checkpoint $firstCheckpoint -MaterializedPromptPath ([string]$firstPlan['PromptPath'])
+        (Get-Content -LiteralPath $taskPromptPath -Raw -Encoding UTF8).TrimEnd("`r", "`n") | Should -BeExactly 'second materialization'
+
+        Restore-SendPromptArtifactCheckpoint -Checkpoint $secondCheckpoint -MaterializedPromptPath ([string]$secondPlan['PromptPath'])
+        (Get-Content -LiteralPath $taskPromptPath -Raw -Encoding UTF8).TrimEnd("`r", "`n") | Should -BeExactly 'original evidence'
+        Test-Path -LiteralPath ($taskPromptPath + '.send.lock') | Should -BeFalse
     }
 
     It 'resolves restart readiness through dictionary capability adapters' {
@@ -18793,6 +24159,58 @@ Describe 'winsmux role command provider routing' {
     BeforeAll {
         $script:winsmuxRoleRawPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
         $script:winsmuxRoleRawContent = Get-Content -Raw -Path $script:winsmuxRoleRawPath -Encoding UTF8
+
+        function Invoke-TestManagedPaneLifecycleMutationRefusal {
+            param(
+                [Parameter(Mandatory = $true)][bool]$HasManifest,
+                [AllowNull()]$Validation,
+                [ValidateSet('role', 'restart', 'name', 'kill')][string]$OperationName = 'role',
+                [AllowEmptyString()][string]$RequestedLabel = '',
+                [AllowNull()]$Context = $null
+            )
+
+            $helperSource = [regex]::Match(
+                $script:winsmuxRoleRawContent,
+                '(?s)function Get-ManagedPaneLifecycleMutationRefusal \{.*?\r?\n\}\r?\n\r?\nfunction Invoke-Role'
+            ).Value
+            if ([string]::IsNullOrWhiteSpace($helperSource)) {
+                throw 'Failed to extract Get-ManagedPaneLifecycleMutationRefusal from winsmux-core.ps1.'
+            }
+            $helperSource = $helperSource -replace '\r?\n\r?\nfunction Invoke-Role$', ''
+
+            & {
+                param($HelperSource, $HasManifest, $Validation, $OperationName, $RequestedLabel, $Context)
+                Set-StrictMode -Version Latest
+
+                function Test-Path {
+                    param([string]$LiteralPath, [string]$PathType)
+                    return $HasManifest
+                }
+
+                function Get-PaneControlManifestContext {
+                    param([string]$ProjectDir, [string]$PaneId)
+                    return [pscustomobject]@{ ProjectDir = $ProjectDir; PaneId = $PaneId }
+                }
+
+                function Test-PaneControlRuntimeContext {
+                    param([string]$ProjectDir, $ManifestEntry, [string]$Operation)
+                    return $Validation
+                }
+
+                function Resolve-WinsmuxManagedTargetContext {
+                    param([string]$PaneId, [string]$CurrentProjectDir, [string]$Operation)
+                    return [pscustomobject]@{
+                        Managed    = $HasManifest
+                        Validation = $Validation
+                        Context    = $Context
+                    }
+                }
+
+                Invoke-Expression $HelperSource
+                Get-ManagedPaneLifecycleMutationRefusal -ProjectDir 'C:\synthetic-winsmux' -PaneId '%1' `
+                    -OperationName $OperationName -RequestedLabel $RequestedLabel
+            } $helperSource $HasManifest $Validation $OperationName $RequestedLabel $Context
+        }
     }
 
     It 'builds reassigned role launch commands through provider capabilities' {
@@ -18836,6 +24254,55 @@ Describe 'winsmux role command provider routing' {
         $manifestUpdateIndex | Should -BeLessThan $respawnIndex
         $environmentClearIndex | Should -BeLessThan $environmentIndex
         $environmentIndex | Should -BeLessThan $respawnIndex
+    }
+
+    It 'TASK781 preserves unmanaged role and restart paths' {
+        $result = Invoke-TestManagedPaneLifecycleMutationRefusal -HasManifest $false -Validation $null
+
+        $result | Should -BeNullOrEmpty
+    }
+
+    It 'TASK781 blocks managed lifecycle replacement after validating the current runtime identity' {
+        $result = Invoke-TestManagedPaneLifecycleMutationRefusal -HasManifest $true -Validation ([pscustomobject]@{
+            valid       = $true
+            reason_code = ''
+            diagnostic  = 'verified'
+        })
+
+        $result.valid | Should -BeFalse
+        $result.reason_code | Should -Be 'manifest_regeneration_required'
+        $result.diagnostic | Should -Match 'replace the registered bootstrap identity'
+        $script:winsmuxRoleRawContent | Should -Match '(?s)function Invoke-Role.*?Get-ManagedPaneLifecycleMutationRefusal.*?Stop-WithError.*?select-pane'
+        $script:winsmuxRoleRawContent | Should -Match '(?s)function Invoke-RestartPane.*?Get-ManagedPaneLifecycleMutationRefusal.*?Stop-WithError.*?respawn-pane'
+    }
+
+    It 'TASK781 refuses every managed name publication after runtime validation' {
+        $validation = [pscustomobject]@{ valid = $true; reason_code = ''; diagnostic = 'verified' }
+        $context = [pscustomobject]@{ Title = 'W1 Codex Reviewer' }
+
+        $exact = Invoke-TestManagedPaneLifecycleMutationRefusal -HasManifest $true -Validation $validation `
+            -OperationName name -RequestedLabel 'W1 Codex Reviewer' -Context $context
+        $replacement = Invoke-TestManagedPaneLifecycleMutationRefusal -HasManifest $true -Validation $validation `
+            -OperationName name -RequestedLabel 'renamed' -Context $context
+
+        $exact.valid | Should -BeFalse
+        $exact.reason_code | Should -Be 'manifest_regeneration_required'
+        $replacement.valid | Should -BeFalse
+        $replacement.reason_code | Should -Be 'manifest_regeneration_required'
+        $script:winsmuxRoleRawContent | Should -Match 'Invoke-Name[\s\S]*?-OperationName name -RequestedLabel \$label'
+        $script:winsmuxRoleRawContent | Should -Not -Match '(?s)function Get-ManagedPaneLifecycleMutationRefusal.*?OperationName -eq ''name''.*?return \$null.*?function Invoke-Role'
+    }
+
+    It 'TASK781 preserves the central runtime refusal reason for managed lifecycle changes' {
+        $result = Invoke-TestManagedPaneLifecycleMutationRefusal -HasManifest $true -Validation ([pscustomobject]@{
+            valid       = $false
+            reason_code = 'invalid_supervisor_identity'
+            diagnostic  = 'supervisor start time mismatch'
+        })
+
+        $result.valid | Should -BeFalse
+        $result.reason_code | Should -Be 'invalid_supervisor_identity'
+        $result.diagnostic | Should -Be 'supervisor start time mismatch'
     }
 }
 
@@ -19398,6 +24865,89 @@ Describe 'winsmux orchestra-smoke command' {
         $script:winsmuxCoreRawContent = Get-Content -Path $script:winsmuxCoreRawPath -Raw -Encoding UTF8
         $script:orchestraSmokePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\orchestra-smoke.ps1'
         $script:orchestraSmokeContent = Get-Content -Path $script:orchestraSmokePath -Raw -Encoding UTF8
+        $script:runtimeManifestPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\manifest.ps1'
+        $script:harnessCheckContent = Get-Content -Path (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\harness-check.ps1') -Raw -Encoding UTF8
+
+        function Invoke-TestOrchestraRuntimeValidity {
+            param(
+                [Parameter(Mandatory = $true)][object[]]$Entries,
+                [Parameter(Mandatory = $true)][object[]]$Validations,
+                [int]$ExpectedPaneCount = 6
+            )
+
+            $runtimeSource = [regex]::Match(
+                $script:orchestraSmokeContent,
+                '(?s)function Get-OrchestraSmokeRuntimeValidity \{.*?\r?\n\}\r?\n\r?\nfunction ConvertTo-OrchestraSmokeInt'
+            ).Value
+            if ([string]::IsNullOrWhiteSpace($runtimeSource)) {
+                throw 'Failed to extract Get-OrchestraSmokeRuntimeValidity from orchestra-smoke.ps1.'
+            }
+            $runtimeSource = $runtimeSource -replace '\r?\n\r?\nfunction ConvertTo-OrchestraSmokeInt$', ''
+
+            & {
+                param($RuntimeSource, $RuntimeManifestPath, $Entries, $Validations, $ExpectedPaneCount)
+
+                Set-StrictMode -Version Latest
+                . $RuntimeManifestPath
+                $validationQueue = [System.Collections.Queue]::new()
+                foreach ($validation in $Validations) {
+                    $validationQueue.Enqueue($validation)
+                }
+
+                function Get-PaneControlManifestEntries {
+                    param([string]$ProjectDir)
+                    return @($Entries)
+                }
+
+                function Get-PaneControlValue {
+                    param($InputObject, [string]$Name, $Default)
+                    if ($InputObject -is [System.Collections.IDictionary] -and $InputObject.Contains($Name)) {
+                        return $InputObject[$Name]
+                    }
+                    if ($null -ne $InputObject -and $null -ne $InputObject.PSObject.Properties[$Name]) {
+                        return $InputObject.$Name
+                    }
+                    return $Default
+                }
+
+                function Test-PaneControlRuntimeContext {
+                    param([string]$ProjectDir, $ManifestEntry, [string]$Operation)
+                    if ($validationQueue.Count -eq 0) {
+                        throw 'Missing synthetic runtime validation result.'
+                    }
+                    return $validationQueue.Dequeue()
+                }
+
+                Invoke-Expression $RuntimeSource
+                Get-OrchestraSmokeRuntimeValidity -ProjectDir 'C:\synthetic-winsmux' -ExpectedPaneCount $ExpectedPaneCount
+            } $runtimeSource $script:runtimeManifestPath $Entries $Validations $ExpectedPaneCount
+        }
+
+        function Invoke-TestHarnessSmokeContractEvaluation {
+            param([Parameter(Mandatory = $true)]$SmokeProbe)
+
+            $propertySource = [regex]::Match(
+                $script:harnessCheckContent,
+                '(?s)function Test-HarnessHasProperty \{.*?\r?\n\}\r?\n\r?\nfunction Test-HarnessSettingsLocalTracked'
+            ).Value
+            $evaluationSource = [regex]::Match(
+                $script:harnessCheckContent,
+                '(?s)function Get-HarnessSmokeContractEvaluation \{.*?\r?\n\}\r?\n\r?\n\$results ='
+            ).Value
+            if ([string]::IsNullOrWhiteSpace($propertySource) -or [string]::IsNullOrWhiteSpace($evaluationSource)) {
+                throw 'Failed to extract harness smoke contract helpers.'
+            }
+            $propertySource = $propertySource -replace '\r?\n\r?\nfunction Test-HarnessSettingsLocalTracked$', ''
+            $evaluationSource = $evaluationSource -replace '\r?\n\r?\n\$results =$', ''
+
+            & {
+                param($PropertySource, $EvaluationSource, $SmokeProbe)
+                Set-StrictMode -Version Latest
+                Invoke-Expression $PropertySource
+                Invoke-Expression $EvaluationSource
+                Get-HarnessSmokeContractEvaluation -SmokeProbe $SmokeProbe
+            } $propertySource $evaluationSource $SmokeProbe
+        }
 
         function Invoke-TestOrchestraOperatorContract {
             param(
@@ -19932,6 +25482,162 @@ Describe 'winsmux orchestra-smoke command' {
         $script:orchestraSmokeContent | Should -Match 'manifest read failed during startup convergence'
     }
 
+    It 'TASK781 makes smoke readiness depend on structured runtime identity validity' {
+        $script:orchestraSmokeContent | Should -Match 'function Get-OrchestraSmokeRuntimeValidity'
+        $script:orchestraSmokeContent | Should -Match 'Test-PaneControlRuntimeContext'
+        $script:orchestraSmokeContent | Should -Match '\$sessionAlreadyHealthy = .*RuntimeValid'
+        $script:orchestraSmokeContent | Should -Match "runtime identity invalid"
+        $script:orchestraSmokeContent | Should -Match 'runtime_valid\s+=\s+\$runtimeValid'
+        $script:orchestraSmokeContent | Should -Match 'runtime_identity\s+=\s+\$runtimeIdentity'
+    }
+
+    It 'TASK781 verifies all six expected runtime identities before smoke can pass' {
+        $entries = @(
+            1..6 | ForEach-Object {
+                [pscustomobject]@{
+                    SlotId        = "worker-$_"
+                    PaneId        = "%$_"
+                    WorkerBackend = 'codex'
+                    Role          = 'Worker'
+                    Title         = "worker-$_"
+                    Status        = 'ready'
+                }
+            }
+        )
+        $validations = @(
+            1..6 | ForEach-Object {
+                [pscustomobject]@{ valid = $true; reason_code = ''; diagnostic = 'verified' }
+            }
+        )
+
+        $result = Invoke-TestOrchestraRuntimeValidity -Entries $entries -Validations $validations
+
+        $result.valid | Should -BeTrue
+        $result.expected | Should -Be 6
+        $result.verified | Should -Be 6
+        $result.entries.Count | Should -Be 6
+    }
+
+    It 'TASK781 makes one invalid supervisor identity fail the six-pane smoke contract' {
+        $entries = @(
+            1..6 | ForEach-Object {
+                [pscustomobject]@{
+                    SlotId        = "worker-$_"
+                    PaneId        = "%$_"
+                    WorkerBackend = 'codex'
+                    Role          = 'Worker'
+                    Title         = "worker-$_"
+                    Status        = 'ready'
+                }
+            }
+        )
+        $validations = @(
+            1..5 | ForEach-Object {
+                [pscustomobject]@{ valid = $true; reason_code = ''; diagnostic = 'verified' }
+            }
+        ) + @(
+            [pscustomobject]@{
+                valid       = $false
+                reason_code = 'invalid_supervisor_identity'
+                diagnostic  = 'supervisor start time mismatch'
+            }
+        )
+
+        $result = Invoke-TestOrchestraRuntimeValidity -Entries $entries -Validations $validations
+
+        $result.valid | Should -BeFalse
+        $result.reason_code | Should -Be 'invalid_supervisor_identity'
+        $result.verified | Should -Be 5
+    }
+
+    It 'TASK781 rejects each parseable but invalid harness smoke result' {
+        $validContract = [pscustomobject]@{
+            operator_state  = 'ready'
+            can_dispatch    = $true
+            requires_startup = $false
+        }
+        $invalidCases = @(
+            [pscustomobject]@{
+                Name  = 'nonzero exit'
+                Probe = [pscustomobject]@{
+                    exit_code = 1
+                    parsed    = [pscustomobject]@{ smoke_ok = $true; runtime_valid = $true; runtime_identity = @{}; operator_contract = $validContract }
+                    error     = ''
+                }
+                Message = 'exited with code 1'
+            }
+            [pscustomobject]@{
+                Name  = 'smoke false'
+                Probe = [pscustomobject]@{
+                    exit_code = 0
+                    parsed    = [pscustomobject]@{ smoke_ok = $false; runtime_valid = $true; runtime_identity = @{}; operator_contract = $validContract }
+                    error     = ''
+                }
+                Message = 'smoke_ok=false'
+            }
+            [pscustomobject]@{
+                Name  = 'missing runtime identity'
+                Probe = [pscustomobject]@{
+                    exit_code = 0
+                    parsed    = [pscustomobject]@{ smoke_ok = $true; runtime_valid = $true; operator_contract = $validContract }
+                    error     = ''
+                }
+                Message = 'runtime identity registry'
+            }
+            [pscustomobject]@{
+                Name  = 'runtime invalid'
+                Probe = [pscustomobject]@{
+                    exit_code = 0
+                    parsed    = [pscustomobject]@{ smoke_ok = $true; runtime_valid = $false; runtime_identity = @{}; operator_contract = $validContract }
+                    error     = ''
+                }
+                Message = 'runtime identity registry'
+            }
+        )
+
+        foreach ($case in $invalidCases) {
+            $result = Invoke-TestHarnessSmokeContractEvaluation -SmokeProbe $case.Probe
+            $result.passed | Should -BeFalse -Because $case.Name
+            $result.message | Should -Match ([regex]::Escape($case.Message)) -Because $case.Name
+        }
+    }
+
+    It 'TASK781 accepts a complete valid harness smoke result' {
+        $probe = [pscustomobject]@{
+            exit_code = 0
+            error     = ''
+            parsed    = [pscustomobject]@{
+                smoke_ok              = $true
+                runtime_valid         = $true
+                runtime_identity      = [pscustomobject]@{ verified = 6; expected = 6 }
+                external_operator_mode = $false
+                session_ready         = $true
+                ui_attached           = $false
+                operator_contract     = [pscustomobject]@{
+                    operator_state   = 'ready-with-ui-warning'
+                    can_dispatch     = $true
+                    requires_startup = $false
+                }
+            }
+        }
+
+        $result = Invoke-TestHarnessSmokeContractEvaluation -SmokeProbe $probe
+
+        $result.passed | Should -BeTrue
+    }
+
+    It 'TASK781 makes harness and doctor fail when smoke or runtime identity is invalid' {
+        $harnessContent = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\harness-check.ps1') -Raw -Encoding UTF8
+        $doctorContent = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\doctor.ps1') -Raw -Encoding UTF8
+
+        $harnessContent | Should -Match 'function Get-HarnessSmokeContractEvaluation'
+        $harnessContent | Should -Match '\$exitCode -ne 0'
+        $harnessContent | Should -Match 'smoke_ok=false'
+        $harnessContent | Should -Match 'runtime_valid'
+        $doctorContent | Should -Match '\$resultOk = \$exitCode -eq 0 -and \$smokeOk -and \$runtimeValid'
+        $doctorContent | Should -Match '\$status = if \(\$null -ne \$smoke\.Data\) \{ ''fail'' \} else \{ ''warn'' \}'
+    }
+
     It 'refreshes the attached client snapshot after startup convergence before resolving attach state' {
         $script:orchestraSmokeContent | Should -Match 'function Get-OrchestraSmokeClientProbe'
         $script:orchestraSmokeContent | Should -Match '(?s)Wait-OrchestraSmokeConvergence -ProjectDir \$ProjectDir -SessionName \$SessionName.*?\$clientSnapshot = Get-OrchestraSmokeClientProbe -WinsmuxBin \$winsmuxBin -SessionName \$SessionName.*?Resolve-OrchestraSmokeAttachState'
@@ -20141,6 +25847,62 @@ Describe 'orchestra pane bootstrap plan' {
         $script:orchestraPaneBootstrapContent | Should -Match '\[winsmux\] pane bootstrap:'
         $script:orchestraPaneBootstrapContent | Should -Match 'launch_command'
         $script:orchestraPaneBootstrapContent | Should -Match 'Invoke-Expression \$launchCommand'
+    }
+
+    It 'TASK781 clean-imports pane bootstrap and writes process identity with <HostName>' -ForEach @(
+        @{ HostName = 'pwsh' }
+        @{ HostName = 'powershell.exe' }
+    ) {
+        $root = Join-Path ([IO.Path]::GetTempPath()) ('winsmux-task781-bootstrap-' + [guid]::NewGuid().ToString('N'))
+        $planPath = Join-Path $root 'plan.json'
+        $markerPath = Join-Path $root 'worker-1.ready.json'
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        try {
+            $plan = [ordered]@{
+                launch_dir       = $root
+                launch_command   = "[Console]::WriteLine('bootstrap-launch-ok')"
+                ready_marker_path = $markerPath
+                generation_id    = 'generation-bootstrap-clean-import'
+                server_session_id = '$99'
+                slot_id          = 'worker-1'
+                pane_id          = '%2'
+                worker_backend   = 'codex'
+                worker_role      = 'reviewer'
+                pane_title       = 'W1 Codex Reviewer'
+                role             = 'Reviewer'
+                label            = 'worker-1'
+                model            = 'gpt-5'
+                environment      = [ordered]@{}
+            }
+            [IO.File]::WriteAllText($planPath, ($plan | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
+
+            $output = @(& $HostName -NoProfile -File $script:orchestraPaneBootstrapPath -PlanFile $planPath 2>&1 |
+                ForEach-Object { [string]$_ })
+            $exitCode = $LASTEXITCODE
+
+            $exitCode | Should -Be 0 -Because ($output -join [Environment]::NewLine)
+            Test-Path -LiteralPath $markerPath -PathType Leaf | Should -BeTrue
+            $markerJson = Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8
+            $marker = $markerJson | ConvertFrom-Json -Depth 8
+            [int]$marker.bootstrap_pid | Should -BeGreaterThan 0
+            [string]$marker.bootstrap_process_started_at | Should -Not -BeNullOrEmpty
+            $startedAtMatch = [regex]::Match(
+                $markerJson,
+                '"bootstrap_process_started_at"\s*:\s*"(?<value>[^"]+)"'
+            )
+            $startedAtMatch.Success | Should -BeTrue
+            $startedAt = [DateTimeOffset]::MinValue
+            [DateTimeOffset]::TryParseExact(
+                $startedAtMatch.Groups['value'].Value,
+                'o',
+                [Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::RoundtripKind,
+                [ref]$startedAt
+            ) | Should -BeTrue
+            $output | Should -Contain 'bootstrap-launch-ok'
+        } finally {
+            Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 
@@ -21461,6 +27223,62 @@ panes:
         }
     }
 
+    It 'TASK781 C19 threads the caller snapshot through review state updates' {
+        $snapshot = [ordered]@{
+            ManifestPath = 'C:\repo\.winsmux\manifest.yaml'
+            PaneId = '%2'
+            GenerationId = 'generation-initial'
+        }
+        $script:capturedReviewGeneration = ''
+        Mock Get-CurrentReviewPaneManifestContext {
+            [pscustomobject]@{ ManifestPath = 'replacement'; PaneId = '%9'; GenerationId = 'generation-replacement' }
+        }
+        Mock Set-PaneControlManifestPaneProperties {
+            param($ManifestPath, $PaneId, $Properties, $ExpectedGenerationId)
+            $script:capturedReviewGeneration = [string]$ExpectedGenerationId
+        }
+
+        Update-ReviewPaneManifestState -Context $snapshot -Properties ([ordered]@{ review_state = 'pending' })
+
+        $script:capturedReviewGeneration | Should -BeExactly 'generation-initial'
+        Should -Invoke Get-CurrentReviewPaneManifestContext -Times 0 -Exactly
+    }
+
+    It 'TASK781 C19 clears authoritative review state when manifest context is unavailable' {
+        $script:reviewResetState = [ordered]@{ 'codex/test-review-reset' = [ordered]@{ status = 'PASS' } }
+        Save-ReviewState -State $script:reviewResetState -ProjectDir $script:consultTempRoot
+        Mock Get-CurrentGitBranch { 'codex/test-review-reset' }
+        Mock Get-CurrentReviewPaneManifestContext { throw 'manifest unavailable' }
+        Mock Set-PaneControlManifestPaneProperties { throw 'must not sync without a snapshot' }
+
+        $output = & { $Target = $null; $Rest = @(); Invoke-ReviewReset }
+
+        $output | Should -Match 'review PASS cleared'
+        (Get-ReviewState -ProjectDir $script:consultTempRoot).Contains('codex/test-review-reset') | Should -BeFalse
+        Should -Invoke Set-PaneControlManifestPaneProperties -Times 0 -Exactly
+    }
+
+    It 'TASK781 C19 carries the initial snapshot through the production consultation caller' {
+        $script:consultCallerGeneration = ''
+        Mock Get-CurrentReviewPaneManifestContext {
+            [pscustomobject]@{
+                ManifestPath = $script:consultManifestPath
+                PaneId = '%2'
+                GenerationId = 'generation-initial'
+            }
+        }
+        Mock Get-PaneControlManifestGenerationId { 'generation-replacement' }
+        Mock Set-PaneControlManifestPaneProperties {
+            $script:consultCallerGeneration = [string]$ExpectedGenerationId
+        }
+
+        Write-ConsultationCommandRecord -Kind 'consult_request' -Mode 'early' -Message 'verify snapshot' `
+            -ProjectDir $script:consultTempRoot | Out-Null
+
+        $script:consultCallerGeneration | Should -BeExactly 'generation-initial'
+        Should -Invoke Get-PaneControlManifestGenerationId -Times 0 -Exactly
+    }
+
     It 'records a consult request as a file-backed packet and event' {
         $args = Parse-ConsultCommandArgs -Mode 'early' -Args @('--target-slot', 'slot-review-1', '--message', 'sanity-check the current hypothesis')
 
@@ -21622,6 +27440,59 @@ panes:
         if ($script:operatorPollTempRoot -and (Test-Path $script:operatorPollTempRoot)) {
             Remove-Item -Path $script:operatorPollTempRoot -Recurse -Force
         }
+    }
+
+    It 'TASK781 C19 threads the event manifest snapshot through pane state updates' {
+        $paneContext = [ordered]@{
+            project_dir = $script:operatorPollTempRoot
+            manifest_path = $script:operatorPollManifestPath
+            pane_id = '%2'
+            generation_id = 'generation-initial'
+        }
+        $script:capturedPollGeneration = ''
+        Mock Get-PaneControlManifestEntries {
+            @([pscustomobject]@{ ManifestPath = 'replacement'; PaneId = '%9'; GenerationId = 'generation-replacement' })
+        }
+        Mock Set-PaneControlManifestPaneProperties {
+            param($ManifestPath, $PaneId, $Properties, $ExpectedGenerationId)
+            $script:capturedPollGeneration = [string]$ExpectedGenerationId
+        }
+
+        Update-OperatorPollPaneState -PaneContext $paneContext -Properties ([ordered]@{ task_state = 'completed' })
+
+        $script:capturedPollGeneration | Should -BeExactly 'generation-initial'
+        Should -Invoke Get-PaneControlManifestEntries -Times 0 -Exactly
+    }
+
+    It 'TASK781 C19 carries the event snapshot through the production poll caller' {
+        $manifest = [ordered]@{
+            Session = [ordered]@{
+                name = 'winsmux-orchestra'
+                project_dir = $script:operatorPollTempRoot
+                generation_id = 'generation-initial'
+            }
+            Panes = [ordered]@{
+                'builder-1' = [ordered]@{ pane_id = '%2'; role = 'Builder'; launch_dir = $script:operatorPollTempRoot }
+            }
+        }
+        $event = [ordered]@{ event = 'pane.idle'; pane_id = '%2'; label = 'builder-1'; role = 'Builder' }
+        $summary = [ordered]@{ new_events = 0; dispatches = 0; completions = 0; approvals = 0; errors = 0; messages = @() }
+        $script:pollCallerGeneration = ''
+        Mock Write-OperatorPollLog { }
+        Mock Send-OperatorTelegramNotification { }
+        Mock Get-PaneControlManifestEntries {
+            @([pscustomobject]@{ ManifestPath = 'replacement'; PaneId = '%9'; GenerationId = 'generation-replacement' })
+        }
+        Mock Set-PaneControlManifestPaneProperties {
+            $script:pollCallerGeneration = [string]$ExpectedGenerationId
+        }
+
+        Invoke-OperatorPollEventRecord -Manifest $manifest -ManifestPath $script:operatorPollManifestPath `
+            -EventRecord $event -Summary $summary
+
+        $summary.dispatches | Should -Be 1
+        $script:pollCallerGeneration | Should -BeExactly 'generation-initial'
+        Should -Invoke Get-PaneControlManifestEntries -Times 0 -Exactly
     }
 
     It 'processes mailbox idle messages and logs dispatch-needed guidance' {
@@ -22439,6 +28310,14 @@ Describe 'deferred worker startup' {
         $script:deferredPreRetryProbeApplies = $false
         $script:deferredPreRetryReady = $false
 
+        Mock Assert-WinsmuxTargetRuntimeWriteAllowed {
+            [pscustomobject]@{
+                Managed      = $true
+                ProjectDir   = $script:deferredTempRoot
+                GenerationId = 'generation-deferred'
+                Validation   = [pscustomobject]@{ valid = $true }
+            }
+        }
         Mock Wait-PaneShellReady { }
         Mock Invoke-Send {
             param(
@@ -22477,6 +28356,18 @@ Describe 'deferred worker startup' {
                 Properties = $capturedProperties
             }) | Out-Null
         }
+        Mock Get-PaneControlManifestContext {
+            param([string]$ProjectDir, [string]$PaneId)
+            [PSCustomObject]@{
+                Label = 'worker-2'; SlotId = 'worker-2'; PaneId = $PaneId; WorkerBackend = 'codex'
+                WorkerRole = 'worker'; Role = 'Worker'; Title = 'W2'; Status = 'deferred_starting'
+                BootstrapMarkerPath = $script:deferredMarkerPath
+            }
+        }
+        Mock Wait-PaneControlRuntimeContext {
+            New-WinsmuxRuntimeValidationResult -Valid $true -ReasonCode 'live_runtime_verified' `
+                -Diagnostic 'synthetic promoted runtime verified' -Context ([ordered]@{ generation_id = 'generation-deferred' })
+        }
     }
 
     AfterEach {
@@ -22512,6 +28403,34 @@ Describe 'deferred worker startup' {
         $script:deferredStatusWrites | Should -Be @('deferred_starting', 'ready')
     }
 
+    It 'TASK781 C29 waits for supervisor live promotion before publishing ready' {
+        $entry = [PSCustomObject]@{
+            Label = 'worker-2'; PaneId = '%3'; Status = 'deferred_starting'; BootstrapPlanPath = $script:deferredPlanPath
+            CapabilityAdapter = 'codex'; ProviderTarget = ''; ApprovedLaunch = $null
+        }
+        $script:c29DeferredTrace = [System.Collections.Generic.List[string]]::new()
+        Mock Wait-DeferredPaneReady { $script:c29DeferredTrace.Add('marker-ready') | Out-Null }
+        Mock Wait-PaneControlRuntimeContext {
+            $script:c29DeferredTrace.Add('registry-live') | Out-Null
+            New-WinsmuxRuntimeValidationResult -Valid $true -ReasonCode 'live_runtime_verified' `
+                -Diagnostic 'synthetic promoted runtime verified' -Context ([ordered]@{ generation_id = 'generation-deferred' })
+        }
+        Mock Assert-WinsmuxTargetRuntimeWriteAllowed {
+            param($PaneId, $CurrentProjectDir, $Operation, $ExpectedGenerationId)
+            if ($Operation -eq 'dispatch') { $script:c29DeferredTrace.Add('final-guard') | Out-Null }
+            [PSCustomObject]@{ Managed = $true; ProjectDir = $script:deferredTempRoot; GenerationId = 'generation-deferred' }
+        }
+        Mock Set-PaneControlManifestPaneProperties {
+            param([string]$ManifestPath, [string]$PaneId, [System.Collections.IDictionary]$Properties)
+            if ([string]$Properties['status'] -eq 'ready') { $script:c29DeferredTrace.Add('manifest-ready') | Out-Null }
+        }
+
+        Start-DeferredPaneFromManifestEntry -ProjectDir $script:deferredTempRoot -ManifestEntry $entry `
+            -ExpectedGenerationId 'generation-deferred' | Should -BeTrue
+
+        @($script:c29DeferredTrace) | Should -Be @('marker-ready', 'registry-live', 'final-guard', 'manifest-ready')
+    }
+
     It 'waits for an already-starting deferred pane without launching a duplicate bootstrap' {
         $entry = [PSCustomObject]@{
             Label             = 'worker-2'
@@ -22528,6 +28447,25 @@ Describe 'deferred worker startup' {
         Should -Invoke Wait-PaneShellReady -Times 0 -Exactly
         $script:deferredSendCommands.Count | Should -Be 0
         $script:deferredStatusWrites | Should -Be @('ready')
+    }
+
+    It 'TASK781 C29 leaves non-retryable unconfigured deferred states unchanged' -ForEach @(
+        'api_llm_runner_unconfigured',
+        'antigravity_runner_unconfigured'
+    ) {
+        $entry = [PSCustomObject]@{
+            Label = 'worker-2'; PaneId = '%3'; Status = [string]$_; BootstrapPlanPath = $script:deferredPlanPath
+            CapabilityAdapter = 'codex'; ProviderTarget = ''; ApprovedLaunch = $null
+        }
+
+        $started = Start-DeferredPaneFromManifestEntry -ProjectDir $script:deferredTempRoot -ManifestEntry $entry
+
+        $started | Should -BeFalse
+        (Get-WinsmuxRuntimeStatusClassification -Status ([string]$_)).Retryable | Should -BeFalse
+        $script:deferredSendCommands.Count | Should -Be 0
+        $script:deferredStatusWrites.Count | Should -Be 0
+        Should -Invoke Wait-PaneShellReady -Times 0 -Exactly
+        Should -Invoke Wait-PaneControlRuntimeContext -Times 0 -Exactly
     }
 
     It 'retries a previously failed deferred pane instead of sending task text to the shell' {
@@ -22557,7 +28495,110 @@ Describe 'deferred worker startup' {
         $script:deferredStatusWrites | Should -Be @('deferred_starting', 'ready')
     }
 
-    It 'marks a previously failed deferred pane ready when the delayed bootstrap already reached an agent prompt' {
+    It 'TASK781 C32 reuses a live authenticated failed marker without launching a duplicate bootstrap' {
+        $entry = [PSCustomObject]@{
+            Label = 'worker-2'; PaneId = '%3'; Status = 'deferred_start_failed'
+            BootstrapPlanPath = $script:deferredPlanPath; BootstrapMarkerPath = $script:deferredMarkerPath
+            CapabilityAdapter = 'codex'; ProviderTarget = ''
+        }
+        Mock Assert-WinsmuxTargetRuntimeWriteAllowed {
+            [pscustomobject]@{
+                Managed = $true; ProjectDir = $script:deferredTempRoot; GenerationId = 'generation-deferred'
+                Validation = [pscustomobject]@{
+                    valid = $true
+                    context = [pscustomobject]@{ retry_marker_state = 'live'; generation_id = 'generation-deferred' }
+                }
+            }
+        }
+
+        $started = Start-DeferredPaneFromManifestEntry -ProjectDir $script:deferredTempRoot -ManifestEntry $entry `
+            -ExpectedGenerationId 'generation-deferred'
+
+        $started | Should -BeTrue
+        Should -Invoke Wait-PaneShellReady -Times 0 -Exactly
+        $script:deferredSendCommands.Count | Should -Be 0
+        $script:deferredStatusWrites | Should -Be @('deferred_starting', 'ready')
+    }
+
+    It 'TASK781 C36 refuses a live retry manifest write when the marker changes after validation' {
+        $entry = [PSCustomObject]@{
+            Label = 'worker-2'; PaneId = '%3'; Status = 'deferred_start_failed'
+            BootstrapPlanPath = $script:deferredPlanPath; BootstrapMarkerPath = $script:deferredMarkerPath
+            CapabilityAdapter = 'codex'; ProviderTarget = ''
+        }
+        $script:c36GuardCalls = 0
+        Mock Assert-WinsmuxTargetRuntimeWriteAllowed {
+            $script:c36GuardCalls++
+            $markerState = if ($script:c36GuardCalls -eq 1) { 'live' } else { 'stale' }
+            [pscustomobject]@{
+                Managed = $true; ProjectDir = $script:deferredTempRoot; GenerationId = 'generation-deferred'
+                Validation = [pscustomobject]@{
+                    valid = $true
+                    context = [pscustomobject]@{ retry_marker_state = $markerState; generation_id = 'generation-deferred' }
+                }
+            }
+        }
+        $errorText = ''
+
+        try {
+            Start-DeferredPaneFromManifestEntry -ProjectDir $script:deferredTempRoot -ManifestEntry $entry `
+                -ExpectedGenerationId 'generation-deferred' | Out-Null
+        } catch {
+            $errorText = [string]$_.Exception.Message
+        }
+
+        $script:c36GuardCalls | Should -Be 2
+        $script:deferredStatusWrites.Count | Should -Be 0
+        $script:deferredSendCommands.Count | Should -Be 0
+        $errorText | Should -Match 'changed before deferred retry manifest update'
+    }
+
+    It 'TASK781 C32 safely removes a stale authenticated failed marker before one bootstrap retry' {
+        $bootstrapRoot = Join-Path (Join-Path $script:deferredTempRoot '.winsmux') 'orchestra-bootstrap'
+        New-Item -ItemType Directory -Path $bootstrapRoot -Force | Out-Null
+        $planPath = Join-Path $bootstrapRoot '2.json'
+        $markerPath = Join-Path $bootstrapRoot '2-generation-deferred.ready.json'
+        ([ordered]@{ agent = 'codex'; ready_marker_path = $markerPath } | ConvertTo-Json) |
+            Set-Content -LiteralPath $planPath -Encoding UTF8
+        '{}' | Set-Content -LiteralPath $markerPath -Encoding UTF8
+        $entry = [PSCustomObject]@{
+            Label = 'worker-2'; PaneId = '%3'; Status = 'deferred_start_failed'
+            BootstrapPlanPath = $planPath; BootstrapMarkerPath = $markerPath
+            CapabilityAdapter = 'codex'; ProviderTarget = ''
+        }
+        $script:c32RetryGuardCount = 0
+        $script:c32MarkerAbsentAtLaunch = $false
+        Mock Assert-WinsmuxTargetRuntimeWriteAllowed {
+            $script:c32RetryGuardCount++
+            $markerState = if ($script:c32RetryGuardCount -le 2) { 'stale' } else { '' }
+            [pscustomobject]@{
+                Managed = $true; ProjectDir = $script:deferredTempRoot; GenerationId = 'generation-deferred'
+                Validation = [pscustomobject]@{
+                    valid = $true
+                    context = [pscustomobject]@{ retry_marker_state = $markerState; generation_id = 'generation-deferred' }
+                }
+            }
+        }
+        Mock Invoke-Send {
+            param([string]$SendTarget, [string[]]$SendArguments, [string]$DeliveryClass, [switch]$SkipDeferredPaneStart)
+            $script:c32MarkerAbsentAtLaunch = -not (Test-Path -LiteralPath $markerPath -PathType Leaf)
+            $script:deferredSendCommands.Add([string]$SendArguments[-1]) | Out-Null
+            return "sent to $SendTarget"
+        }
+        $script:deferredPreRetryProbeApplies = $true
+        $script:deferredPreRetryReady = $false
+
+        $started = Start-DeferredPaneFromManifestEntry -ProjectDir $script:deferredTempRoot -ManifestEntry $entry `
+            -ExpectedGenerationId 'generation-deferred'
+
+        $started | Should -BeTrue
+        $script:c32MarkerAbsentAtLaunch | Should -BeTrue
+        $script:deferredSendCommands.Count | Should -Be 1
+        $script:c32RetryGuardCount | Should -BeGreaterOrEqual 2
+        $script:deferredStatusWrites | Should -Be @('deferred_starting', 'ready')
+    }
+
+    It 'does not trust a delayed prompt without an authenticated marker and launches one retry' {
         $script:deferredPreRetryProbeApplies = $true
         $script:deferredPreRetryReady = $true
         $entry = [PSCustomObject]@{
@@ -22572,10 +28613,10 @@ Describe 'deferred worker startup' {
         $started = Start-DeferredPaneFromManifestEntry -ProjectDir $script:deferredTempRoot -ManifestEntry $entry
 
         $started | Should -Be $true
-        Should -Invoke Wait-PaneShellReady -Times 0 -Exactly
-        $script:deferredSendCommands.Count | Should -Be 0
+        Should -Invoke Wait-PaneShellReady -Times 1 -Exactly
+        $script:deferredSendCommands.Count | Should -Be 1
         $script:deferredReadyProbeCount | Should -Be 1
-        $script:deferredStatusWrites | Should -Be @('ready')
+        $script:deferredStatusWrites | Should -Be @('deferred_starting', 'ready')
     }
 
     It 'blocks a previously failed deferred pane when the bootstrap plan is still missing' {
@@ -22735,6 +28776,137 @@ Describe 'winsmux send fallback' {
                 }
             }
         }
+    }
+
+    It 'TASK781 C29 revalidates the captured generation immediately before every pane mutation' {
+        $script:c29SendLeaseTrace = [System.Collections.Generic.List[string]]::new()
+        $script:c29SendSnapshotCount = 0
+        $deliveryState = [ordered]@{}
+        Mock Resolve-TerminalBackend { 'tauri' }
+        Mock Split-SendKeysLiteralChunks { @('echo ', 'test') }
+        Mock Get-PaneSnapshotText {
+            $script:c29SendSnapshotCount++
+            switch ($script:c29SendSnapshotCount) {
+                1 { return '> ' }
+                2 { return '> echo test' }
+                3 { return "> echo test`nresult" }
+                default { return "> echo test`nresult" }
+            }
+        }
+        Mock Assert-WinsmuxTargetRuntimeWriteAllowed {
+            param($PaneId, $CurrentProjectDir, $Operation, $ExpectedGenerationId)
+            $script:c29SendLeaseTrace.Add("guard:${Operation}:${ExpectedGenerationId}") | Out-Null
+            [PSCustomObject]@{ Managed = $true; ProjectDir = $CurrentProjectDir; GenerationId = $ExpectedGenerationId }
+        }
+        Mock Invoke-WinsmuxSendKeys {
+            param($Target, $Keys, [switch]$Literal)
+            $kind = if ($Literal) { 'literal' } else { [string]$Keys[0] }
+            $script:c29SendLeaseTrace.Add("mutation:$kind") | Out-Null
+            [PSCustomObject]@{ ExitCode = 0; Output = '' }
+        }
+        Mock Save-Watermark { }
+        Mock Set-ReadMark { }
+
+        $result = Send-TextToPane -PaneId '%7' -CommandText 'echo test' `
+            -RuntimeProjectDir 'C:\synthetic-project' -RuntimeOperation dispatch `
+            -ExpectedGenerationId 'generation-G1' -DeliveryState $deliveryState
+
+        $result | Should -Be 'sent to %7 via %7'
+        $mutations = @($script:c29SendLeaseTrace | Where-Object { $_ -like 'mutation:*' })
+        $mutations | Should -Be @('mutation:literal', 'mutation:literal', 'mutation:Enter')
+        for ($index = 0; $index -lt $script:c29SendLeaseTrace.Count; $index++) {
+            if ($script:c29SendLeaseTrace[$index] -like 'mutation:*') {
+                $index | Should -BeGreaterThan 0
+                $script:c29SendLeaseTrace[$index - 1] | Should -Be 'guard:dispatch:generation-G1'
+            }
+        }
+        $deliveryState['SubmissionCommitted'] | Should -BeTrue
+    }
+
+    It 'TASK781 C68 marks packet retention at the first successful Enter before snapshot failure' {
+        $deliveryState = [ordered]@{}
+        $script:c68SnapshotCount = 0
+        Mock Resolve-TerminalBackend { 'tauri' }
+        Mock Split-SendKeysLiteralChunks { @('echo test') }
+        Mock Get-PaneSnapshotText {
+            $script:c68SnapshotCount++
+            switch ($script:c68SnapshotCount) {
+                1 { return '> ' }
+                2 { return '> echo test' }
+                default { throw 'synthetic post-Enter snapshot failure' }
+            }
+        }
+        Mock Assert-SendPaneRuntimeLease { }
+        Mock Invoke-WinsmuxSendKeys { [PSCustomObject]@{ ExitCode = 0; Output = '' } }
+
+        { Send-TextToPane -PaneId '%7' -CommandText 'echo test' -DeliveryState $deliveryState } |
+            Should -Throw '*post-Enter snapshot failure*'
+
+        $deliveryState['SubmissionCommitted'] | Should -BeTrue
+        Should -Invoke Invoke-WinsmuxSendKeys -Times 1 -Exactly -ParameterFilter {
+            -not $Literal -and [string]$Keys[0] -ceq 'Enter'
+        }
+    }
+
+    It 'TASK781 C68 aborts fallback after committed Enter when pasted-content confirmation fails' {
+        $deliveryState = [ordered]@{}
+        $script:c68SecondEnterCount = 0
+        $script:c68FallbackTargetCalls = 0
+        Mock Resolve-TerminalBackend { 'cli' }
+        Mock Get-PaneTargetCandidates { @('%7', 'default:0.3') }
+        Mock Split-SendKeysLiteralChunks { @('echo test') }
+        Mock Get-PaneSnapshotText {
+            if ($script:sendBuffer -eq '') { return '> ' }
+            if ($script:sendBuffer -eq 'typed') { return '> echo test' }
+            if ($script:sendBuffer -eq 'pasted') { return '> [Pasted Content 1 lines]' }
+            return '> '
+        }
+        Mock Invoke-WinsmuxSendKeys {
+            param($Target, $Keys, [switch]$Literal)
+            if ($Target -eq 'default:0.3') {
+                $script:c68FallbackTargetCalls++
+                throw 'committed attempt must not reach fallback target'
+            }
+            if ($Literal) {
+                $script:sendBuffer = 'typed'
+                return [PSCustomObject]@{ ExitCode = 0; Output = '' }
+            }
+            $script:c68SecondEnterCount++
+            if ($script:c68SecondEnterCount -eq 1) {
+                $script:sendBuffer = 'pasted'
+                return [PSCustomObject]@{ ExitCode = 0; Output = '' }
+            }
+            return [PSCustomObject]@{ ExitCode = 1; Output = 'synthetic second Enter failed' }
+        }
+
+        { Send-TextToPane -PaneId '%7' -CommandText 'echo test' -DeliveryState $deliveryState } |
+            Should -Throw '*second Enter failed*'
+
+        $deliveryState['SubmissionCommitted'] | Should -BeTrue
+        $script:c68FallbackTargetCalls | Should -Be 0
+    }
+
+    It 'TASK781 C68 has no control-flow continue after the committed boundary' {
+        $content = [System.IO.File]::ReadAllText($bridgePath, [System.Text.Encoding]::UTF8)
+        $tokens = $null
+        $errors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseInput(
+            $content,
+            $bridgePath,
+            [ref]$tokens,
+            [ref]$errors
+        )
+        @($errors).Count | Should -Be 0
+        $sendFunction = $ast.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq 'Send-TextToPane'
+        }, $true)
+        $source = $sendFunction.Extent.Text
+        $committedIndex = $source.IndexOf("`$DeliveryState['SubmissionCommitted'] = `$true", [System.StringComparison]::Ordinal)
+        $committedIndex | Should -BeGreaterThan -1
+        $postCommitSource = $source.Substring($committedIndex)
+        $postCommitSource | Should -Not -Match '(?m)^\s*continue\b'
     }
 
     It 'adds a coordinate target as a fallback candidate for a pane id' {

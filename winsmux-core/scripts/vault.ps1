@@ -20,13 +20,19 @@ if (-not (Get-Command Invoke-WinsmuxBridgeCommand -ErrorAction SilentlyContinue)
     }
 }
 
-if (-not ('WinCred' -as [type])) {
+$credentialMetadataScript = Join-Path $PSScriptRoot 'credential-metadata.ps1'
+if (-not (Get-Command Get-WinsmuxCredentialTargetNames -ErrorAction SilentlyContinue) -and
+    (Test-Path -LiteralPath $credentialMetadataScript -PathType Leaf)) {
+    . $credentialMetadataScript
+}
+
+if (-not ('WinsmuxVaultCredentialNative' -as [type])) {
     # --- Windows Credential Manager P/Invoke ---
     Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 
-public class WinCred {
+public class WinsmuxVaultCredentialNative {
     [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     public static extern bool CredWrite(ref CREDENTIAL credential, uint flags);
 
@@ -35,9 +41,6 @@ public class WinCred {
 
     [DllImport("advapi32.dll", SetLastError = true)]
     public static extern bool CredFree(IntPtr credential);
-
-    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    public static extern bool CredEnumerate(string filter, uint flags, out int count, out IntPtr credentials);
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     public struct CREDENTIAL {
@@ -85,16 +88,16 @@ function Invoke-VaultSet {
     $blobPtr = [Runtime.InteropServices.Marshal]::AllocHGlobal($valueBytes.Length)
     [Runtime.InteropServices.Marshal]::Copy($valueBytes, 0, $blobPtr, $valueBytes.Length)
 
-    $cred = New-Object WinCred+CREDENTIAL
-    $cred.Type = [WinCred]::CRED_TYPE_GENERIC
+    $cred = New-Object WinsmuxVaultCredentialNative+CREDENTIAL
+    $cred.Type = [WinsmuxVaultCredentialNative]::CRED_TYPE_GENERIC
     $cred.TargetName = $credTarget
     $cred.UserName = "winsmux"
     $cred.CredentialBlobSize = $valueBytes.Length
     $cred.CredentialBlob = $blobPtr
-    $cred.Persist = [WinCred]::CRED_PERSIST_LOCAL_MACHINE
+    $cred.Persist = [WinsmuxVaultCredentialNative]::CRED_PERSIST_LOCAL_MACHINE
 
     try {
-        $ok = [WinCred]::CredWrite([ref]$cred, 0)
+        $ok = [WinsmuxVaultCredentialNative]::CredWrite([ref]$cred, 0)
         if (-not $ok) {
             $errCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
             Stop-WithError "CredWrite failed (error $errCode)"
@@ -112,7 +115,7 @@ function Invoke-VaultGet {
     $credTarget = "winsmux:$key"
     $credPtr = [IntPtr]::Zero
 
-    $ok = [WinCred]::CredRead($credTarget, [WinCred]::CRED_TYPE_GENERIC, 0, [ref]$credPtr)
+    $ok = [WinsmuxVaultCredentialNative]::CredRead($credTarget, [WinsmuxVaultCredentialNative]::CRED_TYPE_GENERIC, 0, [ref]$credPtr)
     if (-not $ok) {
         $errCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
         if ($errCode -eq 1168) {
@@ -122,7 +125,7 @@ function Invoke-VaultGet {
     }
 
     try {
-        $cred = [Runtime.InteropServices.Marshal]::PtrToStructure($credPtr, [Type][WinCred+CREDENTIAL])
+        $cred = [Runtime.InteropServices.Marshal]::PtrToStructure($credPtr, [Type][WinsmuxVaultCredentialNative+CREDENTIAL])
         if ($cred.CredentialBlobSize -gt 0) {
             $bytes = New-Object byte[] $cred.CredentialBlobSize
             [Runtime.InteropServices.Marshal]::Copy($cred.CredentialBlob, $bytes, 0, $cred.CredentialBlobSize)
@@ -130,35 +133,42 @@ function Invoke-VaultGet {
             Write-Output $value
         }
     } finally {
-        [WinCred]::CredFree($credPtr) | Out-Null
+        [WinsmuxVaultCredentialNative]::CredFree($credPtr) | Out-Null
     }
 }
 
 function Invoke-VaultList {
-    $filter = "winsmux:*"
-    $count = 0
-    $credsPtr = [IntPtr]::Zero
+    $names = @(Get-WinsmuxCredentialTargetNames)
+    if ($names.Count -eq 0) {
+        Write-Output "(no credentials stored)"
+        return
+    }
+    Write-Output $names
+}
 
-    $ok = [WinCred]::CredEnumerate($filter, 0, [ref]$count, [ref]$credsPtr)
+function Get-WinsmuxVaultCredentialValue {
+    param([Parameter(Mandatory = $true)][string]$Name)
+
+    $credPtr = [IntPtr]::Zero
+    $ok = [WinsmuxVaultCredentialNative]::CredRead("winsmux:$Name", [WinsmuxVaultCredentialNative]::CRED_TYPE_GENERIC, 0, [ref]$credPtr)
     if (-not $ok) {
         $errCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
         if ($errCode -eq 1168) {
-            Write-Output "(no credentials stored)"
-            return
+            Stop-WithError 'credential no longer exists'
         }
-        Stop-WithError "CredEnumerate failed (error $errCode)"
+        Stop-WithError "CredRead failed (error $errCode)"
     }
 
     try {
-        $ptrSize = [Runtime.InteropServices.Marshal]::SizeOf([Type][IntPtr])
-        for ($i = 0; $i -lt $count; $i++) {
-            $entryPtr = [Runtime.InteropServices.Marshal]::ReadIntPtr($credsPtr, $i * $ptrSize)
-            $cred = [Runtime.InteropServices.Marshal]::PtrToStructure($entryPtr, [Type][WinCred+CREDENTIAL])
-            $name = $cred.TargetName -replace '^winsmux:', ''
-            Write-Output $name
+        $cred = [Runtime.InteropServices.Marshal]::PtrToStructure($credPtr, [Type][WinsmuxVaultCredentialNative+CREDENTIAL])
+        if ($cred.CredentialBlobSize -le 0) {
+            return ''
         }
+        $bytes = New-Object byte[] $cred.CredentialBlobSize
+        [Runtime.InteropServices.Marshal]::Copy($cred.CredentialBlob, $bytes, 0, $cred.CredentialBlobSize)
+        return [System.Text.Encoding]::Unicode.GetString($bytes)
     } finally {
-        [WinCred]::CredFree($credsPtr) | Out-Null
+        [WinsmuxVaultCredentialNative]::CredFree($credPtr) | Out-Null
     }
 }
 
@@ -227,68 +237,57 @@ function Invoke-VaultInject {
 
     $paneId = Resolve-Target $Target
     $paneId = Confirm-Target $paneId
+    $projectDir = (Get-Location).Path
+    $initialRuntime = Assert-WinsmuxTargetRuntimeWriteAllowed `
+        -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch
     Assert-ReadMark $paneId
     try {
-        # Enumerate all winsmux:* credentials
-        $filter = "winsmux:*"
-        $count = 0
-        $credsPtr = [IntPtr]::Zero
-
-        $ok = [WinCred]::CredEnumerate($filter, 0, [ref]$count, [ref]$credsPtr)
-        if (-not $ok) {
-            $errCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
-            if ($errCode -eq 1168) {
-                Write-Output "no credentials to inject"
-                return
-            }
-            Stop-WithError "CredEnumerate failed (error $errCode)"
-        }
-
-        $entries = [System.Collections.Generic.List[object]]::new()
-        try {
-            $ptrSize = [Runtime.InteropServices.Marshal]::SizeOf([Type][IntPtr])
-            for ($i = 0; $i -lt $count; $i++) {
-                $entryPtr = [Runtime.InteropServices.Marshal]::ReadIntPtr($credsPtr, $i * $ptrSize)
-                $cred = [Runtime.InteropServices.Marshal]::PtrToStructure($entryPtr, [Type][WinCred+CREDENTIAL])
-                $envName = $cred.TargetName -replace '^winsmux:', ''
-
-                $value = ''
-                if ($cred.CredentialBlobSize -gt 0) {
-                    $bytes = New-Object byte[] $cred.CredentialBlobSize
-                    [Runtime.InteropServices.Marshal]::Copy($cred.CredentialBlob, $bytes, 0, $cred.CredentialBlobSize)
-                    $value = [System.Text.Encoding]::Unicode.GetString($bytes)
-                }
-
-                $entries.Add([PSCustomObject]@{
-                    Name  = $envName
-                    Value = $value
-                }) | Out-Null
-            }
-        } finally {
-            [WinCred]::CredFree($credsPtr) | Out-Null
+        $credentialNames = @(Get-WinsmuxCredentialTargetNames)
+        if ($credentialNames.Count -eq 0) {
+            Write-Output "no credentials to inject"
+            return
         }
 
         $sessionName = Get-WinsmuxSessionNameForPane -PaneId $paneId
-        $commands = foreach ($entry in $entries) {
-            'set-environment -t {0} {1} {2}' -f `
-                (ConvertTo-WinsmuxConfigString -Value $sessionName), `
-                (ConvertTo-WinsmuxConfigString -Value $entry.Name), `
-                (ConvertTo-WinsmuxConfigString -Value $entry.Value)
-        }
-
-        $sourceResult = Invoke-WinsmuxSourceFile -Commands $commands
-        if (-not $sourceResult.Success) {
-            # source-file keeps secrets out of argv; direct set-environment remains a last-resort fallback.
-            foreach ($entry in $entries) {
-                $setResult = Invoke-WinsmuxCommand -Arguments @('set-environment', '-t', $sessionName, $entry.Name, $entry.Value)
-                if (-not $setResult.Success) {
-                    Stop-WithError "winsmux set-environment failed while injecting credentials into $paneId."
+        $injected = 0
+        foreach ($envName in $credentialNames) {
+            Assert-WinsmuxTargetRuntimeWriteAllowed `
+                -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch `
+                -ExpectedGenerationId ([string]$initialRuntime.GenerationId) | Out-Null
+            $value = [string](Get-WinsmuxVaultCredentialValue -Name ([string]$envName))
+            try {
+                $command = 'set-environment -t {0} {1} {2}' -f `
+                    (ConvertTo-WinsmuxConfigString -Value $sessionName), `
+                    (ConvertTo-WinsmuxConfigString -Value ([string]$envName)), `
+                    (ConvertTo-WinsmuxConfigString -Value $value)
+                Assert-WinsmuxTargetRuntimeWriteAllowed `
+                    -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch `
+                    -ExpectedGenerationId ([string]$initialRuntime.GenerationId) | Out-Null
+                $sourceResult = Invoke-WinsmuxSourceFile -Commands @($command)
+                if (-not $sourceResult.Success) {
+                    # source-file keeps secrets out of argv; direct set-environment remains a last-resort fallback.
+                    Assert-WinsmuxTargetRuntimeWriteAllowed `
+                        -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch `
+                        -ExpectedGenerationId ([string]$initialRuntime.GenerationId) | Out-Null
+                    $setResult = Invoke-WinsmuxCommand -Arguments @('set-environment', '-t', $sessionName, $envName, $value)
+                    if (-not $setResult.Success) {
+                        Stop-WithError "winsmux set-environment failed while injecting credentials into $paneId."
+                    }
                 }
+                $injected++
+            } finally {
+                $value = $null
+                $command = $null
+                $sourceResult = $null
+                $setResult = $null
             }
         }
 
-        Write-Output "injected $($entries.Count) credential(s) into $paneId"
+        Write-Output "injected $injected credential(s) into $paneId"
     } finally {
+        Assert-WinsmuxTargetRuntimeWriteAllowed `
+            -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch `
+            -ExpectedGenerationId ([string]$initialRuntime.GenerationId) | Out-Null
         Clear-ReadMark $paneId
     }
 }

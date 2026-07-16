@@ -12,6 +12,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
+. (Join-Path $PSScriptRoot 'json-compat.ps1')
 . (Join-Path $PSScriptRoot 'manifest.ps1')
 . (Join-Path $PSScriptRoot 'clm-safe-io.ps1')
 . (Join-Path $PSScriptRoot 'submission-contract.ps1')
@@ -109,14 +110,61 @@ function Get-BuilderQueueManifest {
     return $manifest
 }
 
+function Get-BuilderQueueExpectedGenerationId {
+    param([Parameter(Mandatory = $true)]$Manifest)
+
+    if ($null -eq $Manifest) {
+        return ''
+    }
+    $session = Get-PaneControlValue -InputObject $Manifest -Name 'session' -Default $null
+    return [string](Get-PaneControlValue -InputObject $session -Name 'generation_id' -Default '')
+}
+
+function Get-BuilderQueuePaneContext {
+    param(
+        [Parameter(Mandatory = $true)]$Manifest,
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$BuilderLabel
+    )
+
+    $panes = Get-PaneControlValue -InputObject $Manifest -Name 'panes' -Default $null
+    $pane = $null
+    if ($panes -is [System.Collections.IDictionary]) {
+        if ($panes.Contains($BuilderLabel)) {
+            $pane = $panes[$BuilderLabel]
+        }
+    } elseif ($null -ne $panes -and $null -ne $panes.PSObject) {
+        $paneProperty = $panes.PSObject.Properties[$BuilderLabel]
+        if ($null -ne $paneProperty) {
+            $pane = $paneProperty.Value
+        }
+    }
+    if ($null -eq $pane) {
+        return $null
+    }
+    $paneId = [string](Get-PaneControlValue -InputObject $pane -Name 'pane_id' -Default '')
+    if ([string]::IsNullOrWhiteSpace($paneId)) {
+        return $null
+    }
+
+    return [ordered]@{
+        ManifestPath = Join-Path (Join-Path $ProjectDir '.winsmux') 'manifest.yaml'
+        PaneId = $paneId
+        GenerationId = Get-BuilderQueueExpectedGenerationId -Manifest $Manifest
+    }
+}
+
 function Save-BuilderQueueManifest {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
-        [Parameter(Mandatory = $true)]$Manifest
+        [Parameter(Mandatory = $true)]$Manifest,
+        [AllowEmptyString()][string]$ExpectedGenerationId = ''
     )
 
     Ensure-ManifestTasksShape -Manifest $Manifest
-    Save-WinsmuxManifest -ProjectDir $ProjectDir -Manifest $Manifest
+    $manifestPath = Join-Path (Join-Path $ProjectDir '.winsmux') 'manifest.yaml'
+    Save-PaneControlManifestDocument -ManifestPath $manifestPath -Manifest $Manifest `
+        -ExpectedGenerationId $ExpectedGenerationId
 }
 
 function Get-BuilderQueueEntries {
@@ -157,23 +205,24 @@ function Remove-BuilderQueueRawEntry {
 
 function Update-BuilderQueuePaneState {
     param(
-        [Parameter(Mandatory = $true)][string]$ProjectDir,
-        [Parameter(Mandatory = $true)][string]$BuilderLabel,
+        [AllowNull()]$PaneContext,
         [Parameter(Mandatory = $true)][System.Collections.IDictionary]$Properties
     )
 
-    if (-not (Get-Command Get-PaneControlManifestEntries -ErrorAction SilentlyContinue) -or
-        -not (Get-Command Set-PaneControlManifestPaneProperties -ErrorAction SilentlyContinue)) {
+    if (-not (Get-Command Set-PaneControlManifestPaneProperties -ErrorAction SilentlyContinue) -or
+        $null -eq $PaneContext) {
         return
     }
 
     try {
-        $entry = @(Get-PaneControlManifestEntries -ProjectDir $ProjectDir | Where-Object { $_.Label -eq $BuilderLabel } | Select-Object -First 1)[0]
-        if ($null -eq $entry -or [string]::IsNullOrWhiteSpace([string]$entry.PaneId)) {
+        if ([string]::IsNullOrWhiteSpace([string]$PaneContext.PaneId) -or
+            [string]::IsNullOrWhiteSpace([string]$PaneContext.ManifestPath)) {
             return
         }
 
-        Set-PaneControlManifestPaneProperties -ManifestPath ([string]$entry.ManifestPath) -PaneId ([string]$entry.PaneId) -Properties $Properties
+        $expectedGenerationId = [string]$PaneContext.GenerationId
+        Set-PaneControlManifestPaneProperties -ManifestPath ([string]$PaneContext.ManifestPath) -PaneId ([string]$PaneContext.PaneId) `
+            -Properties $Properties -ExpectedGenerationId $expectedGenerationId
     } catch {
         # Pane state enrichment is best-effort and must not break queue operation.
     }
@@ -393,9 +442,10 @@ function Add-BuilderQueueTask {
     )
 
     $manifest = Get-BuilderQueueManifest -ProjectDir $ProjectDir
+    $expectedGenerationId = Get-BuilderQueueExpectedGenerationId -Manifest $manifest
     $entry = ConvertTo-BuilderQueueEntry -BuilderLabel $BuilderLabel -Task $Task
     $manifest.tasks.queued = @($manifest.tasks.queued) + @($entry)
-    Save-BuilderQueueManifest -ProjectDir $ProjectDir -Manifest $manifest
+    Save-BuilderQueueManifest -ProjectDir $ProjectDir -Manifest $manifest -ExpectedGenerationId $expectedGenerationId
 
     return [PSCustomObject]@{
         TaskId       = (ConvertFrom-BuilderQueueEntry -Entry $entry).TaskId
@@ -469,7 +519,7 @@ function Test-BuilderQueueDispatchEvidence {
     }
     try {
         $packet = Read-WinsmuxSubmissionPacket -Path $packetPath
-        $runRecord = Get-Content -LiteralPath $runPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 16
+        $runRecord = Get-Content -LiteralPath $runPath -Raw -Encoding UTF8 | ConvertFrom-WinsmuxJson -Depth 16
     } catch {
         return $false
     }
@@ -494,6 +544,8 @@ function Dispatch-NextBuilderQueueTask {
     )
 
     $manifest = Get-BuilderQueueManifest -ProjectDir $ProjectDir
+    $expectedGenerationId = Get-BuilderQueueExpectedGenerationId -Manifest $manifest
+    $paneContext = Get-BuilderQueuePaneContext -Manifest $manifest -ProjectDir $ProjectDir -BuilderLabel $BuilderLabel
     $current = @(Get-BuilderQueueEntries -Manifest $manifest -State 'in_progress' -BuilderLabel $BuilderLabel)
     if ($current.Count -gt 0) {
         return [PSCustomObject]@{
@@ -568,8 +620,8 @@ function Dispatch-NextBuilderQueueTask {
             Where-Object { (ConvertFrom-BuilderQueueEntry -Entry ([string]$_)).TaskId -cne $nextEntry.TaskId }
     )
     $manifest.tasks.in_progress = (@($manifest.tasks.in_progress) + @($nextEntry.RawEntry))
-    Save-BuilderQueueManifest -ProjectDir $ProjectDir -Manifest $manifest
-    Update-BuilderQueuePaneState -ProjectDir $ProjectDir -BuilderLabel $BuilderLabel -Properties ([ordered]@{
+    Save-BuilderQueueManifest -ProjectDir $ProjectDir -Manifest $manifest -ExpectedGenerationId $expectedGenerationId
+    Update-BuilderQueuePaneState -PaneContext $paneContext -Properties ([ordered]@{
         task_id            = $nextEntry.TaskId
         task               = $nextEntry.Task
         task_state         = 'in_progress'
@@ -599,6 +651,8 @@ function Complete-BuilderQueueTask {
     )
 
     $manifest = Get-BuilderQueueManifest -ProjectDir $ProjectDir
+    $expectedGenerationId = Get-BuilderQueueExpectedGenerationId -Manifest $manifest
+    $paneContext = Get-BuilderQueuePaneContext -Manifest $manifest -ProjectDir $ProjectDir -BuilderLabel $BuilderLabel
     $inProgress = @(Get-BuilderQueueEntries -Manifest $manifest -State 'in_progress' -BuilderLabel $BuilderLabel)
 
     $completedEntry = if ([string]::IsNullOrWhiteSpace($Task)) {
@@ -615,9 +669,9 @@ function Complete-BuilderQueueTask {
     if (@($manifest.tasks.completed | Where-Object { [string]$_ -eq $completedEntry.RawEntry }).Count -eq 0) {
         $manifest.tasks.completed = (@($manifest.tasks.completed) + @($completedEntry.RawEntry))
     }
-    Save-BuilderQueueManifest -ProjectDir $ProjectDir -Manifest $manifest
+    Save-BuilderQueueManifest -ProjectDir $ProjectDir -Manifest $manifest -ExpectedGenerationId $expectedGenerationId
     Unlock-DispatchFiles -TaskId $completedEntry.TaskId -ProjectDir $ProjectDir | Out-Null
-    Update-BuilderQueuePaneState -ProjectDir $ProjectDir -BuilderLabel $BuilderLabel -Properties ([ordered]@{
+    Update-BuilderQueuePaneState -PaneContext $paneContext -Properties ([ordered]@{
         task_id       = $completedEntry.TaskId
         task          = $completedEntry.Task
         task_state    = 'completed'

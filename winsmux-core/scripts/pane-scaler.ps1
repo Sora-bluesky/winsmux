@@ -104,7 +104,8 @@ function Read-PaneScalerManifest {
 function Save-PaneScalerManifest {
     param(
         [Parameter(Mandatory = $true)][string]$ManifestPath,
-        [Parameter(Mandatory = $true)]$Manifest
+        [Parameter(Mandatory = $true)]$Manifest,
+        [AllowEmptyString()][string]$ExpectedGenerationId = ''
     )
 
     $projectDir = Split-Path (Split-Path $ManifestPath -Parent) -Parent
@@ -123,7 +124,17 @@ function Save-PaneScalerManifest {
         worktrees = Get-MonitorPropertyValue -InputObject $Manifest -Name 'Worktrees' -Default (Get-MonitorPropertyValue -InputObject $Manifest -Name 'worktrees' -Default ([ordered]@{}))
     }
 
-    Save-WinsmuxManifest -ProjectDir $projectDir -Manifest $canonicalManifest
+    Save-PaneControlManifestDocument -ManifestPath $ManifestPath -Manifest $canonicalManifest `
+        -ExpectedGenerationId $ExpectedGenerationId
+}
+
+function Assert-PaneScalerPaneCountMutationSupported {
+    param([Parameter(Mandatory = $true)]$Manifest)
+
+    $version = Get-MonitorPropertyValue -InputObject $Manifest -Name 'Version' -Default (Get-MonitorPropertyValue -InputObject $Manifest -Name 'version' -Default 1)
+    if ([int]$version -eq 2) {
+        throw 'runtime dispatch refused (manifest_regeneration_required): v2 pane-count changes require a supervisor-owned manifest, registry, and server transition.'
+    }
 }
 
 function Get-PaneScalerProjectDir {
@@ -307,15 +318,20 @@ function Remove-PaneScalerBuilderWorktree {
         }
 
         if (Test-Path -LiteralPath $resolvedPath -PathType Container) {
-            Invoke-BuilderWorktreeGit -ProjectDir $ProjectDir -Arguments @('worktree', 'remove', '--force', $resolvedPath) -AllowFailure | Out-Null
+            $status = Invoke-BuilderWorktreeGit -ProjectDir $resolvedPath -Arguments @('status', '--porcelain', '--untracked-files=all')
+            if (-not [string]::IsNullOrWhiteSpace([string]$status.Output)) {
+                throw "Refusing to remove Builder worktree with uncommitted changes: $resolvedPath"
+            }
+
+            Invoke-BuilderWorktreeGit -ProjectDir $ProjectDir -Arguments @('worktree', 'remove', $resolvedPath) | Out-Null
             if (Test-Path -LiteralPath $resolvedPath -PathType Container) {
-                Remove-Item -LiteralPath $resolvedPath -Recurse -Force
+                throw "Builder worktree removal did not remove the directory: $resolvedPath"
             }
         }
     }
 
     if (-not [string]::IsNullOrWhiteSpace($BranchName)) {
-        Invoke-BuilderWorktreeGit -ProjectDir $ProjectDir -Arguments @('branch', '-D', $BranchName) -AllowFailure | Out-Null
+        Invoke-BuilderWorktreeGit -ProjectDir $ProjectDir -Arguments @('branch', '-d', $BranchName) | Out-Null
     }
 }
 
@@ -403,6 +419,8 @@ function Add-OrchestraPane {
     )
 
     $manifest = Read-PaneScalerManifest -ManifestPath $ManifestPath
+    Assert-PaneScalerPaneCountMutationSupported -Manifest $manifest
+    $expectedGenerationId = [string](Get-MonitorPropertyValue -InputObject $manifest.Session -Name 'generation_id' -Default '')
     $projectDir = Get-PaneScalerProjectDir -Manifest $manifest -ManifestPath $ManifestPath
     if ($null -eq $Settings) {
         $Settings = Get-BridgeSettings -RootPath $projectDir
@@ -460,7 +478,7 @@ function Add-OrchestraPane {
 
         $manifest.Panes[$newLabel] = $paneObject
         $manifest.SavedAt = Get-Date -Format o
-        Save-PaneScalerManifest -ManifestPath $ManifestPath -Manifest $manifest
+        Save-PaneScalerManifest -ManifestPath $ManifestPath -Manifest $manifest -ExpectedGenerationId $expectedGenerationId
 
         return [PSCustomObject]@{
             Changed      = $true
@@ -496,6 +514,8 @@ function Remove-OrchestraPane {
         [int]$MinimumBuilders = 2
     )
 
+    $currentManifest = Read-PaneScalerManifest -ManifestPath $ManifestPath
+    Assert-PaneScalerPaneCountMutationSupported -Manifest $currentManifest
     $workload = Get-PaneWorkload -ManifestPath $ManifestPath -Settings $Settings
     if ($workload.BuilderCount -le $MinimumBuilders) {
         return [PSCustomObject]@{
@@ -519,20 +539,22 @@ function Remove-OrchestraPane {
     }
 
     $manifest = $workload.Manifest
+    $expectedGenerationId = [string](Get-MonitorPropertyValue -InputObject $manifest.Session -Name 'generation_id' -Default '')
     $projectDir = $workload.ProjectDir
     $pane = $manifest.Panes[[string]$idleBuilder.Label]
     $paneId = [string](Get-MonitorPropertyValue -InputObject $pane -Name 'pane_id' -Default '')
     $worktreePath = [string](Get-MonitorPropertyValue -InputObject $pane -Name 'builder_worktree_path' -Default '')
     $branchName = [string](Get-MonitorPropertyValue -InputObject $pane -Name 'builder_branch' -Default '')
 
+    [void]$manifest.Panes.Remove([string]$idleBuilder.Label)
+    $manifest.SavedAt = Get-Date -Format o
+    Save-PaneScalerManifest -ManifestPath $ManifestPath -Manifest $manifest -ExpectedGenerationId $expectedGenerationId
+
     if (-not [string]::IsNullOrWhiteSpace($paneId)) {
         Invoke-MonitorWinsmux -Arguments @('kill-pane', '-t', $paneId) | Out-Null
     }
 
     Remove-PaneScalerBuilderWorktree -ProjectDir $projectDir -WorktreePath $worktreePath -BranchName $branchName
-    [void]$manifest.Panes.Remove([string]$idleBuilder.Label)
-    $manifest.SavedAt = Get-Date -Format o
-    Save-PaneScalerManifest -ManifestPath $ManifestPath -Manifest $manifest
 
     return [PSCustomObject]@{
         Changed      = $true

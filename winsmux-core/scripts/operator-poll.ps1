@@ -8,6 +8,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+. (Join-Path $PSScriptRoot 'json-compat.ps1')
 . (Join-Path $PSScriptRoot 'manifest.ps1')
 . (Join-Path $PSScriptRoot 'clm-safe-io.ps1')
 . (Join-Path $PSScriptRoot 'pane-control.ps1')
@@ -174,6 +175,8 @@ function Get-OperatorPollPaneContext {
     $eventLabel = [string](Get-OperatorPollValue -InputObject $EventRecord -Name 'label' -Default '')
     $eventRole = [string](Get-OperatorPollValue -InputObject $EventRecord -Name 'role' -Default '')
     $projectDir = Get-OperatorPollProjectDir -Manifest $Manifest -ManifestPath $ManifestPath
+    $manifestSession = Get-OperatorPollValue -InputObject $Manifest -Name 'Session' -Default $null
+    $generationId = [string](Get-OperatorPollValue -InputObject $manifestSession -Name 'generation_id' -Default '')
 
     $matchedLabel = $eventLabel
     $matchedPane = $null
@@ -225,6 +228,8 @@ function Get-OperatorPollPaneContext {
 
     return [ordered]@{
         project_dir   = $projectDir
+        manifest_path = $ManifestPath
+        generation_id = $generationId
         session_name  = Get-OperatorPollSessionName -Manifest $Manifest
         pane_id       = $resolvedPaneId
         label         = $matchedLabel
@@ -251,12 +256,14 @@ function Update-OperatorPollPaneState {
     }
 
     try {
-        $entry = @(Get-PaneControlManifestEntries -ProjectDir ([string]$PaneContext['project_dir']) | Where-Object { $_.PaneId -eq [string]$PaneContext['pane_id'] } | Select-Object -First 1)[0]
-        if ($null -eq $entry) {
+        $manifestPath = [string]$PaneContext['manifest_path']
+        if ([string]::IsNullOrWhiteSpace($manifestPath)) {
             return
         }
 
-        Set-PaneControlManifestPaneProperties -ManifestPath ([string]$entry.ManifestPath) -PaneId ([string]$entry.PaneId) -Properties $Properties
+        $expectedGenerationId = [string]$PaneContext['generation_id']
+        Set-PaneControlManifestPaneProperties -ManifestPath $manifestPath -PaneId ([string]$PaneContext['pane_id']) `
+            -Properties $Properties -ExpectedGenerationId $expectedGenerationId
     } catch {
         # Pane state enrichment is best-effort.
     }
@@ -564,7 +571,7 @@ function Receive-OperatorPollMailboxMessages {
 
             $mailboxMessage = $null
             try {
-                $mailboxMessage = $payload | ConvertFrom-Json -AsHashtable -ErrorAction Stop
+                $mailboxMessage = $payload | ConvertFrom-WinsmuxJson -AsHashtable -ErrorAction Stop
             } catch {
                 continue
             }
@@ -867,7 +874,7 @@ function Invoke-OperatorPollCycle {
             }
 
             try {
-                $eventRecord = $line | ConvertFrom-Json -AsHashtable -ErrorAction Stop
+                $eventRecord = $line | ConvertFrom-WinsmuxJson -AsHashtable -ErrorAction Stop
                 $eventRecord['source'] = 'events_jsonl'
                 $eventRecords.Add($eventRecord)
             } catch {
@@ -959,7 +966,7 @@ function Test-OperatorDraftPrCreated {
         }
 
         try {
-            $record = $line | ConvertFrom-Json -AsHashtable -ErrorAction Stop
+            $record = $line | ConvertFrom-WinsmuxJson -AsHashtable -ErrorAction Stop
         } catch {
             continue
         }
@@ -1076,7 +1083,7 @@ function Invoke-OperatorStateMachine {
                 if (Test-Path $rsp -PathType Leaf) {
                     $branch = (git -C $ProjectDir rev-parse --abbrev-ref HEAD 2>$null)
                     $headSha = (git -C $ProjectDir rev-parse HEAD 2>$null)
-                    $rs = Get-Content $rsp -Raw -Encoding UTF8 | ConvertFrom-Json -AsHashtable -ErrorAction Stop
+                    $rs = Get-Content $rsp -Raw -Encoding UTF8 | ConvertFrom-WinsmuxJson -AsHashtable -ErrorAction Stop
                     if ($rs.Contains($branch)) {
                         $e = $rs[$branch]
                         $st = [string]$e['status']

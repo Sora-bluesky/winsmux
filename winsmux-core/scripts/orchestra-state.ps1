@@ -1,7 +1,9 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+. (Join-Path $PSScriptRoot 'json-compat.ps1')
 . (Join-Path $PSScriptRoot 'manifest.ps1')
+. (Join-Path $PSScriptRoot 'pane-control.ps1')
 
 function Get-OrchestraStateValue {
     param(
@@ -171,7 +173,7 @@ function Get-OrchestraReviewState {
     }
 
     try {
-        $parsed = $raw | ConvertFrom-Json -AsHashtable -ErrorAction Stop
+        $parsed = $raw | ConvertFrom-WinsmuxJson -AsHashtable -ErrorAction Stop
         $ordered = [ordered]@{}
         foreach ($key in $parsed.Keys) {
             $ordered[[string]$key] = $parsed[$key]
@@ -470,6 +472,12 @@ function Sync-OrchestraPaneStateModels {
         $Manifest = Get-WinsmuxManifest -ProjectDir $ProjectDir
     }
 
+    $manifestPath = Join-Path (Join-Path $ProjectDir '.winsmux') 'manifest.yaml'
+    $expectedGenerationId = if ($null -eq $Manifest) { '' } else {
+        $session = Get-OrchestraStateValue -InputObject $Manifest -Name 'session' -Default $null
+        [string](Get-OrchestraStateValue -InputObject $session -Name 'generation_id' -Default '')
+    }
+
     $models = Get-OrchestraPaneStateModels -ProjectDir $ProjectDir -Manifest $Manifest
     if ($null -eq $Manifest) {
         return $models
@@ -494,6 +502,7 @@ function Sync-OrchestraPaneStateModels {
         }
     }
 
-    Save-WinsmuxManifest -ProjectDir $ProjectDir -Manifest $Manifest
+    Save-PaneControlManifestDocument -ManifestPath $manifestPath -Manifest $Manifest `
+        -ExpectedGenerationId $expectedGenerationId
     return $models
 }

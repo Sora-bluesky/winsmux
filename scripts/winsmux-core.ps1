@@ -4,6 +4,8 @@
     [Parameter(Position=2, ValueFromRemainingArguments=$true)][string[]]$Rest
 )
 
+$script:WinsmuxBridgeWasDotSourced = $MyInvocation.InvocationName -eq '.'
+$script:WinsmuxRequestedProcessExitCode = 0
 $script:WinsmuxRawGlobalArgs = @()
 if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_BRIDGE_NAMESPACE_L)) {
     $script:WinsmuxRawGlobalArgs += @('-L', $env:WINSMUX_BRIDGE_NAMESPACE_L)
@@ -59,6 +61,8 @@ $WatermarkDir   = Join-Path $env:TEMP "winsmux\watermarks"
 $LockDir        = Join-Path $env:TEMP "winsmux\locks"
 $FocusPolicyFile = Join-Path $env:TEMP "winsmux\focus-policy-stack.json"
 $LabelsFile     = Join-Path $env:APPDATA "winsmux\labels.json"
+$JsonCompatScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\json-compat.ps1'))
+$CredentialMetadataScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\credential-metadata.ps1'))
 $BridgeSettingsScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\settings.ps1'))
 $PaneControlScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\pane-control.ps1'))
 $PaneStatusScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\pane-status.ps1'))
@@ -81,6 +85,14 @@ $ControlPlaneLedgerScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRo
 # for launcher, provider-capabilities, and provider-switch.
 # Workers module owns workers workspace argument and output handling.
 # Ledger module owns run ledger payload builders and related read-only projections.
+
+if (Test-Path $JsonCompatScript -PathType Leaf) {
+    . $JsonCompatScript
+}
+
+if (Test-Path $CredentialMetadataScript -PathType Leaf) {
+    . $CredentialMetadataScript
+}
 
 if (Test-Path $BridgeSettingsScript -PathType Leaf) {
     . $BridgeSettingsScript
@@ -135,11 +147,12 @@ if (Test-Path $ControlPlaneLedgerScript -PathType Leaf) {
 }
 
 # --- Windows Credential Manager P/Invoke ---
-Add-Type -TypeDefinition @'
+if (-not ('WinsmuxBridgeCredentialNative' -as [type])) {
+    Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 
-public class WinCred {
+public class WinsmuxBridgeCredentialNative {
     [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     public static extern bool CredWrite(ref CREDENTIAL credential, uint flags);
 
@@ -171,7 +184,8 @@ public class WinCred {
     public const uint CRED_TYPE_GENERIC = 1;
     public const uint CRED_PERSIST_LOCAL_MACHINE = 2;
 }
-'@ -ErrorAction SilentlyContinue
+'@ -ErrorAction Stop
+}
 
 # --- Helper: Stop-WithError ---
 function Stop-WithError {
@@ -262,7 +276,7 @@ function Invoke-TerminalJsonRpc {
     $payload = New-TerminalJsonRpcPayload -Method $Method -Params $Params
     $responseText = Invoke-ControlRpcPipeExchange -Payload $payload
     try {
-        $response = $responseText | ConvertFrom-Json -Depth 100 -ErrorAction Stop
+        $response = $responseText | ConvertFrom-WinsmuxJson -Depth 100 -ErrorAction Stop
     } catch {
         Stop-WithError "terminal Tauri request $Method returned invalid JSON: $($_.Exception.Message)"
     }
@@ -424,10 +438,160 @@ function New-TaskPromptFile {
         New-Item -ItemType Directory -Path $parent -Force | Out-Null
     }
 
-    $tempPath = '{0}.tmp' -f $path
-    Write-ClmSafeTextFile -Path $tempPath -Content $Content
-    Move-Item -LiteralPath $tempPath -Destination $path -Force
+    $tempPath = '{0}.tmp-{1}' -f $path, ([guid]::NewGuid().ToString('N'))
+    try {
+        Write-ClmSafeTextFile -Path $tempPath -Content $Content
+        Move-Item -LiteralPath $tempPath -Destination $path -Force
+    } finally {
+        Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+    }
     return $path
+}
+
+function New-SendPromptArtifactCheckpoint {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)]$Intent
+    )
+
+    if (-not [bool](Get-SendConfigValue -InputObject $Intent -Name 'IsFileBacked' -Default $false)) {
+        return $null
+    }
+
+    $taskSlug = [string](Get-SendConfigValue -InputObject $Intent -Name 'TaskSlug' -Default '')
+    $expectedPath = ''
+    $parentPath = Get-DispatchPromptDirectory -ProjectDir $ProjectDir
+    if (-not [string]::IsNullOrWhiteSpace($taskSlug)) {
+        $expectedPath = [System.IO.Path]::GetFullPath((Get-TaskPromptPath -TaskSlug $taskSlug -ProjectDir $ProjectDir))
+        $parentPath = Split-Path -Parent $expectedPath
+    } else {
+        $parentPath = [System.IO.Path]::GetFullPath($parentPath)
+    }
+
+    $parentExisted = Test-Path -LiteralPath $parentPath -PathType Container
+    $leasePath = ''
+    $leaseStream = $null
+    if (-not [string]::IsNullOrWhiteSpace($expectedPath)) {
+        if (-not $parentExisted) {
+            New-Item -ItemType Directory -Path $parentPath -Force | Out-Null
+        }
+        $leasePath = $expectedPath + '.send.lock'
+        $deadline = (Get-Date).AddSeconds(30)
+        do {
+            try {
+                $leaseStream = [System.IO.File]::Open($leasePath, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+                break
+            } catch [System.IO.IOException] {
+                if ((Get-Date) -ge $deadline) {
+                    throw "Timed out waiting for task prompt lease: $expectedPath"
+                }
+                Start-Sleep -Milliseconds 50
+            }
+        } while ($null -eq $leaseStream)
+    }
+
+    $existed = -not [string]::IsNullOrWhiteSpace($expectedPath) -and (Test-Path -LiteralPath $expectedPath -PathType Leaf)
+    # Keep the prior task prompt byte-exact in memory. A text round trip changes
+    # newline bytes and would corrupt the evidence this rollback is preserving.
+    $content = if ($existed) { [System.IO.File]::ReadAllBytes($expectedPath) } else { [byte[]]@() }
+    return [PSCustomObject][ordered]@{
+        ExpectedPath  = $expectedPath
+        ParentPath    = $parentPath
+        ParentExisted = $parentExisted
+        Existed       = $existed
+        Content       = $content
+        LeasePath     = $leasePath
+        LeaseStream   = $leaseStream
+        Closed        = $false
+    }
+}
+
+function Exit-SendPromptArtifactCheckpoint {
+    param([AllowNull()]$Checkpoint)
+
+    if ($null -eq $Checkpoint) {
+        return
+    }
+    if ([bool](Get-SendConfigValue -InputObject $Checkpoint -Name 'Closed' -Default $false)) {
+        return
+    }
+
+    $leaseStream = Get-SendConfigValue -InputObject $Checkpoint -Name 'LeaseStream' -Default $null
+    if ($null -ne $leaseStream) {
+        try { $leaseStream.Dispose() } catch {}
+        try { $Checkpoint.LeaseStream = $null } catch {}
+    }
+
+    $leasePath = [string](Get-SendConfigValue -InputObject $Checkpoint -Name 'LeasePath' -Default '')
+    if (-not [string]::IsNullOrWhiteSpace($leasePath)) {
+        Remove-Item -LiteralPath $leasePath -Force -ErrorAction SilentlyContinue
+    }
+
+    $parentExisted = [bool](Get-SendConfigValue -InputObject $Checkpoint -Name 'ParentExisted' -Default $true)
+    $parentPath = [string](Get-SendConfigValue -InputObject $Checkpoint -Name 'ParentPath' -Default '')
+    if (-not $parentExisted -and -not [string]::IsNullOrWhiteSpace($parentPath) -and
+        (Test-Path -LiteralPath $parentPath -PathType Container) -and
+        @(Get-ChildItem -LiteralPath $parentPath -Force).Count -eq 0) {
+        Remove-Item -LiteralPath $parentPath -Force
+    }
+    try { $Checkpoint.Closed = $true } catch {}
+}
+
+function Restore-SendPromptArtifactCheckpoint {
+    param(
+        [AllowNull()]$Checkpoint,
+        [AllowEmptyString()][string]$MaterializedPromptPath = ''
+    )
+
+    if ($null -eq $Checkpoint) {
+        return
+    }
+    if ([bool](Get-SendConfigValue -InputObject $Checkpoint -Name 'Closed' -Default $false)) {
+        return
+    }
+
+    try {
+        $expectedPath = [string](Get-SendConfigValue -InputObject $Checkpoint -Name 'ExpectedPath' -Default '')
+        $promptPath = if (-not [string]::IsNullOrWhiteSpace($expectedPath)) { $expectedPath } else { $MaterializedPromptPath }
+        if ([string]::IsNullOrWhiteSpace($promptPath)) {
+            return
+        }
+        $promptPath = [System.IO.Path]::GetFullPath($promptPath)
+        if (-not [string]::IsNullOrWhiteSpace($expectedPath) -and
+            -not [string]::Equals($promptPath, [System.IO.Path]::GetFullPath($expectedPath), [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Materialized task prompt path does not match its rollback checkpoint.'
+        }
+
+    $parentPath = [string](Get-SendConfigValue -InputObject $Checkpoint -Name 'ParentPath' -Default '')
+    if ([string]::IsNullOrWhiteSpace($parentPath)) {
+        throw 'Prompt rollback checkpoint is missing its parent path.'
+    }
+    $parentPath = [System.IO.Path]::GetFullPath($parentPath)
+    if ([string]::IsNullOrWhiteSpace($expectedPath)) {
+        $promptParent = [System.IO.Path]::GetFullPath((Split-Path -Parent $promptPath))
+        $promptName = [System.IO.Path]::GetFileName($promptPath)
+        if (-not [string]::Equals($promptParent, $parentPath, [System.StringComparison]::OrdinalIgnoreCase) -or
+            $promptName -cnotmatch '^send-command-[0-9a-f]{32}\.txt$') {
+            throw 'Materialized prompt path is outside its rollback checkpoint.'
+        }
+    }
+
+    $existed = [bool](Get-SendConfigValue -InputObject $Checkpoint -Name 'Existed' -Default $false)
+    if ($existed) {
+        $tempPath = '{0}.rollback-{1}.tmp' -f $promptPath, ([guid]::NewGuid().ToString('N'))
+        try {
+            [System.IO.File]::WriteAllBytes($tempPath, [byte[]](Get-SendConfigValue -InputObject $Checkpoint -Name 'Content' -Default ([byte[]]@())))
+            Move-Item -LiteralPath $tempPath -Destination $promptPath -Force
+        } finally {
+            Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+        }
+    } elseif (Test-Path -LiteralPath $promptPath -PathType Leaf) {
+        Remove-Item -LiteralPath $promptPath -Force
+    }
+
+    } finally {
+        Exit-SendPromptArtifactCheckpoint -Checkpoint $Checkpoint
+    }
 }
 
 function Get-DispatchPromptReference {
@@ -744,7 +908,7 @@ function Read-WinsmuxArtifactJson {
 
     try {
         $content = Get-Content -LiteralPath $fullPath -Raw -Encoding UTF8
-        $parsed = $content | ConvertFrom-Json -AsHashtable -Depth 12
+        $parsed = $content | ConvertFrom-WinsmuxJson -AsHashtable -Depth 12
     } catch {
         return $null
     }
@@ -974,7 +1138,7 @@ function ConvertTo-DispatchPowerShellCommandInvocation {
     return '& ' + (ConvertTo-DispatchPowerShellLiteral -Value $Value)
 }
 
-function Resolve-SendTransportPlan {
+function Resolve-SendTransportIntent {
     param(
         [Parameter(Mandatory = $true)][string]$Text,
         [string]$ProjectDir = (Get-Location).Path,
@@ -989,6 +1153,60 @@ function Resolve-SendTransportPlan {
     )
 
     $resolvedPromptTransport = Resolve-SupportedPromptTransport -PromptTransport $PromptTransport
+    $normalizedTaskSlug = if ([string]::IsNullOrWhiteSpace($TaskSlug)) {
+        ''
+    } else {
+        ConvertTo-TaskPromptSlug -TaskSlug $TaskSlug
+    }
+    $mode = if ($ExecMode) {
+        'codex_exec_file'
+    } elseif (-not [string]::IsNullOrWhiteSpace($normalizedTaskSlug)) {
+        'pointer'
+    } elseif ($resolvedPromptTransport -eq 'stdin') {
+        'inline'
+    } elseif ($resolvedPromptTransport -eq 'argv' -and $Text.Length -le $LengthLimit) {
+        'inline'
+    } else {
+        'pointer'
+    }
+
+    return [ordered]@{
+        Mode            = $mode
+        IsFileBacked    = ($mode -ne 'inline')
+        TextLength      = $Text.Length
+        LengthLimit     = $LengthLimit
+        PromptTransport = $resolvedPromptTransport
+        TaskSlug        = $normalizedTaskSlug
+        ExecMode        = $ExecMode
+        ProjectDir      = $ProjectDir
+        LaunchDir       = $LaunchDir
+        GitWorktreeDir  = $GitWorktreeDir
+        Model           = $Model
+        ExecCommand     = $ExecCommand
+    }
+}
+
+function New-SendTransportPlan {
+    param(
+        [Parameter(Mandatory = $true)][string]$Text,
+        [string]$ProjectDir = (Get-Location).Path,
+        [int]$LengthLimit = 4000,
+        [string]$PromptTransport = 'argv',
+        [string]$TaskSlug = '',
+        [bool]$ExecMode = $false,
+        [string]$LaunchDir,
+        [string]$GitWorktreeDir,
+        [string]$Model,
+        [string]$ExecCommand = 'codex',
+        [AllowNull()]$Intent = $null
+    )
+
+    if ($null -eq $Intent) {
+        $Intent = Resolve-SendTransportIntent -Text $Text -ProjectDir $ProjectDir -LengthLimit $LengthLimit `
+            -PromptTransport $PromptTransport -TaskSlug $TaskSlug -ExecMode $ExecMode -LaunchDir $LaunchDir `
+            -GitWorktreeDir $GitWorktreeDir -Model $Model -ExecCommand $ExecCommand
+    }
+    $resolvedPromptTransport = [string]$Intent['PromptTransport']
     if (-not $ExecMode) {
         $payload = Resolve-SendDispatchPayload -Text $Text -ProjectDir $ProjectDir -LengthLimit $LengthLimit -PromptTransport $resolvedPromptTransport -TaskSlug $TaskSlug
         return [ordered]@{
@@ -1042,6 +1260,23 @@ function Resolve-SendTransportPlan {
         TaskSlug        = $normalizedTaskSlug
         ExecInstruction = $execInstruction
     }
+}
+
+function Resolve-SendTransportPlan {
+    param(
+        [Parameter(Mandatory = $true)][string]$Text,
+        [string]$ProjectDir = (Get-Location).Path,
+        [int]$LengthLimit = 4000,
+        [string]$PromptTransport = 'argv',
+        [string]$TaskSlug = '',
+        [bool]$ExecMode = $false,
+        [string]$LaunchDir,
+        [string]$GitWorktreeDir,
+        [string]$Model,
+        [string]$ExecCommand = 'codex'
+    )
+
+    return New-SendTransportPlan @PSBoundParameters
 }
 
 function Convert-MsysTmpPathToWindowsPath {
@@ -1294,6 +1529,7 @@ function Get-CurrentReviewPaneManifestContext {
 
     return [ordered]@{
         ManifestPath        = [string]$context.ManifestPath
+        GenerationId        = [string]$context.GenerationId
         ProjectDir          = [string]$context.ProjectDir
         Label               = [string]$context.Label
         PaneId              = [string]$context.PaneId
@@ -1327,6 +1563,7 @@ function Get-CurrentPaneManifestContext {
 
     return [ordered]@{
         ManifestPath        = [string]$context.ManifestPath
+        GenerationId        = [string]$context.GenerationId
         ProjectDir          = [string]$context.ProjectDir
         SessionName         = [string]$sessionName
         Label               = [string]$context.Label
@@ -1352,17 +1589,21 @@ function Get-CurrentPaneManifestContext {
 
 function Update-ReviewPaneManifestState {
     param(
-        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [AllowNull()]$Context,
         [Parameter(Mandatory = $true)][System.Collections.IDictionary]$Properties
     )
 
     if (-not (Get-Command Set-PaneControlManifestPaneProperties -ErrorAction SilentlyContinue)) {
         return
     }
+    if ($null -eq $Context) {
+        return
+    }
 
     try {
-        $context = Get-CurrentReviewPaneManifestContext -ProjectDir $ProjectDir
-        Set-PaneControlManifestPaneProperties -ManifestPath $context.ManifestPath -PaneId $context.PaneId -Properties $Properties
+        $expectedGenerationId = [string]$Context.GenerationId
+        Set-PaneControlManifestPaneProperties -ManifestPath ([string]$Context.ManifestPath) -PaneId ([string]$Context.PaneId) `
+            -Properties $Properties -ExpectedGenerationId $expectedGenerationId
     } catch {
         # Review-state persistence remains the source of truth. Manifest sync is best-effort.
     }
@@ -1641,6 +1882,12 @@ function Write-ConsultationCommandRecord {
         [string]$ProjectDir = (Get-Location).Path
     )
 
+    $manifestContext = $null
+    try {
+        $manifestContext = Get-CurrentReviewPaneManifestContext -ProjectDir $ProjectDir
+    } catch {
+        # Consultation persistence is authoritative; manifest enrichment remains best-effort.
+    }
     $context = Get-ConsultationCommandContext -ProjectDir $ProjectDir -RunId $RunId
     $timestamp = (Get-Date).ToString('o')
     $packet = [ordered]@{
@@ -1733,7 +1980,7 @@ function Write-ConsultationCommandRecord {
 
     Write-BridgeEventRecord -ProjectDir $ProjectDir -EventRecord $eventRecord | Out-Null
 
-    Update-ReviewPaneManifestState -ProjectDir $ProjectDir -Properties ([ordered]@{
+    Update-ReviewPaneManifestState -Context $manifestContext -Properties ([ordered]@{
         last_event    = ($Kind -replace '_', '.')
         last_event_at = $timestamp
     })
@@ -2065,8 +2312,79 @@ function Save-Labels {
 }
 
 # --- Helper: Resolve-Target ---
+function Resolve-ManagedManifestTarget {
+    param(
+        [Parameter(Mandatory = $true)][string]$RawTarget,
+        [string]$StartPath = (Get-Location).Path
+    )
+
+    if (-not (Get-Command Get-PaneControlManifestEntries -ErrorAction SilentlyContinue)) {
+        return [PSCustomObject]@{ Managed = $false; PaneId = $null; ManifestPath = $null }
+    }
+
+    try {
+        $currentPath = [System.IO.Path]::GetFullPath($StartPath)
+        if (Test-Path -LiteralPath $currentPath -PathType Leaf) {
+            $currentPath = Split-Path -Parent $currentPath
+        }
+    } catch {
+        return [PSCustomObject]@{ Managed = $false; PaneId = $null; ManifestPath = $null }
+    }
+
+    while (-not [string]::IsNullOrWhiteSpace($currentPath)) {
+        $manifestPath = Join-Path (Join-Path $currentPath '.winsmux') 'manifest.yaml'
+        if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
+            try {
+                $entries = @(Get-PaneControlManifestEntries -ProjectDir $currentPath)
+            } catch {
+                Stop-WithError 'runtime dispatch refused (manifest_regeneration_required): managed manifest target mapping is unavailable'
+            }
+
+            $matches = @($entries | Where-Object {
+                foreach ($candidate in @($_.PaneId, $_.Label, $_.SlotId, $_.Title)) {
+                    if ([string]::Equals([string]$candidate, $RawTarget, [System.StringComparison]::OrdinalIgnoreCase)) {
+                        return $true
+                    }
+                }
+                return $false
+            })
+            if ($matches.Count -gt 1) {
+                Stop-WithError 'runtime dispatch refused (manifest_regeneration_required): managed target mapping is ambiguous'
+            }
+            if ($matches.Count -eq 1 -and -not [string]::IsNullOrWhiteSpace([string]$matches[0].PaneId)) {
+                return [PSCustomObject]@{ Managed = $true; PaneId = [string]$matches[0].PaneId; ManifestPath = $manifestPath }
+            }
+            return [PSCustomObject]@{ Managed = $true; PaneId = $null; ManifestPath = $manifestPath }
+        }
+
+        $parent = Split-Path -Parent $currentPath
+        if ([string]::IsNullOrWhiteSpace($parent) -or [string]::Equals($parent, $currentPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+            break
+        }
+        $currentPath = $parent
+    }
+
+    return [PSCustomObject]@{ Managed = $false; PaneId = $null; ManifestPath = $null }
+}
+
 function Resolve-Target {
     param([string]$RawTarget)
+    $managedResolution = Resolve-ManagedManifestTarget -RawTarget $RawTarget
+    if ([bool]$managedResolution.Managed) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$managedResolution.PaneId)) {
+            return [string]$managedResolution.PaneId
+        }
+        # A nearest managed manifest is authoritative. Do not let a stale
+        # process-global label redirect this target into another live pane.
+        # Explicit pane IDs still proceed to the runtime identity guard, which
+        # decides whether they belong to the managed session. Labels and titles
+        # omitted by the manifest cannot safely identify a pane.
+        if ($RawTarget -match '^%\d+$') {
+            return $RawTarget
+        }
+        throw 'runtime dispatch refused (manifest_regeneration_required): managed manifest does not contain target'
+    }
+
     $labels = Get-Labels
     if ($labels.ContainsKey($RawTarget)) {
         return $labels[$RawTarget]
@@ -2082,6 +2400,260 @@ function Get-TargetSessionName {
     }
 
     return ''
+}
+
+function ConvertTo-WinsmuxCanonicalProjectPath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    if (Test-Path -LiteralPath $fullPath -PathType Container) {
+        $fullPath = (Get-Item -LiteralPath $fullPath -Force).FullName
+    }
+
+    $root = [System.IO.Path]::GetPathRoot($fullPath)
+    if (-not [string]::Equals($fullPath, $root, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $fullPath = $fullPath.TrimEnd([char[]]@('\', '/'))
+    }
+    return $fullPath
+}
+
+function Test-WinsmuxRuntimeRegistryMapsPane {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$PaneId
+    )
+
+    $registryPath = Join-Path (Join-Path $ProjectDir '.winsmux') 'runtime-registry.json'
+    if (-not (Test-Path -LiteralPath $registryPath -PathType Leaf)) {
+        return $false
+    }
+
+    try {
+        $registry = Get-Content -LiteralPath $registryPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+        foreach ($pane in @($registry.panes)) {
+            $candidatePaneId = [string](Get-PaneControlValue -InputObject $pane -Name 'pane_id' -Default '')
+            if ([string]::Equals($candidatePaneId, $PaneId, [System.StringComparison]::Ordinal)) {
+                return $true
+            }
+        }
+    } catch {
+        return $false
+    }
+
+    return $false
+}
+
+function Test-WinsmuxManifestMapsPane {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$PaneId
+    )
+
+    $manifestPath = Join-Path (Join-Path $ProjectDir '.winsmux') 'manifest.yaml'
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        return $false
+    }
+
+    try {
+        foreach ($entry in @(Get-PaneControlManifestEntries -ProjectDir $ProjectDir)) {
+            if ([string]::Equals([string]$entry.PaneId, $PaneId, [System.StringComparison]::Ordinal)) {
+                return $true
+            }
+        }
+    } catch {
+        return $false
+    }
+
+    return $false
+}
+
+function Get-WinsmuxAncestorManagedRoot {
+    param(
+        [Parameter(Mandatory = $true)][string]$StartPath,
+        [Parameter(Mandatory = $true)][string]$PaneId
+    )
+
+    try {
+        $cursor = [System.IO.DirectoryInfo]::new([System.IO.Path]::GetFullPath($StartPath))
+    } catch {
+        return ''
+    }
+
+    while ($null -ne $cursor) {
+        if ((Test-WinsmuxManifestMapsPane -ProjectDir $cursor.FullName -PaneId $PaneId) -or
+            (Test-WinsmuxRuntimeRegistryMapsPane -ProjectDir $cursor.FullName -PaneId $PaneId)) {
+            return $cursor.FullName
+        }
+        $cursor = $cursor.Parent
+    }
+
+    return ''
+}
+
+function New-WinsmuxManagedTargetResolution {
+    param(
+        [Parameter(Mandatory = $true)][bool]$Managed,
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [AllowNull()]$Context,
+        [AllowNull()]$Validation,
+        [Parameter(Mandatory = $true)][string]$Operation,
+        [AllowEmptyString()][string]$GenerationId = ''
+    )
+
+    return [PSCustomObject][ordered]@{
+        Managed      = $Managed
+        ProjectDir   = $ProjectDir
+        Context      = $Context
+        Validation   = $Validation
+        Operation    = $Operation
+        GenerationId = $GenerationId
+    }
+}
+
+function Resolve-WinsmuxManagedTargetContext {
+    param(
+        [Parameter(Mandatory = $true)][string]$PaneId,
+        [string]$CurrentProjectDir = (Get-Location).Path,
+        [ValidateSet('auto', 'dispatch', 'start_deferred', 'stop_transition')][string]$Operation = 'dispatch',
+        [AllowEmptyString()][string]$ExpectedGenerationId = ''
+    )
+
+    $invalidResolution = {
+        param([string]$Diagnostic, [string]$ProjectDir = $CurrentProjectDir)
+        $validation = New-WinsmuxRuntimeValidationResult -Valid $false -ReasonCode 'manifest_regeneration_required' -Diagnostic $Diagnostic
+        New-WinsmuxManagedTargetResolution -Managed $true -ProjectDir $ProjectDir -Context $null -Validation $validation -Operation $Operation
+    }
+
+    try {
+        $sessionOutput = Invoke-WinsmuxRaw -Arguments @('display-message', '-t', $PaneId, '-p', '#{session_name}') 2>$null
+        $sessionName = ((@($sessionOutput) | ForEach-Object { [string]$_ }) -join "`n").Trim()
+        if ($sessionName -match "`r?`n") {
+            $sessionName = ($sessionName -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Last 1).Trim()
+        }
+    } catch {
+        return & $invalidResolution 'Target session identity is unavailable; regenerate the orchestra session.'
+    }
+    if ([string]::IsNullOrWhiteSpace($sessionName)) {
+        return & $invalidResolution 'Target session identity is unavailable; regenerate the orchestra session.'
+    }
+
+    $sessionProjectDir = ''
+    try {
+        $environmentOutput = Invoke-WinsmuxRaw -Arguments @('show-environment', '-t', $sessionName, 'WINSMUX_ORCHESTRA_PROJECT_DIR') 2>$null
+        foreach ($line in @($environmentOutput)) {
+            $text = ([string]$line).Trim()
+            if ($text.StartsWith('WINSMUX_ORCHESTRA_PROJECT_DIR=', [System.StringComparison]::Ordinal)) {
+                $sessionProjectDir = $text.Substring('WINSMUX_ORCHESTRA_PROJECT_DIR='.Length)
+                break
+            }
+        }
+    } catch {
+        return & $invalidResolution 'Target session project identity is unavailable; regenerate the orchestra session.'
+    }
+
+    $processProjectDir = ''
+    if (-not [string]::IsNullOrWhiteSpace([string]$env:WINSMUX_ORCHESTRA_PROJECT_DIR)) {
+        try {
+            $candidateProcessProjectDir = ConvertTo-WinsmuxCanonicalProjectPath -Path ([string]$env:WINSMUX_ORCHESTRA_PROJECT_DIR)
+            if ((Test-WinsmuxManifestMapsPane -ProjectDir $candidateProcessProjectDir -PaneId $PaneId) -or
+                (Test-WinsmuxRuntimeRegistryMapsPane -ProjectDir $candidateProcessProjectDir -PaneId $PaneId)) {
+                $processProjectDir = $candidateProcessProjectDir
+            }
+        } catch {
+            $processProjectDir = ''
+        }
+    }
+
+    $rawCandidates = [System.Collections.Generic.List[string]]::new()
+    foreach ($candidate in @(
+        $sessionProjectDir,
+        $processProjectDir,
+        (Get-WinsmuxAncestorManagedRoot -StartPath $CurrentProjectDir -PaneId $PaneId)
+    )) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate)) {
+            $rawCandidates.Add($candidate.Trim()) | Out-Null
+        }
+    }
+
+    $candidateSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    foreach ($candidate in $rawCandidates) {
+        try {
+            $canonical = ConvertTo-WinsmuxCanonicalProjectPath -Path $candidate
+        } catch {
+            return & $invalidResolution 'Managed project candidate is invalid; regenerate the orchestra session.'
+        }
+        if ($candidateSet.Add($canonical)) {
+            $candidates.Add($canonical) | Out-Null
+        }
+    }
+
+    if ($candidates.Count -eq 0) {
+        if (-not [string]::IsNullOrWhiteSpace($ExpectedGenerationId)) {
+            $validation = New-WinsmuxRuntimeValidationResult -Valid $false `
+                -ReasonCode 'invalid_supervisor_identity' `
+                -Diagnostic 'Managed runtime candidate disappeared before the write operation completed.'
+            return New-WinsmuxManagedTargetResolution -Managed $true `
+                -ProjectDir (ConvertTo-WinsmuxCanonicalProjectPath -Path $CurrentProjectDir) `
+                -Context $null -Validation $validation `
+                -Operation $(if ($Operation -eq 'auto') { 'dispatch' } else { $Operation }) `
+                -GenerationId $ExpectedGenerationId
+        }
+        return New-WinsmuxManagedTargetResolution -Managed $false `
+            -ProjectDir (ConvertTo-WinsmuxCanonicalProjectPath -Path $CurrentProjectDir) `
+            -Context $null -Validation $null -Operation $(if ($Operation -eq 'auto') { 'dispatch' } else { $Operation })
+    }
+    if ($candidates.Count -ne 1) {
+        return & $invalidResolution 'Managed project candidates conflict; regenerate the orchestra session.'
+    }
+
+    $projectDir = [string]$candidates[0]
+    if (-not (Get-Command Get-PaneControlManifestContext -ErrorAction SilentlyContinue) -or
+        -not (Get-Command Test-PaneControlRuntimeContext -ErrorAction SilentlyContinue)) {
+        return & $invalidResolution 'Runtime identity validation is unavailable; regenerate the orchestra session.' $projectDir
+    }
+
+    try {
+        $context = Get-PaneControlManifestContext -ProjectDir $projectDir -PaneId $PaneId
+    } catch {
+        return & $invalidResolution 'Managed pane context is unavailable; regenerate the orchestra session.' $projectDir
+    }
+
+    $runtimeOperation = $Operation
+    if ($runtimeOperation -eq 'auto') {
+        $status = [string](Get-PaneControlValue -InputObject $context -Name 'Status' -Default '')
+        $runtimeOperation = [string](Get-WinsmuxRuntimeStatusClassification -Status $status).RuntimeOperation
+    }
+
+    $validation = Test-PaneControlRuntimeContext -ProjectDir $projectDir -ManifestEntry $context -Operation $runtimeOperation
+    $generationId = ''
+    if ($null -ne $validation -and $null -ne $validation.context) {
+        $generationId = [string](Get-PaneControlValue -InputObject $validation.context -Name 'generation_id' -Default '')
+    }
+    if ([bool]$validation.valid -and -not [string]::IsNullOrWhiteSpace($ExpectedGenerationId) -and
+        -not [string]::Equals($generationId, $ExpectedGenerationId, [System.StringComparison]::Ordinal)) {
+        $validation = New-WinsmuxRuntimeValidationResult -Valid $false -ReasonCode 'invalid_supervisor_identity' `
+            -Diagnostic 'Runtime generation changed before the write operation completed.'
+    }
+
+    return New-WinsmuxManagedTargetResolution -Managed $true -ProjectDir $projectDir -Context $context `
+        -Validation $validation -Operation $runtimeOperation -GenerationId $generationId
+}
+
+function Assert-WinsmuxTargetRuntimeWriteAllowed {
+    param(
+        [Parameter(Mandatory = $true)][string]$PaneId,
+        [string]$CurrentProjectDir = (Get-Location).Path,
+        [ValidateSet('auto', 'dispatch', 'start_deferred', 'stop_transition')][string]$Operation = 'dispatch',
+        [AllowEmptyString()][string]$ExpectedGenerationId = ''
+    )
+
+    $resolution = Resolve-WinsmuxManagedTargetContext -PaneId $PaneId -CurrentProjectDir $CurrentProjectDir `
+        -Operation $Operation -ExpectedGenerationId $ExpectedGenerationId
+    if ($resolution.Managed -and (-not [bool]$resolution.Validation.valid)) {
+        Stop-WithError ("runtime dispatch refused ({0}): {1}" -f [string]$resolution.Validation.reason_code, [string]$resolution.Validation.diagnostic)
+    }
+    return $resolution
 }
 
 # --- Helper: Confirm-Target ---
@@ -2268,13 +2840,39 @@ function Test-PaneContainsCommandFragment {
     return $normalizedPaneText.Contains($fragment)
 }
 
+function Assert-SendPaneRuntimeLease {
+    param(
+        [Parameter(Mandatory = $true)][string]$PaneId,
+        [AllowEmptyString()][string]$RuntimeProjectDir = '',
+        [ValidateSet('dispatch', 'start_deferred')][string]$RuntimeOperation = 'dispatch',
+        [AllowEmptyString()][string]$ExpectedGenerationId = ''
+    )
+
+    if ([string]::IsNullOrWhiteSpace($RuntimeProjectDir) -and [string]::IsNullOrWhiteSpace($ExpectedGenerationId)) {
+        return
+    }
+    if ([string]::IsNullOrWhiteSpace($RuntimeProjectDir) -or [string]::IsNullOrWhiteSpace($ExpectedGenerationId)) {
+        Stop-WithError 'runtime dispatch refused (manifest_regeneration_required): managed send lease identity is incomplete'
+    }
+
+    Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $PaneId -CurrentProjectDir $RuntimeProjectDir `
+        -Operation $RuntimeOperation -ExpectedGenerationId $ExpectedGenerationId | Out-Null
+}
+
 function Send-TextToPane {
     param(
         [Parameter(Mandatory = $true)][string]$PaneId,
         [Parameter(Mandatory = $true)][string]$CommandText,
-        [AllowEmptyString()][string]$PromptTransport = 'argv'
+        [AllowEmptyString()][string]$PromptTransport = 'argv',
+        [AllowEmptyString()][string]$RuntimeProjectDir = '',
+        [ValidateSet('dispatch', 'start_deferred')][string]$RuntimeOperation = 'dispatch',
+        [AllowEmptyString()][string]$ExpectedGenerationId = '',
+        [AllowNull()][System.Collections.IDictionary]$DeliveryState = $null
     )
 
+    if ($null -ne $DeliveryState) {
+        $DeliveryState['SubmissionCommitted'] = $false
+    }
     $resolvedPromptTransport = Resolve-SupportedPromptTransport -PromptTransport $PromptTransport
     $terminalBackend = Resolve-TerminalBackend
     $targetCandidates = if ($terminalBackend -eq 'tauri') {
@@ -2287,6 +2885,8 @@ function Send-TextToPane {
     foreach ($sendTarget in $targetCandidates) {
         $preSendText = Get-PaneSnapshotText -PaneId $PaneId -Lines 200
         if ($resolvedPromptTransport -eq 'stdin') {
+            Assert-SendPaneRuntimeLease -PaneId $PaneId -RuntimeProjectDir $RuntimeProjectDir `
+                -RuntimeOperation $RuntimeOperation -ExpectedGenerationId $ExpectedGenerationId
             $pasteResult = Invoke-WinsmuxSendPaste -Target $sendTarget -Text $CommandText
             if ($pasteResult.ExitCode -ne 0) {
                 $detail = if ([string]::IsNullOrWhiteSpace($pasteResult.Output)) { 'send-paste failed' } else { $pasteResult.Output }
@@ -2298,6 +2898,8 @@ function Send-TextToPane {
 
             # Type text directly (no header; headers break TUI agents like Claude Code)
             for ($chunkIndex = 0; $chunkIndex -lt $literalChunks.Count; $chunkIndex++) {
+                Assert-SendPaneRuntimeLease -PaneId $PaneId -RuntimeProjectDir $RuntimeProjectDir `
+                    -RuntimeOperation $RuntimeOperation -ExpectedGenerationId $ExpectedGenerationId
                 $literalResult = Invoke-WinsmuxSendKeys -Target $sendTarget -Keys @($literalChunks[$chunkIndex]) -Literal
                 if ($literalResult.ExitCode -ne 0) {
                     $detail = if ([string]::IsNullOrWhiteSpace($literalResult.Output)) { 'send-keys literal failed' } else { $literalResult.Output }
@@ -2318,27 +2920,36 @@ function Send-TextToPane {
             continue
         }
 
+        Assert-SendPaneRuntimeLease -PaneId $PaneId -RuntimeProjectDir $RuntimeProjectDir `
+            -RuntimeOperation $RuntimeOperation -ExpectedGenerationId $ExpectedGenerationId
         $enterResult = Invoke-WinsmuxSendKeys -Target $sendTarget -Keys @('Enter')
         if ($enterResult.ExitCode -ne 0) {
             $detail = if ([string]::IsNullOrWhiteSpace($enterResult.Output)) { 'send-keys Enter failed' } else { $enterResult.Output }
             $attemptFailures.Add("target ${sendTarget}: $detail") | Out-Null
             continue
         }
+        if ($null -ne $DeliveryState) {
+            $DeliveryState['SubmissionCommitted'] = $true
+        }
 
         Start-Sleep -Milliseconds 500
         $postEnterText = Get-PaneSnapshotText -PaneId $PaneId -Lines 200
         if ($postEnterText -match '\[Pasted Content') {
+            Assert-SendPaneRuntimeLease -PaneId $PaneId -RuntimeProjectDir $RuntimeProjectDir `
+                -RuntimeOperation $RuntimeOperation -ExpectedGenerationId $ExpectedGenerationId
             $secondEnterResult = Invoke-WinsmuxSendKeys -Target $sendTarget -Keys @('Enter')
             if ($secondEnterResult.ExitCode -ne 0) {
                 $detail = if ([string]::IsNullOrWhiteSpace($secondEnterResult.Output)) { 'send-keys second Enter failed' } else { $secondEnterResult.Output }
-                $attemptFailures.Add("target ${sendTarget}: $detail") | Out-Null
-                continue
+                throw "failed to send to ${PaneId} after submission commit via ${sendTarget}: $detail"
             }
         }
-
         Start-Sleep -Milliseconds 800
         $snapshotText = Get-PaneSnapshotText -PaneId $PaneId -Lines 200
+        Assert-SendPaneRuntimeLease -PaneId $PaneId -RuntimeProjectDir $RuntimeProjectDir `
+            -RuntimeOperation $RuntimeOperation -ExpectedGenerationId $ExpectedGenerationId
         Save-Watermark $PaneId $snapshotText
+        Assert-SendPaneRuntimeLease -PaneId $PaneId -RuntimeProjectDir $RuntimeProjectDir `
+            -RuntimeOperation $RuntimeOperation -ExpectedGenerationId $ExpectedGenerationId
         Set-ReadMark $PaneId
 
         Write-Output "sent to $PaneId via $sendTarget"
@@ -3161,11 +3772,18 @@ function Invoke-Type {
     $text = $Rest -join ' '
     $paneId = Resolve-Target $Target
     $paneId = Confirm-Target $paneId
+    $projectDir = (Get-Location).Path
+
+    $runtimeAccess = Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch
 
     Assert-ReadMark $paneId
 
+    Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch `
+        -ExpectedGenerationId ([string]$runtimeAccess.GenerationId) | Out-Null
     Invoke-WinsmuxRaw -Arguments @('send-keys', '-t', $paneId, '-l', '--', "$text")
 
+    Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch `
+        -ExpectedGenerationId ([string]$runtimeAccess.GenerationId) | Out-Null
     Clear-ReadMark $paneId
 }
 
@@ -3175,13 +3793,20 @@ function Invoke-Keys {
 
     $paneId = Resolve-Target $Target
     $paneId = Confirm-Target $paneId
+    $projectDir = (Get-Location).Path
+
+    $runtimeAccess = Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch
 
     Assert-ReadMark $paneId
 
     foreach ($key in $Rest) {
+        Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch `
+            -ExpectedGenerationId ([string]$runtimeAccess.GenerationId) | Out-Null
         Invoke-WinsmuxRaw -Arguments @('send-keys', '-t', $paneId, $key)
     }
 
+    Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch `
+        -ExpectedGenerationId ([string]$runtimeAccess.GenerationId) | Out-Null
     Clear-ReadMark $paneId
 }
 
@@ -3192,6 +3817,9 @@ function Invoke-Message {
     $text = $Rest -join ' '
     $paneId = Resolve-Target $Target
     $paneId = Confirm-Target $paneId
+    $projectDir = (Get-Location).Path
+
+    $runtimeAccess = Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch
 
     Assert-ReadMark $paneId
 
@@ -3200,8 +3828,12 @@ function Invoke-Message {
     $agentName = if ($env:WINSMUX_AGENT_NAME) { $env:WINSMUX_AGENT_NAME } else { "unknown" }
 
     $header = "[winsmux from:$agentName pane:$myId at:$myCoord -- load the winsmux skill to reply]"
+    Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch `
+        -ExpectedGenerationId ([string]$runtimeAccess.GenerationId) | Out-Null
     Invoke-WinsmuxRaw -Arguments @('send-keys', '-t', $paneId, '-l', '--', "$header $text")
 
+    Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch `
+        -ExpectedGenerationId ([string]$runtimeAccess.GenerationId) | Out-Null
     Clear-ReadMark $paneId
 }
 
@@ -3360,11 +3992,7 @@ function Test-DeferredPaneStartManifestEntry {
     }
 
     $status = [string](Get-SendConfigValue -InputObject $ManifestEntry -Name 'Status' -Default '')
-    if ([string]::IsNullOrWhiteSpace($status)) {
-        return $false
-    }
-
-    return @('deferred_start', 'deferred_starting', 'deferred_start_failed', 'api_llm_runner_unconfigured', 'antigravity_runner_unconfigured') -contains $status.Trim().ToLowerInvariant()
+    return [bool](Get-WinsmuxRuntimeStatusClassification -Status $status).IsDeferred
 }
 
 function Get-WorkersRecoveryActionForFailureStage {
@@ -3427,7 +4055,9 @@ function Set-DeferredPaneStartStatus {
         [AllowEmptyString()][string]$MarkerPath = '',
         [AllowEmptyString()][string]$FailedStage = '',
         [AllowEmptyString()][string]$FailureReason = '',
-        [AllowEmptyString()][string]$RecoveryAction = ''
+        [AllowEmptyString()][string]$RecoveryAction = '',
+        [AllowEmptyString()][string]$ExpectedGenerationId = '',
+        [ValidateSet('start_deferred', 'dispatch')][string]$RuntimeOperation = 'start_deferred'
     )
 
     if (-not (Get-Command Set-PaneControlManifestPaneProperties -ErrorAction SilentlyContinue)) {
@@ -3436,7 +4066,8 @@ function Set-DeferredPaneStartStatus {
 
     $manifestPath = Join-Path (Join-Path $ProjectDir '.winsmux') 'manifest.yaml'
     $properties = [ordered]@{
-        status = $Status
+        status        = $Status
+        runtime_ready = ($Status -ceq 'ready')
     }
     if (-not [string]::IsNullOrWhiteSpace($MarkerPath)) {
         $properties['bootstrap_marker_path'] = $MarkerPath
@@ -3451,7 +4082,8 @@ function Set-DeferredPaneStartStatus {
         }
     }
 
-    Set-PaneControlManifestPaneProperties -ManifestPath $manifestPath -PaneId $PaneId -Properties $properties
+    Set-PaneControlManifestPaneProperties -ManifestPath $manifestPath -PaneId $PaneId -Properties $properties `
+        -ExpectedGenerationId $ExpectedGenerationId -RuntimeOperation $RuntimeOperation
 }
 
 function Wait-DeferredPaneReady {
@@ -3494,13 +4126,19 @@ function Send-PromptPointerWhenAgentReady {
         [Parameter(Mandatory = $true)][string]$PointerText,
         [AllowEmptyString()][string]$Agent = '',
         [string]$PromptTransport = 'argv',
-        [int]$TimeoutSeconds = 60
+        [int]$TimeoutSeconds = 60,
+        [AllowEmptyString()][string]$RuntimeProjectDir = '',
+        [ValidateSet('dispatch', 'start_deferred')][string]$RuntimeOperation = 'dispatch',
+        [AllowEmptyString()][string]$ExpectedGenerationId = '',
+        [AllowNull()][System.Collections.IDictionary]$DeliveryState = $null
     )
 
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
         if (Test-AgentReadyPrompt -PaneId $PaneId -Agent $Agent) {
-            return Send-TextToPane -PaneId $PaneId -CommandText $PointerText -PromptTransport $PromptTransport
+            return Send-TextToPane -PaneId $PaneId -CommandText $PointerText -PromptTransport $PromptTransport `
+                -RuntimeProjectDir $RuntimeProjectDir -RuntimeOperation $RuntimeOperation `
+                -ExpectedGenerationId $ExpectedGenerationId -DeliveryState $DeliveryState
         }
 
         Start-Sleep -Milliseconds 250
@@ -3517,7 +4155,11 @@ function Send-ResolvedTransportPlan {
         [ValidateSet('prompt', 'launch')][string]$DeliveryClass = 'prompt',
         [Parameter(Mandatory = $true)][string]$Target,
         [Parameter(Mandatory = $true)][string]$ProjectDir,
-        [Parameter(Mandatory = $true)]$AgentConfig
+        [Parameter(Mandatory = $true)]$AgentConfig,
+        [AllowEmptyString()][string]$RuntimeProjectDir = '',
+        [ValidateSet('dispatch', 'start_deferred')][string]$RuntimeOperation = 'dispatch',
+        [AllowEmptyString()][string]$ExpectedGenerationId = '',
+        [AllowNull()][System.Collections.IDictionary]$DeliveryState = $null
     )
 
     if (Test-SendTransportRequiresPointerReadiness -TransportPlan $TransportPlan -DeliveryClass $DeliveryClass) {
@@ -3530,7 +4172,11 @@ function Send-ResolvedTransportPlan {
             -PaneId $PaneId `
             -PointerText ([string]$TransportPlan['TextToSend']) `
             -Agent $pointerReadinessAgent `
-            -PromptTransport ([string]$TransportPlan['PromptTransport'])
+            -PromptTransport ([string]$TransportPlan['PromptTransport']) `
+            -RuntimeProjectDir $RuntimeProjectDir `
+            -RuntimeOperation $RuntimeOperation `
+            -ExpectedGenerationId $ExpectedGenerationId `
+            -DeliveryState $DeliveryState
     }
 
     $commandText = [string]$TransportPlan['TextToSend']
@@ -3545,7 +4191,11 @@ function Send-ResolvedTransportPlan {
     return Send-TextToPane `
         -PaneId $PaneId `
         -CommandText $commandText `
-        -PromptTransport ([string]$TransportPlan['PromptTransport'])
+        -PromptTransport ([string]$TransportPlan['PromptTransport']) `
+        -RuntimeProjectDir $RuntimeProjectDir `
+        -RuntimeOperation $RuntimeOperation `
+        -ExpectedGenerationId $ExpectedGenerationId `
+        -DeliveryState $DeliveryState
 }
 
 function Resolve-SendInvocationArguments {
@@ -3581,7 +4231,8 @@ function Resolve-SendInvocationArguments {
 function Start-DeferredPaneFromManifestEntry {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
-        [AllowNull()]$ManifestEntry
+        [AllowNull()]$ManifestEntry,
+        [AllowEmptyString()][string]$ExpectedGenerationId = ''
     )
 
     if (-not (Test-DeferredPaneStartManifestEntry -ManifestEntry $ManifestEntry)) {
@@ -3595,50 +4246,121 @@ function Start-DeferredPaneFromManifestEntry {
     }
 
     $status = [string](Get-SendConfigValue -InputObject $ManifestEntry -Name 'Status' -Default '')
-    $normalizedStatus = $status.Trim().ToLowerInvariant()
+    $statusClassification = Get-WinsmuxRuntimeStatusClassification -Status $status
+    $normalizedStatus = [string]$statusClassification.NormalizedStatus
+    if (-not [bool]$statusClassification.CanStartDeferred -and -not [bool]$statusClassification.IsStarting) {
+        return $false
+    }
     $readinessAgent = ConvertTo-ReadinessAgentName ([string](Get-SendConfigValue -InputObject $ManifestEntry -Name 'CapabilityAdapter' -Default ''))
     if ([string]::IsNullOrWhiteSpace($readinessAgent)) {
         $readinessAgent = ConvertTo-ReadinessAgentName ([string](Get-SendConfigValue -InputObject $ManifestEntry -Name 'ProviderTarget' -Default ''))
     }
 
-    if ($normalizedStatus -eq 'deferred_start_failed') {
-        try {
-            if (Test-AgentReadyPrompt -PaneId $paneId -Agent $readinessAgent) {
-                Set-DeferredPaneStartStatus -ProjectDir $ProjectDir -PaneId $paneId -Status 'ready'
-                return $true
-            }
-        } catch {
-            # Fall through to the bootstrap retry path when the pane cannot be probed.
-        }
-    }
-
     $planPath = [string](Get-SendConfigValue -InputObject $ManifestEntry -Name 'BootstrapPlanPath' -Default '')
     if ([string]::IsNullOrWhiteSpace($planPath)) {
-        Set-DeferredPaneStartStatus -ProjectDir $ProjectDir -PaneId $paneId -Status 'deferred_start_failed' -FailedStage 'bootstrap_plan_missing' -FailureReason "missing bootstrap plan path"
+        Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $ProjectDir `
+            -Operation start_deferred -ExpectedGenerationId $ExpectedGenerationId | Out-Null
+        Set-DeferredPaneStartStatus -ProjectDir $ProjectDir -PaneId $paneId -Status 'deferred_start_failed' `
+            -FailedStage 'bootstrap_plan_missing' -FailureReason "missing bootstrap plan path" `
+            -ExpectedGenerationId $ExpectedGenerationId -RuntimeOperation start_deferred
         throw "deferred pane '$label' is missing bootstrap plan path"
     }
     if (-not [System.IO.Path]::IsPathRooted($planPath)) {
         $planPath = [System.IO.Path]::GetFullPath((Join-Path $ProjectDir $planPath))
     }
     if (-not (Test-Path -LiteralPath $planPath -PathType Leaf)) {
-        Set-DeferredPaneStartStatus -ProjectDir $ProjectDir -PaneId $paneId -Status 'deferred_start_failed' -FailedStage 'bootstrap_plan_not_found' -FailureReason "bootstrap plan not found: $planPath"
+        Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $ProjectDir `
+            -Operation start_deferred -ExpectedGenerationId $ExpectedGenerationId | Out-Null
+        Set-DeferredPaneStartStatus -ProjectDir $ProjectDir -PaneId $paneId -Status 'deferred_start_failed' `
+            -FailedStage 'bootstrap_plan_not_found' -FailureReason "bootstrap plan not found: $planPath" `
+            -ExpectedGenerationId $ExpectedGenerationId -RuntimeOperation start_deferred
         throw "deferred pane '$label' bootstrap plan not found: $planPath"
     }
 
-    $plan = Get-Content -LiteralPath $planPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 8
+    $plan = Get-Content -LiteralPath $planPath -Raw -Encoding UTF8 | ConvertFrom-WinsmuxJson -Depth 8
     $approvedLaunch = Get-SendConfigValue -InputObject $ManifestEntry -Name 'ApprovedLaunch' -Default $null
     $candidateLaunch = Get-SendConfigValue -InputObject $plan -Name 'approved_launch' -Default $null
     $approvalDifferences = @(Get-WorkersLaunchApprovalDifferences -ApprovedLaunch $approvedLaunch -CurrentLaunch $candidateLaunch)
     if ($approvalDifferences.Count -gt 0) {
         $mismatchReason = Format-WorkersLaunchApprovalMismatch -Differences $approvalDifferences
-        Set-DeferredPaneStartStatus -ProjectDir $ProjectDir -PaneId $paneId -Status 'deferred_start_failed' -FailedStage 'launch_approval' -FailureReason $mismatchReason -RecoveryAction 'review-worker-settings-and-rerun-launch'
+        Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $ProjectDir `
+            -Operation start_deferred -ExpectedGenerationId $ExpectedGenerationId | Out-Null
+        Set-DeferredPaneStartStatus -ProjectDir $ProjectDir -PaneId $paneId -Status 'deferred_start_failed' `
+            -FailedStage 'launch_approval' -FailureReason $mismatchReason -RecoveryAction 'review-worker-settings-and-rerun-launch' `
+            -ExpectedGenerationId $ExpectedGenerationId -RuntimeOperation start_deferred
         throw $mismatchReason
     }
 
     $markerPath = [string](Get-SendConfigValue -InputObject $plan -Name 'ready_marker_path' -Default '')
+    $reuseExistingRetryMarker = $false
+    if ($normalizedStatus -eq 'deferred_start_failed') {
+        $retryResolution = Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $ProjectDir `
+            -Operation start_deferred -ExpectedGenerationId $ExpectedGenerationId
+        $retryValidation = Get-SendConfigValue -InputObject $retryResolution -Name 'Validation' -Default $null
+        $retryValidationContext = Get-SendConfigValue -InputObject $retryValidation -Name 'context' -Default $null
+        $retryMarkerState = [string](Get-SendConfigValue -InputObject $retryValidationContext `
+            -Name 'retry_marker_state' -Default '')
+        if (-not [string]::IsNullOrWhiteSpace($retryMarkerState)) {
+            $manifestRetryMarkerPath = [string](Get-SendConfigValue -InputObject $ManifestEntry `
+                -Name 'BootstrapMarkerPath' -Default '')
+            if ([string]::IsNullOrWhiteSpace($manifestRetryMarkerPath) -or [string]::IsNullOrWhiteSpace($markerPath)) {
+                throw 'failed deferred retry marker path is missing from the manifest or bootstrap plan'
+            }
+            $manifestRetryMarkerFull = if ([System.IO.Path]::IsPathRooted($manifestRetryMarkerPath)) {
+                [System.IO.Path]::GetFullPath($manifestRetryMarkerPath)
+            } else {
+                [System.IO.Path]::GetFullPath((Join-Path $ProjectDir $manifestRetryMarkerPath))
+            }
+            $planRetryMarkerFull = if ([System.IO.Path]::IsPathRooted($markerPath)) {
+                [System.IO.Path]::GetFullPath($markerPath)
+            } else {
+                [System.IO.Path]::GetFullPath((Join-Path $ProjectDir $markerPath))
+            }
+            if (-not [string]::Equals($manifestRetryMarkerFull, $planRetryMarkerFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+                throw 'failed deferred retry marker path does not match the approved bootstrap plan'
+            }
+        }
+        if ($retryMarkerState -ceq 'live') {
+            $liveRetryResolution = Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $ProjectDir `
+                -Operation start_deferred -ExpectedGenerationId $ExpectedGenerationId
+            $liveRetryValidation = Get-SendConfigValue -InputObject $liveRetryResolution -Name 'Validation' -Default $null
+            $liveRetryContext = Get-SendConfigValue -InputObject $liveRetryValidation -Name 'context' -Default $null
+            $liveRetryMarkerState = [string](Get-SendConfigValue -InputObject $liveRetryContext `
+                -Name 'retry_marker_state' -Default '')
+            if ($liveRetryMarkerState -cne 'live') {
+                throw 'deferred retry marker changed before deferred retry manifest update'
+            }
+            Set-DeferredPaneStartStatus -ProjectDir $ProjectDir -PaneId $paneId -Status 'deferred_starting' -MarkerPath $markerPath `
+                -ExpectedGenerationId $ExpectedGenerationId -RuntimeOperation start_deferred
+            $reuseExistingRetryMarker = $true
+        } elseif ($retryMarkerState -ceq 'stale') {
+            $preCleanupResolution = Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $ProjectDir `
+                -Operation start_deferred -ExpectedGenerationId $ExpectedGenerationId
+            $preCleanupValidation = Get-SendConfigValue -InputObject $preCleanupResolution -Name 'Validation' -Default $null
+            $preCleanupContext = Get-SendConfigValue -InputObject $preCleanupValidation -Name 'context' -Default $null
+            $preCleanupMarkerState = [string](Get-SendConfigValue -InputObject $preCleanupContext `
+                -Name 'retry_marker_state' -Default '')
+            if ($preCleanupMarkerState -cne 'stale') {
+                throw 'deferred retry marker changed before bounded stale-marker cleanup'
+            }
+            Remove-WorkersBootstrapMarker -ProjectDir $ProjectDir -Entry $ManifestEntry | Out-Null
+            $postCleanupResolution = Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $ProjectDir `
+                -Operation start_deferred -ExpectedGenerationId $ExpectedGenerationId
+            $postCleanupValidation = Get-SendConfigValue -InputObject $postCleanupResolution -Name 'Validation' -Default $null
+            $postCleanupContext = Get-SendConfigValue -InputObject $postCleanupValidation -Name 'context' -Default $null
+            $postCleanupMarkerState = [string](Get-SendConfigValue -InputObject $postCleanupContext `
+                -Name 'retry_marker_state' -Default '')
+            if (-not [string]::IsNullOrWhiteSpace($postCleanupMarkerState)) {
+                throw 'stale deferred retry marker remained observable after bounded cleanup'
+            }
+        }
+    }
 
-    if (@('deferred_start', 'deferred_start_failed') -contains $normalizedStatus) {
-        Set-DeferredPaneStartStatus -ProjectDir $ProjectDir -PaneId $paneId -Status 'deferred_starting' -MarkerPath $markerPath
+    if (@('deferred_start', 'deferred_start_failed') -contains $normalizedStatus -and -not $reuseExistingRetryMarker) {
+        Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $ProjectDir `
+            -Operation start_deferred -ExpectedGenerationId $ExpectedGenerationId | Out-Null
+        Set-DeferredPaneStartStatus -ProjectDir $ProjectDir -PaneId $paneId -Status 'deferred_starting' -MarkerPath $markerPath `
+            -ExpectedGenerationId $ExpectedGenerationId -RuntimeOperation start_deferred
         $bootstrapScriptPath = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\orchestra-pane-bootstrap.ps1'))
         $bootstrapCommand = "pwsh -NoProfile -File {0} -PlanFile {1}" -f `
             (ConvertTo-DispatchPowerShellLiteral -Value $bootstrapScriptPath), `
@@ -3658,11 +4380,26 @@ function Start-DeferredPaneFromManifestEntry {
 
     try {
         Wait-DeferredPaneReady -PaneId $paneId -Agent $readinessAgent -TimeoutSeconds 90
-        Set-DeferredPaneStartStatus -ProjectDir $ProjectDir -PaneId $paneId -Status 'ready' -MarkerPath $markerPath
+        $dispatchEntry = Get-PaneControlManifestContext -ProjectDir $ProjectDir -PaneId $paneId
+        $dispatchRuntime = Wait-PaneControlRuntimeContext -ProjectDir $ProjectDir -ManifestEntry $dispatchEntry -Operation dispatch
+        if (-not [bool]$dispatchRuntime.valid) {
+            Stop-WithError ("runtime dispatch refused ({0}): {1}" -f [string]$dispatchRuntime.reason_code, [string]$dispatchRuntime.diagnostic)
+        }
+        Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $ProjectDir `
+            -Operation dispatch -ExpectedGenerationId $ExpectedGenerationId | Out-Null
+        Set-DeferredPaneStartStatus -ProjectDir $ProjectDir -PaneId $paneId -Status 'ready' -MarkerPath $markerPath `
+            -ExpectedGenerationId $ExpectedGenerationId -RuntimeOperation dispatch
         return $true
     } catch {
         $failureReason = [string]$_.Exception.Message
-        Set-DeferredPaneStartStatus -ProjectDir $ProjectDir -PaneId $paneId -Status 'deferred_start_failed' -MarkerPath $markerPath -FailedStage 'readiness_probe' -FailureReason $failureReason -RecoveryAction 'inspect-pane-log-and-run-workers-start'
+        if ($failureReason -match '^runtime dispatch refused \([^)]+\):') {
+            throw
+        }
+        Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $ProjectDir `
+            -Operation start_deferred -ExpectedGenerationId $ExpectedGenerationId | Out-Null
+        Set-DeferredPaneStartStatus -ProjectDir $ProjectDir -PaneId $paneId -Status 'deferred_start_failed' -MarkerPath $markerPath `
+            -FailedStage 'readiness_probe' -FailureReason $failureReason -RecoveryAction 'inspect-pane-log-and-run-workers-start' `
+            -ExpectedGenerationId $ExpectedGenerationId -RuntimeOperation start_deferred
         throw
     }
 }
@@ -3688,7 +4425,7 @@ function Invoke-Send {
 
     # Normalize Git Bash /tmp paths before dispatching PowerShell-oriented commands.
     $text = Normalize-DispatchText -Text ($messageParts -join ' ')
-    $projectDir = (Get-Location).Path
+    $currentProjectDir = (Get-Location).Path
     $paneId = Resolve-Target $SendTarget
     if ((Resolve-TerminalBackend) -eq 'cli') {
         $paneId = Confirm-Target $paneId
@@ -3701,57 +4438,71 @@ function Invoke-Send {
     }
     $execMode = $false
 
+    $paneControlLoadError = ''
+    $bridgeSettingsLoadError = ''
     try {
         if (Test-Path $PaneControlScript -PathType Leaf) {
             . $PaneControlScript
         }
-
+    } catch {
+        $paneControlLoadError = [string]$_.Exception.Message
+    }
+    try {
         if (Test-Path $BridgeSettingsScript -PathType Leaf) {
             . $BridgeSettingsScript
         }
     } catch {
+        $bridgeSettingsLoadError = [string]$_.Exception.Message
     }
 
-    $hasManifestHelper = Get-Command Get-PaneControlManifestContext -ErrorAction SilentlyContinue
+    $runtimeAccess = Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $currentProjectDir -Operation auto
+    $projectDir = [string]$runtimeAccess.ProjectDir
+    $context = $runtimeAccess.Context
     $hasRoleConfigHelper = Get-Command Get-RoleAgentConfig -ErrorAction SilentlyContinue
-    $manifestPath = Join-Path $projectDir '.winsmux\manifest.yaml'
-    if ($null -ne $hasManifestHelper -and $null -ne $hasRoleConfigHelper -and (Test-Path $manifestPath -PathType Leaf)) {
+    if ($runtimeAccess.Managed -and (
+            -not [string]::IsNullOrWhiteSpace($paneControlLoadError) -or
+            -not [string]::IsNullOrWhiteSpace($bridgeSettingsLoadError) -or
+            $null -eq $hasRoleConfigHelper)) {
+        Stop-WithError 'runtime dispatch refused (manifest_regeneration_required): managed runtime validation helpers are unavailable'
+    }
+    if ($null -ne $context) {
         try {
-            $context = Get-PaneControlManifestContext -ProjectDir $projectDir -PaneId $paneId
-            if ($null -ne $context -and -not [string]::IsNullOrWhiteSpace([string]$context.ManifestPath)) {
-                $manifestContent = Get-Content -LiteralPath $context.ManifestPath -Raw -Encoding UTF8
-                $manifest = ConvertFrom-PaneControlManifestContent -Content $manifestContent
-                $manifestPane = $null
-                if ($null -ne $manifest -and $null -ne $manifest.Panes -and $manifest.Panes.Contains([string]$context.Label)) {
-                    $manifestPane = $manifest.Panes[[string]$context.Label]
-                }
-
-                if (Get-Command Get-SlotAgentConfig -ErrorAction SilentlyContinue) {
-                    $agentConfig = Get-SlotAgentConfig -Role $context.Role -SlotId $context.Label -RootPath $projectDir
-                } else {
-                    $agentConfig = Get-RoleAgentConfig -Role $context.Role
-                }
-
-                $execModeValue = ''
-                if ($null -ne $manifestPane) {
-                    if ($manifestPane -is [System.Collections.IDictionary] -and $manifestPane.Contains('exec_mode')) {
-                        $execModeValue = [string]$manifestPane['exec_mode']
-                    } elseif ($null -ne $manifestPane.PSObject -and $manifestPane.PSObject.Properties.Name -contains 'exec_mode') {
-                        $execModeValue = [string]$manifestPane.exec_mode
-                    }
-                }
-
-                $capabilityAdapter = [string](Get-SendConfigValue -InputObject $agentConfig -Name 'CapabilityAdapter' -Default '')
-                if ([string]::IsNullOrWhiteSpace($capabilityAdapter)) {
-                    $capabilityAdapter = [string]$agentConfig.Agent
-                }
-                $execModeAgent = ConvertTo-ReadinessAgentName $capabilityAdapter
-                $execMode = $execModeValue.Trim().ToLowerInvariant() -eq 'true' -and $execModeAgent -eq 'codex'
+            if ($null -eq $context -or [string]::IsNullOrWhiteSpace([string]$context.ManifestPath)) {
+                throw 'managed pane context did not resolve exactly once'
             }
+            $manifestContent = Get-Content -LiteralPath $context.ManifestPath -Raw -Encoding UTF8
+            $manifest = ConvertFrom-PaneControlManifestContent -Content $manifestContent
+            $manifestPane = $null
+            if ($null -ne $manifest -and $null -ne $manifest.Panes -and $manifest.Panes.Contains([string]$context.Label)) {
+                $manifestPane = $manifest.Panes[[string]$context.Label]
+            }
+
+            if (Get-Command Get-SlotAgentConfig -ErrorAction SilentlyContinue) {
+                $agentConfig = Get-SlotAgentConfig -Role $context.Role -SlotId $context.Label -RootPath $projectDir
+            } else {
+                $agentConfig = Get-RoleAgentConfig -Role $context.Role
+            }
+
+            $execModeValue = ''
+            if ($null -ne $manifestPane) {
+                if ($manifestPane -is [System.Collections.IDictionary] -and $manifestPane.Contains('exec_mode')) {
+                    $execModeValue = [string]$manifestPane['exec_mode']
+                } elseif ($null -ne $manifestPane.PSObject -and $manifestPane.PSObject.Properties.Name -contains 'exec_mode') {
+                    $execModeValue = [string]$manifestPane.exec_mode
+                }
+            }
+
+            $capabilityAdapter = [string](Get-SendConfigValue -InputObject $agentConfig -Name 'CapabilityAdapter' -Default '')
+            if ([string]::IsNullOrWhiteSpace($capabilityAdapter)) {
+                $capabilityAdapter = [string]$agentConfig.Agent
+            }
+            $execModeAgent = ConvertTo-ReadinessAgentName $capabilityAdapter
+            $execMode = $execModeValue.Trim().ToLowerInvariant() -eq 'true' -and $execModeAgent -eq 'codex'
         } catch {
             if ($_.Exception.Message -match 'Provider capability') {
                 throw
             }
+            Stop-WithError ("runtime dispatch refused (manifest_regeneration_required): {0}" -f $_.Exception.Message)
         }
     }
 
@@ -3779,13 +4530,28 @@ function Invoke-Send {
                     target      = $SendTarget
                 }
             }
+            if ([bool]$runtimeAccess.Managed) {
+                Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $projectDir `
+                    -Operation ([string]$runtimeAccess.Operation) -ExpectedGenerationId ([string]$runtimeAccess.GenerationId) | Out-Null
+            }
             Write-BridgeEventRecord -ProjectDir $projectDir -EventRecord $eventRecord | Out-Null
             Stop-WithError ([string]$policyViolation['reason'])
         }
     }
 
-    if (-not $SkipDeferredPaneStart) {
-        Start-DeferredPaneFromManifestEntry -ProjectDir $projectDir -ManifestEntry $context | Out-Null
+    if ($null -ne $context) {
+        $runtimeOperation = [string]$runtimeAccess.Operation
+        if (-not $SkipDeferredPaneStart) {
+            Start-DeferredPaneFromManifestEntry -ProjectDir $projectDir -ManifestEntry $context `
+                -ExpectedGenerationId ([string]$runtimeAccess.GenerationId) | Out-Null
+            if ($runtimeOperation -ceq 'start_deferred') {
+                $context = Get-PaneControlManifestContext -ProjectDir $projectDir -PaneId $paneId
+                $runtimeResult = Wait-PaneControlRuntimeContext -ProjectDir $projectDir -ManifestEntry $context -Operation dispatch
+                if (-not $runtimeResult.valid) {
+                    Stop-WithError ("runtime dispatch refused ({0}): {1}" -f $runtimeResult.reason_code, $runtimeResult.diagnostic)
+                }
+            }
+        }
     }
 
     $contextLaunchDir = $projectDir
@@ -3808,34 +4574,85 @@ function Invoke-Send {
         }
     }
 
-    $transportPlan = Resolve-SendTransportPlan `
-        -Text $text `
-        -ProjectDir $projectDir `
-        -LengthLimit 4000 `
-        -PromptTransport ([string]$agentConfig.PromptTransport) `
-        -TaskSlug $taskSlug `
-        -ExecMode:$execMode `
-        -LaunchDir $contextLaunchDir `
-        -GitWorktreeDir $contextGitWorktreeDir `
-        -Model ([string]$agentConfig.Model) `
-        -ExecCommand ([string](Get-SendConfigValue -InputObject $agentConfig -Name 'CapabilityCommand' -Default $agentConfig.Agent))
-
-    if ($transportPlan['Mode'] -eq 'codex_exec_file') {
-        Send-TextToPane -PaneId $paneId -CommandText ([string]$transportPlan['ExecInstruction'])
-        return
+    $transportPlanRequest = [ordered]@{
+        Text               = $text
+        ProjectDir         = $projectDir
+        LengthLimit        = 4000
+        PromptTransport    = [string]$agentConfig.PromptTransport
+        TaskSlug           = $taskSlug
+        ExecMode           = $execMode
+        LaunchDir          = $contextLaunchDir
+        GitWorktreeDir     = $contextGitWorktreeDir
+        Model              = [string]$agentConfig.Model
+        ExecCommand        = [string](Get-SendConfigValue -InputObject $agentConfig -Name 'CapabilityCommand' -Default $agentConfig.Agent)
     }
 
-    if ($transportPlan['IsFileBacked']) {
-        Write-Warning ("send target '{0}' used prompt_transport={1}; wrote full text to {2} and sent a prompt-file pointer instead." -f $SendTarget, $transportPlan['PromptTransport'], $transportPlan['PromptPath'])
+    # Resolve the complete delivery shape without touching the filesystem. The
+    # runtime lease is revalidated only after this pure planning step; prompt
+    # artifacts are materialized below the guard.
+    $transportIntent = Resolve-SendTransportIntent @transportPlanRequest
+    $sendRuntimeOperation = if ($SkipDeferredPaneStart) { 'start_deferred' } else { 'dispatch' }
+    $sendRuntimeProjectDir = if ($null -ne $context) { $projectDir } else { '' }
+    $sendExpectedGenerationId = if ($null -ne $context) { [string]$runtimeAccess.GenerationId } else { '' }
+
+    if ($null -ne $context) {
+        Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $projectDir `
+            -Operation $sendRuntimeOperation -ExpectedGenerationId $sendExpectedGenerationId | Out-Null
     }
 
-    Send-ResolvedTransportPlan `
-        -PaneId $paneId `
-        -TransportPlan $transportPlan `
-        -DeliveryClass $DeliveryClass `
-        -Target $SendTarget `
-        -ProjectDir $projectDir `
-        -AgentConfig $agentConfig
+    $artifactCheckpoint = New-SendPromptArtifactCheckpoint -ProjectDir $projectDir -Intent $transportIntent
+    $transportPlan = $null
+    $materializationBegan = $false
+    $deliveryState = [ordered]@{ SubmissionCommitted = $false }
+    try {
+        # The checkpoint may wait for another materializer. Revalidate the
+        # captured runtime only after that lease is held and before any prompt
+        # artifact can be created or replaced.
+        Assert-SendPaneRuntimeLease -PaneId $paneId -RuntimeProjectDir $sendRuntimeProjectDir `
+            -RuntimeOperation $sendRuntimeOperation -ExpectedGenerationId $sendExpectedGenerationId
+        $materializationBegan = $true
+        $transportPlan = New-SendTransportPlan @transportPlanRequest -Intent $transportIntent
+        Assert-SendPaneRuntimeLease -PaneId $paneId -RuntimeProjectDir $sendRuntimeProjectDir `
+            -RuntimeOperation $sendRuntimeOperation -ExpectedGenerationId $sendExpectedGenerationId
+
+        if ($transportPlan['Mode'] -eq 'codex_exec_file') {
+            Send-TextToPane -PaneId $paneId -CommandText ([string]$transportPlan['ExecInstruction']) `
+                -RuntimeProjectDir $sendRuntimeProjectDir -RuntimeOperation $sendRuntimeOperation `
+                -ExpectedGenerationId $sendExpectedGenerationId -DeliveryState $deliveryState
+            return
+        }
+
+        if ($transportPlan['IsFileBacked']) {
+            Write-Warning ("send target '{0}' used prompt_transport={1}; wrote full text to {2} and sent a prompt-file pointer instead." -f $SendTarget, $transportPlan['PromptTransport'], $transportPlan['PromptPath'])
+        }
+
+        Send-ResolvedTransportPlan `
+            -PaneId $paneId `
+            -TransportPlan $transportPlan `
+            -DeliveryClass $DeliveryClass `
+            -Target $SendTarget `
+            -ProjectDir $projectDir `
+            -AgentConfig $agentConfig `
+            -RuntimeProjectDir $sendRuntimeProjectDir `
+            -RuntimeOperation $sendRuntimeOperation `
+            -ExpectedGenerationId $sendExpectedGenerationId `
+            -DeliveryState $deliveryState
+    } catch {
+        $failureMessage = [string]$_.Exception.Message
+        $submissionCommitted = [bool](Get-SendConfigValue -InputObject $deliveryState -Name 'SubmissionCommitted' -Default $false)
+        if ($null -ne $context -and $materializationBegan -and -not $submissionCommitted -and
+            $failureMessage -match '^runtime dispatch refused \([^)]+\):') {
+            $materializedPromptPath = if ($null -eq $transportPlan) { '' } else { [string]$transportPlan['PromptPath'] }
+            try {
+                Restore-SendPromptArtifactCheckpoint -Checkpoint $artifactCheckpoint -MaterializedPromptPath $materializedPromptPath
+            } catch {
+                Write-Warning ("send artifact rollback failed after runtime refusal: {0}" -f $_.Exception.Message)
+            }
+        }
+        throw
+    } finally {
+        Exit-SendPromptArtifactCheckpoint -Checkpoint $artifactCheckpoint
+    }
 }
 
 function Invoke-Name {
@@ -3845,6 +4662,11 @@ function Invoke-Name {
     $label = $Rest[0]
     $paneId = Resolve-Target $Target
     $paneId = Confirm-Target $paneId
+
+    $lifecycleRefusal = Get-ManagedPaneLifecycleMutationRefusal -ProjectDir (Get-Location).Path -PaneId $paneId -OperationName name -RequestedLabel $label
+    if ($null -ne $lifecycleRefusal) {
+        Stop-WithError ("{0}: {1}" -f [string]$lifecycleRefusal.reason_code, [string]$lifecycleRefusal.diagnostic)
+    }
 
     $labels = Get-Labels
     $labels[$label] = $paneId
@@ -3907,6 +4729,37 @@ function Invoke-AutoRebalance {
     if ($idleBuilders.Count -gt 0) { Write-Output "アイドル: $($idleBuilders -join ', ')" }
 }
 
+function Get-ManagedPaneLifecycleMutationRefusal {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$PaneId,
+        [Parameter(Mandatory = $true)][ValidateSet('role', 'restart', 'name', 'kill')][string]$OperationName,
+        [AllowEmptyString()][string]$RequestedLabel = ''
+    )
+
+    try {
+        $resolution = Resolve-WinsmuxManagedTargetContext -PaneId $PaneId -CurrentProjectDir $ProjectDir -Operation dispatch
+    } catch {
+        return [PSCustomObject][ordered]@{
+            valid       = $false
+            reason_code = 'manifest_regeneration_required'
+            diagnostic  = 'Runtime identity evidence is unavailable; regenerate the orchestra session.'
+        }
+    }
+    if (-not [bool]$resolution.Managed) {
+        return $null
+    }
+    if (-not [bool]$resolution.Validation.valid) {
+        return $resolution.Validation
+    }
+
+    return [PSCustomObject][ordered]@{
+        valid       = $false
+        reason_code = 'manifest_regeneration_required'
+        diagnostic  = "$OperationName is blocked for supervisor-managed panes because it would replace the registered bootstrap identity; regenerate the orchestra session."
+    }
+}
+
 function Invoke-Role {
     if (-not $Target -or -not $Rest -or $Rest.Count -lt 1) {
         Stop-WithError "usage: winsmux role <pane_label_or_id> <new_role>`n  roles: worker, builder, researcher, reviewer"
@@ -3917,19 +4770,21 @@ function Invoke-Role {
         Stop-WithError "invalid role: $newRole. Must be worker, builder, researcher, or reviewer."
     }
 
-    # Resolve pane ID
-    $paneId = $Target
-    $labels = Get-Labels
-    if ($labels.ContainsKey($Target)) {
-        $paneId = $labels[$Target]
-    } elseif ($Target -notmatch '^%\d+$') {
+    $projectDir = (Get-Location).Path
+    $paneId = Resolve-Target $Target
+    if ($paneId -notmatch '^%\d+$') {
         Stop-WithError "unknown pane: $Target"
     }
+    $labels = Get-Labels
 
     # Read manifest to find current label
-    $projectDir = (Get-Location).Path
     $manifestPath = Join-Path $projectDir ".winsmux\manifest.yaml"
     $oldLabel = $Target
+
+    $lifecycleRefusal = Get-ManagedPaneLifecycleMutationRefusal -ProjectDir $projectDir -PaneId $paneId -OperationName role
+    if ($null -ne $lifecycleRefusal) {
+        Stop-WithError ("{0}: {1}" -f [string]$lifecycleRefusal.reason_code, [string]$lifecycleRefusal.diagnostic)
+    }
 
     # Count existing panes with new role to generate label number
     $existingLabels = @()
@@ -4053,7 +4908,9 @@ function Invoke-Role {
             $manifestProperties['builder_worktree_path'] = ''
             $manifestProperties['builder_branch'] = ''
         }
-        Set-PaneControlManifestPaneProperties -ManifestPath $manifestPath -PaneId $paneId -Properties $manifestProperties
+        $expectedGenerationId = if ($null -eq $manifestEntry) { '' } else { [string]$manifestEntry.GenerationId }
+        Set-PaneControlManifestPaneProperties -ManifestPath $manifestPath -PaneId $paneId -Properties $manifestProperties `
+            -ExpectedGenerationId $expectedGenerationId
     }
 
     $sessionName = [string]$env:WINSMUX_ORCHESTRA_SESSION
@@ -4654,7 +5511,7 @@ function Read-LauncherTemplateStore {
     }
 
     try {
-        $parsed = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json -AsHashtable -Depth 32
+        $parsed = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-WinsmuxJson -AsHashtable -Depth 32
     } catch {
         Stop-WithError "launcher template store is not valid JSON: $path"
     }
@@ -4752,7 +5609,7 @@ function Read-LauncherWorkspaceLifecycleOverride {
     }
 
     try {
-        return Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json -AsHashtable -Depth 32
+        return Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-WinsmuxJson -AsHashtable -Depth 32
     } catch {
         Stop-WithError "workspace lifecycle override is not valid JSON: $Path"
     }
@@ -4989,6 +5846,9 @@ function Invoke-ImeInput {
 
     $paneId = Resolve-Target $Target
     $paneId = Confirm-Target $paneId
+    $projectDir = (Get-Location).Path
+
+    $runtimeAccess = Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch
 
     Assert-ReadMark $paneId
 
@@ -5006,9 +5866,71 @@ function Invoke-ImeInput {
         return
     }
 
+    Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch `
+        -ExpectedGenerationId ([string]$runtimeAccess.GenerationId) | Out-Null
     Invoke-WinsmuxRaw -Arguments @('send-keys', '-t', $paneId, '-l', '--', "$text")
+    Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch `
+        -ExpectedGenerationId ([string]$runtimeAccess.GenerationId) | Out-Null
     Clear-ReadMark $paneId
     Write-Output "sent to $paneId"
+}
+
+function Write-WinsmuxClipboardImageArtifact {
+    param(
+        [Parameter(Mandatory = $true)]$Image,
+        [Parameter(Mandatory = $true)][string]$DirectoryPath
+    )
+
+    $createdDirectory = $false
+    if (-not (Test-Path -LiteralPath $DirectoryPath -PathType Container)) {
+        New-Item -ItemType Directory -Path $DirectoryPath -Force | Out-Null
+        $createdDirectory = $true
+    }
+
+    for ($attempt = 0; $attempt -lt 8; $attempt++) {
+        $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+        $artifactName = '{0}-{1}.png' -f $timestamp, ([guid]::NewGuid().ToString('N'))
+        $artifactPath = Join-Path $DirectoryPath $artifactName
+        $stream = $null
+        try {
+            $stream = [System.IO.File]::Open(
+                $artifactPath,
+                [System.IO.FileMode]::CreateNew,
+                [System.IO.FileAccess]::Write,
+                [System.IO.FileShare]::None
+            )
+        } catch [System.IO.IOException] {
+            continue
+        }
+
+        try {
+            $Image.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)
+            $stream.Flush($true)
+            return [PSCustomObject]@{
+                Path             = $artifactPath
+                DirectoryPath    = $DirectoryPath
+                CreatedDirectory = $createdDirectory
+                Owned            = $true
+            }
+        } catch {
+            $stream.Dispose()
+            $stream = $null
+            Remove-Item -LiteralPath $artifactPath -Force -ErrorAction SilentlyContinue
+            if ($createdDirectory -and (Test-Path -LiteralPath $DirectoryPath -PathType Container) -and
+                @(Get-ChildItem -LiteralPath $DirectoryPath -Force -ErrorAction SilentlyContinue).Count -eq 0) {
+                Remove-Item -LiteralPath $DirectoryPath -Force -ErrorAction SilentlyContinue
+            }
+            throw
+        } finally {
+            if ($null -ne $stream) { $stream.Dispose() }
+        }
+    }
+
+    if ($createdDirectory -and (Test-Path -LiteralPath $DirectoryPath -PathType Container) -and
+        @(Get-ChildItem -LiteralPath $DirectoryPath -Force -ErrorAction SilentlyContinue).Count -eq 0) {
+        Remove-Item -LiteralPath $DirectoryPath -Force -ErrorAction SilentlyContinue
+    }
+    throw 'could not reserve a unique image artifact path'
 }
 
 function Invoke-ImagePaste {
@@ -5016,6 +5938,9 @@ function Invoke-ImagePaste {
 
     $paneId = Resolve-Target $Target
     $paneId = Confirm-Target $paneId
+    $projectDir = (Get-Location).Path
+
+    $runtimeAccess = Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch
 
     Assert-ReadMark $paneId
 
@@ -5026,18 +5951,40 @@ function Invoke-ImagePaste {
         Stop-WithError "no image in clipboard"
     }
 
-    $imgDir = Join-Path $env:TEMP "winsmux\images"
-    if (-not (Test-Path $imgDir)) {
-        New-Item -ItemType Directory -Path $imgDir -Force | Out-Null
+    try {
+        Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch `
+            -ExpectedGenerationId ([string]$runtimeAccess.GenerationId) | Out-Null
+    } catch {
+        $img.Dispose()
+        throw
     }
-
-    $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-    $imgPath = Join-Path $imgDir "$timestamp.png"
-    $img.Save($imgPath, [System.Drawing.Imaging.ImageFormat]::Png)
-    $img.Dispose()
+    $imgDir = Join-Path $env:TEMP 'winsmux\images'
+    $artifact = $null
+    try {
+        $artifact = Write-WinsmuxClipboardImageArtifact -Image $img -DirectoryPath $imgDir
+    } finally {
+        $img.Dispose()
+    }
+    $imgPath = [string]$artifact.Path
+    $createdImageDirectory = [bool]$artifact.CreatedDirectory
 
     # Send file path as text to the target pane
+    try {
+        Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch `
+            -ExpectedGenerationId ([string]$runtimeAccess.GenerationId) | Out-Null
+    } catch {
+        if ([bool]$artifact.Owned) {
+            Remove-Item -LiteralPath $imgPath -Force -ErrorAction SilentlyContinue
+        }
+        if ($createdImageDirectory -and (Test-Path -LiteralPath $imgDir -PathType Container) -and
+            @(Get-ChildItem -LiteralPath $imgDir -Force -ErrorAction SilentlyContinue).Count -eq 0) {
+            Remove-Item -LiteralPath $imgDir -Force -ErrorAction SilentlyContinue
+        }
+        throw
+    }
     Invoke-WinsmuxRaw -Arguments @('send-keys', '-t', $paneId, '-l', '--', "$imgPath")
+    Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch `
+        -ExpectedGenerationId ([string]$runtimeAccess.GenerationId) | Out-Null
     Clear-ReadMark $paneId
     Write-Output "image saved: $imgPath"
     Write-Output "path sent to $paneId"
@@ -5048,6 +5995,9 @@ function Invoke-ClipboardPaste {
 
     $paneId = Resolve-Target $Target
     $paneId = Confirm-Target $paneId
+    $projectDir = (Get-Location).Path
+
+    $runtimeAccess = Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch
 
     Assert-ReadMark $paneId
 
@@ -5056,7 +6006,11 @@ function Invoke-ClipboardPaste {
         Stop-WithError "clipboard is empty"
     }
 
+    Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch `
+        -ExpectedGenerationId ([string]$runtimeAccess.GenerationId) | Out-Null
     Invoke-WinsmuxRaw -Arguments @('send-keys', '-t', $paneId, '-l', '--', "$text")
+    Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch `
+        -ExpectedGenerationId ([string]$runtimeAccess.GenerationId) | Out-Null
     Clear-ReadMark $paneId
     Write-Output "sent to $paneId"
 }
@@ -5835,6 +6789,33 @@ function Get-WorkersStatusRows {
     return @($rows)
 }
 
+function Add-WorkersRuntimeValidity {
+    param(
+        [Parameter(Mandatory = $true)]$Context,
+        [Parameter(Mandatory = $true)][object[]]$Rows
+    )
+
+    foreach ($row in @($Rows)) {
+        $entry = if ($Context.EntriesBySlot.ContainsKey([string]$row.SlotId)) { $Context.EntriesBySlot[[string]$row.SlotId] } else { $null }
+        if ($null -eq $entry) {
+            $runtimeResult = New-WinsmuxRuntimeValidationResult -Valid $false -ReasonCode 'runtime_target_mismatch' -Diagnostic 'Worker status has no matching manifest entry.'
+        } else {
+            $runtimeOperation = if (Test-DeferredPaneStartManifestEntry -ManifestEntry $entry) { 'start_deferred' } else { 'dispatch' }
+            try {
+                $runtimeResult = Test-PaneControlRuntimeContext -ProjectDir $Context.ProjectDir -ManifestEntry $entry -Operation $runtimeOperation
+            } catch {
+                $runtimeResult = New-WinsmuxRuntimeValidationResult -Valid $false -ReasonCode 'manifest_regeneration_required' -Diagnostic 'Runtime identity evidence is unavailable; regenerate the orchestra session.'
+            }
+        }
+        $runtimeValid = [bool]$runtimeResult.valid
+        $row | Add-Member -NotePropertyName RuntimeValid -NotePropertyValue $runtimeValid -Force
+        $row | Add-Member -NotePropertyName RuntimeState -NotePropertyValue $(if ($runtimeValid) { [string]$row.State } else { 'runtime_invalid' }) -Force
+        $row | Add-Member -NotePropertyName RuntimeReasonCode -NotePropertyValue ([string]$runtimeResult.reason_code) -Force
+        $row | Add-Member -NotePropertyName RuntimeDiagnostic -NotePropertyValue ([string]$runtimeResult.diagnostic) -Force
+    }
+    return @($Rows)
+}
+
 function Select-WorkersRows {
     param(
         [Parameter(Mandatory = $true)][object[]]$Rows,
@@ -5858,10 +6839,27 @@ function Select-WorkersRows {
     return @($selected)
 }
 
+function Test-WorkersRuntimeRowsValid {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [object[]]$Rows
+    )
+
+    return @($Rows).Count -gt 0 -and @($Rows | Where-Object { -not [bool]$_.RuntimeValid }).Count -eq 0
+}
+
+function Set-WorkersRuntimeProcessExitCode {
+    param([Parameter(Mandatory = $true)][bool]$RuntimeValid)
+
+    $script:WinsmuxRequestedProcessExitCode = if ($RuntimeValid) { 0 } else { 1 }
+}
+
 function Write-WorkersStatusOutput {
     param(
         [Parameter(Mandatory = $true)]$Context,
         [Parameter(Mandatory = $true)][object[]]$Rows,
+        [Parameter(Mandatory = $true)][bool]$RuntimeValid,
         [switch]$Json
     )
 
@@ -5870,6 +6868,7 @@ function Write-WorkersStatusOutput {
             project_dir     = $Context.ProjectDir
             generated_at    = (Get-Date).ToUniversalTime().ToString('o')
             manifest_error  = $Context.ManifestError
+            runtime_valid   = $RuntimeValid
             workers         = @(ConvertTo-WorkersStatusJsonRows -Rows $Rows)
         } | ConvertTo-Json -Depth 20 -Compress | Write-Output
         return
@@ -5881,7 +6880,7 @@ function Write-WorkersStatusOutput {
     }
 
     $table = $Rows |
-        Select-Object Slot, SlotId, State, Backend, Role, Provider, Model, LastCommand |
+        Select-Object Slot, SlotId, RuntimeState, Backend, Role, Provider, Model, RuntimeValid, LastCommand |
         Format-Table -AutoSize |
         Out-String
     Write-Output ($table.TrimEnd())
@@ -5898,6 +6897,10 @@ function ConvertTo-WorkersStatusJsonRows {
             state           = [string]$row.State
             pane_state      = [string]$row.PaneState
             manifest_status = [string]$row.ManifestStatus
+            runtime_valid   = [bool]$row.RuntimeValid
+            runtime_state   = [string]$row.RuntimeState
+            runtime_reason_code = [string]$row.RuntimeReasonCode
+            runtime_diagnostic = [string]$row.RuntimeDiagnostic
             backend         = [string]$row.Backend
             role            = [string]$row.Role
             execution_profile = [string]$row.ExecutionProfile
@@ -5944,7 +6947,9 @@ function Set-WorkersManifestLifecycleCommand {
         [Parameter(Mandatory = $true)]$Entry,
         [Parameter(Mandatory = $true)][string]$CommandName,
         [AllowEmptyString()][string]$Status = '',
-        [AllowNull()][System.Collections.IDictionary]$ExtraProperties = $null
+        [AllowNull()][System.Collections.IDictionary]$ExtraProperties = $null,
+        [AllowEmptyString()][string]$ExpectedGenerationId = '',
+        [ValidateSet('auto', 'dispatch', 'start_deferred', 'stop_transition')][string]$RuntimeOperation = 'auto'
     )
 
     if ($null -eq $Entry -or [string]::IsNullOrWhiteSpace([string]$Entry.PaneId)) {
@@ -5967,7 +6972,11 @@ function Set-WorkersManifestLifecycleCommand {
         }
     }
 
-    Set-PaneControlManifestPaneProperties -ManifestPath $Entry.ManifestPath -PaneId $Entry.PaneId -Properties $properties
+    if ([string]::IsNullOrWhiteSpace($ExpectedGenerationId)) {
+        $ExpectedGenerationId = [string]$Entry.GenerationId
+    }
+    Set-PaneControlManifestPaneProperties -ManifestPath $Entry.ManifestPath -PaneId $Entry.PaneId -Properties $properties `
+        -ExpectedGenerationId $ExpectedGenerationId -RuntimeOperation $RuntimeOperation
 }
 
 function New-WorkersLifecycleResult {
@@ -7068,7 +8077,7 @@ function Resolve-WorkersVaultSecretValue {
 
     $credTarget = "winsmux:$safeKey"
     $credPtr = [IntPtr]::Zero
-    $ok = [WinCred]::CredRead($credTarget, [WinCred]::CRED_TYPE_GENERIC, 0, [ref]$credPtr)
+    $ok = [WinsmuxBridgeCredentialNative]::CredRead($credTarget, [WinsmuxBridgeCredentialNative]::CRED_TYPE_GENERIC, 0, [ref]$credPtr)
     if (-not $ok) {
         $errCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
         if ($errCode -eq 1168) {
@@ -7078,7 +8087,7 @@ function Resolve-WorkersVaultSecretValue {
     }
 
     try {
-        $cred = [Runtime.InteropServices.Marshal]::PtrToStructure($credPtr, [Type][WinCred+CREDENTIAL])
+        $cred = [Runtime.InteropServices.Marshal]::PtrToStructure($credPtr, [Type][WinsmuxBridgeCredentialNative+CREDENTIAL])
         if ($cred.CredentialBlobSize -le 0) {
             return ''
         }
@@ -7086,7 +8095,7 @@ function Resolve-WorkersVaultSecretValue {
         [Runtime.InteropServices.Marshal]::Copy($cred.CredentialBlob, $bytes, 0, $cred.CredentialBlobSize)
         return [System.Text.Encoding]::Unicode.GetString($bytes)
     } finally {
-        [WinCred]::CredFree($credPtr) | Out-Null
+        [WinsmuxBridgeCredentialNative]::CredFree($credPtr) | Out-Null
     }
 }
 
@@ -10149,7 +11158,37 @@ function Invoke-WorkersStatus {
     $options = Read-WorkersOptions -Tokens $Rest -Usage $usage -DefaultTarget 'all'
     $context = Get-WorkersLifecycleContext -ProjectDir $options.ProjectDir
     $rows = Select-WorkersRows -Rows (Get-WorkersStatusRows -Context $context) -Target $options.Target
-    Write-WorkersStatusOutput -Context $context -Rows $rows -Json:([bool]$options.Json)
+    $rows = @(Add-WorkersRuntimeValidity -Context $context -Rows @($rows))
+    $runtimeValid = Test-WorkersRuntimeRowsValid -Rows $rows
+    Set-WorkersRuntimeProcessExitCode -RuntimeValid $runtimeValid
+    Write-WorkersStatusOutput -Context $context -Rows $rows -RuntimeValid $runtimeValid -Json:([bool]$options.Json)
+}
+
+function ConvertFrom-WorkersRuntimeRefusal {
+    param([AllowEmptyString()][string]$Message = '')
+
+    if ($Message -notmatch '^runtime dispatch refused \(([^)]+)\):\s*(.*)$') {
+        return $null
+    }
+    return [PSCustomObject][ordered]@{
+        reason_code = [string]$Matches[1]
+        diagnostic  = [string]$Matches[2]
+    }
+}
+
+function Assert-WorkersStartRuntimeLease {
+    param(
+        [Parameter(Mandatory = $true)]$Entry,
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [ValidateSet('dispatch', 'start_deferred')][string]$Operation,
+        [Parameter(Mandatory = $true)][string]$ExpectedGenerationId
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ExpectedGenerationId)) {
+        throw 'runtime dispatch refused (manifest_regeneration_required): validated workers start runtime did not provide a generation_id'
+    }
+    Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId ([string]$Entry.PaneId) -CurrentProjectDir $ProjectDir `
+        -Operation $Operation -ExpectedGenerationId $ExpectedGenerationId | Out-Null
 }
 
 function Invoke-WorkersStart {
@@ -10169,45 +11208,93 @@ function Invoke-WorkersStart {
             $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status 'failed' -Reason 'pane_id_missing')) | Out-Null
             continue
         }
-        $approvalDifferences = @($row.ApprovalDifferences)
-        if ($approvalDifferences.Count -gt 0) {
-            $reason = Format-WorkersLaunchApprovalMismatch -Differences $approvalDifferences
-            $repairProperties = New-WorkersRepairProperties -FailedStage 'launch_approval' -FailureReason $reason -RecoveryAction 'review-worker-settings-and-rerun-launch'
-            Set-WorkersManifestLifecycleCommand -Entry $entry -CommandName 'workers.start' -ExtraProperties $repairProperties
-            $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status 'blocked' -Reason $reason -FailedStage ([string]$repairProperties['last_failure_stage']) -RecoveryAction ([string]$repairProperties['recovery_action']))) | Out-Null
+        $runtimeOperation = if (Test-DeferredPaneStartManifestEntry -ManifestEntry $entry) { 'start_deferred' } else { 'dispatch' }
+        $runtimeResult = Test-PaneControlRuntimeContext -ProjectDir $options.ProjectDir -ManifestEntry $entry -Operation $runtimeOperation
+        if (-not $runtimeResult.valid) {
+            $runtimeFailure = New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status 'blocked' -Reason ([string]$runtimeResult.reason_code)
+            $runtimeFailure['reason_code'] = [string]$runtimeResult.reason_code
+            $runtimeFailure['diagnostic'] = [string]$runtimeResult.diagnostic
+            $results.Add($runtimeFailure) | Out-Null
             continue
         }
-        if ([string]::Equals(([string]$entry.Status), 'api_llm_runner_unconfigured', [System.StringComparison]::OrdinalIgnoreCase)) {
-            $repairProperties = New-WorkersRepairProperties -FailedStage 'runner_config' -FailureReason 'api_llm_runner_unconfigured' -RecoveryAction 'set-api-llm-slot-and-api-key-env'
-            Set-WorkersManifestLifecycleCommand -Entry $entry -CommandName 'workers.start' -Status 'api_llm_runner_unconfigured' -ExtraProperties $repairProperties
-            $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status 'blocked' -Reason 'api_llm_runner_unconfigured' -FailedStage ([string]$repairProperties['last_failure_stage']) -RecoveryAction ([string]$repairProperties['recovery_action']))) | Out-Null
-            continue
-        }
-        if ([string]::Equals(([string]$entry.Status), 'antigravity_runner_unconfigured', [System.StringComparison]::OrdinalIgnoreCase)) {
-            $repairProperties = New-WorkersRepairProperties -FailedStage 'runner_config' -FailureReason 'antigravity_runner_unconfigured' -RecoveryAction 'install-or-configure-antigravity-cli'
-            Set-WorkersManifestLifecycleCommand -Entry $entry -CommandName 'workers.start' -Status 'antigravity_runner_unconfigured' -ExtraProperties $repairProperties
-            $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status 'blocked' -Reason 'antigravity_runner_unconfigured' -FailedStage ([string]$repairProperties['last_failure_stage']) -RecoveryAction ([string]$repairProperties['recovery_action']))) | Out-Null
+        $runtimeGenerationId = [string](Get-SendConfigValue -InputObject $runtimeResult.context -Name 'generation_id' -Default '')
+        if ([string]::IsNullOrWhiteSpace($runtimeGenerationId)) {
+            $runtimeFailure = New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status 'blocked' -Reason 'manifest_regeneration_required'
+            $runtimeFailure['reason_code'] = 'manifest_regeneration_required'
+            $runtimeFailure['diagnostic'] = 'Validated workers start runtime did not provide a generation_id; regenerate the orchestra session.'
+            $results.Add($runtimeFailure) | Out-Null
             continue
         }
 
         try {
+            $approvalDifferences = @($row.ApprovalDifferences)
+            if ($approvalDifferences.Count -gt 0) {
+                $reason = Format-WorkersLaunchApprovalMismatch -Differences $approvalDifferences
+                $repairProperties = New-WorkersRepairProperties -FailedStage 'launch_approval' -FailureReason $reason -RecoveryAction 'review-worker-settings-and-rerun-launch'
+                Assert-WorkersStartRuntimeLease -Entry $entry -ProjectDir $options.ProjectDir `
+                    -Operation $runtimeOperation -ExpectedGenerationId $runtimeGenerationId
+                Set-WorkersManifestLifecycleCommand -Entry $entry -CommandName 'workers.start' -ExtraProperties $repairProperties `
+                    -ExpectedGenerationId $runtimeGenerationId -RuntimeOperation $runtimeOperation
+                $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status 'blocked' -Reason $reason -FailedStage ([string]$repairProperties['last_failure_stage']) -RecoveryAction ([string]$repairProperties['recovery_action']))) | Out-Null
+                continue
+            }
+            if ([string]::Equals(([string]$entry.Status), 'api_llm_runner_unconfigured', [System.StringComparison]::OrdinalIgnoreCase)) {
+                $repairProperties = New-WorkersRepairProperties -FailedStage 'runner_config' -FailureReason 'api_llm_runner_unconfigured' -RecoveryAction 'set-api-llm-slot-and-api-key-env'
+                $blocked = New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status 'blocked' -Reason 'api_llm_runner_unconfigured' -FailedStage ([string]$repairProperties['last_failure_stage']) -RecoveryAction ([string]$repairProperties['recovery_action'])
+                $blocked['reason_code'] = 'api_llm_runner_unconfigured'
+                $blocked['diagnostic'] = 'Configure the api_llm runner before retrying workers start.'
+                $results.Add($blocked) | Out-Null
+                continue
+            }
+            if ([string]::Equals(([string]$entry.Status), 'antigravity_runner_unconfigured', [System.StringComparison]::OrdinalIgnoreCase)) {
+                $repairProperties = New-WorkersRepairProperties -FailedStage 'runner_config' -FailureReason 'antigravity_runner_unconfigured' -RecoveryAction 'install-or-configure-antigravity-cli'
+                $blocked = New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status 'blocked' -Reason 'antigravity_runner_unconfigured' -FailedStage ([string]$repairProperties['last_failure_stage']) -RecoveryAction ([string]$repairProperties['recovery_action'])
+                $blocked['reason_code'] = 'antigravity_runner_unconfigured'
+                $blocked['diagnostic'] = 'Configure the antigravity runner before retrying workers start.'
+                $results.Add($blocked) | Out-Null
+                continue
+            }
+
             if (Test-DeferredPaneStartManifestEntry -ManifestEntry $entry) {
-                $started = Start-DeferredPaneFromManifestEntry -ProjectDir $options.ProjectDir -ManifestEntry $entry
+                $started = Start-DeferredPaneFromManifestEntry -ProjectDir $options.ProjectDir -ManifestEntry $entry `
+                    -ExpectedGenerationId $runtimeGenerationId
+                $entry = Get-PaneControlManifestContext -ProjectDir $options.ProjectDir -PaneId ([string]$entry.PaneId)
+                $runtimeResult = Wait-PaneControlRuntimeContext -ProjectDir $options.ProjectDir -ManifestEntry $entry -Operation dispatch
+                if (-not $runtimeResult.valid) {
+                    $runtimeFailure = New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status 'blocked' -Reason ([string]$runtimeResult.reason_code)
+                    $runtimeFailure['reason_code'] = [string]$runtimeResult.reason_code
+                    $runtimeFailure['diagnostic'] = [string]$runtimeResult.diagnostic
+                    $results.Add($runtimeFailure) | Out-Null
+                    continue
+                }
+                Assert-WorkersStartRuntimeLease -Entry $entry -ProjectDir $options.ProjectDir `
+                    -Operation dispatch -ExpectedGenerationId $runtimeGenerationId
                 Set-WorkersManifestLifecycleCommand -Entry $entry -CommandName 'workers.start' -Status 'ready' -ExtraProperties ([ordered]@{
                     last_heartbeat_run_id  = ''
                     last_heartbeat_profile = ''
                     last_failure_stage     = ''
                     last_failure_reason    = ''
                     recovery_action        = ''
-                })
+                }) -ExpectedGenerationId $runtimeGenerationId -RuntimeOperation dispatch
                 $status = if ($started) { 'started' } else { 'unchanged' }
                 $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status $status)) | Out-Null
             } else {
-                Set-WorkersManifestLifecycleCommand -Entry $entry -CommandName 'workers.start'
+                Assert-WorkersStartRuntimeLease -Entry $entry -ProjectDir $options.ProjectDir `
+                    -Operation dispatch -ExpectedGenerationId $runtimeGenerationId
+                Set-WorkersManifestLifecycleCommand -Entry $entry -CommandName 'workers.start' `
+                    -ExpectedGenerationId $runtimeGenerationId -RuntimeOperation dispatch
                 $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status 'already_running')) | Out-Null
             }
         } catch {
             $reason = [string]$_.Exception.Message
+            $runtimeRefusal = ConvertFrom-WorkersRuntimeRefusal -Message $reason
+            if ($null -ne $runtimeRefusal) {
+                $runtimeFailure = New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status 'blocked' -Reason ([string]$runtimeRefusal.reason_code)
+                $runtimeFailure['reason_code'] = [string]$runtimeRefusal.reason_code
+                $runtimeFailure['diagnostic'] = [string]$runtimeRefusal.diagnostic
+                $results.Add($runtimeFailure) | Out-Null
+                continue
+            }
             $status = if (
                 $reason -like 'worker launch approval mismatch:*' -or
                 $reason -like 'api_llm_runner_unconfigured*' -or
@@ -10215,13 +11302,119 @@ function Invoke-WorkersStart {
             ) { 'blocked' } else { 'failed' }
             $repairProperties = Get-WorkersFailureMetadataFromReason -Reason $reason
             if ($null -ne $entry) {
-                Set-WorkersManifestLifecycleCommand -Entry $entry -CommandName 'workers.start' -ExtraProperties $repairProperties
+                try {
+                    Assert-WorkersStartRuntimeLease -Entry $entry -ProjectDir $options.ProjectDir `
+                        -Operation $runtimeOperation -ExpectedGenerationId $runtimeGenerationId
+                    Set-WorkersManifestLifecycleCommand -Entry $entry -CommandName 'workers.start' -ExtraProperties $repairProperties `
+                        -ExpectedGenerationId $runtimeGenerationId -RuntimeOperation $runtimeOperation
+                } catch {
+                    $repairRefusal = ConvertFrom-WorkersRuntimeRefusal -Message ([string]$_.Exception.Message)
+                    if ($null -ne $repairRefusal) {
+                        $runtimeFailure = New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status 'blocked' -Reason ([string]$repairRefusal.reason_code)
+                        $runtimeFailure['reason_code'] = [string]$repairRefusal.reason_code
+                        $runtimeFailure['diagnostic'] = [string]$repairRefusal.diagnostic
+                        $results.Add($runtimeFailure) | Out-Null
+                        continue
+                    }
+                    throw
+                }
             }
             $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.start' -Status $status -Reason $reason -FailedStage ([string]$repairProperties['last_failure_stage']) -RecoveryAction ([string]$repairProperties['recovery_action']))) | Out-Null
         }
     }
 
     Write-WorkersLifecycleOutput -ProjectDir $options.ProjectDir -Results @($results) -Json:([bool]$options.Json)
+}
+
+function Resolve-WorkersBootstrapMarkerPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)]$Entry
+    )
+
+    $markerPath = [string](Get-SendConfigValue -InputObject $Entry -Name 'BootstrapMarkerPath' -Default '')
+    $planPath = [string](Get-SendConfigValue -InputObject $Entry -Name 'BootstrapPlanPath' -Default '')
+    if ([string]::IsNullOrWhiteSpace($markerPath) -or [string]::IsNullOrWhiteSpace($planPath)) {
+        throw 'worker bootstrap marker or plan path is missing'
+    }
+
+    $projectRoot = [System.IO.Path]::GetFullPath($ProjectDir)
+    $bootstrapRoot = [System.IO.Path]::GetFullPath((Join-Path (Join-Path $projectRoot '.winsmux') 'orchestra-bootstrap'))
+    $markerFull = if ([System.IO.Path]::IsPathRooted($markerPath)) {
+        [System.IO.Path]::GetFullPath($markerPath)
+    } else {
+        [System.IO.Path]::GetFullPath((Join-Path $projectRoot $markerPath))
+    }
+    $planFull = if ([System.IO.Path]::IsPathRooted($planPath)) {
+        [System.IO.Path]::GetFullPath($planPath)
+    } else {
+        [System.IO.Path]::GetFullPath((Join-Path $projectRoot $planPath))
+    }
+
+    if (-not (Test-WorkersPathIsUnderDirectory -Path $markerFull -Directory $bootstrapRoot) -or
+        -not (Test-WorkersPathIsUnderDirectory -Path $planFull -Directory $bootstrapRoot) -or
+        [string]::Equals($markerFull, $bootstrapRoot, [System.StringComparison]::OrdinalIgnoreCase) -or
+        [string]::Equals($planFull, $bootstrapRoot, [System.StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals((Split-Path -Parent $markerFull), $bootstrapRoot, [System.StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals((Split-Path -Parent $planFull), $bootstrapRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw 'worker bootstrap marker cleanup path escaped the orchestra bootstrap directory'
+    }
+
+    $planBaseName = [System.IO.Path]::GetFileNameWithoutExtension($planFull)
+    $markerName = [System.IO.Path]::GetFileName($markerFull)
+    if (-not $markerName.StartsWith($planBaseName + '-', [System.StringComparison]::OrdinalIgnoreCase) -or
+        -not $markerName.EndsWith('.ready.json', [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw 'worker bootstrap marker cleanup path does not match its bootstrap plan'
+    }
+
+    if (-not (Test-Path -LiteralPath $bootstrapRoot -PathType Container)) {
+        throw 'worker orchestra bootstrap directory is missing'
+    }
+    $rootItem = Get-Item -LiteralPath $bootstrapRoot -Force -ErrorAction Stop
+    if (([int]($rootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) -ne 0) {
+        throw 'worker orchestra bootstrap directory must not be a reparse point'
+    }
+
+    return $markerFull
+}
+
+function Resolve-WorkersStoppedBootstrapMarkerPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)]$Entry
+    )
+
+    return Resolve-WorkersBootstrapMarkerPath -ProjectDir $ProjectDir -Entry $Entry
+}
+
+function Remove-WorkersBootstrapMarker {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)]$Entry
+    )
+
+    $markerPath = Resolve-WorkersBootstrapMarkerPath -ProjectDir $ProjectDir -Entry $Entry
+    if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) {
+        return $false
+    }
+    $markerItem = Get-Item -LiteralPath $markerPath -Force -ErrorAction Stop
+    if ($markerItem.PSIsContainer -or
+        ([int]($markerItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) -ne 0 -or
+        -not [string]::Equals([System.IO.Path]::GetFullPath([string]$markerItem.FullName), $markerPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw 'worker bootstrap marker cleanup target is not a regular file'
+    }
+
+    Remove-Item -LiteralPath $markerPath -Force -ErrorAction Stop
+    return $true
+}
+
+function Remove-WorkersStoppedBootstrapMarker {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)]$Entry
+    )
+
+    return Remove-WorkersBootstrapMarker -ProjectDir $ProjectDir -Entry $Entry
 }
 
 function Invoke-WorkersStop {
@@ -10242,17 +11435,106 @@ function Invoke-WorkersStop {
             continue
         }
 
+        $runtimeOperation = if (Test-DeferredPaneStartManifestEntry -ManifestEntry $entry) { 'start_deferred' } else { 'dispatch' }
+        $runtimeResult = Test-PaneControlRuntimeContext -ProjectDir $options.ProjectDir -ManifestEntry $entry -Operation $runtimeOperation
+        if (-not $runtimeResult.valid) {
+            $runtimeFailure = New-WorkersLifecycleResult -Row $row -Action 'workers.stop' -Status 'blocked' -Reason ([string]$runtimeResult.reason_code)
+            $runtimeFailure['reason_code'] = [string]$runtimeResult.reason_code
+            $runtimeFailure['diagnostic'] = [string]$runtimeResult.diagnostic
+            $results.Add($runtimeFailure) | Out-Null
+            continue
+        }
+        $runtimeGenerationId = [string](Get-PaneControlValue -InputObject $runtimeResult.context -Name 'generation_id' -Default '')
+        if ([string]::IsNullOrWhiteSpace($runtimeGenerationId)) {
+            $runtimeFailure = New-WorkersLifecycleResult -Row $row -Action 'workers.stop' -Status 'blocked' `
+                -Reason 'manifest_regeneration_required'
+            $runtimeFailure['reason_code'] = 'manifest_regeneration_required'
+            $runtimeFailure['diagnostic'] = 'Validated runtime did not provide a generation_id; regenerate the orchestra session.'
+            $results.Add($runtimeFailure) | Out-Null
+            continue
+        }
+
         try {
-            Invoke-WinsmuxRaw -Arguments @('respawn-pane', '-k', '-t', [string]$entry.PaneId) | Out-Null
-            $nativeExitCode = Get-SafeLastExitCode
-            if ($null -ne $nativeExitCode -and $nativeExitCode -ne 0) {
-                throw "failed to stop pane process: $($entry.PaneId)"
+            Resolve-WorkersStoppedBootstrapMarkerPath -ProjectDir $options.ProjectDir -Entry $entry | Out-Null
+
+            try {
+                try {
+                    Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId ([string]$entry.PaneId) `
+                        -CurrentProjectDir $options.ProjectDir -Operation $runtimeOperation `
+                        -ExpectedGenerationId $runtimeGenerationId | Out-Null
+                } catch {
+                    $runtimeMessage = [string]$_.Exception.Message
+                    $runtimeReasonCode = 'manifest_regeneration_required'
+                    $runtimeDiagnostic = $runtimeMessage
+                    if ($runtimeMessage -match '^runtime dispatch refused \(([^)]+)\):\s*(.*)$') {
+                        $runtimeReasonCode = [string]$Matches[1]
+                        $runtimeDiagnostic = [string]$Matches[2]
+                    }
+                    $runtimeFailure = New-WorkersLifecycleResult -Row $row -Action 'workers.stop' -Status 'blocked' -Reason $runtimeReasonCode
+                    $runtimeFailure['reason_code'] = $runtimeReasonCode
+                    $runtimeFailure['diagnostic'] = $runtimeDiagnostic
+                    $results.Add($runtimeFailure) | Out-Null
+                    continue
+                }
+                Invoke-WinsmuxRaw -Arguments @('respawn-pane', '-k', '-t', [string]$entry.PaneId) | Out-Null
+                $nativeExitCode = Get-SafeLastExitCode
+                if ($null -ne $nativeExitCode -and $nativeExitCode -ne 0) {
+                    throw "failed to stop pane process: $($entry.PaneId)"
+                }
+            } catch {
+                $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.stop' -Status 'failed' `
+                    -Reason 'stop_respawn_failed' -FailedStage 'pane_stop' `
+                    -RecoveryAction 'inspect-pane-and-rerun-workers-stop')) | Out-Null
+                continue
             }
 
-            Clear-ReadMark ([string]$entry.PaneId)
-            Clear-Watermark ([string]$entry.PaneId)
+            Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId ([string]$entry.PaneId) `
+                -CurrentProjectDir $options.ProjectDir -Operation stop_transition `
+                -ExpectedGenerationId $runtimeGenerationId | Out-Null
+            try {
+                Remove-WorkersStoppedBootstrapMarker -ProjectDir $options.ProjectDir -Entry $entry | Out-Null
+            } catch {
+                $recoveryAction = 'inspect-bootstrap-marker-and-rerun-workers-stop'
+                $repairProperties = New-WorkersRepairProperties -FailedStage 'marker_cleanup' `
+                    -FailureReason 'worker bootstrap marker cleanup failed after pane stop' `
+                    -RecoveryAction $recoveryAction
+                $failureProperties = [ordered]@{ runtime_ready = $false }
+                foreach ($propertyEntry in $repairProperties.GetEnumerator()) {
+                    $failureProperties[[string]$propertyEntry.Key] = $propertyEntry.Value
+                }
+                Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId ([string]$entry.PaneId) `
+                    -CurrentProjectDir $options.ProjectDir -Operation stop_transition `
+                    -ExpectedGenerationId $runtimeGenerationId | Out-Null
+                Set-WorkersManifestLifecycleCommand -Entry $entry -CommandName 'workers.stop' `
+                    -Status 'deferred_start_failed' -ExtraProperties $failureProperties `
+                    -ExpectedGenerationId $runtimeGenerationId -RuntimeOperation stop_transition
+                $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.stop' -Status 'failed' `
+                    -Reason 'stop_marker_cleanup_failed' -FailedStage 'marker_cleanup' `
+                    -RecoveryAction $recoveryAction)) | Out-Null
+                continue
+            }
+
             $nextStatus = 'deferred_start'
-            Set-WorkersManifestLifecycleCommand -Entry $entry -CommandName 'workers.stop' -Status $nextStatus
+            Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId ([string]$entry.PaneId) `
+                -CurrentProjectDir $options.ProjectDir -Operation stop_transition `
+                -ExpectedGenerationId $runtimeGenerationId | Out-Null
+            Set-WorkersManifestLifecycleCommand -Entry $entry -CommandName 'workers.stop' -Status $nextStatus -ExtraProperties ([ordered]@{
+                runtime_ready = $false
+            }) -ExpectedGenerationId $runtimeGenerationId -RuntimeOperation stop_transition
+            $deferredEntry = Get-PaneControlManifestContext -ProjectDir $options.ProjectDir -PaneId ([string]$entry.PaneId)
+            $deferredRuntime = Wait-PaneControlRuntimeContext -ProjectDir $options.ProjectDir -ManifestEntry $deferredEntry -Operation start_deferred
+            if (-not [bool]$deferredRuntime.valid) {
+                throw ("{0}: {1}" -f [string]$deferredRuntime.reason_code, [string]$deferredRuntime.diagnostic)
+            }
+
+            Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId ([string]$entry.PaneId) `
+                -CurrentProjectDir $options.ProjectDir -Operation start_deferred `
+                -ExpectedGenerationId $runtimeGenerationId | Out-Null
+            Clear-ReadMark ([string]$entry.PaneId)
+            Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId ([string]$entry.PaneId) `
+                -CurrentProjectDir $options.ProjectDir -Operation start_deferred `
+                -ExpectedGenerationId $runtimeGenerationId | Out-Null
+            Clear-Watermark ([string]$entry.PaneId)
             $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.stop' -Status 'stopped' -Reason $nextStatus)) | Out-Null
         } catch {
             $results.Add((New-WorkersLifecycleResult -Row $row -Action 'workers.stop' -Status 'failed' -Reason $_.Exception.Message)) | Out-Null
@@ -10433,9 +11715,9 @@ function Invoke-WorkersDoctor {
 
     $manifestPath = Join-Path (Join-Path $options.ProjectDir '.winsmux') 'manifest.yaml'
     if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
-        $checks.Add((New-WorkersDoctorCheck -Status 'pass' -Label 'manifest' -Detail $manifestPath -Action '')) | Out-Null
+        $checks.Add((New-WorkersDoctorCheck -Status 'warn' -Label 'manifest desired state' -Detail "desired-state file present; runtime authorization is evaluated separately: $manifestPath" -Action '')) | Out-Null
     } else {
-        $checks.Add((New-WorkersDoctorCheck -Status 'warn' -Label 'manifest' -Detail "manifest not found: $manifestPath" -Action 'Run winsmux launch before workers start or stop.')) | Out-Null
+        $checks.Add((New-WorkersDoctorCheck -Status 'warn' -Label 'manifest desired state' -Detail "manifest not found: $manifestPath" -Action 'Run winsmux launch before workers start or stop.')) | Out-Null
     }
 
     $uvCommand = Get-Command uv -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -10445,11 +11727,22 @@ function Invoke-WorkersDoctor {
         $checks.Add((New-WorkersDoctorCheck -Status 'fail' -Label 'uv' -Detail 'uv not found on PATH' -Action 'Install uv or add it to PATH before launching managed workers.')) | Out-Null
     }
 
-    $rows = if ($null -ne $context) { Get-WorkersStatusRows -Context $context } else { @() }
+    $rows = if ($null -ne $context) { @(Add-WorkersRuntimeValidity -Context $context -Rows @(Get-WorkersStatusRows -Context $context)) } else { @() }
+    $runtimeInvalidRows = @($rows | Where-Object { -not [bool]$_.RuntimeValid })
+    $runtimeValid = Test-WorkersRuntimeRowsValid -Rows $rows
+    Set-WorkersRuntimeProcessExitCode -RuntimeValid $runtimeValid
+    if ($runtimeValid) {
+        $checks.Add((New-WorkersDoctorCheck -Status 'pass' -Label 'runtime identity' -Detail "$(@($rows).Count) worker runtime identities verified" -Action '')) | Out-Null
+    } else {
+        $runtimeReasons = @($runtimeInvalidRows | ForEach-Object { [string]$_.RuntimeReasonCode } | Where-Object { $_ } | Select-Object -Unique)
+        if ($runtimeReasons.Count -lt 1) { $runtimeReasons = @('manifest_regeneration_required') }
+        $checks.Add((New-WorkersDoctorCheck -Status 'fail' -Label 'runtime identity' -Detail ($runtimeReasons -join ', ') -Action 'Regenerate the orchestra session before runtime operations.')) | Out-Null
+    }
     if ($options.Json) {
         [ordered]@{
             project_dir  = $options.ProjectDir
             generated_at = (Get-Date).ToUniversalTime().ToString('o')
+            runtime_valid = $runtimeValid
             checks       = @($checks)
             workers      = @(ConvertTo-WorkersStatusJsonRows -Rows @($rows))
         } | ConvertTo-Json -Depth 20 -Compress | Write-Output
@@ -10467,6 +11760,7 @@ function Invoke-WorkersDoctor {
 }
 
 function Invoke-Workers {
+    $script:WinsmuxRequestedProcessExitCode = 0
     $action = [string]$Target
     if ([string]::IsNullOrWhiteSpace($action)) {
         Stop-WithError (Get-WorkersUsage)
@@ -10732,7 +12026,7 @@ function Get-BridgeEventRecords {
         }
 
         try {
-            $record = $line | ConvertFrom-Json -AsHashtable -ErrorAction Stop
+            $record = $line | ConvertFrom-WinsmuxJson -AsHashtable -ErrorAction Stop
             if ($null -eq $record) {
                 continue
             }
@@ -15562,7 +16856,7 @@ function Invoke-PollEvents {
     $events = [System.Collections.Generic.List[object]]::new()
     for ($i = $cursor; $i -lt $lines.Count; $i++) {
         try {
-            $events.Add(($lines[$i] | ConvertFrom-Json -AsHashtable -ErrorAction Stop)) | Out-Null
+            $events.Add(($lines[$i] | ConvertFrom-WinsmuxJson -AsHashtable -ErrorAction Stop)) | Out-Null
         } catch {
             Stop-WithError "failed to parse event log line $($i + 1): $($_.Exception.Message)"
         }
@@ -15745,16 +17039,16 @@ function Invoke-VaultSet {
     $blobPtr = [Runtime.InteropServices.Marshal]::AllocHGlobal($valueBytes.Length)
     [Runtime.InteropServices.Marshal]::Copy($valueBytes, 0, $blobPtr, $valueBytes.Length)
 
-    $cred = New-Object WinCred+CREDENTIAL
-    $cred.Type = [WinCred]::CRED_TYPE_GENERIC
+    $cred = New-Object WinsmuxBridgeCredentialNative+CREDENTIAL
+    $cred.Type = [WinsmuxBridgeCredentialNative]::CRED_TYPE_GENERIC
     $cred.TargetName = $credTarget
     $cred.UserName = "winsmux"
     $cred.CredentialBlobSize = $valueBytes.Length
     $cred.CredentialBlob = $blobPtr
-    $cred.Persist = [WinCred]::CRED_PERSIST_LOCAL_MACHINE
+    $cred.Persist = [WinsmuxBridgeCredentialNative]::CRED_PERSIST_LOCAL_MACHINE
 
     try {
-        $ok = [WinCred]::CredWrite([ref]$cred, 0)
+        $ok = [WinsmuxBridgeCredentialNative]::CredWrite([ref]$cred, 0)
         if (-not $ok) {
             $errCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
             Stop-WithError "CredWrite failed (error $errCode)"
@@ -15772,7 +17066,7 @@ function Invoke-VaultGet {
     $credTarget = "winsmux:$key"
     $credPtr = [IntPtr]::Zero
 
-    $ok = [WinCred]::CredRead($credTarget, [WinCred]::CRED_TYPE_GENERIC, 0, [ref]$credPtr)
+    $ok = [WinsmuxBridgeCredentialNative]::CredRead($credTarget, [WinsmuxBridgeCredentialNative]::CRED_TYPE_GENERIC, 0, [ref]$credPtr)
     if (-not $ok) {
         $errCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
         if ($errCode -eq 1168) {
@@ -15782,7 +17076,7 @@ function Invoke-VaultGet {
     }
 
     try {
-        $cred = [Runtime.InteropServices.Marshal]::PtrToStructure($credPtr, [Type][WinCred+CREDENTIAL])
+        $cred = [Runtime.InteropServices.Marshal]::PtrToStructure($credPtr, [Type][WinsmuxBridgeCredentialNative+CREDENTIAL])
         if ($cred.CredentialBlobSize -gt 0) {
             $bytes = New-Object byte[] $cred.CredentialBlobSize
             [Runtime.InteropServices.Marshal]::Copy($cred.CredentialBlob, $bytes, 0, $cred.CredentialBlobSize)
@@ -15790,35 +17084,46 @@ function Invoke-VaultGet {
             Write-Output $value
         }
     } finally {
-        [WinCred]::CredFree($credPtr) | Out-Null
+        [WinsmuxBridgeCredentialNative]::CredFree($credPtr) | Out-Null
     }
 }
 
 function Invoke-VaultList {
-    $filter = "winsmux:*"
-    $count = 0
-    $credsPtr = [IntPtr]::Zero
+    $names = @(Get-WinsmuxCredentialTargetNames)
+    if ($names.Count -eq 0) {
+        Write-Output "(no credentials stored)"
+        return
+    }
+    Write-Output $names
+}
 
-    $ok = [WinCred]::CredEnumerate($filter, 0, [ref]$count, [ref]$credsPtr)
+function Get-WinsmuxVaultCredentialNamesInternal {
+    return @(Get-WinsmuxCredentialTargetNames)
+}
+
+function Get-WinsmuxVaultCredentialValueInternal {
+    param([Parameter(Mandatory = $true)][string]$Name)
+
+    $credPtr = [IntPtr]::Zero
+    $ok = [WinsmuxBridgeCredentialNative]::CredRead("winsmux:$Name", [WinsmuxBridgeCredentialNative]::CRED_TYPE_GENERIC, 0, [ref]$credPtr)
     if (-not $ok) {
         $errCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
         if ($errCode -eq 1168) {
-            Write-Output "(no credentials stored)"
-            return
+            Stop-WithError 'credential no longer exists'
         }
-        Stop-WithError "CredEnumerate failed (error $errCode)"
+        Stop-WithError "CredRead failed (error $errCode)"
     }
 
     try {
-        $ptrSize = [Runtime.InteropServices.Marshal]::SizeOf([Type][IntPtr])
-        for ($i = 0; $i -lt $count; $i++) {
-            $entryPtr = [Runtime.InteropServices.Marshal]::ReadIntPtr($credsPtr, $i * $ptrSize)
-            $cred = [Runtime.InteropServices.Marshal]::PtrToStructure($entryPtr, [Type][WinCred+CREDENTIAL])
-            $name = $cred.TargetName -replace '^winsmux:', ''
-            Write-Output $name
+        $cred = [Runtime.InteropServices.Marshal]::PtrToStructure($credPtr, [Type][WinsmuxBridgeCredentialNative+CREDENTIAL])
+        if ($cred.CredentialBlobSize -le 0) {
+            return ''
         }
+        $bytes = New-Object byte[] $cred.CredentialBlobSize
+        [Runtime.InteropServices.Marshal]::Copy($cred.CredentialBlob, $bytes, 0, $cred.CredentialBlobSize)
+        return [System.Text.Encoding]::Unicode.GetString($bytes)
     } finally {
-        [WinCred]::CredFree($credsPtr) | Out-Null
+        [WinsmuxBridgeCredentialNative]::CredFree($credPtr) | Out-Null
     }
 }
 
@@ -15827,50 +17132,44 @@ function Invoke-VaultInject {
 
     $paneId = Resolve-Target $Target
     $paneId = Confirm-Target $paneId
+    $projectDir = (Get-Location).Path
+    $initialRuntime = Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch
     Assert-ReadMark $paneId
 
-    # Enumerate all winsmux:* credentials
-    $filter = "winsmux:*"
-    $count = 0
-    $credsPtr = [IntPtr]::Zero
-
-    $ok = [WinCred]::CredEnumerate($filter, 0, [ref]$count, [ref]$credsPtr)
-    if (-not $ok) {
-        $errCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
-        if ($errCode -eq 1168) {
-            Write-Output "no credentials to inject"
-            return
-        }
-        Stop-WithError "CredEnumerate failed (error $errCode)"
+    $credentialNames = @(Get-WinsmuxVaultCredentialNamesInternal)
+    if ($credentialNames.Count -eq 0) {
+        Write-Output "no credentials to inject"
+        return
     }
 
     $injected = 0
-    try {
-        $ptrSize = [Runtime.InteropServices.Marshal]::SizeOf([Type][IntPtr])
-        for ($i = 0; $i -lt $count; $i++) {
-            $entryPtr = [Runtime.InteropServices.Marshal]::ReadIntPtr($credsPtr, $i * $ptrSize)
-            $cred = [Runtime.InteropServices.Marshal]::PtrToStructure($entryPtr, [Type][WinCred+CREDENTIAL])
-            $envName = $cred.TargetName -replace '^winsmux:', ''
+    foreach ($envName in $credentialNames) {
+        Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch `
+            -ExpectedGenerationId ([string]$initialRuntime.GenerationId) | Out-Null
+        $value = [string](Get-WinsmuxVaultCredentialValueInternal -Name ([string]$envName))
 
-            $value = ''
-            if ($cred.CredentialBlobSize -gt 0) {
-                $bytes = New-Object byte[] $cred.CredentialBlobSize
-                [Runtime.InteropServices.Marshal]::Copy($cred.CredentialBlob, $bytes, 0, $cred.CredentialBlobSize)
-                $value = [System.Text.Encoding]::Unicode.GetString($bytes)
-            }
-
-            # Escape single quotes in value for safe injection
+        try {
+            # Escape single quotes in value for safe injection.
             $escapedValue = $value -replace "'", "''"
             $setCmd = "`$env:$envName = '$escapedValue'"
+            Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch `
+                -ExpectedGenerationId ([string]$initialRuntime.GenerationId) | Out-Null
             Invoke-WinsmuxRaw -Arguments @('send-keys', '-t', $paneId, '-l', '--', "$setCmd")
-            Invoke-WinsmuxRaw -Arguments @('send-keys', '-t', $paneId, 'Enter')
-            Start-Sleep -Milliseconds 100
-            $injected++
+        } finally {
+            $value = $null
+            $escapedValue = $null
+            $setCmd = $null
         }
-    } finally {
-        [WinCred]::CredFree($credsPtr) | Out-Null
+
+        Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch `
+            -ExpectedGenerationId ([string]$initialRuntime.GenerationId) | Out-Null
+        Invoke-WinsmuxRaw -Arguments @('send-keys', '-t', $paneId, 'Enter')
+        Start-Sleep -Milliseconds 100
+        $injected++
     }
 
+    Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch `
+        -ExpectedGenerationId ([string]$initialRuntime.GenerationId) | Out-Null
     Clear-ReadMark $paneId
     Write-Output "injected $injected credential(s) into $paneId"
 }
@@ -15900,6 +17199,41 @@ function Invoke-DispatchReview {
         $receipt = New-WinsmuxSubmissionReceipt -Kind review -Status unavailable -Backend noop -SubmissionId $submissionId -ReasonCode 'review_target_unavailable' -Diagnostic 'No review-capable pane was found in the manifest.'
         ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $receipt | Write-Output
         exit 1
+    }
+
+    $reviewBackend = ([string](Get-SendConfigValue -InputObject $reviewPaneEntry -Name 'WorkerBackend' -Default 'noop')).Trim().ToLowerInvariant()
+    if ($reviewBackend -notin @('local', 'codex', 'api_llm', 'antigravity')) { $reviewBackend = 'noop' }
+    $reviewTarget = [ordered]@{
+        label   = [string](Get-SendConfigValue -InputObject $reviewPaneEntry -Name 'Label' -Default '')
+        pane_id = [string](Get-SendConfigValue -InputObject $reviewPaneEntry -Name 'PaneId' -Default '')
+        role    = [string](Get-SendConfigValue -InputObject $reviewPaneEntry -Name 'Role' -Default '')
+    }
+    $runtimeOperation = if (Test-DeferredPaneStartManifestEntry -ManifestEntry $reviewPaneEntry) { 'start_deferred' } else { 'dispatch' }
+    $runtimeResult = Test-PaneControlRuntimeContext -ProjectDir $projectDir -ManifestEntry $reviewPaneEntry -Operation $runtimeOperation
+    if (-not $runtimeResult.valid) {
+        $receipt = New-WinsmuxSubmissionReceipt -Kind review -Status unavailable -Backend $reviewBackend -SubmissionId $submissionId `
+            -ReasonCode ([string]$runtimeResult.reason_code) -Diagnostic ([string]$runtimeResult.diagnostic) -Target $reviewTarget
+        ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $receipt | Write-Output
+        exit 1
+    }
+    if ($runtimeOperation -ceq 'start_deferred') {
+        try {
+            Start-DeferredPaneFromManifestEntry -ProjectDir $projectDir -ManifestEntry $reviewPaneEntry `
+                -ExpectedGenerationId ([string](Get-SendConfigValue -InputObject $runtimeResult.context -Name 'generation_id' -Default '')) | Out-Null
+        } catch {
+            $receipt = New-WinsmuxDeferredStartFailureReceipt -Kind review -Backend $reviewBackend `
+                -SubmissionId $submissionId -PaneId ([string]$reviewPaneEntry.PaneId) -Failure $_ -Target $reviewTarget
+            ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $receipt | Write-Output
+            exit 1
+        }
+        $reviewPaneEntry = Get-PaneControlManifestContext -ProjectDir $projectDir -PaneId ([string]$reviewPaneEntry.PaneId)
+        $runtimeResult = Wait-PaneControlRuntimeContext -ProjectDir $projectDir -ManifestEntry $reviewPaneEntry -Operation dispatch
+        if (-not $runtimeResult.valid) {
+            $receipt = New-WinsmuxSubmissionReceipt -Kind review -Status unavailable -Backend $reviewBackend -SubmissionId $submissionId `
+                -ReasonCode ([string]$runtimeResult.reason_code) -Diagnostic ([string]$runtimeResult.diagnostic) -Target $reviewTarget
+            ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $receipt | Write-Output
+            exit 1
+        }
     }
 
     $branch = Get-CurrentGitBranch -ProjectDir $projectDir
@@ -15956,7 +17290,7 @@ function Invoke-ReviewRequest {
 
     $state[$branch] = New-ReviewerStateRecord -Status 'PENDING' -Request $request -Reviewer $reviewer -Evidence $null -UpdatedAt $timestamp
     Save-ReviewState -ProjectDir $projectDir -State $state
-    Update-ReviewPaneManifestState -ProjectDir $projectDir -Properties ([ordered]@{
+    Update-ReviewPaneManifestState -Context $context -Properties ([ordered]@{
         review_state = 'pending'
         task_owner   = $context.Role
         branch       = $branch
@@ -16026,7 +17360,7 @@ function Invoke-ReviewApprove {
 
     $state[$branch] = New-ReviewerStateRecord -Status 'PASS' -Request $request -Reviewer $reviewer -Evidence $evidence -UpdatedAt $timestamp
     Save-ReviewState -ProjectDir $projectDir -State $state
-    Update-ReviewPaneManifestState -ProjectDir $projectDir -Properties ([ordered]@{
+    Update-ReviewPaneManifestState -Context $context -Properties ([ordered]@{
         review_state = 'pass'
         task_owner   = 'Operator'
         branch       = $branch
@@ -16096,7 +17430,7 @@ function Invoke-ReviewFail {
 
     $state[$branch] = New-ReviewerStateRecord -Status 'FAIL' -Request $request -Reviewer $reviewer -Evidence $evidence -UpdatedAt $timestamp
     Save-ReviewState -ProjectDir $projectDir -State $state
-    Update-ReviewPaneManifestState -ProjectDir $projectDir -Properties ([ordered]@{
+    Update-ReviewPaneManifestState -Context $context -Properties ([ordered]@{
         review_state = 'fail'
         task_owner   = 'Operator'
         branch       = $branch
@@ -16114,13 +17448,19 @@ function Invoke-ReviewReset {
 
     $projectDir = (Get-Location).Path
     $branch = Get-CurrentGitBranch -ProjectDir $projectDir
+    $context = $null
+    try {
+        $context = Get-CurrentReviewPaneManifestContext -ProjectDir $projectDir
+    } catch {
+        # Review-state persistence is authoritative; manifest sync remains best-effort.
+    }
     $state = Get-ReviewState -ProjectDir $projectDir
     if ($state.Contains($branch)) {
         $state.Remove($branch)
     }
 
     Save-ReviewState -ProjectDir $projectDir -State $state
-    Update-ReviewPaneManifestState -ProjectDir $projectDir -Properties ([ordered]@{
+    Update-ReviewPaneManifestState -Context $context -Properties ([ordered]@{
         review_state = ''
         branch       = ''
         head_sha     = ''
@@ -16411,7 +17751,7 @@ function Invoke-RuntimeRoles {
     }
 
     try {
-        $roles = $rolesJson | ConvertFrom-Json -Depth 16 -ErrorAction Stop
+        $roles = $rolesJson | ConvertFrom-WinsmuxJson -Depth 16 -ErrorAction Stop
     } catch {
         Stop-WithError 'runtime-roles apply received invalid JSON.'
     }
@@ -16554,7 +17894,7 @@ function ConvertTo-ControlRpcPayload {
     }
 
     try {
-        $payload = $JsonText | ConvertFrom-Json -Depth 100
+        $payload = $JsonText | ConvertFrom-WinsmuxJson -Depth 100
     } catch {
         Stop-WithError "control-rpc payload must be valid JSON: $($_.Exception.Message)"
     }
@@ -16863,7 +18203,9 @@ function Set-PaneReadinessManifestFromRestartPlan {
             capability_adapter = [string]$Plan.CapabilityAdapter
         }
 
-        Set-PaneControlManifestPaneProperties -ManifestPath $context.ManifestPath -PaneId $PaneId -Properties $properties
+        $expectedGenerationId = [string]$Plan.GenerationId
+        Set-PaneControlManifestPaneProperties -ManifestPath $context.ManifestPath -PaneId $PaneId -Properties $properties `
+            -ExpectedGenerationId $expectedGenerationId
     } catch {
         # Restart has already changed the running process; readiness metadata sync is best-effort.
     }
@@ -16875,6 +18217,11 @@ function Invoke-Kill {
 
     $paneId = Resolve-Target $Target
     $paneId = Confirm-Target $paneId
+
+    $lifecycleRefusal = Get-ManagedPaneLifecycleMutationRefusal -ProjectDir (Get-Location).Path -PaneId $paneId -OperationName kill
+    if ($null -ne $lifecycleRefusal) {
+        Stop-WithError ("{0}: {1}" -f [string]$lifecycleRefusal.reason_code, [string]$lifecycleRefusal.diagnostic)
+    }
 
     Invoke-WinsmuxRaw -Arguments @('respawn-pane', '-k', '-t', $paneId)
     $nativeExitCode = Get-SafeLastExitCode
@@ -16892,6 +18239,11 @@ function Invoke-RestartPane {
         [Parameter(Mandatory = $true)][string]$PaneId,
         [Parameter(Mandatory = $true)][string]$ProjectDir
     )
+
+    $lifecycleRefusal = Get-ManagedPaneLifecycleMutationRefusal -ProjectDir $ProjectDir -PaneId $PaneId -OperationName restart
+    if ($null -ne $lifecycleRefusal) {
+        Stop-WithError ("{0}: {1}" -f [string]$lifecycleRefusal.reason_code, [string]$lifecycleRefusal.diagnostic)
+    }
 
     $settings = $null
     if (Get-Command Get-BridgeSettings -ErrorAction SilentlyContinue) {
@@ -17086,5 +18438,9 @@ switch ($Command) {
     'rebind-worktree' { Invoke-RebindWorktree }
     ''                { Show-Usage }
     default           { Stop-WithError "unknown command: $Command. Run without arguments for usage." }
+}
+
+if (-not $script:WinsmuxBridgeWasDotSourced -and $script:WinsmuxRequestedProcessExitCode -ne 0) {
+    exit $script:WinsmuxRequestedProcessExitCode
 }
 
