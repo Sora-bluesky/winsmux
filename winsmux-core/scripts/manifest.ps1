@@ -432,7 +432,33 @@ function Test-WinsmuxRuntimeRegistryReplacementAllowed {
     if ($null -eq $ownerPid) {
         return $false
     }
-    return (-not (Test-WinsmuxStrictProcessIdentity -ProcessId $ownerPid -ExpectedStartTime $ownerStartedAt -ProcessResolver $ProcessResolver))
+    try {
+        $observedOwner = & $ProcessResolver $ownerPid
+    } catch {
+        return $false
+    }
+    if ($null -eq $observedOwner) {
+        return $true
+    }
+
+    $observedPid = ConvertTo-WinsmuxRuntimeInteger -Value (
+        Get-WinsmuxRuntimeValue -InputObject $observedOwner -Name 'Id' -Default (
+            Get-WinsmuxRuntimeValue -InputObject $observedOwner -Name 'ProcessId' -Default $null
+        )
+    )
+    $observedStartedAt = ConvertTo-WinsmuxRuntimeUtcIdentity -Value (
+        Get-WinsmuxRuntimeValue -InputObject $observedOwner -Name 'StartTime' -Default (
+            Get-WinsmuxRuntimeValue -InputObject $observedOwner -Name 'CreationDate' -Default $null
+        )
+    )
+    $expectedStartedAt = ConvertTo-WinsmuxRuntimeUtcIdentity -Value $ownerStartedAt
+    if ($null -eq $observedPid -or $observedPid -ne $ownerPid -or
+        [string]::IsNullOrWhiteSpace($observedStartedAt) -or
+        [string]::IsNullOrWhiteSpace($expectedStartedAt)) {
+        return $false
+    }
+
+    return ($observedStartedAt -cne $expectedStartedAt)
 }
 
 function Update-WinsmuxRuntimeRegistryLease {
@@ -479,6 +505,8 @@ function Close-WinsmuxRuntimeRegistry {
         [Parameter(Mandatory = $true)][string]$GenerationId,
         [Parameter(Mandatory = $true)][int]$SupervisorPid,
         [Parameter(Mandatory = $true)][string]$SupervisorProcessStartedAt,
+        [AllowEmptyString()][string]$ExpectedSessionName = '',
+        [AllowEmptyString()][string]$ExpectedServerSessionId = '',
         [datetime]$Now = (Get-Date)
     )
 
@@ -495,6 +523,10 @@ function Close-WinsmuxRuntimeRegistry {
             [string](Get-WinsmuxRuntimeValue -InputObject $registry -Name 'generation_id' -Default ''),
             $GenerationId,
             [System.StringComparison]::Ordinal) -or
+        ((-not [string]::IsNullOrWhiteSpace($ExpectedSessionName)) -and
+            [string](Get-WinsmuxRuntimeValue -InputObject $registry -Name 'session_name' -Default '') -cne $ExpectedSessionName) -or
+        ((-not [string]::IsNullOrWhiteSpace($ExpectedServerSessionId)) -and
+            [string](Get-WinsmuxRuntimeValue -InputObject $registry -Name 'server_session_id' -Default '') -cne $ExpectedServerSessionId) -or
         $null -eq $ownerPid -or $ownerPid -ne $SupervisorPid -or $ownerStartedAt -cne $expectedStartedAt) {
         return $false
     }
@@ -650,9 +682,6 @@ function New-WinsmuxProcessSnapshotResolver {
         }
         if ($snapshotMap.ContainsKey($processId)) {
             throw 'OS process ancestry snapshot contains a duplicate process identity.'
-        }
-        if ($null -eq $parentProcessId -or [string]::IsNullOrWhiteSpace($startedAt) -or [string]::IsNullOrWhiteSpace($name)) {
-            continue
         }
         $snapshotMap[$processId] = [PSCustomObject][ordered]@{
             Id              = $processId
@@ -944,7 +973,10 @@ function Test-WinsmuxRuntimeContext {
             return & $targetMismatch 'Only an explicitly deferred target may enter deferred startup.'
         }
         if ($null -ne $PaneMarker) {
-            if ([string]$statusClassification.NormalizedStatus -cne 'deferred_start_failed') {
+            $normalizedDeferredStatus = [string]$statusClassification.NormalizedStatus
+            $isFailedDeferredRetry = $normalizedDeferredStatus -ceq 'deferred_start_failed'
+            $isDeferredStartingObservation = $normalizedDeferredStatus -ceq 'deferred_starting'
+            if (-not $isFailedDeferredRetry -and -not $isDeferredStartingObservation) {
                 return & $targetMismatch 'A pane marker already exists; deferred startup would duplicate or overwrite a bootstrap identity.'
             }
 
@@ -965,19 +997,31 @@ function Test-WinsmuxRuntimeContext {
                 return & $targetMismatch 'Failed deferred retry marker does not match the current runtime target identity.'
             }
 
-            $retryMarkerState = if (Test-WinsmuxStrictProcessIdentity -ProcessId $retryMarkerPid `
+            $markerProcessState = if (Test-WinsmuxStrictProcessIdentity -ProcessId $retryMarkerPid `
                     -ExpectedStartTime $retryMarkerStartedAt -ProcessResolver $ProcessResolver) {
                 'live'
             } else {
                 'stale'
             }
-            return New-WinsmuxRuntimeValidationResult -Valid $true -ReasonCode 'deferred_retry_marker_verified' `
-                -Diagnostic 'Failed deferred retry marker is authenticated for bounded reuse or stale-marker recovery.' `
+            $markerReasonCode = if ($isFailedDeferredRetry) {
+                'deferred_retry_marker_verified'
+            } else {
+                'deferred_starting_marker_verified'
+            }
+            $markerDiagnostic = if ($isFailedDeferredRetry) {
+                'Failed deferred retry marker is authenticated for bounded reuse or stale-marker recovery.'
+            } else {
+                'Deferred-starting marker is authenticated for readiness observation or failure recording.'
+            }
+            return New-WinsmuxRuntimeValidationResult -Valid $true -ReasonCode $markerReasonCode `
+                -Diagnostic $markerDiagnostic `
                 -Context ([PSCustomObject][ordered]@{
                     session_name = $registrySessionName; server_session_id = $registryServerSession
                     generation_id = $registryGeneration; label = $label; slot_id = $slotId; pane_id = $paneId
                     backend = $backend; role = $role; title = $title; runtime_state = 'deferred'
-                    retry_marker_state = $retryMarkerState; retry_marker_pid = $retryMarkerPid
+                    marker_process_state = $markerProcessState
+                    retry_marker_state = if ($isFailedDeferredRetry) { $markerProcessState } else { '' }
+                    retry_marker_pid = $retryMarkerPid
                     retry_marker_process_started_at = $retryMarkerStartedAt
                 })
         }

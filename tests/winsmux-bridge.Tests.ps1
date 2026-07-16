@@ -3816,8 +3816,21 @@ panes:
             -Now ([datetime]'2026-07-15T00:05:05Z') -LeaseSeconds 15
         $refreshed.lease.expires_at | Should -Be '2026-07-15T00:05:20.0000000Z'
 
+        $foreignSessionClose = Close-WinsmuxRuntimeRegistry -ProjectDir $script:task781TempRoot -GenerationId 'generation-1' `
+            -SupervisorPid 4100 -SupervisorProcessStartedAt '2026-07-15T00:00:00.0000000Z' `
+            -ExpectedSessionName 'winsmux-other' -ExpectedServerSessionId '$9'
+        $foreignSessionClose | Should -BeFalse
+        (Read-WinsmuxRuntimeRegistry -ProjectDir $script:task781TempRoot).status | Should -Be 'active'
+
+        $foreignServerClose = Close-WinsmuxRuntimeRegistry -ProjectDir $script:task781TempRoot -GenerationId 'generation-1' `
+            -SupervisorPid 4100 -SupervisorProcessStartedAt '2026-07-15T00:00:00.0000000Z' `
+            -ExpectedSessionName 'winsmux-task781-test' -ExpectedServerSessionId '$10'
+        $foreignServerClose | Should -BeFalse
+        (Read-WinsmuxRuntimeRegistry -ProjectDir $script:task781TempRoot).status | Should -Be 'active'
+
         $closed = Close-WinsmuxRuntimeRegistry -ProjectDir $script:task781TempRoot -GenerationId 'generation-1' `
             -SupervisorPid 4100 -SupervisorProcessStartedAt '2026-07-15T00:00:00.0000000Z' `
+            -ExpectedSessionName 'winsmux-task781-test' -ExpectedServerSessionId '$9' `
             -Now ([datetime]'2026-07-15T00:05:06Z')
         $closed | Should -BeTrue
         $ended = Read-WinsmuxRuntimeRegistry -ProjectDir $script:task781TempRoot
@@ -3930,6 +3943,23 @@ panes:
         $fixture.Registry.panes[0].state | Should -Be 'deferred'
     }
 
+    It 'TASK781 C73 authenticates a deferred-starting marker so readiness failure can become retryable' {
+        $fixture = New-Task781RuntimeFixture
+        $fixture.Registry.panes[0].state = 'deferred'
+        $fixture.Registry.panes[0].bootstrap_pid = 0
+        $fixture.Registry.panes[0].bootstrap_process_started_at = ''
+        $fixture.Manifest.panes['worker-1'].status = 'deferred_starting'
+        $fixture.Entry.Status = 'deferred_starting'
+        $fixture.Marker | Add-Member -NotePropertyName state -NotePropertyValue 'bootstrap_pending'
+
+        $result = Invoke-Task781RuntimeFixture -Fixture $fixture -Operation start_deferred
+
+        $result.valid | Should -BeTrue
+        $result.reason_code | Should -Be 'deferred_starting_marker_verified'
+        [string]$result.context.marker_process_state | Should -Be 'live'
+        $fixture.Registry.panes[0].state | Should -Be 'deferred'
+    }
+
     It 'TASK781 C32 refuses a failed deferred retry marker with a different generation' {
         $fixture = New-Task781RuntimeFixture
         $fixture.Registry.panes[0].state = 'deferred'
@@ -3996,18 +4026,36 @@ panes:
         @($roles | Where-Object { $_ -cne 'worker' }).Count | Should -Be 0
     }
 
-    It 'TASK781 skips unrelated incomplete process rows but rejects duplicate process IDs' {
+    It 'TASK781 retains incomplete live process rows as unverifiable identities and rejects duplicate process IDs' {
         $resolver = New-WinsmuxProcessSnapshotResolver -Snapshots @(
             [PSCustomObject]@{ ProcessId = 999; ParentProcessId = $null; CreationDate = $null; Name = '' }
             [PSCustomObject]@{ ProcessId = 4300; ParentProcessId = 4200; CreationDate = [datetime]'2026-07-15T00:00:02Z'; Name = 'codex.exe' }
         )
         (& $resolver 4300).Id | Should -Be 4300
-        (& $resolver 999) | Should -BeNullOrEmpty
+        $incomplete = & $resolver 999
+        $incomplete.Id | Should -Be 999
+        (Test-WinsmuxStrictProcessIdentity -ProcessId 999 -ExpectedStartTime '2026-07-15T00:00:01.0000000Z' -ProcessResolver $resolver) |
+            Should -BeFalse
 
         { New-WinsmuxProcessSnapshotResolver -Snapshots @(
                 [PSCustomObject]@{ ProcessId = 4300; ParentProcessId = 4200; CreationDate = [datetime]'2026-07-15T00:00:02Z'; Name = 'codex.exe' }
                 [PSCustomObject]@{ ProcessId = 4300; ParentProcessId = 1; CreationDate = [datetime]'2026-07-15T00:00:03Z'; Name = 'codex.exe' }
             ) } | Should -Throw '*duplicate process identity*'
+    }
+
+    It 'TASK781 refuses expired registry replacement when the live owner identity is incomplete' {
+        $fixture = New-Task781RuntimeFixture
+        $fixture.Registry.lease.expires_at = '2026-07-15T00:04:00.0000000Z'
+        $fixture.ProcessResolver = {
+            param([int]$Id)
+            if ($Id -eq 4100) {
+                return [PSCustomObject]@{ Id = 4100; ParentProcessId = 1; StartTime = ''; Name = 'pwsh.exe' }
+            }
+            return $null
+        }
+
+        (Test-WinsmuxRuntimeRegistryReplacementAllowed -Registry $fixture.Registry -ProcessResolver $fixture.ProcessResolver `
+            -Now ([datetime]'2026-07-15T00:05:00Z')) | Should -BeFalse
     }
 }
 
@@ -9388,6 +9436,29 @@ Describe 'orchestra-start server bootstrap' {
 
     It 'retires background state and deletes the old manifest before replacement generation creation' {
         $script:retiredManifestSequence = [System.Collections.Generic.List[string]]::new()
+        $script:retiredRegistryClosed = $false
+        Mock Get-WinsmuxManifest {
+            [PSCustomObject]@{
+                session = [PSCustomObject]@{
+                    name = 'winsmux-orchestra'; generation_id = 'generation-retired'
+                    server_session_id = '$41'; supervisor_pid = 4201
+                }
+            }
+        }
+        Mock Read-WinsmuxRuntimeRegistry {
+            [PSCustomObject]@{
+                status = if ($script:retiredRegistryClosed) { 'ended' } else { 'active' }
+                session_name = 'winsmux-orchestra'; generation_id = 'generation-retired'; server_session_id = '$41'
+                supervisor = [PSCustomObject]@{ pid = 4201; process_started_at = '2026-07-16T04:00:00.0000000Z' }
+                lease = [PSCustomObject]@{ state = if ($script:retiredRegistryClosed) { 'ended' } else { 'active' }; expires_at = '2026-07-16T04:00:15.0000000Z' }
+            }
+        }
+        Mock New-WinsmuxProcessSnapshotResolver {
+            {
+                param([int]$Id)
+                [PSCustomObject]@{ Id = $Id; StartTime = '2026-07-16T04:00:00.0000000Z' }
+            }
+        }
         Mock Remove-OrchestraSessionServerProcesses {
             $script:retiredManifestSequence.Add('matched-processes-retired') | Out-Null
             return [PSCustomObject]@{ SessionProcesses = @(); Killed = @(); RemainingSessionProcesses = @(); Errors = @() }
@@ -9400,6 +9471,17 @@ Describe 'orchestra-start server bootstrap' {
             $script:retiredManifestSequence.Add('backgrounds-retired') | Out-Null
             return [PSCustomObject]@{ Stopped = @([PSCustomObject]@{ pid = 42 }); Errors = @() }
         }
+        Mock Close-WinsmuxRuntimeRegistry {
+            param($ProjectDir, $GenerationId, $SupervisorPid, $SupervisorProcessStartedAt, $ExpectedSessionName, $ExpectedServerSessionId)
+            $GenerationId | Should -BeExactly 'generation-retired'
+            $SupervisorPid | Should -Be 4201
+            $SupervisorProcessStartedAt | Should -BeExactly '2026-07-16T04:00:00.0000000Z'
+            $ExpectedSessionName | Should -BeExactly 'winsmux-orchestra'
+            $ExpectedServerSessionId | Should -BeExactly '$41'
+            $script:retiredRegistryClosed = $true
+            $script:retiredManifestSequence.Add('registry-ended') | Out-Null
+            return $true
+        }
         Mock Clear-WinsmuxManifest {
             $script:retiredManifestSequence.Add('manifest-cleared') | Out-Null
             return $true
@@ -9409,10 +9491,335 @@ Describe 'orchestra-start server bootstrap' {
             -ProjectDir 'C:\project' -GitWorktreeDir 'C:\project' `
             -BridgeScript 'C:\project\scripts\winsmux-core.ps1' -SessionName 'winsmux-orchestra' -WinsmuxBin 'winsmux'
 
-        @($script:retiredManifestSequence) | Should -Be @('matched-processes-retired', 'server-absent', 'backgrounds-retired', 'manifest-cleared')
+        @($script:retiredManifestSequence) | Should -Be @('matched-processes-retired', 'server-absent', 'backgrounds-retired', 'registry-ended', 'manifest-cleared')
+        $result.RegistryClosed | Should -BeTrue
         $result.Cleared | Should -BeTrue
         @($result.Stopped).Count | Should -Be 1
         @($result.Errors).Count | Should -Be 0
+    }
+
+    It 'TASK781 C71 refuses a competing active runtime registry before retiring any process' {
+        Mock Get-WinsmuxManifest {
+            [PSCustomObject]@{
+                session = [PSCustomObject]@{
+                    name = 'winsmux-orchestra'; generation_id = 'generation-retired'
+                    server_session_id = '$41'; supervisor_pid = 4201
+                }
+            }
+        }
+        Mock Read-WinsmuxRuntimeRegistry {
+            [PSCustomObject]@{
+                status = 'active'; session_name = 'winsmux-orchestra'
+                generation_id = 'generation-competing'; server_session_id = '$41'
+                supervisor = [PSCustomObject]@{ pid = 4201; process_started_at = '2026-07-16T04:00:00.0000000Z' }
+                lease = [PSCustomObject]@{ state = 'active'; expires_at = '2026-07-16T04:00:15.0000000Z' }
+            }
+        }
+        Mock Remove-OrchestraSessionServerProcesses { throw 'process retirement must not start' }
+        Mock Wait-OrchestraServerSessionAbsent { throw 'logical retirement must not start' }
+        Mock Stop-OrchestraBackgroundProcessesFromManifest { throw 'background retirement must not start' }
+        Mock Close-WinsmuxRuntimeRegistry { throw 'competing registry must not be closed' }
+        Mock Clear-WinsmuxManifest { throw 'manifest must be preserved' }
+
+        {
+            Clear-OrchestraManifestAfterServerRetirement `
+                -ProjectDir 'C:\project' -GitWorktreeDir 'C:\project' `
+                -BridgeScript 'C:\project\scripts\winsmux-core.ps1' -SessionName 'winsmux-orchestra' -WinsmuxBin 'winsmux'
+        } | Should -Throw '*runtime registry identity does not match*'
+
+        Should -Invoke Remove-OrchestraSessionServerProcesses -Times 0 -Exactly
+        Should -Invoke Stop-OrchestraBackgroundProcessesFromManifest -Times 0 -Exactly
+        Should -Invoke Close-WinsmuxRuntimeRegistry -Times 0 -Exactly
+        Should -Invoke Clear-WinsmuxManifest -Times 0 -Exactly
+    }
+
+    It 'TASK781 C71 refuses a foreign manifest session before retiring any process even without a registry' {
+        Mock Get-WinsmuxManifest {
+            [PSCustomObject]@{
+                session = [PSCustomObject]@{
+                    name = 'winsmux-foreign'; generation_id = 'generation-retired'
+                    server_session_id = '$41'; supervisor_pid = 4201
+                }
+            }
+        }
+        Mock Read-WinsmuxRuntimeRegistry { $null }
+        Mock Remove-OrchestraSessionServerProcesses { throw 'process retirement must not start' }
+        Mock Wait-OrchestraServerSessionAbsent { throw 'logical retirement must not start' }
+        Mock Stop-OrchestraBackgroundProcessesFromManifest { throw 'background retirement must not start' }
+        Mock Clear-WinsmuxManifest { throw 'foreign manifest must be preserved' }
+
+        {
+            Clear-OrchestraManifestAfterServerRetirement `
+                -ProjectDir 'C:\project' -GitWorktreeDir 'C:\project' `
+                -BridgeScript 'C:\project\scripts\winsmux-core.ps1' -SessionName 'winsmux-orchestra' -WinsmuxBin 'winsmux'
+        } | Should -Throw '*manifest session identity does not match*'
+
+        Should -Invoke Remove-OrchestraSessionServerProcesses -Times 0 -Exactly
+        Should -Invoke Stop-OrchestraBackgroundProcessesFromManifest -Times 0 -Exactly
+        Should -Invoke Clear-WinsmuxManifest -Times 0 -Exactly
+    }
+
+    It 'TASK781 C71 refuses a reused supervisor PID before retiring any process' {
+        Mock Get-WinsmuxManifest {
+            [PSCustomObject]@{
+                session = [PSCustomObject]@{
+                    name = 'winsmux-orchestra'; generation_id = 'generation-retired'
+                    server_session_id = '$41'; supervisor_pid = 4201
+                }
+            }
+        }
+        Mock Read-WinsmuxRuntimeRegistry {
+            [PSCustomObject]@{
+                status = 'active'; session_name = 'winsmux-orchestra'
+                generation_id = 'generation-retired'; server_session_id = '$41'
+                supervisor = [PSCustomObject]@{ pid = 4201; process_started_at = '2026-07-16T04:00:00.0000000Z' }
+                lease = [PSCustomObject]@{ state = 'active'; expires_at = '2026-07-16T04:00:15.0000000Z' }
+            }
+        }
+        Mock New-WinsmuxProcessSnapshotResolver {
+            {
+                param([int]$Id)
+                [PSCustomObject]@{ Id = $Id; StartTime = '2026-07-16T04:00:01.0000000Z' }
+            }
+        }
+        Mock Remove-OrchestraSessionServerProcesses { throw 'process retirement must not start' }
+        Mock Wait-OrchestraServerSessionAbsent { throw 'logical retirement must not start' }
+        Mock Stop-OrchestraBackgroundProcessesFromManifest { throw 'background retirement must not start' }
+        Mock Close-WinsmuxRuntimeRegistry { throw 'reused PID registry must not be closed' }
+        Mock Clear-WinsmuxManifest { throw 'manifest must be preserved' }
+
+        {
+            Clear-OrchestraManifestAfterServerRetirement `
+                -ProjectDir 'C:\project' -GitWorktreeDir 'C:\project' `
+                -BridgeScript 'C:\project\scripts\winsmux-core.ps1' -SessionName 'winsmux-orchestra' -WinsmuxBin 'winsmux'
+        } | Should -Throw '*OS process identity does not match*'
+
+        Should -Invoke Remove-OrchestraSessionServerProcesses -Times 0 -Exactly
+        Should -Invoke Close-WinsmuxRuntimeRegistry -Times 0 -Exactly
+        Should -Invoke Clear-WinsmuxManifest -Times 0 -Exactly
+    }
+
+    It 'TASK781 C71 refuses an incomplete live supervisor identity before retiring any process' {
+        Mock Get-WinsmuxManifest {
+            [PSCustomObject]@{
+                session = [PSCustomObject]@{
+                    name = 'winsmux-orchestra'; generation_id = 'generation-retired'
+                    server_session_id = '$41'; supervisor_pid = 4201
+                }
+            }
+        }
+        Mock Read-WinsmuxRuntimeRegistry {
+            [PSCustomObject]@{
+                status = 'active'; session_name = 'winsmux-orchestra'
+                generation_id = 'generation-retired'; server_session_id = '$41'
+                supervisor = [PSCustomObject]@{ pid = 4201; process_started_at = '2026-07-16T04:00:00.0000000Z' }
+                lease = [PSCustomObject]@{ state = 'active'; expires_at = '2026-07-16T04:00:15.0000000Z' }
+            }
+        }
+        Mock Get-CimInstance {
+            [PSCustomObject]@{ ProcessId = 4201; ParentProcessId = 1; CreationDate = $null; Name = 'pwsh.exe' }
+        } -ParameterFilter { $ClassName -eq 'Win32_Process' }
+        Mock Remove-OrchestraSessionServerProcesses { throw 'process retirement must not start' }
+        Mock Wait-OrchestraServerSessionAbsent { throw 'logical retirement must not start' }
+        Mock Stop-OrchestraBackgroundProcessesFromManifest { throw 'background retirement must not start' }
+        Mock Close-WinsmuxRuntimeRegistry { throw 'unverifiable registry must not be closed' }
+        Mock Clear-WinsmuxManifest { throw 'manifest must be preserved' }
+
+        {
+            Clear-OrchestraManifestAfterServerRetirement `
+                -ProjectDir 'C:\project' -GitWorktreeDir 'C:\project' `
+                -BridgeScript 'C:\project\scripts\winsmux-core.ps1' -SessionName 'winsmux-orchestra' -WinsmuxBin 'winsmux'
+        } | Should -Throw '*OS process identity does not match*'
+
+        Should -Invoke Remove-OrchestraSessionServerProcesses -Times 0 -Exactly
+        Should -Invoke Close-WinsmuxRuntimeRegistry -Times 0 -Exactly
+        Should -Invoke Clear-WinsmuxManifest -Times 0 -Exactly
+    }
+
+    It 'TASK781 C71 preserves the manifest when the matched runtime registry close is refused' {
+        Mock Get-WinsmuxManifest {
+            [PSCustomObject]@{
+                session = [PSCustomObject]@{
+                    name = 'winsmux-orchestra'; generation_id = 'generation-retired'
+                    server_session_id = '$41'; supervisor_pid = 4201
+                }
+            }
+        }
+        Mock Read-WinsmuxRuntimeRegistry {
+            [PSCustomObject]@{
+                status = 'active'; session_name = 'winsmux-orchestra'
+                generation_id = 'generation-retired'; server_session_id = '$41'
+                supervisor = [PSCustomObject]@{ pid = 4201; process_started_at = '2026-07-16T04:00:00.0000000Z' }
+                lease = [PSCustomObject]@{ state = 'active'; expires_at = '2026-07-16T04:00:15.0000000Z' }
+            }
+        }
+        Mock New-WinsmuxProcessSnapshotResolver { { param([int]$Id) $null } }
+        Mock Remove-OrchestraSessionServerProcesses {
+            [PSCustomObject]@{ SessionProcesses = @(); Killed = @(); RemainingSessionProcesses = @(); Errors = @() }
+        }
+        Mock Wait-OrchestraServerSessionAbsent { [PSCustomObject]@{ Ready = $true; PollAttempt = 1 } }
+        Mock Stop-OrchestraBackgroundProcessesFromManifest {
+            [PSCustomObject]@{ Stopped = @([PSCustomObject]@{ pid = 4201 }); Errors = @() }
+        }
+        Mock Close-WinsmuxRuntimeRegistry { $false }
+        Mock Clear-WinsmuxManifest { throw 'manifest must be preserved after close refusal' }
+
+        {
+            Clear-OrchestraManifestAfterServerRetirement `
+                -ProjectDir 'C:\project' -GitWorktreeDir 'C:\project' `
+                -BridgeScript 'C:\project\scripts\winsmux-core.ps1' -SessionName 'winsmux-orchestra' -WinsmuxBin 'winsmux'
+        } | Should -Throw '*retirement was refused because ownership changed*'
+
+        Should -Invoke Close-WinsmuxRuntimeRegistry -Times 1 -Exactly
+        Should -Invoke Clear-WinsmuxManifest -Times 0 -Exactly
+    }
+
+    It 'TASK781 C71 accepts an absent registry as the legacy retirement path' {
+        Mock Get-WinsmuxManifest { $null }
+        Mock Read-WinsmuxRuntimeRegistry { $null }
+        Mock Remove-OrchestraSessionServerProcesses {
+            [PSCustomObject]@{ SessionProcesses = @(); Killed = @(); RemainingSessionProcesses = @(); Errors = @() }
+        }
+        Mock Wait-OrchestraServerSessionAbsent { [PSCustomObject]@{ Ready = $true; PollAttempt = 1 } }
+        Mock Stop-OrchestraBackgroundProcessesFromManifest {
+            [PSCustomObject]@{ Stopped = @(); Errors = @() }
+        }
+        Mock Close-WinsmuxRuntimeRegistry { throw 'absent registry must not be closed' }
+        Mock Clear-WinsmuxManifest { $false }
+
+        $result = Clear-OrchestraManifestAfterServerRetirement `
+            -ProjectDir 'C:\project' -GitWorktreeDir 'C:\project' `
+            -BridgeScript 'C:\project\scripts\winsmux-core.ps1' -SessionName 'winsmux-orchestra' -WinsmuxBin 'winsmux'
+
+        $result.RegistryPresent | Should -BeFalse
+        $result.RegistryClosed | Should -BeFalse
+        Should -Invoke Close-WinsmuxRuntimeRegistry -Times 0 -Exactly
+        Should -Invoke Clear-WinsmuxManifest -Times 1 -Exactly
+    }
+
+    It 'TASK781 C72 retires a nameless v1 manifest as an explicit upgrade compatibility path' {
+        $script:c72Sequence = [System.Collections.Generic.List[string]]::new()
+        Mock Get-WinsmuxManifest {
+            [PSCustomObject]@{
+                version = 1
+                session = [PSCustomObject]@{
+                    started = '2026-07-01T00:00:00Z'
+                    project_dir = 'C:\project'
+                }
+                panes = [ordered]@{}
+            }
+        }
+        Mock Read-WinsmuxRuntimeRegistry { $null }
+        Mock Remove-OrchestraSessionServerProcesses {
+            $script:c72Sequence.Add('server-processes-retired') | Out-Null
+            [PSCustomObject]@{ SessionProcesses = @(); Killed = @(); RemainingSessionProcesses = @(); Errors = @() }
+        }
+        Mock Wait-OrchestraServerSessionAbsent {
+            $script:c72Sequence.Add('server-absent') | Out-Null
+            [PSCustomObject]@{ Ready = $true; PollAttempt = 1 }
+        }
+        Mock Stop-OrchestraBackgroundProcessesFromManifest {
+            $script:c72Sequence.Add('backgrounds-retired') | Out-Null
+            [PSCustomObject]@{ Stopped = @(); Errors = @() }
+        }
+        Mock Close-WinsmuxRuntimeRegistry { throw 'v1 upgrade path has no registry to close' }
+        Mock Clear-WinsmuxManifest {
+            $script:c72Sequence.Add('manifest-cleared') | Out-Null
+            $true
+        }
+
+        $result = Clear-OrchestraManifestAfterServerRetirement `
+            -ProjectDir 'C:\project' -GitWorktreeDir 'C:\project' `
+            -BridgeScript 'C:\project\scripts\winsmux-core.ps1' -SessionName 'winsmux-orchestra' -WinsmuxBin 'winsmux'
+
+        @($script:c72Sequence) | Should -Be @('server-processes-retired', 'server-absent', 'backgrounds-retired', 'manifest-cleared')
+        $result.RegistryPresent | Should -BeFalse
+        $result.Cleared | Should -BeTrue
+        Should -Invoke Close-WinsmuxRuntimeRegistry -Times 0 -Exactly
+    }
+
+    It 'TASK781 C72 keeps the nameless legacy exception version-scoped and target-scoped' {
+        Mock Get-WinsmuxManifest { $script:c72RejectedManifest }
+        Mock Read-WinsmuxRuntimeRegistry { $null }
+        Mock Remove-OrchestraSessionServerProcesses { throw 'rejected manifest must not retire processes' }
+        Mock Wait-OrchestraServerSessionAbsent { throw 'rejected manifest must not wait for retirement' }
+        Mock Stop-OrchestraBackgroundProcessesFromManifest { throw 'rejected manifest must not retire backgrounds' }
+        Mock Clear-WinsmuxManifest { throw 'rejected manifest must be preserved' }
+
+        $cases = @(
+            [PSCustomObject]@{ version = 1; session = [PSCustomObject]@{ name = 'foreign-session' } }
+            [PSCustomObject]@{ version = 2; session = [PSCustomObject]@{} }
+            [PSCustomObject]@{ version = 99; session = [PSCustomObject]@{} }
+            [PSCustomObject]@{ session = [PSCustomObject]@{} }
+        )
+        foreach ($case in $cases) {
+            $script:c72RejectedManifest = $case
+            {
+                Clear-OrchestraManifestAfterServerRetirement `
+                    -ProjectDir 'C:\project' -GitWorktreeDir 'C:\project' `
+                    -BridgeScript 'C:\project\scripts\winsmux-core.ps1' -SessionName 'winsmux-orchestra' -WinsmuxBin 'winsmux'
+            } | Should -Throw '*manifest session identity does not match*'
+        }
+
+        Should -Invoke Remove-OrchestraSessionServerProcesses -Times 0 -Exactly
+        Should -Invoke Stop-OrchestraBackgroundProcessesFromManifest -Times 0 -Exactly
+        Should -Invoke Clear-WinsmuxManifest -Times 0 -Exactly
+    }
+
+    It 'TASK781 C72 refuses a nameless v1 manifest when an active registry cannot be ownership-matched' {
+        Mock Get-WinsmuxManifest {
+            [PSCustomObject]@{ version = 1; session = [PSCustomObject]@{ started = '2026-07-01T00:00:00Z' } }
+        }
+        Mock Read-WinsmuxRuntimeRegistry {
+            [PSCustomObject]@{
+                status = 'active'; session_name = 'winsmux-orchestra'
+                generation_id = 'unverifiable-generation'; server_session_id = '$72'
+                supervisor = [PSCustomObject]@{ pid = 4272; process_started_at = '2026-07-16T06:00:00.0000000Z' }
+                lease = [PSCustomObject]@{ state = 'active'; expires_at = '2026-07-16T06:00:15.0000000Z' }
+            }
+        }
+        Mock Remove-OrchestraSessionServerProcesses { throw 'unmatched active registry must block process retirement' }
+        Mock Stop-OrchestraBackgroundProcessesFromManifest { throw 'unmatched active registry must block background retirement' }
+        Mock Clear-WinsmuxManifest { throw 'unmatched active registry must preserve the manifest' }
+
+        {
+            Clear-OrchestraManifestAfterServerRetirement `
+                -ProjectDir 'C:\project' -GitWorktreeDir 'C:\project' `
+                -BridgeScript 'C:\project\scripts\winsmux-core.ps1' -SessionName 'winsmux-orchestra' -WinsmuxBin 'winsmux'
+        } | Should -Throw '*runtime registry identity does not match*'
+
+        Should -Invoke Remove-OrchestraSessionServerProcesses -Times 0 -Exactly
+        Should -Invoke Stop-OrchestraBackgroundProcessesFromManifest -Times 0 -Exactly
+        Should -Invoke Clear-WinsmuxManifest -Times 0 -Exactly
+    }
+
+    It 'TASK781 C72 completes the production background-cleanup boundary for a tokenless v1 upgrade' {
+        Mock Get-WinsmuxManifest {
+            [PSCustomObject]@{
+                version = 1
+                session = [PSCustomObject]@{ started = '2026-07-01T00:00:00Z'; project_dir = 'C:\project' }
+                panes = [ordered]@{}
+            }
+        }
+        Mock Read-WinsmuxRuntimeRegistry { $null }
+        Mock Remove-OrchestraSessionServerProcesses {
+            [PSCustomObject]@{ SessionProcesses = @(); Killed = @(); RemainingSessionProcesses = @(); Errors = @() }
+        }
+        Mock Wait-OrchestraServerSessionAbsent { [PSCustomObject]@{ Ready = $true; PollAttempt = 1 } }
+        Mock Get-ProcessSnapshot { throw 'tokenless v1 cleanup must not inspect arbitrary processes' }
+        Mock Stop-Process { throw 'tokenless v1 cleanup must not stop arbitrary processes' }
+        Mock Clear-WinsmuxManifest { $true }
+
+        $result = Clear-OrchestraManifestAfterServerRetirement `
+            -ProjectDir 'C:\project' -GitWorktreeDir 'C:\project' `
+            -BridgeScript 'C:\project\scripts\winsmux-core.ps1' -SessionName 'winsmux-orchestra' -WinsmuxBin 'winsmux'
+
+        $result.Cleared | Should -BeTrue
+        @($result.Stopped).Count | Should -Be 0
+        @($result.Errors).Count | Should -Be 0
+        Should -Invoke Get-ProcessSnapshot -Times 0 -Exactly
+        Should -Invoke Stop-Process -Times 0 -Exactly
+        Should -Invoke Clear-WinsmuxManifest -Times 1 -Exactly
     }
 
     It 'does not clear the old manifest while the retired server remains observable' {
@@ -9899,16 +10306,17 @@ Describe 'orchestra-start session reuse contract' {
             $env:APPDATA = $tempAppData
             $labelsPath = Join-Path $tempAppData 'winsmux\labels.json'
             New-Item -ItemType Directory -Path (Split-Path -Parent $labelsPath) -Force | Out-Null
-            [System.IO.File]::WriteAllText($labelsPath, '{"existing":"%9"}', [System.Text.UTF8Encoding]::new($false))
+            [System.IO.File]::WriteAllText($labelsPath, '{"existing":"%9","worker-1":"%99"}', [System.Text.UTF8Encoding]::new($false))
 
             $result = Publish-OrchestraPaneLabels -PaneSummaries @(
-                [ordered]@{ PaneId = '%2'; Title = 'W1 Codex Reviewer' }
-                [ordered]@{ PaneId = '%3'; Title = 'worker-2' }
+                [ordered]@{ Label = 'worker-1'; SlotId = 'worker-1'; PaneId = '%2'; Title = 'W1 Codex Reviewer' }
+                [ordered]@{ Label = 'worker-2'; SlotId = 'worker-2'; PaneId = '%3'; Title = 'worker-2' }
             )
             $published = Get-Content -LiteralPath $labelsPath -Raw -Encoding UTF8 | ConvertFrom-Json
 
             $result.PublishedCount | Should -Be 2
             $published.existing | Should -Be '%9'
+            $published.'worker-1' | Should -Be '%2'
             $published.'W1 Codex Reviewer' | Should -Be '%2'
             $published.'worker-2' | Should -Be '%3'
         } finally {
@@ -9924,14 +10332,51 @@ Describe 'orchestra-start session reuse contract' {
             $env:APPDATA = $tempAppData
             {
                 Publish-OrchestraPaneLabels -PaneSummaries @(
-                    [ordered]@{ PaneId = '%2'; Title = 'worker' }
-                    [ordered]@{ PaneId = '%3'; Title = 'worker' }
+                    [ordered]@{ Label = 'worker-1'; SlotId = 'worker-1'; PaneId = '%2'; Title = 'worker' }
+                    [ordered]@{ Label = 'worker-2'; SlotId = 'worker-2'; PaneId = '%3'; Title = 'worker' }
                 )
             } | Should -Throw '*unique non-empty titles*'
             Test-Path -LiteralPath (Join-Path $tempAppData 'winsmux\labels.json') | Should -BeFalse
         } finally {
             $env:APPDATA = $previousAppData
             if (Test-Path -LiteralPath $tempAppData) { Remove-Item -LiteralPath $tempAppData -Recurse -Force }
+        }
+    }
+
+    It 'TASK781 C74 rejects a slot alias collision before creating a label file' {
+        $tempAppData = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-slot-label-reject-' + [guid]::NewGuid().ToString('N'))
+        $previousAppData = $env:APPDATA
+        try {
+            $env:APPDATA = $tempAppData
+            {
+                Publish-OrchestraPaneLabels -PaneSummaries @(
+                    [ordered]@{ Label = 'worker'; SlotId = 'worker-1'; PaneId = '%2'; Title = 'W1' }
+                    [ordered]@{ Label = 'WORKER'; SlotId = 'worker-2'; PaneId = '%3'; Title = 'W2' }
+                )
+            } | Should -Throw '*unique non-empty titles and slot labels*'
+            Test-Path -LiteralPath (Join-Path $tempAppData 'winsmux\labels.json') | Should -BeFalse
+        } finally {
+            $env:APPDATA = $previousAppData
+            if (Test-Path -LiteralPath $tempAppData) { Remove-Item -LiteralPath $tempAppData -Recurse -Force }
+        }
+    }
+
+    It 'TASK781 C74 rejects a missing Label or SlotId before publishing any alias' {
+        $previousAppData = $env:APPDATA
+        try {
+            foreach ($case in @(
+                    [ordered]@{ Label = ''; SlotId = 'worker-1'; PaneId = '%2'; Title = 'W1' },
+                    [ordered]@{ Label = 'worker-1'; SlotId = ''; PaneId = '%2'; Title = 'W1' }
+                )) {
+                $tempAppData = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-slot-label-missing-' + [guid]::NewGuid().ToString('N'))
+                $env:APPDATA = $tempAppData
+                { Publish-OrchestraPaneLabels -PaneSummaries @($case) } |
+                    Should -Throw '*non-empty slot labels*'
+                Test-Path -LiteralPath (Join-Path $tempAppData 'winsmux\labels.json') | Should -BeFalse
+                if (Test-Path -LiteralPath $tempAppData) { Remove-Item -LiteralPath $tempAppData -Recurse -Force }
+            }
+        } finally {
+            $env:APPDATA = $previousAppData
         }
     }
 
@@ -10004,7 +10449,7 @@ Describe 'orchestra-start session reuse contract' {
         $startupSequence | Should -Not -Match 'Remove-OrchestraSessionServerProcesses'
         $startupSequence | Should -Not -Match '\$requiresManifestRetirement'
         ([regex]::Matches($startupSequence, 'Clear-OrchestraManifestAfterServerRetirement')).Count | Should -Be 1
-        $script:orchestraStartContent | Should -Match '(?s)function Clear-OrchestraManifestAfterServerRetirement.*?Remove-OrchestraSessionServerProcesses.*?Wait-OrchestraServerSessionAbsent.*?Stop-OrchestraBackgroundProcessesFromManifest.*?Clear-WinsmuxManifest'
+        $script:orchestraStartContent | Should -Match '(?s)function Clear-OrchestraManifestAfterServerRetirement.*?Get-OrchestraRuntimeRegistryRetirementPlan.*?Remove-OrchestraSessionServerProcesses.*?Wait-OrchestraServerSessionAbsent.*?Stop-OrchestraBackgroundProcessesFromManifest.*?Complete-OrchestraRuntimeRegistryRetirement.*?Clear-WinsmuxManifest'
     }
 
     It 'suppresses warm servers and trims excess warm processes during managed startup' {
@@ -10325,6 +10770,8 @@ Describe 'orchestra-start rollback helpers' {
     }
 
     It 'TASK781 C66 clears only the manifest generation published by this startup attempt' {
+        $script:rollbackSequence = [System.Collections.Generic.List[string]]::new()
+        $script:rollbackRegistryClosed = $false
         Mock Invoke-Winsmux { @('%1') } -ParameterFilter {
             $Arguments[0] -eq 'list-panes'
         }
@@ -10333,7 +10780,24 @@ Describe 'orchestra-start rollback helpers' {
         }
         Mock Wait-PaneShellReady { }
         Mock Remove-OrchestraCreatedWorktrees { @() }
-        Mock Clear-WinsmuxManifest { $true }
+        Mock Read-WinsmuxRuntimeRegistry {
+            [PSCustomObject]@{
+                status = if ($script:rollbackRegistryClosed) { 'ended' } else { 'active' }
+                session_name = 'winsmux-orchestra'; generation_id = 'owned-generation'; server_session_id = '$41'
+                supervisor = [PSCustomObject]@{ pid = 4201; process_started_at = '2026-07-16T04:00:00.0000000Z' }
+                lease = [PSCustomObject]@{ state = if ($script:rollbackRegistryClosed) { 'ended' } else { 'active' }; expires_at = '2026-07-16T04:00:15.0000000Z' }
+            }
+        }
+        Mock New-WinsmuxProcessSnapshotResolver { { param([int]$Id) $null } }
+        Mock Close-WinsmuxRuntimeRegistry {
+            $script:rollbackRegistryClosed = $true
+            $script:rollbackSequence.Add('registry-ended') | Out-Null
+            return $true
+        }
+        Mock Clear-WinsmuxManifest {
+            $script:rollbackSequence.Add('manifest-cleared') | Out-Null
+            return $true
+        }
 
         $rollback = Invoke-OrchestraStartupRollback `
             -ProjectDir $script:orchestraStartTempRoot `
@@ -10343,9 +10807,19 @@ Describe 'orchestra-start rollback helpers' {
             -CreatedWorktrees @() `
             -FailureMessage 'post-publication failure' `
             -ManifestPublished `
-            -OwnedGenerationId 'owned-generation'
+            -OwnedGenerationId 'owned-generation' `
+            -OwnedServerSessionId '$41' `
+            -OwnedSupervisorPid 4201 `
+            -OwnedSupervisorProcessStartedAt '2026-07-16T04:00:00.0000000Z'
 
         $rollback.RollbackErrors.Count | Should -Be 0
+        $rollback.RegistryClosed | Should -BeTrue
+        @($script:rollbackSequence) | Should -Be @('registry-ended', 'manifest-cleared')
+        Should -Invoke Close-WinsmuxRuntimeRegistry -Times 1 -Exactly -ParameterFilter {
+            $GenerationId -ceq 'owned-generation' -and $SupervisorPid -eq 4201 -and
+            $SupervisorProcessStartedAt -ceq '2026-07-16T04:00:00.0000000Z' -and
+            $ExpectedSessionName -ceq 'winsmux-orchestra' -and $ExpectedServerSessionId -ceq '$41'
+        }
         Should -Invoke Clear-WinsmuxManifest -Times 1 -Exactly -ParameterFilter {
             $ProjectDir -eq $script:orchestraStartTempRoot -and
             $ExpectedGenerationId -ceq 'owned-generation'
@@ -10407,7 +10881,7 @@ Describe 'orchestra-start rollback helpers' {
         $source = [System.IO.File]::ReadAllText($script:orchestraStartPath, [System.Text.Encoding]::UTF8)
         $source | Should -Match '\$manifestPublished\s*=\s*\$false'
         $source | Should -Match '\$manifestPublished\s*=\s*\$true'
-        $source | Should -Match 'Invoke-OrchestraStartupRollback[^\r\n]+-ManifestPublished:\$manifestPublished[^\r\n]+-OwnedGenerationId \$runtimeGenerationId'
+        $source | Should -Match 'Invoke-OrchestraStartupRollback[^\r\n]+-ManifestPublished:\$manifestPublished[^\r\n]+-OwnedGenerationId \$runtimeGenerationId[^\r\n]+-OwnedServerSessionId \$serverSessionId[^\r\n]+-OwnedSupervisorPid \$rollbackSupervisorPid[^\r\n]+-OwnedSupervisorProcessStartedAt \$supervisorProcessStartedAt'
     }
 
     It 'continues rollback when listing session panes fails and still removes created non-bootstrap panes' {
@@ -28522,6 +28996,25 @@ Describe 'deferred worker startup' {
         Should -Invoke Wait-PaneShellReady -Times 0 -Exactly
         $script:deferredSendCommands.Count | Should -Be 0
         $script:deferredStatusWrites | Should -Be @('ready')
+    }
+
+    It 'TASK781 C73 records readiness timeout as retryable after one deferred bootstrap launch' {
+        $entry = [PSCustomObject]@{
+            Label = 'worker-2'; PaneId = '%3'; Status = 'deferred_start'; BootstrapPlanPath = $script:deferredPlanPath
+            CapabilityAdapter = 'codex'; ProviderTarget = ''; ApprovedLaunch = $null
+        }
+        Mock Wait-DeferredPaneReady { throw 'synthetic deferred readiness timeout' }
+
+        {
+            Start-DeferredPaneFromManifestEntry -ProjectDir $script:deferredTempRoot -ManifestEntry $entry `
+                -ExpectedGenerationId 'generation-deferred'
+        } | Should -Throw '*synthetic deferred readiness timeout*'
+
+        $script:deferredSendCommands.Count | Should -Be 1
+        $script:deferredStatusWrites | Should -Be @('deferred_starting', 'deferred_start_failed')
+        $failure = $script:deferredPropertyWrites[$script:deferredPropertyWrites.Count - 1].Properties
+        $failure['last_failure_stage'] | Should -Be 'readiness_probe'
+        $failure['last_failure_reason'] | Should -Match 'synthetic deferred readiness timeout'
     }
 
     It 'TASK781 C29 leaves non-retryable unconfigured deferred states unchanged' -ForEach @(
