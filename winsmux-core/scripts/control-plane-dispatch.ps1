@@ -490,7 +490,8 @@ function Invoke-WinsmuxHarnessCheckCommand {
 
     Invoke-WinsmuxControlPlaneScript `
         -ScriptPath (Get-WinsmuxControlPlaneScriptPath -BridgeScriptRoot $BridgeScriptRoot -ScriptName 'harness-check.ps1') `
-        -Arguments $checkArgs
+        -Arguments $checkArgs `
+        -PropagateExitCode
 }
 
 function Invoke-WinsmuxShadowCutoverGateCommand {

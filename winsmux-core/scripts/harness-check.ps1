@@ -282,19 +282,6 @@ function Get-HarnessSmokeContractEvaluation {
     }
 
     $parsed = $SmokeProbe.parsed
-    $exitCode = if (Test-HarnessHasProperty -Object $SmokeProbe -Name 'exit_code') { [int]$SmokeProbe.exit_code } else { 1 }
-    if ($exitCode -ne 0) {
-        return [ordered]@{ passed = $false; message = "orchestra-smoke exited with code $exitCode." }
-    }
-    if (-not (Test-HarnessHasProperty -Object $parsed -Name 'smoke_ok') -or -not [bool]$parsed.smoke_ok) {
-        return [ordered]@{ passed = $false; message = 'orchestra-smoke reported smoke_ok=false.' }
-    }
-    if (-not (Test-HarnessHasProperty -Object $parsed -Name 'runtime_valid') -or
-        -not (Test-HarnessHasProperty -Object $parsed -Name 'runtime_identity') -or
-        -not [bool]$parsed.runtime_valid) {
-        return [ordered]@{ passed = $false; message = 'orchestra-smoke did not verify the supervisor-owned runtime identity registry.' }
-    }
-
     $contract = if (Test-HarnessHasProperty -Object $parsed -Name 'operator_contract') { $parsed.operator_contract } else { $null }
     $hasContract = $null -ne $contract -and
         (Test-HarnessHasProperty -Object $contract -Name 'operator_state') -and
@@ -302,6 +289,66 @@ function Get-HarnessSmokeContractEvaluation {
         (Test-HarnessHasProperty -Object $contract -Name 'requires_startup')
     if (-not $hasContract) {
         return [ordered]@{ passed = $false; message = 'orchestra-smoke result is missing operator_contract fields.' }
+    }
+
+    if (-not (Test-HarnessHasProperty -Object $parsed -Name 'smoke_ok')) {
+        return [ordered]@{ passed = $false; message = 'orchestra-smoke result is missing smoke_ok.' }
+    }
+    if (-not (Test-HarnessHasProperty -Object $parsed -Name 'runtime_valid') -or
+        -not (Test-HarnessHasProperty -Object $parsed -Name 'runtime_identity')) {
+        return [ordered]@{ passed = $false; message = 'orchestra-smoke did not expose the supervisor-owned runtime identity registry.' }
+    }
+
+    $exitCode = if (Test-HarnessHasProperty -Object $SmokeProbe -Name 'exit_code') { [int]$SmokeProbe.exit_code } else { 1 }
+    $smokeOk = [bool]$parsed.smoke_ok
+    $runtimeValid = [bool]$parsed.runtime_valid
+    $operatorState = [string]$contract.operator_state
+    $canDispatch = [bool]$contract.can_dispatch
+    $requiresStartup = [bool]$contract.requires_startup
+    $runtimeIdentity = $parsed.runtime_identity
+    $runtimeReasonCode = if ($null -ne $runtimeIdentity -and (Test-HarnessHasProperty -Object $runtimeIdentity -Name 'reason_code')) {
+        [string]$runtimeIdentity.reason_code
+    } else {
+        ''
+    }
+    $knownPreStartReasonCodes = @(
+        'manifest_regeneration_required'
+        'invalid_supervisor_identity'
+        'caller_identity_mismatch'
+        'runtime_target_mismatch'
+    )
+    $hasTypedRuntimeRefusal = $null -ne $runtimeIdentity -and
+        (Test-HarnessHasProperty -Object $runtimeIdentity -Name 'valid') -and
+        -not [bool]$runtimeIdentity.valid -and
+        $knownPreStartReasonCodes -ccontains $runtimeReasonCode
+    $safePreStart = $exitCode -eq 1 -and
+        -not $smokeOk -and
+        -not $runtimeValid -and
+        $hasTypedRuntimeRefusal -and
+        $operatorState -ceq 'blocked' -and
+        -not $canDispatch -and
+        $requiresStartup
+
+    if ($safePreStart) {
+        return [ordered]@{
+            passed  = $true
+            message = 'orchestra-smoke reported a safe pre-start blocked state; runtime regeneration is required before dispatch.'
+        }
+    }
+    if ($exitCode -ne 0) {
+        return [ordered]@{ passed = $false; message = "orchestra-smoke exited with code $exitCode and the result was not a safe pre-start blocked state." }
+    }
+    if (-not $smokeOk) {
+        return [ordered]@{ passed = $false; message = 'orchestra-smoke reported smoke_ok=false.' }
+    }
+    if (-not $runtimeValid) {
+        return [ordered]@{ passed = $false; message = 'orchestra-smoke did not verify the supervisor-owned runtime identity registry.' }
+    }
+    if ($requiresStartup) {
+        return [ordered]@{ passed = $false; message = 'operator_contract.requires_startup must be false after a successful orchestra smoke.' }
+    }
+    if ($operatorState -ceq 'blocked' -and $canDispatch) {
+        return [ordered]@{ passed = $false; message = 'operator_state=blocked must not allow dispatch.' }
     }
 
     $externalOperatorMode = (Test-HarnessHasProperty -Object $parsed -Name 'external_operator_mode') -and [bool]$parsed.external_operator_mode
@@ -455,9 +502,12 @@ $results.Add((New-HarnessCheckRecord -Name 'orchestra-smoke-contract' -Passed $s
     exit_code = $smokeProbe.exit_code
     smoke_ok  = $(if ($null -ne $smokeProbe.parsed) { $smokeProbe.parsed.smoke_ok } else { $null })
     runtime_valid = $(if ($null -ne $smokeProbe.parsed -and (Test-HarnessHasProperty -Object $smokeProbe.parsed -Name 'runtime_valid')) { $smokeProbe.parsed.runtime_valid } else { $null })
+    runtime_reason_code = $(if ($null -ne $smokeProbe.parsed -and (Test-HarnessHasProperty -Object $smokeProbe.parsed -Name 'runtime_identity') -and $null -ne $smokeProbe.parsed.runtime_identity -and (Test-HarnessHasProperty -Object $smokeProbe.parsed.runtime_identity -Name 'reason_code')) { $smokeProbe.parsed.runtime_identity.reason_code } else { $null })
     ui_attached = $(if ($null -ne $smokeProbe.parsed) { $smokeProbe.parsed.ui_attached } else { $null })
     external_operator_mode = $(if ($null -ne $smokeProbe.parsed) { $smokeProbe.parsed.external_operator_mode } else { $null })
+    operator_state = $(if ($null -ne $smokeProbe.parsed -and $null -ne $smokeProbe.parsed.operator_contract) { $smokeProbe.parsed.operator_contract.operator_state } else { $null })
     can_dispatch = $(if ($null -ne $smokeProbe.parsed -and $null -ne $smokeProbe.parsed.operator_contract) { $smokeProbe.parsed.operator_contract.can_dispatch } else { $null })
+    requires_startup = $(if ($null -ne $smokeProbe.parsed -and $null -ne $smokeProbe.parsed.operator_contract) { $smokeProbe.parsed.operator_contract.requires_startup } else { $null })
 })) ) | Out-Null
 $results.Add((New-HarnessCheckRecord -Name 'attached-client-registry-contract' -Passed $attachRegistryPassed -Message $attachRegistryMessage -Data ([ordered]@{
     client_probe_ok = $(if ($null -ne $smokeProbe.parsed) { $smokeProbe.parsed.client_probe_ok } else { $null })

@@ -1392,6 +1392,30 @@ exit /b 0
         $exitCode | Should -Be 0
         $json.passed | Should -Be $true
     }
+
+    It 'propagates a failed harness-check exit code through winsmux-core' {
+        $settingsPath = Join-Path $script:RepoRoot '.claude\settings.json'
+        $original = Backup-TestFile -Path $settingsPath
+        try {
+            $settings = $original | ConvertFrom-Json -Depth 32
+            $group = @($settings.hooks.PreToolUse) | Where-Object {
+                @($_.hooks | Where-Object { $_.command -eq 'node .claude/hooks/sh-orchestra-gate.js' }).Count -gt 0
+            } | Select-Object -First 1
+            $group.matcher = 'Bash'
+            Write-TestFileWithCmd -Path $settingsPath -Content ($settings | ConvertTo-Json -Depth 32)
+
+            $stdout = & $script:PwshPath -NoProfile -File $script:WinsmuxCorePath harness-check --json --project-dir $script:RepoRoot 2>&1
+            $exitCode = $LASTEXITCODE
+            $json = (($stdout | Out-String).Trim() | ConvertFrom-Json -Depth 16)
+            $record = $json.results | Where-Object { $_.name -eq 'settings-shared-registers-orchestra-gate' } | Select-Object -First 1
+
+            $exitCode | Should -Be 1
+            $json.passed | Should -BeFalse
+            $record.passed | Should -BeFalse
+        } finally {
+            Restore-TestFile -Path $settingsPath -Content $original
+        }
+    }
 }
 
 Describe 'desktop PTY event payload contract' {

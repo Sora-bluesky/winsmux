@@ -25626,6 +25626,80 @@ Describe 'winsmux orchestra-smoke command' {
         $result.passed | Should -BeTrue
     }
 
+    It 'TASK781 accepts only known typed safe pre-start blocked harness reasons' {
+        foreach ($reasonCode in @(
+            'manifest_regeneration_required'
+            'invalid_supervisor_identity'
+            'caller_identity_mismatch'
+            'runtime_target_mismatch'
+        )) {
+            $probe = [pscustomobject]@{
+                exit_code = 1
+                error     = ''
+                parsed    = [pscustomobject]@{
+                    smoke_ok               = $false
+                    runtime_valid          = $false
+                    runtime_identity       = [pscustomobject]@{
+                        valid       = $false
+                        reason_code = $reasonCode
+                        diagnostic  = 'regenerate the orchestra session'
+                    }
+                    external_operator_mode = $true
+                    session_ready          = $false
+                    ui_attached            = $false
+                    operator_contract      = [pscustomobject]@{
+                        operator_state   = 'blocked'
+                        can_dispatch     = $false
+                        requires_startup = $true
+                    }
+                }
+            }
+
+            $result = Invoke-TestHarnessSmokeContractEvaluation -SmokeProbe $probe
+
+            $result.passed | Should -BeTrue -Because $reasonCode
+            $result.message | Should -Match 'safe pre-start blocked state' -Because $reasonCode
+        }
+    }
+
+    It 'TASK781 rejects inconsistent pre-start blocked harness states' {
+        $cases = @(
+            [pscustomobject]@{ Name = 'dispatch enabled'; State = 'blocked'; CanDispatch = $true; RequiresStartup = $true; Reason = 'manifest_regeneration_required' }
+            [pscustomobject]@{ Name = 'ready claim'; State = 'ready'; CanDispatch = $false; RequiresStartup = $true; Reason = 'manifest_regeneration_required' }
+            [pscustomobject]@{ Name = 'startup not required'; State = 'blocked'; CanDispatch = $false; RequiresStartup = $false; Reason = 'manifest_regeneration_required' }
+            [pscustomobject]@{ Name = 'missing typed reason'; State = 'blocked'; CanDispatch = $false; RequiresStartup = $true; Reason = '' }
+            [pscustomobject]@{ Name = 'unknown typed reason'; State = 'blocked'; CanDispatch = $false; RequiresStartup = $true; Reason = 'unexpected_runtime_reason' }
+        )
+
+        foreach ($case in $cases) {
+            $probe = [pscustomobject]@{
+                exit_code = 1
+                error     = ''
+                parsed    = [pscustomobject]@{
+                    smoke_ok         = $false
+                    runtime_valid    = $false
+                    runtime_identity = [pscustomobject]@{
+                        valid       = $false
+                        reason_code = $case.Reason
+                    }
+                    external_operator_mode = $true
+                    session_ready   = $false
+                    ui_attached     = $false
+                    operator_contract = [pscustomobject]@{
+                        operator_state   = $case.State
+                        can_dispatch     = $case.CanDispatch
+                        requires_startup = $case.RequiresStartup
+                    }
+                }
+            }
+
+            $result = Invoke-TestHarnessSmokeContractEvaluation -SmokeProbe $probe
+
+            $result.passed | Should -BeFalse -Because $case.Name
+            $result.message | Should -Match 'not a safe pre-start blocked state' -Because $case.Name
+        }
+    }
+
     It 'TASK781 makes harness and doctor fail when smoke or runtime identity is invalid' {
         $harnessContent = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\harness-check.ps1') -Raw -Encoding UTF8
         $doctorContent = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\doctor.ps1') -Raw -Encoding UTF8
@@ -25634,6 +25708,7 @@ Describe 'winsmux orchestra-smoke command' {
         $harnessContent | Should -Match '\$exitCode -ne 0'
         $harnessContent | Should -Match 'smoke_ok=false'
         $harnessContent | Should -Match 'runtime_valid'
+        $harnessContent | Should -Match 'safe pre-start blocked state'
         $doctorContent | Should -Match '\$resultOk = \$exitCode -eq 0 -and \$smokeOk -and \$runtimeValid'
         $doctorContent | Should -Match '\$status = if \(\$null -ne \$smoke\.Data\) \{ ''fail'' \} else \{ ''warn'' \}'
     }
