@@ -1494,6 +1494,75 @@ function Save-ReviewState {
     Write-ClmSafeTextFile -Path $path -Content ($State | ConvertTo-Json -Depth 5)
 }
 
+function Invoke-WithReviewStateLock {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][scriptblock]$Action,
+        [ValidateRange(1, 30)][int]$TimeoutSeconds = 5
+    )
+
+    $statePath = Get-ReviewStatePath -ProjectDir $ProjectDir
+    $stateDir = Split-Path $statePath -Parent
+    if (-not (Test-Path -LiteralPath $stateDir)) {
+        New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
+    }
+    $lockPath = $statePath + '.lock'
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $stream = $null
+    do {
+        try {
+            $stream = [IO.File]::Open($lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        } catch [IO.IOException] {
+            if ((Get-Date) -ge $deadline) {
+                Stop-WithError "timed out waiting for review-state lock: $lockPath"
+            }
+            Start-Sleep -Milliseconds 50
+        }
+    } while ($null -eq $stream)
+
+    try {
+        return & $Action
+    } finally {
+        if ($null -ne $stream) {
+            $stream.Dispose()
+        }
+    }
+}
+
+function Get-ReviewStateEntryFingerprint {
+    param([AllowNull()]$Entry)
+
+    if ($null -eq $Entry) {
+        return '<absent>'
+    }
+    return ($Entry | ConvertTo-Json -Compress -Depth 12)
+}
+
+function Save-VerifiedReviewStateTransition {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$Branch,
+        [Parameter(Mandatory = $true)][string]$HeadSha,
+        [Parameter(Mandatory = $true)]$Context,
+        [Parameter(Mandatory = $true)][string]$ExpectedEntryFingerprint,
+        [Parameter(Mandatory = $true)][System.Collections.Specialized.OrderedDictionary]$NewRecord
+    )
+
+    return Invoke-WithReviewStateLock -ProjectDir $ProjectDir -Action {
+        $lockedState = Get-ReviewState -ProjectDir $ProjectDir
+        $lockedEntry = if ($lockedState.Contains($Branch)) { $lockedState[$Branch] } else { $null }
+        $lockedFingerprint = Get-ReviewStateEntryFingerprint -Entry $lockedEntry
+        if (-not [string]::Equals($lockedFingerprint, $ExpectedEntryFingerprint, [System.StringComparison]::Ordinal)) {
+            Stop-WithError "review state changed concurrently for $Branch; retry from the current state"
+        }
+
+        $freshContext = Confirm-ReviewWriteContext -Context $Context -ProjectDir $ProjectDir -Branch $Branch -HeadSha $HeadSha
+        $lockedState[$Branch] = $NewRecord
+        Save-ReviewState -ProjectDir $ProjectDir -State $lockedState
+        return $freshContext
+    }
+}
+
 function Assert-WinsmuxRolePermission {
     param(
         [Parameter(Mandatory = $true)][string]$CommandName,
@@ -1518,25 +1587,69 @@ function Get-CurrentReviewPaneManifestContext {
     }
 
     try {
-        $context = Get-PaneControlManifestContext -ProjectDir $ProjectDir -PaneId $env:WINSMUX_PANE_ID
+        return Get-PaneControlVerifiedReviewIdentity -ProjectDir $ProjectDir -PaneId $env:WINSMUX_PANE_ID
+    } catch {
+        Stop-WithError $_.Exception.Message
+    }
+}
+
+function Confirm-ReviewWriteContext {
+    param(
+        [Parameter(Mandatory = $true)]$Context,
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$Branch,
+        [Parameter(Mandatory = $true)][string]$HeadSha
+    )
+
+    try {
+        $fresh = Get-PaneControlVerifiedReviewIdentity -ProjectDir $ProjectDir -PaneId ([string]$Context.PaneId) `
+            -ExpectedGenerationId ([string]$Context.GenerationId)
     } catch {
         Stop-WithError $_.Exception.Message
     }
 
-    if ([string]$context.Role -notin @('Reviewer', 'Worker')) {
-        Stop-WithError "pane $($env:WINSMUX_PANE_ID) is not registered as a review-capable pane in .winsmux/manifest.yaml"
+    foreach ($propertyName in @('GenerationId', 'ServerSessionId', 'SlotId', 'PaneId', 'Role', 'AgentName', 'Backend')) {
+        if (-not [string]::Equals([string]$fresh.$propertyName, [string]$Context.$propertyName, [System.StringComparison]::Ordinal)) {
+            Stop-WithError "review identity changed before the review-state write: $propertyName"
+        }
     }
 
-    return [ordered]@{
-        ManifestPath        = [string]$context.ManifestPath
-        GenerationId        = [string]$context.GenerationId
-        ProjectDir          = [string]$context.ProjectDir
-        Label               = [string]$context.Label
-        PaneId              = [string]$context.PaneId
-        Role                = [string]$context.Role
-        LaunchDir           = [string]$context.LaunchDir
-        BuilderWorktreePath = [string]$context.BuilderWorktreePath
-        GitWorktreeDir      = [string]$context.GitWorktreeDir
+    $freshBranch = Get-CurrentGitBranch -ProjectDir $ProjectDir
+    $freshHeadSha = Get-CurrentGitHead -ProjectDir $ProjectDir
+    if (-not [string]::Equals($freshBranch, $Branch, [System.StringComparison]::Ordinal)) {
+        Stop-WithError "review branch changed before the review-state write: expected $Branch, got $freshBranch"
+    }
+    if (-not [string]::Equals($freshHeadSha, $HeadSha, [System.StringComparison]::Ordinal)) {
+        Stop-WithError "review HEAD changed before the review-state write: expected $HeadSha, got $freshHeadSha"
+    }
+
+    return $fresh
+}
+
+function Assert-ReviewRequestIdentityBinding {
+    param(
+        [Parameter(Mandatory = $true)]$Request,
+        [Parameter(Mandatory = $true)]$Context,
+        [Parameter(Mandatory = $true)][string]$Branch
+    )
+
+    $bindings = [ordered]@{
+        generation_id    = [string]$Context.GenerationId
+        server_session_id = [string]$Context.ServerSessionId
+        slot_id          = [string]$Context.SlotId
+        pane_id          = [string]$Context.PaneId
+        role             = [string]$Context.Role
+        backend          = [string]$Context.Backend
+        agent_name       = [string]$Context.AgentName
+    }
+    foreach ($name in $bindings.Keys) {
+        $requestedValue = [string](Get-ReviewRequestTargetValue -Request $Request -Name $name)
+        if ([string]::IsNullOrWhiteSpace($requestedValue)) {
+            Stop-WithError "pending review request for $Branch is missing runtime identity '$name'. Re-run: winsmux review-request"
+        }
+        if (-not [string]::Equals($requestedValue, [string]$bindings[$name], [System.StringComparison]::Ordinal)) {
+            Stop-WithError "pending review request identity mismatch for ${name}: expected $requestedValue, got $($bindings[$name])"
+        }
     }
 }
 
@@ -17271,9 +17384,14 @@ function Invoke-ReviewRequest {
         id                      = New-ReviewRequestId
         branch                  = $branch
         head_sha                = $headSha
+        target_review_generation_id = $context.GenerationId
+        target_review_server_session_id = $context.ServerSessionId
+        target_review_slot_id   = $context.SlotId
         target_review_pane_id   = $context.PaneId
         target_review_label     = $context.Label
         target_review_role      = $context.Role
+        target_review_backend   = $context.Backend
+        target_review_agent_name = $context.AgentName
         target_reviewer_pane_id = $context.PaneId
         target_reviewer_label   = $context.Label
         target_reviewer_role    = $context.Role
@@ -17282,14 +17400,21 @@ function Invoke-ReviewRequest {
     }
 
     $reviewer = [ordered]@{
-        pane_id    = $context.PaneId
-        label      = $context.Label
-        role       = $context.Role
-        agent_name = [string]$env:WINSMUX_AGENT_NAME
+        generation_id    = $context.GenerationId
+        server_session_id = $context.ServerSessionId
+        slot_id          = $context.SlotId
+        pane_id          = $context.PaneId
+        label            = $context.Label
+        role             = $context.Role
+        backend          = $context.Backend
+        agent_name       = $context.AgentName
     }
 
-    $state[$branch] = New-ReviewerStateRecord -Status 'PENDING' -Request $request -Reviewer $reviewer -Evidence $null -UpdatedAt $timestamp
-    Save-ReviewState -ProjectDir $projectDir -State $state
+    $previousEntry = if ($state.Contains($branch)) { $state[$branch] } else { $null }
+    $expectedFingerprint = Get-ReviewStateEntryFingerprint -Entry $previousEntry
+    $newRecord = New-ReviewerStateRecord -Status 'PENDING' -Request $request -Reviewer $reviewer -Evidence $null -UpdatedAt $timestamp
+    $context = Save-VerifiedReviewStateTransition -ProjectDir $projectDir -Branch $branch -HeadSha $headSha -Context $context `
+        -ExpectedEntryFingerprint $expectedFingerprint -NewRecord $newRecord
     Update-ReviewPaneManifestState -Context $context -Properties ([ordered]@{
         review_state = 'pending'
         task_owner   = $context.Role
@@ -17344,22 +17469,31 @@ function Invoke-ReviewApprove {
     if ($requestHeadSha -ne $headSha) {
         Stop-WithError "pending review request head mismatch: expected $requestHeadSha, got $headSha"
     }
+    Assert-ReviewRequestIdentityBinding -Request $request -Context $context -Branch $branch
 
     $timestamp = (Get-Date).ToString('o')
     $reviewer = [ordered]@{
-        pane_id    = $context.PaneId
-        label      = $context.Label
-        role       = $context.Role
-        agent_name = [string]$env:WINSMUX_AGENT_NAME
+        generation_id    = $context.GenerationId
+        server_session_id = $context.ServerSessionId
+        slot_id          = $context.SlotId
+        pane_id          = $context.PaneId
+        label            = $context.Label
+        role             = $context.Role
+        backend          = $context.Backend
+        agent_name       = $context.AgentName
     }
     $evidence = [ordered]@{
         approved_at             = $timestamp
         approved_via            = 'winsmux review-approve'
+        runtime_generation_id   = $context.GenerationId
+        runtime_server_session_id = $context.ServerSessionId
         review_contract_snapshot = Get-ReviewStatePropertyValue -InputObject $request -Name 'review_contract'
     }
 
-    $state[$branch] = New-ReviewerStateRecord -Status 'PASS' -Request $request -Reviewer $reviewer -Evidence $evidence -UpdatedAt $timestamp
-    Save-ReviewState -ProjectDir $projectDir -State $state
+    $expectedFingerprint = Get-ReviewStateEntryFingerprint -Entry $entry
+    $newRecord = New-ReviewerStateRecord -Status 'PASS' -Request $request -Reviewer $reviewer -Evidence $evidence -UpdatedAt $timestamp
+    $context = Save-VerifiedReviewStateTransition -ProjectDir $projectDir -Branch $branch -HeadSha $headSha -Context $context `
+        -ExpectedEntryFingerprint $expectedFingerprint -NewRecord $newRecord
     Update-ReviewPaneManifestState -Context $context -Properties ([ordered]@{
         review_state = 'pass'
         task_owner   = 'Operator'
@@ -17414,22 +17548,31 @@ function Invoke-ReviewFail {
     if ($requestHeadSha -ne $headSha) {
         Stop-WithError "pending review request head mismatch: expected $requestHeadSha, got $headSha"
     }
+    Assert-ReviewRequestIdentityBinding -Request $request -Context $context -Branch $branch
 
     $timestamp = (Get-Date).ToString('o')
     $reviewer = [ordered]@{
-        pane_id    = $context.PaneId
-        label      = $context.Label
-        role       = $context.Role
-        agent_name = [string]$env:WINSMUX_AGENT_NAME
+        generation_id    = $context.GenerationId
+        server_session_id = $context.ServerSessionId
+        slot_id          = $context.SlotId
+        pane_id          = $context.PaneId
+        label            = $context.Label
+        role             = $context.Role
+        backend          = $context.Backend
+        agent_name       = $context.AgentName
     }
     $evidence = [ordered]@{
         failed_at               = $timestamp
         failed_via              = 'winsmux review-fail'
+        runtime_generation_id   = $context.GenerationId
+        runtime_server_session_id = $context.ServerSessionId
         review_contract_snapshot = Get-ReviewStatePropertyValue -InputObject $request -Name 'review_contract'
     }
 
-    $state[$branch] = New-ReviewerStateRecord -Status 'FAIL' -Request $request -Reviewer $reviewer -Evidence $evidence -UpdatedAt $timestamp
-    Save-ReviewState -ProjectDir $projectDir -State $state
+    $expectedFingerprint = Get-ReviewStateEntryFingerprint -Entry $entry
+    $newRecord = New-ReviewerStateRecord -Status 'FAIL' -Request $request -Reviewer $reviewer -Evidence $evidence -UpdatedAt $timestamp
+    $context = Save-VerifiedReviewStateTransition -ProjectDir $projectDir -Branch $branch -HeadSha $headSha -Context $context `
+        -ExpectedEntryFingerprint $expectedFingerprint -NewRecord $newRecord
     Update-ReviewPaneManifestState -Context $context -Properties ([ordered]@{
         review_state = 'fail'
         task_owner   = 'Operator'
@@ -17454,12 +17597,13 @@ function Invoke-ReviewReset {
     } catch {
         # Review-state persistence is authoritative; manifest sync remains best-effort.
     }
-    $state = Get-ReviewState -ProjectDir $projectDir
-    if ($state.Contains($branch)) {
-        $state.Remove($branch)
-    }
-
-    Save-ReviewState -ProjectDir $projectDir -State $state
+    Invoke-WithReviewStateLock -ProjectDir $projectDir -Action {
+        $state = Get-ReviewState -ProjectDir $projectDir
+        if ($state.Contains($branch)) {
+            $state.Remove($branch)
+        }
+        Save-ReviewState -ProjectDir $projectDir -State $state
+    } | Out-Null
     Update-ReviewPaneManifestState -Context $context -Properties ([ordered]@{
         review_state = ''
         branch       = ''

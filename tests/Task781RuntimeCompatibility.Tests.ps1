@@ -713,3 +713,150 @@ $afterDelete = Test-VaultKeyExists -Key $key
         $vaultInject.Extent.Text | Should -Match 'Get-WinsmuxVaultCredentialValue'
     }
 }
+
+Describe 'TASK782 verified review identity' {
+    BeforeAll {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\pane-control.ps1')
+    }
+
+    BeforeEach {
+        Mock Get-PaneControlManifestContext {
+            [PSCustomObject][ordered]@{
+                ManifestPath = 'C:\repo\.winsmux\manifest.yaml'; GenerationId = 'generation-current'; ProjectDir = 'C:\repo'
+                Label = 'worker-1'; SlotId = 'worker-1'; PaneId = '%2'; WorkerBackend = 'codex'; WorkerRole = 'reviewer'
+                Role = 'Worker'; Title = 'W1 Codex Reviewer'
+                ApprovedLaunch = [ordered]@{ agent = 'codex'; worker_backend = 'codex'; worker_role = 'reviewer' }
+            }
+        }
+        Mock Test-PaneControlRuntimeContext {
+            New-WinsmuxRuntimeValidationResult -Valid $true -ReasonCode 'live_runtime_verified' -Diagnostic 'verified' -Context ([PSCustomObject][ordered]@{
+                generation_id = 'generation-current'; server_session_id = '$1'; slot_id = 'worker-1'; pane_id = '%2'
+                backend = 'codex'; role = 'reviewer'; title = 'W1 Codex Reviewer'
+            })
+        }
+    }
+
+    It 'binds the manifest-selected reviewer agent to the live runtime generation' {
+        $identity = Get-PaneControlVerifiedReviewIdentity -ProjectDir 'C:\repo' -PaneId '%2'
+        $identity.PaneId | Should -Be '%2'
+        $identity.Role | Should -Be 'reviewer'
+        $identity.AgentName | Should -Be 'codex'
+        $identity.Backend | Should -Be 'codex'
+        $identity.GenerationId | Should -Be 'generation-current'
+        $identity.ServerSessionId | Should -Be '$1'
+        Should -Invoke Test-PaneControlRuntimeContext -Times 1 -Exactly -ParameterFilter { $Operation -eq 'caller_ack' }
+    }
+
+    It 'rejects a mutable pane claim when caller ancestry is not verified' {
+        Mock Test-PaneControlRuntimeContext {
+            New-WinsmuxRuntimeValidationResult -Valid $false -ReasonCode 'caller_identity_mismatch' -Diagnostic 'unrelated caller'
+        }
+        { Get-PaneControlVerifiedReviewIdentity -ProjectDir 'C:\repo' -PaneId '%2' } | Should -Throw '*caller_identity_mismatch*'
+    }
+
+    It 'rejects a live pane that is not review-capable' {
+        Mock Test-PaneControlRuntimeContext {
+            New-WinsmuxRuntimeValidationResult -Valid $true -ReasonCode 'live_runtime_verified' -Diagnostic 'verified' -Context ([PSCustomObject][ordered]@{
+                generation_id = 'generation-current'; server_session_id = '$1'; slot_id = 'worker-1'; pane_id = '%2'
+                backend = 'codex'; role = 'builder'; title = 'Builder'
+            })
+        }
+        { Get-PaneControlVerifiedReviewIdentity -ProjectDir 'C:\repo' -PaneId '%2' } | Should -Throw '*not review-capable*'
+    }
+
+    It 'rejects a backend without authenticated caller ancestry' {
+        Mock Get-PaneControlManifestContext {
+            [PSCustomObject][ordered]@{
+                ManifestPath = 'C:\repo\.winsmux\manifest.yaml'; GenerationId = 'generation-current'; ProjectDir = 'C:\repo'
+                Label = 'worker-1'; SlotId = 'worker-1'; PaneId = '%2'; WorkerBackend = 'api_llm'; WorkerRole = 'reviewer'
+                Role = 'Worker'; Title = 'API Reviewer'
+                ApprovedLaunch = [ordered]@{ agent = 'api-reviewer'; worker_backend = 'api_llm'; worker_role = 'reviewer' }
+            }
+        }
+        Mock Test-PaneControlRuntimeContext {
+            New-WinsmuxRuntimeValidationResult -Valid $true -ReasonCode 'live_runtime_verified' -Diagnostic 'verified' -Context ([PSCustomObject][ordered]@{
+                generation_id = 'generation-current'; server_session_id = '$1'; slot_id = 'worker-1'; pane_id = '%2'
+                backend = 'api_llm'; role = 'reviewer'; title = 'API Reviewer'
+            })
+        }
+        { Get-PaneControlVerifiedReviewIdentity -ProjectDir 'C:\repo' -PaneId '%2' } | Should -Throw '*no authenticated caller-ancestry contract*'
+    }
+
+    It 'rejects approved-launch metadata without an agent identity' {
+        Mock Get-PaneControlManifestContext {
+            [PSCustomObject][ordered]@{
+                ManifestPath = 'C:\repo\.winsmux\manifest.yaml'; GenerationId = 'generation-current'; ProjectDir = 'C:\repo'
+                Label = 'worker-1'; SlotId = 'worker-1'; PaneId = '%2'; WorkerBackend = 'codex'; WorkerRole = 'reviewer'
+                Role = 'Worker'; Title = 'W1 Codex Reviewer'; ApprovedLaunch = [ordered]@{}
+            }
+        }
+        { Get-PaneControlVerifiedReviewIdentity -ProjectDir 'C:\repo' -PaneId '%2' } | Should -Throw '*agent identity*'
+    }
+
+    It 'rejects a generation change before the review-state write' {
+        { Get-PaneControlVerifiedReviewIdentity -ProjectDir 'C:\repo' -PaneId '%2' -ExpectedGenerationId 'generation-old' } |
+            Should -Throw '*generation changed*'
+    }
+}
+
+Describe 'TASK782 review-state compare-and-swap' {
+    BeforeAll {
+        $corePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $content = [IO.File]::ReadAllText($corePath, [Text.Encoding]::UTF8)
+        $tokens = $null
+        $errors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseInput($content, $corePath, [ref]$tokens, [ref]$errors)
+        $errors.Count | Should -Be 0
+        foreach ($name in @('Get-ReviewStateEntryFingerprint', 'Save-VerifiedReviewStateTransition')) {
+            $functionAst = $ast.Find({
+                param($node)
+                $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $name
+            }, $true)
+            $functionAst | Should -Not -BeNullOrEmpty
+            . ([scriptblock]::Create($functionAst.Extent.Text))
+        }
+        function Stop-WithError { param([string]$Message) throw $Message }
+        function Invoke-WithReviewStateLock { param([string]$ProjectDir, [scriptblock]$Action) & $Action }
+        function Get-ReviewState { param([string]$ProjectDir) [ordered]@{} }
+        function Confirm-ReviewWriteContext {
+            param($Context, [string]$ProjectDir, [string]$Branch, [string]$HeadSha)
+            $Context
+        }
+        function Save-ReviewState { param($State, [string]$ProjectDir) }
+    }
+
+    BeforeEach {
+        $script:lockedState = [ordered]@{}
+        Mock Invoke-WithReviewStateLock { & $Action }
+        Mock Get-ReviewState { $script:lockedState }
+        Mock Confirm-ReviewWriteContext { $Context }
+        Mock Save-ReviewState {}
+    }
+
+    It 'refuses a concurrent same-branch update before validation or save' {
+        $script:lockedState['feature/review-gate'] = [ordered]@{ status = 'PENDING'; updatedAt = 'rival' }
+        $newRecord = [ordered]@{ status = 'PASS'; updatedAt = 'candidate' }
+
+        { Save-VerifiedReviewStateTransition -ProjectDir 'C:\repo' -Branch 'feature/review-gate' -HeadSha ('a' * 40) `
+                -Context ([pscustomobject]@{}) -ExpectedEntryFingerprint '<absent>' -NewRecord $newRecord } |
+            Should -Throw '*changed concurrently*'
+        Should -Invoke Confirm-ReviewWriteContext -Times 0 -Exactly
+        Should -Invoke Save-ReviewState -Times 0 -Exactly
+        $script:lockedState['feature/review-gate'].updatedAt | Should -Be 'rival'
+    }
+
+    It 'preserves concurrent entries for other branches during a verified transition' {
+        $script:lockedState['feature/other'] = [ordered]@{ status = 'PASS'; updatedAt = 'other' }
+        $newRecord = [ordered]@{ status = 'PENDING'; updatedAt = 'candidate' }
+
+        Save-VerifiedReviewStateTransition -ProjectDir 'C:\repo' -Branch 'feature/review-gate' -HeadSha ('a' * 40) `
+            -Context ([pscustomobject]@{}) -ExpectedEntryFingerprint '<absent>' -NewRecord $newRecord | Out-Null
+
+        Should -Invoke Confirm-ReviewWriteContext -Times 1 -Exactly
+        Should -Invoke Save-ReviewState -Times 1 -Exactly -ParameterFilter {
+            $State.Contains('feature/other') -and $State.Contains('feature/review-gate')
+        }
+        $script:lockedState['feature/other'].updatedAt | Should -Be 'other'
+        $script:lockedState['feature/review-gate'].status | Should -Be 'PENDING'
+    }
+}
