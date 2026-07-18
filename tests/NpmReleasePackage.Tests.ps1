@@ -13,7 +13,12 @@ Describe 'winsmux npm release package contract' {
         $script:PackageReadmePath = Join-Path $script:PackageRoot 'README.md'
         $script:EntrypointPath = Join-Path $script:PackageRoot 'index.mjs'
         $script:StageScriptPath = Join-Path $script:RepoRoot 'scripts\stage-npm-release.mjs'
+        $script:InstallDownloadGatePath = Join-Path $script:RepoRoot 'scripts\assert-install-downloads-exist.ps1'
         $script:ReleaseWorkflowPath = Join-Path $script:RepoRoot '.github\workflows\release-npm.yml'
+        $script:TestWorkflowPath = Join-Path $script:RepoRoot '.github\workflows\test.yml'
+        $script:InstallerPath = Join-Path $script:RepoRoot 'install.ps1'
+        $script:InstallE2ePath = Join-Path $script:RepoRoot 'scripts\test-install-e2e.ps1'
+        $script:RedirectedInstallSmokePath = Join-Path $script:RepoRoot 'scripts\test-install-redirected.ps1'
         $script:RootReadmePath = Join-Path $script:RepoRoot 'README.md'
         $script:RootReadmeJaPath = Join-Path $script:RepoRoot 'README.ja.md'
         $script:OutputRoot = Join-Path $script:RepoRoot 'output\npm-release\winsmux'
@@ -98,6 +103,41 @@ Describe 'winsmux npm release package contract' {
             }
         }
 
+        function Invoke-PwshProcess {
+            param(
+                [Parameter(Mandatory = $true)][string[]]$Arguments,
+                [string]$WorkingDirectory = $script:RepoRoot
+            )
+
+            $pwshCommand = Get-Command pwsh -ErrorAction Stop | Select-Object -First 1
+            $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+            $startInfo.FileName = if ($pwshCommand.Path) { $pwshCommand.Path } else { $pwshCommand.Name }
+            foreach ($argument in $Arguments) {
+                $startInfo.ArgumentList.Add($argument)
+            }
+            $startInfo.WorkingDirectory = $WorkingDirectory
+            $startInfo.UseShellExecute = $false
+            $startInfo.CreateNoWindow = $true
+            $startInfo.RedirectStandardOutput = $true
+            $startInfo.RedirectStandardError = $true
+
+            $process = [System.Diagnostics.Process]::Start($startInfo)
+            try {
+                $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+                $stderrTask = $process.StandardError.ReadToEndAsync()
+                $process.WaitForExit()
+                $stdout = $stdoutTask.GetAwaiter().GetResult()
+                $stderr = $stderrTask.GetAwaiter().GetResult()
+                return [PSCustomObject]@{
+                    ExitCode = $process.ExitCode
+                    StdOut   = $stdout.Trim()
+                    StdErr   = $stderr.Trim()
+                }
+            } finally {
+                $process.Dispose()
+            }
+        }
+
         function Set-PackagePrivateFlag {
             param([Parameter(Mandatory = $true)][bool]$Private)
 
@@ -127,6 +167,10 @@ Describe 'winsmux npm release package contract' {
         $rootReadme = Get-Content -LiteralPath $script:RootReadmePath -Raw -Encoding UTF8
         $rootReadmeJa = Get-Content -LiteralPath $script:RootReadmeJaPath -Raw -Encoding UTF8
         $releaseWorkflow = Get-Content -LiteralPath $script:ReleaseWorkflowPath -Raw -Encoding UTF8
+        $testWorkflow = Get-Content -LiteralPath $script:TestWorkflowPath -Raw -Encoding UTF8
+        $installer = Get-Content -LiteralPath $script:InstallerPath -Raw -Encoding UTF8
+        $installE2e = Get-Content -LiteralPath $script:InstallE2ePath -Raw -Encoding UTF8
+        $redirectedSmoke = Get-Content -LiteralPath $script:RedirectedInstallSmokePath -Raw -Encoding UTF8
 
         $packageJson.description | Should -Match 'Windows npm install surface'
         $packageJson.private | Should -Be $false
@@ -178,6 +222,189 @@ Describe 'winsmux npm release package contract' {
         $releaseWorkflow | Should -Match 'name:\s+Skip existing npm version'
         $releaseWorkflow | Should -Match 'if:\s+steps\.npm-version\.outputs\.exists != ''true'''
         $releaseWorkflow | Should -Match 'NODE_AUTH_TOKEN:\s+\$\{\{\s*secrets\.NPM_TOKEN\s*\}\}'
+        $testWorkflow | Should -Match 'name:\s+Fresh Install E2E \(\$\{\{ matrix\.route \}\}\)'
+        $installJob = [regex]::Match($testWorkflow, '(?ms)^  install-e2e:\r?\n(?<body>.*?)(?=^  [a-z][a-z0-9-]*:)')
+        $installJob.Success | Should -BeTrue
+        $installJob.Groups['body'].Value | Should -Match 'runs-on:\s+windows-2025'
+        $installJob.Groups['body'].Value | Should -Not -Match 'runs-on:\s+windows-latest'
+        $testWorkflow | Should -Match 'route:\s*\[Npm, Direct, DefectDetection\]'
+        $testWorkflow | Should -Match 'scripts/test-install-e2e\.ps1 -Route "\$\{\{ matrix\.route \}\}"'
+        $testWorkflow | Should -Match 'needs:[\s\S]*?- install-e2e[\s\S]*?needs\.install-e2e\.result'
+        $installer | Should -Not -Match 'Download-File "winsmux\.ps1"'
+        ([regex]::Matches($installer, 'Join-Path \$BIN_DIR "winsmux\.cmd"')).Count | Should -Be 1
+        $installer | Should -Match 'winsmux-core\.ps1" %\*'
+        $installer | Should -Match 'WINSMUX_RAW_EXE=%USERPROFILE%\\\.local\\bin\\winsmux\.exe'
+        $installer | Should -Not -Match '(?<!-core)winsmux\.ps1" %\*'
+        $installer | Should -Match 'winsmux\.cmd'' launch --project-dir \$dir'
+        $installer | Should -Not -Match 'winsmux\.ps1'' start -C \$dir'
+        $installE2e | Should -Match 'isGitHubRunner'
+        $installE2e | Should -Match 'isAuthorizedRedirect'
+        $installE2e | Should -Not -Match '(?m)^\$home\s*='
+        $installE2e | Should -Match '\$fixtureHome = Join-Path \$scratch ''home'''
+        $installE2e | Should -Match "ValidateSet\('Npm', 'Direct', 'DefectDetection'\)"
+        $installE2e | Should -Match 'irm ''\$url'' \| iex'
+        $installE2e | Should -Match 'WINSMUX_INSTALL_SOURCE_REF'
+        $installE2e | Should -Match 'wrapper_launch_project_dir_verified'
+        $installE2e | Should -Match 'WT settings: not found'
+        $installE2e | Should -Match "wrapper.*doctor"
+        $installE2e | Should -Match '\[ValidateRange\(1, 1800\)\]\[int\]\$TimeoutSeconds = 900'
+        $installE2e | Should -Match '\$process\.Kill\(\$true\)'
+        $installE2e | Should -Match 'Child process exceeded \$\{TimeoutSeconds\}s and was terminated'
+        $redirectedSmoke | Should -Match 'Remove-FixturePathEntry'
+        $redirectedSmoke | Should -Match 'Remove-FixtureProfileBlock'
+        $redirectedSmoke | Should -Match '\.winsmux\\backups'
+        $redirectedSmoke | Should -Match '\[System\.IO\.FileShare\]::None'
+        $redirectedSmoke | Should -Match 'live_user_path_untouched'
+        $redirectedSmoke | Should -Match 'live_profile_untouched'
+        $redirectedSmoke | Should -Match 'kind = ''directory'''
+        $redirectedSmoke | Should -Match 'install_owned_live_state_preserved'
+        $installer | Should -Match 'WINSMUX_INSTALL_STATE_ROOT must be contained by the redirected HOME'
+        $installer | Should -Match 'Redirected installer E2E mode only permits the install action'
+        $installer | Should -Match 'Get-InstallUserPath'
+        $installer | Should -Match 'Get-InstallPowerShellProfilePath'
+        $redirectedSmoke.IndexOf('$invariantErrors', [System.StringComparison]::Ordinal) | Should -BeLessThan $redirectedSmoke.IndexOf('$failureParts', [System.StringComparison]::Ordinal)
+    }
+
+    It 'verifies every installer download target against the release tree and rejects a missing target' {
+        $valid = Invoke-PwshProcess -Arguments @(
+            '-NoProfile', '-File', $script:InstallDownloadGatePath,
+            '-RepositoryRoot', $script:RepoRoot,
+            '-Treeish', 'HEAD'
+        )
+        $valid.ExitCode | Should -Be 0
+        $valid.StdErr | Should -Be ''
+        $validSummary = $valid.StdOut | ConvertFrom-Json -Depth 10
+        $validSummary.download_target_count | Should -BeGreaterThan 0
+        @($validSummary.download_targets) | Should -Contain 'scripts/winsmux-core.ps1'
+        @($validSummary.download_targets) | Should -Not -Contain 'winsmux.ps1'
+
+        $invalidInstaller = Join-Path $TestDrive 'install-with-missing-download.ps1'
+        $installer = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'install.ps1') -Raw -Encoding UTF8
+        $invalid = $installer.Replace(
+            'Download-File "scripts/winsmux-core.ps1" (Join-Path $BIN_DIR "winsmux-core.ps1")',
+            'Download-File "missing/installer-entrypoint.ps1" (Join-Path $BIN_DIR "winsmux-core.ps1")'
+        )
+        $invalid | Should -Not -Be $installer
+        Write-TestFileUtf8 -Path $invalidInstaller -Content $invalid
+
+        $missing = Invoke-PwshProcess -Arguments @(
+            '-NoProfile', '-File', $script:InstallDownloadGatePath,
+            '-RepositoryRoot', $script:RepoRoot,
+            '-InstallScriptPath', $invalidInstaller,
+            '-Treeish', 'HEAD'
+        )
+        $missing.ExitCode | Should -Not -Be 0
+        $missing.StdErr | Should -Match 'missing/installer-entrypoint\.ps1'
+
+        $invalidCases = @(
+            @{
+                Name = 'missing optional target'
+                Find = 'Download-OptionalFile "winsmux-core/scripts/control-plane-workers.ps1"'
+                Replace = 'Download-OptionalFile "missing/optional-worker.ps1"'
+                Error = 'missing/optional-worker\.ps1'
+            },
+            @{
+                Name = 'dynamic target'
+                Find = 'Download-File "scripts/winsmux-core.ps1" (Join-Path $BIN_DIR "winsmux-core.ps1")'
+                Replace = 'Download-File $dynamicPath (Join-Path $BIN_DIR "winsmux-core.ps1")'
+                Error = 'static string literal'
+            },
+            @{
+                Name = 'parent traversal'
+                Find = 'Download-File ".winsmux.conf" $confDest'
+                Replace = 'Download-File "../.winsmux.conf" $confDest'
+                Error = 'unsafe relative path'
+            },
+            @{
+                Name = 'absolute URL'
+                Find = 'Download-File ".winsmux.conf" $confDest'
+                Replace = 'Download-File "https://example.invalid/.winsmux.conf" $confDest'
+                Error = 'unsafe relative path'
+            },
+            @{
+                Name = 'directory instead of file'
+                Find = 'Download-File ".winsmux.conf" $confDest'
+                Replace = 'Download-File "scripts" $confDest'
+                Error = 'not files'
+            }
+        )
+        foreach ($case in $invalidCases) {
+            $casePath = Join-Path $TestDrive (($case.Name -replace '[^A-Za-z0-9]+', '-') + '.ps1')
+            $caseInstaller = $installer.Replace($case.Find, $case.Replace)
+            $caseInstaller | Should -Not -Be $installer -Because $case.Name
+            Write-TestFileUtf8 -Path $casePath -Content $caseInstaller
+            $caseResult = Invoke-PwshProcess -Arguments @(
+                '-NoProfile', '-File', $script:InstallDownloadGatePath,
+                '-RepositoryRoot', $script:RepoRoot,
+                '-InstallScriptPath', $casePath,
+                '-Treeish', 'HEAD'
+            )
+            $caseResult.ExitCode | Should -Not -Be 0 -Because $case.Name
+            $caseResult.StdErr | Should -Match $case.Error -Because $case.Name
+        }
+    }
+
+    It 'refuses to run the persistent installer E2E directly on a development machine' {
+        $savedCi = $env:CI
+        try {
+            $env:CI = ''
+            $result = Invoke-PwshProcess -Arguments @(
+                '-NoProfile', '-File', $script:InstallE2ePath,
+                '-Route', 'Direct', '-RepositoryRoot', $script:RepoRoot
+            )
+            $result.ExitCode | Should -Not -Be 0
+            $result.StdErr | Should -Match 'Run it through GitHub Actions'
+            $result.StdErr | Should -Match 'test-install-redirected\.ps1'
+        } finally {
+            $env:CI = $savedCi
+        }
+    }
+
+    It 'does not accept a generic CI marker as disposable-runner authorization' {
+        $savedCi = $env:CI
+        $savedGitHubActions = $env:GITHUB_ACTIONS
+        try {
+            $env:CI = 'true'
+            $env:GITHUB_ACTIONS = ''
+            $result = Invoke-PwshProcess -Arguments @(
+                '-NoProfile', '-File', $script:InstallE2ePath,
+                '-Route', 'Direct', '-RepositoryRoot', $script:RepoRoot
+            )
+            $result.ExitCode | Should -Not -Be 0
+            $result.StdErr | Should -Match 'Run it through GitHub Actions'
+        } finally {
+            $env:CI = $savedCi
+            $env:GITHUB_ACTIONS = $savedGitHubActions
+        }
+    }
+
+    It 'fails closed before uninstall can use the redirected installer seam' {
+        $savedHome = $env:HOME
+        $savedUserProfile = $env:USERPROFILE
+        $savedMode = $env:WINSMUX_INSTALL_E2E
+        $savedStateRoot = $env:WINSMUX_INSTALL_STATE_ROOT
+        $liveProfile = $PROFILE.CurrentUserAllHosts
+        $profileExisted = Test-Path -LiteralPath $liveProfile -PathType Leaf
+        $profileHash = if ($profileExisted) { (Get-FileHash -LiteralPath $liveProfile -Algorithm SHA256).Hash } else { '' }
+        try {
+            $fixtureHome = Join-Path $TestDrive 'redirected-home'
+            $env:HOME = $fixtureHome
+            $env:USERPROFILE = $fixtureHome
+            $env:WINSMUX_INSTALL_E2E = 'redirected'
+            $env:WINSMUX_INSTALL_STATE_ROOT = Join-Path $fixtureHome 'state'
+            $result = Invoke-PwshProcess -Arguments @('-NoProfile', '-File', $script:InstallerPath, 'uninstall')
+            $result.ExitCode | Should -Not -Be 0
+            $result.StdErr | Should -Match 'Redirected installer E2E mode only permits the install action'
+        } finally {
+            $env:HOME = $savedHome
+            $env:USERPROFILE = $savedUserProfile
+            $env:WINSMUX_INSTALL_E2E = $savedMode
+            $env:WINSMUX_INSTALL_STATE_ROOT = $savedStateRoot
+        }
+        $profileAfterExists = Test-Path -LiteralPath $liveProfile -PathType Leaf
+        $profileAfterHash = if ($profileAfterExists) { (Get-FileHash -LiteralPath $liveProfile -Algorithm SHA256).Hash } else { '' }
+        $profileAfterExists | Should -Be $profileExisted
+        $profileAfterHash | Should -Be $profileHash
     }
 
     It 'keeps the package source and staged publish artifact separate' {

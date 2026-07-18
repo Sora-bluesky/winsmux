@@ -64,6 +64,32 @@ jobs:
         shell: pwsh
         run: pwsh -NoProfile -File scripts/audit-public-surface.ps1
 
+  install-e2e:
+    name: Fresh Install E2E (${{ matrix.route }})
+    runs-on: windows-2025
+    needs: public-surface
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        route: [Npm, Direct, DefectDetection]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Verify installer download targets
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/assert-install-downloads-exist.ps1 -RepositoryRoot . -Treeish HEAD
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Run fresh install route
+        shell: pwsh
+        env:
+          WINSMUX_INSTALL_E2E_RELEASE_TAG: v0.36.28
+        run: pwsh -NoProfile -File scripts/test-install-e2e.ps1 -Route "${{ matrix.route }}" -RepositoryRoot . -SourceCommit "${{ github.sha }}"
+
   common-contract-drift:
     name: Common Contract Drift Gate
     runs-on: ubuntu-latest
@@ -432,6 +458,7 @@ jobs:
     needs:
       - secret-scan
       - public-surface
+      - install-e2e
       - common-contract-drift
       - pester
       - core-build-test
@@ -445,6 +472,7 @@ jobs:
           for result in \
             "${{ needs.secret-scan.result }}" \
             "${{ needs.public-surface.result }}" \
+            "${{ needs.install-e2e.result }}" \
             "${{ needs.common-contract-drift.result }}" \
             "${{ needs.pester.result }}" \
             "${{ needs.core-build-test.result }}" \

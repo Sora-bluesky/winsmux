@@ -28,8 +28,36 @@ $PROFILE_MATRIX = @{
     security = "Core profile plus vault, redaction, and audit-oriented scripts."
     full = "Core, orchestra, and security profile contents."
 }
-$requestedReleaseTag = if ([string]::IsNullOrWhiteSpace($ReleaseTag)) { $env:WINSMUX_RELEASE_TAG } else { $ReleaseTag }
+$installerE2e = $env:GITHUB_ACTIONS -eq 'true' -and $env:WINSMUX_INSTALL_E2E -eq 'true'
+$redirectedInstallerE2e = $env:WINSMUX_INSTALL_E2E -eq 'redirected'
+$redirectedStateRoot = ''
+if ($redirectedInstallerE2e) {
+    if ([string]::IsNullOrWhiteSpace($env:WINSMUX_INSTALL_STATE_ROOT)) {
+        throw 'WINSMUX_INSTALL_STATE_ROOT is required in redirected installer E2E mode.'
+    }
+    $redirectedStateRoot = [System.IO.Path]::GetFullPath($env:WINSMUX_INSTALL_STATE_ROOT)
+    $redirectedHome = [System.IO.Path]::GetFullPath($HOME).TrimEnd('\') + '\'
+    if (-not $redirectedStateRoot.StartsWith($redirectedHome, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw 'WINSMUX_INSTALL_STATE_ROOT must be contained by the redirected HOME.'
+    }
+    New-Item -ItemType Directory -Path $redirectedStateRoot -Force | Out-Null
+}
+$e2eReleaseTag = if ($installerE2e) { [string]$env:WINSMUX_INSTALL_E2E_RELEASE_TAG } else { '' }
+$requestedReleaseTag = if (-not [string]::IsNullOrWhiteSpace($e2eReleaseTag)) {
+    $e2eReleaseTag
+} elseif ([string]::IsNullOrWhiteSpace($ReleaseTag)) {
+    $env:WINSMUX_RELEASE_TAG
+} else {
+    $ReleaseTag
+}
+$installSourceRef = if ($installerE2e) { [string]$env:WINSMUX_INSTALL_SOURCE_REF } else { '' }
+if (-not [string]::IsNullOrWhiteSpace($installSourceRef) -and $installSourceRef -notmatch '^[0-9a-fA-F]{40}$') {
+    throw 'WINSMUX_INSTALL_SOURCE_REF must be a 40-character commit SHA in installer E2E mode.'
+}
 $releaseAction = $Action.Trim().ToLowerInvariant()
+if ($redirectedInstallerE2e -and $releaseAction -ne 'install') {
+    throw 'Redirected installer E2E mode only permits the install action.'
+}
 $UseLatestRelease = [string]::IsNullOrWhiteSpace($requestedReleaseTag) -and ($releaseAction -eq 'install' -or $releaseAction -eq 'update')
 if ($UseLatestRelease) {
     $EffectiveReleaseTag = ''
@@ -45,10 +73,40 @@ if ($UseLatestRelease) {
 }
 $ResolvedReleaseTag = $EffectiveReleaseTag
 $ResolvedVersion = $VERSION
+if (-not [string]::IsNullOrWhiteSpace($installSourceRef)) {
+    $BASE_URL = "https://raw.githubusercontent.com/Sora-bluesky/winsmux/$installSourceRef"
+}
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+function Get-InstallUserPath {
+    if ($redirectedInstallerE2e) {
+        $pathFile = Join-Path $redirectedStateRoot 'user-path.txt'
+        if (-not (Test-Path -LiteralPath $pathFile -PathType Leaf)) { return '' }
+        return (Get-Content -LiteralPath $pathFile -Raw -Encoding UTF8)
+    }
+    return [Environment]::GetEnvironmentVariable('Path', 'User')
+}
+
+function Set-InstallUserPath {
+    param([AllowEmptyString()][string]$Value)
+
+    if ($redirectedInstallerE2e) {
+        $pathFile = Join-Path $redirectedStateRoot 'user-path.txt'
+        [System.IO.File]::WriteAllText($pathFile, $Value, [System.Text.UTF8Encoding]::new($false))
+        return
+    }
+    [Environment]::SetEnvironmentVariable('Path', $Value, 'User')
+}
+
+function Get-InstallPowerShellProfilePath {
+    if ($redirectedInstallerE2e) {
+        return (Join-Path $redirectedStateRoot 'Microsoft.PowerShell_profile.ps1')
+    }
+    return $PROFILE.CurrentUserAllHosts
+}
 
 function Write-Status($msg) { Write-Host "[winsmux] $msg" }
 
@@ -235,7 +293,7 @@ function Sync-WindowsTerminalFragment {
   "profiles": [
     {
       "name": "winsmux Orchestra",
-      "commandline": "pwsh -NoProfile -Command \"$dir = Read-Host 'Project dir'; if ([string]::IsNullOrWhiteSpace($dir)) { Write-Error 'Project dir is required.'; exit 1 }; & '%USERPROFILE%\\.winsmux\\bin\\winsmux.ps1' start -C $dir\"",
+      "commandline": "pwsh -NoProfile -Command \"$dir = Read-Host 'Project dir'; if ([string]::IsNullOrWhiteSpace($dir)) { Write-Error 'Project dir is required.'; exit 1 }; & '%USERPROFILE%\\.winsmux\\bin\\winsmux.cmd' launch --project-dir $dir\"",
       "icon": "🎼",
       "startingDirectory": "%USERPROFILE%",
       "tabTitle": "winsmux Orchestra"
@@ -306,24 +364,22 @@ function Install-WinsmuxBinary {
         $script:ResolvedReleaseTag = [string]$release.tag_name
         $script:ResolvedVersion = $script:ResolvedReleaseTag.TrimStart('v', 'V')
         $script:EffectiveReleaseTag = $script:ResolvedReleaseTag
-        $script:BASE_URL = "https://raw.githubusercontent.com/Sora-bluesky/winsmux/$script:ResolvedReleaseTag"
+        $script:BASE_URL = if ([string]::IsNullOrWhiteSpace($script:installSourceRef)) {
+            "https://raw.githubusercontent.com/Sora-bluesky/winsmux/$script:ResolvedReleaseTag"
+        } else {
+            "https://raw.githubusercontent.com/Sora-bluesky/winsmux/$script:installSourceRef"
+        }
         $script:RELEASE_LABEL = $script:ResolvedReleaseTag
 
-        $existing = Get-Command winsmux -ErrorAction SilentlyContinue
-        if ($existing) {
-            $detected = Get-WinsmuxCommandVersion -CommandInfo $existing
-            if ($detected -and $detected.Version -eq $script:ResolvedVersion) {
-                Write-Status "winsmux found: $($detected.Output)"
-                return
-            }
-
-            if ($detected) {
-                Write-Warning "[winsmux] Existing winsmux version '$($detected.Version)' does not match release version '$script:ResolvedVersion'. Reinstalling release binary."
-            } else {
-                Write-Warning "[winsmux] Existing winsmux command did not return a compatible version. Reinstalling release binary."
-            }
+        $localCommand = if (Test-Path -LiteralPath $winsmuxExe -PathType Leaf) { Get-Command $winsmuxExe -ErrorAction SilentlyContinue } else { $null }
+        $detected = if ($localCommand) { Get-WinsmuxCommandVersion -CommandInfo $localCommand } else { $null }
+        $downloadBinary = -not ($detected -and $detected.Version -eq $script:ResolvedVersion)
+        if (-not $downloadBinary) {
+            Write-Status "winsmux found at the installed target: $($detected.Output)"
+        } elseif ($detected) {
+            Write-Warning "[winsmux] Installed target version '$($detected.Version)' does not match release version '$script:ResolvedVersion'. Reinstalling release binary."
         } else {
-            Write-Status "winsmux binary not found. Downloading winsmux-core..."
+            Write-Status "winsmux binary not found at the installed target. Downloading winsmux-core..."
         }
 
         $asset = $release.assets | Where-Object { $_.name -eq $assetName } | Select-Object -First 1
@@ -340,41 +396,43 @@ function Install-WinsmuxBinary {
             throw "SHA256SUMS asset not found in release $($release.tag_name). Cannot verify $($asset.name)."
         }
 
-        $downloadPath = Join-Path ([System.IO.Path]::GetTempPath()) ("winsmux-" + [System.Guid]::NewGuid().ToString() + "-" + $asset.name)
-        $checksumsPath = Join-Path ([System.IO.Path]::GetTempPath()) ("winsmux-" + [System.Guid]::NewGuid().ToString() + "-SHA256SUMS")
-        try {
-            Write-Status "Downloading $($asset.name) from $($release.tag_name)..."
-            Invoke-RestMethod -Uri $asset.browser_download_url -Headers $headers -OutFile $downloadPath -ErrorAction Stop
+        if ($downloadBinary) {
+            $downloadPath = Join-Path ([System.IO.Path]::GetTempPath()) ("winsmux-" + [System.Guid]::NewGuid().ToString() + "-" + $asset.name)
+            $checksumsPath = Join-Path ([System.IO.Path]::GetTempPath()) ("winsmux-" + [System.Guid]::NewGuid().ToString() + "-SHA256SUMS")
+            try {
+                Write-Status "Downloading $($asset.name) from $($release.tag_name)..."
+                Invoke-RestMethod -Uri $asset.browser_download_url -Headers $headers -OutFile $downloadPath -ErrorAction Stop
 
-            Write-Status "Downloading $($sha256Asset.name) from $($release.tag_name)..."
-            Invoke-RestMethod -Uri $sha256Asset.browser_download_url -Headers $headers -OutFile $checksumsPath -ErrorAction Stop
+                Write-Status "Downloading $($sha256Asset.name) from $($release.tag_name)..."
+                Invoke-RestMethod -Uri $sha256Asset.browser_download_url -Headers $headers -OutFile $checksumsPath -ErrorAction Stop
 
-            $expectedHash = $null
-            foreach ($line in Get-Content $checksumsPath) {
-                if ($line -match '^(?<hash>[A-Fa-f0-9]{64})\s+\*?(?<name>.+)$') {
-                    if ($Matches.name -eq $asset.name) {
-                        $expectedHash = $Matches.hash.ToUpperInvariant()
-                        break
+                $expectedHash = $null
+                foreach ($line in Get-Content $checksumsPath) {
+                    if ($line -match '^(?<hash>[A-Fa-f0-9]{64})\s+\*?(?<name>.+)$') {
+                        if ($Matches.name -eq $asset.name) {
+                            $expectedHash = $Matches.hash.ToUpperInvariant()
+                            break
+                        }
                     }
                 }
-            }
 
-            if (-not $expectedHash) {
-                throw "SHA256SUMS does not contain an entry for $($asset.name). Cannot verify release asset."
-            }
+                if (-not $expectedHash) {
+                    throw "SHA256SUMS does not contain an entry for $($asset.name). Cannot verify release asset."
+                }
 
-            $actualHash = (Get-FileHash $downloadPath -Algorithm SHA256).Hash.ToUpperInvariant()
-            if ($actualHash -ne $expectedHash) {
-                throw "Checksum verification failed for $($asset.name)."
+                $actualHash = (Get-FileHash $downloadPath -Algorithm SHA256).Hash.ToUpperInvariant()
+                if ($actualHash -ne $expectedHash) {
+                    throw "Checksum verification failed for $($asset.name)."
+                }
+                Write-Status "Checksum verified"
+                Move-Item -LiteralPath $downloadPath -Destination $winsmuxExe -Force
+            } finally {
+                Remove-Item $downloadPath -Force -ErrorAction SilentlyContinue
+                Remove-Item $checksumsPath -Force -ErrorAction SilentlyContinue
             }
-            Write-Status "Checksum verified"
-            Move-Item -LiteralPath $downloadPath -Destination $winsmuxExe -Force
-        } finally {
-            Remove-Item $downloadPath -Force -ErrorAction SilentlyContinue
-            Remove-Item $checksumsPath -Force -ErrorAction SilentlyContinue
         }
 
-        $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+        $userPath = Get-InstallUserPath
         $userPaths = @()
         if ($userPath) {
             $userPaths = $userPath -split ';' | Where-Object { $_ }
@@ -390,7 +448,7 @@ function Install-WinsmuxBinary {
 
         if (-not $hasLocalBin) {
             $newUserPath = if ($userPath) { "$userPath;$localBin" } else { $localBin }
-            [Environment]::SetEnvironmentVariable("Path", $newUserPath, "User")
+            Set-InstallUserPath -Value $newUserPath
             Write-Status "Added $localBin to user PATH"
         }
 
@@ -488,9 +546,6 @@ function Invoke-Install {
     Download-File "scripts/winsmux-core.ps1" (Join-Path $BIN_DIR "winsmux-core.ps1")
     Download-File "scripts/winsmux-core.ps1" (Join-Path $SCRIPT_DIR "winsmux-core.ps1")
 
-    # winsmux.ps1 CLI
-    Download-File "winsmux.ps1" (Join-Path $BIN_DIR "winsmux.ps1")
-
     Install-CoreSupportScripts
 
     if (Test-InstallProfileContent -Profile $resolvedInstallProfile -Content "orchestration_scripts") {
@@ -507,16 +562,13 @@ function Invoke-Install {
     Download-File ".winsmux.conf" $confDest
 
     # 6. Create .cmd wrappers
-    $bridgeCmd = Join-Path $BIN_DIR "winsmux.cmd"
-    @"
-@echo off
-pwsh -NoProfile -File "%USERPROFILE%\.winsmux\bin\winsmux-core.ps1" %*
-"@ | Set-Content -Path $bridgeCmd -Encoding ASCII
-
     $winsmuxCmd = Join-Path $BIN_DIR "winsmux.cmd"
-    @"
+@"
 @echo off
-pwsh -NoProfile -File "%USERPROFILE%\.winsmux\bin\winsmux.ps1" %*
+setlocal
+set "WINSMUX_RAW_EXE=%USERPROFILE%\.local\bin\winsmux.exe"
+pwsh -NoProfile -File "%USERPROFILE%\.winsmux\bin\winsmux-core.ps1" %*
+exit /b %ERRORLEVEL%
 "@ | Set-Content -Path $winsmuxCmd -Encoding ASCII
 
     # 7.5. Register Windows Terminal Fragments
@@ -524,7 +576,7 @@ pwsh -NoProfile -File "%USERPROFILE%\.winsmux\bin\winsmux.ps1" %*
 
     # 8. Add to PATH via $PROFILE
     $profileLine = "`$env:PATH = `"$BIN_DIR;`$env:PATH`""
-    $profilePath = $PROFILE.CurrentUserAllHosts
+    $profilePath = Get-InstallPowerShellProfilePath
     if (-not (Test-Path $profilePath)) {
         $profileDir = Split-Path $profilePath -Parent
         if (-not (Test-Path $profileDir)) {
