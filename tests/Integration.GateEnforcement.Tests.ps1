@@ -5420,6 +5420,7 @@ EOF
                 '@([Environment]::SetEnvironmentVariable(("NODE_"+"OPTIONS"),"--require=./unreviewed-preload.cjs",[EnvironmentVariableTarget]::Process),[Diagnostics.Process]::Start("node",''-e ""''))',
                 '@{a=[Environment]::SetEnvironmentVariable(("NODE_"+"OPTIONS"),"--require=./unreviewed-preload.cjs",[EnvironmentVariableTarget]::Process);b=[Diagnostics.Process]::Start("node",''-e ""'')}',
                 'deno eval ''Deno.env.set("NODE_"+"OPTIONS","--require=./unreviewed-preload.cjs"); new Deno.Command("node",{args:["-e","0"]}).outputSync()''',
+                'echo ([Environment]::SetEnvironmentVariable(("NODE_"+"OPTIONS"),"--require=./unreviewed-preload.cjs",[EnvironmentVariableTarget]::Process)) ([Diagnostics.Process]::Start("node",''-e ""''))',
                 'node -e "process.env.NODE_OPTIONS=''--require=./unreviewed-preload.cjs''; require(''child_process'').spawnSync(''node'', [''-e'',''''])"',
                 'python -c "import os,subprocess; os.environ[''NODE_OPTIONS'']=''--require=./unreviewed-preload.cjs''; subprocess.run([''node'',''-e'',''''])"',
                 'printf ''require("child_process").spawnSync("codex",["exec"])\n'' | node -',
@@ -5782,7 +5783,7 @@ EOF
                 'ALIAS_VALUE=status git --config-env=alias.x=ALIAS_VALUE x --short'
             )) {
             $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $readOnly }
-            $result.OutputObject | Should -BeNullOrEmpty
+            $result.OutputObject | Should -BeNullOrEmpty -Because "read-only alias must remain allowed: $readOnly"
         }
     }
 

@@ -318,7 +318,7 @@ function stripHeredocBodiesAndTerminators(command) {
     const matches = Array.from(line.matchAll(/<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/gu));
     if (matches.length > 0) activeTerminator = matches[matches.length - 1][2];
   }
-  return output.join("\n");
+  return output.join("\n").replace(/\s*\d*<<-?\s*(['"]?)[A-Za-z_][A-Za-z0-9_]*\1/gu, " ");
 }
 
 function getExecutableHeredocBodies(command) {
@@ -4779,28 +4779,46 @@ function hasUnsupportedDirectProcessBoundary(command) {
   const commandSurface = stripHeredocBodiesAndTerminators(source);
   const canonicalPowerShellGhRepoMerge = isCanonicalPowerShellGhRepoMerge(commandSurface);
   if (hasUnownedStdinScriptPipeline(source)) return true;
-  if (!canonicalPowerShellGhRepoMerge && hasUnownedCommandSequence(commandSurface)) return true;
+  if (hasRuntimeNodeOptionsEnvironmentMutation(commandSurface)) return true;
   if (hasUnownedNodeCommandPrelude(commandSurface)) return true;
   for (const segment of splitCommandSegments(commandSurface)) {
     for (const stage of splitCommandPipelineStages(segment)) {
-      const normalizedStage = unwrapPowerShellCommandWrapper(String(stage || "").trim());
-      const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(normalizedStage));
+      const normalizedStage = unwrapShellExecutableControlFlowPrefix(
+        unwrapPowerShellCommandWrapper(String(stage || "").trim()),
+      );
+      const aliasTokens = resolveStaticDirectAliasTokens(commandSurface, unwrapEnvCommandTokens(tokenizeCommandLine(normalizedStage)));
+      if (aliasTokens === null) return true;
+      const tokens = aliasTokens;
       const executable = normalizeExecutableName(tokens[0] || "");
       if (!executable) continue;
-      if (!canonicalPowerShellGhRepoMerge && isUnownedPowerShellStage(normalizedStage, tokens)) return true;
+      if (isCanonicalUnprotectedPowerShellEnvironmentStage(normalizedStage)) continue;
+      if (!canonicalPowerShellGhRepoMerge && isUnownedPowerShellStage(normalizedStage, tokens)) {
+        return true;
+      }
+      if (hasUnresolvedPowerShellArgumentEvaluation(tokens)) {
+        return true;
+      }
       if ((executable === "node" || executable === "nodejs") &&
-          (hasUnresolvedPowerShellArgumentEvaluation(tokens) ||
-           hasNodeStartupCodeConfiguration(tokens, commandSurface))) return true;
-      if (executable === "git" &&
-          (hasDirectGitProcessEnvironment(normalizedStage) || hasGitExternalProcessConfiguration(tokens))) return true;
+          hasNodeStartupCodeConfiguration(tokens, commandSurface)) return true;
+      if (executable === "git") {
+        const hasInlineAliasConfiguration = /\balias\.[A-Za-z0-9._-]+\b/iu.test(normalizedStage) &&
+          (/\bGIT_CONFIG_(?:COUNT|KEY_[0-9]+|VALUE_[0-9]+)\b/iu.test(normalizedStage) ||
+           /--config-env(?:=|\s)/iu.test(normalizedStage) ||
+           /(?:^|\s)-c(?:=|\s)[^;&\r\n]*\balias\./iu.test(normalizedStage));
+        const hasUnsafeDirectEnvironment = hasDirectGitProcessEnvironment(normalizedStage) &&
+          !(hasInlineAliasConfiguration && !hasCommandLocalGitAliasConfiguration(normalizedStage));
+        if (hasUnsafeDirectEnvironment || hasGitExternalProcessConfiguration(tokens)) return true;
+      }
       if (executable === "rg" && hasRgExternalProcessConfiguration(tokens)) return true;
       if (executable === "xargs") {
         const nestedTokens = unwrapEnvCommandTokens(getNormalizedXargsCommandTokens(tokens));
         const nestedExecutable = normalizeExecutableName(nestedTokens[0] || "");
         const finiteSafeTargets = new Set(["", "echo", "printf"]);
-        if (!finiteSafeTargets.has(nestedExecutable) && !isReviewGatedCommand(source)) {
-          return true;
-        }
+        if (finiteSafeTargets.has(nestedExecutable)) continue;
+        const result = classifyStaticProcessInvocation(nestedExecutable, nestedTokens.slice(1), nestedTokens.join(" "));
+        if (result === INTERPRETER_PROCESS_BOUNDARY.ALLOW_STATIC_READONLY ||
+            result === INTERPRETER_PROCESS_BOUNDARY.ALLOW_PROVEN_NON_PROTECTED) continue;
+        return true;
       }
       if (!isOwnedDirectExecutable(executable)) {
         if ((executable === "npm" || executable === "cargo") &&
@@ -4860,18 +4878,37 @@ function hasUnsupportedDirectProcessBoundary(command) {
   return false;
 }
 
-function hasUnownedCommandSequence(source) {
-  const segments = splitCommandSegments(stripHeredocBodies(String(source || "")));
-  if (segments.length < 2) return false;
-  return segments.slice(0, -1).some((segment) =>
-    splitCommandPipelineStages(segment).some((stage) => {
-      const normalizedStage = unwrapPowerShellCommandWrapper(String(stage || "").trim());
-      const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(normalizedStage));
+function resolveStaticDirectAliasTokens(source, inputTokens) {
+  const powerShellAliases = new Map();
+  const shellAliases = new Map();
+  for (const segment of splitCommandSegments(String(source || ""))) {
+    for (const stage of splitCommandPipelineStages(segment)) {
+      const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(unwrapPowerShellCommandWrapper(stage)));
       const executable = normalizeExecutableName(tokens[0] || "");
-      return (!isOwnedDirectExecutable(executable) && executable !== "tee") ||
-        isUnownedPowerShellStage(normalizedStage, tokens) ||
-        hasUnresolvedPowerShellArgumentEvaluation(tokens);
-    }));
+      if (["set-alias", "sal", "new-alias", "nal"].includes(executable)) {
+        const definition = getSetAliasDefinition(tokens);
+        if (definition.aliasName && ["git", "git.exe", "gh", "gh.exe"].includes(definition.aliasTarget)) {
+          powerShellAliases.set(definition.aliasName, normalizeExecutableName(definition.aliasTarget));
+        }
+      } else if (executable === "alias") {
+        const definition = getShellAliasDefinition(tokens);
+        if (definition.aliasName) shellAliases.set(definition.aliasName, definition);
+      }
+    }
+  }
+
+  const executable = normalizeExecutableName(inputTokens[0] || "");
+  if (["alias", "shopt", "set-alias", "sal", "new-alias", "nal"].includes(executable)) return [];
+  if (powerShellAliases.has(executable)) return [powerShellAliases.get(executable), ...inputTokens.slice(1)];
+  const expansion = expandShellAliasInvocation(inputTokens, shellAliases);
+  if (expansion.unresolved) return null;
+  return expansion.matched ? expansion.tokens : inputTokens;
+}
+
+function isCanonicalUnprotectedPowerShellEnvironmentStage(stage) {
+  const match = /^(?:si|set-item|ni|new-item)\b[^;&\r\n]*\bEnv:\\?([A-Za-z_][A-Za-z0-9_]*)\b/iu.exec(String(stage || "").trim());
+  if (!match) return false;
+  return !/^(?:GIT_|GH_|NODE_OPTIONS$|COMSPEC$|PATH$|PATHEXT$)/iu.test(match[1]);
 }
 
 function isCanonicalPowerShellGhRepoMerge(source) {
@@ -4899,7 +4936,7 @@ function hasUnownedNodeCommandPrelude(source) {
   for (let segmentIndex = 1; segmentIndex < segments.length; segmentIndex += 1) {
     for (const stage of splitCommandPipelineStages(segments[segmentIndex])) {
       const normalizedStage = unwrapPowerShellCommandWrapper(String(stage || "").trim());
-      const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(normalizedStage));
+      const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(unwrapShellExecutableControlFlowPrefix(normalizedStage)));
       const executable = normalizeExecutableName(tokens[0] || "");
       if (executable === "node" || executable === "nodejs") return true;
     }
@@ -4927,9 +4964,9 @@ function hasUnownedStdinScriptPipeline(source) {
 
 function isOwnedDirectExecutable(executable) {
   return new Set([
-    "bash", "cat", "cmd", "codex", "curl", "echo", "gh", "git", "grep", "jq", "node", "nodejs",
-    "powershell", "printf", "pwsh", "py", "python", "python3", "rg", "rustc", "sh", "type", "where",
-    "tee", "which", "winsmux", "xargs", "zsh",
+    ":", "bash", "cat", "cd", "cmd", "codex", "curl", "declare", "echo", "export", "false", "gh", "git", "grep", "jq", "local", "node", "nodejs",
+    "powershell", "printf", "pwsh", "py", "python", "python3", "rg", "rustc", "sh", "type", "typeset", "unset", "where",
+    "tee", "true", "which", "winsmux", "xargs", "zsh",
   ]).has(normalizeExecutableName(executable));
 }
 
