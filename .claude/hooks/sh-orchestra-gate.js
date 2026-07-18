@@ -4783,8 +4783,11 @@ function hasUnsupportedDirectProcessBoundary(command) {
   if (hasUnownedStdinScriptPipeline(source)) return true;
   if (hasRuntimeNodeOptionsEnvironmentMutation(commandSurface)) return true;
   if (hasUnownedNodeCommandPrelude(commandSurface)) return true;
-  for (const segment of splitCommandSegments(commandSurface)) {
-    for (const stage of splitCommandPipelineStages(segment)) {
+  for (const segmentEntry of splitCommandSegmentsWithSeparators(commandSurface)) {
+    const pipelineStages = splitCommandPipelineStages(segmentEntry.segment);
+    const aliasStateUpdateIsDeterministic =
+      !["&&", "||"].includes(segmentEntry.separatorBefore) && pipelineStages.length === 1;
+    for (const stage of pipelineStages) {
       const normalizedStage = unwrapShellExecutableControlFlowPrefix(
         unwrapPowerShellCommandWrapper(String(stage || "").trim()),
       );
@@ -4793,13 +4796,16 @@ function hasUnsupportedDirectProcessBoundary(command) {
       const rawNestedPowerShell = isPowerShellExecutable(rawExecutable)
         ? getPowerShellNestedCommand(rawTokens)
         : "";
+      const rawEvaluationTokens = rawNestedPowerShell
+        ? getPowerShellWrapperPrefixTokens(rawTokens)
+        : rawTokens;
       if (!isPowerShellStartProcessExecutable(rawExecutable) &&
-          !rawNestedPowerShell &&
-          hasUnresolvedPowerShellArgumentEvaluation(rawTokens)) return true;
+          hasUnresolvedPowerShellArgumentEvaluation(rawEvaluationTokens)) return true;
       const aliasTokens = resolveStaticDirectAliasTokens(
         rawTokens,
         powerShellAliases,
         shellAliases,
+        aliasStateUpdateIsDeterministic,
       );
       if (aliasTokens === null) return true;
       const tokens = aliasTokens;
@@ -4808,9 +4814,11 @@ function hasUnsupportedDirectProcessBoundary(command) {
       const nestedPowerShell = isPowerShellExecutable(executable)
         ? getPowerShellNestedCommand(tokens)
         : "";
+      const evaluationTokens = nestedPowerShell
+        ? getPowerShellWrapperPrefixTokens(tokens)
+        : tokens;
       if (!isPowerShellStartProcessExecutable(executable) &&
-          !nestedPowerShell &&
-          hasUnresolvedPowerShellArgumentEvaluation(tokens)) {
+          hasUnresolvedPowerShellArgumentEvaluation(evaluationTokens)) {
         return true;
       }
       if (isCanonicalUnprotectedPowerShellEnvironmentStage(normalizedStage)) continue;
@@ -4897,12 +4905,19 @@ function hasUnsupportedDirectProcessBoundary(command) {
   return false;
 }
 
-function resolveStaticDirectAliasTokens(inputTokens, powerShellAliases, shellAliases) {
+function resolveStaticDirectAliasTokens(
+  inputTokens,
+  powerShellAliases,
+  shellAliases,
+  aliasStateUpdateIsDeterministic = true,
+) {
   const executable = normalizeExecutableName(inputTokens[0] || "");
   if (["set-alias", "sal", "new-alias", "nal"].includes(executable)) {
     const definition = getSetAliasDefinition(inputTokens);
     if (definition.aliasName) {
-      if (["git", "git.exe", "gh", "gh.exe"].includes(definition.aliasTarget)) {
+      if (!aliasStateUpdateIsDeterministic) {
+        powerShellAliases.delete(definition.aliasName);
+      } else if (["git", "git.exe", "gh", "gh.exe"].includes(definition.aliasTarget)) {
         powerShellAliases.set(definition.aliasName, normalizeExecutableName(definition.aliasTarget));
       } else {
         powerShellAliases.delete(definition.aliasName);
@@ -4912,7 +4927,10 @@ function resolveStaticDirectAliasTokens(inputTokens, powerShellAliases, shellAli
   }
   if (executable === "alias") {
     const definition = getShellAliasDefinition(inputTokens);
-    if (definition.aliasName) shellAliases.set(definition.aliasName, definition);
+    if (definition.aliasName) {
+      if (aliasStateUpdateIsDeterministic) shellAliases.set(definition.aliasName, definition);
+      else shellAliases.delete(definition.aliasName);
+    }
     return [];
   }
   if (executable === "shopt") return [];
@@ -10202,6 +10220,25 @@ function getPowerShellNestedCommand(tokens) {
   }
 
   return "";
+}
+
+function getPowerShellWrapperPrefixTokens(tokens) {
+  const nestedOptionPrefixes = expandPowerShellOptionPrefixes([
+    "-command",
+    "-c",
+    "-encodedcommand",
+  ]);
+  for (let index = 1; index < tokens.length; index += 1) {
+    const normalizedToken = normalizeAgentValue(stripOuterQuotes(tokens[index]));
+    if (nestedOptionPrefixes.includes(normalizedToken)) {
+      return tokens.slice(0, index);
+    }
+    if (nestedOptionPrefixes.some((optionName) =>
+      normalizedToken.startsWith(optionName + "=") || normalizedToken.startsWith(optionName + ":"))) {
+      return tokens.slice(0, index);
+    }
+  }
+  return tokens;
 }
 
 function getBraceBlockBodies(command) {

@@ -7672,6 +7672,31 @@ print(f().dumps({'ok':True}))"
         ) | Should -BeNullOrEmpty
     }
 
+    It 'TASK-783 C94 denies conditional alias ambiguity and evaluated PowerShell wrapper arguments' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+
+        foreach ($command in @(
+                'Set-Alias g Invoke-Expression; git rev-parse --verify refs/heads/__winsmux_missing__ && Set-Alias g git; g ''cmd /c echo WINSMUX_SAFE_MARKER''',
+                'Set-Alias g Invoke-Expression; git rev-parse --verify refs/heads/__winsmux_missing__ || Set-Alias g git; g ''cmd /c echo WINSMUX_SAFE_MARKER''',
+                'New-Alias g Invoke-Expression; git rev-parse --verify refs/heads/__winsmux_missing__ && New-Alias g git -Force; g ''cmd /c echo WINSMUX_SAFE_MARKER''',
+                'pwsh -NoProfile $([Diagnostics.Process]::Start(("g"+"it"),("com"+"mit --allow-empty -m wrapper-arg"))) -Command "echo safe"',
+                'powershell -NoProfile $([Diagnostics.Process]::Start(("g"+"it"),("com"+"mit --allow-empty -m wrapper-arg"))) -Command "echo safe"',
+                'pwsh ([Diagnostics.Process]::Start(("g"+"it"),("com"+"mit --allow-empty -m wrapper-paren"))) -Command "echo safe"'
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
+            & $script:AssertDenyResult -Result $result -Because $command
+        }
+
+        foreach ($command in @(
+                'Set-Alias g git; g status',
+                'pwsh -Command ''saps git -ArgumentList @("status","--short") -Wait'''
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
+            $result.OutputObject | Should -BeNullOrEmpty -Because $command
+        }
+    }
+
     It 'TASK-783 C09 denies PowerShell block cwd changes to an unreviewed managed target' {
         $fixture = New-GateFixture
         $script:FixtureRoot = $fixture.Root
