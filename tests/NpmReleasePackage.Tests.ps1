@@ -343,6 +343,42 @@ param(
         $result.bootstrapped | Should -BeTrue
     }
 
+    It 'recovers an interrupted binary rotation and rolls back a failed replacement validation' {
+        $installer = Get-Content -LiteralPath $script:InstallerPath -Raw -Encoding UTF8
+        $mainOffset = $installer.IndexOf('# Main', [System.StringComparison]::Ordinal)
+        $mainOffset | Should -BeGreaterThan 0
+        . ([scriptblock]::Create($installer.Substring(0, $mainOffset)))
+
+        $localBin = Join-Path $TestDrive 'rotation-bin'
+        New-Item -ItemType Directory -Path $localBin -Force | Out-Null
+        $winsmuxExe = Join-Path $localBin 'winsmux.exe'
+        $interruptedPrevious = Join-Path $localBin 'winsmux.exe.previous-0123456789abcdef0123456789abcdef'
+        $unownedSibling = Join-Path $localBin 'winsmux.exe.previous-not-owned'
+        Write-TestFileUtf8 -Path $interruptedPrevious -Content 'previous-version'
+        Write-TestFileUtf8 -Path $unownedSibling -Content 'preserve-me'
+
+        Repair-WinsmuxBinaryRotation -LocalBin $localBin -WinsmuxExe $winsmuxExe
+        (Get-Content -LiteralPath $winsmuxExe -Raw -Encoding UTF8) | Should -Be 'previous-version'
+        Test-Path -LiteralPath $interruptedPrevious | Should -BeFalse
+        Test-Path -LiteralPath $unownedSibling | Should -BeTrue
+
+        $stalePrevious = Join-Path $localBin 'winsmux.exe.previous-fedcba9876543210fedcba9876543210'
+        Write-TestFileUtf8 -Path $stalePrevious -Content 'stale-version'
+        Repair-WinsmuxBinaryRotation -LocalBin $localBin -WinsmuxExe $winsmuxExe
+        Test-Path -LiteralPath $stalePrevious | Should -BeFalse
+
+        $downloadPath = Join-Path $TestDrive 'invalid-replacement.exe'
+        Write-TestFileUtf8 -Path $downloadPath -Content 'invalid-version'
+        function Get-WinsmuxCommandVersion { return $null }
+
+        {
+            Install-VerifiedWinsmuxBinary -DownloadPath $downloadPath -WinsmuxExe $winsmuxExe -LocalBin $localBin -ExpectedVersion '9.9.9'
+        } | Should -Throw '*Installed binary validation failed*'
+        (Get-Content -LiteralPath $winsmuxExe -Raw -Encoding UTF8) | Should -Be 'previous-version'
+        @(Get-ChildItem -LiteralPath $localBin -File | Where-Object { $_.Name -match '^winsmux\.exe\.previous-[0-9a-f]{32}$' }).Count | Should -Be 0
+        Test-Path -LiteralPath $unownedSibling | Should -BeTrue
+    }
+
     It 'removes only the installer-owned profile block and preserves user content and encoding' {
         $installer = Get-Content -LiteralPath $script:InstallerPath -Raw -Encoding UTF8
         $installer | Should -Not -Match "-notmatch 'winsmux'"

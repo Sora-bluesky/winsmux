@@ -430,6 +430,82 @@ function Get-WinsmuxCommandVersion {
     return $null
 }
 
+function Repair-WinsmuxBinaryRotation {
+    param(
+        [Parameter(Mandatory = $true)][string]$LocalBin,
+        [Parameter(Mandatory = $true)][string]$WinsmuxExe
+    )
+
+    $previousBinaries = @(
+        Get-ChildItem -LiteralPath $LocalBin -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^winsmux\.exe\.previous-[0-9a-f]{32}$' } |
+            Sort-Object LastWriteTimeUtc -Descending
+    )
+    if ($previousBinaries.Count -eq 0) {
+        return
+    }
+
+    if (-not (Test-Path -LiteralPath $WinsmuxExe -PathType Leaf)) {
+        Move-Item -LiteralPath $previousBinaries[0].FullName -Destination $WinsmuxExe -Force
+        $previousBinaries = @($previousBinaries | Select-Object -Skip 1)
+        Write-Warning "[winsmux] Recovered the installed binary from an interrupted update."
+    }
+
+    foreach ($previousBinary in $previousBinaries) {
+        Remove-Item -LiteralPath $previousBinary.FullName -Force -ErrorAction SilentlyContinue
+    }
+
+    $remainingBinaries = @(
+        Get-ChildItem -LiteralPath $LocalBin -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^winsmux\.exe\.previous-[0-9a-f]{32}$' }
+    )
+    if ($remainingBinaries.Count -gt 0) {
+        throw "A previous winsmux binary is still in use. Close running winsmux processes and retry."
+    }
+}
+
+function Install-VerifiedWinsmuxBinary {
+    param(
+        [Parameter(Mandatory = $true)][string]$DownloadPath,
+        [Parameter(Mandatory = $true)][string]$WinsmuxExe,
+        [Parameter(Mandatory = $true)][string]$LocalBin,
+        [Parameter(Mandatory = $true)][string]$ExpectedVersion
+    )
+
+    $previousBinary = $null
+    if (Test-Path -LiteralPath $WinsmuxExe -PathType Leaf) {
+        $previousBinary = Join-Path $LocalBin ("winsmux.exe.previous-{0}" -f [Guid]::NewGuid().ToString('N'))
+        Move-Item -LiteralPath $WinsmuxExe -Destination $previousBinary -Force
+    }
+
+    try {
+        Move-Item -LiteralPath $DownloadPath -Destination $WinsmuxExe -Force
+        $installed = Get-WinsmuxCommandVersion -CommandInfo ([PSCustomObject]@{ Source = $WinsmuxExe })
+        if (-not $installed -or $installed.Version -ne $ExpectedVersion) {
+            $observed = if ($installed) { $installed.Output } else { 'not runnable' }
+            throw "Installed binary validation failed. Expected $ExpectedVersion, observed: $observed"
+        }
+    } catch {
+        $installError = $_
+        Remove-Item -LiteralPath $WinsmuxExe -Force -ErrorAction SilentlyContinue
+        if ($previousBinary -and (Test-Path -LiteralPath $previousBinary -PathType Leaf)) {
+            try {
+                Move-Item -LiteralPath $previousBinary -Destination $WinsmuxExe -Force
+            } catch {
+                throw "Failed to install the verified binary and failed to restore the previous binary at '$previousBinary': $installError; rollback error: $_"
+            }
+        }
+        throw $installError
+    }
+
+    if ($previousBinary) {
+        # A running old winsmux process can keep this exact owned file locked. The
+        # next installer invocation removes it before another rotation begins.
+        Remove-Item -LiteralPath $previousBinary -Force -ErrorAction SilentlyContinue
+    }
+    return $installed
+}
+
 function Get-WinsmuxReleaseHeaders {
     $headers = @{ "User-Agent" = "winsmux-installer/$VERSION" }
     $e2eGitHubAccess = if ($installerE2e) { [string]$env:WINSMUX_INSTALL_E2E_GITHUB_ACCESS } else { '' }
@@ -473,9 +549,7 @@ function Install-WinsmuxBinary {
         if (-not (Test-Path $localBin)) {
             New-Item -ItemType Directory -Path $localBin -Force | Out-Null
         }
-        Get-ChildItem -LiteralPath $localBin -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -match '^winsmux\.exe\.previous-[0-9a-f]{32}$' } |
-            Remove-Item -Force -ErrorAction SilentlyContinue
+        Repair-WinsmuxBinaryRotation -LocalBin $localBin -WinsmuxExe $winsmuxExe
 
         $release = Resolve-WinsmuxRelease
         $headers = Get-WinsmuxReleaseHeaders
@@ -534,24 +608,7 @@ function Install-WinsmuxBinary {
                     throw "Checksum verification failed for $($asset.name)."
                 }
                 Write-Status "Checksum verified"
-                $previousBinary = $null
-                if (Test-Path -LiteralPath $winsmuxExe -PathType Leaf) {
-                    $previousBinary = Join-Path $localBin ("winsmux.exe.previous-{0}" -f [Guid]::NewGuid().ToString('N'))
-                    Move-Item -LiteralPath $winsmuxExe -Destination $previousBinary -Force
-                }
-                try {
-                    Move-Item -LiteralPath $downloadPath -Destination $winsmuxExe -Force
-                } catch {
-                    $placementError = $_
-                    if ($previousBinary -and (Test-Path -LiteralPath $previousBinary -PathType Leaf)) {
-                        Remove-Item -LiteralPath $winsmuxExe -Force -ErrorAction SilentlyContinue
-                        Move-Item -LiteralPath $previousBinary -Destination $winsmuxExe -Force
-                    }
-                    throw $placementError
-                }
-                if ($previousBinary) {
-                    Remove-Item -LiteralPath $previousBinary -Force -ErrorAction SilentlyContinue
-                }
+                Install-VerifiedWinsmuxBinary -DownloadPath $downloadPath -WinsmuxExe $winsmuxExe -LocalBin $localBin -ExpectedVersion $script:ResolvedVersion | Out-Null
             } finally {
                 Remove-Item $downloadPath -Force -ErrorAction SilentlyContinue
                 Remove-Item $checksumsPath -Force -ErrorAction SilentlyContinue
@@ -582,8 +639,12 @@ function Install-WinsmuxBinary {
             $env:Path = if ($env:Path) { "$env:Path;$localBin" } else { $localBin }
         }
 
-        $ver = (& $winsmuxExe -V 2>&1 | Out-String).Trim()
-        Write-Status "Installed winsmux: $ver"
+        $installed = Get-WinsmuxCommandVersion -CommandInfo ([PSCustomObject]@{ Source = $winsmuxExe })
+        if (-not $installed -or $installed.Version -ne $script:ResolvedVersion) {
+            $observed = if ($installed) { $installed.Output } else { 'not runnable' }
+            throw "Installed binary validation failed. Expected $script:ResolvedVersion, observed: $observed"
+        }
+        Write-Status "Installed winsmux: $($installed.Output)"
     } catch {
         Write-Error "[winsmux] Failed to install winsmux-core: $_"
         exit 1

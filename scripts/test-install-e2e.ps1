@@ -346,10 +346,12 @@ if ($manifest.profile -ne 'full' -or $manifest.version -ne $expectedNativeVersio
 
 $lockedNativeUpdateVerified = $false
 if ($Route -eq 'Direct') {
-    Copy-Item -LiteralPath $pwsh -Destination $native -Force
+    $cmdFixture = Join-Path $env:SystemRoot 'System32\cmd.exe'
+    if (-not (Test-Path -LiteralPath $cmdFixture -PathType Leaf)) { throw "cmd fixture not found: $cmdFixture" }
+    Copy-Item -LiteralPath $cmdFixture -Destination $native -Force
     $lockInfo = [System.Diagnostics.ProcessStartInfo]::new()
     $lockInfo.FileName = $native
-    foreach ($argument in @('-NoProfile', '-Command', 'Start-Sleep -Seconds 120')) {
+    foreach ($argument in @('/d', '/c', 'ping.exe -n 120 127.0.0.1 >NUL')) {
         $lockInfo.ArgumentList.Add($argument)
     }
     $lockInfo.UseShellExecute = $false
@@ -369,13 +371,32 @@ if ($Route -eq 'Direct') {
         if ($updatedNativeVersion.ExitCode -ne 0 -or $updatedNativeVersion.StdOut -ne "winsmux $expectedNativeVersion") {
             throw "replacement native is not runnable after locked update:`n$($updatedNativeVersion.Combined)"
         }
+        $rotationResidue = @(
+            Get-ChildItem -LiteralPath (Split-Path -Parent $native) -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match '^winsmux\.exe\.previous-[0-9a-f]{32}$' }
+        )
+        if ($rotationResidue.Count -gt 1) {
+            throw "locked update left more than one owned rotation file: $($rotationResidue.Name -join ', ')"
+        }
         $lockedNativeUpdateVerified = $true
     } finally {
         if (-not $lockedNative.HasExited) { $lockedNative.Kill($true) }
+        $lockedNative.WaitForExit()
         $lockedNative.Dispose()
+    }
+    $cleanupUpdate = Invoke-CapturedProcess -FilePath $pwsh -Arguments @(
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $installedInstaller,
+        'update', '-ReleaseTag', "v$expectedNativeVersion", '-InstallProfile', 'full'
+    ) -IncludeGitHubAccess
+    if ($cleanupUpdate.ExitCode -ne 0) {
+        throw "follow-up update could not clean rotation residue:`n$($cleanupUpdate.Combined)"
+    }
+    $remainingRotationResidue = @(
         Get-ChildItem -LiteralPath (Split-Path -Parent $native) -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -match '^winsmux\.exe\.previous-[0-9a-f]{32}$' } |
-            Remove-Item -Force -ErrorAction SilentlyContinue
+            Where-Object { $_.Name -match '^winsmux\.exe\.previous-[0-9a-f]{32}$' }
+    )
+    if ($remainingRotationResidue.Count -ne 0) {
+        throw "follow-up update left owned rotation residue: $($remainingRotationResidue.Name -join ', ')"
     }
 }
 
