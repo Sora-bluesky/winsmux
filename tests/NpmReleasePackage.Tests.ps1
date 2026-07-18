@@ -362,14 +362,37 @@ param(
         Test-Path -LiteralPath $interruptedPrevious | Should -BeFalse
         Test-Path -LiteralPath $unownedSibling | Should -BeTrue
 
+        function Get-WinsmuxCommandVersion {
+            param($CommandInfo)
+            $content = Get-Content -LiteralPath $CommandInfo.Source -Raw -Encoding UTF8
+            if ($content -eq 'previous-version') {
+                return [PSCustomObject]@{ Version = '1.0.0'; Output = 'winsmux 1.0.0' }
+            }
+            if ($content -eq 'unvalidated-replacement') {
+                return [PSCustomObject]@{ Version = '2.0.0'; Output = 'winsmux 2.0.0' }
+            }
+            return $null
+        }
+
         $stalePrevious = Join-Path $localBin 'winsmux.exe.previous-fedcba9876543210fedcba9876543210'
         Write-TestFileUtf8 -Path $stalePrevious -Content 'stale-version'
         Repair-WinsmuxBinaryRotation -LocalBin $localBin -WinsmuxExe $winsmuxExe
+        Test-Path -LiteralPath $stalePrevious | Should -BeTrue
+        Repair-WinsmuxBinaryRotation -LocalBin $localBin -WinsmuxExe $winsmuxExe -ExpectedVersion '1.0.0'
         Test-Path -LiteralPath $stalePrevious | Should -BeFalse
+
+        Write-TestFileUtf8 -Path $winsmuxExe -Content 'unvalidated-replacement'
+        $unvalidatedPrevious = Join-Path $localBin 'winsmux.exe.previous-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+        Write-TestFileUtf8 -Path $unvalidatedPrevious -Content 'previous-version'
+        Repair-WinsmuxBinaryRotation -LocalBin $localBin -WinsmuxExe $winsmuxExe
+        (Get-Content -LiteralPath $winsmuxExe -Raw -Encoding UTF8) | Should -Be 'unvalidated-replacement'
+        Test-Path -LiteralPath $unvalidatedPrevious | Should -BeTrue
+        Repair-WinsmuxBinaryRotation -LocalBin $localBin -WinsmuxExe $winsmuxExe -ExpectedVersion '1.0.0'
+        (Get-Content -LiteralPath $winsmuxExe -Raw -Encoding UTF8) | Should -Be 'previous-version'
+        Test-Path -LiteralPath $unvalidatedPrevious | Should -BeFalse
 
         $downloadPath = Join-Path $TestDrive 'invalid-replacement.exe'
         Write-TestFileUtf8 -Path $downloadPath -Content 'invalid-version'
-        function Get-WinsmuxCommandVersion { return $null }
 
         {
             Install-VerifiedWinsmuxBinary -DownloadPath $downloadPath -WinsmuxExe $winsmuxExe -LocalBin $localBin -ExpectedVersion '9.9.9'

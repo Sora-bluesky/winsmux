@@ -433,7 +433,8 @@ function Get-WinsmuxCommandVersion {
 function Repair-WinsmuxBinaryRotation {
     param(
         [Parameter(Mandatory = $true)][string]$LocalBin,
-        [Parameter(Mandatory = $true)][string]$WinsmuxExe
+        [Parameter(Mandatory = $true)][string]$WinsmuxExe,
+        [string]$ExpectedVersion = ''
     )
 
     $previousBinaries = @(
@@ -445,10 +446,25 @@ function Repair-WinsmuxBinaryRotation {
         return
     }
 
-    if (-not (Test-Path -LiteralPath $WinsmuxExe -PathType Leaf)) {
+    $canonicalExists = Test-Path -LiteralPath $WinsmuxExe -PathType Leaf
+    $canonicalVersion = if ($canonicalExists) {
+        Get-WinsmuxCommandVersion -CommandInfo ([PSCustomObject]@{ Source = $WinsmuxExe })
+    } else {
+        $null
+    }
+    $canonicalTrusted = $canonicalVersion -and (
+        [string]::IsNullOrWhiteSpace($ExpectedVersion) -or $canonicalVersion.Version -eq $ExpectedVersion
+    )
+
+    if (-not $canonicalExists -or -not $canonicalTrusted) {
+        Remove-Item -LiteralPath $WinsmuxExe -Force -ErrorAction SilentlyContinue
         Move-Item -LiteralPath $previousBinaries[0].FullName -Destination $WinsmuxExe -Force
         $previousBinaries = @($previousBinaries | Select-Object -Skip 1)
         Write-Warning "[winsmux] Recovered the installed binary from an interrupted update."
+    } elseif ([string]::IsNullOrWhiteSpace($ExpectedVersion)) {
+        # A runnable canonical binary is not enough to retire the known prior image:
+        # preserve it until the requested release version has been resolved.
+        return
     }
 
     foreach ($previousBinary in $previousBinaries) {
@@ -553,6 +569,7 @@ function Install-WinsmuxBinary {
 
         $release = Resolve-WinsmuxRelease
         $headers = Get-WinsmuxReleaseHeaders
+        Repair-WinsmuxBinaryRotation -LocalBin $localBin -WinsmuxExe $winsmuxExe -ExpectedVersion $script:ResolvedVersion
 
         $localCommand = if (Test-Path -LiteralPath $winsmuxExe -PathType Leaf) { Get-Command $winsmuxExe -ErrorAction SilentlyContinue } else { $null }
         $detected = if ($localCommand) { Get-WinsmuxCommandVersion -CommandInfo $localCommand } else { $null }
