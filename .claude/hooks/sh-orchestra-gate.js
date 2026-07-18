@@ -4824,7 +4824,11 @@ function hasUnsupportedDirectProcessBoundary(command) {
 function hasUnownedStdinScriptPipeline(source) {
   return splitCommandSegments(String(source || "")).some((segment) => {
     const stages = splitCommandPipelineStages(segment);
-    return stages.length > 1 && stages.slice(1).some((stage) => isStdinScriptConsumerStage(stage));
+    if (stages.length > 1 && stages.slice(1).some((stage) => isStdinScriptConsumerStage(stage))) {
+      return true;
+    }
+    return stages.some((stage) =>
+      isStdinScriptConsumerStage(stage) && /<<(?!<)|<\s*(?:<\(|[^>&])|<\(/u.test(stage));
   });
 }
 
@@ -8065,6 +8069,8 @@ function hasNodeStartupCodeConfiguration(tokens, source = "") {
 
 function hasRuntimeNodeOptionsEnvironmentMutation(source) {
   const text = String(source || "");
+  const environmentNameStates = getRuntimeEnvironmentMutationNameStates(text);
+  if (environmentNameStates.hasNodeOptions || environmentNameStates.hasUnresolved) return true;
   return /\$env:NODE_OPTIONS\s*(?:=|\+=)/iu.test(text) ||
     /\[(?:System\.)?Environment\]\s*::\s*SetEnvironmentVariable\s*\(\s*["']NODE_OPTIONS["']/iu.test(text) ||
     /\b(?:Set-Item|si|New-Item|ni|Remove-Item|ri|Clear-Item|cli|Set-Content|sc|Clear-Content|clc)\b[^;&\r\n]*(?:Env:\\?)?NODE_OPTIONS\b/iu.test(text) ||
@@ -9462,6 +9468,7 @@ function getRuntimeEnvironmentMutationNameStates(source, assignments = getConsta
   }
 
   let hasGit = false;
+  let hasNodeOptions = false;
   let hasUnresolved = false;
   for (const expression of expressions) {
     const providerPath = /^Env:\\?([A-Za-z_][A-Za-z0-9_]*)$/iu.exec(String(expression || "").trim());
@@ -9470,9 +9477,11 @@ function getRuntimeEnvironmentMutationNameStates(source, assignments = getConsta
       hasUnresolved = true;
     } else if (isGitEnvironmentName(value)) {
       hasGit = true;
+    } else if (normalizeAgentValue(value) === "node_options") {
+      hasNodeOptions = true;
     }
   }
-  return { hasGit, hasUnresolved, count: expressions.length };
+  return { hasGit, hasNodeOptions, hasUnresolved, count: expressions.length };
 }
 
 function hasPersistentGitTargetMutation(command) {
