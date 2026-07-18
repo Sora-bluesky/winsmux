@@ -4752,9 +4752,10 @@ function hasUnsupportedDirectProcessBoundary(command) {
       if (executable === "git" && hasGitExternalProcessConfiguration(tokens)) return true;
       if (executable === "rg" && hasRgExternalProcessConfiguration(tokens)) return true;
       if (executable === "xargs") {
-        const nestedTokens = getNormalizedXargsCommandTokens(tokens);
+        const nestedTokens = unwrapEnvCommandTokens(getNormalizedXargsCommandTokens(tokens));
         const nestedExecutable = normalizeExecutableName(nestedTokens[0] || "");
-        if (isNestedShellProcessLauncher(nestedExecutable) && !isReviewGatedCommand(normalizedStage)) {
+        const finiteSafeTargets = new Set(["", "echo", "printf", "git", "gh"]);
+        if (!finiteSafeTargets.has(nestedExecutable) && !isReviewGatedCommand(normalizedStage)) {
           return true;
         }
       }
@@ -4768,6 +4769,18 @@ function hasUnsupportedDirectProcessBoundary(command) {
       }
       if (isPowerShellExecutable(executable)) {
         const nestedCommand = getPowerShellNestedCommand(tokens);
+        if (nestedCommand && nestedCommand !== normalizedStage && hasUnsupportedDirectProcessBoundary(nestedCommand)) {
+          return true;
+        }
+      }
+      if (executable === "cmd") {
+        const nestedCommand = getCmdShellArgument(tokens, false);
+        if (nestedCommand && nestedCommand !== normalizedStage && hasUnsupportedDirectProcessBoundary(nestedCommand)) {
+          return true;
+        }
+      }
+      if (isShellCommandExecutable(executable)) {
+        const nestedCommand = getShellCommandArgument(tokens);
         if (nestedCommand && nestedCommand !== normalizedStage && hasUnsupportedDirectProcessBoundary(nestedCommand)) {
           return true;
         }
@@ -7989,6 +8002,7 @@ function getStaticNestedShellCommand(tool, resolvedArguments) {
 
 function hasGitExternalProcessConfiguration(tokens) {
   const normalized = tokens.map((value) => normalizeAgentValue(value));
+  if (normalized.some((value) => value.includes("ext::"))) return true;
   const subcommandIndex = findGitSubcommandIndex(tokens);
   const executionOptions = subcommandIndex < 0 ? [] : normalized.slice(subcommandIndex + 1);
   if (executionOptions.some((value) =>
