@@ -4750,8 +4750,14 @@ function hasUnsupportedDirectProcessBoundary(command) {
       const executable = normalizeExecutableName(tokens[0] || "");
       if (!executable) continue;
       if (executable === "git" && hasGitExternalProcessConfiguration(tokens)) return true;
-      if (!isOwnedDirectExecutable(executable) &&
-          /\bcodex(?:\.exe)?\b[\s"']+(?:exec|e|--sandbox)\b/iu.test(normalizedStage)) return true;
+      if (!isOwnedDirectExecutable(executable)) {
+        const nestedExecutable = tokens.slice(1).some((value) => {
+          const candidate = normalizeExecutableName(value);
+          return candidate === "codex" || isNestedShellProcessLauncher(candidate);
+        });
+        if (nestedExecutable ||
+            /\bcodex(?:\.exe)?\b[\s"']+(?:exec|e|--sandbox)\b/iu.test(normalizedStage)) return true;
+      }
       if (isPowerShellExecutable(executable)) {
         const nestedCommand = getPowerShellNestedCommand(tokens);
         if (nestedCommand && nestedCommand !== normalizedStage && hasUnsupportedDirectProcessBoundary(nestedCommand)) {
@@ -4791,7 +4797,7 @@ function isOwnedDirectExecutable(executable) {
   return new Set([
     "bash", "bun", "cargo", "cat", "cmd", "codex", "curl", "deno", "echo", "gh", "git",
     "grep", "jq", "node", "nodejs", "npm", "npx", "pnpm", "powershell", "printf", "pwsh",
-    "py", "python", "python3", "rg", "rustc", "sh", "type", "where", "which", "winsmux", "yarn", "zsh",
+    "py", "python", "python3", "rg", "rustc", "sh", "type", "where", "which", "winsmux", "xargs", "yarn", "zsh",
   ]).has(normalizeExecutableName(executable));
 }
 

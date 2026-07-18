@@ -5331,6 +5331,8 @@ EOF
                 'git grep --open-files-in-p="codex exec --help" -e "^" -- .gitignore',
                 'conhost.exe --headless cmd.exe /c codex exec',
                 'wsl.exe --exec cmd.exe /c codex exec',
+                'wt.exe cmd.exe /c co^dex exec',
+                'wt.exe cmd.exe /c co""dex exec',
                 'node -e "require(''child_process'').spawnSync(''mshta.exe'', [''javascript:new ActiveXObject(\"WScript.Shell\").Run(\"codex exec\");close()''])"',
                 'python -c "import subprocess; subprocess.run([''wmic.exe'',''process'',''call'',''create'',''codex exec''])"',
                 'python -c "import subprocess; subprocess.run([''schtasks.exe'',''/create'',''/tn'',''winsmux-review-bypass'',''/tr'',''codex exec''])"',
