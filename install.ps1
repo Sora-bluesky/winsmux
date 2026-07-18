@@ -6,7 +6,8 @@
 param(
     [Parameter(Position=0)][string]$Action = "install",
     [string]$ReleaseTag = "",
-    [Alias("Profile")][string]$InstallProfile = ""
+    [Alias("Profile")][string]$InstallProfile = "",
+    [Parameter(DontShow)][switch]$UpdateBootstrapComplete
 )
 
 $ErrorActionPreference = 'Stop'
@@ -380,21 +381,14 @@ function Get-WinsmuxCommandVersion {
     return $null
 }
 
-function Install-WinsmuxBinary {
-    $localBin = Join-Path $HOME ".local/bin"
-    $winsmuxExe = Join-Path $localBin "winsmux.exe"
+function Resolve-WinsmuxRelease {
     $headers = @{ "User-Agent" = "winsmux-installer/$VERSION" }
     $e2eGitHubAccess = if ($installerE2e) { [string]$env:WINSMUX_INSTALL_E2E_GITHUB_ACCESS } else { '' }
     if (-not [string]::IsNullOrWhiteSpace($e2eGitHubAccess)) {
         $headers.Authorization = "Bearer $e2eGitHubAccess"
     }
-    $assetName = Get-PreferredReleaseAssetName
 
     try {
-        if (-not (Test-Path $localBin)) {
-            New-Item -ItemType Directory -Path $localBin -Force | Out-Null
-        }
-
         Write-Status "Fetching winsmux-core release ($RELEASE_LABEL)..."
         $release = Invoke-RestMethod -Uri $RELEASE_API_URL -Headers $headers -ErrorAction Stop
         if ([string]::IsNullOrWhiteSpace([string]$release.tag_name)) {
@@ -409,6 +403,24 @@ function Install-WinsmuxBinary {
             "https://raw.githubusercontent.com/Sora-bluesky/winsmux/$script:installSourceRef"
         }
         $script:RELEASE_LABEL = $script:ResolvedReleaseTag
+        return $release
+    } catch {
+        Write-Error "[winsmux] Failed to resolve winsmux-core release: $_"
+        exit 1
+    }
+}
+
+function Install-WinsmuxBinary {
+    $localBin = Join-Path $HOME ".local/bin"
+    $winsmuxExe = Join-Path $localBin "winsmux.exe"
+    $assetName = Get-PreferredReleaseAssetName
+
+    try {
+        if (-not (Test-Path $localBin)) {
+            New-Item -ItemType Directory -Path $localBin -Force | Out-Null
+        }
+
+        $release = Resolve-WinsmuxRelease
 
         $localCommand = if (Test-Path -LiteralPath $winsmuxExe -PathType Leaf) { Get-Command $winsmuxExe -ErrorAction SilentlyContinue } else { $null }
         $detected = if ($localCommand) { Get-WinsmuxCommandVersion -CommandInfo $localCommand } else { $null }
@@ -661,6 +673,25 @@ exit /b %ERRORLEVEL%
     }
 }
 
+function Invoke-UpdateBootstrap {
+    $resolvedInstallProfile = Resolve-InstallProfile -PreferExisting
+    Resolve-WinsmuxRelease | Out-Null
+
+    $bootstrapPath = Join-Path ([System.IO.Path]::GetTempPath()) ("winsmux-update-{0}.ps1" -f [Guid]::NewGuid().ToString('N'))
+    try {
+        Download-File "install.ps1" $bootstrapPath
+        & pwsh -NoProfile -ExecutionPolicy Bypass -File $bootstrapPath update `
+            -ReleaseTag $ResolvedReleaseTag `
+            -InstallProfile $resolvedInstallProfile `
+            -UpdateBootstrapComplete
+        if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+        }
+    } finally {
+        Remove-Item -LiteralPath $bootstrapPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Invoke-Uninstall {
     Write-Status "Uninstalling winsmux..."
 
@@ -738,7 +769,9 @@ Profiles:
 
 switch ($Action.ToLower()) {
     "install"   { Invoke-Install }
-    "update"    { Invoke-Install -IsUpdate }
+    "update"    {
+        if ($UpdateBootstrapComplete) { Invoke-Install -IsUpdate } else { Invoke-UpdateBootstrap }
+    }
     "uninstall" { Invoke-Uninstall }
     "version"   { Write-Output "winsmux $VERSION" }
     "help"      { Show-Help }

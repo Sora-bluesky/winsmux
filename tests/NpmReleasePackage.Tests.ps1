@@ -291,6 +291,48 @@ Describe 'winsmux npm release package contract' {
         $redirectedSmoke.IndexOf('$invariantErrors', [System.StringComparison]::Ordinal) | Should -BeLessThan $redirectedSmoke.IndexOf('$failureParts', [System.StringComparison]::Ordinal)
     }
 
+    It 're-executes the resolved target installer before applying an update' {
+        $installer = Get-Content -LiteralPath $script:InstallerPath -Raw -Encoding UTF8
+        $mainMarker = '# Main'
+        $mainOffset = $installer.IndexOf($mainMarker, [System.StringComparison]::Ordinal)
+        $mainOffset | Should -BeGreaterThan 0
+        $definitions = $installer.Substring(0, $mainOffset)
+
+        $markerPath = Join-Path $TestDrive 'update-bootstrap.json'
+        $targetInstaller = Join-Path $TestDrive 'target-install.ps1'
+        $markerLiteral = $markerPath.Replace("'", "''")
+        Write-TestFileUtf8 -Path $targetInstaller -Content @"
+param(
+    [Parameter(Position=0)][string]`$Action,
+    [string]`$ReleaseTag,
+    [string]`$InstallProfile,
+    [switch]`$UpdateBootstrapComplete
+)
+@{ action = `$Action; release = `$ReleaseTag; profile = `$InstallProfile; bootstrapped = [bool]`$UpdateBootstrapComplete } |
+    ConvertTo-Json -Compress | Set-Content -LiteralPath '$markerLiteral' -Encoding UTF8
+"@
+
+        . ([scriptblock]::Create($definitions))
+        function Resolve-InstallProfile { return 'orchestra' }
+        function Resolve-WinsmuxRelease {
+            Set-Variable -Name ResolvedReleaseTag -Value 'v9.9.9' -Scope 1
+            return [PSCustomObject]@{ tag_name = 'v9.9.9' }
+        }
+        function Download-File {
+            param($relativeUrl, $destPath)
+            $relativeUrl | Should -Be 'install.ps1'
+            Copy-Item -LiteralPath $targetInstaller -Destination $destPath -Force
+        }
+
+        Invoke-UpdateBootstrap
+
+        $result = Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $result.action | Should -Be 'update'
+        $result.release | Should -Be 'v9.9.9'
+        $result.profile | Should -Be 'orchestra'
+        $result.bootstrapped | Should -BeTrue
+    }
+
     It 'verifies every installer download target against the release tree and rejects a missing target' {
         $valid = Invoke-PwshProcess -Arguments @(
             '-NoProfile', '-File', $script:InstallDownloadGatePath,

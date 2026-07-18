@@ -162,6 +162,8 @@ fn is_winsmux_core_bridge_command(command: &str) -> bool {
         command,
         "init"
             | "install"
+            | "update"
+            | "uninstall"
             | "launch"
             | "list"
             | "read"
@@ -388,6 +390,13 @@ mod tests {
     #[test]
     fn workers_command_is_forwarded_to_core_bridge() {
         assert!(is_winsmux_core_bridge_command("workers"));
+    }
+
+    #[test]
+    fn installer_lifecycle_commands_are_forwarded_to_core_bridge() {
+        for command in ["install", "update", "uninstall"] {
+            assert!(is_winsmux_core_bridge_command(command));
+        }
     }
 
     #[test]
