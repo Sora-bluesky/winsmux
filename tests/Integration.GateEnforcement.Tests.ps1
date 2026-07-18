@@ -6454,8 +6454,7 @@ python -c "import subprocess; subprocess.run(['git','commit','-m','python-commen
         }
 
         foreach ($allowedCommand in @(
-                'pwsh -Command ''saps git -ArgumentList @("status","--short") -Wait''',
-                'pwsh -Command ''saps $env:ComSpec -ArgumentList @("/c","echo","git commit is text") -Wait'''
+                'pwsh -Command ''saps git -ArgumentList @("status","--short") -Wait'''
             )) {
             $allowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $allowedCommand }
             $allowed.OutputObject | Should -BeNullOrEmpty
@@ -6545,24 +6544,18 @@ python -c "import subprocess; subprocess.run(['git','commit','-m','python-commen
         $textOnly.OutputObject | Should -BeNullOrEmpty
     }
 
-    It 'TASK-783 C63 normalizes braced ComSpec Start-Process wrappers' {
+    It 'TASK-783 C63 rejects unproved braced ComSpec Start-Process wrappers' {
         $fixture = New-GateFixture
         $script:FixtureRoot = $fixture.Root
 
         foreach ($command in @(
                 'pwsh -Command ''saps ${env:ComSpec} -ArgumentList @("/c","git","commit","-m","braced-comspec") -Wait''',
-                'pwsh -Command ''Start-Process ${env:ComSpec} -ArgumentList @("/c","call","codex","exec","review") -Wait'''
-            )) {
-            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
-            & $script:AssertDenyResult -Result $result
-        }
-
-        foreach ($allowedCommand in @(
+                'pwsh -Command ''Start-Process ${env:ComSpec} -ArgumentList @("/c","call","codex","exec","review") -Wait''',
                 'pwsh -Command ''saps ${env:ComSpec} -ArgumentList @("/c","git","status","--short") -Wait''',
                 'pwsh -Command ''saps ${env:ComSpec} -ArgumentList @("/c","echo","git commit is text") -Wait'''
             )) {
-            $allowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $allowedCommand }
-            $allowed.OutputObject | Should -BeNullOrEmpty
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
+            & $script:AssertDenyResult -Result $result -Because 'ComSpec is runtime environment state, not a statically proved cmd executable'
         }
     }
 
@@ -6901,28 +6894,25 @@ python -c "import subprocess; subprocess.run(['git','commit','-m','python-commen
         }
     }
 
-    It 'TASK-783 C74 resolves direct ComSpec expressions without blocking read-only commands' {
+    It 'TASK-783 C74 rejects direct ComSpec expressions whose runtime executable is unproved' {
         $fixture = New-GateFixture
         $script:FixtureRoot = $fixture.Root
 
         foreach ($command in @(
                 'pwsh -Command ''saps (Get-Item Env:ComSpec).Value -ArgumentList @("/c","git","commit","-m","direct-item") -Wait''',
                 'pwsh -Command ''saps (gi Env:ComSpec).Value -ArgumentList @("/c","codex","exec","review") -Wait''',
-                'pwsh -Command ''Start-Process ([Environment]::GetEnvironmentVariable(("Com"+"Spec"))) -ArgumentList @("/c","git","commit","-m","constructed-comspec") -Wait'''
+                'pwsh -Command ''Start-Process ([Environment]::GetEnvironmentVariable(("Com"+"Spec"))) -ArgumentList @("/c","git","commit","-m","constructed-comspec") -Wait''',
+                'pwsh -Command ''saps (Get-Item Env:ComSpec).Value -ArgumentList @("/c","git","status","--short") -Wait''',
+                'pwsh -Command ''Start-Process ([Environment]::GetEnvironmentVariable(("Com"+"Spec"))) -ArgumentList @("/c","echo","git commit is text") -Wait'''
             )) {
             $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
-            & $script:AssertDenyResult -Result $result
+            & $script:AssertDenyResult -Result $result -Because 'ComSpec is runtime environment state, not a statically proved cmd executable'
         }
 
-        $allowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
-            command = 'pwsh -Command ''saps (Get-Item Env:ComSpec).Value -ArgumentList @("/c","git","status","--short") -Wait'''
+        $substituted = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -Environment @{ ComSpec = 'pwsh' } -ToolInput @{
+            command = 'saps ${env:ComSpec} -ArgumentList @(''/c'',''echo $PSVersionTable.PSEdition'') -NoNewWindow -Wait'
         }
-        $allowed.OutputObject | Should -BeNullOrEmpty
-
-        $constructed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
-            command = 'pwsh -Command ''Start-Process ([Environment]::GetEnvironmentVariable(("Com"+"Spec"))) -ArgumentList @("/c","echo","git commit is text") -Wait'''
-        }
-        & $script:AssertDenyResult -Result $constructed -Because 'the ComSpec name is computed rather than canonical'
+        & $script:AssertDenyResult -Result $substituted -Because 'a substituted ComSpec must not be classified as cmd'
     }
 
     It 'TASK-783 C75 preserves binding scope while denying parent mutations across function arrow and block forms' {

@@ -5027,10 +5027,9 @@ function hasUnresolvedPowerShellStartProcessArgumentEvaluation(_tokens, source) 
   let maskedSource = maskCanonicalPowerShellArgumentArrays(source);
   maskedSource = maskedSource
     .replace(/\(\s*get-command\s+(?:git|gh|codex)\s*\)/giu, "__WINSMUX_STATIC_COMMAND__")
-    .replace(/\(\s*(?:get-item|gi)\s+Env:\\?ComSpec\s*\)\.Value/giu, "__WINSMUX_STATIC_COMSPEC__")
-    .replace(/\$\{env:ComSpec\}/giu, "__WINSMUX_STATIC_COMSPEC__")
     .replace(/'(?:[^']|'')*'/gu, "__WINSMUX_STATIC_STRING__")
     .replace(/"[^"$\x60]*"/gu, "__WINSMUX_STATIC_STRING__");
+  if (/\$(?:env:comspec|\{env:comspec\})|%comspec%/iu.test(maskedSource)) return true;
   return /\$\(|@\(|@\{|<#|#>|[()[\]{}&]/u.test(maskedSource);
 }
 
