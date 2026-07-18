@@ -226,9 +226,14 @@ if ($Route -eq 'DefectDetection') {
         throw 'Could not construct the pre-fix installer fixture.'
     }
     $broken = $source.Replace($anchor, $anchor + [Environment]::NewLine + [Environment]::NewLine + '    Download-File "winsmux.ps1" (Join-Path $BIN_DIR "winsmux.ps1")')
+    $binaryInstallCall = '    Install-WinsmuxBinary'
+    if ([regex]::Matches($broken, '(?m)^' + [regex]::Escape($binaryInstallCall) + '$').Count -ne 1) {
+        throw 'Could not isolate the pre-fix download defect from release binary acquisition.'
+    }
+    $broken = $broken.Replace($binaryInstallCall, '    Write-Status "Defect fixture skips release binary acquisition"')
     [System.IO.File]::WriteAllText($brokenInstaller, $broken, [System.Text.UTF8Encoding]::new($false))
     $result = Invoke-IrmInstaller -SourceInstaller $brokenInstaller -ServerDirectory (Join-Path $scratch 'pre-fix-server')
-    if ($result.ExitCode -eq 0 -or $result.Combined -notmatch 'winsmux\.ps1' -or $result.Combined -notmatch '404|Not Found|Failed to download') {
+    if ($result.ExitCode -eq 0 -or $result.Combined -notmatch 'winsmux\.ps1' -or $result.Combined -notmatch '404|Not Found') {
         throw "Pre-fix defect was not detected as expected. exit=$($result.ExitCode)`n$($result.Combined)"
     }
     [ordered]@{

@@ -253,6 +253,8 @@ Describe 'winsmux npm release package contract' {
         $installE2e | Should -Match "wrapper.*doctor"
         $installE2e | Should -Match 'installer download failure'
         $installE2e | Should -Not -Match "\$installResult\.Combined -match '404\|Not Found\|Failed to download'"
+        $installE2e | Should -Match 'Defect fixture skips release binary acquisition'
+        $installE2e | Should -Not -Match "\$result\.Combined -notmatch '404\|Not Found\|Failed to download'"
         $installE2e | Should -Match '\[ValidateRange\(1, 1800\)\]\[int\]\$TimeoutSeconds = 900'
         $installE2e | Should -Match '\$process\.Kill\(\$true\)'
         $installE2e | Should -Match 'Child process exceeded \$\{TimeoutSeconds\}s and was terminated'
