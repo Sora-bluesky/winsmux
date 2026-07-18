@@ -5318,6 +5318,7 @@ EOF
                 'node -e "require(''child_process'').spawnSync(''echo'', [''codex'', ''exec''])"',
                 'node --print "require(''child_process'').spawnSync(''echo'', [''codex'', ''exec''])"',
                 'node -p "1 + 1"',
+                'node -pe "1 + 1"',
                 'python -c "import subprocess; subprocess.run([''echo'', ''codex'', ''exec''])"',
                 'cmd /c echo call codex exec review'
             )) {
@@ -5361,6 +5362,7 @@ EOF
                 'git difftool -x "codex e" --no-index .gitignore VERSION',
                 'node --print "require(''child_process'').spawnSync(''codex'', [''exec''])"',
                 'node -p "require(''child_process'').execSync(''cmd.exe /c codex exec'')"',
+                'node -pe "require(''child_process'').spawnSync(''codex'', [''exec''])"',
                 'node -e "require(''child_process'').spawnSync(''mshta.exe'', [''javascript:new ActiveXObject(\"WScript.Shell\").Run(\"codex exec\");close()''])"',
                 'python -c "import subprocess; subprocess.run([''wmic.exe'',''process'',''call'',''create'',''codex exec''])"',
                 'python -c "import subprocess; subprocess.run([''schtasks.exe'',''/create'',''/tn'',''winsmux-review-bypass'',''/tr'',''codex exec''])"',

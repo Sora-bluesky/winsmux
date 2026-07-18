@@ -521,7 +521,7 @@ function isStdinScriptConsumerStage(stage, stdinDeviceAliases = new Map(), expec
     for (let index = 1; index < tokens.length; index += 1) {
       const rawToken = stripOuterQuotes(tokens[index]);
       const token = normalizeAgentValue(rawToken);
-      if (["-c", "-e", "-p", "--eval", "--print", "-m"].includes(token) ||
+      if (["-c", "-e", "-p", "-pe", "--eval", "--print", "-m"].includes(token) ||
           token.startsWith("--eval=") || token.startsWith("--print=")) {
         return false;
       }
@@ -4304,7 +4304,7 @@ function hasUnsupportedNodeProcessConstruction(script) {
 }
 
 function getInterpreterInlineSourceToken(tokens, kind) {
-  const options = kind === "python" ? ["-c"] : ["-e", "-p", "--eval", "--print"];
+  const options = kind === "python" ? ["-c"] : ["-e", "-p", "-pe", "--eval", "--print"];
   for (let index = 1; index < tokens.length; index += 1) {
     const token = String(tokens[index] || "");
     const normalized = normalizeAgentValue(token);
@@ -4324,7 +4324,7 @@ function getInterpreterTrailingArgumentTokens(command) {
   const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(String(command || "")));
   const kind = getShellInterpreterKind(tokens);
   if (!kind) return [];
-  const options = kind === "python" ? ["-c"] : ["-e", "-p", "--eval", "--print"];
+  const options = kind === "python" ? ["-c"] : ["-e", "-p", "-pe", "--eval", "--print"];
   for (let index = 1; index < tokens.length; index += 1) {
     const token = String(tokens[index] || "");
     const normalized = normalizeAgentValue(token);
@@ -7612,7 +7612,7 @@ function hasInterpreterCwdChangeCommand(segment, tokens) {
 }
 
 function getInterpreterInlineScript(tokens, kind) {
-  const scriptOptions = kind === "python" ? ["-c"] : ["-e", "-p", "--eval", "--print"];
+  const scriptOptions = kind === "python" ? ["-c"] : ["-e", "-p", "-pe", "--eval", "--print"];
   return getOptionRemainderValue(tokens, scriptOptions);
 }
 
