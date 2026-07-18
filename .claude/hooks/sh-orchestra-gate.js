@@ -4778,6 +4778,8 @@ function hasUnsupportedDirectProcessBoundary(command) {
   const source = materializePowerShellComSpecAliases(String(command || ""));
   const commandSurface = stripHeredocBodiesAndTerminators(source);
   const canonicalPowerShellGhRepoMerge = isCanonicalPowerShellGhRepoMerge(commandSurface);
+  const powerShellAliases = new Map();
+  const shellAliases = new Map();
   if (hasUnownedStdinScriptPipeline(source)) return true;
   if (hasRuntimeNodeOptionsEnvironmentMutation(commandSurface)) return true;
   if (hasUnownedNodeCommandPrelude(commandSurface)) return true;
@@ -4786,16 +4788,33 @@ function hasUnsupportedDirectProcessBoundary(command) {
       const normalizedStage = unwrapShellExecutableControlFlowPrefix(
         unwrapPowerShellCommandWrapper(String(stage || "").trim()),
       );
-      const aliasTokens = resolveStaticDirectAliasTokens(commandSurface, unwrapEnvCommandTokens(tokenizeCommandLine(normalizedStage)));
+      const rawTokens = unwrapEnvCommandTokens(tokenizeCommandLine(normalizedStage));
+      const rawExecutable = normalizeExecutableName(rawTokens[0] || "");
+      const rawNestedPowerShell = isPowerShellExecutable(rawExecutable)
+        ? getPowerShellNestedCommand(rawTokens)
+        : "";
+      if (!isPowerShellStartProcessExecutable(rawExecutable) &&
+          !rawNestedPowerShell &&
+          hasUnresolvedPowerShellArgumentEvaluation(rawTokens)) return true;
+      const aliasTokens = resolveStaticDirectAliasTokens(
+        rawTokens,
+        powerShellAliases,
+        shellAliases,
+      );
       if (aliasTokens === null) return true;
       const tokens = aliasTokens;
       const executable = normalizeExecutableName(tokens[0] || "");
       if (!executable) continue;
-      if (isCanonicalUnprotectedPowerShellEnvironmentStage(normalizedStage)) continue;
-      if (!canonicalPowerShellGhRepoMerge && isUnownedPowerShellStage(normalizedStage, tokens)) {
+      const nestedPowerShell = isPowerShellExecutable(executable)
+        ? getPowerShellNestedCommand(tokens)
+        : "";
+      if (!isPowerShellStartProcessExecutable(executable) &&
+          !nestedPowerShell &&
+          hasUnresolvedPowerShellArgumentEvaluation(tokens)) {
         return true;
       }
-      if (hasUnresolvedPowerShellArgumentEvaluation(tokens)) {
+      if (isCanonicalUnprotectedPowerShellEnvironmentStage(normalizedStage)) continue;
+      if (!canonicalPowerShellGhRepoMerge && isUnownedPowerShellStage(normalizedStage, tokens)) {
         return true;
       }
       if ((executable === "node" || executable === "nodejs") &&
@@ -4832,7 +4851,7 @@ function hasUnsupportedDirectProcessBoundary(command) {
         return true;
       }
       if (isPowerShellExecutable(executable)) {
-        const nestedCommand = getPowerShellNestedCommand(tokens);
+        const nestedCommand = nestedPowerShell;
         if (nestedCommand && nestedCommand !== normalizedStage && hasUnsupportedDirectProcessBoundary(nestedCommand)) {
           return true;
         }
@@ -4878,27 +4897,25 @@ function hasUnsupportedDirectProcessBoundary(command) {
   return false;
 }
 
-function resolveStaticDirectAliasTokens(source, inputTokens) {
-  const powerShellAliases = new Map();
-  const shellAliases = new Map();
-  for (const segment of splitCommandSegments(String(source || ""))) {
-    for (const stage of splitCommandPipelineStages(segment)) {
-      const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(unwrapPowerShellCommandWrapper(stage)));
-      const executable = normalizeExecutableName(tokens[0] || "");
-      if (["set-alias", "sal", "new-alias", "nal"].includes(executable)) {
-        const definition = getSetAliasDefinition(tokens);
-        if (definition.aliasName && ["git", "git.exe", "gh", "gh.exe"].includes(definition.aliasTarget)) {
-          powerShellAliases.set(definition.aliasName, normalizeExecutableName(definition.aliasTarget));
-        }
-      } else if (executable === "alias") {
-        const definition = getShellAliasDefinition(tokens);
-        if (definition.aliasName) shellAliases.set(definition.aliasName, definition);
+function resolveStaticDirectAliasTokens(inputTokens, powerShellAliases, shellAliases) {
+  const executable = normalizeExecutableName(inputTokens[0] || "");
+  if (["set-alias", "sal", "new-alias", "nal"].includes(executable)) {
+    const definition = getSetAliasDefinition(inputTokens);
+    if (definition.aliasName) {
+      if (["git", "git.exe", "gh", "gh.exe"].includes(definition.aliasTarget)) {
+        powerShellAliases.set(definition.aliasName, normalizeExecutableName(definition.aliasTarget));
+      } else {
+        powerShellAliases.delete(definition.aliasName);
       }
     }
+    return [];
   }
-
-  const executable = normalizeExecutableName(inputTokens[0] || "");
-  if (["alias", "shopt", "set-alias", "sal", "new-alias", "nal"].includes(executable)) return [];
+  if (executable === "alias") {
+    const definition = getShellAliasDefinition(inputTokens);
+    if (definition.aliasName) shellAliases.set(definition.aliasName, definition);
+    return [];
+  }
+  if (executable === "shopt") return [];
   if (powerShellAliases.has(executable)) return [powerShellAliases.get(executable), ...inputTokens.slice(1)];
   const expansion = expandShellAliasInvocation(inputTokens, shellAliases);
   if (expansion.unresolved) return null;
@@ -4906,7 +4923,17 @@ function resolveStaticDirectAliasTokens(source, inputTokens) {
 }
 
 function isCanonicalUnprotectedPowerShellEnvironmentStage(stage) {
-  const match = /^(?:si|set-item|ni|new-item)\b[^;&\r\n]*\bEnv:\\?([A-Za-z_][A-Za-z0-9_]*)\b/iu.exec(String(stage || "").trim());
+  const literal = String.raw`(?:'(?:[^']|'')*'|"[^"$\x60]*"|[A-Za-z0-9_./:\\-]+)`;
+  const source = String(stage || "").trim();
+  const positional = new RegExp(
+    String.raw`^(?:si|set-item|ni|new-item)\s+Env:\\?([A-Za-z_][A-Za-z0-9_]*)\s+(?:-Value\s+)?${literal}$`,
+    "iu",
+  ).exec(source);
+  const byPath = new RegExp(
+    String.raw`^(?:si|set-item|ni|new-item)\s+-Path(?::|\s+)Env:\\?([A-Za-z_][A-Za-z0-9_]*)\s+-Value(?::|\s+)${literal}$`,
+    "iu",
+  ).exec(source);
+  const match = positional || byPath;
   if (!match) return false;
   return !/^(?:GIT_|GH_|NODE_OPTIONS$|COMSPEC$|PATH$|PATHEXT$)/iu.test(match[1]);
 }
@@ -4963,11 +4990,13 @@ function hasUnownedStdinScriptPipeline(source) {
 }
 
 function isOwnedDirectExecutable(executable) {
+  const normalized = normalizeExecutableName(executable);
+  if (/^python[0-9]+(?:\.[0-9]+)?$/u.test(normalized)) return true;
   return new Set([
     ":", "bash", "cat", "cd", "cmd", "codex", "curl", "declare", "echo", "export", "false", "gh", "git", "grep", "jq", "local", "node", "nodejs",
-    "powershell", "printf", "pwsh", "py", "python", "python3", "rg", "rustc", "sh", "type", "typeset", "unset", "where",
+    "powershell", "printf", "pwsh", "py", "python", "python3", "rg", "rustc", "saps", "sh", "start", "start-process", "type", "typeset", "unset", "where",
     "tee", "true", "which", "winsmux", "xargs", "zsh",
-  ]).has(normalizeExecutableName(executable));
+  ]).has(normalized);
 }
 
 function hasUnresolvedInterpreterProcessBoundary(command) {

@@ -6185,16 +6185,16 @@ python -c "import subprocess; subprocess.run(['git','commit','-m','python-commen
                 'h=gh; "$h" pr merge 1200',
                 'h=gh; "$h" api -X PATCH repos/example/winsmux/git/refs/heads/main',
                 'cmd=(git commit -m array-variable); "${cmd[@]}"',
-                'cmd=(codex exec review); "${cmd[@]}"'
+                'cmd=(codex exec review); "${cmd[@]}"',
+                'g=git; "$g" status',
+                'cmd=(git branch --list); "${cmd[@]}"'
             )) {
             $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
             & $script:AssertDenyResult -Result $result
         }
 
         foreach ($allowedCommand in @(
-                'g=git; "$g" status',
-                'g=git; printf "%s" "$g commit"',
-                'cmd=(git branch --list); "${cmd[@]}"'
+                'g=git; printf "%s" "$g commit"'
             )) {
             $allowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $allowedCommand }
             $allowed.OutputObject | Should -BeNullOrEmpty -Because $allowedCommand
@@ -6231,8 +6231,8 @@ python -c "import subprocess; subprocess.run(['git','commit','-m','python-commen
 
         $regularLink = (Join-Path $fixture.Root 'regular-script-link').Replace('\', '/')
         $regularScript = "ln -sf script.sh '$regularLink'; cat <<'EOF' | bash '$regularLink'`ngit commit -m regular-script-data`nEOF"
-        $allowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $regularScript }
-        $allowed.OutputObject | Should -BeNullOrEmpty
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $regularScript }
+        & $script:AssertDenyResult -Result $result -Because 'ln is not a member of the finite direct-executable allowlist'
     }
 
     It 'TASK-783 C52 fails closed on additional runtime Git environment mutation APIs' {
@@ -6341,7 +6341,7 @@ python -c "import subprocess; subprocess.run(['git','commit','-m','python-commen
         $safe = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
             command = 'pwsh -Command "$name=''FOO''; Set-Item (''Env:''+$name) ''1''; git commit -m safe-dynamic-env"'
         }
-        $safe.OutputObject | Should -BeNullOrEmpty
+        & $script:AssertDenyResult -Result $safe -Because 'a dynamically constructed PowerShell environment provider path is not a canonical literal assignment'
     }
 
     It 'TASK-783 C56 inspects executable heredocs supplied on nonzero file descriptors' {
@@ -6424,12 +6424,16 @@ python -c "import subprocess; subprocess.run(['git','commit','-m','python-commen
 
         foreach ($allowedCommand in @(
                 'node -e "const k=''FO''+''O''; process.env[k]=''1''; require(''child_process'').execSync(''git status --short'')"',
-                'python -c "import os,subprocess; k=''FO''+''O''; os.environ[k]=''1''; subprocess.run([''git'',''status'',''--short''])"',
-                'pwsh -Command "$k=''FO''+''O''; Set-Item (''Env:''+$k) ''1''; git commit -m safe-constructed-provider-env"'
+                'python -c "import os,subprocess; k=''FO''+''O''; os.environ[k]=''1''; subprocess.run([''git'',''status'',''--short''])"'
             )) {
             $allowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $allowedCommand }
             $allowed.OutputObject | Should -BeNullOrEmpty
         }
+
+        $dynamicPowerShell = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+            command = 'pwsh -Command "$k=''FO''+''O''; Set-Item (''Env:''+$k) ''1''; git commit -m safe-constructed-provider-env"'
+        }
+        & $script:AssertDenyResult -Result $dynamicPowerShell -Because 'the PowerShell environment name is not a canonical literal'
     }
 
     It 'TASK-783 C59 rejects dynamic Windows lifecycle wrappers' {
@@ -6442,14 +6446,14 @@ python -c "import subprocess; subprocess.run(['git','commit','-m','python-commen
                 'cmd /v:on /c "set h=gh&&call !h! pr merge 1200"',
                 'pwsh -Command ''saps $env:ComSpec -ArgumentList @("/c","call","git","commit","--allow-empty","-m","saps-cmd") -Wait''',
                 'pwsh -Command ''Start-Process $env:ComSpec -ArgumentList @("/v:on","/c","set g=git&&call !g! commit -m start-cmd") -Wait''',
-                'pwsh -Command ''saps $env:ComSpec -ArgumentList @("/c","call","codex","exec","review") -Wait'''
+                'pwsh -Command ''saps $env:ComSpec -ArgumentList @("/c","call","codex","exec","review") -Wait''',
+                'cmd /v:on /c "set g=git&&call !g! status --short"'
             )) {
             $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
             & $script:AssertDenyResult -Result $result
         }
 
         foreach ($allowedCommand in @(
-                'cmd /v:on /c "set g=git&&call !g! status --short"',
                 'pwsh -Command ''saps git -ArgumentList @("status","--short") -Wait''',
                 'pwsh -Command ''saps $env:ComSpec -ArgumentList @("/c","echo","git commit is text") -Wait'''
             )) {
@@ -6527,14 +6531,18 @@ python -c "import subprocess; subprocess.run(['git','commit','-m','python-commen
             & $script:AssertDenyResult -Result $result
         }
 
-        foreach ($allowedCommand in @(
+        foreach ($command in @(
                 'cmd /c call %READ_TOOL% status --short',
-                'cmd /v:on /c "set a=gi&&set b=t&&call !a!!b! status --short"',
-                'cmd /v:on /c "echo set a=gi&&echo !a! commit is text"'
+                'cmd /v:on /c "set a=gi&&set b=t&&call !a!!b! status --short"'
             )) {
-            $allowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $allowedCommand }
-            $allowed.OutputObject | Should -BeNullOrEmpty
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
+            & $script:AssertDenyResult -Result $result -Because 'cmd variable execution is outside the finite direct allowlist'
         }
+
+        $textOnly = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+            command = 'cmd /v:on /c "echo set a=gi&&echo !a! commit is text"'
+        }
+        $textOnly.OutputObject | Should -BeNullOrEmpty
     }
 
     It 'TASK-783 C63 normalizes braced ComSpec Start-Process wrappers' {
@@ -6612,12 +6620,16 @@ python -c "import subprocess; subprocess.run(['git','commit','-m','python-commen
         foreach ($allowedCommand in @(
                 'python -c "import os,subprocess; k=''FO''+''O''; os.environ |= {k:''1''}; subprocess.run([''git'',''status'',''--short''])"',
                 'python -c "import os,subprocess; k=''FO''+''O''; e=os.environ; e[k]=''1''; subprocess.run([''git'',''status'',''--short''])"',
-                'node -e "const k=''FO''+''O''; const e=process.env; e[k]=''1''; require(''child_process'').execSync(''git status --short'')"',
-                'pwsh -Command "$k=''FO''+''O''; $p=(''Env:''+$k); Set-Item $p ''1''; git commit -m safe-provider-path"'
+                'node -e "const k=''FO''+''O''; const e=process.env; e[k]=''1''; require(''child_process'').execSync(''git status --short'')"'
             )) {
             $allowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $allowedCommand }
             $allowed.OutputObject | Should -BeNullOrEmpty
         }
+
+        $dynamicPowerShell = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+            command = 'pwsh -Command "$k=''FO''+''O''; $p=(''Env:''+$k); Set-Item $p ''1''; git commit -m safe-provider-path"'
+        }
+        & $script:AssertDenyResult -Result $dynamicPowerShell -Because 'the provider path is not a canonical literal assignment'
     }
 
     It 'TASK-783 C66 resolves cmd replacements and ComSpec aliases at executable and environment sinks' {
@@ -6639,17 +6651,14 @@ python -c "import subprocess; subprocess.run(['git','commit','-m','python-commen
             & $script:AssertDenyResult -Result $result
         }
 
-        foreach ($allowedCommand in @(
+        foreach ($command in @(
                 'cmd /v:on /c "set g=git&&call !g:git=git! status --short"',
                 'cmd /v:on /c "set t=git commit&&echo !t:commit=commit!"',
                 'pwsh -Command "$cs=$env:ComSpec; saps $cs -ArgumentList @(''/c'',''git'',''status'',''--short'') -Wait"',
                 'pwsh -Command "$cs=$env:ComSpec; saps $cs -ArgumentList @(''/c'',''echo'',''git commit is text'') -Wait"'
             )) {
-            $allowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $allowedCommand }
-            if ($null -ne $allowed.OutputObject) {
-                throw "Expected gate allow for C66 input: $allowedCommand"
-            }
-            $allowed.OutputObject | Should -BeNullOrEmpty
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
+            & $script:AssertDenyResult -Result $result -Because 'runtime replacement and variable-bound ComSpec execution are outside the finite allowlist'
         }
 
         $target = New-GateTargetRepo -Root $fixture.Root -Name 'cmd-dynamic-env-target'
@@ -6666,7 +6675,7 @@ python -c "import subprocess; subprocess.run(['git','commit','-m','python-commen
         $safe = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
             command = 'cmd /v:on /c "set a=FO&&set b=O&&set !a!!b!=1&&git commit -m safe-dynamic-env"'
         }
-        $safe.OutputObject | Should -BeNullOrEmpty
+        & $script:AssertDenyResult -Result $safe -Because 'a dynamically constructed cmd environment name is not canonical'
     }
 
     It 'TASK-783 C67 tracks object-level child provenance and unresolved Codex modes by call position' {
@@ -6719,11 +6728,33 @@ python -c "import subprocess; subprocess.run(['git','commit','-m','python-commen
             & $script:AssertDenyResult -Result $result
         }
 
+        foreach ($command in @(
+                'pwsh -Command ''Set-Item Env:TASK783 ([Diagnostics.Process]::Start(("g"+"it"),("com"+"mit --allow-empty -m env-value-process")))''',
+                'pwsh -Command ''si Env:TASK783 ([Diagnostics.Process]::Start(("g"+"h"),("pr"+" merge 1179")))''',
+                'pwsh -Command ''New-Item Env:TASK783 ([Diagnostics.Process]::Start(("g"+"it"),("com"+"mit --allow-empty -m new-item-process")))''',
+                'pwsh -Command ''Set-Item -Path Env:TASK783 -Value ([Diagnostics.Process]::Start(("g"+"it"),("com"+"mit --allow-empty -m path-value-process")))''',
+                'pwsh -Command ''Set-Item Env:TASK783 $dynamicValue''',
+                'pwsh -Command ''Set-Item Env:TASK783 ("static"+"value")''',
+                'Set-Alias g Invoke-Expression; g ''cmd /c echo WINSMUX_SAFE_MARKER''; Set-Alias g git',
+                'New-Alias g Invoke-Expression; g ''cmd /c echo WINSMUX_SAFE_MARKER_NA''; Set-Alias g git',
+                'sal g iex; g ''cmd /c echo WINSMUX_SAFE_MARKER_SAL''; sal g git',
+                'Set-Alias g ([Diagnostics.Process]::Start(("g"+"it"),("com"+"mit --allow-empty -m alias-value")))',
+                'sal g $([Diagnostics.Process]::Start(("g"+"h"),("pr "+"merge 1179")))',
+                'New-Alias g ([Diagnostics.Process]::Start(("c"+"odex"),("ex"+"ec review")))',
+                'alias g=''$(printf git) commit --allow-empty -m shell-alias-value'''
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
+            & $script:AssertDenyResult -Result $result -Because $command
+        }
+
         foreach ($allowedCommand in @(
                 'node -e "let e=process.env; e={}; const k=''GI''+''T_DIR''; e[k]=''x''; require(''child_process'').execSync(''git status --short'')"',
                 'python -c "import os,subprocess; e=os.environ; e={}; k=''GI''+''T_DIR''; e[k]=''x''; subprocess.run([''git'',''status'',''--short''])"',
                 'pwsh -Command ''Set-Item Env:FOO 1; git commit -m safe-static-foo''',
-                'pwsh -Command ''Set-Item -Path Env:FOO -Value 1; git commit -m safe-path-foo'''
+                'pwsh -Command ''Set-Item -Path Env:FOO -Value 1; git commit -m safe-path-foo''',
+                'pwsh -Command ''si Env:FOO "static"; git commit -m safe-alias-foo''',
+                'pwsh -Command ''New-Item Env:FOO -Value ''static''; git commit -m safe-new-item-foo''',
+                'pwsh -Command ''ni Env:FOO -Value 1; git commit -m safe-new-item-alias-foo'''
             )) {
             $allowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $allowedCommand }
             $allowed.OutputObject | Should -BeNullOrEmpty
@@ -6747,14 +6778,14 @@ python -c "import subprocess; subprocess.run(['git','commit','-m','python-commen
             & $script:AssertDenyResult -Result $result
         }
 
-        foreach ($allowedCommand in @(
+        foreach ($command in @(
                 'cmd /v:on /c "set x=prefix git&&call !x:* =! status --short"',
                 'cmd /v:off /c "set g=git&&call !g! commit -m text"',
                 'pwsh -Command ''$cs=$env:ComSpec; $cs="echo"; saps $cs -ArgumentList @("git","commit","is","text") -Wait''',
                 'pwsh -Command ''$cs=Get-Item Env:ComSpec; saps $cs.Value -ArgumentList @("/c","git","status","--short") -Wait'''
             )) {
-            $allowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $allowedCommand }
-            $allowed.OutputObject | Should -BeNullOrEmpty
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
+            & $script:AssertDenyResult -Result $result -Because 'runtime replacement and variable-bound launchers are not canonical direct forms'
         }
 
         $target = New-GateTargetRepo -Root $fixture.Root -Name 'cmd-wildcard-env-target'
@@ -6804,13 +6835,13 @@ python -c "import subprocess; subprocess.run(['git','commit','-m','python-commen
         }
 
         Set-GatePass -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch
-        foreach ($allowedCommand in @(
+        foreach ($command in @(
                 'cmd /c call %GIT_EXE:* =% status --short',
                 'cmd /v:on /c "set g=echo&&call !g! commit is text&&set g=git"',
                 'cmd /v:off /c "set x=GIT_DIR&&set !x!=literal&&git commit -m literal-bang-env"'
             )) {
-            $allowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $allowedCommand }
-            $allowed.OutputObject | Should -BeNullOrEmpty
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
+            & $script:AssertDenyResult -Result $result -Because 'cmd variable state is not a canonical direct invocation'
         }
     }
 
@@ -6883,13 +6914,15 @@ python -c "import subprocess; subprocess.run(['git','commit','-m','python-commen
             & $script:AssertDenyResult -Result $result
         }
 
-        foreach ($allowedCommand in @(
-                'pwsh -Command ''saps (Get-Item Env:ComSpec).Value -ArgumentList @("/c","git","status","--short") -Wait''',
-                'pwsh -Command ''Start-Process ([Environment]::GetEnvironmentVariable(("Com"+"Spec"))) -ArgumentList @("/c","echo","git commit is text") -Wait'''
-            )) {
-            $allowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $allowedCommand }
-            $allowed.OutputObject | Should -BeNullOrEmpty
+        $allowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+            command = 'pwsh -Command ''saps (Get-Item Env:ComSpec).Value -ArgumentList @("/c","git","status","--short") -Wait'''
         }
+        $allowed.OutputObject | Should -BeNullOrEmpty
+
+        $constructed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+            command = 'pwsh -Command ''Start-Process ([Environment]::GetEnvironmentVariable(("Com"+"Spec"))) -ArgumentList @("/c","echo","git commit is text") -Wait'''
+        }
+        & $script:AssertDenyResult -Result $constructed -Because 'the ComSpec name is computed rather than canonical'
     }
 
     It 'TASK-783 C75 preserves binding scope while denying parent mutations across function arrow and block forms' {
@@ -6953,12 +6986,12 @@ python -c "import subprocess; subprocess.run(['git','commit','-m','python-commen
             & $script:AssertDenyResult -Result $result
         }
 
-        foreach ($allowedCommand in @(
+        foreach ($command in @(
                 'cmd /v:on /c "set g=echo && set g=git || call !g! commit -m skipped-branch"',
                 'cmd /v:off /c "set g=git&&echo !g! commit is text"; cmd /v:on /c "set g=echo&&call !g! commit is text"'
             )) {
-            $allowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $allowedCommand }
-            $allowed.OutputObject | Should -BeNullOrEmpty
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
+            & $script:AssertDenyResult -Result $result -Because 'conditional cmd execution is conservatively default-denied'
         }
     }
 
@@ -6974,7 +7007,7 @@ python -c "import subprocess; subprocess.run(['git','commit','-m','python-commen
         $allowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
             command = 'pwsh -Command ''$cs="echo"; function f {$cs=Get-Item Env:ComSpec}; saps $cs -ArgumentList @("git","commit","is","text") -Wait'''
         }
-        $allowed.OutputObject | Should -BeNullOrEmpty
+        & $script:AssertDenyResult -Result $allowed -Because 'function-scoped launcher bindings are outside the canonical grammar'
     }
 
     It 'TASK-783 C79 resolves aliases at assignment time and fails closed on dynamic process candidates' {
@@ -7091,13 +7124,15 @@ python -c "import subprocess; subprocess.run(['git','commit','-m','python-commen
             & $script:AssertDenyResult -Result $result -Because $command
         }
 
-        foreach ($allowedCommand in @(
-                'cmd /v:on /c "set g=echo&call !g! commit is text"',
-                'cmd /v:off /c "echo !g! commit is text"'
-            )) {
-            $allowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $allowedCommand }
-            $allowed.OutputObject | Should -BeNullOrEmpty
+        $dynamicEcho = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+            command = 'cmd /v:on /c "set g=echo&call !g! commit is text"'
         }
+        & $script:AssertDenyResult -Result $dynamicEcho -Because 'delayed-expansion invocation is outside the finite direct allowlist'
+
+        $literalText = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+            command = 'cmd /v:off /c "echo !g! commit is text"'
+        }
+        $literalText.OutputObject | Should -BeNullOrEmpty
     }
 
     It 'TASK-783 C84 tracks outer environment bindings at the protected sink' {
