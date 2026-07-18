@@ -23,11 +23,13 @@ const INTERPRETER_PROCESS_BOUNDARY = Object.freeze({
 const STATIC_NON_EXECUTOR_TOOL_ALLOWLIST = new Set(["echo"]);
 const DIRECT_PROCESS_TRAMPOLINE_TOOLS = new Set([
   "cscript",
+  "conhost",
   "mshta",
   "regsvr32",
   "rundll32",
   "schtasks",
   "wmic",
+  "wsl",
   "wscript",
 ]);
 
@@ -4748,6 +4750,8 @@ function hasUnsupportedDirectProcessBoundary(command) {
       const executable = normalizeExecutableName(tokens[0] || "");
       if (!executable) continue;
       if (executable === "git" && hasGitExternalProcessConfiguration(tokens)) return true;
+      if (!isOwnedDirectExecutable(executable) &&
+          /\bcodex(?:\.exe)?\b[\s"']+(?:exec|e|--sandbox)\b/iu.test(normalizedStage)) return true;
       if (isPowerShellExecutable(executable)) {
         const nestedCommand = getPowerShellNestedCommand(tokens);
         if (nestedCommand && nestedCommand !== normalizedStage && hasUnsupportedDirectProcessBoundary(nestedCommand)) {
@@ -4781,6 +4785,14 @@ function hasUnsupportedDirectProcessBoundary(command) {
     }
   }
   return false;
+}
+
+function isOwnedDirectExecutable(executable) {
+  return new Set([
+    "bash", "bun", "cargo", "cat", "cmd", "codex", "curl", "deno", "echo", "gh", "git",
+    "grep", "jq", "node", "nodejs", "npm", "npx", "pnpm", "powershell", "printf", "pwsh",
+    "py", "python", "python3", "rg", "rustc", "sh", "type", "where", "which", "winsmux", "yarn", "zsh",
+  ]).has(normalizeExecutableName(executable));
 }
 
 function hasUnresolvedInterpreterProcessBoundary(command) {
@@ -7867,26 +7879,39 @@ function isCanonicalReadOnlyCodexArguments(values) {
   return values.length === 1 && isTerminalReadOnlyCodexMode(values[0]);
 }
 
+function classifyStaticShellCommandString(command, depth = 0) {
+  if (depth > 6) return INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS;
+  let sawStage = false;
+  let strongestAllow = INTERPRETER_PROCESS_BOUNDARY.ALLOW_PROVEN_NON_PROTECTED;
+  for (const segment of splitCommandSegments(String(command || ""))) {
+    for (const stage of splitCommandPipelineStages(segment)) {
+      const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(String(stage || "").trim()));
+      if (tokens.length === 0) continue;
+      sawStage = true;
+      const result = classifyStaticProcessInvocation(
+        normalizeExecutableName(tokens[0]),
+        tokens.slice(1),
+        stage,
+        depth + 1,
+      );
+      if (result === INTERPRETER_PROCESS_BOUNDARY.DENY_PROTECTED ||
+          result === INTERPRETER_PROCESS_BOUNDARY.DENY_AMBIGUOUS_PROTECTED ||
+          result === INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS) return result;
+      if (result === INTERPRETER_PROCESS_BOUNDARY.ALLOW_STATIC_READONLY) {
+        strongestAllow = result;
+      }
+    }
+  }
+  return sawStage ? strongestAllow : INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS;
+}
+
 function classifyCodexCommandExpression(expression, assignments, source = "", callIndex = 0, scopes = buildFunctionScopeIndex(source), language = "javascript", outerProtectedHint = false) {
   const candidate = stripLeadingCallComments(String(expression || "").trim());
   const resolved = source
     ? evaluateScopedStaticStringExpression(candidate, source, callIndex, scopes, language)
     : evaluateStaticStringExpression(candidate, assignments);
   if (resolved !== null) {
-    if (isDirectCodexDispatch(resolved)) {
-      return INTERPRETER_PROCESS_BOUNDARY.DENY_PROTECTED;
-    }
-    const tokens = tokenizeCommandLine(resolved);
-    if (normalizeExecutableName(tokens[0] || "") !== "codex") {
-      return INTERPRETER_PROCESS_BOUNDARY.ALLOW_PROVEN_NON_PROTECTED;
-    }
-    const arguments_ = tokens.slice(1);
-    if (arguments_.some(isDeniedCodexMode)) {
-      return INTERPRETER_PROCESS_BOUNDARY.DENY_PROTECTED;
-    }
-    return isCanonicalReadOnlyCodexArguments(arguments_)
-      ? INTERPRETER_PROCESS_BOUNDARY.ALLOW_STATIC_READONLY
-      : INTERPRETER_PROCESS_BOUNDARY.DENY_PROTECTED;
+    return classifyStaticShellCommandString(resolved);
   }
   let prefix = "";
   for (const part of splitTopLevelPlusExpressions(candidate)) {
@@ -7958,7 +7983,7 @@ function hasGitExternalProcessConfiguration(tokens) {
     value === "--paginate" ||
     value === "-p" ||
     /^-o/u.test(value) ||
-    value.startsWith("--open-files-in-pag"))) return true;
+    value.startsWith("--open-f"))) return true;
   for (let index = 1; index < Math.max(subcommandIndex, 1); index += 1) {
     const value = normalized[index];
     if (value !== "-c" && !value.startsWith("-c")) continue;
