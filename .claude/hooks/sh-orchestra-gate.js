@@ -4750,6 +4750,8 @@ function hasUnsupportedDirectProcessBoundary(command) {
       const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(normalizedStage));
       const executable = normalizeExecutableName(tokens[0] || "");
       if (!executable) continue;
+      if ((executable === "node" || executable === "nodejs") &&
+          hasNodeStartupCodeConfiguration(tokens, normalizedStage)) return true;
       if (executable === "git" &&
           (hasDirectGitProcessEnvironment(normalizedStage) || hasGitExternalProcessConfiguration(tokens))) return true;
       if (executable === "rg" && hasRgExternalProcessConfiguration(tokens)) return true;
@@ -8034,6 +8036,23 @@ function hasDirectGitProcessEnvironment(source) {
   );
 }
 
+function hasNodeStartupCodeConfiguration(tokens, source = "") {
+  if (/(?:^|\s)NODE_OPTIONS\s*=/iu.test(String(source || ""))) return true;
+  const options = tokens.slice(1).map((value) => normalizeAgentValue(value));
+  return options.some((value) =>
+    value === "-r" || /^-r.+/u.test(value) ||
+    value === "--require" || value.startsWith("--require=") ||
+    value === "--import" || value.startsWith("--import=") ||
+    value === "--loader" || value.startsWith("--loader=") ||
+    value === "--experimental-loader" || value.startsWith("--experimental-loader=") ||
+    value === "--experimental-config-file" || value.startsWith("--experimental-config-file=") ||
+    value === "--experimental-default-config-file" ||
+    value === "--env-file" || value.startsWith("--env-file=") ||
+    value === "--env-file-if-exists" || value.startsWith("--env-file-if-exists=") ||
+    value === "--run" || value.startsWith("--run=") ||
+    value === "--test-reporter" || value.startsWith("--test-reporter="));
+}
+
 function hasRgExternalProcessConfiguration(tokens) {
   return tokens.slice(1).map((value) => normalizeAgentValue(value)).some((value) =>
     value === "--pre" ||
@@ -8081,6 +8100,10 @@ function classifyStaticProcessInvocation(tool, resolvedArguments, rawBoundary = 
   }
   const nestedInterpreterKind = getShellInterpreterKind([normalizedTool, ...resolvedArguments]);
   if (nestedInterpreterKind === "node" || nestedInterpreterKind === "python") {
+    if (nestedInterpreterKind === "node" &&
+        hasNodeStartupCodeConfiguration([normalizedTool, ...resolvedArguments], rawBoundary)) {
+      return INTERPRETER_PROCESS_BOUNDARY.DENY_PROTECTED;
+    }
     const script = getInterpreterInlineSourceToken([normalizedTool, ...resolvedArguments], nestedInterpreterKind);
     if (script === null || script === undefined) {
       return resolvedArguments.length === 1 && ["--help", "--version", "-v"].includes(normalizeAgentValue(resolvedArguments[0]))
