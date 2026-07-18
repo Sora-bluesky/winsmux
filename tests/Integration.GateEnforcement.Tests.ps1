@@ -7680,9 +7680,17 @@ print(f().dumps({'ok':True}))"
                 'Set-Alias g Invoke-Expression; git rev-parse --verify refs/heads/__winsmux_missing__ && Set-Alias g git; g ''cmd /c echo WINSMUX_SAFE_MARKER''',
                 'Set-Alias g Invoke-Expression; git rev-parse --verify refs/heads/__winsmux_missing__ || Set-Alias g git; g ''cmd /c echo WINSMUX_SAFE_MARKER''',
                 'New-Alias g Invoke-Expression; git rev-parse --verify refs/heads/__winsmux_missing__ && New-Alias g git -Force; g ''cmd /c echo WINSMUX_SAFE_MARKER''',
+                'Set-Alias g Invoke-Expression -Option ReadOnly; Set-Alias g git; g ''cmd /c echo WINSMUX_SAFE_MARKER''',
+                'New-Alias g Invoke-Expression -Option ReadOnly; Set-Alias g git; g ''cmd /c echo WINSMUX_SAFE_MARKER''',
+                'Set-Alias g Invoke-Expression -Option Constant; Set-Alias g git -Force; g ''cmd /c echo WINSMUX_SAFE_MARKER''',
+                'New-Alias g Invoke-Expression; New-Alias g git; g ''cmd /c echo WINSMUX_SAFE_MARKER''',
                 'pwsh -NoProfile $([Diagnostics.Process]::Start(("g"+"it"),("com"+"mit --allow-empty -m wrapper-arg"))) -Command "echo safe"',
                 'powershell -NoProfile $([Diagnostics.Process]::Start(("g"+"it"),("com"+"mit --allow-empty -m wrapper-arg"))) -Command "echo safe"',
-                'pwsh ([Diagnostics.Process]::Start(("g"+"it"),("com"+"mit --allow-empty -m wrapper-paren"))) -Command "echo safe"'
+                'pwsh ([Diagnostics.Process]::Start(("g"+"it"),("com"+"mit --allow-empty -m wrapper-paren"))) -Command "echo safe"',
+                'saps git -ArgumentList @("status","--short") -Credential $([Diagnostics.Process]::Start(("g"+"it"),("com"+"mit --allow-empty -m credential-value")))',
+                'saps git -ArgumentList @("status","--short") -Verb $([Diagnostics.Process]::Start(("g"+"h"),("pr merge 1179")))',
+                'start git -ArgumentList @("status","--short") -UseNewEnvironment:$([Diagnostics.Process]::Start(("g"+"it"),("com"+"mit --allow-empty -m use-new-env")))',
+                'saps git -ArgumentList @("status","--short") -Credential ([Diagnostics.Process]::Start(("g"+"it"),("com"+"mit --allow-empty -m credential-paren")))'
             )) {
             $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
             & $script:AssertDenyResult -Result $result -Because $command

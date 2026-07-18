@@ -2292,29 +2292,38 @@ function hasPowerShellGitAliasLifecycleCommand(command, reviewOnly, options = {}
 function getSetAliasDefinition(tokens) {
   let aliasName = "";
   let aliasTarget = "";
+  let unsupportedSyntax = false;
   const nameOptionPrefixes = expandPowerShellOptionPrefixes(["-name"]);
   const valueOptionPrefixes = expandPowerShellOptionPrefixes(["-value"]);
   for (let index = 1; index < tokens.length; index += 1) {
     const token = stripOuterQuotes(tokens[index]);
     const normalizedToken = normalizeAgentValue(token);
     if (nameOptionPrefixes.includes(normalizedToken) && index + 1 < tokens.length) {
+      if (aliasName) unsupportedSyntax = true;
       aliasName = normalizeAgentValue(stripOuterQuotes(tokens[index + 1]));
       index += 1;
       continue;
     }
     if (valueOptionPrefixes.includes(normalizedToken) && index + 1 < tokens.length) {
+      if (aliasTarget) unsupportedSyntax = true;
       aliasTarget = normalizeAgentValue(stripOuterQuotes(tokens[index + 1]));
       index += 1;
       continue;
     }
     const inlineNameOption = nameOptionPrefixes.find((optionName) => normalizedToken.startsWith(optionName + ":"));
     if (inlineNameOption) {
+      if (aliasName) unsupportedSyntax = true;
       aliasName = normalizeAgentValue(token.slice(inlineNameOption.length + 1));
       continue;
     }
     const inlineValueOption = valueOptionPrefixes.find((optionName) => normalizedToken.startsWith(optionName + ":"));
     if (inlineValueOption) {
+      if (aliasTarget) unsupportedSyntax = true;
       aliasTarget = normalizeAgentValue(token.slice(inlineValueOption.length + 1));
+      continue;
+    }
+    if (normalizedToken.startsWith("-")) {
+      unsupportedSyntax = true;
       continue;
     }
     if (!normalizedToken.startsWith("-")) {
@@ -2322,11 +2331,17 @@ function getSetAliasDefinition(tokens) {
         aliasName = normalizedToken;
       } else if (!aliasTarget) {
         aliasTarget = normalizedToken;
+      } else {
+        unsupportedSyntax = true;
       }
     }
   }
 
-  return { aliasName, aliasTarget };
+  return {
+    aliasName,
+    aliasTarget,
+    canonicalSyntax: Boolean(aliasName && aliasTarget && !unsupportedSyntax),
+  };
 }
 
 function getShellAliasDefinition(tokens) {
@@ -4779,6 +4794,7 @@ function hasUnsupportedDirectProcessBoundary(command) {
   const commandSurface = stripHeredocBodiesAndTerminators(source);
   const canonicalPowerShellGhRepoMerge = isCanonicalPowerShellGhRepoMerge(commandSurface);
   const powerShellAliases = new Map();
+  const uncertainPowerShellAliases = new Set();
   const shellAliases = new Map();
   if (hasUnownedStdinScriptPipeline(source)) return true;
   if (hasRuntimeNodeOptionsEnvironmentMutation(commandSurface)) return true;
@@ -4799,11 +4815,14 @@ function hasUnsupportedDirectProcessBoundary(command) {
       const rawEvaluationTokens = rawNestedPowerShell
         ? getPowerShellWrapperPrefixTokens(rawTokens)
         : rawTokens;
-      if (!isPowerShellStartProcessExecutable(rawExecutable) &&
-          hasUnresolvedPowerShellArgumentEvaluation(rawEvaluationTokens)) return true;
+      const rawHasUnresolvedEvaluation = isPowerShellStartProcessExecutable(rawExecutable)
+        ? hasUnresolvedPowerShellStartProcessArgumentEvaluation(rawEvaluationTokens)
+        : hasUnresolvedPowerShellArgumentEvaluation(rawEvaluationTokens);
+      if (rawHasUnresolvedEvaluation) return true;
       const aliasTokens = resolveStaticDirectAliasTokens(
         rawTokens,
         powerShellAliases,
+        uncertainPowerShellAliases,
         shellAliases,
         aliasStateUpdateIsDeterministic,
       );
@@ -4817,8 +4836,10 @@ function hasUnsupportedDirectProcessBoundary(command) {
       const evaluationTokens = nestedPowerShell
         ? getPowerShellWrapperPrefixTokens(tokens)
         : tokens;
-      if (!isPowerShellStartProcessExecutable(executable) &&
-          hasUnresolvedPowerShellArgumentEvaluation(evaluationTokens)) {
+      const hasUnresolvedEvaluation = isPowerShellStartProcessExecutable(executable)
+        ? hasUnresolvedPowerShellStartProcessArgumentEvaluation(evaluationTokens)
+        : hasUnresolvedPowerShellArgumentEvaluation(evaluationTokens);
+      if (hasUnresolvedEvaluation) {
         return true;
       }
       if (isCanonicalUnprotectedPowerShellEnvironmentStage(normalizedStage)) continue;
@@ -4908,6 +4929,7 @@ function hasUnsupportedDirectProcessBoundary(command) {
 function resolveStaticDirectAliasTokens(
   inputTokens,
   powerShellAliases,
+  uncertainPowerShellAliases,
   shellAliases,
   aliasStateUpdateIsDeterministic = true,
 ) {
@@ -4915,7 +4937,12 @@ function resolveStaticDirectAliasTokens(
   if (["set-alias", "sal", "new-alias", "nal"].includes(executable)) {
     const definition = getSetAliasDefinition(inputTokens);
     if (definition.aliasName) {
-      if (!aliasStateUpdateIsDeterministic) {
+      const isCanonicalSetAlias = ["set-alias", "sal"].includes(executable) &&
+        definition.canonicalSyntax;
+      if (!aliasStateUpdateIsDeterministic || !isCanonicalSetAlias) {
+        powerShellAliases.delete(definition.aliasName);
+        uncertainPowerShellAliases.add(definition.aliasName);
+      } else if (uncertainPowerShellAliases.has(definition.aliasName)) {
         powerShellAliases.delete(definition.aliasName);
       } else if (["git", "git.exe", "gh", "gh.exe"].includes(definition.aliasTarget)) {
         powerShellAliases.set(definition.aliasName, normalizeExecutableName(definition.aliasTarget));
@@ -4994,6 +5021,23 @@ function hasUnresolvedPowerShellArgumentEvaluation(tokens) {
     const value = stripOuterQuotes(String(token || "").trim());
     return /\$\(|@\(/u.test(value) || /^\(/u.test(value);
   });
+}
+
+function hasUnresolvedPowerShellStartProcessArgumentEvaluation(tokens) {
+  for (let index = 1; index < tokens.length; index += 1) {
+    const value = stripOuterQuotes(String(tokens[index] || "").trim());
+    if (/\$\(/u.test(value)) return true;
+    if (!/^\(/u.test(value)) continue;
+    if (/^\(?get-command$/iu.test(value) && index + 1 < tokens.length) {
+      const target = normalizeExecutableName(stripOuterQuotes(tokens[index + 1]).replace(/\)+$/u, ""));
+      if (["git", "gh", "codex"].includes(target)) {
+        index += 1;
+        continue;
+      }
+    }
+    if (evaluateStaticStringExpression(value, new Map()) === null) return true;
+  }
+  return false;
 }
 
 function hasUnownedStdinScriptPipeline(source) {
