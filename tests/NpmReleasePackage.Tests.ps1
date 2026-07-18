@@ -232,6 +232,7 @@ Describe 'winsmux npm release package contract' {
         $testWorkflow | Should -Match 'WINSMUX_INSTALL_E2E_GITHUB_ACCESS:\s+\$\{\{ github\.token \}\}'
         $testWorkflow | Should -Match 'needs:[\s\S]*?- install-e2e[\s\S]*?needs\.install-e2e\.result'
         $installer | Should -Not -Match 'Download-File "winsmux\.ps1"'
+        $installer | Should -Match 'Download-File "install\.ps1" \(Join-Path \$BIN_DIR "install\.ps1"\)'
         $downloadDeclarations = @([regex]::Matches($installer, '(?m)^\s*Download-(?:Optional)?File\s+"(?<path>[^"]+)"\s+(?<destination>[^\r\n]+)$') | ForEach-Object {
             '{0}|{1}' -f $_.Groups['path'].Value, $_.Groups['destination'].Value.Trim()
         })
@@ -258,6 +259,8 @@ Describe 'winsmux npm release package contract' {
         $installE2e | Should -Match 'Invoke-IrmInstaller -SourceInstaller \$installerPath[^\r\n]+-IncludeGitHubAccess'
         $installE2e | Should -Match 'wrapper_launch_project_dir_verified'
         $installE2e | Should -Match 'wrapper_raw_command_forwarding_verified'
+        $installE2e | Should -Match 'wrapper_update_dispatch_verified'
+        $installE2e | Should -Match 'wrapper_uninstall_dispatch_verified'
         $installE2e | Should -Match 'WT settings: not found'
         $installE2e | Should -Match "wrapper.*doctor"
         $installE2e | Should -Match 'installer download failure'

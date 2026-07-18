@@ -28670,6 +28670,17 @@ Describe 'winsmux raw namespace forwarding' {
         $script:WinsmuxRequestedProcessExitCode | Should -Be 7
     }
 
+    It 'routes documented lifecycle commands to the installed installer with profile aliases preserved' {
+        $bridgeContent = Get-Content -LiteralPath $script:namespaceBridgePath -Raw -Encoding UTF8
+
+        $bridgeContent | Should -Match '''install''\s+\{ Invoke-WinsmuxInstallerLifecycle -Action install'
+        $bridgeContent | Should -Match '''update''\s+\{ Invoke-WinsmuxInstallerLifecycle -Action update'
+        $bridgeContent | Should -Match '''uninstall''\s+\{ Invoke-WinsmuxInstallerLifecycle -Action uninstall'
+        $bridgeContent | Should -Match '\$argument -eq ''--profile'''
+        $bridgeContent | Should -Match 'StartsWith\(''--profile='', \[System\.StringComparison\]::Ordinal\)'
+        $bridgeContent | Should -Match 'Join-Path \$PSScriptRoot ''install\.ps1'''
+    }
+
     It 'keeps command-scoped socket flags after the delegated command name' {
         $env:WINSMUX_BRIDGE_NAMESPACE_L = 'ops'
         $env:WINSMUX_BRIDGE_SOCKET_S = 'socket-name'

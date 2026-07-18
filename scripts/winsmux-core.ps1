@@ -215,6 +215,48 @@ function Invoke-WinsmuxRaw {
     return & $script:WinsmuxRawCommand @rawArguments
 }
 
+function Invoke-WinsmuxInstallerLifecycle {
+    param(
+        [Parameter(Mandatory = $true)][ValidateSet('install', 'update', 'uninstall')][string]$Action,
+        [string[]]$Arguments = @()
+    )
+
+    $installerPath = Join-Path $PSScriptRoot 'install.ps1'
+    if (-not (Test-Path -LiteralPath $installerPath -PathType Leaf)) {
+        Stop-WithError "installed lifecycle entrypoint is missing: $installerPath"
+    }
+
+    $installerArguments = [System.Collections.Generic.List[string]]::new()
+    for ($index = 0; $index -lt @($Arguments).Count; $index++) {
+        $argument = [string]$Arguments[$index]
+        if ($argument -eq '--profile') {
+            if ($index + 1 -ge @($Arguments).Count -or [string]::IsNullOrWhiteSpace([string]$Arguments[$index + 1])) {
+                Stop-WithError 'Missing value for --profile.'
+            }
+            $installerArguments.Add('-Profile')
+            $installerArguments.Add([string]$Arguments[$index + 1])
+            $index++
+            continue
+        }
+        if ($argument.StartsWith('--profile=', [System.StringComparison]::Ordinal)) {
+            $profile = $argument.Substring('--profile='.Length)
+            if ([string]::IsNullOrWhiteSpace($profile)) {
+                Stop-WithError 'Missing value for --profile.'
+            }
+            $installerArguments.Add('-Profile')
+            $installerArguments.Add($profile)
+            continue
+        }
+        $installerArguments.Add($argument)
+    }
+
+    & pwsh -NoProfile -ExecutionPolicy Bypass -File $installerPath $Action @installerArguments
+    $installerExitCode = Get-SafeLastExitCode
+    if ($null -ne $installerExitCode) {
+        $script:WinsmuxRequestedProcessExitCode = $installerExitCode
+    }
+}
+
 function Resolve-TerminalBackend {
     $rawBackend = [string]$env:WINSMUX_BACKEND
     if ([string]::IsNullOrWhiteSpace($rawBackend)) {
@@ -18481,6 +18523,9 @@ function Invoke-RebindWorktree {
 
 # --- Dispatch ---
 switch ($Command) {
+    'install'         { Invoke-WinsmuxInstallerLifecycle -Action install -Arguments @($script:WinsmuxBridgeArguments | Select-Object -Skip 1) }
+    'update'          { Invoke-WinsmuxInstallerLifecycle -Action update -Arguments @($script:WinsmuxBridgeArguments | Select-Object -Skip 1) }
+    'uninstall'       { Invoke-WinsmuxInstallerLifecycle -Action uninstall -Arguments @($script:WinsmuxBridgeArguments | Select-Object -Skip 1) }
     'init'            { Invoke-Init }
     'launch'          { Invoke-Launch }
     'id'              { Invoke-Id }

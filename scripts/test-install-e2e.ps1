@@ -281,10 +281,11 @@ if ($installResult.Combined -match '\[winsmux\]\s+Failed to download\b') {
 
 $core = Join-Path $fixtureHome '.winsmux\bin\winsmux-core.ps1'
 $wrapper = Join-Path $fixtureHome '.winsmux\bin\winsmux.cmd'
+$installedInstaller = Join-Path $fixtureHome '.winsmux\bin\install.ps1'
 $native = Join-Path $fixtureHome '.local\bin\winsmux.exe'
 $manifestPath = Join-Path $fixtureHome '.winsmux\install-profile.json'
 $fragment = Join-Path $localAppData 'Microsoft\Windows Terminal\Fragments\winsmux\winsmux.json'
-foreach ($path in @($core, $wrapper, $native, $manifestPath, $fragment)) {
+foreach ($path in @($core, $wrapper, $installedInstaller, $native, $manifestPath, $fragment)) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "installed artifact missing: $path" }
 }
 
@@ -343,6 +344,29 @@ if ($manifest.profile -ne 'full' -or $manifest.version -ne $expectedNativeVersio
     throw 'Installed profile manifest does not match the requested full release.'
 }
 
+$lifecycleProbePath = Join-Path $scratch 'lifecycle-probe.json'
+$lifecycleProbeLiteral = $lifecycleProbePath.Replace("'", "''")
+$lifecycleProbeScript = @"
+param(
+    [Parameter(Position=0)][string]`$Action,
+    [Alias('Profile')][string]`$InstallProfile = ''
+)
+@{ action = `$Action; profile = `$InstallProfile } | ConvertTo-Json -Compress | Set-Content -LiteralPath '$lifecycleProbeLiteral' -Encoding UTF8
+"@
+[System.IO.File]::WriteAllText($installedInstaller, $lifecycleProbeScript, [System.Text.UTF8Encoding]::new($false))
+$updateResult = Invoke-CapturedProcess -FilePath $wrapper -Arguments @('update', '--profile', 'orchestra')
+if ($updateResult.ExitCode -ne 0) { throw "installed wrapper update dispatch failed:`n$($updateResult.Combined)" }
+$updateProbe = Get-Content -LiteralPath $lifecycleProbePath -Raw -Encoding UTF8 | ConvertFrom-Json
+if ($updateProbe.action -ne 'update' -or $updateProbe.profile -ne 'orchestra') {
+    throw "installed wrapper did not preserve update lifecycle arguments: $($updateProbe | ConvertTo-Json -Compress)"
+}
+$uninstallResult = Invoke-CapturedProcess -FilePath $wrapper -Arguments @('uninstall')
+if ($uninstallResult.ExitCode -ne 0) { throw "installed wrapper uninstall dispatch failed:`n$($uninstallResult.Combined)" }
+$uninstallProbe = Get-Content -LiteralPath $lifecycleProbePath -Raw -Encoding UTF8 | ConvertFrom-Json
+if ($uninstallProbe.action -ne 'uninstall' -or -not [string]::IsNullOrWhiteSpace([string]$uninstallProbe.profile)) {
+    throw "installed wrapper did not preserve uninstall lifecycle arguments: $($uninstallProbe | ConvertTo-Json -Compress)"
+}
+
 [ordered]@{
     schema_version = 1
     route = $Route
@@ -352,6 +376,8 @@ if ($manifest.profile -ne 'full' -or $manifest.version -ne $expectedNativeVersio
     wrapper_version_exit_code = $versionResult.ExitCode
     wrapper_raw_version_exit_code = $rawVersionResult.ExitCode
     wrapper_raw_command_forwarding_verified = $true
+    wrapper_update_dispatch_verified = $true
+    wrapper_uninstall_dispatch_verified = $true
     wrapper_doctor_exit_code = $doctorResult.ExitCode
     wrapper_doctor_native_version_verified = $true
     wrapper_doctor_terminal_absence_verified = $true

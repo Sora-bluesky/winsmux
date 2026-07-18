@@ -581,7 +581,8 @@ function Invoke-Install {
     }
 
     # 5. Download & place files
-    # winsmux-core.ps1
+    # Installed lifecycle entrypoint and winsmux-core.ps1
+    Download-File "install.ps1" (Join-Path $BIN_DIR "install.ps1")
     Download-File "scripts/winsmux-core.ps1" (Join-Path $BIN_DIR "winsmux-core.ps1")
     Download-File "scripts/winsmux-core.ps1" (Join-Path $SCRIPT_DIR "winsmux-core.ps1")
 
