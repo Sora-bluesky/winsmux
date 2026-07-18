@@ -9,6 +9,14 @@ param(
     [Alias("Profile")][string]$InstallProfile = ""
 )
 
+function Assert-WinsmuxReleaseTag {
+    param([Parameter(Mandatory = $true)][string]$ReleaseTag)
+
+    if ($ReleaseTag -notmatch '^v\d+\.\d+\.\d+(?:\.\d+)?(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$') {
+        throw "Invalid winsmux release tag: $ReleaseTag"
+    }
+}
+
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
@@ -49,6 +57,10 @@ $requestedReleaseTag = if (-not [string]::IsNullOrWhiteSpace($e2eReleaseTag)) {
     $env:WINSMUX_RELEASE_TAG
 } else {
     $ReleaseTag
+}
+if (-not [string]::IsNullOrWhiteSpace($requestedReleaseTag)) {
+    $requestedReleaseTag = $requestedReleaseTag.Trim()
+    Assert-WinsmuxReleaseTag -ReleaseTag $requestedReleaseTag
 }
 $installSourceRef = if ($installerE2e -or $redirectedInstallerE2e) { [string]$env:WINSMUX_INSTALL_SOURCE_REF } else { '' }
 if (-not [string]::IsNullOrWhiteSpace($installSourceRef) -and $installSourceRef -notmatch '^[0-9a-fA-F]{40}$') {

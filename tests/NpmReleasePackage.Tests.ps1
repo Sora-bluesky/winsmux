@@ -270,6 +270,7 @@ Describe 'winsmux npm release package contract' {
         $installE2e | Should -Match 'Tagless direct install did not stay on the fixed main installer'
         $installE2e | Should -Match 'Tagless direct install replaced the fixed main scripts with the previous release scripts'
         $installer | Should -Match 'keepTaglessMainScripts'
+        $installer | Should -Match 'Assert-WinsmuxReleaseTag -ReleaseTag \$requestedReleaseTag'
         $installE2e | Should -Match 'WT settings: not found'
         $installE2e | Should -Match "wrapper.*doctor"
         $installE2e | Should -Match 'installer download failure'
@@ -373,6 +374,11 @@ param(
         (Get-WinsmuxBinaryVersionFromReleaseTag -ReleaseTag 'v0.36.28.1') | Should -Be '0.36.28'
         (Get-WinsmuxBinaryVersionFromReleaseTag -ReleaseTag 'v0.36.29-preview.1') | Should -Be '0.36.29-preview.1'
         { Get-WinsmuxBinaryVersionFromReleaseTag -ReleaseTag 'v0.36' } | Should -Throw '*Unsupported winsmux release tag format*'
+        { Assert-WinsmuxReleaseTag -ReleaseTag 'v0.36.28' } | Should -Not -Throw
+        { Assert-WinsmuxReleaseTag -ReleaseTag 'v0.36.28.1' } | Should -Not -Throw
+        { Assert-WinsmuxReleaseTag -ReleaseTag 'v0.36.29-preview.1' } | Should -Not -Throw
+        { Assert-WinsmuxReleaseTag -ReleaseTag '../../attacker/repo/main' } | Should -Throw '*Invalid winsmux release tag*'
+        { Assert-WinsmuxReleaseTag -ReleaseTag 'v0.36.28/../../main' } | Should -Throw '*Invalid winsmux release tag*'
         $installer | Should -Match '-not \(Test-ShouldBootstrapTargetInstaller -TargetAction install\)'
     }
 
