@@ -5775,7 +5775,12 @@ EOF
         foreach ($command in @(
                 'git -c alias.x=push x',
                 'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.x GIT_CONFIG_VALUE_0=push git x',
-                'ALIAS_VALUE=push git --config-env=alias.x=ALIAS_VALUE x'
+                'ALIAS_VALUE=push git --config-env=alias.x=ALIAS_VALUE x',
+                'git -c ''alias.x=grep --open-files-in-page="codex exec --help" -e "^" -- .gitignore'' x',
+                'git -c ''alias.x=grep --open-files-in-p="codex exec --help" -e "^" -- .gitignore'' x',
+                'git -c ''alias.x=grep -O"codex exec --help" -e "^" -- .gitignore'' x',
+                'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.x GIT_CONFIG_VALUE_0=''grep --open-files-in-page="codex exec --help" -e "^" -- .gitignore'' git x',
+                'ALIAS_VALUE=''grep --open-files-in-page="codex exec --help" -e "^" -- .gitignore'' git --config-env=alias.x=ALIAS_VALUE x'
             )) {
             $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
             & $script:AssertDenyResult -Result $result

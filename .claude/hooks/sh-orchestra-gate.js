@@ -8283,11 +8283,17 @@ function isCanonicalSafeGitInlineConfiguration(configuration) {
   if (aliasTokens.length === 0) return false;
   const tokens = ["git", ...aliasTokens];
   const subcommand = normalizeAgentValue(stripOuterQuotes(tokens[1] || ""));
-  return isReadOnlyGitSubcommand(subcommand, tokens, 1) ||
-    (subcommand === "branch" && isReadOnlyGitBranchCommand(tokens, 1)) ||
-    (subcommand === "tag" && isReadOnlyGitTagCommand(tokens, 1)) ||
-    (subcommand === "worktree" && isReadOnlyGitWorktreeCommand(tokens, 1)) ||
+  return isCanonicalReadOnlyGitResolvedTokens(tokens, 1) ||
     isGitLifecycleSubcommandName(subcommand);
+}
+
+function isCanonicalReadOnlyGitResolvedTokens(tokens, subcommandIndex) {
+  if (subcommandIndex < 1 || hasGitExternalProcessConfiguration(tokens)) return false;
+  const subcommand = normalizeAgentValue(stripOuterQuotes(tokens[subcommandIndex] || ""));
+  return isReadOnlyGitSubcommand(subcommand, tokens, subcommandIndex) ||
+    (subcommand === "branch" && isReadOnlyGitBranchCommand(tokens, subcommandIndex)) ||
+    (subcommand === "tag" && isReadOnlyGitTagCommand(tokens, subcommandIndex)) ||
+    (subcommand === "worktree" && isReadOnlyGitWorktreeCommand(tokens, subcommandIndex));
 }
 
 function isCanonicalReadOnlyGitInlineAliasInvocation(tokens, subcommandIndex) {
@@ -8304,11 +8310,7 @@ function isCanonicalReadOnlyGitInlineAliasInvocation(tokens, subcommandIndex) {
     const aliasTokens = tokenizeCommandLine(String(match[2] || "").trim());
     if (aliasTokens.length === 0 || String(match[2] || "").trim().startsWith("!")) return false;
     const resolvedTokens = ["git", ...aliasTokens, ...tokens.slice(subcommandIndex + 1)];
-    const resolvedSubcommand = normalizeAgentValue(stripOuterQuotes(resolvedTokens[1] || ""));
-    return isReadOnlyGitSubcommand(resolvedSubcommand, resolvedTokens, 1) ||
-      (resolvedSubcommand === "branch" && isReadOnlyGitBranchCommand(resolvedTokens, 1)) ||
-      (resolvedSubcommand === "tag" && isReadOnlyGitTagCommand(resolvedTokens, 1)) ||
-      (resolvedSubcommand === "worktree" && isReadOnlyGitWorktreeCommand(resolvedTokens, 1));
+    return isCanonicalReadOnlyGitResolvedTokens(resolvedTokens, 1);
   }
   return false;
 }
@@ -8323,11 +8325,7 @@ function isCanonicalConfiguredReadOnlyGitAliasInvocation(tokens, baseCwd) {
   const aliasTokens = tokenizeCommandLine(aliasValue.trim());
   if (aliasTokens.length === 0) return false;
   const resolvedTokens = ["git", ...aliasTokens, ...tokens.slice(subcommandIndex + 1)];
-  const resolvedSubcommand = normalizeAgentValue(stripOuterQuotes(resolvedTokens[1] || ""));
-  return isReadOnlyGitSubcommand(resolvedSubcommand, resolvedTokens, 1) ||
-    (resolvedSubcommand === "branch" && isReadOnlyGitBranchCommand(resolvedTokens, 1)) ||
-    (resolvedSubcommand === "tag" && isReadOnlyGitTagCommand(resolvedTokens, 1)) ||
-    (resolvedSubcommand === "worktree" && isReadOnlyGitWorktreeCommand(resolvedTokens, 1));
+  return isCanonicalReadOnlyGitResolvedTokens(resolvedTokens, 1);
 }
 
 function hasOnlyCanonicalGitGlobalArguments(tokens, subcommandIndex) {
@@ -9585,14 +9583,9 @@ function hasCommandLocalGitAliasConfiguration(command) {
       }
     }
   }
-  const readOnlySubcommands = new Set(["status", "log", "show", "diff", "grep", "rev-parse", "branch", "tag"]);
   const isReadOnlyAlias = (value) => {
     const aliasTokens = tokenizeCommandLine(String(value || "").trim());
-    const subcommand = normalizeAgentValue(stripOuterQuotes(aliasTokens[0] || ""));
-    if (!readOnlySubcommands.has(subcommand)) return false;
-    if (["branch", "tag"].includes(subcommand) && aliasTokens.slice(1).some((token) =>
-      ["-d", "-D", "-m", "-M", "-f", "--delete", "--move", "--force"].includes(stripOuterQuotes(token)))) return false;
-    return true;
+    return aliasTokens.length > 0 && isCanonicalReadOnlyGitResolvedTokens(["git", ...aliasTokens], 1);
   };
   return hasNonAliasConfiguration || aliasValues.length === 0 || aliasValues.some((value) => !isReadOnlyAlias(value));
 }
