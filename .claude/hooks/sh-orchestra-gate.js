@@ -4303,8 +4303,9 @@ function hasUnsupportedNodeProcessConstruction(script) {
   return hasChildProcessCapabilityCall && hasUnresolvedInterpreterProcessBoundary(source);
 }
 
-function getInterpreterInlineSourceDescriptor(tokens, kind) {
+function getInterpreterInlineSourceDescriptors(tokens, kind) {
   const options = kind === "python" ? ["-c"] : ["-e", "-p", "-pe", "--eval", "--print"];
+  const descriptors = [];
   for (let index = 1; index < tokens.length; index += 1) {
     const token = String(tokens[index] || "");
     const normalized = normalizeAgentValue(token);
@@ -4314,18 +4315,28 @@ function getInterpreterInlineSourceDescriptor(tokens, kind) {
         if (options.includes(next) || options.some((option) =>
           next.startsWith(option + "=") || next.startsWith(option + ":"))) continue;
       }
-      return {
+      descriptors.push({
         source: index + 1 < tokens.length ? stripOuterQuotes(tokens[index + 1]) : "",
         trailingIndex: Math.min(index + 2, tokens.length),
-      };
+      });
+      if (kind === "python") break;
+      index += 1;
+      continue;
     }
     for (const option of options) {
       if (normalized.startsWith(option + "=") || normalized.startsWith(option + ":")) {
-        return { source: stripOuterQuotes(token.slice(option.length + 1)), trailingIndex: index + 1 };
+        descriptors.push({ source: stripOuterQuotes(token.slice(option.length + 1)), trailingIndex: index + 1 });
+        if (kind === "python") return descriptors;
+        break;
       }
     }
   }
-  return null;
+  return descriptors;
+}
+
+function getInterpreterInlineSourceDescriptor(tokens, kind) {
+  const descriptors = getInterpreterInlineSourceDescriptors(tokens, kind);
+  return descriptors.length > 0 ? descriptors[descriptors.length - 1] : null;
 }
 
 function getInterpreterInlineSourceToken(tokens, kind) {
@@ -4721,12 +4732,12 @@ function hasUnsupportedInlineInterpreterBoundary(command) {
       const kind = getShellInterpreterKind(tokens);
       if (kind && hasUnownedInterpreterProcessBoundary(normalizedStage)) return true;
       if (kind === "node") {
-        const script = getInterpreterInlineSourceToken(tokens, kind);
-        if (script !== null && script !== undefined &&
-            (hasRuntimeGitEnvironmentMutation(script) ||
-             hasRuntimeNodeOptionsEnvironmentMutation(script) ||
-             hasUnsupportedNodeProcessConstruction(script) ||
-             hasDynamicInterpreterGitSubcommand(script))) return true;
+        const scripts = getInterpreterInlineSourceDescriptors(tokens, kind).map((descriptor) => descriptor.source);
+        if (scripts.some((script) =>
+          hasRuntimeGitEnvironmentMutation(script) ||
+          hasRuntimeNodeOptionsEnvironmentMutation(script) ||
+          hasUnsupportedNodeProcessConstruction(script) ||
+          hasDynamicInterpreterGitSubcommand(script))) return true;
       } else if (kind === "python") {
         const script = String(getInterpreterInlineSourceToken(tokens, kind) || "");
         if (hasRuntimeGitEnvironmentMutation(script) ||
@@ -8058,16 +8069,23 @@ function hasNodeStartupCodeConfiguration(tokens, source = "") {
   const safeValuelessOptions = new Set([
     "-c", "-h", "-v", "--check", "--help", "--no-warnings", "--trace-warnings", "--use-strict", "--version",
   ]);
+  const inlineAssignmentPrefixes = ["--eval=", "--eval:", "--print=", "--print:"];
+  let sawInline = false;
   for (let index = 1; index < tokens.length; index += 1) {
     const rawValue = stripOuterQuotes(String(tokens[index] || ""));
     const value = normalizeAgentValue(rawValue);
     if (value === "--") return false;
     if (inlineOptions.has(value)) {
-      const descriptor = getInterpreterInlineSourceDescriptor(tokens, "node");
-      return descriptor === null || descriptor.source === "";
+      sawInline = true;
+      const next = normalizeAgentValue(String(tokens[index + 1] || ""));
+      if ((value === "-p" || value === "--print") &&
+          (inlineOptions.has(next) || inlineAssignmentPrefixes.some((prefix) => next.startsWith(prefix)))) continue;
+      if (index + 1 < tokens.length) index += 1;
+      continue;
     }
-    if (["--eval=", "--eval:", "--print=", "--print:"].some((prefix) => value.startsWith(prefix))) {
-      return false;
+    if (inlineAssignmentPrefixes.some((prefix) => value.startsWith(prefix))) {
+      sawInline = true;
+      continue;
     }
     if (safeValueOptions.has(value)) {
       if (index + 1 >= tokens.length) return true;
@@ -8077,7 +8095,7 @@ function hasNodeStartupCodeConfiguration(tokens, source = "") {
     if (["--conditions=", "--input-type="].some((prefix) => value.startsWith(prefix))) continue;
     if (safeValuelessOptions.has(value)) continue;
     if (value.startsWith("-") || value.startsWith("+")) return true;
-    return false;
+    if (!sawInline) return false;
   }
   return false;
 }
