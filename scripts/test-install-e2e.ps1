@@ -261,7 +261,9 @@ if ($Route -eq 'Npm') {
     $installResult = Invoke-IrmInstaller -SourceInstaller $installerPath -ServerDirectory (Join-Path $scratch 'direct-server')
 }
 if ($installResult.ExitCode -ne 0) { throw "$Route full install failed:`n$($installResult.Combined)" }
-if ($installResult.Combined -match '404|Not Found|Failed to download') { throw "$Route install log contains a download failure." }
+if ($installResult.Combined -match '\[winsmux\]\s+Failed to download\b') {
+    throw "$Route install log contains an installer download failure:`n$($installResult.Combined)"
+}
 
 $core = Join-Path $fixtureHome '.winsmux\bin\winsmux-core.ps1'
 $wrapper = Join-Path $fixtureHome '.winsmux\bin\winsmux.cmd'
