@@ -288,6 +288,7 @@ Describe 'winsmux npm release package contract' {
         $redirectedSmoke | Should -Match '''-SourceCommit'', \$sourceCommit'
         $redirectedSmoke | Should -Match "Where-Object \{ \`$_.Source -notmatch '\\\\WindowsApps\\\\' \}"
         $redirectedSmoke | Should -Match 'requires a non-WindowsApps PowerShell 7 executable'
+        $redirectedSmoke | Should -Match 'if \(\$null -eq \$remainingProfile\) \{ \$remainingProfile = '''' \}'
         $installer | Should -Match 'WINSMUX_INSTALL_STATE_ROOT must be contained by the redirected HOME'
         $installer | Should -Match 'Redirected installer E2E mode only permits the install action'
         $installer | Should -Match 'if \(\$installerE2e\) \{ \[string\]\$env:WINSMUX_INSTALL_E2E_GITHUB_ACCESS \} else \{ '''' \}'
@@ -427,6 +428,34 @@ param(
 
         $result.ExitCode | Should -Be 0
         $result.StdOut | Should -BeNullOrEmpty
+    }
+
+    It 'accepts an empty redirected profile after removing the managed block' {
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            $script:RedirectedInstallSmokePath,
+            [ref]$tokens,
+            [ref]$parseErrors
+        )
+        @($parseErrors).Count | Should -Be 0
+        $functionAst = $ast.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -eq 'Remove-FixtureProfileBlock'
+        }, $true)
+        $functionAst | Should -Not -BeNullOrEmpty
+        . ([scriptblock]::Create($functionAst.Extent.Text))
+
+        $profilePath = Join-Path $TestDrive 'redirected-profile.ps1'
+        $fixtureBin = Join-Path $TestDrive 'home\.winsmux\bin'
+        Write-TestFileUtf8 -Path $profilePath -Content ("# winsmux`r`n`$env:PATH = `"$fixtureBin;`$env:PATH`"`r`n")
+
+        (Remove-FixtureProfileBlock -ProfilePath $profilePath -FixtureBin $fixtureBin) | Should -BeTrue
+        (Get-Item -LiteralPath $profilePath).Length | Should -Be 0
+        $remainingProfile = Get-Content -LiteralPath $profilePath -Raw
+        if ($null -eq $remainingProfile) { $remainingProfile = '' }
+        $remainingProfile.Contains($fixtureBin, [System.StringComparison]::OrdinalIgnoreCase) | Should -BeFalse
     }
 
     It 'recovers an interrupted binary rotation and rolls back a failed replacement validation' {

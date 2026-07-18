@@ -213,7 +213,9 @@ foreach ($errorText in $invariantErrors) { $failureParts.Add($errorText) }
 if ($failureParts.Count -gt 0) {
     throw "Redirected installer smoke failed: $($failureParts -join '; ')"
 }
-if ((Get-Content -LiteralPath $fixtureProfile -Raw).Contains($fixtureBridgeBin, [System.StringComparison]::OrdinalIgnoreCase)) {
+$remainingProfile = Get-Content -LiteralPath $fixtureProfile -Raw
+if ($null -eq $remainingProfile) { $remainingProfile = '' }
+if ($remainingProfile.Contains($fixtureBridgeBin, [System.StringComparison]::OrdinalIgnoreCase)) {
     throw 'Redirected installer left its bridge path in the isolated PowerShell profile.'
 }
 
