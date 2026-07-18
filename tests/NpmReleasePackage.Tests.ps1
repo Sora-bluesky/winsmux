@@ -343,6 +343,47 @@ param(
         $result.bootstrapped | Should -BeTrue
     }
 
+    It 'repairs installer-managed state without release assets when the installed binary already matches' {
+        $installer = Get-Content -LiteralPath $script:InstallerPath -Raw -Encoding UTF8
+        $mainOffset = $installer.IndexOf('# Main', [System.StringComparison]::Ordinal)
+        $mainOffset | Should -BeGreaterThan 0
+        $fixtureHome = Join-Path $TestDrive 'matching-binary-home'
+        $script:TestInstallHome = $fixtureHome
+        $localBin = Join-Path $fixtureHome '.local\bin'
+        $winsmuxExe = Join-Path $localBin 'winsmux.exe'
+        New-Item -ItemType Directory -Path $localBin -Force | Out-Null
+        Write-TestFileUtf8 -Path $winsmuxExe -Content 'matching-binary'
+
+        $previousE2e = $env:WINSMUX_INSTALL_E2E
+        $previousStateRoot = $env:WINSMUX_INSTALL_STATE_ROOT
+        try {
+            $env:WINSMUX_INSTALL_E2E = 'redirected'
+            $env:WINSMUX_INSTALL_STATE_ROOT = Join-Path $fixtureHome 'installer-state'
+            $definitions = $installer.Substring(0, $mainOffset).Replace('$HOME', '$script:TestInstallHome')
+            . ([scriptblock]::Create($definitions))
+
+            function Resolve-WinsmuxRelease {
+                Set-Variable -Name ResolvedVersion -Value '9.9.9' -Scope Script
+                return [PSCustomObject]@{ tag_name = 'v9.9.9'; assets = @() }
+            }
+            function Get-WinsmuxReleaseHeaders { return @{} }
+            function Get-WinsmuxCommandVersion {
+                param($CommandInfo)
+                return [PSCustomObject]@{ Version = '9.9.9'; Output = 'winsmux 9.9.9' }
+            }
+            function Get-PreferredReleaseAssetName {
+                throw 'Asset selection must not run when the installed binary already matches.'
+            }
+
+            { Install-WinsmuxBinary } | Should -Not -Throw
+        } finally {
+            $env:WINSMUX_INSTALL_E2E = $previousE2e
+            $env:WINSMUX_INSTALL_STATE_ROOT = $previousStateRoot
+        }
+
+        (Get-Content -LiteralPath $winsmuxExe -Raw -Encoding UTF8) | Should -Be 'matching-binary'
+    }
+
     It 'recovers an interrupted binary rotation and rolls back a failed replacement validation' {
         $installer = Get-Content -LiteralPath $script:InstallerPath -Raw -Encoding UTF8
         $mainOffset = $installer.IndexOf('# Main', [System.StringComparison]::Ordinal)

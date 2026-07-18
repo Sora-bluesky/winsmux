@@ -571,7 +571,6 @@ function Resolve-WinsmuxRelease {
 function Install-WinsmuxBinary {
     $localBin = Join-Path $HOME ".local/bin"
     $winsmuxExe = Join-Path $localBin "winsmux.exe"
-    $assetName = Get-PreferredReleaseAssetName
 
     try {
         if (-not (Test-Path $localBin)) {
@@ -598,21 +597,22 @@ function Install-WinsmuxBinary {
             Write-Status "winsmux binary not found at the installed target. Downloading winsmux-core..."
         }
 
-        $asset = $release.assets | Where-Object { $_.name -eq $assetName } | Select-Object -First 1
-        if (-not $asset -and $assetName -eq "winsmux-arm64.exe") {
-            Write-Warning "[winsmux] ARM64 asset not found in release $($release.tag_name). Falling back to winsmux-x64.exe."
-            $asset = $release.assets | Where-Object { $_.name -eq "winsmux-x64.exe" } | Select-Object -First 1
-        }
-        if (-not $asset) {
-            throw "$assetName asset not found in release $($release.tag_name)"
-        }
-
-        $sha256Asset = $release.assets | Where-Object { $_.name -eq "SHA256SUMS" } | Select-Object -First 1
-        if (-not $sha256Asset) {
-            throw "SHA256SUMS asset not found in release $($release.tag_name). Cannot verify $($asset.name)."
-        }
-
         if ($downloadBinary) {
+            $assetName = Get-PreferredReleaseAssetName
+            $asset = $release.assets | Where-Object { $_.name -eq $assetName } | Select-Object -First 1
+            if (-not $asset -and $assetName -eq "winsmux-arm64.exe") {
+                Write-Warning "[winsmux] ARM64 asset not found in release $($release.tag_name). Falling back to winsmux-x64.exe."
+                $asset = $release.assets | Where-Object { $_.name -eq "winsmux-x64.exe" } | Select-Object -First 1
+            }
+            if (-not $asset) {
+                throw "$assetName asset not found in release $($release.tag_name)"
+            }
+
+            $sha256Asset = $release.assets | Where-Object { $_.name -eq "SHA256SUMS" } | Select-Object -First 1
+            if (-not $sha256Asset) {
+                throw "SHA256SUMS asset not found in release $($release.tag_name). Cannot verify $($asset.name)."
+            }
+
             $downloadPath = Join-Path ([System.IO.Path]::GetTempPath()) ("winsmux-" + [System.Guid]::NewGuid().ToString() + "-" + $asset.name)
             $checksumsPath = Join-Path ([System.IO.Path]::GetTempPath()) ("winsmux-" + [System.Guid]::NewGuid().ToString() + "-SHA256SUMS")
             try {
