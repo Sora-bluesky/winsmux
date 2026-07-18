@@ -222,21 +222,22 @@ function Invoke-WinsmuxRaw {
 function Resolve-WinsmuxLifecycleInstaller {
     param([string]$BridgeRoot = $PSScriptRoot)
 
-    $candidates = [System.Collections.Generic.List[string]]::new()
-    $candidates.Add((Join-Path $BridgeRoot 'install.ps1'))
     $sourceRoot = Split-Path -Parent $BridgeRoot
+    $bridgeRootLeaf = [System.IO.Path]::GetFileName($BridgeRoot)
     $isSourceLayout = (
-        [System.IO.Path]::GetFileName($BridgeRoot) -ieq 'scripts' -and
+        $bridgeRootLeaf -ieq 'scripts' -and
         (Test-Path -LiteralPath (Join-Path $sourceRoot 'core\Cargo.toml') -PathType Leaf) -and
         (Test-Path -LiteralPath (Join-Path $BridgeRoot 'stage-npm-release.mjs') -PathType Leaf)
     )
-    if ($isSourceLayout) {
-        $candidates.Add((Join-Path $sourceRoot 'install.ps1'))
+    $candidate = if ($isSourceLayout) {
+        Join-Path $sourceRoot 'install.ps1'
+    } elseif ($bridgeRootLeaf -ieq 'bin') {
+        Join-Path $BridgeRoot 'install.ps1'
+    } else {
+        $null
     }
-    foreach ($candidate in $candidates) {
-        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-            return [System.IO.Path]::GetFullPath($candidate)
-        }
+    if ($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+        return [System.IO.Path]::GetFullPath($candidate)
     }
 
     return $null

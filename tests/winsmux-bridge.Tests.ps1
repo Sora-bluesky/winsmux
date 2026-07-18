@@ -28738,6 +28738,40 @@ Describe 'winsmux raw namespace forwarding' {
         $resolved | Should -BeNullOrEmpty
     }
 
+    It 'does not let a source scripts installer shadow the repository root installer' {
+        $sourceRoot = Join-Path $TestDrive 'source-layout'
+        $sourceScripts = Join-Path $sourceRoot 'scripts'
+        $sourceCore = Join-Path $sourceRoot 'core'
+        New-Item -ItemType Directory -Path $sourceScripts,$sourceCore -Force | Out-Null
+        foreach ($file in @(
+            @{ Path = (Join-Path $sourceRoot 'install.ps1'); Content = 'root installer' },
+            @{ Path = (Join-Path $sourceScripts 'install.ps1'); Content = 'shadow installer' },
+            @{ Path = (Join-Path $sourceScripts 'stage-npm-release.mjs'); Content = '// source marker' },
+            @{ Path = (Join-Path $sourceCore 'Cargo.toml'); Content = '[package]' }
+        )) {
+            [System.IO.File]::WriteAllText($file.Path, $file.Content, [System.Text.UTF8Encoding]::new($false))
+        }
+        $previousRawExe = $env:WINSMUX_RAW_EXE
+        $env:WINSMUX_RAW_EXE = 'winsmux'
+        function winsmux {
+            $global:LASTEXITCODE = 0
+            return 'winsmux 0.0.0'
+        }
+        try {
+            $null = . $script:namespaceBridgePath version
+            $resolved = Resolve-WinsmuxLifecycleInstaller -BridgeRoot $sourceScripts
+        } finally {
+            Remove-Item Function:\winsmux -ErrorAction SilentlyContinue
+            if ($null -eq $previousRawExe) {
+                Remove-Item Env:\WINSMUX_RAW_EXE -ErrorAction SilentlyContinue
+            } else {
+                $env:WINSMUX_RAW_EXE = $previousRawExe
+            }
+        }
+
+        $resolved | Should -Be ([System.IO.Path]::GetFullPath((Join-Path $sourceRoot 'install.ps1')))
+    }
+
     It 'keeps command-scoped socket flags after the delegated command name' {
         $env:WINSMUX_BRIDGE_NAMESPACE_L = 'ops'
         $env:WINSMUX_BRIDGE_SOCKET_S = 'socket-name'
