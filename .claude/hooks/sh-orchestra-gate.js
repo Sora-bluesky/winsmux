@@ -4749,7 +4749,8 @@ function hasUnsupportedDirectProcessBoundary(command) {
       const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(normalizedStage));
       const executable = normalizeExecutableName(tokens[0] || "");
       if (!executable) continue;
-      if (executable === "git" && hasGitExternalProcessConfiguration(tokens)) return true;
+      if (executable === "git" &&
+          (hasDirectGitProcessEnvironment(normalizedStage) || hasGitExternalProcessConfiguration(tokens))) return true;
       if (executable === "rg" && hasRgExternalProcessConfiguration(tokens)) return true;
       if (executable === "xargs") {
         const nestedTokens = unwrapEnvCommandTokens(getNormalizedXargsCommandTokens(tokens));
@@ -8021,6 +8022,12 @@ function hasGitExternalProcessConfiguration(tokens) {
     }
   }
   return false;
+}
+
+function hasDirectGitProcessEnvironment(source) {
+  return /(?:^|\s)(?:GIT_CONFIG_[A-Z0-9_]+|GIT_EXTERNAL_DIFF|GIT_PAGER|GIT_EDITOR|GIT_SEQUENCE_EDITOR|GIT_SSH|GIT_SSH_COMMAND|GIT_ASKPASS|GIT_ALLOW_PROTOCOL)\s*=/iu.test(
+    String(source || ""),
+  );
 }
 
 function hasRgExternalProcessConfiguration(tokens) {
