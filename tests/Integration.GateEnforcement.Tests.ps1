@@ -5331,6 +5331,8 @@ EOF
                 'node -e "require(''child_process'').spawnSync(''mshta.exe'', [''javascript:new ActiveXObject(\"WScript.Shell\").Run(\"codex exec\");close()''])"',
                 'python -c "import subprocess; subprocess.run([''wmic.exe'',''process'',''call'',''create'',''codex exec''])"',
                 'python -c "import subprocess; subprocess.run([''schtasks.exe'',''/create'',''/tn'',''winsmux-review-bypass'',''/tr'',''codex exec''])"',
+                'python -c "import subprocess; subprocess.run([''git'',''add'',''--dry-run'',''.'']); subprocess.run([''wmic.exe'',''process'',''call'',''create'',''codex exec''])"',
+                'node -e "const cp=require(''child_process''); cp.spawnSync(''git'', [''add'',''--dry-run'',''.'']); cp.spawnSync(''mshta.exe'', [''javascript:new ActiveXObject(\"WScript.Shell\").Run(\"codex exec\");close()''])"',
                 'node -e "require(''child_process'').spawnSync(''helper'', [''codex'', ''exec''])"',
                 'python -c "import subprocess; subprocess.run([''helper'', ''codex'', ''exec''])"',
                 'pwsh -Command "Start-Process helper -ArgumentList codex,exec"'

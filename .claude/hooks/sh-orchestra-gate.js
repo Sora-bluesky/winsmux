@@ -4712,9 +4712,6 @@ function hasUnsupportedInlineInterpreterBoundary(command) {
   for (const segment of splitCommandSegments(source)) {
     for (const stage of splitCommandPipelineStages(segment)) {
       const normalizedStage = unwrapPowerShellCommandWrapper(String(stage || "").trim());
-      if (isReviewGatedCommand(normalizedStage) || isOperatorOnlyGitLifecycleCommand(normalizedStage)) {
-        continue;
-      }
       const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(normalizedStage));
       const kind = getShellInterpreterKind(tokens);
       if (kind && hasUnownedInterpreterProcessBoundary(normalizedStage)) return true;
@@ -4743,7 +4740,7 @@ function hasUnsupportedInlineInterpreterBoundary(command) {
 }
 
 function hasUnsupportedDirectProcessBoundary(command) {
-  const source = String(command || "");
+  const source = materializePowerShellComSpecAliases(String(command || ""));
   for (const segment of splitCommandSegments(source)) {
     for (const stage of splitCommandPipelineStages(segment)) {
       const normalizedStage = unwrapPowerShellCommandWrapper(String(stage || "").trim());
@@ -4751,9 +4748,6 @@ function hasUnsupportedDirectProcessBoundary(command) {
       const executable = normalizeExecutableName(tokens[0] || "");
       if (!executable) continue;
       if (executable === "git" && hasGitExternalProcessConfiguration(tokens)) return true;
-      if (isReviewGatedCommand(normalizedStage) || isOperatorOnlyGitLifecycleCommand(normalizedStage)) {
-        continue;
-      }
       if (isPowerShellExecutable(executable)) {
         const nestedCommand = getPowerShellNestedCommand(tokens);
         if (nestedCommand && nestedCommand !== normalizedStage && hasUnsupportedDirectProcessBoundary(nestedCommand)) {
@@ -4765,7 +4759,8 @@ function hasUnsupportedDirectProcessBoundary(command) {
         const nestedCommand = getPowerShellStartProcessCommand(tokens);
         const nestedTokens = tokenizeCommandLine(nestedCommand);
         if (nestedTokens.length === 0) return true;
-        const nestedExecutable = normalizeExecutableName(nestedTokens[0]);
+        const resolvedNestedExecutable = evaluateStaticStringExpression(nestedTokens[0], new Map());
+        const nestedExecutable = normalizeExecutableName(resolvedNestedExecutable || nestedTokens[0]);
         if (nestedExecutable === "git" || nestedExecutable === "gh" || nestedExecutable === "codex") {
           if (nestedExecutable === "git" && hasGitExternalProcessConfiguration(nestedTokens)) return true;
           continue;
