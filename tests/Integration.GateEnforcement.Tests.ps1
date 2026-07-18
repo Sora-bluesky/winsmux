@@ -7690,7 +7690,12 @@ print(f().dumps({'ok':True}))"
                 'saps git -ArgumentList @("status","--short") -Credential $([Diagnostics.Process]::Start(("g"+"it"),("com"+"mit --allow-empty -m credential-value")))',
                 'saps git -ArgumentList @("status","--short") -Verb $([Diagnostics.Process]::Start(("g"+"h"),("pr merge 1179")))',
                 'start git -ArgumentList @("status","--short") -UseNewEnvironment:$([Diagnostics.Process]::Start(("g"+"it"),("com"+"mit --allow-empty -m use-new-env")))',
-                'saps git -ArgumentList @("status","--short") -Credential ([Diagnostics.Process]::Start(("g"+"it"),("com"+"mit --allow-empty -m credential-paren")))'
+                'saps git -ArgumentList @("status","--short") -Credential ([Diagnostics.Process]::Start(("g"+"it"),("com"+"mit --allow-empty -m credential-paren")))',
+                'saps git -ArgumentList @("status","--short") -Credential @([Diagnostics.Process]::Start(("g"+"it"),("com"+"mit --allow-empty -m credential-array")))',
+                'saps git -ArgumentList @("status","--short") -Credential @{x=[Diagnostics.Process]::Start(("g"+"h"),("pr merge 1179"))}',
+                'start git -ArgumentList @("status","--short") -Verb @([Diagnostics.Process]::Start(("g"+"it"),("com"+"mit --allow-empty -m verb-array")))',
+                'saps git -ArgumentList @("status","--short") -Environment @{FOO=[Diagnostics.Process]::Start(("g"+"it"),("com"+"mit --allow-empty -m environment-hashtable"))}',
+                'saps git -ArgumentList @("status",[Diagnostics.Process]::Start(("g"+"it"),("com"+"mit --allow-empty -m argument-array"))) -Wait'
             )) {
             $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
             & $script:AssertDenyResult -Result $result -Because $command

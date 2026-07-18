@@ -4816,7 +4816,7 @@ function hasUnsupportedDirectProcessBoundary(command) {
         ? getPowerShellWrapperPrefixTokens(rawTokens)
         : rawTokens;
       const rawHasUnresolvedEvaluation = isPowerShellStartProcessExecutable(rawExecutable)
-        ? hasUnresolvedPowerShellStartProcessArgumentEvaluation(rawEvaluationTokens)
+        ? hasUnresolvedPowerShellStartProcessArgumentEvaluation(rawEvaluationTokens, normalizedStage)
         : hasUnresolvedPowerShellArgumentEvaluation(rawEvaluationTokens);
       if (rawHasUnresolvedEvaluation) return true;
       const aliasTokens = resolveStaticDirectAliasTokens(
@@ -4837,7 +4837,7 @@ function hasUnsupportedDirectProcessBoundary(command) {
         ? getPowerShellWrapperPrefixTokens(tokens)
         : tokens;
       const hasUnresolvedEvaluation = isPowerShellStartProcessExecutable(executable)
-        ? hasUnresolvedPowerShellStartProcessArgumentEvaluation(evaluationTokens)
+        ? hasUnresolvedPowerShellStartProcessArgumentEvaluation(evaluationTokens, normalizedStage)
         : hasUnresolvedPowerShellArgumentEvaluation(evaluationTokens);
       if (hasUnresolvedEvaluation) {
         return true;
@@ -5023,10 +5023,11 @@ function hasUnresolvedPowerShellArgumentEvaluation(tokens) {
   });
 }
 
-function hasUnresolvedPowerShellStartProcessArgumentEvaluation(tokens) {
+function hasUnresolvedPowerShellStartProcessArgumentEvaluation(tokens, source) {
+  const maskedSource = maskCanonicalPowerShellArgumentArrays(source);
+  if (/\$\(|@\(|@\{/u.test(maskedSource)) return true;
   for (let index = 1; index < tokens.length; index += 1) {
     const value = stripOuterQuotes(String(tokens[index] || "").trim());
-    if (/\$\(/u.test(value)) return true;
     if (!/^\(/u.test(value)) continue;
     if (/^\(?get-command$/iu.test(value) && index + 1 < tokens.length) {
       const target = normalizeExecutableName(stripOuterQuotes(tokens[index + 1]).replace(/\)+$/u, ""));
@@ -5038,6 +5039,16 @@ function hasUnresolvedPowerShellStartProcessArgumentEvaluation(tokens) {
     if (evaluateStaticStringExpression(value, new Map()) === null) return true;
   }
   return false;
+}
+
+function maskCanonicalPowerShellArgumentArrays(value) {
+  const source = String(value || "");
+  const literal = String.raw`(?:'(?:[^']|'')*'|"[^"$\x60]*"|[A-Za-z0-9_./:\\-]+)`;
+  const staticArray = String.raw`@\(\s*(?:${literal}(?:\s*,\s*${literal})*)?\s*\)`;
+  return source.replace(
+    new RegExp(String.raw`-(?:argumentlist|args)(?::|=|\s+)${staticArray}`, "giu"),
+    "-ArgumentList __WINSMUX_STATIC_ARRAY__",
+  );
 }
 
 function hasUnownedStdinScriptPipeline(source) {
