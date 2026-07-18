@@ -109,6 +109,56 @@ function Get-InstallPowerShellProfilePath {
     return $PROFILE.CurrentUserAllHosts
 }
 
+function Remove-WinsmuxProfileBlock {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProfilePath,
+        [Parameter(Mandatory = $true)][string]$ManagedPathLine
+    )
+
+    if (-not (Test-Path -LiteralPath $ProfilePath -PathType Leaf)) { return }
+    $bytes = [System.IO.File]::ReadAllBytes($ProfilePath)
+    $encoding = $null
+    $preambleLength = 0
+    if ($bytes.Length -ge 4 -and $bytes[0] -eq 0x00 -and $bytes[1] -eq 0x00 -and $bytes[2] -eq 0xFE -and $bytes[3] -eq 0xFF) {
+        $encoding = [System.Text.UTF32Encoding]::new($true, $true)
+        $preambleLength = 4
+    } elseif ($bytes.Length -ge 4 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE -and $bytes[2] -eq 0x00 -and $bytes[3] -eq 0x00) {
+        $encoding = [System.Text.UTF32Encoding]::new($false, $true)
+        $preambleLength = 4
+    } elseif ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+        $encoding = [System.Text.UTF8Encoding]::new($true)
+        $preambleLength = 3
+    } elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF) {
+        $encoding = [System.Text.UnicodeEncoding]::new($true, $true)
+        $preambleLength = 2
+    } elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) {
+        $encoding = [System.Text.UnicodeEncoding]::new($false, $true)
+        $preambleLength = 2
+    } else {
+        try {
+            $encoding = [System.Text.UTF8Encoding]::new($false, $true)
+            $null = $encoding.GetString($bytes)
+        } catch {
+            $encoding = [System.Text.Encoding]::GetEncoding([System.Globalization.CultureInfo]::CurrentCulture.TextInfo.ANSICodePage)
+        }
+    }
+
+    $text = $encoding.GetString($bytes, $preambleLength, $bytes.Length - $preambleLength)
+    $managedPattern = '(?m)^# winsmux\r?\n' + [regex]::Escape($ManagedPathLine) + '(?:\r?\n|$)'
+    $updated = ([regex]::new($managedPattern)).Replace($text, '', 1)
+    if ($updated -ceq $text) { return }
+
+    $body = $encoding.GetBytes($updated)
+    if ($preambleLength -eq 0) {
+        [System.IO.File]::WriteAllBytes($ProfilePath, $body)
+        return
+    }
+    $output = [byte[]]::new($preambleLength + $body.Length)
+    [Array]::Copy($bytes, 0, $output, 0, $preambleLength)
+    [Array]::Copy($body, 0, $output, $preambleLength, $body.Length)
+    [System.IO.File]::WriteAllBytes($ProfilePath, $output)
+}
+
 function Write-Status($msg) { Write-Host "[winsmux] $msg" }
 
 function Resolve-InstallProfile {
@@ -637,7 +687,8 @@ exit /b %ERRORLEVEL%
         New-Item -Path $profilePath -Force | Out-Null
     }
     $content = Get-Content $profilePath -Raw -ErrorAction SilentlyContinue
-    if (-not $content -or $content -notmatch 'winsmux') {
+    $managedProfilePattern = '(?m)^# winsmux\r?\n' + [regex]::Escape($profileLine) + '(?:\r?$)'
+    if (-not $content -or $content -notmatch $managedProfilePattern) {
         Add-Content $profilePath "`n# winsmux`n$profileLine"
     }
     $env:PATH = "$BIN_DIR;$env:PATH"
@@ -715,12 +766,11 @@ function Invoke-Uninstall {
         }
     }
 
-    # 3. Remove winsmux lines from $PROFILE
-    $profilePath = $PROFILE.CurrentUserAllHosts
+    # 3. Remove only the exact installer-owned block from $PROFILE
+    $profilePath = Get-InstallPowerShellProfilePath
     if (Test-Path $profilePath) {
-        $lines = Get-Content $profilePath
-        $filtered = $lines | Where-Object { $_ -notmatch 'winsmux' }
-        $filtered | Set-Content $profilePath
+        $profileLine = "`$env:PATH = `"$BIN_DIR;`$env:PATH`""
+        Remove-WinsmuxProfileBlock -ProfilePath $profilePath -ManagedPathLine $profileLine
         Write-Status "Cleaned $profilePath"
     }
 

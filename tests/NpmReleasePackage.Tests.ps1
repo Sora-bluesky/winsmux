@@ -333,6 +333,39 @@ param(
         $result.bootstrapped | Should -BeTrue
     }
 
+    It 'removes only the installer-owned profile block and preserves user content and encoding' {
+        $installer = Get-Content -LiteralPath $script:InstallerPath -Raw -Encoding UTF8
+        $installer | Should -Not -Match "-notmatch 'winsmux'"
+        $installer | Should -Match '\$managedProfilePattern'
+        $mainOffset = $installer.IndexOf('# Main', [System.StringComparison]::Ordinal)
+        $mainOffset | Should -BeGreaterThan 0
+        . ([scriptblock]::Create($installer.Substring(0, $mainOffset)))
+
+        $managedLine = '$env:PATH = "C:\fixture\.winsmux\bin;$env:PATH"'
+        $profileText = "function Invoke-WinsmuxCustom {`r`n    winsmux doctor`r`n}`r`n# winsmux`r`n$managedLine`r`nWrite-Host 'keep winsmux note'`r`n"
+        foreach ($case in @(
+            @{ Name = 'utf8-bom'; Encoding = [System.Text.UTF8Encoding]::new($true); Preamble = [byte[]](0xEF, 0xBB, 0xBF) },
+            @{ Name = 'utf16-le'; Encoding = [System.Text.UnicodeEncoding]::new($false, $true); Preamble = [byte[]](0xFF, 0xFE) }
+        )) {
+            $profilePath = Join-Path $TestDrive ($case.Name + '.ps1')
+            $body = $case.Encoding.GetBytes($profileText)
+            $bytes = [byte[]]::new($case.Preamble.Length + $body.Length)
+            [Array]::Copy($case.Preamble, 0, $bytes, 0, $case.Preamble.Length)
+            [Array]::Copy($body, 0, $bytes, $case.Preamble.Length, $body.Length)
+            [System.IO.File]::WriteAllBytes($profilePath, $bytes)
+
+            Remove-WinsmuxProfileBlock -ProfilePath $profilePath -ManagedPathLine $managedLine
+
+            $updatedBytes = [System.IO.File]::ReadAllBytes($profilePath)
+            @($updatedBytes[0..($case.Preamble.Length - 1)]) | Should -Be $case.Preamble
+            $updated = $case.Encoding.GetString($updatedBytes, $case.Preamble.Length, $updatedBytes.Length - $case.Preamble.Length)
+            $updated | Should -Match 'function Invoke-WinsmuxCustom'
+            $updated | Should -Match 'winsmux doctor'
+            $updated | Should -Match "Write-Host 'keep winsmux note'"
+            $updated | Should -Not -Match [regex]::Escape($managedLine)
+        }
+    }
+
     It 'verifies every installer download target against the release tree and rejects a missing target' {
         $valid = Invoke-PwshProcess -Arguments @(
             '-NoProfile', '-File', $script:InstallDownloadGatePath,
