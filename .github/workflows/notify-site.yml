@@ -1,0 +1,14 @@
+name: Notify site
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger winsmux.dev rebuild
+        run: gh api repos/Sora-bluesky/winsmux.dev/dispatches -f event_type=winsmux-release
+        env:
+          GH_TOKEN: ${{ secrets.SITE_DISPATCH_TOKEN }}
