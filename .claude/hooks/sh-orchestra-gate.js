@@ -4750,6 +4750,7 @@ function hasUnsupportedDirectProcessBoundary(command) {
       const executable = normalizeExecutableName(tokens[0] || "");
       if (!executable) continue;
       if (executable === "git" && hasGitExternalProcessConfiguration(tokens)) return true;
+      if (executable === "rg" && hasRgExternalProcessConfiguration(tokens)) return true;
       if (executable === "xargs") {
         const nestedTokens = getNormalizedXargsCommandTokens(tokens);
         const nestedExecutable = normalizeExecutableName(nestedTokens[0] || "");
@@ -8006,6 +8007,14 @@ function hasGitExternalProcessConfiguration(tokens) {
     }
   }
   return false;
+}
+
+function hasRgExternalProcessConfiguration(tokens) {
+  return tokens.slice(1).map((value) => normalizeAgentValue(value)).some((value) =>
+    value === "--pre" ||
+    value.startsWith("--pre=") ||
+    value === "--hostname-bin" ||
+    value.startsWith("--hostname-bin="));
 }
 
 function isCanonicalReadOnlyGhArguments(values) {
