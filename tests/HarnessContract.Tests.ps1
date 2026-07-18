@@ -1296,6 +1296,7 @@ panes:
             New-Item -ItemType Directory -Path $fakeBinDir -Force | Out-Null
 
             Copy-Item -LiteralPath (Join-Path $script:RepoRoot '.claude\hooks\sh-orchestra-gate.js') -Destination (Join-Path $hooksDir 'sh-orchestra-gate.js') -Force
+            Copy-Item -LiteralPath (Join-Path $script:RepoRoot '.claude\hooks\vendor') -Destination (Join-Path $hooksDir 'vendor') -Recurse -Force
 
             Write-TestFileWithCmd -Path (Join-Path $scriptsDir 'settings.ps1') -Content @'
 function Get-BridgeSettings {
@@ -1346,6 +1347,7 @@ exit /b 0
             New-Item -ItemType Directory -Path $fakeBinDir -Force | Out-Null
 
             Copy-Item -LiteralPath (Join-Path $script:RepoRoot '.claude\hooks\sh-orchestra-gate.js') -Destination (Join-Path $hooksDir 'sh-orchestra-gate.js') -Force
+            Copy-Item -LiteralPath (Join-Path $script:RepoRoot '.claude\hooks\vendor') -Destination (Join-Path $hooksDir 'vendor') -Recurse -Force
 
             Write-TestFileWithCmd -Path (Join-Path $scriptsDir 'settings.ps1') -Content @'
 function Get-BridgeSettings {
