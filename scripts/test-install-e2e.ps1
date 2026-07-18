@@ -280,6 +280,11 @@ if ($Route -eq 'Direct' -and $isGitHubRunner) {
     if ($taglessResult.ExitCode -ne 0 -or $taglessResult.Combined -match '\[winsmux\]\s+Failed to download\b') {
         throw "Tagless direct install did not stay on the fixed main installer:`n$($taglessResult.Combined)"
     }
+    $taglessInstallerText = Get-Content -LiteralPath (Join-Path $fixtureHome '.winsmux\bin\install.ps1') -Raw -Encoding UTF8
+    $taglessCoreText = Get-Content -LiteralPath (Join-Path $fixtureHome '.winsmux\bin\winsmux-core.ps1') -Raw -Encoding UTF8
+    if ($taglessInstallerText -notmatch 'Test-ShouldBootstrapTargetInstaller' -or $taglessCoreText -notmatch '\$sourceRoot') {
+        throw 'Tagless direct install replaced the fixed main scripts with the previous release scripts.'
+    }
     $taglessInstallVerified = $true
 }
 

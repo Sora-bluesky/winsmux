@@ -55,6 +55,7 @@ if (-not [string]::IsNullOrWhiteSpace($installSourceRef) -and $installSourceRef 
     throw 'WINSMUX_INSTALL_SOURCE_REF must be a 40-character commit SHA in an authorized installer E2E mode.'
 }
 $releaseAction = $Action.Trim().ToLowerInvariant()
+$isPipedInstaller = [string]::IsNullOrWhiteSpace($PSCommandPath)
 if ($redirectedInstallerE2e -and $releaseAction -ne 'install') {
     throw 'Redirected installer E2E mode only permits the install action.'
 }
@@ -220,7 +221,7 @@ function Write-InstallProfileManifest {
 }
 
 function Install-CoreSupportScripts {
-    Download-OptionalFile "winsmux-core/scripts/json-compat.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "json-compat.ps1")
+    Download-File "winsmux-core/scripts/json-compat.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "json-compat.ps1")
     Download-OptionalFile "winsmux-core/scripts/control-plane-workers.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "control-plane-workers.ps1")
     Download-OptionalFile "winsmux-core/scripts/control-plane-ledger.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "control-plane-ledger.ps1")
 }
@@ -268,14 +269,14 @@ function Install-OrchestraSupportScripts {
     Download-File "winsmux-core/scripts/server-watchdog.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "server-watchdog.ps1")
     Download-File "winsmux-core/scripts/settings.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "settings.ps1")
     Download-File "winsmux-core/scripts/shadow-cutover-gate.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "shadow-cutover-gate.ps1")
-    Download-OptionalFile "winsmux-core/scripts/submission-contract.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "submission-contract.ps1")
+    Download-File "winsmux-core/scripts/submission-contract.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "submission-contract.ps1")
     Download-File "winsmux-core/scripts/task-splitter.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "task-splitter.ps1")
     Download-File "winsmux-core/scripts/team-pipeline.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "team-pipeline.ps1")
     Download-File "winsmux-core/scripts/worker-isolation.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "worker-isolation.ps1")
 }
 
 function Install-SecuritySupportScripts {
-    Download-OptionalFile "winsmux-core/scripts/credential-metadata.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "credential-metadata.ps1")
+    Download-File "winsmux-core/scripts/credential-metadata.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "credential-metadata.ps1")
     Download-File "winsmux-core/scripts/vault.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "vault.ps1")
 }
 
@@ -555,10 +556,15 @@ function Resolve-WinsmuxRelease {
         $script:ResolvedReleaseTag = [string]$release.tag_name
         $script:ResolvedVersion = $script:ResolvedReleaseTag.TrimStart('v', 'V')
         $script:EffectiveReleaseTag = $script:ResolvedReleaseTag
-        $script:BASE_URL = if ([string]::IsNullOrWhiteSpace($script:installSourceRef)) {
+        $keepPipedMainScripts = $script:releaseAction -eq 'install' -and $script:isPipedInstaller -and [string]::IsNullOrWhiteSpace($script:requestedReleaseTag)
+        $script:BASE_URL = if ([string]::IsNullOrWhiteSpace($script:installSourceRef) -and -not $keepPipedMainScripts) {
             "https://raw.githubusercontent.com/Sora-bluesky/winsmux/$script:ResolvedReleaseTag"
         } else {
-            "https://raw.githubusercontent.com/Sora-bluesky/winsmux/$script:installSourceRef"
+            if ([string]::IsNullOrWhiteSpace($script:installSourceRef)) {
+                "https://raw.githubusercontent.com/Sora-bluesky/winsmux/main"
+            } else {
+                "https://raw.githubusercontent.com/Sora-bluesky/winsmux/$script:installSourceRef"
+            }
         }
         $script:RELEASE_LABEL = $script:ResolvedReleaseTag
         return $release
@@ -875,7 +881,8 @@ function Test-ShouldBootstrapTargetInstaller {
     param([Parameter(Mandatory = $true)][ValidateSet('install', 'update')][string]$TargetAction)
 
     if ($TargetAction -eq 'update') { return $true }
-    return -not [string]::IsNullOrWhiteSpace($requestedReleaseTag)
+    if (-not [string]::IsNullOrWhiteSpace($requestedReleaseTag)) { return $true }
+    return -not $isPipedInstaller
 }
 
 function Invoke-Uninstall {

@@ -268,6 +268,8 @@ Describe 'winsmux npm release package contract' {
         $installE2e | Should -Match 'wrapper_lifecycle_without_native_verified'
         $installE2e | Should -Match 'tagless_install_verified'
         $installE2e | Should -Match 'Tagless direct install did not stay on the fixed main installer'
+        $installE2e | Should -Match 'Tagless direct install replaced the fixed main scripts with the previous release scripts'
+        $installer | Should -Match 'keepPipedMainScripts'
         $installE2e | Should -Match 'WT settings: not found'
         $installE2e | Should -Match "wrapper.*doctor"
         $installE2e | Should -Match 'installer download failure'
@@ -363,9 +365,13 @@ param(
         }
 
         $requestedReleaseTag = ''
+        $isPipedInstaller = $true
         (Test-ShouldBootstrapTargetInstaller -TargetAction install) | Should -BeFalse
         (Test-ShouldBootstrapTargetInstaller -TargetAction update) | Should -BeTrue
+        $isPipedInstaller = $false
+        (Test-ShouldBootstrapTargetInstaller -TargetAction install) | Should -BeTrue
         $requestedReleaseTag = 'v0.36.28'
+        $isPipedInstaller = $true
         (Test-ShouldBootstrapTargetInstaller -TargetAction install) | Should -BeTrue
         $installer | Should -Match '-not \(Test-ShouldBootstrapTargetInstaller -TargetAction install\)'
     }
@@ -633,7 +639,7 @@ param(
         $invalidCases = @(
             @{
                 Name = 'missing runtime dependency declaration'
-                Find = 'Download-OptionalFile "winsmux-core/scripts/json-compat.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "json-compat.ps1")'
+                Find = 'Download-File "winsmux-core/scripts/json-compat.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "json-compat.ps1")'
                 Replace = '# deliberately omit json-compat.ps1 from the installer fixture'
                 Error = 'runtime script dependencies are not downloaded:.*json-compat\.ps1'
             },
