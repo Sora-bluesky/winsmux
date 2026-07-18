@@ -28628,6 +28628,48 @@ Describe 'winsmux raw namespace forwarding' {
         $script:namespaceRawCalls[0] | Should -Be '-L|ops|-S|socket-name|list-panes|-a'
     }
 
+    It 'forwards unrecognized bridge commands to the native executable with exit status intact' {
+        $script:forwardedRawArguments = @()
+        function winsmux {
+            param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
+
+            $script:forwardedRawArguments = @($Arguments)
+            $global:LASTEXITCODE = 7
+            'native-output'
+        }
+
+        $previousRawExe = $env:WINSMUX_RAW_EXE
+        $previousNamespaceL = $env:WINSMUX_BRIDGE_NAMESPACE_L
+        $previousSocketS = $env:WINSMUX_BRIDGE_SOCKET_S
+        $env:WINSMUX_RAW_EXE = 'winsmux'
+        Remove-Item Env:\WINSMUX_BRIDGE_NAMESPACE_L -ErrorAction SilentlyContinue
+        Remove-Item Env:\WINSMUX_BRIDGE_SOCKET_S -ErrorAction SilentlyContinue
+        try {
+            $output = . $script:namespaceBridgePath new-session -d -s fixture
+        } finally {
+            if ($null -eq $previousRawExe) {
+                Remove-Item Env:\WINSMUX_RAW_EXE -ErrorAction SilentlyContinue
+            } else {
+                $env:WINSMUX_RAW_EXE = $previousRawExe
+            }
+            if ($null -eq $previousNamespaceL) {
+                Remove-Item Env:\WINSMUX_BRIDGE_NAMESPACE_L -ErrorAction SilentlyContinue
+            } else {
+                $env:WINSMUX_BRIDGE_NAMESPACE_L = $previousNamespaceL
+            }
+            if ($null -eq $previousSocketS) {
+                Remove-Item Env:\WINSMUX_BRIDGE_SOCKET_S -ErrorAction SilentlyContinue
+            } else {
+                $env:WINSMUX_BRIDGE_SOCKET_S = $previousSocketS
+            }
+            Remove-Item Function:\winsmux -ErrorAction SilentlyContinue
+        }
+
+        $output | Should -Be 'native-output'
+        $script:forwardedRawArguments | Should -Be @('new-session', '-d', '-s', 'fixture')
+        $script:WinsmuxRequestedProcessExitCode | Should -Be 7
+    }
+
     It 'keeps command-scoped socket flags after the delegated command name' {
         $env:WINSMUX_BRIDGE_NAMESPACE_L = 'ops'
         $env:WINSMUX_BRIDGE_SOCKET_S = 'socket-name'

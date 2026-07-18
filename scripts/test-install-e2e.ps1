@@ -308,6 +308,10 @@ $versionResult = Invoke-CapturedProcess -FilePath $wrapper -Arguments @('version
 if ($versionResult.ExitCode -ne 0 -or $versionResult.StdOut -ne "winsmux $Version") {
     throw "installed wrapper version failed: exit=$($versionResult.ExitCode) output=$($versionResult.Combined)"
 }
+$rawVersionResult = Invoke-CapturedProcess -FilePath $wrapper -Arguments @('-V')
+if ($rawVersionResult.ExitCode -ne 0 -or $rawVersionResult.StdOut -ne "winsmux $expectedNativeVersion") {
+    throw "installed wrapper native forwarding failed: exit=$($rawVersionResult.ExitCode) output=$($rawVersionResult.Combined)"
+}
 $doctorResult = Invoke-CapturedProcess -FilePath $wrapper -Arguments @('doctor')
 $doctorOutput = $doctorResult.Combined
 if ($doctorOutput -notmatch '(?m)^=== winsmux doctor ===\s*$') {
@@ -346,6 +350,8 @@ if ($manifest.profile -ne 'full' -or $manifest.version -ne $expectedNativeVersio
     native_asset_version = $expectedNativeVersion
     install_exit_code = $installResult.ExitCode
     wrapper_version_exit_code = $versionResult.ExitCode
+    wrapper_raw_version_exit_code = $rawVersionResult.ExitCode
+    wrapper_raw_command_forwarding_verified = $true
     wrapper_doctor_exit_code = $doctorResult.ExitCode
     wrapper_doctor_native_version_verified = $true
     wrapper_doctor_terminal_absence_verified = $true

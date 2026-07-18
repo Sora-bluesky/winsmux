@@ -1,8 +1,10 @@
 ﻿param(
-    [Parameter(Position=0)][string]$Command,
-    [Parameter(Position=1)][string]$Target,
-    [Parameter(Position=2, ValueFromRemainingArguments=$true)][string[]]$Rest
 )
+
+$script:WinsmuxBridgeArguments = @($args)
+$Command = if ($script:WinsmuxBridgeArguments.Count -ge 1) { [string]$script:WinsmuxBridgeArguments[0] } else { '' }
+$Target = if ($script:WinsmuxBridgeArguments.Count -ge 2) { [string]$script:WinsmuxBridgeArguments[1] } else { $null }
+$Rest = if ($script:WinsmuxBridgeArguments.Count -ge 3) { [string[]]$script:WinsmuxBridgeArguments[2..($script:WinsmuxBridgeArguments.Count - 1)] } else { @() }
 
 $script:WinsmuxBridgeWasDotSourced = $MyInvocation.InvocationName -eq '.'
 $script:WinsmuxRequestedProcessExitCode = 0
@@ -18581,7 +18583,20 @@ switch ($Command) {
     'runtime-roles' { Invoke-RuntimeRoles }
     'rebind-worktree' { Invoke-RebindWorktree }
     ''                { Show-Usage }
-    default           { Stop-WithError "unknown command: $Command. Run without arguments for usage." }
+    default           {
+        $rawArguments = @($Command)
+        if ($script:WinsmuxBridgeArguments.Count -ge 2) {
+            $rawArguments += @($Target)
+        }
+        if ($script:WinsmuxBridgeArguments.Count -ge 3) {
+            $rawArguments += @($Rest)
+        }
+        Invoke-WinsmuxRaw -Arguments $rawArguments
+        $nativeExitCode = Get-SafeLastExitCode
+        if ($null -ne $nativeExitCode) {
+            $script:WinsmuxRequestedProcessExitCode = $nativeExitCode
+        }
+    }
 }
 
 if (-not $script:WinsmuxBridgeWasDotSourced -and $script:WinsmuxRequestedProcessExitCode -ne 0) {

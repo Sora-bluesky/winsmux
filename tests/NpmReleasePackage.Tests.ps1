@@ -257,6 +257,7 @@ Describe 'winsmux npm release package contract' {
         $installE2e | Should -Match 'Invoke-CapturedProcess -FilePath \$npmShim[^\r\n]+-IncludeGitHubAccess'
         $installE2e | Should -Match 'Invoke-IrmInstaller -SourceInstaller \$installerPath[^\r\n]+-IncludeGitHubAccess'
         $installE2e | Should -Match 'wrapper_launch_project_dir_verified'
+        $installE2e | Should -Match 'wrapper_raw_command_forwarding_verified'
         $installE2e | Should -Match 'WT settings: not found'
         $installE2e | Should -Match "wrapper.*doctor"
         $installE2e | Should -Match 'installer download failure'
@@ -279,6 +280,8 @@ Describe 'winsmux npm release package contract' {
         $installer | Should -Match 'Redirected installer E2E mode only permits the install action'
         $installer | Should -Match 'if \(\$installerE2e\) \{ \[string\]\$env:WINSMUX_INSTALL_E2E_GITHUB_ACCESS \} else \{ '''' \}'
         $installer | Should -Match '\$headers\.Authorization = "Bearer \$e2eGitHubAccess"'
+        $installer | Should -Match 'WINSMUX_RAW_EXE=%USERPROFILE%\\\.local\\bin\\winsmux\.exe'
+        $installE2e | Should -Match 'Invoke-CapturedProcess -FilePath \$wrapper -Arguments @\(''-V''\)'
         $installer | Should -Match 'Get-InstallUserPath'
         $installer | Should -Match 'Get-InstallPowerShellProfilePath'
         $redirectedSmoke.IndexOf('$invariantErrors', [System.StringComparison]::Ordinal) | Should -BeLessThan $redirectedSmoke.IndexOf('$failureParts', [System.StringComparison]::Ordinal)
