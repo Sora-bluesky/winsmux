@@ -435,6 +435,13 @@ param(
         $result.ExitCode | Should -Be 0
         $result.StdOut | Should -BeNullOrEmpty
 
+        $normalMarkerResult = Invoke-CapturedProcess -FilePath (Get-Command pwsh -ErrorAction Stop).Source -Arguments @(
+            '-NoProfile', '-Command',
+            '[Console]::Write([Environment]::GetEnvironmentVariable("WINSMUX_INTERNAL_TARGET_INSTALLER_BOOTSTRAPPED"))'
+        )
+        $normalMarkerResult.ExitCode | Should -Be 0
+        $normalMarkerResult.StdOut | Should -BeNullOrEmpty
+
         $markerResult = Invoke-CapturedProcess -FilePath (Get-Command pwsh -ErrorAction Stop).Source -Arguments @(
             '-NoProfile', '-Command',
             '[Console]::Write([Environment]::GetEnvironmentVariable("WINSMUX_INTERNAL_TARGET_INSTALLER_BOOTSTRAPPED"))'
