@@ -17,6 +17,12 @@ function Assert-WinsmuxReleaseTag {
     }
 }
 
+function Test-IsPipedWinsmuxInstaller {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$InvocationPath)
+
+    return [string]::IsNullOrWhiteSpace($InvocationPath)
+}
+
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
@@ -67,6 +73,7 @@ if (-not [string]::IsNullOrWhiteSpace($installSourceRef) -and $installSourceRef 
     throw 'WINSMUX_INSTALL_SOURCE_REF must be a 40-character commit SHA in an authorized installer E2E mode.'
 }
 $releaseAction = $Action.Trim().ToLowerInvariant()
+$isPipedInstaller = Test-IsPipedWinsmuxInstaller -InvocationPath ([string]$MyInvocation.MyCommand.Path)
 if ($redirectedInstallerE2e -and $releaseAction -ne 'install') {
     throw 'Redirected installer E2E mode only permits the install action.'
 }
@@ -580,8 +587,8 @@ function Resolve-WinsmuxRelease {
         $script:ResolvedReleaseTag = [string]$release.tag_name
         $script:ResolvedVersion = Get-WinsmuxBinaryVersionFromReleaseTag -ReleaseTag $script:ResolvedReleaseTag
         $script:EffectiveReleaseTag = $script:ResolvedReleaseTag
-        $keepTaglessMainScripts = $script:releaseAction -eq 'install' -and [string]::IsNullOrWhiteSpace($script:requestedReleaseTag)
-        $script:BASE_URL = if ([string]::IsNullOrWhiteSpace($script:installSourceRef) -and -not $keepTaglessMainScripts) {
+        $keepPipedMainScripts = $script:releaseAction -eq 'install' -and $script:isPipedInstaller -and [string]::IsNullOrWhiteSpace($script:requestedReleaseTag)
+        $script:BASE_URL = if ([string]::IsNullOrWhiteSpace($script:installSourceRef) -and -not $keepPipedMainScripts) {
             "https://raw.githubusercontent.com/Sora-bluesky/winsmux/$script:ResolvedReleaseTag"
         } else {
             if ([string]::IsNullOrWhiteSpace($script:installSourceRef)) {
@@ -905,7 +912,8 @@ function Test-ShouldBootstrapTargetInstaller {
     param([Parameter(Mandatory = $true)][ValidateSet('install', 'update')][string]$TargetAction)
 
     if ($TargetAction -eq 'update') { return $true }
-    return -not [string]::IsNullOrWhiteSpace($requestedReleaseTag)
+    if (-not [string]::IsNullOrWhiteSpace($requestedReleaseTag)) { return $true }
+    return -not $isPipedInstaller
 }
 
 function Invoke-Uninstall {

@@ -269,7 +269,8 @@ Describe 'winsmux npm release package contract' {
         $installE2e | Should -Match 'tagless_install_verified'
         $installE2e | Should -Match 'Tagless direct install did not stay on the fixed main installer'
         $installE2e | Should -Match 'Tagless direct install replaced the fixed main scripts with the previous release scripts'
-        $installer | Should -Match 'keepTaglessMainScripts'
+        $installer | Should -Match 'keepPipedMainScripts'
+        $installer | Should -Match 'Test-IsPipedWinsmuxInstaller -InvocationPath \(\[string\]\$MyInvocation\.MyCommand\.Path\)'
         $installer | Should -Match 'Assert-WinsmuxReleaseTag -ReleaseTag \$requestedReleaseTag'
         $installE2e | Should -Match 'WT settings: not found'
         $installE2e | Should -Match "wrapper.*doctor"
@@ -366,10 +367,16 @@ param(
         }
 
         $requestedReleaseTag = ''
+        $isPipedInstaller = $true
         (Test-ShouldBootstrapTargetInstaller -TargetAction install) | Should -BeFalse
         (Test-ShouldBootstrapTargetInstaller -TargetAction update) | Should -BeTrue
-        $requestedReleaseTag = 'v0.36.28'
+        $isPipedInstaller = $false
         (Test-ShouldBootstrapTargetInstaller -TargetAction install) | Should -BeTrue
+        $requestedReleaseTag = 'v0.36.28'
+        $isPipedInstaller = $true
+        (Test-ShouldBootstrapTargetInstaller -TargetAction install) | Should -BeTrue
+        (Test-IsPipedWinsmuxInstaller -InvocationPath '') | Should -BeTrue
+        (Test-IsPipedWinsmuxInstaller -InvocationPath 'C:\saved\install.ps1') | Should -BeFalse
         (Get-WinsmuxBinaryVersionFromReleaseTag -ReleaseTag 'v0.36.28') | Should -Be '0.36.28'
         (Get-WinsmuxBinaryVersionFromReleaseTag -ReleaseTag 'v0.36.28.1') | Should -Be '0.36.28'
         (Get-WinsmuxBinaryVersionFromReleaseTag -ReleaseTag 'v0.36.29-preview.1') | Should -Be '0.36.29-preview.1'
