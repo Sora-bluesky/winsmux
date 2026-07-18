@@ -473,6 +473,9 @@ function Install-WinsmuxBinary {
         if (-not (Test-Path $localBin)) {
             New-Item -ItemType Directory -Path $localBin -Force | Out-Null
         }
+        Get-ChildItem -LiteralPath $localBin -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^winsmux\.exe\.previous-[0-9a-f]{32}$' } |
+            Remove-Item -Force -ErrorAction SilentlyContinue
 
         $release = Resolve-WinsmuxRelease
         $headers = Get-WinsmuxReleaseHeaders
@@ -531,7 +534,24 @@ function Install-WinsmuxBinary {
                     throw "Checksum verification failed for $($asset.name)."
                 }
                 Write-Status "Checksum verified"
-                Move-Item -LiteralPath $downloadPath -Destination $winsmuxExe -Force
+                $previousBinary = $null
+                if (Test-Path -LiteralPath $winsmuxExe -PathType Leaf) {
+                    $previousBinary = Join-Path $localBin ("winsmux.exe.previous-{0}" -f [Guid]::NewGuid().ToString('N'))
+                    Move-Item -LiteralPath $winsmuxExe -Destination $previousBinary -Force
+                }
+                try {
+                    Move-Item -LiteralPath $downloadPath -Destination $winsmuxExe -Force
+                } catch {
+                    $placementError = $_
+                    if ($previousBinary -and (Test-Path -LiteralPath $previousBinary -PathType Leaf)) {
+                        Remove-Item -LiteralPath $winsmuxExe -Force -ErrorAction SilentlyContinue
+                        Move-Item -LiteralPath $previousBinary -Destination $winsmuxExe -Force
+                    }
+                    throw $placementError
+                }
+                if ($previousBinary) {
+                    Remove-Item -LiteralPath $previousBinary -Force -ErrorAction SilentlyContinue
+                }
             } finally {
                 Remove-Item $downloadPath -Force -ErrorAction SilentlyContinue
                 Remove-Item $checksumsPath -Force -ErrorAction SilentlyContinue

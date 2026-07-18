@@ -295,6 +295,9 @@ Describe 'winsmux npm release package contract' {
         $installer = Get-Content -LiteralPath $script:InstallerPath -Raw -Encoding UTF8
         $installer | Should -Match '(?s)\$release\s*=\s*Resolve-WinsmuxRelease.*?\$headers\s*=\s*Get-WinsmuxReleaseHeaders.*?browser_download_url\s+-Headers\s+\$headers'
         $installer | Should -Not -Match 'UpdateBootstrapComplete'
+        $installer | Should -Match 'winsmux\.exe\.previous-'
+        $installE2e = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'scripts/test-install-e2e.ps1') -Raw -Encoding UTF8
+        $installE2e | Should -Match 'update could not replace a running native executable'
         $mainMarker = '# Main'
         $mainOffset = $installer.IndexOf($mainMarker, [System.StringComparison]::Ordinal)
         $mainOffset | Should -BeGreaterThan 0

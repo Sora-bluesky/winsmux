@@ -344,6 +344,41 @@ if ($manifest.profile -ne 'full' -or $manifest.version -ne $expectedNativeVersio
     throw 'Installed profile manifest does not match the requested full release.'
 }
 
+$lockedNativeUpdateVerified = $false
+if ($Route -eq 'Direct') {
+    Copy-Item -LiteralPath $pwsh -Destination $native -Force
+    $lockInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $lockInfo.FileName = $native
+    foreach ($argument in @('-NoProfile', '-Command', 'Start-Sleep -Seconds 120')) {
+        $lockInfo.ArgumentList.Add($argument)
+    }
+    $lockInfo.UseShellExecute = $false
+    $lockInfo.CreateNoWindow = $true
+    $lockedNative = [System.Diagnostics.Process]::Start($lockInfo)
+    try {
+        Start-Sleep -Milliseconds 500
+        if ($lockedNative.HasExited) { throw 'locked native fixture exited before update.' }
+        $lockedUpdate = Invoke-CapturedProcess -FilePath $pwsh -Arguments @(
+            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $installedInstaller,
+            'update', '-ReleaseTag', "v$expectedNativeVersion", '-InstallProfile', 'full'
+        ) -IncludeGitHubAccess
+        if ($lockedUpdate.ExitCode -ne 0) {
+            throw "update could not replace a running native executable:`n$($lockedUpdate.Combined)"
+        }
+        $updatedNativeVersion = Invoke-CapturedProcess -FilePath $native -Arguments @('-V')
+        if ($updatedNativeVersion.ExitCode -ne 0 -or $updatedNativeVersion.StdOut -ne "winsmux $expectedNativeVersion") {
+            throw "replacement native is not runnable after locked update:`n$($updatedNativeVersion.Combined)"
+        }
+        $lockedNativeUpdateVerified = $true
+    } finally {
+        if (-not $lockedNative.HasExited) { $lockedNative.Kill($true) }
+        $lockedNative.Dispose()
+        Get-ChildItem -LiteralPath (Split-Path -Parent $native) -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^winsmux\.exe\.previous-[0-9a-f]{32}$' } |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+    }
+}
+
 $lifecycleProbePath = Join-Path $scratch 'lifecycle-probe.json'
 $lifecycleProbeLiteral = $lifecycleProbePath.Replace("'", "''")
 $lifecycleProbeScript = @"
@@ -381,6 +416,7 @@ if ($uninstallProbe.action -ne 'uninstall' -or -not [string]::IsNullOrWhiteSpace
     wrapper_update_dispatch_verified = $true
     wrapper_uninstall_dispatch_verified = $true
     wrapper_lifecycle_without_native_verified = $true
+    locked_native_update_verified = $lockedNativeUpdateVerified
     wrapper_doctor_exit_code = $doctorResult.ExitCode
     wrapper_doctor_native_version_verified = $true
     wrapper_doctor_terminal_absence_verified = $true
