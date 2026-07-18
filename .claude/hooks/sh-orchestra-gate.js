@@ -4750,6 +4750,13 @@ function hasUnsupportedDirectProcessBoundary(command) {
       const executable = normalizeExecutableName(tokens[0] || "");
       if (!executable) continue;
       if (executable === "git" && hasGitExternalProcessConfiguration(tokens)) return true;
+      if (executable === "xargs") {
+        const nestedTokens = getNormalizedXargsCommandTokens(tokens);
+        const nestedExecutable = normalizeExecutableName(nestedTokens[0] || "");
+        if (isNestedShellProcessLauncher(nestedExecutable) && !isReviewGatedCommand(normalizedStage)) {
+          return true;
+        }
+      }
       if (!isOwnedDirectExecutable(executable)) {
         const nestedExecutable = tokens.slice(1).some((value) => {
           const candidate = normalizeExecutableName(value);

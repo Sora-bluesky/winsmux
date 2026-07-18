@@ -5339,6 +5339,8 @@ EOF
                 'npx --no-install codex exec',
                 'pnpm dlx codex exec',
                 'yarn dlx codex exec',
+                'printf ''codex exec\n'' | xargs sh -c ''$0 $1''',
+                'printf ''codex e\n'' | xargs bash -c ''$0 $1''',
                 'node -e "require(''child_process'').spawnSync(''mshta.exe'', [''javascript:new ActiveXObject(\"WScript.Shell\").Run(\"codex exec\");close()''])"',
                 'python -c "import subprocess; subprocess.run([''wmic.exe'',''process'',''call'',''create'',''codex exec''])"',
                 'python -c "import subprocess; subprocess.run([''schtasks.exe'',''/create'',''/tn'',''winsmux-review-bypass'',''/tr'',''codex exec''])"',
