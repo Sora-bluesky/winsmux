@@ -55,7 +55,6 @@ if (-not [string]::IsNullOrWhiteSpace($installSourceRef) -and $installSourceRef 
     throw 'WINSMUX_INSTALL_SOURCE_REF must be a 40-character commit SHA in an authorized installer E2E mode.'
 }
 $releaseAction = $Action.Trim().ToLowerInvariant()
-$isPipedInstaller = [string]::IsNullOrWhiteSpace($PSCommandPath)
 if ($redirectedInstallerE2e -and $releaseAction -ne 'install') {
     throw 'Redirected installer E2E mode only permits the install action.'
 }
@@ -544,6 +543,19 @@ function Get-WinsmuxReleaseHeaders {
     return $headers
 }
 
+function Get-WinsmuxBinaryVersionFromReleaseTag {
+    param([Parameter(Mandatory = $true)][string]$ReleaseTag)
+
+    $normalizedTag = $ReleaseTag.Trim().TrimStart('v', 'V')
+    if ($normalizedTag -notmatch '^(?<binary>\d+\.\d+\.\d+)(?:\.\d+)?(?<suffix>-[0-9A-Za-z.-]+)?$') {
+        throw "Unsupported winsmux release tag format: $ReleaseTag"
+    }
+
+    # A fourth numeric component is a packaging hotfix revision. The Rust
+    # binary keeps the three-component product version embedded at build time.
+    return $Matches['binary'] + $Matches['suffix']
+}
+
 function Resolve-WinsmuxRelease {
     $headers = Get-WinsmuxReleaseHeaders
 
@@ -554,10 +566,10 @@ function Resolve-WinsmuxRelease {
             throw "Release response did not include tag_name."
         }
         $script:ResolvedReleaseTag = [string]$release.tag_name
-        $script:ResolvedVersion = $script:ResolvedReleaseTag.TrimStart('v', 'V')
+        $script:ResolvedVersion = Get-WinsmuxBinaryVersionFromReleaseTag -ReleaseTag $script:ResolvedReleaseTag
         $script:EffectiveReleaseTag = $script:ResolvedReleaseTag
-        $keepPipedMainScripts = $script:releaseAction -eq 'install' -and $script:isPipedInstaller -and [string]::IsNullOrWhiteSpace($script:requestedReleaseTag)
-        $script:BASE_URL = if ([string]::IsNullOrWhiteSpace($script:installSourceRef) -and -not $keepPipedMainScripts) {
+        $keepTaglessMainScripts = $script:releaseAction -eq 'install' -and [string]::IsNullOrWhiteSpace($script:requestedReleaseTag)
+        $script:BASE_URL = if ([string]::IsNullOrWhiteSpace($script:installSourceRef) -and -not $keepTaglessMainScripts) {
             "https://raw.githubusercontent.com/Sora-bluesky/winsmux/$script:ResolvedReleaseTag"
         } else {
             if ([string]::IsNullOrWhiteSpace($script:installSourceRef)) {
@@ -881,8 +893,7 @@ function Test-ShouldBootstrapTargetInstaller {
     param([Parameter(Mandatory = $true)][ValidateSet('install', 'update')][string]$TargetAction)
 
     if ($TargetAction -eq 'update') { return $true }
-    if (-not [string]::IsNullOrWhiteSpace($requestedReleaseTag)) { return $true }
-    return -not $isPipedInstaller
+    return -not [string]::IsNullOrWhiteSpace($requestedReleaseTag)
 }
 
 function Invoke-Uninstall {
