@@ -8106,8 +8106,10 @@ function hasRuntimeNodeOptionsEnvironmentMutation(source) {
   if (environmentNameStates.hasNodeOptions || environmentNameStates.hasUnresolved) return true;
   const powerShellEnvironmentReflection = /(?:\[(?:System\.)?Environment\]|\[type\]\s*::\s*GetType\s*\(\s*["']System\.Environment["']\s*\))[\s\S]{0,1024}?\.(?:GetMethod|GetMethods|GetMember|GetMembers|InvokeMember)\s*\(/iu;
   if (powerShellEnvironmentReflection.test(text)) return true;
-  const unownedPowerShellReflection = /\.(?:GetMethod|GetMethods|GetMember|GetMembers|InvokeMember|CreateDelegate)\s*\(/iu;
+  const unownedPowerShellReflection = /(?:\.|::)(?:GetMethod|GetMethods|GetMember|GetMembers|InvokeMember|CreateDelegate)\s*\(/iu;
   if (unownedPowerShellReflection.test(text)) return true;
+  const dynamicPowerShellMemberInvocation = /(?:\.|::)\s*(?:\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|\(\s*\$\{?[A-Za-z_][A-Za-z0-9_]*\}?\s*\)|\$\([^)]*\))\s*\(/u;
+  if (dynamicPowerShellMemberInvocation.test(text)) return true;
   return /\$env:NODE_OPTIONS\s*(?:=|\+=)/iu.test(text) ||
     /\[(?:System\.)?Environment\]\s*::\s*SetEnvironmentVariable\s*\(\s*["']NODE_OPTIONS["']/iu.test(text) ||
     /\b(?:Set-Item|si|New-Item|ni|Remove-Item|ri|Clear-Item|cli|Set-Content|sc|Clear-Content|clc)\b[^;&\r\n]*(?:Env:\\?)?NODE_OPTIONS\b/iu.test(text) ||
