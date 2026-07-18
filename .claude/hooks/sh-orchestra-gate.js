@@ -4795,9 +4795,9 @@ function hasUnsupportedDirectProcessBoundary(command) {
 
 function isOwnedDirectExecutable(executable) {
   return new Set([
-    "bash", "bun", "cargo", "cat", "cmd", "codex", "curl", "deno", "echo", "gh", "git",
-    "grep", "jq", "node", "nodejs", "npm", "npx", "pnpm", "powershell", "printf", "pwsh",
-    "py", "python", "python3", "rg", "rustc", "sh", "type", "where", "which", "winsmux", "xargs", "yarn", "zsh",
+    "bash", "cat", "cmd", "codex", "curl", "echo", "gh", "git", "grep", "jq", "node", "nodejs",
+    "powershell", "printf", "pwsh", "py", "python", "python3", "rg", "rustc", "sh", "type", "where",
+    "which", "winsmux", "xargs", "zsh",
   ]).has(normalizeExecutableName(executable));
 }
 
