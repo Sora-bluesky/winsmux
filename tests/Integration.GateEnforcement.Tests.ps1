@@ -7695,7 +7695,12 @@ print(f().dumps({'ok':True}))"
                 'saps git -ArgumentList @("status","--short") -Credential @{x=[Diagnostics.Process]::Start(("g"+"h"),("pr merge 1179"))}',
                 'start git -ArgumentList @("status","--short") -Verb @([Diagnostics.Process]::Start(("g"+"it"),("com"+"mit --allow-empty -m verb-array")))',
                 'saps git -ArgumentList @("status","--short") -Environment @{FOO=[Diagnostics.Process]::Start(("g"+"it"),("com"+"mit --allow-empty -m environment-hashtable"))}',
-                'saps git -ArgumentList @("status",[Diagnostics.Process]::Start(("g"+"it"),("com"+"mit --allow-empty -m argument-array"))) -Wait'
+                'saps git -ArgumentList @("status",[Diagnostics.Process]::Start(("g"+"it"),("com"+"mit --allow-empty -m argument-array"))) -Wait',
+                'saps git -ArgumentList @("status","--short") -Credential +([Diagnostics.Process]::Start(("g"+"it"),("com"+"mit --allow-empty -m unary-plus")))',
+                'saps git -ArgumentList @("status","--short") -Credential !([Diagnostics.Process]::Start(("g"+"h"),("pr merge 1179")))',
+                'saps git -ArgumentList @("status","--short") -Credential -([Diagnostics.Process]::Start(("g"+"it"),("com"+"mit --allow-empty -m unary-minus")))',
+                'saps git -ArgumentList @("status","--short") -Credential <#x#>([Diagnostics.Process]::Start(("g"+"it"),("com"+"mit --allow-empty -m comment-prefix")))',
+                'start git -ArgumentList @("status","--short") -Verb <#x#>([Diagnostics.Process]::Start(("g"+"h"),("pr merge 1179")))'
             )) {
             $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
             & $script:AssertDenyResult -Result $result -Because $command

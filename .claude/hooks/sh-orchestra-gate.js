@@ -5023,22 +5023,15 @@ function hasUnresolvedPowerShellArgumentEvaluation(tokens) {
   });
 }
 
-function hasUnresolvedPowerShellStartProcessArgumentEvaluation(tokens, source) {
-  const maskedSource = maskCanonicalPowerShellArgumentArrays(source);
-  if (/\$\(|@\(|@\{/u.test(maskedSource)) return true;
-  for (let index = 1; index < tokens.length; index += 1) {
-    const value = stripOuterQuotes(String(tokens[index] || "").trim());
-    if (!/^\(/u.test(value)) continue;
-    if (/^\(?get-command$/iu.test(value) && index + 1 < tokens.length) {
-      const target = normalizeExecutableName(stripOuterQuotes(tokens[index + 1]).replace(/\)+$/u, ""));
-      if (["git", "gh", "codex"].includes(target)) {
-        index += 1;
-        continue;
-      }
-    }
-    if (evaluateStaticStringExpression(value, new Map()) === null) return true;
-  }
-  return false;
+function hasUnresolvedPowerShellStartProcessArgumentEvaluation(_tokens, source) {
+  let maskedSource = maskCanonicalPowerShellArgumentArrays(source);
+  maskedSource = maskedSource
+    .replace(/\(\s*get-command\s+(?:git|gh|codex)\s*\)/giu, "__WINSMUX_STATIC_COMMAND__")
+    .replace(/\(\s*(?:get-item|gi)\s+Env:\\?ComSpec\s*\)\.Value/giu, "__WINSMUX_STATIC_COMSPEC__")
+    .replace(/\$\{env:ComSpec\}/giu, "__WINSMUX_STATIC_COMSPEC__")
+    .replace(/'(?:[^']|'')*'/gu, "__WINSMUX_STATIC_STRING__")
+    .replace(/"[^"$\x60]*"/gu, "__WINSMUX_STATIC_STRING__");
+  return /\$\(|@\(|@\{|<#|#>|[()[\]{}&]/u.test(maskedSource);
 }
 
 function maskCanonicalPowerShellArgumentArrays(value) {
