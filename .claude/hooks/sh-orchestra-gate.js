@@ -4303,39 +4303,41 @@ function hasUnsupportedNodeProcessConstruction(script) {
   return hasChildProcessCapabilityCall && hasUnresolvedInterpreterProcessBoundary(source);
 }
 
-function getInterpreterInlineSourceToken(tokens, kind) {
+function getInterpreterInlineSourceDescriptor(tokens, kind) {
   const options = kind === "python" ? ["-c"] : ["-e", "-p", "-pe", "--eval", "--print"];
   for (let index = 1; index < tokens.length; index += 1) {
     const token = String(tokens[index] || "");
     const normalized = normalizeAgentValue(token);
     if (options.includes(normalized)) {
-      return index + 1 < tokens.length ? stripOuterQuotes(tokens[index + 1]) : "";
+      if (kind === "node" && (normalized === "-p" || normalized === "--print")) {
+        const next = normalizeAgentValue(String(tokens[index + 1] || ""));
+        if (options.includes(next) || options.some((option) =>
+          next.startsWith(option + "=") || next.startsWith(option + ":"))) continue;
+      }
+      return {
+        source: index + 1 < tokens.length ? stripOuterQuotes(tokens[index + 1]) : "",
+        trailingIndex: Math.min(index + 2, tokens.length),
+      };
     }
     for (const option of options) {
       if (normalized.startsWith(option + "=") || normalized.startsWith(option + ":")) {
-        return stripOuterQuotes(token.slice(option.length + 1));
+        return { source: stripOuterQuotes(token.slice(option.length + 1)), trailingIndex: index + 1 };
       }
     }
   }
   return null;
 }
 
+function getInterpreterInlineSourceToken(tokens, kind) {
+  return getInterpreterInlineSourceDescriptor(tokens, kind)?.source ?? null;
+}
+
 function getInterpreterTrailingArgumentTokens(command) {
   const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(String(command || "")));
   const kind = getShellInterpreterKind(tokens);
   if (!kind) return [];
-  const options = kind === "python" ? ["-c"] : ["-e", "-p", "-pe", "--eval", "--print"];
-  for (let index = 1; index < tokens.length; index += 1) {
-    const token = String(tokens[index] || "");
-    const normalized = normalizeAgentValue(token);
-    if (options.includes(normalized)) {
-      return index + 2 <= tokens.length ? tokens.slice(index + 2) : [];
-    }
-    if (options.some((option) => normalized.startsWith(option + "=") || normalized.startsWith(option + ":"))) {
-      return tokens.slice(index + 1);
-    }
-  }
-  return [];
+  const descriptor = getInterpreterInlineSourceDescriptor(tokens, kind);
+  return descriptor ? tokens.slice(descriptor.trailingIndex) : [];
 }
 
 function hasOuterCodexProtectedArguments(command) {
@@ -7628,8 +7630,7 @@ function hasInterpreterCwdChangeCommand(segment, tokens) {
 }
 
 function getInterpreterInlineScript(tokens, kind) {
-  const scriptOptions = kind === "python" ? ["-c"] : ["-e", "-p", "-pe", "--eval", "--print"];
-  return getOptionRemainderValue(tokens, scriptOptions);
+  return getInterpreterInlineSourceToken(tokens, kind) || "";
 }
 
 function hasPythonCwdChangeCommand(script) {
@@ -8061,7 +8062,10 @@ function hasNodeStartupCodeConfiguration(tokens, source = "") {
     const rawValue = stripOuterQuotes(String(tokens[index] || ""));
     const value = normalizeAgentValue(rawValue);
     if (value === "--") return false;
-    if (inlineOptions.has(value)) return index + 1 >= tokens.length;
+    if (inlineOptions.has(value)) {
+      const descriptor = getInterpreterInlineSourceDescriptor(tokens, "node");
+      return descriptor === null || descriptor.source === "";
+    }
     if (["--eval=", "--eval:", "--print=", "--print:"].some((prefix) => value.startsWith(prefix))) {
       return false;
     }
@@ -8082,6 +8086,8 @@ function hasRuntimeNodeOptionsEnvironmentMutation(source) {
   const text = String(source || "");
   const environmentNameStates = getRuntimeEnvironmentMutationNameStates(text);
   if (environmentNameStates.hasNodeOptions || environmentNameStates.hasUnresolved) return true;
+  const powerShellEnvironmentReflection = /(?:\[(?:System\.)?Environment\]|\[type\]\s*::\s*GetType\s*\(\s*["']System\.Environment["']\s*\))[\s\S]{0,1024}?\.(?:GetMethod|GetMethods|GetMember|GetMembers|InvokeMember)\s*\(/iu;
+  if (powerShellEnvironmentReflection.test(text)) return true;
   return /\$env:NODE_OPTIONS\s*(?:=|\+=)/iu.test(text) ||
     /\[(?:System\.)?Environment\]\s*::\s*SetEnvironmentVariable\s*\(\s*["']NODE_OPTIONS["']/iu.test(text) ||
     /\b(?:Set-Item|si|New-Item|ni|Remove-Item|ri|Clear-Item|cli|Set-Content|sc|Clear-Content|clc)\b[^;&\r\n]*(?:Env:\\?)?NODE_OPTIONS\b/iu.test(text) ||
