@@ -311,6 +311,7 @@ Describe 'winsmux npm release package contract' {
         $installE2e | Should -Match 'update could not replace a running native executable'
         $installE2e | Should -Match "if \(\`$Route -eq 'Direct' -and \`$isGitHubRunner\)"
         $installE2e | Should -Not -Match "if \(\`$Route -eq 'Direct'\) \{\s*\`$cmdFixture"
+        $installE2e | Should -Match "\`$env:WINSMUX_INTERNAL_TARGET_INSTALLER_BOOTSTRAPPED = '1'"
         $mainMarker = '# Main'
         $mainOffset = $installer.IndexOf($mainMarker, [System.StringComparison]::Ordinal)
         $mainOffset | Should -BeGreaterThan 0
