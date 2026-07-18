@@ -219,16 +219,27 @@ function Invoke-WinsmuxRaw {
     return & $script:WinsmuxRawCommand @rawArguments
 }
 
+function Resolve-WinsmuxLifecycleInstaller {
+    $candidates = @(
+        (Join-Path $PSScriptRoot 'install.ps1'),
+        (Join-Path (Split-Path -Parent $PSScriptRoot) 'install.ps1')
+    )
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            return [System.IO.Path]::GetFullPath($candidate)
+        }
+    }
+
+    Stop-WithError "installed lifecycle entrypoint is missing; checked: $($candidates -join ', ')"
+}
+
 function Invoke-WinsmuxInstallerLifecycle {
     param(
         [Parameter(Mandatory = $true)][ValidateSet('install', 'update', 'uninstall')][string]$Action,
         [string[]]$Arguments = @()
     )
 
-    $installerPath = Join-Path $PSScriptRoot 'install.ps1'
-    if (-not (Test-Path -LiteralPath $installerPath -PathType Leaf)) {
-        Stop-WithError "installed lifecycle entrypoint is missing: $installerPath"
-    }
+    $installerPath = Resolve-WinsmuxLifecycleInstaller
 
     $installerArguments = [System.Collections.Generic.List[string]]::new()
     for ($index = 0; $index -lt @($Arguments).Count; $index++) {

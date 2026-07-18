@@ -28678,9 +28678,33 @@ Describe 'winsmux raw namespace forwarding' {
         $bridgeContent | Should -Match '''uninstall''\s+\{ Invoke-WinsmuxInstallerLifecycle -Action uninstall'
         $bridgeContent | Should -Match '\$argument -eq ''--profile'''
         $bridgeContent | Should -Match 'StartsWith\(''--profile='', \[System\.StringComparison\]::Ordinal\)'
-        $bridgeContent | Should -Match 'Join-Path \$PSScriptRoot ''install\.ps1'''
+        $bridgeContent | Should -Match 'function Resolve-WinsmuxLifecycleInstaller'
+        $bridgeContent | Should -Match 'Join-Path \(Split-Path -Parent \$PSScriptRoot\) ''install\.ps1'''
         $bridgeContent | Should -Match '\$script:WinsmuxRawCommand = \$null'
         $bridgeContent | Should -Match 'if \(\[string\]::IsNullOrWhiteSpace\(\[string\]\$script:WinsmuxRawCommand\)\)'
+    }
+
+    It 'resolves the lifecycle installer from the repository root when running the source bridge' {
+        $previousRawExe = $env:WINSMUX_RAW_EXE
+        $env:WINSMUX_RAW_EXE = 'winsmux'
+        function winsmux {
+            $global:LASTEXITCODE = 0
+            return 'winsmux 0.0.0'
+        }
+        try {
+            $null = . $script:namespaceBridgePath version
+            $resolved = Resolve-WinsmuxLifecycleInstaller
+        } finally {
+            Remove-Item Function:\winsmux -ErrorAction SilentlyContinue
+            if ($null -eq $previousRawExe) {
+                Remove-Item Env:\WINSMUX_RAW_EXE -ErrorAction SilentlyContinue
+            } else {
+                $env:WINSMUX_RAW_EXE = $previousRawExe
+            }
+        }
+
+        $expected = Join-Path (Split-Path -Parent (Split-Path -Parent $script:namespaceBridgePath)) 'install.ps1'
+        $resolved | Should -Be ([System.IO.Path]::GetFullPath($expected))
     }
 
     It 'keeps command-scoped socket flags after the delegated command name' {
