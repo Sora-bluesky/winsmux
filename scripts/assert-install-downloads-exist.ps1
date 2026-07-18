@@ -107,6 +107,63 @@ if ($nonBlobPaths.Count -gt 0) {
     throw "Installer download targets are not files in '$Treeish': $($nonBlobPaths -join ', ')"
 }
 
+$knownRuntimeScripts = @{}
+Get-ChildItem -LiteralPath (Join-Path $repoRoot 'winsmux-core\scripts') -Filter '*.ps1' -File | ForEach-Object {
+    $knownRuntimeScripts[$_.Name] = $_.FullName
+}
+$declaredRuntimePaths = @($uniquePaths | Where-Object { $_ -like 'winsmux-core/scripts/*.ps1' })
+$declaredRuntimeNames = @($declaredRuntimePaths | ForEach-Object { Split-Path $_ -Leaf })
+$runtimeDependencyNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+$scanQueue = [System.Collections.Generic.Queue[string]]::new()
+$scanQueue.Enqueue((Join-Path $repoRoot 'scripts\winsmux-core.ps1'))
+foreach ($name in $declaredRuntimeNames) {
+    if ($knownRuntimeScripts.ContainsKey($name) -and $runtimeDependencyNames.Add($name)) {
+        $scanQueue.Enqueue($knownRuntimeScripts[$name])
+    }
+}
+
+while ($scanQueue.Count -gt 0) {
+    $scriptPath = $scanQueue.Dequeue()
+    $tokens = $null
+    $errors = $null
+    $scriptAst = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$tokens, [ref]$errors)
+    if ($errors.Count -gt 0) {
+        throw "Runtime dependency source has parse errors: $scriptPath"
+    }
+    $stringNodes = @($scriptAst.FindAll({
+        param($node)
+        return $node -is [System.Management.Automation.Language.StringConstantExpressionAst] -or
+            $node -is [System.Management.Automation.Language.ExpandableStringExpressionAst]
+    }, $true))
+    foreach ($node in $stringNodes) {
+        $referenceParent = $node.Parent
+        $isRuntimeReference = $false
+        while ($null -ne $referenceParent) {
+            if ($referenceParent -is [System.Management.Automation.Language.CommandAst]) {
+                $isRuntimeReference = $true
+                break
+            }
+            if ($referenceParent -is [System.Management.Automation.Language.AssignmentStatementAst]) {
+                $isRuntimeReference = $referenceParent.Left.Extent.Text -match '(?i)(script|worker)'
+                break
+            }
+            $referenceParent = $referenceParent.Parent
+        }
+        if (-not $isRuntimeReference) { continue }
+        foreach ($match in [regex]::Matches([string]$node.Value, '(?<![A-Za-z0-9_.-])(?<name>[A-Za-z0-9_.-]+\.ps1)')) {
+            $name = $match.Groups['name'].Value
+            if ($knownRuntimeScripts.ContainsKey($name) -and $runtimeDependencyNames.Add($name)) {
+                $scanQueue.Enqueue($knownRuntimeScripts[$name])
+            }
+        }
+    }
+}
+
+$missingRuntimeDependencies = @($runtimeDependencyNames | Where-Object { $_ -notin $declaredRuntimeNames } | Sort-Object)
+if ($missingRuntimeDependencies.Count -gt 0) {
+    throw "Installer runtime script dependencies are not downloaded: $($missingRuntimeDependencies -join ', ')"
+}
+
 [ordered]@{
     schema_version = 1
     treeish = $Treeish
@@ -114,4 +171,6 @@ if ($nonBlobPaths.Count -gt 0) {
     install_script = $installerPath
     download_target_count = $uniquePaths.Count
     download_targets = $uniquePaths
+    runtime_dependency_count = $runtimeDependencyNames.Count
+    runtime_dependencies = @($runtimeDependencyNames | Sort-Object)
 } | ConvertTo-Json -Depth 4

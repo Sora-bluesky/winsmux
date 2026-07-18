@@ -231,6 +231,10 @@ Describe 'winsmux npm release package contract' {
         $testWorkflow | Should -Match 'scripts/test-install-e2e\.ps1 -Route "\$\{\{ matrix\.route \}\}"'
         $testWorkflow | Should -Match 'needs:[\s\S]*?- install-e2e[\s\S]*?needs\.install-e2e\.result'
         $installer | Should -Not -Match 'Download-File "winsmux\.ps1"'
+        $downloadDeclarations = @([regex]::Matches($installer, '(?m)^\s*Download-(?:Optional)?File\s+"(?<path>[^"]+)"\s+(?<destination>[^\r\n]+)$') | ForEach-Object {
+            '{0}|{1}' -f $_.Groups['path'].Value, $_.Groups['destination'].Value.Trim()
+        })
+        @($downloadDeclarations | Group-Object | Where-Object Count -gt 1).Count | Should -Be 0
         ([regex]::Matches($installer, 'Join-Path \$BIN_DIR "winsmux\.cmd"')).Count | Should -Be 1
         $installer | Should -Match 'winsmux-core\.ps1" %\*'
         $installer | Should -Match 'WINSMUX_RAW_EXE=%USERPROFILE%\\\.local\\bin\\winsmux\.exe'
@@ -277,8 +281,10 @@ Describe 'winsmux npm release package contract' {
         $valid.StdErr | Should -Be ''
         $validSummary = $valid.StdOut | ConvertFrom-Json -Depth 10
         $validSummary.download_target_count | Should -BeGreaterThan 0
+        $validSummary.runtime_dependency_count | Should -BeGreaterThan 0
         @($validSummary.download_targets) | Should -Contain 'scripts/winsmux-core.ps1'
         @($validSummary.download_targets) | Should -Not -Contain 'winsmux.ps1'
+        @($validSummary.runtime_dependencies) | Should -Contain 'json-compat.ps1'
 
         $invalidInstaller = Join-Path $TestDrive 'install-with-missing-download.ps1'
         $installer = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'install.ps1') -Raw -Encoding UTF8
@@ -299,6 +305,12 @@ Describe 'winsmux npm release package contract' {
         $missing.StdErr | Should -Match 'missing/installer-entrypoint\.ps1'
 
         $invalidCases = @(
+            @{
+                Name = 'missing runtime dependency declaration'
+                Find = 'Download-File "winsmux-core/scripts/json-compat.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "json-compat.ps1")'
+                Replace = '# deliberately omit json-compat.ps1 from the installer fixture'
+                Error = 'runtime script dependencies are not downloaded:.*json-compat\.ps1'
+            },
             @{
                 Name = 'missing optional target'
                 Find = 'Download-OptionalFile "winsmux-core/scripts/control-plane-workers.ps1"'

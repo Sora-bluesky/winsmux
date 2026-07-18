@@ -170,44 +170,62 @@ function Write-InstallProfileManifest {
 }
 
 function Install-CoreSupportScripts {
+    Download-File "winsmux-core/scripts/json-compat.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "json-compat.ps1")
     Download-OptionalFile "winsmux-core/scripts/control-plane-workers.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "control-plane-workers.ps1")
     Download-OptionalFile "winsmux-core/scripts/control-plane-ledger.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "control-plane-ledger.ps1")
 }
 
 function Install-OrchestraSupportScripts {
+    Download-File "winsmux-core/scripts/api-llm-pane-worker.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "api-llm-pane-worker.ps1")
     Download-File "winsmux-core/scripts/agent-launch.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "agent-launch.ps1")
     Download-File "winsmux-core/scripts/agent-monitor.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "agent-monitor.ps1")
     Download-File "winsmux-core/scripts/agent-readiness.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "agent-readiness.ps1")
     Download-File "winsmux-core/scripts/agent-watchdog.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "agent-watchdog.ps1")
+    Download-File "winsmux-core/scripts/assignment-policy.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "assignment-policy.ps1")
+    Download-File "winsmux-core/scripts/builder-queue.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "builder-queue.ps1")
     Download-File "winsmux-core/scripts/builder-worktree.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "builder-worktree.ps1")
     Download-File "winsmux-core/scripts/clm-safe-io.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "clm-safe-io.ps1")
     Download-File "winsmux-core/scripts/common-contract.generated.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "common-contract.generated.ps1")
     Download-File "winsmux-core/scripts/control-plane-commands.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "control-plane-commands.ps1")
     Download-File "winsmux-core/scripts/control-plane-dispatch.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "control-plane-dispatch.ps1")
+    Download-File "winsmux-core/scripts/conflict-preflight.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "conflict-preflight.ps1")
     Download-File "winsmux-core/scripts/operator-poll.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "operator-poll.ps1")
     Download-File "winsmux-core/scripts/doctor.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "doctor.ps1")
+    Download-File "winsmux-core/scripts/dispatch-router.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "dispatch-router.ps1")
+    Download-File "winsmux-core/scripts/github-write-preflight.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "github-write-preflight.ps1")
+    Download-File "winsmux-core/scripts/harness-check.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "harness-check.ps1")
     Download-File "winsmux-core/scripts/logger.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "logger.ps1")
     Download-File "winsmux-core/scripts/manifest.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "manifest.ps1")
     Download-File "winsmux-core/scripts/orchestra-attach-confirm.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "orchestra-attach-confirm.ps1")
     Download-File "winsmux-core/scripts/orchestra-attach-entry.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "orchestra-attach-entry.ps1")
+    Download-File "winsmux-core/scripts/orchestra-attach.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "orchestra-attach.ps1")
     Download-File "winsmux-core/scripts/orchestra-pane-bootstrap.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "orchestra-pane-bootstrap.ps1")
     Download-File "winsmux-core/scripts/orchestra-preflight.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "orchestra-preflight.ps1")
     Download-File "winsmux-core/scripts/orchestra-smoke.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "orchestra-smoke.ps1")
     Download-File "winsmux-core/scripts/orchestra-start.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "orchestra-start.ps1")
+    Download-File "winsmux-core/scripts/orchestra-supervisor.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "orchestra-supervisor.ps1")
     Download-File "winsmux-core/scripts/orchestra-state.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "orchestra-state.ps1")
     Download-File "winsmux-core/scripts/orchestra-layout.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "orchestra-layout.ps1")
     Download-File "winsmux-core/scripts/orchestra-ui-attach.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "orchestra-ui-attach.ps1")
     Download-File "winsmux-core/scripts/pane-control.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "pane-control.ps1")
     Download-File "winsmux-core/scripts/pane-env.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "pane-env.ps1")
     Download-File "winsmux-core/scripts/pane-border.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "pane-border.ps1")
+    Download-File "winsmux-core/scripts/pane-status.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "pane-status.ps1")
     Download-File "winsmux-core/scripts/planning-paths.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "planning-paths.ps1")
     Download-File "winsmux-core/scripts/public-first-run.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "public-first-run.ps1")
+    Download-File "winsmux-core/scripts/powershell-deescalation.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "powershell-deescalation.ps1")
+    Download-File "winsmux-core/scripts/role-gate.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "role-gate.ps1")
     Download-File "winsmux-core/scripts/server-watchdog.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "server-watchdog.ps1")
     Download-File "winsmux-core/scripts/settings.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "settings.ps1")
-    Download-File "winsmux-core/scripts/vault.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "vault.ps1")
+    Download-File "winsmux-core/scripts/shadow-cutover-gate.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "shadow-cutover-gate.ps1")
+    Download-File "winsmux-core/scripts/submission-contract.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "submission-contract.ps1")
+    Download-File "winsmux-core/scripts/task-splitter.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "task-splitter.ps1")
+    Download-File "winsmux-core/scripts/team-pipeline.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "team-pipeline.ps1")
+    Download-File "winsmux-core/scripts/worker-isolation.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "worker-isolation.ps1")
 }
 
 function Install-SecuritySupportScripts {
+    Download-File "winsmux-core/scripts/credential-metadata.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "credential-metadata.ps1")
     Download-File "winsmux-core/scripts/vault.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "vault.ps1")
 }
 
@@ -222,36 +240,53 @@ function Remove-ProfileExcludedSupportScripts {
                 "agent-monitor.ps1",
                 "agent-readiness.ps1",
                 "agent-watchdog.ps1",
+                "api-llm-pane-worker.ps1",
+                "assignment-policy.ps1",
+                "builder-queue.ps1",
                 "builder-worktree.ps1",
                 "clm-safe-io.ps1",
                 "common-contract.generated.ps1",
+                "conflict-preflight.ps1",
                 "control-plane-commands.ps1",
                 "control-plane-dispatch.ps1",
+                "dispatch-router.ps1",
                 "operator-poll.ps1",
                 "doctor.ps1",
+                "github-write-preflight.ps1",
+                "harness-check.ps1",
                 "logger.ps1",
                 "manifest.ps1",
                 "orchestra-attach-confirm.ps1",
                 "orchestra-attach-entry.ps1",
+                "orchestra-attach.ps1",
                 "orchestra-pane-bootstrap.ps1",
                 "orchestra-preflight.ps1",
                 "orchestra-smoke.ps1",
                 "orchestra-start.ps1",
                 "orchestra-state.ps1",
+                "orchestra-supervisor.ps1",
                 "orchestra-layout.ps1",
                 "orchestra-ui-attach.ps1",
                 "pane-control.ps1",
                 "pane-env.ps1",
                 "pane-border.ps1",
+                "pane-status.ps1",
                 "planning-paths.ps1",
+                "powershell-deescalation.ps1",
                 "public-first-run.ps1",
+                "role-gate.ps1",
                 "server-watchdog.ps1",
-                "settings.ps1"
+                "settings.ps1",
+                "shadow-cutover-gate.ps1",
+                "submission-contract.ps1",
+                "task-splitter.ps1",
+                "team-pipeline.ps1",
+                "worker-isolation.ps1"
             )
         },
         [PSCustomObject]@{
             Content = "vault"
-            Files = @("vault.ps1")
+            Files = @("credential-metadata.ps1", "vault.ps1")
         }
     )
 
