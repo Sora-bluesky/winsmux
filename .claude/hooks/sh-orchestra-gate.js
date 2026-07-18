@@ -4722,11 +4722,13 @@ function hasUnsupportedInlineInterpreterBoundary(command) {
         const script = getInterpreterInlineSourceToken(tokens, kind);
         if (script !== null && script !== undefined &&
             (hasRuntimeGitEnvironmentMutation(script) ||
+             hasRuntimeNodeOptionsEnvironmentMutation(script) ||
              hasUnsupportedNodeProcessConstruction(script) ||
              hasDynamicInterpreterGitSubcommand(script))) return true;
       } else if (kind === "python") {
         const script = String(getInterpreterInlineSourceToken(tokens, kind) || "");
         if (hasRuntimeGitEnvironmentMutation(script) ||
+            hasRuntimeNodeOptionsEnvironmentMutation(script) ||
             hasUnsupportedPythonModuleLoad(script) ||
             hasUnsupportedPythonProcessConstruction(script) ||
             hasUnresolvedInterpreterProcessBoundary(script) ||
@@ -4744,6 +4746,7 @@ function hasUnsupportedInlineInterpreterBoundary(command) {
 
 function hasUnsupportedDirectProcessBoundary(command) {
   const source = materializePowerShellComSpecAliases(String(command || ""));
+  if (hasUnownedStdinScriptPipeline(source)) return true;
   for (const segment of splitCommandSegments(source)) {
     for (const stage of splitCommandPipelineStages(segment)) {
       const normalizedStage = unwrapPowerShellCommandWrapper(String(stage || "").trim());
@@ -4751,7 +4754,7 @@ function hasUnsupportedDirectProcessBoundary(command) {
       const executable = normalizeExecutableName(tokens[0] || "");
       if (!executable) continue;
       if ((executable === "node" || executable === "nodejs") &&
-          hasNodeStartupCodeConfiguration(tokens, normalizedStage)) return true;
+          hasNodeStartupCodeConfiguration(tokens, source)) return true;
       if (executable === "git" &&
           (hasDirectGitProcessEnvironment(normalizedStage) || hasGitExternalProcessConfiguration(tokens))) return true;
       if (executable === "rg" && hasRgExternalProcessConfiguration(tokens)) return true;
@@ -4816,6 +4819,13 @@ function hasUnsupportedDirectProcessBoundary(command) {
     }
   }
   return false;
+}
+
+function hasUnownedStdinScriptPipeline(source) {
+  return splitCommandSegments(String(source || "")).some((segment) => {
+    const stages = splitCommandPipelineStages(segment);
+    return stages.length > 1 && stages.slice(1).some((stage) => isStdinScriptConsumerStage(stage));
+  });
 }
 
 function isOwnedDirectExecutable(executable) {
@@ -8037,7 +8047,7 @@ function hasDirectGitProcessEnvironment(source) {
 }
 
 function hasNodeStartupCodeConfiguration(tokens, source = "") {
-  if (/(?:^|\s)NODE_OPTIONS\s*=/iu.test(String(source || ""))) return true;
+  if (hasRuntimeNodeOptionsEnvironmentMutation(source)) return true;
   const options = tokens.slice(1).map((value) => normalizeAgentValue(value));
   return options.some((value) =>
     value === "-r" || /^-r.+/u.test(value) ||
@@ -8051,6 +8061,18 @@ function hasNodeStartupCodeConfiguration(tokens, source = "") {
     value === "--env-file-if-exists" || value.startsWith("--env-file-if-exists=") ||
     value === "--run" || value.startsWith("--run=") ||
     value === "--test-reporter" || value.startsWith("--test-reporter="));
+}
+
+function hasRuntimeNodeOptionsEnvironmentMutation(source) {
+  const text = String(source || "");
+  return /\$env:NODE_OPTIONS\s*(?:=|\+=)/iu.test(text) ||
+    /\[(?:System\.)?Environment\]\s*::\s*SetEnvironmentVariable\s*\(\s*["']NODE_OPTIONS["']/iu.test(text) ||
+    /\b(?:Set-Item|si|New-Item|ni|Remove-Item|ri|Clear-Item|cli|Set-Content|sc|Clear-Content|clc)\b[^;&\r\n]*(?:Env:\\?)?NODE_OPTIONS\b/iu.test(text) ||
+    /(?:^|[;&\r\n])\s*(?:export|declare|typeset|local)\s+(?:[-+][A-Za-z]+\s+)*["']?NODE_OPTIONS\s*=/iu.test(text) ||
+    /(?:^|[;&\r\n])\s*set\s+["']?NODE_OPTIONS\s*=/iu.test(text) ||
+    /(?:^|\s)NODE_OPTIONS\s*=/iu.test(text) ||
+    /\bprocess\.env(?:\.NODE_OPTIONS|\[\s*["']NODE_OPTIONS["']\s*\])\s*(?:=|\+=|\|\|=|\?\?=)/iu.test(text) ||
+    /\bos\.(?:environ\s*\[\s*["']NODE_OPTIONS["']\s*\]\s*=|putenv\s*\(\s*["']NODE_OPTIONS["'])/iu.test(text);
 }
 
 function hasRgExternalProcessConfiguration(tokens) {
