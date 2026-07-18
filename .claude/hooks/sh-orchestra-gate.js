@@ -8108,7 +8108,7 @@ function hasRuntimeNodeOptionsEnvironmentMutation(source) {
   if (powerShellEnvironmentReflection.test(text)) return true;
   const unownedPowerShellReflection = /(?:\.|::)(?:GetMethod|GetMethods|GetMember|GetMembers|InvokeMember|CreateDelegate)\s*\(/iu;
   if (unownedPowerShellReflection.test(text)) return true;
-  const dynamicPowerShellMemberInvocation = /(?:\.|::)\s*(?:\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|\(\s*\$\{?[A-Za-z_][A-Za-z0-9_]*\}?\s*\)|\$\([^)]*\))\s*\(/u;
+  const dynamicPowerShellMemberInvocation = /(?:\.|::)\s*(?:\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|\$\([^)]*\)|\([^\r\n)]*\)|["'][^"'\r\n]+["']|[A-Za-z_][A-Za-z0-9_`]*`[A-Za-z0-9_`]*)\s*\(/u;
   if (dynamicPowerShellMemberInvocation.test(text)) return true;
   return /\$env:NODE_OPTIONS\s*(?:=|\+=)/iu.test(text) ||
     /\[(?:System\.)?Environment\]\s*::\s*SetEnvironmentVariable\s*\(\s*["']NODE_OPTIONS["']/iu.test(text) ||
