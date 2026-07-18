@@ -27,8 +27,9 @@ function Resolve-WinsmuxRawCommand {
 
         $configuredCommand = Get-Command $configured -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($null -ne $configuredCommand) {
-            if ($configuredCommand.Path) {
-                return $configuredCommand.Path
+            $pathProperty = $configuredCommand.PSObject.Properties['Path']
+            if ($null -ne $pathProperty -and -not [string]::IsNullOrWhiteSpace([string]$pathProperty.Value)) {
+                return [string]$pathProperty.Value
             }
 
             return $configuredCommand.Name
@@ -50,7 +51,7 @@ function Resolve-WinsmuxRawCommand {
     return 'winsmux'
 }
 
-$script:WinsmuxRawCommand = Resolve-WinsmuxRawCommand
+$script:WinsmuxRawCommand = $null
 
 # --- Config ---
 $VERSION = "0.36.28"
@@ -207,6 +208,9 @@ function Get-SafeLastExitCode {
 function Invoke-WinsmuxRaw {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
 
+    if ([string]::IsNullOrWhiteSpace([string]$script:WinsmuxRawCommand)) {
+        $script:WinsmuxRawCommand = Resolve-WinsmuxRawCommand
+    }
     $rawArguments = @()
     if ($script:WinsmuxRawGlobalArgs) {
         $rawArguments += $script:WinsmuxRawGlobalArgs

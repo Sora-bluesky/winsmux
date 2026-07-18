@@ -28679,6 +28679,8 @@ Describe 'winsmux raw namespace forwarding' {
         $bridgeContent | Should -Match '\$argument -eq ''--profile'''
         $bridgeContent | Should -Match 'StartsWith\(''--profile='', \[System\.StringComparison\]::Ordinal\)'
         $bridgeContent | Should -Match 'Join-Path \$PSScriptRoot ''install\.ps1'''
+        $bridgeContent | Should -Match '\$script:WinsmuxRawCommand = \$null'
+        $bridgeContent | Should -Match 'if \(\[string\]::IsNullOrWhiteSpace\(\[string\]\$script:WinsmuxRawCommand\)\)'
     }
 
     It 'keeps command-scoped socket flags after the delegated command name' {

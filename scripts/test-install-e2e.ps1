@@ -354,6 +354,8 @@ param(
 @{ action = `$Action; profile = `$InstallProfile } | ConvertTo-Json -Compress | Set-Content -LiteralPath '$lifecycleProbeLiteral' -Encoding UTF8
 "@
 [System.IO.File]::WriteAllText($installedInstaller, $lifecycleProbeScript, [System.Text.UTF8Encoding]::new($false))
+Remove-Item -LiteralPath $native -Force
+if (Test-Path -LiteralPath $native) { throw 'native recovery fixture could not remove the installed executable.' }
 $updateResult = Invoke-CapturedProcess -FilePath $wrapper -Arguments @('update', '--profile', 'orchestra')
 if ($updateResult.ExitCode -ne 0) { throw "installed wrapper update dispatch failed:`n$($updateResult.Combined)" }
 $updateProbe = Get-Content -LiteralPath $lifecycleProbePath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -378,6 +380,7 @@ if ($uninstallProbe.action -ne 'uninstall' -or -not [string]::IsNullOrWhiteSpace
     wrapper_raw_command_forwarding_verified = $true
     wrapper_update_dispatch_verified = $true
     wrapper_uninstall_dispatch_verified = $true
+    wrapper_lifecycle_without_native_verified = $true
     wrapper_doctor_exit_code = $doctorResult.ExitCode
     wrapper_doctor_native_version_verified = $true
     wrapper_doctor_terminal_absence_verified = $true

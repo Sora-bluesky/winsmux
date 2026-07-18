@@ -261,6 +261,7 @@ Describe 'winsmux npm release package contract' {
         $installE2e | Should -Match 'wrapper_raw_command_forwarding_verified'
         $installE2e | Should -Match 'wrapper_update_dispatch_verified'
         $installE2e | Should -Match 'wrapper_uninstall_dispatch_verified'
+        $installE2e | Should -Match 'wrapper_lifecycle_without_native_verified'
         $installE2e | Should -Match 'WT settings: not found'
         $installE2e | Should -Match "wrapper.*doctor"
         $installE2e | Should -Match 'installer download failure'
