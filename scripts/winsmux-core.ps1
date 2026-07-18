@@ -220,17 +220,26 @@ function Invoke-WinsmuxRaw {
 }
 
 function Resolve-WinsmuxLifecycleInstaller {
-    $candidates = @(
-        (Join-Path $PSScriptRoot 'install.ps1'),
-        (Join-Path (Split-Path -Parent $PSScriptRoot) 'install.ps1')
+    param([string]$BridgeRoot = $PSScriptRoot)
+
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    $candidates.Add((Join-Path $BridgeRoot 'install.ps1'))
+    $sourceRoot = Split-Path -Parent $BridgeRoot
+    $isSourceLayout = (
+        [System.IO.Path]::GetFileName($BridgeRoot) -ieq 'scripts' -and
+        (Test-Path -LiteralPath (Join-Path $sourceRoot 'core\Cargo.toml') -PathType Leaf) -and
+        (Test-Path -LiteralPath (Join-Path $BridgeRoot 'stage-npm-release.mjs') -PathType Leaf)
     )
+    if ($isSourceLayout) {
+        $candidates.Add((Join-Path $sourceRoot 'install.ps1'))
+    }
     foreach ($candidate in $candidates) {
         if (Test-Path -LiteralPath $candidate -PathType Leaf) {
             return [System.IO.Path]::GetFullPath($candidate)
         }
     }
 
-    Stop-WithError "installed lifecycle entrypoint is missing; checked: $($candidates -join ', ')"
+    return $null
 }
 
 function Invoke-WinsmuxInstallerLifecycle {
@@ -240,6 +249,9 @@ function Invoke-WinsmuxInstallerLifecycle {
     )
 
     $installerPath = Resolve-WinsmuxLifecycleInstaller
+    if ([string]::IsNullOrWhiteSpace([string]$installerPath)) {
+        Stop-WithError "installed lifecycle entrypoint is missing for bridge root: $PSScriptRoot"
+    }
 
     $installerArguments = [System.Collections.Generic.List[string]]::new()
     for ($index = 0; $index -lt @($Arguments).Count; $index++) {
