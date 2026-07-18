@@ -50,9 +50,9 @@ $requestedReleaseTag = if (-not [string]::IsNullOrWhiteSpace($e2eReleaseTag)) {
 } else {
     $ReleaseTag
 }
-$installSourceRef = if ($installerE2e) { [string]$env:WINSMUX_INSTALL_SOURCE_REF } else { '' }
+$installSourceRef = if ($installerE2e -or $redirectedInstallerE2e) { [string]$env:WINSMUX_INSTALL_SOURCE_REF } else { '' }
 if (-not [string]::IsNullOrWhiteSpace($installSourceRef) -and $installSourceRef -notmatch '^[0-9a-fA-F]{40}$') {
-    throw 'WINSMUX_INSTALL_SOURCE_REF must be a 40-character commit SHA in installer E2E mode.'
+    throw 'WINSMUX_INSTALL_SOURCE_REF must be a 40-character commit SHA in an authorized installer E2E mode.'
 }
 $releaseAction = $Action.Trim().ToLowerInvariant()
 if ($redirectedInstallerE2e -and $releaseAction -ne 'install') {

@@ -132,10 +132,14 @@ $profileResidueRemoved = $false
 try {
     $env:WINSMUX_REDIRECT_NONCE = $nonce
     $pwsh = (Get-Command pwsh -ErrorAction Stop | Select-Object -First 1).Source
+    $sourceCommit = (& git -C $repoRoot rev-parse HEAD 2>$null | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $sourceCommit -notmatch '^[0-9a-fA-F]{40}$') {
+        throw 'Redirected installer smoke requires a repository HEAD commit SHA.'
+    }
     $arguments = @(
         '-NoProfile', '-File', (Join-Path $repoRoot 'scripts\test-install-e2e.ps1'),
         '-Route', $Route, '-RepositoryRoot', $repoRoot, '-ScratchRoot', $scratch,
-        '-AllowRedirectedLocal', '-RedirectNonce', $nonce
+        '-SourceCommit', $sourceCommit, '-AllowRedirectedLocal', '-RedirectNonce', $nonce
     )
     if (-not [string]::IsNullOrWhiteSpace($Version)) { $arguments += @('-Version', $Version) }
     $output = & $pwsh @arguments 2>&1 | Out-String

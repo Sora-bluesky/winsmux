@@ -250,6 +250,9 @@ Describe 'winsmux npm release package contract' {
         $installE2e | Should -Match "ValidateSet\('Npm', 'Direct', 'DefectDetection'\)"
         $installE2e | Should -Match 'irm ''\$url'' \| iex'
         $installE2e | Should -Match 'WINSMUX_INSTALL_SOURCE_REF'
+        $installE2e | Should -Match "GetExtension\(\`$FilePath\) -ieq '\.cmd'"
+        $installE2e | Should -Match '\$startInfo\.FileName = \$env:ComSpec'
+        $installE2e | Should -Match '\$startInfo\.Arguments = ''/d /s /c "'''
         $installE2e | Should -Match 'WINSMUX_INSTALL_E2E_GITHUB_ACCESS'
         $installE2e | Should -Match '\[switch\]\$IncludeGitHubAccess'
         $installE2e | Should -Match '\$startInfo\.Environment\[''WINSMUX_INSTALL_E2E_GITHUB_ACCESS''\] = \$gitHubAccess'
@@ -280,9 +283,12 @@ Describe 'winsmux npm release package contract' {
         $redirectedSmoke | Should -Match 'live_profile_untouched'
         $redirectedSmoke | Should -Match 'kind = ''directory'''
         $redirectedSmoke | Should -Match 'install_owned_live_state_preserved'
+        $redirectedSmoke | Should -Match 'git -C \$repoRoot rev-parse HEAD'
+        $redirectedSmoke | Should -Match '''-SourceCommit'', \$sourceCommit'
         $installer | Should -Match 'WINSMUX_INSTALL_STATE_ROOT must be contained by the redirected HOME'
         $installer | Should -Match 'Redirected installer E2E mode only permits the install action'
         $installer | Should -Match 'if \(\$installerE2e\) \{ \[string\]\$env:WINSMUX_INSTALL_E2E_GITHUB_ACCESS \} else \{ '''' \}'
+        $installer | Should -Match '\$installSourceRef = if \(\$installerE2e -or \$redirectedInstallerE2e\)'
         $installer | Should -Match '\$headers\.Authorization = "Bearer \$e2eGitHubAccess"'
         $installer | Should -Match 'WINSMUX_RAW_EXE=%USERPROFILE%\\\.local\\bin\\winsmux\.exe'
         $installE2e | Should -Match 'Invoke-CapturedProcess -FilePath \$wrapper -Arguments @\(''-V''\)'
@@ -298,6 +304,8 @@ Describe 'winsmux npm release package contract' {
         $installer | Should -Match 'winsmux\.exe\.previous-'
         $installE2e = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'scripts/test-install-e2e.ps1') -Raw -Encoding UTF8
         $installE2e | Should -Match 'update could not replace a running native executable'
+        $installE2e | Should -Match "if \(\`$Route -eq 'Direct' -and \`$isGitHubRunner\)"
+        $installE2e | Should -Not -Match "if \(\`$Route -eq 'Direct'\) \{\s*\`$cmdFixture"
         $mainMarker = '# Main'
         $mainOffset = $installer.IndexOf($mainMarker, [System.StringComparison]::Ordinal)
         $mainOffset | Should -BeGreaterThan 0

@@ -77,6 +77,7 @@ if ($isGitHubRunner) {
 } else {
     $env:WINSMUX_INSTALL_E2E = 'redirected'
     $env:WINSMUX_INSTALL_STATE_ROOT = Join-Path $fixtureHome '.winsmux-install-state'
+    $env:WINSMUX_INSTALL_SOURCE_REF = $SourceCommit
 }
 
 function Invoke-CapturedProcess {
@@ -89,9 +90,17 @@ function Invoke-CapturedProcess {
     )
 
     $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
-    $startInfo.FileName = $FilePath
-    foreach ($argument in $Arguments) {
-        $startInfo.ArgumentList.Add($argument)
+    if ([System.IO.Path]::GetExtension($FilePath) -ieq '.cmd') {
+        $startInfo.FileName = $env:ComSpec
+        $commandParts = @($FilePath) + @($Arguments) | ForEach-Object {
+            '"' + ([string]$_).Replace('"', '""') + '"'
+        }
+        $startInfo.Arguments = '/d /s /c "' + ($commandParts -join ' ') + '"'
+    } else {
+        $startInfo.FileName = $FilePath
+        foreach ($argument in $Arguments) {
+            $startInfo.ArgumentList.Add($argument)
+        }
     }
     $startInfo.WorkingDirectory = $WorkingDirectory
     $startInfo.UseShellExecute = $false
@@ -345,7 +354,7 @@ if ($manifest.profile -ne 'full' -or $manifest.version -ne $expectedNativeVersio
 }
 
 $lockedNativeUpdateVerified = $false
-if ($Route -eq 'Direct') {
+if ($Route -eq 'Direct' -and $isGitHubRunner) {
     $cmdFixture = Join-Path $env:SystemRoot 'System32\cmd.exe'
     if (-not (Test-Path -LiteralPath $cmdFixture -PathType Leaf)) { throw "cmd fixture not found: $cmdFixture" }
     Copy-Item -LiteralPath $cmdFixture -Destination $native -Force
