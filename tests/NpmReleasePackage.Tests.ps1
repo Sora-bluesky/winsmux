@@ -378,7 +378,7 @@ param(
         Write-TestFileUtf8 -Path $stalePrevious -Content 'stale-version'
         Repair-WinsmuxBinaryRotation -LocalBin $localBin -WinsmuxExe $winsmuxExe
         Test-Path -LiteralPath $stalePrevious | Should -BeTrue
-        Repair-WinsmuxBinaryRotation -LocalBin $localBin -WinsmuxExe $winsmuxExe -ExpectedVersion '1.0.0'
+        Clear-WinsmuxBinaryRotation -LocalBin $localBin
         Test-Path -LiteralPath $stalePrevious | Should -BeFalse
 
         Write-TestFileUtf8 -Path $winsmuxExe -Content 'unvalidated-replacement'
@@ -387,8 +387,8 @@ param(
         Repair-WinsmuxBinaryRotation -LocalBin $localBin -WinsmuxExe $winsmuxExe
         (Get-Content -LiteralPath $winsmuxExe -Raw -Encoding UTF8) | Should -Be 'unvalidated-replacement'
         Test-Path -LiteralPath $unvalidatedPrevious | Should -BeTrue
-        Repair-WinsmuxBinaryRotation -LocalBin $localBin -WinsmuxExe $winsmuxExe -ExpectedVersion '1.0.0'
-        (Get-Content -LiteralPath $winsmuxExe -Raw -Encoding UTF8) | Should -Be 'previous-version'
+        Clear-WinsmuxBinaryRotation -LocalBin $localBin
+        (Get-Content -LiteralPath $winsmuxExe -Raw -Encoding UTF8) | Should -Be 'unvalidated-replacement'
         Test-Path -LiteralPath $unvalidatedPrevious | Should -BeFalse
 
         $downloadPath = Join-Path $TestDrive 'invalid-replacement.exe'
@@ -397,7 +397,7 @@ param(
         {
             Install-VerifiedWinsmuxBinary -DownloadPath $downloadPath -WinsmuxExe $winsmuxExe -LocalBin $localBin -ExpectedVersion '9.9.9'
         } | Should -Throw '*Installed binary validation failed*'
-        (Get-Content -LiteralPath $winsmuxExe -Raw -Encoding UTF8) | Should -Be 'previous-version'
+        (Get-Content -LiteralPath $winsmuxExe -Raw -Encoding UTF8) | Should -Be 'unvalidated-replacement'
         @(Get-ChildItem -LiteralPath $localBin -File | Where-Object { $_.Name -match '^winsmux\.exe\.previous-[0-9a-f]{32}$' }).Count | Should -Be 0
         Test-Path -LiteralPath $unownedSibling | Should -BeTrue
     }

@@ -433,8 +433,7 @@ function Get-WinsmuxCommandVersion {
 function Repair-WinsmuxBinaryRotation {
     param(
         [Parameter(Mandatory = $true)][string]$LocalBin,
-        [Parameter(Mandatory = $true)][string]$WinsmuxExe,
-        [string]$ExpectedVersion = ''
+        [Parameter(Mandatory = $true)][string]$WinsmuxExe
     )
 
     $previousBinaries = @(
@@ -452,24 +451,37 @@ function Repair-WinsmuxBinaryRotation {
     } else {
         $null
     }
-    $canonicalTrusted = $canonicalVersion -and (
-        [string]::IsNullOrWhiteSpace($ExpectedVersion) -or $canonicalVersion.Version -eq $ExpectedVersion
-    )
-
-    if (-not $canonicalExists -or -not $canonicalTrusted) {
+    if (-not $canonicalExists -or -not $canonicalVersion) {
         Remove-Item -LiteralPath $WinsmuxExe -Force -ErrorAction SilentlyContinue
         Move-Item -LiteralPath $previousBinaries[0].FullName -Destination $WinsmuxExe -Force
         $previousBinaries = @($previousBinaries | Select-Object -Skip 1)
         Write-Warning "[winsmux] Recovered the installed binary from an interrupted update."
-    } elseif ([string]::IsNullOrWhiteSpace($ExpectedVersion)) {
-        # A runnable canonical binary is not enough to retire the known prior image:
-        # preserve it until the requested release version has been resolved.
+    } else {
+        # A runnable canonical binary can be either the last verified release or an
+        # interrupted replacement. Keep both images until the target is already
+        # installed or its downloaded asset has passed checksum verification.
         return
     }
 
     foreach ($previousBinary in $previousBinaries) {
         Remove-Item -LiteralPath $previousBinary.FullName -Force -ErrorAction SilentlyContinue
     }
+
+    $remainingBinaries = @(
+        Get-ChildItem -LiteralPath $LocalBin -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^winsmux\.exe\.previous-[0-9a-f]{32}$' }
+    )
+    if ($remainingBinaries.Count -gt 0) {
+        throw "A previous winsmux binary is still in use. Close running winsmux processes and retry."
+    }
+}
+
+function Clear-WinsmuxBinaryRotation {
+    param([Parameter(Mandatory = $true)][string]$LocalBin)
+
+    Get-ChildItem -LiteralPath $LocalBin -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match '^winsmux\.exe\.previous-[0-9a-f]{32}$' } |
+        Remove-Item -Force -ErrorAction SilentlyContinue
 
     $remainingBinaries = @(
         Get-ChildItem -LiteralPath $LocalBin -File -ErrorAction SilentlyContinue |
@@ -569,13 +581,17 @@ function Install-WinsmuxBinary {
 
         $release = Resolve-WinsmuxRelease
         $headers = Get-WinsmuxReleaseHeaders
-        Repair-WinsmuxBinaryRotation -LocalBin $localBin -WinsmuxExe $winsmuxExe -ExpectedVersion $script:ResolvedVersion
 
         $localCommand = if (Test-Path -LiteralPath $winsmuxExe -PathType Leaf) { Get-Command $winsmuxExe -ErrorAction SilentlyContinue } else { $null }
         $detected = if ($localCommand) { Get-WinsmuxCommandVersion -CommandInfo $localCommand } else { $null }
         $downloadBinary = -not ($detected -and $detected.Version -eq $script:ResolvedVersion)
         if (-not $downloadBinary) {
-            Write-Status "winsmux found at the installed target: $($detected.Output)"
+            $confirmed = Get-WinsmuxCommandVersion -CommandInfo ([PSCustomObject]@{ Source = $winsmuxExe })
+            if (-not $confirmed -or $confirmed.Version -ne $script:ResolvedVersion) {
+                throw "The installed binary changed while validating the requested release. Retry the installation."
+            }
+            Write-Status "winsmux found at the installed target: $($confirmed.Output)"
+            Clear-WinsmuxBinaryRotation -LocalBin $localBin
         } elseif ($detected) {
             Write-Warning "[winsmux] Installed target version '$($detected.Version)' does not match release version '$script:ResolvedVersion'. Reinstalling release binary."
         } else {
@@ -625,6 +641,8 @@ function Install-WinsmuxBinary {
                     throw "Checksum verification failed for $($asset.name)."
                 }
                 Write-Status "Checksum verified"
+                Repair-WinsmuxBinaryRotation -LocalBin $localBin -WinsmuxExe $winsmuxExe
+                Clear-WinsmuxBinaryRotation -LocalBin $localBin
                 Install-VerifiedWinsmuxBinary -DownloadPath $downloadPath -WinsmuxExe $winsmuxExe -LocalBin $localBin -ExpectedVersion $script:ResolvedVersion | Out-Null
             } finally {
                 Remove-Item $downloadPath -Force -ErrorAction SilentlyContinue
