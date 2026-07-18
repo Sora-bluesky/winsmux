@@ -5780,7 +5780,12 @@ EOF
                 'git -c ''alias.x=grep --open-files-in-p="codex exec --help" -e "^" -- .gitignore'' x',
                 'git -c ''alias.x=grep -O"codex exec --help" -e "^" -- .gitignore'' x',
                 'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.x GIT_CONFIG_VALUE_0=''grep --open-files-in-page="codex exec --help" -e "^" -- .gitignore'' git x',
-                'ALIAS_VALUE=''grep --open-files-in-page="codex exec --help" -e "^" -- .gitignore'' git --config-env=alias.x=ALIAS_VALUE x'
+                'ALIAS_VALUE=''grep --open-files-in-page="codex exec --help" -e "^" -- .gitignore'' git --config-env=alias.x=ALIAS_VALUE x',
+                'git -c alias.x=remote x add winsmux-review https://invalid.example/repo',
+                'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.x GIT_CONFIG_VALUE_0=remote git x add winsmux-review https://invalid.example/repo',
+                'ALIAS_VALUE=remote git --config-env=alias.x=ALIAS_VALUE x add winsmux-review https://invalid.example/repo',
+                'git -c alias.x=remote x rename origin winsmux-review',
+                'git -c alias.x=remote x remove origin'
             )) {
             $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
             & $script:AssertDenyResult -Result $result
@@ -5789,7 +5794,10 @@ EOF
         foreach ($readOnly in @(
                 'git -c alias.x=status x --short',
                 'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.x GIT_CONFIG_VALUE_0=status git x --short',
-                'ALIAS_VALUE=status git --config-env=alias.x=ALIAS_VALUE x --short'
+                'ALIAS_VALUE=status git --config-env=alias.x=ALIAS_VALUE x --short',
+                'git -c alias.x=remote x -v',
+                'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.x GIT_CONFIG_VALUE_0=remote git x -v',
+                'ALIAS_VALUE=remote git --config-env=alias.x=ALIAS_VALUE x -v'
             )) {
             $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $readOnly }
             $result.OutputObject | Should -BeNullOrEmpty -Because "read-only alias must remain allowed: $readOnly"

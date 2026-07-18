@@ -9543,11 +9543,11 @@ function hasCommandLocalGitAliasConfiguration(command) {
     const assignment = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/u.exec(token);
     if (assignment) environment.set(normalizeAgentValue(assignment[1]), assignment[2]);
   }
-  const aliasValues = [];
+  const aliasConfigurations = new Map();
   const addAliasConfiguration = (configuration) => {
     const candidate = String(configuration || "").trim();
-    const match = /^alias\.[A-Za-z0-9._-]+=([\s\S]*)$/iu.exec(candidate);
-    if (match) aliasValues.push(match[1]);
+    const match = /^alias\.([A-Za-z0-9._-]+)=([\s\S]*)$/iu.exec(candidate);
+    if (match) aliasConfigurations.set(normalizeAgentValue(match[1]), match[2]);
     else if (candidate.includes("=")) hasNonAliasConfiguration = true;
   };
   for (let index = 0; index < tokens.length; index += 1) {
@@ -9568,8 +9568,11 @@ function hasCommandLocalGitAliasConfiguration(command) {
       ? token.slice(token.indexOf("=") + 1)
       : "";
     if (configEnv) {
-      const match = /^alias\.[A-Za-z0-9._-]+=([A-Za-z_][A-Za-z0-9_]*)$/iu.exec(configEnv);
-      if (match) aliasValues.push(environment.get(normalizeAgentValue(match[1])) || "");
+      const match = /^alias\.([A-Za-z0-9._-]+)=([A-Za-z_][A-Za-z0-9_]*)$/iu.exec(configEnv);
+      if (match) aliasConfigurations.set(
+        normalizeAgentValue(match[1]),
+        environment.get(normalizeAgentValue(match[2])) || "",
+      );
       else hasNonAliasConfiguration = true;
     }
   }
@@ -9577,17 +9580,31 @@ function hasCommandLocalGitAliasConfiguration(command) {
     const keyMatch = /^git_config_key_([0-9]+)$/u.exec(name);
     if (keyMatch) {
       if (/^alias\.[A-Za-z0-9._-]+$/iu.test(value)) {
-        aliasValues.push(environment.get(`git_config_value_${keyMatch[1]}`) || "");
+        aliasConfigurations.set(
+          normalizeAgentValue(value.slice("alias.".length)),
+          environment.get(`git_config_value_${keyMatch[1]}`) || "",
+        );
       } else {
         hasNonAliasConfiguration = true;
       }
     }
   }
-  const isReadOnlyAlias = (value) => {
-    const aliasTokens = tokenizeCommandLine(String(value || "").trim());
-    return aliasTokens.length > 0 && isCanonicalReadOnlyGitResolvedTokens(["git", ...aliasTokens], 1);
-  };
-  return hasNonAliasConfiguration || aliasValues.length === 0 || aliasValues.some((value) => !isReadOnlyAlias(value));
+  if (hasNonAliasConfiguration || aliasConfigurations.size === 0) return true;
+  for (const value of aliasConfigurations.values()) {
+    if (!isCanonicalSafeGitInlineConfiguration(`alias.x=${value}`)) return true;
+  }
+  const gitIndex = tokens.findIndex((token) => normalizeExecutableName(token) === "git");
+  if (gitIndex < 0) return true;
+  const gitTokens = tokens.slice(gitIndex);
+  const subcommandIndex = findGitSubcommandIndex(gitTokens);
+  if (subcommandIndex < 1) return true;
+  const invokedAlias = normalizeAgentValue(stripOuterQuotes(gitTokens[subcommandIndex] || ""));
+  const aliasValue = aliasConfigurations.get(invokedAlias);
+  if (aliasValue === undefined) return true;
+  const aliasTokens = tokenizeCommandLine(String(aliasValue || "").trim());
+  if (aliasTokens.length === 0 || String(aliasValue || "").trim().startsWith("!")) return true;
+  const resolvedTokens = ["git", ...aliasTokens, ...gitTokens.slice(subcommandIndex + 1)];
+  return !isCanonicalReadOnlyGitResolvedTokens(resolvedTokens, 1);
 }
 
 function hasConstructedGitEnvironmentName(source) {
