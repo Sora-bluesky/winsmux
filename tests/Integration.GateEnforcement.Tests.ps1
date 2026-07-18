@@ -5335,7 +5335,7 @@ EOF
             $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{ command = $command }
             $result.ExitCode | Should -Be 0
             $result.StdErr | Should -Be ''
-            $result.OutputObject | Should -BeNullOrEmpty
+            $result.OutputObject | Should -BeNullOrEmpty -Because "safe control must remain allowed: $command"
         }
     }
 
@@ -5418,6 +5418,8 @@ EOF
                 'Set-Item Env:NODE_OPTIONS "--require=./unreviewed-preload.cjs"; cmd /d /s /c "node -e 0"',
                 'sal x Set-Item; x Env:NODE_OPTIONS "--require=./unreviewed-preload.cjs"; cmd /d /s /c "node -e 0"',
                 '@([Environment]::SetEnvironmentVariable(("NODE_"+"OPTIONS"),"--require=./unreviewed-preload.cjs",[EnvironmentVariableTarget]::Process),[Diagnostics.Process]::Start("node",''-e ""''))',
+                '@{a=[Environment]::SetEnvironmentVariable(("NODE_"+"OPTIONS"),"--require=./unreviewed-preload.cjs",[EnvironmentVariableTarget]::Process);b=[Diagnostics.Process]::Start("node",''-e ""'')}',
+                'deno eval ''Deno.env.set("NODE_"+"OPTIONS","--require=./unreviewed-preload.cjs"); new Deno.Command("node",{args:["-e","0"]}).outputSync()''',
                 'node -e "process.env.NODE_OPTIONS=''--require=./unreviewed-preload.cjs''; require(''child_process'').spawnSync(''node'', [''-e'',''''])"',
                 'python -c "import os,subprocess; os.environ[''NODE_OPTIONS'']=''--require=./unreviewed-preload.cjs''; subprocess.run([''node'',''-e'',''''])"',
                 'printf ''require("child_process").spawnSync("codex",["exec"])\n'' | node -',

@@ -304,6 +304,23 @@ function stripHeredocBodies(command) {
   return output.join("\n");
 }
 
+function stripHeredocBodiesAndTerminators(command) {
+  if (!command.includes("<<")) return command;
+  const lines = command.split(/\r?\n/u);
+  const output = [];
+  let activeTerminator = null;
+  for (const line of lines) {
+    if (activeTerminator !== null) {
+      if (line.trim() === activeTerminator) activeTerminator = null;
+      continue;
+    }
+    output.push(line);
+    const matches = Array.from(line.matchAll(/<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/gu));
+    if (matches.length > 0) activeTerminator = matches[matches.length - 1][2];
+  }
+  return output.join("\n");
+}
+
 function getExecutableHeredocBodies(command) {
   if (typeof command !== "string" || !command.includes("<<")) {
     return [];
@@ -4759,19 +4776,21 @@ function hasUnsupportedInlineInterpreterBoundary(command) {
 
 function hasUnsupportedDirectProcessBoundary(command) {
   const source = materializePowerShellComSpecAliases(String(command || ""));
+  const commandSurface = stripHeredocBodiesAndTerminators(source);
+  const canonicalPowerShellGhRepoMerge = isCanonicalPowerShellGhRepoMerge(commandSurface);
   if (hasUnownedStdinScriptPipeline(source)) return true;
-  if (hasUnownedCommandSequence(source)) return true;
-  if (hasUnownedNodeCommandPrelude(source)) return true;
-  for (const segment of splitCommandSegments(source)) {
+  if (!canonicalPowerShellGhRepoMerge && hasUnownedCommandSequence(commandSurface)) return true;
+  if (hasUnownedNodeCommandPrelude(commandSurface)) return true;
+  for (const segment of splitCommandSegments(commandSurface)) {
     for (const stage of splitCommandPipelineStages(segment)) {
       const normalizedStage = unwrapPowerShellCommandWrapper(String(stage || "").trim());
       const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(normalizedStage));
       const executable = normalizeExecutableName(tokens[0] || "");
       if (!executable) continue;
-      if (isUnownedPowerShellStage(normalizedStage, tokens)) return true;
+      if (!canonicalPowerShellGhRepoMerge && isUnownedPowerShellStage(normalizedStage, tokens)) return true;
       if ((executable === "node" || executable === "nodejs") &&
           (hasUnresolvedPowerShellArgumentEvaluation(tokens) ||
-           hasNodeStartupCodeConfiguration(tokens, source))) return true;
+           hasNodeStartupCodeConfiguration(tokens, commandSurface))) return true;
       if (executable === "git" &&
           (hasDirectGitProcessEnvironment(normalizedStage) || hasGitExternalProcessConfiguration(tokens))) return true;
       if (executable === "rg" && hasRgExternalProcessConfiguration(tokens)) return true;
@@ -4784,12 +4803,15 @@ function hasUnsupportedDirectProcessBoundary(command) {
         }
       }
       if (!isOwnedDirectExecutable(executable)) {
+        if ((executable === "npm" || executable === "cargo") &&
+            tokens.length === 2 && normalizeAgentValue(tokens[1]) === "--version") continue;
         const nestedExecutable = tokens.slice(1).some((value) => {
           const candidate = normalizeExecutableName(value);
           return candidate === "codex" || isNestedShellProcessLauncher(candidate);
         });
         if (nestedExecutable ||
             /\bcodex(?:\.exe)?\b[\s"']+(?:exec|e|--sandbox)\b/iu.test(normalizedStage)) return true;
+        return true;
       }
       if (isPowerShellExecutable(executable)) {
         const nestedCommand = getPowerShellNestedCommand(tokens);
@@ -4852,10 +4874,19 @@ function hasUnownedCommandSequence(source) {
     }));
 }
 
+function isCanonicalPowerShellGhRepoMerge(source) {
+  const segments = splitCommandSegments(String(source || ""));
+  if (segments.length !== 2) return false;
+  const assignment = /^\$env:GH_REPO\s*=\s*(["'])([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\1$/iu.exec(segments[0].trim());
+  if (!assignment) return false;
+  const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(segments[1]));
+  return normalizeExecutableName(tokens[0] || "") === "gh" && isReviewGatedCommand(segments[1]);
+}
+
 function isUnownedPowerShellStage(stage, tokens) {
   const source = String(stage || "").trim();
   const executable = normalizeExecutableName(tokens[0] || "");
-  if (/^(?:\$|\[|@\(|\(|&\s|\.\s)/u.test(source)) return true;
+  if (/^(?:\$|\[|@(?:\(|\{)|\(|&\s|\.\s)/u.test(source)) return true;
   if (/^[a-z][a-z0-9]*-[a-z][a-z0-9-]*$/u.test(executable)) return true;
   return new Set([
     "clc", "cli", "iex", "ni", "ri", "sc", "set", "si",
@@ -4898,7 +4929,7 @@ function isOwnedDirectExecutable(executable) {
   return new Set([
     "bash", "cat", "cmd", "codex", "curl", "echo", "gh", "git", "grep", "jq", "node", "nodejs",
     "powershell", "printf", "pwsh", "py", "python", "python3", "rg", "rustc", "sh", "type", "where",
-    "which", "winsmux", "xargs", "zsh",
+    "tee", "which", "winsmux", "xargs", "zsh",
   ]).has(normalizeExecutableName(executable));
 }
 
