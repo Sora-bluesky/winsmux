@@ -220,7 +220,7 @@ function Write-InstallProfileManifest {
 }
 
 function Install-CoreSupportScripts {
-    Download-File "winsmux-core/scripts/json-compat.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "json-compat.ps1")
+    Download-OptionalFile "winsmux-core/scripts/json-compat.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "json-compat.ps1")
     Download-OptionalFile "winsmux-core/scripts/control-plane-workers.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "control-plane-workers.ps1")
     Download-OptionalFile "winsmux-core/scripts/control-plane-ledger.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "control-plane-ledger.ps1")
 }
@@ -268,14 +268,14 @@ function Install-OrchestraSupportScripts {
     Download-File "winsmux-core/scripts/server-watchdog.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "server-watchdog.ps1")
     Download-File "winsmux-core/scripts/settings.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "settings.ps1")
     Download-File "winsmux-core/scripts/shadow-cutover-gate.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "shadow-cutover-gate.ps1")
-    Download-File "winsmux-core/scripts/submission-contract.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "submission-contract.ps1")
+    Download-OptionalFile "winsmux-core/scripts/submission-contract.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "submission-contract.ps1")
     Download-File "winsmux-core/scripts/task-splitter.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "task-splitter.ps1")
     Download-File "winsmux-core/scripts/team-pipeline.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "team-pipeline.ps1")
     Download-File "winsmux-core/scripts/worker-isolation.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "worker-isolation.ps1")
 }
 
 function Install-SecuritySupportScripts {
-    Download-File "winsmux-core/scripts/credential-metadata.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "credential-metadata.ps1")
+    Download-OptionalFile "winsmux-core/scripts/credential-metadata.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "credential-metadata.ps1")
     Download-File "winsmux-core/scripts/vault.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "vault.ps1")
 }
 
@@ -871,6 +871,13 @@ function Invoke-TargetInstallerBootstrap {
     }
 }
 
+function Test-ShouldBootstrapTargetInstaller {
+    param([Parameter(Mandatory = $true)][ValidateSet('install', 'update')][string]$TargetAction)
+
+    if ($TargetAction -eq 'update') { return $true }
+    return -not [string]::IsNullOrWhiteSpace($requestedReleaseTag)
+}
+
 function Invoke-Uninstall {
     Write-Status "Uninstalling winsmux..."
 
@@ -947,7 +954,11 @@ Profiles:
 
 switch ($Action.ToLower()) {
     "install"   {
-        if ($env:WINSMUX_INTERNAL_TARGET_INSTALLER_BOOTSTRAPPED -eq '1') { Invoke-Install } else { Invoke-TargetInstallerBootstrap -TargetAction install }
+        if ($env:WINSMUX_INTERNAL_TARGET_INSTALLER_BOOTSTRAPPED -eq '1' -or -not (Test-ShouldBootstrapTargetInstaller -TargetAction install)) {
+            Invoke-Install
+        } else {
+            Invoke-TargetInstallerBootstrap -TargetAction install
+        }
     }
     "update"    {
         if ($env:WINSMUX_INTERNAL_TARGET_INSTALLER_BOOTSTRAPPED -eq '1') { Invoke-Install -IsUpdate } else { Invoke-TargetInstallerBootstrap -TargetAction update }

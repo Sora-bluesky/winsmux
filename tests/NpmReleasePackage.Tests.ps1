@@ -266,6 +266,8 @@ Describe 'winsmux npm release package contract' {
         $installE2e | Should -Match 'wrapper_update_dispatch_verified'
         $installE2e | Should -Match 'wrapper_uninstall_dispatch_verified'
         $installE2e | Should -Match 'wrapper_lifecycle_without_native_verified'
+        $installE2e | Should -Match 'tagless_install_verified'
+        $installE2e | Should -Match 'Tagless direct install did not stay on the fixed main installer'
         $installE2e | Should -Match 'WT settings: not found'
         $installE2e | Should -Match "wrapper.*doctor"
         $installE2e | Should -Match 'installer download failure'
@@ -359,6 +361,13 @@ param(
             $result.profile | Should -Be 'orchestra'
             $result.bootstrapped | Should -BeTrue
         }
+
+        $requestedReleaseTag = ''
+        (Test-ShouldBootstrapTargetInstaller -TargetAction install) | Should -BeFalse
+        (Test-ShouldBootstrapTargetInstaller -TargetAction update) | Should -BeTrue
+        $requestedReleaseTag = 'v0.36.28'
+        (Test-ShouldBootstrapTargetInstaller -TargetAction install) | Should -BeTrue
+        $installer | Should -Match '-not \(Test-ShouldBootstrapTargetInstaller -TargetAction install\)'
     }
 
     It 'repairs installer-managed state without release assets when the installed binary already matches' {
@@ -448,6 +457,24 @@ param(
         ) -IncludeTargetInstallerBootstrapMarker
         $markerResult.ExitCode | Should -Be 0
         $markerResult.StdOut | Should -Be '1'
+
+        $releaseNames = @('WINSMUX_RELEASE_TAG', 'WINSMUX_INSTALL_E2E_RELEASE_TAG', 'WINSMUX_INSTALL_SOURCE_REF')
+        $previousReleaseValues = @{}
+        try {
+            foreach ($name in $releaseNames) {
+                $previousReleaseValues[$name] = [Environment]::GetEnvironmentVariable($name)
+                [Environment]::SetEnvironmentVariable($name, 'fixture-value', 'Process')
+            }
+            $releaseProbe = '[Console]::Write((@("WINSMUX_RELEASE_TAG","WINSMUX_INSTALL_E2E_RELEASE_TAG","WINSMUX_INSTALL_SOURCE_REF") | ForEach-Object { [Environment]::GetEnvironmentVariable($_) }) -join "|")'
+            $selectedReleaseResult = Invoke-CapturedProcess -FilePath (Get-Command pwsh -ErrorAction Stop).Source -Arguments @('-NoProfile', '-Command', $releaseProbe)
+            $taglessReleaseResult = Invoke-CapturedProcess -FilePath (Get-Command pwsh -ErrorAction Stop).Source -Arguments @('-NoProfile', '-Command', $releaseProbe) -OmitReleaseSelection
+        } finally {
+            foreach ($name in $releaseNames) {
+                [Environment]::SetEnvironmentVariable($name, $previousReleaseValues[$name], 'Process')
+            }
+        }
+        $selectedReleaseResult.StdOut | Should -Be 'fixture-value|fixture-value|fixture-value'
+        $taglessReleaseResult.StdOut | Should -Be '||'
     }
 
     It 'accepts an empty redirected profile after removing the managed block' {
@@ -606,7 +633,7 @@ param(
         $invalidCases = @(
             @{
                 Name = 'missing runtime dependency declaration'
-                Find = 'Download-File "winsmux-core/scripts/json-compat.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "json-compat.ps1")'
+                Find = 'Download-OptionalFile "winsmux-core/scripts/json-compat.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "json-compat.ps1")'
                 Replace = '# deliberately omit json-compat.ps1 from the installer fixture'
                 Error = 'runtime script dependencies are not downloaded:.*json-compat\.ps1'
             },
