@@ -6,8 +6,7 @@
 param(
     [Parameter(Position=0)][string]$Action = "install",
     [string]$ReleaseTag = "",
-    [Alias("Profile")][string]$InstallProfile = "",
-    [Parameter(DontShow)][switch]$UpdateBootstrapComplete
+    [Alias("Profile")][string]$InstallProfile = ""
 )
 
 $ErrorActionPreference = 'Stop'
@@ -431,12 +430,17 @@ function Get-WinsmuxCommandVersion {
     return $null
 }
 
-function Resolve-WinsmuxRelease {
+function Get-WinsmuxReleaseHeaders {
     $headers = @{ "User-Agent" = "winsmux-installer/$VERSION" }
     $e2eGitHubAccess = if ($installerE2e) { [string]$env:WINSMUX_INSTALL_E2E_GITHUB_ACCESS } else { '' }
     if (-not [string]::IsNullOrWhiteSpace($e2eGitHubAccess)) {
         $headers.Authorization = "Bearer $e2eGitHubAccess"
     }
+    return $headers
+}
+
+function Resolve-WinsmuxRelease {
+    $headers = Get-WinsmuxReleaseHeaders
 
     try {
         Write-Status "Fetching winsmux-core release ($RELEASE_LABEL)..."
@@ -471,6 +475,7 @@ function Install-WinsmuxBinary {
         }
 
         $release = Resolve-WinsmuxRelease
+        $headers = Get-WinsmuxReleaseHeaders
 
         $localCommand = if (Test-Path -LiteralPath $winsmuxExe -PathType Leaf) { Get-Command $winsmuxExe -ErrorAction SilentlyContinue } else { $null }
         $detected = if ($localCommand) { Get-WinsmuxCommandVersion -CommandInfo $localCommand } else { $null }
@@ -729,16 +734,19 @@ function Invoke-UpdateBootstrap {
     Resolve-WinsmuxRelease | Out-Null
 
     $bootstrapPath = Join-Path ([System.IO.Path]::GetTempPath()) ("winsmux-update-{0}.ps1" -f [Guid]::NewGuid().ToString('N'))
+    $bootstrapMarkerName = 'WINSMUX_INTERNAL_UPDATE_BOOTSTRAPPED'
+    $previousBootstrapMarker = [Environment]::GetEnvironmentVariable($bootstrapMarkerName, 'Process')
     try {
         Download-File "install.ps1" $bootstrapPath
+        [Environment]::SetEnvironmentVariable($bootstrapMarkerName, '1', 'Process')
         & pwsh -NoProfile -ExecutionPolicy Bypass -File $bootstrapPath update `
             -ReleaseTag $ResolvedReleaseTag `
-            -InstallProfile $resolvedInstallProfile `
-            -UpdateBootstrapComplete
+            -InstallProfile $resolvedInstallProfile
         if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
         }
     } finally {
+        [Environment]::SetEnvironmentVariable($bootstrapMarkerName, $previousBootstrapMarker, 'Process')
         Remove-Item -LiteralPath $bootstrapPath -Force -ErrorAction SilentlyContinue
     }
 }
@@ -820,7 +828,7 @@ Profiles:
 switch ($Action.ToLower()) {
     "install"   { Invoke-Install }
     "update"    {
-        if ($UpdateBootstrapComplete) { Invoke-Install -IsUpdate } else { Invoke-UpdateBootstrap }
+        if ($env:WINSMUX_INTERNAL_UPDATE_BOOTSTRAPPED -eq '1') { Invoke-Install -IsUpdate } else { Invoke-UpdateBootstrap }
     }
     "uninstall" { Invoke-Uninstall }
     "version"   { Write-Output "winsmux $VERSION" }

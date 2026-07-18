@@ -293,6 +293,8 @@ Describe 'winsmux npm release package contract' {
 
     It 're-executes the resolved target installer before applying an update' {
         $installer = Get-Content -LiteralPath $script:InstallerPath -Raw -Encoding UTF8
+        $installer | Should -Match '(?s)\$release\s*=\s*Resolve-WinsmuxRelease.*?\$headers\s*=\s*Get-WinsmuxReleaseHeaders.*?browser_download_url\s+-Headers\s+\$headers'
+        $installer | Should -Not -Match 'UpdateBootstrapComplete'
         $mainMarker = '# Main'
         $mainOffset = $installer.IndexOf($mainMarker, [System.StringComparison]::Ordinal)
         $mainOffset | Should -BeGreaterThan 0
@@ -305,10 +307,9 @@ Describe 'winsmux npm release package contract' {
 param(
     [Parameter(Position=0)][string]`$Action,
     [string]`$ReleaseTag,
-    [string]`$InstallProfile,
-    [switch]`$UpdateBootstrapComplete
+    [string]`$InstallProfile
 )
-@{ action = `$Action; release = `$ReleaseTag; profile = `$InstallProfile; bootstrapped = [bool]`$UpdateBootstrapComplete } |
+@{ action = `$Action; release = `$ReleaseTag; profile = `$InstallProfile; bootstrapped = (`$env:WINSMUX_INTERNAL_UPDATE_BOOTSTRAPPED -eq '1') } |
     ConvertTo-Json -Compress | Set-Content -LiteralPath '$markerLiteral' -Encoding UTF8
 "@
 
@@ -324,7 +325,13 @@ param(
             Copy-Item -LiteralPath $targetInstaller -Destination $destPath -Force
         }
 
-        Invoke-UpdateBootstrap
+        $env:WINSMUX_INTERNAL_UPDATE_BOOTSTRAPPED = 'outer-value'
+        try {
+            Invoke-UpdateBootstrap
+        } finally {
+            $env:WINSMUX_INTERNAL_UPDATE_BOOTSTRAPPED | Should -Be 'outer-value'
+            Remove-Item Env:WINSMUX_INTERNAL_UPDATE_BOOTSTRAPPED -ErrorAction SilentlyContinue
+        }
 
         $result = Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8 | ConvertFrom-Json
         $result.action | Should -Be 'update'
