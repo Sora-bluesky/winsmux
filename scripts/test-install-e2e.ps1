@@ -88,7 +88,7 @@ function Invoke-CapturedProcess {
         [ValidateRange(1, 1800)][int]$TimeoutSeconds = 900,
         [switch]$IncludeGitHubAccess,
         [switch]$IncludeTargetInstallerBootstrapMarker,
-        [switch]$OmitReleaseSelection
+        [switch]$OmitReleaseTagSelection
     )
 
     $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
@@ -119,7 +119,7 @@ function Invoke-CapturedProcess {
         'WINSMUX_INSTALL_E2E_RELEASE_TAG', 'WINSMUX_INSTALL_SOURCE_REF',
         'WINSMUX_INSTALL_STATE_ROOT', 'GITHUB_ACTIONS'
     )) {
-        if ($OmitReleaseSelection -and $name -in @('WINSMUX_RELEASE_TAG', 'WINSMUX_INSTALL_E2E_RELEASE_TAG', 'WINSMUX_INSTALL_SOURCE_REF')) {
+        if ($OmitReleaseTagSelection -and $name -in @('WINSMUX_RELEASE_TAG', 'WINSMUX_INSTALL_E2E_RELEASE_TAG')) {
             continue
         }
         $value = [Environment]::GetEnvironmentVariable($name)
@@ -170,7 +170,7 @@ function Invoke-IrmInstaller {
         [Parameter(Mandatory = $true)][string]$ServerDirectory,
         [switch]$IncludeGitHubAccess,
         [switch]$IncludeTargetInstallerBootstrapMarker,
-        [switch]$OmitReleaseSelection
+        [switch]$OmitReleaseTagSelection
     )
 
     New-Item -ItemType Directory -Path $ServerDirectory -Force | Out-Null
@@ -235,7 +235,7 @@ try {
         if ($port -notmatch '^\d+$') { throw "Loopback installer server returned an invalid port: $port" }
         $url = "http://127.0.0.1:$port/install.ps1"
         $command = "`$ErrorActionPreference = 'Stop'; irm '$url' | iex"
-        $result = Invoke-CapturedProcess -FilePath $pwsh -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $command) -IncludeGitHubAccess:$IncludeGitHubAccess -IncludeTargetInstallerBootstrapMarker:$IncludeTargetInstallerBootstrapMarker -OmitReleaseSelection:$OmitReleaseSelection
+        $result = Invoke-CapturedProcess -FilePath $pwsh -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $command) -IncludeGitHubAccess:$IncludeGitHubAccess -IncludeTargetInstallerBootstrapMarker:$IncludeTargetInstallerBootstrapMarker -OmitReleaseTagSelection:$OmitReleaseTagSelection
         if (-not $server.WaitForExit(15000)) { throw 'Loopback installer server did not exit after serving install.ps1.' }
         $serverError = $server.StandardError.ReadToEnd().Trim()
         if ($server.ExitCode -ne 0) { throw "Loopback installer server failed: $serverError" }
@@ -276,7 +276,7 @@ if ($Route -eq 'DefectDetection') {
 
 $taglessInstallVerified = $false
 if ($Route -eq 'Direct' -and $isGitHubRunner) {
-    $taglessResult = Invoke-IrmInstaller -SourceInstaller $installerPath -ServerDirectory (Join-Path $scratch 'tagless-direct-server') -IncludeGitHubAccess -OmitReleaseSelection
+    $taglessResult = Invoke-IrmInstaller -SourceInstaller $installerPath -ServerDirectory (Join-Path $scratch 'tagless-direct-server') -IncludeGitHubAccess -OmitReleaseTagSelection
     if ($taglessResult.ExitCode -ne 0 -or $taglessResult.Combined -match '\[winsmux\]\s+Failed to download\b') {
         throw "Tagless direct install did not stay on the fixed main installer:`n$($taglessResult.Combined)"
     }

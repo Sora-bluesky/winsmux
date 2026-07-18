@@ -473,14 +473,14 @@ param(
             }
             $releaseProbe = '[Console]::Write((@("WINSMUX_RELEASE_TAG","WINSMUX_INSTALL_E2E_RELEASE_TAG","WINSMUX_INSTALL_SOURCE_REF") | ForEach-Object { [Environment]::GetEnvironmentVariable($_) }) -join "|")'
             $selectedReleaseResult = Invoke-CapturedProcess -FilePath (Get-Command pwsh -ErrorAction Stop).Source -Arguments @('-NoProfile', '-Command', $releaseProbe)
-            $taglessReleaseResult = Invoke-CapturedProcess -FilePath (Get-Command pwsh -ErrorAction Stop).Source -Arguments @('-NoProfile', '-Command', $releaseProbe) -OmitReleaseSelection
+            $taglessReleaseResult = Invoke-CapturedProcess -FilePath (Get-Command pwsh -ErrorAction Stop).Source -Arguments @('-NoProfile', '-Command', $releaseProbe) -OmitReleaseTagSelection
         } finally {
             foreach ($name in $releaseNames) {
                 [Environment]::SetEnvironmentVariable($name, $previousReleaseValues[$name], 'Process')
             }
         }
         $selectedReleaseResult.StdOut | Should -Be 'fixture-value|fixture-value|fixture-value'
-        $taglessReleaseResult.StdOut | Should -Be '||'
+        $taglessReleaseResult.StdOut | Should -Be '||fixture-value'
     }
 
     It 'accepts an empty redirected profile after removing the managed block' {
