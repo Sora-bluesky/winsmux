@@ -5328,6 +5328,7 @@ EOF
                 'node --no-warnings -e "1 + 1"',
                 'node --check companion-runtime.js',
                 'printf ''payload'' | node -e "process.stdin.resume()"',
+                'node -e "1 + 1"; echo done',
                 'python -c "import subprocess; subprocess.run([''echo'', ''codex'', ''exec''])"',
                 'cmd /c echo call codex exec review'
             )) {
@@ -5408,6 +5409,9 @@ EOF
                 '$t=[type]::GetType("System."+"Environment"); $t.("Invoke"+"Member")(("Set"+"EnvironmentVariable"),"InvokeMethod,Static,Public",$null,$null,@(("NODE_"+"OPTIONS"),"--require=./unreviewed-preload.cjs","Process")); node -e ""',
                 '$d=[Delegate]::("Create"+"Delegate")([Action[string,string,System.EnvironmentVariableTarget]],[Environment],("Set"+"EnvironmentVariable")); $d.("Inv"+"oke")(("NODE_"+"OPTIONS"),"--require=./unreviewed-preload.cjs",[EnvironmentVariableTarget]::Process); node -e ""',
                 '$d=[Delegate]::''CreateDelegate''([Action[string,string,System.EnvironmentVariableTarget]],[Environment],("Set"+"EnvironmentVariable")); $d.''Invoke''(("NODE_"+"OPTIONS"),"--require=./unreviewed-preload.cjs",[EnvironmentVariableTarget]::Process); node -e ""',
+                '$t=[type]::GetType("System."+"Environment"); $m=$t.PSObject.Methods[("Get"+"Method")].Invoke("Set"+"EnvironmentVariable"); $m.Invoke($null,@(("NODE_"+"OPTIONS"),"--require=./unreviewed-preload.cjs","Process")); node -e ""',
+                '$t=[type]::GetType("System."+"Environment"); $ti=[System.Reflection.IntrospectionExtensions]::GetTypeInfo($t); $m=@($ti.DeclaredMethods).Where({$_.Name -eq ("Set"+"EnvironmentVariable")})[0]; $m.Invoke($null,@(("NODE_"+"OPTIONS"),"--require=./unreviewed-preload.cjs","Process")); node -e ""',
+                '$x=1; node -e "1 + 1"',
                 'Set-Item Env:NODE_OPTIONS "--require=./unreviewed-preload.cjs"; node -e ""',
                 'node -e "process.env.NODE_OPTIONS=''--require=./unreviewed-preload.cjs''; require(''child_process'').spawnSync(''node'', [''-e'',''''])"',
                 'python -c "import os,subprocess; os.environ[''NODE_OPTIONS'']=''--require=./unreviewed-preload.cjs''; subprocess.run([''node'',''-e'',''''])"',

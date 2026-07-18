@@ -4760,6 +4760,7 @@ function hasUnsupportedInlineInterpreterBoundary(command) {
 function hasUnsupportedDirectProcessBoundary(command) {
   const source = materializePowerShellComSpecAliases(String(command || ""));
   if (hasUnownedStdinScriptPipeline(source)) return true;
+  if (hasUnownedNodeCommandPrelude(source)) return true;
   for (const segment of splitCommandSegments(source)) {
     for (const stage of splitCommandPipelineStages(segment)) {
       const normalizedStage = unwrapPowerShellCommandWrapper(String(stage || "").trim());
@@ -4829,6 +4830,19 @@ function hasUnsupportedDirectProcessBoundary(command) {
         if (result !== INTERPRETER_PROCESS_BOUNDARY.ALLOW_STATIC_READONLY &&
             result !== INTERPRETER_PROCESS_BOUNDARY.ALLOW_PROVEN_NON_PROTECTED) return true;
       }
+    }
+  }
+  return false;
+}
+
+function hasUnownedNodeCommandPrelude(source) {
+  const segments = splitCommandSegments(String(source || ""));
+  for (let segmentIndex = 1; segmentIndex < segments.length; segmentIndex += 1) {
+    for (const stage of splitCommandPipelineStages(segments[segmentIndex])) {
+      const normalizedStage = unwrapPowerShellCommandWrapper(String(stage || "").trim());
+      const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(normalizedStage));
+      const executable = normalizeExecutableName(tokens[0] || "");
+      if (executable === "node" || executable === "nodejs") return true;
     }
   }
   return false;
