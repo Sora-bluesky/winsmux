@@ -5306,23 +5306,37 @@ EOF
         ($allowed -join "`n") | Should -Be ''
     }
 
-    It 'TASK-783 C20-C21 allows read-only Codex text and sanctioned companion-shaped input without name allowlists' {
+    It 'TASK-783 C20-C21 allows read-only Codex text and finitely allowlisted companion input' {
         foreach ($command in @(
                 'rg -n ''codex exec'' docs',
                 'git grep ''codex exec'' -- docs',
                 'rg -n ''git commit'' docs',
                 'git grep ''gh pr merge'' -- docs',
                 'node companion-runtime.js --payload ''codex exec review''',
-                'node -e "require(''child_process'').spawnSync(''helper'', [''codex'', ''exec''])"',
-                'python -c "import subprocess; subprocess.run([''helper'', ''codex'', ''exec''])"',
-                'python -c "import subprocess; subprocess.run((''helper'', ''codex'', ''exec''))"',
-                'pwsh -Command "Start-Process helper -ArgumentList codex,exec"',
+                'node -e "require(''child_process'').spawnSync(''echo'', [''codex'', ''exec''])"',
+                'python -c "import subprocess; subprocess.run([''echo'', ''codex'', ''exec''])"',
                 'cmd /c echo call codex exec review'
             )) {
             $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{ command = $command }
             $result.ExitCode | Should -Be 0
             $result.StdErr | Should -Be ''
             $result.OutputObject | Should -BeNullOrEmpty
+        }
+    }
+
+    It 'TASK-783 C93 defaults direct trampolines and unenumerated child executables to deny' {
+        foreach ($command in @(
+                'forfiles.exe /p . /m VERSION /c "cmd /c codex exec"',
+                'git grep --open-files-in-page="codex exec --help" -e "^" -- .gitignore',
+                'node -e "require(''child_process'').spawnSync(''mshta.exe'', [''javascript:new ActiveXObject(\"WScript.Shell\").Run(\"codex exec\");close()''])"',
+                'python -c "import subprocess; subprocess.run([''wmic.exe'',''process'',''call'',''create'',''codex exec''])"',
+                'python -c "import subprocess; subprocess.run([''schtasks.exe'',''/create'',''/tn'',''winsmux-review-bypass'',''/tr'',''codex exec''])"',
+                'node -e "require(''child_process'').spawnSync(''helper'', [''codex'', ''exec''])"',
+                'python -c "import subprocess; subprocess.run([''helper'', ''codex'', ''exec''])"',
+                'pwsh -Command "Start-Process helper -ArgumentList codex,exec"'
+            )) {
+            $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{ command = $command }
+            & $script:AssertDenyResult -Result $result -Because $command
         }
     }
 

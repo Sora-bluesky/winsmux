@@ -20,6 +20,16 @@ const INTERPRETER_PROCESS_BOUNDARY = Object.freeze({
   DENY_AMBIGUOUS_PROTECTED: "deny-ambiguous-protected",
   DENY_UNOWNED_PROCESS: "deny-unowned-process",
 });
+const STATIC_NON_EXECUTOR_TOOL_ALLOWLIST = new Set(["echo"]);
+const DIRECT_PROCESS_TRAMPOLINE_TOOLS = new Set([
+  "cscript",
+  "mshta",
+  "regsvr32",
+  "rundll32",
+  "schtasks",
+  "wmic",
+  "wscript",
+]);
 
 try {
   const input = fs.readFileSync(0, "utf8");
@@ -208,7 +218,9 @@ try {
 
   // Rule 12b: AST completeness guard. Worker ownership rules run first so their
   // more specific remediation remains observable for protected Git lifecycle calls.
-  if (toolName === "Bash" && hasUnsupportedInlineInterpreterBoundary(reviewCommand)) {
+  if (toolName === "Bash" &&
+      (hasUnsupportedInlineInterpreterBoundary(reviewCommand) ||
+       hasUnsupportedDirectProcessBoundary(reviewCommand))) {
     deny("Unsupported inline process construction is blocked. Use a supported literal form or a managed winsmux workflow.");
   }
 
@@ -4700,6 +4712,9 @@ function hasUnsupportedInlineInterpreterBoundary(command) {
   for (const segment of splitCommandSegments(source)) {
     for (const stage of splitCommandPipelineStages(segment)) {
       const normalizedStage = unwrapPowerShellCommandWrapper(String(stage || "").trim());
+      if (isReviewGatedCommand(normalizedStage) || isOperatorOnlyGitLifecycleCommand(normalizedStage)) {
+        continue;
+      }
       const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(normalizedStage));
       const kind = getShellInterpreterKind(tokens);
       if (kind && hasUnownedInterpreterProcessBoundary(normalizedStage)) return true;
@@ -4721,6 +4736,52 @@ function hasUnsupportedInlineInterpreterBoundary(command) {
       if ((executable === "cmd" || executable === "cmd.exe")) {
         const nested = getCmdShellArgument(tokens, false);
         if (/\bif\s+(?:not\s+)?exist\b/iu.test(nested) && /![^!]+!/u.test(nested)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+function hasUnsupportedDirectProcessBoundary(command) {
+  const source = String(command || "");
+  for (const segment of splitCommandSegments(source)) {
+    for (const stage of splitCommandPipelineStages(segment)) {
+      const normalizedStage = unwrapPowerShellCommandWrapper(String(stage || "").trim());
+      const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(normalizedStage));
+      const executable = normalizeExecutableName(tokens[0] || "");
+      if (!executable) continue;
+      if (executable === "git" && hasGitExternalProcessConfiguration(tokens)) return true;
+      if (isReviewGatedCommand(normalizedStage) || isOperatorOnlyGitLifecycleCommand(normalizedStage)) {
+        continue;
+      }
+      if (isPowerShellExecutable(executable)) {
+        const nestedCommand = getPowerShellNestedCommand(tokens);
+        if (nestedCommand && nestedCommand !== normalizedStage && hasUnsupportedDirectProcessBoundary(nestedCommand)) {
+          return true;
+        }
+      }
+      if (DIRECT_PROCESS_TRAMPOLINE_TOOLS.has(executable)) return true;
+      if (isPowerShellStartProcessExecutable(executable)) {
+        const nestedCommand = getPowerShellStartProcessCommand(tokens);
+        const nestedTokens = tokenizeCommandLine(nestedCommand);
+        if (nestedTokens.length === 0) return true;
+        const nestedExecutable = normalizeExecutableName(nestedTokens[0]);
+        if (nestedExecutable === "git" || nestedExecutable === "gh" || nestedExecutable === "codex") {
+          if (nestedExecutable === "git" && hasGitExternalProcessConfiguration(nestedTokens)) return true;
+          continue;
+        }
+        const result = classifyStaticProcessInvocation(
+          nestedExecutable,
+          nestedTokens.slice(1),
+          nestedCommand,
+        );
+        if (result !== INTERPRETER_PROCESS_BOUNDARY.ALLOW_STATIC_READONLY &&
+            result !== INTERPRETER_PROCESS_BOUNDARY.ALLOW_PROVEN_NON_PROTECTED) return true;
+      }
+      if (executable === "forfiles") {
+        const result = classifyStaticProcessInvocation(executable, tokens.slice(1), normalizedStage);
+        if (result !== INTERPRETER_PROCESS_BOUNDARY.ALLOW_STATIC_READONLY &&
+            result !== INTERPRETER_PROCESS_BOUNDARY.ALLOW_PROVEN_NON_PROTECTED) return true;
       }
     }
   }
@@ -7892,6 +7953,39 @@ function getStaticNestedShellCommand(tool, resolvedArguments) {
   return materializeStaticPosixShellCommand(tokens);
 }
 
+function hasGitExternalProcessConfiguration(tokens) {
+  const normalized = tokens.map((value) => normalizeAgentValue(value));
+  const subcommandIndex = findGitSubcommandIndex(tokens);
+  const executionOptions = subcommandIndex < 0 ? [] : normalized.slice(subcommandIndex + 1);
+  if (executionOptions.some((value) =>
+    value === "--ext-diff" ||
+    value === "--textconv" ||
+    value === "--paginate" ||
+    value === "-p" ||
+    /^-o/u.test(value) ||
+    value.startsWith("--open-files-in-pag"))) return true;
+  for (let index = 1; index < Math.max(subcommandIndex, 1); index += 1) {
+    const value = normalized[index];
+    if (value !== "-c" && !value.startsWith("-c")) continue;
+    const config = value === "-c" ? normalized[index + 1] || "" : value.slice(2);
+    if (/^(?:diff\..*\.command|diff\.external|core\.fsmonitor|core\.hookspath|credential\..*\.helper|credential\.helper|pager\..*|core\.pager)=/u.test(config)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isCanonicalReadOnlyGhArguments(values) {
+  const args = values.map((value) => normalizeAgentValue(value));
+  if (args.length >= 2 && (args[0] === "pr" || args[0] === "issue") && args[1] === "view") return true;
+  if (args[0] !== "api") return false;
+  for (let index = 1; index < args.length; index += 1) {
+    if ((args[index] === "--method" || args[index] === "-x") && args[index + 1] !== "get") return false;
+    if (args[index].startsWith("--method=") && args[index].slice("--method=".length) !== "get") return false;
+  }
+  return !args.some((value) => value === "--input" || value === "-f" || value === "--field" || value === "--raw-field");
+}
+
 function classifyStaticProcessInvocation(tool, resolvedArguments, rawBoundary = "", depth = 0) {
   if (!resolvedArguments || resolvedArguments.some((value) => value === null)) {
     return /\bcodex(?:\.exe)?\b/iu.test(rawBoundary)
@@ -7940,16 +8034,8 @@ function classifyStaticProcessInvocation(tool, resolvedArguments, rawBoundary = 
     const tokens = [normalizedTool, ...resolvedArguments];
     const subcommandIndex = findGitSubcommandIndex(tokens);
     const globalArguments = subcommandIndex < 0 ? tokens.slice(1) : tokens.slice(1, subcommandIndex);
-    const executionOptions = subcommandIndex < 0 ? [] : tokens.slice(subcommandIndex + 1)
-      .map((value) => normalizeAgentValue(value));
     const subcommand = subcommandIndex < 0 ? "" : normalizeAgentValue(tokens[subcommandIndex]);
-    const canLaunchExternalProcess = executionOptions.some((value) =>
-      value === "--ext-diff" ||
-      value === "--textconv" ||
-      value === "--paginate" ||
-      value === "-p" ||
-      /^-o/u.test(value) ||
-      value.startsWith("--open-files-in-pag"));
+    const canLaunchExternalProcess = hasGitExternalProcessConfiguration(tokens);
     const readOnlySubcommand = isReadOnlyGitSubcommand(subcommand, tokens, subcommandIndex) ||
       (subcommand === "branch" && isReadOnlyGitBranchCommand(tokens, subcommandIndex)) ||
       (subcommand === "tag" && isReadOnlyGitTagCommand(tokens, subcommandIndex)) ||
@@ -7960,6 +8046,11 @@ function classifyStaticProcessInvocation(tool, resolvedArguments, rawBoundary = 
     }
     return readOnlySubcommand || reviewGatedSubcommand
       ? INTERPRETER_PROCESS_BOUNDARY.ALLOW_PROVEN_NON_PROTECTED
+      : INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS;
+  }
+  if (normalizedTool === "gh") {
+    return isCanonicalReadOnlyGhArguments(resolvedArguments)
+      ? INTERPRETER_PROCESS_BOUNDARY.ALLOW_STATIC_READONLY
       : INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS;
   }
   if (normalizedTool === "forfiles") {
@@ -7977,7 +8068,9 @@ function classifyStaticProcessInvocation(tool, resolvedArguments, rawBoundary = 
     );
   }
   if (!isNestedShellProcessLauncher(normalizedTool)) {
-    return INTERPRETER_PROCESS_BOUNDARY.ALLOW_PROVEN_NON_PROTECTED;
+    return STATIC_NON_EXECUTOR_TOOL_ALLOWLIST.has(normalizedTool)
+      ? INTERPRETER_PROCESS_BOUNDARY.ALLOW_PROVEN_NON_PROTECTED
+      : INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS;
   }
   const nestedCommand = getStaticNestedShellCommand(normalizedTool, resolvedArguments);
   if (nestedCommand === null) {
