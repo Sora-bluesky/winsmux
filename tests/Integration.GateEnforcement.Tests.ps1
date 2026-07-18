@@ -5398,6 +5398,8 @@ EOF
                 '[Environment]::SetEnvironmentVariable(("NODE_"+"OPTIONS"), "--require=./unreviewed-preload.cjs", "Process"); node -e ""',
                 '[Environment].GetMethod("SetEnvironmentVariable", [type[]]@([string],[string],[EnvironmentVariableTarget])).Invoke($null, @("NODE_OPTIONS", "--require=./unreviewed-preload.cjs", [EnvironmentVariableTarget]::Process)); node -e ""',
                 '[System.Environment].GetMethod("SetEnvironmentVariable").Invoke($null, @("NODE_OPTIONS", "--require=./unreviewed-preload.cjs", "Process")); node -e ""',
+                '$t=[type]::GetType("System."+"Environment"); $m=$t.GetMethod("Set"+"EnvironmentVariable",[type[]]@([string],[string],[EnvironmentVariableTarget])); $m.Invoke($null,[object[]]@(("NODE_"+"OPTIONS"),"--require=./unreviewed-preload.cjs",[EnvironmentVariableTarget]::Process)); node -e ""',
+                '$t=[type]::GetType("System."+"Environment"); $t.InvokeMember(("Set"+"EnvironmentVariable"),"InvokeMethod,Static,Public",$null,$null,@(("NODE_"+"OPTIONS"),"--require=./unreviewed-preload.cjs",[EnvironmentVariableTarget]::Process)); node -e ""',
                 'Set-Item Env:NODE_OPTIONS "--require=./unreviewed-preload.cjs"; node -e ""',
                 'node -e "process.env.NODE_OPTIONS=''--require=./unreviewed-preload.cjs''; require(''child_process'').spawnSync(''node'', [''-e'',''''])"',
                 'python -c "import os,subprocess; os.environ[''NODE_OPTIONS'']=''--require=./unreviewed-preload.cjs''; subprocess.run([''node'',''-e'',''''])"',
