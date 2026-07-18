@@ -4760,6 +4760,7 @@ function hasUnsupportedInlineInterpreterBoundary(command) {
 function hasUnsupportedDirectProcessBoundary(command) {
   const source = materializePowerShellComSpecAliases(String(command || ""));
   if (hasUnownedStdinScriptPipeline(source)) return true;
+  if (hasUnownedPowerShellCommandSequence(source)) return true;
   if (hasUnownedNodeCommandPrelude(source)) return true;
   for (const segment of splitCommandSegments(source)) {
     for (const stage of splitCommandPipelineStages(segment)) {
@@ -4768,7 +4769,8 @@ function hasUnsupportedDirectProcessBoundary(command) {
       const executable = normalizeExecutableName(tokens[0] || "");
       if (!executable) continue;
       if ((executable === "node" || executable === "nodejs") &&
-          hasNodeStartupCodeConfiguration(tokens, source)) return true;
+          (hasUnresolvedPowerShellArgumentEvaluation(tokens) ||
+           hasNodeStartupCodeConfiguration(tokens, source))) return true;
       if (executable === "git" &&
           (hasDirectGitProcessEnvironment(normalizedStage) || hasGitExternalProcessConfiguration(tokens))) return true;
       if (executable === "rg" && hasRgExternalProcessConfiguration(tokens)) return true;
@@ -4835,6 +4837,16 @@ function hasUnsupportedDirectProcessBoundary(command) {
   return false;
 }
 
+function hasUnownedPowerShellCommandSequence(source) {
+  const segments = splitCommandSegments(String(source || ""));
+  if (segments.length < 2) return false;
+  return segments.slice(0, -1).some((segment) =>
+    splitCommandPipelineStages(segment).some((stage) => {
+      const normalizedStage = unwrapPowerShellCommandWrapper(String(stage || "").trim());
+      return /^(?:\$|\[|@\(|\()/u.test(normalizedStage);
+    }));
+}
+
 function hasUnownedNodeCommandPrelude(source) {
   const segments = splitCommandSegments(String(source || ""));
   for (let segmentIndex = 1; segmentIndex < segments.length; segmentIndex += 1) {
@@ -4846,6 +4858,13 @@ function hasUnownedNodeCommandPrelude(source) {
     }
   }
   return false;
+}
+
+function hasUnresolvedPowerShellArgumentEvaluation(tokens) {
+  return tokens.slice(1).some((token) => {
+    const value = stripOuterQuotes(String(token || "").trim());
+    return /\$\(|@\(/u.test(value) || /^\(/u.test(value);
+  });
 }
 
 function hasUnownedStdinScriptPipeline(source) {

@@ -5412,6 +5412,8 @@ EOF
                 '$t=[type]::GetType("System."+"Environment"); $m=$t.PSObject.Methods[("Get"+"Method")].Invoke("Set"+"EnvironmentVariable"); $m.Invoke($null,@(("NODE_"+"OPTIONS"),"--require=./unreviewed-preload.cjs","Process")); node -e ""',
                 '$t=[type]::GetType("System."+"Environment"); $ti=[System.Reflection.IntrospectionExtensions]::GetTypeInfo($t); $m=@($ti.DeclaredMethods).Where({$_.Name -eq ("Set"+"EnvironmentVariable")})[0]; $m.Invoke($null,@(("NODE_"+"OPTIONS"),"--require=./unreviewed-preload.cjs","Process")); node -e ""',
                 '$x=1; node -e "1 + 1"',
+                '[Environment]::SetEnvironmentVariable(("NODE_"+"OPTIONS"),"--require=./unreviewed-preload.cjs",[EnvironmentVariableTarget]::Process); $p=[Diagnostics.Process]::Start("node",''-e ""''); $p.WaitForExit()',
+                'node -e "" $($d=[Delegate]::(("Create"+"Delegate"))([Action[string,string,System.EnvironmentVariableTarget]],[Environment],("Set"+"EnvironmentVariable")); $d.(("Inv"+"oke"))(("NODE_"+"OPTIONS"),"--require=./unreviewed-preload.cjs",[EnvironmentVariableTarget]::Process))',
                 'Set-Item Env:NODE_OPTIONS "--require=./unreviewed-preload.cjs"; node -e ""',
                 'node -e "process.env.NODE_OPTIONS=''--require=./unreviewed-preload.cjs''; require(''child_process'').spawnSync(''node'', [''-e'',''''])"',
                 'python -c "import os,subprocess; os.environ[''NODE_OPTIONS'']=''--require=./unreviewed-preload.cjs''; subprocess.run([''node'',''-e'',''''])"',
