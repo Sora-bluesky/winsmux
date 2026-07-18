@@ -18,6 +18,7 @@ Describe 'winsmux npm release package contract' {
         $script:TestWorkflowPath = Join-Path $script:RepoRoot '.github\workflows\test.yml'
         $script:InstallerPath = Join-Path $script:RepoRoot 'install.ps1'
         $script:InstallE2ePath = Join-Path $script:RepoRoot 'scripts\test-install-e2e.ps1'
+        $script:NativeBridgeE2ePath = Join-Path $script:RepoRoot 'scripts\test-native-bridge-resolution.ps1'
         $script:RedirectedInstallSmokePath = Join-Path $script:RepoRoot 'scripts\test-install-redirected.ps1'
         $script:RootReadmePath = Join-Path $script:RepoRoot 'README.md'
         $script:RootReadmeJaPath = Join-Path $script:RepoRoot 'README.ja.md'
@@ -170,6 +171,7 @@ Describe 'winsmux npm release package contract' {
         $testWorkflow = Get-Content -LiteralPath $script:TestWorkflowPath -Raw -Encoding UTF8
         $installer = Get-Content -LiteralPath $script:InstallerPath -Raw -Encoding UTF8
         $installE2e = Get-Content -LiteralPath $script:InstallE2ePath -Raw -Encoding UTF8
+        $nativeBridgeE2e = Get-Content -LiteralPath $script:NativeBridgeE2ePath -Raw -Encoding UTF8
         $redirectedSmoke = Get-Content -LiteralPath $script:RedirectedInstallSmokePath -Raw -Encoding UTF8
 
         $e2eTokens = $null
@@ -282,11 +284,21 @@ Describe 'winsmux npm release package contract' {
         $installE2e | Should -Match 'tagless_install_verified'
         $installE2e | Should -Match '\$expectedReleaseTag'
         $installE2e | Should -Match 'ConvertTo-WinsmuxBinaryVersion -ReleaseTag \$expectedReleaseTag'
+        $testWorkflow | Should -Match '(?m)^  native-lifecycle-source:$'
+        $testWorkflow | Should -Match 'runs-on: windows-2025'
+        $testWorkflow | Should -Match 'test-native-bridge-resolution\.ps1 -CandidateBinary target/release/winsmux\.exe'
+        $testWorkflow | Should -Match '\$\{\{ needs\.native-lifecycle-source\.result \}\}'
+        $nativeBridgeE2e | Should -Match "foreach \(\`$action in @\('install', 'update', 'uninstall'\)\)"
+        $nativeBridgeE2e | Should -Match 'executed the hostile CWD bridge'
+        $nativeBridgeE2e | Should -Match 'succeeded without an installed bridge'
+        $nativeBridgeE2e | Should -Match 'non-WindowsApps PowerShell 7 executable'
         $installE2e | Should -Match 'Tagless direct install did not stay on the fixed main installer'
         $installE2e | Should -Match 'Tagless direct install replaced the fixed main scripts with the previous release scripts'
         $installer | Should -Match 'keepPipedMainScripts'
         $installer | Should -Match 'Test-IsPipedWinsmuxInstaller -InvocationPath \(\[string\]\$MyInvocation\.MyCommand\.Path\)'
-        $installer | Should -Match 'Assert-WinsmuxReleaseTag -ReleaseTag \$requestedReleaseTag'
+        $installer | Should -Match "(?s)\`$requestedReleaseTag = if \(\`$releaseAction -notin @\('install', 'update'\)\).*?Assert-WinsmuxReleaseTag -ReleaseTag \`$requestedReleaseTag"
+        $installer | Should -Match 'switch \(\$releaseAction\)'
+        $installer | Should -Not -Match 'switch \(\$Action\.ToLower\(\)\)'
         $installE2e | Should -Match 'WT settings: not found'
         $installE2e | Should -Match "wrapper.*doctor"
         $installE2e | Should -Match 'installer download failure'
@@ -402,6 +414,21 @@ param(
         { Assert-WinsmuxReleaseTag -ReleaseTag '../../attacker/repo/main' } | Should -Throw '*Invalid winsmux release tag*'
         { Assert-WinsmuxReleaseTag -ReleaseTag 'v0.36.28/../../main' } | Should -Throw '*Invalid winsmux release tag*'
         $installer | Should -Match '-not \(Test-ShouldBootstrapTargetInstaller -TargetAction install\)'
+    }
+
+    It 'keeps non-release actions independent from a stale release tag' {
+        $installerLiteral = $script:InstallerPath.Replace("'", "''")
+        foreach ($case in @(
+            @{ Action = 'help'; Expected = 'Usage: install.ps1' },
+            @{ Action = 'version'; Expected = 'winsmux 0.36.28' },
+            @{ Action = 'unknown-action'; Expected = 'Usage: install.ps1' }
+        )) {
+            $command = "`$env:WINSMUX_RELEASE_TAG = '../../attacker/repo/main'; & '$installerLiteral' $($case.Action) -ReleaseTag 'also-invalid'"
+            $result = Invoke-PwshProcess -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $command)
+            $result.ExitCode | Should -Be 0
+            $result.StdOut | Should -Match ([regex]::Escape($case.Expected))
+            $result.StdErr | Should -Not -Match 'Invalid winsmux release tag'
+        }
     }
 
     It 'repairs installer-managed state without release assets when the installed binary already matches' {

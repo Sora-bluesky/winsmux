@@ -91,6 +91,23 @@ jobs:
           WINSMUX_INSTALL_E2E_GITHUB_ACCESS: ${{ github.token }}
         run: pwsh -NoProfile -File scripts/test-install-e2e.ps1 -Route "${{ matrix.route }}" -RepositoryRoot . -SourceCommit "${{ github.sha }}"
 
+  native-lifecycle-source:
+    name: Native Lifecycle Source Boundary
+    runs-on: windows-2025
+    needs: public-surface
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build candidate native binary
+        run: cargo build --release --manifest-path core/Cargo.toml --bin winsmux
+
+      - name: Reject hostile working-directory bridge selection
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/test-native-bridge-resolution.ps1 -CandidateBinary target/release/winsmux.exe
+
   common-contract-drift:
     name: Common Contract Drift Gate
     runs-on: ubuntu-latest
@@ -460,6 +477,7 @@ jobs:
       - secret-scan
       - public-surface
       - install-e2e
+      - native-lifecycle-source
       - common-contract-drift
       - pester
       - core-build-test
@@ -474,6 +492,7 @@ jobs:
             "${{ needs.secret-scan.result }}" \
             "${{ needs.public-surface.result }}" \
             "${{ needs.install-e2e.result }}" \
+            "${{ needs.native-lifecycle-source.result }}" \
             "${{ needs.common-contract-drift.result }}" \
             "${{ needs.pester.result }}" \
             "${{ needs.core-build-test.result }}" \

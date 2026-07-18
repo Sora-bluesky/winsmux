@@ -57,7 +57,10 @@ if ($redirectedInstallerE2e) {
     New-Item -ItemType Directory -Path $redirectedStateRoot -Force | Out-Null
 }
 $e2eReleaseTag = if ($installerE2e) { [string]$env:WINSMUX_INSTALL_E2E_RELEASE_TAG } else { '' }
-$requestedReleaseTag = if (-not [string]::IsNullOrWhiteSpace($e2eReleaseTag)) {
+$releaseAction = $Action.Trim().ToLowerInvariant()
+$requestedReleaseTag = if ($releaseAction -notin @('install', 'update')) {
+    ''
+} elseif (-not [string]::IsNullOrWhiteSpace($e2eReleaseTag)) {
     $e2eReleaseTag
 } elseif ([string]::IsNullOrWhiteSpace($ReleaseTag)) {
     $env:WINSMUX_RELEASE_TAG
@@ -72,7 +75,6 @@ $installSourceRef = if ($installerE2e -or $redirectedInstallerE2e) { [string]$en
 if (-not [string]::IsNullOrWhiteSpace($installSourceRef) -and $installSourceRef -notmatch '^[0-9a-fA-F]{40}$') {
     throw 'WINSMUX_INSTALL_SOURCE_REF must be a 40-character commit SHA in an authorized installer E2E mode.'
 }
-$releaseAction = $Action.Trim().ToLowerInvariant()
 $isPipedInstaller = Test-IsPipedWinsmuxInstaller -InvocationPath ([string]$MyInvocation.MyCommand.Path)
 if ($redirectedInstallerE2e -and $releaseAction -ne 'install') {
     throw 'Redirected installer E2E mode only permits the install action.'
@@ -990,7 +992,7 @@ Profiles:
 # Main
 # ---------------------------------------------------------------------------
 
-switch ($Action.ToLower()) {
+switch ($releaseAction) {
     "install"   {
         if ($env:WINSMUX_INTERNAL_TARGET_INSTALLER_BOOTSTRAPPED -eq '1' -or -not (Test-ShouldBootstrapTargetInstaller -TargetAction install)) {
             Invoke-Install

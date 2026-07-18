@@ -106,6 +106,7 @@ $whitelistPatterns = @(
     'scripts/summarize-cli-bakeoff.ps1',
     'scripts/test-cli-bakeoff-preflight.ps1',
     'scripts/test-install-e2e.ps1',
+    'scripts/test-native-bridge-resolution.ps1',
     'scripts/test-install-redirected.ps1',
     'scripts/test-v03617-reliability-gate.ps1',
     'scripts/test-v03618-release-hardening.ps1',
