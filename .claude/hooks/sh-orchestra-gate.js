@@ -4754,8 +4754,8 @@ function hasUnsupportedDirectProcessBoundary(command) {
       if (executable === "xargs") {
         const nestedTokens = unwrapEnvCommandTokens(getNormalizedXargsCommandTokens(tokens));
         const nestedExecutable = normalizeExecutableName(nestedTokens[0] || "");
-        const finiteSafeTargets = new Set(["", "echo", "printf", "git", "gh"]);
-        if (!finiteSafeTargets.has(nestedExecutable) && !isReviewGatedCommand(normalizedStage)) {
+        const finiteSafeTargets = new Set(["", "echo", "printf"]);
+        if (!finiteSafeTargets.has(nestedExecutable) && !isReviewGatedCommand(source)) {
           return true;
         }
       }

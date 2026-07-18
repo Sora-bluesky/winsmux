@@ -5350,6 +5350,8 @@ EOF
                 'bash -lc ''rg --pre="codex exec" -e "^" .gitignore''',
                 'printf ''codex\n'' | xargs node -e "require(''child_process'').spawnSync(process.argv[1], [''exec''])"',
                 'printf ''codex\n'' | xargs python -c "import subprocess,sys; subprocess.run([sys.argv[1],''exec''])"',
+                'printf ''remote show ext::codex exec\n'' | xargs git',
+                'printf ''pr merge 1179 --squash\n'' | xargs gh',
                 'node -e "require(''child_process'').spawnSync(''mshta.exe'', [''javascript:new ActiveXObject(\"WScript.Shell\").Run(\"codex exec\");close()''])"',
                 'python -c "import subprocess; subprocess.run([''wmic.exe'',''process'',''call'',''create'',''codex exec''])"',
                 'python -c "import subprocess; subprocess.run([''schtasks.exe'',''/create'',''/tn'',''winsmux-review-bypass'',''/tr'',''codex exec''])"',
