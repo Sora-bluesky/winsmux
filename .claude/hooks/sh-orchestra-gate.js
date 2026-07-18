@@ -4853,9 +4853,18 @@ function hasUnsupportedDirectProcessBoundary(command) {
           (/\bGIT_CONFIG_(?:COUNT|KEY_[0-9]+|VALUE_[0-9]+)\b/iu.test(normalizedStage) ||
            /--config-env(?:=|\s)/iu.test(normalizedStage) ||
            /(?:^|\s)-c(?:=|\s)[^;&\r\n]*\balias\./iu.test(normalizedStage));
+        const hasCanonicalCommandLocalAlias = hasInlineAliasConfiguration &&
+          !hasCommandLocalGitAliasConfiguration(normalizedStage);
+        const hasConfiguredReviewAlias = hasConfiguredGitReviewLifecycleAlias(normalizedStage, process.cwd());
+        const hasConfiguredReadOnlyAlias = isCanonicalConfiguredReadOnlyGitAliasInvocation(tokens, process.cwd());
         const hasUnsafeDirectEnvironment = hasDirectGitProcessEnvironment(normalizedStage) &&
-          !(hasInlineAliasConfiguration && !hasCommandLocalGitAliasConfiguration(normalizedStage));
+          !hasCanonicalCommandLocalAlias;
         if (hasUnsafeDirectEnvironment || hasGitExternalProcessConfiguration(tokens)) return true;
+        if (!hasCanonicalCommandLocalAlias && !hasConfiguredReviewAlias && !hasConfiguredReadOnlyAlias) {
+          const gitProcessDecision = classifyStaticProcessInvocation("git", tokens.slice(1), normalizedStage);
+          if (gitProcessDecision !== INTERPRETER_PROCESS_BOUNDARY.ALLOW_STATIC_READONLY &&
+              gitProcessDecision !== INTERPRETER_PROCESS_BOUNDARY.ALLOW_PROVEN_NON_PROTECTED) return true;
+        }
       }
       if (executable === "rg" && hasRgExternalProcessConfiguration(tokens)) return true;
       if (executable === "xargs") {
@@ -8267,6 +8276,93 @@ function hasGitExternalProcessConfiguration(tokens) {
   return false;
 }
 
+function isCanonicalSafeGitInlineConfiguration(configuration) {
+  const match = /^alias\.([A-Za-z0-9._-]+)=([\s\S]+)$/iu.exec(String(configuration || "").trim());
+  if (!match || String(match[2] || "").trim().startsWith("!")) return false;
+  const aliasTokens = tokenizeCommandLine(String(match[2] || "").trim());
+  if (aliasTokens.length === 0) return false;
+  const tokens = ["git", ...aliasTokens];
+  const subcommand = normalizeAgentValue(stripOuterQuotes(tokens[1] || ""));
+  return isReadOnlyGitSubcommand(subcommand, tokens, 1) ||
+    (subcommand === "branch" && isReadOnlyGitBranchCommand(tokens, 1)) ||
+    (subcommand === "tag" && isReadOnlyGitTagCommand(tokens, 1)) ||
+    (subcommand === "worktree" && isReadOnlyGitWorktreeCommand(tokens, 1)) ||
+    isGitLifecycleSubcommandName(subcommand);
+}
+
+function isCanonicalReadOnlyGitInlineAliasInvocation(tokens, subcommandIndex) {
+  const invokedAlias = normalizeAgentValue(stripOuterQuotes(tokens[subcommandIndex] || ""));
+  for (let index = 1; index < subcommandIndex; index += 1) {
+    const raw = stripOuterQuotes(String(tokens[index] || ""));
+    const configuration = raw === "-c" && index + 1 < subcommandIndex
+      ? stripOuterQuotes(tokens[++index])
+      : raw.startsWith("-c") && raw.length > 2
+      ? raw.slice(2)
+      : "";
+    const match = /^alias\.([A-Za-z0-9._-]+)=([\s\S]+)$/iu.exec(String(configuration || "").trim());
+    if (!match || normalizeAgentValue(match[1]) !== invokedAlias) continue;
+    const aliasTokens = tokenizeCommandLine(String(match[2] || "").trim());
+    if (aliasTokens.length === 0 || String(match[2] || "").trim().startsWith("!")) return false;
+    const resolvedTokens = ["git", ...aliasTokens, ...tokens.slice(subcommandIndex + 1)];
+    const resolvedSubcommand = normalizeAgentValue(stripOuterQuotes(resolvedTokens[1] || ""));
+    return isReadOnlyGitSubcommand(resolvedSubcommand, resolvedTokens, 1) ||
+      (resolvedSubcommand === "branch" && isReadOnlyGitBranchCommand(resolvedTokens, 1)) ||
+      (resolvedSubcommand === "tag" && isReadOnlyGitTagCommand(resolvedTokens, 1)) ||
+      (resolvedSubcommand === "worktree" && isReadOnlyGitWorktreeCommand(resolvedTokens, 1));
+  }
+  return false;
+}
+
+function isCanonicalConfiguredReadOnlyGitAliasInvocation(tokens, baseCwd) {
+  const subcommandIndex = findGitSubcommandIndex(tokens);
+  if (subcommandIndex < 1) return false;
+  const rawSubcommand = normalizeAgentValue(stripOuterQuotes(tokens[subcommandIndex] || ""));
+  const gitBaseCwd = getGitGlobalCwdOption(tokens, 0, baseCwd, {}) || baseCwd || process.cwd();
+  const aliasValue = getConfiguredGitAliasValue(gitBaseCwd, rawSubcommand);
+  if (!aliasValue || aliasValue.trim().startsWith("!")) return false;
+  const aliasTokens = tokenizeCommandLine(aliasValue.trim());
+  if (aliasTokens.length === 0) return false;
+  const resolvedTokens = ["git", ...aliasTokens, ...tokens.slice(subcommandIndex + 1)];
+  const resolvedSubcommand = normalizeAgentValue(stripOuterQuotes(resolvedTokens[1] || ""));
+  return isReadOnlyGitSubcommand(resolvedSubcommand, resolvedTokens, 1) ||
+    (resolvedSubcommand === "branch" && isReadOnlyGitBranchCommand(resolvedTokens, 1)) ||
+    (resolvedSubcommand === "tag" && isReadOnlyGitTagCommand(resolvedTokens, 1)) ||
+    (resolvedSubcommand === "worktree" && isReadOnlyGitWorktreeCommand(resolvedTokens, 1));
+}
+
+function hasOnlyCanonicalGitGlobalArguments(tokens, subcommandIndex) {
+  const safeValueless = new Set([
+    "--bare", "--glob-pathspecs", "--icase-pathspecs", "--literal-pathspecs",
+    "--no-optional-locks", "--no-pager", "--noglob-pathspecs",
+  ]);
+  const safeValued = new Set(["--git-dir", "--namespace", "--work-tree"]);
+  for (let index = 1; index < subcommandIndex; index += 1) {
+    const raw = stripOuterQuotes(String(tokens[index] || ""));
+    const value = normalizeAgentValue(raw);
+    if (safeValueless.has(value)) continue;
+    if (raw === "-C") {
+      if (++index >= subcommandIndex || !stripOuterQuotes(String(tokens[index] || "")).trim()) return false;
+      continue;
+    }
+    if (raw.startsWith("-C") && raw.length > 2) continue;
+    if (raw === "-c") {
+      if (index + 1 >= subcommandIndex || !isCanonicalSafeGitInlineConfiguration(stripOuterQuotes(tokens[++index]))) return false;
+      continue;
+    }
+    if (raw.startsWith("-c") && raw.length > 2) {
+      if (!isCanonicalSafeGitInlineConfiguration(raw.slice(2))) return false;
+      continue;
+    }
+    if (safeValued.has(value)) {
+      if (++index >= subcommandIndex || !stripOuterQuotes(String(tokens[index] || "")).trim()) return false;
+      continue;
+    }
+    if (["--git-dir=", "--namespace=", "--work-tree="].some((prefix) => value.startsWith(prefix) && value.length > prefix.length)) continue;
+    return false;
+  }
+  return true;
+}
+
 function hasDirectGitProcessEnvironment(source) {
   return /(?:^|\s)(?:GIT_CONFIG_[A-Z0-9_]+|GIT_EXTERNAL_DIFF|GIT_PAGER|GIT_EDITOR|GIT_SEQUENCE_EDITOR|GIT_SSH|GIT_SSH_COMMAND|GIT_ASKPASS|GIT_ALLOW_PROTOCOL)\s*=/iu.test(
     String(source || ""),
@@ -8401,15 +8497,15 @@ function classifyStaticProcessInvocation(tool, resolvedArguments, rawBoundary = 
   if (normalizedTool === "git") {
     const tokens = [normalizedTool, ...resolvedArguments];
     const subcommandIndex = findGitSubcommandIndex(tokens);
-    const globalArguments = subcommandIndex < 0 ? tokens.slice(1) : tokens.slice(1, subcommandIndex);
     const subcommand = subcommandIndex < 0 ? "" : normalizeAgentValue(tokens[subcommandIndex]);
     const canLaunchExternalProcess = hasGitExternalProcessConfiguration(tokens);
     const readOnlySubcommand = isReadOnlyGitSubcommand(subcommand, tokens, subcommandIndex) ||
       (subcommand === "branch" && isReadOnlyGitBranchCommand(tokens, subcommandIndex)) ||
       (subcommand === "tag" && isReadOnlyGitTagCommand(tokens, subcommandIndex)) ||
-      (subcommand === "worktree" && isReadOnlyGitWorktreeCommand(tokens, subcommandIndex));
+      (subcommand === "worktree" && isReadOnlyGitWorktreeCommand(tokens, subcommandIndex)) ||
+      isCanonicalReadOnlyGitInlineAliasInvocation(tokens, subcommandIndex);
     const reviewGatedSubcommand = isReviewGatedCommand(tokens.join(" "));
-    if (subcommandIndex <= 0 || globalArguments.length > 0 || canLaunchExternalProcess) {
+    if (subcommandIndex <= 0 || !hasOnlyCanonicalGitGlobalArguments(tokens, subcommandIndex) || canLaunchExternalProcess) {
       return INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS;
     }
     return readOnlySubcommand || reviewGatedSubcommand
@@ -9444,14 +9540,17 @@ function hasCommandLocalGitAliasConfiguration(command) {
   }
   const tokens = tokenizeCommandLine(source).map((token) => stripOuterQuotes(token));
   const environment = new Map();
+  let hasNonAliasConfiguration = false;
   for (const token of tokens) {
     const assignment = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/u.exec(token);
     if (assignment) environment.set(normalizeAgentValue(assignment[1]), assignment[2]);
   }
   const aliasValues = [];
   const addAliasConfiguration = (configuration) => {
-    const match = /^alias\.[A-Za-z0-9._-]+=([\s\S]*)$/iu.exec(String(configuration || "").trim());
+    const candidate = String(configuration || "").trim();
+    const match = /^alias\.[A-Za-z0-9._-]+=([\s\S]*)$/iu.exec(candidate);
     if (match) aliasValues.push(match[1]);
+    else if (candidate.includes("=")) hasNonAliasConfiguration = true;
   };
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index];
@@ -9473,12 +9572,17 @@ function hasCommandLocalGitAliasConfiguration(command) {
     if (configEnv) {
       const match = /^alias\.[A-Za-z0-9._-]+=([A-Za-z_][A-Za-z0-9_]*)$/iu.exec(configEnv);
       if (match) aliasValues.push(environment.get(normalizeAgentValue(match[1])) || "");
+      else hasNonAliasConfiguration = true;
     }
   }
   for (const [name, value] of environment) {
     const keyMatch = /^git_config_key_([0-9]+)$/u.exec(name);
-    if (keyMatch && /^alias\.[A-Za-z0-9._-]+$/iu.test(value)) {
-      aliasValues.push(environment.get(`git_config_value_${keyMatch[1]}`) || "");
+    if (keyMatch) {
+      if (/^alias\.[A-Za-z0-9._-]+$/iu.test(value)) {
+        aliasValues.push(environment.get(`git_config_value_${keyMatch[1]}`) || "");
+      } else {
+        hasNonAliasConfiguration = true;
+      }
     }
   }
   const readOnlySubcommands = new Set(["status", "log", "show", "diff", "grep", "rev-parse", "branch", "tag"]);
@@ -9490,7 +9594,7 @@ function hasCommandLocalGitAliasConfiguration(command) {
       ["-d", "-D", "-m", "-M", "-f", "--delete", "--move", "--force"].includes(stripOuterQuotes(token)))) return false;
     return true;
   };
-  return aliasValues.length === 0 || aliasValues.some((value) => !isReadOnlyAlias(value));
+  return hasNonAliasConfiguration || aliasValues.length === 0 || aliasValues.some((value) => !isReadOnlyAlias(value));
 }
 
 function hasConstructedGitEnvironmentName(source) {
