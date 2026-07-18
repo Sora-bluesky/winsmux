@@ -5316,6 +5316,8 @@ EOF
                 'npm --version',
                 'cargo --version',
                 'node -e "require(''child_process'').spawnSync(''echo'', [''codex'', ''exec''])"',
+                'node --print "require(''child_process'').spawnSync(''echo'', [''codex'', ''exec''])"',
+                'node -p "1 + 1"',
                 'python -c "import subprocess; subprocess.run([''echo'', ''codex'', ''exec''])"',
                 'cmd /c echo call codex exec review'
             )) {
@@ -5355,6 +5357,10 @@ EOF
                 'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0="codex exec" git status',
                 'env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0="cmd.exe /c codex exec" git status',
                 'GIT_EXTERNAL_DIFF="codex exec" git diff --ext-diff -- .gitignore',
+                'git difftool --extcmd="codex exec" --no-index .gitignore VERSION',
+                'git difftool -x "codex e" --no-index .gitignore VERSION',
+                'node --print "require(''child_process'').spawnSync(''codex'', [''exec''])"',
+                'node -p "require(''child_process'').execSync(''cmd.exe /c codex exec'')"',
                 'node -e "require(''child_process'').spawnSync(''mshta.exe'', [''javascript:new ActiveXObject(\"WScript.Shell\").Run(\"codex exec\");close()''])"',
                 'python -c "import subprocess; subprocess.run([''wmic.exe'',''process'',''call'',''create'',''codex exec''])"',
                 'python -c "import subprocess; subprocess.run([''schtasks.exe'',''/create'',''/tn'',''winsmux-review-bypass'',''/tr'',''codex exec''])"',

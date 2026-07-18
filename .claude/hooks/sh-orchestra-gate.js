@@ -521,7 +521,8 @@ function isStdinScriptConsumerStage(stage, stdinDeviceAliases = new Map(), expec
     for (let index = 1; index < tokens.length; index += 1) {
       const rawToken = stripOuterQuotes(tokens[index]);
       const token = normalizeAgentValue(rawToken);
-      if (["-c", "-e", "--eval", "--print", "-m"].includes(token) || token.startsWith("--eval=")) {
+      if (["-c", "-e", "-p", "--eval", "--print", "-m"].includes(token) ||
+          token.startsWith("--eval=") || token.startsWith("--print=")) {
         return false;
       }
       if (token === "-") {
@@ -4303,7 +4304,7 @@ function hasUnsupportedNodeProcessConstruction(script) {
 }
 
 function getInterpreterInlineSourceToken(tokens, kind) {
-  const options = kind === "python" ? ["-c"] : ["-e", "--eval"];
+  const options = kind === "python" ? ["-c"] : ["-e", "-p", "--eval", "--print"];
   for (let index = 1; index < tokens.length; index += 1) {
     const token = String(tokens[index] || "");
     const normalized = normalizeAgentValue(token);
@@ -4323,7 +4324,7 @@ function getInterpreterTrailingArgumentTokens(command) {
   const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(String(command || "")));
   const kind = getShellInterpreterKind(tokens);
   if (!kind) return [];
-  const options = kind === "python" ? ["-c"] : ["-e", "--eval"];
+  const options = kind === "python" ? ["-c"] : ["-e", "-p", "--eval", "--print"];
   for (let index = 1; index < tokens.length; index += 1) {
     const token = String(tokens[index] || "");
     const normalized = normalizeAgentValue(token);
@@ -7611,7 +7612,7 @@ function hasInterpreterCwdChangeCommand(segment, tokens) {
 }
 
 function getInterpreterInlineScript(tokens, kind) {
-  const scriptOptions = kind === "python" ? ["-c"] : ["-e", "--eval"];
+  const scriptOptions = kind === "python" ? ["-c"] : ["-e", "-p", "--eval", "--print"];
   return getOptionRemainderValue(tokens, scriptOptions);
 }
 
@@ -8006,6 +8007,9 @@ function hasGitExternalProcessConfiguration(tokens) {
   if (normalized.some((value) => value.includes("ext::"))) return true;
   const subcommandIndex = findGitSubcommandIndex(tokens);
   const executionOptions = subcommandIndex < 0 ? [] : normalized.slice(subcommandIndex + 1);
+  const subcommand = subcommandIndex < 0 ? "" : normalized[subcommandIndex];
+  if (subcommand === "difftool" && executionOptions.some((value) =>
+    value === "-x" || value.startsWith("-x") || value === "--extcmd" || value.startsWith("--extcmd="))) return true;
   if (executionOptions.some((value) =>
     value === "--ext-diff" ||
     value === "--textconv" ||
