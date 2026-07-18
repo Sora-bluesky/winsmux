@@ -257,7 +257,7 @@ Describe 'winsmux npm release package contract' {
         $installE2e | Should -Match '\[switch\]\$IncludeGitHubAccess'
         $installE2e | Should -Match 'if \(\$IncludeGitHubAccess -and \$isGitHubRunner\)'
         $installE2e | Should -Match '\$startInfo\.Environment\[''WINSMUX_INSTALL_E2E_GITHUB_ACCESS''\] = \$gitHubAccess'
-        $installE2e | Should -Match 'Invoke-IrmInstaller -SourceInstaller \$brokenInstaller -ServerDirectory \(Join-Path \$scratch ''pre-fix-server''\)\r?\n'
+        $installE2e | Should -Match 'Invoke-IrmInstaller -SourceInstaller \$brokenInstaller -ServerDirectory \(Join-Path \$scratch ''pre-fix-server''\) -IncludeTargetInstallerBootstrapMarker\r?\n'
         $installE2e | Should -Not -Match 'Invoke-IrmInstaller -SourceInstaller \$brokenInstaller[^\r\n]+-IncludeGitHubAccess'
         $installE2e | Should -Match 'Invoke-CapturedProcess -FilePath \$npmShim[^\r\n]+-IncludeGitHubAccess:\$isGitHubRunner'
         $installE2e | Should -Match 'Invoke-IrmInstaller -SourceInstaller \$installerPath[^\r\n]+-IncludeGitHubAccess:\$isGitHubRunner'
@@ -311,7 +311,8 @@ Describe 'winsmux npm release package contract' {
         $installE2e | Should -Match 'update could not replace a running native executable'
         $installE2e | Should -Match "if \(\`$Route -eq 'Direct' -and \`$isGitHubRunner\)"
         $installE2e | Should -Not -Match "if \(\`$Route -eq 'Direct'\) \{\s*\`$cmdFixture"
-        $installE2e | Should -Match "\`$env:WINSMUX_INTERNAL_TARGET_INSTALLER_BOOTSTRAPPED = '1'"
+        $installE2e | Should -Match "\`$startInfo.Environment\['WINSMUX_INTERNAL_TARGET_INSTALLER_BOOTSTRAPPED'\] = '1'"
+        $installE2e | Should -Match 'Invoke-IrmInstaller .* -IncludeTargetInstallerBootstrapMarker'
         $mainMarker = '# Main'
         $mainOffset = $installer.IndexOf($mainMarker, [System.StringComparison]::Ordinal)
         $mainOffset | Should -BeGreaterThan 0
@@ -433,6 +434,13 @@ param(
 
         $result.ExitCode | Should -Be 0
         $result.StdOut | Should -BeNullOrEmpty
+
+        $markerResult = Invoke-CapturedProcess -FilePath (Get-Command pwsh -ErrorAction Stop).Source -Arguments @(
+            '-NoProfile', '-Command',
+            '[Console]::Write([Environment]::GetEnvironmentVariable("WINSMUX_INTERNAL_TARGET_INSTALLER_BOOTSTRAPPED"))'
+        ) -IncludeTargetInstallerBootstrapMarker
+        $markerResult.ExitCode | Should -Be 0
+        $markerResult.StdOut | Should -Be '1'
     }
 
     It 'accepts an empty redirected profile after removing the managed block' {
