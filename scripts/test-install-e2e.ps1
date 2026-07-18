@@ -38,6 +38,16 @@ if ($Version -notmatch '^\d+\.\d+\.\d+(?:\.[0-9]+)?(?:-[0-9A-Za-z.-]+)?$') {
     throw "Invalid release version: $Version"
 }
 
+function ConvertTo-WinsmuxBinaryVersion {
+    param([Parameter(Mandatory = $true)][string]$ReleaseTag)
+
+    $normalizedTag = $ReleaseTag.Trim().TrimStart('v', 'V')
+    if ($normalizedTag -notmatch '^(?<binary>\d+\.\d+\.\d+)(?:\.\d+)?(?<suffix>-[0-9A-Za-z.-]+)?$') {
+        throw "Unsupported winsmux release tag format: $ReleaseTag"
+    }
+    return $Matches['binary'] + $Matches['suffix']
+}
+
 $scratch = if ([string]::IsNullOrWhiteSpace($ScratchRoot)) {
     $base = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [System.IO.Path]::GetTempPath() }
     Join-Path $base ("winsmux-install-e2e-" + [System.Guid]::NewGuid().ToString('N'))
@@ -333,11 +343,12 @@ if ($fragmentText -notmatch 'winsmux\.cmd' -or $fragmentText -notmatch 'launch -
 }
 
 $env:PATH = "$(Split-Path -Parent $wrapper);$(Split-Path -Parent $native);$env:PATH"
-$expectedNativeVersion = if ($isGitHubRunner -and -not [string]::IsNullOrWhiteSpace($env:WINSMUX_INSTALL_E2E_RELEASE_TAG)) {
-    $env:WINSMUX_INSTALL_E2E_RELEASE_TAG.TrimStart('v', 'V')
+$expectedReleaseTag = if ($isGitHubRunner -and -not [string]::IsNullOrWhiteSpace($env:WINSMUX_INSTALL_E2E_RELEASE_TAG)) {
+    $env:WINSMUX_INSTALL_E2E_RELEASE_TAG.Trim()
 } else {
-    $Version
+    "v$Version"
 }
+$expectedNativeVersion = ConvertTo-WinsmuxBinaryVersion -ReleaseTag $expectedReleaseTag
 $versionResult = Invoke-CapturedProcess -FilePath $wrapper -Arguments @('version')
 if ($versionResult.ExitCode -ne 0 -or $versionResult.StdOut -ne "winsmux $Version") {
     throw "installed wrapper version failed: exit=$($versionResult.ExitCode) output=$($versionResult.Combined)"
@@ -373,7 +384,7 @@ if ($doctorOutput -match 'winsmux:\s+NOT FOUND|winsmux-core\.ps1.*(?:not found|c
 }
 
 $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 10
-if ($manifest.profile -ne 'full' -or $manifest.version -ne $expectedNativeVersion -or $manifest.release_tag -ne "v$expectedNativeVersion") {
+if ($manifest.profile -ne 'full' -or $manifest.version -ne $expectedNativeVersion -or $manifest.release_tag -ne $expectedReleaseTag) {
     throw 'Installed profile manifest does not match the requested full release.'
 }
 
@@ -395,7 +406,7 @@ if ($Route -eq 'Direct' -and $isGitHubRunner) {
         if ($lockedNative.HasExited) { throw 'locked native fixture exited before update.' }
         $lockedUpdate = Invoke-CapturedProcess -FilePath $pwsh -Arguments @(
             '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $installedInstaller,
-            'update', '-ReleaseTag', "v$expectedNativeVersion", '-InstallProfile', 'full'
+            'update', '-ReleaseTag', $expectedReleaseTag, '-InstallProfile', 'full'
         ) -IncludeGitHubAccess:$isGitHubRunner
         if ($lockedUpdate.ExitCode -ne 0) {
             throw "update could not replace a running native executable:`n$($lockedUpdate.Combined)"
@@ -419,7 +430,7 @@ if ($Route -eq 'Direct' -and $isGitHubRunner) {
     }
     $cleanupUpdate = Invoke-CapturedProcess -FilePath $pwsh -Arguments @(
         '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $installedInstaller,
-        'update', '-ReleaseTag', "v$expectedNativeVersion", '-InstallProfile', 'full'
+        'update', '-ReleaseTag', $expectedReleaseTag, '-InstallProfile', 'full'
     ) -IncludeGitHubAccess:$isGitHubRunner
     if ($cleanupUpdate.ExitCode -ne 0) {
         throw "follow-up update could not clean rotation residue:`n$($cleanupUpdate.Combined)"

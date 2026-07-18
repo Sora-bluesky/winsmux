@@ -172,6 +172,19 @@ Describe 'winsmux npm release package contract' {
         $installE2e = Get-Content -LiteralPath $script:InstallE2ePath -Raw -Encoding UTF8
         $redirectedSmoke = Get-Content -LiteralPath $script:RedirectedInstallSmokePath -Raw -Encoding UTF8
 
+        $e2eTokens = $null
+        $e2eErrors = $null
+        $e2eAst = [System.Management.Automation.Language.Parser]::ParseInput($installE2e, [ref]$e2eTokens, [ref]$e2eErrors)
+        $e2eErrors.Count | Should -Be 0
+        $versionConverter = $e2eAst.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'ConvertTo-WinsmuxBinaryVersion'
+        }, $true)
+        $versionConverter | Should -Not -BeNullOrEmpty
+        . ([scriptblock]::Create($versionConverter.Extent.Text))
+        (ConvertTo-WinsmuxBinaryVersion -ReleaseTag 'v0.36.28') | Should -Be '0.36.28'
+        (ConvertTo-WinsmuxBinaryVersion -ReleaseTag 'v0.36.28.1') | Should -Be '0.36.28'
+
         $packageJson.description | Should -Match 'Windows npm install surface'
         $packageJson.private | Should -Be $false
         $packageJson.license | Should -Be 'Apache-2.0'
@@ -267,6 +280,8 @@ Describe 'winsmux npm release package contract' {
         $installE2e | Should -Match 'wrapper_uninstall_dispatch_verified'
         $installE2e | Should -Match 'wrapper_lifecycle_without_native_verified'
         $installE2e | Should -Match 'tagless_install_verified'
+        $installE2e | Should -Match '\$expectedReleaseTag'
+        $installE2e | Should -Match 'ConvertTo-WinsmuxBinaryVersion -ReleaseTag \$expectedReleaseTag'
         $installE2e | Should -Match 'Tagless direct install did not stay on the fixed main installer'
         $installE2e | Should -Match 'Tagless direct install replaced the fixed main scripts with the previous release scripts'
         $installer | Should -Match 'keepPipedMainScripts'
