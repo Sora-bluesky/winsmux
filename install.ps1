@@ -384,6 +384,10 @@ function Install-WinsmuxBinary {
     $localBin = Join-Path $HOME ".local/bin"
     $winsmuxExe = Join-Path $localBin "winsmux.exe"
     $headers = @{ "User-Agent" = "winsmux-installer/$VERSION" }
+    $e2eGitHubAccess = if ($installerE2e) { [string]$env:WINSMUX_INSTALL_E2E_GITHUB_ACCESS } else { '' }
+    if (-not [string]::IsNullOrWhiteSpace($e2eGitHubAccess)) {
+        $headers.Authorization = "Bearer $e2eGitHubAccess"
+    }
     $assetName = Get-PreferredReleaseAssetName
 
     try {

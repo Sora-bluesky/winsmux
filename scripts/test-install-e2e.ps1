@@ -84,7 +84,8 @@ function Invoke-CapturedProcess {
         [Parameter(Mandatory = $true)][string]$FilePath,
         [Parameter(Mandatory = $true)][string[]]$Arguments,
         [string]$WorkingDirectory = $repoRoot,
-        [ValidateRange(1, 1800)][int]$TimeoutSeconds = 900
+        [ValidateRange(1, 1800)][int]$TimeoutSeconds = 900,
+        [switch]$IncludeGitHubAccess
     )
 
     $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
@@ -104,10 +105,17 @@ function Invoke-CapturedProcess {
         'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'TEMP', 'TMP', 'LOCALAPPDATA', 'APPDATA',
         'npm_config_prefix', 'npm_config_cache', 'npm_config_userconfig',
         'WINSMUX_RELEASE_TAG', 'WINSMUX_INSTALL_PROFILE', 'WINSMUX_INSTALL_E2E',
-        'WINSMUX_INSTALL_E2E_RELEASE_TAG', 'WINSMUX_INSTALL_SOURCE_REF', 'WINSMUX_INSTALL_STATE_ROOT', 'GITHUB_ACTIONS'
+        'WINSMUX_INSTALL_E2E_RELEASE_TAG', 'WINSMUX_INSTALL_SOURCE_REF',
+        'WINSMUX_INSTALL_STATE_ROOT', 'GITHUB_ACTIONS'
     )) {
         $value = [Environment]::GetEnvironmentVariable($name)
         if ($null -ne $value) { $startInfo.Environment[$name] = $value }
+    }
+    if ($IncludeGitHubAccess) {
+        $gitHubAccess = [Environment]::GetEnvironmentVariable('WINSMUX_INSTALL_E2E_GITHUB_ACCESS')
+        if (-not [string]::IsNullOrWhiteSpace($gitHubAccess)) {
+            $startInfo.Environment['WINSMUX_INSTALL_E2E_GITHUB_ACCESS'] = $gitHubAccess
+        }
     }
 
     $process = [System.Diagnostics.Process]::Start($startInfo)
@@ -142,7 +150,8 @@ $installerPath = Join-Path $repoRoot 'install.ps1'
 function Invoke-IrmInstaller {
     param(
         [Parameter(Mandatory = $true)][string]$SourceInstaller,
-        [Parameter(Mandatory = $true)][string]$ServerDirectory
+        [Parameter(Mandatory = $true)][string]$ServerDirectory,
+        [switch]$IncludeGitHubAccess
     )
 
     New-Item -ItemType Directory -Path $ServerDirectory -Force | Out-Null
@@ -207,7 +216,7 @@ try {
         if ($port -notmatch '^\d+$') { throw "Loopback installer server returned an invalid port: $port" }
         $url = "http://127.0.0.1:$port/install.ps1"
         $command = "`$ErrorActionPreference = 'Stop'; irm '$url' | iex"
-        $result = Invoke-CapturedProcess -FilePath $pwsh -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $command)
+        $result = Invoke-CapturedProcess -FilePath $pwsh -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $command) -IncludeGitHubAccess:$IncludeGitHubAccess
         if (-not $server.WaitForExit(15000)) { throw 'Loopback installer server did not exit after serving install.ps1.' }
         $serverError = $server.StandardError.ReadToEnd().Trim()
         if ($server.ExitCode -ne 0) { throw "Loopback installer server failed: $serverError" }
@@ -226,11 +235,11 @@ if ($Route -eq 'DefectDetection') {
         throw 'Could not construct the pre-fix installer fixture.'
     }
     $broken = $source.Replace($anchor, $anchor + [Environment]::NewLine + [Environment]::NewLine + '    Download-File "winsmux.ps1" (Join-Path $BIN_DIR "winsmux.ps1")')
-    $binaryInstallCall = '    Install-WinsmuxBinary'
-    if ([regex]::Matches($broken, '(?m)^' + [regex]::Escape($binaryInstallCall) + '$').Count -ne 1) {
+    $binaryInstallCall = '(?m)^[ \t]*Install-WinsmuxBinary[ \t]*\r?$'
+    if ([regex]::Matches($broken, $binaryInstallCall).Count -ne 1) {
         throw 'Could not isolate the pre-fix download defect from release binary acquisition.'
     }
-    $broken = $broken.Replace($binaryInstallCall, '    Write-Status "Defect fixture skips release binary acquisition"')
+    $broken = [regex]::Replace($broken, $binaryInstallCall, '    Write-Status "Defect fixture skips release binary acquisition"')
     [System.IO.File]::WriteAllText($brokenInstaller, $broken, [System.Text.UTF8Encoding]::new($false))
     $result = Invoke-IrmInstaller -SourceInstaller $brokenInstaller -ServerDirectory (Join-Path $scratch 'pre-fix-server')
     if ($result.ExitCode -eq 0 -or $result.Combined -notmatch 'winsmux\.ps1' -or $result.Combined -notmatch '404|Not Found') {
@@ -261,9 +270,9 @@ if ($Route -eq 'Npm') {
     if ($npmInstall.ExitCode -ne 0) { throw "npm global install failed:`n$($npmInstall.Combined)" }
     $npmShim = Join-Path $npmPrefix 'winsmux.cmd'
     if (-not (Test-Path -LiteralPath $npmShim -PathType Leaf)) { throw "npm shim missing: $npmShim" }
-    $installResult = Invoke-CapturedProcess -FilePath $npmShim -Arguments @('install', '--profile', 'full')
+    $installResult = Invoke-CapturedProcess -FilePath $npmShim -Arguments @('install', '--profile', 'full') -IncludeGitHubAccess
 } else {
-    $installResult = Invoke-IrmInstaller -SourceInstaller $installerPath -ServerDirectory (Join-Path $scratch 'direct-server')
+    $installResult = Invoke-IrmInstaller -SourceInstaller $installerPath -ServerDirectory (Join-Path $scratch 'direct-server') -IncludeGitHubAccess
 }
 if ($installResult.ExitCode -ne 0) { throw "$Route full install failed:`n$($installResult.Combined)" }
 if ($installResult.Combined -match '\[winsmux\]\s+Failed to download\b') {

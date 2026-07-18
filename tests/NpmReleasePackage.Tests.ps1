@@ -229,6 +229,7 @@ Describe 'winsmux npm release package contract' {
         $installJob.Groups['body'].Value | Should -Not -Match 'runs-on:\s+windows-latest'
         $testWorkflow | Should -Match 'route:\s*\[Npm, Direct, DefectDetection\]'
         $testWorkflow | Should -Match 'scripts/test-install-e2e\.ps1 -Route "\$\{\{ matrix\.route \}\}"'
+        $testWorkflow | Should -Match 'WINSMUX_INSTALL_E2E_GITHUB_ACCESS:\s+\$\{\{ github\.token \}\}'
         $testWorkflow | Should -Match 'needs:[\s\S]*?- install-e2e[\s\S]*?needs\.install-e2e\.result'
         $installer | Should -Not -Match 'Download-File "winsmux\.ps1"'
         $downloadDeclarations = @([regex]::Matches($installer, '(?m)^\s*Download-(?:Optional)?File\s+"(?<path>[^"]+)"\s+(?<destination>[^\r\n]+)$') | ForEach-Object {
@@ -248,12 +249,20 @@ Describe 'winsmux npm release package contract' {
         $installE2e | Should -Match "ValidateSet\('Npm', 'Direct', 'DefectDetection'\)"
         $installE2e | Should -Match 'irm ''\$url'' \| iex'
         $installE2e | Should -Match 'WINSMUX_INSTALL_SOURCE_REF'
+        $installE2e | Should -Match 'WINSMUX_INSTALL_E2E_GITHUB_ACCESS'
+        $installE2e | Should -Match '\[switch\]\$IncludeGitHubAccess'
+        $installE2e | Should -Match '\$startInfo\.Environment\[''WINSMUX_INSTALL_E2E_GITHUB_ACCESS''\] = \$gitHubAccess'
+        $installE2e | Should -Match 'Invoke-IrmInstaller -SourceInstaller \$brokenInstaller -ServerDirectory \(Join-Path \$scratch ''pre-fix-server''\)\r?\n'
+        $installE2e | Should -Not -Match 'Invoke-IrmInstaller -SourceInstaller \$brokenInstaller[^\r\n]+-IncludeGitHubAccess'
+        $installE2e | Should -Match 'Invoke-CapturedProcess -FilePath \$npmShim[^\r\n]+-IncludeGitHubAccess'
+        $installE2e | Should -Match 'Invoke-IrmInstaller -SourceInstaller \$installerPath[^\r\n]+-IncludeGitHubAccess'
         $installE2e | Should -Match 'wrapper_launch_project_dir_verified'
         $installE2e | Should -Match 'WT settings: not found'
         $installE2e | Should -Match "wrapper.*doctor"
         $installE2e | Should -Match 'installer download failure'
         $installE2e | Should -Not -Match "\$installResult\.Combined -match '404\|Not Found\|Failed to download'"
         $installE2e | Should -Match 'Defect fixture skips release binary acquisition'
+        $installE2e | Should -Match "Install-WinsmuxBinary\[ \\t\]\*\\r\?\$"
         $installE2e | Should -Not -Match "\$result\.Combined -notmatch '404\|Not Found\|Failed to download'"
         $installE2e | Should -Match '\[ValidateRange\(1, 1800\)\]\[int\]\$TimeoutSeconds = 900'
         $installE2e | Should -Match '\$process\.Kill\(\$true\)'
@@ -268,6 +277,8 @@ Describe 'winsmux npm release package contract' {
         $redirectedSmoke | Should -Match 'install_owned_live_state_preserved'
         $installer | Should -Match 'WINSMUX_INSTALL_STATE_ROOT must be contained by the redirected HOME'
         $installer | Should -Match 'Redirected installer E2E mode only permits the install action'
+        $installer | Should -Match 'if \(\$installerE2e\) \{ \[string\]\$env:WINSMUX_INSTALL_E2E_GITHUB_ACCESS \} else \{ '''' \}'
+        $installer | Should -Match '\$headers\.Authorization = "Bearer \$e2eGitHubAccess"'
         $installer | Should -Match 'Get-InstallUserPath'
         $installer | Should -Match 'Get-InstallPowerShellProfilePath'
         $redirectedSmoke.IndexOf('$invariantErrors', [System.StringComparison]::Ordinal) | Should -BeLessThan $redirectedSmoke.IndexOf('$failureParts', [System.StringComparison]::Ordinal)

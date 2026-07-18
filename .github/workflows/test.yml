@@ -88,6 +88,7 @@ jobs:
         shell: pwsh
         env:
           WINSMUX_INSTALL_E2E_RELEASE_TAG: v0.36.28
+          WINSMUX_INSTALL_E2E_GITHUB_ACCESS: ${{ github.token }}
         run: pwsh -NoProfile -File scripts/test-install-e2e.ps1 -Route "${{ matrix.route }}" -RepositoryRoot . -SourceCommit "${{ github.sha }}"
 
   common-contract-drift:
