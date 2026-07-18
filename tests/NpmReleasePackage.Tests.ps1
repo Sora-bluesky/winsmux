@@ -255,11 +255,12 @@ Describe 'winsmux npm release package contract' {
         $installE2e | Should -Match '\$startInfo\.Arguments = ''/d /s /c "'''
         $installE2e | Should -Match 'WINSMUX_INSTALL_E2E_GITHUB_ACCESS'
         $installE2e | Should -Match '\[switch\]\$IncludeGitHubAccess'
+        $installE2e | Should -Match 'if \(\$IncludeGitHubAccess -and \$isGitHubRunner\)'
         $installE2e | Should -Match '\$startInfo\.Environment\[''WINSMUX_INSTALL_E2E_GITHUB_ACCESS''\] = \$gitHubAccess'
         $installE2e | Should -Match 'Invoke-IrmInstaller -SourceInstaller \$brokenInstaller -ServerDirectory \(Join-Path \$scratch ''pre-fix-server''\)\r?\n'
         $installE2e | Should -Not -Match 'Invoke-IrmInstaller -SourceInstaller \$brokenInstaller[^\r\n]+-IncludeGitHubAccess'
-        $installE2e | Should -Match 'Invoke-CapturedProcess -FilePath \$npmShim[^\r\n]+-IncludeGitHubAccess'
-        $installE2e | Should -Match 'Invoke-IrmInstaller -SourceInstaller \$installerPath[^\r\n]+-IncludeGitHubAccess'
+        $installE2e | Should -Match 'Invoke-CapturedProcess -FilePath \$npmShim[^\r\n]+-IncludeGitHubAccess:\$isGitHubRunner'
+        $installE2e | Should -Match 'Invoke-IrmInstaller -SourceInstaller \$installerPath[^\r\n]+-IncludeGitHubAccess:\$isGitHubRunner'
         $installE2e | Should -Match 'wrapper_launch_project_dir_verified'
         $installE2e | Should -Match 'wrapper_raw_command_forwarding_verified'
         $installE2e | Should -Match 'wrapper_update_dispatch_verified'
@@ -285,6 +286,8 @@ Describe 'winsmux npm release package contract' {
         $redirectedSmoke | Should -Match 'install_owned_live_state_preserved'
         $redirectedSmoke | Should -Match 'git -C \$repoRoot rev-parse HEAD'
         $redirectedSmoke | Should -Match '''-SourceCommit'', \$sourceCommit'
+        $redirectedSmoke | Should -Match "Where-Object \{ \`$_.Source -notmatch '\\\\WindowsApps\\\\' \}"
+        $redirectedSmoke | Should -Match 'requires a non-WindowsApps PowerShell 7 executable'
         $installer | Should -Match 'WINSMUX_INSTALL_STATE_ROOT must be contained by the redirected HOME'
         $installer | Should -Match 'Redirected installer E2E mode only permits the install action'
         $installer | Should -Match 'if \(\$installerE2e\) \{ \[string\]\$env:WINSMUX_INSTALL_E2E_GITHUB_ACCESS \} else \{ '''' \}'
@@ -390,6 +393,40 @@ param(
         }
 
         (Get-Content -LiteralPath $winsmuxExe -Raw -Encoding UTF8) | Should -Be 'matching-binary'
+    }
+
+    It 'does not forward GitHub access from redirected local smoke' {
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            $script:InstallE2ePath,
+            [ref]$tokens,
+            [ref]$parseErrors
+        )
+        @($parseErrors).Count | Should -Be 0
+        $functionAst = $ast.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -eq 'Invoke-CapturedProcess'
+        }, $true)
+        $functionAst | Should -Not -BeNullOrEmpty
+        . ([scriptblock]::Create($functionAst.Extent.Text))
+
+        $previousAccess = $env:WINSMUX_INSTALL_E2E_GITHUB_ACCESS
+        $isGitHubRunner = $false
+        $repoRoot = $script:RepoRoot
+        try {
+            $env:WINSMUX_INSTALL_E2E_GITHUB_ACCESS = 'local-sentinel-must-not-cross'
+            $result = Invoke-CapturedProcess -FilePath (Get-Command pwsh -ErrorAction Stop).Source -Arguments @(
+                '-NoProfile', '-Command',
+                '[Console]::Write([Environment]::GetEnvironmentVariable("WINSMUX_INSTALL_E2E_GITHUB_ACCESS"))'
+            ) -IncludeGitHubAccess
+        } finally {
+            $env:WINSMUX_INSTALL_E2E_GITHUB_ACCESS = $previousAccess
+        }
+
+        $result.ExitCode | Should -Be 0
+        $result.StdOut | Should -BeNullOrEmpty
     }
 
     It 'recovers an interrupted binary rotation and rolls back a failed replacement validation' {

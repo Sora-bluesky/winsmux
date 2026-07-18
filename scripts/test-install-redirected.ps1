@@ -131,7 +131,14 @@ $profileResidueRemoved = $false
 
 try {
     $env:WINSMUX_REDIRECT_NONCE = $nonce
-    $pwsh = (Get-Command pwsh -ErrorAction Stop | Select-Object -First 1).Source
+    $pwshCommand = Get-Command pwsh -All -ErrorAction Stop |
+        Where-Object { $_.Source -notmatch '\\WindowsApps\\' } |
+        Select-Object -First 1
+    if ($null -eq $pwshCommand) {
+        throw 'Redirected installer smoke requires a non-WindowsApps PowerShell 7 executable.'
+    }
+    $pwsh = $pwshCommand.Source
+    $env:PATH = "$(Split-Path -Parent $pwsh);$env:PATH"
     $sourceCommit = (& git -C $repoRoot rev-parse HEAD 2>$null | Out-String).Trim()
     if ($LASTEXITCODE -ne 0 -or $sourceCommit -notmatch '^[0-9a-fA-F]{40}$') {
         throw 'Redirected installer smoke requires a repository HEAD commit SHA.'

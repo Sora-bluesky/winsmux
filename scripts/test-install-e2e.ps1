@@ -120,7 +120,7 @@ function Invoke-CapturedProcess {
         $value = [Environment]::GetEnvironmentVariable($name)
         if ($null -ne $value) { $startInfo.Environment[$name] = $value }
     }
-    if ($IncludeGitHubAccess) {
+    if ($IncludeGitHubAccess -and $isGitHubRunner) {
         $gitHubAccess = [Environment]::GetEnvironmentVariable('WINSMUX_INSTALL_E2E_GITHUB_ACCESS')
         if (-not [string]::IsNullOrWhiteSpace($gitHubAccess)) {
             $startInfo.Environment['WINSMUX_INSTALL_E2E_GITHUB_ACCESS'] = $gitHubAccess
@@ -279,9 +279,9 @@ if ($Route -eq 'Npm') {
     if ($npmInstall.ExitCode -ne 0) { throw "npm global install failed:`n$($npmInstall.Combined)" }
     $npmShim = Join-Path $npmPrefix 'winsmux.cmd'
     if (-not (Test-Path -LiteralPath $npmShim -PathType Leaf)) { throw "npm shim missing: $npmShim" }
-    $installResult = Invoke-CapturedProcess -FilePath $npmShim -Arguments @('install', '--profile', 'full') -IncludeGitHubAccess
+    $installResult = Invoke-CapturedProcess -FilePath $npmShim -Arguments @('install', '--profile', 'full') -IncludeGitHubAccess:$isGitHubRunner
 } else {
-    $installResult = Invoke-IrmInstaller -SourceInstaller $installerPath -ServerDirectory (Join-Path $scratch 'direct-server') -IncludeGitHubAccess
+    $installResult = Invoke-IrmInstaller -SourceInstaller $installerPath -ServerDirectory (Join-Path $scratch 'direct-server') -IncludeGitHubAccess:$isGitHubRunner
 }
 if ($installResult.ExitCode -ne 0) { throw "$Route full install failed:`n$($installResult.Combined)" }
 if ($installResult.Combined -match '\[winsmux\]\s+Failed to download\b') {
@@ -372,7 +372,7 @@ if ($Route -eq 'Direct' -and $isGitHubRunner) {
         $lockedUpdate = Invoke-CapturedProcess -FilePath $pwsh -Arguments @(
             '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $installedInstaller,
             'update', '-ReleaseTag', "v$expectedNativeVersion", '-InstallProfile', 'full'
-        ) -IncludeGitHubAccess
+        ) -IncludeGitHubAccess:$isGitHubRunner
         if ($lockedUpdate.ExitCode -ne 0) {
             throw "update could not replace a running native executable:`n$($lockedUpdate.Combined)"
         }
@@ -396,7 +396,7 @@ if ($Route -eq 'Direct' -and $isGitHubRunner) {
     $cleanupUpdate = Invoke-CapturedProcess -FilePath $pwsh -Arguments @(
         '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $installedInstaller,
         'update', '-ReleaseTag', "v$expectedNativeVersion", '-InstallProfile', 'full'
-    ) -IncludeGitHubAccess
+    ) -IncludeGitHubAccess:$isGitHubRunner
     if ($cleanupUpdate.ExitCode -ne 0) {
         throw "follow-up update could not clean rotation residue:`n$($cleanupUpdate.Combined)"
     }
