@@ -4768,6 +4768,7 @@ function hasUnsupportedDirectProcessBoundary(command) {
       const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(normalizedStage));
       const executable = normalizeExecutableName(tokens[0] || "");
       if (!executable) continue;
+      if (isUnownedPowerShellStage(normalizedStage, tokens)) return true;
       if ((executable === "node" || executable === "nodejs") &&
           (hasUnresolvedPowerShellArgumentEvaluation(tokens) ||
            hasNodeStartupCodeConfiguration(tokens, source))) return true;
@@ -4844,12 +4845,14 @@ function hasUnownedCommandSequence(source) {
     splitCommandPipelineStages(segment).some((stage) => {
       const normalizedStage = unwrapPowerShellCommandWrapper(String(stage || "").trim());
       const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(normalizedStage));
-      return isUnownedPowerShellPreludeStage(normalizedStage, tokens) ||
+      const executable = normalizeExecutableName(tokens[0] || "");
+      return (!isOwnedDirectExecutable(executable) && executable !== "tee") ||
+        isUnownedPowerShellStage(normalizedStage, tokens) ||
         hasUnresolvedPowerShellArgumentEvaluation(tokens);
     }));
 }
 
-function isUnownedPowerShellPreludeStage(stage, tokens) {
+function isUnownedPowerShellStage(stage, tokens) {
   const source = String(stage || "").trim();
   const executable = normalizeExecutableName(tokens[0] || "");
   if (/^(?:\$|\[|@\(|\(|&\s|\.\s)/u.test(source)) return true;
