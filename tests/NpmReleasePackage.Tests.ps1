@@ -301,10 +301,11 @@ Describe 'winsmux npm release package contract' {
         $redirectedSmoke.IndexOf('$invariantErrors', [System.StringComparison]::Ordinal) | Should -BeLessThan $redirectedSmoke.IndexOf('$failureParts', [System.StringComparison]::Ordinal)
     }
 
-    It 're-executes the resolved target installer before applying an update' {
+    It 're-executes the resolved target installer before a pinned install or update' {
         $installer = Get-Content -LiteralPath $script:InstallerPath -Raw -Encoding UTF8
         $installer | Should -Match '(?s)\$release\s*=\s*Resolve-WinsmuxRelease.*?\$headers\s*=\s*Get-WinsmuxReleaseHeaders.*?browser_download_url\s+-Headers\s+\$headers'
         $installer | Should -Not -Match 'UpdateBootstrapComplete'
+        $installer | Should -Match 'WINSMUX_INTERNAL_TARGET_INSTALLER_BOOTSTRAPPED'
         $installer | Should -Match 'winsmux\.exe\.previous-'
         $installE2e = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'scripts/test-install-e2e.ps1') -Raw -Encoding UTF8
         $installE2e | Should -Match 'update could not replace a running native executable'
@@ -324,35 +325,38 @@ param(
     [string]`$ReleaseTag,
     [string]`$InstallProfile
 )
-@{ action = `$Action; release = `$ReleaseTag; profile = `$InstallProfile; bootstrapped = (`$env:WINSMUX_INTERNAL_UPDATE_BOOTSTRAPPED -eq '1') } |
+@{ action = `$Action; release = `$ReleaseTag; profile = `$InstallProfile; bootstrapped = (`$env:WINSMUX_INTERNAL_TARGET_INSTALLER_BOOTSTRAPPED -eq '1') } |
     ConvertTo-Json -Compress | Set-Content -LiteralPath '$markerLiteral' -Encoding UTF8
 "@
 
         . ([scriptblock]::Create($definitions))
         function Resolve-InstallProfile { return 'orchestra' }
         function Resolve-WinsmuxRelease {
-            Set-Variable -Name ResolvedReleaseTag -Value 'v9.9.9' -Scope 1
-            return [PSCustomObject]@{ tag_name = 'v9.9.9' }
+            throw 'A pinned release must not be replaced by a latest-release lookup.'
         }
+        $UseLatestRelease = $false
+        $ResolvedReleaseTag = 'v0.36.28'
         function Download-File {
             param($relativeUrl, $destPath)
             $relativeUrl | Should -Be 'install.ps1'
             Copy-Item -LiteralPath $targetInstaller -Destination $destPath -Force
         }
 
-        $env:WINSMUX_INTERNAL_UPDATE_BOOTSTRAPPED = 'outer-value'
-        try {
-            Invoke-UpdateBootstrap
-        } finally {
-            $env:WINSMUX_INTERNAL_UPDATE_BOOTSTRAPPED | Should -Be 'outer-value'
-            Remove-Item Env:WINSMUX_INTERNAL_UPDATE_BOOTSTRAPPED -ErrorAction SilentlyContinue
-        }
+        foreach ($targetAction in @('install', 'update')) {
+            $env:WINSMUX_INTERNAL_TARGET_INSTALLER_BOOTSTRAPPED = 'outer-value'
+            try {
+                Invoke-TargetInstallerBootstrap -TargetAction $targetAction
+            } finally {
+                $env:WINSMUX_INTERNAL_TARGET_INSTALLER_BOOTSTRAPPED | Should -Be 'outer-value'
+                Remove-Item Env:WINSMUX_INTERNAL_TARGET_INSTALLER_BOOTSTRAPPED -ErrorAction SilentlyContinue
+            }
 
-        $result = Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        $result.action | Should -Be 'update'
-        $result.release | Should -Be 'v9.9.9'
-        $result.profile | Should -Be 'orchestra'
-        $result.bootstrapped | Should -BeTrue
+            $result = Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            $result.action | Should -Be $targetAction
+            $result.release | Should -Be 'v0.36.28'
+            $result.profile | Should -Be 'orchestra'
+            $result.bootstrapped | Should -BeTrue
+        }
     }
 
     It 'repairs installer-managed state without release assets when the installed binary already matches' {

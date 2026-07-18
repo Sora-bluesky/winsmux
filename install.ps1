@@ -845,17 +845,21 @@ exit /b %ERRORLEVEL%
     }
 }
 
-function Invoke-UpdateBootstrap {
-    $resolvedInstallProfile = Resolve-InstallProfile -PreferExisting
-    Resolve-WinsmuxRelease | Out-Null
+function Invoke-TargetInstallerBootstrap {
+    param([Parameter(Mandatory = $true)][ValidateSet('install', 'update')][string]$TargetAction)
 
-    $bootstrapPath = Join-Path ([System.IO.Path]::GetTempPath()) ("winsmux-update-{0}.ps1" -f [Guid]::NewGuid().ToString('N'))
-    $bootstrapMarkerName = 'WINSMUX_INTERNAL_UPDATE_BOOTSTRAPPED'
+    $resolvedInstallProfile = Resolve-InstallProfile -PreferExisting:($TargetAction -eq 'update')
+    if ($UseLatestRelease) {
+        Resolve-WinsmuxRelease | Out-Null
+    }
+
+    $bootstrapPath = Join-Path ([System.IO.Path]::GetTempPath()) ("winsmux-target-installer-{0}.ps1" -f [Guid]::NewGuid().ToString('N'))
+    $bootstrapMarkerName = 'WINSMUX_INTERNAL_TARGET_INSTALLER_BOOTSTRAPPED'
     $previousBootstrapMarker = [Environment]::GetEnvironmentVariable($bootstrapMarkerName, 'Process')
     try {
         Download-File "install.ps1" $bootstrapPath
         [Environment]::SetEnvironmentVariable($bootstrapMarkerName, '1', 'Process')
-        & pwsh -NoProfile -ExecutionPolicy Bypass -File $bootstrapPath update `
+        & pwsh -NoProfile -ExecutionPolicy Bypass -File $bootstrapPath $TargetAction `
             -ReleaseTag $ResolvedReleaseTag `
             -InstallProfile $resolvedInstallProfile
         if ($LASTEXITCODE -ne 0) {
@@ -942,9 +946,11 @@ Profiles:
 # ---------------------------------------------------------------------------
 
 switch ($Action.ToLower()) {
-    "install"   { Invoke-Install }
+    "install"   {
+        if ($env:WINSMUX_INTERNAL_TARGET_INSTALLER_BOOTSTRAPPED -eq '1') { Invoke-Install } else { Invoke-TargetInstallerBootstrap -TargetAction install }
+    }
     "update"    {
-        if ($env:WINSMUX_INTERNAL_UPDATE_BOOTSTRAPPED -eq '1') { Invoke-Install -IsUpdate } else { Invoke-UpdateBootstrap }
+        if ($env:WINSMUX_INTERNAL_TARGET_INSTALLER_BOOTSTRAPPED -eq '1') { Invoke-Install -IsUpdate } else { Invoke-TargetInstallerBootstrap -TargetAction update }
     }
     "uninstall" { Invoke-Uninstall }
     "version"   { Write-Output "winsmux $VERSION" }
