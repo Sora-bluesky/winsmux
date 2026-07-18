@@ -8052,19 +8052,30 @@ function hasDirectGitProcessEnvironment(source) {
 
 function hasNodeStartupCodeConfiguration(tokens, source = "") {
   if (hasRuntimeNodeOptionsEnvironmentMutation(source)) return true;
-  const options = tokens.slice(1).map((value) => normalizeAgentValue(value));
-  return options.some((value) =>
-    value === "-r" || /^-r.+/u.test(value) ||
-    value === "--require" || value.startsWith("--require=") ||
-    value === "--import" || value.startsWith("--import=") ||
-    value === "--loader" || value.startsWith("--loader=") ||
-    value === "--experimental-loader" || value.startsWith("--experimental-loader=") ||
-    value === "--experimental-config-file" || value.startsWith("--experimental-config-file=") ||
-    value === "--experimental-default-config-file" ||
-    value === "--env-file" || value.startsWith("--env-file=") ||
-    value === "--env-file-if-exists" || value.startsWith("--env-file-if-exists=") ||
-    value === "--run" || value.startsWith("--run=") ||
-    value === "--test-reporter" || value.startsWith("--test-reporter="));
+  const inlineOptions = new Set(["-e", "-p", "-pe", "--eval", "--print"]);
+  const safeValueOptions = new Set(["--conditions", "--input-type"]);
+  const safeValuelessOptions = new Set([
+    "-c", "-h", "-v", "--check", "--help", "--no-warnings", "--trace-warnings", "--use-strict", "--version",
+  ]);
+  for (let index = 1; index < tokens.length; index += 1) {
+    const rawValue = stripOuterQuotes(String(tokens[index] || ""));
+    const value = normalizeAgentValue(rawValue);
+    if (value === "--") return false;
+    if (inlineOptions.has(value)) return index + 1 >= tokens.length;
+    if (["--eval=", "--eval:", "--print=", "--print:"].some((prefix) => value.startsWith(prefix))) {
+      return false;
+    }
+    if (safeValueOptions.has(value)) {
+      if (index + 1 >= tokens.length) return true;
+      index += 1;
+      continue;
+    }
+    if (["--conditions=", "--input-type="].some((prefix) => value.startsWith(prefix))) continue;
+    if (safeValuelessOptions.has(value)) continue;
+    if (value.startsWith("-") || value.startsWith("+")) return true;
+    return false;
+  }
+  return false;
 }
 
 function hasRuntimeNodeOptionsEnvironmentMutation(source) {

@@ -5321,6 +5321,8 @@ EOF
                 'node -pe "1 + 1"',
                 'node --input-type=commonjs -e "1 + 1"',
                 'node --conditions=winsmux -e "1 + 1"',
+                'node --no-warnings -e "1 + 1"',
+                'node --check companion-runtime.js',
                 'printf ''payload'' | node -e "process.stdin.resume()"',
                 'python -c "import subprocess; subprocess.run([''echo'', ''codex'', ''exec''])"',
                 'cmd /c echo call codex exec review'
@@ -5377,6 +5379,7 @@ EOF
                 'node --env-file-if-exists=./unreviewed.env -e ""',
                 'node --run review',
                 'node --test-reporter ./unreviewed-reporter.mjs --test',
+                'node --entry-url "data:text/javascript,import%20{spawnSync}%20from%20%27node:child_process%27;spawnSync(%27codex%27,[%27exec%27])"',
                 'NODE_OPTIONS="--import data:text/javascript,import{spawnSync}from''node:child_process'';spawnSync(''codex'',[''exec''])" node -e ""',
                 '$env:NODE_OPTIONS="--import=data:text/javascript,import{spawnSync}from%22node:child_process%22;spawnSync(%22codex%22,[%22exec%22])"; node -e ""',
                 'set "NODE_OPTIONS=--require=./unreviewed-preload.cjs" && node -e ""',
