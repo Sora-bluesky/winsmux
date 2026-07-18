@@ -4760,7 +4760,7 @@ function hasUnsupportedInlineInterpreterBoundary(command) {
 function hasUnsupportedDirectProcessBoundary(command) {
   const source = materializePowerShellComSpecAliases(String(command || ""));
   if (hasUnownedStdinScriptPipeline(source)) return true;
-  if (hasUnownedPowerShellCommandSequence(source)) return true;
+  if (hasUnownedCommandSequence(source)) return true;
   if (hasUnownedNodeCommandPrelude(source)) return true;
   for (const segment of splitCommandSegments(source)) {
     for (const stage of splitCommandPipelineStages(segment)) {
@@ -4837,14 +4837,27 @@ function hasUnsupportedDirectProcessBoundary(command) {
   return false;
 }
 
-function hasUnownedPowerShellCommandSequence(source) {
-  const segments = splitCommandSegments(String(source || ""));
+function hasUnownedCommandSequence(source) {
+  const segments = splitCommandSegments(stripHeredocBodies(String(source || "")));
   if (segments.length < 2) return false;
   return segments.slice(0, -1).some((segment) =>
     splitCommandPipelineStages(segment).some((stage) => {
       const normalizedStage = unwrapPowerShellCommandWrapper(String(stage || "").trim());
-      return /^(?:\$|\[|@\(|\()/u.test(normalizedStage);
+      const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(normalizedStage));
+      return isUnownedPowerShellPreludeStage(normalizedStage, tokens) ||
+        hasUnresolvedPowerShellArgumentEvaluation(tokens);
     }));
+}
+
+function isUnownedPowerShellPreludeStage(stage, tokens) {
+  const source = String(stage || "").trim();
+  const executable = normalizeExecutableName(tokens[0] || "");
+  if (/^(?:\$|\[|@\(|\(|&\s|\.\s)/u.test(source)) return true;
+  if (/^[a-z][a-z0-9]*-[a-z][a-z0-9-]*$/u.test(executable)) return true;
+  return new Set([
+    "clc", "cli", "iex", "ni", "ri", "sc", "set", "si",
+    "class", "filter", "for", "foreach", "function", "if", "param", "switch", "trap", "try", "using", "while",
+  ]).has(executable);
 }
 
 function hasUnownedNodeCommandPrelude(source) {

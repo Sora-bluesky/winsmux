@@ -5415,6 +5415,7 @@ EOF
                 '[Environment]::SetEnvironmentVariable(("NODE_"+"OPTIONS"),"--require=./unreviewed-preload.cjs",[EnvironmentVariableTarget]::Process); $p=[Diagnostics.Process]::Start("node",''-e ""''); $p.WaitForExit()',
                 'node -e "" $($d=[Delegate]::(("Create"+"Delegate"))([Action[string,string,System.EnvironmentVariableTarget]],[Environment],("Set"+"EnvironmentVariable")); $d.(("Inv"+"oke"))(("NODE_"+"OPTIONS"),"--require=./unreviewed-preload.cjs",[EnvironmentVariableTarget]::Process))',
                 'Set-Item Env:NODE_OPTIONS "--require=./unreviewed-preload.cjs"; node -e ""',
+                'Set-Item Env:NODE_OPTIONS "--require=./unreviewed-preload.cjs"; cmd /d /s /c "node -e 0"',
                 'node -e "process.env.NODE_OPTIONS=''--require=./unreviewed-preload.cjs''; require(''child_process'').spawnSync(''node'', [''-e'',''''])"',
                 'python -c "import os,subprocess; os.environ[''NODE_OPTIONS'']=''--require=./unreviewed-preload.cjs''; subprocess.run([''node'',''-e'',''''])"',
                 'printf ''require("child_process").spawnSync("codex",["exec"])\n'' | node -',
