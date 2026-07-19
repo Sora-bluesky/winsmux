@@ -1556,6 +1556,11 @@ function hasPythonGitLifecycleCommand(segment) {
     hasDynamicInterpreterLifecycleHint(source);
 }
 
+function hasPythonGitChildProcess(segment) {
+  return getInterpreterLiteralGitCommandsForKind(String(segment || ""), "python")
+    .some((command) => /^\s*git(?:\.exe)?\b/iu.test(command));
+}
+
 function hasNodeGitLifecycleCommand(segment) {
   const source = String(segment || "");
   return getInterpreterLiteralGitCommandsForKind(source, "node")
@@ -4776,7 +4781,8 @@ function hasUnsupportedInlineInterpreterBoundary(command) {
           hasDynamicInterpreterGitSubcommand(script))) return true;
       } else if (kind === "python") {
         const script = String(getInterpreterInlineSourceToken(tokens, kind) || "");
-        if (hasRuntimeGitEnvironmentMutation(script) ||
+        if (hasPythonGitChildProcess(script) ||
+            hasRuntimeGitEnvironmentMutation(script) ||
             hasRuntimeNodeOptionsEnvironmentMutation(script) ||
             hasUnsupportedPythonModuleLoad(script) ||
             hasUnsupportedPythonProcessConstruction(script) ||
@@ -9999,9 +10005,6 @@ function hasPersistentGitTargetMutation(command) {
 
 function hasRuntimeGitEnvironmentMutation(source) {
   const text = String(source || "");
-  if (hasPythonEnvironmentObjectWithGitChildProcess(text)) {
-    return true;
-  }
   const gitName = /\b(?:GIT_DIR|GIT_WORK_TREE)\b/iu;
   const environmentNameStates = getRuntimeEnvironmentMutationNameStates(text);
   if (environmentNameStates.hasGit || environmentNameStates.hasUnresolved) {
@@ -10034,21 +10037,6 @@ function hasRuntimeGitEnvironmentMutation(source) {
   return gitName.test(text) &&
     (/\b(?:Object\.(?:assign|defineProperty)|Reflect\.(?:set|deleteProperty))\s*\(\s*process\.env\b/iu.test(text) ||
      /\bos\.environ\.(?:update|setdefault|pop|__setitem__|__delitem__)\s*\(/iu.test(text));
-}
-
-function hasPythonEnvironmentObjectWithGitChildProcess(source) {
-  const text = String(source || "");
-  if (getPythonProcessCalls(text).length === 0) {
-    return false;
-  }
-  const environmentAliases = getEnvironmentObjectAliasHistories(text);
-  const hasEnvironmentObject = [...environmentAliases.aliases].some((alias) =>
-    new RegExp(`(?<![A-Za-z0-9_$])${escapeRegex(alias)}(?![A-Za-z0-9_$])`, "u").test(text));
-  if (!hasEnvironmentObject) {
-    return false;
-  }
-  return getInterpreterLiteralGitCommandsForKind(text, "python")
-    .some((command) => /^\s*git(?:\.exe)?\b/iu.test(command));
 }
 
 function hasDynamicPowerShellGitEnvironmentMutation(source) {

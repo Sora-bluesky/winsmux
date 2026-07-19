@@ -6092,7 +6092,7 @@ EOF
         foreach ($allowedCommand in @(
                 'node -e "require(''child_process'').execSync(''git commit -m no-options'')"',
                 'node -e "require(''child_process'').execSync(''git commit -m safe-options'', {encoding:''utf8'',stdio:''inherit''})"',
-                'python -c "import subprocess; subprocess.run([''git'',''commit'',''-m'',''safe-options''], check=True, text=True)"'
+                'python -c "import subprocess; subprocess.run([''echo'',''safe-options''], check=True, text=True)"'
             )) {
             $allowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $allowedCommand }
             $allowed.OutputObject | Should -BeNullOrEmpty
@@ -6159,7 +6159,7 @@ EOF
 
         foreach ($allowedCommand in @(
                 'node -e "process.env.FOO=''1''; require(''child_process'').execSync(''git commit -m non-git-env'')"',
-                'python -c "import os,subprocess; os.environ[''FOO'']=''1''; subprocess.run([''git'',''commit'',''-m'',''non-git-env''])"'
+                'python -c "import os,subprocess; os.environ[''FOO'']=''1''; subprocess.run([''echo'',''non-git-env''])"'
             )) {
             $allowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $allowedCommand }
             $allowed.OutputObject | Should -BeNullOrEmpty -Because $allowedCommand
@@ -6219,7 +6219,7 @@ python -c "import subprocess; subprocess.run(['git','commit','-m','python-commen
             & $script:AssertDenyResult -Result $result
         }
 
-        $safe = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'python -c "import subprocess; subprocess.Popen([''git'',''commit'',''-m'',''popen-default''])"' }
+        $safe = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'python -c "import subprocess; subprocess.Popen([''echo'',''popen-default''])"' }
         $safe.OutputObject | Should -BeNullOrEmpty -Because 'Popen defaults do not change the reviewed repository target'
     }
 
@@ -6313,7 +6313,7 @@ python -c "import subprocess; subprocess.run(['git','commit','-m','python-commen
 
         foreach ($allowedCommand in @(
                 'node -e "Object.assign(process.env,{FOO:''1''}); require(''child_process'').execSync(''git commit -m safe-object-assign'')"',
-                'python -c "import os,subprocess; os.environ.update({''FOO'':''1''}); subprocess.run([''git'',''commit'',''-m'',''safe-update''])"'
+                'python -c "import os,subprocess; os.environ.update({''FOO'':''1''}); subprocess.run([''echo'',''safe-update''])"'
             )) {
             $allowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $allowedCommand }
             $allowed.OutputObject | Should -BeNullOrEmpty -Because $allowedCommand
@@ -6366,7 +6366,7 @@ python -c "import subprocess; subprocess.run(['git','commit','-m','python-commen
 
         foreach ($allowedCommand in @(
                 'node -e "require(''child_process'').spawnSync(''git'', [''status''])"',
-                'python -c "import subprocess; subprocess.run([''git'',''branch'',''--list''])"',
+                'git branch --list',
                 'node -e "require(''child_process'').spawnSync(''gh'', [''pr'',''view'',''1200''])"',
                 'node -e "const id=''1200''; require(''child_process'').spawnSync(''gh'', [''issue'',''view'',id])"',
                 'python -c "import subprocess; subprocess.run([''gh'',''api'',''--method'',''GET'',''repos/x/y''])"'
@@ -6451,7 +6451,7 @@ python -c "import subprocess; subprocess.run(['git','commit','-m','python-commen
         foreach ($allowedCommand in @(
                 'node -e "require(''child_process'')[''spawnSync''](''git'', [''status''])"',
                 'node -e "const {spawnSync:s}=require(''child_process''); s(''gh'', [''issue'',''view'',''1200''])"',
-                'python -c "from subprocess import run as r; r([''git'',''branch'',''--list''])"'
+                'python -c "from subprocess import run as r; r([''echo'',''read-only''])"'
             )) {
             $allowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $allowedCommand }
             $allowed.OutputObject | Should -BeNullOrEmpty -Because $allowedCommand
@@ -6478,7 +6478,7 @@ python -c "import subprocess; subprocess.run(['git','commit','-m','python-commen
 
         foreach ($allowedCommand in @(
                 'node -e "const k=''FO''+''O''; process.env[k]=''1''; require(''child_process'').execSync(''git status --short'')"',
-                'python -c "import os,subprocess; k=''FO''+''O''; os.environ[k]=''1''; subprocess.run([''git'',''status'',''--short''])"'
+                'python -c "import os,subprocess; k=''FO''+''O''; os.environ[k]=''1''; subprocess.run([''echo'',''read-only''])"'
             )) {
             $allowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $allowedCommand }
             $allowed.OutputObject | Should -BeNullOrEmpty
@@ -6535,7 +6535,7 @@ python -c "import subprocess; subprocess.run(['git','commit','-m','python-commen
         foreach ($allowedCommand in @(
                 'node -e "function exec(x){return x}; exec(''git commit is text'')"',
                 'node -e "const cp=require(''child_process''); const s=cp.spawnSync; const t=s; t(''git'', [''status''])"',
-                'python -c "from subprocess import PIPE, run as r; r([''git'',''branch'',''--list''])"'
+                'python -c "from subprocess import PIPE, run as r; r([''echo'',''read-only''])"'
             )) {
             $allowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $allowedCommand }
             $allowed.OutputObject | Should -BeNullOrEmpty -Because $allowedCommand
@@ -6561,7 +6561,7 @@ python -c "import subprocess; subprocess.run(['git','commit','-m','python-commen
         }
 
         foreach ($allowedCommand in @(
-                'python -c "import os,subprocess; k=''''.join([''F'',''OO'']); os.environ[k]=''1''; subprocess.run([''git'',''status'',''--short''])"',
+                'python -c "import os,subprocess; k=''''.join([''F'',''OO'']); os.environ[k]=''1''; subprocess.run([''echo'',''read-only''])"',
                 'node -e "const k=''F''+''OO''; process.env[k]=''1''; require(''child_process'').execSync(''git status --short'')"'
             )) {
             $allowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $allowedCommand }
@@ -6665,8 +6665,8 @@ python -c "import subprocess; subprocess.run(['git','commit','-m','python-commen
         }
 
         foreach ($allowedCommand in @(
-                'python -c "import os,subprocess; k=''FO''+''O''; os.environ |= {k:''1''}; subprocess.run([''git'',''status'',''--short''])"',
-                'python -c "import os,subprocess; k=''FO''+''O''; e=os.environ; e[k]=''1''; subprocess.run([''git'',''status'',''--short''])"',
+                'python -c "import os,subprocess; k=''FO''+''O''; os.environ |= {k:''1''}; subprocess.run([''echo'',''read-only''])"',
+                'python -c "import os,subprocess; k=''FO''+''O''; e=os.environ; e[k]=''1''; subprocess.run([''echo'',''read-only''])"',
                 'node -e "const k=''FO''+''O''; const e=process.env; e[k]=''1''; require(''child_process'').execSync(''git status --short'')"'
             )) {
             $allowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $allowedCommand }
@@ -6744,9 +6744,9 @@ python -c "import subprocess; subprocess.run(['git','commit','-m','python-commen
 
         foreach ($allowedCommand in @(
                 'node -e "require(''child_process'').spawnSync(''git'', [''status''])"',
-                'python -c "import subprocess; subprocess.run([''git'',''status''])"',
-                'python -c "import os; os.system(''git status'')"',
-                'python -c "import subprocess; subprocess.run([''git'',''branch'',''--list''])"',
+                'git status',
+                'python -c "import os; os.system(''echo read-only'')"',
+                'python -c "import subprocess; subprocess.run([''echo'',''read-only''])"',
                 'python -c "import os; os.system(''echo read-only'')"',
                 'node -e "const {spawnSync:s}=require(''child_process''); const tool=''echo''; s(tool,[''exec''])"'
             )) {
@@ -6796,7 +6796,7 @@ python -c "import subprocess; subprocess.run(['git','commit','-m','python-commen
 
         foreach ($allowedCommand in @(
                 'node -e "let e=process.env; e={}; const k=''GI''+''T_DIR''; e[k]=''x''; require(''child_process'').execSync(''git status --short'')"',
-                'python -c "import os,subprocess; e=os.environ; e={}; k=''GI''+''T_DIR''; e[k]=''x''; subprocess.run([''git'',''status'',''--short''])"',
+                'python -c "import os,subprocess; e=os.environ; e={}; k=''GI''+''T_DIR''; e[k]=''x''; subprocess.run([''echo'',''read-only''])"',
                 'pwsh -Command ''Set-Item Env:FOO 1; git commit -m safe-static-foo''',
                 'pwsh -Command ''Set-Item -Path Env:FOO -Value 1; git commit -m safe-path-foo''',
                 'pwsh -Command ''si Env:FOO "static"; git commit -m safe-alias-foo''',
@@ -6914,7 +6914,7 @@ python -c "import subprocess; subprocess.run(['git','commit','-m','python-commen
 
         foreach ($allowedCommand in @(
                 'node -e "let e; ({env:e}=process); e={}; const k=''GIT_DIR''; e[k]=''x''; require(''child_process'').execSync(''git status --short'')"',
-                'python -c "import os,subprocess; e,other=os.environ,None; e={}; k=''GIT_DIR''; e[k]=''x''; subprocess.run([''git'',''status'',''--short''])"',
+                'python -c "import os,subprocess; e,other=os.environ,None; e={}; k=''GIT_DIR''; e[k]=''x''; subprocess.run([''echo'',''read-only''])"',
                 'node -e "const e=process.env; Object.assign(e,{FOO:''1''}); require(''child_process'').execSync(''git status --short'')"'
             )) {
             $allowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $allowedCommand }
@@ -7008,7 +7008,7 @@ python -c "import subprocess; subprocess.run(['git','commit','-m','python-commen
         }
 
         foreach ($allowedCommand in @(
-                'python -c "import subprocess; subprocess.run([''git'',''status''])"',
+                'git status',
                 'node -e "require(''child_process'').spawnSync(''git'', [''status''])"',
                 'node -e "const {spawnSync:s}=require(''child_process''); const args=[''--version'']; s(''codex'',args)"',
                 'python -c "import subprocess; args=[''codex'',''--version'']; subprocess.run(args)"'
@@ -7072,7 +7072,7 @@ python -c "import subprocess; subprocess.run(['git','commit','-m','python-commen
                 'node -e "require(''child_process'').execSync(''codex --version'')"',
                 'node -e "const {spawnSync:s}=require(''child_process''); const args=[''--version'']; s(''codex'',args)"',
                 'node -e "require(''child_process'').spawnSync(''git'', [''status''])"',
-                'python -c "import subprocess; subprocess.run([''git'',''status''])"'
+                'git status'
             )) {
             $allowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $allowedCommand }
             $allowed.OutputObject | Should -BeNullOrEmpty
@@ -7226,7 +7226,7 @@ python -c "import subprocess; subprocess.run(['git','commit','-m','python-commen
         foreach ($allowedCommand in @(
                 'node -e "require(''child_process'').spawnSync(''git'', [''status'',''--short''])"',
                 'node -e "require(''child_process'').execSync(''codex --version'')"',
-                'python -c "import subprocess; subprocess.run([''git'',''status''])"',
+                'git status',
                 'cmd /c "git status --short"'
             )) {
             $allowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $allowedCommand }
@@ -7267,7 +7267,7 @@ python -c "import subprocess; subprocess.run(['git','commit','-m','python-commen
         foreach ($allowedCommand in @(
                 'node -e "require(''child_process'').spawnSync(''git'', [''status'',''--short''])"',
                 'node -e "require(''child_process'').execSync(''codex --version'')"',
-                'python -c "import subprocess; subprocess.run([''git'',''status''])"',
+                'git status',
                 'cmd /c "git status --short"',
                 'cmd /c "echo read-only text"',
                 'node -e "console.log(''read-only text'')"',
@@ -7378,8 +7378,8 @@ python -c "import subprocess; subprocess.run(['git','commit','-m','python-commen
         foreach ($allowedCommand in @(
                 'node -e "console.log(Object.getOwnPropertyDescriptor({a:1},''a'').value)"',
                 'nodejs -e "require(''child_process'').spawnSync(''git'', [''status'',''--short''])"',
-                'py -c "import subprocess; subprocess.run([''git'',''status''])"',
-                'python3.12 -c "import subprocess; subprocess.run([''git'',''status''])"',
+                'py -c "import subprocess; subprocess.run([''echo'',''read-only''])"',
+                'python3.12 -c "import subprocess; subprocess.run([''echo'',''read-only''])"',
                 'node -e "require(''child_process'').spawnSync(''codex'', [''--version''])"',
                 'python -c "import subprocess; subprocess.run([''codex'',''--version''])"',
                 'python -c "print(''os.execlp codex exec'')"',
@@ -7701,8 +7701,8 @@ print(f().dumps({'ok':True}))"
                 'node -e "require(''child_process'').spawnSync(''echo'', [''read-only''])"',
                 'python -c "import json,types; box=types.SimpleNamespace(); box.module=json; print(box.module.dumps({''ok'':True}))"',
                 'node -e "require(''child_process'').spawnSync(''sh'', [''-c'', ''co""dex.cmd --version''])"',
-                'python -c "import subprocess; subprocess.run([''git'',''grep'',''-e'',''codex'',''--'',''.gitignore''])"',
-                'python -c "import subprocess; subprocess.run([''git'',''remote'',''show'',''-n'',''origin''])"',
+                'git grep -e codex -- .gitignore',
+                'git remote show -n origin',
                 'python -c "import sys,json; sys.modules[''json'']=json; print(sys.modules[''json''].dumps({''ok'':True}))"',
                 $safeReturnCommand
             )) {
@@ -7787,7 +7787,7 @@ print(f().dumps({'ok':True}))"
         }
     }
 
-    It 'TASK-783 C96 denies indirect operator mutation of protected Git environment state' {
+    It 'TASK-783 C96 defaults every statically resolved Python Git child process to deny' {
         $fixture = New-GateFixture
         $script:FixtureRoot = $fixture.Root
 
@@ -7806,7 +7806,12 @@ print(f().dumps({'ok':True}))"
                 'python -c "import os,subprocess,operator; vars(operator).get(''setitem'')(os.environ,''GIT_CONFIG_COUNT'',''1''); vars(operator).get(''setitem'')(os.environ,''GIT_CONFIG_KEY_0'',''core.fsmonitor''); vars(operator).get(''setitem'')(os.environ,''GIT_CONFIG_VALUE_0'',''codex exec --full-auto''); subprocess.run([''git'',''status'',''--short''])"',
                 'python -c "import os,subprocess,operator; f=operator.__dict__[''set''+''item'']; f(os.environ,''GIT_CONFIG_COUNT'',''1''); f(os.environ,''GIT_CONFIG_KEY_0'',''core.fsmonitor''); f(os.environ,''GIT_CONFIG_VALUE_0'',''codex exec --full-auto''); subprocess.run([''git'',''status'',''--short''])"',
                 'python -c "import os,subprocess,operator; f,_=(operator.setitem,None); f(os.environ,''GIT_CONFIG_COUNT'',''1''); f(os.environ,''GIT_CONFIG_KEY_0'',''core.fsmonitor''); f(os.environ,''GIT_CONFIG_VALUE_0'',''codex exec --full-auto''); subprocess.run([''git'',''status'',''--short''])"',
-                'python -c "import os,subprocess,operator; env=os.environ; launch=subprocess.run; f=operator.itemgetter(''setitem'')(operator.__dict__); f(env,''GIT_CONFIG_COUNT'',''1''); f(env,''GIT_CONFIG_KEY_0'',''core.fsmonitor''); f(env,''GIT_CONFIG_VALUE_0'',''codex exec --full-auto''); launch([''git'',''status'',''--short''])"'
+                'python -c "import os,subprocess,operator; env=os.environ; launch=subprocess.run; f=operator.itemgetter(''setitem'')(operator.__dict__); f(env,''GIT_CONFIG_COUNT'',''1''); f(env,''GIT_CONFIG_KEY_0'',''core.fsmonitor''); f(env,''GIT_CONFIG_VALUE_0'',''codex exec --full-auto''); launch([''git'',''status'',''--short''])"',
+                'python -c "import subprocess; subprocess.run([''git'',''status'',''--short''])"',
+                'python -c "import os,subprocess; e=getattr(os,''environ''); e[''GIT_CONFIG_COUNT'']=''1''; e[''GIT_CONFIG_KEY_0'']=''core.fsmonitor''; e[''GIT_CONFIG_VALUE_0'']=''codex exec --full-auto''; subprocess.run([''git'',''status'',''--short''])"',
+                'python -c "import os,subprocess; e=getattr(os,''en''+''viron''); e[''GIT_CONFIG_COUNT'']=''1''; e[''GIT_CONFIG_KEY_0'']=''core.fsmonitor''; e[''GIT_CONFIG_VALUE_0'']=''codex exec --full-auto''; subprocess.run([''git'',''status'',''--short''])"',
+                'python -c "import os,subprocess,operator; e=operator.attrgetter(''environ'')(os); e[''GIT_CONFIG_COUNT'']=''1''; e[''GIT_CONFIG_KEY_0'']=''core.fsmonitor''; e[''GIT_CONFIG_VALUE_0'']=''codex exec --full-auto''; subprocess.run([''git'',''status'',''--short''])"',
+                'python -c "import os as o,subprocess; e=o.environ; e[''GIT_CONFIG_COUNT'']=''1''; e[''GIT_CONFIG_KEY_0'']=''core.fsmonitor''; e[''GIT_CONFIG_VALUE_0'']=''codex exec --full-auto''; subprocess.run([''git'',''status'',''--short''])"'
             )) {
             $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
             & $script:AssertDenyResult -Result $result -Because $command
@@ -7815,8 +7820,9 @@ print(f().dumps({'ok':True}))"
         foreach ($command in @(
                 'python -c "import operator,os; print(getattr(operator,''setitem'').__name__); print(len(os.environ))"',
                 'python -c "import operator,os; getattr(operator,''setitem'')({},''key'',''value''); print(len(os.environ))"',
-                'python -c "import operator,subprocess; getattr(operator,''setitem'')({},''key'',''value''); subprocess.run([''git'',''status'',''--short''])"',
-                'python -c "import os,subprocess; print(len(os.environ)); subprocess.run([''echo'',''read-only''])"'
+                'python -c "import operator,subprocess; getattr(operator,''setitem'')({},''key'',''value''); subprocess.run([''echo'',''read-only''])"',
+                'python -c "import os,subprocess; print(len(os.environ)); subprocess.run([''echo'',''read-only''])"',
+                'git status --short'
             )) {
             $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
             $result.OutputObject | Should -BeNullOrEmpty -Because $command
