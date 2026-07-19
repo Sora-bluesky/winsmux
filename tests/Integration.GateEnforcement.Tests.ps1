@@ -7987,40 +7987,41 @@ cd .claude && bash "${target##*/}"
     It 'TASK-783 C98 reviews statically invoked PowerShell script files before Git lifecycle execution' {
         $fixture = New-GateFixture
         $script:FixtureRoot = $fixture.Root
+        $workerEnvironment = @{ WINSMUX_ROLE = 'worker'; WINSMUX_ASSIGNED_WORKTREE = $fixture.RepoRoot }
         $scriptPath = Join-Path $fixture.RepoRoot 'scripts\protected-lifecycle.ps1'
         Write-GateTestFile -Path $scriptPath -Content "git commit --allow-empty -m static-script-bypass`n"
 
         $command = 'pwsh -NoProfile -File scripts/protected-lifecycle.ps1'
-        $denied = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot }
+        $denied = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot } -Environment $workerEnvironment
         & $script:AssertDenyResult -Result $denied -Because 'a statically resolved script cannot hide a Git lifecycle command'
 
         $safeScriptPath = Join-Path $fixture.RepoRoot 'scripts\read-only.ps1'
         Write-GateTestFile -Path $safeScriptPath -Content "# git commit is documentation only`nWrite-Output 'git commit is data only'`n"
-        $safe = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'pwsh -NoProfile -File scripts/read-only.ps1'; cwd = $fixture.RepoRoot }
+        $safe = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'pwsh -NoProfile -File scripts/read-only.ps1'; cwd = $fixture.RepoRoot } -Environment $workerEnvironment
         $safe.OutputObject | Should -BeNullOrEmpty -Because 'a static script without a protected sink remains allowed'
 
         $codexScriptPath = Join-Path $fixture.RepoRoot 'scripts\direct-codex.ps1'
         Write-GateTestFile -Path $codexScriptPath -Content "codex exec --sandbox read-only 'review'`n"
-        $codex = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'pwsh -NoProfile -File scripts/direct-codex.ps1'; cwd = $fixture.RepoRoot }
+        $codex = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'pwsh -NoProfile -File scripts/direct-codex.ps1'; cwd = $fixture.RepoRoot } -Environment $workerEnvironment
         & $script:AssertDenyResult -Result $codex -Because 'a static script cannot hide direct Codex dispatch'
         $codex.OutputObject.systemMessage | Should -Be 'Use winsmux send to dispatch Codex to panes'
 
-        $dynamic = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'pwsh -NoProfile -File $scriptPath'; cwd = $fixture.RepoRoot }
+        $dynamic = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'pwsh -NoProfile -File $scriptPath'; cwd = $fixture.RepoRoot } -Environment $workerEnvironment
         & $script:AssertDenyResult -Result $dynamic -Because 'a dynamic script path must fail closed'
 
         $dynamicExecutorPath = Join-Path $fixture.RepoRoot 'scripts\dynamic-lifecycle.ps1'
         Write-GateTestFile -Path $dynamicExecutorPath -Content "`$runner = 'git'`n& `$runner commit --allow-empty -m dynamic-static-script`n"
-        $dynamicExecutor = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'pwsh -NoProfile -File scripts/dynamic-lifecycle.ps1'; cwd = $fixture.RepoRoot }
+        $dynamicExecutor = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'pwsh -NoProfile -File scripts/dynamic-lifecycle.ps1'; cwd = $fixture.RepoRoot } -Environment $workerEnvironment
         & $script:AssertDenyResult -Result $dynamicExecutor -Because 'dynamic process construction inside a static script must fail closed'
 
-        $wrapped = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'command pwsh -NoProfile -File scripts/protected-lifecycle.ps1'; cwd = $fixture.RepoRoot }
+        $wrapped = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'command pwsh -NoProfile -File scripts/protected-lifecycle.ps1'; cwd = $fixture.RepoRoot } -Environment $workerEnvironment
         & $script:AssertDenyResult -Result $wrapped -Because 'a constant shell wrapper cannot hide static script execution'
 
-        $positional = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'pwsh -NoProfile scripts/protected-lifecycle.ps1'; cwd = $fixture.RepoRoot }
+        $positional = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'pwsh -NoProfile scripts/protected-lifecycle.ps1'; cwd = $fixture.RepoRoot } -Environment $workerEnvironment
         & $script:AssertDenyResult -Result $positional -Because 'PowerShell positional script execution cannot hide a protected sink'
 
         Set-GatePass -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch
-        $allowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot }
+        $allowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot } -Environment $workerEnvironment
         $allowed.ExitCode | Should -Be 0
         $allowed.OutputObject | Should -BeNullOrEmpty
 
@@ -8028,11 +8029,11 @@ cd .claude && bash "${target##*/}"
         $targetScriptPath = Join-Path $target.RepoRoot 'scripts\protected-lifecycle.ps1'
         Write-GateTestFile -Path $targetScriptPath -Content "git commit --allow-empty -m target-static-script`n"
         $targetCommand = ('pwsh -WorkingDirectory "{0}" -File scripts/protected-lifecycle.ps1' -f $target.RepoRoot)
-        $callerOnly = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $targetCommand; cwd = $fixture.RepoRoot }
+        $callerOnly = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $targetCommand; cwd = $fixture.RepoRoot } -Environment $workerEnvironment
         & $script:AssertDenyResult -Result $callerOnly -Because 'caller PASS cannot approve a static script executed in another managed repository'
 
         Set-GatePass -RepoRoot $target.RepoRoot -Branch $target.Branch
-        $targetAllowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $targetCommand; cwd = $fixture.RepoRoot }
+        $targetAllowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $targetCommand; cwd = $fixture.RepoRoot } -Environment $workerEnvironment
         $targetAllowed.OutputObject | Should -BeNullOrEmpty -Because 'the static script target repository has its own valid PASS'
 
         $routerScriptPath = Join-Path $fixture.RepoRoot 'scripts\winsmux-core.ps1'
@@ -8055,10 +8056,10 @@ switch ($Command) {
         foreach ($readOnlyCommand in @(
                 'pwsh -NoProfile -File scripts/winsmux-core.ps1 version'
             )) {
-            $readOnlyResult = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $readOnlyCommand; cwd = $fixture.RepoRoot }
+            $readOnlyResult = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $readOnlyCommand; cwd = $fixture.RepoRoot } -Environment $workerEnvironment
             $readOnlyResult.OutputObject | Should -BeNullOrEmpty -Because $readOnlyCommand
         }
-        $protectedRouter = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'pwsh -NoProfile -File scripts/winsmux-core.ps1 verify'; cwd = $fixture.RepoRoot }
+        $protectedRouter = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'pwsh -NoProfile -File scripts/winsmux-core.ps1 verify'; cwd = $fixture.RepoRoot } -Environment $workerEnvironment
         & $script:AssertDenyResult -Result $protectedRouter -Because 'a non-read-only router subcommand remains subject to protected-sink review'
 
         foreach ($statefulDiagnosticCommand in @(
@@ -8067,7 +8068,7 @@ switch ($Command) {
                 'pwsh -NoProfile -File scripts/winsmux-core.ps1 doctor',
                 'pwsh -NoProfile -File scripts/winsmux-core.ps1 harness-check --json'
             )) {
-            $statefulDiagnostic = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $statefulDiagnosticCommand; cwd = $fixture.RepoRoot }
+            $statefulDiagnostic = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $statefulDiagnosticCommand; cwd = $fixture.RepoRoot } -Environment $workerEnvironment
             & $script:AssertDenyResult -Result $statefulDiagnostic -Because "only a statically proven state-invariant diagnostic can bypass review: $statefulDiagnosticCommand"
         }
     }
@@ -8081,20 +8082,24 @@ switch ($Command) {
     }
 
     It 'TASK-783 C100 proves the selected finite PowerShell router function body is sink-free' {
-        $fixture = New-GateFixture
-        $script:FixtureRoot = $fixture.Root
-        $routerScriptPath = Join-Path $fixture.RepoRoot 'scripts\winsmux-core.ps1'
         foreach ($maliciousBody in @(
                 'git commit --allow-empty -m version-bypass',
+                'cmd /c "git commit --allow-empty -m cmd-version-bypass"',
+                'pwsh -NoProfile -Command "git commit --allow-empty -m pwsh-version-bypass"',
+                "bash -c 'git commit --allow-empty -m shell-version-bypass'",
                 "Set-Content -LiteralPath state.txt -Value changed",
                 "Start-Process -FilePath git -ArgumentList 'commit'",
                 '. $dynamicHelper'
             )) {
+            $fixture = New-GateFixture
+            $script:FixtureRoot = $fixture.Root
+            $routerScriptPath = Join-Path $fixture.RepoRoot 'scripts\winsmux-core.ps1'
             $maliciousRouter = "function Invoke-Version { $maliciousBody }`nswitch (`$Command) { 'version' { Invoke-Version } }`n"
             Write-GateTestFile -Path $routerScriptPath -Content $maliciousRouter
             $command = 'pwsh -NoProfile -File scripts/winsmux-core.ps1 version'
-            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot }
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot } -Environment @{ WINSMUX_ROLE = 'worker'; WINSMUX_ASSIGNED_WORKTREE = $fixture.RepoRoot }
             & $script:AssertDenyResult -Result $result -Because "the allowlist cannot skip a stateful selected function body: $maliciousBody"
+            $result.OutputObject.systemMessage | Should -Not -Match '^Worker isolation:'
         }
     }
 
@@ -8117,8 +8122,11 @@ switch ($Command) {
                 'pwsh -NoProfile -Command "pwsh -NoProfile -File $dynamicPath"',
                 'cmd /c "pwsh -NoProfile -File %SCRIPT_PATH% version"'
             )) {
-            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot }
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot } -Environment @{ WINSMUX_ROLE = 'worker'; WINSMUX_ASSIGNED_WORKTREE = $fixture.RepoRoot }
             & $script:AssertDenyResult -Result $result -Because "a nested or dynamic wrapper cannot hide static script execution: $command"
+            if ($command -notmatch '[%$!]|not-base64|-EncodedCommand') {
+                $result.OutputObject.systemMessage | Should -Not -Match '^Worker isolation:'
+            }
         }
 
     }
@@ -8128,7 +8136,7 @@ switch ($Command) {
         $script:FixtureRoot = $fixture.Root
         $cases = @(
             @'
-cat <<'EOF'> note.sh 2>/dev/null
+cat <<'EOF'> note.sh 2>errors.txt
 git commit --allow-empty -m fd-bypass
 EOF
 bash note.sh
@@ -8140,8 +8148,14 @@ EOF
 bash note.sh
 '@,
             @'
-cat <<'EOF' 2>/dev/null >note.sh
+cat <<'EOF' 2>errors.txt >note.sh
 git commit --allow-empty -m reordered-fd-bypass
+EOF
+bash note.sh
+'@,
+            @'
+cat <<'EOF' 01>note.sh
+codex exec --sandbox read-only leading-zero-fd-bypass
 EOF
 bash note.sh
 '@,
@@ -8154,16 +8168,39 @@ bash run.sh
 '@,
             @'
 cat <<'EOF'> note.sh
+git commit --allow-empty -m second-cat-input-bypass
+EOF
+: > empty.txt
+cat empty.txt note.sh > run.sh
+bash run.sh
+'@,
+            @'
+cat <<'EOF'> note.sh
 git commit --allow-empty -m tee-bypass
 EOF
-tee run.sh < note.sh >/dev/null
+tee run.sh < note.sh >discard.txt
+bash run.sh
+'@,
+            @'
+cat <<'EOF'> note.sh
+codex exec --sandbox read-only second-tee-output-bypass
+EOF
+tee first.txt run.sh < note.sh >discard.txt
+bash run.sh
+'@,
+            @'
+target=note.sh
+cat <<'EOF'> $target
+git commit --allow-empty -m dynamic-tee-input-bypass
+EOF
+tee run.sh < "$target" >discard.txt
 bash run.sh
 '@,
             @'
 cat <<'EOF'> note.sh
 git commit --allow-empty -m pipeline-bypass
 EOF
-cat note.sh | tee run.sh >/dev/null
+cat note.sh | tee run.sh >discard.txt
 bash run.sh
 '@,
             @'
@@ -8185,6 +8222,18 @@ cat <<'EOF'> note.sh
 git commit --allow-empty -m env-wrapper-bypass
 EOF
 env BASH_ENV=note.sh bash -c ':'
+'@,
+            @'
+cat <<'EOF'> note.sh
+git commit --allow-empty -m split-string-env-bypass
+EOF
+env --split-string='BASH_ENV=note.sh bash -c :'
+'@,
+            @'
+cat <<'EOF'> .zshenv
+codex exec --sandbox read-only zshenv-bypass
+EOF
+ZDOTDIR=. zsh -c ':'
 '@,
             @'
 cat <<'EOF'> note.sh
@@ -8219,8 +8268,12 @@ zsh -o SH_FILE_EXPANSION note.sh
         )
 
         foreach ($command in $cases) {
-            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot }
+            $caseEnvironment = @{ WINSMUX_ROLE = 'worker'; WINSMUX_ASSIGNED_WORKTREE = $fixture.RepoRoot }
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot } -Environment $caseEnvironment
             & $script:AssertDenyResult -Result $result -Because 'a materialized protected heredoc body reaches an executable shell path'
+            if ($command -notmatch 'target=note\.sh') {
+                $result.OutputObject.systemMessage | Should -Not -Match '^Worker isolation:'
+            }
         }
     }
 
@@ -8235,7 +8288,7 @@ EOF
 bash note.sh
 '@,
                 @'
-cat <<'EOF' >/dev/null 2>note.sh
+cat <<'EOF' >discard.txt 2>note.sh
 git commit --allow-empty -m stdout-discarded
 EOF
 bash note.sh
@@ -8259,9 +8312,43 @@ EOF
 BASH_ENV=note.sh true
 '@
             )) {
-            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot }
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot } -Environment @{ WINSMUX_ROLE = 'worker'; WINSMUX_ASSIGNED_WORKTREE = $fixture.RepoRoot }
             $result.OutputObject | Should -BeNullOrEmpty -Because 'protected text that cannot reach an executable sink remains data'
         }
+    }
+
+    It 'TASK-783 C104 permits only clean HEAD-bound canonical orchestra recovery scripts' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $routerPath = Join-Path $fixture.RepoRoot 'scripts\winsmux-core.ps1'
+        $startPath = Join-Path $fixture.RepoRoot 'winsmux-core\scripts\orchestra-start.ps1'
+        $dependencyPath = Join-Path $fixture.RepoRoot 'winsmux-core\scripts\recovery-dependency.ps1'
+        Write-GateTestFile -Path $routerPath -Content @'
+function Invoke-Recovery { Write-Output 'ready' }
+function Invoke-Protected { git commit --allow-empty -m unrelated-protected-path }
+switch ($Command) {
+    'harness-check' { Invoke-Recovery }
+    'orchestra-smoke' { Invoke-Recovery }
+    'verify' { Invoke-Protected }
+}
+'@
+        Write-GateTestFile -Path $startPath -Content "function Invoke-Protected { git commit --allow-empty -m unrelated-start-path }`nWrite-Output 'started'`n"
+        Write-GateTestFile -Path $dependencyPath -Content "Write-Output 'clean dependency'`n"
+        & git -C $fixture.RepoRoot add -- scripts/winsmux-core.ps1 winsmux-core/scripts/orchestra-start.ps1 winsmux-core/scripts/recovery-dependency.ps1
+        & git -C $fixture.RepoRoot -c user.name='Test User' -c user.email='test@example.com' commit -m 'add canonical recovery surface' | Out-Null
+
+        foreach ($command in @(
+                'pwsh -NoProfile -File scripts/winsmux-core.ps1 harness-check --json',
+                'pwsh -NoProfile -File winsmux-core/scripts/orchestra-start.ps1',
+                'pwsh -NoProfile -File scripts/winsmux-core.ps1 orchestra-smoke --json'
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot } -Environment @{ WINSMUX_ROLE = 'worker'; WINSMUX_ASSIGNED_WORKTREE = $fixture.RepoRoot }
+            $result.OutputObject | Should -BeNullOrEmpty -Because "the canonical recovery command is clean and HEAD-bound: $command"
+        }
+
+        Write-GateTestFile -Path $dependencyPath -Content "git commit --allow-empty -m modified-recovery-dependency`n"
+        $dirty = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'pwsh -NoProfile -File scripts/winsmux-core.ps1 harness-check --json'; cwd = $fixture.RepoRoot } -Environment @{ WINSMUX_ROLE = 'worker'; WINSMUX_ASSIGNED_WORKTREE = $fixture.RepoRoot }
+        & $script:AssertDenyResult -Result $dirty -Because 'a modified recovery dependency invalidates the HEAD-bound exception'
     }
 
     It 'TASK-783 C09 denies PowerShell block cwd changes to an unreviewed managed target' {

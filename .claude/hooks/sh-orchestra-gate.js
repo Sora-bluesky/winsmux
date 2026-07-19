@@ -391,7 +391,7 @@ function getExecutableHeredocBodies(command) {
 function getStaticHeredocOutputTarget(commandLine) {
   const targets = [...String(commandLine || "").matchAll(
     /(?<![<>])([0-9]*)>>?(?![>&])[ \t]*(?:'([^']+)'|"([^"$\x60]+)"|([^\s;&|]+))/gu,
-  )].filter((match) => !match[1] || match[1] === "1");
+  )].filter((match) => !match[1] || Number.parseInt(match[1], 10) === 1);
   if (targets.length === 0) return "";
   const match = targets[targets.length - 1];
   const target = stripOuterQuotes(match[2] || match[3] || match[4] || "").trim();
@@ -442,21 +442,17 @@ function doesCommandExecuteStaticScriptPath(command, expectedPath, initialCwd = 
         continue;
       }
       if (isShellCommandExecutable(executable)) {
-        const startupAssignments = rawTokens
-          .map((token) => stripOuterQuotes(token))
-          .map((token) => /^(?:BASH_ENV|ENV)=(.*)$/u.exec(token))
-          .filter(Boolean)
-          .map((match) => stripOuterQuotes(match[1] || ""));
-        if (startupAssignments.some((value) => !value || matchesKnownPath(value))) {
+        const startupFiles = getShellStartupFileCandidates(rawTokens, executable);
+        if (startupFiles.some((value) => !value || value.includes("\0") || matchesKnownPath(value))) {
           return true;
         }
       }
       if (executable === "cat") {
-        const source = execution.tokens.slice(1).find((token) => {
+        const sources = execution.tokens.slice(1).filter((token) => {
           const value = stripOuterQuotes(token);
           return value && !value.startsWith("-") && !/^[<>]/u.test(value);
         });
-        const carriesKnownBody = Boolean(source && matchesKnownPath(source));
+        const carriesKnownBody = sources.some((source) => matchesKnownPath(source));
         if (carriesKnownBody) {
           const destination = getStaticHeredocOutputTarget(stage);
           if (destination) rememberPath(destination);
@@ -464,13 +460,13 @@ function doesCommandExecuteStaticScriptPath(command, expectedPath, initialCwd = 
         }
       } else if (executable === "tee") {
         const inputTarget = getStaticShellInputTarget(stage);
-        const carriesKnownBody = pipelineCarriesKnownBody || Boolean(inputTarget && matchesKnownPath(inputTarget));
+        const carriesKnownBody = pipelineCarriesKnownBody ||
+          Boolean(inputTarget && (inputTarget.includes("\0") || matchesKnownPath(inputTarget)));
         if (carriesKnownBody) {
           for (const token of execution.tokens.slice(1)) {
             const value = stripOuterQuotes(token);
             if (!value || value.startsWith("-") || /^[<>]/u.test(value) || value === inputTarget) continue;
             rememberPath(value);
-            break;
           }
           pipelineCarriesKnownBody = true;
         }
@@ -494,8 +490,47 @@ function getStaticShellInputTarget(commandLine) {
   if (targets.length === 0) return "";
   const match = targets[targets.length - 1];
   const target = stripOuterQuotes(match[1] || match[2] || match[3] || "").trim();
-  if (!target || /[$%\x60*?\[\]{}\0]/u.test(target)) return "";
+  const exactShellVariable = /^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})$/u.test(target);
+  if (!target) return "";
+  if (!exactShellVariable && /[$%\x60*?\[\]{}\0]/u.test(target)) return "\0unresolved-shell-input";
   return target;
+}
+
+function getShellStartupFileCandidates(rawTokens, executable) {
+  const expandedTokens = [...rawTokens];
+  for (let index = 0; index < rawTokens.length; index += 1) {
+    const rawToken = stripOuterQuotes(rawTokens[index]);
+    const normalized = normalizeAgentValue(rawToken);
+    let splitValue = "";
+    if ((normalized === "-s" || normalized === "--split-string") && index + 1 < rawTokens.length) {
+      splitValue = stripOuterQuotes(rawTokens[index + 1]);
+    } else if (normalized.startsWith("--split-string=")) {
+      splitValue = rawToken.slice(rawToken.indexOf("=") + 1);
+    } else if (/^-s[\s\S]+/iu.test(rawToken)) {
+      splitValue = rawToken.slice(2);
+    }
+    if (splitValue) expandedTokens.push(...tokenizeCommandLine(splitValue));
+  }
+
+  const startupFiles = [];
+  for (const rawToken of expandedTokens) {
+    const token = stripOuterQuotes(rawToken);
+    const assignment = /^(BASH_ENV|ENV|ZDOTDIR)=(.*)$/u.exec(token);
+    if (!assignment) continue;
+    const name = assignment[1];
+    const value = stripOuterQuotes(assignment[2] || "");
+    if (name === "ZDOTDIR") {
+      if (executable !== "zsh" && executable !== "zsh.exe") continue;
+      if (!value || isDynamicStdinScriptPath(value)) {
+        startupFiles.push("\0unresolved-zdotdir");
+      } else {
+        startupFiles.push(path.posix.join(value.replace(/\\/gu, "/"), ".zshenv"));
+      }
+      continue;
+    }
+    startupFiles.push(value || "\0unresolved-shell-startup-environment");
+  }
+  return startupFiles;
 }
 
 function normalizeStaticScriptPathToken(value) {
@@ -701,6 +736,14 @@ function getStaticInvokedScriptEvidence(command, baseCwd, depth = 0) {
           continue;
         }
         const source = fs.readFileSync(scriptPath, "utf8").replace(/^\uFEFF/u, "");
+        if (isHeadBoundCanonicalOrchestraRecoveryInvocation(
+          tokens,
+          fileArgument,
+          scriptPath,
+          scriptRepoRoot,
+        )) {
+          continue;
+        }
         const knownReadOnlyState = getKnownReadOnlyPowerShellScriptInvocationState(
           tokens,
           fileArgument,
@@ -758,8 +801,41 @@ function getKnownReadOnlyPowerShellScriptInvocationState(tokens, fileArgument, s
   const body = bodies[0];
   const protectedEvidence = getStaticScriptProtectedEvidence(body, path.dirname(scriptPath));
   if (protectedEvidence.unresolved || protectedEvidence.commands.length > 0) return "unsafe";
+  if (isReviewGatedCommand(body) || isDirectCodexDispatch(body)) return "unsafe";
   const mutatesState = /(?:^|[;\r\n])\s*(?:&\s*)?(?:git|gh|codex|set-content|add-content|out-file|new-item|remove-item|move-item|copy-item|rename-item|set-itemproperty|new-itemproperty|remove-itemproperty|start-process|saps|invoke-expression|iex|set-alias|new-alias|reg(?:\.exe)?)\b|(?:^|[;\r\n])\s*\.\s+[^\r\n]+|&\s*\$[A-Za-z_]/imu.test(body);
   return mutatesState ? "unsafe" : "safe";
+}
+
+function isHeadBoundCanonicalOrchestraRecoveryInvocation(tokens, fileArgument, scriptPath, repoRoot) {
+  if (fileArgument.valueIndex < 0) return false;
+  const relativePath = path.relative(repoRoot, scriptPath).replace(/\\/gu, "/").toLowerCase();
+  const args = tokens.slice(fileArgument.valueIndex + 1).map((token) => normalizeAgentValue(stripOuterQuotes(token)));
+  if (args.some((token) => /[$%\x60;&|{}\0]/u.test(token))) return false;
+  const matchesRouterRecovery = relativePath === "scripts/winsmux-core.ps1" && (
+    (args.length === 2 && args[0] === "harness-check" && args[1] === "--json") ||
+    (args.length === 2 && args[0] === "orchestra-smoke" && args[1] === "--json")
+  );
+  const matchesStartRecovery = relativePath === "winsmux-core/scripts/orchestra-start.ps1" && args.length === 0;
+  if (!matchesRouterRecovery && !matchesStartRecovery) return false;
+  try {
+    const status = execFileSync(
+      "git",
+      [
+        "-C",
+        repoRoot,
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=all",
+        "--",
+        "scripts/winsmux-core.ps1",
+        "winsmux-core/scripts",
+      ],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5000 },
+    );
+    return status.trim() === "";
+  } catch {
+    return false;
+  }
 }
 
 function getStaticScriptProtectedEvidence(source, scriptCwd) {
