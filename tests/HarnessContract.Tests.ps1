@@ -1359,6 +1359,12 @@ function Get-BridgeSettings {
 }
 '@
 
+            Write-TestFileWithCmd -Path (Join-Path $scriptsDir 'orchestra-start.ps1') -Content "Write-Output 'canonical recovery fixture'`n"
+
+            & git -C $fixtureRoot init | Out-Null
+            & git -C $fixtureRoot add -- winsmux-core/scripts/settings.ps1 winsmux-core/scripts/orchestra-start.ps1
+            & git -C $fixtureRoot -c user.name='Test User' -c user.email='test@example.com' commit -m 'add canonical recovery fixture' | Out-Null
+
             Write-TestFileWithCmd -Path (Join-Path $fakeBinDir 'winsmux.cmd') -Content @'
 @echo off
 if "%1"=="has-session" exit /b 1

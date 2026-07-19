@@ -353,6 +353,7 @@ function getExecutableHeredocBodies(command) {
     }
 
     const declarationPattern = /(?:(?<![A-Za-z0-9_])[0-9]+)?<<(?!<)-?\s*(['"]?)[A-Za-z_][A-Za-z0-9_]*\1/gu;
+    updateStaticShellVariableAssignments(commandLine.slice(0, declarations[0].index), staticVariables);
     const executableFds = new Set(declarations
       .map((declaration) => declaration[1] || "0")
       .filter((fd) => hasExecutableHeredocConsumer(commandLine, declarationPattern, fd)));
@@ -405,9 +406,11 @@ function getStaticHeredocOutputTarget(commandLine, staticVariables = new Map()) 
   const match = targets[targets.length - 1];
   const rawTarget = stripOuterQuotes(match.value).trim();
   const variableName = getShellScriptVariableName(rawTarget);
-  const target = variableName && staticVariables.has(variableName)
-    ? staticVariables.get(variableName)
-    : rawTarget;
+  const hasDynamicExpansion = /[$%\x60*?\[\]{}\0]/u.test(rawTarget);
+  if (hasDynamicExpansion && (!variableName || !staticVariables.has(variableName))) {
+    return "\0unresolved-heredoc-output";
+  }
+  const target = variableName ? staticVariables.get(variableName) : rawTarget;
   const exactShellVariable = /^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})$/u.test(target);
   if (!target || (!exactShellVariable && /[$%\x60*?\[\]{}\0]/u.test(target))) return "";
   return target;
@@ -423,9 +426,11 @@ function getStaticHeredocMaterializationTargets(commandLine, staticVariables = n
     for (const token of execution.tokens.slice(1)) {
       const rawValue = stripOuterQuotes(token);
       const variableName = getShellScriptVariableName(rawValue);
-      const value = variableName && staticVariables.has(variableName)
-        ? staticVariables.get(variableName)
-        : rawValue;
+      if (/[$%\x60*?\[\]{}\0]/u.test(rawValue) && (!variableName || !staticVariables.has(variableName))) {
+        targets.add("\0unresolved-heredoc-output");
+        continue;
+      }
+      const value = variableName ? staticVariables.get(variableName) : rawValue;
       if (!value || value.startsWith("-") || /^[<>]/u.test(value) || /[$%\x60*?\[\]{}\0]/u.test(value)) continue;
       targets.add(value);
     }
@@ -448,13 +453,22 @@ function updateStaticShellVariableAssignments(commandLine, variables) {
       const assignment = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/u.exec(stripOuterQuotes(token));
       if (!assignment) continue;
       const value = stripOuterQuotes(assignment[2]);
-      if (!value || /[$%\x60*?\[\]{}\0]/u.test(value)) variables.delete(normalizeAgentValue(assignment[1]));
-      else variables.set(normalizeAgentValue(assignment[1]), value);
+      if (!value || /[$%\x60*?\[\]{}\0]/u.test(value)) variables.delete(assignment[1]);
+      else variables.set(assignment[1], value);
     }
   }
 }
 
 function doesCommandExecuteStaticScriptPath(command, expectedPath, initialCwd = ".") {
+  if (String(expectedPath || "").includes("\0")) {
+    return splitCommandSegments(String(command || "")).some((segment) =>
+      splitCommandPipelineStages(segment).some((stage) => {
+        const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(tokenizeCommandLine(stage)));
+        const executable = normalizeExecutableName(execution.tokens[0] || "");
+        return Boolean(execution.nestedCommand) || isShellCommandExecutable(executable) ||
+          Boolean(getStaticInterpreterScriptPath(execution.tokens));
+      }));
+  }
   const expected = resolveComparableStaticScriptPath(expectedPath, initialCwd);
   const expectedVariable = getShellScriptVariableName(expectedPath);
   if (!expected && !expectedVariable) return false;
@@ -503,8 +517,10 @@ function doesCommandExecuteStaticScriptPath(command, expectedPath, initialCwd = 
             const name = stripOuterQuotes(token);
             if (unexportsValue && /^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)) {
               exportedShellVariables.delete(name);
-            } else if (exportsValue && /^[A-Za-z_][A-Za-z0-9_]*$/u.test(name) && shellVariables.has(name)) {
-              exportedShellVariables.set(name, shellVariables.get(name));
+            } else if (exportsValue && /^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)) {
+              exportedShellVariables.set(name, shellVariables.has(name)
+                ? shellVariables.get(name)
+                : "\0unresolved-exported-shell-variable");
             }
           }
         }
@@ -651,7 +667,7 @@ function normalizeStaticScriptPathToken(value) {
 function getShellScriptVariableName(value) {
   const source = stripOuterQuotes(String(value || "").trim());
   const match = source.match(/^\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)(?:(?:#{1,2}|%{1,2})[^}]*)?\})$/u);
-  return normalizeAgentValue(match?.[1] || match?.[2] || "");
+  return match?.[1] || match?.[2] || "";
 }
 
 function resolveComparableStaticScriptPath(value, cwd = ".") {

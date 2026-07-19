@@ -8229,6 +8229,27 @@ EOF
 bash note.sh
 '@,
             @'
+target=note.sh; cat <<'EOF'> "$target"
+git commit --allow-empty -m same-line-variable-output-bypass
+EOF
+bash note.sh
+'@,
+            @'
+TARGET=note.sh
+target=safe.sh
+cat <<'EOF'> "$TARGET"
+git commit --allow-empty -m case-sensitive-variable-bypass
+EOF
+bash note.sh
+'@,
+            @'
+unset target
+cat <<'EOF'> "${target:-note.sh}"
+codex exec --sandbox read-only unresolved-parameter-expansion-bypass
+EOF
+bash note.sh
+'@,
+            @'
 cat <<'EOF'> note.sh
 git commit --allow-empty -m pipeline-bypass
 EOF
@@ -8261,6 +8282,14 @@ cat <<'EOF'> note.sh
 git commit --allow-empty -m declared-export-bypass
 EOF
 declare -x BASH_ENV=note.sh
+bash -c ':'
+'@,
+            @'
+cat <<'EOF'> note.sh
+git commit --allow-empty -m export-attribute-bypass
+EOF
+export BASH_ENV
+BASH_ENV=note.sh
 bash -c ':'
 '@,
             @'
