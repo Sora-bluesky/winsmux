@@ -877,34 +877,138 @@ function getPowerShellFileArgument(tokens) {
 }
 
 function getStaticNonPowerShellInterpreterFileArgument(tokens) {
-  if (!Array.isArray(tokens) || tokens.length < 2) return { kind: "", present: false, value: "" };
+  if (!Array.isArray(tokens) || tokens.length < 2) return { kind: "", present: false, value: "", unresolved: false };
   const executable = normalizeExecutableName(tokens[0] || "");
   if (isShellCommandExecutable(executable)) {
     const noExecute = tokens.slice(1).some((token) => ["-n", "--noexec"].includes(normalizeAgentValue(token)));
     const scriptPath = getStaticInterpreterScriptPath(tokens);
     return noExecute || !scriptPath || isDynamicStdinScriptPath(scriptPath) || isAnyStdinDevicePath(scriptPath)
-      ? { kind: "shell", present: false, value: "" }
-      : { kind: "shell", present: Boolean(scriptPath), value: scriptPath };
+      ? { kind: "shell", present: false, value: "", unresolved: false }
+      : { kind: "shell", present: Boolean(scriptPath), value: scriptPath, unresolved: false };
   }
   const kind = getShellInterpreterKind(tokens);
   if (!kind || getInterpreterInlineSourceDescriptor(tokens, kind)) {
-    return { kind: kind || "", present: false, value: "" };
+    return { kind: kind || "", present: false, value: "", unresolved: false };
   }
   if (kind === "node" && tokens.slice(1).some((token) => ["-c", "--check"].includes(normalizeAgentValue(token)))) {
-    return { kind, present: false, value: "" };
+    return { kind, present: false, value: "", unresolved: false };
   }
   for (let index = 1; index < tokens.length; index += 1) {
     const value = stripOuterQuotes(tokens[index]);
     if (value === "--") {
-      return { kind, present: index + 1 < tokens.length, value: stripOuterQuotes(tokens[index + 1] || "") };
+      return { kind, present: index + 1 < tokens.length, value: stripOuterQuotes(tokens[index + 1] || ""), unresolved: false };
+    }
+    const normalized = normalizeAgentValue(value);
+    if (kind === "python" && normalized === "-m") {
+      return { kind, present: false, value: "", unresolved: true };
+    }
+    if (interpreterOptionConsumesNextValue(kind, value, normalized)) {
+      if (index + 1 >= tokens.length) return { kind, present: false, value: "", unresolved: true };
+      index += 1;
+      continue;
     }
     if (value.startsWith("-")) continue;
-    return { kind, present: true, value };
+    return { kind, present: true, value, unresolved: false };
   }
-  return { kind, present: false, value: "" };
+  return { kind, present: false, value: "", unresolved: false };
 }
 
-function getStaticInvokedScriptEvidence(command, baseCwd, depth = 0, cmdDelayedExpansion = false) {
+function getStaticScriptOverlayKey(scriptPath) {
+  return process.platform === "win32" ? scriptPath.toLowerCase() : scriptPath;
+}
+
+function getShellStdoutRedirectTargets(stage) {
+  const source = String(stage || "");
+  const targets = [];
+  let quote = "";
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    if (quote) {
+      if (char === quote && source[index - 1] !== "\\") quote = "";
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (char !== ">" || source[index - 1] === "<") continue;
+    let fdStart = index;
+    while (fdStart > 0 && /[0-9]/u.test(source[fdStart - 1])) fdStart -= 1;
+    const fd = source.slice(fdStart, index);
+    if (fd && Number.parseInt(fd, 10) !== 1) continue;
+    const descriptorRedirect = source[index + 1] === "&";
+    if (descriptorRedirect) index += 1;
+    if (source[index + 1] === ">") index += 1;
+    while (index + 1 < source.length && /\s/u.test(source[index + 1])) index += 1;
+    const targetStart = index + 1;
+    if (targetStart >= source.length) continue;
+    const targetQuote = source[targetStart] === "'" || source[targetStart] === '"' ? source[targetStart] : "";
+    let targetEnd = targetStart + (targetQuote ? 1 : 0);
+    while (targetEnd < source.length) {
+      const targetChar = source[targetEnd];
+      if (targetQuote ? targetChar === targetQuote && source[targetEnd - 1] !== "\\" : /[\s;&|<>]/u.test(targetChar)) break;
+      targetEnd += 1;
+    }
+    const target = source.slice(targetStart + (targetQuote ? 1 : 0), targetEnd);
+    if (!descriptorRedirect || !/^\d+$/u.test(target)) targets.push(target);
+    index = targetEnd;
+  }
+  return targets;
+}
+
+function getHeredocOverlayExemptKeys(command, baseCwd) {
+  const keys = new Set();
+  const staticVariables = new Map();
+  for (const line of String(command || "").split(/\r?\n/u)) {
+    if (line.includes("<<")) {
+      for (const target of getStaticHeredocMaterializationTargets(line, staticVariables)) {
+        if (!target || target.includes("\0")) continue;
+        keys.add(getStaticScriptOverlayKey(path.resolve(baseCwd, target)));
+      }
+    }
+    updateStaticShellVariableAssignments(line, staticVariables, hasShellControlFlowBoundary(line));
+  }
+  return keys;
+}
+
+function recordStaticScriptWriteEffects(
+  stage,
+  baseCwd,
+  repoRoot,
+  scriptOverlay,
+  staticVariables,
+  heredocExemptKeys,
+) {
+  const isHeredocStage = String(stage || "").includes("__WINSMUX_HEREDOC_WRITE__");
+  const targets = getShellStdoutRedirectTargets(stage);
+  const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(tokenizeCommandLine(stage)));
+  if (normalizeExecutableName(execution.tokens[0] || "") === "tee") {
+    for (const token of execution.tokens.slice(1)) {
+      const value = stripOuterQuotes(token);
+      if (value && !value.startsWith("-") && !/^[<>]/u.test(value)) targets.push(value);
+    }
+  }
+  for (const rawTarget of new Set(targets)) {
+    const target = resolveStaticShellVariableReference(rawTarget, staticVariables);
+    if (!target || target.includes("\0") || /[%\x60*?\[\]{}]/u.test(target)) {
+      scriptOverlay.unresolvedTarget = true;
+      continue;
+    }
+    const scriptPath = path.resolve(baseCwd, target);
+    if (!isPathInsideOrSame(scriptPath, repoRoot)) continue;
+    const overlayKey = getStaticScriptOverlayKey(scriptPath);
+    if (isHeredocStage && heredocExemptKeys.has(overlayKey)) continue;
+    scriptOverlay.set(overlayKey, null);
+  }
+}
+
+function getStaticInvokedScriptEvidence(
+  command,
+  baseCwd,
+  depth = 0,
+  cmdDelayedExpansion = false,
+  inheritedScriptOverlay = null,
+) {
   const evidence = { contents: [], unresolved: false };
   if (depth > 5) {
     evidence.unresolved = true;
@@ -912,14 +1016,69 @@ function getStaticInvokedScriptEvidence(command, baseCwd, depth = 0, cmdDelayedE
   }
   const baseRepoRoot = resolveGitTopLevel(baseCwd);
   if (!baseRepoRoot) return evidence;
-  const commandSurface = stripHeredocBodiesAndTerminators(String(command || ""));
-  const segments = splitCommandSegments(commandSurface);
-  for (const segment of segments) {
+  const heredocExemptKeys = getHeredocOverlayExemptKeys(command, baseCwd);
+  const markedCommand = String(command || "").replace(
+    /(?:(?<![A-Za-z0-9_])[0-9]+)?<<(?!<)-?\s*(['"]?)[A-Za-z_][A-Za-z0-9_]*\1/gu,
+    (declaration) => `__WINSMUX_HEREDOC_WRITE__ ${declaration}`,
+  );
+  const commandSurface = stripHeredocBodiesAndTerminators(markedCommand);
+  const segments = splitCommandSegmentsWithSeparators(commandSurface);
+  const scriptOverlay = inheritedScriptOverlay || new Map();
+  const staticVariables = new Map();
+  let effectiveBaseCwd = baseCwd;
+  const controlFlowExecutionStack = [];
+  for (const segmentEntry of segments) {
+    const segment = segmentEntry.segment;
+    const controlFlowBoundary = getShellControlFlowBoundary(segment);
+    if (controlFlowBoundary === "branch") {
+      updateShellControlFlowBranchExecution(controlFlowExecutionStack, segment, segmentEntry.separatorAfter);
+    }
+    const controlFlowExecutionState = getShellControlFlowExecutionState(controlFlowExecutionStack);
+    const segmentBaseCwd = effectiveBaseCwd;
     const stages = splitCommandPipelineStages(segment);
+    if (controlFlowExecutionState === "inactive") {
+      updateShellControlFlowDepthExecution(controlFlowExecutionStack, segment, segmentEntry.separatorAfter);
+      continue;
+    }
     for (const stage of stages) {
-      const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(tokenizeCommandLine(stage)));
+      const rawTokens = tokenizeCommandLine(stage);
+      const envContext = getGitInlineEnvironmentContext(rawTokens, segmentBaseCwd);
+      const stageBaseCwd = envContext.baseCwd || segmentBaseCwd;
+      recordStaticScriptWriteEffects(
+        stage,
+        stageBaseCwd,
+        baseRepoRoot,
+        scriptOverlay,
+        staticVariables,
+        heredocExemptKeys,
+      );
+    }
+    for (const stage of stages) {
+      const groupedStage = unwrapShellGroupingWrapper(stage);
+      if (groupedStage !== stage.trim()) {
+        const groupedEvidence = getStaticInvokedScriptEvidence(
+          groupedStage,
+          segmentBaseCwd,
+          depth + 1,
+          false,
+          scriptOverlay,
+        );
+        evidence.contents.push(...groupedEvidence.contents);
+        evidence.unresolved = evidence.unresolved || groupedEvidence.unresolved;
+        continue;
+      }
+      const rawTokens = tokenizeCommandLine(stage);
+      const envContext = getGitInlineEnvironmentContext(rawTokens, segmentBaseCwd);
+      const stageBaseCwd = envContext.baseCwd || segmentBaseCwd;
+      const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(rawTokens));
       if (execution.nestedCommand) {
-        const nestedEvidence = getStaticInvokedScriptEvidence(execution.nestedCommand, baseCwd, depth + 1);
+        const nestedEvidence = getStaticInvokedScriptEvidence(
+          execution.nestedCommand,
+          stageBaseCwd,
+          depth + 1,
+          false,
+          scriptOverlay,
+        );
         evidence.contents.push(...nestedEvidence.contents);
         evidence.unresolved = evidence.unresolved || nestedEvidence.unresolved;
       }
@@ -931,9 +1090,10 @@ function getStaticInvokedScriptEvidence(command, baseCwd, depth = 0, cmdDelayedE
           const nestedCommand = getStaticNestedShellCommand("cmd", tokens.slice(1));
           const nestedEvidence = getStaticInvokedScriptEvidence(
             nestedCommand === null ? rawNestedCommand : nestedCommand,
-            baseCwd,
+            stageBaseCwd,
             depth + 1,
             nestedCommand === null && isCmdDelayedExpansionEnabled(tokens),
+            scriptOverlay,
           );
           evidence.contents.push(...nestedEvidence.contents);
           evidence.unresolved = evidence.unresolved || nestedEvidence.unresolved;
@@ -943,13 +1103,23 @@ function getStaticInvokedScriptEvidence(command, baseCwd, depth = 0, cmdDelayedE
       if (isShellCommandExecutable(executable)) {
         const nestedCommand = getShellCommandArgument(tokens);
         if (nestedCommand) {
-          const nestedEvidence = getStaticInvokedScriptEvidence(nestedCommand, baseCwd, depth + 1);
+          const nestedEvidence = getStaticInvokedScriptEvidence(
+            nestedCommand,
+            stageBaseCwd,
+            depth + 1,
+            false,
+            scriptOverlay,
+          );
           evidence.contents.push(...nestedEvidence.contents);
           evidence.unresolved = evidence.unresolved || nestedEvidence.unresolved;
         }
         if (nestedCommand) continue;
       }
       const staticInterpreterFile = getStaticNonPowerShellInterpreterFileArgument(tokens);
+      if (staticInterpreterFile.unresolved) {
+        evidence.unresolved = true;
+        continue;
+      }
       if (staticInterpreterFile.present) {
         const value = staticInterpreterFile.value;
         if (isAnyStdinDevicePath(value)) continue;
@@ -958,8 +1128,8 @@ function getStaticInvokedScriptEvidence(command, baseCwd, depth = 0, cmdDelayedE
           evidence.unresolved = true;
           continue;
         }
-        const scriptPath = path.resolve(baseCwd, value);
-        const scriptRepoRoot = resolveGitTopLevel(baseCwd);
+        const scriptPath = path.resolve(stageBaseCwd, value);
+        const scriptRepoRoot = resolveGitTopLevel(stageBaseCwd);
         if (!scriptRepoRoot ||
             !isManagedReviewGateRepo(scriptRepoRoot, baseRepoRoot) ||
             !isPathInsideOrSame(scriptPath, scriptRepoRoot)) {
@@ -967,12 +1137,25 @@ function getStaticInvokedScriptEvidence(command, baseCwd, depth = 0, cmdDelayedE
           continue;
         }
         try {
-          const stat = fs.statSync(scriptPath);
-          if (!stat.isFile() || stat.size > 1024 * 1024) {
+          const overlayKey = getStaticScriptOverlayKey(scriptPath);
+          let source;
+          if (scriptOverlay.unresolvedTarget) {
             evidence.unresolved = true;
             continue;
+          } else if (scriptOverlay.has(overlayKey)) {
+            source = scriptOverlay.get(overlayKey);
+            if (typeof source !== "string") {
+              evidence.unresolved = true;
+              continue;
+            }
+          } else {
+            const stat = fs.statSync(scriptPath);
+            if (!stat.isFile() || stat.size > 1024 * 1024) {
+              evidence.unresolved = true;
+              continue;
+            }
+            source = fs.readFileSync(scriptPath, "utf8").replace(/^\uFEFF/u, "");
           }
-          const source = fs.readFileSync(scriptPath, "utf8").replace(/^\uFEFF/u, "");
           const protectedEvidence = getStaticScriptProtectedEvidence(source, path.dirname(scriptPath));
           evidence.contents.push(...protectedEvidence.commands);
           evidence.unresolved = evidence.unresolved || protectedEvidence.unresolved;
@@ -1001,9 +1184,15 @@ function getStaticInvokedScriptEvidence(command, baseCwd, depth = 0, cmdDelayedE
           evidence.unresolved = true;
         } else {
           const nestedCwd = initialWorkingDirectory
-            ? path.resolve(baseCwd, stripOuterQuotes(initialWorkingDirectory))
-            : baseCwd;
-          const nestedEvidence = getStaticInvokedScriptEvidence(nestedCommand, nestedCwd, depth + 1);
+            ? path.resolve(stageBaseCwd, stripOuterQuotes(initialWorkingDirectory))
+            : stageBaseCwd;
+          const nestedEvidence = getStaticInvokedScriptEvidence(
+            nestedCommand,
+            nestedCwd,
+            depth + 1,
+            false,
+            scriptOverlay,
+          );
           evidence.contents.push(...nestedEvidence.contents);
           evidence.unresolved = evidence.unresolved || nestedEvidence.unresolved;
         }
@@ -1023,8 +1212,8 @@ function getStaticInvokedScriptEvidence(command, baseCwd, depth = 0, cmdDelayedE
         continue;
       }
       const scriptBaseCwd = initialWorkingDirectory
-        ? path.resolve(baseCwd, stripOuterQuotes(initialWorkingDirectory))
-        : baseCwd;
+          ? path.resolve(stageBaseCwd, stripOuterQuotes(initialWorkingDirectory))
+          : stageBaseCwd;
       const scriptPath = path.resolve(scriptBaseCwd, value);
       const scriptRepoRoot = resolveGitTopLevel(scriptBaseCwd);
       if (!scriptRepoRoot ||
@@ -1034,12 +1223,25 @@ function getStaticInvokedScriptEvidence(command, baseCwd, depth = 0, cmdDelayedE
         continue;
       }
       try {
-        const stat = fs.statSync(scriptPath);
-        if (!stat.isFile() || stat.size > 1024 * 1024) {
+        const overlayKey = getStaticScriptOverlayKey(scriptPath);
+        let source;
+        if (scriptOverlay.unresolvedTarget) {
           evidence.unresolved = true;
           continue;
+        } else if (scriptOverlay.has(overlayKey)) {
+          source = scriptOverlay.get(overlayKey);
+          if (typeof source !== "string") {
+            evidence.unresolved = true;
+            continue;
+          }
+        } else {
+          const stat = fs.statSync(scriptPath);
+          if (!stat.isFile() || stat.size > 1024 * 1024) {
+            evidence.unresolved = true;
+            continue;
+          }
+          source = fs.readFileSync(scriptPath, "utf8").replace(/^\uFEFF/u, "");
         }
-        const source = fs.readFileSync(scriptPath, "utf8").replace(/^\uFEFF/u, "");
         if (isHeadBoundCanonicalOrchestraRecoveryInvocation(
           tokens,
           fileArgument,
@@ -1074,6 +1276,22 @@ function getStaticInvokedScriptEvidence(command, baseCwd, depth = 0, cmdDelayedE
         if (error?.code !== "ENOENT") evidence.unresolved = true;
       }
     }
+    const cwdChange = getShellCwdChange(segment, segmentBaseCwd);
+    if (cwdChange.target) {
+      const skipCwdChange = cwdChange.controlFlowPrefixed && controlFlowExecutionState === "inactive";
+      if (!skipCwdChange && cwdChange.controlFlowPrefixed && controlFlowExecutionState === "unknown") {
+        evidence.unresolved = true;
+      }
+      effectiveBaseCwd = skipCwdChange
+        ? effectiveBaseCwd
+        : cwdChange.controlFlowPrefixed && controlFlowExecutionState === "unknown"
+        ? "\0unresolved-control-flow-cwd"
+        : hasConditionalCwdChangeBoundary(segmentEntry)
+        ? "\0unresolved-conditional-cwd-change"
+        : cwdChange.target;
+    }
+    updateStaticShellVariableAssignments(segment, staticVariables, controlFlowExecutionState !== "active");
+    updateShellControlFlowDepthExecution(controlFlowExecutionStack, segment, segmentEntry.separatorAfter);
   }
   return evidence;
 }
@@ -1156,7 +1374,7 @@ function isHeadBoundCanonicalOrchestraRecoveryInvocation(tokens, fileArgument, s
 }
 
 function getStaticScriptProtectedEvidence(source, scriptCwd) {
-  const text = String(source || "");
+  const text = materializeConstantExecutableSubstitutions(String(source || ""));
   const lines = text.split(/\r?\n/u);
   const commands = [];
   const seen = new Set();
@@ -1169,7 +1387,7 @@ function getStaticScriptProtectedEvidence(source, scriptCwd) {
       }
     }
     for (const candidate of windows) {
-      if (!/(?:^|[;&|({])\s*(?:&\s*)?(?:codex|git|gh|winsmux|start-process|saps)\b/iu.test(candidate) &&
+      if (!/(?:^|[;&|({])\s*(?:(?:command(?:\s+(?:--|-p))*|exec(?:\s+(?:--|-c|-l|-a\s+\S+))*|builtin)\s+)?(?:&\s*)?(?:codex|git|gh|winsmux|start-process|saps)\b/iu.test(candidate) &&
           !/\b(?:Process|ProcessStartInfo)\s*\]::(?:Start|new)\s*\(/iu.test(candidate)) {
         continue;
       }
@@ -5163,7 +5381,12 @@ function getInterpreterInlineSourceDescriptors(tokens, kind) {
   const descriptors = [];
   for (let index = 1; index < tokens.length; index += 1) {
     const token = String(tokens[index] || "");
+    const rawToken = stripOuterQuotes(token);
     const normalized = normalizeAgentValue(token);
+    if (interpreterOptionConsumesNextValue(kind, rawToken, normalized)) {
+      index += 1;
+      continue;
+    }
     if (options.includes(normalized)) {
       if (kind === "node" && (normalized === "-p" || normalized === "--print")) {
         const next = normalizeAgentValue(String(tokens[index + 1] || ""));
@@ -7302,6 +7525,9 @@ function parseEnvShortOptionCluster(value) {
     }
     if (option === "0") {
       parsed.nullOutput = true;
+      continue;
+    }
+    if (option === "v") {
       continue;
     }
     if (option === "S" || option === "s" || option === "C" || option === "c" || option === "u") {
@@ -11985,7 +12211,7 @@ function materializeConstantExecutableSubstitutions(command) {
   for (const [name, executable] of assignments) {
     const variableReference = `\\$(?:\\{${name}\\}|${name}\\b)`;
     const executablePosition = new RegExp(
-      `(^|[;&|(){}\\r\\n]\\s*|["']|\\b(?:then|elif|else|do)\\s+)(["']?)${variableReference}\\2(?=\\s)`,
+      `(^|[;&|(){}\\r\\n]\\s*|["']|\\b(?:then|elif|else|do)\\s+|\\b(?:command(?:\\s+(?:--|-p))*|exec(?:\\s+(?:--|-c|-l|-a\\s+\\S+))*|builtin)\\s+)(["']?)${variableReference}\\2(?=\\s)`,
       "giu");
     source = source.replace(executablePosition, (_match, prefix) => `${prefix}${executable}`);
   }
@@ -12447,6 +12673,32 @@ function getGitInlineEnvironmentContext(tokens, baseCwd) {
             normalizedEnvToken === "--null") {
           index += 1;
           continue;
+        }
+
+        if (normalizedEnvToken === "-v" ||
+            normalizedEnvToken === "--debug" ||
+            normalizedEnvToken === "--list-signal-handling" ||
+            normalizedEnvToken === "--block-signal" ||
+            normalizedEnvToken.startsWith("--block-signal=") ||
+            normalizedEnvToken === "--default-signal" ||
+            normalizedEnvToken.startsWith("--default-signal=") ||
+            normalizedEnvToken === "--ignore-signal" ||
+            normalizedEnvToken.startsWith("--ignore-signal=")) {
+          index += 1;
+          continue;
+        }
+
+        if (normalizedEnvToken === "-") {
+          gitDir = null;
+          workTree = null;
+          clearedGitDir = true;
+          clearedWorkTree = true;
+          index += 1;
+          continue;
+        }
+
+        if (normalizedEnvToken.startsWith("-")) {
+          commandBaseCwd = "\0unresolved-env-option";
         }
 
         break;

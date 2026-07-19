@@ -8644,6 +8644,202 @@ BASH_ENV=note.sh true
             $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot } -Environment @{ WINSMUX_ROLE = 'worker'; WINSMUX_ASSIGNED_WORKTREE = $fixture.RepoRoot }
             $result.OutputObject | Should -BeNullOrEmpty -Because 'protected text that cannot reach an executable sink remains data'
         }
+
+        $safeExecutable = @'
+cat <<'EOF'> safe-heredoc.sh
+printf '%s\n' safe
+EOF
+bash safe-heredoc.sh
+'@
+        $safeExecutableResult = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $safeExecutable; cwd = $fixture.RepoRoot } -Environment @{ WINSMUX_ROLE = 'worker'; WINSMUX_ASSIGNED_WORKTREE = $fixture.RepoRoot }
+        $safeExecutableResult.OutputObject | Should -BeNullOrEmpty -Because 'a statically safe heredoc body remains executable data'
+    }
+
+    It 'TASK-783 C105 resolves review targets after GNU env options' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Name 'env-option-target'
+        Set-GatePass -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch
+        $targetGitDir = ($target.RepoRoot -replace '\\', '/') + '/.git'
+        $targetWorkTree = $target.RepoRoot -replace '\\', '/'
+
+        foreach ($envOption in @(
+                '--block-signal=PIPE',
+                '--default-signal=PIPE',
+                '--ignore-signal=PIPE',
+                '--list-signal-handling',
+                '--debug',
+                '--future-option'
+            )) {
+            $command = "env $envOption GIT_DIR='$targetGitDir' GIT_WORK_TREE='$targetWorkTree' git commit --allow-empty -m env-option-target"
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot }
+            & $script:AssertDenyResult -Result $result -Because "GNU env options cannot hide or ambiguate the unreviewed Git target that follows them: $envOption"
+        }
+    }
+
+    It 'TASK-783 C106 resolves static interpreter scripts after value-taking options' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $protectedPath = Join-Path $fixture.RepoRoot 'scripts\option-protected.py'
+        Write-GateTestFile -Path $protectedPath -Content "import subprocess`nsubprocess.run(['git', 'commit', '--allow-empty', '-m', 'option-protected'])`n"
+        $environment = @{ WINSMUX_ROLE = 'worker'; WINSMUX_ASSIGNED_WORKTREE = $fixture.RepoRoot }
+
+        foreach ($command in @(
+                'python -W ignore scripts/option-protected.py',
+                'python -X dev scripts/option-protected.py',
+                'python --check-hash-based-pycs default scripts/option-protected.py',
+                'py -W ignore scripts/option-protected.py',
+                'python -W -c scripts/option-protected.py',
+                'python -X -c scripts/option-protected.py',
+                'python -m option_protected'
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot } -Environment $environment
+            & $script:AssertDenyResult -Result $result -Because "a Python option operand cannot be mistaken for the executable script path: $command"
+        }
+
+        $safePath = Join-Path $fixture.RepoRoot 'scripts\option-safe.py'
+        Write-GateTestFile -Path $safePath -Content "print('safe')`n"
+        foreach ($command in @(
+                'python -W ignore scripts/option-safe.py',
+                'python -X dev scripts/option-safe.py',
+                'python --check-hash-based-pycs default scripts/option-safe.py',
+                'python -Wignore scripts/option-safe.py',
+                'python -Xdev scripts/option-safe.py',
+                'python -- scripts/option-safe.py'
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot } -Environment $environment
+            $result.OutputObject | Should -BeNullOrEmpty -Because "a statically proven safe Python script remains allowed: $command"
+        }
+    }
+
+    It 'TASK-783 C107 carries shell and env cwd into static script review' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $protectedPath = Join-Path $fixture.RepoRoot 'scripts\cwd-protected.sh'
+        Write-GateTestFile -Path $protectedPath -Content "git commit --allow-empty -m cwd-protected`n"
+        $environment = @{ WINSMUX_ROLE = 'worker'; WINSMUX_ASSIGNED_WORKTREE = $fixture.RepoRoot }
+
+        foreach ($command in @(
+                'cd scripts && bash cwd-protected.sh',
+                'cd scripts; bash cwd-protected.sh',
+                '(cd scripts && bash cwd-protected.sh)',
+                "bash -lc 'cd scripts && bash cwd-protected.sh'",
+                'env -C scripts bash cwd-protected.sh',
+                'env -Cscripts bash cwd-protected.sh',
+                'env --chdir scripts bash cwd-protected.sh',
+                'env --chdir=scripts bash cwd-protected.sh'
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot } -Environment $environment
+            & $script:AssertDenyResult -Result $result -Because "the static script must be resolved from the effective cwd: $command"
+        }
+
+    }
+
+    It 'TASK-783 C108 resolves finite shell executable assignments inside static scripts' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $environment = @{ WINSMUX_ROLE = 'worker'; WINSMUX_ASSIGNED_WORKTREE = $fixture.RepoRoot }
+        $gitScript = Join-Path $fixture.RepoRoot 'scripts\dynamic-git.sh'
+        $codexScript = Join-Path $fixture.RepoRoot 'scripts\dynamic-codex.sh'
+        $safeScript = Join-Path $fixture.RepoRoot 'scripts\dynamic-safe.sh'
+        $wrappedGitScript = Join-Path $fixture.RepoRoot 'scripts\dynamic-wrapped-git.sh'
+        $wrappedCodexScript = Join-Path $fixture.RepoRoot 'scripts\dynamic-wrapped-codex.sh'
+        $optionWrappedGitScript = Join-Path $fixture.RepoRoot 'scripts\dynamic-option-wrapped-git.sh'
+        $optionWrappedCodexScript = Join-Path $fixture.RepoRoot 'scripts\dynamic-option-wrapped-codex.sh'
+        Write-GateTestFile -Path $gitScript -Content "g=git`n`"`$g`" commit --allow-empty -m dynamic-git`n"
+        Write-GateTestFile -Path $codexScript -Content "tool=codex`n`"`$tool`" exec --sandbox read-only review`n"
+        Write-GateTestFile -Path $safeScript -Content "tool=printf`n`"`$tool`" '%s\\n' safe`n"
+        Write-GateTestFile -Path $wrappedGitScript -Content "g=git`ncommand `"`$g`" commit --allow-empty -m dynamic-wrapped-git`n"
+        Write-GateTestFile -Path $wrappedCodexScript -Content "tool=codex`nexec `"`$tool`" exec --sandbox read-only review`n"
+        Write-GateTestFile -Path $optionWrappedGitScript -Content "g=git`ncommand -- `"`$g`" commit --allow-empty -m dynamic-option-wrapped-git`ncommand -p `"`$g`" push`n"
+        Write-GateTestFile -Path $optionWrappedCodexScript -Content "tool=codex`nexec -a review `"`$tool`" exec --sandbox read-only review`n"
+
+        foreach ($command in @(
+                'bash scripts/dynamic-git.sh',
+                'bash scripts/dynamic-codex.sh',
+                'bash scripts/dynamic-wrapped-git.sh',
+                'bash scripts/dynamic-wrapped-codex.sh',
+                'bash scripts/dynamic-option-wrapped-git.sh',
+                'bash scripts/dynamic-option-wrapped-codex.sh'
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot } -Environment $environment
+            & $script:AssertDenyResult -Result $result -Because "a finite executable assignment cannot hide a protected sink: $command"
+        }
+        $safe = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'bash scripts/dynamic-safe.sh'; cwd = $fixture.RepoRoot } -Environment $environment
+        $safe.OutputObject | Should -BeNullOrEmpty -Because 'a finite non-protected executable remains allowed'
+    }
+
+    It 'TASK-783 C109 reviews the effective script body after an earlier overwrite' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $scriptPath = Join-Path $fixture.RepoRoot 'scripts\overwritten.sh'
+        Write-GateTestFile -Path $scriptPath -Content "printf '%s\n' safe`n"
+        $environment = @{ WINSMUX_ROLE = 'worker'; WINSMUX_ASSIGNED_WORKTREE = $fixture.RepoRoot }
+
+        $protected = "printf '%s\n' 'git commit --allow-empty -m overwritten-script' > scripts/overwritten.sh && bash scripts/overwritten.sh"
+        $denied = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $protected; cwd = $fixture.RepoRoot } -Environment $environment
+        & $script:AssertDenyResult -Result $denied -Because 'the script body that will execute is the earlier same-command write, not the stale filesystem body'
+
+        $safe = "printf '%s\n' 'printf safe' > scripts/overwritten.sh && bash scripts/overwritten.sh"
+        $safeOverwrite = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $safe; cwd = $fixture.RepoRoot } -Environment $environment
+        & $script:AssertDenyResult -Result $safeOverwrite -Because 'same-command executable writes remain fail-closed until their runtime bytes are independently proven'
+
+        $echoProtected = "echo 'git commit --allow-empty -m echo-overwrite' > scripts/overwritten.sh && bash scripts/overwritten.sh"
+        $echoDenied = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $echoProtected; cwd = $fixture.RepoRoot } -Environment $environment
+        & $script:AssertDenyResult -Result $echoDenied -Because 'echo is another finite writer for the same overwrite mechanism'
+
+        $payloadPath = Join-Path $fixture.RepoRoot 'scripts\protected-payload.sh'
+        Write-GateTestFile -Path $payloadPath -Content "git commit --allow-empty -m copied-payload`n"
+        foreach ($command in @(
+                'cat scripts/protected-payload.sh > scripts/overwritten.sh && bash scripts/overwritten.sh',
+                "echo 'git commit --allow-empty -m amp-overwrite' >& scripts/overwritten.sh && bash scripts/overwritten.sh",
+                "echo 'git commit --allow-empty -m padded-fd-overwrite' 01> scripts/overwritten.sh && bash scripts/overwritten.sh",
+                "echo 'git commit --allow-empty -m numeric-path-overwrite' > 123 && bash 123",
+                "printf '%s\n' 'git commit --allow-empty -m tee-overwrite' | tee scripts/overwritten.sh && bash scripts/overwritten.sh",
+                "printf '%s\n' 'git commit --allow-empty -m append-overwrite' >> scripts/overwritten.sh && bash scripts/overwritten.sh",
+                "payload='git commit --allow-empty -m expanded-payload'; printf '%s\n' `"`$payload`" > scripts/overwritten.sh && bash scripts/overwritten.sh",
+                'target=scripts/overwritten.sh; cat scripts/protected-payload.sh > "$target"; bash scripts/overwritten.sh'
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot } -Environment $environment
+            & $script:AssertDenyResult -Result $result -Because "an unproven earlier write to the executed script must fail closed: $command"
+        }
+
+        $existingProtectedPath = Join-Path $fixture.RepoRoot 'scripts\existing-protected.sh'
+        Write-GateTestFile -Path $existingProtectedPath -Content "git commit --allow-empty -m existing-protected`n"
+        foreach ($command in @(
+                "false && printf '%s\n' 'printf safe' > scripts/existing-protected.sh; bash scripts/existing-protected.sh",
+                "true || printf '%s\n' 'printf safe' > scripts/existing-protected.sh; bash scripts/existing-protected.sh",
+                "bash scripts/existing-protected.sh | echo 'printf safe' > scripts/existing-protected.sh"
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot } -Environment $environment
+            & $script:AssertDenyResult -Result $result -Because "skipped or concurrent writes cannot hide the protected body that can execute: $command"
+        }
+
+        $heredocThenOverwrite = @'
+cat <<'EOF'> scripts/overwritten.sh
+printf '%s\n' safe
+EOF
+printf '%s\n' 'git commit --allow-empty -m after-heredoc' > scripts/overwritten.sh
+bash scripts/overwritten.sh
+cat <<'EOF'> scripts/overwritten.sh
+printf '%s\n' safe-again
+EOF
+'@
+        $heredocThenOverwriteResult = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $heredocThenOverwrite; cwd = $fixture.RepoRoot } -Environment $environment
+        & $script:AssertDenyResult -Result $heredocThenOverwriteResult -Because 'a heredoc exemption applies only to its own materialization, not a later overwrite of the same path'
+
+        foreach ($command in @(
+                "printf '%s\n' 'git commit --allow-empty -m unrelated' > scripts/unrelated.sh && bash scripts/overwritten.sh",
+                "bash scripts/overwritten.sh && printf '%s\n' 'git commit --allow-empty -m later' > scripts/overwritten.sh",
+                "printf '%s\n' 'git commit --allow-empty -m data-only' > scripts/overwritten.sh"
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot } -Environment $environment
+            $result.OutputObject | Should -BeNullOrEmpty -Because "only a prior same-path write followed by execution is review gated: $command"
+        }
+
+        $quotedData = "echo 'data > scripts/overwritten.sh'; bash scripts/overwritten.sh"
+        $quotedDataResult = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $quotedData; cwd = $fixture.RepoRoot } -Environment $environment
+        $quotedDataResult.OutputObject | Should -BeNullOrEmpty -Because 'a redirection token inside quoted data is not a file write'
     }
 
     It 'TASK-783 C104 permits only clean HEAD-bound canonical orchestra recovery scripts' {
