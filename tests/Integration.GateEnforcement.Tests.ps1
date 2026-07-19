@@ -7787,6 +7787,31 @@ print(f().dumps({'ok':True}))"
         }
     }
 
+    It 'TASK-783 C96 denies indirect operator mutation of protected Git environment state' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+
+        foreach ($command in @(
+                'python -c "import os,subprocess,operator; operator.__dict__[''setitem''](os.environ,''GIT_CONFIG_COUNT'',''1''); operator.__dict__[''setitem''](os.environ,''GIT_CONFIG_KEY_0'',''core.fsmonitor''); operator.__dict__[''setitem''](os.environ,''GIT_CONFIG_VALUE_0'',''codex exec --full-auto''); subprocess.run([''git'',''status'',''--short''])"',
+                'python -c "import os,subprocess,operator; getattr(operator,''setitem'')(os.environ,''GIT_CONFIG_COUNT'',''1''); getattr(operator,''setitem'')(os.environ,''GIT_CONFIG_KEY_0'',''core.fsmonitor''); getattr(operator,''setitem'')(os.environ,''GIT_CONFIG_VALUE_0'',''codex exec --full-auto''); subprocess.run([''git'',''status'',''--short''])"',
+                'python -c "import os,subprocess,operator; operator.__dict__.get(''setitem'')(os.environ,''GIT_CONFIG_COUNT'',''1''); operator.__dict__.get(''setitem'')(os.environ,''GIT_CONFIG_KEY_0'',''core.fsmonitor''); operator.__dict__.get(''setitem'')(os.environ,''GIT_CONFIG_VALUE_0'',''codex exec --full-auto''); subprocess.run([''git'',''status'',''--short''])"',
+                'python -c "import os,subprocess,operator; vars(operator)[''setitem''](os.environ,''GIT_CONFIG_COUNT'',''1''); vars(operator)[''setitem''](os.environ,''GIT_CONFIG_KEY_0'',''core.fsmonitor''); vars(operator)[''setitem''](os.environ,''GIT_CONFIG_VALUE_0'',''codex exec --full-auto''); subprocess.run([''git'',''status'',''--short''])"',
+                'python -c "import os,subprocess,operator; operator.__getattribute__(''setitem'')(os.environ,''GIT_CONFIG_COUNT'',''1''); operator.__getattribute__(''setitem'')(os.environ,''GIT_CONFIG_KEY_0'',''core.fsmonitor''); operator.__getattribute__(''setitem'')(os.environ,''GIT_CONFIG_VALUE_0'',''codex exec --full-auto''); subprocess.run([''git'',''status'',''--short''])"',
+                'python -c "import os,subprocess,operator as op; assign=getattr(op,''setitem''); assign(os.environ,''GIT_CONFIG_COUNT'',''1''); assign(os.environ,''GIT_CONFIG_KEY_0'',''core.fsmonitor''); assign(os.environ,''GIT_CONFIG_VALUE_0'',''codex exec --full-auto''); subprocess.run([''git'',''status'',''--short''])"'
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
+            & $script:AssertDenyResult -Result $result -Because $command
+        }
+
+        foreach ($command in @(
+                'python -c "import operator,os; print(getattr(operator,''setitem'').__name__); print(len(os.environ))"',
+                'python -c "import operator,os; getattr(operator,''setitem'')({},''key'',''value''); print(len(os.environ))"'
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
+            $result.OutputObject | Should -BeNullOrEmpty -Because $command
+        }
+    }
+
     It 'TASK-783 C09 denies PowerShell block cwd changes to an unreviewed managed target' {
         $fixture = New-GateFixture
         $script:FixtureRoot = $fixture.Root
