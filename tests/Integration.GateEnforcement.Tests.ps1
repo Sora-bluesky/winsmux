@@ -7961,6 +7961,27 @@ bash "${target}"
 '@
         $variableTarget = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $variableTargetCommand }
         & $script:AssertDenyResult -Result $variableTarget -Because 'the same shell variable cannot hide a materialized executable body'
+
+        foreach ($shell in @('bash', 'sh', 'zsh')) {
+            $compactAndShifted = @"
+cat <<'EOF'> .claude/note.sh
+git commit --allow-empty -m compact-cwd-shift
+EOF
+cd .claude && $shell note.sh
+"@
+            $shiftedResult = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $compactAndShifted }
+            & $script:AssertDenyResult -Result $shiftedResult -Because "compact redirection and cwd shifts cannot hide execution through $shell"
+        }
+
+        $basenameVariable = @'
+target=.claude/note.sh
+cat <<'EOF'> "$target"
+git commit --allow-empty -m variable-basename-bypass
+EOF
+cd .claude && bash "${target##*/}"
+'@
+        $basenameResult = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $basenameVariable }
+        & $script:AssertDenyResult -Result $basenameResult -Because 'a basename expansion of the same materialized target must remain executable evidence'
     }
 
     It 'TASK-783 C98 reviews statically invoked PowerShell script files before Git lifecycle execution' {
@@ -8013,6 +8034,36 @@ bash "${target}"
         Set-GatePass -RepoRoot $target.RepoRoot -Branch $target.Branch
         $targetAllowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $targetCommand; cwd = $fixture.RepoRoot }
         $targetAllowed.OutputObject | Should -BeNullOrEmpty -Because 'the static script target repository has its own valid PASS'
+
+        $routerScriptPath = Join-Path $fixture.RepoRoot 'scripts\winsmux-core.ps1'
+        $routerScript = @'
+function Invoke-Version { Write-Output 'winsmux test' }
+function Invoke-Status { Write-Output '{}' }
+function Invoke-Doctor { Write-Output 'ok' }
+function Invoke-WinsmuxHarnessCheckCommand { Write-Output '{}' }
+function Invoke-Protected { git commit --allow-empty -m protected-router }
+switch ($Command) {
+    'version' { Invoke-Version }
+    'status' { Invoke-Status }
+    'doctor' { Invoke-Doctor }
+    'harness-check' { Invoke-WinsmuxHarnessCheckCommand }
+    'verify' { Invoke-Protected }
+}
+'@
+        Write-GateTestFile -Path $routerScriptPath -Content $routerScript
+        Remove-Item -LiteralPath (Join-Path $fixture.RepoRoot '.winsmux\review-state.json') -Force
+        foreach ($readOnlyCommand in @(
+                'pwsh -NoProfile -File scripts/winsmux-core.ps1 version',
+                'pwsh -NoProfile -File scripts/winsmux-core.ps1 status',
+                'pwsh -NoProfile -File scripts/winsmux-core.ps1 status --json',
+                'pwsh -NoProfile -File scripts/winsmux-core.ps1 doctor',
+                'pwsh -NoProfile -File scripts/winsmux-core.ps1 harness-check --json'
+            )) {
+            $readOnlyResult = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $readOnlyCommand; cwd = $fixture.RepoRoot }
+            $readOnlyResult.OutputObject | Should -BeNullOrEmpty -Because $readOnlyCommand
+        }
+        $protectedRouter = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'pwsh -NoProfile -File scripts/winsmux-core.ps1 verify'; cwd = $fixture.RepoRoot }
+        & $script:AssertDenyResult -Result $protectedRouter -Because 'a non-read-only router subcommand remains subject to protected-sink review'
     }
 
     It 'TASK-783 C99 allows finite read-only shell inspection commands' {
