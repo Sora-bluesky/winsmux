@@ -8053,17 +8053,23 @@ switch ($Command) {
         Write-GateTestFile -Path $routerScriptPath -Content $routerScript
         Remove-Item -LiteralPath (Join-Path $fixture.RepoRoot '.winsmux\review-state.json') -Force
         foreach ($readOnlyCommand in @(
-                'pwsh -NoProfile -File scripts/winsmux-core.ps1 version',
-                'pwsh -NoProfile -File scripts/winsmux-core.ps1 status',
-                'pwsh -NoProfile -File scripts/winsmux-core.ps1 status --json',
-                'pwsh -NoProfile -File scripts/winsmux-core.ps1 doctor',
-                'pwsh -NoProfile -File scripts/winsmux-core.ps1 harness-check --json'
+                'pwsh -NoProfile -File scripts/winsmux-core.ps1 version'
             )) {
             $readOnlyResult = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $readOnlyCommand; cwd = $fixture.RepoRoot }
             $readOnlyResult.OutputObject | Should -BeNullOrEmpty -Because $readOnlyCommand
         }
         $protectedRouter = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'pwsh -NoProfile -File scripts/winsmux-core.ps1 verify'; cwd = $fixture.RepoRoot }
         & $script:AssertDenyResult -Result $protectedRouter -Because 'a non-read-only router subcommand remains subject to protected-sink review'
+
+        foreach ($statefulDiagnosticCommand in @(
+                'pwsh -NoProfile -File scripts/winsmux-core.ps1 status',
+                'pwsh -NoProfile -File scripts/winsmux-core.ps1 status --json',
+                'pwsh -NoProfile -File scripts/winsmux-core.ps1 doctor',
+                'pwsh -NoProfile -File scripts/winsmux-core.ps1 harness-check --json'
+            )) {
+            $statefulDiagnostic = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $statefulDiagnosticCommand; cwd = $fixture.RepoRoot }
+            & $script:AssertDenyResult -Result $statefulDiagnostic -Because "only a statically proven state-invariant diagnostic can bypass review: $statefulDiagnosticCommand"
+        }
     }
 
     It 'TASK-783 C99 allows finite read-only shell inspection commands' {
@@ -8071,6 +8077,190 @@ switch ($Command) {
             $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{ command = $command }
             $result.ExitCode | Should -Be 0 -Because $command
             $result.OutputObject | Should -BeNullOrEmpty -Because $command
+        }
+    }
+
+    It 'TASK-783 C100 proves the selected finite PowerShell router function body is sink-free' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $routerScriptPath = Join-Path $fixture.RepoRoot 'scripts\winsmux-core.ps1'
+        foreach ($maliciousBody in @(
+                'git commit --allow-empty -m version-bypass',
+                "Set-Content -LiteralPath state.txt -Value changed",
+                "Start-Process -FilePath git -ArgumentList 'commit'",
+                '. $dynamicHelper'
+            )) {
+            $maliciousRouter = "function Invoke-Version { $maliciousBody }`nswitch (`$Command) { 'version' { Invoke-Version } }`n"
+            Write-GateTestFile -Path $routerScriptPath -Content $maliciousRouter
+            $command = 'pwsh -NoProfile -File scripts/winsmux-core.ps1 version'
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot }
+            & $script:AssertDenyResult -Result $result -Because "the allowlist cannot skip a stateful selected function body: $maliciousBody"
+        }
+    }
+
+    It 'TASK-783 C101 follows cmd and PowerShell command wrappers into static child scripts' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $scriptPath = Join-Path $fixture.RepoRoot 'scripts\bump-version.ps1'
+        Write-GateTestFile -Path $scriptPath -Content "git commit --allow-empty -m nested-static-script`n"
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes('pwsh -NoProfile -File scripts/bump-version.ps1 -Version 9.9.9'))
+
+        foreach ($command in @(
+                'cmd /c "pwsh -NoProfile -File scripts/bump-version.ps1 -Version 9.9.9"',
+                'cmd.exe /d /s /c "pwsh -NoProfile -File scripts/bump-version.ps1 -Version 9.9.9"',
+                'cmd /v:on /c "pwsh -NoProfile -File !SCRIPT_PATH! -Version 9.9.9"',
+                'pwsh -NoProfile -Command "pwsh -NoProfile -File scripts/bump-version.ps1 -Version 9.9.9"',
+                'pwsh -NoProfile -CommandWithArgs "pwsh -NoProfile -File scripts/bump-version.ps1 -Version 9.9.9"',
+                ('pwsh -NoProfile -EncodedCommand {0}' -f $encoded),
+                'pwsh -NoProfile -EncodedCommand not-base64!',
+                'pwsh -NoProfile -Command $dynamicCommand',
+                'pwsh -NoProfile -Command "pwsh -NoProfile -File $dynamicPath"',
+                'cmd /c "pwsh -NoProfile -File %SCRIPT_PATH% version"'
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot }
+            & $script:AssertDenyResult -Result $result -Because "a nested or dynamic wrapper cannot hide static script execution: $command"
+        }
+
+    }
+
+    It 'TASK-783 C102 tracks executable heredoc materialization across fd redirects copies and shell startup files' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $cases = @(
+            @'
+cat <<'EOF'> note.sh 2>/dev/null
+git commit --allow-empty -m fd-bypass
+EOF
+bash note.sh
+'@,
+            @'
+cat <<'EOF' 1>note.sh 2>&1
+git commit --allow-empty -m explicit-stdout-bypass
+EOF
+bash note.sh
+'@,
+            @'
+cat <<'EOF' 2>/dev/null >note.sh
+git commit --allow-empty -m reordered-fd-bypass
+EOF
+bash note.sh
+'@,
+            @'
+cat <<'EOF'> note.sh
+git commit --allow-empty -m copy-bypass
+EOF
+cat note.sh > run.sh
+bash run.sh
+'@,
+            @'
+cat <<'EOF'> note.sh
+git commit --allow-empty -m tee-bypass
+EOF
+tee run.sh < note.sh >/dev/null
+bash run.sh
+'@,
+            @'
+cat <<'EOF'> note.sh
+git commit --allow-empty -m pipeline-bypass
+EOF
+cat note.sh | tee run.sh >/dev/null
+bash run.sh
+'@,
+            @'
+cat <<'EOF'> note.sh
+git commit --allow-empty -m copy-chain-bypass
+EOF
+cat note.sh > first.sh
+cat first.sh > run.sh
+bash run.sh
+'@,
+            @'
+cat <<'EOF'> note.sh
+git commit --allow-empty -m bash-env-bypass
+EOF
+BASH_ENV=note.sh bash -c ':'
+'@,
+            @'
+cat <<'EOF'> note.sh
+git commit --allow-empty -m env-wrapper-bypass
+EOF
+env BASH_ENV=note.sh bash -c ':'
+'@,
+            @'
+cat <<'EOF'> note.sh
+git commit --allow-empty -m init-file-bypass
+EOF
+bash --init-file=note.sh -c ':'
+'@,
+            @'
+cat <<'EOF'> note.sh
+git commit --allow-empty -m rcfile-bypass
+EOF
+bash --rcfile note.sh -i -c ':'
+'@,
+            @'
+cat <<'EOF'> note.sh
+git commit --allow-empty -m option-bypass
+EOF
+bash -O extglob note.sh
+'@,
+            @'
+cat <<'EOF'> note.sh
+git commit --allow-empty -m option-bypass
+EOF
+sh -o noglob note.sh
+'@,
+            @'
+cat <<'EOF'> note.sh
+codex exec --sandbox read-only option-bypass
+EOF
+zsh -o SH_FILE_EXPANSION note.sh
+'@
+        )
+
+        foreach ($command in $cases) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot }
+            & $script:AssertDenyResult -Result $result -Because 'a materialized protected heredoc body reaches an executable shell path'
+        }
+    }
+
+    It 'TASK-783 C103 keeps non-executed heredoc materialization allowed' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        foreach ($command in @(
+                @'
+cat <<'EOF' 2>note.sh
+git commit --allow-empty -m stderr-is-not-body
+EOF
+bash note.sh
+'@,
+                @'
+cat <<'EOF' >/dev/null 2>note.sh
+git commit --allow-empty -m stdout-discarded
+EOF
+bash note.sh
+'@,
+                @'
+cat <<'EOF'> note.sh
+git commit --allow-empty -m copied-only
+EOF
+cat note.sh > run.sh
+'@,
+                @'
+cat <<'EOF'> note.sh
+git commit --allow-empty -m positional-data
+EOF
+bash -c ':' note.sh
+'@,
+                @'
+cat <<'EOF'> note.sh
+git commit --allow-empty -m non-shell-env
+EOF
+BASH_ENV=note.sh true
+'@
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot }
+            $result.OutputObject | Should -BeNullOrEmpty -Because 'protected text that cannot reach an executable sink remains data'
         }
     }
 

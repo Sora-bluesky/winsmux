@@ -390,11 +390,11 @@ function getExecutableHeredocBodies(command) {
 
 function getStaticHeredocOutputTarget(commandLine) {
   const targets = [...String(commandLine || "").matchAll(
-    /(?<![<>])(?:[0-9]*>>?)(?![>&])[ \t]*(?:'([^']+)'|"([^"$\x60]+)"|([^\s;&|]+))/gu,
-  )];
+    /(?<![<>])([0-9]*)>>?(?![>&])[ \t]*(?:'([^']+)'|"([^"$\x60]+)"|([^\s;&|]+))/gu,
+  )].filter((match) => !match[1] || match[1] === "1");
   if (targets.length === 0) return "";
   const match = targets[targets.length - 1];
-  const target = stripOuterQuotes(match[1] || match[2] || match[3] || "").trim();
+  const target = stripOuterQuotes(match[2] || match[3] || match[4] || "").trim();
   const exactShellVariable = /^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})$/u.test(target);
   if (!target || (!exactShellVariable && /[$%\x60*?\[\]{}\0]/u.test(target))) return "";
   return target;
@@ -404,12 +404,29 @@ function doesCommandExecuteStaticScriptPath(command, expectedPath, initialCwd = 
   const expected = resolveComparableStaticScriptPath(expectedPath, initialCwd);
   const expectedVariable = getShellScriptVariableName(expectedPath);
   if (!expected && !expectedVariable) return false;
+  const knownPaths = new Set(expected ? [expected] : []);
   let effectiveCwd = initialCwd;
   let cwdUnresolved = false;
+  const matchesKnownPath = (value) => {
+    const variable = getShellScriptVariableName(value);
+    if (expectedVariable && variable === expectedVariable) return true;
+    if (isDynamicStdinScriptPath(value)) return true;
+    const resolved = resolveComparableStaticScriptPath(value, effectiveCwd);
+    return Boolean(resolved && knownPaths.has(resolved));
+  };
+  const rememberPath = (value) => {
+    if (!value || isDynamicStdinScriptPath(value)) return false;
+    const resolved = resolveComparableStaticScriptPath(value, effectiveCwd);
+    if (!resolved) return false;
+    knownPaths.add(resolved);
+    return true;
+  };
   for (const segment of splitCommandSegments(String(command || ""))) {
     const stages = splitCommandPipelineStages(segment);
+    let pipelineCarriesKnownBody = false;
     for (const stage of stages) {
-      const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(tokenizeCommandLine(stage)));
+      const rawTokens = tokenizeCommandLine(stage);
+      const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(rawTokens));
       if (execution.nestedCommand && doesCommandExecuteStaticScriptPath(execution.nestedCommand, expectedPath, effectiveCwd)) {
         return true;
       }
@@ -424,21 +441,61 @@ function doesCommandExecuteStaticScriptPath(command, expectedPath, initialCwd = 
         }
         continue;
       }
+      if (isShellCommandExecutable(executable)) {
+        const startupAssignments = rawTokens
+          .map((token) => stripOuterQuotes(token))
+          .map((token) => /^(?:BASH_ENV|ENV)=(.*)$/u.exec(token))
+          .filter(Boolean)
+          .map((match) => stripOuterQuotes(match[1] || ""));
+        if (startupAssignments.some((value) => !value || matchesKnownPath(value))) {
+          return true;
+        }
+      }
+      if (executable === "cat") {
+        const source = execution.tokens.slice(1).find((token) => {
+          const value = stripOuterQuotes(token);
+          return value && !value.startsWith("-") && !/^[<>]/u.test(value);
+        });
+        const carriesKnownBody = Boolean(source && matchesKnownPath(source));
+        if (carriesKnownBody) {
+          const destination = getStaticHeredocOutputTarget(stage);
+          if (destination) rememberPath(destination);
+          pipelineCarriesKnownBody = true;
+        }
+      } else if (executable === "tee") {
+        const inputTarget = getStaticShellInputTarget(stage);
+        const carriesKnownBody = pipelineCarriesKnownBody || Boolean(inputTarget && matchesKnownPath(inputTarget));
+        if (carriesKnownBody) {
+          for (const token of execution.tokens.slice(1)) {
+            const value = stripOuterQuotes(token);
+            if (!value || value.startsWith("-") || /^[<>]/u.test(value) || value === inputTarget) continue;
+            rememberPath(value);
+            break;
+          }
+          pipelineCarriesKnownBody = true;
+        }
+      } else {
+        pipelineCarriesKnownBody = false;
+      }
       const scriptPath = getStaticInterpreterScriptPath(execution.tokens);
       if (!scriptPath) continue;
-      const scriptVariable = getShellScriptVariableName(scriptPath);
-      if (expectedVariable && scriptVariable === expectedVariable) {
-        return true;
-      }
-      if (cwdUnresolved || isDynamicStdinScriptPath(scriptPath)) {
-        return true;
-      }
-      if (resolveComparableStaticScriptPath(scriptPath, effectiveCwd) === expected) {
+      if (cwdUnresolved || scriptPath.includes("\0") || matchesKnownPath(scriptPath)) {
         return true;
       }
     }
   }
   return false;
+}
+
+function getStaticShellInputTarget(commandLine) {
+  const targets = [...String(commandLine || "").matchAll(
+    /(?<![<])(?:0)?<(?![<&])[ \t]*(?:'([^']+)'|"([^"$\x60]+)"|([^\s;&|>]+))/gu,
+  )];
+  if (targets.length === 0) return "";
+  const match = targets[targets.length - 1];
+  const target = stripOuterQuotes(match[1] || match[2] || match[3] || "").trim();
+  if (!target || /[$%\x60*?\[\]{}\0]/u.test(target)) return "";
+  return target;
 }
 
 function normalizeStaticScriptPathToken(value) {
@@ -478,6 +535,17 @@ function getStaticInterpreterScriptPath(tokens) {
     const token = stripOuterQuotes(tokens[index]);
     const normalized = normalizeAgentValue(token);
     if (normalized === "-c" || normalized === "--command") return "";
+    if (/^--(?:init-file|rcfile|startup-file)=/u.test(normalized)) {
+      return token.slice(token.indexOf("=") + 1);
+    }
+    if (["--init-file", "--rcfile", "--startup-file"].includes(normalized)) {
+      return index + 1 < tokens.length ? stripOuterQuotes(tokens[index + 1]) : "\0unresolved-shell-startup-file";
+    }
+    if (shellInterpreterOptionConsumesNextValue(token)) {
+      if (index + 1 >= tokens.length) return "\0unresolved-shell-option-value";
+      index += 1;
+      continue;
+    }
     if (normalized === "--") {
       return index + 1 < tokens.length ? stripOuterQuotes(tokens[index + 1]) : "";
     }
@@ -562,6 +630,20 @@ function getStaticInvokedScriptEvidence(command, baseCwd, depth = 0) {
       }
       const tokens = execution.tokens;
       const executable = normalizeExecutableName(tokens[0] || "");
+      if (executable === "cmd" || executable === "cmd.exe") {
+        const rawNestedCommand = getCmdShellArgument(tokens, false);
+        if (rawNestedCommand) {
+          const nestedCommand = getStaticNestedShellCommand("cmd", tokens.slice(1));
+          if (nestedCommand === null) {
+            evidence.unresolved = true;
+          } else {
+            const nestedEvidence = getStaticInvokedScriptEvidence(nestedCommand, baseCwd, depth + 1);
+            evidence.contents.push(...nestedEvidence.contents);
+            evidence.unresolved = evidence.unresolved || nestedEvidence.unresolved;
+          }
+        }
+        continue;
+      }
       if (isShellCommandExecutable(executable)) {
         const nestedCommand = getShellCommandArgument(tokens);
         if (nestedCommand) {
@@ -572,6 +654,23 @@ function getStaticInvokedScriptEvidence(command, baseCwd, depth = 0) {
         continue;
       }
       if (!isPowerShellExecutable(executable)) continue;
+      const wrapperPrefix = getPowerShellWrapperPrefixTokens(tokens);
+      if (wrapperPrefix.length < tokens.length) {
+        const nestedCommand = getStaticNestedShellCommand(executable, tokens.slice(1));
+        const initialWorkingDirectory = getPowerShellInitialWorkingDirectory(tokens, executable);
+        if (nestedCommand === null || !nestedCommand || initialWorkingDirectory.includes("\0") ||
+            isDynamicStdinScriptPath(initialWorkingDirectory)) {
+          evidence.unresolved = true;
+        } else {
+          const nestedCwd = initialWorkingDirectory
+            ? path.resolve(baseCwd, stripOuterQuotes(initialWorkingDirectory))
+            : baseCwd;
+          const nestedEvidence = getStaticInvokedScriptEvidence(nestedCommand, nestedCwd, depth + 1);
+          evidence.contents.push(...nestedEvidence.contents);
+          evidence.unresolved = evidence.unresolved || nestedEvidence.unresolved;
+        }
+        continue;
+      }
       const fileArgument = getPowerShellFileArgument(tokens);
       if (!fileArgument.present) continue;
       const value = fileArgument.value;
@@ -602,7 +701,18 @@ function getStaticInvokedScriptEvidence(command, baseCwd, depth = 0) {
           continue;
         }
         const source = fs.readFileSync(scriptPath, "utf8").replace(/^\uFEFF/u, "");
-        if (isKnownReadOnlyPowerShellScriptInvocation(tokens, fileArgument, scriptPath, scriptRepoRoot, source)) {
+        const knownReadOnlyState = getKnownReadOnlyPowerShellScriptInvocationState(
+          tokens,
+          fileArgument,
+          scriptPath,
+          scriptRepoRoot,
+          source,
+        );
+        if (knownReadOnlyState === "safe") {
+          continue;
+        }
+        if (knownReadOnlyState === "unsafe") {
+          evidence.unresolved = true;
           continue;
         }
         const protectedEvidence = getStaticScriptProtectedEvidence(source, path.dirname(scriptPath));
@@ -616,27 +726,20 @@ function getStaticInvokedScriptEvidence(command, baseCwd, depth = 0) {
   return evidence;
 }
 
-function isKnownReadOnlyPowerShellScriptInvocation(tokens, fileArgument, scriptPath, repoRoot, source) {
+function getKnownReadOnlyPowerShellScriptInvocationState(tokens, fileArgument, scriptPath, repoRoot, source) {
   const relativePath = path.relative(repoRoot, scriptPath).replace(/\\/gu, "/").toLowerCase();
-  if (relativePath !== "scripts/winsmux-core.ps1" || fileArgument.valueIndex < 0) return false;
+  if (relativePath !== "scripts/winsmux-core.ps1" || fileArgument.valueIndex < 0) return "none";
   const args = tokens.slice(fileArgument.valueIndex + 1).map((token) => stripOuterQuotes(token));
-  if (args.length === 0 || args.some((token) => /[$%\x60;&|{}\0]/u.test(token))) return false;
+  if (args.length === 0 || args.some((token) => /[$%\x60;&|{}\0]/u.test(token))) return "none";
   const command = normalizeAgentValue(args[0]);
   const rest = args.slice(1).map(normalizeAgentValue);
   const contracts = {
     version: { functionName: "Invoke-Version", allowedArgs: [[]] },
-    status: { functionName: "Invoke-Status", allowedArgs: [[], ["--json"]] },
-    doctor: { functionName: "Invoke-Doctor", allowedArgs: [[], ["--json"]] },
-    "harness-check": {
-      functionName: "Invoke-WinsmuxHarnessCheckCommand",
-      allowedArgs: [[], ["--json"]],
-      definitionPath: "winsmux-core/scripts/control-plane-dispatch.ps1",
-    },
   };
   const contract = contracts[command];
   if (!contract || !contract.allowedArgs.some((allowed) =>
     allowed.length === rest.length && allowed.every((value, index) => value === rest[index]))) {
-    return false;
+    return "none";
   }
   const escapedCommand = command.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
   const escapedFunction = contract.functionName.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
@@ -648,21 +751,15 @@ function isKnownReadOnlyPowerShellScriptInvocation(tokens, fileArgument, scriptP
     String.raw`^[ \t]*function[ \t]+${escapedFunction}[ \t]*\{`,
     "imu",
   );
-  let hasFunctionDefinition = functionDefinitionPattern.test(source);
-  if (!hasFunctionDefinition && contract.definitionPath) {
-    const definitionPath = path.resolve(repoRoot, contract.definitionPath);
-    if (!isPathInsideOrSame(definitionPath, repoRoot)) return false;
-    try {
-      const stat = fs.statSync(definitionPath);
-      if (!stat.isFile() || stat.size > 1024 * 1024) return false;
-      hasFunctionDefinition = functionDefinitionPattern.test(
-        fs.readFileSync(definitionPath, "utf8").replace(/^\uFEFF/u, ""),
-      );
-    } catch {
-      return false;
-    }
-  }
-  return hasRouterBinding && hasFunctionDefinition;
+  const functionMatch = functionDefinitionPattern.exec(source);
+  if (!hasRouterBinding || !functionMatch) return "unsafe";
+  const bodies = getBraceBlockBodies(source.slice(functionMatch.index));
+  if (bodies.length === 0) return "unsafe";
+  const body = bodies[0];
+  const protectedEvidence = getStaticScriptProtectedEvidence(body, path.dirname(scriptPath));
+  if (protectedEvidence.unresolved || protectedEvidence.commands.length > 0) return "unsafe";
+  const mutatesState = /(?:^|[;\r\n])\s*(?:&\s*)?(?:git|gh|codex|set-content|add-content|out-file|new-item|remove-item|move-item|copy-item|rename-item|set-itemproperty|new-itemproperty|remove-itemproperty|start-process|saps|invoke-expression|iex|set-alias|new-alias|reg(?:\.exe)?)\b|(?:^|[;\r\n])\s*\.\s+[^\r\n]+|&\s*\$[A-Za-z_]/imu.test(body);
+  return mutatesState ? "unsafe" : "safe";
 }
 
 function getStaticScriptProtectedEvidence(source, scriptCwd) {
