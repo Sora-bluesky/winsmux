@@ -132,7 +132,7 @@ try {
 
   // Rule 7: No direct Codex dispatch outside winsmux send
   if (toolName === "Bash") {
-    if (isDirectCodexDispatch(reviewCommand)) {
+    if (isDirectCodexDispatch(reviewDetectionCommand)) {
       deny("Use winsmux send to dispatch Codex to panes");
     }
   }
@@ -221,8 +221,8 @@ try {
   // Rule 12b: AST completeness guard. Worker ownership rules run first so their
   // more specific remediation remains observable for protected Git lifecycle calls.
   if (toolName === "Bash" &&
-      (hasUnsupportedInlineInterpreterBoundary(reviewCommand) ||
-       hasUnsupportedDirectProcessBoundary(reviewCommand))) {
+      (hasUnsupportedInlineInterpreterBoundary(reviewDetectionCommand) ||
+       hasUnsupportedDirectProcessBoundary(reviewDetectionCommand))) {
     deny("Unsupported inline process construction is blocked. Use a supported literal form or a managed winsmux workflow.");
   }
 
@@ -9521,11 +9521,20 @@ function getReviewGatedCommandTargets(command, baseCwd, depth = 0, inheritedGitE
 
       if (isPowerShellExecutable(executable)) {
         const nestedCommand = getPowerShellNestedCommand(tokens);
-        const nestedTargets = getReviewGatedCommandTargets(nestedCommand || "", gitCommandBaseCwd, depth + 1, gitEnvContext);
+        const initialWorkingDirectory = getPowerShellInitialWorkingDirectory(tokens, executable);
+        const powerShellCommandBaseCwd = initialWorkingDirectory
+          ? resolveGitCwdOption(gitCommandBaseCwd, "", initialWorkingDirectory)
+          : gitCommandBaseCwd;
+        if (initialWorkingDirectory && !powerShellCommandBaseCwd &&
+            (isReviewGatedCommand(nestedCommand) || hasConfiguredGitReviewLifecycleAlias(nestedCommand, gitCommandBaseCwd))) {
+          targetCwds.push("\0unresolved-powershell-working-directory");
+          continue;
+        }
+        const nestedTargets = getReviewGatedCommandTargets(nestedCommand || "", powerShellCommandBaseCwd, depth + 1, gitEnvContext);
         targetCwds.push(...nestedTargets.targetCwds);
         requiresBaseCwd = requiresBaseCwd || nestedTargets.requiresBaseCwd;
         for (const blockBody of getBraceBlockBodies(nestedCommand)) {
-          const blockTargets = getReviewGatedCommandTargets(blockBody, gitCommandBaseCwd, depth + 1, gitEnvContext);
+          const blockTargets = getReviewGatedCommandTargets(blockBody, powerShellCommandBaseCwd, depth + 1, gitEnvContext);
           targetCwds.push(...blockTargets.targetCwds);
           requiresBaseCwd = requiresBaseCwd || blockTargets.requiresBaseCwd;
         }
@@ -10495,7 +10504,7 @@ function hasControlFlowReviewGatedCommand(command) {
 }
 
 function getPowerShellNestedCommand(tokens) {
-  const plainCommand = getOptionRemainderValue(tokens, ["-command", "-c"]);
+  const plainCommand = getOptionRemainderValue(tokens, ["-command", "-c", "-commandwithargs", "-cwa"]);
   if (plainCommand) {
     return plainCommand;
   }
@@ -10529,10 +10538,44 @@ function getPowerShellNestedCommand(tokens) {
   return "";
 }
 
+function getPowerShellInitialWorkingDirectory(tokens, executable) {
+  if (executable !== "pwsh" && executable !== "pwsh.exe") {
+    return "";
+  }
+  const optionNames = [
+    ...expandPowerShellOptionPrefixes(["-workingdirectory"]).filter((optionName) => optionName.length >= 3),
+    "-wd",
+  ];
+  const nestedOptionNames = expandPowerShellOptionPrefixes([
+    "-command",
+    "-c",
+    "-commandwithargs",
+    "-cwa",
+    "-encodedcommand",
+  ]);
+  for (let index = 1; index < tokens.length; index += 1) {
+    const rawToken = stripOuterQuotes(tokens[index]);
+    const normalizedToken = normalizeAgentValue(rawToken);
+    if (nestedOptionNames.includes(normalizedToken) || nestedOptionNames.some((optionName) =>
+      normalizedToken.startsWith(optionName + "=") || normalizedToken.startsWith(optionName + ":"))) {
+      break;
+    }
+    if (optionNames.includes(normalizedToken)) {
+      return index + 1 < tokens.length
+        ? stripOuterQuotes(tokens[index + 1])
+        : "\0unresolved-powershell-working-directory";
+    }
+  }
+
+  return "";
+}
+
 function getPowerShellWrapperPrefixTokens(tokens) {
   const nestedOptionPrefixes = expandPowerShellOptionPrefixes([
     "-command",
     "-c",
+    "-commandwithargs",
+    "-cwa",
     "-encodedcommand",
   ]);
   for (let index = 1; index < tokens.length; index += 1) {

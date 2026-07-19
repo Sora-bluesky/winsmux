@@ -839,16 +839,35 @@ PY
     }
 
     It 'allows codex exec text inside a heredoc body' {
-        $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
-            command = @'
+        $commands = @(
+            @'
 cat <<'EOF'
 codex exec "review the repo"
 EOF
 '@
-        }
+            [string]::Join("`n", @(
+                "cat <<'EOF' > note.txt"
+                'codex exec "review the repo"'
+                'EOF'
+            ))
+            [string]::Join("`n", @(
+                "cat <<'EOF' > python-example.txt"
+                'python -c "import os; os.system(cmd)"'
+                'EOF'
+            ))
+            [string]::Join("`n", @(
+                "cat <<'EOF' > node-example.txt"
+                'node -e "require(''child_process'').execSync(cmd)"'
+                'EOF'
+            ))
+        )
+        foreach ($command in $commands) {
+            $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{ command = $command }
 
-        $result.ExitCode | Should -Be 0
-        $result.StdErr | Should -Be ''
+            $result.ExitCode | Should -Be 0
+            $result.StdErr | Should -Be ''
+            $result.OutputObject | Should -BeNullOrEmpty -Because 'a data-only heredoc must remain literal regardless of newline style'
+        }
     }
 
     It 'denies shallow git clone usage' {
@@ -2082,6 +2101,79 @@ EOF
         & $script:AssertDenyResult -Result $result
         $result.OutputObject.systemMessage | Should -Match 'review-approve'
         $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'uses pwsh initial WorkingDirectory for review-gated lifecycle checks' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $targetHeadSha
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+        }) | Out-Null
+
+        foreach ($option in @('-WorkingDirectory', '-WorkingD', '-wo', '-wd')) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+                command = ('pwsh {0} "{1}" -Command "git commit -m pwsh-working-directory-approved"' -f $option, $target.RepoRoot)
+            })
+
+            $result.ExitCode | Should -Be 0
+            $result.StdErr | Should -Be ''
+            $result.OutputObject | Should -BeNullOrEmpty -Because "$option must resolve the approved target repository"
+        }
+    }
+
+    It 'does not allow caller PASS to satisfy pwsh initial WorkingDirectory lifecycle targets' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
+        $rootHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $rootHeadSha
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+        }) | Out-Null
+
+        foreach ($option in @('-WorkingDirectory', '-WorkingD', '-wo', '-wd')) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+                command = ('pwsh {0} "{1}" -Command "git commit -m pwsh-working-directory-denied"' -f $option, $target.RepoRoot)
+            })
+
+            & $script:AssertDenyResult -Result $result -Because "$option must not inherit the caller repository PASS"
+            $result.OutputObject.systemMessage | Should -Match 'review-request'
+        }
+
+        $unresolved = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = 'pwsh -WorkingDirectory -Command "git commit -m unresolved-working-directory"'
+        })
+        & $script:AssertDenyResult -Result $unresolved -Because 'a missing pwsh working-directory value must fail closed'
+
+        $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes('git commit -m pwsh-encoded-working-directory'))
+        $encoded = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('pwsh -wd "{0}" -EncodedCommand {1}' -f $target.RepoRoot, $encodedCommand)
+        })
+        & $script:AssertDenyResult -Result $encoded -Because 'pwsh initial cwd must also govern decoded lifecycle commands'
+
+        $commandWithArgs = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('pwsh -wd "{0}" -CommandWithArgs "git commit -m pwsh-command-with-args"' -f $target.RepoRoot)
+        })
+        & $script:AssertDenyResult -Result $commandWithArgs -Because 'pwsh initial cwd must govern CommandWithArgs lifecycle commands'
+
+        $windowsPowerShell = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('powershell -WorkingDirectory "{0}" -Command "git commit -m windows-powershell-caller"' -f $target.RepoRoot)
+        })
+        $windowsPowerShell.ExitCode | Should -Be 0
+        $windowsPowerShell.OutputObject | Should -BeNullOrEmpty -Because 'Windows PowerShell 5.1 does not apply pwsh host WorkingDirectory semantics'
     }
 
     It 'default-denies shell function body lifecycle launchers' {
