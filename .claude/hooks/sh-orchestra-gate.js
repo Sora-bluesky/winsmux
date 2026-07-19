@@ -336,6 +336,7 @@ function getExecutableHeredocBodies(command) {
 
   const lines = command.split(/\r?\n/);
   const bodies = [];
+  const staticVariables = new Map();
   for (let index = 0; index < lines.length; index += 1) {
     let commandLine = lines[index];
     let commandLineEnd = index;
@@ -346,6 +347,7 @@ function getExecutableHeredocBodies(command) {
 
     const declarations = [...commandLine.matchAll(/(?:(?<![A-Za-z0-9_])([0-9]+))?<<(?!<)(-?)\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\3/gu)];
     if (declarations.length === 0) {
+      updateStaticShellVariableAssignments(commandLine, staticVariables);
       index = commandLineEnd;
       continue;
     }
@@ -354,7 +356,7 @@ function getExecutableHeredocBodies(command) {
     const executableFds = new Set(declarations
       .map((declaration) => declaration[1] || "0")
       .filter((fd) => hasExecutableHeredocConsumer(commandLine, declarationPattern, fd)));
-    const materializedTargets = getStaticHeredocMaterializationTargets(commandLine);
+    const materializedTargets = getStaticHeredocMaterializationTargets(commandLine, staticVariables);
 
     const parsedBodies = [];
     let bodyIndex = commandLineEnd + 1;
@@ -388,7 +390,7 @@ function getExecutableHeredocBodies(command) {
   return bodies;
 }
 
-function getStaticHeredocOutputTarget(commandLine) {
+function getStaticHeredocOutputTarget(commandLine, staticVariables = new Map()) {
   const source = String(commandLine || "");
   const targets = [
     ...[...source.matchAll(
@@ -401,26 +403,55 @@ function getStaticHeredocOutputTarget(commandLine) {
     .sort((left, right) => left.index - right.index);
   if (targets.length === 0) return "";
   const match = targets[targets.length - 1];
-  const target = stripOuterQuotes(match.value).trim();
+  const rawTarget = stripOuterQuotes(match.value).trim();
+  const variableName = getShellScriptVariableName(rawTarget);
+  const target = variableName && staticVariables.has(variableName)
+    ? staticVariables.get(variableName)
+    : rawTarget;
   const exactShellVariable = /^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})$/u.test(target);
   if (!target || (!exactShellVariable && /[$%\x60*?\[\]{}\0]/u.test(target))) return "";
   return target;
 }
 
-function getStaticHeredocMaterializationTargets(commandLine) {
+function getStaticHeredocMaterializationTargets(commandLine, staticVariables = new Map()) {
   const targets = new Set();
-  const redirectedTarget = getStaticHeredocOutputTarget(commandLine);
+  const redirectedTarget = getStaticHeredocOutputTarget(commandLine, staticVariables);
   if (redirectedTarget) targets.add(redirectedTarget);
   for (const stage of splitCommandPipelineStages(String(commandLine || ""))) {
     const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(tokenizeCommandLine(stage)));
     if (normalizeExecutableName(execution.tokens[0] || "") !== "tee") continue;
     for (const token of execution.tokens.slice(1)) {
-      const value = stripOuterQuotes(token);
+      const rawValue = stripOuterQuotes(token);
+      const variableName = getShellScriptVariableName(rawValue);
+      const value = variableName && staticVariables.has(variableName)
+        ? staticVariables.get(variableName)
+        : rawValue;
       if (!value || value.startsWith("-") || /^[<>]/u.test(value) || /[$%\x60*?\[\]{}\0]/u.test(value)) continue;
       targets.add(value);
     }
   }
   return [...targets];
+}
+
+function updateStaticShellVariableAssignments(commandLine, variables) {
+  for (const segment of splitCommandSegments(String(commandLine || ""))) {
+    const tokens = tokenizeCommandLine(segment);
+    if (tokens.length === 0) continue;
+    let assignmentTokens = tokens;
+    const executable = normalizeExecutableName(tokens[0] || "");
+    if (["export", "declare", "typeset"].includes(executable)) {
+      assignmentTokens = tokens.slice(1).filter((token) => !/^[+-][A-Za-z]+$/u.test(stripOuterQuotes(token)));
+    } else if (!tokens.every((token) => /^[A-Za-z_][A-Za-z0-9_]*=/u.test(stripOuterQuotes(token)))) {
+      continue;
+    }
+    for (const token of assignmentTokens) {
+      const assignment = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/u.exec(stripOuterQuotes(token));
+      if (!assignment) continue;
+      const value = stripOuterQuotes(assignment[2]);
+      if (!value || /[$%\x60*?\[\]{}\0]/u.test(value)) variables.delete(normalizeAgentValue(assignment[1]));
+      else variables.set(normalizeAgentValue(assignment[1]), value);
+    }
+  }
 }
 
 function doesCommandExecuteStaticScriptPath(command, expectedPath, initialCwd = ".") {
@@ -456,15 +487,23 @@ function doesCommandExecuteStaticScriptPath(command, expectedPath, initialCwd = 
         return true;
       }
       const executable = normalizeExecutableName(execution.tokens[0] || "");
-      if (stages.length === 1 && executable === "export") {
-        for (const token of execution.tokens.slice(1)) {
+      if (stages.length === 1 && ["export", "declare", "typeset"].includes(executable)) {
+        const declarationTokens = execution.tokens.slice(1);
+        const exportsValue = executable === "export" || declarationTokens.some((token) => /^-[A-Za-z]*x[A-Za-z]*$/u.test(stripOuterQuotes(token)));
+        const unexportsValue = declarationTokens.some((token) => /^\+[A-Za-z]*x[A-Za-z]*$/u.test(stripOuterQuotes(token)));
+        for (const token of declarationTokens) {
+          if (/^[+-][A-Za-z]+$/u.test(stripOuterQuotes(token))) continue;
           const assignment = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/u.exec(stripOuterQuotes(token));
           if (assignment) {
-            shellVariables.set(assignment[1], stripOuterQuotes(assignment[2]));
-            exportedShellVariables.set(assignment[1], stripOuterQuotes(assignment[2]));
+            const value = stripOuterQuotes(assignment[2]);
+            shellVariables.set(assignment[1], value);
+            if (unexportsValue) exportedShellVariables.delete(assignment[1]);
+            else if (exportsValue || exportedShellVariables.has(assignment[1])) exportedShellVariables.set(assignment[1], value);
           } else {
             const name = stripOuterQuotes(token);
-            if (/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name) && shellVariables.has(name)) {
+            if (unexportsValue && /^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)) {
+              exportedShellVariables.delete(name);
+            } else if (exportsValue && /^[A-Za-z_][A-Za-z0-9_]*$/u.test(name) && shellVariables.has(name)) {
               exportedShellVariables.set(name, shellVariables.get(name));
             }
           }

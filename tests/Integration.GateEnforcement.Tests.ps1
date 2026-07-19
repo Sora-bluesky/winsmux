@@ -8207,12 +8207,26 @@ EOF
 bash run.sh
 '@,
             @'
+out=run.sh
+tee "$out" <<'EOF' >discard.txt
+codex exec --sandbox read-only resolved-tee-variable-bypass
+EOF
+bash run.sh
+'@,
+            @'
 target=note.sh
 cat <<'EOF'> $target
 git commit --allow-empty -m dynamic-tee-input-bypass
 EOF
 tee run.sh < "$target" >discard.txt
 bash run.sh
+'@,
+            @'
+target=note.sh
+cat <<'EOF'> "$target"
+git commit --allow-empty -m resolved-variable-output-bypass
+EOF
+bash note.sh
 '@,
             @'
 cat <<'EOF'> note.sh
@@ -8240,6 +8254,20 @@ cat <<'EOF'> note.sh
 git commit --allow-empty -m exported-bash-env-bypass
 EOF
 export BASH_ENV=note.sh
+bash -c ':'
+'@,
+            @'
+cat <<'EOF'> note.sh
+git commit --allow-empty -m declared-export-bypass
+EOF
+declare -x BASH_ENV=note.sh
+bash -c ':'
+'@,
+            @'
+cat <<'EOF'> note.sh
+git commit --allow-empty -m typeset-export-bypass
+EOF
+typeset -x BASH_ENV=note.sh
 bash -c ':'
 '@,
             @'
