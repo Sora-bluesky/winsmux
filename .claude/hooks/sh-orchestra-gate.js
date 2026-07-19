@@ -904,7 +904,7 @@ function getStaticNonPowerShellInterpreterFileArgument(tokens) {
   return { kind, present: false, value: "" };
 }
 
-function getStaticInvokedScriptEvidence(command, baseCwd, depth = 0) {
+function getStaticInvokedScriptEvidence(command, baseCwd, depth = 0, cmdDelayedExpansion = false) {
   const evidence = { contents: [], unresolved: false };
   if (depth > 5) {
     evidence.unresolved = true;
@@ -933,6 +933,7 @@ function getStaticInvokedScriptEvidence(command, baseCwd, depth = 0) {
             nestedCommand === null ? rawNestedCommand : nestedCommand,
             baseCwd,
             depth + 1,
+            nestedCommand === null && isCmdDelayedExpansionEnabled(tokens),
           );
           evidence.contents.push(...nestedEvidence.contents);
           evidence.unresolved = evidence.unresolved || nestedEvidence.unresolved;
@@ -952,7 +953,8 @@ function getStaticInvokedScriptEvidence(command, baseCwd, depth = 0) {
       if (staticInterpreterFile.present) {
         const value = staticInterpreterFile.value;
         if (isAnyStdinDevicePath(value)) continue;
-        if (!value || value === "-" || /[$%\x60*?\[\]{}\0]/u.test(value)) {
+        if (!value || value === "-" || /[$%\x60*?\[\]{}\0]/u.test(value) ||
+            (cmdDelayedExpansion && /![^!\r\n]+!/u.test(value))) {
           evidence.unresolved = true;
           continue;
         }
@@ -1010,7 +1012,8 @@ function getStaticInvokedScriptEvidence(command, baseCwd, depth = 0) {
       const fileArgument = getPowerShellFileArgument(tokens);
       if (!fileArgument.present) continue;
       const value = fileArgument.value;
-      if (!value || value === "-" || /[$%\x60*?\[\]{}\0]/u.test(value)) {
+      if (!value || value === "-" || /[$%\x60*?\[\]{}\0]/u.test(value) ||
+          (cmdDelayedExpansion && /![^!\r\n]+!/u.test(value))) {
         evidence.unresolved = true;
         continue;
       }
@@ -6593,6 +6596,26 @@ function getCmdShellArgument(tokens, materialize = true) {
   }
 
   return "";
+}
+
+function isCmdDelayedExpansionEnabled(tokens) {
+  let delayedExpansion = false;
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = normalizeAgentValue(tokens[index]);
+    if (token === "/v:on") {
+      delayedExpansion = true;
+      continue;
+    }
+    if (token === "/v:off") {
+      delayedExpansion = false;
+      continue;
+    }
+    if (token === "/c" || token === "/k" || token.startsWith("/c") || token.startsWith("/k") ||
+        Math.max(token.lastIndexOf("/c"), token.lastIndexOf("/k")) > 0) {
+      return delayedExpansion;
+    }
+  }
+  return delayedExpansion;
 }
 
 function splitCmdConditionalStatements(command) {

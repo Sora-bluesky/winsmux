@@ -8002,6 +8002,13 @@ cd .claude && bash "${target##*/}"
         $safe = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'pwsh -NoProfile -File scripts/read-only.ps1'; cwd = $fixture.RepoRoot } -Environment $workerEnvironment
         $safe.OutputObject | Should -BeNullOrEmpty -Because 'a static script without a protected sink remains allowed'
 
+        $bangLiteralScriptPath = Join-Path $fixture.RepoRoot 'scripts\read!only.ps1'
+        Write-GateTestFile -Path $bangLiteralScriptPath -Content "Write-Output 'read only'`n"
+        $bangLiteral = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'pwsh -NoProfile -File scripts/read!only.ps1'; cwd = $fixture.RepoRoot } -Environment $workerEnvironment
+        $bangLiteral.OutputObject | Should -BeNullOrEmpty -Because 'a literal bang in a direct PowerShell script path is not cmd delayed expansion'
+        $disabledDelayedExpansion = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'cmd /v:off /c "pwsh -NoProfile -File scripts/read!only.ps1"'; cwd = $fixture.RepoRoot } -Environment $workerEnvironment
+        $disabledDelayedExpansion.OutputObject | Should -BeNullOrEmpty -Because 'cmd /v:off preserves a literal bang in a static script path'
+
         $codexScriptPath = Join-Path $fixture.RepoRoot 'scripts\direct-codex.ps1'
         Write-GateTestFile -Path $codexScriptPath -Content "codex exec --sandbox read-only 'review'`n"
         $codex = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'pwsh -NoProfile -File scripts/direct-codex.ps1'; cwd = $fixture.RepoRoot } -Environment $workerEnvironment
@@ -8140,6 +8147,10 @@ switch ($Command) {
                 'cmd /c "pwsh -NoProfile -File scripts/bump-version.ps1 -Version 9.9.9"',
                 'cmd.exe /d /s /c "pwsh -NoProfile -File scripts/bump-version.ps1 -Version 9.9.9"',
                 'cmd /v:on /c "pwsh -NoProfile -File !SCRIPT_PATH! -Version 9.9.9"',
+                'cmd /v:on /c "powershell -NoProfile -File !SCRIPT_PATH! -Version 9.9.9"',
+                'cmd /v:on /c "bash !SCRIPT_PATH!"',
+                'cmd /v:on /c "python !SCRIPT_PATH!"',
+                'cmd /v:on /c "node !SCRIPT_PATH!"',
                 'pwsh -NoProfile -Command "pwsh -NoProfile -File scripts/bump-version.ps1 -Version 9.9.9"',
                 'pwsh -NoProfile -CommandWithArgs "pwsh -NoProfile -File scripts/bump-version.ps1 -Version 9.9.9"',
                 ('pwsh -NoProfile -EncodedCommand {0}' -f $encoded),
