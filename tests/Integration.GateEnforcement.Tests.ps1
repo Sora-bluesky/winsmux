@@ -8235,6 +8235,21 @@ EOF
 bash note.sh
 '@,
             @'
+target=note.sh
+false && target=safe.sh
+cat <<'EOF'> "$target"
+git commit --allow-empty -m conditional-assignment-bypass
+EOF
+bash note.sh
+'@,
+            @'
+target=dir/note.sh
+cat <<'EOF'> "${target##*/}"
+git commit --allow-empty -m basename-expansion-bypass
+EOF
+bash note.sh
+'@,
+            @'
 TARGET=note.sh
 target=safe.sh
 cat <<'EOF'> "$TARGET"
@@ -8373,7 +8388,7 @@ zsh -o SH_FILE_EXPANSION note.sh
             $caseEnvironment = @{ WINSMUX_ROLE = 'worker'; WINSMUX_ASSIGNED_WORKTREE = $fixture.RepoRoot }
             $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot } -Environment $caseEnvironment
             & $script:AssertDenyResult -Result $result -Because "a materialized protected heredoc body reaches an executable shell path: $command"
-            if ($command -notmatch 'target=note\.sh') {
+            if ($command -notmatch 'target=note\.sh|\$\{target##\*/\}') {
                 $result.OutputObject.systemMessage | Should -Not -Match '^Worker isolation:'
             }
         }

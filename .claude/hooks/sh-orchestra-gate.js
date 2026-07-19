@@ -405,12 +405,8 @@ function getStaticHeredocOutputTarget(commandLine, staticVariables = new Map()) 
   if (targets.length === 0) return "";
   const match = targets[targets.length - 1];
   const rawTarget = stripOuterQuotes(match.value).trim();
-  const variableName = getShellScriptVariableName(rawTarget);
-  const hasDynamicExpansion = /[$%\x60*?\[\]{}\0]/u.test(rawTarget);
-  if (hasDynamicExpansion && (!variableName || !staticVariables.has(variableName))) {
-    return "\0unresolved-heredoc-output";
-  }
-  const target = variableName ? staticVariables.get(variableName) : rawTarget;
+  const target = resolveStaticShellVariableReference(rawTarget, staticVariables);
+  if (target.includes("\0")) return target;
   const exactShellVariable = /^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})$/u.test(target);
   if (!target || (!exactShellVariable && /[$%\x60*?\[\]{}\0]/u.test(target))) return "";
   return target;
@@ -425,12 +421,11 @@ function getStaticHeredocMaterializationTargets(commandLine, staticVariables = n
     if (normalizeExecutableName(execution.tokens[0] || "") !== "tee") continue;
     for (const token of execution.tokens.slice(1)) {
       const rawValue = stripOuterQuotes(token);
-      const variableName = getShellScriptVariableName(rawValue);
-      if (/[$%\x60*?\[\]{}\0]/u.test(rawValue) && (!variableName || !staticVariables.has(variableName))) {
-        targets.add("\0unresolved-heredoc-output");
+      const value = resolveStaticShellVariableReference(rawValue, staticVariables);
+      if (value.includes("\0")) {
+        targets.add(value);
         continue;
       }
-      const value = variableName ? staticVariables.get(variableName) : rawValue;
       if (!value || value.startsWith("-") || /^[<>]/u.test(value) || /[$%\x60*?\[\]{}\0]/u.test(value)) continue;
       targets.add(value);
     }
@@ -439,8 +434,8 @@ function getStaticHeredocMaterializationTargets(commandLine, staticVariables = n
 }
 
 function updateStaticShellVariableAssignments(commandLine, variables) {
-  for (const segment of splitCommandSegments(String(commandLine || ""))) {
-    const tokens = tokenizeCommandLine(segment);
+  for (const segmentEntry of splitCommandSegmentsWithSeparators(String(commandLine || ""))) {
+    const tokens = tokenizeCommandLine(segmentEntry.segment);
     if (tokens.length === 0) continue;
     let assignmentTokens = tokens;
     const executable = normalizeExecutableName(tokens[0] || "");
@@ -453,10 +448,28 @@ function updateStaticShellVariableAssignments(commandLine, variables) {
       const assignment = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/u.exec(stripOuterQuotes(token));
       if (!assignment) continue;
       const value = stripOuterQuotes(assignment[2]);
-      if (!value || /[$%\x60*?\[\]{}\0]/u.test(value)) variables.delete(assignment[1]);
+      if (["&&", "||"].includes(segmentEntry.separatorBefore)) variables.set(assignment[1], "\0conditional-shell-variable");
+      else if (!value || /[$%\x60*?\[\]{}\0]/u.test(value)) variables.delete(assignment[1]);
       else variables.set(assignment[1], value);
     }
   }
+}
+
+function resolveStaticShellVariableReference(value, variables) {
+  const source = stripOuterQuotes(String(value || "").trim());
+  const plain = /^\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})$/u.exec(source);
+  if (plain) {
+    const name = plain[1] || plain[2];
+    return variables.has(name) ? variables.get(name) : "\0unresolved-shell-variable";
+  }
+  const basename = /^\$\{([A-Za-z_][A-Za-z0-9_]*)##\*\/\}$/u.exec(source);
+  if (basename) {
+    if (!variables.has(basename[1])) return "\0unresolved-shell-variable";
+    const resolved = variables.get(basename[1]);
+    if (!resolved || resolved.includes("\0")) return "\0unresolved-shell-variable";
+    return path.posix.basename(resolved.replace(/\\/gu, "/"));
+  }
+  return /[$%\x60*?\[\]{}\0]/u.test(source) ? "\0unresolved-shell-expansion" : source;
 }
 
 function doesCommandExecuteStaticScriptPath(command, expectedPath, initialCwd = ".") {
@@ -491,7 +504,9 @@ function doesCommandExecuteStaticScriptPath(command, expectedPath, initialCwd = 
     knownPaths.add(resolved);
     return true;
   };
-  for (const segment of splitCommandSegments(String(command || ""))) {
+  for (const segmentEntry of splitCommandSegmentsWithSeparators(String(command || ""))) {
+    const segment = segmentEntry.segment;
+    const conditionalSegment = ["&&", "||"].includes(segmentEntry.separatorBefore);
     const stages = splitCommandPipelineStages(segment);
     let pipelineCarriesKnownBody = false;
     for (const stage of stages) {
@@ -509,16 +524,19 @@ function doesCommandExecuteStaticScriptPath(command, expectedPath, initialCwd = 
           if (/^[+-][A-Za-z]+$/u.test(stripOuterQuotes(token))) continue;
           const assignment = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/u.exec(stripOuterQuotes(token));
           if (assignment) {
-            const value = stripOuterQuotes(assignment[2]);
+            const value = conditionalSegment ? "\0conditional-shell-variable" : stripOuterQuotes(assignment[2]);
             shellVariables.set(assignment[1], value);
             if (unexportsValue) exportedShellVariables.delete(assignment[1]);
             else if (exportsValue || exportedShellVariables.has(assignment[1])) exportedShellVariables.set(assignment[1], value);
           } else {
             const name = stripOuterQuotes(token);
             if (unexportsValue && /^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)) {
-              exportedShellVariables.delete(name);
+              if (conditionalSegment) exportedShellVariables.set(name, "\0conditional-shell-variable");
+              else exportedShellVariables.delete(name);
             } else if (exportsValue && /^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)) {
-              exportedShellVariables.set(name, shellVariables.has(name)
+              exportedShellVariables.set(name, conditionalSegment
+                ? "\0conditional-shell-variable"
+                : shellVariables.has(name)
                 ? shellVariables.get(name)
                 : "\0unresolved-exported-shell-variable");
             }
@@ -529,8 +547,13 @@ function doesCommandExecuteStaticScriptPath(command, expectedPath, initialCwd = 
       if (stages.length === 1 && executable === "unset") {
         for (const token of execution.tokens.slice(1)) {
           const name = stripOuterQuotes(token);
-          shellVariables.delete(name);
-          exportedShellVariables.delete(name);
+          if (conditionalSegment) {
+            shellVariables.set(name, "\0conditional-shell-variable");
+            if (exportedShellVariables.has(name)) exportedShellVariables.set(name, "\0conditional-shell-variable");
+          } else {
+            shellVariables.delete(name);
+            exportedShellVariables.delete(name);
+          }
         }
         continue;
       }
@@ -538,7 +561,7 @@ function doesCommandExecuteStaticScriptPath(command, expectedPath, initialCwd = 
         for (const token of rawTokens) {
           const assignment = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/u.exec(stripOuterQuotes(token));
           if (!assignment) break;
-          const value = stripOuterQuotes(assignment[2]);
+          const value = conditionalSegment ? "\0conditional-shell-variable" : stripOuterQuotes(assignment[2]);
           shellVariables.set(assignment[1], value);
           if (exportedShellVariables.has(assignment[1])) exportedShellVariables.set(assignment[1], value);
         }
@@ -666,7 +689,7 @@ function normalizeStaticScriptPathToken(value) {
 
 function getShellScriptVariableName(value) {
   const source = stripOuterQuotes(String(value || "").trim());
-  const match = source.match(/^\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)(?:(?:#{1,2}|%{1,2})[^}]*)?\})$/u);
+  const match = source.match(/^\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)(?:##\*\/)?\})$/u);
   return match?.[1] || match?.[2] || "";
 }
 
