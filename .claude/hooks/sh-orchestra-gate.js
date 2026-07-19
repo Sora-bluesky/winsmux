@@ -487,6 +487,17 @@ function resolveStaticShellVariableReference(value, variables) {
   return /[$%\x60*?\[\]{}\0]/u.test(source) ? "\0unresolved-shell-expansion" : source;
 }
 
+function mergeConditionalShellMap(parent, branch) {
+  const keys = new Set([...parent.keys(), ...branch.keys()]);
+  for (const key of keys) {
+    const parentHas = parent.has(key);
+    const branchHas = branch.has(key);
+    if (parentHas !== branchHas || (parentHas && parent.get(key) !== branch.get(key))) {
+      parent.set(key, "\0conditional-shell-variable");
+    }
+  }
+}
+
 function doesCommandExecuteStaticScriptPath(command, expectedPath, initialCwd = ".", inheritedState = null) {
   if (String(expectedPath || "").includes("\0")) {
     return splitCommandSegments(String(command || "")).some((segment) =>
@@ -539,6 +550,10 @@ function doesCommandExecuteStaticScriptPath(command, expectedPath, initialCwd = 
           cwdUnresolved,
         };
         if (doesCommandExecuteStaticScriptPath(controlStage, expectedPath, effectiveCwd, controlState)) return true;
+        for (const value of controlState.knownPaths) knownPaths.add(value);
+        mergeConditionalShellMap(shellVariables, controlState.shellVariables);
+        mergeConditionalShellMap(exportedShellVariables, controlState.exportedShellVariables);
+        if (controlState.cwdUnresolved || controlState.effectiveCwd !== effectiveCwd) cwdUnresolved = true;
       }
       const ungroupedStage = unwrapShellGroupingWrapper(stage);
       if (ungroupedStage !== stage.trim()) {
@@ -565,7 +580,12 @@ function doesCommandExecuteStaticScriptPath(command, expectedPath, initialCwd = 
             }
           : { knownPaths, shellVariables, exportedShellVariables, effectiveCwd, cwdUnresolved };
         if (doesCommandExecuteStaticScriptPath(braceGroup[1], expectedPath, effectiveCwd, groupState)) return true;
-        if (!isolatedGroup) {
+        if (conditionalSegment && !isolatedSegment) {
+          for (const value of groupState.knownPaths) knownPaths.add(value);
+          mergeConditionalShellMap(shellVariables, groupState.shellVariables);
+          mergeConditionalShellMap(exportedShellVariables, groupState.exportedShellVariables);
+          if (groupState.cwdUnresolved || groupState.effectiveCwd !== effectiveCwd) cwdUnresolved = true;
+        } else if (!isolatedGroup) {
           effectiveCwd = groupState.effectiveCwd;
           cwdUnresolved = groupState.cwdUnresolved;
         }

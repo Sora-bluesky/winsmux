@@ -8431,6 +8431,34 @@ bash -c ':'
 '@,
             @'
 cat <<'EOF'> note.sh
+codex exec --sandbox read-only taken-and-brace-state-bypass
+EOF
+true && { export BASH_ENV=note.sh; :; }
+bash -c ':'
+'@,
+            @'
+cat <<'EOF'> note.sh
+git commit --allow-empty -m taken-or-brace-state-bypass
+EOF
+false || { export BASH_ENV=note.sh; :; }
+bash -c ':'
+'@,
+            @'
+cat <<'EOF'> note.sh
+git commit --allow-empty -m taken-if-export-state-bypass
+EOF
+if true; then export BASH_ENV=note.sh; fi
+bash -c ':'
+'@,
+            @'
+cat <<'EOF'> note.sh
+codex exec --sandbox read-only taken-case-export-state-bypass
+EOF
+case one in one) export BASH_ENV=note.sh;; esac
+bash -c ':'
+'@,
+            @'
+cat <<'EOF'> note.sh
 git commit --allow-empty -m conditional-exported-bash-env-bypass
 EOF
 export BASH_ENV=note.sh
