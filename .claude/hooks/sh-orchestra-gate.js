@@ -41,8 +41,18 @@ try {
   const rawCommand = typeof toolInput.command === "string" ? toolInput.command : "";
   const bashCommand = toolName === "Bash" ? stripHeredocBodies(rawCommand) : "";
   const reviewCommand = toolName === "Bash" ? rawCommand : "";
+  const reviewBaseCwd = typeof toolInput.cwd === "string" && toolInput.cwd.trim() !== ""
+    ? toolInput.cwd
+    : process.cwd();
+  const executableHeredocBodies = toolName === "Bash" ? getExecutableHeredocBodies(reviewCommand) : [];
+  const staticScriptEvidence = toolName === "Bash"
+    ? getStaticInvokedScriptEvidence(reviewCommand, reviewBaseCwd)
+    : { contents: [], unresolved: false };
+  const reviewInlineCommand = toolName === "Bash"
+    ? [bashCommand, ...executableHeredocBodies].filter(Boolean).join("\n")
+    : "";
   const reviewDetectionCommand = toolName === "Bash"
-    ? [bashCommand, ...getExecutableHeredocBodies(reviewCommand)].filter(Boolean).join("\n")
+    ? [reviewInlineCommand, ...staticScriptEvidence.contents].filter(Boolean).join("\n")
     : "";
   const currentRole = normalizeAgentValue(process.env.WINSMUX_ROLE);
 
@@ -221,23 +231,21 @@ try {
   // Rule 12b: AST completeness guard. Worker ownership rules run first so their
   // more specific remediation remains observable for protected Git lifecycle calls.
   if (toolName === "Bash" &&
-      (hasUnsupportedInlineInterpreterBoundary(reviewDetectionCommand) ||
-       hasUnsupportedDirectProcessBoundary(reviewDetectionCommand))) {
+      (staticScriptEvidence.unresolved ||
+       hasUnsupportedInlineInterpreterBoundary(reviewInlineCommand) ||
+       hasUnsupportedDirectProcessBoundary(reviewInlineCommand))) {
     deny("Unsupported inline process construction is blocked. Use a supported literal form or a managed winsmux workflow.");
   }
 
   // Rule 13: Block review-gated commit/merge commands without valid Reviewer PASS for the current HEAD (#279)
   if (toolName === "Bash") {
-    const reviewBaseCwd = typeof toolInput.cwd === "string" && toolInput.cwd.trim() !== ""
-      ? toolInput.cwd
-      : process.cwd();
     if (isReviewGatedCommand(reviewDetectionCommand) || hasConfiguredGitReviewLifecycleAlias(reviewDetectionCommand, reviewBaseCwd)) {
       const denyMessage = "Review required. Flow: 1) a review-capable pane runs winsmux review-request, 2) that pane reviews, 3) it runs winsmux review-approve or winsmux review-fail.";
       try {
         if (hasForeignGitHubLifecycleTarget(reviewDetectionCommand, reviewBaseCwd)) {
           deny(denyMessage);
         }
-        const reviewRepoRoots = resolveReviewGateRepoRoots(toolInput, reviewCommand);
+        const reviewRepoRoots = resolveReviewGateRepoRoots(toolInput, reviewDetectionCommand);
         if (reviewRepoRoots === null) {
           deny(denyMessage);
         }
@@ -346,6 +354,7 @@ function getExecutableHeredocBodies(command) {
     const executableFds = new Set(declarations
       .map((declaration) => declaration[1] || "0")
       .filter((fd) => hasExecutableHeredocConsumer(commandLine, declarationPattern, fd)));
+    const materializedTarget = getStaticHeredocOutputTarget(commandLine);
 
     const parsedBodies = [];
     let bodyIndex = commandLineEnd + 1;
@@ -365,19 +374,247 @@ function getExecutableHeredocBodies(command) {
       parsedBodies.push({ fd: declaration[1] || "0", body: body.join("\n") });
     }
     index = Math.max(index, bodyIndex - 1);
-
-    if (executableFds.size === 0) {
-      continue;
-    }
+    const laterCommand = lines.slice(bodyIndex).join("\n");
+    const materializedBodyExecutesLater = materializedTarget !== "" &&
+      doesCommandExecuteStaticScriptPath(laterCommand, materializedTarget);
 
     for (const parsedBody of parsedBodies) {
-      if (executableFds.has(parsedBody.fd) && parsedBody.body) {
+      if ((executableFds.has(parsedBody.fd) || materializedBodyExecutesLater) && parsedBody.body) {
         bodies.push(parsedBody.body);
       }
     }
   }
 
   return bodies;
+}
+
+function getStaticHeredocOutputTarget(commandLine) {
+  const targets = [...String(commandLine || "").matchAll(
+    /(?:^|\s)(?:[0-9]*>>?)(?!&)[ \t]*(?:'([^']+)'|"([^"$\x60]+)"|([^\s;&|]+))/gu,
+  )];
+  if (targets.length === 0) return "";
+  const match = targets[targets.length - 1];
+  const target = stripOuterQuotes(match[1] || match[2] || match[3] || "").trim();
+  const exactShellVariable = /^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})$/u.test(target);
+  if (!target || (!exactShellVariable && /[$%\x60*?\[\]{}\0]/u.test(target))) return "";
+  return target;
+}
+
+function doesCommandExecuteStaticScriptPath(command, expectedPath) {
+  const expected = normalizeStaticScriptPathToken(expectedPath);
+  if (!expected) return false;
+  for (const segment of splitCommandSegments(String(command || ""))) {
+    for (const stage of splitCommandPipelineStages(segment)) {
+      const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(tokenizeCommandLine(stage)));
+      if (execution.nestedCommand && doesCommandExecuteStaticScriptPath(execution.nestedCommand, expectedPath)) {
+        return true;
+      }
+      const scriptPath = getStaticInterpreterScriptPath(execution.tokens);
+      if (scriptPath && normalizeStaticScriptPathToken(scriptPath) === expected) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function normalizeStaticScriptPathToken(value) {
+  return stripOuterQuotes(String(value || "").trim())
+    .replace(/^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/u, "$$$1")
+    .replace(/^[.][\\/]/u, "")
+    .replace(/\\/gu, "/")
+    .replace(/\/+$/u, "")
+    .toLowerCase();
+}
+
+function getStaticInterpreterScriptPath(tokens) {
+  if (!Array.isArray(tokens) || tokens.length < 2) return "";
+  const executable = normalizeExecutableName(tokens[0] || "");
+  if (isPowerShellExecutable(executable)) {
+    const fileArgument = getPowerShellFileArgument(tokens);
+    return fileArgument.present ? fileArgument.value : "";
+  }
+  if (!isShellCommandExecutable(executable)) return "";
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = stripOuterQuotes(tokens[index]);
+    const normalized = normalizeAgentValue(token);
+    if (normalized === "-c" || normalized === "--command") return "";
+    if (normalized === "--") {
+      return index + 1 < tokens.length ? stripOuterQuotes(tokens[index + 1]) : "";
+    }
+    if (token.startsWith("-")) continue;
+    return token;
+  }
+  return "";
+}
+
+function getPowerShellFileArgument(tokens) {
+  const fileOptionNames = expandPowerShellOptionPrefixes(["-file"]);
+  const commandOptionNames = expandPowerShellOptionPrefixes([
+    "-command",
+    "-commandwithargs",
+    "-encodedcommand",
+  ]);
+  for (let index = 1; index < tokens.length; index += 1) {
+    const rawToken = stripOuterQuotes(tokens[index]);
+    const normalizedToken = normalizeAgentValue(rawToken);
+    if (commandOptionNames.includes(normalizedToken) || commandOptionNames.some((optionName) =>
+      normalizedToken.startsWith(optionName + "=") || normalizedToken.startsWith(optionName + ":"))) {
+      return { present: false, value: "" };
+    }
+    if (fileOptionNames.includes(normalizedToken)) {
+      return {
+        present: true,
+        value: index + 1 < tokens.length ? stripOuterQuotes(tokens[index + 1]) : "",
+      };
+    }
+    for (const optionName of fileOptionNames) {
+      if (normalizedToken.startsWith(optionName + "=") || normalizedToken.startsWith(optionName + ":")) {
+        return { present: true, value: rawToken.slice(optionName.length + 1) };
+      }
+    }
+  }
+  const valueOptionNames = expandPowerShellOptionPrefixes([
+    "-configurationname",
+    "-custompipename",
+    "-executionpolicy",
+    "-inputformat",
+    "-outputformat",
+    "-settingsfile",
+    "-workingdirectory",
+  ]);
+  for (let index = 1; index < tokens.length; index += 1) {
+    const rawToken = stripOuterQuotes(tokens[index]);
+    const normalizedToken = normalizeAgentValue(rawToken);
+    if (valueOptionNames.includes(normalizedToken)) {
+      index += 1;
+      continue;
+    }
+    if (valueOptionNames.some((optionName) =>
+      normalizedToken.startsWith(optionName + "=") || normalizedToken.startsWith(optionName + ":"))) {
+      continue;
+    }
+    if (rawToken.startsWith("-")) continue;
+    if (/\.(?:ps1|psm1)$/iu.test(rawToken)) {
+      return { present: true, value: rawToken };
+    }
+    break;
+  }
+  return { present: false, value: "" };
+}
+
+function getStaticInvokedScriptEvidence(command, baseCwd, depth = 0) {
+  const evidence = { contents: [], unresolved: false };
+  if (depth > 5) {
+    evidence.unresolved = true;
+    return evidence;
+  }
+  const baseRepoRoot = resolveGitTopLevel(baseCwd);
+  if (!baseRepoRoot) return evidence;
+  const commandSurface = stripHeredocBodiesAndTerminators(String(command || ""));
+  for (const segment of splitCommandSegments(commandSurface)) {
+    for (const stage of splitCommandPipelineStages(segment)) {
+      const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(tokenizeCommandLine(stage)));
+      if (execution.nestedCommand) {
+        const nestedEvidence = getStaticInvokedScriptEvidence(execution.nestedCommand, baseCwd, depth + 1);
+        evidence.contents.push(...nestedEvidence.contents);
+        evidence.unresolved = evidence.unresolved || nestedEvidence.unresolved;
+      }
+      const tokens = execution.tokens;
+      const executable = normalizeExecutableName(tokens[0] || "");
+      if (isShellCommandExecutable(executable)) {
+        const nestedCommand = getShellCommandArgument(tokens);
+        if (nestedCommand) {
+          const nestedEvidence = getStaticInvokedScriptEvidence(nestedCommand, baseCwd, depth + 1);
+          evidence.contents.push(...nestedEvidence.contents);
+          evidence.unresolved = evidence.unresolved || nestedEvidence.unresolved;
+        }
+        continue;
+      }
+      if (!isPowerShellExecutable(executable)) continue;
+      const fileArgument = getPowerShellFileArgument(tokens);
+      if (!fileArgument.present) continue;
+      const value = fileArgument.value;
+      if (!value || value === "-" || /[$%\x60*?\[\]{}\0]/u.test(value)) {
+        evidence.unresolved = true;
+        continue;
+      }
+      const initialWorkingDirectory = getPowerShellInitialWorkingDirectory(tokens, executable);
+      if (initialWorkingDirectory.includes("\0")) {
+        evidence.unresolved = true;
+        continue;
+      }
+      const scriptBaseCwd = initialWorkingDirectory
+        ? path.resolve(baseCwd, stripOuterQuotes(initialWorkingDirectory))
+        : baseCwd;
+      const scriptPath = path.resolve(scriptBaseCwd, value);
+      const scriptRepoRoot = resolveGitTopLevel(scriptBaseCwd);
+      if (!scriptRepoRoot ||
+          !isManagedReviewGateRepo(scriptRepoRoot, baseRepoRoot) ||
+          !isPathInsideOrSame(scriptPath, scriptRepoRoot)) {
+        evidence.unresolved = true;
+        continue;
+      }
+      try {
+        const stat = fs.statSync(scriptPath);
+        if (!stat.isFile() || stat.size > 1024 * 1024) {
+          evidence.unresolved = true;
+          continue;
+        }
+        const source = fs.readFileSync(scriptPath, "utf8").replace(/^\uFEFF/u, "");
+        const protectedEvidence = getStaticScriptProtectedEvidence(source, path.dirname(scriptPath));
+        evidence.contents.push(...protectedEvidence.commands);
+        evidence.unresolved = evidence.unresolved || protectedEvidence.unresolved;
+      } catch {
+        evidence.unresolved = true;
+      }
+    }
+  }
+  return evidence;
+}
+
+function getStaticScriptProtectedEvidence(source, scriptCwd) {
+  const text = String(source || "");
+  const lines = text.split(/\r?\n/u);
+  const commands = [];
+  const seen = new Set();
+  for (let index = 0; index < lines.length; index += 1) {
+    const windows = [lines[index]];
+    if (/[`\\]\s*$/u.test(lines[index]) && index + 1 < lines.length) {
+      windows.push(`${lines[index]}\n${lines[index + 1]}`);
+      if (/[`\\]\s*$/u.test(lines[index + 1]) && index + 2 < lines.length) {
+        windows.push(`${lines[index]}\n${lines[index + 1]}\n${lines[index + 2]}`);
+      }
+    }
+    for (const candidate of windows) {
+      if (!/(?:^|[;&|({])\s*(?:&\s*)?(?:codex|git|gh|winsmux|start-process|saps)\b/iu.test(candidate) &&
+          !/\b(?:Process|ProcessStartInfo)\s*\]::(?:Start|new)\s*\(/iu.test(candidate)) {
+        continue;
+      }
+      const directCodex = /\bcodex(?:\.exe)?\b/iu.test(candidate) && isDirectCodexDispatch(candidate);
+      const reviewGated = !directCodex && isReviewGatedCommand(candidate);
+      if (!reviewGated && !directCodex) {
+        continue;
+      }
+      const hasExplicitTarget = /(?:\bgit(?:\.exe)?\s+(?:[^;&\r\n]*\s)?-C\b|--git-dir\b|--work-tree\b|\bGIT_(?:DIR|WORK_TREE)\b|\bgh\s+(?:pr|repo)\s+merge\b[^;&\r\n]*--repo\b|\b(?:set-location|workingdirectory)\b)/iu.test(candidate);
+      const normalized = directCodex
+        ? "codex exec"
+        : (hasExplicitTarget ? candidate.trim() : `git -C "${scriptCwd}" commit`);
+      if (normalized && !seen.has(normalized)) {
+        commands.push(normalized);
+        seen.add(normalized);
+      }
+    }
+  }
+  const executableText = lines
+    .filter((line) => !/^\s*#/u.test(line))
+    .join("\n");
+  const hasUnparsedDynamicProtectedCommand =
+    /(?:&\s*\$[A-Za-z_][A-Za-z0-9_:]*|\b(?:invoke-expression|iex)\b)[\s\S]{0,200}\b(?:commit|merge|push|tag|codex\s+(?:exec|e)|--sandbox)\b/iu.test(executableText);
+  return {
+    commands,
+    unresolved: hasUnparsedDynamicProtectedCommand && commands.length === 0,
+  };
 }
 
 function hasExecutableHeredocConsumer(commandLine, declarationPattern, expectedFd = "0") {
@@ -5192,7 +5429,7 @@ function isOwnedDirectExecutable(executable) {
   const normalized = normalizeExecutableName(executable);
   if (/^python[0-9]+(?:\.[0-9]+)?$/u.test(normalized)) return true;
   return new Set([
-    ":", "bash", "cat", "cd", "cmd", "codex", "curl", "declare", "echo", "export", "false", "gh", "git", "grep", "jq", "local", "node", "nodejs",
+    ":", "bash", "cat", "cd", "cmd", "codex", "curl", "declare", "echo", "export", "false", "gh", "git", "grep", "jq", "local", "ls", "node", "nodejs", "pwd",
     "powershell", "printf", "pwsh", "py", "python", "python3", "rg", "rustc", "saps", "sh", "start", "start-process", "type", "typeset", "unset", "where",
     "tee", "true", "which", "winsmux", "xargs", "zsh",
   ]).has(normalized);

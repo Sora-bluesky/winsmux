@@ -7929,6 +7929,100 @@ print(f().dumps({'ok':True}))"
         }
     }
 
+    It 'TASK-783 C97 treats a heredoc materialized and later executed as executable evidence' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+
+        $gitCommand = @'
+cat <<'EOF' > note.sh
+git commit --allow-empty -m hidden-heredoc-bypass
+EOF
+bash note.sh
+'@
+        $gitResult = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $gitCommand }
+        & $script:AssertDenyResult -Result $gitResult -Because 'materialized Git lifecycle code must require review approval'
+
+        $codexCommand = @'
+cat <<'EOF' > review.sh
+codex exec --sandbox read-only 'review'
+EOF
+bash review.sh
+'@
+        $codexResult = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $codexCommand }
+        & $script:AssertDenyResult -Result $codexResult -Because 'materialized Codex dispatch code must remain protected'
+        $codexResult.OutputObject.systemMessage | Should -Be 'Use winsmux send to dispatch Codex to panes'
+
+        $variableTargetCommand = @'
+target=review.sh
+cat <<'EOF' > "$target"
+git commit --allow-empty -m variable-heredoc-target
+EOF
+bash "${target}"
+'@
+        $variableTarget = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $variableTargetCommand }
+        & $script:AssertDenyResult -Result $variableTarget -Because 'the same shell variable cannot hide a materialized executable body'
+    }
+
+    It 'TASK-783 C98 reviews statically invoked PowerShell script files before Git lifecycle execution' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $scriptPath = Join-Path $fixture.RepoRoot 'scripts\protected-lifecycle.ps1'
+        Write-GateTestFile -Path $scriptPath -Content "git commit --allow-empty -m static-script-bypass`n"
+
+        $command = 'pwsh -NoProfile -File scripts/protected-lifecycle.ps1'
+        $denied = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot }
+        & $script:AssertDenyResult -Result $denied -Because 'a statically resolved script cannot hide a Git lifecycle command'
+
+        $safeScriptPath = Join-Path $fixture.RepoRoot 'scripts\read-only.ps1'
+        Write-GateTestFile -Path $safeScriptPath -Content "# git commit is documentation only`nWrite-Output 'git commit is data only'`n"
+        $safe = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'pwsh -NoProfile -File scripts/read-only.ps1'; cwd = $fixture.RepoRoot }
+        $safe.OutputObject | Should -BeNullOrEmpty -Because 'a static script without a protected sink remains allowed'
+
+        $codexScriptPath = Join-Path $fixture.RepoRoot 'scripts\direct-codex.ps1'
+        Write-GateTestFile -Path $codexScriptPath -Content "codex exec --sandbox read-only 'review'`n"
+        $codex = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'pwsh -NoProfile -File scripts/direct-codex.ps1'; cwd = $fixture.RepoRoot }
+        & $script:AssertDenyResult -Result $codex -Because 'a static script cannot hide direct Codex dispatch'
+        $codex.OutputObject.systemMessage | Should -Be 'Use winsmux send to dispatch Codex to panes'
+
+        $dynamic = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'pwsh -NoProfile -File $scriptPath'; cwd = $fixture.RepoRoot }
+        & $script:AssertDenyResult -Result $dynamic -Because 'a dynamic script path must fail closed'
+
+        $dynamicExecutorPath = Join-Path $fixture.RepoRoot 'scripts\dynamic-lifecycle.ps1'
+        Write-GateTestFile -Path $dynamicExecutorPath -Content "`$runner = 'git'`n& `$runner commit --allow-empty -m dynamic-static-script`n"
+        $dynamicExecutor = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'pwsh -NoProfile -File scripts/dynamic-lifecycle.ps1'; cwd = $fixture.RepoRoot }
+        & $script:AssertDenyResult -Result $dynamicExecutor -Because 'dynamic process construction inside a static script must fail closed'
+
+        $wrapped = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'command pwsh -NoProfile -File scripts/protected-lifecycle.ps1'; cwd = $fixture.RepoRoot }
+        & $script:AssertDenyResult -Result $wrapped -Because 'a constant shell wrapper cannot hide static script execution'
+
+        $positional = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'pwsh -NoProfile scripts/protected-lifecycle.ps1'; cwd = $fixture.RepoRoot }
+        & $script:AssertDenyResult -Result $positional -Because 'PowerShell positional script execution cannot hide a protected sink'
+
+        Set-GatePass -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch
+        $allowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot }
+        $allowed.ExitCode | Should -Be 0
+        $allowed.OutputObject | Should -BeNullOrEmpty
+
+        $target = New-GateTargetRepo -Root $fixture.Root -Name 'static-script-target'
+        $targetScriptPath = Join-Path $target.RepoRoot 'scripts\protected-lifecycle.ps1'
+        Write-GateTestFile -Path $targetScriptPath -Content "git commit --allow-empty -m target-static-script`n"
+        $targetCommand = ('pwsh -WorkingDirectory "{0}" -File scripts/protected-lifecycle.ps1' -f $target.RepoRoot)
+        $callerOnly = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $targetCommand; cwd = $fixture.RepoRoot }
+        & $script:AssertDenyResult -Result $callerOnly -Because 'caller PASS cannot approve a static script executed in another managed repository'
+
+        Set-GatePass -RepoRoot $target.RepoRoot -Branch $target.Branch
+        $targetAllowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $targetCommand; cwd = $fixture.RepoRoot }
+        $targetAllowed.OutputObject | Should -BeNullOrEmpty -Because 'the static script target repository has its own valid PASS'
+    }
+
+    It 'TASK-783 C99 allows finite read-only shell inspection commands' {
+        foreach ($command in @('ls', 'ls -la', 'pwd')) {
+            $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{ command = $command }
+            $result.ExitCode | Should -Be 0 -Because $command
+            $result.OutputObject | Should -BeNullOrEmpty -Because $command
+        }
+    }
+
     It 'TASK-783 C09 denies PowerShell block cwd changes to an unreviewed managed target' {
         $fixture = New-GateFixture
         $script:FixtureRoot = $fixture.Root
