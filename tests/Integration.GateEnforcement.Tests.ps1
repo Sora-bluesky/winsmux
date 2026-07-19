@@ -8160,6 +8160,18 @@ EOF
 bash note.sh
 '@,
             @'
+cat <<'EOF' >& note.sh
+codex exec --sandbox read-only combined-stdout-fd-bypass
+EOF
+bash note.sh
+'@,
+            @'
+cat <<'EOF' &> note.sh
+codex exec --sandbox read-only reversed-combined-stdout-fd-bypass
+EOF
+bash note.sh
+'@,
+            @'
 cat <<'EOF'> note.sh
 git commit --allow-empty -m copy-bypass
 EOF
@@ -8186,6 +8198,12 @@ cat <<'EOF'> note.sh
 codex exec --sandbox read-only second-tee-output-bypass
 EOF
 tee first.txt run.sh < note.sh >discard.txt
+bash run.sh
+'@,
+            @'
+tee run.sh <<'EOF' >discard.txt
+codex exec --sandbox read-only direct-tee-heredoc-bypass
+EOF
 bash run.sh
 '@,
             @'
@@ -8219,6 +8237,21 @@ BASH_ENV=note.sh bash -c ':'
 '@,
             @'
 cat <<'EOF'> note.sh
+git commit --allow-empty -m exported-bash-env-bypass
+EOF
+export BASH_ENV=note.sh
+bash -c ':'
+'@,
+            @'
+cat <<'EOF'> note.sh
+git commit --allow-empty -m retained-export-bypass
+EOF
+export BASH_ENV=placeholder.sh
+BASH_ENV=note.sh
+bash -c ':'
+'@,
+            @'
+cat <<'EOF'> note.sh
 git commit --allow-empty -m env-wrapper-bypass
 EOF
 env BASH_ENV=note.sh bash -c ':'
@@ -8234,6 +8267,18 @@ cat <<'EOF'> .zshenv
 codex exec --sandbox read-only zshenv-bypass
 EOF
 ZDOTDIR=. zsh -c ':'
+'@,
+            @'
+cat <<'EOF'> .zshenv
+codex exec --sandbox read-only home-zshenv-bypass
+EOF
+HOME=. zsh -c ':'
+'@,
+            @'
+cat <<'EOF'> note.sh
+git commit --allow-empty -m shell-stdin-bypass
+EOF
+bash < note.sh
 '@,
             @'
 cat <<'EOF'> note.sh
@@ -8270,7 +8315,7 @@ zsh -o SH_FILE_EXPANSION note.sh
         foreach ($command in $cases) {
             $caseEnvironment = @{ WINSMUX_ROLE = 'worker'; WINSMUX_ASSIGNED_WORKTREE = $fixture.RepoRoot }
             $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot } -Environment $caseEnvironment
-            & $script:AssertDenyResult -Result $result -Because 'a materialized protected heredoc body reaches an executable shell path'
+            & $script:AssertDenyResult -Result $result -Because "a materialized protected heredoc body reaches an executable shell path: $command"
             if ($command -notmatch 'target=note\.sh') {
                 $result.OutputObject.systemMessage | Should -Not -Match '^Worker isolation:'
             }
@@ -8344,6 +8389,19 @@ switch ($Command) {
             )) {
             $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot } -Environment @{ WINSMUX_ROLE = 'worker'; WINSMUX_ASSIGNED_WORKTREE = $fixture.RepoRoot }
             $result.OutputObject | Should -BeNullOrEmpty -Because "the canonical recovery command is clean and HEAD-bound: $command"
+        }
+
+        foreach ($command in @(
+                'cmd /c "pwsh -NoProfile -File winsmux-core/scripts/orchestra-start.ps1"',
+                'pwsh -NoProfile -Command "pwsh -NoProfile -File winsmux-core/scripts/orchestra-start.ps1"',
+                'command pwsh -NoProfile -File winsmux-core/scripts/orchestra-start.ps1',
+                'pwsh -NoLogo -NoProfile -File winsmux-core/scripts/orchestra-start.ps1',
+                'env RECOVERY=1 pwsh -NoProfile -File winsmux-core/scripts/orchestra-start.ps1',
+                'pwsh -NoProfile -File winsmux-core/scripts/orchestra-start.ps1; true'
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot } -Environment @{ WINSMUX_ROLE = 'worker'; WINSMUX_ASSIGNED_WORKTREE = $fixture.RepoRoot }
+            & $script:AssertDenyResult -Result $result -Because "only an exact root recovery command may use the pre-review exception: $command"
+            $result.OutputObject.systemMessage | Should -Not -Match '^Worker isolation:'
         }
 
         Write-GateTestFile -Path $dependencyPath -Content "git commit --allow-empty -m modified-recovery-dependency`n"
