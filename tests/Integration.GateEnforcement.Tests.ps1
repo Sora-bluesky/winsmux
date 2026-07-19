@@ -8378,6 +8378,43 @@ bash -c ':'
 '@,
             @'
 cat <<'EOF'> note.sh
+git commit --allow-empty -m if-subshell-startup-bypass
+EOF
+if true; then ( export BASH_ENV=note.sh; bash -c ':' ); fi
+'@,
+            @'
+cat <<'EOF'> note.sh
+git commit --allow-empty -m case-subshell-startup-bypass
+EOF
+case one in one) ( export BASH_ENV=note.sh; bash -c ':' );; esac
+'@,
+            @'
+cat <<'EOF'> note.sh
+codex exec --sandbox read-only pipeline-brace-state-bypass
+EOF
+export BASH_ENV=note.sh
+{ export BASH_ENV=safe.sh; :; } | :
+bash -c ':'
+'@,
+            @'
+cat <<'EOF'> note.sh
+git commit --allow-empty -m pipeline-assignment-state-bypass
+EOF
+export BASH_ENV=note.sh
+BASH_ENV=safe.sh | :
+bash -c ':'
+'@,
+            @'
+cat <<'EOF'> note.sh
+git commit --allow-empty -m background-brace-state-bypass
+EOF
+export BASH_ENV=note.sh
+{ export BASH_ENV=safe.sh; :; } &
+wait
+bash -c ':'
+'@,
+            @'
+cat <<'EOF'> note.sh
 git commit --allow-empty -m conditional-exported-bash-env-bypass
 EOF
 export BASH_ENV=note.sh

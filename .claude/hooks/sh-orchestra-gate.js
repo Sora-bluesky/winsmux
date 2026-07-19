@@ -524,10 +524,22 @@ function doesCommandExecuteStaticScriptPath(command, expectedPath, initialCwd = 
   for (const segmentEntry of splitCommandSegmentsWithSeparators(String(command || ""))) {
     const segment = segmentEntry.segment;
     if (hasShellControlFlowBoundary(segment)) controlFlowStateUncertain = true;
-    const conditionalSegment = controlFlowStateUncertain || ["&&", "||"].includes(segmentEntry.separatorBefore);
     const stages = splitCommandPipelineStages(segment);
+    const isolatedSegment = stages.length > 1 || segmentEntry.separatorAfter === "&";
+    const conditionalSegment = controlFlowStateUncertain || isolatedSegment || ["&&", "||"].includes(segmentEntry.separatorBefore);
     let pipelineCarriesKnownBody = false;
     for (const stage of stages) {
+      const controlStage = unwrapShellExecutableControlFlowPrefix(stage);
+      if (controlStage && controlStage !== stage.trim()) {
+        const controlState = {
+          knownPaths: new Set(knownPaths),
+          shellVariables: new Map(shellVariables),
+          exportedShellVariables: new Map(exportedShellVariables),
+          effectiveCwd,
+          cwdUnresolved,
+        };
+        if (doesCommandExecuteStaticScriptPath(controlStage, expectedPath, effectiveCwd, controlState)) return true;
+      }
       const ungroupedStage = unwrapShellGroupingWrapper(stage);
       if (ungroupedStage !== stage.trim()) {
         const childState = {
@@ -542,10 +554,20 @@ function doesCommandExecuteStaticScriptPath(command, expectedPath, initialCwd = 
       }
       const braceGroup = /^\{\s*([\s\S]*?)\s*;?\s*\}$/u.exec(stage.trim());
       if (braceGroup) {
-        const groupState = { knownPaths, shellVariables, exportedShellVariables, effectiveCwd, cwdUnresolved };
+        const groupState = isolatedSegment
+          ? {
+              knownPaths: new Set(knownPaths),
+              shellVariables: new Map(shellVariables),
+              exportedShellVariables: new Map(exportedShellVariables),
+              effectiveCwd,
+              cwdUnresolved,
+            }
+          : { knownPaths, shellVariables, exportedShellVariables, effectiveCwd, cwdUnresolved };
         if (doesCommandExecuteStaticScriptPath(braceGroup[1], expectedPath, effectiveCwd, groupState)) return true;
-        effectiveCwd = groupState.effectiveCwd;
-        cwdUnresolved = groupState.cwdUnresolved;
+        if (!isolatedSegment) {
+          effectiveCwd = groupState.effectiveCwd;
+          cwdUnresolved = groupState.cwdUnresolved;
+        }
         continue;
       }
       const rawTokens = tokenizeCommandLine(stage);
