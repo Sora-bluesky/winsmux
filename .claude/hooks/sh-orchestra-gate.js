@@ -402,7 +402,8 @@ function getExecutableHeredocBodies(command) {
 function hasShellControlFlowBoundary(commandLine) {
   const source = String(commandLine || "");
   return /(?:^|[;\s()])(if|then|elif|else|fi|while|until|for|select|case|esac|do|done|function)(?:[;\s()]|$)/u.test(source) ||
-    /(?:^|[;\s])\((?:[;\s]|$)|(?:^|[;\s])\)(?:[;\s]|$)/u.test(source);
+    /(?:^|[;\s])\((?:[;\s]|$)|(?:^|[;\s])\)(?:[;\s]|$)/u.test(source) ||
+    /(?:[$<>]\(|\x60)/u.test(source);
 }
 
 function getStaticHeredocOutputTarget(commandLine, staticVariables = new Map()) {

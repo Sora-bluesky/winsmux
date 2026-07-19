@@ -8273,6 +8273,28 @@ EOF
 bash note.sh
 '@,
             @'
+target=note.sh
+ignored=$(
+  target=safe.sh
+  printf x
+)
+cat <<'EOF'> "$target"
+codex exec --sandbox read-only command-substitution-assignment-bypass
+EOF
+bash note.sh
+'@,
+            @'
+target=note.sh
+cat <(
+  target=safe.sh
+  printf x
+) >discard.txt
+cat <<'EOF'> "$target"
+codex exec --sandbox read-only process-substitution-assignment-bypass
+EOF
+bash note.sh
+'@,
+            @'
 target=dir/note.sh
 cat <<'EOF'> "${target##*/}"
 git commit --allow-empty -m basename-expansion-bypass
