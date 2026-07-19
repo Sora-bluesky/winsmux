@@ -876,6 +876,33 @@ function getPowerShellFileArgument(tokens) {
   return { present: false, value: "", valueIndex: -1 };
 }
 
+function getStaticNonPowerShellInterpreterFileArgument(tokens) {
+  if (!Array.isArray(tokens) || tokens.length < 2) return { kind: "", present: false, value: "" };
+  const executable = normalizeExecutableName(tokens[0] || "");
+  if (isShellCommandExecutable(executable)) {
+    const noExecute = tokens.slice(1).some((token) => ["-n", "--noexec"].includes(normalizeAgentValue(token)));
+    return noExecute
+      ? { kind: "shell", present: false, value: "" }
+      : { kind: "shell", present: true, value: getStaticInterpreterScriptPath(tokens) };
+  }
+  const kind = getShellInterpreterKind(tokens);
+  if (!kind || getInterpreterInlineSourceDescriptor(tokens, kind)) {
+    return { kind: kind || "", present: false, value: "" };
+  }
+  if (kind === "node" && tokens.slice(1).some((token) => ["-c", "--check"].includes(normalizeAgentValue(token)))) {
+    return { kind, present: false, value: "" };
+  }
+  for (let index = 1; index < tokens.length; index += 1) {
+    const value = stripOuterQuotes(tokens[index]);
+    if (value === "--") {
+      return { kind, present: index + 1 < tokens.length, value: stripOuterQuotes(tokens[index + 1] || "") };
+    }
+    if (value.startsWith("-")) continue;
+    return { kind, present: true, value };
+  }
+  return { kind, present: false, value: "" };
+}
+
 function getStaticInvokedScriptEvidence(command, baseCwd, depth = 0) {
   const evidence = { contents: [], unresolved: false };
   if (depth > 5) {
@@ -917,6 +944,44 @@ function getStaticInvokedScriptEvidence(command, baseCwd, depth = 0) {
           const nestedEvidence = getStaticInvokedScriptEvidence(nestedCommand, baseCwd, depth + 1);
           evidence.contents.push(...nestedEvidence.contents);
           evidence.unresolved = evidence.unresolved || nestedEvidence.unresolved;
+        }
+        if (nestedCommand) continue;
+      }
+      const staticInterpreterFile = getStaticNonPowerShellInterpreterFileArgument(tokens);
+      if (staticInterpreterFile.present) {
+        const value = staticInterpreterFile.value;
+        if (!value || value === "-" || /[$%\x60*?\[\]{}\0]/u.test(value)) {
+          evidence.unresolved = true;
+          continue;
+        }
+        const scriptPath = path.resolve(baseCwd, value);
+        const scriptRepoRoot = resolveGitTopLevel(baseCwd);
+        if (!scriptRepoRoot ||
+            !isManagedReviewGateRepo(scriptRepoRoot, baseRepoRoot) ||
+            !isPathInsideOrSame(scriptPath, scriptRepoRoot)) {
+          evidence.unresolved = true;
+          continue;
+        }
+        try {
+          const stat = fs.statSync(scriptPath);
+          if (!stat.isFile() || stat.size > 1024 * 1024) {
+            evidence.unresolved = true;
+            continue;
+          }
+          const source = fs.readFileSync(scriptPath, "utf8").replace(/^\uFEFF/u, "");
+          const protectedEvidence = getStaticScriptProtectedEvidence(source, path.dirname(scriptPath));
+          evidence.contents.push(...protectedEvidence.commands);
+          evidence.unresolved = evidence.unresolved || protectedEvidence.unresolved;
+          if (staticInterpreterFile.kind === "python" || staticInterpreterFile.kind === "node") {
+            if (hasConservativeProtectedInterpreterBoundary(source, "git") ||
+                hasConservativeProtectedInterpreterBoundary(source, "codex") ||
+                getInterpreterProcessBoundaryResults(source, staticInterpreterFile.kind)
+                  .some(isDeniedInterpreterProcessBoundary)) {
+              evidence.unresolved = true;
+            }
+          }
+        } catch {
+          evidence.unresolved = true;
         }
         continue;
       }
@@ -9900,11 +9965,12 @@ function classifyPythonOsProcessBoundary(source, scopes, outerProtectedHint = fa
     : INTERPRETER_PROCESS_BOUNDARY.ALLOW_PROVEN_NON_PROTECTED;
 }
 
-function getInterpreterProcessBoundaryResults(source) {
+function getInterpreterProcessBoundaryResults(source, forcedKind = null) {
   const stage = String(source || "");
   const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(stage));
-  const kind = getShellInterpreterKind(tokens);
-  const inlineSource = kind ? getInterpreterInlineSourceToken(tokens, kind) : null;
+  const parsedKind = getShellInterpreterKind(tokens);
+  const kind = forcedKind || parsedKind;
+  const inlineSource = forcedKind === null && kind ? getInterpreterInlineSourceToken(tokens, kind) : null;
   const text = inlineSource === null || inlineSource === undefined ? stage : String(inlineSource);
   const scopes = buildFunctionScopeIndex(text);
   const outerProtectedHint = hasOuterCodexProtectedArguments(stage);

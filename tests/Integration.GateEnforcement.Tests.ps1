@@ -8020,6 +8020,30 @@ cd .claude && bash "${target##*/}"
         $positional = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'pwsh -NoProfile scripts/protected-lifecycle.ps1'; cwd = $fixture.RepoRoot } -Environment $workerEnvironment
         & $script:AssertDenyResult -Result $positional -Because 'PowerShell positional script execution cannot hide a protected sink'
 
+        foreach ($scriptCase in @(
+                @{ Path = 'scripts/protected-lifecycle.sh'; Content = "git commit --allow-empty -m shell-static-script`n"; Command = 'bash scripts/protected-lifecycle.sh' },
+                @{ Path = 'scripts/protected-lifecycle.sh'; Content = "git commit --allow-empty -m sh-static-script`n"; Command = 'sh scripts/protected-lifecycle.sh' },
+                @{ Path = 'scripts/protected-lifecycle.zsh'; Content = "git commit --allow-empty -m zsh-static-script`n"; Command = 'zsh scripts/protected-lifecycle.zsh' },
+                @{ Path = 'scripts/protected-lifecycle.py'; Content = "import subprocess`nsubprocess.run(['git', 'commit', '--allow-empty', '-m', 'python-static-script'])`n"; Command = 'python scripts/protected-lifecycle.py' },
+                @{ Path = 'scripts/protected-lifecycle.js'; Content = "require('child_process').spawnSync('git', ['commit', '--allow-empty', '-m', 'node-static-script']);`n"; Command = 'node scripts/protected-lifecycle.js' }
+            )) {
+            Write-GateTestFile -Path (Join-Path $fixture.RepoRoot $scriptCase.Path) -Content $scriptCase.Content
+            $staticInterpreter = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $scriptCase.Command; cwd = $fixture.RepoRoot } -Environment $workerEnvironment
+            & $script:AssertDenyResult -Result $staticInterpreter -Because "a static interpreter script cannot hide a protected sink: $($scriptCase.Command)"
+        }
+
+        foreach ($safeScriptCase in @(
+                @{ Path = 'scripts/safe-static-script.sh'; Content = "printf '%s\\n' safe`n"; Command = 'bash scripts/safe-static-script.sh' },
+                @{ Path = 'scripts/safe-static-script.sh'; Content = "printf '%s\\n' safe`n"; Command = 'sh scripts/safe-static-script.sh' },
+                @{ Path = 'scripts/safe-static-script.zsh'; Content = "printf '%s\\n' safe`n"; Command = 'zsh scripts/safe-static-script.zsh' },
+                @{ Path = 'scripts/safe-static-script.py'; Content = "print('safe')`n"; Command = 'python scripts/safe-static-script.py' },
+                @{ Path = 'scripts/safe-static-script.js'; Content = "console.log('safe');`n"; Command = 'node scripts/safe-static-script.js' }
+            )) {
+            Write-GateTestFile -Path (Join-Path $fixture.RepoRoot $safeScriptCase.Path) -Content $safeScriptCase.Content
+            $safeStaticInterpreter = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $safeScriptCase.Command; cwd = $fixture.RepoRoot } -Environment $workerEnvironment
+            $safeStaticInterpreter.ExitCode | Should -Be 0 -Because "a statically proven safe interpreter script remains allowed: $($safeScriptCase.Command)"
+        }
+
         Set-GatePass -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch
         $allowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot } -Environment $workerEnvironment
         $allowed.ExitCode | Should -Be 0
