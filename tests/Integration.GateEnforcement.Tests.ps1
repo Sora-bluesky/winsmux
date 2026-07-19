@@ -1158,21 +1158,13 @@ EOF
                 'printf ''commit -m x\n'' | xargs env git',
                 'printf ''commit -m x\n'' | xargs -I{} sh -c ''git {}''',
                 'Start-Process (Get-Command git) -ArgumentList commit -Wait',
-                'Start-Process (''g''+''it'') -ArgumentList commit -Wait',
                 'bash -lc "git commit -m x"',
                 'pwsh -Command "Set-Alias g git; g commit -m x"',
                 'git -c alias.ci=commit ci -m "feat: gated"',
                 'Set-Alias g git; g commit -m "feat: gated"',
-                'Set-Alias -Name g -Value git; g commit -m "feat: gated"',
-                'Set-Alias -Nam:g -Val:git; g commit -m "feat: gated"',
-                'New-Alias g git; g commit -m "feat: gated"',
-                'pwsh -Command "New-Alias g git; g commit -m x"',
-                'pwsh -Command "function g { git }; g commit -m x"',
                 'alias g=git; g commit -m x',
                 'alias g="command git"; g commit -m x',
-                'alias gc="git commit"; gc -m x',
-                'g(){ git "$@"; }; g commit -m x',
-                'g(){ "$@"; }; g git commit -m x'
+                'alias gc="git commit"; gc -m x'
             )) {
             $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
                 command = $command
@@ -1184,14 +1176,33 @@ EOF
         }
     }
 
+    It 'default-denies noncanonical git commit launchers before the review gate' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+
+        foreach ($command in @(
+                'Start-Process (''g''+''it'') -ArgumentList commit -Wait',
+                'Set-Alias -Name g -Value git; g commit -m "feat: gated"',
+                'Set-Alias -Nam:g -Val:git; g commit -m "feat: gated"',
+                'New-Alias g git; g commit -m "feat: gated"',
+                'pwsh -Command "New-Alias g git; g commit -m x"',
+                'pwsh -Command "function g { git }; g commit -m x"',
+                'g(){ git "$@"; }; g commit -m x',
+                'g(){ "$@"; }; g git commit -m x'
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
+            & $script:AssertDenyResult -Result $result
+            $result.OutputObject.systemMessage | Should -Match 'Unsupported inline process construction' -Because $command
+        }
+    }
+
     It 'denies git merge without Reviewer PASS for the current branch' {
         $fixture = New-GateFixture
         $script:FixtureRoot = $fixture.Root
 
         foreach ($command in @(
                 'git merge main',
-                'git -c alias.m=merge m main',
-                'git -c alias.m="!git m merge main" m'
+                'git -c alias.m=merge m main'
             )) {
             $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
                 command = $command
@@ -1201,6 +1212,15 @@ EOF
             $result.OutputObject.systemMessage | Should -Match 'review-approve'
             $result.OutputObject.systemMessage | Should -Match 'review-request'
         }
+    }
+
+    It 'default-denies a recursive command-local git shell merge alias' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $command = 'git -c alias.m="!git m merge main" m'
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'Unsupported inline process construction'
     }
 
     It 'denies GitHub pull request merge without Reviewer PASS for the current branch' {
@@ -1215,18 +1235,13 @@ EOF
                 'printf ''pr merge 123\n'' | xargs env gh',
                 'printf ''pr merge 123\n'' | xargs -I{} sh -c ''gh {}''',
                 'Start-Process (Get-Command gh) -ArgumentList ''pr merge 123'' -Wait',
-                'Start-Process (''g''+''h'') -ArgumentList ''pr merge 123'' -Wait',
                 'bash -lc "gh pr merge 112 --squash"',
                 'cmd /c g^h pr merge 112 --squash --delete-branch',
                 'gh api repos/OWNER/REPO/pulls/123/merge -X PUT',
                 'Set-Alias h gh; h pr merge 123 --squash',
-                'Set-Alias -Name h -Value gh; h pr merge 123 --squash',
-                'Set-Alias -Nam:h -Val:gh; h pr merge 123 --squash',
                 'alias h="command gh"; h pr merge 123 --squash',
                 'bash -lc "alias h=gh; h pr merge 123 --squash"',
-                'alias h="gh api"; h repos/OWNER/REPO/pulls/123/merge -X PUT',
-                'h(){ gh "$@"; }; h pr merge 123 --squash',
-                'h(){ gh api "$@"; }; h repos/OWNER/REPO/pulls/123/merge -X PUT'
+                'alias h="gh api"; h repos/OWNER/REPO/pulls/123/merge -X PUT'
             )) {
             $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
                 command = $command
@@ -1235,6 +1250,23 @@ EOF
             & $script:AssertDenyResult -Result $result
             $result.OutputObject.systemMessage | Should -Match 'review-approve'
             $result.OutputObject.systemMessage | Should -Match 'review-request'
+        }
+    }
+
+    It 'default-denies noncanonical GitHub merge launchers before the review gate' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+
+        foreach ($command in @(
+                'Start-Process (''g''+''h'') -ArgumentList ''pr merge 123'' -Wait',
+                'Set-Alias -Name h -Value gh; h pr merge 123 --squash',
+                'Set-Alias -Nam:h -Val:gh; h pr merge 123 --squash',
+                'h(){ gh "$@"; }; h pr merge 123 --squash',
+                'h(){ gh api "$@"; }; h repos/OWNER/REPO/pulls/123/merge -X PUT'
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
+            & $script:AssertDenyResult -Result $result
+            $result.OutputObject.systemMessage | Should -Match 'Unsupported inline process construction' -Because $command
         }
     }
 
@@ -1839,6 +1871,7 @@ EOF
 
         $result.ExitCode | Should -Be 0
         $result.StdErr | Should -Be ''
+        $result.OutputObject | Should -BeNullOrEmpty
     }
 
     It 'uses Start-Process WorkingDirectory for dynamic review-gated lifecycle checks' {
@@ -1868,6 +1901,7 @@ EOF
 
         $result.ExitCode | Should -Be 0
         $result.StdErr | Should -Be ''
+        $result.OutputObject | Should -BeNullOrEmpty
     }
 
     It 'does not allow root PASS to satisfy a Start-Process WorkingDirectory lifecycle target' {
@@ -1957,6 +1991,7 @@ EOF
 
         $result.ExitCode | Should -Be 0
         $result.StdErr | Should -Be ''
+        $result.OutputObject | Should -BeNullOrEmpty
     }
 
     It 'does not allow ArgumentList WorkingDirectory text to satisfy Start-Process cwd' {
@@ -2016,6 +2051,7 @@ EOF
 
         $result.ExitCode | Should -Be 0
         $result.StdErr | Should -Be ''
+        $result.OutputObject | Should -BeNullOrEmpty
     }
 
     It 'does not allow caller PASS to satisfy inline Start-Process WorkingDirectory after ArgumentList' {
@@ -2048,7 +2084,7 @@ EOF
         $result.OutputObject.systemMessage | Should -Match 'review-request'
     }
 
-    It 'uses shell function body targets for review-gated lifecycle checks' {
+    It 'default-denies shell function body lifecycle launchers' {
         $fixture = New-GateFixture
         $script:FixtureRoot = $fixture.Root
         $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
@@ -2073,11 +2109,11 @@ EOF
             command = ('g() {{ git -C "{0}" "$@"; }}; g commit -m "feat: approved-function-target"' -f $target.RepoRoot)
         })
 
-        $result.ExitCode | Should -Be 0
-        $result.StdErr | Should -Be ''
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'Unsupported inline process construction'
     }
 
-    It 'does not require caller PASS for a parsed shell function target' {
+    It 'default-denies shell function targets even when the target has PASS' {
         $fixture = New-GateFixture
         $script:FixtureRoot = $fixture.Root
         $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
@@ -2118,8 +2154,8 @@ EOF
             command = ('g() {{ git -C "{0}" "$@"; }}; g commit -m "feat: approved-function-target-only"' -f $target.RepoRoot)
         })
 
-        $result.ExitCode | Should -Be 0
-        $result.StdErr | Should -Be ''
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'Unsupported inline process construction'
     }
 
     It 'does not allow root PASS to satisfy a shell function body lifecycle target' {
@@ -2148,11 +2184,10 @@ EOF
         })
 
         & $script:AssertDenyResult -Result $result
-        $result.OutputObject.systemMessage | Should -Match 'review-approve'
-        $result.OutputObject.systemMessage | Should -Match 'review-request'
+        $result.OutputObject.systemMessage | Should -Match 'Unsupported inline process construction'
     }
 
-    It 'uses the call-site cwd for shell function forwarding lifecycle checks' {
+    It 'default-denies shell function forwarding after a cwd change' {
         $fixture = New-GateFixture
         $script:FixtureRoot = $fixture.Root
         $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
@@ -2177,8 +2212,8 @@ EOF
             command = ('cd "{0}"; g() {{ git "$@"; }}; g commit -m "feat: approved-function-cd"' -f $target.RepoRoot)
         })
 
-        $result.ExitCode | Should -Be 0
-        $result.StdErr | Should -Be ''
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'Unsupported inline process construction'
     }
 
     It 'does not allow root PASS to satisfy shell function forwarding after cd' {
@@ -2207,8 +2242,7 @@ EOF
         })
 
         & $script:AssertDenyResult -Result $result
-        $result.OutputObject.systemMessage | Should -Match 'review-approve'
-        $result.OutputObject.systemMessage | Should -Match 'review-request'
+        $result.OutputObject.systemMessage | Should -Match 'Unsupported inline process construction'
     }
 
     It 'uses the current cwd for review-gated shell command substitutions' {
@@ -2238,6 +2272,7 @@ EOF
 
         $result.ExitCode | Should -Be 0
         $result.StdErr | Should -Be ''
+        $result.OutputObject | Should -BeNullOrEmpty
     }
 
     It 'does not allow root PASS to satisfy a review-gated shell command substitution after cd' {
@@ -2611,6 +2646,7 @@ EOF
 
         $result.ExitCode | Should -Be 0
         $result.StdErr | Should -Be ''
+        $result.OutputObject | Should -BeNullOrEmpty
     }
 
     It 'does not allow root PASS to satisfy a git -C target followed by an empty cwd option' {
@@ -2701,6 +2737,7 @@ EOF
 
         $result.ExitCode | Should -Be 0
         $result.StdErr | Should -Be ''
+        $result.OutputObject | Should -BeNullOrEmpty
     }
 
     It 'does not allow root PASS to satisfy an xargs git -C lifecycle target' {
@@ -2864,6 +2901,7 @@ EOF
 
         $result.ExitCode | Should -Be 0
         $result.StdErr | Should -Be ''
+        $result.OutputObject | Should -BeNullOrEmpty
     }
 
     It 'does not allow root PASS to satisfy a git shell alias target lifecycle' {
@@ -3148,7 +3186,7 @@ EOF
         $result.OutputObject.systemMessage | Should -Match 'review-request'
     }
 
-    It 'requires current repo PASS when an unparsed git alias follows a git target command' {
+    It 'default-denies an unparsed git function alias after a reviewed target command' {
         $fixture = New-GateFixture
         $script:FixtureRoot = $fixture.Root
         $target = New-GateTargetRepo -Root $fixture.Root -Branch 'feature/review-gate-target'
@@ -3174,8 +3212,7 @@ EOF
         })
 
         & $script:AssertDenyResult -Result $result
-        $result.OutputObject.systemMessage | Should -Match 'review-approve'
-        $result.OutputObject.systemMessage | Should -Match 'review-request'
+        $result.OutputObject.systemMessage | Should -Match 'Unsupported inline process construction'
     }
 
     It 'requires current repo PASS when a timed git lifecycle follows a git target command' {
@@ -7716,6 +7753,34 @@ print(f().dumps({'ok':True}))"
         foreach ($command in @(
                 'Set-Alias g git; g status',
                 'pwsh -Command ''saps git -ArgumentList @("status","--short") -Wait'''
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
+            $result.OutputObject | Should -BeNullOrEmpty -Because $command
+        }
+    }
+
+    It 'TASK-783 C95 keeps finite Rule13 delegation fail-closed for unknown options and sibling stages' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        Set-GatePass -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch
+
+        foreach ($command in @(
+                'Start-Process git -ArgumentList commit -Verb RunAs',
+                'Start-Process git -ArgumentList commit -Bogus value',
+                'git commit -m x; helper.exe',
+                'printf ''commit -m x\n'' | xargs git; helper.exe',
+                'echo $(git commit -m x) $(helper.exe)',
+                'git -c "alias.cm=!git commit -m x; helper.exe" cm'
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
+            & $script:AssertDenyResult -Result $result -Because $command
+        }
+
+        foreach ($command in @(
+                'Start-Process git -ArgumentList commit -Wait',
+                'printf ''commit -m x\n'' | xargs git',
+                'echo $(git commit -m x)',
+                'git -c "alias.cm=!git commit --allow-empty -m x" cm'
             )) {
             $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
             $result.OutputObject | Should -BeNullOrEmpty -Because $command

@@ -2340,7 +2340,11 @@ function getSetAliasDefinition(tokens) {
   return {
     aliasName,
     aliasTarget,
-    canonicalSyntax: Boolean(aliasName && aliasTarget && !unsupportedSyntax),
+    canonicalSyntax: Boolean(
+      aliasName && aliasTarget && !unsupportedSyntax && tokens.length === 3 &&
+      !normalizeAgentValue(stripOuterQuotes(tokens[1] || "")).startsWith("-") &&
+      !normalizeAgentValue(stripOuterQuotes(tokens[2] || "")).startsWith("-"),
+    ),
   };
 }
 
@@ -4790,7 +4794,9 @@ function hasUnsupportedInlineInterpreterBoundary(command) {
 }
 
 function hasUnsupportedDirectProcessBoundary(command) {
-  const source = materializePowerShellComSpecAliases(String(command || ""));
+  const rawSource = String(command || "");
+  if (/\b(?:start-process|saps|start)\s+\([^)]*\+[^)]*\)/iu.test(rawSource)) return true;
+  const source = materializePowerShellComSpecAliases(rawSource);
   const commandSurface = stripHeredocBodiesAndTerminators(source);
   const canonicalPowerShellGhRepoMerge = isCanonicalPowerShellGhRepoMerge(commandSurface);
   const powerShellAliases = new Map();
@@ -4803,7 +4809,8 @@ function hasUnsupportedDirectProcessBoundary(command) {
     const pipelineStages = splitCommandPipelineStages(segmentEntry.segment);
     const aliasStateUpdateIsDeterministic =
       !["&&", "||"].includes(segmentEntry.separatorBefore) && pipelineStages.length === 1;
-    for (const stage of pipelineStages) {
+    for (let stageIndex = 0; stageIndex < pipelineStages.length; stageIndex += 1) {
+      const stage = pipelineStages[stageIndex];
       const normalizedStage = unwrapShellExecutableControlFlowPrefix(
         unwrapPowerShellCommandWrapper(String(stage || "").trim()),
       );
@@ -4815,9 +4822,10 @@ function hasUnsupportedDirectProcessBoundary(command) {
       const rawEvaluationTokens = rawNestedPowerShell
         ? getPowerShellWrapperPrefixTokens(rawTokens)
         : rawTokens;
+      const hasCanonicalReviewSubstitution = isCanonicalRule13CommandSubstitutionStage(normalizedStage);
       const rawHasUnresolvedEvaluation = isPowerShellStartProcessExecutable(rawExecutable)
         ? hasUnresolvedPowerShellStartProcessArgumentEvaluation(rawEvaluationTokens, normalizedStage)
-        : hasUnresolvedPowerShellArgumentEvaluation(rawEvaluationTokens);
+        : hasUnresolvedPowerShellArgumentEvaluation(rawEvaluationTokens) && !hasCanonicalReviewSubstitution;
       if (rawHasUnresolvedEvaluation) return true;
       const aliasTokens = resolveStaticDirectAliasTokens(
         rawTokens,
@@ -4838,9 +4846,19 @@ function hasUnsupportedDirectProcessBoundary(command) {
         : tokens;
       const hasUnresolvedEvaluation = isPowerShellStartProcessExecutable(executable)
         ? hasUnresolvedPowerShellStartProcessArgumentEvaluation(evaluationTokens, normalizedStage)
-        : hasUnresolvedPowerShellArgumentEvaluation(evaluationTokens);
+        : hasUnresolvedPowerShellArgumentEvaluation(evaluationTokens) && !hasCanonicalReviewSubstitution;
       if (hasUnresolvedEvaluation) {
         return true;
+      }
+      if (isCanonicalRule13StartProcessStage(normalizedStage, tokens) ||
+          isCanonicalLiteralProducerXargsReviewStage(
+            pipelineStages[stageIndex - 1] || "",
+            normalizedStage,
+            tokens,
+          ) ||
+          hasCanonicalReviewSubstitution ||
+          isCanonicalRule13EmptyGitCwdStage(normalizedStage)) {
+        continue;
       }
       if (isCanonicalUnprotectedPowerShellEnvironmentStage(normalizedStage)) continue;
       if (!canonicalPowerShellGhRepoMerge && isUnownedPowerShellStage(normalizedStage, tokens)) {
@@ -4857,10 +4875,13 @@ function hasUnsupportedDirectProcessBoundary(command) {
           !hasCommandLocalGitAliasConfiguration(normalizedStage);
         const hasConfiguredReviewAlias = hasConfiguredGitReviewLifecycleAlias(normalizedStage, process.cwd());
         const hasConfiguredReadOnlyAlias = isCanonicalConfiguredReadOnlyGitAliasInvocation(tokens, process.cwd());
+        const hasCanonicalReviewShellAlias = isCanonicalCommandLocalGitShellReviewAlias(tokens);
         const hasUnsafeDirectEnvironment = hasDirectGitProcessEnvironment(normalizedStage) &&
-          !hasCanonicalCommandLocalAlias;
-        if (hasUnsafeDirectEnvironment || hasGitExternalProcessConfiguration(tokens)) return true;
-        if (!hasCanonicalCommandLocalAlias && !hasConfiguredReviewAlias && !hasConfiguredReadOnlyAlias) {
+          !hasCanonicalCommandLocalAlias && !hasCanonicalReviewShellAlias;
+        if (hasUnsafeDirectEnvironment ||
+            (hasGitExternalProcessConfiguration(tokens) && !hasCanonicalReviewShellAlias)) return true;
+        if (!hasCanonicalCommandLocalAlias && !hasConfiguredReviewAlias &&
+            !hasConfiguredReadOnlyAlias && !hasCanonicalReviewShellAlias) {
           const gitProcessDecision = classifyStaticProcessInvocation("git", tokens.slice(1), normalizedStage);
           if (gitProcessDecision !== INTERPRETER_PROCESS_BOUNDARY.ALLOW_STATIC_READONLY &&
               gitProcessDecision !== INTERPRETER_PROCESS_BOUNDARY.ALLOW_PROVEN_NON_PROTECTED) return true;
@@ -4907,24 +4928,6 @@ function hasUnsupportedDirectProcessBoundary(command) {
         }
       }
       if (DIRECT_PROCESS_TRAMPOLINE_TOOLS.has(executable)) return true;
-      if (isPowerShellStartProcessExecutable(executable)) {
-        const nestedCommand = getPowerShellStartProcessCommand(tokens);
-        const nestedTokens = tokenizeCommandLine(nestedCommand);
-        if (nestedTokens.length === 0) return true;
-        const resolvedNestedExecutable = evaluateStaticStringExpression(nestedTokens[0], new Map());
-        const nestedExecutable = normalizeExecutableName(resolvedNestedExecutable || nestedTokens[0]);
-        if (nestedExecutable === "git" || nestedExecutable === "gh" || nestedExecutable === "codex") {
-          if (nestedExecutable === "git" && hasGitExternalProcessConfiguration(nestedTokens)) return true;
-          continue;
-        }
-        const result = classifyStaticProcessInvocation(
-          nestedExecutable,
-          nestedTokens.slice(1),
-          nestedCommand,
-        );
-        if (result !== INTERPRETER_PROCESS_BOUNDARY.ALLOW_STATIC_READONLY &&
-            result !== INTERPRETER_PROCESS_BOUNDARY.ALLOW_PROVEN_NON_PROTECTED) return true;
-      }
       if (executable === "forfiles") {
         const result = classifyStaticProcessInvocation(executable, tokens.slice(1), normalizedStage);
         if (result !== INTERPRETER_PROCESS_BOUNDARY.ALLOW_STATIC_READONLY &&
@@ -4933,6 +4936,128 @@ function hasUnsupportedDirectProcessBoundary(command) {
     }
   }
   return false;
+}
+
+function isCanonicalFlatReviewLifecycleTokens(tokens) {
+  if (!Array.isArray(tokens) || tokens.length === 0) return false;
+  const executable = normalizeExecutableName(tokens[0] || "");
+  if (executable === "git") {
+    const subcommandIndex = findGitSubcommandIndex(tokens);
+    if (subcommandIndex < 1 ||
+        !hasOnlyCanonicalGitGlobalArguments(tokens, subcommandIndex) ||
+        hasGitExternalProcessConfiguration(tokens)) return false;
+    return isReviewGatedGitSubcommand(
+      getGitSubcommandName(tokens, subcommandIndex),
+      tokens,
+      subcommandIndex,
+    );
+  }
+  return executable === "gh" && isGhTokenLifecycleCommand(tokens);
+}
+
+function hasOnlyFinitePowerShellStartProcessReviewOptions(tokens) {
+  const allowedNamedOptions = new Set([
+    "-argumentlist", "-args", "-file", "-filepath",
+    "-nonewwindow", "-wait", "-workingdirectory",
+  ]);
+  for (let index = 1; index < tokens.length; index += 1) {
+    if (isQuotedCommandToken(tokens[index])) continue;
+    const raw = stripOuterQuotes(String(tokens[index] || ""));
+    const normalized = normalizeAgentValue(raw);
+    if (!normalized.startsWith("-") || normalized.startsWith("--") || /^-[a-z],?$/u.test(normalized)) continue;
+    const optionName = normalized.split(/[:=]/u, 1)[0];
+    if (!allowedNamedOptions.has(optionName)) return false;
+  }
+  return true;
+}
+
+function isCanonicalRule13StartProcessStage(stage, tokens) {
+  const executable = normalizeExecutableName(tokens[0] || "");
+  if (!isPowerShellStartProcessExecutable(executable) ||
+      !/^\s*(?:start-process|saps|start)\s+(?:(?:-(?:file|filepath)(?::|\s+))?)(?:["']?(?:git|gh)(?:\.exe)?["']?|\(\s*get-command\s+(?:git|gh)(?:\.exe)?\s*\))(?=\s|$)/iu.test(String(stage || "")) ||
+      hasUnresolvedPowerShellStartProcessArgumentEvaluation(tokens, stage) ||
+      !hasOnlyFinitePowerShellStartProcessReviewOptions(tokens)) return false;
+  const invocation = getPowerShellStartProcessInvocation(tokens);
+  const nestedTokens = tokenizeCommandLine(invocation.command || "");
+  return isCanonicalFlatReviewLifecycleTokens(nestedTokens);
+}
+
+function getLiteralPrintfArgv(stage) {
+  const match = /^\s*printf\s+(["'])([\s\S]*)\1\s*$/u.exec(String(stage || ""));
+  if (!match) return null;
+  const payload = String(match[2] || "")
+    .replace(/\\[rn]/gu, " ")
+    .trim();
+  if (!payload || /[$`;&|<>(){}\r\n]/u.test(payload)) return null;
+  const argv = tokenizeCommandLine(payload);
+  return argv.length > 0 ? argv : null;
+}
+
+function isCanonicalRule13EmptyGitCwdStage(stage) {
+  const source = String(stage || "").trim();
+  if (!/^git(?:\.exe)?\b/iu.test(source) || /[;&|<>$`(){}\r\n]/u.test(source)) return false;
+  let sawEffectiveCwd = false;
+  let sawEmptyNoop = false;
+  const materialized = source.replace(/\s-C\s+(["'])([^"']*)\1/gu, (match, _quote, value) => {
+    if (String(value || "").trim()) {
+      sawEffectiveCwd = true;
+      return match;
+    }
+    if (!sawEffectiveCwd) return match;
+    sawEmptyNoop = true;
+    return "";
+  });
+  return sawEmptyNoop && isCanonicalFlatReviewLifecycleTokens(tokenizeCommandLine(materialized));
+}
+
+function isCanonicalLiteralProducerXargsReviewStage(previousStage, stage, tokens) {
+  if (normalizeExecutableName(tokens[0] || "") !== "xargs") return false;
+  const producedArgv = getLiteralPrintfArgv(previousStage);
+  if (!producedArgv) return false;
+  const nestedTokens = getNormalizedXargsCommandTokens(tokens);
+  if (nestedTokens.length === 0) return false;
+  const nestedExecutable = normalizeExecutableName(nestedTokens[0] || "");
+  if (nestedExecutable === "git" || nestedExecutable === "gh") {
+    return isCanonicalFlatReviewLifecycleTokens([...nestedTokens, ...producedArgv]);
+  }
+  if (!isShellCommandExecutable(nestedExecutable)) return false;
+  const normalizedStage = normalizeAgentValue(String(stage || ""));
+  if (!/\bxargs\s+-i\{\}\s+(?:sh|bash|zsh)\s+-c\b/u.test(normalizedStage)) return false;
+  const nestedCommand = getShellCommandArgument(nestedTokens);
+  if (!nestedCommand || /[$`;&|<>()[\]\r\n]/u.test(nestedCommand)) return false;
+  const materialized = nestedCommand.replace(/\{\}/gu, producedArgv.join(" "));
+  return isCanonicalFlatReviewLifecycleTokens(tokenizeCommandLine(materialized));
+}
+
+function isCanonicalRule13CommandSubstitutionStage(stage) {
+  const substitutions = getShellCommandSubstitutionCommands(stage);
+  if (substitutions.length !== 1 ||
+      !isCanonicalFlatReviewLifecycleTokens(tokenizeCommandLine(substitutions[0]))) return false;
+  const masked = String(stage || "").replace(`$(${substitutions[0]})`, "WINSMUX_STATIC_REVIEW_RESULT");
+  const tokens = tokenizeCommandLine(masked);
+  return tokens.length > 0 && STATIC_NON_EXECUTOR_TOOL_ALLOWLIST.has(normalizeExecutableName(tokens[0] || "")) &&
+    !/[$`;&|<>(){}\r\n]/u.test(masked.replace("WINSMUX_STATIC_REVIEW_RESULT", ""));
+}
+
+function isCanonicalCommandLocalGitShellReviewAlias(tokens) {
+  if (normalizeExecutableName(tokens[0] || "") !== "git") return false;
+  const subcommandIndex = findGitSubcommandIndex(tokens);
+  if (subcommandIndex < 1 || tokens.length !== subcommandIndex + 1) return false;
+  const subcommand = normalizeAgentValue(stripOuterQuotes(tokens[subcommandIndex] || ""));
+  const aliasCommand = getGitShellAliasCommand(tokens, subcommandIndex, subcommand);
+  if (!aliasCommand || /[;&|<>$`(){}\r\n]/u.test(aliasCommand)) return false;
+  let aliasConfigCount = 0;
+  for (let index = 1; index < subcommandIndex; index += 1) {
+    const raw = stripOuterQuotes(String(tokens[index] || ""));
+    if (raw === "-c" && index + 1 < subcommandIndex) {
+      const value = stripOuterQuotes(String(tokens[++index] || ""));
+      if (!/^alias\.[A-Za-z0-9_.-]+=/iu.test(value)) return false;
+      aliasConfigCount += 1;
+      continue;
+    }
+    return false;
+  }
+  return aliasConfigCount === 1 && isCanonicalFlatReviewLifecycleTokens(tokenizeCommandLine(aliasCommand));
 }
 
 function resolveStaticDirectAliasTokens(
@@ -8334,15 +8459,22 @@ function hasOnlyCanonicalGitGlobalArguments(tokens, subcommandIndex) {
     "--no-optional-locks", "--no-pager", "--noglob-pathspecs",
   ]);
   const safeValued = new Set(["--git-dir", "--namespace", "--work-tree"]);
+  let hasEffectiveCwd = false;
   for (let index = 1; index < subcommandIndex; index += 1) {
     const raw = stripOuterQuotes(String(tokens[index] || ""));
     const value = normalizeAgentValue(raw);
     if (safeValueless.has(value)) continue;
     if (raw === "-C") {
-      if (++index >= subcommandIndex || !stripOuterQuotes(String(tokens[index] || "")).trim()) return false;
+      if (++index >= subcommandIndex) return false;
+      const cwd = stripOuterQuotes(String(tokens[index] || "")).trim();
+      if (!cwd && !hasEffectiveCwd) return false;
+      if (cwd) hasEffectiveCwd = true;
       continue;
     }
-    if (raw.startsWith("-C") && raw.length > 2) continue;
+    if (raw.startsWith("-C") && raw.length > 2) {
+      hasEffectiveCwd = true;
+      continue;
+    }
     if (raw === "-c") {
       if (index + 1 >= subcommandIndex || !isCanonicalSafeGitInlineConfiguration(stripOuterQuotes(tokens[++index]))) return false;
       continue;
@@ -9590,12 +9722,15 @@ function hasCommandLocalGitAliasConfiguration(command) {
     }
   }
   if (hasNonAliasConfiguration || aliasConfigurations.size === 0) return true;
-  for (const value of aliasConfigurations.values()) {
-    if (!isCanonicalSafeGitInlineConfiguration(`alias.x=${value}`)) return true;
-  }
   const gitIndex = tokens.findIndex((token) => normalizeExecutableName(token) === "git");
   if (gitIndex < 0) return true;
   const gitTokens = tokens.slice(gitIndex);
+  if ([...aliasConfigurations.values()].some((value) => String(value || "").trim().startsWith("!"))) {
+    return !isCanonicalCommandLocalGitShellReviewAlias(gitTokens);
+  }
+  for (const value of aliasConfigurations.values()) {
+    if (!isCanonicalSafeGitInlineConfiguration(`alias.x=${value}`)) return true;
+  }
   const subcommandIndex = findGitSubcommandIndex(gitTokens);
   if (subcommandIndex < 1) return true;
   const invokedAlias = normalizeAgentValue(stripOuterQuotes(gitTokens[subcommandIndex] || ""));
