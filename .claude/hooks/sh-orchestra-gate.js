@@ -1556,11 +1556,6 @@ function hasPythonGitLifecycleCommand(segment) {
     hasDynamicInterpreterLifecycleHint(source);
 }
 
-function hasPythonGitChildProcess(segment) {
-  return getInterpreterLiteralGitCommandsForKind(String(segment || ""), "python")
-    .some((command) => /^\s*git(?:\.exe)?\b/iu.test(command));
-}
-
 function hasNodeGitLifecycleCommand(segment) {
   const source = String(segment || "");
   return getInterpreterLiteralGitCommandsForKind(source, "node")
@@ -4781,8 +4776,7 @@ function hasUnsupportedInlineInterpreterBoundary(command) {
           hasDynamicInterpreterGitSubcommand(script))) return true;
       } else if (kind === "python") {
         const script = String(getInterpreterInlineSourceToken(tokens, kind) || "");
-        if (hasPythonGitChildProcess(script) ||
-            hasRuntimeGitEnvironmentMutation(script) ||
+        if (hasRuntimeGitEnvironmentMutation(script) ||
             hasRuntimeNodeOptionsEnvironmentMutation(script) ||
             hasUnsupportedPythonModuleLoad(script) ||
             hasUnsupportedPythonProcessConstruction(script) ||
@@ -8287,7 +8281,7 @@ function isCanonicalReadOnlyCodexArguments(values) {
   return values.length === 1 && isTerminalReadOnlyCodexMode(values[0]);
 }
 
-function classifyStaticShellCommandString(command, depth = 0) {
+function classifyStaticShellCommandString(command, depth = 0, denyGit = false) {
   if (depth > 6) return INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS;
   let sawStage = false;
   let strongestAllow = INTERPRETER_PROCESS_BOUNDARY.ALLOW_PROVEN_NON_PROTECTED;
@@ -8301,6 +8295,7 @@ function classifyStaticShellCommandString(command, depth = 0) {
         tokens.slice(1),
         stage,
         depth + 1,
+        denyGit,
       );
       if (result === INTERPRETER_PROCESS_BOUNDARY.DENY_PROTECTED ||
           result === INTERPRETER_PROCESS_BOUNDARY.DENY_AMBIGUOUS_PROTECTED ||
@@ -8313,13 +8308,13 @@ function classifyStaticShellCommandString(command, depth = 0) {
   return sawStage ? strongestAllow : INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS;
 }
 
-function classifyCodexCommandExpression(expression, assignments, source = "", callIndex = 0, scopes = buildFunctionScopeIndex(source), language = "javascript", outerProtectedHint = false) {
+function classifyCodexCommandExpression(expression, assignments, source = "", callIndex = 0, scopes = buildFunctionScopeIndex(source), language = "javascript", outerProtectedHint = false, denyGit = false) {
   const candidate = stripLeadingCallComments(String(expression || "").trim());
   const resolved = source
     ? evaluateScopedStaticStringExpression(candidate, source, callIndex, scopes, language)
     : evaluateStaticStringExpression(candidate, assignments);
   if (resolved !== null) {
-    return classifyStaticShellCommandString(resolved);
+    return classifyStaticShellCommandString(resolved, 0, denyGit);
   }
   let prefix = "";
   for (const part of splitTopLevelPlusExpressions(candidate)) {
@@ -8582,7 +8577,7 @@ function isCanonicalReadOnlyGhArguments(values) {
   return !args.some((value) => value === "--input" || value === "-f" || value === "--field" || value === "--raw-field");
 }
 
-function classifyStaticProcessInvocation(tool, resolvedArguments, rawBoundary = "", depth = 0) {
+function classifyStaticProcessInvocation(tool, resolvedArguments, rawBoundary = "", depth = 0, denyGit = false) {
   if (!resolvedArguments || resolvedArguments.some((value) => value === null)) {
     return /\bcodex(?:\.exe)?\b/iu.test(rawBoundary)
       ? INTERPRETER_PROCESS_BOUNDARY.DENY_AMBIGUOUS_PROTECTED
@@ -8600,6 +8595,7 @@ function classifyStaticProcessInvocation(tool, resolvedArguments, rawBoundary = 
       unwrapped.slice(1),
       rawBoundary,
       depth + 1,
+      denyGit,
     );
   }
   if (normalizedTool === "codex") {
@@ -8610,6 +8606,7 @@ function classifyStaticProcessInvocation(tool, resolvedArguments, rawBoundary = 
   }
   const nestedInterpreterKind = getShellInterpreterKind([normalizedTool, ...resolvedArguments]);
   if (nestedInterpreterKind === "node" || nestedInterpreterKind === "python") {
+    if (denyGit) return INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS;
     if (nestedInterpreterKind === "node" &&
         hasNodeStartupCodeConfiguration([normalizedTool, ...resolvedArguments], rawBoundary)) {
       return INTERPRETER_PROCESS_BOUNDARY.DENY_PROTECTED;
@@ -8631,6 +8628,7 @@ function classifyStaticProcessInvocation(tool, resolvedArguments, rawBoundary = 
       : INTERPRETER_PROCESS_BOUNDARY.ALLOW_PROVEN_NON_PROTECTED;
   }
   if (normalizedTool === "git") {
+    if (denyGit) return INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS;
     const tokens = [normalizedTool, ...resolvedArguments];
     const subcommandIndex = findGitSubcommandIndex(tokens);
     const subcommand = subcommandIndex < 0 ? "" : normalizeAgentValue(tokens[subcommandIndex]);
@@ -8665,6 +8663,7 @@ function classifyStaticProcessInvocation(tool, resolvedArguments, rawBoundary = 
       nestedTokens.slice(1),
       nestedCommand,
       depth + 1,
+      denyGit,
     );
   }
   if (!isNestedShellProcessLauncher(normalizedTool)) {
@@ -8687,6 +8686,7 @@ function classifyStaticProcessInvocation(tool, resolvedArguments, rawBoundary = 
     nestedTokens.slice(1),
     nestedCommand,
     depth + 1,
+    denyGit,
   );
   return nestedDecision === INTERPRETER_PROCESS_BOUNDARY.ALLOW_STATIC_READONLY ||
     nestedDecision === INTERPRETER_PROCESS_BOUNDARY.ALLOW_PROVEN_NON_PROTECTED
@@ -8694,7 +8694,7 @@ function classifyStaticProcessInvocation(tool, resolvedArguments, rawBoundary = 
     : INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS;
 }
 
-function classifyCodexArgvInvocation(toolExpression, argvExpression, source, callIndex, scopes, language, toolInsideVector, outerProtectedHint = false) {
+function classifyCodexArgvInvocation(toolExpression, argvExpression, source, callIndex, scopes, language, toolInsideVector, outerProtectedHint = false, denyGit = false) {
   const elements = getArgumentContainerElements(argvExpression, source, callIndex, scopes, language);
   const resolvedTool = toolInsideVector
     ? (elements ? evaluateScopedStaticStringExpression(elements[0], source, callIndex, scopes, language) : null)
@@ -8717,6 +8717,8 @@ function classifyCodexArgvInvocation(toolExpression, argvExpression, source, cal
       tool,
       resolvedArguments,
       [toolExpression, argvExpression, ...(elements || [])].join(" "),
+      0,
+      denyGit,
     );
   }
   const rawBoundary = [toolExpression, argvExpression, ...(elements || [])].join(" ");
@@ -8930,6 +8932,7 @@ function classifyPythonOsProcessCall(method, callBody, source, callIndex, scopes
       scopes,
       "python",
       outerProtectedHint,
+      true,
     );
   }
   const signature = getPythonOsProcessSignature(method);
@@ -8965,7 +8968,7 @@ function classifyPythonOsProcessCall(method, callBody, source, callIndex, scopes
   if (resolvedArguments.some((value) => value === null)) {
     return INTERPRETER_PROCESS_BOUNDARY.DENY_AMBIGUOUS_PROTECTED;
   }
-  return classifyStaticProcessInvocation(tool, resolvedArguments.slice(1), callBody);
+  return classifyStaticProcessInvocation(tool, resolvedArguments.slice(1), callBody, 0, true);
 }
 
 function classifyPythonOsProcessBoundary(source, scopes, outerProtectedHint = false) {
@@ -9186,6 +9189,7 @@ function getInterpreterProcessBoundaryResults(source) {
           scopes,
           "python",
           outerProtectedHint,
+          true,
         ));
       } else {
         results.push(classifyCodexArgvInvocation(
@@ -9197,6 +9201,7 @@ function getInterpreterProcessBoundaryResults(source) {
           "python",
           true,
           outerProtectedHint,
+          true,
         ));
       }
     }

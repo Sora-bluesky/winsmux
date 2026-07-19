@@ -6637,7 +6637,7 @@ python -c "import subprocess; subprocess.run(['git','commit','-m','python-commen
         foreach ($allowedCommand in @(
                 'node -e "require(''child_process'').spawnSync(''git'', [''status''])"',
                 'node -e "const cp=require(''child_process''); let s; s=cp.spawnSync; s(''git'', [''status''])"',
-                'python -c "import os as o; o.system(''git status'')"',
+                'python -c "import os as o; o.system(''echo read-only'')"',
                 'node -e "function exec(x){return x}; exec(''git commit is text'')"'
             )) {
             $allowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $allowedCommand }
@@ -7384,15 +7384,15 @@ python -c "import subprocess; subprocess.run(['git','commit','-m','python-commen
                 'python -c "import subprocess; subprocess.run([''codex'',''--version''])"',
                 'python -c "print(''os.execlp codex exec'')"',
                 'python -c "print(\"os.execlp(''codex'',''codex'',''exec'')\")"',
-                'python -c "import os; os.spawnvp(os.P_WAIT,''git'', [''git'',''status''])"',
+                'python -c "import os; os.spawnvp(os.P_WAIT,''echo'', [''echo'',''read-only''])"',
                 'python -c "import os; os.spawnvp(os.P_WAIT,''codex'', [''codex'',''--version''])"',
-                'python -c "import os; os.execlp(''git'',''git'',''grep'',''codex'',''exec'')"',
+                'python -c "import os; os.execlp(''echo'',''echo'',''read-only'')"',
                 'python -c "import os; os.execlp(''echo'',''echo'',''codex'',''exec'')"',
                 'python -c "import os; os.system(''echo codex exec'')"',
-                'python -c "import subprocess; subprocess.run([''cmd'',''/c'',''git status''])"',
+                'cmd /c "git status --short"',
                 'node -e "require(`child_process`).execSync(''codex --version'')"',
-                'python -c "import os; os.popen(''git status'')"',
-                'python -c "import os; m,x=os,None; m.execlp(''git'',''git'',''grep'',''codex'',''exec'')"',
+                'python -c "import os; os.popen(''echo read-only'')"',
+                'python -c "import os; m,x=os,None; m.execlp(''echo'',''echo'',''read-only'')"',
                 'cmd /c "git status --short"',
                 'git -c alias.safe=status safe --short'
             )) {
@@ -7465,15 +7465,15 @@ python -c "import subprocess; subprocess.run(['git','commit','-m','python-commen
 
         $unexpectedDenied = @()
         foreach ($command in @(
-                'python -c "import subprocess; subprocess.run([''sh'',''-c'',''git status --short''])"',
-                'python -c "import subprocess; subprocess.run([''sh'',''-c'',''"$0" "$1$2"'',''git'',''sta'',''tus''])"',
+                'python -c "import subprocess; subprocess.run([''sh'',''-c'',''echo read-only''])"',
+                'python -c "import subprocess; subprocess.run([''sh'',''-c'',''"$0" "$1$2"'',''echo'',''read'',''-only''])"',
                 'node -e "require(''child_process'').spawnSync(''sh'', [''-c'',''"$0" "$1$2"'',''git'',''sta'',''tus''])"',
                 'node -e "require(`child\u005fprocess`).execSync(''codex --version'')"',
                 'node -e "require(`node:child\x5fprocess`).execSync(''git status'')"',
-                'python -c "import subprocess; subprocess.run([''env'',''git'',''status'',''--short''])"',
+                'python -c "import subprocess; subprocess.run([''env'',''echo'',''read-only''])"',
                 'node -e "require(''child_process'').spawnSync(''/usr/bin/env'', [''codex'',''--version''])"',
-                'python -c "import os; getattr(os,''popen'')(''git status'')"',
-                'python -c "import os; m=os; m.execlp(''git'',''git'',''status'')"',
+                'python -c "import os; getattr(os,''popen'')(''echo read-only'')"',
+                'python -c "import os; m=os; m.execlp(''echo'',''echo'',''read-only'')"',
                 'python -c "import platform; print(platform.system())"',
                 'python -c "class Cursor: pass; cursor=Cursor(); cursor.execute=lambda value:value; print(cursor.execute(''select 1''))"',
                 'python -c "import os; print(os.name)"',
@@ -7811,7 +7811,15 @@ print(f().dumps({'ok':True}))"
                 'python -c "import os,subprocess; e=getattr(os,''environ''); e[''GIT_CONFIG_COUNT'']=''1''; e[''GIT_CONFIG_KEY_0'']=''core.fsmonitor''; e[''GIT_CONFIG_VALUE_0'']=''codex exec --full-auto''; subprocess.run([''git'',''status'',''--short''])"',
                 'python -c "import os,subprocess; e=getattr(os,''en''+''viron''); e[''GIT_CONFIG_COUNT'']=''1''; e[''GIT_CONFIG_KEY_0'']=''core.fsmonitor''; e[''GIT_CONFIG_VALUE_0'']=''codex exec --full-auto''; subprocess.run([''git'',''status'',''--short''])"',
                 'python -c "import os,subprocess,operator; e=operator.attrgetter(''environ'')(os); e[''GIT_CONFIG_COUNT'']=''1''; e[''GIT_CONFIG_KEY_0'']=''core.fsmonitor''; e[''GIT_CONFIG_VALUE_0'']=''codex exec --full-auto''; subprocess.run([''git'',''status'',''--short''])"',
-                'python -c "import os as o,subprocess; e=o.environ; e[''GIT_CONFIG_COUNT'']=''1''; e[''GIT_CONFIG_KEY_0'']=''core.fsmonitor''; e[''GIT_CONFIG_VALUE_0'']=''codex exec --full-auto''; subprocess.run([''git'',''status'',''--short''])"'
+                'python -c "import os as o,subprocess; e=o.environ; e[''GIT_CONFIG_COUNT'']=''1''; e[''GIT_CONFIG_KEY_0'']=''core.fsmonitor''; e[''GIT_CONFIG_VALUE_0'']=''codex exec --full-auto''; subprocess.run([''git'',''status'',''--short''])"',
+                'python -c "import os; os.system(''git status --short'')"',
+                'python -c "import os; os.popen(''git status --short'')"',
+                'python -c "import os; os.execlp(''git'',''git'',''status'',''--short'')"',
+                'python -c "import os; os.spawnvp(os.P_WAIT,''git'', [''git'',''status'',''--short''])"',
+                'python -c "import subprocess; subprocess.run([''env'',''git'',''status'',''--short''])"',
+                'python -c "import subprocess; subprocess.run([''sh'',''-c'',''git status --short''])"',
+                'python -c "import subprocess; subprocess.run([''cmd'',''/c'',''git status --short''])"',
+                'python -c "import subprocess; subprocess.run([''python'',''-c'',''import subprocess; subprocess.run([\"git\",\"status\",\"--short\"])''])"'
             )) {
             $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
             & $script:AssertDenyResult -Result $result -Because $command
