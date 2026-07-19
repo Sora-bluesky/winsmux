@@ -881,9 +881,10 @@ function getStaticNonPowerShellInterpreterFileArgument(tokens) {
   const executable = normalizeExecutableName(tokens[0] || "");
   if (isShellCommandExecutable(executable)) {
     const noExecute = tokens.slice(1).some((token) => ["-n", "--noexec"].includes(normalizeAgentValue(token)));
-    return noExecute
+    const scriptPath = getStaticInterpreterScriptPath(tokens);
+    return noExecute || !scriptPath || isDynamicStdinScriptPath(scriptPath) || isAnyStdinDevicePath(scriptPath)
       ? { kind: "shell", present: false, value: "" }
-      : { kind: "shell", present: true, value: getStaticInterpreterScriptPath(tokens) };
+      : { kind: "shell", present: Boolean(scriptPath), value: scriptPath };
   }
   const kind = getShellInterpreterKind(tokens);
   if (!kind || getInterpreterInlineSourceDescriptor(tokens, kind)) {
@@ -928,13 +929,13 @@ function getStaticInvokedScriptEvidence(command, baseCwd, depth = 0) {
         const rawNestedCommand = getCmdShellArgument(tokens, false);
         if (rawNestedCommand) {
           const nestedCommand = getStaticNestedShellCommand("cmd", tokens.slice(1));
-          if (nestedCommand === null) {
-            evidence.unresolved = true;
-          } else {
-            const nestedEvidence = getStaticInvokedScriptEvidence(nestedCommand, baseCwd, depth + 1);
-            evidence.contents.push(...nestedEvidence.contents);
-            evidence.unresolved = evidence.unresolved || nestedEvidence.unresolved;
-          }
+          const nestedEvidence = getStaticInvokedScriptEvidence(
+            nestedCommand === null ? rawNestedCommand : nestedCommand,
+            baseCwd,
+            depth + 1,
+          );
+          evidence.contents.push(...nestedEvidence.contents);
+          evidence.unresolved = evidence.unresolved || nestedEvidence.unresolved;
         }
         continue;
       }
@@ -950,6 +951,7 @@ function getStaticInvokedScriptEvidence(command, baseCwd, depth = 0) {
       const staticInterpreterFile = getStaticNonPowerShellInterpreterFileArgument(tokens);
       if (staticInterpreterFile.present) {
         const value = staticInterpreterFile.value;
+        if (isAnyStdinDevicePath(value)) continue;
         if (!value || value === "-" || /[$%\x60*?\[\]{}\0]/u.test(value)) {
           evidence.unresolved = true;
           continue;
@@ -980,12 +982,14 @@ function getStaticInvokedScriptEvidence(command, baseCwd, depth = 0) {
               evidence.unresolved = true;
             }
           }
-        } catch {
-          evidence.unresolved = true;
+        } catch (error) {
+          if (error?.code !== "ENOENT") evidence.unresolved = true;
         }
         continue;
       }
       if (!isPowerShellExecutable(executable)) continue;
+      const nestedPowerShellCommand = getPowerShellNestedCommand(tokens);
+      if (nestedPowerShellCommand && isCanonicalPowerShellGhRepoMerge(nestedPowerShellCommand)) continue;
       const wrapperPrefix = getPowerShellWrapperPrefixTokens(tokens);
       if (wrapperPrefix.length < tokens.length) {
         const nestedCommand = getStaticNestedShellCommand(executable, tokens.slice(1));
@@ -1063,8 +1067,8 @@ function getStaticInvokedScriptEvidence(command, baseCwd, depth = 0) {
         const protectedEvidence = getStaticScriptProtectedEvidence(source, path.dirname(scriptPath));
         evidence.contents.push(...protectedEvidence.commands);
         evidence.unresolved = evidence.unresolved || protectedEvidence.unresolved;
-      } catch {
-        evidence.unresolved = true;
+      } catch (error) {
+        if (error?.code !== "ENOENT") evidence.unresolved = true;
       }
     }
   }
@@ -5631,13 +5635,19 @@ function hasUnsupportedDirectProcessBoundary(command) {
       const rawNestedPowerShell = isPowerShellExecutable(rawExecutable)
         ? getPowerShellNestedCommand(rawTokens)
         : "";
+      const stageCanonicalPowerShellGhRepoMerge =
+        isCanonicalPowerShellGhRepoMerge(normalizedStage) ||
+        Boolean(rawNestedPowerShell && isCanonicalPowerShellGhRepoMerge(rawNestedPowerShell));
       const rawEvaluationTokens = rawNestedPowerShell
         ? getPowerShellWrapperPrefixTokens(rawTokens)
         : rawTokens;
       const hasCanonicalReviewSubstitution = isCanonicalRule13CommandSubstitutionStage(normalizedStage);
       const rawHasUnresolvedEvaluation = isPowerShellStartProcessExecutable(rawExecutable)
         ? hasUnresolvedPowerShellStartProcessArgumentEvaluation(rawEvaluationTokens, normalizedStage)
-        : hasUnresolvedPowerShellArgumentEvaluation(rawEvaluationTokens) && !hasCanonicalReviewSubstitution;
+        : hasUnresolvedPowerShellArgumentEvaluation(rawEvaluationTokens) &&
+          !hasCanonicalReviewSubstitution &&
+          !canonicalPowerShellGhRepoMerge &&
+          !stageCanonicalPowerShellGhRepoMerge;
       if (rawHasUnresolvedEvaluation) return true;
       const aliasTokens = resolveStaticDirectAliasTokens(
         rawTokens,
@@ -5658,7 +5668,10 @@ function hasUnsupportedDirectProcessBoundary(command) {
         : tokens;
       const hasUnresolvedEvaluation = isPowerShellStartProcessExecutable(executable)
         ? hasUnresolvedPowerShellStartProcessArgumentEvaluation(evaluationTokens, normalizedStage)
-        : hasUnresolvedPowerShellArgumentEvaluation(evaluationTokens) && !hasCanonicalReviewSubstitution;
+        : hasUnresolvedPowerShellArgumentEvaluation(evaluationTokens) &&
+          !hasCanonicalReviewSubstitution &&
+          !canonicalPowerShellGhRepoMerge &&
+          !stageCanonicalPowerShellGhRepoMerge;
       if (hasUnresolvedEvaluation) {
         return true;
       }
@@ -5673,7 +5686,8 @@ function hasUnsupportedDirectProcessBoundary(command) {
         continue;
       }
       if (isCanonicalUnprotectedPowerShellEnvironmentStage(normalizedStage)) continue;
-      if (!canonicalPowerShellGhRepoMerge && isUnownedPowerShellStage(normalizedStage, tokens)) {
+      if (!canonicalPowerShellGhRepoMerge && !stageCanonicalPowerShellGhRepoMerge &&
+          isUnownedPowerShellStage(normalizedStage, tokens)) {
         return true;
       }
       if ((executable === "node" || executable === "nodejs") &&

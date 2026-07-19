@@ -6508,7 +6508,9 @@ python -c "import subprocess; subprocess.run(['git','commit','-m','python-commen
         foreach ($allowedCommand in @(
                 "cat /dev/fd/3 3<<'EOF'`ngit commit -m data-only-fd`nEOF",
                 "bash script.sh 3<<'EOF'`ngit commit -m script-file-fd`nEOF",
-                "bash /dev/fd/4 3<<'EOF'`ngit commit -m mismatched-fd`nEOF"
+                "bash /dev/fd/4 3<<'EOF'`ngit commit -m mismatched-fd`nEOF",
+                "python /dev/fd/4 3<<'EOF'`ngit commit -m mismatched-python-fd`nEOF",
+                "node /proc/self/fd/04 3<<'EOF'`ngit commit -m mismatched-node-fd`nEOF"
             )) {
             $allowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $allowedCommand }
             $allowed.OutputObject | Should -BeNullOrEmpty
