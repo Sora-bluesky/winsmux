@@ -8263,6 +8263,16 @@ EOF
 bash note.sh
 '@,
             @'
+target=note.sh
+(
+  target=safe.sh
+)
+cat <<'EOF'> "$target"
+codex exec --sandbox read-only subshell-assignment-bypass
+EOF
+bash note.sh
+'@,
+            @'
 target=dir/note.sh
 cat <<'EOF'> "${target##*/}"
 git commit --allow-empty -m basename-expansion-bypass
@@ -8310,6 +8320,16 @@ cat <<'EOF'> note.sh
 git commit --allow-empty -m exported-bash-env-bypass
 EOF
 export BASH_ENV=note.sh
+bash -c ':'
+'@,
+            @'
+cat <<'EOF'> note.sh
+git commit --allow-empty -m conditional-exported-bash-env-bypass
+EOF
+export BASH_ENV=note.sh
+if false; then
+  BASH_ENV=safe.sh
+fi
 bash -c ':'
 '@,
             @'

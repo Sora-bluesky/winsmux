@@ -348,7 +348,7 @@ function getExecutableHeredocBodies(command) {
 
     const declarations = [...commandLine.matchAll(/(?:(?<![A-Za-z0-9_])([0-9]+))?<<(?!<)(-?)\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\3/gu)];
     if (declarations.length === 0) {
-      if (/(?:^|[;\s])(if|then|elif|else|fi|while|until|for|select|case|esac|do|done|function)(?:[;\s]|$)/u.test(commandLine)) {
+      if (hasShellControlFlowBoundary(commandLine)) {
         controlFlowStateUncertain = true;
       }
       updateStaticShellVariableAssignments(commandLine, staticVariables, controlFlowStateUncertain);
@@ -358,7 +358,7 @@ function getExecutableHeredocBodies(command) {
 
     const declarationPattern = /(?:(?<![A-Za-z0-9_])[0-9]+)?<<(?!<)-?\s*(['"]?)[A-Za-z_][A-Za-z0-9_]*\1/gu;
     const commandPrefix = commandLine.slice(0, declarations[0].index);
-    if (/(?:^|[;\s])(if|then|elif|else|fi|while|until|for|select|case|esac|do|done|function)(?:[;\s]|$)/u.test(commandPrefix)) {
+    if (hasShellControlFlowBoundary(commandPrefix)) {
       controlFlowStateUncertain = true;
     }
     updateStaticShellVariableAssignments(commandPrefix, staticVariables, controlFlowStateUncertain);
@@ -397,6 +397,12 @@ function getExecutableHeredocBodies(command) {
   }
 
   return bodies;
+}
+
+function hasShellControlFlowBoundary(commandLine) {
+  const source = String(commandLine || "");
+  return /(?:^|[;\s()])(if|then|elif|else|fi|while|until|for|select|case|esac|do|done|function)(?:[;\s()]|$)/u.test(source) ||
+    /(?:^|[;\s])\((?:[;\s]|$)|(?:^|[;\s])\)(?:[;\s]|$)/u.test(source);
 }
 
 function getStaticHeredocOutputTarget(commandLine, staticVariables = new Map()) {
@@ -498,6 +504,7 @@ function doesCommandExecuteStaticScriptPath(command, expectedPath, initialCwd = 
   const exportedShellVariables = new Map();
   let effectiveCwd = initialCwd;
   let cwdUnresolved = false;
+  let controlFlowStateUncertain = false;
   const matchesKnownPath = (value) => {
     const variable = getShellScriptVariableName(value);
     if (expectedVariable && variable === expectedVariable) return true;
@@ -514,7 +521,8 @@ function doesCommandExecuteStaticScriptPath(command, expectedPath, initialCwd = 
   };
   for (const segmentEntry of splitCommandSegmentsWithSeparators(String(command || ""))) {
     const segment = segmentEntry.segment;
-    const conditionalSegment = ["&&", "||"].includes(segmentEntry.separatorBefore);
+    if (hasShellControlFlowBoundary(segment)) controlFlowStateUncertain = true;
+    const conditionalSegment = controlFlowStateUncertain || ["&&", "||"].includes(segmentEntry.separatorBefore);
     const stages = splitCommandPipelineStages(segment);
     let pipelineCarriesKnownBody = false;
     for (const stage of stages) {
@@ -577,7 +585,7 @@ function doesCommandExecuteStaticScriptPath(command, expectedPath, initialCwd = 
       }
       if (stages.length === 1 && (executable === "cd" || executable === "pushd")) {
         const nextCwd = stripOuterQuotes(execution.tokens[1] || "");
-        if (!nextCwd || isDynamicStdinScriptPath(nextCwd)) {
+        if (conditionalSegment || !nextCwd || isDynamicStdinScriptPath(nextCwd)) {
           cwdUnresolved = true;
         } else {
           effectiveCwd = resolveComparableStaticScriptPath(nextCwd, effectiveCwd);
