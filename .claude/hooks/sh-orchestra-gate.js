@@ -9872,22 +9872,10 @@ function getRuntimeEnvironmentMutationNameStates(source, assignments = getConsta
 
   const environmentAliases = getEnvironmentObjectAliasHistories(text);
   const environmentMutationFunctions = new Set(["operator.setitem", "operator.delitem"]);
-  const operatorAliases = new Set(["operator"]);
   for (const match of text.matchAll(/\bimport\s+operator(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?/gu)) {
     const alias = match[1] || "operator";
-    operatorAliases.add(alias);
     environmentMutationFunctions.add(`${alias}.setitem`);
     environmentMutationFunctions.add(`${alias}.delitem`);
-  }
-  for (const match of text.matchAll(/\bimport\s+([^;\r\n]+)/gu)) {
-    for (const rawBinding of String(match[1] || "").split(",")) {
-      const binding = /^\s*operator(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*$/u.exec(rawBinding);
-      if (!binding) continue;
-      const alias = binding[1] || "operator";
-      operatorAliases.add(alias);
-      environmentMutationFunctions.add(`${alias}.setitem`);
-      environmentMutationFunctions.add(`${alias}.delitem`);
-    }
   }
   for (const match of text.matchAll(/\bfrom\s+operator\s+import\s+([^;\r\n]+)/gu)) {
     for (const rawBinding of String(match[1] || "").split(",")) {
@@ -9920,21 +9908,6 @@ function getRuntimeEnvironmentMutationNameStates(source, assignments = getConsta
     addActiveMatches(new RegExp(`\\b(?:Reflect\\.(?:set|deleteProperty)|Object\\.defineProperty)\\s*\\(\\s*${escapedAlias}\\s*,\\s*([^,\\)]+)`, "giu"));
     for (const mutationFunction of environmentMutationFunctions) {
       addActiveMatches(new RegExp(`\\b${escapeRegex(mutationFunction)}\\s*\\(\\s*${escapedAlias}\\s*,\\s*([^,\\)]+)`, "giu"));
-    }
-    for (const operatorAlias of operatorAliases) {
-      const escapedOperatorAlias = escapeRegex(operatorAlias);
-      const mutationAccessor = [
-        `${escapedOperatorAlias}\\s*\\.\\s*__dict__\\s*\\[\\s*["'](?:setitem|delitem)["']\\s*\\]`,
-        `${escapedOperatorAlias}\\s*\\.\\s*__dict__\\s*\\.\\s*(?:get|__getitem__)\\s*\\(\\s*["'](?:setitem|delitem)["']\\s*\\)`,
-        `vars\\s*\\(\\s*${escapedOperatorAlias}\\s*\\)\\s*\\[\\s*["'](?:setitem|delitem)["']\\s*\\]`,
-        `getattr\\s*\\(\\s*${escapedOperatorAlias}\\s*,\\s*["'](?:setitem|delitem)["']\\s*\\)`,
-        `${escapedOperatorAlias}\\s*\\.\\s*__getattribute__\\s*\\(\\s*["'](?:setitem|delitem)["']\\s*\\)`,
-      ].join("|");
-      addActiveMatches(new RegExp(`(?:${mutationAccessor})\\s*\\(\\s*${escapedAlias}\\s*,\\s*([^,\\)]+)`, "giu"));
-      for (const match of text.matchAll(new RegExp(`\\b([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*(?:${mutationAccessor})`, "giu"))) {
-        const binding = escapeRegex(match[1]);
-        addActiveMatches(new RegExp(`\\b${binding}\\s*\\(\\s*${escapedAlias}\\s*,\\s*([^,\\)]+)`, "giu"));
-      }
     }
     addActiveMatches(new RegExp(`\\b${escapedAlias}\\.(?:setdefault|pop|__setitem__|__delitem__)\\s*\\(\\s*([^,\\)]+)`, "giu"));
     for (const match of text.matchAll(new RegExp(`\\b${escapedAlias}\\s*\\|=\\s*\\{([\\s\\S]{0,1024}?)\\}`, "giu"))) {
@@ -10026,6 +9999,9 @@ function hasPersistentGitTargetMutation(command) {
 
 function hasRuntimeGitEnvironmentMutation(source) {
   const text = String(source || "");
+  if (hasPythonEnvironmentObjectWithGitChildProcess(text)) {
+    return true;
+  }
   const gitName = /\b(?:GIT_DIR|GIT_WORK_TREE)\b/iu;
   const environmentNameStates = getRuntimeEnvironmentMutationNameStates(text);
   if (environmentNameStates.hasGit || environmentNameStates.hasUnresolved) {
@@ -10058,6 +10034,21 @@ function hasRuntimeGitEnvironmentMutation(source) {
   return gitName.test(text) &&
     (/\b(?:Object\.(?:assign|defineProperty)|Reflect\.(?:set|deleteProperty))\s*\(\s*process\.env\b/iu.test(text) ||
      /\bos\.environ\.(?:update|setdefault|pop|__setitem__|__delitem__)\s*\(/iu.test(text));
+}
+
+function hasPythonEnvironmentObjectWithGitChildProcess(source) {
+  const text = String(source || "");
+  if (getPythonProcessCalls(text).length === 0) {
+    return false;
+  }
+  const environmentAliases = getEnvironmentObjectAliasHistories(text);
+  const hasEnvironmentObject = [...environmentAliases.aliases].some((alias) =>
+    new RegExp(`(?<![A-Za-z0-9_$])${escapeRegex(alias)}(?![A-Za-z0-9_$])`, "u").test(text));
+  if (!hasEnvironmentObject) {
+    return false;
+  }
+  return getInterpreterLiteralGitCommandsForKind(text, "python")
+    .some((command) => /^\s*git(?:\.exe)?\b/iu.test(command));
 }
 
 function hasDynamicPowerShellGitEnvironmentMutation(source) {
