@@ -8346,6 +8346,38 @@ bash -c ':'
 '@,
             @'
 cat <<'EOF'> note.sh
+git commit --allow-empty -m subshell-startup-bypass
+EOF
+( export BASH_ENV=note.sh; bash -c ':' )
+'@,
+            @'
+cat <<'EOF'> note.sh
+git commit --allow-empty -m subshell-posix-env-bypass
+EOF
+( export ENV=note.sh; sh -c ':' )
+'@,
+            @'
+cat <<'EOF'> note.sh
+codex exec --sandbox read-only brace-group-startup-bypass
+EOF
+{ export BASH_ENV=note.sh; bash -c ':'; }
+'@,
+            @'
+cat <<'EOF'> note.sh
+git commit --allow-empty -m inherited-subshell-startup-bypass
+EOF
+export BASH_ENV=note.sh
+( bash -c ':' )
+'@,
+            @'
+cat <<'EOF'> note.sh
+git commit --allow-empty -m persistent-brace-startup-bypass
+EOF
+{ export BASH_ENV=note.sh; }
+bash -c ':'
+'@,
+            @'
+cat <<'EOF'> note.sh
 git commit --allow-empty -m conditional-exported-bash-env-bypass
 EOF
 export BASH_ENV=note.sh

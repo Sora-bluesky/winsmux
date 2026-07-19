@@ -487,7 +487,7 @@ function resolveStaticShellVariableReference(value, variables) {
   return /[$%\x60*?\[\]{}\0]/u.test(source) ? "\0unresolved-shell-expansion" : source;
 }
 
-function doesCommandExecuteStaticScriptPath(command, expectedPath, initialCwd = ".") {
+function doesCommandExecuteStaticScriptPath(command, expectedPath, initialCwd = ".", inheritedState = null) {
   if (String(expectedPath || "").includes("\0")) {
     return splitCommandSegments(String(command || "")).some((segment) =>
       splitCommandPipelineStages(segment).some((stage) => {
@@ -500,11 +500,12 @@ function doesCommandExecuteStaticScriptPath(command, expectedPath, initialCwd = 
   const expected = resolveComparableStaticScriptPath(expectedPath, initialCwd);
   const expectedVariable = getShellScriptVariableName(expectedPath);
   if (!expected && !expectedVariable) return false;
-  const knownPaths = new Set(expected ? [expected] : []);
-  const shellVariables = new Map();
-  const exportedShellVariables = new Map();
-  let effectiveCwd = initialCwd;
-  let cwdUnresolved = false;
+  const knownPaths = inheritedState?.knownPaths || new Set(expected ? [expected] : []);
+  if (expected) knownPaths.add(expected);
+  const shellVariables = inheritedState?.shellVariables || new Map();
+  const exportedShellVariables = inheritedState?.exportedShellVariables || new Map();
+  let effectiveCwd = inheritedState?.effectiveCwd || initialCwd;
+  let cwdUnresolved = Boolean(inheritedState?.cwdUnresolved);
   let controlFlowStateUncertain = false;
   const matchesKnownPath = (value) => {
     const variable = getShellScriptVariableName(value);
@@ -527,6 +528,26 @@ function doesCommandExecuteStaticScriptPath(command, expectedPath, initialCwd = 
     const stages = splitCommandPipelineStages(segment);
     let pipelineCarriesKnownBody = false;
     for (const stage of stages) {
+      const ungroupedStage = unwrapShellGroupingWrapper(stage);
+      if (ungroupedStage !== stage.trim()) {
+        const childState = {
+          knownPaths: new Set(knownPaths),
+          shellVariables: new Map(shellVariables),
+          exportedShellVariables: new Map(exportedShellVariables),
+          effectiveCwd,
+          cwdUnresolved,
+        };
+        if (doesCommandExecuteStaticScriptPath(ungroupedStage, expectedPath, effectiveCwd, childState)) return true;
+        continue;
+      }
+      const braceGroup = /^\{\s*([\s\S]*?)\s*;?\s*\}$/u.exec(stage.trim());
+      if (braceGroup) {
+        const groupState = { knownPaths, shellVariables, exportedShellVariables, effectiveCwd, cwdUnresolved };
+        if (doesCommandExecuteStaticScriptPath(braceGroup[1], expectedPath, effectiveCwd, groupState)) return true;
+        effectiveCwd = groupState.effectiveCwd;
+        cwdUnresolved = groupState.cwdUnresolved;
+        continue;
+      }
       const rawTokens = tokenizeCommandLine(stage);
       const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(rawTokens));
       if (execution.nestedCommand && doesCommandExecuteStaticScriptPath(execution.nestedCommand, expectedPath, effectiveCwd)) {
@@ -634,6 +655,10 @@ function doesCommandExecuteStaticScriptPath(command, expectedPath, initialCwd = 
         return true;
       }
     }
+  }
+  if (inheritedState) {
+    inheritedState.effectiveCwd = effectiveCwd;
+    inheritedState.cwdUnresolved = cwdUnresolved;
   }
   return false;
 }
