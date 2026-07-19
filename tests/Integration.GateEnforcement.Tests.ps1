@@ -8415,6 +8415,22 @@ bash -c ':'
 '@,
             @'
 cat <<'EOF'> note.sh
+codex exec --sandbox read-only skipped-and-brace-state-bypass
+EOF
+export BASH_ENV=note.sh
+false && { export BASH_ENV=safe.sh; :; }
+bash -c ':'
+'@,
+            @'
+cat <<'EOF'> note.sh
+git commit --allow-empty -m skipped-or-brace-state-bypass
+EOF
+export BASH_ENV=note.sh
+true || { export BASH_ENV=safe.sh; :; }
+bash -c ':'
+'@,
+            @'
+cat <<'EOF'> note.sh
 git commit --allow-empty -m conditional-exported-bash-env-bypass
 EOF
 export BASH_ENV=note.sh

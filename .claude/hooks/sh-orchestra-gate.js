@@ -554,7 +554,8 @@ function doesCommandExecuteStaticScriptPath(command, expectedPath, initialCwd = 
       }
       const braceGroup = /^\{\s*([\s\S]*?)\s*;?\s*\}$/u.exec(stage.trim());
       if (braceGroup) {
-        const groupState = isolatedSegment
+        const isolatedGroup = isolatedSegment || conditionalSegment;
+        const groupState = isolatedGroup
           ? {
               knownPaths: new Set(knownPaths),
               shellVariables: new Map(shellVariables),
@@ -564,7 +565,7 @@ function doesCommandExecuteStaticScriptPath(command, expectedPath, initialCwd = 
             }
           : { knownPaths, shellVariables, exportedShellVariables, effectiveCwd, cwdUnresolved };
         if (doesCommandExecuteStaticScriptPath(braceGroup[1], expectedPath, effectiveCwd, groupState)) return true;
-        if (!isolatedSegment) {
+        if (!isolatedGroup) {
           effectiveCwd = groupState.effectiveCwd;
           cwdUnresolved = groupState.cwdUnresolved;
         }
