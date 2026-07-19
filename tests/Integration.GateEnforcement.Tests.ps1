@@ -8243,6 +8243,26 @@ EOF
 bash note.sh
 '@,
             @'
+target=note.sh
+if false; then
+  target=safe.sh
+fi
+cat <<'EOF'> "$target"
+git commit --allow-empty -m conditional-block-assignment-bypass
+EOF
+bash note.sh
+'@,
+            @'
+target=note.sh
+while false; do
+  target=safe.sh
+done
+cat <<'EOF'> "$target"
+git commit --allow-empty -m loop-block-assignment-bypass
+EOF
+bash note.sh
+'@,
+            @'
 target=dir/note.sh
 cat <<'EOF'> "${target##*/}"
 git commit --allow-empty -m basename-expansion-bypass

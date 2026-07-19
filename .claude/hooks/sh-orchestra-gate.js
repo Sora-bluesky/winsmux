@@ -337,6 +337,7 @@ function getExecutableHeredocBodies(command) {
   const lines = command.split(/\r?\n/);
   const bodies = [];
   const staticVariables = new Map();
+  let controlFlowStateUncertain = false;
   for (let index = 0; index < lines.length; index += 1) {
     let commandLine = lines[index];
     let commandLineEnd = index;
@@ -347,13 +348,20 @@ function getExecutableHeredocBodies(command) {
 
     const declarations = [...commandLine.matchAll(/(?:(?<![A-Za-z0-9_])([0-9]+))?<<(?!<)(-?)\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\3/gu)];
     if (declarations.length === 0) {
-      updateStaticShellVariableAssignments(commandLine, staticVariables);
+      if (/(?:^|[;\s])(if|then|elif|else|fi|while|until|for|select|case|esac|do|done|function)(?:[;\s]|$)/u.test(commandLine)) {
+        controlFlowStateUncertain = true;
+      }
+      updateStaticShellVariableAssignments(commandLine, staticVariables, controlFlowStateUncertain);
       index = commandLineEnd;
       continue;
     }
 
     const declarationPattern = /(?:(?<![A-Za-z0-9_])[0-9]+)?<<(?!<)-?\s*(['"]?)[A-Za-z_][A-Za-z0-9_]*\1/gu;
-    updateStaticShellVariableAssignments(commandLine.slice(0, declarations[0].index), staticVariables);
+    const commandPrefix = commandLine.slice(0, declarations[0].index);
+    if (/(?:^|[;\s])(if|then|elif|else|fi|while|until|for|select|case|esac|do|done|function)(?:[;\s]|$)/u.test(commandPrefix)) {
+      controlFlowStateUncertain = true;
+    }
+    updateStaticShellVariableAssignments(commandPrefix, staticVariables, controlFlowStateUncertain);
     const executableFds = new Set(declarations
       .map((declaration) => declaration[1] || "0")
       .filter((fd) => hasExecutableHeredocConsumer(commandLine, declarationPattern, fd)));
@@ -433,7 +441,7 @@ function getStaticHeredocMaterializationTargets(commandLine, staticVariables = n
   return [...targets];
 }
 
-function updateStaticShellVariableAssignments(commandLine, variables) {
+function updateStaticShellVariableAssignments(commandLine, variables, controlFlowStateUncertain = false) {
   for (const segmentEntry of splitCommandSegmentsWithSeparators(String(commandLine || ""))) {
     const tokens = tokenizeCommandLine(segmentEntry.segment);
     if (tokens.length === 0) continue;
@@ -448,7 +456,7 @@ function updateStaticShellVariableAssignments(commandLine, variables) {
       const assignment = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/u.exec(stripOuterQuotes(token));
       if (!assignment) continue;
       const value = stripOuterQuotes(assignment[2]);
-      if (["&&", "||"].includes(segmentEntry.separatorBefore)) variables.set(assignment[1], "\0conditional-shell-variable");
+      if (controlFlowStateUncertain || ["&&", "||"].includes(segmentEntry.separatorBefore)) variables.set(assignment[1], "\0conditional-shell-variable");
       else if (!value || /[$%\x60*?\[\]{}\0]/u.test(value)) variables.delete(assignment[1]);
       else variables.set(assignment[1], value);
     }
