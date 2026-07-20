@@ -1631,6 +1631,8 @@ function getStaticScriptProtectedEvidence(source, scriptCwd) {
   const lines = text.split(/\r?\n/u);
   const commands = [];
   const seen = new Set();
+  let effectiveScriptCwd = scriptCwd;
+  let unresolved = false;
   for (let index = 0; index < lines.length; index += 1) {
     const windows = [lines[index]];
     if (/[`\\]\s*$/u.test(lines[index]) && index + 1 < lines.length) {
@@ -1646,27 +1648,51 @@ function getStaticScriptProtectedEvidence(source, scriptCwd) {
       }
       const directCodex = /\bcodex(?:\.exe)?\b/iu.test(candidate) && isDirectCodexDispatch(candidate);
       const reviewGated = !directCodex && isReviewGatedCommand(candidate);
-      if (!reviewGated && !directCodex) {
-        continue;
+      if (directCodex) {
+        if (!seen.has("codex exec")) commands.push("codex exec");
+        seen.add("codex exec");
+      } else if (reviewGated) {
+        const targetEvidence = getReviewGatedCommandTargets(candidate, effectiveScriptCwd);
+        const targets = [
+          ...targetEvidence.targetCwds,
+          ...(targetEvidence.requiresBaseCwd ? [effectiveScriptCwd] : []),
+        ];
+        for (const target of targets.length > 0 ? targets : [effectiveScriptCwd]) {
+          if (!target || target.includes("\0")) {
+            unresolved = true;
+            continue;
+          }
+          const normalized = `git -C "${target}" commit`;
+          if (!seen.has(normalized)) {
+            commands.push(normalized);
+            seen.add(normalized);
+          }
+        }
+        if (/\bgh\b[^\r\n]*(?:--repo|--hostname|https?:\/\/|\brepos\/)/iu.test(candidate)) {
+          const explicitGitHubCommand = candidate.trim();
+          if (!seen.has(explicitGitHubCommand)) {
+            commands.push(explicitGitHubCommand);
+            seen.add(explicitGitHubCommand);
+          }
+        }
       }
-      const hasExplicitTarget = /(?:\bgit(?:\.exe)?\s+(?:[^;&\r\n]*\s)?-C\b|--git-dir\b|--work-tree\b|\bGIT_(?:DIR|WORK_TREE)\b|\bgh\s+(?:pr|repo)\s+merge\b[^;&\r\n]*--repo\b|\b(?:set-location|workingdirectory)\b)/iu.test(candidate);
-      const normalized = directCodex
-        ? "codex exec"
-        : (hasExplicitTarget ? candidate.trim() : `git -C "${scriptCwd}" commit`);
-      if (normalized && !seen.has(normalized)) {
-        commands.push(normalized);
-        seen.add(normalized);
-      }
+    }
+    const cwdChange = getShellCwdChange(lines[index], effectiveScriptCwd);
+    if (cwdChange.state === "ambiguous") {
+      effectiveScriptCwd = "\0unresolved-static-script-cwd";
+    } else if (cwdChange.target) {
+      effectiveScriptCwd = cwdChange.target;
     }
   }
   const executableText = lines
     .filter((line) => !/^\s*#/u.test(line))
     .join("\n");
   const hasUnparsedDynamicProtectedCommand =
-    /(?:&\s*\$[A-Za-z_][A-Za-z0-9_:]*|\b(?:invoke-expression|iex)\b)[\s\S]{0,200}\b(?:commit|merge|push|tag|codex\s+(?:exec|e)|--sandbox)\b/iu.test(executableText);
+    /(?:&\s*\$[A-Za-z_][A-Za-z0-9_:]*|\b(?:invoke-expression|iex)\b)[\s\S]{0,200}\b(?:commit|merge|push|tag|codex\s+(?:exec|e)|--sandbox)\b/iu.test(executableText) ||
+    /(?:^|[;&|({])\s*["']?\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)["']?\s+[^;&\r\n]*\b(?:commit|merge|push|tag|exec|--sandbox)\b/imu.test(executableText);
   return {
     commands,
-    unresolved: hasUnparsedDynamicProtectedCommand && commands.length === 0,
+    unresolved: unresolved || hasUnparsedDynamicProtectedCommand,
   };
 }
 
@@ -6558,6 +6584,7 @@ function isUnownedPowerShellStage(stage, tokens) {
   const source = String(stage || "").trim();
   const executable = normalizeExecutableName(tokens[0] || "");
   if (/^(?:\$|\[|@(?:\(|\{)|\(|&\s|\.\s)/u.test(source)) return true;
+  if (["set-location", "push-location", "pop-location"].includes(executable)) return false;
   if (/^[a-z][a-z0-9]*-[a-z][a-z0-9-]*$/u.test(executable)) return true;
   return new Set([
     "clc", "cli", "iex", "ni", "ri", "sc", "set", "si",
@@ -6620,8 +6647,8 @@ function isOwnedDirectExecutable(executable) {
   const normalized = normalizeExecutableName(executable);
   if (/^python[0-9]+(?:\.[0-9]+)?$/u.test(normalized)) return true;
   return new Set([
-    ":", "bash", "cargo", "cat", "cd", "cmd", "codex", "cp", "curl", "declare", "dotnet", "echo", "export", "false", "gh", "git", "go", "grep", "install", "jq", "ln", "local", "ls", "make", "mv", "node", "nodejs", "npm", "pwd",
-    "powershell", "printf", "pwsh", "py", "python", "python3", "rg", "rustc", "saps", "sed", "sh", "start", "start-process", "tee", "true", "type", "typeset", "unset", "where",
+    ":", "bash", "cargo", "cat", "cd", "chdir", "cmd", "codex", "cp", "curl", "declare", "dotnet", "echo", "export", "false", "gh", "git", "go", "grep", "install", "jq", "ln", "local", "ls", "make", "mv", "node", "nodejs", "npm", "pop-location", "popd", "push-location", "pushd", "pwd",
+    "powershell", "printf", "pwsh", "py", "python", "python3", "rg", "rustc", "saps", "sed", "set-location", "sh", "sl", "start", "start-process", "tee", "true", "type", "typeset", "unset", "where",
     "which", "winsmux", "xargs", "zsh",
   ]).has(normalized);
 }

@@ -9170,6 +9170,36 @@ EOF
         }
     }
 
+    It 'TASK-783 C115 tracks static-script cwd and compound executables without rejecting modeled cwd builtins' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $environment = @{ WINSMUX_ROLE = 'operator'; WINSMUX_ASSIGNED_WORKTREE = $fixture.RepoRoot }
+        Set-GatePass -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch
+
+        $target = New-GateTargetRepo -Root $fixture.Root -Name 'static-runtime-cwd-target'
+        $targetPath = $target.RepoRoot.Replace('\', '/')
+        $cwdScript = Join-Path $fixture.RepoRoot 'scripts\static-runtime-cwd.sh'
+        Write-GateTestFile -Path $cwdScript -Content "cd '$targetPath'`ngit commit --allow-empty -m static-runtime-cwd`n"
+        $unreviewedTarget = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'bash scripts/static-runtime-cwd.sh'; cwd = $fixture.RepoRoot } -Environment $environment
+        & $script:AssertDenyResult -Result $unreviewedTarget -Because 'a static script must review the repository selected by its own runtime cwd'
+
+        $compoundScript = Join-Path $fixture.RepoRoot 'scripts\compound-git.sh'
+        Write-GateTestFile -Path $compoundScript -Content "g=g`n`$g+=it`n`"`$g`" commit --allow-empty -m compound-git`n"
+        $compound = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'bash scripts/compound-git.sh'; cwd = $fixture.RepoRoot } -Environment $environment
+        & $script:AssertDenyResult -Result $compound -Because 'a compound executable assignment cannot hide a protected sink'
+
+        Set-GatePass -RepoRoot $target.RepoRoot -Branch $target.Branch
+        $reviewedStaticScript = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'bash scripts/static-runtime-cwd.sh'; cwd = $fixture.RepoRoot } -Environment $environment
+        $reviewedStaticScript.OutputObject | Should -BeNullOrEmpty -Because 'the static script runtime target has its own valid PASS'
+        foreach ($command in @(
+                "pushd '$targetPath'; git commit --allow-empty -m pushd-reviewed",
+                ('pwsh -Command "Set-Location ''{0}''; git commit --allow-empty -m set-location-reviewed"' -f $target.RepoRoot)
+            )) {
+            $reviewedTarget = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot } -Environment $environment
+            $reviewedTarget.OutputObject | Should -BeNullOrEmpty -Because "a modeled cwd builtin may reach a repository with its own valid PASS: $command"
+        }
+    }
+
     It 'TASK-783 C104 permits only clean HEAD-bound canonical orchestra recovery scripts' {
         $fixture = New-GateFixture
         $script:FixtureRoot = $fixture.Root
