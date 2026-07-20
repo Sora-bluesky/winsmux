@@ -250,6 +250,19 @@ Describe 'Get-BridgeSettings' {
         }
     }
 
+    It 'ignores arbitrary output when the global option command exits nonzero' {
+        Mock Get-WinsmuxBin { return 'winsmux-test-double' }
+        Mock Invoke-WinsmuxBridgeCommand {
+            $global:LASTEXITCODE = 5
+            return 'Access is denied.'
+        }
+
+        $settings = Get-BridgeSettings
+
+        $settings.prompt_transport | Should -Be 'argv'
+        $settings.execution_profile | Should -Be 'local-windows'
+    }
+
     It 'returns built-in defaults when no global or project settings exist' {
         Mock Get-WinsmuxOption { param($Name, $Default) return $null }
 
@@ -8289,6 +8302,525 @@ Describe 'orchestra-start server bootstrap' {
         }
     }
 
+    Context 'TASK-784 attach render truth' {
+        BeforeEach {
+            Mock Test-OrchestraProcessAlive { $true }
+            Mock Get-OrchestraProcessStartedAtUnixMs { 123456 }
+        }
+
+        It 'isolates attach state by the effective bridge namespace' {
+            $previousNamespace = $env:WINSMUX_BRIDGE_NAMESPACE_L
+            $previousSocket = $env:WINSMUX_BRIDGE_SOCKET_S
+            $previousResolvedNamespace = $env:WINSMUX_BRIDGE_SESSION_NAMESPACE
+            try {
+                Remove-Item Env:WINSMUX_BRIDGE_SOCKET_S -ErrorAction SilentlyContinue
+                Remove-Item Env:WINSMUX_BRIDGE_SESSION_NAMESPACE -ErrorAction SilentlyContinue
+
+                $env:WINSMUX_BRIDGE_NAMESPACE_L = 'namespace-a'
+                $pathA = Get-OrchestraAttachStatePath -SessionName 'winsmux-orchestra' -ProjectDir 'C:\repo'
+                $pathARepeat = Get-OrchestraAttachStatePath -SessionName 'winsmux-orchestra' -ProjectDir 'C:\repo'
+                $env:WINSMUX_BRIDGE_NAMESPACE_L = 'namespace-b'
+                $pathB = Get-OrchestraAttachStatePath -SessionName 'winsmux-orchestra' -ProjectDir 'C:\repo'
+                Remove-Item Env:WINSMUX_BRIDGE_NAMESPACE_L -ErrorAction SilentlyContinue
+                $defaultPath = Get-OrchestraAttachStatePath -SessionName 'winsmux-orchestra' -ProjectDir 'C:\repo'
+
+                $pathA | Should -Be $pathARepeat
+                $pathA | Should -Not -Be $pathB
+                [System.IO.Path]::GetFileName($pathA) | Should -Match '^winsmux-orchestra\.[0-9a-f]{16}\.json$'
+                [System.IO.Path]::GetFileName($defaultPath) | Should -Be 'winsmux-orchestra.json'
+            } finally {
+                foreach ($entry in @(
+                    @{ Name = 'WINSMUX_BRIDGE_NAMESPACE_L'; Value = $previousNamespace },
+                    @{ Name = 'WINSMUX_BRIDGE_SOCKET_S'; Value = $previousSocket },
+                    @{ Name = 'WINSMUX_BRIDGE_SESSION_NAMESPACE'; Value = $previousResolvedNamespace }
+                )) {
+                    if ($null -eq $entry.Value) {
+                        Remove-Item ("Env:{0}" -f $entry.Name) -ErrorAction SilentlyContinue
+                    } else {
+                        Set-Item ("Env:{0}" -f $entry.Name) -Value ([string]$entry.Value)
+                    }
+                }
+            }
+        }
+
+        It 'serializes ownership comparison with the state write across processes' {
+            $scratchLocalAppData = Join-Path $TestDrive 'local-app-data'
+            $stateDir = Join-Path $scratchLocalAppData 'winsmux\ui-attach'
+            $statePath = Join-Path $stateDir 'winsmux-orchestra.json'
+            $uiAttachScriptPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\orchestra-ui-attach.ps1'
+            New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
+            '{"attach_request_id":"request-old","request_id":"request-old"}' | Set-Content -LiteralPath $statePath -Encoding utf8NoBOM
+
+            $mutex = [System.Threading.Mutex]::new($false, (Get-OrchestraAttachStateLockName -StatePath $statePath))
+            $job = $null
+            $lockAcquired = $false
+            try {
+                $lockAcquired = $mutex.WaitOne([TimeSpan]::FromSeconds(5))
+                $lockAcquired | Should -Be $true
+                $job = Start-ThreadJob -ArgumentList $uiAttachScriptPath, $scratchLocalAppData, $TestDrive -ScriptBlock {
+                    param($ScriptPath, $LocalAppData, $ProjectDir)
+                    $env:LOCALAPPDATA = $LocalAppData
+                    Remove-Item Env:WINSMUX_BRIDGE_NAMESPACE_L -ErrorAction SilentlyContinue
+                    Remove-Item Env:WINSMUX_BRIDGE_SOCKET_S -ErrorAction SilentlyContinue
+                    Remove-Item Env:WINSMUX_BRIDGE_SESSION_NAMESPACE -ErrorAction SilentlyContinue
+                    . $ScriptPath
+                    Write-OrchestraAttachState -SessionName 'winsmux-orchestra' -ProjectDir $ProjectDir -ExpectedRequestId 'request-old' -Properties @{
+                        attach_status = 'stale_writer_won'
+                    }
+                }
+
+                Start-Sleep -Milliseconds 250
+                $job.State | Should -Be 'Running'
+                '{"attach_request_id":"request-new-owner","request_id":"request-new-owner","attach_status":"attach_requested"}' |
+                    Set-Content -LiteralPath $statePath -Encoding utf8NoBOM
+            } finally {
+                if ($lockAcquired) {
+                    $mutex.ReleaseMutex()
+                }
+                $mutex.Dispose()
+            }
+
+            try {
+                Wait-Job -Job $job -Timeout 15 | Should -Not -BeNullOrEmpty
+                $result = Receive-Job -Job $job
+                [string]$result.attach_request_id | Should -Be 'request-new-owner'
+                $finalState = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+                $finalState.attach_request_id | Should -Be 'request-new-owner'
+                $finalState.attach_status | Should -Be 'attach_requested'
+            } finally {
+                if ($null -ne $job) {
+                    Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+
+        It 'fails closed when the winsmux executable is unavailable' {
+            $state = [pscustomobject]@{
+                session_name        = 'winsmux-orchestra'
+                attach_status       = 'attach_confirmed'
+                attach_request_id   = 'request-784'
+                render_receipt_path = 'C:\temp\request-784.render.json'
+            }
+
+            Test-OrchestraLiveVisibleAttachState -State $state -SessionName 'winsmux-orchestra' -WinsmuxBin '' |
+                Should -Be $false
+        }
+
+        It 'rejects client registration without a render receipt' {
+            $result = Test-OrchestraRenderReceipt `
+                -Receipt $null `
+                -SessionName 'winsmux-orchestra' `
+                -RequestId 'request-784' `
+                -LivePaneIds @('%1', '%2')
+
+            $result.Confirmed | Should -Be $false
+            $result.Reason | Should -Be 'render_receipt_missing'
+        }
+
+        It 'rejects stale nonce and dead renderer receipts' {
+            $receipt = [pscustomobject]@{
+                version             = 1
+                request_id          = 'stale-request'
+                session_name        = 'winsmux-orchestra'
+                renderer_process_id = 4242
+                renderer_process_started_at_unix_ms = 123456
+                rendered_at_unix_ms = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+                pane_ids            = @('%1', '%2')
+            }
+
+            $stale = Test-OrchestraRenderReceipt -Receipt $receipt -SessionName 'winsmux-orchestra' -RequestId 'request-784' -LivePaneIds @('%1', '%2')
+            $stale.Confirmed | Should -Be $false
+            $stale.Reason | Should -Be 'render_receipt_request_mismatch'
+
+            $receipt.request_id = 'request-784'
+            Mock Test-OrchestraProcessAlive { $false }
+            $dead = Test-OrchestraRenderReceipt -Receipt $receipt -SessionName 'winsmux-orchestra' -RequestId 'request-784' -LivePaneIds @('%1', '%2')
+            $dead.Confirmed | Should -Be $false
+            $dead.Reason | Should -Be 'render_receipt_renderer_not_live'
+        }
+
+        It 'rejects pane-set mismatch and accepts an exact rendered set' {
+            $receipt = [pscustomobject]@{
+                version             = 1
+                request_id          = 'request-784'
+                session_name        = 'winsmux-orchestra'
+                renderer_process_id = 4242
+                renderer_process_started_at_unix_ms = 123456
+                rendered_at_unix_ms = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+                pane_ids            = @('%1')
+            }
+
+            $mismatch = Test-OrchestraRenderReceipt -Receipt $receipt -SessionName 'winsmux-orchestra' -RequestId 'request-784' -LivePaneIds @('%1', '%2')
+            $mismatch.Confirmed | Should -Be $false
+            $mismatch.Reason | Should -Be 'render_receipt_pane_set_mismatch'
+
+            $receipt.pane_ids = @('%2', '%1')
+            $exact = Test-OrchestraRenderReceipt -Receipt $receipt -SessionName 'winsmux-orchestra' -RequestId 'request-784' -LivePaneIds @('%1', '%2')
+            $exact.Confirmed | Should -Be $true
+            $exact.Reason | Should -Be 'render_receipt_confirmed'
+            $exact.RendererProcessId | Should -Be 4242
+            $exact.RenderedPaneIds | Should -Be @('%1', '%2')
+        }
+
+        It 'rejects malformed, wrong-session, and pre-request receipts' {
+            $receipt = [pscustomobject]@{
+                version             = 'invalid'
+                request_id          = 'request-784'
+                session_name        = 'winsmux-orchestra'
+                renderer_process_id = 4242
+                renderer_process_started_at_unix_ms = 123456
+                rendered_at_unix_ms = 2000
+                pane_ids            = @('%1')
+            }
+
+            (Test-OrchestraRenderReceipt -Receipt $receipt -SessionName 'winsmux-orchestra' -RequestId 'request-784' -LivePaneIds @('%1')).Reason |
+                Should -Be 'render_receipt_version_unsupported'
+
+            $receipt.version = 1
+            $receipt.session_name = 'other-session'
+            (Test-OrchestraRenderReceipt -Receipt $receipt -SessionName 'winsmux-orchestra' -RequestId 'request-784' -LivePaneIds @('%1')).Reason |
+                Should -Be 'render_receipt_session_mismatch'
+
+            $receipt.session_name = 'winsmux-orchestra'
+            (Test-OrchestraRenderReceipt -Receipt $receipt -SessionName 'winsmux-orchestra' -RequestId 'request-784' -LivePaneIds @('%1') -RequestedAtUnixMs 2001).Reason |
+                Should -Be 'render_receipt_not_fresh'
+        }
+
+        It 'rejects duplicate and superset pane identities' {
+            $receipt = [pscustomobject]@{
+                version             = 1
+                request_id          = 'request-784'
+                session_name        = 'winsmux-orchestra'
+                renderer_process_id = 4242
+                renderer_process_started_at_unix_ms = 123456
+                rendered_at_unix_ms = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+                pane_ids            = @('%1', '%1')
+            }
+
+            (Test-OrchestraRenderReceipt -Receipt $receipt -SessionName 'winsmux-orchestra' -RequestId 'request-784' -LivePaneIds @('%1')).Reason |
+                Should -Be 'render_receipt_pane_set_mismatch'
+
+            $receipt.pane_ids = @('%1', '%2')
+            (Test-OrchestraRenderReceipt -Receipt $receipt -SessionName 'winsmux-orchestra' -RequestId 'request-784' -LivePaneIds @('%1')).Reason |
+                Should -Be 'render_receipt_pane_set_mismatch'
+        }
+
+        It 'rejects a reused renderer PID with a different process start time' {
+            $receipt = [pscustomobject]@{
+                version                              = 1
+                request_id                           = 'request-784'
+                session_name                         = 'winsmux-orchestra'
+                renderer_process_id                  = 4242
+                renderer_process_started_at_unix_ms  = 123456
+                rendered_at_unix_ms                  = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+                pane_ids                             = @('%1')
+            }
+            Mock Get-OrchestraProcessStartedAtUnixMs { 654321 }
+
+            $result = Test-OrchestraRenderReceipt -Receipt $receipt -SessionName 'winsmux-orchestra' -RequestId 'request-784' -LivePaneIds @('%1')
+
+            $result.Confirmed | Should -Be $false
+            $result.Reason | Should -Be 'render_receipt_renderer_instance_mismatch'
+        }
+
+        It 'requires a refreshed receipt after the session pane topology changes' {
+            $script:receiptPaneIds = @('%1')
+            $state = [pscustomobject]@{
+                session_name        = 'winsmux-orchestra'
+                render_session_identity = 'winsmux-orchestra'
+                attach_status       = 'attach_confirmed'
+                attach_request_id   = 'request-784'
+                requested_at        = [DateTimeOffset]::UtcNow.AddSeconds(-1).ToString('o')
+                render_receipt_path = 'C:\temp\request-784.render.json'
+                project_dir         = 'C:\repo'
+            }
+            Mock Get-OrchestraLivePaneSnapshot {
+                [pscustomobject]@{ Ok = $true; Count = 2; Error = ''; PaneIds = @('%1', '%2') }
+            }
+            Mock Read-OrchestraRenderReceipt {
+                [pscustomobject]@{
+                    version                              = 1
+                    request_id                           = 'request-784'
+                    session_name                         = 'winsmux-orchestra'
+                    renderer_process_id                  = 4242
+                    renderer_process_started_at_unix_ms  = 123456
+                    rendered_at_unix_ms                  = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+                    pane_ids                             = @($script:receiptPaneIds)
+                }
+            }
+
+            Test-OrchestraLiveVisibleAttachState -State $state -SessionName 'winsmux-orchestra' -WinsmuxBin 'C:\winsmux\winsmux.exe' |
+                Should -Be $false
+
+            $script:receiptPaneIds = @('%1', '%2')
+            Test-OrchestraLiveVisibleAttachState -State $state -SessionName 'winsmux-orchestra' -WinsmuxBin 'C:\winsmux\winsmux.exe' |
+                Should -Be $true
+        }
+
+        It 'rejects a receipt from a different namespace with identical pane ids' {
+            $previousNamespace = $env:WINSMUX_BRIDGE_NAMESPACE_L
+            $previousSocket = $env:WINSMUX_BRIDGE_SOCKET_S
+            $previousResolvedNamespace = $env:WINSMUX_BRIDGE_SESSION_NAMESPACE
+            try {
+                $env:WINSMUX_BRIDGE_NAMESPACE_L = 'requested'
+                Remove-Item Env:WINSMUX_BRIDGE_SOCKET_S -ErrorAction SilentlyContinue
+                Remove-Item Env:WINSMUX_BRIDGE_SESSION_NAMESPACE -ErrorAction SilentlyContinue
+                $state = [pscustomobject]@{
+                    session_name            = 'winsmux-orchestra'
+                    render_session_identity = 'other__winsmux-orchestra'
+                    attach_status           = 'attach_confirmed'
+                    attach_request_id       = 'request-784'
+                    requested_at            = [DateTimeOffset]::UtcNow.AddSeconds(-1).ToString('o')
+                    render_receipt_path     = 'C:\temp\request-784.render.json'
+                    project_dir             = 'C:\repo'
+                }
+                Mock Get-OrchestraLivePaneSnapshot {
+                    [pscustomobject]@{ Ok = $true; Count = 1; Error = ''; PaneIds = @('%1') }
+                }
+                Mock Read-OrchestraRenderReceipt {
+                    [pscustomobject]@{
+                        version                              = 1
+                        request_id                           = 'request-784'
+                        session_name                         = 'other__winsmux-orchestra'
+                        renderer_process_id                  = 4242
+                        renderer_process_started_at_unix_ms  = 123456
+                        rendered_at_unix_ms                  = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+                        pane_ids                             = @('%1')
+                    }
+                }
+
+                Test-OrchestraLiveVisibleAttachState -State $state -SessionName 'winsmux-orchestra' -WinsmuxBin 'C:\winsmux\winsmux.exe' |
+                    Should -Be $false
+            } finally {
+                if ($null -eq $previousNamespace) {
+                    Remove-Item Env:WINSMUX_BRIDGE_NAMESPACE_L -ErrorAction SilentlyContinue
+                } else {
+                    $env:WINSMUX_BRIDGE_NAMESPACE_L = $previousNamespace
+                }
+                if ($null -eq $previousSocket) {
+                    Remove-Item Env:WINSMUX_BRIDGE_SOCKET_S -ErrorAction SilentlyContinue
+                } else {
+                    $env:WINSMUX_BRIDGE_SOCKET_S = $previousSocket
+                }
+                if ($null -eq $previousResolvedNamespace) {
+                    Remove-Item Env:WINSMUX_BRIDGE_SESSION_NAMESPACE -ErrorAction SilentlyContinue
+                } else {
+                    $env:WINSMUX_BRIDGE_SESSION_NAMESPACE = $previousResolvedNamespace
+                }
+            }
+        }
+
+        It 'rejects an expired render lease even when process and panes still match' {
+            $receipt = [pscustomobject]@{
+                version                              = 1
+                request_id                           = 'request-784'
+                session_name                         = 'winsmux-orchestra'
+                renderer_process_id                  = 4242
+                renderer_process_started_at_unix_ms  = 123456
+                rendered_at_unix_ms                  = [DateTimeOffset]::UtcNow.AddMinutes(-1).ToUnixTimeMilliseconds()
+                pane_ids                             = @('%1')
+            }
+
+            $result = Test-OrchestraRenderReceipt -Receipt $receipt -SessionName 'winsmux-orchestra' -RequestId 'request-784' -LivePaneIds @('%1')
+
+            $result.Confirmed | Should -Be $false
+            $result.Reason | Should -Be 'render_receipt_expired'
+        }
+
+        It 'does not treat client registration as launch observation' {
+            Mock Read-OrchestraAttachState { $null }
+            Mock Get-OrchestraAttachedClientSnapshot {
+                [pscustomobject]@{ Ok = $true; Count = 1; Error = ''; Clients = @('client-1') }
+            }
+            Mock Start-Sleep {}
+
+            $result = Wait-OrchestraAttachLaunchObservation `
+                -SessionName 'winsmux-orchestra' `
+                -WinsmuxBin 'C:\winsmux\winsmux.exe' `
+                -BaselineClientCount 0 `
+                -TimeoutMilliseconds 1 `
+                -PollMilliseconds 1
+
+            $result.Observed | Should -Be $false
+        }
+
+        It 'derives the exact render identity from L and S namespace selectors' {
+            $previousNamespace = $env:WINSMUX_BRIDGE_NAMESPACE_L
+            $previousSocket = $env:WINSMUX_BRIDGE_SOCKET_S
+            $previousResolvedNamespace = $env:WINSMUX_BRIDGE_SESSION_NAMESPACE
+            try {
+                Remove-Item Env:WINSMUX_BRIDGE_SOCKET_S -ErrorAction SilentlyContinue
+                Remove-Item Env:WINSMUX_BRIDGE_SESSION_NAMESPACE -ErrorAction SilentlyContinue
+                $env:WINSMUX_BRIDGE_NAMESPACE_L = 'requested'
+                Get-OrchestraRenderSessionIdentity -SessionName 'winsmux-orchestra' -ProjectDir 'C:\repo' |
+                    Should -Be 'requested__winsmux-orchestra'
+
+                Remove-Item Env:WINSMUX_BRIDGE_NAMESPACE_L -ErrorAction SilentlyContinue
+                $env:WINSMUX_BRIDGE_SOCKET_S = 'socket-name'
+                Get-OrchestraRenderSessionIdentity -SessionName 'winsmux-orchestra' -ProjectDir 'C:\repo' |
+                    Should -Be 'socket-name__winsmux-orchestra'
+            } finally {
+                foreach ($entry in @(
+                    @{ Name = 'WINSMUX_BRIDGE_NAMESPACE_L'; Value = $previousNamespace },
+                    @{ Name = 'WINSMUX_BRIDGE_SOCKET_S'; Value = $previousSocket },
+                    @{ Name = 'WINSMUX_BRIDGE_SESSION_NAMESPACE'; Value = $previousResolvedNamespace }
+                )) {
+                    if ($null -eq $entry.Value) {
+                        Remove-Item ("Env:{0}" -f $entry.Name) -ErrorAction SilentlyContinue
+                    } else {
+                        Set-Item ("Env:{0}" -f $entry.Name) -Value ([string]$entry.Value)
+                    }
+                }
+            }
+        }
+
+        It 'passes render metadata and clears inherited mux markers before attach-session' {
+            $entryPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\orchestra-attach-entry.ps1'
+            $entryContent = Get-Content -LiteralPath $entryPath -Raw -Encoding UTF8
+            $uiAttachPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\orchestra-ui-attach.ps1'
+            $uiAttachContent = Get-Content -LiteralPath $uiAttachPath -Raw -Encoding UTF8
+
+            $entryContent | Should -Match '\$launchRequestId\s*=\s*\[string\]\$env:WINSMUX_ATTACH_REQUEST_ID'
+            $entryContent | Should -Match 'Get-OrchestraAttachRequestId -State \$state\) -ne \$launchRequestId'
+            $entryContent | Should -Match '\$env:WINSMUX_RENDER_RECEIPT_PATH\s*=\s*\$renderReceiptPath'
+            $entryContent | Should -Match '\$env:WINSMUX_RENDER_REQUEST_ID\s*=\s*\$attachRequestId'
+            $entryContent | Should -Match '\$env:WINSMUX_RENDER_SESSION_NAME\s*=\s*\$renderSessionIdentity'
+            $entryContent | Should -Match 'Name = ''WINSMUX_BRIDGE_NAMESPACE_L''; Value = \$bridgeNamespaceL'
+            $entryContent | Should -Match 'Name = ''WINSMUX_BRIDGE_SOCKET_S''; Value = \$bridgeSocketS'
+            $entryContent | Should -Match '''-ProjectDir'', \$projectDir'
+            $entryContent | Should -Match '''-RequestId'', \$launchRequestId'
+            $entryContent | Should -Match 'Remove-Item Env:PSMUX_ACTIVE'
+            $entryContent | Should -Match 'Remove-Item Env:PSMUX_SESSION'
+            $entryContent | Should -Match 'Invoke-WinsmuxBridgeCommand.+@\(''attach-session'', ''-t'', \$sessionName\)'
+            $uiAttachContent | Should -Match '\$env:WINSMUX_ATTACH_REQUEST_ID\s*=\s*\$attachRequestId'
+            $uiAttachContent | Should -Match 'Wait-OrchestraAttachHandshake.+-ExpectedRequestId \$attachRequestId'
+        }
+
+        It 'promotes pending state only from a current exact render receipt' {
+            $script:attachStateStore = [pscustomobject]@{
+                session_name        = 'winsmux-orchestra'
+                attach_status       = 'attach_confirming'
+                attach_request_id   = 'request-784'
+                requested_at        = [DateTimeOffset]::UtcNow.AddSeconds(-1).ToString('o')
+                render_receipt_path = 'C:\temp\request-784.render.json'
+                render_session_identity = Get-OrchestraRenderSessionIdentity -SessionName 'winsmux-orchestra' -ProjectDir 'C:\repo'
+            }
+            Mock Read-OrchestraRenderReceipt {
+                [pscustomobject]@{
+                    version             = 1
+                    request_id          = 'request-784'
+                    session_name        = 'winsmux-orchestra'
+                    renderer_process_id = 4242
+                    renderer_process_started_at_unix_ms = 123456
+                    rendered_at_unix_ms = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+                    pane_ids            = @('%2', '%1')
+                }
+            }
+            Mock Get-OrchestraLivePaneSnapshot {
+                [pscustomobject]@{ Ok = $true; Count = 2; Error = ''; PaneIds = @('%1', '%2') }
+            }
+            Mock Get-OrchestraAttachedClientSnapshot {
+                [pscustomobject]@{ Ok = $true; Count = 1; Error = ''; Clients = @('client-1') }
+            }
+
+            $result = Wait-OrchestraAttachHandshake -SessionName 'winsmux-orchestra' -WinsmuxBin 'C:\winsmux\winsmux.exe' -BaselineClientCount 0 -ProjectDir 'C:\repo' -TimeoutMilliseconds 100 -PollMilliseconds 1
+
+            $result.Confirmed | Should -Be $true
+            $result.Source | Should -Be 'render-receipt'
+            $result.State.renderer_process_id | Should -Be 4242
+            $result.State.rendered_pane_ids | Should -Be @('%1', '%2')
+        }
+
+        It 'rejects a handshake state written by another namespace' {
+            $previousNamespace = $env:WINSMUX_BRIDGE_NAMESPACE_L
+            try {
+                $env:WINSMUX_BRIDGE_NAMESPACE_L = 'namespace-a'
+                $script:attachStateStore = [pscustomobject]@{
+                    session_name            = 'winsmux-orchestra'
+                    attach_status           = 'attach_confirming'
+                    attach_request_id       = 'request-b'
+                    requested_at            = [DateTimeOffset]::UtcNow.AddSeconds(-1).ToString('o')
+                    render_receipt_path     = 'C:\temp\request-b.render.json'
+                    render_session_identity = 'namespace-b__winsmux-orchestra'
+                }
+                Mock Read-OrchestraRenderReceipt {
+                    [pscustomobject]@{
+                        version             = 1
+                        request_id          = 'request-b'
+                        session_name        = 'namespace-b__winsmux-orchestra'
+                        renderer_process_id = 4242
+                        renderer_process_started_at_unix_ms = 123456
+                        rendered_at_unix_ms = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+                        pane_ids            = @('%1', '%2')
+                    }
+                }
+                Mock Get-OrchestraLivePaneSnapshot {
+                    [pscustomobject]@{ Ok = $true; Count = 2; Error = ''; PaneIds = @('%1', '%2') }
+                }
+                Mock Get-OrchestraAttachedClientSnapshot {
+                    [pscustomobject]@{ Ok = $true; Count = 1; Error = ''; Clients = @('client-a') }
+                }
+
+                $result = Wait-OrchestraAttachHandshake -SessionName 'winsmux-orchestra' -WinsmuxBin 'C:\winsmux\winsmux.exe' -BaselineClientCount 0 -ProjectDir 'C:\repo-a' -TimeoutMilliseconds 5 -PollMilliseconds 1
+
+                $result.Confirmed | Should -Be $false
+                $result.Reason | Should -Match 'render_receipt_session_mismatch'
+            } finally {
+                if ($null -eq $previousNamespace) {
+                    Remove-Item Env:WINSMUX_BRIDGE_NAMESPACE_L -ErrorAction SilentlyContinue
+                } else {
+                    $env:WINSMUX_BRIDGE_NAMESPACE_L = $previousNamespace
+                }
+            }
+        }
+
+        It 'rejects a superseded launch request before reading its receipt' {
+            $script:attachStateStore = [pscustomobject]@{
+                session_name      = 'winsmux-orchestra'
+                attach_status     = 'attach_requested'
+                attach_request_id = 'request-new'
+            }
+
+            $result = Wait-OrchestraAttachHandshake -SessionName 'winsmux-orchestra' -WinsmuxBin 'C:\winsmux\winsmux.exe' -BaselineClientCount 0 -ProjectDir 'C:\repo' -ExpectedRequestId 'request-old' -TimeoutMilliseconds 5 -PollMilliseconds 1
+
+            $result.Confirmed | Should -Be $false
+            $result.Status | Should -Be 'attach_superseded'
+            $result.Reason | Should -Match "request-old.+request-new"
+            Should -Invoke Write-OrchestraAttachState -Times 0 -Exactly
+        }
+
+        It 'does not confirm a live desktop host without the same render receipt contract' {
+            $previousMode = $env:WINSMUX_ORCHESTRA_ATTACH_MODE
+            $previousPid = $env:WINSMUX_DESKTOP_APP_PID
+            try {
+                $env:WINSMUX_ORCHESTRA_ATTACH_MODE = 'desktop-app'
+                $env:WINSMUX_DESKTOP_APP_PID = '4242'
+
+                $result = Invoke-OrchestraVisibleAttachRequest -SessionName 'winsmux-orchestra' -ProjectDir 'C:\repo' -WinsmuxPathForAttach 'C:\winsmux\winsmux.exe'
+
+                $result.Attached | Should -Be $false
+                $result.Status | Should -Be 'attach_failed'
+                $result.Reason | Should -Match 'post-draw render receipt'
+            } finally {
+                if ($null -eq $previousMode) { Remove-Item Env:WINSMUX_ORCHESTRA_ATTACH_MODE -ErrorAction SilentlyContinue } else { $env:WINSMUX_ORCHESTRA_ATTACH_MODE = $previousMode }
+                if ($null -eq $previousPid) { Remove-Item Env:WINSMUX_DESKTOP_APP_PID -ErrorAction SilentlyContinue } else { $env:WINSMUX_DESKTOP_APP_PID = $previousPid }
+            }
+        }
+
+        It 'keeps receipt paths request-specific and writes only after terminal draw returns' {
+            $firstPath = Get-OrchestraRenderReceiptPath -SessionName 'winsmux-orchestra' -RequestId 'request-one'
+            $secondPath = Get-OrchestraRenderReceiptPath -SessionName 'winsmux-orchestra' -RequestId 'request-two'
+            $firstPath | Should -Not -Be $secondPath
+
+            $clientPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'core\src\client.rs'
+            $clientContent = Get-Content -LiteralPath $clientPath -Raw -Encoding UTF8
+            $drawIndex = $clientContent.IndexOf('terminal.draw(|f|')
+            $receiptIndex = $clientContent.IndexOf('write_render_receipt(config, &pane_ids)', $drawIndex)
+            $drawIndex | Should -BeGreaterThan -1
+            $receiptIndex | Should -BeGreaterThan $drawIndex
+        }
+    }
+
     It 'redacts credentials from expected origin metadata' {
         ConvertTo-SafeGitRemoteUrl -RemoteUrl 'https://token@example.com/org/repo.git' |
             Should -Be 'https://example.com/org/repo.git'
@@ -8601,14 +9133,15 @@ Describe 'orchestra-start server bootstrap' {
         }
         Mock Get-OrchestraAttachEntryArgumentList { @('-NoLogo', '-NoExit', '-File', 'C:\repo\winsmux-core\scripts\orchestra-attach-entry.ps1') }
         Mock Wait-OrchestraAttachHandshake {
+            param([string]$ExpectedRequestId)
             [PSCustomObject][ordered]@{
                 Confirmed           = $true
-                Source              = 'handshake'
+                Source              = 'render-receipt'
                 Status              = 'attach_confirmed'
                 Reason              = 'Attach confirmed'
                 AttachedClientCount = 1
                 State               = [pscustomobject]@{
-                    attach_request_id      = 'req-123'
+                    attach_request_id      = $ExpectedRequestId
                     attached_client_snapshot = @('client-1')
                     ui_host_kind           = 'windows-terminal'
                 }
@@ -8639,8 +9172,8 @@ Describe 'orchestra-start server bootstrap' {
         $result.Launched | Should -Be $true
         $result.Attached | Should -Be $true
         $result.Status | Should -Be 'attach_confirmed'
-        $result.Source | Should -Be 'handshake'
-        $result.attach_request_id | Should -Be 'req-123'
+        $result.Source | Should -Be 'render-receipt'
+        $result.attach_request_id | Should -Match '^[0-9a-f]{32}$'
         $result.attached_client_snapshot | Should -Be @('client-1')
         $result.ui_host_kind | Should -Be 'windows-terminal'
         $result.attach_adapter_trace.Count | Should -Be 1
@@ -8694,13 +9227,14 @@ Describe 'orchestra-start server bootstrap' {
         Mock Get-OrchestraPowerShellPath { 'C:\Program Files\PowerShell\7\pwsh.exe' }
         Mock Get-OrchestraAttachEntryArgumentList { @('-NoLogo', '-NoExit', '-File', 'C:\repo\winsmux-core\scripts\orchestra-attach-entry.ps1') }
         Mock Wait-OrchestraAttachHandshake {
+            param([string]$ExpectedRequestId)
             [PSCustomObject][ordered]@{
                 Confirmed           = $true
                 Source              = 'handshake'
                 Status              = 'attach_confirmed'
                 Reason              = 'Attach confirmed via PowerShell'
                 AttachedClientCount = 1
-                State               = [pscustomobject]@{}
+                State               = [pscustomobject]@{ attach_request_id = $ExpectedRequestId }
             }
         }
 
@@ -8777,11 +9311,11 @@ Describe 'orchestra-start server bootstrap' {
         $result.Launched | Should -Be $false
         $result.Attached | Should -Be $true
         $result.Status | Should -Be 'attach_already_present'
-        $result.Source | Should -Be 'handshake'
+        $result.Source | Should -Be 'render-receipt'
         $script:startProcessCalls.Count | Should -Be 0
     }
 
-    It 'preserves a client-probe confirmation source when the live attach process is still alive' {
+    It 'preserves a render receipt confirmation source while the verified renderer is alive' {
         $script:startProcessCalls = @()
         $script:winsmuxBin = 'C:\winsmux\winsmux.exe'
 
@@ -8792,11 +9326,11 @@ Describe 'orchestra-start server bootstrap' {
             [pscustomobject]@{
                 session_name      = 'winsmux-orchestra'
                 attach_status     = 'attach_confirmed'
-                ui_attach_source  = 'client-probe'
+                ui_attach_source  = 'render-receipt'
                 attach_process_id = 4242
             }
         }
-        Mock Test-OrchestraProcessAlive { $true }
+        Mock Test-OrchestraLiveVisibleAttachState { $true }
         Mock Write-OrchestraAttachState {
             param([string]$SessionName, [hashtable]$Properties)
             $merged = [ordered]@{}
@@ -8818,11 +9352,11 @@ Describe 'orchestra-start server bootstrap' {
         $result.Launched | Should -Be $false
         $result.Attached | Should -Be $true
         $result.Status | Should -Be 'attach_already_present'
-        $result.Source | Should -Be 'client-probe'
+        $result.Source | Should -Be 'render-receipt'
         $script:startProcessCalls.Count | Should -Be 0
     }
 
-    It 'reuses attached-client registry confirmation even when the visible host process is gone' {
+    It 'does not reuse attached-client registry confirmation when render evidence is absent' {
         $script:startProcessCalls = @()
         $script:winsmuxBin = 'C:\winsmux\winsmux.exe'
         $script:attachStateStore = $null
@@ -8841,6 +9375,7 @@ Describe 'orchestra-start server bootstrap' {
             }
         }
         Mock Test-OrchestraLiveVisibleAttachState { $false }
+        Mock Get-OrchestraVisibleAttachHostCandidates { @() }
         Mock Write-OrchestraAttachState {
             param([string]$SessionName, [hashtable]$Properties)
             $merged = [ordered]@{}
@@ -8869,9 +9404,9 @@ Describe 'orchestra-start server bootstrap' {
 
         $result.Attempted | Should -Be $false
         $result.Launched | Should -Be $false
-        $result.Attached | Should -Be $true
-        $result.Status | Should -Be 'attach_already_present'
-        $result.Source | Should -Be 'attached-client-registry'
+        $result.Attached | Should -Be $false
+        $result.Status | Should -Be 'attach_failed'
+        $result.Source | Should -Be 'none'
         $script:startProcessCalls.Count | Should -Be 0
     }
 
@@ -8920,13 +9455,14 @@ Describe 'orchestra-start server bootstrap' {
             [PSCustomObject]@{ Observed = $true; Reason = 'launch observed' }
         }
         Mock Wait-OrchestraAttachHandshake {
+            param([string]$ExpectedRequestId)
             [PSCustomObject][ordered]@{
                 Confirmed           = $true
                 Source              = 'handshake'
                 Status              = 'attach_confirmed'
                 Reason              = 'Attach confirmed'
                 AttachedClientCount = 2
-                State               = [pscustomobject]@{}
+                State               = [pscustomobject]@{ attach_request_id = $ExpectedRequestId }
             }
         }
 
@@ -8995,13 +9531,14 @@ Describe 'orchestra-start server bootstrap' {
         Mock Get-OrchestraPowerShellPath { 'C:\Program Files\PowerShell\7\pwsh.exe' }
         Mock Get-OrchestraAttachEntryArgumentList { @('-NoLogo', '-NoExit', '-File', 'C:\repo\winsmux-core\scripts\orchestra-attach-entry.ps1') }
         Mock Wait-OrchestraAttachHandshake {
+            param([string]$ExpectedRequestId)
             [PSCustomObject][ordered]@{
                 Confirmed           = $true
                 Source              = 'handshake'
                 Status              = 'attach_confirmed'
                 Reason              = 'Attach confirmed after fallback'
                 AttachedClientCount = 1
-                State               = [pscustomobject]@{}
+                State               = [pscustomobject]@{ attach_request_id = $ExpectedRequestId }
             }
         }
 
@@ -9066,13 +9603,14 @@ Describe 'orchestra-start server bootstrap' {
         Mock Get-OrchestraPowerShellPath { 'C:\Program Files\PowerShell\7\pwsh.exe' }
         Mock Get-OrchestraAttachEntryArgumentList { @('-NoLogo', '-NoExit', '-File', 'C:\repo\winsmux-core\scripts\orchestra-attach-entry.ps1') }
         Mock Wait-OrchestraAttachHandshake {
+            param([string]$ExpectedRequestId)
             [PSCustomObject][ordered]@{
                 Confirmed           = $true
                 Source              = 'handshake'
                 Status              = 'attach_confirmed'
                 Reason              = 'Attach confirmed via fallback host'
                 AttachedClientCount = 1
-                State               = [pscustomobject]@{}
+                State               = [pscustomobject]@{ attach_request_id = $ExpectedRequestId }
             }
         }
 
@@ -9150,6 +9688,7 @@ Describe 'orchestra-start server bootstrap' {
         Mock Get-OrchestraPowerShellPath { 'C:\Program Files\PowerShell\7\pwsh.exe' }
         Mock Get-OrchestraAttachEntryArgumentList { @('-NoLogo', '-NoExit', '-File', 'C:\repo\winsmux-core\scripts\orchestra-attach-entry.ps1') }
         Mock Wait-OrchestraAttachHandshake {
+            param([string]$ExpectedRequestId)
             $script:handshakeCalls++
             if ($script:handshakeCalls -eq 1) {
                 return [PSCustomObject][ordered]@{
@@ -9159,7 +9698,7 @@ Describe 'orchestra-start server bootstrap' {
                     Reason              = 'first host timed out'
                     AttachedClientCount = 1
                     State               = [pscustomobject]@{
-                        attach_request_id = 'req-fail-1'
+                        attach_request_id = $ExpectedRequestId
                         ui_host_kind      = 'windows-terminal'
                     }
                 }
@@ -9172,7 +9711,7 @@ Describe 'orchestra-start server bootstrap' {
                 Reason              = 'fallback host confirmed'
                 AttachedClientCount = 1
                 State               = [pscustomobject]@{
-                    attach_request_id        = 'req-ok-2'
+                    attach_request_id        = $ExpectedRequestId
                     attached_client_snapshot = @('client-1')
                     ui_host_kind             = 'powershell-window'
                 }
@@ -9193,7 +9732,7 @@ Describe 'orchestra-start server bootstrap' {
         $result.Attached | Should -Be $true
         $result.Status | Should -Be 'attach_confirmed'
         $result.Path | Should -Be 'C:\Program Files\PowerShell\7\pwsh.exe'
-        $result.attach_request_id | Should -Be 'req-ok-2'
+        $result.attach_request_id | Should -Match '^[0-9a-f]{32}$'
         $result.ui_host_kind | Should -Be 'powershell-window'
         $result.attach_adapter_trace.Count | Should -Be 2
         $result.attach_adapter_trace[0].host_kind | Should -Be 'windows-terminal'
@@ -9203,7 +9742,79 @@ Describe 'orchestra-start server bootstrap' {
         $script:startProcessCalls.Count | Should -Be 2
     }
 
-    It 'confirms visible attach on client transition even when client count does not increase' {
+    It 'treats ownership supersession as terminal and never launches a fallback host' {
+        $script:attachStateStore = $null
+        $script:candidateLaunchCount = 0
+        $script:winsmuxBin = 'C:\winsmux\winsmux.exe'
+
+        Mock Get-OrchestraAttachedClientSnapshot {
+            [PSCustomObject]@{ Ok = $true; Count = 0; Error = ''; Clients = @() }
+        }
+        Mock Read-OrchestraAttachState { $script:attachStateStore }
+        Mock Test-OrchestraLiveVisibleAttachState { $false }
+        Mock Get-OrchestraVisibleAttachHostCandidates {
+            @(
+                [pscustomobject]@{ Available = $true; HostKind = 'host-a'; Path = 'C:\host-a.exe'; Reason = 'ready'; UseLaunchObservation = $false },
+                [pscustomobject]@{ Available = $true; HostKind = 'host-b'; Path = 'C:\host-b.exe'; Reason = 'ready'; UseLaunchObservation = $false }
+            )
+        }
+        Mock Write-OrchestraAttachState {
+            param([string]$SessionName, [hashtable]$Properties, [string]$ProjectDir, [string]$ExpectedRequestId)
+            $currentRequestId = if ($null -ne $script:attachStateStore) { [string]$script:attachStateStore.attach_request_id } else { '' }
+            if (-not [string]::IsNullOrWhiteSpace($ExpectedRequestId) -and $currentRequestId -ne $ExpectedRequestId) {
+                return $script:attachStateStore
+            }
+            $merged = [ordered]@{}
+            if ($null -ne $script:attachStateStore) {
+                foreach ($property in $script:attachStateStore.PSObject.Properties) {
+                    $merged[$property.Name] = $property.Value
+                }
+            }
+            foreach ($key in $Properties.Keys) {
+                $merged[$key] = $Properties[$key]
+            }
+            if ($Properties.ContainsKey('attach_request_id')) {
+                $merged.request_id = $Properties.attach_request_id
+            }
+            $script:attachStateStore = [pscustomobject]$merged
+            return $script:attachStateStore
+        }
+        Mock Start-OrchestraVisibleAttachHostCandidate {
+            param($Candidate)
+            $script:candidateLaunchCount++
+            [pscustomobject]@{ HostKind = $Candidate.HostKind; Path = $Candidate.Path; Process = [pscustomobject]@{ Id = 4001 } }
+        }
+        Mock Wait-OrchestraAttachHandshake {
+            param([string]$ExpectedRequestId)
+            $script:attachStateStore = [pscustomobject]@{
+                attach_request_id    = 'request-new-owner'
+                request_id           = 'request-new-owner'
+                attach_status        = 'attach_requested'
+                ui_host_kind         = 'host-new-owner'
+                attach_adapter_trace = @('{"sequence":1,"host_kind":"host-new-owner","launch_result":"launched"}')
+            }
+            [pscustomobject]@{
+                Confirmed           = $false
+                Source              = 'none'
+                Status              = 'attach_superseded'
+                Reason              = "Attach request '$ExpectedRequestId' was superseded by 'request-new-owner'."
+                AttachedClientCount = 0
+                State               = $script:attachStateStore
+            }
+        }
+
+        $result = Try-StartOrchestraUiAttach -SessionName 'winsmux-orchestra'
+
+        $result.Attached | Should -Be $false
+        $result.Status | Should -Be 'attach_superseded'
+        $result.attach_request_id | Should -Be 'request-new-owner'
+        $result.ui_host_kind | Should -Be 'host-new-owner'
+        $script:candidateLaunchCount | Should -Be 1
+        $script:attachStateStore.attach_request_id | Should -Be 'request-new-owner'
+        $script:attachStateStore.attach_adapter_trace | Should -Be @('{"sequence":1,"host_kind":"host-new-owner","launch_result":"launched"}')
+    }
+
+    It 'does not confirm visible attach from client transition without render evidence' {
         $script:attachStateReads = 0
 
         Mock Read-OrchestraAttachState {
@@ -9224,6 +9835,9 @@ Describe 'orchestra-start server bootstrap' {
                 Clients = @('client-new')
             }
         }
+        Mock Get-OrchestraLivePaneSnapshot {
+            [pscustomobject]@{ Ok = $true; Count = 2; Error = ''; PaneIds = @('%1', '%2') }
+        }
         Mock Test-OrchestraProcessAlive { $true }
         Mock Write-OrchestraAttachState {
             param([string]$SessionName, [hashtable]$Properties)
@@ -9235,9 +9849,9 @@ Describe 'orchestra-start server bootstrap' {
 
         $result = Wait-OrchestraAttachHandshake -SessionName 'winsmux-orchestra' -WinsmuxBin 'C:\winsmux\winsmux.exe' -BaselineClientCount 1 -BaselineClients @('client-old') -TimeoutMilliseconds 1000 -PollMilliseconds 1
 
-        $result.Confirmed | Should -Be $true
-        $result.Source | Should -Be 'handshake'
-        $result.Status | Should -Be 'attach_confirmed'
+        $result.Confirmed | Should -Be $false
+        $result.Source | Should -Be 'none'
+        $result.Status | Should -Be 'attach_failed'
         $result.AttachedClientCount | Should -Be 1
     }
 
@@ -9271,7 +9885,7 @@ Describe 'orchestra-start server bootstrap' {
 
         $result.Confirmed | Should -Be $false
         $result.Status | Should -Be 'attach_failed'
-        $result.Reason | Should -Match 'Attach confirmation timed out before client count reached 1'
+        $result.Reason | Should -Match 'Attach confirmation timed out: render_receipt_'
     }
 
     It 'checks the bootstrap pane count before reporting startup ready' {
@@ -10004,13 +10618,14 @@ Describe 'orchestra-start server bootstrap' {
         Mock Get-OrchestraPowerShellPath { 'C:\Program Files\PowerShell\7\pwsh.exe' }
         Mock Get-OrchestraAttachEntryArgumentList { @('-NoLogo', '-NoExit', '-File', 'C:\repo\winsmux-core\scripts\orchestra-attach-entry.ps1') }
         Mock Wait-OrchestraAttachHandshake {
+            param([string]$ExpectedRequestId)
             [PSCustomObject][ordered]@{
                 Confirmed           = $true
                 Source              = 'handshake'
                 Status              = 'attach_confirmed'
                 Reason              = 'Attach confirmed via fallback host'
                 AttachedClientCount = 1
-                State               = [pscustomobject]@{}
+                State               = [pscustomobject]@{ attach_request_id = $ExpectedRequestId }
             }
         }
 
@@ -25489,23 +26104,8 @@ Describe 'winsmux orchestra-smoke command' {
                 Set-StrictMode -Version Latest
 
                 function Test-OrchestraLiveVisibleAttachState {
-                    param($State, [string]$SessionName)
+                    param($State, [string]$SessionName, [string]$WinsmuxBin)
                     return $LiveVisibleAttach
-                }
-
-                function Test-OrchestraAttachClientSnapshotMatch {
-                    param([string[]]$ExpectedClients, [string[]]$CurrentClients)
-                    if ($ExpectedClients.Count -ne $CurrentClients.Count) {
-                        return $false
-                    }
-
-                    for ($i = 0; $i -lt $ExpectedClients.Count; $i++) {
-                        if ($ExpectedClients[$i] -ne $CurrentClients[$i]) {
-                            return $false
-                        }
-                    }
-
-                    return $true
                 }
 
                 function Get-OrchestraAttachTraceEntries {
@@ -25518,7 +26118,7 @@ Describe 'winsmux orchestra-smoke command' {
                 }
 
                 Invoke-Expression $resolverSource
-                Resolve-OrchestraSmokeAttachState -ProbeState $ProbeState -AttachState $AttachState -ClientProbeOk $ClientProbeOk -ClientSnapshot $ClientSnapshot
+                Resolve-OrchestraSmokeAttachState -ProbeState $ProbeState -AttachState $AttachState -ClientProbeOk $ClientProbeOk -ClientSnapshot $ClientSnapshot -WinsmuxBin 'C:\winsmux\winsmux.exe'
             } $ProbeState $AttachState $ClientProbeOk $ClientSnapshot $LiveVisibleAttach
         }
 
@@ -25862,7 +26462,7 @@ Describe 'winsmux orchestra-smoke command' {
         $script:orchestraSmokeContent | Should -Match 'Visible attach state is missing; runtime attach confirmation is unavailable\.'
     }
 
-    It 'accepts attached-client registry matches as attach truth when the host launcher process is gone' {
+    It 'rejects attached-client registry matches when post-draw render evidence is absent' {
         $resolution = Invoke-TestOrchestraAttachResolution `
             -ProbeState ([pscustomobject]@{
                 SessionName      = 'winsmux-orchestra'
@@ -25887,9 +26487,9 @@ Describe 'winsmux orchestra-smoke command' {
             }) `
             -LiveVisibleAttach $false
 
-        $resolution.UiAttached | Should -Be $true
-        $resolution.UiAttachStatus | Should -Be 'attach_confirmed'
-        $resolution.UiAttachSource | Should -Be 'attached-client-registry'
+        $resolution.UiAttached | Should -Be $false
+        $resolution.UiAttachStatus | Should -Be 'attach_unconfirmed'
+        $resolution.UiAttachSource | Should -Be 'none'
         $resolution.AttachedClientRegistryCount | Should -Be 1
         $resolution.AttachRequestId | Should -Be 'req-456'
         $resolution.AttachedClientSnapshot | Should -Be @('/dev/pts/7: winsmux-orchestra: node')

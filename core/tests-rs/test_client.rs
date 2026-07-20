@@ -3,6 +3,135 @@ use super::*;
 
 #[cfg(windows)]
 #[test]
+fn task784_render_receipt_records_only_post_draw_identity() {
+    let path = std::env::temp_dir().join(format!(
+        "winsmux-task784-render-receipt-{}-{}.json",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let config = RenderReceiptConfig {
+        path: path.clone(),
+        request_id: "request-784".to_string(),
+        session_name: "winsmux-orchestra".to_string(),
+    };
+
+    write_render_receipt(&config, &[3, 1, 3]).expect("receipt write should succeed");
+    write_render_receipt(&config, &[3, 1, 3]).expect("receipt refresh should replace the prior lease");
+
+    let receipt: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&path).expect("receipt should exist"),
+    )
+    .expect("receipt should be valid JSON");
+    assert_eq!(receipt["request_id"], "request-784");
+    assert_eq!(receipt["session_name"], "winsmux-orchestra");
+    assert_eq!(receipt["renderer_process_id"], std::process::id());
+    assert!(receipt["renderer_process_started_at_unix_ms"]
+        .as_u64()
+        .is_some_and(|value| value > 0));
+    assert_eq!(receipt["pane_ids"], serde_json::json!(["%1", "%3"]));
+    assert!(receipt.get("pane_content").is_none());
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[cfg(windows)]
+#[test]
+fn task784_render_receipt_heartbeat_refreshes_without_a_new_frame() {
+    let path = std::env::temp_dir().join(format!(
+        "winsmux-task784-render-heartbeat-{}-{}.json",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let config = RenderReceiptConfig {
+        path: path.clone(),
+        request_id: "request-784".to_string(),
+        session_name: "winsmux-orchestra".to_string(),
+    };
+    let now = Instant::now();
+    let mut last_write = Some(now - Duration::from_secs(2));
+
+    assert!(refresh_render_receipt_lease_if_due(
+        Some(&config),
+        &[1, 2],
+        &mut last_write,
+        now,
+    )
+    .expect("idle heartbeat should refresh the live render lease"));
+    assert!(path.exists());
+    assert_eq!(last_write, Some(now));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn task784_main_loop_refreshes_the_render_lease_before_render_branching() {
+    let source = include_str!("../src/client.rs");
+    let loop_schedule = source
+        .find("if let Err(error) = refresh_render_receipt_lease_if_due(")
+        .expect("main loop should schedule the render lease heartbeat");
+    let first_render_branch = source
+        .find("if !got_frame && !selection_changed && !overlays_active {")
+        .expect("render branch should exist");
+    assert!(
+        loop_schedule < first_render_branch,
+        "heartbeat must run before idle and continuously rendered paths diverge"
+    );
+    assert_eq!(
+        source.matches("refresh_render_receipt_lease_if_due(").count(),
+        2,
+        "heartbeat scheduling must stay centralized at one call site"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn task784_render_receipt_lease_removes_stale_proof_on_exit() {
+    let path = std::env::temp_dir().join(format!(
+        "winsmux-task784-render-lease-{}-{}.json",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::write(&path, b"stale").unwrap();
+    {
+        let _lease = RenderReceiptLease::new(Some(&RenderReceiptConfig {
+            path: path.clone(),
+            request_id: "request-784".to_string(),
+            session_name: "winsmux-orchestra".to_string(),
+        }));
+        assert!(!path.exists());
+        std::fs::write(&path, b"live").unwrap();
+    }
+    assert!(!path.exists());
+}
+
+#[cfg(windows)]
+#[test]
+fn task784_render_session_identity_requires_the_exact_runtime_name() {
+    assert!(render_session_matches(
+        "winsmux-orchestra",
+        "winsmux-orchestra"
+    ));
+    assert!(!render_session_matches(
+        "isolated__winsmux-orchestra",
+        "winsmux-orchestra"
+    ));
+    assert!(!render_session_matches(
+        "isolated__other-session",
+        "winsmux-orchestra"
+    ));
+}
+
+#[cfg(windows)]
+#[test]
 fn windows_terminal_normal_ssh_env_only_does_not_refresh_mouse_reporting() {
     assert!(!should_refresh_managed_mouse_reporting(
         false,

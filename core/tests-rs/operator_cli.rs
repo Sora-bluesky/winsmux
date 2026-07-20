@@ -4364,8 +4364,18 @@ fn operator_cli_wait_treats_dash_t_as_channel() {
 
 #[test]
 fn operator_cli_wait_signal_option_preserves_tmux_alias() {
+    let project_dir = make_temp_project_dir("wait-signal-tmux-alias");
+    let home_dir = project_dir.join("home");
+    fs::create_dir_all(&home_dir).expect("test should create isolated home directory");
+
     let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
         .args(["wait", "-S", "compat-channel"])
+        .env("USERPROFILE", &home_dir)
+        .env("HOME", &home_dir)
+        .env_remove("PSMUX_TARGET_SESSION")
+        .env_remove("PSMUX_TARGET_FULL")
+        .env_remove("TMUX")
+        .current_dir(&project_dir)
         .output()
         .expect("winsmux command should run");
 

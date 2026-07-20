@@ -524,8 +524,13 @@ manual flow
 
     It 'passes against the current repository contract' {
         $result = Invoke-HarnessCheckJson -Arguments @('-ProjectDir', $script:RepoRoot, '-AsJson')
+        $failureSummary = @(
+            $result.Json.results |
+                Where-Object { -not $_.passed } |
+                ForEach-Object { '{0}: {1}' -f $_.name, $_.message }
+        ) -join '; '
 
-        $result.ExitCode | Should -Be 0
+        $result.ExitCode | Should -Be 0 -Because "failed harness checks must be reported: $failureSummary"
         $result.Json.passed | Should -Be $true
         ($result.Json.results | Where-Object { -not $_.passed }).Count | Should -Be 0
         @($result.Json.results.name) | Should -Contain 'visible-attach-host-adapters'
@@ -539,6 +544,27 @@ manual flow
         $content | Should -Match 'function\s+Resolve-HarnessRuntimeProjectDir'
         $content | Should -Match 'Test-HarnessSmokeContract\s+-CodeRoot\s+\$ProjectDir\s+-RuntimeProjectDir\s+\$runtimeProjectDir'
         $content | Should -Match 'Ensure-OrchestraAttachProfile\s+-ProjectDir\s+\$runtimeProjectDir'
+    }
+
+    It 'fails closed instead of throwing when smoke runs without a winsmux executable' {
+        $smokePath = Join-Path $script:RepoRoot 'winsmux-core\scripts\orchestra-smoke.ps1'
+        $tokens = $null
+        $errors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($smokePath, [ref]$tokens, [ref]$errors)
+        $errors.Count | Should -Be 0
+
+        foreach ($functionName in @('Get-OrchestraAttachedClientSnapshot', 'Resolve-OrchestraSmokeAttachState')) {
+            $functionAst = $ast.Find({
+                param($node)
+                $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                    $node.Name -eq $functionName
+            }, $true)
+            $functionAst | Should -Not -BeNullOrEmpty
+            $winsmuxParameter = $functionAst.Body.ParamBlock.Parameters |
+                Where-Object { $_.Name.VariablePath.UserPath -eq 'WinsmuxBin' }
+            $winsmuxParameter | Should -Not -BeNullOrEmpty
+            @($winsmuxParameter.Attributes.TypeName.Name) | Should -Contain 'AllowEmptyString'
+        }
     }
 
     It 'keeps critical .claude files trimmed to a single final newline' {
@@ -1396,8 +1422,13 @@ exit /b 0
         $stdout = & $script:PwshPath -NoProfile -File $script:WinsmuxCorePath harness-check --json 2>&1
         $exitCode = $LASTEXITCODE
         $json = (($stdout | Out-String).Trim() | ConvertFrom-Json -Depth 16)
+        $failureSummary = @(
+            $json.results |
+                Where-Object { -not $_.passed } |
+                ForEach-Object { '{0}: {1}' -f $_.name, $_.message }
+        ) -join '; '
 
-        $exitCode | Should -Be 0
+        $exitCode | Should -Be 0 -Because "failed harness checks must be reported: $failureSummary"
         $json.passed | Should -Be $true
     }
 

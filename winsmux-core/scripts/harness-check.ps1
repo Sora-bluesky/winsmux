@@ -257,7 +257,11 @@ function Test-HarnessSmokeContract {
             $parsed = $raw | ConvertFrom-WinsmuxJson -Depth 16
         }
     } catch {
-        $error = $_.Exception.Message
+        $rawPreview = $raw -replace '[\r\n]+', ' '
+        if ($rawPreview.Length -gt 512) {
+            $rawPreview = $rawPreview.Substring(0, 512)
+        }
+        $error = "{0} Raw output prefix: {1}" -f $_.Exception.Message, $rawPreview
     }
 
     return [ordered]@{
@@ -416,7 +420,7 @@ try {
 }
 $results.Add((New-HarnessCheckRecord -Name 'wt-attach-profile' -Passed $profileCheckPassed -Message $profileCheckMessage -Data $profileCheckData)) | Out-Null
 
-$attachProbePath = Get-OrchestraAttachStatePath -SessionName 'winsmux-harness-check'
+$attachProbePath = Get-OrchestraAttachStatePath -SessionName 'winsmux-harness-check' -ProjectDir $runtimeProjectDir
 $attachPathWritable = Test-HarnessWritableFile -Path $attachProbePath
 $attachWritableMessage = if ($attachPathWritable) { 'Attach handshake path is writable.' } else { 'Attach handshake path is not writable.' }
 $results.Add((New-HarnessCheckRecord -Name 'attach-handshake-path-writable' -Passed $attachPathWritable -Message $attachWritableMessage -Data $attachProbePath)) | Out-Null
