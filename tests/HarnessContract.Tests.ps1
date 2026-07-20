@@ -524,8 +524,13 @@ manual flow
 
     It 'passes against the current repository contract' {
         $result = Invoke-HarnessCheckJson -Arguments @('-ProjectDir', $script:RepoRoot, '-AsJson')
+        $failureSummary = @(
+            $result.Json.results |
+                Where-Object { -not $_.passed } |
+                ForEach-Object { '{0}: {1}' -f $_.name, $_.message }
+        ) -join '; '
 
-        $result.ExitCode | Should -Be 0
+        $result.ExitCode | Should -Be 0 -Because "failed harness checks must be reported: $failureSummary"
         $result.Json.passed | Should -Be $true
         ($result.Json.results | Where-Object { -not $_.passed }).Count | Should -Be 0
         @($result.Json.results.name) | Should -Contain 'visible-attach-host-adapters'
@@ -1396,8 +1401,13 @@ exit /b 0
         $stdout = & $script:PwshPath -NoProfile -File $script:WinsmuxCorePath harness-check --json 2>&1
         $exitCode = $LASTEXITCODE
         $json = (($stdout | Out-String).Trim() | ConvertFrom-Json -Depth 16)
+        $failureSummary = @(
+            $json.results |
+                Where-Object { -not $_.passed } |
+                ForEach-Object { '{0}: {1}' -f $_.name, $_.message }
+        ) -join '; '
 
-        $exitCode | Should -Be 0
+        $exitCode | Should -Be 0 -Because "failed harness checks must be reported: $failureSummary"
         $json.passed | Should -Be $true
     }
 
