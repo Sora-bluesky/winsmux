@@ -250,6 +250,19 @@ Describe 'Get-BridgeSettings' {
         }
     }
 
+    It 'ignores arbitrary output when the global option command exits nonzero' {
+        Mock Get-WinsmuxBin { return 'winsmux-test-double' }
+        Mock Invoke-WinsmuxBridgeCommand {
+            $global:LASTEXITCODE = 5
+            return 'Access is denied.'
+        }
+
+        $settings = Get-BridgeSettings
+
+        $settings.prompt_transport | Should -Be 'argv'
+        $settings.execution_profile | Should -Be 'local-windows'
+    }
+
     It 'returns built-in defaults when no global or project settings exist' {
         Mock Get-WinsmuxOption { param($Name, $Default) return $null }
 

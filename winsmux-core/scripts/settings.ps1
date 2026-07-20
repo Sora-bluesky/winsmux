@@ -239,7 +239,13 @@ if (-not (Get-Command Get-WinsmuxOption -ErrorAction SilentlyContinue)) {
         }
 
         try {
-            $value = (Invoke-WinsmuxBridgeCommand -WinsmuxBin $winsmuxBin -Arguments @('show-options', '-g', '-v', $Name) 2>&1 | Out-String).Trim()
+            $rawOutput = @(Invoke-WinsmuxBridgeCommand -WinsmuxBin $winsmuxBin -Arguments @('show-options', '-g', '-v', $Name) 2>&1)
+            $exitCode = $LASTEXITCODE
+            if ($exitCode -ne 0) {
+                return $Default
+            }
+
+            $value = ($rawOutput | Out-String).Trim()
             if (-not (Test-WinsmuxOptionFailureText -Value $value)) {
                 return $value
             }
