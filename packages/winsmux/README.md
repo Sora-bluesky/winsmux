@@ -16,7 +16,7 @@ Repository publishing is tag-driven and uses the staged package from
 The source directory is not the publish artifact. Do not publish
 `packages/winsmux` directly from a checkout. The published npm tarball is
 produced by `scripts/stage-npm-release.mjs`; `install.ps1` is added during
-staging and pinned to the same release tag as the npm package.
+staging and pinned to the exact GitHub tag recorded in package metadata.
 
 Install the CLI package on Windows with:
 
@@ -44,7 +44,8 @@ User-facing setup docs:
 - `winsmux help`
 - the staged package records the exact GitHub release tag in
   `winsmuxReleaseTag`; packaging-hotfix tags use a distinct valid npm prerelease
-  version (for example, `v0.36.28.1` becomes npm `0.36.28-hotfix.1`)
+  version in the reserved `pkgfix` namespace (for example, `v0.36.28.1`
+  becomes npm `0.36.28-pkgfix.1`)
 - the package source directory is not the publish artifact; the staged package
   contains the generated release-pinned `install.ps1`
 

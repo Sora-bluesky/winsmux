@@ -45,8 +45,11 @@ function coordinatesFromReleaseTag(releaseTag) {
     throw new Error(`Unsupported winsmux release tag format: ${releaseTag}`);
   }
   const suffix = match.groups.suffix ?? "";
+  if (!match.groups.revision && /^-pkgfix(?:\.|$)/u.test(suffix)) {
+    throw new Error(`Reserved npm packaging-hotfix tag namespace: ${releaseTag}`);
+  }
   const packageVersion = match.groups.revision
-    ? `${match.groups.binary}-hotfix.${match.groups.revision}${suffix ? `.${suffix.slice(1)}` : ""}`
+    ? `${match.groups.binary}-pkgfix.${match.groups.revision}${suffix ? `.${suffix.slice(1)}` : ""}`
     : `${match.groups.binary}${suffix}`;
   return { packageVersion, releaseTag: `v${normalizedTag}` };
 }
