@@ -11822,6 +11822,7 @@ function getShellCwdChange(segment, baseCwd) {
 
   const originalTokens = tokenizeCommandLine(stages[0]);
   const effectiveCdPath = getEffectiveEnvironmentValue(originalTokens, "CDPATH");
+  const effectiveHome = getEffectiveEnvironmentValue(originalTokens, "HOME");
   let rawTokens = stripInlineEnvironmentPrefixes(originalTokens);
   let negated = false;
   if (normalizeAgentValue(stripOuterQuotes(rawTokens[0] || "")) === "!") {
@@ -11847,7 +11848,7 @@ function getShellCwdChange(segment, baseCwd) {
       : { state: "none", target: "", controlFlowPrefixed };
   }
 
-  const target = getShellCwdChangeArgument(tokens);
+  const target = getShellCwdChangeArgument(tokens, effectiveHome);
   if (!target || target.includes("\0")) {
     return { state: "ambiguous", target: "\0unresolved-cwd-change", controlFlowPrefixed };
   }
@@ -11866,7 +11867,7 @@ function getShellCwdChange(segment, baseCwd) {
   };
 }
 
-function getShellCwdChangeArgument(tokens) {
+function getShellCwdChangeArgument(tokens, effectiveHome) {
   let optionsTerminated = false;
   for (let index = 1; index < tokens.length; index += 1) {
     const token = stripOuterQuotes(tokens[index]);
@@ -11903,7 +11904,10 @@ function getShellCwdChangeArgument(tokens) {
     return token;
   }
 
-  return os.homedir();
+  if (!effectiveHome || effectiveHome.unresolved || !effectiveHome.value) {
+    return "\0unresolved-cwd-change";
+  }
+  return effectiveHome.value;
 }
 
 function hasUnparsedBaseScopedReviewGatedCommand(command, parsedSeparatedFunctionWrapper = false, parsedXargsWrapper = false) {

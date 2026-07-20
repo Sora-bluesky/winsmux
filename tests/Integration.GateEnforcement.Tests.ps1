@@ -9035,6 +9035,19 @@ EOF
         $clearedCdPathResult = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'CDPATH= cd effective-env-target; git commit --allow-empty -m cleared-cdpath'; cwd = $fixture.RepoRoot } -Environment $cdPathEnvironment
         $clearedCdPathResult.OutputObject | Should -BeNullOrEmpty -Because 'an explicit empty CDPATH restores deterministic local resolution to the reviewed repository'
 
+        $reviewedAmbientHome = New-GateTargetRepo -Root $fixture.Root -Name 'reviewed-ambient-home'
+        Set-GatePass -RepoRoot $reviewedAmbientHome.RepoRoot -Branch $reviewedAmbientHome.Branch
+        $unreviewedCommandHome = New-GateTargetRepo -Root $fixture.Root -Name 'unreviewed-command-home'
+        $homeEnvironment = @{
+            WINSMUX_ROLE = 'operator'
+            WINSMUX_ASSIGNED_WORKTREE = $fixture.RepoRoot
+            HOME = $reviewedAmbientHome.RepoRoot
+            USERPROFILE = $reviewedAmbientHome.RepoRoot
+        }
+        $commandHome = $unreviewedCommandHome.RepoRoot.Replace('\', '/')
+        $commandHomeResult = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = "HOME='$commandHome' cd; git commit --allow-empty -m command-home"; cwd = $fixture.RepoRoot } -Environment $homeEnvironment
+        & $script:AssertDenyResult -Result $commandHomeResult -Because 'a command-scoped HOME must determine the no-argument cd target instead of the hook process home'
+
         $reviewedInheritedGit = New-GateTargetRepo -Root $fixture.Root -Name 'inherited-git-target'
         Set-GatePass -RepoRoot $reviewedInheritedGit.RepoRoot -Branch $reviewedInheritedGit.Branch
         $gitEnvironment = @{
