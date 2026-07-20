@@ -5374,6 +5374,30 @@ EOF
         }
         & $script:AssertDenyResult -Result $inheritedForeignHost -Because 'an inherited GH_HOST is part of the protected GitHub target identity'
 
+        $inheritedForeignRepo = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+            command = 'gh pr merge 1 --squash'
+        } -Environment @{
+            WINSMUX_ROLE = 'operator'
+            WINSMUX_ASSIGNED_WORKTREE = $fixture.RepoRoot
+            GH_REPO = 'other/repo'
+        }
+        & $script:AssertDenyResult -Result $inheritedForeignRepo -Because 'an inherited GH_REPO is part of the command-effective protected GitHub target identity'
+
+        foreach ($overrideCommand in @(
+                'env -u GH_REPO gh pr merge 1 --squash',
+                'env -i gh pr merge 1 --squash',
+                'gh pr merge 1 -R Sora-bluesky/winsmux --squash'
+            )) {
+            $overrideResult = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+                command = $overrideCommand
+            } -Environment @{
+                WINSMUX_ROLE = 'operator'
+                WINSMUX_ASSIGNED_WORKTREE = $fixture.RepoRoot
+                GH_REPO = 'other/repo'
+            }
+            $overrideResult.OutputObject | Should -BeNullOrEmpty -Because "command-effective GH_REPO clearing or an explicit -R overrides inherited GH_REPO: $overrideCommand"
+        }
+
         foreach ($command in @(
                 'gh pr merge 1 -R Sora-bluesky/winsmux --squash',
                 'gh pr merge https://github.com/Sora-bluesky/winsmux/pull/1 --squash',
@@ -8897,6 +8921,12 @@ EOF
         Write-GateTestFile -Path $protectedPayloadPath -Content "git commit --allow-empty -m copied-overwrite`n"
         $targetDirectoryPayloadPath = Join-Path $fixture.RepoRoot 'payload\interpreter-safe.sh'
         Write-GateTestFile -Path $targetDirectoryPayloadPath -Content "git commit --allow-empty -m target-directory-overwrite`n"
+        $directoryCopyPayloadPath = Join-Path $fixture.RepoRoot 'payload\directory-protected.sh'
+        Write-GateTestFile -Path $directoryCopyPayloadPath -Content "git commit --allow-empty -m directory-copy-overwrite`n"
+        $movePayloadPath = Join-Path $fixture.RepoRoot 'payload\move-protected.sh'
+        Write-GateTestFile -Path $movePayloadPath -Content "git commit --allow-empty -m move-overwrite`n"
+        $linkPayloadPath = Join-Path $fixture.RepoRoot 'payload\link-protected.sh'
+        Write-GateTestFile -Path $linkPayloadPath -Content "git commit --allow-empty -m link-overwrite`n"
         $safePythonPath = Join-Path $fixture.RepoRoot 'scripts\interpreter-safe.py'
         Write-GateTestFile -Path $safePythonPath -Content "print('safe')`n"
         $safeNodePath = Join-Path $fixture.RepoRoot 'scripts\interpreter-safe.js'
@@ -8951,7 +8981,11 @@ EOF
                 'pwsh -WorkingDirectory scripts/sub -File interpreter-cwd-writer.ps1 ; bash scripts/interpreter-safe.sh',
                 'cp scripts/interpreter-protected-payload.sh scripts/interpreter-safe.sh ; bash scripts/interpreter-safe.sh',
                 'cp -t scripts payload/interpreter-safe.sh ; bash scripts/interpreter-safe.sh',
+                'cp payload/directory-protected.sh scripts ; bash scripts/directory-protected.sh',
                 'install -t scripts payload/interpreter-safe.sh ; bash scripts/interpreter-safe.sh',
+                'mv payload/move-protected.sh scripts/interpreter-safe.sh ; bash scripts/interpreter-safe.sh',
+                'mv payload/move-protected.sh scripts ; bash scripts/move-protected.sh',
+                'ln -s payload/link-protected.sh scripts/linked.sh ; bash scripts/linked.sh',
                 @'
 python <<'PY'
 from pathlib import Path

@@ -1053,7 +1053,7 @@ function collectStaticScriptMutationTargets(source, scriptKind, scriptBaseCwd, t
     collectNodeMutationTargets(source, scriptTargets);
   } else if (scriptKind === "shell") {
     collectShellWriteTargetsFromCommand(source, scriptTargets);
-    collectStaticPosixReplacementTargetsFromCommand(source, scriptTargets);
+    collectStaticPosixReplacementTargetsFromCommand(source, scriptBaseCwd, scriptTargets);
   } else {
     collectShellWriteTargetsFromCommand(source, scriptTargets);
   }
@@ -1066,17 +1066,17 @@ function collectStaticScriptMutationTargets(source, scriptKind, scriptBaseCwd, t
   }
 }
 
-function collectStaticPosixReplacementTargetsFromCommand(source, targets) {
+function collectStaticPosixReplacementTargetsFromCommand(source, baseCwd, targets) {
   for (const segment of splitCommandSegments(source)) {
     for (const stage of splitCommandPipelineStages(segment)) {
-      collectStaticPosixReplacementTargets(stage, targets);
+      collectStaticPosixReplacementTargets(stage, baseCwd, targets);
     }
   }
 }
 
-function getStaticScriptContentMutationTargets(stage) {
+function getStaticScriptContentMutationTargets(stage, baseCwd) {
   const targets = getShellStdoutRedirectTargets(stage);
-  collectStaticPosixReplacementTargets(stage, targets);
+  collectStaticPosixReplacementTargets(stage, baseCwd, targets);
   const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(tokenizeCommandLine(stage)));
   const interpreterKind = getShellInterpreterKind(execution.tokens);
   const staticInterpreterTokens = execution.tokens.filter((token, index) =>
@@ -1098,12 +1098,12 @@ function getStaticScriptContentMutationTargets(stage) {
   return targets;
 }
 
-function collectStaticPosixReplacementTargets(stage, targets) {
+function collectStaticPosixReplacementTargets(stage, baseCwd, targets) {
   const tokens = unwrapReviewGateExecutionTokens(
     unwrapEnvCommandTokens(tokenizeCommandLine(stage)),
   ).tokens;
   const executable = normalizeExecutableName(tokens[0] || "");
-  if (executable !== "cp" && executable !== "install") return;
+  if (!["cp", "install", "ln", "mv"].includes(executable)) return;
 
   const targetDirectory = getPosixOptionValue(tokens, ["-t", "--target-directory"]);
   const operands = [];
@@ -1121,18 +1121,31 @@ function collectStaticPosixReplacementTargets(stage, targets) {
         (value.startsWith("-") && value !== "-")) continue;
     operands.push(value);
   }
-  if (targetDirectory) {
-    for (const sourcePath of operands) {
+  const sources = operands.slice(0, -1);
+  const destination = targetDirectory || operands[operands.length - 1] || "";
+  const noTargetDirectory = tokens.some((token) => {
+    const value = stripOuterQuotes(token);
+    return value === "-T" || normalizeAgentValue(value) === "--no-target-directory";
+  });
+  let destinationIsDirectory = Boolean(targetDirectory) || sources.length > 1;
+  if (!destinationIsDirectory && !noTargetDirectory && destination && !/[$%\x60*?\[\]{}\0]/u.test(destination)) {
+    try {
+      destinationIsDirectory = fs.statSync(path.resolve(baseCwd, destination)).isDirectory();
+    } catch {
+      destinationIsDirectory = false;
+    }
+  }
+  if (destinationIsDirectory) {
+    for (const sourcePath of targetDirectory ? operands : sources) {
       if (!sourcePath || /[$%\x60*?\[\]{}\0]/u.test(sourcePath)) {
         targets.push("$unresolved-static-posix-copy-effect");
         continue;
       }
-      targets.push(path.join(targetDirectory, path.basename(sourcePath)));
+      targets.push(path.join(destination, path.basename(sourcePath)));
     }
     return;
   }
   if (operands.length < 2) return;
-  const destination = operands[operands.length - 1];
   targets.push(!destination || /[$%\x60*?\[\]{}\0]/u.test(destination)
     ? "$unresolved-static-posix-copy-effect"
     : destination);
@@ -1192,7 +1205,7 @@ function recordStaticScriptWriteEffects(
   heredocExemptKeys,
 ) {
   const isHeredocStage = String(stage || "").includes("__WINSMUX_HEREDOC_WRITE__");
-  const targets = getStaticScriptContentMutationTargets(stage);
+  const targets = getStaticScriptContentMutationTargets(stage, baseCwd);
   const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(tokenizeCommandLine(stage)));
   if (normalizeExecutableName(execution.tokens[0] || "") === "tee") {
     for (const token of execution.tokens.slice(1)) {
@@ -2969,9 +2982,20 @@ function hasForeignGitHubLifecycleTarget(command, baseCwd, depth = 0, inheritedG
     }
     for (const stage of splitCommandPipelineStages(segment)) {
       const originalTokens = tokenizeCommandLine(stage);
+      const effectiveGhRepo = getEffectiveEnvironmentValue(originalTokens, "GH_REPO");
       const effectiveGhHost = getEffectiveEnvironmentValue(originalTokens, "GH_HOST");
       const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(originalTokens));
-      const nestedGhEnvironment = { repo: ghRepoEnvironmentTarget, host: ghHostEnvironmentTarget, reviewedIdentities };
+      const stageGhRepoEnvironmentTarget = effectiveGhRepo.specified
+        ? effectiveGhRepo.value
+        : (ghRepoEnvironmentTarget || effectiveGhRepo.value);
+      const stageGhHostEnvironmentTarget = effectiveGhHost.specified
+        ? effectiveGhHost.value
+        : (ghHostEnvironmentTarget || effectiveGhHost.value);
+      const nestedGhEnvironment = {
+        repo: stageGhRepoEnvironmentTarget,
+        host: stageGhHostEnvironmentTarget,
+        reviewedIdentities,
+      };
       if (execution.nestedCommand && hasForeignGitHubLifecycleTarget(execution.nestedCommand, baseCwd, depth + 1, nestedGhEnvironment)) {
         return true;
       }
@@ -2992,7 +3016,7 @@ function hasForeignGitHubLifecycleTarget(command, baseCwd, depth = 0, inheritedG
       if (!isGhExecutableToken(tokens[0])) {
         continue;
       }
-      if (effectiveGhHost.unresolved) {
+      if (effectiveGhRepo.unresolved || effectiveGhHost.unresolved) {
         return true;
       }
       if (isGhApiGraphqlRefMutation(tokens.map((token) => normalizeAgentValue(stripOuterQuotes(token))))) {
@@ -3069,16 +3093,14 @@ function hasForeignGitHubLifecycleTarget(command, baseCwd, depth = 0, inheritedG
         }
       }
 
-      if (!explicitRepo && ghRepoEnvironmentTarget) {
-        explicitRepo = ghRepoEnvironmentTarget;
+      if (!explicitRepo && stageGhRepoEnvironmentTarget) {
+        explicitRepo = normalizeAgentValue(stripOuterQuotes(stageGhRepoEnvironmentTarget));
         repoSelected = true;
       }
 
       if (!hostSelected) {
         if (ghHostEnvironmentTarget.includes("\0")) return true;
-        const environmentHost = effectiveGhHost.specified
-          ? effectiveGhHost.value
-          : (ghHostEnvironmentTarget || effectiveGhHost.value);
+        const environmentHost = stageGhHostEnvironmentTarget;
         if (environmentHost) {
           explicitHost = normalizeGitHubHost(environmentHost);
           if (!explicitHost) return true;
