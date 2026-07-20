@@ -1631,8 +1631,28 @@ function getStaticScriptProtectedEvidence(source, scriptCwd) {
   const lines = text.split(/\r?\n/u);
   const commands = [];
   const seen = new Set();
-  let effectiveScriptCwd = scriptCwd;
   let unresolved = false;
+  if (isReviewGatedCommand(text)) {
+    if (hasShellControlFlowBoundary(text) && hasShellCwdChangeCommand(text)) {
+      unresolved = true;
+    }
+    const targetEvidence = getReviewGatedCommandTargets(text, scriptCwd);
+    const targets = [
+      ...targetEvidence.targetCwds,
+      ...(targetEvidence.requiresBaseCwd ? [scriptCwd] : []),
+    ];
+    for (const target of targets.length > 0 ? targets : [scriptCwd]) {
+      if (!target || target.includes("\0")) {
+        unresolved = true;
+        continue;
+      }
+      const normalized = `git -C "${target}" commit`;
+      if (!seen.has(normalized)) {
+        commands.push(normalized);
+        seen.add(normalized);
+      }
+    }
+  }
   for (let index = 0; index < lines.length; index += 1) {
     const windows = [lines[index]];
     if (/[`\\]\s*$/u.test(lines[index]) && index + 1 < lines.length) {
@@ -1651,37 +1671,14 @@ function getStaticScriptProtectedEvidence(source, scriptCwd) {
       if (directCodex) {
         if (!seen.has("codex exec")) commands.push("codex exec");
         seen.add("codex exec");
-      } else if (reviewGated) {
-        const targetEvidence = getReviewGatedCommandTargets(candidate, effectiveScriptCwd);
-        const targets = [
-          ...targetEvidence.targetCwds,
-          ...(targetEvidence.requiresBaseCwd ? [effectiveScriptCwd] : []),
-        ];
-        for (const target of targets.length > 0 ? targets : [effectiveScriptCwd]) {
-          if (!target || target.includes("\0")) {
-            unresolved = true;
-            continue;
-          }
-          const normalized = `git -C "${target}" commit`;
-          if (!seen.has(normalized)) {
-            commands.push(normalized);
-            seen.add(normalized);
-          }
-        }
-        if (/\bgh\b[^\r\n]*(?:--repo|--hostname|https?:\/\/|\brepos\/)/iu.test(candidate)) {
-          const explicitGitHubCommand = candidate.trim();
-          if (!seen.has(explicitGitHubCommand)) {
-            commands.push(explicitGitHubCommand);
-            seen.add(explicitGitHubCommand);
-          }
+      }
+      if (reviewGated && /\bgh\b[^\r\n]*(?:--repo|--hostname|https?:\/\/|\brepos\/)/iu.test(candidate)) {
+        const explicitGitHubCommand = candidate.trim();
+        if (!seen.has(explicitGitHubCommand)) {
+          commands.push(explicitGitHubCommand);
+          seen.add(explicitGitHubCommand);
         }
       }
-    }
-    const cwdChange = getShellCwdChange(lines[index], effectiveScriptCwd);
-    if (cwdChange.state === "ambiguous") {
-      effectiveScriptCwd = "\0unresolved-static-script-cwd";
-    } else if (cwdChange.target) {
-      effectiveScriptCwd = cwdChange.target;
     }
   }
   const executableText = lines

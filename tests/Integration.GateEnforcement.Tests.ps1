@@ -9200,6 +9200,33 @@ EOF
         }
     }
 
+    It 'TASK-783 C116 uses the canonical review target resolver for static script state' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $environment = @{ WINSMUX_ROLE = 'operator'; WINSMUX_ASSIGNED_WORKTREE = $fixture.RepoRoot }
+        Set-GatePass -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch
+        $target = New-GateTargetRepo -Root $fixture.Root -Name 'static-environment-target'
+        $targetPath = $target.RepoRoot.Replace('\', '/')
+        $environmentScript = Join-Path $fixture.RepoRoot 'scripts\static-git-environment.sh'
+        Write-GateTestFile -Path $environmentScript -Content "export GIT_DIR='$targetPath/.git'`nexport GIT_WORK_TREE='$targetPath'`ngit commit --allow-empty -m static-environment`n"
+        $persistentEnvironment = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'bash scripts/static-git-environment.sh'; cwd = $fixture.RepoRoot } -Environment $environment
+        & $script:AssertDenyResult -Result $persistentEnvironment -Because 'persistent Git target state inside a static script must fail closed instead of borrowing caller PASS'
+
+        $conditionalFixture = New-GateFixture
+        $approvedTarget = New-GateTargetRepo -Root $conditionalFixture.Root -Name 'approved-conditional-target'
+        Set-GatePass -RepoRoot $approvedTarget.RepoRoot -Branch $approvedTarget.Branch
+        $approvedPath = $approvedTarget.RepoRoot.Replace('\', '/')
+        $conditionalScript = Join-Path $conditionalFixture.RepoRoot 'scripts\inactive-cwd.sh'
+        Write-GateTestFile -Path $conditionalScript -Content "if false; then`n  cd '$approvedPath'`nfi`ngit commit --allow-empty -m inactive-cwd`n"
+        $conditionalEnvironment = @{ WINSMUX_ROLE = 'operator'; WINSMUX_ASSIGNED_WORKTREE = $conditionalFixture.RepoRoot }
+        $unreviewedCaller = & $script:InvokeOrchestraGate -RepoRoot $conditionalFixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'bash scripts/inactive-cwd.sh'; cwd = $conditionalFixture.RepoRoot } -Environment $conditionalEnvironment
+        & $script:AssertDenyResult -Result $unreviewedCaller -Because 'a cwd change in an inactive branch cannot redirect review away from the runtime caller repository'
+
+        Set-GatePass -RepoRoot $conditionalFixture.RepoRoot -Branch $conditionalFixture.Branch
+        $reviewedCaller = & $script:InvokeOrchestraGate -RepoRoot $conditionalFixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'bash scripts/inactive-cwd.sh'; cwd = $conditionalFixture.RepoRoot } -Environment $conditionalEnvironment
+        & $script:AssertDenyResult -Result $reviewedCaller -Because 'control-flow-dependent cwd state remains fail closed even when one possible target has PASS'
+    }
+
     It 'TASK-783 C104 permits only clean HEAD-bound canonical orchestra recovery scripts' {
         $fixture = New-GateFixture
         $script:FixtureRoot = $fixture.Root
