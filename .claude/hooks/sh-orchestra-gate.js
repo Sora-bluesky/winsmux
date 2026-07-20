@@ -971,6 +971,29 @@ function getHeredocOverlayExemptKeys(command, baseCwd) {
   return keys;
 }
 
+function getStaticScriptContentMutationTargets(stage) {
+  const targets = getShellStdoutRedirectTargets(stage);
+  const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(tokenizeCommandLine(stage)));
+  const interpreterKind = getShellInterpreterKind(execution.tokens);
+  const staticInterpreterTokens = execution.tokens.filter((token, index) =>
+    index === 0 ||
+    (!String(token || "").includes("__WINSMUX_HEREDOC_WRITE__") &&
+     !/^(?:[0-9]+)?<<-?/u.test(stripOuterQuotes(String(token || "")))),
+  );
+  const staticInterpreterFile = getStaticNonPowerShellInterpreterFileArgument(staticInterpreterTokens);
+  const hasStaticInterpreterFile = staticInterpreterFile.present &&
+    staticInterpreterFile.value !== "-" &&
+    !isAnyStdinDevicePath(staticInterpreterFile.value);
+  // Inline interpreters can mutate a later script through arbitrary runtime APIs.
+  // Their lack of side effects is not statically proven, so a following script fails closed.
+  if (interpreterKind &&
+      (getInterpreterInlineSourceDescriptors(execution.tokens, interpreterKind).length > 0 ||
+       (String(stage || "").includes("__WINSMUX_HEREDOC_WRITE__") && !hasStaticInterpreterFile))) {
+    targets.push("$unresolved-inline-interpreter-effect");
+  }
+  return targets;
+}
+
 function recordStaticScriptWriteEffects(
   stage,
   baseCwd,
@@ -980,7 +1003,7 @@ function recordStaticScriptWriteEffects(
   heredocExemptKeys,
 ) {
   const isHeredocStage = String(stage || "").includes("__WINSMUX_HEREDOC_WRITE__");
-  const targets = getShellStdoutRedirectTargets(stage);
+  const targets = getStaticScriptContentMutationTargets(stage);
   const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(tokenizeCommandLine(stage)));
   if (normalizeExecutableName(execution.tokens[0] || "") === "tee") {
     for (const token of execution.tokens.slice(1)) {
@@ -5387,6 +5410,20 @@ function getInterpreterInlineSourceDescriptors(tokens, kind) {
       index += 1;
       continue;
     }
+    if (normalized === "--" || rawToken === "-" || !rawToken.startsWith("-")) break;
+    if (kind === "python") {
+      const clusteredCommand = /^-[bBdEiIOPqRsSuvx]*c([\s\S]*)$/u.exec(rawToken);
+      if (clusteredCommand) {
+        const hasAttachedSource = clusteredCommand[1].length > 0;
+        descriptors.push({
+          source: hasAttachedSource
+            ? stripOuterQuotes(clusteredCommand[1])
+            : (index + 1 < tokens.length ? stripOuterQuotes(tokens[index + 1]) : ""),
+          trailingIndex: Math.min(index + (hasAttachedSource ? 1 : 2), tokens.length),
+        });
+        return descriptors;
+      }
+    }
     if (options.includes(normalized)) {
       if (kind === "node" && (normalized === "-p" || normalized === "--print")) {
         const next = normalizeAgentValue(String(tokens[index + 1] || ""));
@@ -8734,7 +8771,8 @@ function getShellInterpreterKind(tokens) {
 
   const executable = normalizeAgentValue(getExecutableBasename(effectiveTokens[0]));
 
-  if (/^python(?:\d+(?:\.\d+)*)?(?:\.exe)?$/u.test(executable) || executable === "py" || executable === "py.exe") {
+  if (/^pythonw?(?:\d+(?:\.\d+)*)?(?:\.exe)?$/u.test(executable) ||
+      ["py", "py.exe", "pyw", "pyw.exe"].includes(executable)) {
     return "python";
   }
 

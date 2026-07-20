@@ -8842,6 +8842,102 @@ EOF
         $quotedDataResult.OutputObject | Should -BeNullOrEmpty -Because 'a redirection token inside quoted data is not a file write'
     }
 
+    It 'TASK-783 C110 fails closed when an interpreter writes a script before static invocation' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $safeScriptPath = Join-Path $fixture.RepoRoot 'scripts\interpreter-safe.sh'
+        Write-GateTestFile -Path $safeScriptPath -Content "printf '%s\n' safe`n"
+        $protectedPayloadPath = Join-Path $fixture.RepoRoot 'scripts\interpreter-protected-payload.sh'
+        Write-GateTestFile -Path $protectedPayloadPath -Content "git commit --allow-empty -m copied-overwrite`n"
+        $targetDirectoryPayloadPath = Join-Path $fixture.RepoRoot 'payload\interpreter-safe.sh'
+        Write-GateTestFile -Path $targetDirectoryPayloadPath -Content "git commit --allow-empty -m target-directory-overwrite`n"
+        $safePythonPath = Join-Path $fixture.RepoRoot 'scripts\interpreter-safe.py'
+        Write-GateTestFile -Path $safePythonPath -Content "print('safe')`n"
+        $safeNodePath = Join-Path $fixture.RepoRoot 'scripts\interpreter-safe.js'
+        Write-GateTestFile -Path $safeNodePath -Content "console.log('safe');`n"
+        $environment = @{ WINSMUX_ROLE = 'operator'; WINSMUX_ASSIGNED_WORKTREE = $fixture.RepoRoot }
+
+        foreach ($command in @(
+                'python -c "print(''unproven-before-script'')" ; bash scripts/interpreter-safe.sh',
+                'node -e "console.log(''unproven-before-script'')" ; bash scripts/interpreter-safe.sh',
+                'python -c "open(''scripts/interpreter-written.sh'',''w'').write(bytes.fromhex(''67697420636f6d6974202d2d616c6c6f772d656d707479202d6d2078310a'').decode())" ; bash scripts/interpreter-written.sh',
+                'python -c"open(''scripts/interpreter-written.sh'',''w'').write(bytes.fromhex(''67697420636f6d6974202d2d616c6c6f772d656d707479202d6d2061747461636865640a'').decode())" ; bash scripts/interpreter-written.sh',
+                'python -Ic"open(''scripts/interpreter-written.sh'',''w'').write(bytes.fromhex(''67697420636f6d6974202d2d616c6c6f772d656d707479202d6d20636c75737465720a'').decode())" ; bash scripts/interpreter-written.sh',
+                'python -Bqc "open(''scripts/interpreter-written.sh'',''w'').write(bytes.fromhex(''67697420636f6d6974202d2d616c6c6f772d656d707479202d6d20636c75737465722d6e6578740a'').decode())" ; bash scripts/interpreter-written.sh',
+                'pythonw -c "open(''scripts/interpreter-written.sh'',''w'').write(bytes.fromhex(''67697420636f6d6974202d2d616c6c6f772d656d707479202d6d20707974686f6e770a'').decode())" && bash scripts/interpreter-written.sh',
+                'pyw -3 -c "open(''scripts/interpreter-written.sh'',''w'').write(bytes.fromhex(''67697420636f6d6974202d2d616c6c6f772d656d707479202d6d207079770a'').decode())" && bash scripts/interpreter-written.sh',
+                'node -e "require(''fs'').writeFileSync(''scripts/interpreter-written.sh'',Buffer.from(''67697420636f6d6974202d2d616c6c6f772d656d707479202d6d2078310a'',''hex''))" ; bash scripts/interpreter-written.sh',
+                'python -c "open(''scripts/interpreter-written'',''w'').write(''git commit --allow-empty -m extensionless-written\n'')" ; bash scripts/interpreter-written',
+                'python -c "from pathlib import Path; Path(''scripts/interpreter-written.sh'').write_text(''git commit --allow-empty -m pathlib-written\n'')" ; bash scripts/interpreter-written.sh',
+                'python -c "handle=open(''scripts/interpreter-written.sh'',''w''); handle.write(''git commit --allow-empty -m handle-written\n'')" ; bash scripts/interpreter-written.sh',
+                'python -c "target=''scripts/interpreter-written.sh''; open(target,''w'').write(bytes.fromhex(''67697420636f6d6974202d2d616c6c6f772d656d707479202d6d2078310a'').decode())" ; bash scripts/interpreter-written.sh',
+                'python -c "from pathlib import Path; Path(''scripts/interpreter-written.sh'').open(''w'').write(bytes.fromhex(''67697420636f6d6974202d2d616c6c6f772d656d707479202d6d2078310a'').decode())" ; bash scripts/interpreter-written.sh',
+                'python -c "open(''scripts/interpreter-written.sh'',mode=''w'').write(bytes.fromhex(''67697420636f6d6974202d2d616c6c6f772d656d707479202d6d2078310a'').decode())" ; bash scripts/interpreter-written.sh',
+                'python -c "open(''scripts/interpreter-written.sh'',encoding=''utf-8'',mode=''w'').write(bytes.fromhex(''67697420636f6d6974202d2d616c6c6f772d656d707479202d6d2078310a'').decode())" ; bash scripts/interpreter-written.sh',
+                'python -c "open(file=''scripts/interpreter-written.sh'',mode=''w'').write(bytes.fromhex(''67697420636f6d6974202d2d616c6c6f772d656d707479202d6d2078310a'').decode())" ; bash scripts/interpreter-written.sh',
+                'python -c "mode=''w''; open(''scripts/interpreter-written.sh'',mode).write(bytes.fromhex(''67697420636f6d6974202d2d616c6c6f772d656d707479202d6d2078310a'').decode())" ; bash scripts/interpreter-written.sh',
+                'python -c "mode=''w''; payload=bytes.fromhex(''67697420636f6d6974202d2d616c6c6f772d656d707479202d6d2078310a'').decode(); print(payload,file=open(''scripts/interpreter-written.sh'',mode))" ; bash scripts/interpreter-written.sh',
+                'python -c "from pathlib import Path; Path(''scripts/interpreter-written.sh'').open(mode=''w'').write(bytes.fromhex(''67697420636f6d6974202d2d616c6c6f772d656d707479202d6d2078310a'').decode())" ; bash scripts/interpreter-written.sh',
+                'python -c "from pathlib import Path; Path(''scripts/interpreter-written.sh'').open(encoding=''utf-8'',mode=''w'').write(bytes.fromhex(''67697420636f6d6974202d2d616c6c6f772d656d707479202d6d2078310a'').decode())" ; bash scripts/interpreter-written.sh',
+                'python -c "from pathlib import Path; path=Path(''scripts/interpreter-written.sh''); path.open(''w'').write(bytes.fromhex(''67697420636f6d6974202d2d616c6c6f772d656d707479202d6d2078310a'').decode())" ; bash scripts/interpreter-written.sh',
+                'node -e "const fs=require(''fs''); const fd=fs.openSync(''scripts/interpreter-written.sh'',''w''); fs.writeSync(fd,''git commit --allow-empty -m fd-written\n'')" ; bash scripts/interpreter-written.sh',
+                'cp scripts/interpreter-protected-payload.sh scripts/interpreter-safe.sh ; bash scripts/interpreter-safe.sh',
+                'cp -t scripts payload/interpreter-safe.sh ; bash scripts/interpreter-safe.sh',
+                'install -t scripts payload/interpreter-safe.sh ; bash scripts/interpreter-safe.sh',
+                @'
+python <<'PY'
+from pathlib import Path
+Path('scripts/interpreter-safe.sh').write_text(bytes.fromhex('67697420636f6d6974202d2d616c6c6f772d656d707479202d6d2068657265646f632d7772697474656e0a').decode())
+PY
+bash scripts/interpreter-safe.sh
+'@,
+                @'
+python /dev/stdin <<'PY'
+from pathlib import Path
+Path('scripts/interpreter-safe.sh').write_text(bytes.fromhex('67697420636f6d6974202d2d616c6c6f772d656d707479202d6d20737464696e0a').decode())
+PY
+bash scripts/interpreter-safe.sh
+'@,
+                'cd scripts ; python -c "open(''cwd-written.sh'',''w'').write(bytes.fromhex(''67697420636f6d6974202d2d616c6c6f772d656d707479202d6d2078310a'').decode())" ; bash cwd-written.sh'
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot } -Environment $environment
+            & $script:AssertDenyResult -Result $result -Because "an earlier unreviewed content mutation cannot create a script that reaches a protected sink: $command"
+        }
+
+        foreach ($command in @(
+                'python -c "print(''safe'')"',
+                'bash scripts/interpreter-safe.sh ; python -c "open(''scripts/interpreter-safe.sh'',''w'').write(''git commit --allow-empty -m later\n'')"',
+                'python -c "open(''scripts/interpreter-written.sh'',''w'').write(''git commit --allow-empty -m data-only\n'')"',
+                'python scripts/interpreter-safe.py -config safe ; bash scripts/interpreter-safe.sh',
+                'python -- scripts/interpreter-safe.py -config safe ; bash scripts/interpreter-safe.sh',
+                'node scripts/interpreter-safe.js -e harmless ; bash scripts/interpreter-safe.sh',
+                'node -- scripts/interpreter-safe.js -e harmless ; bash scripts/interpreter-safe.sh',
+                @'
+python scripts/interpreter-safe.py <<'EOF'
+data
+EOF
+'@,
+                @'
+node scripts/interpreter-safe.js <<'EOF'
+data
+EOF
+'@,
+                @'
+python <<'EOF' scripts/interpreter-safe.py
+data
+EOF
+'@,
+                @'
+node <<'EOF' scripts/interpreter-safe.js
+data
+EOF
+'@
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot } -Environment $environment
+            $result.OutputObject | Should -BeNullOrEmpty -Because "an interpreter stage that cannot replace the invoked script remains allowed: $command"
+        }
+    }
+
     It 'TASK-783 C104 permits only clean HEAD-bound canonical orchestra recovery scripts' {
         $fixture = New-GateFixture
         $script:FixtureRoot = $fixture.Root
