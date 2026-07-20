@@ -8343,6 +8343,57 @@ Describe 'orchestra-start server bootstrap' {
             }
         }
 
+        It 'serializes ownership comparison with the state write across processes' {
+            $scratchLocalAppData = Join-Path $TestDrive 'local-app-data'
+            $stateDir = Join-Path $scratchLocalAppData 'winsmux\ui-attach'
+            $statePath = Join-Path $stateDir 'winsmux-orchestra.json'
+            $uiAttachScriptPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\orchestra-ui-attach.ps1'
+            New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
+            '{"attach_request_id":"request-old","request_id":"request-old"}' | Set-Content -LiteralPath $statePath -Encoding utf8NoBOM
+
+            $mutex = [System.Threading.Mutex]::new($false, (Get-OrchestraAttachStateLockName -StatePath $statePath))
+            $job = $null
+            $lockAcquired = $false
+            try {
+                $lockAcquired = $mutex.WaitOne([TimeSpan]::FromSeconds(5))
+                $lockAcquired | Should -Be $true
+                $job = Start-ThreadJob -ArgumentList $uiAttachScriptPath, $scratchLocalAppData, $TestDrive -ScriptBlock {
+                    param($ScriptPath, $LocalAppData, $ProjectDir)
+                    $env:LOCALAPPDATA = $LocalAppData
+                    Remove-Item Env:WINSMUX_BRIDGE_NAMESPACE_L -ErrorAction SilentlyContinue
+                    Remove-Item Env:WINSMUX_BRIDGE_SOCKET_S -ErrorAction SilentlyContinue
+                    Remove-Item Env:WINSMUX_BRIDGE_SESSION_NAMESPACE -ErrorAction SilentlyContinue
+                    . $ScriptPath
+                    Write-OrchestraAttachState -SessionName 'winsmux-orchestra' -ProjectDir $ProjectDir -ExpectedRequestId 'request-old' -Properties @{
+                        attach_status = 'stale_writer_won'
+                    }
+                }
+
+                Start-Sleep -Milliseconds 250
+                $job.State | Should -Be 'Running'
+                '{"attach_request_id":"request-new-owner","request_id":"request-new-owner","attach_status":"attach_requested"}' |
+                    Set-Content -LiteralPath $statePath -Encoding utf8NoBOM
+            } finally {
+                if ($lockAcquired) {
+                    $mutex.ReleaseMutex()
+                }
+                $mutex.Dispose()
+            }
+
+            try {
+                Wait-Job -Job $job -Timeout 15 | Should -Not -BeNullOrEmpty
+                $result = Receive-Job -Job $job
+                [string]$result.attach_request_id | Should -Be 'request-new-owner'
+                $finalState = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+                $finalState.attach_request_id | Should -Be 'request-new-owner'
+                $finalState.attach_status | Should -Be 'attach_requested'
+            } finally {
+                if ($null -ne $job) {
+                    Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+
         It 'fails closed when the winsmux executable is unavailable' {
             $state = [pscustomobject]@{
                 session_name        = 'winsmux-orchestra'
@@ -9082,6 +9133,7 @@ Describe 'orchestra-start server bootstrap' {
         }
         Mock Get-OrchestraAttachEntryArgumentList { @('-NoLogo', '-NoExit', '-File', 'C:\repo\winsmux-core\scripts\orchestra-attach-entry.ps1') }
         Mock Wait-OrchestraAttachHandshake {
+            param([string]$ExpectedRequestId)
             [PSCustomObject][ordered]@{
                 Confirmed           = $true
                 Source              = 'render-receipt'
@@ -9089,7 +9141,7 @@ Describe 'orchestra-start server bootstrap' {
                 Reason              = 'Attach confirmed'
                 AttachedClientCount = 1
                 State               = [pscustomobject]@{
-                    attach_request_id      = 'req-123'
+                    attach_request_id      = $ExpectedRequestId
                     attached_client_snapshot = @('client-1')
                     ui_host_kind           = 'windows-terminal'
                 }
@@ -9121,7 +9173,7 @@ Describe 'orchestra-start server bootstrap' {
         $result.Attached | Should -Be $true
         $result.Status | Should -Be 'attach_confirmed'
         $result.Source | Should -Be 'render-receipt'
-        $result.attach_request_id | Should -Be 'req-123'
+        $result.attach_request_id | Should -Match '^[0-9a-f]{32}$'
         $result.attached_client_snapshot | Should -Be @('client-1')
         $result.ui_host_kind | Should -Be 'windows-terminal'
         $result.attach_adapter_trace.Count | Should -Be 1
@@ -9175,13 +9227,14 @@ Describe 'orchestra-start server bootstrap' {
         Mock Get-OrchestraPowerShellPath { 'C:\Program Files\PowerShell\7\pwsh.exe' }
         Mock Get-OrchestraAttachEntryArgumentList { @('-NoLogo', '-NoExit', '-File', 'C:\repo\winsmux-core\scripts\orchestra-attach-entry.ps1') }
         Mock Wait-OrchestraAttachHandshake {
+            param([string]$ExpectedRequestId)
             [PSCustomObject][ordered]@{
                 Confirmed           = $true
                 Source              = 'handshake'
                 Status              = 'attach_confirmed'
                 Reason              = 'Attach confirmed via PowerShell'
                 AttachedClientCount = 1
-                State               = [pscustomobject]@{}
+                State               = [pscustomobject]@{ attach_request_id = $ExpectedRequestId }
             }
         }
 
@@ -9402,13 +9455,14 @@ Describe 'orchestra-start server bootstrap' {
             [PSCustomObject]@{ Observed = $true; Reason = 'launch observed' }
         }
         Mock Wait-OrchestraAttachHandshake {
+            param([string]$ExpectedRequestId)
             [PSCustomObject][ordered]@{
                 Confirmed           = $true
                 Source              = 'handshake'
                 Status              = 'attach_confirmed'
                 Reason              = 'Attach confirmed'
                 AttachedClientCount = 2
-                State               = [pscustomobject]@{}
+                State               = [pscustomobject]@{ attach_request_id = $ExpectedRequestId }
             }
         }
 
@@ -9477,13 +9531,14 @@ Describe 'orchestra-start server bootstrap' {
         Mock Get-OrchestraPowerShellPath { 'C:\Program Files\PowerShell\7\pwsh.exe' }
         Mock Get-OrchestraAttachEntryArgumentList { @('-NoLogo', '-NoExit', '-File', 'C:\repo\winsmux-core\scripts\orchestra-attach-entry.ps1') }
         Mock Wait-OrchestraAttachHandshake {
+            param([string]$ExpectedRequestId)
             [PSCustomObject][ordered]@{
                 Confirmed           = $true
                 Source              = 'handshake'
                 Status              = 'attach_confirmed'
                 Reason              = 'Attach confirmed after fallback'
                 AttachedClientCount = 1
-                State               = [pscustomobject]@{}
+                State               = [pscustomobject]@{ attach_request_id = $ExpectedRequestId }
             }
         }
 
@@ -9548,13 +9603,14 @@ Describe 'orchestra-start server bootstrap' {
         Mock Get-OrchestraPowerShellPath { 'C:\Program Files\PowerShell\7\pwsh.exe' }
         Mock Get-OrchestraAttachEntryArgumentList { @('-NoLogo', '-NoExit', '-File', 'C:\repo\winsmux-core\scripts\orchestra-attach-entry.ps1') }
         Mock Wait-OrchestraAttachHandshake {
+            param([string]$ExpectedRequestId)
             [PSCustomObject][ordered]@{
                 Confirmed           = $true
                 Source              = 'handshake'
                 Status              = 'attach_confirmed'
                 Reason              = 'Attach confirmed via fallback host'
                 AttachedClientCount = 1
-                State               = [pscustomobject]@{}
+                State               = [pscustomobject]@{ attach_request_id = $ExpectedRequestId }
             }
         }
 
@@ -9632,6 +9688,7 @@ Describe 'orchestra-start server bootstrap' {
         Mock Get-OrchestraPowerShellPath { 'C:\Program Files\PowerShell\7\pwsh.exe' }
         Mock Get-OrchestraAttachEntryArgumentList { @('-NoLogo', '-NoExit', '-File', 'C:\repo\winsmux-core\scripts\orchestra-attach-entry.ps1') }
         Mock Wait-OrchestraAttachHandshake {
+            param([string]$ExpectedRequestId)
             $script:handshakeCalls++
             if ($script:handshakeCalls -eq 1) {
                 return [PSCustomObject][ordered]@{
@@ -9641,7 +9698,7 @@ Describe 'orchestra-start server bootstrap' {
                     Reason              = 'first host timed out'
                     AttachedClientCount = 1
                     State               = [pscustomobject]@{
-                        attach_request_id = 'req-fail-1'
+                        attach_request_id = $ExpectedRequestId
                         ui_host_kind      = 'windows-terminal'
                     }
                 }
@@ -9654,7 +9711,7 @@ Describe 'orchestra-start server bootstrap' {
                 Reason              = 'fallback host confirmed'
                 AttachedClientCount = 1
                 State               = [pscustomobject]@{
-                    attach_request_id        = 'req-ok-2'
+                    attach_request_id        = $ExpectedRequestId
                     attached_client_snapshot = @('client-1')
                     ui_host_kind             = 'powershell-window'
                 }
@@ -9675,7 +9732,7 @@ Describe 'orchestra-start server bootstrap' {
         $result.Attached | Should -Be $true
         $result.Status | Should -Be 'attach_confirmed'
         $result.Path | Should -Be 'C:\Program Files\PowerShell\7\pwsh.exe'
-        $result.attach_request_id | Should -Be 'req-ok-2'
+        $result.attach_request_id | Should -Match '^[0-9a-f]{32}$'
         $result.ui_host_kind | Should -Be 'powershell-window'
         $result.attach_adapter_trace.Count | Should -Be 2
         $result.attach_adapter_trace[0].host_kind | Should -Be 'windows-terminal'
@@ -9683,6 +9740,78 @@ Describe 'orchestra-start server bootstrap' {
         $result.attach_adapter_trace[1].host_kind | Should -Be 'powershell-window'
         $result.attach_adapter_trace[1].launch_result | Should -Be 'attach_confirmed'
         $script:startProcessCalls.Count | Should -Be 2
+    }
+
+    It 'treats ownership supersession as terminal and never launches a fallback host' {
+        $script:attachStateStore = $null
+        $script:candidateLaunchCount = 0
+        $script:winsmuxBin = 'C:\winsmux\winsmux.exe'
+
+        Mock Get-OrchestraAttachedClientSnapshot {
+            [PSCustomObject]@{ Ok = $true; Count = 0; Error = ''; Clients = @() }
+        }
+        Mock Read-OrchestraAttachState { $script:attachStateStore }
+        Mock Test-OrchestraLiveVisibleAttachState { $false }
+        Mock Get-OrchestraVisibleAttachHostCandidates {
+            @(
+                [pscustomobject]@{ Available = $true; HostKind = 'host-a'; Path = 'C:\host-a.exe'; Reason = 'ready'; UseLaunchObservation = $false },
+                [pscustomobject]@{ Available = $true; HostKind = 'host-b'; Path = 'C:\host-b.exe'; Reason = 'ready'; UseLaunchObservation = $false }
+            )
+        }
+        Mock Write-OrchestraAttachState {
+            param([string]$SessionName, [hashtable]$Properties, [string]$ProjectDir, [string]$ExpectedRequestId)
+            $currentRequestId = if ($null -ne $script:attachStateStore) { [string]$script:attachStateStore.attach_request_id } else { '' }
+            if (-not [string]::IsNullOrWhiteSpace($ExpectedRequestId) -and $currentRequestId -ne $ExpectedRequestId) {
+                return $script:attachStateStore
+            }
+            $merged = [ordered]@{}
+            if ($null -ne $script:attachStateStore) {
+                foreach ($property in $script:attachStateStore.PSObject.Properties) {
+                    $merged[$property.Name] = $property.Value
+                }
+            }
+            foreach ($key in $Properties.Keys) {
+                $merged[$key] = $Properties[$key]
+            }
+            if ($Properties.ContainsKey('attach_request_id')) {
+                $merged.request_id = $Properties.attach_request_id
+            }
+            $script:attachStateStore = [pscustomobject]$merged
+            return $script:attachStateStore
+        }
+        Mock Start-OrchestraVisibleAttachHostCandidate {
+            param($Candidate)
+            $script:candidateLaunchCount++
+            [pscustomobject]@{ HostKind = $Candidate.HostKind; Path = $Candidate.Path; Process = [pscustomobject]@{ Id = 4001 } }
+        }
+        Mock Wait-OrchestraAttachHandshake {
+            param([string]$ExpectedRequestId)
+            $script:attachStateStore = [pscustomobject]@{
+                attach_request_id    = 'request-new-owner'
+                request_id           = 'request-new-owner'
+                attach_status        = 'attach_requested'
+                ui_host_kind         = 'host-new-owner'
+                attach_adapter_trace = @('{"sequence":1,"host_kind":"host-new-owner","launch_result":"launched"}')
+            }
+            [pscustomobject]@{
+                Confirmed           = $false
+                Source              = 'none'
+                Status              = 'attach_superseded'
+                Reason              = "Attach request '$ExpectedRequestId' was superseded by 'request-new-owner'."
+                AttachedClientCount = 0
+                State               = $script:attachStateStore
+            }
+        }
+
+        $result = Try-StartOrchestraUiAttach -SessionName 'winsmux-orchestra'
+
+        $result.Attached | Should -Be $false
+        $result.Status | Should -Be 'attach_superseded'
+        $result.attach_request_id | Should -Be 'request-new-owner'
+        $result.ui_host_kind | Should -Be 'host-new-owner'
+        $script:candidateLaunchCount | Should -Be 1
+        $script:attachStateStore.attach_request_id | Should -Be 'request-new-owner'
+        $script:attachStateStore.attach_adapter_trace | Should -Be @('{"sequence":1,"host_kind":"host-new-owner","launch_result":"launched"}')
     }
 
     It 'does not confirm visible attach from client transition without render evidence' {
@@ -10489,13 +10618,14 @@ Describe 'orchestra-start server bootstrap' {
         Mock Get-OrchestraPowerShellPath { 'C:\Program Files\PowerShell\7\pwsh.exe' }
         Mock Get-OrchestraAttachEntryArgumentList { @('-NoLogo', '-NoExit', '-File', 'C:\repo\winsmux-core\scripts\orchestra-attach-entry.ps1') }
         Mock Wait-OrchestraAttachHandshake {
+            param([string]$ExpectedRequestId)
             [PSCustomObject][ordered]@{
                 Confirmed           = $true
                 Source              = 'handshake'
                 Status              = 'attach_confirmed'
                 Reason              = 'Attach confirmed via fallback host'
                 AttachedClientCount = 1
-                State               = [pscustomobject]@{}
+                State               = [pscustomobject]@{ attach_request_id = $ExpectedRequestId }
             }
         }
 
