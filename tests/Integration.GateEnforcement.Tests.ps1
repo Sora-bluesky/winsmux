@@ -8964,6 +8964,20 @@ EOF
         }
     }
 
+    It 'TASK-783 C111 rejects process-substitution shell script inputs' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $environment = @{ WINSMUX_ROLE = 'operator'; WINSMUX_ASSIGNED_WORKTREE = $fixture.RepoRoot }
+
+        foreach ($command in @(
+                "bash <(echo 'git push')",
+                "bash < <(echo 'git push')"
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot } -Environment $environment
+            & $script:AssertDenyResult -Result $result -Because 'process-substitution script bodies are not statically owned or reviewable'
+        }
+    }
+
     It 'TASK-783 C104 permits only clean HEAD-bound canonical orchestra recovery scripts' {
         $fixture = New-GateFixture
         $script:FixtureRoot = $fixture.Root

@@ -1639,6 +1639,7 @@ function hasUnescapedTrailingBackslash(value) {
 
 function isStdinScriptConsumerStage(stage, stdinDeviceAliases = new Map(), expectedFd = "0") {
   const normalizedStage = String(stage || "").trim();
+  if (/(?:^|[\s<])<\(/u.test(normalizedStage)) return true;
   const commandSegments = splitCommandSegments(normalizedStage);
   if (commandSegments.length > 1 || (commandSegments.length === 1 && commandSegments[0] !== normalizedStage)) {
     return commandSegments.some((segment) =>
