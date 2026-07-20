@@ -28628,6 +28628,150 @@ Describe 'winsmux raw namespace forwarding' {
         $script:namespaceRawCalls[0] | Should -Be '-L|ops|-S|socket-name|list-panes|-a'
     }
 
+    It 'forwards unrecognized bridge commands to the native executable with exit status intact' {
+        $script:forwardedRawArguments = @()
+        function winsmux {
+            param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
+
+            $script:forwardedRawArguments = @($Arguments)
+            $global:LASTEXITCODE = 7
+            'native-output'
+        }
+
+        $previousRawExe = $env:WINSMUX_RAW_EXE
+        $previousNamespaceL = $env:WINSMUX_BRIDGE_NAMESPACE_L
+        $previousSocketS = $env:WINSMUX_BRIDGE_SOCKET_S
+        $env:WINSMUX_RAW_EXE = 'winsmux'
+        Remove-Item Env:\WINSMUX_BRIDGE_NAMESPACE_L -ErrorAction SilentlyContinue
+        Remove-Item Env:\WINSMUX_BRIDGE_SOCKET_S -ErrorAction SilentlyContinue
+        try {
+            $output = . $script:namespaceBridgePath new-session -d -s fixture
+        } finally {
+            if ($null -eq $previousRawExe) {
+                Remove-Item Env:\WINSMUX_RAW_EXE -ErrorAction SilentlyContinue
+            } else {
+                $env:WINSMUX_RAW_EXE = $previousRawExe
+            }
+            if ($null -eq $previousNamespaceL) {
+                Remove-Item Env:\WINSMUX_BRIDGE_NAMESPACE_L -ErrorAction SilentlyContinue
+            } else {
+                $env:WINSMUX_BRIDGE_NAMESPACE_L = $previousNamespaceL
+            }
+            if ($null -eq $previousSocketS) {
+                Remove-Item Env:\WINSMUX_BRIDGE_SOCKET_S -ErrorAction SilentlyContinue
+            } else {
+                $env:WINSMUX_BRIDGE_SOCKET_S = $previousSocketS
+            }
+            Remove-Item Function:\winsmux -ErrorAction SilentlyContinue
+        }
+
+        $output | Should -Be 'native-output'
+        $script:forwardedRawArguments | Should -Be @('new-session', '-d', '-s', 'fixture')
+        $script:WinsmuxRequestedProcessExitCode | Should -Be 7
+    }
+
+    It 'routes documented lifecycle commands to the installed installer with profile aliases preserved' {
+        $bridgeContent = Get-Content -LiteralPath $script:namespaceBridgePath -Raw -Encoding UTF8
+
+        $bridgeContent | Should -Match '''install''\s+\{ Invoke-WinsmuxInstallerLifecycle -Action install'
+        $bridgeContent | Should -Match '''update''\s+\{ Invoke-WinsmuxInstallerLifecycle -Action update'
+        $bridgeContent | Should -Match '''uninstall''\s+\{ Invoke-WinsmuxInstallerLifecycle -Action uninstall'
+        $bridgeContent | Should -Match '\$argument -eq ''--profile'''
+        $bridgeContent | Should -Match 'StartsWith\(''--profile='', \[System\.StringComparison\]::Ordinal\)'
+        $bridgeContent | Should -Match 'function Resolve-WinsmuxLifecycleInstaller'
+        $bridgeContent | Should -Match 'core\\Cargo\.toml'
+        $bridgeContent | Should -Match 'stage-npm-release\.mjs'
+        $bridgeContent | Should -Match '\$script:WinsmuxRawCommand = \$null'
+        $bridgeContent | Should -Match 'if \(\[string\]::IsNullOrWhiteSpace\(\[string\]\$script:WinsmuxRawCommand\)\)'
+    }
+
+    It 'resolves the lifecycle installer from the repository root when running the source bridge' {
+        $previousRawExe = $env:WINSMUX_RAW_EXE
+        $env:WINSMUX_RAW_EXE = 'winsmux'
+        function winsmux {
+            $global:LASTEXITCODE = 0
+            return 'winsmux 0.0.0'
+        }
+        try {
+            $null = . $script:namespaceBridgePath version
+            $resolved = Resolve-WinsmuxLifecycleInstaller
+        } finally {
+            Remove-Item Function:\winsmux -ErrorAction SilentlyContinue
+            if ($null -eq $previousRawExe) {
+                Remove-Item Env:\WINSMUX_RAW_EXE -ErrorAction SilentlyContinue
+            } else {
+                $env:WINSMUX_RAW_EXE = $previousRawExe
+            }
+        }
+
+        $expected = Join-Path (Split-Path -Parent (Split-Path -Parent $script:namespaceBridgePath)) 'install.ps1'
+        $resolved | Should -Be ([System.IO.Path]::GetFullPath($expected))
+    }
+
+    It 'does not trust a parent installer when the bridge is in an installed bin layout' {
+        $installedRoot = Join-Path $TestDrive 'installed-home'
+        $installedBin = Join-Path $installedRoot 'bin'
+        New-Item -ItemType Directory -Path $installedBin -Force | Out-Null
+        [System.IO.File]::WriteAllText(
+            (Join-Path $installedRoot 'install.ps1'),
+            'throw ''untrusted parent installer executed''',
+            [System.Text.UTF8Encoding]::new($false)
+        )
+        $previousRawExe = $env:WINSMUX_RAW_EXE
+        $env:WINSMUX_RAW_EXE = 'winsmux'
+        function winsmux {
+            $global:LASTEXITCODE = 0
+            return 'winsmux 0.0.0'
+        }
+        try {
+            $null = . $script:namespaceBridgePath version
+            $resolved = Resolve-WinsmuxLifecycleInstaller -BridgeRoot $installedBin
+        } finally {
+            Remove-Item Function:\winsmux -ErrorAction SilentlyContinue
+            if ($null -eq $previousRawExe) {
+                Remove-Item Env:\WINSMUX_RAW_EXE -ErrorAction SilentlyContinue
+            } else {
+                $env:WINSMUX_RAW_EXE = $previousRawExe
+            }
+        }
+
+        $resolved | Should -BeNullOrEmpty
+    }
+
+    It 'does not let a source scripts installer shadow the repository root installer' {
+        $sourceRoot = Join-Path $TestDrive 'source-layout'
+        $sourceScripts = Join-Path $sourceRoot 'scripts'
+        $sourceCore = Join-Path $sourceRoot 'core'
+        New-Item -ItemType Directory -Path $sourceScripts,$sourceCore -Force | Out-Null
+        foreach ($file in @(
+            @{ Path = (Join-Path $sourceRoot 'install.ps1'); Content = 'root installer' },
+            @{ Path = (Join-Path $sourceScripts 'install.ps1'); Content = 'shadow installer' },
+            @{ Path = (Join-Path $sourceScripts 'stage-npm-release.mjs'); Content = '// source marker' },
+            @{ Path = (Join-Path $sourceCore 'Cargo.toml'); Content = '[package]' }
+        )) {
+            [System.IO.File]::WriteAllText($file.Path, $file.Content, [System.Text.UTF8Encoding]::new($false))
+        }
+        $previousRawExe = $env:WINSMUX_RAW_EXE
+        $env:WINSMUX_RAW_EXE = 'winsmux'
+        function winsmux {
+            $global:LASTEXITCODE = 0
+            return 'winsmux 0.0.0'
+        }
+        try {
+            $null = . $script:namespaceBridgePath version
+            $resolved = Resolve-WinsmuxLifecycleInstaller -BridgeRoot $sourceScripts
+        } finally {
+            Remove-Item Function:\winsmux -ErrorAction SilentlyContinue
+            if ($null -eq $previousRawExe) {
+                Remove-Item Env:\WINSMUX_RAW_EXE -ErrorAction SilentlyContinue
+            } else {
+                $env:WINSMUX_RAW_EXE = $previousRawExe
+            }
+        }
+
+        $resolved | Should -Be ([System.IO.Path]::GetFullPath((Join-Path $sourceRoot 'install.ps1')))
+    }
+
     It 'keeps command-scoped socket flags after the delegated command name' {
         $env:WINSMUX_BRIDGE_NAMESPACE_L = 'ops'
         $env:WINSMUX_BRIDGE_SOCKET_S = 'socket-name'

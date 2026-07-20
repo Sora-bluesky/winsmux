@@ -1,8 +1,10 @@
 ﻿param(
-    [Parameter(Position=0)][string]$Command,
-    [Parameter(Position=1)][string]$Target,
-    [Parameter(Position=2, ValueFromRemainingArguments=$true)][string[]]$Rest
 )
+
+$script:WinsmuxBridgeArguments = @($args)
+$Command = if ($script:WinsmuxBridgeArguments.Count -ge 1) { [string]$script:WinsmuxBridgeArguments[0] } else { '' }
+$Target = if ($script:WinsmuxBridgeArguments.Count -ge 2) { [string]$script:WinsmuxBridgeArguments[1] } else { $null }
+$Rest = if ($script:WinsmuxBridgeArguments.Count -ge 3) { [string[]]$script:WinsmuxBridgeArguments[2..($script:WinsmuxBridgeArguments.Count - 1)] } else { @() }
 
 $script:WinsmuxBridgeWasDotSourced = $MyInvocation.InvocationName -eq '.'
 $script:WinsmuxRequestedProcessExitCode = 0
@@ -25,8 +27,9 @@ function Resolve-WinsmuxRawCommand {
 
         $configuredCommand = Get-Command $configured -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($null -ne $configuredCommand) {
-            if ($configuredCommand.Path) {
-                return $configuredCommand.Path
+            $pathProperty = $configuredCommand.PSObject.Properties['Path']
+            if ($null -ne $pathProperty -and -not [string]::IsNullOrWhiteSpace([string]$pathProperty.Value)) {
+                return [string]$pathProperty.Value
             }
 
             return $configuredCommand.Name
@@ -48,7 +51,7 @@ function Resolve-WinsmuxRawCommand {
     return 'winsmux'
 }
 
-$script:WinsmuxRawCommand = Resolve-WinsmuxRawCommand
+$script:WinsmuxRawCommand = $null
 
 # --- Config ---
 $VERSION = "0.36.28"
@@ -205,12 +208,81 @@ function Get-SafeLastExitCode {
 function Invoke-WinsmuxRaw {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
 
+    if ([string]::IsNullOrWhiteSpace([string]$script:WinsmuxRawCommand)) {
+        $script:WinsmuxRawCommand = Resolve-WinsmuxRawCommand
+    }
     $rawArguments = @()
     if ($script:WinsmuxRawGlobalArgs) {
         $rawArguments += $script:WinsmuxRawGlobalArgs
     }
     $rawArguments += @($Arguments)
     return & $script:WinsmuxRawCommand @rawArguments
+}
+
+function Resolve-WinsmuxLifecycleInstaller {
+    param([string]$BridgeRoot = $PSScriptRoot)
+
+    $sourceRoot = Split-Path -Parent $BridgeRoot
+    $bridgeRootLeaf = [System.IO.Path]::GetFileName($BridgeRoot)
+    $isSourceLayout = (
+        $bridgeRootLeaf -ieq 'scripts' -and
+        (Test-Path -LiteralPath (Join-Path $sourceRoot 'core\Cargo.toml') -PathType Leaf) -and
+        (Test-Path -LiteralPath (Join-Path $BridgeRoot 'stage-npm-release.mjs') -PathType Leaf)
+    )
+    $candidate = if ($isSourceLayout) {
+        Join-Path $sourceRoot 'install.ps1'
+    } elseif ($bridgeRootLeaf -ieq 'bin') {
+        Join-Path $BridgeRoot 'install.ps1'
+    } else {
+        $null
+    }
+    if ($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+        return [System.IO.Path]::GetFullPath($candidate)
+    }
+
+    return $null
+}
+
+function Invoke-WinsmuxInstallerLifecycle {
+    param(
+        [Parameter(Mandatory = $true)][ValidateSet('install', 'update', 'uninstall')][string]$Action,
+        [string[]]$Arguments = @()
+    )
+
+    $installerPath = Resolve-WinsmuxLifecycleInstaller
+    if ([string]::IsNullOrWhiteSpace([string]$installerPath)) {
+        Stop-WithError "installed lifecycle entrypoint is missing for bridge root: $PSScriptRoot"
+    }
+
+    $installerArguments = [System.Collections.Generic.List[string]]::new()
+    for ($index = 0; $index -lt @($Arguments).Count; $index++) {
+        $argument = [string]$Arguments[$index]
+        if ($argument -eq '--profile') {
+            if ($index + 1 -ge @($Arguments).Count -or [string]::IsNullOrWhiteSpace([string]$Arguments[$index + 1])) {
+                Stop-WithError 'Missing value for --profile.'
+            }
+            $installerArguments.Add('-Profile')
+            $installerArguments.Add([string]$Arguments[$index + 1])
+            $index++
+            continue
+        }
+        if ($argument.StartsWith('--profile=', [System.StringComparison]::Ordinal)) {
+            $profile = $argument.Substring('--profile='.Length)
+            if ([string]::IsNullOrWhiteSpace($profile)) {
+                Stop-WithError 'Missing value for --profile.'
+            }
+            $installerArguments.Add('-Profile')
+            $installerArguments.Add($profile)
+            continue
+        }
+        $installerArguments.Add($argument)
+    }
+
+    & pwsh -NoProfile -ExecutionPolicy Bypass -File $installerPath $Action @installerArguments
+    $installerExitCode = Get-SafeLastExitCode
+    if ($null -ne $installerExitCode) {
+        $script:WinsmuxRequestedProcessExitCode = $installerExitCode
+    }
 }
 
 function Resolve-TerminalBackend {
@@ -18479,6 +18551,9 @@ function Invoke-RebindWorktree {
 
 # --- Dispatch ---
 switch ($Command) {
+    'install'         { Invoke-WinsmuxInstallerLifecycle -Action install -Arguments @($script:WinsmuxBridgeArguments | Select-Object -Skip 1) }
+    'update'          { Invoke-WinsmuxInstallerLifecycle -Action update -Arguments @($script:WinsmuxBridgeArguments | Select-Object -Skip 1) }
+    'uninstall'       { Invoke-WinsmuxInstallerLifecycle -Action uninstall -Arguments @($script:WinsmuxBridgeArguments | Select-Object -Skip 1) }
     'init'            { Invoke-Init }
     'launch'          { Invoke-Launch }
     'id'              { Invoke-Id }
@@ -18581,7 +18656,20 @@ switch ($Command) {
     'runtime-roles' { Invoke-RuntimeRoles }
     'rebind-worktree' { Invoke-RebindWorktree }
     ''                { Show-Usage }
-    default           { Stop-WithError "unknown command: $Command. Run without arguments for usage." }
+    default           {
+        $rawArguments = @($Command)
+        if ($script:WinsmuxBridgeArguments.Count -ge 2) {
+            $rawArguments += @($Target)
+        }
+        if ($script:WinsmuxBridgeArguments.Count -ge 3) {
+            $rawArguments += @($Rest)
+        }
+        Invoke-WinsmuxRaw -Arguments $rawArguments
+        $nativeExitCode = Get-SafeLastExitCode
+        if ($null -ne $nativeExitCode) {
+            $script:WinsmuxRequestedProcessExitCode = $nativeExitCode
+        }
+    }
 }
 
 if (-not $script:WinsmuxBridgeWasDotSourced -and $script:WinsmuxRequestedProcessExitCode -ne 0) {

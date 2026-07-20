@@ -64,7 +64,12 @@ Describe 'winsmux version surface' {
         $installScript | Should -Not -Match '\$UseLatestRelease\s*=.*\$Action\.Trim\(\)\.ToLowerInvariant\(\) -eq ''update'''
         $installScript | Should -Match '\$RELEASE_API_URL = "https://api\.github\.com/repos/Sora-bluesky/winsmux/releases/latest"'
         $installScript | Should -Match '\$script:ResolvedReleaseTag = \[string\]\$release\.tag_name'
-        $installScript | Should -Match '\$script:BASE_URL = "https://raw\.githubusercontent\.com/Sora-bluesky/winsmux/\$script:ResolvedReleaseTag"'
+        $installScript | Should -Match '\$script:ResolvedVersion = Get-WinsmuxBinaryVersionFromReleaseTag -ReleaseTag \$script:ResolvedReleaseTag'
+        $installScript | Should -Match '\$keepPipedMainScripts = \$script:releaseAction -eq ''install'' -and \$script:isPipedInstaller -and \[string\]::IsNullOrWhiteSpace\(\$script:requestedReleaseTag\)'
+        $installScript | Should -Match '\$script:BASE_URL = if \(\[string\]::IsNullOrWhiteSpace\(\$script:installSourceRef\) -and -not \$keepPipedMainScripts\)'
+        $installScript | Should -Match '"https://raw\.githubusercontent\.com/Sora-bluesky/winsmux/main"'
+        $installScript | Should -Match '"https://raw\.githubusercontent\.com/Sora-bluesky/winsmux/\$script:ResolvedReleaseTag"'
+        $installScript | Should -Match '"https://raw\.githubusercontent\.com/Sora-bluesky/winsmux/\$script:installSourceRef"'
     }
 
     It 'keeps desktop app metadata aligned with the product version' {

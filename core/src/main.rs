@@ -162,6 +162,8 @@ fn is_winsmux_core_bridge_command(command: &str) -> bool {
         command,
         "init"
             | "install"
+            | "update"
+            | "uninstall"
             | "launch"
             | "list"
             | "read"
@@ -215,39 +217,52 @@ fn is_winsmux_core_bridge_command(command: &str) -> bool {
     )
 }
 
-fn find_winsmux_core_script() -> Option<PathBuf> {
+fn winsmux_core_script_candidates(
+    configured_script: Option<PathBuf>,
+    executable_path: Option<&Path>,
+    home: Option<&Path>,
+) -> Vec<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
 
-    if let Ok(path) = env::var("WINSMUX_CORE_SCRIPT") {
-        candidates.push(PathBuf::from(path));
+    if let Some(path) = configured_script {
+        candidates.push(path);
     }
 
-    if let Ok(current_dir) = env::current_dir() {
-        for ancestor in current_dir.ancestors() {
-            candidates.push(ancestor.join("scripts").join("winsmux-core.ps1"));
-            candidates.push(
-                ancestor
-                    .join("winsmux-core")
-                    .join("scripts")
-                    .join("winsmux-core.ps1"),
-            );
-        }
-    }
-
-    if let Ok(exe_path) = env::current_exe() {
+    if let Some(exe_path) = executable_path {
         if let Some(exe_dir) = exe_path.parent() {
             for ancestor in exe_dir.ancestors() {
-                candidates.push(ancestor.join("scripts").join("winsmux-core.ps1"));
+                let source_markers_exist = ancestor.join("core").join("Cargo.toml").is_file()
+                    && ancestor
+                        .join("scripts")
+                        .join("stage-npm-release.mjs")
+                        .is_file();
+                if source_markers_exist {
+                    candidates.push(ancestor.join("scripts").join("winsmux-core.ps1"));
+                }
             }
         }
     }
 
-    if let Ok(home) = env::var("USERPROFILE").or_else(|_| env::var("HOME")) {
-        let home = PathBuf::from(home);
+    if let Some(home) = home {
         candidates.push(home.join(".winsmux").join("bin").join("winsmux-core.ps1"));
         candidates.push(home.join(".winsmux").join("scripts").join("winsmux-core.ps1"));
     }
 
+    candidates
+}
+
+fn find_winsmux_core_script() -> Option<PathBuf> {
+    let configured_script = env::var("WINSMUX_CORE_SCRIPT").ok().map(PathBuf::from);
+    let executable_path = env::current_exe().ok();
+    let home = env::var("USERPROFILE")
+        .or_else(|_| env::var("HOME"))
+        .ok()
+        .map(PathBuf::from);
+    let candidates = winsmux_core_script_candidates(
+        configured_script,
+        executable_path.as_deref(),
+        home.as_deref(),
+    );
     candidates.into_iter().find(|path| path.is_file())
 }
 
@@ -382,12 +397,68 @@ fn bare_session_headless_server_config(
 mod tests {
     use super::{
         bare_session_headless_server_config, is_winsmux_core_bridge_command,
-        resolve_attach_session_name_from_parts,
+        resolve_attach_session_name_from_parts, winsmux_core_script_candidates,
     };
 
     #[test]
     fn workers_command_is_forwarded_to_core_bridge() {
         assert!(is_winsmux_core_bridge_command("workers"));
+    }
+
+    #[test]
+    fn installer_lifecycle_commands_are_forwarded_to_core_bridge() {
+        for command in ["install", "update", "uninstall"] {
+            assert!(is_winsmux_core_bridge_command(command));
+        }
+    }
+
+    #[test]
+    fn core_bridge_candidates_are_bound_to_executable_origin_and_installed_home() {
+        let temp = tempfile::tempdir().expect("create candidate fixture");
+        let root = temp.path();
+        let source_root = root.join("source");
+        let hostile_root = root.join("hostile-cwd");
+        let home = root.join("home");
+        let executable = source_root
+            .join("core")
+            .join("target")
+            .join("debug")
+            .join("winsmux.exe");
+        let source_bridge = source_root.join("scripts").join("winsmux-core.ps1");
+        let hostile_bridge = hostile_root.join("scripts").join("winsmux-core.ps1");
+        let installed_bridge = home
+            .join(".winsmux")
+            .join("bin")
+            .join("winsmux-core.ps1");
+
+        std::fs::create_dir_all(source_root.join("core")).expect("create source core");
+        std::fs::create_dir_all(source_root.join("scripts")).expect("create source scripts");
+        std::fs::create_dir_all(hostile_bridge.parent().unwrap()).expect("create hostile scripts");
+        std::fs::write(source_root.join("core").join("Cargo.toml"), "[package]\n")
+            .expect("write source marker");
+        std::fs::write(source_root.join("scripts").join("stage-npm-release.mjs"), "")
+            .expect("write source marker");
+        std::fs::write(&source_bridge, "").expect("write source bridge");
+        std::fs::write(&hostile_bridge, "").expect("write hostile bridge");
+
+        let candidates = winsmux_core_script_candidates(
+            None,
+            Some(executable.as_path()),
+            Some(home.as_path()),
+        );
+        assert_eq!(candidates.first(), Some(&source_bridge));
+        assert!(candidates.contains(&installed_bridge));
+        assert!(!candidates.contains(&hostile_bridge));
+
+        let installed_executable = home.join(".local").join("bin").join("winsmux.exe");
+        let installed_candidates = winsmux_core_script_candidates(
+            None,
+            Some(installed_executable.as_path()),
+            Some(home.as_path()),
+        );
+        assert_eq!(installed_candidates.first(), Some(&installed_bridge));
+        assert!(!installed_candidates.contains(&source_bridge));
+        assert!(!installed_candidates.contains(&hostile_bridge));
     }
 
     #[test]
