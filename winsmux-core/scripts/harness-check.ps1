@@ -257,7 +257,11 @@ function Test-HarnessSmokeContract {
             $parsed = $raw | ConvertFrom-WinsmuxJson -Depth 16
         }
     } catch {
-        $error = $_.Exception.Message
+        $rawPreview = $raw -replace '[\r\n]+', ' '
+        if ($rawPreview.Length -gt 512) {
+            $rawPreview = $rawPreview.Substring(0, 512)
+        }
+        $error = "{0} Raw output prefix: {1}" -f $_.Exception.Message, $rawPreview
     }
 
     return [ordered]@{
