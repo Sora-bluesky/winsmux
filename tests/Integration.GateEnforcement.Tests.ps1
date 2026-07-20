@@ -5349,6 +5349,8 @@ EOF
             'GH_HOST=ghe.example gh api -X PUT repos/Sora-bluesky/winsmux/pulls/1/merge',
             'env GH_HOST=ghe.example gh api -X PUT repos/Sora-bluesky/winsmux/pulls/1/merge',
             'GH_HOST=ghe.example bash -c ''gh api -X PUT repos/Sora-bluesky/winsmux/pulls/1/merge''',
+            'TARGET=ghe.example; GH_HOST=$TARGET gh api -X PUT repos/Sora-bluesky/winsmux/pulls/1/merge',
+            'TARGET=ghe.example; GH_HOST=$TARGET bash -c ''gh api -X PUT repos/Sora-bluesky/winsmux/pulls/1/merge''',
             'pwsh -Command "$env:GH_HOST=''ghe.example''; gh api -X PUT repos/Sora-bluesky/winsmux/pulls/1/merge"',
             'gh pr merge https://ghe.example/Sora-bluesky/winsmux/pull/1 --squash',
             'gh api https://ghe.example/api/v3/repos/Sora-bluesky/winsmux/pulls/1/merge -X PUT'
@@ -5384,6 +5386,31 @@ EOF
             )) {
             $approved = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
             $approved.OutputObject | Should -BeNullOrEmpty
+        }
+
+        $explicitHostOverride = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+            command = 'gh api --hostname github.com -X PUT repos/Sora-bluesky/winsmux/pulls/1/merge'
+        } -Environment @{
+            WINSMUX_ROLE = 'operator'
+            WINSMUX_ASSIGNED_WORKTREE = $fixture.RepoRoot
+            GH_HOST = 'ghe.example'
+        }
+        $explicitHostOverride.OutputObject | Should -BeNullOrEmpty -Because '--hostname overrides an inherited GH_HOST'
+
+        $cwdTarget = New-GateTargetRepo -Root $fixture.Root -Name 'github-cwd-target'
+        & git -C $cwdTarget.RepoRoot remote add origin https://github.com/acme/target.git
+        if ($LASTEXITCODE -ne 0) { throw 'unable to configure cwd target origin' }
+        Set-GatePass -RepoRoot $cwdTarget.RepoRoot -Branch $cwdTarget.Branch
+        $cwdTargetPath = $cwdTarget.RepoRoot.Replace('\', '/')
+        foreach ($cwdCommand in @(
+                "cd '$cwdTargetPath'; gh pr merge 1 --squash",
+                "cd '$cwdTargetPath'; gh pr merge https://github.com/acme/target/pull/1 --squash"
+            )) {
+            $cwdTargetResult = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+                command = $cwdCommand
+                cwd = $fixture.RepoRoot
+            }
+            $cwdTargetResult.OutputObject | Should -BeNullOrEmpty -Because "GitHub identity follows the effective cwd used by the protected gh stage: $cwdCommand"
         }
     }
 
@@ -9081,6 +9108,31 @@ EOF
             )) {
             $clearedGitResult = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot } -Environment $gitEnvironment
             & $script:AssertDenyResult -Result $clearedGitResult -Because "metadata probes must not inherit Git target variables that the submitted command clears: $command"
+        }
+    }
+
+    It 'TASK-783 C114 permits literal direct tools without weakening indirect process boundaries' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+
+        foreach ($command in @(
+                'npm test',
+                'cargo test',
+                'go test ./...',
+                'make test',
+                'dotnet test',
+                'sed -n 1,10p README.md'
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot }
+            $result.OutputObject | Should -BeNullOrEmpty -Because "a canonical literal executable is not an unsupported process-construction boundary: $command"
+        }
+
+        foreach ($command in @(
+                'custom-tool codex exec --sandbox workspace-write task',
+                'custom-tool bash -c ''git commit -m hidden'''
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot }
+            & $script:AssertDenyResult -Result $result -Because "an unknown direct tool cannot smuggle a known process launcher: $command"
         }
     }
 

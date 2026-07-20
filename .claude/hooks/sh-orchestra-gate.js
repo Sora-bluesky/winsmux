@@ -1053,7 +1053,7 @@ function collectStaticScriptMutationTargets(source, scriptKind, scriptBaseCwd, t
     collectNodeMutationTargets(source, scriptTargets);
   } else if (scriptKind === "shell") {
     collectShellWriteTargetsFromCommand(source, scriptTargets);
-    collectStaticPosixTargetDirectoryReplacementTargets(source, scriptTargets);
+    collectStaticPosixReplacementTargetsFromCommand(source, scriptTargets);
   } else {
     collectShellWriteTargetsFromCommand(source, scriptTargets);
   }
@@ -1066,40 +1066,17 @@ function collectStaticScriptMutationTargets(source, scriptKind, scriptBaseCwd, t
   }
 }
 
-function collectStaticPosixTargetDirectoryReplacementTargets(source, targets) {
+function collectStaticPosixReplacementTargetsFromCommand(source, targets) {
   for (const segment of splitCommandSegments(source)) {
     for (const stage of splitCommandPipelineStages(segment)) {
-      const tokens = unwrapReviewGateExecutionTokens(
-        unwrapEnvCommandTokens(tokenizeCommandLine(stage)),
-      ).tokens;
-      const executable = normalizeExecutableName(tokens[0] || "");
-      if (executable !== "cp" && executable !== "install") continue;
-      const targetDirectory = getPosixOptionValue(tokens, ["-t", "--target-directory"]);
-      if (!targetDirectory) continue;
-      const sources = [];
-      for (let index = 1; index < tokens.length; index += 1) {
-        const value = stripOuterQuotes(tokens[index]);
-        const normalized = normalizeAgentValue(value);
-        if (normalized === "-t" || normalized === "--target-directory") {
-          index += 1;
-          continue;
-        }
-        if (normalized.startsWith("--target-directory=") || value.startsWith("-")) continue;
-        sources.push(value);
-      }
-      for (const sourcePath of sources) {
-        if (!sourcePath || /[$%\x60*?\[\]{}\0]/u.test(sourcePath)) {
-          targets.push("$unresolved-static-posix-copy-effect");
-          continue;
-        }
-        targets.push(path.join(targetDirectory, path.basename(sourcePath)));
-      }
+      collectStaticPosixReplacementTargets(stage, targets);
     }
   }
 }
 
 function getStaticScriptContentMutationTargets(stage) {
   const targets = getShellStdoutRedirectTargets(stage);
+  collectStaticPosixReplacementTargets(stage, targets);
   const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(tokenizeCommandLine(stage)));
   const interpreterKind = getShellInterpreterKind(execution.tokens);
   const staticInterpreterTokens = execution.tokens.filter((token, index) =>
@@ -1119,6 +1096,46 @@ function getStaticScriptContentMutationTargets(stage) {
     targets.push("$unresolved-inline-interpreter-effect");
   }
   return targets;
+}
+
+function collectStaticPosixReplacementTargets(stage, targets) {
+  const tokens = unwrapReviewGateExecutionTokens(
+    unwrapEnvCommandTokens(tokenizeCommandLine(stage)),
+  ).tokens;
+  const executable = normalizeExecutableName(tokens[0] || "");
+  if (executable !== "cp" && executable !== "install") return;
+
+  const targetDirectory = getPosixOptionValue(tokens, ["-t", "--target-directory"]);
+  const operands = [];
+  for (let index = 1; index < tokens.length; index += 1) {
+    const value = stripOuterQuotes(tokens[index]);
+    const normalized = normalizeAgentValue(value);
+    if (["-t", "--target-directory", "-m", "--mode", "-o", "--owner", "-g", "--group"].includes(normalized)) {
+      index += 1;
+      continue;
+    }
+    if (normalized.startsWith("--target-directory=") ||
+        normalized.startsWith("--mode=") ||
+        normalized.startsWith("--owner=") ||
+        normalized.startsWith("--group=") ||
+        (value.startsWith("-") && value !== "-")) continue;
+    operands.push(value);
+  }
+  if (targetDirectory) {
+    for (const sourcePath of operands) {
+      if (!sourcePath || /[$%\x60*?\[\]{}\0]/u.test(sourcePath)) {
+        targets.push("$unresolved-static-posix-copy-effect");
+        continue;
+      }
+      targets.push(path.join(targetDirectory, path.basename(sourcePath)));
+    }
+    return;
+  }
+  if (operands.length < 2) return;
+  const destination = operands[operands.length - 1];
+  targets.push(!destination || /[$%\x60*?\[\]{}\0]/u.test(destination)
+    ? "$unresolved-static-posix-copy-effect"
+    : destination);
 }
 
 function recordStaticScriptOverlayTargets(
@@ -2932,23 +2949,29 @@ function hasForeignGitHubLifecycleTarget(command, baseCwd, depth = 0, inheritedG
     return true;
   }
 
-  const currentRepo = getGitHubRepositoryIdentity(baseCwd);
   let ghRepoEnvironmentTarget = inheritedGhEnvironment.repo || "";
   let ghHostEnvironmentTarget = inheritedGhEnvironment.host || "";
+  const reviewedIdentities = Array.isArray(inheritedGhEnvironment.reviewedIdentities)
+    ? inheritedGhEnvironment.reviewedIdentities
+    : getReviewGatedCommandTargets(command, baseCwd).targetCwds
+      .map((targetCwd) => getGitHubRepositoryIdentity(targetCwd))
+      .filter((identity) => identity.host && identity.slug);
   for (const segment of splitCommandSegments(command)) {
     const segmentGhRepo = getConstantGhRepoAssignment(segment);
     if (segmentGhRepo) {
       ghRepoEnvironmentTarget = segmentGhRepo;
     }
     const segmentGhHost = getConstantGhHostAssignment(segment);
-    if (segmentGhHost) {
-      ghHostEnvironmentTarget = segmentGhHost;
+    if (segmentGhHost.found) {
+      ghHostEnvironmentTarget = segmentGhHost.unresolved
+        ? "\0unresolved-gh-host"
+        : segmentGhHost.value;
     }
     for (const stage of splitCommandPipelineStages(segment)) {
       const originalTokens = tokenizeCommandLine(stage);
       const effectiveGhHost = getEffectiveEnvironmentValue(originalTokens, "GH_HOST");
       const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(originalTokens));
-      const nestedGhEnvironment = { repo: ghRepoEnvironmentTarget, host: ghHostEnvironmentTarget };
+      const nestedGhEnvironment = { repo: ghRepoEnvironmentTarget, host: ghHostEnvironmentTarget, reviewedIdentities };
       if (execution.nestedCommand && hasForeignGitHubLifecycleTarget(execution.nestedCommand, baseCwd, depth + 1, nestedGhEnvironment)) {
         return true;
       }
@@ -2978,31 +3001,38 @@ function hasForeignGitHubLifecycleTarget(command, baseCwd, depth = 0, inheritedG
 
       let explicitRepo = "";
       let explicitHost = "";
+      let repoSelected = false;
+      let hostSelected = false;
       for (let index = 1; index < tokens.length; index += 1) {
         const token = stripOuterQuotes(tokens[index]);
         const normalized = normalizeAgentValue(token);
         if (normalized === "--hostname") {
           explicitHost = normalizeGitHubHost(tokens[index + 1] || "");
           if (!explicitHost) return true;
+          hostSelected = true;
           index += 1;
           continue;
         }
         if (normalized.startsWith("--hostname=")) {
           explicitHost = normalizeGitHubHost(token.slice(token.indexOf("=") + 1));
           if (!explicitHost) return true;
+          hostSelected = true;
           continue;
         }
         if ((normalized === "-r" || normalized === "--repo") && index + 1 < tokens.length) {
           if (!explicitRepo) explicitRepo = normalizeAgentValue(stripOuterQuotes(tokens[index + 1]));
+          repoSelected = true;
           index += 1;
           continue;
         }
         if (normalized.startsWith("--repo=")) {
           if (!explicitRepo) explicitRepo = normalizeAgentValue(token.slice(token.indexOf("=") + 1));
+          repoSelected = true;
           continue;
         }
         if (normalized.startsWith("-r=") || (/^-r[^-]/u.test(normalized) && normalized.length > 2)) {
           if (!explicitRepo) explicitRepo = normalizeAgentValue(token.slice(token.startsWith("-R=") || token.startsWith("-r=") ? 3 : 2));
+          repoSelected = true;
           continue;
         }
         const pullUrlRepo = /^https?:\/\/([^/]+)\/([^/]+\/[^/]+)\/pull\/\d+(?:[/?#]|$)/iu.exec(token);
@@ -3010,12 +3040,16 @@ function hasForeignGitHubLifecycleTarget(command, baseCwd, depth = 0, inheritedG
           explicitHost = normalizeGitHubHost(pullUrlRepo[1]);
           if (!explicitRepo) explicitRepo = normalizeAgentValue(pullUrlRepo[2]);
           if (!explicitHost) return true;
+          hostSelected = true;
+          repoSelected = true;
           continue;
         }
         const schemelessGitHubPull = /^(?:www\.)?github\.com\/([^/]+\/[^/]+)\/pull\/\d+(?:[/?#]|$)/iu.exec(token);
         if (schemelessGitHubPull) {
           explicitHost = "github.com";
           if (!explicitRepo) explicitRepo = normalizeAgentValue(schemelessGitHubPull[1]);
+          hostSelected = true;
+          repoSelected = true;
           continue;
         }
         const apiUrlRepo = /^https?:\/\/([^/]+)\/(?:api\/v3\/)?repos\/([^/]+\/[^/]+)(?:\/|$)/iu.exec(token);
@@ -3023,31 +3057,38 @@ function hasForeignGitHubLifecycleTarget(command, baseCwd, depth = 0, inheritedG
           explicitHost = normalizeGitHubHost(apiUrlRepo[1]);
           if (!explicitRepo) explicitRepo = normalizeAgentValue(apiUrlRepo[2]);
           if (!explicitHost) return true;
+          hostSelected = true;
+          repoSelected = true;
           continue;
         }
         const apiRepo = /(?:^|\/)repos\/([^/]+\/[^/]+)(?:\/|$)/iu.exec(token);
         if (apiRepo) {
           if (!explicitRepo) explicitRepo = normalizeAgentValue(apiRepo[1]);
+          repoSelected = true;
           continue;
         }
       }
 
       if (!explicitRepo && ghRepoEnvironmentTarget) {
         explicitRepo = ghRepoEnvironmentTarget;
+        repoSelected = true;
       }
 
-      if (!explicitHost) {
+      if (!hostSelected) {
+        if (ghHostEnvironmentTarget.includes("\0")) return true;
         const environmentHost = effectiveGhHost.specified
           ? effectiveGhHost.value
           : (ghHostEnvironmentTarget || effectiveGhHost.value);
-        explicitHost = environmentHost ? normalizeGitHubHost(environmentHost) : currentRepo.host;
-        if (environmentHost && !explicitHost) return true;
+        if (environmentHost) {
+          explicitHost = normalizeGitHubHost(environmentHost);
+          if (!explicitHost) return true;
+          hostSelected = true;
+        }
       }
 
-      if (explicitHost && (!currentRepo.host || explicitHost !== currentRepo.host)) {
-        return true;
-      }
-      if (explicitRepo && (!currentRepo.slug || explicitRepo !== currentRepo.slug)) {
+      if ((hostSelected || repoSelected) && !reviewedIdentities.some((identity) =>
+        (!hostSelected || identity.host === explicitHost) &&
+        (!repoSelected || identity.slug === explicitRepo))) {
         return true;
       }
     }
@@ -3066,11 +3107,14 @@ function getConstantGhRepoAssignment(source) {
 
 function getConstantGhHostAssignment(source) {
   let value = "";
+  let found = false;
   const pattern = /(?:^|[\s;])(?:export\s+)?(?:\$env:)?gh_host\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s;]+))/giu;
   for (const match of String(source || "").matchAll(pattern)) {
+    found = true;
     value = match[1] || match[2] || match[3] || "";
   }
-  return normalizeGitHubHost(value);
+  const normalized = normalizeGitHubHost(value);
+  return { found, value: normalized, unresolved: found && !normalized };
 }
 
 function normalizeGitHubHost(value) {
@@ -6267,7 +6311,7 @@ function hasUnsupportedDirectProcessBoundary(command) {
         });
         if (nestedExecutable ||
             /\bcodex(?:\.exe)?\b[\s"']+(?:exec|e|--sandbox)\b/iu.test(normalizedStage)) return true;
-        return true;
+        continue;
       }
       if (isPowerShellExecutable(executable)) {
         const nestedCommand = nestedPowerShell;
