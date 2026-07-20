@@ -14,7 +14,7 @@ Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot 'orchestra-ui-attach.ps1')
 
 try {
-    Write-OrchestraAttachState -SessionName $SessionName -Properties @{
+    Write-OrchestraAttachState -SessionName $SessionName -ProjectDir $ProjectDir -Properties @{
         session_name       = $SessionName
         winsmux_path       = $WinsmuxPath
         attach_status      = 'attach_confirming'
@@ -27,7 +27,7 @@ try {
 
     $null = Wait-OrchestraAttachHandshake -SessionName $SessionName -WinsmuxBin $WinsmuxPath -BaselineClientCount $BaselineClientCount -ProjectDir $ProjectDir -TimeoutMilliseconds $TimeoutMilliseconds -PollMilliseconds $PollMilliseconds
 } catch {
-    Write-OrchestraAttachState -SessionName $SessionName -Properties @{
+    Write-OrchestraAttachState -SessionName $SessionName -ProjectDir $ProjectDir -Properties @{
         attach_status     = 'attach_failed'
         ui_attach_source  = 'none'
         confirm_process_id = $PID

@@ -420,7 +420,7 @@ try {
 }
 $results.Add((New-HarnessCheckRecord -Name 'wt-attach-profile' -Passed $profileCheckPassed -Message $profileCheckMessage -Data $profileCheckData)) | Out-Null
 
-$attachProbePath = Get-OrchestraAttachStatePath -SessionName 'winsmux-harness-check'
+$attachProbePath = Get-OrchestraAttachStatePath -SessionName 'winsmux-harness-check' -ProjectDir $runtimeProjectDir
 $attachPathWritable = Test-HarnessWritableFile -Path $attachProbePath
 $attachWritableMessage = if ($attachPathWritable) { 'Attach handshake path is writable.' } else { 'Attach handshake path is not writable.' }
 $results.Add((New-HarnessCheckRecord -Name 'attach-handshake-path-writable' -Passed $attachPathWritable -Message $attachWritableMessage -Data $attachProbePath)) | Out-Null

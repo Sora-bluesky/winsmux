@@ -8,9 +8,10 @@ Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot 'orchestra-ui-attach.ps1')
 
 $defaultSessionName = 'winsmux-orchestra'
+$projectDir = (Get-Location).Path
 
 try {
-    $state = Read-OrchestraAttachState -SessionName $defaultSessionName
+    $state = Read-OrchestraAttachState -SessionName $defaultSessionName -ProjectDir $projectDir
     if ($null -eq $state) {
         throw "Attach state file was not found for session '$defaultSessionName'."
     }
@@ -45,7 +46,7 @@ try {
         [void][int]::TryParse([string]$state.baseline_client_count, [ref]$baselineClientCount)
     }
 
-    Write-OrchestraAttachState -SessionName $sessionName -Properties @{
+    Write-OrchestraAttachState -SessionName $sessionName -ProjectDir $projectDir -Properties @{
         attach_status     = 'attach_entry_started'
         attach_process_id = $PID
         started_at        = (Get-Date).ToString('o')
@@ -110,7 +111,7 @@ try {
     }
     $exitCode = $LASTEXITCODE
     if ($exitCode -ne 0) {
-        Write-OrchestraAttachState -SessionName $sessionName -Properties @{
+        Write-OrchestraAttachState -SessionName $sessionName -ProjectDir $projectDir -Properties @{
             attach_status = 'attach_failed'
             ui_attach_source = 'none'
             error = "winsmux attach-session exited with code $exitCode."
@@ -118,7 +119,7 @@ try {
         exit $exitCode
     }
 } catch {
-    Write-OrchestraAttachState -SessionName $defaultSessionName -Properties @{
+    Write-OrchestraAttachState -SessionName $defaultSessionName -ProjectDir $projectDir -Properties @{
         attach_status     = 'attach_failed'
         ui_attach_source  = 'none'
         attach_process_id = $PID

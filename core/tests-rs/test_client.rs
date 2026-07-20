@@ -70,24 +70,23 @@ fn task784_render_receipt_heartbeat_refreshes_without_a_new_frame() {
 }
 
 #[test]
-fn task784_idle_loop_back_edges_refresh_the_render_lease() {
+fn task784_main_loop_refreshes_the_render_lease_before_render_branching() {
     let source = include_str!("../src/client.rs");
-    for idle_gate in [
-        "if !got_frame && !selection_changed && !overlays_active {",
-        "if dump_buf == prev_dump_buf && !selection_changed && !overlays_active {",
-    ] {
-        let branch = source
-            .split_once(idle_gate)
-            .expect("idle gate should exist")
-            .1
-            .split_once("continue;")
-            .expect("idle gate should loop back")
-            .0;
-        assert!(
-            branch.contains("refresh_render_receipt_lease_if_due"),
-            "idle loop-back must refresh an established render lease"
-        );
-    }
+    let loop_schedule = source
+        .find("if let Err(error) = refresh_render_receipt_lease_if_due(")
+        .expect("main loop should schedule the render lease heartbeat");
+    let first_render_branch = source
+        .find("if !got_frame && !selection_changed && !overlays_active {")
+        .expect("render branch should exist");
+    assert!(
+        loop_schedule < first_render_branch,
+        "heartbeat must run before idle and continuously rendered paths diverge"
+    );
+    assert_eq!(
+        source.matches("refresh_render_receipt_lease_if_due(").count(),
+        2,
+        "heartbeat scheduling must stay centralized at one call site"
+    );
 }
 
 #[cfg(windows)]

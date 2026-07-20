@@ -8308,6 +8308,41 @@ Describe 'orchestra-start server bootstrap' {
             Mock Get-OrchestraProcessStartedAtUnixMs { 123456 }
         }
 
+        It 'isolates attach state by the effective bridge namespace' {
+            $previousNamespace = $env:WINSMUX_BRIDGE_NAMESPACE_L
+            $previousSocket = $env:WINSMUX_BRIDGE_SOCKET_S
+            $previousResolvedNamespace = $env:WINSMUX_BRIDGE_SESSION_NAMESPACE
+            try {
+                Remove-Item Env:WINSMUX_BRIDGE_SOCKET_S -ErrorAction SilentlyContinue
+                Remove-Item Env:WINSMUX_BRIDGE_SESSION_NAMESPACE -ErrorAction SilentlyContinue
+
+                $env:WINSMUX_BRIDGE_NAMESPACE_L = 'namespace-a'
+                $pathA = Get-OrchestraAttachStatePath -SessionName 'winsmux-orchestra' -ProjectDir 'C:\repo'
+                $pathARepeat = Get-OrchestraAttachStatePath -SessionName 'winsmux-orchestra' -ProjectDir 'C:\repo'
+                $env:WINSMUX_BRIDGE_NAMESPACE_L = 'namespace-b'
+                $pathB = Get-OrchestraAttachStatePath -SessionName 'winsmux-orchestra' -ProjectDir 'C:\repo'
+                Remove-Item Env:WINSMUX_BRIDGE_NAMESPACE_L -ErrorAction SilentlyContinue
+                $defaultPath = Get-OrchestraAttachStatePath -SessionName 'winsmux-orchestra' -ProjectDir 'C:\repo'
+
+                $pathA | Should -Be $pathARepeat
+                $pathA | Should -Not -Be $pathB
+                [System.IO.Path]::GetFileName($pathA) | Should -Match '^winsmux-orchestra\.[0-9a-f]{16}\.json$'
+                [System.IO.Path]::GetFileName($defaultPath) | Should -Be 'winsmux-orchestra.json'
+            } finally {
+                foreach ($entry in @(
+                    @{ Name = 'WINSMUX_BRIDGE_NAMESPACE_L'; Value = $previousNamespace },
+                    @{ Name = 'WINSMUX_BRIDGE_SOCKET_S'; Value = $previousSocket },
+                    @{ Name = 'WINSMUX_BRIDGE_SESSION_NAMESPACE'; Value = $previousResolvedNamespace }
+                )) {
+                    if ($null -eq $entry.Value) {
+                        Remove-Item ("Env:{0}" -f $entry.Name) -ErrorAction SilentlyContinue
+                    } else {
+                        Set-Item ("Env:{0}" -f $entry.Name) -Value ([string]$entry.Value)
+                    }
+                }
+            }
+        }
+
         It 'fails closed when the winsmux executable is unavailable' {
             $state = [pscustomobject]@{
                 session_name        = 'winsmux-orchestra'

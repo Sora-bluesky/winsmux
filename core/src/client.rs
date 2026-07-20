@@ -2473,6 +2473,18 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
             force_dump = true;
         }
 
+        // Keep an established render lease alive from one common loop point.
+        // Initial proof is still published only after terminal.draw(), while
+        // every later loop iteration refreshes the last actually drawn pane set.
+        if let Err(error) = refresh_render_receipt_lease_if_due(
+            render_receipt_config.as_ref(),
+            &last_rendered_pane_ids,
+            &mut last_render_receipt_write,
+            Instant::now(),
+        ) {
+            client_log("render-receipt", &format!("heartbeat failed: {}", error));
+        }
+
         // ── STEP 2b: Request screen update (non-blocking) ────────────────
         // Rate-limit dump-state requests to avoid flooding the server.
         // dump_in_flight prevents >1 concurrent request; the interval check
@@ -2500,14 +2512,6 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
         // Also render if selection changed (for highlight overlay) even without new frame
         // Always render when overlays are active (command prompt, rename, choosers)
         if !got_frame && !selection_changed && !overlays_active {
-            if let Err(error) = refresh_render_receipt_lease_if_due(
-                render_receipt_config.as_ref(),
-                &last_rendered_pane_ids,
-                &mut last_render_receipt_write,
-                Instant::now(),
-            ) {
-                client_log("render-receipt", &format!("heartbeat failed: {}", error));
-            }
             continue;
         }
 
@@ -2515,14 +2519,6 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
         // frame AND selection hasn't changed AND no overlays are active.
         if dump_buf == prev_dump_buf && !selection_changed && !overlays_active {
             last_dump_time = Instant::now();
-            if let Err(error) = refresh_render_receipt_lease_if_due(
-                render_receipt_config.as_ref(),
-                &last_rendered_pane_ids,
-                &mut last_render_receipt_write,
-                Instant::now(),
-            ) {
-                client_log("render-receipt", &format!("heartbeat failed: {}", error));
-            }
             continue;
         }
 
