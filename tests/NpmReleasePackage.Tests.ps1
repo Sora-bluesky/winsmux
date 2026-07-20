@@ -198,7 +198,7 @@ Describe 'winsmux npm release package contract' {
         $packageReadme | Should -Match 'winsmux uninstall'
         $packageReadme | Should -Match 'winsmux version'
         $packageReadme | Should -Match 'winsmux help'
-        $packageReadme | Should -Match 'same GitHub release tag'
+        $packageReadme | Should -Match 'exact GitHub release tag'
         $packageReadme | Should -Match 'source directory is not the publish artifact'
         $packageReadme | Should -Match 'staged package'
         $packageReadme | Should -Match 'added during\s+staging'
@@ -862,6 +862,7 @@ param(
         $stagedReadme = Get-Content -LiteralPath (Join-Path $script:OutputRoot 'README.md') -Raw -Encoding UTF8
         $stagedPackage.name | Should -Be 'winsmux'
         $stagedPackage.version | Should -Be '0.23.0'
+        $stagedPackage.winsmuxReleaseTag | Should -Be 'v0.23.0'
         $stagedPackage.description | Should -Match 'Windows npm install surface'
         $stagedPackage.license | Should -Be 'Apache-2.0'
         $stagedPackage.PSObject.Properties.Name | Should -Not -Contain 'private'
@@ -875,7 +876,7 @@ param(
         $stagedReadme | Should -Match 'winsmux uninstall'
         $stagedReadme | Should -Match 'winsmux version'
         $stagedReadme | Should -Match 'winsmux help'
-        $stagedReadme | Should -Match 'same GitHub release tag'
+        $stagedReadme | Should -Match 'exact GitHub release tag'
         $stagedReadme | Should -Match 'source directory is not the publish artifact'
         $stagedReadme | Should -Match 'added during\s+staging'
         $stagedReadme | Should -Match '## Installer profiles'
@@ -892,7 +893,7 @@ param(
         $stagedReadme | Should -Match 'tag-driven'
 
         $stagedEntrypoint = Get-Content -LiteralPath (Join-Path $script:OutputRoot 'index.mjs') -Raw -Encoding UTF8
-        $stagedEntrypoint | Should -Match 'const releaseTag = `v\$\{packageJson\.version\}`;'
+        $stagedEntrypoint | Should -Match 'packageJson\.winsmuxReleaseTag \?\? `v\$\{packageJson\.version\}`'
         $stagedEntrypoint | Should -Match '"-ReleaseTag",\s*releaseTag'
         $stagedEntrypoint | Should -Match 'value === "--profile"'
         $stagedEntrypoint | Should -Match 'result\.push\("-Profile", profile\)'
@@ -924,5 +925,62 @@ param(
         $helpResult.StdErr | Should -Be ''
         $helpResult.StdOut | Should -Match 'Usage: install\.ps1 \[action\]'
         $helpResult.StdOut | Should -Match 'Profiles:'
+    }
+
+    It 'maps a four-part packaging hotfix tag to unique npm and exact release identities' {
+        $stageResult = Invoke-NodeProcess -Arguments @(
+            $script:StageScriptPath,
+            '--release-tag',
+            'v0.36.28.1',
+            '--out',
+            'output/npm-release/winsmux'
+        )
+
+        $stageResult.ExitCode | Should -Be 0
+        $stageResult.StdErr | Should -Be ''
+        $stagedPackage = Get-Content -LiteralPath (Join-Path $script:OutputRoot 'package.json') -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
+        $stagedPackage.version | Should -Be '0.36.28-pkgfix.1'
+        $stagedPackage.winsmuxReleaseTag | Should -Be 'v0.36.28.1'
+
+        $releaseWorkflow = Get-Content -LiteralPath $script:ReleaseWorkflowPath -Raw -Encoding UTF8
+        $releaseWorkflow | Should -Not -Match 'workflow_dispatch'
+        $releaseWorkflow | Should -Not -Match 'github\.event\.inputs\.'
+        $releaseWorkflow | Should -Match 'stage-npm-release\.mjs --release-tag \$releaseTag'
+        $releaseWorkflow | Should -Match 'version=\$version'
+        $releaseWorkflow | Should -Match 'release_tag=\$releaseTag'
+        $releaseWorkflow | Should -Match 'npm publish --access public --tag latest'
+
+        $stagedEntrypoint = Get-Content -LiteralPath (Join-Path $script:OutputRoot 'index.mjs') -Raw -Encoding UTF8
+        $stagedEntrypoint | Should -Match 'packageJson\.winsmuxReleaseTag \?\? `v\$\{packageJson\.version\}`'
+    }
+
+    It 'rejects release tags that collide with the reserved npm hotfix namespace' {
+        $stageResult = Invoke-NodeProcess -Arguments @(
+            $script:StageScriptPath,
+            '--release-tag',
+            'v0.36.28-pkgfix.1',
+            '--out',
+            'output/npm-release/winsmux'
+        )
+
+        $stageResult.ExitCode | Should -Not -Be 0
+        $stageResult.StdErr | Should -Match 'Reserved npm packaging-hotfix tag namespace'
+        Test-Path -LiteralPath $script:OutputRoot | Should -BeFalse
+    }
+
+    It 'preserves an ordinary prerelease tag outside the reserved namespace' {
+        $stageResult = Invoke-NodeProcess -Arguments @(
+            $script:StageScriptPath,
+            '--release-tag',
+            'v0.36.29-preview.1',
+            '--out',
+            'output/npm-release/winsmux'
+        )
+
+        $stageResult.ExitCode | Should -Be 0
+        $stageResult.StdErr | Should -Be ''
+        $stagedPackage = Get-Content -LiteralPath (Join-Path $script:OutputRoot 'package.json') -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
+        $stagedPackage.version | Should -Be '0.36.29-preview.1'
+        $stagedPackage.winsmuxReleaseTag | Should -Be 'v0.36.29-preview.1'
     }
 }

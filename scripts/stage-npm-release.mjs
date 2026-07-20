@@ -36,12 +36,38 @@ function isSemver(version) {
   return /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version);
 }
 
+function coordinatesFromReleaseTag(releaseTag) {
+  const normalizedTag = releaseTag.trim().replace(/^v/iu, "");
+  const match = /^(?<binary>\d+\.\d+\.\d+)(?:\.(?<revision>\d+))?(?<suffix>-[0-9A-Za-z.-]+)?$/u.exec(
+    normalizedTag,
+  );
+  if (!match) {
+    throw new Error(`Unsupported winsmux release tag format: ${releaseTag}`);
+  }
+  const suffix = match.groups.suffix ?? "";
+  if (!match.groups.revision && /^-pkgfix(?:\.|$)/u.test(suffix)) {
+    throw new Error(`Reserved npm packaging-hotfix tag namespace: ${releaseTag}`);
+  }
+  const packageVersion = match.groups.revision
+    ? `${match.groups.binary}-pkgfix.${match.groups.revision}${suffix ? `.${suffix.slice(1)}` : ""}`
+    : `${match.groups.binary}${suffix}`;
+  return { packageVersion, releaseTag: `v${normalizedTag}` };
+}
+
 const args = parseArgs(process.argv);
-const version = args.version;
+if (Boolean(args.version) === Boolean(args["release-tag"])) {
+  throw new Error("Specify exactly one of --version or --release-tag");
+}
+const coordinates = args["release-tag"]
+  ? coordinatesFromReleaseTag(args["release-tag"])
+  : { packageVersion: args.version, releaseTag: `v${args.version}` };
+const version = coordinates.packageVersion;
 const outDir = args.out;
 
 if (!version || !outDir) {
-  throw new Error("Usage: node scripts/stage-npm-release.mjs --version <semver> --out <dir>");
+  throw new Error(
+    "Usage: node scripts/stage-npm-release.mjs (--version <semver> | --release-tag <tag>) --out <dir>",
+  );
 }
 
 if (!isSemver(version)) {
@@ -70,6 +96,7 @@ copyDir(sourceDir, targetDir);
 const stagedPackagePath = path.join(targetDir, "package.json");
 const stagedPackage = JSON.parse(fs.readFileSync(stagedPackagePath, "utf8"));
 stagedPackage.version = version;
+stagedPackage.winsmuxReleaseTag = coordinates.releaseTag;
 delete stagedPackage.private;
 fs.writeFileSync(stagedPackagePath, `${JSON.stringify(stagedPackage, null, 2)}\n`);
 

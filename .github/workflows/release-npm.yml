@@ -4,12 +4,6 @@ on:
   push:
     tags:
       - "v*"
-  workflow_dispatch:
-    inputs:
-      version:
-        description: "Override semver version for the staged npm package"
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -21,6 +15,7 @@ jobs:
     outputs:
       publish_ready: ${{ steps.stage.outputs.publish_ready }}
       version: ${{ steps.stage.outputs.version }}
+      release_tag: ${{ steps.stage.outputs.release_tag }}
     steps:
       - uses: actions/checkout@v6
 
@@ -40,26 +35,25 @@ jobs:
         id: stage
         shell: pwsh
         run: |
-          $version = "${{ github.event.inputs.version }}"
-          if ([string]::IsNullOrWhiteSpace($version)) {
-            $version = "${{ github.ref_name }}"
-          }
-          if ($version.StartsWith("v")) {
-            $version = $version.Substring(1)
+          $releaseTag = '${{ github.ref_name }}'
+          if ([string]::IsNullOrWhiteSpace($releaseTag)) {
+            throw 'An exact GitHub release tag is required.'
           }
 
-          node scripts/stage-npm-release.mjs --version $version --out output/npm-release/winsmux
+          node scripts/stage-npm-release.mjs --release-tag $releaseTag --out output/npm-release/winsmux
 
           if (Test-Path "output/npm-release/winsmux/package.json") {
             $packageJson = Get-Content -LiteralPath "output/npm-release/winsmux/package.json" -Raw | ConvertFrom-Json
+            $version = [string]$packageJson.version
             if ($packageJson.version -eq "0.0.0-development") {
               throw "Staged npm package still has the development placeholder version."
             }
-            if ($packageJson.version -ne $version) {
-              throw "Staged npm package version '$($packageJson.version)' does not match requested version '$version'."
+            if ([string]::IsNullOrWhiteSpace($version)) {
+              throw "Staged npm package did not contain a version."
             }
             "publish_ready=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
             "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            "release_tag=$releaseTag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           } else {
             "publish_ready=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           }
@@ -90,8 +84,12 @@ jobs:
         shell: pwsh
         run: |
           $version = "${{ needs.verify.outputs.version }}"
+          $releaseTag = "${{ needs.verify.outputs.release_tag }}"
 
-          node scripts/stage-npm-release.mjs --version $version --out output/npm-release/winsmux
+          if ([string]::IsNullOrWhiteSpace($releaseTag)) {
+            throw 'The verify job did not preserve the exact GitHub release tag.'
+          }
+          node scripts/stage-npm-release.mjs --release-tag $releaseTag --out output/npm-release/winsmux
           $packageJson = Get-Content -LiteralPath "output/npm-release/winsmux/package.json" -Raw | ConvertFrom-Json
           if ($packageJson.version -eq "0.0.0-development") {
             throw "Staged npm package still has the development placeholder version."
@@ -123,6 +121,6 @@ jobs:
       - name: Publish to npm
         if: steps.npm-version.outputs.exists != 'true'
         working-directory: output/npm-release/winsmux
-        run: npm publish --access public
+        run: npm publish --access public --tag latest
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
