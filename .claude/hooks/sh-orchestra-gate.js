@@ -3,6 +3,7 @@
 "use strict";
 
 const { execFileSync } = require("child_process");
+const acorn = require("./vendor/acorn-8.17.0/acorn.js");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -12,6 +13,25 @@ const SECRET_PATTERN =
   /\b(?:gho_[A-Za-z0-9_]+|ghp_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+)\b|(?:^|\s)(?:GITHUB_TOKEN|GH_TOKEN|API_KEY)\s*=/i;
 const ORCHESTRA_SESSION_NAME = "winsmux-orchestra";
 const STARTUP_GATE_DISABLED = normalizeAgentValue(process.env.WINSMUX_DISABLE_ORCHESTRA_STARTUP_GATE) === "1";
+const INTERPRETER_PROCESS_BOUNDARY = Object.freeze({
+  ALLOW_PROVEN_NON_PROTECTED: "allow-proven-non-protected",
+  ALLOW_STATIC_READONLY: "allow-static-readonly",
+  DENY_PROTECTED: "deny-protected",
+  DENY_AMBIGUOUS_PROTECTED: "deny-ambiguous-protected",
+  DENY_UNOWNED_PROCESS: "deny-unowned-process",
+});
+const STATIC_NON_EXECUTOR_TOOL_ALLOWLIST = new Set(["echo"]);
+const DIRECT_PROCESS_TRAMPOLINE_TOOLS = new Set([
+  "cscript",
+  "conhost",
+  "mshta",
+  "regsvr32",
+  "rundll32",
+  "schtasks",
+  "wmic",
+  "wsl",
+  "wscript",
+]);
 
 try {
   const input = fs.readFileSync(0, "utf8");
@@ -20,6 +40,20 @@ try {
   const toolInput = event.tool_input || {};
   const rawCommand = typeof toolInput.command === "string" ? toolInput.command : "";
   const bashCommand = toolName === "Bash" ? stripHeredocBodies(rawCommand) : "";
+  const reviewCommand = toolName === "Bash" ? rawCommand : "";
+  const reviewBaseCwd = typeof toolInput.cwd === "string" && toolInput.cwd.trim() !== ""
+    ? toolInput.cwd
+    : process.cwd();
+  const executableHeredocBodies = toolName === "Bash" ? getExecutableHeredocBodies(reviewCommand) : [];
+  const staticScriptEvidence = toolName === "Bash"
+    ? getStaticInvokedScriptEvidence(reviewCommand, reviewBaseCwd)
+    : { contents: [], unresolved: false };
+  const reviewInlineCommand = toolName === "Bash"
+    ? [bashCommand, ...executableHeredocBodies].filter(Boolean).join("\n")
+    : "";
+  const reviewDetectionCommand = toolName === "Bash"
+    ? [reviewInlineCommand, ...staticScriptEvidence.contents].filter(Boolean).join("\n")
+    : "";
   const currentRole = normalizeAgentValue(process.env.WINSMUX_ROLE);
 
   logCommand(toolName, rawCommand);
@@ -108,7 +142,7 @@ try {
 
   // Rule 7: No direct Codex dispatch outside winsmux send
   if (toolName === "Bash") {
-    if (isDirectCodexDispatch(bashCommand)) {
+    if (isDirectCodexDispatch(reviewDetectionCommand)) {
       deny("Use winsmux send to dispatch Codex to panes");
     }
   }
@@ -194,17 +228,35 @@ try {
     deny("Worker-pane Git lifecycle blocked. Keep editing and testing in the assigned worktree; run git add, git commit, git push, and PR merge from the Operator shell.");
   }
 
+  // Rule 12b: AST completeness guard. Worker ownership rules run first so their
+  // more specific remediation remains observable for protected Git lifecycle calls.
+  if (toolName === "Bash" &&
+      (staticScriptEvidence.unresolved ||
+       hasUnsupportedInlineInterpreterBoundary(reviewInlineCommand) ||
+       hasUnsupportedDirectProcessBoundary(reviewInlineCommand))) {
+    deny("Unsupported inline process construction is blocked. Use a supported literal form or a managed winsmux workflow.");
+  }
+
   // Rule 13: Block review-gated commit/merge commands without valid Reviewer PASS for the current HEAD (#279)
   if (toolName === "Bash") {
-    if (isReviewGatedCommand(bashCommand) && !/bump-version|chore:\s*bump/.test(bashCommand)) {
-      const reviewStatePath = path.join(process.cwd(), ".winsmux", "review-state.json");
+    if (isReviewGatedCommand(reviewDetectionCommand) || hasConfiguredGitReviewLifecycleAlias(reviewDetectionCommand, reviewBaseCwd)) {
       const denyMessage = "Review required. Flow: 1) a review-capable pane runs winsmux review-request, 2) that pane reviews, 3) it runs winsmux review-approve or winsmux review-fail.";
       try {
-        const currentBranch = getCurrentBranch(process.cwd());
-        const currentHeadSha = getCurrentHeadSha(process.cwd());
-        const reviewState = JSON.parse(fs.readFileSync(reviewStatePath, "utf8"));
-        if (!currentBranch || !hasValidReviewerPass(reviewState[currentBranch], currentHeadSha)) {
+        if (hasForeignGitHubLifecycleTarget(reviewDetectionCommand, reviewBaseCwd)) {
           deny(denyMessage);
+        }
+        const reviewRepoRoots = resolveReviewGateRepoRoots(toolInput, reviewDetectionCommand);
+        if (reviewRepoRoots === null) {
+          deny(denyMessage);
+        }
+        for (const reviewRepoRoot of reviewRepoRoots) {
+          const reviewStatePath = path.join(reviewRepoRoot, ".winsmux", "review-state.json");
+          const currentBranch = getCurrentBranch(reviewRepoRoot);
+          const currentHeadSha = getCurrentHeadSha(reviewRepoRoot);
+          const reviewState = JSON.parse(fs.readFileSync(reviewStatePath, "utf8"));
+          if (!currentBranch || !hasValidReviewerPass(reviewState[currentBranch], currentHeadSha)) {
+            deny(denyMessage);
+          }
         }
       } catch (e) {
         deny(denyMessage);
@@ -258,6 +310,1842 @@ function stripHeredocBodies(command) {
   }
 
   return output.join("\n");
+}
+
+function stripHeredocBodiesAndTerminators(command) {
+  if (!command.includes("<<")) return command;
+  const lines = command.split(/\r?\n/u);
+  const output = [];
+  let activeTerminator = null;
+  for (const line of lines) {
+    if (activeTerminator !== null) {
+      if (line.trim() === activeTerminator) activeTerminator = null;
+      continue;
+    }
+    output.push(line);
+    const matches = Array.from(line.matchAll(/<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/gu));
+    if (matches.length > 0) activeTerminator = matches[matches.length - 1][2];
+  }
+  return output.join("\n").replace(/\s*\d*<<-?\s*(['"]?)[A-Za-z_][A-Za-z0-9_]*\1/gu, " ");
+}
+
+function getExecutableHeredocBodies(command) {
+  if (typeof command !== "string" || !command.includes("<<")) {
+    return [];
+  }
+
+  const lines = command.split(/\r?\n/);
+  const bodies = [];
+  const staticVariables = new Map();
+  let controlFlowStateUncertain = false;
+  for (let index = 0; index < lines.length; index += 1) {
+    let commandLine = lines[index];
+    let commandLineEnd = index;
+    while (hasUnescapedTrailingBackslash(commandLine) && commandLineEnd + 1 < lines.length) {
+      commandLine = commandLine.slice(0, -1) + lines[commandLineEnd + 1];
+      commandLineEnd += 1;
+    }
+
+    const declarations = [...commandLine.matchAll(/(?:(?<![A-Za-z0-9_])([0-9]+))?<<(?!<)(-?)\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\3/gu)];
+    if (declarations.length === 0) {
+      if (hasShellControlFlowBoundary(commandLine)) {
+        controlFlowStateUncertain = true;
+      }
+      updateStaticShellVariableAssignments(commandLine, staticVariables, controlFlowStateUncertain);
+      index = commandLineEnd;
+      continue;
+    }
+
+    const declarationPattern = /(?:(?<![A-Za-z0-9_])[0-9]+)?<<(?!<)-?\s*(['"]?)[A-Za-z_][A-Za-z0-9_]*\1/gu;
+    const commandPrefix = commandLine.slice(0, declarations[0].index);
+    if (hasShellControlFlowBoundary(commandPrefix)) {
+      controlFlowStateUncertain = true;
+    }
+    updateStaticShellVariableAssignments(commandPrefix, staticVariables, controlFlowStateUncertain);
+    const executableFds = new Set(declarations
+      .map((declaration) => declaration[1] || "0")
+      .filter((fd) => hasExecutableHeredocConsumer(commandLine, declarationPattern, fd)));
+    const materializedTargets = getStaticHeredocMaterializationTargets(commandLine, staticVariables);
+
+    const parsedBodies = [];
+    let bodyIndex = commandLineEnd + 1;
+    for (const declaration of declarations) {
+      const body = [];
+      const stripTabs = declaration[2] === "-";
+      const terminator = declaration[4];
+      while (bodyIndex < lines.length) {
+        const candidate = stripTabs ? lines[bodyIndex].replace(/^\t+/u, "") : lines[bodyIndex];
+        if (candidate === terminator) {
+          bodyIndex += 1;
+          break;
+        }
+        body.push(stripTabs ? lines[bodyIndex].replace(/^\t+/u, "") : lines[bodyIndex]);
+        bodyIndex += 1;
+      }
+      parsedBodies.push({ fd: declaration[1] || "0", body: body.join("\n") });
+    }
+    index = Math.max(index, bodyIndex - 1);
+    const laterCommand = lines.slice(bodyIndex).join("\n");
+    const materializedBodyExecutesLater = materializedTargets.some((target) =>
+      doesCommandExecuteStaticScriptPath(laterCommand, target));
+
+    for (const parsedBody of parsedBodies) {
+      if ((executableFds.has(parsedBody.fd) || materializedBodyExecutesLater) && parsedBody.body) {
+        bodies.push(parsedBody.body);
+      }
+    }
+  }
+
+  return bodies;
+}
+
+function hasShellControlFlowBoundary(commandLine) {
+  const source = String(commandLine || "");
+  return /(?:^|[;\s()])(if|then|elif|else|fi|while|until|for|select|case|esac|do|done|function)(?:[;\s()]|$)/u.test(source) ||
+    /(?:^|[;\s])\((?:[;\s]|$)|(?:^|[;\s])\)(?:[;\s]|$)/u.test(source) ||
+    /(?:[$<>]\(|\x60)/u.test(source);
+}
+
+function getStaticHeredocOutputTarget(commandLine, staticVariables = new Map()) {
+  const source = String(commandLine || "");
+  const targets = [
+    ...[...source.matchAll(
+      /(?<![<>])([0-9]*)>>?(?![>&])[ \t]*(?:'([^']+)'|"([^"$\x60]+)"|([^\s;&|]+))/gu,
+    )].map((match) => ({ index: match.index, fd: match[1], value: match[2] || match[3] || match[4] || "" })),
+    ...[...source.matchAll(
+      /(?<![<>])([0-9]*)(?:>&|&>)[ \t]*(?:'([^']+)'|"([^"$\x60]+)"|([^\s;&|]+))/gu,
+    )].map((match) => ({ index: match.index, fd: match[1], value: match[2] || match[3] || match[4] || "" })),
+  ].filter((match) => !match.fd || Number.parseInt(match.fd, 10) === 1)
+    .sort((left, right) => left.index - right.index);
+  if (targets.length === 0) return "";
+  const match = targets[targets.length - 1];
+  const rawTarget = stripOuterQuotes(match.value).trim();
+  const target = resolveStaticShellVariableReference(rawTarget, staticVariables);
+  if (target.includes("\0")) return target;
+  const exactShellVariable = /^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})$/u.test(target);
+  if (!target || (!exactShellVariable && /[$%\x60*?\[\]{}\0]/u.test(target))) return "";
+  return target;
+}
+
+function getStaticHeredocMaterializationTargets(commandLine, staticVariables = new Map()) {
+  const targets = new Set();
+  const redirectedTarget = getStaticHeredocOutputTarget(commandLine, staticVariables);
+  if (redirectedTarget) targets.add(redirectedTarget);
+  for (const stage of splitCommandPipelineStages(String(commandLine || ""))) {
+    const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(tokenizeCommandLine(stage)));
+    if (normalizeExecutableName(execution.tokens[0] || "") !== "tee") continue;
+    for (const token of execution.tokens.slice(1)) {
+      const rawValue = stripOuterQuotes(token);
+      const value = resolveStaticShellVariableReference(rawValue, staticVariables);
+      if (value.includes("\0")) {
+        targets.add(value);
+        continue;
+      }
+      if (!value || value.startsWith("-") || /^[<>]/u.test(value) || /[$%\x60*?\[\]{}\0]/u.test(value)) continue;
+      targets.add(value);
+    }
+  }
+  return [...targets];
+}
+
+function updateStaticShellVariableAssignments(commandLine, variables, controlFlowStateUncertain = false) {
+  for (const segmentEntry of splitCommandSegmentsWithSeparators(String(commandLine || ""))) {
+    const tokens = tokenizeCommandLine(segmentEntry.segment);
+    if (tokens.length === 0) continue;
+    let assignmentTokens = tokens;
+    const executable = normalizeExecutableName(tokens[0] || "");
+    if (["export", "declare", "typeset"].includes(executable)) {
+      assignmentTokens = tokens.slice(1).filter((token) => !/^[+-][A-Za-z]+$/u.test(stripOuterQuotes(token)));
+    } else if (!tokens.every((token) => /^[A-Za-z_][A-Za-z0-9_]*=/u.test(stripOuterQuotes(token)))) {
+      continue;
+    }
+    for (const token of assignmentTokens) {
+      const assignment = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/u.exec(stripOuterQuotes(token));
+      if (!assignment) continue;
+      const value = stripOuterQuotes(assignment[2]);
+      if (controlFlowStateUncertain || ["&&", "||"].includes(segmentEntry.separatorBefore)) variables.set(assignment[1], "\0conditional-shell-variable");
+      else if (!value || /[$%\x60*?\[\]{}\0]/u.test(value)) variables.delete(assignment[1]);
+      else variables.set(assignment[1], value);
+    }
+  }
+}
+
+function resolveStaticShellVariableReference(value, variables) {
+  const source = stripOuterQuotes(String(value || "").trim());
+  const plain = /^\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})$/u.exec(source);
+  if (plain) {
+    const name = plain[1] || plain[2];
+    return variables.has(name) ? variables.get(name) : "\0unresolved-shell-variable";
+  }
+  const basename = /^\$\{([A-Za-z_][A-Za-z0-9_]*)##\*\/\}$/u.exec(source);
+  if (basename) {
+    if (!variables.has(basename[1])) return "\0unresolved-shell-variable";
+    const resolved = variables.get(basename[1]);
+    if (!resolved || resolved.includes("\0")) return "\0unresolved-shell-variable";
+    return path.posix.basename(resolved.replace(/\\/gu, "/"));
+  }
+  return /[$%\x60*?\[\]{}\0]/u.test(source) ? "\0unresolved-shell-expansion" : source;
+}
+
+function mergeConditionalShellMap(parent, branch) {
+  const keys = new Set([...parent.keys(), ...branch.keys()]);
+  for (const key of keys) {
+    const parentHas = parent.has(key);
+    const branchHas = branch.has(key);
+    if (parentHas !== branchHas || (parentHas && parent.get(key) !== branch.get(key))) {
+      parent.set(key, "\0conditional-shell-variable");
+    }
+  }
+}
+
+function doesCommandExecuteStaticScriptPath(command, expectedPath, initialCwd = ".", inheritedState = null) {
+  if (String(expectedPath || "").includes("\0")) {
+    return splitCommandSegments(String(command || "")).some((segment) =>
+      splitCommandPipelineStages(segment).some((stage) => {
+        const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(tokenizeCommandLine(stage)));
+        const executable = normalizeExecutableName(execution.tokens[0] || "");
+        return Boolean(execution.nestedCommand) || isShellCommandExecutable(executable) ||
+          Boolean(getStaticInterpreterScriptPath(execution.tokens));
+      }));
+  }
+  const expected = resolveComparableStaticScriptPath(expectedPath, initialCwd);
+  const expectedVariable = getShellScriptVariableName(expectedPath);
+  if (!expected && !expectedVariable) return false;
+  const knownPaths = inheritedState?.knownPaths || new Set(expected ? [expected] : []);
+  if (expected) knownPaths.add(expected);
+  const shellVariables = inheritedState?.shellVariables || new Map();
+  const exportedShellVariables = inheritedState?.exportedShellVariables || new Map();
+  let effectiveCwd = inheritedState?.effectiveCwd || initialCwd;
+  let cwdUnresolved = Boolean(inheritedState?.cwdUnresolved);
+  let controlFlowStateUncertain = false;
+  const matchesKnownPath = (value) => {
+    const variable = getShellScriptVariableName(value);
+    if (expectedVariable && variable === expectedVariable) return true;
+    if (isDynamicStdinScriptPath(value)) return true;
+    const resolved = resolveComparableStaticScriptPath(value, effectiveCwd);
+    return Boolean(resolved && knownPaths.has(resolved));
+  };
+  const rememberPath = (value) => {
+    if (!value || isDynamicStdinScriptPath(value)) return false;
+    const resolved = resolveComparableStaticScriptPath(value, effectiveCwd);
+    if (!resolved) return false;
+    knownPaths.add(resolved);
+    return true;
+  };
+  for (const segmentEntry of splitCommandSegmentsWithSeparators(String(command || ""))) {
+    const segment = segmentEntry.segment;
+    if (hasShellControlFlowBoundary(segment)) controlFlowStateUncertain = true;
+    const stages = splitCommandPipelineStages(segment);
+    const isolatedSegment = stages.length > 1 || segmentEntry.separatorAfter === "&";
+    const conditionalSegment = controlFlowStateUncertain || isolatedSegment || ["&&", "||"].includes(segmentEntry.separatorBefore);
+    let pipelineCarriesKnownBody = false;
+    for (const stage of stages) {
+      const controlStage = unwrapShellExecutableControlFlowPrefix(stage);
+      if (controlStage && controlStage !== stage.trim()) {
+        const controlState = {
+          knownPaths: new Set(knownPaths),
+          shellVariables: new Map(shellVariables),
+          exportedShellVariables: new Map(exportedShellVariables),
+          effectiveCwd,
+          cwdUnresolved,
+        };
+        if (doesCommandExecuteStaticScriptPath(controlStage, expectedPath, effectiveCwd, controlState)) return true;
+        for (const value of controlState.knownPaths) knownPaths.add(value);
+        mergeConditionalShellMap(shellVariables, controlState.shellVariables);
+        mergeConditionalShellMap(exportedShellVariables, controlState.exportedShellVariables);
+        if (controlState.cwdUnresolved || controlState.effectiveCwd !== effectiveCwd) cwdUnresolved = true;
+      }
+      const ungroupedStage = unwrapShellGroupingWrapper(stage);
+      if (ungroupedStage !== stage.trim()) {
+        const childState = {
+          knownPaths: new Set(knownPaths),
+          shellVariables: new Map(shellVariables),
+          exportedShellVariables: new Map(exportedShellVariables),
+          effectiveCwd,
+          cwdUnresolved,
+        };
+        if (doesCommandExecuteStaticScriptPath(ungroupedStage, expectedPath, effectiveCwd, childState)) return true;
+        continue;
+      }
+      const braceGroup = /^\{\s*([\s\S]*?)\s*;?\s*\}$/u.exec(stage.trim());
+      if (braceGroup) {
+        const isolatedGroup = isolatedSegment || conditionalSegment;
+        const groupState = isolatedGroup
+          ? {
+              knownPaths: new Set(knownPaths),
+              shellVariables: new Map(shellVariables),
+              exportedShellVariables: new Map(exportedShellVariables),
+              effectiveCwd,
+              cwdUnresolved,
+            }
+          : { knownPaths, shellVariables, exportedShellVariables, effectiveCwd, cwdUnresolved };
+        if (doesCommandExecuteStaticScriptPath(braceGroup[1], expectedPath, effectiveCwd, groupState)) return true;
+        if (conditionalSegment && !isolatedSegment) {
+          for (const value of groupState.knownPaths) knownPaths.add(value);
+          mergeConditionalShellMap(shellVariables, groupState.shellVariables);
+          mergeConditionalShellMap(exportedShellVariables, groupState.exportedShellVariables);
+          if (groupState.cwdUnresolved || groupState.effectiveCwd !== effectiveCwd) cwdUnresolved = true;
+        } else if (!isolatedGroup) {
+          effectiveCwd = groupState.effectiveCwd;
+          cwdUnresolved = groupState.cwdUnresolved;
+        }
+        continue;
+      }
+      const rawTokens = tokenizeCommandLine(stage);
+      const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(rawTokens));
+      if (execution.nestedCommand && doesCommandExecuteStaticScriptPath(execution.nestedCommand, expectedPath, effectiveCwd)) {
+        return true;
+      }
+      const executable = normalizeExecutableName(execution.tokens[0] || "");
+      if (stages.length === 1 && ["export", "declare", "typeset"].includes(executable)) {
+        const declarationTokens = execution.tokens.slice(1);
+        const exportsValue = executable === "export" || declarationTokens.some((token) => /^-[A-Za-z]*x[A-Za-z]*$/u.test(stripOuterQuotes(token)));
+        const unexportsValue = declarationTokens.some((token) => /^\+[A-Za-z]*x[A-Za-z]*$/u.test(stripOuterQuotes(token)));
+        for (const token of declarationTokens) {
+          if (/^[+-][A-Za-z]+$/u.test(stripOuterQuotes(token))) continue;
+          const assignment = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/u.exec(stripOuterQuotes(token));
+          if (assignment) {
+            const value = conditionalSegment ? "\0conditional-shell-variable" : stripOuterQuotes(assignment[2]);
+            shellVariables.set(assignment[1], value);
+            if (unexportsValue) exportedShellVariables.delete(assignment[1]);
+            else if (exportsValue || exportedShellVariables.has(assignment[1])) exportedShellVariables.set(assignment[1], value);
+          } else {
+            const name = stripOuterQuotes(token);
+            if (unexportsValue && /^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)) {
+              if (conditionalSegment) exportedShellVariables.set(name, "\0conditional-shell-variable");
+              else exportedShellVariables.delete(name);
+            } else if (exportsValue && /^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)) {
+              exportedShellVariables.set(name, conditionalSegment
+                ? "\0conditional-shell-variable"
+                : shellVariables.has(name)
+                ? shellVariables.get(name)
+                : "\0unresolved-exported-shell-variable");
+            }
+          }
+        }
+        continue;
+      }
+      if (stages.length === 1 && executable === "unset") {
+        for (const token of execution.tokens.slice(1)) {
+          const name = stripOuterQuotes(token);
+          if (conditionalSegment) {
+            shellVariables.set(name, "\0conditional-shell-variable");
+            if (exportedShellVariables.has(name)) exportedShellVariables.set(name, "\0conditional-shell-variable");
+          } else {
+            shellVariables.delete(name);
+            exportedShellVariables.delete(name);
+          }
+        }
+        continue;
+      }
+      if (stages.length === 1 && !executable && rawTokens.length > 0) {
+        for (const token of rawTokens) {
+          const assignment = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/u.exec(stripOuterQuotes(token));
+          if (!assignment) break;
+          const value = conditionalSegment ? "\0conditional-shell-variable" : stripOuterQuotes(assignment[2]);
+          shellVariables.set(assignment[1], value);
+          if (exportedShellVariables.has(assignment[1])) exportedShellVariables.set(assignment[1], value);
+        }
+        continue;
+      }
+      if (stages.length === 1 && (executable === "cd" || executable === "pushd")) {
+        const nextCwd = stripOuterQuotes(execution.tokens[1] || "");
+        if (conditionalSegment || !nextCwd || isDynamicStdinScriptPath(nextCwd)) {
+          cwdUnresolved = true;
+        } else {
+          effectiveCwd = resolveComparableStaticScriptPath(nextCwd, effectiveCwd);
+          cwdUnresolved = !effectiveCwd;
+        }
+        continue;
+      }
+      if (isShellCommandExecutable(executable)) {
+        const startupFiles = getShellStartupFileCandidates(rawTokens, executable, exportedShellVariables);
+        if (startupFiles.some((value) => !value || value.includes("\0") || matchesKnownPath(value))) {
+          return true;
+        }
+        const shellInput = getStaticShellInputTarget(stage);
+        if (shellInput && (shellInput.includes("\0") || matchesKnownPath(shellInput))) return true;
+      }
+      if (executable === "cat") {
+        const sources = execution.tokens.slice(1).filter((token) => {
+          const value = stripOuterQuotes(token);
+          return value && !value.startsWith("-") && !/^[<>]/u.test(value);
+        });
+        const carriesKnownBody = sources.some((source) => matchesKnownPath(source));
+        if (carriesKnownBody) {
+          const destination = getStaticHeredocOutputTarget(stage);
+          if (destination) rememberPath(destination);
+          pipelineCarriesKnownBody = true;
+        }
+      } else if (executable === "tee") {
+        const inputTarget = getStaticShellInputTarget(stage);
+        const carriesKnownBody = pipelineCarriesKnownBody ||
+          Boolean(inputTarget && (inputTarget.includes("\0") || matchesKnownPath(inputTarget)));
+        if (carriesKnownBody) {
+          for (const token of execution.tokens.slice(1)) {
+            const value = stripOuterQuotes(token);
+            if (!value || value.startsWith("-") || /^[<>]/u.test(value) || value === inputTarget) continue;
+            rememberPath(value);
+          }
+          pipelineCarriesKnownBody = true;
+        }
+      } else {
+        pipelineCarriesKnownBody = false;
+      }
+      const scriptPath = getStaticInterpreterScriptPath(execution.tokens);
+      if (!scriptPath) continue;
+      if (cwdUnresolved || scriptPath.includes("\0") || matchesKnownPath(scriptPath)) {
+        return true;
+      }
+    }
+  }
+  if (inheritedState) {
+    inheritedState.effectiveCwd = effectiveCwd;
+    inheritedState.cwdUnresolved = cwdUnresolved;
+  }
+  return false;
+}
+
+function getStaticShellInputTarget(commandLine) {
+  const targets = [...String(commandLine || "").matchAll(
+    /(?<![<])(?:0)?<(?![<&])[ \t]*(?:'([^']+)'|"([^"$\x60]+)"|([^\s;&|>]+))/gu,
+  )];
+  if (targets.length === 0) return "";
+  const match = targets[targets.length - 1];
+  const target = stripOuterQuotes(match[1] || match[2] || match[3] || "").trim();
+  const exactShellVariable = /^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})$/u.test(target);
+  if (!target) return "";
+  if (!exactShellVariable && /[$%\x60*?\[\]{}\0]/u.test(target)) return "\0unresolved-shell-input";
+  return target;
+}
+
+function getShellStartupFileCandidates(rawTokens, executable, inheritedEnvironment = new Map()) {
+  const expandedTokens = [...rawTokens];
+  for (let index = 0; index < rawTokens.length; index += 1) {
+    const rawToken = stripOuterQuotes(rawTokens[index]);
+    const normalized = normalizeAgentValue(rawToken);
+    let splitValue = "";
+    if ((normalized === "-s" || normalized === "--split-string") && index + 1 < rawTokens.length) {
+      splitValue = stripOuterQuotes(rawTokens[index + 1]);
+    } else if (normalized.startsWith("--split-string=")) {
+      splitValue = rawToken.slice(rawToken.indexOf("=") + 1);
+    } else if (/^-s[\s\S]+/iu.test(rawToken)) {
+      splitValue = rawToken.slice(2);
+    }
+    if (splitValue) expandedTokens.push(...tokenizeCommandLine(splitValue));
+  }
+
+  const assignments = new Map(inheritedEnvironment);
+  for (const rawToken of expandedTokens) {
+    const token = stripOuterQuotes(rawToken);
+    const assignment = /^(BASH_ENV|ENV|ZDOTDIR|HOME)=(.*)$/u.exec(token);
+    if (!assignment) continue;
+    assignments.set(assignment[1], stripOuterQuotes(assignment[2] || ""));
+  }
+
+  const startupFiles = [];
+  for (const name of ["BASH_ENV", "ENV"]) {
+    if (!assignments.has(name)) continue;
+    const value = assignments.get(name);
+    startupFiles.push(value || "\0unresolved-shell-startup-environment");
+  }
+  if (executable === "zsh" || executable === "zsh.exe") {
+    const rootName = assignments.has("ZDOTDIR") ? "ZDOTDIR" : (assignments.has("HOME") ? "HOME" : "");
+    if (rootName) {
+      const value = assignments.get(rootName);
+      if (!value || isDynamicStdinScriptPath(value)) {
+        startupFiles.push("\0unresolved-zsh-startup-directory");
+      } else {
+        startupFiles.push(path.posix.join(value.replace(/\\/gu, "/"), ".zshenv"));
+      }
+    }
+  }
+  const executionTokens = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(rawTokens)).tokens;
+  const invocation = parseStaticInterpreterInvocation(executionTokens);
+  startupFiles.push(...invocation.startupFiles);
+  return startupFiles;
+}
+
+function normalizeStaticScriptPathToken(value) {
+  return stripOuterQuotes(String(value || "").trim())
+    .replace(/^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/u, "$$$1")
+    .replace(/^[.][\\/]/u, "")
+    .replace(/\\/gu, "/")
+    .replace(/\/+$/u, "")
+    .toLowerCase();
+}
+
+function getShellScriptVariableName(value) {
+  const source = stripOuterQuotes(String(value || "").trim());
+  const match = source.match(/^\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)(?:##\*\/)?\})$/u);
+  return match?.[1] || match?.[2] || "";
+}
+
+function resolveComparableStaticScriptPath(value, cwd = ".") {
+  const normalized = normalizeStaticScriptPathToken(value);
+  if (!normalized || getShellScriptVariableName(value) || isDynamicStdinScriptPath(value)) return "";
+  if (/^[a-z]:\//u.test(normalized) || normalized.startsWith("/")) {
+    return path.posix.normalize(normalized);
+  }
+  const normalizedCwd = normalizeStaticScriptPathToken(cwd) || ".";
+  return path.posix.normalize(path.posix.join(normalizedCwd, normalized)).replace(/^\.\//u, "");
+}
+
+function parseStaticInterpreterInvocation(tokens) {
+  const result = {
+    kind: "",
+    mode: "none",
+    mainFile: "",
+    startupFiles: [],
+    operandIndex: -1,
+    unresolved: false,
+  };
+  if (!Array.isArray(tokens) || tokens.length === 0) return result;
+  const executable = normalizeExecutableName(tokens[0] || "");
+  if (isShellCommandExecutable(executable)) {
+    result.kind = "shell";
+    let noExecute = false;
+    for (let index = 1; index < tokens.length; index += 1) {
+      const token = stripOuterQuotes(tokens[index]);
+      const normalized = normalizeAgentValue(token);
+      if (normalized === "-c" || normalized === "--command") {
+        result.mode = noExecute ? "no-execute" : "inline";
+        return result;
+      }
+      if (normalized === "-n" || normalized === "--noexec") {
+        noExecute = true;
+        continue;
+      }
+      const inlineStartup = /^--(?:init-file|rcfile|startup-file)=(.*)$/u.exec(token);
+      if (inlineStartup) {
+        result.startupFiles.push(inlineStartup[1] || "\0unresolved-shell-startup-file");
+        continue;
+      }
+      if (["--init-file", "--rcfile", "--startup-file"].includes(normalized)) {
+        if (index + 1 >= tokens.length) {
+          result.unresolved = true;
+          result.mode = "unresolved";
+          return result;
+        }
+        result.startupFiles.push(stripOuterQuotes(tokens[index + 1]) || "\0unresolved-shell-startup-file");
+        index += 1;
+        continue;
+      }
+      if (shellInterpreterOptionConsumesNextValue(token)) {
+        if (index + 1 >= tokens.length) {
+          result.unresolved = true;
+          result.mode = "unresolved";
+          return result;
+        }
+        index += 1;
+        continue;
+      }
+      if (normalized === "--") {
+        if (index + 1 < tokens.length) {
+          result.mainFile = stripOuterQuotes(tokens[index + 1]);
+          result.operandIndex = index + 1;
+          result.mode = noExecute ? "no-execute" : "file";
+        }
+        return result;
+      }
+      if (token.startsWith("-") || token.startsWith("+")) continue;
+      result.mainFile = token;
+      result.operandIndex = index;
+      result.mode = noExecute ? "no-execute" : "file";
+      return result;
+    }
+    result.mode = noExecute ? "no-execute" : (result.startupFiles.length > 0 ? "startup-only" : "stdin");
+    return result;
+  }
+
+  const kind = getShellInterpreterKind(tokens);
+  if (!kind) return result;
+  result.kind = kind;
+  if (getInterpreterInlineSourceDescriptor(tokens, kind)) {
+    result.mode = "inline";
+    return result;
+  }
+  let noExecute = false;
+  for (let index = 1; index < tokens.length; index += 1) {
+    const value = stripOuterQuotes(tokens[index]);
+    const normalized = normalizeAgentValue(value);
+    if (value === "--") {
+      if (index + 1 < tokens.length) {
+        result.mainFile = stripOuterQuotes(tokens[index + 1]);
+        result.operandIndex = index + 1;
+        result.mode = noExecute ? "no-execute" : "file";
+      }
+      return result;
+    }
+    if (kind === "node" && ["-c", "--check"].includes(normalized)) {
+      noExecute = true;
+      continue;
+    }
+    if (kind === "python" && normalized === "-m") {
+      result.mode = "module";
+      result.unresolved = true;
+      return result;
+    }
+    if (interpreterOptionConsumesNextValue(kind, value, normalized)) {
+      if (index + 1 >= tokens.length) {
+        result.mode = "unresolved";
+        result.unresolved = true;
+        return result;
+      }
+      index += 1;
+      continue;
+    }
+    if (value.startsWith("-")) continue;
+    result.mainFile = value;
+    result.operandIndex = index;
+    result.mode = noExecute ? "no-execute" : "file";
+    return result;
+  }
+  result.mode = noExecute ? "no-execute" : "stdin";
+  return result;
+}
+
+function getStaticInterpreterScriptPath(tokens) {
+  if (!Array.isArray(tokens) || tokens.length < 2) return "";
+  const executable = normalizeExecutableName(tokens[0] || "");
+  if (isPowerShellExecutable(executable)) {
+    const fileArgument = getPowerShellFileArgument(tokens);
+    return fileArgument.present ? fileArgument.value : "";
+  }
+  const invocation = parseStaticInterpreterInvocation(tokens);
+  if (invocation.unresolved) return "\0unresolved-interpreter-invocation";
+  return invocation.mode === "file" ? invocation.mainFile : "";
+}
+
+function getPowerShellFileArgument(tokens) {
+  const fileOptionNames = expandPowerShellOptionPrefixes(["-file"]);
+  const commandOptionNames = expandPowerShellOptionPrefixes([
+    "-command",
+    "-commandwithargs",
+    "-encodedcommand",
+  ]);
+  for (let index = 1; index < tokens.length; index += 1) {
+    const rawToken = stripOuterQuotes(tokens[index]);
+    const normalizedToken = normalizeAgentValue(rawToken);
+    if (commandOptionNames.includes(normalizedToken) || commandOptionNames.some((optionName) =>
+      normalizedToken.startsWith(optionName + "=") || normalizedToken.startsWith(optionName + ":"))) {
+      return { present: false, value: "", valueIndex: -1 };
+    }
+    if (fileOptionNames.includes(normalizedToken)) {
+      return {
+        present: true,
+        value: index + 1 < tokens.length ? stripOuterQuotes(tokens[index + 1]) : "",
+        valueIndex: index + 1,
+      };
+    }
+    for (const optionName of fileOptionNames) {
+      if (normalizedToken.startsWith(optionName + "=") || normalizedToken.startsWith(optionName + ":")) {
+        return { present: true, value: rawToken.slice(optionName.length + 1), valueIndex: index };
+      }
+    }
+  }
+  const valueOptionNames = expandPowerShellOptionPrefixes([
+    "-configurationname",
+    "-custompipename",
+    "-executionpolicy",
+    "-inputformat",
+    "-outputformat",
+    "-settingsfile",
+    "-workingdirectory",
+  ]);
+  for (let index = 1; index < tokens.length; index += 1) {
+    const rawToken = stripOuterQuotes(tokens[index]);
+    const normalizedToken = normalizeAgentValue(rawToken);
+    if (valueOptionNames.includes(normalizedToken)) {
+      index += 1;
+      continue;
+    }
+    if (valueOptionNames.some((optionName) =>
+      normalizedToken.startsWith(optionName + "=") || normalizedToken.startsWith(optionName + ":"))) {
+      continue;
+    }
+    if (rawToken.startsWith("-")) continue;
+    if (/\.(?:ps1|psm1)$/iu.test(rawToken)) {
+      return { present: true, value: rawToken, valueIndex: index };
+    }
+    break;
+  }
+  return { present: false, value: "", valueIndex: -1 };
+}
+
+function getStaticNonPowerShellInterpreterFileArgument(tokens) {
+  if (!Array.isArray(tokens) || tokens.length < 2) return { kind: "", present: false, value: "", unresolved: false };
+  const invocation = parseStaticInterpreterInvocation(tokens);
+  const present = invocation.mode === "file" && Boolean(invocation.mainFile) &&
+    !isDynamicStdinScriptPath(invocation.mainFile) && !isAnyStdinDevicePath(invocation.mainFile);
+  return {
+    kind: invocation.kind,
+    present,
+    value: present ? invocation.mainFile : "",
+    startupFiles: invocation.startupFiles,
+    unresolved: invocation.unresolved,
+  };
+}
+
+function getStaticScriptOverlayKey(scriptPath) {
+  return process.platform === "win32" ? scriptPath.toLowerCase() : scriptPath;
+}
+
+function getShellStdoutRedirectTargets(stage) {
+  const source = String(stage || "");
+  const targets = [];
+  let quote = "";
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    if (quote) {
+      if (char === quote && source[index - 1] !== "\\") quote = "";
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (char !== ">" || source[index - 1] === "<") continue;
+    let fdStart = index;
+    while (fdStart > 0 && /[0-9]/u.test(source[fdStart - 1])) fdStart -= 1;
+    const fd = source.slice(fdStart, index);
+    if (fd && Number.parseInt(fd, 10) !== 1) continue;
+    const descriptorRedirect = source[index + 1] === "&";
+    if (descriptorRedirect) index += 1;
+    if (source[index + 1] === ">") index += 1;
+    while (index + 1 < source.length && /\s/u.test(source[index + 1])) index += 1;
+    const targetStart = index + 1;
+    if (targetStart >= source.length) continue;
+    const targetQuote = source[targetStart] === "'" || source[targetStart] === '"' ? source[targetStart] : "";
+    let targetEnd = targetStart + (targetQuote ? 1 : 0);
+    while (targetEnd < source.length) {
+      const targetChar = source[targetEnd];
+      if (targetQuote ? targetChar === targetQuote && source[targetEnd - 1] !== "\\" : /[\s;&|<>]/u.test(targetChar)) break;
+      targetEnd += 1;
+    }
+    const target = source.slice(targetStart + (targetQuote ? 1 : 0), targetEnd);
+    if (!descriptorRedirect || !/^\d+$/u.test(target)) targets.push(target);
+    index = targetEnd;
+  }
+  return targets;
+}
+
+function getHeredocOverlayExemptKeys(command, baseCwd) {
+  const keys = new Set();
+  const staticVariables = new Map();
+  for (const line of String(command || "").split(/\r?\n/u)) {
+    if (line.includes("<<")) {
+      for (const target of getStaticHeredocMaterializationTargets(line, staticVariables)) {
+        if (!target || target.includes("\0")) continue;
+        keys.add(getStaticScriptOverlayKey(path.resolve(baseCwd, target)));
+      }
+    }
+    updateStaticShellVariableAssignments(line, staticVariables, hasShellControlFlowBoundary(line));
+  }
+  return keys;
+}
+
+function collectStaticScriptMutationTargets(source, scriptKind, scriptBaseCwd, targets) {
+  const scriptTargets = [];
+  if (scriptKind === "python") {
+    collectPythonMutationTargets(source, scriptTargets);
+  } else if (scriptKind === "node") {
+    collectNodeMutationTargets(source, scriptTargets);
+  } else if (scriptKind === "shell") {
+    collectShellWriteTargetsFromCommand(source, scriptTargets);
+    collectStaticPosixReplacementTargetsFromCommand(source, scriptBaseCwd, scriptTargets);
+  } else {
+    collectShellWriteTargetsFromCommand(source, scriptTargets);
+  }
+  for (const target of scriptTargets) {
+    if (!target || target.startsWith("$") || target.includes("\0")) {
+      targets.push(target || "$unresolved-static-script-effect");
+      continue;
+    }
+    targets.push(path.resolve(scriptBaseCwd, target));
+  }
+}
+
+function collectStaticPosixReplacementTargetsFromCommand(source, baseCwd, targets) {
+  for (const segment of splitCommandSegments(source)) {
+    for (const stage of splitCommandPipelineStages(segment)) {
+      collectStaticPosixReplacementTargets(stage, baseCwd, targets);
+    }
+  }
+}
+
+function getStaticScriptContentMutationTargets(stage, baseCwd) {
+  const targets = getShellStdoutRedirectTargets(stage);
+  collectStaticPosixReplacementTargets(stage, baseCwd, targets);
+  const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(tokenizeCommandLine(stage)));
+  const interpreterKind = getShellInterpreterKind(execution.tokens);
+  const staticInterpreterTokens = execution.tokens.filter((token, index) =>
+    index === 0 ||
+    (!String(token || "").includes("__WINSMUX_HEREDOC_WRITE__") &&
+     !/^(?:[0-9]+)?<<-?/u.test(stripOuterQuotes(String(token || "")))),
+  );
+  const staticInterpreterFile = getStaticNonPowerShellInterpreterFileArgument(staticInterpreterTokens);
+  const hasStaticInterpreterFile = staticInterpreterFile.present &&
+    staticInterpreterFile.value !== "-" &&
+    !isAnyStdinDevicePath(staticInterpreterFile.value);
+  // Inline interpreters can mutate a later script through arbitrary runtime APIs.
+  // Their lack of side effects is not statically proven, so a following script fails closed.
+  if (interpreterKind &&
+      (getInterpreterInlineSourceDescriptors(execution.tokens, interpreterKind).length > 0 ||
+       (String(stage || "").includes("__WINSMUX_HEREDOC_WRITE__") && !hasStaticInterpreterFile))) {
+    targets.push("$unresolved-inline-interpreter-effect");
+  }
+  return targets;
+}
+
+function collectStaticPosixReplacementTargets(stage, baseCwd, targets) {
+  const tokens = unwrapReviewGateExecutionTokens(
+    unwrapEnvCommandTokens(tokenizeCommandLine(stage)),
+  ).tokens;
+  const executable = normalizeExecutableName(tokens[0] || "");
+  if (!["cp", "install", "ln", "mv"].includes(executable)) return;
+
+  const targetDirectory = getPosixOptionValue(tokens, ["-t", "--target-directory"]);
+  const operands = [];
+  for (let index = 1; index < tokens.length; index += 1) {
+    const value = stripOuterQuotes(tokens[index]);
+    const normalized = normalizeAgentValue(value);
+    if (["-t", "--target-directory", "-m", "--mode", "-o", "--owner", "-g", "--group"].includes(normalized)) {
+      index += 1;
+      continue;
+    }
+    if (normalized.startsWith("--target-directory=") ||
+        normalized.startsWith("--mode=") ||
+        normalized.startsWith("--owner=") ||
+        normalized.startsWith("--group=") ||
+        (value.startsWith("-") && value !== "-")) continue;
+    operands.push(value);
+  }
+  const sources = operands.slice(0, -1);
+  const destination = targetDirectory || operands[operands.length - 1] || "";
+  const noTargetDirectory = tokens.some((token) => {
+    const value = stripOuterQuotes(token);
+    return value === "-T" || normalizeAgentValue(value) === "--no-target-directory";
+  });
+  let destinationIsDirectory = Boolean(targetDirectory) || sources.length > 1;
+  if (!destinationIsDirectory && !noTargetDirectory && destination && !/[$%\x60*?\[\]{}\0]/u.test(destination)) {
+    try {
+      destinationIsDirectory = fs.statSync(path.resolve(baseCwd, destination)).isDirectory();
+    } catch {
+      destinationIsDirectory = false;
+    }
+  }
+  if (destinationIsDirectory) {
+    for (const sourcePath of targetDirectory ? operands : sources) {
+      if (!sourcePath || /[$%\x60*?\[\]{}\0]/u.test(sourcePath)) {
+        targets.push("$unresolved-static-posix-copy-effect");
+        continue;
+      }
+      targets.push(path.join(destination, path.basename(sourcePath)));
+    }
+    return;
+  }
+  if (operands.length < 2) return;
+  targets.push(!destination || /[$%\x60*?\[\]{}\0]/u.test(destination)
+    ? "$unresolved-static-posix-copy-effect"
+    : destination);
+}
+
+function recordStaticScriptOverlayTargets(
+  targets,
+  baseCwd,
+  repoRoot,
+  scriptOverlay,
+  staticVariables,
+  heredocExemptKeys,
+  isHeredocStage,
+) {
+  for (const rawTarget of new Set(targets)) {
+    const target = resolveStaticShellVariableReference(rawTarget, staticVariables);
+    if (!target || target.includes("\0") || /[%\x60*?\[\]{}]/u.test(target)) {
+      scriptOverlay.unresolvedTarget = true;
+      continue;
+    }
+    const scriptPath = path.resolve(baseCwd, target);
+    if (!isPathInsideOrSame(scriptPath, repoRoot)) continue;
+    const overlayKey = getStaticScriptOverlayKey(scriptPath);
+    if (isHeredocStage && heredocExemptKeys.has(overlayKey)) continue;
+    scriptOverlay.set(overlayKey, null);
+  }
+}
+
+function recordStaticInvokedScriptMutationEffects(
+  source,
+  scriptKind,
+  scriptBaseCwd,
+  repoRoot,
+  scriptOverlay,
+  staticVariables,
+  heredocExemptKeys,
+) {
+  const mutationTargets = [];
+  collectStaticScriptMutationTargets(source, scriptKind, scriptBaseCwd, mutationTargets);
+  recordStaticScriptOverlayTargets(
+    mutationTargets,
+    scriptBaseCwd,
+    repoRoot,
+    scriptOverlay,
+    staticVariables,
+    heredocExemptKeys,
+    false,
+  );
+}
+
+function recordStaticScriptWriteEffects(
+  stage,
+  baseCwd,
+  repoRoot,
+  scriptOverlay,
+  staticVariables,
+  heredocExemptKeys,
+) {
+  const isHeredocStage = String(stage || "").includes("__WINSMUX_HEREDOC_WRITE__");
+  const targets = getStaticScriptContentMutationTargets(stage, baseCwd);
+  const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(tokenizeCommandLine(stage)));
+  if (normalizeExecutableName(execution.tokens[0] || "") === "tee") {
+    for (const token of execution.tokens.slice(1)) {
+      const value = stripOuterQuotes(token);
+      if (value && !value.startsWith("-") && !/^[<>]/u.test(value)) targets.push(value);
+    }
+  }
+  recordStaticScriptOverlayTargets(
+    targets,
+    baseCwd,
+    repoRoot,
+    scriptOverlay,
+    staticVariables,
+    heredocExemptKeys,
+    isHeredocStage,
+  );
+}
+
+function getStaticInvokedScriptEvidence(
+  command,
+  baseCwd,
+  depth = 0,
+  cmdDelayedExpansion = false,
+  inheritedScriptOverlay = null,
+) {
+  const evidence = { contents: [], unresolved: false };
+  if (depth > 5) {
+    evidence.unresolved = true;
+    return evidence;
+  }
+  const baseRepoRoot = resolveGitTopLevel(baseCwd);
+  if (!baseRepoRoot) return evidence;
+  const heredocExemptKeys = getHeredocOverlayExemptKeys(command, baseCwd);
+  const markedCommand = String(command || "").replace(
+    /(?:(?<![A-Za-z0-9_])[0-9]+)?<<(?!<)-?\s*(['"]?)[A-Za-z_][A-Za-z0-9_]*\1/gu,
+    (declaration) => `__WINSMUX_HEREDOC_WRITE__ ${declaration}`,
+  );
+  const commandSurface = stripHeredocBodiesAndTerminators(markedCommand);
+  const segments = splitCommandSegmentsWithSeparators(commandSurface);
+  const scriptOverlay = inheritedScriptOverlay || new Map();
+  const staticVariables = new Map();
+  let effectiveBaseCwd = baseCwd;
+  const controlFlowExecutionStack = [];
+  for (const segmentEntry of segments) {
+    const segment = segmentEntry.segment;
+    const controlFlowBoundary = getShellControlFlowBoundary(segment);
+    if (controlFlowBoundary === "branch") {
+      updateShellControlFlowBranchExecution(controlFlowExecutionStack, segment, segmentEntry.separatorAfter);
+    }
+    const controlFlowExecutionState = getShellControlFlowExecutionState(controlFlowExecutionStack);
+    const segmentBaseCwd = effectiveBaseCwd;
+    const stages = splitCommandPipelineStages(segment);
+    if (controlFlowExecutionState === "inactive") {
+      updateShellControlFlowDepthExecution(controlFlowExecutionStack, segment, segmentEntry.separatorAfter);
+      continue;
+    }
+    for (const stage of stages) {
+      const rawTokens = tokenizeCommandLine(stage);
+      const envContext = getGitInlineEnvironmentContext(rawTokens, segmentBaseCwd);
+      const stageBaseCwd = envContext.baseCwd || segmentBaseCwd;
+      recordStaticScriptWriteEffects(
+        stage,
+        stageBaseCwd,
+        baseRepoRoot,
+        scriptOverlay,
+        staticVariables,
+        heredocExemptKeys,
+      );
+    }
+    for (const stage of stages) {
+      const groupedStage = unwrapShellGroupingWrapper(stage);
+      if (groupedStage !== stage.trim()) {
+        const groupedEvidence = getStaticInvokedScriptEvidence(
+          groupedStage,
+          segmentBaseCwd,
+          depth + 1,
+          false,
+          scriptOverlay,
+        );
+        evidence.contents.push(...groupedEvidence.contents);
+        evidence.unresolved = evidence.unresolved || groupedEvidence.unresolved;
+        continue;
+      }
+      const rawTokens = tokenizeCommandLine(stage);
+      const envContext = getGitInlineEnvironmentContext(rawTokens, segmentBaseCwd);
+      const stageBaseCwd = envContext.baseCwd || segmentBaseCwd;
+      const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(rawTokens));
+      const isLiteralRootCommand = depth === 0 &&
+        segments.length === 1 &&
+        stages.length === 1 &&
+        rawTokens.length === execution.tokens.length &&
+        rawTokens.every((token, index) => token === execution.tokens[index]);
+      if (execution.nestedCommand) {
+        const nestedEvidence = getStaticInvokedScriptEvidence(
+          execution.nestedCommand,
+          stageBaseCwd,
+          depth + 1,
+          false,
+          scriptOverlay,
+        );
+        evidence.contents.push(...nestedEvidence.contents);
+        evidence.unresolved = evidence.unresolved || nestedEvidence.unresolved;
+      }
+      const tokens = execution.tokens;
+      const executable = normalizeExecutableName(tokens[0] || "");
+      const sourceInvocation = getStaticShellSourceInvocation(tokens);
+      if (sourceInvocation.matched) {
+        if (sourceInvocation.unresolved) {
+          evidence.unresolved = true;
+        } else {
+          const sourcedEvidence = getStaticInvokedScriptEvidence(
+            `bash ${JSON.stringify(sourceInvocation.value)}`,
+            stageBaseCwd,
+            depth + 1,
+            false,
+            scriptOverlay,
+          );
+          evidence.contents.push(...sourcedEvidence.contents);
+          evidence.unresolved = evidence.unresolved || sourcedEvidence.unresolved;
+        }
+        continue;
+      }
+      if (executable === "cmd" || executable === "cmd.exe") {
+        const rawNestedCommand = getCmdShellArgument(tokens, false);
+        if (rawNestedCommand) {
+          const nestedCommand = getStaticNestedShellCommand("cmd", tokens.slice(1));
+          const nestedEvidence = getStaticInvokedScriptEvidence(
+            nestedCommand === null ? rawNestedCommand : nestedCommand,
+            stageBaseCwd,
+            depth + 1,
+            nestedCommand === null && isCmdDelayedExpansionEnabled(tokens),
+            scriptOverlay,
+          );
+          evidence.contents.push(...nestedEvidence.contents);
+          evidence.unresolved = evidence.unresolved || nestedEvidence.unresolved;
+        }
+        continue;
+      }
+      if (isShellCommandExecutable(executable)) {
+        const nestedCommand = getShellCommandArgument(tokens);
+        if (nestedCommand) {
+          const nestedEvidence = getStaticInvokedScriptEvidence(
+            nestedCommand,
+            stageBaseCwd,
+            depth + 1,
+            false,
+            scriptOverlay,
+          );
+          evidence.contents.push(...nestedEvidence.contents);
+          evidence.unresolved = evidence.unresolved || nestedEvidence.unresolved;
+        }
+        const shellInvocation = parseStaticInterpreterInvocation(tokens);
+        if (nestedCommand && shellInvocation.startupFiles.length === 0) continue;
+      }
+      const staticInterpreterFile = getStaticNonPowerShellInterpreterFileArgument(tokens);
+      if (staticInterpreterFile.unresolved) {
+        evidence.unresolved = true;
+        continue;
+      }
+      const staticInterpreterFiles = [
+        ...(staticInterpreterFile.startupFiles || []).map((value) => ({ kind: "shell", value })),
+        ...(staticInterpreterFile.present ? [{ kind: staticInterpreterFile.kind, value: staticInterpreterFile.value }] : []),
+      ];
+      if (staticInterpreterFiles.length > 0) {
+        for (const invokedFile of staticInterpreterFiles) {
+          const value = invokedFile.value;
+          if (isAnyStdinDevicePath(value)) continue;
+          if (!value || value === "-" || /[$%\x60*?\[\]{}\0]/u.test(value) ||
+              (cmdDelayedExpansion && /![^!\r\n]+!/u.test(value))) {
+            evidence.unresolved = true;
+            continue;
+          }
+          const scriptPath = path.resolve(stageBaseCwd, value);
+          const scriptRepoRoot = resolveGitTopLevel(stageBaseCwd);
+          if (!scriptRepoRoot ||
+              !isManagedReviewGateRepo(scriptRepoRoot, baseRepoRoot) ||
+              !isPathInsideOrSame(scriptPath, scriptRepoRoot)) {
+            evidence.unresolved = true;
+            continue;
+          }
+          try {
+            const overlayKey = getStaticScriptOverlayKey(scriptPath);
+            let source;
+            if (scriptOverlay.unresolvedTarget) {
+              evidence.unresolved = true;
+              continue;
+            } else if (scriptOverlay.has(overlayKey)) {
+              source = scriptOverlay.get(overlayKey);
+              if (typeof source !== "string") {
+                evidence.unresolved = true;
+                continue;
+              }
+            } else {
+              const identity = fs.lstatSync(scriptPath);
+              const stat = fs.statSync(scriptPath);
+              if (identity.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1 || stat.size > 1024 * 1024) {
+                evidence.unresolved = true;
+                continue;
+              }
+              source = fs.readFileSync(scriptPath, "utf8").replace(/^\uFEFF/u, "");
+            }
+            const protectedEvidence = getStaticScriptProtectedEvidence(source, stageBaseCwd);
+            evidence.contents.push(...protectedEvidence.commands);
+            evidence.unresolved = evidence.unresolved || protectedEvidence.unresolved;
+            if (invokedFile.kind === "shell") {
+              const nestedScriptEvidence = getStaticInvokedScriptEvidence(
+                source,
+                stageBaseCwd,
+                depth + 1,
+                false,
+                scriptOverlay,
+              );
+              evidence.contents.push(...nestedScriptEvidence.contents);
+              evidence.unresolved = evidence.unresolved || nestedScriptEvidence.unresolved;
+            }
+            if (invokedFile.kind === "python" || invokedFile.kind === "node") {
+              if (hasConservativeProtectedInterpreterBoundary(source, "git") ||
+                  hasConservativeProtectedInterpreterBoundary(source, "codex") ||
+                  getInterpreterProcessBoundaryResults(source, invokedFile.kind)
+                    .some(isDeniedInterpreterProcessBoundary)) {
+                evidence.unresolved = true;
+              }
+            }
+            // The current body must be reviewed before its writes affect later commands.
+            recordStaticInvokedScriptMutationEffects(
+              source,
+              invokedFile.kind,
+              stageBaseCwd,
+              baseRepoRoot,
+              scriptOverlay,
+              staticVariables,
+              heredocExemptKeys,
+            );
+          } catch (error) {
+            if (error?.code !== "ENOENT") evidence.unresolved = true;
+          }
+        }
+        continue;
+      }
+      if (!isPowerShellExecutable(executable)) continue;
+      const nestedPowerShellCommand = getPowerShellNestedCommand(tokens);
+      if (nestedPowerShellCommand && isCanonicalPowerShellGhRepoMerge(nestedPowerShellCommand)) continue;
+      const wrapperPrefix = getPowerShellWrapperPrefixTokens(tokens);
+      if (wrapperPrefix.length < tokens.length) {
+        const nestedCommand = getStaticNestedShellCommand(executable, tokens.slice(1));
+        const initialWorkingDirectory = getPowerShellInitialWorkingDirectory(tokens, executable);
+        if (nestedCommand === null || !nestedCommand || initialWorkingDirectory.includes("\0") ||
+            isDynamicStdinScriptPath(initialWorkingDirectory)) {
+          evidence.unresolved = true;
+        } else {
+          const nestedCwd = initialWorkingDirectory
+            ? path.resolve(stageBaseCwd, stripOuterQuotes(initialWorkingDirectory))
+            : stageBaseCwd;
+          const nestedEvidence = getStaticInvokedScriptEvidence(
+            nestedCommand,
+            nestedCwd,
+            depth + 1,
+            false,
+            scriptOverlay,
+          );
+          evidence.contents.push(...nestedEvidence.contents);
+          evidence.unresolved = evidence.unresolved || nestedEvidence.unresolved;
+        }
+        continue;
+      }
+      const fileArgument = getPowerShellFileArgument(tokens);
+      if (!fileArgument.present) continue;
+      const value = fileArgument.value;
+      if (!value || value === "-" || /[$%\x60*?\[\]{}\0]/u.test(value) ||
+          (cmdDelayedExpansion && /![^!\r\n]+!/u.test(value))) {
+        evidence.unresolved = true;
+        continue;
+      }
+      const initialWorkingDirectory = getPowerShellInitialWorkingDirectory(tokens, executable);
+      if (initialWorkingDirectory.includes("\0")) {
+        evidence.unresolved = true;
+        continue;
+      }
+      const scriptBaseCwd = initialWorkingDirectory
+          ? path.resolve(stageBaseCwd, stripOuterQuotes(initialWorkingDirectory))
+          : stageBaseCwd;
+      const scriptPath = path.resolve(scriptBaseCwd, value);
+      const scriptRepoRoot = resolveGitTopLevel(scriptBaseCwd);
+      if (!scriptRepoRoot ||
+          !isManagedReviewGateRepo(scriptRepoRoot, baseRepoRoot) ||
+          !isPathInsideOrSame(scriptPath, scriptRepoRoot)) {
+        evidence.unresolved = true;
+        continue;
+      }
+      try {
+        const overlayKey = getStaticScriptOverlayKey(scriptPath);
+        let source;
+        if (scriptOverlay.unresolvedTarget) {
+          evidence.unresolved = true;
+          continue;
+        } else if (scriptOverlay.has(overlayKey)) {
+          source = scriptOverlay.get(overlayKey);
+          if (typeof source !== "string") {
+            evidence.unresolved = true;
+            continue;
+          }
+        } else {
+          const identity = fs.lstatSync(scriptPath);
+          const stat = fs.statSync(scriptPath);
+          if (identity.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1 || stat.size > 1024 * 1024) {
+            evidence.unresolved = true;
+            continue;
+          }
+          source = fs.readFileSync(scriptPath, "utf8").replace(/^\uFEFF/u, "");
+        }
+        if (isHeadBoundCanonicalOrchestraRecoveryInvocation(
+          tokens,
+          fileArgument,
+          scriptPath,
+          scriptRepoRoot,
+          isLiteralRootCommand,
+        )) {
+          continue;
+        }
+        const knownReadOnlyState = getKnownReadOnlyPowerShellScriptInvocationState(
+          tokens,
+          fileArgument,
+          scriptPath,
+          scriptRepoRoot,
+          source,
+        );
+        if (knownReadOnlyState === "safe") {
+          continue;
+        }
+        if (knownReadOnlyState === "unsafe") {
+          evidence.unresolved = true;
+          continue;
+        }
+        const protectedEvidence = getStaticScriptProtectedEvidence(source, scriptBaseCwd);
+        evidence.contents.push(...protectedEvidence.commands);
+        evidence.unresolved = evidence.unresolved || protectedEvidence.unresolved;
+        const nestedScriptEvidence = getStaticInvokedScriptEvidence(
+          source,
+          scriptBaseCwd,
+          depth + 1,
+          false,
+          scriptOverlay,
+        );
+        evidence.contents.push(...nestedScriptEvidence.contents);
+        evidence.unresolved = evidence.unresolved || nestedScriptEvidence.unresolved;
+        recordStaticInvokedScriptMutationEffects(
+          source,
+          "powershell",
+          scriptBaseCwd,
+          baseRepoRoot,
+          scriptOverlay,
+          staticVariables,
+          heredocExemptKeys,
+        );
+      } catch (error) {
+        if (error?.code !== "ENOENT") evidence.unresolved = true;
+      }
+    }
+    const cwdChange = getShellCwdChange(segment, segmentBaseCwd);
+    if (cwdChange.state === "ambiguous") {
+      // Cwd ambiguity matters here only if a later static script consumes it.
+      // Review-gated Git/GitHub targets are resolved independently by Rule 13.
+      effectiveBaseCwd = "\0unresolved-cwd-change";
+    } else if (cwdChange.target) {
+      const skipCwdChange = cwdChange.controlFlowPrefixed && controlFlowExecutionState === "inactive";
+      if (!skipCwdChange && cwdChange.controlFlowPrefixed && controlFlowExecutionState === "unknown") {
+        evidence.unresolved = true;
+      }
+      effectiveBaseCwd = skipCwdChange
+        ? effectiveBaseCwd
+        : cwdChange.controlFlowPrefixed && controlFlowExecutionState === "unknown"
+        ? "\0unresolved-control-flow-cwd"
+        : hasConditionalCwdChangeBoundary(segmentEntry)
+        ? "\0unresolved-conditional-cwd-change"
+        : cwdChange.target;
+    }
+    updateStaticShellVariableAssignments(segment, staticVariables, controlFlowExecutionState !== "active");
+    updateShellControlFlowDepthExecution(controlFlowExecutionStack, segment, segmentEntry.separatorAfter);
+  }
+  return evidence;
+}
+
+function getKnownReadOnlyPowerShellScriptInvocationState(tokens, fileArgument, scriptPath, repoRoot, source) {
+  const relativePath = path.relative(repoRoot, scriptPath).replace(/\\/gu, "/").toLowerCase();
+  if (relativePath !== "scripts/winsmux-core.ps1" || fileArgument.valueIndex < 0) return "none";
+  const args = tokens.slice(fileArgument.valueIndex + 1).map((token) => stripOuterQuotes(token));
+  if (args.length === 0 || args.some((token) => /[$%\x60;&|{}\0]/u.test(token))) return "none";
+  const command = normalizeAgentValue(args[0]);
+  const rest = args.slice(1).map(normalizeAgentValue);
+  const contracts = {
+    version: { functionName: "Invoke-Version", allowedArgs: [[]] },
+  };
+  const contract = contracts[command];
+  if (!contract || !contract.allowedArgs.some((allowed) =>
+    allowed.length === rest.length && allowed.every((value, index) => value === rest[index]))) {
+    return "none";
+  }
+  const escapedCommand = command.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const escapedFunction = contract.functionName.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const hasRouterBinding = new RegExp(
+    String.raw`^[ \t]*['"]${escapedCommand}['"][ \t]*\{[ \t]*${escapedFunction}\b`,
+    "imu",
+  ).test(source);
+  const functionDefinitionPattern = new RegExp(
+    String.raw`^[ \t]*function[ \t]+${escapedFunction}[ \t]*\{`,
+    "imu",
+  );
+  const functionMatch = functionDefinitionPattern.exec(source);
+  if (!hasRouterBinding || !functionMatch) return "unsafe";
+  const bodies = getBraceBlockBodies(source.slice(functionMatch.index));
+  if (bodies.length === 0) return "unsafe";
+  const body = bodies[0];
+  const protectedEvidence = getStaticScriptProtectedEvidence(body, path.dirname(scriptPath));
+  if (protectedEvidence.unresolved || protectedEvidence.commands.length > 0) return "unsafe";
+  if (isReviewGatedCommand(body) || isDirectCodexDispatch(body)) return "unsafe";
+  const mutatesState = /(?:^|[;\r\n])\s*(?:&\s*)?(?:git|gh|codex|set-content|add-content|out-file|new-item|remove-item|move-item|copy-item|rename-item|set-itemproperty|new-itemproperty|remove-itemproperty|start-process|saps|invoke-expression|iex|set-alias|new-alias|reg(?:\.exe)?)\b|(?:^|[;\r\n])\s*\.\s+[^\r\n]+|&\s*\$[A-Za-z_]/imu.test(body);
+  return mutatesState ? "unsafe" : "safe";
+}
+
+function isHeadBoundCanonicalOrchestraRecoveryInvocation(tokens, fileArgument, scriptPath, repoRoot, isLiteralRootCommand) {
+  if (!isLiteralRootCommand || fileArgument.valueIndex < 0) return false;
+  const literalTokens = tokens.map((token) => stripOuterQuotes(token).replace(/\\/gu, "/"));
+  const exactRouterPrefix = ["pwsh", "-NoProfile", "-File", "scripts/winsmux-core.ps1"];
+  const exactStartCommand = ["pwsh", "-NoProfile", "-File", "winsmux-core/scripts/orchestra-start.ps1"];
+  const matchesExactPrefix = (prefix) => prefix.every((value, index) => literalTokens[index] === value);
+  const relativePath = path.relative(repoRoot, scriptPath).replace(/\\/gu, "/").toLowerCase();
+  const args = tokens.slice(fileArgument.valueIndex + 1).map((token) => normalizeAgentValue(stripOuterQuotes(token)));
+  if (args.some((token) => /[$%\x60;&|{}\0]/u.test(token))) return false;
+  const matchesRouterRecovery = literalTokens.length === 6 &&
+    matchesExactPrefix(exactRouterPrefix) &&
+    relativePath === "scripts/winsmux-core.ps1" && (
+    (args.length === 2 && args[0] === "harness-check" && args[1] === "--json") ||
+    (args.length === 2 && args[0] === "orchestra-smoke" && args[1] === "--json")
+  );
+  const matchesStartRecovery = literalTokens.length === exactStartCommand.length &&
+    matchesExactPrefix(exactStartCommand) &&
+    relativePath === "winsmux-core/scripts/orchestra-start.ps1" && args.length === 0;
+  if (!matchesRouterRecovery && !matchesStartRecovery) return false;
+  try {
+    const status = execFileSync(
+      "git",
+      [
+        "-C",
+        repoRoot,
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=all",
+        "--",
+        "scripts/winsmux-core.ps1",
+        "winsmux-core/scripts",
+      ],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5000 },
+    );
+    return status.trim() === "";
+  } catch {
+    return false;
+  }
+}
+
+function getStaticScriptProtectedEvidence(source, scriptCwd) {
+  const text = materializeConstantExecutableSubstitutions(String(source || ""));
+  const lines = text.split(/\r?\n/u);
+  const commands = [];
+  const seen = new Set();
+  let unresolved = false;
+  if (isReviewGatedCommand(text)) {
+    if (hasStaticShellSourceCommand(text)) {
+      unresolved = true;
+    }
+    if (hasPersistentGitHubTargetMutation(text)) {
+      unresolved = true;
+    }
+    if (hasShellControlFlowBoundary(text) && hasShellCwdChangeCommand(text)) {
+      unresolved = true;
+    }
+    const targetEvidence = getReviewGatedCommandTargets(text, scriptCwd);
+    const targets = [
+      ...targetEvidence.targetCwds,
+      ...(targetEvidence.requiresBaseCwd ? [scriptCwd] : []),
+    ];
+    for (const target of targets.length > 0 ? targets : [scriptCwd]) {
+      if (!target || target.includes("\0")) {
+        unresolved = true;
+        continue;
+      }
+      const normalized = `git -C "${target}" commit`;
+      if (!seen.has(normalized)) {
+        commands.push(normalized);
+        seen.add(normalized);
+      }
+    }
+  }
+  for (let index = 0; index < lines.length; index += 1) {
+    const windows = [lines[index]];
+    if (/[`\\]\s*$/u.test(lines[index]) && index + 1 < lines.length) {
+      windows.push(`${lines[index]}\n${lines[index + 1]}`);
+      if (/[`\\]\s*$/u.test(lines[index + 1]) && index + 2 < lines.length) {
+        windows.push(`${lines[index]}\n${lines[index + 1]}\n${lines[index + 2]}`);
+      }
+    }
+    for (const candidate of windows) {
+      if (!/(?:^|[;&|({])\s*(?:(?:command(?:\s+(?:--|-p))*|exec(?:\s+(?:--|-c|-l|-a\s+\S+))*|builtin)\s+)?(?:&\s*)?(?:codex|git|gh|winsmux|start-process|saps)\b/iu.test(candidate) &&
+          !/\b(?:Process|ProcessStartInfo)\s*\]::(?:Start|new)\s*\(/iu.test(candidate)) {
+        continue;
+      }
+      const directCodex = /\bcodex(?:\.exe)?\b/iu.test(candidate) && isDirectCodexDispatch(candidate);
+      const reviewGated = !directCodex && isReviewGatedCommand(candidate);
+      if (directCodex) {
+        if (!seen.has("codex exec")) commands.push("codex exec");
+        seen.add("codex exec");
+      }
+      if (reviewGated && /\bgh\b[^\r\n]*(?:--repo|--hostname|https?:\/\/|\brepos\/)/iu.test(candidate)) {
+        const explicitGitHubCommand = candidate.trim();
+        if (!seen.has(explicitGitHubCommand)) {
+          commands.push(explicitGitHubCommand);
+          seen.add(explicitGitHubCommand);
+        }
+      }
+    }
+  }
+  const executableText = lines
+    .filter((line) => !/^\s*#/u.test(line))
+    .join("\n");
+  const hasUnparsedDynamicProtectedCommand =
+    /(?:&\s*\$[A-Za-z_][A-Za-z0-9_:]*|\b(?:invoke-expression|iex)\b)[\s\S]{0,200}\b(?:commit|merge|push|tag|codex\s+(?:exec|e)|--sandbox)\b/iu.test(executableText) ||
+    /(?:^|[;&|({])\s*["']?\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)["']?\s+[^;&\r\n]*\b(?:commit|merge|push|tag|exec|--sandbox)\b/imu.test(executableText);
+  return {
+    commands,
+    unresolved: unresolved || hasUnparsedDynamicProtectedCommand,
+  };
+}
+
+function getStaticShellSourceInvocation(tokens) {
+  const rawExecutable = normalizeAgentValue(stripOuterQuotes(tokens[0] || ""));
+  const executable = rawExecutable === "." ? "." : normalizeExecutableName(tokens[0] || "");
+  if (executable !== "source" && executable !== ".") {
+    return { matched: false, unresolved: false, value: "" };
+  }
+  const value = stripOuterQuotes(tokens[1] || "");
+  const hasExplicitPath = path.isAbsolute(value) || value.includes("/") || value.includes("\\");
+  if (!value || value.startsWith("-") || !hasExplicitPath || /[$%\x60*?\[\]{}\0]/u.test(value)) {
+    return { matched: true, unresolved: true, value: "" };
+  }
+  return { matched: true, unresolved: false, value };
+}
+
+function hasStaticShellSourceCommand(command) {
+  return splitCommandSegments(String(command || "")).some((segment) =>
+    splitCommandPipelineStages(segment).some((stage) =>
+      getStaticShellSourceInvocation(
+        unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(tokenizeCommandLine(stage))).tokens,
+      ).matched));
+}
+
+function hasExecutableHeredocConsumer(commandLine, declarationPattern, expectedFd = "0") {
+  const marker = "__WINSMUX_HEREDOC_DECLARATION__";
+  const markedCommandLine = commandLine.replace(declarationPattern, ` ${marker} `);
+  const stdinDeviceAliases = getStdinDeviceAliases(commandLine);
+  const reachableFds = getReachableHeredocFds(commandLine, expectedFd);
+  const persistentDescriptor = expectedFd !== "0" && hasPersistentHeredocDescriptor(markedCommandLine, marker);
+  if (persistentDescriptor) {
+    return true;
+  }
+  const functionConsumers = new Set();
+  const functionPattern = /(?:^|[;&])\s*([A-Za-z_][A-Za-z0-9_-]*)\s*\(\)\s*\{([^}]*)\}/giu;
+  for (const match of String(commandLine || "").matchAll(functionPattern)) {
+    if ([...reachableFds].some((fd) => isStdinScriptConsumerStage(match[2] || "", stdinDeviceAliases, fd))) {
+      functionConsumers.add(normalizeAgentValue(match[1]));
+    }
+  }
+
+  for (const segment of splitCommandSegments(markedCommandLine)) {
+    if (!segment.includes(marker) && !persistentDescriptor) {
+      continue;
+    }
+    for (const markedStage of splitCommandPipelineStages(segment)) {
+      const stageHasDeclaration = markedStage.includes(marker);
+      const stage = markedStage.replaceAll(marker, " ");
+      if (expectedFd !== "0" && !persistentDescriptor && !stageHasDeclaration) {
+        continue;
+      }
+      if ([...reachableFds].some((fd) => isStdinScriptConsumerStage(stage, stdinDeviceAliases, fd))) {
+        return true;
+      }
+      const stageTokens = unwrapEnvCommandTokens(tokenizeCommandLine(stage));
+      if (functionConsumers.has(normalizeAgentValue(stripOuterQuotes(stageTokens[0] || "")))) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function getReachableHeredocFds(commandLine, sourceFd) {
+  const normalizedSource = String(Number.parseInt(String(sourceFd), 10));
+  const reachable = new Set([normalizedSource]);
+  const duplications = [...String(commandLine || "").matchAll(/(?<![A-Za-z0-9_])([0-9]+)<&([0-9]+)(?![0-9])/gu)]
+    .map((match) => [String(Number.parseInt(match[1], 10)), String(Number.parseInt(match[2], 10))]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [destination, source] of duplications) {
+      if (reachable.has(source) && !reachable.has(destination)) {
+        reachable.add(destination);
+        changed = true;
+      }
+    }
+  }
+  return reachable;
+}
+
+function hasPersistentHeredocDescriptor(markedCommandLine, marker) {
+  for (const segment of splitCommandSegments(markedCommandLine)) {
+    for (const stage of splitCommandPipelineStages(segment)) {
+      if (!stage.includes(marker)) {
+        continue;
+      }
+      const tokens = tokenizeCommandLine(stage.replaceAll(marker, " "));
+      if (normalizeExecutableName(tokens[0] || "") === "exec" && tokens.length === 1) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function hasUnescapedTrailingBackslash(value) {
+  const source = String(value || "");
+  let count = 0;
+  for (let index = source.length - 1; index >= 0 && source[index] === "\\"; index -= 1) {
+    count += 1;
+  }
+  return count % 2 === 1;
+}
+
+function isStdinScriptConsumerStage(stage, stdinDeviceAliases = new Map(), expectedFd = "0") {
+  const normalizedStage = String(stage || "").trim();
+  if (/(?:^|[\s<])<\(/u.test(normalizedStage)) return true;
+  const commandSegments = splitCommandSegments(normalizedStage);
+  if (commandSegments.length > 1 || (commandSegments.length === 1 && commandSegments[0] !== normalizedStage)) {
+    return commandSegments.some((segment) =>
+      splitCommandPipelineStages(segment).some((pipelineStage) =>
+        isStdinScriptConsumerStage(pipelineStage, stdinDeviceAliases, expectedFd)));
+  }
+
+  const executableStage = unwrapShellExecutableControlFlowPrefix(stage);
+  if (executableStage && executableStage !== String(stage || "").trim()) {
+    return isStdinScriptConsumerStage(executableStage, stdinDeviceAliases, expectedFd);
+  }
+
+  for (const blockBody of getBraceBlockBodies(stage)) {
+    if (isStdinScriptConsumerStage(blockBody, stdinDeviceAliases, expectedFd)) {
+      return true;
+    }
+  }
+
+  for (const match of String(stage || "").matchAll(/>\(([^()]*)\)/gu)) {
+    if (isStdinScriptConsumerStage(match[1] || "", stdinDeviceAliases, expectedFd)) {
+      return true;
+    }
+  }
+
+  const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(tokenizeCommandLine(stage)));
+  if (execution.nestedCommand) {
+    return isStdinScriptConsumerStage(execution.nestedCommand, stdinDeviceAliases, expectedFd);
+  }
+
+  const tokens = execution.tokens;
+  const executable = normalizeExecutableName(tokens[0] || "");
+  if (["source", "."].includes(executable)) {
+    return isStdinDevicePathOrAlias(tokens[1] || "", stdinDeviceAliases, expectedFd) ||
+      isDynamicStdinScriptPath(tokens[1] || "");
+  }
+  if (isShellCommandExecutable(executable)) {
+    if (tokens.slice(1).some((token) => /^-[a-z]*c(?:[a-z]*|[\s\S]+)$/u.test(normalizeAgentValue(stripOuterQuotes(token))))) {
+      return false;
+    }
+
+    let ambiguousOption = false;
+    for (let index = 1; index < tokens.length; index += 1) {
+      const token = stripOuterQuotes(tokens[index]);
+      if (token === "-") {
+        return true;
+      }
+      if (/^-[A-Za-z]*s[A-Za-z]*$/u.test(token)) {
+        return true;
+      }
+      if (token === "--") {
+        return index + 1 >= tokens.length;
+      }
+      if (shellInterpreterOptionConsumesNextValue(token)) {
+        index += 1;
+        continue;
+      }
+      if (/^[-+][abefhkmnptuvxBCEHPT]+$/u.test(token)) {
+        continue;
+      }
+      if (token.startsWith("-") || token.startsWith("+")) {
+        ambiguousOption = true;
+        continue;
+      }
+      return isStdinDevicePathOrAlias(token, stdinDeviceAliases, expectedFd) ||
+        isDynamicStdinScriptPath(token) || ambiguousOption;
+    }
+    return true;
+  }
+
+  if (["node", "python", "python3"].includes(executable)) {
+    let ambiguousOption = false;
+    for (let index = 1; index < tokens.length; index += 1) {
+      const rawToken = stripOuterQuotes(tokens[index]);
+      const token = normalizeAgentValue(rawToken);
+      if (["-c", "-e", "-p", "-pe", "--eval", "--print", "-m"].includes(token) ||
+          token.startsWith("--eval=") || token.startsWith("--print=")) {
+        return false;
+      }
+      if (token === "-") {
+        return true;
+      }
+      if (interpreterOptionConsumesNextValue(executable, rawToken, token)) {
+        index += 1;
+        continue;
+      }
+      if (isKnownValuelessInterpreterOption(executable, token)) {
+        continue;
+      }
+      if (token.startsWith("-")) {
+        ambiguousOption = true;
+        continue;
+      }
+      return isStdinDevicePathOrAlias(rawToken, stdinDeviceAliases, expectedFd) ||
+        isDynamicStdinScriptPath(rawToken) || ambiguousOption;
+    }
+    return true;
+  }
+
+  if (isPowerShellExecutable(executable)) {
+    for (let index = 1; index < tokens.length; index += 1) {
+      const token = normalizeAgentValue(stripOuterQuotes(tokens[index]));
+      if (["-command", "-c", "-file", "-f"].includes(token)) {
+        const scriptPath = tokens[index + 1] || "";
+        return isStdinDevicePathOrAlias(scriptPath, stdinDeviceAliases, expectedFd) ||
+          isDynamicStdinScriptPath(scriptPath);
+      }
+    }
+    return true;
+  }
+
+  return false;
+}
+
+function isStdinDevicePath(token, expectedFd = "0", depth = 0, seen = new Set()) {
+  const rawValue = stripOuterQuotes(String(token || "").trim());
+  const value = normalizeAgentValue(rawValue).replaceAll("\\", "/");
+  const normalizedFd = Number.parseInt(String(expectedFd), 10);
+  if (!Number.isInteger(normalizedFd) || normalizedFd < 0) {
+    return false;
+  }
+  if (normalizedFd === 0 && value === "-") {
+    return true;
+  }
+  const normalizedPath = path.posix.normalize(value);
+  if (normalizedFd === 0 && normalizedPath === "/dev/stdin") {
+    return true;
+  }
+  const fdMatch = normalizedPath.match(/^\/(?:dev|proc\/self)\/fd\/([0-9]+)$/u);
+  if (fdMatch && Number.parseInt(fdMatch[1], 10) === normalizedFd) {
+    return true;
+  }
+  const alias = getFilesystemAliasTarget(rawValue);
+  if (!alias.matched) {
+    return false;
+  }
+  const aliasKey = normalizeAgentValue(path.resolve(rawValue)).replaceAll("\\", "/");
+  if (alias.unresolved || depth >= 8 || seen.has(aliasKey)) {
+    return true;
+  }
+  const nextSeen = new Set(seen);
+  nextSeen.add(aliasKey);
+  return isStdinDevicePath(alias.target, expectedFd, depth + 1, nextSeen);
+}
+
+function isStdinDevicePathOrAlias(token, stdinDeviceAliases, expectedFd = "0") {
+  if (isStdinDevicePath(token, expectedFd)) {
+    return true;
+  }
+  const aliasTarget = stdinDeviceAliases.get(normalizeStdinAliasPath(token));
+  return Boolean(aliasTarget) && isStdinDevicePath(aliasTarget, expectedFd);
+}
+
+function normalizeStdinAliasPath(token) {
+  const value = normalizeAgentValue(stripOuterQuotes(String(token || "").trim())).replaceAll("\\", "/");
+  return value ? path.posix.normalize(value) : "";
+}
+
+function isAnyStdinDevicePath(token, depth = 0, seen = new Set()) {
+  const rawValue = stripOuterQuotes(String(token || "").trim());
+  const normalizedPath = path.posix.normalize(normalizeAgentValue(rawValue).replaceAll("\\", "/"));
+  if (normalizedPath === "/dev/stdin" || /^\/(?:dev|proc\/self)\/fd\/[0-9]+$/u.test(normalizedPath)) {
+    return true;
+  }
+  const alias = getFilesystemAliasTarget(rawValue);
+  if (!alias.matched) {
+    return false;
+  }
+  const aliasKey = normalizeAgentValue(path.resolve(rawValue)).replaceAll("\\", "/");
+  if (alias.unresolved || depth >= 8 || seen.has(aliasKey)) {
+    return true;
+  }
+  const nextSeen = new Set(seen);
+  nextSeen.add(aliasKey);
+  return isAnyStdinDevicePath(alias.target, depth + 1, nextSeen);
+}
+
+function getFilesystemAliasTarget(rawValue) {
+  const candidate = path.resolve(String(rawValue || ""));
+  let stat;
+  try {
+    stat = fs.lstatSync(candidate);
+  } catch {
+    return { matched: false, target: "", unresolved: false };
+  }
+
+  if (stat.isSymbolicLink()) {
+    try {
+      const target = fs.readlinkSync(candidate, "utf8");
+      return {
+        matched: true,
+        target: path.isAbsolute(target) ? target : path.resolve(path.dirname(candidate), target),
+        unresolved: !target,
+      };
+    } catch {
+      return { matched: true, target: "", unresolved: true };
+    }
+  }
+
+  if (stat.isFile() && stat.size >= 10 && stat.size <= 65536) {
+    try {
+      const content = fs.readFileSync(candidate);
+      const magic = Buffer.from("!<symlink>", "ascii");
+      if (content.subarray(0, magic.length).equals(magic)) {
+        let payload = content.subarray(magic.length);
+        let target = "";
+        if (payload.length >= 2 && payload[0] === 0xff && payload[1] === 0xfe) {
+          target = payload.subarray(2).toString("utf16le");
+        } else if (payload.length >= 2 && payload[0] === 0xfe && payload[1] === 0xff) {
+          const swapped = Buffer.from(payload.subarray(2));
+          for (let index = 0; index + 1 < swapped.length; index += 2) {
+            [swapped[index], swapped[index + 1]] = [swapped[index + 1], swapped[index]];
+          }
+          target = swapped.toString("utf16le");
+        } else if (payload.length >= 2 && payload[1] === 0x00) {
+          target = payload.toString("utf16le");
+        } else {
+          target = payload.toString("utf8");
+        }
+        target = target.replace(/^\uFEFF/u, "").replace(/\0+$/u, "").replace(/\r?\n$/u, "");
+        return {
+          matched: true,
+          target: target && !path.isAbsolute(target) ? path.resolve(path.dirname(candidate), target) : target,
+          unresolved: !target,
+        };
+      }
+    } catch {
+      return { matched: true, target: "", unresolved: true };
+    }
+  }
+
+  try {
+    const realPath = fs.realpathSync(candidate);
+    if (normalizeStdinAliasPath(realPath) !== normalizeStdinAliasPath(candidate)) {
+      return { matched: true, target: realPath, unresolved: false };
+    }
+  } catch {
+    // A regular non-alias path is not an stdin device.
+  }
+  return { matched: false, target: "", unresolved: false };
+}
+
+function getStdinDeviceAliases(commandLine) {
+  const aliases = new Map();
+  for (const segment of splitCommandSegments(commandLine)) {
+    for (const stage of splitCommandPipelineStages(segment)) {
+      const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(tokenizeCommandLine(stage)));
+      const tokens = execution.tokens;
+      if (normalizeExecutableName(tokens[0] || "") !== "ln") {
+        continue;
+      }
+      let symbolic = false;
+      const operands = [];
+      let optionsComplete = false;
+      for (const rawToken of tokens.slice(1)) {
+        const token = stripOuterQuotes(rawToken);
+        if (!optionsComplete && token === "--") {
+          optionsComplete = true;
+          continue;
+        }
+        if (!optionsComplete && token.startsWith("-")) {
+          symbolic = symbolic || token === "--symbolic" || /^-[A-Za-z]*s[A-Za-z]*$/u.test(token);
+          continue;
+        }
+        optionsComplete = true;
+        operands.push(rawToken);
+      }
+      if (!symbolic || operands.length !== 2) {
+        continue;
+      }
+      const sourceKey = normalizeStdinAliasPath(operands[0]);
+      const source = aliases.get(sourceKey) || operands[0];
+      if (isAnyStdinDevicePath(source) || isDynamicStdinScriptPath(source)) {
+        aliases.set(normalizeStdinAliasPath(operands[1]), source);
+      }
+    }
+  }
+  return aliases;
+}
+
+function isDynamicStdinScriptPath(token) {
+  const value = stripOuterQuotes(String(token || "").trim());
+  return /(?:\$\{|\$[A-Za-z_]|`|\$\()/u.test(value);
+}
+
+function shellInterpreterOptionConsumesNextValue(token) {
+  return ["-o", "+o", "-O", "+O", "--rcfile", "--init-file", "--startup-file"].includes(token) ||
+    /^[-+][A-Za-z]*[oO]$/u.test(token);
+}
+
+function interpreterOptionConsumesNextValue(executable, rawToken, normalizedToken) {
+  if (executable === "python" || executable === "python3") {
+    return ["-W", "-X"].includes(rawToken) || normalizedToken === "--check-hash-based-pycs";
+  }
+  return ["-r", "--require", "--input-type", "--loader", "--import", "--conditions", "--experimental-loader"].includes(normalizedToken);
+}
+
+function isKnownValuelessInterpreterOption(executable, token) {
+  if (executable === "python" || executable === "python3") {
+    return /^-[bdeiopqssuvx]+$/u.test(token);
+  }
+  return ["--no-warnings", "--trace-warnings", "--use-strict"].includes(token);
 }
 
 function isStartupDiagnosisSubagent(toolInput) {
@@ -525,6 +2413,111 @@ function unwrapPowerShellCommandWrapper(segment) {
   return current;
 }
 
+function unwrapShellGroupingWrapper(segment) {
+  let current = typeof segment === "string" ? segment.trim() : "";
+
+  while (isFullyWrappedShellGroup(current)) {
+    current = current.slice(1, -1).trim();
+  }
+
+  return current;
+}
+
+function unwrapShellExecutableControlFlowPrefix(stage) {
+  let current = typeof stage === "string" ? stage.trim() : "";
+  for (let depth = 0; depth < 8 && current; depth += 1) {
+    const ungrouped = unwrapShellGroupingWrapper(current);
+    if (ungrouped !== current) {
+      current = ungrouped;
+      continue;
+    }
+
+    const unaryPrefix = /^(?:!\s*|coproc\b\s*)/iu.exec(current);
+    if (unaryPrefix) {
+      current = current.slice(unaryPrefix[0].length).trim();
+      continue;
+    }
+
+    const caseArm = /^case\b[\s\S]*?\bin\b[\s\S]*?\)\s*/iu.exec(current);
+    if (caseArm) {
+      current = current.slice(caseArm[0].length).trim();
+      continue;
+    }
+
+    const match = /^(if|then|else|elif|while|until|for|do|case|try|catch|finally|switch|foreach|fi|done|esac)\b\s*/iu.exec(current);
+    if (!match) {
+      break;
+    }
+    current = current.slice(match[0].length).trim();
+    if (["fi", "done", "esac"].includes(normalizeAgentValue(match[1]))) {
+      return "";
+    }
+  }
+
+  return unwrapShellGroupingWrapper(current);
+}
+
+function isFullyWrappedShellGroup(value) {
+  const source = typeof value === "string" ? value.trim() : "";
+  if (!source.startsWith("(") || !source.endsWith(")")) {
+    return false;
+  }
+
+  let quote = "";
+  let parenDepth = 0;
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    if (quote) {
+      if (isShellQuoteTerminator(source, index, quote)) {
+        quote = "";
+      }
+      continue;
+    }
+
+    if (char === "'" || char === "\"") {
+      quote = getShellQuoteMode(source, index, char);
+      continue;
+    }
+
+    if (char === "(") {
+      parenDepth += 1;
+      continue;
+    }
+
+    if (char === ")" && parenDepth > 0) {
+      parenDepth -= 1;
+      if (parenDepth === 0 && index < source.length - 1) {
+        return false;
+      }
+    }
+  }
+
+  return parenDepth === 0;
+}
+
+function isShellQuoteTerminator(source, index, quote) {
+  const quoteCharacter = quote === "ansi-single" ? "'" : quote;
+  if (source[index] !== quoteCharacter) {
+    return false;
+  }
+  if (quote === "'") {
+    return true;
+  }
+
+  let backslashCount = 0;
+  for (let cursor = index - 1; cursor >= 0 && source[cursor] === "\\"; cursor -= 1) {
+    backslashCount += 1;
+  }
+  return backslashCount % 2 === 0;
+}
+
+function getShellQuoteMode(source, index, quoteCharacter) {
+  if (quoteCharacter === "'" && source[index - 1] === "$") {
+    return "ansi-single";
+  }
+  return quoteCharacter;
+}
+
 function hasAllowedWinsmuxDiagnosticCommand(tokens, startIndex) {
   return hasStandaloneCommandToken(tokens, "has-session", startIndex) ||
          hasStandaloneCommandToken(tokens, "list-panes", startIndex) ||
@@ -600,6 +2593,11 @@ function isGhPrMergeCommand(command) {
 }
 
 function isOperatorOnlyGitLifecycleCommand(command) {
+  const powerShellComSpecCommand = materializePowerShellComSpecAliases(command);
+  if (powerShellComSpecCommand !== command) {
+    return isOperatorOnlyGitLifecycleCommand(powerShellComSpecCommand);
+  }
+
   if (hasPowerShellGitAliasLifecycleCommand(command, false)) {
     return true;
   }
@@ -617,7 +2615,15 @@ function isOperatorOnlyGitLifecycleCommand(command) {
   }
 
   return splitCommandSegments(command).some((segment) =>
-    splitCommandPipelineStages(segment).some(isOperatorOnlyGitLifecycleSegment));
+    splitCommandPipelineStages(segment).some((stage) => {
+      const powerShellStage = unwrapPowerShellCommandWrapper(stage);
+      const groupedStage = unwrapShellGroupingWrapper(powerShellStage);
+      if (groupedStage !== powerShellStage.trim()) {
+        return isOperatorOnlyGitLifecycleCommand(groupedStage);
+      }
+
+      return isOperatorOnlyGitLifecycleSegment(stage);
+    }));
 }
 
 function hasPowerShellScriptBlockGitLifecycleCommand(command) {
@@ -648,7 +2654,11 @@ function hasXargsGitLifecycleCommand(command, reviewOnly) {
   return splitCommandSegments(source).some((segment) =>
     splitCommandPipelineStages(segment).some((stage) => {
       const normalizedStage = unwrapPowerShellCommandWrapper(stage);
-      const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(normalizedStage));
+      const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(tokenizeCommandLine(normalizedStage)));
+      if (execution.nestedCommand) {
+        return isReviewGatedCommand(execution.nestedCommand);
+      }
+      const tokens = execution.tokens;
       if (tokens.length === 0 || normalizeExecutableName(tokens[0]) !== "xargs") {
         return false;
       }
@@ -663,9 +2673,13 @@ function hasXargsGitLifecycleCommand(command, reviewOnly) {
         return true;
       }
 
+      if (hasUnresolvedXargsLifecycleCommand(nestedTokens)) {
+        return true;
+      }
+
       const nestedExecutable = normalizeExecutableName(nestedTokens[0] || "");
-      if (reviewOnly && nestedExecutable === "git") {
-        return /\b(?:commit|merge)\b/u.test(normalizeAgentValue(source));
+      if (reviewOnly && nestedExecutable === "git" && findGitSubcommandIndex(nestedTokens) < 0) {
+        return /\b(?:commit|merge|push|update-ref|branch|tag)\b/u.test(normalizeAgentValue(source));
       }
 
       if (nestedExecutable === "gh") {
@@ -842,58 +2856,98 @@ function hasInterpreterGitLifecycleCommand(segment, tokens) {
     : hasPythonGitLifecycleCommand(segment);
 }
 
-function hasPythonGitLifecycleCommand(segment) {
+function hasInterpreterReviewGatedGitLifecycleCommand(segment, tokens) {
+  if (hasDynamicInterpreterGitSubcommand(segment)) {
+    return true;
+  }
+  const literalCommands = getInterpreterLiteralGitCommands(segment, tokens);
+  if (literalCommands.some((command) => isReviewGatedCommand(command))) {
+    return true;
+  }
+
+  return literalCommands.length === 0 &&
+    hasDynamicInterpreterLifecycleHint(segment) &&
+    /\b(?:commit|merge|push|update-ref|branch|tag)\b/iu.test(String(segment || ""));
+}
+
+function getInterpreterLiteralGitCommands(segment, tokens) {
+  const interpreterKind = getShellInterpreterKind(tokens);
+  if (!interpreterKind) {
+    return [];
+  }
+
+  return getInterpreterLiteralGitCommandsForKind(segment, interpreterKind);
+}
+
+function getInterpreterLiteralGitCommandsForKind(segment, interpreterKind) {
   const source = String(segment || "");
-  const literalCommandPatterns = [
-    /\b(?:subprocess\.(?:run|call|check_call|check_output|popen)|os\.system)\s*\(\s*(?:"([^"]*\b(?:git|gh)\b[^"]*)"|'([^']*\b(?:git|gh)\b[^']*)')/giu,
-  ];
-  for (const pattern of literalCommandPatterns) {
-    for (const match of source.matchAll(pattern)) {
-      const command = match[1] || match[2] || "";
-      if (command && isOperatorOnlyGitLifecycleCommand(command)) {
-        return true;
+  const commands = [];
+  const calls = interpreterKind === "node"
+    ? getNodeChildProcessCalls(source)
+    : getPythonProcessCalls(source);
+  for (const call of calls) {
+    const callBody = getBalancedCallBody(source, call.openIndex);
+    if (callBody === null) {
+      continue;
+    }
+    const args = splitTopLevelCallArguments(callBody);
+    const method = normalizeAgentValue(call.method);
+    const assignments = getConstantStringAssignments(source, call.openIndex);
+    if (interpreterKind === "node" && (method === "exec" || method === "execsync")) {
+      const command = evaluateStaticStringExpression(args[0], assignments) || "";
+      if (/\b(?:git|gh)(?:\.exe)?\b/iu.test(command)) {
+        commands.push(command);
+      }
+      continue;
+    }
+    if (interpreterKind === "python" && method === "system") {
+      const command = evaluateStaticStringExpression(args[0], assignments) || "";
+      if (/\b(?:git|gh)(?:\.exe)?\b/iu.test(command)) {
+        commands.push(command);
+      }
+      continue;
+    }
+
+    const commandExpression = stripLeadingCallComments(args[0]);
+    const elements = interpreterKind === "node"
+      ? getArrayLiteralElements(args[1])
+      : commandExpression && ["[", "("].includes(commandExpression[0])
+      ? splitTopLevelCallArguments(commandExpression.slice(1, -1))
+      : null;
+    const tool = interpreterKind === "node"
+      ? normalizeExecutableName(evaluateStaticStringExpression(args[0], assignments) || "")
+      : elements
+      ? normalizeExecutableName(evaluateStaticStringExpression(elements[0], assignments) || "")
+      : "";
+    const argumentExpressions = interpreterKind === "node" ? elements : elements?.slice(1);
+    if ((tool === "git" || tool === "gh") && argumentExpressions) {
+      const staticArguments = argumentExpressions.map((expression) => evaluateStaticStringExpression(expression, assignments) || "");
+      if (staticArguments.every((argument) => argument !== "")) {
+        commands.push([tool, ...staticArguments].join(" "));
       }
     }
   }
+  return commands.filter(Boolean);
+}
 
-  return hasArrayGitLifecycleCommand(source) || hasDynamicInterpreterLifecycleHint(source);
+function hasPythonGitLifecycleCommand(segment) {
+  const source = String(segment || "");
+  return getInterpreterLiteralGitCommandsForKind(source, "python")
+    .some((command) => isOperatorOnlyGitLifecycleCommand(command)) ||
+    hasDynamicInterpreterLifecycleHint(source);
 }
 
 function hasNodeGitLifecycleCommand(segment) {
   const source = String(segment || "");
-  const literalCommandPatterns = [
-    /\b(?:execsync|exec)\s*\(\s*(?:"([^"]*\b(?:git|gh)\b[^"]*)"|'([^']*\b(?:git|gh)\b[^']*)')/giu,
-  ];
-  for (const pattern of literalCommandPatterns) {
-    for (const match of source.matchAll(pattern)) {
-      const command = match[1] || match[2] || "";
-      if (command && isOperatorOnlyGitLifecycleCommand(command)) {
-        return true;
-      }
-    }
-  }
-
-  const fileCommandPattern = /\b(?:execfilesync|execfile|spawnsync|spawn)\s*\(\s*(?:"(git|gh)(?:\.exe)?"|'(git|gh)(?:\.exe)?')\s*,\s*\[([^\]]*)\]/giu;
-  for (const match of source.matchAll(fileCommandPattern)) {
-    const tool = match[1] || match[2] || "";
-    const args = extractQuotedArguments(match[3] || "");
-    if (tool && isOperatorOnlyGitLifecycleCommand([tool, ...args].join(" "))) {
-      return true;
-    }
-  }
-
-  return hasDynamicInterpreterLifecycleHint(source);
+  return getInterpreterLiteralGitCommandsForKind(source, "node")
+    .some((command) => isOperatorOnlyGitLifecycleCommand(command)) ||
+    hasDynamicInterpreterLifecycleHint(source);
 }
 
 function hasDynamicInterpreterLifecycleHint(source) {
   const text = String(source || "").toLowerCase();
-  const subprocessAliases = [...text.matchAll(/\bimport\s+subprocess\s+as\s+([a-z_][a-z0-9_]*)/gu)]
-    .map((match) => match[1])
-    .filter(Boolean);
-  const subprocessCallPattern = subprocessAliases.length > 0
-    ? new RegExp(`\\b(?:subprocess|${subprocessAliases.join("|")})\\.(?:run|call|check_call|check_output|popen)\\b|\\bos\\.system\\b|\\b(?:execfilesync|execfile|spawnsync|spawn|execsync|exec)\\b`, "u")
-    : /\b(?:subprocess\.(?:run|call|check_call|check_output|popen)|os\.system|execfilesync|execfile|spawnsync|spawn|execsync|exec)\b/u;
-  if (!subprocessCallPattern.test(text)) {
+  if (getNodeChildProcessCalls(text).length === 0 &&
+      getPythonProcessCalls(text).length === 0) {
     return false;
   }
 
@@ -911,12 +2965,20 @@ function hasPowerShellDynamicCallLifecycleCommand(segment) {
 
 function hasPowerShellStartProcessLifecycleHint(segment) {
   const source = String(segment || "");
-  if (!/^\s*start-process\b/iu.test(source)) {
+  if (!/^\s*(?:start-process|saps|start)\b/iu.test(source)) {
     return false;
   }
 
+  const embeddedSetIndex = source.search(/\bset\s+[A-Za-z_][A-Za-z0-9_]*=/iu);
+  if (embeddedSetIndex >= 0 && getCmdDynamicLifecycleCommand(unescapeCmdCaretEscapes(source.slice(embeddedSetIndex)))) {
+    return true;
+  }
+  const invocation = getPowerShellStartProcessInvocation(tokenizeCommandLine(source));
+  if (invocation.command) {
+    return isOperatorOnlyGitLifecycleCommand(invocation.command);
+  }
   return hasGitLifecycleHint(source) &&
-    /(?:\(\s*get-command\b|\$env:comspec\b|\bpwsh\b|\bpowershell\b|\bcmd\b|['"]g['"]\s*\+\s*['"](?:it|h)['"])/iu.test(source);
+    /(?:\(\s*get-command\b|\$env:comspec\b|\bpwsh\b|\bpowershell\b|\bcmd\b|['"]g['"]\s*\+\s*['"](?:it|h)['"]|^\s*(?:start-process|saps|start)\s+(?:['"]?git(?:\.exe)?['"]?|['"]?gh(?:\.exe)?['"]?))/iu.test(source);
 }
 
 function hasGitLifecycleHint(source) {
@@ -986,6 +3048,216 @@ function isGhApiRefWriteCommand(tokens) {
   return hasGhApiWriteMethod(args) || hasGhApiWriteField(args);
 }
 
+function hasForeignGitHubLifecycleTarget(command, baseCwd, depth = 0, inheritedGhEnvironment = {}) {
+  if (depth > 5) {
+    return true;
+  }
+
+  let ghRepoEnvironmentTarget = inheritedGhEnvironment.repo || "";
+  let ghHostEnvironmentTarget = inheritedGhEnvironment.host || "";
+  const reviewedIdentities = Array.isArray(inheritedGhEnvironment.reviewedIdentities)
+    ? inheritedGhEnvironment.reviewedIdentities
+    : getReviewGatedCommandTargets(command, baseCwd).targetCwds
+      .map((targetCwd) => getGitHubRepositoryIdentity(targetCwd))
+      .filter((identity) => identity.host && identity.slug);
+  for (const segment of splitCommandSegments(command)) {
+    const segmentGhRepo = getConstantGhRepoAssignment(segment);
+    if (segmentGhRepo) {
+      ghRepoEnvironmentTarget = segmentGhRepo;
+    }
+    const segmentGhHost = getConstantGhHostAssignment(segment);
+    if (segmentGhHost.found) {
+      ghHostEnvironmentTarget = segmentGhHost.unresolved
+        ? "\0unresolved-gh-host"
+        : segmentGhHost.value;
+    }
+    for (const stage of splitCommandPipelineStages(segment)) {
+      const originalTokens = tokenizeCommandLine(stage);
+      const effectiveGhRepo = getEffectiveEnvironmentValue(originalTokens, "GH_REPO");
+      const effectiveGhHost = getEffectiveEnvironmentValue(originalTokens, "GH_HOST");
+      const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(originalTokens));
+      const stageGhRepoEnvironmentTarget = effectiveGhRepo.specified
+        ? effectiveGhRepo.value
+        : (ghRepoEnvironmentTarget || effectiveGhRepo.value);
+      const stageGhHostEnvironmentTarget = effectiveGhHost.specified
+        ? effectiveGhHost.value
+        : (ghHostEnvironmentTarget || effectiveGhHost.value);
+      const nestedGhEnvironment = {
+        repo: stageGhRepoEnvironmentTarget,
+        host: stageGhHostEnvironmentTarget,
+        reviewedIdentities,
+      };
+      if (execution.nestedCommand && hasForeignGitHubLifecycleTarget(execution.nestedCommand, baseCwd, depth + 1, nestedGhEnvironment)) {
+        return true;
+      }
+      const tokens = execution.tokens;
+      if (tokens.length === 0) {
+        continue;
+      }
+      const executable = normalizeExecutableName(tokens[0]);
+      if (isShellCommandExecutable(executable) || isPowerShellExecutable(executable)) {
+        const nestedCommand = isShellCommandExecutable(executable)
+          ? getShellCommandArgument(tokens)
+          : getPowerShellNestedCommand(tokens);
+        if (nestedCommand && hasForeignGitHubLifecycleTarget(nestedCommand, baseCwd, depth + 1, nestedGhEnvironment)) {
+          return true;
+        }
+        continue;
+      }
+      if (!isGhExecutableToken(tokens[0])) {
+        continue;
+      }
+      if (effectiveGhRepo.unresolved || effectiveGhHost.unresolved) {
+        return true;
+      }
+      if (isGhApiGraphqlRefMutation(tokens.map((token) => normalizeAgentValue(stripOuterQuotes(token))))) {
+        return true;
+      }
+
+      let explicitRepo = "";
+      let explicitHost = "";
+      let repoSelected = false;
+      let hostSelected = false;
+      for (let index = 1; index < tokens.length; index += 1) {
+        const token = stripOuterQuotes(tokens[index]);
+        const normalized = normalizeAgentValue(token);
+        if (normalized === "--hostname") {
+          explicitHost = normalizeGitHubHost(tokens[index + 1] || "");
+          if (!explicitHost) return true;
+          hostSelected = true;
+          index += 1;
+          continue;
+        }
+        if (normalized.startsWith("--hostname=")) {
+          explicitHost = normalizeGitHubHost(token.slice(token.indexOf("=") + 1));
+          if (!explicitHost) return true;
+          hostSelected = true;
+          continue;
+        }
+        if ((normalized === "-r" || normalized === "--repo") && index + 1 < tokens.length) {
+          if (!explicitRepo) explicitRepo = normalizeAgentValue(stripOuterQuotes(tokens[index + 1]));
+          repoSelected = true;
+          index += 1;
+          continue;
+        }
+        if (normalized.startsWith("--repo=")) {
+          if (!explicitRepo) explicitRepo = normalizeAgentValue(token.slice(token.indexOf("=") + 1));
+          repoSelected = true;
+          continue;
+        }
+        if (normalized.startsWith("-r=") || (/^-r[^-]/u.test(normalized) && normalized.length > 2)) {
+          if (!explicitRepo) explicitRepo = normalizeAgentValue(token.slice(token.startsWith("-R=") || token.startsWith("-r=") ? 3 : 2));
+          repoSelected = true;
+          continue;
+        }
+        const pullUrlRepo = /^https?:\/\/([^/]+)\/([^/]+\/[^/]+)\/pull\/\d+(?:[/?#]|$)/iu.exec(token);
+        if (pullUrlRepo) {
+          explicitHost = normalizeGitHubHost(pullUrlRepo[1]);
+          if (!explicitRepo) explicitRepo = normalizeAgentValue(pullUrlRepo[2]);
+          if (!explicitHost) return true;
+          hostSelected = true;
+          repoSelected = true;
+          continue;
+        }
+        const schemelessGitHubPull = /^(?:www\.)?github\.com\/([^/]+\/[^/]+)\/pull\/\d+(?:[/?#]|$)/iu.exec(token);
+        if (schemelessGitHubPull) {
+          explicitHost = "github.com";
+          if (!explicitRepo) explicitRepo = normalizeAgentValue(schemelessGitHubPull[1]);
+          hostSelected = true;
+          repoSelected = true;
+          continue;
+        }
+        const apiUrlRepo = /^https?:\/\/([^/]+)\/(?:api\/v3\/)?repos\/([^/]+\/[^/]+)(?:\/|$)/iu.exec(token);
+        if (apiUrlRepo) {
+          explicitHost = normalizeGitHubHost(apiUrlRepo[1]);
+          if (!explicitRepo) explicitRepo = normalizeAgentValue(apiUrlRepo[2]);
+          if (!explicitHost) return true;
+          hostSelected = true;
+          repoSelected = true;
+          continue;
+        }
+        const apiRepo = /(?:^|\/)repos\/([^/]+\/[^/]+)(?:\/|$)/iu.exec(token);
+        if (apiRepo) {
+          if (!explicitRepo) explicitRepo = normalizeAgentValue(apiRepo[1]);
+          repoSelected = true;
+          continue;
+        }
+      }
+
+      if (!explicitRepo && stageGhRepoEnvironmentTarget) {
+        explicitRepo = normalizeAgentValue(stripOuterQuotes(stageGhRepoEnvironmentTarget));
+        repoSelected = true;
+      }
+
+      if (!hostSelected) {
+        if (ghHostEnvironmentTarget.includes("\0")) return true;
+        const environmentHost = stageGhHostEnvironmentTarget;
+        if (environmentHost) {
+          explicitHost = normalizeGitHubHost(environmentHost);
+          if (!explicitHost) return true;
+          hostSelected = true;
+        }
+      }
+
+      if ((hostSelected || repoSelected) && !reviewedIdentities.some((identity) =>
+        (!hostSelected || identity.host === explicitHost) &&
+        (!repoSelected || identity.slug === explicitRepo))) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function getConstantGhRepoAssignment(source) {
+  let value = "";
+  const pattern = /(?:^|[\s;])(?:export\s+)?(?:\$env:)?gh_repo\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s;]+))/giu;
+  for (const match of String(source || "").matchAll(pattern)) {
+    value = match[1] || match[2] || match[3] || "";
+  }
+  return normalizeAgentValue(stripOuterQuotes(value));
+}
+
+function getConstantGhHostAssignment(source) {
+  let value = "";
+  let found = false;
+  const pattern = /(?:^|[\s;])(?:export\s+)?(?:\$env:)?gh_host\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s;]+))/giu;
+  for (const match of String(source || "").matchAll(pattern)) {
+    found = true;
+    value = match[1] || match[2] || match[3] || "";
+  }
+  const normalized = normalizeGitHubHost(value);
+  return { found, value: normalized, unresolved: found && !normalized };
+}
+
+function normalizeGitHubHost(value) {
+  const normalized = normalizeAgentValue(stripOuterQuotes(String(value || "")))
+    .replace(/^https?:\/\//u, "")
+    .replace(/^www\./u, "")
+    .replace(/\/$/u, "");
+  return /^[a-z0-9.-]+(?::\d+)?$/u.test(normalized) ? normalized : "";
+}
+
+function getGitHubRepositoryIdentity(repoCwd) {
+  const repoRoot = resolveGitTopLevel(repoCwd);
+  if (!repoRoot) {
+    return { host: "", slug: "" };
+  }
+  try {
+    const remote = execFileSync("git", ["-C", repoRoot, "config", "--get", "remote.origin.url"], {
+      encoding: "utf8",
+      env: getGitProbeEnvironment(),
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim().replace(/\\/gu, "/");
+    const match = /^(?:https?:\/\/|ssh:\/\/[^@]+@|[^@/:]+@)?([^/:]+)(?::\d+)?[:/]([^/]+\/[^/]+)$/iu.exec(remote);
+    return match
+      ? { host: normalizeGitHubHost(match[1]), slug: normalizeAgentValue(match[2]).replace(/\.git$/u, "") }
+      : { host: "", slug: "" };
+  } catch {
+    return { host: "", slug: "" };
+  }
+}
+
 function isGhApiGraphqlRefMutation(args) {
   const joinedArgs = args.join(" ");
   return /\bgraphql\b/u.test(joinedArgs) &&
@@ -1031,9 +3303,13 @@ function hasGhApiWriteField(args) {
 }
 
 function isReadOnlyGitSubcommand(gitSubcommand, tokens, subcommandIndex) {
+  if (gitSubcommand === "grep") {
+    return !hasGitWriteOption(tokens, subcommandIndex) &&
+      hasOnlyCanonicalGitGrepLongOptions(tokens, subcommandIndex);
+  }
+
   if ([
     "diff",
-    "grep",
     "log",
     "ls-files",
     "merge-base",
@@ -1070,6 +3346,28 @@ function hasGitWriteOption(tokens, subcommandIndex) {
   }
 
   return false;
+}
+
+function hasOnlyCanonicalGitGrepLongOptions(tokens, subcommandIndex) {
+  const exactOptions = new Set([
+    "--all-match", "--and", "--basic-regexp", "--break", "--cached", "--count",
+    "--extended-regexp", "--files-with-matches", "--files-without-match", "--fixed-strings",
+    "--full-name", "--heading", "--ignore-case", "--invert-match", "--line-number",
+    "--name-only", "--no-color", "--no-index", "--not", "--null", "--or",
+    "--perl-regexp", "--quiet", "--recurse-submodules", "--text", "--untracked",
+    "--word-regexp",
+  ]);
+  const valuedOptions = [
+    "--after-context=", "--before-context=", "--color=", "--context=", "--max-count=",
+    "--max-depth=", "--threads=",
+  ];
+  return tokens.slice(subcommandIndex + 1)
+    .map((token) => normalizeAgentValue(stripOuterQuotes(token)))
+    .every((argument) =>
+      !argument.startsWith("--") ||
+      argument === "--" ||
+      exactOptions.has(argument) ||
+      valuedOptions.some((prefix) => argument.startsWith(prefix) && argument.length > prefix.length));
 }
 
 function isReadOnlyGitConfigCommand(tokens, subcommandIndex) {
@@ -1117,8 +3415,14 @@ function isReadOnlyGitRemoteCommand(tokens, subcommandIndex) {
     return true;
   }
 
-  const subcommand = args.find((arg) => !arg.startsWith("-")) || "";
-  return subcommand === "-v" || subcommand === "show" || subcommand === "get-url";
+  const commandIndex = args.findIndex((arg) => !arg.startsWith("-"));
+  const subcommand = commandIndex < 0 ? "" : args[commandIndex];
+  if (subcommand !== "show" && subcommand !== "get-url") return false;
+  const operands = args.slice(commandIndex + 1).filter((arg) => !arg.startsWith("-"));
+  const noQuery = args.includes("-n") || args.includes("--no-query");
+  return operands.length === 1 &&
+    /^[a-z0-9._-]+$/u.test(operands[0]) &&
+    (subcommand === "get-url" || noQuery);
 }
 
 function findGitSubcommandIndex(tokens) {
@@ -1129,19 +3433,12 @@ function findGitSubcommandIndex(tokens) {
       continue;
     }
 
-    if (normalizedToken === "-c" ||
-        normalizedToken === "-C" ||
-        normalizedToken === "--git-dir" ||
-        normalizedToken === "--work-tree" ||
-        normalizedToken === "--namespace") {
+    if (isGitGlobalOptionWithSeparateValue(normalizedToken)) {
       index += 1;
       continue;
     }
 
-    if (normalizedToken.startsWith("-c=") ||
-        normalizedToken.startsWith("--git-dir=") ||
-        normalizedToken.startsWith("--work-tree=") ||
-        normalizedToken.startsWith("--namespace=")) {
+    if (isGitGlobalOptionWithInlineValue(normalizedToken)) {
       continue;
     }
 
@@ -1155,13 +3452,154 @@ function findGitSubcommandIndex(tokens) {
   return -1;
 }
 
+function isGitGlobalOptionWithSeparateValue(normalizedToken) {
+  return normalizedToken === "-c" ||
+         normalizedToken === "--config-env" ||
+         normalizedToken === "--git-dir" ||
+         normalizedToken === "--work-tree" ||
+         normalizedToken === "--namespace";
+}
+
+function isGitGlobalOptionWithInlineValue(normalizedToken) {
+  return normalizedToken.startsWith("-c=") ||
+         normalizedToken.startsWith("--config-env=") ||
+         normalizedToken.startsWith("--git-dir=") ||
+         normalizedToken.startsWith("--work-tree=") ||
+         normalizedToken.startsWith("--namespace=");
+}
+
 function getGitSubcommandName(tokens, subcommandIndex) {
   const subcommand = normalizeAgentValue(stripOuterQuotes(tokens[subcommandIndex]));
   const aliasSubcommand = getGitAliasSubcommandName(tokens, subcommandIndex, subcommand);
   return aliasSubcommand || subcommand;
 }
 
+function isReviewGatedGitSubcommand(subcommand, tokens = [], subcommandIndex = -1) {
+  const normalized = normalizeAgentValue(subcommand);
+  if (["commit", "merge", "push", "update-ref"].includes(normalized)) {
+    return true;
+  }
+
+  if (normalized === "branch") {
+    return !isReadOnlyGitBranchCommand(tokens, subcommandIndex);
+  }
+
+  if (normalized === "tag") {
+    return !isReadOnlyGitTagCommand(tokens, subcommandIndex);
+  }
+
+  return false;
+}
+
+function getConfiguredGitAliasSubcommand(aliasValue) {
+  if (typeof aliasValue !== "string" || aliasValue.trim() === "" || aliasValue.trim().startsWith("!")) {
+    return "";
+  }
+
+  const aliasTokens = tokenizeCommandLine(aliasValue);
+  return aliasTokens.length > 0 ? normalizeAgentValue(stripOuterQuotes(aliasTokens[0])) : "";
+}
+
+function getConfiguredGitAliasValue(repoCwd, aliasName) {
+  const normalizedAlias = normalizeAgentValue(aliasName);
+  if (!repoCwd || !/^[a-z0-9._-]+$/u.test(normalizedAlias)) {
+    return "";
+  }
+
+  try {
+    return execFileSync("git", ["-C", repoCwd, "config", "--get", `alias.${normalizedAlias}`], {
+      encoding: "utf8",
+      env: getGitProbeEnvironment(),
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return "";
+  }
+}
+
+function hasConfiguredGitReviewLifecycleAlias(command, baseCwd, depth = 0) {
+  if (depth > 5) {
+    return true;
+  }
+
+  for (const segment of splitCommandSegments(command)) {
+    for (const stage of splitCommandPipelineStages(segment)) {
+      const rawTokens = tokenizeCommandLine(stage);
+      const gitEnvContext = getGitInlineEnvironmentContext(rawTokens, baseCwd);
+      const commandBaseCwd = gitEnvContext.baseCwd || baseCwd;
+      const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(rawTokens));
+      if (execution.nestedCommand && hasConfiguredGitReviewLifecycleAlias(execution.nestedCommand, baseCwd, depth + 1)) {
+        return true;
+      }
+      const tokens = execution.tokens;
+      if (tokens.length === 0) {
+        continue;
+      }
+
+      const executable = normalizeExecutableName(tokens[0]);
+      if (isShellCommandExecutable(executable) || isPowerShellExecutable(executable)) {
+        const nestedCommand = isShellCommandExecutable(executable)
+          ? getShellCommandArgument(tokens)
+          : getPowerShellNestedCommand(tokens);
+        if (nestedCommand && hasConfiguredGitReviewLifecycleAlias(nestedCommand, baseCwd, depth + 1)) {
+          return true;
+        }
+        continue;
+      }
+
+      if (!isGitExecutableToken(tokens[0])) {
+        continue;
+      }
+      const subcommandIndex = findGitSubcommandIndex(tokens);
+      if (subcommandIndex < 0) {
+        continue;
+      }
+      const rawSubcommand = normalizeAgentValue(stripOuterQuotes(tokens[subcommandIndex]));
+      const gitBaseCwd = getGitGlobalCwdOption(tokens, 0, commandBaseCwd, gitEnvContext) || commandBaseCwd || process.cwd();
+      const aliasValue = getConfiguredGitAliasValue(gitBaseCwd, rawSubcommand);
+      const aliasSubcommand = getConfiguredGitAliasSubcommand(aliasValue);
+      if (isReviewGatedGitSubcommand(aliasSubcommand)) {
+        return true;
+      }
+      if (aliasValue.trim().startsWith("!") && isReviewGatedCommand(aliasValue.trim().slice(1))) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
 function getGitAliasSubcommandName(tokens, subcommandIndex, subcommand) {
+  const aliasValue = getGitAliasConfigValue(tokens, subcommandIndex, subcommand);
+  if (!aliasValue) {
+    return "";
+  }
+
+  const aliasTokens = tokenizeCommandLine(aliasValue);
+  if (aliasTokens.length === 0) {
+    return "";
+  }
+
+  const delegatedSubcommand = getGitShellAliasDelegatedSubcommand(aliasTokens);
+  if (delegatedSubcommand) {
+    return delegatedSubcommand;
+  }
+
+  return normalizeAgentValue(stripOuterQuotes(aliasTokens[0]));
+}
+
+function getGitShellAliasCommand(tokens, subcommandIndex, subcommand) {
+  const aliasValue = getGitAliasConfigValue(tokens, subcommandIndex, subcommand);
+  const trimmedAliasValue = typeof aliasValue === "string" ? aliasValue.trim() : "";
+  if (!trimmedAliasValue.startsWith("!")) {
+    return "";
+  }
+
+  return trimmedAliasValue.slice(1).trim();
+}
+
+function getGitAliasConfigValue(tokens, subcommandIndex, subcommand) {
   for (let index = 1; index < subcommandIndex; index += 1) {
     const token = stripOuterQuotes(tokens[index]);
     const normalizedToken = normalizeAgentValue(token);
@@ -1183,17 +3621,7 @@ function getGitAliasSubcommandName(tokens, subcommandIndex, subcommand) {
       continue;
     }
 
-    const aliasTokens = tokenizeCommandLine(aliasMatch[2]);
-    if (aliasTokens.length === 0) {
-      continue;
-    }
-
-    const delegatedSubcommand = getGitShellAliasDelegatedSubcommand(aliasTokens);
-    if (delegatedSubcommand) {
-      return delegatedSubcommand;
-    }
-
-    return normalizeAgentValue(stripOuterQuotes(aliasTokens[0]));
+    return aliasMatch[2] || "";
   }
 
   return "";
@@ -1239,9 +3667,11 @@ function isGitLifecycleSubcommandName(value) {
   ].includes(normalizeAgentValue(value));
 }
 
-function hasPowerShellGitAliasLifecycleCommand(command, reviewOnly) {
+function hasPowerShellGitAliasLifecycleCommand(command, reviewOnly, options = {}) {
+  const includeFunctionCommands = options.includeFunctionCommands !== false;
   const aliases = new Map();
   const ghAliases = new Map();
+  const shellAliases = new Map();
 
   for (const segment of splitCommandSegments(command)) {
     for (const pipelineStage of splitCommandPipelineStages(segment)) {
@@ -1265,6 +3695,9 @@ function hasPowerShellGitAliasLifecycleCommand(command, reviewOnly) {
 
       if (executable === "alias") {
         const aliasDefinition = getShellAliasDefinition(tokens);
+        if (aliasDefinition.aliasName) {
+          shellAliases.set(aliasDefinition.aliasName, aliasDefinition);
+        }
         if (aliasDefinition.aliasName && aliasDefinition.aliasTarget === "git") {
           aliases.set(aliasDefinition.aliasName, aliasDefinition.aliasArgs);
         }
@@ -1274,12 +3707,38 @@ function hasPowerShellGitAliasLifecycleCommand(command, reviewOnly) {
         continue;
       }
 
+      const shellExpansion = expandShellAliasInvocation(tokens, shellAliases);
+      if (shellExpansion.unresolved) {
+        return true;
+      }
+      if (shellExpansion.matched) {
+        const effectiveTokens = shellExpansion.tokens;
+        const effectiveExecutable = normalizeExecutableName(effectiveTokens[0] || "");
+        if (effectiveExecutable === "git") {
+          const subcommandIndex = findGitSubcommandIndex(effectiveTokens);
+          const subcommand = subcommandIndex >= 0
+            ? getGitSubcommandName(effectiveTokens, subcommandIndex)
+            : "";
+          if (reviewOnly
+            ? isReviewGatedGitSubcommand(subcommand, effectiveTokens, subcommandIndex)
+            : isGitLifecycleSubcommandName(subcommand) || !isReadOnlyGitSubcommand(subcommand, effectiveTokens, subcommandIndex)) {
+            return true;
+          }
+        }
+        if (effectiveExecutable === "gh" &&
+            (isGhPrMergeTokenCommand(effectiveTokens) ||
+             isGhApiMergeCommand(effectiveTokens) ||
+             isGhApiRefWriteCommand(effectiveTokens))) {
+          return true;
+        }
+      }
+
       if (aliases.has(executable)) {
         const aliasArgs = aliases.get(executable) || [];
         const effectiveTokens = [tokens[0], ...aliasArgs, ...tokens.slice(1)];
         const subcommand = normalizeAgentValue(stripOuterQuotes(effectiveTokens[1] || ""));
         if (reviewOnly) {
-          if (subcommand === "commit" || subcommand === "merge") {
+          if (isReviewGatedGitSubcommand(subcommand, ["git", ...effectiveTokens.slice(1)], 1)) {
             return true;
           }
           continue;
@@ -1305,13 +3764,13 @@ function hasPowerShellGitAliasLifecycleCommand(command, reviewOnly) {
     }
   }
 
-  if (hasShellFunctionLifecycleCommand(command, reviewOnly)) {
+  if (includeFunctionCommands && hasShellFunctionLifecycleCommand(command, reviewOnly)) {
     return true;
   }
-  if (hasPowerShellFunctionLifecycleCommand(command, reviewOnly)) {
+  if (includeFunctionCommands && hasPowerShellFunctionLifecycleCommand(command, reviewOnly)) {
     return true;
   }
-  if (hasAliasFunctionLifecycleCommand(command, reviewOnly, aliases, ghAliases)) {
+  if (includeFunctionCommands && hasAliasFunctionLifecycleCommand(command, reviewOnly, aliases, ghAliases)) {
     return true;
   }
 
@@ -1321,29 +3780,38 @@ function hasPowerShellGitAliasLifecycleCommand(command, reviewOnly) {
 function getSetAliasDefinition(tokens) {
   let aliasName = "";
   let aliasTarget = "";
+  let unsupportedSyntax = false;
   const nameOptionPrefixes = expandPowerShellOptionPrefixes(["-name"]);
   const valueOptionPrefixes = expandPowerShellOptionPrefixes(["-value"]);
   for (let index = 1; index < tokens.length; index += 1) {
     const token = stripOuterQuotes(tokens[index]);
     const normalizedToken = normalizeAgentValue(token);
     if (nameOptionPrefixes.includes(normalizedToken) && index + 1 < tokens.length) {
+      if (aliasName) unsupportedSyntax = true;
       aliasName = normalizeAgentValue(stripOuterQuotes(tokens[index + 1]));
       index += 1;
       continue;
     }
     if (valueOptionPrefixes.includes(normalizedToken) && index + 1 < tokens.length) {
+      if (aliasTarget) unsupportedSyntax = true;
       aliasTarget = normalizeAgentValue(stripOuterQuotes(tokens[index + 1]));
       index += 1;
       continue;
     }
     const inlineNameOption = nameOptionPrefixes.find((optionName) => normalizedToken.startsWith(optionName + ":"));
     if (inlineNameOption) {
+      if (aliasName) unsupportedSyntax = true;
       aliasName = normalizeAgentValue(token.slice(inlineNameOption.length + 1));
       continue;
     }
     const inlineValueOption = valueOptionPrefixes.find((optionName) => normalizedToken.startsWith(optionName + ":"));
     if (inlineValueOption) {
+      if (aliasTarget) unsupportedSyntax = true;
       aliasTarget = normalizeAgentValue(token.slice(inlineValueOption.length + 1));
+      continue;
+    }
+    if (normalizedToken.startsWith("-")) {
+      unsupportedSyntax = true;
       continue;
     }
     if (!normalizedToken.startsWith("-")) {
@@ -1351,32 +3819,1181 @@ function getSetAliasDefinition(tokens) {
         aliasName = normalizedToken;
       } else if (!aliasTarget) {
         aliasTarget = normalizedToken;
+      } else {
+        unsupportedSyntax = true;
       }
     }
   }
 
-  return { aliasName, aliasTarget };
+  return {
+    aliasName,
+    aliasTarget,
+    canonicalSyntax: Boolean(
+      aliasName && aliasTarget && !unsupportedSyntax && tokens.length === 3 &&
+      !normalizeAgentValue(stripOuterQuotes(tokens[1] || "")).startsWith("-") &&
+      !normalizeAgentValue(stripOuterQuotes(tokens[2] || "")).startsWith("-"),
+    ),
+  };
 }
 
 function getShellAliasDefinition(tokens) {
   const assignment = stripOuterQuotes(tokens[1] || "");
   const match = /^([A-Za-z_][A-Za-z0-9_-]*)=(.+)$/u.exec(assignment);
   if (!match) {
-    return { aliasName: "", aliasTarget: "", aliasArgs: [] };
+    return { aliasName: "", aliasTarget: "", aliasArgs: [], aliasTokens: [], expandsNext: false };
   }
 
-  const aliasTokens = unwrapEnvCommandTokens(tokenizeCommandLine(match[2] || ""));
+  const aliasValue = match[2] || "";
+  const aliasTokens = unwrapEnvCommandTokens(tokenizeCommandLine(aliasValue));
   const aliasTarget = normalizeAgentValue(getExecutableBasename(aliasTokens[0] || ""));
-  if (aliasTarget !== "git" && aliasTarget !== "git.exe" &&
-      aliasTarget !== "gh" && aliasTarget !== "gh.exe") {
-    return { aliasName: "", aliasTarget: "", aliasArgs: [] };
-  }
 
   return {
     aliasName: normalizeAgentValue(match[1]),
     aliasTarget: aliasTarget.endsWith(".exe") ? aliasTarget.slice(0, -4) : aliasTarget,
     aliasArgs: aliasTokens.slice(1),
+    aliasTokens,
+    expandsNext: /\s$/u.test(aliasValue),
   };
+}
+
+function splitTopLevelPlusExpressions(value) {
+  const source = String(value || "");
+  const parts = [];
+  let current = "";
+  let quote = "";
+  let escaped = false;
+  let depth = 0;
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    if (quote) {
+      current += char;
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === quote) {
+        quote = "";
+      }
+      continue;
+    }
+    if (char === "'" || char === '"' || char === "`") {
+      quote = char;
+      current += char;
+      continue;
+    }
+    if (char === "(" || char === "[" || char === "{") {
+      depth += 1;
+      current += char;
+      continue;
+    }
+    if (char === ")" || char === "]" || char === "}") {
+      depth = Math.max(0, depth - 1);
+      current += char;
+      continue;
+    }
+    if (char === "+" && depth === 0) {
+      parts.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  parts.push(current.trim());
+  return parts;
+}
+
+function evaluateStaticStringExpression(expression, assignments = new Map(), depth = 0) {
+  if (depth > 8) {
+    return null;
+  }
+  let source = stripLeadingCallComments(String(expression || "").trim());
+  while (source.startsWith("(") && source.endsWith(")")) {
+    const body = getBalancedCallBody(source, 0);
+    if (body === null || body.length !== source.length - 2) {
+      break;
+    }
+    source = body.trim();
+  }
+  const literal = getStaticCallStringLiteral(source);
+  if (literal !== "" || /^(?:''|""|``)$/u.test(source)) {
+    return literal;
+  }
+
+  if (/^\$(?:env:comspec|\{env:comspec\})$/iu.test(source) ||
+      /^\[(?:System\.)?Environment\]\s*::\s*GetEnvironmentVariable\s*\(\s*["']ComSpec["']\s*\)$/iu.test(source)) {
+    return "\0winsmux-comspec";
+  }
+  const environmentVariableCall = /^\[(?:System\.)?Environment\]\s*::\s*GetEnvironmentVariable\s*\(([\s\S]*)\)$/iu.exec(source);
+  if (environmentVariableCall) {
+    const nameExpression = splitTopLevelCallArguments(environmentVariableCall[1])[0];
+    const resolvedName = evaluateStaticStringExpression(nameExpression, assignments, depth + 1);
+    if (normalizeAgentValue(resolvedName) === "comspec") {
+      return "\0winsmux-comspec";
+    }
+  }
+  if (/^(?:Get-Item|gi)\s+(?:-(?:Path|LiteralPath)\s+)?Env:\\?ComSpec$/iu.test(source) ||
+      /^\(\s*(?:Get-Item|gi)\s+(?:-(?:Path|LiteralPath)\s+)?Env:\\?ComSpec\s*\)\.Value$/iu.test(source)) {
+    return "\0winsmux-comspec";
+  }
+
+  const variableValue = /^\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))\.Value$/u.exec(source);
+  if (variableValue) {
+    const name = normalizeAgentValue(variableValue[1] || variableValue[2]);
+    return assignments.has(name) ? assignments.get(name) : null;
+  }
+
+  const variableName = source.replace(/^\$/u, "");
+  if (/^[A-Za-z_][A-Za-z0-9_]*$/u.test(variableName) && assignments.has(normalizeAgentValue(variableName))) {
+    return assignments.get(normalizeAgentValue(variableName));
+  }
+
+  const plusParts = splitTopLevelPlusExpressions(source);
+  if (plusParts.length > 1) {
+    const values = plusParts.map((part) => evaluateStaticStringExpression(part, assignments, depth + 1));
+    return values.every((value) => value !== null) ? values.join("") : null;
+  }
+
+  const arrayJoin = /^\[([\s\S]*)\]\s*\.\s*join\s*\(\s*([\s\S]*)\s*\)$/u.exec(source);
+  if (arrayJoin) {
+    const separator = evaluateStaticStringExpression(arrayJoin[2], assignments, depth + 1);
+    const values = splitTopLevelCallArguments(arrayJoin[1])
+      .map((part) => evaluateStaticStringExpression(part, assignments, depth + 1));
+    return separator !== null && values.every((value) => value !== null) ? values.join(separator) : null;
+  }
+
+  const pythonJoin = /^([\s\S]+?)\.\s*join\s*\(\s*\[([\s\S]*)\]\s*\)$/u.exec(source);
+  if (pythonJoin) {
+    const separator = evaluateStaticStringExpression(pythonJoin[1], assignments, depth + 1);
+    const values = splitTopLevelCallArguments(pythonJoin[2])
+      .map((part) => evaluateStaticStringExpression(part, assignments, depth + 1));
+    return separator !== null && values.every((value) => value !== null) ? values.join(separator) : null;
+  }
+
+  const dotNetConcat = /^\[(?:System\.)?String\]\s*::\s*Concat\s*\(\s*([\s\S]*)\s*\)$/iu.exec(source);
+  if (dotNetConcat) {
+    const values = splitTopLevelCallArguments(dotNetConcat[1])
+      .map((part) => evaluateStaticStringExpression(part, assignments, depth + 1));
+    return values.every((value) => value !== null) ? values.join("") : null;
+  }
+
+  return null;
+}
+
+function getConstantStringAssignments(source, endIndex = String(source || "").length) {
+  const text = String(source || "");
+  const events = [];
+  const seen = new Set();
+  const collect = (pattern, nameGroup = 1, expressionGroup = 2) => {
+    for (const match of text.matchAll(pattern)) {
+      const index = match.index || 0;
+      const name = normalizeAgentValue(match[nameGroup]);
+      const expression = match[expressionGroup];
+      const key = `${index}:${name}:${expression}`;
+      if (index < endIndex && name && expression !== undefined && !seen.has(key)) {
+        seen.add(key);
+        events.push({ index, name, expression });
+      }
+    }
+  };
+  collect(/\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*([^;\r\n]+)/gu);
+  collect(/(?:^|[;\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^;\r\n]+)/gu);
+  collect(/\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))\s*=\s*([^;\r\n]+)/gu, 1, 3);
+  for (const match of text.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}\s*=\s*([^;\r\n]+)/gu)) {
+    const index = match.index || 0;
+    const name = normalizeAgentValue(match[1]);
+    const key = `${index}:${name}:${match[2]}`;
+    if (index < endIndex && !seen.has(key)) {
+      seen.add(key);
+      events.push({ index, name, expression: match[2] });
+    }
+  }
+  for (const match of text.matchAll(/\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^;\r\n]+)/gu)) {
+    const index = match.index || 0;
+    const name = normalizeAgentValue(match[1]);
+    const key = `${index}:${name}:${match[2]}`;
+    if (index < endIndex && !seen.has(key)) {
+      seen.add(key);
+      events.push({ index, name, expression: match[2] });
+    }
+  }
+
+  events.sort((left, right) => left.index - right.index);
+  const assignments = new Map();
+  for (const event of events) {
+    const value = evaluateStaticStringExpression(event.expression, assignments);
+    if (value === null) {
+      assignments.delete(event.name);
+    } else {
+      assignments.set(event.name, value);
+    }
+  }
+  return assignments;
+}
+
+function getLatestAssignmentExpression(source, name, endIndex = String(source || "").length) {
+  const text = String(source || "");
+  const normalizedName = String(name || "");
+  const events = [];
+  for (const pattern of [
+    /\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*([^;\r\n]+)/gu,
+    /(?:^|[;\r\n])\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*([^;\r\n]+)/gu,
+  ]) {
+    for (const match of text.matchAll(pattern)) {
+      if ((match.index || 0) < endIndex && match[1] === normalizedName) {
+        events.push({ index: match.index || 0, expression: match[2].trim() });
+      }
+    }
+  }
+  events.sort((left, right) => left.index - right.index);
+  return events.at(-1)?.expression || "";
+}
+
+function getLatestScopedAssignmentEvent(source, name, endIndex, scopes, language = "javascript") {
+  const text = String(source || "");
+  const target = String(name || "");
+  const events = [];
+  const collect = (pattern, declared) => {
+    for (const match of text.matchAll(pattern)) {
+      const index = match.index || 0;
+      if (index < endIndex && match[1] === target) {
+        events.push({ index, expression: match[2].trim(), declared });
+      }
+    }
+  };
+  collect(/\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*([^;\r\n]+)/gu, true);
+  collect(/(?:^|[;{\r\n])\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*([^;\r\n]+)/gu, false);
+  events.sort((left, right) => left.index - right.index);
+
+  const scoped = [];
+  for (const event of events) {
+    let scope = scopes.scopeAt(event.index);
+    if (!event.declared && language === "javascript") {
+      const existing = scopes.chainAt(event.index).find((candidateScope) =>
+        scoped.some((candidate) => candidate.scope === candidateScope && candidate.index < event.index));
+      if (existing !== undefined) {
+        scope = existing;
+      }
+    }
+    scoped.push({ ...event, scope });
+  }
+  for (const scope of scopes.chainAt(endIndex)) {
+    const event = scoped
+      .filter((candidate) => candidate.scope === scope && candidate.index < endIndex)
+      .sort((left, right) => left.index - right.index)
+      .at(-1);
+    if (event) {
+      return event;
+    }
+  }
+  return null;
+}
+
+function getLatestScopedPowerShellAssignmentEvent(source, name, endIndex, scopes) {
+  const events = [];
+  const pattern = /\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))\s*=\s*([^;\r\n]+)/gu;
+  for (const match of String(source || "").matchAll(pattern)) {
+    const index = match.index || 0;
+    if (index < endIndex && normalizeAgentValue(match[1] || match[2]) === normalizeAgentValue(name)) {
+      events.push({ index, scope: scopes.scopeAt(index), expression: match[3].trim() });
+    }
+  }
+  for (const scope of scopes.chainAt(endIndex)) {
+    const event = events
+      .filter((candidate) => candidate.scope === scope)
+      .sort((left, right) => left.index - right.index)
+      .at(-1);
+    if (event) {
+      return event;
+    }
+  }
+  return null;
+}
+
+function hasContainerMutationBetween(source, name, startIndex, endIndex) {
+  const text = String(source || "");
+  const body = text.slice(Math.max(0, startIndex), Math.max(0, endIndex));
+  const aliases = new Set([String(name || "")]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const match of body.matchAll(/\b(?:const|let|var)?\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*([A-Za-z_$][A-Za-z0-9_$]*)\b/gu)) {
+      if (aliases.has(match[2]) && !aliases.has(match[1])) {
+        aliases.add(match[1]);
+        changed = true;
+      }
+    }
+  }
+  try {
+    const ast = acorn.parse(text, { ecmaVersion: "latest", sourceType: "script", allowAwaitOutsideFunction: true });
+    const rootIdentifier = (node) => {
+      let current = node;
+      while (current?.type === "MemberExpression") current = current.object;
+      return current?.type === "Identifier" ? current.name : null;
+    };
+    let hasMutation = false;
+    walkJavaScriptAst(ast, (node) => {
+      if (hasMutation || typeof node.start !== "number" || node.start < startIndex || node.start >= endIndex) return;
+      if (node.type === "AssignmentExpression" && aliases.has(rootIdentifier(node.left))) {
+        hasMutation = true;
+        return;
+      }
+      if (node.type === "UpdateExpression" && aliases.has(rootIdentifier(node.argument))) {
+        hasMutation = true;
+        return;
+      }
+      if (node.type === "UnaryExpression" && node.operator === "delete" && aliases.has(rootIdentifier(node.argument))) {
+        hasMutation = true;
+        return;
+      }
+      if (node.type !== "CallExpression") return;
+      if (node.callee?.end === endIndex) return;
+      if (node.callee?.type === "MemberExpression" && aliases.has(rootIdentifier(node.callee))) {
+        hasMutation = true;
+        return;
+      }
+      if ((node.arguments || []).some((argument) => {
+        const value = argument?.type === "SpreadElement" ? argument.argument : argument;
+        return value?.type === "Identifier" && aliases.has(value.name);
+      })) hasMutation = true;
+    });
+    if (hasMutation) return true;
+  } catch (_) {
+    // Non-JavaScript callers retain the conservative text fallback below.
+  }
+  return [...aliases].some((candidate) => {
+    const alias = escapeRegex(candidate);
+    return new RegExp(`\\b${alias}\\s*\\[[^\\]]+\\]\\s*=`, "u").test(body) ||
+      new RegExp(`\\b${alias}\\s*\\.\\s*[A-Za-z_$][A-Za-z0-9_$]*\\s*(?:=|\\+=|-=|\\*=|/=|%=|\\+\\+|--)`, "u").test(body) ||
+      new RegExp(`\\b(?:delete|del)\\s+${alias}\\s*\\[`, "u").test(body) ||
+      new RegExp(`\\b${alias}\\s*\\.[A-Za-z_$][A-Za-z0-9_$]*\\s*\\(`, "u").test(body) ||
+      new RegExp(`\\b(?:Object\\s*\\.\\s*assign|Reflect\\s*\\.\\s*set)\\s*\\(\\s*${alias}(?:\\s*,|\\s*\\))`, "u").test(body) ||
+      new RegExp(`\\b[A-Za-z_$][A-Za-z0-9_$]*(?:(?:\\s*\\.\\s*[A-Za-z_$][A-Za-z0-9_$]*)|(?:\\s*\\[[^\\]]+\\]))*\\s*\\([^)]*\\b${alias}\\b`, "u").test(body);
+  });
+}
+
+function recordPositionState(history, name, value, index) {
+  const key = String(name || "");
+  if (!key) {
+    return;
+  }
+  if (!history.has(key)) {
+    history.set(key, []);
+  }
+  history.get(key).push({ index, value });
+  history.get(key).sort((left, right) => left.index - right.index);
+}
+
+function getPositionState(history, name, index) {
+  const entries = history.get(String(name || "")) || [];
+  let state = null;
+  for (const entry of entries) {
+    if (entry.index > index) {
+      break;
+    }
+    state = entry.value;
+  }
+  return state;
+}
+
+function findBalancedBraceEnd(source, openIndex) {
+  let depth = 0;
+  let quote = "";
+  let escaped = false;
+  for (let index = openIndex; index < source.length; index += 1) {
+    const char = source[index];
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === quote) {
+        quote = "";
+      }
+      continue;
+    }
+    if (char === "'" || char === '"' || char === "`") {
+      quote = char;
+      continue;
+    }
+    if (char === "{") {
+      depth += 1;
+    } else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return index;
+      }
+    }
+  }
+  return -1;
+}
+
+function buildFunctionScopeIndex(source) {
+  const text = String(source || "");
+  const ranges = [];
+  const rangeStarts = new Set();
+  for (const pattern of [
+    /\bfunction\b[^{};]*\{/gu,
+    /=>\s*\{/gu,
+    /\b(?:if|for|while|switch|try|catch|finally|do)\b[^{};]*\{/gu,
+    /(?:^|;)\s*\{/gu,
+  ]) {
+    for (const match of text.matchAll(pattern)) {
+      const start = (match.index || 0) + match[0].lastIndexOf("{");
+      rangeStarts.add(start);
+    }
+  }
+  for (const start of [...rangeStarts].sort((left, right) => left - right)) {
+    const end = findBalancedBraceEnd(text, start);
+    if (end > start) {
+      ranges.push({ id: start, start, end, parent: -1 });
+    }
+  }
+  const lines = text.split(/\r?\n/u);
+  let offset = 0;
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = lines[lineIndex];
+    const definition = /^(\s*)(?:async\s+)?def\s+[A-Za-z_][A-Za-z0-9_]*\s*\([^)]*\)\s*:/u.exec(line);
+    if (definition) {
+      const indent = definition[1].replace(/\t/gu, "    ").length;
+      let endOffset = offset + line.length;
+      let cursorOffset = endOffset + 1;
+      for (let cursor = lineIndex + 1; cursor < lines.length; cursor += 1) {
+        const candidate = lines[cursor];
+        const trimmed = candidate.trim();
+        const candidateIndent = candidate.match(/^\s*/u)[0].replace(/\t/gu, "    ").length;
+        if (trimmed && candidateIndent <= indent) {
+          break;
+        }
+        endOffset = cursorOffset + candidate.length;
+        cursorOffset += candidate.length + 1;
+      }
+      ranges.push({ id: offset, start: offset, end: endOffset, parent: -1 });
+    }
+    offset += line.length + 1;
+  }
+  ranges.sort((left, right) => left.start - right.start || right.end - left.end);
+  for (const range of ranges) {
+    const parent = ranges
+      .filter((candidate) => candidate.id !== range.id && candidate.start < range.start && candidate.end >= range.end)
+      .sort((left, right) => right.start - left.start)[0];
+    range.parent = parent?.id ?? -1;
+  }
+  const byId = new Map(ranges.map((range) => [range.id, range]));
+  const scopeAt = (index) => ranges
+    .filter((range) => range.start <= index && index <= range.end)
+    .sort((left, right) => right.start - left.start)[0]?.id ?? -1;
+  const chainAt = (index) => {
+    const chain = [];
+    let scope = scopeAt(index);
+    while (scope !== -1) {
+      chain.push(scope);
+      scope = byId.get(scope)?.parent ?? -1;
+    }
+    chain.push(-1);
+    return chain;
+  };
+  return { scopeAt, chainAt };
+}
+
+function recordScopedPositionState(history, name, value, index, scope) {
+  recordPositionState(history, `${scope}:${name}`, value, index);
+}
+
+function getScopedPositionState(history, name, index, scopes) {
+  for (const scope of scopes.chainAt(index)) {
+    const key = `${scope}:${name}`;
+    if (history.has(key)) {
+      return getPositionState(history, key, index);
+    }
+  }
+  return null;
+}
+
+function getExistingBindingScope(histories, name, index, scopes) {
+  for (const scope of scopes.chainAt(index)) {
+    if (histories.some((history) => history.has(`${scope}:${name}`))) {
+      return scope;
+    }
+  }
+  return scopes.scopeAt(index);
+}
+
+function evaluateScopedStaticStringExpression(expression, source, evaluationIndex, scopes, language = "javascript") {
+  const assignments = new Map();
+  const resolving = new Set();
+  const populate = (candidate, index, depth = 0) => {
+    if (depth > 8) {
+      return;
+    }
+    for (const match of String(candidate || "").matchAll(/\b([A-Za-z_$][A-Za-z0-9_$]*)\b/gu)) {
+      const name = match[1];
+      const key = `${name}:${index}`;
+      if (resolving.has(key)) {
+        continue;
+      }
+      const event = getLatestScopedAssignmentEvent(source, name, index, scopes, language);
+      if (!event) {
+        continue;
+      }
+      resolving.add(key);
+      populate(event.expression, event.index, depth + 1);
+      const value = evaluateStaticStringExpression(event.expression, assignments);
+      resolving.delete(key);
+      if (value !== null) {
+        assignments.set(normalizeAgentValue(name), value);
+      }
+    }
+  };
+  populate(expression, evaluationIndex);
+  return evaluateStaticStringExpression(expression, assignments);
+}
+
+function getNodeChildProcessCalls(source) {
+  const text = String(source || "");
+  const supportedMethods = new Map([
+    ["exec", "exec"],
+    ["execsync", "execSync"],
+    ["execfile", "execFile"],
+    ["execfilesync", "execFileSync"],
+    ["spawn", "spawn"],
+    ["spawnsync", "spawnSync"],
+  ]);
+  const calls = [];
+  const seen = new Set();
+  const scopes = buildFunctionScopeIndex(text);
+  const objectHistory = new Map();
+  const methodHistory = new Map();
+  const propertyHistory = new Map();
+  const objectAliases = new Set();
+  const methodAliases = new Set();
+  const recordObject = (alias, active, index, scope = scopes.scopeAt(index)) => {
+    objectAliases.add(alias);
+    recordScopedPositionState(objectHistory, alias, active, index, scope);
+    for (const method of supportedMethods.values()) {
+      recordScopedPositionState(propertyHistory, `${alias}.${method}`, "", index, scope);
+    }
+  };
+  const isDirectChildProcessObject = (expression) => {
+    const candidate = String(expression || "").trim();
+    return /^(?:await\s+)?(?:require|import)\(\s*["'`](?:node:)?child_process["'`]\s*\)$/u.test(candidate) ||
+      /^Object\.assign\s*\(\s*\{\s*\}\s*,\s*(?:require|import)\(\s*["'`](?:node:)?child_process["'`]\s*\)\s*\)$/u.test(candidate);
+  };
+  const isChildProcessObjectAt = (expression, index) => {
+    const candidate = String(expression || "").trim();
+    return isDirectChildProcessObject(candidate) ||
+      (/^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(candidate) && getScopedPositionState(objectHistory, candidate, index, scopes) === true);
+  };
+  for (const match of text.matchAll(/\bimport\s+\*\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*)\s+from\s*["'`](?:node:)?child_process["'`]/gu)) {
+    recordObject(match[1], true, match.index || 0);
+  }
+  for (const match of text.matchAll(/\bimport\s+([A-Za-z_$][A-Za-z0-9_$]*)\s+from\s*["'`](?:node:)?child_process["'`]/gu)) {
+    recordObject(match[1], true, match.index || 0);
+  }
+
+  const recordMethod = (alias, method, index, scope = scopes.scopeAt(index)) => {
+    methodAliases.add(alias);
+    recordScopedPositionState(methodHistory, alias, method || "", index, scope);
+  };
+  const addBindingList = (body, separator, index = 0, active = true) => {
+    for (const rawBinding of String(body || "").split(",")) {
+      const binding = rawBinding.trim();
+      const pattern = separator === "as"
+        ? /^(exec|execSync|execFile|execFileSync|spawn|spawnSync)\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*)$/u
+        : /^(exec|execSync|execFile|execFileSync|spawn|spawnSync)(?:\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*))?$/u;
+      const match = pattern.exec(binding);
+      if (match) {
+        recordMethod(match[2] || match[1], active ? match[1] : "", index);
+      }
+    }
+  };
+  for (const match of text.matchAll(/\bimport\s*\{([^}]*)\}\s*from\s*["'`](?:node:)?child_process["'`]/gu)) {
+    addBindingList(match[1], "as", match.index || 0);
+  }
+
+  const assignmentEvents = [];
+  const assignmentKeys = new Set();
+  const collectAssignments = (pattern, declared) => {
+    for (const match of text.matchAll(pattern)) {
+      const event = { index: match.index || 0, alias: match[1], expression: match[2].trim(), declared };
+      const key = `${event.index}:${event.alias}:${event.expression}`;
+      if (!assignmentKeys.has(key)) {
+        assignmentKeys.add(key);
+        assignmentEvents.push(event);
+      }
+    }
+  };
+  collectAssignments(/\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*([^;\r\n]+)/gu, true);
+  collectAssignments(/(?:^|[;{\r\n])\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*([^;\r\n]+)/gu, false);
+  assignmentEvents.sort((left, right) => left.index - right.index);
+  for (const event of assignmentEvents) {
+    const { alias, index } = event;
+    const expression = event.expression.startsWith("{")
+      ? event.expression
+      : event.expression.replace(/\}\s*$/u, "");
+    const assignmentScope = event.declared
+      ? scopes.scopeAt(index)
+      : getExistingBindingScope([objectHistory, methodHistory], alias, index, scopes);
+    recordObject(alias, isChildProcessObjectAt(expression, index), index, assignmentScope);
+    let method = "";
+    const directMember = /^([A-Za-z_$][A-Za-z0-9_$]*|require\(\s*["'`](?:node:)?child_process["'`]\s*\))\s*(?:\?\.|\.)\s*([A-Za-z_$][A-Za-z0-9_$]*)(?:\.bind\s*\([^)]*\))?$/u.exec(expression);
+    if (directMember && isChildProcessObjectAt(directMember[1], index)) {
+      method = supportedMethods.get(normalizeAgentValue(directMember[2])) || "";
+    }
+    const computedMember = /^([A-Za-z_$][A-Za-z0-9_$]*|require\(\s*["'`](?:node:)?child_process["'`]\s*\))\s*(?:\?\.\s*)?\[([\s\S]+)\](?:\.bind\s*\([^)]*\))?$/u.exec(expression);
+    if (!method && computedMember && isChildProcessObjectAt(computedMember[1], index)) {
+      const computedName = evaluateStaticStringExpression(computedMember[2], getConstantStringAssignments(text, index));
+      method = computedName === null ? "unknown" : supportedMethods.get(normalizeAgentValue(computedName)) || "";
+    }
+    if (!method && /^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(expression)) {
+      method = getScopedPositionState(methodHistory, expression, index, scopes) || "";
+    }
+    recordMethod(alias, method, index, assignmentScope);
+    const objectLiteral = /^\{([\s\S]*)\}$/u.exec(expression);
+    if (objectLiteral) {
+      for (const entry of splitTopLevelCallArguments(objectLiteral[1])) {
+        const property = /^(?:([A-Za-z_$][A-Za-z0-9_$]*)|["']([^"']+)["']|\[([\s\S]+)\])\s*:\s*([\s\S]+)$/u.exec(entry.trim());
+        if (!property) {
+          continue;
+        }
+        const propertyName = property[1] || property[2] ||
+          evaluateScopedStaticStringExpression(property[3], text, index, scopes, "javascript");
+        if (!propertyName) {
+          continue;
+        }
+        const member = /^(?:require\(\s*["'`](?:node:)?child_process["'`]\s*\)|([A-Za-z_$][A-Za-z0-9_$]*))\s*\.\s*([A-Za-z_$][A-Za-z0-9_$]*)$/u.exec(property[4].trim());
+        const propertyMethod = member && (!member[1] || isChildProcessObjectAt(member[1], index))
+          ? supportedMethods.get(normalizeAgentValue(member[2])) || ""
+          : "";
+        recordScopedPositionState(propertyHistory, `${alias}.${propertyName}`, propertyMethod, index, assignmentScope);
+      }
+    }
+  }
+
+  const destructuringEvents = [];
+  for (const pattern of [
+    /\b(?:const|let|var)\s*\{([^}]*)\}\s*=\s*([^;\r\n]+)/gu,
+    /(?:^|[;\r\n])\s*\(\s*\{([^}]*)\}\s*=\s*([^;\r\n]+)\s*\)(?=\s*(?:;|$))/gu,
+  ]) {
+    for (const match of text.matchAll(pattern)) {
+      destructuringEvents.push({ index: match.index || 0, body: match[1], expression: match[2].trim() });
+    }
+  }
+  destructuringEvents.sort((left, right) => left.index - right.index);
+  for (const event of destructuringEvents) {
+    addBindingList(event.body, "colon", event.index, isChildProcessObjectAt(event.expression, event.index));
+  }
+
+  for (const match of text.matchAll(/(?:^|[;\r\n])\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\.\s*(exec|execSync|execFile|execFileSync|spawn|spawnSync)\s*=\s*([^;\r\n]+)/gu)) {
+    const index = match.index || 0;
+    const property = `${match[1]}.${match[2]}`;
+    const expression = match[3].trim();
+    let method = "";
+    const directMember = /^(?:require\(\s*["'`](?:node:)?child_process["'`]\s*\)|([A-Za-z_$][A-Za-z0-9_$]*))\s*\.\s*([A-Za-z_$][A-Za-z0-9_$]*)$/u.exec(expression);
+    if (directMember && (!directMember[1] || isChildProcessObjectAt(directMember[1], index))) {
+      method = supportedMethods.get(normalizeAgentValue(directMember[2])) || "";
+    } else if (/^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(expression)) {
+      method = getScopedPositionState(methodHistory, expression, index, scopes) || "";
+    }
+    recordScopedPositionState(propertyHistory, property, method, index, scopes.scopeAt(index));
+  }
+  for (const match of text.matchAll(/(?:^|[;\r\n])\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\[([^\]]+)\]\s*=\s*([^;\r\n]+)/gu)) {
+    const index = match.index || 0;
+    const propertyName = evaluateScopedStaticStringExpression(match[2], text, index, scopes, "javascript");
+    if (!propertyName) {
+      continue;
+    }
+    const expression = match[3].trim();
+    const directMember = /^(?:require\(\s*["'`](?:node:)?child_process["'`]\s*\)|([A-Za-z_$][A-Za-z0-9_$]*))\s*\.\s*([A-Za-z_$][A-Za-z0-9_$]*)$/u.exec(expression);
+    const method = directMember && (!directMember[1] || isChildProcessObjectAt(directMember[1], index))
+      ? supportedMethods.get(normalizeAgentValue(directMember[2])) || ""
+      : "";
+    recordScopedPositionState(propertyHistory, `${match[1]}.${propertyName}`, method, index, scopes.scopeAt(index));
+  }
+
+  for (const match of text.matchAll(/(?:^|[;\r\n])\s*\[\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*,\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\]\s*=\s*\[\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*,\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\]/gu)) {
+    const index = match.index || 0;
+    const left = [match[1], match[2]];
+    const right = [match[3], match[4]].map((name) => getScopedPositionState(methodHistory, name, index, scopes) || "");
+    for (let offset = 0; offset < left.length; offset += 1) {
+      const scope = getExistingBindingScope([methodHistory], left[offset], index, scopes);
+      recordMethod(left[offset], right[offset], index, scope);
+    }
+  }
+
+  const addCall = (method, openIndex) => {
+    const normalizedMethod = normalizeAgentValue(method) === "unknown"
+      ? "unknown"
+      : supportedMethods.get(normalizeAgentValue(method));
+    if (!normalizedMethod) {
+      return;
+    }
+    const key = `${openIndex}:${normalizedMethod.toLowerCase()}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      calls.push({ method: normalizedMethod, openIndex });
+    }
+  };
+  for (const match of text.matchAll(/\b([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:\?\.|\.)\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/gu)) {
+    const callIndex = match.index || 0;
+    const propertyMethod = getScopedPositionState(propertyHistory, `${match[1]}.${match[2]}`, callIndex, scopes);
+    if (propertyMethod) {
+      addCall(propertyMethod, callIndex + match[0].lastIndexOf("("));
+    } else if (getScopedPositionState(objectHistory, match[1], callIndex, scopes) === true) {
+      addCall(match[2], callIndex + match[0].lastIndexOf("("));
+    }
+  }
+  for (const match of text.matchAll(/\b([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:\?\.\s*)?\[([^\]]+)\]\s*\(/gu)) {
+    const callIndex = match.index || 0;
+    if (getScopedPositionState(objectHistory, match[1], callIndex, scopes) === true) {
+      const method = evaluateStaticStringExpression(match[2], getConstantStringAssignments(text, callIndex));
+      addCall(method === null ? "unknown" : method, callIndex + match[0].lastIndexOf("("));
+    }
+  }
+  for (const match of text.matchAll(/require\(\s*["'`](?:node:)?child_process["'`]\s*\)\s*(?:\?\.|\.)\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/gu)) {
+    addCall(match[1], (match.index || 0) + match[0].lastIndexOf("("));
+  }
+  for (const match of text.matchAll(/require\(\s*["'`](?:node:)?child_process["'`]\s*\)\s*(?:\?\.\s*)?\[([^\]]+)\]\s*\(/gu)) {
+    const callIndex = match.index || 0;
+    const method = evaluateStaticStringExpression(match[1], getConstantStringAssignments(text, callIndex));
+    addCall(method === null ? "unknown" : method, callIndex + match[0].lastIndexOf("("));
+  }
+  for (const alias of methodAliases) {
+    const pattern = new RegExp(`(?<![.$A-Za-z0-9_])${escapeRegex(alias)}\\s*\\(`, "gu");
+    for (const match of text.matchAll(pattern)) {
+      const callIndex = match.index || 0;
+      const method = getScopedPositionState(methodHistory, alias, callIndex, scopes);
+      if (method) {
+        addCall(method, callIndex + match[0].lastIndexOf("("));
+      }
+    }
+  }
+  return calls;
+}
+
+function getPythonSubprocessCalls(source) {
+  const text = String(source || "");
+  const supportedMethods = new Map([
+    ["run", "run"],
+    ["call", "call"],
+    ["popen", "Popen"],
+    ["check_call", "check_call"],
+    ["check_output", "check_output"],
+  ]);
+  const calls = [];
+  const seen = new Set();
+  const scopes = buildFunctionScopeIndex(text);
+  const objectHistory = new Map();
+  const methodHistory = new Map();
+  const objectAliases = new Set(["subprocess"]);
+  const methodAliases = new Set();
+  const recordObject = (alias, active, index, scope = scopes.scopeAt(index)) => {
+    objectAliases.add(alias);
+    recordScopedPositionState(objectHistory, alias, active, index, scope);
+  };
+  const recordMethod = (alias, method, index, scope = scopes.scopeAt(index)) => {
+    methodAliases.add(alias);
+    recordScopedPositionState(methodHistory, alias, method || "", index, scope);
+  };
+  recordObject("subprocess", true, -1, -1);
+  for (const match of text.matchAll(/\bimport\s+([^;\r\n]+)/gu)) {
+    for (const rawBinding of match[1].split(",")) {
+      const binding = /^subprocess(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?$/u.exec(rawBinding.trim());
+      if (binding) {
+        recordObject(binding[1] || "subprocess", true, match.index || 0);
+      }
+    }
+  }
+  for (const match of text.matchAll(/\bfrom\s+subprocess\s+import\s+([^;\r\n]+)/gu)) {
+    for (const rawBinding of match[1].split(",")) {
+      const binding = /^([A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?$/u.exec(rawBinding.trim());
+      if (!binding) {
+        continue;
+      }
+      const method = supportedMethods.get(normalizeAgentValue(binding[1]));
+      if (method) {
+        recordMethod(binding[2] || binding[1], method, match.index || 0);
+      }
+    }
+  }
+  const assignmentEvents = [];
+  const seenAssignments = new Set();
+  for (const pattern of [
+    /(?:^|[;\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^;\r\n]+)/gu,
+  ]) {
+    for (const match of text.matchAll(pattern)) {
+      const event = { index: match.index || 0, alias: match[1], expression: match[2].trim() };
+      const key = `${event.index}:${event.alias}:${event.expression}`;
+      if (!seenAssignments.has(key)) {
+        seenAssignments.add(key);
+        assignmentEvents.push(event);
+      }
+    }
+  }
+  assignmentEvents.sort((left, right) => left.index - right.index);
+  for (const event of assignmentEvents) {
+    const { alias, expression, index } = event;
+    const objectValue = /^[A-Za-z_][A-Za-z0-9_]*$/u.test(expression) &&
+      getScopedPositionState(objectHistory, expression, index, scopes) === true;
+    recordObject(alias, objectValue, index);
+    let method = "";
+    const directMember = /^([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)$/u.exec(expression);
+    if (directMember && getScopedPositionState(objectHistory, directMember[1], index, scopes) === true) {
+      method = supportedMethods.get(normalizeAgentValue(directMember[2])) || "";
+    }
+    const getattrMember = /^getattr\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*,\s*([\s\S]+)\)$/u.exec(expression);
+    if (!method && getattrMember && getScopedPositionState(objectHistory, getattrMember[1], index, scopes) === true) {
+      const computedName = evaluateStaticStringExpression(getattrMember[2], getConstantStringAssignments(text, index));
+      method = computedName === null ? "unknown" : supportedMethods.get(normalizeAgentValue(computedName)) || "";
+    }
+    if (!method && /^[A-Za-z_][A-Za-z0-9_]*$/u.test(expression)) {
+      method = getScopedPositionState(methodHistory, expression, index, scopes) || "";
+    }
+    recordMethod(alias, method, index);
+  }
+
+  for (const match of text.matchAll(/(?:^|[;\r\n])\s*([A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)+)\s*=\s*([^;\r\n]+)/gu)) {
+    const aliases = match[1].split(",").map((value) => value.trim());
+    const expressions = splitTopLevelCallArguments(match[2]);
+    const assignmentIndex = match.index || 0;
+    const resolved = expressions.map((rawExpression) => {
+      const expression = rawExpression.trim();
+      const member = /^([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)$/u.exec(expression);
+      const method = member && getScopedPositionState(objectHistory, member[1], assignmentIndex, scopes) === true
+        ? supportedMethods.get(normalizeAgentValue(member[2])) || ""
+        : getScopedPositionState(methodHistory, expression, assignmentIndex, scopes) || "";
+      const object = getScopedPositionState(objectHistory, expression, assignmentIndex, scopes) === true;
+      return { method, object };
+    });
+    for (let offset = 0; offset < Math.min(aliases.length, resolved.length); offset += 1) {
+      recordMethod(aliases[offset], resolved[offset].method, assignmentIndex);
+      recordObject(aliases[offset], resolved[offset].object, assignmentIndex);
+    }
+  }
+
+  const addCall = (method, openIndex) => {
+    const normalizedMethod = normalizeAgentValue(method) === "unknown"
+      ? "unknown"
+      : supportedMethods.get(normalizeAgentValue(method));
+    if (!normalizedMethod) {
+      return;
+    }
+    const key = `${openIndex}:${normalizedMethod.toLowerCase()}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      calls.push({ method: normalizedMethod, openIndex });
+    }
+  };
+  for (const objectAlias of objectAliases) {
+    const escapedAlias = escapeRegex(objectAlias);
+    for (const match of text.matchAll(new RegExp(`\\b${escapedAlias}\\.([A-Za-z_][A-Za-z0-9_]*)\\s*\\(`, "gu"))) {
+      if (getScopedPositionState(objectHistory, objectAlias, match.index || 0, scopes) !== true) {
+        continue;
+      }
+      addCall(match[1], (match.index || 0) + match[0].lastIndexOf("("));
+    }
+    for (const match of text.matchAll(new RegExp(`\\bgetattr\\s*\\(\\s*${escapedAlias}\\s*,\\s*([^,)]+)\\s*\\)\\s*\\(`, "gu"))) {
+      if (getScopedPositionState(objectHistory, objectAlias, match.index || 0, scopes) !== true) {
+        continue;
+      }
+      const method = evaluateStaticStringExpression(match[1], getConstantStringAssignments(text, match.index || 0));
+      addCall(method === null ? "unknown" : method, (match.index || 0) + match[0].lastIndexOf("("));
+    }
+  }
+  for (const alias of methodAliases) {
+    const pattern = new RegExp(`\\b${escapeRegex(alias)}\\s*\\(`, "gu");
+    for (const match of text.matchAll(pattern)) {
+      const method = getScopedPositionState(methodHistory, alias, match.index || 0, scopes);
+      if (method) {
+        addCall(method, (match.index || 0) + match[0].lastIndexOf("("));
+      }
+    }
+  }
+  return calls;
+}
+
+function getPythonOsSystemCalls(source) {
+  const text = String(source || "");
+  const supportedMethods = new Set(["system", "popen"]);
+  const scopes = buildFunctionScopeIndex(text);
+  const objectHistory = new Map();
+  const methodHistory = new Map();
+  const objectAliases = new Set(["os"]);
+  const methodAliases = new Set();
+  const recordObject = (alias, active, index, scope = scopes.scopeAt(index)) => {
+    objectAliases.add(alias);
+    recordScopedPositionState(objectHistory, alias, active, index, scope);
+  };
+  const recordMethod = (alias, method, index, scope = scopes.scopeAt(index)) => {
+    methodAliases.add(alias);
+    recordScopedPositionState(methodHistory, alias, method || "", index, scope);
+  };
+  recordObject("os", true, -1, -1);
+  for (const match of text.matchAll(/\bimport\s+([^;\r\n]+)/gu)) {
+    for (const rawBinding of match[1].split(",")) {
+      const binding = /^os(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?$/u.exec(rawBinding.trim());
+      if (binding) {
+        recordObject(binding[1] || "os", true, match.index || 0);
+      }
+    }
+  }
+  for (const match of text.matchAll(/\bfrom\s+os\s+import\s+([^;\r\n]+)/gu)) {
+    for (const rawBinding of match[1].split(",")) {
+      const binding = /^(system|popen)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?$/u.exec(rawBinding.trim());
+      if (binding) {
+        recordMethod(binding[2] || binding[1], binding[1], match.index || 0);
+      }
+    }
+  }
+  const assignments = /(?:^|[;\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^;\r\n]+)/gu;
+  for (const match of text.matchAll(assignments)) {
+    const alias = match[1];
+    const expression = match[2].trim();
+    const index = match.index || 0;
+    recordObject(alias,
+      /^[A-Za-z_][A-Za-z0-9_]*$/u.test(expression) && getScopedPositionState(objectHistory, expression, index, scopes) === true,
+      index);
+    const member = /^([A-Za-z_][A-Za-z0-9_]*)\.(system|popen)$/u.exec(expression);
+    const getattr = /^getattr\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*,\s*["'](system|popen)["']\s*\)$/u.exec(expression);
+    const method = ((member && getScopedPositionState(objectHistory, member[1], index, scopes) === true) ||
+      (getattr && getScopedPositionState(objectHistory, getattr[1], index, scopes) === true))
+      ? (member?.[2] || getattr?.[2] || "")
+      : getScopedPositionState(methodHistory, expression, index, scopes) || "";
+    recordMethod(alias, method, index);
+  }
+
+  for (const match of text.matchAll(/(?:^|[;\r\n])\s*([A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)+)\s*=\s*([^;\r\n]+)/gu)) {
+    const aliases = match[1].split(",").map((value) => value.trim());
+    const expressions = splitTopLevelCallArguments(match[2]);
+    const index = match.index || 0;
+    const resolved = expressions.map((rawExpression) => {
+      const expression = rawExpression.trim();
+      const object = /^[A-Za-z_][A-Za-z0-9_]*$/u.test(expression) &&
+        getScopedPositionState(objectHistory, expression, index, scopes) === true;
+      const member = /^([A-Za-z_][A-Za-z0-9_]*)\.(system|popen)$/u.exec(expression);
+      const getattr = /^getattr\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*,\s*["'](system|popen)["']\s*\)$/u.exec(expression);
+      const method = ((member && getScopedPositionState(objectHistory, member[1], index, scopes) === true) ||
+        (getattr && getScopedPositionState(objectHistory, getattr[1], index, scopes) === true))
+        ? (member?.[2] || getattr?.[2] || "")
+        : getScopedPositionState(methodHistory, expression, index, scopes) || "";
+      return { object, method };
+    });
+    for (let offset = 0; offset < Math.min(aliases.length, resolved.length); offset += 1) {
+      recordObject(aliases[offset], resolved[offset].object, index);
+      recordMethod(aliases[offset], resolved[offset].method, index);
+    }
+  }
+
+  const calls = [];
+  const seen = new Set();
+  const addCall = (method, openIndex) => {
+    const normalizedMethod = normalizeAgentValue(method);
+    if (supportedMethods.has(normalizedMethod) && !seen.has(`${openIndex}:${normalizedMethod}`)) {
+      seen.add(`${openIndex}:${normalizedMethod}`);
+      calls.push({ method: normalizedMethod, openIndex });
+    }
+  };
+  for (const alias of objectAliases) {
+    for (const match of text.matchAll(new RegExp(`\\b${escapeRegex(alias)}\\.(system|popen)\\s*\\(`, "gu"))) {
+      if (getScopedPositionState(objectHistory, alias, match.index || 0, scopes) === true) {
+        addCall(match[1], (match.index || 0) + match[0].lastIndexOf("("));
+      }
+    }
+  }
+  for (const alias of methodAliases) {
+    for (const match of text.matchAll(new RegExp(`\\b${escapeRegex(alias)}\\s*\\(`, "gu"))) {
+      if (getScopedPositionState(methodHistory, alias, match.index || 0, scopes) === "system") {
+        addCall("system", (match.index || 0) + match[0].lastIndexOf("("));
+      } else if (getScopedPositionState(methodHistory, alias, match.index || 0, scopes) === "popen") {
+        addCall("popen", (match.index || 0) + match[0].lastIndexOf("("));
+      }
+    }
+  }
+  return calls;
+}
+
+function getPythonProcessCalls(source) {
+  return [...getPythonSubprocessCalls(source), ...getPythonOsSystemCalls(source)]
+    .sort((left, right) => left.openIndex - right.openIndex);
+}
+
+function hasDynamicInterpreterGitSubcommand(segment) {
+  const source = String(segment || "");
+  const hasProtectedGitHint = /["']git(?:\.exe)?["'][\s\S]{0,512}["'](?:commit|merge|push|update-ref|branch|tag)["']/iu.test(source) ||
+    /["'`]git(?:\.exe)?\s+(?:commit|merge|push|update-ref)\b/iu.test(source);
+  const hasUnsupportedNodeBoundary = /["'](?:node:)?child_process["']/u.test(source) && (
+    /\b(?:if|for|while|switch|try|catch|finally|do)\b[^{};]*\{[\s\S]{0,512}\b(?:const|let|var)\s+[A-Za-z_$][A-Za-z0-9_$]*\s*=/u.test(source) ||
+    /\bObject\.assign\s*\([^)]*["'](?:node:)?child_process["']/u.test(source) ||
+    /(?:^|[;\r\n])\s*\[[^\]]+\]\s*=\s*\[[^\]]+\]/u.test(source) ||
+    /\b[A-Za-z_$][A-Za-z0-9_$]*\s*\[[^\]]+\]\s*=\s*(?:require\(\s*["'](?:node:)?child_process["']\s*\)|[A-Za-z_$][A-Za-z0-9_$]*)\s*\./u.test(source)
+  );
+  if (hasProtectedGitHint && hasUnsupportedNodeBoundary) {
+    return true;
+  }
+  for (const call of getNodeChildProcessCalls(source).filter((candidate) => /^(?:exec|execsync)$/iu.test(candidate.method))) {
+    const openIndex = call.openIndex;
+    const callBody = getBalancedCallBody(source, openIndex);
+    if (callBody === null) {
+      return /(?:['"`](?:git|gh)(?:\.exe)?\b|['"]g['"]\s*\+\s*['"](?:it|h))/iu.test(source.slice(openIndex, openIndex + 512));
+    }
+    const commandExpression = stripLeadingCallComments(splitTopLevelCallArguments(callBody)[0]);
+    if (evaluateStaticStringExpression(commandExpression, getConstantStringAssignments(source, openIndex)) === null &&
+        /(?:['"`](?:git|gh)(?:\.exe)?\b|['"]g['"]\s*\+\s*['"](?:it|h))/iu.test(commandExpression)) {
+      return true;
+    }
+  }
+  for (const call of getNodeChildProcessCalls(source).filter((candidate) => /^(?:execfile|execfilesync|spawn|spawnsync|unknown)$/iu.test(candidate.method))) {
+    const openIndex = call.openIndex;
+    const callBody = getBalancedCallBody(source, openIndex);
+    if (callBody === null) {
+      return /['"](?:git|gh)(?:\.exe)?['"]/iu.test(source.slice(openIndex, openIndex + 512));
+    }
+    const args = splitTopLevelCallArguments(callBody);
+    const assignments = getConstantStringAssignments(source, openIndex);
+    const resolvedTool = evaluateStaticStringExpression(args[0], assignments);
+    const tool = normalizeExecutableName(resolvedTool || "");
+    const argumentExpressions = getArrayLiteralElements(args[1]);
+    if (resolvedTool === null && argumentExpressions &&
+        /\b(?:commit|merge|push|update-ref|branch|tag|pr|api)\b/iu.test(args[1] || "")) {
+      return true;
+    }
+    if (tool !== "git" && tool !== "gh") {
+      continue;
+    }
+    if (normalizeAgentValue(call.method) === "unknown" && argumentExpressions) {
+      const resolvedArguments = argumentExpressions.map((expression) => evaluateStaticStringExpression(expression, assignments));
+      if (resolvedArguments.every((value) => value !== null) &&
+          isReviewGatedCommand([tool, ...resolvedArguments].join(" "))) {
+        return true;
+      }
+    }
+    const resolvedFirstArgument = argumentExpressions
+      ? evaluateStaticStringExpression(argumentExpressions[0], assignments)
+      : null;
+    if (tool === "git" &&
+        resolvedFirstArgument !== null &&
+        !/^\s*["'][^"']+["']\s*$/u.test(String(argumentExpressions[0] || ""))) {
+      return true;
+    }
+    if (argumentExpressions === null ||
+        (tool === "git" && resolvedFirstArgument === null) ||
+        (tool === "gh" && hasUnresolvedGhLifecycleExpressions(argumentExpressions))) {
+      return true;
+    }
+  }
+
+  for (const call of getPythonProcessCalls(source)) {
+    const openIndex = call.openIndex;
+    const callBody = getBalancedCallBody(source, openIndex);
+    if (callBody === null) {
+      return /[\[(]\s*['"](?:git|gh)(?:\.exe)?['"]/iu.test(source.slice(openIndex, openIndex + 512));
+    }
+    const args = splitTopLevelCallArguments(callBody);
+    const commandArg = stripLeadingCallComments(args[0]);
+    const assignments = getConstantStringAssignments(source, openIndex);
+    if (normalizeAgentValue(call.method) === "system") {
+      const resolvedCommand = evaluateStaticStringExpression(commandArg, assignments);
+      if ((resolvedCommand === null && /['"](?:git|gh)(?:\.exe)?\b/iu.test(commandArg)) ||
+          (resolvedCommand !== null &&
+           normalizeExecutableName(tokenizeCommandLine(resolvedCommand)[0] || "") !== "" &&
+           ["git", "gh"].includes(normalizeExecutableName(tokenizeCommandLine(resolvedCommand)[0] || "")) &&
+           getStaticCallStringLiteral(commandArg) === "")) {
+        return true;
+      }
+      continue;
+    }
+    if (!commandArg || !(["[", "("].includes(commandArg[0]))) {
+      continue;
+    }
+    const elements = splitTopLevelCallArguments(commandArg.slice(1, -1));
+    const resolvedTool = evaluateStaticStringExpression(elements[0], assignments);
+    const tool = normalizeExecutableName(resolvedTool || "");
+    if (resolvedTool === null && /\b(?:commit|merge|push|update-ref|branch|tag|pr|api)\b/iu.test(commandArg)) {
+      return true;
+    }
+    if (tool !== "git" && tool !== "gh") {
+      continue;
+    }
+    if (normalizeAgentValue(call.method) === "unknown") {
+      const resolvedArguments = elements.slice(1).map((expression) => evaluateStaticStringExpression(expression, assignments));
+      if (resolvedArguments.every((value) => value !== null) &&
+          isReviewGatedCommand([tool, ...resolvedArguments].join(" "))) {
+        return true;
+      }
+    }
+    const resolvedSubcommand = evaluateStaticStringExpression(elements[1], assignments);
+    if (tool === "git" &&
+        resolvedSubcommand !== null &&
+        !/^\s*["'][^"']+["']\s*$/u.test(String(elements[1] || ""))) {
+      return true;
+    }
+    if ((tool === "git" && resolvedSubcommand === null) ||
+        (tool === "gh" && hasUnresolvedGhLifecycleExpressions(elements.slice(1)))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function getArrayLiteralElements(value) {
+  const arrayValue = stripLeadingCallComments(value);
+  if (!arrayValue || arrayValue[0] !== "[" || arrayValue[arrayValue.length - 1] !== "]") {
+    return null;
+  }
+  return splitTopLevelCallArguments(arrayValue.slice(1, -1));
+}
+
+function hasUnresolvedGhLifecycleExpressions(expressions) {
+  const values = expressions.map((expression) => normalizeAgentValue(getStaticCallStringLiteral(expression)));
+  const hasDynamic = values.some((value) => value === "");
+  if (!hasDynamic) {
+    return false;
+  }
+  const prIndex = values.indexOf("pr");
+  const apiIndex = values.indexOf("api");
+  return values[0] === "" || prIndex >= 0 || apiIndex >= 0;
+}
+
+function getStaticCallStringLiteral(value) {
+  const source = stripLeadingCallComments(value);
+  const singleQuoted = source.match(/^'([^'\\]*(?:\\.[^'\\]*)*)'$/u);
+  if (singleQuoted) {
+    return singleQuoted[1];
+  }
+  const doubleQuoted = source.match(/^"([^"\\]*(?:\\.[^"\\]*)*)"$/u);
+  if (doubleQuoted) {
+    return doubleQuoted[1];
+  }
+  const templateLiteral = source.match(/^`([^`\\$]*(?:\\.[^`\\$]*)*)`$/u);
+  return templateLiteral ? templateLiteral[1] : "";
+}
+
+function expandShellAliasInvocation(tokens, aliases, depth = 0, seen = new Set()) {
+  const aliasName = normalizeAgentValue(getExecutableBasename(tokens[0] || ""));
+  const definition = aliases.get(aliasName);
+  if (!definition) {
+    return { matched: depth > 0, unresolved: false, tokens };
+  }
+  if (depth >= 8 || seen.has(aliasName)) {
+    return { matched: true, unresolved: true, tokens: [] };
+  }
+
+  const nextSeen = new Set(seen);
+  nextSeen.add(aliasName);
+  let remainder = tokens.slice(1);
+  if (definition.expandsNext && remainder.length > 0) {
+    const expandedRemainder = expandShellAliasInvocation(remainder, aliases, depth + 1, nextSeen);
+    if (expandedRemainder.unresolved) {
+      return expandedRemainder;
+    }
+    remainder = expandedRemainder.tokens;
+  }
+
+  const expandedTokens = [...definition.aliasTokens, ...remainder];
+  const expandedExecutable = normalizeAgentValue(getExecutableBasename(expandedTokens[0] || ""));
+  if (aliases.has(expandedExecutable)) {
+    return expandShellAliasInvocation(expandedTokens, aliases, depth + 1, nextSeen);
+  }
+  return { matched: true, unresolved: false, tokens: expandedTokens };
 }
 
 function hasShellFunctionLifecycleCommand(command, reviewOnly) {
@@ -1392,7 +5009,7 @@ function hasShellFunctionLifecycleCommand(command, reviewOnly) {
     if (toolName === "git") {
       const subcommand = bodySubcommand && bodySubcommand !== "$@" ? bodySubcommand : normalizeAgentValue(callTokens[0] || "");
       if (reviewOnly) {
-        if (subcommand === "commit" || subcommand === "merge") {
+        if (isReviewGatedGitSubcommand(subcommand, ["git", subcommand, ...callTokens.slice(1)], 1)) {
           return true;
         }
         continue;
@@ -1431,10 +5048,12 @@ function hasShellForwardingFunctionLifecycleCommand(command, reviewOnly) {
     }
 
     const callTokens = unwrapEnvCommandTokens(tokenizeCommandLine(match[3] || ""));
-    if (isGitTokenLifecycleCommand(callTokens, reviewOnly)) {
+    if (isGitTokenLifecycleCommand(callTokens, reviewOnly) ||
+        (/\bgit\b/u.test(body) && isGitTokenLifecycleCommand(["git", ...callTokens], reviewOnly))) {
       return true;
     }
-    if (isGhTokenLifecycleCommand(callTokens)) {
+    if (isGhTokenLifecycleCommand(callTokens) ||
+        (/\bgh\b/u.test(body) && isGhTokenLifecycleCommand(["gh", ...callTokens]))) {
       return true;
     }
   }
@@ -1449,7 +5068,7 @@ function isGitTokenLifecycleCommand(tokens, reviewOnly) {
 
   const subcommand = normalizeAgentValue(stripOuterQuotes(tokens[1] || ""));
   if (reviewOnly) {
-    return subcommand === "commit" || subcommand === "merge";
+    return isReviewGatedGitSubcommand(subcommand, tokens, 1);
   }
 
   return isGitLifecycleSubcommandName(subcommand) ||
@@ -1477,7 +5096,7 @@ function hasPowerShellFunctionLifecycleCommand(command, reviewOnly) {
     if (toolName === "git") {
       const subcommand = bodySubcommand && bodySubcommand !== "$args" ? bodySubcommand : normalizeAgentValue(callTokens[0] || "");
       if (reviewOnly) {
-        if (subcommand === "commit" || subcommand === "merge") {
+        if (isReviewGatedGitSubcommand(subcommand, ["git", subcommand, ...callTokens.slice(1)], 1)) {
           return true;
         }
         continue;
@@ -1553,7 +5172,7 @@ function hasAliasBodyGitLifecycleCommand(body, callTokens, reviewOnly, aliases) 
     const effectiveTokens = [aliasName, ...aliasArgs, ...bodyTokens, ...callTokens];
     const subcommand = normalizeAgentValue(stripOuterQuotes(effectiveTokens[1] || ""));
     if (reviewOnly) {
-      if (subcommand === "commit" || subcommand === "merge") {
+      if (isReviewGatedGitSubcommand(subcommand, ["git", ...effectiveTokens.slice(1)], 1)) {
         return true;
       }
       continue;
@@ -1678,7 +5297,1529 @@ function isReadOnlyGitWorktreeCommand(tokens, subcommandIndex) {
   return subcommand === "list";
 }
 
+function hasConservativeProtectedInterpreterBoundary(command, intent) {
+  const source = String(command || "");
+  const hasProcessApi = /["'](?:node:)?child_process["']|\b(?:import\s+subprocess|from\s+subprocess\s+import|os\.system\s*\()/iu.test(source);
+  if (!hasProcessApi) {
+    return false;
+  }
+  if (intent === "codex") {
+    return /\bcodex(?:\.exe)?\b/iu.test(source) &&
+      /(?:["'`]\s*(?:exec|e|--sandbox(?:=[^"'`\s]*)?)\s*["'`]|\bcodex(?:\.exe)?\s+(?:exec|e|--sandbox)\b)/iu.test(source);
+  }
+  return /(?:["'`]git(?:\.exe)?["'`]|\bgit(?:\.exe)?\b)[\s\S]{0,1024}(?:["'`]\s*(?:commit|merge|push|update-ref)\s*["'`]|\b(?:commit|merge|push|update-ref)\b)/iu.test(source) ||
+    /(?:["'`]git(?:\.exe)?["'`]|\bgit(?:\.exe)?\b)[\s\S]{0,1024}\b(?:branch|tag)\b[\s\S]{0,128}(?:--delete|-d|-D|--move|-m|-M|--force|-f)\b/iu.test(source);
+}
+
+function walkJavaScriptAst(node, visitor) {
+  if (!node || typeof node !== "object") {
+    return;
+  }
+  if (typeof node.type === "string") {
+    visitor(node);
+  }
+  for (const [key, value] of Object.entries(node)) {
+    if (key === "start" || key === "end" || key === "loc" || key === "range") {
+      continue;
+    }
+    if (Array.isArray(value)) {
+      for (const child of value) walkJavaScriptAst(child, visitor);
+    } else if (value && typeof value === "object") {
+      walkJavaScriptAst(value, visitor);
+    }
+  }
+}
+
+function collectJavaScriptBindingIdentifiers(pattern, target) {
+  if (!pattern || !target) return;
+  if (pattern.type === "Identifier") {
+    target.add(pattern.name);
+    return;
+  }
+  if (pattern.type === "RestElement") {
+    collectJavaScriptBindingIdentifiers(pattern.argument, target);
+    return;
+  }
+  if (pattern.type === "AssignmentPattern") {
+    collectJavaScriptBindingIdentifiers(pattern.left, target);
+    return;
+  }
+  if (pattern.type === "ArrayPattern") {
+    for (const element of pattern.elements || []) collectJavaScriptBindingIdentifiers(element, target);
+    return;
+  }
+  if (pattern.type === "ObjectPattern") {
+    for (const property of pattern.properties || []) {
+      collectJavaScriptBindingIdentifiers(property.type === "RestElement" ? property.argument : property.value, target);
+    }
+  }
+}
+
+function evaluateJavaScriptStaticValue(node, bindings, depth = 0) {
+  if (!node || depth > 12) return null;
+  if (node.type === "Literal" && (typeof node.value === "string" || typeof node.value === "number")) {
+    return node.value;
+  }
+  if (node.type === "TemplateLiteral" && node.expressions.length === 0) {
+    return node.quasis.map((part) => part.value.cooked).join("");
+  }
+  if (node.type === "Identifier") {
+    return bindings.has(node.name) ? bindings.get(node.name) : null;
+  }
+  if (node.type === "BinaryExpression" && node.operator === "+") {
+    const left = evaluateJavaScriptStaticValue(node.left, bindings, depth + 1);
+    const right = evaluateJavaScriptStaticValue(node.right, bindings, depth + 1);
+    return left !== null && right !== null ? String(left) + String(right) : null;
+  }
+  if (node.type === "ArrayExpression") {
+    const values = node.elements.map((element) => evaluateJavaScriptStaticValue(element, bindings, depth + 1));
+    return values.some((value) => value === null) ? null : values;
+  }
+  if (node.type === "CallExpression" && node.callee?.type === "MemberExpression") {
+    const property = node.callee.computed
+      ? evaluateJavaScriptStaticValue(node.callee.property, bindings, depth + 1)
+      : node.callee.property?.name;
+    if (property === "join") {
+      const array = evaluateJavaScriptStaticValue(node.callee.object, bindings, depth + 1);
+      const separator = node.arguments.length === 0 ? "," : evaluateJavaScriptStaticValue(node.arguments[0], bindings, depth + 1);
+      return Array.isArray(array) && separator !== null ? array.join(String(separator)) : null;
+    }
+    if (property === "fromCharCode" && node.callee.object?.type === "Identifier" && node.callee.object.name === "String") {
+      const codes = node.arguments.map((argument) => evaluateJavaScriptStaticValue(argument, bindings, depth + 1));
+      return codes.every((value) => typeof value === "number") ? String.fromCharCode(...codes) : null;
+    }
+  }
+  return null;
+}
+
+function getJavaScriptStaticBindings(ast) {
+  const declarations = [];
+  walkJavaScriptAst(ast, (node) => {
+    if (node.type === "VariableDeclarator" && node.id?.type === "Identifier" && node.init) {
+      declarations.push(node);
+    }
+  });
+  const bindings = new Map();
+  for (let pass = 0; pass < declarations.length + 1; pass += 1) {
+    let changed = false;
+    for (const declaration of declarations) {
+      const value = evaluateJavaScriptStaticValue(declaration.init, bindings);
+      if (value !== null && bindings.get(declaration.id.name) !== value) {
+        bindings.set(declaration.id.name, value);
+        changed = true;
+      }
+    }
+    if (!changed) break;
+  }
+  return bindings;
+}
+
+function getJavaScriptMemberName(member, bindings) {
+  if (!member || member.type !== "MemberExpression") return null;
+  return member.computed
+    ? evaluateJavaScriptStaticValue(member.property, bindings)
+    : member.property?.name || null;
+}
+
+function getCanonicalJavaScriptModuleSpecifier(node) {
+  if (node?.type === "Literal" && typeof node.value === "string") return node.value;
+  if (node?.type === "TemplateLiteral" && node.expressions.length === 0) {
+    return node.quasis.map((part) => part.value.cooked).join("");
+  }
+  return null;
+}
+
+function hasUnsupportedNodeProcessConstruction(script) {
+  const source = String(script || "");
+  let ast;
+  try {
+    ast = acorn.parse(source, { ecmaVersion: "latest", sourceType: "script", allowAwaitOutsideFunction: true });
+  } catch (_) {
+    return /\b(?:require|import|process|spawn|exec|fork|eval|Function|Proxy)\b/u.test(source);
+  }
+  const bindings = getJavaScriptStaticBindings(ast);
+  const stableModuleBindings = new Map();
+  const moduleBindingCounts = new Map();
+  const unstableModuleBindings = new Set();
+  walkJavaScriptAst(ast, (node) => {
+    if (node.type === "VariableDeclaration") {
+      for (const declaration of node.declarations) {
+        if (declaration.id?.type !== "Identifier") continue;
+        const name = declaration.id.name;
+        moduleBindingCounts.set(name, (moduleBindingCounts.get(name) || 0) + 1);
+        const value = node.kind === "const" ? evaluateJavaScriptStaticValue(declaration.init, bindings) : null;
+        if (typeof value === "string") stableModuleBindings.set(name, value);
+        else unstableModuleBindings.add(name);
+      }
+    }
+    if (node.type === "AssignmentExpression") {
+      collectJavaScriptBindingIdentifiers(node.left, unstableModuleBindings);
+    }
+    if (node.type === "UpdateExpression" && node.argument?.type === "Identifier") {
+      unstableModuleBindings.add(node.argument.name);
+    }
+    if (["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"].includes(node.type)) {
+      for (const parameter of node.params || []) {
+        collectJavaScriptBindingIdentifiers(parameter, unstableModuleBindings);
+      }
+    }
+    if (node.type === "CatchClause") {
+      collectJavaScriptBindingIdentifiers(node.param, unstableModuleBindings);
+    }
+  });
+  for (const [name, count] of moduleBindingCounts) {
+    if (count !== 1 || unstableModuleBindings.has(name)) stableModuleBindings.delete(name);
+  }
+  const getStableModuleSpecifier = (node) => {
+    const canonical = getCanonicalJavaScriptModuleSpecifier(node);
+    if (canonical !== null) return canonical;
+    return node?.type === "Identifier" && stableModuleBindings.has(node.name)
+      ? stableModuleBindings.get(node.name)
+      : null;
+  };
+  const staticObjectBindings = new Map();
+  const unstableObjectBindings = new Set();
+  walkJavaScriptAst(ast, (node) => {
+    if (node.type === "AssignmentExpression") collectJavaScriptBindingIdentifiers(node.left, unstableObjectBindings);
+    if (node.type === "UpdateExpression" && node.argument?.type === "Identifier") unstableObjectBindings.add(node.argument.name);
+    if (["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"].includes(node.type)) {
+      for (const parameter of node.params || []) {
+        collectJavaScriptBindingIdentifiers(parameter, unstableObjectBindings);
+      }
+    }
+    if (node.type === "CatchClause") collectJavaScriptBindingIdentifiers(node.param, unstableObjectBindings);
+  });
+  walkJavaScriptAst(ast, (node) => {
+    if (node.type !== "VariableDeclaration" || node.kind !== "const") return;
+    for (const declaration of node.declarations) {
+      if (declaration.id?.type === "Identifier" && declaration.init?.type === "ObjectExpression" &&
+          moduleBindingCounts.get(declaration.id.name) === 1 && !unstableObjectBindings.has(declaration.id.name)) {
+        staticObjectBindings.set(declaration.id.name, {
+          expression: declaration.init,
+          end: declaration.end || declaration.start || 0,
+        });
+      }
+    }
+  });
+  const getStaticObjectKeys = (node, sinkIndex, depth = 0) => {
+    if (!node || depth > 8) return null;
+    if (node.type === "Identifier") {
+      const binding = staticObjectBindings.get(node.name);
+      if (!binding || hasContainerMutationBetween(source, node.name, binding.end, sinkIndex)) return null;
+      return getStaticObjectKeys(binding.expression, sinkIndex, depth + 1);
+    }
+    if (node.type !== "ObjectExpression") return null;
+    const keys = new Set();
+    for (const property of node.properties) {
+      if (property.type === "SpreadElement") {
+        const spreadKeys = getStaticObjectKeys(property.argument, sinkIndex, depth + 1);
+        if (spreadKeys === null) return null;
+        for (const key of spreadKeys) keys.add(key);
+        continue;
+      }
+      if (property.type !== "Property" || property.kind && property.kind !== "init" || property.method) return null;
+      const key = property.computed
+        ? evaluateJavaScriptStaticValue(property.key, bindings)
+        : property.key?.name || property.key?.value;
+      if (typeof key !== "string") return null;
+      keys.add(key);
+    }
+    return keys;
+  };
+  const processMethods = new Set(["exec", "execSync", "execFile", "execFileSync", "spawn", "spawnSync", "fork"]);
+  const childProcessObjects = new Set();
+  const childProcessMethodAliases = new Set();
+  const processEnvironmentAliases = new Set();
+  const moduleLoaderAliases = new Set();
+  let hasUnsupportedProvenance = false;
+  const isBuiltinModuleLoaderCallee = (node) => {
+    if (node?.type === "Identifier") {
+      return node.name === "require" || moduleLoaderAliases.has(node.name);
+    }
+    if (node?.type === "MemberExpression" && getJavaScriptMemberName(node, bindings) === "require") {
+      const object = node.object;
+      return object?.type === "Identifier" && object.name === "module" ||
+        object?.type === "MemberExpression" &&
+          object.object?.type === "Identifier" && object.object.name === "process" &&
+          getJavaScriptMemberName(object, bindings) === "mainModule";
+    }
+    if (node?.type === "MemberExpression" && getJavaScriptMemberName(node, bindings) === "getBuiltinModule") {
+      return node.object?.type === "Identifier" && node.object.name === "process";
+    }
+    if (node?.type === "CallExpression" && node.callee?.type === "MemberExpression" &&
+        getJavaScriptMemberName(node.callee, bindings) === "createRequire") {
+      const object = node.callee.object;
+      return object?.type === "Identifier" && ["module", "Module"].includes(object.name);
+    }
+    return false;
+  };
+  const isChildProcessRequire = (node) => {
+    if (node?.type !== "CallExpression" || !isBuiltinModuleLoaderCallee(node.callee)) return false;
+    const moduleName = node.arguments.length === 1 ? getStableModuleSpecifier(node.arguments[0]) : null;
+    return moduleName === "child_process" || moduleName === "node:child_process";
+  };
+  walkJavaScriptAst(ast, (node) => {
+    if (node.type !== "VariableDeclaration") return;
+    for (const declaration of node.declarations) {
+      if (declaration.id?.type === "Identifier" &&
+          declaration.init?.type === "Identifier" && declaration.init.name === "require") {
+        moduleLoaderAliases.add(declaration.id.name);
+        continue;
+      }
+      if (declaration.id?.type === "Identifier" && isChildProcessRequire(declaration.init)) {
+        childProcessObjects.add(declaration.id.name);
+        if (node.kind !== "const") hasUnsupportedProvenance = true;
+        continue;
+      }
+      if (declaration.id?.type === "ObjectPattern" && isChildProcessRequire(declaration.init)) {
+        for (const property of declaration.id.properties) {
+          const method = property.computed
+            ? evaluateJavaScriptStaticValue(property.key, bindings)
+            : property.key?.name || property.key?.value;
+          const alias = property.value?.type === "Identifier" ? property.value.name : null;
+          if (processMethods.has(method) && alias) childProcessMethodAliases.add(alias);
+        }
+        if (node.kind !== "const") hasUnsupportedProvenance = true;
+        continue;
+      }
+      if (declaration.id?.type === "Identifier" && declaration.init?.type === "MemberExpression") {
+        const method = getJavaScriptMemberName(declaration.init, bindings);
+        const object = declaration.init.object;
+        if (object?.type === "Identifier" && object.name === "process" && method === "env") {
+          processEnvironmentAliases.add(declaration.id.name);
+          continue;
+        }
+        const isChildObject = isChildProcessRequire(object) ||
+          (object?.type === "Identifier" && childProcessObjects.has(object.name));
+        if (isChildObject && processMethods.has(method)) {
+          childProcessMethodAliases.add(declaration.id.name);
+          if (node.kind !== "const") hasUnsupportedProvenance = true;
+        }
+      }
+    }
+  });
+  let capabilityAliasChanged = true;
+  while (capabilityAliasChanged) {
+    capabilityAliasChanged = false;
+    walkJavaScriptAst(ast, (node) => {
+      if (node.type !== "VariableDeclaration") return;
+      for (const declaration of node.declarations || []) {
+        if (declaration.id?.type !== "Identifier" || declaration.init?.type !== "Identifier") continue;
+        if (childProcessObjects.has(declaration.init.name) && !childProcessObjects.has(declaration.id.name)) {
+          childProcessObjects.add(declaration.id.name);
+          capabilityAliasChanged = true;
+          if (node.kind !== "const") hasUnsupportedProvenance = true;
+        }
+        if (childProcessMethodAliases.has(declaration.init.name) && !childProcessMethodAliases.has(declaration.id.name)) {
+          childProcessMethodAliases.add(declaration.id.name);
+          capabilityAliasChanged = true;
+          if (node.kind !== "const") hasUnsupportedProvenance = true;
+        }
+      }
+    });
+  }
+  const activeEnvironmentAliases = new Set(processEnvironmentAliases);
+  const inspectEnvironmentAliasFlow = (node, functionDepth = 0) => {
+    if (!node || typeof node !== "object") return;
+    const entersFunction = ["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"].includes(node.type);
+    const currentDepth = functionDepth + (entersFunction ? 1 : 0);
+    if (node.type === "AssignmentExpression" && node.left?.type === "Identifier" &&
+        activeEnvironmentAliases.has(node.left.name) && currentDepth === 0) {
+      activeEnvironmentAliases.delete(node.left.name);
+    }
+    if (node.type === "AssignmentExpression" && node.left?.type === "MemberExpression" &&
+        node.left.object?.type === "Identifier" && activeEnvironmentAliases.has(node.left.object.name)) {
+      const key = node.left.computed
+        ? evaluateJavaScriptStaticValue(node.left.property, bindings)
+        : node.left.property?.name;
+      if (key === "GIT_DIR" || key === "GIT_WORK_TREE") hasUnsupportedProvenance = true;
+    }
+    for (const [key, value] of Object.entries(node)) {
+      if (["start", "end", "loc", "range"].includes(key)) continue;
+      if (Array.isArray(value)) {
+        for (const child of value) inspectEnvironmentAliasFlow(child, currentDepth);
+      } else if (value && typeof value === "object") {
+        inspectEnvironmentAliasFlow(value, currentDepth);
+      }
+    }
+  };
+  inspectEnvironmentAliasFlow(ast);
+  let hasChildProcessModule = false;
+  let hasDynamicModuleLoad = false;
+  let hasUnsupportedReflection = false;
+  let hasTargetChangingOptions = false;
+  let hasChildProcessCapabilityCall = false;
+  const containsChildProcessCapability = (node, depth = 0) => {
+    if (!node || depth > 12) return false;
+    if (isChildProcessRequire(node)) return true;
+    if (node.type === "Identifier" &&
+        (childProcessObjects.has(node.name) || childProcessMethodAliases.has(node.name))) return true;
+    if (node.type === "MemberExpression") {
+      const method = getJavaScriptMemberName(node, bindings);
+      const object = node.object;
+      if (processMethods.has(method) &&
+          (isChildProcessRequire(object) ||
+           (object?.type === "Identifier" && childProcessObjects.has(object.name)))) return true;
+    }
+    for (const [key, value] of Object.entries(node)) {
+      if (["start", "end", "loc", "range"].includes(key)) continue;
+      if (Array.isArray(value) && value.some((child) => containsChildProcessCapability(child, depth + 1))) return true;
+      if (value && typeof value === "object" && containsChildProcessCapability(value, depth + 1)) return true;
+    }
+    return false;
+  };
+  const inspectCapabilityEscapes = (node, parent = null, grandparent = null) => {
+    if (!node || typeof node !== "object") return;
+    const isRequireCapability = isChildProcessRequire(node);
+    const isObjectCapability = node.type === "Identifier" && childProcessObjects.has(node.name);
+    const isMethodCapability = node.type === "Identifier" && childProcessMethodAliases.has(node.name);
+    if ((isRequireCapability || isObjectCapability || isMethodCapability) && parent) {
+      const isBindingOccurrence = parent.type === "VariableDeclarator" && parent.id === node ||
+        parent.type === "Property" && grandparent?.type === "ObjectPattern";
+      const isCanonicalRequireUse = isRequireCapability && (
+        parent.type === "VariableDeclarator" && parent.init === node &&
+          ["Identifier", "ObjectPattern"].includes(parent.id?.type) ||
+        parent.type === "MemberExpression" && parent.object === node ||
+        parent.type === "ExpressionStatement" && parent.expression === node
+      );
+      const isCanonicalObjectUse = isObjectCapability && (
+        isBindingOccurrence ||
+        parent.type === "MemberExpression" && parent.object === node ||
+        parent.type === "VariableDeclarator" && parent.init === node &&
+          parent.id?.type === "Identifier" && childProcessObjects.has(parent.id.name)
+      );
+      const isCanonicalMethodUse = isMethodCapability && (
+        isBindingOccurrence ||
+        parent.type === "CallExpression" && parent.callee === node ||
+        parent.type === "VariableDeclarator" && parent.init === node &&
+          parent.id?.type === "Identifier" && childProcessMethodAliases.has(parent.id.name)
+      );
+      if (!isBindingOccurrence && !isCanonicalRequireUse && !isCanonicalObjectUse && !isCanonicalMethodUse) {
+        hasUnsupportedProvenance = true;
+      }
+    }
+    for (const [key, value] of Object.entries(node)) {
+      if (["start", "end", "loc", "range"].includes(key)) continue;
+      if (Array.isArray(value)) {
+        for (const child of value) inspectCapabilityEscapes(child, node, parent);
+      } else if (value && typeof value === "object") {
+        inspectCapabilityEscapes(value, node, parent);
+      }
+    }
+  };
+  inspectCapabilityEscapes(ast);
+  const getMemberRootIdentifier = (node) => {
+    let current = node;
+    while (current?.type === "MemberExpression") current = current.object;
+    return current?.type === "Identifier" ? current.name : null;
+  };
+  const functionBindings = new Map();
+  walkJavaScriptAst(ast, (node) => {
+    if (node.type === "FunctionDeclaration" && node.id?.type === "Identifier") {
+      functionBindings.set(node.id.name, node);
+    }
+    if (node.type === "VariableDeclarator" && node.id?.type === "Identifier" &&
+        ["FunctionExpression", "ArrowFunctionExpression"].includes(node.init?.type)) {
+      functionBindings.set(node.id.name, node.init);
+    }
+  });
+  const getProcessParameterIndexes = (functionNode) => {
+    if (!functionNode || !Array.isArray(functionNode.params)) return [];
+    const indexes = [];
+    functionNode.params.forEach((parameter, index) => {
+      if (parameter?.type !== "Identifier") return;
+      let reachesProcessCapability = false;
+      walkJavaScriptAst(functionNode.body, (node) => {
+        if (node.type === "MemberExpression" && processMethods.has(getJavaScriptMemberName(node, bindings)) &&
+            getMemberRootIdentifier(node) === parameter.name) {
+          reachesProcessCapability = true;
+        }
+      });
+      if (reachesProcessCapability) indexes.push(index);
+    });
+    return indexes;
+  };
+  walkJavaScriptAst(ast, (node) => {
+    if (node.type !== "CallExpression") return;
+    const functionNode = node.callee?.type === "Identifier"
+      ? functionBindings.get(node.callee.name)
+      : ["FunctionExpression", "ArrowFunctionExpression"].includes(node.callee?.type) ? node.callee : null;
+    for (const index of getProcessParameterIndexes(functionNode)) {
+      if (containsChildProcessCapability(node.arguments[index])) hasUnsupportedProvenance = true;
+    }
+  });
+  walkJavaScriptAst(ast, (node) => {
+    if (node.type === "ImportExpression") {
+      const moduleName = getStableModuleSpecifier(node.source);
+      if (moduleName === null) hasDynamicModuleLoad = true;
+      if (moduleName === "child_process" || moduleName === "node:child_process") {
+        hasChildProcessModule = true;
+        hasUnsupportedProvenance = true;
+      }
+    }
+    if (node.type === "CallExpression" && isBuiltinModuleLoaderCallee(node.callee)) {
+      const moduleName = node.arguments.length === 1 ? getStableModuleSpecifier(node.arguments[0]) : null;
+      if (moduleName === null) hasDynamicModuleLoad = true;
+      if (moduleName === "child_process" || moduleName === "node:child_process") {
+        hasChildProcessModule = true;
+        if (node.callee?.type === "Identifier" && moduleLoaderAliases.has(node.callee.name)) {
+          hasUnsupportedProvenance = true;
+        }
+      }
+    }
+    if (node.type === "SpreadElement" && isChildProcessRequire(node.argument)) {
+      hasUnsupportedProvenance = true;
+    }
+    if (node.type === "CallExpression") {
+      const calleeName = node.callee?.type === "MemberExpression" ? getJavaScriptMemberName(node.callee, bindings) : null;
+      const calleeObject = node.callee?.type === "MemberExpression" ? node.callee.object : null;
+      const objectName = calleeObject?.type === "Identifier" ? calleeObject.name : null;
+      const descriptorTarget = node.arguments[0];
+      const isSensitiveDescriptor = containsChildProcessCapability(descriptorTarget) ||
+        descriptorTarget?.type === "Identifier" && descriptorTarget.name === "process";
+      if ((objectName === "Object" && calleeName === "getOwnPropertyDescriptor" && isSensitiveDescriptor) ||
+          (objectName === "Reflect" && ["get", "set"].includes(calleeName)) ||
+          (node.callee?.type === "Identifier" && ["eval", "Function"].includes(node.callee.name))) {
+        hasUnsupportedReflection = true;
+      }
+      if (processMethods.has(calleeName)) {
+        const optionsIndex = ["exec", "execSync"].includes(calleeName) ? 1 : 2;
+        const options = node.arguments[optionsIndex];
+        const optionKeys = options ? getStaticObjectKeys(options, node.start || 0) : new Set();
+        if (optionKeys === null || ["cwd", "env", "shell"].some((key) => optionKeys.has(key))) {
+          hasTargetChangingOptions = true;
+        }
+      }
+      if (node.callee?.type === "MemberExpression" && node.callee.computed &&
+          node.callee.object?.type === "Identifier" && childProcessObjects.has(node.callee.object.name) &&
+          processMethods.has(calleeName)) {
+        hasUnsupportedProvenance = true;
+      }
+      const isCanonicalDirectMember = node.callee?.type === "MemberExpression" &&
+        processMethods.has(getJavaScriptMemberName(node.callee, bindings)) &&
+        (isChildProcessRequire(node.callee.object) ||
+         (node.callee.object?.type === "Identifier" && childProcessObjects.has(node.callee.object.name)));
+      const isCanonicalAlias = node.callee?.type === "Identifier" && childProcessMethodAliases.has(node.callee.name);
+      const hasWrappedCapability = containsChildProcessCapability(node.callee);
+      if (isCanonicalDirectMember || isCanonicalAlias || hasWrappedCapability) {
+        hasChildProcessCapabilityCall = true;
+      }
+      if (hasWrappedCapability && !isCanonicalDirectMember && !isCanonicalAlias) {
+        hasUnsupportedProvenance = true;
+      }
+    }
+    if (node.type === "AssignmentExpression" && node.left?.type === "Identifier" &&
+        (childProcessObjects.has(node.left.name) ||
+         childProcessMethodAliases.has(node.left.name) ||
+         processEnvironmentAliases.has(node.left.name) && node.right?.type !== "ObjectExpression")) {
+      hasUnsupportedProvenance = true;
+    }
+    if (node.type === "NewExpression" && node.callee?.type === "Identifier" && ["Function", "Proxy"].includes(node.callee.name)) {
+      hasUnsupportedReflection = true;
+    }
+  });
+  if (hasDynamicModuleLoad || hasUnsupportedReflection || hasTargetChangingOptions || hasUnsupportedProvenance) {
+    return true;
+  }
+  if (!hasChildProcessModule) {
+    return false;
+  }
+  return hasChildProcessCapabilityCall && hasUnresolvedInterpreterProcessBoundary(source);
+}
+
+function getInterpreterInlineSourceDescriptors(tokens, kind) {
+  const options = kind === "python" ? ["-c"] : ["-e", "-p", "-pe", "--eval", "--print"];
+  const descriptors = [];
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = String(tokens[index] || "");
+    const rawToken = stripOuterQuotes(token);
+    const normalized = normalizeAgentValue(token);
+    if (interpreterOptionConsumesNextValue(kind, rawToken, normalized)) {
+      index += 1;
+      continue;
+    }
+    if (normalized === "--" || rawToken === "-" || !rawToken.startsWith("-")) break;
+    if (kind === "python") {
+      const clusteredCommand = /^-[bBdEiIOPqRsSuvx]*c([\s\S]*)$/u.exec(rawToken);
+      if (clusteredCommand) {
+        const hasAttachedSource = clusteredCommand[1].length > 0;
+        descriptors.push({
+          source: hasAttachedSource
+            ? stripOuterQuotes(clusteredCommand[1])
+            : (index + 1 < tokens.length ? stripOuterQuotes(tokens[index + 1]) : ""),
+          trailingIndex: Math.min(index + (hasAttachedSource ? 1 : 2), tokens.length),
+        });
+        return descriptors;
+      }
+    }
+    if (options.includes(normalized)) {
+      if (kind === "node" && (normalized === "-p" || normalized === "--print")) {
+        const next = normalizeAgentValue(String(tokens[index + 1] || ""));
+        if (options.includes(next) || options.some((option) =>
+          next.startsWith(option + "=") || next.startsWith(option + ":"))) continue;
+      }
+      descriptors.push({
+        source: index + 1 < tokens.length ? stripOuterQuotes(tokens[index + 1]) : "",
+        trailingIndex: Math.min(index + 2, tokens.length),
+      });
+      if (kind === "python") break;
+      index += 1;
+      continue;
+    }
+    for (const option of options) {
+      if (normalized.startsWith(option + "=") || normalized.startsWith(option + ":")) {
+        descriptors.push({ source: stripOuterQuotes(token.slice(option.length + 1)), trailingIndex: index + 1 });
+        if (kind === "python") return descriptors;
+        break;
+      }
+    }
+  }
+  return descriptors;
+}
+
+function getInterpreterInlineSourceDescriptor(tokens, kind) {
+  const descriptors = getInterpreterInlineSourceDescriptors(tokens, kind);
+  return descriptors.length > 0 ? descriptors[descriptors.length - 1] : null;
+}
+
+function getInterpreterInlineSourceToken(tokens, kind) {
+  return getInterpreterInlineSourceDescriptor(tokens, kind)?.source ?? null;
+}
+
+function getInterpreterTrailingArgumentTokens(command) {
+  const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(String(command || "")));
+  const kind = getShellInterpreterKind(tokens);
+  if (!kind) return [];
+  const descriptor = getInterpreterInlineSourceDescriptor(tokens, kind);
+  return descriptor ? tokens.slice(descriptor.trailingIndex) : [];
+}
+
+function hasOuterCodexProtectedArguments(command) {
+  const trailing = getInterpreterTrailingArgumentTokens(command)
+    .map((token) => stripOuterQuotes(String(token || "")));
+  return normalizeExecutableName(trailing[0] || "") === "codex" &&
+    trailing.slice(1).some(isDeniedCodexMode);
+}
+
+function hasUnsupportedPythonProcessConstruction(script) {
+  const source = String(script || "");
+  const code = maskPythonNonCode(source);
+  const hasDynamicExecution = /(?<![.A-Za-z0-9_])(?:exec|eval)\s*\(/u.test(code);
+  if (!hasDynamicExecution) return false;
+  const isProtectedProcessSource = (value) =>
+    /\b(?:subprocess|__import__|importlib)\b|\bos\s*\.\s*(?:exec|spawn|posix_spawn|system)/iu.test(value) &&
+    /\b(?:codex|git|gh)(?:\.exe)?\b[\s\S]*\b(?:exec|e|--sandbox|commit|merge|push|update-ref)\b/iu.test(value);
+  if (isProtectedProcessSource(code)) return true;
+  for (const match of code.matchAll(/(?<![.A-Za-z0-9_])(?:exec|eval)\s*\(/gu)) {
+    const openIndex = (match.index || 0) + match[0].lastIndexOf("(");
+    const body = getBalancedCallBody(source, openIndex);
+    if (body === null) return true;
+    const expression = splitTopLevelCallArguments(body)[0];
+    const materialized = evaluateScopedStaticStringExpression(
+      expression,
+      source,
+      openIndex,
+      buildFunctionScopeIndex(source),
+      "python",
+    );
+    if (materialized === null || isProtectedProcessSource(materialized)) return true;
+  }
+  return false;
+}
+
+function hasUnsupportedPythonModuleLoad(script) {
+  const source = String(script || "");
+  const code = maskPythonNonCode(source);
+  if (/\b(?:globals|locals)\s*\(/u.test(code)) {
+    return true;
+  }
+  const canonicalModuleRoots = new Set([
+    "builtins", "collections", "functools", "importlib", "itertools", "json", "math",
+    "operator", "os", "pathlib", "platform", "re", "shlex", "subprocess", "sys", "time", "types",
+  ]);
+  for (const match of code.matchAll(/(?:^|[;\r\n])\s*import\s+([^;\r\n]+)/gu)) {
+    for (const binding of String(match[1] || "").split(",")) {
+      const moduleRoot = /^\s*([A-Za-z_][A-Za-z0-9_]*)/u.exec(binding)?.[1] || "";
+      if (!canonicalModuleRoots.has(moduleRoot)) return true;
+    }
+  }
+  for (const match of code.matchAll(/(?:^|[;\r\n])\s*from\s+([A-Za-z_][A-Za-z0-9_]*)\b/gu)) {
+    if (!canonicalModuleRoots.has(match[1])) return true;
+  }
+  const nonCanonicalModuleRegistry = source.replace(
+    /\bsys\s*\.\s*modules\s*(?:\[\s*["']json["']\s*\]|\.\s*get\s*\(\s*["']json["']\s*\))/gu,
+    "",
+  );
+  if (/\bsys\s*\.\s*modules\b/u.test(nonCanonicalModuleRegistry)) {
+    return true;
+  }
+  const scopes = buildFunctionScopeIndex(source);
+  const containerHistory = new Map();
+  const loaderHistory = new Map();
+  const containerAliases = new Set(["__builtins__"]);
+  const loaderAliases = new Set(["__import__"]);
+  let unsupportedLoad = false;
+  let escapedLoader = false;
+
+  const recordContainer = (name, kind, index, scope = scopes.scopeAt(index)) => {
+    containerAliases.add(name);
+    recordScopedPositionState(containerHistory, name, kind || "", index, scope);
+  };
+  const recordLoader = (name, kind, index, scope = scopes.scopeAt(index)) => {
+    loaderAliases.add(name);
+    recordScopedPositionState(loaderHistory, name, kind || "", index, scope);
+  };
+  recordContainer("__builtins__", "builtins", -1, -1);
+  recordLoader("__import__", "__import__", -1, -1);
+
+  for (const match of code.matchAll(/(?:^|[;\r\n])\s*import\s+([^;\r\n]+)/gu)) {
+    const index = match.index || 0;
+    for (const rawBinding of String(match[1] || "").split(",")) {
+      const binding = /^\s*(importlib|builtins)(?:\.([A-Za-z_][A-Za-z0-9_.]*))?(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*$/u.exec(rawBinding);
+      if (!binding) continue;
+      const root = binding[1];
+      const suffix = binding[2];
+      const alias = binding[3];
+      if (!suffix) {
+        recordContainer(alias || root, root, index);
+      } else if (!alias) {
+        recordContainer(root, root, index);
+      }
+    }
+  }
+  for (const match of code.matchAll(/(?:^|[;\r\n])\s*from\s+(importlib|builtins)\s+import\s+([^;\r\n]+)/gu)) {
+    const index = match.index || 0;
+    const expected = match[1] === "importlib" ? "import_module" : "__import__";
+    for (const rawBinding of String(match[2] || "").replace(/[()]/gu, "").split(",")) {
+      const binding = /^\s*([A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*$/u.exec(rawBinding);
+      if (binding?.[1] === expected) recordLoader(binding[2] || binding[1], expected, index);
+    }
+  }
+
+  const hasExplicitProtectedContainer = /(?:^|[;\r\n])\s*(?:import\s+[^;\r\n]*\b(?:importlib|builtins)\b|from\s+(?:importlib|builtins)\s+import\b)|\b(?:__builtins__|__import__)\b/u.test(code);
+  if (hasExplicitProtectedContainer &&
+      (/\b(?:async|await|class|def|for|lambda|match|return|try|while|with|yield)\b/u.test(code) || /:=/u.test(code))) {
+    return true;
+  }
+
+  const getContainerKind = (name, index) => getScopedPositionState(containerHistory, name, index, scopes) || "";
+  const getLoaderKind = (name, index) => getScopedPositionState(loaderHistory, name, index, scopes) || "";
+  const loaderForMember = (containerKind, memberName) => {
+    const member = normalizeAgentValue(memberName);
+    if (containerKind === "importlib" && member === "import_module") return "import_module";
+    if (containerKind === "builtins" && member === "__import__") return "__import__";
+    return "";
+  };
+  const unwrapGrouping = (value) => {
+    let candidate = String(value || "").trim();
+    while (candidate.startsWith("(") && candidate.endsWith(")")) {
+      const body = getBalancedCallBody(candidate, 0);
+      if (body === null || body.length !== candidate.length - 2 || /,\s*$/u.test(body)) break;
+      candidate = body.trim();
+    }
+    return candidate;
+  };
+  const findTrailingCallOpen = (value) => {
+    const candidate = String(value || "").trim();
+    for (let index = 0; index < candidate.length; index += 1) {
+      if (candidate[index] !== "(") continue;
+      const body = getBalancedCallBody(candidate, index);
+      if (body !== null && index + body.length + 1 === candidate.length - 1) return index;
+    }
+    return -1;
+  };
+  const getExactCallBody = (value, openIndex) => {
+    const candidate = String(value || "").trim();
+    const body = getBalancedCallBody(candidate, openIndex);
+    return body !== null && openIndex + body.length + 1 === candidate.length - 1 ? body : null;
+  };
+  const classifyLoaderCall = (callBody, index) => {
+    const moduleExpression = splitTopLevelCallArguments(callBody)[0];
+    const moduleName = moduleExpression === undefined
+      ? null
+      : evaluateScopedStaticStringExpression(moduleExpression, source, index, scopes, "python");
+    const moduleRoot = moduleName === null ? null : normalizeAgentValue(moduleName).split(".")[0];
+    if (moduleRoot === null || moduleRoot === "os" || moduleRoot === "subprocess") unsupportedLoad = true;
+    return { type: "module", kind: moduleRoot || "unknown" };
+  };
+
+  const resolveCapabilityExpression = (rawExpression, index, depth = 0) => {
+    if (depth > 8) return null;
+    const expression = unwrapGrouping(rawExpression);
+    const identifier = /^([A-Za-z_][A-Za-z0-9_]*)$/u.exec(expression)?.[1];
+    if (identifier) {
+      const loader = getLoaderKind(identifier, index);
+      if (loader) return { type: "loader", kind: loader };
+      const container = getContainerKind(identifier, index);
+      return container ? { type: "container", kind: container } : null;
+    }
+
+    const callOpen = findTrailingCallOpen(expression);
+    if (callOpen >= 0) {
+      const callee = resolveCapabilityExpression(expression.slice(0, callOpen), index, depth + 1);
+      if (callee?.type === "loader") {
+        return classifyLoaderCall(expression.slice(callOpen + 1, -1), index);
+      }
+    }
+
+    const directMember = /^([\s\S]+?)\s*\.\s*(import_module|__import__)$/u.exec(expression);
+    if (directMember) {
+      const owner = resolveCapabilityExpression(directMember[1], index, depth + 1);
+      const loader = owner?.type === "container" ? loaderForMember(owner.kind, directMember[2]) : "";
+      return loader ? { type: "loader", kind: loader } : null;
+    }
+    const dictMember = /^([\s\S]+?)\s*\.\s*__dict__\s*\[([\s\S]+)\]$/u.exec(expression);
+    if (dictMember) {
+      const owner = resolveCapabilityExpression(dictMember[1], index, depth + 1);
+      const member = evaluateScopedStaticStringExpression(dictMember[2], source, index, scopes, "python");
+      const loader = owner?.type !== "container" ? "" : member === null ? "unknown" : loaderForMember(owner.kind, member);
+      return loader ? { type: "loader", kind: loader } : null;
+    }
+    const dictGet = /^([\s\S]+?)\s*\.\s*__dict__\s*\.\s*get\s*\(/u.exec(expression);
+    const dictGetOpen = dictGet ? dictGet[0].lastIndexOf("(") : -1;
+    const dictGetBody = dictGetOpen >= 0 ? getExactCallBody(expression, dictGetOpen) : null;
+    if (dictGet && dictGetBody !== null) {
+      const owner = resolveCapabilityExpression(dictGet[1], index, depth + 1);
+      const args = splitTopLevelCallArguments(dictGetBody);
+      const member = evaluateScopedStaticStringExpression(args[0], source, index, scopes, "python");
+      const loader = owner?.type !== "container" ? "" : member === null ? "unknown" : loaderForMember(owner.kind, member);
+      return loader ? { type: "loader", kind: loader } : null;
+    }
+    const varsMember = /^vars\s*\(\s*([\s\S]+)\s*\)\s*\[([\s\S]+)\]$/u.exec(expression);
+    if (varsMember) {
+      const owner = resolveCapabilityExpression(varsMember[1], index, depth + 1);
+      const member = evaluateScopedStaticStringExpression(varsMember[2], source, index, scopes, "python");
+      const loader = owner?.type !== "container" ? "" : member === null ? "unknown" : loaderForMember(owner.kind, member);
+      return loader ? { type: "loader", kind: loader } : null;
+    }
+    const computedMember = /^([\s\S]+?)\s*\[([\s\S]+)\]$/u.exec(expression);
+    if (computedMember) {
+      const owner = resolveCapabilityExpression(computedMember[1], index, depth + 1);
+      const member = evaluateScopedStaticStringExpression(computedMember[2], source, index, scopes, "python");
+      const loader = owner?.type !== "container" ? "" : member === null ? "unknown" : loaderForMember(owner.kind, member);
+      if (loader) return { type: "loader", kind: loader };
+    }
+    const getattrCall = /^getattr\s*\(/u.exec(expression);
+    const getattrOpen = getattrCall ? getattrCall[0].lastIndexOf("(") : -1;
+    const getattrBody = getattrOpen >= 0 ? getExactCallBody(expression, getattrOpen) : null;
+    if (getattrBody !== null) {
+      const args = splitTopLevelCallArguments(getattrBody);
+      const owner = resolveCapabilityExpression(args[0], index, depth + 1);
+      if (owner?.type === "container") {
+        const member = evaluateScopedStaticStringExpression(args[1], source, index, scopes, "python");
+        const loader = member === null ? "unknown" : loaderForMember(owner.kind, member);
+        if (loader) return { type: "loader", kind: loader };
+      }
+    }
+
+    const indexedSequence = /^(\([\s\S]*\)|\[[\s\S]*\])\s*\[\s*(\d+)\s*\]$/u.exec(expression);
+    if (indexedSequence) {
+      const body = indexedSequence[1].slice(1, -1);
+      const elements = splitTopLevelCallArguments(body);
+      const selected = Number.parseInt(indexedSequence[2], 10);
+      return selected < elements.length
+        ? resolveCapabilityExpression(elements[selected], index, depth + 1)
+        : null;
+    }
+
+    return null;
+  };
+
+  const hasLiveLoaderReference = (expression, index) => {
+    const maskedExpression = maskPythonNonCode(String(expression || ""));
+    for (const alias of loaderAliases) {
+      const pattern = new RegExp(`(?<![.A-Za-z0-9_])${escapeRegex(alias)}\\b`, "gu");
+      for (const match of maskedExpression.matchAll(pattern)) {
+        if (getLoaderKind(alias, index + (match.index || 0))) return true;
+      }
+    }
+    for (const alias of containerAliases) {
+      if (!getContainerKind(alias, index)) continue;
+      const escaped = escapeRegex(alias);
+      if (new RegExp(`\\b${escaped}\\s*\\.\\s*(?:import_module|__import__)\\b`, "u").test(expression) ||
+          new RegExp(`\\b(?:getattr|vars)\\s*\\(\\s*${escaped}\\b`, "u").test(expression) ||
+          new RegExp(`\\b${escaped}\\s*(?:\\.\\s*__dict__)?\\s*\\[`, "u").test(expression)) return true;
+    }
+    return false;
+  };
+  const hasEscapingContainerReference = (expression, index) => {
+    const maskedExpression = maskPythonNonCode(String(expression || ""));
+    const canonicalReadOnlyMembers = {
+      builtins: new Set(["__name__"]),
+      importlib: new Set(["__name__", "metadata", "util"]),
+    };
+    for (const alias of containerAliases) {
+      const pattern = new RegExp(`(?<![.A-Za-z0-9_])${escapeRegex(alias)}\\b`, "gu");
+      for (const match of maskedExpression.matchAll(pattern)) {
+        const referenceIndex = index + (match.index || 0);
+        const containerKind = getContainerKind(alias, referenceIndex);
+        if (!containerKind) continue;
+        const tail = maskedExpression.slice((match.index || 0) + match[0].length);
+        const member = /^\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)/u.exec(tail)?.[1] || "";
+        if (!member) return true;
+        if (loaderForMember(containerKind, member)) continue;
+        if (!canonicalReadOnlyMembers[containerKind]?.has(member)) return true;
+      }
+    }
+    return false;
+  };
+
+  const assignments = [];
+  for (const match of code.matchAll(/(?:^|[;\r\n])\s*([^=;\r\n]+?)\s*(?<![<>=!:])=(?!=)\s*([^;\r\n]+)/gu)) {
+    const start = match.index || 0;
+    const equalsOffset = match[0].indexOf("=");
+    assignments.push({
+      index: start,
+      left: match[1].trim(),
+      right: source.slice(start + equalsOffset + 1, start + match[0].length).trim(),
+    });
+  }
+  assignments.sort((left, right) => left.index - right.index);
+  for (const assignment of assignments) {
+    const left = getPythonAssignmentElements(assignment.left);
+    const right = getPythonAssignmentElements(assignment.right);
+    const pairs = left.sequence && right.sequence
+      ? Math.min(left.elements.length, right.elements.length)
+      : !left.sequence ? 1 : 0;
+    for (let offset = 0; offset < pairs; offset += 1) {
+      const name = /^([A-Za-z_][A-Za-z0-9_]*)$/u.exec(left.elements[offset])?.[1];
+      const expression = right.sequence ? right.elements[offset] : assignment.right;
+      if (!name) {
+        if (hasLiveLoaderReference(expression, assignment.index) ||
+            hasEscapingContainerReference(expression, assignment.index)) escapedLoader = true;
+        continue;
+      }
+      const resolved = resolveCapabilityExpression(expression, assignment.index);
+      const scope = scopes.scopeAt(assignment.index);
+      recordContainer(name, resolved?.type === "container" ? resolved.kind : "", assignment.index, scope);
+      recordLoader(name, resolved?.type === "loader" ? resolved.kind : "", assignment.index, scope);
+      if (!resolved && (hasLiveLoaderReference(expression, assignment.index) ||
+          hasEscapingContainerReference(expression, assignment.index))) escapedLoader = true;
+    }
+    if (!left.sequence && right.sequence && right.elements.some((expression) => hasLiveLoaderReference(expression, assignment.index))) {
+      escapedLoader = true;
+    }
+  }
+  for (const match of code.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*:=\s*([^,;\r\n)\]}]+)/gu)) {
+    const expression = source.slice(
+      (match.index || 0) + match[0].indexOf(":=") + 2,
+      (match.index || 0) + match[0].length,
+    ).trim();
+    if (hasLiveLoaderReference(expression, match.index || 0) ||
+        hasEscapingContainerReference(expression, match.index || 0)) escapedLoader = true;
+  }
+  for (const match of code.matchAll(/\bfor\b/gu)) {
+    const clauseStart = (match.index || 0) + match[0].length;
+    const remainingClause = source.slice(clauseStart);
+    if (hasLiveLoaderReference(remainingClause, clauseStart) ||
+        hasEscapingContainerReference(remainingClause, clauseStart)) escapedLoader = true;
+  }
+
+  const resolveCallCallee = (openIndex) => {
+    let unresolvedGroupedCapability = false;
+    for (let start = openIndex - 1; start >= 0; start -= 1) {
+      if (start > 0 && /[A-Za-z0-9_]/u.test(source[start - 1] || "")) continue;
+      const expression = source.slice(start, openIndex).trim();
+      if (!expression) continue;
+      const resolved = resolveCapabilityExpression(expression, openIndex);
+      if (resolved) return { resolved, escaped: false };
+      if (expression.startsWith("(") && expression.endsWith(")") &&
+          (hasLiveLoaderReference(expression, start) || hasEscapingContainerReference(expression, start))) {
+        unresolvedGroupedCapability = true;
+      }
+      if (/[;\r\n]/u.test(expression)) break;
+    }
+    return { resolved: null, escaped: unresolvedGroupedCapability };
+  };
+  for (let openIndex = 0; openIndex < code.length; openIndex += 1) {
+    if (code[openIndex] !== "(") continue;
+    let previousIndex = openIndex - 1;
+    while (previousIndex >= 0 && /\s/u.test(code[previousIndex])) previousIndex -= 1;
+    if (previousIndex < 0 || !/[A-Za-z0-9_)\]]/u.test(code[previousIndex])) continue;
+    const precedingIdentifier = /([A-Za-z_][A-Za-z0-9_]*)\s*$/u.exec(code.slice(0, openIndex))?.[1] || "";
+    if (precedingIdentifier === "import") continue;
+    const callee = resolveCallCallee(openIndex);
+    const maskedBody = getBalancedCallBody(code, openIndex);
+    if (maskedBody === null) {
+      if (callee.resolved?.type === "loader" || callee.escaped) return true;
+      continue;
+    }
+    const body = source.slice(openIndex + 1, openIndex + 1 + maskedBody.length);
+    if (callee.resolved?.type === "loader") {
+      classifyLoaderCall(body, openIndex);
+      continue;
+    }
+    if (callee.escaped) escapedLoader = true;
+    const simpleCallee = /([A-Za-z_][A-Za-z0-9_]*)\s*$/u.exec(source.slice(0, openIndex))?.[1] || "";
+    const canonicalContainerConsumer = ["getattr", "print", "vars"].includes(simpleCallee) &&
+      !getLatestScopedAssignmentEvent(source, simpleCallee, openIndex, scopes, "python");
+    for (const argument of splitTopLevelCallArguments(body)) {
+      const capability = resolveCapabilityExpression(argument, openIndex);
+      if (capability?.type === "loader") escapedLoader = true;
+      if (capability?.type === "container" && !canonicalContainerConsumer) escapedLoader = true;
+      if (!capability && !canonicalContainerConsumer &&
+          (hasLiveLoaderReference(argument, openIndex) || hasEscapingContainerReference(argument, openIndex))) {
+        escapedLoader = true;
+      }
+    }
+  }
+  return unsupportedLoad || escapedLoader;
+}
+
+function hasUnsupportedInlineInterpreterBoundary(command) {
+  const source = String(command || "");
+  for (const segment of splitCommandSegments(source)) {
+    for (const stage of splitCommandPipelineStages(segment)) {
+      const normalizedStage = unwrapPowerShellCommandWrapper(String(stage || "").trim());
+      const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(normalizedStage));
+      const kind = getShellInterpreterKind(tokens);
+      if (kind && hasUnownedInterpreterProcessBoundary(normalizedStage)) return true;
+      if (kind === "node") {
+        const scripts = getInterpreterInlineSourceDescriptors(tokens, kind).map((descriptor) => descriptor.source);
+        if (scripts.some((script) =>
+          hasRuntimeGitEnvironmentMutation(script) ||
+          hasRuntimeNodeOptionsEnvironmentMutation(script) ||
+          hasUnsupportedNodeProcessConstruction(script) ||
+          hasDynamicInterpreterGitSubcommand(script))) return true;
+      } else if (kind === "python") {
+        const script = String(getInterpreterInlineSourceToken(tokens, kind) || "");
+        if (hasRuntimeGitEnvironmentMutation(script) ||
+            hasRuntimeNodeOptionsEnvironmentMutation(script) ||
+            hasUnsupportedPythonModuleLoad(script) ||
+            hasUnsupportedPythonProcessConstruction(script) ||
+            hasUnresolvedInterpreterProcessBoundary(script) ||
+            hasDynamicInterpreterGitSubcommand(script)) return true;
+      }
+      const executable = tokens.length > 0 ? normalizeAgentValue(getExecutableBasename(tokens[0])) : "";
+      if ((executable === "cmd" || executable === "cmd.exe")) {
+        const nested = getCmdShellArgument(tokens, false);
+        if (/\bif\s+(?:not\s+)?exist\b/iu.test(nested) && /![^!]+!/u.test(nested)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+function hasUnsupportedDirectProcessBoundary(command) {
+  const rawSource = String(command || "");
+  if (/\b(?:start-process|saps|start)\s+\([^)]*\+[^)]*\)/iu.test(rawSource)) return true;
+  const source = materializePowerShellComSpecAliases(rawSource);
+  const commandSurface = stripHeredocBodiesAndTerminators(source);
+  const canonicalPowerShellGhRepoMerge = isCanonicalPowerShellGhRepoMerge(commandSurface);
+  const powerShellAliases = new Map();
+  const uncertainPowerShellAliases = new Set();
+  const shellAliases = new Map();
+  if (hasUnownedStdinScriptPipeline(source)) return true;
+  if (hasRuntimeNodeOptionsEnvironmentMutation(commandSurface)) return true;
+  if (hasUnownedNodeCommandPrelude(commandSurface)) return true;
+  for (const segmentEntry of splitCommandSegmentsWithSeparators(commandSurface)) {
+    const pipelineStages = splitCommandPipelineStages(segmentEntry.segment);
+    const aliasStateUpdateIsDeterministic =
+      !["&&", "||"].includes(segmentEntry.separatorBefore) && pipelineStages.length === 1;
+    for (let stageIndex = 0; stageIndex < pipelineStages.length; stageIndex += 1) {
+      const stage = pipelineStages[stageIndex];
+      const normalizedStage = unwrapShellExecutableControlFlowPrefix(
+        unwrapPowerShellCommandWrapper(String(stage || "").trim()),
+      );
+      const rawTokens = unwrapEnvCommandTokens(tokenizeCommandLine(normalizedStage));
+      const rawExecutable = normalizeExecutableName(rawTokens[0] || "");
+      const rawNestedPowerShell = isPowerShellExecutable(rawExecutable)
+        ? getPowerShellNestedCommand(rawTokens)
+        : "";
+      const stageCanonicalPowerShellGhRepoMerge =
+        isCanonicalPowerShellGhRepoMerge(normalizedStage) ||
+        Boolean(rawNestedPowerShell && isCanonicalPowerShellGhRepoMerge(rawNestedPowerShell));
+      const rawEvaluationTokens = rawNestedPowerShell
+        ? getPowerShellWrapperPrefixTokens(rawTokens)
+        : rawTokens;
+      const hasCanonicalReviewSubstitution = isCanonicalRule13CommandSubstitutionStage(normalizedStage);
+      const rawHasUnresolvedEvaluation = isPowerShellStartProcessExecutable(rawExecutable)
+        ? hasUnresolvedPowerShellStartProcessArgumentEvaluation(rawEvaluationTokens, normalizedStage)
+        : hasUnresolvedPowerShellArgumentEvaluation(rawEvaluationTokens) &&
+          !hasCanonicalReviewSubstitution &&
+          !canonicalPowerShellGhRepoMerge &&
+          !stageCanonicalPowerShellGhRepoMerge;
+      if (rawHasUnresolvedEvaluation) return true;
+      const aliasTokens = resolveStaticDirectAliasTokens(
+        rawTokens,
+        powerShellAliases,
+        uncertainPowerShellAliases,
+        shellAliases,
+        aliasStateUpdateIsDeterministic,
+      );
+      if (aliasTokens === null) return true;
+      const tokens = aliasTokens;
+      const executable = normalizeExecutableName(tokens[0] || "");
+      if (!executable) continue;
+      const nestedPowerShell = isPowerShellExecutable(executable)
+        ? getPowerShellNestedCommand(tokens)
+        : "";
+      const evaluationTokens = nestedPowerShell
+        ? getPowerShellWrapperPrefixTokens(tokens)
+        : tokens;
+      const hasUnresolvedEvaluation = isPowerShellStartProcessExecutable(executable)
+        ? hasUnresolvedPowerShellStartProcessArgumentEvaluation(evaluationTokens, normalizedStage)
+        : hasUnresolvedPowerShellArgumentEvaluation(evaluationTokens) &&
+          !hasCanonicalReviewSubstitution &&
+          !canonicalPowerShellGhRepoMerge &&
+          !stageCanonicalPowerShellGhRepoMerge;
+      if (hasUnresolvedEvaluation) {
+        return true;
+      }
+      if (isCanonicalRule13StartProcessStage(normalizedStage, tokens) ||
+          isCanonicalLiteralProducerXargsReviewStage(
+            pipelineStages[stageIndex - 1] || "",
+            normalizedStage,
+            tokens,
+          ) ||
+          hasCanonicalReviewSubstitution ||
+          isCanonicalRule13EmptyGitCwdStage(normalizedStage)) {
+        continue;
+      }
+      if (isCanonicalUnprotectedPowerShellEnvironmentStage(normalizedStage)) continue;
+      if (!canonicalPowerShellGhRepoMerge && !stageCanonicalPowerShellGhRepoMerge &&
+          isUnownedPowerShellStage(normalizedStage, tokens)) {
+        return true;
+      }
+      if ((executable === "node" || executable === "nodejs") &&
+          hasNodeStartupCodeConfiguration(tokens, commandSurface)) return true;
+      if (executable === "git") {
+        const hasInlineAliasConfiguration = /\balias\.[A-Za-z0-9._-]+\b/iu.test(normalizedStage) &&
+          (/\bGIT_CONFIG_(?:COUNT|KEY_[0-9]+|VALUE_[0-9]+)\b/iu.test(normalizedStage) ||
+           /--config-env(?:=|\s)/iu.test(normalizedStage) ||
+           /(?:^|\s)-c(?:=|\s)[^;&\r\n]*\balias\./iu.test(normalizedStage));
+        const hasCanonicalCommandLocalAlias = hasInlineAliasConfiguration &&
+          !hasCommandLocalGitAliasConfiguration(normalizedStage);
+        const hasConfiguredReviewAlias = hasConfiguredGitReviewLifecycleAlias(normalizedStage, process.cwd());
+        const hasConfiguredReadOnlyAlias = isCanonicalConfiguredReadOnlyGitAliasInvocation(tokens, process.cwd());
+        const hasCanonicalReviewShellAlias = isCanonicalCommandLocalGitShellReviewAlias(tokens);
+        const hasUnsafeDirectEnvironment = hasDirectGitProcessEnvironment(normalizedStage) &&
+          !hasCanonicalCommandLocalAlias && !hasCanonicalReviewShellAlias;
+        if (hasUnsafeDirectEnvironment ||
+            (hasGitExternalProcessConfiguration(tokens) && !hasCanonicalReviewShellAlias)) return true;
+        if (!hasCanonicalCommandLocalAlias && !hasConfiguredReviewAlias &&
+            !hasConfiguredReadOnlyAlias && !hasCanonicalReviewShellAlias) {
+          const gitProcessDecision = classifyStaticProcessInvocation("git", tokens.slice(1), normalizedStage);
+          if (gitProcessDecision !== INTERPRETER_PROCESS_BOUNDARY.ALLOW_STATIC_READONLY &&
+              gitProcessDecision !== INTERPRETER_PROCESS_BOUNDARY.ALLOW_PROVEN_NON_PROTECTED) return true;
+        }
+      }
+      if (executable === "rg" && hasRgExternalProcessConfiguration(tokens)) return true;
+      if (executable === "xargs") {
+        const nestedTokens = unwrapEnvCommandTokens(getNormalizedXargsCommandTokens(tokens));
+        const nestedExecutable = normalizeExecutableName(nestedTokens[0] || "");
+        const finiteSafeTargets = new Set(["", "echo", "printf"]);
+        if (finiteSafeTargets.has(nestedExecutable)) continue;
+        const result = classifyStaticProcessInvocation(nestedExecutable, nestedTokens.slice(1), nestedTokens.join(" "));
+        if (result === INTERPRETER_PROCESS_BOUNDARY.ALLOW_STATIC_READONLY ||
+            result === INTERPRETER_PROCESS_BOUNDARY.ALLOW_PROVEN_NON_PROTECTED) continue;
+        return true;
+      }
+      if (executable === "npm" && normalizeAgentValue(tokens[1] || "") === "exec") return true;
+      if (!isOwnedDirectExecutable(executable)) {
+        if ((executable === "npm" || executable === "cargo") &&
+            tokens.length === 2 && normalizeAgentValue(tokens[1]) === "--version") continue;
+        const nestedExecutable = tokens.slice(1).some((value) => {
+          const candidate = normalizeExecutableName(value);
+          return candidate === "codex" || isNestedShellProcessLauncher(candidate);
+        });
+        if (nestedExecutable ||
+            /\bcodex(?:\.exe)?\b[\s"']+(?:exec|e|--sandbox)\b/iu.test(normalizedStage)) return true;
+        return true;
+      }
+      if (isPowerShellExecutable(executable)) {
+        const nestedCommand = nestedPowerShell;
+        if (nestedCommand && nestedCommand !== normalizedStage && hasUnsupportedDirectProcessBoundary(nestedCommand)) {
+          return true;
+        }
+      }
+      if (executable === "cmd") {
+        const nestedCommand = getCmdShellArgument(tokens, false);
+        if (nestedCommand && nestedCommand !== normalizedStage && hasUnsupportedDirectProcessBoundary(nestedCommand)) {
+          return true;
+        }
+      }
+      if (isShellCommandExecutable(executable)) {
+        const nestedCommand = getShellCommandArgument(tokens);
+        if (nestedCommand && nestedCommand !== normalizedStage && hasUnsupportedDirectProcessBoundary(nestedCommand)) {
+          return true;
+        }
+      }
+      if (DIRECT_PROCESS_TRAMPOLINE_TOOLS.has(executable)) return true;
+      if (executable === "forfiles") {
+        const result = classifyStaticProcessInvocation(executable, tokens.slice(1), normalizedStage);
+        if (result !== INTERPRETER_PROCESS_BOUNDARY.ALLOW_STATIC_READONLY &&
+            result !== INTERPRETER_PROCESS_BOUNDARY.ALLOW_PROVEN_NON_PROTECTED) return true;
+      }
+    }
+  }
+  return false;
+}
+
+function isCanonicalFlatReviewLifecycleTokens(tokens) {
+  if (!Array.isArray(tokens) || tokens.length === 0) return false;
+  const executable = normalizeExecutableName(tokens[0] || "");
+  if (executable === "git") {
+    const subcommandIndex = findGitSubcommandIndex(tokens);
+    if (subcommandIndex < 1 ||
+        !hasOnlyCanonicalGitGlobalArguments(tokens, subcommandIndex) ||
+        hasGitExternalProcessConfiguration(tokens)) return false;
+    return isReviewGatedGitSubcommand(
+      getGitSubcommandName(tokens, subcommandIndex),
+      tokens,
+      subcommandIndex,
+    );
+  }
+  return executable === "gh" && isGhTokenLifecycleCommand(tokens);
+}
+
+function hasOnlyFinitePowerShellStartProcessReviewOptions(tokens) {
+  const allowedNamedOptions = new Set([
+    "-argumentlist", "-args", "-file", "-filepath",
+    "-nonewwindow", "-wait", "-workingdirectory",
+  ]);
+  for (let index = 1; index < tokens.length; index += 1) {
+    if (isQuotedCommandToken(tokens[index])) continue;
+    const raw = stripOuterQuotes(String(tokens[index] || ""));
+    const normalized = normalizeAgentValue(raw);
+    if (!normalized.startsWith("-") || normalized.startsWith("--") || /^-[a-z],?$/u.test(normalized)) continue;
+    const optionName = normalized.split(/[:=]/u, 1)[0];
+    if (!allowedNamedOptions.has(optionName)) return false;
+  }
+  return true;
+}
+
+function isCanonicalRule13StartProcessStage(stage, tokens) {
+  const executable = normalizeExecutableName(tokens[0] || "");
+  if (!isPowerShellStartProcessExecutable(executable) ||
+      !/^\s*(?:start-process|saps|start)\s+(?:(?:-(?:file|filepath)(?::|\s+))?)(?:["']?(?:git|gh)(?:\.exe)?["']?|\(\s*get-command\s+(?:git|gh)(?:\.exe)?\s*\))(?=\s|$)/iu.test(String(stage || "")) ||
+      hasUnresolvedPowerShellStartProcessArgumentEvaluation(tokens, stage) ||
+      !hasOnlyFinitePowerShellStartProcessReviewOptions(tokens)) return false;
+  const invocation = getPowerShellStartProcessInvocation(tokens);
+  const nestedTokens = tokenizeCommandLine(invocation.command || "");
+  return isCanonicalFlatReviewLifecycleTokens(nestedTokens);
+}
+
+function getLiteralPrintfArgv(stage) {
+  const match = /^\s*printf\s+(["'])([\s\S]*)\1\s*$/u.exec(String(stage || ""));
+  if (!match) return null;
+  const payload = String(match[2] || "")
+    .replace(/\\[rn]/gu, " ")
+    .trim();
+  if (!payload || /[$`;&|<>(){}\r\n]/u.test(payload)) return null;
+  const argv = tokenizeCommandLine(payload);
+  return argv.length > 0 ? argv : null;
+}
+
+function isCanonicalRule13EmptyGitCwdStage(stage) {
+  const source = String(stage || "").trim();
+  if (!/^git(?:\.exe)?\b/iu.test(source) || /[;&|<>$`(){}\r\n]/u.test(source)) return false;
+  let sawEffectiveCwd = false;
+  let sawEmptyNoop = false;
+  const materialized = source.replace(/\s-C\s+(["'])([^"']*)\1/gu, (match, _quote, value) => {
+    if (String(value || "").trim()) {
+      sawEffectiveCwd = true;
+      return match;
+    }
+    if (!sawEffectiveCwd) return match;
+    sawEmptyNoop = true;
+    return "";
+  });
+  return sawEmptyNoop && isCanonicalFlatReviewLifecycleTokens(tokenizeCommandLine(materialized));
+}
+
+function isCanonicalLiteralProducerXargsReviewStage(previousStage, stage, tokens) {
+  if (normalizeExecutableName(tokens[0] || "") !== "xargs") return false;
+  const producedArgv = getLiteralPrintfArgv(previousStage);
+  if (!producedArgv) return false;
+  const nestedTokens = getNormalizedXargsCommandTokens(tokens);
+  if (nestedTokens.length === 0) return false;
+  const nestedExecutable = normalizeExecutableName(nestedTokens[0] || "");
+  if (nestedExecutable === "git" || nestedExecutable === "gh") {
+    return isCanonicalFlatReviewLifecycleTokens([...nestedTokens, ...producedArgv]);
+  }
+  if (!isShellCommandExecutable(nestedExecutable)) return false;
+  const normalizedStage = normalizeAgentValue(String(stage || ""));
+  if (!/\bxargs\s+-i\{\}\s+(?:sh|bash|zsh)\s+-c\b/u.test(normalizedStage)) return false;
+  const nestedCommand = getShellCommandArgument(nestedTokens);
+  if (!nestedCommand || /[$`;&|<>()[\]\r\n]/u.test(nestedCommand)) return false;
+  const materialized = nestedCommand.replace(/\{\}/gu, producedArgv.join(" "));
+  return isCanonicalFlatReviewLifecycleTokens(tokenizeCommandLine(materialized));
+}
+
+function isCanonicalRule13CommandSubstitutionStage(stage) {
+  const substitutions = getShellCommandSubstitutionCommands(stage);
+  if (substitutions.length !== 1 ||
+      !isCanonicalFlatReviewLifecycleTokens(tokenizeCommandLine(substitutions[0]))) return false;
+  const masked = String(stage || "").replace(`$(${substitutions[0]})`, "WINSMUX_STATIC_REVIEW_RESULT");
+  const tokens = tokenizeCommandLine(masked);
+  return tokens.length > 0 && STATIC_NON_EXECUTOR_TOOL_ALLOWLIST.has(normalizeExecutableName(tokens[0] || "")) &&
+    !/[$`;&|<>(){}\r\n]/u.test(masked.replace("WINSMUX_STATIC_REVIEW_RESULT", ""));
+}
+
+function isCanonicalCommandLocalGitShellReviewAlias(tokens) {
+  if (normalizeExecutableName(tokens[0] || "") !== "git") return false;
+  const subcommandIndex = findGitSubcommandIndex(tokens);
+  if (subcommandIndex < 1 || tokens.length !== subcommandIndex + 1) return false;
+  const subcommand = normalizeAgentValue(stripOuterQuotes(tokens[subcommandIndex] || ""));
+  const aliasCommand = getGitShellAliasCommand(tokens, subcommandIndex, subcommand);
+  if (!aliasCommand || /[;&|<>$`(){}\r\n]/u.test(aliasCommand)) return false;
+  let aliasConfigCount = 0;
+  for (let index = 1; index < subcommandIndex; index += 1) {
+    const raw = stripOuterQuotes(String(tokens[index] || ""));
+    if (raw === "-c" && index + 1 < subcommandIndex) {
+      const value = stripOuterQuotes(String(tokens[++index] || ""));
+      if (!/^alias\.[A-Za-z0-9_.-]+=/iu.test(value)) return false;
+      aliasConfigCount += 1;
+      continue;
+    }
+    return false;
+  }
+  return aliasConfigCount === 1 && isCanonicalFlatReviewLifecycleTokens(tokenizeCommandLine(aliasCommand));
+}
+
+function resolveStaticDirectAliasTokens(
+  inputTokens,
+  powerShellAliases,
+  uncertainPowerShellAliases,
+  shellAliases,
+  aliasStateUpdateIsDeterministic = true,
+) {
+  const executable = normalizeExecutableName(inputTokens[0] || "");
+  if (["set-alias", "sal", "new-alias", "nal"].includes(executable)) {
+    const definition = getSetAliasDefinition(inputTokens);
+    if (definition.aliasName) {
+      const isCanonicalSetAlias = ["set-alias", "sal"].includes(executable) &&
+        definition.canonicalSyntax;
+      if (!aliasStateUpdateIsDeterministic || !isCanonicalSetAlias) {
+        powerShellAliases.delete(definition.aliasName);
+        uncertainPowerShellAliases.add(definition.aliasName);
+      } else if (uncertainPowerShellAliases.has(definition.aliasName)) {
+        powerShellAliases.delete(definition.aliasName);
+      } else if (["git", "git.exe", "gh", "gh.exe"].includes(definition.aliasTarget)) {
+        powerShellAliases.set(definition.aliasName, normalizeExecutableName(definition.aliasTarget));
+      } else {
+        powerShellAliases.delete(definition.aliasName);
+      }
+    }
+    return [];
+  }
+  if (executable === "alias") {
+    const definition = getShellAliasDefinition(inputTokens);
+    if (definition.aliasName) {
+      if (aliasStateUpdateIsDeterministic) shellAliases.set(definition.aliasName, definition);
+      else shellAliases.delete(definition.aliasName);
+    }
+    return [];
+  }
+  if (executable === "shopt") return [];
+  if (powerShellAliases.has(executable)) return [powerShellAliases.get(executable), ...inputTokens.slice(1)];
+  const expansion = expandShellAliasInvocation(inputTokens, shellAliases);
+  if (expansion.unresolved) return null;
+  return expansion.matched ? expansion.tokens : inputTokens;
+}
+
+function isCanonicalUnprotectedPowerShellEnvironmentStage(stage) {
+  const literal = String.raw`(?:'(?:[^']|'')*'|"[^"$\x60]*"|[A-Za-z0-9_./:\\-]+)`;
+  const source = String(stage || "").trim();
+  const positional = new RegExp(
+    String.raw`^(?:si|set-item|ni|new-item)\s+Env:\\?([A-Za-z_][A-Za-z0-9_]*)\s+(?:-Value\s+)?${literal}$`,
+    "iu",
+  ).exec(source);
+  const byPath = new RegExp(
+    String.raw`^(?:si|set-item|ni|new-item)\s+-Path(?::|\s+)Env:\\?([A-Za-z_][A-Za-z0-9_]*)\s+-Value(?::|\s+)${literal}$`,
+    "iu",
+  ).exec(source);
+  const match = positional || byPath;
+  if (!match) return false;
+  return !/^(?:GIT_|GH_|NODE_OPTIONS$|COMSPEC$|PATH$|PATHEXT$)/iu.test(match[1]);
+}
+
+function isCanonicalPowerShellGhRepoMerge(source) {
+  const segments = splitCommandSegments(String(source || ""));
+  if (segments.length !== 2) return false;
+  const assignment = /^\$env:GH_REPO\s*=\s*(["'])([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\1$/iu.exec(segments[0].trim());
+  if (!assignment) return false;
+  const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(segments[1]));
+  return normalizeExecutableName(tokens[0] || "") === "gh" && isReviewGatedCommand(segments[1]);
+}
+
+function isUnownedPowerShellStage(stage, tokens) {
+  const source = String(stage || "").trim();
+  const executable = normalizeExecutableName(tokens[0] || "");
+  if (/^(?:\$|\[|@(?:\(|\{)|\(|&\s|\.\s)/u.test(source)) return true;
+  if (["set-location", "push-location", "pop-location"].includes(executable)) return false;
+  if (/^[a-z][a-z0-9]*-[a-z][a-z0-9-]*$/u.test(executable)) return true;
+  return new Set([
+    "clc", "cli", "iex", "ni", "ri", "sc", "set", "si",
+    "class", "filter", "for", "foreach", "function", "if", "param", "switch", "trap", "try", "using", "while",
+  ]).has(executable);
+}
+
+function hasUnownedNodeCommandPrelude(source) {
+  const segments = splitCommandSegments(String(source || ""));
+  for (let segmentIndex = 1; segmentIndex < segments.length; segmentIndex += 1) {
+    for (const stage of splitCommandPipelineStages(segments[segmentIndex])) {
+      const normalizedStage = unwrapPowerShellCommandWrapper(String(stage || "").trim());
+      const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(unwrapShellExecutableControlFlowPrefix(normalizedStage)));
+      const executable = normalizeExecutableName(tokens[0] || "");
+      if (executable === "node" || executable === "nodejs") return true;
+    }
+  }
+  return false;
+}
+
+function hasUnresolvedPowerShellArgumentEvaluation(tokens) {
+  return tokens.slice(1).some((token) => {
+    const value = stripOuterQuotes(String(token || "").trim());
+    return /\$\(|@\(/u.test(value) || /^\(/u.test(value);
+  });
+}
+
+function hasUnresolvedPowerShellStartProcessArgumentEvaluation(_tokens, source) {
+  let maskedSource = maskCanonicalPowerShellArgumentArrays(source);
+  maskedSource = maskedSource
+    .replace(/\(\s*get-command\s+(?:git|gh|codex)\s*\)/giu, "__WINSMUX_STATIC_COMMAND__")
+    .replace(/'(?:[^']|'')*'/gu, "__WINSMUX_STATIC_STRING__")
+    .replace(/"[^"$\x60]*"/gu, "__WINSMUX_STATIC_STRING__");
+  if (/\$(?:env:comspec|\{env:comspec\})|%comspec%/iu.test(maskedSource)) return true;
+  return /\$\(|@\(|@\{|<#|#>|[()[\]{}&]/u.test(maskedSource);
+}
+
+function maskCanonicalPowerShellArgumentArrays(value) {
+  const source = String(value || "");
+  const literal = String.raw`(?:'(?:[^']|'')*'|"[^"$\x60]*"|[A-Za-z0-9_./:\\-]+)`;
+  const staticArray = String.raw`@\(\s*(?:${literal}(?:\s*,\s*${literal})*)?\s*\)`;
+  return source.replace(
+    new RegExp(String.raw`-(?:argumentlist|args)(?::|=|\s+)${staticArray}`, "giu"),
+    "-ArgumentList __WINSMUX_STATIC_ARRAY__",
+  );
+}
+
+function hasUnownedStdinScriptPipeline(source) {
+  return splitCommandSegments(String(source || "")).some((segment) => {
+    const stages = splitCommandPipelineStages(segment);
+    if (stages.length > 1 && stages.slice(1).some((stage) => isStdinScriptConsumerStage(stage))) {
+      return true;
+    }
+    return stages.some((stage) =>
+      isStdinScriptConsumerStage(stage) && /<<(?!<)|<\s*(?:<\(|[^>&])|<\(/u.test(stage));
+  });
+}
+
+function isOwnedDirectExecutable(executable) {
+  const normalized = normalizeExecutableName(executable);
+  if (/^python[0-9]+(?:\.[0-9]+)?$/u.test(normalized)) return true;
+  return new Set([
+    ":", "bash", "cargo", "cat", "cd", "chdir", "cmd", "codex", "cp", "curl", "declare", "dotnet", "echo", "export", "false", "gh", "git", "go", "grep", "install", "jq", "ln", "local", "ls", "make", "mv", "node", "nodejs", "npm", "pop-location", "popd", "push-location", "pushd", "pwd",
+    "powershell", "printf", "pwsh", "py", "python", "python3", "rg", "rustc", "saps", "sed", "set-location", "sh", "sl", "start", "start-process", "tee", "true", "type", "typeset", "unset", "where",
+    "which", "winsmux", "xargs", "zsh",
+  ]).has(normalized);
+}
+
+function hasUnresolvedInterpreterProcessBoundary(command) {
+  const source = String(command || "");
+  const scopes = buildFunctionScopeIndex(source);
+  const nodeMarker = /["'](?:node:)?child_process["']/u.test(source);
+  const pythonCode = maskPythonNonCode(source);
+  const pythonMarker = /\bsubprocess\b|\bos\.system\s*\(/iu.test(pythonCode);
+  if (!nodeMarker && !pythonMarker) {
+    return false;
+  }
+  if (/\bReflect\.(?:get|set)\s*\(/u.test(source) ||
+      /\.\.\.\s*(?:require|import)\(\s*["'](?:node:)?child_process["']\s*\)/u.test(source)) {
+    return true;
+  }
+  const inspectCalls = (calls, language) => {
+    if (calls.length === 0) {
+      return true;
+    }
+    for (const call of calls) {
+      if (normalizeAgentValue(call.method) === "unknown") {
+        return true;
+      }
+      const body = getBalancedCallBody(source, call.openIndex);
+      if (body === null) {
+        return true;
+      }
+      const args = splitTopLevelCallArguments(body);
+      const method = normalizeAgentValue(call.method);
+      if (method === "exec" || method === "execsync" || method === "system") {
+        if (evaluateScopedStaticStringExpression(args[0], source, call.openIndex, scopes, language) === null) {
+          return true;
+        }
+        continue;
+      }
+      const elements = getArgumentContainerElements(args[language === "python" ? 0 : 1], source, call.openIndex, scopes, language);
+      const toolExpression = language === "python" ? elements?.[0] : args[0];
+      if (!elements || evaluateScopedStaticStringExpression(toolExpression, source, call.openIndex, scopes, language) === null ||
+          elements.some((element) => evaluateScopedStaticStringExpression(element, source, call.openIndex, scopes, language) === null)) {
+        return true;
+      }
+    }
+    return false;
+  };
+  return (nodeMarker && inspectCalls(getNodeChildProcessCalls(source), "javascript")) ||
+    (pythonMarker && inspectCalls(getPythonProcessCalls(pythonCode), "python"));
+}
+
+function hasConservativeProtectedCmdBoundary(command) {
+  const source = String(command || "");
+  if (!/\bcmd(?:\.exe)?\b/iu.test(source) ||
+      !/\b(?:git|codex)(?:\.exe)?\b/iu.test(source)) {
+    return false;
+  }
+  return /\b(?:setlocal|endlocal)\b|\bif\s+(?:not\s+)?(?:defined|exist|errorlevel|cmdextversion)\b/iu.test(source) ||
+    (/&&[\s\S]*\|\||\|\|[\s\S]*&&/u.test(source) && !/\/c\s+["']?\s*set\b/iu.test(source));
+}
+
 function isReviewGatedCommand(command) {
+  if (hasConservativeProtectedInterpreterBoundary(command, "git") || hasConservativeProtectedCmdBoundary(command)) {
+    return true;
+  }
+  if (hasCommandLocalGitAliasConfiguration(command)) {
+    return true;
+  }
+  if (hasDynamicShellReviewGatedArguments(command) || hasShellArrayReviewGatedCommand(command)) {
+    return true;
+  }
+
+  const powerShellComSpecCommand = materializePowerShellComSpecAliases(command);
+  if (powerShellComSpecCommand !== command) {
+    return isReviewGatedCommand(powerShellComSpecCommand);
+  }
+
+  const materializedCommand = materializeConstantExecutableSubstitutions(command);
+  if (materializedCommand !== command && isGitCommitOrMergeCommandLine(materializedCommand)) {
+    return true;
+  }
+
+  const groupedCommand = unwrapShellGroupingWrapper(command);
+  if (groupedCommand !== String(command || "").trim() && isReviewGatedCommand(groupedCommand)) {
+    return true;
+  }
+
+  for (const blockBody of getBraceBlockBodies(command)) {
+    if (isReviewGatedCommand(blockBody)) {
+      return true;
+    }
+  }
+
+  for (const substitutionCommand of getShellCommandSubstitutionCommands(command)) {
+    if (isReviewGatedCommand(substitutionCommand)) {
+      return true;
+    }
+  }
+
+  for (const segment of splitCommandSegments(command)) {
+    for (const stage of splitCommandPipelineStages(segment)) {
+      const executableStage = unwrapShellExecutableControlFlowPrefix(stage);
+      if (executableStage && executableStage !== stage.trim() && isReviewGatedCommand(executableStage)) {
+        return true;
+      }
+    }
+  }
+
   if (hasPowerShellGitAliasLifecycleCommand(command, true)) {
     return true;
   }
@@ -1687,21 +6828,52 @@ function isReviewGatedCommand(command) {
     return true;
   }
 
+  for (const indirectCommand of getConstantShellStdinCommands(command)) {
+    if (isReviewGatedCommand(indirectCommand)) {
+      return true;
+    }
+  }
+
   return isGitCommitOrMergeCommandLine(command) ||
-         isGitCommitCommand(command) ||
-         isGitMergeCommand(command) ||
          isGhPrMergeCommandLine(command) ||
-         isGhPrMergeCommand(command) ||
          isGhApiMergeCommandLine(command);
+}
+
+function getConstantShellStdinCommands(command) {
+  const source = String(command || "");
+  const commands = [];
+  const pipePattern = /\b(?:echo|printf(?:\s+%s)?)\s+(['"])([\s\S]*?)\1\s*\|\s*(?:bash|sh|zsh|pwsh|powershell)(?:\.exe)?\b/giu;
+  const hereStringPattern = /\b(?:bash|sh|zsh)(?:\.exe)?\b[^;\r\n]*?<<<\s*(['"])([\s\S]*?)\1/giu;
+  for (const pattern of [pipePattern, hereStringPattern]) {
+    for (const match of source.matchAll(pattern)) {
+      if (match[2]) {
+        commands.push(match[2]);
+      }
+    }
+  }
+  return commands;
 }
 
 function isGitCommitOrMergeCommandLine(command) {
   return splitCommandSegments(command).some((segment) =>
     splitCommandPipelineStages(segment).some((stage) => {
       const normalizedStage = unwrapPowerShellCommandWrapper(stage);
-      const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(normalizedStage));
+      const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(tokenizeCommandLine(normalizedStage)));
+      if (execution.nestedCommand) {
+        return isReviewGatedCommand(execution.nestedCommand);
+      }
+      const tokens = execution.tokens;
       if (tokens.length === 0) {
         return false;
+      }
+
+      if (isDynamicShellExecutableToken(tokens[0])) {
+        const syntheticTokens = ["git", ...tokens.slice(1)];
+        const syntheticSubcommandIndex = findGitSubcommandIndex(syntheticTokens);
+        if (syntheticSubcommandIndex >= 0) {
+          const syntheticSubcommand = getGitSubcommandName(syntheticTokens, syntheticSubcommandIndex);
+          return isReviewGatedGitSubcommand(syntheticSubcommand, syntheticTokens, syntheticSubcommandIndex);
+        }
       }
 
       const executable = getExecutableBasename(tokens[0]);
@@ -1711,8 +6883,10 @@ function isGitCommitOrMergeCommandLine(command) {
       }
 
       if (isPowerShellExecutable(executable)) {
-        const nestedCommand = getOptionRemainderValue(tokens, ["-command", "-c"]);
-        return nestedCommand ? isReviewGatedCommand(nestedCommand) : false;
+        const nestedCommand = getPowerShellNestedCommand(tokens);
+        return nestedCommand
+          ? isReviewGatedCommand(nestedCommand) || getBraceBlockBodies(nestedCommand).some(isReviewGatedCommand)
+          : false;
       }
 
       if (isShellCommandExecutable(executable)) {
@@ -1728,6 +6902,10 @@ function isGitCommitOrMergeCommandLine(command) {
         return nestedCommand ? isReviewGatedCommand(nestedCommand) : false;
       }
 
+      if (hasInterpreterReviewGatedGitLifecycleCommand(normalizedStage, tokens)) {
+        return true;
+      }
+
       if (executable !== "git" && executable !== "git.exe") {
         return false;
       }
@@ -1738,7 +6916,7 @@ function isGitCommitOrMergeCommandLine(command) {
       }
 
       const gitSubcommand = getGitSubcommandName(tokens, gitSubcommandIndex);
-      return gitSubcommand === "commit" || gitSubcommand === "merge";
+      return isReviewGatedGitSubcommand(gitSubcommand, tokens, gitSubcommandIndex);
     }));
 }
 
@@ -1873,16 +7051,35 @@ function isReviewerOnlySegment(segment) {
 }
 
 function splitCommandSegments(command) {
+  return splitCommandSegmentsWithSeparators(command).map((entry) => entry.segment);
+}
+
+function splitCommandSegmentsWithSeparators(command) {
   const segments = [];
   let current = "";
   let quote = "";
+  let parenDepth = 0;
+  let braceDepth = 0;
+  let separatorBefore = "";
+
+  const pushSegment = (separatorAfter) => {
+    if (current.trim() !== "") {
+      segments.push({
+        segment: current.trim(),
+        separatorBefore,
+        separatorAfter,
+      });
+    }
+    current = "";
+    separatorBefore = separatorAfter;
+  };
 
   for (let index = 0; index < command.length; index += 1) {
     const char = command[index];
     const nextChar = command[index + 1];
 
     if (quote) {
-      if (char === quote && command[index - 1] !== "\\") {
+      if (isShellQuoteTerminator(command, index, quote)) {
         quote = "";
       }
       current += char;
@@ -1890,42 +7087,55 @@ function splitCommandSegments(command) {
     }
 
     if (char === "'" || char === "\"") {
-      quote = char;
+      quote = getShellQuoteMode(command, index, char);
       current += char;
       continue;
     }
 
-    if (char === "\r" || char === "\n" || char === ";") {
-      if (current.trim() !== "") {
-        segments.push(current.trim());
-      }
-      current = "";
+    if (char === "(") {
+      parenDepth += 1;
+      current += char;
       continue;
     }
 
-    if ((char === "&" && nextChar === "&") || (char === "|" && nextChar === "|")) {
-      if (current.trim() !== "") {
-        segments.push(current.trim());
-      }
-      current = "";
+    if (char === ")" && parenDepth > 0) {
+      parenDepth -= 1;
+      current += char;
+      continue;
+    }
+
+    if (char === "{" && command[index - 1] !== "$") {
+      braceDepth += 1;
+      current += char;
+      continue;
+    }
+
+    if (char === "}" && braceDepth > 0) {
+      braceDepth -= 1;
+      current += char;
+      continue;
+    }
+
+    if ((char === "\r" || char === "\n" || char === ";") && parenDepth === 0 && braceDepth === 0) {
+      pushSegment(";");
+      continue;
+    }
+
+    if (((char === "&" && nextChar === "&") || (char === "|" && nextChar === "|")) && parenDepth === 0 && braceDepth === 0) {
+      pushSegment(char + nextChar);
       index += 1;
       continue;
     }
 
-    if (char === "&" && command[index - 1] !== ">") {
-      if (current.trim() !== "") {
-        segments.push(current.trim());
-      }
-      current = "";
+    if (char === "&" && command[index - 1] !== ">" && command[index - 1] !== "|" && parenDepth === 0 && braceDepth === 0) {
+      pushSegment("&");
       continue;
     }
 
     current += char;
   }
 
-  if (current.trim() !== "") {
-    segments.push(current.trim());
-  }
+  pushSegment("");
 
   return segments;
 }
@@ -1934,13 +7144,15 @@ function splitCommandPipelineStages(command) {
   const segments = [];
   let current = "";
   let quote = "";
+  let parenDepth = 0;
+  let braceDepth = 0;
 
   for (let index = 0; index < command.length; index += 1) {
     const char = command[index];
     const nextChar = command[index + 1];
 
     if (quote) {
-      if (char === quote && command[index - 1] !== "\\") {
+      if (isShellQuoteTerminator(command, index, quote)) {
         quote = "";
       }
       current += char;
@@ -1948,16 +7160,43 @@ function splitCommandPipelineStages(command) {
     }
 
     if (char === "'" || char === "\"") {
-      quote = char;
+      quote = getShellQuoteMode(command, index, char);
       current += char;
       continue;
     }
 
-    if (char === "|" && nextChar !== "|") {
+    if (char === "(") {
+      parenDepth += 1;
+      current += char;
+      continue;
+    }
+
+    if (char === ")" && parenDepth > 0) {
+      parenDepth -= 1;
+      current += char;
+      continue;
+    }
+
+    if (char === "{" && command[index - 1] !== "$") {
+      braceDepth += 1;
+      current += char;
+      continue;
+    }
+
+    if (char === "}" && braceDepth > 0) {
+      braceDepth -= 1;
+      current += char;
+      continue;
+    }
+
+    if (char === "|" && nextChar !== "|" && command[index - 1] !== "|" && parenDepth === 0 && braceDepth === 0) {
       if (current.trim() !== "") {
         segments.push(current.trim());
       }
       current = "";
+      if (nextChar === "&") {
+        index += 1;
+      }
       continue;
     }
 
@@ -1975,12 +7214,13 @@ function tokenizeCommandLine(command) {
   const tokens = [];
   let current = "";
   let quote = "";
+  let tokenStarted = false;
 
   for (let index = 0; index < command.length; index += 1) {
     const char = command[index];
 
     if (quote) {
-      if (char === quote && command[index - 1] !== "\\") {
+      if (isShellQuoteTerminator(command, index, quote)) {
         quote = "";
       } else {
         current += char;
@@ -1989,48 +7229,290 @@ function tokenizeCommandLine(command) {
     }
 
     if (char === "'" || char === "\"") {
-      quote = char;
+      quote = getShellQuoteMode(command, index, char);
+      tokenStarted = true;
       continue;
     }
 
     if (/\s/.test(char)) {
-      if (current !== "") {
+      if (tokenStarted) {
         tokens.push(current);
         current = "";
+        tokenStarted = false;
       }
       continue;
     }
 
     current += char;
+    tokenStarted = true;
   }
 
-  if (current !== "") {
+  if (tokenStarted) {
     tokens.push(current);
   }
 
   return tokens;
 }
 
-function getCmdShellArgument(tokens) {
+function getCmdShellArgument(tokens, materialize = true) {
+  let delayedExpansion = false;
   for (let index = 1; index < tokens.length; index += 1) {
     const token = normalizeAgentValue(tokens[index]);
+    if (token === "/v:on") {
+      delayedExpansion = true;
+      continue;
+    }
+    if (token === "/v:off") {
+      delayedExpansion = false;
+      continue;
+    }
     if (token === "/c" || token === "/k") {
-      return unescapeCmdCaretEscapes(tokens.slice(index + 1).join(" "));
+      const nestedCommand = stripLeadingCmdCallBuiltins(unescapeCmdCaretEscapes(tokens.slice(index + 1).join(" ")));
+      return materialize ? getCmdDynamicLifecycleCommand(nestedCommand, delayedExpansion) || nestedCommand : nestedCommand;
     }
 
     if (token.startsWith("/c") || token.startsWith("/k")) {
       const inlineCommand = tokens[index].slice(2);
-      return unescapeCmdCaretEscapes([inlineCommand, ...tokens.slice(index + 1)].filter(Boolean).join(" "));
+      const nestedCommand = stripLeadingCmdCallBuiltins(unescapeCmdCaretEscapes([inlineCommand, ...tokens.slice(index + 1)].filter(Boolean).join(" ")));
+      return materialize ? getCmdDynamicLifecycleCommand(nestedCommand, delayedExpansion) || nestedCommand : nestedCommand;
     }
 
     const inlineSwitchIndex = Math.max(token.lastIndexOf("/c"), token.lastIndexOf("/k"));
     if (inlineSwitchIndex > 0) {
       const inlineCommand = tokens[index].slice(inlineSwitchIndex + 2);
-      return unescapeCmdCaretEscapes([inlineCommand, ...tokens.slice(index + 1)].filter(Boolean).join(" "));
+      const nestedCommand = stripLeadingCmdCallBuiltins(unescapeCmdCaretEscapes([inlineCommand, ...tokens.slice(index + 1)].filter(Boolean).join(" ")));
+      return materialize ? getCmdDynamicLifecycleCommand(nestedCommand, delayedExpansion) || nestedCommand : nestedCommand;
     }
   }
 
   return "";
+}
+
+function isCmdDelayedExpansionEnabled(tokens) {
+  let delayedExpansion = false;
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = normalizeAgentValue(tokens[index]);
+    if (token === "/v:on") {
+      delayedExpansion = true;
+      continue;
+    }
+    if (token === "/v:off") {
+      delayedExpansion = false;
+      continue;
+    }
+    if (token === "/c" || token === "/k" || token.startsWith("/c") || token.startsWith("/k") ||
+        Math.max(token.lastIndexOf("/c"), token.lastIndexOf("/k")) > 0) {
+      return delayedExpansion;
+    }
+  }
+  return delayedExpansion;
+}
+
+function splitCmdConditionalStatements(command) {
+  const source = String(command || "");
+  const statements = [];
+  let current = "";
+  let quote = false;
+  let precedingOperator = "";
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    if (char === "^" && index + 1 < source.length) {
+      current += char + source[index + 1];
+      index += 1;
+      continue;
+    }
+    if (char === '"') {
+      quote = !quote;
+      current += char;
+      continue;
+    }
+    if (!quote && (char === "&" || char === "|")) {
+      const operator = source[index + 1] === char ? char + char : char;
+      statements.push({ operator: precedingOperator, text: current.trim() });
+      current = "";
+      precedingOperator = operator;
+      if (operator.length === 2) {
+        index += 1;
+      }
+      continue;
+    }
+    current += char;
+  }
+  statements.push({ operator: precedingOperator, text: current.trim() });
+  return statements.filter((statement) => statement.text !== "");
+}
+
+function getCmdDynamicLifecycleCommand(command, delayedExpansion = true) {
+  const source = String(command || "");
+  for (const match of source.matchAll(/\bfor(?:\s+\/[A-Za-z]+)?\s+%%?([A-Za-z])\s+in\s*\(([^)]*)\)\s+do\s+@?%%?\1(?:\.exe)?\s+([^&|\r\n]+)/giu)) {
+    const candidates = tokenizeCommandLine(match[2]).map(normalizeExecutableName);
+    const args = tokenizeCommandLine(match[3]).map((token) => normalizeAgentValue(stripOuterQuotes(token)));
+    if (candidates.includes("codex") && args.some(isDeniedCodexMode)) {
+      return "codex exec";
+    }
+    if (candidates.some((candidate) => /[%!]/u.test(candidate)) && args.some(isDeniedCodexMode) && /\bcodex(?:\.exe)?\b/iu.test(source)) {
+      return "codex exec";
+    }
+  }
+  if (/&&[\s\S]*\|\||\|\|[\s\S]*&&/u.test(source) &&
+      !/^\s*set\b/iu.test(source) &&
+      /(?:%[^%]+%|![^!]+!)[\s\S]*\b(?:commit|merge|push|update-ref|exec|--sandbox)\b/iu.test(source)) {
+    return /\b(?:exec|--sandbox)\b/iu.test(source) ? "codex exec" : "git commit";
+  }
+  const assignments = new Map();
+  let lastSucceeded = true;
+  const gitTargetAssignments = new Map();
+  const isLifecycle = (candidate) => isOperatorOnlyGitLifecycleCommand(candidate) ||
+    isDirectCodexDispatch(candidate) || isGhPrMergeCommandLine(candidate) || isGhApiMergeCommandLine(candidate);
+  for (const entry of splitCmdConditionalStatements(source)) {
+    const shouldExecute = entry.operator === "&&"
+      ? lastSucceeded !== false
+      : entry.operator === "||"
+      ? lastSucceeded !== true
+      : true;
+    if (!shouldExecute) {
+      continue;
+    }
+    let statement = entry.text;
+    const setLocalMatch = /^setlocal(?:\s+(EnableDelayedExpansion|DisableDelayedExpansion))?$/iu.exec(statement);
+    if (setLocalMatch) {
+      if (setLocalMatch[1]) {
+        delayedExpansion = normalizeAgentValue(setLocalMatch[1]) === "enabledelayedexpansion";
+      }
+      lastSucceeded = true;
+      continue;
+    }
+    const ifDefinedMatch = /^if\s+(not\s+)?defined\s+([A-Za-z_][A-Za-z0-9_]*)\s+([\s\S]+)$/iu.exec(statement);
+    if (ifDefinedMatch) {
+      const isDefined = assignments.has(normalizeAgentValue(ifDefinedMatch[2]));
+      const shouldRun = ifDefinedMatch[1] ? !isDefined : isDefined;
+      if (!shouldRun) {
+        lastSucceeded = false;
+        continue;
+      }
+      statement = ifDefinedMatch[3].trim();
+    }
+    const setMatch = /^(?:call\s+)?set\s+"?([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*?)"?$/iu.exec(statement);
+    if (setMatch) {
+      const value = expandCmdVariables(setMatch[2].trim(), assignments, delayedExpansion).value;
+      const name = normalizeAgentValue(setMatch[1]);
+      assignments.set(name, value);
+      if (isGitEnvironmentName(name)) {
+        gitTargetAssignments.set(name.toUpperCase(), value);
+      }
+      lastSucceeded = true;
+      continue;
+    }
+    for (let pass = 0; pass < 8; pass += 1) {
+      const expansion = expandCmdVariables(statement, assignments, delayedExpansion);
+      statement = expansion.value;
+      if (!expansion.replaced) {
+        break;
+      }
+    }
+    const expandedSetMatch = /^(?:call\s+)?set\s+"?([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*?)"?$/iu.exec(statement);
+    if (expandedSetMatch) {
+      const name = normalizeAgentValue(expandedSetMatch[1]);
+      const value = expandedSetMatch[2].trim();
+      assignments.set(name, value);
+      if (isGitEnvironmentName(name)) {
+        gitTargetAssignments.set(name.toUpperCase(), value);
+      }
+      lastSucceeded = true;
+      continue;
+    }
+    const invocation = /^(?:call\s+)?(git|gh|codex)(?:\.exe)?\b([\s\S]*)$/iu.exec(statement);
+    if (invocation) {
+      const candidate = [invocation[1], invocation[2]].filter(Boolean).join(" ").trim();
+      if (isLifecycle(candidate)) {
+        const targetPrefix = [...gitTargetAssignments.entries()]
+          .map(([name, value]) => `${name}=${JSON.stringify(value)}`)
+          .join(" ");
+        return [targetPrefix, candidate].filter(Boolean).join(" ");
+      }
+      lastSucceeded = null;
+      continue;
+    }
+    const unresolved = /^(?:call\s+)?((?:%[^%]+%|![^!]+!))\s+([\s\S]*)$/u.exec(statement);
+    if (!unresolved || (!delayedExpansion && unresolved[1].startsWith("!"))) {
+      lastSucceeded = null;
+      continue;
+    }
+    const variableName = /^[%!](?:([A-Za-z_][A-Za-z0-9_]*))/u.exec(unresolved[1])?.[1] || "";
+    for (const executable of ["gh", "codex", "git"]) {
+      const candidateAssignments = new Map(assignments);
+      if (variableName) {
+        candidateAssignments.set(normalizeAgentValue(variableName), executable);
+      }
+      const expandedExecutable = expandCmdVariables(unresolved[1], candidateAssignments, delayedExpansion).value;
+      const candidate = `${expandedExecutable} ${unresolved[2]}`.trim();
+      if (isLifecycle(candidate)) {
+        return candidate;
+      }
+    }
+    lastSucceeded = /^(?:echo|rem|setlocal|endlocal)\b/iu.test(statement) ? true : null;
+  }
+  return "";
+}
+
+function expandCmdVariables(value, assignments, delayedExpansion = true) {
+  let replaced = false;
+  const replacementExpanded = String(value || "").replace(
+    /(!|%)([A-Za-z_][A-Za-z0-9_]*):([^=!%\r\n]*)=([^!%\r\n]*)\1/giu,
+    (full, delimiter, rawName, searchValue, replacementValue) => {
+      if (delimiter === "!" && !delayedExpansion) {
+        return full;
+      }
+      const name = normalizeAgentValue(rawName);
+      if (!assignments.has(name)) {
+        return full;
+      }
+      replaced = true;
+      const source = String(assignments.get(name));
+      if (searchValue === "") {
+        return source;
+      }
+      if (searchValue.startsWith("*")) {
+        const needle = searchValue.slice(1);
+        if (needle === "") {
+          return `${replacementValue}${source}`;
+        }
+        const matchIndex = source.toLocaleLowerCase("en-US").indexOf(needle.toLocaleLowerCase("en-US"));
+        return matchIndex < 0 ? source : `${replacementValue}${source.slice(matchIndex + needle.length)}`;
+      }
+      return source.replace(new RegExp(escapeRegex(searchValue), "giu"), replacementValue);
+    },
+  );
+  const expanded = replacementExpanded.replace(
+    /(!|%)([A-Za-z_][A-Za-z0-9_]*)(?::~(-?\d+)(?:,(-?\d+))?)?\1/giu,
+    (full, delimiter, rawName, rawStart, rawLength) => {
+      if (delimiter === "!" && !delayedExpansion) {
+        return full;
+      }
+      const name = normalizeAgentValue(rawName);
+      if (!assignments.has(name)) {
+        return full;
+      }
+      replaced = true;
+      const source = String(assignments.get(name));
+      if (rawStart === undefined) {
+        return source;
+      }
+      let start = Number.parseInt(rawStart, 10);
+      if (start < 0) {
+        start = Math.max(0, source.length + start);
+      }
+      if (rawLength === undefined) {
+        return source.slice(start);
+      }
+      let length = Number.parseInt(rawLength, 10);
+      if (length < 0) {
+        length = Math.max(0, source.length - start + length);
+      }
+      return source.slice(start, start + length);
+    },
+  );
+  return { value: expanded, replaced };
 }
 
 function isShellCommandExecutable(executable) {
@@ -2122,6 +7604,70 @@ function hasShellWrappedXargsLifecycleCommand(tokens, source, reviewOnly) {
     : isOperatorOnlyGitLifecycleCommand(nestedCommand) || hasXargsLifecycleArgumentHint(source, false);
 }
 
+function getReviewGatedXargsCommandTargets(tokens, source, baseCwd, depth, inheritedGitEnvContext = {}) {
+  const nestedTokens = getNormalizedXargsCommandTokens(tokens);
+  const lifecycleHint = hasXargsLifecycleArgumentHint(source, true);
+  const nestedExecutable = normalizeExecutableName(nestedTokens[0] || "");
+  const fallbackTarget = baseCwd || process.cwd();
+
+  if (nestedExecutable === "git") {
+    const subcommandIndex = findGitSubcommandIndex(nestedTokens);
+    const subcommand = subcommandIndex >= 0
+      ? getGitSubcommandName(nestedTokens, subcommandIndex)
+      : "";
+    if (subcommandIndex < 0 || isReviewGatedGitSubcommand(subcommand, nestedTokens, subcommandIndex) || lifecycleHint) {
+      const targetCwd = getGitGlobalCwdOption(nestedTokens, 0, baseCwd, inheritedGitEnvContext) || fallbackTarget;
+      return { targetCwds: [targetCwd || "\0unresolved-xargs-git-target"], requiresBaseCwd: false, matched: true };
+    }
+  }
+
+  if (nestedExecutable === "gh") {
+    if (nestedTokens.length < 2 ||
+        isGhPrMergeTokenCommand(nestedTokens) ||
+        isGhApiMergeCommand(nestedTokens) ||
+        isGhApiRefWriteCommand(nestedTokens) ||
+        hasGhLifecycleArgumentHint(source)) {
+      return { targetCwds: [fallbackTarget], requiresBaseCwd: false, matched: true };
+    }
+  }
+
+  if (isShellCommandExecutable(nestedExecutable)) {
+    const nestedCommand = getShellCommandArgument(nestedTokens);
+    if (nestedCommand) {
+      const nestedTargets = getReviewGatedCommandTargets(nestedCommand, baseCwd, depth + 1, inheritedGitEnvContext);
+      if (nestedTargets.targetCwds.length > 0 || nestedTargets.requiresBaseCwd) {
+        return { ...nestedTargets, matched: true };
+      }
+
+      if (lifecycleHint) {
+        const materializedCommand = materializeXargsLifecyclePlaceholders(nestedCommand);
+        const materializedTargets = getReviewGatedCommandTargets(materializedCommand, baseCwd, depth + 1, inheritedGitEnvContext);
+        if (materializedTargets.targetCwds.length > 0 || materializedTargets.requiresBaseCwd) {
+          return { ...materializedTargets, matched: true };
+        }
+      }
+    }
+  }
+
+  if (isGitTokenLifecycleCommand(nestedTokens, true) ||
+      isGhTokenLifecycleCommand(nestedTokens) ||
+      hasShellWrappedXargsLifecycleCommand(nestedTokens, source, true) ||
+      hasUnresolvedXargsLifecycleCommand(nestedTokens) ||
+      lifecycleHint) {
+    return { targetCwds: ["\0unresolved-xargs-review-target"], requiresBaseCwd: false, matched: true };
+  }
+
+  return { targetCwds: [], requiresBaseCwd: false, matched: false };
+}
+
+function materializeXargsLifecyclePlaceholders(command) {
+  return String(command || "")
+    .replace(/(["'])\{\}\1/gu, "commit")
+    .replace(/\{\}/gu, "commit")
+    .replace(/(["'])\$@\1/gu, "commit")
+    .replace(/\$@/gu, "commit");
+}
+
 function hasXargsLifecycleArgumentHint(source, reviewOnly) {
   const normalized = normalizeAgentValue(String(source || ""));
   const hasXargsGit = /\bxargs\b[\s\S]*\bgit\b/u.test(normalized);
@@ -2140,16 +7686,32 @@ function isPowerShellStartProcessExecutable(executable) {
   return normalized === "start-process" || normalized === "saps" || normalized === "start";
 }
 
-function getPowerShellStartProcessCommand(tokens) {
+function getPowerShellStartProcessInvocation(tokens) {
   if (tokens.length < 2) {
-    return "";
+    return { command: "", workingDirectory: "" };
   }
 
   let filePath = "";
+  const workingDirectory = getPowerShellStartProcessWorkingDirectory(tokens);
   const argumentList = [];
   for (let index = 1; index < tokens.length; index += 1) {
     const rawToken = stripOuterQuotes(tokens[index]);
     const token = normalizeAgentValue(rawToken);
+    if (isPowerShellStartProcessWorkingDirectoryToken(token)) {
+      index += 1;
+      continue;
+    }
+
+    if (getInlinePowerShellStartProcessWorkingDirectory(rawToken)) {
+      continue;
+    }
+
+    if (!filePath && /^\(?get-command$/u.test(token) && index + 1 < tokens.length) {
+      filePath = stripOuterQuotes(tokens[index + 1]).replace(/\)+$/u, "");
+      index += 1;
+      continue;
+    }
+
     if ((token === "-filepath" || token === "-file") && index + 1 < tokens.length) {
       filePath = stripOuterQuotes(tokens[index + 1]);
       index += 1;
@@ -2164,6 +7726,14 @@ function getPowerShellStartProcessCommand(tokens) {
 
     if ((token === "-argumentlist" || token === "-args") && index + 1 < tokens.length) {
       for (let argumentIndex = index + 1; argumentIndex < tokens.length; argumentIndex += 1) {
+        const argumentToken = normalizeAgentValue(stripOuterQuotes(tokens[argumentIndex]));
+        if (isPowerShellStartProcessWorkingDirectoryToken(argumentToken)) {
+          argumentIndex += 1;
+          continue;
+        }
+        if (getInlinePowerShellStartProcessWorkingDirectory(stripOuterQuotes(tokens[argumentIndex]))) {
+          continue;
+        }
         for (const argument of cleanPowerShellStartProcessArguments(tokens[argumentIndex])) {
           argumentList.push(argument);
         }
@@ -2177,6 +7747,14 @@ function getPowerShellStartProcessCommand(tokens) {
         argumentList.push(inlineArgument);
       }
       for (let argumentIndex = index + 1; argumentIndex < tokens.length; argumentIndex += 1) {
+        const argumentToken = normalizeAgentValue(stripOuterQuotes(tokens[argumentIndex]));
+        if (isPowerShellStartProcessWorkingDirectoryToken(argumentToken)) {
+          argumentIndex += 1;
+          continue;
+        }
+        if (getInlinePowerShellStartProcessWorkingDirectory(stripOuterQuotes(tokens[argumentIndex]))) {
+          continue;
+        }
         for (const argument of cleanPowerShellStartProcessArguments(tokens[argumentIndex])) {
           argumentList.push(argument);
         }
@@ -2197,16 +7775,115 @@ function getPowerShellStartProcessCommand(tokens) {
   }
 
   const joinedArguments = argumentList.filter(Boolean).join(" ").trim();
+  const normalizedFilePath = stripOuterQuotes(filePath).replace(/^\(+|\)+$/gu, "");
+  if (/^\$(?:env:comspec|\{env:comspec\})$/iu.test(normalizedFilePath) ||
+      /^%comspec%$/iu.test(normalizedFilePath) ||
+      /^\[(?:System\.)?Environment\]\s*::\s*GetEnvironmentVariable\s*\(\s*["']?ComSpec["']?\s*\)$/iu.test(normalizedFilePath)) {
+    return {
+      command: ["cmd", joinedArguments].filter(Boolean).join(" ").trim(),
+      workingDirectory,
+    };
+  }
   if (isPowerShellVariableReference(filePath)) {
     if (hasGhLifecycleArgumentHint(joinedArguments)) {
-      return ["gh", joinedArguments].filter(Boolean).join(" ").trim();
+      return {
+        command: ["gh", joinedArguments].filter(Boolean).join(" ").trim(),
+        workingDirectory,
+      };
     }
     if (hasGitLifecycleArgumentHint(joinedArguments)) {
-      return ["git", joinedArguments].filter(Boolean).join(" ").trim();
+      return {
+        command: ["git", joinedArguments].filter(Boolean).join(" ").trim(),
+        workingDirectory,
+      };
     }
   }
 
-  return [filePath, joinedArguments].filter(Boolean).join(" ").trim();
+  return {
+    command: [filePath, joinedArguments].filter(Boolean).join(" ").trim(),
+    workingDirectory,
+  };
+}
+
+function getPowerShellStartProcessCommand(tokens) {
+  return getPowerShellStartProcessInvocation(tokens).command;
+}
+
+function getPowerShellStartProcessWorkingDirectory(tokens) {
+  let argumentListSeen = false;
+  let argumentListIsArrayLike = false;
+  for (let index = 1; index < tokens.length; index += 1) {
+    const originalToken = tokens[index];
+    if (isQuotedCommandToken(originalToken)) {
+      if (argumentListSeen) {
+        argumentListIsArrayLike = true;
+      }
+      continue;
+    }
+    const rawToken = stripOuterQuotes(originalToken);
+    const token = normalizeAgentValue(rawToken);
+    if (token === "-argumentlist" || token === "-args") {
+      argumentListSeen = true;
+      continue;
+    }
+    if (token.startsWith("-argumentlist:") || token.startsWith("-argumentlist=") ||
+        token.startsWith("-args:") || token.startsWith("-args=")) {
+      argumentListSeen = true;
+      argumentListIsArrayLike = true;
+      continue;
+    }
+    if (isPowerShellStartProcessWorkingDirectoryToken(token) && index + 1 < tokens.length) {
+      return cleanPowerShellStartProcessArgument(tokens[index + 1]);
+    }
+
+    const inlineWorkingDirectory = getInlinePowerShellStartProcessWorkingDirectory(rawToken);
+    if (argumentListSeen && argumentListIsArrayLike && inlineWorkingDirectory) {
+      continue;
+    }
+    if (inlineWorkingDirectory) {
+      return inlineWorkingDirectory;
+    }
+
+    if (argumentListSeen && /,+$/u.test(String(originalToken || "").trim())) {
+      argumentListIsArrayLike = true;
+    }
+  }
+
+  return "";
+}
+
+function stripLeadingCmdCallBuiltins(command) {
+  let remaining = String(command || "").trim();
+  for (let depth = 0; depth < 8; depth += 1) {
+    const stripped = remaining.replace(/^@?call(?:\.exe)?\s+/iu, "").trim();
+    if (stripped === remaining) {
+      break;
+    }
+    remaining = stripped;
+  }
+  return remaining;
+}
+
+function isQuotedCommandToken(value) {
+  const token = String(value || "").trim().replace(/,+$/u, "");
+  return token.length >= 2 &&
+    ((token.startsWith("'") && token.endsWith("'")) ||
+     (token.startsWith('"') && token.endsWith('"')));
+}
+
+function isPowerShellStartProcessWorkingDirectoryToken(token) {
+  return expandPowerShellOptionPrefixes(["-workingdirectory"]).includes(normalizeAgentValue(token));
+}
+
+function getInlinePowerShellStartProcessWorkingDirectory(token) {
+  const normalizedToken = normalizeAgentValue(token);
+  for (const optionName of expandPowerShellOptionPrefixes(["-workingdirectory"])) {
+    if (normalizedToken.startsWith(optionName + ":") || normalizedToken.startsWith(optionName + "=")) {
+      return cleanPowerShellStartProcessArgument(token.slice(optionName.length + 1));
+    }
+  }
+
+  return "";
 }
 
 function cleanPowerShellStartProcessArguments(value) {
@@ -2239,7 +7916,7 @@ function splitPowerShellCommaArguments(value) {
   for (let index = 0; index < source.length; index += 1) {
     const char = source[index];
     if (quote) {
-      if (char === quote && source[index - 1] !== "\\") {
+      if (isShellQuoteTerminator(source, index, quote)) {
         quote = "";
       }
       current += char;
@@ -2247,7 +7924,7 @@ function splitPowerShellCommaArguments(value) {
     }
 
     if (char === "'" || char === "\"") {
-      quote = char;
+      quote = getShellQuoteMode(source, index, char);
       current += char;
       continue;
     }
@@ -2284,6 +7961,52 @@ function unescapeCmdCaretEscapes(value) {
   return String(value || "").replace(/\^([\s\S])/gu, "$1");
 }
 
+function hasUnresolvedXargsLifecycleCommand(tokens) {
+  const executable = normalizeExecutableName(tokens[0] || "");
+  if (executable === "git") {
+    return findGitSubcommandIndex(tokens) < 0;
+  }
+  if (executable === "gh") {
+    return tokens.length < 2;
+  }
+  if (!isShellCommandExecutable(executable)) {
+    return false;
+  }
+
+  const nestedCommand = getShellCommandArgument(tokens);
+  return /(?:^|[;&|]\s*)(?:env\s+)?(?:git|gh)\s+(?:["']?\$@["']?|\{\})(?:\s|$)/iu.test(String(nestedCommand || ""));
+}
+
+function parseEnvShortOptionCluster(value) {
+  const token = stripOuterQuotes(String(value || ""));
+  if (!/^-[^-]/u.test(token)) {
+    return null;
+  }
+
+  const parsed = { ignoreEnvironment: false, nullOutput: false, valueOption: "", value: "" };
+  for (let index = 1; index < token.length; index += 1) {
+    const option = token[index];
+    if (option === "i") {
+      parsed.ignoreEnvironment = true;
+      continue;
+    }
+    if (option === "0") {
+      parsed.nullOutput = true;
+      continue;
+    }
+    if (option === "v") {
+      continue;
+    }
+    if (option === "S" || option === "s" || option === "C" || option === "c" || option === "u") {
+      parsed.valueOption = option.toUpperCase();
+      parsed.value = token.slice(index + 1);
+      return parsed;
+    }
+    return null;
+  }
+  return parsed;
+}
+
 function unwrapEnvCommandTokens(tokens) {
   const withoutInlineAssignments = stripShellCommandBuiltinPrefixes(stripInlineEnvironmentPrefixes(tokens));
   if (withoutInlineAssignments.length === 0) {
@@ -2304,6 +8027,28 @@ function unwrapEnvCommandTokens(tokens) {
       continue;
     }
 
+    const shortOptions = parseEnvShortOptionCluster(token);
+    if (shortOptions) {
+      if (shortOptions.valueOption === "S") {
+        const splitValue = shortOptions.value || stripOuterQuotes(withoutInlineAssignments[index + 1] || "");
+        if (!splitValue) {
+          return [];
+        }
+        const consumedTokens = shortOptions.value ? 1 : 2;
+        const splitTokens = tokenizeCommandLine(splitValue);
+        return stripShellCommandBuiltinPrefixes(stripInlineEnvironmentPrefixes([
+          ...splitTokens,
+          ...withoutInlineAssignments.slice(index + consumedTokens),
+        ]));
+      }
+      if (shortOptions.valueOption === "C" || shortOptions.valueOption === "U") {
+        index += shortOptions.value ? 1 : 2;
+        continue;
+      }
+      index += 1;
+      continue;
+    }
+
     if (normalizedToken === "-s" || normalizedToken === "--split-string") {
       if (index + 1 >= withoutInlineAssignments.length) {
         return [];
@@ -2312,6 +8057,14 @@ function unwrapEnvCommandTokens(tokens) {
       return stripShellCommandBuiltinPrefixes(stripInlineEnvironmentPrefixes([
         ...splitTokens,
         ...withoutInlineAssignments.slice(index + 2),
+      ]));
+    }
+
+    if (normalizedToken.startsWith("-s") && normalizedToken.length > 2) {
+      const splitTokens = tokenizeCommandLine(stripOuterQuotes(token.slice(2)));
+      return stripShellCommandBuiltinPrefixes(stripInlineEnvironmentPrefixes([
+        ...splitTokens,
+        ...withoutInlineAssignments.slice(index + 1),
       ]));
     }
 
@@ -2331,6 +8084,11 @@ function unwrapEnvCommandTokens(tokens) {
 
     if (normalizedToken === "-c" || normalizedToken === "--chdir") {
       index += 2;
+      continue;
+    }
+
+    if (normalizedToken.startsWith("-c") && normalizedToken.length > 2) {
+      index += 1;
       continue;
     }
 
@@ -2356,6 +8114,19 @@ function stripShellCommandBuiltinPrefixes(tokens) {
   let index = 0;
   while (index < tokens.length) {
     const executable = normalizeAgentValue(getExecutableBasename(tokens[index]));
+    if (executable === "time") {
+      index += 1;
+      while (index < tokens.length) {
+        const option = normalizeAgentValue(stripOuterQuotes(tokens[index]));
+        if (option === "-p" || option === "--portability") {
+          index += 1;
+          continue;
+        }
+        break;
+      }
+      continue;
+    }
+
     if (executable !== "command" && executable !== "exec" && executable !== "builtin") {
       break;
     }
@@ -2380,6 +8151,91 @@ function stripShellCommandBuiltinPrefixes(tokens) {
   }
 
   return tokens.slice(index);
+}
+
+function unwrapReviewGateExecutionTokens(tokens) {
+  let remaining = stripShellCommandBuiltinPrefixes(tokens);
+  for (let depth = 0; depth < 8 && remaining.length > 0; depth += 1) {
+    const executable = normalizeExecutableName(remaining[0]);
+    if (executable === "eval") {
+      return { tokens: [], nestedCommand: remaining.slice(1).join(" ") };
+    }
+
+    if (executable === "script") {
+      for (let index = 1; index < remaining.length; index += 1) {
+        const option = normalizeAgentValue(stripOuterQuotes(remaining[index]));
+        if ((option === "-c" || option === "--command") && index + 1 < remaining.length) {
+          return { tokens: [], nestedCommand: stripOuterQuotes(remaining[index + 1]) };
+        }
+        if (option.startsWith("--command=")) {
+          return { tokens: [], nestedCommand: stripOuterQuotes(remaining[index].slice(remaining[index].indexOf("=") + 1)) };
+        }
+      }
+      return { tokens: [], nestedCommand: "" };
+    }
+
+    if (executable === "timeout") {
+      let index = 1;
+      while (index < remaining.length) {
+        const option = stripOuterQuotes(remaining[index]);
+        if (option === "--") {
+          index += 1;
+          break;
+        }
+        if (!option.startsWith("-")) {
+          break;
+        }
+        index += reviewGateWrapperOptionConsumesNextValue(executable, option) ? 2 : 1;
+      }
+      if (index < remaining.length) {
+        index += 1;
+      }
+      remaining = remaining.slice(index);
+      continue;
+    }
+
+    if (["nohup", "stdbuf", "nice", "ionice", "setsid", "sudo"].includes(executable)) {
+      let index = 1;
+      while (index < remaining.length) {
+        const option = stripOuterQuotes(remaining[index]);
+        if (option === "--") {
+          index += 1;
+          break;
+        }
+        if (!option.startsWith("-")) {
+          break;
+        }
+        index += reviewGateWrapperOptionConsumesNextValue(executable, option) ? 2 : 1;
+      }
+      remaining = remaining.slice(index);
+      continue;
+    }
+
+    const stripped = stripShellCommandBuiltinPrefixes(remaining);
+    if (stripped.length !== remaining.length) {
+      remaining = stripped;
+      continue;
+    }
+    break;
+  }
+
+  return { tokens: remaining, nestedCommand: "" };
+}
+
+function reviewGateWrapperOptionConsumesNextValue(executable, option) {
+  const normalizedOption = normalizeAgentValue(stripOuterQuotes(option));
+  const valueOptions = {
+    timeout: new Set(["-k", "--kill-after", "-s", "--signal"]),
+    stdbuf: new Set(["-i", "--input", "-o", "--output", "-e", "--error"]),
+    nice: new Set(["-n", "--adjustment"]),
+    ionice: new Set(["-c", "--class", "-n", "--classdata", "-p", "--pid", "-p", "--pgid", "-u", "--uid"]),
+    sudo: new Set([
+      "-u", "--user", "-g", "--group", "-h", "--host", "-p", "--prompt",
+      "-c", "--close-from", "-r", "--role", "-t", "--type",
+      "--command-timeout", "-d", "--chdir",
+    ]),
+  };
+  return Boolean(valueOptions[executable]?.has(normalizedOption));
 }
 
 function stripInlineEnvironmentPrefixes(tokens) {
@@ -2441,7 +8297,7 @@ function unescapeShellCommandName(token) {
 
 function normalizeExecutableName(token) {
   const normalized = normalizeAgentValue(getExecutableBasename(token));
-  return normalized.endsWith(".exe") ? normalized.slice(0, -4) : normalized;
+  return normalized.replace(/\.(?:bat|cmd|com|exe)$/u, "");
 }
 
 function hasStandaloneCommandToken(tokens, expectedToken, startIndex) {
@@ -3201,7 +9057,11 @@ function getPowerShellMutationExecutableNames() {
 function collectPowerShellOptionValues(tokens, optionPrefixes) {
   const values = [];
   for (let index = 1; index < tokens.length; index += 1) {
-    const token = stripOuterQuotes(tokens[index]);
+    const originalToken = tokens[index];
+    if (isQuotedCommandToken(originalToken)) {
+      continue;
+    }
+    const token = stripOuterQuotes(originalToken);
     const normalizedToken = normalizeAgentValue(token);
     if (optionPrefixes.includes(normalizedToken)) {
       if (index + 1 < tokens.length) {
@@ -3341,7 +9201,8 @@ function getShellInterpreterKind(tokens) {
 
   const executable = normalizeAgentValue(getExecutableBasename(effectiveTokens[0]));
 
-  if (/^python(?:\d+(?:\.\d+)*)?(?:\.exe)?$/u.test(executable) || executable === "py" || executable === "py.exe") {
+  if (/^pythonw?(?:\d+(?:\.\d+)*)?(?:\.exe)?$/u.test(executable) ||
+      ["py", "py.exe", "pyw", "pyw.exe"].includes(executable)) {
     return "python";
   }
 
@@ -3668,8 +9529,7 @@ function hasInterpreterCwdChangeCommand(segment, tokens) {
 }
 
 function getInterpreterInlineScript(tokens, kind) {
-  const scriptOptions = kind === "python" ? ["-c"] : ["-e", "--eval"];
-  return getOptionRemainderValue(tokens, scriptOptions);
+  return getInterpreterInlineSourceToken(tokens, kind) || "";
 }
 
 function hasPythonCwdChangeCommand(script) {
@@ -3738,14 +9598,1210 @@ function isSettingsLocalHookMutation(command) {
   );
 }
 
-function isDirectCodexDispatch(command) {
-  const codexDispatchPattern = /\bcodex\b(?:\s+(?:exec|e)\b|\s+--sandbox\b)/i;
-  return (
-    codexDispatchPattern.test(command) &&
-    !/\bwinsmux\s+send\b/i.test(command) &&
-    !/\bwinsmux-core\b/i.test(command) &&
-    !/^\s*gh\s+/i.test(command)
+function evaluatePowerShellLiteralStringExpression(expression) {
+  let candidate = String(expression || "").trim();
+  while (candidate.startsWith("(") && candidate.endsWith(")")) {
+    const body = getBalancedCallBody(candidate, 0);
+    if (body === null || body.length !== candidate.length - 2) break;
+    candidate = body.trim();
+  }
+  const literal = /'(?:[^']|'')*'|"(?:[^"`$]|"")*"/gu;
+  const remainder = candidate.replace(literal, "").replace(/\s*\+\s*/gu, "").trim();
+  if (remainder !== "") return null;
+  const values = [...candidate.matchAll(literal)].map((match) => {
+    const value = match[0];
+    return value.startsWith("'")
+      ? value.slice(1, -1).replace(/''/gu, "'")
+      : value.slice(1, -1).replace(/""/gu, '"');
+  });
+  return values.length > 0 ? values.join("") : null;
+}
+
+function hasPowerShellDynamicCodexDispatch(command, depth) {
+  const source = String(command || "");
+  const dynamicExpressions = [];
+  for (const match of source.matchAll(/\b(?:Invoke-Expression|iex)\b/giu)) {
+    const start = (match.index || 0) + match[0].length;
+    const remainder = source.slice(start).trimStart();
+    if (remainder.startsWith("(")) {
+      const body = getBalancedCallBody(remainder, 0);
+      if (body !== null) dynamicExpressions.push(body);
+    } else {
+      const quoted = /^(?:'(?:[^']|'')*'|"(?:[^"`$]|"")*")/u.exec(remainder);
+      dynamicExpressions.push(quoted ? quoted[0] : (/^[^;\r\n]+/u.exec(remainder) || [""])[0]);
+    }
+  }
+  for (const match of source.matchAll(/\[\s*(?:(?:System\.)?Management\.Automation\.)?ScriptBlock\s*\]\s*::\s*Create\s*\(/giu)) {
+    const openIndex = (match.index || 0) + match[0].lastIndexOf("(");
+    const body = getBalancedCallBody(source, openIndex);
+    if (body !== null) dynamicExpressions.push(body);
+  }
+  if (dynamicExpressions.some((expression) => {
+    const value = evaluatePowerShellLiteralStringExpression(expression);
+    return value !== null && isDirectCodexDispatch(value, depth + 1);
+  })) return true;
+
+  const processPatterns = [
+    /\[\s*(?:System\.)?Diagnostics\.Process\s*\]\s*::\s*Start\s*\(\s*(["'])codex(?:\.exe)?\1\s*,\s*(["'])([\s\S]*?)\2/giu,
+    /\[\s*(?:System\.)?Diagnostics\.ProcessStartInfo\s*\]\s*::\s*new\s*\(\s*(["'])codex(?:\.exe)?\1\s*,\s*(["'])([\s\S]*?)\2/giu,
+  ];
+  return processPatterns.some((pattern) => [...source.matchAll(pattern)].some((match) =>
+    tokenizeCommandLine(match[3]).some(isDeniedCodexMode)));
+}
+
+function isDirectCodexDispatch(command, depth = 0) {
+  if (typeof command !== "string" || command.trim() === "") {
+    return false;
+  }
+  if (depth > 6) {
+    return true;
+  }
+  const directTokens = tokenizeCommandLine(command);
+  if (normalizeExecutableName(directTokens[0] || "") === "codex" &&
+      directTokens.slice(1).some(isDeniedCodexMode)) {
+    return true;
+  }
+  if (hasPowerShellDynamicCodexDispatch(command, depth)) {
+    return true;
+  }
+  if (hasShellArrayDirectCodexDispatch(command, depth)) {
+    return true;
+  }
+  if (/\bxargs\b[^;&\r\n]*\bcodex\b/iu.test(command) ||
+      /\b(?:echo|printf)\b[^|]*\bcodex\b[^|]*\|\s*xargs\b[^;&\r\n]*\b(?:sh|bash|zsh)\b[^;&\r\n]*\$0[^;&\r\n]*\b(?:exec|--sandbox)\b/iu.test(command)) {
+    return true;
+  }
+
+  const powerShellComSpecCommand = materializePowerShellComSpecAliases(command);
+  if (powerShellComSpecCommand !== command) {
+    return isDirectCodexDispatch(powerShellComSpecCommand, depth + 1);
+  }
+
+  const materializedCommand = materializeConstantExecutableSubstitutions(command);
+  if (materializedCommand !== command && isDirectCodexDispatch(materializedCommand, depth + 1)) {
+    return true;
+  }
+
+  for (const heredocBody of getExecutableHeredocBodies(command)) {
+    if (isDirectCodexDispatch(heredocBody, depth + 1)) {
+      return true;
+    }
+  }
+
+  for (const segment of splitCommandSegments(command)) {
+    for (const stage of splitCommandPipelineStages(segment)) {
+      const executableStage = unwrapShellExecutableControlFlowPrefix(stage);
+      if (executableStage && executableStage !== stage.trim()) {
+        if (isDirectCodexDispatch(executableStage, depth + 1)) {
+          return true;
+        }
+        continue;
+      }
+
+      for (const substitution of getShellCommandSubstitutionCommands(stage)) {
+        if (isDirectCodexDispatch(substitution, depth + 1)) {
+          return true;
+        }
+      }
+
+      const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(tokenizeCommandLine(stage)));
+      if (execution.nestedCommand && isDirectCodexDispatch(execution.nestedCommand, depth + 1)) {
+        return true;
+      }
+      const tokens = execution.tokens;
+      if (tokens.length === 0) {
+        continue;
+      }
+
+      const executable = normalizeExecutableName(tokens[0]);
+      if (isDynamicShellExecutableToken(tokens[0])) {
+        const dynamicArgs = tokens.slice(1).map((token) => normalizeAgentValue(stripOuterQuotes(token)));
+        if (dynamicArgs.some((arg) => arg === "exec" || arg === "e" || arg === "--sandbox" || arg.startsWith("--sandbox="))) {
+          return true;
+        }
+      }
+      if (executable === "codex") {
+        const args = tokens.slice(1).map((token) => normalizeAgentValue(stripOuterQuotes(token)));
+        if (args.some((arg) => arg === "exec" || arg === "e" || arg === "--sandbox" || arg.startsWith("--sandbox="))) {
+          return true;
+        }
+      }
+
+      if (isPowerShellStartProcessExecutable(executable)) {
+        const nestedCommand = getPowerShellStartProcessCommand(tokens);
+        if (nestedCommand && isDirectCodexDispatch(nestedCommand, depth + 1)) {
+          return true;
+        }
+      } else if (executable === "cmd") {
+        const nestedCommand = getCmdShellArgument(tokens);
+        if (nestedCommand && isDirectCodexDispatch(nestedCommand, depth + 1)) {
+          return true;
+        }
+      } else if (isPowerShellExecutable(executable)) {
+        const nestedCommand = getPowerShellNestedCommand(tokens);
+        if (nestedCommand && isDirectCodexDispatch(nestedCommand, depth + 1)) {
+          return true;
+        }
+      } else if (isShellCommandExecutable(executable)) {
+        const nestedCommand = getShellCommandArgument(tokens);
+        if (nestedCommand && isDirectCodexDispatch(nestedCommand, depth + 1)) {
+          return true;
+        }
+      } else if (getShellInterpreterKind(tokens) && hasInterpreterCodexDispatch(stage)) {
+        return true;
+      } else if (executable === "xargs") {
+        const nestedTokens = getNormalizedXargsCommandTokens(tokens);
+        if (nestedTokens.length > 0 && isDirectCodexDispatch(nestedTokens.join(" "), depth + 1)) {
+          return true;
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
+function getArgumentContainerElements(
+  expression,
+  source,
+  evaluationIndex,
+  scopes = buildFunctionScopeIndex(source),
+  language = "javascript",
+  depth = 0,
+  seen = new Set(),
+  sinkIndex = evaluationIndex,
+) {
+  if (depth > 8) {
+    return null;
+  }
+  const candidate = stripLeadingCallComments(String(expression || "").trim());
+  const arrayElements = getArrayLiteralElements(candidate);
+  if (arrayElements) {
+    return arrayElements;
+  }
+  if (candidate.startsWith("(") && candidate.endsWith(")")) {
+    const body = getBalancedCallBody(candidate, 0);
+    if (body !== null && body.length === candidate.length - 2) {
+      return splitTopLevelCallArguments(body);
+    }
+  }
+  if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(candidate) || seen.has(`${candidate}:${evaluationIndex}`)) {
+    return null;
+  }
+  const event = getLatestScopedAssignmentEvent(source, candidate, evaluationIndex, scopes, language);
+  if (!event || hasContainerMutationBetween(source, candidate, event.index, sinkIndex)) {
+    return null;
+  }
+  const nextSeen = new Set(seen);
+  nextSeen.add(`${candidate}:${evaluationIndex}`);
+  return getArgumentContainerElements(
+    event.expression,
+    source,
+    event.index,
+    scopes,
+    language,
+    depth + 1,
+    nextSeen,
+    sinkIndex,
   );
+}
+
+function isDeniedCodexMode(value) {
+  const mode = normalizeAgentValue(value);
+  return mode === "exec" || mode === "e" || mode === "--sandbox" || mode.startsWith("--sandbox=");
+}
+
+function isTerminalReadOnlyCodexMode(value) {
+  return ["--version", "-v", "--help", "-h", "help"].includes(normalizeAgentValue(value));
+}
+
+function isDeniedInterpreterProcessBoundary(result) {
+  return result === INTERPRETER_PROCESS_BOUNDARY.DENY_PROTECTED ||
+    result === INTERPRETER_PROCESS_BOUNDARY.DENY_AMBIGUOUS_PROTECTED;
+}
+
+function isCanonicalReadOnlyCodexArguments(values) {
+  return values.length === 1 && isTerminalReadOnlyCodexMode(values[0]);
+}
+
+function classifyStaticShellCommandString(command, depth = 0, denyGit = false) {
+  if (depth > 6) return INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS;
+  let sawStage = false;
+  let strongestAllow = INTERPRETER_PROCESS_BOUNDARY.ALLOW_PROVEN_NON_PROTECTED;
+  for (const segment of splitCommandSegments(String(command || ""))) {
+    for (const stage of splitCommandPipelineStages(segment)) {
+      const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(String(stage || "").trim()));
+      if (tokens.length === 0) continue;
+      sawStage = true;
+      const result = classifyStaticProcessInvocation(
+        normalizeExecutableName(tokens[0]),
+        tokens.slice(1),
+        stage,
+        depth + 1,
+        denyGit,
+      );
+      if (result === INTERPRETER_PROCESS_BOUNDARY.DENY_PROTECTED ||
+          result === INTERPRETER_PROCESS_BOUNDARY.DENY_AMBIGUOUS_PROTECTED ||
+          result === INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS) return result;
+      if (result === INTERPRETER_PROCESS_BOUNDARY.ALLOW_STATIC_READONLY) {
+        strongestAllow = result;
+      }
+    }
+  }
+  return sawStage ? strongestAllow : INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS;
+}
+
+function classifyCodexCommandExpression(expression, assignments, source = "", callIndex = 0, scopes = buildFunctionScopeIndex(source), language = "javascript", outerProtectedHint = false, denyGit = false) {
+  const candidate = stripLeadingCallComments(String(expression || "").trim());
+  const resolved = source
+    ? evaluateScopedStaticStringExpression(candidate, source, callIndex, scopes, language)
+    : evaluateStaticStringExpression(candidate, assignments);
+  if (resolved !== null) {
+    return classifyStaticShellCommandString(resolved, 0, denyGit);
+  }
+  let prefix = "";
+  for (const part of splitTopLevelPlusExpressions(candidate)) {
+    const value = evaluateStaticStringExpression(part, assignments);
+    if (value === null) {
+      break;
+    }
+    prefix += value;
+  }
+  const prefixTokens = tokenizeCommandLine(prefix);
+  const prefixTool = normalizeExecutableName(prefixTokens[0] || "");
+  if (prefixTool && prefixTool !== "codex") {
+    return INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS;
+  }
+  if (prefixTool === "codex") {
+    return INTERPRETER_PROCESS_BOUNDARY.DENY_AMBIGUOUS_PROTECTED;
+  }
+  if (outerProtectedHint) {
+    return INTERPRETER_PROCESS_BOUNDARY.DENY_AMBIGUOUS_PROTECTED;
+  }
+  return /^(?:f["']|`|["'])codex(?:\.exe)?\s+(?:\$\{|\{)[\s\S]*(?:["']|`)$/iu.test(candidate)
+    ? INTERPRETER_PROCESS_BOUNDARY.DENY_AMBIGUOUS_PROTECTED
+    : INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS;
+}
+
+function isNestedShellProcessLauncher(tool) {
+  return tool === "cmd" || isPowerShellExecutable(tool) || isShellCommandExecutable(tool);
+}
+
+function materializeStaticPosixShellCommand(tokens) {
+  let commandIndex = -1;
+  for (let index = 1; index < tokens.length; index += 1) {
+    if (/^-[a-z]*c[a-z]*$/u.test(normalizeAgentValue(stripOuterQuotes(tokens[index])))) {
+      commandIndex = index + 1;
+      break;
+    }
+  }
+  if (commandIndex < 0 || commandIndex >= tokens.length) return null;
+  const script = String(tokens[commandIndex] || "");
+  const positional = tokens.slice(commandIndex + 1).map((value) => String(value || ""));
+  if (/\$(?:[@*]|\{|\(|[A-Za-z_])|`|\$\d{2,}|[*?\[]/u.test(script)) return null;
+  const materialized = script.replace(/\$(\d)/gu, (_match, rawIndex) => {
+    const index = Number.parseInt(rawIndex, 10);
+    return index < positional.length ? positional[index] : "";
+  });
+  return /\$(?:[@*{(A-Za-z_]|\d)/u.test(materialized) ? null : materialized;
+}
+
+function getStaticNestedShellCommand(tool, resolvedArguments) {
+  const tokens = [tool, ...resolvedArguments];
+  if (tool === "cmd") {
+    const command = getCmdShellArgument(tokens, false);
+    return command && !/%(?:[^%\r\n]+%|\d)|![^!\r\n]+!/u.test(command) ? command : null;
+  }
+  if (isPowerShellExecutable(tool)) {
+    const command = getPowerShellNestedCommand(tokens);
+    return command && !/\$(?:\{|\(|[A-Za-z_])/u.test(command) ? command : null;
+  }
+  return materializeStaticPosixShellCommand(tokens);
+}
+
+function hasGitExternalProcessConfiguration(tokens) {
+  const normalized = tokens.map((value) => normalizeAgentValue(value));
+  if (normalized.some((value) => value.includes("ext::"))) return true;
+  const subcommandIndex = findGitSubcommandIndex(tokens);
+  const executionOptions = subcommandIndex < 0 ? [] : normalized.slice(subcommandIndex + 1);
+  const subcommand = subcommandIndex < 0 ? "" : normalized[subcommandIndex];
+  if (subcommand === "difftool" && executionOptions.some((value) =>
+    value === "-x" || value.startsWith("-x") || value === "--extcmd" || value.startsWith("--extcmd="))) return true;
+  if (executionOptions.some((value) =>
+    value === "--ext-diff" ||
+    value === "--textconv" ||
+    value === "--paginate" ||
+    value === "-p" ||
+    /^-o/u.test(value) ||
+    value.startsWith("--open-f"))) return true;
+  for (let index = 1; index < Math.max(subcommandIndex, 1); index += 1) {
+    const value = normalized[index];
+    if (value !== "-c" && !value.startsWith("-c")) continue;
+    const config = value === "-c" ? normalized[index + 1] || "" : value.slice(2);
+    if (/^(?:diff\..*\.command|diff\.external|core\.fsmonitor|core\.hookspath|credential\..*\.helper|credential\.helper|pager\..*|core\.pager)=/u.test(config)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isCanonicalSafeGitInlineConfiguration(configuration) {
+  const match = /^alias\.([A-Za-z0-9._-]+)=([\s\S]+)$/iu.exec(String(configuration || "").trim());
+  if (!match || String(match[2] || "").trim().startsWith("!")) return false;
+  const aliasTokens = tokenizeCommandLine(String(match[2] || "").trim());
+  if (aliasTokens.length === 0) return false;
+  const tokens = ["git", ...aliasTokens];
+  const subcommand = normalizeAgentValue(stripOuterQuotes(tokens[1] || ""));
+  return isCanonicalReadOnlyGitResolvedTokens(tokens, 1) ||
+    isGitLifecycleSubcommandName(subcommand);
+}
+
+function isCanonicalReadOnlyGitResolvedTokens(tokens, subcommandIndex) {
+  if (subcommandIndex < 1 || hasGitExternalProcessConfiguration(tokens)) return false;
+  const subcommand = normalizeAgentValue(stripOuterQuotes(tokens[subcommandIndex] || ""));
+  return isReadOnlyGitSubcommand(subcommand, tokens, subcommandIndex) ||
+    (subcommand === "branch" && isReadOnlyGitBranchCommand(tokens, subcommandIndex)) ||
+    (subcommand === "tag" && isReadOnlyGitTagCommand(tokens, subcommandIndex)) ||
+    (subcommand === "worktree" && isReadOnlyGitWorktreeCommand(tokens, subcommandIndex));
+}
+
+function isCanonicalReadOnlyGitInlineAliasInvocation(tokens, subcommandIndex) {
+  const invokedAlias = normalizeAgentValue(stripOuterQuotes(tokens[subcommandIndex] || ""));
+  for (let index = 1; index < subcommandIndex; index += 1) {
+    const raw = stripOuterQuotes(String(tokens[index] || ""));
+    const configuration = raw === "-c" && index + 1 < subcommandIndex
+      ? stripOuterQuotes(tokens[++index])
+      : raw.startsWith("-c") && raw.length > 2
+      ? raw.slice(2)
+      : "";
+    const match = /^alias\.([A-Za-z0-9._-]+)=([\s\S]+)$/iu.exec(String(configuration || "").trim());
+    if (!match || normalizeAgentValue(match[1]) !== invokedAlias) continue;
+    const aliasTokens = tokenizeCommandLine(String(match[2] || "").trim());
+    if (aliasTokens.length === 0 || String(match[2] || "").trim().startsWith("!")) return false;
+    const resolvedTokens = ["git", ...aliasTokens, ...tokens.slice(subcommandIndex + 1)];
+    return isCanonicalReadOnlyGitResolvedTokens(resolvedTokens, 1);
+  }
+  return false;
+}
+
+function isCanonicalConfiguredReadOnlyGitAliasInvocation(tokens, baseCwd) {
+  const subcommandIndex = findGitSubcommandIndex(tokens);
+  if (subcommandIndex < 1) return false;
+  const rawSubcommand = normalizeAgentValue(stripOuterQuotes(tokens[subcommandIndex] || ""));
+  const gitBaseCwd = getGitGlobalCwdOption(tokens, 0, baseCwd, {}) || baseCwd || process.cwd();
+  const aliasValue = getConfiguredGitAliasValue(gitBaseCwd, rawSubcommand);
+  if (!aliasValue || aliasValue.trim().startsWith("!")) return false;
+  const aliasTokens = tokenizeCommandLine(aliasValue.trim());
+  if (aliasTokens.length === 0) return false;
+  const resolvedTokens = ["git", ...aliasTokens, ...tokens.slice(subcommandIndex + 1)];
+  return isCanonicalReadOnlyGitResolvedTokens(resolvedTokens, 1);
+}
+
+function hasOnlyCanonicalGitGlobalArguments(tokens, subcommandIndex) {
+  const safeValueless = new Set([
+    "--bare", "--glob-pathspecs", "--icase-pathspecs", "--literal-pathspecs",
+    "--no-optional-locks", "--no-pager", "--noglob-pathspecs",
+  ]);
+  const safeValued = new Set(["--git-dir", "--namespace", "--work-tree"]);
+  let hasEffectiveCwd = false;
+  for (let index = 1; index < subcommandIndex; index += 1) {
+    const raw = stripOuterQuotes(String(tokens[index] || ""));
+    const value = normalizeAgentValue(raw);
+    if (safeValueless.has(value)) continue;
+    if (raw === "-C") {
+      if (++index >= subcommandIndex) return false;
+      const cwd = stripOuterQuotes(String(tokens[index] || "")).trim();
+      if (!cwd && !hasEffectiveCwd) return false;
+      if (cwd) hasEffectiveCwd = true;
+      continue;
+    }
+    if (raw.startsWith("-C") && raw.length > 2) {
+      hasEffectiveCwd = true;
+      continue;
+    }
+    if (raw === "-c") {
+      if (index + 1 >= subcommandIndex || !isCanonicalSafeGitInlineConfiguration(stripOuterQuotes(tokens[++index]))) return false;
+      continue;
+    }
+    if (raw.startsWith("-c") && raw.length > 2) {
+      if (!isCanonicalSafeGitInlineConfiguration(raw.slice(2))) return false;
+      continue;
+    }
+    if (safeValued.has(value)) {
+      if (++index >= subcommandIndex || !stripOuterQuotes(String(tokens[index] || "")).trim()) return false;
+      continue;
+    }
+    if (["--git-dir=", "--namespace=", "--work-tree="].some((prefix) => value.startsWith(prefix) && value.length > prefix.length)) continue;
+    return false;
+  }
+  return true;
+}
+
+function hasDirectGitProcessEnvironment(source) {
+  return /(?:^|\s)(?:GIT_CONFIG_[A-Z0-9_]+|GIT_EXTERNAL_DIFF|GIT_PAGER|GIT_EDITOR|GIT_SEQUENCE_EDITOR|GIT_SSH|GIT_SSH_COMMAND|GIT_ASKPASS|GIT_ALLOW_PROTOCOL)\s*=/iu.test(
+    String(source || ""),
+  );
+}
+
+function hasNodeStartupCodeConfiguration(tokens, source = "") {
+  if (hasRuntimeNodeOptionsEnvironmentMutation(source)) return true;
+  const inlineOptions = new Set(["-e", "-p", "-pe", "--eval", "--print"]);
+  const safeValueOptions = new Set(["--conditions", "--input-type"]);
+  const safeValuelessOptions = new Set([
+    "-c", "-h", "-v", "--check", "--help", "--no-warnings", "--trace-warnings", "--use-strict", "--version",
+  ]);
+  const inlineAssignmentPrefixes = ["--eval=", "--eval:", "--print=", "--print:"];
+  let sawInline = false;
+  for (let index = 1; index < tokens.length; index += 1) {
+    const rawValue = stripOuterQuotes(String(tokens[index] || ""));
+    const value = normalizeAgentValue(rawValue);
+    if (value === "--") return false;
+    if (inlineOptions.has(value)) {
+      sawInline = true;
+      const next = normalizeAgentValue(String(tokens[index + 1] || ""));
+      if ((value === "-p" || value === "--print") &&
+          (inlineOptions.has(next) || inlineAssignmentPrefixes.some((prefix) => next.startsWith(prefix)))) continue;
+      if (index + 1 < tokens.length) index += 1;
+      continue;
+    }
+    if (inlineAssignmentPrefixes.some((prefix) => value.startsWith(prefix))) {
+      sawInline = true;
+      continue;
+    }
+    if (safeValueOptions.has(value)) {
+      if (index + 1 >= tokens.length) return true;
+      index += 1;
+      continue;
+    }
+    if (["--conditions=", "--input-type="].some((prefix) => value.startsWith(prefix))) continue;
+    if (safeValuelessOptions.has(value)) continue;
+    if (value.startsWith("-") || value.startsWith("+")) return true;
+    if (!sawInline) return false;
+  }
+  return false;
+}
+
+function hasRuntimeNodeOptionsEnvironmentMutation(source) {
+  const text = String(source || "");
+  const environmentNameStates = getRuntimeEnvironmentMutationNameStates(text);
+  if (environmentNameStates.hasNodeOptions || environmentNameStates.hasUnresolved) return true;
+  const powerShellEnvironmentReflection = /(?:\[(?:System\.)?Environment\]|\[type\]\s*::\s*GetType\s*\(\s*["']System\.Environment["']\s*\))[\s\S]{0,1024}?\.(?:GetMethod|GetMethods|GetMember|GetMembers|InvokeMember)\s*\(/iu;
+  if (powerShellEnvironmentReflection.test(text)) return true;
+  const unownedPowerShellReflection = /(?:\.|::)(?:GetMethod|GetMethods|GetMember|GetMembers|InvokeMember|CreateDelegate)\s*\(/iu;
+  if (unownedPowerShellReflection.test(text)) return true;
+  const dynamicPowerShellMemberInvocation = /(?:\.|::)\s*(?:\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|\$\([^)]*\)|\([^\r\n)]*\)|["'][^"'\r\n]+["']|[A-Za-z_][A-Za-z0-9_`]*`[A-Za-z0-9_`]*)\s*\(/u;
+  if (dynamicPowerShellMemberInvocation.test(text)) return true;
+  return /\$env:NODE_OPTIONS\s*(?:=|\+=)/iu.test(text) ||
+    /\[(?:System\.)?Environment\]\s*::\s*SetEnvironmentVariable\s*\(\s*["']NODE_OPTIONS["']/iu.test(text) ||
+    /\b(?:Set-Item|si|New-Item|ni|Remove-Item|ri|Clear-Item|cli|Set-Content|sc|Clear-Content|clc)\b[^;&\r\n]*(?:Env:\\?)?NODE_OPTIONS\b/iu.test(text) ||
+    /(?:^|[;&\r\n])\s*(?:export|declare|typeset|local)\s+(?:[-+][A-Za-z]+\s+)*["']?NODE_OPTIONS\s*=/iu.test(text) ||
+    /(?:^|[;&\r\n])\s*set\s+["']?NODE_OPTIONS\s*=/iu.test(text) ||
+    /(?:^|\s)NODE_OPTIONS\s*=/iu.test(text) ||
+    /\bprocess\.env(?:\.NODE_OPTIONS|\[\s*["']NODE_OPTIONS["']\s*\])\s*(?:=|\+=|\|\|=|\?\?=)/iu.test(text) ||
+    /\bos\.(?:environ\s*\[\s*["']NODE_OPTIONS["']\s*\]\s*=|putenv\s*\(\s*["']NODE_OPTIONS["'])/iu.test(text);
+}
+
+function hasRgExternalProcessConfiguration(tokens) {
+  return tokens.slice(1).map((value) => normalizeAgentValue(value)).some((value) =>
+    value === "--pre" ||
+    value.startsWith("--pre=") ||
+    value === "--hostname-bin" ||
+    value.startsWith("--hostname-bin="));
+}
+
+function isCanonicalReadOnlyGhArguments(values) {
+  const args = values.map((value) => normalizeAgentValue(value));
+  if (args.length >= 2 && (args[0] === "pr" || args[0] === "issue") && args[1] === "view") return true;
+  if (args[0] !== "api") return false;
+  for (let index = 1; index < args.length; index += 1) {
+    if ((args[index] === "--method" || args[index] === "-x") && args[index + 1] !== "get") return false;
+    if (args[index].startsWith("--method=") && args[index].slice("--method=".length) !== "get") return false;
+  }
+  return !args.some((value) => value === "--input" || value === "-f" || value === "--field" || value === "--raw-field");
+}
+
+function classifyStaticProcessInvocation(tool, resolvedArguments, rawBoundary = "", depth = 0, denyGit = false) {
+  if (!resolvedArguments || resolvedArguments.some((value) => value === null)) {
+    return /\bcodex(?:\.exe)?\b/iu.test(rawBoundary)
+      ? INTERPRETER_PROCESS_BOUNDARY.DENY_AMBIGUOUS_PROTECTED
+      : INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS;
+  }
+  if (depth > 6) return INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS;
+  const normalizedTool = normalizeExecutableName(tool);
+  if (normalizedTool === "env") {
+    const unwrapped = unwrapEnvCommandTokens([tool, ...resolvedArguments]);
+    if (unwrapped.length === 0 || normalizeExecutableName(unwrapped[0]) === "env") {
+      return INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS;
+    }
+    return classifyStaticProcessInvocation(
+      normalizeExecutableName(unwrapped[0]),
+      unwrapped.slice(1),
+      rawBoundary,
+      depth + 1,
+      denyGit,
+    );
+  }
+  if (normalizedTool === "codex") {
+    if (resolvedArguments.some(isDeniedCodexMode)) return INTERPRETER_PROCESS_BOUNDARY.DENY_PROTECTED;
+    return isCanonicalReadOnlyCodexArguments(resolvedArguments)
+      ? INTERPRETER_PROCESS_BOUNDARY.ALLOW_STATIC_READONLY
+      : INTERPRETER_PROCESS_BOUNDARY.DENY_PROTECTED;
+  }
+  const nestedInterpreterKind = getShellInterpreterKind([normalizedTool, ...resolvedArguments]);
+  if (nestedInterpreterKind === "node" || nestedInterpreterKind === "python") {
+    if (denyGit) return INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS;
+    if (nestedInterpreterKind === "node" &&
+        hasNodeStartupCodeConfiguration([normalizedTool, ...resolvedArguments], rawBoundary)) {
+      return INTERPRETER_PROCESS_BOUNDARY.DENY_PROTECTED;
+    }
+    const script = getInterpreterInlineSourceToken([normalizedTool, ...resolvedArguments], nestedInterpreterKind);
+    if (script === null || script === undefined) {
+      return resolvedArguments.length === 1 && ["--help", "--version", "-v"].includes(normalizeAgentValue(resolvedArguments[0]))
+        ? INTERPRETER_PROCESS_BOUNDARY.ALLOW_STATIC_READONLY
+        : INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS;
+    }
+    const unsupported = nestedInterpreterKind === "node"
+      ? hasUnsupportedNodeProcessConstruction(script) || hasDynamicInterpreterGitSubcommand(script)
+      : hasUnsupportedPythonModuleLoad(script) ||
+        hasUnsupportedPythonProcessConstruction(script) ||
+        hasUnresolvedInterpreterProcessBoundary(script) ||
+        hasDynamicInterpreterGitSubcommand(script);
+    return unsupported
+      ? INTERPRETER_PROCESS_BOUNDARY.DENY_PROTECTED
+      : INTERPRETER_PROCESS_BOUNDARY.ALLOW_PROVEN_NON_PROTECTED;
+  }
+  if (normalizedTool === "git") {
+    if (denyGit) return INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS;
+    const tokens = [normalizedTool, ...resolvedArguments];
+    const subcommandIndex = findGitSubcommandIndex(tokens);
+    const subcommand = subcommandIndex < 0 ? "" : normalizeAgentValue(tokens[subcommandIndex]);
+    const canLaunchExternalProcess = hasGitExternalProcessConfiguration(tokens);
+    const readOnlySubcommand = isReadOnlyGitSubcommand(subcommand, tokens, subcommandIndex) ||
+      (subcommand === "branch" && isReadOnlyGitBranchCommand(tokens, subcommandIndex)) ||
+      (subcommand === "tag" && isReadOnlyGitTagCommand(tokens, subcommandIndex)) ||
+      (subcommand === "worktree" && isReadOnlyGitWorktreeCommand(tokens, subcommandIndex)) ||
+      isCanonicalReadOnlyGitInlineAliasInvocation(tokens, subcommandIndex);
+    const reviewGatedSubcommand = isReviewGatedCommand(tokens.join(" "));
+    if (subcommandIndex <= 0 || !hasOnlyCanonicalGitGlobalArguments(tokens, subcommandIndex) || canLaunchExternalProcess) {
+      return INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS;
+    }
+    return readOnlySubcommand || reviewGatedSubcommand
+      ? INTERPRETER_PROCESS_BOUNDARY.ALLOW_PROVEN_NON_PROTECTED
+      : INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS;
+  }
+  if (normalizedTool === "gh") {
+    return isCanonicalReadOnlyGhArguments(resolvedArguments)
+      ? INTERPRETER_PROCESS_BOUNDARY.ALLOW_STATIC_READONLY
+      : INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS;
+  }
+  if (normalizedTool === "forfiles") {
+    const commandIndex = resolvedArguments.findIndex((value) => normalizeAgentValue(value) === "/c");
+    if (commandIndex < 0) return INTERPRETER_PROCESS_BOUNDARY.ALLOW_PROVEN_NON_PROTECTED;
+    const nestedCommand = resolvedArguments[commandIndex + 1];
+    if (!nestedCommand) return INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS;
+    const nestedTokens = tokenizeCommandLine(nestedCommand);
+    if (nestedTokens.length === 0) return INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS;
+    return classifyStaticProcessInvocation(
+      normalizeExecutableName(nestedTokens[0]),
+      nestedTokens.slice(1),
+      nestedCommand,
+      depth + 1,
+      denyGit,
+    );
+  }
+  if (!isNestedShellProcessLauncher(normalizedTool)) {
+    return STATIC_NON_EXECUTOR_TOOL_ALLOWLIST.has(normalizedTool)
+      ? INTERPRETER_PROCESS_BOUNDARY.ALLOW_PROVEN_NON_PROTECTED
+      : INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS;
+  }
+  const nestedCommand = getStaticNestedShellCommand(normalizedTool, resolvedArguments);
+  if (nestedCommand === null) {
+    return /\bcodex(?:\.exe)?\b|\b(?:exec|e|--sandbox)\b/iu.test(rawBoundary)
+      ? INTERPRETER_PROCESS_BOUNDARY.DENY_AMBIGUOUS_PROTECTED
+      : INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS;
+  }
+  if (isDirectCodexDispatch(nestedCommand)) return INTERPRETER_PROCESS_BOUNDARY.DENY_PROTECTED;
+  if (/[;&|<>\r\n]/u.test(nestedCommand)) return INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS;
+  const nestedTokens = tokenizeCommandLine(nestedCommand);
+  if (nestedTokens.length === 0) return INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS;
+  const nestedDecision = classifyStaticProcessInvocation(
+    normalizeExecutableName(nestedTokens[0]),
+    nestedTokens.slice(1),
+    nestedCommand,
+    depth + 1,
+    denyGit,
+  );
+  return nestedDecision === INTERPRETER_PROCESS_BOUNDARY.ALLOW_STATIC_READONLY ||
+    nestedDecision === INTERPRETER_PROCESS_BOUNDARY.ALLOW_PROVEN_NON_PROTECTED
+    ? nestedDecision
+    : INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS;
+}
+
+function classifyCodexArgvInvocation(toolExpression, argvExpression, source, callIndex, scopes, language, toolInsideVector, outerProtectedHint = false, denyGit = false) {
+  const elements = getArgumentContainerElements(argvExpression, source, callIndex, scopes, language);
+  const resolvedTool = toolInsideVector
+    ? (elements ? evaluateScopedStaticStringExpression(elements[0], source, callIndex, scopes, language) : null)
+    : evaluateScopedStaticStringExpression(toolExpression, source, callIndex, scopes, language);
+  const tool = normalizeExecutableName(resolvedTool || "");
+  const argumentElements = elements?.slice(toolInsideVector ? 1 : 0);
+  const resolvedArguments = argumentElements?.map((element) =>
+    evaluateScopedStaticStringExpression(element, source, callIndex, scopes, language));
+  if (toolInsideVector && !elements) {
+    const containerName = String(argvExpression || "").trim();
+    const event = /^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(containerName)
+      ? getLatestScopedAssignmentEvent(source, containerName, callIndex, scopes, language)
+      : null;
+    if (/\bcodex(?:\.exe)?\b/iu.test(event?.expression || containerName)) {
+      return INTERPRETER_PROCESS_BOUNDARY.DENY_AMBIGUOUS_PROTECTED;
+    }
+  }
+  if (resolvedTool !== null) {
+    return classifyStaticProcessInvocation(
+      tool,
+      resolvedArguments,
+      [toolExpression, argvExpression, ...(elements || [])].join(" "),
+      0,
+      denyGit,
+    );
+  }
+  const rawBoundary = [toolExpression, argvExpression, ...(elements || [])].join(" ");
+  if (outerProtectedHint || /\bcodex(?:\.exe)?\b/iu.test(rawBoundary)) {
+    return INTERPRETER_PROCESS_BOUNDARY.DENY_AMBIGUOUS_PROTECTED;
+  }
+  return INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS;
+}
+
+function isPythonOsProcessCapabilityName(value) {
+  return /^(?:(?:exec|spawn|posix_spawn)[A-Za-z0-9_]*|system|popen|startfile)$/u.test(normalizeAgentValue(value));
+}
+
+function getPythonOsProcessSignature(value) {
+  const method = normalizeAgentValue(value);
+  if (/^posix_spawnp?$/u.test(method)) {
+    return { toolIndex: 0, argvKind: "vector", argvIndex: 1, hasEnvironment: true };
+  }
+  const match = /^(exec|spawn)([lv])((?:e|p|pe)?)$/u.exec(method);
+  if (!match) return null;
+  const toolIndex = match[1] === "spawn" ? 1 : 0;
+  return {
+    toolIndex,
+    argvKind: match[2] === "v" ? "vector" : "scalar",
+    argvIndex: toolIndex + 1,
+    hasEnvironment: match[3].endsWith("e"),
+  };
+}
+
+function getPythonAssignmentElements(value) {
+  const candidate = String(value || "").trim();
+  if (candidate.startsWith("[") && candidate.endsWith("]")) {
+    return { sequence: true, elements: splitTopLevelCallArguments(candidate.slice(1, -1)).map((part) => part.trim()) };
+  }
+  if (candidate.startsWith("(") && candidate.endsWith(")")) {
+    const body = getBalancedCallBody(candidate, 0);
+    if (body !== null && body.length === candidate.length - 2) {
+      const elements = splitTopLevelCallArguments(body).map((part) => part.trim());
+      const sequence = elements.length > 1 || /,\s*$/u.test(body);
+      return { sequence, elements };
+    }
+  }
+  if (candidate.startsWith("{") && candidate.endsWith("}")) {
+    return { sequence: true, elements: splitTopLevelCallArguments(candidate.slice(1, -1)).map((part) => part.trim()) };
+  }
+  const elements = splitTopLevelCallArguments(candidate).map((part) => part.trim());
+  return { sequence: elements.length > 1, elements };
+}
+
+function maskPythonNonCode(source) {
+  const characters = String(source || "").split("");
+  const mask = (index) => {
+    if (characters[index] !== "\r" && characters[index] !== "\n") characters[index] = " ";
+  };
+  for (let index = 0; index < characters.length;) {
+    if (characters[index] === "#") {
+      while (index < characters.length && characters[index] !== "\r" && characters[index] !== "\n") {
+        mask(index);
+        index += 1;
+      }
+      continue;
+    }
+    if (characters[index] !== "'" && characters[index] !== '"') {
+      index += 1;
+      continue;
+    }
+    const quote = characters[index];
+    const triple = characters[index + 1] === quote && characters[index + 2] === quote;
+    const width = triple ? 3 : 1;
+    for (let offset = 0; offset < width; offset += 1) mask(index + offset);
+    index += width;
+    while (index < characters.length) {
+      if (!triple && characters[index] === "\\") {
+        mask(index);
+        index += 1;
+        if (index < characters.length) {
+          mask(index);
+          index += 1;
+        }
+        continue;
+      }
+      if (triple && characters[index] === quote && characters[index + 1] === quote && characters[index + 2] === quote) {
+        for (let offset = 0; offset < 3; offset += 1) mask(index + offset);
+        index += 3;
+        break;
+      }
+      if (!triple && characters[index] === quote) {
+        mask(index);
+        index += 1;
+        break;
+      }
+      mask(index);
+      index += 1;
+    }
+  }
+  return characters.join("");
+}
+
+function decodeStaticJavaScriptStringLiteral(source) {
+  const text = String(source || "").trim();
+  try {
+    const node = acorn.parseExpressionAt(text, 0, { ecmaVersion: "latest" });
+    if (node.end !== text.length) return null;
+    if (node.type === "Literal" && typeof node.value === "string") return node.value;
+    if (node.type === "TemplateLiteral" && node.expressions.length === 0) {
+      return node.quasis.map((part) => part.value.cooked).join("");
+    }
+  } catch (_) {
+    return null;
+  }
+  return null;
+}
+
+function maskJavaScriptNonCodeForProcessDiscovery(source) {
+  const original = String(source || "");
+  const characters = original.split("");
+  const maskRange = (start, end) => {
+    for (let index = start; index < end; index += 1) {
+      if (characters[index] !== "\r" && characters[index] !== "\n") characters[index] = " ";
+    }
+  };
+  for (let index = 0; index < characters.length;) {
+    if (characters[index] === "/" && characters[index + 1] === "/") {
+      const start = index;
+      while (index < characters.length && characters[index] !== "\r" && characters[index] !== "\n") index += 1;
+      maskRange(start, index);
+      continue;
+    }
+    if (characters[index] === "/" && characters[index + 1] === "*") {
+      const start = index;
+      index += 2;
+      while (index < characters.length && !(characters[index] === "*" && characters[index + 1] === "/")) index += 1;
+      index = Math.min(characters.length, index + 2);
+      maskRange(start, index);
+      continue;
+    }
+    const quote = characters[index];
+    if (quote !== "'" && quote !== '"' && quote !== "`") {
+      index += 1;
+      continue;
+    }
+    const start = index;
+    index += 1;
+    let escaped = false;
+    while (index < characters.length) {
+      if (escaped) {
+        escaped = false;
+      } else if (characters[index] === "\\") {
+        escaped = true;
+      } else if (characters[index] === quote) {
+        index += 1;
+        break;
+      }
+      index += 1;
+    }
+    const decodedLiteral = decodeStaticJavaScriptStringLiteral(original.slice(start, index));
+    const isStaticChildProcessModule = decodedLiteral === "child_process" || decodedLiteral === "node:child_process";
+    if (!isStaticChildProcessModule) {
+      maskRange(start, index);
+    } else {
+      maskRange(start + 1, index);
+      for (let offset = 0; offset < decodedLiteral.length && start + 1 + offset < index; offset += 1) {
+        characters[start + 1 + offset] = decodedLiteral[offset];
+      }
+      if (start + 1 + decodedLiteral.length < index) {
+        characters[start + 1 + decodedLiteral.length] = quote;
+      }
+    }
+  }
+  return characters.join("");
+}
+
+function getResolvedPythonCallStrings(callBody, source, callIndex, scopes) {
+  const values = [];
+  const visit = (expression) => {
+    const elements = getArgumentContainerElements(expression, source, callIndex, scopes, "python");
+    if (elements) {
+      for (const element of elements) visit(element);
+      return;
+    }
+    const value = evaluateScopedStaticStringExpression(expression, source, callIndex, scopes, "python");
+    if (value !== null) values.push(value);
+  };
+  for (const expression of splitTopLevelCallArguments(callBody)) visit(expression);
+  return values;
+}
+
+function hasProtectedCodexEvidenceInPythonCall(callBody, source, callIndex, scopes, outerProtectedHint = false) {
+  if (outerProtectedHint) return true;
+  const values = getResolvedPythonCallStrings(callBody, source, callIndex, scopes);
+  return values.some((value) => normalizeExecutableName(value) === "codex") &&
+    values.some(isDeniedCodexMode);
+}
+
+function classifyPythonOsProcessCall(method, callBody, source, callIndex, scopes, outerProtectedHint = false, escapedCapability = false) {
+  const protectedHint = hasProtectedCodexEvidenceInPythonCall(callBody, source, callIndex, scopes, outerProtectedHint);
+  const protectedModeHint = getResolvedPythonCallStrings(callBody, source, callIndex, scopes).some(isDeniedCodexMode);
+  const normalizedMethod = normalizeAgentValue(method);
+  if (normalizedMethod === "system" || normalizedMethod === "popen") {
+    if (escapedCapability) {
+      return protectedHint || protectedModeHint
+        ? INTERPRETER_PROCESS_BOUNDARY.DENY_AMBIGUOUS_PROTECTED
+        : INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS;
+    }
+    const commandExpression = stripLeadingCallComments(splitTopLevelCallArguments(callBody)[0]);
+    return classifyCodexCommandExpression(
+      commandExpression,
+      getConstantStringAssignments(source, callIndex),
+      source,
+      callIndex,
+      scopes,
+      "python",
+      outerProtectedHint,
+      true,
+    );
+  }
+  const signature = getPythonOsProcessSignature(method);
+  if (escapedCapability || !signature) {
+    return protectedHint
+      ? INTERPRETER_PROCESS_BOUNDARY.DENY_AMBIGUOUS_PROTECTED
+      : INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS;
+  }
+  const expressions = splitTopLevelCallArguments(callBody);
+  const toolExpression = expressions[signature.toolIndex];
+  const resolvedTool = toolExpression === undefined
+    ? null
+    : evaluateScopedStaticStringExpression(toolExpression, source, callIndex, scopes, "python");
+  const tool = normalizeExecutableName(resolvedTool || "");
+  if (resolvedTool === null) {
+    return protectedHint || protectedModeHint
+      ? INTERPRETER_PROCESS_BOUNDARY.DENY_AMBIGUOUS_PROTECTED
+      : INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS;
+  }
+
+  let argumentExpressions;
+  if (signature.argvKind === "vector") {
+    argumentExpressions = getArgumentContainerElements(expressions[signature.argvIndex], source, callIndex, scopes, "python");
+  } else {
+    const end = signature.hasEnvironment ? Math.max(signature.argvIndex, expressions.length - 1) : expressions.length;
+    argumentExpressions = expressions.slice(signature.argvIndex, end);
+  }
+  if (!argumentExpressions || argumentExpressions.length === 0) {
+    return INTERPRETER_PROCESS_BOUNDARY.DENY_AMBIGUOUS_PROTECTED;
+  }
+  const resolvedArguments = argumentExpressions.map((expression) =>
+    evaluateScopedStaticStringExpression(expression, source, callIndex, scopes, "python"));
+  if (resolvedArguments.some((value) => value === null)) {
+    return INTERPRETER_PROCESS_BOUNDARY.DENY_AMBIGUOUS_PROTECTED;
+  }
+  return classifyStaticProcessInvocation(tool, resolvedArguments.slice(1), callBody, 0, true);
+}
+
+function classifyPythonOsProcessBoundary(source, scopes, outerProtectedHint = false) {
+  const text = String(source || "");
+  const code = maskPythonNonCode(text);
+  const moduleAliases = new Set(["os"]);
+  const escapedAliases = new Set();
+  let hasCapabilityEscape = false;
+  for (const match of code.matchAll(/\bimport\s+os\s+as\s+([A-Za-z_][A-Za-z0-9_]*)/gu)) {
+    moduleAliases.add(match[1]);
+  }
+  for (const match of code.matchAll(/\bfrom\s+os\s+import\s+([^;\r\n]+)/gu)) {
+    for (const rawBinding of match[1].split(",")) {
+      const binding = /^([A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?$/u.exec(rawBinding.trim());
+      if (binding && isPythonOsProcessCapabilityName(binding[1])) {
+        escapedAliases.add(binding[2] || binding[1]);
+      }
+    }
+  }
+
+  const assignments = [];
+  for (const match of code.matchAll(/(?:^|[;\r\n])\s*([^=;\r\n]+?)\s*(?<![<>=!:])=(?!=)\s*([^;\r\n]+)/gu)) {
+    assignments.push({ index: match.index || 0, left: match[1].trim(), right: match[2].trim() });
+  }
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const assignment of assignments) {
+      const leftNames = [...assignment.left.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\b/gu)].map((match) => match[1]);
+      const leftBinding = getPythonAssignmentElements(assignment.left);
+      const rightBinding = getPythonAssignmentElements(assignment.right);
+      const leftElements = leftBinding.elements;
+      const rightElements = rightBinding.elements;
+      if (!leftBinding.sequence && rightBinding.sequence && rightElements.some((element) => moduleAliases.has(element))) {
+        hasCapabilityEscape = true;
+      }
+      for (let offset = 0; offset < Math.min(leftElements.length, rightElements.length); offset += 1) {
+        if (rightBinding.sequence && !leftBinding.sequence) break;
+        if (/^[A-Za-z_][A-Za-z0-9_]*$/u.test(leftElements[offset]) && moduleAliases.has(rightElements[offset])) {
+          if (!moduleAliases.has(leftElements[offset])) {
+            moduleAliases.add(leftElements[offset]);
+            changed = true;
+          }
+        }
+      }
+      const rightName = rightElements.length === 1 && !rightBinding.sequence
+        ? /^([A-Za-z_][A-Za-z0-9_]*)$/u.exec(rightElements[0])?.[1]
+        : undefined;
+      if (rightName && moduleAliases.has(rightName)) {
+        for (const name of leftNames) {
+          if (!moduleAliases.has(name)) {
+            moduleAliases.add(name);
+            changed = true;
+          }
+        }
+      }
+      const modulePattern = [...moduleAliases].map(escapeRegex).join("|");
+      const capabilityReference = modulePattern && new RegExp(`\\b(?:${modulePattern})\\.(?:(?:exec|spawn|posix_spawn)[A-Za-z0-9_]*|system|popen|startfile)\\b(?!\\s*\\()`, "u").test(assignment.right);
+      const getattrReference = modulePattern && new RegExp(`\\bgetattr\\s*\\(\\s*(?:${modulePattern})\\s*,`, "u").test(assignment.right);
+      if (capabilityReference || getattrReference || rightName && escapedAliases.has(rightName)) {
+        for (const name of leftNames) escapedAliases.add(name);
+      }
+    }
+  }
+
+  const modulePattern = [...moduleAliases].map(escapeRegex).join("|");
+  const processMethodPattern = "(?:exec|spawn|posix_spawn)[A-Za-z0-9_]*|system|popen|startfile";
+  const parameterizedCapabilityFunctions = new Set();
+  for (const assignment of assignments) {
+    const functionName = /^([A-Za-z_][A-Za-z0-9_]*)$/u.exec(assignment.left)?.[1];
+    const lambda = /^lambda\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([\s\S]+)$/u.exec(assignment.right);
+    if (functionName && lambda && new RegExp(`\\b${escapeRegex(lambda[1])}\\.(?:${processMethodPattern})\\s*\\(`, "u").test(lambda[2])) {
+      parameterizedCapabilityFunctions.add(functionName);
+    }
+  }
+  if (modulePattern) {
+    const moduleDictionaryAccess = new RegExp(`\\b(?:${modulePattern})\\s*\\.\\s*__dict__\\b`, "u");
+    if (moduleDictionaryAccess.test(code)) hasCapabilityEscape = true;
+    const directLambda = new RegExp(`\\(\\s*lambda\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*:\\s*\\1\\.(?:${processMethodPattern})\\s*\\([^)]*\\)\\s*\\)\\s*\\(\\s*(?:${modulePattern})\\s*\\)`, "u");
+    if (directLambda.test(code)) hasCapabilityEscape = true;
+    const defaultedLambda = new RegExp(`\\blambda\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*(?:${modulePattern})\\s*:\\s*\\1\\.(?:${processMethodPattern})\\s*\\(`, "u");
+    if (defaultedLambda.test(code)) hasCapabilityEscape = true;
+    for (const functionName of parameterizedCapabilityFunctions) {
+      if (new RegExp(`\\b${escapeRegex(functionName)}\\s*\\(\\s*(?:${modulePattern})\\s*\\)`, "u").test(code)) {
+        hasCapabilityEscape = true;
+      }
+    }
+    const callPattern = /(?<![.A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*(?:(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)|(?:\s*\[[^\]]+\]))*)\s*\(/gu;
+    for (const match of code.matchAll(callPattern)) {
+      const callee = normalizeAgentValue(match[1]).replace(/\s+/gu, "");
+      if (callee === "getattr") continue;
+      const openIndex = (match.index || 0) + match[0].lastIndexOf("(");
+      const body = getBalancedCallBody(text, openIndex);
+      if (body === null) continue;
+      const argumentsList = splitTopLevelCallArguments(body).map((argument) => String(argument || "").trim());
+      if (argumentsList.some((argument) => moduleAliases.has(argument))) {
+        hasCapabilityEscape = true;
+        break;
+      }
+    }
+  }
+
+  const calls = [];
+  const seen = new Set();
+  const addCall = (method, openIndex, escaped) => {
+    const key = `${openIndex}:${method}:${escaped}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      calls.push({ method, openIndex, escaped });
+    }
+  };
+  for (const alias of moduleAliases) {
+    const pattern = new RegExp(`\\b${escapeRegex(alias)}\\.([A-Za-z_][A-Za-z0-9_]*)\\s*\\(`, "gu");
+    for (const match of code.matchAll(pattern)) {
+      if (isPythonOsProcessCapabilityName(match[1])) {
+        addCall(match[1], (match.index || 0) + match[0].lastIndexOf("("), false);
+      }
+    }
+  }
+  for (const match of code.matchAll(/\bgetattr\s*\(/gu)) {
+    const getattrOpenIndex = (match.index || 0) + match[0].lastIndexOf("(");
+    const getattrBody = getBalancedCallBody(text, getattrOpenIndex);
+    if (getattrBody === null) continue;
+    const getattrArguments = splitTopLevelCallArguments(getattrBody);
+    if (getattrArguments.length < 2 || !moduleAliases.has(String(getattrArguments[0] || "").trim())) continue;
+    const method = evaluateScopedStaticStringExpression(getattrArguments[1], text, getattrOpenIndex, scopes, "python");
+    if (method !== null && !isPythonOsProcessCapabilityName(method)) continue;
+    const getattrCloseIndex = getattrOpenIndex + getattrBody.length + 1;
+    const invocationSuffix = /^\s*\(/u.exec(code.slice(getattrCloseIndex + 1));
+    if (invocationSuffix) {
+      addCall(method || "unknown", getattrCloseIndex + 1 + invocationSuffix[0].lastIndexOf("("), method === null);
+    } else {
+      hasCapabilityEscape = true;
+    }
+  }
+  for (const alias of escapedAliases) {
+    const pattern = new RegExp(`(?<![A-Za-z0-9_])${escapeRegex(alias)}(?:\\s*\\[[^\\]]+\\])?\\s*\\(`, "gu");
+    for (const match of code.matchAll(pattern)) {
+      const callIndex = match.index || 0;
+      const event = getLatestScopedAssignmentEvent(text, alias, callIndex, scopes, "python");
+      if (event) {
+        const expression = String(event.expression || "").trim();
+        const referencedAlias = /^([A-Za-z_][A-Za-z0-9_]*)$/u.exec(expression)?.[1];
+        const directCapability = modulePattern && new RegExp(
+          `\\b(?:${modulePattern})\\.(?:(?:exec|spawn|posix_spawn)[A-Za-z0-9_]*|system|popen|startfile)\\b`,
+          "u",
+        ).test(expression);
+        const reflectedCapability = modulePattern && new RegExp(
+          `\\bgetattr\\s*\\(\\s*(?:${modulePattern})\\s*,`,
+          "u",
+        ).test(expression);
+        if (!directCapability && !reflectedCapability && !(referencedAlias && escapedAliases.has(referencedAlias))) {
+          continue;
+        }
+      }
+      addCall("unknown", (match.index || 0) + match[0].lastIndexOf("("), true);
+    }
+  }
+
+  let unowned = hasCapabilityEscape;
+  for (const call of calls.sort((left, right) => left.openIndex - right.openIndex)) {
+    const callBody = getBalancedCallBody(text, call.openIndex);
+    if (callBody === null) {
+      if (outerProtectedHint) return INTERPRETER_PROCESS_BOUNDARY.DENY_AMBIGUOUS_PROTECTED;
+      unowned = true;
+      continue;
+    }
+    const result = classifyPythonOsProcessCall(
+      call.method,
+      callBody,
+      text,
+      call.openIndex,
+      scopes,
+      outerProtectedHint,
+      call.escaped,
+    );
+    if (isDeniedInterpreterProcessBoundary(result)) return result;
+    if (result === INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS) unowned = true;
+  }
+  return unowned
+    ? INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS
+    : INTERPRETER_PROCESS_BOUNDARY.ALLOW_PROVEN_NON_PROTECTED;
+}
+
+function getInterpreterProcessBoundaryResults(source, forcedKind = null) {
+  const stage = String(source || "");
+  const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(stage));
+  const parsedKind = getShellInterpreterKind(tokens);
+  const kind = forcedKind || parsedKind;
+  const inlineSource = forcedKind === null && kind ? getInterpreterInlineSourceToken(tokens, kind) : null;
+  const text = inlineSource === null || inlineSource === undefined ? stage : String(inlineSource);
+  const scopes = buildFunctionScopeIndex(text);
+  const outerProtectedHint = hasOuterCodexProtectedArguments(stage);
+  const results = [];
+
+  if (kind === "python" || kind === null) {
+    results.push(classifyPythonOsProcessBoundary(text, scopes, outerProtectedHint));
+    const pythonCode = maskPythonNonCode(text);
+    for (const call of getPythonProcessCalls(pythonCode)) {
+      const callBody = getBalancedCallBody(text, call.openIndex);
+      if (callBody === null) {
+        results.push(outerProtectedHint
+          ? INTERPRETER_PROCESS_BOUNDARY.DENY_AMBIGUOUS_PROTECTED
+          : INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS);
+        continue;
+      }
+      const commandExpression = stripLeadingCallComments(splitTopLevelCallArguments(callBody)[0]);
+      const assignments = getConstantStringAssignments(text, call.openIndex);
+      if (normalizeAgentValue(call.method) === "system" || call.method === "popen") {
+        const event = /^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(commandExpression)
+          ? getLatestScopedAssignmentEvent(text, commandExpression, call.openIndex, scopes, "python")
+          : null;
+        const resolvedExpression = event?.expression || commandExpression;
+        results.push(classifyCodexCommandExpression(
+          resolvedExpression,
+          assignments,
+          text,
+          call.openIndex,
+          scopes,
+          "python",
+          outerProtectedHint,
+          true,
+        ));
+      } else {
+        results.push(classifyCodexArgvInvocation(
+          "",
+          commandExpression,
+          text,
+          call.openIndex,
+          scopes,
+          "python",
+          true,
+          outerProtectedHint,
+          true,
+        ));
+      }
+    }
+  }
+
+  if (kind === "node" || kind === null) {
+    const nodeCode = maskJavaScriptNonCodeForProcessDiscovery(text);
+    for (const call of getNodeChildProcessCalls(nodeCode)) {
+      const callBody = getBalancedCallBody(text, call.openIndex);
+      if (callBody === null) {
+        results.push(outerProtectedHint
+          ? INTERPRETER_PROCESS_BOUNDARY.DENY_AMBIGUOUS_PROTECTED
+          : INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS);
+        continue;
+      }
+      const args = splitTopLevelCallArguments(callBody);
+      const method = normalizeAgentValue(call.method);
+      const assignments = getConstantStringAssignments(text, call.openIndex);
+      if (method === "exec" || method === "execsync") {
+        const commandCandidate = String(args[0] || "").trim();
+        const event = /^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(commandCandidate)
+          ? getLatestScopedAssignmentEvent(text, commandCandidate, call.openIndex, scopes, "javascript")
+          : null;
+        results.push(classifyCodexCommandExpression(
+          event?.expression || args[0],
+          assignments,
+          text,
+          call.openIndex,
+          scopes,
+          "javascript",
+          outerProtectedHint,
+        ));
+      } else {
+        results.push(classifyCodexArgvInvocation(
+          args[0],
+          args[1],
+          text,
+          call.openIndex,
+          scopes,
+          "javascript",
+          false,
+          outerProtectedHint,
+        ));
+      }
+    }
+  }
+  return results;
+}
+
+function hasInterpreterCodexDispatch(source) {
+  return getInterpreterProcessBoundaryResults(source).some(isDeniedInterpreterProcessBoundary);
+}
+
+function hasUnownedInterpreterProcessBoundary(source) {
+  return getInterpreterProcessBoundaryResults(source)
+    .some((result) => result === INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS);
 }
 
 function isWriteCapableAgentMode(mode) {
@@ -3783,6 +10839,2654 @@ function getReviewStateHeadSha(reviewStateEntry) {
   return "";
 }
 
+function resolveReviewGateRepoRoots(toolInput, command) {
+  const toolInputCwd = typeof toolInput?.cwd === "string" ? toolInput.cwd : "";
+  const baseCwd = toolInputCwd || process.cwd();
+  const baseRepoRoot = resolveGitTopLevel(baseCwd);
+  const commandTargets = getReviewGatedCommandTargets(command, baseCwd);
+  const candidates = commandTargets.targetCwds.length > 0
+    ? [
+        ...commandTargets.targetCwds,
+        ...(commandTargets.requiresBaseCwd ? [baseCwd] : []),
+      ]
+    : [baseCwd];
+  const repoRoots = [];
+  const seen = new Set();
+
+  for (const candidate of candidates) {
+    const repoRoot = resolveGitTopLevel(candidate);
+    if (!repoRoot) {
+      return null;
+    }
+    if (repoRoot && isManagedReviewGateRepo(repoRoot, baseRepoRoot) && !seen.has(repoRoot)) {
+      repoRoots.push(repoRoot);
+      seen.add(repoRoot);
+    }
+  }
+
+  return repoRoots;
+}
+
+function isManagedReviewGateRepo(repoRoot, baseRepoRoot) {
+  if (!repoRoot) {
+    return false;
+  }
+
+  if (baseRepoRoot && normalizeComparablePath(repoRoot) === normalizeComparablePath(baseRepoRoot)) {
+    return true;
+  }
+
+  const repoCommonDir = getGitCommonDir(repoRoot);
+  const baseCommonDir = getGitCommonDir(baseRepoRoot);
+  if (repoCommonDir && baseCommonDir && normalizeComparablePath(repoCommonDir) === normalizeComparablePath(baseCommonDir)) {
+    return true;
+  }
+
+  return fs.existsSync(path.join(repoRoot, ".winsmux"));
+}
+
+function getGitCommonDir(repoRoot) {
+  if (!repoRoot) {
+    return "";
+  }
+
+  try {
+    const commonDir = execFileSync("git", ["-C", repoRoot, "rev-parse", "--git-common-dir"], {
+      encoding: "utf8",
+      env: getGitProbeEnvironment(),
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return commonDir ? path.resolve(repoRoot, commonDir) : "";
+  } catch {
+    return "";
+  }
+}
+
+function resolveGitTopLevel(candidate) {
+  if (typeof candidate !== "string" || candidate.trim() === "" || candidate.includes("\0")) {
+    return "";
+  }
+
+  const resolved = path.resolve(process.cwd(), stripOuterQuotes(candidate.trim()));
+  try {
+    return execFileSync("git", ["-C", resolved, "rev-parse", "--show-toplevel"], {
+      encoding: "utf8",
+      env: getGitProbeEnvironment(),
+    }).trim();
+  } catch {
+    return "";
+  }
+}
+
+function getGitProbeEnvironment() {
+  return Object.fromEntries(Object.entries(process.env).filter(([name]) =>
+    !name.toUpperCase().startsWith("GIT_")));
+}
+
+function getReviewGatedCommandTargets(command, baseCwd, depth = 0, inheritedGitEnvContext = {}) {
+  if (depth > 5) {
+    const inheritedTarget = inheritedGitEnvContext?.targetCwd || "";
+    return {
+      targetCwds: [...(inheritedTarget ? [inheritedTarget] : []), "\0unresolved-review-target-depth"],
+      requiresBaseCwd: true,
+    };
+  }
+
+  const powerShellComSpecCommand = materializePowerShellComSpecAliases(command);
+  if (powerShellComSpecCommand !== command) {
+    return getReviewGatedCommandTargets(powerShellComSpecCommand, baseCwd, depth + 1, inheritedGitEnvContext);
+  }
+
+  const targetCwds = [];
+  let requiresBaseCwd = false;
+  if (hasConservativeProtectedCmdBoundary(command)) {
+    targetCwds.push("\0conservative-cmd-review-target");
+  }
+  if (hasCommandLocalGitAliasConfiguration(command)) {
+    targetCwds.push("\0unresolved-command-local-git-alias");
+  }
+  if (hasPersistentGitTargetMutation(command)) {
+    targetCwds.push("\0unresolved-persistent-git-environment");
+  }
+  if (hasUnresolvedChildProcessGitTarget(command)) {
+    targetCwds.push("\0unresolved-child-process-git-target");
+  }
+  let parsedSeparatedFunctionWrapper = false;
+  let parsedXargsWrapper = false;
+  const shellForwardingFunctions = getSeparatedForwardingFunctionDefinitions(command);
+  let effectiveBaseCwd = baseCwd || process.cwd();
+  const controlFlowExecutionStack = [];
+  const materializedCommand = materializeConstantExecutableSubstitutions(command);
+  if (materializedCommand !== command && isReviewGatedCommand(materializedCommand)) {
+    const materializedTargets = getReviewGatedCommandTargets(materializedCommand, baseCwd, depth + 1, inheritedGitEnvContext);
+    targetCwds.push(...materializedTargets.targetCwds);
+    requiresBaseCwd = requiresBaseCwd || materializedTargets.requiresBaseCwd;
+  }
+  for (const indirectCommand of getConstantShellStdinCommands(command)) {
+    if (!isReviewGatedCommand(indirectCommand)) {
+      continue;
+    }
+    const indirectTargets = getReviewGatedCommandTargets(indirectCommand, baseCwd, depth + 1, inheritedGitEnvContext);
+    targetCwds.push(...indirectTargets.targetCwds);
+    requiresBaseCwd = requiresBaseCwd || indirectTargets.requiresBaseCwd;
+  }
+  for (const heredocBody of getExecutableHeredocBodies(command)) {
+    if (!isReviewGatedCommand(heredocBody) && !hasConfiguredGitReviewLifecycleAlias(heredocBody, baseCwd)) {
+      continue;
+    }
+    const nestedTargets = getReviewGatedCommandTargets(heredocBody, baseCwd, depth + 1, inheritedGitEnvContext);
+    targetCwds.push(...nestedTargets.targetCwds);
+    requiresBaseCwd = requiresBaseCwd || nestedTargets.requiresBaseCwd;
+  }
+  for (const commandSegment of splitCommandSegmentsWithSeparators(command)) {
+    const segment = commandSegment.segment;
+    const controlFlowBoundary = getShellControlFlowBoundary(segment);
+    if (controlFlowBoundary === "branch") {
+      updateShellControlFlowBranchExecution(controlFlowExecutionStack, segment, commandSegment.separatorAfter);
+    }
+
+    const segmentBaseCwd = effectiveBaseCwd;
+    const controlFlowExecutionState = getShellControlFlowExecutionState(controlFlowExecutionStack);
+    for (const stage of splitCommandPipelineStages(segment)) {
+      const executableStage = unwrapShellExecutableControlFlowPrefix(stage);
+      if (executableStage && executableStage !== stage.trim()) {
+        const nestedTargets = getReviewGatedCommandTargets(executableStage, segmentBaseCwd, depth + 1, inheritedGitEnvContext);
+        targetCwds.push(...nestedTargets.targetCwds);
+        requiresBaseCwd = requiresBaseCwd || nestedTargets.requiresBaseCwd;
+        continue;
+      }
+
+      const powerShellStage = unwrapPowerShellCommandWrapper(stage);
+      if (powerShellStage !== stage.trim()) {
+        const nestedTargets = getReviewGatedCommandTargets(powerShellStage, segmentBaseCwd, depth + 1, inheritedGitEnvContext);
+        targetCwds.push(...nestedTargets.targetCwds);
+        requiresBaseCwd = requiresBaseCwd || nestedTargets.requiresBaseCwd;
+        continue;
+      }
+
+      const groupedStage = unwrapShellGroupingWrapper(powerShellStage);
+      if (groupedStage !== powerShellStage.trim()) {
+        const nestedTargets = getReviewGatedCommandTargets(groupedStage, segmentBaseCwd, depth + 1, inheritedGitEnvContext);
+        targetCwds.push(...nestedTargets.targetCwds);
+        requiresBaseCwd = requiresBaseCwd || nestedTargets.requiresBaseCwd;
+        continue;
+      }
+
+      const normalizedStage = groupedStage;
+      for (const substitutionCommand of getShellCommandSubstitutionCommands(normalizedStage)) {
+        if (!isReviewGatedCommand(substitutionCommand)) {
+          continue;
+        }
+
+        const substitutionTargets = getReviewGatedCommandTargets(substitutionCommand, segmentBaseCwd, depth + 1, inheritedGitEnvContext);
+        if (substitutionTargets.targetCwds.length === 0 && !substitutionTargets.requiresBaseCwd) {
+          targetCwds.push(segmentBaseCwd || process.cwd());
+        } else {
+          targetCwds.push(...substitutionTargets.targetCwds);
+          requiresBaseCwd = requiresBaseCwd || substitutionTargets.requiresBaseCwd;
+        }
+      }
+
+      const rawTokens = tokenizeCommandLine(normalizedStage);
+      const gitEnvContext = mergeGitInlineEnvironmentContext(
+        inheritedGitEnvContext,
+        getGitInlineEnvironmentContext(rawTokens, segmentBaseCwd),
+      );
+      const gitCommandBaseCwd = gitEnvContext.baseCwd || segmentBaseCwd;
+      const unwrappedExecution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(rawTokens));
+      if (unwrappedExecution.nestedCommand) {
+        const nestedTargets = getReviewGatedCommandTargets(unwrappedExecution.nestedCommand, gitCommandBaseCwd, depth + 1, gitEnvContext);
+        targetCwds.push(...nestedTargets.targetCwds);
+        requiresBaseCwd = requiresBaseCwd || nestedTargets.requiresBaseCwd;
+        continue;
+      }
+      const tokens = unwrappedExecution.tokens;
+      if (tokens.length === 0) {
+        continue;
+      }
+
+      const executable = getExecutableBasename(tokens[0]);
+      const forwardingFunctionCommand = getForwardingFunctionInvocationCommand(tokens, shellForwardingFunctions);
+      if (forwardingFunctionCommand) {
+        parsedSeparatedFunctionWrapper = true;
+        const nestedTargets = getReviewGatedCommandTargets(forwardingFunctionCommand, gitCommandBaseCwd, depth + 1, gitEnvContext);
+        targetCwds.push(...nestedTargets.targetCwds);
+        requiresBaseCwd = requiresBaseCwd || nestedTargets.requiresBaseCwd;
+        continue;
+      }
+
+      if (executable === "cmd" || executable === "cmd.exe") {
+        const nestedCommand = getCmdShellArgument(tokens);
+        const rawNestedCommand = getCmdShellArgument(tokens, false);
+        const hasUnsupportedCmdState = /\bsetlocal\s+(?:Enable|Disable)DelayedExpansion\b/iu.test(rawNestedCommand) ||
+          /\bif\s+(?:not\s+)?defined\b/iu.test(rawNestedCommand) ||
+          (/&&[\s\S]*\|\||\|\|[\s\S]*&&/u.test(rawNestedCommand) &&
+            !/^(?:\s*set\s+[^&|]+\s*(?:&&|\|\|)\s*)+/iu.test(rawNestedCommand));
+        if (hasUnsupportedCmdState && nestedCommand && isReviewGatedCommand(nestedCommand)) {
+          targetCwds.push("\0unresolved-cmd-review-target");
+          continue;
+        }
+        const nestedTargets = getReviewGatedCommandTargets(nestedCommand || "", gitCommandBaseCwd, depth + 1, gitEnvContext);
+        targetCwds.push(...nestedTargets.targetCwds);
+        requiresBaseCwd = requiresBaseCwd || nestedTargets.requiresBaseCwd;
+        continue;
+      }
+
+      if (isPowerShellExecutable(executable)) {
+        const nestedCommand = getPowerShellNestedCommand(tokens);
+        const initialWorkingDirectory = getPowerShellInitialWorkingDirectory(tokens, executable);
+        const powerShellCommandBaseCwd = initialWorkingDirectory
+          ? resolveGitCwdOption(gitCommandBaseCwd, "", initialWorkingDirectory)
+          : gitCommandBaseCwd;
+        if (initialWorkingDirectory && !powerShellCommandBaseCwd &&
+            (isReviewGatedCommand(nestedCommand) || hasConfiguredGitReviewLifecycleAlias(nestedCommand, gitCommandBaseCwd))) {
+          targetCwds.push("\0unresolved-powershell-working-directory");
+          continue;
+        }
+        const nestedTargets = getReviewGatedCommandTargets(nestedCommand || "", powerShellCommandBaseCwd, depth + 1, gitEnvContext);
+        targetCwds.push(...nestedTargets.targetCwds);
+        requiresBaseCwd = requiresBaseCwd || nestedTargets.requiresBaseCwd;
+        for (const blockBody of getBraceBlockBodies(nestedCommand)) {
+          const blockTargets = getReviewGatedCommandTargets(blockBody, powerShellCommandBaseCwd, depth + 1, gitEnvContext);
+          targetCwds.push(...blockTargets.targetCwds);
+          requiresBaseCwd = requiresBaseCwd || blockTargets.requiresBaseCwd;
+        }
+        continue;
+      }
+
+      if (isShellCommandExecutable(executable)) {
+        const nestedCommand = getShellCommandArgument(tokens);
+        const nestedTargets = getReviewGatedCommandTargets(nestedCommand || "", gitCommandBaseCwd, depth + 1, gitEnvContext);
+        targetCwds.push(...nestedTargets.targetCwds);
+        requiresBaseCwd = requiresBaseCwd || nestedTargets.requiresBaseCwd;
+        continue;
+      }
+
+      if (isPowerShellStartProcessExecutable(executable)) {
+        const invocation = getPowerShellStartProcessInvocation(tokens);
+        const startProcessBaseCwd = invocation.workingDirectory
+          ? resolveGitCwdOption(gitCommandBaseCwd, "", invocation.workingDirectory)
+          : gitCommandBaseCwd;
+        const startsWithFreshEnvironment = rawTokens.some((token) => normalizeAgentValue(stripOuterQuotes(token)) === "-usenewenvironment");
+        const nestedTargets = getReviewGatedCommandTargets(
+          invocation.command || "",
+          startProcessBaseCwd,
+          depth + 1,
+          startsWithFreshEnvironment ? {} : gitEnvContext,
+        );
+        if (nestedTargets.targetCwds.length === 0 &&
+            !nestedTargets.requiresBaseCwd &&
+            hasPowerShellStartProcessLifecycleHint(normalizedStage)) {
+          targetCwds.push(startProcessBaseCwd || "\0unresolved-start-process-working-directory");
+        } else {
+          targetCwds.push(...nestedTargets.targetCwds);
+          requiresBaseCwd = requiresBaseCwd || nestedTargets.requiresBaseCwd;
+        }
+        continue;
+      }
+
+      if (hasDynamicInterpreterGitSubcommand(normalizedStage)) {
+        targetCwds.push("\0unresolved-interpreter-review-target");
+        continue;
+      }
+      const interpreterCommands = getInterpreterLiteralGitCommands(normalizedStage, tokens)
+        .filter((interpreterCommand) => isReviewGatedCommand(interpreterCommand));
+      if (interpreterCommands.length > 0) {
+        for (const interpreterCommand of interpreterCommands) {
+          const interpreterTargets = getReviewGatedCommandTargets(interpreterCommand, gitCommandBaseCwd, depth + 1, gitEnvContext);
+          targetCwds.push(...interpreterTargets.targetCwds);
+          requiresBaseCwd = requiresBaseCwd || interpreterTargets.requiresBaseCwd;
+        }
+        continue;
+      }
+      if (hasInterpreterReviewGatedGitLifecycleCommand(normalizedStage, tokens)) {
+        targetCwds.push("\0unresolved-interpreter-review-target");
+        continue;
+      }
+
+      if (executable === "xargs" || executable === "xargs.exe") {
+        const xargsTargets = getReviewGatedXargsCommandTargets(tokens, segment, gitCommandBaseCwd, depth, gitEnvContext);
+        if (xargsTargets.matched) {
+          parsedXargsWrapper = true;
+          targetCwds.push(...xargsTargets.targetCwds);
+          requiresBaseCwd = requiresBaseCwd || xargsTargets.requiresBaseCwd;
+        }
+        continue;
+      }
+
+      if (isGhExecutableToken(stripOuterQuotes(tokens[0]))) {
+        if (isGhPrMergeTokenCommand(tokens) || isGhApiMergeCommand(tokens) || isGhApiRefWriteCommand(tokens)) {
+          targetCwds.push(gitCommandBaseCwd || process.cwd());
+        }
+        continue;
+      }
+
+      if (!isGitExecutableToken(stripOuterQuotes(tokens[0]))) {
+        continue;
+      }
+
+      const gitSubcommandIndex = findGitSubcommandIndex(tokens);
+      if (gitSubcommandIndex < 0) {
+        continue;
+      }
+
+      const rawGitSubcommand = normalizeAgentValue(stripOuterQuotes(tokens[gitSubcommandIndex]));
+      const gitBaseCwd = getGitGlobalCwdOption(tokens, 0, gitCommandBaseCwd, gitEnvContext) || gitCommandBaseCwd || process.cwd();
+      const configuredAliasValue = getConfiguredGitAliasValue(gitBaseCwd, rawGitSubcommand);
+      if (configuredAliasValue && configuredAliasValue.trim().startsWith("!")) {
+        const aliasTargets = getReviewGatedCommandTargets(configuredAliasValue.trim().slice(1), gitBaseCwd, depth + 1, gitEnvContext);
+        if (aliasTargets.targetCwds.length === 0 && !aliasTargets.requiresBaseCwd) {
+          targetCwds.push("\0unresolved-configured-git-alias");
+        } else {
+          targetCwds.push(...aliasTargets.targetCwds);
+          requiresBaseCwd = requiresBaseCwd || aliasTargets.requiresBaseCwd;
+        }
+        continue;
+      }
+
+      const gitSubcommand = getConfiguredGitAliasSubcommand(configuredAliasValue) ||
+        getGitSubcommandName(tokens, gitSubcommandIndex);
+      if (!isReviewGatedGitSubcommand(gitSubcommand, tokens, gitSubcommandIndex)) {
+        continue;
+      }
+
+      const shellAliasCommand = getGitShellAliasCommand(tokens, gitSubcommandIndex, rawGitSubcommand);
+      if (shellAliasCommand) {
+        const aliasTargets = getReviewGatedCommandTargets(shellAliasCommand, gitBaseCwd, depth + 1, gitEnvContext);
+        if (aliasTargets.targetCwds.length === 0 && !aliasTargets.requiresBaseCwd) {
+          targetCwds.push("\0unresolved-git-alias");
+          continue;
+        }
+
+        targetCwds.push(...aliasTargets.targetCwds);
+        requiresBaseCwd = requiresBaseCwd || aliasTargets.requiresBaseCwd;
+        continue;
+      }
+
+      targetCwds.push(gitBaseCwd);
+    }
+
+    const cwdChange = getShellCwdChange(segment, segmentBaseCwd);
+    const nextBaseCwd = cwdChange.target;
+    if (cwdChange.state === "ambiguous") {
+      targetCwds.push("\0unresolved-cwd-change");
+      requiresBaseCwd = true;
+      effectiveBaseCwd = "\0unresolved-cwd-change";
+    } else if (nextBaseCwd) {
+      const skipCwdChange = cwdChange.controlFlowPrefixed && controlFlowExecutionState === "inactive";
+      if (!skipCwdChange && cwdChange.controlFlowPrefixed && controlFlowExecutionState === "unknown") {
+        requiresBaseCwd = true;
+      }
+      effectiveBaseCwd = skipCwdChange
+        ? effectiveBaseCwd
+        : cwdChange.controlFlowPrefixed && controlFlowExecutionState === "unknown"
+        ? "\0unresolved-control-flow-cwd"
+        : hasConditionalCwdChangeBoundary(commandSegment)
+        ? "\0unresolved-conditional-cwd-change"
+        : nextBaseCwd;
+    }
+    updateShellControlFlowDepthExecution(controlFlowExecutionStack, segment, commandSegment.separatorAfter);
+  }
+
+  if (targetCwds.length > 0 && hasUnparsedBaseScopedReviewGatedCommand(command, parsedSeparatedFunctionWrapper, parsedXargsWrapper)) {
+    requiresBaseCwd = true;
+  }
+
+  return { targetCwds, requiresBaseCwd };
+}
+
+function hasCommandLocalGitAliasConfiguration(command) {
+  const source = String(command || "");
+  const hasAliasConfiguration = /\bgit(?:\.exe)?\b/iu.test(source) &&
+    /\balias\.[A-Za-z0-9._-]+\b/iu.test(source) &&
+    (/\bGIT_CONFIG_(?:COUNT|KEY_[0-9]+|VALUE_[0-9]+)\b/iu.test(source) ||
+     /--config-env(?:=|\s)/iu.test(source) ||
+     /(?:^|\s)-c(?:=|\s)[^;&\r\n]*\balias\./iu.test(source));
+  if (!hasAliasConfiguration) {
+    return false;
+  }
+  const tokens = tokenizeCommandLine(source).map((token) => stripOuterQuotes(token));
+  const environment = new Map();
+  let hasNonAliasConfiguration = false;
+  for (const token of tokens) {
+    const assignment = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/u.exec(token);
+    if (assignment) environment.set(normalizeAgentValue(assignment[1]), assignment[2]);
+  }
+  const aliasConfigurations = new Map();
+  const addAliasConfiguration = (configuration) => {
+    const candidate = String(configuration || "").trim();
+    const match = /^alias\.([A-Za-z0-9._-]+)=([\s\S]*)$/iu.exec(candidate);
+    if (match) aliasConfigurations.set(normalizeAgentValue(match[1]), match[2]);
+    else if (candidate.includes("=")) hasNonAliasConfiguration = true;
+  };
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    const normalized = normalizeAgentValue(token);
+    if (normalized === "-c" && index + 1 < tokens.length) {
+      addAliasConfiguration(tokens[index + 1]);
+      index += 1;
+      continue;
+    }
+    if (normalized.startsWith("-calias.")) {
+      addAliasConfiguration(token.slice(2));
+      continue;
+    }
+    const configEnv = normalized === "--config-env" && index + 1 < tokens.length
+      ? tokens[++index]
+      : normalized.startsWith("--config-env=")
+      ? token.slice(token.indexOf("=") + 1)
+      : "";
+    if (configEnv) {
+      const match = /^alias\.([A-Za-z0-9._-]+)=([A-Za-z_][A-Za-z0-9_]*)$/iu.exec(configEnv);
+      if (match) aliasConfigurations.set(
+        normalizeAgentValue(match[1]),
+        environment.get(normalizeAgentValue(match[2])) || "",
+      );
+      else hasNonAliasConfiguration = true;
+    }
+  }
+  for (const [name, value] of environment) {
+    const keyMatch = /^git_config_key_([0-9]+)$/u.exec(name);
+    if (keyMatch) {
+      if (/^alias\.[A-Za-z0-9._-]+$/iu.test(value)) {
+        aliasConfigurations.set(
+          normalizeAgentValue(value.slice("alias.".length)),
+          environment.get(`git_config_value_${keyMatch[1]}`) || "",
+        );
+      } else {
+        hasNonAliasConfiguration = true;
+      }
+    }
+  }
+  if (hasNonAliasConfiguration || aliasConfigurations.size === 0) return true;
+  const gitIndex = tokens.findIndex((token) => normalizeExecutableName(token) === "git");
+  if (gitIndex < 0) return true;
+  const gitTokens = tokens.slice(gitIndex);
+  if ([...aliasConfigurations.values()].some((value) => String(value || "").trim().startsWith("!"))) {
+    return !isCanonicalCommandLocalGitShellReviewAlias(gitTokens);
+  }
+  for (const value of aliasConfigurations.values()) {
+    if (!isCanonicalSafeGitInlineConfiguration(`alias.x=${value}`)) return true;
+  }
+  const subcommandIndex = findGitSubcommandIndex(gitTokens);
+  if (subcommandIndex < 1) return true;
+  const invokedAlias = normalizeAgentValue(stripOuterQuotes(gitTokens[subcommandIndex] || ""));
+  const aliasValue = aliasConfigurations.get(invokedAlias);
+  if (aliasValue === undefined) return true;
+  const aliasTokens = tokenizeCommandLine(String(aliasValue || "").trim());
+  if (aliasTokens.length === 0 || String(aliasValue || "").trim().startsWith("!")) return true;
+  const resolvedTokens = ["git", ...aliasTokens, ...gitTokens.slice(subcommandIndex + 1)];
+  return !isCanonicalReadOnlyGitResolvedTokens(resolvedTokens, 1);
+}
+
+function hasConstructedGitEnvironmentName(source) {
+  const text = String(source || "");
+  const assignments = getConstantStringAssignments(text);
+  return [...assignments.values()].some(isGitEnvironmentName) ||
+    getRuntimeEnvironmentMutationNameStates(text, assignments).hasGit;
+}
+
+function isGitEnvironmentName(value) {
+  const normalized = String(value || "").trim().replace(/^Env:\\?/iu, "").toUpperCase();
+  return /^GIT_[A-Z0-9_]+$/u.test(normalized);
+}
+
+function getEnvironmentObjectAliasHistories(source) {
+  const text = String(source || "");
+  const history = new Map();
+  const scopes = buildFunctionScopeIndex(text);
+  const aliases = new Set(["process.env", "os.environ"]);
+  const osAliases = new Set(["os"]);
+  recordScopedPositionState(history, "process.env", true, -1, -1);
+  recordScopedPositionState(history, "os.environ", true, -1, -1);
+  for (const match of text.matchAll(/\bimport\s+([^;\r\n]+)/gu)) {
+    for (const rawBinding of match[1].split(",")) {
+      const binding = /^os(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?$/u.exec(rawBinding.trim());
+      if (binding) {
+        const alias = binding[1] || "os";
+        osAliases.add(alias);
+        aliases.add(`${alias}.environ`);
+        recordScopedPositionState(history, `${alias}.environ`, true, match.index || 0, scopes.scopeAt(match.index || 0));
+      }
+    }
+  }
+  const isEnvironmentObjectAt = (expression, index) => {
+    const candidate = String(expression || "").trim();
+    if (/^process\s*(?:\?\.env|\.env|\[\s*["']env["']\s*\])$/u.test(candidate)) {
+      return true;
+    }
+    const osMember = /^([A-Za-z_][A-Za-z0-9_]*)\.environ$/u.exec(candidate) ||
+      /^getattr\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*,\s*["']environ["']\s*\)$/u.exec(candidate) ||
+      /^([A-Za-z_][A-Za-z0-9_]*)\.__dict__\s*\[\s*["']environ["']\s*\]$/u.exec(candidate);
+    if (osMember && osAliases.has(osMember[1])) {
+      return true;
+    }
+    return /^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(candidate) && getScopedPositionState(history, candidate, index, scopes) === true;
+  };
+  for (const match of text.matchAll(/\bfrom\s+os\s+import\s+environ(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?/gu)) {
+    const alias = match[1] || "environ";
+    aliases.add(alias);
+    recordScopedPositionState(history, alias, true, match.index || 0, scopes.scopeAt(match.index || 0));
+  }
+  for (const match of text.matchAll(/(?:\b(?:const|let|var)\s*)?\(?\s*\{([^}]*)\}\s*=\s*process\s*\)?/gu)) {
+    for (const rawBinding of match[1].split(",")) {
+      const binding = /^(?:env|["']env["'])(?:\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*))?$/u.exec(rawBinding.trim());
+      if (binding) {
+        const alias = binding[1] || "env";
+        aliases.add(alias);
+        recordScopedPositionState(history, alias, true, match.index || 0, scopes.scopeAt(match.index || 0));
+      }
+    }
+  }
+  const events = [];
+  const seen = new Set();
+  const assignmentPatterns = [
+    { pattern: /\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*([^;\r\n]+)/gu, declared: true },
+    { pattern: /(?:^|[;{\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^;\r\n]+)/gu, declared: false },
+  ];
+  for (const { pattern, declared } of assignmentPatterns) {
+    for (const match of text.matchAll(pattern)) {
+      const event = { index: match.index || 0, alias: match[1], expression: match[2].trim(), declared };
+      const key = `${event.index}:${event.alias}:${event.expression}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        events.push(event);
+      }
+    }
+  }
+  for (const match of text.matchAll(/(?:^|[;\r\n])\s*([A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)+)\s*=\s*([^;\r\n]+)/gu)) {
+    const left = match[1].split(",").map((value) => value.trim());
+    const right = splitTopLevelCallArguments(match[2]);
+    for (let index = 0; index < Math.min(left.length, right.length); index += 1) {
+      events.push({ index: match.index || 0, alias: left[index], expression: right[index].trim() });
+    }
+  }
+  events.sort((left, right) => left.index - right.index);
+  for (const event of events) {
+    aliases.add(event.alias);
+    const bindingScope = event.declared
+      ? scopes.scopeAt(event.index)
+      : getExistingBindingScope([history], event.alias, event.index, scopes);
+    recordScopedPositionState(
+      history,
+      event.alias,
+      isEnvironmentObjectAt(event.expression, event.index),
+      event.index,
+      bindingScope,
+    );
+  }
+  return { history, scopes, aliases };
+}
+
+function getPowerShellProviderPathExpression(tail) {
+  let source = String(tail || "").trim();
+  source = source.replace(/^-(?:Path|LiteralPath)\s+/iu, "");
+  if (source.startsWith("(")) {
+    const body = getBalancedCallBody(source, 0);
+    return body === null ? source : `(${body})`;
+  }
+  const quoted = /^("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/u.exec(source);
+  if (quoted) {
+    return quoted[1];
+  }
+  const variable = /^(\$\{?[A-Za-z_][A-Za-z0-9_]*\}?)/u.exec(source);
+  if (variable) {
+    return variable[1];
+  }
+  return source.split(/\s/u)[0] || "";
+}
+
+function getRuntimeEnvironmentMutationNameStates(source, assignments = getConstantStringAssignments(source)) {
+  const text = String(source || "");
+  const expressions = [];
+  const addMatches = (pattern, group = 1) => {
+    for (const match of text.matchAll(pattern)) {
+      if (match[group]) {
+        expressions.push(match[group]);
+      }
+    }
+  };
+
+  const environmentAliases = getEnvironmentObjectAliasHistories(text);
+  const environmentMutationFunctions = new Set(["operator.setitem", "operator.delitem"]);
+  for (const match of text.matchAll(/\bimport\s+operator(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?/gu)) {
+    const alias = match[1] || "operator";
+    environmentMutationFunctions.add(`${alias}.setitem`);
+    environmentMutationFunctions.add(`${alias}.delitem`);
+  }
+  for (const match of text.matchAll(/\bfrom\s+operator\s+import\s+([^;\r\n]+)/gu)) {
+    for (const rawBinding of String(match[1] || "").split(",")) {
+      const binding = /^\s*(setitem|delitem)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*$/u.exec(rawBinding);
+      if (binding) environmentMutationFunctions.add(binding[2] || binding[1]);
+    }
+  }
+  const pushObjectEntries = (body, bareIdentifierIsLiteral = false) => {
+    for (const entry of splitTopLevelCallArguments(body)) {
+      const key = /^\s*(?:\[([^\]]+)\]|([^:]+))\s*:/u.exec(entry);
+      if (key) {
+        const keyExpression = (key[1] || key[2]).trim();
+        expressions.push(bareIdentifierIsLiteral && !key[1] && /^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(keyExpression)
+          ? JSON.stringify(keyExpression)
+          : keyExpression);
+      }
+    }
+  };
+  for (const alias of environmentAliases.aliases) {
+    const escapedAlias = escapeRegex(alias);
+    const addActiveMatches = (pattern, group = 1) => {
+      for (const match of text.matchAll(pattern)) {
+        if (getScopedPositionState(environmentAliases.history, alias, match.index || 0, environmentAliases.scopes) === true && match[group]) {
+          expressions.push(match[group]);
+        }
+      }
+    };
+    addActiveMatches(new RegExp(`\\b${escapedAlias}\\s*\\[\\s*([^\\]]+)\\s*\\]\\s*(?:=|\\+\\+|--|\\|=)`, "giu"));
+    addActiveMatches(new RegExp(`\\b(?:delete|del)\\s+${escapedAlias}\\s*\\[\\s*([^\\]]+)\\s*\\]`, "giu"));
+    addActiveMatches(new RegExp(`\\b(?:Reflect\\.(?:set|deleteProperty)|Object\\.defineProperty)\\s*\\(\\s*${escapedAlias}\\s*,\\s*([^,\\)]+)`, "giu"));
+    for (const mutationFunction of environmentMutationFunctions) {
+      addActiveMatches(new RegExp(`\\b${escapeRegex(mutationFunction)}\\s*\\(\\s*${escapedAlias}\\s*,\\s*([^,\\)]+)`, "giu"));
+    }
+    addActiveMatches(new RegExp(`\\b${escapedAlias}\\.(?:setdefault|pop|__setitem__|__delitem__)\\s*\\(\\s*([^,\\)]+)`, "giu"));
+    for (const match of text.matchAll(new RegExp(`\\b${escapedAlias}\\s*\\|=\\s*\\{([\\s\\S]{0,1024}?)\\}`, "giu"))) {
+      if (getScopedPositionState(environmentAliases.history, alias, match.index || 0, environmentAliases.scopes) === true) {
+        pushObjectEntries(match[1]);
+      }
+    }
+    for (const match of text.matchAll(new RegExp(`\\bObject\\.assign\\s*\\(\\s*${escapedAlias}\\s*,\\s*\\{([\\s\\S]{0,1024}?)\\}\\s*\\)`, "giu"))) {
+      if (getScopedPositionState(environmentAliases.history, alias, match.index || 0, environmentAliases.scopes) === true) {
+        pushObjectEntries(match[1], true);
+      }
+    }
+    for (const match of text.matchAll(new RegExp(`\\b${escapedAlias}\\.update\\s*\\(\\s*\\{([\\s\\S]{0,1024}?)\\}\\s*\\)`, "giu"))) {
+      if (getScopedPositionState(environmentAliases.history, alias, match.index || 0, environmentAliases.scopes) === true) {
+        pushObjectEntries(match[1]);
+      }
+    }
+  }
+  addMatches(/\bos\.(?:putenv|unsetenv)\s*\(\s*([^,\)]+)/giu);
+  addMatches(/\b(?:Object\.assign\s*\(\s*process\.env|os\.environ\.update\s*\()[\s\S]{0,1024}?\[\s*([^\]]+)\s*\]\s*:/giu);
+  for (const match of text.matchAll(/\[(?:System\.)?Environment\]\s*::\s*SetEnvironmentVariable\s*\(/giu)) {
+    const openIndex = (match.index || 0) + match[0].lastIndexOf("(");
+    const body = getBalancedCallBody(text, openIndex);
+    const firstArgument = body === null ? "" : splitTopLevelCallArguments(body)[0];
+    if (firstArgument) {
+      expressions.push(firstArgument);
+    }
+  }
+
+  const dynamicProviderMutation = /\b(?:Set-Item|si|New-Item|ni|Remove-Item|ri|Clear-Item|cli|Set-Content|sc|Clear-Content|clc|Move-Item|mi|Rename-Item|rni|Copy-Item|ci)\b([^;\r\n]*)/giu;
+  for (const match of text.matchAll(dynamicProviderMutation)) {
+    const pathExpression = getPowerShellProviderPathExpression(match[1]);
+    if (/Env:/iu.test(pathExpression) || /^\$\{?[A-Za-z_]/u.test(pathExpression)) {
+      expressions.push(pathExpression);
+    }
+  }
+
+  const cmdAssignments = new Map();
+  let cmdDelayedExpansion = true;
+  for (const match of text.matchAll(/\/v:(on|off)\b/giu)) {
+    cmdDelayedExpansion = normalizeAgentValue(match[1]) === "on";
+  }
+  const cmdEnvironmentAssignment = /(?:^|["']|&&|\|\||&|\|)\s*set\s+"?((?:![A-Za-z_][A-Za-z0-9_]*(?::[^=!%\r\n]*=[^!%\r\n]*)?!|%[A-Za-z_][A-Za-z0-9_]*(?::[^=!%\r\n]*=[^!%\r\n]*)?%|[A-Za-z_][A-Za-z0-9_]*))=([^"&|\r\n]*)"?/giu;
+  for (const match of text.matchAll(cmdEnvironmentAssignment)) {
+    const rawName = String(match[1] || "").trim();
+    const expandedName = expandCmdVariables(rawName, cmdAssignments, cmdDelayedExpansion).value;
+    const expandedValue = expandCmdVariables(String(match[2] || "").trim(), cmdAssignments, cmdDelayedExpansion).value;
+    const disabledBangReference = !cmdDelayedExpansion && /^![^!]+!$/u.test(rawName);
+    if (/^[A-Za-z_][A-Za-z0-9_]*$/u.test(expandedName)) {
+      cmdAssignments.set(normalizeAgentValue(expandedName), expandedValue);
+      if (/[%!]/u.test(rawName) || isGitEnvironmentName(expandedName)) {
+        expressions.push(JSON.stringify(expandedName));
+      }
+    } else if (/[%!]/u.test(rawName) && !disabledBangReference) {
+      expressions.push(rawName);
+    }
+  }
+
+  let hasGit = false;
+  let hasNodeOptions = false;
+  let hasUnresolved = false;
+  for (const expression of expressions) {
+    const providerPath = /^Env:\\?([A-Za-z_][A-Za-z0-9_]*)$/iu.exec(String(expression || "").trim());
+    const value = providerPath ? providerPath[1] : evaluateStaticStringExpression(expression, assignments);
+    if (value === null) {
+      hasUnresolved = true;
+    } else if (isGitEnvironmentName(value)) {
+      hasGit = true;
+    } else if (normalizeAgentValue(value) === "node_options") {
+      hasNodeOptions = true;
+    }
+  }
+  return { hasGit, hasNodeOptions, hasUnresolved, count: expressions.length };
+}
+
+function hasPersistentGitTargetMutation(command) {
+  const source = String(command || "");
+  return /(?:^|[;&\r\n])\s*(?:export|declare|typeset|local)\s+(?:[-+][A-Za-z]+\s+)*["']?(?:GIT_DIR|GIT_WORK_TREE)(?:=|["']?\b)/iu.test(source) ||
+    /(?:^|[;&\r\n])\s*unset\s+(?:-[A-Za-z]+\s+)*["']?(?:GIT_DIR|GIT_WORK_TREE)\b/iu.test(source) ||
+    /\$env:(?:GIT_DIR|GIT_WORK_TREE)\s*=/iu.test(source) ||
+    /\b(?:Set-Item|si|New-Item|ni|Remove-Item|ri|Clear-Item|cli|Set-Content|sc|Clear-Content|clc)\b[^;&\r\n]*(?:Env:\\?)?(?:GIT_DIR|GIT_WORK_TREE)\b/iu.test(source) ||
+    /\[(?:System\.)?Environment\]\s*::\s*SetEnvironmentVariable\s*\(\s*["'](?:GIT_DIR|GIT_WORK_TREE)["']/iu.test(source) ||
+    /\bprocess\.env(?:\.(?:GIT_DIR|GIT_WORK_TREE)|\[\s*["'](?:GIT_DIR|GIT_WORK_TREE)["']\s*\])\s*=/iu.test(source) ||
+    /\bos\.(?:environ\s*\[\s*["'](?:GIT_DIR|GIT_WORK_TREE)["']\s*\]\s*=|putenv\s*\(\s*["'](?:GIT_DIR|GIT_WORK_TREE)["'])/iu.test(source) ||
+    /(?:^|[;&\r\n])\s*set\s+(?:GIT_DIR|GIT_WORK_TREE)=/iu.test(source) ||
+    hasRuntimeGitEnvironmentMutation(source) ||
+    hasDynamicPowerShellGitEnvironmentMutation(source);
+}
+
+function hasPersistentGitHubTargetMutation(command) {
+  const source = String(command || "");
+  return /(?:^|[;&\r\n])\s*(?:export|declare|typeset|local)\s+(?:[-+][A-Za-z]+\s+)*["']?(?:GH_REPO|GH_HOST)(?:=|["']?\b)/iu.test(source) ||
+    /(?:^|[;&\r\n])\s*unset\s+(?:-[A-Za-z]+\s+)*["']?(?:GH_REPO|GH_HOST)\b/iu.test(source) ||
+    /\$env:(?:GH_REPO|GH_HOST)\s*=/iu.test(source) ||
+    /\b(?:Set-Item|si|New-Item|ni|Remove-Item|ri|Clear-Item|cli|Set-Content|sc|Clear-Content|clc)\b[^;&\r\n]*(?:Env:\\?)?(?:GH_REPO|GH_HOST)\b/iu.test(source) ||
+    /\[(?:System\.)?Environment\]\s*::\s*SetEnvironmentVariable\s*\(\s*["'](?:GH_REPO|GH_HOST)["']/iu.test(source) ||
+    /(?:^|[;&\r\n])\s*set\s+(?:GH_REPO|GH_HOST)=/iu.test(source);
+}
+
+function hasRuntimeGitEnvironmentMutation(source) {
+  const text = String(source || "");
+  const gitName = /\b(?:GIT_DIR|GIT_WORK_TREE)\b/iu;
+  const environmentNameStates = getRuntimeEnvironmentMutationNameStates(text);
+  if (environmentNameStates.hasGit || environmentNameStates.hasUnresolved) {
+    return true;
+  }
+  const constructedGitName = hasConstructedGitEnvironmentName(text);
+  const escapedEnvironmentAlias = /\bfunction\b[^{};]*\{[^{};]*\b([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*process\.env[^{};]*\}[\s\S]{0,1024}\b\1\s*\[\s*["'](?:GIT_DIR|GIT_WORK_TREE)["']\s*\]\s*=/iu.test(text);
+  if (escapedEnvironmentAlias) {
+    return true;
+  }
+  const nodeMutation = /\b(?:delete\s+)?process\.env\s*\[[^\]]+\]\s*(?:=|\+\+|--)/iu.test(text) ||
+    /\b(?:Object\.(?:assign|defineProperty)|Reflect\.(?:set|deleteProperty))\s*\(\s*process\.env\b/iu.test(text) ||
+    /\bprocess\.env\s*=\s*\{/iu.test(text);
+  const pythonMutation = /\bos\.environ\s*\[[^\]]+\]\s*=/iu.test(text) ||
+    /\bos\.environ\.(?:update|setdefault|pop|__setitem__|__delitem__)\s*\(/iu.test(text) ||
+    /\bos\.(?:putenv|unsetenv)\s*\(/iu.test(text);
+  if (constructedGitName && (nodeMutation || pythonMutation)) {
+    return true;
+  }
+  if (/\b(?:delete\s+process\.env(?:\.(?:GIT_DIR|GIT_WORK_TREE)|\[\s*["'](?:GIT_DIR|GIT_WORK_TREE)["']\s*\])|process\.env\s*=\s*\{[\s\S]{0,1024}\b(?:GIT_DIR|GIT_WORK_TREE)\b)/iu.test(text)) {
+    return true;
+  }
+  if (/\b(?:Object\.(?:assign|defineProperty)|Reflect\.(?:set|deleteProperty))\s*\(\s*process\.env\b[\s\S]{0,1024}\b(?:GIT_DIR|GIT_WORK_TREE)\b/iu.test(text)) {
+    return true;
+  }
+  if (/\bos\.environ\.(?:update|setdefault|pop|__setitem__|__delitem__)\s*\([^)]*\b(?:GIT_DIR|GIT_WORK_TREE)\b/iu.test(text) ||
+      /\b(?:del\s+os\.environ\s*\[\s*["'](?:GIT_DIR|GIT_WORK_TREE)["']\s*\]|os\.environ\s*\|=\s*\{[\s\S]{0,1024}\b(?:GIT_DIR|GIT_WORK_TREE)\b|os\.(?:unsetenv|putenv)\s*\(\s*["'](?:GIT_DIR|GIT_WORK_TREE)["'])/iu.test(text)) {
+    return true;
+  }
+  return gitName.test(text) &&
+    (/\b(?:Object\.(?:assign|defineProperty)|Reflect\.(?:set|deleteProperty))\s*\(\s*process\.env\b/iu.test(text) ||
+     /\bos\.environ\.(?:update|setdefault|pop|__setitem__|__delitem__)\s*\(/iu.test(text));
+}
+
+function hasDynamicPowerShellGitEnvironmentMutation(source) {
+  const text = String(source || "");
+  const environmentNameStates = getRuntimeEnvironmentMutationNameStates(text);
+  if (environmentNameStates.hasGit || environmentNameStates.hasUnresolved) {
+    return true;
+  }
+  if (!/\b(?:GIT_DIR|GIT_WORK_TREE)\b/iu.test(text) && !hasConstructedGitEnvironmentName(text)) {
+    return false;
+  }
+  const dynamicProviderMutation = /\b(?:Set-Item|si|New-Item|ni|Remove-Item|ri|Clear-Item|cli|Set-Content|sc|Clear-Content|clc|Move-Item|mi|Rename-Item|rni|Copy-Item|ci)\b[^;\r\n]*(?:["']Env:|Env:\\?)[^;\r\n]*(?:\$|\+|-f\b|\[)/iu;
+  const dynamicDotNetMutation = /\[(?:System\.)?Environment\]\s*::\s*SetEnvironmentVariable\s*\(\s*(?!["'](?:GIT_DIR|GIT_WORK_TREE)["'])[^,]+,/iu;
+  return dynamicProviderMutation.test(text) || dynamicDotNetMutation.test(text);
+}
+
+function hasUnresolvedChildProcessGitTarget(command) {
+  const source = String(command || "");
+  const hasGatedGit = /\bgit(?:\.exe)?\b[\s\S]*\b(?:commit|merge|push|update-ref|branch|tag)\b/iu.test(source) ||
+    hasDynamicInterpreterGitSubcommand(source);
+  if (!hasGatedGit) {
+    return false;
+  }
+  return hasNodeChildProcessTargetMetadata(source) ||
+    hasPythonChildProcessTargetMetadata(source) ||
+    /\b(?:Start-Process|saps|start)\b[^;\r\n]*-Envir(?:onment|onmentVariables)?\b/iu.test(source);
+}
+
+function hasNodeChildProcessTargetMetadata(source) {
+  for (const call of getNodeChildProcessCalls(source)) {
+    const openIndex = call.openIndex;
+    const callBody = getBalancedCallBody(source, openIndex);
+    if (callBody === null) {
+      return true;
+    }
+    const args = splitTopLevelCallArguments(callBody);
+    for (const argument of args.slice(1)) {
+      const value = stripLeadingCallComments(argument);
+      if (!value || value === "undefined" || value === "null" || value.startsWith("[") || /^(?:function\b|\(?[A-Za-z_$][A-Za-z0-9_$,\s]*\)?\s*=>)/u.test(value)) {
+        continue;
+      }
+      if (value.startsWith("{")) {
+        const structuralValue = stripJavaScriptRegexLiterals(value);
+        if (/\.\.\./u.test(structuralValue) || /\[\s*(?!["'](?:cwd|env)["']\s*\])/iu.test(structuralValue) ||
+            /(?:^|[,{]\s*)(?:cwd|env|["'](?:cwd|env)["']|\[\s*["'](?:cwd|env)["']\s*\])\s*(?::|,|\})/iu.test(structuralValue)) {
+          return true;
+        }
+        continue;
+      }
+      if (/^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(value)) {
+        return true;
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
+function hasPythonChildProcessTargetMetadata(source) {
+  for (const call of getPythonProcessCalls(source)) {
+    const openIndex = call.openIndex;
+    const callBody = getBalancedCallBody(source, openIndex);
+    if (callBody === null) {
+      return true;
+    }
+    const args = splitTopLevelCallArguments(callBody);
+    if (normalizeAgentValue(call.method) === "popen") {
+      for (const index of [9, 10]) {
+        const positionalTarget = String(args[index] || "").trim();
+        if (positionalTarget && !/^(?:None|null)$/iu.test(positionalTarget)) {
+          return true;
+        }
+      }
+    }
+    for (const argument of args.slice(1)) {
+      const value = stripLeadingCallComments(argument);
+      if (/^(?:cwd|env)\s*=/iu.test(value) || value.startsWith("**")) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function getBalancedCallBody(source, openIndex) {
+  const value = String(source || "");
+  if (value[openIndex] !== "(") {
+    return null;
+  }
+  let quote = "";
+  let escaped = false;
+  let lineComment = false;
+  let blockComment = false;
+  let regexLiteral = false;
+  let regexCharacterClass = false;
+  let regexEscaped = false;
+  let depth = 1;
+  for (let index = openIndex + 1; index < value.length; index += 1) {
+    const char = value[index];
+    const next = value[index + 1] || "";
+    if (lineComment) {
+      if (char === "\n" || char === "\r") lineComment = false;
+      continue;
+    }
+    if (blockComment) {
+      if (char === "*" && next === "/") {
+        blockComment = false;
+        index += 1;
+      }
+      continue;
+    }
+    if (regexLiteral) {
+      if (regexEscaped) {
+        regexEscaped = false;
+      } else if (char === "\\") {
+        regexEscaped = true;
+      } else if (char === "[" && !regexCharacterClass) {
+        regexCharacterClass = true;
+      } else if (char === "]" && regexCharacterClass) {
+        regexCharacterClass = false;
+      } else if (char === "/" && !regexCharacterClass) {
+        regexLiteral = false;
+      } else if (char === "\n" || char === "\r") {
+        return null;
+      }
+      continue;
+    }
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (quote) {
+      if (char === "\\") {
+        escaped = true;
+      } else if (char === quote) {
+        quote = "";
+      }
+      continue;
+    }
+    if (["'", '"', "`"].includes(char)) {
+      quote = char;
+      continue;
+    }
+    if (char === "/" && next !== "/" && next !== "*" && isJavaScriptRegexLiteralStart(value, index, openIndex + 1)) {
+      regexLiteral = true;
+      regexCharacterClass = false;
+      regexEscaped = false;
+      continue;
+    }
+    if (char === "/" && next === "*") {
+      blockComment = true;
+      index += 1;
+      continue;
+    }
+    if ((char === "/" && next === "/") || char === "#") {
+      lineComment = true;
+      if (char === "/") index += 1;
+      continue;
+    }
+    if (char === "(") {
+      depth += 1;
+    } else if (char === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        return value.slice(openIndex + 1, index);
+      }
+    }
+  }
+  return null;
+}
+
+function stripLeadingCallComments(value) {
+  let result = String(value || "").trim();
+  let previous = "";
+  while (result !== previous) {
+    previous = result;
+    result = result
+      .replace(/^\/\*[\s\S]*?\*\/\s*/u, "")
+      .replace(/^\/\/[^\r\n]*(?:\r?\n|$)\s*/u, "")
+      .replace(/^#[^\r\n]*(?:\r?\n|$)\s*/u, "");
+  }
+  return result;
+}
+
+function splitTopLevelCallArguments(callBody) {
+  const source = String(callBody || "");
+  const result = [];
+  let start = 0;
+  let quote = "";
+  let escaped = false;
+  let lineComment = false;
+  let blockComment = false;
+  let regexLiteral = false;
+  let regexCharacterClass = false;
+  let regexEscaped = false;
+  let roundDepth = 0;
+  let squareDepth = 0;
+  let braceDepth = 0;
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    const next = source[index + 1] || "";
+    if (lineComment) {
+      if (char === "\n" || char === "\r") lineComment = false;
+      continue;
+    }
+    if (blockComment) {
+      if (char === "*" && next === "/") {
+        blockComment = false;
+        index += 1;
+      }
+      continue;
+    }
+    if (regexLiteral) {
+      if (regexEscaped) {
+        regexEscaped = false;
+      } else if (char === "\\") {
+        regexEscaped = true;
+      } else if (char === "[" && !regexCharacterClass) {
+        regexCharacterClass = true;
+      } else if (char === "]" && regexCharacterClass) {
+        regexCharacterClass = false;
+      } else if (char === "/" && !regexCharacterClass) {
+        regexLiteral = false;
+      }
+      continue;
+    }
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (quote) {
+      if (char === "\\") {
+        escaped = true;
+      } else if (char === quote) {
+        quote = "";
+      }
+      continue;
+    }
+    if (["'", '"', "`"].includes(char)) {
+      quote = char;
+      continue;
+    }
+    if (char === "/" && next !== "/" && next !== "*" && isJavaScriptRegexLiteralStart(source, index, 0)) {
+      regexLiteral = true;
+      regexCharacterClass = false;
+      regexEscaped = false;
+      continue;
+    }
+    if (char === "/" && next === "*") {
+      blockComment = true;
+      index += 1;
+      continue;
+    }
+    if ((char === "/" && next === "/") || char === "#") {
+      lineComment = true;
+      if (char === "/") index += 1;
+      continue;
+    }
+    if (char === "(") roundDepth += 1;
+    else if (char === ")") roundDepth = Math.max(0, roundDepth - 1);
+    else if (char === "[") squareDepth += 1;
+    else if (char === "]") squareDepth = Math.max(0, squareDepth - 1);
+    else if (char === "{") braceDepth += 1;
+    else if (char === "}") braceDepth = Math.max(0, braceDepth - 1);
+    else if (char === "," && roundDepth === 0 && squareDepth === 0 && braceDepth === 0) {
+      result.push(source.slice(start, index).trim());
+      start = index + 1;
+    }
+  }
+  result.push(source.slice(start).trim());
+  return result;
+}
+
+function isJavaScriptRegexLiteralStart(source, index, lowerBound = 0) {
+  const value = String(source || "");
+  let cursor = index - 1;
+  while (cursor >= lowerBound && /\s/u.test(value[cursor])) {
+    cursor -= 1;
+  }
+  if (cursor < lowerBound) {
+    return true;
+  }
+  const previous = value[cursor];
+  if ("([{=,:;!?&|+-*%^~<>".includes(previous)) {
+    return true;
+  }
+  const prefix = value.slice(lowerBound, cursor + 1);
+  return /(?:^|[^A-Za-z0-9_$])(?:return|throw|case|delete|void|typeof|instanceof|in|of|yield|await)\s*$/u.test(prefix);
+}
+
+function stripJavaScriptRegexLiterals(source) {
+  const value = String(source || "");
+  const output = [...value];
+  let quote = "";
+  let escaped = false;
+  let regexLiteral = false;
+  let regexCharacterClass = false;
+  let regexEscaped = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    const next = value[index + 1] || "";
+    if (regexLiteral) {
+      output[index] = " ";
+      if (regexEscaped) {
+        regexEscaped = false;
+      } else if (char === "\\") {
+        regexEscaped = true;
+      } else if (char === "[" && !regexCharacterClass) {
+        regexCharacterClass = true;
+      } else if (char === "]" && regexCharacterClass) {
+        regexCharacterClass = false;
+      } else if (char === "/" && !regexCharacterClass) {
+        regexLiteral = false;
+        while (/[A-Za-z]/u.test(value[index + 1] || "")) {
+          index += 1;
+          output[index] = " ";
+        }
+      }
+      continue;
+    }
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (quote) {
+      if (char === "\\") escaped = true;
+      else if (char === quote) quote = "";
+      continue;
+    }
+    if (["'", '"', "`"].includes(char)) {
+      quote = char;
+      continue;
+    }
+    if (char === "/" && next !== "/" && next !== "*" && isJavaScriptRegexLiteralStart(value, index, 0)) {
+      regexLiteral = true;
+      regexCharacterClass = false;
+      regexEscaped = false;
+      output[index] = " ";
+    }
+  }
+  return output.join("");
+}
+
+function hasConditionalCwdChangeBoundary(commandSegment) {
+  return commandSegment?.separatorBefore === "&&" ||
+         commandSegment?.separatorBefore === "||" ||
+         commandSegment?.separatorAfter === "||" ||
+         commandSegment?.separatorAfter === "&";
+}
+
+function getEffectiveEnvironmentValue(tokens, requestedName) {
+  const normalizedName = String(requestedName || "").toUpperCase();
+  let value = Object.entries(process.env)
+    .find(([name]) => name.toUpperCase() === normalizedName)?.[1] || "";
+  let specified = false;
+  let index = 0;
+  const applyAssignment = (token) => {
+    const assignment = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/u.exec(stripOuterQuotes(token));
+    if (!assignment) return false;
+    if (assignment[1].toUpperCase() === normalizedName) {
+      value = stripOuterQuotes(assignment[2]);
+      specified = true;
+    }
+    return true;
+  };
+  while (index < tokens.length && applyAssignment(tokens[index])) index += 1;
+  const executable = normalizeAgentValue(getExecutableBasename(tokens[index] || ""));
+  if (executable !== "env" && executable !== "env.exe") {
+    return { value, unresolved: false, specified };
+  }
+  index += 1;
+  while (index < tokens.length) {
+    const token = stripOuterQuotes(tokens[index]);
+    const normalized = normalizeAgentValue(token);
+    if (applyAssignment(token)) {
+      index += 1;
+      continue;
+    }
+    const shortOptions = parseEnvShortOptionCluster(token);
+    if (shortOptions) {
+      if (shortOptions.ignoreEnvironment) {
+        value = "";
+        specified = true;
+      }
+      const optionValue = shortOptions.value || stripOuterQuotes(tokens[index + 1] || "");
+      const consumed = shortOptions.value ? 1 : 2;
+      if (shortOptions.valueOption === "U") {
+        if (!optionValue) return { value, unresolved: true };
+        if (optionValue.toUpperCase() === normalizedName) {
+          value = "";
+          specified = true;
+        }
+        index += consumed;
+        continue;
+      }
+      if (shortOptions.valueOption === "C") {
+        if (!optionValue) return { value, unresolved: true };
+        index += consumed;
+        continue;
+      }
+      if (shortOptions.valueOption === "S") return { value, unresolved: true };
+      index += 1;
+      continue;
+    }
+    if (normalized === "-i" || normalized === "--ignore-environment" || normalized === "-") {
+      value = "";
+      specified = true;
+      index += 1;
+      continue;
+    }
+    if (normalized === "-u" || normalized === "--unset") {
+      const unsetName = stripOuterQuotes(tokens[index + 1] || "").toUpperCase();
+      if (!unsetName) return { value, unresolved: true };
+      if (unsetName === normalizedName) {
+        value = "";
+        specified = true;
+      }
+      index += 2;
+      continue;
+    }
+    if (normalized.startsWith("--unset=")) {
+      if (token.slice(token.indexOf("=") + 1).toUpperCase() === normalizedName) {
+        value = "";
+        specified = true;
+      }
+      index += 1;
+      continue;
+    }
+    if (normalized === "-c" || normalized === "--chdir") {
+      if (index + 1 >= tokens.length) return { value, unresolved: true };
+      index += 2;
+      continue;
+    }
+    if (normalized.startsWith("--chdir=") || (normalized.startsWith("-c") && normalized.length > 2) ||
+        normalized === "-0" || normalized === "--null" || normalized === "-v" || normalized === "--debug" ||
+        normalized === "--list-signal-handling" || normalized.startsWith("--block-signal=") ||
+        normalized.startsWith("--default-signal=") || normalized.startsWith("--ignore-signal=")) {
+      index += 1;
+      continue;
+    }
+    if (normalized === "-s" || normalized === "--split-string" || normalized.startsWith("--split-string=") ||
+        (normalized.startsWith("-s") && normalized.length > 2)) {
+      return { value, unresolved: true };
+    }
+    if (token.startsWith("-")) return { value, unresolved: true };
+    break;
+  }
+  return { value, unresolved: false, specified };
+}
+
+function getShellCwdChange(segment, baseCwd) {
+  const normalizedSegment = unwrapPowerShellCommandWrapper(segment);
+  const stages = splitCommandPipelineStages(normalizedSegment);
+  if (stages.length !== 1) {
+    return { state: "none", target: "", controlFlowPrefixed: false };
+  }
+
+  const originalTokens = tokenizeCommandLine(stages[0]);
+  const effectiveCdPath = getEffectiveEnvironmentValue(originalTokens, "CDPATH");
+  const effectiveHome = getEffectiveEnvironmentValue(originalTokens, "HOME");
+  let rawTokens = stripInlineEnvironmentPrefixes(originalTokens);
+  let negated = false;
+  if (normalizeAgentValue(stripOuterQuotes(rawTokens[0] || "")) === "!") {
+    rawTokens = rawTokens.slice(1);
+    negated = true;
+  }
+  const controlFlowPrefixed = hasShellControlFlowPrefix(rawTokens);
+  const tokens = stripShellCommandBuiltinPrefixes(stripShellControlFlowPrefixes(rawTokens));
+  if (tokens.length === 0) {
+    return { state: "none", target: "", controlFlowPrefixed };
+  }
+
+  const executable = normalizeAgentValue(getExecutableBasename(tokens[0]));
+  if (!["cd", "chdir", "pushd", "set-location", "sl", "push-location"].includes(executable)) {
+    if (["popd", "pop-location"].includes(executable)) {
+      return { state: "ambiguous", target: "\0unresolved-cwd-change", controlFlowPrefixed };
+    }
+    const containsNestedCwdChange = rawTokens.some((token) =>
+      ["cd", "chdir", "pushd", "set-location", "sl", "push-location", "popd", "pop-location"]
+        .includes(normalizeAgentValue(getExecutableBasename(token))));
+    return containsNestedCwdChange
+      ? { state: "ambiguous", target: "\0unresolved-cwd-change", controlFlowPrefixed: true }
+      : { state: "none", target: "", controlFlowPrefixed };
+  }
+
+  const target = getShellCwdChangeArgument(tokens, effectiveHome, executable);
+  if (!target || target.includes("\0")) {
+    return { state: "ambiguous", target: "\0unresolved-cwd-change", controlFlowPrefixed };
+  }
+  const isPosixBareRelativeTarget = !path.isAbsolute(target) &&
+    !/^[A-Za-z]:[\\/]/u.test(target) &&
+    !target.startsWith("./") && !target.startsWith(".\\") &&
+    !target.startsWith("../") && !target.startsWith("..\\");
+  if (isPosixBareRelativeTarget && (effectiveCdPath.unresolved || effectiveCdPath.value)) {
+    return { state: "ambiguous", target: "\0unresolved-cdpath-change", controlFlowPrefixed };
+  }
+
+  return {
+    state: "resolved",
+    target: resolveGitCwdOption(baseCwd || process.cwd(), "", target) || "\0unresolved-cwd-change",
+    controlFlowPrefixed: negated ? false : controlFlowPrefixed,
+  };
+}
+
+function getShellCwdChangeArgument(tokens, effectiveHome, executable = "") {
+  let optionsTerminated = false;
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = stripOuterQuotes(tokens[index]);
+    const normalizedToken = normalizeAgentValue(token);
+    if (!optionsTerminated && normalizedToken === "--") {
+      optionsTerminated = true;
+      continue;
+    }
+
+    if (token === "-") {
+      return "\0unresolved-cwd-change";
+    }
+
+    if (!optionsTerminated && normalizedToken === "/d") {
+      continue;
+    }
+
+    if (!optionsTerminated && (normalizedToken === "-path" ||
+        normalizedToken === "-literalpath" ||
+        normalizedToken === "-pspath")) {
+      return index + 1 < tokens.length ? stripOuterQuotes(tokens[index + 1]) : "";
+    }
+
+    if (!optionsTerminated && (normalizedToken.startsWith("-path:") ||
+        normalizedToken.startsWith("-literalpath:") ||
+        normalizedToken.startsWith("-pspath:"))) {
+      return token.slice(token.indexOf(":") + 1);
+    }
+
+    if (!optionsTerminated && token.startsWith("-")) {
+      const safePosixCdOption = ["cd", "chdir"].includes(executable) &&
+        /^-(?:[LPe@]+)$/u.test(token);
+      if (safePosixCdOption) {
+        continue;
+      }
+      return "\0unresolved-cwd-change";
+    }
+
+    return token;
+  }
+
+  if (!effectiveHome || effectiveHome.unresolved || !effectiveHome.value) {
+    return "\0unresolved-cwd-change";
+  }
+  return effectiveHome.value;
+}
+
+function hasUnparsedBaseScopedReviewGatedCommand(command, parsedSeparatedFunctionWrapper = false, parsedXargsWrapper = false) {
+  return hasPowerShellGitAliasLifecycleCommand(command, true, { includeFunctionCommands: false }) ||
+         (!parsedXargsWrapper && hasXargsGitLifecycleCommand(command, true)) ||
+         (!parsedSeparatedFunctionWrapper && hasShellFunctionLifecycleCommand(command, true)) ||
+         hasPowerShellFunctionLifecycleCommand(command, true) ||
+         hasControlFlowReviewGatedCommand(command) ||
+         (!parsedSeparatedFunctionWrapper && hasSeparatedShellFunctionReviewLifecycleCommand(command)) ||
+         hasSeparatedPowerShellFunctionReviewLifecycleCommand(command);
+}
+
+function hasControlFlowReviewGatedCommand(command) {
+  const source = String(command || "");
+  for (const segment of splitCommandSegments(source)) {
+    for (const stage of splitCommandPipelineStages(segment)) {
+      const normalizedStage = unwrapShellGroupingWrapper(unwrapPowerShellCommandWrapper(stage));
+      const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(normalizedStage));
+      if (!tokens.some((token) => isShellControlFlowToken(token))) {
+        continue;
+      }
+
+      if (hasControlFlowLifecycleTokens(tokens)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function getPowerShellNestedCommand(tokens) {
+  const plainCommand = getOptionRemainderValue(tokens, ["-command", "-c", "-commandwithargs", "-cwa"]);
+  if (plainCommand) {
+    return plainCommand;
+  }
+
+  const encodedOptionPrefixes = expandPowerShellOptionPrefixes(["-encodedcommand"]);
+  for (let index = 1; index < tokens.length; index += 1) {
+    const rawToken = stripOuterQuotes(tokens[index]);
+    const normalizedToken = normalizeAgentValue(rawToken);
+    let encodedValue = "";
+    if (encodedOptionPrefixes.includes(normalizedToken) && index + 1 < tokens.length) {
+      encodedValue = stripOuterQuotes(tokens[index + 1]);
+    } else {
+      for (const optionName of encodedOptionPrefixes) {
+        if (normalizedToken.startsWith(optionName + "=") || normalizedToken.startsWith(optionName + ":")) {
+          encodedValue = rawToken.slice(optionName.length + 1);
+          break;
+        }
+      }
+    }
+
+    if (!encodedValue || !/^[A-Za-z0-9+/]+={0,2}$/u.test(encodedValue)) {
+      continue;
+    }
+    try {
+      return Buffer.from(encodedValue, "base64").toString("utf16le").replace(/^\uFEFF/u, "");
+    } catch {
+      return "";
+    }
+  }
+
+  return "";
+}
+
+function getPowerShellInitialWorkingDirectory(tokens, executable) {
+  if (executable !== "pwsh" && executable !== "pwsh.exe") {
+    return "";
+  }
+  const optionNames = [
+    ...expandPowerShellOptionPrefixes(["-workingdirectory"]).filter((optionName) => optionName.length >= 3),
+    "-wd",
+  ];
+  const nestedOptionNames = expandPowerShellOptionPrefixes([
+    "-command",
+    "-c",
+    "-commandwithargs",
+    "-cwa",
+    "-encodedcommand",
+  ]);
+  for (let index = 1; index < tokens.length; index += 1) {
+    const rawToken = stripOuterQuotes(tokens[index]);
+    const normalizedToken = normalizeAgentValue(rawToken);
+    if (nestedOptionNames.includes(normalizedToken) || nestedOptionNames.some((optionName) =>
+      normalizedToken.startsWith(optionName + "=") || normalizedToken.startsWith(optionName + ":"))) {
+      break;
+    }
+    if (optionNames.includes(normalizedToken)) {
+      return index + 1 < tokens.length
+        ? stripOuterQuotes(tokens[index + 1])
+        : "\0unresolved-powershell-working-directory";
+    }
+  }
+
+  return "";
+}
+
+function getPowerShellWrapperPrefixTokens(tokens) {
+  const nestedOptionPrefixes = expandPowerShellOptionPrefixes([
+    "-command",
+    "-c",
+    "-commandwithargs",
+    "-cwa",
+    "-encodedcommand",
+  ]);
+  for (let index = 1; index < tokens.length; index += 1) {
+    const normalizedToken = normalizeAgentValue(stripOuterQuotes(tokens[index]));
+    if (nestedOptionPrefixes.includes(normalizedToken)) {
+      return tokens.slice(0, index);
+    }
+    if (nestedOptionPrefixes.some((optionName) =>
+      normalizedToken.startsWith(optionName + "=") || normalizedToken.startsWith(optionName + ":"))) {
+      return tokens.slice(0, index);
+    }
+  }
+  return tokens;
+}
+
+function getBraceBlockBodies(command) {
+  const source = String(command || "");
+  const bodies = [];
+  const stack = [];
+  let quote = "";
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    if (quote) {
+      if (isShellQuoteTerminator(source, index, quote)) {
+        quote = "";
+      }
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = getShellQuoteMode(source, index, char);
+      continue;
+    }
+    if (char === "{") {
+      stack.push(index + 1);
+      continue;
+    }
+    if (char === "}" && stack.length > 0) {
+      const start = stack.pop();
+      if (stack.length === 0 && start < index) {
+        bodies.push(source.slice(start, index).trim());
+      }
+    }
+  }
+  return bodies.filter(Boolean);
+}
+
+function hasControlFlowLifecycleTokens(tokens) {
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (!isAfterControlFlowExecutionBoundary(tokens, index)) {
+      continue;
+    }
+
+    const effectiveTokens = stripShellCommandBuiltinPrefixes(stripInlineEnvironmentPrefixes(tokens.slice(index)));
+    if (effectiveTokens.length === 0) {
+      continue;
+    }
+
+    const executable = stripOuterQuotes(effectiveTokens[0]);
+    if (isGitExecutableToken(executable)) {
+      const gitSubcommandIndex = findGitSubcommandIndex(effectiveTokens);
+      if (gitSubcommandIndex >= 0) {
+        const gitSubcommand = getGitSubcommandName(effectiveTokens, gitSubcommandIndex);
+        if (gitSubcommand === "commit" || gitSubcommand === "merge") {
+          return true;
+        }
+      }
+    }
+
+    if (isGhExecutableToken(executable)) {
+      if (isGhPrMergeTokenCommand(effectiveTokens) ||
+          isGhApiMergeCommand(effectiveTokens) ||
+          isGhApiRefWriteCommand(effectiveTokens)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function isAfterControlFlowExecutionBoundary(tokens, index) {
+  const previousToken = getPreviousMeaningfulControlFlowToken(tokens, index);
+  if (!previousToken) {
+    return false;
+  }
+
+  return previousToken === "{" || isShellControlFlowToken(previousToken);
+}
+
+function getPreviousMeaningfulControlFlowToken(tokens, index) {
+  for (let currentIndex = index - 1; currentIndex >= 0; currentIndex -= 1) {
+    const token = normalizeAgentValue(stripOuterQuotes(tokens[currentIndex] || ""));
+    if (!token || token === "(" || token === ")" || token === ";") {
+      continue;
+    }
+
+    return token;
+  }
+
+  return "";
+}
+
+function isShellControlFlowToken(token) {
+  const normalized = normalizeAgentValue(stripOuterQuotes(token || "")).replace(/^[()]+|[()]+$/gu, "");
+  return [
+    "if",
+    "then",
+    "else",
+    "elif",
+    "while",
+    "until",
+    "for",
+    "do",
+    "case",
+    "try",
+    "catch",
+    "finally",
+    "switch",
+    "foreach",
+  ].includes(normalized);
+}
+
+function hasShellControlFlowPrefix(tokens) {
+  for (const token of tokens) {
+    const normalized = normalizeAgentValue(stripOuterQuotes(token || ""));
+    if (!normalized) {
+      continue;
+    }
+
+    return normalized === "{" || isShellControlFlowToken(normalized);
+  }
+
+  return false;
+}
+
+function getShellControlFlowBoundary(segment) {
+  const normalizedSegment = unwrapPowerShellCommandWrapper(segment);
+  const stages = splitCommandPipelineStages(normalizedSegment);
+  if (stages.length !== 1) {
+    return "";
+  }
+
+  const tokens = stripShellCommandBuiltinPrefixes(stripInlineEnvironmentPrefixes(tokenizeCommandLine(stages[0])));
+  for (const token of tokens) {
+    const normalized = normalizeAgentValue(stripOuterQuotes(token || "")).replace(/^[()]+|[()]+$/gu, "");
+    if (!normalized || normalized === "{" || normalized === "}") {
+      continue;
+    }
+
+    if (["else", "elif", "catch", "finally"].includes(normalized)) {
+      return "branch";
+    }
+
+    if (["fi", "done", "esac"].includes(normalized)) {
+      return "end";
+    }
+
+    return "";
+  }
+
+  return "";
+}
+
+function getShellControlFlowDepthChange(segment) {
+  const normalizedSegment = unwrapPowerShellCommandWrapper(segment);
+  const stages = splitCommandPipelineStages(normalizedSegment);
+  if (stages.length !== 1) {
+    return 0;
+  }
+
+  const tokens = stripShellCommandBuiltinPrefixes(stripInlineEnvironmentPrefixes(tokenizeCommandLine(stages[0])));
+  let sawControlFlowPrefix = false;
+  let depthChange = 0;
+  for (const token of tokens) {
+    const normalized = normalizeAgentValue(stripOuterQuotes(token || "")).replace(/^[()]+|[()]+$/gu, "");
+    if (!normalized || normalized === "{" || normalized === "}") {
+      continue;
+    }
+
+    if (!sawControlFlowPrefix) {
+      if (!isShellControlFlowToken(normalized) && !isShellControlFlowEndToken(normalized)) {
+        return 0;
+      }
+      sawControlFlowPrefix = true;
+    }
+
+    if (["if", "while", "until", "for", "case"].includes(normalized)) {
+      depthChange += 1;
+    } else if (isShellControlFlowEndToken(normalized)) {
+      depthChange -= 1;
+    }
+  }
+
+  return depthChange;
+}
+
+function isShellControlFlowEndToken(token) {
+  const normalized = normalizeAgentValue(stripOuterQuotes(token || "")).replace(/^[()]+|[()]+$/gu, "");
+  return ["fi", "done", "esac"].includes(normalized);
+}
+
+function getShellControlFlowExecutionState(stack) {
+  if (!Array.isArray(stack) || stack.length === 0) {
+    return "active";
+  }
+
+  const states = stack.map((frame) => typeof frame === "string" ? frame : frame?.state || "unknown");
+  if (states.includes("inactive")) {
+    return "inactive";
+  }
+
+  if (states.includes("unknown")) {
+    return "unknown";
+  }
+
+  return "active";
+}
+
+function updateShellControlFlowBranchExecution(stack, segment, separatorAfter = "") {
+  if (!Array.isArray(stack) || stack.length === 0) {
+    return;
+  }
+
+  const branchToken = getShellControlFlowBranchToken(segment);
+  const current = stack[stack.length - 1];
+  const frame = typeof current === "string"
+    ? createShellControlFlowFrame(current)
+    : current;
+  stack[stack.length - 1] = frame;
+
+  if (branchToken === "else") {
+    if (frame.matched === true) {
+      frame.state = "inactive";
+    } else if (frame.matched === false) {
+      frame.state = "active";
+      frame.matched = true;
+    } else {
+      frame.state = "unknown";
+      frame.matched = "unknown";
+    }
+  } else if (branchToken === "elif") {
+    if (frame.matched === true) {
+      frame.state = "inactive";
+    } else if (frame.matched === false) {
+      frame.state = isCompoundShellConditionContinuation(separatorAfter)
+        ? "unknown"
+        : getShellControlFlowConditionState(segment, "elif");
+      frame.matched = frame.state === "active" ? true : frame.state === "inactive" ? false : "unknown";
+    } else {
+      frame.state = "unknown";
+      frame.matched = "unknown";
+    }
+  } else {
+    frame.state = "unknown";
+    frame.matched = "unknown";
+  }
+}
+
+function updateShellControlFlowDepthExecution(stack, segment, separatorAfter = "") {
+  if (!Array.isArray(stack)) {
+    return;
+  }
+
+  for (const action of getShellControlFlowExecutionActions(segment, separatorAfter)) {
+    if (action.type === "open") {
+      stack.push(createShellControlFlowFrame(action.state));
+    } else if (action.type === "end" && stack.length > 0) {
+      stack.pop();
+    }
+  }
+}
+
+function createShellControlFlowFrame(state) {
+  return {
+    state,
+    matched: state === "active" ? true : state === "inactive" ? false : "unknown",
+  };
+}
+
+function getShellControlFlowExecutionActions(segment, separatorAfter = "") {
+  const normalizedSegment = unwrapPowerShellCommandWrapper(segment);
+  const stages = splitCommandPipelineStages(normalizedSegment);
+  if (stages.length !== 1) {
+    return [];
+  }
+
+  const tokens = stripShellCommandBuiltinPrefixes(stripInlineEnvironmentPrefixes(tokenizeCommandLine(stages[0])));
+  if (!tokensHaveShellControlFlowPrefix(tokens)) {
+    return [];
+  }
+
+  const actions = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const normalized = normalizeAgentValue(stripOuterQuotes(tokens[index] || "")).replace(/^[()]+|[()]+$/gu, "");
+    if (["if", "while", "until", "for", "case"].includes(normalized)) {
+      const state = normalized === "if" && !isCompoundShellConditionContinuation(separatorAfter)
+        ? getShellControlFlowConditionStateFromTokens(tokens, index)
+        : "unknown";
+      actions.push({ type: "open", state });
+    } else if (isShellControlFlowEndToken(normalized)) {
+      actions.push({ type: "end" });
+    }
+  }
+
+  return actions;
+}
+
+function isCompoundShellConditionContinuation(separatorAfter) {
+  return separatorAfter === "&&" || separatorAfter === "||";
+}
+
+function tokensHaveShellControlFlowPrefix(tokens) {
+  for (const token of tokens) {
+    const normalized = normalizeAgentValue(stripOuterQuotes(token || "")).replace(/^[()]+|[()]+$/gu, "");
+    if (!normalized || normalized === "{" || normalized === "}") {
+      continue;
+    }
+
+    return isShellControlFlowToken(normalized) || isShellControlFlowEndToken(normalized);
+  }
+
+  return false;
+}
+
+function getShellControlFlowBranchToken(segment) {
+  const normalizedSegment = unwrapPowerShellCommandWrapper(segment);
+  const stages = splitCommandPipelineStages(normalizedSegment);
+  if (stages.length !== 1) {
+    return "";
+  }
+
+  const tokens = stripShellCommandBuiltinPrefixes(stripInlineEnvironmentPrefixes(tokenizeCommandLine(stages[0])));
+  for (const token of tokens) {
+    const normalized = normalizeAgentValue(stripOuterQuotes(token || "")).replace(/^[()]+|[()]+$/gu, "");
+    if (!normalized || normalized === "{" || normalized === "}") {
+      continue;
+    }
+
+    return ["else", "elif", "catch", "finally"].includes(normalized) ? normalized : "";
+  }
+
+  return "";
+}
+
+function getShellControlFlowConditionState(segment, keyword) {
+  const tokens = stripShellCommandBuiltinPrefixes(stripInlineEnvironmentPrefixes(tokenizeCommandLine(unwrapPowerShellCommandWrapper(segment))));
+  const targetKeyword = normalizeAgentValue(keyword || "if");
+  for (let index = 0; index < tokens.length; index += 1) {
+    const normalized = normalizeAgentValue(stripOuterQuotes(tokens[index] || "")).replace(/^[()]+|[()]+$/gu, "");
+    if (normalized === targetKeyword) {
+      return getShellControlFlowConditionStateFromTokens(tokens, index);
+    }
+  }
+
+  return "unknown";
+}
+
+function getShellControlFlowConditionStateFromTokens(tokens, keywordIndex) {
+  for (let index = keywordIndex + 1; index < tokens.length; index += 1) {
+    const normalized = normalizeAgentValue(stripOuterQuotes(tokens[index] || "")).replace(/^[()]+|[()]+$/gu, "");
+    if (!normalized || normalized === "{" || normalized === "}" || normalized === ";") {
+      continue;
+    }
+
+    if (normalized === "true" || normalized === ":") {
+      return "active";
+    }
+    if (normalized === "false") {
+      return "inactive";
+    }
+    return "unknown";
+  }
+
+  return "unknown";
+}
+
+function stripShellControlFlowPrefixes(tokens) {
+  let index = 0;
+  while (index < tokens.length) {
+    const token = normalizeAgentValue(stripOuterQuotes(tokens[index] || ""));
+    if (token === "{" || isShellControlFlowToken(token)) {
+      index += 1;
+      continue;
+    }
+
+    break;
+  }
+
+  return tokens.slice(index);
+}
+
+function getSeparatedForwardingFunctionDefinitions(command) {
+  const source = String(command || "");
+  const functions = new Map();
+  const functionPattern = /(?:^|[;&])\s*([A-Za-z_][A-Za-z0-9_-]*)\s*\(\)\s*\{([^}]*)\}/giu;
+  const forwardingPattern = /(?:^|[\s;|&])(?:command\s+|exec\s+|builtin\s+)?["']?\$@["']?(?:$|[\s;|&])/u;
+
+  for (const match of source.matchAll(functionPattern)) {
+    const functionName = normalizeAgentValue(match[1] || "");
+    const body = match[2] || "";
+    if (!functionName || !forwardingPattern.test(body) || !/\b(?:git|gh)\b/u.test(body)) {
+      continue;
+    }
+
+    functions.set(functionName, body);
+  }
+
+  return functions;
+}
+
+function getForwardingFunctionInvocationCommand(tokens, functions) {
+  if (!functions || functions.size === 0 || tokens.length === 0) {
+    return "";
+  }
+
+  const commandName = normalizeAgentValue(getExecutableBasename(tokens[0]));
+  const body = functions.get(commandName);
+  if (!body) {
+    return "";
+  }
+
+  const callArguments = tokens.slice(1).join(" ");
+  const nestedCommand = body.replace(/["']?\$@["']?/gu, callArguments).trim();
+  return nestedCommand && isReviewGatedCommand(nestedCommand) ? nestedCommand : "";
+}
+
+function getShellCommandSubstitutionCommands(stage) {
+  const source = String(stage || "");
+  const commands = [];
+  let inSingleQuote = false;
+  for (let index = 0; index < source.length - 1; index += 1) {
+    if (inSingleQuote) {
+      if (source[index] === "'") {
+        inSingleQuote = false;
+      }
+      continue;
+    }
+
+    if (source[index] === "'") {
+      inSingleQuote = true;
+      continue;
+    }
+
+    if (source[index] === "`" && isUnescapedShellMetacharacter(source, index)) {
+      let depthIndex = index + 1;
+      let command = "";
+      while (depthIndex < source.length) {
+        if (source[depthIndex] === "`" && isUnescapedShellMetacharacter(source, depthIndex)) {
+          break;
+        }
+
+        command += source[depthIndex];
+        depthIndex += 1;
+      }
+
+      if (depthIndex < source.length && command.trim()) {
+        commands.push(command.trim());
+        index = depthIndex;
+      }
+      continue;
+    }
+
+    if (source[index] !== "$" || source[index + 1] !== "(") {
+      continue;
+    }
+
+    const parsed = readBalancedShellCommandSubstitution(source, index + 2);
+    if (parsed.command.trim() !== "") {
+      commands.push(parsed.command.trim());
+    }
+    index = parsed.endIndex;
+  }
+
+  return commands;
+}
+
+function isUnescapedShellMetacharacter(source, index) {
+  let backslashCount = 0;
+  for (let cursor = index - 1; cursor >= 0 && source[cursor] === "\\"; cursor -= 1) {
+    backslashCount += 1;
+  }
+  return backslashCount % 2 === 0;
+}
+
+function readPowerShellExecutableExpression(source, startIndex) {
+  let start = startIndex;
+  while (/\s/u.test(source[start] || "")) {
+    start += 1;
+  }
+  if (source[start] === "(") {
+    const body = getBalancedCallBody(source, start);
+    if (body === null) {
+      return null;
+    }
+    let end = start + body.length + 2;
+    const valueMember = /^\.Value\b/iu.exec(source.slice(end));
+    if (valueMember) {
+      end += valueMember[0].length;
+    }
+    return { start, end, expression: source.slice(start, end) };
+  }
+  const variable = /^\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)(?:\.Value)?/u.exec(source.slice(start));
+  if (variable) {
+    return { start, end: start + variable[0].length, expression: variable[0] };
+  }
+  const quoted = /^(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/u.exec(source.slice(start));
+  if (quoted) {
+    return { start, end: start + quoted[0].length, expression: quoted[0] };
+  }
+  const token = /^[^\s;|&]+/u.exec(source.slice(start));
+  return token ? { start, end: start + token[0].length, expression: token[0] } : null;
+}
+
+function materializePowerShellComSpecAliases(command) {
+  let source = String(command || "")
+    .replace(/\[(?:System\.)?Environment\]\s*::\s*GetEnvironmentVariable\s*\(\s*['"]ComSpec['"]\s*\)/giu, "$env:ComSpec");
+  const replacements = [];
+  const scopes = buildFunctionScopeIndex(source);
+  for (const match of source.matchAll(/\b(?:Start-Process|saps|start)\b\s+(?:-(?:FilePath|File)\s+)?/giu)) {
+    const callIndex = match.index || 0;
+    const executableReference = readPowerShellExecutableExpression(source, callIndex + match[0].length);
+    if (!executableReference) {
+      continue;
+    }
+    const assignments = getConstantStringAssignments(source, callIndex);
+    let executable = evaluateStaticStringExpression(executableReference.expression, assignments);
+    const variable = /^\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))(?:\.Value)?$/u.exec(executableReference.expression);
+    if (variable) {
+      const event = getLatestScopedPowerShellAssignmentEvent(source, variable[1] || variable[2], callIndex, scopes);
+      if (event) {
+        executable = evaluateStaticStringExpression(event.expression, new Map());
+      }
+    }
+    if (executable === "\0winsmux-comspec") {
+      replacements.push({ ...executableReference, value: "$env:ComSpec" });
+    } else if (typeof executable === "string" && /^[A-Za-z0-9._:\\/ -]+$/u.test(executable) && !/\s/u.test(executable)) {
+      replacements.push({ ...executableReference, value: executable });
+    }
+  }
+  for (const replacement of replacements.sort((left, right) => right.start - left.start)) {
+    source = `${source.slice(0, replacement.start)}${replacement.value}${source.slice(replacement.end)}`;
+  }
+  return source;
+}
+
+function materializeConstantExecutableSubstitutions(command) {
+  let source = String(command || "")
+    .replace(/\$\(\s*(?:echo|printf(?:\s+['"]?%s['"]?)?)\s+['"]?(git|codex)['"]?\s*\)/giu, "$1")
+    .replace(/`\s*(?:echo|printf(?:\s+['"]?%s['"]?)?)\s+['"]?(git|codex)['"]?\s*`/giu, "$1");
+
+  const assignments = new Map();
+  const assignmentPattern = /(?:^|[;&\r\n])\s*(?:(?:export|readonly|declare|typeset|local)\s+(?:[-+][A-Za-z]+\s+)*)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(['"]?)(?:[^\s;&"'=]*[\\/])?(git|gh|codex)(?:\.exe)?\2(?=\s|[;&\r\n]|$)/giu;
+  for (const match of source.matchAll(assignmentPattern)) {
+    assignments.set(match[1], normalizeAgentValue(match[3]));
+  }
+
+  for (const [name, executable] of assignments) {
+    const variableReference = `\\$(?:\\{${name}\\}|${name}\\b)`;
+    const executablePosition = new RegExp(
+      `(^|[;&|(){}\\r\\n]\\s*|["']|\\b(?:then|elif|else|do)\\s+|\\b(?:command(?:\\s+(?:--|-p))*|exec(?:\\s+(?:--|-c|-l|-a\\s+\\S+))*|builtin)\\s+)(["']?)${variableReference}\\2(?=\\s)`,
+      "giu");
+    source = source.replace(executablePosition, (_match, prefix) => `${prefix}${executable}`);
+  }
+  return source;
+}
+
+function isDynamicShellExecutableToken(token) {
+  const value = stripOuterQuotes(String(token || "").trim());
+  return /^\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)$/u.test(value) ||
+    /^\$\{[^}]+\}$/u.test(value) ||
+    /^\$\([^)]*\)$/u.test(value) ||
+    /^`[^`]*`$/u.test(value);
+}
+
+function hasDynamicShellReviewGatedArguments(command) {
+  for (const segment of splitCommandSegments(command)) {
+    for (const stage of splitCommandPipelineStages(segment)) {
+      const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(tokenizeCommandLine(stage)));
+      const tokens = execution.tokens;
+      if (tokens.length === 0 || !isDynamicShellExecutableToken(tokens[0])) {
+        continue;
+      }
+      const syntheticGit = ["git", ...tokens.slice(1)];
+      const subcommandIndex = findGitSubcommandIndex(syntheticGit);
+      if (subcommandIndex >= 0 &&
+          isReviewGatedGitSubcommand(getGitSubcommandName(syntheticGit, subcommandIndex), syntheticGit, subcommandIndex)) {
+        return true;
+      }
+      const syntheticGh = ["gh", ...tokens.slice(1)];
+      if (hasUnresolvedShellGhLifecycleTokens(syntheticGh) ||
+          isGhPrMergeTokenCommand(syntheticGh) || isGhApiMergeCommand(syntheticGh) || isGhApiRefWriteCommand(syntheticGh)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function hasUnresolvedShellGhLifecycleTokens(tokens) {
+  const args = tokens.slice(1).map((token) => stripOuterQuotes(String(token || "")));
+  const dynamic = args.map((arg) => /(?:\$\{|\$[A-Za-z_]|`|\$\()/u.test(arg));
+  if (!dynamic.some(Boolean)) {
+    return false;
+  }
+  const normalized = args.map((arg) => normalizeAgentValue(arg));
+  return dynamic[0] || normalized.includes("pr") || normalized.includes("api");
+}
+
+function getExecutedShellArrayBodies(command) {
+  const source = String(command || "");
+  const bodies = [];
+  const assignmentPattern = /(?:^|[;&\r\n])\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\(([^()]*)\)/gu;
+  for (const match of source.matchAll(assignmentPattern)) {
+    const name = match[1];
+    const invocationPattern = new RegExp(`["']?\\$\\{${name}\\[(?:@|\\*)\\]\\}["']?`, "gu");
+    if (invocationPattern.test(source.slice((match.index || 0) + match[0].length))) {
+      bodies.push(match[2] || "");
+    }
+  }
+  return bodies;
+}
+
+function hasShellArrayReviewGatedCommand(command) {
+  return getExecutedShellArrayBodies(command).some((body) => isReviewGatedCommand(body));
+}
+
+function hasShellArrayDirectCodexDispatch(command, depth) {
+  return getExecutedShellArrayBodies(command).some((body) => isDirectCodexDispatch(body, depth + 1));
+}
+
+function readBalancedShellCommandSubstitution(source, startIndex) {
+  let depth = 1;
+  let quote = "";
+  let command = "";
+  for (let index = startIndex; index < source.length; index += 1) {
+    const char = source[index];
+    if (quote) {
+      if (isShellQuoteTerminator(source, index, quote)) {
+        quote = "";
+      }
+      command += char;
+      continue;
+    }
+
+    if (char === "'" || char === "\"") {
+      quote = getShellQuoteMode(source, index, char);
+      command += char;
+      continue;
+    }
+
+    if (char === "(") {
+      depth += 1;
+      command += char;
+      continue;
+    }
+
+    if (char === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        return { command, endIndex: index };
+      }
+      command += char;
+      continue;
+    }
+
+    command += char;
+  }
+
+  return { command: "", endIndex: source.length - 1 };
+}
+
+function hasSeparatedShellFunctionReviewLifecycleCommand(command) {
+  return hasSeparatedForwardingFunctionReviewLifecycleCommand(
+    command,
+    /(?:^|[;&])\s*([A-Za-z_][A-Za-z0-9_-]*)\s*\(\)\s*\{([^}]*)\}/giu,
+    "$@");
+}
+
+function hasSeparatedPowerShellFunctionReviewLifecycleCommand(command) {
+  return hasSeparatedForwardingFunctionReviewLifecycleCommand(
+    command,
+    /(?:^|[;&])\s*function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\{([^}]*)\}/giu,
+    "$args");
+}
+
+function hasSeparatedForwardingFunctionReviewLifecycleCommand(command, functionPattern, forwardingToken) {
+  const source = String(command || "");
+  const gitFunctions = new Set();
+  const ghFunctions = new Set();
+  const forwardingPattern = new RegExp(`(?:^|[\\s;|&])(?:command\\s+|exec\\s+|builtin\\s+)?["']?\\${forwardingToken}["']?(?:$|[\\s;|&])`, "u");
+
+  for (const match of source.matchAll(functionPattern)) {
+    const functionName = normalizeAgentValue(match[1] || "");
+    const body = match[2] || "";
+    if (!functionName || !forwardingPattern.test(body)) {
+      continue;
+    }
+
+    if (/\bgit\b/u.test(body)) {
+      gitFunctions.add(functionName);
+    }
+    if (/\bgh\b/u.test(body)) {
+      ghFunctions.add(functionName);
+    }
+  }
+
+  if (gitFunctions.size === 0 && ghFunctions.size === 0) {
+    return false;
+  }
+
+  for (const segment of splitCommandSegments(source)) {
+    for (const stage of splitCommandPipelineStages(segment)) {
+      const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(unwrapPowerShellCommandWrapper(stage)));
+      if (tokens.length === 0) {
+        continue;
+      }
+
+      const commandName = normalizeAgentValue(getExecutableBasename(tokens[0]));
+      if (gitFunctions.has(commandName)) {
+        const subcommand = normalizeAgentValue(stripOuterQuotes(tokens[1] || ""));
+        if (subcommand === "commit" || subcommand === "merge") {
+          return true;
+        }
+      }
+
+      if (ghFunctions.has(commandName)) {
+        const effectiveTokens = ["gh", ...tokens.slice(1)];
+        if (isGhPrMergeTokenCommand(effectiveTokens) || isGhApiMergeCommand(effectiveTokens) || isGhApiRefWriteCommand(effectiveTokens)) {
+          return true;
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
+function isGitExecutableToken(token) {
+  const normalized = normalizeAgentValue(token).replace(/\\/g, "/");
+  return normalized === "git" || normalized === "git.exe" || normalized.endsWith("/git") || normalized.endsWith("/git.exe");
+}
+
+function isGhExecutableToken(token) {
+  const normalized = normalizeAgentValue(token).replace(/\\/g, "/");
+  return normalized === "gh" || normalized === "gh.exe" || normalized.endsWith("/gh") || normalized.endsWith("/gh.exe");
+}
+
+function isGhPrMergeTokenCommand(tokens) {
+  return tokens.some((token, index) =>
+    normalizeAgentValue(stripOuterQuotes(token)) === "pr" &&
+    tokens.slice(index + 1).some((nextToken) =>
+      normalizeAgentValue(stripOuterQuotes(nextToken)) === "merge"));
+}
+
+function getGitGlobalCwdOption(tokens, gitIndex, baseCwd, gitEnvContext = {}) {
+  let effectiveCwd = "";
+  let effectiveGitDir = null;
+  let effectiveWorkTree = null;
+
+  for (let i = gitIndex + 1; i < tokens.length; i++) {
+    const token = stripOuterQuotes(tokens[i]);
+    const normalizedToken = normalizeAgentValue(token);
+    if (token === "-C") {
+      if (i + 1 >= tokens.length) {
+        return "";
+      }
+      effectiveCwd = resolveGitCwdOption(baseCwd, effectiveCwd, stripOuterQuotes(tokens[i + 1]));
+      i++;
+      continue;
+    }
+
+    if (token.startsWith("-C") && token.length > 2) {
+      effectiveCwd = resolveGitCwdOption(baseCwd, effectiveCwd, token.slice(2));
+      continue;
+    }
+
+    if (normalizedToken === "--git-dir") {
+      if (i + 1 >= tokens.length) {
+        return "";
+      }
+      effectiveGitDir = stripOuterQuotes(tokens[i + 1]);
+      i++;
+      continue;
+    }
+
+    if (normalizedToken.startsWith("--git-dir=")) {
+      effectiveGitDir = token.slice("--git-dir=".length);
+      continue;
+    }
+
+    if (normalizedToken === "--work-tree") {
+      if (i + 1 >= tokens.length) {
+        return "";
+      }
+      effectiveWorkTree = stripOuterQuotes(tokens[i + 1]);
+      i++;
+      continue;
+    }
+
+    if (normalizedToken.startsWith("--work-tree=")) {
+      effectiveWorkTree = token.slice("--work-tree=".length);
+      continue;
+    }
+
+    if (isGitGlobalOptionWithSeparateValue(normalizedToken)) {
+      i++;
+      continue;
+    }
+
+    if (isGitGlobalOptionWithInlineValue(normalizedToken)) {
+      continue;
+    }
+
+    if (!token.startsWith("-")) {
+      return resolveGitGlobalTargetCwd(baseCwd, effectiveCwd, effectiveGitDir, effectiveWorkTree, gitEnvContext);
+    }
+  }
+
+  return resolveGitGlobalTargetCwd(baseCwd, effectiveCwd, effectiveGitDir, effectiveWorkTree, gitEnvContext);
+}
+
+function resolveGitGlobalTargetCwd(baseCwd, effectiveCwd, gitDirOption, workTreeOption, gitEnvContext = {}) {
+  const envGitDir = typeof gitEnvContext?.gitDir === "string" ? gitEnvContext.gitDir : null;
+  const envWorkTree = typeof gitEnvContext?.workTree === "string" ? gitEnvContext.workTree : null;
+  const envTargetCwd = typeof gitEnvContext?.targetCwd === "string" ? gitEnvContext.targetCwd : "";
+  const finalGitDir = gitDirOption === null ? envGitDir : gitDirOption;
+  const finalWorkTree = workTreeOption === null ? envWorkTree : workTreeOption;
+  const fallbackCwd = typeof finalGitDir === "string" && finalGitDir !== ""
+    ? (envTargetCwd || effectiveCwd)
+    : (effectiveCwd || envTargetCwd);
+  return resolveGitRepositoryTargetCwd(baseCwd, effectiveCwd, finalGitDir, finalWorkTree, fallbackCwd);
+}
+
+function resolveGitPathOption(baseCwd, effectiveCwd, optionValue) {
+  if (typeof optionValue !== "string") {
+    return "";
+  }
+
+  return resolveGitCwdOption(baseCwd, effectiveCwd, optionValue);
+}
+
+function getGitInlineEnvironmentContext(tokens, baseCwd) {
+  const effectiveTokens = stripShellCommandBuiltinPrefixes(tokens);
+  let commandBaseCwd = baseCwd || process.cwd();
+  let gitDir = null;
+  let workTree = null;
+  let clearedGitDir = false;
+  let clearedWorkTree = false;
+
+  for (let index = 0; index < effectiveTokens.length; index += 1) {
+    const token = stripOuterQuotes(effectiveTokens[index]);
+    const executable = normalizeAgentValue(getExecutableBasename(token));
+    if (executable === "env" || executable === "env.exe") {
+      index += 1;
+      while (index < effectiveTokens.length) {
+        const envToken = stripOuterQuotes(effectiveTokens[index]);
+        const normalizedEnvToken = normalizeAgentValue(envToken);
+        if (isInlineEnvironmentAssignment(envToken)) {
+          const separatorIndex = envToken.indexOf("=");
+          const name = envToken.slice(0, separatorIndex).toUpperCase();
+          const value = envToken.slice(separatorIndex + 1);
+          if (name === "GIT_WORK_TREE") {
+            workTree = value;
+            clearedWorkTree = false;
+          } else if (name === "GIT_DIR") {
+            gitDir = value;
+            clearedGitDir = false;
+          }
+          index += 1;
+          continue;
+        }
+
+        const shortOptions = parseEnvShortOptionCluster(envToken);
+        if (shortOptions) {
+          if (shortOptions.ignoreEnvironment) {
+            gitDir = null;
+            workTree = null;
+            clearedGitDir = true;
+            clearedWorkTree = true;
+          }
+
+          const shortOptionValue = shortOptions.value || stripOuterQuotes(effectiveTokens[index + 1] || "");
+          const consumedTokens = shortOptions.value ? 1 : 2;
+          if (shortOptions.valueOption === "C") {
+            if (!shortOptionValue) {
+              break;
+            }
+            commandBaseCwd = resolveGitCwdOption(commandBaseCwd, "", shortOptionValue);
+            index += consumedTokens;
+            continue;
+          }
+          if (shortOptions.valueOption === "S") {
+            if (!shortOptionValue) {
+              break;
+            }
+            const splitTokens = tokenizeCommandLine(shortOptionValue);
+            return mergeGitInlineEnvironmentContext(
+              { baseCwd: commandBaseCwd, gitDir, workTree, clearedGitDir, clearedWorkTree },
+              getGitInlineEnvironmentContext([...splitTokens, ...effectiveTokens.slice(index + consumedTokens)], commandBaseCwd),
+            );
+          }
+          if (shortOptions.valueOption === "U") {
+            const unsetName = normalizeAgentValue(shortOptionValue).toUpperCase();
+            if (unsetName === "GIT_DIR") {
+              gitDir = null;
+              clearedGitDir = true;
+            } else if (unsetName === "GIT_WORK_TREE") {
+              workTree = null;
+              clearedWorkTree = true;
+            }
+            index += consumedTokens;
+            continue;
+          }
+
+          index += 1;
+          continue;
+        }
+
+        if ((normalizedEnvToken === "-c" || normalizedEnvToken === "--chdir") && index + 1 < effectiveTokens.length) {
+          commandBaseCwd = resolveGitCwdOption(commandBaseCwd, "", stripOuterQuotes(effectiveTokens[index + 1]));
+          index += 2;
+          continue;
+        }
+
+        if (normalizedEnvToken.startsWith("-c") && normalizedEnvToken.length > 2) {
+          commandBaseCwd = resolveGitCwdOption(commandBaseCwd, "", envToken.slice(2));
+          index += 1;
+          continue;
+        }
+
+        if ((normalizedEnvToken === "-s" || normalizedEnvToken === "--split-string") && index + 1 < effectiveTokens.length) {
+          const splitTokens = tokenizeCommandLine(stripOuterQuotes(effectiveTokens[index + 1]));
+          return mergeGitInlineEnvironmentContext(
+            { baseCwd: commandBaseCwd, gitDir, workTree },
+            getGitInlineEnvironmentContext([...splitTokens, ...effectiveTokens.slice(index + 2)], commandBaseCwd),
+          );
+        }
+
+        if (normalizedEnvToken.startsWith("-s") && normalizedEnvToken.length > 2) {
+          const splitTokens = tokenizeCommandLine(stripOuterQuotes(envToken.slice(2)));
+          return mergeGitInlineEnvironmentContext(
+            { baseCwd: commandBaseCwd, gitDir, workTree },
+            getGitInlineEnvironmentContext([...splitTokens, ...effectiveTokens.slice(index + 1)], commandBaseCwd),
+          );
+        }
+
+        if (normalizedEnvToken.startsWith("--chdir=")) {
+          commandBaseCwd = resolveGitCwdOption(commandBaseCwd, "", envToken.slice(envToken.indexOf("=") + 1));
+          index += 1;
+          continue;
+        }
+
+        if (normalizedEnvToken.startsWith("--split-string=")) {
+          const splitValue = envToken.slice(envToken.indexOf("=") + 1);
+          const splitTokens = tokenizeCommandLine(stripOuterQuotes(splitValue));
+          return mergeGitInlineEnvironmentContext(
+            { baseCwd: commandBaseCwd, gitDir, workTree },
+            getGitInlineEnvironmentContext([...splitTokens, ...effectiveTokens.slice(index + 1)], commandBaseCwd),
+          );
+        }
+
+        if (normalizedEnvToken === "--") {
+          index += 1;
+          break;
+        }
+
+        if (normalizedEnvToken === "-u" || normalizedEnvToken === "--unset") {
+          const unsetName = index + 1 < effectiveTokens.length
+            ? normalizeAgentValue(stripOuterQuotes(effectiveTokens[index + 1])).toUpperCase()
+            : "";
+          if (unsetName === "GIT_DIR") {
+            gitDir = null;
+            clearedGitDir = true;
+          } else if (unsetName === "GIT_WORK_TREE") {
+            workTree = null;
+            clearedWorkTree = true;
+          }
+          index += 2;
+          continue;
+        }
+
+        if (normalizedEnvToken.startsWith("-u") && normalizedEnvToken.length > 2) {
+          const unsetName = normalizeAgentValue(envToken.slice(2)).toUpperCase();
+          if (unsetName === "GIT_DIR") {
+            gitDir = null;
+            clearedGitDir = true;
+          } else if (unsetName === "GIT_WORK_TREE") {
+            workTree = null;
+            clearedWorkTree = true;
+          }
+          index += 1;
+          continue;
+        }
+
+        if (normalizedEnvToken.startsWith("--unset=")) {
+          const unsetName = normalizeAgentValue(envToken.slice(envToken.indexOf("=") + 1)).toUpperCase();
+          if (unsetName === "GIT_DIR") {
+            gitDir = null;
+            clearedGitDir = true;
+          } else if (unsetName === "GIT_WORK_TREE") {
+            workTree = null;
+            clearedWorkTree = true;
+          }
+          index += 1;
+          continue;
+        }
+
+        if (normalizedEnvToken === "-i" ||
+            normalizedEnvToken === "--ignore-environment") {
+          gitDir = null;
+          workTree = null;
+          clearedGitDir = true;
+          clearedWorkTree = true;
+          index += 1;
+          continue;
+        }
+
+        if (normalizedEnvToken === "-0" ||
+            normalizedEnvToken === "--null") {
+          index += 1;
+          continue;
+        }
+
+        if (normalizedEnvToken === "-v" ||
+            normalizedEnvToken === "--debug" ||
+            normalizedEnvToken === "--list-signal-handling" ||
+            normalizedEnvToken === "--block-signal" ||
+            normalizedEnvToken.startsWith("--block-signal=") ||
+            normalizedEnvToken === "--default-signal" ||
+            normalizedEnvToken.startsWith("--default-signal=") ||
+            normalizedEnvToken === "--ignore-signal" ||
+            normalizedEnvToken.startsWith("--ignore-signal=")) {
+          index += 1;
+          continue;
+        }
+
+        if (normalizedEnvToken === "-") {
+          gitDir = null;
+          workTree = null;
+          clearedGitDir = true;
+          clearedWorkTree = true;
+          index += 1;
+          continue;
+        }
+
+        if (normalizedEnvToken.startsWith("-")) {
+          commandBaseCwd = "\0unresolved-env-option";
+        }
+
+        break;
+      }
+      index -= 1;
+      continue;
+    }
+
+    const assignment = stripOuterQuotes(token);
+    if (!isInlineEnvironmentAssignment(assignment)) {
+      break;
+    }
+
+    const separatorIndex = assignment.indexOf("=");
+    const name = assignment.slice(0, separatorIndex).toUpperCase();
+    const value = assignment.slice(separatorIndex + 1);
+    if (name === "GIT_WORK_TREE") {
+      workTree = value;
+      clearedWorkTree = false;
+    } else if (name === "GIT_DIR") {
+      gitDir = value;
+      clearedGitDir = false;
+    }
+  }
+
+  return {
+    baseCwd: commandBaseCwd,
+    gitDir,
+    workTree,
+    clearedGitDir,
+    clearedWorkTree,
+    targetCwd: resolveGitRepositoryTargetCwd(commandBaseCwd, "", gitDir, workTree, ""),
+  };
+}
+
+function mergeGitInlineEnvironmentContext(prefixContext, nestedContext) {
+  const baseCwd = nestedContext?.baseCwd || prefixContext?.baseCwd || process.cwd();
+  const nestedHasGitDir = nestedContext?.gitDir !== null && typeof nestedContext?.gitDir === "string";
+  const nestedHasWorkTree = nestedContext?.workTree !== null && typeof nestedContext?.workTree === "string";
+  const gitDir = nestedHasGitDir
+    ? nestedContext.gitDir
+    : nestedContext?.clearedGitDir
+      ? null
+      : prefixContext?.gitDir;
+  const workTree = nestedHasWorkTree
+    ? nestedContext.workTree
+    : nestedContext?.clearedWorkTree
+      ? null
+      : prefixContext?.workTree;
+  const clearedGitDir = nestedHasGitDir
+    ? false
+    : Boolean(nestedContext?.clearedGitDir || prefixContext?.clearedGitDir);
+  const clearedWorkTree = nestedHasWorkTree
+    ? false
+    : Boolean(nestedContext?.clearedWorkTree || prefixContext?.clearedWorkTree);
+
+  return {
+    baseCwd,
+    gitDir,
+    workTree,
+    clearedGitDir,
+    clearedWorkTree,
+    targetCwd: resolveGitRepositoryTargetCwd(baseCwd, "", gitDir, workTree, ""),
+  };
+}
+
+function resolveGitRepositoryTargetCwd(baseCwd, effectiveCwd, gitDirOption, workTreeOption, fallbackCwd = "") {
+  const resolvedGitDir = resolveGitPathOption(baseCwd, effectiveCwd, gitDirOption);
+  const resolvedWorkTree = resolveGitPathOption(baseCwd, effectiveCwd, workTreeOption);
+  if (resolvedGitDir) {
+    const gitDirTarget = resolveGitDirTargetCwd(resolvedGitDir);
+    if (gitDirTarget && !gitDirTarget.includes("\0")) {
+      return gitDirTarget;
+    }
+
+    return resolveGitDirWorkTreeTargetCwd(resolvedGitDir, resolvedWorkTree) || gitDirTarget;
+  }
+
+  if (resolvedWorkTree) {
+    return fallbackCwd || effectiveCwd || baseCwd || process.cwd();
+  }
+
+  return fallbackCwd;
+}
+
+function resolveGitDirTargetCwd(gitDir) {
+  if (typeof gitDir !== "string" || gitDir.trim() === "" || gitDir.includes("\0")) {
+    return "";
+  }
+
+  const resolvedGitDir = path.resolve(process.cwd(), stripOuterQuotes(gitDir.trim()));
+  try {
+    const stat = fs.statSync(resolvedGitDir);
+    if ((stat.isDirectory() || stat.isFile()) && path.basename(resolvedGitDir).toLowerCase() === ".git") {
+      return path.dirname(resolvedGitDir);
+    }
+  } catch {
+    return "\0unresolved-git-dir";
+  }
+
+  return "\0unresolved-git-dir";
+}
+
+function resolveGitDirWorkTreeTargetCwd(gitDir, workTree) {
+  if (typeof gitDir !== "string" ||
+      typeof workTree !== "string" ||
+      gitDir.trim() === "" ||
+      workTree.trim() === "" ||
+      gitDir.includes("\0") ||
+      workTree.includes("\0")) {
+    return "";
+  }
+
+  const gitDirPath = stripOuterQuotes(gitDir.trim());
+  const workTreePath = stripOuterQuotes(workTree.trim());
+  if (!fs.existsSync(gitDirPath) || !fs.existsSync(workTreePath)) {
+    return "";
+  }
+
+  try {
+    return execFileSync("git", [
+      "--git-dir",
+      gitDirPath,
+      "--work-tree",
+      workTreePath,
+      "rev-parse",
+      "--show-toplevel",
+    ], {
+      encoding: "utf8",
+      env: getGitProbeEnvironment(),
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return "";
+  }
+}
+
+function resolveGitCwdOption(baseCwd, currentCwd, nextCwd) {
+  if (typeof nextCwd !== "string" || nextCwd.includes("\0")) {
+    return "";
+  }
+
+  const normalizedNextCwd = stripOuterQuotes(nextCwd);
+  if (normalizedNextCwd === "") {
+    return currentCwd || baseCwd || process.cwd();
+  }
+
+  if (normalizedNextCwd.trim() === "") {
+    return "";
+  }
+
+  const trimmedNextCwd = normalizedNextCwd.trim();
+  if (hasShellExpandedPathToken(trimmedNextCwd)) {
+    return "\0unresolved-shell-expanded-cwd";
+  }
+
+  const base = currentCwd || baseCwd || process.cwd();
+  return path.resolve(base, trimmedNextCwd);
+}
+
+function hasShellExpandedPathToken(value) {
+  if (typeof value !== "string" || value === "") {
+    return false;
+  }
+
+  return /(?:^~(?:$|[\\/])|\$[A-Za-z_][A-Za-z0-9_]*|\$\{[^}]+\}|%[^%\s]+%|![^!\s]+!|`|\$\(|[?*[\]{}])/.test(value);
+}
+
 function getCurrentBranch(repoRoot) {
   const gitDir = resolveGitDir(repoRoot);
   const headPath = path.join(gitDir, "HEAD");
@@ -3792,7 +13496,10 @@ function getCurrentBranch(repoRoot) {
 }
 
 function getCurrentHeadSha(repoRoot) {
-  return execFileSync("git", ["-C", repoRoot, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  return execFileSync("git", ["-C", repoRoot, "rev-parse", "HEAD"], {
+    encoding: "utf8",
+    env: getGitProbeEnvironment(),
+  }).trim();
 }
 
 function resolveGitDir(repoRoot) {

@@ -1296,6 +1296,7 @@ panes:
             New-Item -ItemType Directory -Path $fakeBinDir -Force | Out-Null
 
             Copy-Item -LiteralPath (Join-Path $script:RepoRoot '.claude\hooks\sh-orchestra-gate.js') -Destination (Join-Path $hooksDir 'sh-orchestra-gate.js') -Force
+            Copy-Item -LiteralPath (Join-Path $script:RepoRoot '.claude\hooks\vendor') -Destination (Join-Path $hooksDir 'vendor') -Recurse -Force
 
             Write-TestFileWithCmd -Path (Join-Path $scriptsDir 'settings.ps1') -Content @'
 function Get-BridgeSettings {
@@ -1346,6 +1347,7 @@ exit /b 0
             New-Item -ItemType Directory -Path $fakeBinDir -Force | Out-Null
 
             Copy-Item -LiteralPath (Join-Path $script:RepoRoot '.claude\hooks\sh-orchestra-gate.js') -Destination (Join-Path $hooksDir 'sh-orchestra-gate.js') -Force
+            Copy-Item -LiteralPath (Join-Path $script:RepoRoot '.claude\hooks\vendor') -Destination (Join-Path $hooksDir 'vendor') -Recurse -Force
 
             Write-TestFileWithCmd -Path (Join-Path $scriptsDir 'settings.ps1') -Content @'
 function Get-BridgeSettings {
@@ -1356,6 +1358,12 @@ function Get-BridgeSettings {
     }
 }
 '@
+
+            Write-TestFileWithCmd -Path (Join-Path $scriptsDir 'orchestra-start.ps1') -Content "Write-Output 'canonical recovery fixture'`n"
+
+            & git -C $fixtureRoot init | Out-Null
+            & git -C $fixtureRoot add -- winsmux-core/scripts/settings.ps1 winsmux-core/scripts/orchestra-start.ps1
+            & git -C $fixtureRoot -c user.name='Test User' -c user.email='test@example.com' commit -m 'add canonical recovery fixture' | Out-Null
 
             Write-TestFileWithCmd -Path (Join-Path $fakeBinDir 'winsmux.cmd') -Content @'
 @echo off
