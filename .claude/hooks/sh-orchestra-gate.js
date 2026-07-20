@@ -1633,6 +1633,9 @@ function getStaticScriptProtectedEvidence(source, scriptCwd) {
   const seen = new Set();
   let unresolved = false;
   if (isReviewGatedCommand(text)) {
+    if (hasPersistentGitHubTargetMutation(text)) {
+      unresolved = true;
+    }
     if (hasShellControlFlowBoundary(text) && hasShellCwdChangeCommand(text)) {
       unresolved = true;
     }
@@ -11505,6 +11508,16 @@ function hasPersistentGitTargetMutation(command) {
     /(?:^|[;&\r\n])\s*set\s+(?:GIT_DIR|GIT_WORK_TREE)=/iu.test(source) ||
     hasRuntimeGitEnvironmentMutation(source) ||
     hasDynamicPowerShellGitEnvironmentMutation(source);
+}
+
+function hasPersistentGitHubTargetMutation(command) {
+  const source = String(command || "");
+  return /(?:^|[;&\r\n])\s*(?:export|declare|typeset|local)\s+(?:[-+][A-Za-z]+\s+)*["']?(?:GH_REPO|GH_HOST)(?:=|["']?\b)/iu.test(source) ||
+    /(?:^|[;&\r\n])\s*unset\s+(?:-[A-Za-z]+\s+)*["']?(?:GH_REPO|GH_HOST)\b/iu.test(source) ||
+    /\$env:(?:GH_REPO|GH_HOST)\s*=/iu.test(source) ||
+    /\b(?:Set-Item|si|New-Item|ni|Remove-Item|ri|Clear-Item|cli|Set-Content|sc|Clear-Content|clc)\b[^;&\r\n]*(?:Env:\\?)?(?:GH_REPO|GH_HOST)\b/iu.test(source) ||
+    /\[(?:System\.)?Environment\]\s*::\s*SetEnvironmentVariable\s*\(\s*["'](?:GH_REPO|GH_HOST)["']/iu.test(source) ||
+    /(?:^|[;&\r\n])\s*set\s+(?:GH_REPO|GH_HOST)=/iu.test(source);
 }
 
 function hasRuntimeGitEnvironmentMutation(source) {

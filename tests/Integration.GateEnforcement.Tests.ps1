@@ -9212,6 +9212,16 @@ EOF
         $persistentEnvironment = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'bash scripts/static-git-environment.sh'; cwd = $fixture.RepoRoot } -Environment $environment
         & $script:AssertDenyResult -Result $persistentEnvironment -Because 'persistent Git target state inside a static script must fail closed instead of borrowing caller PASS'
 
+        foreach ($githubTargetMutation in @(
+                @{ Name = 'repo'; Content = "export GH_REPO=other/repo`ngh pr merge 1 --squash`n" },
+                @{ Name = 'host'; Content = "export GH_HOST=ghe.example`ngh api -X PUT repos/Sora-bluesky/winsmux/pulls/1/merge`n" }
+            )) {
+            $githubScript = Join-Path $fixture.RepoRoot ("scripts\static-github-{0}.sh" -f $githubTargetMutation.Name)
+            Write-GateTestFile -Path $githubScript -Content $githubTargetMutation.Content
+            $persistentGitHubTarget = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = ("bash scripts/static-github-{0}.sh" -f $githubTargetMutation.Name); cwd = $fixture.RepoRoot } -Environment $environment
+            & $script:AssertDenyResult -Result $persistentGitHubTarget -Because 'persistent GitHub target state inside a static script must fail closed instead of borrowing caller PASS'
+        }
+
         $conditionalFixture = New-GateFixture
         $approvedTarget = New-GateTargetRepo -Root $conditionalFixture.Root -Name 'approved-conditional-target'
         Set-GatePass -RepoRoot $approvedTarget.RepoRoot -Branch $approvedTarget.Branch
