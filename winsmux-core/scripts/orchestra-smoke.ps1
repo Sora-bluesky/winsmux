@@ -473,7 +473,7 @@ function Get-OrchestraSmokeProcessContract {
 
 function Get-OrchestraAttachedClientSnapshot {
     param(
-        [Parameter(Mandatory = $true)][string]$WinsmuxBin,
+        [AllowEmptyString()][string]$WinsmuxBin = '',
         [Parameter(Mandatory = $true)][string]$SessionName
     )
 
@@ -736,7 +736,7 @@ function Resolve-OrchestraSmokeAttachState {
         [AllowNull()]$AttachState,
         [Parameter(Mandatory = $true)][bool]$ClientProbeOk,
         [AllowNull()]$ClientSnapshot,
-        [Parameter(Mandatory = $true)][string]$WinsmuxBin
+        [AllowEmptyString()][string]$WinsmuxBin = ''
     )
 
     $uiAttached = $false

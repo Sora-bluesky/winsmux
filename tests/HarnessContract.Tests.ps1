@@ -546,6 +546,27 @@ manual flow
         $content | Should -Match 'Ensure-OrchestraAttachProfile\s+-ProjectDir\s+\$runtimeProjectDir'
     }
 
+    It 'fails closed instead of throwing when smoke runs without a winsmux executable' {
+        $smokePath = Join-Path $script:RepoRoot 'winsmux-core\scripts\orchestra-smoke.ps1'
+        $tokens = $null
+        $errors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($smokePath, [ref]$tokens, [ref]$errors)
+        $errors.Count | Should -Be 0
+
+        foreach ($functionName in @('Get-OrchestraAttachedClientSnapshot', 'Resolve-OrchestraSmokeAttachState')) {
+            $functionAst = $ast.Find({
+                param($node)
+                $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                    $node.Name -eq $functionName
+            }, $true)
+            $functionAst | Should -Not -BeNullOrEmpty
+            $winsmuxParameter = $functionAst.Body.ParamBlock.Parameters |
+                Where-Object { $_.Name.VariablePath.UserPath -eq 'WinsmuxBin' }
+            $winsmuxParameter | Should -Not -BeNullOrEmpty
+            @($winsmuxParameter.Attributes.TypeName.Name) | Should -Contain 'AllowEmptyString'
+        }
+    }
+
     It 'keeps critical .claude files trimmed to a single final newline' {
         foreach ($relativePath in @(
             '.claude\hooks\lib\sh-utils.js',
