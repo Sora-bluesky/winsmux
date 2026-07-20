@@ -230,14 +230,14 @@ function Get-OrchestraAttachSocketNamespaceBase {
 function Get-OrchestraAttachSessionNamespace {
     param([Parameter(Mandatory = $true)][string]$ProjectDir)
 
-    if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_BRIDGE_SESSION_NAMESPACE)) {
-        return $env:WINSMUX_BRIDGE_SESSION_NAMESPACE.Trim()
-    }
     if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_BRIDGE_SOCKET_S)) {
         return Get-OrchestraAttachSocketNamespaceBase -SocketSelector $env:WINSMUX_BRIDGE_SOCKET_S -ProjectDir $ProjectDir
     }
     if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_BRIDGE_NAMESPACE_L)) {
         return $env:WINSMUX_BRIDGE_NAMESPACE_L.Trim()
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_BRIDGE_SESSION_NAMESPACE)) {
+        return $env:WINSMUX_BRIDGE_SESSION_NAMESPACE.Trim()
     }
     return ''
 }
@@ -309,7 +309,7 @@ function Test-OrchestraRenderReceipt {
         [Parameter(Mandatory = $true)][string]$RequestId,
         [AllowEmptyCollection()][string[]]$LivePaneIds = @(),
         [long]$RequestedAtUnixMs = 0,
-        [switch]$AllowPaneTopologyChange
+        [long]$MaxAgeMilliseconds = 5000
     )
 
     $result = [ordered]@{
@@ -366,12 +366,21 @@ function Test-OrchestraRenderReceipt {
         $result.Reason = 'render_receipt_not_fresh'
         return [PSCustomObject]$result
     }
+    $nowUnixMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    if ($MaxAgeMilliseconds -le 0 -or $renderedAtUnixMs -gt ($nowUnixMs + $MaxAgeMilliseconds)) {
+        $result.Reason = 'render_receipt_not_fresh'
+        return [PSCustomObject]$result
+    }
+    if (($nowUnixMs - $renderedAtUnixMs) -gt $MaxAgeMilliseconds) {
+        $result.Reason = 'render_receipt_expired'
+        return [PSCustomObject]$result
+    }
 
     $rawRenderedPaneIds = @($Receipt.pane_ids | ForEach-Object { ([string]$_).Trim() })
     $renderedPaneIds = @($rawRenderedPaneIds | Where-Object { $_ -match '^%[0-9]+$' } | Sort-Object -Unique)
     $rawLivePaneIds = @($LivePaneIds | ForEach-Object { ([string]$_).Trim() })
     $livePaneIds = @($rawLivePaneIds | Where-Object { $_ -match '^%[0-9]+$' } | Sort-Object -Unique)
-    if ($rawRenderedPaneIds.Count -eq 0 -or $rawRenderedPaneIds.Count -ne $renderedPaneIds.Count -or $rawLivePaneIds.Count -ne $livePaneIds.Count -or $livePaneIds.Count -eq 0 -or (-not $AllowPaneTopologyChange -and (($renderedPaneIds -join "`n") -ne ($livePaneIds -join "`n")))) {
+    if ($rawRenderedPaneIds.Count -eq 0 -or $rawRenderedPaneIds.Count -ne $renderedPaneIds.Count -or $rawLivePaneIds.Count -ne $livePaneIds.Count -or $livePaneIds.Count -eq 0 -or (($renderedPaneIds -join "`n") -ne ($livePaneIds -join "`n"))) {
         $result.Reason = 'render_receipt_pane_set_mismatch'
         return [PSCustomObject]$result
     }
@@ -412,8 +421,13 @@ function Test-OrchestraLiveVisibleAttachState {
         return $false
     }
 
-    $livePanes = Get-OrchestraLivePaneSnapshot -WinsmuxBin $WinsmuxBin -SessionName $SessionName
-    if (-not [bool]$livePanes.Ok) {
+    $projectDir = Get-OrchestraAttachStateString -State $State -Name 'project_dir'
+    if ([string]::IsNullOrWhiteSpace($projectDir)) {
+        $projectDir = (Get-Location).Path
+    }
+    $storedSessionIdentity = Get-OrchestraAttachStateString -State $State -Name 'render_session_identity'
+    $currentSessionIdentity = Get-OrchestraRenderSessionIdentity -SessionName $SessionName -ProjectDir $projectDir
+    if ([string]::IsNullOrWhiteSpace($storedSessionIdentity) -or $storedSessionIdentity -ne $currentSessionIdentity) {
         return $false
     }
 
@@ -423,13 +437,24 @@ function Test-OrchestraLiveVisibleAttachState {
     if ([DateTimeOffset]::TryParse($requestedAt, [ref]$parsedRequestedAt)) {
         $requestedAtUnixMs = $parsedRequestedAt.ToUnixTimeMilliseconds()
     }
-    $receipt = Read-OrchestraRenderReceipt -Path $receiptPath
-    $renderSessionIdentity = Get-OrchestraAttachStateString -State $State -Name 'render_session_identity'
-    if ([string]::IsNullOrWhiteSpace($renderSessionIdentity)) {
-        $renderSessionIdentity = $SessionName
+    for ($attempt = 0; $attempt -lt 3; $attempt++) {
+        $livePanes = Get-OrchestraLivePaneSnapshot -WinsmuxBin $WinsmuxBin -SessionName $SessionName
+        if (-not [bool]$livePanes.Ok) {
+            return $false
+        }
+        $receipt = Read-OrchestraRenderReceipt -Path $receiptPath
+        $validation = Test-OrchestraRenderReceipt -Receipt $receipt -SessionName $currentSessionIdentity -RequestId $requestId -LivePaneIds @($livePanes.PaneIds) -RequestedAtUnixMs $requestedAtUnixMs
+        if ([bool]$validation.Confirmed) {
+            return $true
+        }
+        if ([string]$validation.Reason -notin @('render_receipt_pane_set_mismatch', 'render_receipt_expired')) {
+            return $false
+        }
+        if ($attempt -lt 2) {
+            Start-Sleep -Milliseconds 50
+        }
     }
-    $validation = Test-OrchestraRenderReceipt -Receipt $receipt -SessionName $renderSessionIdentity -RequestId $requestId -LivePaneIds @($livePanes.PaneIds) -RequestedAtUnixMs $requestedAtUnixMs -AllowPaneTopologyChange
-    return [bool]$validation.Confirmed
+    return $false
 }
 
 function Write-OrchestraAttachState {

@@ -60,6 +60,28 @@ impl RenderReceiptConfig {
     }
 }
 
+struct RenderReceiptLease {
+    path: Option<PathBuf>,
+}
+
+impl RenderReceiptLease {
+    fn new(config: Option<&RenderReceiptConfig>) -> Self {
+        let path = config.map(|value| value.path.clone());
+        if let Some(ref receipt_path) = path {
+            let _ = std::fs::remove_file(receipt_path);
+        }
+        Self { path }
+    }
+}
+
+impl Drop for RenderReceiptLease {
+    fn drop(&mut self) {
+        if let Some(ref receipt_path) = self.path {
+            let _ = std::fs::remove_file(receipt_path);
+        }
+    }
+}
+
 #[derive(serde::Serialize)]
 struct RenderReceipt<'a> {
     version: u8,
@@ -76,6 +98,39 @@ fn normalized_rendered_pane_ids(pane_ids: &[usize]) -> Vec<String> {
     pane_ids.sort_unstable();
     pane_ids.dedup();
     pane_ids.into_iter().map(|id| format!("%{}", id)).collect()
+}
+
+#[cfg(windows)]
+fn replace_render_receipt_file(
+    source: &std::path::Path,
+    destination: &std::path::Path,
+) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let source_wide: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+    let destination_wide: Vec<u16> = destination.as_os_str().encode_wide().chain(Some(0)).collect();
+    let moved = unsafe {
+        MoveFileExW(
+            source_wide.as_ptr(),
+            destination_wide.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_render_receipt_file(
+    source: &std::path::Path,
+    destination: &std::path::Path,
+) -> io::Result<()> {
+    std::fs::rename(source, destination)
 }
 
 fn write_render_receipt(config: &RenderReceiptConfig, pane_ids: &[usize]) -> io::Result<()> {
@@ -120,7 +175,7 @@ fn write_render_receipt(config: &RenderReceiptConfig, pane_ids: &[usize]) -> io:
         file.write_all(b"\n")?;
         file.sync_all()?;
         drop(file);
-        std::fs::rename(&temporary_path, &config.path)?;
+        replace_render_receipt_file(&temporary_path, &config.path)?;
         Ok(())
     })();
     if write_result.is_err() {
@@ -510,7 +565,9 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
     let mut confirm_cmd: Option<String> = None;  // pending kill confirmation
     let current_session = name.clone();
     let render_receipt_config = RenderReceiptConfig::from_env(&name);
-    let mut render_receipt_written = false;
+    let _render_receipt_lease = RenderReceiptLease::new(render_receipt_config.as_ref());
+    let mut last_render_receipt_write: Option<Instant> = None;
+    let mut last_rendered_pane_ids: Vec<usize> = Vec::new();
     let mut last_sent_size: (u16, u16) = (0, 0);
     let mut last_status_lines: u16 = 1; // track server's status_lines for correct client-size height
     let mut last_dump_time = Instant::now() - Duration::from_millis(250);
@@ -3795,12 +3852,20 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
 
         })?;
 
-        if !render_receipt_written {
-            if let Some(ref config) = render_receipt_config {
-                let mut pane_ids = Vec::new();
-                collect_rendered_pane_ids(&root, &mut pane_ids);
+        if let Some(ref config) = render_receipt_config {
+            let mut pane_ids = Vec::new();
+            collect_rendered_pane_ids(&root, &mut pane_ids);
+            pane_ids.sort_unstable();
+            pane_ids.dedup();
+            let heartbeat_due = last_render_receipt_write
+                .map(|written_at| written_at.elapsed() >= Duration::from_secs(1))
+                .unwrap_or(true);
+            if pane_ids != last_rendered_pane_ids || heartbeat_due {
                 match write_render_receipt(config, &pane_ids) {
-                    Ok(()) => render_receipt_written = true,
+                    Ok(()) => {
+                        last_rendered_pane_ids = pane_ids;
+                        last_render_receipt_write = Some(Instant::now());
+                    }
                     Err(error) => client_log("render-receipt", &format!("write failed: {}", error)),
                 }
             }

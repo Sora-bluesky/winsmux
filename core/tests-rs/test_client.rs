@@ -19,6 +19,7 @@ fn task784_render_receipt_records_only_post_draw_identity() {
     };
 
     write_render_receipt(&config, &[3, 1, 3]).expect("receipt write should succeed");
+    write_render_receipt(&config, &[3, 1, 3]).expect("receipt refresh should replace the prior lease");
 
     let receipt: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(&path).expect("receipt should exist"),
@@ -34,6 +35,30 @@ fn task784_render_receipt_records_only_post_draw_identity() {
     assert!(receipt.get("pane_content").is_none());
 
     let _ = std::fs::remove_file(path);
+}
+
+#[cfg(windows)]
+#[test]
+fn task784_render_receipt_lease_removes_stale_proof_on_exit() {
+    let path = std::env::temp_dir().join(format!(
+        "winsmux-task784-render-lease-{}-{}.json",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::write(&path, b"stale").unwrap();
+    {
+        let _lease = RenderReceiptLease::new(Some(&RenderReceiptConfig {
+            path: path.clone(),
+            request_id: "request-784".to_string(),
+            session_name: "winsmux-orchestra".to_string(),
+        }));
+        assert!(!path.exists());
+        std::fs::write(&path, b"live").unwrap();
+    }
+    assert!(!path.exists());
 }
 
 #[cfg(windows)]

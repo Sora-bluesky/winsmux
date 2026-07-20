@@ -8425,13 +8425,16 @@ Describe 'orchestra-start server bootstrap' {
             $result.Reason | Should -Be 'render_receipt_renderer_instance_mismatch'
         }
 
-        It 'keeps a confirmed renderer live when the session pane topology changes' {
+        It 'requires a refreshed receipt after the session pane topology changes' {
+            $script:receiptPaneIds = @('%1')
             $state = [pscustomobject]@{
                 session_name        = 'winsmux-orchestra'
+                render_session_identity = 'winsmux-orchestra'
                 attach_status       = 'attach_confirmed'
                 attach_request_id   = 'request-784'
                 requested_at        = [DateTimeOffset]::UtcNow.AddSeconds(-1).ToString('o')
                 render_receipt_path = 'C:\temp\request-784.render.json'
+                project_dir         = 'C:\repo'
             }
             Mock Get-OrchestraLivePaneSnapshot {
                 [pscustomobject]@{ Ok = $true; Count = 2; Error = ''; PaneIds = @('%1', '%2') }
@@ -8444,40 +8447,86 @@ Describe 'orchestra-start server bootstrap' {
                     renderer_process_id                  = 4242
                     renderer_process_started_at_unix_ms  = 123456
                     rendered_at_unix_ms                  = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
-                    pane_ids                             = @('%1')
-                }
-            }
-
-            Test-OrchestraLiveVisibleAttachState -State $state -SessionName 'winsmux-orchestra' -WinsmuxBin 'C:\winsmux\winsmux.exe' |
-                Should -Be $true
-        }
-
-        It 'rejects a receipt from a different namespace with identical pane ids' {
-            $state = [pscustomobject]@{
-                session_name            = 'winsmux-orchestra'
-                render_session_identity = 'requested__winsmux-orchestra'
-                attach_status           = 'attach_confirmed'
-                attach_request_id       = 'request-784'
-                requested_at            = [DateTimeOffset]::UtcNow.AddSeconds(-1).ToString('o')
-                render_receipt_path     = 'C:\temp\request-784.render.json'
-            }
-            Mock Get-OrchestraLivePaneSnapshot {
-                [pscustomobject]@{ Ok = $true; Count = 1; Error = ''; PaneIds = @('%1') }
-            }
-            Mock Read-OrchestraRenderReceipt {
-                [pscustomobject]@{
-                    version                              = 1
-                    request_id                           = 'request-784'
-                    session_name                         = 'winsmux-orchestra'
-                    renderer_process_id                  = 4242
-                    renderer_process_started_at_unix_ms  = 123456
-                    rendered_at_unix_ms                  = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
-                    pane_ids                             = @('%1')
+                    pane_ids                             = @($script:receiptPaneIds)
                 }
             }
 
             Test-OrchestraLiveVisibleAttachState -State $state -SessionName 'winsmux-orchestra' -WinsmuxBin 'C:\winsmux\winsmux.exe' |
                 Should -Be $false
+
+            $script:receiptPaneIds = @('%1', '%2')
+            Test-OrchestraLiveVisibleAttachState -State $state -SessionName 'winsmux-orchestra' -WinsmuxBin 'C:\winsmux\winsmux.exe' |
+                Should -Be $true
+        }
+
+        It 'rejects a receipt from a different namespace with identical pane ids' {
+            $previousNamespace = $env:WINSMUX_BRIDGE_NAMESPACE_L
+            $previousSocket = $env:WINSMUX_BRIDGE_SOCKET_S
+            $previousResolvedNamespace = $env:WINSMUX_BRIDGE_SESSION_NAMESPACE
+            try {
+                $env:WINSMUX_BRIDGE_NAMESPACE_L = 'requested'
+                Remove-Item Env:WINSMUX_BRIDGE_SOCKET_S -ErrorAction SilentlyContinue
+                Remove-Item Env:WINSMUX_BRIDGE_SESSION_NAMESPACE -ErrorAction SilentlyContinue
+                $state = [pscustomobject]@{
+                    session_name            = 'winsmux-orchestra'
+                    render_session_identity = 'other__winsmux-orchestra'
+                    attach_status           = 'attach_confirmed'
+                    attach_request_id       = 'request-784'
+                    requested_at            = [DateTimeOffset]::UtcNow.AddSeconds(-1).ToString('o')
+                    render_receipt_path     = 'C:\temp\request-784.render.json'
+                    project_dir             = 'C:\repo'
+                }
+                Mock Get-OrchestraLivePaneSnapshot {
+                    [pscustomobject]@{ Ok = $true; Count = 1; Error = ''; PaneIds = @('%1') }
+                }
+                Mock Read-OrchestraRenderReceipt {
+                    [pscustomobject]@{
+                        version                              = 1
+                        request_id                           = 'request-784'
+                        session_name                         = 'other__winsmux-orchestra'
+                        renderer_process_id                  = 4242
+                        renderer_process_started_at_unix_ms  = 123456
+                        rendered_at_unix_ms                  = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+                        pane_ids                             = @('%1')
+                    }
+                }
+
+                Test-OrchestraLiveVisibleAttachState -State $state -SessionName 'winsmux-orchestra' -WinsmuxBin 'C:\winsmux\winsmux.exe' |
+                    Should -Be $false
+            } finally {
+                if ($null -eq $previousNamespace) {
+                    Remove-Item Env:WINSMUX_BRIDGE_NAMESPACE_L -ErrorAction SilentlyContinue
+                } else {
+                    $env:WINSMUX_BRIDGE_NAMESPACE_L = $previousNamespace
+                }
+                if ($null -eq $previousSocket) {
+                    Remove-Item Env:WINSMUX_BRIDGE_SOCKET_S -ErrorAction SilentlyContinue
+                } else {
+                    $env:WINSMUX_BRIDGE_SOCKET_S = $previousSocket
+                }
+                if ($null -eq $previousResolvedNamespace) {
+                    Remove-Item Env:WINSMUX_BRIDGE_SESSION_NAMESPACE -ErrorAction SilentlyContinue
+                } else {
+                    $env:WINSMUX_BRIDGE_SESSION_NAMESPACE = $previousResolvedNamespace
+                }
+            }
+        }
+
+        It 'rejects an expired render lease even when process and panes still match' {
+            $receipt = [pscustomobject]@{
+                version                              = 1
+                request_id                           = 'request-784'
+                session_name                         = 'winsmux-orchestra'
+                renderer_process_id                  = 4242
+                renderer_process_started_at_unix_ms  = 123456
+                rendered_at_unix_ms                  = [DateTimeOffset]::UtcNow.AddMinutes(-1).ToUnixTimeMilliseconds()
+                pane_ids                             = @('%1')
+            }
+
+            $result = Test-OrchestraRenderReceipt -Receipt $receipt -SessionName 'winsmux-orchestra' -RequestId 'request-784' -LivePaneIds @('%1')
+
+            $result.Confirmed | Should -Be $false
+            $result.Reason | Should -Be 'render_receipt_expired'
         }
 
         It 'does not treat client registration as launch observation' {
