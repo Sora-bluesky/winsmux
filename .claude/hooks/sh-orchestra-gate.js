@@ -2927,21 +2927,29 @@ function isGhApiRefWriteCommand(tokens) {
   return hasGhApiWriteMethod(args) || hasGhApiWriteField(args);
 }
 
-function hasForeignGitHubLifecycleTarget(command, baseCwd, depth = 0) {
+function hasForeignGitHubLifecycleTarget(command, baseCwd, depth = 0, inheritedGhEnvironment = {}) {
   if (depth > 5) {
     return true;
   }
 
-  const currentRepo = getGitHubRepositorySlug(baseCwd);
-  let ghRepoEnvironmentTarget = "";
+  const currentRepo = getGitHubRepositoryIdentity(baseCwd);
+  let ghRepoEnvironmentTarget = inheritedGhEnvironment.repo || "";
+  let ghHostEnvironmentTarget = inheritedGhEnvironment.host || "";
   for (const segment of splitCommandSegments(command)) {
     const segmentGhRepo = getConstantGhRepoAssignment(segment);
     if (segmentGhRepo) {
       ghRepoEnvironmentTarget = segmentGhRepo;
     }
+    const segmentGhHost = getConstantGhHostAssignment(segment);
+    if (segmentGhHost) {
+      ghHostEnvironmentTarget = segmentGhHost;
+    }
     for (const stage of splitCommandPipelineStages(segment)) {
-      const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(tokenizeCommandLine(stage)));
-      if (execution.nestedCommand && hasForeignGitHubLifecycleTarget(execution.nestedCommand, baseCwd, depth + 1)) {
+      const originalTokens = tokenizeCommandLine(stage);
+      const effectiveGhHost = getEffectiveEnvironmentValue(originalTokens, "GH_HOST");
+      const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(originalTokens));
+      const nestedGhEnvironment = { repo: ghRepoEnvironmentTarget, host: ghHostEnvironmentTarget };
+      if (execution.nestedCommand && hasForeignGitHubLifecycleTarget(execution.nestedCommand, baseCwd, depth + 1, nestedGhEnvironment)) {
         return true;
       }
       const tokens = execution.tokens;
@@ -2953,7 +2961,7 @@ function hasForeignGitHubLifecycleTarget(command, baseCwd, depth = 0) {
         const nestedCommand = isShellCommandExecutable(executable)
           ? getShellCommandArgument(tokens)
           : getPowerShellNestedCommand(tokens);
-        if (nestedCommand && hasForeignGitHubLifecycleTarget(nestedCommand, baseCwd, depth + 1)) {
+        if (nestedCommand && hasForeignGitHubLifecycleTarget(nestedCommand, baseCwd, depth + 1, nestedGhEnvironment)) {
           return true;
         }
         continue;
@@ -2961,35 +2969,66 @@ function hasForeignGitHubLifecycleTarget(command, baseCwd, depth = 0) {
       if (!isGhExecutableToken(tokens[0])) {
         continue;
       }
+      if (effectiveGhHost.unresolved) {
+        return true;
+      }
       if (isGhApiGraphqlRefMutation(tokens.map((token) => normalizeAgentValue(stripOuterQuotes(token))))) {
         return true;
       }
 
       let explicitRepo = "";
+      let explicitHost = "";
       for (let index = 1; index < tokens.length; index += 1) {
         const token = stripOuterQuotes(tokens[index]);
         const normalized = normalizeAgentValue(token);
+        if (normalized === "--hostname") {
+          explicitHost = normalizeGitHubHost(tokens[index + 1] || "");
+          if (!explicitHost) return true;
+          index += 1;
+          continue;
+        }
+        if (normalized.startsWith("--hostname=")) {
+          explicitHost = normalizeGitHubHost(token.slice(token.indexOf("=") + 1));
+          if (!explicitHost) return true;
+          continue;
+        }
         if ((normalized === "-r" || normalized === "--repo") && index + 1 < tokens.length) {
-          explicitRepo = normalizeAgentValue(stripOuterQuotes(tokens[index + 1]));
-          break;
+          if (!explicitRepo) explicitRepo = normalizeAgentValue(stripOuterQuotes(tokens[index + 1]));
+          index += 1;
+          continue;
         }
         if (normalized.startsWith("--repo=")) {
-          explicitRepo = normalizeAgentValue(token.slice(token.indexOf("=") + 1));
-          break;
+          if (!explicitRepo) explicitRepo = normalizeAgentValue(token.slice(token.indexOf("=") + 1));
+          continue;
         }
         if (normalized.startsWith("-r=") || (/^-r[^-]/u.test(normalized) && normalized.length > 2)) {
-          explicitRepo = normalizeAgentValue(token.slice(token.startsWith("-R=") || token.startsWith("-r=") ? 3 : 2));
-          break;
+          if (!explicitRepo) explicitRepo = normalizeAgentValue(token.slice(token.startsWith("-R=") || token.startsWith("-r=") ? 3 : 2));
+          continue;
         }
-        const pullUrlRepo = /^(?:https?:\/\/)?(?:www\.)?github\.com\/([^/]+\/[^/]+)\/pull\/\d+(?:[/?#]|$)/iu.exec(token);
+        const pullUrlRepo = /^https?:\/\/([^/]+)\/([^/]+\/[^/]+)\/pull\/\d+(?:[/?#]|$)/iu.exec(token);
         if (pullUrlRepo) {
-          explicitRepo = normalizeAgentValue(pullUrlRepo[1]);
-          break;
+          explicitHost = normalizeGitHubHost(pullUrlRepo[1]);
+          if (!explicitRepo) explicitRepo = normalizeAgentValue(pullUrlRepo[2]);
+          if (!explicitHost) return true;
+          continue;
+        }
+        const schemelessGitHubPull = /^(?:www\.)?github\.com\/([^/]+\/[^/]+)\/pull\/\d+(?:[/?#]|$)/iu.exec(token);
+        if (schemelessGitHubPull) {
+          explicitHost = "github.com";
+          if (!explicitRepo) explicitRepo = normalizeAgentValue(schemelessGitHubPull[1]);
+          continue;
+        }
+        const apiUrlRepo = /^https?:\/\/([^/]+)\/(?:api\/v3\/)?repos\/([^/]+\/[^/]+)(?:\/|$)/iu.exec(token);
+        if (apiUrlRepo) {
+          explicitHost = normalizeGitHubHost(apiUrlRepo[1]);
+          if (!explicitRepo) explicitRepo = normalizeAgentValue(apiUrlRepo[2]);
+          if (!explicitHost) return true;
+          continue;
         }
         const apiRepo = /(?:^|\/)repos\/([^/]+\/[^/]+)(?:\/|$)/iu.exec(token);
         if (apiRepo) {
-          explicitRepo = normalizeAgentValue(apiRepo[1]);
-          break;
+          if (!explicitRepo) explicitRepo = normalizeAgentValue(apiRepo[1]);
+          continue;
         }
       }
 
@@ -2997,7 +3036,18 @@ function hasForeignGitHubLifecycleTarget(command, baseCwd, depth = 0) {
         explicitRepo = ghRepoEnvironmentTarget;
       }
 
-      if (explicitRepo && (!currentRepo || explicitRepo !== currentRepo)) {
+      if (!explicitHost) {
+        const environmentHost = effectiveGhHost.specified
+          ? effectiveGhHost.value
+          : (ghHostEnvironmentTarget || effectiveGhHost.value);
+        explicitHost = environmentHost ? normalizeGitHubHost(environmentHost) : currentRepo.host;
+        if (environmentHost && !explicitHost) return true;
+      }
+
+      if (explicitHost && (!currentRepo.host || explicitHost !== currentRepo.host)) {
+        return true;
+      }
+      if (explicitRepo && (!currentRepo.slug || explicitRepo !== currentRepo.slug)) {
         return true;
       }
     }
@@ -3014,10 +3064,27 @@ function getConstantGhRepoAssignment(source) {
   return normalizeAgentValue(stripOuterQuotes(value));
 }
 
-function getGitHubRepositorySlug(repoCwd) {
+function getConstantGhHostAssignment(source) {
+  let value = "";
+  const pattern = /(?:^|[\s;])(?:export\s+)?(?:\$env:)?gh_host\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s;]+))/giu;
+  for (const match of String(source || "").matchAll(pattern)) {
+    value = match[1] || match[2] || match[3] || "";
+  }
+  return normalizeGitHubHost(value);
+}
+
+function normalizeGitHubHost(value) {
+  const normalized = normalizeAgentValue(stripOuterQuotes(String(value || "")))
+    .replace(/^https?:\/\//u, "")
+    .replace(/^www\./u, "")
+    .replace(/\/$/u, "");
+  return /^[a-z0-9.-]+(?::\d+)?$/u.test(normalized) ? normalized : "";
+}
+
+function getGitHubRepositoryIdentity(repoCwd) {
   const repoRoot = resolveGitTopLevel(repoCwd);
   if (!repoRoot) {
-    return "";
+    return { host: "", slug: "" };
   }
   try {
     const remote = execFileSync("git", ["-C", repoRoot, "config", "--get", "remote.origin.url"], {
@@ -3025,10 +3092,12 @@ function getGitHubRepositorySlug(repoCwd) {
       env: getGitProbeEnvironment(),
       stdio: ["ignore", "pipe", "ignore"],
     }).trim().replace(/\\/gu, "/");
-    const match = /(?:github\.com[:/])([^/]+\/[^/]+)$/iu.exec(remote);
-    return match ? normalizeAgentValue(match[1]).replace(/\.git$/u, "") : "";
+    const match = /^(?:https?:\/\/|ssh:\/\/[^@]+@|[^@/:]+@)?([^/:]+)(?::\d+)?[:/]([^/]+\/[^/]+)$/iu.exec(remote);
+    return match
+      ? { host: normalizeGitHubHost(match[1]), slug: normalizeAgentValue(match[2]).replace(/\.git$/u, "") }
+      : { host: "", slug: "" };
   } catch {
-    return "";
+    return { host: "", slug: "" };
   }
 }
 
@@ -11734,17 +11803,21 @@ function getEffectiveEnvironmentValue(tokens, requestedName) {
   const normalizedName = String(requestedName || "").toUpperCase();
   let value = Object.entries(process.env)
     .find(([name]) => name.toUpperCase() === normalizedName)?.[1] || "";
+  let specified = false;
   let index = 0;
   const applyAssignment = (token) => {
     const assignment = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/u.exec(stripOuterQuotes(token));
     if (!assignment) return false;
-    if (assignment[1].toUpperCase() === normalizedName) value = stripOuterQuotes(assignment[2]);
+    if (assignment[1].toUpperCase() === normalizedName) {
+      value = stripOuterQuotes(assignment[2]);
+      specified = true;
+    }
     return true;
   };
   while (index < tokens.length && applyAssignment(tokens[index])) index += 1;
   const executable = normalizeAgentValue(getExecutableBasename(tokens[index] || ""));
   if (executable !== "env" && executable !== "env.exe") {
-    return { value, unresolved: false };
+    return { value, unresolved: false, specified };
   }
   index += 1;
   while (index < tokens.length) {
@@ -11756,12 +11829,18 @@ function getEffectiveEnvironmentValue(tokens, requestedName) {
     }
     const shortOptions = parseEnvShortOptionCluster(token);
     if (shortOptions) {
-      if (shortOptions.ignoreEnvironment) value = "";
+      if (shortOptions.ignoreEnvironment) {
+        value = "";
+        specified = true;
+      }
       const optionValue = shortOptions.value || stripOuterQuotes(tokens[index + 1] || "");
       const consumed = shortOptions.value ? 1 : 2;
       if (shortOptions.valueOption === "U") {
         if (!optionValue) return { value, unresolved: true };
-        if (optionValue.toUpperCase() === normalizedName) value = "";
+        if (optionValue.toUpperCase() === normalizedName) {
+          value = "";
+          specified = true;
+        }
         index += consumed;
         continue;
       }
@@ -11776,18 +11855,25 @@ function getEffectiveEnvironmentValue(tokens, requestedName) {
     }
     if (normalized === "-i" || normalized === "--ignore-environment" || normalized === "-") {
       value = "";
+      specified = true;
       index += 1;
       continue;
     }
     if (normalized === "-u" || normalized === "--unset") {
       const unsetName = stripOuterQuotes(tokens[index + 1] || "").toUpperCase();
       if (!unsetName) return { value, unresolved: true };
-      if (unsetName === normalizedName) value = "";
+      if (unsetName === normalizedName) {
+        value = "";
+        specified = true;
+      }
       index += 2;
       continue;
     }
     if (normalized.startsWith("--unset=")) {
-      if (token.slice(token.indexOf("=") + 1).toUpperCase() === normalizedName) value = "";
+      if (token.slice(token.indexOf("=") + 1).toUpperCase() === normalizedName) {
+        value = "";
+        specified = true;
+      }
       index += 1;
       continue;
     }
@@ -11810,7 +11896,7 @@ function getEffectiveEnvironmentValue(tokens, requestedName) {
     if (token.startsWith("-")) return { value, unresolved: true };
     break;
   }
-  return { value, unresolved: false };
+  return { value, unresolved: false, specified };
 }
 
 function getShellCwdChange(segment, baseCwd) {

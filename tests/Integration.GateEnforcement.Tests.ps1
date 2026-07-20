@@ -5334,6 +5334,8 @@ EOF
         $fixture = New-GateFixture
         $script:FixtureRoot = $fixture.Root
         Set-GatePass -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch
+        & git -C $fixture.RepoRoot remote add origin https://github.com/Sora-bluesky/winsmux.git
+        if ($LASTEXITCODE -ne 0) { throw 'unable to configure synthetic origin' }
         $commands = @(
             'gh pr merge 1 -R other/repo --squash',
             'gh pr merge https://github.com/other/repo/pull/1 --squash',
@@ -5341,7 +5343,15 @@ EOF
             'env GH_REPO=other/repo gh pr merge 1 --squash',
             'pwsh -Command "$env:GH_REPO=''other/repo''; gh pr merge 1 --squash"',
             'gh api -X PUT repos/other/repo/pulls/1/merge',
-            'gh api -X PATCH repos/other/repo/git/refs/heads/main'
+            'gh api -X PATCH repos/other/repo/git/refs/heads/main',
+            'gh api --hostname ghe.example -X PUT repos/Sora-bluesky/winsmux/pulls/1/merge',
+            'gh api repos/Sora-bluesky/winsmux/pulls/1/merge -X PUT --hostname ghe.example',
+            'GH_HOST=ghe.example gh api -X PUT repos/Sora-bluesky/winsmux/pulls/1/merge',
+            'env GH_HOST=ghe.example gh api -X PUT repos/Sora-bluesky/winsmux/pulls/1/merge',
+            'GH_HOST=ghe.example bash -c ''gh api -X PUT repos/Sora-bluesky/winsmux/pulls/1/merge''',
+            'pwsh -Command "$env:GH_HOST=''ghe.example''; gh api -X PUT repos/Sora-bluesky/winsmux/pulls/1/merge"',
+            'gh pr merge https://ghe.example/Sora-bluesky/winsmux/pull/1 --squash',
+            'gh api https://ghe.example/api/v3/repos/Sora-bluesky/winsmux/pulls/1/merge -X PUT'
         )
         $allowed = @()
         foreach ($command in $commands) {
@@ -5353,15 +5363,24 @@ EOF
 
         ($allowed -join "`n") | Should -Be ''
 
-        & git -C $fixture.RepoRoot remote add origin https://github.com/Sora-bluesky/winsmux.git
-        if ($LASTEXITCODE -ne 0) { throw 'unable to configure synthetic origin' }
+        $inheritedForeignHost = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+            command = 'gh api -X PUT repos/Sora-bluesky/winsmux/pulls/1/merge'
+        } -Environment @{
+            WINSMUX_ROLE = 'operator'
+            WINSMUX_ASSIGNED_WORKTREE = $fixture.RepoRoot
+            GH_HOST = 'ghe.example'
+        }
+        & $script:AssertDenyResult -Result $inheritedForeignHost -Because 'an inherited GH_HOST is part of the protected GitHub target identity'
+
         foreach ($command in @(
                 'gh pr merge 1 -R Sora-bluesky/winsmux --squash',
                 'gh pr merge https://github.com/Sora-bluesky/winsmux/pull/1 --squash',
                 'GH_REPO=Sora-bluesky/winsmux gh pr merge 1 --squash',
                 'env GH_REPO=Sora-bluesky/winsmux gh pr merge 1 --squash',
                 'pwsh -Command "$env:GH_REPO=''Sora-bluesky/winsmux''; gh pr merge 1 --squash"',
-                'gh api -X PUT repos/Sora-bluesky/winsmux/pulls/1/merge'
+                'gh api -X PUT repos/Sora-bluesky/winsmux/pulls/1/merge',
+                'gh api --hostname github.com -X PUT repos/Sora-bluesky/winsmux/pulls/1/merge',
+                'GH_HOST=github.com gh api -X PUT repos/Sora-bluesky/winsmux/pulls/1/merge'
             )) {
             $approved = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
             $approved.OutputObject | Should -BeNullOrEmpty
