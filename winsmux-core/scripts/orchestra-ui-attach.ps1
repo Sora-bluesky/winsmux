@@ -28,6 +28,19 @@ function Get-OrchestraAttachStatePath {
     return Join-Path (Get-OrchestraAttachRoot) ("{0}.json" -f $SessionName)
 }
 
+function Get-OrchestraRenderReceiptPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$SessionName,
+        [Parameter(Mandatory = $true)][string]$RequestId
+    )
+
+    if ([string]::IsNullOrWhiteSpace($RequestId)) {
+        throw 'Attach request ID is required for a render receipt path.'
+    }
+
+    return Join-Path (Get-OrchestraAttachRoot) ("{0}.{1}.render.json" -f $SessionName, $RequestId)
+}
+
 function Get-OrchestraAttachEntryScriptPath {
     return [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'orchestra-attach-entry.ps1'))
 }
@@ -73,6 +86,24 @@ function Read-OrchestraAttachState {
     }
 
     try {
+        return $raw | ConvertFrom-WinsmuxJson -Depth 8
+    } catch {
+        return $null
+    }
+}
+
+function Read-OrchestraRenderReceipt {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $null
+    }
+
+    try {
+        $raw = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
+        if ([string]::IsNullOrWhiteSpace($raw)) {
+            return $null
+        }
         return $raw | ConvertFrom-WinsmuxJson -Depth 8
     } catch {
         return $null
@@ -162,10 +193,111 @@ function Test-OrchestraProcessAlive {
     }
 }
 
+function Get-OrchestraLivePaneSnapshot {
+    param(
+        [Parameter(Mandatory = $true)][string]$WinsmuxBin,
+        [Parameter(Mandatory = $true)][string]$SessionName
+    )
+
+    if ([string]::IsNullOrWhiteSpace($WinsmuxBin)) {
+        return [PSCustomObject][ordered]@{ Ok = $false; Count = 0; Error = 'winsmux executable could not be resolved.'; PaneIds = @() }
+    }
+
+    try {
+        $paneLines = Invoke-WinsmuxBridgeCommand -WinsmuxBin $WinsmuxBin -Arguments @('list-panes', '-t', $SessionName, '-F', '#{pane_id}') 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            return [PSCustomObject][ordered]@{ Ok = $false; Count = 0; Error = ($paneLines | Out-String).Trim(); PaneIds = @() }
+        }
+
+        $rawPaneIds = @(
+            $paneLines |
+                ForEach-Object { ([string]$_).Trim() } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
+        $paneIds = @($rawPaneIds | Where-Object { $_ -match '^%[0-9]+$' } | Sort-Object -Unique)
+        if ($rawPaneIds.Count -ne $paneIds.Count) {
+            return [PSCustomObject][ordered]@{ Ok = $false; Count = 0; Error = 'list-panes returned malformed or duplicate pane IDs.'; PaneIds = @() }
+        }
+        return [PSCustomObject][ordered]@{ Ok = ($paneIds.Count -gt 0); Count = $paneIds.Count; Error = if ($paneIds.Count -gt 0) { '' } else { 'No live pane IDs were returned.' }; PaneIds = @($paneIds) }
+    } catch {
+        return [PSCustomObject][ordered]@{ Ok = $false; Count = 0; Error = $_.Exception.Message; PaneIds = @() }
+    }
+}
+
+function Test-OrchestraRenderReceipt {
+    param(
+        [AllowNull()]$Receipt,
+        [Parameter(Mandatory = $true)][string]$SessionName,
+        [Parameter(Mandatory = $true)][string]$RequestId,
+        [AllowEmptyCollection()][string[]]$LivePaneIds = @(),
+        [long]$RequestedAtUnixMs = 0
+    )
+
+    $result = [ordered]@{
+        Confirmed = $false
+        Reason = 'render_receipt_missing'
+        RendererProcessId = 0
+        RenderedPaneIds = @()
+        RenderedAtUnixMs = 0
+    }
+    if ($null -eq $Receipt) {
+        return [PSCustomObject]$result
+    }
+
+    foreach ($requiredProperty in @('version', 'request_id', 'session_name', 'renderer_process_id', 'rendered_at_unix_ms', 'pane_ids')) {
+        if ($null -eq $Receipt.PSObject.Properties[$requiredProperty]) {
+            $result.Reason = 'render_receipt_malformed'
+            return [PSCustomObject]$result
+        }
+    }
+    $receiptVersion = 0
+    if (-not [int]::TryParse(([string]$Receipt.version), [ref]$receiptVersion) -or $receiptVersion -ne 1) {
+        $result.Reason = 'render_receipt_version_unsupported'
+        return [PSCustomObject]$result
+    }
+    if ([string]$Receipt.request_id -ne $RequestId) {
+        $result.Reason = 'render_receipt_request_mismatch'
+        return [PSCustomObject]$result
+    }
+    if ([string]$Receipt.session_name -ne $SessionName) {
+        $result.Reason = 'render_receipt_session_mismatch'
+        return [PSCustomObject]$result
+    }
+
+    $rendererProcessId = ConvertTo-OrchestraAttachProcessId -Value $Receipt.renderer_process_id
+    if (-not (Test-OrchestraProcessAlive -ProcessId $rendererProcessId)) {
+        $result.Reason = 'render_receipt_renderer_not_live'
+        return [PSCustomObject]$result
+    }
+
+    $renderedAtUnixMs = 0L
+    if (-not [long]::TryParse(([string]$Receipt.rendered_at_unix_ms), [ref]$renderedAtUnixMs) -or $renderedAtUnixMs -le 0 -or ($RequestedAtUnixMs -gt 0 -and $renderedAtUnixMs -lt $RequestedAtUnixMs)) {
+        $result.Reason = 'render_receipt_not_fresh'
+        return [PSCustomObject]$result
+    }
+
+    $rawRenderedPaneIds = @($Receipt.pane_ids | ForEach-Object { ([string]$_).Trim() })
+    $renderedPaneIds = @($rawRenderedPaneIds | Where-Object { $_ -match '^%[0-9]+$' } | Sort-Object -Unique)
+    $rawLivePaneIds = @($LivePaneIds | ForEach-Object { ([string]$_).Trim() })
+    $livePaneIds = @($rawLivePaneIds | Where-Object { $_ -match '^%[0-9]+$' } | Sort-Object -Unique)
+    if ($rawRenderedPaneIds.Count -eq 0 -or $rawRenderedPaneIds.Count -ne $renderedPaneIds.Count -or $rawLivePaneIds.Count -ne $livePaneIds.Count -or $livePaneIds.Count -eq 0 -or (($renderedPaneIds -join "`n") -ne ($livePaneIds -join "`n"))) {
+        $result.Reason = 'render_receipt_pane_set_mismatch'
+        return [PSCustomObject]$result
+    }
+
+    $result.Confirmed = $true
+    $result.Reason = 'render_receipt_confirmed'
+    $result.RendererProcessId = $rendererProcessId
+    $result.RenderedPaneIds = @($renderedPaneIds)
+    $result.RenderedAtUnixMs = $renderedAtUnixMs
+    return [PSCustomObject]$result
+}
+
 function Test-OrchestraLiveVisibleAttachState {
     param(
         [AllowNull()]$State,
-        [Parameter(Mandatory = $true)][string]$SessionName
+        [Parameter(Mandatory = $true)][string]$SessionName,
+        [Parameter(Mandatory = $true)][string]$WinsmuxBin
     )
 
     if ($null -eq $State) {
@@ -182,97 +314,26 @@ function Test-OrchestraLiveVisibleAttachState {
         return $false
     }
 
-    return (Test-OrchestraProcessAlive -ProcessId $State.attach_process_id)
-}
-
-function Get-OrchestraBaselineClients {
-    param(
-        [AllowNull()]$BaselineClients,
-        [AllowNull()]$State
-    )
-
-    $clients = @()
-    if ($null -ne $BaselineClients) {
-        $clients = @(
-            @($BaselineClients) |
-                ForEach-Object { [string]$_ } |
-                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-        )
-    }
-
-    if ($clients.Count -gt 0) {
-        return $clients
-    }
-
-    if ($null -ne $State -and $State.PSObject.Properties.Name -contains 'baseline_clients') {
-        return @(
-            @($State.baseline_clients) |
-                ForEach-Object { [string]$_ } |
-                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-        )
-    }
-
-    return @()
-}
-
-function Test-OrchestraAttachClientTransition {
-    param(
-        [AllowEmptyCollection()][string[]]$BaselineClients = @(),
-        [AllowEmptyCollection()][string[]]$CurrentClients = @()
-    )
-
-    $baseline = @(
-        @($BaselineClients) |
-            ForEach-Object { [string]$_ } |
-            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
-            Sort-Object -Unique
-    )
-    $current = @(
-        @($CurrentClients) |
-            ForEach-Object { [string]$_ } |
-            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
-            Sort-Object -Unique
-    )
-
-    if ($baseline.Count -eq 0) {
-        return ($current.Count -gt 0)
-    }
-
-    if ($baseline.Count -ne $current.Count) {
-        return $true
-    }
-
-    if ($baseline.Count -eq 0 -and $current.Count -eq 0) {
+    $requestId = Get-OrchestraAttachRequestId -State $State
+    $receiptPath = Get-OrchestraAttachStateString -State $State -Name 'render_receipt_path'
+    if ([string]::IsNullOrWhiteSpace($requestId) -or [string]::IsNullOrWhiteSpace($receiptPath)) {
         return $false
     }
 
-    return (($baseline -join "`n") -ne ($current -join "`n"))
-}
-
-function Test-OrchestraAttachClientSnapshotMatch {
-    param(
-        [AllowNull()]$ExpectedClients,
-        [AllowNull()]$CurrentClients
-    )
-
-    $expected = @(
-        @($ExpectedClients) |
-            ForEach-Object { [string]$_ } |
-            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
-            Sort-Object -Unique
-    )
-    $current = @(
-        @($CurrentClients) |
-            ForEach-Object { [string]$_ } |
-            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
-            Sort-Object -Unique
-    )
-
-    if ($expected.Count -eq 0) {
+    $livePanes = Get-OrchestraLivePaneSnapshot -WinsmuxBin $WinsmuxBin -SessionName $SessionName
+    if (-not [bool]$livePanes.Ok) {
         return $false
     }
 
-    return (($expected -join "`n") -eq ($current -join "`n"))
+    $requestedAtUnixMs = 0L
+    $requestedAt = Get-OrchestraAttachStateString -State $State -Name 'requested_at'
+    $parsedRequestedAt = [DateTimeOffset]::MinValue
+    if ([DateTimeOffset]::TryParse($requestedAt, [ref]$parsedRequestedAt)) {
+        $requestedAtUnixMs = $parsedRequestedAt.ToUnixTimeMilliseconds()
+    }
+    $receipt = Read-OrchestraRenderReceipt -Path $receiptPath
+    $validation = Test-OrchestraRenderReceipt -Receipt $receipt -SessionName $SessionName -RequestId $requestId -LivePaneIds @($livePanes.PaneIds) -RequestedAtUnixMs $requestedAtUnixMs
+    return [bool]$validation.Confirmed
 }
 
 function Write-OrchestraAttachState {
@@ -732,74 +793,58 @@ function Wait-OrchestraAttachHandshake {
         [int]$PollMilliseconds = 250
     )
 
-    $targetClientCount = $BaselineClientCount + 1
     $deadline = (Get-Date).AddMilliseconds($TimeoutMilliseconds)
-    $lastError = ''
+    $lastError = 'render_receipt_missing'
 
     do {
         $state = Read-OrchestraAttachState -SessionName $SessionName
         if ($null -ne $state) {
             $status = [string]$state.attach_status
-            if ($status -eq 'attach_confirmed') {
-                return [PSCustomObject][ordered]@{
-                    Confirmed           = $true
-                    Source              = 'handshake'
-                    Status              = 'attach_confirmed'
-                    Reason              = [string]$state.error
-                    AttachedClientCount = [int]$state.client_count_seen
-                    State               = $state
-                }
-            }
-
             if ($status -eq 'attach_failed') {
                 $lastError = [string]$state.error
             }
         }
 
         $snapshot = Get-OrchestraAttachedClientSnapshot -WinsmuxBin $WinsmuxBin -SessionName $SessionName
-        $effectiveBaselineClients = Get-OrchestraBaselineClients -BaselineClients $BaselineClients -State $state
-        $clientTransition = if ([bool]$snapshot.Ok) {
-            Test-OrchestraAttachClientTransition -BaselineClients $effectiveBaselineClients -CurrentClients @($snapshot.Clients)
+        $requestId = Get-OrchestraAttachRequestId -State $state
+        $receiptPath = Get-OrchestraAttachStateString -State $state -Name 'render_receipt_path'
+        $livePanes = Get-OrchestraLivePaneSnapshot -WinsmuxBin $WinsmuxBin -SessionName $SessionName
+        if (-not [string]::IsNullOrWhiteSpace($requestId) -and -not [string]::IsNullOrWhiteSpace($receiptPath) -and [bool]$livePanes.Ok) {
+            $requestedAtUnixMs = 0L
+            $requestedAt = Get-OrchestraAttachStateString -State $state -Name 'requested_at'
+            $parsedRequestedAt = [DateTimeOffset]::MinValue
+            if ([DateTimeOffset]::TryParse($requestedAt, [ref]$parsedRequestedAt)) {
+                $requestedAtUnixMs = $parsedRequestedAt.ToUnixTimeMilliseconds()
+            }
+            $receipt = Read-OrchestraRenderReceipt -Path $receiptPath
+            $receiptValidation = Test-OrchestraRenderReceipt -Receipt $receipt -SessionName $SessionName -RequestId $requestId -LivePaneIds @($livePanes.PaneIds) -RequestedAtUnixMs $requestedAtUnixMs
+            $lastError = [string]$receiptValidation.Reason
         } else {
-            $false
+            $receiptValidation = [PSCustomObject]@{ Confirmed = $false; Reason = if (-not [bool]$livePanes.Ok) { 'render_receipt_live_panes_unavailable' } else { 'render_receipt_missing' } }
+            $lastError = [string]$receiptValidation.Reason
         }
-        $attachEntryObserved = $false
-        if ($null -ne $state) {
-            $currentStatus = [string]$state.attach_status
-            $attachEntryObserved = $currentStatus -in @('attach_entry_started', 'attach_confirming', 'attach_confirmed')
-        }
-        $countAdvanced = [bool]$snapshot.Ok -and ([int]$snapshot.Count -ge $targetClientCount)
-        $countBasedConfirmationAllowed = $countAdvanced -and (
-            ($BaselineClientCount -gt 0) -or
-            (@($effectiveBaselineClients).Count -gt 0) -or
-            $attachEntryObserved
-        )
-        $identityBasedConfirmationAllowed = $clientTransition -and (@($effectiveBaselineClients).Count -gt 0)
 
-        if ($countBasedConfirmationAllowed -or $identityBasedConfirmationAllowed) {
-            $source = if ($attachEntryObserved) { 'handshake' } else { 'client-probe' }
-
+        if ([bool]$receiptValidation.Confirmed) {
             $confirmedAt = (Get-Date).ToString('o')
             $updatedState = Write-OrchestraAttachState -SessionName $SessionName -Properties @{
-                attach_status       = 'attach_confirmed'
-                attach_confirmed_at = $confirmedAt
-                client_count_seen   = [int]$snapshot.Count
-                attached_client_count = [int]$snapshot.Count
+                attach_status             = 'attach_confirmed'
+                attach_confirmed_at       = $confirmedAt
+                client_count_seen         = if ([bool]$snapshot.Ok) { [int]$snapshot.Count } else { 0 }
+                attached_client_count     = if ([bool]$snapshot.Ok) { [int]$snapshot.Count } else { 0 }
                 attached_client_snapshot = @($snapshot.Clients)
-                ui_attach_source    = $source
-                error               = if ($identityBasedConfirmationAllowed -and [int]$snapshot.Count -lt $targetClientCount) {
-                    "Visible attach confirmed for session '$SessionName' after attached client identity changed."
-                } else {
-                    "Visible attach confirmed for session '$SessionName' with $($snapshot.Count) attached client(s)."
-                }
+                renderer_process_id       = [int]$receiptValidation.RendererProcessId
+                rendered_pane_ids         = @($receiptValidation.RenderedPaneIds)
+                rendered_at_unix_ms       = [long]$receiptValidation.RenderedAtUnixMs
+                ui_attach_source          = 'render-receipt'
+                error                     = "Visible attach confirmed for session '$SessionName' by a post-draw render receipt."
             }
 
             return [PSCustomObject][ordered]@{
                 Confirmed           = $true
-                Source              = $source
+                Source              = 'render-receipt'
                 Status              = 'attach_confirmed'
                 Reason              = [string]$updatedState.error
-                AttachedClientCount = [int]$snapshot.Count
+                AttachedClientCount = if ([bool]$snapshot.Ok) { [int]$snapshot.Count } else { 0 }
                 State               = $updatedState
             }
         }
@@ -811,11 +856,7 @@ function Wait-OrchestraAttachHandshake {
         attach_status     = 'attach_failed'
         ui_attach_source  = 'none'
         client_count_seen = $BaselineClientCount
-        error             = if ([string]::IsNullOrWhiteSpace($lastError)) {
-            "Attach confirmation timed out before client count reached $targetClientCount."
-        } else {
-            $lastError
-        }
+        error             = "Attach confirmation timed out: $lastError."
     }
 
     return [PSCustomObject][ordered]@{
@@ -844,11 +885,7 @@ function Invoke-OrchestraVisibleAttachRequest {
         $desktopPid = 0
         [void][int]::TryParse(([string]$env:WINSMUX_DESKTOP_APP_PID), [ref]$desktopPid)
         $desktopAlive = $desktopPid -gt 0 -and (Test-OrchestraProcessAlive -ProcessId $desktopPid)
-        $reason = if ($desktopAlive) {
-            "Desktop app PID $desktopPid is the visible attach host; skipped terminal attach."
-        } else {
-            "WINSMUX_ORCHESTRA_ATTACH_MODE=desktop-app requires a live WINSMUX_DESKTOP_APP_PID."
-        }
+        $reason = if ($desktopAlive) { 'Desktop app is live, but it did not provide a nonce-bound post-draw render receipt.' } else { 'WINSMUX_ORCHESTRA_ATTACH_MODE=desktop-app requires a live WINSMUX_DESKTOP_APP_PID.' }
         $stateProperties = @{
             session_name        = $SessionName
             winsmux_path        = [string]$WinsmuxPathForAttach
@@ -856,8 +893,8 @@ function Invoke-OrchestraVisibleAttachRequest {
             requested_at        = (Get-Date).ToString('o')
             attach_request_id   = [guid]::NewGuid().ToString('N')
             attach_process_id   = $desktopPid
-            attach_status       = if ($desktopAlive) { 'attach_confirmed' } else { 'attach_failed' }
-            attach_confirmed_at = if ($desktopAlive) { (Get-Date).ToString('o') } else { '' }
+            attach_status       = 'attach_failed'
+            attach_confirmed_at = ''
             client_count_seen   = 0
             attached_client_count = 0
             attached_client_snapshot = @()
@@ -871,9 +908,9 @@ function Invoke-OrchestraVisibleAttachRequest {
         return [PSCustomObject][ordered]@{
             Attempted                = $true
             Launched                 = $false
-            Attached                 = $desktopAlive
+            Attached                 = $false
             AttachedClientCount      = 0
-            Status                   = if ($desktopAlive) { 'attach_confirmed' } else { 'attach_failed' }
+            Status                   = 'attach_failed'
             Reason                   = $reason
             Path                     = ''
             Source                   = 'desktop-app'
@@ -913,20 +950,15 @@ function Invoke-OrchestraVisibleAttachRequest {
     $baselineClientCount = if ([bool]$clientSnapshot.Ok) { [int]$clientSnapshot.Count } else { 0 }
     $baselineClients = if ([bool]$clientSnapshot.Ok) { @($clientSnapshot.Clients) } else { @() }
     $existingAttachState = Read-OrchestraAttachState -SessionName $SessionName
-    $existingAttachSource = if ($null -eq $existingAttachState) { '' } else { [string]$existingAttachState.ui_attach_source }
-    if ([string]::IsNullOrWhiteSpace($existingAttachSource)) {
-        $existingAttachSource = 'handshake'
-    }
-
-    $hasLiveVisibleAttach = (Test-OrchestraLiveVisibleAttachState -State $existingAttachState -SessionName $SessionName)
-    if ($hasLiveVisibleAttach -and [bool]$clientSnapshot.Ok -and $baselineClientCount -ge 1) {
+    $hasLiveVisibleAttach = (Test-OrchestraLiveVisibleAttachState -State $existingAttachState -SessionName $SessionName -WinsmuxBin $resolvedWinsmuxPath)
+    if ($hasLiveVisibleAttach) {
         $existingAttachState = Write-OrchestraAttachState -SessionName $SessionName -Properties @{
             session_name        = $SessionName
             winsmux_path        = $resolvedWinsmuxPath
             attach_status       = 'attach_confirmed'
             attach_confirmed_at = (Get-Date).ToString('o')
             client_count_seen   = $baselineClientCount
-            ui_attach_source    = $existingAttachSource
+            ui_attach_source    = 'render-receipt'
             error               = "Detected $baselineClientCount attached client(s) for session '$SessionName'."
         }
 
@@ -938,38 +970,7 @@ function Invoke-OrchestraVisibleAttachRequest {
             Status                   = 'attach_already_present'
             Reason                   = "Detected an existing live visible attach for session '$SessionName'; skipped spawning another visible attach window."
             Path                     = ''
-            Source                   = $existingAttachSource
-            attach_request_id        = (Get-OrchestraAttachRequestId -State $existingAttachState)
-            attached_client_snapshot = @(Get-OrchestraAttachStateStringArray -State $existingAttachState -Name 'attached_client_snapshot')
-            ui_host_kind             = (Get-OrchestraAttachStateString -State $existingAttachState -Name 'ui_host_kind')
-            attach_adapter_trace     = @(Get-OrchestraAttachTraceEntries -State $existingAttachState)
-        }
-    }
-
-    $existingAttachStatus = if ($null -eq $existingAttachState) { '' } else { [string](Get-OrchestraAttachStateString -State $existingAttachState -Name 'attach_status') }
-    $existingAttachedClientSnapshot = if ($null -eq $existingAttachState) { @() } else { @(Get-OrchestraAttachStateStringArray -State $existingAttachState -Name 'attached_client_snapshot') }
-    if ($existingAttachStatus -eq 'attach_confirmed' -and [bool]$clientSnapshot.Ok -and (Test-OrchestraAttachClientSnapshotMatch -ExpectedClients $existingAttachedClientSnapshot -CurrentClients @($clientSnapshot.Clients))) {
-        $existingAttachState = Write-OrchestraAttachState -SessionName $SessionName -Properties @{
-            session_name        = $SessionName
-            winsmux_path        = $resolvedWinsmuxPath
-            attach_status       = 'attach_confirmed'
-            attach_confirmed_at = (Get-Date).ToString('o')
-            client_count_seen   = $baselineClientCount
-            attached_client_count = $baselineClientCount
-            attached_client_snapshot = @($clientSnapshot.Clients)
-            ui_attach_source    = 'attached-client-registry'
-            error               = "Detected existing attached-client registry confirmation for session '$SessionName'."
-        }
-
-        return [PSCustomObject][ordered]@{
-            Attempted                = $false
-            Launched                 = $false
-            Attached                 = $true
-            AttachedClientCount      = $baselineClientCount
-            Status                   = 'attach_already_present'
-            Reason                   = "Detected an existing attached-client confirmation for session '$SessionName'; skipped spawning another visible attach window."
-            Path                     = ''
-            Source                   = 'attached-client-registry'
+            Source                   = 'render-receipt'
             attach_request_id        = (Get-OrchestraAttachRequestId -State $existingAttachState)
             attached_client_snapshot = @(Get-OrchestraAttachStateStringArray -State $existingAttachState -Name 'attached_client_snapshot')
             ui_host_kind             = (Get-OrchestraAttachStateString -State $existingAttachState -Name 'ui_host_kind')
@@ -978,6 +979,7 @@ function Invoke-OrchestraVisibleAttachRequest {
     }
 
     $attachRequestId = [guid]::NewGuid().ToString('N')
+    $renderReceiptPath = Get-OrchestraRenderReceiptPath -SessionName $SessionName -RequestId $attachRequestId
     $state = Write-OrchestraAttachState -SessionName $SessionName -Properties @{
         session_name          = $SessionName
         winsmux_path          = $resolvedWinsmuxPath
@@ -988,6 +990,10 @@ function Invoke-OrchestraVisibleAttachRequest {
         baseline_clients      = @($baselineClients)
         client_count_seen     = $baselineClientCount
         attach_process_id     = 0
+        renderer_process_id   = 0
+        render_receipt_path   = $renderReceiptPath
+        rendered_pane_ids     = @()
+        rendered_at_unix_ms   = 0
         attach_status         = 'attach_requested'
         attach_confirmed_at   = ''
         started_at            = ''
@@ -1017,6 +1023,22 @@ function Invoke-OrchestraVisibleAttachRequest {
             $state = $traceUpdate.State
             $lastFailureReason = [string]$candidate.Reason
             continue
+        }
+
+        $attachRequestId = [guid]::NewGuid().ToString('N')
+        $renderReceiptPath = Get-OrchestraRenderReceiptPath -SessionName $SessionName -RequestId $attachRequestId
+        $state = Write-OrchestraAttachState -SessionName $SessionName -Properties @{
+            requested_at          = (Get-Date).ToString('o')
+            attach_request_id     = $attachRequestId
+            attach_process_id     = 0
+            renderer_process_id   = 0
+            render_receipt_path   = $renderReceiptPath
+            rendered_pane_ids     = @()
+            rendered_at_unix_ms   = 0
+            attach_status         = 'attach_requested'
+            attach_confirmed_at   = ''
+            ui_attach_source      = 'none'
+            error                 = ''
         }
 
         try {

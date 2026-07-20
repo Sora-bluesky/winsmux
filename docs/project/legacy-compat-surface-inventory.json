@@ -103,6 +103,7 @@
         "scripts/winsmux-core.ps1",
         "winsmux-core/psmux-bridge.ps1",
         "winsmux-core/scripts/agent-monitor.ps1",
+        "winsmux-core/scripts/orchestra-attach-entry.ps1",
         "winsmux-core/scripts/orchestra-layout.ps1",
         "winsmux-core/scripts/powershell-deescalation.ps1"
       ]

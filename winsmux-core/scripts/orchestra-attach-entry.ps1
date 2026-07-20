@@ -23,6 +23,11 @@ try {
     if ([string]::IsNullOrWhiteSpace($winsmuxPath)) {
         throw "winsmux executable path missing from attach state for session '$sessionName'."
     }
+    $attachRequestId = Get-OrchestraAttachRequestId -State $state
+    $renderReceiptPath = Get-OrchestraAttachStateString -State $state -Name 'render_receipt_path'
+    if ([string]::IsNullOrWhiteSpace($attachRequestId) -or [string]::IsNullOrWhiteSpace($renderReceiptPath)) {
+        throw "Render receipt metadata missing from attach state for session '$sessionName'."
+    }
 
     $baselineClientCount = 0
     if ($state.PSObject.Properties.Name -contains 'baseline_client_count') {
@@ -48,7 +53,33 @@ try {
         '-BaselineClientCount', $baselineClientCount
     ) -WindowStyle Hidden | Out-Null
 
-    Invoke-WinsmuxBridgeCommand -WinsmuxBin $winsmuxPath -Arguments @('attach-session', '-t', $sessionName)
+    $previousRenderReceiptPath = $env:WINSMUX_RENDER_RECEIPT_PATH
+    $previousRenderRequestId = $env:WINSMUX_RENDER_REQUEST_ID
+    $previousRenderSessionName = $env:WINSMUX_RENDER_SESSION_NAME
+    $previousPsmuxActive = $env:PSMUX_ACTIVE
+    $previousPsmuxSession = $env:PSMUX_SESSION
+    try {
+        $env:WINSMUX_RENDER_RECEIPT_PATH = $renderReceiptPath
+        $env:WINSMUX_RENDER_REQUEST_ID = $attachRequestId
+        $env:WINSMUX_RENDER_SESSION_NAME = $sessionName
+        Remove-Item Env:PSMUX_ACTIVE -ErrorAction SilentlyContinue
+        Remove-Item Env:PSMUX_SESSION -ErrorAction SilentlyContinue
+        Invoke-WinsmuxBridgeCommand -WinsmuxBin $winsmuxPath -Arguments @('attach-session', '-t', $sessionName)
+    } finally {
+        foreach ($entry in @(
+            @{ Name = 'WINSMUX_RENDER_RECEIPT_PATH'; Value = $previousRenderReceiptPath },
+            @{ Name = 'WINSMUX_RENDER_REQUEST_ID'; Value = $previousRenderRequestId },
+            @{ Name = 'WINSMUX_RENDER_SESSION_NAME'; Value = $previousRenderSessionName },
+            @{ Name = 'PSMUX_ACTIVE'; Value = $previousPsmuxActive },
+            @{ Name = 'PSMUX_SESSION'; Value = $previousPsmuxSession }
+        )) {
+            if ($null -eq $entry.Value) {
+                Remove-Item ("Env:{0}" -f $entry.Name) -ErrorAction SilentlyContinue
+            } else {
+                Set-Item ("Env:{0}" -f $entry.Name) -Value ([string]$entry.Value)
+            }
+        }
+    }
     $exitCode = $LASTEXITCODE
     if ($exitCode -ne 0) {
         Write-OrchestraAttachState -SessionName $sessionName -Properties @{

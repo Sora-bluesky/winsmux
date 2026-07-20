@@ -1,4 +1,5 @@
 use std::io::{self, Write, BufRead, BufReader};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use std::env;
 
@@ -24,6 +25,119 @@ pub(crate) fn should_refresh_managed_mouse_reporting(
     elapsed: Duration,
 ) -> bool {
     managed_vt_input && elapsed >= Duration::from_secs(30)
+}
+
+#[derive(Debug, Clone)]
+struct RenderReceiptConfig {
+    path: PathBuf,
+    request_id: String,
+    session_name: String,
+}
+
+fn render_session_matches(runtime_session_name: &str, logical_session_name: &str) -> bool {
+    if runtime_session_name == logical_session_name {
+        return true;
+    }
+    runtime_session_name.ends_with(&format!("__{}", logical_session_name))
+}
+
+impl RenderReceiptConfig {
+    fn from_env(runtime_session_name: &str) -> Option<Self> {
+        let path = env::var_os("WINSMUX_RENDER_RECEIPT_PATH")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)?;
+        let request_id = env::var("WINSMUX_RENDER_REQUEST_ID").ok()?;
+        let session_name = env::var("WINSMUX_RENDER_SESSION_NAME").ok()?;
+        if request_id.trim().is_empty()
+            || session_name.trim().is_empty()
+            || !render_session_matches(runtime_session_name, &session_name)
+        {
+            return None;
+        }
+
+        Some(Self {
+            path,
+            request_id,
+            session_name,
+        })
+    }
+}
+
+#[derive(serde::Serialize)]
+struct RenderReceipt<'a> {
+    version: u8,
+    request_id: &'a str,
+    session_name: &'a str,
+    renderer_process_id: u32,
+    rendered_at_unix_ms: u128,
+    pane_ids: Vec<String>,
+}
+
+fn normalized_rendered_pane_ids(pane_ids: &[usize]) -> Vec<String> {
+    let mut pane_ids = pane_ids.to_vec();
+    pane_ids.sort_unstable();
+    pane_ids.dedup();
+    pane_ids.into_iter().map(|id| format!("%{}", id)).collect()
+}
+
+fn write_render_receipt(config: &RenderReceiptConfig, pane_ids: &[usize]) -> io::Result<()> {
+    let pane_ids = normalized_rendered_pane_ids(pane_ids);
+    if pane_ids.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "render receipt requires at least one rendered pane",
+        ));
+    }
+
+    if let Some(parent) = config.path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let rendered_at_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| io::Error::new(io::ErrorKind::Other, error))?
+        .as_millis();
+    let receipt = RenderReceipt {
+        version: 1,
+        request_id: &config.request_id,
+        session_name: &config.session_name,
+        renderer_process_id: std::process::id(),
+        rendered_at_unix_ms,
+        pane_ids,
+    };
+
+    let temporary_path = config.path.with_extension(format!(
+        "render-tmp-{}",
+        std::process::id()
+    ));
+    let write_result = (|| -> io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary_path)?;
+        serde_json::to_writer(&mut file, &receipt)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        file.write_all(b"\n")?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temporary_path, &config.path)?;
+        Ok(())
+    })();
+    if write_result.is_err() {
+        let _ = std::fs::remove_file(&temporary_path);
+    }
+    write_result
+}
+
+fn collect_rendered_pane_ids(node: &LayoutJson, out: &mut Vec<usize>) {
+    match node {
+        LayoutJson::Leaf { id, .. } => out.push(*id),
+        LayoutJson::Split { children, .. } => {
+            for child in children {
+                collect_rendered_pane_ids(child, out);
+            }
+        }
+    }
 }
 
 /// Build a send-key name with modifier prefix (e.g. "C-Left", "S-Right", "C-S-Up").
@@ -395,6 +509,8 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
     let mut session_selected: usize = 0;
     let mut confirm_cmd: Option<String> = None;  // pending kill confirmation
     let current_session = name.clone();
+    let render_receipt_config = RenderReceiptConfig::from_env(&name);
+    let mut render_receipt_written = false;
     let mut last_sent_size: (u16, u16) = (0, 0);
     let mut last_status_lines: u16 = 1; // track server's status_lines for correct client-size height
     let mut last_dump_time = Instant::now() - Duration::from_millis(250);
@@ -3678,6 +3794,17 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
             }
 
         })?;
+
+        if !render_receipt_written {
+            if let Some(ref config) = render_receipt_config {
+                let mut pane_ids = Vec::new();
+                collect_rendered_pane_ids(&root, &mut pane_ids);
+                match write_render_receipt(config, &pane_ids) {
+                    Ok(()) => render_receipt_written = true,
+                    Err(error) => client_log("render-receipt", &format!("write failed: {}", error)),
+                }
+            }
+        }
         if client_log_enabled() {
             client_log("draw", &format!("draw OK, render={}us overlays: popup={} confirm={} menu={} display_panes={}",
                 _t_parse.elapsed().as_micros().saturating_sub(_parse_us as u128),

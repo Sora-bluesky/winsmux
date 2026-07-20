@@ -3,6 +3,55 @@ use super::*;
 
 #[cfg(windows)]
 #[test]
+fn task784_render_receipt_records_only_post_draw_identity() {
+    let path = std::env::temp_dir().join(format!(
+        "winsmux-task784-render-receipt-{}-{}.json",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let config = RenderReceiptConfig {
+        path: path.clone(),
+        request_id: "request-784".to_string(),
+        session_name: "winsmux-orchestra".to_string(),
+    };
+
+    write_render_receipt(&config, &[3, 1, 3]).expect("receipt write should succeed");
+
+    let receipt: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&path).expect("receipt should exist"),
+    )
+    .expect("receipt should be valid JSON");
+    assert_eq!(receipt["request_id"], "request-784");
+    assert_eq!(receipt["session_name"], "winsmux-orchestra");
+    assert_eq!(receipt["renderer_process_id"], std::process::id());
+    assert_eq!(receipt["pane_ids"], serde_json::json!(["%1", "%3"]));
+    assert!(receipt.get("pane_content").is_none());
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[cfg(windows)]
+#[test]
+fn task784_render_session_identity_accepts_only_exact_or_namespaced_logical_name() {
+    assert!(render_session_matches(
+        "winsmux-orchestra",
+        "winsmux-orchestra"
+    ));
+    assert!(render_session_matches(
+        "isolated__winsmux-orchestra",
+        "winsmux-orchestra"
+    ));
+    assert!(!render_session_matches(
+        "isolated__other-session",
+        "winsmux-orchestra"
+    ));
+}
+
+#[cfg(windows)]
+#[test]
 fn windows_terminal_normal_ssh_env_only_does_not_refresh_mouse_reporting() {
     assert!(!should_refresh_managed_mouse_reporting(
         false,

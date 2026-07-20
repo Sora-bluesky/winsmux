@@ -735,7 +735,8 @@ function Resolve-OrchestraSmokeAttachState {
         [Parameter(Mandatory = $true)]$ProbeState,
         [AllowNull()]$AttachState,
         [Parameter(Mandatory = $true)][bool]$ClientProbeOk,
-        [AllowNull()]$ClientSnapshot
+        [AllowNull()]$ClientSnapshot,
+        [Parameter(Mandatory = $true)][string]$WinsmuxBin
     )
 
     $uiAttached = $false
@@ -785,30 +786,15 @@ function Resolve-OrchestraSmokeAttachState {
 
         $attachStateError = if ($null -ne $AttachState.PSObject.Properties['error']) { [string]$AttachState.error } else { '' }
         $attachStateSource = if ($null -ne $AttachState.PSObject.Properties['ui_attach_source']) { [string]$AttachState.ui_attach_source } else { '' }
-        $currentClients = if ($null -ne $ClientSnapshot -and $null -ne $ClientSnapshot.PSObject.Properties['Clients']) { @($ClientSnapshot.Clients) } else { @() }
-
-        if (($attachStateStatus -eq 'attach_confirmed') -and $ClientProbeOk -and (Test-OrchestraLiveVisibleAttachState -State $AttachState -SessionName ([string]$ProbeState.SessionName))) {
+        if (($attachStateStatus -eq 'attach_confirmed') -and (Test-OrchestraLiveVisibleAttachState -State $AttachState -SessionName ([string]$ProbeState.SessionName) -WinsmuxBin $WinsmuxBin)) {
             $uiAttached = $true
             $uiAttachStatus = 'attach_confirmed'
             $uiAttachReason = $attachStateError
-            $uiAttachSource = if ([string]::IsNullOrWhiteSpace($attachStateSource)) { 'handshake' } else { $attachStateSource }
-        } elseif (($attachStateStatus -eq 'attach_confirmed') -and $ClientProbeOk -and (Test-OrchestraAttachClientSnapshotMatch -ExpectedClients $attachedClientSnapshot -CurrentClients $currentClients)) {
-            $uiAttached = $true
-            $uiAttachStatus = 'attach_confirmed'
-            $uiAttachReason = if ([string]::IsNullOrWhiteSpace($attachStateError)) {
-                'Attached-client registry matches the current runtime client snapshot.'
-            } else {
-                $attachStateError
-            }
-            $uiAttachSource = 'attached-client-registry'
+            $uiAttachSource = if ([string]::IsNullOrWhiteSpace($attachStateSource)) { 'render-receipt' } else { $attachStateSource }
         } elseif ($attachStateStatus -eq 'attach_confirmed') {
             $uiAttached = $false
             $uiAttachStatus = 'attach_unconfirmed'
-            $uiAttachReason = if (-not $ClientProbeOk) {
-                'Attach state exists, but the runtime client probe is unavailable.'
-            } else {
-                'Attach state exists, but no live visible attach process is associated with it.'
-            }
+            $uiAttachReason = 'Attach state exists, but its post-draw render receipt no longer matches the live session.'
             $uiAttachSource = if ([string]::IsNullOrWhiteSpace($attachStateSource)) { 'none' } else { $attachStateSource }
         } elseif ($attachStateStatus -eq 'attach_failed') {
             $uiAttachStatus = 'attach_failed'
@@ -921,7 +907,7 @@ $attachResolution = Resolve-OrchestraSmokeAttachState -ProbeState ([pscustomobje
     UiHostKind        = $probeState.UiHostKind
     AttachRequestId   = $probeState.AttachRequestId
     AttachAdapterTrace = @($probeState.AttachAdapterTrace)
-}) -AttachState $attachState -ClientProbeOk $clientProbeOk -ClientSnapshot $clientSnapshot
+}) -AttachState $attachState -ClientProbeOk $clientProbeOk -ClientSnapshot $clientSnapshot -WinsmuxBin $winsmuxBin
 $uiAttached = [bool]$attachResolution.UiAttached
 $uiAttachStatus = [string]$attachResolution.UiAttachStatus
 $uiAttachReason = [string]$attachResolution.UiAttachReason
