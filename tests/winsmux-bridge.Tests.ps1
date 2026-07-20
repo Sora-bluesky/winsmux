@@ -8452,6 +8452,34 @@ Describe 'orchestra-start server bootstrap' {
                 Should -Be $true
         }
 
+        It 'rejects a receipt from a different namespace with identical pane ids' {
+            $state = [pscustomobject]@{
+                session_name            = 'winsmux-orchestra'
+                render_session_identity = 'requested__winsmux-orchestra'
+                attach_status           = 'attach_confirmed'
+                attach_request_id       = 'request-784'
+                requested_at            = [DateTimeOffset]::UtcNow.AddSeconds(-1).ToString('o')
+                render_receipt_path     = 'C:\temp\request-784.render.json'
+            }
+            Mock Get-OrchestraLivePaneSnapshot {
+                [pscustomobject]@{ Ok = $true; Count = 1; Error = ''; PaneIds = @('%1') }
+            }
+            Mock Read-OrchestraRenderReceipt {
+                [pscustomobject]@{
+                    version                              = 1
+                    request_id                           = 'request-784'
+                    session_name                         = 'winsmux-orchestra'
+                    renderer_process_id                  = 4242
+                    renderer_process_started_at_unix_ms  = 123456
+                    rendered_at_unix_ms                  = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+                    pane_ids                             = @('%1')
+                }
+            }
+
+            Test-OrchestraLiveVisibleAttachState -State $state -SessionName 'winsmux-orchestra' -WinsmuxBin 'C:\winsmux\winsmux.exe' |
+                Should -Be $false
+        }
+
         It 'does not treat client registration as launch observation' {
             Mock Read-OrchestraAttachState { $null }
             Mock Get-OrchestraAttachedClientSnapshot {
@@ -8469,13 +8497,45 @@ Describe 'orchestra-start server bootstrap' {
             $result.Observed | Should -Be $false
         }
 
+        It 'derives the exact render identity from L and S namespace selectors' {
+            $previousNamespace = $env:WINSMUX_BRIDGE_NAMESPACE_L
+            $previousSocket = $env:WINSMUX_BRIDGE_SOCKET_S
+            $previousResolvedNamespace = $env:WINSMUX_BRIDGE_SESSION_NAMESPACE
+            try {
+                Remove-Item Env:WINSMUX_BRIDGE_SOCKET_S -ErrorAction SilentlyContinue
+                Remove-Item Env:WINSMUX_BRIDGE_SESSION_NAMESPACE -ErrorAction SilentlyContinue
+                $env:WINSMUX_BRIDGE_NAMESPACE_L = 'requested'
+                Get-OrchestraRenderSessionIdentity -SessionName 'winsmux-orchestra' -ProjectDir 'C:\repo' |
+                    Should -Be 'requested__winsmux-orchestra'
+
+                Remove-Item Env:WINSMUX_BRIDGE_NAMESPACE_L -ErrorAction SilentlyContinue
+                $env:WINSMUX_BRIDGE_SOCKET_S = 'socket-name'
+                Get-OrchestraRenderSessionIdentity -SessionName 'winsmux-orchestra' -ProjectDir 'C:\repo' |
+                    Should -Be 'socket-name__winsmux-orchestra'
+            } finally {
+                foreach ($entry in @(
+                    @{ Name = 'WINSMUX_BRIDGE_NAMESPACE_L'; Value = $previousNamespace },
+                    @{ Name = 'WINSMUX_BRIDGE_SOCKET_S'; Value = $previousSocket },
+                    @{ Name = 'WINSMUX_BRIDGE_SESSION_NAMESPACE'; Value = $previousResolvedNamespace }
+                )) {
+                    if ($null -eq $entry.Value) {
+                        Remove-Item ("Env:{0}" -f $entry.Name) -ErrorAction SilentlyContinue
+                    } else {
+                        Set-Item ("Env:{0}" -f $entry.Name) -Value ([string]$entry.Value)
+                    }
+                }
+            }
+        }
+
         It 'passes render metadata and clears inherited mux markers before attach-session' {
             $entryPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\orchestra-attach-entry.ps1'
             $entryContent = Get-Content -LiteralPath $entryPath -Raw -Encoding UTF8
 
             $entryContent | Should -Match '\$env:WINSMUX_RENDER_RECEIPT_PATH\s*=\s*\$renderReceiptPath'
             $entryContent | Should -Match '\$env:WINSMUX_RENDER_REQUEST_ID\s*=\s*\$attachRequestId'
-            $entryContent | Should -Match '\$env:WINSMUX_RENDER_SESSION_NAME\s*=\s*\$sessionName'
+            $entryContent | Should -Match '\$env:WINSMUX_RENDER_SESSION_NAME\s*=\s*\$renderSessionIdentity'
+            $entryContent | Should -Match 'Name = ''WINSMUX_BRIDGE_NAMESPACE_L''; Value = \$bridgeNamespaceL'
+            $entryContent | Should -Match 'Name = ''WINSMUX_BRIDGE_SOCKET_S''; Value = \$bridgeSocketS'
             $entryContent | Should -Match 'Remove-Item Env:PSMUX_ACTIVE'
             $entryContent | Should -Match 'Remove-Item Env:PSMUX_SESSION'
             $entryContent | Should -Match 'Invoke-WinsmuxBridgeCommand.+@\(''attach-session'', ''-t'', \$sessionName\)'

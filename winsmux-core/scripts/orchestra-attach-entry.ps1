@@ -25,6 +25,13 @@ try {
     }
     $attachRequestId = Get-OrchestraAttachRequestId -State $state
     $renderReceiptPath = Get-OrchestraAttachStateString -State $state -Name 'render_receipt_path'
+    $renderSessionIdentity = Get-OrchestraAttachStateString -State $state -Name 'render_session_identity'
+    if ([string]::IsNullOrWhiteSpace($renderSessionIdentity)) {
+        $renderSessionIdentity = $sessionName
+    }
+    $bridgeNamespaceL = Get-OrchestraAttachStateString -State $state -Name 'bridge_namespace_l'
+    $bridgeSocketS = Get-OrchestraAttachStateString -State $state -Name 'bridge_socket_s'
+    $bridgeSessionNamespace = Get-OrchestraAttachStateString -State $state -Name 'bridge_session_namespace'
     if ([string]::IsNullOrWhiteSpace($attachRequestId) -or [string]::IsNullOrWhiteSpace($renderReceiptPath)) {
         throw "Render receipt metadata missing from attach state for session '$sessionName'."
     }
@@ -42,26 +49,39 @@ try {
         error             = ''
     } | Out-Null
 
-    $pwshPath = Get-OrchestraPowerShellPath
-    $confirmScriptPath = Get-OrchestraAttachConfirmScriptPath
-    Start-Process -FilePath $pwshPath -ArgumentList @(
-        '-NoProfile',
-        '-File',
-        $confirmScriptPath,
-        '-SessionName', $sessionName,
-        '-WinsmuxPath', $winsmuxPath,
-        '-BaselineClientCount', $baselineClientCount
-    ) -WindowStyle Hidden | Out-Null
-
     $previousRenderReceiptPath = $env:WINSMUX_RENDER_RECEIPT_PATH
     $previousRenderRequestId = $env:WINSMUX_RENDER_REQUEST_ID
     $previousRenderSessionName = $env:WINSMUX_RENDER_SESSION_NAME
     $previousPsmuxActive = $env:PSMUX_ACTIVE
     $previousPsmuxSession = $env:PSMUX_SESSION
+    $previousBridgeNamespaceL = $env:WINSMUX_BRIDGE_NAMESPACE_L
+    $previousBridgeSocketS = $env:WINSMUX_BRIDGE_SOCKET_S
+    $previousBridgeSessionNamespace = $env:WINSMUX_BRIDGE_SESSION_NAMESPACE
     try {
         $env:WINSMUX_RENDER_RECEIPT_PATH = $renderReceiptPath
         $env:WINSMUX_RENDER_REQUEST_ID = $attachRequestId
-        $env:WINSMUX_RENDER_SESSION_NAME = $sessionName
+        $env:WINSMUX_RENDER_SESSION_NAME = $renderSessionIdentity
+        foreach ($selector in @(
+            @{ Name = 'WINSMUX_BRIDGE_NAMESPACE_L'; Value = $bridgeNamespaceL },
+            @{ Name = 'WINSMUX_BRIDGE_SOCKET_S'; Value = $bridgeSocketS },
+            @{ Name = 'WINSMUX_BRIDGE_SESSION_NAMESPACE'; Value = $bridgeSessionNamespace }
+        )) {
+            if ([string]::IsNullOrWhiteSpace([string]$selector.Value)) {
+                Remove-Item ("Env:{0}" -f $selector.Name) -ErrorAction SilentlyContinue
+            } else {
+                Set-Item ("Env:{0}" -f $selector.Name) -Value ([string]$selector.Value)
+            }
+        }
+        $pwshPath = Get-OrchestraPowerShellPath
+        $confirmScriptPath = Get-OrchestraAttachConfirmScriptPath
+        Start-Process -FilePath $pwshPath -ArgumentList @(
+            '-NoProfile',
+            '-File',
+            $confirmScriptPath,
+            '-SessionName', $sessionName,
+            '-WinsmuxPath', $winsmuxPath,
+            '-BaselineClientCount', $baselineClientCount
+        ) -WindowStyle Hidden | Out-Null
         Remove-Item Env:PSMUX_ACTIVE -ErrorAction SilentlyContinue
         Remove-Item Env:PSMUX_SESSION -ErrorAction SilentlyContinue
         Invoke-WinsmuxBridgeCommand -WinsmuxBin $winsmuxPath -Arguments @('attach-session', '-t', $sessionName)
@@ -71,7 +91,10 @@ try {
             @{ Name = 'WINSMUX_RENDER_REQUEST_ID'; Value = $previousRenderRequestId },
             @{ Name = 'WINSMUX_RENDER_SESSION_NAME'; Value = $previousRenderSessionName },
             @{ Name = 'PSMUX_ACTIVE'; Value = $previousPsmuxActive },
-            @{ Name = 'PSMUX_SESSION'; Value = $previousPsmuxSession }
+            @{ Name = 'PSMUX_SESSION'; Value = $previousPsmuxSession },
+            @{ Name = 'WINSMUX_BRIDGE_NAMESPACE_L'; Value = $previousBridgeNamespaceL },
+            @{ Name = 'WINSMUX_BRIDGE_SOCKET_S'; Value = $previousBridgeSocketS },
+            @{ Name = 'WINSMUX_BRIDGE_SESSION_NAMESPACE'; Value = $previousBridgeSessionNamespace }
         )) {
             if ($null -eq $entry.Value) {
                 Remove-Item ("Env:{0}" -f $entry.Name) -ErrorAction SilentlyContinue

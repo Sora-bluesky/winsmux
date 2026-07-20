@@ -193,6 +193,68 @@ function Test-OrchestraProcessAlive {
     }
 }
 
+function Get-OrchestraAttachSocketNamespaceBase {
+    param(
+        [Parameter(Mandatory = $true)][string]$SocketSelector,
+        [Parameter(Mandatory = $true)][string]$ProjectDir
+    )
+
+    $selector = $SocketSelector.Trim()
+    if ([string]::IsNullOrWhiteSpace($selector)) {
+        return ''
+    }
+    $looksLikePath = $selector.Contains('\') -or $selector.Contains('/') -or [System.IO.Path]::HasExtension($selector)
+    if (-not $looksLikePath) {
+        return $selector
+    }
+
+    try {
+        $path = if ([System.IO.Path]::IsPathRooted($selector)) { $selector } else { Join-Path $ProjectDir $selector }
+        $normalized = [System.IO.Path]::GetFullPath($path).Replace('\', '/')
+        if ([System.IO.Path]::DirectorySeparatorChar -eq '\') {
+            $normalized = $normalized.ToLowerInvariant()
+        }
+    } catch {
+        $normalized = $selector.Replace('\', '/').ToLowerInvariant()
+    }
+
+    $hash = [System.Numerics.BigInteger]::Parse('14695981039346656037')
+    $prime = [System.Numerics.BigInteger]::Parse('1099511628211')
+    $modulus = [System.Numerics.BigInteger]::Pow([System.Numerics.BigInteger]2, 64)
+    foreach ($byte in [System.Text.Encoding]::UTF8.GetBytes($normalized)) {
+        $hash = [System.Numerics.BigInteger]::Remainder(($hash -bxor [System.Numerics.BigInteger]$byte) * $prime, $modulus)
+    }
+    return ('socket-{0:x16}' -f [uint64]$hash)
+}
+
+function Get-OrchestraAttachSessionNamespace {
+    param([Parameter(Mandatory = $true)][string]$ProjectDir)
+
+    if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_BRIDGE_SESSION_NAMESPACE)) {
+        return $env:WINSMUX_BRIDGE_SESSION_NAMESPACE.Trim()
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_BRIDGE_SOCKET_S)) {
+        return Get-OrchestraAttachSocketNamespaceBase -SocketSelector $env:WINSMUX_BRIDGE_SOCKET_S -ProjectDir $ProjectDir
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_BRIDGE_NAMESPACE_L)) {
+        return $env:WINSMUX_BRIDGE_NAMESPACE_L.Trim()
+    }
+    return ''
+}
+
+function Get-OrchestraRenderSessionIdentity {
+    param(
+        [Parameter(Mandatory = $true)][string]$SessionName,
+        [Parameter(Mandatory = $true)][string]$ProjectDir
+    )
+
+    $namespace = Get-OrchestraAttachSessionNamespace -ProjectDir $ProjectDir
+    if ([string]::IsNullOrWhiteSpace($namespace)) {
+        return $SessionName
+    }
+    return ('{0}__{1}' -f $namespace, $SessionName)
+}
+
 function Get-OrchestraProcessStartedAtUnixMs {
     param([AllowNull()]$ProcessId)
 
@@ -362,7 +424,11 @@ function Test-OrchestraLiveVisibleAttachState {
         $requestedAtUnixMs = $parsedRequestedAt.ToUnixTimeMilliseconds()
     }
     $receipt = Read-OrchestraRenderReceipt -Path $receiptPath
-    $validation = Test-OrchestraRenderReceipt -Receipt $receipt -SessionName $SessionName -RequestId $requestId -LivePaneIds @($livePanes.PaneIds) -RequestedAtUnixMs $requestedAtUnixMs -AllowPaneTopologyChange
+    $renderSessionIdentity = Get-OrchestraAttachStateString -State $State -Name 'render_session_identity'
+    if ([string]::IsNullOrWhiteSpace($renderSessionIdentity)) {
+        $renderSessionIdentity = $SessionName
+    }
+    $validation = Test-OrchestraRenderReceipt -Receipt $receipt -SessionName $renderSessionIdentity -RequestId $requestId -LivePaneIds @($livePanes.PaneIds) -RequestedAtUnixMs $requestedAtUnixMs -AllowPaneTopologyChange
     return [bool]$validation.Confirmed
 }
 
@@ -832,7 +898,11 @@ function Wait-OrchestraAttachHandshake {
                 $requestedAtUnixMs = $parsedRequestedAt.ToUnixTimeMilliseconds()
             }
             $receipt = Read-OrchestraRenderReceipt -Path $receiptPath
-            $receiptValidation = Test-OrchestraRenderReceipt -Receipt $receipt -SessionName $SessionName -RequestId $requestId -LivePaneIds @($livePanes.PaneIds) -RequestedAtUnixMs $requestedAtUnixMs
+            $renderSessionIdentity = Get-OrchestraAttachStateString -State $state -Name 'render_session_identity'
+            if ([string]::IsNullOrWhiteSpace($renderSessionIdentity)) {
+                $renderSessionIdentity = $SessionName
+            }
+            $receiptValidation = Test-OrchestraRenderReceipt -Receipt $receipt -SessionName $renderSessionIdentity -RequestId $requestId -LivePaneIds @($livePanes.PaneIds) -RequestedAtUnixMs $requestedAtUnixMs
             $lastError = [string]$receiptValidation.Reason
         } else {
             $receiptValidation = [PSCustomObject]@{ Confirmed = $false; Reason = if (-not [bool]$livePanes.Ok) { 'render_receipt_live_panes_unavailable' } else { 'render_receipt_missing' } }
@@ -996,8 +1066,16 @@ function Invoke-OrchestraVisibleAttachRequest {
 
     $attachRequestId = [guid]::NewGuid().ToString('N')
     $renderReceiptPath = Get-OrchestraRenderReceiptPath -SessionName $SessionName -RequestId $attachRequestId
+    $bridgeNamespaceL = [string]$env:WINSMUX_BRIDGE_NAMESPACE_L
+    $bridgeSocketS = [string]$env:WINSMUX_BRIDGE_SOCKET_S
+    $bridgeSessionNamespace = Get-OrchestraAttachSessionNamespace -ProjectDir $ProjectDir
+    $renderSessionIdentity = Get-OrchestraRenderSessionIdentity -SessionName $SessionName -ProjectDir $ProjectDir
     $state = Write-OrchestraAttachState -SessionName $SessionName -Properties @{
         session_name          = $SessionName
+        render_session_identity = $renderSessionIdentity
+        bridge_namespace_l    = $bridgeNamespaceL
+        bridge_socket_s       = $bridgeSocketS
+        bridge_session_namespace = $bridgeSessionNamespace
         winsmux_path          = $resolvedWinsmuxPath
         project_dir           = $ProjectDir
         requested_at          = (Get-Date).ToString('o')

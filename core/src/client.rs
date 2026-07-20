@@ -35,10 +35,7 @@ struct RenderReceiptConfig {
 }
 
 fn render_session_matches(runtime_session_name: &str, logical_session_name: &str) -> bool {
-    if runtime_session_name == logical_session_name {
-        return true;
-    }
-    runtime_session_name.ends_with(&format!("__{}", logical_session_name))
+    runtime_session_name == logical_session_name
 }
 
 impl RenderReceiptConfig {

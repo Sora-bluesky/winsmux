@@ -38,12 +38,12 @@ fn task784_render_receipt_records_only_post_draw_identity() {
 
 #[cfg(windows)]
 #[test]
-fn task784_render_session_identity_accepts_only_exact_or_namespaced_logical_name() {
+fn task784_render_session_identity_requires_the_exact_runtime_name() {
     assert!(render_session_matches(
         "winsmux-orchestra",
         "winsmux-orchestra"
     ));
-    assert!(render_session_matches(
+    assert!(!render_session_matches(
         "isolated__winsmux-orchestra",
         "winsmux-orchestra"
     ));
