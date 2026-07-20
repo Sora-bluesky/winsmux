@@ -8,12 +8,19 @@ Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot 'orchestra-ui-attach.ps1')
 
 $defaultSessionName = 'winsmux-orchestra'
-$projectDir = (Get-Location).Path
+$launchRequestId = [string]$env:WINSMUX_ATTACH_REQUEST_ID
+$projectDir = if ([string]::IsNullOrWhiteSpace($env:WINSMUX_ATTACH_PROJECT_DIR)) { (Get-Location).Path } else { [string]$env:WINSMUX_ATTACH_PROJECT_DIR }
 
 try {
+    if ([string]::IsNullOrWhiteSpace($launchRequestId)) {
+        throw 'Attach entry is missing its immutable request ID.'
+    }
     $state = Read-OrchestraAttachState -SessionName $defaultSessionName -ProjectDir $projectDir
     if ($null -eq $state) {
         throw "Attach state file was not found for session '$defaultSessionName'."
+    }
+    if ((Get-OrchestraAttachRequestId -State $state) -ne $launchRequestId) {
+        exit 0
     }
 
     $sessionName = [string]$state.session_name
@@ -46,13 +53,16 @@ try {
         [void][int]::TryParse([string]$state.baseline_client_count, [ref]$baselineClientCount)
     }
 
-    Write-OrchestraAttachState -SessionName $sessionName -ProjectDir $projectDir -Properties @{
+    $entryState = Write-OrchestraAttachState -SessionName $sessionName -ProjectDir $projectDir -ExpectedRequestId $launchRequestId -Properties @{
         attach_status     = 'attach_entry_started'
         attach_process_id = $PID
         started_at        = (Get-Date).ToString('o')
         ui_attach_source  = 'none'
         error             = ''
-    } | Out-Null
+    }
+    if ((Get-OrchestraAttachRequestId -State $entryState) -ne $launchRequestId) {
+        exit 0
+    }
 
     $previousRenderReceiptPath = $env:WINSMUX_RENDER_RECEIPT_PATH
     $previousRenderRequestId = $env:WINSMUX_RENDER_REQUEST_ID
@@ -86,6 +96,7 @@ try {
             '-SessionName', $sessionName,
             '-WinsmuxPath', $winsmuxPath,
             '-ProjectDir', $projectDir,
+            '-RequestId', $launchRequestId,
             '-BaselineClientCount', $baselineClientCount
         ) -WindowStyle Hidden | Out-Null
         Remove-Item Env:PSMUX_ACTIVE -ErrorAction SilentlyContinue
@@ -111,7 +122,7 @@ try {
     }
     $exitCode = $LASTEXITCODE
     if ($exitCode -ne 0) {
-        Write-OrchestraAttachState -SessionName $sessionName -ProjectDir $projectDir -Properties @{
+        Write-OrchestraAttachState -SessionName $sessionName -ProjectDir $projectDir -ExpectedRequestId $launchRequestId -Properties @{
             attach_status = 'attach_failed'
             ui_attach_source = 'none'
             error = "winsmux attach-session exited with code $exitCode."
@@ -119,11 +130,13 @@ try {
         exit $exitCode
     }
 } catch {
-    Write-OrchestraAttachState -SessionName $defaultSessionName -ProjectDir $projectDir -Properties @{
-        attach_status     = 'attach_failed'
-        ui_attach_source  = 'none'
-        attach_process_id = $PID
-        error             = $_.Exception.Message
-    } | Out-Null
+    if (-not [string]::IsNullOrWhiteSpace($launchRequestId)) {
+        Write-OrchestraAttachState -SessionName $defaultSessionName -ProjectDir $projectDir -ExpectedRequestId $launchRequestId -Properties @{
+            attach_status     = 'attach_failed'
+            ui_attach_source  = 'none'
+            attach_process_id = $PID
+            error             = $_.Exception.Message
+        } | Out-Null
+    }
     throw
 }

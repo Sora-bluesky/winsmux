@@ -8626,16 +8626,23 @@ Describe 'orchestra-start server bootstrap' {
         It 'passes render metadata and clears inherited mux markers before attach-session' {
             $entryPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\orchestra-attach-entry.ps1'
             $entryContent = Get-Content -LiteralPath $entryPath -Raw -Encoding UTF8
+            $uiAttachPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\orchestra-ui-attach.ps1'
+            $uiAttachContent = Get-Content -LiteralPath $uiAttachPath -Raw -Encoding UTF8
 
+            $entryContent | Should -Match '\$launchRequestId\s*=\s*\[string\]\$env:WINSMUX_ATTACH_REQUEST_ID'
+            $entryContent | Should -Match 'Get-OrchestraAttachRequestId -State \$state\) -ne \$launchRequestId'
             $entryContent | Should -Match '\$env:WINSMUX_RENDER_RECEIPT_PATH\s*=\s*\$renderReceiptPath'
             $entryContent | Should -Match '\$env:WINSMUX_RENDER_REQUEST_ID\s*=\s*\$attachRequestId'
             $entryContent | Should -Match '\$env:WINSMUX_RENDER_SESSION_NAME\s*=\s*\$renderSessionIdentity'
             $entryContent | Should -Match 'Name = ''WINSMUX_BRIDGE_NAMESPACE_L''; Value = \$bridgeNamespaceL'
             $entryContent | Should -Match 'Name = ''WINSMUX_BRIDGE_SOCKET_S''; Value = \$bridgeSocketS'
             $entryContent | Should -Match '''-ProjectDir'', \$projectDir'
+            $entryContent | Should -Match '''-RequestId'', \$launchRequestId'
             $entryContent | Should -Match 'Remove-Item Env:PSMUX_ACTIVE'
             $entryContent | Should -Match 'Remove-Item Env:PSMUX_SESSION'
             $entryContent | Should -Match 'Invoke-WinsmuxBridgeCommand.+@\(''attach-session'', ''-t'', \$sessionName\)'
+            $uiAttachContent | Should -Match '\$env:WINSMUX_ATTACH_REQUEST_ID\s*=\s*\$attachRequestId'
+            $uiAttachContent | Should -Match 'Wait-OrchestraAttachHandshake.+-ExpectedRequestId \$attachRequestId'
         }
 
         It 'promotes pending state only from a current exact render receipt' {
@@ -8714,6 +8721,21 @@ Describe 'orchestra-start server bootstrap' {
                     $env:WINSMUX_BRIDGE_NAMESPACE_L = $previousNamespace
                 }
             }
+        }
+
+        It 'rejects a superseded launch request before reading its receipt' {
+            $script:attachStateStore = [pscustomobject]@{
+                session_name      = 'winsmux-orchestra'
+                attach_status     = 'attach_requested'
+                attach_request_id = 'request-new'
+            }
+
+            $result = Wait-OrchestraAttachHandshake -SessionName 'winsmux-orchestra' -WinsmuxBin 'C:\winsmux\winsmux.exe' -BaselineClientCount 0 -ProjectDir 'C:\repo' -ExpectedRequestId 'request-old' -TimeoutMilliseconds 5 -PollMilliseconds 1
+
+            $result.Confirmed | Should -Be $false
+            $result.Status | Should -Be 'attach_superseded'
+            $result.Reason | Should -Match "request-old.+request-new"
+            Should -Invoke Write-OrchestraAttachState -Times 0 -Exactly
         }
 
         It 'does not confirm a live desktop host without the same render receipt contract' {
