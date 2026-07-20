@@ -971,6 +971,59 @@ function getHeredocOverlayExemptKeys(command, baseCwd) {
   return keys;
 }
 
+function collectStaticScriptMutationTargets(source, scriptKind, scriptBaseCwd, targets) {
+  const scriptTargets = [];
+  if (scriptKind === "python") {
+    collectPythonMutationTargets(source, scriptTargets);
+  } else if (scriptKind === "node") {
+    collectNodeMutationTargets(source, scriptTargets);
+  } else if (scriptKind === "shell") {
+    collectShellWriteTargetsFromCommand(source, scriptTargets);
+    collectStaticPosixTargetDirectoryReplacementTargets(source, scriptTargets);
+  } else {
+    collectShellWriteTargetsFromCommand(source, scriptTargets);
+  }
+  for (const target of scriptTargets) {
+    if (!target || target.startsWith("$") || target.includes("\0")) {
+      targets.push(target || "$unresolved-static-script-effect");
+      continue;
+    }
+    targets.push(path.resolve(scriptBaseCwd, target));
+  }
+}
+
+function collectStaticPosixTargetDirectoryReplacementTargets(source, targets) {
+  for (const segment of splitCommandSegments(source)) {
+    for (const stage of splitCommandPipelineStages(segment)) {
+      const tokens = unwrapReviewGateExecutionTokens(
+        unwrapEnvCommandTokens(tokenizeCommandLine(stage)),
+      ).tokens;
+      const executable = normalizeExecutableName(tokens[0] || "");
+      if (executable !== "cp" && executable !== "install") continue;
+      const targetDirectory = getPosixOptionValue(tokens, ["-t", "--target-directory"]);
+      if (!targetDirectory) continue;
+      const sources = [];
+      for (let index = 1; index < tokens.length; index += 1) {
+        const value = stripOuterQuotes(tokens[index]);
+        const normalized = normalizeAgentValue(value);
+        if (normalized === "-t" || normalized === "--target-directory") {
+          index += 1;
+          continue;
+        }
+        if (normalized.startsWith("--target-directory=") || value.startsWith("-")) continue;
+        sources.push(value);
+      }
+      for (const sourcePath of sources) {
+        if (!sourcePath || /[$%\x60*?\[\]{}\0]/u.test(sourcePath)) {
+          targets.push("$unresolved-static-posix-copy-effect");
+          continue;
+        }
+        targets.push(path.join(targetDirectory, path.basename(sourcePath)));
+      }
+    }
+  }
+}
+
 function getStaticScriptContentMutationTargets(stage) {
   const targets = getShellStdoutRedirectTargets(stage);
   const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(tokenizeCommandLine(stage)));
@@ -994,6 +1047,51 @@ function getStaticScriptContentMutationTargets(stage) {
   return targets;
 }
 
+function recordStaticScriptOverlayTargets(
+  targets,
+  baseCwd,
+  repoRoot,
+  scriptOverlay,
+  staticVariables,
+  heredocExemptKeys,
+  isHeredocStage,
+) {
+  for (const rawTarget of new Set(targets)) {
+    const target = resolveStaticShellVariableReference(rawTarget, staticVariables);
+    if (!target || target.includes("\0") || /[%\x60*?\[\]{}]/u.test(target)) {
+      scriptOverlay.unresolvedTarget = true;
+      continue;
+    }
+    const scriptPath = path.resolve(baseCwd, target);
+    if (!isPathInsideOrSame(scriptPath, repoRoot)) continue;
+    const overlayKey = getStaticScriptOverlayKey(scriptPath);
+    if (isHeredocStage && heredocExemptKeys.has(overlayKey)) continue;
+    scriptOverlay.set(overlayKey, null);
+  }
+}
+
+function recordStaticInvokedScriptMutationEffects(
+  source,
+  scriptKind,
+  scriptBaseCwd,
+  repoRoot,
+  scriptOverlay,
+  staticVariables,
+  heredocExemptKeys,
+) {
+  const mutationTargets = [];
+  collectStaticScriptMutationTargets(source, scriptKind, scriptBaseCwd, mutationTargets);
+  recordStaticScriptOverlayTargets(
+    mutationTargets,
+    scriptBaseCwd,
+    repoRoot,
+    scriptOverlay,
+    staticVariables,
+    heredocExemptKeys,
+    false,
+  );
+}
+
 function recordStaticScriptWriteEffects(
   stage,
   baseCwd,
@@ -1011,18 +1109,15 @@ function recordStaticScriptWriteEffects(
       if (value && !value.startsWith("-") && !/^[<>]/u.test(value)) targets.push(value);
     }
   }
-  for (const rawTarget of new Set(targets)) {
-    const target = resolveStaticShellVariableReference(rawTarget, staticVariables);
-    if (!target || target.includes("\0") || /[%\x60*?\[\]{}]/u.test(target)) {
-      scriptOverlay.unresolvedTarget = true;
-      continue;
-    }
-    const scriptPath = path.resolve(baseCwd, target);
-    if (!isPathInsideOrSame(scriptPath, repoRoot)) continue;
-    const overlayKey = getStaticScriptOverlayKey(scriptPath);
-    if (isHeredocStage && heredocExemptKeys.has(overlayKey)) continue;
-    scriptOverlay.set(overlayKey, null);
-  }
+  recordStaticScriptOverlayTargets(
+    targets,
+    baseCwd,
+    repoRoot,
+    scriptOverlay,
+    staticVariables,
+    heredocExemptKeys,
+    isHeredocStage,
+  );
 }
 
 function getStaticInvokedScriptEvidence(
@@ -1094,6 +1189,11 @@ function getStaticInvokedScriptEvidence(
       const envContext = getGitInlineEnvironmentContext(rawTokens, segmentBaseCwd);
       const stageBaseCwd = envContext.baseCwd || segmentBaseCwd;
       const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(rawTokens));
+      const isLiteralRootCommand = depth === 0 &&
+        segments.length === 1 &&
+        stages.length === 1 &&
+        rawTokens.length === execution.tokens.length &&
+        rawTokens.every((token, index) => token === execution.tokens[index]);
       if (execution.nestedCommand) {
         const nestedEvidence = getStaticInvokedScriptEvidence(
           execution.nestedCommand,
@@ -1190,6 +1290,16 @@ function getStaticInvokedScriptEvidence(
               evidence.unresolved = true;
             }
           }
+          // The current body must be reviewed before its writes affect later commands.
+          recordStaticInvokedScriptMutationEffects(
+            source,
+            staticInterpreterFile.kind,
+            stageBaseCwd,
+            baseRepoRoot,
+            scriptOverlay,
+            staticVariables,
+            heredocExemptKeys,
+          );
         } catch (error) {
           if (error?.code !== "ENOENT") evidence.unresolved = true;
         }
@@ -1270,11 +1380,7 @@ function getStaticInvokedScriptEvidence(
           fileArgument,
           scriptPath,
           scriptRepoRoot,
-          depth === 0 &&
-            segments.length === 1 &&
-            stages.length === 1 &&
-            tokenizeCommandLine(stage).length === tokens.length &&
-            tokenizeCommandLine(stage).every((token, index) => token === tokens[index]),
+          isLiteralRootCommand,
         )) {
           continue;
         }
@@ -1295,6 +1401,15 @@ function getStaticInvokedScriptEvidence(
         const protectedEvidence = getStaticScriptProtectedEvidence(source, path.dirname(scriptPath));
         evidence.contents.push(...protectedEvidence.commands);
         evidence.unresolved = evidence.unresolved || protectedEvidence.unresolved;
+        recordStaticInvokedScriptMutationEffects(
+          source,
+          "powershell",
+          scriptBaseCwd,
+          baseRepoRoot,
+          scriptOverlay,
+          staticVariables,
+          heredocExemptKeys,
+        );
       } catch (error) {
         if (error?.code !== "ENOENT") evidence.unresolved = true;
       }

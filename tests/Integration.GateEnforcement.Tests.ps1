@@ -8855,6 +8855,22 @@ EOF
         Write-GateTestFile -Path $safePythonPath -Content "print('safe')`n"
         $safeNodePath = Join-Path $fixture.RepoRoot 'scripts\interpreter-safe.js'
         Write-GateTestFile -Path $safeNodePath -Content "console.log('safe');`n"
+        $staticPythonWriterPath = Join-Path $fixture.RepoRoot 'scripts\interpreter-writer.py'
+        Write-GateTestFile -Path $staticPythonWriterPath -Content "from pathlib import Path`nPath('scripts/interpreter-safe.sh').write_bytes(bytes.fromhex('67697420636f6d6974202d2d616c6c6f772d656d707479202d6d207374617469632d7772697465720a'))`n"
+        $staticNodeWriterPath = Join-Path $fixture.RepoRoot 'scripts\interpreter-writer.js'
+        Write-GateTestFile -Path $staticNodeWriterPath -Content "require('fs').writeFileSync('scripts/interpreter-safe.sh', Buffer.from('67697420636f6d6974202d2d616c6c6f772d656d707479202d6d207374617469632d7772697465720a', 'hex'));`n"
+        $staticPowerShellWriterPath = Join-Path $fixture.RepoRoot 'scripts\interpreter-writer.ps1'
+        Write-GateTestFile -Path $staticPowerShellWriterPath -Content "Set-Content -LiteralPath scripts/interpreter-safe.sh -Value ([Text.Encoding]::UTF8.GetString([Convert]::FromHexString('67697420636f6d6974202d2d616c6c6f772d656d707479202d6d207374617469632d7772697465720a')))`n"
+        $staticShellWriterPath = Join-Path $fixture.RepoRoot 'scripts\interpreter-writer.sh'
+        Write-GateTestFile -Path $staticShellWriterPath -Content "printf '%b' '\x67\x69\x74\x20\x63\x6f\x6d\x6d\x69\x74\x20\x2d\x2d\x61\x6c\x6c\x6f\x77\x2d\x65\x6d\x70\x74\x79\x20\x2d\x6d\x20\x73\x74\x61\x74\x69\x63\x2d\x77\x72\x69\x74\x65\x72\x0a' > scripts/interpreter-safe.sh`n"
+        $staticCopyWriterPath = Join-Path $fixture.RepoRoot 'scripts\interpreter-copy-writer.sh'
+        Write-GateTestFile -Path $staticCopyWriterPath -Content "cp -t scripts payload/interpreter-safe.sh`n"
+        $staticPowerShellCwdWriterPath = Join-Path $fixture.RepoRoot 'scripts\sub\interpreter-cwd-writer.ps1'
+        Write-GateTestFile -Path $staticPowerShellCwdWriterPath -Content "Set-Content -LiteralPath ..\interpreter-safe.sh -Value ([Text.Encoding]::UTF8.GetString([Convert]::FromHexString('67697420636f6d6974202d2d616c6c6f772d656d707479202d6d207374617469632d7772697465720a')))`n"
+        $staticDataWriterPath = Join-Path $fixture.RepoRoot 'scripts\interpreter-data-writer.py'
+        Write-GateTestFile -Path $staticDataWriterPath -Content "from pathlib import Path`nPath('scripts/interpreter-data.txt').write_text('data')`n"
+        $dynamicDataWriterPath = Join-Path $fixture.RepoRoot 'scripts\interpreter-dynamic-data-writer.py'
+        Write-GateTestFile -Path $dynamicDataWriterPath -Content "from pathlib import Path`ntarget = 'scripts/interpreter-data.txt'`nPath(target).write_text('data')`n"
         $environment = @{ WINSMUX_ROLE = 'operator'; WINSMUX_ASSIGNED_WORKTREE = $fixture.RepoRoot }
 
         foreach ($command in @(
@@ -8881,6 +8897,12 @@ EOF
                 'python -c "from pathlib import Path; Path(''scripts/interpreter-written.sh'').open(encoding=''utf-8'',mode=''w'').write(bytes.fromhex(''67697420636f6d6974202d2d616c6c6f772d656d707479202d6d2078310a'').decode())" ; bash scripts/interpreter-written.sh',
                 'python -c "from pathlib import Path; path=Path(''scripts/interpreter-written.sh''); path.open(''w'').write(bytes.fromhex(''67697420636f6d6974202d2d616c6c6f772d656d707479202d6d2078310a'').decode())" ; bash scripts/interpreter-written.sh',
                 'node -e "const fs=require(''fs''); const fd=fs.openSync(''scripts/interpreter-written.sh'',''w''); fs.writeSync(fd,''git commit --allow-empty -m fd-written\n'')" ; bash scripts/interpreter-written.sh',
+                'python scripts/interpreter-writer.py ; bash scripts/interpreter-safe.sh',
+                'node scripts/interpreter-writer.js ; bash scripts/interpreter-safe.sh',
+                'pwsh -File scripts/interpreter-writer.ps1 ; bash scripts/interpreter-safe.sh',
+                'bash scripts/interpreter-writer.sh ; bash scripts/interpreter-safe.sh',
+                'bash scripts/interpreter-copy-writer.sh ; bash scripts/interpreter-safe.sh',
+                'pwsh -WorkingDirectory scripts/sub -File interpreter-cwd-writer.ps1 ; bash scripts/interpreter-safe.sh',
                 'cp scripts/interpreter-protected-payload.sh scripts/interpreter-safe.sh ; bash scripts/interpreter-safe.sh',
                 'cp -t scripts payload/interpreter-safe.sh ; bash scripts/interpreter-safe.sh',
                 'install -t scripts payload/interpreter-safe.sh ; bash scripts/interpreter-safe.sh',
@@ -8908,6 +8930,10 @@ bash scripts/interpreter-safe.sh
                 'python -c "print(''safe'')"',
                 'bash scripts/interpreter-safe.sh ; python -c "open(''scripts/interpreter-safe.sh'',''w'').write(''git commit --allow-empty -m later\n'')"',
                 'python -c "open(''scripts/interpreter-written.sh'',''w'').write(''git commit --allow-empty -m data-only\n'')"',
+                'python scripts/interpreter-writer.py',
+                'python scripts/interpreter-dynamic-data-writer.py',
+                'bash scripts/interpreter-safe.sh ; python scripts/interpreter-writer.py',
+                'python scripts/interpreter-data-writer.py ; bash scripts/interpreter-safe.sh',
                 'python scripts/interpreter-safe.py -config safe ; bash scripts/interpreter-safe.sh',
                 'python -- scripts/interpreter-safe.py -config safe ; bash scripts/interpreter-safe.sh',
                 'node scripts/interpreter-safe.js -e harmless ; bash scripts/interpreter-safe.sh',
