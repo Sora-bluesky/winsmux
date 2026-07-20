@@ -15,7 +15,7 @@ const args = process.argv.slice(2);
 const action = args[0] ?? "install";
 const installerArgs = toInstallerArgs(args.slice(1));
 const supportedActions = new Set(["install", "update", "uninstall", "version", "help"]);
-const releaseTag = `v${packageJson.version}`;
+const releaseTag = packageJson.winsmuxReleaseTag ?? `v${packageJson.version}`;
 
 if (!supportedActions.has(action)) {
   console.error(`Unknown winsmux action: ${action}`);

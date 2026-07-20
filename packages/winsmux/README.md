@@ -42,7 +42,9 @@ User-facing setup docs:
 - `winsmux uninstall`
 - `winsmux version`
 - `winsmux help`
-- the npm package version will pin `install.ps1` to the same GitHub release tag
+- the staged package records the exact GitHub release tag in
+  `winsmuxReleaseTag`; packaging-hotfix tags use a distinct valid npm prerelease
+  version (for example, `v0.36.28.1` becomes npm `0.36.28-hotfix.1`)
 - the package source directory is not the publish artifact; the staged package
   contains the generated release-pinned `install.ps1`
 
