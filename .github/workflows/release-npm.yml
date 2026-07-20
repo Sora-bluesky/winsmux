@@ -6,8 +6,8 @@ on:
       - "v*"
   workflow_dispatch:
     inputs:
-      version:
-        description: "Override semver version for the staged npm package"
+      release_tag:
+        description: "Exact GitHub release tag to package, for example v0.36.28.1"
         required: true
         type: string
 
@@ -41,16 +41,16 @@ jobs:
         id: stage
         shell: pwsh
         run: |
-          $requestedVersion = "${{ github.event.inputs.version }}"
-          if ([string]::IsNullOrWhiteSpace($requestedVersion)) {
-            $releaseTag = '${{ github.ref_name }}'
-            $stageArguments = @('--release-tag', $releaseTag)
+          $releaseTag = if ('${{ github.event_name }}' -eq 'push') {
+            '${{ github.ref_name }}'
           } else {
-            $releaseTag = ''
-            $stageArguments = @('--version', $requestedVersion)
+            '${{ github.event.inputs.release_tag }}'
+          }
+          if ([string]::IsNullOrWhiteSpace($releaseTag)) {
+            throw 'An exact GitHub release tag is required.'
           }
 
-          node scripts/stage-npm-release.mjs @stageArguments --out output/npm-release/winsmux
+          node scripts/stage-npm-release.mjs --release-tag $releaseTag --out output/npm-release/winsmux
 
           if (Test-Path "output/npm-release/winsmux/package.json") {
             $packageJson = Get-Content -LiteralPath "output/npm-release/winsmux/package.json" -Raw | ConvertFrom-Json
@@ -97,11 +97,9 @@ jobs:
           $releaseTag = "${{ needs.verify.outputs.release_tag }}"
 
           if ([string]::IsNullOrWhiteSpace($releaseTag)) {
-            $stageArguments = @('--version', $version)
-          } else {
-            $stageArguments = @('--release-tag', $releaseTag)
+            throw 'The verify job did not preserve the exact GitHub release tag.'
           }
-          node scripts/stage-npm-release.mjs @stageArguments --out output/npm-release/winsmux
+          node scripts/stage-npm-release.mjs --release-tag $releaseTag --out output/npm-release/winsmux
           $packageJson = Get-Content -LiteralPath "output/npm-release/winsmux/package.json" -Raw | ConvertFrom-Json
           if ($packageJson.version -eq "0.0.0-development") {
             throw "Staged npm package still has the development placeholder version."

@@ -943,7 +943,10 @@ param(
         $stagedPackage.winsmuxReleaseTag | Should -Be 'v0.36.28.1'
 
         $releaseWorkflow = Get-Content -LiteralPath $script:ReleaseWorkflowPath -Raw -Encoding UTF8
-        $releaseWorkflow | Should -Match '@\(''--release-tag'', \$releaseTag\)'
+        $releaseWorkflow | Should -Match '(?m)^\s+release_tag:$'
+        $releaseWorkflow | Should -Not -Match 'github\.event\.inputs\.version'
+        $releaseWorkflow | Should -Match 'github\.event\.inputs\.release_tag'
+        $releaseWorkflow | Should -Match 'stage-npm-release\.mjs --release-tag \$releaseTag'
         $releaseWorkflow | Should -Match 'version=\$version'
         $releaseWorkflow | Should -Match 'release_tag=\$releaseTag'
         $releaseWorkflow | Should -Match 'npm publish --access public --tag latest'
