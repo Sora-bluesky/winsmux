@@ -8978,6 +8978,46 @@ EOF
         }
     }
 
+    It 'TASK-783 C112 parses interpreter operands in order and defaults ambiguous cwd changes to deny' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $environment = @{ WINSMUX_ROLE = 'operator'; WINSMUX_ASSIGNED_WORKTREE = $fixture.RepoRoot }
+        Write-GateTestFile -Path (Join-Path $fixture.RepoRoot 'scripts\safe.rc') -Content "printf '%s\n' safe-startup`n"
+        Write-GateTestFile -Path (Join-Path $fixture.RepoRoot 'scripts\protected.sh') -Content "git commit --allow-empty -m protected-shell`n"
+        Write-GateTestFile -Path (Join-Path $fixture.RepoRoot 'scripts\protected.js') -Content "require('child_process').spawnSync('git', ['commit', '--allow-empty', '-m', 'protected-node']);`n"
+
+        foreach ($command in @(
+                'bash --rcfile scripts/safe.rc scripts/protected.sh',
+                'bash scripts/protected.sh -n',
+                'node scripts/protected.js -c'
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot } -Environment $environment
+            & $script:AssertDenyResult -Result $result -Because "only options before the first script operand may change interpreter execution mode, and startup files do not replace the main script: $command"
+        }
+
+        foreach ($command in @(
+                'bash -n scripts/protected.sh',
+                'node -c scripts/protected.js'
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot } -Environment $environment
+            $result.OutputObject | Should -BeNullOrEmpty -Because "a statically proven pre-operand no-execute mode remains allowed: $command"
+        }
+
+        Set-GatePass -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch
+        $target = New-GateTargetRepo -Root $fixture.Root -Name 'ordered-cwd-target'
+        $relativeTarget = [System.IO.Path]::GetRelativePath($fixture.RepoRoot, $target.RepoRoot).Replace('\', '/')
+        $targetName = Split-Path -Leaf $target.RepoRoot
+        $cdPath = $fixture.Root.Replace('\', '/')
+        foreach ($command in @(
+                "case x in x) cd '$relativeTarget'; git commit --allow-empty -m case-cwd;; esac",
+                "! cd '$relativeTarget'; git commit --allow-empty -m negated-cwd",
+                "CDPATH='$cdPath' cd '$targetName'; git commit --allow-empty -m cdpath-cwd"
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot } -Environment $environment
+            & $script:AssertDenyResult -Result $result -Because "an unreviewed target repository cannot be hidden behind an ambiguous or prefixed cwd change: $command"
+        }
+    }
+
     It 'TASK-783 C104 permits only clean HEAD-bound canonical orchestra recovery scripts' {
         $fixture = New-GateFixture
         $script:FixtureRoot = $fixture.Root

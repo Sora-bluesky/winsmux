@@ -760,6 +760,9 @@ function getShellStartupFileCandidates(rawTokens, executable, inheritedEnvironme
       }
     }
   }
+  const executionTokens = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(rawTokens)).tokens;
+  const invocation = parseStaticInterpreterInvocation(executionTokens);
+  startupFiles.push(...invocation.startupFiles);
   return startupFiles;
 }
 
@@ -788,6 +791,120 @@ function resolveComparableStaticScriptPath(value, cwd = ".") {
   return path.posix.normalize(path.posix.join(normalizedCwd, normalized)).replace(/^\.\//u, "");
 }
 
+function parseStaticInterpreterInvocation(tokens) {
+  const result = {
+    kind: "",
+    mode: "none",
+    mainFile: "",
+    startupFiles: [],
+    operandIndex: -1,
+    unresolved: false,
+  };
+  if (!Array.isArray(tokens) || tokens.length === 0) return result;
+  const executable = normalizeExecutableName(tokens[0] || "");
+  if (isShellCommandExecutable(executable)) {
+    result.kind = "shell";
+    let noExecute = false;
+    for (let index = 1; index < tokens.length; index += 1) {
+      const token = stripOuterQuotes(tokens[index]);
+      const normalized = normalizeAgentValue(token);
+      if (normalized === "-c" || normalized === "--command") {
+        result.mode = noExecute ? "no-execute" : "inline";
+        return result;
+      }
+      if (normalized === "-n" || normalized === "--noexec") {
+        noExecute = true;
+        continue;
+      }
+      const inlineStartup = /^--(?:init-file|rcfile|startup-file)=(.*)$/u.exec(token);
+      if (inlineStartup) {
+        result.startupFiles.push(inlineStartup[1] || "\0unresolved-shell-startup-file");
+        continue;
+      }
+      if (["--init-file", "--rcfile", "--startup-file"].includes(normalized)) {
+        if (index + 1 >= tokens.length) {
+          result.unresolved = true;
+          result.mode = "unresolved";
+          return result;
+        }
+        result.startupFiles.push(stripOuterQuotes(tokens[index + 1]) || "\0unresolved-shell-startup-file");
+        index += 1;
+        continue;
+      }
+      if (shellInterpreterOptionConsumesNextValue(token)) {
+        if (index + 1 >= tokens.length) {
+          result.unresolved = true;
+          result.mode = "unresolved";
+          return result;
+        }
+        index += 1;
+        continue;
+      }
+      if (normalized === "--") {
+        if (index + 1 < tokens.length) {
+          result.mainFile = stripOuterQuotes(tokens[index + 1]);
+          result.operandIndex = index + 1;
+          result.mode = noExecute ? "no-execute" : "file";
+        }
+        return result;
+      }
+      if (token.startsWith("-") || token.startsWith("+")) continue;
+      result.mainFile = token;
+      result.operandIndex = index;
+      result.mode = noExecute ? "no-execute" : "file";
+      return result;
+    }
+    result.mode = noExecute ? "no-execute" : (result.startupFiles.length > 0 ? "startup-only" : "stdin");
+    return result;
+  }
+
+  const kind = getShellInterpreterKind(tokens);
+  if (!kind) return result;
+  result.kind = kind;
+  if (getInterpreterInlineSourceDescriptor(tokens, kind)) {
+    result.mode = "inline";
+    return result;
+  }
+  let noExecute = false;
+  for (let index = 1; index < tokens.length; index += 1) {
+    const value = stripOuterQuotes(tokens[index]);
+    const normalized = normalizeAgentValue(value);
+    if (value === "--") {
+      if (index + 1 < tokens.length) {
+        result.mainFile = stripOuterQuotes(tokens[index + 1]);
+        result.operandIndex = index + 1;
+        result.mode = noExecute ? "no-execute" : "file";
+      }
+      return result;
+    }
+    if (kind === "node" && ["-c", "--check"].includes(normalized)) {
+      noExecute = true;
+      continue;
+    }
+    if (kind === "python" && normalized === "-m") {
+      result.mode = "module";
+      result.unresolved = true;
+      return result;
+    }
+    if (interpreterOptionConsumesNextValue(kind, value, normalized)) {
+      if (index + 1 >= tokens.length) {
+        result.mode = "unresolved";
+        result.unresolved = true;
+        return result;
+      }
+      index += 1;
+      continue;
+    }
+    if (value.startsWith("-")) continue;
+    result.mainFile = value;
+    result.operandIndex = index;
+    result.mode = noExecute ? "no-execute" : "file";
+    return result;
+  }
+  result.mode = noExecute ? "no-execute" : "stdin";
+  return result;
+}
+
 function getStaticInterpreterScriptPath(tokens) {
   if (!Array.isArray(tokens) || tokens.length < 2) return "";
   const executable = normalizeExecutableName(tokens[0] || "");
@@ -795,29 +912,9 @@ function getStaticInterpreterScriptPath(tokens) {
     const fileArgument = getPowerShellFileArgument(tokens);
     return fileArgument.present ? fileArgument.value : "";
   }
-  if (!isShellCommandExecutable(executable)) return "";
-  for (let index = 1; index < tokens.length; index += 1) {
-    const token = stripOuterQuotes(tokens[index]);
-    const normalized = normalizeAgentValue(token);
-    if (normalized === "-c" || normalized === "--command") return "";
-    if (/^--(?:init-file|rcfile|startup-file)=/u.test(normalized)) {
-      return token.slice(token.indexOf("=") + 1);
-    }
-    if (["--init-file", "--rcfile", "--startup-file"].includes(normalized)) {
-      return index + 1 < tokens.length ? stripOuterQuotes(tokens[index + 1]) : "\0unresolved-shell-startup-file";
-    }
-    if (shellInterpreterOptionConsumesNextValue(token)) {
-      if (index + 1 >= tokens.length) return "\0unresolved-shell-option-value";
-      index += 1;
-      continue;
-    }
-    if (normalized === "--") {
-      return index + 1 < tokens.length ? stripOuterQuotes(tokens[index + 1]) : "";
-    }
-    if (token.startsWith("-")) continue;
-    return token;
-  }
-  return "";
+  const invocation = parseStaticInterpreterInvocation(tokens);
+  if (invocation.unresolved) return "\0unresolved-interpreter-invocation";
+  return invocation.mode === "file" ? invocation.mainFile : "";
 }
 
 function getPowerShellFileArgument(tokens) {
@@ -878,39 +975,16 @@ function getPowerShellFileArgument(tokens) {
 
 function getStaticNonPowerShellInterpreterFileArgument(tokens) {
   if (!Array.isArray(tokens) || tokens.length < 2) return { kind: "", present: false, value: "", unresolved: false };
-  const executable = normalizeExecutableName(tokens[0] || "");
-  if (isShellCommandExecutable(executable)) {
-    const noExecute = tokens.slice(1).some((token) => ["-n", "--noexec"].includes(normalizeAgentValue(token)));
-    const scriptPath = getStaticInterpreterScriptPath(tokens);
-    return noExecute || !scriptPath || isDynamicStdinScriptPath(scriptPath) || isAnyStdinDevicePath(scriptPath)
-      ? { kind: "shell", present: false, value: "", unresolved: false }
-      : { kind: "shell", present: Boolean(scriptPath), value: scriptPath, unresolved: false };
-  }
-  const kind = getShellInterpreterKind(tokens);
-  if (!kind || getInterpreterInlineSourceDescriptor(tokens, kind)) {
-    return { kind: kind || "", present: false, value: "", unresolved: false };
-  }
-  if (kind === "node" && tokens.slice(1).some((token) => ["-c", "--check"].includes(normalizeAgentValue(token)))) {
-    return { kind, present: false, value: "", unresolved: false };
-  }
-  for (let index = 1; index < tokens.length; index += 1) {
-    const value = stripOuterQuotes(tokens[index]);
-    if (value === "--") {
-      return { kind, present: index + 1 < tokens.length, value: stripOuterQuotes(tokens[index + 1] || ""), unresolved: false };
-    }
-    const normalized = normalizeAgentValue(value);
-    if (kind === "python" && normalized === "-m") {
-      return { kind, present: false, value: "", unresolved: true };
-    }
-    if (interpreterOptionConsumesNextValue(kind, value, normalized)) {
-      if (index + 1 >= tokens.length) return { kind, present: false, value: "", unresolved: true };
-      index += 1;
-      continue;
-    }
-    if (value.startsWith("-")) continue;
-    return { kind, present: true, value, unresolved: false };
-  }
-  return { kind, present: false, value: "", unresolved: false };
+  const invocation = parseStaticInterpreterInvocation(tokens);
+  const present = invocation.mode === "file" && Boolean(invocation.mainFile) &&
+    !isDynamicStdinScriptPath(invocation.mainFile) && !isAnyStdinDevicePath(invocation.mainFile);
+  return {
+    kind: invocation.kind,
+    present,
+    value: present ? invocation.mainFile : "",
+    startupFiles: invocation.startupFiles,
+    unresolved: invocation.unresolved,
+  };
 }
 
 function getStaticScriptOverlayKey(scriptPath) {
@@ -1236,72 +1310,79 @@ function getStaticInvokedScriptEvidence(
           evidence.contents.push(...nestedEvidence.contents);
           evidence.unresolved = evidence.unresolved || nestedEvidence.unresolved;
         }
-        if (nestedCommand) continue;
+        const shellInvocation = parseStaticInterpreterInvocation(tokens);
+        if (nestedCommand && shellInvocation.startupFiles.length === 0) continue;
       }
       const staticInterpreterFile = getStaticNonPowerShellInterpreterFileArgument(tokens);
       if (staticInterpreterFile.unresolved) {
         evidence.unresolved = true;
         continue;
       }
-      if (staticInterpreterFile.present) {
-        const value = staticInterpreterFile.value;
-        if (isAnyStdinDevicePath(value)) continue;
-        if (!value || value === "-" || /[$%\x60*?\[\]{}\0]/u.test(value) ||
-            (cmdDelayedExpansion && /![^!\r\n]+!/u.test(value))) {
-          evidence.unresolved = true;
-          continue;
-        }
-        const scriptPath = path.resolve(stageBaseCwd, value);
-        const scriptRepoRoot = resolveGitTopLevel(stageBaseCwd);
-        if (!scriptRepoRoot ||
-            !isManagedReviewGateRepo(scriptRepoRoot, baseRepoRoot) ||
-            !isPathInsideOrSame(scriptPath, scriptRepoRoot)) {
-          evidence.unresolved = true;
-          continue;
-        }
-        try {
-          const overlayKey = getStaticScriptOverlayKey(scriptPath);
-          let source;
-          if (scriptOverlay.unresolvedTarget) {
+      const staticInterpreterFiles = [
+        ...(staticInterpreterFile.startupFiles || []).map((value) => ({ kind: "shell", value })),
+        ...(staticInterpreterFile.present ? [{ kind: staticInterpreterFile.kind, value: staticInterpreterFile.value }] : []),
+      ];
+      if (staticInterpreterFiles.length > 0) {
+        for (const invokedFile of staticInterpreterFiles) {
+          const value = invokedFile.value;
+          if (isAnyStdinDevicePath(value)) continue;
+          if (!value || value === "-" || /[$%\x60*?\[\]{}\0]/u.test(value) ||
+              (cmdDelayedExpansion && /![^!\r\n]+!/u.test(value))) {
             evidence.unresolved = true;
             continue;
-          } else if (scriptOverlay.has(overlayKey)) {
-            source = scriptOverlay.get(overlayKey);
-            if (typeof source !== "string") {
+          }
+          const scriptPath = path.resolve(stageBaseCwd, value);
+          const scriptRepoRoot = resolveGitTopLevel(stageBaseCwd);
+          if (!scriptRepoRoot ||
+              !isManagedReviewGateRepo(scriptRepoRoot, baseRepoRoot) ||
+              !isPathInsideOrSame(scriptPath, scriptRepoRoot)) {
+            evidence.unresolved = true;
+            continue;
+          }
+          try {
+            const overlayKey = getStaticScriptOverlayKey(scriptPath);
+            let source;
+            if (scriptOverlay.unresolvedTarget) {
               evidence.unresolved = true;
               continue;
+            } else if (scriptOverlay.has(overlayKey)) {
+              source = scriptOverlay.get(overlayKey);
+              if (typeof source !== "string") {
+                evidence.unresolved = true;
+                continue;
+              }
+            } else {
+              const stat = fs.statSync(scriptPath);
+              if (!stat.isFile() || stat.size > 1024 * 1024) {
+                evidence.unresolved = true;
+                continue;
+              }
+              source = fs.readFileSync(scriptPath, "utf8").replace(/^\uFEFF/u, "");
             }
-          } else {
-            const stat = fs.statSync(scriptPath);
-            if (!stat.isFile() || stat.size > 1024 * 1024) {
-              evidence.unresolved = true;
-              continue;
+            const protectedEvidence = getStaticScriptProtectedEvidence(source, path.dirname(scriptPath));
+            evidence.contents.push(...protectedEvidence.commands);
+            evidence.unresolved = evidence.unresolved || protectedEvidence.unresolved;
+            if (invokedFile.kind === "python" || invokedFile.kind === "node") {
+              if (hasConservativeProtectedInterpreterBoundary(source, "git") ||
+                  hasConservativeProtectedInterpreterBoundary(source, "codex") ||
+                  getInterpreterProcessBoundaryResults(source, invokedFile.kind)
+                    .some(isDeniedInterpreterProcessBoundary)) {
+                evidence.unresolved = true;
+              }
             }
-            source = fs.readFileSync(scriptPath, "utf8").replace(/^\uFEFF/u, "");
+            // The current body must be reviewed before its writes affect later commands.
+            recordStaticInvokedScriptMutationEffects(
+              source,
+              invokedFile.kind,
+              stageBaseCwd,
+              baseRepoRoot,
+              scriptOverlay,
+              staticVariables,
+              heredocExemptKeys,
+            );
+          } catch (error) {
+            if (error?.code !== "ENOENT") evidence.unresolved = true;
           }
-          const protectedEvidence = getStaticScriptProtectedEvidence(source, path.dirname(scriptPath));
-          evidence.contents.push(...protectedEvidence.commands);
-          evidence.unresolved = evidence.unresolved || protectedEvidence.unresolved;
-          if (staticInterpreterFile.kind === "python" || staticInterpreterFile.kind === "node") {
-            if (hasConservativeProtectedInterpreterBoundary(source, "git") ||
-                hasConservativeProtectedInterpreterBoundary(source, "codex") ||
-                getInterpreterProcessBoundaryResults(source, staticInterpreterFile.kind)
-                  .some(isDeniedInterpreterProcessBoundary)) {
-              evidence.unresolved = true;
-            }
-          }
-          // The current body must be reviewed before its writes affect later commands.
-          recordStaticInvokedScriptMutationEffects(
-            source,
-            staticInterpreterFile.kind,
-            stageBaseCwd,
-            baseRepoRoot,
-            scriptOverlay,
-            staticVariables,
-            heredocExemptKeys,
-          );
-        } catch (error) {
-          if (error?.code !== "ENOENT") evidence.unresolved = true;
         }
         continue;
       }
@@ -1415,7 +1496,10 @@ function getStaticInvokedScriptEvidence(
       }
     }
     const cwdChange = getShellCwdChange(segment, segmentBaseCwd);
-    if (cwdChange.target) {
+    if (cwdChange.state === "ambiguous") {
+      evidence.unresolved = true;
+      effectiveBaseCwd = "\0unresolved-cwd-change";
+    } else if (cwdChange.target) {
       const skipCwdChange = cwdChange.controlFlowPrefixed && controlFlowExecutionState === "inactive";
       if (!skipCwdChange && cwdChange.controlFlowPrefixed && controlFlowExecutionState === "unknown") {
         evidence.unresolved = true;
@@ -10885,7 +10969,11 @@ function getReviewGatedCommandTargets(command, baseCwd, depth = 0, inheritedGitE
 
     const cwdChange = getShellCwdChange(segment, segmentBaseCwd);
     const nextBaseCwd = cwdChange.target;
-    if (nextBaseCwd) {
+    if (cwdChange.state === "ambiguous") {
+      targetCwds.push("\0unresolved-cwd-change");
+      requiresBaseCwd = true;
+      effectiveBaseCwd = "\0unresolved-cwd-change";
+    } else if (nextBaseCwd) {
       const skipCwdChange = cwdChange.controlFlowPrefixed && controlFlowExecutionState === "inactive";
       if (!skipCwdChange && cwdChange.controlFlowPrefixed && controlFlowExecutionState === "unknown") {
         requiresBaseCwd = true;
@@ -11635,32 +11723,54 @@ function getShellCwdChange(segment, baseCwd) {
   const normalizedSegment = unwrapPowerShellCommandWrapper(segment);
   const stages = splitCommandPipelineStages(normalizedSegment);
   if (stages.length !== 1) {
-    return { target: "", controlFlowPrefixed: false };
+    return { state: "none", target: "", controlFlowPrefixed: false };
   }
 
-  const rawTokens = stripInlineEnvironmentPrefixes(tokenizeCommandLine(stages[0]));
+  const originalTokens = tokenizeCommandLine(stages[0]);
+  const inlineCdPath = originalTokens
+    .map((token) => /^CDPATH=(.*)$/u.exec(stripOuterQuotes(token)))
+    .find(Boolean);
+  let rawTokens = stripInlineEnvironmentPrefixes(originalTokens);
+  let negated = false;
+  if (normalizeAgentValue(stripOuterQuotes(rawTokens[0] || "")) === "!") {
+    rawTokens = rawTokens.slice(1);
+    negated = true;
+  }
   const controlFlowPrefixed = hasShellControlFlowPrefix(rawTokens);
   const tokens = stripShellCommandBuiltinPrefixes(stripShellControlFlowPrefixes(rawTokens));
   if (tokens.length === 0) {
-    return { target: "", controlFlowPrefixed };
+    return { state: "none", target: "", controlFlowPrefixed };
   }
 
   const executable = normalizeAgentValue(getExecutableBasename(tokens[0]));
   if (!["cd", "chdir", "pushd", "set-location", "sl", "push-location"].includes(executable)) {
     if (["popd", "pop-location"].includes(executable)) {
-      return { target: "\0unresolved-cwd-change", controlFlowPrefixed };
+      return { state: "ambiguous", target: "\0unresolved-cwd-change", controlFlowPrefixed };
     }
-    return { target: "", controlFlowPrefixed };
+    const containsNestedCwdChange = rawTokens.some((token) =>
+      ["cd", "chdir", "pushd", "set-location", "sl", "push-location", "popd", "pop-location"]
+        .includes(normalizeAgentValue(getExecutableBasename(token))));
+    return containsNestedCwdChange
+      ? { state: "ambiguous", target: "\0unresolved-cwd-change", controlFlowPrefixed: true }
+      : { state: "none", target: "", controlFlowPrefixed };
   }
 
   const target = getShellCwdChangeArgument(tokens);
   if (!target || target.includes("\0")) {
-    return { target: "\0unresolved-cwd-change", controlFlowPrefixed };
+    return { state: "ambiguous", target: "\0unresolved-cwd-change", controlFlowPrefixed };
+  }
+  const isPosixBareRelativeTarget = !path.isAbsolute(target) &&
+    !/^[A-Za-z]:[\\/]/u.test(target) &&
+    !target.startsWith("./") && !target.startsWith(".\\") &&
+    !target.startsWith("../") && !target.startsWith("..\\");
+  if (inlineCdPath && inlineCdPath[1] && isPosixBareRelativeTarget) {
+    return { state: "ambiguous", target: "\0unresolved-cdpath-change", controlFlowPrefixed };
   }
 
   return {
+    state: "resolved",
     target: resolveGitCwdOption(baseCwd || process.cwd(), "", target) || "\0unresolved-cwd-change",
-    controlFlowPrefixed,
+    controlFlowPrefixed: negated ? false : controlFlowPrefixed,
   };
 }
 
