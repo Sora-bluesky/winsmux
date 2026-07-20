@@ -8305,6 +8305,7 @@ Describe 'orchestra-start server bootstrap' {
     Context 'TASK-784 attach render truth' {
         BeforeEach {
             Mock Test-OrchestraProcessAlive { $true }
+            Mock Get-OrchestraProcessStartedAtUnixMs { 123456 }
         }
 
         It 'rejects client registration without a render receipt' {
@@ -8324,6 +8325,7 @@ Describe 'orchestra-start server bootstrap' {
                 request_id          = 'stale-request'
                 session_name        = 'winsmux-orchestra'
                 renderer_process_id = 4242
+                renderer_process_started_at_unix_ms = 123456
                 rendered_at_unix_ms = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
                 pane_ids            = @('%1', '%2')
             }
@@ -8345,6 +8347,7 @@ Describe 'orchestra-start server bootstrap' {
                 request_id          = 'request-784'
                 session_name        = 'winsmux-orchestra'
                 renderer_process_id = 4242
+                renderer_process_started_at_unix_ms = 123456
                 rendered_at_unix_ms = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
                 pane_ids            = @('%1')
             }
@@ -8367,6 +8370,7 @@ Describe 'orchestra-start server bootstrap' {
                 request_id          = 'request-784'
                 session_name        = 'winsmux-orchestra'
                 renderer_process_id = 4242
+                renderer_process_started_at_unix_ms = 123456
                 rendered_at_unix_ms = 2000
                 pane_ids            = @('%1')
             }
@@ -8390,6 +8394,7 @@ Describe 'orchestra-start server bootstrap' {
                 request_id          = 'request-784'
                 session_name        = 'winsmux-orchestra'
                 renderer_process_id = 4242
+                renderer_process_started_at_unix_ms = 123456
                 rendered_at_unix_ms = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
                 pane_ids            = @('%1', '%1')
             }
@@ -8400,6 +8405,68 @@ Describe 'orchestra-start server bootstrap' {
             $receipt.pane_ids = @('%1', '%2')
             (Test-OrchestraRenderReceipt -Receipt $receipt -SessionName 'winsmux-orchestra' -RequestId 'request-784' -LivePaneIds @('%1')).Reason |
                 Should -Be 'render_receipt_pane_set_mismatch'
+        }
+
+        It 'rejects a reused renderer PID with a different process start time' {
+            $receipt = [pscustomobject]@{
+                version                              = 1
+                request_id                           = 'request-784'
+                session_name                         = 'winsmux-orchestra'
+                renderer_process_id                  = 4242
+                renderer_process_started_at_unix_ms  = 123456
+                rendered_at_unix_ms                  = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+                pane_ids                             = @('%1')
+            }
+            Mock Get-OrchestraProcessStartedAtUnixMs { 654321 }
+
+            $result = Test-OrchestraRenderReceipt -Receipt $receipt -SessionName 'winsmux-orchestra' -RequestId 'request-784' -LivePaneIds @('%1')
+
+            $result.Confirmed | Should -Be $false
+            $result.Reason | Should -Be 'render_receipt_renderer_instance_mismatch'
+        }
+
+        It 'keeps a confirmed renderer live when the session pane topology changes' {
+            $state = [pscustomobject]@{
+                session_name        = 'winsmux-orchestra'
+                attach_status       = 'attach_confirmed'
+                attach_request_id   = 'request-784'
+                requested_at        = [DateTimeOffset]::UtcNow.AddSeconds(-1).ToString('o')
+                render_receipt_path = 'C:\temp\request-784.render.json'
+            }
+            Mock Get-OrchestraLivePaneSnapshot {
+                [pscustomobject]@{ Ok = $true; Count = 2; Error = ''; PaneIds = @('%1', '%2') }
+            }
+            Mock Read-OrchestraRenderReceipt {
+                [pscustomobject]@{
+                    version                              = 1
+                    request_id                           = 'request-784'
+                    session_name                         = 'winsmux-orchestra'
+                    renderer_process_id                  = 4242
+                    renderer_process_started_at_unix_ms  = 123456
+                    rendered_at_unix_ms                  = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+                    pane_ids                             = @('%1')
+                }
+            }
+
+            Test-OrchestraLiveVisibleAttachState -State $state -SessionName 'winsmux-orchestra' -WinsmuxBin 'C:\winsmux\winsmux.exe' |
+                Should -Be $true
+        }
+
+        It 'does not treat client registration as launch observation' {
+            Mock Read-OrchestraAttachState { $null }
+            Mock Get-OrchestraAttachedClientSnapshot {
+                [pscustomobject]@{ Ok = $true; Count = 1; Error = ''; Clients = @('client-1') }
+            }
+            Mock Start-Sleep {}
+
+            $result = Wait-OrchestraAttachLaunchObservation `
+                -SessionName 'winsmux-orchestra' `
+                -WinsmuxBin 'C:\winsmux\winsmux.exe' `
+                -BaselineClientCount 0 `
+                -TimeoutMilliseconds 1 `
+                -PollMilliseconds 1
+
+            $result.Observed | Should -Be $false
         }
 
         It 'passes render metadata and clears inherited mux markers before attach-session' {
@@ -8428,6 +8495,7 @@ Describe 'orchestra-start server bootstrap' {
                     request_id          = 'request-784'
                     session_name        = 'winsmux-orchestra'
                     renderer_process_id = 4242
+                    renderer_process_started_at_unix_ms = 123456
                     rendered_at_unix_ms = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
                     pane_ids            = @('%2', '%1')
                 }

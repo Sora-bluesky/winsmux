@@ -193,6 +193,22 @@ function Test-OrchestraProcessAlive {
     }
 }
 
+function Get-OrchestraProcessStartedAtUnixMs {
+    param([AllowNull()]$ProcessId)
+
+    $resolvedProcessId = ConvertTo-OrchestraAttachProcessId -Value $ProcessId
+    if ($resolvedProcessId -le 0) {
+        return 0L
+    }
+
+    try {
+        $process = Get-Process -Id $resolvedProcessId -ErrorAction Stop
+        return ([DateTimeOffset]$process.StartTime.ToUniversalTime()).ToUnixTimeMilliseconds()
+    } catch {
+        return 0L
+    }
+}
+
 function Get-OrchestraLivePaneSnapshot {
     param(
         [Parameter(Mandatory = $true)][string]$WinsmuxBin,
@@ -230,13 +246,15 @@ function Test-OrchestraRenderReceipt {
         [Parameter(Mandatory = $true)][string]$SessionName,
         [Parameter(Mandatory = $true)][string]$RequestId,
         [AllowEmptyCollection()][string[]]$LivePaneIds = @(),
-        [long]$RequestedAtUnixMs = 0
+        [long]$RequestedAtUnixMs = 0,
+        [switch]$AllowPaneTopologyChange
     )
 
     $result = [ordered]@{
         Confirmed = $false
         Reason = 'render_receipt_missing'
         RendererProcessId = 0
+        RendererProcessStartedAtUnixMs = 0
         RenderedPaneIds = @()
         RenderedAtUnixMs = 0
     }
@@ -244,7 +262,7 @@ function Test-OrchestraRenderReceipt {
         return [PSCustomObject]$result
     }
 
-    foreach ($requiredProperty in @('version', 'request_id', 'session_name', 'renderer_process_id', 'rendered_at_unix_ms', 'pane_ids')) {
+    foreach ($requiredProperty in @('version', 'request_id', 'session_name', 'renderer_process_id', 'renderer_process_started_at_unix_ms', 'rendered_at_unix_ms', 'pane_ids')) {
         if ($null -eq $Receipt.PSObject.Properties[$requiredProperty]) {
             $result.Reason = 'render_receipt_malformed'
             return [PSCustomObject]$result
@@ -270,6 +288,17 @@ function Test-OrchestraRenderReceipt {
         return [PSCustomObject]$result
     }
 
+    $rendererProcessStartedAtUnixMs = 0L
+    if (-not [long]::TryParse(([string]$Receipt.renderer_process_started_at_unix_ms), [ref]$rendererProcessStartedAtUnixMs) -or $rendererProcessStartedAtUnixMs -le 0) {
+        $result.Reason = 'render_receipt_malformed'
+        return [PSCustomObject]$result
+    }
+    $liveProcessStartedAtUnixMs = Get-OrchestraProcessStartedAtUnixMs -ProcessId $rendererProcessId
+    if ($liveProcessStartedAtUnixMs -le 0 -or $liveProcessStartedAtUnixMs -ne $rendererProcessStartedAtUnixMs) {
+        $result.Reason = 'render_receipt_renderer_instance_mismatch'
+        return [PSCustomObject]$result
+    }
+
     $renderedAtUnixMs = 0L
     if (-not [long]::TryParse(([string]$Receipt.rendered_at_unix_ms), [ref]$renderedAtUnixMs) -or $renderedAtUnixMs -le 0 -or ($RequestedAtUnixMs -gt 0 -and $renderedAtUnixMs -lt $RequestedAtUnixMs)) {
         $result.Reason = 'render_receipt_not_fresh'
@@ -280,7 +309,7 @@ function Test-OrchestraRenderReceipt {
     $renderedPaneIds = @($rawRenderedPaneIds | Where-Object { $_ -match '^%[0-9]+$' } | Sort-Object -Unique)
     $rawLivePaneIds = @($LivePaneIds | ForEach-Object { ([string]$_).Trim() })
     $livePaneIds = @($rawLivePaneIds | Where-Object { $_ -match '^%[0-9]+$' } | Sort-Object -Unique)
-    if ($rawRenderedPaneIds.Count -eq 0 -or $rawRenderedPaneIds.Count -ne $renderedPaneIds.Count -or $rawLivePaneIds.Count -ne $livePaneIds.Count -or $livePaneIds.Count -eq 0 -or (($renderedPaneIds -join "`n") -ne ($livePaneIds -join "`n"))) {
+    if ($rawRenderedPaneIds.Count -eq 0 -or $rawRenderedPaneIds.Count -ne $renderedPaneIds.Count -or $rawLivePaneIds.Count -ne $livePaneIds.Count -or $livePaneIds.Count -eq 0 -or (-not $AllowPaneTopologyChange -and (($renderedPaneIds -join "`n") -ne ($livePaneIds -join "`n")))) {
         $result.Reason = 'render_receipt_pane_set_mismatch'
         return [PSCustomObject]$result
     }
@@ -288,6 +317,7 @@ function Test-OrchestraRenderReceipt {
     $result.Confirmed = $true
     $result.Reason = 'render_receipt_confirmed'
     $result.RendererProcessId = $rendererProcessId
+    $result.RendererProcessStartedAtUnixMs = $rendererProcessStartedAtUnixMs
     $result.RenderedPaneIds = @($renderedPaneIds)
     $result.RenderedAtUnixMs = $renderedAtUnixMs
     return [PSCustomObject]$result
@@ -332,7 +362,7 @@ function Test-OrchestraLiveVisibleAttachState {
         $requestedAtUnixMs = $parsedRequestedAt.ToUnixTimeMilliseconds()
     }
     $receipt = Read-OrchestraRenderReceipt -Path $receiptPath
-    $validation = Test-OrchestraRenderReceipt -Receipt $receipt -SessionName $SessionName -RequestId $requestId -LivePaneIds @($livePanes.PaneIds) -RequestedAtUnixMs $requestedAtUnixMs
+    $validation = Test-OrchestraRenderReceipt -Receipt $receipt -SessionName $SessionName -RequestId $requestId -LivePaneIds @($livePanes.PaneIds) -RequestedAtUnixMs $requestedAtUnixMs -AllowPaneTopologyChange
     return [bool]$validation.Confirmed
 }
 
@@ -723,21 +753,6 @@ function Wait-OrchestraAttachLaunchObservation {
             }
         }
 
-        $snapshot = Get-OrchestraAttachedClientSnapshot -WinsmuxBin $WinsmuxBin -SessionName $SessionName
-        $effectiveBaselineClients = @(Get-OrchestraBaselineClients -BaselineClients $BaselineClients -State $state)
-        $clientTransition = if ([bool]$snapshot.Ok) {
-            Test-OrchestraAttachClientTransition -BaselineClients $effectiveBaselineClients -CurrentClients @($snapshot.Clients)
-        } else {
-            $false
-        }
-
-        if ([bool]$snapshot.Ok -and (([int]$snapshot.Count -ge ($BaselineClientCount + 1)) -or $clientTransition)) {
-            return [PSCustomObject][ordered]@{
-                Observed = $true
-                Reason   = 'Attached client probe changed during attach launch.'
-            }
-        }
-
         Start-Sleep -Milliseconds $PollMilliseconds
     } while ((Get-Date) -lt $deadline)
 
@@ -833,6 +848,7 @@ function Wait-OrchestraAttachHandshake {
                 attached_client_count     = if ([bool]$snapshot.Ok) { [int]$snapshot.Count } else { 0 }
                 attached_client_snapshot = @($snapshot.Clients)
                 renderer_process_id       = [int]$receiptValidation.RendererProcessId
+                renderer_process_started_at_unix_ms = [long]$receiptValidation.RendererProcessStartedAtUnixMs
                 rendered_pane_ids         = @($receiptValidation.RenderedPaneIds)
                 rendered_at_unix_ms       = [long]$receiptValidation.RenderedAtUnixMs
                 ui_attach_source          = 'render-receipt'
@@ -991,6 +1007,7 @@ function Invoke-OrchestraVisibleAttachRequest {
         client_count_seen     = $baselineClientCount
         attach_process_id     = 0
         renderer_process_id   = 0
+        renderer_process_started_at_unix_ms = 0
         render_receipt_path   = $renderReceiptPath
         rendered_pane_ids     = @()
         rendered_at_unix_ms   = 0
@@ -1032,6 +1049,7 @@ function Invoke-OrchestraVisibleAttachRequest {
             attach_request_id     = $attachRequestId
             attach_process_id     = 0
             renderer_process_id   = 0
+            renderer_process_started_at_unix_ms = 0
             render_receipt_path   = $renderReceiptPath
             rendered_pane_ids     = @()
             rendered_at_unix_ms   = 0

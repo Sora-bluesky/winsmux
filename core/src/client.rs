@@ -69,6 +69,7 @@ struct RenderReceipt<'a> {
     request_id: &'a str,
     session_name: &'a str,
     renderer_process_id: u32,
+    renderer_process_started_at_unix_ms: u128,
     rendered_at_unix_ms: u128,
     pane_ids: Vec<String>,
 }
@@ -102,6 +103,8 @@ fn write_render_receipt(config: &RenderReceiptConfig, pane_ids: &[usize]) -> io:
         request_id: &config.request_id,
         session_name: &config.session_name,
         renderer_process_id: std::process::id(),
+        renderer_process_started_at_unix_ms:
+            crate::session::current_process_started_at_millis().unwrap_or(rendered_at_unix_ms),
         rendered_at_unix_ms,
         pane_ids,
     };

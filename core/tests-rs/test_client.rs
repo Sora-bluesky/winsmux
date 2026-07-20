@@ -27,6 +27,9 @@ fn task784_render_receipt_records_only_post_draw_identity() {
     assert_eq!(receipt["request_id"], "request-784");
     assert_eq!(receipt["session_name"], "winsmux-orchestra");
     assert_eq!(receipt["renderer_process_id"], std::process::id());
+    assert!(receipt["renderer_process_started_at_unix_ms"]
+        .as_u64()
+        .is_some_and(|value| value > 0));
     assert_eq!(receipt["pane_ids"], serde_json::json!(["%1", "%3"]));
     assert!(receipt.get("pane_content").is_none());
 
