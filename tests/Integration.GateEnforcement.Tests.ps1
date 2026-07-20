@@ -9237,6 +9237,29 @@ EOF
         & $script:AssertDenyResult -Result $reviewedCaller -Because 'control-flow-dependent cwd state remains fail closed even when one possible target has PASS'
     }
 
+    It 'TASK-783 C117 treats sourced scripts and cwd options as execution boundaries' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $environment = @{ WINSMUX_ROLE = 'operator'; WINSMUX_ASSIGNED_WORKTREE = $fixture.RepoRoot }
+
+        $protectedDependency = Join-Path $fixture.RepoRoot 'scripts\protected-dependency.sh'
+        Write-GateTestFile -Path $protectedDependency -Content "git commit --allow-empty -m sourced-protected`n"
+        foreach ($sourceCommand in @('.', 'source')) {
+            $sourceScript = Join-Path $fixture.RepoRoot ("scripts\source-{0}.sh" -f $sourceCommand.Replace('.', 'dot'))
+            Write-GateTestFile -Path $sourceScript -Content ("{0} ./scripts/protected-dependency.sh`n" -f $sourceCommand)
+            $sourced = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = ("bash scripts/{0}" -f (Split-Path -Leaf $sourceScript)); cwd = $fixture.RepoRoot } -Environment $environment
+            & $script:AssertDenyResult -Result $sourced -Because "a literal sourced dependency must be inspected for protected operations: $sourceCommand"
+        }
+
+        $cwdFixture = New-GateFixture
+        $approvedTarget = New-GateTargetRepo -Root $cwdFixture.Root -Name 'pushd-no-cwd-target'
+        Set-GatePass -RepoRoot $approvedTarget.RepoRoot -Branch $approvedTarget.Branch
+        $approvedPath = $approvedTarget.RepoRoot.Replace('\', '/')
+        $cwdEnvironment = @{ WINSMUX_ROLE = 'operator'; WINSMUX_ASSIGNED_WORKTREE = $cwdFixture.RepoRoot }
+        $noCwdChange = & $script:InvokeOrchestraGate -RepoRoot $cwdFixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = "pushd -n '$approvedPath'; git commit --allow-empty -m caller"; cwd = $cwdFixture.RepoRoot } -Environment $cwdEnvironment
+        & $script:AssertDenyResult -Result $noCwdChange -Because 'pushd -n does not change cwd and cannot borrow the stack target review PASS'
+    }
+
     It 'TASK-783 C104 permits only clean HEAD-bound canonical orchestra recovery scripts' {
         $fixture = New-GateFixture
         $script:FixtureRoot = $fixture.Root
