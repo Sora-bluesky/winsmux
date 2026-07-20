@@ -398,10 +398,10 @@ function Test-OrchestraLiveVisibleAttachState {
     param(
         [AllowNull()]$State,
         [Parameter(Mandatory = $true)][string]$SessionName,
-        [Parameter(Mandatory = $true)][string]$WinsmuxBin
+        [AllowEmptyString()][string]$WinsmuxBin = ''
     )
 
-    if ($null -eq $State) {
+    if ($null -eq $State -or [string]::IsNullOrWhiteSpace($WinsmuxBin)) {
         return $false
     }
 

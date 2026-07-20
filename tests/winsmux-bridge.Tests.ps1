@@ -8308,6 +8308,18 @@ Describe 'orchestra-start server bootstrap' {
             Mock Get-OrchestraProcessStartedAtUnixMs { 123456 }
         }
 
+        It 'fails closed when the winsmux executable is unavailable' {
+            $state = [pscustomobject]@{
+                session_name        = 'winsmux-orchestra'
+                attach_status       = 'attach_confirmed'
+                attach_request_id   = 'request-784'
+                render_receipt_path = 'C:\temp\request-784.render.json'
+            }
+
+            Test-OrchestraLiveVisibleAttachState -State $state -SessionName 'winsmux-orchestra' -WinsmuxBin '' |
+                Should -Be $false
+        }
+
         It 'rejects client registration without a render receipt' {
             $result = Test-OrchestraRenderReceipt `
                 -Receipt $null `
