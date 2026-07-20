@@ -1527,7 +1527,8 @@ function getStaticInvokedScriptEvidence(
     }
     const cwdChange = getShellCwdChange(segment, segmentBaseCwd);
     if (cwdChange.state === "ambiguous") {
-      evidence.unresolved = true;
+      // Cwd ambiguity matters here only if a later static script consumes it.
+      // Review-gated Git/GitHub targets are resolved independently by Rule 13.
       effectiveBaseCwd = "\0unresolved-cwd-change";
     } else if (cwdChange.target) {
       const skipCwdChange = cwdChange.controlFlowPrefixed && controlFlowExecutionState === "inactive";
@@ -6324,6 +6325,7 @@ function hasUnsupportedDirectProcessBoundary(command) {
             result === INTERPRETER_PROCESS_BOUNDARY.ALLOW_PROVEN_NON_PROTECTED) continue;
         return true;
       }
+      if (executable === "npm" && normalizeAgentValue(tokens[1] || "") === "exec") return true;
       if (!isOwnedDirectExecutable(executable)) {
         if ((executable === "npm" || executable === "cargo") &&
             tokens.length === 2 && normalizeAgentValue(tokens[1]) === "--version") continue;
@@ -6333,7 +6335,7 @@ function hasUnsupportedDirectProcessBoundary(command) {
         });
         if (nestedExecutable ||
             /\bcodex(?:\.exe)?\b[\s"']+(?:exec|e|--sandbox)\b/iu.test(normalizedStage)) return true;
-        continue;
+        return true;
       }
       if (isPowerShellExecutable(executable)) {
         const nestedCommand = nestedPowerShell;
@@ -6618,9 +6620,9 @@ function isOwnedDirectExecutable(executable) {
   const normalized = normalizeExecutableName(executable);
   if (/^python[0-9]+(?:\.[0-9]+)?$/u.test(normalized)) return true;
   return new Set([
-    ":", "bash", "cat", "cd", "cmd", "codex", "curl", "declare", "echo", "export", "false", "gh", "git", "grep", "jq", "local", "ls", "node", "nodejs", "pwd",
-    "powershell", "printf", "pwsh", "py", "python", "python3", "rg", "rustc", "saps", "sh", "start", "start-process", "type", "typeset", "unset", "where",
-    "tee", "true", "which", "winsmux", "xargs", "zsh",
+    ":", "bash", "cargo", "cat", "cd", "cmd", "codex", "cp", "curl", "declare", "dotnet", "echo", "export", "false", "gh", "git", "go", "grep", "install", "jq", "ln", "local", "ls", "make", "mv", "node", "nodejs", "npm", "pwd",
+    "powershell", "printf", "pwsh", "py", "python", "python3", "rg", "rustc", "saps", "sed", "sh", "start", "start-process", "tee", "true", "type", "typeset", "unset", "where",
+    "which", "winsmux", "xargs", "zsh",
   ]).has(normalized);
 }
 
