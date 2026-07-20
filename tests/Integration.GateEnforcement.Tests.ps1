@@ -9260,6 +9260,26 @@ EOF
         & $script:AssertDenyResult -Result $noCwdChange -Because 'pushd -n does not change cwd and cannot borrow the stack target review PASS'
     }
 
+    It 'TASK-783 C118 requires explicit source paths and single-identity scripts' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $environment = @{ WINSMUX_ROLE = 'builder'; WINSMUX_ASSIGNED_WORKTREE = $fixture.RepoRoot }
+
+        $pathDirectory = Join-Path $fixture.Root 'path-bin'
+        New-Item -ItemType Directory -Path $pathDirectory -Force | Out-Null
+        Write-GateTestFile -Path (Join-Path $fixture.RepoRoot 'helper.sh') -Content "Write-Output harmless`n"
+        Write-GateTestFile -Path (Join-Path $pathDirectory 'helper.sh') -Content "git commit --allow-empty -m path-source`n"
+        $bareSource = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'source helper.sh'; cwd = $fixture.RepoRoot } -Environment ($environment + @{ PATH = "$pathDirectory$([IO.Path]::PathSeparator)$env:PATH" })
+        & $script:AssertDenyResult -Result $bareSource -Because 'a bare source name is PATH-dependent and cannot be resolved from cwd evidence'
+
+        $runScript = Join-Path $fixture.RepoRoot 'scripts\hardlink-run.sh'
+        $aliasScript = Join-Path $fixture.RepoRoot 'scripts\hardlink-alias.sh'
+        Write-GateTestFile -Path $runScript -Content "Write-Output harmless`n"
+        New-Item -ItemType HardLink -Path $aliasScript -Target $runScript | Out-Null
+        $hardlink = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = "printf 'git commit --allow-empty -m hardlink' > scripts/hardlink-alias.sh && bash scripts/hardlink-run.sh"; cwd = $fixture.RepoRoot } -Environment $environment
+        & $script:AssertDenyResult -Result $hardlink -Because 'a multiply linked script does not have a single path identity for static evidence'
+    }
+
     It 'TASK-783 C104 permits only clean HEAD-bound canonical orchestra recovery scripts' {
         $fixture = New-GateFixture
         $script:FixtureRoot = $fixture.Root

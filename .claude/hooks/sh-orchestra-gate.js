@@ -1399,8 +1399,9 @@ function getStaticInvokedScriptEvidence(
                 continue;
               }
             } else {
+              const identity = fs.lstatSync(scriptPath);
               const stat = fs.statSync(scriptPath);
-              if (!stat.isFile() || stat.size > 1024 * 1024) {
+              if (identity.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1 || stat.size > 1024 * 1024) {
                 evidence.unresolved = true;
                 continue;
               }
@@ -1507,8 +1508,9 @@ function getStaticInvokedScriptEvidence(
             continue;
           }
         } else {
+          const identity = fs.lstatSync(scriptPath);
           const stat = fs.statSync(scriptPath);
-          if (!stat.isFile() || stat.size > 1024 * 1024) {
+          if (identity.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1 || stat.size > 1024 * 1024) {
             evidence.unresolved = true;
             continue;
           }
@@ -1743,7 +1745,8 @@ function getStaticShellSourceInvocation(tokens) {
     return { matched: false, unresolved: false, value: "" };
   }
   const value = stripOuterQuotes(tokens[1] || "");
-  if (!value || value.startsWith("-") || /[$%\x60*?\[\]{}\0]/u.test(value)) {
+  const hasExplicitPath = path.isAbsolute(value) || value.includes("/") || value.includes("\\");
+  if (!value || value.startsWith("-") || !hasExplicitPath || /[$%\x60*?\[\]{}\0]/u.test(value)) {
     return { matched: true, unresolved: true, value: "" };
   }
   return { matched: true, unresolved: false, value };
