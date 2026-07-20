@@ -9018,6 +9018,40 @@ EOF
         }
     }
 
+    It 'TASK-783 C113 separates inherited environment from the command effective environment' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+
+        $reviewedLocal = New-GateTargetRepo -Root $fixture.RepoRoot -Name 'effective-env-target'
+        Set-GatePass -RepoRoot $reviewedLocal.RepoRoot -Branch $reviewedLocal.Branch
+        $unreviewedCdPath = New-GateTargetRepo -Root $fixture.Root -Name 'effective-env-target'
+        $cdPathEnvironment = @{
+            WINSMUX_ROLE = 'operator'
+            WINSMUX_ASSIGNED_WORKTREE = $fixture.RepoRoot
+            CDPATH = $fixture.Root
+        }
+        $cdPathResult = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'cd effective-env-target; git commit --allow-empty -m inherited-cdpath'; cwd = $fixture.RepoRoot } -Environment $cdPathEnvironment
+        & $script:AssertDenyResult -Result $cdPathResult -Because 'an inherited CDPATH can redirect a bare relative cd away from the locally reviewed repository'
+        $clearedCdPathResult = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = 'CDPATH= cd effective-env-target; git commit --allow-empty -m cleared-cdpath'; cwd = $fixture.RepoRoot } -Environment $cdPathEnvironment
+        $clearedCdPathResult.OutputObject | Should -BeNullOrEmpty -Because 'an explicit empty CDPATH restores deterministic local resolution to the reviewed repository'
+
+        $reviewedInheritedGit = New-GateTargetRepo -Root $fixture.Root -Name 'inherited-git-target'
+        Set-GatePass -RepoRoot $reviewedInheritedGit.RepoRoot -Branch $reviewedInheritedGit.Branch
+        $gitEnvironment = @{
+            WINSMUX_ROLE = 'operator'
+            WINSMUX_ASSIGNED_WORKTREE = $fixture.RepoRoot
+            GIT_DIR = Join-Path $reviewedInheritedGit.RepoRoot '.git'
+            GIT_WORK_TREE = $reviewedInheritedGit.RepoRoot
+        }
+        foreach ($command in @(
+                'env -u GIT_DIR -u GIT_WORK_TREE git commit --allow-empty -m cleared-git-environment',
+                'env -i git commit --allow-empty -m ignored-git-environment'
+            )) {
+            $clearedGitResult = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command; cwd = $fixture.RepoRoot } -Environment $gitEnvironment
+            & $script:AssertDenyResult -Result $clearedGitResult -Because "metadata probes must not inherit Git target variables that the submitted command clears: $command"
+        }
+    }
+
     It 'TASK-783 C104 permits only clean HEAD-bound canonical orchestra recovery scripts' {
         $fixture = New-GateFixture
         $script:FixtureRoot = $fixture.Root

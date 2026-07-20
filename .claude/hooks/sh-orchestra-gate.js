@@ -3022,6 +3022,7 @@ function getGitHubRepositorySlug(repoCwd) {
   try {
     const remote = execFileSync("git", ["-C", repoRoot, "config", "--get", "remote.origin.url"], {
       encoding: "utf8",
+      env: getGitProbeEnvironment(),
       stdio: ["ignore", "pipe", "ignore"],
     }).trim().replace(/\\/gu, "/");
     const match = /(?:github\.com[:/])([^/]+\/[^/]+)$/iu.exec(remote);
@@ -3282,6 +3283,7 @@ function getConfiguredGitAliasValue(repoCwd, aliasName) {
   try {
     return execFileSync("git", ["-C", repoCwd, "config", "--get", `alias.${normalizedAlias}`], {
       encoding: "utf8",
+      env: getGitProbeEnvironment(),
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();
   } catch {
@@ -10663,6 +10665,7 @@ function getGitCommonDir(repoRoot) {
   try {
     const commonDir = execFileSync("git", ["-C", repoRoot, "rev-parse", "--git-common-dir"], {
       encoding: "utf8",
+      env: getGitProbeEnvironment(),
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();
     return commonDir ? path.resolve(repoRoot, commonDir) : "";
@@ -10678,10 +10681,18 @@ function resolveGitTopLevel(candidate) {
 
   const resolved = path.resolve(process.cwd(), stripOuterQuotes(candidate.trim()));
   try {
-    return execFileSync("git", ["-C", resolved, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
+    return execFileSync("git", ["-C", resolved, "rev-parse", "--show-toplevel"], {
+      encoding: "utf8",
+      env: getGitProbeEnvironment(),
+    }).trim();
   } catch {
     return "";
   }
+}
+
+function getGitProbeEnvironment() {
+  return Object.fromEntries(Object.entries(process.env).filter(([name]) =>
+    !name.toUpperCase().startsWith("GIT_")));
 }
 
 function getReviewGatedCommandTargets(command, baseCwd, depth = 0, inheritedGitEnvContext = {}) {
@@ -11719,6 +11730,89 @@ function hasConditionalCwdChangeBoundary(commandSegment) {
          commandSegment?.separatorAfter === "&";
 }
 
+function getEffectiveEnvironmentValue(tokens, requestedName) {
+  const normalizedName = String(requestedName || "").toUpperCase();
+  let value = Object.entries(process.env)
+    .find(([name]) => name.toUpperCase() === normalizedName)?.[1] || "";
+  let index = 0;
+  const applyAssignment = (token) => {
+    const assignment = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/u.exec(stripOuterQuotes(token));
+    if (!assignment) return false;
+    if (assignment[1].toUpperCase() === normalizedName) value = stripOuterQuotes(assignment[2]);
+    return true;
+  };
+  while (index < tokens.length && applyAssignment(tokens[index])) index += 1;
+  const executable = normalizeAgentValue(getExecutableBasename(tokens[index] || ""));
+  if (executable !== "env" && executable !== "env.exe") {
+    return { value, unresolved: false };
+  }
+  index += 1;
+  while (index < tokens.length) {
+    const token = stripOuterQuotes(tokens[index]);
+    const normalized = normalizeAgentValue(token);
+    if (applyAssignment(token)) {
+      index += 1;
+      continue;
+    }
+    const shortOptions = parseEnvShortOptionCluster(token);
+    if (shortOptions) {
+      if (shortOptions.ignoreEnvironment) value = "";
+      const optionValue = shortOptions.value || stripOuterQuotes(tokens[index + 1] || "");
+      const consumed = shortOptions.value ? 1 : 2;
+      if (shortOptions.valueOption === "U") {
+        if (!optionValue) return { value, unresolved: true };
+        if (optionValue.toUpperCase() === normalizedName) value = "";
+        index += consumed;
+        continue;
+      }
+      if (shortOptions.valueOption === "C") {
+        if (!optionValue) return { value, unresolved: true };
+        index += consumed;
+        continue;
+      }
+      if (shortOptions.valueOption === "S") return { value, unresolved: true };
+      index += 1;
+      continue;
+    }
+    if (normalized === "-i" || normalized === "--ignore-environment" || normalized === "-") {
+      value = "";
+      index += 1;
+      continue;
+    }
+    if (normalized === "-u" || normalized === "--unset") {
+      const unsetName = stripOuterQuotes(tokens[index + 1] || "").toUpperCase();
+      if (!unsetName) return { value, unresolved: true };
+      if (unsetName === normalizedName) value = "";
+      index += 2;
+      continue;
+    }
+    if (normalized.startsWith("--unset=")) {
+      if (token.slice(token.indexOf("=") + 1).toUpperCase() === normalizedName) value = "";
+      index += 1;
+      continue;
+    }
+    if (normalized === "-c" || normalized === "--chdir") {
+      if (index + 1 >= tokens.length) return { value, unresolved: true };
+      index += 2;
+      continue;
+    }
+    if (normalized.startsWith("--chdir=") || (normalized.startsWith("-c") && normalized.length > 2) ||
+        normalized === "-0" || normalized === "--null" || normalized === "-v" || normalized === "--debug" ||
+        normalized === "--list-signal-handling" || normalized.startsWith("--block-signal=") ||
+        normalized.startsWith("--default-signal=") || normalized.startsWith("--ignore-signal=")) {
+      index += 1;
+      continue;
+    }
+    if (normalized === "-s" || normalized === "--split-string" || normalized.startsWith("--split-string=") ||
+        (normalized.startsWith("-s") && normalized.length > 2)) {
+      return { value, unresolved: true };
+    }
+    if (token.startsWith("-")) return { value, unresolved: true };
+    break;
+  }
+  return { value, unresolved: false };
+}
+
 function getShellCwdChange(segment, baseCwd) {
   const normalizedSegment = unwrapPowerShellCommandWrapper(segment);
   const stages = splitCommandPipelineStages(normalizedSegment);
@@ -11727,9 +11821,7 @@ function getShellCwdChange(segment, baseCwd) {
   }
 
   const originalTokens = tokenizeCommandLine(stages[0]);
-  const inlineCdPath = originalTokens
-    .map((token) => /^CDPATH=(.*)$/u.exec(stripOuterQuotes(token)))
-    .find(Boolean);
+  const effectiveCdPath = getEffectiveEnvironmentValue(originalTokens, "CDPATH");
   let rawTokens = stripInlineEnvironmentPrefixes(originalTokens);
   let negated = false;
   if (normalizeAgentValue(stripOuterQuotes(rawTokens[0] || "")) === "!") {
@@ -11763,7 +11855,7 @@ function getShellCwdChange(segment, baseCwd) {
     !/^[A-Za-z]:[\\/]/u.test(target) &&
     !target.startsWith("./") && !target.startsWith(".\\") &&
     !target.startsWith("../") && !target.startsWith("..\\");
-  if (inlineCdPath && inlineCdPath[1] && isPosixBareRelativeTarget) {
+  if (isPosixBareRelativeTarget && (effectiveCdPath.unresolved || effectiveCdPath.value)) {
     return { state: "ambiguous", target: "\0unresolved-cdpath-change", controlFlowPrefixed };
   }
 
@@ -13090,7 +13182,11 @@ function resolveGitDirWorkTreeTargetCwd(gitDir, workTree) {
       workTreePath,
       "rev-parse",
       "--show-toplevel",
-    ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    ], {
+      encoding: "utf8",
+      env: getGitProbeEnvironment(),
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
   } catch {
     return "";
   }
@@ -13136,7 +13232,10 @@ function getCurrentBranch(repoRoot) {
 }
 
 function getCurrentHeadSha(repoRoot) {
-  return execFileSync("git", ["-C", repoRoot, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  return execFileSync("git", ["-C", repoRoot, "rev-parse", "HEAD"], {
+    encoding: "utf8",
+    env: getGitProbeEnvironment(),
+  }).trim();
 }
 
 function resolveGitDir(repoRoot) {
