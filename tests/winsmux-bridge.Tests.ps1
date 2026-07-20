@@ -8597,6 +8597,7 @@ Describe 'orchestra-start server bootstrap' {
             $entryContent | Should -Match '\$env:WINSMUX_RENDER_SESSION_NAME\s*=\s*\$renderSessionIdentity'
             $entryContent | Should -Match 'Name = ''WINSMUX_BRIDGE_NAMESPACE_L''; Value = \$bridgeNamespaceL'
             $entryContent | Should -Match 'Name = ''WINSMUX_BRIDGE_SOCKET_S''; Value = \$bridgeSocketS'
+            $entryContent | Should -Match '''-ProjectDir'', \$projectDir'
             $entryContent | Should -Match 'Remove-Item Env:PSMUX_ACTIVE'
             $entryContent | Should -Match 'Remove-Item Env:PSMUX_SESSION'
             $entryContent | Should -Match 'Invoke-WinsmuxBridgeCommand.+@\(''attach-session'', ''-t'', \$sessionName\)'
@@ -8609,6 +8610,7 @@ Describe 'orchestra-start server bootstrap' {
                 attach_request_id   = 'request-784'
                 requested_at        = [DateTimeOffset]::UtcNow.AddSeconds(-1).ToString('o')
                 render_receipt_path = 'C:\temp\request-784.render.json'
+                render_session_identity = Get-OrchestraRenderSessionIdentity -SessionName 'winsmux-orchestra' -ProjectDir 'C:\repo'
             }
             Mock Read-OrchestraRenderReceipt {
                 [pscustomobject]@{
@@ -8628,12 +8630,55 @@ Describe 'orchestra-start server bootstrap' {
                 [pscustomobject]@{ Ok = $true; Count = 1; Error = ''; Clients = @('client-1') }
             }
 
-            $result = Wait-OrchestraAttachHandshake -SessionName 'winsmux-orchestra' -WinsmuxBin 'C:\winsmux\winsmux.exe' -BaselineClientCount 0 -TimeoutMilliseconds 100 -PollMilliseconds 1
+            $result = Wait-OrchestraAttachHandshake -SessionName 'winsmux-orchestra' -WinsmuxBin 'C:\winsmux\winsmux.exe' -BaselineClientCount 0 -ProjectDir 'C:\repo' -TimeoutMilliseconds 100 -PollMilliseconds 1
 
             $result.Confirmed | Should -Be $true
             $result.Source | Should -Be 'render-receipt'
             $result.State.renderer_process_id | Should -Be 4242
             $result.State.rendered_pane_ids | Should -Be @('%1', '%2')
+        }
+
+        It 'rejects a handshake state written by another namespace' {
+            $previousNamespace = $env:WINSMUX_BRIDGE_NAMESPACE_L
+            try {
+                $env:WINSMUX_BRIDGE_NAMESPACE_L = 'namespace-a'
+                $script:attachStateStore = [pscustomobject]@{
+                    session_name            = 'winsmux-orchestra'
+                    attach_status           = 'attach_confirming'
+                    attach_request_id       = 'request-b'
+                    requested_at            = [DateTimeOffset]::UtcNow.AddSeconds(-1).ToString('o')
+                    render_receipt_path     = 'C:\temp\request-b.render.json'
+                    render_session_identity = 'namespace-b__winsmux-orchestra'
+                }
+                Mock Read-OrchestraRenderReceipt {
+                    [pscustomobject]@{
+                        version             = 1
+                        request_id          = 'request-b'
+                        session_name        = 'namespace-b__winsmux-orchestra'
+                        renderer_process_id = 4242
+                        renderer_process_started_at_unix_ms = 123456
+                        rendered_at_unix_ms = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+                        pane_ids            = @('%1', '%2')
+                    }
+                }
+                Mock Get-OrchestraLivePaneSnapshot {
+                    [pscustomobject]@{ Ok = $true; Count = 2; Error = ''; PaneIds = @('%1', '%2') }
+                }
+                Mock Get-OrchestraAttachedClientSnapshot {
+                    [pscustomobject]@{ Ok = $true; Count = 1; Error = ''; Clients = @('client-a') }
+                }
+
+                $result = Wait-OrchestraAttachHandshake -SessionName 'winsmux-orchestra' -WinsmuxBin 'C:\winsmux\winsmux.exe' -BaselineClientCount 0 -ProjectDir 'C:\repo-a' -TimeoutMilliseconds 5 -PollMilliseconds 1
+
+                $result.Confirmed | Should -Be $false
+                $result.Reason | Should -Match 'render_receipt_session_mismatch'
+            } finally {
+                if ($null -eq $previousNamespace) {
+                    Remove-Item Env:WINSMUX_BRIDGE_NAMESPACE_L -ErrorAction SilentlyContinue
+                } else {
+                    $env:WINSMUX_BRIDGE_NAMESPACE_L = $previousNamespace
+                }
+            }
         }
 
         It 'does not confirm a live desktop host without the same render receipt contract' {

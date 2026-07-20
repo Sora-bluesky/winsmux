@@ -2,6 +2,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$SessionName,
     [Parameter(Mandatory = $true)][string]$WinsmuxPath,
+    [Parameter(Mandatory = $true)][string]$ProjectDir,
     [int]$BaselineClientCount = 0,
     [int]$TimeoutMilliseconds = 12000,
     [int]$PollMilliseconds = 250
@@ -24,7 +25,7 @@ try {
         error              = ''
     } | Out-Null
 
-    $null = Wait-OrchestraAttachHandshake -SessionName $SessionName -WinsmuxBin $WinsmuxPath -BaselineClientCount $BaselineClientCount -TimeoutMilliseconds $TimeoutMilliseconds -PollMilliseconds $PollMilliseconds
+    $null = Wait-OrchestraAttachHandshake -SessionName $SessionName -WinsmuxBin $WinsmuxPath -BaselineClientCount $BaselineClientCount -ProjectDir $ProjectDir -TimeoutMilliseconds $TimeoutMilliseconds -PollMilliseconds $PollMilliseconds
 } catch {
     Write-OrchestraAttachState -SessionName $SessionName -Properties @{
         attach_status     = 'attach_failed'

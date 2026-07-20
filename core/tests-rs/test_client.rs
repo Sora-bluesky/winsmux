@@ -39,6 +39,59 @@ fn task784_render_receipt_records_only_post_draw_identity() {
 
 #[cfg(windows)]
 #[test]
+fn task784_render_receipt_heartbeat_refreshes_without_a_new_frame() {
+    let path = std::env::temp_dir().join(format!(
+        "winsmux-task784-render-heartbeat-{}-{}.json",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let config = RenderReceiptConfig {
+        path: path.clone(),
+        request_id: "request-784".to_string(),
+        session_name: "winsmux-orchestra".to_string(),
+    };
+    let now = Instant::now();
+    let mut last_write = Some(now - Duration::from_secs(2));
+
+    assert!(refresh_render_receipt_lease_if_due(
+        Some(&config),
+        &[1, 2],
+        &mut last_write,
+        now,
+    )
+    .expect("idle heartbeat should refresh the live render lease"));
+    assert!(path.exists());
+    assert_eq!(last_write, Some(now));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn task784_idle_loop_back_edges_refresh_the_render_lease() {
+    let source = include_str!("../src/client.rs");
+    for idle_gate in [
+        "if !got_frame && !selection_changed && !overlays_active {",
+        "if dump_buf == prev_dump_buf && !selection_changed && !overlays_active {",
+    ] {
+        let branch = source
+            .split_once(idle_gate)
+            .expect("idle gate should exist")
+            .1
+            .split_once("continue;")
+            .expect("idle gate should loop back")
+            .0;
+        assert!(
+            branch.contains("refresh_render_receipt_lease_if_due"),
+            "idle loop-back must refresh an established render lease"
+        );
+    }
+}
+
+#[cfg(windows)]
+#[test]
 fn task784_render_receipt_lease_removes_stale_proof_on_exit() {
     let path = std::env::temp_dir().join(format!(
         "winsmux-task784-render-lease-{}-{}.json",

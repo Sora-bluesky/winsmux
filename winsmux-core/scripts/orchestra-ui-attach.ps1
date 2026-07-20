@@ -895,6 +895,7 @@ function Wait-OrchestraAttachHandshake {
         [Parameter(Mandatory = $true)][string]$WinsmuxBin,
         [Parameter(Mandatory = $true)][int]$BaselineClientCount,
         [AllowEmptyCollection()][string[]]$BaselineClients = @(),
+        [string]$ProjectDir = (Get-Location).Path,
         [int]$TimeoutMilliseconds = 12000,
         [int]$PollMilliseconds = 250
     )
@@ -923,11 +924,13 @@ function Wait-OrchestraAttachHandshake {
                 $requestedAtUnixMs = $parsedRequestedAt.ToUnixTimeMilliseconds()
             }
             $receipt = Read-OrchestraRenderReceipt -Path $receiptPath
-            $renderSessionIdentity = Get-OrchestraAttachStateString -State $state -Name 'render_session_identity'
-            if ([string]::IsNullOrWhiteSpace($renderSessionIdentity)) {
-                $renderSessionIdentity = $SessionName
+            $storedSessionIdentity = Get-OrchestraAttachStateString -State $state -Name 'render_session_identity'
+            $currentSessionIdentity = Get-OrchestraRenderSessionIdentity -SessionName $SessionName -ProjectDir $ProjectDir
+            if ([string]::IsNullOrWhiteSpace($storedSessionIdentity) -or $storedSessionIdentity -ne $currentSessionIdentity) {
+                $receiptValidation = [PSCustomObject]@{ Confirmed = $false; Reason = 'render_receipt_session_mismatch' }
+            } else {
+                $receiptValidation = Test-OrchestraRenderReceipt -Receipt $receipt -SessionName $currentSessionIdentity -RequestId $requestId -LivePaneIds @($livePanes.PaneIds) -RequestedAtUnixMs $requestedAtUnixMs
             }
-            $receiptValidation = Test-OrchestraRenderReceipt -Receipt $receipt -SessionName $renderSessionIdentity -RequestId $requestId -LivePaneIds @($livePanes.PaneIds) -RequestedAtUnixMs $requestedAtUnixMs
             $lastError = [string]$receiptValidation.Reason
         } else {
             $receiptValidation = [PSCustomObject]@{ Confirmed = $false; Reason = if (-not [bool]$livePanes.Ok) { 'render_receipt_live_panes_unavailable' } else { 'render_receipt_missing' } }
@@ -1204,7 +1207,7 @@ function Invoke-OrchestraVisibleAttachRequest {
             }
         }
 
-        $confirmed = Wait-OrchestraAttachHandshake -SessionName $SessionName -WinsmuxBin $resolvedWinsmuxPath -BaselineClientCount $baselineClientCount -BaselineClients $baselineClients
+        $confirmed = Wait-OrchestraAttachHandshake -SessionName $SessionName -WinsmuxBin $resolvedWinsmuxPath -BaselineClientCount $baselineClientCount -BaselineClients $baselineClients -ProjectDir $ProjectDir
         $confirmedState = if ($null -ne $confirmed.State) { $confirmed.State } else { $state }
         $traceUpdate = Add-OrchestraAttachTraceEntry -SessionName $SessionName -Entry @{
             host_kind           = [string]$candidate.HostKind

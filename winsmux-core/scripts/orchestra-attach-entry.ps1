@@ -17,11 +17,15 @@ try {
 
     $sessionName = [string]$state.session_name
     $winsmuxPath = [string]$state.winsmux_path
+    $projectDir = [string]$state.project_dir
     if ([string]::IsNullOrWhiteSpace($sessionName)) {
         $sessionName = $defaultSessionName
     }
     if ([string]::IsNullOrWhiteSpace($winsmuxPath)) {
         throw "winsmux executable path missing from attach state for session '$sessionName'."
+    }
+    if ([string]::IsNullOrWhiteSpace($projectDir)) {
+        throw "Project directory missing from attach state for session '$sessionName'."
     }
     $attachRequestId = Get-OrchestraAttachRequestId -State $state
     $renderReceiptPath = Get-OrchestraAttachStateString -State $state -Name 'render_receipt_path'
@@ -80,6 +84,7 @@ try {
             $confirmScriptPath,
             '-SessionName', $sessionName,
             '-WinsmuxPath', $winsmuxPath,
+            '-ProjectDir', $projectDir,
             '-BaselineClientCount', $baselineClientCount
         ) -WindowStyle Hidden | Out-Null
         Remove-Item Env:PSMUX_ACTIVE -ErrorAction SilentlyContinue

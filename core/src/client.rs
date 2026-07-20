@@ -184,6 +184,29 @@ fn write_render_receipt(config: &RenderReceiptConfig, pane_ids: &[usize]) -> io:
     write_result
 }
 
+const RENDER_RECEIPT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
+
+fn refresh_render_receipt_lease_if_due(
+    config: Option<&RenderReceiptConfig>,
+    pane_ids: &[usize],
+    last_write: &mut Option<Instant>,
+    now: Instant,
+) -> io::Result<bool> {
+    let Some(config) = config else {
+        return Ok(false);
+    };
+    let Some(written_at) = *last_write else {
+        return Ok(false);
+    };
+    if now.saturating_duration_since(written_at) < RENDER_RECEIPT_HEARTBEAT_INTERVAL {
+        return Ok(false);
+    }
+
+    write_render_receipt(config, pane_ids)?;
+    *last_write = Some(now);
+    Ok(true)
+}
+
 fn collect_rendered_pane_ids(node: &LayoutJson, out: &mut Vec<usize>) {
     match node {
         LayoutJson::Leaf { id, .. } => out.push(*id),
@@ -2477,6 +2500,14 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
         // Also render if selection changed (for highlight overlay) even without new frame
         // Always render when overlays are active (command prompt, rename, choosers)
         if !got_frame && !selection_changed && !overlays_active {
+            if let Err(error) = refresh_render_receipt_lease_if_due(
+                render_receipt_config.as_ref(),
+                &last_rendered_pane_ids,
+                &mut last_render_receipt_write,
+                Instant::now(),
+            ) {
+                client_log("render-receipt", &format!("heartbeat failed: {}", error));
+            }
             continue;
         }
 
@@ -2484,6 +2515,14 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
         // frame AND selection hasn't changed AND no overlays are active.
         if dump_buf == prev_dump_buf && !selection_changed && !overlays_active {
             last_dump_time = Instant::now();
+            if let Err(error) = refresh_render_receipt_lease_if_due(
+                render_receipt_config.as_ref(),
+                &last_rendered_pane_ids,
+                &mut last_render_receipt_write,
+                Instant::now(),
+            ) {
+                client_log("render-receipt", &format!("heartbeat failed: {}", error));
+            }
             continue;
         }
 
@@ -3857,10 +3896,7 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
             collect_rendered_pane_ids(&root, &mut pane_ids);
             pane_ids.sort_unstable();
             pane_ids.dedup();
-            let heartbeat_due = last_render_receipt_write
-                .map(|written_at| written_at.elapsed() >= Duration::from_secs(1))
-                .unwrap_or(true);
-            if pane_ids != last_rendered_pane_ids || heartbeat_due {
+            if pane_ids != last_rendered_pane_ids || last_render_receipt_write.is_none() {
                 match write_render_receipt(config, &pane_ids) {
                     Ok(()) => {
                         last_rendered_pane_ids = pane_ids;
