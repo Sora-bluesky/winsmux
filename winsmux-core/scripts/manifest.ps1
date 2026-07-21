@@ -375,6 +375,14 @@ function Get-ManifestUnknownTopLevelBlocks {
 function Assert-ManifestYamlBlockMappingRoot {
     param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Content)
 
+    $ownedTopLevelPatterns = [ordered]@{
+        version   = '^version:\s*[0-9]+\s*$'
+        saved_at  = '^saved_at:\s*(.*?)\s*$'
+        session   = '^session:\s*(\{\})?\s*$'
+        panes     = '^panes:\s*(\{\})?\s*$'
+        tasks     = '^tasks:\s*(\{\})?\s*$'
+        worktrees = '^worktrees:\s*(\{\})?\s*$'
+    }
     $rootEntryObserved = $false
     foreach ($rawLine in ($Content -split "\r?\n")) {
         $line = $rawLine.TrimEnd()
@@ -398,8 +406,13 @@ function Assert-ManifestYamlBlockMappingRoot {
         # Every column-zero data line starts another mapping entry. Checking only
         # the first entry would let a later root sequence/scalar/flow node pass
         # through the line-oriented compatibility reader.
-        if ($null -eq (ConvertFrom-ManifestTopLevelYamlKey -Line $line)) {
+        $topLevelKey = ConvertFrom-ManifestTopLevelYamlKey -Line $line
+        if ($null -eq $topLevelKey) {
             throw 'manifest parse rejected: document must be a single block-style mapping.'
+        }
+        if ($ownedTopLevelPatterns.Contains($topLevelKey) -and
+            $line -cnotmatch $ownedTopLevelPatterns[$topLevelKey]) {
+            throw "manifest parse rejected: owned top-level key '$topLevelKey' must use the canonical form."
         }
         $rootEntryObserved = $true
     }
@@ -1545,7 +1558,11 @@ function ConvertTo-ManifestYaml {
     $worktreesMap = ConvertTo-ManifestPropertyMap -Value $manifestMap['worktrees']
 
     $lines = [System.Collections.Generic.List[string]]::new()
-    $lines.Add(('version: {0}' -f (ConvertTo-ManifestYamlScalar -Value $(if ($manifestMap.Contains('version')) { $manifestMap['version'] } else { 1 })))) | Out-Null
+    $manifestVersion = ConvertTo-WinsmuxRuntimeInteger -Value $(if ($manifestMap.Contains('version')) { $manifestMap['version'] } else { 1 })
+    if ($null -eq $manifestVersion) {
+        throw 'manifest serialization rejected: version must be an integer.'
+    }
+    $lines.Add(('version: {0}' -f $manifestVersion)) | Out-Null
     $lines.Add(('saved_at: {0}' -f (ConvertTo-ManifestYamlScalar -Value $(if ($manifestMap.Contains('saved_at')) { $manifestMap['saved_at'] } else { [System.DateTimeOffset]::Now.ToString('o') })))) | Out-Null
     $lines.Add('session:') | Out-Null
     foreach ($key in $sessionMap.Keys) {
@@ -1656,6 +1673,7 @@ function ConvertFrom-ManifestYaml {
     }
 
     $section = ''
+    $opaqueTopLevel = $false
     $currentLabel = ''
     $currentMode = ''
     $taskListKey = ''
@@ -1680,6 +1698,10 @@ function ConvertFrom-ManifestYaml {
         $line = $rawLine.TrimEnd()
         if ([string]::IsNullOrWhiteSpace($line) -or $line -match '^\s*#') {
             continue
+        }
+
+        if ($null -ne (ConvertFrom-ManifestTopLevelYamlKey -Line $line)) {
+            $opaqueTopLevel = $false
         }
 
         if ($line -match '^version:\s*(.*?)\s*$') {
@@ -1708,12 +1730,20 @@ function ConvertFrom-ManifestYaml {
             # Unknown additive top-level sections are retained as raw YAML blocks.
             # Stop interpreting their nested lines as part of the preceding known section.
             $section = ''
+            $opaqueTopLevel = $true
             $currentLabel = ''
             $currentMode = ''
             $taskListKey = ''
             continue
         }
 
+        if ($opaqueTopLevel) {
+            continue
+        }
+
+        if ($section -eq 'session' -and $line -match '^\s{2}' -and $line -notmatch '^\s{2}([A-Za-z0-9_.-]+):\s*(.*?)\s*$') {
+            throw 'manifest parse rejected: session entries must use canonical scalar keys.'
+        }
         if ($section -eq 'session' -and $line -match '^\s{2}([A-Za-z0-9_.-]+):\s*(.*?)\s*$') {
             $propertyName = [string]$Matches[1]
             if (-not $seenSessionKeys.Add($propertyName)) { & $recordDuplicate ("session.{0}" -f $propertyName) }
@@ -1793,6 +1823,8 @@ function ConvertFrom-ManifestYaml {
                 continue
             }
         }
+
+        throw 'manifest parse rejected: unsupported canonical manifest syntax.'
     }
 
     if (($observedVersion2 -or $manifest.version -eq 2) -and $duplicatePaths.Count -gt 0) {

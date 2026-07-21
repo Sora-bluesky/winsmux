@@ -680,10 +680,90 @@ fn workspace_plan_global_provider_defaults_fill_unset_project_values() {
     assert_eq!(settings.model_source, "operator-override");
     assert_eq!(settings.prompt_transport, "stdin");
     let first = settings.slot("worker-1").expect("default worker slot");
-    assert_eq!(first.agent.as_deref(), Some("gemini"));
-    assert_eq!(first.model.as_deref(), Some("gemini-2.5-pro"));
+    assert_eq!(first.agent.as_deref(), Some("codex"));
+    assert_eq!(first.model.as_deref(), Some("provider-default"));
+    assert_eq!(first.model_source.as_deref(), Some("provider-default"));
     assert_eq!(first.prompt_transport.as_deref(), Some("stdin"));
+    let second = settings.slot("worker-2").expect("inherited worker slot");
+    assert_eq!(second.agent.as_deref(), Some("gemini"));
+    assert_eq!(second.model.as_deref(), Some("gemini-2.5-pro"));
+    assert_eq!(second.model_source.as_deref(), Some("operator-override"));
 
+    let _ = std::fs::remove_dir_all(project_dir);
+}
+
+#[test]
+fn workspace_plan_generated_first_slot_matches_runtime_reviewer_contract() {
+    let project_dir = test_project_dir("workspace-plan-generated-reviewer");
+    write_workspace_plan_settings(
+        &project_dir,
+        "config_version: 1\nagent: review-only\nmodel: review-model\nprompt_transport: file\nworker_count: 2\n",
+    );
+
+    let settings = read_workspace_plan_settings_with_global_reader(&project_dir, |_| None)
+        .expect("generated slots should resolve");
+    let first = settings.slot("worker-1").expect("canonical reviewer slot");
+    assert_eq!(first.agent.as_deref(), Some("codex"));
+    assert_eq!(first.model.as_deref(), Some("provider-default"));
+    assert_eq!(first.model_source.as_deref(), Some("provider-default"));
+    let second = settings.slot("worker-2").expect("inherited worker slot");
+    assert_eq!(second.agent.as_deref(), Some("review-only"));
+    assert_eq!(second.model.as_deref(), Some("review-model"));
+    assert_eq!(second.model_source.as_deref(), Some("operator-override"));
+
+    let _ = std::fs::remove_dir_all(project_dir);
+}
+
+#[test]
+fn workspace_plan_global_legacy_counts_follow_per_key_project_precedence() {
+    for option in [
+        "@bridge-operators",
+        "@bridge-builders",
+        "@bridge-researchers",
+        "@bridge-reviewers",
+    ] {
+        let project_dir = test_project_dir(&format!(
+            "workspace-plan-global-legacy-count-{}",
+            option.trim_start_matches("@bridge-")
+        ));
+        write_workspace_plan_settings(&project_dir, "config_version: 1\n");
+        let error = read_workspace_plan_settings_with_global_reader(&project_dir, |name| {
+            (name == option).then(|| "1".to_string())
+        })
+        .expect_err("positive global legacy count must reject modern layout");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            error.to_string(),
+            "Legacy role counts require legacy_role_layout=true."
+        );
+        let _ = std::fs::remove_dir_all(project_dir);
+    }
+
+    let project_dir = test_project_dir("workspace-plan-project-zero-over-global-count");
+    write_workspace_plan_settings(&project_dir, "config_version: 1\noperators: 0\n");
+    let settings = read_workspace_plan_settings_with_global_reader(&project_dir, |name| {
+        (name == "@bridge-operators").then(|| "1".to_string())
+    })
+    .expect("explicit project zero must override the same global count");
+    assert_eq!(settings.agent_slots.len(), 6);
+    let _ = std::fs::remove_dir_all(project_dir);
+
+    let project_dir = test_project_dir("workspace-plan-project-per-key-global-count");
+    write_workspace_plan_settings(&project_dir, "config_version: 1\nbuilders: 0\n");
+    let error = read_workspace_plan_settings_with_global_reader(&project_dir, |name| {
+        (name == "@bridge-operators").then(|| "1".to_string())
+    })
+    .expect_err("project precedence applies per key, not to the whole legacy count group");
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    let _ = std::fs::remove_dir_all(project_dir);
+
+    let project_dir = test_project_dir("workspace-plan-invalid-global-legacy-count");
+    write_workspace_plan_settings(&project_dir, "config_version: 1\n");
+    let settings = read_workspace_plan_settings_with_global_reader(&project_dir, |name| {
+        (name == "@bridge-reviewers").then(|| "many".to_string())
+    })
+    .expect("invalid global legacy count is absent like the runtime loader");
+    assert_eq!(settings.agent_slots.len(), 6);
     let _ = std::fs::remove_dir_all(project_dir);
 }
 

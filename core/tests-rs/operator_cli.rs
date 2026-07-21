@@ -24,9 +24,11 @@ fn run_project_settings_render(input: &[u8], extra_args: &[&str]) -> std::proces
 }
 
 fn render_payload(original_yaml: &str, desired_yaml: &str, owned_keys: &[&str]) -> Vec<u8> {
+    let desired_settings = serde_yaml::from_str::<serde_json::Value>(desired_yaml)
+        .expect("desired renderer settings should parse as typed JSON-compatible YAML");
     serde_json::to_vec(&serde_json::json!({
         "original_yaml": original_yaml,
-        "desired_yaml": desired_yaml,
+        "desired_settings": desired_settings,
         "owned_keys": owned_keys,
         "nested_contract": {
             "agent_slots": {
@@ -48,6 +50,23 @@ fn render_payload(original_yaml: &str, desired_yaml: &str, owned_keys: &[&str]) 
         }
     }))
     .expect("serialize renderer payload")
+}
+
+fn legacy_render_payload(original_yaml: &str, desired_yaml: &str, owned_keys: &[&str]) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "original_yaml": original_yaml,
+        "desired_yaml": desired_yaml,
+        "owned_keys": owned_keys,
+        "nested_contract": {
+            "agent_slots": {
+                "identity_key": "slot_id",
+                "owned_keys": ["slot_id"],
+                "aliases": {}
+            },
+            "roles": { "owned_keys": [] }
+        }
+    }))
+    .expect("serialize legacy renderer payload")
 }
 
 fn yaml_mapping(yaml: &[u8]) -> serde_yaml::Mapping {
@@ -641,6 +660,67 @@ fn project_settings_render_rejects_arguments_and_oversized_stdin() {
 }
 
 #[test]
+fn project_settings_render_requires_typed_settings_and_preserves_json_value_kinds() {
+    let desired = serde_json::json!({
+        "agent_slots": [],
+        "roles": {},
+        "external_operator": false,
+        "worker_count": 0,
+        "agent": "false"
+    });
+    let input = serde_json::to_vec(&serde_json::json!({
+        "original_yaml": "agent_slots:\n  - slot_id: worker-1\nroles:\n  worker:\n    model: old\nexternal_operator: true\nworker_count: 6\nagent: codex\n",
+        "desired_settings": desired,
+        "owned_keys": ["agent_slots", "roles", "external_operator", "worker_count", "agent"],
+        "nested_contract": {
+            "agent_slots": {
+                "identity_key": "slot_id",
+                "owned_keys": ["slot_id"],
+                "aliases": {}
+            },
+            "roles": { "owned_keys": ["model"] }
+        }
+    }))
+    .expect("serialize typed renderer payload");
+    let output = run_project_settings_render(&input, &[]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mapping = yaml_mapping(&output.stdout);
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("agent_slots".into())),
+        Some(&serde_yaml::Value::Sequence(Vec::new()))
+    );
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("roles".into())),
+        Some(&serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))
+    );
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("external_operator".into())),
+        Some(&serde_yaml::Value::Bool(false))
+    );
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("worker_count".into())),
+        Some(&serde_yaml::Value::Number(0.into()))
+    );
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("agent".into())),
+        Some(&serde_yaml::Value::String("false".into()))
+    );
+
+    let legacy = legacy_render_payload("agent: old\n", "agent: new\n", &["agent"]);
+    let rejected = run_project_settings_render(&legacy, &[]);
+    assert!(!rejected.status.success());
+    assert!(rejected.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(rejected.stderr).expect("UTF-8 generic error"),
+        "winsmux: project settings render failed.\n"
+    );
+}
+
+#[test]
 #[cfg(windows)]
 fn operator_cli_workspace_plan_preserves_stale_startup_state() {
     let fixture = tempfile::tempdir().expect("create isolated workspace-plan fixture");
@@ -689,39 +769,53 @@ fn operator_cli_workspace_plan_preserves_stale_startup_state() {
         fs::write(path, bytes).expect("write stale startup state");
     }
 
-    let output = Command::new(binary)
-        .args([
-            "workspace-plan",
-            "--recipe-id",
-            "bugfix-two-slot",
-            "--workflow-id",
-            "issue-1204",
-            "--json",
-            "--project-dir",
-        ])
-        .arg(&project_dir)
-        .env("USERPROFILE", &home_dir)
-        .env("HOME", &home_dir)
-        .env_remove("PSMUX_TARGET_SESSION")
-        .env_remove("PSMUX_TARGET_FULL")
-        .env_remove("TMUX")
-        .output()
-        .expect("run workspace-plan preview");
+    for prefix in [
+        Vec::<&str>::new(),
+        vec!["-u"],
+        vec!["--unknown"],
+        vec!["-L", "ops"],
+        vec!["-S", "socket-name"],
+        vec!["-f", "config"],
+        vec!["-t", "target"],
+        vec!["-C"],
+        vec!["-CC"],
+        vec!["-L", "ops", "-u"],
+    ] {
+        let output = Command::new(binary)
+            .args(&prefix)
+            .args([
+                "workspace-plan",
+                "--recipe-id",
+                "bugfix-two-slot",
+                "--workflow-id",
+                "issue-1204",
+                "--json",
+                "--project-dir",
+            ])
+            .arg(&project_dir)
+            .env("USERPROFILE", &home_dir)
+            .env("HOME", &home_dir)
+            .env_remove("PSMUX_TARGET_SESSION")
+            .env_remove("PSMUX_TARGET_FULL")
+            .env_remove("TMUX")
+            .output()
+            .expect("run workspace-plan preview");
 
-    assert!(
-        output.status.success(),
-        "workspace-plan stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice::<serde_json::Value>(&output.stdout)
-        .expect("workspace-plan should emit JSON");
-    for (path, expected) in &stale_paths {
-        assert_eq!(
-            fs::read(path).expect("preview must preserve stale startup state"),
-            *expected,
-            "workspace-plan changed {}",
-            path.display()
+        assert!(
+            output.status.success(),
+            "workspace-plan {prefix:?} stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
         );
+        serde_json::from_slice::<serde_json::Value>(&output.stdout)
+            .expect("workspace-plan should emit JSON");
+        for (path, expected) in &stale_paths {
+            assert_eq!(
+                fs::read(path).expect("preview must preserve stale startup state"),
+                *expected,
+                "workspace-plan {prefix:?} changed {}",
+                path.display()
+            );
+        }
     }
 
     let ordinary = Command::new(binary)

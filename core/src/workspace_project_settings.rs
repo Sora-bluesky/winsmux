@@ -40,7 +40,10 @@ pub(crate) struct WorkspacePlanProjectSettings {
     pub(crate) external_operator: Option<bool>,
     pub(crate) worker_count: Option<i32>,
     pub(crate) legacy_role_layout: Option<bool>,
-    pub(crate) legacy_role_count: i64,
+    pub(crate) operators: Option<i32>,
+    pub(crate) builders: Option<i32>,
+    pub(crate) researchers: Option<i32>,
+    pub(crate) reviewers: Option<i32>,
     pub(crate) worker_role: ProjectRoleSettings,
     pub(crate) agent_slots: Vec<ProjectSlotSettings>,
 }
@@ -84,6 +87,10 @@ fn parse(root: &serde_yaml::Value) -> io::Result<WorkspacePlanProjectSettings> {
         external_operator: project_bool(&values, "external_operator")?,
         worker_count: project_i32(&values, "worker_count")?,
         legacy_role_layout: project_bool(&values, "legacy_role_layout")?,
+        operators: project_i32(&values, "operators")?,
+        builders: project_i32(&values, "builders")?,
+        researchers: project_i32(&values, "researchers")?,
+        reviewers: project_i32(&values, "reviewers")?,
         ..WorkspacePlanProjectSettings::default()
     };
     settings.prompt_transport = project_domain(
@@ -116,11 +123,6 @@ fn parse(root: &serde_yaml::Value) -> io::Result<WorkspacePlanProjectSettings> {
         Some(value) => parse_roles(value)?,
         None => ProjectRoleSettings::default(),
     };
-    for key in ["operators", "builders", "researchers", "reviewers"] {
-        if let Some(value) = project_i32(&values, key)? {
-            settings.legacy_role_count += i64::from(value);
-        }
-    }
     let _ = project_text(&values, "terminal")?;
     if let Some(value) = values.get("vault_keys") {
         let valid = match value {

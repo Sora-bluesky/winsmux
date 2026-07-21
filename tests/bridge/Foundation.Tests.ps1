@@ -163,7 +163,7 @@ Describe 'Get-OrchestraLayoutSettings' {
             $script:bridgeProjectSettingsPayloads.Add($payload) | Out-Null
             return [PSCustomObject]@{
                 ExitCode = 0
-                StdOut   = [string]$payload.desired_yaml
+                StdOut   = ($payload.desired_settings | ConvertTo-Json -Depth 8)
             }
         }
     }
@@ -261,7 +261,7 @@ Describe 'Get-OrchestraLayoutSettings' {
         } | Should -Throw '*runtime_role overrides are not supported yet at runtime*'
     }
 
-    It 'TASK658 writes project settings to an explicit root path and omits worker_count when agent slots are present' {
+    It 'TASK658 sends typed project settings to an explicit root path' {
         $saveSettingsTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-save-settings-tests-' + [guid]::NewGuid().ToString('N'))
         $projectRoot = Join-Path $saveSettingsTempRoot 'repo-root'
 
@@ -285,13 +285,14 @@ Describe 'Get-OrchestraLayoutSettings' {
             $projectConfigPath = Join-Path $projectRoot '.winsmux.yaml'
             Test-Path $projectConfigPath | Should -Be $true
             $projectConfig = Get-Content -Raw -Path $projectConfigPath -Encoding UTF8
-            $projectConfig | Should -Match 'agent_slots:'
-            $projectConfig | Should -Not -Match 'worker_count:'
-            $projectConfig | Should -Match 'execution_profile: isolated-enterprise'
-            $projectConfig | Should -Match 'worker_backend: antigravity'
+            $projectConfigJson = $projectConfig | ConvertFrom-Json
+            $projectConfigJson.agent_slots.Count | Should -Be 2
+            $projectConfigJson.worker_count | Should -Be 2
+            $projectConfigJson.execution_profile | Should -Be 'isolated-enterprise'
+            $projectConfigJson.agent_slots[1].worker_backend | Should -Be 'antigravity'
             $script:bridgeProjectSettingsPayloads.Count | Should -Be 1
             $script:bridgeProjectSettingsPayloads[0].original_yaml | Should -Be ''
-            $script:bridgeProjectSettingsPayloads[0].desired_yaml | Should -BeExactly $projectConfig
+            $script:bridgeProjectSettingsPayloads[0].desired_settings.agent_slots.Count | Should -Be 2
             @($script:bridgeProjectSettingsPayloads[0].owned_keys) | Should -Contain 'agent'
             @($script:bridgeProjectSettingsPayloads[0].owned_keys) | Should -Contain 'roles'
             $projectConfigBytes = [System.IO.File]::ReadAllBytes($projectConfigPath)
@@ -299,18 +300,6 @@ Describe 'Get-OrchestraLayoutSettings' {
                 @($projectConfigBytes[0..2]) -join ',' | Should -Not -Be '239,187,191'
             }
 
-            Mock Get-WinsmuxOption { param($Name, $Default) return $null }
-
-            $roundTrip = Get-BridgeSettings -RootPath $projectRoot
-            $roundTrip.worker_backend | Should -Be 'local'
-            $roundTrip.execution_profile | Should -Be 'isolated-enterprise'
-            $roundTrip.worker_count | Should -Be 2
-            $roundTrip.agent_slots[0].worker_backend | Should -Be 'codex'
-            $roundTrip.agent_slots[0].execution_profile | Should -Be 'local-windows'
-            $roundTrip.agent_slots[0].worker_role | Should -Be 'reviewer'
-            $roundTrip.agent_slots[1].worker_backend | Should -Be 'antigravity'
-            $roundTrip.agent_slots[1].execution_profile | Should -Be 'isolated-enterprise'
-            $roundTrip.agent_slots[1].worker_role | Should -Be 'impl'
         } finally {
             Remove-Item -LiteralPath $saveSettingsTempRoot -Recurse -Force -ErrorAction SilentlyContinue
         }
@@ -338,9 +327,9 @@ Describe 'Get-OrchestraLayoutSettings' {
             $script:bridgeProjectSettingsPayloads.Count | Should -Be 1
             $payload = $script:bridgeProjectSettingsPayloads[0]
             $payload.original_yaml | Should -BeExactly $original
-            $payload.desired_yaml | Should -Match '(?m)^agent: codex\r?$'
-            $payload.desired_yaml | Should -Match '(?m)^model: gpt-5\.4\r?$'
-            $payload.desired_yaml | Should -Not -Match 'workspace-recipes'
+            $payload.desired_settings.agent | Should -Be 'codex'
+            $payload.desired_settings.model | Should -Be 'gpt-5.4'
+            $payload.desired_settings.PSObject.Properties.Name | Should -Not -Contain 'workspace-recipes'
             @($payload.owned_keys).Count | Should -Be $script:BridgeSettingsSchema.Count
             @($payload.owned_keys) | Should -Contain 'agent_slots'
             @($payload.owned_keys) | Should -Not -Contain 'workspace-recipes'
@@ -391,9 +380,7 @@ roles:
             $script:bridgeProjectSettingsPayloads.Count | Should -Be 1
             $payload = $script:bridgeProjectSettingsPayloads[0]
             $payload.original_yaml | Should -BeExactly $original
-            $payload.desired_yaml | Should -Match '(?m)^roles:\r?$'
-            $payload.desired_yaml | Should -Match '(?m)^  builder: \{\}\r?$'
-            $payload.desired_yaml | Should -Not -Match '(?m)^    agent:'
+            @($payload.desired_settings.roles.builder.PSObject.Properties).Count | Should -Be 0
             @($payload.nested_contract.roles.owned_keys) | Should -Contain 'agent'
             [System.IO.File]::ReadAllText($path, $utf8) | Should -BeExactly $rendered
             [System.IO.File]::ReadAllText($path, $utf8) | Should -Match '(?m)^    future_nested:\r?$'
@@ -492,6 +479,39 @@ roles:
                 reviewers          = 1
             })
         } | Should -Throw '*legacy_role_layout=true*'
+    }
+    It 'TASK658 R38 preserves explicit empty agent_slots as a typed empty array and JSON output' {
+        $projectRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-settings-empty-' + [guid]::NewGuid().ToString('N'))
+        try {
+            New-Item -ItemType Directory -Path $projectRoot -Force | Out-Null
+            Save-BridgeSettings -Scope project -RootPath $projectRoot -Settings @{ agent_slots = @() }
+            $payload = $script:bridgeProjectSettingsPayloads[0]
+            @($payload.desired_settings.agent_slots).Count | Should -Be 0
+            $payload.desired_settings.agent_slots.GetType().Name | Should -Be 'Object[]'
+            Get-Content -LiteralPath (Join-Path $projectRoot '.winsmux.yaml') -Raw -Encoding UTF8 | Should -Match '"agent_slots"\s*:\s*\[\]'
+        } finally {
+            Remove-Item -LiteralPath $projectRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'TASK658 R39 rejects unsupported owned manifest syntax and accepts canonical forms for <Case>' -ForEach @(
+        @{ Case = 'quoted session'; Content = ("version: 1`n" + [char]34 + "session" + [char]34 + ":`n  name: x`n"); Reject = $true }
+        @{ Case = 'flow session'; Content = "version: 1`nsession: {name: x}`n"; Reject = $true }
+        @{ Case = 'quoted version'; Content = (([char]34) + "version" + [char]34 + ": 1`n"); Reject = $true }
+        @{ Case = 'case changed session'; Content = "version: 1`nSession:`n  name: x`n"; Reject = $true }
+        @{ Case = 'quoted session property'; Content = ("version: 1`nsession:`n  " + [char]34 + "name" + [char]34 + ": x`n"); Reject = $true }
+        @{ Case = 'quoted pane property'; Content = ("version: 1`npanes:`n  main:`n    " + [char]34 + "title" + [char]34 + ": x`n"); Reject = $true }
+        @{ Case = 'noncanonical task flow list'; Content = "version: 1`ntasks:`n  queued: [x]`n"; Reject = $true }
+        @{ Case = 'quoted saved at'; Content = ("version: 1`n" + [char]34 + "saved_at" + [char]34 + ": now`n"); Reject = $true }
+        @{ Case = 'canonical version'; Content = "version: 1`n"; Reject = $false }
+        @{ Case = 'canonical saved at'; Content = "version: 1`nsaved_at: now`n"; Reject = $false }
+        @{ Case = 'canonical session'; Content = "version: 1`nsession:`n  name: x`n"; Reject = $false }
+        @{ Case = 'empty canonical session'; Content = "version: 1`nsession: {}`n"; Reject = $false }
+        @{ Case = 'opaque additive block'; Content = "version: 1`nworkflow_runs:`n  run-1:`n    state: done`n"; Reject = $false }
+    ) {
+        . (Join-Path (Split-Path -Parent $script:BridgeTestsRoot) 'winsmux-core\scripts\manifest.ps1')
+        if ($Reject) { { ConvertFrom-ManifestYaml -Content $Content } | Should -Throw }
+        else { { ConvertFrom-ManifestYaml -Content $Content } | Should -Not -Throw }
     }
 }
 

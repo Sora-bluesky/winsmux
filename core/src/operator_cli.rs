@@ -31,7 +31,7 @@ const FILE_LOCK_RETRY_DELAY: Duration = Duration::from_millis(50);
 const CODEX_MAX_REASONING_MODELS: [&str; 3] = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
 const LEGACY_CAPABILITY_REASONING_EFFORTS: [&str; 6] =
     ["provider-default", "low", "medium", "high", "max", "xhigh"];
-const WORKSPACE_PLAN_GLOBAL_OPTIONS: [&str; 7] = [
+const WORKSPACE_PLAN_GLOBAL_OPTIONS: [&str; 11] = [
     "@bridge-agent",
     "@bridge-model",
     "@bridge-prompt-transport",
@@ -39,6 +39,10 @@ const WORKSPACE_PLAN_GLOBAL_OPTIONS: [&str; 7] = [
     "@bridge-worker-count",
     "@bridge-execution-profile",
     "@bridge-legacy-role-layout",
+    "@bridge-operators",
+    "@bridge-builders",
+    "@bridge-researchers",
+    "@bridge-reviewers",
 ];
 
 pub fn is_operator_status_invocation(args: &[&String]) -> bool {
@@ -1857,6 +1861,10 @@ struct WorkspacePlanGlobalSettings {
     external_operator: Option<bool>,
     worker_count: Option<i32>,
     legacy_role_layout: Option<bool>,
+    operators: Option<i32>,
+    builders: Option<i32>,
+    researchers: Option<i32>,
+    reviewers: Option<i32>,
 }
 
 enum WorkspacePlanGlobalOptionRead {
@@ -3445,6 +3453,24 @@ fn default_bridge_settings() -> BridgeSettings {
     }
 }
 
+fn apply_workspace_plan_global_settings(
+    settings: &mut BridgeSettings,
+    globals: &WorkspacePlanGlobalSettings,
+) {
+    if let Some(value) = globals.agent.as_deref() {
+        settings.agent = value.to_string();
+        settings.agent_explicit = true;
+    }
+    if let Some(value) = globals.model.as_deref() {
+        settings.model = value.to_string();
+        settings.model_explicit = true;
+        settings.model_source = inferred_model_source_for_model(value);
+    }
+    if let Some(value) = globals.prompt_transport.as_deref() {
+        settings.prompt_transport = value.to_string();
+    }
+}
+
 fn apply_workspace_plan_project_settings(
     settings: &mut BridgeSettings,
     project: &WorkspacePlanProjectSettings,
@@ -3493,20 +3519,71 @@ fn apply_workspace_plan_project_settings(
         .collect();
 }
 
-fn read_bridge_settings(project_dir: &Path) -> io::Result<BridgeSettings> {
-    let project = workspace_project_settings::read(project_dir)?;
+fn finalize_bridge_settings(
+    project_dir: &Path,
+    globals: &WorkspacePlanGlobalSettings,
+    project: &WorkspacePlanProjectSettings,
+) -> io::Result<BridgeSettings> {
     let mut settings = default_bridge_settings();
+    apply_workspace_plan_global_settings(&mut settings, globals);
     apply_workspace_plan_project_settings(&mut settings, &project);
     if let Some(runtime_worker_role) = runtime_role_config(project_dir, "worker")? {
         settings.worker_role = merge_role_config(settings.worker_role, runtime_worker_role);
     }
-    let external_operator = project.external_operator.unwrap_or(true);
-    let legacy_role_layout = project.legacy_role_layout.unwrap_or(false);
-    let worker_count = project.worker_count.unwrap_or(6);
-    if settings.agent_slots.is_empty() && external_operator && !legacy_role_layout {
-        settings.agent_slots = generated_workspace_plan_worker_slots(&settings, worker_count);
+
+    let legacy_role_layout = project
+        .legacy_role_layout
+        .or(globals.legacy_role_layout)
+        .unwrap_or(false);
+    let legacy_role_count: i64 = [
+        project.operators.or(globals.operators),
+        project.builders.or(globals.builders),
+        project.researchers.or(globals.researchers),
+        project.reviewers.or(globals.reviewers),
+    ]
+    .into_iter()
+    .flatten()
+    .map(i64::from)
+    .sum();
+    if legacy_role_count > 0 && !legacy_role_layout {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Legacy role counts require legacy_role_layout=true.",
+        ));
+    }
+    if !settings.agent_slots.is_empty() && legacy_role_layout {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "workspace-plan cannot bind agent_slots while legacy_role_layout is enabled.",
+        ));
+    }
+    if settings.agent_slots.is_empty() {
+        let external_operator = project
+            .external_operator
+            .or(globals.external_operator)
+            .unwrap_or(true);
+        let worker_count = project.worker_count.or(globals.worker_count).unwrap_or(6);
+
+        if !legacy_role_layout && worker_count < 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "workspace-plan worker_count must be at least 1 when agent_slots are omitted and legacy_role_layout is disabled.",
+            ));
+        }
+        if external_operator && !legacy_role_layout {
+            settings.agent_slots = generated_workspace_plan_worker_slots(&settings, worker_count);
+        }
     }
     Ok(settings)
+}
+
+fn read_bridge_settings(project_dir: &Path) -> io::Result<BridgeSettings> {
+    let project = workspace_project_settings::read(project_dir)?;
+    finalize_bridge_settings(
+        project_dir,
+        &WorkspacePlanGlobalSettings::default(),
+        &project,
+    )
 }
 
 fn generated_workspace_plan_worker_slots(
@@ -3516,9 +3593,21 @@ fn generated_workspace_plan_worker_slots(
     (1..=worker_count)
         .map(|index| ProviderSlotConfig {
             slot_id: format!("worker-{index}"),
-            agent: settings.agent_explicit.then(|| settings.agent.clone()),
-            model: settings.model_explicit.then(|| settings.model.clone()),
-            model_source: Some(settings.model_source.clone()),
+            agent: if index == 1 {
+                Some("codex".to_string())
+            } else {
+                settings.agent_explicit.then(|| settings.agent.clone())
+            },
+            model: if index == 1 {
+                Some("provider-default".to_string())
+            } else {
+                settings.model_explicit.then(|| settings.model.clone())
+            },
+            model_source: Some(if index == 1 {
+                "provider-default".to_string()
+            } else {
+                settings.model_source.clone()
+            }),
             reasoning_effort: Some(settings.reasoning_effort.clone()),
             prompt_transport: Some(settings.prompt_transport.clone()),
             auth_mode: (!settings.auth_mode.trim().is_empty()).then(|| settings.auth_mode.clone()),
@@ -3607,62 +3696,7 @@ where
 {
     let globals = read_workspace_plan_global_settings(&mut read_global)?;
     let project = workspace_project_settings::read(project_dir)?;
-    let mut settings = default_bridge_settings();
-    if let Some(value) = globals.agent.as_deref() {
-        settings.agent = value.to_string();
-        settings.agent_explicit = true;
-    }
-    if let Some(value) = globals.model.as_deref() {
-        settings.model = value.to_string();
-        settings.model_explicit = true;
-        settings.model_source = inferred_model_source_for_model(value);
-    }
-    if let Some(value) = globals.prompt_transport.as_deref() {
-        settings.prompt_transport = value.to_string();
-    }
-    apply_workspace_plan_project_settings(&mut settings, &project);
-    if let Some(runtime_worker_role) = runtime_role_config(project_dir, "worker")? {
-        settings.worker_role = merge_role_config(settings.worker_role, runtime_worker_role);
-    }
-
-    let legacy_role_layout = project
-        .legacy_role_layout
-        .or(globals.legacy_role_layout)
-        .unwrap_or(false);
-    if project.legacy_role_count > 0 && !legacy_role_layout {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Legacy role counts require legacy_role_layout=true.",
-        ));
-    }
-    if !settings.agent_slots.is_empty() && legacy_role_layout {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "workspace-plan cannot bind agent_slots while legacy_role_layout is enabled.",
-        ));
-    }
-    if settings.agent_slots.is_empty() {
-        let external_operator = project
-            .external_operator
-            .or(globals.external_operator)
-            .unwrap_or(true);
-        let worker_count = project
-            .worker_count
-            .or(globals.worker_count)
-            .unwrap_or(6);
-
-        if !legacy_role_layout && worker_count < 1 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "workspace-plan worker_count must be at least 1 when agent_slots are omitted and legacy_role_layout is disabled.",
-            ));
-        }
-        if external_operator && !legacy_role_layout {
-            settings.agent_slots = generated_workspace_plan_worker_slots(&settings, worker_count);
-        }
-    }
-
-    Ok(settings)
+    finalize_bridge_settings(project_dir, &globals, &project)
 }
 
 fn read_workspace_plan_global_settings<F>(
@@ -3713,6 +3747,10 @@ where
             "@bridge-legacy-role-layout" => {
                 settings.legacy_role_layout = workspace_plan_bool(value)
             }
+            "@bridge-operators" => settings.operators = workspace_plan_i32(value),
+            "@bridge-builders" => settings.builders = workspace_plan_i32(value),
+            "@bridge-researchers" => settings.researchers = workspace_plan_i32(value),
+            "@bridge-reviewers" => settings.reviewers = workspace_plan_i32(value),
             _ => unreachable!("workspace-plan global option allowlist is exhaustive"),
         }
     }

@@ -217,7 +217,7 @@ Describe 'public first-run helper' {
             $script:publicFirstRunRendererPayloads += $payload
             [PSCustomObject]@{
                 ExitCode = 0
-                StdOut   = [string]$payload.desired_yaml
+                StdOut   = ($payload.desired_settings | ConvertTo-Json -Depth 8)
             }
         }
     }
@@ -272,8 +272,7 @@ Describe 'public first-run helper' {
         $result.status | Should -Be 'initialized'
         $result.workspace_lifecycle_preset | Should -Be 'ephemeral-worktree'
 
-        $settings = Get-BridgeSettings -RootPath $script:publicFirstRunTempRoot
-        $settings.workspace_lifecycle_preset | Should -Be 'ephemeral-worktree'
+        $script:publicFirstRunRendererPayloads[0].desired_settings.workspace_lifecycle_preset | Should -Be 'ephemeral-worktree'
     }
 
     It 'stores custom provider names in managed slots on init' {
@@ -282,16 +281,16 @@ Describe 'public first-run helper' {
         $result.status | Should -Be 'initialized'
         $result.slot_count | Should -Be 2
 
-        $settings = Get-BridgeSettings -RootPath $script:publicFirstRunTempRoot
-        $settings.agent | Should -Be 'codex-nightly'
-        $settings.model | Should -Be 'gpt-5.4-code'
-        $settings.worker_count | Should -Be 2
-        $settings.agent_slots.Count | Should -Be 2
-        $settings.agent_slots[0].agent | Should -Be 'codex'
-        $settings.agent_slots[0].model | Should -Be 'provider-default'
-        $settings.agent_slots[0].worker_role | Should -Be 'reviewer'
-        $settings.agent_slots[1].agent | Should -Be 'codex-nightly'
-        $settings.agent_slots[1].model | Should -Be 'gpt-5.4-code'
+        $desired = $script:publicFirstRunRendererPayloads[0].desired_settings
+        $desired.agent | Should -Be 'codex-nightly'
+        $desired.model | Should -Be 'gpt-5.4-code'
+        $desired.worker_count | Should -Be 2
+        $desired.agent_slots.Count | Should -Be 2
+        $desired.agent_slots[0].agent | Should -Be 'codex'
+        $desired.agent_slots[0].model | Should -Be 'provider-default'
+        $desired.agent_slots[0].worker_role | Should -Be 'reviewer'
+        $desired.agent_slots[1].agent | Should -Be 'codex-nightly'
+        $desired.agent_slots[1].model | Should -Be 'gpt-5.4-code'
     }
 
     It 'returns already_initialized when config exists and force is not set' {

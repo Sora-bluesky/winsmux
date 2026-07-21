@@ -13,7 +13,7 @@ const GENERIC_ERROR: &str = "project settings render failed.";
 #[serde(deny_unknown_fields)]
 struct RenderRequest {
     original_yaml: String,
-    desired_yaml: String,
+    desired_settings: serde_json::Map<String, serde_json::Value>,
     owned_keys: Vec<String>,
     nested_contract: NestedContractRequest,
 }
@@ -101,19 +101,35 @@ fn render_from_stdin(args: &[String]) -> Result<String, ()> {
 }
 
 fn render(request: RenderRequest) -> Result<String, ()> {
-    let nested_contract = NestedContract::new(request.nested_contract)?;
-    let owned = normalize_owned_keys(&request.owned_keys)?;
-    let original = parse_document(&request.original_yaml, true)?;
-    let desired = parse_document(&request.desired_yaml, false)?;
+    let RenderRequest {
+        original_yaml,
+        desired_settings,
+        owned_keys,
+        nested_contract,
+    } = request;
+    let nested_contract = NestedContract::new(nested_contract)?;
+    let owned = normalize_owned_keys(&owned_keys)?;
+    let original = parse_document(&original_yaml, true)?;
+    let desired_explicit = desired_settings
+        .keys()
+        .map(|key| SemanticValue::String(key.clone()))
+        .collect::<Vec<_>>();
+    let desired_semantic = serde_yaml::to_value(serde_json::Value::Object(desired_settings))
+        .map_err(|_| ())?;
 
     let original_explicit = explicit_owned_keys(&original.explicit_keys, &owned)?;
-    let desired_explicit = explicit_owned_keys(&desired.explicit_keys, &owned)?;
-    if desired_explicit.len() != desired.explicit_keys.len() {
+    let desired_explicit = explicit_owned_keys(&desired_explicit, &owned)?;
+    if desired_explicit.len()
+        != desired_semantic
+            .as_mapping()
+            .map(SemanticMapping::len)
+            .ok_or(())?
+    {
         return Err(());
     }
 
     let original_semantic = merged_mapping(&original.semantic)?;
-    let desired_semantic = merged_mapping(&desired.semantic)?;
+    let desired_semantic = merged_mapping(&desired_semantic)?;
     let original_owned = owned_projection(&original_semantic, &owned)?;
     let desired_owned = owned_projection(&desired_semantic, &owned)?;
     let expected_owned =
@@ -735,6 +751,12 @@ fn build_roles_edit_plan(
         (Some(original), Some(desired), YamlNode::Mapping(mapping)) => (original, desired, mapping),
         _ => return Ok(None),
     };
+    // Deleting every nested role would otherwise leave a bare `roles:` key,
+    // which YAML decodes as null. Replace the top-level value so `{}` remains
+    // an explicitly typed empty mapping.
+    if desired.is_empty() {
+        return Ok(None);
+    }
     reject_duplicate_keys(&cst_mapping_keys(mapping)?)?;
     let entries = root_entry_ranges(mapping)?;
     let mut edits = Vec::new();
