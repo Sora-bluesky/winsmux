@@ -1185,7 +1185,7 @@ workflow_runs:
         $serialized = ConvertTo-ManifestYaml -Manifest $first
 
         $first.PSObject.Properties.Name | Should -Not -Contain 'declarative_workspace'
-        $serialized.Contains($declarativeBlock) | Should -Be $true
+        ($serialized -replace "`r`n", "`n").Contains(($declarativeBlock -replace "`r`n", "`n")) | Should -Be $true
         ([regex]::Matches($serialized, '(?m)^declarative_workspace:')).Count | Should -Be 1
         $serialized | Should -Match '(?m)^workflow_runs:'
         $serialized | Should -Match "(?m)^    state: 'blocked'"
