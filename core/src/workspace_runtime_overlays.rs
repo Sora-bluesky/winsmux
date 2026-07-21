@@ -55,6 +55,7 @@ fn canonical_runtime_roles(
     legacy_root: bool,
     validate_role: &mut impl FnMut(&Value) -> io::Result<()>,
 ) -> io::Result<Value> {
+    let mut role_identities = HashMap::new();
     if let Some(map) = roles.as_object() {
         let mut canonical = Map::new();
         for (role_id, role) in map {
@@ -63,6 +64,7 @@ fn canonical_runtime_roles(
             }
             let role = canonical_runtime_role(role)?;
             validate_role(&role)?;
+            register_runtime_role_identity(&mut role_identities, role_id)?;
             canonical.insert(role_id.clone(), role);
         }
         return Ok(Value::Object(canonical));
@@ -72,6 +74,11 @@ fn canonical_runtime_roles(
         for role in items {
             let role = canonical_runtime_role(role)?;
             validate_role(&role)?;
+            let role_id = role
+                .get("role_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            register_runtime_role_identity(&mut role_identities, role_id)?;
             canonical.push(role);
         }
         return Ok(Value::Array(canonical));
@@ -80,6 +87,23 @@ fn canonical_runtime_roles(
         io::ErrorKind::InvalidData,
         "Invalid runtime role preferences roles.",
     ))
+}
+
+fn register_runtime_role_identity(
+    identities: &mut HashMap<String, ()>,
+    role_id: &str,
+) -> io::Result<()> {
+    let normalized = role_id.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return Ok(());
+    }
+    if identities.insert(normalized, ()).is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Duplicate runtime role preference identity.",
+        ));
+    }
+    Ok(())
 }
 
 fn canonical_runtime_role(role: &Value) -> io::Result<Value> {

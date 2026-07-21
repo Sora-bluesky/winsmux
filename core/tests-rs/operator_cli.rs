@@ -2044,6 +2044,18 @@ fn operator_cli_workspace_plan_validates_all_runtime_roles_before_selection() {
             "unselected-transport-domain",
             r#"{"version":1,"roles":{"worker":{},"reviewer":{"promptTransport":"socket"}}}"#,
         ),
+        (
+            "object-identity-duplicate",
+            r#"{"version":1,"roles":{" secret-marker-reviewer ":{},"SECRET-MARKER-REVIEWER":{}}}"#,
+        ),
+        (
+            "array-identity-alias-duplicate",
+            r#"{"version":1,"roles":[{"roleId":"reviewer"},{"runtime_role":" REVIEWER "}]}"#,
+        ),
+        (
+            "missing-identity-still-validates",
+            r#"{"version":1,"roles":[{"reasoningEffort":"secret-marker-effort"},{"roleId":"worker"}]}"#,
+        ),
     ];
     for (case_name, preferences) in rejected {
         let project_dir = make_temp_project_dir(&format!("workspace-role-all-{case_name}"));
@@ -2080,6 +2092,14 @@ fn operator_cli_workspace_plan_validates_all_runtime_roles_before_selection() {
         (
             "legacy-root-version",
             r#"{"version":1,"worker":{"provider":"openrouter","promptTransport":"file"}}"#,
+        ),
+        (
+            "distinct-object-identities",
+            r#"{"version":1,"roles":{"worker":{"promptTransport":"file"},"reviewer":{}}}"#,
+        ),
+        (
+            "missing-and-blank-array-identities",
+            r#"{"version":1,"roles":[{"model":"unselected"},{"roleId":"  ","promptTransport":"file"},{"runtimeRole":"worker","promptTransport":"file"}]}"#,
         ),
     ];
     for (case_name, preferences) in accepted {
