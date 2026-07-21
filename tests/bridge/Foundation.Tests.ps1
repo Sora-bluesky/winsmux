@@ -526,6 +526,38 @@ roles:
         }
     }
 
+    It 'TASK658 R52 manually reads renderer-shaped block roles slots and escaped JSON scalars' {
+        $content = @'
+agent_slots:
+  - slot_id: "Worker-1"
+    model: "slot # \"added"
+    reasoning_effort: "high"
+  - slot_id: "worker-3"
+    model: "added"
+roles:
+  Builder:
+    {}
+  reviewer:
+    model: "added-role"
+  "review # \"lead":
+    model: "role # \"added"
+  "invalid \q":
+    model: "must-not-attach"
+'@
+
+        $settings = ConvertFrom-BridgeManualYaml -Content $content
+
+        @($settings.agent_slots).Count | Should -Be 2
+        $settings.agent_slots[0].slot_id | Should -Be 'Worker-1'
+        $settings.agent_slots[0].model | Should -Be 'slot # "added'
+        $settings.agent_slots[0].reasoning_effort | Should -Be 'high'
+        $settings.roles.Count | Should -Be 3
+        $settings.roles.Builder.Count | Should -Be 0
+        $settings.roles.reviewer.model | Should -Be 'added-role'
+        $settings.roles['review # "lead'].model | Should -Be 'role # "added'
+        $settings.roles.Contains('invalid \q') | Should -BeFalse
+    }
+
     It 'TASK658 R39 rejects unsupported owned manifest syntax and accepts canonical forms for <Case>' -ForEach @(
         @{ Case = 'quoted session'; Content = ("version: 1`n" + [char]34 + "session" + [char]34 + ":`n  name: x`n"); Reject = $true }
         @{ Case = 'flow session'; Content = "version: 1`nsession: {name: x}`n"; Reject = $true }

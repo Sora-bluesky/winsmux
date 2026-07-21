@@ -603,6 +603,232 @@ fn project_settings_render_still_allows_distinct_new_slot_identity() {
 }
 
 #[test]
+fn project_settings_render_r48_matches_trimmed_slot_and_role_identities_in_block_yaml() {
+    let original = "agent_slots:\n  - slot_id: ' Worker-1 ' # slot-id-comment\n    model: old\n    task_classes: [implementation] # slot-extension\nroles:\n  ' Builder ': # role-name-comment\n    model: old\n    task_classes: [implementation] # role-extension\n";
+    let desired = "agent_slots:\n  - slot_id: worker-1\n    model: new\nroles:\n  builder:\n    model: new-role\n";
+    let input = render_payload(original, desired, &["agent_slots", "roles"]);
+    let first = run_project_settings_render(&input, &[]);
+
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let first_text = String::from_utf8(first.stdout).expect("UTF-8 YAML output");
+    assert!(first_text.contains("slot_id: \" Worker-1 \" # slot-id-comment"));
+    assert!(first_text.contains("task_classes: [implementation] # slot-extension"));
+    assert!(first_text.contains("' Builder ': # role-name-comment"));
+    assert!(first_text.contains("task_classes: [implementation] # role-extension"));
+    assert!(first_text.contains("model: \"new\""));
+    assert!(first_text.contains("model: \"new-role\""));
+
+    let second_input = render_payload(&first_text, desired, &["agent_slots", "roles"]);
+    let second = run_project_settings_render(&second_input, &[]);
+    assert!(second.status.success());
+    assert_eq!(second.stdout, first_text.as_bytes());
+}
+
+#[test]
+fn project_settings_render_r48_matches_trimmed_slot_and_role_identities_in_flow_yaml() {
+    let original = "{agent_slots: [{slot_id: ' Worker-1 ', model: old, future_slot: keep} # slot-comment\n], roles: {' Reviewer ': {model: old, future_role: keep} # role-comment\n}} # root-comment\n";
+    let desired = "agent_slots:\n  - slot_id: worker-1\n    model: new\nroles:\n  reviewer:\n    model: new-role\n";
+    let input = render_payload(original, desired, &["agent_slots", "roles"]);
+    let output = run_project_settings_render(&input, &[]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).expect("UTF-8 YAML output");
+    assert!(text.contains("slot_id: \" Worker-1 \""));
+    assert!(text.contains("future_slot: keep"));
+    assert!(text.contains("' Reviewer ':"));
+    assert!(text.contains("future_role: keep"));
+    assert!(text.contains("# slot-comment"));
+    assert!(text.contains("# role-comment"));
+    assert!(text.contains("# root-comment"));
+}
+
+#[test]
+fn project_settings_render_r48_rejects_trimmed_identity_duplicates_on_both_sides() {
+    let cases = [
+        (
+            "agent_slots:\n  - slot_id: ' Worker-1 '\n  - slot_id: worker-1\n",
+            "agent_slots:\n  - slot_id: worker-1\n",
+            &["agent_slots"][..],
+        ),
+        (
+            "agent_slots:\n  - slot_id: worker-1\n",
+            "agent_slots:\n  - slot_id: ' Worker-1 '\n  - slot_id: worker-1\n",
+            &["agent_slots"][..],
+        ),
+        (
+            "roles:\n  ' Builder ': {}\n  builder: {}\n",
+            "roles:\n  builder: {}\n",
+            &["roles"][..],
+        ),
+        (
+            "roles:\n  builder: {}\n",
+            "roles:\n  ' Builder ': {}\n  builder: {}\n",
+            &["roles"][..],
+        ),
+    ];
+
+    for (original, desired, owned) in cases {
+        let output = run_project_settings_render(&render_payload(original, desired, owned), &[]);
+        assert!(
+            !output.status.success(),
+            "unexpected output for {original:?}"
+        );
+        assert!(output.stdout.is_empty());
+        assert_eq!(
+            String::from_utf8(output.stderr).expect("UTF-8 generic error"),
+            "winsmux: project settings render failed.\n"
+        );
+    }
+}
+
+#[test]
+fn project_settings_render_r48_keeps_add_remove_and_owned_omission_controls() {
+    let original = "agent_slots:\n  - slot_id: Worker-1\n    model: old\n  - slot_id: removed-slot\n    model: old\nroles:\n  Builder:\n    model: old\n  removed-role:\n    model: old\n";
+    let desired = "agent_slots:\n  - slot_id: ' worker-1 '\n    reasoning_effort: high\n  - slot_id: worker-3\n    model: \"slot # \\\"added\"\nroles:\n  ' builder ': {}\n  reviewer:\n    model: added-role\n  \"review # \\\"lead\":\n    model: \"role # \\\"added\"\n";
+    let output = run_project_settings_render(
+        &render_payload(original, desired, &["agent_slots", "roles"]),
+        &[],
+    );
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mapping = yaml_mapping(&output.stdout);
+    let slots = mapping
+        .get(serde_yaml::Value::String("agent_slots".into()))
+        .and_then(serde_yaml::Value::as_sequence)
+        .expect("agent_slots sequence");
+    assert_eq!(slots.len(), 2);
+    assert_eq!(
+        slots[0]
+            .as_mapping()
+            .and_then(|slot| slot.get(serde_yaml::Value::String("slot_id".into())))
+            .and_then(serde_yaml::Value::as_str),
+        Some("Worker-1")
+    );
+    assert!(slots[0]
+        .as_mapping()
+        .is_some_and(|slot| !slot.contains_key(serde_yaml::Value::String("model".into()))));
+    assert_eq!(
+        slots[0]
+            .as_mapping()
+            .and_then(|slot| slot.get(serde_yaml::Value::String("reasoning_effort".into())))
+            .and_then(serde_yaml::Value::as_str),
+        Some("high")
+    );
+    let block_text = String::from_utf8(output.stdout.clone()).expect("UTF-8 block YAML output");
+    assert!(block_text.contains("agent_slots:\n  - reasoning_effort: \"high\""));
+    assert!(block_text.contains("    slot_id: \"Worker-1\""));
+    assert!(block_text.contains("roles:\n  Builder:\n    {}"));
+    assert!(block_text.contains("  reviewer:\n    model: \"added-role\""));
+    assert!(block_text.contains("  \"review # \\\"lead\":\n    model: \"role # \\\"added\""));
+    assert!(!block_text.contains("[{"));
+    assert!(!block_text.contains("{\\\"model\\\""));
+    let roles = mapping
+        .get(serde_yaml::Value::String("roles".into()))
+        .and_then(serde_yaml::Value::as_mapping)
+        .expect("roles mapping");
+    assert_eq!(roles.len(), 3);
+    assert!(roles
+        .get(serde_yaml::Value::String("Builder".into()))
+        .is_some_and(|role| role.as_mapping().is_some_and(serde_yaml::Mapping::is_empty)));
+    assert!(roles.contains_key(serde_yaml::Value::String("reviewer".into())));
+    assert_eq!(
+        roles
+            .get(serde_yaml::Value::String("review # \"lead".into()))
+            .and_then(serde_yaml::Value::as_mapping)
+            .and_then(|role| role.get(serde_yaml::Value::String("model".into())))
+            .and_then(serde_yaml::Value::as_str),
+        Some("role # \"added")
+    );
+
+    let second = run_project_settings_render(
+        &render_payload(&block_text, desired, &["agent_slots", "roles"]),
+        &[],
+    );
+    assert!(second.status.success());
+    assert_eq!(second.stdout, block_text.as_bytes());
+
+    let replace_only_original = "roles:\n  Builder:\n    model: old\n";
+    let replace_only_desired = "roles:\n  Reviewer:\n    model: new\n";
+    let replace_only = run_project_settings_render(
+        &render_payload(replace_only_original, replace_only_desired, &["roles"]),
+        &[],
+    );
+    assert!(
+        replace_only.status.success(),
+        "{}",
+        String::from_utf8_lossy(&replace_only.stderr)
+    );
+    let replace_only_text =
+        String::from_utf8(replace_only.stdout).expect("UTF-8 replaced roles YAML");
+    assert_eq!(
+        replace_only_text,
+        "roles:\n  Reviewer:\n    model: \"new\"\n"
+    );
+    let replace_only_second = run_project_settings_render(
+        &render_payload(&replace_only_text, replace_only_desired, &["roles"]),
+        &[],
+    );
+    assert!(replace_only_second.status.success());
+    assert_eq!(replace_only_second.stdout, replace_only_text.as_bytes());
+
+    let flow_original = "{roles: {' Builder ': {model: old} # builder-comment\n, removed-role: {model: old}}, untouched: keep} # root-comment\n";
+    let flow_desired = "roles:\n  ' builder ': {}\n  reviewer:\n    model: added-role\n";
+    let flow_input = render_payload(flow_original, flow_desired, &["roles"]);
+    let flow_first = run_project_settings_render(&flow_input, &[]);
+    assert!(
+        flow_first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&flow_first.stderr)
+    );
+    let flow_text = String::from_utf8(flow_first.stdout).expect("UTF-8 flow YAML output");
+    assert!(flow_text.contains("' Builder ': {} # builder-comment"));
+    assert!(flow_text.contains("\"reviewer\": {\"model\":\"added-role\"}"));
+    assert!(!flow_text.contains("removed-role"));
+    assert!(flow_text.contains("untouched: keep"));
+    assert!(flow_text.contains("# root-comment"));
+
+    let flow_second_input = render_payload(&flow_text, flow_desired, &["roles"]);
+    let flow_second = run_project_settings_render(&flow_second_input, &[]);
+    assert!(flow_second.status.success());
+    assert_eq!(flow_second.stdout, flow_text.as_bytes());
+}
+
+#[test]
+fn project_settings_render_r52_adds_missing_structured_roots_as_canonical_block_yaml() {
+    let original = "worker_count: 1 # keep-root-comment\n";
+    let desired = "worker_count: 1\nagent_slots:\n  - slot_id: worker-1\n    model: slot-added\nroles:\n  reviewer:\n    model: role-added\n";
+    let owned = &["worker_count", "agent_slots", "roles"];
+    let first = run_project_settings_render(&render_payload(original, desired, owned), &[]);
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let text = String::from_utf8(first.stdout).expect("UTF-8 block YAML output");
+    assert!(text.contains("worker_count: 1 # keep-root-comment"));
+    assert!(text.contains("agent_slots:\n  - model: \"slot-added\"\n    slot_id: \"worker-1\""));
+    assert!(text.contains("roles:\n  reviewer:\n    model: \"role-added\""));
+    assert!(!text.contains("agent_slots: ["));
+    assert!(!text.contains("roles: {"));
+
+    let second = run_project_settings_render(&render_payload(&text, desired, owned), &[]);
+    assert!(second.status.success());
+    assert_eq!(second.stdout, text.as_bytes());
+}
+
+#[test]
 fn project_settings_render_allows_owned_slot_topology_changes_without_extensions() {
     let original = "agent_slots:\n  - slot_id: worker-1\n    model: old\n  - slot_id: worker-2\n    model: old\n    backend: local\n";
     let desired = "agent_slots:\n  - slot_id: worker-2\n    model: new\n    worker_backend: codex\n  - slot_id: worker-3\n    model: added\n";
@@ -634,6 +860,26 @@ fn project_settings_render_allows_owned_slot_topology_changes_without_extensions
             .and_then(serde_yaml::Value::as_str),
         Some("worker-3")
     );
+
+    let flow_original = "agent_slots: [{slot_id: worker-1, model: old}, {slot_id: removed-slot, model: old}] # slot-flow-comment\nuntouched: keep\n";
+    let flow_first = run_project_settings_render(
+        &render_payload(flow_original, desired, &["agent_slots"]),
+        &[],
+    );
+    assert!(
+        flow_first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&flow_first.stderr)
+    );
+    let flow_text = String::from_utf8(flow_first.stdout).expect("UTF-8 flow YAML output");
+    assert!(flow_text.contains("agent_slots: [{"));
+    assert!(flow_text.contains("# slot-flow-comment"));
+    assert!(flow_text.contains("untouched: keep"));
+
+    let flow_second =
+        run_project_settings_render(&render_payload(&flow_text, desired, &["agent_slots"]), &[]);
+    assert!(flow_second.status.success());
+    assert_eq!(flow_second.stdout, flow_text.as_bytes());
 }
 
 #[test]
@@ -761,6 +1007,168 @@ fn project_settings_render_creates_canonical_block_yaml_from_empty_source() {
         String::from_utf8(output.stdout).expect("UTF-8 YAML output"),
         "agent_slots:\n  []\nroles:\n  {}\nvault_keys:\n  []\n"
     );
+}
+
+#[test]
+fn project_settings_render_r50_materializes_semantic_empty_roots_and_preserves_envelope() {
+    let cases = [
+        ("{}\n", &[][..]),
+        (
+            "# heading\n{} # inline-comment\n# trailing\n",
+            &["# heading", "# inline-comment", "# trailing"][..],
+        ),
+        ("--- {}\n...\n", &["---", "..."][..]),
+        (
+            "# heading\n---\n{}\n...\n# trailing\n",
+            &["# heading", "---", "...", "# trailing"][..],
+        ),
+    ];
+
+    for (original, preserved) in cases {
+        let desired = "agent: codex\n";
+        let first =
+            run_project_settings_render(&render_payload(original, desired, &["agent"]), &[]);
+        assert!(
+            first.status.success(),
+            "{original:?}: {}",
+            String::from_utf8_lossy(&first.stderr)
+        );
+        let first_text = String::from_utf8(first.stdout).expect("UTF-8 YAML output");
+        assert!(first_text.lines().any(|line| line == "agent: \"codex\""));
+        assert!(!first_text.contains("--- agent:"));
+        for marker in preserved {
+            assert!(
+                first_text.contains(marker),
+                "missing {marker:?} in {first_text:?}"
+            );
+        }
+        assert_eq!(
+            yaml_mapping(first_text.as_bytes())
+                .get(serde_yaml::Value::String("agent".into()))
+                .and_then(serde_yaml::Value::as_str),
+            Some("codex")
+        );
+
+        let second =
+            run_project_settings_render(&render_payload(&first_text, desired, &["agent"]), &[]);
+        assert!(second.status.success());
+        assert_eq!(second.stdout, first_text.as_bytes());
+    }
+}
+
+#[test]
+fn project_settings_render_r50_uses_manual_fallback_block_shape_for_empty_mapping() {
+    let desired = "agent_slots:\n  - slot_id: worker-1\n    runtime_role: worker\n    worktree_mode: managed\nroles: {}\nvault_keys: []\n";
+    let owned = &["agent_slots", "roles", "vault_keys"];
+    let first = run_project_settings_render(&render_payload("{}\n", desired, owned), &[]);
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let first_text = String::from_utf8(first.stdout).expect("UTF-8 YAML output");
+    assert!(first_text.contains("agent_slots:\n  - runtime_role: \"worker\""));
+    assert!(first_text.contains("    slot_id: \"worker-1\""));
+    assert!(first_text.contains("    worktree_mode: \"managed\""));
+    assert!(first_text.contains("roles:\n  {}\n"));
+    assert!(first_text.contains("vault_keys:\n  []\n"));
+    assert!(!first_text.contains("[{"));
+
+    let second = run_project_settings_render(&render_payload(&first_text, desired, owned), &[]);
+    assert!(second.status.success());
+    assert_eq!(second.stdout, first_text.as_bytes());
+}
+
+#[test]
+fn project_settings_render_r50_emits_explicit_empty_mapping_after_delete_all() {
+    for original in ["agent: old\n", "{agent: old}\n"] {
+        let desired = "{}\n";
+        let first =
+            run_project_settings_render(&render_payload(original, desired, &["agent"]), &[]);
+        assert!(
+            first.status.success(),
+            "{original:?}: {}",
+            String::from_utf8_lossy(&first.stderr)
+        );
+        assert_eq!(first.stdout, b"{}\n");
+
+        let second = run_project_settings_render(&render_payload("{}\n", desired, &["agent"]), &[]);
+        assert!(second.status.success());
+        assert_eq!(second.stdout, first.stdout);
+    }
+
+    let commented_cases = [
+        (
+            "# heading\nagent: old # keep-inline\n# trailing\n",
+            &["# heading", "# keep-inline", "# trailing"][..],
+        ),
+        (
+            "agent: old # keep-agent\nworker_count: 2 # keep-worker\n# trailing\n",
+            &["# keep-agent", "# keep-worker", "# trailing"][..],
+        ),
+        (
+            "{agent: old} # keep-flow\n# trailing\n",
+            &["# keep-flow", "# trailing"][..],
+        ),
+    ];
+    for (original, comments) in commented_cases {
+        let owned = if original.contains("worker_count") {
+            &["agent", "worker_count"][..]
+        } else {
+            &["agent"][..]
+        };
+        let first = run_project_settings_render(&render_payload(original, "{}\n", owned), &[]);
+        assert!(
+            first.status.success(),
+            "{original:?}: {}",
+            String::from_utf8_lossy(&first.stderr)
+        );
+        let first_text = String::from_utf8(first.stdout).expect("UTF-8 delete-all YAML");
+        assert!(
+            yaml_mapping(first_text.as_bytes()).is_empty(),
+            "{first_text:?}"
+        );
+        assert!(first_text.contains("{}"), "{first_text:?}");
+        for comment in comments {
+            assert!(
+                first_text.contains(comment),
+                "missing {comment:?} in {first_text:?}"
+            );
+        }
+        let second = run_project_settings_render(&render_payload(&first_text, "{}\n", owned), &[]);
+        assert!(second.status.success());
+        assert_eq!(second.stdout, first_text.as_bytes());
+    }
+}
+
+#[test]
+fn project_settings_render_r50_rejects_unsupported_root_states() {
+    let cases = [
+        "# comment only\n",
+        "---\n",
+        "...\n",
+        "null\n",
+        "scalar\n",
+        "- item\n",
+        "agent: [\n",
+        "agent: one\nagent: two\n",
+        "---\nagent: one\n---\nagent: two\n",
+    ];
+    for original in cases {
+        let output = run_project_settings_render(
+            &render_payload(original, "agent: codex\n", &["agent"]),
+            &[],
+        );
+        assert!(
+            !output.status.success(),
+            "unexpected output for {original:?}"
+        );
+        assert!(output.stdout.is_empty());
+        assert_eq!(
+            String::from_utf8(output.stderr).expect("UTF-8 generic error"),
+            "winsmux: project settings render failed.\n"
+        );
+    }
 }
 
 #[test]

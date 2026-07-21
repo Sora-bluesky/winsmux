@@ -57,11 +57,30 @@ struct AgentSlotPairing<'a> {
     desired_to_original: Vec<Option<usize>>,
 }
 
+struct RoleEntry<'a> {
+    name: &'a str,
+    mapping: &'a SemanticMapping,
+}
+
+struct RolePairing<'a> {
+    original_entries: Vec<RoleEntry<'a>>,
+    desired_entries: Vec<RoleEntry<'a>>,
+    desired_to_original: Vec<Option<usize>>,
+}
+
+#[derive(Clone, Copy)]
+enum RootRenderMode {
+    Blank,
+    EmptyMapping,
+    NonEmptyMapping,
+}
+
 struct ParsedDocument {
     source: String,
     semantic: SemanticValue,
     cst: YamlFile,
     explicit_keys: Vec<SemanticValue>,
+    root_mode: RootRenderMode,
 }
 
 #[derive(Clone, Debug)]
@@ -116,17 +135,19 @@ fn render(request: RenderRequest) -> Result<String, ()> {
     } = request;
     let nested_contract = NestedContract::new(nested_contract)?;
     let owned = normalize_owned_keys(&owned_keys)?;
-    let original_was_blank = original_yaml.trim().is_empty();
     let original = parse_document(&original_yaml, true)?;
-    let new_document_output = original_was_blank
-        .then(|| canonical_block_document(&desired_settings))
-        .transpose()?;
+    let canonical_output = matches!(
+        original.root_mode,
+        RootRenderMode::Blank | RootRenderMode::EmptyMapping
+    )
+    .then(|| canonical_block_document(&desired_settings))
+    .transpose()?;
     let desired_explicit = desired_settings
         .keys()
         .map(|key| SemanticValue::String(key.clone()))
         .collect::<Vec<_>>();
-    let desired_semantic = serde_yaml::to_value(serde_json::Value::Object(desired_settings))
-        .map_err(|_| ())?;
+    let desired_semantic =
+        serde_yaml::to_value(serde_json::Value::Object(desired_settings)).map_err(|_| ())?;
 
     let original_explicit = explicit_owned_keys(&original.explicit_keys, &owned)?;
     let desired_explicit = explicit_owned_keys(&desired_explicit, &owned)?;
@@ -148,11 +169,13 @@ fn render(request: RenderRequest) -> Result<String, ()> {
         desired_owned.get("agent_slots"),
         &nested_contract,
     )?;
+    let role_pairing = role_pairing(original_owned.get("roles"), desired_owned.get("roles"))?;
     let expected_owned = merged_owned_projection(
         &original_owned,
         &desired_owned,
         &nested_contract,
         agent_slot_pairing.as_ref(),
+        role_pairing.as_ref(),
     )?;
 
     // An owned field inherited through YAML merge syntax has no unambiguous CST
@@ -165,20 +188,36 @@ fn render(request: RenderRequest) -> Result<String, ()> {
     }
 
     let mapping = original.cst.document().ok_or(())?.as_mapping().ok_or(())?;
-    let edits = build_edit_plan(
-        &original.source,
-        &mapping,
-        &original_explicit,
-        &desired_explicit,
-        &original_owned,
-        &desired_owned,
-        &expected_owned,
-        &nested_contract,
-        agent_slot_pairing.as_ref(),
-    )?;
-    let mut output = match new_document_output {
-        Some(output) => output,
-        None => apply_edit_plan(original.source, edits)?,
+    let result_is_empty =
+        expected_owned.is_empty() && unknown_projection(&original_semantic, &owned).is_empty();
+    let mut output = match original.root_mode {
+        RootRenderMode::Blank => canonical_output.ok_or(())?,
+        RootRenderMode::EmptyMapping => {
+            let canonical = canonical_output.ok_or(())?;
+            if canonical == "{}\n" {
+                original.source
+            } else {
+                replace_root_mapping(&original.source, &mapping, &canonical)?
+            }
+        }
+        RootRenderMode::NonEmptyMapping if result_is_empty => {
+            empty_root_mapping_preserving_trivia(&original.source, &mapping)?
+        }
+        RootRenderMode::NonEmptyMapping => {
+            let edits = build_edit_plan(
+                &original.source,
+                &mapping,
+                &original_explicit,
+                &desired_explicit,
+                &original_owned,
+                &desired_owned,
+                &expected_owned,
+                &nested_contract,
+                agent_slot_pairing.as_ref(),
+                role_pairing.as_ref(),
+            )?;
+            apply_edit_plan(original.source, edits)?
+        }
     };
     if !output.ends_with('\n') {
         output.push('\n');
@@ -257,7 +296,11 @@ impl NestedContract {
 }
 
 fn parse_document(source: &str, blank_as_mapping: bool) -> Result<ParsedDocument, ()> {
-    let source = if blank_as_mapping && source.trim().is_empty() {
+    let lexical_blank = source.trim().is_empty();
+    if lexical_blank && !blank_as_mapping {
+        return Err(());
+    }
+    let source = if lexical_blank {
         "{}\n".to_string()
     } else {
         source.to_string()
@@ -270,6 +313,9 @@ fn parse_document(source: &str, blank_as_mapping: bool) -> Result<ParsedDocument
     if documents.len() != 1 || !documents[0].is_mapping() {
         return Err(());
     }
+    let semantic_empty = documents[0]
+        .as_mapping()
+        .is_some_and(SemanticMapping::is_empty);
 
     let cst = YamlFile::from_str(&source).map_err(|_| ())?;
     let cst_documents = cst.documents().collect::<Vec<_>>();
@@ -279,12 +325,20 @@ fn parse_document(source: &str, blank_as_mapping: bool) -> Result<ParsedDocument
     let mapping = cst_documents[0].as_mapping().ok_or(())?;
     let explicit_keys = cst_mapping_keys(&mapping)?;
     reject_duplicate_keys(&explicit_keys)?;
+    let root_mode = if lexical_blank {
+        RootRenderMode::Blank
+    } else if semantic_empty {
+        RootRenderMode::EmptyMapping
+    } else {
+        RootRenderMode::NonEmptyMapping
+    };
 
     Ok(ParsedDocument {
         source,
         semantic: documents.into_iter().next().ok_or(())?,
         cst,
         explicit_keys,
+        root_mode,
     })
 }
 
@@ -432,6 +486,10 @@ fn slot_id<'a>(
     .and_then(SemanticValue::as_str))
 }
 
+fn normalize_identity(identity: &str) -> String {
+    identity.trim().to_ascii_lowercase()
+}
+
 fn agent_slot_pairing<'a>(
     original: Option<&'a SemanticValue>,
     desired: Option<&'a SemanticValue>,
@@ -459,10 +517,11 @@ fn agent_slot_pairing<'a>(
     for (index, mapping) in original_mappings.iter().enumerate() {
         let id = slot_id(mapping, contract)?;
         if let Some(id) = id {
-            if original_by_id
-                .insert(id.to_ascii_lowercase(), index)
-                .is_some()
-            {
+            let normalized_id = normalize_identity(id);
+            if normalized_id.is_empty() {
+                return Err(());
+            }
+            if original_by_id.insert(normalized_id, index).is_some() {
                 return Err(());
             }
         }
@@ -473,8 +532,8 @@ fn agent_slot_pairing<'a>(
     let mut desired_to_original = Vec::with_capacity(desired_mappings.len());
     for mapping in &desired_mappings {
         let id = slot_id(mapping, contract)?.ok_or(())?;
-        let normalized_id = id.to_ascii_lowercase();
-        if !desired_ids.insert(normalized_id.clone()) {
+        let normalized_id = normalize_identity(id);
+        if normalized_id.is_empty() || !desired_ids.insert(normalized_id.clone()) {
             return Err(());
         }
         desired_to_original.push(original_by_id.get(&normalized_id).copied());
@@ -493,10 +552,7 @@ fn effective_desired_slot(
     desired_index: usize,
     contract: &NestedContract,
 ) -> Result<SemanticMapping, ()> {
-    let desired = pairing
-        .desired_mappings
-        .get(desired_index)
-        .ok_or(())?;
+    let desired = pairing.desired_mappings.get(desired_index).ok_or(())?;
     let mut effective = (*desired).clone();
     let Some(original_index) = pairing
         .desired_to_original
@@ -547,11 +603,7 @@ fn merged_agent_slots(
                 &contract.agent_slots,
             )?),
             None => {
-                merged_known_mapping(
-                    &SemanticMapping::new(),
-                    &desired,
-                    &contract.agent_slots,
-                )?;
+                merged_known_mapping(&SemanticMapping::new(), &desired, &contract.agent_slots)?;
                 SemanticValue::Mapping(desired)
             }
         };
@@ -560,32 +612,78 @@ fn merged_agent_slots(
     Ok(SemanticValue::Sequence(merged))
 }
 
-fn merged_roles(
-    original: &SemanticValue,
-    desired: &SemanticValue,
-    contract: &NestedContract,
-) -> Result<SemanticValue, ()> {
-    let original = original.as_mapping().ok_or(())?;
-    let desired = desired.as_mapping().ok_or(())?;
+fn role_entries(value: &SemanticValue) -> Result<Vec<RoleEntry<'_>>, ()> {
+    value
+        .as_mapping()
+        .ok_or(())?
+        .iter()
+        .map(|(name, value)| {
+            let name = name.as_str().ok_or(())?;
+            let mapping = value.as_mapping().ok_or(())?;
+            Ok(RoleEntry { name, mapping })
+        })
+        .collect()
+}
+
+fn role_pairing<'a>(
+    original: Option<&'a SemanticValue>,
+    desired: Option<&'a SemanticValue>,
+) -> Result<Option<RolePairing<'a>>, ()> {
+    let Some(desired) = desired else {
+        return Ok(None);
+    };
+    let original_entries = match original {
+        Some(original) => role_entries(original)?,
+        None => Vec::new(),
+    };
+    let desired_entries = role_entries(desired)?;
+    let mut original_by_id = BTreeMap::new();
+    for (index, entry) in original_entries.iter().enumerate() {
+        let identity = normalize_identity(entry.name);
+        if identity.is_empty() || original_by_id.insert(identity, index).is_some() {
+            return Err(());
+        }
+    }
+    let mut desired_ids = BTreeSet::new();
+    let mut desired_to_original = Vec::with_capacity(desired_entries.len());
+    for entry in &desired_entries {
+        let identity = normalize_identity(entry.name);
+        if identity.is_empty() || !desired_ids.insert(identity.clone()) {
+            return Err(());
+        }
+        desired_to_original.push(original_by_id.get(&identity).copied());
+    }
+    Ok(Some(RolePairing {
+        original_entries,
+        desired_entries,
+        desired_to_original,
+    }))
+}
+
+fn merged_roles(pairing: &RolePairing<'_>, contract: &NestedContract) -> Result<SemanticValue, ()> {
     let mut merged = SemanticMapping::new();
-    for (role, desired_value) in desired {
-        let role_name = role.as_str().ok_or(())?;
-        let desired_mapping = desired_value.as_mapping().ok_or(())?;
-        let value = match original.get(SemanticValue::String(role_name.to_string())) {
-            Some(original_value) => {
-                let original_mapping = original_value.as_mapping().ok_or(())?;
-                SemanticValue::Mapping(merged_known_mapping(
-                    original_mapping,
-                    desired_mapping,
-                    &contract.roles,
-                )?)
+    for (desired_index, desired) in pairing.desired_entries.iter().enumerate() {
+        let (name, value) = match pairing.desired_to_original[desired_index] {
+            Some(original_index) => {
+                let original = pairing.original_entries.get(original_index).ok_or(())?;
+                (
+                    original.name,
+                    SemanticValue::Mapping(merged_known_mapping(
+                        original.mapping,
+                        desired.mapping,
+                        &contract.roles,
+                    )?),
+                )
             }
             None => {
-                merged_known_mapping(&SemanticMapping::new(), desired_mapping, &contract.roles)?;
-                desired_value.clone()
+                merged_known_mapping(&SemanticMapping::new(), desired.mapping, &contract.roles)?;
+                (
+                    desired.name,
+                    SemanticValue::Mapping(desired.mapping.clone()),
+                )
             }
         };
-        merged.insert(role.clone(), value);
+        merged.insert(SemanticValue::String(name.to_string()), value);
     }
     Ok(SemanticValue::Mapping(merged))
 }
@@ -595,15 +693,14 @@ fn merged_owned_projection(
     desired: &BTreeMap<String, SemanticValue>,
     contract: &NestedContract,
     agent_slot_pairing: Option<&AgentSlotPairing<'_>>,
+    role_pairing: Option<&RolePairing<'_>>,
 ) -> Result<BTreeMap<String, SemanticValue>, ()> {
     desired
         .iter()
         .map(|(key, value)| {
             let merged = match (key.as_str(), original.get(key)) {
-                ("agent_slots", _) => {
-                    merged_agent_slots(agent_slot_pairing.ok_or(())?, contract)?
-                }
-                ("roles", Some(original)) => merged_roles(original, value, contract)?,
+                ("agent_slots", _) => merged_agent_slots(agent_slot_pairing.ok_or(())?, contract)?,
+                ("roles", _) => merged_roles(role_pairing.ok_or(())?, contract)?,
                 _ => value.clone(),
             };
             Ok((key.clone(), merged))
@@ -614,6 +711,15 @@ fn merged_owned_projection(
 fn semantic_value_as_json(value: &SemanticValue) -> Result<String, ()> {
     let json = serde_json::to_string(value).map_err(|_| ())?;
     let round_trip = serde_yaml::from_str::<SemanticValue>(&json).map_err(|_| ())?;
+    if &round_trip != value {
+        return Err(());
+    }
+    Ok(json)
+}
+
+fn semantic_value_as_json_value(value: &SemanticValue) -> Result<serde_json::Value, ()> {
+    let json = serde_json::to_value(value).map_err(|_| ())?;
+    let round_trip = serde_yaml::to_value(&json).map_err(|_| ())?;
     if &round_trip != value {
         return Err(());
     }
@@ -725,14 +831,115 @@ fn canonical_yaml_key(key: &str) -> Result<String, ()> {
         .next()
         .is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_')
         && characters.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
-        && !matches!(
-            key.to_ascii_lowercase().as_str(),
-            "null" | "true" | "false"
-        );
+        && !matches!(key.to_ascii_lowercase().as_str(), "null" | "true" | "false");
     if plain {
         Ok(key.to_string())
     } else {
         serde_json::to_string(key).map_err(|_| ())
+    }
+}
+
+fn mapping_prefers_block_fragments(source: &str, mapping: &CstMapping) -> Result<bool, ()> {
+    if !mapping.is_flow_style() {
+        return Ok(true);
+    }
+    if mapping.entries().next().is_some() {
+        return Ok(false);
+    }
+    let start = mapping.byte_range().start as usize;
+    let line_start = source[..start]
+        .rfind(['\r', '\n'])
+        .map_or(0, |index| index + 1);
+    Ok(source
+        .get(line_start..start)
+        .ok_or(())?
+        .bytes()
+        .all(|byte| matches!(byte, b' ' | b'\t')))
+}
+
+fn node_prefers_block_fragments(source: &str, node: &YamlNode) -> Result<bool, ()> {
+    match node {
+        YamlNode::Mapping(mapping) => mapping_prefers_block_fragments(source, mapping),
+        YamlNode::Sequence(sequence) if !sequence.is_flow_style() => Ok(true),
+        YamlNode::Sequence(sequence) if sequence.is_empty() => {
+            let start = sequence.byte_range().start as usize;
+            let line_start = source[..start]
+                .rfind(['\r', '\n'])
+                .map_or(0, |index| index + 1);
+            Ok(source
+                .get(line_start..start)
+                .ok_or(())?
+                .bytes()
+                .all(|byte| matches!(byte, b' ' | b'\t')))
+        }
+        _ => Ok(false),
+    }
+}
+
+fn canonical_block_mapping_entry_fragment(
+    key: &str,
+    value: &SemanticValue,
+) -> Result<String, ()> {
+    let mut output = String::new();
+    let value = semantic_value_as_json_value(value)?;
+    write_block_mapping_entry(key, &value, 2, &mut output)?;
+    Ok(output.trim_end_matches(['\r', '\n']).to_string())
+}
+
+fn canonical_block_value_fragment(
+    source: &str,
+    value_start: usize,
+    value: &SemanticValue,
+) -> Result<String, ()> {
+    let line_start = source[..value_start]
+        .rfind(['\r', '\n'])
+        .map_or(0, |index| index + 1);
+    let indentation = source.get(line_start..value_start).ok_or(())?;
+    if !indentation
+        .bytes()
+        .all(|byte| matches!(byte, b' ' | b'\t'))
+    {
+        return Err(());
+    }
+    let value = semantic_value_as_json_value(value)?;
+    let mut output = String::new();
+    write_block_container(&value, indentation.len(), &mut output)?;
+    let output = output.strip_prefix(indentation).ok_or(())?;
+    Ok(output.trim_end_matches(['\r', '\n']).to_string())
+}
+
+fn style_aware_mapping_entry_fragment(
+    source: &str,
+    mapping: &CstMapping,
+    key: &str,
+    value: &SemanticValue,
+) -> Result<String, ()> {
+    if mapping_prefers_block_fragments(source, mapping)? {
+        canonical_block_mapping_entry_fragment(key, value)
+    } else {
+        Ok(format!(
+            "{}: {}",
+            serde_json::to_string(key).map_err(|_| ())?,
+            semantic_value_as_json(value)?
+        ))
+    }
+}
+
+fn style_aware_value_fragment(
+    source: &str,
+    prefer_block: bool,
+    value_start: usize,
+    value: &SemanticValue,
+) -> Result<String, ()> {
+    if prefer_block
+        && matches!(
+            value,
+            SemanticValue::Mapping(_) | SemanticValue::Sequence(_)
+        )
+    {
+        canonical_block_value_fragment(source, value_start, value)
+    } else {
+        semantic_value_as_json(value)
     }
 }
 
@@ -828,6 +1035,7 @@ fn build_flat_mapping_edit_plan(
             .find(|entry| entry.key == *original_key)
             .ok_or(())?;
         if let Some(value) = desired_values.get(normalized) {
+            let original_value_node = mapping_value_node(mapping, original_key)?;
             let original_value = source.get(entry.value_start..entry.value_end).ok_or(())?;
             let value_without_line_endings = original_value.trim_end_matches(['\r', '\n']);
             let trailing_line_endings = &original_value[value_without_line_endings.len()..];
@@ -836,7 +1044,12 @@ fn build_flat_mapping_edit_plan(
                 end: entry.value_end,
                 replacement: format!(
                     "{}{}",
-                    semantic_value_as_json(value)?,
+                    style_aware_value_fragment(
+                        source,
+                        node_prefers_block_fragments(source, &original_value_node)?,
+                        entry.value_start,
+                        value,
+                    )?,
                     trailing_line_endings
                 ),
             });
@@ -858,11 +1071,12 @@ fn build_flat_mapping_edit_plan(
         .iter()
         .filter(|(normalized, _)| !original_keys.contains_key(*normalized))
         .map(|(normalized, key)| {
-            Ok(format!(
-                "{}: {}",
-                serde_json::to_string(key).map_err(|_| ())?,
-                semantic_value_as_json(desired_values.get(normalized).ok_or(())?)?
-            ))
+            style_aware_mapping_entry_fragment(
+                source,
+                mapping,
+                key,
+                desired_values.get(normalized).ok_or(())?,
+            )
         })
         .collect::<Result<Vec<_>, ()>>()?;
     if !additions.is_empty() {
@@ -891,6 +1105,19 @@ fn mapping_has_unknown_keys(mapping: &SemanticMapping, policy: &KeyPolicy) -> bo
     })
 }
 
+fn value_replacement_with_original_line_endings(
+    source: &str,
+    start: usize,
+    end: usize,
+    replacement: &str,
+) -> Result<String, ()> {
+    let original_value = source.get(start..end).ok_or(())?;
+    let original_without_line_endings = original_value.trim_end_matches(['\r', '\n']);
+    let trailing_line_endings = &original_value[original_without_line_endings.len()..];
+    let replacement = replacement.trim_end_matches(['\r', '\n']);
+    Ok(format!("{replacement}{trailing_line_endings}"))
+}
+
 fn build_agent_slots_edit_plan(
     source: &str,
     cst: &YamlNode,
@@ -902,10 +1129,7 @@ fn build_agent_slots_edit_plan(
         .iter()
         .any(|mapping| mapping_has_unknown_keys(mapping, &contract.agent_slots));
     let preserves_topology = pairing.original_mappings.len() == pairing.desired_mappings.len()
-        && pairing
-            .original_ids
-            .iter()
-            .all(Option::is_some)
+        && pairing.original_ids.iter().all(Option::is_some)
         && pairing
             .desired_to_original
             .iter()
@@ -950,95 +1174,238 @@ fn build_agent_slots_edit_plan(
 
 fn build_roles_edit_plan(
     source: &str,
+    role_key: &str,
     cst: &YamlNode,
-    original: &SemanticValue,
-    desired: &SemanticValue,
+    pairing: &RolePairing<'_>,
     contract: &NestedContract,
-) -> Result<Option<Vec<TextEdit>>, ()> {
-    let (original, desired, mapping) = match (original.as_mapping(), desired.as_mapping(), cst) {
-        (Some(original), Some(desired), YamlNode::Mapping(mapping)) => (original, desired, mapping),
-        _ => return Ok(None),
+) -> Result<TextEdit, ()> {
+    let mapping = match cst {
+        YamlNode::Mapping(mapping) => mapping,
+        _ => return Err(()),
     };
-    // Deleting every nested role would otherwise leave a bare `roles:` key,
-    // which YAML decodes as null. Replace the top-level value so `{}` remains
-    // an explicitly typed empty mapping.
-    if desired.is_empty() {
-        return Ok(None);
-    }
     reject_duplicate_keys(&cst_mapping_keys(mapping)?)?;
     let entries = root_entry_ranges(mapping)?;
-    let mut edits = Vec::new();
+    if entries.len() != pairing.original_entries.len()
+        || entries
+            .iter()
+            .zip(&pairing.original_entries)
+            .any(|(entry, original)| entry.key != original.name)
+    {
+        return Err(());
+    }
+    let original_range = yaml_node_range(cst)?;
+    let original_start = original_range.start as usize;
+    let original_end = original_range.end as usize;
+    source.get(original_start..original_end).ok_or(())?;
 
-    for entry in &entries {
-        let role = SemanticValue::String(entry.key.clone());
-        if let Some(desired_value) = desired.get(&role) {
-            let original_value = original.get(&role).ok_or(())?;
-            match (
-                mapping_value_node(mapping, &entry.key)?,
-                original_value.as_mapping(),
-                desired_value.as_mapping(),
-            ) {
-                (YamlNode::Mapping(role_mapping), Some(original), Some(desired)) => {
-                    edits.extend(build_flat_mapping_edit_plan(
+    let desired_for_original = pairing
+        .desired_to_original
+        .iter()
+        .enumerate()
+        .filter_map(|(desired_index, original_index)| {
+            original_index.map(|original_index| (original_index, desired_index))
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    // Mapping style belongs to the original roles transaction, not to an
+    // intermediate value produced while applying it. When every original
+    // block role is removed, build the complete replacement in that original
+    // block style instead of reparsing a temporary `{}` as authored flow YAML.
+    if !mapping.is_flow_style() && desired_for_original.is_empty() {
+        let merged = merged_roles(pairing, contract)?;
+        let replacement = canonical_block_value_fragment(source, original_start, &merged)?;
+        return Ok(TextEdit {
+            start: original_start,
+            end: original_end,
+            replacement: value_replacement_with_original_line_endings(
+                source,
+                original_start,
+                original_end,
+                &replacement,
+            )?,
+        });
+    }
+
+    // Phase 1 owns only descendant edits for matched roles. Applying these
+    // before changing sibling topology keeps every later coordinate tied to a
+    // freshly parsed CST rather than to the original mapping.
+    let mut working_source = source.to_string();
+    let mut descendant_edits = Vec::new();
+    for (original_index, (entry, original)) in
+        entries.iter().zip(&pairing.original_entries).enumerate()
+    {
+        if let Some(desired_index) = desired_for_original.get(&original_index) {
+            let desired = pairing.desired_entries.get(*desired_index).ok_or(())?;
+            let merged = merged_known_mapping(original.mapping, desired.mapping, &contract.roles)?;
+            if merged.is_empty() {
+                descendant_edits.push(TextEdit {
+                    start: entry.value_start,
+                    end: entry.value_end,
+                    replacement: value_replacement_with_original_line_endings(
                         source,
-                        &role_mapping,
-                        original,
-                        desired,
-                        &contract.roles,
-                    )?);
-                }
-                _ => {
-                    edits.push(TextEdit {
-                        start: entry.value_start,
-                        end: entry.value_end,
-                        replacement: semantic_value_as_json(desired_value)?,
-                    });
-                }
-            }
-        } else {
-            let (start, end) = if mapping.is_flow_style() {
-                flow_deletion_range(source, mapping, &entries, entry)?
+                        entry.value_start,
+                        entry.value_end,
+                        "{}",
+                    )?,
+                });
             } else {
-                block_deletion_range(source, mapping, entry)?
+                let role_mapping = match mapping_value_node(mapping, &entry.key)? {
+                    YamlNode::Mapping(role_mapping) => role_mapping,
+                    _ => return Err(()),
+                };
+                descendant_edits.extend(build_flat_mapping_edit_plan(
+                    source,
+                    &role_mapping,
+                    original.mapping,
+                    desired.mapping,
+                    &contract.roles,
+                )?);
+            }
+        }
+    }
+    validate_edit_plan(source, mapping, &descendant_edits)?;
+    working_source = apply_edit_plan(working_source, descendant_edits)?;
+
+    // Phase 2 reparses the complete document and removes unmatched original
+    // roles using only coordinates from that generation. If none remain, use
+    // an explicit empty mapping so the intermediate document is still valid.
+    let phase_two_document = parse_document(&working_source, false)?;
+    let phase_two_root = phase_two_document
+        .cst
+        .document()
+        .ok_or(())?
+        .as_mapping()
+        .ok_or(())?;
+    let phase_two_value = mapping_value_node(&phase_two_root, role_key)?;
+    let phase_two_mapping = match &phase_two_value {
+        YamlNode::Mapping(mapping) => mapping,
+        _ => return Err(()),
+    };
+    let phase_two_entries = root_entry_ranges(phase_two_mapping)?;
+    if phase_two_entries.len() != pairing.original_entries.len()
+        || phase_two_entries
+            .iter()
+            .zip(&pairing.original_entries)
+            .any(|(entry, original)| entry.key != original.name)
+    {
+        return Err(());
+    }
+
+    let mut removal_edits = Vec::new();
+    if desired_for_original.is_empty() {
+        let range = yaml_node_range(&phase_two_value)?;
+        removal_edits.push(TextEdit {
+            start: range.start as usize,
+            end: range.end as usize,
+            replacement: value_replacement_with_original_line_endings(
+                &working_source,
+                range.start as usize,
+                range.end as usize,
+                "{}",
+            )?,
+        });
+    } else {
+        for (original_index, entry) in phase_two_entries.iter().enumerate() {
+            if desired_for_original.contains_key(&original_index) {
+                continue;
+            }
+            let (start, end) = if phase_two_mapping.is_flow_style() {
+                flow_deletion_range(
+                    &working_source,
+                    phase_two_mapping,
+                    &phase_two_entries,
+                    entry,
+                )?
+            } else {
+                block_deletion_range(&working_source, phase_two_mapping, entry)?
             };
-            edits.push(TextEdit {
+            removal_edits.push(TextEdit {
                 start,
                 end,
                 replacement: String::new(),
             });
         }
+        removal_edits =
+            coalesce_deletion_edits(phase_two_mapping, &phase_two_entries, removal_edits)?;
     }
+    validate_edit_plan(&working_source, phase_two_mapping, &removal_edits)?;
+    working_source = apply_edit_plan(working_source, removal_edits)?;
 
-    let additions = desired
+    // Phase 3 reparses again before adding new sibling roles. This deliberately
+    // does not coalesce an insertion with a descendant replacement at a shared
+    // offset; the parent mapping alone owns this edit.
+    let phase_three_document = parse_document(&working_source, false)?;
+    let phase_three_root = phase_three_document
+        .cst
+        .document()
+        .ok_or(())?
+        .as_mapping()
+        .ok_or(())?;
+    let phase_three_value = mapping_value_node(&phase_three_root, role_key)?;
+    let phase_three_mapping = match &phase_three_value {
+        YamlNode::Mapping(mapping) => mapping,
+        _ => return Err(()),
+    };
+    let phase_three_entries = root_entry_ranges(phase_three_mapping)?;
+    let additions = pairing
+        .desired_entries
         .iter()
-        .filter_map(|(key, value)| {
-            let key = key.as_str()?;
-            (!entries.iter().any(|entry| entry.key == key)).then_some((key, value))
-        })
-        .map(|(key, value)| {
-            Ok(format!(
-                "{}: {}",
-                serde_json::to_string(key).map_err(|_| ())?,
-                semantic_value_as_json(value)?
-            ))
+        .zip(&pairing.desired_to_original)
+        .filter(|(_, original_index)| original_index.is_none())
+        .map(|(desired, _)| {
+            style_aware_mapping_entry_fragment(
+                &working_source,
+                phase_three_mapping,
+                desired.name,
+                &SemanticValue::Mapping(desired.mapping.clone()),
+            )
         })
         .collect::<Result<Vec<_>, ()>>()?;
     if !additions.is_empty() {
-        let removed = entries
-            .iter()
-            .filter(|entry| !desired.contains_key(SemanticValue::String(entry.key.clone())))
-            .count();
-        edits.push(addition_edit(
-            source,
-            mapping,
-            entries.len().checked_sub(removed).ok_or(())?,
+        let addition = addition_edit(
+            &working_source,
+            phase_three_mapping,
+            phase_three_entries.len(),
             &additions,
-        )?);
+        )?;
+        validate_edit_plan(
+            &working_source,
+            phase_three_mapping,
+            std::slice::from_ref(&addition),
+        )?;
+        working_source = apply_edit_plan(working_source, vec![addition])?;
     }
 
-    let edits = coalesce_deletion_edits(mapping, &entries, edits)?;
-    validate_edit_plan(source, mapping, &edits)?;
-    Ok(Some(edits))
+    let final_document = parse_document(&working_source, false)?;
+    let final_root = final_document
+        .cst
+        .document()
+        .ok_or(())?
+        .as_mapping()
+        .ok_or(())?;
+    let final_value = mapping_value_node(&final_root, role_key)?;
+    let final_range = yaml_node_range(&final_value)?;
+    let final_roles = final_document
+        .semantic
+        .as_mapping()
+        .and_then(|mapping| mapping.get(SemanticValue::String(role_key.to_string())))
+        .ok_or(())?;
+    if final_roles != &merged_roles(pairing, contract)? {
+        return Err(());
+    }
+    let replacement = working_source
+        .get(final_range.start as usize..final_range.end as usize)
+        .ok_or(())?;
+    Ok(TextEdit {
+        start: original_start,
+        end: original_end,
+        replacement: value_replacement_with_original_line_endings(
+            source,
+            original_start,
+            original_end,
+            replacement,
+        )?,
+    })
 }
 
 fn build_edit_plan(
@@ -1051,6 +1418,7 @@ fn build_edit_plan(
     rendered_values: &BTreeMap<String, SemanticValue>,
     nested_contract: &NestedContract,
     agent_slot_pairing: Option<&AgentSlotPairing<'_>>,
+    role_pairing: Option<&RolePairing<'_>>,
 ) -> Result<Vec<TextEdit>, ()> {
     let entries = root_entry_ranges(mapping)?;
     let mut edits = Vec::new();
@@ -1060,9 +1428,10 @@ fn build_edit_plan(
             .iter()
             .find(|entry| entry.key == *original_key)
             .ok_or(())?;
-        if let Some(desired_value) = desired_values.get(normalized) {
-            let original_value = original_values.get(normalized).ok_or(())?;
+        if desired_values.contains_key(normalized) {
+            original_values.get(normalized).ok_or(())?;
             let cst_value = mapping_value_node(mapping, original_key)?;
+            let value_prefers_block = node_prefers_block_fragments(source, &cst_value)?;
             let recursive_edits = match normalized.as_str() {
                 "agent_slots" => build_agent_slots_edit_plan(
                     source,
@@ -1072,11 +1441,13 @@ fn build_edit_plan(
                 )?,
                 "roles" => build_roles_edit_plan(
                     source,
+                    original_key,
                     &cst_value,
-                    original_value,
-                    desired_value,
+                    role_pairing.ok_or(())?,
                     nested_contract,
-                )?,
+                )
+                .map(|edit| vec![edit])
+                .map(Some)?,
                 _ => None,
             };
             if let Some(recursive_edits) = recursive_edits {
@@ -1092,7 +1463,12 @@ fn build_edit_plan(
                 end: entry.value_end,
                 replacement: format!(
                     "{}{}",
-                    semantic_value_as_json(rendered_value)?,
+                    style_aware_value_fragment(
+                        source,
+                        value_prefers_block,
+                        entry.value_start,
+                        rendered_value,
+                    )?,
                     trailing_line_endings
                 ),
             });
@@ -1117,11 +1493,12 @@ fn build_edit_plan(
     for (normalized, desired_key) in desired {
         if !original.contains_key(normalized) {
             let value = rendered_values.get(normalized).ok_or(())?;
-            additions.push(format!(
-                "{}: {}",
-                serde_json::to_string(desired_key).map_err(|_| ())?,
-                semantic_value_as_json(value)?
-            ));
+            additions.push(style_aware_mapping_entry_fragment(
+                source,
+                mapping,
+                desired_key,
+                value,
+            )?);
         }
     }
     if !additions.is_empty() {
@@ -1375,11 +1752,21 @@ fn addition_edit(
     } else {
         "\n"
     };
-    let additions = additions.join(&format!("\n{indentation}"));
+    let additions = additions
+        .iter()
+        .map(|addition| {
+            addition
+                .split('\n')
+                .map(|line| format!("{indentation}{line}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     Ok(TextEdit {
         start: end,
         end,
-        replacement: format!("{prefix}{indentation}{additions}\n"),
+        replacement: format!("{prefix}{additions}\n"),
     })
 }
 
@@ -1406,6 +1793,87 @@ fn validate_edit_plan(source: &str, mapping: &CstMapping, edits: &[TextEdit]) ->
         return Err(());
     }
     Ok(())
+}
+
+fn replace_root_mapping(source: &str, mapping: &CstMapping, canonical: &str) -> Result<String, ()> {
+    let range = mapping.byte_range();
+    let start = range.start as usize;
+    let end = range.end as usize;
+    let prefix = source.get(..start).ok_or(())?;
+    let suffix = source.get(end..).ok_or(())?;
+    if start >= end {
+        return Err(());
+    }
+
+    let mut replacement = canonical.to_string();
+    if (suffix.starts_with('\n') || suffix.starts_with("\r\n")) && replacement.ends_with('\n') {
+        replacement.pop();
+    }
+    let line_start = prefix.rfind(['\r', '\n']).map_or(0, |index| index + 1);
+    if !prefix[line_start..].trim().is_empty() {
+        let line_ending = if suffix.starts_with("\r\n") {
+            "\r\n"
+        } else {
+            "\n"
+        };
+        replacement.insert_str(0, line_ending);
+    }
+
+    let mut output = source.to_string();
+    output.replace_range(start..end, &replacement);
+    Ok(output)
+}
+
+fn empty_root_mapping_preserving_trivia(
+    source: &str,
+    mapping: &CstMapping,
+) -> Result<String, ()> {
+    let entries = root_entry_ranges(mapping)?;
+    if entries.is_empty() {
+        return Err(());
+    }
+
+    let edits = if mapping.is_flow_style() {
+        let edits = entries
+            .iter()
+            .map(|entry| {
+                let (start, end) = flow_deletion_range(source, mapping, &entries, entry)?;
+                Ok(TextEdit {
+                    start,
+                    end,
+                    replacement: String::new(),
+                })
+            })
+            .collect::<Result<Vec<_>, ()>>()?;
+        coalesce_deletion_edits(mapping, &entries, edits)?
+    } else {
+        entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                let prefix = source
+                    .get(entry.entry_start..entry.key_start)
+                    .ok_or(())?;
+                if !prefix
+                    .bytes()
+                    .all(|byte| matches!(byte, b' ' | b'\t'))
+                {
+                    return Err(());
+                }
+                Ok(TextEdit {
+                    start: entry.key_start,
+                    end: entry.value_end,
+                    replacement: if index == 0 {
+                        "{}".to_string()
+                    } else {
+                        String::new()
+                    },
+                })
+            })
+            .collect::<Result<Vec<_>, ()>>()?
+    };
+    validate_edit_plan(source, mapping, &edits)?;
+    apply_edit_plan(source.to_string(), edits)
 }
 
 fn apply_edit_plan(mut source: String, mut edits: Vec<TextEdit>) -> Result<String, ()> {

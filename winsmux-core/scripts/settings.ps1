@@ -324,8 +324,21 @@ function Remove-BridgeYamlComment {
     $builder = [System.Text.StringBuilder]::new()
     $inSingleQuote = $false
     $inDoubleQuote = $false
+    $escapeNext = $false
 
     foreach ($character in $Line.ToCharArray()) {
+        if ($inDoubleQuote -and $escapeNext) {
+            [void]$builder.Append($character)
+            $escapeNext = $false
+            continue
+        }
+
+        if ($inDoubleQuote -and $character -eq '\') {
+            [void]$builder.Append($character)
+            $escapeNext = $true
+            continue
+        }
+
         if ($character -eq "'" -and -not $inDoubleQuote) {
             $inSingleQuote = -not $inSingleQuote
             [void]$builder.Append($character)
@@ -357,6 +370,15 @@ function ConvertFrom-BridgeYamlScalar {
 
     $text = $Value.ToString().Trim()
     if ($text.Length -ge 2) {
+        if ($text.StartsWith('"') -and $text.EndsWith('"')) {
+            try {
+                $decoded = $text | ConvertFrom-Json -ErrorAction Stop
+                if ($decoded -is [string]) {
+                    return $decoded
+                }
+            } catch {
+            }
+        }
         if (($text.StartsWith("'") -and $text.EndsWith("'")) -or ($text.StartsWith('"') -and $text.EndsWith('"'))) {
             $text = $text.Substring(1, $text.Length - 2)
         }
@@ -2312,8 +2334,25 @@ function ConvertFrom-BridgeManualYaml {
         $currentSlotListKey = $null
         $currentSlotEntry = $null
         $currentSlotEntryListKey = $null
-        if ($null -ne $currentMapKey -and $line -match '^\s{2}([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*$') {
-            $currentMapEntryKey = $Matches[1] -replace '-', '_'
+        if ($null -ne $currentMapKey -and $null -ne $currentMapEntryKey -and $line -match '^\s{4}\{\}\s*$') {
+            continue
+        }
+        if ($null -ne $currentMapKey -and $line -match '^\s{2}((?:[A-Za-z_][A-Za-z0-9_-]*)|(?:"(?:\\.|[^"\\])*"))\s*:\s*$') {
+            $rawMapEntryKey = $Matches[1]
+            if ($rawMapEntryKey.StartsWith('"')) {
+                try {
+                    $decodedMapEntryKey = $rawMapEntryKey | ConvertFrom-Json -ErrorAction Stop
+                    if ($decodedMapEntryKey -isnot [string]) {
+                        throw 'Generated role identifier must be a JSON string.'
+                    }
+                    $currentMapEntryKey = $decodedMapEntryKey
+                } catch {
+                    $currentMapEntryKey = $null
+                    continue
+                }
+            } else {
+                $currentMapEntryKey = ConvertFrom-BridgeYamlScalar $rawMapEntryKey
+            }
             if (-not $settings[$currentMapKey].Contains($currentMapEntryKey)) {
                 $settings[$currentMapKey][$currentMapEntryKey] = [ordered]@{}
             }

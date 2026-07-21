@@ -232,15 +232,7 @@ pub fn run_workspace_plan_command(args: &[&String]) -> io::Result<()> {
     }
 
     let options = parse_workspace_plan_options(args)?;
-    let settings_path = options.project_dir.join(".winsmux.yaml");
-    let yaml = fs::read_to_string(&settings_path)
-        .map_err(|error| io::Error::new(error.kind(), "failed to read project .winsmux.yaml."))?;
-    let settings = read_workspace_plan_settings(&options.project_dir).map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "failed to resolve the effective slot catalog.",
-        )
-    })?;
+    let (yaml, settings) = read_workspace_plan_snapshot(&options.project_dir)?;
     let mut slots = Vec::with_capacity(settings.agent_slots.len());
     for slot in &settings.agent_slots {
         let effective = resolve_slot_agent_config(&options.project_dir, &settings, &slot.slot_id)
@@ -3615,21 +3607,55 @@ fn generated_workspace_plan_worker_slots(
         .collect()
 }
 
-fn read_workspace_plan_settings(project_dir: &Path) -> io::Result<BridgeSettings> {
+fn read_workspace_plan_snapshot(project_dir: &Path) -> io::Result<(String, BridgeSettings)> {
     let mut source_available = true;
-    read_workspace_plan_settings_with_global_reader(project_dir, |name| {
-        if !source_available {
-            return None;
-        }
-        match read_workspace_plan_global_option(name) {
-            WorkspacePlanGlobalOptionRead::Value(value) => Some(value),
-            WorkspacePlanGlobalOptionRead::Missing => None,
-            WorkspacePlanGlobalOptionRead::SourceUnavailable => {
-                source_available = false;
-                None
+    let snapshot = load_workspace_plan_snapshot_with(
+        project_dir,
+        |path| {
+            fs::read_to_string(path).map_err(|error| {
+                io::Error::new(error.kind(), "failed to read project .winsmux.yaml.")
+            })
+        },
+        |name| {
+            if !source_available {
+                return None;
             }
+            match read_workspace_plan_global_option(name) {
+                WorkspacePlanGlobalOptionRead::Value(value) => Some(value),
+                WorkspacePlanGlobalOptionRead::Missing => None,
+                WorkspacePlanGlobalOptionRead::SourceUnavailable => {
+                    source_available = false;
+                    None
+                }
+            }
+        },
+    );
+    snapshot.map_err(|error| {
+        if error.to_string() == "failed to read project .winsmux.yaml." {
+            error
+        } else {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "failed to resolve the effective slot catalog.",
+            )
         }
     })
+}
+
+fn load_workspace_plan_snapshot_with<L, G>(
+    project_dir: &Path,
+    mut load_project: L,
+    mut read_global: G,
+) -> io::Result<(String, BridgeSettings)>
+where
+    L: FnMut(&Path) -> io::Result<String>,
+    G: FnMut(&str) -> Option<String>,
+{
+    let raw = load_project(&project_dir.join(".winsmux.yaml"))?;
+    let globals = read_workspace_plan_global_settings(&mut read_global)?;
+    let project = workspace_project_settings::parse_str(&raw)?;
+    let settings = finalize_bridge_settings(project_dir, &globals, &project)?;
+    Ok((raw, settings))
 }
 
 fn read_workspace_plan_global_option(name: &str) -> WorkspacePlanGlobalOptionRead {
@@ -11539,3 +11565,80 @@ fn write_json<T: Serialize>(value: &T) -> io::Result<()> {
 #[cfg(test)]
 #[path = "../tests-rs/operator_cli_unit.rs"]
 mod tests;
+
+#[cfg(test)]
+mod task658_workspace_snapshot_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn workspace_plan_r49_uses_one_project_snapshot_for_a_to_b_and_b_to_a() {
+        let fixture = tempfile::tempdir().expect("create workspace snapshot fixture");
+        let generation_a = "workspace-recipes:\n  generation-a: {}\nagent-slots:\n  - slot-id: slot-a\n";
+        let generation_b = "workspace-recipes:\n  generation-b: {}\nagent-slots:\n  - slot-id: slot-b\n";
+
+        for (first, second, expected_slot) in [
+            (generation_a, generation_b, "slot-a"),
+            (generation_b, generation_a, "slot-b"),
+        ] {
+            let calls = Cell::new(0);
+            let (raw, settings) = load_workspace_plan_snapshot_with(
+                fixture.path(),
+                |_| {
+                    let call = calls.get();
+                    calls.set(call + 1);
+                    Ok(if call == 0 { first } else { second }.to_string())
+                },
+                |_| None,
+            )
+            .expect("load one coherent project snapshot");
+
+            assert_eq!(calls.get(), 1);
+            assert_eq!(raw, first);
+            assert_eq!(settings.agent_slots.len(), 1);
+            assert_eq!(settings.agent_slots[0].slot_id, expected_slot);
+        }
+    }
+
+    #[test]
+    fn workspace_plan_r49_snapshot_loader_keeps_invalid_empty_and_missing_controls() {
+        let fixture = tempfile::tempdir().expect("create workspace snapshot fixture");
+        let invalid_calls = Cell::new(0);
+        let invalid = load_workspace_plan_snapshot_with(
+            fixture.path(),
+            |_| {
+                invalid_calls.set(invalid_calls.get() + 1);
+                Ok("agent-slots: [".to_string())
+            },
+            |_| None,
+        );
+        assert!(invalid.is_err());
+        assert_eq!(invalid_calls.get(), 1);
+
+        let empty_calls = Cell::new(0);
+        let (raw, settings) = load_workspace_plan_snapshot_with(
+            fixture.path(),
+            |_| {
+                empty_calls.set(empty_calls.get() + 1);
+                Ok(String::new())
+            },
+            |_| None,
+        )
+        .expect("empty project settings remain compatible");
+        assert_eq!(empty_calls.get(), 1);
+        assert!(raw.is_empty());
+        assert_eq!(settings.agent_slots.len(), 6);
+
+        let missing_calls = Cell::new(0);
+        let missing = load_workspace_plan_snapshot_with(
+            fixture.path(),
+            |_| {
+                missing_calls.set(missing_calls.get() + 1);
+                Err(io::Error::new(io::ErrorKind::NotFound, "missing"))
+            },
+            |_| None,
+        );
+        assert!(missing.is_err());
+        assert_eq!(missing_calls.get(), 1);
+    }
+}

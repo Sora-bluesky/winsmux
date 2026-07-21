@@ -61,6 +61,10 @@ pub(crate) fn read(project_dir: &Path) -> io::Result<WorkspacePlanProjectSetting
         return Ok(WorkspacePlanProjectSettings::default());
     }
     let raw = fs::read_to_string(path)?;
+    parse_str(&raw)
+}
+
+pub(crate) fn parse_str(raw: &str) -> io::Result<WorkspacePlanProjectSettings> {
     if raw.trim().is_empty() {
         return Ok(WorkspacePlanProjectSettings::default());
     }
