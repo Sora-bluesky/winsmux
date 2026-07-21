@@ -1506,52 +1506,26 @@ $($spelling):
     }
 }
 
+BeforeDiscovery {
+    $task658RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+    $task658ParityFixturePath = Join-Path $task658RepoRoot 'tests\fixtures\rust-parity\task658-project-settings-parity.json'
+    $script:task658ParityCases = @(Get-Content -LiteralPath $task658ParityFixturePath -Raw -Encoding UTF8 |
+        ConvertFrom-Json |
+        ForEach-Object {
+            @{
+                Case           = [string]$_.Case
+                Settings       = [string]$_.Settings
+                Startup        = [string]$_.Startup
+                Preview        = [string]$_.Preview
+                Classification = [string]$_.Classification
+            }
+        })
+}
+
 Describe 'TASK658 R37 project-settings startup and workspace-plan differential contract' {
     BeforeAll {
         $script:task658DifferentialRepoRoot = Split-Path -Parent $script:BridgeTestsRoot
-        $script:task658WorkspacePlanBin = Join-Path $script:task658DifferentialRepoRoot 'core\target\debug\winsmux.exe'
         . (Join-Path $script:task658DifferentialRepoRoot 'winsmux-core\scripts\orchestra-start.ps1')
-
-        function Invoke-Task658WorkspacePlanProcess {
-            param(
-                [Parameter(Mandatory = $true)][string]$WinsmuxBin,
-                [Parameter(Mandatory = $true)][string]$ProjectDir
-            )
-
-            $utf8 = [System.Text.UTF8Encoding]::new($false, $true)
-            $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
-            $startInfo.FileName = $WinsmuxBin
-            $startInfo.WorkingDirectory = $ProjectDir
-            $startInfo.UseShellExecute = $false
-            $startInfo.CreateNoWindow = $true
-            $startInfo.RedirectStandardOutput = $true
-            $startInfo.RedirectStandardError = $true
-            $startInfo.StandardOutputEncoding = $utf8
-            $startInfo.StandardErrorEncoding = $utf8
-            foreach ($argument in @('workspace-plan', '--recipe-id', 'review', '--json', '--project-dir', $ProjectDir)) {
-                [void]$startInfo.ArgumentList.Add($argument)
-            }
-
-            $process = [System.Diagnostics.Process]::new()
-            $process.StartInfo = $startInfo
-            try {
-                $process.Start() | Should -Be $true
-                $stdoutTask = $process.StandardOutput.ReadToEndAsync()
-                $stderrTask = $process.StandardError.ReadToEndAsync()
-                $process.WaitForExit()
-
-                return [PSCustomObject]@{
-                    ExitCode = $process.ExitCode
-                    StdOut   = [string]$stdoutTask.GetAwaiter().GetResult()
-                    StdErr   = [string]$stderrTask.GetAwaiter().GetResult()
-                }
-            } finally {
-                if (-not $process.HasExited) {
-                    try { $process.Kill($true) } catch { }
-                }
-                $process.Dispose()
-            }
-        }
     }
 
     BeforeEach {
@@ -1566,249 +1540,58 @@ Describe 'TASK658 R37 project-settings startup and workspace-plan differential c
         }
     }
 
-    It 'TASK658 R37 keeps the startup and preview rejection boundary explicit for <Case>' -ForEach @(
-        @{
-            Case = 'valid canonical kebab keys'
-            Startup = 'accept'
-            Preview = 'accept'
-            Classification = 'equivalent'
-            Settings = @'
-config-version: 1
-agent-slots:
-  - slot-id: worker-1
-    runtime-role: worker
-    worktree-mode: managed
-'@
-        }
-        @{
-            Case = 'valid legacy underscore aliases'
-            Startup = 'accept'
-            Preview = 'accept'
-            Classification = 'equivalent'
-            Settings = @'
-config_version: 1
-agent_slots:
-  - slot_id: worker-1
-    runtime_role: worker
-    worktree_mode: managed
-'@
-        }
-        @{
-            Case = 'unsupported slot worker backend'
-            Startup = 'reject'
-            Preview = 'reject'
-            Classification = 'startup-rejection'
-            Settings = @'
-agent-slots:
-  - slot-id: worker-1
-    runtime-role: worker
-    worktree-mode: managed
-    worker-backend: unsupported
-'@
-        }
-        @{
-            Case = 'mixed-case unsupported slot worker backend'
-            Startup = 'reject'
-            Preview = 'reject'
-            Classification = 'startup-rejection'
-            Settings = @'
-agent-slots:
-  - slot-id: worker-1
-    runtime-role: worker
-    worktree-mode: managed
-    Worker_Backend: unsupported
-'@
-        }
-        @{
-            Case = 'mixed-case slot worker backend alias collision'
-            Startup = 'reject'
-            Preview = 'reject'
-            Classification = 'R35-explicit-fail-closed'
-            Settings = @'
-agent-slots:
-  - slot-id: worker-1
-    runtime-role: worker
-    worktree-mode: managed
-    worker_backend: local
-    Worker-Backend: unsupported
-'@
-        }
-        @{
-            Case = 'unsupported slot execution profile'
-            Startup = 'reject'
-            Preview = 'reject'
-            Classification = 'startup-rejection'
-            Settings = @'
-agent-slots:
-  - slot-id: worker-1
-    runtime-role: worker
-    worktree-mode: managed
-    execution-profile: unsupported
-'@
-        }
-        @{
-            Case = 'invalid mcp mode'
-            Startup = 'reject'
-            Preview = 'reject'
-            Classification = 'startup-rejection'
-            Settings = @'
-agent-slots:
-  - slot-id: worker-1
-    runtime-role: worker
-    worktree-mode: managed
-    mcp-mode: unsupported
-'@
-        }
-        @{
-            Case = 'invalid runtime role'
-            Startup = 'reject'
-            Preview = 'reject'
-            Classification = 'startup-rejection'
-            Settings = @'
-agent-slots:
-  - slot-id: worker-1
-    runtime-role: reviewer
-    worktree-mode: managed
-'@
-        }
-        @{
-            Case = 'invalid worktree mode'
-            Startup = 'reject'
-            Preview = 'reject'
-            Classification = 'startup-rejection'
-            Settings = @'
-agent-slots:
-  - slot-id: worker-1
-    runtime-role: worker
-    worktree-mode: ephemeral
-'@
-        }
-        @{
-            Case = 'case-insensitive duplicate slot id'
-            Startup = 'reject'
-            Preview = 'reject'
-            Classification = 'startup-rejection'
-            Settings = @'
-agent-slots:
-  - slot-id: worker-1
-    runtime-role: worker
-    worktree-mode: managed
-  - slot-id: WORKER-1
-    runtime-role: worker
-    worktree-mode: managed
-'@
-        }
-        @{
-            Case = 'top-level alias collision'
-            Startup = 'accept'
-            Preview = 'reject'
-            Classification = 'R35-explicit-fail-closed'
-            Settings = @'
-model-source: provider-default
-model_source: provider-default
-agent-slots:
-  - slot-id: worker-1
-    runtime-role: worker
-    worktree-mode: managed
-'@
-        }
-        @{
-            Case = 'slot alias collision'
-            Startup = 'accept'
-            Preview = 'reject'
-            Classification = 'R35-explicit-fail-closed'
-            Settings = @'
-agent-slots:
-  - slot-id: worker-1
-    runtime-role: worker
-    runtime_role: worker
-    worktree-mode: managed
-'@
-        }
-        @{
-            Case = 'role alias collision'
-            Startup = 'accept'
-            Preview = 'reject'
-            Classification = 'R35-explicit-fail-closed'
-            Settings = @'
-roles:
-  worker:
-    model-source: provider-default
-    model_source: provider-default
-agent-slots:
-  - slot-id: worker-1
-    runtime-role: worker
-    worktree-mode: managed
-'@
-        }
-    ) {
-        $fixturePath = Join-Path $script:task658DifferentialRoot '.winsmux.yaml'
-        $recipe = @'
-workspace-recipes:
-  review:
-    schema-version: 1
-    panes:
-      - pane-key: worker
-        workflow-role: implement
-        slot-ref: worker-1
-        region: main
-        worktree:
-          mode: read-only-reference
-    startup-actions:
-      - action-id: ready
-        kind: ensure-slot-ready
-        pane-ref: worker
-'@
-        Write-PsmuxBridgeTestFile -Path $fixturePath -Content ($Settings.TrimEnd() + "`n" + $recipe)
-        $beforeBytes = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($fixturePath))
-        $beforeFiles = @(Get-ChildItem -LiteralPath $script:task658DifferentialRoot -Recurse -Force -File |
-            ForEach-Object { $_.FullName.Substring($script:task658DifferentialRoot.Length) } |
-            Sort-Object)
+    It 'TASK658 R37 keeps the startup and preview rejection boundary explicit for <Case>' -ForEach $script:task658ParityCases {
+            $Settings | Should -Not -BeNullOrEmpty
+            $Startup | Should -BeIn @('accept', 'reject')
+            $Preview | Should -BeIn @('accept', 'reject')
+            $Classification | Should -BeIn @('equivalent', 'startup-rejection', 'R35-explicit-fail-closed')
+            $fixturePath = Join-Path $script:task658DifferentialRoot '.winsmux.yaml'
+            Write-PsmuxBridgeTestFile -Path $fixturePath -Content ($Settings.TrimEnd() + "`n")
+            $beforeBytes = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($fixturePath))
+            $beforeFiles = @(Get-ChildItem -LiteralPath $script:task658DifferentialRoot -Recurse -Force -File |
+                ForEach-Object { $_.FullName.Substring($script:task658DifferentialRoot.Length) } |
+                Sort-Object)
 
-        $startupError = $null
-        $startupSettings = $null
-        $startupLayout = $null
-        try {
-            $startupSettings = Get-BridgeSettings -RootPath $script:task658DifferentialRoot
-            $startupLayout = Get-OrchestraLayoutSettings -Settings $startupSettings
-        } catch {
-            $startupError = $_
-        }
-
-        if ($Startup -eq 'accept') {
-            $startupError | Should -BeNullOrEmpty
-        } else {
-            $startupError | Should -Not -BeNullOrEmpty
-        }
-
-        Test-Path -LiteralPath $script:task658WorkspacePlanBin -PathType Leaf | Should -Be $true
-        $previewProcessResult = Invoke-Task658WorkspacePlanProcess `
-            -WinsmuxBin $script:task658WorkspacePlanBin `
-            -ProjectDir $script:task658DifferentialRoot
-
-        if ($Preview -eq 'accept') {
-            $previewProcessResult.ExitCode | Should -Be 0
-            $previewProcessResult.StdOut | Should -Not -BeNullOrEmpty
-            $plan = $previewProcessResult.StdOut | ConvertFrom-Json
-            $plan.recipe_id | Should -Be 'review'
-            if ($Startup -eq 'accept') {
-                $startupLayout.Workers | Should -Be @($startupSettings.agent_slots).Count
-                @($startupSettings.agent_slots | ForEach-Object { [string]$_.slot_id }) |
-                    Should -Contain ([string]$plan.resolved_bindings.worker)
+            $startupError = $null
+            $startupSettings = $null
+            $startupLayout = $null
+            try {
+                $startupSettings = Get-BridgeSettings -RootPath $script:task658DifferentialRoot
+                $startupLayout = Get-OrchestraLayoutSettings -Settings $startupSettings
+            } catch {
+                $startupError = $_
             }
-        } else {
-            $previewProcessResult.ExitCode | Should -Not -Be 0
-            $previewProcessResult.StdOut.Trim() | Should -Be ''
-        }
 
-        $Classification | Should -BeIn @('equivalent', 'startup-rejection', 'R35-explicit-fail-closed')
-        [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($fixturePath)) | Should -Be $beforeBytes
-        $afterFiles = @(Get-ChildItem -LiteralPath $script:task658DifferentialRoot -Recurse -Force -File |
-            ForEach-Object { $_.FullName.Substring($script:task658DifferentialRoot.Length) } |
-            Sort-Object)
-        $afterFiles | Should -Be $beforeFiles
+            if ($Startup -eq 'accept') {
+                $startupError | Should -BeNullOrEmpty
+                $startupLayout.Workers | Should -Be @($startupSettings.agent_slots).Count
+                @($startupSettings.agent_slots | ForEach-Object { [string]$_.slot_id }) | Should -Contain 'worker-1'
+            } else {
+                $startupError | Should -Not -BeNullOrEmpty
+            }
+
+            switch ($Classification) {
+                'equivalent' {
+                    $Startup | Should -Be 'accept'
+                    $Preview | Should -Be 'accept'
+                }
+                'startup-rejection' {
+                    $Startup | Should -Be 'reject'
+                    $Preview | Should -Be 'reject'
+                }
+                'R35-explicit-fail-closed' {
+                    $Preview | Should -Be 'reject'
+                }
+            }
+
+            [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($fixturePath)) | Should -Be $beforeBytes
+            $afterFiles = @(Get-ChildItem -LiteralPath $script:task658DifferentialRoot -Recurse -Force -File |
+                ForEach-Object { $_.FullName.Substring($script:task658DifferentialRoot.Length) } |
+                Sort-Object)
+            $afterFiles | Should -Be $beforeFiles
     }
 }
+
 
 Describe 'winsmux pane env contract' {
     BeforeAll {

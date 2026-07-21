@@ -1,0 +1,93 @@
+[
+  {
+    "Case": "valid canonical kebab keys",
+    "Settings": "config-version: 1\nagent-slots:\n  - slot-id: worker-1\n    runtime-role: worker\n    worktree-mode: managed\n",
+    "Startup": "accept",
+    "Preview": "accept",
+    "Classification": "equivalent"
+  },
+  {
+    "Case": "valid legacy underscore aliases",
+    "Settings": "config_version: 1\nagent_slots:\n  - slot_id: worker-1\n    runtime_role: worker\n    worktree_mode: managed\n",
+    "Startup": "accept",
+    "Preview": "accept",
+    "Classification": "equivalent"
+  },
+  {
+    "Case": "unsupported slot worker backend",
+    "Settings": "agent-slots:\n  - slot-id: worker-1\n    runtime-role: worker\n    worktree-mode: managed\n    worker-backend: unsupported\n",
+    "Startup": "reject",
+    "Preview": "reject",
+    "Classification": "startup-rejection"
+  },
+  {
+    "Case": "mixed-case unsupported slot worker backend",
+    "Settings": "agent-slots:\n  - slot-id: worker-1\n    runtime-role: worker\n    worktree-mode: managed\n    Worker_Backend: unsupported\n",
+    "Startup": "reject",
+    "Preview": "reject",
+    "Classification": "startup-rejection"
+  },
+  {
+    "Case": "mixed-case slot worker backend alias collision",
+    "Settings": "agent-slots:\n  - slot-id: worker-1\n    runtime-role: worker\n    worktree-mode: managed\n    worker_backend: local\n    Worker-Backend: unsupported\n",
+    "Startup": "reject",
+    "Preview": "reject",
+    "Classification": "R35-explicit-fail-closed"
+  },
+  {
+    "Case": "unsupported slot execution profile",
+    "Settings": "agent-slots:\n  - slot-id: worker-1\n    runtime-role: worker\n    worktree-mode: managed\n    execution-profile: unsupported\n",
+    "Startup": "reject",
+    "Preview": "reject",
+    "Classification": "startup-rejection"
+  },
+  {
+    "Case": "invalid mcp mode",
+    "Settings": "agent-slots:\n  - slot-id: worker-1\n    runtime-role: worker\n    worktree-mode: managed\n    mcp-mode: unsupported\n",
+    "Startup": "reject",
+    "Preview": "reject",
+    "Classification": "startup-rejection"
+  },
+  {
+    "Case": "invalid runtime role",
+    "Settings": "agent-slots:\n  - slot-id: worker-1\n    runtime-role: reviewer\n    worktree-mode: managed\n",
+    "Startup": "reject",
+    "Preview": "reject",
+    "Classification": "startup-rejection"
+  },
+  {
+    "Case": "invalid worktree mode",
+    "Settings": "agent-slots:\n  - slot-id: worker-1\n    runtime-role: worker\n    worktree-mode: ephemeral\n",
+    "Startup": "reject",
+    "Preview": "reject",
+    "Classification": "startup-rejection"
+  },
+  {
+    "Case": "case-insensitive duplicate slot id",
+    "Settings": "agent-slots:\n  - slot-id: worker-1\n    runtime-role: worker\n    worktree-mode: managed\n  - slot-id: WORKER-1\n    runtime-role: worker\n    worktree-mode: managed\n",
+    "Startup": "reject",
+    "Preview": "reject",
+    "Classification": "startup-rejection"
+  },
+  {
+    "Case": "top-level alias collision",
+    "Settings": "model-source: provider-default\nmodel_source: provider-default\nagent-slots:\n  - slot-id: worker-1\n    runtime-role: worker\n    worktree-mode: managed\n",
+    "Startup": "accept",
+    "Preview": "reject",
+    "Classification": "R35-explicit-fail-closed"
+  },
+  {
+    "Case": "slot alias collision",
+    "Settings": "agent-slots:\n  - slot-id: worker-1\n    runtime-role: worker\n    runtime_role: worker\n    worktree-mode: managed\n",
+    "Startup": "accept",
+    "Preview": "reject",
+    "Classification": "R35-explicit-fail-closed"
+  },
+  {
+    "Case": "role alias collision",
+    "Settings": "roles:\n  worker:\n    model-source: provider-default\n    model_source: provider-default\nagent-slots:\n  - slot-id: worker-1\n    runtime-role: worker\n    worktree-mode: managed\n",
+    "Startup": "accept",
+    "Preview": "reject",
+    "Classification": "R35-explicit-fail-closed"
+  }
+]

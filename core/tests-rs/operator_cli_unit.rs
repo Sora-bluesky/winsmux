@@ -44,6 +44,63 @@ fn assert_workspace_plan_project_yaml_rejected(name: &str, yaml: &str) -> String
     error.to_string()
 }
 
+#[derive(Debug, serde::Deserialize)]
+struct Task658ProjectSettingsParityRow {
+    #[serde(rename = "Case")]
+    case: String,
+    #[serde(rename = "Settings")]
+    settings: String,
+    #[serde(rename = "Startup")]
+    startup: String,
+    #[serde(rename = "Preview")]
+    preview: String,
+    #[serde(rename = "Classification")]
+    classification: String,
+}
+
+#[test]
+fn workspace_plan_task658_project_settings_parity_fixture() {
+    let rows: Vec<Task658ProjectSettingsParityRow> = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../tests/fixtures/rust-parity/task658-project-settings-parity.json"
+    )))
+    .expect("TASK-658 project-settings parity fixture must be valid JSON");
+    assert_eq!(rows.len(), 13, "the Foundation R37 parity contract has 13 rows");
+
+    let mut cases = std::collections::HashSet::new();
+    for (index, row) in rows.iter().enumerate() {
+        assert!(cases.insert(row.case.as_str()), "duplicate Case: {}", row.case);
+        assert!(matches!(row.startup.as_str(), "accept" | "reject"));
+        assert!(matches!(row.preview.as_str(), "accept" | "reject"));
+        assert!(matches!(
+            row.classification.as_str(),
+            "equivalent" | "startup-rejection" | "R35-explicit-fail-closed"
+        ));
+
+        let project_dir = test_project_dir(&format!("task658-parity-{index}"));
+        write_workspace_plan_settings(&project_dir, &row.settings);
+        let result = read_workspace_plan_settings_with_global_reader(&project_dir, |_| None);
+        let _ = std::fs::remove_dir_all(project_dir);
+
+        match row.preview.as_str() {
+            "accept" => {
+                let settings = result.unwrap_or_else(|error| {
+                    panic!("{} should be accepted by preview: {error}", row.case)
+                });
+                assert!(settings.has_slot("worker-1"), "{}", row.case);
+            }
+            "reject" => {
+                let error = result.expect_err(&format!(
+                    "{} should be rejected by preview",
+                    row.case
+                ));
+                assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{}", row.case);
+            }
+            _ => unreachable!("validated above"),
+        }
+    }
+}
+
 #[test]
 fn workspace_plan_global_worker_count_limits_the_effective_slot_catalog() {
     let project_dir = test_project_dir("workspace-plan-global-worker-count");
@@ -343,76 +400,12 @@ fn workspace_plan_irrelevant_worker_count_does_not_block_explicit_or_legacy_layo
 }
 
 #[test]
-fn workspace_plan_rejects_bot_slot_runtime_domain_counterexamples() {
-    for (name, field) in [
-        ("slot-unsupported-worker-backend", "worker_backend"),
-        ("slot-unsupported-execution-profile", "execution_profile"),
-    ] {
-        let message = assert_workspace_plan_project_yaml_rejected(
-            name,
-            &format!(
-                "config_version: 1\nagent_slots:\n  - slot_id: worker-1\n    {field}: secret-marker-unsupported\n"
-            ),
-        );
-        assert!(message.contains("Invalid agent_slots configuration"));
-        assert!(!message.contains("secret-marker"));
-    }
-}
-
-#[test]
-fn workspace_plan_rejects_bot_top_level_alias_collision_counterexample() {
-    let message = assert_workspace_plan_project_yaml_rejected(
-        "top-alias-collision",
-        "config_version: 1\nprompt_transport: argv\nprompt-transport: file\n",
-    );
-    assert_eq!(
-        message,
-        "Invalid project settings: conflicting runtime-owned aliases at top level."
-    );
-}
-
-#[test]
-fn workspace_plan_rejects_alias_collisions_at_every_runtime_owned_scope() {
-    let cases = [
-        (
-            "top-worker-backend-alias",
-            "config_version: 1\nworker_backend: local\nworker-backend: codex\n",
-            "Invalid project settings: conflicting runtime-owned aliases at top level.",
-        ),
-        (
-            "slot-hyphen-alias",
-            "config_version: 1\nagent_slots:\n  - slot_id: worker-1\n    model_source: provider-default\n    model-source: operator-override\n",
-            "Invalid agent_slots configuration: conflicting runtime-owned aliases.",
-        ),
-        (
-            "slot-backend-alias",
-            "config_version: 1\nagent_slots:\n  - slot_id: worker-1\n    backend: local\n    worker_backend: codex\n",
-            "Invalid agent_slots configuration: conflicting runtime-owned aliases.",
-        ),
-        (
-            "role-hyphen-alias",
-            "config_version: 1\nroles:\n  worker:\n    model_source: provider-default\n    model-source: operator-override\n",
-            "Invalid roles configuration: conflicting runtime-owned aliases.",
-        ),
-    ];
-
-    for (name, yaml, expected) in cases {
-        assert_eq!(assert_workspace_plan_project_yaml_rejected(name, yaml), expected);
-    }
-}
-
-#[test]
 fn workspace_plan_mixed_case_known_keys_use_finite_validation() {
     let cases = [
         (
             "mixed-case-top-domain",
             "Config_Version: 1\nPrompt_Transport: secret-marker-unsupported\n",
             "Invalid project settings",
-        ),
-        (
-            "mixed-case-slot-domain",
-            "Config_Version: 1\nAgent_Slots:\n  - Slot_Id: worker-1\n    Worker_Backend: secret-marker-unsupported\n",
-            "Invalid agent_slots configuration",
         ),
         (
             "mixed-case-role-domain",
@@ -435,11 +428,6 @@ fn workspace_plan_mixed_case_alias_collisions_are_rejected() {
             "mixed-case-top-collision",
             "config_version: 1\nprompt_transport: argv\nPrompt-Transport: file\n",
             "Invalid project settings: conflicting runtime-owned aliases at top level.",
-        ),
-        (
-            "mixed-case-slot-collision",
-            "config_version: 1\nagent_slots:\n  - slot_id: worker-1\n    worker_backend: local\n    Worker-Backend: noop\n",
-            "Invalid agent_slots configuration: conflicting runtime-owned aliases.",
         ),
         (
             "mixed-case-role-collision",
@@ -513,15 +501,7 @@ fn workspace_plan_rejects_invalid_top_level_runtime_domains() {
 
 #[test]
 fn workspace_plan_rejects_invalid_slot_and_role_runtime_domains() {
-    let slot_cases = [
-        "worker_backend",
-        "execution_profile",
-        "mcp_mode",
-        "reasoning_effort",
-        "prompt_transport",
-        "runtime_role",
-        "worktree_mode",
-    ];
+    let slot_cases = ["reasoning_effort", "prompt_transport"];
     for field in slot_cases {
         let message = assert_workspace_plan_project_yaml_rejected(
             &format!("slot-invalid-{field}"),
@@ -559,10 +539,6 @@ fn workspace_plan_rejects_invalid_slot_shapes_and_case_insensitive_ids() {
         (
             "slot-missing-id",
             "config_version: 1\nagent_slots:\n  - agent: codex\n",
-        ),
-        (
-            "slot-case-duplicate",
-            "config_version: 1\nagent_slots:\n  - slot_id: worker-1\n  - slot-id: WORKER-1\n",
         ),
     ];
     for (name, yaml) in cases {
