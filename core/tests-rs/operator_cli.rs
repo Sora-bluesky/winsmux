@@ -2021,6 +2021,92 @@ fn operator_cli_workspace_plan_requires_canonical_runtime_role_version() {
     }
 }
 
+#[test]
+fn operator_cli_workspace_plan_validates_all_runtime_roles_before_selection() {
+    let rejected = [
+        (
+            "unselected-domain",
+            r#"{"version":1,"roles":{"worker":{},"reviewer":{"reasoning_effort":"secret-marker-effort"}}}"#,
+        ),
+        (
+            "unselected-nonscalar",
+            r#"{"version":1,"roles":{"worker":{},"reviewer":{"model":{"secret-marker":"value"}}}}"#,
+        ),
+        (
+            "object-alias-collision",
+            r#"{"version":1,"roles":{"worker":{},"reviewer":{"agent":"codex","provider":"openrouter"}}}"#,
+        ),
+        (
+            "array-identity-collision",
+            r#"{"version":1,"roles":[{"runtimeRole":"worker"},{"role_id":"reviewer","runtime_role":"reviewer"}]}"#,
+        ),
+        (
+            "unselected-transport-domain",
+            r#"{"version":1,"roles":{"worker":{},"reviewer":{"promptTransport":"socket"}}}"#,
+        ),
+    ];
+    for (case_name, preferences) in rejected {
+        let project_dir = make_temp_project_dir(&format!("workspace-role-all-{case_name}"));
+        write_workspace_overlay_fixture(&project_dir);
+        fs::write(
+            project_dir
+                .join(".winsmux")
+                .join("runtime-role-preferences.json"),
+            preferences,
+        )
+        .expect("write invalid unselected runtime role");
+
+        let output = run_workspace_plan(&project_dir, "review-one-slot");
+        assert!(!output.status.success(), "{case_name} must fail closed");
+        assert!(
+            output.stdout.is_empty(),
+            "{case_name} must not emit a partial plan"
+        );
+        assert!(
+            !String::from_utf8_lossy(&output.stderr).contains("secret-marker"),
+            "{case_name} must not reflect a rejected value"
+        );
+    }
+
+    let accepted = [
+        (
+            "object-aliases",
+            r#"{"version":1,"roles":{"worker":{"provider":"openrouter","modelSource":"provider-api","reasoning-effort":"provider-default","promptTransport":"file","auth-mode":"api-key-env","future":{"keep":true}}}}"#,
+        ),
+        (
+            "array-aliases",
+            r#"{"version":1,"roles":[{"runtimeRole":"worker","provider":"openrouter","model-source":"provider-api","reasoningEffort":"provider-default","prompt-transport":"file","auth_mode":"api-key-env"}]}"#,
+        ),
+        (
+            "legacy-root-version",
+            r#"{"version":1,"worker":{"provider":"openrouter","promptTransport":"file"}}"#,
+        ),
+    ];
+    for (case_name, preferences) in accepted {
+        let project_dir = make_temp_project_dir(&format!("workspace-role-control-{case_name}"));
+        write_workspace_overlay_fixture(&project_dir);
+        let settings_path = project_dir.join(".winsmux.yaml");
+        let settings = fs::read_to_string(&settings_path)
+            .expect("read workspace role fixture")
+            .replace("    prompt-transport: file\n", "");
+        fs::write(&settings_path, settings).expect("remove slot prompt transport");
+        fs::write(
+            project_dir
+                .join(".winsmux")
+                .join("runtime-role-preferences.json"),
+            preferences,
+        )
+        .expect("write canonical runtime role control");
+
+        let output = run_workspace_plan(&project_dir, "review-one-slot");
+        assert!(
+            output.status.success(),
+            "{case_name} must remain accepted: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
 struct ChildKillGuard(Child);
 
 impl Drop for ChildKillGuard {

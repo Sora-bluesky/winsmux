@@ -33,6 +33,7 @@ use workspace_builtin_provider::resolve_provider_capability_in_registry;
 mod workspace_runtime_overlays;
 use workspace_runtime_overlays::{
     read_provider_registry as read_provider_registry_envelope, read_runtime_role_preferences,
+    reject_retired_commander_options,
 };
 
 static REVIEW_REQUEST_COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -44,7 +45,7 @@ const FILE_LOCK_RETRY_DELAY: Duration = Duration::from_millis(50);
 const CODEX_MAX_REASONING_MODELS: [&str; 3] = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
 const LEGACY_CAPABILITY_REASONING_EFFORTS: [&str; 6] =
     ["provider-default", "low", "medium", "high", "max", "xhigh"];
-const WORKSPACE_PLAN_GLOBAL_OPTIONS: [&str; 11] = [
+const WORKSPACE_PLAN_GLOBAL_OPTIONS: [&str; 13] = [
     "@bridge-agent",
     "@bridge-model",
     "@bridge-prompt-transport",
@@ -56,6 +57,8 @@ const WORKSPACE_PLAN_GLOBAL_OPTIONS: [&str; 11] = [
     "@bridge-builders",
     "@bridge-researchers",
     "@bridge-reviewers",
+    "@bridge-external-commander",
+    "@bridge-commanders",
 ];
 
 pub fn is_operator_status_invocation(args: &[&String]) -> bool {
@@ -3786,8 +3789,13 @@ where
     F: FnMut(&str) -> Option<String>,
 {
     let mut settings = WorkspacePlanGlobalSettings::default();
-    for option in WORKSPACE_PLAN_GLOBAL_OPTIONS {
-        let Some(raw) = read_global(option) else {
+    let snapshot: Vec<_> = WORKSPACE_PLAN_GLOBAL_OPTIONS
+        .into_iter()
+        .map(|option| (option, read_global(option)))
+        .collect();
+    reject_retired_commander_options(&snapshot, workspace_plan_global_option_failure_text)?;
+    for (option, raw) in snapshot {
+        let Some(raw) = raw else {
             continue;
         };
         let value = raw.trim();
@@ -3831,6 +3839,7 @@ where
             "@bridge-builders" => settings.builders = workspace_plan_i32(value),
             "@bridge-researchers" => settings.researchers = workspace_plan_i32(value),
             "@bridge-reviewers" => settings.reviewers = workspace_plan_i32(value),
+            "@bridge-external-commander" | "@bridge-commanders" => continue,
             _ => unreachable!("workspace-plan global option allowlist is exhaustive"),
         }
     }
@@ -3875,7 +3884,8 @@ fn merge_role_config(
 }
 
 fn runtime_role_config(project_dir: &Path, role: &str) -> io::Result<Option<ProviderRoleConfig>> {
-    let Some(root) = read_runtime_role_preferences(project_dir)? else {
+    let Some(root) = read_runtime_role_preferences(project_dir, validate_runtime_role_config)?
+    else {
         return Ok(None);
     };
     let roles = root.get("roles").unwrap_or(&root);
@@ -3921,7 +3931,8 @@ fn runtime_role_config_from_value(value: &Value) -> io::Result<ProviderRoleConfi
             &["reasoning_effort", "reasoning-effort", "reasoningEffort"],
         )
         .map(|value| value.to_ascii_lowercase()),
-        prompt_transport: json_string_any(value, &["prompt_transport", "prompt-transport"]),
+        prompt_transport: json_string_any(value, &["prompt_transport"])
+            .map(|value| value.to_ascii_lowercase()),
         auth_mode: json_string_any(value, &["auth_mode", "auth-mode"]),
     };
     if let Some(source) = config.model_source.as_deref() {
@@ -3930,7 +3941,28 @@ fn runtime_role_config_from_value(value: &Value) -> io::Result<ProviderRoleConfi
     if let Some(effort) = config.reasoning_effort.as_deref() {
         validate_reasoning_effort(effort)?;
     }
+    if config
+        .prompt_transport
+        .as_deref()
+        .is_some_and(|value| !matches!(value, "argv" | "file" | "stdin"))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Invalid runtime role preference prompt_transport.",
+        ));
+    }
     Ok(config)
+}
+
+fn validate_runtime_role_config(value: &Value) -> io::Result<()> {
+    runtime_role_config_from_value(value)
+        .map(|_| ())
+        .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Invalid runtime role preference.",
+            )
+        })
 }
 
 fn json_string_any(value: &Value, keys: &[&str]) -> Option<String> {
@@ -8054,7 +8086,7 @@ fn resolve_restart_provider(
     project_dir: &Path,
     context: &RestartPlan,
 ) -> io::Result<(String, String, String, String, String)> {
-    let _ = read_runtime_role_preferences(project_dir)?;
+    let _ = read_runtime_role_preferences(project_dir, validate_runtime_role_config)?;
     let _ = read_provider_registry(&provider_registry_path(project_dir))?;
     let manifest_provider_target = manifest_provider_target(project_dir, &context.pane_id);
     let manifest_capability_adapter =
