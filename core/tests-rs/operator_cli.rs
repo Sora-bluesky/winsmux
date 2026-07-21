@@ -510,6 +510,99 @@ fn project_settings_render_rejects_ambiguous_unknown_slot_topology() {
 }
 
 #[test]
+fn project_settings_render_matches_slot_identity_ascii_case_insensitively() {
+    let original = "agent_slots:\n  - slot_id: Worker-1 # identity-comment\n    model: old\n    task_classes: [implementation] # extension-comment\n";
+    let desired = "agent_slots:\n  - slot_id: worker-1\n    model: new\n    model_source: operator-override\n";
+    let input = render_payload(original, desired, &["agent_slots"]);
+    let output = run_project_settings_render(&input, &[]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).expect("UTF-8 YAML output");
+    assert!(text.contains("slot_id: \"Worker-1\" # identity-comment"));
+    assert!(text.contains("task_classes: [implementation] # extension-comment"));
+    assert!(text.contains("model: \"new\""));
+
+    let mapping = yaml_mapping(text.as_bytes());
+    let slot = mapping
+        .get(serde_yaml::Value::String("agent_slots".into()))
+        .and_then(serde_yaml::Value::as_sequence)
+        .and_then(|slots| slots.first())
+        .and_then(serde_yaml::Value::as_mapping)
+        .expect("one slot mapping");
+    assert_eq!(
+        slot.get(serde_yaml::Value::String("slot_id".into()))
+            .and_then(serde_yaml::Value::as_str),
+        Some("Worker-1")
+    );
+    assert_eq!(
+        slot.get(serde_yaml::Value::String("model_source".into()))
+            .and_then(serde_yaml::Value::as_str),
+        Some("operator-override")
+    );
+}
+
+#[test]
+fn project_settings_render_rejects_case_variant_original_slot_duplicates() {
+    let original = "agent_slots:\n  - slot_id: Worker-1\n    model: old\n  - slot_id: worker-1\n    model: duplicate\n";
+    let desired = "agent_slots:\n  - slot_id: worker-1\n    model: new\n";
+    let input = render_payload(original, desired, &["agent_slots"]);
+    let output = run_project_settings_render(&input, &[]);
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stderr).expect("UTF-8 generic error"),
+        "winsmux: project settings render failed.\n"
+    );
+}
+
+#[test]
+fn project_settings_render_rejects_case_variant_desired_slot_duplicates() {
+    let original = "agent_slots:\n  - slot_id: worker-1\n    model: old\n";
+    let desired = "agent_slots:\n  - slot_id: Worker-1\n    model: new\n  - slot_id: worker-1\n    model: duplicate\n";
+    let input = render_payload(original, desired, &["agent_slots"]);
+    let output = run_project_settings_render(&input, &[]);
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stderr).expect("UTF-8 generic error"),
+        "winsmux: project settings render failed.\n"
+    );
+}
+
+#[test]
+fn project_settings_render_still_allows_distinct_new_slot_identity() {
+    let original = "agent_slots:\n  - slot_id: Worker-1\n    model: old\n";
+    let desired = "agent_slots:\n  - slot_id: worker-2\n    model: added\n";
+    let input = render_payload(original, desired, &["agent_slots"]);
+    let output = run_project_settings_render(&input, &[]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mapping = yaml_mapping(&output.stdout);
+    let slots = mapping
+        .get(serde_yaml::Value::String("agent_slots".into()))
+        .and_then(serde_yaml::Value::as_sequence)
+        .expect("agent_slots sequence");
+    assert_eq!(slots.len(), 1);
+    assert_eq!(
+        slots[0]
+            .as_mapping()
+            .and_then(|slot| slot.get(serde_yaml::Value::String("slot_id".into())))
+            .and_then(serde_yaml::Value::as_str),
+        Some("worker-2")
+    );
+}
+
+#[test]
 fn project_settings_render_allows_owned_slot_topology_changes_without_extensions() {
     let original = "agent_slots:\n  - slot_id: worker-1\n    model: old\n  - slot_id: worker-2\n    model: old\n    backend: local\n";
     let desired = "agent_slots:\n  - slot_id: worker-2\n    model: new\n    worker_backend: codex\n  - slot_id: worker-3\n    model: added\n";

@@ -50,6 +50,13 @@ struct KeyPolicy {
     aliases: BTreeMap<String, String>,
 }
 
+struct AgentSlotPairing<'a> {
+    original_mappings: Vec<&'a SemanticMapping>,
+    desired_mappings: Vec<&'a SemanticMapping>,
+    original_ids: Vec<Option<&'a str>>,
+    desired_to_original: Vec<Option<usize>>,
+}
+
 struct ParsedDocument {
     source: String,
     semantic: SemanticValue,
@@ -136,8 +143,17 @@ fn render(request: RenderRequest) -> Result<String, ()> {
     let desired_semantic = merged_mapping(&desired_semantic)?;
     let original_owned = owned_projection(&original_semantic, &owned)?;
     let desired_owned = owned_projection(&desired_semantic, &owned)?;
-    let expected_owned =
-        merged_owned_projection(&original_owned, &desired_owned, &nested_contract)?;
+    let agent_slot_pairing = agent_slot_pairing(
+        original_owned.get("agent_slots"),
+        desired_owned.get("agent_slots"),
+        &nested_contract,
+    )?;
+    let expected_owned = merged_owned_projection(
+        &original_owned,
+        &desired_owned,
+        &nested_contract,
+        agent_slot_pairing.as_ref(),
+    )?;
 
     // An owned field inherited through YAML merge syntax has no unambiguous CST
     // entry to replace or remove. Refuse it instead of silently shadowing it.
@@ -156,7 +172,9 @@ fn render(request: RenderRequest) -> Result<String, ()> {
         &desired_explicit,
         &original_owned,
         &desired_owned,
+        &expected_owned,
         &nested_contract,
+        agent_slot_pairing.as_ref(),
     )?;
     let mut output = match new_document_output {
         Some(output) => output,
@@ -414,61 +432,132 @@ fn slot_id<'a>(
     .and_then(SemanticValue::as_str))
 }
 
-fn merged_agent_slots(
-    original: &SemanticValue,
-    desired: &SemanticValue,
+fn agent_slot_pairing<'a>(
+    original: Option<&'a SemanticValue>,
+    desired: Option<&'a SemanticValue>,
     contract: &NestedContract,
-) -> Result<SemanticValue, ()> {
-    let original = original.as_sequence().ok_or(())?;
+) -> Result<Option<AgentSlotPairing<'a>>, ()> {
+    let Some(desired) = desired else {
+        return Ok(None);
+    };
+    let original = match original {
+        Some(original) => original.as_sequence().ok_or(())?.as_slice(),
+        None => &[],
+    };
     let desired = desired.as_sequence().ok_or(())?;
-    let has_unknown = original.iter().try_fold(false, |found, value| {
-        let mapping = value.as_mapping().ok_or(())?;
-        Ok::<_, ()>(found || mapping_has_unknown_keys(mapping, &contract.agent_slots))
-    })?;
+    let original_mappings = original
+        .iter()
+        .map(|value| value.as_mapping().ok_or(()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let desired_mappings = desired
+        .iter()
+        .map(|value| value.as_mapping().ok_or(()))
+        .collect::<Result<Vec<_>, _>>()?;
+
     let mut original_by_id = BTreeMap::new();
-    for value in original {
-        let mapping = value.as_mapping().ok_or(())?;
-        let Some(id) = slot_id(mapping, contract)? else {
-            if mapping.keys().any(|key| {
-                key.as_str()
-                    .map(|key| contract.agent_slots.normalize(key))
-                    .is_none_or(|key| !contract.agent_slots.owned.contains(&key))
-            }) {
+    let mut original_ids = Vec::with_capacity(original_mappings.len());
+    for (index, mapping) in original_mappings.iter().enumerate() {
+        let id = slot_id(mapping, contract)?;
+        if let Some(id) = id {
+            if original_by_id
+                .insert(id.to_ascii_lowercase(), index)
+                .is_some()
+            {
                 return Err(());
             }
-            continue;
-        };
-        if original_by_id.insert(id.to_string(), mapping).is_some() {
-            return Err(());
         }
+        original_ids.push(id);
     }
 
     let mut desired_ids = BTreeSet::new();
-    let mut merged = Vec::with_capacity(desired.len());
-    for value in desired {
-        let mapping = value.as_mapping().ok_or(())?;
+    let mut desired_to_original = Vec::with_capacity(desired_mappings.len());
+    for mapping in &desired_mappings {
         let id = slot_id(mapping, contract)?.ok_or(())?;
-        if !desired_ids.insert(id.to_string()) {
+        let normalized_id = id.to_ascii_lowercase();
+        if !desired_ids.insert(normalized_id.clone()) {
             return Err(());
         }
-        let value = match original_by_id.get(id) {
-            Some(original) => SemanticValue::Mapping(merged_known_mapping(
-                original,
-                mapping,
+        desired_to_original.push(original_by_id.get(&normalized_id).copied());
+    }
+
+    Ok(Some(AgentSlotPairing {
+        original_mappings,
+        desired_mappings,
+        original_ids,
+        desired_to_original,
+    }))
+}
+
+fn effective_desired_slot(
+    pairing: &AgentSlotPairing<'_>,
+    desired_index: usize,
+    contract: &NestedContract,
+) -> Result<SemanticMapping, ()> {
+    let desired = pairing
+        .desired_mappings
+        .get(desired_index)
+        .ok_or(())?;
+    let mut effective = (*desired).clone();
+    let Some(original_index) = pairing
+        .desired_to_original
+        .get(desired_index)
+        .copied()
+        .flatten()
+    else {
+        return Ok(effective);
+    };
+    let original_id = pairing
+        .original_ids
+        .get(original_index)
+        .copied()
+        .flatten()
+        .ok_or(())?;
+    let mut replaced = false;
+    for (key, value) in &mut effective {
+        let key = key.as_str().ok_or(())?;
+        if contract.agent_slots.normalize(key) == contract.agent_slot_identity {
+            if replaced {
+                return Err(());
+            }
+            *value = SemanticValue::String(original_id.to_string());
+            replaced = true;
+        }
+    }
+    if !replaced {
+        return Err(());
+    }
+    Ok(effective)
+}
+
+fn merged_agent_slots(
+    pairing: &AgentSlotPairing<'_>,
+    contract: &NestedContract,
+) -> Result<SemanticValue, ()> {
+    let mut merged = Vec::with_capacity(pairing.desired_mappings.len());
+    for desired_index in 0..pairing.desired_mappings.len() {
+        let desired = effective_desired_slot(pairing, desired_index, contract)?;
+        let value = match pairing.desired_to_original[desired_index] {
+            Some(original_index) => SemanticValue::Mapping(merged_known_mapping(
+                pairing
+                    .original_mappings
+                    .get(original_index)
+                    .copied()
+                    .ok_or(())?,
+                &desired,
                 &contract.agent_slots,
             )?),
             None => {
-                merged_known_mapping(&SemanticMapping::new(), mapping, &contract.agent_slots)?;
-                value.clone()
+                merged_known_mapping(
+                    &SemanticMapping::new(),
+                    &desired,
+                    &contract.agent_slots,
+                )?;
+                SemanticValue::Mapping(desired)
             }
         };
         merged.push(value);
     }
-    if has_unknown {
-        Ok(SemanticValue::Sequence(merged))
-    } else {
-        Ok(SemanticValue::Sequence(desired.clone()))
-    }
+    Ok(SemanticValue::Sequence(merged))
 }
 
 fn merged_roles(
@@ -505,12 +594,15 @@ fn merged_owned_projection(
     original: &BTreeMap<String, SemanticValue>,
     desired: &BTreeMap<String, SemanticValue>,
     contract: &NestedContract,
+    agent_slot_pairing: Option<&AgentSlotPairing<'_>>,
 ) -> Result<BTreeMap<String, SemanticValue>, ()> {
     desired
         .iter()
         .map(|(key, value)| {
             let merged = match (key.as_str(), original.get(key)) {
-                ("agent_slots", Some(original)) => merged_agent_slots(original, value, contract)?,
+                ("agent_slots", _) => {
+                    merged_agent_slots(agent_slot_pairing.ok_or(())?, contract)?
+                }
                 ("roles", Some(original)) => merged_roles(original, value, contract)?,
                 _ => value.clone(),
             };
@@ -802,48 +894,41 @@ fn mapping_has_unknown_keys(mapping: &SemanticMapping, policy: &KeyPolicy) -> bo
 fn build_agent_slots_edit_plan(
     source: &str,
     cst: &YamlNode,
-    original: &SemanticValue,
-    desired: &SemanticValue,
+    pairing: &AgentSlotPairing<'_>,
     contract: &NestedContract,
 ) -> Result<Option<Vec<TextEdit>>, ()> {
-    let original = original.as_sequence().ok_or(())?;
-    let desired = desired.as_sequence().ok_or(())?;
-    let original_mappings = original
-        .iter()
-        .map(|value| value.as_mapping().ok_or(()))
-        .collect::<Result<Vec<_>, _>>()?;
-    let has_unknown = original_mappings
+    let has_unknown = pairing
+        .original_mappings
         .iter()
         .any(|mapping| mapping_has_unknown_keys(mapping, &contract.agent_slots));
-    if !has_unknown {
-        return Ok(None);
+    let preserves_topology = pairing.original_mappings.len() == pairing.desired_mappings.len()
+        && pairing
+            .original_ids
+            .iter()
+            .all(Option::is_some)
+        && pairing
+            .desired_to_original
+            .iter()
+            .enumerate()
+            .all(|(desired_index, original_index)| *original_index == Some(desired_index));
+    if !preserves_topology {
+        return if has_unknown { Err(()) } else { Ok(None) };
     }
 
-    let original_ids = original_mappings
-        .iter()
-        .map(|mapping| slot_id(mapping, contract)?.map(str::to_string).ok_or(()))
+    let desired_mappings = (0..pairing.desired_mappings.len())
+        .map(|desired_index| effective_desired_slot(pairing, desired_index, contract))
         .collect::<Result<Vec<_>, ()>>()?;
-    let desired_mappings = desired
-        .iter()
-        .map(|value| value.as_mapping().ok_or(()))
-        .collect::<Result<Vec<_>, _>>()?;
-    let desired_ids = desired_mappings
-        .iter()
-        .map(|mapping| slot_id(mapping, contract)?.map(str::to_string).ok_or(()))
-        .collect::<Result<Vec<_>, ()>>()?;
-    if original_ids != desired_ids {
-        return Err(());
-    }
 
     let sequence = match cst {
         YamlNode::Sequence(sequence) => sequence,
         _ => return Err(()),
     };
-    if sequence.len() != original_mappings.len() {
+    if sequence.len() != pairing.original_mappings.len() {
         return Err(());
     }
     let mut edits = Vec::new();
-    for (index, (original, desired)) in original_mappings
+    for (index, (original, desired)) in pairing
+        .original_mappings
         .iter()
         .zip(desired_mappings.iter())
         .enumerate()
@@ -963,7 +1048,9 @@ fn build_edit_plan(
     desired: &BTreeMap<String, String>,
     original_values: &BTreeMap<String, SemanticValue>,
     desired_values: &BTreeMap<String, SemanticValue>,
+    rendered_values: &BTreeMap<String, SemanticValue>,
     nested_contract: &NestedContract,
+    agent_slot_pairing: Option<&AgentSlotPairing<'_>>,
 ) -> Result<Vec<TextEdit>, ()> {
     let entries = root_entry_ranges(mapping)?;
     let mut edits = Vec::new();
@@ -980,8 +1067,7 @@ fn build_edit_plan(
                 "agent_slots" => build_agent_slots_edit_plan(
                     source,
                     &cst_value,
-                    original_value,
-                    desired_value,
+                    agent_slot_pairing.ok_or(())?,
                     nested_contract,
                 )?,
                 "roles" => build_roles_edit_plan(
@@ -1000,12 +1086,13 @@ fn build_edit_plan(
             let original_value = source.get(entry.value_start..entry.value_end).ok_or(())?;
             let value_without_line_endings = original_value.trim_end_matches(['\r', '\n']);
             let trailing_line_endings = &original_value[value_without_line_endings.len()..];
+            let rendered_value = rendered_values.get(normalized).ok_or(())?;
             edits.push(TextEdit {
                 start: entry.value_start,
                 end: entry.value_end,
                 replacement: format!(
                     "{}{}",
-                    semantic_value_as_json(desired_value)?,
+                    semantic_value_as_json(rendered_value)?,
                     trailing_line_endings
                 ),
             });
@@ -1029,7 +1116,7 @@ fn build_edit_plan(
     let mut additions = Vec::new();
     for (normalized, desired_key) in desired {
         if !original.contains_key(normalized) {
-            let value = desired_values.get(normalized).ok_or(())?;
+            let value = rendered_values.get(normalized).ok_or(())?;
             additions.push(format!(
                 "{}: {}",
                 serde_json::to_string(desired_key).map_err(|_| ())?,
