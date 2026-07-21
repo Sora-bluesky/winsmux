@@ -5,7 +5,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 const SCHEMA_VERSION: u64 = 1;
+const DOCUMENT_CONFIG_VERSION: i64 = 1;
 const WORKFLOW_ID_TOKEN: &str = "{{workflow-id}}";
+const WINDOWS_RESERVED_PATH_NAMES: [&str; 22] = [
+    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
+    "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SlotCapabilities {
@@ -118,6 +123,7 @@ pub fn normalize_workspace_plan(
 
     let root = serde_yaml::from_str::<serde_yaml::Value>(yaml)
         .map_err(|_| invalid_data("invalid .winsmux.yaml syntax."))?;
+    validate_document_config_version(&root)?;
     let recipes = mapping_value(&root, "workspace-recipes")?
         .ok_or_else(|| invalid_input("workspace-recipes is not configured."))?;
     let recipes = recipes
@@ -279,6 +285,32 @@ pub fn normalize_workspace_plan(
     })
 }
 
+fn validate_document_config_version(root: &serde_yaml::Value) -> io::Result<()> {
+    let mapping = root
+        .as_mapping()
+        .ok_or_else(|| invalid_data(".winsmux.yaml must be a mapping."))?;
+    let canonical = mapping.get(&serde_yaml::Value::String("config-version".to_string()));
+    let legacy = mapping.get(&serde_yaml::Value::String("config_version".to_string()));
+
+    if canonical.is_some() && legacy.is_some() {
+        return Err(invalid_data("ambiguous document config-version."));
+    }
+    let Some(value) = canonical.or(legacy) else {
+        return Ok(());
+    };
+    let is_supported = match value {
+        serde_yaml::Value::Number(number) => number.as_i64() == Some(DOCUMENT_CONFIG_VERSION),
+        serde_yaml::Value::String(text) => {
+            text.trim().parse::<i64>().ok() == Some(DOCUMENT_CONFIG_VERSION)
+        }
+        _ => false,
+    };
+    if !is_supported {
+        return Err(invalid_data("invalid document config-version."));
+    }
+    Ok(())
+}
+
 fn mapping_value<'a>(
     root: &'a serde_yaml::Value,
     key: &str,
@@ -425,9 +457,18 @@ fn is_safe_worktree_name(value: &str) -> bool {
     };
     (first.is_ascii_lowercase() || first.is_ascii_digit())
         && !value.contains("..")
+        && !value.ends_with('.')
+        && !is_windows_reserved_path_name(value)
         && bytes.all(|byte| {
             byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
         })
+}
+
+fn is_windows_reserved_path_name(value: &str) -> bool {
+    let base_name = value.split('.').next().unwrap_or_default();
+    WINDOWS_RESERVED_PATH_NAMES
+        .iter()
+        .any(|reserved| base_name.eq_ignore_ascii_case(reserved))
 }
 
 fn reject_synthetic_credential(value: &str) -> io::Result<()> {

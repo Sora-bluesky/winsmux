@@ -118,6 +118,73 @@ fn recipe_schema_version_requires_an_integer_scalar() {
 }
 
 #[test]
+fn document_config_version_accepts_only_the_supported_v1_spellings() {
+    let without_version = VALID_RECIPE
+        .strip_prefix("config-version: 1\n")
+        .expect("fixture starts with config-version");
+    normalize_workspace_plan(
+        without_version,
+        "bugfix-two-slot",
+        Some("issue-1204"),
+        &slots(),
+    )
+    .expect("missing config-version defaults to v1");
+
+    for yaml in [
+        VALID_RECIPE.to_string(),
+        VALID_RECIPE.replacen("config-version: 1", "config-version: '1'", 1),
+        VALID_RECIPE.replacen("config-version: 1", "config-version: \" 1 \"", 1),
+        VALID_RECIPE.replacen("config-version: 1", "config_version: 1", 1),
+        VALID_RECIPE.replacen("config-version: 1", "config_version: '1'", 1),
+    ] {
+        normalize_workspace_plan(&yaml, "bugfix-two-slot", Some("issue-1204"), &slots())
+            .expect("supported document config-version spelling should normalize");
+    }
+}
+
+#[test]
+fn document_config_version_rejects_unsupported_invalid_and_ambiguous_values() {
+    for value in [
+        "0",
+        "2",
+        "-1",
+        "1.0",
+        "not-a-number",
+        "true",
+        "null",
+        "[]",
+        "{}",
+    ] {
+        let yaml =
+            VALID_RECIPE.replacen("config-version: 1", &format!("config-version: {value}"), 1);
+        let error =
+            normalize_workspace_plan(&yaml, "bugfix-two-slot", Some("issue-1204"), &slots())
+                .expect_err("unsupported or invalid config-version must be rejected");
+        assert_eq!(error.to_string(), "invalid document config-version.");
+    }
+
+    let ambiguous = VALID_RECIPE.replacen(
+        "config-version: 1",
+        "config-version: 1\nconfig_version: 1",
+        1,
+    );
+    let error =
+        normalize_workspace_plan(&ambiguous, "bugfix-two-slot", Some("issue-1204"), &slots())
+            .expect_err("both document config-version aliases must be rejected");
+    assert_eq!(error.to_string(), "ambiguous document config-version.");
+
+    let unsupported_legacy = VALID_RECIPE.replacen("config-version: 1", "config_version: 2", 1);
+    let error = normalize_workspace_plan(
+        &unsupported_legacy,
+        "bugfix-two-slot",
+        Some("issue-1204"),
+        &slots(),
+    )
+    .expect_err("unsupported legacy config-version alias must be rejected");
+    assert_eq!(error.to_string(), "invalid document config-version.");
+}
+
+#[test]
 fn multiple_panes_may_share_one_placement_region() {
     let same_region = VALID_RECIPE.replace("region: side", "region: main");
     let plan = normalize_workspace_plan(
@@ -257,6 +324,59 @@ fn identifiers_and_worktree_names_use_the_strict_v1_grammar() {
         normalize_workspace_plan(&repeated_dot, "bugfix-two-slot", Some("task-658"), &slots())
             .expect_err("worktree names containing dot-dot must be rejected");
     assert!(error.to_string().contains("safe project-local name"));
+}
+
+#[test]
+fn managed_worktree_names_reject_windows_devices_and_trailing_dots() {
+    for reserved in [
+        "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
+        "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9", "con.txt",
+        "com1.log", "lpt9.tmp",
+    ] {
+        let yaml = VALID_RECIPE.replace(
+            "name-template: \"{{workflow-id}}-implement\"",
+            &format!("name-template: \"{reserved}\""),
+        );
+        let error =
+            normalize_workspace_plan(&yaml, "bugfix-two-slot", Some("issue-1204"), &slots())
+                .expect_err("Windows reserved device basename must be rejected");
+        assert!(error.to_string().contains("safe project-local name"));
+    }
+
+    let trailing_dot = VALID_RECIPE.replace(
+        "name-template: \"{{workflow-id}}-implement\"",
+        "name-template: \"safe-name.\"",
+    );
+    normalize_workspace_plan(
+        &trailing_dot,
+        "bugfix-two-slot",
+        Some("issue-1204"),
+        &slots(),
+    )
+    .expect_err("trailing dots must be rejected");
+}
+
+#[test]
+fn managed_worktree_names_keep_safe_dotted_hyphenated_and_underscored_boundaries() {
+    for safe in [
+        "conway.txt",
+        "prn-file",
+        "aux_data",
+        "nul-safe",
+        "com0.log",
+        "com10.log",
+        "lpt0.tmp",
+        "lpt10.tmp",
+        "safe.name-v1_2",
+    ] {
+        let yaml = VALID_RECIPE.replace(
+            "name-template: \"{{workflow-id}}-implement\"",
+            &format!("name-template: \"{safe}\""),
+        );
+        let plan = normalize_workspace_plan(&yaml, "bugfix-two-slot", Some("issue-1204"), &slots())
+            .expect("near-boundary safe worktree name should normalize");
+        assert_eq!(plan.panes[0].worktree.name.as_deref(), Some(safe));
+    }
 }
 
 #[test]
