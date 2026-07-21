@@ -564,17 +564,104 @@ fn project_settings_render_preserves_multiline_flow_comments_and_is_idempotent()
 }
 
 #[test]
-fn project_settings_render_accepts_blank_original_as_empty_mapping() {
-    let input = render_payload(" \r\n\t", "added: true\n", &["added"]);
+fn project_settings_render_creates_canonical_block_yaml_from_empty_source() {
+    for original in ["", " \r\n\t"] {
+        let input = render_payload(original, "worker_count: 2\n", &["worker_count"]);
+        let output = run_project_settings_render(&input, &[]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8(output.stdout.clone()).expect("UTF-8 YAML output"),
+            "worker_count: 2\n",
+            "new settings must use a block-style root"
+        );
+        assert_eq!(
+            yaml_mapping(&output.stdout).get(serde_yaml::Value::String("worker_count".into())),
+            Some(&serde_yaml::Value::Number(2.into()))
+        );
+    }
+
+    let nested = serde_json::json!({
+        "worker_count": 2,
+        "agent_slots": [{
+            "slot_id": "worker-1",
+            "agent": "codex",
+            "model": "provider-default"
+        }],
+        "roles": {
+            "worker": {
+                "model": "gpt-5.6-terra",
+                "prompt_transport": "stdin"
+            }
+        },
+        "vault_keys": []
+    });
+    let input = serde_json::to_vec(&serde_json::json!({
+        "original_yaml": "",
+        "desired_settings": nested,
+        "owned_keys": ["worker_count", "agent_slots", "roles", "vault_keys"],
+        "nested_contract": {
+            "agent_slots": {
+                "identity_key": "slot_id",
+                "owned_keys": ["slot_id", "agent", "model"],
+                "aliases": {}
+            },
+            "roles": { "owned_keys": ["model", "prompt_transport"] }
+        }
+    }))
+    .expect("serialize nested block-style renderer payload");
     let output = run_project_settings_render(&input, &[]);
     assert!(
         output.status.success(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    let text = String::from_utf8(output.stdout.clone()).expect("UTF-8 YAML output");
     assert_eq!(
-        yaml_mapping(&output.stdout).get(serde_yaml::Value::String("added".into())),
-        Some(&serde_yaml::Value::Bool(true))
+        text,
+        concat!(
+            "agent_slots:\n",
+            "  - agent: \"codex\"\n",
+            "    model: \"provider-default\"\n",
+            "    slot_id: \"worker-1\"\n",
+            "roles:\n",
+            "  worker:\n",
+            "    model: \"gpt-5.6-terra\"\n",
+            "    prompt_transport: \"stdin\"\n",
+            "vault_keys:\n",
+            "  []\n",
+            "worker_count: 2\n"
+        ),
+        "new nested settings must use the manual fallback's block indentation"
+    );
+    let mapping = yaml_mapping(&output.stdout);
+    assert_eq!(
+        mapping
+            .get(serde_yaml::Value::String("agent_slots".into()))
+            .and_then(serde_yaml::Value::as_sequence)
+            .map(Vec::len),
+        Some(1)
+    );
+    assert!(mapping
+        .get(serde_yaml::Value::String("roles".into()))
+        .is_some_and(serde_yaml::Value::is_mapping));
+    assert!(mapping
+        .get(serde_yaml::Value::String("vault_keys".into()))
+        .is_some_and(serde_yaml::Value::is_sequence));
+
+    let empty_containers = render_payload(
+        "",
+        "agent_slots: []\nroles: {}\nvault_keys: []\n",
+        &["agent_slots", "roles", "vault_keys"],
+    );
+    let output = run_project_settings_render(&empty_containers, &[]);
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).expect("UTF-8 YAML output"),
+        "agent_slots:\n  []\nroles:\n  {}\nvault_keys:\n  []\n"
     );
 }
 

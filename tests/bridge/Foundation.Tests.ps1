@@ -494,6 +494,38 @@ roles:
         }
     }
 
+    It 'TASK658 preserves canonical renderer YAML through the manual project-settings fallback on a new file' {
+        $projectRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-settings-fallback-' + [guid]::NewGuid().ToString('N'))
+        try {
+            New-Item -ItemType Directory -Path $projectRoot -Force | Out-Null
+            Mock Invoke-BridgeProjectSettingsRenderProcess {
+                [PSCustomObject]@{
+                    ExitCode = 0
+                    StdOut = "agent_slots:`n  - slot_id: `"worker-1`"`n    runtime_role: `"worker`"`n    worktree_mode: `"managed`"`nexternal_operator: false`nroles:`n  {}`nvault_keys:`n  []`nworker_count: 2`n"
+                }
+            }
+            Mock Get-Command {
+                param($Name)
+                if ($Name -eq 'ConvertFrom-Yaml') { return $null }
+                return Microsoft.PowerShell.Core\Get-Command -Name $Name -ErrorAction SilentlyContinue
+            }
+
+            Save-BridgeSettings -Scope project -RootPath $projectRoot -Settings @{ external_operator = $false; worker_count = 2; agent_slots = @([ordered]@{ slot_id = 'worker-1'; runtime_role = 'worker'; worktree_mode = 'managed' }) }
+            $settings = Get-BridgeSettings -RootPath $projectRoot
+
+            $settings.external_operator | Should -BeFalse
+            $settings.worker_count | Should -Be 1
+            @($settings.agent_slots).Count | Should -Be 1
+            $settings.agent_slots[0].runtime_role | Should -Be 'worker'
+            $settings.agent_slots[0].worktree_mode | Should -Be 'managed'
+            ($settings.roles -is [System.Collections.IDictionary]) | Should -BeTrue
+            $settings.roles.Count | Should -Be 0
+            @($settings.vault_keys).Count | Should -Be 0
+        } finally {
+            Remove-Item -LiteralPath $projectRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     It 'TASK658 R39 rejects unsupported owned manifest syntax and accepts canonical forms for <Case>' -ForEach @(
         @{ Case = 'quoted session'; Content = ("version: 1`n" + [char]34 + "session" + [char]34 + ":`n  name: x`n"); Reject = $true }
         @{ Case = 'flow session'; Content = "version: 1`nsession: {name: x}`n"; Reject = $true }

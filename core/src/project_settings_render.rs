@@ -109,7 +109,11 @@ fn render(request: RenderRequest) -> Result<String, ()> {
     } = request;
     let nested_contract = NestedContract::new(nested_contract)?;
     let owned = normalize_owned_keys(&owned_keys)?;
+    let original_was_blank = original_yaml.trim().is_empty();
     let original = parse_document(&original_yaml, true)?;
+    let new_document_output = original_was_blank
+        .then(|| canonical_block_document(&desired_settings))
+        .transpose()?;
     let desired_explicit = desired_settings
         .keys()
         .map(|key| SemanticValue::String(key.clone()))
@@ -154,7 +158,10 @@ fn render(request: RenderRequest) -> Result<String, ()> {
         &desired_owned,
         &nested_contract,
     )?;
-    let mut output = apply_edit_plan(original.source, edits)?;
+    let mut output = match new_document_output {
+        Some(output) => output,
+        None => apply_edit_plan(original.source, edits)?,
+    };
     if !output.ends_with('\n') {
         output.push('\n');
     }
@@ -519,6 +526,122 @@ fn semantic_value_as_json(value: &SemanticValue) -> Result<String, ()> {
         return Err(());
     }
     Ok(json)
+}
+
+fn canonical_block_document(
+    mapping: &serde_json::Map<String, serde_json::Value>,
+) -> Result<String, ()> {
+    // serde_yaml renders dynamic JSON maps as flow collections. New settings
+    // must instead match ConvertFrom-BridgeManualYaml: two-space sequence
+    // entries and four-space properties inside agent_slots.
+    if mapping.is_empty() {
+        return Ok("{}\n".to_string());
+    }
+    let mut output = String::new();
+    write_block_mapping(mapping, 0, &mut output)?;
+    Ok(output)
+}
+
+fn write_block_mapping(
+    mapping: &serde_json::Map<String, serde_json::Value>,
+    indentation: usize,
+    output: &mut String,
+) -> Result<(), ()> {
+    for (key, value) in mapping {
+        write_indentation(output, indentation);
+        write_block_mapping_entry(key, value, indentation + 2, output)?;
+    }
+    Ok(())
+}
+
+fn write_block_mapping_entry(
+    key: &str,
+    value: &serde_json::Value,
+    child_indentation: usize,
+    output: &mut String,
+) -> Result<(), ()> {
+    output.push_str(&canonical_yaml_key(key)?);
+    match value {
+        serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+            output.push_str(":\n");
+            write_block_container(value, child_indentation, output)
+        }
+        _ => {
+            output.push_str(": ");
+            output.push_str(&serde_json::to_string(value).map_err(|_| ())?);
+            output.push('\n');
+            Ok(())
+        }
+    }
+}
+
+fn write_block_container(
+    value: &serde_json::Value,
+    indentation: usize,
+    output: &mut String,
+) -> Result<(), ()> {
+    match value {
+        serde_json::Value::Object(mapping) if mapping.is_empty() => {
+            write_indentation(output, indentation);
+            output.push_str("{}\n");
+            Ok(())
+        }
+        serde_json::Value::Object(mapping) => write_block_mapping(mapping, indentation, output),
+        serde_json::Value::Array(values) if values.is_empty() => {
+            write_indentation(output, indentation);
+            output.push_str("[]\n");
+            Ok(())
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                write_indentation(output, indentation);
+                match value {
+                    serde_json::Value::Object(mapping) if !mapping.is_empty() => {
+                        output.push_str("- ");
+                        let mut entries = mapping.iter();
+                        let (key, value) = entries.next().ok_or(())?;
+                        write_block_mapping_entry(key, value, indentation + 4, output)?;
+                        for (key, value) in entries {
+                            write_indentation(output, indentation + 2);
+                            write_block_mapping_entry(key, value, indentation + 4, output)?;
+                        }
+                    }
+                    serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+                        output.push_str("-\n");
+                        write_block_container(value, indentation + 2, output)?;
+                    }
+                    _ => {
+                        output.push_str("- ");
+                        output.push_str(&serde_json::to_string(value).map_err(|_| ())?);
+                        output.push('\n');
+                    }
+                }
+            }
+            Ok(())
+        }
+        _ => Err(()),
+    }
+}
+
+fn write_indentation(output: &mut String, indentation: usize) {
+    output.extend(std::iter::repeat(' ').take(indentation));
+}
+
+fn canonical_yaml_key(key: &str) -> Result<String, ()> {
+    let mut characters = key.chars();
+    let plain = characters
+        .next()
+        .is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_')
+        && characters.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+        && !matches!(
+            key.to_ascii_lowercase().as_str(),
+            "null" | "true" | "false"
+        );
+    if plain {
+        Ok(key.to_string())
+    } else {
+        serde_json::to_string(key).map_err(|_| ())
+    }
 }
 
 fn mapping_value_node(mapping: &CstMapping, key: &str) -> Result<YamlNode, ()> {
