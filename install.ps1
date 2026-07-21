@@ -735,15 +735,35 @@ function Backup-File($path) {
     }
 }
 
-function Download-File($relativeUrl, $destPath) {
+function Test-RetryableDownloadFailure {
+    param([Parameter(Mandatory = $true)]$ErrorRecord)
+
+    $statusCode = $null
+    if ($null -ne $ErrorRecord.Exception.Response) { $statusCode = [int]$ErrorRecord.Exception.Response.StatusCode }
+    if ($null -ne $statusCode) { return $statusCode -eq 408 -or $statusCode -eq 429 -or ($statusCode -ge 500 -and $statusCode -le 599) }
+    return $ErrorRecord.Exception.Message -match '(?i)timeout|timed out|connection.*reset|connection.*closed'
+}
+
+function Invoke-DownloadFileWithRetry($relativeUrl, $destPath) {
     $url = "$BASE_URL/$relativeUrl"
     Write-Status "Downloading $relativeUrl ..."
-    try {
-        Invoke-RestMethod -Uri $url -OutFile $destPath -ErrorAction Stop
-    } catch {
-        Write-Error "[winsmux] Failed to download $url : $_"
-        exit 1
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        $tempPath = "$destPath.download-$([guid]::NewGuid().ToString('N')).tmp"
+        try {
+            Invoke-RestMethod -Uri $url -OutFile $tempPath -ErrorAction Stop
+            Move-Item -LiteralPath $tempPath -Destination $destPath -Force
+            return
+        } catch {
+            Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+            if ($attempt -ge 3 -or -not (Test-RetryableDownloadFailure $_)) { throw "[winsmux] Failed to download $url : $_" }
+            Start-Sleep -Milliseconds (100 * $attempt)
+        }
     }
+}
+
+function Download-File($relativeUrl, $destPath) {
+    try { Invoke-DownloadFileWithRetry $relativeUrl $destPath }
+    catch { Write-Error $_; exit 1 }
 }
 
 function Test-RemoteFileExists($relativeUrl) {

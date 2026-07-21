@@ -625,6 +625,43 @@ param(
         Test-Path -LiteralPath $unownedSibling | Should -BeTrue
     }
 
+    It 'retries transient download failures without replacing the destination until success' {
+        $installer = Get-Content -LiteralPath $script:InstallerPath -Raw -Encoding UTF8
+        . ([scriptblock]::Create($installer.Substring(0, $installer.IndexOf('# Main', [System.StringComparison]::Ordinal))))
+        $dest = Join-Path $TestDrive 'download.txt'
+        'old' | Set-Content -LiteralPath $dest -NoNewline -Encoding utf8
+        $script:r46Attempts = 0
+        Mock Invoke-RestMethod { param($Uri, $OutFile); $script:r46Attempts++; if ($script:r46Attempts -eq 1) { throw 'timeout' }; 'new' | Set-Content -LiteralPath $OutFile -NoNewline -Encoding utf8 }
+        Download-File 'fixture' $dest
+        $script:r46Attempts | Should -Be 2
+        Get-Content -LiteralPath $dest -Raw -Encoding utf8 | Should -Be 'new'
+        @(Get-ChildItem -LiteralPath $TestDrive -Filter '*.download-*.tmp' -File).Count | Should -Be 0
+    }
+
+    It 'stops a permanent download failure after one attempt without mutating the destination' {
+        $installer = Get-Content -LiteralPath $script:InstallerPath -Raw -Encoding UTF8
+        . ([scriptblock]::Create($installer.Substring(0, $installer.IndexOf('# Main', [System.StringComparison]::Ordinal))))
+        $dest = Join-Path $TestDrive 'permanent.txt'; 'old' | Set-Content $dest -NoNewline -Encoding utf8
+        $script:r46Attempts = 0
+        Mock Invoke-RestMethod { $script:r46Attempts++; throw '404 not found' }
+        { Invoke-DownloadFileWithRetry 'fixture' $dest } | Should -Throw
+        $script:r46Attempts | Should -Be 1
+        Get-Content $dest -Raw -Encoding utf8 | Should -Be 'old'
+        @(Get-ChildItem $TestDrive -Filter '*.download-*.tmp' -File).Count | Should -Be 0
+    }
+
+    It 'stops transient download failures after three attempts without mutating the destination' {
+        $installer = Get-Content -LiteralPath $script:InstallerPath -Raw -Encoding UTF8
+        . ([scriptblock]::Create($installer.Substring(0, $installer.IndexOf('# Main', [System.StringComparison]::Ordinal))))
+        $dest = Join-Path $TestDrive 'transient.txt'; 'old' | Set-Content $dest -NoNewline -Encoding utf8
+        $script:r46Attempts = 0
+        Mock Invoke-RestMethod { $script:r46Attempts++; throw 'timeout' }
+        { Invoke-DownloadFileWithRetry 'fixture' $dest } | Should -Throw
+        $script:r46Attempts | Should -Be 3
+        Get-Content $dest -Raw -Encoding utf8 | Should -Be 'old'
+        @(Get-ChildItem $TestDrive -Filter '*.download-*.tmp' -File).Count | Should -Be 0
+    }
+
     It 'removes only the installer-owned profile block and preserves user content and encoding' {
         $installer = Get-Content -LiteralPath $script:InstallerPath -Raw -Encoding UTF8
         $installer | Should -Not -Match "-notmatch 'winsmux'"
