@@ -188,8 +188,15 @@ pub fn run_provider_capabilities_command(args: &[&String]) -> io::Result<()> {
     let registry = read_provider_capability_registry(&registry_path)?;
 
     if let Some(provider_id) = options.provider_id.as_deref() {
-        let Some(capabilities) = resolve_provider_capability_in_registry(&registry, provider_id)?
-        else {
+        let capabilities = resolve_provider_capability_in_registry(&registry, provider_id)
+            .or_else(|error| {
+                if error.kind() == io::ErrorKind::NotFound {
+                    Ok(None)
+                } else {
+                    Err(error)
+                }
+            })?;
+        let Some(capabilities) = capabilities else {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
                 format!("provider capability '{provider_id}' was not found."),
