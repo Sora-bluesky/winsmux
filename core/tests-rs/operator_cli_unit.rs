@@ -83,6 +83,272 @@ fn workspace_plan_global_worker_count_limits_the_effective_slot_catalog() {
 }
 
 #[test]
+fn workspace_plan_project_external_operator_off_disables_generated_slots() {
+    let project_dir = test_project_dir("workspace-plan-project-external-operator-off");
+    write_workspace_plan_settings(
+        &project_dir,
+        "config_version: 1\nexternal_operator: off\n",
+    );
+
+    let settings = read_workspace_plan_settings_with_global_reader(&project_dir, |_| None)
+        .expect("project external_operator=off should resolve");
+
+    assert!(settings.agent_slots.is_empty());
+
+    let _ = std::fs::remove_dir_all(project_dir);
+}
+
+#[test]
+fn workspace_plan_project_negative_worker_count_is_rejected() {
+    let project_dir = test_project_dir("workspace-plan-project-negative-worker-count");
+    write_workspace_plan_settings(&project_dir, "config_version: 1\nworker_count: -1\n");
+
+    let error = read_workspace_plan_settings_with_global_reader(&project_dir, |_| None)
+        .expect_err("negative project worker_count must not fall back to six workers");
+
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(
+        error.to_string(),
+        "workspace-plan worker_count must be at least 1 when agent_slots are omitted and legacy_role_layout is disabled."
+    );
+
+    let _ = std::fs::remove_dir_all(project_dir);
+}
+
+#[test]
+fn workspace_plan_project_boolean_scalars_use_the_finite_vocabulary() {
+    let cases = [
+        ("true", true),
+        ("1", true),
+        ("yes", true),
+        ("ON", true),
+        ("false", false),
+        ("0", false),
+        ("no", false),
+        ("Off", false),
+    ];
+
+    for (option, enabled_means_slots) in [
+        ("external_operator", true),
+        ("legacy_role_layout", false),
+    ] {
+        for (value, parsed) in cases {
+            let project_dir = test_project_dir(&format!(
+                "workspace-plan-project-{option}-{}",
+                value.to_ascii_lowercase()
+            ));
+            write_workspace_plan_settings(
+                &project_dir,
+                &format!("config_version: 1\n{option}: {value}\n"),
+            );
+
+            let settings = read_workspace_plan_settings_with_global_reader(&project_dir, |_| None)
+                .unwrap_or_else(|error| panic!("{option}={value} should resolve: {error}"));
+            let should_have_slots = parsed == enabled_means_slots;
+            assert_eq!(
+                settings.agent_slots.len(),
+                if should_have_slots { 6 } else { 0 },
+                "unexpected slot count for project {option}={value}"
+            );
+
+            let _ = std::fs::remove_dir_all(project_dir);
+        }
+    }
+}
+
+#[test]
+fn workspace_plan_global_boolean_scalars_use_the_finite_vocabulary() {
+    let cases = [("on", true), ("1", true), ("OFF", false), ("0", false)];
+
+    for (option, enabled_means_slots) in [
+        ("@bridge-external-operator", true),
+        ("@bridge-legacy-role-layout", false),
+    ] {
+        for (value, parsed) in cases {
+            let project_dir = test_project_dir(&format!(
+                "workspace-plan-global-{}-{}",
+                option.trim_start_matches("@bridge-"),
+                value.to_ascii_lowercase()
+            ));
+            write_workspace_plan_settings(&project_dir, "config_version: 1\n");
+
+            let settings = read_workspace_plan_settings_with_global_reader(&project_dir, |name| {
+                (name == option).then(|| value.to_string())
+            })
+            .unwrap_or_else(|error| panic!("{option}={value} should resolve: {error}"));
+            let should_have_slots = parsed == enabled_means_slots;
+            assert_eq!(
+                settings.agent_slots.len(),
+                if should_have_slots { 6 } else { 0 },
+                "unexpected slot count for global {option}={value}"
+            );
+
+            let _ = std::fs::remove_dir_all(project_dir);
+        }
+    }
+}
+
+#[test]
+fn workspace_plan_unsupported_project_boolean_scalar_falls_through_to_global() {
+    for (index, (project_setting, global_option, global_value)) in [
+        (
+            "external_operator: maybe\n",
+            "@bridge-external-operator",
+            "off",
+        ),
+        (
+            "legacy_role_layout: sometimes\n",
+            "@bridge-legacy-role-layout",
+            "on",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let project_dir = test_project_dir(&format!("workspace-plan-project-bool-miss-{index}"));
+        write_workspace_plan_settings(
+            &project_dir,
+            &format!("config_version: 1\n{project_setting}"),
+        );
+
+        let settings = read_workspace_plan_settings_with_global_reader(&project_dir, |name| {
+            (name == global_option).then(|| global_value.to_string())
+        })
+        .expect("unsupported project bool should fall through to the global value");
+        assert!(settings.agent_slots.is_empty());
+
+        let _ = std::fs::remove_dir_all(project_dir);
+    }
+}
+
+#[test]
+fn workspace_plan_nonpositive_effective_worker_count_is_rejected() {
+    let cases = [
+        (Some("worker_count: -1\n"), None),
+        (Some("worker_count: 0\n"), None),
+        (None, Some("-1")),
+        (None, Some("0")),
+    ];
+
+    for (index, (project_count, global_count)) in cases.into_iter().enumerate() {
+        let project_dir = test_project_dir(&format!("workspace-plan-nonpositive-{index}"));
+        write_workspace_plan_settings(
+            &project_dir,
+            &format!("config_version: 1\n{}", project_count.unwrap_or_default()),
+        );
+
+        let error = read_workspace_plan_settings_with_global_reader(&project_dir, |name| {
+            (name == "@bridge-worker-count")
+                .then(|| global_count.map(str::to_string))
+                .flatten()
+        })
+        .expect_err("nonpositive effective worker_count must be rejected");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            error.to_string(),
+            "workspace-plan worker_count must be at least 1 when agent_slots are omitted and legacy_role_layout is disabled."
+        );
+
+        let _ = std::fs::remove_dir_all(project_dir);
+    }
+}
+
+#[test]
+fn workspace_plan_project_worker_count_precedes_global_nonpositive_value() {
+    let project_dir = test_project_dir("workspace-plan-project-count-precedence");
+    write_workspace_plan_settings(&project_dir, "config_version: 1\nworker_count: 2\n");
+
+    let settings = read_workspace_plan_settings_with_global_reader(&project_dir, |name| {
+        (name == "@bridge-worker-count").then(|| "-1".to_string())
+    })
+    .expect("positive project worker_count should override the global value");
+
+    assert_eq!(settings.agent_slots.len(), 2);
+    assert!(settings.has_slot("worker-2"));
+    assert!(!settings.has_slot("worker-3"));
+
+    let _ = std::fs::remove_dir_all(project_dir);
+}
+
+#[test]
+fn workspace_plan_invalid_or_overflow_worker_count_falls_through() {
+    for (index, project_count) in ["many", "2147483648"].into_iter().enumerate() {
+        let project_dir = test_project_dir(&format!("workspace-plan-project-count-miss-{index}"));
+        write_workspace_plan_settings(
+            &project_dir,
+            &format!("config_version: 1\nworker_count: {project_count}\n"),
+        );
+
+        let settings = read_workspace_plan_settings_with_global_reader(&project_dir, |name| {
+            (name == "@bridge-worker-count").then(|| "3".to_string())
+        })
+        .expect("invalid project count should fall through to the global value");
+        assert_eq!(settings.agent_slots.len(), 3);
+
+        let _ = std::fs::remove_dir_all(project_dir);
+    }
+
+    for (index, global_count) in ["many", "2147483648"].into_iter().enumerate() {
+        let project_dir = test_project_dir(&format!("workspace-plan-global-count-miss-{index}"));
+        write_workspace_plan_settings(&project_dir, "config_version: 1\n");
+
+        let settings = read_workspace_plan_settings_with_global_reader(&project_dir, |name| {
+            (name == "@bridge-worker-count").then(|| global_count.to_string())
+        })
+        .expect("invalid global count should fall through to the default");
+        assert_eq!(settings.agent_slots.len(), 6);
+
+        let _ = std::fs::remove_dir_all(project_dir);
+    }
+}
+
+#[test]
+fn workspace_plan_irrelevant_worker_count_does_not_block_explicit_or_legacy_layouts() {
+    let cases = [
+        (
+            "agent_slots:\n  - slot_id: worker-1\nworker_count: -1\n",
+            None,
+            1,
+        ),
+        ("legacy_role_layout: true\nworker_count: 0\n", None, 0),
+        (
+            "agent_slots:\n  - slot_id: worker-1\n",
+            Some(("@bridge-worker-count", "-1")),
+            1,
+        ),
+        (
+            "",
+            Some(("@bridge-legacy-role-layout", "on")),
+            0,
+        ),
+    ];
+
+    for (index, (project_settings, global_setting, expected_slots)) in
+        cases.into_iter().enumerate()
+    {
+        let project_dir = test_project_dir(&format!("workspace-plan-irrelevant-count-{index}"));
+        write_workspace_plan_settings(
+            &project_dir,
+            &format!("config_version: 1\n{project_settings}"),
+        );
+
+        let settings = read_workspace_plan_settings_with_global_reader(&project_dir, |name| {
+            global_setting
+                .filter(|(option, _)| name == *option)
+                .map(|(_, value)| value.to_string())
+                .or_else(|| {
+                    (index == 3 && name == "@bridge-worker-count").then(|| "-1".to_string())
+                })
+        })
+        .expect("irrelevant worker_count should not block the selected layout");
+        assert_eq!(settings.agent_slots.len(), expected_slots);
+
+        let _ = std::fs::remove_dir_all(project_dir);
+    }
+}
+
+#[test]
 fn workspace_plan_global_option_classification_keeps_per_key_misses_local() {
     assert!(matches!(
         classify_workspace_plan_global_option(false, b"unknown option"),

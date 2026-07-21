@@ -1854,7 +1854,7 @@ struct WorkspacePlanGlobalSettings {
     model: Option<String>,
     prompt_transport: Option<String>,
     external_operator: Option<bool>,
-    worker_count: Option<u64>,
+    worker_count: Option<i32>,
     legacy_role_layout: Option<bool>,
 }
 
@@ -3503,8 +3503,8 @@ fn read_bridge_settings(project_dir: &Path) -> io::Result<BridgeSettings> {
     let legacy_role_layout = yaml_bool(&root, "legacy_role_layout")
         .or_else(|| yaml_bool(&root, "legacy-role-layout"))
         .unwrap_or(false);
-    let worker_count = yaml_u64(&root, "worker_count")
-        .or_else(|| yaml_u64(&root, "worker-count"))
+    let worker_count = yaml_i32(&root, "worker_count")
+        .or_else(|| yaml_i32(&root, "worker-count"))
         .unwrap_or(6);
     if settings.agent_slots.is_empty() && external_operator && !legacy_role_layout {
         for index in 1..=worker_count {
@@ -3525,7 +3525,7 @@ fn read_bridge_settings(project_dir: &Path) -> io::Result<BridgeSettings> {
 
 fn generated_workspace_plan_worker_slots(
     settings: &BridgeSettings,
-    worker_count: u64,
+    worker_count: i32,
 ) -> Vec<ProviderSlotConfig> {
     (1..=worker_count)
         .map(|index| ProviderSlotConfig {
@@ -3674,12 +3674,18 @@ where
             .or_else(|| yaml_bool(&root, "external-operator"))
             .or(globals.external_operator)
             .unwrap_or(true);
-        let worker_count = yaml_u64(&root, "worker_count")
-            .or_else(|| yaml_u64(&root, "worker-count"))
+        let worker_count = yaml_i32(&root, "worker_count")
+            .or_else(|| yaml_i32(&root, "worker-count"))
             .or(globals.worker_count)
             .unwrap_or(6);
 
         settings.agent_slots.clear();
+        if !legacy_role_layout && worker_count < 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "workspace-plan worker_count must be at least 1 when agent_slots are omitted and legacy_role_layout is disabled.",
+            ));
+        }
         if external_operator && !legacy_role_layout {
             settings.agent_slots = generated_workspace_plan_worker_slots(&settings, worker_count);
         }
@@ -3719,9 +3725,9 @@ where
                 settings.prompt_transport = Some(normalized);
             }
             "@bridge-external-operator" => {
-                settings.external_operator = workspace_plan_global_bool(value)
+                settings.external_operator = workspace_plan_bool(value)
             }
-            "@bridge-worker-count" => settings.worker_count = value.parse::<u64>().ok(),
+            "@bridge-worker-count" => settings.worker_count = workspace_plan_i32(value),
             "@bridge-execution-profile" => {
                 let normalized = value.to_ascii_lowercase();
                 if !matches!(normalized.as_str(), "local-windows" | "isolated-enterprise") {
@@ -3734,7 +3740,7 @@ where
                 }
             }
             "@bridge-legacy-role-layout" => {
-                settings.legacy_role_layout = workspace_plan_global_bool(value)
+                settings.legacy_role_layout = workspace_plan_bool(value)
             }
             _ => unreachable!("workspace-plan global option allowlist is exhaustive"),
         }
@@ -3742,12 +3748,16 @@ where
     Ok(settings)
 }
 
-fn workspace_plan_global_bool(value: &str) -> Option<bool> {
-    match value.to_ascii_lowercase().as_str() {
+fn workspace_plan_bool(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
         "true" | "1" | "yes" | "on" => Some(true),
         "false" | "0" | "no" | "off" => Some(false),
         _ => None,
     }
+}
+
+fn workspace_plan_i32(value: &str) -> Option<i32> {
+    value.trim().parse::<i32>().ok()
 }
 
 fn merge_role_config(
@@ -3948,26 +3958,19 @@ fn yaml_string(value: &serde_yaml::Value, key: &str) -> Option<String> {
 }
 
 fn yaml_bool(value: &serde_yaml::Value, key: &str) -> Option<bool> {
-    yaml_get(value, key).and_then(|item| {
-        item.as_bool().or_else(|| {
-            item.as_str()
-                .map(str::trim)
-                .and_then(|text| match text.to_ascii_lowercase().as_str() {
-                    "true" => Some(true),
-                    "false" => Some(false),
-                    _ => None,
-                })
-        })
+    yaml_get(value, key).and_then(|item| match item {
+        serde_yaml::Value::Bool(value) => workspace_plan_bool(if *value { "true" } else { "false" }),
+        serde_yaml::Value::Number(value) => workspace_plan_bool(&value.to_string()),
+        serde_yaml::Value::String(value) => workspace_plan_bool(value),
+        _ => None,
     })
 }
 
-fn yaml_u64(value: &serde_yaml::Value, key: &str) -> Option<u64> {
-    yaml_get(value, key).and_then(|item| {
-        item.as_u64().or_else(|| {
-            item.as_str()
-                .map(str::trim)
-                .and_then(|text| text.parse::<u64>().ok())
-        })
+fn yaml_i32(value: &serde_yaml::Value, key: &str) -> Option<i32> {
+    yaml_get(value, key).and_then(|item| match item {
+        serde_yaml::Value::Number(value) => workspace_plan_i32(&value.to_string()),
+        serde_yaml::Value::String(value) => workspace_plan_i32(value),
+        _ => None,
     })
 }
 
