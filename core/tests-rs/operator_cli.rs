@@ -5,6 +5,11 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+#[allow(dead_code)]
+#[rustfmt::skip]
+#[path = "../src/workspace_project_settings.rs"]
+mod canonical_project_settings_reader;
+
 fn run_project_settings_render(input: &[u8], extra_args: &[&str]) -> std::process::Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_winsmux"));
     command
@@ -662,6 +667,74 @@ fn project_settings_render_creates_canonical_block_yaml_from_empty_source() {
     assert_eq!(
         String::from_utf8(output.stdout).expect("UTF-8 YAML output"),
         "agent_slots:\n  []\nroles:\n  {}\nvault_keys:\n  []\n"
+    );
+}
+
+#[test]
+fn project_settings_render_uses_reader_canonicalization_for_mixed_case_owned_keys() {
+    let original = "Agent: claude # top-comment\nagent_slots:\n  - Slot-ID: worker-1\n    Model-Source: legacy\n    Future-Slot: keep # slot-comment\nroles:\n  worker:\n    Model-Source: legacy-role\n    Future-Role: keep # role-comment\n";
+    let desired = serde_json::json!({
+        "agent": "codex",
+        "agent_slots": [{
+            "slot_id": "worker-1",
+            "model_source": "operator-override"
+        }],
+        "roles": {
+            "worker": {
+                "model_source": "provider-default"
+            }
+        }
+    });
+    let input = serde_json::to_vec(&serde_json::json!({
+        "original_yaml": original,
+        "desired_settings": desired,
+        "owned_keys": ["agent", "agent_slots", "roles"],
+        "nested_contract": {
+            "agent_slots": {
+                "identity_key": "slot_id",
+                "owned_keys": ["slot_id", "model_source"],
+                "aliases": {}
+            },
+            "roles": { "owned_keys": ["model_source"] }
+        }
+    }))
+    .expect("serialize mixed-case renderer payload");
+    let output = run_project_settings_render(&input, &[]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).expect("UTF-8 YAML output");
+    assert!(text.contains("Agent: \"codex\" # top-comment"));
+    assert!(text.contains("Slot-ID: \"worker-1\""));
+    assert!(text.contains("Model-Source: \"operator-override\""));
+    assert!(text.contains("Future-Slot: keep # slot-comment"));
+    assert!(text.contains("Model-Source: \"provider-default\""));
+    assert!(text.contains("Future-Role: keep # role-comment"));
+    assert!(!text.lines().any(|line| line.starts_with("agent:")));
+    assert!(!text
+        .lines()
+        .any(|line| line.trim_start().starts_with("slot_id:")));
+    assert!(!text
+        .lines()
+        .any(|line| line.trim_start().starts_with("model_source:")));
+
+    let project = tempfile::tempdir().expect("create canonical reader fixture");
+    fs::write(project.path().join(".winsmux.yaml"), &text)
+        .expect("write rendered project settings");
+    let settings = canonical_project_settings_reader::read(project.path())
+        .expect("canonical reader must accept the rendered aliases without conflicts");
+    assert_eq!(settings.agent.as_deref(), Some("codex"));
+    assert_eq!(settings.agent_slots.len(), 1);
+    assert_eq!(settings.agent_slots[0].slot_id, "worker-1");
+    assert_eq!(
+        settings.agent_slots[0].model_source.as_deref(),
+        Some("operator-override")
+    );
+    assert_eq!(
+        settings.worker_role.model_source.as_deref(),
+        Some("provider-default")
     );
 }
 
@@ -8616,24 +8689,17 @@ panes:
     branch: codex/task266-rust-operator-readmodels-20260424
     head_sha: abc123
     changed_file_count: 2
-    changed_files:
-      - core/src/main.rs
-      - core/src/operator_cli.rs
-    write_scope:
-      - core/src/operator_cli.rs
-    read_scope:
-      - scripts/winsmux-core.ps1
-    constraints:
-      - preserve PowerShell JSON shape
+    changed_files: '["core/src/main.rs","core/src/operator_cli.rs"]'
+    write_scope: '["core/src/operator_cli.rs"]'
+    read_scope: '["scripts/winsmux-core.ps1"]'
+    constraints: '["preserve PowerShell JSON shape"]'
     expected_output: Rust read-only CLI
-    verification_plan:
-      - cargo test --manifest-path core/Cargo.toml --test operator_cli
+    verification_plan: '["cargo test --manifest-path core/Cargo.toml --test operator_cli"]'
     review_required: true
     provider_target: codex:gpt-5.4
     agent_role: worker
     timeout_policy: standard
-    handoff_refs:
-      - docs/handoff.md
+    handoff_refs: '["docs/handoff.md"]'
     last_event: operator.review_requested
     last_event_at: 2026-04-24T12:00:00+09:00
   reviewer-1:

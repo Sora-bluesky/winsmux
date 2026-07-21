@@ -185,7 +185,7 @@ fn normalize_owned_keys(keys: &[String]) -> Result<BTreeSet<String>, ()> {
 }
 
 fn normalize_alias(key: &str) -> String {
-    key.replace('-', "_")
+    key.replace('-', "_").to_ascii_lowercase()
 }
 
 impl KeyPolicy {
