@@ -51,6 +51,10 @@ name = "operator_cli"
 path = "tests-rs/operator_cli.rs"
 
 [[test]]
+name = "workspace_recipe_contract"
+path = "tests-rs/workspace_recipe_contract.rs"
+
+[[test]]
 name = "search_ledger_contract"
 path = "tests-rs/search_ledger_contract.rs"
 

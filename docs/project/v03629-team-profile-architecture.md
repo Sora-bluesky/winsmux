@@ -337,8 +337,17 @@ in this order:
 4. the selected role template;
 5. the selected lifecycle template;
 6. task-class templates in the validated order from `.winsmux.yaml`;
-7. bounded runtime assignment metadata: slot ID, task ID, allowed worktree,
-   allowed read/write scope, and expected evidence contract.
+7. bounded launch metadata: slot ID, allowed worktree, session-level
+   read/write scope, and the slot's evidence class.
+
+Worker launch must not require or synthesize a task ID. A session- or
+task-lifecycle slot can be created before any task has been assigned, so the
+launch bundle contains no placeholder task identity, task body, or task-scoped
+authorization. When the operator dispatches real work, the existing typed
+dispatch packet carries the concrete task ID, task-scoped read/write bounds,
+and expected evidence contract. That packet may reference the immutable launch
+bundle digest, but it does not rewrite the launch bundle or infer task state
+from its text.
 
 The bundle is written atomically beneath
 `.winsmux/runtime/prompt-bundles/<session-id>/<slot-id>.md`. It is ephemeral

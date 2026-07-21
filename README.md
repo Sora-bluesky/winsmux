@@ -106,6 +106,7 @@ winsmux compare preflight <left_ref> <right_ref>
 winsmux compare promote <run_id>
 winsmux meta-plan --task "Plan this change" --json
 winsmux meta-plan --task "Plan this change" --roles .winsmux/meta-plan-roles.yaml --review-rounds 2 --json
+winsmux workspace-plan --recipe-id bugfix-two-slot --workflow-id issue-1204 --json
 winsmux skills --json
 ```
 
@@ -128,6 +129,7 @@ winsmux skills --json
 | `winsmux compare preflight` | Check two refs before merge or compare review |
 | `winsmux compare promote` | Export a successful run as input for the next run |
 | `winsmux meta-plan` | Draft a read-only multi-role planning packet before execution |
+| `winsmux workspace-plan` | Validate, resolve, and preview one declarative workspace recipe without creating panes or worktrees |
 | `winsmux skills` | Print agent-readable command skill contracts |
 | `winsmux read` | Read a pane before acting |
 | `winsmux send` | Send text to a pane |

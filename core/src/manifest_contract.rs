@@ -1,5 +1,6 @@
 use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::Path;
 
@@ -8,6 +9,21 @@ pub struct WinsmuxManifest {
     pub version: ManifestU32,
     pub session: ManifestSession,
     pub panes: ManifestPanes,
+    #[serde(default)]
+    pub declarative_workspace: Option<DeclarativeWorkspaceManifest>,
+    #[serde(flatten)]
+    pub additive_sections: BTreeMap<String, serde_yaml::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeclarativeWorkspaceManifest {
+    pub schema_version: u32,
+    pub config_fingerprint: String,
+    pub recipe_id: String,
+    #[serde(default)]
+    pub resolved_bindings: BTreeMap<String, String>,
+    #[serde(default)]
+    pub dry_run_plan_ref: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -413,6 +429,9 @@ impl WinsmuxManifest {
                 self.version.value()
             ));
         }
+        if let Some(projection) = &self.declarative_workspace {
+            validate_declarative_workspace(projection)?;
+        }
         for pane in self.panes_with_labels() {
             validate_pane(&pane.0, pane.1)?;
         }
@@ -438,6 +457,84 @@ impl WinsmuxManifest {
                 .collect(),
         }
     }
+}
+
+fn validate_declarative_workspace(projection: &DeclarativeWorkspaceManifest) -> Result<(), String> {
+    if projection.schema_version != 1 {
+        return Err("declarative_workspace.schema_version must be 1".to_string());
+    }
+    let fingerprint = projection
+        .config_fingerprint
+        .strip_prefix("sha256:")
+        .ok_or_else(|| {
+            "declarative_workspace.config_fingerprint must be sha256:<lowercase hex>".to_string()
+        })?;
+    if fingerprint.len() != 64
+        || !fingerprint
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    {
+        return Err(
+            "declarative_workspace.config_fingerprint must be sha256:<lowercase hex>".to_string(),
+        );
+    }
+    if !is_declarative_workspace_id(&projection.recipe_id)
+        || projection.resolved_bindings.iter().any(|(pane, slot)| {
+            !is_declarative_workspace_id(pane) || !is_declarative_workspace_id(slot)
+        })
+    {
+        return Err("declarative_workspace identifiers must use lowercase kebab-case".to_string());
+    }
+    if !projection.dry_run_plan_ref.is_empty()
+        && !is_safe_declarative_workspace_evidence_ref(&projection.dry_run_plan_ref)
+    {
+        return Err(
+            "declarative_workspace.dry_run_plan_ref must be a safe evidence reference".to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn is_declarative_workspace_id(value: &str) -> bool {
+    let mut parts = value.split('-');
+    let Some(first) = parts.next() else {
+        return false;
+    };
+    if first.is_empty()
+        || !first
+            .bytes()
+            .next()
+            .is_some_and(|byte| byte.is_ascii_lowercase())
+        || !first
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+    {
+        return false;
+    }
+    parts.all(|part| {
+        !part.is_empty()
+            && part
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+    })
+}
+
+fn is_safe_declarative_workspace_evidence_ref(value: &str) -> bool {
+    let Some(path) = value.strip_prefix("evidence:") else {
+        return false;
+    };
+    let mut bytes = path.bytes();
+    let Some(first) = bytes.next() else {
+        return false;
+    };
+    (first.is_ascii_lowercase() || first.is_ascii_digit())
+        && !path.contains("..")
+        && !path.contains('\\')
+        && bytes.all(|byte| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || matches!(byte, b'.' | b'_' | b'-' | b'/')
+        })
 }
 
 fn normalize_manifest_pane(
@@ -788,6 +885,72 @@ mod tests {
         let panes = manifest.normalized_panes();
         assert!(panes.iter().any(|pane| pane.label == "builder-1"));
         assert!(panes.iter().any(|pane| pane.label == "reviewer-1"));
+    }
+
+    #[test]
+    fn manifest_accepts_declarative_workspace_and_unknown_additive_sections() {
+        let manifest = WinsmuxManifest::from_yaml(
+            r#"
+version: 1
+session:
+  name: winsmux-orchestra
+panes: {}
+declarative_workspace:
+  schema_version: 1
+  config_fingerprint: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  recipe_id: review
+  resolved_bindings:
+    implement: worker-1
+    verify: worker-2
+  dry_run_plan_ref: evidence:workspace-plan.json
+workflow_runs:
+  run-1:
+    state: blocked
+"#,
+        )
+        .unwrap();
+        manifest.validate().unwrap();
+
+        let projection = manifest.declarative_workspace.as_ref().unwrap();
+        assert_eq!(projection.schema_version, 1);
+        assert_eq!(
+            projection.config_fingerprint,
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+        assert_eq!(projection.recipe_id, "review");
+        assert_eq!(
+            projection.resolved_bindings.get("verify").unwrap(),
+            "worker-2"
+        );
+        assert_eq!(projection.dry_run_plan_ref, "evidence:workspace-plan.json");
+        assert!(manifest.additive_sections.contains_key("workflow_runs"));
+    }
+
+    #[test]
+    fn manifest_rejects_invalid_declarative_workspace_identity() {
+        let mut manifest = WinsmuxManifest::from_yaml(
+            r#"
+version: 1
+session:
+  name: winsmux-orchestra
+panes: {}
+declarative_workspace:
+  schema_version: 1
+  config_fingerprint: sha256:ABC
+  recipe_id: Review
+"#,
+        )
+        .unwrap();
+
+        let error = manifest.validate().unwrap_err();
+        assert!(error.contains("config_fingerprint"));
+        let projection = manifest.declarative_workspace.as_mut().unwrap();
+        projection.config_fingerprint =
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string();
+        projection.recipe_id = "review".to_string();
+        projection.dry_run_plan_ref = "evidence:../private".to_string();
+        let error = manifest.validate().unwrap_err();
+        assert!(error.contains("dry_run_plan_ref"));
     }
 
     #[test]

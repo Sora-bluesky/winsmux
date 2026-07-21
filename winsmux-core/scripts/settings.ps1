@@ -2395,6 +2395,35 @@ function Read-BridgeProjectSettings {
     return ConvertFrom-BridgeManualYaml -Content $raw
 }
 
+function Get-BridgePreservedProjectSettingsBlocks {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return @()
+    }
+    $content = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
+    $blocks = [System.Collections.Generic.List[string]]::new()
+    $current = [System.Collections.Generic.List[string]]::new()
+    $preserve = $false
+    foreach ($line in ($content -split "\r?\n")) {
+        if ($line -match '^([A-Za-z_][A-Za-z0-9_-]*):') {
+            if ($preserve -and $current.Count -gt 0) {
+                $blocks.Add(($current -join "`n")) | Out-Null
+                $current.Clear()
+            }
+            $key = [string]$Matches[1] -replace '-', '_'
+            $preserve = -not $script:BridgeSettingsSchema.Contains($key)
+        }
+        if ($preserve) {
+            $current.Add($line) | Out-Null
+        }
+    }
+    if ($preserve -and $current.Count -gt 0) {
+        $blocks.Add(($current -join "`n")) | Out-Null
+    }
+    return @($blocks)
+}
+
 function Test-BridgeSettingValue {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
@@ -2851,6 +2880,29 @@ function Get-BridgeSettings {
     }
 
     return $settings
+}
+
+function Get-BridgeWorkspaceRecipeSlotCatalog {
+    param(
+        [Parameter(Mandatory = $true)]$Settings,
+        [Parameter(Mandatory = $true)][string]$RootPath
+    )
+
+    $catalog = [ordered]@{}
+    foreach ($slot in @($Settings.agent_slots)) {
+        $slotId = if ($slot -is [System.Collections.IDictionary]) { [string]$slot['slot_id'] } else { [string]$slot.slot_id }
+        if ([string]::IsNullOrWhiteSpace($slotId)) {
+            continue
+        }
+        $effective = Get-SlotAgentConfig -SlotId $slotId -Settings $Settings -RootPath $RootPath
+        $catalog[$slotId] = [ordered]@{
+            slot_id                    = $slotId
+            supports_file_edit         = [bool]$effective.SupportsFileEdit
+            supports_verification      = [bool]$effective.SupportsVerification
+            supports_structured_result = [bool]$effective.SupportsStructuredResult
+        }
+    }
+    return $catalog
 }
 
 function Get-BridgeSettingsMetadata {
@@ -3390,8 +3442,9 @@ function Save-BridgeSettings {
 
     if ($Scope -eq 'project') {
         $path = Get-BridgeProjectSettingsPath -RootPath $RootPath
+        $preservedBlocks = @(Get-BridgePreservedProjectSettingsBlocks -Path $path)
         $lines = [System.Collections.Generic.List[string]]::new()
-        $hasAgentSlots = @($normalized.agent_slots).Count -gt 0
+        $hasAgentSlots = $normalized.Contains('agent_slots') -and @($normalized['agent_slots']).Count -gt 0
 
         foreach ($key in $script:BridgeSettingsSchema.Keys) {
             if (-not $normalized.Contains($key)) {
@@ -3451,6 +3504,13 @@ function Save-BridgeSettings {
                 }
             } else {
                 $lines.Add("${key}: $(ConvertTo-BridgeYamlScalar $value)")
+            }
+        }
+
+
+        foreach ($block in $preservedBlocks) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$block)) {
+                $lines.Add(([string]$block).TrimEnd())
             }
         }
 

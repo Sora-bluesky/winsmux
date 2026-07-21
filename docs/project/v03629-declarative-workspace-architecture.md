@@ -96,12 +96,12 @@ logical namespaces.
 
 | Namespace | Owner | May contain | Must not contain |
 | --- | --- | --- | --- |
-| `team_profile`, `agent_slots` | Lane B, especially TASK-713/TASK-715 | Slot identity, provider, model, reasoning effort, role profile, lifecycle, task classes, and provider capability settings. | Workspace geometry, workflow DAG state, context-pack content, or run checkpoints. |
-| `workspace_recipes`, `workflows`, `context_packs` | Lane A, TASK-658/TASK-660 | Pane geometry, logical workflow roles, slot/capability references, worktree policy, typed startup actions, DAG nodes, resume/cleanup policy, and bounded repository projections. | Provider/model assignment, secrets, prompt bodies, raw transcripts, or a copy of `agent_slots`. |
+| `team-profile`, `agent-slots` | Lane B, especially TASK-713/TASK-715 | Slot identity, provider, model, reasoning effort, role profile, lifecycle, task classes, and provider capability settings. | Workspace geometry, workflow DAG state, context-pack content, or run checkpoints. |
+| `workspace-recipes`, `workflows`, `context-packs` | Lane A, TASK-658/TASK-660 | Pane geometry, logical workflow roles, slot/capability references, worktree policy, typed startup actions, DAG nodes, resume/cleanup policy, and bounded repository projections. | Provider/model assignment, secrets, prompt bodies, raw transcripts, or a copy of `agent-slots`. |
 
 Resolution order is fixed:
 
-1. Lane B normalizes `team_profile` and `agent_slots` into the effective slot
+1. Lane B normalizes `team-profile` and `agent-slots` into the effective slot
    catalog.
 2. Lane A validates recipe bindings against slot IDs and capabilities from
    that catalog.
@@ -114,7 +114,7 @@ Resolution order is fixed:
 
 This boundary prevents two sources of truth for worker assignment. Until Lane
 B lands, Lane A uses the effective slots already produced from current
-`agent_slots`; future Lane B fields are optional inputs, not a prerequisite for
+`agent-slots`; future Lane B fields are optional inputs, not a prerequisite for
 parsing Lane A configuration. TASK-662 cannot declare the v0.36.29 release
 gate complete until TASK-718 has verified the combined desktop/CLI behavior.
 
@@ -217,12 +217,19 @@ Normative field rules:
 - IDs are stable ASCII identifiers and unique within their containing map.
 - `slot-ref` is an exact Lane B slot reference. `slot-selector` is a
   deterministic capability constraint and must produce exactly one effective
-  slot after availability masking.
+  slot from the configured effective slot catalog. TASK-658 does not use live
+  pane readiness as an availability signal. `slot-ref` and `slot-selector` are
+  mutually exclusive.
+- The TASK-658 capability vocabulary is closed: `file-edit` requires
+  `supports_file_edit`; `review` requires both `supports_verification` and
+  `supports_structured_result`. Pane and selector requirements are combined
+  and de-duplicated before matching.
 - `workflow-role` is a role in this workflow only. It is not Lane B's persistent
   slot `role_profile` and cannot rewrite it.
 - Startup actions are a closed typed enum with schema-validated arguments.
-  Arbitrary shell text, inline credentials, and provider prompt bodies are not
-  valid startup actions.
+  TASK-658 accepts exactly `ensure-managed-worktree` and `ensure-slot-ready`.
+  Arbitrary shell text, unknown fields, inline credentials, and provider prompt
+  bodies are not valid startup actions.
 - Worktree paths are derived by runtime policy. Config may provide a safe name
   template but not an absolute private path or an escape outside the managed
   worktree root.
@@ -230,6 +237,15 @@ Normative field rules:
   idempotency key and an explicit compensation or cleanup classification.
 - Context-pack `include` values are allowlisted projections. Omitted limits use
   conservative defaults; disabling privacy exclusions is not supported.
+
+Recipe selection is explicit. The TASK-658 preview entry point is
+`winsmux workspace-plan --recipe-id <id> [--workflow-id <id>] --json
+--project-dir <path>`. Merely adding `workspace-recipes` does not select a
+recipe or alter startup. A `{{workflow-id}}` template requires the explicit
+`--workflow-id` value; recipe IDs are never substituted for missing workflow
+identity. Preview normalizes and validates the complete selected recipe before
+returning deterministic JSON and does not create logs, evidence, temporary
+files, manifests, processes, panes, branches, directories, or worktrees.
 
 ### 3.3 Runtime manifest projection
 
@@ -357,13 +373,13 @@ The merge order remains TASK-658, TASK-659, TASK-660, TASK-661, then TASK-662.
 ### 6.1 TASK-658: workspace layout and recipe definitions
 
 **Owns:** the Lane A `.winsmux.yaml` schema and normalization for
-`workspace_recipes`; logical pane geometry; workflow-role-to-slot references;
+`workspace-recipes`; logical pane geometry; workflow-role-to-slot references;
 capability validation; managed-worktree policy; the closed startup-action
 enum; dry-run workspace planning; and projection of the selected recipe and
 resolved bindings into the runtime manifest.
 
-**Does not own:** provider/model/reasoning assignment, `team_profile`,
-`agent_slots`, workflow execution state, context-pack generation, presets, or
+**Does not own:** provider/model/reasoning assignment, `team-profile`,
+`agent-slots`, workflow execution state, context-pack generation, presets, or
 desktop release parity.
 
 **Acceptance gate:**
@@ -407,7 +423,7 @@ repository context selection, gallery content, or final desktop/CLI parity.
 
 ### 6.3 TASK-660: repository context package
 
-**Owns:** the `context_packs` schema; deterministic `code_map`, changed-file,
+**Owns:** the `context-packs` schema; deterministic `code_map`, changed-file,
 test, and evidence-ref projections; byte/item budgets; freshness and source-head
 checks; redaction; pack digests; and integration with the existing ledger
 context contract, Context Capsule, and Checkpoint package.
@@ -505,12 +521,12 @@ similar.
 ## 8. Migration, compatibility, and old-path treatment
 
 The current `.winsmux.yaml` keys, default external-operator layout,
-`agent_slots` behavior, `orchestra-start.ps1` entrypoint, one-shot
+`agent-slots` behavior, `orchestra-start.ps1` entrypoint, one-shot
 `team-pipeline.ps1` path, and operator-owned decisions are intentionally
 preserved.
 
-Lane A keys are opt-in. Absence of `workspace_recipes`, `workflows`, and
-`context_packs` selects current behavior. The gallery may generate a proposal,
+Lane A keys are opt-in. Absence of `workspace-recipes`, `workflows`, and
+`context-packs` selects current behavior. The gallery may generate a proposal,
 but no existing project is rewritten until an explicit migration apply.
 Unknown incompatible schema versions fail with an actionable error; they do
 not fall back to a partially understood workflow.
@@ -541,7 +557,7 @@ worktree merely because a workflow record is incomplete.
 - replacing the external operator or existing operator/pane responsibility
   boundary
 - removing or silently migrating the current layout and one-shot pipeline
-- owning Lane B's `team_profile`, `agent_slots`, provider, model, reasoning,
+- owning Lane B's `team-profile`, `agent-slots`, provider, model, reasoning,
   role-profile, lifecycle, or task-class configuration
 - storing raw transcripts, prompt bodies, secrets, credential material,
   provider hidden metadata, raw tool output, or private absolute paths

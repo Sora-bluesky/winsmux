@@ -292,6 +292,36 @@ Describe 'Get-OrchestraLayoutSettings' {
         }
     }
 
+    It 'TASK658 preserves Lane B and unknown top-level blocks when saving legacy settings' {
+        $projectRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-settings-preserve-' + [guid]::NewGuid().ToString('N'))
+        try {
+            New-Item -ItemType Directory -Path $projectRoot -Force | Out-Null
+            $path = Join-Path $projectRoot '.winsmux.yaml'
+@'
+agent: codex
+team-profile:
+  schema-version: 1
+  preset: official-balanced-v1
+workspace-recipes:
+  review:
+    schema-version: 1
+future-owner:
+  enabled: true
+'@ | Set-Content -LiteralPath $path -Encoding UTF8
+
+            Save-BridgeSettings -Scope project -RootPath $projectRoot -Settings ([ordered]@{ agent = 'codex'; model = 'gpt-5.4' })
+
+            $saved = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+            $saved | Should -Match '(?m)^team-profile:'
+            $saved | Should -Match '(?m)^workspace-recipes:'
+            $saved | Should -Match '(?m)^future-owner:'
+            $saved | Should -Match 'preset: official-balanced-v1'
+            $saved | Should -Match 'schema-version: 1'
+        } finally {
+            Remove-Item -LiteralPath $projectRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     It 'preserves legacy role layouts only when explicit opt-in is enabled' {
         $layout = Get-OrchestraLayoutSettings -Settings ([ordered]@{
             external_operator = $false
@@ -1071,6 +1101,67 @@ Describe 'manifest worker isolation metadata' {
         $entry.builder_worktree_path | Should -Be 'C:\repo\.worktrees\worker-1'
         $entry.worktree_git_dir | Should -Be 'C:\repo\.git\worktrees\worker-1'
         $entry.expected_origin | Should -Be 'https://github.com/example/repo.git'
+    }
+
+    It 'TASK658 round-trips declarative workspace and preserves unknown additive sections' {
+        $content = @'
+version: 1
+saved_at: '2026-07-21T00:00:00Z'
+session:
+  name: 'winsmux-orchestra'
+panes: {}
+tasks:
+  queued: []
+  in_progress: []
+  completed: []
+worktrees: {}
+declarative_workspace:
+  schema_version: '1'
+  config_fingerprint: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+  recipe_id: 'review'
+  resolved_bindings:
+    implement: 'worker-1'
+    verify: 'worker-2'
+workflow_runs:
+  run-1:
+    state: 'blocked'
+'@
+
+        $first = ConvertFrom-ManifestYaml -Content $content
+        $serialized = ConvertTo-ManifestYaml -Manifest $first
+        $second = ConvertFrom-ManifestYaml -Content $serialized
+
+        $second.declarative_workspace.recipe_id | Should -Be 'review'
+        $second.declarative_workspace.config_fingerprint | Should -Be ('sha256:' + ('a' * 64))
+        $second.declarative_workspace.resolved_bindings.implement | Should -Be 'worker-1'
+        $second.declarative_workspace.resolved_bindings.verify | Should -Be 'worker-2'
+        $serialized | Should -Match '(?m)^workflow_runs:'
+        $serialized | Should -Match "(?m)^    state: 'blocked'"
+    }
+
+    It 'TASK658 derives a deterministic declarative workspace fingerprint without writing state' {
+        $plan = [ordered]@{
+            recipe_id = 'review'
+            config_fingerprint = ('sha256:' + ('a' * 64))
+            resolved_bindings = [ordered]@{ implement = 'worker-1'; verify = 'worker-2' }
+        }
+        $first = New-WinsmuxDeclarativeWorkspaceProjection -Plan $plan
+        $second = New-WinsmuxDeclarativeWorkspaceProjection -Plan $plan
+
+        $first.config_fingerprint | Should -Be $second.config_fingerprint
+        $first.config_fingerprint | Should -Be $plan.config_fingerprint
+        $first.config_fingerprint | Should -Match '^sha256:[0-9a-f]{64}$'
+        $first.resolved_bindings.verify | Should -Be 'worker-2'
+
+        $invalid = [ordered]@{
+            recipe_id = 'C:\private\recipe'
+            config_fingerprint = $plan.config_fingerprint
+            resolved_bindings = $plan.resolved_bindings
+        }
+        { New-WinsmuxDeclarativeWorkspaceProjection -Plan $invalid } |
+            Should -Throw '*stable lowercase ASCII identifier*'
+        { New-WinsmuxDeclarativeWorkspaceProjection -Plan $plan -DryRunPlanRef 'evidence:../private' } |
+            Should -Throw '*safe evidence reference*'
     }
 }
 

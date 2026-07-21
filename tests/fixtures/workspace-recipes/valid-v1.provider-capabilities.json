@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "adapter": "codex",
+      "command": "codex",
+      "prompt_transports": ["argv"],
+      "supports_file_edit": true,
+      "supports_verification": false,
+      "supports_structured_result": false
+    },
+    "review-only": {
+      "adapter": "review-only",
+      "command": "review-only",
+      "prompt_transports": ["argv"],
+      "supports_file_edit": false,
+      "supports_verification": true,
+      "supports_structured_result": true
+    }
+  }
+}

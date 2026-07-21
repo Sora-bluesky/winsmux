@@ -19,6 +19,7 @@ use crate::ledger::{attach_evidence_chain_to_event, public_changed_files};
 use crate::machine_contract::machine_contract_catalog;
 use crate::read_path;
 use crate::types::VERSION;
+use crate::workspace_recipe::{normalize_workspace_plan, SlotCapabilities};
 
 static REVIEW_REQUEST_COUNTER: AtomicU32 = AtomicU32::new(0);
 static ATOMIC_WRITE_COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -208,6 +209,48 @@ pub fn run_provider_capabilities_command(args: &[&String]) -> io::Result<()> {
         println!("  {provider_id}");
     }
     Ok(())
+}
+
+pub fn run_workspace_plan_command(args: &[&String]) -> io::Result<()> {
+    if should_print_help(args) {
+        println!("{}", usage_for("workspace-plan"));
+        return Ok(());
+    }
+
+    let options = parse_workspace_plan_options(args)?;
+    let settings_path = options.project_dir.join(".winsmux.yaml");
+    let yaml = fs::read_to_string(&settings_path).map_err(|error| {
+        io::Error::new(error.kind(), "failed to read project .winsmux.yaml.")
+    })?;
+    let settings = read_bridge_settings(&options.project_dir).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "failed to resolve the effective slot catalog.",
+        )
+    })?;
+    let mut slots = Vec::with_capacity(settings.agent_slots.len());
+    for slot in &settings.agent_slots {
+        let effective = resolve_slot_agent_config(&options.project_dir, &settings, &slot.slot_id)
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "failed to resolve the effective slot catalog.",
+                )
+            })?;
+        slots.push(SlotCapabilities {
+            slot_id: slot.slot_id.clone(),
+            supports_file_edit: effective.supports_file_edit,
+            supports_verification: effective.supports_verification,
+            supports_structured_result: effective.supports_structured_result,
+        });
+    }
+    let plan = normalize_workspace_plan(
+        &yaml,
+        &options.recipe_id,
+        options.workflow_id.as_deref(),
+        &slots,
+    )?;
+    write_json(&plan)
 }
 
 pub fn run_operator_jobs_command(args: &[&String]) -> io::Result<()> {
@@ -1667,6 +1710,13 @@ struct ProviderCapabilitiesOptions {
 }
 
 #[derive(Debug)]
+struct WorkspacePlanOptions {
+    recipe_id: String,
+    workflow_id: Option<String>,
+    project_dir: PathBuf,
+}
+
+#[derive(Debug)]
 struct OperatorJobsOptions {
     project_dir: PathBuf,
     action: String,
@@ -1902,6 +1952,89 @@ fn parse_provider_capabilities_options(
         project_dir,
         provider_id,
         json,
+    })
+}
+
+fn parse_workspace_plan_options(args: &[&String]) -> io::Result<WorkspacePlanOptions> {
+    let mut recipe_id: Option<String> = None;
+    let mut workflow_id: Option<String> = None;
+    let mut project_dir = env::current_dir()?;
+    let mut project_dir_seen = false;
+    let mut json = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--recipe-id" => {
+                if recipe_id.is_some() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--recipe-id may be specified only once.",
+                    ));
+                }
+                recipe_id = Some(required_option_value(args, index, "--recipe-id")?);
+                index += 2;
+            }
+            "--workflow-id" => {
+                if workflow_id.is_some() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--workflow-id may be specified only once.",
+                    ));
+                }
+                workflow_id = Some(required_option_value(args, index, "--workflow-id")?);
+                index += 2;
+            }
+            "--project-dir" => {
+                if project_dir_seen {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--project-dir may be specified only once.",
+                    ));
+                }
+                project_dir_seen = true;
+                project_dir = PathBuf::from(required_option_value(
+                    args,
+                    index,
+                    "--project-dir",
+                )?);
+                index += 2;
+            }
+            "--json" => {
+                if json {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--json may be specified only once.",
+                    ));
+                }
+                json = true;
+                index += 1;
+            }
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "unknown workspace-plan argument.",
+                ));
+            }
+        }
+    }
+
+    let recipe_id = recipe_id.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "workspace-plan requires --recipe-id <id>.",
+        )
+    })?;
+    if !json {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "workspace-plan requires --json.",
+        ));
+    }
+    Ok(WorkspacePlanOptions {
+        recipe_id,
+        workflow_id,
+        project_dir,
     })
 }
 
@@ -6646,6 +6779,9 @@ fn usage_for(command: &str) -> &'static str {
         "desktop-summary" => "usage: winsmux desktop-summary [--json] [--stream] [--project-dir <path>]",
         "meta-plan" => {
             "usage: winsmux meta-plan --task <text> [--roles <path>] [--review-rounds <1|2>] [--json] [--project-dir <path>] [--session <name>]"
+        }
+        "workspace-plan" => {
+            "usage: winsmux workspace-plan --recipe-id <id> [--workflow-id <id>] --json [--project-dir <path>]"
         }
         "provider-capabilities" => {
             "usage: winsmux provider-capabilities [provider] [--json] [--project-dir <path>]"
