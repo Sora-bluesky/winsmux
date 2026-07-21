@@ -160,6 +160,126 @@ fn project_settings_render_coalesces_all_owned_flow_deletions() {
 }
 
 #[test]
+fn project_settings_render_preserves_flow_separator_comment_when_deleting_tail() {
+    let original =
+        "{workspace-recipes: {review: {schema-version: 1}}, # recipe comment\n reasoning_effort: high}\n";
+    let input = render_payload(original, "{}\n", &["reasoning_effort"]);
+    let output = run_project_settings_render(&input, &[]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).expect("UTF-8 YAML output");
+    assert!(text.contains(", # recipe comment"));
+    assert!(!text.contains("reasoning_effort"));
+    let mapping = yaml_mapping(text.as_bytes());
+    assert_eq!(mapping.len(), 1);
+    assert_eq!(
+        mapping
+            .get(serde_yaml::Value::String("workspace-recipes".into()))
+            .and_then(serde_yaml::Value::as_mapping)
+            .and_then(|workspace| workspace.get(serde_yaml::Value::String("review".into())))
+            .and_then(serde_yaml::Value::as_mapping)
+            .and_then(|review| {
+                review.get(serde_yaml::Value::String("schema-version".into()))
+            }),
+        Some(&serde_yaml::Value::Number(1.into()))
+    );
+}
+
+#[test]
+fn project_settings_render_reuses_flow_separator_comment_when_replacing_tail() {
+    let original =
+        "{workspace-recipes: {review: {schema-version: 1}}, # recipe comment\n reasoning_effort: high}\n";
+    let input = render_payload(
+        original,
+        "agent: codex\n",
+        &["agent", "reasoning_effort"],
+    );
+    let output = run_project_settings_render(&input, &[]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).expect("UTF-8 YAML output");
+    assert!(text.contains(", # recipe comment"));
+    assert!(!text.contains("reasoning_effort"));
+    let mapping = yaml_mapping(text.as_bytes());
+    assert_eq!(mapping.len(), 2);
+    assert_eq!(
+        mapping
+            .get(serde_yaml::Value::String("workspace-recipes".into()))
+            .and_then(serde_yaml::Value::as_mapping)
+            .and_then(|workspace| workspace.get(serde_yaml::Value::String("review".into())))
+            .and_then(serde_yaml::Value::as_mapping)
+            .and_then(|review| {
+                review.get(serde_yaml::Value::String("schema-version".into()))
+            }),
+        Some(&serde_yaml::Value::Number(1.into()))
+    );
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("agent".into())),
+        Some(&serde_yaml::Value::String("codex".into()))
+    );
+}
+
+#[test]
+fn project_settings_render_preserves_unknown_alias_and_tagged_values() {
+    let cases = [
+        (
+            "defaults: &d\n  enabled: true\nfuture-owner: *d\nagent: old\n",
+            "future-owner: *d",
+        ),
+        (
+            "future-owner: !future keep\nagent: old\n",
+            "future-owner: !future keep",
+        ),
+    ];
+
+    for (original, preserved) in cases {
+        let input = render_payload(original, "agent: codex\n", &["agent"]);
+        let output = run_project_settings_render(&input, &[]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let text = String::from_utf8(output.stdout).expect("UTF-8 YAML output");
+        assert!(text.contains(preserved));
+        assert_eq!(
+            yaml_mapping(text.as_bytes()).get(serde_yaml::Value::String("agent".into())),
+            Some(&serde_yaml::Value::String("codex".into()))
+        );
+    }
+}
+
+#[test]
+fn project_settings_render_replaces_owned_alias_and_tagged_values() {
+    let cases = [
+        "defaults: &d codex\nagent: *d\n",
+        "agent: !legacy old\n",
+    ];
+
+    for original in cases {
+        let input = render_payload(original, "agent: codex\n", &["agent"]);
+        let output = run_project_settings_render(&input, &[]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            yaml_mapping(&output.stdout).get(serde_yaml::Value::String("agent".into())),
+            Some(&serde_yaml::Value::String("codex".into()))
+        );
+    }
+}
+
+#[test]
 fn project_settings_render_preserves_multiline_flow_comments_and_is_idempotent() {
     let original = "{\n  unknown: 'keep', # unknown-comment\n  owned: old # owned-comment\n}\n";
     let desired = "{owned: new, added: {nested: true}}\n";

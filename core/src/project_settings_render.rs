@@ -312,13 +312,12 @@ fn build_edit_plan(
         )?);
     }
 
-    let edits = coalesce_deletion_edits(source, mapping, &entries, edits)?;
+    let edits = coalesce_deletion_edits(mapping, &entries, edits)?;
     validate_edit_plan(source, mapping, &edits)?;
     Ok(edits)
 }
 
 fn coalesce_deletion_edits(
-    source: &str,
     mapping: &CstMapping,
     entries: &[RootEntryRange],
     edits: Vec<TextEdit>,
@@ -341,7 +340,7 @@ fn coalesce_deletion_edits(
 
     if mapping.is_flow_style() {
         let close = mapping.byte_range().end.checked_sub(1).ok_or(())? as usize;
-        for deletion in &mut coalesced {
+        for deletion in &coalesced {
             if deletion.end != close {
                 continue;
             }
@@ -351,34 +350,21 @@ fn coalesce_deletion_edits(
             else {
                 continue;
             };
-            let Some(previous) = first_deleted
-                .checked_sub(1)
-                .and_then(|index| entries.get(index))
-            else {
+            if first_deleted == 0 {
                 continue;
-            };
-            let separator = source
-                .get(previous.value_end..deletion.start)
-                .ok_or(())?;
-            let comma = flow_separator_comma(separator)?;
-            deletion.start = previous.value_end.checked_add(comma).ok_or(())?;
+            }
+            if let Some(addition) = preserved.iter_mut().find(|edit| {
+                edit.start == close
+                    && edit.end == close
+                    && edit.replacement.starts_with(", ")
+            }) {
+                addition.replacement.replace_range(..2, "");
+            }
         }
     }
 
     preserved.extend(coalesced);
     Ok(preserved)
-}
-
-fn flow_separator_comma(separator: &str) -> Result<usize, ()> {
-    let mut comma = None;
-    for (offset, byte) in separator.bytes().enumerate() {
-        match byte {
-            b',' if comma.is_none() => comma = Some(offset),
-            byte if byte.is_ascii_whitespace() => {}
-            _ => return Err(()),
-        }
-    }
-    comma.ok_or(())
 }
 
 fn root_entry_ranges(mapping: &CstMapping) -> Result<Vec<RootEntryRange>, ()> {
@@ -411,7 +397,12 @@ fn yaml_node_range(node: &YamlNode) -> Result<yaml_edit::TextPosition, ()> {
         YamlNode::Scalar(scalar) => Ok(scalar.byte_range()),
         YamlNode::Mapping(mapping) => Ok(mapping.byte_range()),
         YamlNode::Sequence(sequence) => Ok(sequence.byte_range()),
-        YamlNode::Alias(_) | YamlNode::TaggedNode(_) => Err(()),
+        YamlNode::Alias(value) => Ok(yaml_edit::advanced::text_range_to_position(
+            value.syntax().text_range(),
+        )),
+        YamlNode::TaggedNode(value) => Ok(yaml_edit::advanced::text_range_to_position(
+            value.syntax().text_range(),
+        )),
     }
 }
 
@@ -444,20 +435,6 @@ fn flow_deletion_range(
     if let Some(next) = entries.get(index + 1) {
         require_flow_separator(source.get(target.value_end..next.key_start).ok_or(())?)?;
         return Ok((target.key_start, next.key_start));
-    }
-    if let Some(previous) = index
-        .checked_sub(1)
-        .and_then(|previous| entries.get(previous))
-    {
-        let separator = source.get(previous.value_end..target.key_start).ok_or(())?;
-        require_flow_separator(separator)?;
-        let comma = separator.find(',').ok_or(())? + previous.value_end;
-        let close = mapping.byte_range().end.checked_sub(1).ok_or(())? as usize;
-        let trailing = source.get(target.value_end..close).ok_or(())?;
-        if !trailing.bytes().all(|byte| byte.is_ascii_whitespace()) {
-            return Err(());
-        }
-        return Ok((comma, close));
     }
     let close = mapping.byte_range().end.checked_sub(1).ok_or(())? as usize;
     if !source
