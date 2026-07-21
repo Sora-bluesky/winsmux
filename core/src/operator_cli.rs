@@ -20,7 +20,13 @@ use crate::machine_contract::machine_contract_catalog;
 use crate::read_path;
 use crate::types::VERSION;
 use crate::workspace_project_settings::{self, WorkspacePlanProjectSettings};
-use crate::workspace_recipe::{normalize_workspace_plan, SlotCapabilities};
+use crate::workspace_recipe::{
+    normalize_workspace_plan_from_value, parse_workspace_yaml, SlotCapabilities,
+};
+
+#[path = "workspace_builtin_provider.rs"]
+mod workspace_builtin_provider;
+use workspace_builtin_provider::resolve_provider_capability_in_registry;
 
 static REVIEW_REQUEST_COUNTER: AtomicU32 = AtomicU32::new(0);
 static ATOMIC_WRITE_COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -180,7 +186,8 @@ pub fn run_provider_capabilities_command(args: &[&String]) -> io::Result<()> {
     let registry = read_provider_capability_registry(&registry_path)?;
 
     if let Some(provider_id) = options.provider_id.as_deref() {
-        let Some(capabilities) = find_provider_capability(&registry, provider_id) else {
+        let Some(capabilities) = resolve_provider_capability_in_registry(&registry, provider_id)?
+        else {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
                 format!("provider capability '{provider_id}' was not found."),
@@ -232,7 +239,7 @@ pub fn run_workspace_plan_command(args: &[&String]) -> io::Result<()> {
     }
 
     let options = parse_workspace_plan_options(args)?;
-    let (yaml, settings) = read_workspace_plan_snapshot(&options.project_dir)?;
+    let (_yaml, root, settings) = read_workspace_plan_snapshot(&options.project_dir)?;
     let mut slots = Vec::with_capacity(settings.agent_slots.len());
     for slot in &settings.agent_slots {
         let effective = resolve_slot_agent_config(&options.project_dir, &settings, &slot.slot_id)
@@ -249,8 +256,8 @@ pub fn run_workspace_plan_command(args: &[&String]) -> io::Result<()> {
             supports_structured_result: effective.supports_structured_result,
         });
     }
-    let plan = normalize_workspace_plan(
-        &yaml,
+    let plan = normalize_workspace_plan_from_value(
+        &root,
         &options.recipe_id,
         options.workflow_id.as_deref(),
         &slots,
@@ -2828,11 +2835,8 @@ fn apply_operator_job_update(job: &mut OperatorJobRecord, update: &Map<String, V
 }
 
 fn validate_model_source(value: &str) -> io::Result<()> {
-    let normalized = value.trim();
-    if matches!(
-        normalized,
-        "provider-default" | "cli-discovery" | "official-doc" | "operator-override"
-    ) {
+    let normalized = value.trim().to_ascii_lowercase();
+    if valid_model_source(&normalized) {
         Ok(())
     } else {
         Err(io::Error::new(
@@ -3607,7 +3611,9 @@ fn generated_workspace_plan_worker_slots(
         .collect()
 }
 
-fn read_workspace_plan_snapshot(project_dir: &Path) -> io::Result<(String, BridgeSettings)> {
+fn read_workspace_plan_snapshot(
+    project_dir: &Path,
+) -> io::Result<(String, serde_yaml::Value, BridgeSettings)> {
     let mut source_available = true;
     let snapshot = load_workspace_plan_snapshot_with(
         project_dir,
@@ -3631,7 +3637,10 @@ fn read_workspace_plan_snapshot(project_dir: &Path) -> io::Result<(String, Bridg
         },
     );
     snapshot.map_err(|error| {
-        if error.to_string() == "failed to read project .winsmux.yaml." {
+        let message = error.to_string();
+        if message == "failed to read project .winsmux.yaml."
+            || message == "duplicate YAML mapping key."
+        {
             error
         } else {
             io::Error::new(
@@ -3646,16 +3655,17 @@ fn load_workspace_plan_snapshot_with<L, G>(
     project_dir: &Path,
     mut load_project: L,
     mut read_global: G,
-) -> io::Result<(String, BridgeSettings)>
+) -> io::Result<(String, serde_yaml::Value, BridgeSettings)>
 where
     L: FnMut(&Path) -> io::Result<String>,
     G: FnMut(&str) -> Option<String>,
 {
     let raw = load_project(&project_dir.join(".winsmux.yaml"))?;
+    let root = parse_workspace_yaml(&raw)?;
     let globals = read_workspace_plan_global_settings(&mut read_global)?;
-    let project = workspace_project_settings::parse_str(&raw)?;
+    let project = workspace_project_settings::parse_value(&root)?;
     let settings = finalize_bridge_settings(project_dir, &globals, &project)?;
-    Ok((raw, settings))
+    Ok((raw, root, settings))
 }
 
 fn read_workspace_plan_global_option(name: &str) -> WorkspacePlanGlobalOptionRead {
@@ -4416,18 +4426,7 @@ fn provider_registry_optional_string(
 fn resolve_provider_capability(project_dir: &Path, provider_id: &str) -> io::Result<Option<Value>> {
     let path = provider_capability_registry_path(project_dir);
     let registry = read_provider_capability_registry(&path)?;
-    if registry.providers.is_empty() {
-        return Ok(None);
-    }
-    find_provider_capability(&registry, provider_id)
-        .cloned()
-        .map(Some)
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("Provider capability '{provider_id}' was not found."),
-            )
-        })
+    resolve_provider_capability_in_registry(&registry, provider_id)
 }
 
 fn assert_provider_prompt_transport(
@@ -11582,7 +11581,7 @@ mod task658_workspace_snapshot_tests {
             (generation_b, generation_a, "slot-b"),
         ] {
             let calls = Cell::new(0);
-            let (raw, settings) = load_workspace_plan_snapshot_with(
+            let (raw, _root, settings) = load_workspace_plan_snapshot_with(
                 fixture.path(),
                 |_| {
                     let call = calls.get();
@@ -11616,7 +11615,7 @@ mod task658_workspace_snapshot_tests {
         assert_eq!(invalid_calls.get(), 1);
 
         let empty_calls = Cell::new(0);
-        let (raw, settings) = load_workspace_plan_snapshot_with(
+        let (raw, _root, settings) = load_workspace_plan_snapshot_with(
             fixture.path(),
             |_| {
                 empty_calls.set(empty_calls.get() + 1);

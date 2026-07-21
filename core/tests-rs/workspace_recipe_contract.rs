@@ -110,6 +110,24 @@ fn standard_yaml_collection_forms_share_one_rust_normalized_contract() {
 }
 
 #[test]
+fn direct_recipe_normalizer_rejects_duplicate_mapping_keys_before_value_collapse() {
+    let duplicate_recipe_id = VALID_RECIPE.replace(
+        "  bugfix-two-slot:\n    schema-version: 1",
+        "  bugfix-two-slot:\n    schema-version: 1\n    panes: []\n    startup-actions: []\n  bugfix-two-slot:\n    schema-version: 1",
+    );
+    let duplicate_nested_key = VALID_RECIPE.replace(
+        "        region: main",
+        "        region: main\n        region: side",
+    );
+
+    for yaml in [duplicate_recipe_id, duplicate_nested_key] {
+        let error = normalize_workspace_plan(&yaml, "bugfix-two-slot", Some("task-658"), &slots())
+            .expect_err("duplicate mapping keys must fail before plan generation");
+        assert_eq!(error.to_string(), "duplicate YAML mapping key.");
+    }
+}
+
+#[test]
 fn recipe_schema_version_requires_an_integer_scalar() {
     let quoted = VALID_RECIPE.replace("    schema-version: 1", "    schema-version: '1'");
     let error = normalize_workspace_plan(&quoted, "bugfix-two-slot", Some("issue-1204"), &slots())

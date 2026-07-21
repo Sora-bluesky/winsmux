@@ -10,6 +10,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 #[path = "../src/workspace_project_settings.rs"]
 mod canonical_project_settings_reader;
 
+#[allow(dead_code)]
+#[path = "../src/workspace_recipe.rs"]
+mod workspace_recipe;
+
 fn run_project_settings_render(input: &[u8], extra_args: &[&str]) -> std::process::Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_winsmux"));
     command
@@ -1496,6 +1500,294 @@ fn operator_cli_workspace_plan_preserves_stale_startup_state() {
             path.display()
         );
     }
+}
+
+fn workspace_plan_builtin_provider_yaml(
+    provider: &str,
+    model: &str,
+    model_source: &str,
+    prompt_transport: &str,
+    auth_mode: &str,
+) -> String {
+    format!(
+        r#"config-version: 1
+agent-slots:
+  - slot-id: reviewer-1
+    agent: {provider}
+    model: {model}
+    model-source: {model_source}
+    reasoning-effort: provider-default
+    prompt-transport: {prompt_transport}
+    auth-mode: {auth_mode}
+workspace-recipes:
+  review-one-slot:
+    schema-version: 1
+    panes:
+      - pane-key: verify
+        workflow-role: verifier
+        slot-ref: reviewer-1
+        requires-capabilities: [review]
+        region: main
+        worktree:
+          mode: read-only-reference
+    startup-actions:
+      - action-id: start-verify-slot
+        kind: ensure-slot-ready
+        pane-ref: verify
+"#
+    )
+}
+
+fn run_workspace_plan(project_dir: &std::path::Path, recipe_id: &str) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args([
+            "workspace-plan",
+            "--recipe-id",
+            recipe_id,
+            "--workflow-id",
+            "task-658",
+            "--json",
+            "--project-dir",
+        ])
+        .arg(project_dir)
+        .output()
+        .expect("run workspace-plan")
+}
+
+#[test]
+fn operator_cli_workspace_plan_uses_builtin_provider_capabilities_for_registry_gaps() {
+    let cases = [
+        (
+            "missing",
+            "openrouter",
+            "sakana/fugu-ultra",
+            "provider-api",
+            "file",
+            "api-key-env",
+        ),
+        (
+            "empty",
+            "antigravity",
+            "'Gemini 3.5 Flash (High)'",
+            "cli-discovery",
+            "file",
+            "antigravity-official-cli",
+        ),
+        (
+            "unrelated",
+            "grok-build",
+            "grok-build",
+            "cli-discovery",
+            "file",
+            "grok-build-local",
+        ),
+    ];
+
+    for (registry_case, provider, model, model_source, transport, auth_mode) in cases {
+        let project_dir = make_temp_project_dir(&format!(
+            "workspace-plan-builtin-{provider}-{registry_case}"
+        ));
+        fs::write(
+            project_dir.join(".winsmux.yaml"),
+            workspace_plan_builtin_provider_yaml(
+                provider,
+                model,
+                model_source,
+                transport,
+                auth_mode,
+            ),
+        )
+        .expect("write workspace plan fixture");
+
+        if registry_case != "missing" {
+            let runtime_dir = project_dir.join(".winsmux");
+            fs::create_dir_all(&runtime_dir).expect("create runtime fixture directory");
+            let registry = if registry_case == "empty" {
+                String::new()
+            } else {
+                r#"{"version":1,"providers":{"unrelated":{"adapter":"unrelated","command":"unrelated","prompt_transports":["argv"]}}}"#.to_string()
+            };
+            fs::write(runtime_dir.join("provider-capabilities.json"), registry)
+                .expect("write capability registry fixture");
+        }
+
+        let output = run_workspace_plan(&project_dir, "review-one-slot");
+        assert!(
+            output.status.success(),
+            "{provider} with {registry_case} registry failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let plan: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("workspace plan should be JSON");
+        assert_eq!(plan["resolved_bindings"]["verify"], "reviewer-1");
+    }
+}
+
+#[test]
+#[cfg(windows)]
+fn operator_cli_builtin_provider_mirror_matches_powershell_runtime_contract() {
+    let project_dir = make_temp_project_dir("builtin-provider-runtime-parity");
+    let settings_script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("core should have a repository parent")
+        .join("winsmux-core")
+        .join("scripts")
+        .join("settings.ps1");
+    let fields = [
+        "adapter",
+        "command",
+        "model_options",
+        "model_sources",
+        "reasoning_efforts",
+        "local_access_note",
+        "harness_availability",
+        "credential_requirements",
+        "execution_backend",
+        "runtime_requirements",
+        "analysis_posture",
+        "prompt_transports",
+        "auth_modes",
+        "local_interactive_oauth_modes",
+        "supports_parallel_runs",
+        "supports_interrupt",
+        "supports_structured_result",
+        "supports_file_edit",
+        "supports_subagents",
+        "supports_verification",
+        "supports_consultation",
+        "supports_context_reset",
+    ];
+    let quoted_fields = fields
+        .iter()
+        .map(|field| format!("'{field}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    for provider in ["openrouter", "antigravity", "grok-build"] {
+        let cli_output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+            .args(["provider-capabilities", provider, "--json", "--project-dir"])
+            .arg(&project_dir)
+            .output()
+            .expect("run Rust provider capability resolver");
+        assert!(
+            cli_output.status.success(),
+            "Rust resolver failed for {provider}: {}",
+            String::from_utf8_lossy(&cli_output.stderr)
+        );
+        let cli_json: serde_json::Value =
+            serde_json::from_slice(&cli_output.stdout).expect("Rust capability output is JSON");
+
+        let parity_script = project_dir.join(format!("provider-parity-{provider}.ps1"));
+        let escaped_settings = settings_script.to_string_lossy().replace('\'', "''");
+        fs::write(
+            &parity_script,
+            format!(
+                ". '{escaped_settings}'\n$cap = Get-BridgeBuiltinProviderCapability -ProviderId '{provider}'\n$fields = @({quoted_fields})\n$result = [ordered]@{{}}\nforeach ($field in $fields) {{ if ($cap.Contains($field)) {{ $result[$field] = $cap[$field] }} }}\n$result | ConvertTo-Json -Depth 16 -Compress\n"
+            ),
+        )
+        .expect("write PowerShell parity probe");
+        let runtime_output = Command::new("pwsh")
+            .args(["-NoLogo", "-NoProfile", "-File"])
+            .arg(&parity_script)
+            .output()
+            .expect("run PowerShell capability source of truth");
+        assert!(
+            runtime_output.status.success(),
+            "PowerShell resolver failed for {provider}: {}",
+            String::from_utf8_lossy(&runtime_output.stderr)
+        );
+        let runtime_json: serde_json::Value = serde_json::from_slice(&runtime_output.stdout)
+            .expect("PowerShell capability output is JSON");
+
+        assert_eq!(
+            cli_json["capabilities"], runtime_json,
+            "Rust builtin mirror diverged from settings.ps1 for {provider}"
+        );
+    }
+}
+
+#[test]
+fn operator_cli_workspace_plan_rejects_exact_duplicate_yaml_keys_before_interpretation() {
+    let valid = workspace_plan_builtin_provider_yaml(
+        "openrouter",
+        "sakana/fugu-ultra",
+        "provider-api",
+        "file",
+        "api-key-env",
+    );
+    let duplicate_cases = [
+        (
+            "runtime-root",
+            valid.replacen(
+                "config-version: 1",
+                "config-version: 1\nworker-count: 1\nworker-count: 2",
+                1,
+            ),
+        ),
+        (
+            "selected-recipe-id",
+            valid.replace(
+                "  review-one-slot:\n    schema-version: 1",
+                "  review-one-slot:\n    schema-version: 1\n    panes: []\n    startup-actions: []\n  review-one-slot:\n    schema-version: 1",
+            ),
+        ),
+        (
+            "nested-settings",
+            valid.replace(
+                "    model-source: provider-api",
+                "    model-source: provider-api\n    model-source: provider-default",
+            ),
+        ),
+        (
+            "nested-recipe",
+            valid.replace("        region: main", "        region: main\n        region: side"),
+        ),
+    ];
+
+    for (case_name, yaml) in duplicate_cases {
+        let project_dir = make_temp_project_dir(&format!("workspace-plan-duplicate-{case_name}"));
+        fs::write(project_dir.join(".winsmux.yaml"), yaml).expect("write duplicate YAML fixture");
+        let output = run_workspace_plan(&project_dir, "review-one-slot");
+        assert!(!output.status.success(), "{case_name} must fail closed");
+        assert!(output.stdout.is_empty(), "{case_name} must not emit a plan");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("duplicate YAML mapping key"),
+            "{case_name} stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
+fn canonical_project_settings_reader_uses_shared_duplicate_key_gate() {
+    let error = canonical_project_settings_reader::parse_str("worker-count: 1\nworker-count: 2\n")
+        .expect_err("direct settings reads must not collapse duplicate runtime-owned keys");
+    assert_eq!(error.to_string(), "duplicate YAML mapping key.");
+}
+
+#[test]
+fn operator_cli_workspace_plan_keeps_distinct_yaml_keys_valid() {
+    let project_dir = make_temp_project_dir("workspace-plan-distinct-yaml-keys");
+    let yaml = workspace_plan_builtin_provider_yaml(
+        "openrouter",
+        "sakana/fugu-ultra",
+        "provider-api",
+        "file",
+        "api-key-env",
+    )
+    .replacen(
+        "config-version: 1",
+        "config-version: 1\nfuture-one: preserve\nfuture-two: preserve",
+        1,
+    );
+    fs::write(project_dir.join(".winsmux.yaml"), yaml).expect("write distinct-key fixture");
+
+    let output = run_workspace_plan(&project_dir, "review-one-slot");
+    assert!(
+        output.status.success(),
+        "distinct keys must remain valid: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 struct ChildKillGuard(Child);

@@ -1,12 +1,12 @@
 use std::{
     collections::{BTreeMap, HashMap},
-    fs,
-    io,
+    fs, io,
     path::Path,
 };
 
-const REASONING_EFFORTS: [&str; 6] =
-    ["provider-default", "low", "medium", "high", "max", "xhigh"];
+use crate::workspace_recipe::parse_workspace_yaml;
+
+const REASONING_EFFORTS: [&str; 6] = ["provider-default", "low", "medium", "high", "max", "xhigh"];
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ProjectRoleSettings {
@@ -68,12 +68,17 @@ pub(crate) fn parse_str(raw: &str) -> io::Result<WorkspacePlanProjectSettings> {
     if raw.trim().is_empty() {
         return Ok(WorkspacePlanProjectSettings::default());
     }
-    let root = serde_yaml::from_str::<serde_yaml::Value>(&raw)
-        .map_err(|_| invalid("Invalid project settings YAML."))?;
-    parse(&root)
+    let root = parse_workspace_yaml(raw).map_err(|error| {
+        if error.to_string() == "duplicate YAML mapping key." {
+            error
+        } else {
+            invalid("Invalid project settings YAML.")
+        }
+    })?;
+    parse_value(&root)
 }
 
-fn parse(root: &serde_yaml::Value) -> io::Result<WorkspacePlanProjectSettings> {
+pub(crate) fn parse_value(root: &serde_yaml::Value) -> io::Result<WorkspacePlanProjectSettings> {
     let values = canonical_mapping(root, Scope::Top)?;
     if let Some(value) = values.get("config_version") {
         if yaml_i32(value) != Some(1) {
@@ -97,13 +102,9 @@ fn parse(root: &serde_yaml::Value) -> io::Result<WorkspacePlanProjectSettings> {
         reviewers: project_i32(&values, "reviewers")?,
         ..WorkspacePlanProjectSettings::default()
     };
-    settings.prompt_transport = project_domain(
-        &values,
-        "prompt_transport",
-        &["argv", "file", "stdin"],
-    )?;
-    settings.reasoning_effort =
-        project_domain(&values, "reasoning_effort", &REASONING_EFFORTS)?;
+    settings.prompt_transport =
+        project_domain(&values, "prompt_transport", &["argv", "file", "stdin"])?;
+    settings.reasoning_effort = project_domain(&values, "reasoning_effort", &REASONING_EFFORTS)?;
     let _ = project_domain(
         &values,
         "worker_backend",
@@ -130,7 +131,9 @@ fn parse(root: &serde_yaml::Value) -> io::Result<WorkspacePlanProjectSettings> {
     let _ = project_text(&values, "terminal")?;
     if let Some(value) = values.get("vault_keys") {
         let valid = match value {
-            serde_yaml::Value::Sequence(items) => items.iter().all(|item| yaml_text(item).is_some()),
+            serde_yaml::Value::Sequence(items) => {
+                items.iter().all(|item| yaml_text(item).is_some())
+            }
             _ => yaml_text(value).is_some(),
         };
         if !valid {
@@ -153,9 +156,7 @@ fn canonical_mapping(
     let mapping = value.as_mapping().ok_or_else(|| {
         invalid(match scope {
             Scope::Top => "Invalid project settings: root must be a mapping.",
-            Scope::Slot => {
-                "Invalid agent_slots configuration: every slot entry must be a mapping."
-            }
+            Scope::Slot => "Invalid agent_slots configuration: every slot entry must be a mapping.",
             Scope::Role => "Invalid roles configuration: every role entry must be a mapping.",
         })
     })?;
@@ -286,9 +287,9 @@ fn project_text(
     let Some(value) = values.get(key) else {
         return Ok(None);
     };
-    yaml_text(value).map(Some).ok_or_else(|| {
-        invalid("Invalid project settings: invalid runtime-owned value shape.")
-    })
+    yaml_text(value)
+        .map(Some)
+        .ok_or_else(|| invalid("Invalid project settings: invalid runtime-owned value shape."))
 }
 
 fn project_bool(
@@ -303,10 +304,7 @@ fn project_bool(
         .ok_or_else(|| invalid("Invalid project settings: unsupported runtime-owned value."))
 }
 
-fn project_i32(
-    values: &BTreeMap<String, serde_yaml::Value>,
-    key: &str,
-) -> io::Result<Option<i32>> {
+fn project_i32(values: &BTreeMap<String, serde_yaml::Value>, key: &str) -> io::Result<Option<i32>> {
     let Some(value) = values.get(key) else {
         return Ok(None);
     };
@@ -339,14 +337,14 @@ fn nested_domain(
     let Some(value) = values.get(key) else {
         return Ok(None);
     };
-    let normalized = yaml_text(value).expect("known nested values are validated").to_ascii_lowercase();
+    let normalized = yaml_text(value)
+        .expect("known nested values are validated")
+        .to_ascii_lowercase();
     if allowed.contains(&normalized.as_str()) {
         Ok(Some(normalized))
     } else {
         Err(invalid(match scope {
-            Scope::Slot => {
-                "Invalid agent_slots configuration: unsupported runtime-owned value."
-            }
+            Scope::Slot => "Invalid agent_slots configuration: unsupported runtime-owned value.",
             Scope::Role => "Invalid roles configuration: unsupported runtime-owned value.",
             Scope::Top => unreachable!(),
         }))
@@ -355,7 +353,9 @@ fn nested_domain(
 
 fn parse_slots(value: &serde_yaml::Value) -> io::Result<Vec<ProjectSlotSettings>> {
     let items = value.as_sequence().ok_or_else(|| {
-        invalid("Invalid agent_slots configuration: every slot entry must include at least slot_id.")
+        invalid(
+            "Invalid agent_slots configuration: every slot entry must include at least slot_id.",
+        )
     })?;
     let mut slots = Vec::new();
     let mut slot_ids = HashMap::new();
@@ -425,7 +425,10 @@ fn parse_roles(value: &serde_yaml::Value) -> io::Result<ProjectRoleSettings> {
     let mut worker = ProjectRoleSettings::default();
     let mut role_names = HashMap::new();
     for (role_name, role_value) in roles {
-        let Some(role_name) = role_name.as_str().map(str::trim).filter(|value| !value.is_empty())
+        let Some(role_name) = role_name
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
         else {
             return Err(invalid("Invalid roles configuration: invalid role name."));
         };

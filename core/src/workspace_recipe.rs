@@ -1,7 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 
-use serde::{Deserialize, Serialize};
+use serde::{
+    de::{DeserializeSeed, EnumAccess, Error as _, MapAccess, SeqAccess, VariantAccess, Visitor},
+    Deserialize, Serialize,
+};
 use sha2::{Digest, Sha256};
 
 const SCHEMA_VERSION: u64 = 1;
@@ -12,6 +15,140 @@ const WINDOWS_RESERVED_PATH_NAMES: [&str; 22] = [
     "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
     "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
 ];
+const DUPLICATE_YAML_MAPPING_KEY_SENTINEL: &str = "winsmux duplicate YAML mapping key";
+
+struct UniqueYamlValueSeed;
+
+impl<'de> DeserializeSeed<'de> for UniqueYamlValueSeed {
+    type Value = serde_yaml::Value;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(UniqueYamlValueVisitor)
+    }
+}
+
+struct UniqueYamlValueVisitor;
+
+impl<'de> Visitor<'de> for UniqueYamlValueVisitor {
+    type Value = serde_yaml::Value;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a YAML value")
+    }
+
+    fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+        Ok(serde_yaml::Value::Bool(value))
+    }
+
+    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
+        Ok(serde_yaml::Value::Number(value.into()))
+    }
+
+    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
+        Ok(serde_yaml::Value::Number(value.into()))
+    }
+
+    fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E> {
+        Ok(serde_yaml::Value::Number(value.into()))
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
+        Ok(serde_yaml::Value::String(value.to_string()))
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+        Ok(serde_yaml::Value::String(value))
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E> {
+        Ok(serde_yaml::Value::Null)
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(serde_yaml::Value::Null)
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        UniqueYamlValueSeed.deserialize(deserializer)
+    }
+
+    fn visit_newtype_struct<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        UniqueYamlValueSeed.deserialize(deserializer)
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut values = Vec::new();
+        while let Some(value) = sequence.next_element_seed(UniqueYamlValueSeed)? {
+            values.push(value);
+        }
+        Ok(serde_yaml::Value::Sequence(values))
+    }
+
+    fn visit_map<A>(self, mut mapping: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut values = serde_yaml::Mapping::new();
+        while let Some(key) = mapping.next_key_seed(UniqueYamlValueSeed)? {
+            if values.contains_key(&key) {
+                return Err(A::Error::custom(DUPLICATE_YAML_MAPPING_KEY_SENTINEL));
+            }
+            let value = mapping.next_value_seed(UniqueYamlValueSeed)?;
+            values.insert(key, value);
+        }
+        Ok(serde_yaml::Value::Mapping(values))
+    }
+
+    fn visit_enum<A>(self, data: A) -> Result<Self::Value, A::Error>
+    where
+        A: EnumAccess<'de>,
+    {
+        let (tag, contents) = data.variant::<String>()?;
+        let value = contents.newtype_variant_seed(UniqueYamlValueSeed)?;
+        Ok(serde_yaml::Value::Tagged(Box::new(
+            serde_yaml::value::TaggedValue {
+                tag: serde_yaml::value::Tag::new(tag),
+                value,
+            },
+        )))
+    }
+}
+
+pub(crate) fn parse_workspace_yaml(yaml: &str) -> io::Result<serde_yaml::Value> {
+    if yaml.trim().is_empty() {
+        return Ok(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+    }
+    let mut documents = serde_yaml::Deserializer::from_str(yaml);
+    let Some(document) = documents.next() else {
+        return Ok(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+    };
+    let root = UniqueYamlValueSeed.deserialize(document).map_err(|error| {
+        if error
+            .to_string()
+            .contains(DUPLICATE_YAML_MAPPING_KEY_SENTINEL)
+        {
+            invalid_data("duplicate YAML mapping key.")
+        } else {
+            invalid_data("invalid .winsmux.yaml syntax.")
+        }
+    })?;
+    if documents.next().is_some() {
+        return Err(invalid_data("invalid .winsmux.yaml syntax."));
+    }
+    Ok(root)
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SlotCapabilities {
@@ -117,15 +254,23 @@ pub fn normalize_workspace_plan(
     workflow_id: Option<&str>,
     slots: &[SlotCapabilities],
 ) -> io::Result<NormalizedWorkspacePlan> {
+    let root = parse_workspace_yaml(yaml)?;
+    normalize_workspace_plan_from_value(&root, recipe_id, workflow_id, slots)
+}
+
+pub(crate) fn normalize_workspace_plan_from_value(
+    root: &serde_yaml::Value,
+    recipe_id: &str,
+    workflow_id: Option<&str>,
+    slots: &[SlotCapabilities],
+) -> io::Result<NormalizedWorkspacePlan> {
     require_stable_id("recipe-id", recipe_id)?;
     if let Some(value) = workflow_id {
         require_stable_id("workflow-id", value)?;
     }
 
-    let root = serde_yaml::from_str::<serde_yaml::Value>(yaml)
-        .map_err(|_| invalid_data("invalid .winsmux.yaml syntax."))?;
-    validate_document_config_version(&root)?;
-    let recipes = mapping_value(&root, "workspace-recipes")?
+    validate_document_config_version(root)?;
+    let recipes = mapping_value(root, "workspace-recipes")?
         .ok_or_else(|| invalid_input("workspace-recipes is not configured."))?;
     let recipes = recipes
         .as_mapping()
