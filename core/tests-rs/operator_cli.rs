@@ -1791,6 +1791,148 @@ fn operator_cli_workspace_plan_keeps_distinct_yaml_keys_valid() {
     );
 }
 
+fn write_workspace_overlay_fixture(project_dir: &std::path::Path) {
+    fs::write(
+        project_dir.join(".winsmux.yaml"),
+        workspace_plan_builtin_provider_yaml(
+            "openrouter",
+            "sakana/fugu-ultra",
+            "provider-api",
+            "file",
+            "api-key-env",
+        ),
+    )
+    .expect("write workspace overlay fixture");
+    fs::create_dir_all(project_dir.join(".winsmux")).expect("create workspace overlay directory");
+}
+
+#[test]
+fn operator_cli_workspace_plan_validates_entire_provider_registry_envelope() {
+    let rejected = [
+        ("slots-array", r#"{"version":1,"slots":[]}"#),
+        ("slots-string", r#"{"version":1,"slots":"worker-1"}"#),
+        (
+            "unselected-malformed",
+            r#"{"version":1,"slots":{"reviewer-1":{"agent":"openrouter"},"worker-99":{"agent":true}}}"#,
+        ),
+        (
+            "blank-slot-id",
+            r#"{"version":1,"slots":{"   ":{"agent":"codex"}}}"#,
+        ),
+        (
+            "case-duplicate-slot-id",
+            r#"{"version":1,"slots":{"worker-99":{"agent":"codex"},"WORKER-99":{"agent":"codex"}}}"#,
+        ),
+    ];
+
+    for (case_name, registry) in rejected {
+        let project_dir = make_temp_project_dir(&format!("workspace-provider-{case_name}"));
+        write_workspace_overlay_fixture(&project_dir);
+        fs::write(
+            project_dir.join(".winsmux").join("provider-registry.json"),
+            registry,
+        )
+        .expect("write provider registry case");
+
+        let output = run_workspace_plan(&project_dir, "review-one-slot");
+        assert!(!output.status.success(), "{case_name} must fail closed");
+        assert!(
+            output.stdout.is_empty(),
+            "{case_name} must not emit a partial workspace plan"
+        );
+    }
+
+    let accepted = [
+        ("missing-slots", r#"{"version":1,"future":"keep"}"#),
+        ("null-slots", r#"{"version":1,"slots":null}"#),
+        (
+            "valid-unrelated",
+            r#"{"version":1,"future":{"keep":true},"slots":{"worker-99":{"agent":"codex","future":"keep"}}}"#,
+        ),
+    ];
+
+    for (case_name, registry) in accepted {
+        let project_dir = make_temp_project_dir(&format!("workspace-provider-{case_name}"));
+        write_workspace_overlay_fixture(&project_dir);
+        fs::write(
+            project_dir.join(".winsmux").join("provider-registry.json"),
+            registry,
+        )
+        .expect("write provider registry control");
+
+        let output = run_workspace_plan(&project_dir, "review-one-slot");
+        assert!(
+            output.status.success(),
+            "{case_name} must remain accepted: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<serde_json::Value>(&output.stdout)
+            .expect("accepted workspace plan should be JSON");
+    }
+}
+
+#[test]
+fn operator_cli_workspace_plan_requires_canonical_runtime_role_version() {
+    let accepted = [
+        ("missing", r#"{"roles":{}}"#),
+        ("numeric-one", r#"{"version":1,"roles":{}}"#),
+    ];
+    for (case_name, preferences) in accepted {
+        let project_dir = make_temp_project_dir(&format!("workspace-role-{case_name}"));
+        write_workspace_overlay_fixture(&project_dir);
+        fs::write(
+            project_dir
+                .join(".winsmux")
+                .join("runtime-role-preferences.json"),
+            preferences,
+        )
+        .expect("write runtime role preferences control");
+
+        let output = run_workspace_plan(&project_dir, "review-one-slot");
+        assert!(
+            output.status.success(),
+            "{case_name} must remain accepted: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let rejected = [
+        ("numeric-two", r#"{"version":2,"roles":{}}"#),
+        (
+            "string-secret-marker",
+            r#"{"version":"secret-marker-version","roles":{}}"#,
+        ),
+        ("string-two", r#"{"version":"2","roles":{}}"#),
+        ("boolean", r#"{"version":true,"roles":{}}"#),
+        ("null", r#"{"version":null,"roles":{}}"#),
+        ("float", r#"{"version":1.0,"roles":{}}"#),
+        ("object", r#"{"version":{"value":1},"roles":{}}"#),
+        ("array", r#"{"version":[1],"roles":{}}"#),
+    ];
+    for (case_name, preferences) in rejected {
+        let project_dir = make_temp_project_dir(&format!("workspace-role-{case_name}"));
+        write_workspace_overlay_fixture(&project_dir);
+        fs::write(
+            project_dir
+                .join(".winsmux")
+                .join("runtime-role-preferences.json"),
+            preferences,
+        )
+        .expect("write runtime role preferences case");
+
+        let output = run_workspace_plan(&project_dir, "review-one-slot");
+        assert!(!output.status.success(), "{case_name} must fail closed");
+        assert!(
+            output.stdout.is_empty(),
+            "{case_name} must not emit a partial workspace plan"
+        );
+        assert!(
+            !String::from_utf8_lossy(&output.stderr).contains("secret-marker"),
+            "{case_name} must not reflect the rejected version"
+        );
+    }
+}
+
 struct ChildKillGuard(Child);
 
 impl Drop for ChildKillGuard {
@@ -5195,6 +5337,75 @@ fn operator_cli_provider_switch_validates_candidate_before_write() {
         .join(".winsmux")
         .join("provider-registry.json")
         .exists());
+}
+
+#[test]
+fn operator_cli_provider_switch_rejects_unselected_malformed_registry_before_write() {
+    let project_dir = make_temp_project_dir("provider-switch-unselected-malformed-registry");
+    write_provider_switch_fixture(&project_dir);
+    let registry_path = project_dir.join(".winsmux").join("provider-registry.json");
+    let registry_before =
+        r#"{"version":1,"slots":{"worker-1":{"agent":"codex"},"worker-99":{"agent":true}}}"#;
+    fs::write(&registry_path, registry_before).expect("write malformed provider registry");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args([
+            "provider-switch",
+            "worker-1",
+            "--model",
+            "gpt-5.5",
+            "--model-source",
+            "cli-discovery",
+            "--json",
+        ])
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        fs::read_to_string(&registry_path).expect("read unchanged provider registry"),
+        registry_before
+    );
+}
+
+#[test]
+fn operator_cli_provider_switch_accepts_missing_or_null_slots() {
+    let cases = [
+        ("missing", r#"{"version":1,"future":"keep"}"#),
+        ("null", r#"{"version":1,"future":"keep","slots":null}"#),
+    ];
+
+    for (case_name, registry_before) in cases {
+        let project_dir = make_temp_project_dir(&format!("provider-switch-{case_name}-slots"));
+        write_provider_switch_fixture(&project_dir);
+        let registry_path = project_dir.join(".winsmux").join("provider-registry.json");
+        fs::write(&registry_path, registry_before).expect("write provider registry control");
+
+        let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+            .args([
+                "provider-switch",
+                "worker-1",
+                "--model",
+                "gpt-5.5",
+                "--model-source",
+                "cli-discovery",
+                "--json",
+            ])
+            .current_dir(&project_dir)
+            .output()
+            .expect("winsmux command should run");
+
+        assert!(
+            output.status.success(),
+            "{case_name} slots must remain accepted: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let registry = read_json_file(&registry_path);
+        assert_eq!(registry["future"], "keep");
+        assert_eq!(registry["slots"]["worker-1"]["model"], "gpt-5.5");
+    }
 }
 
 #[test]
@@ -8812,6 +9023,46 @@ fn operator_cli_restart_rejects_malformed_provider_registry() {
         !log.contains("send-keys"),
         "restart should not dispatch with a malformed registry: {log}"
     );
+}
+
+#[test]
+fn operator_cli_restart_rejects_invalid_runtime_overlays_before_dispatch() {
+    let cases = [
+        (
+            "provider-registry",
+            "provider-registry.json",
+            r#"{"version":1,"slots":{"unselected":{"agent":true}}}"#,
+        ),
+        (
+            "runtime-roles",
+            "runtime-role-preferences.json",
+            r#"{"version":"1","roles":{}}"#,
+        ),
+    ];
+
+    for (case_name, file_name, overlay) in cases {
+        let project_dir = make_temp_project_dir(&format!("restart-invalid-{case_name}"));
+        write_manifest(&project_dir);
+        fs::write(project_dir.join(".winsmux").join(file_name), overlay)
+            .expect("write invalid runtime overlay");
+        let (winsmux_bin, log_path) =
+            write_fake_winsmux_restart(&project_dir, Some("winsmux-orchestra"), &["%2", "%3"]);
+
+        let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+            .args(["restart", "builder-1"])
+            .env("WINSMUX_BIN", winsmux_bin)
+            .current_dir(&project_dir)
+            .output()
+            .expect("winsmux command should run");
+
+        assert!(!output.status.success(), "{case_name} must fail closed");
+        assert!(output.stdout.is_empty());
+        let log = fs::read_to_string(&log_path).unwrap_or_default();
+        assert!(
+            !log.contains("send-keys"),
+            "{case_name} must not dispatch a restart: {log}"
+        );
+    }
 }
 
 #[test]

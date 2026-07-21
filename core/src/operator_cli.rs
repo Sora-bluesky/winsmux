@@ -29,6 +29,11 @@ use crate::workspace_recipe::{
 #[path = "workspace_builtin_provider.rs"]
 mod workspace_builtin_provider;
 use workspace_builtin_provider::resolve_provider_capability_in_registry;
+#[path = "workspace_runtime_overlays.rs"]
+mod workspace_runtime_overlays;
+use workspace_runtime_overlays::{
+    read_provider_registry as read_provider_registry_envelope, read_runtime_role_preferences,
+};
 
 static REVIEW_REQUEST_COUNTER: AtomicU32 = AtomicU32::new(0);
 static ATOMIC_WRITE_COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -3840,34 +3845,9 @@ fn merge_role_config(
 }
 
 fn runtime_role_config(project_dir: &Path, role: &str) -> io::Result<Option<ProviderRoleConfig>> {
-    let path = project_dir
-        .join(".winsmux")
-        .join("runtime-role-preferences.json");
-    if !path.exists() {
+    let Some(root) = read_runtime_role_preferences(project_dir)? else {
         return Ok(None);
-    }
-    let raw = fs::read_to_string(&path)?;
-    if raw.trim().is_empty() {
-        return Ok(None);
-    }
-    let root = serde_json::from_str::<Value>(&raw).map_err(|err| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "invalid runtime role preferences: {}: {err}",
-                path.display()
-            ),
-        )
-    })?;
-    let version = root.get("version").and_then(Value::as_u64).unwrap_or(1);
-    if version != 1 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "Unsupported runtime role preferences version '{version}'. Supported versions: 1."
-            ),
-        ));
-    }
+    };
     let roles = root.get("roles").unwrap_or(&root);
     runtime_role_config_from_roles(roles, role)
 }
@@ -4262,42 +4242,9 @@ fn provider_registry_path(project_dir: &Path) -> PathBuf {
 }
 
 fn read_provider_registry(path: &Path) -> io::Result<Map<String, Value>> {
-    if !path.exists() {
-        let mut root = Map::new();
-        root.insert("version".to_string(), Value::from(1));
-        root.insert("slots".to_string(), Value::Object(Map::new()));
-        return Ok(root);
-    }
-    let raw = fs::read_to_string(path)?;
-    if raw.trim().is_empty() {
-        let mut root = Map::new();
-        root.insert("version".to_string(), Value::from(1));
-        root.insert("slots".to_string(), Value::Object(Map::new()));
-        return Ok(root);
-    }
-    let parsed: Value = serde_json::from_str(&raw).map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("Invalid provider registry JSON at '{}'.", path.display()),
-        )
-    })?;
-    let Some(root) = parsed.as_object() else {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("Invalid provider registry JSON at '{}'.", path.display()),
-        ));
-    };
-    match root.get("version") {
-        Some(Value::Number(number)) if number.as_u64() == Some(1) => {}
-        Some(_) => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Unsupported provider registry version. Supported versions: 1.",
-            ))
-        }
-        None => {}
-    }
-    Ok(root.clone())
+    read_provider_registry_envelope(path, |slot_id, entry, path| {
+        ProviderRegistryEntry::from_value(slot_id, entry, path).map(|_| ())
+    })
 }
 
 fn provider_registry_entry_full(
@@ -4310,7 +4257,7 @@ fn provider_registry_entry_full(
         return Ok(None);
     };
     for (candidate, value) in slots {
-        if candidate.eq_ignore_ascii_case(slot_id) {
+        if candidate.trim().eq_ignore_ascii_case(slot_id.trim()) {
             return Ok(Some(ProviderRegistryEntry::from_value(
                 candidate, value, &path,
             )?));
@@ -4328,7 +4275,7 @@ fn write_provider_registry_entry(
     let slots = ensure_provider_registry_slots(&mut root)?;
     let matched: Vec<String> = slots
         .keys()
-        .filter(|candidate| candidate.eq_ignore_ascii_case(slot_id))
+        .filter(|candidate| candidate.trim().eq_ignore_ascii_case(slot_id.trim()))
         .cloned()
         .collect();
     for key in matched {
@@ -4346,7 +4293,7 @@ fn remove_provider_registry_entry(
     let slots = ensure_provider_registry_slots(&mut root)?;
     let matched = slots
         .keys()
-        .find(|candidate| candidate.eq_ignore_ascii_case(slot_id))
+        .find(|candidate| candidate.trim().eq_ignore_ascii_case(slot_id.trim()))
         .cloned();
     let removed = if let Some(key) = matched {
         slots.remove(&key).is_some()
@@ -4367,7 +4314,7 @@ fn ensure_provider_registry_slots(
     if !root.contains_key("version") {
         root.insert("version".to_string(), Value::from(1));
     }
-    if !root.contains_key("slots") {
+    if !root.contains_key("slots") || root.get("slots").is_some_and(Value::is_null) {
         root.insert("slots".to_string(), Value::Object(Map::new()));
     }
     root.get_mut("slots")
@@ -8077,6 +8024,8 @@ fn resolve_restart_provider(
     project_dir: &Path,
     context: &RestartPlan,
 ) -> io::Result<(String, String, String, String, String)> {
+    let _ = read_runtime_role_preferences(project_dir)?;
+    let _ = read_provider_registry(&provider_registry_path(project_dir))?;
     let manifest_provider_target = manifest_provider_target(project_dir, &context.pane_id);
     let manifest_capability_adapter =
         manifest_capability_adapter(project_dir, &context.pane_id).unwrap_or_default();
