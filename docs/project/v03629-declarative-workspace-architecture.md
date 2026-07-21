@@ -40,10 +40,16 @@ parallel control plane:
   evidence-based verification, Context Capsule v1, Checkpoint package v1, and
   the prohibition on raw transcripts and private paths.
 - `winsmux-core/scripts/settings.ps1` owns legacy project setting
-  normalization. When it saves `.winsmux.yaml`, it preserves Lane A and
-  unknown top-level blocks as raw YAML without interpreting their semantics.
-- `core/src/operator_cli.rs` and `core/src/workspace_recipe.rs` are the single
-  semantic parser, validator, and planner for `workspace-recipes`. The
+  normalization and block-style serialization of its owned keys. Project
+  saves pass the original document, desired owned-key document, and finite
+  owned-key list to the hidden Rust `project-settings-render` boundary, then
+  atomically replace the file only after that boundary succeeds.
+- The Rust settings renderer uses lossless syntax-tree ranges as a read-only
+  edit plan and `serde_yaml` as the single semantic parser and preservation postcondition.
+  It preserves Lane A and unknown top-level subtrees, including standard flow
+  style, comments, and formatting, while rejecting any candidate that changes
+  their meaning. `core/src/operator_cli.rs` and `core/src/workspace_recipe.rs`
+  remain the semantic validator and planner for `workspace-recipes`. The
   `winsmux workspace-plan --json` output is the normalized contract consumed
   by future PowerShell runtime paths; PowerShell must not reparse a recipe.
 - `winsmux-core/scripts/orchestra-start.ps1` owns workspace startup and
@@ -385,7 +391,9 @@ desktop release parity.
 **Acceptance gate:**
 
 - standard YAML spellings normalize through the single Rust reader, while the
-  PowerShell settings writer preserves Lane A YAML without semantic parsing;
+  PowerShell settings writer emits only its owned block-style draft and the
+  Rust renderer losslessly preserves Lane A and unknown YAML with a semantic
+  postcondition before the atomic project-file replacement;
 - duplicate IDs, unknown actions, path escapes, ambiguous selectors, missing
   slots, and capability mismatches fail before pane/worktree creation;
 - existing `.winsmux.yaml` files without Lane A keys produce the current

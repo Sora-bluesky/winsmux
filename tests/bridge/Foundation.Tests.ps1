@@ -153,6 +153,21 @@ Describe 'Get-OrchestraLayoutSettings' {
         . (Join-Path (Split-Path -Parent $script:BridgeTestsRoot) 'winsmux-core\scripts\orchestra-start.ps1')
     }
 
+    BeforeEach {
+        $script:bridgeProjectSettingsPayloads = [System.Collections.Generic.List[object]]::new()
+        Mock Get-WinsmuxBin { return 'C:\test\winsmux.exe' }
+        Mock Invoke-BridgeProjectSettingsRenderProcess {
+            param($WinsmuxBin, $PayloadJson)
+
+            $payload = $PayloadJson | ConvertFrom-Json
+            $script:bridgeProjectSettingsPayloads.Add($payload) | Out-Null
+            return [PSCustomObject]@{
+                ExitCode = 0
+                StdOut   = [string]$payload.desired_yaml
+            }
+        }
+    }
+
     It 'uses external operator mode by default' {
         $layout = Get-OrchestraLayoutSettings -Settings ([ordered]@{
             external_operator = $true
@@ -246,7 +261,7 @@ Describe 'Get-OrchestraLayoutSettings' {
         } | Should -Throw '*runtime_role overrides are not supported yet at runtime*'
     }
 
-    It 'writes project settings to an explicit root path and omits worker_count when agent slots are present' {
+    It 'TASK658 writes project settings to an explicit root path and omits worker_count when agent slots are present' {
         $saveSettingsTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-save-settings-tests-' + [guid]::NewGuid().ToString('N'))
         $projectRoot = Join-Path $saveSettingsTempRoot 'repo-root'
 
@@ -274,6 +289,15 @@ Describe 'Get-OrchestraLayoutSettings' {
             $projectConfig | Should -Not -Match 'worker_count:'
             $projectConfig | Should -Match 'execution_profile: isolated-enterprise'
             $projectConfig | Should -Match 'worker_backend: antigravity'
+            $script:bridgeProjectSettingsPayloads.Count | Should -Be 1
+            $script:bridgeProjectSettingsPayloads[0].original_yaml | Should -Be ''
+            $script:bridgeProjectSettingsPayloads[0].desired_yaml | Should -BeExactly $projectConfig
+            @($script:bridgeProjectSettingsPayloads[0].owned_keys) | Should -Contain 'agent'
+            @($script:bridgeProjectSettingsPayloads[0].owned_keys) | Should -Contain 'roles'
+            $projectConfigBytes = [System.IO.File]::ReadAllBytes($projectConfigPath)
+            if ($projectConfigBytes.Length -ge 3) {
+                @($projectConfigBytes[0..2]) -join ',' | Should -Not -Be '239,187,191'
+            }
 
             Mock Get-WinsmuxOption { param($Name, $Default) return $null }
 
@@ -292,84 +316,97 @@ Describe 'Get-OrchestraLayoutSettings' {
         }
     }
 
-    It 'TASK658 preserves Lane B and unknown top-level blocks when saving legacy settings' {
-        $projectRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-settings-preserve-' + [guid]::NewGuid().ToString('N'))
+    It 'TASK658 sends the exact original desired and owned key contract and installs the renderer output verbatim' {
+        $projectRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-settings-render-' + [guid]::NewGuid().ToString('N'))
         try {
             New-Item -ItemType Directory -Path $projectRoot -Force | Out-Null
             $path = Join-Path $projectRoot '.winsmux.yaml'
-            $workspaceRecipeBlock = @'
-workspace-recipes: # Rust owns semantic parsing
- review:
-   schema-version: 1
-   panes: # collection comment
-   -
-     pane-key: implement
-     workflow-role: implementer
-     slot-ref: worker-1
-     requires-capabilities: [file-edit]
-     region: main
-     worktree: { mode: managed, name-template: "{{workflow-id}}-implement" }
-   startup-actions: []
-'@
-            @"
-agent: codex
-team-profile:
-  schema-version: 1
-  preset: official-balanced-v1
-$workspaceRecipeBlock
-future-owner:
-  enabled: true
-"@ | Set-Content -LiteralPath $path -Encoding UTF8
+            $utf8 = [System.Text.UTF8Encoding]::new($false, $true)
+            $original = '{agent: legacy, workspace-recipes: {review: {schema-version: 1}}}'
+            $rendered = "{agent: codex, workspace-recipes: {review: {schema-version: 1}}}`n"
+            [System.IO.File]::WriteAllText($path, $original, $utf8)
+            Mock Invoke-BridgeProjectSettingsRenderProcess {
+                param($WinsmuxBin, $PayloadJson)
+
+                $payload = $PayloadJson | ConvertFrom-Json
+                $script:bridgeProjectSettingsPayloads.Add($payload) | Out-Null
+                return [PSCustomObject]@{ ExitCode = 0; StdOut = $rendered }
+            }
 
             Save-BridgeSettings -Scope project -RootPath $projectRoot -Settings ([ordered]@{ agent = 'codex'; model = 'gpt-5.4' })
 
-            $saved = Get-Content -LiteralPath $path -Raw -Encoding UTF8
-            $saved | Should -Match '(?m)^team-profile:'
-            $saved | Should -Match '(?m)^workspace-recipes:'
-            $saved | Should -Match '(?m)^future-owner:'
-            $saved | Should -Match 'preset: official-balanced-v1'
-            $saved | Should -Match 'schema-version: 1'
-            ($saved -replace "`r`n", "`n") | Should -Match ([regex]::Escape(($workspaceRecipeBlock -replace "`r`n", "`n")))
+            $script:bridgeProjectSettingsPayloads.Count | Should -Be 1
+            $payload = $script:bridgeProjectSettingsPayloads[0]
+            $payload.original_yaml | Should -BeExactly $original
+            $payload.desired_yaml | Should -Match '(?m)^agent: codex\r?$'
+            $payload.desired_yaml | Should -Match '(?m)^model: gpt-5\.4\r?$'
+            $payload.desired_yaml | Should -Not -Match 'workspace-recipes'
+            @($payload.owned_keys).Count | Should -Be $script:BridgeSettingsSchema.Count
+            @($payload.owned_keys) | Should -Contain 'agent_slots'
+            @($payload.owned_keys) | Should -Not -Contain 'workspace-recipes'
+            [System.IO.File]::ReadAllText($path, $utf8) | Should -BeExactly $rendered
+            [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($path)) |
+                Should -Be ([Convert]::ToBase64String($utf8.GetBytes($rendered)))
+            @(Get-ChildItem -LiteralPath $projectRoot -Filter '.winsmux.yaml.tmp-*' -File).Count | Should -Be 0
         } finally {
             Remove-Item -LiteralPath $projectRoot -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
 
-    It 'TASK658 preserves quoted Lane A top-level keys without retaining quoted known keys' {
-        $spellings = @(
-            'workspace-recipes',
-            "'workspace-recipes'",
-            '"workspace-recipes"',
-            '"workspace\u002drecipes"'
-        )
+    It 'TASK658 keeps original bytes and removes temporary files when the renderer fails as <Case>' -ForEach @(
+        @{ Case = 'missing-native' }
+        @{ Case = 'nonzero' }
+        @{ Case = 'empty-success' }
+        @{ Case = 'invalid-outcome' }
+        @{ Case = 'throwing-process' }
+    ) {
+        $projectRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-settings-reject-' + [guid]::NewGuid().ToString('N'))
+        try {
+            New-Item -ItemType Directory -Path $projectRoot -Force | Out-Null
+            $path = Join-Path $projectRoot '.winsmux.yaml'
+            $utf8 = [System.Text.UTF8Encoding]::new($false, $true)
+            $original = "agent: legacy`nfuture-owner:`n  raw: do-not-reflect-this-marker`n"
+            [System.IO.File]::WriteAllText($path, $original, $utf8)
+            $beforeBytes = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($path))
 
-        foreach ($spelling in $spellings) {
-            $projectRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-settings-key-' + [guid]::NewGuid().ToString('N'))
-            try {
-                New-Item -ItemType Directory -Path $projectRoot -Force | Out-Null
-                $path = Join-Path $projectRoot '.winsmux.yaml'
-                $originalBlock = @(
-                    ("{0}:" -f $spelling),
-                    '  schema-version: 1',
-                    '  preset: official-balanced-v1'
-                ) -join "`n"
-                @"
-future-owner:
-  enabled: true
-"agent": legacy-agent
-$originalBlock
-"@ | Set-Content -LiteralPath $path -Encoding UTF8
-
-                Save-BridgeSettings -Scope project -RootPath $projectRoot -Settings ([ordered]@{ agent = 'codex'; model = 'gpt-5.4' })
-
-                $saved = (Get-Content -LiteralPath $path -Raw -Encoding UTF8) -replace "`r`n", "`n"
-                $saved | Should -Match ([regex]::Escape($originalBlock))
-                $saved | Should -Match '(?m)^future-owner:'
-                $saved | Should -Not -Match '(?m)^"agent": legacy-agent$'
-                ([regex]::Matches($saved, '(?m)^agent:')).Count | Should -Be 1
-            } finally {
-                Remove-Item -LiteralPath $projectRoot -Recurse -Force -ErrorAction SilentlyContinue
+            switch ($Case) {
+                'missing-native' {
+                    Mock Get-WinsmuxBin { return $null }
+                }
+                'nonzero' {
+                    Mock Invoke-BridgeProjectSettingsRenderProcess {
+                        return [PSCustomObject]@{ ExitCode = 23; StdOut = 'do-not-reflect-this-marker' }
+                    }
+                }
+                'empty-success' {
+                    Mock Invoke-BridgeProjectSettingsRenderProcess {
+                        return [PSCustomObject]@{ ExitCode = 0; StdOut = '' }
+                    }
+                }
+                'invalid-outcome' {
+                    Mock Invoke-BridgeProjectSettingsRenderProcess {
+                        return [PSCustomObject]@{ ExitCode = 0 }
+                    }
+                }
+                'throwing-process' {
+                    Mock Invoke-BridgeProjectSettingsRenderProcess { throw 'do-not-reflect-this-marker' }
+                }
             }
+
+            $caught = $null
+            try {
+                Save-BridgeSettings -Scope project -RootPath $projectRoot -Settings ([ordered]@{ agent = 'codex' })
+            } catch {
+                $caught = $_
+            }
+
+            $caught | Should -Not -BeNullOrEmpty
+            $caught.Exception.Message | Should -BeExactly 'Project settings save was rejected.'
+            $caught.Exception.Message | Should -Not -Match 'do-not-reflect-this-marker'
+            [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($path)) | Should -Be $beforeBytes
+            @(Get-ChildItem -LiteralPath $projectRoot -Filter '.winsmux.yaml.tmp-*' -File).Count | Should -Be 0
+        } finally {
+            Remove-Item -LiteralPath $projectRoot -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
 

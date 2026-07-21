@@ -30,6 +30,7 @@ mod search_ledger;
 mod dogfood;
 mod machine_contract;
 mod operator_cli;
+mod project_settings_render;
 mod client;
 mod app;
 mod ssh_input;
@@ -580,7 +581,13 @@ mod tests {
 
 fn run_main() -> io::Result<()> {
     let args: Vec<String> = env::args().collect();
-    
+
+    // Private, side-effect-free bridge used by the PowerShell settings writer.
+    // Handle it before runtime cleanup so rendering cannot mutate session state.
+    if args.get(1).map(String::as_str) == Some("project-settings-render") {
+        return project_settings_render::run(&args[2..]);
+    }
+
     // Clean up any stale port files at startup
     cleanup_stale_port_files();
     

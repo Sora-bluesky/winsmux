@@ -1,8 +1,242 @@
 use std::fs;
+use std::io::Write as _;
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+fn run_project_settings_render(input: &[u8], extra_args: &[&str]) -> std::process::Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_winsmux"));
+    command
+        .arg("project-settings-render")
+        .args(extra_args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().expect("spawn project settings renderer");
+    child
+        .stdin
+        .take()
+        .expect("renderer stdin")
+        .write_all(input)
+        .expect("write renderer input");
+    child.wait_with_output().expect("wait for renderer")
+}
+
+fn render_payload(original_yaml: &str, desired_yaml: &str, owned_keys: &[&str]) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "original_yaml": original_yaml,
+        "desired_yaml": desired_yaml,
+        "owned_keys": owned_keys,
+    }))
+    .expect("serialize renderer payload")
+}
+
+fn yaml_mapping(yaml: &[u8]) -> serde_yaml::Mapping {
+    serde_yaml::from_slice::<serde_yaml::Value>(yaml)
+        .expect("renderer output should parse")
+        .as_mapping()
+        .expect("renderer output should be a mapping")
+        .clone()
+}
+
+#[test]
+fn project_settings_render_preserves_block_comments_and_unknown_fields() {
+    let original = "# heading\n'unknown-key': 'keep' # keep-comment\nworkspace-recipes:\n  old: value\ndrop-me: true\n";
+    let desired = "workspace_recipes:\n  new: value\nconfig_version: 1\n";
+    let input = render_payload(
+        original,
+        desired,
+        &["workspace-recipes", "config-version", "drop-me"],
+    );
+    let output = run_project_settings_render(&input, &[]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    let text = String::from_utf8(output.stdout).expect("UTF-8 YAML output");
+    assert!(text.starts_with("# heading\n'unknown-key': 'keep' # keep-comment\n"));
+    assert!(text.contains("workspace-recipes:"));
+    assert!(!text.contains("old: value"));
+    assert!(!text.contains("drop-me:"));
+
+    let mapping = yaml_mapping(text.as_bytes());
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("unknown-key".into())),
+        Some(&serde_yaml::Value::String("keep".into()))
+    );
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("config_version".into())),
+        Some(&serde_yaml::Value::Number(1.into()))
+    );
+    assert_eq!(
+        mapping
+            .get(serde_yaml::Value::String("workspace-recipes".into()))
+            .and_then(serde_yaml::Value::as_mapping)
+            .and_then(|workspace| {
+                workspace.get(serde_yaml::Value::String("new".into()))
+            }),
+        Some(&serde_yaml::Value::String("value".into()))
+    );
+}
+
+#[test]
+fn project_settings_render_mutates_single_line_flow_without_using_cst_insert() {
+    let original = "{unknown: keep, owned-old: 1, drop-me: true} # tail\n";
+    let desired = "{owned_old: 2, added_key: [x, 3]}\n";
+    let input = render_payload(original, desired, &["owned-old", "drop-me", "added-key"]);
+    let output = run_project_settings_render(&input, &[]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    let text = String::from_utf8(output.stdout).expect("UTF-8 YAML output");
+    assert!(text.trim_end().ends_with("} # tail"));
+    let mapping = yaml_mapping(text.as_bytes());
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("unknown".into())),
+        Some(&serde_yaml::Value::String("keep".into()))
+    );
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("owned-old".into())),
+        Some(&serde_yaml::Value::Number(2.into()))
+    );
+    assert!(!mapping.contains_key(serde_yaml::Value::String("drop-me".into())));
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("added_key".into())),
+        Some(&serde_yaml::Value::Sequence(vec![
+            serde_yaml::Value::String("x".into()),
+            serde_yaml::Value::Number(3.into()),
+        ]))
+    );
+}
+
+#[test]
+fn project_settings_render_preserves_multiline_flow_comments_and_is_idempotent() {
+    let original = "{\n  unknown: 'keep', # unknown-comment\n  owned: old # owned-comment\n}\n";
+    let desired = "{owned: new, added: {nested: true}}\n";
+    let first_input = render_payload(original, desired, &["owned", "added"]);
+    let first = run_project_settings_render(&first_input, &[]);
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let first_text = String::from_utf8(first.stdout).expect("UTF-8 YAML output");
+    assert!(first_text.contains("unknown: 'keep', # unknown-comment"));
+    assert!(first_text.contains("owned: \"new\" # owned-comment"));
+
+    let second_input = render_payload(&first_text, desired, &["owned", "added"]);
+    let second = run_project_settings_render(&second_input, &[]);
+    assert!(
+        second.status.success(),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert_eq!(second.stdout, first_text.as_bytes());
+}
+
+#[test]
+fn project_settings_render_accepts_blank_original_as_empty_mapping() {
+    let input = render_payload(" \r\n\t", "added: true\n", &["added"]);
+    let output = run_project_settings_render(&input, &[]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        yaml_mapping(&output.stdout).get(serde_yaml::Value::String("added".into())),
+        Some(&serde_yaml::Value::Bool(true))
+    );
+}
+
+#[test]
+fn project_settings_render_preserves_unknown_only_flow_when_adding_owned_keys() {
+    let original =
+        "{workspace-recipes: {review: {schema-version: 1}}, future-owner: {enabled: true}}\n";
+    let desired = "agent: codex\nmodel: gpt-5.6-sol\n";
+    let input = render_payload(original, desired, &["agent", "model"]);
+    let output = run_project_settings_render(&input, &[]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mapping = yaml_mapping(&output.stdout);
+    assert!(mapping.contains_key(serde_yaml::Value::String("workspace-recipes".into())));
+    assert!(mapping.contains_key(serde_yaml::Value::String("future-owner".into())));
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("agent".into())),
+        Some(&serde_yaml::Value::String("codex".into()))
+    );
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("model".into())),
+        Some(&serde_yaml::Value::String("gpt-5.6-sol".into()))
+    );
+}
+
+#[test]
+fn project_settings_render_rejects_invalid_contracts_without_reflection() {
+    let secret = "sk-proj-synthetic-secret-value";
+    let duplicate_original = format!("owned: one\nowned: {secret}\n");
+    let cases = vec![
+        b"not-json".to_vec(),
+        render_payload(secret, "owned: ok\n", &["owned"]),
+        render_payload(
+            "---\nowned: one\n---\nowned: two\n",
+            "owned: ok\n",
+            &["owned"],
+        ),
+        render_payload("[one, two]\n", "owned: ok\n", &["owned"]),
+        render_payload(&duplicate_original, "owned: ok\n", &["owned"]),
+        render_payload("unknown: keep\n", "unknown: changed\n", &["owned"]),
+        render_payload("owned: old\n", "owned: new\nunknown: leaked\n", &["owned"]),
+        render_payload("owned: old\n", "owned: new\n", &["owned", "owned"]),
+        render_payload(
+            "owned-key: old\n",
+            "owned_key: new\n",
+            &["owned-key", "owned_key"],
+        ),
+    ];
+
+    for input in cases {
+        let output = run_project_settings_render(&input, &[]);
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        let stderr = String::from_utf8(output.stderr).expect("UTF-8 generic error");
+        assert_eq!(stderr, "winsmux: project settings render failed.\n");
+        assert!(!stderr.contains(secret));
+    }
+}
+
+#[test]
+fn project_settings_render_rejects_arguments_and_oversized_stdin() {
+    let input = render_payload("", "owned: ok\n", &["owned"]);
+    let with_arg = run_project_settings_render(&input, &["unexpected-private-value"]);
+    assert!(!with_arg.status.success());
+    assert!(with_arg.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(with_arg.stderr).unwrap(),
+        "winsmux: project settings render failed.\n"
+    );
+
+    let oversized = vec![b'x'; 4 * 1024 * 1024 + 1];
+    let output = run_project_settings_render(&oversized, &[]);
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "winsmux: project settings render failed.\n"
+    );
+}
 
 struct ChildKillGuard(Child);
 
