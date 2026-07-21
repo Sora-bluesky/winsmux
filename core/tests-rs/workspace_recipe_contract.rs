@@ -111,11 +111,12 @@ fn standard_yaml_collection_forms_share_one_rust_normalized_contract() {
 
 #[test]
 fn direct_recipe_normalizer_rejects_duplicate_mapping_keys_before_value_collapse() {
-    let duplicate_recipe_id = VALID_RECIPE.replace(
+    let valid_recipe = VALID_RECIPE.replace("\r\n", "\n");
+    let duplicate_recipe_id = valid_recipe.replace(
         "  bugfix-two-slot:\n    schema-version: 1",
         "  bugfix-two-slot:\n    schema-version: 1\n    panes: []\n    startup-actions: []\n  bugfix-two-slot:\n    schema-version: 1",
     );
-    let duplicate_nested_key = VALID_RECIPE.replace(
+    let duplicate_nested_key = valid_recipe.replace(
         "        region: main",
         "        region: main\n        region: side",
     );
