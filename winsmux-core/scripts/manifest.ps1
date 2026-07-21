@@ -225,6 +225,13 @@ function ConvertTo-ManifestPropertyMap {
     return $result
 }
 
+function Test-ManifestYamlMappingValue {
+    param([AllowNull()]$Value)
+
+    return ($null -ne $Value -and
+        ($Value -is [System.Collections.IDictionary] -or $Value -is [pscustomobject]))
+}
+
 function ConvertTo-ManifestKeyName {
     param([Parameter(Mandatory = $true)][string]$Name)
 
@@ -265,8 +272,14 @@ function Add-ManifestYamlNode {
         $Lines.Add(("{0}{1}:" -f $prefix, $Name)) | Out-Null
         foreach ($item in $items) {
             $itemMap = ConvertTo-ManifestPropertyMap -Value $item
-            if ($itemMap.Count -eq 0) {
+            $itemIsMapping = Test-ManifestYamlMappingValue -Value $item
+            if (-not $itemIsMapping) {
                 $Lines.Add(("{0}  - {1}" -f $prefix, (ConvertTo-ManifestYamlScalar -Value $item))) | Out-Null
+                continue
+            }
+
+            if ($itemMap.Count -eq 0) {
+                $Lines.Add(("{0}  - {{}}" -f $prefix)) | Out-Null
                 continue
             }
 
@@ -279,7 +292,12 @@ function Add-ManifestYamlNode {
     }
 
     $map = ConvertTo-ManifestPropertyMap -Value $Value
-    if ($null -ne $Value -and $map.Count -gt 0) {
+    if (Test-ManifestYamlMappingValue -Value $Value) {
+        if ($map.Count -eq 0) {
+            $Lines.Add(("{0}{1}: {{}}" -f $prefix, $Name)) | Out-Null
+            return
+        }
+
         $Lines.Add(("{0}{1}:" -f $prefix, $Name)) | Out-Null
         foreach ($key in $map.Keys) {
             Add-ManifestYamlNode -Lines $Lines -Name ([string]$key) -Value $map[$key] -Indent ($Indent + 2)
@@ -326,7 +344,9 @@ function Get-ManifestUnknownTopLevelBlocks {
     param([Parameter(Mandatory = $true)][string]$Content)
 
     $known = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    foreach ($name in @('version', 'saved_at', 'session', 'panes', 'tasks', 'worktrees', 'declarative_workspace')) {
+    # Rust owns semantic parsing for declarative_workspace and all additive sections.
+    # PowerShell retains those top-level blocks as opaque save-through state.
+    foreach ($name in @('version', 'saved_at', 'session', 'panes', 'tasks', 'worktrees')) {
         [void]$known.Add($name)
     }
 
@@ -1550,8 +1570,28 @@ function ConvertTo-ManifestYaml {
         Add-ManifestYamlNode -Lines $lines -Name ([string]$key) -Value $manifestMap[$key]
     }
     if ($manifestMap.Contains('__preserved_top_level_yaml')) {
+        $materializedKeys = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+        foreach ($key in $manifestMap.Keys) {
+            $keyText = [string]$key
+            if ($keyText -ceq 'declarative_workspace') {
+                if ($null -ne $manifestMap[$key]) {
+                    [void]$materializedKeys.Add($keyText)
+                }
+                continue
+            }
+            if ($key -notin $coreKeys -and
+                -not $keyText.StartsWith('__', [System.StringComparison]::Ordinal)) {
+                [void]$materializedKeys.Add($keyText)
+            }
+        }
+
         foreach ($block in @($manifestMap['__preserved_top_level_yaml'])) {
             if (-not [string]::IsNullOrWhiteSpace([string]$block)) {
+                $firstLine = (([string]$block) -split "\r?\n", 2)[0]
+                $preservedKey = ConvertFrom-ManifestTopLevelYamlKey -Line $firstLine
+                if ($null -ne $preservedKey -and $materializedKeys.Contains($preservedKey)) {
+                    continue
+                }
                 $lines.Add(([string]$block).TrimEnd()) | Out-Null
             }
         }
@@ -1574,7 +1614,6 @@ function ConvertFrom-ManifestYaml {
             completed   = @()
         }
         worktrees = [ordered]@{}
-        declarative_workspace = $null
     }
 
     $section = ''
@@ -1588,8 +1627,6 @@ function ConvertFrom-ManifestYaml {
     $seenPaneKeys = [ordered]@{}
     $seenWorktreeLabels = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     $seenWorktreeKeys = [ordered]@{}
-    $seenDeclarativeKeys = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    $seenBindingKeys = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     $duplicatePaths = [System.Collections.Generic.List[string]]::new()
     $seenDuplicatePaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 
@@ -1619,7 +1656,7 @@ function ConvertFrom-ManifestYaml {
             continue
         }
 
-        if ($line -match '^(session|panes|tasks|worktrees|declarative_workspace):\s*(\{\})?\s*$') {
+        if ($line -match '^(session|panes|tasks|worktrees):\s*(\{\})?\s*$') {
             $section = $Matches[1]
             if (-not $seenTopLevel.Add($section)) { & $recordDuplicate $section }
             $currentLabel = ''
@@ -1636,31 +1673,6 @@ function ConvertFrom-ManifestYaml {
             $currentMode = ''
             $taskListKey = ''
             continue
-        }
-
-        if ($section -eq 'declarative_workspace') {
-            if ($null -eq $manifest.declarative_workspace) {
-                $manifest.declarative_workspace = [ordered]@{}
-            }
-            if ($line -match '^\s{2}resolved_bindings:\s*(\{\})?\s*$') {
-                if (-not $seenDeclarativeKeys.Add('resolved_bindings')) { & $recordDuplicate 'declarative_workspace.resolved_bindings' }
-                $manifest.declarative_workspace['resolved_bindings'] = [ordered]@{}
-                $currentMode = 'resolved_bindings'
-                continue
-            }
-            if ($currentMode -eq 'resolved_bindings' -and $line -match '^\s{4}([A-Za-z0-9_.-]+):\s*(.*?)\s*$') {
-                $bindingKey = [string]$Matches[1]
-                if (-not $seenBindingKeys.Add($bindingKey)) { & $recordDuplicate ("declarative_workspace.resolved_bindings.{0}" -f $bindingKey) }
-                $manifest.declarative_workspace['resolved_bindings'][$bindingKey] = ConvertFrom-ManifestYamlValue $Matches[2]
-                continue
-            }
-            if ($line -match '^\s{2}([A-Za-z0-9_.-]+):\s*(.*?)\s*$') {
-                $propertyName = [string]$Matches[1]
-                if (-not $seenDeclarativeKeys.Add($propertyName)) { & $recordDuplicate ("declarative_workspace.{0}" -f $propertyName) }
-                $manifest.declarative_workspace[$propertyName] = ConvertFrom-ManifestYamlValue $Matches[2]
-                $currentMode = ''
-                continue
-            }
         }
 
         if ($section -eq 'session' -and $line -match '^\s{2}([A-Za-z0-9_.-]+):\s*(.*?)\s*$') {

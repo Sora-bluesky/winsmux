@@ -1154,8 +1154,17 @@ Describe 'manifest worker isolation metadata' {
         $entry.expected_origin | Should -Be 'https://github.com/example/repo.git'
     }
 
-    It 'TASK658 round-trips declarative workspace and preserves unknown additive sections' {
-        $content = @'
+    It 'TASK658 preserves Rust-owned declarative workspace YAML without PowerShell interpretation' {
+        $declarativeBlock = @'
+declarative_workspace:
+    schema_version: '1'
+    config_fingerprint: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    recipe_id: 'review'
+    resolved_bindings:
+        implement: 'worker-1'
+        verify: 'worker-2'
+'@
+        $content = @"
 version: 1
 saved_at: '2026-07-21T00:00:00Z'
 session:
@@ -1166,29 +1175,96 @@ tasks:
   in_progress: []
   completed: []
 worktrees: {}
-declarative_workspace:
-  schema_version: '1'
-  config_fingerprint: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-  recipe_id: 'review'
-  resolved_bindings:
-    implement: 'worker-1'
-    verify: 'worker-2'
+$declarativeBlock
 workflow_runs:
   run-1:
     state: 'blocked'
-'@
+"@
 
         $first = ConvertFrom-ManifestYaml -Content $content
         $serialized = ConvertTo-ManifestYaml -Manifest $first
-        $second = ConvertFrom-ManifestYaml -Content $serialized
 
-        $serialized | Should -Match "(?m)^  schema_version: '1'$"
-        $second.declarative_workspace.recipe_id | Should -Be 'review'
-        $second.declarative_workspace.config_fingerprint | Should -Be ('sha256:' + ('a' * 64))
-        $second.declarative_workspace.resolved_bindings.implement | Should -Be 'worker-1'
-        $second.declarative_workspace.resolved_bindings.verify | Should -Be 'worker-2'
+        $first.PSObject.Properties.Name | Should -Not -Contain 'declarative_workspace'
+        $serialized.Contains($declarativeBlock) | Should -Be $true
+        ([regex]::Matches($serialized, '(?m)^declarative_workspace:')).Count | Should -Be 1
         $serialized | Should -Match '(?m)^workflow_runs:'
         $serialized | Should -Match "(?m)^    state: 'blocked'"
+    }
+
+    It 'TASK658 shadows a preserved additive block when its property is materialized' {
+        foreach ($spelling in @('workflow_runs', "'workflow_runs'", '"workflow_runs"', '"workflow\u005fruns"')) {
+            $manifest = ConvertFrom-ManifestYaml -Content @"
+version: 1
+saved_at: '2026-07-21T00:00:00Z'
+session:
+  name: 'winsmux-orchestra'
+panes: {}
+tasks:
+  queued: []
+  in_progress: []
+  completed: []
+worktrees: {}
+$($spelling):
+  run-old:
+    state: 'blocked'
+"@
+            $manifest | Add-Member -NotePropertyName 'workflow_runs' -NotePropertyValue ([ordered]@{
+                'run-new' = [ordered]@{ state = 'running' }
+            }) -Force
+
+            $serialized = ConvertTo-ManifestYaml -Manifest $manifest
+
+            ([regex]::Matches($serialized, '(?m)^workflow_runs:')).Count | Should -Be 1
+            $serialized | Should -Match '(?m)^  run-new:$'
+            $serialized | Should -Match "(?m)^    state: 'running'$"
+            $serialized | Should -Not -Match '(?m)^  run-old:$'
+        }
+
+        $nullManifest = ConvertFrom-ManifestYaml -Content @'
+version: 1
+saved_at: '2026-07-21T00:00:00Z'
+session:
+  name: 'winsmux-orchestra'
+panes: {}
+tasks:
+  queued: []
+  in_progress: []
+  completed: []
+worktrees: {}
+workflow_runs:
+  run-old:
+    state: 'blocked'
+'@
+        $nullManifest | Add-Member -NotePropertyName 'workflow_runs' -NotePropertyValue $null -Force
+
+        $nullSerialized = ConvertTo-ManifestYaml -Manifest $nullManifest
+
+        ([regex]::Matches($nullSerialized, '(?m)^workflow_runs:')).Count | Should -Be 1
+        $nullSerialized | Should -Match '(?m)^workflow_runs: null$'
+        $nullSerialized | Should -Not -Match '(?m)^  run-old:$'
+    }
+
+    It 'TASK658 serializes empty materialized mappings as YAML mappings' {
+        foreach ($emptyMap in @([ordered]@{}, [pscustomobject]@{})) {
+            $manifest = ConvertFrom-ManifestYaml -Content @'
+version: 1
+saved_at: '2026-07-21T00:00:00Z'
+session:
+  name: 'winsmux-orchestra'
+panes: {}
+tasks:
+  queued: []
+  in_progress: []
+  completed: []
+worktrees: {}
+'@
+            $manifest | Add-Member -NotePropertyName 'workflow_runs' -NotePropertyValue $emptyMap -Force
+
+            $serialized = ConvertTo-ManifestYaml -Manifest $manifest
+
+            $serialized | Should -Match '(?m)^workflow_runs: \{\}$'
+            $serialized | Should -Not -Match 'OrderedDictionary|PSCustomObject|System\.Collections'
+        }
     }
 
     It 'TASK658 serializes additive object and string sequences without adapted-object recursion' {
