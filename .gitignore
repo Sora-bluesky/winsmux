@@ -86,7 +86,12 @@ tests/*
 !tests/Integration.GateEnforcement.Tests.ps1
 !tests/Integration.MultiAgent.Tests.ps1
 !tests/Runtime.VaultInject.Tests.ps1
-!tests/winsmux-bridge.Tests.ps1
+!tests/bridge/
+tests/bridge/*
+!tests/bridge/*.Tests.ps1
+!tests/bridge/_helpers/
+tests/bridge/_helpers/*
+!tests/bridge/_helpers/BridgeTestCommon.ps1
 !tests/OrchestraPreflight.Tests.ps1
 !tests/PaneBorder.Tests.ps1
 !tests/Integration.WorktreeHook.Tests.ps1

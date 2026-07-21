@@ -1,0 +1,505 @@
+$ErrorActionPreference = 'Stop'
+BeforeAll {
+    $script:BridgeTestsRoot = Split-Path -Parent $PSScriptRoot
+    . (Join-Path $PSScriptRoot '_helpers\BridgeTestCommon.ps1')
+}
+
+Describe 'operator-poll helpers' {
+    BeforeAll {
+        $script:operatorPollScriptPath = Join-Path (Split-Path -Parent $script:BridgeTestsRoot) 'winsmux-core\scripts\operator-poll.ps1'
+    }
+
+    BeforeEach {
+        $script:operatorPollTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-operator-poll-tests-' + [guid]::NewGuid().ToString('N'))
+        $script:operatorPollManifestDir = Join-Path $script:operatorPollTempRoot '.winsmux'
+        $script:operatorPollManifestPath = Join-Path $script:operatorPollManifestDir 'manifest.yaml'
+        New-Item -ItemType Directory -Path $script:operatorPollManifestDir -Force | Out-Null
+
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:operatorPollTempRoot
+panes:
+  - label: builder-1
+    pane_id: %2
+    role: Builder
+    launch_dir: $script:operatorPollTempRoot
+"@ | Set-Content -Path $script:operatorPollManifestPath -Encoding UTF8
+
+        . $script:operatorPollScriptPath -ManifestPath $script:operatorPollManifestPath
+    }
+
+    AfterEach {
+        if ($script:operatorPollTempRoot -and (Test-Path $script:operatorPollTempRoot)) {
+            Remove-Item -Path $script:operatorPollTempRoot -Recurse -Force
+        }
+    }
+
+    It 'TASK781 C19 threads the event manifest snapshot through pane state updates' {
+        $paneContext = [ordered]@{
+            project_dir = $script:operatorPollTempRoot
+            manifest_path = $script:operatorPollManifestPath
+            pane_id = '%2'
+            generation_id = 'generation-initial'
+        }
+        $script:capturedPollGeneration = ''
+        Mock Get-PaneControlManifestEntries {
+            @([pscustomobject]@{ ManifestPath = 'replacement'; PaneId = '%9'; GenerationId = 'generation-replacement' })
+        }
+        Mock Set-PaneControlManifestPaneProperties {
+            param($ManifestPath, $PaneId, $Properties, $ExpectedGenerationId)
+            $script:capturedPollGeneration = [string]$ExpectedGenerationId
+        }
+
+        Update-OperatorPollPaneState -PaneContext $paneContext -Properties ([ordered]@{ task_state = 'completed' })
+
+        $script:capturedPollGeneration | Should -BeExactly 'generation-initial'
+        Should -Invoke Get-PaneControlManifestEntries -Times 0 -Exactly
+    }
+
+    It 'TASK781 C19 carries the event snapshot through the production poll caller' {
+        $manifest = [ordered]@{
+            Session = [ordered]@{
+                name = 'winsmux-orchestra'
+                project_dir = $script:operatorPollTempRoot
+                generation_id = 'generation-initial'
+            }
+            Panes = [ordered]@{
+                'builder-1' = [ordered]@{ pane_id = '%2'; role = 'Builder'; launch_dir = $script:operatorPollTempRoot }
+            }
+        }
+        $event = [ordered]@{ event = 'pane.idle'; pane_id = '%2'; label = 'builder-1'; role = 'Builder' }
+        $summary = [ordered]@{ new_events = 0; dispatches = 0; completions = 0; approvals = 0; errors = 0; messages = @() }
+        $script:pollCallerGeneration = ''
+        Mock Write-OperatorPollLog { }
+        Mock Send-OperatorTelegramNotification { }
+        Mock Get-PaneControlManifestEntries {
+            @([pscustomobject]@{ ManifestPath = 'replacement'; PaneId = '%9'; GenerationId = 'generation-replacement' })
+        }
+        Mock Set-PaneControlManifestPaneProperties {
+            $script:pollCallerGeneration = [string]$ExpectedGenerationId
+        }
+
+        Invoke-OperatorPollEventRecord -Manifest $manifest -ManifestPath $script:operatorPollManifestPath `
+            -EventRecord $event -Summary $summary
+
+        $summary.dispatches | Should -Be 1
+        $script:pollCallerGeneration | Should -BeExactly 'generation-initial'
+        Should -Invoke Get-PaneControlManifestEntries -Times 0 -Exactly
+    }
+
+    It 'processes mailbox idle messages and logs dispatch-needed guidance' {
+        Mock Receive-OperatorPollMailboxMessages {
+            @(
+                [ordered]@{
+                    timestamp   = '2026-04-07T09:00:00.0000000+09:00'
+                    session     = 'winsmux-orchestra'
+                    event       = 'pane.idle'
+                    message     = 'Operator alert: idle pane builder-1 (%2, role=Builder)'
+                    label       = 'builder-1'
+                    pane_id     = '%2'
+                    role        = 'Builder'
+                    status      = 'ready'
+                    exit_reason = ''
+                    data        = [ordered]@{
+                        idle_threshold_seconds = 120
+                    }
+                    source      = 'mailbox'
+                }
+            )
+        }
+        Mock Write-OperatorPollLog { }
+
+        $cycle = Invoke-OperatorPollCycle -ManifestPath $script:operatorPollManifestPath -ProcessedLineCount 0 -ProcessedEventSignatures ([ordered]@{})
+        $summary = $cycle['Summary']
+
+        $summary.mailbox_events | Should -Be 1
+        $summary.new_events | Should -Be 1
+        $summary.dispatches | Should -Be 1
+        $summary.messages[0] | Should -Be 'builder-1 (%2) がアイドル。次タスクのディスパッチが必要'
+        Should -Invoke Write-OperatorPollLog -Times 1 -Exactly -ParameterFilter {
+            $EventName -eq 'operator.poll.idle_dispatch_needed' -and
+            $PaneId -eq '%2' -and
+            $Message -eq 'builder-1 (%2) がアイドル。次タスクのディスパッチが必要'
+        }
+    }
+
+    It 'converts v2 mailbox payloads into auditable operator events' {
+        $record = ConvertTo-OperatorPollMailboxRecord -MailboxMessage ([ordered]@{
+            mailbox_version = 2
+            message_id      = 'msg-1'
+            correlation_id  = 'corr-1'
+            causation_id    = 'cause-1'
+            idempotency_key = 'mailbox:v2:winsmux-orchestra:worker-1:pane.idle:abc123'
+            message_type    = 'share'
+            state           = 'created'
+            ttl_seconds     = 300
+            ack_required    = $true
+            from            = 'worker-1'
+            to              = 'Operator'
+            timestamp       = '2026-04-07T09:00:00.0000000+09:00'
+            content         = [ordered]@{
+                session = 'winsmux-orchestra'
+                event   = 'pane.idle'
+                message = 'worker idle'
+                label   = 'worker-1'
+                pane_id = '%2'
+                role    = 'Worker'
+                status  = 'ready'
+                data    = [ordered]@{ idle_threshold_seconds = 120 }
+            }
+        }) -SessionName 'winsmux-orchestra'
+
+        $record.source | Should -Be 'mailbox'
+        $record.mailbox_version | Should -Be 2
+        $record.mailbox_state | Should -Be 'created'
+        $record.message_id | Should -Be 'msg-1'
+        $record.correlation_id | Should -Be 'corr-1'
+        $record.causation_id | Should -Be 'cause-1'
+        $record.idempotency_key | Should -Be 'mailbox:v2:winsmux-orchestra:worker-1:pane.idle:abc123'
+        $record.ack_required | Should -Be $true
+        $record.data.mailbox_message_id | Should -Be 'msg-1'
+        $record.data.mailbox_state | Should -Be 'created'
+    }
+
+    It 'ignores malformed v2 mailbox payloads before they reach operator events' {
+        $record = ConvertTo-OperatorPollMailboxRecord -MailboxMessage ([ordered]@{
+            mailbox_version = 2
+            message_type    = 'share'
+            state           = 'created'
+            content         = [ordered]@{
+                session = 'winsmux-orchestra'
+                message = 'missing event'
+            }
+        }) -SessionName 'winsmux-orchestra'
+
+        $record | Should -BeNullOrEmpty
+    }
+
+    It 'processes mailbox idle messages when panes are stored in dictionary format' {
+        @"
+version: 1
+saved_at: 2026-04-09T11:00:00+09:00
+session:
+  name: winsmux-orchestra
+  project_dir: $script:operatorPollTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    launch_dir: $script:operatorPollTempRoot
+"@ | Set-Content -Path $script:operatorPollManifestPath -Encoding UTF8
+
+        Mock Receive-OperatorPollMailboxMessages {
+            @(
+                [ordered]@{
+                    timestamp   = '2026-04-07T09:00:00.0000000+09:00'
+                    session     = 'winsmux-orchestra'
+                    event       = 'pane.idle'
+                    message     = 'Operator alert: idle pane builder-1 (%2, role=Builder)'
+                    label       = 'builder-1'
+                    pane_id     = '%2'
+                    role        = 'Builder'
+                    status      = 'ready'
+                    exit_reason = ''
+                    data        = [ordered]@{
+                        idle_threshold_seconds = 120
+                    }
+                    source      = 'mailbox'
+                }
+            )
+        }
+        Mock Write-OperatorPollLog { }
+
+        $cycle = Invoke-OperatorPollCycle -ManifestPath $script:operatorPollManifestPath -ProcessedLineCount 0 -ProcessedEventSignatures ([ordered]@{})
+        $summary = $cycle['Summary']
+
+        $summary.mailbox_events | Should -Be 1
+        $summary.new_events | Should -Be 1
+        $summary.dispatches | Should -Be 1
+        $summary.messages[0] | Should -Be 'builder-1 (%2) がアイドル。次タスクのディスパッチが必要'
+    }
+
+    It 'prefers a worker as the review target when no reviewer pane exists' {
+@"
+version: 1
+saved_at: 2026-04-09T11:00:00+09:00
+session:
+  name: winsmux-orchestra
+  project_dir: $script:operatorPollTempRoot
+panes:
+  worker-1:
+    pane_id: %2
+    role: Worker
+    launch_dir: $script:operatorPollTempRoot
+"@ | Set-Content -Path $script:operatorPollManifestPath -Encoding UTF8
+
+        $manifest = Read-OperatorPollManifest -Path $script:operatorPollManifestPath
+        $reviewPane = Get-OperatorPollPreferredReviewPane -Manifest $manifest
+
+        $reviewPane.PaneId | Should -Be '%2'
+        $reviewPane.Label | Should -Be 'worker-1'
+        $reviewPane.Role | Should -Be 'Worker'
+    }
+
+    It 'matches review-state records that use generic review target keys' {
+@"
+version: 1
+saved_at: 2026-04-09T11:00:00+09:00
+session:
+  name: winsmux-orchestra
+  project_dir: $script:operatorPollTempRoot
+panes:
+  worker-1:
+    pane_id: %2
+    role: Worker
+    launch_dir: $script:operatorPollTempRoot
+"@ | Set-Content -Path $script:operatorPollManifestPath -Encoding UTF8
+
+        . (Join-Path (Split-Path -Parent $script:BridgeTestsRoot) 'winsmux-core\scripts\orchestra-state.ps1')
+
+        $reviewState = @{
+            'feature/test' = @{
+                status = 'PENDING'
+                request = @{
+                    target_review_label = 'worker-1'
+                    target_review_pane_id = '%2'
+                }
+            }
+        }
+
+        $record = Get-OrchestraPaneReviewRecord -ReviewState $reviewState -Branch '' -Label 'worker-1' -PaneId '%2' -Role 'Worker'
+
+        $record.status | Should -Be 'PENDING'
+    }
+
+    It 'appends operator poll log records as jsonl' {
+        Write-OperatorPollLog -ProjectDir $script:operatorPollTempRoot -SessionName 'winsmux-orchestra' -EventName 'operator.poll.idle_dispatch_needed' -Message 'idle' -PaneId '%2'
+        Write-OperatorPollLog -ProjectDir $script:operatorPollTempRoot -SessionName 'winsmux-orchestra' -EventName 'operator.poll.auto_approved' -Message 'approved' -PaneId '%2'
+
+        $logPath = Get-OperatorPollLogPath -ProjectDir $script:operatorPollTempRoot
+        $lines = @(Get-Content -Path $logPath -Encoding UTF8 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+
+        $lines.Count | Should -Be 2
+        ($lines[0] | ConvertFrom-Json).event | Should -Be 'operator.poll.idle_dispatch_needed'
+        ($lines[1] | ConvertFrom-Json).event | Should -Be 'operator.poll.auto_approved'
+    }
+
+    It 'does not forward operator dispatch-needed alerts to Telegram by default' {
+        Mock Test-Path { $true }
+        Mock Get-Content { 'TELEGRAM_BOT_TOKEN=test-token' }
+        Mock Invoke-RestMethod { }
+
+        Send-OperatorTelegramNotification -ProjectDir $script:operatorPollTempRoot -SessionName 'winsmux-orchestra' `
+            -Event 'operator.dispatch_needed' -Message 'idle' -PaneId '%2' -Label 'builder-1' -Role 'Builder'
+
+        Should -Not -Invoke Invoke-RestMethod
+    }
+
+    It 'does not forward auto-approved alerts to Telegram by default' {
+        Mock Test-Path { $true }
+        Mock Get-Content { 'TELEGRAM_BOT_TOKEN=test-token' }
+        Mock Invoke-RestMethod { }
+
+        Send-OperatorTelegramNotification -ProjectDir $script:operatorPollTempRoot -SessionName 'winsmux-orchestra' `
+            -Event 'operator.auto_approved' -Message 'approved' -PaneId '%2' -Label 'builder-1' -Role 'Builder'
+
+        Should -Not -Invoke Invoke-RestMethod
+    }
+
+    It 'sends external review-requested alerts to Telegram by default' {
+        Mock Test-Path { $true }
+        Mock Get-Content { 'TELEGRAM_BOT_TOKEN=test-token' }
+        Mock Invoke-RestMethod { }
+
+        Send-OperatorTelegramNotification -ProjectDir $script:operatorPollTempRoot -SessionName 'winsmux-orchestra' `
+            -Event 'operator.review_requested' -Message 'review requested' -PaneId '%4' -Label 'worker-1' -Role 'Worker'
+
+        Should -Invoke Invoke-RestMethod -Times 1 -Exactly
+    }
+
+    It 'sends commit-ready alerts to Telegram by default' {
+        Mock Test-Path { $true }
+        Mock Get-Content { 'TELEGRAM_BOT_TOKEN=test-token' }
+        Mock Invoke-RestMethod { }
+
+        Send-OperatorTelegramNotification -ProjectDir $script:operatorPollTempRoot -SessionName 'winsmux-orchestra' `
+            -Event 'operator.commit_ready' -Message 'ready to commit' -HeadSha 'abc1234def5678'
+
+        Should -Invoke Invoke-RestMethod -Times 1 -Exactly
+    }
+
+    It 'allows all operator Telegram alerts when verbose profile is enabled' {
+        $previousProfile = $env:WINSMUX_TELEGRAM_PROFILE
+        $env:WINSMUX_TELEGRAM_PROFILE = 'verbose'
+
+        try {
+            Mock Test-Path { $true }
+            Mock Get-Content { 'TELEGRAM_BOT_TOKEN=test-token' }
+            Mock Invoke-RestMethod { }
+
+            Send-OperatorTelegramNotification -ProjectDir $script:operatorPollTempRoot -SessionName 'winsmux-orchestra' `
+                -Event 'operator.dispatch_needed' -Message 'idle' -PaneId '%2' -Label 'builder-1' -Role 'Builder'
+
+            Should -Invoke Invoke-RestMethod -Times 1 -Exactly
+        } finally {
+            if ($null -eq $previousProfile) {
+                Remove-Item Env:WINSMUX_TELEGRAM_PROFILE -ErrorAction SilentlyContinue
+            } else {
+                $env:WINSMUX_TELEGRAM_PROFILE = $previousProfile
+            }
+        }
+    }
+
+    It 'suppresses all Telegram alerts when profile is none' {
+        $previousProfile = $env:WINSMUX_TELEGRAM_PROFILE
+        $env:WINSMUX_TELEGRAM_PROFILE = 'none'
+
+        try {
+            Mock Test-Path { $true }
+            Mock Get-Content { 'TELEGRAM_BOT_TOKEN=test-token' }
+            Mock Invoke-RestMethod { }
+
+            Send-OperatorTelegramNotification -ProjectDir $script:operatorPollTempRoot -SessionName 'winsmux-orchestra' `
+                -Event 'operator.review_failed' -Message 'review failed' -HeadSha 'abc1234def5678'
+
+            Should -Not -Invoke Invoke-RestMethod
+        } finally {
+            if ($null -eq $previousProfile) {
+                Remove-Item Env:WINSMUX_TELEGRAM_PROFILE -ErrorAction SilentlyContinue
+            } else {
+                $env:WINSMUX_TELEGRAM_PROFILE = $previousProfile
+            }
+        }
+    }
+
+    It 'allows internal operator Telegram alerts only when explicitly overridden' {
+        $previousOverride = $env:WINSMUX_TELEGRAM_INCLUDE_INTERNAL_EVENTS
+        $env:WINSMUX_TELEGRAM_INCLUDE_INTERNAL_EVENTS = 'true'
+
+        try {
+            Mock Test-Path { $true }
+            Mock Get-Content { 'TELEGRAM_BOT_TOKEN=test-token' }
+            Mock Invoke-RestMethod { }
+
+            Send-OperatorTelegramNotification -ProjectDir $script:operatorPollTempRoot -SessionName 'winsmux-orchestra' `
+                -Event 'operator.dispatch_needed' -Message 'idle' -PaneId '%2' -Label 'builder-1' -Role 'Builder'
+
+            Should -Invoke Invoke-RestMethod -Times 1 -Exactly
+        } finally {
+            if ($null -eq $previousOverride) {
+                Remove-Item Env:WINSMUX_TELEGRAM_INCLUDE_INTERNAL_EVENTS -ErrorAction SilentlyContinue
+            } else {
+                $env:WINSMUX_TELEGRAM_INCLUDE_INTERNAL_EVENTS = $previousOverride
+            }
+        }
+    }
+
+    It 'dispatches review requests through operator poll wrappers' {
+@"
+version: 1
+saved_at: 2026-04-12T10:00:00+09:00
+session:
+  name: winsmux-orchestra
+  project_dir: $script:operatorPollTempRoot
+panes:
+  reviewer-1:
+    pane_id: %4
+    role: Reviewer
+    launch_dir: $script:operatorPollTempRoot
+"@ | Set-Content -Path $script:operatorPollManifestPath -Encoding UTF8
+
+        Mock Send-OperatorPollLiteral { }
+        Mock Approve-OperatorPollPane { }
+        Mock Send-OperatorTelegramNotification { }
+
+        $result = Invoke-OperatorStateMachine `
+            -CurrentState 'waiting_for_review' `
+            -CycleSummary @{ completions = 1 } `
+            -ProjectDir $script:operatorPollTempRoot `
+            -SessionName 'winsmux-orchestra' `
+            -ManifestPath $script:operatorPollManifestPath
+
+        $result.State | Should -Be 'review_requested'
+        Should -Invoke Send-OperatorPollLiteral -Times 1 -Exactly -ParameterFilter {
+            $PaneId -eq '%4' -and $Text -eq 'winsmux review-request'
+        }
+        Should -Invoke Approve-OperatorPollPane -Times 1 -Exactly -ParameterFilter {
+            $PaneId -eq '%4'
+        }
+    }
+
+    It 'stops at the draft PR gate after review passed' {
+        Mock Send-OperatorTelegramNotification { }
+
+        $result = Invoke-OperatorStateMachine `
+            -CurrentState 'review_passed' `
+            -CycleSummary @{ completions = 0 } `
+            -ProjectDir $script:operatorPollTempRoot `
+            -SessionName 'winsmux-orchestra' `
+            -ManifestPath $script:operatorPollManifestPath
+
+        $result.State | Should -Be 'blocked_draft_pr_required'
+        $result.CommitReadySha | Should -Be ''
+
+        $eventsPath = Join-Path $script:operatorPollManifestDir 'events.jsonl'
+        $events = @(Get-Content -Path $eventsPath -Encoding UTF8 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_ | ConvertFrom-Json -AsHashtable })
+        @($events | ForEach-Object { $_['event'] }) | Should -Contain 'operator.draft_pr.required'
+        $draftEvent = @($events | Where-Object { $_['event'] -eq 'operator.draft_pr.required' })[0]
+        $draftEvent['status'] | Should -Be 'blocked_draft_pr_required'
+        $draftEvent['data']['human_merge_required'] | Should -Be $true
+        $draftEvent['data']['auto_merge_allowed'] | Should -Be $false
+        @($events | ForEach-Object { $_['event'] }) | Should -Not -Contain 'operator.commit_ready'
+
+        Should -Invoke Send-OperatorTelegramNotification -Times 1 -Exactly -ParameterFilter {
+            $Event -eq 'operator.draft_pr.required'
+        }
+    }
+
+    It 'ignores draft PR events without a matching head sha' {
+        $eventsPath = Join-Path $script:operatorPollManifestDir 'events.jsonl'
+        @(
+            ([ordered]@{
+                timestamp = '2026-04-12T10:00:00+09:00'
+                event     = 'operator.draft_pr.created'
+                head_sha  = ''
+                data      = [ordered]@{ target = 'draft_pr'; draft_pr_url = 'https://github.com/Sora-bluesky/winsmux/pull/900' }
+            } | ConvertTo-Json -Compress -Depth 10),
+            ([ordered]@{
+                timestamp = '2026-04-12T10:01:00+09:00'
+                event     = 'operator.draft_pr.created'
+                head_sha  = 'old-sha'
+                data      = [ordered]@{ target = 'draft_pr'; draft_pr_url = 'https://github.com/Sora-bluesky/winsmux/pull/901' }
+            } | ConvertTo-Json -Compress -Depth 10)
+        ) | Set-Content -Path $eventsPath -Encoding UTF8
+
+        Test-OperatorDraftPrCreated -ProjectDir $script:operatorPollTempRoot -HeadSha 'current-sha' | Should -Be $false
+    }
+
+    It 'resumes from the draft PR gate when matching draft PR evidence appears' {
+        Mock git { 'abc123' }
+        Mock Send-OperatorTelegramNotification { }
+
+        $eventsPath = Join-Path $script:operatorPollManifestDir 'events.jsonl'
+        ([ordered]@{
+            timestamp = '2026-04-12T10:02:00+09:00'
+            event     = 'operator.draft_pr.created'
+            head_sha  = 'abc123'
+            data      = [ordered]@{ target = 'draft_pr'; draft_pr_url = 'https://github.com/Sora-bluesky/winsmux/pull/902' }
+        } | ConvertTo-Json -Compress -Depth 10) | Set-Content -Path $eventsPath -Encoding UTF8
+
+        $result = Invoke-OperatorStateMachine `
+            -CurrentState 'blocked_draft_pr_required' `
+            -CycleSummary @{ completions = 0 } `
+            -ProjectDir $script:operatorPollTempRoot `
+            -SessionName 'winsmux-orchestra' `
+            -ManifestPath $script:operatorPollManifestPath
+
+        $result.State | Should -Be 'commit_ready'
+        $result.CommitReadySha | Should -Be 'abc123'
+        Should -Invoke Send-OperatorTelegramNotification -Times 1 -Exactly -ParameterFilter {
+            $Event -eq 'operator.commit_ready' -and $HeadSha -eq 'abc123'
+        }
+    }
+}

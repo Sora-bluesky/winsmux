@@ -151,7 +151,7 @@ Full release gate:
 
 ```powershell
 git diff --check
-Invoke-Pester -Path tests\winsmux-bridge.Tests.ps1 -PassThru
+pwsh -NoProfile -File scripts\run-tests.ps1
 Invoke-Pester -Path tests\PublicSurfacePolicy.Tests.ps1 -PassThru
 cargo test --manifest-path core\Cargo.toml
 cmd /c "cd winsmux-app && npm run test:common-contract-package"

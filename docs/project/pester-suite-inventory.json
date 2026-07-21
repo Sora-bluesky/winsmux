@@ -50,7 +50,6 @@
       "target": "migrate before thinning or deleting the Pester files",
       "batch": "407-a",
       "paths": [
-        "tests/winsmux-bridge.Tests.ps1",
         "tests/Runtime.VaultInject.Tests.ps1",
         "tests/OrchestraPreflight.Tests.ps1",
         "tests/PaneBorder.Tests.ps1",
@@ -58,6 +57,9 @@
         "tests/Integration.MultiAgent.Tests.ps1",
         "tests/Integration.PaneMonitorHook.Tests.ps1",
         "tests/Integration.WorktreeHook.Tests.ps1"
+      ],
+      "globs": [
+        "tests/bridge/*.Tests.ps1"
       ]
     },
     {

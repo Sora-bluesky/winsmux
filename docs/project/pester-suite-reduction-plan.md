@@ -34,7 +34,7 @@ Keep these in the active release gate because they protect current public, relea
 
 Keep these temporarily, but move their runtime assertions into Rust tests, CLI contract tests, or typed fixtures:
 
-- `tests/winsmux-bridge.Tests.ps1`
+- `tests/bridge/*.Tests.ps1`
 - `tests/Runtime.VaultInject.Tests.ps1`
 - `tests/OrchestraPreflight.Tests.ps1`
 - `tests/PaneBorder.Tests.ps1`
