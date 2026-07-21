@@ -58,8 +58,8 @@ foreach ($deferredId in @('A-003', 'CI-03', 'CI-04', 'CI-06', 'TST-07', 'WIN-08'
     Add-Check "audit document defers $deferredId" ($auditDoc -match [regex]::Escape($deferredId)) 'docs/project/v03619-repo-audit.md'
 }
 
-Add-Check 'Pester matrix guards full-name filter source coverage' ($testWorkflow -match 'Assert-PesterCategoryFilterCoverage' -and $testWorkflow -match 'has FullName filters with no source match') '.github/workflows/test.yml'
-Add-Check 'Pester matrix allows categories without full-name filters' ($testWorkflow -match '\[string\[\]\]\$Filters = @\(\)' -and $testWorkflow -match 'if \(\$fullNameFilters\.Count -gt 0\)') '.github/workflows/test.yml'
+Add-Check 'Pester matrix guards bridge file union coverage' ($testWorkflow -match 'assert-pester-shard-coverage\.ps1' -and $testWorkflow -match 'Bridge shard coverage gate failed') '.github/workflows/test.yml'
+Add-Check 'Pester matrix executes resolved files without FullName filters' ($testWorkflow -match '\$config\.Run\.Path = \$resolvedPaths' -and $testWorkflow -notmatch '\$config\.Filter\.FullName') '.github/workflows/test.yml'
 Add-Check 'Pester matrix includes v0.36.19 audit tests' ($testWorkflow -match 'V03619RepoAudit\.Tests\.ps1') '.github/workflows/test.yml'
 foreach ($workflow in @(
     @{ name = 'test'; content = $testWorkflow },

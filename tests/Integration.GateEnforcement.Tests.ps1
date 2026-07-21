@@ -182,8 +182,10 @@ Describe 'sh-orchestra-gate integration' {
             Copy-Item (Join-Path $script:RepoRoot '.claude\hooks\vendor') (Join-Path $repoRoot '.claude\hooks\vendor') -Recurse
 
             & git -C $repoRoot init | Out-Null
+            $fixtureHooks = Join-Path $repoRoot '.git\fixture-hooks'
+            New-Item -ItemType Directory -Path $fixtureHooks -Force | Out-Null
             & git -C $repoRoot add .
-            & git -C $repoRoot -c user.name='Test User' -c user.email='test@example.com' commit -m 'init' | Out-Null
+            & git -C $repoRoot -c "core.hooksPath=$fixtureHooks" -c user.name='Test User' -c user.email='test@example.com' commit -m 'init' | Out-Null
             & git -C $repoRoot checkout -b 'feature/review-gate' | Out-Null
             New-Item -ItemType Directory -Path (Join-Path $repoRoot '.winsmux') -Force | Out-Null
             $fixtureBin = Join-Path $repoRoot '.winsmux-test-bin'
@@ -274,8 +276,10 @@ worktrees: {}
             Write-GateTestFile -Path (Join-Path $repoRoot 'README.md') -Content 'target fixture'
 
             & git -C $repoRoot init | Out-Null
+            $fixtureHooks = Join-Path $repoRoot '.git\fixture-hooks'
+            New-Item -ItemType Directory -Path $fixtureHooks -Force | Out-Null
             & git -C $repoRoot add .
-            & git -C $repoRoot -c user.name='Test User' -c user.email='test@example.com' commit -m 'init' | Out-Null
+            & git -C $repoRoot -c "core.hooksPath=$fixtureHooks" -c user.name='Test User' -c user.email='test@example.com' commit -m 'init' | Out-Null
             & git -C $repoRoot checkout -b $Branch | Out-Null
             New-Item -ItemType Directory -Path (Join-Path $repoRoot '.winsmux') -Force | Out-Null
 

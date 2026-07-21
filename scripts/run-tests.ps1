@@ -18,7 +18,9 @@ param(
 
     [Parameter(DontShow = $true)]
     [ValidateRange(1, 7200)]
-    [int]$WorkerTimeoutSeconds = 1200,
+    # The integration CI shard owns a 25-minute budget. Keep the local aggregate
+    # runner above that boundary because concurrent bridge workers add contention.
+    [int]$WorkerTimeoutSeconds = 1800,
 
     [Parameter(DontShow = $true)]
     [string]$WorkerStdOutPath,
@@ -33,7 +35,7 @@ $ErrorActionPreference = 'Stop'
 function Get-CoverageTargets {
     param([string]$RepositoryRoot)
 
-    $testFiles = Get-ChildItem -Path (Join-Path $RepositoryRoot 'tests') -Filter '*.Tests.ps1' -File -ErrorAction SilentlyContinue
+    $testFiles = Get-ChildItem -Path (Join-Path $RepositoryRoot 'tests') -Filter '*.Tests.ps1' -File -Recurse -ErrorAction SilentlyContinue
     $targets = [System.Collections.Generic.List[string]]::new()
 
     foreach ($testFile in $testFiles) {
@@ -550,24 +552,45 @@ function Get-BridgeShards {
         '(?ms)^\s{10}- name:\s+(?<name>bridge-[^\r\n]+)\r?\n(?<body>.*?)(?=^\s{10}- name:|^\s{6}[a-zA-Z_-]+:|\z)'
     )
     $shards = [System.Collections.Generic.List[object]]::new()
+    $owners = @{}
     foreach ($match in $matches) {
-        $fullNameMatch = [regex]::Match($match.Groups['body'].Value, '(?m)^\s+full_name:\s*(?<value>[^\r\n]+)$')
-        if (-not $fullNameMatch.Success) {
-            throw "Bridge shard $($match.Groups['name'].Value) has no full_name filter."
+        $name = [string]$match.Groups['name'].Value
+        $pathsMatch = [regex]::Match($match.Groups['body'].Value, '(?m)^\s+paths:\s*(?<value>[^\r\n]+)$')
+        if (-not $pathsMatch.Success) {
+            throw "Bridge shard $name has no paths entry."
         }
-        $value = $fullNameMatch.Groups['value'].Value.Trim().Trim('''', '"')
-        $filters = @($value -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-        if ($filters.Count -eq 0) {
-            throw "Bridge shard $($match.Groups['name'].Value) has an empty full_name filter."
+        $patterns = @($pathsMatch.Groups['value'].Value.Trim().Trim('''', '"') -split ';' |
+            ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        $paths = [System.Collections.Generic.List[string]]::new()
+        foreach ($pattern in $patterns) {
+            $resolved = @(Resolve-Path -Path (Join-Path $RepositoryRoot $pattern) -ErrorAction Stop)
+            if ($resolved.Count -eq 0) {
+                throw "Bridge shard $name pattern matched no files: $pattern"
+            }
+            foreach ($item in $resolved) {
+                $path = [System.IO.Path]::GetFullPath($item.ProviderPath)
+                if ($owners.ContainsKey($path)) {
+                    throw "Bridge test file $path belongs to both $($owners[$path]) and $name."
+                }
+                $owners[$path] = $name
+                $paths.Add($path)
+            }
         }
         $shards.Add([PSCustomObject]@{
-            Name = [string]$match.Groups['name'].Value
-            Filters = $filters
-            Tests = [System.Collections.Generic.List[object]]::new()
+            Name = $name
+            Paths = @($paths | Sort-Object -Unique)
         })
     }
     if ($shards.Count -ne 13) {
         throw "Expected 13 bridge CI shards, found $($shards.Count)."
+    }
+    $actualBridgeFiles = @(Get-ChildItem -LiteralPath (Join-Path $RepositoryRoot 'tests\bridge') -Filter '*.Tests.ps1' -File -Recurse |
+        ForEach-Object { [System.IO.Path]::GetFullPath($_.FullName) } | Sort-Object -Unique)
+    $assignedBridgeFiles = @($owners.Keys | Sort-Object -Unique)
+    $unassigned = @($actualBridgeFiles | Where-Object { $_ -notin $assignedBridgeFiles })
+    $missing = @($assignedBridgeFiles | Where-Object { $_ -notin $actualBridgeFiles })
+    if ($unassigned.Count -gt 0 -or $missing.Count -gt 0) {
+        throw "Bridge shard coverage mismatch. unassigned=[$($unassigned -join ', ')] missing=[$($missing -join ', ')]"
     }
     return $shards.ToArray()
 }
@@ -579,7 +602,7 @@ function New-PesterWorkUnits {
     )
 
     $testsPath = Join-Path $RepositoryRoot 'tests'
-    $testFiles = @(Get-ChildItem -LiteralPath $testsPath -Filter '*.Tests.ps1' -File | Sort-Object Name)
+    $testFiles = @(Get-ChildItem -LiteralPath $testsPath -Filter '*.Tests.ps1' -File -Recurse | Sort-Object FullName)
     if ($testFiles.Count -eq 0) {
         throw 'No Pester test files were found.'
     }
@@ -594,8 +617,9 @@ function New-PesterWorkUnits {
     }
 
     $units = [System.Collections.Generic.List[object]]::new()
-    $bridgeFile = $testFiles | Where-Object Name -EQ 'winsmux-bridge.Tests.ps1' | Select-Object -First 1
-    foreach ($file in $testFiles | Where-Object Name -NE 'winsmux-bridge.Tests.ps1') {
+    $shards = @(Get-BridgeShards -RepositoryRoot $RepositoryRoot)
+    $bridgePaths = @($shards.Paths | ForEach-Object { [System.IO.Path]::GetFullPath([string]$_) } | Sort-Object -Unique)
+    foreach ($file in $testFiles | Where-Object { [System.IO.Path]::GetFullPath($_.FullName) -notin $bridgePaths }) {
         $fullPath = [System.IO.Path]::GetFullPath($file.FullName)
         if (-not $testsByFile.ContainsKey($fullPath)) {
             throw "Pester discovery did not return tests for $fullPath"
@@ -608,59 +632,24 @@ function New-PesterWorkUnits {
         })
     }
 
-    if ($null -ne $bridgeFile) {
-        $bridgePath = [System.IO.Path]::GetFullPath($bridgeFile.FullName)
-        if (-not $testsByFile.ContainsKey($bridgePath)) {
-            throw 'Pester discovery did not return bridge tests.'
-        }
-        $bridgeTests = @($testsByFile[$bridgePath])
-        if (@($bridgeTests | Where-Object { [bool]$_.skipped }).Count -gt 0) {
-            throw 'Bridge line sharding cannot safely override skipped tests.'
-        }
-
-        $shards = @(Get-BridgeShards -RepositoryRoot $RepositoryRoot)
-        $unmatched = [System.Collections.Generic.List[object]]::new()
-        foreach ($test in $bridgeTests) {
-            $matchingShards = @($shards | Where-Object {
-                $shard = $_
-                @($shard.Filters | Where-Object {
-                    $filter = $_
-                    @($test.fullNameCandidates | Where-Object { [string]$_ -like $filter }).Count -gt 0
-                }).Count -gt 0
-            })
-            if ($matchingShards.Count -gt 0) {
-                # CI filters can overlap. Assign once to preserve the serial identity
-                # multiset while retaining the first CI matrix lane as precedence.
-                $matchingShards[0].Tests.Add($test)
-            } else {
-                $unmatched.Add($test)
+    foreach ($shard in $shards) {
+        $count = 0
+        foreach ($path in $shard.Paths) {
+            $fullPath = [System.IO.Path]::GetFullPath([string]$path)
+            if (-not $testsByFile.ContainsKey($fullPath)) {
+                throw "Pester discovery did not return bridge tests for $fullPath"
             }
+            $count += [int]$testsByFile[$fullPath].Count
         }
-
-        # The current CI matrix has known coverage gaps. Keep every previously
-        # unlisted top-level Describe together and place it in the least-loaded
-        # CI lane so the local full gate cannot silently omit tests.
-        foreach ($group in @($unmatched | Group-Object topLevelName | Sort-Object @{ Expression = 'Count'; Descending = $true }, Name)) {
-            $target = $shards | Sort-Object @{ Expression = { $_.Tests.Count } }, Name | Select-Object -First 1
-            foreach ($test in $group.Group) {
-                $target.Tests.Add($test)
-            }
+        if ($count -eq 0) {
+            throw "Bridge CI shard $($shard.Name) resolved to zero tests."
         }
-
-        foreach ($shard in $shards) {
-            if ($shard.Tests.Count -eq 0) {
-                throw "Bridge CI shard $($shard.Name) resolved to zero tests."
-            }
-            $lineFilters = @($shard.Tests | ForEach-Object {
-                '{0}:{1}' -f ([string]$_.file).Replace('\', '/'), [int]$_.startLine
-            } | Sort-Object -Unique)
-            $units.Add([PSCustomObject]@{
-                WorkerId = [string]$shard.Name
-                Paths = @($bridgePath)
-                LineFilters = $lineFilters
-                ExpectedCount = [int]$shard.Tests.Count
-            })
-        }
+        $units.Add([PSCustomObject]@{
+            WorkerId = [string]$shard.Name
+            Paths = @($shard.Paths)
+            LineFilters = @()
+            ExpectedCount = $count
+        })
     }
 
     $expected = [int](($units | Measure-Object ExpectedCount -Sum).Sum)

@@ -155,7 +155,7 @@ Three duplications have already diverged in the tree today:
   ValidateSet), `coordinator-router.ps1` (Thinker/Worker/Verifier + role
   contracts), `local-router-shadow.ps1` + `router/local-small-router-v03621.weights.json`
   (role_heads / feature vector), `.claude/CLAUDE.md` + `.claude/rules/dispatch.md`
-  (operator-facing role docs), `winsmux-bridge.Tests.ps1` (`WINSMUX_ROLE_MAP`).
+  (operator-facing role docs), `tests/bridge/*.Tests.ps1` (`WINSMUX_ROLE_MAP`).
 - **Top drift risks:** the two PowerShell taxonomies never translate to each
   other or to the Rust canonical set; the keyword→role map is hardcoded in one
   function with no design contract; the router weights hardcode role names /

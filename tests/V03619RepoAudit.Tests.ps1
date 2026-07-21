@@ -20,11 +20,12 @@ Describe 'v0.36.19 repository-wide audit gate' {
         [int]$result['check_count'] | Should -BeGreaterThan 20
     }
 
-    It 'keeps CI Pester categories without FullName filters runnable' {
+    It 'keeps CI Pester categories file-owned and runnable without FullName filters' {
         $workflow = Get-Content -LiteralPath (Join-Path $script:repoRoot '.github/workflows/test.yml') -Raw
 
-        $workflow | Should -Match '\[string\[\]\]\$Filters = @\(\)'
-        $workflow | Should -Match 'if \(\$fullNameFilters\.Count -gt 0\)'
-        $workflow | Should -Match 'Assert-PesterCategoryFilterCoverage -Category'
+        $workflow | Should -Match 'assert-pester-shard-coverage\.ps1'
+        $workflow | Should -Match 'Bridge shard coverage gate failed'
+        $workflow | Should -Match '\$config\.Run\.Path = \$resolvedPaths'
+        $workflow | Should -Not -Match '\$config\.Filter\.FullName'
     }
 }

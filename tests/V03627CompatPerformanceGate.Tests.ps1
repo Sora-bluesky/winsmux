@@ -77,19 +77,23 @@ Describe 'v0.36.27 compat performance gate' {
         $content | Should -Match 'process-benchmark'
     }
 
-    It 'keeps the five required worker execution FullName filters bidirectional' {
+    It 'keeps the five required worker execution tests in one covered shard file' {
         $workflow = Get-Content -LiteralPath (Join-Path $script:repoRoot '.github/workflows/test.yml') -Raw
-        $workflow | Should -Match 'Assert-PesterCategoryRequiredFilters'
-        $workflow | Should -Match 'missing required FullName filters'
+        $guard = Get-Content -LiteralPath (Join-Path $script:repoRoot 'scripts/assert-pester-shard-coverage.ps1') -Raw
+        $workerTests = Get-Content -LiteralPath (Join-Path $script:repoRoot 'tests/bridge/WorkerApiAgyExec.Tests.ps1') -Raw
 
-        foreach ($requiredFilter in @(
-            '*uses the worker input byte limit contract*',
-            '*classifies JSON-formatted secret task fields*',
-            '*keeps empty stored worker logs local*',
-            '*propagates stored failed run status from local logs*',
-            '*returns failing process exit codes when the antigravity adapter fails*'
+        [regex]::Matches($workflow, 'paths: tests/bridge/WorkerApiAgyExec\.Tests\.ps1').Count | Should -Be 1
+        $guard | Should -Match 'belongs to both'
+        $guard | Should -Match 'unassigned='
+
+        foreach ($requiredName in @(
+            'uses the worker input byte limit contract',
+            'classifies JSON-formatted secret task fields',
+            'keeps empty stored worker logs local',
+            'propagates stored failed run status from local logs',
+            'returns failing process exit codes when the antigravity adapter fails'
         )) {
-            [regex]::Matches($workflow, [regex]::Escape($requiredFilter)).Count | Should -BeGreaterOrEqual 2
+            [regex]::Matches($workerTests, [regex]::Escape($requiredName)).Count | Should -Be 1
         }
     }
 
