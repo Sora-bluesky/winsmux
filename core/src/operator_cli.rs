@@ -20,6 +20,8 @@ use crate::machine_contract::machine_contract_catalog;
 use crate::read_path;
 use crate::types::VERSION;
 use crate::workspace_project_settings::{self, WorkspacePlanProjectSettings};
+#[cfg(test)]
+use crate::workspace_recipe::normalize_workspace_plan;
 use crate::workspace_recipe::{
     normalize_workspace_plan_from_value, parse_workspace_yaml, SlotCapabilities,
 };
