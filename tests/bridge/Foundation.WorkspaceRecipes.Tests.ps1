@@ -94,6 +94,32 @@ Describe 'TASK-658 workspace recipe pure contract' {
         $second | Should -BeExactly $expected
     }
 
+    It 'accepts legal relative indentation widths without changing the golden plan or fingerprint' -ForEach @(
+        @{ Width = 1 }, @{ Width = 3 }
+    ) {
+        $raw = Get-Content -Raw -LiteralPath $script:FixturePath -Encoding UTF8
+        $reindented = (($raw -split "`r?`n") | ForEach-Object {
+                $leading = [regex]::Match($_, '^ *').Value.Length
+                $depth = [int]($leading / 2)
+                (' ' * ($depth * $Width)) + $_.Substring($leading)
+            }) -join "`n"
+
+        $document = ConvertFrom-WorkspaceRecipeYaml -Content $reindented
+        $actual = ConvertTo-WorkspaceRecipePlanJson (Invoke-TestWorkspaceRecipePlan $document)
+        $expected = (Get-Content -Raw -LiteralPath $script:ExpectedPath -Encoding UTF8).Trim()
+
+        $actual | Should -BeExactly $expected
+    }
+
+    It 'rejects tab indentation, indented roots, structurally inconsistent blocks, and invalid dedents' -ForEach @(
+        @{ Content = "root:`n`tchild: value"; Error = '*tab indentation*' },
+        @{ Content = ' root: value'; Error = '*root must start at indentation zero*' },
+        @{ Content = "root:`n child: value`n  stray: value"; Error = '*inconsistent indentation*' },
+        @{ Content = "root:`n   child:`n     leaf: value`n    sibling: value"; Error = '*inconsistent indentation*' }
+    ) {
+        { ConvertFrom-WorkspaceRecipeYaml -Content $Content } | Should -Throw $Error
+    }
+
     It 'accepts YAML inline comments without changing the golden plan or fingerprint' -ForEach @(
         @{ From = '    schema-version: 1'; To = '    schema-version: 1 # declarative contract version' },
         @{ From = '        region: main'; To = '        region: main # primary placement region' }

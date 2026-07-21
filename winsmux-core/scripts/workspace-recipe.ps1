@@ -282,7 +282,7 @@ function ConvertFrom-WorkspaceRecipeYaml {
         if ($rawLine -match "`t") { throw "YAML line $number contains a tab indentation." }
         if ([string]::IsNullOrWhiteSpace($rawLine) -or $rawLine.TrimStart().StartsWith('#')) { continue }
         $indent = $rawLine.Length - $rawLine.TrimStart(' ').Length
-        if (($indent % 2) -ne 0) { throw "YAML line $number must use two-space indentation." }
+        # YAML indentation width is not fixed; block parsing below enforces relative consistency.
         $text = $rawLine.Trim()
         $lines += [pscustomobject]@{ Indent = $indent; Text = $text; Number = $number }
     }
