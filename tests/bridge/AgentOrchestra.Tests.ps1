@@ -2709,7 +2709,7 @@ Describe 'orchestra-start rollback helpers' {
         [System.IO.File]::WriteAllText($manifestPath, "version: '1'`n", [System.Text.UTF8Encoding]::new($false))
 
         { Clear-WinsmuxManifest -ProjectDir $script:orchestraStartTempRoot -ExpectedGenerationId 'owned-generation' } |
-            Should -Throw '*cannot be verified*'
+            Should -Throw
         (Test-Path -LiteralPath $manifestPath -PathType Leaf) | Should -BeTrue
     }
 

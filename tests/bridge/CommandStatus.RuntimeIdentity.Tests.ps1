@@ -317,6 +317,7 @@ panes:
     It 'TASK781 C58 rejects case-variant v2 duplicate <Case>' -ForEach @(
         @{
             Case = 'top-level section'
+            ExpectedError = '*canonical form*'
             Content = @'
 version: 2
 session:
@@ -327,6 +328,7 @@ Session:
         }
         @{
             Case = 'session property'
+            ExpectedError = '*duplicate manifest key*'
             Content = @'
 version: 2
 session:
@@ -336,6 +338,7 @@ session:
         }
         @{
             Case = 'pane label'
+            ExpectedError = '*duplicate manifest key*'
             Content = @'
 version: 2
 panes:
@@ -347,6 +350,7 @@ panes:
         }
         @{
             Case = 'pane property'
+            ExpectedError = '*duplicate manifest key*'
             Content = @'
 version: 2
 panes:
@@ -357,6 +361,7 @@ panes:
         }
         @{
             Case = 'worktree label'
+            ExpectedError = '*duplicate manifest key*'
             Content = @'
 version: 2
 worktrees:
@@ -368,6 +373,7 @@ worktrees:
         }
         @{
             Case = 'worktree property'
+            ExpectedError = '*duplicate manifest key*'
             Content = @'
 version: 2
 worktrees:
@@ -377,7 +383,7 @@ worktrees:
 '@
         }
     ) {
-        { ConvertFrom-ManifestYaml -Content $Content } | Should -Throw '*duplicate manifest key*'
+        { ConvertFrom-ManifestYaml -Content $Content } | Should -Throw $ExpectedError
     }
 
     It 'TASK781 C58 preserves case-insensitive last-value parsing for legacy v1 diagnostics' {
