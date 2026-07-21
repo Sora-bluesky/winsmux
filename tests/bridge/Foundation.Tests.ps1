@@ -297,17 +297,29 @@ Describe 'Get-OrchestraLayoutSettings' {
         try {
             New-Item -ItemType Directory -Path $projectRoot -Force | Out-Null
             $path = Join-Path $projectRoot '.winsmux.yaml'
-@'
+            $workspaceRecipeBlock = @'
+workspace-recipes: # Rust owns semantic parsing
+ review:
+   schema-version: 1
+   panes: # collection comment
+   -
+     pane-key: implement
+     workflow-role: implementer
+     slot-ref: worker-1
+     requires-capabilities: [file-edit]
+     region: main
+     worktree: { mode: managed, name-template: "{{workflow-id}}-implement" }
+   startup-actions: []
+'@
+            @"
 agent: codex
 team-profile:
   schema-version: 1
   preset: official-balanced-v1
-workspace-recipes:
-  review:
-    schema-version: 1
+$workspaceRecipeBlock
 future-owner:
   enabled: true
-'@ | Set-Content -LiteralPath $path -Encoding UTF8
+"@ | Set-Content -LiteralPath $path -Encoding UTF8
 
             Save-BridgeSettings -Scope project -RootPath $projectRoot -Settings ([ordered]@{ agent = 'codex'; model = 'gpt-5.4' })
 
@@ -317,6 +329,7 @@ future-owner:
             $saved | Should -Match '(?m)^future-owner:'
             $saved | Should -Match 'preset: official-balanced-v1'
             $saved | Should -Match 'schema-version: 1'
+            ($saved -replace "`r`n", "`n") | Should -Match ([regex]::Escape(($workspaceRecipeBlock -replace "`r`n", "`n")))
         } finally {
             Remove-Item -LiteralPath $projectRoot -Recurse -Force -ErrorAction SilentlyContinue
         }

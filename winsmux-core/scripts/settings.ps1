@@ -2882,29 +2882,6 @@ function Get-BridgeSettings {
     return $settings
 }
 
-function Get-BridgeWorkspaceRecipeSlotCatalog {
-    param(
-        [Parameter(Mandatory = $true)]$Settings,
-        [Parameter(Mandatory = $true)][string]$RootPath
-    )
-
-    $catalog = [ordered]@{}
-    foreach ($slot in @($Settings.agent_slots)) {
-        $slotId = if ($slot -is [System.Collections.IDictionary]) { [string]$slot['slot_id'] } else { [string]$slot.slot_id }
-        if ([string]::IsNullOrWhiteSpace($slotId)) {
-            continue
-        }
-        $effective = Get-SlotAgentConfig -SlotId $slotId -Settings $Settings -RootPath $RootPath
-        $catalog[$slotId] = [ordered]@{
-            slot_id                    = $slotId
-            supports_file_edit         = [bool]$effective.SupportsFileEdit
-            supports_verification      = [bool]$effective.SupportsVerification
-            supports_structured_result = [bool]$effective.SupportsStructuredResult
-        }
-    }
-    return $catalog
-}
-
 function Get-BridgeSettingsMetadata {
     param(
         [string]$RootPath,

@@ -62,6 +62,62 @@ fn valid_recipe_matches_the_shared_golden_plan_deterministically() {
 }
 
 #[test]
+fn standard_yaml_collection_forms_share_one_rust_normalized_contract() {
+    let collection_comments = VALID_RECIPE
+        .replace("    panes:", "    panes: # pane collection")
+        .replace(
+            "    startup-actions:",
+            "    startup-actions: # action collection",
+        );
+    let bare_sequence_entry = VALID_RECIPE.replace(
+        "      - pane-key: implement",
+        "      -\n        pane-key: implement",
+    );
+    let flow_mapping = VALID_RECIPE.replace(
+        "        worktree:\n          mode: read-only-reference",
+        "        worktree: { mode: read-only-reference }",
+    );
+    let arbitrary_indentation = VALID_RECIPE
+        .lines()
+        .map(|line| {
+            let indentation = line.len() - line.trim_start().len();
+            let replacement = match indentation {
+                2 => 1,
+                4 => 3,
+                6 => 4,
+                8 => 6,
+                10 => 8,
+                _ => indentation,
+            };
+            format!("{}{}", " ".repeat(replacement), line.trim_start())
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    for yaml in [
+        collection_comments,
+        bare_sequence_entry,
+        flow_mapping,
+        arbitrary_indentation,
+    ] {
+        let plan = normalize_workspace_plan(&yaml, "bugfix-two-slot", Some("issue-1204"), &slots())
+            .expect("standard YAML spelling should normalize through serde_yaml");
+        assert_eq!(
+            serde_json::to_string(&plan).expect("serialize normalized plan"),
+            EXPECTED_PLAN.trim()
+        );
+    }
+}
+
+#[test]
+fn recipe_schema_version_requires_an_integer_scalar() {
+    let quoted = VALID_RECIPE.replace("    schema-version: 1", "    schema-version: '1'");
+    let error = normalize_workspace_plan(&quoted, "bugfix-two-slot", Some("issue-1204"), &slots())
+        .expect_err("quoted schema-version must not satisfy the integer contract");
+    assert_eq!(error.to_string(), "invalid workspace recipe schema.");
+}
+
+#[test]
 fn multiple_panes_may_share_one_placement_region() {
     let same_region = VALID_RECIPE.replace("region: side", "region: main");
     let plan = normalize_workspace_plan(

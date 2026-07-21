@@ -145,7 +145,7 @@ jobs:
           - name: bridge-foundation
             result: bridge-foundation
             timeout_minutes: 15
-            paths: tests/bridge/Foundation.Tests.ps1;tests/bridge/Foundation.Settings.Tests.ps1;tests/bridge/Foundation.WorkspaceRecipes.Tests.ps1
+            paths: tests/bridge/Foundation.Tests.ps1;tests/bridge/Foundation.Settings.Tests.ps1
             full_name: ""
           - name: bridge-agent-orchestra
             result: bridge-agent-orchestra

@@ -39,13 +39,13 @@ parallel control plane:
 - `docs/operator-model.md` defines the operator/pane responsibility boundary,
   evidence-based verification, Context Capsule v1, Checkpoint package v1, and
   the prohibition on raw transcripts and private paths.
-- `winsmux-core/scripts/settings.ps1` owns project settings normalization. Its
-  `BridgeSettingsSchema`, `Get-BridgeSettings`, and
-  `Get-BridgeSettingsMetadata` are the PowerShell compatibility path for
-  `.winsmux.yaml`.
-- `core/src/operator_cli.rs` contains the Rust `.winsmux.yaml` reader and the
-  CLI paths that consume `.winsmux/manifest.yaml`. The Rust and PowerShell
-  readers must share fixtures for every new public key.
+- `winsmux-core/scripts/settings.ps1` owns legacy project setting
+  normalization. When it saves `.winsmux.yaml`, it preserves Lane A and
+  unknown top-level blocks as raw YAML without interpreting their semantics.
+- `core/src/operator_cli.rs` and `core/src/workspace_recipe.rs` are the single
+  semantic parser, validator, and planner for `workspace-recipes`. The
+  `winsmux workspace-plan --json` output is the normalized contract consumed
+  by future PowerShell runtime paths; PowerShell must not reparse a recipe.
 - `winsmux-core/scripts/orchestra-start.ps1` owns workspace startup and
   `Save-OrchestraSessionState`; `winsmux-core/scripts/orchestra-layout.ps1`
   owns the current deterministic pane layout.
@@ -384,7 +384,8 @@ desktop release parity.
 
 **Acceptance gate:**
 
-- valid recipe fixtures round-trip through both PowerShell and Rust readers;
+- standard YAML spellings normalize through the single Rust reader, while the
+  PowerShell settings writer preserves Lane A YAML without semantic parsing;
 - duplicate IDs, unknown actions, path escapes, ambiguous selectors, missing
   slots, and capability mismatches fail before pane/worktree creation;
 - existing `.winsmux.yaml` files without Lane A keys produce the current
