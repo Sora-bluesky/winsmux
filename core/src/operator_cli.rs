@@ -19,6 +19,7 @@ use crate::ledger::{attach_evidence_chain_to_event, public_changed_files};
 use crate::machine_contract::machine_contract_catalog;
 use crate::read_path;
 use crate::types::VERSION;
+use crate::workspace_project_settings::{self, WorkspacePlanProjectSettings};
 use crate::workspace_recipe::{normalize_workspace_plan, SlotCapabilities};
 
 static REVIEW_REQUEST_COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -3429,9 +3430,8 @@ impl ProviderRegistryEntry {
     }
 }
 
-fn read_bridge_settings(project_dir: &Path) -> io::Result<BridgeSettings> {
-    let path = project_dir.join(".winsmux.yaml");
-    let mut settings = BridgeSettings {
+fn default_bridge_settings() -> BridgeSettings {
+    BridgeSettings {
         agent: "codex".to_string(),
         model: String::new(),
         model_source: "provider-default".to_string(),
@@ -3442,83 +3442,69 @@ fn read_bridge_settings(project_dir: &Path) -> io::Result<BridgeSettings> {
         model_explicit: false,
         worker_role: ProviderRoleConfig::default(),
         agent_slots: Vec::new(),
-    };
-    if !path.exists() {
-        if let Some(runtime_worker_role) = runtime_role_config(project_dir, "worker")? {
-            settings.worker_role = merge_role_config(settings.worker_role, runtime_worker_role);
-        }
-        return Ok(settings);
     }
+}
 
-    let raw = fs::read_to_string(&path)?;
-    if raw.trim().is_empty() {
-        if let Some(runtime_worker_role) = runtime_role_config(project_dir, "worker")? {
-            settings.worker_role = merge_role_config(settings.worker_role, runtime_worker_role);
-        }
-        return Ok(settings);
-    }
-    let root = serde_yaml::from_str::<serde_yaml::Value>(&raw).map_err(|err| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("invalid settings: {}: {err}", path.display()),
-        )
-    })?;
-
-    if let Some(value) = yaml_string(&root, "agent") {
-        settings.agent = value;
+fn apply_workspace_plan_project_settings(
+    settings: &mut BridgeSettings,
+    project: &WorkspacePlanProjectSettings,
+) {
+    if let Some(value) = project.agent.as_deref() {
+        settings.agent = value.to_string();
         settings.agent_explicit = true;
     }
-    if let Some(value) = yaml_string(&root, "model") {
-        settings.model = value;
+    if let Some(value) = project.model.as_deref() {
+        settings.model = value.to_string();
         settings.model_explicit = true;
+        settings.model_source = inferred_model_source_for_model(value);
     }
-    if let Some(value) =
-        yaml_string(&root, "model_source").or_else(|| yaml_string(&root, "model-source"))
-    {
-        settings.model_source = value;
-    } else if settings.model_explicit {
-        settings.model_source = inferred_model_source_for_model(&settings.model);
+    if let Some(value) = project.model_source.as_deref() {
+        settings.model_source = value.to_string();
     }
-    if let Some(value) =
-        yaml_string(&root, "reasoning_effort").or_else(|| yaml_string(&root, "reasoning-effort"))
-    {
-        settings.reasoning_effort = value.to_ascii_lowercase();
+    if let Some(value) = project.reasoning_effort.as_deref() {
+        settings.reasoning_effort = value.to_string();
     }
-    settings.prompt_transport = yaml_string(&root, "prompt_transport")
-        .or_else(|| yaml_string(&root, "prompt-transport"))
-        .unwrap_or(settings.prompt_transport);
-    settings.auth_mode = yaml_string(&root, "auth_mode")
-        .or_else(|| yaml_string(&root, "auth-mode"))
-        .unwrap_or_default();
-    settings.worker_role = yaml_role_config(&root, "Worker")
-        .or_else(|| yaml_role_config(&root, "worker"))
-        .unwrap_or_default();
+    if let Some(value) = project.prompt_transport.as_deref() {
+        settings.prompt_transport = value.to_string();
+    }
+    if let Some(value) = project.auth_mode.as_deref() {
+        settings.auth_mode = value.to_string();
+    }
+    settings.worker_role = ProviderRoleConfig {
+        agent: project.worker_role.agent.clone(),
+        model: project.worker_role.model.clone(),
+        model_source: project.worker_role.model_source.clone(),
+        reasoning_effort: project.worker_role.reasoning_effort.clone(),
+        prompt_transport: project.worker_role.prompt_transport.clone(),
+        auth_mode: project.worker_role.auth_mode.clone(),
+    };
+    settings.agent_slots = project
+        .agent_slots
+        .iter()
+        .map(|slot| ProviderSlotConfig {
+            slot_id: slot.slot_id.clone(),
+            agent: slot.agent.clone(),
+            model: slot.model.clone(),
+            model_source: slot.model_source.clone(),
+            reasoning_effort: slot.reasoning_effort.clone(),
+            prompt_transport: slot.prompt_transport.clone(),
+            auth_mode: slot.auth_mode.clone(),
+        })
+        .collect();
+}
+
+fn read_bridge_settings(project_dir: &Path) -> io::Result<BridgeSettings> {
+    let project = workspace_project_settings::read(project_dir)?;
+    let mut settings = default_bridge_settings();
+    apply_workspace_plan_project_settings(&mut settings, &project);
     if let Some(runtime_worker_role) = runtime_role_config(project_dir, "worker")? {
         settings.worker_role = merge_role_config(settings.worker_role, runtime_worker_role);
     }
-    settings.agent_slots = yaml_agent_slots(&root)?;
-    let external_operator = yaml_bool(&root, "external_operator")
-        .or_else(|| yaml_bool(&root, "external-operator"))
-        .unwrap_or(true);
-    let legacy_role_layout = yaml_bool(&root, "legacy_role_layout")
-        .or_else(|| yaml_bool(&root, "legacy-role-layout"))
-        .unwrap_or(false);
-    let worker_count = yaml_i32(&root, "worker_count")
-        .or_else(|| yaml_i32(&root, "worker-count"))
-        .unwrap_or(6);
+    let external_operator = project.external_operator.unwrap_or(true);
+    let legacy_role_layout = project.legacy_role_layout.unwrap_or(false);
+    let worker_count = project.worker_count.unwrap_or(6);
     if settings.agent_slots.is_empty() && external_operator && !legacy_role_layout {
-        for index in 1..=worker_count {
-            settings.agent_slots.push(ProviderSlotConfig {
-                slot_id: format!("worker-{index}"),
-                agent: settings.agent_explicit.then(|| settings.agent.clone()),
-                model: settings.model_explicit.then(|| settings.model.clone()),
-                model_source: Some(settings.model_source.clone()),
-                reasoning_effort: Some(settings.reasoning_effort.clone()),
-                prompt_transport: Some(settings.prompt_transport.clone()),
-                auth_mode: (!settings.auth_mode.trim().is_empty())
-                    .then(|| settings.auth_mode.clone()),
-            });
-        }
+        settings.agent_slots = generated_workspace_plan_worker_slots(&settings, worker_count);
     }
     Ok(settings)
 }
@@ -3620,66 +3606,51 @@ where
     F: FnMut(&str) -> Option<String>,
 {
     let globals = read_workspace_plan_global_settings(&mut read_global)?;
-    let mut settings = read_bridge_settings(project_dir)?;
-    let raw = fs::read_to_string(project_dir.join(".winsmux.yaml"))?;
-    let root = serde_yaml::from_str::<serde_yaml::Value>(&raw).map_err(|err| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("invalid workspace-plan settings: {err}"),
-        )
-    })?;
-
-    let project_agent = yaml_string(&root, "agent");
-    if project_agent.is_none() {
-        if let Some(value) = globals.agent {
-            settings.agent = value;
-            settings.agent_explicit = true;
-        }
+    let project = workspace_project_settings::read(project_dir)?;
+    let mut settings = default_bridge_settings();
+    if let Some(value) = globals.agent.as_deref() {
+        settings.agent = value.to_string();
+        settings.agent_explicit = true;
+    }
+    if let Some(value) = globals.model.as_deref() {
+        settings.model = value.to_string();
+        settings.model_explicit = true;
+        settings.model_source = inferred_model_source_for_model(value);
+    }
+    if let Some(value) = globals.prompt_transport.as_deref() {
+        settings.prompt_transport = value.to_string();
+    }
+    apply_workspace_plan_project_settings(&mut settings, &project);
+    if let Some(runtime_worker_role) = runtime_role_config(project_dir, "worker")? {
+        settings.worker_role = merge_role_config(settings.worker_role, runtime_worker_role);
     }
 
-    let project_model = yaml_string(&root, "model");
-    let project_model_source =
-        yaml_string(&root, "model_source").or_else(|| yaml_string(&root, "model-source"));
-    if project_model.is_none() {
-        if let Some(value) = globals.model {
-            settings.model = value;
-            settings.model_explicit = true;
-            if project_model_source.is_none() {
-                settings.model_source = inferred_model_source_for_model(&settings.model);
-            }
-        }
-    }
-
-    let project_prompt_transport =
-        yaml_string(&root, "prompt_transport").or_else(|| yaml_string(&root, "prompt-transport"));
-    if project_prompt_transport.is_none() {
-        if let Some(value) = globals.prompt_transport {
-            settings.prompt_transport = value;
-        }
-    }
-
-    let project_slots = yaml_agent_slots(&root)?;
-    let legacy_role_layout = yaml_bool(&root, "legacy_role_layout")
-        .or_else(|| yaml_bool(&root, "legacy-role-layout"))
+    let legacy_role_layout = project
+        .legacy_role_layout
         .or(globals.legacy_role_layout)
         .unwrap_or(false);
-    if !project_slots.is_empty() && legacy_role_layout {
+    if project.legacy_role_count > 0 && !legacy_role_layout {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Legacy role counts require legacy_role_layout=true.",
+        ));
+    }
+    if !settings.agent_slots.is_empty() && legacy_role_layout {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "workspace-plan cannot bind agent_slots while legacy_role_layout is enabled.",
         ));
     }
-    if project_slots.is_empty() {
-        let external_operator = yaml_bool(&root, "external_operator")
-            .or_else(|| yaml_bool(&root, "external-operator"))
+    if settings.agent_slots.is_empty() {
+        let external_operator = project
+            .external_operator
             .or(globals.external_operator)
             .unwrap_or(true);
-        let worker_count = yaml_i32(&root, "worker_count")
-            .or_else(|| yaml_i32(&root, "worker-count"))
+        let worker_count = project
+            .worker_count
             .or(globals.worker_count)
             .unwrap_or(6);
 
-        settings.agent_slots.clear();
         if !legacy_role_layout && worker_count < 1 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -3877,100 +3848,6 @@ fn json_string_any(value: &Value, keys: &[&str]) -> Option<String> {
             .map(str::trim)
             .filter(|text| !text.is_empty())
             .map(str::to_string)
-    })
-}
-
-fn yaml_agent_slots(root: &serde_yaml::Value) -> io::Result<Vec<ProviderSlotConfig>> {
-    let Some(slots) = yaml_get(root, "agent_slots").or_else(|| yaml_get(root, "agent-slots"))
-    else {
-        return Ok(Vec::new());
-    };
-    let Some(items) = slots.as_sequence() else {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Invalid agent_slots configuration: every slot entry must include at least slot_id.",
-        ));
-    };
-    let mut result = Vec::new();
-    for item in items {
-        let slot_id = yaml_string(item, "slot_id")
-            .or_else(|| yaml_string(item, "slot-id"))
-            .unwrap_or_default();
-        if slot_id.trim().is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Invalid agent_slots configuration: every slot entry must include at least slot_id.",
-            ));
-        }
-        let model = yaml_string(item, "model");
-        let model_source = yaml_string(item, "model_source")
-            .or_else(|| yaml_string(item, "model-source"))
-            .or_else(|| model.as_deref().map(inferred_model_source_for_model));
-        result.push(ProviderSlotConfig {
-            slot_id,
-            agent: yaml_string(item, "agent"),
-            model,
-            model_source,
-            reasoning_effort: yaml_string(item, "reasoning_effort")
-                .or_else(|| yaml_string(item, "reasoning-effort"))
-                .map(|value| value.to_ascii_lowercase()),
-            prompt_transport: yaml_string(item, "prompt_transport")
-                .or_else(|| yaml_string(item, "prompt-transport")),
-            auth_mode: yaml_string(item, "auth_mode").or_else(|| yaml_string(item, "auth-mode")),
-        });
-    }
-    Ok(result)
-}
-
-fn yaml_role_config(root: &serde_yaml::Value, role: &str) -> Option<ProviderRoleConfig> {
-    let roles = yaml_get(root, "roles")?;
-    let role_value = yaml_get(roles, role)?;
-    let model = yaml_string(role_value, "model");
-    let model_source = yaml_string(role_value, "model_source")
-        .or_else(|| yaml_string(role_value, "model-source"))
-        .or_else(|| model.as_deref().map(inferred_model_source_for_model));
-    Some(ProviderRoleConfig {
-        agent: yaml_string(role_value, "agent"),
-        model,
-        model_source,
-        reasoning_effort: yaml_string(role_value, "reasoning_effort")
-            .or_else(|| yaml_string(role_value, "reasoning-effort"))
-            .map(|value| value.to_ascii_lowercase()),
-        prompt_transport: yaml_string(role_value, "prompt_transport")
-            .or_else(|| yaml_string(role_value, "prompt-transport")),
-        auth_mode: yaml_string(role_value, "auth_mode")
-            .or_else(|| yaml_string(role_value, "auth-mode")),
-    })
-}
-
-fn yaml_get<'a>(value: &'a serde_yaml::Value, key: &str) -> Option<&'a serde_yaml::Value> {
-    let map = value.as_mapping()?;
-    let yaml_key = serde_yaml::Value::String(key.to_string());
-    map.get(&yaml_key)
-}
-
-fn yaml_string(value: &serde_yaml::Value, key: &str) -> Option<String> {
-    yaml_get(value, key)
-        .and_then(serde_yaml::Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-}
-
-fn yaml_bool(value: &serde_yaml::Value, key: &str) -> Option<bool> {
-    yaml_get(value, key).and_then(|item| match item {
-        serde_yaml::Value::Bool(value) => workspace_plan_bool(if *value { "true" } else { "false" }),
-        serde_yaml::Value::Number(value) => workspace_plan_bool(&value.to_string()),
-        serde_yaml::Value::String(value) => workspace_plan_bool(value),
-        _ => None,
-    })
-}
-
-fn yaml_i32(value: &serde_yaml::Value, key: &str) -> Option<i32> {
-    yaml_get(value, key).and_then(|item| match item {
-        serde_yaml::Value::Number(value) => workspace_plan_i32(&value.to_string()),
-        serde_yaml::Value::String(value) => workspace_plan_i32(value),
-        _ => None,
     })
 }
 

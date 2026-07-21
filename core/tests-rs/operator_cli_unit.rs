@@ -32,6 +32,18 @@ fn write_workspace_plan_settings(project_dir: &Path, yaml: &str) {
     std::fs::write(project_dir.join(".winsmux.yaml"), yaml).expect("write workspace-plan settings");
 }
 
+fn assert_workspace_plan_project_yaml_rejected(name: &str, yaml: &str) -> String {
+    let project_dir = test_project_dir(name);
+    write_workspace_plan_settings(&project_dir, yaml);
+    let error = match read_workspace_plan_settings_with_global_reader(&project_dir, |_| None) {
+        Ok(_) => panic!("{name} must be rejected before plan output"),
+        Err(error) => error,
+    };
+    let _ = std::fs::remove_dir_all(project_dir);
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{name}");
+    error.to_string()
+}
+
 #[test]
 fn workspace_plan_global_worker_count_limits_the_effective_slot_catalog() {
     let project_dir = test_project_dir("workspace-plan-global-worker-count");
@@ -189,35 +201,22 @@ fn workspace_plan_global_boolean_scalars_use_the_finite_vocabulary() {
 }
 
 #[test]
-fn workspace_plan_unsupported_project_boolean_scalar_falls_through_to_global() {
-    for (index, (project_setting, global_option, global_value)) in [
-        (
-            "external_operator: maybe\n",
-            "@bridge-external-operator",
-            "off",
-        ),
-        (
-            "legacy_role_layout: sometimes\n",
-            "@bridge-legacy-role-layout",
-            "on",
-        ),
+fn workspace_plan_rejects_unsupported_project_boolean_scalar() {
+    for (index, project_setting) in [
+        "external_operator: maybe\n",
+        "legacy_role_layout: sometimes\n",
     ]
     .into_iter()
     .enumerate()
     {
-        let project_dir = test_project_dir(&format!("workspace-plan-project-bool-miss-{index}"));
-        write_workspace_plan_settings(
-            &project_dir,
+        let message = assert_workspace_plan_project_yaml_rejected(
+            &format!("workspace-plan-project-bool-invalid-{index}"),
             &format!("config_version: 1\n{project_setting}"),
         );
-
-        let settings = read_workspace_plan_settings_with_global_reader(&project_dir, |name| {
-            (name == global_option).then(|| global_value.to_string())
-        })
-        .expect("unsupported project bool should fall through to the global value");
-        assert!(settings.agent_slots.is_empty());
-
-        let _ = std::fs::remove_dir_all(project_dir);
+        assert_eq!(
+            message,
+            "Invalid project settings: unsupported runtime-owned value."
+        );
     }
 }
 
@@ -272,21 +271,16 @@ fn workspace_plan_project_worker_count_precedes_global_nonpositive_value() {
 }
 
 #[test]
-fn workspace_plan_invalid_or_overflow_worker_count_falls_through() {
+fn workspace_plan_rejects_invalid_project_count_and_ignores_invalid_global_count() {
     for (index, project_count) in ["many", "2147483648"].into_iter().enumerate() {
-        let project_dir = test_project_dir(&format!("workspace-plan-project-count-miss-{index}"));
-        write_workspace_plan_settings(
-            &project_dir,
+        let message = assert_workspace_plan_project_yaml_rejected(
+            &format!("workspace-plan-project-count-invalid-{index}"),
             &format!("config_version: 1\nworker_count: {project_count}\n"),
         );
-
-        let settings = read_workspace_plan_settings_with_global_reader(&project_dir, |name| {
-            (name == "@bridge-worker-count").then(|| "3".to_string())
-        })
-        .expect("invalid project count should fall through to the global value");
-        assert_eq!(settings.agent_slots.len(), 3);
-
-        let _ = std::fs::remove_dir_all(project_dir);
+        assert_eq!(
+            message,
+            "Invalid project settings: unsupported runtime-owned value."
+        );
     }
 
     for (index, global_count) in ["many", "2147483648"].into_iter().enumerate() {
@@ -346,6 +340,303 @@ fn workspace_plan_irrelevant_worker_count_does_not_block_explicit_or_legacy_layo
 
         let _ = std::fs::remove_dir_all(project_dir);
     }
+}
+
+#[test]
+fn workspace_plan_rejects_bot_slot_runtime_domain_counterexamples() {
+    for (name, field) in [
+        ("slot-unsupported-worker-backend", "worker_backend"),
+        ("slot-unsupported-execution-profile", "execution_profile"),
+    ] {
+        let message = assert_workspace_plan_project_yaml_rejected(
+            name,
+            &format!(
+                "config_version: 1\nagent_slots:\n  - slot_id: worker-1\n    {field}: secret-marker-unsupported\n"
+            ),
+        );
+        assert!(message.contains("Invalid agent_slots configuration"));
+        assert!(!message.contains("secret-marker"));
+    }
+}
+
+#[test]
+fn workspace_plan_rejects_bot_top_level_alias_collision_counterexample() {
+    let message = assert_workspace_plan_project_yaml_rejected(
+        "top-alias-collision",
+        "config_version: 1\nprompt_transport: argv\nprompt-transport: file\n",
+    );
+    assert_eq!(
+        message,
+        "Invalid project settings: conflicting runtime-owned aliases at top level."
+    );
+}
+
+#[test]
+fn workspace_plan_rejects_alias_collisions_at_every_runtime_owned_scope() {
+    let cases = [
+        (
+            "top-worker-backend-alias",
+            "config_version: 1\nworker_backend: local\nworker-backend: codex\n",
+            "Invalid project settings: conflicting runtime-owned aliases at top level.",
+        ),
+        (
+            "slot-hyphen-alias",
+            "config_version: 1\nagent_slots:\n  - slot_id: worker-1\n    model_source: provider-default\n    model-source: operator-override\n",
+            "Invalid agent_slots configuration: conflicting runtime-owned aliases.",
+        ),
+        (
+            "slot-backend-alias",
+            "config_version: 1\nagent_slots:\n  - slot_id: worker-1\n    backend: local\n    worker_backend: codex\n",
+            "Invalid agent_slots configuration: conflicting runtime-owned aliases.",
+        ),
+        (
+            "role-hyphen-alias",
+            "config_version: 1\nroles:\n  worker:\n    model_source: provider-default\n    model-source: operator-override\n",
+            "Invalid roles configuration: conflicting runtime-owned aliases.",
+        ),
+    ];
+
+    for (name, yaml, expected) in cases {
+        assert_eq!(assert_workspace_plan_project_yaml_rejected(name, yaml), expected);
+    }
+}
+
+#[test]
+fn workspace_plan_mixed_case_known_keys_use_finite_validation() {
+    let cases = [
+        (
+            "mixed-case-top-domain",
+            "Config_Version: 1\nPrompt_Transport: secret-marker-unsupported\n",
+            "Invalid project settings",
+        ),
+        (
+            "mixed-case-slot-domain",
+            "Config_Version: 1\nAgent_Slots:\n  - Slot_Id: worker-1\n    Worker_Backend: secret-marker-unsupported\n",
+            "Invalid agent_slots configuration",
+        ),
+        (
+            "mixed-case-role-domain",
+            "Config_Version: 1\nRoles:\n  Worker:\n    Reasoning_Effort: secret-marker-unsupported\n",
+            "Invalid roles configuration",
+        ),
+    ];
+
+    for (name, yaml, expected) in cases {
+        let message = assert_workspace_plan_project_yaml_rejected(name, yaml);
+        assert!(message.contains(expected), "{name}: {message}");
+        assert!(!message.contains("secret-marker"), "{name}: {message}");
+    }
+}
+
+#[test]
+fn workspace_plan_mixed_case_alias_collisions_are_rejected() {
+    let cases = [
+        (
+            "mixed-case-top-collision",
+            "config_version: 1\nprompt_transport: argv\nPrompt-Transport: file\n",
+            "Invalid project settings: conflicting runtime-owned aliases at top level.",
+        ),
+        (
+            "mixed-case-slot-collision",
+            "config_version: 1\nagent_slots:\n  - slot_id: worker-1\n    worker_backend: local\n    Worker-Backend: noop\n",
+            "Invalid agent_slots configuration: conflicting runtime-owned aliases.",
+        ),
+        (
+            "mixed-case-role-collision",
+            "config_version: 1\nroles:\n  worker:\n    reasoning_effort: low\n    Reasoning-Effort: high\n",
+            "Invalid roles configuration: conflicting runtime-owned aliases.",
+        ),
+    ];
+
+    for (name, yaml, expected) in cases {
+        assert_eq!(assert_workspace_plan_project_yaml_rejected(name, yaml), expected);
+    }
+}
+
+#[test]
+fn workspace_plan_mixed_case_known_keys_accept_valid_values() {
+    let project_dir = test_project_dir("workspace-plan-mixed-case-valid");
+    write_workspace_plan_settings(
+        &project_dir,
+        "Config-Version: 1\nPrompt-Transport: FILE\nRoles:\n  Worker:\n    Reasoning-Effort: MEDIUM\nAgent-Slots:\n  - Slot-Id: worker-1\n    Worker-Backend: NOOP\n    Execution-Profile: LOCAL-WINDOWS\n    Runtime-Role: WORKER\n    Worktree-Mode: MANAGED\n",
+    );
+
+    let settings = read_workspace_plan_settings_with_global_reader(&project_dir, |_| None)
+        .expect("valid mixed-case runtime-owned keys should resolve");
+    assert_eq!(settings.prompt_transport, "file");
+    assert_eq!(settings.worker_role.reasoning_effort.as_deref(), Some("medium"));
+    assert_eq!(settings.agent_slots.len(), 1);
+    assert!(settings.has_slot("worker-1"));
+
+    let _ = std::fs::remove_dir_all(project_dir);
+}
+
+#[test]
+fn workspace_plan_rejects_invalid_top_level_runtime_domains() {
+    let cases = [
+        ("top-prompt-transport", "prompt_transport"),
+        ("top-worker-backend", "worker_backend"),
+        ("top-execution-profile", "execution_profile"),
+        (
+            "top-workspace-lifecycle",
+            "workspace_lifecycle_preset",
+        ),
+        ("top-reasoning-effort", "reasoning_effort"),
+    ];
+
+    for (name, field) in cases {
+        let message = assert_workspace_plan_project_yaml_rejected(
+            name,
+            &format!("config_version: 1\n{field}: secret-marker-unsupported\n"),
+        );
+        assert!(message.contains("Invalid project settings"), "{name}: {message}");
+        assert!(!message.contains("secret-marker"), "{name}: {message}");
+    }
+
+    for (name, version) in [("unsupported-config-version", "2"), ("malformed-config-version", "many")]
+    {
+        let message = assert_workspace_plan_project_yaml_rejected(
+            name,
+            &format!("config_version: {version}\n"),
+        );
+        assert_eq!(message, "Invalid project settings: unsupported config_version.");
+    }
+
+    for retired_key in ["external_commander", "external-commander", "commanders"] {
+        let message = assert_workspace_plan_project_yaml_rejected(
+            "retired-operator-setting",
+            &format!("config_version: 1\n{retired_key}: true\n"),
+        );
+        assert_eq!(message, "Retired project setting is not supported.");
+    }
+}
+
+#[test]
+fn workspace_plan_rejects_invalid_slot_and_role_runtime_domains() {
+    let slot_cases = [
+        "worker_backend",
+        "execution_profile",
+        "mcp_mode",
+        "reasoning_effort",
+        "prompt_transport",
+        "runtime_role",
+        "worktree_mode",
+    ];
+    for field in slot_cases {
+        let message = assert_workspace_plan_project_yaml_rejected(
+            &format!("slot-invalid-{field}"),
+            &format!(
+                "config_version: 1\nagent_slots:\n  - slot_id: worker-1\n    {field}: secret-marker-unsupported\n"
+            ),
+        );
+        assert!(message.contains("Invalid agent_slots configuration"));
+        assert!(!message.contains("secret-marker"));
+    }
+
+    for field in ["reasoning_effort", "prompt_transport"] {
+        let message = assert_workspace_plan_project_yaml_rejected(
+            &format!("role-invalid-{field}"),
+            &format!(
+                "config_version: 1\nroles:\n  worker:\n    {field}: secret-marker-unsupported\n"
+            ),
+        );
+        assert!(message.contains("Invalid roles configuration"));
+        assert!(!message.contains("secret-marker"));
+    }
+}
+
+#[test]
+fn workspace_plan_rejects_invalid_slot_shapes_and_case_insensitive_ids() {
+    let cases = [
+        (
+            "slot-list-shape",
+            "config_version: 1\nagent_slots: {slot_id: worker-1}\n",
+        ),
+        (
+            "slot-entry-shape",
+            "config_version: 1\nagent_slots:\n  - worker-1\n",
+        ),
+        (
+            "slot-missing-id",
+            "config_version: 1\nagent_slots:\n  - agent: codex\n",
+        ),
+        (
+            "slot-case-duplicate",
+            "config_version: 1\nagent_slots:\n  - slot_id: worker-1\n  - slot-id: WORKER-1\n",
+        ),
+    ];
+    for (name, yaml) in cases {
+        let message = assert_workspace_plan_project_yaml_rejected(name, yaml);
+        assert!(message.contains("Invalid agent_slots configuration"));
+    }
+}
+
+#[test]
+fn workspace_plan_rejects_explicit_empty_or_non_scalar_runtime_owned_values() {
+    let cases = [
+        ("top-empty", "config_version: 1\nagent: ''\n"),
+        ("top-non-scalar", "config_version: 1\nworker_count: {}\n"),
+        (
+            "slot-empty",
+            "config_version: 1\nagent_slots:\n  - slot_id: worker-1\n    worker_backend: ''\n",
+        ),
+        (
+            "slot-non-scalar",
+            "config_version: 1\nagent_slots:\n  - slot_id: worker-1\n    agent: []\n",
+        ),
+        (
+            "role-empty",
+            "config_version: 1\nroles:\n  worker:\n    reasoning_effort: ''\n",
+        ),
+        (
+            "role-non-scalar",
+            "config_version: 1\nroles:\n  worker:\n    model: {}\n",
+        ),
+    ];
+    for (name, yaml) in cases {
+        let message = assert_workspace_plan_project_yaml_rejected(name, yaml);
+        assert!(message.contains("Invalid"), "{name}: {message}");
+    }
+}
+
+#[test]
+fn workspace_plan_accepts_valid_runtime_domain_boundaries_and_unknown_fields() {
+    let project_dir = test_project_dir("workspace-plan-valid-runtime-domains");
+    write_workspace_plan_settings(
+        &project_dir,
+        r#"config-version: 1
+prompt-transport: FILE
+worker-backend: API_LLM
+execution-profile: ISOLATED-ENTERPRISE
+workspace-lifecycle-preset: ephemeral-worktree
+reasoning-effort: XHIGH
+unknown_future_top: preserved-by-runtime
+roles:
+  worker:
+    reasoning-effort: medium
+    prompt-transport: stdin
+    unknown_future_role: preserved-by-runtime
+agent-slots:
+  - slot-id: worker-1
+    backend: noop
+    execution-profile: local-windows
+    mcp-mode: provider-default
+    reasoning-effort: max
+    prompt-transport: argv
+    runtime-role: worker
+    worktree-mode: managed
+    unknown_future_slot: preserved-by-runtime
+"#,
+    );
+
+    let settings = read_workspace_plan_settings_with_global_reader(&project_dir, |_| None)
+        .expect("supported runtime domains and unknown fields should resolve");
+    assert_eq!(settings.prompt_transport, "file");
+    assert_eq!(settings.reasoning_effort, "xhigh");
+    assert_eq!(settings.agent_slots.len(), 1);
+    assert!(settings.has_slot("worker-1"));
+
+    let _ = std::fs::remove_dir_all(project_dir);
 }
 
 #[test]
