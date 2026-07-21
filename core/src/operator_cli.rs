@@ -3359,15 +3359,16 @@ impl ProviderRegistryEntry {
                 ),
             ));
         };
-        let agent = provider_registry_optional_string(map, "agent")?;
-        let model = provider_registry_optional_string(map, "model")?;
-        let mut model_source = provider_registry_optional_string(map, "model_source")?;
-        let reasoning_effort = provider_registry_optional_string(map, "reasoning_effort")?;
-        let prompt_transport = provider_registry_optional_string(map, "prompt_transport")?;
-        let auth_mode = provider_registry_optional_string(map, "auth_mode")?;
+        let map = canonical_provider_registry_entry_fields(map)?;
+        let agent = provider_registry_optional_string(&map, "agent")?;
+        let model = provider_registry_optional_string(&map, "model")?;
+        let mut model_source = provider_registry_optional_string(&map, "model_source")?;
+        let reasoning_effort = provider_registry_optional_string(&map, "reasoning_effort")?;
+        let prompt_transport = provider_registry_optional_string(&map, "prompt_transport")?;
+        let auth_mode = provider_registry_optional_string(&map, "auth_mode")?;
         let updated_at_utc =
-            provider_registry_optional_string(map, "updated_at_utc")?.unwrap_or_default();
-        let reason = provider_registry_optional_string(map, "reason")?;
+            provider_registry_optional_string(&map, "updated_at_utc")?.unwrap_or_default();
+        let reason = provider_registry_optional_string(&map, "reason")?;
         if let Some(transport) = prompt_transport.as_deref() {
             if !matches!(transport, "argv" | "file" | "stdin") {
                 return Err(io::Error::new(
@@ -3446,6 +3447,35 @@ impl ProviderRegistryEntry {
         }
         Value::Object(map)
     }
+}
+
+fn canonical_provider_registry_entry_fields(
+    source: &Map<String, Value>,
+) -> io::Result<Map<String, Value>> {
+    let mut fields = Map::new();
+    for (source_key, value) in source {
+        let key = source_key.to_ascii_lowercase().replace('-', "_");
+        if !matches!(
+            key.as_str(),
+            "agent"
+                | "model"
+                | "model_source"
+                | "reasoning_effort"
+                | "prompt_transport"
+                | "auth_mode"
+                | "updated_at_utc"
+                | "reason"
+        ) {
+            continue;
+        }
+        if fields.insert(key.clone(), value.clone()).is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Duplicate provider registry field '{key}'."),
+            ));
+        }
+    }
+    Ok(fields)
 }
 
 fn default_bridge_settings() -> BridgeSettings {

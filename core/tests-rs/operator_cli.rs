@@ -1872,6 +1872,94 @@ fn operator_cli_workspace_plan_validates_entire_provider_registry_envelope() {
 }
 
 #[test]
+fn operator_cli_workspace_plan_canonicalizes_provider_registry_entry_fields() {
+    let project_dir = make_temp_project_dir("workspace-provider-canonical-fields");
+    write_workspace_overlay_fixture(&project_dir);
+    let settings_path = project_dir.join(".winsmux.yaml");
+    let settings = fs::read_to_string(&settings_path)
+        .expect("read workspace overlay fixture")
+        .replace("prompt-transport: file", "prompt-transport: argv");
+    fs::write(&settings_path, settings).expect("write lower-precedence argv fixture");
+    fs::write(
+        project_dir.join(".winsmux").join("provider-registry.json"),
+        r#"{
+  "version": 1,
+  "slots": {
+    "reviewer-1": {
+      "Agent": "openrouter",
+      "Model": "sakana/fugu-ultra",
+      "Model-Source": "provider-api",
+      "Reasoning-Effort": "provider-default",
+      "Prompt-Transport": "file",
+      "Auth-Mode": "api-key-env",
+      "Updated-At-UTC": "2026-07-22T00:00:00Z",
+      "Reason": "canonical alias control",
+      "Future-Field": {"keep": true}
+    }
+  }
+}"#,
+    )
+    .expect("write canonical provider registry fixture");
+
+    let output = run_workspace_plan(&project_dir, "review-one-slot");
+    assert!(
+        output.status.success(),
+        "Prompt-Transport must override lower-precedence argv: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let collisions = [
+        ("agent", r#"{"agent":"openrouter","AGENT":"openrouter"}"#),
+        ("model", r#"{"model":"one","MODEL":"two"}"#),
+        (
+            "model-source",
+            r#"{"model_source":"provider-api","MODEL-SOURCE":"provider-api"}"#,
+        ),
+        (
+            "reasoning-effort",
+            r#"{"reasoning_effort":"provider-default","REASONING-EFFORT":"provider-default"}"#,
+        ),
+        (
+            "prompt-transport",
+            r#"{"prompt_transport":"file","PROMPT-TRANSPORT":"file"}"#,
+        ),
+        (
+            "auth-mode",
+            r#"{"auth_mode":"api-key-env","AUTH-MODE":"api-key-env"}"#,
+        ),
+        (
+            "updated-at-utc",
+            r#"{"updated_at_utc":"one","UPDATED-AT-UTC":"two"}"#,
+        ),
+        ("reason", r#"{"reason":"one","REASON":"two"}"#),
+    ];
+
+    for (case_name, entry) in collisions {
+        let project_dir = make_temp_project_dir(&format!("workspace-provider-alias-{case_name}"));
+        write_workspace_overlay_fixture(&project_dir);
+        let registry = format!(r#"{{"version":1,"slots":{{"reviewer-1":{entry}}}}}"#);
+        fs::write(
+            project_dir.join(".winsmux").join("provider-registry.json"),
+            registry,
+        )
+        .expect("write provider registry collision fixture");
+
+        let output = run_workspace_plan(&project_dir, "review-one-slot");
+        assert!(!output.status.success(), "{case_name} collision must fail");
+        assert!(
+            output.stdout.is_empty(),
+            "{case_name} collision must not emit a partial plan"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("failed to resolve the effective slot catalog"),
+            "{case_name} collision must use the existing public error: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
 fn operator_cli_workspace_plan_requires_canonical_runtime_role_version() {
     let accepted = [
         ("missing", r#"{"roles":{}}"#),
