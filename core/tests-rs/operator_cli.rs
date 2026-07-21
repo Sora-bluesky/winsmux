@@ -1761,7 +1761,8 @@ fn operator_cli_workspace_plan_rejects_exact_duplicate_yaml_keys_before_interpre
 #[test]
 fn canonical_project_settings_reader_uses_shared_duplicate_key_gate() {
     let error = canonical_project_settings_reader::parse_str("worker-count: 1\nworker-count: 2\n")
-        .expect_err("direct settings reads must not collapse duplicate runtime-owned keys");
+        .err()
+        .expect("direct settings reads must not collapse duplicate runtime-owned keys");
     assert_eq!(error.to_string(), "duplicate YAML mapping key.");
 }
 
