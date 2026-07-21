@@ -1131,6 +1131,7 @@ workflow_runs:
         $serialized = ConvertTo-ManifestYaml -Manifest $first
         $second = ConvertFrom-ManifestYaml -Content $serialized
 
+        $serialized | Should -Match "(?m)^  schema_version: '1'$"
         $second.declarative_workspace.recipe_id | Should -Be 'review'
         $second.declarative_workspace.config_fingerprint | Should -Be ('sha256:' + ('a' * 64))
         $second.declarative_workspace.resolved_bindings.implement | Should -Be 'worker-1'

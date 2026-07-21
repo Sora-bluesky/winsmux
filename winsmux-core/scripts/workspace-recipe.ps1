@@ -104,13 +104,53 @@ function ConvertTo-WorkspaceRecipeStringList {
     return @($result)
 }
 
+function Remove-WorkspaceRecipeYamlInlineComment {
+    param([Parameter(Mandatory = $true)][string]$Text)
+
+    $quote = [char]0
+    $escaped = $false
+    for ($index = 0; $index -lt $Text.Length; $index++) {
+        $char = $Text[$index]
+        if ($quote -eq '"') {
+            if ($escaped) {
+                $escaped = $false
+            } elseif ($char -eq '\') {
+                $escaped = $true
+            } elseif ($char -eq '"') {
+                $quote = [char]0
+            }
+            continue
+        }
+        if ($quote -eq "'") {
+            if ($char -eq "'") {
+                if ($index + 1 -lt $Text.Length -and $Text[$index + 1] -eq "'") {
+                    $index++
+                } else {
+                    $quote = [char]0
+                }
+            }
+            continue
+        }
+        if ($char -eq '"' -or $char -eq "'") {
+            $quote = $char
+            continue
+        }
+        if ($char -eq '#' -and
+            ($index -eq 0 -or [char]::IsWhiteSpace($Text[$index - 1]))) {
+            return $Text.Substring(0, $index).TrimEnd()
+        }
+    }
+    return $Text
+}
+
 function ConvertFrom-WorkspaceRecipeYamlScalar {
     param(
         [Parameter(Mandatory = $true)][string]$Text,
         [Parameter(Mandatory = $true)][string]$Context
     )
 
-    $value = $Text.Trim()
+    $value = (Remove-WorkspaceRecipeYamlInlineComment -Text $Text).Trim()
+    if ($value.Length -eq 0) { return $null }
     if ($value.StartsWith('[')) {
         if (-not $value.EndsWith(']')) { throw "$Context contains an invalid inline sequence." }
         $body = $value.Substring(1, $value.Length - 2).Trim()
@@ -125,10 +165,12 @@ function ConvertFrom-WorkspaceRecipeYamlScalar {
     if ($value.StartsWith('{') -or $value -match '^[&*!>|]') {
         throw "$Context uses unsupported YAML syntax."
     }
-    if ($value.Length -ge 2 -and $value.StartsWith('"') -and $value.EndsWith('"')) {
+    if ($value.StartsWith('"')) {
+        if (-not $value.EndsWith('"')) { throw "$Context contains an invalid quoted scalar." }
         try { return ($value | ConvertFrom-Json -ErrorAction Stop) } catch { throw "$Context contains an invalid quoted scalar." }
     }
-    if ($value.Length -ge 2 -and $value.StartsWith("'") -and $value.EndsWith("'")) {
+    if ($value.StartsWith("'")) {
+        if (-not $value.EndsWith("'")) { throw "$Context contains an invalid quoted scalar." }
         return $value.Substring(1, $value.Length - 2).Replace("''", "'")
     }
     if ($value -ceq 'true') { return $true }
@@ -137,7 +179,7 @@ function ConvertFrom-WorkspaceRecipeYamlScalar {
     $integer = 0L
     if ([long]::TryParse($value, [Globalization.NumberStyles]::Integer,
             [Globalization.CultureInfo]::InvariantCulture, [ref]$integer)) { return $integer }
-    if ($value -match '[:#]' -or [string]::IsNullOrWhiteSpace($value)) {
+    if ($value -match ':' -or [string]::IsNullOrWhiteSpace($value)) {
         throw "$Context contains an invalid plain scalar."
     }
     return $value

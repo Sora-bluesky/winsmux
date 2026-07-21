@@ -94,6 +94,49 @@ Describe 'TASK-658 workspace recipe pure contract' {
         $second | Should -BeExactly $expected
     }
 
+    It 'accepts YAML inline comments without changing the golden plan or fingerprint' -ForEach @(
+        @{ From = '    schema-version: 1'; To = '    schema-version: 1 # declarative contract version' },
+        @{ From = '        region: main'; To = '        region: main # primary placement region' }
+    ) {
+        $raw = Get-Content -Raw -LiteralPath $script:FixturePath -Encoding UTF8
+        $commented = $raw.Replace($From, $To)
+        $document = ConvertFrom-WorkspaceRecipeYaml -Content $commented
+        $actual = ConvertTo-WorkspaceRecipePlanJson (Invoke-TestWorkspaceRecipePlan $document)
+        $expected = (Get-Content -Raw -LiteralPath $script:ExpectedPath -Encoding UTF8).Trim()
+
+        $actual | Should -BeExactly $expected
+    }
+
+    It 'preserves hashes inside quoted and non-comment plain scalars' {
+        $document = ConvertFrom-WorkspaceRecipeYaml -Content @'
+single: 'value # fragment' # ignored comment
+double: "value # fragment" # ignored comment
+plain: value#fragment
+commented: value # ignored comment
+'@
+
+        $document.single | Should -BeExactly 'value # fragment'
+        $document.double | Should -BeExactly 'value # fragment'
+        $document.plain | Should -BeExactly 'value#fragment'
+        $document.commented | Should -BeExactly 'value'
+    }
+
+    It 'continues to reject unsupported YAML syntax without reflecting scalar values' -ForEach @(
+        @{ Value = '{synthetic-private-parser-value}'; Error = '*unsupported YAML syntax*' },
+        @{ Value = '"synthetic-private-parser-value'; Error = '*invalid quoted scalar*' },
+        @{ Value = 'synthetic-private-parser:value'; Error = '*invalid plain scalar*' }
+    ) {
+        $message = ''
+        try {
+            $null = ConvertFrom-WorkspaceRecipeYaml -Content "value: $Value"
+        } catch {
+            $message = $_.Exception.Message
+        }
+
+        $message | Should -BeLike $Error
+        $message | Should -Not -Match ([Regex]::Escape($Value))
+    }
+
     It 'R04 rejects a selector that matches zero slots' {
         $catalog = Copy-TestWorkspaceRecipeDocument $script:Catalog
         $catalog['reviewer-1'].supports_structured_result = $false

@@ -17,7 +17,7 @@ pub struct WinsmuxManifest {
 
 #[derive(Debug, Deserialize)]
 pub struct DeclarativeWorkspaceManifest {
-    pub schema_version: u32,
+    pub schema_version: ManifestU32,
     pub config_fingerprint: String,
     pub recipe_id: String,
     #[serde(default)]
@@ -460,7 +460,7 @@ impl WinsmuxManifest {
 }
 
 fn validate_declarative_workspace(projection: &DeclarativeWorkspaceManifest) -> Result<(), String> {
-    if projection.schema_version != 1 {
+    if projection.schema_version.value() != Some(1) {
         return Err("declarative_workspace.schema_version must be 1".to_string());
     }
     let fingerprint = projection
@@ -912,7 +912,7 @@ workflow_runs:
         manifest.validate().unwrap();
 
         let projection = manifest.declarative_workspace.as_ref().unwrap();
-        assert_eq!(projection.schema_version, 1);
+        assert_eq!(projection.schema_version.value(), Some(1));
         assert_eq!(
             projection.config_fingerprint,
             "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -924,6 +924,47 @@ workflow_runs:
         );
         assert_eq!(projection.dry_run_plan_ref, "evidence:workspace-plan.json");
         assert!(manifest.additive_sections.contains_key("workflow_runs"));
+    }
+
+    #[test]
+    fn manifest_accepts_power_shell_quoted_declarative_workspace_schema_version() {
+        let manifest = WinsmuxManifest::from_yaml(
+            r#"
+version: '1'
+session:
+  name: winsmux-orchestra
+panes: {}
+declarative_workspace:
+  schema_version: '1'
+  config_fingerprint: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+  recipe_id: 'review'
+"#,
+        )
+        .unwrap();
+
+        manifest.validate().unwrap();
+    }
+
+    #[test]
+    fn manifest_rejects_invalid_or_unknown_declarative_workspace_schema_versions() {
+        for schema_version in ["'invalid'", "2", "'2'"] {
+            let yaml = format!(
+                r#"
+version: 1
+session:
+  name: winsmux-orchestra
+panes: {{}}
+declarative_workspace:
+  schema_version: {schema_version}
+  config_fingerprint: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  recipe_id: review
+"#
+            );
+            let manifest = WinsmuxManifest::from_yaml(&yaml).unwrap();
+
+            let error = manifest.validate().unwrap_err();
+            assert!(error.contains("schema_version"));
+        }
     }
 
     #[test]
