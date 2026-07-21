@@ -103,6 +103,32 @@ fn workspace_plan_global_option_classification_keeps_per_key_misses_local() {
 }
 
 #[test]
+fn workspace_plan_in_process_global_reader_distinguishes_missing_and_unavailable() {
+    assert!(matches!(
+        read_workspace_plan_global_option_with_control("@bridge-agent", |_| {
+            Ok("unknown option".to_string())
+        }),
+        WorkspacePlanGlobalOptionRead::Missing
+    ));
+    assert!(matches!(
+        read_workspace_plan_global_option_with_control("@bridge-agent", |_| {
+            Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "synthetic unavailable source",
+            ))
+        }),
+        WorkspacePlanGlobalOptionRead::SourceUnavailable
+    ));
+    assert!(matches!(
+        read_workspace_plan_global_option_with_control("@bridge-worker-count", |command| {
+            assert_eq!(command, "show-options -g -v @bridge-worker-count\n");
+            Ok("2\n".to_string())
+        }),
+        WorkspacePlanGlobalOptionRead::Value(value) if value == "2"
+    ));
+}
+
+#[test]
 fn workspace_plan_global_provider_defaults_fill_unset_project_values() {
     let project_dir = test_project_dir("workspace-plan-global-provider-defaults");
     write_workspace_plan_settings(&project_dir, "config_version: 1\n");

@@ -3541,13 +3541,12 @@ fn generated_workspace_plan_worker_slots(
 }
 
 fn read_workspace_plan_settings(project_dir: &Path) -> io::Result<BridgeSettings> {
-    let executable = env::current_exe().ok();
-    let mut source_available = executable.is_some();
+    let mut source_available = true;
     read_workspace_plan_settings_with_global_reader(project_dir, |name| {
         if !source_available {
             return None;
         }
-        match read_workspace_plan_global_option(executable.as_deref()?, name) {
+        match read_workspace_plan_global_option(name) {
             WorkspacePlanGlobalOptionRead::Value(value) => Some(value),
             WorkspacePlanGlobalOptionRead::Missing => None,
             WorkspacePlanGlobalOptionRead::SourceUnavailable => {
@@ -3558,17 +3557,21 @@ fn read_workspace_plan_settings(project_dir: &Path) -> io::Result<BridgeSettings
     })
 }
 
-fn read_workspace_plan_global_option(
-    executable: &Path,
+fn read_workspace_plan_global_option(name: &str) -> WorkspacePlanGlobalOptionRead {
+    read_workspace_plan_global_option_with_control(name, crate::session::send_control_with_response)
+}
+
+fn read_workspace_plan_global_option_with_control<F>(
     name: &str,
-) -> WorkspacePlanGlobalOptionRead {
-    let Ok(output) = Command::new(executable)
-        .args(["show-options", "-g", "-v", name])
-        .output()
-    else {
+    send_control: F,
+) -> WorkspacePlanGlobalOptionRead
+where
+    F: FnOnce(String) -> io::Result<String>,
+{
+    let Ok(output) = send_control(format!("show-options -g -v {name}\n")) else {
         return WorkspacePlanGlobalOptionRead::SourceUnavailable;
     };
-    classify_workspace_plan_global_option(output.status.success(), &output.stdout)
+    classify_workspace_plan_global_option(true, output.as_bytes())
 }
 
 fn classify_workspace_plan_global_option(

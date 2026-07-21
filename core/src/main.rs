@@ -395,11 +395,34 @@ fn bare_session_headless_server_config(
     }
 }
 
+fn startup_command(args: &[String]) -> Option<&str> {
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "-L" | "-S" | "-f" | "-t" => {
+                if index + 1 >= args.len() {
+                    return None;
+                }
+                index += 2;
+            }
+            "-C" | "-CC" => index += 1,
+            value if value.starts_with('-') => return None,
+            value => return Some(value),
+        }
+    }
+    None
+}
+
+fn workspace_plan_skips_startup_cleanup(args: &[String]) -> bool {
+    startup_command(args) == Some("workspace-plan")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         bare_session_headless_server_config, is_winsmux_core_bridge_command,
         resolve_attach_session_name_from_parts, winsmux_core_script_candidates,
+        workspace_plan_skips_startup_cleanup,
     };
 
     #[test]
@@ -467,6 +490,31 @@ mod tests {
     fn typed_submission_commands_are_forwarded_to_the_shared_core_bridge() {
         assert!(is_winsmux_core_bridge_command("dispatch-task"));
         assert!(is_winsmux_core_bridge_command("dispatch-review"));
+    }
+
+    #[test]
+    fn workspace_plan_bypasses_startup_cleanup_with_supported_global_flags() {
+        for args in [
+            vec!["winsmux", "workspace-plan"],
+            vec!["winsmux", "-L", "ops", "workspace-plan"],
+            vec!["winsmux", "-S", "socket-name", "workspace-plan"],
+        ] {
+            let args = args.into_iter().map(str::to_string).collect::<Vec<_>>();
+            assert!(workspace_plan_skips_startup_cleanup(&args), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn runtime_and_control_commands_keep_startup_cleanup() {
+        for args in [
+            vec!["winsmux", "new-session"],
+            vec!["winsmux", "show-options", "-g"],
+            vec!["winsmux", "-L", "ops", "show-options", "-g"],
+            vec!["winsmux", "--unknown", "workspace-plan"],
+        ] {
+            let args = args.into_iter().map(str::to_string).collect::<Vec<_>>();
+            assert!(!workspace_plan_skips_startup_cleanup(&args), "{args:?}");
+        }
     }
 
     #[cfg(windows)]
@@ -588,8 +636,11 @@ fn run_main() -> io::Result<()> {
         return project_settings_render::run(&args[2..]);
     }
 
-    // Clean up any stale port files at startup
-    cleanup_stale_port_files();
+    // Public workspace-plan is a read-only preview. It must not mutate session
+    // state before dispatch, including while resolving runtime global options.
+    if !workspace_plan_skips_startup_cleanup(&args) {
+        cleanup_stale_port_files();
+    }
     
     // Parse -L flag early (tmux-compatible: names the server socket for namespace isolation)
     // In psmux, -L <name> creates a namespace prefix for session port/key files.

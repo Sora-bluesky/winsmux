@@ -640,6 +640,109 @@ fn project_settings_render_rejects_arguments_and_oversized_stdin() {
     );
 }
 
+#[test]
+#[cfg(windows)]
+fn operator_cli_workspace_plan_preserves_stale_startup_state() {
+    let fixture = tempfile::tempdir().expect("create isolated workspace-plan fixture");
+    let project_dir = fixture.path().join("project");
+    let runtime_dir = project_dir.join(".winsmux");
+    let home_dir = fixture.path().join("home");
+    let psmux_dir = home_dir.join(".psmux");
+    fs::create_dir_all(&runtime_dir).expect("create project runtime directory");
+    fs::create_dir_all(&psmux_dir).expect("create isolated psmux directory");
+    fs::write(
+        project_dir.join(".winsmux.yaml"),
+        include_str!("../../tests/fixtures/workspace-recipes/valid-v1.yaml"),
+    )
+    .expect("write workspace recipe fixture");
+    fs::write(
+        runtime_dir.join("provider-capabilities.json"),
+        include_str!("../../tests/fixtures/workspace-recipes/valid-v1.provider-capabilities.json"),
+    )
+    .expect("write provider capabilities fixture");
+
+    let binary = env!("CARGO_BIN_EXE_winsmux");
+    let normalized_binary = binary.replace('\\', "/").to_ascii_lowercase();
+    let stale_paths = [
+        (psmux_dir.join("dead.port"), b"not-a-port".to_vec()),
+        (psmux_dir.join("dead.key"), b"synthetic-key".to_vec()),
+        (
+            psmux_dir.join("dead.registry.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "protocol_version": 1,
+                "session": "dead",
+                "namespace": null,
+                "server_pid": u32::MAX,
+                "process_started_at": 1,
+                "server_exe": normalized_binary,
+                "instance_nonce": "stale-preview-fixture",
+                "port": 42124,
+                "state": "ready",
+                "owner": "normal",
+                "created_at": 1,
+                "ready_at": 2
+            }))
+            .expect("serialize stale registry fixture"),
+        ),
+    ];
+    for (path, bytes) in &stale_paths {
+        fs::write(path, bytes).expect("write stale startup state");
+    }
+
+    let output = Command::new(binary)
+        .args([
+            "workspace-plan",
+            "--recipe-id",
+            "bugfix-two-slot",
+            "--workflow-id",
+            "issue-1204",
+            "--json",
+            "--project-dir",
+        ])
+        .arg(&project_dir)
+        .env("USERPROFILE", &home_dir)
+        .env("HOME", &home_dir)
+        .env_remove("PSMUX_TARGET_SESSION")
+        .env_remove("PSMUX_TARGET_FULL")
+        .env_remove("TMUX")
+        .output()
+        .expect("run workspace-plan preview");
+
+    assert!(
+        output.status.success(),
+        "workspace-plan stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice::<serde_json::Value>(&output.stdout)
+        .expect("workspace-plan should emit JSON");
+    for (path, expected) in &stale_paths {
+        assert_eq!(
+            fs::read(path).expect("preview must preserve stale startup state"),
+            *expected,
+            "workspace-plan changed {}",
+            path.display()
+        );
+    }
+
+    let ordinary = Command::new(binary)
+        .arg("version")
+        .env("USERPROFILE", &home_dir)
+        .env("HOME", &home_dir)
+        .env_remove("PSMUX_TARGET_SESSION")
+        .env_remove("PSMUX_TARGET_FULL")
+        .env_remove("TMUX")
+        .output()
+        .expect("run ordinary startup route");
+    assert!(ordinary.status.success(), "version command should succeed");
+    for (path, _) in &stale_paths {
+        assert!(
+            !path.exists(),
+            "ordinary startup cleanup should remove {}",
+            path.display()
+        );
+    }
+}
+
 struct ChildKillGuard(Child);
 
 impl Drop for ChildKillGuard {
