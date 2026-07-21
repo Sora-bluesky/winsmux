@@ -118,6 +118,48 @@ fn project_settings_render_mutates_single_line_flow_without_using_cst_insert() {
 }
 
 #[test]
+fn project_settings_render_coalesces_two_owned_deletions_at_flow_tail() {
+    let original = "{unknown: keep, model: old, reasoning_effort: high}\n";
+    let input = render_payload(
+        original,
+        "agent: codex\n",
+        &["agent", "model", "reasoning_effort"],
+    );
+    let output = run_project_settings_render(&input, &[]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"{unknown: keep, \"agent\": \"codex\"}\n");
+    let mapping = yaml_mapping(&output.stdout);
+    assert_eq!(mapping.len(), 2);
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("unknown".into())),
+        Some(&serde_yaml::Value::String("keep".into()))
+    );
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("agent".into())),
+        Some(&serde_yaml::Value::String("codex".into()))
+    );
+}
+
+#[test]
+fn project_settings_render_coalesces_all_owned_flow_deletions() {
+    let original = "{owned-a: 1, owned-b: 2}\n";
+    let input = render_payload(original, "{}\n", &["owned-a", "owned-b"]);
+    let output = run_project_settings_render(&input, &[]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(yaml_mapping(&output.stdout).is_empty());
+}
+
+#[test]
 fn project_settings_render_preserves_multiline_flow_comments_and_is_idempotent() {
     let original = "{\n  unknown: 'keep', # unknown-comment\n  owned: old # owned-comment\n}\n";
     let desired = "{owned: new, added: {nested: true}}\n";

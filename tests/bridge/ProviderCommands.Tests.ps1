@@ -208,6 +208,16 @@ Describe 'public first-run helper' {
     BeforeEach {
         $script:publicFirstRunTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-public-first-run-tests-' + [guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $script:publicFirstRunTempRoot -Force | Out-Null
+        Mock Get-WinsmuxBin { 'C:\test\winsmux.exe' }
+        Mock Invoke-BridgeProjectSettingsRenderProcess {
+            param($WinsmuxBin, $PayloadJson)
+
+            $payload = $PayloadJson | ConvertFrom-Json
+            [PSCustomObject]@{
+                ExitCode = 0
+                StdOut   = [string]$payload.desired_yaml
+            }
+        }
     }
 
     AfterEach {

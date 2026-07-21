@@ -312,8 +312,73 @@ fn build_edit_plan(
         )?);
     }
 
+    let edits = coalesce_deletion_edits(source, mapping, &entries, edits)?;
     validate_edit_plan(source, mapping, &edits)?;
     Ok(edits)
+}
+
+fn coalesce_deletion_edits(
+    source: &str,
+    mapping: &CstMapping,
+    entries: &[RootEntryRange],
+    edits: Vec<TextEdit>,
+) -> Result<Vec<TextEdit>, ()> {
+    let (mut deletions, mut preserved): (Vec<_>, Vec<_>) = edits
+        .into_iter()
+        .partition(|edit| edit.replacement.is_empty() && edit.start < edit.end);
+    deletions.sort_unstable_by_key(|edit| (edit.start, edit.end));
+
+    let mut coalesced: Vec<TextEdit> = Vec::new();
+    for deletion in deletions {
+        if let Some(previous) = coalesced.last_mut() {
+            if deletion.start <= previous.end {
+                previous.end = previous.end.max(deletion.end);
+                continue;
+            }
+        }
+        coalesced.push(deletion);
+    }
+
+    if mapping.is_flow_style() {
+        let close = mapping.byte_range().end.checked_sub(1).ok_or(())? as usize;
+        for deletion in &mut coalesced {
+            if deletion.end != close {
+                continue;
+            }
+            let Some(first_deleted) = entries
+                .iter()
+                .position(|entry| entry.key_start == deletion.start)
+            else {
+                continue;
+            };
+            let Some(previous) = first_deleted
+                .checked_sub(1)
+                .and_then(|index| entries.get(index))
+            else {
+                continue;
+            };
+            let separator = source
+                .get(previous.value_end..deletion.start)
+                .ok_or(())?;
+            let comma = flow_separator_comma(separator)?;
+            deletion.start = previous.value_end.checked_add(comma).ok_or(())?;
+        }
+    }
+
+    preserved.extend(coalesced);
+    Ok(preserved)
+}
+
+fn flow_separator_comma(separator: &str) -> Result<usize, ()> {
+    let mut comma = None;
+    for (offset, byte) in separator.bytes().enumerate() {
+        match byte {
+            b',' if comma.is_none() => comma = Some(offset),
+            byte if byte.is_ascii_whitespace() => {}
+            _ => return Err(()),
+        }
+    }
+    comma.ok_or(())
 }
 
 fn root_entry_ranges(mapping: &CstMapping) -> Result<Vec<RootEntryRange>, ()> {

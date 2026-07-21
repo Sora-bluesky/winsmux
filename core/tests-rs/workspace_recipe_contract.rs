@@ -120,7 +120,8 @@ fn recipe_schema_version_requires_an_integer_scalar() {
 #[test]
 fn document_config_version_accepts_only_the_supported_v1_spellings() {
     let without_version = VALID_RECIPE
-        .strip_prefix("config-version: 1\n")
+        .strip_prefix("config-version: 1\r\n")
+        .or_else(|| VALID_RECIPE.strip_prefix("config-version: 1\n"))
         .expect("fixture starts with config-version");
     normalize_workspace_plan(
         without_version,
