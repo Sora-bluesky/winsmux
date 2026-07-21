@@ -3955,16 +3955,10 @@ fn runtime_role_config_from_value(value: &Value) -> io::Result<ProviderRoleConfi
 }
 
 fn validate_runtime_role_config(value: &Value) -> io::Result<()> {
-    runtime_role_config_from_value(value)
-        .map(|_| ())
-        .map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Invalid runtime role preference.",
-            )
-        })
+    runtime_role_config_from_value(value).map(|_| ()).map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidData, "Invalid runtime role preference.")
+    })
 }
-
 fn json_string_any(value: &Value, keys: &[&str]) -> Option<String> {
     keys.iter().find_map(|key| {
         value

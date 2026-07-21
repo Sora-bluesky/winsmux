@@ -246,6 +246,77 @@ fn selector_rejects_zero_and_multiple_matches() {
 }
 
 #[test]
+fn effective_slot_catalog_uses_canonical_identity_and_preserves_catalog_spelling() {
+    let lowercase = normalize_workspace_plan(
+        VALID_RECIPE,
+        "bugfix-two-slot",
+        Some("issue-1204"),
+        &slots(),
+    )
+    .expect("lowercase catalog remains the golden contract");
+    assert_eq!(
+        serde_json::to_string(&lowercase).expect("serialize lowercase plan"),
+        EXPECTED_PLAN.trim()
+    );
+
+    let mut mixed_case = slots();
+    mixed_case[0].slot_id = "Worker-1".to_string();
+    mixed_case[1].slot_id = "Reviewer-1".to_string();
+    let plan = normalize_workspace_plan(
+        VALID_RECIPE,
+        "bugfix-two-slot",
+        Some("issue-1204"),
+        &mixed_case,
+    )
+    .expect("canonical recipe references resolve mixed-case catalog entries");
+    assert_eq!(plan.panes[0].slot_id, "Worker-1");
+    assert_eq!(plan.resolved_bindings["implement"], "Worker-1");
+    assert_eq!(plan.panes[1].slot_id, "Reviewer-1");
+    assert_eq!(plan.resolved_bindings["verify"], "Reviewer-1");
+
+    let uppercase_ref = VALID_RECIPE.replace("slot-ref: worker-1", "slot-ref: Worker-1");
+    let error = normalize_workspace_plan(
+        &uppercase_ref,
+        "bugfix-two-slot",
+        Some("issue-1204"),
+        &mixed_case,
+    )
+    .expect_err("recipe-authored slot references remain canonical lowercase");
+    assert!(error
+        .to_string()
+        .contains("slot-ref must be a non-empty stable ASCII identifier"));
+
+    let mut duplicate = mixed_case.clone();
+    duplicate.push(SlotCapabilities {
+        slot_id: "worker-1".to_string(),
+        supports_file_edit: true,
+        supports_verification: false,
+        supports_structured_result: false,
+    });
+    let error = normalize_workspace_plan(
+        VALID_RECIPE,
+        "bugfix-two-slot",
+        Some("issue-1204"),
+        &duplicate,
+    )
+    .expect_err("case-variant catalog IDs must be rejected");
+    assert!(error.to_string().contains("duplicate effective slot-id"));
+
+    let mut invalid = slots();
+    invalid[0].slot_id = "Worker_1".to_string();
+    let error = normalize_workspace_plan(
+        VALID_RECIPE,
+        "bugfix-two-slot",
+        Some("issue-1204"),
+        &invalid,
+    )
+    .expect_err("canonical invalid catalog IDs must be rejected");
+    assert!(error
+        .to_string()
+        .contains("slot-id must be a non-empty stable ASCII identifier"));
+}
+
+#[test]
 fn review_requires_verification_and_structured_result() {
     let mut incomplete = slots();
     incomplete[1].supports_structured_result = false;

@@ -328,14 +328,16 @@ pub(crate) fn normalize_workspace_plan_from_value(
             }
             (Some(slot_id), None) => {
                 require_stable_id("slot-ref", slot_id)?;
-                let slot = slot_catalog.get(slot_id).ok_or_else(|| {
-                    invalid_data(format!(
-                        "pane '{}' references unknown slot '{}'.",
-                        pane.pane_key, slot_id
-                    ))
-                })?;
+                let slot = slot_catalog
+                    .get(&canonical_slot_identity(slot_id)?)
+                    .ok_or_else(|| {
+                        invalid_data(format!(
+                            "pane '{}' references unknown slot '{}'.",
+                            pane.pane_key, slot_id
+                        ))
+                    })?;
                 require_capabilities(slot, &required_capabilities, &pane.pane_key)?;
-                slot_id.to_string()
+                slot.slot_id.clone()
             }
             (None, Some(_)) => {
                 let matches: Vec<&SlotCapabilities> = slot_catalog
@@ -472,8 +474,8 @@ fn validate_slot_catalog(
 ) -> io::Result<BTreeMap<String, &SlotCapabilities>> {
     let mut catalog = BTreeMap::new();
     for slot in slots {
-        require_stable_id("slot-id", &slot.slot_id)?;
-        if catalog.insert(slot.slot_id.clone(), slot).is_some() {
+        let canonical_id = canonical_slot_identity(&slot.slot_id)?;
+        if catalog.insert(canonical_id, slot).is_some() {
             return Err(invalid_data(format!(
                 "duplicate effective slot-id '{}'.",
                 slot.slot_id
@@ -481,6 +483,12 @@ fn validate_slot_catalog(
         }
     }
     Ok(catalog)
+}
+
+fn canonical_slot_identity(value: &str) -> io::Result<String> {
+    let canonical = value.trim().to_ascii_lowercase();
+    require_stable_id("slot-id", &canonical)?;
+    Ok(canonical)
 }
 
 fn append_capabilities(target: &mut Vec<String>, requested: &[String]) -> io::Result<()> {
