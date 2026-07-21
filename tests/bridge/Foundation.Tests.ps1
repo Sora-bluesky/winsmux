@@ -335,6 +335,44 @@ future-owner:
         }
     }
 
+    It 'TASK658 preserves quoted Lane A top-level keys without retaining quoted known keys' {
+        $spellings = @(
+            'workspace-recipes',
+            "'workspace-recipes'",
+            '"workspace-recipes"',
+            '"workspace\u002drecipes"'
+        )
+
+        foreach ($spelling in $spellings) {
+            $projectRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-settings-key-' + [guid]::NewGuid().ToString('N'))
+            try {
+                New-Item -ItemType Directory -Path $projectRoot -Force | Out-Null
+                $path = Join-Path $projectRoot '.winsmux.yaml'
+                $originalBlock = @(
+                    ("{0}:" -f $spelling),
+                    '  schema-version: 1',
+                    '  preset: official-balanced-v1'
+                ) -join "`n"
+                @"
+future-owner:
+  enabled: true
+"agent": legacy-agent
+$originalBlock
+"@ | Set-Content -LiteralPath $path -Encoding UTF8
+
+                Save-BridgeSettings -Scope project -RootPath $projectRoot -Settings ([ordered]@{ agent = 'codex'; model = 'gpt-5.4' })
+
+                $saved = (Get-Content -LiteralPath $path -Raw -Encoding UTF8) -replace "`r`n", "`n"
+                $saved | Should -Match ([regex]::Escape($originalBlock))
+                $saved | Should -Match '(?m)^future-owner:'
+                $saved | Should -Not -Match '(?m)^"agent": legacy-agent$'
+                ([regex]::Matches($saved, '(?m)^agent:')).Count | Should -Be 1
+            } finally {
+                Remove-Item -LiteralPath $projectRoot -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+
     It 'preserves legacy role layouts only when explicit opt-in is enabled' {
         $layout = Get-OrchestraLayoutSettings -Settings ([ordered]@{
             external_operator = $false
@@ -1151,6 +1189,75 @@ workflow_runs:
         $second.declarative_workspace.resolved_bindings.verify | Should -Be 'worker-2'
         $serialized | Should -Match '(?m)^workflow_runs:'
         $serialized | Should -Match "(?m)^    state: 'blocked'"
+    }
+
+    It 'TASK658 serializes additive object and string sequences without adapted-object recursion' {
+        $manifest = ConvertFrom-ManifestYaml -Content @'
+version: 1
+saved_at: '2026-07-21T00:00:00Z'
+session:
+  name: 'winsmux-orchestra'
+panes: {}
+tasks:
+  queued: []
+  in_progress: []
+  completed: []
+worktrees: {}
+'@
+        $manifest | Add-Member -NotePropertyName 'workflow_runs' -NotePropertyValue ([ordered]@{
+            'run-123' = [ordered]@{
+                evidence_refs = @('artifact:first', 'artifact:second')
+                cleanup_journal = @(
+                    [ordered]@{ action = 'remove-worktree'; state = 'completed' },
+                    [pscustomobject]@{ action = 'remove-branch'; state = 'pending' }
+                )
+            }
+        }) -Force
+
+        $serialized = ConvertTo-ManifestYaml -Manifest $manifest
+        $roundTrip = ConvertFrom-ManifestYaml -Content $serialized
+        $serializedAgain = ConvertTo-ManifestYaml -Manifest $roundTrip
+
+        $serialized | Should -Match '(?m)^workflow_runs:$'
+        $serialized | Should -Match "(?m)^\s+- 'artifact:first'$"
+        $serialized | Should -Match "(?m)^\s+- 'artifact:second'$"
+        $serialized | Should -Match '(?m)^\s+cleanup_journal:$'
+        $serialized | Should -Match "(?m)^\s+action: 'remove-worktree'$"
+        $serialized | Should -Match "(?m)^\s+action: 'remove-branch'$"
+        $serializedAgain | Should -Match "(?m)^\s+- 'artifact:first'$"
+        $serializedAgain | Should -Match "(?m)^\s+action: 'remove-worktree'$"
+        $serializedAgain | Should -Match "(?m)^\s+action: 'remove-branch'$"
+    }
+
+    It 'TASK658 preserves quoted additive manifest keys without retaining quoted known keys' {
+        foreach ($spelling in @('workflow_runs', "'workflow_runs'", '"workflow_runs"', '"workflow\u005fruns"')) {
+            $content = @"
+version: 1
+saved_at: '2026-07-21T00:00:00Z'
+session:
+  name: 'winsmux-orchestra'
+panes: {}
+tasks:
+  queued: []
+  in_progress: []
+  completed: []
+worktrees: {}
+$($spelling):
+  run-1:
+    state: 'blocked'
+"@
+
+            $serialized = ConvertTo-ManifestYaml -Manifest (ConvertFrom-ManifestYaml -Content $content)
+
+            $serialized | Should -Match ([regex]::Escape(("{0}:" -f $spelling)))
+            $serialized | Should -Match "(?m)^    state: 'blocked'$"
+        }
+
+        $quotedKnown = @(Get-ManifestUnknownTopLevelBlocks -Content @'
+"session":
+  name: 'quoted-known'
+'@)
+        $quotedKnown.Count | Should -Be 0
     }
 
     It 'TASK658 derives a deterministic declarative workspace fingerprint without writing state' {

@@ -2395,6 +2395,38 @@ function Read-BridgeProjectSettings {
     return ConvertFrom-BridgeManualYaml -Content $raw
 }
 
+function ConvertFrom-BridgeTopLevelYamlKey {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Line)
+
+    if ([string]::IsNullOrWhiteSpace($Line) -or [char]::IsWhiteSpace($Line[0])) {
+        return $null
+    }
+
+    $match = [regex]::Match(
+        $Line,
+        '^(?<token>[A-Za-z_][A-Za-z0-9_.-]*|''(?:[^'']|'''')*''|"(?:[^"\\]|\\(?:["\\/bfnrt]|u[0-9A-Fa-f]{4}))*")\s*:'
+    )
+    if (-not $match.Success) {
+        return $null
+    }
+
+    $keyText = [string]$match.Groups['token'].Value
+    if ($keyText[0] -eq "'") {
+        $keyText = $keyText.Substring(1, $keyText.Length - 2).Replace("''", "'")
+    } elseif ($keyText[0] -eq '"') {
+        try {
+            $keyText = [string](ConvertFrom-Json -InputObject $keyText -ErrorAction Stop)
+        } catch {
+            return $null
+        }
+    }
+
+    if ($keyText -cnotmatch '^[A-Za-z_][A-Za-z0-9_.-]*$') {
+        return $null
+    }
+    return $keyText
+}
+
 function Get-BridgePreservedProjectSettingsBlocks {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -2406,12 +2438,13 @@ function Get-BridgePreservedProjectSettingsBlocks {
     $current = [System.Collections.Generic.List[string]]::new()
     $preserve = $false
     foreach ($line in ($content -split "\r?\n")) {
-        if ($line -match '^([A-Za-z_][A-Za-z0-9_-]*):') {
+        $topLevelKey = ConvertFrom-BridgeTopLevelYamlKey -Line $line
+        if ($null -ne $topLevelKey) {
             if ($preserve -and $current.Count -gt 0) {
                 $blocks.Add(($current -join "`n")) | Out-Null
                 $current.Clear()
             }
-            $key = [string]$Matches[1] -replace '-', '_'
+            $key = $topLevelKey -replace '-', '_'
             $preserve = -not $script:BridgeSettingsSchema.Contains($key)
         }
         if ($preserve) {

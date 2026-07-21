@@ -195,6 +195,11 @@ function ConvertTo-ManifestPropertyMap {
         return $result
     }
 
+    if ($Value -is [string] -or $Value -is [System.ValueType] -or
+        ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [System.Collections.IDictionary]))) {
+        return $result
+    }
+
     if ($Value -is [System.Collections.Specialized.OrderedDictionary]) {
         foreach ($key in $Value.Keys) {
             $result[[string]$key] = $Value[$key]
@@ -249,16 +254,6 @@ function Add-ManifestYamlNode {
     )
 
     $prefix = ' ' * $Indent
-    $map = ConvertTo-ManifestPropertyMap -Value $Value
-    if ($null -ne $Value -and $map.Count -gt 0 -and
-        -not ($Value -is [string]) -and -not ($Value -is [System.ValueType])) {
-        $Lines.Add(("{0}{1}:" -f $prefix, $Name)) | Out-Null
-        foreach ($key in $map.Keys) {
-            Add-ManifestYamlNode -Lines $Lines -Name ([string]$key) -Value $map[$key] -Indent ($Indent + 2)
-        }
-        return
-    }
-
     if ($Value -is [System.Collections.IEnumerable] -and
         -not ($Value -is [string]) -and -not ($Value -is [System.Collections.IDictionary])) {
         $items = @($Value)
@@ -275,20 +270,56 @@ function Add-ManifestYamlNode {
                 continue
             }
 
-            $first = $true
+            $Lines.Add(("{0}  -" -f $prefix)) | Out-Null
             foreach ($key in $itemMap.Keys) {
-                if ($first) {
-                    $Lines.Add(("{0}  - {1}: {2}" -f $prefix, $key, (ConvertTo-ManifestYamlValue -Value $itemMap[$key]))) | Out-Null
-                    $first = $false
-                } else {
-                    Add-ManifestYamlNode -Lines $Lines -Name ([string]$key) -Value $itemMap[$key] -Indent ($Indent + 4)
-                }
+                Add-ManifestYamlNode -Lines $Lines -Name ([string]$key) -Value $itemMap[$key] -Indent ($Indent + 4)
             }
         }
         return
     }
 
+    $map = ConvertTo-ManifestPropertyMap -Value $Value
+    if ($null -ne $Value -and $map.Count -gt 0) {
+        $Lines.Add(("{0}{1}:" -f $prefix, $Name)) | Out-Null
+        foreach ($key in $map.Keys) {
+            Add-ManifestYamlNode -Lines $Lines -Name ([string]$key) -Value $map[$key] -Indent ($Indent + 2)
+        }
+        return
+    }
+
     $Lines.Add(("{0}{1}: {2}" -f $prefix, $Name, (ConvertTo-ManifestYamlValue -Value $Value))) | Out-Null
+}
+
+function ConvertFrom-ManifestTopLevelYamlKey {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Line)
+
+    if ([string]::IsNullOrWhiteSpace($Line) -or [char]::IsWhiteSpace($Line[0])) {
+        return $null
+    }
+
+    $match = [regex]::Match(
+        $Line,
+        '^(?<token>[A-Za-z0-9_.-]+|''(?:[^'']|'''')*''|"(?:[^"\\]|\\(?:["\\/bfnrt]|u[0-9A-Fa-f]{4}))*")\s*:'
+    )
+    if (-not $match.Success) {
+        return $null
+    }
+
+    $keyText = [string]$match.Groups['token'].Value
+    if ($keyText[0] -eq "'") {
+        $keyText = $keyText.Substring(1, $keyText.Length - 2).Replace("''", "'")
+    } elseif ($keyText[0] -eq '"') {
+        try {
+            $keyText = [string](ConvertFrom-Json -InputObject $keyText -ErrorAction Stop)
+        } catch {
+            return $null
+        }
+    }
+
+    if ($keyText -cnotmatch '^[A-Za-z0-9_.-]+$') {
+        return $null
+    }
+    return $keyText
 }
 
 function Get-ManifestUnknownTopLevelBlocks {
@@ -303,12 +334,13 @@ function Get-ManifestUnknownTopLevelBlocks {
     $current = [System.Collections.Generic.List[string]]::new()
     $capturing = $false
     foreach ($rawLine in ($Content -split "\r?\n")) {
-        if ($rawLine -match '^([A-Za-z0-9_.-]+):') {
+        $topLevelKey = ConvertFrom-ManifestTopLevelYamlKey -Line $rawLine
+        if ($null -ne $topLevelKey) {
             if ($capturing -and $current.Count -gt 0) {
                 $blocks.Add(($current -join "`n")) | Out-Null
                 $current.Clear()
             }
-            $capturing = -not $known.Contains([string]$Matches[1])
+            $capturing = -not $known.Contains($topLevelKey)
         }
         if ($capturing) {
             $current.Add($rawLine) | Out-Null
@@ -1596,7 +1628,7 @@ function ConvertFrom-ManifestYaml {
             continue
         }
 
-        if ($line -match '^([A-Za-z0-9_.-]+):') {
+        if ($null -ne (ConvertFrom-ManifestTopLevelYamlKey -Line $line)) {
             # Unknown additive top-level sections are retained as raw YAML blocks.
             # Stop interpreting their nested lines as part of the preceding known section.
             $section = ''
