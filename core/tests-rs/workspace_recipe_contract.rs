@@ -167,10 +167,8 @@ fn startup_action_kind_must_be_compatible_with_the_target_pane() {
         "ensure-managed-worktree requires a managed target pane."
     );
 
-    let slot_ready_on_managed = VALID_RECIPE.replace(
-        "action-id: start-verify-slot\n        kind: ensure-slot-ready\n        pane-ref: verify",
-        "action-id: start-verify-slot\n        kind: ensure-slot-ready\n        pane-ref: implement",
-    );
+    let crlf_recipe = VALID_RECIPE.replace("\r\n", "\n").replace('\n', "\r\n");
+    let slot_ready_on_managed = crlf_recipe.replacen("pane-ref: verify", "pane-ref: implement", 1);
     let plan = normalize_workspace_plan(
         &slot_ready_on_managed,
         "bugfix-two-slot",
