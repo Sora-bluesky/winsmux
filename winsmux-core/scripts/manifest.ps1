@@ -317,7 +317,7 @@ function ConvertFrom-ManifestTopLevelYamlKey {
 
     $match = [regex]::Match(
         $Line,
-        '^(?<token>[A-Za-z0-9_.-]+|''(?:[^'']|'''')*''|"(?:[^"\\]|\\(?:["\\/bfnrt]|u[0-9A-Fa-f]{4}))*")\s*:'
+        '^(?<token>[A-Za-z0-9_.-]+|''(?:[^'']|'''')*''|"(?:[^"\\]|\\(?:["\\/bfnrt]|u[0-9A-Fa-f]{4}))*")\s*:(?=$|\s|#)'
     )
     if (-not $match.Success) {
         return $null
@@ -370,6 +370,43 @@ function Get-ManifestUnknownTopLevelBlocks {
         $blocks.Add(($current -join "`n")) | Out-Null
     }
     return @($blocks)
+}
+
+function Assert-ManifestYamlBlockMappingRoot {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Content)
+
+    $rootEntryObserved = $false
+    foreach ($rawLine in ($Content -split "\r?\n")) {
+        $line = $rawLine.TrimEnd()
+        if ([string]::IsNullOrWhiteSpace($line) -or $line -match '^\s*#') {
+            continue
+        }
+
+        # This parser supports one block-style mapping document. Reject document
+        # boundaries before the line-oriented reader can silently combine roots.
+        if ($line -match '^(?:---|\.\.\.)(?:\s+#.*)?$') {
+            throw 'manifest parse rejected: document must be a single block-style mapping.'
+        }
+
+        if ([char]::IsWhiteSpace($line[0])) {
+            if (-not $rootEntryObserved) {
+                throw 'manifest parse rejected: document must be a single block-style mapping.'
+            }
+            continue
+        }
+
+        # Every column-zero data line starts another mapping entry. Checking only
+        # the first entry would let a later root sequence/scalar/flow node pass
+        # through the line-oriented compatibility reader.
+        if ($null -eq (ConvertFrom-ManifestTopLevelYamlKey -Line $line)) {
+            throw 'manifest parse rejected: document must be a single block-style mapping.'
+        }
+        $rootEntryObserved = $true
+    }
+
+    if (-not $rootEntryObserved) {
+        throw 'manifest parse rejected: document must be a single block-style mapping.'
+    }
 }
 
 function Write-ManifestTextFile {
@@ -1602,6 +1639,8 @@ function ConvertTo-ManifestYaml {
 
 function ConvertFrom-ManifestYaml {
     param([Parameter(Mandatory = $true)][string]$Content)
+
+    Assert-ManifestYamlBlockMappingRoot -Content $Content
 
     $manifest = [PSCustomObject]@{
         version  = 1

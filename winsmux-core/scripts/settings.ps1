@@ -54,6 +54,14 @@ $script:BridgeSlotScalarKeys = @(
     'fallback_model'
 )
 $script:BridgeSlotListKeys = @()
+$script:BridgeRoleScalarKeys = @(
+    'agent',
+    'model',
+    'model_source',
+    'reasoning_effort',
+    'prompt_transport',
+    'auth_mode'
+)
 $script:BridgeSettingsSchema = [ordered]@{
     config_version      = @{ Type = 'int';      Default = 1;             Option = $null }
     agent               = @{ Type = 'string';   Default = 'codex';       Option = '@bridge-agent' }
@@ -2585,7 +2593,7 @@ function Test-BridgeSettingValue {
 
                 foreach ($rolePair in $rolePairs) {
                     $propertyKey = $rolePair.Key.ToString() -replace '-', '_'
-                    if ($propertyKey -notin @('agent', 'model', 'model_source', 'reasoning_effort', 'prompt_transport', 'auth_mode')) {
+                    if ($propertyKey -notin $script:BridgeRoleScalarKeys) {
                         continue
                     }
 
@@ -3438,8 +3446,22 @@ function ConvertTo-BridgeOwnedProjectSettingsYaml {
         } elseif ($value -is [System.Collections.IDictionary]) {
             $lines.Add("${key}:")
             foreach ($entry in $value.GetEnumerator()) {
-                $lines.Add("  $($entry.Key):")
                 $roleConfig = $entry.Value
+                $roleProperties = @()
+                if ($roleConfig -is [System.Collections.IDictionary]) {
+                    $roleProperties = @($roleConfig.GetEnumerator())
+                } elseif ($null -ne $roleConfig -and $null -ne $roleConfig.PSObject) {
+                    $roleProperties = @($roleConfig.PSObject.Properties)
+                }
+
+                if (($roleConfig -is [System.Collections.IDictionary] -or
+                        ($null -ne $roleConfig -and $null -ne $roleConfig.PSObject)) -and
+                    $roleProperties.Count -eq 0) {
+                    $lines.Add("  $($entry.Key): {}")
+                    continue
+                }
+
+                $lines.Add("  $($entry.Key):")
                 if ($roleConfig -is [System.Collections.IDictionary]) {
                     foreach ($roleEntry in $roleConfig.GetEnumerator()) {
                         $lines.Add("    $($roleEntry.Key): $(ConvertTo-BridgeYamlScalar $roleEntry.Value)")
@@ -3522,6 +3544,19 @@ function Invoke-BridgeProjectSettingsRenderer {
             original_yaml = $OriginalYaml
             desired_yaml  = $DesiredYaml
             owned_keys    = @($script:BridgeSettingsSchema.Keys | ForEach-Object { [string]$_ })
+            nested_contract = [ordered]@{
+                agent_slots = [ordered]@{
+                    identity_key = 'slot_id'
+                    owned_keys   = @($script:BridgeSlotScalarKeys + $script:BridgeSlotListKeys)
+                    aliases      = [ordered]@{
+                        backend = 'worker_backend'
+                        role    = 'worker_role'
+                    }
+                }
+                roles = [ordered]@{
+                    owned_keys = @($script:BridgeRoleScalarKeys)
+                }
+            }
         }
         $payloadJson = $payload | ConvertTo-Json -Depth 4 -Compress
         $result = Invoke-BridgeProjectSettingsRenderProcess -WinsmuxBin ([string]$winsmuxBin) -PayloadJson $payloadJson

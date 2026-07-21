@@ -353,6 +353,56 @@ Describe 'Get-OrchestraLayoutSettings' {
         }
     }
 
+    It 'TASK658 serializes an emptied role as a mapping and carries the unknown-descendant preservation contract for <Case>' -ForEach @(
+        @{ Case = 'ordered dictionary'; RoleConfig = [ordered]@{} }
+        @{ Case = 'PSCustomObject'; RoleConfig = [pscustomobject]@{} }
+    ) {
+        $projectRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-settings-empty-role-' + [guid]::NewGuid().ToString('N'))
+        try {
+            New-Item -ItemType Directory -Path $projectRoot -Force | Out-Null
+            $path = Join-Path $projectRoot '.winsmux.yaml'
+            $utf8 = [System.Text.UTF8Encoding]::new($false, $true)
+            $original = @'
+roles:
+  builder:
+    agent: codex
+    future_nested:
+      mode: retain
+'@
+            $rendered = @'
+roles:
+  builder:
+    future_nested:
+      mode: retain
+'@ + "`n"
+            [System.IO.File]::WriteAllText($path, $original, $utf8)
+            Mock Invoke-BridgeProjectSettingsRenderProcess {
+                param($WinsmuxBin, $PayloadJson)
+
+                $payload = $PayloadJson | ConvertFrom-Json
+                $script:bridgeProjectSettingsPayloads.Add($payload) | Out-Null
+                return [PSCustomObject]@{ ExitCode = 0; StdOut = $rendered }
+            }
+
+            Save-BridgeSettings -Scope project -RootPath $projectRoot -Settings ([ordered]@{
+                roles = [ordered]@{ builder = $RoleConfig }
+            })
+
+            $script:bridgeProjectSettingsPayloads.Count | Should -Be 1
+            $payload = $script:bridgeProjectSettingsPayloads[0]
+            $payload.original_yaml | Should -BeExactly $original
+            $payload.desired_yaml | Should -Match '(?m)^roles:\r?$'
+            $payload.desired_yaml | Should -Match '(?m)^  builder: \{\}\r?$'
+            $payload.desired_yaml | Should -Not -Match '(?m)^    agent:'
+            @($payload.nested_contract.roles.owned_keys) | Should -Contain 'agent'
+            [System.IO.File]::ReadAllText($path, $utf8) | Should -BeExactly $rendered
+            [System.IO.File]::ReadAllText($path, $utf8) | Should -Match '(?m)^    future_nested:\r?$'
+            @(Get-ChildItem -LiteralPath $projectRoot -Filter '.winsmux.yaml.tmp-*' -File).Count | Should -Be 0
+        } finally {
+            Remove-Item -LiteralPath $projectRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     It 'TASK658 keeps original bytes and removes temporary files when the renderer fails as <Case>' -ForEach @(
         @{ Case = 'missing-native' }
         @{ Case = 'nonzero' }
@@ -1371,6 +1421,63 @@ $($spelling):
   name: 'quoted-known'
 '@)
         $quotedKnown.Count | Should -Be 0
+    }
+
+    It 'TASK658 rejects manifest roots outside the supported single block mapping shape' -ForEach @(
+        @{ Case = 'flow mapping'; Content = '{version: 1, workflow_runs: {run-1: {state: blocked}}}' }
+        @{ Case = 'flow sequence'; Content = '[version, workflow_runs]' }
+        @{ Case = 'block sequence'; Content = "- version`n- workflow_runs" }
+        @{ Case = 'scalar'; Content = 'version' }
+        @{ Case = 'http URI scalar'; Content = 'http://example.com' }
+        @{ Case = 'https URI scalar'; Content = 'https://example.com/manifest' }
+        @{ Case = 'ssh URI scalar'; Content = 'ssh://git@example.com/repo' }
+        @{ Case = 'multiple documents'; Content = "version: 1`n---`nworkflow_runs: {}" }
+        @{ Case = 'mapping then block sequence'; Content = "version: 1`n- workflow_runs" }
+        @{ Case = 'mapping then scalar'; Content = "version: 1`nworkflow_runs" }
+        @{ Case = 'mapping then flow mapping'; Content = "version: 1`n{workflow_runs: {}}" }
+    ) {
+        { ConvertFrom-ManifestYaml -Content $Content } |
+            Should -Throw '*manifest parse rejected*single block-style mapping*'
+    }
+
+    It 'TASK658 preserves rejected flow and URI-scalar manifests across save and update attempts' -ForEach @(
+        @{ Case = 'flow mapping'; Content = '{version: 1, workflow_runs: {run-1: {state: blocked}}}' }
+        @{ Case = 'http URI scalar'; Content = 'http://example.com' }
+        @{ Case = 'https URI scalar'; Content = 'https://example.com/manifest' }
+        @{ Case = 'ssh URI scalar'; Content = 'ssh://git@example.com/repo' }
+    ) {
+        $projectDir = Join-Path $TestDrive ('task658-rejected-manifest-' + [guid]::NewGuid().ToString('N'))
+        $manifestDir = Join-Path $projectDir '.winsmux'
+        $manifestPath = Join-Path $manifestDir 'manifest.yaml'
+        $original = $Content
+        New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
+        [System.IO.File]::WriteAllText(
+            $manifestPath,
+            $original,
+            [System.Text.UTF8Encoding]::new($false)
+        )
+        $replacement = [PSCustomObject]@{
+            version = 1
+            saved_at = '2026-07-21T00:00:00Z'
+            session = [PSCustomObject]@{}
+            panes = [ordered]@{}
+            tasks = [PSCustomObject]@{ queued = @(); in_progress = @(); completed = @() }
+            worktrees = [ordered]@{}
+        }
+
+        { Save-WinsmuxManifest -ProjectDir $projectDir -Manifest $replacement } |
+            Should -Throw '*manifest_regeneration_required*'
+        [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($manifestPath)) |
+            Should -Be ([Convert]::ToBase64String([System.Text.UTF8Encoding]::new($false).GetBytes($original)))
+        @(Get-ChildItem -LiteralPath $manifestDir -Filter 'manifest.yaml.tmp-*' -File).Count | Should -Be 0
+
+        { Update-ManifestPanes -ManifestPath $manifestPath -PaneSummaries @(
+                [PSCustomObject]@{ Label = 'worker-1'; PaneId = '%2' }
+            ) } |
+            Should -Throw '*manifest parse rejected*single block-style mapping*'
+        [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($manifestPath)) |
+            Should -Be ([Convert]::ToBase64String([System.Text.UTF8Encoding]::new($false).GetBytes($original)))
+        @(Get-ChildItem -LiteralPath $manifestDir -Filter 'manifest.yaml.tmp-*' -File).Count | Should -Be 0
     }
 
     It 'TASK658 derives a deterministic declarative workspace fingerprint without writing state' {

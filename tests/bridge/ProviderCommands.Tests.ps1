@@ -208,11 +208,13 @@ Describe 'public first-run helper' {
     BeforeEach {
         $script:publicFirstRunTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-public-first-run-tests-' + [guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $script:publicFirstRunTempRoot -Force | Out-Null
+        $script:publicFirstRunRendererPayloads = @()
         Mock Get-WinsmuxBin { 'C:\test\winsmux.exe' }
         Mock Invoke-BridgeProjectSettingsRenderProcess {
             param($WinsmuxBin, $PayloadJson)
 
             $payload = $PayloadJson | ConvertFrom-Json
+            $script:publicFirstRunRendererPayloads += $payload
             [PSCustomObject]@{
                 ExitCode = 0
                 StdOut   = [string]$payload.desired_yaml
@@ -255,6 +257,13 @@ Describe 'public first-run helper' {
         }
         $slotKeys | Should -Not -Contain 'model'
         $settings.workspace_lifecycle_preset | Should -Be 'managed-worktree'
+        $script:publicFirstRunRendererPayloads.Count | Should -Be 1
+        $contract = $script:publicFirstRunRendererPayloads[0].nested_contract
+        $contract.agent_slots.identity_key | Should -Be 'slot_id'
+        @($contract.agent_slots.owned_keys) | Should -Contain 'fallback_model'
+        $contract.agent_slots.aliases.backend | Should -Be 'worker_backend'
+        $contract.agent_slots.aliases.role | Should -Be 'worker_role'
+        @($contract.roles.owned_keys) | Should -Be @('agent', 'model', 'model_source', 'reasoning_effort', 'prompt_transport', 'auth_mode')
     }
 
     It 'stores a custom workspace lifecycle preset on init' {

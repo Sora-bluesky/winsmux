@@ -30,6 +30,15 @@ const FILE_LOCK_RETRY_DELAY: Duration = Duration::from_millis(50);
 const CODEX_MAX_REASONING_MODELS: [&str; 3] = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
 const LEGACY_CAPABILITY_REASONING_EFFORTS: [&str; 6] =
     ["provider-default", "low", "medium", "high", "max", "xhigh"];
+const WORKSPACE_PLAN_GLOBAL_OPTIONS: [&str; 7] = [
+    "@bridge-agent",
+    "@bridge-model",
+    "@bridge-prompt-transport",
+    "@bridge-external-operator",
+    "@bridge-worker-count",
+    "@bridge-execution-profile",
+    "@bridge-legacy-role-layout",
+];
 
 pub fn is_operator_status_invocation(args: &[&String]) -> bool {
     args.iter()
@@ -219,10 +228,9 @@ pub fn run_workspace_plan_command(args: &[&String]) -> io::Result<()> {
 
     let options = parse_workspace_plan_options(args)?;
     let settings_path = options.project_dir.join(".winsmux.yaml");
-    let yaml = fs::read_to_string(&settings_path).map_err(|error| {
-        io::Error::new(error.kind(), "failed to read project .winsmux.yaml.")
-    })?;
-    let settings = read_bridge_settings(&options.project_dir).map_err(|_| {
+    let yaml = fs::read_to_string(&settings_path)
+        .map_err(|error| io::Error::new(error.kind(), "failed to read project .winsmux.yaml."))?;
+    let settings = read_workspace_plan_settings(&options.project_dir).map_err(|_| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             "failed to resolve the effective slot catalog.",
@@ -1838,6 +1846,22 @@ struct BridgeSettings {
     model_explicit: bool,
     worker_role: ProviderRoleConfig,
     agent_slots: Vec<ProviderSlotConfig>,
+}
+
+#[derive(Default)]
+struct WorkspacePlanGlobalSettings {
+    agent: Option<String>,
+    model: Option<String>,
+    prompt_transport: Option<String>,
+    external_operator: Option<bool>,
+    worker_count: Option<u64>,
+    legacy_role_layout: Option<bool>,
+}
+
+enum WorkspacePlanGlobalOptionRead {
+    Value(String),
+    Missing,
+    SourceUnavailable,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -3497,6 +3521,230 @@ fn read_bridge_settings(project_dir: &Path) -> io::Result<BridgeSettings> {
         }
     }
     Ok(settings)
+}
+
+fn generated_workspace_plan_worker_slots(
+    settings: &BridgeSettings,
+    worker_count: u64,
+) -> Vec<ProviderSlotConfig> {
+    (1..=worker_count)
+        .map(|index| ProviderSlotConfig {
+            slot_id: format!("worker-{index}"),
+            agent: settings.agent_explicit.then(|| settings.agent.clone()),
+            model: settings.model_explicit.then(|| settings.model.clone()),
+            model_source: Some(settings.model_source.clone()),
+            reasoning_effort: Some(settings.reasoning_effort.clone()),
+            prompt_transport: Some(settings.prompt_transport.clone()),
+            auth_mode: (!settings.auth_mode.trim().is_empty()).then(|| settings.auth_mode.clone()),
+        })
+        .collect()
+}
+
+fn read_workspace_plan_settings(project_dir: &Path) -> io::Result<BridgeSettings> {
+    let executable = env::current_exe().ok();
+    let mut source_available = executable.is_some();
+    read_workspace_plan_settings_with_global_reader(project_dir, |name| {
+        if !source_available {
+            return None;
+        }
+        match read_workspace_plan_global_option(executable.as_deref()?, name) {
+            WorkspacePlanGlobalOptionRead::Value(value) => Some(value),
+            WorkspacePlanGlobalOptionRead::Missing => None,
+            WorkspacePlanGlobalOptionRead::SourceUnavailable => {
+                source_available = false;
+                None
+            }
+        }
+    })
+}
+
+fn read_workspace_plan_global_option(
+    executable: &Path,
+    name: &str,
+) -> WorkspacePlanGlobalOptionRead {
+    let Ok(output) = Command::new(executable)
+        .args(["show-options", "-g", "-v", name])
+        .output()
+    else {
+        return WorkspacePlanGlobalOptionRead::SourceUnavailable;
+    };
+    classify_workspace_plan_global_option(output.status.success(), &output.stdout)
+}
+
+fn classify_workspace_plan_global_option(
+    status_success: bool,
+    stdout: &[u8],
+) -> WorkspacePlanGlobalOptionRead {
+    // show-options reports an unset individual option with a non-zero exit. That
+    // is a per-key miss, not proof that the executable/server source is gone;
+    // later @bridge-* keys must still be queried like Get-WinsmuxOption does.
+    if !status_success {
+        return WorkspacePlanGlobalOptionRead::Missing;
+    }
+    let Ok(value) = std::str::from_utf8(stdout) else {
+        return WorkspacePlanGlobalOptionRead::SourceUnavailable;
+    };
+    let value = value.trim();
+    if value.is_empty() || workspace_plan_global_option_failure_text(value) {
+        return WorkspacePlanGlobalOptionRead::Missing;
+    }
+    WorkspacePlanGlobalOptionRead::Value(value.to_string())
+}
+
+fn workspace_plan_global_option_failure_text(value: &str) -> bool {
+    let value = value.to_ascii_lowercase();
+    [
+        "unknown",
+        "error",
+        "invalid",
+        "no server running on session",
+        "not recognized as the name",
+        "is not recognized as a name",
+        "failed with exit code",
+        "failed to connect",
+        "could not connect",
+        "no such session",
+    ]
+    .iter()
+    .any(|failure| value.contains(failure))
+}
+
+fn read_workspace_plan_settings_with_global_reader<F>(
+    project_dir: &Path,
+    mut read_global: F,
+) -> io::Result<BridgeSettings>
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    let globals = read_workspace_plan_global_settings(&mut read_global)?;
+    let mut settings = read_bridge_settings(project_dir)?;
+    let raw = fs::read_to_string(project_dir.join(".winsmux.yaml"))?;
+    let root = serde_yaml::from_str::<serde_yaml::Value>(&raw).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid workspace-plan settings: {err}"),
+        )
+    })?;
+
+    let project_agent = yaml_string(&root, "agent");
+    if project_agent.is_none() {
+        if let Some(value) = globals.agent {
+            settings.agent = value;
+            settings.agent_explicit = true;
+        }
+    }
+
+    let project_model = yaml_string(&root, "model");
+    let project_model_source =
+        yaml_string(&root, "model_source").or_else(|| yaml_string(&root, "model-source"));
+    if project_model.is_none() {
+        if let Some(value) = globals.model {
+            settings.model = value;
+            settings.model_explicit = true;
+            if project_model_source.is_none() {
+                settings.model_source = inferred_model_source_for_model(&settings.model);
+            }
+        }
+    }
+
+    let project_prompt_transport =
+        yaml_string(&root, "prompt_transport").or_else(|| yaml_string(&root, "prompt-transport"));
+    if project_prompt_transport.is_none() {
+        if let Some(value) = globals.prompt_transport {
+            settings.prompt_transport = value;
+        }
+    }
+
+    let project_slots = yaml_agent_slots(&root)?;
+    let legacy_role_layout = yaml_bool(&root, "legacy_role_layout")
+        .or_else(|| yaml_bool(&root, "legacy-role-layout"))
+        .or(globals.legacy_role_layout)
+        .unwrap_or(false);
+    if !project_slots.is_empty() && legacy_role_layout {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "workspace-plan cannot bind agent_slots while legacy_role_layout is enabled.",
+        ));
+    }
+    if project_slots.is_empty() {
+        let external_operator = yaml_bool(&root, "external_operator")
+            .or_else(|| yaml_bool(&root, "external-operator"))
+            .or(globals.external_operator)
+            .unwrap_or(true);
+        let worker_count = yaml_u64(&root, "worker_count")
+            .or_else(|| yaml_u64(&root, "worker-count"))
+            .or(globals.worker_count)
+            .unwrap_or(6);
+
+        settings.agent_slots.clear();
+        if external_operator && !legacy_role_layout {
+            settings.agent_slots = generated_workspace_plan_worker_slots(&settings, worker_count);
+        }
+    }
+
+    Ok(settings)
+}
+
+fn read_workspace_plan_global_settings<F>(
+    read_global: &mut F,
+) -> io::Result<WorkspacePlanGlobalSettings>
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    let mut settings = WorkspacePlanGlobalSettings::default();
+    for option in WORKSPACE_PLAN_GLOBAL_OPTIONS {
+        let Some(raw) = read_global(option) else {
+            continue;
+        };
+        let value = raw.trim();
+        if value.is_empty() {
+            continue;
+        }
+        match option {
+            "@bridge-agent" => settings.agent = Some(value.to_string()),
+            "@bridge-model" => settings.model = Some(value.to_string()),
+            "@bridge-prompt-transport" => {
+                let normalized = value.to_ascii_lowercase();
+                if !matches!(normalized.as_str(), "argv" | "file" | "stdin") {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "Invalid prompt_transport configuration: unsupported value '{value}'."
+                        ),
+                    ));
+                }
+                settings.prompt_transport = Some(normalized);
+            }
+            "@bridge-external-operator" => {
+                settings.external_operator = workspace_plan_global_bool(value)
+            }
+            "@bridge-worker-count" => settings.worker_count = value.parse::<u64>().ok(),
+            "@bridge-execution-profile" => {
+                let normalized = value.to_ascii_lowercase();
+                if !matches!(normalized.as_str(), "local-windows" | "isolated-enterprise") {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "Invalid execution_profile configuration: unsupported value '{value}'."
+                        ),
+                    ));
+                }
+            }
+            "@bridge-legacy-role-layout" => {
+                settings.legacy_role_layout = workspace_plan_global_bool(value)
+            }
+            _ => unreachable!("workspace-plan global option allowlist is exhaustive"),
+        }
+    }
+    Ok(settings)
+}
+
+fn workspace_plan_global_bool(value: &str) -> Option<bool> {
+    match value.to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Some(true),
+        "false" | "0" | "no" | "off" => Some(false),
+        _ => None,
+    }
 }
 
 fn merge_role_config(
@@ -11368,224 +11616,5 @@ fn write_json<T: Serialize>(value: &T) -> io::Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    fn restart_plan(agent: &str, capability_adapter: &str) -> RestartPlan {
-        RestartPlan {
-            label: "worker-1".to_string(),
-            pane_id: "%2".to_string(),
-            role: "Worker".to_string(),
-            session_name: "winsmux-orchestra".to_string(),
-            launch_dir: "C:\\repo".to_string(),
-            git_worktree_dir: "C:\\repo\\.git".to_string(),
-            agent: agent.to_string(),
-            model: String::new(),
-            model_source: default_provider_model_source(),
-            reasoning_effort: default_provider_reasoning_effort(),
-            capability_adapter: capability_adapter.to_string(),
-            launch_command: "noop".to_string(),
-        }
-    }
-
-    fn test_project_dir(name: &str) -> PathBuf {
-        let suffix = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time should be after epoch")
-            .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("winsmux-{name}-{}-{suffix}", std::process::id()));
-        std::fs::create_dir_all(path.join(".winsmux")).expect("create test project");
-        path
-    }
-
-    #[test]
-    fn stream_event_reader_ignores_partial_tail_line() {
-        let project_dir = test_project_dir("stream-partial-tail");
-        let events_path = project_dir.join(".winsmux").join("events.jsonl");
-        std::fs::write(
-            &events_path,
-            concat!(
-                r#"{"timestamp":"2026-04-24T12:00:01+09:00","event":"operator.followup","data":{"run_id":"task:TASK-1"}}"#,
-                "\n",
-                r#"{"timestamp":"2026-04-24T12:00:02+09:00","event":"#
-            ),
-        )
-        .expect("write partial event log");
-
-        let events =
-            read_desktop_summary_events_for_stream(&project_dir).expect("stream reader succeeds");
-
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].event, "operator.followup");
-        assert!(read_desktop_summary_events(&project_dir).is_err());
-    }
-
-    fn meta_plan_role(provider: &str, plan_mode: &str) -> MetaPlanRole {
-        MetaPlanRole {
-            role_id: "planner".to_string(),
-            label: "Planner".to_string(),
-            provider: provider.to_string(),
-            model: "provider-default".to_string(),
-            model_source: default_provider_model_source(),
-            reasoning_effort: default_provider_reasoning_effort(),
-            plan_mode: plan_mode.to_string(),
-            read_only: true,
-            review_rounds: 1,
-            capabilities: vec!["planning".to_string()],
-            prompt: "Plan without editing files.".to_string(),
-        }
-    }
-
-    #[test]
-    fn restart_readiness_agent_resolves_known_adapters() {
-        assert_eq!(
-            restart_readiness_agent(&restart_plan("custom", "codex")),
-            "codex"
-        );
-        assert_eq!(
-            restart_readiness_agent(&restart_plan("claude-opus", "")),
-            "claude"
-        );
-        assert_eq!(
-            restart_readiness_agent(&restart_plan("gemini:flash", "")),
-            "gemini"
-        );
-    }
-
-    #[test]
-    fn restart_readiness_agent_does_not_default_unknown_to_codex() {
-        assert_eq!(restart_readiness_agent(&restart_plan("", "")), "");
-        assert_eq!(
-            restart_readiness_agent(&restart_plan("custom-agent", "")),
-            ""
-        );
-        assert_eq!(
-            restart_readiness_agent(&restart_plan("custom-agent", "custom-adapter")),
-            ""
-        );
-    }
-
-    #[test]
-    fn meta_plan_role_uses_provider_capability_metadata_for_future_provider() {
-        let project_dir = test_project_dir("meta-plan-provider-capability");
-        let capability_path = provider_capability_registry_path(&project_dir);
-        std::fs::write(
-            &capability_path,
-            r#"{
-              "version": 1,
-              "providers": {
-                "gemini-planner": {
-                  "adapter": "gemini",
-                  "command": "gemini",
-                  "prompt_transports": ["stdin"],
-                  "supports_file_edit": false,
-                  "supports_consultation": true
-                }
-              }
-            }"#,
-        )
-        .expect("write provider capability registry");
-
-        let role = meta_plan_role("gemini-planner", "read_only_equivalent");
-        validate_meta_plan_role(&project_dir, &role).expect("role should validate");
-        let adapter = meta_plan_provider_adapter(&project_dir, &role).expect("adapter");
-        let command = meta_plan_provider_command(&project_dir, &role).expect("command");
-        let launch =
-            meta_plan_launch_contract(&project_dir, &role, &adapter, &command).expect("launch");
-
-        assert_eq!(adapter, "gemini");
-        assert_eq!(command, "gemini");
-        assert_eq!(launch["provider"], "gemini-planner");
-        assert_eq!(launch["provider_adapter"], "gemini");
-        assert_eq!(launch["read_only_equivalent"], true);
-        assert_eq!(launch["read_only"], true);
-
-        let _ = std::fs::remove_dir_all(project_dir);
-    }
-
-    #[test]
-    fn meta_plan_role_rejects_future_provider_without_capability_metadata() {
-        let project_dir = test_project_dir("meta-plan-missing-provider-capability");
-        let role = meta_plan_role("future-planner", "read_only_equivalent");
-        let error = validate_meta_plan_role(&project_dir, &role).expect_err("role should fail");
-
-        assert!(error
-            .to_string()
-            .contains("must be declared in .winsmux/provider-capabilities.json"));
-
-        let _ = std::fs::remove_dir_all(project_dir);
-    }
-
-    #[test]
-    fn meta_plan_role_rejects_custom_adapter_without_read_only_launch_args() {
-        let project_dir = test_project_dir("meta-plan-custom-provider-no-read-only-args");
-        let capability_path = provider_capability_registry_path(&project_dir);
-        std::fs::write(
-            &capability_path,
-            r#"{
-              "version": 1,
-              "providers": {
-                "future-planner": {
-                  "adapter": "future-cli",
-                  "command": "future",
-                  "prompt_transports": ["stdin"],
-                  "supports_file_edit": false,
-                  "supports_consultation": true
-                }
-              }
-            }"#,
-        )
-        .expect("write provider capability registry");
-
-        let role = meta_plan_role("future-planner", "read_only_equivalent");
-        let error = validate_meta_plan_role(&project_dir, &role).expect_err("role should fail");
-
-        assert!(error
-            .to_string()
-            .contains("must declare read_only_launch_args"));
-
-        let _ = std::fs::remove_dir_all(project_dir);
-    }
-
-    #[test]
-    fn meta_plan_role_uses_custom_adapter_read_only_launch_args() {
-        let project_dir = test_project_dir("meta-plan-custom-provider-read-only-args");
-        let capability_path = provider_capability_registry_path(&project_dir);
-        std::fs::write(
-            &capability_path,
-            r#"{
-              "version": 1,
-              "providers": {
-                "future-planner": {
-                  "adapter": "future-cli",
-                  "command": "future",
-                  "prompt_transports": ["stdin"],
-                  "read_only_launch_args": ["--read-only", "--no-write"],
-                  "supports_file_edit": false,
-                  "supports_consultation": true
-                }
-              }
-            }"#,
-        )
-        .expect("write provider capability registry");
-
-        let role = meta_plan_role("future-planner", "read_only_equivalent");
-        validate_meta_plan_role(&project_dir, &role).expect("role should validate");
-        let adapter = meta_plan_provider_adapter(&project_dir, &role).expect("adapter");
-        let command = meta_plan_provider_command(&project_dir, &role).expect("command");
-        let launch =
-            meta_plan_launch_contract(&project_dir, &role, &adapter, &command).expect("launch");
-
-        assert_eq!(adapter, "future-cli");
-        assert_eq!(command, "future");
-        assert_eq!(launch["provider"], "future-planner");
-        assert_eq!(launch["provider_adapter"], "future-cli");
-        assert_eq!(launch["args"], json!(["--read-only", "--no-write"]));
-        assert_eq!(launch["read_only_equivalent"], true);
-        assert_eq!(launch["read_only"], true);
-
-        let _ = std::fs::remove_dir_all(project_dir);
-    }
-}
+#[path = "../tests-rs/operator_cli_unit.rs"]
+mod tests;

@@ -28,6 +28,24 @@ fn render_payload(original_yaml: &str, desired_yaml: &str, owned_keys: &[&str]) 
         "original_yaml": original_yaml,
         "desired_yaml": desired_yaml,
         "owned_keys": owned_keys,
+        "nested_contract": {
+            "agent_slots": {
+                "identity_key": "slot_id",
+                "owned_keys": [
+                    "slot_id", "runtime_role", "agent", "model", "model_source",
+                    "reasoning_effort", "prompt_transport", "mcp_mode", "auth_mode",
+                    "worktree_mode", "worker_backend", "execution_profile", "worker_role",
+                    "pane_title", "fallback_model"
+                ],
+                "aliases": { "backend": "worker_backend", "role": "worker_role" }
+            },
+            "roles": {
+                "owned_keys": [
+                    "agent", "model", "model_source", "reasoning_effort",
+                    "prompt_transport", "auth_mode"
+                ]
+            }
+        }
     }))
     .expect("serialize renderer payload")
 }
@@ -76,9 +94,7 @@ fn project_settings_render_preserves_block_comments_and_unknown_fields() {
         mapping
             .get(serde_yaml::Value::String("workspace-recipes".into()))
             .and_then(serde_yaml::Value::as_mapping)
-            .and_then(|workspace| {
-                workspace.get(serde_yaml::Value::String("new".into()))
-            }),
+            .and_then(|workspace| { workspace.get(serde_yaml::Value::String("new".into())) }),
         Some(&serde_yaml::Value::String("value".into()))
     );
 }
@@ -114,6 +130,56 @@ fn project_settings_render_mutates_single_line_flow_without_using_cst_insert() {
             serde_yaml::Value::String("x".into()),
             serde_yaml::Value::Number(3.into()),
         ]))
+    );
+}
+
+#[test]
+fn project_settings_render_preserves_separator_comment_after_deleted_flow_head() {
+    let original = "{model: old, # separator-comment\n future-owner: keep}\n";
+    let input = render_payload(original, "agent: codex\n", &["agent", "model"]);
+    let output = run_project_settings_render(&input, &[]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).expect("UTF-8 YAML output");
+    assert!(text.contains("# separator-comment"));
+    assert!(!text.contains("model: old"));
+    let mapping = yaml_mapping(text.as_bytes());
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("future-owner".into())),
+        Some(&serde_yaml::Value::String("keep".into()))
+    );
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("agent".into())),
+        Some(&serde_yaml::Value::String("codex".into()))
+    );
+}
+
+#[test]
+fn project_settings_render_preserves_separator_comment_after_deleted_flow_middle() {
+    let original = "{agent: old, model: old, # separator-comment\n future-owner: keep}\n";
+    let input = render_payload(original, "agent: new\n", &["agent", "model"]);
+    let output = run_project_settings_render(&input, &[]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).expect("UTF-8 YAML output");
+    assert!(text.contains("# separator-comment"));
+    assert!(!text.contains("model: old"));
+    let mapping = yaml_mapping(text.as_bytes());
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("future-owner".into())),
+        Some(&serde_yaml::Value::String("keep".into()))
+    );
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("agent".into())),
+        Some(&serde_yaml::Value::String("new".into()))
     );
 }
 
@@ -182,9 +248,7 @@ fn project_settings_render_preserves_flow_separator_comment_when_deleting_tail()
             .and_then(serde_yaml::Value::as_mapping)
             .and_then(|workspace| workspace.get(serde_yaml::Value::String("review".into())))
             .and_then(serde_yaml::Value::as_mapping)
-            .and_then(|review| {
-                review.get(serde_yaml::Value::String("schema-version".into()))
-            }),
+            .and_then(|review| { review.get(serde_yaml::Value::String("schema-version".into())) }),
         Some(&serde_yaml::Value::Number(1.into()))
     );
 }
@@ -193,11 +257,7 @@ fn project_settings_render_preserves_flow_separator_comment_when_deleting_tail()
 fn project_settings_render_reuses_flow_separator_comment_when_replacing_tail() {
     let original =
         "{workspace-recipes: {review: {schema-version: 1}}, # recipe comment\n reasoning_effort: high}\n";
-    let input = render_payload(
-        original,
-        "agent: codex\n",
-        &["agent", "reasoning_effort"],
-    );
+    let input = render_payload(original, "agent: codex\n", &["agent", "reasoning_effort"]);
     let output = run_project_settings_render(&input, &[]);
 
     assert!(
@@ -216,9 +276,7 @@ fn project_settings_render_reuses_flow_separator_comment_when_replacing_tail() {
             .and_then(serde_yaml::Value::as_mapping)
             .and_then(|workspace| workspace.get(serde_yaml::Value::String("review".into())))
             .and_then(serde_yaml::Value::as_mapping)
-            .and_then(|review| {
-                review.get(serde_yaml::Value::String("schema-version".into()))
-            }),
+            .and_then(|review| { review.get(serde_yaml::Value::String("schema-version".into())) }),
         Some(&serde_yaml::Value::Number(1.into()))
     );
     assert_eq!(
@@ -259,10 +317,7 @@ fn project_settings_render_preserves_unknown_alias_and_tagged_values() {
 
 #[test]
 fn project_settings_render_replaces_owned_alias_and_tagged_values() {
-    let cases = [
-        "defaults: &d codex\nagent: *d\n",
-        "agent: !legacy old\n",
-    ];
+    let cases = ["defaults: &d codex\nagent: *d\n", "agent: !legacy old\n"];
 
     for original in cases {
         let input = render_payload(original, "agent: codex\n", &["agent"]);
@@ -277,6 +332,191 @@ fn project_settings_render_replaces_owned_alias_and_tagged_values() {
             Some(&serde_yaml::Value::String("codex".into()))
         );
     }
+}
+
+#[test]
+fn project_settings_render_recursively_preserves_unknown_owned_descendants() {
+    let original = "defaults: &classes [implementation, review]\nagent_slots:\n  - slot_id: worker-1\n    model: old\n    backend: local\n    fallback_model: legacy\n    task_classes: *classes # keep-slot-extension\nroles:\n  builder:\n    model: old\n    auth_mode: local\n    task_classes: !future [implementation] # keep-role-extension\n  researcher:\n    model: old\n    task_classes: [research]\n";
+    let desired = "agent_slots:\n  - slot_id: worker-1\n    model: new\n    model_source: operator-override\n    worker_backend: codex\nroles:\n  builder:\n    model: new\n    model_source: operator-override\n  reviewer:\n    model: review-model\n";
+    let input = render_payload(original, desired, &["agent_slots", "roles"]);
+    let output = run_project_settings_render(&input, &[]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).expect("UTF-8 YAML output");
+    assert!(text.contains("task_classes: *classes # keep-slot-extension"));
+    assert!(text.contains("task_classes: !future [implementation] # keep-role-extension"));
+    assert!(!text.contains("fallback_model:"));
+    assert!(!text.contains("auth_mode:"));
+    assert!(!text.contains("researcher:"));
+
+    let mapping = yaml_mapping(text.as_bytes());
+    let slot = mapping
+        .get(serde_yaml::Value::String("agent_slots".into()))
+        .and_then(serde_yaml::Value::as_sequence)
+        .and_then(|slots| slots.first())
+        .and_then(serde_yaml::Value::as_mapping)
+        .expect("one slot mapping");
+    assert_eq!(
+        slot.get(serde_yaml::Value::String("model".into())),
+        Some(&serde_yaml::Value::String("new".into()))
+    );
+    assert_eq!(
+        slot.get(serde_yaml::Value::String("model_source".into())),
+        Some(&serde_yaml::Value::String("operator-override".into()))
+    );
+    assert_eq!(
+        slot.get(serde_yaml::Value::String("backend".into())),
+        Some(&serde_yaml::Value::String("codex".into()))
+    );
+    assert!(slot.contains_key(serde_yaml::Value::String("task_classes".into())));
+
+    let role = mapping
+        .get(serde_yaml::Value::String("roles".into()))
+        .and_then(serde_yaml::Value::as_mapping)
+        .and_then(|roles| roles.get(serde_yaml::Value::String("builder".into())))
+        .and_then(serde_yaml::Value::as_mapping)
+        .expect("builder role mapping");
+    assert_eq!(
+        role.get(serde_yaml::Value::String("model".into())),
+        Some(&serde_yaml::Value::String("new".into()))
+    );
+    assert!(role.contains_key(serde_yaml::Value::String("task_classes".into())));
+    assert!(mapping
+        .get(serde_yaml::Value::String("roles".into()))
+        .and_then(serde_yaml::Value::as_mapping)
+        .is_some_and(|roles| roles.contains_key(serde_yaml::Value::String("reviewer".into()))));
+}
+
+#[test]
+fn project_settings_render_combines_nested_edits_with_top_level_additions() {
+    let original = "defaults: &classes [implementation, review]\nagent_slots:\n  - slot_id: worker-1\n    model: old\n    backend: local\n    fallback_model: legacy\n    task_classes: *classes # keep-slot-extension\nroles:\n  builder:\n    model: old\n    auth_mode: local\n    task_classes: !future [implementation] # keep-role-extension\n";
+    let desired = "agent: codex\r\nmodel: gpt-5.6-terra\r\nagent_slots:\r\n  - slot_id: worker-1\r\n    runtime_role: worker\r\n    model: gpt-5.6-terra\r\n    model_source: operator-override\r\n    worker_backend: codex\r\n    worktree_mode: managed\r\nroles:\r\n  builder:\r\n    model: gpt-5.6-terra\r\n    model_source: operator-override\r\n";
+    let input = render_payload(
+        original,
+        desired,
+        &["agent", "model", "agent_slots", "roles"],
+    );
+    let output = run_project_settings_render(&input, &[]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).expect("UTF-8 YAML output");
+    let mapping = yaml_mapping(text.as_bytes());
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("agent".into())),
+        Some(&serde_yaml::Value::String("codex".into()))
+    );
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("model".into())),
+        Some(&serde_yaml::Value::String("gpt-5.6-terra".into()))
+    );
+    assert!(text.contains("task_classes: *classes # keep-slot-extension"));
+    assert!(text.contains("task_classes: !future [implementation] # keep-role-extension"));
+    assert!(!text.contains("fallback_model:"));
+    assert!(!text.contains("auth_mode:"));
+}
+
+#[test]
+fn project_settings_render_recursively_preserves_unknown_owned_flow_descendants() {
+    let original = "agent_slots: [{slot_id: worker-1, model: old, fallback_model: legacy, task_classes: !future keep} # slot-extension\n]\nroles: {builder: {model: old, auth_mode: local, task_classes: !future keep}}\n";
+    let desired = "agent_slots:\n  - slot_id: worker-1\n    model: new\n    model_source: operator-override\nroles:\n  builder:\n    model: new\n    model_source: operator-override\n";
+    let input = render_payload(original, desired, &["agent_slots", "roles"]);
+    let output = run_project_settings_render(&input, &[]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).expect("UTF-8 YAML output");
+    assert!(text.contains("task_classes: !future keep"));
+    assert!(text.contains("# slot-extension"));
+    assert!(!text.contains("fallback_model:"));
+    assert!(!text.contains("auth_mode:"));
+    let mapping = yaml_mapping(text.as_bytes());
+    assert_eq!(
+        mapping
+            .get(serde_yaml::Value::String("agent_slots".into()))
+            .and_then(serde_yaml::Value::as_sequence)
+            .and_then(|slots| slots.first())
+            .and_then(serde_yaml::Value::as_mapping)
+            .and_then(|slot| slot.get(serde_yaml::Value::String("model_source".into())))
+            .and_then(serde_yaml::Value::as_str),
+        Some("operator-override")
+    );
+}
+
+#[test]
+fn project_settings_render_rejects_ambiguous_unknown_slot_topology() {
+    let original = "agent_slots:\n  - slot_id: worker-1\n    model: old\n    task_classes: [implementation]\n  - slot_id: worker-2\n    model: old\n";
+    let cases = [
+        "agent_slots:\n  - slot_id: worker-2\n    model: new\n  - slot_id: worker-1\n    model: new\n",
+        "agent_slots:\n  - slot_id: worker-1\n    model: new\n",
+        "agent_slots:\n  - slot_id: worker-1\n    model: new\n  - slot_id: worker-2\n    model: new\n  - slot_id: worker-3\n    model: new\n",
+        "agent_slots:\n  - slot_id: worker-1\n    model: new\n  - slot_id: worker-1\n    model: duplicate\n",
+    ];
+
+    for desired in cases {
+        let input = render_payload(original, desired, &["agent_slots"]);
+        let output = run_project_settings_render(&input, &[]);
+        assert!(!output.status.success(), "unexpected output: {desired}");
+        assert!(output.stdout.is_empty());
+        assert_eq!(
+            String::from_utf8(output.stderr).expect("UTF-8 generic error"),
+            "winsmux: project settings render failed.\n"
+        );
+    }
+
+    let duplicate_original = "agent_slots:\n  - slot_id: worker-1\n    task_classes: [implementation]\n  - slot_id: worker-1\n    model: old\n";
+    let input = render_payload(
+        duplicate_original,
+        "agent_slots:\n  - slot_id: worker-1\n    model: new\n",
+        &["agent_slots"],
+    );
+    let output = run_project_settings_render(&input, &[]);
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn project_settings_render_allows_owned_slot_topology_changes_without_extensions() {
+    let original = "agent_slots:\n  - slot_id: worker-1\n    model: old\n  - slot_id: worker-2\n    model: old\n    backend: local\n";
+    let desired = "agent_slots:\n  - slot_id: worker-2\n    model: new\n    worker_backend: codex\n  - slot_id: worker-3\n    model: added\n";
+    let input = render_payload(original, desired, &["agent_slots"]);
+    let output = run_project_settings_render(&input, &[]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mapping = yaml_mapping(&output.stdout);
+    let slots = mapping
+        .get(serde_yaml::Value::String("agent_slots".into()))
+        .and_then(serde_yaml::Value::as_sequence)
+        .expect("agent_slots sequence");
+    assert_eq!(slots.len(), 2);
+    assert_eq!(
+        slots[0]
+            .as_mapping()
+            .and_then(|slot| slot.get(serde_yaml::Value::String("slot_id".into())))
+            .and_then(serde_yaml::Value::as_str),
+        Some("worker-2")
+    );
+    assert_eq!(
+        slots[1]
+            .as_mapping()
+            .and_then(|slot| slot.get(serde_yaml::Value::String("slot_id".into())))
+            .and_then(serde_yaml::Value::as_str),
+        Some("worker-3")
+    );
 }
 
 #[test]

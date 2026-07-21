@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 const SCHEMA_VERSION: u64 = 1;
 const DOCUMENT_CONFIG_VERSION: i64 = 1;
 const WORKFLOW_ID_TOKEN: &str = "{{workflow-id}}";
+const WINDOWS_MAX_COMPONENT_LENGTH: usize = 255;
 const WINDOWS_RESERVED_PATH_NAMES: [&str; 22] = [
     "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
     "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
@@ -381,6 +382,11 @@ fn normalize_worktree(
                 .name_template
                 .as_deref()
                 .ok_or_else(|| invalid_data("managed worktree requires name-template."))?;
+            if !is_safe_worktree_name(template, true) {
+                return Err(invalid_data(
+                    "managed worktree name-template must resolve to a safe project-local name.",
+                ));
+            }
             let name = if template.contains(WORKFLOW_ID_TOKEN) {
                 let workflow_id = workflow_id.ok_or_else(|| {
                     invalid_input(
@@ -391,7 +397,7 @@ fn normalize_worktree(
             } else {
                 template.to_string()
             };
-            if name.contains("{{") || name.contains("}}") || !is_safe_worktree_name(&name) {
+            if !is_safe_worktree_name(&name, false) {
                 return Err(invalid_data(
                     "managed worktree name-template must resolve to a safe project-local name.",
                 ));
@@ -450,15 +456,24 @@ fn is_stable_id(value: &str) -> bool {
     })
 }
 
-fn is_safe_worktree_name(value: &str) -> bool {
-    let mut bytes = value.bytes();
+fn is_safe_worktree_name(value: &str, is_template: bool) -> bool {
+    if value.len() > WINDOWS_MAX_COMPONENT_LENGTH {
+        return false;
+    }
+
+    let normalized = if is_template {
+        value.replace(WORKFLOW_ID_TOKEN, "workflow-id")
+    } else {
+        value.to_string()
+    };
+    let mut bytes = normalized.bytes();
     let Some(first) = bytes.next() else {
         return false;
     };
     (first.is_ascii_lowercase() || first.is_ascii_digit())
-        && !value.contains("..")
-        && !value.ends_with('.')
-        && !is_windows_reserved_path_name(value)
+        && !normalized.contains("..")
+        && !normalized.ends_with('.')
+        && !is_windows_reserved_path_name(&normalized)
         && bytes.all(|byte| {
             byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
         })

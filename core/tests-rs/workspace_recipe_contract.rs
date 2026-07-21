@@ -381,6 +381,65 @@ fn managed_worktree_names_keep_safe_dotted_hyphenated_and_underscored_boundaries
 }
 
 #[test]
+fn managed_worktree_names_reject_windows_component_overflow_before_plan_output() {
+    let max_component = "a".repeat(255);
+    let at_limit = VALID_RECIPE.replace(
+        "name-template: \"{{workflow-id}}-implement\"",
+        &format!("name-template: \"{max_component}\""),
+    );
+    let plan = normalize_workspace_plan(&at_limit, "bugfix-two-slot", Some("issue-1204"), &slots())
+        .expect("a 255-byte ASCII component must remain valid");
+    assert_eq!(
+        plan.panes[0].worktree.name.as_deref(),
+        Some(max_component.as_str())
+    );
+
+    let overlong_component = "a".repeat(256);
+    let overlong_template = VALID_RECIPE.replace(
+        "name-template: \"{{workflow-id}}-implement\"",
+        &format!("name-template: \"{overlong_component}\""),
+    );
+    let error = normalize_workspace_plan(
+        &overlong_template,
+        "bugfix-two-slot",
+        Some("issue-1204"),
+        &slots(),
+    )
+    .expect_err("a 256-byte template must be rejected before plan output");
+    assert!(error.to_string().contains("safe project-local name"));
+
+    let workflow_id = format!("a{}", "b".repeat(19));
+    let expansion_at_limit = VALID_RECIPE.replace(
+        "name-template: \"{{workflow-id}}-implement\"",
+        &format!("name-template: \"{{{{workflow-id}}}}-{}\"", "c".repeat(234)),
+    );
+    let plan = normalize_workspace_plan(
+        &expansion_at_limit,
+        "bugfix-two-slot",
+        Some(&workflow_id),
+        &slots(),
+    )
+    .expect("a template resolving to a 255-byte component must remain valid");
+    assert_eq!(
+        plan.panes[0].worktree.name.as_deref().map(str::len),
+        Some(255)
+    );
+
+    let expansion_over_limit = VALID_RECIPE.replace(
+        "name-template: \"{{workflow-id}}-implement\"",
+        &format!("name-template: \"{{{{workflow-id}}}}-{}\"", "c".repeat(235)),
+    );
+    let error = normalize_workspace_plan(
+        &expansion_over_limit,
+        "bugfix-two-slot",
+        Some(&workflow_id),
+        &slots(),
+    )
+    .expect_err("a template resolving to a 256-byte component must be rejected before plan output");
+    assert!(error.to_string().contains("safe project-local name"));
+}
+
+#[test]
 fn new_lane_a_namespace_requires_canonical_kebab_case() {
     let snake_case = VALID_RECIPE.replace("workspace-recipes:", "workspace_recipes:");
     let error =
