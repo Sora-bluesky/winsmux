@@ -259,6 +259,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         ack_required = $envelope.ack_required
         from = $envelope.from
         to = $envelope.to
+        timestamp = $envelope.timestamp
         content = [ordered]@{
             event = $envelope.content.event
             status = $envelope.content.status
@@ -293,6 +294,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         $result.envelope.ack_required | Should -BeTrue
         $result.envelope.from | Should -Be 'worker-1'
         $result.envelope.to | Should -Be 'Operator'
+        $result.envelope.timestamp | Should -BeNullOrEmpty
         $result.envelope.content.event | Should -Be 'workflow.node.acknowledged'
         $result.envelope.content.status | Should -Be 'succeeded'
         $result.envelope.content.pane_id | Should -Be '%2'

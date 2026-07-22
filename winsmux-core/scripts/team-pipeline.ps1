@@ -1988,7 +1988,9 @@ function New-TeamPipelineDeclarativeCompletionInstruction {
         ack_required    = $true
         from            = $Target
         to              = 'Operator'
-        timestamp       = [DateTimeOffset]::UtcNow.ToString('o')
+        # The durable publisher owns freshness. A dispatch-time timestamp would
+        # consume the TTL while the worker is still doing the requested work.
+        timestamp       = $null
         content         = [ordered]@{
             session     = $SessionName
             event       = 'workflow.node.acknowledged'

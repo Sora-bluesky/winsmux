@@ -392,6 +392,23 @@ panes:
         (Get-OperatorPollEventSignature -EventRecord $first) | Should -Not -BeExactly (Get-OperatorPollEventSignature -EventRecord $second)
     }
 
+    It 'F03 rejects a workflow completion whose durable publication TTL has elapsed' {
+        $pendingRoot = Join-Path $script:operatorPollTempRoot '.winsmux\mailbox\winsmux-orchestra-operator\pending'
+        [IO.Directory]::CreateDirectory($pendingRoot) | Out-Null
+        $pendingPath = Join-Path $pendingRoot 'workflow-ack-stale-publication.json'
+        $payload = New-TestDurableWorkflowEnvelope -MessageId 'workflow-ack-stale-publication'
+        $payload.timestamp = [DateTimeOffset]::UtcNow.AddMinutes(-10).ToString('o')
+        [IO.File]::WriteAllText($pendingPath, ($payload | ConvertTo-Json -Compress -Depth 20), [Text.UTF8Encoding]::new($false))
+        Mock Receive-OperatorPollMailboxMessages { @() }
+        Mock Write-OrchestraLog { throw 'expired durable completion must not reach the log' }
+
+        $result = Invoke-OperatorPollCycle -ManifestPath $script:operatorPollManifestPath -ProcessedLineCount 0 -ProcessedEventSignatures ([ordered]@{})
+
+        $result.Summary.mailbox_events | Should -Be 0
+        Test-Path -LiteralPath $pendingPath | Should -BeFalse
+        Should -Invoke Write-OrchestraLog -Times 0 -Exactly
+    }
+
     It 'F01 consumes a pending workflow ACK only after durable log success and leaves it for replay after log failure' {
         $pendingRoot = Join-Path $script:operatorPollTempRoot '.winsmux\mailbox\winsmux-orchestra-operator\pending'
         [IO.Directory]::CreateDirectory($pendingRoot) | Out-Null

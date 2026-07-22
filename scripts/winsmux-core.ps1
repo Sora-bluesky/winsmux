@@ -18325,7 +18325,8 @@ function ConvertTo-WinsmuxWorkflowCompletionEnvelope {
     param(
         [Parameter(Mandatory = $true)][string]$Payload,
         [Parameter(Mandatory = $true)][string]$SessionName,
-        [Parameter(Mandatory = $true)][string]$GenerationId
+        [Parameter(Mandatory = $true)][string]$GenerationId,
+        [switch]$RequireTimestamp
     )
 
     $bytes = [Text.UTF8Encoding]::new($false).GetBytes($Payload)
@@ -18351,6 +18352,7 @@ function ConvertTo-WinsmuxWorkflowCompletionEnvelope {
     $messageId = if ($envelope -is [Collections.IDictionary] -and $envelope.Contains('message_id')) { [string]$envelope['message_id'] } else { '' }
     $runId = if ($data -is [Collections.IDictionary] -and $data.Contains('run_id')) { [string]$data['run_id'] } else { '' }
     $nodeId = if ($data -is [Collections.IDictionary] -and $data.Contains('node_id')) { [string]$data['node_id'] } else { '' }
+    $timestampText = if ($envelope -is [Collections.IDictionary] -and $envelope.Contains('timestamp')) { [string]$envelope['timestamp'] } else { '' }
     $timestamp = [DateTimeOffset]::MinValue
     $ttl = 0
     if (-not (Test-WinsmuxExactJsonProperties -Value $envelope -Names $envelopeNames) -or
@@ -18367,7 +18369,8 @@ function ConvertTo-WinsmuxWorkflowCompletionEnvelope {
         -not [bool]$envelope['ack_required'] -or
         [string]$envelope['from'] -cnotmatch '^[A-Za-z0-9_-]{1,64}$' -or
         [string]$envelope['to'] -cne 'Operator' -or
-        -not [DateTimeOffset]::TryParse([string]$envelope['timestamp'], [ref]$timestamp) -or
+        ($RequireTimestamp -and [string]::IsNullOrWhiteSpace($timestampText)) -or
+        (-not [string]::IsNullOrWhiteSpace($timestampText) -and -not [DateTimeOffset]::TryParse($timestampText, [ref]$timestamp)) -or
         [string]$content['session'] -cne $SessionName -or
         [string]$content['event'] -cne 'workflow.node.acknowledged' -or
         [string]$content['message'] -cne 'Declarative workflow completion.' -or
@@ -18389,6 +18392,49 @@ function ConvertTo-WinsmuxWorkflowCompletionEnvelope {
         throw 'mailbox-send: workflow completion payload violates the bounded v2 envelope contract'
     }
     return $envelope
+}
+
+function ConvertTo-WinsmuxWorkflowCompletionSemanticJson {
+    param([Parameter(Mandatory = $true)][Collections.IDictionary]$Envelope)
+
+    $content = $Envelope['content']
+    $data = $content['data']
+    return ([ordered]@{
+        mailbox_version = [int]$Envelope['mailbox_version']
+        message_id = [string]$Envelope['message_id']
+        correlation_id = [string]$Envelope['correlation_id']
+        causation_id = $null
+        idempotency_key = [string]$Envelope['idempotency_key']
+        message_type = [string]$Envelope['message_type']
+        state = [string]$Envelope['state']
+        ttl_seconds = [int]$Envelope['ttl_seconds']
+        ack_required = [bool]$Envelope['ack_required']
+        from = [string]$Envelope['from']
+        to = [string]$Envelope['to']
+        content = [ordered]@{
+            session = [string]$content['session']
+            event = [string]$content['event']
+            message = [string]$content['message']
+            label = [string]$content['label']
+            pane_id = [string]$content['pane_id']
+            role = [string]$content['role']
+            status = [string]$content['status']
+            exit_reason = [string]$content['exit_reason']
+            data = [ordered]@{
+                schema_version = [int]$data['schema_version']
+                run_id = [string]$data['run_id']
+                node_id = [string]$data['node_id']
+                idempotency_key = [string]$data['idempotency_key']
+                generation_id = [string]$data['generation_id']
+                config_fingerprint = [string]$data['config_fingerprint']
+                workflow_fingerprint = [string]$data['workflow_fingerprint']
+                source_head = [string]$data['source_head']
+                pane_id = [string]$data['pane_id']
+                status = [string]$data['status']
+                evidence_ref = [string]$data['evidence_ref']
+            }
+        }
+    } | ConvertTo-Json -Compress -Depth 12)
 }
 
 function Publish-WinsmuxWorkflowCompletionEnvelope {
@@ -18422,12 +18468,24 @@ function Publish-WinsmuxWorkflowCompletionEnvelope {
     }
     [IO.Directory]::CreateDirectory($pendingRoot) | Out-Null
     $destination = Join-Path $pendingRoot "$messageId.json"
-    $payloadBytes = [Text.UTF8Encoding]::new($false).GetBytes($Payload)
+    $semanticJson = ConvertTo-WinsmuxWorkflowCompletionSemanticJson -Envelope $envelope
     if ([IO.File]::Exists($destination)) {
-        if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($destination)) -ceq [Convert]::ToBase64String($payloadBytes)) {
-            return $destination
+        try {
+            $existingPayload = [Text.UTF8Encoding]::new($false, $true).GetString([IO.File]::ReadAllBytes($destination))
+            $existingEnvelope = ConvertTo-WinsmuxWorkflowCompletionEnvelope -Payload $existingPayload -SessionName $sessionName -GenerationId $generationId -RequireTimestamp
+            if ((ConvertTo-WinsmuxWorkflowCompletionSemanticJson -Envelope $existingEnvelope) -ceq $semanticJson) {
+                return $destination
+            }
+        } catch {
+            # A malformed or differently-owned destination is a create-once conflict.
         }
         throw 'mailbox-send: workflow completion message_id conflict'
+    }
+    $envelope['timestamp'] = [DateTimeOffset]::UtcNow.ToString('o')
+    $publishedPayload = $envelope | ConvertTo-Json -Compress -Depth 20
+    $payloadBytes = [Text.UTF8Encoding]::new($false).GetBytes($publishedPayload)
+    if ($payloadBytes.Length -lt 2 -or $payloadBytes.Length -gt 65536) {
+        throw 'mailbox-send: workflow completion payload exceeds the bounded envelope size'
     }
     $temporary = Join-Path $pendingRoot ('.publish-{0}.tmp' -f [guid]::NewGuid().ToString('N'))
     try {
@@ -18441,9 +18499,16 @@ function Publish-WinsmuxWorkflowCompletionEnvelope {
         try {
             [IO.File]::Move($temporary, $destination)
         } catch [IO.IOException] {
-            if ([IO.File]::Exists($destination) -and
-                [Convert]::ToBase64String([IO.File]::ReadAllBytes($destination)) -ceq [Convert]::ToBase64String($payloadBytes)) {
-                return $destination
+            if ([IO.File]::Exists($destination)) {
+                try {
+                    $existingPayload = [Text.UTF8Encoding]::new($false, $true).GetString([IO.File]::ReadAllBytes($destination))
+                    $existingEnvelope = ConvertTo-WinsmuxWorkflowCompletionEnvelope -Payload $existingPayload -SessionName $sessionName -GenerationId $generationId -RequireTimestamp
+                    if ((ConvertTo-WinsmuxWorkflowCompletionSemanticJson -Envelope $existingEnvelope) -ceq $semanticJson) {
+                        return $destination
+                    }
+                } catch {
+                    # A malformed or differently-owned winner is a create-once conflict.
+                }
             }
             throw 'mailbox-send: workflow completion message_id conflict'
         }

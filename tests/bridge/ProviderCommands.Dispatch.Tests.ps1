@@ -849,7 +849,7 @@ Describe 'winsmux send dispatch payload' {
         $payload = [ordered]@{
             mailbox_version = 2; message_id = 'workflow-ack-f01'; correlation_id = 'workflow-ack-f01'; causation_id = $null
             idempotency_key = 'workflow-completion-f01'; message_type = 'workflow-completion'; state = 'created'; ttl_seconds = 300
-            ack_required = $true; from = 'builder-1'; to = 'Operator'; timestamp = [DateTimeOffset]::UtcNow.ToString('o')
+            ack_required = $true; from = 'builder-1'; to = 'Operator'; timestamp = [DateTimeOffset]::UtcNow.AddMinutes(-10).ToString('o')
             content = [ordered]@{
                 session = 'winsmux-orchestra'; event = 'workflow.node.acknowledged'; message = 'Declarative workflow completion.'
                 label = 'builder-1'; pane_id = '%2'; role = 'Builder'; status = 'succeeded'; exit_reason = ''
@@ -862,18 +862,32 @@ Describe 'winsmux send dispatch payload' {
         }
         $json = $payload | ConvertTo-Json -Compress -Depth 20
 
+        $publishedAfter = [DateTimeOffset]::UtcNow
         Publish-WinsmuxWorkflowCompletionEnvelope -ProjectDir $project -Channel 'winsmux-orchestra-operator' -Payload $json | Out-Null
+        $publishedBefore = [DateTimeOffset]::UtcNow
         $pending = Join-Path $project '.winsmux\mailbox\winsmux-orchestra-operator\pending\workflow-ack-f01.json'
         Test-Path -LiteralPath $pending -PathType Leaf | Should -BeTrue
-        [IO.File]::ReadAllText($pending, [Text.UTF8Encoding]::new($false, $true)) | Should -BeExactly $json
+        $publishedBytes = [IO.File]::ReadAllBytes($pending)
+        $published = [Text.UTF8Encoding]::new($false, $true).GetString($publishedBytes) | ConvertFrom-Json -AsHashtable -DateKind String
+        $publishedAt = [DateTimeOffset]::Parse([string]$published.timestamp)
+        $publishedAt.UtcDateTime.Ticks | Should -BeGreaterOrEqual $publishedAfter.UtcDateTime.Ticks
+        $publishedAt.UtcDateTime.Ticks | Should -BeLessOrEqual $publishedBefore.UtcDateTime.Ticks
 
         $env:WINSMUX_ORCHESTRA_PROJECT_DIR = $project
         $pwsh = (Get-Process -Id $PID).Path
         $commandOutput = @(& $pwsh -NoLogo -NoProfile -NonInteractive -File $script:winsmuxCorePath mailbox-send 'winsmux-orchestra-operator' $json)
         $LASTEXITCODE | Should -Be 0
         $commandOutput | Should -Contain 'mailbox queued: winsmux-orchestra-operator'
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($pending)) | Should -BeExactly ([Convert]::ToBase64String($publishedBytes))
+
+        $retryPayload = $json | ConvertFrom-Json -AsHashtable
+        $retryPayload.timestamp = [DateTimeOffset]::UtcNow.AddYears(1).ToString('o')
+        $retryJson = $retryPayload | ConvertTo-Json -Compress -Depth 20
+        Publish-WinsmuxWorkflowCompletionEnvelope -ProjectDir $project -Channel 'winsmux-orchestra-operator' -Payload $retryJson | Out-Null
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($pending)) | Should -BeExactly ([Convert]::ToBase64String($publishedBytes))
+
         $changedPayload = $json | ConvertFrom-Json -AsHashtable
-        $changedPayload.timestamp = [DateTimeOffset]::UtcNow.AddSeconds(1).ToString('o')
+        $changedPayload.content.role = 'reviewer'
         $changed = $changedPayload | ConvertTo-Json -Compress -Depth 20
         { Publish-WinsmuxWorkflowCompletionEnvelope -ProjectDir $project -Channel 'winsmux-orchestra-operator' -Payload $changed } |
             Should -Throw '*message_id conflict*'
@@ -908,6 +922,9 @@ Describe 'winsmux send dispatch payload' {
             }
         }
         $racePending = Join-Path $project '.winsmux\mailbox\winsmux-orchestra-operator\pending\workflow-ack-race.json'
-        [IO.File]::ReadAllText($racePending, [Text.UTF8Encoding]::new($false, $true)) | Should -BeExactly $raceJson
+        $racePublished = [IO.File]::ReadAllText($racePending, [Text.UTF8Encoding]::new($false, $true)) | ConvertFrom-Json -AsHashtable -DateKind String
+        ([DateTimeOffset]::Parse([string]$racePublished.timestamp)).UtcDateTime.Ticks |
+            Should -BeGreaterThan ([DateTimeOffset]::UtcNow.AddMinutes(-1).UtcDateTime.Ticks)
+        $racePublished.content.data.node_id | Should -BeExactly 'inspect'
     }
 }
