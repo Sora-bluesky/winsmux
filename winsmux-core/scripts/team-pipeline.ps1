@@ -37,6 +37,7 @@ $script:TeamPipelineDangerousApprovalPattern = '(?im)(rm\s+-rf|Remove-Item\s+.+-
 . (Join-Path $PSScriptRoot 'manifest.ps1')
 . (Join-Path $PSScriptRoot 'json-compat.ps1')
 . (Join-Path $PSScriptRoot 'declarative-workflow.ps1')
+. (Join-Path $PSScriptRoot 'pane-control.ps1')
 if (Test-Path $script:TeamPipelineLoggerScript -PathType Leaf) {
     . $script:TeamPipelineLoggerScript
 }
@@ -925,12 +926,18 @@ function Invoke-TeamPipelineGuardedSend {
         [string]$Role = '',
         [string]$Task = '',
         [int]$Attempt = 0,
+        [AllowEmptyString()][string]$ExpectedGenerationId = '',
         [switch]$RedactEventPayload
     )
 
     $violation = Find-TeamPipelineSecurityViolation -StageName $StageName -Text $Prompt
     if ($null -eq $violation) {
-        Invoke-TeamPipelineBridge -Arguments @('send', $Target, $Prompt) | Out-Null
+        $sendArguments = @('send', $Target)
+        if (-not [string]::IsNullOrWhiteSpace($ExpectedGenerationId)) {
+            $sendArguments += @('--expected-generation-id', $ExpectedGenerationId)
+        }
+        $sendArguments += @($Prompt)
+        Invoke-TeamPipelineBridge -Arguments $sendArguments | Out-Null
         return $null
     }
 
@@ -1776,6 +1783,44 @@ function Invoke-TeamPipeline {
     return [PSCustomObject]$result
 }
 
+function Resolve-TeamPipelineDeclarativeRuntimeLease {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)]$Run,
+        [Parameter(Mandatory = $true)][string]$SessionName,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    $generationId = [string](Get-DeclarativeWorkflowValue $Run 'generation_id' '')
+    try {
+        $matches = @(Get-PaneControlManifestEntries -ProjectDir $ProjectDir | Where-Object {
+                [string](Get-TeamPipelineValue $_ 'Label' '') -ceq $Label
+            })
+        if ($matches.Count -ne 1) { return $null }
+        $paneId = [string](Get-TeamPipelineValue $matches[0] 'PaneId' '')
+        if ([string]::IsNullOrWhiteSpace($paneId)) { return $null }
+        $manifestEntry = Get-PaneControlManifestContext -ProjectDir $ProjectDir -PaneId $paneId
+        if ([string](Get-TeamPipelineValue $manifestEntry 'Label' '') -cne $Label -or
+            [string](Get-TeamPipelineValue $manifestEntry 'PaneId' '') -cne $paneId -or
+            -not [string]::Equals([string](Get-TeamPipelineValue $manifestEntry 'GenerationId' ''), $generationId, [StringComparison]::Ordinal)) {
+            return $null
+        }
+        $validation = Test-PaneControlRuntimeContext -ProjectDir $ProjectDir -ManifestEntry $manifestEntry -Operation dispatch
+        if ($null -eq $validation -or -not [bool](Get-TeamPipelineValue $validation 'valid' $false)) { return $null }
+        $runtime = Get-TeamPipelineValue $validation 'context' $null
+        if ($null -eq $runtime -or
+            [string](Get-TeamPipelineValue $runtime 'session_name' '') -cne $SessionName -or
+            -not [string]::Equals([string](Get-TeamPipelineValue $runtime 'generation_id' ''), $generationId, [StringComparison]::Ordinal) -or
+            [string](Get-TeamPipelineValue $runtime 'pane_id' '') -cne $paneId -or
+            [string](Get-TeamPipelineValue $runtime 'label' '') -cne $Label) {
+            return $null
+        }
+        return [PSCustomObject]@{ manifest_entry = $manifestEntry; runtime = $runtime; pane_id = $paneId; label = $Label }
+    } catch {
+        return $null
+    }
+}
+
 function Invoke-TeamPipelineWorkspacePlanOnce {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -2140,9 +2185,11 @@ function Invoke-TeamPipelineDeclarativeDispatch {
     $paneRef = [string](Get-DeclarativeWorkflowValue $Request 'pane_ref' '')
     if ($null -eq $bindings -or -not $bindings.Contains($paneRef)) { return $null }
     $target = [string]$bindings[$paneRef]
-    $pane = Get-TeamPipelinePaneInfo -Manifest $Manifest -Label $target
-    if ($null -eq $pane) { return $null }
-    $paneId = [string](Get-TeamPipelineValue $pane 'pane_id' '')
+    $runtimeLease = Resolve-TeamPipelineDeclarativeRuntimeLease -ProjectDir $ProjectDir -Run $Run -SessionName $SessionName -Label $target
+    if ($null -eq $runtimeLease) { return $null }
+    $pane = $runtimeLease.manifest_entry
+    $paneId = [string]$runtimeLease.pane_id
+    $generationId = [string](Get-DeclarativeWorkflowValue $Run 'generation_id' '')
     $stage = [string](Get-DeclarativeWorkflowValue $Request 'stage' '')
     $taskText = [string](Get-DeclarativeWorkflowValue $Request 'task' '')
     $nodeId = [string](Get-DeclarativeWorkflowValue $Request 'node_id' '')
@@ -2164,7 +2211,7 @@ function Invoke-TeamPipelineDeclarativeDispatch {
         New-TeamPipelineExecPrompt -Task $taskText -PlanSummary ''
     }
     $prompt = $prompt + $completionInstruction
-    $dispatchResult = Invoke-TeamPipelineGuardedSend -StageName $stage -Target $target -Prompt $prompt -ProjectDir $ProjectDir -SessionName $SessionName -Role 'Worker' -Task $eventTaskRef -Attempt 1 -RedactEventPayload
+    $dispatchResult = Invoke-TeamPipelineGuardedSend -StageName $stage -Target $paneId -Prompt $prompt -ProjectDir $ProjectDir -SessionName $SessionName -Role 'Worker' -Task $eventTaskRef -Attempt 1 -ExpectedGenerationId $generationId -RedactEventPayload
     $status = [string](Get-TeamPipelineValue $dispatchResult 'Status' '')
     if ($status -ceq 'BLOCKED') {
         return [PSCustomObject]@{ status = 'blocked'; target = [PSCustomObject]@{ label = $target; pane_id = $paneId }; evidence_refs = @() }
@@ -2292,9 +2339,17 @@ function Invoke-TeamPipelineDeclarativeWorkflow {
     if ($null -eq $manifest) { throw 'workflow_manifest_unavailable' }
     $manifestSession = Get-TeamPipelineValue -InputObject $manifest -Name 'session' -Default $null
     $manifestSessionName = [string](Get-TeamPipelineValue -InputObject $manifestSession -Name 'name' -Default '')
+    $manifestGenerationId = [string](Get-TeamPipelineValue -InputObject $manifestSession -Name 'generation_id' -Default '')
     if ([string]::IsNullOrWhiteSpace($manifestSessionName)) { throw 'workflow_manifest_session_identity_unavailable' }
     $sessionName = Get-TeamPipelineSessionName -Manifest $manifest
-    if ([string]::IsNullOrWhiteSpace($sessionName) -or $sessionName -cne $manifestSessionName) { throw 'workflow_manifest_session_identity_unavailable' }
+    if ([string]::IsNullOrWhiteSpace($sessionName) -or
+        -not [string]::Equals($sessionName, $manifestSessionName, [StringComparison]::Ordinal)) {
+        throw 'workflow_manifest_session_identity_unavailable'
+    }
+    if ([string]::IsNullOrWhiteSpace($manifestGenerationId) -or
+        -not [string]::Equals($manifestGenerationId, $GenerationId, [StringComparison]::Ordinal)) {
+        throw 'workflow_manifest_generation_mismatch'
+    }
     if ($Action -ceq 'start') {
         $statePath = Resolve-DeclarativeWorkflowOwnedRunPath -ProjectDir $ProjectDir -RunId $RunId -LeafName 'state.json'
         if ([IO.File]::Exists($statePath)) { throw 'workflow_run_already_exists' }

@@ -37,6 +37,28 @@ panes:
                 panes = @([PSCustomObject]@{ pane_id = '%2'; generation_id = 'generation-123' })
             }
         }
+        $script:operatorPollRuntimeGeneration = 'generation-123'
+        Mock Get-PaneControlManifestContext {
+            param($ProjectDir, $PaneId)
+            [PSCustomObject]@{
+                ProjectDir = $ProjectDir
+                Label = 'builder-1'
+                PaneId = $PaneId
+                GenerationId = $script:operatorPollRuntimeGeneration
+            }
+        }
+        Mock Test-PaneControlRuntimeContext {
+            param($ProjectDir, $ManifestEntry, $Operation)
+            [PSCustomObject]@{
+                valid = $true
+                context = [PSCustomObject]@{
+                    session_name = 'winsmux-orchestra'
+                    generation_id = [string]$ManifestEntry.GenerationId
+                    label = [string]$ManifestEntry.Label
+                    pane_id = [string]$ManifestEntry.PaneId
+                }
+            }
+        }
     }
 
     AfterEach {
@@ -78,11 +100,12 @@ panes:
                 'builder-1' = [ordered]@{ pane_id = '%2'; role = 'Builder'; launch_dir = $script:operatorPollTempRoot }
             }
         }
-        $event = [ordered]@{ event = 'pane.idle'; pane_id = '%2'; label = 'builder-1'; role = 'Builder' }
+        $event = [ordered]@{ session = 'winsmux-orchestra'; event = 'pane.idle'; pane_id = '%2'; label = 'builder-1'; role = 'Builder' }
         $summary = [ordered]@{ new_events = 0; dispatches = 0; completions = 0; approvals = 0; errors = 0; messages = @() }
         $script:pollCallerGeneration = ''
         Mock Write-OperatorPollLog { }
         Mock Send-OperatorTelegramNotification { }
+        $script:operatorPollRuntimeGeneration = 'generation-initial'
         Mock Get-PaneControlManifestEntries {
             @([pscustomobject]@{ ManifestPath = 'replacement'; PaneId = '%9'; GenerationId = 'generation-replacement' })
         }
@@ -96,6 +119,48 @@ panes:
         $summary.dispatches | Should -Be 1
         $script:pollCallerGeneration | Should -BeExactly 'generation-initial'
         Should -Invoke Get-PaneControlManifestEntries -Times 0 -Exactly
+    }
+
+    It 'D02 rejects an old pane ID with a reused label before log, counter, mutation, or notification effects' {
+        $manifest = [ordered]@{
+            Session = [ordered]@{
+                name = 'winsmux-orchestra'
+                project_dir = $script:operatorPollTempRoot
+                generation_id = 'generation-current'
+            }
+            Panes = [ordered]@{
+                'builder-1' = [ordered]@{ pane_id = '%9'; role = 'Builder'; launch_dir = $script:operatorPollTempRoot }
+            }
+        }
+        $event = [ordered]@{
+            session = 'winsmux-orchestra'
+            event = 'pane.completed'
+            pane_id = '%2'
+            label = 'builder-1'
+            role = 'Builder'
+            source = 'events_jsonl'
+            id = 'stale-pane-id'
+        }
+        $summary = [ordered]@{ new_events = 0; dispatches = 0; completions = 0; approvals = 0; errors = 0; messages = @() }
+        Mock Write-OperatorPollLog { throw 'stale event must not be logged' }
+        Mock Update-OperatorPollPaneState { throw 'stale event must not mutate manifest state' }
+        Mock Send-OperatorTelegramNotification { throw 'stale event must not notify' }
+        Mock Get-OperatorPollDiffData { throw 'stale event must not inspect a worktree' }
+        Mock Test-PaneControlRuntimeContext { throw 'mismatched pane identity must be rejected before runtime admission' }
+
+        Invoke-OperatorPollEventRecord -Manifest $manifest -ManifestPath $script:operatorPollManifestPath `
+            -EventRecord $event -Summary $summary
+
+        $summary.new_events | Should -Be 0
+        $summary.dispatches | Should -Be 0
+        $summary.completions | Should -Be 0
+        $summary.approvals | Should -Be 0
+        $summary.errors | Should -Be 1
+        Should -Invoke Write-OperatorPollLog -Times 0 -Exactly
+        Should -Invoke Update-OperatorPollPaneState -Times 0 -Exactly
+        Should -Invoke Send-OperatorTelegramNotification -Times 0 -Exactly
+        Should -Invoke Get-OperatorPollDiffData -Times 0 -Exactly
+        Should -Invoke Test-PaneControlRuntimeContext -Times 0 -Exactly
     }
 
     It 'processes mailbox idle messages and logs dispatch-needed guidance' {
@@ -288,6 +353,7 @@ version: 1
 saved_at: 2026-04-09T11:00:00+09:00
 session:
   name: winsmux-orchestra
+  generation_id: generation-123
   project_dir: $script:operatorPollTempRoot
 panes:
   builder-1:

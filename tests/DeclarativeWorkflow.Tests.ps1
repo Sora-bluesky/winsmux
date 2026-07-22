@@ -88,6 +88,32 @@ BeforeAll {
 }
 
 Describe 'TASK-659 declarative workflow runtime' -Tag 'unit' {
+    BeforeEach {
+        $script:testDeclarativeSessionName = 'winsmux-orchestra'
+        Mock Get-PaneControlManifestEntries {
+            @(
+                [PSCustomObject]@{ Label = 'worker-1'; PaneId = '%2'; GenerationId = 'generation-123'; Role = 'Builder' }
+                [PSCustomObject]@{ Label = 'worker-2'; PaneId = '%3'; GenerationId = 'generation-123'; Role = 'Reviewer' }
+            )
+        }
+        Mock Get-PaneControlManifestContext {
+            param($ProjectDir, $PaneId)
+            Get-PaneControlManifestEntries -ProjectDir $ProjectDir | Where-Object { $_.PaneId -ceq $PaneId } | Select-Object -First 1
+        }
+        Mock Test-PaneControlRuntimeContext {
+            param($ProjectDir, $ManifestEntry, $Operation)
+            [PSCustomObject]@{
+                valid = $true
+                context = [PSCustomObject]@{
+                    session_name = $script:testDeclarativeSessionName
+                    generation_id = [string]$ManifestEntry.GenerationId
+                    label = [string]$ManifestEntry.Label
+                    pane_id = [string]$ManifestEntry.PaneId
+                }
+            }
+        }
+    }
+
     It 'L01 L02 selects declarative mode only for the leading marker' {
         (ConvertTo-WinsmuxDeclarativePipelineArguments -CommandTarget 'legacy task' -CommandRest @('--workflow-action', 'start')) | Should -BeNullOrEmpty
         (Join-WinsmuxControlPlaneText -Arguments (Get-WinsmuxControlPlaneArguments -CommandTarget 'legacy task' -CommandRest @('--workflow-action', 'start'))) | Should -Be 'legacy task --workflow-action start'
@@ -299,6 +325,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
     }
 
     It 'W05 W06 persists intent before one effect and ACK before dependency release' {
+        $script:testDeclarativeSessionName = 'workflow-test'
         $run = New-TestRun
         $events = [Collections.Generic.List[string]]::new()
         Mock Invoke-TeamPipelineGuardedSend { [PSCustomObject]@{ Status = 'EXEC_DONE' } }
@@ -403,6 +430,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         }
 
         $secretInput = New-TestTaskInput -Text 'git reset --hard SECRET_MARKER'
+        $script:testDeclarativeSessionName = 'privacy-test'
         $secretRun = New-DeclarativeWorkflowRun -Plan (New-TestWorkflowPlan) -RunId 'run-123' -GenerationId 'generation-123' -SourceHead ('b' * 40) -TaskInput $secretInput
         $manifest = [PSCustomObject]@{ Panes = [ordered]@{ 'worker-1' = [ordered]@{ pane_id = '%2' } } }
         $capturedEvents = [Collections.Generic.List[object]]::new()
@@ -571,7 +599,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
 
         Mock Read-DeclarativeWorkflowRunState { Copy-DeclarativeWorkflowValue $script:w11WiredRun }
         Mock Invoke-TeamPipelineWorkspacePlanOnce { [ordered]@{ config_fingerprint = ('sha256:' + ('a' * 64)); resolved_bindings = [ordered]@{ implement = 'worker-1'; verify = 'worker-2' }; workflow = (New-TestWorkflowPlan) } }
-        Mock Read-TeamPipelineManifest { [PSCustomObject]@{ Session = [ordered]@{ name = 'w11-session' }; Panes = [ordered]@{} } }
+        Mock Read-TeamPipelineManifest { [PSCustomObject]@{ Session = [ordered]@{ name = 'w11-session'; generation_id = 'generation-123' }; Panes = [ordered]@{} } }
         Mock Get-TeamPipelineSessionName { 'w11-session' }
         Mock Get-TeamPipelineDeclarativeProjectHead { 'b' * 40 }
         Mock Assert-TeamPipelineDeclarativeRunLockAdmission { }
@@ -622,6 +650,38 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         Test-Path -LiteralPath $lock | Should -BeFalse
     }
 
+    It 'D01 rejects a fresh manifest generation mismatch before workspace planning, state, lock, or dispatch effects' {
+        $taskFile = Join-Path $TestDrive 'manifest-generation-mismatch-task.txt'
+        [IO.File]::WriteAllText($taskFile, 'Implement TASK-659 safely.', [Text.UTF8Encoding]::new($false))
+        $script:manifestGenerationMismatchWorkspacePlans = 0
+        $script:manifestGenerationMismatchStateWrites = 0
+        $script:manifestGenerationMismatchLocks = 0
+        $script:manifestGenerationMismatchAdvances = 0
+
+        Mock Get-TeamPipelineDeclarativeProjectHead { 'b' * 40 }
+        Mock Read-TeamPipelineManifest {
+            [PSCustomObject]@{
+                Session = [ordered]@{ name = 'workflow-session'; generation_id = 'generation-replaced' }
+                Panes = [ordered]@{}
+            }
+        }
+        Mock Invoke-TeamPipelineWorkspacePlanOnce { $script:manifestGenerationMismatchWorkspacePlans++ }
+        Mock Save-DeclarativeWorkflowRunState { $script:manifestGenerationMismatchStateWrites++ }
+        Mock New-DeclarativeWorkflowRunLock { $script:manifestGenerationMismatchLocks++ }
+        Mock Invoke-TeamPipelineDeclarativeRunAdvancement { $script:manifestGenerationMismatchAdvances++ }
+
+        {
+            Invoke-TeamPipelineDeclarativeWorkflow -Action start -RecipeId 'bugfix-two-slot' -WorkflowId 'bugfix' `
+                -RunId 'run-123' -GenerationId 'generation-123' -ConfigFingerprint ('sha256:' + ('a' * 64)) `
+                -SourceHead ('b' * 40) -TaskFile $taskFile -ProjectDir $TestDrive
+        } | Should -Throw '*workflow_manifest_generation_mismatch*'
+
+        $script:manifestGenerationMismatchWorkspacePlans | Should -Be 0
+        $script:manifestGenerationMismatchStateWrites | Should -Be 0
+        $script:manifestGenerationMismatchLocks | Should -Be 0
+        $script:manifestGenerationMismatchAdvances | Should -Be 0
+    }
+
     It 'W11 routes start through the one run-advancement choke point' {
         $taskFile = Join-Path $TestDrive 'start-route-task.txt'
         [IO.File]::WriteAllText($taskFile, 'Implement TASK-659 safely.', [Text.UTF8Encoding]::new($false))
@@ -640,7 +700,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         Mock New-DeclarativeWorkflowRun { Copy-DeclarativeWorkflowValue $script:startRouteRun }
         Mock New-DeclarativeWorkflowRunLock { Join-Path $TestDrive 'synthetic-start.lock' }
         Mock Save-DeclarativeWorkflowRunState { }
-        Mock Read-TeamPipelineManifest { [PSCustomObject]@{ Session = [ordered]@{ name = 'start-session' }; Panes = [ordered]@{} } }
+        Mock Read-TeamPipelineManifest { [PSCustomObject]@{ Session = [ordered]@{ name = 'start-session'; generation_id = 'generation-123' }; Panes = [ordered]@{} } }
         Mock Get-TeamPipelineSessionName { 'start-session' }
         Mock Invoke-TeamPipelineDeclarativeRunAdvancement {
             $completed = Copy-DeclarativeWorkflowValue $script:startRouteRun
@@ -748,7 +808,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
                     workflow = (New-TestWorkflowPlan)
                 }
             }
-            Mock Read-TeamPipelineManifest { [PSCustomObject]@{ Session = [ordered]@{ name = 'terminal-session' }; Panes = [ordered]@{} } }
+            Mock Read-TeamPipelineManifest { [PSCustomObject]@{ Session = [ordered]@{ name = 'terminal-session'; generation_id = 'generation-123' }; Panes = [ordered]@{} } }
             Mock Get-TeamPipelineSessionName { 'terminal-session' }
             Mock Get-TeamPipelineDeclarativeProjectHead { 'b' * 40 }
             Mock Save-DeclarativeWorkflowRunState { $script:terminalResumeSaveCount++ }
@@ -1051,6 +1111,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
     }
 
     It 'V01 carries an ordered bounded verification envelope from durable dependency evidence into the existing verify prompt' {
+        $script:testDeclarativeSessionName = 'verification-session'
         $run = New-TestRun
         $run.state = 'running'
         $run.nodes.inspect.state = 'succeeded'
@@ -1291,7 +1352,7 @@ future_state:
         $junctionPath = Join-Path $junctionRunsRoot 'run-123'
         $taskFile = Join-Path $TestDrive 'junction-state-task.txt'
         [IO.File]::WriteAllText($taskFile, 'Implement TASK-659 safely.', [Text.UTF8Encoding]::new($false))
-        Mock Read-TeamPipelineManifest { [PSCustomObject]@{ Session = [ordered]@{ name = 'm01-session' }; Panes = [ordered]@{} } }
+        Mock Read-TeamPipelineManifest { [PSCustomObject]@{ Session = [ordered]@{ name = 'm01-session'; generation_id = 'generation-123' }; Panes = [ordered]@{} } }
         Mock Get-TeamPipelineSessionName { 'm01-session' }
         try {
             try {
@@ -1392,7 +1453,7 @@ future_state:
             $script:bootstrapAdvances = 0
             $script:bootstrapDispatches = 0
             Mock Get-TeamPipelineDeclarativeProjectHead { 'b' * 40 }
-            Mock Read-TeamPipelineManifest { [PSCustomObject]@{ Session = [ordered]@{ name = 'bootstrap-session' }; Panes = [ordered]@{} } }
+            Mock Read-TeamPipelineManifest { [PSCustomObject]@{ Session = [ordered]@{ name = 'bootstrap-session'; generation_id = 'generation-123' }; Panes = [ordered]@{} } }
             Mock Get-TeamPipelineSessionName { 'bootstrap-session' }
             Mock Invoke-TeamPipelineWorkspacePlanOnce { Copy-DeclarativeWorkflowValue $workspacePlan }
             Mock Invoke-TeamPipelineDeclarativeRunAdvancement {

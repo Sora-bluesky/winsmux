@@ -4387,6 +4387,7 @@ function Resolve-SendInvocationArguments {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
 
     $taskSlug = ''
+    $expectedGenerationId = ''
     $messageParts = New-Object System.Collections.Generic.List[string]
     for ($index = 0; $index -lt $Arguments.Count; $index++) {
         $token = [string]$Arguments[$index]
@@ -4404,12 +4405,28 @@ function Resolve-SendInvocationArguments {
             throw '--delivery-class is internal-only and cannot be supplied through argv'
         }
 
+        if ($token -eq '--expected-generation-id') {
+            if ($index + 1 -ge $Arguments.Count) {
+                throw '--expected-generation-id requires a value'
+            }
+            if (-not [string]::IsNullOrWhiteSpace($expectedGenerationId)) {
+                throw '--expected-generation-id may be supplied only once'
+            }
+            $index++
+            $expectedGenerationId = [string]$Arguments[$index]
+            if ($expectedGenerationId -cnotmatch '^[A-Za-z0-9][A-Za-z0-9-]{0,127}$') {
+                throw 'invalid expected generation id'
+            }
+            continue
+        }
+
         $messageParts.Add($token) | Out-Null
     }
 
     return [ordered]@{
-        TaskSlug     = $taskSlug
-        MessageParts = @($messageParts)
+        TaskSlug             = $taskSlug
+        ExpectedGenerationId = $expectedGenerationId
+        MessageParts         = @($messageParts)
     }
 }
 
@@ -4602,6 +4619,7 @@ function Invoke-Send {
 
     $resolvedSendArguments = Resolve-SendInvocationArguments -Arguments $SendArguments
     $taskSlug = [string]$resolvedSendArguments['TaskSlug']
+    $explicitExpectedGenerationId = [string]$resolvedSendArguments['ExpectedGenerationId']
     $messageParts = @($resolvedSendArguments['MessageParts'])
 
     if ($messageParts.Count -lt 1) {
@@ -4640,9 +4658,15 @@ function Invoke-Send {
         $bridgeSettingsLoadError = [string]$_.Exception.Message
     }
 
-    $runtimeAccess = Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $currentProjectDir -Operation auto
+    $runtimeAccess = Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $currentProjectDir -Operation auto `
+        -ExpectedGenerationId $explicitExpectedGenerationId
     $projectDir = [string]$runtimeAccess.ProjectDir
     $context = $runtimeAccess.Context
+    $runtimeLeaseGenerationId = if (-not [string]::IsNullOrWhiteSpace($explicitExpectedGenerationId)) {
+        $explicitExpectedGenerationId
+    } else {
+        [string]$runtimeAccess.GenerationId
+    }
     $hasRoleConfigHelper = Get-Command Get-RoleAgentConfig -ErrorAction SilentlyContinue
     if ($runtimeAccess.Managed -and (
             -not [string]::IsNullOrWhiteSpace($paneControlLoadError) -or
@@ -4717,7 +4741,7 @@ function Invoke-Send {
             }
             if ([bool]$runtimeAccess.Managed) {
                 Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $projectDir `
-                    -Operation ([string]$runtimeAccess.Operation) -ExpectedGenerationId ([string]$runtimeAccess.GenerationId) | Out-Null
+                    -Operation ([string]$runtimeAccess.Operation) -ExpectedGenerationId $runtimeLeaseGenerationId | Out-Null
             }
             Write-BridgeEventRecord -ProjectDir $projectDir -EventRecord $eventRecord | Out-Null
             Stop-WithError ([string]$policyViolation['reason'])
@@ -4728,7 +4752,7 @@ function Invoke-Send {
         $runtimeOperation = [string]$runtimeAccess.Operation
         if (-not $SkipDeferredPaneStart) {
             Start-DeferredPaneFromManifestEntry -ProjectDir $projectDir -ManifestEntry $context `
-                -ExpectedGenerationId ([string]$runtimeAccess.GenerationId) | Out-Null
+                -ExpectedGenerationId $runtimeLeaseGenerationId | Out-Null
             if ($runtimeOperation -ceq 'start_deferred') {
                 $context = Get-PaneControlManifestContext -ProjectDir $projectDir -PaneId $paneId
                 $runtimeResult = Wait-PaneControlRuntimeContext -ProjectDir $projectDir -ManifestEntry $context -Operation dispatch
@@ -4778,7 +4802,7 @@ function Invoke-Send {
     $transportIntent = Resolve-SendTransportIntent @transportPlanRequest
     $sendRuntimeOperation = if ($SkipDeferredPaneStart) { 'start_deferred' } else { 'dispatch' }
     $sendRuntimeProjectDir = if ($null -ne $context) { $projectDir } else { '' }
-    $sendExpectedGenerationId = if ($null -ne $context) { [string]$runtimeAccess.GenerationId } else { '' }
+    $sendExpectedGenerationId = if ($null -ne $context) { $runtimeLeaseGenerationId } else { '' }
 
     if ($null -ne $context) {
         Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $projectDir `

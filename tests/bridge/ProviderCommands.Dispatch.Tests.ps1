@@ -339,7 +339,7 @@ Describe 'winsmux send dispatch payload' {
         Push-Location $script:sendTempRoot
         try {
             try {
-                Invoke-Send -SendTarget '%2' -SendArguments @('--task-slug', 'lease-before-materialization', ('x' * 5000))
+                Invoke-Send -SendTarget '%2' -SendArguments @('--expected-generation-id', 'G-client', '--task-slug', 'lease-before-materialization', ('x' * 5000))
             } catch {
                 $errorText = [string]$_.Exception.Message
             }
@@ -382,9 +382,9 @@ Describe 'winsmux send dispatch payload' {
             text_send_count = 0
             guard_calls = 3
             guard_sequence = @(
-                [PSCustomObject][ordered]@{ operation = 'auto'; expected_generation_id = '' }
-                [PSCustomObject][ordered]@{ operation = 'dispatch'; expected_generation_id = 'G1' }
-                [PSCustomObject][ordered]@{ operation = 'dispatch'; expected_generation_id = 'G1' }
+                [PSCustomObject][ordered]@{ operation = 'auto'; expected_generation_id = 'G-client' }
+                [PSCustomObject][ordered]@{ operation = 'dispatch'; expected_generation_id = 'G-client' }
+                [PSCustomObject][ordered]@{ operation = 'dispatch'; expected_generation_id = 'G-client' }
             )
             deferred_start_calls = 1
             restore_calls = 0
@@ -636,6 +636,22 @@ Describe 'winsmux send dispatch payload' {
                 'pwsh -NoProfile -File bootstrap.ps1 -PlanFile plan.json'
             )
         } | Should -Throw '*--delivery-class is internal-only*'
+    }
+
+    It 'D03 separates and validates an explicit send generation lease from prompt text' {
+        $resolved = Resolve-SendInvocationArguments -Arguments @(
+            '--expected-generation-id',
+            'generation-123',
+            '--task-slug',
+            'declarative-node',
+            'typed payload'
+        )
+
+        $resolved['ExpectedGenerationId'] | Should -BeExactly 'generation-123'
+        $resolved['TaskSlug'] | Should -BeExactly 'declarative-node'
+        @($resolved['MessageParts']) | Should -Be @('typed payload')
+        { Resolve-SendInvocationArguments -Arguments @('--expected-generation-id') } | Should -Throw '*--expected-generation-id requires a value*'
+        { Resolve-SendInvocationArguments -Arguments @('--expected-generation-id', 'Generation_123', 'typed payload') } | Should -Throw '*invalid expected generation id*'
     }
 
     It 'routes an oversized prompt pointer through agent readiness' {
