@@ -1866,12 +1866,39 @@ function ConvertTo-TeamPipelineDeclarativeWorkflowPlan {
     return $workflowPlan
 }
 
+function Assert-TeamPipelineDeclarativeAdmission {
+    param(
+        [Parameter(Mandatory = $true)]$Run,
+        [Parameter(Mandatory = $true)]$Confirmation,
+        [Parameter(Mandatory = $true)]$TaskInput,
+        [Parameter(Mandatory = $true)]$WorkspacePlan,
+        [Parameter(Mandatory = $true)][string]$ManifestGenerationId,
+        [Parameter(Mandatory = $true)][string]$ObservedSourceHead
+    )
+
+    Assert-DeclarativeWorkflowTaskIdentity -Run $Run -TaskInput $TaskInput
+    Assert-DeclarativeWorkflowConfirmation -Run $Run -Confirmation $Confirmation
+    if (-not [string]::Equals([string](Get-DeclarativeWorkflowValue $Run 'generation_id' ''), $ManifestGenerationId, [StringComparison]::Ordinal)) {
+        throw 'workflow_manifest_generation_mismatch'
+    }
+    Assert-TeamPipelineDeclarativeSourceHead -ExpectedSourceHead ([string](Get-DeclarativeWorkflowValue $Run 'source_head' '')) -ObservedSourceHead $ObservedSourceHead
+    $freshConfigFingerprint = [string](Get-DeclarativeWorkflowValue $WorkspacePlan 'config_fingerprint' '')
+    if (-not [string]::Equals([string](Get-DeclarativeWorkflowValue $Run 'config_fingerprint' ''), $freshConfigFingerprint, [StringComparison]::Ordinal)) {
+        throw 'workflow_fresh_config_mismatch'
+    }
+    $freshWorkflowPlan = ConvertTo-TeamPipelineDeclarativeWorkflowPlan -WorkspacePlan $WorkspacePlan
+    Assert-DeclarativeWorkflowExecutionProjection -Run $Run -Plan $freshWorkflowPlan
+}
+
 function Assert-TeamPipelineDeclarativeRunLockAdmission {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)]$Run
     )
 
+    if (Test-DeclarativeWorkflowRunningCleanupRecovery -Run $Run) {
+        try { return Resolve-DeclarativeWorkflowOwnedLock -ProjectDir $ProjectDir -Run $Run } catch { return $null }
+    }
     $lockPath = Resolve-DeclarativeWorkflowOwnedLock -ProjectDir $ProjectDir -Run $Run
     if ([IO.File]::Exists($lockPath)) {
         if (-not (Test-DeclarativeWorkflowRunLockOwnership -ProjectDir $ProjectDir -Run $Run)) {
@@ -2363,33 +2390,7 @@ function Invoke-TeamPipelineDeclarativeTerminalRecovery {
         throw "Declarative workflow terminal recovery requires a terminal run, not '$terminalState'."
     }
 
-    $journal = @(Get-DeclarativeWorkflowValue $Run 'cleanup_journal' @())
-    if ($journal.Count -ne 1 -or $null -eq $journal[0]) {
-        throw 'Declarative workflow terminal recovery requires exactly one typed pending cleanup action.'
-    }
-
-    $action = $journal[0]
-    $propertyNames = if ($action -is [Collections.IDictionary]) {
-        @($action.Keys | ForEach-Object { [string]$_ })
-    } else {
-        @($action.PSObject.Properties.Name | ForEach-Object { [string]$_ })
-    }
-    $expectedAction = [ordered]@{
-        action_id      = 'release-run-lock'
-        kind           = 'release-run-lock'
-        state          = 'pending'
-        idempotency_key = "$( [string](Get-DeclarativeWorkflowValue $Run 'run_id' '') ):cleanup:release-run-lock"
-        resource_ref   = "workflow-run-lock:$( [string](Get-DeclarativeWorkflowValue $Run 'run_id' '') )"
-    }
-    if (@($propertyNames | Where-Object { $_ -notin @($expectedAction.Keys) }).Count -ne 0 -or
-        @($expectedAction.Keys | Where-Object { $_ -notin $propertyNames }).Count -ne 0) {
-        throw 'Declarative workflow terminal recovery cleanup action is malformed.'
-    }
-    foreach ($entry in $expectedAction.GetEnumerator()) {
-        if ([string](Get-DeclarativeWorkflowValue $action ([string]$entry.Key) '') -cne [string]$entry.Value) {
-            throw 'Declarative workflow terminal recovery cleanup action is not the pending owned lock release.'
-        }
-    }
+    Get-DeclarativeWorkflowCleanupActionState -Run $Run -AllowedStates @('pending', 'running') | Out-Null
 
     return Invoke-DeclarativeWorkflowTerminalCleanup -ProjectDir $ProjectDir -Run $Run -SaveRun $SaveRun -ReleaseLock $ReleaseLock `
         -ResolveAcknowledgement $ResolveAcknowledgement -ResolveCancellation $ResolveCancellation
@@ -2435,9 +2436,10 @@ function Invoke-TeamPipelineDeclarativeWorkflow {
             $statePath = Resolve-DeclarativeWorkflowOwnedRunPath -ProjectDir $ProjectDir -RunId $RunId -LeafName 'state.json'
             if ([IO.File]::Exists($statePath)) { throw 'workflow_run_already_exists' }
             $workspacePlan = Invoke-TeamPipelineWorkspacePlanOnce -ProjectDir $ProjectDir -RecipeId $RecipeId -WorkflowId $WorkflowId -RunId $RunId
-            if ([string](Get-DeclarativeWorkflowValue $workspacePlan 'config_fingerprint' '') -cne $ConfigFingerprint) { throw 'workflow_confirmation_mismatch' }
             $workflowPlan = ConvertTo-TeamPipelineDeclarativeWorkflowPlan -WorkspacePlan $workspacePlan
             $run = New-DeclarativeWorkflowRun -Plan $workflowPlan -RunId $RunId -GenerationId $GenerationId -ConfigFingerprint $ConfigFingerprint -SourceHead $SourceHead -TaskInput $taskInput
+            Assert-TeamPipelineDeclarativeAdmission -Run $run -Confirmation $confirmation -TaskInput $taskInput -WorkspacePlan $workspacePlan `
+                -ManifestGenerationId $manifestGenerationId -ObservedSourceHead $observedSourceHead
             try {
                 Save-DeclarativeWorkflowRunState -ProjectDir $ProjectDir -Run $run -CreateNew | Out-Null
             } catch {
@@ -2468,20 +2470,18 @@ function Invoke-TeamPipelineDeclarativeWorkflow {
         if ($Action -ceq 'resume') {
             $durableProofs = Resolve-DeclarativeWorkflowDurableProofs -Run $run -ResolveAcknowledgement $resolveAcknowledgement -ResolveCancellation $resolveCancellation
             $run = Invoke-DeclarativeWorkflowTransition -Run $run -Event ([ordered]@{ type = 'validate' }) -DurableProofs $durableProofs
-            $validateSnapshot = {
-                param($candidateRun)
-                $workspacePlan = Invoke-TeamPipelineWorkspacePlanOnce -ProjectDir $ProjectDir -RecipeId ([string]$candidateRun.recipe_ref) -WorkflowId ([string]$candidateRun.workflow_id) -RunId $RunId
-                $currentWorkflowPlan = ConvertTo-TeamPipelineDeclarativeWorkflowPlan -WorkspacePlan $workspacePlan
-                Assert-DeclarativeWorkflowExecutionProjection -Run $candidateRun -Plan $currentWorkflowPlan
-            }
-            Assert-DeclarativeWorkflowTaskIdentity -Run $run -TaskInput $taskInput
-            Assert-DeclarativeWorkflowConfirmation -Run $run -Confirmation $confirmation
-            & $validateSnapshot $run
+            $workspacePlan = Invoke-TeamPipelineWorkspacePlanOnce -ProjectDir $ProjectDir -RecipeId ([string]$run.recipe_ref) -WorkflowId ([string]$run.workflow_id) -RunId $RunId
+            Assert-TeamPipelineDeclarativeAdmission -Run $run -Confirmation $confirmation -TaskInput $taskInput -WorkspacePlan $workspacePlan `
+                -ManifestGenerationId $manifestGenerationId -ObservedSourceHead $observedSourceHead
             Assert-TeamPipelineDeclarativeRunLockAdmission -ProjectDir $ProjectDir -Run $run | Out-Null
             $snapshotValidated = $true
             if ([string]$run.state -in @('succeeded', 'failed', 'cancelled')) {
                 $run = Invoke-TeamPipelineDeclarativeTerminalRecovery -ProjectDir $ProjectDir -Run $run -TaskInput $taskInput -Confirmation $confirmation `
                     -SaveRun $save -ReleaseLock $releaseLock -ResolveAcknowledgement $resolveAcknowledgement -ResolveCancellation $resolveCancellation -ValidateSnapshot $validateSnapshot -SnapshotValidated
+            } elseif ([string]$run.state -ceq 'cleanup_pending') {
+                Get-DeclarativeWorkflowCleanupActionState -Run $run -AllowedStates @('running') | Out-Null
+                $run = Invoke-DeclarativeWorkflowCleanup -ProjectDir $ProjectDir -Run $run -SaveRun $save -ReleaseLock $releaseLock `
+                    -ResolveAcknowledgement $resolveAcknowledgement -ResolveCancellation $resolveCancellation
             }
         }
         if ($Action -ceq 'start' -or [string]$run.state -notin @('succeeded', 'failed', 'cancelled')) {

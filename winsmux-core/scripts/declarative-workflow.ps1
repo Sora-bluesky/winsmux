@@ -997,6 +997,55 @@ function Test-DeclarativeWorkflowPristineBootstrap {
     return $true
 }
 
+function Get-DeclarativeWorkflowCleanupActionState {
+    param(
+        [Parameter(Mandatory = $true)]$Run,
+        [Parameter(Mandatory = $true)][string[]]$AllowedStates
+    )
+
+    $journal = @(Get-DeclarativeWorkflowValue $Run 'cleanup_journal' @())
+    if ($journal.Count -ne 1 -or $null -eq $journal[0]) { throw 'workflow_cleanup_action_invalid' }
+    $action = $journal[0]
+    $runId = [string](Get-DeclarativeWorkflowValue $Run 'run_id' '')
+    $expected = [ordered]@{
+        action_id       = 'release-run-lock'
+        kind            = 'release-run-lock'
+        idempotency_key = "$runId`:cleanup:release-run-lock"
+        resource_ref    = "workflow-run-lock:$runId"
+    }
+    $propertyNames = if ($action -is [Collections.IDictionary]) {
+        @($action.Keys | ForEach-Object { [string]$_ })
+    } else {
+        @($action.PSObject.Properties.Name | ForEach-Object { [string]$_ })
+    }
+    $expectedNames = @($expected.Keys) + @('state')
+    if (@($propertyNames | Where-Object { $_ -notin $expectedNames }).Count -ne 0 -or
+        @($expectedNames | Where-Object { $_ -notin $propertyNames }).Count -ne 0) {
+        throw 'workflow_cleanup_action_invalid'
+    }
+    foreach ($entry in $expected.GetEnumerator()) {
+        if ([string](Get-DeclarativeWorkflowValue $action ([string]$entry.Key) '') -cne [string]$entry.Value) {
+            throw 'workflow_cleanup_action_invalid'
+        }
+    }
+    $state = [string](Get-DeclarativeWorkflowValue $action 'state' '')
+    if ($AllowedStates -cnotcontains $state) { throw 'workflow_cleanup_action_not_admissible' }
+    return $state
+}
+
+function Test-DeclarativeWorkflowRunningCleanupRecovery {
+    param([Parameter(Mandatory = $true)]$Run)
+    try {
+        if ((Get-DeclarativeWorkflowCleanupActionState -Run $Run -AllowedStates @('running')) -cne 'running') { return $false }
+        $runState = [string](Get-DeclarativeWorkflowValue $Run 'state' '')
+        $preserved = [string](Get-DeclarativeWorkflowValue $Run 'cleanup_preserve_run_state' '')
+        if ($runState -ceq 'cleanup_pending') { return [string]::IsNullOrWhiteSpace($preserved) }
+        return (@('succeeded', 'failed', 'cancelled') -ccontains $runState) -and $preserved -ceq $runState
+    } catch {
+        return $false
+    }
+}
+
 function Remove-DeclarativeWorkflowPristineRunState {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -1036,28 +1085,37 @@ function Invoke-DeclarativeWorkflowCleanup {
     if ($journal.Count -ne 1) { throw 'workflow_state_invalid' }
     $cleanupState = [string](Get-DeclarativeWorkflowValue $journal[0] 'state' '')
     if ($cleanupState -ceq 'succeeded' -or $cleanupState -ceq 'blocked') { return $candidate }
-    if ($cleanupState -ceq 'running') {
+    if (@('pending', 'running') -cnotcontains $cleanupState) { throw 'workflow_state_invalid' }
+
+    $ownershipUnobservable = $false
+    try {
+        $lockPath = Resolve-DeclarativeWorkflowOwnedLock -ProjectDir $ProjectDir -Run $candidate
+        $lockPresent = [IO.File]::Exists($lockPath)
+    } catch {
+        $lockPath = $null
+        $lockPresent = $false
+        $ownershipUnobservable = $true
+    }
+    if ($cleanupState -ceq 'pending' -and -not $lockPresent -and -not $ownershipUnobservable) {
+        throw 'workflow_run_lock_missing_after_effect'
+    }
+
+    if ($cleanupState -ceq 'pending') {
+        $intent = [ordered]@{ type = 'cleanup_intent' }
+        if (-not [string]::IsNullOrWhiteSpace($PreserveRunState)) {
+            $intent['preserve_run_state'] = $PreserveRunState
+        }
+        $candidate = Invoke-DeclarativeWorkflowTransition -Run $candidate -Event $intent -DurableProofs $durableProofs
+        & $SaveRun $candidate
+    }
+
+    if ($ownershipUnobservable) {
         $candidate = Invoke-DeclarativeWorkflowTransition -Run $candidate -Event ([ordered]@{ type = 'cleanup_blocked' }) -DurableProofs $durableProofs
         & $SaveRun $candidate
         return $candidate
     }
-    if ($cleanupState -cne 'pending') { throw 'workflow_state_invalid' }
-
-    $intent = [ordered]@{ type = 'cleanup_intent' }
-    if (-not [string]::IsNullOrWhiteSpace($PreserveRunState)) {
-        $intent['preserve_run_state'] = $PreserveRunState
-    }
-    $candidate = Invoke-DeclarativeWorkflowTransition -Run $candidate -Event $intent -DurableProofs $durableProofs
-    & $SaveRun $candidate
-
-    try {
-        $lockPath = Resolve-DeclarativeWorkflowOwnedLock -ProjectDir $ProjectDir -Run $candidate
-        $owned = Test-DeclarativeWorkflowRunLockOwnership -ProjectDir $ProjectDir -Run $candidate
-    } catch {
-        $owned = $false
-    }
-    if (-not $owned) {
-        $candidate = Invoke-DeclarativeWorkflowTransition -Run $candidate -Event ([ordered]@{ type = 'cleanup_blocked' }) -DurableProofs $durableProofs
+    if (-not $lockPresent) {
+        $candidate = Invoke-DeclarativeWorkflowTransition -Run $candidate -Event ([ordered]@{ type = 'cleanup_succeeded' }) -DurableProofs $durableProofs
         & $SaveRun $candidate
         return $candidate
     }

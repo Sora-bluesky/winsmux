@@ -1016,15 +1016,15 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         }
     }
 
-    It 'C07 permits terminal resume recovery only for one pending typed cleanup action' {
+    It 'C07 rejects terminal recovery actions outside the typed pending or running states' {
         $project = Join-Path $TestDrive 'terminal-recovery-admission'
         $taskInput = New-TestTaskInput
         $confirmation = New-TestConfirmation
 
         foreach ($case in @(
                 [PSCustomObject]@{ Name = 'succeeded'; Configure = { param($run) $run.cleanup_journal[0].state = 'succeeded' } },
-                [PSCustomObject]@{ Name = 'running'; Configure = { param($run) $run.cleanup_journal[0].state = 'running' } },
                 [PSCustomObject]@{ Name = 'blocked'; Configure = { param($run) $run.cleanup_journal[0].state = 'blocked' } },
+                [PSCustomObject]@{ Name = 'case-variant'; Configure = { param($run) $run.cleanup_journal[0].state = 'Running' } },
                 [PSCustomObject]@{ Name = 'unknown'; Configure = { param($run) $run.cleanup_journal[0].state = 'unknown' } },
                 [PSCustomObject]@{ Name = 'malformed'; Configure = { param($run) $run.cleanup_journal = @([ordered]@{ state = 'pending' }) } },
                 [PSCustomObject]@{ Name = 'multiple'; Configure = { param($run) $run.cleanup_journal = @($run.cleanup_journal[0], (Copy-DeclarativeWorkflowValue $run.cleanup_journal[0])) } }
@@ -1046,14 +1046,14 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         }
     }
 
-    It 'C07 rejects every non-pending terminal resume recovery before save release or dispatch' {
+    It 'C07 rejects terminal resume recovery outside the typed pending or running states before protected effects' {
         $taskFile = Join-Path $TestDrive 'terminal-recovery-task.txt'
         [IO.File]::WriteAllText($taskFile, 'Implement TASK-659 safely.', [Text.UTF8Encoding]::new($false))
 
         foreach ($case in @(
                 [PSCustomObject]@{ Name = 'succeeded'; Configure = { param($run) $run.cleanup_journal[0].state = 'succeeded' } },
-                [PSCustomObject]@{ Name = 'running'; Configure = { param($run) $run.cleanup_journal[0].state = 'running' } },
                 [PSCustomObject]@{ Name = 'blocked'; Configure = { param($run) $run.cleanup_journal[0].state = 'blocked' } },
+                [PSCustomObject]@{ Name = 'case-variant'; Configure = { param($run) $run.cleanup_journal[0].state = 'Running' } },
                 [PSCustomObject]@{ Name = 'unknown'; Configure = { param($run) $run.cleanup_journal[0].state = 'unknown' } },
                 [PSCustomObject]@{ Name = 'malformed'; Configure = { param($run) $run.cleanup_journal = @([ordered]@{ state = 'pending' }) } },
                 [PSCustomObject]@{ Name = 'multiple'; Configure = { param($run) $run.cleanup_journal = @($run.cleanup_journal[0], (Copy-DeclarativeWorkflowValue $run.cleanup_journal[0])) } }
@@ -1092,26 +1092,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         }
     }
 
-    It 'C01 C02 C04 releases only an owned run lock once after persisted intent' {
-        $project = Join-Path $TestDrive 'project'
-        $run = New-TestSucceededRun
-        $resolveAcknowledgement = {
-            param($candidate, $nodeId)
-            New-TestAcknowledgement -NodeId $nodeId -PaneId $(if ($nodeId -ceq 'inspect') { '%2' } else { '%3' })
-        }
-        $lock = New-DeclarativeWorkflowRunLock -ProjectDir $project -Run $run
-        $events = [Collections.Generic.List[string]]::new()
-        $first = Invoke-DeclarativeWorkflowCleanup -ProjectDir $project -Run $run -SaveRun { param($candidate) $events.Add("save:$($candidate.cleanup_journal[0].state)") | Out-Null } -ReleaseLock { param($path) $events.Add("release:$path") | Out-Null; Remove-Item -LiteralPath $path } -ResolveAcknowledgement $resolveAcknowledgement
-        $second = Invoke-DeclarativeWorkflowCleanup -ProjectDir $project -Run $first -SaveRun { param($candidate) $events.Add("save:$($candidate.cleanup_journal[0].state)") | Out-Null } -ReleaseLock { $events.Add('release:again') | Out-Null } -ResolveAcknowledgement $resolveAcknowledgement
-
-        $events[0] | Should -Be 'save:running'
-        @($events | Where-Object { $_ -like 'release:*' }).Count | Should -Be 1
-        $second.cleanup_journal[0].state | Should -Be 'succeeded'
-        Test-Path -LiteralPath $lock | Should -BeFalse
-    }
-
-    It 'C03 C05 blocks ambiguous or mismatched cleanup without repeating release' {
-        $project = Join-Path $TestDrive 'blocked-project'
+    It 'C01 C02 C04 reconciles pending and persisted-running cleanup with exact save and release counts' {
         $resolveAcknowledgement = {
             param($candidate, $nodeId)
             New-TestAcknowledgement -NodeId $nodeId -PaneId $(if ($nodeId -ceq 'inspect') { '%2' } else { '%3' })
@@ -1120,12 +1101,41 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
             (New-TestAcknowledgement -NodeId 'inspect' -PaneId '%2'),
             (New-TestAcknowledgement -NodeId 'verify' -PaneId '%3')
         )
-        $run = Invoke-DeclarativeWorkflowTransition -Run (New-TestSucceededRun) -Event ([ordered]@{ type = 'cleanup_intent' }) -DurableProofs $completionProofs
-        $script:releases = 0
-        $ambiguous = Invoke-DeclarativeWorkflowCleanup -ProjectDir $project -Run $run -SaveRun { } -ReleaseLock { $script:releases++ } -ResolveAcknowledgement $resolveAcknowledgement
-        $ambiguous.cleanup_journal[0].state | Should -Be 'blocked'
-        $script:releases | Should -Be 0
 
+        foreach ($case in @(
+                [PSCustomObject]@{ Name = 'pending-matching'; PersistIntent = $false; LockPresent = $true; ExpectedSaves = 'running,succeeded'; ExpectedReleases = 1 },
+                [PSCustomObject]@{ Name = 'running-matching'; PersistIntent = $true; LockPresent = $true; ExpectedSaves = 'succeeded'; ExpectedReleases = 1 },
+                [PSCustomObject]@{ Name = 'running-absent'; PersistIntent = $true; LockPresent = $false; ExpectedSaves = 'succeeded'; ExpectedReleases = 0 }
+            )) {
+            $project = Join-Path $TestDrive ("cleanup-" + $case.Name)
+            $run = New-TestSucceededRun
+            if ($case.PersistIntent) {
+                $run = Invoke-DeclarativeWorkflowTransition -Run $run -Event ([ordered]@{ type = 'cleanup_intent' }) -DurableProofs $completionProofs
+            }
+            $lock = Resolve-DeclarativeWorkflowOwnedLock -ProjectDir $project -Run $run -CreateRunDirectory
+            if ($case.LockPresent) { $lock = New-DeclarativeWorkflowRunLock -ProjectDir $project -Run $run }
+            $events = [Collections.Generic.List[string]]::new()
+
+            $after = Invoke-DeclarativeWorkflowCleanup -ProjectDir $project -Run $run `
+                -SaveRun { param($candidate) $events.Add("save:$($candidate.cleanup_journal[0].state)") | Out-Null } `
+                -ReleaseLock { param($path) $events.Add("release:$path") | Out-Null; Remove-Item -LiteralPath $path } `
+                -ResolveAcknowledgement $resolveAcknowledgement
+
+            [string]::Join(',', @($events | Where-Object { $_ -like 'save:*' } | ForEach-Object { $_.Substring(5) })) | Should -Be $case.ExpectedSaves -Because $case.Name
+            @($events | Where-Object { $_ -like 'release:*' }).Count | Should -Be $case.ExpectedReleases -Because $case.Name
+            $after.cleanup_journal[0].state | Should -Be 'succeeded' -Because $case.Name
+            $after.state | Should -Be 'succeeded' -Because $case.Name
+            Test-Path -LiteralPath $lock -PathType Leaf | Should -BeFalse -Because $case.Name
+        }
+    }
+
+    It 'C03 C05 blocks mismatched or reparse-point cleanup without releasing' {
+        $project = Join-Path $TestDrive 'blocked-project'
+        $resolveAcknowledgement = {
+            param($candidate, $nodeId)
+            New-TestAcknowledgement -NodeId $nodeId -PaneId $(if ($nodeId -ceq 'inspect') { '%2' } else { '%3' })
+        }
+        $script:releases = 0
         $run = New-TestSucceededRun
         $lock = New-DeclarativeWorkflowRunLock -ProjectDir $project -Run $run
         $payload = Get-Content -LiteralPath $lock -Raw | ConvertFrom-Json
@@ -1259,6 +1269,85 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         ($run | ConvertTo-Json -Depth 40 -Compress) | Should -Be $before
     }
 
+    It 'K01 admits resume only when confirmation fresh configuration workflow bindings source and generation all match' {
+        $taskFile = Join-Path $TestDrive 'fresh-admission-task.txt'
+        [IO.File]::WriteAllText($taskFile, 'Implement TASK-659 safely.', [Text.UTF8Encoding]::new($false))
+        $script:k01Run = New-TestBlockedRun
+        $script:k01Plan = [ordered]@{
+            config_fingerprint = ('sha256:' + ('a' * 64))
+            resolved_bindings  = [ordered]@{ implement = 'worker-1'; verify = 'worker-2' }
+            workflow           = (New-TestWorkflowPlan)
+        }
+        $script:k01ObservedHead = 'b' * 40
+        $script:k01ManifestGeneration = 'generation-123'
+        $script:k01LockAdmissions = 0
+        $script:k01Saves = 0
+        $script:k01Dispatches = 0
+        $script:k01Advancements = 0
+        $script:k01Cleanups = 0
+
+        Mock Read-DeclarativeWorkflowRunState { Copy-DeclarativeWorkflowValue $script:k01Run }
+        Mock Invoke-TeamPipelineWorkspacePlanOnce { Copy-DeclarativeWorkflowValue $script:k01Plan }
+        Mock Get-TeamPipelineDeclarativeProjectHead { $script:k01ObservedHead }
+        Mock Read-TeamPipelineManifest {
+            [PSCustomObject]@{ Session = [ordered]@{ name = 'k01-session'; generation_id = $script:k01ManifestGeneration }; Panes = [ordered]@{} }
+        }
+        Mock Get-TeamPipelineSessionName { 'k01-session' }
+        Mock Assert-TeamPipelineDeclarativeRunLockAdmission { $script:k01LockAdmissions++; Join-Path $TestDrive 'k01.lock' }
+        Mock Save-DeclarativeWorkflowRunState { $script:k01Saves++ }
+        Mock Invoke-TeamPipelineDeclarativeDispatch { $script:k01Dispatches++; throw 'K01 rejection must not dispatch' }
+        Mock Invoke-TeamPipelineDeclarativeRunAdvancement { param($Run) $script:k01Advancements++; $Run }
+        Mock Invoke-TeamPipelineDeclarativeTerminalRecovery { $script:k01Cleanups++; throw 'K01 rejection must not clean up' }
+
+        $cases = @(
+            [PSCustomObject]@{ Name = 'unchanged'; ExpectedAccepted = $true },
+            [PSCustomObject]@{ Name = 'changed-config'; Configure = { $script:k01Plan.config_fingerprint = 'sha256:' + ('c' * 64) } },
+            [PSCustomObject]@{ Name = 'changed-workflow'; Configure = { $script:k01Plan.workflow.workflow_fingerprint = 'sha256:' + ('e' * 64) } },
+            [PSCustomObject]@{ Name = 'changed-binding'; Configure = { $script:k01Plan.resolved_bindings.implement = 'worker-other' } },
+            [PSCustomObject]@{ Name = 'stale-confirmation'; ConfigFingerprint = ('sha256:' + ('c' * 64)) },
+            [PSCustomObject]@{ Name = 'source-head'; SourceHead = ('c' * 40) },
+            [PSCustomObject]@{ Name = 'generation'; GenerationId = 'generation-other' }
+        )
+
+        foreach ($case in $cases) {
+            $script:k01Plan = [ordered]@{
+                config_fingerprint = ('sha256:' + ('a' * 64))
+                resolved_bindings  = [ordered]@{ implement = 'worker-1'; verify = 'worker-2' }
+                workflow           = (New-TestWorkflowPlan)
+            }
+            $configure = Get-DeclarativeWorkflowValue $case 'Configure' $null
+            if ($null -ne $configure) { & $configure }
+            $caseConfigFingerprint = [string](Get-DeclarativeWorkflowValue $case 'ConfigFingerprint' '')
+            $caseSourceHead = [string](Get-DeclarativeWorkflowValue $case 'SourceHead' '')
+            $caseGenerationId = [string](Get-DeclarativeWorkflowValue $case 'GenerationId' '')
+            $configFingerprint = if ($caseConfigFingerprint) { $caseConfigFingerprint } else { 'sha256:' + ('a' * 64) }
+            $sourceHead = if ($caseSourceHead) { $caseSourceHead } else { 'b' * 40 }
+            $generationId = if ($caseGenerationId) { $caseGenerationId } else { 'generation-123' }
+            $before = $script:k01Run | ConvertTo-Json -Depth 40 -Compress
+            $beforeCounts = @($script:k01LockAdmissions, $script:k01Saves, $script:k01Dispatches, $script:k01Advancements, $script:k01Cleanups)
+
+            $expectedAccepted = [bool](Get-DeclarativeWorkflowValue $case 'ExpectedAccepted' $false)
+            if ($expectedAccepted) {
+                $result = Invoke-TeamPipelineDeclarativeWorkflow -Action resume -RunId 'run-123' -GenerationId $generationId `
+                    -ConfigFingerprint $configFingerprint -SourceHead $sourceHead -TaskFile $taskFile -ProjectDir $TestDrive
+                $result.status | Should -Be 'blocked'
+                $script:k01LockAdmissions | Should -Be ($beforeCounts[0] + 1)
+                $script:k01Advancements | Should -Be ($beforeCounts[3] + 1)
+            } else {
+                {
+                    Invoke-TeamPipelineDeclarativeWorkflow -Action resume -RunId 'run-123' -GenerationId $generationId `
+                        -ConfigFingerprint $configFingerprint -SourceHead $sourceHead -TaskFile $taskFile -ProjectDir $TestDrive
+                } | Should -Throw -Because $case.Name
+                $script:k01LockAdmissions | Should -Be $beforeCounts[0] -Because $case.Name
+                $script:k01Saves | Should -Be $beforeCounts[1] -Because $case.Name
+                $script:k01Dispatches | Should -Be $beforeCounts[2] -Because $case.Name
+                $script:k01Advancements | Should -Be $beforeCounts[3] -Because $case.Name
+                $script:k01Cleanups | Should -Be $beforeCounts[4] -Because $case.Name
+                ($script:k01Run | ConvertTo-Json -Depth 40 -Compress) | Should -Be $before -Because $case.Name
+            }
+        }
+    }
+
     It 'A21 structurally binds the persisted DAG projection before reconciliation, save, dispatch, or cleanup' {
         $plan = New-TestWorkflowPlan
         $taskInput = New-TestTaskInput
@@ -1359,7 +1448,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         }
     }
 
-    It 'C07 resumes a terminal crash-cut cleanup once and blocks an ambiguous running cleanup without rewriting terminal outcome' {
+    It 'C07 resumes terminal cleanup after both crash cuts without rewriting terminal outcome' {
         $project = Join-Path $TestDrive 'terminal-cleanup-crash-cut'
         $run = New-TestFailedRun
         $lock = New-DeclarativeWorkflowRunLock -ProjectDir $project -Run $run
@@ -1372,10 +1461,106 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         $afterCrash.state | Should -Be 'failed'
         $resumeReleases.Count | Should -Be 1
 
-        $ambiguous = Invoke-DeclarativeWorkflowTransition -Run (New-TestFailedRun) -Event ([ordered]@{ type = 'cleanup_intent'; preserve_run_state = 'failed' })
-        $blocked = Invoke-DeclarativeWorkflowTerminalCleanup -ProjectDir $project -Run $ambiguous -SaveRun { } -ReleaseLock { throw 'must not repeat' }
-        $blocked.state | Should -Be 'failed'
-        $blocked.cleanup_journal[0].state | Should -Be 'blocked'
+        $afterDeleteCrash = Invoke-DeclarativeWorkflowTransition -Run (New-TestFailedRun) -Event ([ordered]@{ type = 'cleanup_intent'; preserve_run_state = 'failed' })
+        $recovered = Invoke-DeclarativeWorkflowTerminalCleanup -ProjectDir $project -Run $afterDeleteCrash -SaveRun { } -ReleaseLock { throw 'must not repeat deletion' }
+        $recovered.state | Should -Be 'failed'
+        $recovered.cleanup_journal[0].state | Should -Be 'succeeded'
+    }
+
+    It 'L01 reconciles persisted running cleanup through public resume for terminal and successful outcomes' {
+        $taskFile = Join-Path $TestDrive 'persisted-cleanup-resume-task.txt'
+        [IO.File]::WriteAllText($taskFile, 'Implement TASK-659 safely.', [Text.UTF8Encoding]::new($false))
+        $completionProofs = New-TestDurableProofs -CompletionAcknowledgements @(
+            (New-TestAcknowledgement -NodeId 'inspect' -PaneId '%2'),
+            (New-TestAcknowledgement -NodeId 'verify' -PaneId '%3')
+        )
+        $fixtures = @()
+        foreach ($case in @(
+                [PSCustomObject]@{ Name = 'terminal-running-matching'; Outcome = 'failed'; ExpectedStatus = 'failed'; ExpectedCleanupState = 'succeeded'; LockPresent = $true; ExpectedLockAfter = $false; ExpectedDeletes = 1 },
+                [PSCustomObject]@{ Name = 'terminal-running-absent'; Outcome = 'failed'; ExpectedStatus = 'failed'; ExpectedCleanupState = 'succeeded'; LockPresent = $false; ExpectedLockAfter = $false; ExpectedDeletes = 0 },
+                [PSCustomObject]@{ Name = 'terminal-running-mismatch'; Outcome = 'failed'; ExpectedStatus = 'blocked'; ExpectedCleanupState = 'blocked'; LockPresent = $true; ExpectedLockAfter = $true; ExpectedDeletes = 0; Mismatch = $true },
+                [PSCustomObject]@{ Name = 'success-running-matching'; Outcome = 'succeeded'; ExpectedStatus = 'accepted'; ExpectedCleanupState = 'succeeded'; LockPresent = $true; ExpectedLockAfter = $false; ExpectedDeletes = 1 },
+                [PSCustomObject]@{ Name = 'success-running-absent'; Outcome = 'succeeded'; ExpectedStatus = 'accepted'; ExpectedCleanupState = 'succeeded'; LockPresent = $false; ExpectedLockAfter = $false; ExpectedDeletes = 0 }
+            )) {
+            $project = Join-Path $TestDrive ("l01-" + $case.Name)
+            $run = if ($case.Outcome -ceq 'failed') { New-TestFailedRun } else { New-TestSucceededRun }
+            $intent = [ordered]@{ type = 'cleanup_intent' }
+            if ($case.Outcome -ceq 'failed') { $intent['preserve_run_state'] = 'failed' }
+            $run = Invoke-DeclarativeWorkflowTransition -Run $run -Event $intent -DurableProofs $(if ($case.Outcome -ceq 'succeeded') { $completionProofs } else { New-TestDurableProofs })
+            if ($case.LockPresent) {
+                $lock = New-DeclarativeWorkflowRunLock -ProjectDir $project -Run $run
+                if ([bool](Get-DeclarativeWorkflowValue $case 'Mismatch' $false)) {
+                    $payload = [IO.File]::ReadAllText($lock) | ConvertFrom-Json
+                    $payload.source_head = 'c' * 40
+                    [IO.File]::WriteAllText($lock, ($payload | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+                }
+            }
+            $fixtures += [PSCustomObject]@{ Case = $case; Project = $project; Run = $run }
+        }
+
+        $script:l01Current = $null
+        $script:l01SaveCount = 0
+        $script:l01DeleteCount = 0
+        $script:l01DispatchCount = 0
+        Mock Read-DeclarativeWorkflowRunState { Copy-DeclarativeWorkflowValue $script:l01Current.Run }
+        Mock Save-DeclarativeWorkflowRunState {
+            param($Run)
+            $script:l01SaveCount++
+            $script:l01Current.Run = Copy-DeclarativeWorkflowValue $Run
+        }
+        Mock Get-TeamPipelineDeclarativeProjectHead { 'b' * 40 }
+        Mock Read-TeamPipelineManifest { [PSCustomObject]@{ Session = [ordered]@{ name = 'l01-session'; generation_id = 'generation-123' }; Panes = [ordered]@{} } }
+        Mock Get-TeamPipelineSessionName { 'l01-session' }
+        Mock Invoke-TeamPipelineWorkspacePlanOnce {
+            [ordered]@{
+                config_fingerprint = ('sha256:' + ('a' * 64))
+                resolved_bindings  = [ordered]@{ implement = 'worker-1'; verify = 'worker-2' }
+                workflow           = (New-TestWorkflowPlan)
+            }
+        }
+        Mock Resolve-TeamPipelineDeclarativeAcknowledgement {
+            param($Run, $NodeId)
+            if ($script:l01Current.Case.Outcome -ceq 'succeeded') {
+                return New-TestAcknowledgement -NodeId $NodeId -PaneId $(if ($NodeId -ceq 'inspect') { '%2' } else { '%3' })
+            }
+            return $null
+        }
+        Mock Invoke-TeamPipelineDeclarativeDispatch { $script:l01DispatchCount++; throw 'cleanup recovery must not dispatch' }
+        Mock Remove-Item {
+            param($LiteralPath)
+            $script:l01DeleteCount++
+            [IO.File]::Delete([string]$LiteralPath)
+        } -ParameterFilter { [string]$LiteralPath -like '*run.lock' }
+
+        foreach ($fixture in $fixtures) {
+            $script:l01Current = $fixture
+            $saveBefore = $script:l01SaveCount
+            $deleteBefore = $script:l01DeleteCount
+            $dispatchBefore = $script:l01DispatchCount
+            $lockPath = Resolve-DeclarativeWorkflowOwnedLock -ProjectDir $fixture.Project -Run $fixture.Run
+
+            $result = Invoke-TeamPipelineDeclarativeWorkflow -Action resume -RunId 'run-123' -GenerationId 'generation-123' `
+                -ConfigFingerprint ('sha256:' + ('a' * 64)) -SourceHead ('b' * 40) -TaskFile $taskFile -ProjectDir $fixture.Project
+
+            $result.status | Should -Be $fixture.Case.ExpectedStatus -Because $fixture.Case.Name
+            $result.state | Should -Be $fixture.Case.Outcome -Because $fixture.Case.Name
+            $script:l01Current.Run.cleanup_journal[0].state | Should -Be $fixture.Case.ExpectedCleanupState -Because $fixture.Case.Name
+            $script:l01Current.Run.state | Should -Be $fixture.Case.Outcome -Because $fixture.Case.Name
+            ($script:l01SaveCount - $saveBefore) | Should -Be 1 -Because $fixture.Case.Name
+            ($script:l01DeleteCount - $deleteBefore) | Should -Be $fixture.Case.ExpectedDeletes -Because $fixture.Case.Name
+            ($script:l01DispatchCount - $dispatchBefore) | Should -Be 0 -Because $fixture.Case.Name
+            (Test-Path -LiteralPath $lockPath -PathType Leaf) | Should -Be $fixture.Case.ExpectedLockAfter -Because $fixture.Case.Name
+
+            $saveAfterSuccess = $script:l01SaveCount
+            $deleteAfterSuccess = $script:l01DeleteCount
+            {
+                Invoke-TeamPipelineDeclarativeWorkflow -Action resume -RunId 'run-123' -GenerationId 'generation-123' `
+                    -ConfigFingerprint ('sha256:' + ('a' * 64)) -SourceHead ('b' * 40) -TaskFile $taskFile -ProjectDir $fixture.Project
+            } | Should -Throw -Because "cleanup success is terminal and idempotently rejected for $($fixture.Case.Name)"
+            $script:l01SaveCount | Should -Be $saveAfterSuccess -Because $fixture.Case.Name
+            $script:l01DeleteCount | Should -Be $deleteAfterSuccess -Because $fixture.Case.Name
+            $script:l01DispatchCount | Should -Be $dispatchBefore -Because $fixture.Case.Name
+        }
     }
 
     It 'V01 carries an ordered bounded verification envelope from durable dependency evidence into the existing verify prompt' {
