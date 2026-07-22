@@ -1071,7 +1071,7 @@ function Invoke-OperatorPollEventRecord {
     $eventName = [string](Get-OperatorPollValue -InputObject $EventRecord -Name 'event' -Default '')
     $paneContext = Get-OperatorPollPaneContext -Manifest $Manifest -ManifestPath $ManifestPath -EventRecord $EventRecord
     $approvalEvent = Test-OperatorPollApprovalEvent -EventRecord $EventRecord
-    $protectedEvent = $eventName -in @('workflow.node.acknowledged', 'pane.exec_completed', 'pane.completed', 'pane.idle') -or $approvalEvent
+    $protectedEvent = $eventName -in @('pane.exec_completed', 'pane.completed', 'pane.idle') -or $approvalEvent
     if ($protectedEvent) {
         $paneContext = Resolve-OperatorPollProtectedRuntimeAdmission -Manifest $Manifest -EventRecord $EventRecord -PaneContext $paneContext
         if ($null -eq $paneContext) {
@@ -1085,10 +1085,6 @@ function Invoke-OperatorPollEventRecord {
     $Summary['new_events'] = [int]$Summary['new_events'] + 1
 
     if ($eventName -ceq 'workflow.node.acknowledged') {
-        if (-not (Test-OperatorPollWorkflowAcknowledgementRecord -EventRecord $EventRecord -PaneContext $paneContext -SessionName $sessionName)) {
-            $Summary['errors'] = [int]$Summary['errors'] + 1
-            return 'workflow_ack_rejected'
-        }
         $acknowledgement = Get-OperatorPollWorkflowAcknowledgementData `
             -Data (Get-OperatorPollValue -InputObject $EventRecord -Name 'workflow_ack_payload' -Default $null) `
             -MessageId ([string](Get-OperatorPollValue $EventRecord 'message_id' ''))
@@ -1096,15 +1092,16 @@ function Invoke-OperatorPollEventRecord {
         $nodeId = [string](Get-OperatorPollValue $acknowledgement 'node_id' '')
         try {
             $run = Read-DeclarativeWorkflowRunState -ProjectDir $projectDir -RunId $runId
-            Write-DeclarativeWorkflowDurableProof -ProjectDir $projectDir -Run $run -Kind Completion -NodeId $nodeId -Proof $acknowledgement `
-                -TrustedSenderLabel ([string]$paneContext['label']) -TrustedSenderPaneId ([string]$paneContext['pane_id']) | Out-Null
+            $proof = Read-DeclarativeWorkflowDurableProof -ProjectDir $projectDir -Run $run -Kind Completion -NodeId $nodeId
+            if ($null -eq $proof -or
+                (ConvertTo-DeclarativeWorkflowCanonicalJson -Value $proof) -cne (ConvertTo-DeclarativeWorkflowCanonicalJson -Value $acknowledgement)) {
+                $Summary['errors'] = [int]$Summary['errors'] + 1
+                return 'workflow_ack_rejected'
+            }
         } catch {
             $admissionError = [string]$_.Exception.Message
-            if ($admissionError -clike 'workflow_completion_rejected:*' -or $admissionError -clike "Declarative workflow run '$runId' was not found.*") {
+            if ($admissionError -clike 'Workflow durable proof *' -or $admissionError -clike "Declarative workflow run '$runId' was not found.*") {
                 $Summary['errors'] = [int]$Summary['errors'] + 1
-                Write-OrchestraLog -ProjectDir $projectDir -SessionName $sessionName -Event 'workflow.node.acknowledged' -Level 'error' `
-                    -Message "Declarative workflow completion was terminally rejected: $admissionError" `
-                    -Role ([string]$paneContext['role']) -PaneId ([string]$paneContext['pane_id']) -Target ([string]$paneContext['label']) -Data $acknowledgement | Out-Null
                 return 'workflow_ack_rejected'
             }
             throw

@@ -9,6 +9,28 @@ Describe 'winsmux send dispatch payload' {
         $script:winsmuxCorePath = Join-Path (Split-Path -Parent $script:BridgeTestsRoot) 'scripts\winsmux-core.ps1'
         $script:winsmuxCoreSendRawContent = Get-Content -Path $script:winsmuxCorePath -Raw -Encoding UTF8
         . $script:winsmuxCorePath 'version' *> $null
+        function Initialize-TestWorkflowCompletionRun {
+            param([Parameter(Mandatory = $true)][string]$ProjectDir)
+            $runRoot = Join-Path $ProjectDir '.winsmux\workflow-runs\run-123'
+            [IO.Directory]::CreateDirectory($runRoot) | Out-Null
+            $run = [ordered]@{
+                schema_version = 2; run_id = 'run-123'; generation_id = 'generation-123'; state = 'running'
+                config_fingerprint = ('sha256:' + ('a' * 64)); workflow_fingerprint = ('sha256:' + ('d' * 64)); source_head = ('b' * 40)
+                resolved_bindings = [ordered]@{ implement = 'builder-1' }
+                nodes = [ordered]@{ inspect = [ordered]@{ node_id = 'inspect'; idempotency_key = 'run-123:inspect'; state = 'dispatching'; attempt = 1; pane_ref = 'implement' } }
+            }
+            [IO.File]::WriteAllText((Join-Path $runRoot 'state.json'), ($run | ConvertTo-Json -Compress -Depth 20), [Text.UTF8Encoding]::new($false))
+        }
+
+        function Enable-TestWorkflowCompletionCaller {
+            param([Parameter(Mandatory = $true)][string]$ProjectDir)
+            Mock Get-PaneControlManifestEntries {
+                @([PSCustomObject]@{ Label = 'builder-1'; PaneId = '%2'; WorkerBackend = 'api_llm'; ProjectDir = $ProjectDir })
+            }
+            Mock Test-PaneControlRuntimeContext {
+                [PSCustomObject]@{ valid = $true; context = [PSCustomObject]@{ generation_id = 'generation-123'; label = 'builder-1'; pane_id = '%2' } }
+            }
+        }
     }
 
     BeforeEach {
@@ -846,6 +868,8 @@ Describe 'winsmux send dispatch payload' {
             tasks = [ordered]@{ queued = @(); in_progress = @(); completed = @() }
             worktrees = [ordered]@{}
         })
+        Initialize-TestWorkflowCompletionRun -ProjectDir $project
+        Enable-TestWorkflowCompletionCaller -ProjectDir $project
         $payload = [ordered]@{
             mailbox_version = 2; message_id = 'workflow-ack-f01'; correlation_id = 'workflow-ack-f01'; causation_id = $null
             idempotency_key = 'workflow-completion-f01'; message_type = 'workflow-completion'; state = 'created'; ttl_seconds = 300
@@ -873,18 +897,18 @@ Describe 'winsmux send dispatch payload' {
         $publishedAt.UtcDateTime.Ticks | Should -BeGreaterOrEqual $publishedAfter.UtcDateTime.Ticks
         $publishedAt.UtcDateTime.Ticks | Should -BeLessOrEqual $publishedBefore.UtcDateTime.Ticks
 
-        $env:WINSMUX_ORCHESTRA_PROJECT_DIR = $project
-        $pwsh = (Get-Process -Id $PID).Path
-        $commandOutput = @(& $pwsh -NoLogo -NoProfile -NonInteractive -File $script:winsmuxCorePath mailbox-send 'winsmux-orchestra-operator' $json)
-        $LASTEXITCODE | Should -Be 0
-        $commandOutput | Should -Contain 'mailbox queued: winsmux-orchestra-operator'
-        [Convert]::ToBase64String([IO.File]::ReadAllBytes($pending)) | Should -BeExactly ([Convert]::ToBase64String($publishedBytes))
+        $proofPath = Join-Path $project '.winsmux\workflow-runs\run-123\proofs\completion\inspect.json'
+        Test-Path -LiteralPath $proofPath -PathType Leaf | Should -BeTrue
+        $proofBytes = [IO.File]::ReadAllBytes($proofPath)
+        Should -Invoke Get-PaneControlManifestEntries -Times 1 -Exactly -ParameterFilter { $ProjectDir -eq $project }
+        Should -Invoke Test-PaneControlRuntimeContext -Times 1 -Exactly -ParameterFilter { $Operation -eq 'workflow_ack' -and $ManifestEntry.Label -eq 'builder-1' -and $ManifestEntry.PaneId -eq '%2' }
 
         $retryPayload = $json | ConvertFrom-Json -AsHashtable
         $retryPayload.timestamp = [DateTimeOffset]::UtcNow.AddYears(1).ToString('o')
         $retryJson = $retryPayload | ConvertTo-Json -Compress -Depth 20
         Publish-WinsmuxWorkflowCompletionEnvelope -ProjectDir $project -Channel 'winsmux-orchestra-operator' -Payload $retryJson | Out-Null
         [Convert]::ToBase64String([IO.File]::ReadAllBytes($pending)) | Should -BeExactly ([Convert]::ToBase64String($publishedBytes))
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($proofPath)) | Should -BeExactly ([Convert]::ToBase64String($proofBytes))
 
         $changedPayload = $json | ConvertFrom-Json -AsHashtable
         $changedPayload.content.role = 'reviewer'
@@ -897,18 +921,45 @@ Describe 'winsmux send dispatch payload' {
         { Publish-WinsmuxWorkflowCompletionEnvelope -ProjectDir $project -Channel ('a' * 65) -Payload $json } |
             Should -Throw '*channel*'
 
+        $raceProject = Join-Path $script:sendTempRoot 'durable-workflow-mailbox-race'
+        [IO.Directory]::CreateDirectory((Join-Path $raceProject '.winsmux')) | Out-Null
+        Save-WinsmuxManifest -ProjectDir $raceProject -Manifest ([ordered]@{
+            version = 2
+            session = [ordered]@{ name = 'winsmux-orchestra'; generation_id = 'generation-123'; server_session_id = '$41'; session_ready = $true }
+            panes = [ordered]@{ 'builder-1' = [ordered]@{ pane_id = '%2'; role = 'Builder'; status = 'ready'; runtime_ready = $true } }
+            tasks = [ordered]@{ queued = @(); in_progress = @(); completed = @() }
+            worktrees = [ordered]@{}
+        })
+        Initialize-TestWorkflowCompletionRun -ProjectDir $raceProject
         $racePayload = $json | ConvertFrom-Json -AsHashtable
         $racePayload.message_id = 'workflow-ack-race'
         $racePayload.correlation_id = 'workflow-ack-race'
         $racePayload.idempotency_key = 'workflow-completion-race'
         $raceJson = $racePayload | ConvertTo-Json -Compress -Depth 20
-        $escapedCorePath = $script:winsmuxCorePath.Replace("'", "''")
-        $escapedRaceJson = $raceJson.Replace("'", "''")
-        $childCommand = "& '$escapedCorePath' mailbox-send 'winsmux-orchestra-operator' '$escapedRaceJson'; exit `$LASTEXITCODE"
-        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childCommand))
+        $corePathBase64 = [Convert]::ToBase64String([Text.UTF8Encoding]::new($false).GetBytes($script:winsmuxCorePath))
+        $raceProjectBase64 = [Convert]::ToBase64String([Text.UTF8Encoding]::new($false).GetBytes($raceProject))
+        $racePayloadBase64 = [Convert]::ToBase64String([Text.UTF8Encoding]::new($false).GetBytes($raceJson))
+        $childTemplate = @'
+$corePath = [Text.UTF8Encoding]::new($false).GetString([Convert]::FromBase64String('__CORE_PATH__'))
+$projectDir = [Text.UTF8Encoding]::new($false).GetString([Convert]::FromBase64String('__PROJECT_DIR__'))
+$payload = [Text.UTF8Encoding]::new($false).GetString([Convert]::FromBase64String('__PAYLOAD__'))
+. $corePath 'version' *> $null
+function Get-PaneControlManifestEntries {
+    param([string]$ProjectDir)
+    @([PSCustomObject]@{ Label = 'builder-1'; PaneId = '%2'; WorkerBackend = 'api_llm'; ProjectDir = $ProjectDir })
+}
+function Test-PaneControlRuntimeContext {
+    param($ProjectDir, $ManifestEntry, $Operation)
+    [PSCustomObject]@{ valid = $true; context = [PSCustomObject]@{ generation_id = 'generation-123'; label = 'builder-1'; pane_id = '%2' } }
+}
+Publish-WinsmuxWorkflowCompletionEnvelope -ProjectDir $projectDir -Channel 'winsmux-orchestra-operator' -Payload $payload | Out-Null
+'@
+        $childScript = $childTemplate.Replace('__CORE_PATH__', $corePathBase64).Replace('__PROJECT_DIR__', $raceProjectBase64).Replace('__PAYLOAD__', $racePayloadBase64)
+        $encodedChildScript = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childScript))
+        $pwsh = (Get-Process -Id $PID).Path
         $publishers = @(
-            Start-Process -FilePath $pwsh -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) -WindowStyle Hidden -PassThru
-            Start-Process -FilePath $pwsh -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) -WindowStyle Hidden -PassThru
+            Start-Process -FilePath $pwsh -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', $encodedChildScript) -WindowStyle Hidden -PassThru
+            Start-Process -FilePath $pwsh -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', $encodedChildScript) -WindowStyle Hidden -PassThru
         )
         try {
             foreach ($publisher in $publishers) {
@@ -921,11 +972,71 @@ Describe 'winsmux send dispatch payload' {
                 $publisher.Dispose()
             }
         }
-        $racePending = Join-Path $project '.winsmux\mailbox\winsmux-orchestra-operator\pending\workflow-ack-race.json'
-        $racePublished = [IO.File]::ReadAllText($racePending, [Text.UTF8Encoding]::new($false, $true)) | ConvertFrom-Json -AsHashtable -DateKind String
-        ([DateTimeOffset]::Parse([string]$racePublished.timestamp)).UtcDateTime.Ticks |
-            Should -BeGreaterThan ([DateTimeOffset]::UtcNow.AddMinutes(-1).UtcDateTime.Ticks)
-        $racePublished.content.data.node_id | Should -BeExactly 'inspect'
+        $racePending = Join-Path $raceProject '.winsmux\mailbox\winsmux-orchestra-operator\pending\workflow-ack-race.json'
+        $raceProofPath = Join-Path $raceProject '.winsmux\workflow-runs\run-123\proofs\completion\inspect.json'
+        @(Get-ChildItem -LiteralPath (Split-Path -Parent $racePending) -File -Filter '*.json').Count | Should -Be 1
+        Test-Path -LiteralPath $raceProofPath -PathType Leaf | Should -BeTrue
+        $raceProof = Read-DeclarativeWorkflowDurableProof -ProjectDir $raceProject -RunId 'run-123' -Kind Completion -NodeId 'inspect'
+        $expectedRaceProof = [ordered]@{}
+        foreach ($name in @('schema_version', 'run_id', 'node_id', 'idempotency_key', 'generation_id', 'config_fingerprint', 'workflow_fingerprint', 'source_head', 'pane_id', 'status', 'evidence_ref')) {
+            $expectedRaceProof[$name] = $racePayload.content.data[$name]
+        }
+        $expectedRaceProof.transport = 'mailbox'
+        $expectedRaceProof.message_id = 'workflow-ack-race'
+        (ConvertTo-DeclarativeWorkflowCanonicalJson -Value $raceProof) | Should -BeExactly (ConvertTo-DeclarativeWorkflowCanonicalJson -Value $expectedRaceProof)
+        $racePendingEnvelope = [IO.File]::ReadAllText($racePending, [Text.UTF8Encoding]::new($false, $true)) | ConvertFrom-Json -AsHashtable -DateKind String
+        (ConvertTo-WinsmuxWorkflowCompletionSemanticJson -Envelope $racePendingEnvelope) | Should -BeExactly (ConvertTo-WinsmuxWorkflowCompletionSemanticJson -Envelope $racePayload)
+        $raceProofBytes = [IO.File]::ReadAllBytes($raceProofPath)
+        $racePendingBytes = [IO.File]::ReadAllBytes($racePending)
+        Enable-TestWorkflowCompletionCaller -ProjectDir $raceProject
+        Publish-WinsmuxWorkflowCompletionEnvelope -ProjectDir $raceProject -Channel 'winsmux-orchestra-operator' -Payload $raceJson | Out-Null
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($raceProofPath)) | Should -BeExactly ([Convert]::ToBase64String($raceProofBytes))
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($racePending)) | Should -BeExactly ([Convert]::ToBase64String($racePendingBytes))
+
+    }
+
+    It 'Q01 refuses a claimed workflow completion from a different live caller before proof or pending effects' {
+        $project = Join-Path $script:sendTempRoot 'q01-wrong-caller'
+        [IO.Directory]::CreateDirectory((Join-Path $project '.winsmux')) | Out-Null
+        Save-WinsmuxManifest -ProjectDir $project -Manifest ([ordered]@{
+            version = 2
+            session = [ordered]@{ name = 'winsmux-orchestra'; generation_id = 'generation-123'; server_session_id = '$41'; session_ready = $true }
+            panes = [ordered]@{ 'builder-1' = [ordered]@{ pane_id = '%2'; role = 'Builder'; status = 'ready'; runtime_ready = $true } }
+            tasks = [ordered]@{ queued = @(); in_progress = @(); completed = @() }
+            worktrees = [ordered]@{}
+        })
+        Initialize-TestWorkflowCompletionRun -ProjectDir $project
+        Enable-TestWorkflowCompletionCaller -ProjectDir $project
+        $payload = [ordered]@{
+            mailbox_version = 2; message_id = 'workflow-ack-q01'; correlation_id = 'workflow-ack-q01'; causation_id = $null
+            idempotency_key = 'workflow-completion-q01'; message_type = 'workflow-completion'; state = 'created'; ttl_seconds = 300
+            ack_required = $true; from = 'builder-1'; to = 'Operator'; timestamp = $null
+            content = [ordered]@{
+                session = 'winsmux-orchestra'; event = 'workflow.node.acknowledged'; message = 'Declarative workflow completion.'
+                label = 'builder-1'; pane_id = '%2'; role = 'Builder'; status = 'succeeded'; exit_reason = ''
+                data = [ordered]@{
+                    schema_version = 1; run_id = 'run-123'; node_id = 'inspect'; idempotency_key = 'run-123:inspect'
+                    generation_id = 'generation-123'; config_fingerprint = ('sha256:' + ('a' * 64)); workflow_fingerprint = ('sha256:' + ('d' * 64))
+                    source_head = ('b' * 40); pane_id = '%2'; status = 'succeeded'; evidence_ref = 'workflow-ack:run-123:inspect'
+                }
+            }
+        }
+        $run = [ordered]@{
+            run_id = 'run-123'; generation_id = 'generation-123'; resolved_bindings = [ordered]@{ implement = 'builder-1' }
+            nodes = [ordered]@{ inspect = [ordered]@{ node_id = 'inspect'; pane_ref = 'implement'; state = 'dispatching'; attempt = 1; idempotency_key = 'run-123:inspect' } }
+        }
+        Mock Read-DeclarativeWorkflowRunState { $run }
+        Mock Get-PaneControlManifestEntries {
+            @([PSCustomObject]@{ Label = 'builder-1'; PaneId = '%2'; WorkerBackend = 'api_llm'; ProjectDir = $project })
+        }
+        Mock Test-PaneControlRuntimeContext {
+            [PSCustomObject]@{ valid = $false; reason_code = 'caller_identity_mismatch'; diagnostic = 'different live pane process' }
+        }
+
+        { Publish-WinsmuxWorkflowCompletionEnvelope -ProjectDir $project -Channel 'winsmux-orchestra-operator' -Payload ($payload | ConvertTo-Json -Compress -Depth 20) } |
+            Should -Throw '*caller_identity_mismatch*'
+        Test-Path -LiteralPath (Join-Path $project '.winsmux\workflow-runs\run-123\proofs\completion\inspect.json') -PathType Leaf | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $project '.winsmux\mailbox\winsmux-orchestra-operator\pending\workflow-ack-q01.json') -PathType Leaf | Should -BeFalse
     }
 
     It 'P03 refuses prepared pending ancestor and destination leaf junctions without external writes' {
@@ -938,6 +1049,8 @@ Describe 'winsmux send dispatch payload' {
             tasks = [ordered]@{ queued = @(); in_progress = @(); completed = @() }
             worktrees = [ordered]@{}
         })
+        Initialize-TestWorkflowCompletionRun -ProjectDir $project
+        Enable-TestWorkflowCompletionCaller -ProjectDir $project
         $payload = [ordered]@{
             mailbox_version = 2; message_id = 'workflow-ack-p03'; correlation_id = 'workflow-ack-p03'; causation_id = $null
             idempotency_key = 'workflow-completion-p03'; message_type = 'workflow-completion'; state = 'created'; ttl_seconds = 300

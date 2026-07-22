@@ -992,6 +992,28 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         Should -Invoke Invoke-DeclarativeWorkflowResume -Times 1 -Exactly
     }
 
+    It 'R01 consumes an admitted proof after the original pane exits or is replaced' {
+        $run = New-TestBlockedRun
+        $proof = New-TestAcknowledgement -NodeId 'inspect' -PaneId '%2'
+        $script:r01OldPaneResolutions = 0
+        $result = Invoke-DeclarativeWorkflowResume -Run $run -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) `
+            -SaveRun { param($candidate) } `
+            -Dispatch { param($request) New-TestAcceptedReceipt -NodeId $request.node_id -PaneId '%3' } `
+            -ResolveSession {
+                param($paneId)
+                if ($paneId -ceq '%2') { $script:r01OldPaneResolutions++; throw 'the original pane exited' }
+                return $paneId
+            } `
+            -ResolveAcknowledgement {
+                param($candidate, $nodeId)
+                if ($nodeId -ceq 'inspect') { return $proof }
+                return New-TestAcknowledgement -NodeId $nodeId -PaneId '%3'
+            }
+
+        $script:r01OldPaneResolutions | Should -Be 0
+        $result.nodes.inspect.state | Should -Be 'succeeded'
+    }
+
     It 'C07 advances a start run through every ready node and releases the terminal lock exactly once' {
         $project = Join-Path $TestDrive 'start-run-advancement'
         $run = New-TestRun

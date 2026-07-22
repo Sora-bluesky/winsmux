@@ -47,6 +47,19 @@ Describe 'operator-poll helpers' {
             }
             [IO.File]::WriteAllText((Join-Path $runRoot 'state.json'), ($run | ConvertTo-Json -Compress -Depth 20), [Text.UTF8Encoding]::new($false))
         }
+
+        function Add-TestDurableWorkflowCompletionProof {
+            param(
+                [Parameter(Mandatory = $true)][string]$MessageId,
+                [string]$NodeId = 'inspect'
+            )
+            $run = Read-DeclarativeWorkflowRunState -ProjectDir $script:operatorPollTempRoot -RunId 'run-123'
+            $proof = (New-TestDurableWorkflowEnvelope -MessageId $MessageId -NodeId $NodeId).content.data
+            $proof['transport'] = 'mailbox'
+            $proof['message_id'] = $MessageId
+            Write-DeclarativeWorkflowDurableProof -ProjectDir $script:operatorPollTempRoot -Run $run -Kind Completion -NodeId $NodeId -Proof $proof `
+                -TrustedSenderLabel 'builder-1' -TrustedSenderPaneId '%2' | Out-Null
+        }
     }
 
     BeforeEach {
@@ -334,6 +347,7 @@ panes:
         $manifest = Read-OperatorPollManifest -Path $script:operatorPollManifestPath
         $summary = [ordered]@{ new_events = 0; dispatches = 0; completions = 0; approvals = 0; errors = 0; messages = @() }
         Initialize-TestDurableWorkflowRun
+        Add-TestDurableWorkflowCompletionProof -MessageId 'workflow-ack-1'
         Mock Write-OrchestraLog { }
 
         Invoke-OperatorPollEventRecord -Manifest $manifest -ManifestPath $script:operatorPollManifestPath -EventRecord $record -Summary $summary
@@ -459,6 +473,7 @@ panes:
         $payload.timestamp = [DateTimeOffset]::UtcNow.AddMinutes(-10).ToString('o')
         [IO.File]::WriteAllText($pendingPath, ($payload | ConvertTo-Json -Compress -Depth 20), [Text.UTF8Encoding]::new($false))
         Initialize-TestDurableWorkflowRun
+        Add-TestDurableWorkflowCompletionProof -MessageId 'workflow-ack-stale-publication'
         Mock Receive-OperatorPollMailboxMessages { @() }
         Mock Write-OrchestraLog { }
 
@@ -471,6 +486,23 @@ panes:
         $proof = Read-DeclarativeWorkflowDurableProof -ProjectDir $script:operatorPollTempRoot -Run $null -RunId 'run-123' -Kind Completion -NodeId 'inspect'
         $proof.message_id | Should -BeExactly 'workflow-ack-stale-publication'
         Should -Invoke Write-OrchestraLog -Times 1 -Exactly
+    }
+
+    It 'P03 terminally rejects raw pending completion without an already admitted proof' {
+        $pendingRoot = Join-Path $script:operatorPollTempRoot '.winsmux\mailbox\winsmux-orchestra-operator\pending'
+        [IO.Directory]::CreateDirectory($pendingRoot) | Out-Null
+        $pendingPath = Join-Path $pendingRoot 'workflow-ack-p03-raw.json'
+        [IO.File]::WriteAllText($pendingPath, ((New-TestDurableWorkflowEnvelope -MessageId 'workflow-ack-p03-raw') | ConvertTo-Json -Compress -Depth 20), [Text.UTF8Encoding]::new($false))
+        Initialize-TestDurableWorkflowRun
+        Mock Receive-OperatorPollMailboxMessages { @() }
+        Mock Write-OrchestraLog { throw 'raw pending completion must not be logged' }
+
+        $result = Invoke-OperatorPollCycle -ManifestPath $script:operatorPollManifestPath -ProcessedLineCount 0 -ProcessedEventSignatures ([ordered]@{})
+
+        $result.Summary.errors | Should -BeGreaterThan 0
+        Test-Path -LiteralPath $pendingPath -PathType Leaf | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $script:operatorPollTempRoot '.winsmux\workflow-runs\run-123\proofs\completion\inspect.json') -PathType Leaf | Should -BeFalse
+        Should -Invoke Write-OrchestraLog -Times 0 -Exactly
     }
 
     It 'P02 refuses a prepared pending junction before read delete log or proof effects' {
@@ -583,6 +615,7 @@ panes:
         $json = (New-TestDurableWorkflowEnvelope) | ConvertTo-Json -Compress -Depth 20
         [IO.File]::WriteAllText($pendingPath, $json, [Text.UTF8Encoding]::new($false))
         Initialize-TestDurableWorkflowRun
+        Add-TestDurableWorkflowCompletionProof -MessageId 'workflow-ack-f01'
         Mock Receive-OperatorPollMailboxMessages { @() }
         Mock Write-OrchestraLog { }
 
@@ -644,6 +677,7 @@ panes:
         Mock Receive-OperatorPollMailboxMessages { @() }
         Mock Write-OrchestraLog { }
         Initialize-TestDurableWorkflowRun -InspectState 'blocked'
+        Add-TestDurableWorkflowCompletionProof -MessageId 'workflow-ack-q03-blocked'
         $pendingPath = Join-Path $pendingRoot 'workflow-ack-q03-blocked.json'
         [IO.File]::WriteAllText($pendingPath, ((New-TestDurableWorkflowEnvelope -MessageId 'workflow-ack-q03-blocked') | ConvertTo-Json -Compress -Depth 20), [Text.UTF8Encoding]::new($false))
 
@@ -659,6 +693,7 @@ panes:
         Mock Receive-OperatorPollMailboxMessages { @() }
         Mock Write-OrchestraLog { }
         Initialize-TestDurableWorkflowRun
+        Add-TestDurableWorkflowCompletionProof -MessageId 'z-workflow-ack-q01-valid'
         $poisonPath = Join-Path $pendingRoot 'a-workflow-ack-q01-future.json'
         $validPath = Join-Path $pendingRoot 'z-workflow-ack-q01-valid.json'
         [IO.File]::WriteAllText($poisonPath, ((New-TestDurableWorkflowEnvelope -MessageId 'a-workflow-ack-q01-future' -NodeId 'verify') | ConvertTo-Json -Compress -Depth 20), [Text.UTF8Encoding]::new($false))
@@ -728,6 +763,7 @@ panes:
         Mock Receive-OperatorPollMailboxMessages { @() }
         Mock Write-OrchestraLog { }
         Initialize-TestDurableWorkflowRun
+        Add-TestDurableWorkflowCompletionProof -MessageId 'z-workflow-ack-q07-valid'
 
         foreach ($index in 0..19) {
             $messageId = 'a-workflow-ack-q07-{0:d2}' -f $index

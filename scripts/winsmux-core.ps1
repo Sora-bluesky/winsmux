@@ -18442,6 +18442,53 @@ function ConvertTo-WinsmuxWorkflowCompletionSemanticJson {
     } | ConvertTo-Json -Compress -Depth 12)
 }
 
+function Resolve-WinsmuxWorkflowCompletionAdmission {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][Collections.IDictionary]$Envelope
+    )
+
+    $data = $Envelope['content']['data']
+    $runId = [string]$data['run_id']
+    $nodeId = [string]$data['node_id']
+    $run = Read-DeclarativeWorkflowRunState -ProjectDir $ProjectDir -RunId $runId
+    $nodes = Get-DeclarativeWorkflowValue -InputObject $run -Name 'nodes' -Default $null
+    if ($nodes -isnot [Collections.IDictionary] -or -not $nodes.Contains($nodeId)) {
+        throw 'mailbox-send: workflow completion run does not own the claimed node'
+    }
+    $node = $nodes[$nodeId]
+    $paneRef = [string](Get-DeclarativeWorkflowValue -InputObject $node -Name 'pane_ref' -Default '')
+    $bindings = Get-DeclarativeWorkflowValue -InputObject $run -Name 'resolved_bindings' -Default $null
+    if ($bindings -isnot [Collections.IDictionary] -or [string]::IsNullOrWhiteSpace($paneRef) -or -not $bindings.Contains($paneRef)) {
+        throw 'mailbox-send: workflow completion node has no resolved runtime binding'
+    }
+    $expectedLabel = [string]$bindings[$paneRef]
+    $entries = @(Get-PaneControlManifestEntries -ProjectDir $ProjectDir | Where-Object { [string]$_.Label -ceq $expectedLabel })
+    if ($entries.Count -ne 1) {
+        throw 'mailbox-send: workflow completion binding does not resolve to exactly one manifest target'
+    }
+    $entry = $entries[0]
+    $expectedPaneId = [string]$entry.PaneId
+    $content = $Envelope['content']
+    if ([string]$Envelope['from'] -cne $expectedLabel -or [string]$content['label'] -cne $expectedLabel -or
+        [string]$content['pane_id'] -cne $expectedPaneId -or [string]$data['pane_id'] -cne $expectedPaneId) {
+        throw 'mailbox-send: workflow completion payload does not match the resolved runtime target'
+    }
+    $validation = Test-PaneControlRuntimeContext -ProjectDir $ProjectDir -ManifestEntry $entry -Operation workflow_ack
+    if ($null -eq $validation -or -not [bool](Get-PaneControlValue -InputObject $validation -Name 'valid' -Default $false)) {
+        $reasonCode = [string](Get-PaneControlValue -InputObject $validation -Name 'reason_code' -Default 'caller_identity_mismatch')
+        $diagnostic = [string](Get-PaneControlValue -InputObject $validation -Name 'diagnostic' -Default 'workflow caller identity could not be verified')
+        throw ('mailbox-send: workflow completion caller identity refused ({0}): {1}' -f $reasonCode, $diagnostic)
+    }
+    $runtime = Get-PaneControlValue -InputObject $validation -Name 'context' -Default $null
+    if (-not [string]::Equals([string](Get-PaneControlValue -InputObject $runtime -Name 'generation_id' -Default ''), [string]$data['generation_id'], [StringComparison]::Ordinal) -or
+        [string](Get-PaneControlValue -InputObject $runtime -Name 'label' -Default '') -cne $expectedLabel -or
+        [string](Get-PaneControlValue -InputObject $runtime -Name 'pane_id' -Default '') -cne $expectedPaneId) {
+        throw 'mailbox-send: workflow completion authenticated runtime target changed before admission'
+    }
+    return [PSCustomObject][ordered]@{ Run = $run; NodeId = $nodeId; Label = $expectedLabel; PaneId = $expectedPaneId }
+}
+
 function Publish-WinsmuxWorkflowCompletionEnvelope {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -18465,6 +18512,15 @@ function Publish-WinsmuxWorkflowCompletionEnvelope {
         throw 'mailbox-send: workflow completion channel does not match the fresh manifest session'
     }
     $envelope = ConvertTo-WinsmuxWorkflowCompletionEnvelope -Payload $Payload -SessionName $sessionName -GenerationId $generationId
+    $admission = Resolve-WinsmuxWorkflowCompletionAdmission -ProjectDir $projectRoot -Envelope $envelope
+    $acknowledgement = [ordered]@{}
+    foreach ($name in @('schema_version', 'run_id', 'node_id', 'idempotency_key', 'generation_id', 'config_fingerprint', 'workflow_fingerprint', 'source_head', 'pane_id', 'status', 'evidence_ref')) {
+        $acknowledgement[$name] = $envelope['content']['data'][$name]
+    }
+    $acknowledgement['transport'] = 'mailbox'
+    $acknowledgement['message_id'] = [string]$envelope['message_id']
+    Write-DeclarativeWorkflowDurableProof -ProjectDir $projectRoot -Run $admission.Run -Kind Completion -NodeId $admission.NodeId -Proof $acknowledgement `
+        -TrustedSenderLabel $admission.Label -TrustedSenderPaneId $admission.PaneId | Out-Null
     $messageId = [string]$envelope['message_id']
     $pendingRoot = Resolve-DeclarativeWorkflowMailboxPendingPath -ProjectDir $projectRoot -Channel $Channel -CreateDirectory
     $destination = Resolve-DeclarativeWorkflowMailboxPendingPath -ProjectDir $projectRoot -Channel $Channel -MessageId $messageId

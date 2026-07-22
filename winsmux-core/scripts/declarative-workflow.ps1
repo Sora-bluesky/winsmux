@@ -820,15 +820,10 @@ function Invoke-DeclarativeWorkflowResume {
                 return $candidate
             }
             $acknowledgement = $acknowledgements[0]
-            $paneId = [string](Get-DeclarativeWorkflowValue $acknowledgement 'pane_id' '')
-            $resolvedSession = [string](& $ResolveSession $paneId)
-            if (-not (Test-DeclarativeWorkflowSessionId $resolvedSession) -or $resolvedSession -cne $paneId) {
-                if ($nodeState -ceq 'dispatching') {
-                    $candidate = Invoke-DeclarativeWorkflowTransition -Run $candidate -Event ([ordered]@{ type = 'block'; node_id = $nodeId }) -DurableProofs $durableProofs
-                    & $SaveRun $candidate
-                }
-                return $candidate
-            }
+            # Completion proofs have already passed publisher-side caller authentication and
+            # immutable admission.  Resume must retain that original execution identity even
+            # when the completed pane no longer exists in the current runtime registry.
+            $resolvedSession = [string](Get-DeclarativeWorkflowValue $acknowledgement 'pane_id' '')
             $candidate = Invoke-DeclarativeWorkflowTransition -Run $candidate -Event ([ordered]@{
                     type                = 'acknowledge'
                     node_id             = $nodeId

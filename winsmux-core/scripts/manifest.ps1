@@ -1011,7 +1011,7 @@ function Test-WinsmuxRuntimeContext {
         [AllowNull()]$PaneMarker,
         [AllowNull()]$CallerIdentity,
         [AllowNull()][object[]]$ObservedPanes = $null,
-        [ValidateSet('dispatch', 'start_deferred', 'caller_ack', 'stop_transition')][string]$Operation = 'dispatch',
+        [ValidateSet('dispatch', 'start_deferred', 'caller_ack', 'workflow_ack', 'stop_transition')][string]$Operation = 'dispatch',
         [scriptblock]$ProcessResolver = { param([int]$Id) Get-CimInstance -ClassName Win32_Process -Filter ("ProcessId = {0}" -f $Id) -ErrorAction SilentlyContinue },
         [datetime]$Now = (Get-Date)
     )
@@ -1243,7 +1243,7 @@ function Test-WinsmuxRuntimeContext {
         return & $targetMismatch 'Live pane marker does not match the runtime registry and current bootstrap process identity.'
     }
 
-    $requiresCallerIdentity = $Operation -ceq 'caller_ack' -and $backend -in @('local', 'codex')
+    $requiresCallerIdentity = $Operation -ceq 'workflow_ack' -or ($Operation -ceq 'caller_ack' -and $backend -in @('local', 'codex'))
     $callerPid = ConvertTo-WinsmuxRuntimeInteger -Value (Get-WinsmuxRuntimeValue -InputObject $CallerIdentity -Name 'process_id' -Default $null)
     $callerStartedAt = [string](Get-WinsmuxRuntimeValue -InputObject $CallerIdentity -Name 'process_started_at' -Default '')
     if ($requiresCallerIdentity -and ($null -eq $CallerIdentity -or $null -eq $callerPid -or
