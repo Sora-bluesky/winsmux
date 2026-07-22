@@ -1803,6 +1803,49 @@ function Invoke-TeamPipelineWorkspacePlanOnce {
     return $plan
 }
 
+function ConvertTo-TeamPipelineDeclarativeWorkflowPlan {
+    param([Parameter(Mandatory = $true)]$WorkspacePlan)
+
+    $rawWorkflow = Get-DeclarativeWorkflowValue $WorkspacePlan 'workflow' $null
+    if ($null -eq $rawWorkflow) { throw 'workspace_plan_missing_workflow' }
+    $workflowPlan = Copy-DeclarativeWorkflowValue $rawWorkflow
+    if ($workflowPlan -isnot [Collections.IDictionary]) {
+        $copy = [ordered]@{}
+        foreach ($property in @($workflowPlan.PSObject.Properties | Where-Object { $_.MemberType -in @('NoteProperty', 'Property') })) {
+            $copy[[string]$property.Name] = $property.Value
+        }
+        $workflowPlan = $copy
+    }
+
+    $workflowPlan['config_fingerprint'] = [string](Get-DeclarativeWorkflowValue $WorkspacePlan 'config_fingerprint' '')
+    $workflowPlan['resolved_bindings'] = Copy-DeclarativeWorkflowValue (Get-DeclarativeWorkflowValue $WorkspacePlan 'resolved_bindings' ([ordered]@{}))
+    return $workflowPlan
+}
+
+function Assert-TeamPipelineDeclarativeRunLockAdmission {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)]$Run
+    )
+
+    $lockPath = Resolve-DeclarativeWorkflowOwnedLock -ProjectDir $ProjectDir -Run $Run
+    if ([IO.File]::Exists($lockPath)) {
+        if (-not (Test-DeclarativeWorkflowRunLockOwnership -ProjectDir $ProjectDir -Run $Run)) {
+            throw 'workflow_run_lock_mismatch'
+        }
+        return $lockPath
+    }
+    if (-not (Test-DeclarativeWorkflowPristineBootstrap -Run $Run)) {
+        throw 'workflow_run_lock_missing_after_effect'
+    }
+
+    $createdPath = New-DeclarativeWorkflowRunLock -ProjectDir $ProjectDir -Run $Run
+    if (-not (Test-DeclarativeWorkflowRunLockOwnership -ProjectDir $ProjectDir -Run $Run)) {
+        throw 'workflow_run_lock_create_unverified'
+    }
+    return $createdPath
+}
+
 function Get-TeamPipelineDeclarativeSessionId {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -2153,7 +2196,8 @@ function Invoke-TeamPipelineDeclarativeRunAdvancement {
         [Parameter(Mandatory = $true)][scriptblock]$ResolveSession,
         [Parameter(Mandatory = $true)][scriptblock]$ResolveAcknowledgement,
         [Parameter(Mandatory = $true)][scriptblock]$ReleaseLock,
-        [scriptblock]$ValidateSnapshot
+        [scriptblock]$ValidateSnapshot,
+        [switch]$SnapshotValidated
     )
 
     $initialState = [string](Get-DeclarativeWorkflowValue $Run 'state' '')
@@ -2161,9 +2205,10 @@ function Invoke-TeamPipelineDeclarativeRunAdvancement {
         throw "Declarative workflow terminal run '$initialState' requires terminal cleanup recovery."
     }
 
+    $resumeSnapshotValidator = if ($SnapshotValidated) { $null } else { $ValidateSnapshot }
     $advanced = Invoke-DeclarativeWorkflowResume -Run $Run -TaskInput $TaskInput -Confirmation $Confirmation `
         -SaveRun $SaveRun -Dispatch $Dispatch -ResolveSession $ResolveSession `
-        -ResolveAcknowledgement $ResolveAcknowledgement -ValidateSnapshot $ValidateSnapshot
+        -ResolveAcknowledgement $ResolveAcknowledgement -ValidateSnapshot $resumeSnapshotValidator
 
     if ([string](Get-DeclarativeWorkflowValue $advanced 'state' '') -in @('succeeded', 'failed', 'cancelled')) {
         return Invoke-DeclarativeWorkflowTerminalCleanup -ProjectDir $ProjectDir -Run $advanced -SaveRun $SaveRun -ReleaseLock $ReleaseLock
@@ -2180,12 +2225,13 @@ function Invoke-TeamPipelineDeclarativeTerminalRecovery {
         [Parameter(Mandatory = $true)]$Confirmation,
         [Parameter(Mandatory = $true)][scriptblock]$SaveRun,
         [Parameter(Mandatory = $true)][scriptblock]$ReleaseLock,
-        [scriptblock]$ValidateSnapshot
+        [scriptblock]$ValidateSnapshot,
+        [switch]$SnapshotValidated
     )
 
     Assert-DeclarativeWorkflowTaskIdentity -Run $Run -TaskInput $TaskInput
     Assert-DeclarativeWorkflowConfirmation -Run $Run -Confirmation $Confirmation
-    if ($null -ne $ValidateSnapshot) { & $ValidateSnapshot $Run }
+    if (-not $SnapshotValidated -and $null -ne $ValidateSnapshot) { & $ValidateSnapshot $Run }
 
     $terminalState = [string](Get-DeclarativeWorkflowValue $Run 'state' '')
     if ($terminalState -notin @('succeeded', 'failed', 'cancelled')) {
@@ -2254,28 +2300,23 @@ function Invoke-TeamPipelineDeclarativeWorkflow {
         if ([IO.File]::Exists($statePath)) { throw 'workflow_run_already_exists' }
         $workspacePlan = Invoke-TeamPipelineWorkspacePlanOnce -ProjectDir $ProjectDir -RecipeId $RecipeId -WorkflowId $WorkflowId -RunId $RunId
         if ([string](Get-DeclarativeWorkflowValue $workspacePlan 'config_fingerprint' '') -cne $ConfigFingerprint) { throw 'workflow_confirmation_mismatch' }
-        $workflowPlan = Copy-DeclarativeWorkflowValue (Get-DeclarativeWorkflowValue $workspacePlan 'workflow' $null)
-        $workflowPlan['config_fingerprint'] = $ConfigFingerprint
-        $workflowPlan['resolved_bindings'] = Copy-DeclarativeWorkflowValue (Get-DeclarativeWorkflowValue $workspacePlan 'resolved_bindings' ([ordered]@{}))
+        $workflowPlan = ConvertTo-TeamPipelineDeclarativeWorkflowPlan -WorkspacePlan $workspacePlan
         $run = New-DeclarativeWorkflowRun -Plan $workflowPlan -RunId $RunId -GenerationId $GenerationId -SourceHead $SourceHead -TaskInput $taskInput
-        $createdLockPath = New-DeclarativeWorkflowRunLock -ProjectDir $ProjectDir -Run $run
         try {
-            Save-DeclarativeWorkflowRunState -ProjectDir $ProjectDir -Run $run | Out-Null
+            Save-DeclarativeWorkflowRunState -ProjectDir $ProjectDir -Run $run -CreateNew | Out-Null
         } catch {
-            $stateSaveError = $_
+            throw
+        }
+        try {
+            New-DeclarativeWorkflowRunLock -ProjectDir $ProjectDir -Run $run | Out-Null
+        } catch {
+            $lockCreateError = $_
             try {
-                $compensationPath = Resolve-DeclarativeWorkflowOwnedLock -ProjectDir $ProjectDir -Run $run
-                if ($compensationPath -cne $createdLockPath -or
-                    -not (Test-DeclarativeWorkflowRunLockOwnership -ProjectDir $ProjectDir -Run $run)) {
-                    throw 'Workflow run lock ownership changed before state-save compensation.'
-                }
-                Remove-Item -LiteralPath $compensationPath -Force
-                $postCompensationPath = Resolve-DeclarativeWorkflowOwnedLock -ProjectDir $ProjectDir -Run $run
-                if ([IO.File]::Exists($postCompensationPath)) { throw 'Workflow run lock compensation did not remove the owned lock.' }
+                Remove-DeclarativeWorkflowPristineRunState -ProjectDir $ProjectDir -Run $run
             } catch {
-                throw "workflow_state_save_failed_lock_compensation_blocked: $([string]$stateSaveError.Exception.Message); $([string]$_.Exception.Message)"
+                throw "workflow_lock_create_failed_state_rollback_blocked: $([string]$lockCreateError.Exception.Message); $([string]$_.Exception.Message)"
             }
-            throw $stateSaveError
+            throw $lockCreateError
         }
     } else {
         $run = Read-DeclarativeWorkflowRunState -ProjectDir $ProjectDir -RunId $RunId
@@ -2286,19 +2327,22 @@ function Invoke-TeamPipelineDeclarativeWorkflow {
     $releaseLock = { param($path) Remove-Item -LiteralPath $path -Force -ErrorAction Stop }
     $resolveAcknowledgement = { param($candidateRun, $nodeId) Resolve-TeamPipelineDeclarativeAcknowledgement -Run $candidateRun -NodeId $nodeId -ProjectDir $ProjectDir -SessionName $sessionName }
     $validateSnapshot = $null
+    $snapshotValidated = $false
     if ($Action -ceq 'resume') {
         $validateSnapshot = {
             param($candidateRun)
             $workspacePlan = Invoke-TeamPipelineWorkspacePlanOnce -ProjectDir $ProjectDir -RecipeId ([string]$candidateRun.recipe_ref) -WorkflowId ([string]$candidateRun.workflow_id) -RunId $RunId
-            $currentWorkflow = Get-DeclarativeWorkflowValue $workspacePlan 'workflow' $null
-            Assert-DeclarativeWorkflowSnapshot -Run $candidateRun `
-                -WorkflowFingerprint ([string](Get-DeclarativeWorkflowValue $currentWorkflow 'workflow_fingerprint' '')) `
-                -ConfigFingerprint ([string](Get-DeclarativeWorkflowValue $workspacePlan 'config_fingerprint' '')) `
-                -ResolvedBindings (Get-DeclarativeWorkflowValue $workspacePlan 'resolved_bindings' ([ordered]@{}))
+            $currentWorkflowPlan = ConvertTo-TeamPipelineDeclarativeWorkflowPlan -WorkspacePlan $workspacePlan
+            Assert-DeclarativeWorkflowExecutionProjection -Run $candidateRun -Plan $currentWorkflowPlan
         }
+        Assert-DeclarativeWorkflowTaskIdentity -Run $run -TaskInput $taskInput
+        Assert-DeclarativeWorkflowConfirmation -Run $run -Confirmation $confirmation
+        & $validateSnapshot $run
+        Assert-TeamPipelineDeclarativeRunLockAdmission -ProjectDir $ProjectDir -Run $run | Out-Null
+        $snapshotValidated = $true
         if ([string]$run.state -in @('succeeded', 'failed', 'cancelled')) {
             $run = Invoke-TeamPipelineDeclarativeTerminalRecovery -ProjectDir $ProjectDir -Run $run -TaskInput $taskInput -Confirmation $confirmation `
-                -SaveRun $save -ReleaseLock $releaseLock -ValidateSnapshot $validateSnapshot
+                -SaveRun $save -ReleaseLock $releaseLock -ValidateSnapshot $validateSnapshot -SnapshotValidated
         }
     }
     if ($Action -ceq 'start' -or [string]$run.state -notin @('succeeded', 'failed', 'cancelled')) {
@@ -2313,7 +2357,10 @@ function Invoke-TeamPipelineDeclarativeWorkflow {
             ResolveAcknowledgement   = $resolveAcknowledgement
             ReleaseLock              = $releaseLock
         }
-        if ($Action -ceq 'resume') { $advanceArguments['ValidateSnapshot'] = $validateSnapshot }
+        if ($Action -ceq 'resume') {
+            $advanceArguments['ValidateSnapshot'] = $validateSnapshot
+            $advanceArguments['SnapshotValidated'] = $snapshotValidated
+        }
         $run = Invoke-TeamPipelineDeclarativeRunAdvancement @advanceArguments
     }
     $cleanupBlocked = @((Get-DeclarativeWorkflowValue $run 'cleanup_journal' @()) | Where-Object {

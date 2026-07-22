@@ -183,18 +183,47 @@ function Test-OperatorPollWorkflowAcknowledgementRecord {
     $data = Get-OperatorPollValue -InputObject $EventRecord -Name 'data' -Default $null
     $acknowledgement = Get-OperatorPollWorkflowAcknowledgementData -Data $data
     $generationId = [string]$PaneContext['generation_id']
+    $manifestPaneId = [string]$PaneContext['manifest_pane_id']
+    $manifestLabel = [string]$PaneContext['label']
+    $registeredSession = [string]$PaneContext['session_name']
+    $runtimeRegistry = $null
+    try {
+        $runtimeRegistry = Read-WinsmuxRuntimeRegistry -ProjectDir ([string]$PaneContext['project_dir'])
+    } catch {
+        return $false
+    }
+    $registeredPanes = @()
+    if ($null -ne $runtimeRegistry) {
+        $registeredPanes = @((Get-WinsmuxRuntimeValue -InputObject $runtimeRegistry -Name 'panes' -Default @()) | Where-Object {
+                [string](Get-WinsmuxRuntimeValue -InputObject $_ -Name 'pane_id' -Default '') -ceq $manifestPaneId -and
+                [string](Get-WinsmuxRuntimeValue -InputObject $_ -Name 'generation_id' -Default '') -ceq $generationId
+            })
+    }
     return (
         [string](Get-OperatorPollValue -InputObject $EventRecord -Name 'source' -Default '') -ceq 'mailbox' -and
         [int](Get-OperatorPollValue -InputObject $EventRecord -Name 'mailbox_version' -Default 0) -eq 2 -and
         [string](Get-OperatorPollValue -InputObject $EventRecord -Name 'mailbox_state' -Default '') -ceq 'created' -and
         [string](Get-OperatorPollValue -InputObject $EventRecord -Name 'message_type' -Default '') -ceq 'workflow-completion' -and
         [bool](Get-OperatorPollValue -InputObject $EventRecord -Name 'ack_required' -Default $false) -and
-        [string](Get-OperatorPollValue -InputObject $EventRecord -Name 'session' -Default '') -ceq $SessionName -and
-        [string](Get-OperatorPollValue -InputObject $EventRecord -Name 'pane_id' -Default '') -ceq [string]$PaneContext['pane_id'] -and
-        [string](Get-OperatorPollValue -InputObject $EventRecord -Name 'label' -Default '') -ceq [string]$PaneContext['label'] -and
-        [string](Get-OperatorPollValue -InputObject $EventRecord -Name 'mailbox_from' -Default '') -ceq [string]$PaneContext['label'] -and
-        [string](Get-OperatorPollValue -InputObject $acknowledgement -Name 'pane_id' -Default '') -ceq [string]$PaneContext['pane_id'] -and
-        ([string]::IsNullOrWhiteSpace($generationId) -or [string]::Equals([string](Get-OperatorPollValue -InputObject $acknowledgement -Name 'generation_id' -Default ''), $generationId, [StringComparison]::Ordinal)) -and
+        -not [string]::IsNullOrWhiteSpace($manifestPaneId) -and
+        -not [string]::IsNullOrWhiteSpace($manifestLabel) -and
+        -not [string]::IsNullOrWhiteSpace($registeredSession) -and
+        -not [string]::IsNullOrWhiteSpace($generationId) -and
+        $null -ne $runtimeRegistry -and
+        [string](Get-WinsmuxRuntimeValue -InputObject $runtimeRegistry -Name 'status' -Default '') -ceq 'active' -and
+        [string](Get-WinsmuxRuntimeValue -InputObject $runtimeRegistry -Name 'session_name' -Default '') -ceq $registeredSession -and
+        [string](Get-WinsmuxRuntimeValue -InputObject $runtimeRegistry -Name 'generation_id' -Default '') -ceq $generationId -and
+        $registeredPanes.Count -eq 1 -and
+        $SessionName -ceq $registeredSession -and
+        [string](Get-OperatorPollValue -InputObject $EventRecord -Name 'session' -Default '') -ceq $registeredSession -and
+        [string](Get-OperatorPollValue -InputObject $EventRecord -Name 'pane_id' -Default '') -ceq $manifestPaneId -and
+        [string](Get-OperatorPollValue -InputObject $EventRecord -Name 'label' -Default '') -ceq $manifestLabel -and
+        [string](Get-OperatorPollValue -InputObject $EventRecord -Name 'mailbox_from' -Default '') -ceq $manifestLabel -and
+        [string](Get-OperatorPollValue $PaneContext 'pane_id' '') -ceq $manifestPaneId -and
+        [string](Get-OperatorPollValue $PaneContext 'event_pane_id' '') -ceq $manifestPaneId -and
+        [string](Get-OperatorPollValue $PaneContext 'event_label' '') -ceq $manifestLabel -and
+        [string](Get-OperatorPollValue $acknowledgement -Name 'pane_id' -Default '') -ceq $manifestPaneId -and
+        [string]::Equals([string](Get-OperatorPollValue -InputObject $acknowledgement -Name 'generation_id' -Default ''), $generationId, [StringComparison]::Ordinal) -and
         (Test-OperatorPollWorkflowAcknowledgementData -Data (Get-OperatorPollValue -InputObject $EventRecord -Name 'workflow_ack_payload' -Default $data))
     )
 }
@@ -323,23 +352,23 @@ function Get-OperatorPollPaneContext {
     $manifestSession = Get-OperatorPollValue -InputObject $Manifest -Name 'Session' -Default $null
     $generationId = [string](Get-OperatorPollValue -InputObject $manifestSession -Name 'generation_id' -Default '')
 
-    $matchedLabel = $eventLabel
+    $matchedLabel = ''
     $matchedPane = $null
 
-    foreach ($label in $Manifest['Panes'].Keys) {
-        $pane = $Manifest['Panes'][$label]
-        $paneId = [string](Get-OperatorPollValue -InputObject $pane -Name 'pane_id' -Default '')
-
-        if (-not [string]::IsNullOrWhiteSpace($eventPaneId) -and $paneId -eq $eventPaneId) {
-            $matchedLabel = $label
-            $matchedPane = $pane
-            break
+    if (-not [string]::IsNullOrWhiteSpace($eventLabel) -and $Manifest['Panes'].Contains($eventLabel)) {
+        $matchedLabel = $eventLabel
+        $matchedPane = $Manifest['Panes'][$eventLabel]
+    } elseif (-not [string]::IsNullOrWhiteSpace($eventPaneId)) {
+        $matches = @()
+        foreach ($label in $Manifest['Panes'].Keys) {
+            $pane = $Manifest['Panes'][$label]
+            if ([string](Get-OperatorPollValue -InputObject $pane -Name 'pane_id' -Default '') -ceq $eventPaneId) {
+                $matches += [PSCustomObject]@{ label = [string]$label; pane = $pane }
+            }
         }
-
-        if (-not [string]::IsNullOrWhiteSpace($eventLabel) -and $label -eq $eventLabel) {
-            $matchedLabel = $label
-            $matchedPane = $pane
-            break
+        if ($matches.Count -eq 1) {
+            $matchedLabel = [string]$matches[0].label
+            $matchedPane = $matches[0].pane
         }
     }
 
@@ -366,9 +395,10 @@ function Get-OperatorPollPaneContext {
         $worktreePath = $projectDir
     }
 
-    $resolvedPaneId = $eventPaneId
-    if ([string]::IsNullOrWhiteSpace($resolvedPaneId) -and $null -ne $matchedPane) {
-        $resolvedPaneId = [string](Get-OperatorPollValue -InputObject $matchedPane -Name 'pane_id' -Default '')
+    $manifestPaneId = if ($null -ne $matchedPane) {
+        [string](Get-OperatorPollValue -InputObject $matchedPane -Name 'pane_id' -Default '')
+    } else {
+        ''
     }
 
     return [ordered]@{
@@ -376,7 +406,10 @@ function Get-OperatorPollPaneContext {
         manifest_path = $ManifestPath
         generation_id = $generationId
         session_name  = Get-OperatorPollSessionName -Manifest $Manifest
-        pane_id       = $resolvedPaneId
+        pane_id       = $manifestPaneId
+        manifest_pane_id = $manifestPaneId
+        event_pane_id = $eventPaneId
+        event_label   = $eventLabel
         label         = $matchedLabel
         role          = $role
         worktree_path = $worktreePath

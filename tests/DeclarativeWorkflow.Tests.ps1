@@ -574,6 +574,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         Mock Read-TeamPipelineManifest { [PSCustomObject]@{ Session = [ordered]@{ name = 'w11-session' }; Panes = [ordered]@{} } }
         Mock Get-TeamPipelineSessionName { 'w11-session' }
         Mock Get-TeamPipelineDeclarativeProjectHead { 'b' * 40 }
+        Mock Assert-TeamPipelineDeclarativeRunLockAdmission { }
         Mock Save-DeclarativeWorkflowRunState { }
         Mock Invoke-DeclarativeWorkflowResume {
             param($Run, $TaskInput, $Confirmation, $SaveRun, $Dispatch, $ResolveSession, $ResolveAcknowledgement, $ValidateSnapshot)
@@ -929,6 +930,81 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         ($run | ConvertTo-Json -Depth 40 -Compress) | Should -Be $before
     }
 
+    It 'A21 structurally binds the persisted DAG projection before reconciliation, save, dispatch, or cleanup' {
+        $plan = New-TestWorkflowPlan
+        $taskInput = New-TestTaskInput
+        $confirmation = New-TestConfirmation
+
+        { Assert-DeclarativeWorkflowExecutionProjection -Run (New-TestRun) -Plan $plan } | Should -Not -Throw
+
+        $cases = @(
+            [PSCustomObject]@{
+                Name = 'extra-normalized-node'
+                Mutate = {
+                    param($candidate)
+                    $candidate.normalized_snapshot.nodes += [ordered]@{
+                        node_id = 'extra'; pane_ref = 'implement'; action = 'operator-dispatch'; depends_on = @()
+                        idempotency_key = 'run-123:extra'; cleanup = 'retain'
+                    }
+                }
+            },
+            [PSCustomObject]@{
+                Name = 'missing-normalized-node'
+                Mutate = { param($candidate) $candidate.normalized_snapshot.nodes = @($candidate.normalized_snapshot.nodes | Select-Object -First 1) }
+            },
+            [PSCustomObject]@{
+                Name = 'reordered-normalized-nodes'
+                Mutate = { param($candidate) $candidate.normalized_snapshot.nodes = @($candidate.normalized_snapshot.nodes[1], $candidate.normalized_snapshot.nodes[0]) }
+            },
+            [PSCustomObject]@{
+                Name = 'runtime-node-order'
+                Mutate = { param($candidate) $candidate.node_order = @('verify', 'inspect') }
+            }
+        )
+
+        foreach ($field in @('node_id', 'action', 'pane_ref', 'depends_on', 'idempotency_key', 'cleanup', 'context_pack_ref')) {
+            $cases += [PSCustomObject]@{
+                Name = "mutated-runtime-$field"
+                Mutate = {
+                    param($candidate)
+                    switch ($field) {
+                        'node_id' { $candidate.nodes.inspect.node_id = 'verify' }
+                        'action' { $candidate.nodes.inspect.action = 'verification' }
+                        'pane_ref' { $candidate.nodes.inspect.pane_ref = 'verify' }
+                        'depends_on' { $candidate.nodes.inspect.depends_on = @('verify') }
+                        'idempotency_key' { $candidate.nodes.inspect.idempotency_key = 'run-123:other' }
+                        'cleanup' { $candidate.nodes.inspect.cleanup = 'delete-everything' }
+                        'context_pack_ref' { $candidate.nodes.inspect.context_pack_ref = 'different-pack' }
+                    }
+                }.GetNewClosure()
+            }
+        }
+
+        foreach ($case in $cases) {
+            $candidate = New-TestRun
+            & $case.Mutate $candidate
+            $script:projectionSaves = 0
+            $script:projectionDispatches = 0
+            $script:projectionReconciles = 0
+            $script:projectionCleanups = 0
+
+            {
+                Invoke-TeamPipelineDeclarativeRunAdvancement -ProjectDir $TestDrive -Run $candidate -TaskInput $taskInput -Confirmation $confirmation `
+                    -SaveRun { $script:projectionSaves++ } `
+                    -Dispatch { $script:projectionDispatches++; throw 'projection validation must happen before dispatch' } `
+                    -ResolveSession { throw 'projection validation must happen before session lookup' } `
+                    -ResolveAcknowledgement { $script:projectionReconciles++; throw 'projection validation must happen before reconciliation' } `
+                    -ReleaseLock { $script:projectionCleanups++ } `
+                    -ValidateSnapshot { param($runToValidate) Assert-DeclarativeWorkflowExecutionProjection -Run $runToValidate -Plan $plan }
+            } | Should -Throw '*projection*' -Because $case.Name
+
+            $script:projectionSaves | Should -Be 0 -Because $case.Name
+            $script:projectionDispatches | Should -Be 0 -Because $case.Name
+            $script:projectionReconciles | Should -Be 0 -Because $case.Name
+            $script:projectionCleanups | Should -Be 0 -Because $case.Name
+        }
+    }
+
     It 'C07 preserves terminal success failure and cancel outcomes while releasing the lock exactly once' {
         foreach ($terminalState in @('succeeded', 'failed', 'cancelled')) {
             $project = Join-Path $TestDrive "terminal-cleanup-$terminalState"
@@ -1270,8 +1346,101 @@ future_state:
                 -RunId 'run-123' -GenerationId 'generation-123' -ConfigFingerprint ('sha256:' + ('a' * 64)) `
                 -SourceHead ('b' * 40) -TaskFile $taskFile -ProjectDir $saveFailureProject
         } | Should -Throw '*injected state save failure*'
-        $script:lockObservedBeforeStateSave | Should -BeTrue
+        $script:lockObservedBeforeStateSave | Should -BeFalse
         Test-Path -LiteralPath $saveFailureLock -PathType Leaf | Should -BeFalse
         Test-Path -LiteralPath (Join-Path $saveFailureProject '.winsmux\workflow-runs\run-123\state.json') -PathType Leaf | Should -BeFalse
+    }
+
+    It 'C21 admits only a pristine state-only bootstrap, reuses a matching lock, and blocks a missing or mismatched lock after an effect' {
+        $taskFile = Join-Path $TestDrive 'bootstrap-task.txt'
+        [IO.File]::WriteAllText($taskFile, 'Implement TASK-659 safely.', [Text.UTF8Encoding]::new($false))
+        $workspacePlan = [ordered]@{
+            config_fingerprint = ('sha256:' + ('a' * 64))
+            resolved_bindings = [ordered]@{ implement = 'worker-1'; verify = 'worker-2' }
+            workflow = (New-TestWorkflowPlan)
+        }
+
+        foreach ($case in @(
+                [PSCustomObject]@{ Name = 'state-only-pristine'; Setup = { param($project, $run) } ; ExpectedAdvance = 1; ExpectedLock = $true },
+                [PSCustomObject]@{ Name = 'matching-lock'; Setup = { param($project, $run) New-DeclarativeWorkflowRunLock -ProjectDir $project -Run $run | Out-Null } ; ExpectedAdvance = 1; ExpectedLock = $true },
+                [PSCustomObject]@{
+                    Name = 'missing-lock-after-effect'
+                    Setup = { param($project, $run) $run.nodes.inspect.attempt = 1; $run.nodes.inspect.state = 'dispatching'; Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $run | Out-Null }
+                    ExpectedAdvance = 0; ExpectedLock = $false
+                },
+                [PSCustomObject]@{
+                    Name = 'mismatched-lock-after-effect'
+                    Setup = {
+                        param($project, $run)
+                        $run.nodes.inspect.attempt = 1
+                        $run.nodes.inspect.state = 'dispatching'
+                        Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $run | Out-Null
+                        $lock = New-DeclarativeWorkflowRunLock -ProjectDir $project -Run $run
+                        $payload = [IO.File]::ReadAllText($lock) | ConvertFrom-Json
+                        $payload.source_head = ('c' * 40)
+                        [IO.File]::WriteAllText($lock, ($payload | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+                    }
+                    ExpectedAdvance = 0; ExpectedLock = $true
+                }
+            )) {
+            $project = Join-Path $TestDrive ("bootstrap-" + $case.Name)
+            $run = New-TestRun
+            Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $run -CreateNew | Out-Null
+            & $case.Setup $project $run
+            $statePath = Join-Path $project '.winsmux\workflow-runs\run-123\state.json'
+            $stateBefore = [IO.File]::ReadAllBytes($statePath)
+            $script:bootstrapAdvances = 0
+            $script:bootstrapDispatches = 0
+            Mock Get-TeamPipelineDeclarativeProjectHead { 'b' * 40 }
+            Mock Read-TeamPipelineManifest { [PSCustomObject]@{ Session = [ordered]@{ name = 'bootstrap-session' }; Panes = [ordered]@{} } }
+            Mock Get-TeamPipelineSessionName { 'bootstrap-session' }
+            Mock Invoke-TeamPipelineWorkspacePlanOnce { Copy-DeclarativeWorkflowValue $workspacePlan }
+            Mock Invoke-TeamPipelineDeclarativeRunAdvancement {
+                param($ProjectDir, $Run)
+                $script:bootstrapAdvances++
+                return $Run
+            }
+            Mock Invoke-TeamPipelineDeclarativeDispatch { $script:bootstrapDispatches++; throw 'bootstrap rejection must not dispatch' }
+
+            if ($case.ExpectedAdvance -eq 0) {
+                {
+                    Invoke-TeamPipelineDeclarativeWorkflow -Action resume -RunId 'run-123' -GenerationId 'generation-123' `
+                        -ConfigFingerprint ('sha256:' + ('a' * 64)) -SourceHead ('b' * 40) -TaskFile $taskFile -ProjectDir $project
+                } | Should -Throw -Because $case.Name
+            } else {
+                $result = Invoke-TeamPipelineDeclarativeWorkflow -Action resume -RunId 'run-123' -GenerationId 'generation-123' `
+                    -ConfigFingerprint ('sha256:' + ('a' * 64)) -SourceHead ('b' * 40) -TaskFile $taskFile -ProjectDir $project
+                $result.status | Should -Be 'accepted'
+            }
+
+            $script:bootstrapAdvances | Should -Be $case.ExpectedAdvance -Because $case.Name
+            $script:bootstrapDispatches | Should -Be 0 -Because $case.Name
+            $lockPath = Join-Path $project '.winsmux\workflow-runs\run-123\run.lock'
+            (Test-Path -LiteralPath $lockPath -PathType Leaf) | Should -Be $case.ExpectedLock -Because $case.Name
+            if ($case.ExpectedAdvance -eq 0) {
+                [Convert]::ToHexString([IO.File]::ReadAllBytes($statePath)) | Should -Be ([Convert]::ToHexString($stateBefore)) -Because $case.Name
+            }
+        }
+    }
+
+    It 'C22 removes the create-new state when initial manifest projection fails before any lock exists' {
+        $project = Join-Path $TestDrive 'bootstrap-projection-failure'
+        $winsmuxDir = Join-Path $project '.winsmux'
+        [IO.Directory]::CreateDirectory($winsmuxDir) | Out-Null
+        [IO.File]::WriteAllText((Join-Path $winsmuxDir 'manifest.yaml'), @"
+version: 2
+session:
+  name: bootstrap-projection
+  generation_id: generation-123
+panes: {}
+worktrees: {}
+"@, [Text.UTF8Encoding]::new($false))
+        $run = New-TestRun
+        Mock Save-WinsmuxManifest { throw 'injected initial manifest projection failure' }
+
+        { Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $run -CreateNew } | Should -Throw '*injected initial manifest projection failure*'
+
+        Test-Path -LiteralPath (Join-Path $project '.winsmux\workflow-runs\run-123\state.json') -PathType Leaf | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $project '.winsmux\workflow-runs\run-123\run.lock') -PathType Leaf | Should -BeFalse
     }
 }

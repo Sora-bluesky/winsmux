@@ -128,6 +128,16 @@ function ConvertTo-DeclarativeWorkflowCanonicalValue {
     if ($Value -is [Collections.IEnumerable] -and $Value -isnot [string]) {
         return @($Value | ForEach-Object { ConvertTo-DeclarativeWorkflowCanonicalValue -Value $_ })
     }
+    if ($null -ne $Value.PSObject -and $Value -isnot [string] -and $Value -isnot [ValueType]) {
+        $properties = @($Value.PSObject.Properties | Where-Object { $_.MemberType -in @('NoteProperty', 'Property') })
+        if ($properties.Count -gt 0) {
+            $normalized = [ordered]@{}
+            foreach ($property in @($properties | Sort-Object Name)) {
+                $normalized[[string]$property.Name] = ConvertTo-DeclarativeWorkflowCanonicalValue -Value $property.Value
+            }
+            return $normalized
+        }
+    }
     return $Value
 }
 
@@ -152,6 +162,119 @@ function Assert-DeclarativeWorkflowSnapshot {
             (ConvertTo-DeclarativeWorkflowCanonicalJson -Value $ResolvedBindings)
     ) {
         throw 'Declarative workflow snapshot does not match the persisted workflow, configuration, and bindings.'
+    }
+}
+
+function Test-DeclarativeWorkflowFieldExists {
+    param(
+        [AllowNull()]$InputObject,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    if ($null -eq $InputObject) { return $false }
+    if ($InputObject -is [Collections.IDictionary]) { return $InputObject.Contains($Name) }
+    return ($null -ne $InputObject.PSObject -and $InputObject.PSObject.Properties.Name -contains $Name)
+}
+
+function New-DeclarativeWorkflowExecutionProjection {
+    param([Parameter(Mandatory = $true)]$Plan)
+
+    $definitions = @(Get-DeclarativeWorkflowValue $Plan 'nodes' @())
+    if ($definitions.Count -lt 1) { throw 'Normalized workflow must contain at least one node.' }
+
+    $nodeOrder = [Collections.Generic.List[string]]::new()
+    $runtimeNodes = [ordered]@{}
+    foreach ($definition in $definitions) {
+        foreach ($field in @('node_id', 'action', 'pane_ref', 'depends_on', 'idempotency_key', 'cleanup')) {
+            if (-not (Test-DeclarativeWorkflowFieldExists -InputObject $definition -Name $field)) {
+                throw "Normalized workflow node is missing immutable field '$field'."
+            }
+        }
+        $nodeId = [string](Get-DeclarativeWorkflowValue $definition 'node_id' '')
+        Assert-DeclarativeWorkflowId -Name 'node_id' -Value $nodeId
+        if ($runtimeNodes.Contains($nodeId)) { throw "Duplicate normalized node '$nodeId'." }
+
+        $dependencies = @((Get-DeclarativeWorkflowValue $definition 'depends_on' @()) | ForEach-Object {
+                $dependencyId = [string]$_
+                Assert-DeclarativeWorkflowId -Name 'dependency node_id' -Value $dependencyId
+                $dependencyId
+            })
+        $contextPackRef = [string](Get-DeclarativeWorkflowValue $definition 'context_pack_ref' '')
+        if (-not [string]::IsNullOrWhiteSpace($contextPackRef) -and
+            -not (Test-DeclarativeWorkflowBoundedReference -Value $contextPackRef)) {
+            throw 'context_pack_ref must be a bounded reference, not inline context content.'
+        }
+
+        $runtimeNodes[$nodeId] = [ordered]@{
+            node_id         = $nodeId
+            action          = [string](Get-DeclarativeWorkflowValue $definition 'action' '')
+            pane_ref        = [string](Get-DeclarativeWorkflowValue $definition 'pane_ref' '')
+            depends_on      = @($dependencies)
+            idempotency_key = [string](Get-DeclarativeWorkflowValue $definition 'idempotency_key' '')
+            cleanup         = [string](Get-DeclarativeWorkflowValue $definition 'cleanup' '')
+            context_pack_ref = $contextPackRef
+        }
+        $nodeOrder.Add($nodeId) | Out-Null
+    }
+
+    return [ordered]@{
+        normalized_snapshot = Copy-DeclarativeWorkflowValue $Plan
+        node_order          = @($nodeOrder)
+        runtime_nodes       = $runtimeNodes
+    }
+}
+
+function Assert-DeclarativeWorkflowExecutionProjection {
+    param(
+        [Parameter(Mandatory = $true)]$Run,
+        [Parameter(Mandatory = $true)]$Plan
+    )
+
+    $expected = New-DeclarativeWorkflowExecutionProjection -Plan $Plan
+    $persistedSnapshot = Get-DeclarativeWorkflowValue $Run 'normalized_snapshot' $null
+    if ((ConvertTo-DeclarativeWorkflowCanonicalJson -Value $persistedSnapshot) -cne
+        (ConvertTo-DeclarativeWorkflowCanonicalJson -Value $expected.normalized_snapshot)) {
+        throw 'Declarative workflow execution projection normalized snapshot does not match the current normalized workflow.'
+    }
+
+    $persistedOrder = @(Get-DeclarativeWorkflowValue $Run 'node_order' @()) | ForEach-Object { [string]$_ }
+    $expectedOrder = @($expected.node_order | ForEach-Object { [string]$_ })
+    if ($persistedOrder.Count -ne $expectedOrder.Count) {
+        throw 'Declarative workflow execution projection node order does not match the normalized workflow.'
+    }
+    for ($index = 0; $index -lt $expectedOrder.Count; $index++) {
+        if ($persistedOrder[$index] -cne $expectedOrder[$index]) {
+            throw 'Declarative workflow execution projection node order does not match the normalized workflow.'
+        }
+    }
+
+    $persistedNodes = Get-DeclarativeWorkflowValue $Run 'nodes' $null
+    if ($null -eq $persistedNodes -or $persistedNodes -isnot [Collections.IDictionary]) {
+        throw 'Declarative workflow execution projection runtime nodes are missing.'
+    }
+    $persistedIds = @($persistedNodes.Keys | ForEach-Object { [string]$_ } | Sort-Object)
+    $expectedIds = @($expected.runtime_nodes.Keys | ForEach-Object { [string]$_ } | Sort-Object)
+    if ($persistedIds.Count -ne $expectedIds.Count -or
+        @($persistedIds | Where-Object { $_ -notin $expectedIds }).Count -ne 0) {
+        throw 'Declarative workflow execution projection runtime node set does not match the normalized workflow.'
+    }
+
+    foreach ($nodeId in $expectedOrder) {
+        $persistedNode = $persistedNodes[$nodeId]
+        $expectedNode = $expected.runtime_nodes[$nodeId]
+        foreach ($field in @('node_id', 'action', 'pane_ref', 'depends_on', 'idempotency_key', 'cleanup', 'context_pack_ref')) {
+            $persistedValue = if ($field -ceq 'depends_on') {
+                @((Get-DeclarativeWorkflowValue $persistedNode $field @()))
+            } else {
+                Get-DeclarativeWorkflowValue $persistedNode $field $null
+            }
+            $expectedValue = if ($field -ceq 'depends_on') { @($expectedNode[$field]) } else { $expectedNode[$field] }
+            if (-not (Test-DeclarativeWorkflowFieldExists -InputObject $persistedNode -Name $field) -or
+                (ConvertTo-DeclarativeWorkflowCanonicalJson -Value $persistedValue) -cne
+                    (ConvertTo-DeclarativeWorkflowCanonicalJson -Value $expectedValue)) {
+                throw "Declarative workflow execution projection immutable field '$field' does not match node '$nodeId'."
+            }
+        }
     }
 }
 
@@ -181,32 +304,25 @@ function New-DeclarativeWorkflowRun {
     if ($taskDigest -cnotmatch $script:DeclarativeWorkflowDigestPattern -or $taskByteCount -lt 0) {
         throw 'Task input identity is invalid.'
     }
+    $projection = New-DeclarativeWorkflowExecutionProjection -Plan $Plan
     $nodes = [ordered]@{}
-    foreach ($definition in @(Get-DeclarativeWorkflowValue $Plan 'nodes' @())) {
-        $nodeId = [string](Get-DeclarativeWorkflowValue $definition 'node_id' '')
-        Assert-DeclarativeWorkflowId -Name 'node_id' -Value $nodeId
-        if ($nodes.Contains($nodeId)) { throw "Duplicate normalized node '$nodeId'." }
-        $dependencies = @((Get-DeclarativeWorkflowValue $definition 'depends_on' @()) | ForEach-Object { [string]$_ })
+    foreach ($nodeId in @($projection.node_order)) {
+        $immutableNode = $projection.runtime_nodes[$nodeId]
+        $dependencies = @($immutableNode.depends_on)
         $node = [ordered]@{
+            node_id         = [string]$immutableNode.node_id
             state           = if ($dependencies.Count -eq 0) { 'ready' } else { 'pending' }
             attempt         = 0
-            idempotency_key = [string](Get-DeclarativeWorkflowValue $definition 'idempotency_key' '')
-            pane_ref        = [string](Get-DeclarativeWorkflowValue $definition 'pane_ref' '')
-            action          = [string](Get-DeclarativeWorkflowValue $definition 'action' '')
+            idempotency_key = [string]$immutableNode.idempotency_key
+            pane_ref        = [string]$immutableNode.pane_ref
+            action          = [string]$immutableNode.action
             depends_on      = $dependencies
-            cleanup         = [string](Get-DeclarativeWorkflowValue $definition 'cleanup' '')
+            cleanup         = [string]$immutableNode.cleanup
+            context_pack_ref = [string]$immutableNode.context_pack_ref
             evidence_refs   = @()
-        }
-        $contextPackRef = [string](Get-DeclarativeWorkflowValue $definition 'context_pack_ref' '')
-        if (-not [string]::IsNullOrWhiteSpace($contextPackRef)) {
-            if (-not (Test-DeclarativeWorkflowBoundedReference -Value $contextPackRef)) {
-                throw 'context_pack_ref must be a bounded reference, not inline context content.'
-            }
-            $node['context_pack_ref'] = $contextPackRef
         }
         $nodes[$nodeId] = $node
     }
-    if ($nodes.Count -lt 1) { throw 'Normalized workflow must contain at least one node.' }
 
     return [ordered]@{
         schema_version      = 1
@@ -221,7 +337,8 @@ function New-DeclarativeWorkflowRun {
         task_sha256        = $taskDigest
         task_byte_count    = $taskByteCount
         resolved_bindings  = Copy-DeclarativeWorkflowValue (Get-DeclarativeWorkflowValue $Plan 'resolved_bindings' ([ordered]@{}))
-        normalized_snapshot = Copy-DeclarativeWorkflowValue $Plan
+        normalized_snapshot = $projection.normalized_snapshot
+        node_order         = @($projection.node_order)
         nodes              = $nodes
         cleanup_journal    = @([ordered]@{
             action_id      = 'release-run-lock'
@@ -785,6 +902,68 @@ function Test-DeclarativeWorkflowRunLockOwnership {
     return $true
 }
 
+function Test-DeclarativeWorkflowPristineBootstrap {
+    param([Parameter(Mandatory = $true)]$Run)
+
+    if ([string](Get-DeclarativeWorkflowValue $Run 'state' '') -cne 'ready') { return $false }
+    if ([string](Get-DeclarativeWorkflowValue $Run 'rollback_state' '') -cne 'not_requested') { return $false }
+
+    $journal = @(Get-DeclarativeWorkflowValue $Run 'cleanup_journal' @())
+    if ($journal.Count -ne 1) { return $false }
+    $action = $journal[0]
+    $runId = [string](Get-DeclarativeWorkflowValue $Run 'run_id' '')
+    foreach ($field in @('action_id', 'kind', 'state', 'idempotency_key', 'resource_ref')) {
+        if (-not (Test-DeclarativeWorkflowFieldExists -InputObject $action -Name $field)) { return $false }
+    }
+    if (
+        [string](Get-DeclarativeWorkflowValue $action 'action_id' '') -cne 'release-run-lock' -or
+        [string](Get-DeclarativeWorkflowValue $action 'kind' '') -cne 'release-run-lock' -or
+        [string](Get-DeclarativeWorkflowValue $action 'state' '') -cne 'pending' -or
+        [string](Get-DeclarativeWorkflowValue $action 'idempotency_key' '') -cne "$runId`:cleanup:release-run-lock" -or
+        [string](Get-DeclarativeWorkflowValue $action 'resource_ref' '') -cne "workflow-run-lock:$runId"
+    ) {
+        return $false
+    }
+
+    $nodes = Get-DeclarativeWorkflowValue $Run 'nodes' $null
+    if ($null -eq $nodes -or $nodes -isnot [Collections.IDictionary] -or $nodes.Count -lt 1) { return $false }
+    foreach ($entry in $nodes.GetEnumerator()) {
+        $node = $entry.Value
+        if (
+            [int](Get-DeclarativeWorkflowValue $node 'attempt' -1) -ne 0 -or
+            [string](Get-DeclarativeWorkflowValue $node 'state' '') -notin @('pending', 'ready') -or
+            -not [string]::IsNullOrWhiteSpace([string](Get-DeclarativeWorkflowValue $node 'agent_cli_session_id' '')) -or
+            @((Get-DeclarativeWorkflowValue $node 'evidence_refs' @()) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }).Count -ne 0
+        ) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Remove-DeclarativeWorkflowPristineRunState {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)]$Run
+    )
+
+    $runId = [string](Get-DeclarativeWorkflowValue $Run 'run_id' '')
+    $path = Resolve-DeclarativeWorkflowOwnedRunPath -ProjectDir $ProjectDir -RunId $runId -LeafName 'state.json'
+    if (-not [IO.File]::Exists($path)) { return }
+    $persisted = Read-DeclarativeWorkflowRunState -ProjectDir $ProjectDir -RunId $runId
+    foreach ($field in @('run_id', 'generation_id', 'config_fingerprint', 'source_head')) {
+        if ([string](Get-DeclarativeWorkflowValue $persisted $field '') -cne [string](Get-DeclarativeWorkflowValue $Run $field '')) {
+            throw 'Declarative workflow initial state ownership changed before rollback.'
+        }
+    }
+    if (-not (Test-DeclarativeWorkflowPristineBootstrap -Run $persisted)) {
+        throw 'Declarative workflow initial state is no longer pristine for rollback.'
+    }
+    $verifiedPath = Resolve-DeclarativeWorkflowOwnedRunPath -ProjectDir $ProjectDir -RunId $runId -LeafName 'state.json'
+    if ($verifiedPath -cne $path) { throw 'Declarative workflow initial state ownership changed before rollback.' }
+    Remove-Item -LiteralPath $path -Force -ErrorAction Stop
+}
+
 function Invoke-DeclarativeWorkflowCleanup {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -979,7 +1158,8 @@ function Assert-DeclarativeWorkflowStatePrivacy {
 function Save-DeclarativeWorkflowRunState {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
-        [Parameter(Mandatory = $true)]$Run
+        [Parameter(Mandatory = $true)]$Run,
+        [switch]$CreateNew
     )
     $runId = [string](Get-DeclarativeWorkflowValue $Run 'run_id' '')
     $generationId = [string](Get-DeclarativeWorkflowValue $Run 'generation_id' '')
@@ -988,14 +1168,30 @@ function Save-DeclarativeWorkflowRunState {
     Assert-DeclarativeWorkflowStatePrivacy -Value $Run -Shape 'run'
     $path = Resolve-DeclarativeWorkflowOwnedRunPath -ProjectDir $ProjectDir -RunId $runId -LeafName 'state.json' -CreateRunDirectory
     $runRoot = Split-Path -Parent $path
-    $previousBytes = if ([IO.File]::Exists($path)) { [IO.File]::ReadAllBytes($path) } else { $null }
+    if ($CreateNew -and [IO.File]::Exists($path)) {
+        throw 'Declarative workflow run state already exists.'
+    }
+    $previousBytes = if (-not $CreateNew -and [IO.File]::Exists($path)) { [IO.File]::ReadAllBytes($path) } else { $null }
     $json = $Run | ConvertTo-Json -Depth 100 -Compress
+    $stateBytes = [Text.UTF8Encoding]::new($false).GetBytes($json + "`n")
     $tempPath = Join-Path $runRoot ('.state-{0}.tmp' -f [guid]::NewGuid().ToString('N'))
+    $createdInitialState = $false
     try {
-        [IO.File]::WriteAllText($tempPath, $json + "`n", [Text.UTF8Encoding]::new($false))
         $verifiedPath = Resolve-DeclarativeWorkflowOwnedRunPath -ProjectDir $ProjectDir -RunId $runId -LeafName 'state.json'
         if ($verifiedPath -cne $path) { throw 'Workflow run state ownership changed before write.' }
-        Move-Item -LiteralPath $tempPath -Destination $path -Force
+        if ($CreateNew) {
+            $stream = [IO.File]::Open($path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+            $createdInitialState = $true
+            try {
+                $stream.Write($stateBytes, 0, $stateBytes.Length)
+                $stream.Flush($true)
+            } finally {
+                $stream.Dispose()
+            }
+        } else {
+            [IO.File]::WriteAllBytes($tempPath, $stateBytes)
+            Move-Item -LiteralPath $tempPath -Destination $path -Force
+        }
 
         $manifestPath = Join-Path (Join-Path ([IO.Path]::GetFullPath($ProjectDir)) '.winsmux') 'manifest.yaml'
         if ([IO.File]::Exists($manifestPath) -and (Get-Command Get-WinsmuxManifest -ErrorAction SilentlyContinue) -and (Get-Command Save-WinsmuxManifest -ErrorAction SilentlyContinue)) {
@@ -1019,15 +1215,33 @@ function Save-DeclarativeWorkflowRunState {
             Save-WinsmuxManifest -ProjectDir $ProjectDir -Manifest $manifest -ExpectedGenerationId $generationId | Out-Null
         }
     } catch {
+        $saveFailure = $_
         $rollbackPath = Resolve-DeclarativeWorkflowOwnedRunPath -ProjectDir $ProjectDir -RunId $runId -LeafName 'state.json'
         if ($rollbackPath -cne $path) { throw 'Workflow run state ownership changed during rollback.' }
         if ([IO.File]::Exists($tempPath)) { Remove-Item -LiteralPath $tempPath -Force }
-        if ($null -ne $previousBytes) {
+        if ($CreateNew) {
+            if ($createdInitialState -and [IO.File]::Exists($rollbackPath)) {
+                try {
+                    $persisted = Read-DeclarativeWorkflowRunState -ProjectDir $ProjectDir -RunId $runId
+                    foreach ($field in @('run_id', 'generation_id', 'config_fingerprint', 'source_head')) {
+                        if ([string](Get-DeclarativeWorkflowValue $persisted $field '') -cne [string](Get-DeclarativeWorkflowValue $Run $field '')) {
+                            throw 'Declarative workflow initial state ownership changed during rollback.'
+                        }
+                    }
+                    if (-not (Test-DeclarativeWorkflowPristineBootstrap -Run $persisted)) {
+                        throw 'Declarative workflow initial state is no longer pristine during rollback.'
+                    }
+                    Remove-Item -LiteralPath $rollbackPath -Force -ErrorAction Stop
+                } catch {
+                    throw "Declarative workflow initial state rollback failed: $([string]$saveFailure.Exception.Message); $([string]$_.Exception.Message)"
+                }
+            }
+        } elseif ($null -ne $previousBytes) {
             [IO.File]::WriteAllBytes($rollbackPath, $previousBytes)
         } elseif ([IO.File]::Exists($rollbackPath)) {
             Remove-Item -LiteralPath $rollbackPath -Force
         }
-        throw
+        throw $saveFailure
     }
     return $path
 }

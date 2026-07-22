@@ -19,6 +19,7 @@ Describe 'operator-poll helpers' {
 version: 1
 session:
   name: winsmux-orchestra
+  generation_id: generation-123
   project_dir: $script:operatorPollTempRoot
 panes:
   - label: builder-1
@@ -28,6 +29,14 @@ panes:
 "@ | Set-Content -Path $script:operatorPollManifestPath -Encoding UTF8
 
         . $script:operatorPollScriptPath -ManifestPath $script:operatorPollManifestPath
+        Mock Read-WinsmuxRuntimeRegistry {
+            [PSCustomObject]@{
+                status = 'active'
+                session_name = 'winsmux-orchestra'
+                generation_id = 'generation-123'
+                panes = @([PSCustomObject]@{ pane_id = '%2'; generation_id = 'generation-123' })
+            }
+        }
     }
 
     AfterEach {
@@ -236,6 +245,41 @@ panes:
         $unknown = $payload | ConvertTo-Json -Depth 20 | ConvertFrom-Json -AsHashtable
         $unknown.content.data['unexpected'] = 'field'
         (ConvertTo-OperatorPollMailboxRecord -MailboxMessage $unknown -SessionName 'winsmux-orchestra') | Should -BeNullOrEmpty
+    }
+
+    It 'rejects a stale workflow acknowledgement pane ID even when its label and envelope agree' {
+        $acknowledgement = [ordered]@{
+            schema_version      = 1
+            run_id              = 'run-123'
+            node_id             = 'inspect'
+            idempotency_key     = 'run-123:inspect'
+            generation_id       = 'generation-123'
+            config_fingerprint  = ('sha256:' + ('a' * 64))
+            workflow_fingerprint = ('sha256:' + ('d' * 64))
+            source_head         = ('b' * 40)
+            pane_id             = '%2'
+            status              = 'succeeded'
+            evidence_ref        = 'workflow-ack:run-123:inspect'
+        }
+        $payload = [ordered]@{
+            mailbox_version = 2; message_id = 'workflow-ack-stale'; correlation_id = 'workflow-ack-stale'; causation_id = $null
+            idempotency_key = 'workflow-completion-stale'; message_type = 'workflow-completion'; state = 'created'; ttl_seconds = 300
+            ack_required = $true; from = 'builder-1'; to = 'Operator'; timestamp = '2026-07-22T00:00:00.0000000+00:00'
+            content = [ordered]@{
+                session = 'winsmux-orchestra'; event = 'workflow.node.acknowledged'; message = 'Declarative workflow completion.'
+                label = 'builder-1'; pane_id = '%2'; role = 'Builder'; status = 'succeeded'; exit_reason = ''; data = $acknowledgement
+            }
+        }
+        $record = ConvertTo-OperatorPollMailboxRecord -MailboxMessage $payload -SessionName 'winsmux-orchestra'
+        $manifest = Read-OperatorPollManifest -Path $script:operatorPollManifestPath
+        $manifest.Panes['builder-1'].pane_id = '%9'
+        $summary = [ordered]@{ new_events = 0; dispatches = 0; completions = 0; approvals = 0; errors = 0; messages = @() }
+        Mock Write-OrchestraLog { throw 'stale pane acknowledgement must not become durable evidence' }
+
+        Invoke-OperatorPollEventRecord -Manifest $manifest -ManifestPath $script:operatorPollManifestPath -EventRecord $record -Summary $summary
+
+        $summary.errors | Should -Be 1
+        Should -Invoke Write-OrchestraLog -Times 0 -Exactly
     }
 
     It 'processes mailbox idle messages when panes are stored in dictionary format' {
