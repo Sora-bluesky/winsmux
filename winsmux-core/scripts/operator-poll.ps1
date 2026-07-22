@@ -1087,15 +1087,28 @@ function Invoke-OperatorPollEventRecord {
     if ($eventName -ceq 'workflow.node.acknowledged') {
         if (-not (Test-OperatorPollWorkflowAcknowledgementRecord -EventRecord $EventRecord -PaneContext $paneContext -SessionName $sessionName)) {
             $Summary['errors'] = [int]$Summary['errors'] + 1
-            return
+            return 'workflow_ack_rejected'
         }
         $acknowledgement = Get-OperatorPollWorkflowAcknowledgementData `
             -Data (Get-OperatorPollValue -InputObject $EventRecord -Name 'workflow_ack_payload' -Default $null) `
             -MessageId ([string](Get-OperatorPollValue $EventRecord 'message_id' ''))
         $runId = [string](Get-OperatorPollValue $acknowledgement 'run_id' '')
         $nodeId = [string](Get-OperatorPollValue $acknowledgement 'node_id' '')
-        $run = Read-DeclarativeWorkflowRunState -ProjectDir $projectDir -RunId $runId
-        Write-DeclarativeWorkflowDurableProof -ProjectDir $projectDir -Run $run -Kind Completion -NodeId $nodeId -Proof $acknowledgement | Out-Null
+        try {
+            $run = Read-DeclarativeWorkflowRunState -ProjectDir $projectDir -RunId $runId
+            Write-DeclarativeWorkflowDurableProof -ProjectDir $projectDir -Run $run -Kind Completion -NodeId $nodeId -Proof $acknowledgement `
+                -TrustedSenderLabel ([string]$paneContext['label']) -TrustedSenderPaneId ([string]$paneContext['pane_id']) | Out-Null
+        } catch {
+            $admissionError = [string]$_.Exception.Message
+            if ($admissionError -clike 'workflow_completion_rejected:*' -or $admissionError -clike "Declarative workflow run '$runId' was not found.*") {
+                $Summary['errors'] = [int]$Summary['errors'] + 1
+                Write-OrchestraLog -ProjectDir $projectDir -SessionName $sessionName -Event 'workflow.node.acknowledged' -Level 'error' `
+                    -Message "Declarative workflow completion was terminally rejected: $admissionError" `
+                    -Role ([string]$paneContext['role']) -PaneId ([string]$paneContext['pane_id']) -Target ([string]$paneContext['label']) -Data $acknowledgement | Out-Null
+                return 'workflow_ack_rejected'
+            }
+            throw
+        }
         Write-OrchestraLog -ProjectDir $projectDir -SessionName $sessionName -Event 'workflow.node.acknowledged' -Level 'info' `
             -Message 'Declarative workflow completion was received through the mailbox.' `
             -Role ([string]$paneContext['role']) -PaneId ([string]$paneContext['pane_id']) -Target ([string]$paneContext['label']) -Data $acknowledgement | Out-Null
@@ -1279,7 +1292,7 @@ function Invoke-OperatorPollCycle {
 
             $result = Invoke-OperatorPollEventRecord -Manifest $manifest -ManifestPath $ManifestPath -EventRecord $eventRecord -Summary $summary
             if (-not [string]::IsNullOrWhiteSpace($pendingPath)) {
-                if ([string]$result -ceq 'workflow_ack_logged') {
+                if ([string]$result -in @('workflow_ack_logged', 'workflow_ack_rejected')) {
                     $pendingChannel = [string](Get-OperatorPollValue $eventRecord 'durable_pending_channel' '')
                     $pendingMessageId = [string](Get-OperatorPollValue $eventRecord 'durable_pending_message_id' '')
                     $verifiedPendingPath = Resolve-DeclarativeWorkflowMailboxPendingPath -ProjectDir $projectDir -Channel $pendingChannel -MessageId $pendingMessageId

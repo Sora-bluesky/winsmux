@@ -29,12 +29,21 @@ Describe 'operator-poll helpers' {
             }
         }
         function Initialize-TestDurableWorkflowRun {
+            param(
+                [string]$InspectState = 'dispatching',
+                [int]$InspectAttempt = 1,
+                [string]$InspectBinding = 'builder-1'
+            )
             $runRoot = Join-Path $script:operatorPollTempRoot '.winsmux\workflow-runs\run-123'
             [IO.Directory]::CreateDirectory($runRoot) | Out-Null
             $run = [ordered]@{
                 schema_version = 2; run_id = 'run-123'; generation_id = 'generation-123'
                 config_fingerprint = ('sha256:' + ('a' * 64)); workflow_fingerprint = ('sha256:' + ('d' * 64)); source_head = ('b' * 40)
-                nodes = [ordered]@{ inspect = [ordered]@{ node_id = 'inspect'; idempotency_key = 'run-123:inspect' } }
+                resolved_bindings = [ordered]@{ implement = $InspectBinding; verify = 'builder-2' }
+                nodes = [ordered]@{
+                    inspect = [ordered]@{ node_id = 'inspect'; idempotency_key = 'run-123:inspect'; state = $InspectState; attempt = $InspectAttempt; pane_ref = 'implement' }
+                    verify = [ordered]@{ node_id = 'verify'; idempotency_key = 'run-123:verify'; state = 'pending'; attempt = 0; pane_ref = 'verify' }
+                }
             }
             [IO.File]::WriteAllText((Join-Path $runRoot 'state.json'), ($run | ConvertTo-Json -Compress -Depth 20), [Text.UTF8Encoding]::new($false))
         }
@@ -597,6 +606,148 @@ panes:
         $retry.Summary.mailbox_events | Should -Be 1
         Test-Path -LiteralPath $pendingPath | Should -BeFalse
         [Convert]::ToBase64String([IO.File]::ReadAllBytes($proofPath)) | Should -BeExactly ([Convert]::ToBase64String($proofBeforeRetry))
+    }
+
+    It 'Q01 rejects a future-node pre-ACK without creating a completion proof' {
+        $pendingRoot = Join-Path $script:operatorPollTempRoot '.winsmux\mailbox\winsmux-orchestra-operator\pending'
+        [IO.Directory]::CreateDirectory($pendingRoot) | Out-Null
+        Mock Receive-OperatorPollMailboxMessages { @() }
+        Mock Write-OrchestraLog { }
+        Initialize-TestDurableWorkflowRun
+        $pendingPath = Join-Path $pendingRoot 'workflow-ack-q01-future.json'
+        [IO.File]::WriteAllText($pendingPath, ((New-TestDurableWorkflowEnvelope -MessageId 'workflow-ack-q01-future' -NodeId 'verify') | ConvertTo-Json -Compress -Depth 20), [Text.UTF8Encoding]::new($false))
+
+        $cycle = Invoke-OperatorPollCycle -ManifestPath $script:operatorPollManifestPath -ProcessedLineCount 0 -ProcessedEventSignatures ([ordered]@{})
+        $cycle.Summary.errors | Should -BeGreaterThan 0
+        Test-Path -LiteralPath $pendingPath -PathType Leaf | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $script:operatorPollTempRoot '.winsmux\workflow-runs\run-123\proofs\completion\verify.json') -PathType Leaf | Should -BeFalse
+    }
+
+    It 'Q02 rejects a completion from a live but unassigned pane without poisoning the proof path' {
+        $pendingRoot = Join-Path $script:operatorPollTempRoot '.winsmux\mailbox\winsmux-orchestra-operator\pending'
+        [IO.Directory]::CreateDirectory($pendingRoot) | Out-Null
+        Mock Receive-OperatorPollMailboxMessages { @() }
+        Mock Write-OrchestraLog { }
+        Initialize-TestDurableWorkflowRun -InspectBinding 'builder-2'
+        $pendingPath = Join-Path $pendingRoot 'workflow-ack-q02-wrong-pane.json'
+        [IO.File]::WriteAllText($pendingPath, ((New-TestDurableWorkflowEnvelope -MessageId 'workflow-ack-q02-wrong-pane') | ConvertTo-Json -Compress -Depth 20), [Text.UTF8Encoding]::new($false))
+
+        $cycle = Invoke-OperatorPollCycle -ManifestPath $script:operatorPollManifestPath -ProcessedLineCount 0 -ProcessedEventSignatures ([ordered]@{})
+        $cycle.Summary.errors | Should -BeGreaterThan 0
+        Test-Path -LiteralPath $pendingPath -PathType Leaf | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $script:operatorPollTempRoot '.winsmux\workflow-runs\run-123\proofs\completion\inspect.json') -PathType Leaf | Should -BeFalse
+    }
+
+    It 'Q03 accepts a delayed completion from the assigned pane while the node is blocked' {
+        $pendingRoot = Join-Path $script:operatorPollTempRoot '.winsmux\mailbox\winsmux-orchestra-operator\pending'
+        [IO.Directory]::CreateDirectory($pendingRoot) | Out-Null
+        Mock Receive-OperatorPollMailboxMessages { @() }
+        Mock Write-OrchestraLog { }
+        Initialize-TestDurableWorkflowRun -InspectState 'blocked'
+        $pendingPath = Join-Path $pendingRoot 'workflow-ack-q03-blocked.json'
+        [IO.File]::WriteAllText($pendingPath, ((New-TestDurableWorkflowEnvelope -MessageId 'workflow-ack-q03-blocked') | ConvertTo-Json -Compress -Depth 20), [Text.UTF8Encoding]::new($false))
+
+        $cycle = Invoke-OperatorPollCycle -ManifestPath $script:operatorPollManifestPath -ProcessedLineCount 0 -ProcessedEventSignatures ([ordered]@{})
+        $cycle.Summary.errors | Should -Be 0
+        Test-Path -LiteralPath $pendingPath -PathType Leaf | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $script:operatorPollTempRoot '.winsmux\workflow-runs\run-123\proofs\completion\inspect.json') -PathType Leaf | Should -BeTrue
+    }
+
+    It 'Q04 removes semantic poison and processes a later valid completion in the same cycle' {
+        $pendingRoot = Join-Path $script:operatorPollTempRoot '.winsmux\mailbox\winsmux-orchestra-operator\pending'
+        [IO.Directory]::CreateDirectory($pendingRoot) | Out-Null
+        Mock Receive-OperatorPollMailboxMessages { @() }
+        Mock Write-OrchestraLog { }
+        Initialize-TestDurableWorkflowRun
+        $poisonPath = Join-Path $pendingRoot 'a-workflow-ack-q01-future.json'
+        $validPath = Join-Path $pendingRoot 'z-workflow-ack-q01-valid.json'
+        [IO.File]::WriteAllText($poisonPath, ((New-TestDurableWorkflowEnvelope -MessageId 'a-workflow-ack-q01-future' -NodeId 'verify') | ConvertTo-Json -Compress -Depth 20), [Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($validPath, ((New-TestDurableWorkflowEnvelope -MessageId 'z-workflow-ack-q01-valid') | ConvertTo-Json -Compress -Depth 20), [Text.UTF8Encoding]::new($false))
+
+        $cycle = Invoke-OperatorPollCycle -ManifestPath $script:operatorPollManifestPath -ProcessedLineCount 0 -ProcessedEventSignatures ([ordered]@{})
+        $cycle.Summary.errors | Should -BeGreaterThan 0
+        Test-Path -LiteralPath $poisonPath -PathType Leaf | Should -BeFalse
+        Test-Path -LiteralPath $validPath -PathType Leaf | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $script:operatorPollTempRoot '.winsmux\workflow-runs\run-123\proofs\completion\verify.json') -PathType Leaf | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $script:operatorPollTempRoot '.winsmux\workflow-runs\run-123\proofs\completion\inspect.json') -PathType Leaf | Should -BeTrue
+    }
+
+    It 'Q05 removes a missing-run completion record as terminal semantic poison' {
+        $pendingRoot = Join-Path $script:operatorPollTempRoot '.winsmux\mailbox\winsmux-orchestra-operator\pending'
+        [IO.Directory]::CreateDirectory($pendingRoot) | Out-Null
+        Mock Receive-OperatorPollMailboxMessages { @() }
+        Mock Write-OrchestraLog { }
+        $pendingPath = Join-Path $pendingRoot 'workflow-ack-q05-missing-run.json'
+        $payload = New-TestDurableWorkflowEnvelope -MessageId 'workflow-ack-q05-missing-run'
+        $payload.content.data.run_id = 'missing-run'
+        $payload.content.data.idempotency_key = 'missing-run:inspect'
+        $payload.content.data.evidence_ref = 'workflow-ack:missing-run:inspect'
+        [IO.File]::WriteAllText($pendingPath, ($payload | ConvertTo-Json -Compress -Depth 20), [Text.UTF8Encoding]::new($false))
+
+        $cycle = Invoke-OperatorPollCycle -ManifestPath $script:operatorPollManifestPath -ProcessedLineCount 0 -ProcessedEventSignatures ([ordered]@{})
+        $cycle.Summary.errors | Should -BeGreaterThan 0
+        Test-Path -LiteralPath $pendingPath -PathType Leaf | Should -BeFalse
+    }
+
+    It 'Q06 removes unknown-node and tuple-mismatch completion records as terminal semantic poison' {
+        $pendingRoot = Join-Path $script:operatorPollTempRoot '.winsmux\mailbox\winsmux-orchestra-operator\pending'
+        [IO.Directory]::CreateDirectory($pendingRoot) | Out-Null
+        Mock Receive-OperatorPollMailboxMessages { @() }
+        Mock Write-OrchestraLog { }
+        Initialize-TestDurableWorkflowRun
+
+        foreach ($case in @(
+                [PSCustomObject]@{ Name = 'unknown-node'; Mutate = {
+                        param($Payload)
+                        $Payload.content.data.node_id = 'unknown'
+                        $Payload.content.data.idempotency_key = 'run-123:unknown'
+                        $Payload.content.data.evidence_ref = 'workflow-ack:run-123:unknown'
+                    } },
+                [PSCustomObject]@{ Name = 'tuple-mismatch'; Mutate = {
+                        param($Payload)
+                        $Payload.content.data.config_fingerprint = ('sha256:' + ('c' * 64))
+                    } }
+            )) {
+            $messageId = "workflow-ack-q06-$($case.Name)"
+            $pendingPath = Join-Path $pendingRoot ($messageId + '.json')
+            $payload = New-TestDurableWorkflowEnvelope -MessageId $messageId
+            & $case.Mutate $payload
+            [IO.File]::WriteAllText($pendingPath, ($payload | ConvertTo-Json -Compress -Depth 20), [Text.UTF8Encoding]::new($false))
+
+            $cycle = Invoke-OperatorPollCycle -ManifestPath $script:operatorPollManifestPath -ProcessedLineCount 0 -ProcessedEventSignatures ([ordered]@{})
+            $cycle.Summary.errors | Should -BeGreaterThan 0 -Because $case.Name
+            Test-Path -LiteralPath $pendingPath -PathType Leaf | Should -BeFalse -Because $case.Name
+        }
+        Test-Path -LiteralPath (Join-Path $script:operatorPollTempRoot '.winsmux\workflow-runs\run-123\proofs\completion\unknown.json') -PathType Leaf | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $script:operatorPollTempRoot '.winsmux\workflow-runs\run-123\proofs\completion\inspect.json') -PathType Leaf | Should -BeFalse
+    }
+
+    It 'Q07 drains a full batch of proof-pane mismatches so a later valid completion advances on the next cycle' {
+        $pendingRoot = Join-Path $script:operatorPollTempRoot '.winsmux\mailbox\winsmux-orchestra-operator\pending'
+        [IO.Directory]::CreateDirectory($pendingRoot) | Out-Null
+        Mock Receive-OperatorPollMailboxMessages { @() }
+        Mock Write-OrchestraLog { }
+        Initialize-TestDurableWorkflowRun
+
+        foreach ($index in 0..19) {
+            $messageId = 'a-workflow-ack-q07-{0:d2}' -f $index
+            $pendingPath = Join-Path $pendingRoot ($messageId + '.json')
+            $payload = New-TestDurableWorkflowEnvelope -MessageId $messageId
+            $payload.content.data.pane_id = '%3'
+            [IO.File]::WriteAllText($pendingPath, ($payload | ConvertTo-Json -Compress -Depth 20), [Text.UTF8Encoding]::new($false))
+        }
+        $validPath = Join-Path $pendingRoot 'z-workflow-ack-q07-valid.json'
+        [IO.File]::WriteAllText($validPath, ((New-TestDurableWorkflowEnvelope -MessageId 'z-workflow-ack-q07-valid') | ConvertTo-Json -Compress -Depth 20), [Text.UTF8Encoding]::new($false))
+
+        $first = Invoke-OperatorPollCycle -ManifestPath $script:operatorPollManifestPath -ProcessedLineCount 0 -ProcessedEventSignatures ([ordered]@{})
+        $first.Summary.errors | Should -Be 20
+        @(Get-ChildItem -LiteralPath $pendingRoot -File -Filter 'a-workflow-ack-q07-*.json').Count | Should -Be 0
+        Test-Path -LiteralPath $validPath -PathType Leaf | Should -BeTrue
+
+        $second = Invoke-OperatorPollCycle -ManifestPath $script:operatorPollManifestPath -ProcessedLineCount $first.ProcessedLineCount -ProcessedEventSignatures $first.ProcessedEventSignatures
+        $second.Summary.errors | Should -Be 0
+        Test-Path -LiteralPath $validPath -PathType Leaf | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $script:operatorPollTempRoot '.winsmux\workflow-runs\run-123\proofs\completion\inspect.json') -PathType Leaf | Should -BeTrue
     }
 
     It 'processes mailbox idle messages when panes are stored in dictionary format' {

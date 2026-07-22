@@ -570,6 +570,45 @@ function Test-DeclarativeWorkflowAcknowledgement {
     return (Test-DeclarativeWorkflowSessionId ([string](Get-DeclarativeWorkflowValue $Acknowledgement 'pane_id' '')))
 }
 
+function Get-DeclarativeWorkflowCompletionProofAdmissionError {
+    param(
+        [Parameter(Mandatory = $true)]$Run,
+        [Parameter(Mandatory = $true)][string]$NodeId,
+        [Parameter(Mandatory = $true)]$Proof,
+        [AllowEmptyString()][string]$TrustedSenderLabel = '',
+        [AllowEmptyString()][string]$TrustedSenderPaneId = ''
+    )
+
+    $nodes = Get-DeclarativeWorkflowValue $Run 'nodes' $null
+    if ($null -eq $nodes -or $nodes -isnot [Collections.IDictionary] -or -not $nodes.Contains($NodeId)) {
+        return 'unknown node'
+    }
+    $node = $nodes[$NodeId]
+    if ([string](Get-DeclarativeWorkflowValue $node 'state' '') -notin @('dispatching', 'blocked')) {
+        return 'node is not awaiting completion'
+    }
+    if ([int](Get-DeclarativeWorkflowValue $node 'attempt' 0) -lt 1) {
+        return 'node has no dispatch attempt'
+    }
+    if ([string]::IsNullOrWhiteSpace($TrustedSenderLabel) -or [string]::IsNullOrWhiteSpace($TrustedSenderPaneId)) {
+        return 'trusted sender identity is missing'
+    }
+    $bindings = Get-DeclarativeWorkflowValue $Run 'resolved_bindings' $null
+    $paneRef = [string](Get-DeclarativeWorkflowValue $node 'pane_ref' '')
+    if ($null -eq $bindings -or $bindings -isnot [Collections.IDictionary] -or
+        [string]::IsNullOrWhiteSpace($paneRef) -or -not $bindings.Contains($paneRef) -or
+        [string]$bindings[$paneRef] -cne $TrustedSenderLabel) {
+        return 'sender is not assigned to the node'
+    }
+    if ([string](Get-DeclarativeWorkflowValue $Proof 'pane_id' '') -cne $TrustedSenderPaneId) {
+        return 'proof pane does not match the authenticated sender'
+    }
+    if (-not (Test-DeclarativeWorkflowAcknowledgement -Run $Run -NodeId $NodeId -Acknowledgement $Proof)) {
+        return 'completion tuple does not match the existing run'
+    }
+    return $null
+}
+
 function Resolve-DeclarativeWorkflowAcknowledgementCandidates {
     param(
         [Parameter(Mandatory = $true)]$Run,
@@ -1050,19 +1089,31 @@ function Write-DeclarativeWorkflowDurableProof {
         [Parameter(Mandatory = $true)]$Run,
         [Parameter(Mandatory = $true)][ValidateSet('Completion', 'Cancellation')][string]$Kind,
         [AllowEmptyString()][string]$NodeId = '',
-        [Parameter(Mandatory = $true)]$Proof
+        [Parameter(Mandatory = $true)]$Proof,
+        [AllowEmptyString()][string]$TrustedSenderLabel = '',
+        [AllowEmptyString()][string]$TrustedSenderPaneId = ''
     )
     $runId = [string](Get-DeclarativeWorkflowValue $Run 'run_id' '')
     $persistedRun = Read-DeclarativeWorkflowRunState -ProjectDir $ProjectDir -RunId $runId
-    $valid = if ($Kind -ceq 'Completion') {
-        Test-DeclarativeWorkflowAcknowledgement -Run $persistedRun -NodeId $NodeId -Acknowledgement $Proof
-    } else {
-        Test-DeclarativeWorkflowCancellationProof -Run $persistedRun -Proof $Proof
+    $canonical = ConvertTo-DeclarativeWorkflowCanonicalJson -Value $Proof
+    if ($Kind -ceq 'Completion') {
+        $nodes = Get-DeclarativeWorkflowValue $persistedRun 'nodes' $null
+        $node = if ($null -ne $nodes -and $nodes -is [Collections.IDictionary] -and $nodes.Contains($NodeId)) { $nodes[$NodeId] } else { $null }
+        if ($null -ne $node -and [string](Get-DeclarativeWorkflowValue $node 'state' '') -ceq 'succeeded') {
+            $existingPath = Resolve-DeclarativeWorkflowDurableProofPath -ProjectDir $ProjectDir -RunId $runId -Kind $Kind -NodeId $NodeId
+            if ([IO.File]::Exists($existingPath)) {
+                $existing = Read-DeclarativeWorkflowDurableProof -ProjectDir $ProjectDir -Run $persistedRun -Kind $Kind -NodeId $NodeId
+                if ((ConvertTo-DeclarativeWorkflowCanonicalJson -Value $existing) -ceq $canonical) { return $existingPath }
+            }
+        }
+        $admissionError = Get-DeclarativeWorkflowCompletionProofAdmissionError -Run $persistedRun -NodeId $NodeId -Proof $Proof `
+            -TrustedSenderLabel $TrustedSenderLabel -TrustedSenderPaneId $TrustedSenderPaneId
+        if ($null -ne $admissionError) { throw "workflow_completion_rejected: $admissionError" }
+    } elseif (-not (Test-DeclarativeWorkflowCancellationProof -Run $persistedRun -Proof $Proof)) {
+        throw 'Workflow durable proof does not match the existing run.'
     }
-    if (-not $valid) { throw 'Workflow durable proof does not match the existing run.' }
 
     $path = Resolve-DeclarativeWorkflowDurableProofPath -ProjectDir $ProjectDir -RunId $runId -Kind $Kind -NodeId $NodeId -CreateDirectory
-    $canonical = ConvertTo-DeclarativeWorkflowCanonicalJson -Value $Proof
     $payloadBytes = [Text.UTF8Encoding]::new($false).GetBytes($canonical + "`n")
     if ([IO.File]::Exists($path)) {
         $existing = Read-DeclarativeWorkflowDurableProof -ProjectDir $ProjectDir -Run $persistedRun -Kind $Kind -NodeId $NodeId

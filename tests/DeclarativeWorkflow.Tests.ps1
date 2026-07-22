@@ -593,15 +593,15 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
 
     It 'O01 uses immutable run-owned completion and cancellation proofs without log fallback' {
         $project = Join-Path $TestDrive 'o01-proof-store'
-        $run = New-TestRun
+        $run = New-TestDispatchedRun
         Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $run -CreateNew | Out-Null
         $acknowledgement = New-TestAcknowledgement -NodeId 'inspect' -PaneId '%2'
         $acknowledgement['transport'] = 'mailbox'
         $acknowledgement['message_id'] = 'workflow-ack-o01'
 
-        $proofPath = Write-DeclarativeWorkflowDurableProof -ProjectDir $project -Run $run -Kind Completion -NodeId 'inspect' -Proof $acknowledgement
+        $proofPath = Write-DeclarativeWorkflowDurableProof -ProjectDir $project -Run $run -Kind Completion -NodeId 'inspect' -Proof $acknowledgement -TrustedSenderLabel 'worker-1' -TrustedSenderPaneId '%2'
         $before = [IO.File]::ReadAllBytes($proofPath)
-        Write-DeclarativeWorkflowDurableProof -ProjectDir $project -Run $run -Kind Completion -NodeId 'inspect' -Proof $acknowledgement | Should -BeExactly $proofPath
+        Write-DeclarativeWorkflowDurableProof -ProjectDir $project -Run $run -Kind Completion -NodeId 'inspect' -Proof $acknowledgement -TrustedSenderLabel 'worker-1' -TrustedSenderPaneId '%2' | Should -BeExactly $proofPath
         [Convert]::ToBase64String([IO.File]::ReadAllBytes($proofPath)) | Should -BeExactly ([Convert]::ToBase64String($before))
 
         Write-OrchestraLog -ProjectDir $project -SessionName 'unused-log' -Event 'workflow.node.acknowledged' -PaneId '%2' -Data $acknowledgement | Out-Null
@@ -612,13 +612,13 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         $resolved[0].message_id | Should -BeExactly 'workflow-ack-o01'
 
         $conflict = Copy-DeclarativeWorkflowValue $acknowledgement
-        $conflict.pane_id = '%3'
-        { Write-DeclarativeWorkflowDurableProof -ProjectDir $project -Run $run -Kind Completion -NodeId 'inspect' -Proof $conflict } |
+        $conflict.message_id = 'workflow-ack-o01-conflict'
+        { Write-DeclarativeWorkflowDurableProof -ProjectDir $project -Run $run -Kind Completion -NodeId 'inspect' -Proof $conflict -TrustedSenderLabel 'worker-1' -TrustedSenderPaneId '%2' } |
             Should -Throw '*conflict*'
         Test-Path -LiteralPath (Join-Path $project '.winsmux\workflow-runs\run-123\proofs\completion\inspect.conflict') -PathType Leaf | Should -BeTrue
         { Read-DeclarativeWorkflowDurableProof -ProjectDir $project -Run $run -Kind Completion -NodeId 'inspect' } |
             Should -Throw '*conflict*'
-        { Write-DeclarativeWorkflowDurableProof -ProjectDir $project -Run $run -Kind Completion -NodeId 'inspect' -Proof $acknowledgement } |
+        { Write-DeclarativeWorkflowDurableProof -ProjectDir $project -Run $run -Kind Completion -NodeId 'inspect' -Proof $acknowledgement -TrustedSenderLabel 'worker-1' -TrustedSenderPaneId '%2' } |
             Should -Throw '*conflict*'
         $script:o01SaveCount = 0
         $script:o01DispatchCount = 0
@@ -644,9 +644,30 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         $resolvedCancellation[0].evidence_ref | Should -BeExactly 'workflow-cancel:run-123'
     }
 
+    It 'O03 binds completion-proof admission to the authenticated sender and preserves exact retry after success' {
+        $project = Join-Path $TestDrive 'o03-proof-admission'
+        $run = New-TestDispatchedRun
+        Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $run -CreateNew | Out-Null
+        $acknowledgement = New-TestAcknowledgement -NodeId 'inspect' -PaneId '%2'
+        $acknowledgement['transport'] = 'mailbox'
+        $acknowledgement['message_id'] = 'workflow-ack-o03'
+
+        $wrongPane = Copy-DeclarativeWorkflowValue $acknowledgement
+        $wrongPane['pane_id'] = '%3'
+        { Write-DeclarativeWorkflowDurableProof -ProjectDir $project -Run $run -Kind Completion -NodeId 'inspect' -Proof $wrongPane -TrustedSenderLabel 'worker-1' -TrustedSenderPaneId '%2' } |
+            Should -Throw '*workflow_completion_rejected*'
+        Test-Path -LiteralPath (Join-Path $project '.winsmux\workflow-runs\run-123\proofs\completion\inspect.json') -PathType Leaf | Should -BeFalse
+
+        $proofPath = Write-DeclarativeWorkflowDurableProof -ProjectDir $project -Run $run -Kind Completion -NodeId 'inspect' -Proof $acknowledgement -TrustedSenderLabel 'worker-1' -TrustedSenderPaneId '%2'
+        $succeededRun = Copy-DeclarativeWorkflowValue $run
+        $succeededRun.nodes.inspect.state = 'succeeded'
+        Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $succeededRun | Out-Null
+        Write-DeclarativeWorkflowDurableProof -ProjectDir $project -Run $succeededRun -Kind Completion -NodeId 'inspect' -Proof $acknowledgement | Should -BeExactly $proofPath
+    }
+
     It 'P01 rejects prepared proof directory and leaf junctions without changing external bytes' {
         $project = Join-Path $TestDrive 'p01-proof-reparse'
-        $run = New-TestRun
+        $run = New-TestDispatchedRun
         Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $run -CreateNew | Out-Null
         $acknowledgement = New-TestAcknowledgement -NodeId 'inspect' -PaneId '%2'
         $acknowledgement['transport'] = 'mailbox'
@@ -661,7 +682,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         $junction = $null
         try {
             $junction = New-Item -ItemType Junction -Path $proofsJunction -Target $external -ErrorAction Stop
-            { Write-DeclarativeWorkflowDurableProof -ProjectDir $project -Run $run -Kind Completion -NodeId 'inspect' -Proof $acknowledgement } |
+            { Write-DeclarativeWorkflowDurableProof -ProjectDir $project -Run $run -Kind Completion -NodeId 'inspect' -Proof $acknowledgement -TrustedSenderLabel 'worker-1' -TrustedSenderPaneId '%2' } |
                 Should -Throw '*reparse*'
             { Read-DeclarativeWorkflowDurableProof -ProjectDir $project -Run $run -Kind Completion -NodeId 'inspect' } |
                 Should -Throw '*reparse*'
@@ -678,7 +699,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         $junction = $null
         try {
             $junction = New-Item -ItemType Junction -Path $leafJunction -Target $external -ErrorAction Stop
-            { Write-DeclarativeWorkflowDurableProof -ProjectDir $project -Run $run -Kind Completion -NodeId 'inspect' -Proof $acknowledgement } |
+            { Write-DeclarativeWorkflowDurableProof -ProjectDir $project -Run $run -Kind Completion -NodeId 'inspect' -Proof $acknowledgement -TrustedSenderLabel 'worker-1' -TrustedSenderPaneId '%2' } |
                 Should -Throw '*reparse*'
             [Convert]::ToBase64String([IO.File]::ReadAllBytes($marker)) | Should -BeExactly ([Convert]::ToBase64String($before))
         } finally {
@@ -690,7 +711,8 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         $script:testDeclarativeSessionName = 'workflow-test'
         $run = New-TestRun
         $proofProject = Join-Path $TestDrive 'w05-durable-proof'
-        Save-DeclarativeWorkflowRunState -ProjectDir $proofProject -Run $run -CreateNew | Out-Null
+        $proofRun = New-TestDispatchedRun -Run $run
+        Save-DeclarativeWorkflowRunState -ProjectDir $proofProject -Run $proofRun -CreateNew | Out-Null
         $events = [Collections.Generic.List[string]]::new()
         Mock Invoke-TeamPipelineGuardedSend { [PSCustomObject]@{ Status = 'EXEC_DONE' } }
         Mock Wait-TeamPipelineDeclarativeCompletion {
@@ -709,7 +731,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         $productionReceipt.acknowledgement.transport | Should -Be 'mailbox'
         $productionReceipt.acknowledgement.evidence_ref | Should -Be 'workflow-ack:run-123:inspect'
         Should -Invoke Write-TeamPipelineEvent -Times 0 -Exactly
-        Write-DeclarativeWorkflowDurableProof -ProjectDir $proofProject -Run $run -Kind Completion -NodeId 'inspect' -Proof $productionReceipt.acknowledgement | Out-Null
+        Write-DeclarativeWorkflowDurableProof -ProjectDir $proofProject -Run $proofRun -Kind Completion -NodeId 'inspect' -Proof $productionReceipt.acknowledgement -TrustedSenderLabel 'worker-1' -TrustedSenderPaneId '%2' | Out-Null
         $resolvedAcknowledgements = @(Resolve-TeamPipelineDeclarativeAcknowledgement -Run $run -NodeId 'inspect' -ProjectDir $proofProject -SessionName 'workflow-test')
         $resolvedAcknowledgements.Count | Should -Be 1
         $resolvedAcknowledgements[0].pane_id | Should -Be '%2'
