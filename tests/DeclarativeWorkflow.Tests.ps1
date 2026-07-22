@@ -974,6 +974,196 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         $blocked.cleanup_journal[0].state | Should -Be 'blocked'
     }
 
+    It 'V01 carries an ordered bounded verification envelope from durable dependency evidence into the existing verify prompt' {
+        $run = New-TestRun
+        $run.state = 'running'
+        $run.nodes.inspect.state = 'succeeded'
+        $run.nodes.inspect.attempt = 1
+        $run.nodes.inspect.agent_cli_session_id = '%2'
+        $run.nodes.inspect.evidence_refs = @('workflow-ack:run-123:inspect')
+        $run.nodes.verify.state = 'ready'
+        $manifest = [PSCustomObject]@{
+            Panes = [ordered]@{
+                'worker-1' = [ordered]@{ pane_id = '%2'; role = 'Builder'; builder_worktree_path = 'C:\\builder-worktree' }
+                'worker-2' = [ordered]@{ pane_id = '%3'; role = 'Reviewer' }
+            }
+        }
+        $acknowledgement = New-TestAcknowledgement -NodeId 'verify' -PaneId '%3'
+        $acknowledgement['transport'] = 'mailbox'
+        $script:verificationRequest = $null
+        $script:verificationPrompt = ''
+        Mock Invoke-TeamPipelineGuardedSend {
+            param($StageName, $Target, $Prompt)
+            $script:verificationPrompt = $Prompt
+            [PSCustomObject]@{ Status = 'SENT'; Target = $Target }
+        }
+        Mock Wait-TeamPipelineDeclarativeCompletion { $acknowledgement }
+
+        $after = Invoke-DeclarativeWorkflowNode -Run $run -NodeId 'verify' -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) `
+            -SaveRun { param($candidate) } `
+            -Dispatch {
+                param($request, $candidateRun)
+                $script:verificationRequest = Copy-DeclarativeWorkflowValue $request
+                Invoke-TeamPipelineDeclarativeDispatch -Request $request -Run $candidateRun -Manifest $manifest -ProjectDir $TestDrive -SessionName 'verification-session'
+            } `
+            -ResolveSession { param($paneId) $paneId }
+
+        $after.nodes.verify.state | Should -Be 'succeeded'
+        $script:verificationRequest.context_pack_ref | Should -Be 'review-pack'
+        @($script:verificationRequest.dependency_node_ids) | Should -Be @('inspect')
+        @($script:verificationRequest.evidence_refs) | Should -Be @('workflow-ack:run-123:inspect')
+        $script:verificationPrompt | Should -Match 'Builder label: worker-1'
+        $script:verificationPrompt | Should -Match ([regex]::Escape('Builder worktree: C:\\builder-worktree'))
+        $script:verificationPrompt | Should -Match 'Context package reference: review-pack'
+        $script:verificationPrompt | Should -Match 'workflow-ack:run-123:inspect'
+        $script:verificationPrompt | Should -Not -Match 'RAW_OUTPUT_MARKER'
+    }
+
+    It 'V01 blocks a verification dispatch before acknowledgement when the dependency producer binding or bounded context is missing' {
+        $run = New-TestRun
+        $run.nodes.inspect.state = 'succeeded'
+        $run.nodes.inspect.evidence_refs = @('workflow-ack:run-123:inspect')
+        $run.resolved_bindings.Remove('implement')
+        $manifest = [PSCustomObject]@{ Panes = [ordered]@{ 'worker-2' = [ordered]@{ pane_id = '%3'; role = 'Reviewer' } } }
+        $request = [PSCustomObject]@{
+            stage = 'VERIFY'; node_id = 'verify'; pane_ref = 'verify'; task = 'safe task body'
+            context_pack_ref = 'review-pack'; dependency_node_ids = @('inspect'); evidence_refs = @('workflow-ack:run-123:inspect')
+        }
+        Mock Invoke-TeamPipelineGuardedSend { throw 'verification must not be sent without a producer binding' }
+        Mock Wait-TeamPipelineDeclarativeCompletion { throw 'verification must not await an acknowledgement without a producer binding' }
+
+        $result = Invoke-TeamPipelineDeclarativeDispatch -Request $request -Run $run -Manifest $manifest -ProjectDir $TestDrive -SessionName 'verification-session'
+
+        $result | Should -BeNullOrEmpty
+        Should -Invoke Invoke-TeamPipelineGuardedSend -Times 0 -Exactly
+        Should -Invoke Wait-TeamPipelineDeclarativeCompletion -Times 0 -Exactly
+    }
+
+    It 'V01 blocks an unbounded context value before it can become verification prompt content' {
+        $run = New-TestRun
+        $run.nodes.inspect.state = 'succeeded'
+        $run.nodes.inspect.evidence_refs = @('workflow-ack:run-123:inspect')
+        $run.nodes.verify.context_pack_ref = "context-pack:RAW_OUTPUT_MARKER`nnot-a-reference"
+        $manifest = [PSCustomObject]@{
+            Panes = [ordered]@{
+                'worker-1' = [ordered]@{ pane_id = '%2'; role = 'Builder'; builder_worktree_path = 'C:\\builder-worktree' }
+                'worker-2' = [ordered]@{ pane_id = '%3'; role = 'Reviewer' }
+            }
+        }
+        $request = [PSCustomObject]@{
+            stage = 'VERIFY'; node_id = 'verify'; pane_ref = 'verify'; task = 'safe task body'
+            context_pack_ref = $run.nodes.verify.context_pack_ref; dependency_node_ids = @('inspect'); evidence_refs = @('workflow-ack:run-123:inspect')
+        }
+        Mock Invoke-TeamPipelineGuardedSend { throw 'raw producer output must not be forwarded as a context reference' }
+        Mock Wait-TeamPipelineDeclarativeCompletion { throw 'raw producer output must not reach acknowledgement polling' }
+
+        $result = Invoke-TeamPipelineDeclarativeDispatch -Request $request -Run $run -Manifest $manifest -ProjectDir $TestDrive -SessionName 'verification-session'
+
+        $result | Should -BeNullOrEmpty
+        Should -Invoke Invoke-TeamPipelineGuardedSend -Times 0 -Exactly
+        Should -Invoke Wait-TeamPipelineDeclarativeCompletion -Times 0 -Exactly
+    }
+
+    It 'V01 rejects unbounded context content while constructing the durable run state' {
+        $plan = New-TestWorkflowPlan
+        $plan.nodes[1].context_pack_ref = "context-pack:RAW_OUTPUT_MARKER`nnot-a-reference"
+
+        {
+            New-DeclarativeWorkflowRun -Plan $plan -RunId 'run-123' -GenerationId 'generation-123' -SourceHead ('b' * 40) -TaskInput (New-TestTaskInput)
+        } | Should -Throw '*bounded reference*'
+    }
+
+    It 'V01 blocks an ambiguous multi-producer verification context before acknowledgement' {
+        $run = New-TestRun
+        $run.nodes.inspect.state = 'succeeded'
+        $run.nodes.inspect.evidence_refs = @('workflow-ack:run-123:inspect')
+        $run.nodes['second'] = [ordered]@{
+            state = 'succeeded'; attempt = 1; idempotency_key = 'run-123:second'; pane_ref = 'implement-two'
+            action = 'operator-dispatch'; depends_on = @(); cleanup = 'retain'; evidence_refs = @('workflow-ack:run-123:second')
+        }
+        $run.nodes.verify.depends_on = @('inspect', 'second')
+        $run.resolved_bindings['implement-two'] = 'worker-3'
+        $manifest = [PSCustomObject]@{
+            Panes = [ordered]@{
+                'worker-1' = [ordered]@{ pane_id = '%2'; role = 'Builder'; builder_worktree_path = 'C:\\builder-one' }
+                'worker-2' = [ordered]@{ pane_id = '%3'; role = 'Reviewer' }
+                'worker-3' = [ordered]@{ pane_id = '%4'; role = 'Builder'; builder_worktree_path = 'C:\\builder-two' }
+            }
+        }
+        $request = [PSCustomObject]@{
+            stage = 'VERIFY'; node_id = 'verify'; pane_ref = 'verify'; task = 'safe task body'
+            context_pack_ref = 'review-pack'; dependency_node_ids = @('inspect', 'second')
+            evidence_refs = @('workflow-ack:run-123:inspect', 'workflow-ack:run-123:second')
+        }
+        Mock Invoke-TeamPipelineGuardedSend { throw 'verification must not be sent for an ambiguous producer context' }
+        Mock Wait-TeamPipelineDeclarativeCompletion { throw 'verification must not await acknowledgement for an ambiguous producer context' }
+
+        $result = Invoke-TeamPipelineDeclarativeDispatch -Request $request -Run $run -Manifest $manifest -ProjectDir $TestDrive -SessionName 'verification-session'
+
+        $result | Should -BeNullOrEmpty
+        Should -Invoke Invoke-TeamPipelineGuardedSend -Times 0 -Exactly
+        Should -Invoke Wait-TeamPipelineDeclarativeCompletion -Times 0 -Exactly
+    }
+
+    It 'S01 rejects missing or malformed start manifests before creating a workflow-run state lock dispatch or cleanup effect' {
+        $taskFile = Join-Path $TestDrive 'manifest-precondition-task.txt'
+        [IO.File]::WriteAllText($taskFile, 'Implement TASK-659 safely.', [Text.UTF8Encoding]::new($false))
+        foreach ($case in @(
+                [PSCustomObject]@{ Name = 'missing'; ReadManifest = { $null } },
+                [PSCustomObject]@{ Name = 'malformed'; ReadManifest = { throw 'manifest parse rejected' } },
+                [PSCustomObject]@{ Name = 'missing-session-identity'; ReadManifest = { [PSCustomObject]@{ Session = [ordered]@{}; Panes = [ordered]@{} } } }
+            )) {
+            $project = Join-Path $TestDrive ("manifest-precondition-" + $case.Name)
+            $plan = [ordered]@{
+                config_fingerprint = ('sha256:' + ('a' * 64))
+                resolved_bindings = [ordered]@{ implement = 'worker-1'; verify = 'worker-2' }
+                workflow = (New-TestWorkflowPlan)
+            }
+            Mock Get-TeamPipelineDeclarativeProjectHead { 'b' * 40 }
+            Mock Read-TeamPipelineManifest $case.ReadManifest
+            Mock Invoke-TeamPipelineWorkspacePlanOnce { Copy-DeclarativeWorkflowValue $plan }
+            Mock Invoke-TeamPipelineDeclarativeRunAdvancement { throw 'start must not dispatch without a manifest identity' }
+
+            {
+                Invoke-TeamPipelineDeclarativeWorkflow -Action start -RecipeId 'bugfix-two-slot' -WorkflowId 'bugfix' `
+                    -RunId 'run-123' -GenerationId 'generation-123' -ConfigFingerprint ('sha256:' + ('a' * 64)) `
+                    -SourceHead ('b' * 40) -TaskFile $taskFile -ProjectDir $project
+            } | Should -Throw
+
+            Test-Path -LiteralPath (Join-Path $project '.winsmux\workflow-runs\run-123') | Should -BeFalse
+            Should -Invoke Invoke-TeamPipelineWorkspacePlanOnce -Times 0 -Exactly
+            Should -Invoke Invoke-TeamPipelineDeclarativeRunAdvancement -Times 0 -Exactly
+        }
+    }
+
+    It 'M02 structurally rejects task-body fields without rejecting identifier-map keys and preserves existing state bytes' {
+        $project = Join-Path $TestDrive 'structural-privacy-project'
+        $run = New-TestRun
+        $run.nodes.inspect.pane_ref = 'task'
+        $run.resolved_bindings['task'] = 'worker-1'
+        $run.nodes['task'] = Copy-DeclarativeWorkflowValue $run.nodes.inspect
+        Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $run | Out-Null
+        $statePath = Join-Path $project '.winsmux\workflow-runs\run-123\state.json'
+        $baseline = [IO.File]::ReadAllBytes($statePath)
+
+        foreach ($field in @('Text', 'task', 'task_file', 'task_path')) {
+            $topLevel = Copy-DeclarativeWorkflowValue $run
+            $topLevel[$field] = 'PRIVATE_TASK_BODY'
+            { Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $topLevel } | Should -Throw '*must not persist*'
+            [Convert]::ToHexString([IO.File]::ReadAllBytes($statePath)) | Should -Be ([Convert]::ToHexString($baseline))
+
+            $nodeRecord = Copy-DeclarativeWorkflowValue $run
+            $nodeRecord.nodes.inspect[$field] = 'PRIVATE_TASK_BODY'
+            { Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $nodeRecord } | Should -Throw '*must not persist*'
+            [Convert]::ToHexString([IO.File]::ReadAllBytes($statePath)) | Should -Be ([Convert]::ToHexString($baseline))
+        }
+
+        $untypedNode = Copy-DeclarativeWorkflowValue $run
+        $untypedNode.nodes['task'] = 'PRIVATE_TASK_BODY'
+        { Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $untypedNode } | Should -Throw '*typed records*'
+        [Convert]::ToHexString([IO.File]::ReadAllBytes($statePath)) | Should -Be ([Convert]::ToHexString($baseline))
+    }
+
     It 'M01 atomically projects workflow state while preserving unknown manifest sections' {
         $project = Join-Path $TestDrive 'manifest-project'
         $winsmuxDir = Join-Path $project '.winsmux'
@@ -1025,6 +1215,8 @@ future_state:
         $junctionPath = Join-Path $junctionRunsRoot 'run-123'
         $taskFile = Join-Path $TestDrive 'junction-state-task.txt'
         [IO.File]::WriteAllText($taskFile, 'Implement TASK-659 safely.', [Text.UTF8Encoding]::new($false))
+        Mock Read-TeamPipelineManifest { [PSCustomObject]@{ Session = [ordered]@{ name = 'm01-session' }; Panes = [ordered]@{} } }
+        Mock Get-TeamPipelineSessionName { 'm01-session' }
         try {
             try {
                 $stateJunction = New-Item -ItemType Junction -Path $junctionPath -Target $externalRunRoot -ErrorAction Stop

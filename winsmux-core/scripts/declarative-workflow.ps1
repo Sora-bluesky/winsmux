@@ -198,7 +198,12 @@ function New-DeclarativeWorkflowRun {
             evidence_refs   = @()
         }
         $contextPackRef = [string](Get-DeclarativeWorkflowValue $definition 'context_pack_ref' '')
-        if (-not [string]::IsNullOrWhiteSpace($contextPackRef)) { $node['context_pack_ref'] = $contextPackRef }
+        if (-not [string]::IsNullOrWhiteSpace($contextPackRef)) {
+            if (-not (Test-DeclarativeWorkflowBoundedReference -Value $contextPackRef)) {
+                throw 'context_pack_ref must be a bounded reference, not inline context content.'
+            }
+            $node['context_pack_ref'] = $contextPackRef
+        }
         $nodes[$nodeId] = $node
     }
     if ($nodes.Count -lt 1) { throw 'Normalized workflow must contain at least one node.' }
@@ -234,6 +239,64 @@ function Get-DeclarativeWorkflowNode {
     $nodes = Get-DeclarativeWorkflowValue $Run 'nodes' $null
     if ($null -eq $nodes -or -not $nodes.Contains($NodeId)) { throw "Unknown workflow node '$NodeId'." }
     return $nodes[$NodeId]
+}
+
+function Test-DeclarativeWorkflowBoundedReference {
+    param([AllowNull()][string]$Value)
+
+    return (-not [string]::IsNullOrWhiteSpace($Value) -and
+        $Value.Length -le 256 -and
+        $Value -cmatch '^[A-Za-z0-9][A-Za-z0-9._:/-]*$')
+}
+
+function Get-DeclarativeWorkflowVerificationEnvelope {
+    param(
+        [Parameter(Mandatory = $true)]$Run,
+        [Parameter(Mandatory = $true)][string]$NodeId
+    )
+
+    $node = Get-DeclarativeWorkflowNode -Run $Run -NodeId $NodeId
+    if ([string](Get-DeclarativeWorkflowValue $node 'action' '') -cne 'verification') {
+        return $null
+    }
+
+    $contextPackRef = [string](Get-DeclarativeWorkflowValue $node 'context_pack_ref' '')
+    $dependencyNodeIds = @((Get-DeclarativeWorkflowValue $node 'depends_on' @()) | ForEach-Object { [string]$_ })
+    if (-not (Test-DeclarativeWorkflowBoundedReference -Value $contextPackRef) -or $dependencyNodeIds.Count -lt 1) {
+        return $null
+    }
+
+    $nodes = Get-DeclarativeWorkflowValue $Run 'nodes' $null
+    if ($null -eq $nodes) { return $null }
+    $seenNodes = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $seenEvidence = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $evidenceRefs = [Collections.Generic.List[string]]::new()
+    $runId = [string](Get-DeclarativeWorkflowValue $Run 'run_id' '')
+
+    foreach ($dependencyNodeId in $dependencyNodeIds) {
+        if ([string]::IsNullOrWhiteSpace($dependencyNodeId) -or -not $seenNodes.Add($dependencyNodeId) -or -not $nodes.Contains($dependencyNodeId)) {
+            return $null
+        }
+        $dependencyNode = $nodes[$dependencyNodeId]
+        if ([string](Get-DeclarativeWorkflowValue $dependencyNode 'state' '') -cne 'succeeded') {
+            return $null
+        }
+        $expectedEvidenceRef = "workflow-ack:$runId`:$dependencyNodeId"
+        $dependencyEvidenceRefs = @((Get-DeclarativeWorkflowValue $dependencyNode 'evidence_refs' @()) | ForEach-Object { [string]$_ })
+        if ($dependencyEvidenceRefs.Count -lt 1) { return $null }
+        foreach ($evidenceRef in $dependencyEvidenceRefs) {
+            if ($evidenceRef -cne $expectedEvidenceRef -or -not $seenEvidence.Add($evidenceRef)) {
+                return $null
+            }
+            $evidenceRefs.Add($evidenceRef) | Out-Null
+        }
+    }
+
+    return [PSCustomObject]@{
+        context_pack_ref    = $contextPackRef
+        dependency_node_ids = @($dependencyNodeIds)
+        evidence_refs       = @($evidenceRefs)
+    }
 }
 
 function Set-DeclarativeWorkflowReadyNodes {
@@ -436,12 +499,23 @@ function Invoke-DeclarativeWorkflowNode {
     Save-DeclarativeWorkflowProgress -Run $candidate -SaveRun $SaveRun -RecalculateRunState
 
     $stage = if ([string](Get-DeclarativeWorkflowValue $node 'action' '') -ceq 'verification') { 'VERIFY' } else { 'EXEC' }
-    $request = [PSCustomObject]@{
+    $request = [ordered]@{
         stage       = $stage
         node_id     = $NodeId
         pane_ref    = [string](Get-DeclarativeWorkflowValue $node 'pane_ref' '')
         task        = [string](Get-DeclarativeWorkflowValue $TaskInput 'Text' '')
         evidence_refs = @()
+    }
+    if ($stage -ceq 'VERIFY') {
+        $verificationEnvelope = Get-DeclarativeWorkflowVerificationEnvelope -Run $candidate -NodeId $NodeId
+        if ($null -eq $verificationEnvelope) {
+            $node.state = 'blocked'
+            Save-DeclarativeWorkflowProgress -Run $candidate -SaveRun $SaveRun -RecalculateRunState
+            return $candidate
+        }
+        $request.context_pack_ref = [string]$verificationEnvelope.context_pack_ref
+        $request.dependency_node_ids = @($verificationEnvelope.dependency_node_ids)
+        $request.evidence_refs = @($verificationEnvelope.evidence_refs)
     }
     try {
     $completion = & $Dispatch $request $candidate
@@ -823,6 +897,85 @@ function Read-DeclarativeWorkflowRunState {
     return $state
 }
 
+function Test-DeclarativeWorkflowForbiddenStateField {
+    param([Parameter(Mandatory = $true)][string]$Name)
+
+    return [string]::Equals($Name, 'Text', [StringComparison]::OrdinalIgnoreCase) -or
+        [string]::Equals($Name, 'task', [StringComparison]::OrdinalIgnoreCase) -or
+        [string]::Equals($Name, 'task_file', [StringComparison]::OrdinalIgnoreCase) -or
+        [string]::Equals($Name, 'task_path', [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Get-DeclarativeWorkflowStateEntries {
+    param([AllowNull()]$Value)
+
+    if ($Value -is [Collections.IDictionary]) {
+        foreach ($key in $Value.Keys) {
+            [PSCustomObject]@{ Name = [string]$key; Value = $Value[$key] }
+        }
+        return
+    }
+    if ($Value -is [pscustomobject]) {
+        foreach ($property in @($Value.PSObject.Properties | Where-Object { $_.MemberType -in @('NoteProperty', 'Property') })) {
+            [PSCustomObject]@{ Name = [string]$property.Name; Value = $property.Value }
+        }
+    }
+}
+
+function Test-DeclarativeWorkflowStructuredStateRecord {
+    param([AllowNull()]$Value)
+
+    return ($Value -is [Collections.IDictionary] -or $Value -is [pscustomobject])
+}
+
+function Assert-DeclarativeWorkflowStatePrivacy {
+    param(
+        [AllowNull()]$Value,
+        [ValidateSet('run', 'snapshot', 'record', 'node-map', 'binding-map')][string]$Shape = 'record'
+    )
+
+    if ($null -eq $Value -or $Value -is [string] -or $Value -is [ValueType]) {
+        return
+    }
+    if ($Value -is [Collections.IEnumerable] -and $Value -isnot [Collections.IDictionary]) {
+        foreach ($item in $Value) {
+            Assert-DeclarativeWorkflowStatePrivacy -Value $item -Shape 'record'
+        }
+        return
+    }
+
+    $entries = @(Get-DeclarativeWorkflowStateEntries -Value $Value)
+    if ($entries.Count -eq 0) { return }
+    if ($Shape -in @('node-map', 'binding-map')) {
+        foreach ($entry in $entries) {
+            if ($Shape -ceq 'node-map' -and -not (Test-DeclarativeWorkflowStructuredStateRecord -Value $entry.Value)) {
+                throw 'Declarative workflow state nodes must map identifiers to typed records.'
+            }
+            Assert-DeclarativeWorkflowStatePrivacy -Value $entry.Value -Shape 'record'
+        }
+        return
+    }
+
+    foreach ($entry in $entries) {
+        if (Test-DeclarativeWorkflowForbiddenStateField -Name $entry.Name) {
+            throw 'Declarative workflow state must not persist task text or task-file paths.'
+        }
+        $childShape = 'record'
+        if ($Shape -ceq 'run') {
+            if ($entry.Name -ceq 'nodes') {
+                $childShape = 'node-map'
+            } elseif ($entry.Name -ceq 'resolved_bindings') {
+                $childShape = 'binding-map'
+            } elseif ($entry.Name -ceq 'normalized_snapshot') {
+                $childShape = 'snapshot'
+            }
+        } elseif ($Shape -ceq 'snapshot' -and $entry.Name -ceq 'resolved_bindings') {
+            $childShape = 'binding-map'
+        }
+        Assert-DeclarativeWorkflowStatePrivacy -Value $entry.Value -Shape $childShape
+    }
+}
+
 function Save-DeclarativeWorkflowRunState {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -832,13 +985,11 @@ function Save-DeclarativeWorkflowRunState {
     $generationId = [string](Get-DeclarativeWorkflowValue $Run 'generation_id' '')
     Assert-DeclarativeWorkflowId -Name 'run_id' -Value $runId
     Assert-DeclarativeWorkflowId -Name 'generation_id' -Value $generationId
+    Assert-DeclarativeWorkflowStatePrivacy -Value $Run -Shape 'run'
     $path = Resolve-DeclarativeWorkflowOwnedRunPath -ProjectDir $ProjectDir -RunId $runId -LeafName 'state.json' -CreateRunDirectory
     $runRoot = Split-Path -Parent $path
     $previousBytes = if ([IO.File]::Exists($path)) { [IO.File]::ReadAllBytes($path) } else { $null }
     $json = $Run | ConvertTo-Json -Depth 100 -Compress
-    if ($json -match '"(?:Text|task|task_file|task_path)"\s*:') {
-        throw 'Declarative workflow state must not persist task text or task-file paths.'
-    }
     $tempPath = Join-Path $runRoot ('.state-{0}.tmp' -f [guid]::NewGuid().ToString('N'))
     try {
         [IO.File]::WriteAllText($tempPath, $json + "`n", [Text.UTF8Encoding]::new($false))

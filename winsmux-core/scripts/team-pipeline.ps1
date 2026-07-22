@@ -1236,7 +1236,10 @@ function New-TeamPipelineVerifyPrompt {
         [Parameter(Mandatory = $true)][string]$BuilderLabel,
         [Parameter(Mandatory = $true)][string]$BuilderWorktreePath,
         [string]$PlanSummary,
-        [string]$BuilderCompletionMessage
+        [string]$BuilderCompletionMessage,
+        [string]$ContextPackRef = '',
+        [string[]]$DependencyNodeIds = @(),
+        [string[]]$DependencyEvidenceRefs = @()
     )
 
     $planBlock = if ([string]::IsNullOrWhiteSpace($PlanSummary)) {
@@ -1249,6 +1252,19 @@ function New-TeamPipelineVerifyPrompt {
         'No explicit builder completion notification was recorded.'
     } else {
         $BuilderCompletionMessage.Trim()
+    }
+
+    $declarativeEvidenceBlock = @()
+    if (-not [string]::IsNullOrWhiteSpace($ContextPackRef)) {
+        $declarativeEvidenceBlock = @(
+            '',
+            'Declarative workflow evidence boundary:',
+            ('Context package reference: {0}' -f $ContextPackRef),
+            ('Dependency node IDs: {0}' -f (@($DependencyNodeIds) -join ', ')),
+            'Durable dependency evidence references:'
+        ) + @($DependencyEvidenceRefs | ForEach-Object { '- ' + [string]$_ }) + @(
+            'Use only these bounded references. Do not request, paste, or rely on raw producer output.'
+        )
     }
 
     return (@(
@@ -1267,6 +1283,7 @@ function New-TeamPipelineVerifyPrompt {
         ''
         'Plan guidance:'
         $planBlock
+        $declarativeEvidenceBlock
         ''
         'Please inspect the builder workspace, review the current diff, and run focused verification where useful.'
         'If fixes are needed, provide concrete findings the builder can act on.'
@@ -1980,6 +1997,92 @@ function Wait-TeamPipelineDeclarativeCompletion {
     return $null
 }
 
+function Resolve-TeamPipelineDeclarativeVerificationContext {
+    param(
+        [Parameter(Mandatory = $true)]$Request,
+        [Parameter(Mandatory = $true)]$Run,
+        [Parameter(Mandatory = $true)]$Manifest
+    )
+
+    $contextPackRef = [string](Get-DeclarativeWorkflowValue $Request 'context_pack_ref' '')
+    $dependencyNodeIds = @((Get-DeclarativeWorkflowValue $Request 'dependency_node_ids' @()) | ForEach-Object { [string]$_ })
+    $requestedEvidenceRefs = @((Get-DeclarativeWorkflowValue $Request 'evidence_refs' @()) | ForEach-Object { [string]$_ })
+    if (-not (Test-DeclarativeWorkflowBoundedReference -Value $contextPackRef) -or $dependencyNodeIds.Count -lt 1) { return $null }
+
+    $nodes = Get-DeclarativeWorkflowValue $Run 'nodes' $null
+    $bindings = Get-DeclarativeWorkflowValue $Run 'resolved_bindings' $null
+    $verificationNodeId = [string](Get-DeclarativeWorkflowValue $Request 'node_id' '')
+    if ($null -eq $nodes -or $null -eq $bindings -or -not $nodes.Contains($verificationNodeId)) { return $null }
+    $verificationNode = $nodes[$verificationNodeId]
+    if ([string](Get-DeclarativeWorkflowValue $verificationNode 'action' '') -cne 'verification' -or
+        [string](Get-DeclarativeWorkflowValue $verificationNode 'context_pack_ref' '') -cne $contextPackRef) {
+        return $null
+    }
+    $persistedDependencyNodeIds = @((Get-DeclarativeWorkflowValue $verificationNode 'depends_on' @()) | ForEach-Object { [string]$_ })
+    if ($persistedDependencyNodeIds.Count -ne $dependencyNodeIds.Count) { return $null }
+    for ($index = 0; $index -lt $dependencyNodeIds.Count; $index++) {
+        if ($dependencyNodeIds[$index] -cne $persistedDependencyNodeIds[$index]) { return $null }
+    }
+
+    $runId = [string](Get-DeclarativeWorkflowValue $Run 'run_id' '')
+    $expectedEvidenceRefs = [Collections.Generic.List[string]]::new()
+    $producerContexts = [Collections.Generic.List[object]]::new()
+    $seenDependencyIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($dependencyNodeId in $dependencyNodeIds) {
+        if ([string]::IsNullOrWhiteSpace($dependencyNodeId) -or -not $seenDependencyIds.Add($dependencyNodeId) -or -not $nodes.Contains($dependencyNodeId)) {
+            return $null
+        }
+        $dependencyNode = $nodes[$dependencyNodeId]
+        if ([string](Get-DeclarativeWorkflowValue $dependencyNode 'state' '') -cne 'succeeded') { return $null }
+        $producerPaneRef = [string](Get-DeclarativeWorkflowValue $dependencyNode 'pane_ref' '')
+        if ([string]::IsNullOrWhiteSpace($producerPaneRef) -or -not $bindings.Contains($producerPaneRef)) { return $null }
+        $producerLabel = [string]$bindings[$producerPaneRef]
+        $producerPane = Get-TeamPipelinePaneInfo -Manifest $Manifest -Label $producerLabel
+        if ($null -eq $producerPane) { return $null }
+        $producerWorktree = ''
+        foreach ($candidateKey in @('builder_worktree_path', 'launch_dir')) {
+            $candidatePath = [string](Get-TeamPipelineValue -InputObject $producerPane -Name $candidateKey -Default '')
+            if (-not [string]::IsNullOrWhiteSpace($candidatePath)) {
+                $producerWorktree = $candidatePath
+                break
+            }
+        }
+        if ([string]::IsNullOrWhiteSpace($producerLabel) -or [string]::IsNullOrWhiteSpace($producerWorktree) -or
+            [string]::IsNullOrWhiteSpace([string](Get-TeamPipelineValue -InputObject $producerPane -Name 'pane_id' -Default ''))) {
+            return $null
+        }
+        $producerContexts.Add([PSCustomObject]@{ label = $producerLabel; worktree = $producerWorktree }) | Out-Null
+
+        $expectedEvidenceRef = "workflow-ack:$runId`:$dependencyNodeId"
+        $dependencyEvidenceRefs = @((Get-DeclarativeWorkflowValue $dependencyNode 'evidence_refs' @()) | ForEach-Object { [string]$_ })
+        if ($dependencyEvidenceRefs.Count -lt 1) { return $null }
+        foreach ($evidenceRef in $dependencyEvidenceRefs) {
+            if ($evidenceRef -cne $expectedEvidenceRef) { return $null }
+            $expectedEvidenceRefs.Add($evidenceRef) | Out-Null
+        }
+    }
+
+    if ($requestedEvidenceRefs.Count -ne $expectedEvidenceRefs.Count) { return $null }
+    for ($index = 0; $index -lt $expectedEvidenceRefs.Count; $index++) {
+        if ($requestedEvidenceRefs[$index] -cne $expectedEvidenceRefs[$index]) { return $null }
+    }
+
+    $producer = $producerContexts[0]
+    foreach ($candidateProducer in @($producerContexts | Select-Object -Skip 1)) {
+        if ([string]$candidateProducer.label -cne [string]$producer.label -or
+            [string]$candidateProducer.worktree -cne [string]$producer.worktree) {
+            return $null
+        }
+    }
+    return [PSCustomObject]@{
+        builder_label = [string]$producer.label
+        builder_worktree_path = [string]$producer.worktree
+        context_pack_ref = $contextPackRef
+        dependency_node_ids = @($dependencyNodeIds)
+        evidence_refs = @($expectedEvidenceRefs)
+    }
+}
+
 function Invoke-TeamPipelineDeclarativeDispatch {
     param(
         [Parameter(Mandatory = $true)]$Request,
@@ -2004,9 +2107,16 @@ function Invoke-TeamPipelineDeclarativeDispatch {
     $eventTaskRef = "workflow:$runId`:$nodeId"
     $role = [string](Get-TeamPipelineValue $pane 'role' 'Worker')
     if ([string]::IsNullOrWhiteSpace($role)) { $role = 'Worker' }
+    $verificationContext = $null
+    if ($stage -ceq 'VERIFY') {
+        $verificationContext = Resolve-TeamPipelineDeclarativeVerificationContext -Request $Request -Run $Run -Manifest $Manifest
+        if ($null -eq $verificationContext) { return $null }
+    }
     $completionInstruction = New-TeamPipelineDeclarativeCompletionInstruction -Run $Run -NodeId $nodeId -SessionName $SessionName -Target $target -PaneId $paneId -Role $role
     $prompt = if ($stage -ceq 'VERIFY') {
-        New-TeamPipelineVerifyPrompt -Task $taskText -BuilderLabel '' -BuilderWorktreePath '' -PlanSummary '' -BuilderCompletionMessage 'Dependencies completed with durable acknowledgement evidence.'
+        New-TeamPipelineVerifyPrompt -Task $taskText -BuilderLabel $verificationContext.builder_label -BuilderWorktreePath $verificationContext.builder_worktree_path -PlanSummary '' `
+            -BuilderCompletionMessage 'Dependencies completed with durable acknowledgement evidence.' -ContextPackRef $verificationContext.context_pack_ref `
+            -DependencyNodeIds $verificationContext.dependency_node_ids -DependencyEvidenceRefs $verificationContext.evidence_refs
     } else {
         New-TeamPipelineExecPrompt -Task $taskText -PlanSummary ''
     }
@@ -2131,6 +2241,14 @@ function Invoke-TeamPipelineDeclarativeWorkflow {
     $observedSourceHead = Get-TeamPipelineDeclarativeProjectHead -ProjectDir $ProjectDir
     Assert-TeamPipelineDeclarativeSourceHead -ExpectedSourceHead $SourceHead -ObservedSourceHead $observedSourceHead
     $confirmation = [ordered]@{ run_id = $RunId; generation_id = $GenerationId; config_fingerprint = $ConfigFingerprint; source_head = $SourceHead }
+    $manifestPath = Join-Path (Join-Path $ProjectDir '.winsmux') 'manifest.yaml'
+    $manifest = Read-TeamPipelineManifest -Path $manifestPath
+    if ($null -eq $manifest) { throw 'workflow_manifest_unavailable' }
+    $manifestSession = Get-TeamPipelineValue -InputObject $manifest -Name 'session' -Default $null
+    $manifestSessionName = [string](Get-TeamPipelineValue -InputObject $manifestSession -Name 'name' -Default '')
+    if ([string]::IsNullOrWhiteSpace($manifestSessionName)) { throw 'workflow_manifest_session_identity_unavailable' }
+    $sessionName = Get-TeamPipelineSessionName -Manifest $manifest
+    if ([string]::IsNullOrWhiteSpace($sessionName) -or $sessionName -cne $manifestSessionName) { throw 'workflow_manifest_session_identity_unavailable' }
     if ($Action -ceq 'start') {
         $statePath = Resolve-DeclarativeWorkflowOwnedRunPath -ProjectDir $ProjectDir -RunId $RunId -LeafName 'state.json'
         if ([IO.File]::Exists($statePath)) { throw 'workflow_run_already_exists' }
@@ -2162,10 +2280,6 @@ function Invoke-TeamPipelineDeclarativeWorkflow {
     } else {
         $run = Read-DeclarativeWorkflowRunState -ProjectDir $ProjectDir -RunId $RunId
     }
-    $manifestPath = Join-Path (Join-Path $ProjectDir '.winsmux') 'manifest.yaml'
-    $manifest = Read-TeamPipelineManifest -Path $manifestPath
-    if ($null -eq $manifest) { throw 'workflow_manifest_unavailable' }
-    $sessionName = Get-TeamPipelineSessionName -Manifest $manifest
     $save = { param($candidate) Save-DeclarativeWorkflowRunState -ProjectDir $ProjectDir -Run $candidate | Out-Null }
     $dispatch = { param($request, $candidateRun) Invoke-TeamPipelineDeclarativeDispatch -Request $request -Run $candidateRun -Manifest $manifest -ProjectDir $ProjectDir -SessionName $sessionName -PollIntervalSeconds $PollIntervalSeconds -StageTimeoutSeconds $StageTimeoutSeconds }
     $resolveSession = { param($paneId) Get-TeamPipelineDeclarativeSessionId -ProjectDir $ProjectDir -GenerationId $GenerationId -PaneId $paneId }
