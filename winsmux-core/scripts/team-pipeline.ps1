@@ -2064,35 +2064,9 @@ function Resolve-TeamPipelineDeclarativeAcknowledgement {
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)][string]$SessionName
     )
-    if (-not (Get-Command Get-OrchestraLogPath -ErrorAction SilentlyContinue)) { return @() }
-    $activePath = Get-OrchestraLogPath -ProjectDir $ProjectDir -SessionName $SessionName
-    $paths = [Collections.Generic.List[string]]::new()
-    if ([IO.File]::Exists($activePath)) { $paths.Add($activePath) | Out-Null }
-    if (Get-Command Get-OrchestraLogRotatedFiles -ErrorAction SilentlyContinue) {
-        foreach ($file in @(Get-OrchestraLogRotatedFiles -Path $activePath | Sort-Object LastWriteTimeUtc -Descending)) {
-            $paths.Add([string]$file.FullName) | Out-Null
-        }
-    }
-    $records = [Collections.Generic.List[object]]::new()
-    foreach ($path in $paths) {
-        try {
-            foreach ($line in [IO.File]::ReadLines($path, [Text.UTF8Encoding]::new($false, $true))) {
-                if ([string]::IsNullOrWhiteSpace($line)) { continue }
-                try { $record = $line | ConvertFrom-Json -ErrorAction Stop } catch { continue }
-                if ([string](Get-DeclarativeWorkflowValue $record 'session' '') -cne $SessionName -or
-                    [string](Get-DeclarativeWorkflowValue $record 'event' '') -cne 'workflow.node.acknowledged') { continue }
-                $acknowledgement = Get-DeclarativeWorkflowValue $record 'data' $null
-                if ($null -ne $acknowledgement) {
-                    $records.Add($acknowledgement) | Out-Null
-                }
-            }
-        } catch [IO.FileNotFoundException] {
-            continue
-        } catch [IO.DirectoryNotFoundException] {
-            continue
-        }
-    }
-    return Resolve-DeclarativeWorkflowAcknowledgementCandidates -Run $Run -NodeId $NodeId -Acknowledgements @($records)
+    $proof = Read-DeclarativeWorkflowDurableProof -ProjectDir $ProjectDir -Run $Run -Kind Completion -NodeId $NodeId
+    if ($null -eq $proof) { return @() }
+    return Resolve-DeclarativeWorkflowAcknowledgementCandidates -Run $Run -NodeId $NodeId -Acknowledgements @($proof)
 }
 
 function Resolve-TeamPipelineDeclarativeCancellation {
@@ -2101,67 +2075,9 @@ function Resolve-TeamPipelineDeclarativeCancellation {
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)][string]$SessionName
     )
-    if (-not (Get-Command Get-OrchestraLogPath -ErrorAction SilentlyContinue)) { return @() }
-    $activePath = Get-OrchestraLogPath -ProjectDir $ProjectDir -SessionName $SessionName
-    $paths = [Collections.Generic.List[string]]::new()
-    if ([IO.File]::Exists($activePath)) { $paths.Add($activePath) | Out-Null }
-    if (Get-Command Get-OrchestraLogRotatedFiles -ErrorAction SilentlyContinue) {
-        foreach ($file in @(Get-OrchestraLogRotatedFiles -Path $activePath | Sort-Object LastWriteTimeUtc -Descending)) {
-            $paths.Add([string]$file.FullName) | Out-Null
-        }
-    }
-
-    $expected = [ordered]@{
-        schema_version       = 1
-        run_id               = [string](Get-DeclarativeWorkflowValue $Run 'run_id' '')
-        idempotency_key      = "$( [string](Get-DeclarativeWorkflowValue $Run 'run_id' '') ):cancel"
-        generation_id        = [string](Get-DeclarativeWorkflowValue $Run 'generation_id' '')
-        config_fingerprint   = [string](Get-DeclarativeWorkflowValue $Run 'config_fingerprint' '')
-        workflow_fingerprint = [string](Get-DeclarativeWorkflowValue $Run 'workflow_fingerprint' '')
-        source_head          = [string](Get-DeclarativeWorkflowValue $Run 'source_head' '')
-        status               = 'cancelled'
-        evidence_ref         = "workflow-cancel:$( [string](Get-DeclarativeWorkflowValue $Run 'run_id' '') )"
-    }
-    $candidatesByCanonicalValue = [ordered]@{}
-    foreach ($path in $paths) {
-        try {
-            foreach ($line in [IO.File]::ReadLines($path, [Text.UTF8Encoding]::new($false, $true))) {
-                if ([string]::IsNullOrWhiteSpace($line)) { continue }
-                try { $record = $line | ConvertFrom-Json -ErrorAction Stop } catch { continue }
-                if ([string](Get-DeclarativeWorkflowValue $record 'session' '') -cne $SessionName -or
-                    [string](Get-DeclarativeWorkflowValue $record 'event' '') -cne 'workflow.run.cancelled') { continue }
-                $candidate = Get-DeclarativeWorkflowValue $record 'data' $null
-                if ($null -eq $candidate) { continue }
-                $propertyNames = if ($candidate -is [Collections.IDictionary]) {
-                    @($candidate.Keys | ForEach-Object { [string]$_ })
-                } else {
-                    @($candidate.PSObject.Properties.Name | ForEach-Object { [string]$_ })
-                }
-                if (@($propertyNames | Where-Object { $_ -notin @($expected.Keys) }).Count -ne 0 -or
-                    @($expected.Keys | Where-Object { $_ -notin $propertyNames }).Count -ne 0) { continue }
-                $schemaVersion = Get-DeclarativeWorkflowValue $candidate 'schema_version' $null
-                if ($schemaVersion -isnot [byte] -and $schemaVersion -isnot [int16] -and
-                    $schemaVersion -isnot [int32] -and $schemaVersion -isnot [int64]) { continue }
-                $matches = $true
-                foreach ($entry in $expected.GetEnumerator()) {
-                    if ([string](Get-DeclarativeWorkflowValue $candidate ([string]$entry.Key) '') -cne [string]$entry.Value) {
-                        $matches = $false
-                        break
-                    }
-                }
-                if (-not $matches) { continue }
-                $canonical = $candidate | ConvertTo-Json -Compress -Depth 8
-                if (-not $candidatesByCanonicalValue.Contains($canonical)) {
-                    $candidatesByCanonicalValue[$canonical] = $candidate
-                }
-            }
-        } catch [IO.FileNotFoundException] {
-            continue
-        } catch [IO.DirectoryNotFoundException] {
-            continue
-        }
-    }
-    return @($candidatesByCanonicalValue.Values)
+    $proof = Read-DeclarativeWorkflowDurableProof -ProjectDir $ProjectDir -Run $Run -Kind Cancellation
+    if ($null -eq $proof) { return @() }
+    return @($proof)
 }
 
 function Wait-TeamPipelineDeclarativeCompletion {

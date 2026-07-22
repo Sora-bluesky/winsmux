@@ -11,6 +11,7 @@ Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot 'json-compat.ps1')
 . (Join-Path $PSScriptRoot 'manifest.ps1')
 . (Join-Path $PSScriptRoot 'clm-safe-io.ps1')
+. (Join-Path $PSScriptRoot 'declarative-workflow.ps1')
 . (Join-Path $PSScriptRoot 'pane-control.ps1')
 $operatorPollLoggerParameterNames = @(
     'Command', 'ProjectDir', 'SessionName', 'Event', 'Level', 'Message', 'Role',
@@ -812,9 +813,22 @@ function Receive-OperatorPollMailboxMessages {
 }
 
 function Remove-OperatorPollTerminalPendingFile {
-    param([Parameter(Mandatory = $true)][string]$Path)
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$Channel,
+        [AllowEmptyString()][string]$MessageId = '',
+        [AllowEmptyString()][string]$FileName = ''
+    )
 
     try {
+        if (-not [string]::IsNullOrWhiteSpace($MessageId)) {
+            $Path = Resolve-DeclarativeWorkflowMailboxPendingPath -ProjectDir $ProjectDir -Channel $Channel -MessageId $MessageId
+        } elseif (-not [string]::IsNullOrWhiteSpace($FileName)) {
+            $Path = Resolve-DeclarativeWorkflowManagedPath -ProjectDir $ProjectDir `
+                -RelativeComponents @('mailbox', $Channel, 'pending', $FileName) -DirectoryComponentCount 3
+        } else {
+            return
+        }
         [IO.File]::Delete($Path)
     } catch {
     }
@@ -829,7 +843,11 @@ function Receive-OperatorPollDurableWorkflowMessages {
 
     $channel = Get-OperatorPollMailboxChannel -SessionName $SessionName
     if ($channel -cnotmatch '^[A-Za-z0-9_-]{1,64}$') { return @() }
-    $pendingRoot = Join-Path $ProjectDir ".winsmux\mailbox\$channel\pending"
+    try {
+        $pendingRoot = Resolve-DeclarativeWorkflowMailboxPendingPath -ProjectDir $ProjectDir -Channel $channel
+    } catch {
+        return @()
+    }
     if (-not [IO.Directory]::Exists($pendingRoot)) { return @() }
     $messages = [Collections.Generic.List[object]]::new()
     if ($MaxMessages -lt 1) { return @($messages) }
@@ -841,25 +859,33 @@ function Receive-OperatorPollDurableWorkflowMessages {
     foreach ($file in $pendingFiles) {
         if ($messages.Count -ge $MaxMessages) { break }
         if ($file.BaseName -cnotmatch '^[a-z][a-z0-9-]{0,127}$') {
-            Remove-OperatorPollTerminalPendingFile -Path $file.FullName
+            Remove-OperatorPollTerminalPendingFile -ProjectDir $ProjectDir -Channel $channel -FileName ([string]$file.Name)
+            continue
+        }
+        $messageId = [string]$file.BaseName
+        try {
+            $pendingPath = Resolve-DeclarativeWorkflowMailboxPendingPath -ProjectDir $ProjectDir -Channel $channel -MessageId $messageId
+        } catch {
             continue
         }
         try {
-            $fileLength = [int64]$file.Length
+            $fileLength = [int64]([IO.FileInfo]::new($pendingPath).Length)
         } catch {
             continue
         }
         if ($fileLength -lt 2 -or $fileLength -gt 65536) {
-            Remove-OperatorPollTerminalPendingFile -Path $file.FullName
+            Remove-OperatorPollTerminalPendingFile -ProjectDir $ProjectDir -Channel $channel -MessageId $messageId
             continue
         }
         try {
-            $bytes = [IO.File]::ReadAllBytes($file.FullName)
+            $verifiedPath = Resolve-DeclarativeWorkflowMailboxPendingPath -ProjectDir $ProjectDir -Channel $channel -MessageId $messageId
+            if ($verifiedPath -cne $pendingPath) { continue }
+            $bytes = [IO.File]::ReadAllBytes($pendingPath)
         } catch {
             continue
         }
         if ([Array]::IndexOf($bytes, [byte]0) -ge 0) {
-            Remove-OperatorPollTerminalPendingFile -Path $file.FullName
+            Remove-OperatorPollTerminalPendingFile -ProjectDir $ProjectDir -Channel $channel -MessageId $messageId
             continue
         }
         try {
@@ -868,7 +894,7 @@ function Receive-OperatorPollDurableWorkflowMessages {
             $record = ConvertTo-OperatorPollMailboxRecord -MailboxMessage $mailboxMessage -SessionName $SessionName
             if ($null -eq $record -or [string]$record['message_type'] -cne 'workflow-completion' -or
                 [string]$record['message_id'] -cne $file.BaseName) {
-                Remove-OperatorPollTerminalPendingFile -Path $file.FullName
+                Remove-OperatorPollTerminalPendingFile -ProjectDir $ProjectDir -Channel $channel -MessageId $messageId
                 continue
             }
             $createdAt = [DateTimeOffset]::MinValue
@@ -876,17 +902,15 @@ function Receive-OperatorPollDurableWorkflowMessages {
             if (-not [DateTimeOffset]::TryParse([string]$record['timestamp'], [ref]$createdAt) -or
                 -not [int]::TryParse([string](Get-OperatorPollValue $record['data'] 'mailbox_ttl_seconds' 0), [ref]$ttl) -or
                 $ttl -lt 1 -or $ttl -gt 3600) {
-                Remove-OperatorPollTerminalPendingFile -Path $file.FullName
+                Remove-OperatorPollTerminalPendingFile -ProjectDir $ProjectDir -Channel $channel -MessageId $messageId
                 continue
             }
-            if ([DateTimeOffset]::UtcNow -gt $createdAt.ToUniversalTime().AddSeconds($ttl)) {
-                Remove-OperatorPollTerminalPendingFile -Path $file.FullName
-                continue
-            }
-            $record['durable_pending_path'] = $file.FullName
+            $record['durable_pending_path'] = $pendingPath
+            $record['durable_pending_channel'] = $channel
+            $record['durable_pending_message_id'] = $messageId
             $messages.Add($record) | Out-Null
         } catch {
-            Remove-OperatorPollTerminalPendingFile -Path $file.FullName
+            Remove-OperatorPollTerminalPendingFile -ProjectDir $ProjectDir -Channel $channel -MessageId $messageId
             continue
         }
     }
@@ -1068,6 +1092,10 @@ function Invoke-OperatorPollEventRecord {
         $acknowledgement = Get-OperatorPollWorkflowAcknowledgementData `
             -Data (Get-OperatorPollValue -InputObject $EventRecord -Name 'workflow_ack_payload' -Default $null) `
             -MessageId ([string](Get-OperatorPollValue $EventRecord 'message_id' ''))
+        $runId = [string](Get-OperatorPollValue $acknowledgement 'run_id' '')
+        $nodeId = [string](Get-OperatorPollValue $acknowledgement 'node_id' '')
+        $run = Read-DeclarativeWorkflowRunState -ProjectDir $projectDir -RunId $runId
+        Write-DeclarativeWorkflowDurableProof -ProjectDir $projectDir -Run $run -Kind Completion -NodeId $nodeId -Proof $acknowledgement | Out-Null
         Write-OrchestraLog -ProjectDir $projectDir -SessionName $sessionName -Event 'workflow.node.acknowledged' -Level 'info' `
             -Message 'Declarative workflow completion was received through the mailbox.' `
             -Role ([string]$paneContext['role']) -PaneId ([string]$paneContext['pane_id']) -Target ([string]$paneContext['label']) -Data $acknowledgement | Out-Null
@@ -1252,7 +1280,11 @@ function Invoke-OperatorPollCycle {
             $result = Invoke-OperatorPollEventRecord -Manifest $manifest -ManifestPath $ManifestPath -EventRecord $eventRecord -Summary $summary
             if (-not [string]::IsNullOrWhiteSpace($pendingPath)) {
                 if ([string]$result -ceq 'workflow_ack_logged') {
-                    [IO.File]::Delete($pendingPath)
+                    $pendingChannel = [string](Get-OperatorPollValue $eventRecord 'durable_pending_channel' '')
+                    $pendingMessageId = [string](Get-OperatorPollValue $eventRecord 'durable_pending_message_id' '')
+                    $verifiedPendingPath = Resolve-DeclarativeWorkflowMailboxPendingPath -ProjectDir $projectDir -Channel $pendingChannel -MessageId $pendingMessageId
+                    if ($verifiedPendingPath -cne $pendingPath) { throw 'Workflow pending ownership changed before delete.' }
+                    [IO.File]::Delete($verifiedPendingPath)
                     $ProcessedEventSignatures[$signature] = [string](Get-OperatorPollValue -InputObject $eventRecord -Name 'timestamp' -Default ([System.DateTimeOffset]::Now.ToString('o')))
                 }
                 continue

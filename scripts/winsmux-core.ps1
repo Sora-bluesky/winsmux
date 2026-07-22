@@ -71,6 +71,7 @@ $PaneControlScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\
 $PaneStatusScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\pane-status.ps1'))
 $RoleGateScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\role-gate.ps1'))
 $ClmSafeIoScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\clm-safe-io.ps1'))
+$DeclarativeWorkflowScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\declarative-workflow.ps1'))
 $PaneEnvScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\pane-env.ps1'))
 $PublicFirstRunScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\public-first-run.ps1'))
 $ConflictPreflightScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\conflict-preflight.ps1'))
@@ -115,6 +116,10 @@ if (Test-Path $RoleGateScript -PathType Leaf) {
 
 if (Test-Path $ClmSafeIoScript -PathType Leaf) {
     . $ClmSafeIoScript
+}
+
+if (Test-Path $DeclarativeWorkflowScript -PathType Leaf) {
+    . $DeclarativeWorkflowScript
 }
 
 if (Test-Path $PaneEnvScript -PathType Leaf) {
@@ -18445,6 +18450,7 @@ function Publish-WinsmuxWorkflowCompletionEnvelope {
     )
 
     $projectRoot = ConvertTo-WinsmuxCanonicalProjectPath -Path $ProjectDir
+    Resolve-DeclarativeWorkflowMailboxPendingPath -ProjectDir $projectRoot -Channel $Channel | Out-Null
     $manifestPath = Join-Path (Join-Path $projectRoot '.winsmux') 'manifest.yaml'
     if (-not [IO.File]::Exists($manifestPath)) { throw 'mailbox-send: managed project manifest is unavailable' }
     $manifestText = [IO.File]::ReadAllText($manifestPath, [Text.UTF8Encoding]::new($false, $true))
@@ -18460,17 +18466,13 @@ function Publish-WinsmuxWorkflowCompletionEnvelope {
     }
     $envelope = ConvertTo-WinsmuxWorkflowCompletionEnvelope -Payload $Payload -SessionName $sessionName -GenerationId $generationId
     $messageId = [string]$envelope['message_id']
-    $pendingRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot ".winsmux\mailbox\$Channel\pending"))
-    $mailboxRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot '.winsmux\mailbox'))
-    $prefix = $mailboxRoot.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
-    if (-not $pendingRoot.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
-        throw 'mailbox-send: workflow completion pending path escaped the managed project'
-    }
-    [IO.Directory]::CreateDirectory($pendingRoot) | Out-Null
-    $destination = Join-Path $pendingRoot "$messageId.json"
+    $pendingRoot = Resolve-DeclarativeWorkflowMailboxPendingPath -ProjectDir $projectRoot -Channel $Channel -CreateDirectory
+    $destination = Resolve-DeclarativeWorkflowMailboxPendingPath -ProjectDir $projectRoot -Channel $Channel -MessageId $messageId
     $semanticJson = ConvertTo-WinsmuxWorkflowCompletionSemanticJson -Envelope $envelope
     if ([IO.File]::Exists($destination)) {
         try {
+            $verifiedDestination = Resolve-DeclarativeWorkflowMailboxPendingPath -ProjectDir $projectRoot -Channel $Channel -MessageId $messageId
+            if ($verifiedDestination -cne $destination) { throw 'mailbox-send: workflow completion ownership changed before read' }
             $existingPayload = [Text.UTF8Encoding]::new($false, $true).GetString([IO.File]::ReadAllBytes($destination))
             $existingEnvelope = ConvertTo-WinsmuxWorkflowCompletionEnvelope -Payload $existingPayload -SessionName $sessionName -GenerationId $generationId -RequireTimestamp
             if ((ConvertTo-WinsmuxWorkflowCompletionSemanticJson -Envelope $existingEnvelope) -ceq $semanticJson) {
@@ -18487,7 +18489,9 @@ function Publish-WinsmuxWorkflowCompletionEnvelope {
     if ($payloadBytes.Length -lt 2 -or $payloadBytes.Length -gt 65536) {
         throw 'mailbox-send: workflow completion payload exceeds the bounded envelope size'
     }
-    $temporary = Join-Path $pendingRoot ('.publish-{0}.tmp' -f [guid]::NewGuid().ToString('N'))
+    $temporaryName = '.publish-{0}.tmp' -f [guid]::NewGuid().ToString('N')
+    $temporary = Resolve-DeclarativeWorkflowManagedPath -ProjectDir $projectRoot `
+        -RelativeComponents @('mailbox', $Channel, 'pending', $temporaryName) -DirectoryComponentCount 3
     try {
         $stream = [IO.File]::Open($temporary, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
         try {
@@ -18497,10 +18501,14 @@ function Publish-WinsmuxWorkflowCompletionEnvelope {
             $stream.Dispose()
         }
         try {
+            $verifiedDestination = Resolve-DeclarativeWorkflowMailboxPendingPath -ProjectDir $projectRoot -Channel $Channel -MessageId $messageId
+            if ($verifiedDestination -cne $destination) { throw 'mailbox-send: workflow completion ownership changed before commit' }
             [IO.File]::Move($temporary, $destination)
         } catch [IO.IOException] {
             if ([IO.File]::Exists($destination)) {
                 try {
+                    $verifiedDestination = Resolve-DeclarativeWorkflowMailboxPendingPath -ProjectDir $projectRoot -Channel $Channel -MessageId $messageId
+                    if ($verifiedDestination -cne $destination) { throw 'mailbox-send: workflow completion ownership changed before retry read' }
                     $existingPayload = [Text.UTF8Encoding]::new($false, $true).GetString([IO.File]::ReadAllBytes($destination))
                     $existingEnvelope = ConvertTo-WinsmuxWorkflowCompletionEnvelope -Payload $existingPayload -SessionName $sessionName -GenerationId $generationId -RequireTimestamp
                     if ((ConvertTo-WinsmuxWorkflowCompletionSemanticJson -Envelope $existingEnvelope) -ceq $semanticJson) {
@@ -18513,7 +18521,11 @@ function Publish-WinsmuxWorkflowCompletionEnvelope {
             throw 'mailbox-send: workflow completion message_id conflict'
         }
     } finally {
-        if ([IO.File]::Exists($temporary)) { [IO.File]::Delete($temporary) }
+        if ([IO.File]::Exists($temporary)) {
+            $verifiedTemporary = Resolve-DeclarativeWorkflowManagedPath -ProjectDir $projectRoot `
+                -RelativeComponents @('mailbox', $Channel, 'pending', $temporaryName) -DirectoryComponentCount 3
+            if ($verifiedTemporary -ceq $temporary) { [IO.File]::Delete($temporary) }
+        }
     }
     return $destination
 }

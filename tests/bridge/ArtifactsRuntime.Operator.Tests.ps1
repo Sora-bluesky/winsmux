@@ -28,6 +28,16 @@ Describe 'operator-poll helpers' {
                 }
             }
         }
+        function Initialize-TestDurableWorkflowRun {
+            $runRoot = Join-Path $script:operatorPollTempRoot '.winsmux\workflow-runs\run-123'
+            [IO.Directory]::CreateDirectory($runRoot) | Out-Null
+            $run = [ordered]@{
+                schema_version = 2; run_id = 'run-123'; generation_id = 'generation-123'
+                config_fingerprint = ('sha256:' + ('a' * 64)); workflow_fingerprint = ('sha256:' + ('d' * 64)); source_head = ('b' * 40)
+                nodes = [ordered]@{ inspect = [ordered]@{ node_id = 'inspect'; idempotency_key = 'run-123:inspect' } }
+            }
+            [IO.File]::WriteAllText((Join-Path $runRoot 'state.json'), ($run | ConvertTo-Json -Compress -Depth 20), [Text.UTF8Encoding]::new($false))
+        }
     }
 
     BeforeEach {
@@ -314,6 +324,7 @@ panes:
         $record = ConvertTo-OperatorPollMailboxRecord -MailboxMessage $payload -SessionName 'winsmux-orchestra'
         $manifest = Read-OperatorPollManifest -Path $script:operatorPollManifestPath
         $summary = [ordered]@{ new_events = 0; dispatches = 0; completions = 0; approvals = 0; errors = 0; messages = @() }
+        Initialize-TestDurableWorkflowRun
         Mock Write-OrchestraLog { }
 
         Invoke-OperatorPollEventRecord -Manifest $manifest -ManifestPath $script:operatorPollManifestPath -EventRecord $record -Summary $summary
@@ -431,21 +442,66 @@ panes:
         (Get-OperatorPollEventSignature -EventRecord $first) | Should -Not -BeExactly (Get-OperatorPollEventSignature -EventRecord $second)
     }
 
-    It 'F03 rejects a workflow completion whose durable publication TTL has elapsed' {
+    It 'O02 commits a valid workflow completion after more than five minutes of poll downtime' {
         $pendingRoot = Join-Path $script:operatorPollTempRoot '.winsmux\mailbox\winsmux-orchestra-operator\pending'
         [IO.Directory]::CreateDirectory($pendingRoot) | Out-Null
         $pendingPath = Join-Path $pendingRoot 'workflow-ack-stale-publication.json'
         $payload = New-TestDurableWorkflowEnvelope -MessageId 'workflow-ack-stale-publication'
         $payload.timestamp = [DateTimeOffset]::UtcNow.AddMinutes(-10).ToString('o')
         [IO.File]::WriteAllText($pendingPath, ($payload | ConvertTo-Json -Compress -Depth 20), [Text.UTF8Encoding]::new($false))
+        Initialize-TestDurableWorkflowRun
         Mock Receive-OperatorPollMailboxMessages { @() }
-        Mock Write-OrchestraLog { throw 'expired durable completion must not reach the log' }
+        Mock Write-OrchestraLog { }
 
         $result = Invoke-OperatorPollCycle -ManifestPath $script:operatorPollManifestPath -ProcessedLineCount 0 -ProcessedEventSignatures ([ordered]@{})
 
-        $result.Summary.mailbox_events | Should -Be 0
+        $result.Summary.mailbox_events | Should -Be 1
         Test-Path -LiteralPath $pendingPath | Should -BeFalse
-        Should -Invoke Write-OrchestraLog -Times 0 -Exactly
+        $proofPath = Join-Path $script:operatorPollTempRoot '.winsmux\workflow-runs\run-123\proofs\completion\inspect.json'
+        Test-Path -LiteralPath $proofPath -PathType Leaf | Should -BeTrue
+        $proof = Read-DeclarativeWorkflowDurableProof -ProjectDir $script:operatorPollTempRoot -Run $null -RunId 'run-123' -Kind Completion -NodeId 'inspect'
+        $proof.message_id | Should -BeExactly 'workflow-ack-stale-publication'
+        Should -Invoke Write-OrchestraLog -Times 1 -Exactly
+    }
+
+    It 'P02 refuses a prepared pending junction before read delete log or proof effects' {
+        Initialize-TestDurableWorkflowRun
+        $channelRoot = Join-Path $script:operatorPollTempRoot '.winsmux\mailbox\winsmux-orchestra-operator'
+        [IO.Directory]::CreateDirectory($channelRoot) | Out-Null
+        $external = Join-Path $script:operatorPollTempRoot 'external-pending'
+        [IO.Directory]::CreateDirectory($external) | Out-Null
+        $externalPath = Join-Path $external 'workflow-ack-p02.json'
+        $payload = New-TestDurableWorkflowEnvelope -MessageId 'workflow-ack-p02'
+        [IO.File]::WriteAllText($externalPath, ($payload | ConvertTo-Json -Compress -Depth 20), [Text.UTF8Encoding]::new($false))
+        $before = [IO.File]::ReadAllBytes($externalPath)
+        $junction = $null
+        try {
+            $junction = New-Item -ItemType Junction -Path (Join-Path $channelRoot 'pending') -Target $external -ErrorAction Stop
+            Mock Receive-OperatorPollMailboxMessages { @() }
+            Mock Write-OrchestraLog { throw 'unsafe mailbox must not reach log' }
+            $result = Invoke-OperatorPollCycle -ManifestPath $script:operatorPollManifestPath -ProcessedLineCount 0 -ProcessedEventSignatures ([ordered]@{})
+            $result.Summary.mailbox_events | Should -Be 0
+            Should -Invoke Write-OrchestraLog -Times 0 -Exactly
+            [Convert]::ToBase64String([IO.File]::ReadAllBytes($externalPath)) | Should -BeExactly ([Convert]::ToBase64String($before))
+            Test-Path -LiteralPath (Join-Path $script:operatorPollTempRoot '.winsmux\workflow-runs\run-123\proofs') | Should -BeFalse
+        } finally {
+            if ($null -ne $junction) { $junction.Delete() }
+        }
+
+        $pendingRoot = Join-Path $channelRoot 'pending'
+        [IO.Directory]::CreateDirectory($pendingRoot) | Out-Null
+        $leaf = Join-Path $pendingRoot 'workflow-ack-p02.json'
+        $junction = $null
+        try {
+            $junction = New-Item -ItemType Junction -Path $leaf -Target $external -ErrorAction Stop
+            $leafResult = Invoke-OperatorPollCycle -ManifestPath $script:operatorPollManifestPath -ProcessedLineCount 0 -ProcessedEventSignatures ([ordered]@{})
+            $leafResult.Summary.mailbox_events | Should -Be 0
+            Should -Invoke Write-OrchestraLog -Times 0 -Exactly
+            [Convert]::ToBase64String([IO.File]::ReadAllBytes($externalPath)) | Should -BeExactly ([Convert]::ToBase64String($before))
+            Test-Path -LiteralPath (Join-Path $script:operatorPollTempRoot '.winsmux\workflow-runs\run-123\proofs') | Should -BeFalse
+        } finally {
+            if ($null -ne $junction) { $junction.Delete() }
+        }
     }
 
     It 'J01 admits a live completion after twenty sorted poison files and deletes every terminal-invalid partition without effects' {
@@ -517,6 +573,7 @@ panes:
         $pendingPath = Join-Path $pendingRoot 'workflow-ack-f01.json'
         $json = (New-TestDurableWorkflowEnvelope) | ConvertTo-Json -Compress -Depth 20
         [IO.File]::WriteAllText($pendingPath, $json, [Text.UTF8Encoding]::new($false))
+        Initialize-TestDurableWorkflowRun
         Mock Receive-OperatorPollMailboxMessages { @() }
         Mock Write-OrchestraLog { }
 
@@ -532,6 +589,14 @@ panes:
 
         $failed.Summary.errors | Should -BeGreaterThan 0
         Test-Path -LiteralPath $pendingPath -PathType Leaf | Should -BeTrue
+        $proofPath = Join-Path $script:operatorPollTempRoot '.winsmux\workflow-runs\run-123\proofs\completion\inspect.json'
+        Test-Path -LiteralPath $proofPath -PathType Leaf | Should -BeTrue
+        $proofBeforeRetry = [IO.File]::ReadAllBytes($proofPath)
+        Mock Write-OrchestraLog { }
+        $retry = Invoke-OperatorPollCycle -ManifestPath $script:operatorPollManifestPath -ProcessedLineCount 0 -ProcessedEventSignatures ([ordered]@{})
+        $retry.Summary.mailbox_events | Should -Be 1
+        Test-Path -LiteralPath $pendingPath | Should -BeFalse
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($proofPath)) | Should -BeExactly ([Convert]::ToBase64String($proofBeforeRetry))
     }
 
     It 'processes mailbox idle messages when panes are stored in dictionary format' {

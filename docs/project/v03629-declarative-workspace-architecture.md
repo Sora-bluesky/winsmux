@@ -361,9 +361,11 @@ State transitions are driven by structured runtime results and recorded
 acknowledgements, never by sniffing pane text for success words. Dispatch
 success requires a closed mailbox v2 completion envelope. `operator-poll.ps1`
 must validate that envelope against the current pane/generation and project it
-as one durable `workflow.node.acknowledged` record before the workflow consumes
-it. A process exit, successful pane write, `STATUS: EXEC_DONE`, or
-`VERIFY_PASS` text is not sufficient proof.
+as one immutable run-owned proof under `.winsmux/workflow-runs/<run>/proofs/`
+before the workflow consumes it. The mailbox pending directory is transport
+only, and active or rotated logs are observability only; neither TTL nor log
+retention may grant or revoke completion authority. A process exit, successful
+pane write, `STATUS: EXEC_DONE`, or `VERIFY_PASS` text is not sufficient proof.
 
 For every side effect, runtime must persist the transition intent and
 idempotency key before dispatch and persist the acknowledgement/evidence before
@@ -660,8 +662,8 @@ worktree merely because a workflow record is incomplete.
 | Arbitrary startup actions become a command-injection surface. | Closed action enum, schema-validated arguments, managed-path checks, no inline shell or credentials. |
 | Context packs leak private content or grow without bound. | Allowlisted projections, hard limits, public refs, deterministic redaction, and fail-closed privacy gate. |
 | Cleanup repeats destructive work. | Journal each compensation with a stable idempotency key and require explicit operator handling for ambiguity. |
-| A junction redirects workflow state or lock access outside the project. | Derive every run-state and lock path through one owner and reject any observed reparse component before access. |
-| Log rotation exposes the same durable acknowledgement twice. | Deduplicate byte-equivalent normalized acknowledgements; keep conflicting acknowledgements ambiguous and block resume. |
+| A junction redirects workflow state, mailbox, proof, or lock access outside the project. | Derive every managed path through one owner and reject any observed reparse component before access. This is defense in depth for prepared reparse points, not an arbitrary-code sandbox or a guarantee against a concurrent component swap after validation. |
+| Log rotation removes workflow evidence. | Resolve only the exact immutable run-owned proof; logs remain observability and are never a proof fallback. |
 | Desktop and CLI implement different semantics. | One normalized contract and golden parity fixtures; UI does not rederive runtime meaning. |
 | TASK-662 runs before Lane B is complete. | Allow Lane A-only gate development, but keep the combined release result blocked until TASK-718 evidence is present. |
 | Declarative automation weakens operator authority. | Operator-confirmed start/resume/rollback and evidence-based final judgement remain mandatory. |

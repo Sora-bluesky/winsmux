@@ -591,9 +591,106 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         }
     }
 
+    It 'O01 uses immutable run-owned completion and cancellation proofs without log fallback' {
+        $project = Join-Path $TestDrive 'o01-proof-store'
+        $run = New-TestRun
+        Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $run -CreateNew | Out-Null
+        $acknowledgement = New-TestAcknowledgement -NodeId 'inspect' -PaneId '%2'
+        $acknowledgement['transport'] = 'mailbox'
+        $acknowledgement['message_id'] = 'workflow-ack-o01'
+
+        $proofPath = Write-DeclarativeWorkflowDurableProof -ProjectDir $project -Run $run -Kind Completion -NodeId 'inspect' -Proof $acknowledgement
+        $before = [IO.File]::ReadAllBytes($proofPath)
+        Write-DeclarativeWorkflowDurableProof -ProjectDir $project -Run $run -Kind Completion -NodeId 'inspect' -Proof $acknowledgement | Should -BeExactly $proofPath
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($proofPath)) | Should -BeExactly ([Convert]::ToBase64String($before))
+
+        Write-OrchestraLog -ProjectDir $project -SessionName 'unused-log' -Event 'workflow.node.acknowledged' -PaneId '%2' -Data $acknowledgement | Out-Null
+        $observabilityLog = Get-OrchestraLogPath -ProjectDir $project -SessionName 'unused-log'
+        Remove-Item -LiteralPath $observabilityLog -Force
+        $resolved = @(Resolve-TeamPipelineDeclarativeAcknowledgement -Run $run -NodeId 'inspect' -ProjectDir $project -SessionName 'unused-log')
+        $resolved.Count | Should -Be 1
+        $resolved[0].message_id | Should -BeExactly 'workflow-ack-o01'
+
+        $conflict = Copy-DeclarativeWorkflowValue $acknowledgement
+        $conflict.pane_id = '%3'
+        { Write-DeclarativeWorkflowDurableProof -ProjectDir $project -Run $run -Kind Completion -NodeId 'inspect' -Proof $conflict } |
+            Should -Throw '*conflict*'
+        Test-Path -LiteralPath (Join-Path $project '.winsmux\workflow-runs\run-123\proofs\completion\inspect.conflict') -PathType Leaf | Should -BeTrue
+        { Read-DeclarativeWorkflowDurableProof -ProjectDir $project -Run $run -Kind Completion -NodeId 'inspect' } |
+            Should -Throw '*conflict*'
+        { Write-DeclarativeWorkflowDurableProof -ProjectDir $project -Run $run -Kind Completion -NodeId 'inspect' -Proof $acknowledgement } |
+            Should -Throw '*conflict*'
+        $script:o01SaveCount = 0
+        $script:o01DispatchCount = 0
+        {
+            Invoke-DeclarativeWorkflowResume -Run (New-TestDispatchedRun) -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) `
+                -SaveRun { $script:o01SaveCount++ } `
+                -Dispatch { $script:o01DispatchCount++ } `
+                -ResolveSession { '%2' } `
+                -ResolveAcknowledgement {
+                    param($candidate, $nodeId)
+                    Resolve-TeamPipelineDeclarativeAcknowledgement -Run $candidate -NodeId $nodeId -ProjectDir $project -SessionName 'unused-log'
+                }
+        } | Should -Throw '*conflict*'
+        $script:o01SaveCount | Should -Be 0
+        $script:o01DispatchCount | Should -Be 0
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($proofPath)) | Should -BeExactly ([Convert]::ToBase64String($before))
+
+        $cancellation = New-TestCancellationProof
+        $cancelPath = Write-DeclarativeWorkflowDurableProof -ProjectDir $project -Run $run -Kind Cancellation -Proof $cancellation
+        Test-Path -LiteralPath $cancelPath -PathType Leaf | Should -BeTrue
+        $resolvedCancellation = @(Resolve-TeamPipelineDeclarativeCancellation -Run $run -ProjectDir $project -SessionName 'unused-log')
+        $resolvedCancellation.Count | Should -Be 1
+        $resolvedCancellation[0].evidence_ref | Should -BeExactly 'workflow-cancel:run-123'
+    }
+
+    It 'P01 rejects prepared proof directory and leaf junctions without changing external bytes' {
+        $project = Join-Path $TestDrive 'p01-proof-reparse'
+        $run = New-TestRun
+        Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $run -CreateNew | Out-Null
+        $acknowledgement = New-TestAcknowledgement -NodeId 'inspect' -PaneId '%2'
+        $acknowledgement['transport'] = 'mailbox'
+        $acknowledgement['message_id'] = 'workflow-ack-p01'
+        $runRoot = Join-Path $project '.winsmux\workflow-runs\run-123'
+        $external = Join-Path $TestDrive 'external-proof-target'
+        [IO.Directory]::CreateDirectory($external) | Out-Null
+        $marker = Join-Path $external 'marker.txt'
+        [IO.File]::WriteAllText($marker, 'unchanged', [Text.UTF8Encoding]::new($false))
+        $before = [IO.File]::ReadAllBytes($marker)
+        $proofsJunction = Join-Path $runRoot 'proofs'
+        $junction = $null
+        try {
+            $junction = New-Item -ItemType Junction -Path $proofsJunction -Target $external -ErrorAction Stop
+            { Write-DeclarativeWorkflowDurableProof -ProjectDir $project -Run $run -Kind Completion -NodeId 'inspect' -Proof $acknowledgement } |
+                Should -Throw '*reparse*'
+            { Read-DeclarativeWorkflowDurableProof -ProjectDir $project -Run $run -Kind Completion -NodeId 'inspect' } |
+                Should -Throw '*reparse*'
+            [Convert]::ToBase64String([IO.File]::ReadAllBytes($marker)) | Should -BeExactly ([Convert]::ToBase64String($before))
+            @(Get-ChildItem -LiteralPath $external -Force).Count | Should -Be 1
+        } finally {
+            if ($null -ne $junction -and (Test-Path -LiteralPath $proofsJunction)) { $junction.Delete() }
+        }
+
+        $proofsRoot = Join-Path $runRoot 'proofs'
+        $completionRoot = Join-Path $proofsRoot 'completion'
+        [IO.Directory]::CreateDirectory($completionRoot) | Out-Null
+        $leafJunction = Join-Path $completionRoot 'inspect.json'
+        $junction = $null
+        try {
+            $junction = New-Item -ItemType Junction -Path $leafJunction -Target $external -ErrorAction Stop
+            { Write-DeclarativeWorkflowDurableProof -ProjectDir $project -Run $run -Kind Completion -NodeId 'inspect' -Proof $acknowledgement } |
+                Should -Throw '*reparse*'
+            [Convert]::ToBase64String([IO.File]::ReadAllBytes($marker)) | Should -BeExactly ([Convert]::ToBase64String($before))
+        } finally {
+            if ($null -ne $junction -and (Test-Path -LiteralPath $leafJunction)) { $junction.Delete() }
+        }
+    }
+
     It 'W05 W06 persists intent before one effect and ACK before dependency release' {
         $script:testDeclarativeSessionName = 'workflow-test'
         $run = New-TestRun
+        $proofProject = Join-Path $TestDrive 'w05-durable-proof'
+        Save-DeclarativeWorkflowRunState -ProjectDir $proofProject -Run $run -CreateNew | Out-Null
         $events = [Collections.Generic.List[string]]::new()
         Mock Invoke-TeamPipelineGuardedSend { [PSCustomObject]@{ Status = 'EXEC_DONE' } }
         Mock Wait-TeamPipelineDeclarativeCompletion {
@@ -612,9 +709,8 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         $productionReceipt.acknowledgement.transport | Should -Be 'mailbox'
         $productionReceipt.acknowledgement.evidence_ref | Should -Be 'workflow-ack:run-123:inspect'
         Should -Invoke Write-TeamPipelineEvent -Times 0 -Exactly
-        Write-OrchestraLog -ProjectDir $TestDrive -SessionName 'workflow-test' -Event 'workflow.node.acknowledged' -PaneId '%2' -Data $productionReceipt.acknowledgement -MaxBytes 1 -RetentionCount 5 | Out-Null
-        Write-OrchestraLog -ProjectDir $TestDrive -SessionName 'workflow-test' -Event 'workflow.node.acknowledged' -PaneId '%2' -Data $productionReceipt.acknowledgement -MaxBytes 1 -RetentionCount 5 | Out-Null
-        $resolvedAcknowledgements = @(Resolve-TeamPipelineDeclarativeAcknowledgement -Run $run -NodeId 'inspect' -ProjectDir $TestDrive -SessionName 'workflow-test')
+        Write-DeclarativeWorkflowDurableProof -ProjectDir $proofProject -Run $run -Kind Completion -NodeId 'inspect' -Proof $productionReceipt.acknowledgement | Out-Null
+        $resolvedAcknowledgements = @(Resolve-TeamPipelineDeclarativeAcknowledgement -Run $run -NodeId 'inspect' -ProjectDir $proofProject -SessionName 'workflow-test')
         $resolvedAcknowledgements.Count | Should -Be 1
         $resolvedAcknowledgements[0].pane_id | Should -Be '%2'
 
@@ -626,27 +722,19 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         } finally {
             $noiseWriter.Dispose()
         }
-        $ackBeforeNoise = @(Resolve-TeamPipelineDeclarativeAcknowledgement -Run $run -NodeId 'inspect' -ProjectDir $TestDrive -SessionName 'workflow-noise-test')
+        $ackBeforeNoise = @(Resolve-TeamPipelineDeclarativeAcknowledgement -Run $run -NodeId 'inspect' -ProjectDir $proofProject -SessionName 'workflow-noise-test')
         $ackBeforeNoise.Count | Should -Be 1
         $ackBeforeNoise[0].pane_id | Should -Be '%2'
 
-        $conflictingAcknowledgement = Copy-DeclarativeWorkflowValue $productionReceipt.acknowledgement
-        $conflictingAcknowledgement.pane_id = '%3'
-        Write-OrchestraLog -ProjectDir $TestDrive -SessionName 'workflow-test' -Event 'workflow.node.acknowledged' -PaneId '%3' -Data $conflictingAcknowledgement -MaxBytes 1 -RetentionCount 5 | Out-Null
-        $ambiguousAcknowledgements = @(Resolve-TeamPipelineDeclarativeAcknowledgement -Run $run -NodeId 'inspect' -ProjectDir $TestDrive -SessionName 'workflow-test')
-        $ambiguousAcknowledgements.Count | Should -Be 2
-        @($ambiguousAcknowledgements.pane_id | Sort-Object) | Should -Be @('%2', '%3')
+        $ambiguousAcknowledgements = @($productionReceipt.acknowledgement, (Copy-DeclarativeWorkflowValue $productionReceipt.acknowledgement))
+        $ambiguousAcknowledgements[1].pane_id = '%3'
 
         $cancellation = New-TestCancellationProof
-        Write-OrchestraLog -ProjectDir $TestDrive -SessionName 'workflow-test' -Event 'workflow.run.cancelled' -Data $cancellation -MaxBytes 1 -RetentionCount 5 | Out-Null
-        Write-OrchestraLog -ProjectDir $TestDrive -SessionName 'workflow-test' -Event 'workflow.run.cancelled' -Data $cancellation -MaxBytes 1 -RetentionCount 5 | Out-Null
-        $resolvedCancellations = @(Resolve-TeamPipelineDeclarativeCancellation -Run $run -ProjectDir $TestDrive -SessionName 'workflow-test')
+        Write-DeclarativeWorkflowDurableProof -ProjectDir $proofProject -Run $run -Kind Cancellation -Proof $cancellation | Out-Null
+        $resolvedCancellations = @(Resolve-TeamPipelineDeclarativeCancellation -Run $run -ProjectDir $proofProject -SessionName 'workflow-test')
         $resolvedCancellations.Count | Should -Be 1
         $resolvedCancellations[0].evidence_ref | Should -Be 'workflow-cancel:run-123'
-        $foreignCancellation = Copy-DeclarativeWorkflowValue $cancellation
-        $foreignCancellation.run_id = 'run-foreign'
-        Write-OrchestraLog -ProjectDir $TestDrive -SessionName 'workflow-test' -Event 'workflow.run.cancelled' -Data $foreignCancellation -MaxBytes 1 -RetentionCount 5 | Out-Null
-        @(Resolve-TeamPipelineDeclarativeCancellation -Run $run -ProjectDir $TestDrive -SessionName 'workflow-test').Count | Should -Be 1
+        @(Resolve-TeamPipelineDeclarativeCancellation -Run $run -ProjectDir $proofProject -SessionName 'workflow-test').Count | Should -Be 1
 
         $ambiguousRun = New-TestDispatchedRun
         $script:ambiguousDispatches = 0

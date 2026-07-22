@@ -837,6 +837,276 @@ function Test-DeclarativeWorkflowReparsePoint {
     return [bool]($item.Attributes -band [IO.FileAttributes]::ReparsePoint)
 }
 
+function Resolve-DeclarativeWorkflowManagedPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string[]]$RelativeComponents,
+        [Parameter(Mandatory = $true)][ValidateRange(0, 16)][int]$DirectoryComponentCount,
+        [switch]$CreateDirectories
+    )
+    if ($RelativeComponents.Count -lt 1 -or $DirectoryComponentCount -gt $RelativeComponents.Count) {
+        throw 'Workflow managed path components are invalid.'
+    }
+    foreach ($component in $RelativeComponents) {
+        if ([string]::IsNullOrWhiteSpace($component) -or $component -in @('.', '..') -or
+            $component.IndexOf([IO.Path]::DirectorySeparatorChar) -ge 0 -or
+            $component.IndexOf([IO.Path]::AltDirectorySeparatorChar) -ge 0) {
+            throw 'Workflow managed path component is invalid.'
+        }
+    }
+
+    $projectRoot = [IO.Path]::GetFullPath($ProjectDir)
+    $winsmuxRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot '.winsmux'))
+    $projectPrefix = $projectRoot.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    if (-not $winsmuxRoot.StartsWith($projectPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Workflow managed path escaped the project.'
+    }
+    $paths = [Collections.Generic.List[string]]::new()
+    $paths.Add($winsmuxRoot) | Out-Null
+    $current = $winsmuxRoot
+    foreach ($component in $RelativeComponents) {
+        $current = [IO.Path]::GetFullPath((Join-Path $current $component))
+        $winsmuxPrefix = $winsmuxRoot.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+        if (-not $current.StartsWith($winsmuxPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Workflow managed path escaped .winsmux.'
+        }
+        $paths.Add($current) | Out-Null
+    }
+
+    foreach ($path in $paths) {
+        if (Test-DeclarativeWorkflowReparsePoint -Path $path) {
+            throw 'Workflow managed path contains a reparse point.'
+        }
+    }
+    if ($CreateDirectories) {
+        [IO.Directory]::CreateDirectory($winsmuxRoot) | Out-Null
+        for ($index = 0; $index -lt $DirectoryComponentCount; $index++) {
+            [IO.Directory]::CreateDirectory($paths[$index + 1]) | Out-Null
+            foreach ($observedPath in $paths) {
+                if (Test-DeclarativeWorkflowReparsePoint -Path $observedPath) {
+                    throw 'Workflow managed path contains a reparse point.'
+                }
+            }
+        }
+    }
+    foreach ($path in $paths) {
+        if (Test-DeclarativeWorkflowReparsePoint -Path $path) {
+            throw 'Workflow managed path contains a reparse point.'
+        }
+    }
+    return $paths[$paths.Count - 1]
+}
+
+function Resolve-DeclarativeWorkflowMailboxPendingPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$Channel,
+        [AllowEmptyString()][string]$MessageId = '',
+        [switch]$CreateDirectory
+    )
+    if ($Channel -cnotmatch '^[A-Za-z0-9_-]{1,64}$') { throw 'Workflow mailbox channel is invalid.' }
+    $components = @('mailbox', $Channel, 'pending')
+    $directoryCount = 3
+    if (-not [string]::IsNullOrWhiteSpace($MessageId)) {
+        if ($MessageId -cnotmatch '^[a-z][a-z0-9-]{0,127}$') { throw 'Workflow mailbox message_id is invalid.' }
+        $components += @("$MessageId.json")
+    }
+    return Resolve-DeclarativeWorkflowManagedPath -ProjectDir $ProjectDir -RelativeComponents $components `
+        -DirectoryComponentCount $directoryCount -CreateDirectories:$CreateDirectory
+}
+
+function Resolve-DeclarativeWorkflowDurableProofPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$RunId,
+        [Parameter(Mandatory = $true)][ValidateSet('Completion', 'Cancellation')][string]$Kind,
+        [AllowEmptyString()][string]$NodeId = '',
+        [switch]$CreateDirectory
+    )
+    Assert-DeclarativeWorkflowId -Name 'run_id' -Value $RunId
+    if ($Kind -ceq 'Completion') {
+        Assert-DeclarativeWorkflowId -Name 'node_id' -Value $NodeId
+        $components = @('workflow-runs', $RunId, 'proofs', 'completion', "$NodeId.json")
+        $directoryCount = 4
+    } else {
+        if (-not [string]::IsNullOrWhiteSpace($NodeId)) { throw 'Cancellation proof must not specify node_id.' }
+        $components = @('workflow-runs', $RunId, 'proofs', 'cancel.json')
+        $directoryCount = 3
+    }
+    return Resolve-DeclarativeWorkflowManagedPath -ProjectDir $ProjectDir -RelativeComponents $components `
+        -DirectoryComponentCount $directoryCount -CreateDirectories:$CreateDirectory
+}
+
+function Resolve-DeclarativeWorkflowDurableProofConflictPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$RunId,
+        [Parameter(Mandatory = $true)][ValidateSet('Completion', 'Cancellation')][string]$Kind,
+        [AllowEmptyString()][string]$NodeId = '',
+        [switch]$CreateDirectory
+    )
+    Assert-DeclarativeWorkflowId -Name 'run_id' -Value $RunId
+    if ($Kind -ceq 'Completion') {
+        Assert-DeclarativeWorkflowId -Name 'node_id' -Value $NodeId
+        $components = @('workflow-runs', $RunId, 'proofs', 'completion', "$NodeId.conflict")
+        $directoryCount = 4
+    } else {
+        $components = @('workflow-runs', $RunId, 'proofs', 'cancel.conflict')
+        $directoryCount = 3
+    }
+    return Resolve-DeclarativeWorkflowManagedPath -ProjectDir $ProjectDir -RelativeComponents $components `
+        -DirectoryComponentCount $directoryCount -CreateDirectories:$CreateDirectory
+}
+
+function Set-DeclarativeWorkflowDurableProofConflict {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$RunId,
+        [Parameter(Mandatory = $true)][ValidateSet('Completion', 'Cancellation')][string]$Kind,
+        [AllowEmptyString()][string]$NodeId = ''
+    )
+    $path = Resolve-DeclarativeWorkflowDurableProofConflictPath -ProjectDir $ProjectDir -RunId $RunId -Kind $Kind -NodeId $NodeId -CreateDirectory
+    if ([IO.File]::Exists($path)) { return }
+    $bytes = [Text.UTF8Encoding]::new($false).GetBytes("conflict`n")
+    try {
+        $verifiedPath = Resolve-DeclarativeWorkflowDurableProofConflictPath -ProjectDir $ProjectDir -RunId $RunId -Kind $Kind -NodeId $NodeId
+        if ($verifiedPath -cne $path) { throw 'Workflow durable proof conflict ownership changed.' }
+        $stream = [IO.File]::Open($path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try {
+            $stream.Write($bytes, 0, $bytes.Length)
+            $stream.Flush($true)
+        } finally {
+            $stream.Dispose()
+        }
+    } catch [IO.IOException] {
+        if (-not [IO.File]::Exists($path)) { throw }
+    }
+}
+
+function Test-DeclarativeWorkflowCancellationProof {
+    param([Parameter(Mandatory = $true)]$Run, [AllowNull()]$Proof)
+    if ($null -eq $Proof) { return $false }
+    $expected = [ordered]@{
+        schema_version       = 1
+        run_id               = [string](Get-DeclarativeWorkflowValue $Run 'run_id' '')
+        idempotency_key      = "$([string](Get-DeclarativeWorkflowValue $Run 'run_id' '')):cancel"
+        generation_id        = [string](Get-DeclarativeWorkflowValue $Run 'generation_id' '')
+        config_fingerprint   = [string](Get-DeclarativeWorkflowValue $Run 'config_fingerprint' '')
+        workflow_fingerprint = [string](Get-DeclarativeWorkflowValue $Run 'workflow_fingerprint' '')
+        source_head          = [string](Get-DeclarativeWorkflowValue $Run 'source_head' '')
+        status               = 'cancelled'
+        evidence_ref         = "workflow-cancel:$([string](Get-DeclarativeWorkflowValue $Run 'run_id' ''))"
+    }
+    $names = if ($Proof -is [Collections.IDictionary]) { @($Proof.Keys | ForEach-Object { [string]$_ }) } else { @($Proof.PSObject.Properties.Name) }
+    if ($names.Count -ne $expected.Count -or @($names | Where-Object { $_ -notin $expected.Keys }).Count -ne 0) { return $false }
+    $schema = Get-DeclarativeWorkflowValue $Proof 'schema_version' $null
+    if ($schema -isnot [ValueType] -or [int64]$schema -ne 1) { return $false }
+    foreach ($entry in $expected.GetEnumerator()) {
+        if ([string](Get-DeclarativeWorkflowValue $Proof ([string]$entry.Key) '') -cne [string]$entry.Value) { return $false }
+    }
+    return $true
+}
+
+function Read-DeclarativeWorkflowDurableProof {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [AllowNull()]$Run = $null,
+        [AllowEmptyString()][string]$RunId = '',
+        [Parameter(Mandatory = $true)][ValidateSet('Completion', 'Cancellation')][string]$Kind,
+        [AllowEmptyString()][string]$NodeId = ''
+    )
+    if ($null -eq $Run) {
+        if ([string]::IsNullOrWhiteSpace($RunId)) { throw 'Workflow durable proof requires run_id.' }
+        $Run = Read-DeclarativeWorkflowRunState -ProjectDir $ProjectDir -RunId $RunId
+    } else {
+        $RunId = [string](Get-DeclarativeWorkflowValue $Run 'run_id' '')
+    }
+    $conflictPath = Resolve-DeclarativeWorkflowDurableProofConflictPath -ProjectDir $ProjectDir -RunId $RunId -Kind $Kind -NodeId $NodeId
+    if ([IO.File]::Exists($conflictPath)) { throw 'Workflow durable proof conflict.' }
+    $path = Resolve-DeclarativeWorkflowDurableProofPath -ProjectDir $ProjectDir -RunId $RunId -Kind $Kind -NodeId $NodeId
+    if (-not [IO.File]::Exists($path)) { return $null }
+    $verifiedPath = Resolve-DeclarativeWorkflowDurableProofPath -ProjectDir $ProjectDir -RunId $RunId -Kind $Kind -NodeId $NodeId
+    if ($verifiedPath -cne $path) { throw 'Workflow durable proof ownership changed before read.' }
+    try {
+        $bytes = [IO.File]::ReadAllBytes($path)
+        if ($bytes.Length -lt 2 -or $bytes.Length -gt 65536 -or [Array]::IndexOf($bytes, [byte]0) -ge 0) { throw 'invalid proof size' }
+        $text = [Text.UTF8Encoding]::new($false, $true).GetString($bytes)
+        $proof = $text | ConvertFrom-WinsmuxJson -AsHashtable -Depth 30 -ErrorAction Stop
+    } catch {
+        throw 'Workflow durable proof is malformed.'
+    }
+    $valid = if ($Kind -ceq 'Completion') {
+        Test-DeclarativeWorkflowAcknowledgement -Run $Run -NodeId $NodeId -Acknowledgement $proof
+    } else {
+        Test-DeclarativeWorkflowCancellationProof -Run $Run -Proof $proof
+    }
+    if (-not $valid) { throw 'Workflow durable proof conflicts with its derived identity.' }
+    return $proof
+}
+
+function Write-DeclarativeWorkflowDurableProof {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)]$Run,
+        [Parameter(Mandatory = $true)][ValidateSet('Completion', 'Cancellation')][string]$Kind,
+        [AllowEmptyString()][string]$NodeId = '',
+        [Parameter(Mandatory = $true)]$Proof
+    )
+    $runId = [string](Get-DeclarativeWorkflowValue $Run 'run_id' '')
+    $persistedRun = Read-DeclarativeWorkflowRunState -ProjectDir $ProjectDir -RunId $runId
+    $valid = if ($Kind -ceq 'Completion') {
+        Test-DeclarativeWorkflowAcknowledgement -Run $persistedRun -NodeId $NodeId -Acknowledgement $Proof
+    } else {
+        Test-DeclarativeWorkflowCancellationProof -Run $persistedRun -Proof $Proof
+    }
+    if (-not $valid) { throw 'Workflow durable proof does not match the existing run.' }
+
+    $path = Resolve-DeclarativeWorkflowDurableProofPath -ProjectDir $ProjectDir -RunId $runId -Kind $Kind -NodeId $NodeId -CreateDirectory
+    $canonical = ConvertTo-DeclarativeWorkflowCanonicalJson -Value $Proof
+    $payloadBytes = [Text.UTF8Encoding]::new($false).GetBytes($canonical + "`n")
+    if ([IO.File]::Exists($path)) {
+        $existing = Read-DeclarativeWorkflowDurableProof -ProjectDir $ProjectDir -Run $persistedRun -Kind $Kind -NodeId $NodeId
+        if ((ConvertTo-DeclarativeWorkflowCanonicalJson -Value $existing) -ceq $canonical) { return $path }
+        Set-DeclarativeWorkflowDurableProofConflict -ProjectDir $ProjectDir -RunId $runId -Kind $Kind -NodeId $NodeId
+        throw 'Workflow durable proof conflict.'
+    }
+
+    $temporaryName = '.proof-{0}.tmp' -f [guid]::NewGuid().ToString('N')
+    $temporaryComponents = @('workflow-runs', $runId, 'proofs')
+    if ($Kind -ceq 'Completion') { $temporaryComponents += @('completion', $temporaryName) } else { $temporaryComponents += @($temporaryName) }
+    $temporaryDirectoryCount = if ($Kind -ceq 'Completion') { 4 } else { 3 }
+    $temporary = Resolve-DeclarativeWorkflowManagedPath -ProjectDir $ProjectDir `
+        -RelativeComponents $temporaryComponents -DirectoryComponentCount $temporaryDirectoryCount
+    try {
+        $stream = [IO.File]::Open($temporary, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try {
+            $stream.Write($payloadBytes, 0, $payloadBytes.Length)
+            $stream.Flush($true)
+        } finally {
+            $stream.Dispose()
+        }
+        $verifiedPath = Resolve-DeclarativeWorkflowDurableProofPath -ProjectDir $ProjectDir -RunId $runId -Kind $Kind -NodeId $NodeId
+        if ($verifiedPath -cne $path) { throw 'Workflow durable proof ownership changed before commit.' }
+        try {
+            [IO.File]::Move($temporary, $path)
+        } catch [IO.IOException] {
+            if ([IO.File]::Exists($path)) {
+                $winner = Read-DeclarativeWorkflowDurableProof -ProjectDir $ProjectDir -Run $persistedRun -Kind $Kind -NodeId $NodeId
+                if ((ConvertTo-DeclarativeWorkflowCanonicalJson -Value $winner) -ceq $canonical) { return $path }
+            }
+            Set-DeclarativeWorkflowDurableProofConflict -ProjectDir $ProjectDir -RunId $runId -Kind $Kind -NodeId $NodeId
+            throw 'Workflow durable proof conflict.'
+        }
+    } finally {
+        if ([IO.File]::Exists($temporary)) {
+            $verifiedTemporary = Resolve-DeclarativeWorkflowManagedPath -ProjectDir $ProjectDir `
+                -RelativeComponents $temporaryComponents -DirectoryComponentCount $temporaryDirectoryCount
+            if ($verifiedTemporary -ceq $temporary) { [IO.File]::Delete($temporary) }
+        }
+    }
+    return $path
+}
+
 function Resolve-DeclarativeWorkflowOwnedRunPath {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,

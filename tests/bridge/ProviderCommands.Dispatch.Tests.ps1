@@ -927,4 +927,61 @@ Describe 'winsmux send dispatch payload' {
             Should -BeGreaterThan ([DateTimeOffset]::UtcNow.AddMinutes(-1).UtcDateTime.Ticks)
         $racePublished.content.data.node_id | Should -BeExactly 'inspect'
     }
+
+    It 'P03 refuses prepared pending ancestor and destination leaf junctions without external writes' {
+        $project = Join-Path $script:sendTempRoot 'reparse-workflow-mailbox'
+        [IO.Directory]::CreateDirectory((Join-Path $project '.winsmux')) | Out-Null
+        Save-WinsmuxManifest -ProjectDir $project -Manifest ([ordered]@{
+            version = 2
+            session = [ordered]@{ name = 'winsmux-orchestra'; generation_id = 'generation-123'; server_session_id = '$41'; session_ready = $true }
+            panes = [ordered]@{ 'builder-1' = [ordered]@{ pane_id = '%2'; role = 'Builder'; status = 'ready'; runtime_ready = $true } }
+            tasks = [ordered]@{ queued = @(); in_progress = @(); completed = @() }
+            worktrees = [ordered]@{}
+        })
+        $payload = [ordered]@{
+            mailbox_version = 2; message_id = 'workflow-ack-p03'; correlation_id = 'workflow-ack-p03'; causation_id = $null
+            idempotency_key = 'workflow-completion-p03'; message_type = 'workflow-completion'; state = 'created'; ttl_seconds = 300
+            ack_required = $true; from = 'builder-1'; to = 'Operator'; timestamp = $null
+            content = [ordered]@{
+                session = 'winsmux-orchestra'; event = 'workflow.node.acknowledged'; message = 'Declarative workflow completion.'
+                label = 'builder-1'; pane_id = '%2'; role = 'Builder'; status = 'succeeded'; exit_reason = ''
+                data = [ordered]@{
+                    schema_version = 1; run_id = 'run-123'; node_id = 'inspect'; idempotency_key = 'run-123:inspect'
+                    generation_id = 'generation-123'; config_fingerprint = ('sha256:' + ('a' * 64)); workflow_fingerprint = ('sha256:' + ('d' * 64))
+                    source_head = ('b' * 40); pane_id = '%2'; status = 'succeeded'; evidence_ref = 'workflow-ack:run-123:inspect'
+                }
+            }
+        }
+        $json = $payload | ConvertTo-Json -Compress -Depth 20
+        $external = Join-Path $script:sendTempRoot 'external-mailbox-target'
+        [IO.Directory]::CreateDirectory($external) | Out-Null
+        $marker = Join-Path $external 'marker.txt'
+        [IO.File]::WriteAllText($marker, 'unchanged', [Text.UTF8Encoding]::new($false))
+        $before = [IO.File]::ReadAllBytes($marker)
+        $channelRoot = Join-Path $project '.winsmux\mailbox\winsmux-orchestra-operator'
+        [IO.Directory]::CreateDirectory($channelRoot) | Out-Null
+        $pending = Join-Path $channelRoot 'pending'
+        $junction = $null
+        try {
+            $junction = New-Item -ItemType Junction -Path $pending -Target $external -ErrorAction Stop
+            { Publish-WinsmuxWorkflowCompletionEnvelope -ProjectDir $project -Channel 'winsmux-orchestra-operator' -Payload $json } |
+                Should -Throw '*reparse*'
+            [Convert]::ToBase64String([IO.File]::ReadAllBytes($marker)) | Should -BeExactly ([Convert]::ToBase64String($before))
+            @(Get-ChildItem -LiteralPath $external -Force).Count | Should -Be 1
+        } finally {
+            if ($null -ne $junction) { $junction.Delete() }
+        }
+
+        [IO.Directory]::CreateDirectory($pending) | Out-Null
+        $leaf = Join-Path $pending 'workflow-ack-p03.json'
+        $junction = $null
+        try {
+            $junction = New-Item -ItemType Junction -Path $leaf -Target $external -ErrorAction Stop
+            { Publish-WinsmuxWorkflowCompletionEnvelope -ProjectDir $project -Channel 'winsmux-orchestra-operator' -Payload $json } |
+                Should -Throw '*reparse*'
+            [Convert]::ToBase64String([IO.File]::ReadAllBytes($marker)) | Should -BeExactly ([Convert]::ToBase64String($before))
+        } finally {
+            if ($null -ne $junction) { $junction.Delete() }
+        }
+    }
 }
