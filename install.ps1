@@ -322,6 +322,7 @@ function Remove-ProfileExcludedSupportScripts {
                 "control-plane-commands.ps1",
                 "control-plane-dispatch.ps1",
                 "dispatch-router.ps1",
+                "declarative-workflow.ps1",
                 "operator-poll.ps1",
                 "doctor.ps1",
                 "github-write-preflight.ps1",

@@ -590,6 +590,181 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         Should -Invoke Invoke-DeclarativeWorkflowResume -Times 1 -Exactly
     }
 
+    It 'C07 advances a start run through every ready node and releases the terminal lock exactly once' {
+        $project = Join-Path $TestDrive 'start-run-advancement'
+        $run = New-TestRun
+        $lock = New-DeclarativeWorkflowRunLock -ProjectDir $project -Run $run
+        $effects = [Collections.Generic.List[string]]::new()
+        $releases = [Collections.Generic.List[string]]::new()
+
+        $after = Invoke-TeamPipelineDeclarativeRunAdvancement -ProjectDir $project -Run $run -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) `
+            -SaveRun { param($candidate) } `
+            -Dispatch {
+                param($request)
+                $effects.Add([string]$request.node_id) | Out-Null
+                $paneId = if ([string]$request.node_id -ceq 'inspect') { '%2' } else { '%3' }
+                New-TestAcceptedReceipt -NodeId $request.node_id -PaneId $paneId
+            } `
+            -ResolveSession { param($paneId) $paneId } `
+            -ResolveAcknowledgement { throw 'a fresh start must not reconcile an in-flight node' } `
+            -ReleaseLock {
+                param($path)
+                $releases.Add($path) | Out-Null
+                Remove-Item -LiteralPath $path -Force
+            }
+
+        $after.state | Should -Be 'succeeded'
+        $after.nodes.inspect.state | Should -Be 'succeeded'
+        $after.nodes.verify.state | Should -Be 'succeeded'
+        [string]::Join(',', @($effects)) | Should -Be 'inspect,verify'
+        $releases.Count | Should -Be 1
+        Test-Path -LiteralPath $lock | Should -BeFalse
+    }
+
+    It 'W11 routes start through the one run-advancement choke point' {
+        $taskFile = Join-Path $TestDrive 'start-route-task.txt'
+        [IO.File]::WriteAllText($taskFile, 'Implement TASK-659 safely.', [Text.UTF8Encoding]::new($false))
+        $script:startRouteRun = New-TestRun
+
+        Mock Get-TeamPipelineDeclarativeProjectHead { 'b' * 40 }
+        Mock Invoke-TeamPipelineWorkspacePlanOnce {
+            $workflow = [ordered]@{}
+            (New-TestWorkflowPlan).PSObject.Properties | ForEach-Object { $workflow[$_.Name] = $_.Value }
+            [ordered]@{
+                config_fingerprint = ('sha256:' + ('a' * 64))
+                resolved_bindings = [ordered]@{ implement = 'worker-1'; verify = 'worker-2' }
+                workflow = $workflow
+            }
+        }
+        Mock New-DeclarativeWorkflowRun { Copy-DeclarativeWorkflowValue $script:startRouteRun }
+        Mock New-DeclarativeWorkflowRunLock { Join-Path $TestDrive 'synthetic-start.lock' }
+        Mock Save-DeclarativeWorkflowRunState { }
+        Mock Read-TeamPipelineManifest { [PSCustomObject]@{ Session = [ordered]@{ name = 'start-session' }; Panes = [ordered]@{} } }
+        Mock Get-TeamPipelineSessionName { 'start-session' }
+        Mock Invoke-TeamPipelineDeclarativeRunAdvancement {
+            $completed = Copy-DeclarativeWorkflowValue $script:startRouteRun
+            $completed.state = 'succeeded'
+            return $completed
+        }
+        Mock Invoke-DeclarativeWorkflowNode { throw 'start must not retain a second direct node-dispatch path' }
+
+        $result = Invoke-TeamPipelineDeclarativeWorkflow -Action start -RecipeId 'bugfix-two-slot' -WorkflowId 'bugfix' `
+            -RunId 'run-123' -GenerationId 'generation-123' -ConfigFingerprint ('sha256:' + ('a' * 64)) `
+            -SourceHead ('b' * 40) -TaskFile $taskFile -ProjectDir $TestDrive
+
+        $result.status | Should -Be 'accepted'
+        $result.state | Should -Be 'succeeded'
+        Should -Invoke Invoke-TeamPipelineDeclarativeRunAdvancement -Times 1 -Exactly
+        Should -Invoke Invoke-DeclarativeWorkflowNode -Times 0 -Exactly
+    }
+
+    It 'C07 recovers one pending terminal action after validation and preserves its terminal outcome' {
+        foreach ($terminalState in @('succeeded', 'failed', 'cancelled')) {
+            $project = Join-Path $TestDrive "terminal-recovery-$terminalState"
+            $run = New-TestRun
+            $run.state = $terminalState
+            $run.nodes.inspect.state = if ($terminalState -eq 'failed') { 'failed' } else { 'succeeded' }
+            $lock = New-DeclarativeWorkflowRunLock -ProjectDir $project -Run $run
+            $script:terminalRecoverySnapshotCalls = 0
+            $releases = [Collections.Generic.List[string]]::new()
+
+            $after = Invoke-TeamPipelineDeclarativeTerminalRecovery -ProjectDir $project -Run $run -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) `
+                -ValidateSnapshot { param($candidate) $script:terminalRecoverySnapshotCalls++ } `
+                -SaveRun { param($candidate) } `
+                -ReleaseLock {
+                    param($path)
+                    $releases.Add($path) | Out-Null
+                    Remove-Item -LiteralPath $path -Force
+                }
+
+            $after.state | Should -Be $terminalState
+            $after.cleanup_journal[0].state | Should -Be 'succeeded'
+            $script:terminalRecoverySnapshotCalls | Should -Be 1
+            $releases.Count | Should -Be 1
+            Test-Path -LiteralPath $lock | Should -BeFalse
+        }
+    }
+
+    It 'C07 permits terminal resume recovery only for one pending typed cleanup action' {
+        $project = Join-Path $TestDrive 'terminal-recovery-admission'
+        $taskInput = New-TestTaskInput
+        $confirmation = New-TestConfirmation
+
+        foreach ($case in @(
+                [PSCustomObject]@{ Name = 'succeeded'; Configure = { param($run) $run.cleanup_journal[0].state = 'succeeded' } },
+                [PSCustomObject]@{ Name = 'running'; Configure = { param($run) $run.cleanup_journal[0].state = 'running' } },
+                [PSCustomObject]@{ Name = 'blocked'; Configure = { param($run) $run.cleanup_journal[0].state = 'blocked' } },
+                [PSCustomObject]@{ Name = 'unknown'; Configure = { param($run) $run.cleanup_journal[0].state = 'unknown' } },
+                [PSCustomObject]@{ Name = 'malformed'; Configure = { param($run) $run.cleanup_journal = @([ordered]@{ state = 'pending' }) } },
+                [PSCustomObject]@{ Name = 'multiple'; Configure = { param($run) $run.cleanup_journal = @($run.cleanup_journal[0], (Copy-DeclarativeWorkflowValue $run.cleanup_journal[0])) } }
+            )) {
+            $run = New-TestRun
+            $run.state = 'failed'
+            $run.nodes.inspect.state = 'failed'
+            & $case.Configure $run
+            $before = $run | ConvertTo-Json -Depth 40 -Compress
+            $script:terminalRecoveryEffects = 0
+
+            {
+                Invoke-TeamPipelineDeclarativeTerminalRecovery -ProjectDir $project -Run $run -TaskInput $taskInput -Confirmation $confirmation `
+                    -ValidateSnapshot { param($candidate) } `
+                    -SaveRun { $script:terminalRecoveryEffects++ } `
+                    -ReleaseLock { $script:terminalRecoveryEffects++ }
+            } | Should -Throw -Because "terminal cleanup state '$($case.Name)' is not a recoverable pending action"
+
+            $script:terminalRecoveryEffects | Should -Be 0
+            ($run | ConvertTo-Json -Depth 40 -Compress) | Should -Be $before
+        }
+    }
+
+    It 'C07 rejects every non-pending terminal resume recovery before save release or dispatch' {
+        $taskFile = Join-Path $TestDrive 'terminal-recovery-task.txt'
+        [IO.File]::WriteAllText($taskFile, 'Implement TASK-659 safely.', [Text.UTF8Encoding]::new($false))
+
+        foreach ($case in @(
+                [PSCustomObject]@{ Name = 'succeeded'; Configure = { param($run) $run.cleanup_journal[0].state = 'succeeded' } },
+                [PSCustomObject]@{ Name = 'running'; Configure = { param($run) $run.cleanup_journal[0].state = 'running' } },
+                [PSCustomObject]@{ Name = 'blocked'; Configure = { param($run) $run.cleanup_journal[0].state = 'blocked' } },
+                [PSCustomObject]@{ Name = 'unknown'; Configure = { param($run) $run.cleanup_journal[0].state = 'unknown' } },
+                [PSCustomObject]@{ Name = 'malformed'; Configure = { param($run) $run.cleanup_journal = @([ordered]@{ state = 'pending' }) } },
+                [PSCustomObject]@{ Name = 'multiple'; Configure = { param($run) $run.cleanup_journal = @($run.cleanup_journal[0], (Copy-DeclarativeWorkflowValue $run.cleanup_journal[0])) } }
+            )) {
+            $script:terminalResumeRun = New-TestRun
+            $script:terminalResumeRun.state = 'failed'
+            $script:terminalResumeRun.nodes.inspect.state = 'failed'
+            & $case.Configure $script:terminalResumeRun
+            $before = $script:terminalResumeRun | ConvertTo-Json -Depth 40 -Compress
+            $script:terminalResumeSaveCount = 0
+            $script:terminalResumeDispatchCount = 0
+            $script:terminalResumeSnapshotCount = 0
+
+            Mock Read-DeclarativeWorkflowRunState { Copy-DeclarativeWorkflowValue $script:terminalResumeRun }
+            Mock Invoke-TeamPipelineWorkspacePlanOnce {
+                $script:terminalResumeSnapshotCount++
+                [ordered]@{
+                    config_fingerprint = ('sha256:' + ('a' * 64))
+                    resolved_bindings = [ordered]@{ implement = 'worker-1'; verify = 'worker-2' }
+                    workflow = (New-TestWorkflowPlan)
+                }
+            }
+            Mock Read-TeamPipelineManifest { [PSCustomObject]@{ Session = [ordered]@{ name = 'terminal-session' }; Panes = [ordered]@{} } }
+            Mock Get-TeamPipelineSessionName { 'terminal-session' }
+            Mock Get-TeamPipelineDeclarativeProjectHead { 'b' * 40 }
+            Mock Save-DeclarativeWorkflowRunState { $script:terminalResumeSaveCount++ }
+            Mock Invoke-TeamPipelineDeclarativeDispatch { $script:terminalResumeDispatchCount++; throw 'terminal recovery must not dispatch' }
+
+            {
+                Invoke-TeamPipelineDeclarativeWorkflow -Action resume -RunId 'run-123' -GenerationId 'generation-123' `
+                    -ConfigFingerprint ('sha256:' + ('a' * 64)) -SourceHead ('b' * 40) -TaskFile $taskFile -ProjectDir $TestDrive
+            } | Should -Throw -Because "terminal cleanup state '$($case.Name)' is not admissible for recovery"
+
+            $script:terminalResumeSnapshotCount | Should -Be 1
+            $script:terminalResumeSaveCount | Should -Be 0
+            $script:terminalResumeDispatchCount | Should -Be 0
+            ($script:terminalResumeRun | ConvertTo-Json -Depth 40 -Compress) | Should -Be $before
+        }
+    }
+
     It 'C01 C02 C04 releases only an owned run lock once after persisted intent' {
         $project = Join-Path $TestDrive 'project'
         $run = New-TestRun

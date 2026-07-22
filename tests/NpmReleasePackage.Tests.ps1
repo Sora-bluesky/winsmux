@@ -954,6 +954,16 @@ param(
         $stagedInstallScript | Should -Match 'Install-SecuritySupportScripts'
         $stagedInstallScript | Should -Match 'Remove-ProfileExcludedSupportScripts'
         $stagedInstallScript | Should -Match 'Removed profile-excluded support script'
+
+        $orchestraDownloadBlock = [regex]::Match($stagedInstallScript, '(?ms)^function Install-OrchestraSupportScripts \{(?<body>.*?)^\}')
+        $orchestraDownloadBlock.Success | Should -BeTrue
+        $orchestraDownloads = @([regex]::Matches($orchestraDownloadBlock.Groups['body'].Value, 'Download-File\s+"winsmux-core/scripts/(?<script>[^"]+)"') | ForEach-Object { $_.Groups['script'].Value })
+        $orchestrationRemovalBlock = [regex]::Match($stagedInstallScript, '(?ms)Content = "orchestration_scripts"\s*Files = @\((?<body>.*?)^\s*\)\s*\}')
+        $orchestrationRemovalBlock.Success | Should -BeTrue
+        $orchestrationRemovals = @([regex]::Matches($orchestrationRemovalBlock.Groups['body'].Value, '(?m)^\s*"(?<script>[^"]+)"') | ForEach-Object { $_.Groups['script'].Value })
+        @($orchestraDownloads | Where-Object { $_ -notin $orchestrationRemovals }).Count | Should -Be 0
+        $orchestrationRemovals | Should -Contain 'declarative-workflow.ps1'
+
         $stagedInstallScript | Should -Match 'Sync-WindowsTerminalFragment -Profile \$resolvedInstallProfile'
         $stagedInstallScript | Should -Match 'SHA256SUMS asset not found in release'
         $stagedInstallScript | Should -Match 'Cannot verify release asset'
