@@ -717,7 +717,7 @@ function Resolve-OperatorPollProtectedRuntimeAdmission {
         [string]::IsNullOrWhiteSpace($manifestGenerationId) -or
         $eventSession -cne $manifestSessionName -or
         [string](Get-OperatorPollValue $PaneContext 'session_name' '') -cne $manifestSessionName -or
-        [string](Get-OperatorPollValue $PaneContext 'generation_id' '') -cne $manifestGenerationId -or
+        -not [string]::Equals([string](Get-OperatorPollValue $PaneContext 'generation_id' ''), $manifestGenerationId, [StringComparison]::Ordinal) -or
         [string](Get-OperatorPollValue $PaneContext 'label' '') -cne $eventLabel -or
         [string](Get-OperatorPollValue $PaneContext 'pane_id' '') -cne $eventPaneId) {
         return $null

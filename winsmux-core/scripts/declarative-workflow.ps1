@@ -30,6 +30,134 @@ function Copy-DeclarativeWorkflowValue {
     )
 }
 
+function Resolve-DeclarativeWorkflowNativeCommand {
+    foreach ($configured in @($env:WINSMUX_RAW_EXE, $env:WINSMUX_BIN)) {
+        if ([string]::IsNullOrWhiteSpace($configured)) { continue }
+        if ([IO.Path]::IsPathRooted($configured) -and [IO.File]::Exists($configured)) {
+            return [IO.Path]::GetFullPath($configured)
+        }
+        $configuredCommand = Get-Command $configured -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($null -eq $configuredCommand) { throw 'workflow_state_reducer_unavailable' }
+        $path = [string](Get-DeclarativeWorkflowValue $configuredCommand 'Source' '')
+        if ([string]::IsNullOrWhiteSpace($path)) { $path = [string]$configuredCommand.Name }
+        return $path
+    }
+
+    $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+    foreach ($candidate in @(
+            (Join-Path $repoRoot 'target\release\winsmux.exe'),
+            (Join-Path $repoRoot 'target\debug\winsmux.exe'))) {
+        if ([IO.File]::Exists($candidate)) { return [IO.Path]::GetFullPath($candidate) }
+    }
+    $command = Get-Command winsmux -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -eq $command) { throw 'workflow_state_reducer_unavailable' }
+    $commandPath = [string](Get-DeclarativeWorkflowValue $command 'Source' '')
+    if ([string]::IsNullOrWhiteSpace($commandPath)) { $commandPath = [string]$command.Name }
+    return $commandPath
+}
+
+function Invoke-DeclarativeWorkflowNativeReducerProcess {
+    param([Parameter(Mandatory = $true)][string]$RequestPath)
+
+    $nativeCommand = Resolve-DeclarativeWorkflowNativeCommand
+    $output = @(& $nativeCommand '__workflow-state-reduce' '--request-file' $RequestPath 2>&1)
+    $exitCode = $LASTEXITCODE
+    $text = ($output | ForEach-Object { [string]$_ }) -join "`n"
+    if ($exitCode -ne 0) {
+        if ([string]::IsNullOrWhiteSpace($text)) { throw 'workflow_state_reducer_failed' }
+        throw $text.Trim()
+    }
+    try {
+        $snapshot = $text | ConvertFrom-WinsmuxJson -AsHashtable -Depth 100 -ErrorAction Stop
+    } catch {
+        throw 'workflow_state_reducer_invalid_output'
+    }
+    if ($snapshot -isnot [Collections.IDictionary]) { throw 'workflow_state_reducer_invalid_output' }
+    return $snapshot
+}
+
+function Invoke-DeclarativeWorkflowStateReducer {
+    param([Parameter(Mandatory = $true)]$Request)
+
+    $json = $Request | ConvertTo-Json -Compress -Depth 100
+    [byte[]]$bytes = [Text.UTF8Encoding]::new($false).GetBytes($json)
+    if ($bytes.Length -gt 1048576 -or [Array]::IndexOf($bytes, [byte]0) -ge 0) {
+        throw 'workflow_state_reducer_request_invalid'
+    }
+
+    $requestDirectory = Join-Path ([IO.Path]::GetTempPath()) ('winsmux-workflow-reducer-' + [guid]::NewGuid().ToString('N'))
+    $requestPath = Join-Path $requestDirectory 'request.json'
+    [IO.Directory]::CreateDirectory($requestDirectory) | Out-Null
+    try {
+        $stream = [IO.File]::Open($requestPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try {
+            $stream.Write($bytes, 0, $bytes.Length)
+            $stream.Flush($true)
+        } finally {
+            $stream.Dispose()
+        }
+        return Invoke-DeclarativeWorkflowNativeReducerProcess -RequestPath $requestPath
+    } finally {
+        if ([IO.File]::Exists($requestPath)) { [IO.File]::Delete($requestPath) }
+        if ([IO.Directory]::Exists($requestDirectory)) { [IO.Directory]::Delete($requestDirectory, $false) }
+    }
+}
+
+function Invoke-DeclarativeWorkflowTransition {
+    param(
+        [Parameter(Mandatory = $true)]$Run,
+        [Parameter(Mandatory = $true)]$Event,
+        $DurableProofs = $null
+    )
+    if ($null -eq $DurableProofs) {
+        $DurableProofs = [ordered]@{ completion_acknowledgements = @(); cancellation_proofs = @() }
+    }
+    return Invoke-DeclarativeWorkflowStateReducer -Request ([ordered]@{
+            schema_version = 1
+            operation      = 'transition'
+            run            = $Run
+            event          = $Event
+            durable_proofs = $DurableProofs
+        })
+}
+
+function Resolve-DeclarativeWorkflowDurableProofs {
+    param(
+        [Parameter(Mandatory = $true)]$Run,
+        [scriptblock]$ResolveAcknowledgement,
+        [scriptblock]$ResolveCancellation
+    )
+
+    $acknowledgements = [Collections.Generic.List[object]]::new()
+    foreach ($entry in $Run.nodes.GetEnumerator()) {
+        if ([string](Get-DeclarativeWorkflowValue $entry.Value 'state' '') -cne 'succeeded') { continue }
+        if ($null -eq $ResolveAcknowledgement) { throw 'workflow_state_invalid: external durable completion proof required' }
+        $nodeId = [string]$entry.Key
+        $raw = @(& $ResolveAcknowledgement $Run $nodeId)
+        $candidates = @(Resolve-DeclarativeWorkflowAcknowledgementCandidates -Run $Run -NodeId $nodeId -Acknowledgements $raw)
+        if ($candidates.Count -ne 1 -or
+            -not (Test-DeclarativeWorkflowAcknowledgement -Run $Run -NodeId $nodeId -Acknowledgement $candidates[0])) {
+            throw 'workflow_state_invalid: external durable completion proof required'
+        }
+        $acknowledgements.Add($candidates[0]) | Out-Null
+    }
+
+    $cancellations = @()
+    $hasCancellation = $null -ne (Get-DeclarativeWorkflowValue $Run 'cancellation_proof' $null) -or
+        [string](Get-DeclarativeWorkflowValue $Run 'state' '') -ceq 'cancelled'
+    if ($hasCancellation) {
+        if ($null -eq $ResolveCancellation) { throw 'workflow_state_invalid: external durable cancellation proof required' }
+        $cancellations = @(& $ResolveCancellation $Run)
+        if ($cancellations.Count -ne 1 -or $null -eq $cancellations[0]) {
+            throw 'workflow_state_invalid: external durable cancellation proof required'
+        }
+    }
+    return [ordered]@{
+        completion_acknowledgements = @($acknowledgements)
+        cancellation_proofs         = @($cancellations)
+    }
+}
+
 function Assert-DeclarativeWorkflowId {
     param([Parameter(Mandatory = $true)][string]$Name, [Parameter(Mandatory = $true)][string]$Value)
     if ($Value -cnotmatch $script:DeclarativeWorkflowIdPattern) {
@@ -199,8 +327,9 @@ function New-DeclarativeWorkflowExecutionProjection {
                 Assert-DeclarativeWorkflowId -Name 'dependency node_id' -Value $dependencyId
                 $dependencyId
             })
-        $contextPackRef = [string](Get-DeclarativeWorkflowValue $definition 'context_pack_ref' '')
-        if (-not [string]::IsNullOrWhiteSpace($contextPackRef) -and
+        $contextPackValue = Get-DeclarativeWorkflowValue $definition 'context_pack_ref' $null
+        $contextPackRef = if ($null -eq $contextPackValue) { $null } else { [string]$contextPackValue }
+        if ($null -ne $contextPackRef -and -not [string]::IsNullOrWhiteSpace($contextPackRef) -and
             -not (Test-DeclarativeWorkflowBoundedReference -Value $contextPackRef)) {
             throw 'context_pack_ref must be a bounded reference, not inline context content.'
         }
@@ -269,7 +398,8 @@ function Assert-DeclarativeWorkflowExecutionProjection {
                 Get-DeclarativeWorkflowValue $persistedNode $field $null
             }
             $expectedValue = if ($field -ceq 'depends_on') { @($expectedNode[$field]) } else { $expectedNode[$field] }
-            if (-not (Test-DeclarativeWorkflowFieldExists -InputObject $persistedNode -Name $field) -or
+            $fieldRequired = $field -cne 'context_pack_ref' -or $null -ne $expectedValue
+            if (($fieldRequired -and -not (Test-DeclarativeWorkflowFieldExists -InputObject $persistedNode -Name $field)) -or
                 (ConvertTo-DeclarativeWorkflowCanonicalJson -Value $persistedValue) -cne
                     (ConvertTo-DeclarativeWorkflowCanonicalJson -Value $expectedValue)) {
                 throw "Declarative workflow execution projection immutable field '$field' does not match node '$nodeId'."
@@ -283,6 +413,7 @@ function New-DeclarativeWorkflowRun {
         [Parameter(Mandatory = $true)]$Plan,
         [Parameter(Mandatory = $true)][string]$RunId,
         [Parameter(Mandatory = $true)][string]$GenerationId,
+        [Parameter(Mandatory = $true)][string]$ConfigFingerprint,
         [Parameter(Mandatory = $true)][string]$SourceHead,
         [Parameter(Mandatory = $true)]$TaskInput
     )
@@ -291,8 +422,7 @@ function New-DeclarativeWorkflowRun {
     if ($SourceHead -cnotmatch $script:DeclarativeWorkflowHeadPattern) {
         throw 'source_head must be a lowercase full commit ID.'
     }
-    $configFingerprint = [string](Get-DeclarativeWorkflowValue $Plan 'config_fingerprint' '')
-    if ($configFingerprint -cnotmatch $script:DeclarativeWorkflowDigestPattern) {
+    if ($ConfigFingerprint -cnotmatch $script:DeclarativeWorkflowDigestPattern) {
         throw 'config_fingerprint must be a lowercase SHA-256 digest.'
     }
     $workflowFingerprint = [string](Get-DeclarativeWorkflowValue $Plan 'workflow_fingerprint' '')
@@ -304,51 +434,19 @@ function New-DeclarativeWorkflowRun {
     if ($taskDigest -cnotmatch $script:DeclarativeWorkflowDigestPattern -or $taskByteCount -lt 0) {
         throw 'Task input identity is invalid.'
     }
-    $projection = New-DeclarativeWorkflowExecutionProjection -Plan $Plan
-    $nodes = [ordered]@{}
-    foreach ($nodeId in @($projection.node_order)) {
-        $immutableNode = $projection.runtime_nodes[$nodeId]
-        $dependencies = @($immutableNode.depends_on)
-        $node = [ordered]@{
-            node_id         = [string]$immutableNode.node_id
-            state           = if ($dependencies.Count -eq 0) { 'ready' } else { 'pending' }
-            attempt         = 0
-            idempotency_key = [string]$immutableNode.idempotency_key
-            pane_ref        = [string]$immutableNode.pane_ref
-            action          = [string]$immutableNode.action
-            depends_on      = $dependencies
-            cleanup         = [string]$immutableNode.cleanup
-            context_pack_ref = [string]$immutableNode.context_pack_ref
-            evidence_refs   = @()
-        }
-        $nodes[$nodeId] = $node
-    }
-
-    return [ordered]@{
-        schema_version      = 1
-        workflow_id        = [string](Get-DeclarativeWorkflowValue $Plan 'workflow_id' '')
-        recipe_ref         = [string](Get-DeclarativeWorkflowValue $Plan 'recipe_ref' '')
-        run_id             = $RunId
-        state              = 'ready'
-        generation_id      = $GenerationId
-        config_fingerprint = $configFingerprint
-        workflow_fingerprint = $workflowFingerprint
-        source_head        = $SourceHead
-        task_sha256        = $taskDigest
-        task_byte_count    = $taskByteCount
-        resolved_bindings  = Copy-DeclarativeWorkflowValue (Get-DeclarativeWorkflowValue $Plan 'resolved_bindings' ([ordered]@{}))
-        normalized_snapshot = $projection.normalized_snapshot
-        node_order         = @($projection.node_order)
-        nodes              = $nodes
-        cleanup_journal    = @([ordered]@{
-            action_id      = 'release-run-lock'
-            kind           = 'release-run-lock'
-            state          = 'pending'
-            idempotency_key = "$RunId`:cleanup:release-run-lock"
-            resource_ref   = "workflow-run-lock:$RunId"
+    return Invoke-DeclarativeWorkflowStateReducer -Request ([ordered]@{
+            schema_version = 1
+            operation      = 'bootstrap'
+            plan           = Copy-DeclarativeWorkflowValue $Plan
+            identity       = [ordered]@{
+                run_id             = $RunId
+                generation_id      = $GenerationId
+                config_fingerprint = $ConfigFingerprint
+                source_head        = $SourceHead
+                task_sha256        = $taskDigest
+                task_byte_count    = $taskByteCount
+            }
         })
-        rollback_state     = 'not_requested'
-    }
 }
 
 function Get-DeclarativeWorkflowNode {
@@ -414,28 +512,6 @@ function Get-DeclarativeWorkflowVerificationEnvelope {
         dependency_node_ids = @($dependencyNodeIds)
         evidence_refs       = @($evidenceRefs)
     }
-}
-
-function Set-DeclarativeWorkflowReadyNodes {
-    param([Parameter(Mandatory = $true)]$Run)
-    $released = $false
-    $nodes = Get-DeclarativeWorkflowValue $Run 'nodes' $null
-    foreach ($entry in $nodes.GetEnumerator()) {
-        $node = $entry.Value
-        if ([string](Get-DeclarativeWorkflowValue $node 'state' '') -cne 'pending') { continue }
-        $ready = $true
-        foreach ($dependency in @(Get-DeclarativeWorkflowValue $node 'depends_on' @())) {
-            if (-not $nodes.Contains([string]$dependency) -or [string](Get-DeclarativeWorkflowValue $nodes[[string]$dependency] 'state' '') -cne 'succeeded') {
-                $ready = $false
-                break
-            }
-        }
-        if ($ready) {
-            $node.state = 'ready'
-            $released = $true
-        }
-    }
-    return $released
 }
 
 function Test-DeclarativeWorkflowSessionId {
@@ -542,46 +618,6 @@ function Get-DeclarativeWorkflowCompletionAcknowledgement {
     return $acknowledgement
 }
 
-function Save-DeclarativeWorkflowProgress {
-    param(
-        [Parameter(Mandatory = $true)]$Run,
-        [Parameter(Mandatory = $true)][scriptblock]$SaveRun,
-        [switch]$RecalculateRunState
-    )
-    if ($RecalculateRunState) {
-        $states = @($Run.nodes.Values | ForEach-Object { [string](Get-DeclarativeWorkflowValue $_ 'state' '') })
-        $knownStates = @('pending', 'ready', 'dispatching', 'running', 'blocked', 'failed', 'succeeded', 'cleanup_pending', 'cleaned', 'rolled_back')
-        if ($states.Count -eq 0 -or @($states | Where-Object { $_ -notin $knownStates }).Count -gt 0) {
-            throw 'Declarative workflow contains an unsupported node state.'
-        }
-        $completedStates = @('succeeded', 'cleaned', 'rolled_back')
-        if (@($states | Where-Object { $_ -ceq 'failed' }).Count -gt 0) {
-            $Run.state = 'failed'
-        } elseif (@($states | Where-Object { $_ -ceq 'blocked' }).Count -gt 0) {
-            $Run.state = 'blocked'
-        } elseif (@($states | Where-Object { $_ -ceq 'cleanup_pending' }).Count -gt 0) {
-            $Run.state = 'cleanup_pending'
-        } elseif (@($states | Where-Object { $_ -notin $completedStates }).Count -eq 0) {
-            $Run.state = 'succeeded'
-        } elseif (@($states | Where-Object { $_ -in @('dispatching', 'running') }).Count -gt 0) {
-            $Run.state = 'running'
-        } elseif (@($states | Where-Object { $_ -ceq 'ready' }).Count -gt 0) {
-            $hasProgress = @($Run.nodes.Values | Where-Object {
-                [int](Get-DeclarativeWorkflowValue $_ 'attempt' 0) -gt 0 -or
-                [string](Get-DeclarativeWorkflowValue $_ 'state' '') -in $completedStates
-            }).Count -gt 0
-            $Run.state = if ($hasProgress) { 'running' } else { 'ready' }
-        } else {
-            $hasProgress = @($Run.nodes.Values | Where-Object {
-                [int](Get-DeclarativeWorkflowValue $_ 'attempt' 0) -gt 0 -or
-                [string](Get-DeclarativeWorkflowValue $_ 'state' '') -in $completedStates
-            }).Count -gt 0
-            $Run.state = if ($hasProgress) { 'running' } else { 'planned' }
-        }
-    }
-    & $SaveRun $Run
-}
-
 function Invoke-DeclarativeWorkflowNode {
     param(
         [Parameter(Mandatory = $true)]$Run,
@@ -590,20 +626,22 @@ function Invoke-DeclarativeWorkflowNode {
         [Parameter(Mandatory = $true)]$Confirmation,
         [Parameter(Mandatory = $true)][scriptblock]$SaveRun,
         [Parameter(Mandatory = $true)][scriptblock]$Dispatch,
-        [Parameter(Mandatory = $true)][scriptblock]$ResolveSession
+        [Parameter(Mandatory = $true)][scriptblock]$ResolveSession,
+        $DurableProofs = $null
     )
     Assert-DeclarativeWorkflowTaskIdentity -Run $Run -TaskInput $TaskInput
     Assert-DeclarativeWorkflowConfirmation -Run $Run -Confirmation $Confirmation
-    $runState = [string](Get-DeclarativeWorkflowValue $Run 'state' '')
+    $candidate = Invoke-DeclarativeWorkflowTransition -Run $Run -Event ([ordered]@{ type = 'validate' }) -DurableProofs $DurableProofs
+    $runState = [string](Get-DeclarativeWorkflowValue $candidate 'state' '')
     if ($runState -in @('succeeded', 'cancelled', 'rolled_back')) {
         throw "Declarative workflow terminal run '$runState' cannot resume."
     }
     if ($runState -ceq 'failed') {
         throw 'Declarative workflow failed run requires a new operator-approved run.'
     }
-    $current = Get-DeclarativeWorkflowNode -Run $Run -NodeId $NodeId
+    $current = Get-DeclarativeWorkflowNode -Run $candidate -NodeId $NodeId
     $currentState = [string](Get-DeclarativeWorkflowValue $current 'state' '')
-    if ($currentState -in @('succeeded', 'cleaned', 'rolled_back')) { return $Run }
+    if ($currentState -ceq 'succeeded') { return $candidate }
     if ($currentState -cne 'ready') {
         throw "Workflow node '$NodeId' is not ready for dispatch."
     }
@@ -611,11 +649,9 @@ function Invoke-DeclarativeWorkflowNode {
         throw "Workflow node '$NodeId' cannot be retried automatically."
     }
 
-    $candidate = Copy-DeclarativeWorkflowValue $Run
+    $candidate = Invoke-DeclarativeWorkflowTransition -Run $candidate -Event ([ordered]@{ type = 'dispatch_intent'; node_id = $NodeId }) -DurableProofs $DurableProofs
+    & $SaveRun $candidate
     $node = Get-DeclarativeWorkflowNode -Run $candidate -NodeId $NodeId
-    $node.attempt = 1
-    $node.state = 'dispatching'
-    Save-DeclarativeWorkflowProgress -Run $candidate -SaveRun $SaveRun -RecalculateRunState
 
     $stage = if ([string](Get-DeclarativeWorkflowValue $node 'action' '') -ceq 'verification') { 'VERIFY' } else { 'EXEC' }
     $request = [ordered]@{
@@ -628,8 +664,8 @@ function Invoke-DeclarativeWorkflowNode {
     if ($stage -ceq 'VERIFY') {
         $verificationEnvelope = Get-DeclarativeWorkflowVerificationEnvelope -Run $candidate -NodeId $NodeId
         if ($null -eq $verificationEnvelope) {
-            $node.state = 'blocked'
-            Save-DeclarativeWorkflowProgress -Run $candidate -SaveRun $SaveRun -RecalculateRunState
+            $candidate = Invoke-DeclarativeWorkflowTransition -Run $candidate -Event ([ordered]@{ type = 'block'; node_id = $NodeId }) -DurableProofs $DurableProofs
+            & $SaveRun $candidate
             return $candidate
         }
         $request.context_pack_ref = [string]$verificationEnvelope.context_pack_ref
@@ -637,46 +673,46 @@ function Invoke-DeclarativeWorkflowNode {
         $request.evidence_refs = @($verificationEnvelope.evidence_refs)
     }
     try {
-    $completion = & $Dispatch $request $candidate
+        $completion = & $Dispatch $request $candidate
     } catch {
-        $node.state = 'blocked'
-        Save-DeclarativeWorkflowProgress -Run $candidate -SaveRun $SaveRun -RecalculateRunState
+        $candidate = Invoke-DeclarativeWorkflowTransition -Run $candidate -Event ([ordered]@{ type = 'block'; node_id = $NodeId }) -DurableProofs $DurableProofs
+        & $SaveRun $candidate
         return $candidate
     }
     if ($null -eq $completion) {
-        $node.state = 'blocked'
-        Save-DeclarativeWorkflowProgress -Run $candidate -SaveRun $SaveRun -RecalculateRunState
+        $candidate = Invoke-DeclarativeWorkflowTransition -Run $candidate -Event ([ordered]@{ type = 'block'; node_id = $NodeId }) -DurableProofs $DurableProofs
+        & $SaveRun $candidate
         return $candidate
     }
     $completionStatus = [string](Get-DeclarativeWorkflowValue $completion 'status' '')
     if ($completionStatus -cne 'accepted') {
-        $node.state = if ($completionStatus -in @('failed', 'rejected')) { 'failed' } else { 'blocked' }
-        Save-DeclarativeWorkflowProgress -Run $candidate -SaveRun $SaveRun -RecalculateRunState
+        $eventType = if ($completionStatus -in @('failed', 'rejected')) { 'dispatch_failed' } else { 'block' }
+        $candidate = Invoke-DeclarativeWorkflowTransition -Run $candidate -Event ([ordered]@{ type = $eventType; node_id = $NodeId }) -DurableProofs $DurableProofs
+        & $SaveRun $candidate
         return $candidate
     }
     $acknowledgement = Get-DeclarativeWorkflowCompletionAcknowledgement -Run $candidate -NodeId $NodeId -Completion $completion
     if ($null -eq $acknowledgement) {
-        $node.state = 'blocked'
-        Save-DeclarativeWorkflowProgress -Run $candidate -SaveRun $SaveRun -RecalculateRunState
+        $candidate = Invoke-DeclarativeWorkflowTransition -Run $candidate -Event ([ordered]@{ type = 'block'; node_id = $NodeId }) -DurableProofs $DurableProofs
+        & $SaveRun $candidate
         return $candidate
     }
     $paneId = [string](Get-DeclarativeWorkflowValue $acknowledgement 'pane_id' '')
     $sessionId = [string](& $ResolveSession $paneId)
-    $existingSession = [string](Get-DeclarativeWorkflowValue $node 'agent_cli_session_id' '')
     if (-not (Test-DeclarativeWorkflowSessionId $sessionId) -or
-        $sessionId -cne $paneId -or
-        (-not [string]::IsNullOrWhiteSpace($existingSession) -and $existingSession -cne $paneId)) {
-        $node.state = 'blocked'
-        Save-DeclarativeWorkflowProgress -Run $candidate -SaveRun $SaveRun -RecalculateRunState
+        $sessionId -cne $paneId) {
+        $candidate = Invoke-DeclarativeWorkflowTransition -Run $candidate -Event ([ordered]@{ type = 'block'; node_id = $NodeId }) -DurableProofs $DurableProofs
+        & $SaveRun $candidate
         return $candidate
     }
 
-    $node['agent_cli_session_id'] = $paneId
-    $node.evidence_refs = @([string](Get-DeclarativeWorkflowValue $acknowledgement 'evidence_ref' ''))
-    $node.state = 'succeeded'
-    Save-DeclarativeWorkflowProgress -Run $candidate -SaveRun $SaveRun
-    Set-DeclarativeWorkflowReadyNodes -Run $candidate | Out-Null
-    Save-DeclarativeWorkflowProgress -Run $candidate -SaveRun $SaveRun -RecalculateRunState
+    $candidate = Invoke-DeclarativeWorkflowTransition -Run $candidate -Event ([ordered]@{
+            type                = 'acknowledge'
+            node_id             = $NodeId
+            acknowledgement     = $acknowledgement
+            resolved_session_id = $sessionId
+        }) -DurableProofs $DurableProofs
+    & $SaveRun $candidate
     return $candidate
 }
 
@@ -689,89 +725,79 @@ function Invoke-DeclarativeWorkflowResume {
         [Parameter(Mandatory = $true)][scriptblock]$Dispatch,
         [Parameter(Mandatory = $true)][scriptblock]$ResolveSession,
         [Parameter(Mandatory = $true)][scriptblock]$ResolveAcknowledgement,
+        [scriptblock]$ResolveCancellation,
         [scriptblock]$ValidateSnapshot
     )
     Assert-DeclarativeWorkflowTaskIdentity -Run $Run -TaskInput $TaskInput
     Assert-DeclarativeWorkflowConfirmation -Run $Run -Confirmation $Confirmation
-    $runState = [string](Get-DeclarativeWorkflowValue $Run 'state' '')
-    if ($runState -in @('succeeded', 'cancelled', 'rolled_back')) {
-        throw "Declarative workflow terminal run '$runState' cannot resume."
-    }
-    if ($null -ne $ValidateSnapshot) { & $ValidateSnapshot $Run }
+    $candidate = $Run
+    $snapshotPending = $null -ne $ValidateSnapshot
+    $initialValidation = $true
 
-    $candidate = Copy-DeclarativeWorkflowValue $Run
-    if ($runState -ceq 'failed') { return $candidate }
-    $knownStates = @('pending', 'ready', 'dispatching', 'running', 'blocked', 'failed', 'succeeded', 'cleanup_pending', 'cleaned', 'rolled_back')
     while ($true) {
-        foreach ($entry in $candidate.nodes.GetEnumerator()) {
-            $state = [string](Get-DeclarativeWorkflowValue $entry.Value 'state' '')
-            if ($state -notin $knownStates) { throw "Workflow node '$($entry.Key)' has an unsupported state." }
-        }
-
-        $failed = @($candidate.nodes.GetEnumerator() | Where-Object { [string](Get-DeclarativeWorkflowValue $_.Value 'state' '') -ceq 'failed' } | Select-Object -First 1)
-        if ($failed.Count -gt 0) {
-            Save-DeclarativeWorkflowProgress -Run $candidate -SaveRun $SaveRun -RecalculateRunState
+        $durableProofs = Resolve-DeclarativeWorkflowDurableProofs -Run $candidate -ResolveAcknowledgement $ResolveAcknowledgement -ResolveCancellation $ResolveCancellation
+        $candidate = Invoke-DeclarativeWorkflowTransition -Run $candidate -Event ([ordered]@{ type = 'validate' }) -DurableProofs $durableProofs
+        $runState = [string](Get-DeclarativeWorkflowValue $candidate 'state' '')
+        if ($runState -in @('succeeded', 'cancelled', 'rolled_back')) {
+            if ($initialValidation) {
+                throw "Declarative workflow terminal run '$runState' cannot resume."
+            }
             return $candidate
         }
+        $initialValidation = $false
+        if ($snapshotPending) {
+            & $ValidateSnapshot $candidate
+            $snapshotPending = $false
+        }
+        if ($runState -ceq 'failed') { return $candidate }
+
+        $failed = @($candidate.nodes.GetEnumerator() | Where-Object {
+                [string](Get-DeclarativeWorkflowValue $_.Value 'state' '') -ceq 'failed'
+            } | Select-Object -First 1)
+        if ($failed.Count -gt 0) { return $candidate }
 
         $inFlight = @($candidate.nodes.GetEnumerator() | Where-Object {
-            [string](Get-DeclarativeWorkflowValue $_.Value 'state' '') -in @('dispatching', 'running', 'blocked')
-        } | Select-Object -First 1)
+                [string](Get-DeclarativeWorkflowValue $_.Value 'state' '') -in @('dispatching', 'blocked')
+            } | Select-Object -First 1)
         if ($inFlight.Count -gt 0) {
             $nodeId = [string]$inFlight[0].Key
-            $node = $inFlight[0].Value
-            if ([int](Get-DeclarativeWorkflowValue $node 'attempt' 0) -ne 1) {
-                $node.state = 'blocked'
-                Save-DeclarativeWorkflowProgress -Run $candidate -SaveRun $SaveRun -RecalculateRunState
-                return $candidate
-            }
+            $nodeState = [string](Get-DeclarativeWorkflowValue $inFlight[0].Value 'state' '')
             $rawAcknowledgements = @(& $ResolveAcknowledgement $candidate $nodeId)
             $acknowledgements = @(Resolve-DeclarativeWorkflowAcknowledgementCandidates -Run $candidate -NodeId $nodeId -Acknowledgements $rawAcknowledgements)
             if ($acknowledgements.Count -ne 1 -or
                 -not (Test-DeclarativeWorkflowAcknowledgement -Run $candidate -NodeId $nodeId -Acknowledgement $acknowledgements[0])) {
-                $node.state = 'blocked'
-                Save-DeclarativeWorkflowProgress -Run $candidate -SaveRun $SaveRun -RecalculateRunState
+                if ($nodeState -ceq 'dispatching') {
+                    $candidate = Invoke-DeclarativeWorkflowTransition -Run $candidate -Event ([ordered]@{ type = 'block'; node_id = $nodeId }) -DurableProofs $durableProofs
+                    & $SaveRun $candidate
+                }
                 return $candidate
             }
             $acknowledgement = $acknowledgements[0]
             $paneId = [string](Get-DeclarativeWorkflowValue $acknowledgement 'pane_id' '')
-            $evidenceRef = [string](Get-DeclarativeWorkflowValue $acknowledgement 'evidence_ref' '')
-            $persistedSession = [string](Get-DeclarativeWorkflowValue $node 'agent_cli_session_id' '')
-            $persistedEvidence = @((Get-DeclarativeWorkflowValue $node 'evidence_refs' @()) | ForEach-Object { [string]$_ })
             $resolvedSession = [string](& $ResolveSession $paneId)
-            if ((-not [string]::IsNullOrWhiteSpace($persistedSession) -and $persistedSession -cne $paneId) -or
-                ($persistedEvidence.Count -gt 0 -and $persistedEvidence -notcontains $evidenceRef) -or
-                -not (Test-DeclarativeWorkflowSessionId $resolvedSession) -or $resolvedSession -cne $paneId) {
-                $node.state = 'blocked'
-                Save-DeclarativeWorkflowProgress -Run $candidate -SaveRun $SaveRun -RecalculateRunState
+            if (-not (Test-DeclarativeWorkflowSessionId $resolvedSession) -or $resolvedSession -cne $paneId) {
+                if ($nodeState -ceq 'dispatching') {
+                    $candidate = Invoke-DeclarativeWorkflowTransition -Run $candidate -Event ([ordered]@{ type = 'block'; node_id = $nodeId }) -DurableProofs $durableProofs
+                    & $SaveRun $candidate
+                }
                 return $candidate
             }
-            $node['agent_cli_session_id'] = $paneId
-            $node.evidence_refs = if ($persistedEvidence.Count -gt 0) { @($persistedEvidence) } else { @($evidenceRef) }
-            $node.state = 'succeeded'
-            Save-DeclarativeWorkflowProgress -Run $candidate -SaveRun $SaveRun
-            Set-DeclarativeWorkflowReadyNodes -Run $candidate | Out-Null
-            Save-DeclarativeWorkflowProgress -Run $candidate -SaveRun $SaveRun -RecalculateRunState
+            $candidate = Invoke-DeclarativeWorkflowTransition -Run $candidate -Event ([ordered]@{
+                    type                = 'acknowledge'
+                    node_id             = $nodeId
+                    acknowledgement     = $acknowledgement
+                    resolved_session_id = $resolvedSession
+                }) -DurableProofs $durableProofs
+            & $SaveRun $candidate
             continue
         }
 
-        if (Set-DeclarativeWorkflowReadyNodes -Run $candidate) {
-            Save-DeclarativeWorkflowProgress -Run $candidate -SaveRun $SaveRun -RecalculateRunState
-            continue
-        }
-        $ready = @($candidate.nodes.GetEnumerator() | Where-Object { [string](Get-DeclarativeWorkflowValue $_.Value 'state' '') -ceq 'ready' } | Select-Object -First 1)
-        if ($ready.Count -eq 0) {
-            Save-DeclarativeWorkflowProgress -Run $candidate -SaveRun $SaveRun -RecalculateRunState
-            return $candidate
-        }
-        $readyNode = $ready[0].Value
-        if ([int](Get-DeclarativeWorkflowValue $readyNode 'attempt' 0) -ne 0) {
-            $readyNode.state = 'blocked'
-            Save-DeclarativeWorkflowProgress -Run $candidate -SaveRun $SaveRun -RecalculateRunState
-            return $candidate
-        }
+        $ready = @($candidate.nodes.GetEnumerator() | Where-Object {
+                [string](Get-DeclarativeWorkflowValue $_.Value 'state' '') -ceq 'ready'
+            } | Select-Object -First 1)
+        if ($ready.Count -eq 0) { return $candidate }
         $candidate = Invoke-DeclarativeWorkflowNode -Run $candidate -NodeId ([string]$ready[0].Key) -TaskInput $TaskInput `
-            -Confirmation $Confirmation -SaveRun $SaveRun -Dispatch $Dispatch -ResolveSession $ResolveSession
+            -Confirmation $Confirmation -SaveRun $SaveRun -Dispatch $Dispatch -ResolveSession $ResolveSession -DurableProofs $durableProofs
         if ([string](Get-DeclarativeWorkflowValue $candidate 'state' '') -in @('blocked', 'failed')) { return $candidate }
     }
 }
@@ -992,72 +1018,72 @@ function Invoke-DeclarativeWorkflowCleanup {
         [Parameter(Mandatory = $true)]$Run,
         [Parameter(Mandatory = $true)][scriptblock]$SaveRun,
         [Parameter(Mandatory = $true)][scriptblock]$ReleaseLock,
+        [scriptblock]$ResolveAcknowledgement,
+        [scriptblock]$ResolveCancellation,
         [ValidateSet('', 'succeeded', 'failed', 'cancelled')][string]$PreserveRunState = ''
     )
-    $candidate = Copy-DeclarativeWorkflowValue $Run
-    $preservedState = if ([string]::IsNullOrWhiteSpace($PreserveRunState)) { '' } else { $PreserveRunState }
-    $setRunState = {
-        param([string]$Fallback)
-        if ([string]::IsNullOrWhiteSpace($preservedState)) {
-            $candidate.state = $Fallback
-        } else {
-            $candidate.state = $preservedState
-        }
-    }
+    $durableProofs = Resolve-DeclarativeWorkflowDurableProofs -Run $Run -ResolveAcknowledgement $ResolveAcknowledgement -ResolveCancellation $ResolveCancellation
+    $candidate = Invoke-DeclarativeWorkflowTransition -Run $Run -Event ([ordered]@{ type = 'validate' }) -DurableProofs $durableProofs
     $journal = @(Get-DeclarativeWorkflowValue $candidate 'cleanup_journal' @())
-    if ($journal.Count -ne 1) { throw 'Workflow cleanup journal must contain exactly one v1 action.' }
-    $action = $journal[0]
-    if ([string](Get-DeclarativeWorkflowValue $action 'kind' '') -cne 'release-run-lock' -or
-        [string](Get-DeclarativeWorkflowValue $action 'action_id' '') -cne 'release-run-lock') {
-        $action.state = 'blocked'; & $setRunState 'blocked'; & $SaveRun $candidate; return $candidate
+    if ($journal.Count -ne 1) { throw 'workflow_state_invalid' }
+    $cleanupState = [string](Get-DeclarativeWorkflowValue $journal[0] 'state' '')
+    if ($cleanupState -ceq 'succeeded' -or $cleanupState -ceq 'blocked') { return $candidate }
+    if ($cleanupState -ceq 'running') {
+        $candidate = Invoke-DeclarativeWorkflowTransition -Run $candidate -Event ([ordered]@{ type = 'cleanup_blocked' }) -DurableProofs $durableProofs
+        & $SaveRun $candidate
+        return $candidate
     }
-    foreach ($unsafeField in @('path', 'arguments', 'shell', 'command')) {
-        if ($null -ne (Get-DeclarativeWorkflowValue $action $unsafeField $null)) {
-            $action.state = 'blocked'; & $setRunState 'blocked'; & $SaveRun $candidate; return $candidate
-        }
+    if ($cleanupState -cne 'pending') { throw 'workflow_state_invalid' }
+
+    $intent = [ordered]@{ type = 'cleanup_intent' }
+    if (-not [string]::IsNullOrWhiteSpace($PreserveRunState)) {
+        $intent['preserve_run_state'] = $PreserveRunState
     }
-    $state = [string](Get-DeclarativeWorkflowValue $action 'state' '')
-    if ($state -ceq 'succeeded') { return $candidate }
-    if ($state -in @('running', 'blocked')) {
-        $action.state = 'blocked'; & $setRunState 'blocked'; & $SaveRun $candidate; return $candidate
-    }
-    if ($state -cne 'pending') { $action.state = 'blocked'; & $setRunState 'blocked'; & $SaveRun $candidate; return $candidate }
+    $candidate = Invoke-DeclarativeWorkflowTransition -Run $candidate -Event $intent -DurableProofs $durableProofs
+    & $SaveRun $candidate
 
     try {
         $lockPath = Resolve-DeclarativeWorkflowOwnedLock -ProjectDir $ProjectDir -Run $candidate
+        $owned = Test-DeclarativeWorkflowRunLockOwnership -ProjectDir $ProjectDir -Run $candidate
     } catch {
-        $action.state = 'blocked'; & $setRunState 'blocked'; & $SaveRun $candidate; return $candidate
+        $owned = $false
     }
-    if (-not (Test-DeclarativeWorkflowRunLockOwnership -ProjectDir $ProjectDir -Run $candidate)) {
-        $action.state = 'blocked'; & $setRunState 'blocked'; & $SaveRun $candidate; return $candidate
+    if (-not $owned) {
+        $candidate = Invoke-DeclarativeWorkflowTransition -Run $candidate -Event ([ordered]@{ type = 'cleanup_blocked' }) -DurableProofs $durableProofs
+        & $SaveRun $candidate
+        return $candidate
     }
-    $action.state = 'running'
-    & $setRunState 'cleanup_pending'
-    & $SaveRun $candidate
     try {
         $verifiedLockPath = Resolve-DeclarativeWorkflowOwnedLock -ProjectDir $ProjectDir -Run $candidate
+        $owned = $verifiedLockPath -ceq $lockPath -and
+            (Test-DeclarativeWorkflowRunLockOwnership -ProjectDir $ProjectDir -Run $candidate)
     } catch {
-        $action.state = 'blocked'; & $setRunState 'blocked'; & $SaveRun $candidate; return $candidate
+        $owned = $false
     }
-    if ($verifiedLockPath -cne $lockPath -or
-        -not (Test-DeclarativeWorkflowRunLockOwnership -ProjectDir $ProjectDir -Run $candidate)) {
-        $action.state = 'blocked'; & $setRunState 'blocked'; & $SaveRun $candidate; return $candidate
+    if (-not $owned) {
+        $candidate = Invoke-DeclarativeWorkflowTransition -Run $candidate -Event ([ordered]@{ type = 'cleanup_blocked' }) -DurableProofs $durableProofs
+        & $SaveRun $candidate
+        return $candidate
     }
     try {
         & $ReleaseLock $lockPath
     } catch {
-        $action.state = 'blocked'; & $setRunState 'blocked'; & $SaveRun $candidate; return $candidate
+        $candidate = Invoke-DeclarativeWorkflowTransition -Run $candidate -Event ([ordered]@{ type = 'cleanup_blocked' }) -DurableProofs $durableProofs
+        & $SaveRun $candidate
+        return $candidate
     }
     try {
         $postReleasePath = Resolve-DeclarativeWorkflowOwnedLock -ProjectDir $ProjectDir -Run $candidate
+        $released = $postReleasePath -ceq $lockPath -and -not [IO.File]::Exists($postReleasePath)
     } catch {
-        $action.state = 'blocked'; & $setRunState 'blocked'; & $SaveRun $candidate; return $candidate
+        $released = $false
     }
-    if ($postReleasePath -cne $lockPath -or [IO.File]::Exists($postReleasePath)) {
-        $action.state = 'blocked'; & $setRunState 'blocked'; & $SaveRun $candidate; return $candidate
+    if (-not $released) {
+        $candidate = Invoke-DeclarativeWorkflowTransition -Run $candidate -Event ([ordered]@{ type = 'cleanup_blocked' }) -DurableProofs $durableProofs
+        & $SaveRun $candidate
+        return $candidate
     }
-    $action.state = 'succeeded'
-    & $setRunState 'succeeded'
+    $candidate = Invoke-DeclarativeWorkflowTransition -Run $candidate -Event ([ordered]@{ type = 'cleanup_succeeded' }) -DurableProofs $durableProofs
     & $SaveRun $candidate
     return $candidate
 }
@@ -1067,14 +1093,17 @@ function Invoke-DeclarativeWorkflowTerminalCleanup {
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)]$Run,
         [Parameter(Mandatory = $true)][scriptblock]$SaveRun,
-        [Parameter(Mandatory = $true)][scriptblock]$ReleaseLock
+        [Parameter(Mandatory = $true)][scriptblock]$ReleaseLock,
+        [scriptblock]$ResolveAcknowledgement,
+        [scriptblock]$ResolveCancellation
     )
 
     $terminalState = [string](Get-DeclarativeWorkflowValue $Run 'state' '')
     if ($terminalState -notin @('succeeded', 'failed', 'cancelled')) {
         throw "Declarative workflow terminal cleanup requires a terminal run, not '$terminalState'."
     }
-    return Invoke-DeclarativeWorkflowCleanup -ProjectDir $ProjectDir -Run $Run -SaveRun $SaveRun -ReleaseLock $ReleaseLock -PreserveRunState $terminalState
+    return Invoke-DeclarativeWorkflowCleanup -ProjectDir $ProjectDir -Run $Run -SaveRun $SaveRun -ReleaseLock $ReleaseLock `
+        -ResolveAcknowledgement $ResolveAcknowledgement -ResolveCancellation $ResolveCancellation -PreserveRunState $terminalState
 }
 
 function Read-DeclarativeWorkflowRunState {

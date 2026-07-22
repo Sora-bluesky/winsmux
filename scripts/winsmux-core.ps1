@@ -4405,7 +4405,7 @@ function Resolve-SendInvocationArguments {
             throw '--delivery-class is internal-only and cannot be supplied through argv'
         }
 
-        if ($token -eq '--expected-generation-id') {
+        if ([string]::Equals($token, '--expected-generation-id', [StringComparison]::Ordinal)) {
             if ($index + 1 -ge $Arguments.Count) {
                 throw '--expected-generation-id requires a value'
             }
@@ -18382,7 +18382,7 @@ function ConvertTo-WinsmuxWorkflowCompletionEnvelope {
         $runId -cnotmatch '^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$' -or
         $nodeId -cnotmatch '^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$' -or
         [string]$data['idempotency_key'] -cne "$runId`:$nodeId" -or
-        [string]$data['generation_id'] -cne $GenerationId -or
+        -not [string]::Equals([string]$data['generation_id'], $GenerationId, [StringComparison]::Ordinal) -or
         [string]$data['config_fingerprint'] -cnotmatch '^sha256:[0-9a-f]{64}$' -or
         [string]$data['workflow_fingerprint'] -cnotmatch '^sha256:[0-9a-f]{64}$' -or
         [string]$data['source_head'] -cnotmatch '^[0-9a-f]{40}$' -or

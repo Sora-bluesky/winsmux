@@ -913,6 +913,9 @@ fn run_main() -> io::Result<()> {
     }
 
     match cmd {
+        "__workflow-state-reduce" => {
+            return workflow::run_workflow_state_reduce_command(&cmd_args[1..])
+        }
         "board" => return operator_cli::run_board_command(&cmd_args[1..]),
         "inbox" => return operator_cli::run_inbox_command(&cmd_args[1..]),
         "digest" => return operator_cli::run_digest_command(&cmd_args[1..]),

@@ -12,14 +12,15 @@ BeforeAll {
             schema_version = 1
             workflow_id = 'bugfix'
             recipe_ref = 'bugfix-two-slot'
-            config_fingerprint = ('sha256:' + ('a' * 64))
             workflow_fingerprint = ('sha256:' + ('d' * 64))
+            task_input = [ordered]@{ source = 'runtime-task-file'; privacy = 'digest-only' }
             resolved_bindings = [ordered]@{ implement = 'worker-1'; verify = 'worker-2' }
             nodes = @(
                 [PSCustomObject]@{ node_id = 'inspect'; pane_ref = 'implement'; action = 'operator-dispatch'; depends_on = @(); idempotency_key = 'run-123:inspect'; cleanup = 'retain' },
                 [PSCustomObject]@{ node_id = 'verify'; pane_ref = 'verify'; action = 'verification'; depends_on = @('inspect'); idempotency_key = 'run-123:verify'; cleanup = 'retain'; context_pack_ref = 'review-pack' }
             )
-            cleanup_actions = @('release-run-lock')
+            resume_policy = [ordered]@{ mode = 'operator-confirmed'; reject_completed_runs = $true }
+            cleanup_policy = [ordered]@{ mode = 'compensating-actions'; on = @('cancel', 'failure', 'success'); actions = @('release-run-lock') }
         }
     }
 
@@ -48,8 +49,183 @@ BeforeAll {
             -Plan (New-TestWorkflowPlan) `
             -RunId 'run-123' `
             -GenerationId 'generation-123' `
+            -ConfigFingerprint ('sha256:' + ('a' * 64)) `
             -SourceHead ('b' * 40) `
             -TaskInput $taskInput
+    }
+
+    function Get-TestWorkflowDerivedState {
+        param([Parameter(Mandatory = $true)]$Run)
+        if ($null -ne (Get-DeclarativeWorkflowValue $Run 'cancellation_proof' $null)) { return 'cancelled' }
+        $states = @($Run.nodes.Values | ForEach-Object { [string]$_.state })
+        $nodeState = if ($states -contains 'failed') { 'failed' }
+            elseif ($states -contains 'blocked') { 'blocked' }
+            elseif ($states -contains 'dispatching') { 'running' }
+            elseif (@($states | Where-Object { $_ -cne 'succeeded' }).Count -eq 0) { 'succeeded' }
+            elseif ($states -contains 'ready') {
+                if (@($Run.nodes.Values | Where-Object { [int]$_.attempt -gt 0 -or [string]$_.state -ceq 'succeeded' }).Count -gt 0) { 'running' } else { 'ready' }
+            } else { 'planned' }
+        $cleanup = $Run.cleanup_journal[0]
+        if ([string]$cleanup.state -ceq 'pending') { return $nodeState }
+        if ([string]$cleanup.state -ceq 'running') {
+            if ($null -ne (Get-DeclarativeWorkflowValue $Run 'cleanup_preserve_run_state' $null)) { return [string]$Run.cleanup_preserve_run_state }
+            return 'cleanup_pending'
+        }
+        if ([string]$cleanup.state -ceq 'blocked') {
+            if ($null -ne (Get-DeclarativeWorkflowValue $Run 'cleanup_preserve_run_state' $null)) { return [string]$Run.cleanup_preserve_run_state }
+            return 'blocked'
+        }
+        if ($null -ne (Get-DeclarativeWorkflowValue $Run 'cleanup_preserve_run_state' $null)) { return [string]$Run.cleanup_preserve_run_state }
+        return 'succeeded'
+    }
+
+    function Assert-TestWorkflowReducerSnapshot {
+        param(
+            [Parameter(Mandatory = $true)]$Run,
+            [Parameter(Mandatory = $true)]$DurableProofs
+        )
+        if ([int]$Run.schema_version -eq 1) { throw 'workflow_state_migration_required' }
+        if ([int]$Run.schema_version -ne 2) { throw 'workflow_state_invalid' }
+        Assert-DeclarativeWorkflowExecutionProjection -Run $Run -Plan $Run.normalized_snapshot
+        foreach ($node in $Run.nodes.Values) {
+            $dependenciesProven = @($node.depends_on | Where-Object {
+                    [string]$Run.nodes[[string]$_].state -cne 'succeeded' -or $null -eq $Run.nodes[[string]$_].completion_proof
+                }).Count -eq 0
+            $hasSession = -not [string]::IsNullOrWhiteSpace([string](Get-DeclarativeWorkflowValue $node 'agent_cli_session_id' ''))
+            $evidence = @($node.evidence_refs)
+            $proof = Get-DeclarativeWorkflowValue $node 'completion_proof' $null
+            switch ([string]$node.state) {
+                'pending' { if ([int]$node.attempt -ne 0 -or $hasSession -or $evidence.Count -ne 0 -or $null -ne $proof -or $dependenciesProven) { throw 'workflow_state_invalid' } }
+                'ready' { if ([int]$node.attempt -ne 0 -or $hasSession -or $evidence.Count -ne 0 -or $null -ne $proof -or -not $dependenciesProven) { throw 'workflow_state_invalid' } }
+                { $_ -in @('dispatching', 'blocked', 'failed') } { if ([int]$node.attempt -ne 1 -or $hasSession -or $evidence.Count -ne 0 -or $null -ne $proof -or -not $dependenciesProven) { throw 'workflow_state_invalid' } }
+                'succeeded' {
+                    $expectedEvidence = "workflow-ack:$($Run.run_id):$($node.node_id)"
+                    if ([int]$node.attempt -ne 1 -or -not $hasSession -or $evidence.Count -ne 1 -or [string]$evidence[0] -cne $expectedEvidence -or $null -eq $proof -or
+                        [string]$proof.run_id -cne [string]$Run.run_id -or [string]$proof.node_id -cne [string]$node.node_id -or
+                        [string]$proof.idempotency_key -cne [string]$node.idempotency_key -or [string]$proof.generation_id -cne [string]$Run.generation_id -or
+                        [string]$proof.config_fingerprint -cne [string]$Run.config_fingerprint -or [string]$proof.workflow_fingerprint -cne [string]$Run.workflow_fingerprint -or
+                        [string]$proof.source_head -cne [string]$Run.source_head -or [string]$proof.pane_id -cne [string]$node.agent_cli_session_id -or
+                        [string]$proof.status -cne 'succeeded' -or [string]$proof.evidence_ref -cne $expectedEvidence -or -not $dependenciesProven) { throw 'workflow_state_invalid' }
+                    $external = @($DurableProofs.completion_acknowledgements | Where-Object {
+                            (ConvertTo-DeclarativeWorkflowCanonicalJson -Value $_) -ceq (ConvertTo-DeclarativeWorkflowCanonicalJson -Value $proof)
+                        })
+                    if ($external.Count -ne 1) { throw 'workflow_state_invalid' }
+                }
+                default { throw 'workflow_state_invalid' }
+            }
+        }
+        $cancellation = Get-DeclarativeWorkflowValue $Run 'cancellation_proof' $null
+        if ($null -ne $cancellation) {
+            $externalCancellation = @($DurableProofs.cancellation_proofs | Where-Object {
+                    (ConvertTo-DeclarativeWorkflowCanonicalJson -Value $_) -ceq (ConvertTo-DeclarativeWorkflowCanonicalJson -Value $cancellation)
+                })
+            if ($externalCancellation.Count -ne 1) { throw 'workflow_state_invalid' }
+        }
+        $journal = @(Get-DeclarativeWorkflowValue $Run 'cleanup_journal' @())
+        if ($journal.Count -ne 1 -or $null -eq $journal[0]) { throw 'workflow_state_invalid' }
+        $action = $journal[0]
+        $expectedCleanup = [ordered]@{
+            action_id       = 'release-run-lock'
+            kind            = 'release-run-lock'
+            idempotency_key = "$($Run.run_id):cleanup:release-run-lock"
+            resource_ref    = "workflow-run-lock:$($Run.run_id)"
+        }
+        foreach ($entry in $expectedCleanup.GetEnumerator()) {
+            if ([string](Get-DeclarativeWorkflowValue $action ([string]$entry.Key) '') -cne [string]$entry.Value) { throw 'workflow_state_invalid' }
+        }
+        $cleanupState = [string](Get-DeclarativeWorkflowValue $action 'state' '')
+        if ($cleanupState -notin @('pending', 'running', 'blocked', 'succeeded')) { throw 'workflow_state_invalid' }
+        $nodeOutcome = if ($null -ne $cancellation) { 'cancelled' } else {
+            $states = @($Run.nodes.Values | ForEach-Object { [string]$_.state })
+            if ($states -contains 'failed') { 'failed' }
+            elseif ($states -contains 'blocked') { 'blocked' }
+            elseif ($states -contains 'dispatching') { 'running' }
+            elseif (@($states | Where-Object { $_ -cne 'succeeded' }).Count -eq 0) { 'succeeded' }
+            elseif ($states -contains 'ready') {
+                if (@($Run.nodes.Values | Where-Object { [int]$_.attempt -gt 0 -or [string]$_.state -ceq 'succeeded' }).Count -gt 0) { 'running' } else { 'ready' }
+            } else { 'planned' }
+        }
+        $preserved = Get-DeclarativeWorkflowValue $Run 'cleanup_preserve_run_state' $null
+        if ($cleanupState -ceq 'pending') {
+            if ($null -ne $preserved) { throw 'workflow_state_invalid' }
+        } elseif ($null -ne $preserved) {
+            if ([string]$preserved -cne [string]$nodeOutcome) { throw 'workflow_state_invalid' }
+        } elseif ($nodeOutcome -cne 'succeeded') {
+            throw 'workflow_state_invalid'
+        }
+        if ([string]$Run.state -cne (Get-TestWorkflowDerivedState -Run $Run)) { throw 'workflow_state_invalid' }
+    }
+
+    function Invoke-TestWorkflowReducer {
+        param([Parameter(Mandatory = $true)]$Request)
+        if ([string]$Request.operation -ceq 'bootstrap') {
+            $plan = $Request.plan
+            $identity = $Request.identity
+            $nodes = [ordered]@{}
+            foreach ($definition in @($plan.nodes)) {
+                $contextPackRef = [string](Get-DeclarativeWorkflowValue $definition 'context_pack_ref' '')
+                if (-not [string]::IsNullOrWhiteSpace($contextPackRef) -and
+                    -not (Test-DeclarativeWorkflowBoundedReference -Value $contextPackRef)) {
+                    throw 'context_pack_ref must be a bounded reference'
+                }
+                $nodeId = [string]$definition.node_id
+                $nodes[$nodeId] = [ordered]@{
+                    node_id = $nodeId; state = if (@($definition.depends_on).Count -eq 0) { 'ready' } else { 'pending' }; attempt = 0
+                    idempotency_key = [string]$definition.idempotency_key; pane_ref = [string]$definition.pane_ref; action = [string]$definition.action
+                    depends_on = @($definition.depends_on); cleanup = [string]$definition.cleanup; evidence_refs = @()
+                }
+                if (Test-DeclarativeWorkflowFieldExists -InputObject $definition -Name 'context_pack_ref') {
+                    $nodes[$nodeId]['context_pack_ref'] = $definition.context_pack_ref
+                }
+            }
+            return [ordered]@{
+                schema_version = 2; workflow_id = [string]$plan.workflow_id; recipe_ref = [string]$plan.recipe_ref; run_id = [string]$identity.run_id; state = 'ready'
+                generation_id = [string]$identity.generation_id; config_fingerprint = [string]$identity.config_fingerprint; workflow_fingerprint = [string]$plan.workflow_fingerprint
+                source_head = [string]$identity.source_head; task_sha256 = [string]$identity.task_sha256; task_byte_count = [int64]$identity.task_byte_count
+                resolved_bindings = Copy-DeclarativeWorkflowValue $plan.resolved_bindings; normalized_snapshot = Copy-DeclarativeWorkflowValue $plan
+                node_order = @($plan.nodes | ForEach-Object { [string]$_.node_id }); nodes = $nodes
+                cleanup_journal = @([ordered]@{ action_id = 'release-run-lock'; kind = 'release-run-lock'; state = 'pending'; idempotency_key = "$($identity.run_id):cleanup:release-run-lock"; resource_ref = "workflow-run-lock:$($identity.run_id)" })
+                rollback_state = 'not_requested'
+            }
+        }
+        $run = Copy-DeclarativeWorkflowValue $Request.run
+        $event = $Request.event
+        $durableProofs = Copy-DeclarativeWorkflowValue $Request.durable_proofs
+        if ([string]$event.type -ceq 'acknowledge') {
+            $durableProofs.completion_acknowledgements = @($durableProofs.completion_acknowledgements) + @($event.acknowledgement)
+        } elseif ([string]$event.type -ceq 'cancel') {
+            $durableProofs.cancellation_proofs = @($durableProofs.cancellation_proofs) + @($event.cancellation)
+        }
+        Assert-TestWorkflowReducerSnapshot -Run $run -DurableProofs $durableProofs
+        $node = if (Test-DeclarativeWorkflowFieldExists -InputObject $event -Name 'node_id') { $run.nodes[[string]$event.node_id] } else { $null }
+        switch ([string]$event.type) {
+            'validate' { return $run }
+            'dispatch_intent' { $node.state = 'dispatching'; $node.attempt = 1 }
+            'block' { $node.state = 'blocked' }
+            'dispatch_failed' { $node.state = 'failed' }
+            'acknowledge' {
+                $ack = $event.acknowledgement
+                $node.state = 'succeeded'; $node.agent_cli_session_id = [string]$event.resolved_session_id
+                $node.evidence_refs = @([string]$ack.evidence_ref); $node.completion_proof = Copy-DeclarativeWorkflowValue $ack
+                foreach ($candidate in $run.nodes.Values) {
+                    if ([string]$candidate.state -cne 'pending') { continue }
+                    if (@($candidate.depends_on | Where-Object { [string]$run.nodes[[string]$_].state -cne 'succeeded' -or $null -eq $run.nodes[[string]$_].completion_proof }).Count -eq 0) {
+                        $candidate.state = 'ready'
+                    }
+                }
+            }
+            'cleanup_intent' {
+                $run.cleanup_journal[0].state = 'running'
+                if (Test-DeclarativeWorkflowFieldExists -InputObject $event -Name 'preserve_run_state') { $run.cleanup_preserve_run_state = [string]$event.preserve_run_state }
+            }
+            'cleanup_blocked' { $run.cleanup_journal[0].state = 'blocked' }
+            'cleanup_succeeded' { $run.cleanup_journal[0].state = 'succeeded' }
+            'cancel' { $run['cancellation_proof'] = Copy-DeclarativeWorkflowValue $event.cancellation }
+            default { throw 'workflow_state_invalid' }
+        }
+        $run.state = Get-TestWorkflowDerivedState -Run $run
+        Assert-TestWorkflowReducerSnapshot -Run $run -DurableProofs $durableProofs
+        return $run
     }
 
     function New-TestAcknowledgement {
@@ -72,6 +248,73 @@ BeforeAll {
         }
     }
 
+    function New-TestCancellationProof {
+        [ordered]@{
+            schema_version       = 1
+            run_id               = 'run-123'
+            idempotency_key      = 'run-123:cancel'
+            generation_id        = 'generation-123'
+            config_fingerprint   = ('sha256:' + ('a' * 64))
+            workflow_fingerprint = ('sha256:' + ('d' * 64))
+            source_head          = ('b' * 40)
+            status               = 'cancelled'
+            evidence_ref         = 'workflow-cancel:run-123'
+        }
+    }
+
+    function New-TestDurableProofs {
+        param(
+            [object[]]$CompletionAcknowledgements = @(),
+            [object[]]$CancellationProofs = @()
+        )
+        [ordered]@{
+            completion_acknowledgements = @($CompletionAcknowledgements)
+            cancellation_proofs         = @($CancellationProofs)
+        }
+    }
+
+    function New-TestDispatchedRun {
+        param([string]$NodeId = 'inspect', $Run = $null, $DurableProofs = $null)
+        if ($null -eq $Run) { $Run = New-TestRun }
+        if ($null -eq $DurableProofs) { $DurableProofs = New-TestDurableProofs }
+        Invoke-DeclarativeWorkflowTransition -Run $Run -Event ([ordered]@{ type = 'dispatch_intent'; node_id = $NodeId }) -DurableProofs $DurableProofs
+    }
+
+    function New-TestBlockedRun {
+        $run = New-TestDispatchedRun
+        Invoke-DeclarativeWorkflowTransition -Run $run -Event ([ordered]@{ type = 'block'; node_id = 'inspect' })
+    }
+
+    function New-TestFailedRun {
+        $run = New-TestDispatchedRun
+        Invoke-DeclarativeWorkflowTransition -Run $run -Event ([ordered]@{ type = 'dispatch_failed'; node_id = 'inspect' })
+    }
+
+    function New-TestSucceededInspectRun {
+        $run = New-TestDispatchedRun
+        $acknowledgement = New-TestAcknowledgement -NodeId 'inspect' -PaneId '%2'
+        Invoke-DeclarativeWorkflowTransition -Run $run -Event ([ordered]@{
+                type = 'acknowledge'; node_id = 'inspect'; resolved_session_id = '%2'; acknowledgement = $acknowledgement
+            })
+    }
+
+    function New-TestSucceededRun {
+        $inspectAcknowledgement = New-TestAcknowledgement -NodeId 'inspect' -PaneId '%2'
+        $run = New-TestSucceededInspectRun
+        $durableProofs = New-TestDurableProofs -CompletionAcknowledgements @($inspectAcknowledgement)
+        $run = New-TestDispatchedRun -NodeId 'verify' -Run $run -DurableProofs $durableProofs
+        $verifyAcknowledgement = New-TestAcknowledgement -NodeId 'verify' -PaneId '%3'
+        Invoke-DeclarativeWorkflowTransition -Run $run -Event ([ordered]@{
+                type = 'acknowledge'; node_id = 'verify'; resolved_session_id = '%3'; acknowledgement = $verifyAcknowledgement
+            }) -DurableProofs $durableProofs
+    }
+
+    function New-TestCancelledRun {
+        $run = New-TestRun
+        $cancellation = New-TestCancellationProof
+        Invoke-DeclarativeWorkflowTransition -Run $run -Event ([ordered]@{ type = 'cancel'; cancellation = $cancellation })
+    }
+
     function New-TestAcceptedReceipt {
         param(
             [Parameter(Mandatory = $true)][string]$NodeId,
@@ -89,6 +332,12 @@ BeforeAll {
 
 Describe 'TASK-659 declarative workflow runtime' -Tag 'unit' {
     BeforeEach {
+        Mock Invoke-DeclarativeWorkflowNativeReducerProcess {
+            param($RequestPath)
+            $request = [IO.File]::ReadAllText($RequestPath, [Text.UTF8Encoding]::new($false, $true)) |
+                ConvertFrom-WinsmuxJson -AsHashtable -Depth 100 -ErrorAction Stop
+            Invoke-TestWorkflowReducer -Request $request
+        }
         $script:testDeclarativeSessionName = 'winsmux-orchestra'
         Mock Get-PaneControlManifestEntries {
             @(
@@ -189,7 +438,7 @@ Describe 'TASK-659 declarative workflow runtime' -Tag 'unit' {
         [System.IO.File]::WriteAllBytes($path, [System.Text.UTF8Encoding]::new($false).GetBytes('日本語 task'))
 
         $input = Read-DeclarativeWorkflowTaskFile -Path $path
-        $run = New-DeclarativeWorkflowRun -Plan (New-TestWorkflowPlan) -RunId 'run-123' -GenerationId 'generation-123' -SourceHead ('b' * 40) -TaskInput $input
+        $run = New-DeclarativeWorkflowRun -Plan (New-TestWorkflowPlan) -RunId 'run-123' -GenerationId 'generation-123' -ConfigFingerprint ('sha256:' + ('a' * 64)) -SourceHead ('b' * 40) -TaskInput $input
         $json = $run | ConvertTo-Json -Depth 20
 
         $input.Text | Should -Be '日本語 task'
@@ -220,20 +469,36 @@ Set-StrictMode -Version Latest
 . $TeamPipelineScript
 $Error.Clear()
 
+function Invoke-DeclarativeWorkflowNativeReducerProcess {
+    param([string]$RequestPath)
+    $request = [IO.File]::ReadAllText($RequestPath, [Text.UTF8Encoding]::new($false, $true)) | ConvertFrom-Json
+    $definition = $request.plan.nodes[0]
+    return [ordered]@{
+        schema_version = 2; workflow_id = [string]$request.plan.workflow_id; recipe_ref = [string]$request.plan.recipe_ref; run_id = [string]$request.identity.run_id; state = 'ready'
+        generation_id = [string]$request.identity.generation_id; config_fingerprint = [string]$request.identity.config_fingerprint; workflow_fingerprint = [string]$request.plan.workflow_fingerprint
+        source_head = [string]$request.identity.source_head; task_sha256 = [string]$request.identity.task_sha256; task_byte_count = [int64]$request.identity.task_byte_count
+        resolved_bindings = $request.plan.resolved_bindings; normalized_snapshot = $request.plan; node_order = @([string]$definition.node_id)
+        nodes = [ordered]@{ inspect = [ordered]@{ node_id = 'inspect'; state = 'ready'; attempt = 0; idempotency_key = 'run-ps51:inspect'; pane_ref = 'implement'; action = 'operator-dispatch'; depends_on = @(); cleanup = 'retain'; evidence_refs = @() } }
+        cleanup_journal = @([ordered]@{ action_id = 'release-run-lock'; kind = 'release-run-lock'; state = 'pending'; idempotency_key = 'run-ps51:cleanup:release-run-lock'; resource_ref = 'workflow-run-lock:run-ps51' })
+        rollback_state = 'not_requested'
+    }
+}
+
 $taskInput = Read-DeclarativeWorkflowTaskFile -Path $TaskPath
 $plan = [ordered]@{
     schema_version = 1
     workflow_id = 'bugfix'
     recipe_ref = 'bugfix-two-slot'
-    config_fingerprint = ('sha256:' + ('a' * 64))
     workflow_fingerprint = ('sha256:' + ('d' * 64))
+    task_input = [ordered]@{ source = 'runtime-task-file'; privacy = 'digest-only' }
     resolved_bindings = [ordered]@{ implement = 'worker-1' }
     nodes = @(
         [ordered]@{ node_id = 'inspect'; pane_ref = 'implement'; action = 'operator-dispatch'; depends_on = @(); idempotency_key = 'run-ps51:inspect'; cleanup = 'retain' }
     )
-    cleanup_actions = @('release-run-lock')
+    resume_policy = [ordered]@{ mode = 'operator-confirmed'; reject_completed_runs = $true }
+    cleanup_policy = [ordered]@{ mode = 'compensating-actions'; on = @('cancel', 'failure', 'success'); actions = @('release-run-lock') }
 }
-$run = New-DeclarativeWorkflowRun -Plan $plan -RunId 'run-ps51' -GenerationId 'generation-ps51' -SourceHead ('b' * 40) -TaskInput $taskInput
+$run = New-DeclarativeWorkflowRun -Plan $plan -RunId 'run-ps51' -GenerationId 'generation-ps51' -ConfigFingerprint ('sha256:' + ('a' * 64)) -SourceHead ('b' * 40) -TaskInput $taskInput
 $instruction = New-TeamPipelineDeclarativeCompletionInstruction -Run $run -NodeId 'inspect' -SessionName 'workflow-ps51' -Target 'worker-1' -PaneId '%2' -Role 'implement'
 $mailboxCommand = @($instruction -split '\r?\n' | Where-Object { $_ -like 'winsmux mailbox-send *' })
 if ($mailboxCommand.Count -ne 1 -or $mailboxCommand[0] -notmatch "^winsmux mailbox-send '[^']+' '(?<payload>.+)'$") {
@@ -371,10 +636,19 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         $ambiguousAcknowledgements = @(Resolve-TeamPipelineDeclarativeAcknowledgement -Run $run -NodeId 'inspect' -ProjectDir $TestDrive -SessionName 'workflow-test')
         $ambiguousAcknowledgements.Count | Should -Be 2
         @($ambiguousAcknowledgements.pane_id | Sort-Object) | Should -Be @('%2', '%3')
-        $ambiguousRun = New-TestRun
-        $ambiguousRun.state = 'running'
-        $ambiguousRun.nodes.inspect.state = 'dispatching'
-        $ambiguousRun.nodes.inspect.attempt = 1
+
+        $cancellation = New-TestCancellationProof
+        Write-OrchestraLog -ProjectDir $TestDrive -SessionName 'workflow-test' -Event 'workflow.run.cancelled' -Data $cancellation -MaxBytes 1 -RetentionCount 5 | Out-Null
+        Write-OrchestraLog -ProjectDir $TestDrive -SessionName 'workflow-test' -Event 'workflow.run.cancelled' -Data $cancellation -MaxBytes 1 -RetentionCount 5 | Out-Null
+        $resolvedCancellations = @(Resolve-TeamPipelineDeclarativeCancellation -Run $run -ProjectDir $TestDrive -SessionName 'workflow-test')
+        $resolvedCancellations.Count | Should -Be 1
+        $resolvedCancellations[0].evidence_ref | Should -Be 'workflow-cancel:run-123'
+        $foreignCancellation = Copy-DeclarativeWorkflowValue $cancellation
+        $foreignCancellation.run_id = 'run-foreign'
+        Write-OrchestraLog -ProjectDir $TestDrive -SessionName 'workflow-test' -Event 'workflow.run.cancelled' -Data $foreignCancellation -MaxBytes 1 -RetentionCount 5 | Out-Null
+        @(Resolve-TeamPipelineDeclarativeCancellation -Run $run -ProjectDir $TestDrive -SessionName 'workflow-test').Count | Should -Be 1
+
+        $ambiguousRun = New-TestDispatchedRun
         $script:ambiguousDispatches = 0
         $ambiguousResult = Invoke-DeclarativeWorkflowResume -Run $ambiguousRun -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) `
             -SaveRun { param($candidate) } `
@@ -394,8 +668,8 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         $events[0] | Should -Be 'save:dispatching:pending'
         $events[1] | Should -Be 'dispatch:EXEC'
         $events[2] | Should -Be 'session:%2'
-        $events[3] | Should -Be 'save:succeeded:pending'
-        $events[4] | Should -Be 'save:succeeded:ready'
+        $events[3] | Should -Be 'save:succeeded:ready'
+        $events.Count | Should -Be 4
         @($events | Where-Object { $_ -like 'dispatch:*' }).Count | Should -Be 1
         $result.nodes.inspect.state | Should -Be 'succeeded'
         $result.nodes.inspect.attempt | Should -Be 1
@@ -433,7 +707,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
 
         $secretInput = New-TestTaskInput -Text 'git reset --hard SECRET_MARKER'
         $script:testDeclarativeSessionName = 'privacy-test'
-        $secretRun = New-DeclarativeWorkflowRun -Plan (New-TestWorkflowPlan) -RunId 'run-123' -GenerationId 'generation-123' -SourceHead ('b' * 40) -TaskInput $secretInput
+        $secretRun = New-DeclarativeWorkflowRun -Plan (New-TestWorkflowPlan) -RunId 'run-123' -GenerationId 'generation-123' -ConfigFingerprint ('sha256:' + ('a' * 64)) -SourceHead ('b' * 40) -TaskInput $secretInput
         $manifest = [PSCustomObject]@{ Panes = [ordered]@{ 'worker-1' = [ordered]@{ pane_id = '%2' } } }
         $capturedEvents = [Collections.Generic.List[object]]::new()
         $savedRuns = [Collections.Generic.List[string]]::new()
@@ -452,19 +726,25 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
     }
 
     It 'W09 W12 skips succeeded nodes and rejects terminal run resume' {
-        $run = New-TestRun
-        $run.nodes.inspect.state = 'succeeded'
+        $run = New-TestSucceededInspectRun
+        $inspectProofs = New-TestDurableProofs -CompletionAcknowledgements @((New-TestAcknowledgement -NodeId 'inspect' -PaneId '%2'))
         $script:dispatches = 0
-        $same = Invoke-DeclarativeWorkflowNode -Run $run -NodeId 'inspect' -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) -SaveRun { } -Dispatch { $script:dispatches++ } -ResolveSession { 'x' }
+        $same = Invoke-DeclarativeWorkflowNode -Run $run -NodeId 'inspect' -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) -SaveRun { } -Dispatch { $script:dispatches++ } -ResolveSession { 'x' } -DurableProofs $inspectProofs
         $same.nodes.inspect.state | Should -Be 'succeeded'
         $script:dispatches | Should -Be 0
 
-        foreach ($terminal in @('succeeded', 'cancelled', 'rolled_back')) {
-            $run.state = $terminal
-            { Invoke-DeclarativeWorkflowNode -Run $run -NodeId 'verify' -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) -SaveRun { } -Dispatch { } -ResolveSession { 'x' } } | Should -Throw '*terminal*'
-        }
-        $run = New-TestRun
-        $run.state = 'failed'
+        $run = New-TestSucceededRun
+        $allProofs = New-TestDurableProofs -CompletionAcknowledgements @(
+            (New-TestAcknowledgement -NodeId 'inspect' -PaneId '%2'),
+            (New-TestAcknowledgement -NodeId 'verify' -PaneId '%3')
+        )
+        { Invoke-DeclarativeWorkflowNode -Run $run -NodeId 'verify' -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) -SaveRun { } -Dispatch { } -ResolveSession { 'x' } -DurableProofs $allProofs } | Should -Throw '*terminal*'
+
+        $run = New-TestCancelledRun
+        $cancellationProofs = New-TestDurableProofs -CancellationProofs @((New-TestCancellationProof))
+        { Invoke-DeclarativeWorkflowNode -Run $run -NodeId 'inspect' -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) -SaveRun { } -Dispatch { } -ResolveSession { 'x' } -DurableProofs $cancellationProofs } | Should -Throw '*terminal*'
+
+        $run = New-TestFailedRun
         { Invoke-DeclarativeWorkflowNode -Run $run -NodeId 'inspect' -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) -SaveRun { } -Dispatch { $script:dispatches++ } -ResolveSession { '%2' } } | Should -Throw '*new operator-approved run*'
         $script:dispatches | Should -Be 0
     }
@@ -495,7 +775,8 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         $resolveSession = { param($paneId) $paneId }
 
         $afterInspect = Invoke-DeclarativeWorkflowNode -Run (New-TestRun) -NodeId 'inspect' -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) -SaveRun $save -Dispatch $dispatch -ResolveSession $resolveSession
-        $afterVerify = Invoke-DeclarativeWorkflowNode -Run $afterInspect -NodeId 'verify' -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) -SaveRun $save -Dispatch $dispatch -ResolveSession $resolveSession
+        $inspectProofs = New-TestDurableProofs -CompletionAcknowledgements @((New-TestAcknowledgement -NodeId 'inspect' -PaneId '%2'))
+        $afterVerify = Invoke-DeclarativeWorkflowNode -Run $afterInspect -NodeId 'verify' -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) -SaveRun $save -Dispatch $dispatch -ResolveSession $resolveSession -DurableProofs $inspectProofs
         $reloaded = Read-DeclarativeWorkflowRunState -ProjectDir $project -RunId 'run-123'
 
         $afterVerify.state | Should -Be 'succeeded'
@@ -504,10 +785,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
     }
 
     It 'W11 reconciles a durable ACK after the ACK-event cut without redispatch and advances only unfinished nodes' {
-        $run = New-TestRun
-        $run.state = 'running'
-        $run.nodes.inspect.state = 'dispatching'
-        $run.nodes.inspect.attempt = 1
+        $run = New-TestDispatchedRun
         $saved = [Collections.Generic.List[object]]::new()
         $requests = [Collections.Generic.List[object]]::new()
 
@@ -515,7 +793,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
             -SaveRun { param($candidate) $saved.Add((Copy-DeclarativeWorkflowValue $candidate)) | Out-Null } `
             -Dispatch { param($request) $requests.Add($request) | Out-Null; New-TestAcceptedReceipt -NodeId $request.node_id -PaneId '%3' } `
             -ResolveSession { param($paneId) $paneId } `
-            -ResolveAcknowledgement { param($candidate, $nodeId) New-TestAcknowledgement -NodeId $nodeId -PaneId '%2' }
+            -ResolveAcknowledgement { param($candidate, $nodeId) New-TestAcknowledgement -NodeId $nodeId -PaneId $(if ($nodeId -ceq 'inspect') { '%2' } else { '%3' }) }
 
         $result.state | Should -Be 'succeeded'
         $result.nodes.inspect.state | Should -Be 'succeeded'
@@ -529,11 +807,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
     }
 
     It 'W11 keeps a blocked node without ACK or registry evidence blocked with zero dispatches' {
-        $run = New-TestRun
-        $run.state = 'blocked'
-        $run.nodes.inspect.state = 'blocked'
-        $run.nodes.inspect.attempt = 1
-        $run.nodes.inspect.evidence_refs = @()
+        $run = New-TestBlockedRun
         $saved = [Collections.Generic.List[object]]::new()
         $script:w11Dispatches = 0
 
@@ -546,25 +820,19 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         $result.state | Should -Be 'blocked'
         $result.nodes.inspect.state | Should -Be 'blocked'
         $script:w11Dispatches | Should -Be 0
-        $saved[$saved.Count - 1].state | Should -Be 'blocked'
-        $saved[$saved.Count - 1].nodes.inspect.attempt | Should -Be 1
+        $saved.Count | Should -Be 0
 
-        $conflict = New-TestRun
-        $conflict.state = 'blocked'
-        $conflict.nodes.inspect.state = 'blocked'
-        $conflict.nodes.inspect.attempt = 1
-        $conflict.nodes.inspect.agent_cli_session_id = '%2'
-        $conflict.nodes.inspect.evidence_refs = @('workflow-ack:run-123:inspect')
+        $conflict = New-TestBlockedRun
         $conflictResult = Invoke-DeclarativeWorkflowResume -Run $conflict -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) `
             -SaveRun { param($candidate) } `
             -Dispatch { $script:w11Dispatches++; throw 'conflicting acknowledgement must not redispatch' } `
             -ResolveSession { param($paneId) $paneId } `
-            -ResolveAcknowledgement { New-TestAcknowledgement -NodeId 'inspect' -PaneId '%3' }
+            -ResolveAcknowledgement { @((New-TestAcknowledgement -NodeId 'inspect' -PaneId '%2'), (New-TestAcknowledgement -NodeId 'inspect' -PaneId '%3')) }
         $conflictResult.nodes.inspect.state | Should -Be 'blocked'
         $script:w11Dispatches | Should -Be 0
     }
 
-    It 'W11 skips a succeeded sibling without an additional effect when another node remains blocked' {
+    It 'W11 rejects an impossible succeeded sibling while another dependency remains blocked without effects' {
         $run = New-TestRun
         $run.state = 'blocked'
         $run.nodes.inspect.state = 'blocked'
@@ -577,25 +845,17 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         $run.nodes.verify.evidence_refs = @('evidence:verify')
         $script:w11Effects = 0
 
-        $result = Invoke-DeclarativeWorkflowResume -Run $run -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) `
-            -SaveRun { param($candidate) } `
-            -Dispatch { $script:w11Effects++; throw 'succeeded sibling must be skipped' } `
+        { Invoke-DeclarativeWorkflowResume -Run $run -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) `
+            -SaveRun { $script:w11Effects++ } `
+            -Dispatch { $script:w11Effects++ } `
             -ResolveSession { '' } `
-            -ResolveAcknowledgement { $null }
-
-        $result.state | Should -Be 'blocked'
-        $result.nodes.inspect.state | Should -Be 'blocked'
-        $result.nodes.verify.state | Should -Be 'succeeded'
+            -ResolveAcknowledgement { $null } } | Should -Throw '*workflow_state_invalid*'
         $script:w11Effects | Should -Be 0
     }
 
     It 'W11 wires resume through the reconciliation choke point for blocked evidence-free runs' {
         $script:w11ResumeCalls = 0
-        $script:w11WiredRun = New-TestRun
-        $script:w11WiredRun.state = 'blocked'
-        $script:w11WiredRun.nodes.inspect.state = 'blocked'
-        $script:w11WiredRun.nodes.inspect.attempt = 1
-        $script:w11WiredRun.nodes.inspect.evidence_refs = @()
+        $script:w11WiredRun = New-TestBlockedRun
         $taskFile = Join-Path $TestDrive 'resume-task.txt'
         [IO.File]::WriteAllText($taskFile, 'Implement TASK-659 safely.', [Text.UTF8Encoding]::new($false))
 
@@ -607,7 +867,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         Mock Assert-TeamPipelineDeclarativeRunLockAdmission { }
         Mock Save-DeclarativeWorkflowRunState { }
         Mock Invoke-DeclarativeWorkflowResume {
-            param($Run, $TaskInput, $Confirmation, $SaveRun, $Dispatch, $ResolveSession, $ResolveAcknowledgement, $ValidateSnapshot)
+            param($Run, $TaskInput, $Confirmation, $SaveRun, $Dispatch, $ResolveSession, $ResolveAcknowledgement, $ResolveCancellation, $ValidateSnapshot)
             $script:w11ResumeCalls++
             & $SaveRun $Run
             return $Run
@@ -637,7 +897,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
                 New-TestAcceptedReceipt -NodeId $request.node_id -PaneId $paneId
             } `
             -ResolveSession { param($paneId) $paneId } `
-            -ResolveAcknowledgement { throw 'a fresh start must not reconcile an in-flight node' } `
+            -ResolveAcknowledgement { param($candidate, $nodeId) New-TestAcknowledgement -NodeId $nodeId -PaneId $(if ($nodeId -ceq 'inspect') { '%2' } else { '%3' }) } `
             -ReleaseLock {
                 param($path)
                 $releases.Add($path) | Out-Null
@@ -724,16 +984,24 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
     It 'C07 recovers one pending terminal action after validation and preserves its terminal outcome' {
         foreach ($terminalState in @('succeeded', 'failed', 'cancelled')) {
             $project = Join-Path $TestDrive "terminal-recovery-$terminalState"
-            $run = New-TestRun
-            $run.state = $terminalState
-            $run.nodes.inspect.state = if ($terminalState -eq 'failed') { 'failed' } else { 'succeeded' }
+            $run = switch ($terminalState) {
+                'succeeded' { New-TestSucceededRun }
+                'failed' { New-TestFailedRun }
+                'cancelled' { New-TestCancelledRun }
+            }
             $lock = New-DeclarativeWorkflowRunLock -ProjectDir $project -Run $run
             $script:terminalRecoverySnapshotCalls = 0
             $releases = [Collections.Generic.List[string]]::new()
+            $resolveAcknowledgement = {
+                param($candidate, $nodeId)
+                New-TestAcknowledgement -NodeId $nodeId -PaneId $(if ($nodeId -ceq 'inspect') { '%2' } else { '%3' })
+            }
+            $resolveCancellation = { New-TestCancellationProof }
 
             $after = Invoke-TeamPipelineDeclarativeTerminalRecovery -ProjectDir $project -Run $run -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) `
                 -ValidateSnapshot { param($candidate) $script:terminalRecoverySnapshotCalls++ } `
                 -SaveRun { param($candidate) } `
+                -ResolveAcknowledgement $resolveAcknowledgement -ResolveCancellation $resolveCancellation `
                 -ReleaseLock {
                     param($path)
                     $releases.Add($path) | Out-Null
@@ -761,9 +1029,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
                 [PSCustomObject]@{ Name = 'malformed'; Configure = { param($run) $run.cleanup_journal = @([ordered]@{ state = 'pending' }) } },
                 [PSCustomObject]@{ Name = 'multiple'; Configure = { param($run) $run.cleanup_journal = @($run.cleanup_journal[0], (Copy-DeclarativeWorkflowValue $run.cleanup_journal[0])) } }
             )) {
-            $run = New-TestRun
-            $run.state = 'failed'
-            $run.nodes.inspect.state = 'failed'
+            $run = New-TestFailedRun
             & $case.Configure $run
             $before = $run | ConvertTo-Json -Depth 40 -Compress
             $script:terminalRecoveryEffects = 0
@@ -792,9 +1058,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
                 [PSCustomObject]@{ Name = 'malformed'; Configure = { param($run) $run.cleanup_journal = @([ordered]@{ state = 'pending' }) } },
                 [PSCustomObject]@{ Name = 'multiple'; Configure = { param($run) $run.cleanup_journal = @($run.cleanup_journal[0], (Copy-DeclarativeWorkflowValue $run.cleanup_journal[0])) } }
             )) {
-            $script:terminalResumeRun = New-TestRun
-            $script:terminalResumeRun.state = 'failed'
-            $script:terminalResumeRun.nodes.inspect.state = 'failed'
+            $script:terminalResumeRun = New-TestFailedRun
             & $case.Configure $script:terminalResumeRun
             $before = $script:terminalResumeRun | ConvertTo-Json -Depth 40 -Compress
             $script:terminalResumeSaveCount = 0
@@ -821,7 +1085,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
                     -ConfigFingerprint ('sha256:' + ('a' * 64)) -SourceHead ('b' * 40) -TaskFile $taskFile -ProjectDir $TestDrive
             } | Should -Throw -Because "terminal cleanup state '$($case.Name)' is not admissible for recovery"
 
-            $script:terminalResumeSnapshotCount | Should -Be 1
+            $script:terminalResumeSnapshotCount | Should -Be 0
             $script:terminalResumeSaveCount | Should -Be 0
             $script:terminalResumeDispatchCount | Should -Be 0
             ($script:terminalResumeRun | ConvertTo-Json -Depth 40 -Compress) | Should -Be $before
@@ -830,11 +1094,15 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
 
     It 'C01 C02 C04 releases only an owned run lock once after persisted intent' {
         $project = Join-Path $TestDrive 'project'
-        $run = New-TestRun
+        $run = New-TestSucceededRun
+        $resolveAcknowledgement = {
+            param($candidate, $nodeId)
+            New-TestAcknowledgement -NodeId $nodeId -PaneId $(if ($nodeId -ceq 'inspect') { '%2' } else { '%3' })
+        }
         $lock = New-DeclarativeWorkflowRunLock -ProjectDir $project -Run $run
         $events = [Collections.Generic.List[string]]::new()
-        $first = Invoke-DeclarativeWorkflowCleanup -ProjectDir $project -Run $run -SaveRun { param($candidate) $events.Add("save:$($candidate.cleanup_journal[0].state)") | Out-Null } -ReleaseLock { param($path) $events.Add("release:$path") | Out-Null; Remove-Item -LiteralPath $path }
-        $second = Invoke-DeclarativeWorkflowCleanup -ProjectDir $project -Run $first -SaveRun { param($candidate) $events.Add("save:$($candidate.cleanup_journal[0].state)") | Out-Null } -ReleaseLock { $events.Add('release:again') | Out-Null }
+        $first = Invoke-DeclarativeWorkflowCleanup -ProjectDir $project -Run $run -SaveRun { param($candidate) $events.Add("save:$($candidate.cleanup_journal[0].state)") | Out-Null } -ReleaseLock { param($path) $events.Add("release:$path") | Out-Null; Remove-Item -LiteralPath $path } -ResolveAcknowledgement $resolveAcknowledgement
+        $second = Invoke-DeclarativeWorkflowCleanup -ProjectDir $project -Run $first -SaveRun { param($candidate) $events.Add("save:$($candidate.cleanup_journal[0].state)") | Out-Null } -ReleaseLock { $events.Add('release:again') | Out-Null } -ResolveAcknowledgement $resolveAcknowledgement
 
         $events[0] | Should -Be 'save:running'
         @($events | Where-Object { $_ -like 'release:*' }).Count | Should -Be 1
@@ -844,19 +1112,26 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
 
     It 'C03 C05 blocks ambiguous or mismatched cleanup without repeating release' {
         $project = Join-Path $TestDrive 'blocked-project'
-        $run = New-TestRun
-        $run.cleanup_journal[0].state = 'running'
+        $resolveAcknowledgement = {
+            param($candidate, $nodeId)
+            New-TestAcknowledgement -NodeId $nodeId -PaneId $(if ($nodeId -ceq 'inspect') { '%2' } else { '%3' })
+        }
+        $completionProofs = New-TestDurableProofs -CompletionAcknowledgements @(
+            (New-TestAcknowledgement -NodeId 'inspect' -PaneId '%2'),
+            (New-TestAcknowledgement -NodeId 'verify' -PaneId '%3')
+        )
+        $run = Invoke-DeclarativeWorkflowTransition -Run (New-TestSucceededRun) -Event ([ordered]@{ type = 'cleanup_intent' }) -DurableProofs $completionProofs
         $script:releases = 0
-        $ambiguous = Invoke-DeclarativeWorkflowCleanup -ProjectDir $project -Run $run -SaveRun { } -ReleaseLock { $script:releases++ }
+        $ambiguous = Invoke-DeclarativeWorkflowCleanup -ProjectDir $project -Run $run -SaveRun { } -ReleaseLock { $script:releases++ } -ResolveAcknowledgement $resolveAcknowledgement
         $ambiguous.cleanup_journal[0].state | Should -Be 'blocked'
         $script:releases | Should -Be 0
 
-        $run = New-TestRun
+        $run = New-TestSucceededRun
         $lock = New-DeclarativeWorkflowRunLock -ProjectDir $project -Run $run
         $payload = Get-Content -LiteralPath $lock -Raw | ConvertFrom-Json
         $payload.source_head = 'c' * 40
         [IO.File]::WriteAllText($lock, ($payload | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
-        $blocked = Invoke-DeclarativeWorkflowCleanup -ProjectDir $project -Run $run -SaveRun { } -ReleaseLock { $script:releases++ }
+        $blocked = Invoke-DeclarativeWorkflowCleanup -ProjectDir $project -Run $run -SaveRun { } -ReleaseLock { $script:releases++ } -ResolveAcknowledgement $resolveAcknowledgement
         $blocked.cleanup_journal[0].state | Should -Be 'blocked'
         $script:releases | Should -Be 0
         Test-Path -LiteralPath $lock | Should -BeTrue
@@ -867,7 +1142,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         [IO.Directory]::CreateDirectory($runsRoot) | Out-Null
         [IO.Directory]::CreateDirectory($externalRunRoot) | Out-Null
         $externalLock = Join-Path $externalRunRoot 'run.lock'
-        $junctionRun = New-TestRun
+        $junctionRun = New-TestSucceededRun
         $junctionPayload = [ordered]@{
             run_id = $junctionRun.run_id
             generation_id = $junctionRun.generation_id
@@ -883,7 +1158,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
                 throw "Junction fixture creation failed explicitly: $($_.Exception.Message)"
             }
             [bool]($junction.Attributes -band [IO.FileAttributes]::ReparsePoint) | Should -BeTrue
-            $junctionBlocked = Invoke-DeclarativeWorkflowCleanup -ProjectDir $junctionProject -Run $junctionRun -SaveRun { } -ReleaseLock { $script:releases++; Remove-Item -LiteralPath $args[0] }
+            $junctionBlocked = Invoke-DeclarativeWorkflowCleanup -ProjectDir $junctionProject -Run $junctionRun -SaveRun { } -ReleaseLock { $script:releases++; Remove-Item -LiteralPath $args[0] } -ResolveAcknowledgement $resolveAcknowledgement
             $junctionBlocked.cleanup_journal[0].state | Should -Be 'blocked'
             $script:releases | Should -Be 0
             Test-Path -LiteralPath $externalLock -PathType Leaf | Should -BeTrue
@@ -955,12 +1230,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         @(Resolve-DeclarativeWorkflowAcknowledgementCandidates -Run $run -NodeId 'inspect' -Acknowledgements @($first, $conflict)).Count | Should -Be 2
         @(Resolve-DeclarativeWorkflowAcknowledgementCandidates -Run $run -NodeId 'inspect' -Acknowledgements @($unknown)).Count | Should -Be 1
 
-        $blocked = Invoke-DeclarativeWorkflowResume -Run ([ordered]@{
-                schema_version = $run.schema_version; workflow_id = $run.workflow_id; recipe_ref = $run.recipe_ref; run_id = $run.run_id
-                state = 'blocked'; generation_id = $run.generation_id; config_fingerprint = $run.config_fingerprint; workflow_fingerprint = $run.workflow_fingerprint
-                source_head = $run.source_head; task_sha256 = $run.task_sha256; task_byte_count = $run.task_byte_count; resolved_bindings = $run.resolved_bindings
-                normalized_snapshot = $run.normalized_snapshot; nodes = $run.nodes; cleanup_journal = $run.cleanup_journal; rollback_state = $run.rollback_state
-            }) -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) -SaveRun { } -Dispatch { throw 'must not dispatch' } -ResolveSession { param($paneId) $paneId } `
+        $blocked = Invoke-DeclarativeWorkflowResume -Run (New-TestBlockedRun) -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) -SaveRun { } -Dispatch { throw 'must not dispatch' } -ResolveSession { param($paneId) $paneId } `
             -ResolveAcknowledgement { @($first, $conflict) }
         $blocked.state | Should -Be 'blocked'
     }
@@ -976,10 +1246,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
     }
 
     It 'W20 persists workflow fingerprint and rejects a workflow-only resume mismatch before dispatch' {
-        $run = New-TestRun
-        $run.state = 'blocked'
-        $run.nodes.inspect.state = 'blocked'
-        $run.nodes.inspect.attempt = 1
+        $run = New-TestBlockedRun
         $before = $run | ConvertTo-Json -Depth 40 -Compress
         $script:workflowEffects = 0
 
@@ -1070,12 +1337,16 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
     It 'C07 preserves terminal success failure and cancel outcomes while releasing the lock exactly once' {
         foreach ($terminalState in @('succeeded', 'failed', 'cancelled')) {
             $project = Join-Path $TestDrive "terminal-cleanup-$terminalState"
-            $run = New-TestRun
-            $run.state = $terminalState
-            $run.nodes.inspect.state = if ($terminalState -eq 'failed') { 'failed' } else { 'succeeded' }
+            $run = switch ($terminalState) {
+                'succeeded' { New-TestSucceededRun }
+                'failed' { New-TestFailedRun }
+                'cancelled' { New-TestCancelledRun }
+            }
             $lock = New-DeclarativeWorkflowRunLock -ProjectDir $project -Run $run
             $releases = [Collections.Generic.List[string]]::new()
-            $after = Invoke-DeclarativeWorkflowTerminalCleanup -ProjectDir $project -Run $run -SaveRun { } -ReleaseLock {
+            $after = Invoke-DeclarativeWorkflowTerminalCleanup -ProjectDir $project -Run $run -SaveRun { } `
+                -ResolveAcknowledgement { param($candidate, $nodeId) New-TestAcknowledgement -NodeId $nodeId -PaneId $(if ($nodeId -ceq 'inspect') { '%2' } else { '%3' }) } `
+                -ResolveCancellation { New-TestCancellationProof } -ReleaseLock {
                 param($path)
                 $releases.Add($path) | Out-Null
                 Remove-Item -LiteralPath $path
@@ -1090,9 +1361,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
 
     It 'C07 resumes a terminal crash-cut cleanup once and blocks an ambiguous running cleanup without rewriting terminal outcome' {
         $project = Join-Path $TestDrive 'terminal-cleanup-crash-cut'
-        $run = New-TestRun
-        $run.state = 'failed'
-        $run.nodes.inspect.state = 'failed'
+        $run = New-TestFailedRun
         $lock = New-DeclarativeWorkflowRunLock -ProjectDir $project -Run $run
         $resumeReleases = [Collections.Generic.List[string]]::new()
         $afterCrash = Invoke-DeclarativeWorkflowTerminalCleanup -ProjectDir $project -Run $run -SaveRun { } -ReleaseLock {
@@ -1103,10 +1372,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         $afterCrash.state | Should -Be 'failed'
         $resumeReleases.Count | Should -Be 1
 
-        $ambiguous = New-TestRun
-        $ambiguous.state = 'failed'
-        $ambiguous.nodes.inspect.state = 'failed'
-        $ambiguous.cleanup_journal[0].state = 'running'
+        $ambiguous = Invoke-DeclarativeWorkflowTransition -Run (New-TestFailedRun) -Event ([ordered]@{ type = 'cleanup_intent'; preserve_run_state = 'failed' })
         $blocked = Invoke-DeclarativeWorkflowTerminalCleanup -ProjectDir $project -Run $ambiguous -SaveRun { } -ReleaseLock { throw 'must not repeat' }
         $blocked.state | Should -Be 'failed'
         $blocked.cleanup_journal[0].state | Should -Be 'blocked'
@@ -1114,13 +1380,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
 
     It 'V01 carries an ordered bounded verification envelope from durable dependency evidence into the existing verify prompt' {
         $script:testDeclarativeSessionName = 'verification-session'
-        $run = New-TestRun
-        $run.state = 'running'
-        $run.nodes.inspect.state = 'succeeded'
-        $run.nodes.inspect.attempt = 1
-        $run.nodes.inspect.agent_cli_session_id = '%2'
-        $run.nodes.inspect.evidence_refs = @('workflow-ack:run-123:inspect')
-        $run.nodes.verify.state = 'ready'
+        $run = New-TestSucceededInspectRun
         $manifest = [PSCustomObject]@{
             Panes = [ordered]@{
                 'worker-1' = [ordered]@{ pane_id = '%2'; role = 'Builder'; builder_worktree_path = 'C:\\builder-worktree' }
@@ -1145,7 +1405,8 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
                 $script:verificationRequest = Copy-DeclarativeWorkflowValue $request
                 Invoke-TeamPipelineDeclarativeDispatch -Request $request -Run $candidateRun -Manifest $manifest -ProjectDir $TestDrive -SessionName 'verification-session'
             } `
-            -ResolveSession { param($paneId) $paneId }
+            -ResolveSession { param($paneId) $paneId } `
+            -DurableProofs (New-TestDurableProofs -CompletionAcknowledgements @((New-TestAcknowledgement -NodeId 'inspect' -PaneId '%2')))
 
         $after.nodes.verify.state | Should -Be 'succeeded'
         $script:verificationRequest.context_pack_ref | Should -Be 'review-pack'
@@ -1159,9 +1420,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
     }
 
     It 'V01 blocks a verification dispatch before acknowledgement when the dependency producer binding or bounded context is missing' {
-        $run = New-TestRun
-        $run.nodes.inspect.state = 'succeeded'
-        $run.nodes.inspect.evidence_refs = @('workflow-ack:run-123:inspect')
+        $run = New-TestSucceededInspectRun
         $run.resolved_bindings.Remove('implement')
         $manifest = [PSCustomObject]@{ Panes = [ordered]@{ 'worker-2' = [ordered]@{ pane_id = '%3'; role = 'Reviewer' } } }
         $request = [PSCustomObject]@{
@@ -1179,9 +1438,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
     }
 
     It 'V01 blocks an unbounded context value before it can become verification prompt content' {
-        $run = New-TestRun
-        $run.nodes.inspect.state = 'succeeded'
-        $run.nodes.inspect.evidence_refs = @('workflow-ack:run-123:inspect')
+        $run = New-TestSucceededInspectRun
         $run.nodes.verify.context_pack_ref = "context-pack:RAW_OUTPUT_MARKER`nnot-a-reference"
         $manifest = [PSCustomObject]@{
             Panes = [ordered]@{
@@ -1208,7 +1465,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         $plan.nodes[1].context_pack_ref = "context-pack:RAW_OUTPUT_MARKER`nnot-a-reference"
 
         {
-            New-DeclarativeWorkflowRun -Plan $plan -RunId 'run-123' -GenerationId 'generation-123' -SourceHead ('b' * 40) -TaskInput (New-TestTaskInput)
+            New-DeclarativeWorkflowRun -Plan $plan -RunId 'run-123' -GenerationId 'generation-123' -ConfigFingerprint ('sha256:' + ('a' * 64)) -SourceHead ('b' * 40) -TaskInput (New-TestTaskInput)
         } | Should -Throw '*bounded reference*'
     }
 
@@ -1428,17 +1685,16 @@ future_state:
                 [PSCustomObject]@{ Name = 'matching-lock'; Setup = { param($project, $run) New-DeclarativeWorkflowRunLock -ProjectDir $project -Run $run | Out-Null } ; ExpectedAdvance = 1; ExpectedLock = $true },
                 [PSCustomObject]@{
                     Name = 'missing-lock-after-effect'
-                    Setup = { param($project, $run) $run.nodes.inspect.attempt = 1; $run.nodes.inspect.state = 'dispatching'; Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $run | Out-Null }
+                    Setup = { param($project, $run) $dispatched = New-TestDispatchedRun -Run $run; Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $dispatched | Out-Null }
                     ExpectedAdvance = 0; ExpectedLock = $false
                 },
                 [PSCustomObject]@{
                     Name = 'mismatched-lock-after-effect'
                     Setup = {
                         param($project, $run)
-                        $run.nodes.inspect.attempt = 1
-                        $run.nodes.inspect.state = 'dispatching'
-                        Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $run | Out-Null
-                        $lock = New-DeclarativeWorkflowRunLock -ProjectDir $project -Run $run
+                        $dispatched = New-TestDispatchedRun -Run $run
+                        Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $dispatched | Out-Null
+                        $lock = New-DeclarativeWorkflowRunLock -ProjectDir $project -Run $dispatched
                         $payload = [IO.File]::ReadAllText($lock) | ConvertFrom-Json
                         $payload.source_head = ('c' * 40)
                         [IO.File]::WriteAllText($lock, ($payload | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
@@ -1601,5 +1857,41 @@ while (`$true) { Start-Sleep -Seconds 1 }
         $script:invocationBusyObserved | Should -BeTrue
         $after = Enter-DeclarativeWorkflowInvocationLease -ProjectDir $project -RunId 'run-123'
         $after.Dispose()
+    }
+
+    It 'H01 routes all workflow state changes through the native Rust reducer and creates only schema v2 snapshots' {
+        Get-Command Invoke-DeclarativeWorkflowStateReducer -ErrorAction SilentlyContinue | Should -Not -BeNullOrEmpty
+        $run = New-TestRun
+        $run.schema_version | Should -Be 2
+        $run.nodes.inspect.state | Should -Be 'ready'
+        $run.nodes.verify.state | Should -Be 'pending'
+    }
+
+    It 'H02 rejects a legacy v1 snapshot before save dispatch or cleanup effects' {
+        $run = New-TestRun
+        $run.schema_version = 1
+        $script:h02Effects = 0
+        {
+            Invoke-DeclarativeWorkflowResume -Run $run -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) `
+                -SaveRun { $script:h02Effects++ } -Dispatch { $script:h02Effects++ } `
+                -ResolveSession { '%2' } -ResolveAcknowledgement { New-TestAcknowledgement -NodeId 'inspect' -PaneId '%2' }
+        } | Should -Throw '*workflow_state_migration_required*'
+        $script:h02Effects | Should -Be 0
+    }
+
+    It 'H03 does not release a dependent from a forged succeeded state without an exact completion proof' {
+        $run = New-TestRun
+        $run.nodes.inspect.state = 'succeeded'
+        $run.nodes.inspect.attempt = 1
+        $run.nodes.inspect.agent_cli_session_id = '%2'
+        $run.nodes.inspect.evidence_refs = @('workflow-ack:run-123:inspect')
+        $script:h03Effects = 0
+        {
+            Invoke-DeclarativeWorkflowResume -Run $run -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) `
+                -SaveRun { $script:h03Effects++ } -Dispatch { $script:h03Effects++ } `
+                -ResolveSession { '%2' } -ResolveAcknowledgement { $null }
+        } | Should -Throw '*workflow_state_invalid*'
+        $script:h03Effects | Should -Be 0
+        $run.nodes.verify.state | Should -Be 'pending'
     }
 }
