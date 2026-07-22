@@ -864,6 +864,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         Mock Read-TeamPipelineManifest { [PSCustomObject]@{ Session = [ordered]@{ name = 'w11-session'; generation_id = 'generation-123' }; Panes = [ordered]@{} } }
         Mock Get-TeamPipelineSessionName { 'w11-session' }
         Mock Get-TeamPipelineDeclarativeProjectHead { 'b' * 40 }
+        Mock Resolve-TeamPipelineDeclarativeRuntimeLease { param($Label) [PSCustomObject]@{ label = [string]$Label; pane_id = '%2' } }
         Mock Assert-TeamPipelineDeclarativeRunLockAdmission { }
         Mock Save-DeclarativeWorkflowRunState { }
         Mock Invoke-DeclarativeWorkflowResume {
@@ -964,6 +965,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         Mock Save-DeclarativeWorkflowRunState { }
         Mock Read-TeamPipelineManifest { [PSCustomObject]@{ Session = [ordered]@{ name = 'start-session'; generation_id = 'generation-123' }; Panes = [ordered]@{} } }
         Mock Get-TeamPipelineSessionName { 'start-session' }
+        Mock Resolve-TeamPipelineDeclarativeRuntimeLease { param($Label) [PSCustomObject]@{ label = [string]$Label; pane_id = '%2' } }
         Mock Invoke-TeamPipelineDeclarativeRunAdvancement {
             $completed = Copy-DeclarativeWorkflowValue $script:startRouteRun
             $completed.state = 'succeeded'
@@ -1077,6 +1079,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
             Mock Read-TeamPipelineManifest { [PSCustomObject]@{ Session = [ordered]@{ name = 'terminal-session'; generation_id = 'generation-123' }; Panes = [ordered]@{} } }
             Mock Get-TeamPipelineSessionName { 'terminal-session' }
             Mock Get-TeamPipelineDeclarativeProjectHead { 'b' * 40 }
+            Mock Resolve-TeamPipelineDeclarativeRuntimeLease { param($Label) [PSCustomObject]@{ label = [string]$Label; pane_id = '%2' } }
             Mock Save-DeclarativeWorkflowRunState { $script:terminalResumeSaveCount++ }
             Mock Invoke-TeamPipelineDeclarativeDispatch { $script:terminalResumeDispatchCount++; throw 'terminal recovery must not dispatch' }
 
@@ -1293,6 +1296,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
             [PSCustomObject]@{ Session = [ordered]@{ name = 'k01-session'; generation_id = $script:k01ManifestGeneration }; Panes = [ordered]@{} }
         }
         Mock Get-TeamPipelineSessionName { 'k01-session' }
+        Mock Resolve-TeamPipelineDeclarativeRuntimeLease { param($Label) [PSCustomObject]@{ label = [string]$Label; pane_id = '%2' } }
         Mock Assert-TeamPipelineDeclarativeRunLockAdmission { $script:k01LockAdmissions++; Join-Path $TestDrive 'k01.lock' }
         Mock Save-DeclarativeWorkflowRunState { $script:k01Saves++ }
         Mock Invoke-TeamPipelineDeclarativeDispatch { $script:k01Dispatches++; throw 'K01 rejection must not dispatch' }
@@ -1345,6 +1349,139 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
                 $script:k01Cleanups | Should -Be $beforeCounts[4] -Because $case.Name
                 ($script:k01Run | ConvertTo-Json -Depth 40 -Compress) | Should -Be $before -Because $case.Name
             }
+        }
+    }
+
+    It 'M03 rejects public start with an unresolved live binding before state lock dispatch or cleanup effects' {
+        $project = Join-Path $TestDrive 'live-binding-start-reject'
+        $taskFile = Join-Path $TestDrive 'live-binding-start-task.txt'
+        [IO.File]::WriteAllText($taskFile, 'Implement TASK-659 safely.', [Text.UTF8Encoding]::new($false))
+        $workspacePlan = [ordered]@{
+            config_fingerprint = ('sha256:' + ('a' * 64))
+            resolved_bindings  = [ordered]@{ implement = 'worker-1'; verify = 'worker-2' }
+            workflow           = (New-TestWorkflowPlan)
+        }
+        $script:m03StateWrites = 0
+        $script:m03LockWrites = 0
+        $script:m03Dispatches = 0
+        $script:m03Cleanups = 0
+        $script:m03ResolvedLabels = [Collections.Generic.List[string]]::new()
+
+        Mock Get-TeamPipelineDeclarativeProjectHead { 'b' * 40 }
+        Mock Read-TeamPipelineManifest { [PSCustomObject]@{ Session = [ordered]@{ name = 'm03-session'; generation_id = 'generation-123' }; Panes = [ordered]@{} } }
+        Mock Get-TeamPipelineSessionName { 'm03-session' }
+        Mock Invoke-TeamPipelineWorkspacePlanOnce { Copy-DeclarativeWorkflowValue $workspacePlan }
+        Mock Resolve-TeamPipelineDeclarativeRuntimeLease {
+            param($Label)
+            $script:m03ResolvedLabels.Add([string]$Label) | Out-Null
+            if ([string]$Label -ceq 'worker-1') { return [PSCustomObject]@{ label = 'worker-1'; pane_id = '%2' } }
+            return $null
+        }
+        Mock Save-DeclarativeWorkflowRunState { $script:m03StateWrites++ }
+        Mock New-DeclarativeWorkflowRunLock { $script:m03LockWrites++; Join-Path $project 'synthetic-run.lock' }
+        Mock Invoke-TeamPipelineDeclarativeRunAdvancement { $script:m03Dispatches++; throw 'unresolved admission must not reach advancement' }
+        Mock Invoke-DeclarativeWorkflowCleanup { $script:m03Cleanups++; throw 'unresolved admission must not reach cleanup' }
+
+        {
+            Invoke-TeamPipelineDeclarativeWorkflow -Action start -RecipeId 'bugfix-two-slot' -WorkflowId 'bugfix' `
+                -RunId 'run-123' -GenerationId 'generation-123' -ConfigFingerprint ('sha256:' + ('a' * 64)) `
+                -SourceHead ('b' * 40) -TaskFile $taskFile -ProjectDir $project
+        } | Should -Throw '*workflow_live_binding_unavailable*'
+
+        $script:m03ResolvedLabels | Should -Contain 'worker-2'
+        $script:m03StateWrites | Should -Be 0
+        $script:m03LockWrites | Should -Be 0
+        $script:m03Dispatches | Should -Be 0
+        $script:m03Cleanups | Should -Be 0
+        Test-Path -LiteralPath (Join-Path $project '.winsmux\workflow-runs\run-123\state.json') -PathType Leaf | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $project '.winsmux\workflow-runs\run-123\run.lock') -PathType Leaf | Should -BeFalse
+    }
+
+    It 'M05 rejects public resume with an unresolved live binding without changing existing state or lock bytes' {
+        $project = Join-Path $TestDrive 'live-binding-resume-reject'
+        $taskFile = Join-Path $TestDrive 'live-binding-resume-task.txt'
+        [IO.File]::WriteAllText($taskFile, 'Implement TASK-659 safely.', [Text.UTF8Encoding]::new($false))
+        $run = New-TestBlockedRun
+        Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $run | Out-Null
+        $lockPath = New-DeclarativeWorkflowRunLock -ProjectDir $project -Run $run
+        $statePath = Resolve-DeclarativeWorkflowOwnedRunPath -ProjectDir $project -RunId 'run-123' -LeafName 'state.json'
+        $stateBytesBefore = [Convert]::ToBase64String([IO.File]::ReadAllBytes($statePath))
+        $lockBytesBefore = [Convert]::ToBase64String([IO.File]::ReadAllBytes($lockPath))
+        $workspacePlan = [ordered]@{
+            config_fingerprint = ('sha256:' + ('a' * 64))
+            resolved_bindings  = [ordered]@{ implement = 'worker-1'; verify = 'worker-2' }
+            workflow           = (New-TestWorkflowPlan)
+        }
+        $script:m05Saves = 0
+        $script:m05Dispatches = 0
+        $script:m05Cleanups = 0
+        $script:m05LockAdmissions = 0
+
+        Mock Get-TeamPipelineDeclarativeProjectHead { 'b' * 40 }
+        Mock Read-TeamPipelineManifest { [PSCustomObject]@{ Session = [ordered]@{ name = 'm05-session'; generation_id = 'generation-123' }; Panes = [ordered]@{} } }
+        Mock Get-TeamPipelineSessionName { 'm05-session' }
+        Mock Invoke-TeamPipelineWorkspacePlanOnce { Copy-DeclarativeWorkflowValue $workspacePlan }
+        Mock Resolve-TeamPipelineDeclarativeRuntimeLease {
+            param($Label)
+            if ([string]$Label -ceq 'worker-1') { return [PSCustomObject]@{ label = 'worker-1'; pane_id = '%2' } }
+            return $null
+        }
+        Mock Save-DeclarativeWorkflowRunState { $script:m05Saves++ }
+        Mock Invoke-TeamPipelineDeclarativeDispatch { $script:m05Dispatches++; throw 'unresolved resume admission must not dispatch' }
+        Mock Invoke-TeamPipelineDeclarativeTerminalRecovery { $script:m05Cleanups++; throw 'unresolved resume admission must not recover terminal state' }
+        Mock Invoke-DeclarativeWorkflowCleanup { $script:m05Cleanups++; throw 'unresolved resume admission must not clean up' }
+        Mock Assert-TeamPipelineDeclarativeRunLockAdmission { $script:m05LockAdmissions++; throw 'unresolved resume admission must not inspect the run lock' }
+
+        {
+            Invoke-TeamPipelineDeclarativeWorkflow -Action resume -RunId 'run-123' -GenerationId 'generation-123' `
+                -ConfigFingerprint ('sha256:' + ('a' * 64)) -SourceHead ('b' * 40) -TaskFile $taskFile -ProjectDir $project
+        } | Should -Throw '*workflow_live_binding_unavailable*'
+
+        $script:m05Saves | Should -Be 0
+        $script:m05Dispatches | Should -Be 0
+        $script:m05Cleanups | Should -Be 0
+        $script:m05LockAdmissions | Should -Be 0
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($statePath)) | Should -Be $stateBytesBefore
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($lockPath)) | Should -Be $lockBytesBefore
+    }
+
+    It 'M04 validates every ordinal-distinct live binding once and rejects each resolver-null partition' {
+        $script:m04Mode = ''
+        $script:m04Labels = [Collections.Generic.List[string]]::new()
+        Mock Resolve-TeamPipelineDeclarativeRuntimeLease {
+            param($Label)
+            $script:m04Labels.Add([string]$Label) | Out-Null
+            if ($script:m04Mode -in @('missing', 'duplicate', 'stale', 'invalid') -and [string]$Label -ceq 'worker-2') { return $null }
+            return [PSCustomObject]@{ label = [string]$Label; pane_id = '%2' }
+        }
+
+        foreach ($case in @(
+                [PSCustomObject]@{ Name = 'complete-with-unrelated-extra'; Mode = 'complete'; Bindings = [ordered]@{ implement = 'worker-1'; verify = 'worker-2' }; ExpectedLabels = 'worker-1,worker-2'; Accept = $true },
+                [PSCustomObject]@{ Name = 'shared-label'; Mode = 'shared'; Bindings = [ordered]@{ implement = 'worker-1'; verify = 'worker-1' }; ExpectedLabels = 'worker-1'; Accept = $true },
+                [PSCustomObject]@{ Name = 'missing'; Mode = 'missing'; Bindings = [ordered]@{ implement = 'worker-1'; verify = 'worker-2' }; ExpectedLabels = 'worker-1,worker-2'; Accept = $false },
+                [PSCustomObject]@{ Name = 'duplicate'; Mode = 'duplicate'; Bindings = [ordered]@{ implement = 'worker-1'; verify = 'worker-2' }; ExpectedLabels = 'worker-1,worker-2'; Accept = $false },
+                [PSCustomObject]@{ Name = 'stale'; Mode = 'stale'; Bindings = [ordered]@{ implement = 'worker-1'; verify = 'worker-2' }; ExpectedLabels = 'worker-1,worker-2'; Accept = $false },
+                [PSCustomObject]@{ Name = 'invalid'; Mode = 'invalid'; Bindings = [ordered]@{ implement = 'worker-1'; verify = 'worker-2' }; ExpectedLabels = 'worker-1,worker-2'; Accept = $false }
+            )) {
+            $run = New-TestRun
+            $run.resolved_bindings = Copy-DeclarativeWorkflowValue $case.Bindings
+            $run.normalized_snapshot.resolved_bindings = Copy-DeclarativeWorkflowValue $case.Bindings
+            $workspacePlan = [ordered]@{
+                config_fingerprint = ('sha256:' + ('a' * 64))
+                resolved_bindings  = Copy-DeclarativeWorkflowValue $case.Bindings
+                workflow           = Copy-DeclarativeWorkflowValue $run.normalized_snapshot
+            }
+            $script:m04Mode = [string]$case.Mode
+            $script:m04Labels.Clear()
+            $invoke = {
+                Assert-TeamPipelineDeclarativeAdmission -Run $run -Confirmation (New-TestConfirmation) -TaskInput (New-TestTaskInput) `
+                    -WorkspacePlan $workspacePlan -ManifestGenerationId 'generation-123' -ObservedSourceHead ('b' * 40) `
+                    -ProjectDir $TestDrive -SessionName 'm04-session'
+            }
+
+            if ($case.Accept) { $invoke | Should -Not -Throw -Because $case.Name }
+            else { $invoke | Should -Throw '*workflow_live_binding_unavailable*' -Because $case.Name }
+            [string]::Join(',', @($script:m04Labels)) | Should -Be $case.ExpectedLabels -Because $case.Name
         }
     }
 
@@ -1511,6 +1648,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         Mock Get-TeamPipelineDeclarativeProjectHead { 'b' * 40 }
         Mock Read-TeamPipelineManifest { [PSCustomObject]@{ Session = [ordered]@{ name = 'l01-session'; generation_id = 'generation-123' }; Panes = [ordered]@{} } }
         Mock Get-TeamPipelineSessionName { 'l01-session' }
+        Mock Resolve-TeamPipelineDeclarativeRuntimeLease { param($Label) [PSCustomObject]@{ label = [string]$Label; pane_id = '%2' } }
         Mock Invoke-TeamPipelineWorkspacePlanOnce {
             [ordered]@{
                 config_fingerprint = ('sha256:' + ('a' * 64))
@@ -1825,6 +1963,7 @@ future_state:
             workflow = $transactionWorkflow
         }
         Mock Invoke-TeamPipelineWorkspacePlanOnce { Copy-DeclarativeWorkflowValue $transactionPlan }
+        Mock Resolve-TeamPipelineDeclarativeRuntimeLease { param($Label) [PSCustomObject]@{ label = [string]$Label; pane_id = '%2' } }
         $existingLockProject = Join-Path $TestDrive 'existing-lock-project'
         $existingRunRoot = Join-Path $existingLockProject '.winsmux\workflow-runs\run-123'
         [IO.Directory]::CreateDirectory($existingRunRoot) | Out-Null
@@ -1899,6 +2038,7 @@ future_state:
             Mock Read-TeamPipelineManifest { [PSCustomObject]@{ Session = [ordered]@{ name = 'bootstrap-session'; generation_id = 'generation-123' }; Panes = [ordered]@{} } }
             Mock Get-TeamPipelineSessionName { 'bootstrap-session' }
             Mock Invoke-TeamPipelineWorkspacePlanOnce { Copy-DeclarativeWorkflowValue $workspacePlan }
+            Mock Resolve-TeamPipelineDeclarativeRuntimeLease { param($Label) [PSCustomObject]@{ label = [string]$Label; pane_id = '%2' } }
             Mock Invoke-TeamPipelineDeclarativeRunAdvancement {
                 param($ProjectDir, $Run)
                 $script:bootstrapAdvances++
@@ -2032,6 +2172,7 @@ while (`$true) { Start-Sleep -Seconds 1 }
             }
             Copy-DeclarativeWorkflowValue $workspacePlan
         }
+        Mock Resolve-TeamPipelineDeclarativeRuntimeLease { param($Label) [PSCustomObject]@{ label = [string]$Label; pane_id = '%2' } }
         Mock Invoke-TeamPipelineDeclarativeRunAdvancement { param($ProjectDir, $Run) $Run }
 
         $result = Invoke-TeamPipelineDeclarativeWorkflow -Action start -RecipeId 'bugfix-two-slot' -WorkflowId 'bugfix' `
