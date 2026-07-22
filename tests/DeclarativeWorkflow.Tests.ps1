@@ -2391,4 +2391,91 @@ while (`$true) { Start-Sleep -Seconds 1 }
         $script:h03Effects | Should -Be 0
         $run.nodes.verify.state | Should -Be 'pending'
     }
+
+    It 'S01 accepts a 192-byte composite idempotency key and rejects 193 bytes' {
+        $nodeId = 'n' * 12
+        $acceptedRunId = 'r' * 179
+        $rejectedRunId = 'r' * 180
+        $taskInput = New-TestTaskInput
+        $acceptedPlan = New-TestWorkflowPlan
+        $acceptedPlan.nodes[0].node_id = $nodeId
+        $acceptedPlan.nodes[0].idempotency_key = $acceptedRunId + ':' + $nodeId
+        $acceptedPlan.nodes[1].depends_on = @($nodeId)
+        $acceptedPlan.nodes[1].idempotency_key = $acceptedRunId + ':verify'
+        $accepted = New-DeclarativeWorkflowRun -Plan $acceptedPlan -RunId $acceptedRunId -GenerationId 'generation-123' `
+            -ConfigFingerprint ('sha256:' + ('a' * 64)) -SourceHead ('b' * 40) -TaskInput $taskInput
+        ([Text.UTF8Encoding]::new($false).GetByteCount([string]$accepted.nodes[$nodeId].idempotency_key)) | Should -Be 192
+        $rejectedPlan = New-TestWorkflowPlan
+        $rejectedPlan.nodes[0].node_id = $nodeId
+        $rejectedPlan.nodes[0].idempotency_key = $rejectedRunId + ':' + $nodeId
+        $rejectedPlan.nodes[1].depends_on = @($nodeId)
+        $rejectedPlan.nodes[1].idempotency_key = $rejectedRunId + ':verify'
+        {
+            New-DeclarativeWorkflowRun -Plan $rejectedPlan -RunId $rejectedRunId -GenerationId 'generation-123' `
+                -ConfigFingerprint ('sha256:' + ('a' * 64)) -SourceHead ('b' * 40) -TaskInput $taskInput
+        } | Should -Throw '*idempotency*'
+
+    }
+
+    It 'S02 validates the composite bound at direct durable-proof path entry' {
+        $nodeId = 'n' * 12
+        $acceptedRunId = 'r' * 179
+        $rejectedRunId = 'r' * 180
+        foreach ($resolver in @(
+                { param($runId) Resolve-DeclarativeWorkflowDurableProofPath -ProjectDir $TestDrive -RunId $runId -Kind Completion -NodeId $nodeId },
+                { param($runId) Resolve-DeclarativeWorkflowDurableProofConflictPath -ProjectDir $TestDrive -RunId $runId -Kind Completion -NodeId $nodeId }
+            )) {
+            { & $resolver $acceptedRunId } | Should -Not -Throw
+            { & $resolver $rejectedRunId } | Should -Throw '*idempotency*'
+        }
+    }
+
+    It 'T01 rejects an oversize state update while preserving the prior bytes' {
+        $project = Join-Path $TestDrive 't01-state-size'
+        $baseline = New-TestRun
+        Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $baseline -CreateNew | Out-Null
+        $statePath = Join-Path $project '.winsmux\workflow-runs\run-123\state.json'
+        $before = [IO.File]::ReadAllBytes($statePath)
+        $oversize = Copy-DeclarativeWorkflowValue $baseline
+        $oversize['opaque_padding'] = 'あ' * 400000
+        {
+            Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $oversize
+        } | Should -Throw '*state*size*'
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($statePath)) | Should -BeExactly ([Convert]::ToBase64String($before))
+
+    }
+
+    It 'T02 rejects an oversize initial state before creating durable state' {
+        $baseline = New-TestRun
+        $oversize = Copy-DeclarativeWorkflowValue $baseline
+        $oversize['opaque_padding'] = 'あ' * 400000
+        $createProject = Join-Path $TestDrive 't01-create-new-size'
+        {
+            Save-DeclarativeWorkflowRunState -ProjectDir $createProject -Run $oversize -CreateNew
+        } | Should -Throw '*state*size*'
+        Test-Path -LiteralPath (Join-Path $createProject '.winsmux\workflow-runs\run-123') -PathType Container | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $createProject '.winsmux\workflow-runs\run-123\state.json') -PathType Leaf | Should -BeFalse
+    }
+
+    It 'T03 persists and rereads exactly 1 MiB but rejects one serialized byte more' {
+        $atLimit = Copy-DeclarativeWorkflowValue (New-TestRun)
+        $atLimit['opaque_padding'] = ''
+        $baseBytes = ConvertTo-DeclarativeWorkflowStateBytes -Run $atLimit
+        $atLimit['opaque_padding'] = 'a' * ($script:DeclarativeWorkflowStateMaxBytes - $baseBytes.Length)
+        $serialized = ConvertTo-DeclarativeWorkflowStateBytes -Run $atLimit
+        $serialized.Length | Should -Be $script:DeclarativeWorkflowStateMaxBytes
+
+        $project = Join-Path $TestDrive 't03-exact-state-size'
+        Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $atLimit -CreateNew | Out-Null
+        $statePath = Join-Path $project '.winsmux\workflow-runs\run-123\state.json'
+        ([IO.File]::ReadAllBytes($statePath)).Length | Should -Be $script:DeclarativeWorkflowStateMaxBytes
+        { Read-DeclarativeWorkflowRunState -ProjectDir $project -RunId 'run-123' } | Should -Not -Throw
+
+        $overLimit = Copy-DeclarativeWorkflowValue $atLimit
+        $overLimit['opaque_padding'] = [string]$overLimit['opaque_padding'] + 'a'
+        { ConvertTo-DeclarativeWorkflowStateBytes -Run $overLimit } | Should -Throw '*state*size*'
+        $overProject = Join-Path $TestDrive 't03-over-state-size'
+        { Save-DeclarativeWorkflowRunState -ProjectDir $overProject -Run $overLimit -CreateNew } | Should -Throw '*state*size*'
+        Test-Path -LiteralPath (Join-Path $overProject '.winsmux\workflow-runs\run-123') -PathType Container | Should -BeFalse
+    }
 }

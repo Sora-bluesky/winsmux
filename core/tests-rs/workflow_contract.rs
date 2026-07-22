@@ -67,6 +67,76 @@ fn w01_normalizes_dag_and_digest_deterministically_without_task_body() {
 }
 
 #[test]
+fn s01_rejects_normalized_idempotency_keys_over_192_ascii_bytes() {
+    let node_id = "n".repeat(12);
+    let yaml = VALID.replace("inspect", &node_id);
+    let accepted_run_id = "r".repeat(179);
+    let rejected_run_id = "r".repeat(180);
+
+    let accepted = normalize_workflow_plan(
+        &yaml,
+        "bugfix",
+        &accepted_run_id,
+        "bugfix-two-slot",
+        &bindings(),
+    )
+    .expect("192-byte run_id:node_id must normalize");
+    assert_eq!(accepted.nodes[0].idempotency_key.as_bytes().len(), 192);
+
+    let error = normalize_workflow_plan(
+        &yaml,
+        "bugfix",
+        &rejected_run_id,
+        "bugfix-two-slot",
+        &bindings(),
+    )
+    .expect_err("193-byte run_id:node_id must be rejected");
+    assert!(error.to_string().contains("idempotency"));
+}
+
+#[test]
+fn t01_rejects_expanded_state_over_one_mib_from_a_smaller_request() {
+    let mut yaml = String::from(
+        "config-version: 1\nworkflows:\n  bugfix:\n    schema-version: 1\n    recipe-ref: bugfix-two-slot\n    task-input:\n      source: runtime-task-file\n      privacy: digest-only\n    nodes:\n",
+    );
+    for index in 0..4_000 {
+        yaml.push_str(&format!(
+            "      - node-id: node-{index:04}\n        pane-ref: implement\n        action: operator-dispatch\n        idempotency-key: \"{{{{run-id}}}}:node-{index:04}\"\n        cleanup: retain\n"
+        ));
+    }
+    yaml.push_str(
+        "    resume-policy:\n      mode: operator-confirmed\n      reject-completed-runs: true\n    cleanup-policy:\n      mode: compensating-actions\n      on: [success, failure, cancel]\n      actions: [release-run-lock]\n",
+    );
+    let plan = normalize_workflow_plan(&yaml, "bugfix", "run-123", "bugfix-two-slot", &bindings())
+        .expect("normalize large workflow below the request limit");
+    let request = serde_json::json!({
+        "schema_version": 1,
+        "operation": "bootstrap",
+        "plan": plan,
+        "identity": {
+            "run_id": "run-123",
+            "generation_id": "generation-123",
+            "config_fingerprint": format!("sha256:{}", "a".repeat(64)),
+            "source_head": "b".repeat(40),
+            "task_sha256": format!("sha256:{}", "c".repeat(64)),
+            "task_byte_count": 24
+        }
+    });
+
+    let request_bytes = serde_json::to_vec(&request).expect("serialize reducer request");
+    assert!(
+        request_bytes.len() < 1_048_576,
+        "fixture must remain below the reducer input limit"
+    );
+    let error = reduce_workflow_state_value(&request)
+        .expect_err("expanded state over one MiB must be rejected before output");
+    assert!(
+        error.to_string().contains("exceeds 1048576 UTF-8 bytes"),
+        "unexpected reducer error: {error}"
+    );
+}
+
+#[test]
 fn w02_rejects_cycle_self_edge_missing_dependency_duplicate_and_unknown_pane() {
     let cases = [
         (

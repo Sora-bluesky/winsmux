@@ -7,6 +7,10 @@ $script:DeclarativeWorkflowGenerationIdPattern = '\A(?:[0-9a-f]{32}|[a-z][a-z0-9
 $script:DeclarativeWorkflowDigestPattern = '^sha256:[0-9a-f]{64}$'
 $script:DeclarativeWorkflowHeadPattern = '^[0-9a-f]{40}$'
 $script:DeclarativeWorkflowTaskLimit = 262144
+$script:DeclarativeWorkflowRunIdMaxBytes = 192
+$script:DeclarativeWorkflowIdempotencyKeyMaxBytes = 192
+$script:DeclarativeWorkflowStateMaxBytes = 1048576
+$script:DeclarativeWorkflowUtf8NoBom = [Text.UTF8Encoding]::new($false)
 
 function Get-DeclarativeWorkflowValue {
     param(
@@ -166,6 +170,73 @@ function Assert-DeclarativeWorkflowId {
     }
 }
 
+function Assert-DeclarativeWorkflowRunId {
+    param([Parameter(Mandatory = $true)][string]$Name, [Parameter(Mandatory = $true)][string]$Value)
+    Assert-DeclarativeWorkflowId -Name $Name -Value $Value
+    if ($script:DeclarativeWorkflowUtf8NoBom.GetByteCount($Value) -gt $script:DeclarativeWorkflowRunIdMaxBytes) {
+        throw "$Name exceeds $($script:DeclarativeWorkflowRunIdMaxBytes) ASCII bytes."
+    }
+}
+
+function Assert-DeclarativeWorkflowCompositeIdempotencyKey {
+    param(
+        [Parameter(Mandatory = $true)][string]$RunId,
+        [Parameter(Mandatory = $true)][string]$NodeId,
+        [Parameter(Mandatory = $true)][string]$IdempotencyKey
+    )
+    Assert-DeclarativeWorkflowCompositeIdempotencyKeyLength -RunId $RunId -NodeId $NodeId
+    $expected = $RunId + ':' + $NodeId
+    if ($IdempotencyKey -cne $expected) {
+        throw 'idempotency_key must be the canonical run_id:node_id composite.'
+    }
+}
+
+function Assert-DeclarativeWorkflowCompositeIdempotencyKeyLength {
+    param(
+        [Parameter(Mandatory = $true)][string]$RunId,
+        [Parameter(Mandatory = $true)][string]$NodeId
+    )
+    Assert-DeclarativeWorkflowRunId -Name 'run_id' -Value $RunId
+    Assert-DeclarativeWorkflowId -Name 'node_id' -Value $NodeId
+    $expected = $RunId + ':' + $NodeId
+    if ($script:DeclarativeWorkflowUtf8NoBom.GetByteCount($expected) -gt $script:DeclarativeWorkflowIdempotencyKeyMaxBytes) {
+        throw "idempotency_key exceeds $($script:DeclarativeWorkflowIdempotencyKeyMaxBytes) ASCII bytes."
+    }
+}
+
+function Assert-DeclarativeWorkflowRunCompositeIds {
+    param([Parameter(Mandatory = $true)]$Run)
+
+    $runId = [string](Get-DeclarativeWorkflowValue $Run 'run_id' '')
+    Assert-DeclarativeWorkflowRunId -Name 'run_id' -Value $runId
+    $nodes = Get-DeclarativeWorkflowValue $Run 'nodes' $null
+    if ($nodes -isnot [Collections.IDictionary]) { throw 'Declarative workflow runtime nodes are missing.' }
+    foreach ($entry in $nodes.GetEnumerator()) {
+        $node = $entry.Value
+        $nodeId = [string](Get-DeclarativeWorkflowValue $node 'node_id' '')
+        $idempotencyKey = [string](Get-DeclarativeWorkflowValue $node 'idempotency_key' '')
+        Assert-DeclarativeWorkflowCompositeIdempotencyKey -RunId $runId -NodeId $nodeId -IdempotencyKey $idempotencyKey
+    }
+}
+
+function Assert-DeclarativeWorkflowStateBytes {
+    param([Parameter(Mandatory = $true)][byte[]]$Bytes)
+    if ($Bytes.Length -gt $script:DeclarativeWorkflowStateMaxBytes) {
+        throw "Declarative workflow state size exceeds $($script:DeclarativeWorkflowStateMaxBytes) UTF-8 bytes."
+    }
+    if ([Array]::IndexOf($Bytes, [byte]0) -ge 0) {
+        throw 'Declarative workflow state contains NUL.'
+    }
+}
+
+function ConvertTo-DeclarativeWorkflowStateBytes {
+    param([Parameter(Mandatory = $true)]$Run)
+    $json = $Run | ConvertTo-Json -Depth 100 -Compress
+    [byte[]]$bytes = $script:DeclarativeWorkflowUtf8NoBom.GetBytes($json + "`n")
+    Assert-DeclarativeWorkflowStateBytes -Bytes $bytes
+    return $bytes
+}
+
 function Assert-DeclarativeWorkflowGenerationId {
     param([Parameter(Mandatory = $true)][string]$Name, [Parameter(Mandatory = $true)][string]$Value)
     if ($Value -cnotmatch $script:DeclarativeWorkflowGenerationIdPattern) {
@@ -313,7 +384,14 @@ function Test-DeclarativeWorkflowFieldExists {
 }
 
 function New-DeclarativeWorkflowExecutionProjection {
-    param([Parameter(Mandatory = $true)]$Plan)
+    param(
+        [Parameter(Mandatory = $true)]$Plan,
+        [string]$RunId
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($RunId)) {
+        Assert-DeclarativeWorkflowRunId -Name 'run_id' -Value $RunId
+    }
 
     $definitions = @(Get-DeclarativeWorkflowValue $Plan 'nodes' @())
     if ($definitions.Count -lt 1) { throw 'Normalized workflow must contain at least one node.' }
@@ -328,6 +406,10 @@ function New-DeclarativeWorkflowExecutionProjection {
         }
         $nodeId = [string](Get-DeclarativeWorkflowValue $definition 'node_id' '')
         Assert-DeclarativeWorkflowId -Name 'node_id' -Value $nodeId
+        $idempotencyKey = [string](Get-DeclarativeWorkflowValue $definition 'idempotency_key' '')
+        if (-not [string]::IsNullOrWhiteSpace($RunId)) {
+            Assert-DeclarativeWorkflowCompositeIdempotencyKey -RunId $RunId -NodeId $nodeId -IdempotencyKey $idempotencyKey
+        }
         if ($runtimeNodes.Contains($nodeId)) { throw "Duplicate normalized node '$nodeId'." }
 
         $dependencies = @((Get-DeclarativeWorkflowValue $definition 'depends_on' @()) | ForEach-Object {
@@ -347,7 +429,7 @@ function New-DeclarativeWorkflowExecutionProjection {
             action          = [string](Get-DeclarativeWorkflowValue $definition 'action' '')
             pane_ref        = [string](Get-DeclarativeWorkflowValue $definition 'pane_ref' '')
             depends_on      = @($dependencies)
-            idempotency_key = [string](Get-DeclarativeWorkflowValue $definition 'idempotency_key' '')
+            idempotency_key = $idempotencyKey
             cleanup         = [string](Get-DeclarativeWorkflowValue $definition 'cleanup' '')
             context_pack_ref = $contextPackRef
         }
@@ -367,7 +449,8 @@ function Assert-DeclarativeWorkflowExecutionProjection {
         [Parameter(Mandatory = $true)]$Plan
     )
 
-    $expected = New-DeclarativeWorkflowExecutionProjection -Plan $Plan
+    $runId = [string](Get-DeclarativeWorkflowValue $Run 'run_id' '')
+    $expected = New-DeclarativeWorkflowExecutionProjection -Plan $Plan -RunId $runId
     $persistedSnapshot = Get-DeclarativeWorkflowValue $Run 'normalized_snapshot' $null
     if ((ConvertTo-DeclarativeWorkflowCanonicalJson -Value $persistedSnapshot) -cne
         (ConvertTo-DeclarativeWorkflowCanonicalJson -Value $expected.normalized_snapshot)) {
@@ -425,7 +508,7 @@ function New-DeclarativeWorkflowRun {
         [Parameter(Mandatory = $true)][string]$SourceHead,
         [Parameter(Mandatory = $true)]$TaskInput
     )
-    Assert-DeclarativeWorkflowId -Name 'run_id' -Value $RunId
+    Assert-DeclarativeWorkflowRunId -Name 'run_id' -Value $RunId
     Assert-DeclarativeWorkflowGenerationId -Name 'generation_id' -Value $GenerationId
     if ($SourceHead -cnotmatch $script:DeclarativeWorkflowHeadPattern) {
         throw 'source_head must be a lowercase full commit ID.'
@@ -442,7 +525,8 @@ function New-DeclarativeWorkflowRun {
     if ($taskDigest -cnotmatch $script:DeclarativeWorkflowDigestPattern -or $taskByteCount -lt 0) {
         throw 'Task input identity is invalid.'
     }
-    return Invoke-DeclarativeWorkflowStateReducer -Request ([ordered]@{
+    New-DeclarativeWorkflowExecutionProjection -Plan $Plan -RunId $RunId | Out-Null
+    $run = Invoke-DeclarativeWorkflowStateReducer -Request ([ordered]@{
             schema_version = 1
             operation      = 'bootstrap'
             plan           = Copy-DeclarativeWorkflowValue $Plan
@@ -455,6 +539,8 @@ function New-DeclarativeWorkflowRun {
                 task_byte_count    = $taskByteCount
             }
         })
+    Assert-DeclarativeWorkflowRunCompositeIds -Run $run
+    return $run
 }
 
 function Get-DeclarativeWorkflowNode {
@@ -846,7 +932,7 @@ function Invoke-DeclarativeWorkflowResume {
 
 function Get-DeclarativeWorkflowRunDirectory {
     param([Parameter(Mandatory = $true)][string]$ProjectDir, [Parameter(Mandatory = $true)][string]$RunId)
-    Assert-DeclarativeWorkflowId -Name 'run_id' -Value $RunId
+    Assert-DeclarativeWorkflowRunId -Name 'run_id' -Value $RunId
     $projectRoot = [IO.Path]::GetFullPath($ProjectDir)
     $runsRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot '.winsmux\workflow-runs'))
     $runRoot = [IO.Path]::GetFullPath((Join-Path $runsRoot $RunId))
@@ -957,9 +1043,10 @@ function Resolve-DeclarativeWorkflowDurableProofPath {
         [AllowEmptyString()][string]$NodeId = '',
         [switch]$CreateDirectory
     )
-    Assert-DeclarativeWorkflowId -Name 'run_id' -Value $RunId
+    Assert-DeclarativeWorkflowRunId -Name 'run_id' -Value $RunId
     if ($Kind -ceq 'Completion') {
         Assert-DeclarativeWorkflowId -Name 'node_id' -Value $NodeId
+        Assert-DeclarativeWorkflowCompositeIdempotencyKeyLength -RunId $RunId -NodeId $NodeId
         $components = @('workflow-runs', $RunId, 'proofs', 'completion', "$NodeId.json")
         $directoryCount = 4
     } else {
@@ -979,9 +1066,10 @@ function Resolve-DeclarativeWorkflowDurableProofConflictPath {
         [AllowEmptyString()][string]$NodeId = '',
         [switch]$CreateDirectory
     )
-    Assert-DeclarativeWorkflowId -Name 'run_id' -Value $RunId
+    Assert-DeclarativeWorkflowRunId -Name 'run_id' -Value $RunId
     if ($Kind -ceq 'Completion') {
         Assert-DeclarativeWorkflowId -Name 'node_id' -Value $NodeId
+        Assert-DeclarativeWorkflowCompositeIdempotencyKeyLength -RunId $RunId -NodeId $NodeId
         $components = @('workflow-runs', $RunId, 'proofs', 'completion', "$NodeId.conflict")
         $directoryCount = 4
     } else {
@@ -1201,7 +1289,7 @@ function Enter-DeclarativeWorkflowInvocationLease {
         [Parameter(Mandatory = $true)][string]$RunId
     )
 
-    Assert-DeclarativeWorkflowId -Name 'run_id' -Value $RunId
+    Assert-DeclarativeWorkflowRunId -Name 'run_id' -Value $RunId
     $path = Resolve-DeclarativeWorkflowOwnedRunPath -ProjectDir $ProjectDir -RunId $RunId -LeafName 'invocation.lock' -CreateRunDirectory
     try {
         return [IO.File]::Open(
@@ -1497,7 +1585,7 @@ function Read-DeclarativeWorkflowRunState {
     if (-not [IO.File]::Exists($path)) { throw "Declarative workflow run '$RunId' was not found." }
     try {
         [byte[]]$bytes = [IO.File]::ReadAllBytes($path)
-        if ($bytes.Length -gt 1048576 -or [Array]::IndexOf($bytes, [byte]0) -ge 0) { throw 'invalid state size' }
+        Assert-DeclarativeWorkflowStateBytes -Bytes $bytes
         $text = [Text.UTF8Encoding]::new($false, $true).GetString($bytes)
         $state = $text | ConvertFrom-WinsmuxJson -AsHashtable -Depth 100 -ErrorAction Stop
     } catch {
@@ -1505,6 +1593,11 @@ function Read-DeclarativeWorkflowRunState {
     }
     if ([string](Get-DeclarativeWorkflowValue $state 'run_id' '') -cne $RunId) {
         throw "Declarative workflow run '$RunId' identity does not match its derived path."
+    }
+    try {
+        Assert-DeclarativeWorkflowRunCompositeIds -Run $state
+    } catch {
+        throw "Declarative workflow run '$RunId' is malformed."
     }
     return $state
 }
@@ -1596,17 +1689,17 @@ function Save-DeclarativeWorkflowRunState {
     )
     $runId = [string](Get-DeclarativeWorkflowValue $Run 'run_id' '')
     $generationId = [string](Get-DeclarativeWorkflowValue $Run 'generation_id' '')
-    Assert-DeclarativeWorkflowId -Name 'run_id' -Value $runId
+    Assert-DeclarativeWorkflowRunId -Name 'run_id' -Value $runId
     Assert-DeclarativeWorkflowGenerationId -Name 'generation_id' -Value $generationId
     Assert-DeclarativeWorkflowStatePrivacy -Value $Run -Shape 'run'
+    Assert-DeclarativeWorkflowRunCompositeIds -Run $Run
+    [byte[]]$stateBytes = ConvertTo-DeclarativeWorkflowStateBytes -Run $Run
     $path = Resolve-DeclarativeWorkflowOwnedRunPath -ProjectDir $ProjectDir -RunId $runId -LeafName 'state.json' -CreateRunDirectory
     $runRoot = Split-Path -Parent $path
     if ($CreateNew -and [IO.File]::Exists($path)) {
         throw 'Declarative workflow run state already exists.'
     }
     $previousBytes = if (-not $CreateNew -and [IO.File]::Exists($path)) { [IO.File]::ReadAllBytes($path) } else { $null }
-    $json = $Run | ConvertTo-Json -Depth 100 -Compress
-    $stateBytes = [Text.UTF8Encoding]::new($false).GetBytes($json + "`n")
     $tempPath = Join-Path $runRoot ('.state-{0}.tmp' -f [guid]::NewGuid().ToString('N'))
     $createdInitialState = $false
     try {

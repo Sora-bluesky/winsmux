@@ -9,6 +9,9 @@ use crate::workspace_recipe::{parse_workspace_yaml, NormalizedWorkspacePlan};
 
 const WORKFLOW_SCHEMA_VERSION: u64 = 1;
 const RUN_ID_TOKEN: &str = "{{run-id}}";
+const MAX_WORKFLOW_RUN_ID_BYTES: usize = 192;
+const MAX_WORKFLOW_IDEMPOTENCY_KEY_BYTES: usize = 192;
+const MAX_WORKFLOW_STATE_BYTES: usize = 1_048_576;
 
 #[derive(Debug, Default)]
 pub(crate) struct WorkflowPlanCliOptions {
@@ -254,7 +257,7 @@ pub(crate) fn normalize_workflow_plan_from_value(
     resolved_bindings: &BTreeMap<String, String>,
 ) -> io::Result<NormalizedWorkflowPlan> {
     require_stable_id("workflow-id", workflow_id)?;
-    require_stable_id("run-id", run_id)?;
+    require_workflow_run_id("run-id", run_id)?;
     require_stable_id("recipe-id", selected_recipe_id)?;
     for (pane_ref, slot_id) in resolved_bindings {
         require_stable_id("pane-ref", pane_ref)?;
@@ -754,14 +757,13 @@ pub fn reduce_workflow_state_value(request: &serde_json::Value) -> io::Result<se
             transition_workflow_run(request.run, request.event, request.durable_proofs)?
         }
     };
+    validate_serialized_workflow_state_bytes(&run)?;
     serde_json::to_value(run).map_err(|error| {
         workflow_state_invalid(format!("failed to serialize reducer output: {error}"))
     })
 }
 
 pub fn run_workflow_state_reduce_command(args: &[&String]) -> io::Result<()> {
-    const MAX_REQUEST_BYTES: usize = 1_048_576;
-
     if args.len() != 2 || args[0].as_str() != "--request-file" {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -769,7 +771,7 @@ pub fn run_workflow_state_reduce_command(args: &[&String]) -> io::Result<()> {
         ));
     }
     let bytes = fs::read(args[1])?;
-    if bytes.len() > MAX_REQUEST_BYTES {
+    if bytes.len() > MAX_WORKFLOW_STATE_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "workflow state reducer request exceeds 1048576 bytes",
@@ -1094,7 +1096,7 @@ fn cleanup_action_mut(run: &mut WorkflowRun) -> io::Result<&mut CleanupActionRec
 }
 
 fn validate_workflow_run_identity(identity: &WorkflowRunIdentity) -> io::Result<()> {
-    require_stable_id("run_id", &identity.run_id)?;
+    require_workflow_run_id("run_id", &identity.run_id)?;
     require_generation_id("generation_id", &identity.generation_id)?;
     validate_digest("config_fingerprint", &identity.config_fingerprint)?;
     validate_digest("task_sha256", &identity.task_sha256)?;
@@ -1112,7 +1114,7 @@ fn validate_normalized_workflow_plan(
     }
     require_stable_id("workflow_id", &plan.workflow_id)?;
     require_stable_id("recipe_ref", &plan.recipe_ref)?;
-    require_stable_id("run_id", run_id)?;
+    require_workflow_run_id("run_id", run_id)?;
     validate_digest("workflow_fingerprint", &plan.workflow_fingerprint)?;
     if plan.task_input.source != "runtime-task-file" || plan.task_input.privacy != "digest-only" {
         return Err(workflow_state_invalid(
@@ -1162,7 +1164,9 @@ fn validate_normalized_workflow_plan(
                 "normalized workflow node cleanup is invalid",
             ));
         }
-        if node.idempotency_key != format!("{run_id}:{}", node.node_id) {
+        let expected_idempotency_key = format!("{run_id}:{}", node.node_id);
+        require_workflow_idempotency_key(&expected_idempotency_key)?;
+        if node.idempotency_key != expected_idempotency_key {
             return Err(workflow_state_invalid(
                 "normalized workflow node idempotency key is invalid",
             ));
@@ -1752,6 +1756,40 @@ fn validate_message_id(value: &str) -> io::Result<()> {
 
 fn workflow_state_invalid(message: impl Into<String>) -> io::Error {
     invalid_data(format!("workflow_state_invalid: {}", message.into()))
+}
+
+fn validate_serialized_workflow_state_bytes(run: &WorkflowRun) -> io::Result<()> {
+    let byte_count = serde_json::to_vec(run)
+        .map_err(|error| {
+            workflow_state_invalid(format!("failed to serialize workflow state: {error}"))
+        })?
+        .len()
+        .saturating_add(1);
+    if byte_count > MAX_WORKFLOW_STATE_BYTES {
+        return Err(workflow_state_invalid(format!(
+            "workflow state exceeds {MAX_WORKFLOW_STATE_BYTES} UTF-8 bytes"
+        )));
+    }
+    Ok(())
+}
+
+fn require_workflow_run_id(label: &str, value: &str) -> io::Result<()> {
+    require_stable_id(label, value)?;
+    if value.len() > MAX_WORKFLOW_RUN_ID_BYTES {
+        return Err(invalid_data(format!(
+            "{label} exceeds {MAX_WORKFLOW_RUN_ID_BYTES} ASCII bytes."
+        )));
+    }
+    Ok(())
+}
+
+fn require_workflow_idempotency_key(value: &str) -> io::Result<()> {
+    if !value.is_ascii() || value.len() > MAX_WORKFLOW_IDEMPOTENCY_KEY_BYTES {
+        return Err(workflow_state_invalid(format!(
+            "workflow node idempotency key exceeds {MAX_WORKFLOW_IDEMPOTENCY_KEY_BYTES} ASCII bytes"
+        )));
+    }
+    Ok(())
 }
 
 fn require_stable_id(label: &str, value: &str) -> io::Result<()> {
