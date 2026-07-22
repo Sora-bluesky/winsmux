@@ -344,6 +344,11 @@ pub(crate) fn normalize_workflow_plan_from_value(
             }
         }
         if node.action == "verification" {
+            if dependencies.is_empty() {
+                return Err(invalid_data(
+                    "verification node requires at least one dependency.",
+                ));
+            }
             let context_ref = node
                 .context_pack_ref
                 .as_deref()

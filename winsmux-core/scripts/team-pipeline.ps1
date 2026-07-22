@@ -2350,7 +2350,9 @@ function Invoke-TeamPipelineDeclarativeWorkflow {
         -not [string]::Equals($manifestGenerationId, $GenerationId, [StringComparison]::Ordinal)) {
         throw 'workflow_manifest_generation_mismatch'
     }
-    if ($Action -ceq 'start') {
+    $invocationLease = Enter-DeclarativeWorkflowInvocationLease -ProjectDir $ProjectDir -RunId $RunId
+    try {
+        if ($Action -ceq 'start') {
         $statePath = Resolve-DeclarativeWorkflowOwnedRunPath -ProjectDir $ProjectDir -RunId $RunId -LeafName 'state.json'
         if ([IO.File]::Exists($statePath)) { throw 'workflow_run_already_exists' }
         $workspacePlan = Invoke-TeamPipelineWorkspacePlanOnce -ProjectDir $ProjectDir -RecipeId $RecipeId -WorkflowId $WorkflowId -RunId $RunId
@@ -2373,17 +2375,17 @@ function Invoke-TeamPipelineDeclarativeWorkflow {
             }
             throw $lockCreateError
         }
-    } else {
-        $run = Read-DeclarativeWorkflowRunState -ProjectDir $ProjectDir -RunId $RunId
-    }
-    $save = { param($candidate) Save-DeclarativeWorkflowRunState -ProjectDir $ProjectDir -Run $candidate | Out-Null }
-    $dispatch = { param($request, $candidateRun) Invoke-TeamPipelineDeclarativeDispatch -Request $request -Run $candidateRun -Manifest $manifest -ProjectDir $ProjectDir -SessionName $sessionName -PollIntervalSeconds $PollIntervalSeconds -StageTimeoutSeconds $StageTimeoutSeconds }
-    $resolveSession = { param($paneId) Get-TeamPipelineDeclarativeSessionId -ProjectDir $ProjectDir -GenerationId $GenerationId -PaneId $paneId }
-    $releaseLock = { param($path) Remove-Item -LiteralPath $path -Force -ErrorAction Stop }
-    $resolveAcknowledgement = { param($candidateRun, $nodeId) Resolve-TeamPipelineDeclarativeAcknowledgement -Run $candidateRun -NodeId $nodeId -ProjectDir $ProjectDir -SessionName $sessionName }
-    $validateSnapshot = $null
-    $snapshotValidated = $false
-    if ($Action -ceq 'resume') {
+        } else {
+            $run = Read-DeclarativeWorkflowRunState -ProjectDir $ProjectDir -RunId $RunId
+        }
+        $save = { param($candidate) Save-DeclarativeWorkflowRunState -ProjectDir $ProjectDir -Run $candidate | Out-Null }
+        $dispatch = { param($request, $candidateRun) Invoke-TeamPipelineDeclarativeDispatch -Request $request -Run $candidateRun -Manifest $manifest -ProjectDir $ProjectDir -SessionName $sessionName -PollIntervalSeconds $PollIntervalSeconds -StageTimeoutSeconds $StageTimeoutSeconds }
+        $resolveSession = { param($paneId) Get-TeamPipelineDeclarativeSessionId -ProjectDir $ProjectDir -GenerationId $GenerationId -PaneId $paneId }
+        $releaseLock = { param($path) Remove-Item -LiteralPath $path -Force -ErrorAction Stop }
+        $resolveAcknowledgement = { param($candidateRun, $nodeId) Resolve-TeamPipelineDeclarativeAcknowledgement -Run $candidateRun -NodeId $nodeId -ProjectDir $ProjectDir -SessionName $sessionName }
+        $validateSnapshot = $null
+        $snapshotValidated = $false
+        if ($Action -ceq 'resume') {
         $validateSnapshot = {
             param($candidateRun)
             $workspacePlan = Invoke-TeamPipelineWorkspacePlanOnce -ProjectDir $ProjectDir -RecipeId ([string]$candidateRun.recipe_ref) -WorkflowId ([string]$candidateRun.workflow_id) -RunId $RunId
@@ -2399,8 +2401,8 @@ function Invoke-TeamPipelineDeclarativeWorkflow {
             $run = Invoke-TeamPipelineDeclarativeTerminalRecovery -ProjectDir $ProjectDir -Run $run -TaskInput $taskInput -Confirmation $confirmation `
                 -SaveRun $save -ReleaseLock $releaseLock -ValidateSnapshot $validateSnapshot -SnapshotValidated
         }
-    }
-    if ($Action -ceq 'start' -or [string]$run.state -notin @('succeeded', 'failed', 'cancelled')) {
+        }
+        if ($Action -ceq 'start' -or [string]$run.state -notin @('succeeded', 'failed', 'cancelled')) {
         $advanceArguments = [ordered]@{
             ProjectDir               = $ProjectDir
             Run                      = $run
@@ -2416,17 +2418,20 @@ function Invoke-TeamPipelineDeclarativeWorkflow {
             $advanceArguments['ValidateSnapshot'] = $validateSnapshot
             $advanceArguments['SnapshotValidated'] = $snapshotValidated
         }
-        $run = Invoke-TeamPipelineDeclarativeRunAdvancement @advanceArguments
+            $run = Invoke-TeamPipelineDeclarativeRunAdvancement @advanceArguments
+        }
+        $cleanupBlocked = @((Get-DeclarativeWorkflowValue $run 'cleanup_journal' @()) | Where-Object {
+                [string](Get-DeclarativeWorkflowValue $_ 'state' '') -ceq 'blocked'
+            }).Count -gt 0
+        $status = if ($cleanupBlocked) {
+            'blocked'
+        } else {
+            switch ([string]$run.state) { 'blocked' { 'blocked' }; 'failed' { 'failed' }; default { 'accepted' } }
+        }
+        return [PSCustomObject][ordered]@{ schema_version = 1; status = $status; run_id = $RunId; state = [string]$run.state }
+    } finally {
+        $invocationLease.Dispose()
     }
-    $cleanupBlocked = @((Get-DeclarativeWorkflowValue $run 'cleanup_journal' @()) | Where-Object {
-            [string](Get-DeclarativeWorkflowValue $_ 'state' '') -ceq 'blocked'
-        }).Count -gt 0
-    $status = if ($cleanupBlocked) {
-        'blocked'
-    } else {
-        switch ([string]$run.state) { 'blocked' { 'blocked' }; 'failed' { 'failed' }; default { 'accepted' } }
-    }
-    return [PSCustomObject][ordered]@{ schema_version = 1; status = $status; run_id = $RunId; state = [string]$run.state }
 }
 
 if ($MyInvocation.InvocationName -ne '.') {

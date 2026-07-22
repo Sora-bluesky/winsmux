@@ -7,6 +7,23 @@ BeforeAll {
 Describe 'operator-poll helpers' {
     BeforeAll {
         $script:operatorPollScriptPath = Join-Path (Split-Path -Parent $script:BridgeTestsRoot) 'winsmux-core\scripts\operator-poll.ps1'
+        function New-TestDurableWorkflowEnvelope {
+            param([string]$MessageId = 'workflow-ack-f01', [string]$NodeId = 'inspect')
+            [ordered]@{
+                mailbox_version = 2; message_id = $MessageId; correlation_id = $MessageId; causation_id = $null
+                idempotency_key = "workflow-completion-$MessageId"; message_type = 'workflow-completion'; state = 'created'; ttl_seconds = 300
+                ack_required = $true; from = 'builder-1'; to = 'Operator'; timestamp = [DateTimeOffset]::UtcNow.ToString('o')
+                content = [ordered]@{
+                    session = 'winsmux-orchestra'; event = 'workflow.node.acknowledged'; message = 'Declarative workflow completion.'
+                    label = 'builder-1'; pane_id = '%2'; role = 'Builder'; status = 'succeeded'; exit_reason = ''
+                    data = [ordered]@{
+                        schema_version = 1; run_id = 'run-123'; node_id = $NodeId; idempotency_key = "run-123:$NodeId"
+                        generation_id = 'generation-123'; config_fingerprint = ('sha256:' + ('a' * 64)); workflow_fingerprint = ('sha256:' + ('d' * 64))
+                        source_head = ('b' * 40); pane_id = '%2'; status = 'succeeded'; evidence_ref = "workflow-ack:run-123:$NodeId"
+                    }
+                }
+            }
+        }
     }
 
     BeforeEach {
@@ -303,6 +320,7 @@ panes:
             $PaneId -eq '%2' -and
             $Target -eq 'builder-1' -and
             $Data.transport -eq 'mailbox' -and
+            $Data.message_id -eq 'workflow-ack-1' -and
             $Data.workflow_fingerprint -eq ('sha256:' + ('d' * 64)) -and
             $Data.evidence_ref -eq 'workflow-ack:run-123:inspect'
         }
@@ -345,6 +363,56 @@ panes:
 
         $summary.errors | Should -Be 1
         Should -Invoke Write-OrchestraLog -Times 0 -Exactly
+    }
+
+    It 'F02 deduplicates exact workflow ACK replay without collapsing different nodes on the same pane' {
+        $first = ConvertTo-OperatorPollMailboxRecord -MailboxMessage (New-TestDurableWorkflowEnvelope -MessageId 'workflow-ack-node-a' -NodeId 'inspect') -SessionName 'winsmux-orchestra'
+        $replay = ConvertTo-OperatorPollMailboxRecord -MailboxMessage (New-TestDurableWorkflowEnvelope -MessageId 'workflow-ack-node-a' -NodeId 'inspect') -SessionName 'winsmux-orchestra'
+        $secondNode = ConvertTo-OperatorPollMailboxRecord -MailboxMessage (New-TestDurableWorkflowEnvelope -MessageId 'workflow-ack-node-b' -NodeId 'verify') -SessionName 'winsmux-orchestra'
+
+        (Get-OperatorPollEventSignature -EventRecord $first) | Should -BeExactly (Get-OperatorPollEventSignature -EventRecord $replay)
+        (Get-OperatorPollEventSignature -EventRecord $first) | Should -Not -BeExactly (Get-OperatorPollEventSignature -EventRecord $secondNode)
+    }
+
+    It 'F02 keys non-workflow mailbox v2 records by message_id before legacy display fields' {
+        $first = [ordered]@{
+            event = 'pane.idle'; pane_id = '%2'; label = 'builder-1'; status = 'ready'; message = 'same display'
+            source = 'mailbox'; mailbox_version = 2; message_id = 'mailbox-v2-first'
+        }
+        $replay = [ordered]@{
+            event = 'pane.idle'; pane_id = '%2'; label = 'builder-1'; status = 'ready'; message = 'same display'
+            source = 'mailbox'; mailbox_version = 2; message_id = 'mailbox-v2-first'
+        }
+        $second = [ordered]@{
+            event = 'pane.idle'; pane_id = '%2'; label = 'builder-1'; status = 'ready'; message = 'same display'
+            source = 'mailbox'; mailbox_version = 2; message_id = 'mailbox-v2-second'
+        }
+
+        (Get-OperatorPollEventSignature -EventRecord $first) | Should -BeExactly (Get-OperatorPollEventSignature -EventRecord $replay)
+        (Get-OperatorPollEventSignature -EventRecord $first) | Should -Not -BeExactly (Get-OperatorPollEventSignature -EventRecord $second)
+    }
+
+    It 'F01 consumes a pending workflow ACK only after durable log success and leaves it for replay after log failure' {
+        $pendingRoot = Join-Path $script:operatorPollTempRoot '.winsmux\mailbox\winsmux-orchestra-operator\pending'
+        [IO.Directory]::CreateDirectory($pendingRoot) | Out-Null
+        $pendingPath = Join-Path $pendingRoot 'workflow-ack-f01.json'
+        $json = (New-TestDurableWorkflowEnvelope) | ConvertTo-Json -Compress -Depth 20
+        [IO.File]::WriteAllText($pendingPath, $json, [Text.UTF8Encoding]::new($false))
+        Mock Receive-OperatorPollMailboxMessages { @() }
+        Mock Write-OrchestraLog { }
+
+        $success = Invoke-OperatorPollCycle -ManifestPath $script:operatorPollManifestPath -ProcessedLineCount 0 -ProcessedEventSignatures ([ordered]@{})
+
+        $success.Summary.mailbox_events | Should -Be 1
+        Test-Path -LiteralPath $pendingPath | Should -BeFalse
+        Should -Invoke Write-OrchestraLog -Times 1 -Exactly -ParameterFilter { $Event -eq 'workflow.node.acknowledged' }
+
+        [IO.File]::WriteAllText($pendingPath, $json, [Text.UTF8Encoding]::new($false))
+        Mock Write-OrchestraLog { throw 'injected durable log failure' }
+        $failed = Invoke-OperatorPollCycle -ManifestPath $script:operatorPollManifestPath -ProcessedLineCount 0 -ProcessedEventSignatures ([ordered]@{})
+
+        $failed.Summary.errors | Should -BeGreaterThan 0
+        Test-Path -LiteralPath $pendingPath -PathType Leaf | Should -BeTrue
     }
 
     It 'processes mailbox idle messages when panes are stored in dictionary format' {

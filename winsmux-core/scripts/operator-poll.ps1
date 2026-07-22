@@ -160,7 +160,10 @@ function Test-OperatorPollWorkflowAcknowledgementMailbox {
 }
 
 function Get-OperatorPollWorkflowAcknowledgementData {
-    param([Parameter(Mandatory = $true)]$Data)
+    param(
+        [Parameter(Mandatory = $true)]$Data,
+        [AllowEmptyString()][string]$MessageId = ''
+    )
 
     $acknowledgement = [ordered]@{}
     foreach ($field in @(
@@ -170,6 +173,9 @@ function Get-OperatorPollWorkflowAcknowledgementData {
         $acknowledgement[$field] = Get-OperatorPollValue -InputObject $Data -Name $field -Default $null
     }
     $acknowledgement['transport'] = 'mailbox'
+    if (-not [string]::IsNullOrWhiteSpace($MessageId)) {
+        $acknowledgement['message_id'] = $MessageId
+    }
     return $acknowledgement
 }
 
@@ -799,8 +805,72 @@ function Receive-OperatorPollMailboxMessages {
     return @($messages)
 }
 
+function Receive-OperatorPollDurableWorkflowMessages {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$SessionName,
+        [int]$MaxMessages = 20
+    )
+
+    $channel = Get-OperatorPollMailboxChannel -SessionName $SessionName
+    if ($channel -cnotmatch '^[A-Za-z0-9_-]{1,64}$') { return @() }
+    $pendingRoot = Join-Path $ProjectDir ".winsmux\mailbox\$channel\pending"
+    if (-not [IO.Directory]::Exists($pendingRoot)) { return @() }
+    $messages = [Collections.Generic.List[object]]::new()
+    foreach ($file in @(Get-ChildItem -LiteralPath $pendingRoot -File -Filter '*.json' -ErrorAction Stop | Sort-Object Name | Select-Object -First $MaxMessages)) {
+        if ($file.BaseName -cnotmatch '^[a-z][a-z0-9-]{0,127}$' -or $file.Length -lt 2 -or $file.Length -gt 65536) { continue }
+        try {
+            $bytes = [IO.File]::ReadAllBytes($file.FullName)
+            if ([Array]::IndexOf($bytes, [byte]0) -ge 0) { continue }
+            $json = [Text.UTF8Encoding]::new($false, $true).GetString($bytes)
+            $mailboxMessage = $json | ConvertFrom-WinsmuxJson -AsHashtable -Depth 30 -ErrorAction Stop
+            $record = ConvertTo-OperatorPollMailboxRecord -MailboxMessage $mailboxMessage -SessionName $SessionName
+            if ($null -eq $record -or [string]$record['message_type'] -cne 'workflow-completion' -or
+                [string]$record['message_id'] -cne $file.BaseName) { continue }
+            $createdAt = [DateTimeOffset]::MinValue
+            $ttl = 0
+            if (-not [DateTimeOffset]::TryParse([string]$record['timestamp'], [ref]$createdAt) -or
+                -not [int]::TryParse([string](Get-OperatorPollValue $record['data'] 'mailbox_ttl_seconds' 0), [ref]$ttl) -or
+                $ttl -lt 1 -or $ttl -gt 3600) { continue }
+            if ([DateTimeOffset]::UtcNow -gt $createdAt.ToUniversalTime().AddSeconds($ttl)) {
+                [IO.File]::Delete($file.FullName)
+                continue
+            }
+            $record['durable_pending_path'] = $file.FullName
+            $messages.Add($record) | Out-Null
+        } catch {
+            continue
+        }
+    }
+    return @($messages)
+}
+
 function Get-OperatorPollEventSignature {
     param([Parameter(Mandatory = $true)]$EventRecord)
+
+    if ([string](Get-OperatorPollValue $EventRecord 'event' '') -ceq 'workflow.node.acknowledged' -and
+        [int](Get-OperatorPollValue $EventRecord 'mailbox_version' 0) -eq 2) {
+        $data = Get-OperatorPollValue $EventRecord 'workflow_ack_payload' $null
+        return 'workflow-ack|{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}|{9}|{10}|{11}' -f `
+            ([string](Get-OperatorPollValue $EventRecord 'message_id' '')), `
+            ([string](Get-OperatorPollValue $data 'run_id' '')), `
+            ([string](Get-OperatorPollValue $data 'node_id' '')), `
+            ([string](Get-OperatorPollValue $data 'idempotency_key' '')), `
+            ([string](Get-OperatorPollValue $data 'generation_id' '')), `
+            ([string](Get-OperatorPollValue $data 'workflow_fingerprint' '')), `
+            ([string](Get-OperatorPollValue $data 'config_fingerprint' '')), `
+            ([string](Get-OperatorPollValue $data 'source_head' '')), `
+            ([string](Get-OperatorPollValue $data 'pane_id' '')), `
+            ([string](Get-OperatorPollValue $data 'status' '')), `
+            ([string](Get-OperatorPollValue $data 'evidence_ref' '')), `
+            ([string](Get-OperatorPollValue $EventRecord 'idempotency_key' ''))
+    }
+    if ([int](Get-OperatorPollValue $EventRecord 'mailbox_version' 0) -ge 2) {
+        $messageId = [string](Get-OperatorPollValue $EventRecord 'message_id' '')
+        if (-not [string]::IsNullOrWhiteSpace($messageId)) {
+            return "mailbox-v2|$messageId"
+        }
+    }
 
     return '{0}|{1}|{2}|{3}|{4}' -f `
         ([string](Get-OperatorPollValue -InputObject $EventRecord -Name 'event' -Default '')), `
@@ -947,11 +1017,13 @@ function Invoke-OperatorPollEventRecord {
             $Summary['errors'] = [int]$Summary['errors'] + 1
             return
         }
-        $acknowledgement = Get-OperatorPollWorkflowAcknowledgementData -Data (Get-OperatorPollValue -InputObject $EventRecord -Name 'workflow_ack_payload' -Default $null)
+        $acknowledgement = Get-OperatorPollWorkflowAcknowledgementData `
+            -Data (Get-OperatorPollValue -InputObject $EventRecord -Name 'workflow_ack_payload' -Default $null) `
+            -MessageId ([string](Get-OperatorPollValue $EventRecord 'message_id' ''))
         Write-OrchestraLog -ProjectDir $projectDir -SessionName $sessionName -Event 'workflow.node.acknowledged' -Level 'info' `
             -Message 'Declarative workflow completion was received through the mailbox.' `
             -Role ([string]$paneContext['role']) -PaneId ([string]$paneContext['pane_id']) -Target ([string]$paneContext['label']) -Data $acknowledgement | Out-Null
-        return
+        return 'workflow_ack_logged'
     }
 
     if ($eventName -in @('pane.exec_completed', 'pane.completed')) {
@@ -1113,7 +1185,10 @@ function Invoke-OperatorPollCycle {
 
         $ProcessedLineCount = $lines.Count
 
-        $mailboxRecords = @(Receive-OperatorPollMailboxMessages -SessionName $sessionName)
+        $mailboxRecords = @(
+            @(Receive-OperatorPollMailboxMessages -SessionName $sessionName)
+            @(Receive-OperatorPollDurableWorkflowMessages -ProjectDir $projectDir -SessionName $sessionName)
+        )
         $summary['mailbox_events'] = $mailboxRecords.Count
         foreach ($mailboxRecord in $mailboxRecords) {
             $eventRecords.Add($mailboxRecord)
@@ -1121,12 +1196,20 @@ function Invoke-OperatorPollCycle {
 
         foreach ($eventRecord in $eventRecords) {
             $signature = Get-OperatorPollEventSignature -EventRecord $eventRecord
-            if ($ProcessedEventSignatures.Contains($signature)) {
+            $pendingPath = [string](Get-OperatorPollValue $eventRecord 'durable_pending_path' '')
+            if ([string]::IsNullOrWhiteSpace($pendingPath) -and $ProcessedEventSignatures.Contains($signature)) {
                 continue
             }
 
+            $result = Invoke-OperatorPollEventRecord -Manifest $manifest -ManifestPath $ManifestPath -EventRecord $eventRecord -Summary $summary
+            if (-not [string]::IsNullOrWhiteSpace($pendingPath)) {
+                if ([string]$result -ceq 'workflow_ack_logged') {
+                    [IO.File]::Delete($pendingPath)
+                    $ProcessedEventSignatures[$signature] = [string](Get-OperatorPollValue -InputObject $eventRecord -Name 'timestamp' -Default ([System.DateTimeOffset]::Now.ToString('o')))
+                }
+                continue
+            }
             $ProcessedEventSignatures[$signature] = [string](Get-OperatorPollValue -InputObject $eventRecord -Name 'timestamp' -Default ([System.DateTimeOffset]::Now.ToString('o')))
-            Invoke-OperatorPollEventRecord -Manifest $manifest -ManifestPath $ManifestPath -EventRecord $eventRecord -Summary $summary
         }
     } catch {
         $summary['errors'] = [int]$summary['errors'] + 1

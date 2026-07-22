@@ -1504,4 +1504,100 @@ worktrees: {}
         Test-Path -LiteralPath (Join-Path $project '.winsmux\workflow-runs\run-123\state.json') -PathType Leaf | Should -BeFalse
         Test-Path -LiteralPath (Join-Path $project '.winsmux\workflow-runs\run-123\run.lock') -PathType Leaf | Should -BeFalse
     }
+
+    It 'F03 admits one invocation lease per run, permits different runs, and recovers after owner exit without deleting the marker' {
+        $project = Join-Path $TestDrive 'invocation-lease'
+        $run = New-TestRun
+        $otherRun = Copy-DeclarativeWorkflowValue $run
+        $otherRun.run_id = 'run-456'
+
+        $owner = Enter-DeclarativeWorkflowInvocationLease -ProjectDir $project -RunId 'run-123'
+        $otherOwner = $null
+        try {
+            { Enter-DeclarativeWorkflowInvocationLease -ProjectDir $project -RunId 'run-123' } |
+                Should -Throw '*workflow_run_invocation_busy*'
+            $otherOwner = Enter-DeclarativeWorkflowInvocationLease -ProjectDir $project -RunId 'run-456'
+        } finally {
+            if ($null -ne $otherOwner) { $otherOwner.Dispose() }
+            $owner.Dispose()
+        }
+
+        $marker = Join-Path $project '.winsmux\workflow-runs\run-123\invocation.lock'
+        Test-Path -LiteralPath $marker -PathType Leaf | Should -BeTrue
+        $recovered = Enter-DeclarativeWorkflowInvocationLease -ProjectDir $project -RunId 'run-123'
+        $recovered.Dispose()
+        Test-Path -LiteralPath $marker -PathType Leaf | Should -BeTrue
+    }
+
+    It 'F03 releases the kernel invocation lease after an owning pwsh process is terminated' {
+        $project = Join-Path $TestDrive 'invocation-crash-recovery'
+        $readyPath = Join-Path $TestDrive 'invocation-owner-ready.txt'
+        $workflowScript = Join-Path $script:RepoRoot 'winsmux-core\scripts\declarative-workflow.ps1'
+        $escapedWorkflowScript = $workflowScript.Replace("'", "''")
+        $escapedProject = $project.Replace("'", "''")
+        $escapedReadyPath = $readyPath.Replace("'", "''")
+        $childCommand = @"
+. '$escapedWorkflowScript'
+`$lease = Enter-DeclarativeWorkflowInvocationLease -ProjectDir '$escapedProject' -RunId 'run-123'
+[IO.File]::WriteAllText('$escapedReadyPath', 'ready', [Text.UTF8Encoding]::new(`$false))
+while (`$true) { Start-Sleep -Seconds 1 }
+"@
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childCommand))
+        $pwsh = (Get-Process -Id $PID).Path
+        $owner = Start-Process -FilePath $pwsh -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) -WindowStyle Hidden -PassThru
+        try {
+            $deadline = [DateTime]::UtcNow.AddSeconds(10)
+            while (-not (Test-Path -LiteralPath $readyPath -PathType Leaf) -and [DateTime]::UtcNow -lt $deadline) {
+                if ($owner.HasExited) { throw "invocation lease child exited early with code $($owner.ExitCode)" }
+                Start-Sleep -Milliseconds 50
+            }
+            Test-Path -LiteralPath $readyPath -PathType Leaf | Should -BeTrue
+            { Enter-DeclarativeWorkflowInvocationLease -ProjectDir $project -RunId 'run-123' } |
+                Should -Throw '*workflow_run_invocation_busy*'
+        } finally {
+            if (-not $owner.HasExited) { Stop-Process -Id $owner.Id -Force -ErrorAction SilentlyContinue }
+            $owner.WaitForExit(10000) | Out-Null
+            $owner.Dispose()
+        }
+
+        $marker = Join-Path $project '.winsmux\workflow-runs\run-123\invocation.lock'
+        Test-Path -LiteralPath $marker -PathType Leaf | Should -BeTrue
+        $recovered = Enter-DeclarativeWorkflowInvocationLease -ProjectDir $project -RunId 'run-123'
+        $recovered.Dispose()
+        Test-Path -LiteralPath $marker -PathType Leaf | Should -BeTrue
+    }
+
+    It 'F03 holds the invocation lease across start planning and releases it after the invocation returns' {
+        $project = Join-Path $TestDrive 'invocation-lifetime'
+        $taskFile = Join-Path $TestDrive 'invocation-lifetime-task.txt'
+        [IO.File]::WriteAllText($taskFile, 'Implement TASK-659 safely.', [Text.UTF8Encoding]::new($false))
+        $workspacePlan = [ordered]@{
+            config_fingerprint = ('sha256:' + ('a' * 64))
+            resolved_bindings = [ordered]@{ implement = 'worker-1'; verify = 'worker-2' }
+            workflow = (New-TestWorkflowPlan)
+        }
+        $script:invocationBusyObserved = $false
+        Mock Get-TeamPipelineDeclarativeProjectHead { 'b' * 40 }
+        Mock Read-TeamPipelineManifest { [PSCustomObject]@{ Session = [ordered]@{ name = 'lease-session'; generation_id = 'generation-123' }; Panes = [ordered]@{} } }
+        Mock Get-TeamPipelineSessionName { 'lease-session' }
+        Mock Invoke-TeamPipelineWorkspacePlanOnce {
+            try {
+                $contender = Enter-DeclarativeWorkflowInvocationLease -ProjectDir $project -RunId 'run-123'
+                $contender.Dispose()
+            } catch {
+                $script:invocationBusyObserved = $_.Exception.Message -like '*workflow_run_invocation_busy*'
+            }
+            Copy-DeclarativeWorkflowValue $workspacePlan
+        }
+        Mock Invoke-TeamPipelineDeclarativeRunAdvancement { param($ProjectDir, $Run) $Run }
+
+        $result = Invoke-TeamPipelineDeclarativeWorkflow -Action start -RecipeId 'bugfix-two-slot' -WorkflowId 'bugfix' `
+            -RunId 'run-123' -GenerationId 'generation-123' -ConfigFingerprint ('sha256:' + ('a' * 64)) `
+            -SourceHead ('b' * 40) -TaskFile $taskFile -ProjectDir $project
+
+        $result.status | Should -Be 'accepted'
+        $script:invocationBusyObserved | Should -BeTrue
+        $after = Enter-DeclarativeWorkflowInvocationLease -ProjectDir $project -RunId 'run-123'
+        $after.Dispose()
+    }
 }

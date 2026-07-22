@@ -469,7 +469,7 @@ function Test-DeclarativeWorkflowAcknowledgement {
         @($Acknowledgement.PSObject.Properties.Name)
     }
     $requiredNames = @($expected.Keys) + @('pane_id')
-    $allowedNames = @($requiredNames) + @('transport')
+    $allowedNames = @($requiredNames) + @('transport', 'message_id')
     if (@($propertyNames | Where-Object { $_ -notin $allowedNames }).Count -ne 0 -or
         @($requiredNames | Where-Object { $_ -notin $propertyNames }).Count -ne 0) {
         return $false
@@ -481,6 +481,8 @@ function Test-DeclarativeWorkflowAcknowledgement {
     }
     $transport = Get-DeclarativeWorkflowValue $Acknowledgement 'transport' $null
     if ($null -ne $transport -and [string]$transport -cne 'mailbox') { return $false }
+    $messageId = [string](Get-DeclarativeWorkflowValue $Acknowledgement 'message_id' '')
+    if (-not [string]::IsNullOrWhiteSpace($messageId) -and $messageId -cnotmatch '^[a-z][a-z0-9-]{0,127}$') { return $false }
     return (Test-DeclarativeWorkflowSessionId ([string](Get-DeclarativeWorkflowValue $Acknowledgement 'pane_id' '')))
 }
 
@@ -805,7 +807,7 @@ function Resolve-DeclarativeWorkflowOwnedRunPath {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)][string]$RunId,
-        [Parameter(Mandatory = $true)][ValidateSet('state.json', 'run.lock')][string]$LeafName,
+        [Parameter(Mandatory = $true)][ValidateSet('state.json', 'run.lock', 'invocation.lock')][string]$LeafName,
         [switch]$CreateRunDirectory
     )
     $projectRoot = [IO.Path]::GetFullPath($ProjectDir)
@@ -841,6 +843,26 @@ function Resolve-DeclarativeWorkflowOwnedLock {
     )
     $runId = [string](Get-DeclarativeWorkflowValue $Run 'run_id' '')
     return Resolve-DeclarativeWorkflowOwnedRunPath -ProjectDir $ProjectDir -RunId $runId -LeafName 'run.lock' -CreateRunDirectory:$CreateRunDirectory
+}
+
+function Enter-DeclarativeWorkflowInvocationLease {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$RunId
+    )
+
+    Assert-DeclarativeWorkflowId -Name 'run_id' -Value $RunId
+    $path = Resolve-DeclarativeWorkflowOwnedRunPath -ProjectDir $ProjectDir -RunId $RunId -LeafName 'invocation.lock' -CreateRunDirectory
+    try {
+        return [IO.File]::Open(
+            $path,
+            [IO.FileMode]::OpenOrCreate,
+            [IO.FileAccess]::ReadWrite,
+            [IO.FileShare]::None
+        )
+    } catch [IO.IOException] {
+        throw 'workflow_run_invocation_busy'
+    }
 }
 
 function New-DeclarativeWorkflowRunLock {

@@ -18308,6 +18308,151 @@ function Get-MailboxPipeName {
     return "winsmux-mailbox-$Channel"
 }
 
+function Test-WinsmuxExactJsonProperties {
+    param(
+        [AllowNull()]$Value,
+        [Parameter(Mandatory = $true)][string[]]$Names
+    )
+
+    if ($Value -isnot [Collections.IDictionary]) { return $false }
+    $actual = @($Value.Keys | ForEach-Object { [string]$_ })
+    return $actual.Count -eq $Names.Count -and
+        @($actual | Where-Object { $_ -notin $Names }).Count -eq 0 -and
+        @($Names | Where-Object { $_ -notin $actual }).Count -eq 0
+}
+
+function ConvertTo-WinsmuxWorkflowCompletionEnvelope {
+    param(
+        [Parameter(Mandatory = $true)][string]$Payload,
+        [Parameter(Mandatory = $true)][string]$SessionName,
+        [Parameter(Mandatory = $true)][string]$GenerationId
+    )
+
+    $bytes = [Text.UTF8Encoding]::new($false).GetBytes($Payload)
+    if ($bytes.Length -lt 2 -or $bytes.Length -gt 65536 -or [Array]::IndexOf($bytes, [byte]0) -ge 0) {
+        throw 'mailbox-send: workflow completion payload exceeds the bounded envelope size'
+    }
+    try {
+        $envelope = $Payload | ConvertFrom-WinsmuxJson -AsHashtable -Depth 30 -ErrorAction Stop
+    } catch {
+        throw 'mailbox-send: workflow completion payload must be valid JSON'
+    }
+    $envelopeNames = @(
+        'mailbox_version', 'message_id', 'correlation_id', 'causation_id', 'idempotency_key',
+        'message_type', 'state', 'ttl_seconds', 'ack_required', 'from', 'to', 'timestamp', 'content'
+    )
+    $contentNames = @('session', 'event', 'message', 'label', 'pane_id', 'role', 'status', 'exit_reason', 'data')
+    $dataNames = @(
+        'schema_version', 'run_id', 'node_id', 'idempotency_key', 'generation_id',
+        'config_fingerprint', 'workflow_fingerprint', 'source_head', 'pane_id', 'status', 'evidence_ref'
+    )
+    $content = if ($envelope -is [Collections.IDictionary] -and $envelope.Contains('content')) { $envelope['content'] } else { $null }
+    $data = if ($content -is [Collections.IDictionary] -and $content.Contains('data')) { $content['data'] } else { $null }
+    $messageId = if ($envelope -is [Collections.IDictionary] -and $envelope.Contains('message_id')) { [string]$envelope['message_id'] } else { '' }
+    $runId = if ($data -is [Collections.IDictionary] -and $data.Contains('run_id')) { [string]$data['run_id'] } else { '' }
+    $nodeId = if ($data -is [Collections.IDictionary] -and $data.Contains('node_id')) { [string]$data['node_id'] } else { '' }
+    $timestamp = [DateTimeOffset]::MinValue
+    $ttl = 0
+    if (-not (Test-WinsmuxExactJsonProperties -Value $envelope -Names $envelopeNames) -or
+        -not (Test-WinsmuxExactJsonProperties -Value $content -Names $contentNames) -or
+        -not (Test-WinsmuxExactJsonProperties -Value $data -Names $dataNames) -or
+        [int]$envelope['mailbox_version'] -ne 2 -or
+        $messageId -cnotmatch '^[a-z][a-z0-9-]{0,127}$' -or
+        [string]$envelope['correlation_id'] -cne $messageId -or
+        -not [string]::IsNullOrWhiteSpace([string]$envelope['causation_id']) -or
+        [string]$envelope['idempotency_key'] -cnotmatch '^[A-Za-z0-9:_-]{1,192}$' -or
+        [string]$envelope['message_type'] -cne 'workflow-completion' -or
+        [string]$envelope['state'] -cne 'created' -or
+        -not [int]::TryParse([string]$envelope['ttl_seconds'], [ref]$ttl) -or $ttl -lt 1 -or $ttl -gt 3600 -or
+        -not [bool]$envelope['ack_required'] -or
+        [string]$envelope['from'] -cnotmatch '^[A-Za-z0-9_-]{1,64}$' -or
+        [string]$envelope['to'] -cne 'Operator' -or
+        -not [DateTimeOffset]::TryParse([string]$envelope['timestamp'], [ref]$timestamp) -or
+        [string]$content['session'] -cne $SessionName -or
+        [string]$content['event'] -cne 'workflow.node.acknowledged' -or
+        [string]$content['message'] -cne 'Declarative workflow completion.' -or
+        [string]$content['label'] -cne [string]$envelope['from'] -or
+        [string]$content['pane_id'] -cnotmatch '^%[0-9]+$' -or
+        [string]$content['status'] -cne 'succeeded' -or
+        -not [string]::IsNullOrWhiteSpace([string]$content['exit_reason']) -or
+        [int]$data['schema_version'] -ne 1 -or
+        $runId -cnotmatch '^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$' -or
+        $nodeId -cnotmatch '^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$' -or
+        [string]$data['idempotency_key'] -cne "$runId`:$nodeId" -or
+        [string]$data['generation_id'] -cne $GenerationId -or
+        [string]$data['config_fingerprint'] -cnotmatch '^sha256:[0-9a-f]{64}$' -or
+        [string]$data['workflow_fingerprint'] -cnotmatch '^sha256:[0-9a-f]{64}$' -or
+        [string]$data['source_head'] -cnotmatch '^[0-9a-f]{40}$' -or
+        [string]$data['pane_id'] -cne [string]$content['pane_id'] -or
+        [string]$data['status'] -cne 'succeeded' -or
+        [string]$data['evidence_ref'] -cne "workflow-ack:$runId`:$nodeId") {
+        throw 'mailbox-send: workflow completion payload violates the bounded v2 envelope contract'
+    }
+    return $envelope
+}
+
+function Publish-WinsmuxWorkflowCompletionEnvelope {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$Channel,
+        [Parameter(Mandatory = $true)][string]$Payload
+    )
+
+    $projectRoot = ConvertTo-WinsmuxCanonicalProjectPath -Path $ProjectDir
+    $manifestPath = Join-Path (Join-Path $projectRoot '.winsmux') 'manifest.yaml'
+    if (-not [IO.File]::Exists($manifestPath)) { throw 'mailbox-send: managed project manifest is unavailable' }
+    $manifestText = [IO.File]::ReadAllText($manifestPath, [Text.UTF8Encoding]::new($false, $true))
+    $manifest = ConvertFrom-PaneControlManifestContent -Content $manifestText
+    $session = Get-PaneControlValue -InputObject $manifest -Name 'Session' -Default $null
+    $sessionName = [string](Get-PaneControlValue -InputObject $session -Name 'name' -Default '')
+    $generationId = [string](Get-PaneControlValue -InputObject $session -Name 'generation_id' -Default '')
+    $expectedChannel = "$sessionName-operator"
+    Get-MailboxPipeName -Channel $Channel | Out-Null
+    if ([string]::IsNullOrWhiteSpace($sessionName) -or [string]::IsNullOrWhiteSpace($generationId) -or
+        $expectedChannel.Length -gt 64 -or $Channel -cne $expectedChannel) {
+        throw 'mailbox-send: workflow completion channel does not match the fresh manifest session'
+    }
+    $envelope = ConvertTo-WinsmuxWorkflowCompletionEnvelope -Payload $Payload -SessionName $sessionName -GenerationId $generationId
+    $messageId = [string]$envelope['message_id']
+    $pendingRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot ".winsmux\mailbox\$Channel\pending"))
+    $mailboxRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot '.winsmux\mailbox'))
+    $prefix = $mailboxRoot.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    if (-not $pendingRoot.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'mailbox-send: workflow completion pending path escaped the managed project'
+    }
+    [IO.Directory]::CreateDirectory($pendingRoot) | Out-Null
+    $destination = Join-Path $pendingRoot "$messageId.json"
+    $payloadBytes = [Text.UTF8Encoding]::new($false).GetBytes($Payload)
+    if ([IO.File]::Exists($destination)) {
+        if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($destination)) -ceq [Convert]::ToBase64String($payloadBytes)) {
+            return $destination
+        }
+        throw 'mailbox-send: workflow completion message_id conflict'
+    }
+    $temporary = Join-Path $pendingRoot ('.publish-{0}.tmp' -f [guid]::NewGuid().ToString('N'))
+    try {
+        $stream = [IO.File]::Open($temporary, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try {
+            $stream.Write($payloadBytes, 0, $payloadBytes.Length)
+            $stream.Flush($true)
+        } finally {
+            $stream.Dispose()
+        }
+        try {
+            [IO.File]::Move($temporary, $destination)
+        } catch [IO.IOException] {
+            if ([IO.File]::Exists($destination) -and
+                [Convert]::ToBase64String([IO.File]::ReadAllBytes($destination)) -ceq [Convert]::ToBase64String($payloadBytes)) {
+                return $destination
+            }
+            throw 'mailbox-send: workflow completion message_id conflict'
+        }
+    } finally {
+        if ([IO.File]::Exists($temporary)) { [IO.File]::Delete($temporary) }
+    }
+    return $destination
+}
+
 function Invoke-MailboxCreate {
     if (-not $Target) { Stop-WithError "usage: winsmux mailbox-create <channel>" }
 
@@ -18359,19 +18504,34 @@ function Invoke-MailboxCreate {
 
 function Invoke-MailboxSend {
     if (-not $Target) { Stop-WithError "usage: winsmux mailbox-send <channel> <json>" }
-    if (-not $Rest -or $Rest.Count -eq 0) {
+    $mailboxArguments = @($Rest)
+    if ($mailboxArguments.Count -eq 0) {
         Stop-WithError "usage: winsmux mailbox-send <channel> <json>"
     }
 
-    $pipeName = Get-MailboxPipeName $Target
-    $payload = $Rest -join ' '
+    $payload = $mailboxArguments -join ' '
 
     # Validate JSON
     try {
-        $null = $payload | ConvertFrom-Json -ErrorAction Stop
+        $message = $payload | ConvertFrom-Json -ErrorAction Stop
     } catch {
         Stop-WithError "mailbox-send: payload must be valid JSON"
     }
+
+    if ($null -ne $message -and [string]$message.message_type -ceq 'workflow-completion') {
+        if ([string]::IsNullOrWhiteSpace([string]$env:WINSMUX_ORCHESTRA_PROJECT_DIR)) {
+            Stop-WithError 'mailbox-send: workflow completion requires WINSMUX_ORCHESTRA_PROJECT_DIR'
+        }
+        try {
+            Publish-WinsmuxWorkflowCompletionEnvelope -ProjectDir ([string]$env:WINSMUX_ORCHESTRA_PROJECT_DIR) -Channel $Target -Payload $payload | Out-Null
+        } catch {
+            Stop-WithError ([string]$_.Exception.Message)
+        }
+        Write-Output "mailbox queued: $Target"
+        return
+    }
+
+    $pipeName = Get-MailboxPipeName $Target
 
     $client = [System.IO.Pipes.NamedPipeClientStream]::new(
         ".",

@@ -833,4 +833,81 @@ Describe 'winsmux send dispatch payload' {
         $violation.verdict | Should -Be 'BLOCK'
         $violation.reason | Should -Match 'allow_patterns'
     }
+
+    It 'F01 durably publishes workflow completion without a pipe listener and enforces channel and create-once identity' {
+        $project = Join-Path $script:sendTempRoot 'durable-workflow-mailbox'
+        [IO.Directory]::CreateDirectory((Join-Path $project '.winsmux')) | Out-Null
+        Save-WinsmuxManifest -ProjectDir $project -Manifest ([ordered]@{
+            version = 2
+            session = [ordered]@{ name = 'winsmux-orchestra'; generation_id = 'generation-123'; server_session_id = '$41'; session_ready = $true }
+            panes = [ordered]@{
+                'builder-1' = [ordered]@{ pane_id = '%2'; role = 'Builder'; status = 'ready'; runtime_ready = $true }
+            }
+            tasks = [ordered]@{ queued = @(); in_progress = @(); completed = @() }
+            worktrees = [ordered]@{}
+        })
+        $payload = [ordered]@{
+            mailbox_version = 2; message_id = 'workflow-ack-f01'; correlation_id = 'workflow-ack-f01'; causation_id = $null
+            idempotency_key = 'workflow-completion-f01'; message_type = 'workflow-completion'; state = 'created'; ttl_seconds = 300
+            ack_required = $true; from = 'builder-1'; to = 'Operator'; timestamp = [DateTimeOffset]::UtcNow.ToString('o')
+            content = [ordered]@{
+                session = 'winsmux-orchestra'; event = 'workflow.node.acknowledged'; message = 'Declarative workflow completion.'
+                label = 'builder-1'; pane_id = '%2'; role = 'Builder'; status = 'succeeded'; exit_reason = ''
+                data = [ordered]@{
+                    schema_version = 1; run_id = 'run-123'; node_id = 'inspect'; idempotency_key = 'run-123:inspect'
+                    generation_id = 'generation-123'; config_fingerprint = ('sha256:' + ('a' * 64)); workflow_fingerprint = ('sha256:' + ('d' * 64))
+                    source_head = ('b' * 40); pane_id = '%2'; status = 'succeeded'; evidence_ref = 'workflow-ack:run-123:inspect'
+                }
+            }
+        }
+        $json = $payload | ConvertTo-Json -Compress -Depth 20
+
+        Publish-WinsmuxWorkflowCompletionEnvelope -ProjectDir $project -Channel 'winsmux-orchestra-operator' -Payload $json | Out-Null
+        $pending = Join-Path $project '.winsmux\mailbox\winsmux-orchestra-operator\pending\workflow-ack-f01.json'
+        Test-Path -LiteralPath $pending -PathType Leaf | Should -BeTrue
+        [IO.File]::ReadAllText($pending, [Text.UTF8Encoding]::new($false, $true)) | Should -BeExactly $json
+
+        $env:WINSMUX_ORCHESTRA_PROJECT_DIR = $project
+        $pwsh = (Get-Process -Id $PID).Path
+        $commandOutput = @(& $pwsh -NoLogo -NoProfile -NonInteractive -File $script:winsmuxCorePath mailbox-send 'winsmux-orchestra-operator' $json)
+        $LASTEXITCODE | Should -Be 0
+        $commandOutput | Should -Contain 'mailbox queued: winsmux-orchestra-operator'
+        $changedPayload = $json | ConvertFrom-Json -AsHashtable
+        $changedPayload.timestamp = [DateTimeOffset]::UtcNow.AddSeconds(1).ToString('o')
+        $changed = $changedPayload | ConvertTo-Json -Compress -Depth 20
+        { Publish-WinsmuxWorkflowCompletionEnvelope -ProjectDir $project -Channel 'winsmux-orchestra-operator' -Payload $changed } |
+            Should -Throw '*message_id conflict*'
+        { Publish-WinsmuxWorkflowCompletionEnvelope -ProjectDir $project -Channel 'wrong-session-operator' -Payload $json } |
+            Should -Throw '*channel*'
+        (Get-MailboxPipeName ('a' * 65)) | Should -BeExactly ('winsmux-mailbox-' + ('a' * 65))
+        { Publish-WinsmuxWorkflowCompletionEnvelope -ProjectDir $project -Channel ('a' * 65) -Payload $json } |
+            Should -Throw '*channel*'
+
+        $racePayload = $json | ConvertFrom-Json -AsHashtable
+        $racePayload.message_id = 'workflow-ack-race'
+        $racePayload.correlation_id = 'workflow-ack-race'
+        $racePayload.idempotency_key = 'workflow-completion-race'
+        $raceJson = $racePayload | ConvertTo-Json -Compress -Depth 20
+        $escapedCorePath = $script:winsmuxCorePath.Replace("'", "''")
+        $escapedRaceJson = $raceJson.Replace("'", "''")
+        $childCommand = "& '$escapedCorePath' mailbox-send 'winsmux-orchestra-operator' '$escapedRaceJson'; exit `$LASTEXITCODE"
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childCommand))
+        $publishers = @(
+            Start-Process -FilePath $pwsh -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) -WindowStyle Hidden -PassThru
+            Start-Process -FilePath $pwsh -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) -WindowStyle Hidden -PassThru
+        )
+        try {
+            foreach ($publisher in $publishers) {
+                $publisher.WaitForExit(10000) | Should -BeTrue
+                $publisher.ExitCode | Should -Be 0
+            }
+        } finally {
+            foreach ($publisher in $publishers) {
+                if (-not $publisher.HasExited) { Stop-Process -Id $publisher.Id -Force -ErrorAction SilentlyContinue }
+                $publisher.Dispose()
+            }
+        }
+        $racePending = Join-Path $project '.winsmux\mailbox\winsmux-orchestra-operator\pending\workflow-ack-race.json'
+        [IO.File]::ReadAllText($racePending, [Text.UTF8Encoding]::new($false, $true)) | Should -BeExactly $raceJson
+    }
 }

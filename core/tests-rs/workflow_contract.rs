@@ -137,6 +137,28 @@ fn schema_is_closed_for_task_input_cleanup_action_and_node_payload() {
 }
 
 #[test]
+fn f04_verification_requires_at_least_one_dependency_before_execution() {
+    for (name, yaml) in [
+        (
+            "omitted",
+            VALID.replace("        depends-on: [inspect]\n", ""),
+        ),
+        (
+            "empty",
+            VALID.replace("depends-on: [inspect]", "depends-on: []"),
+        ),
+    ] {
+        let error =
+            normalize_workflow_plan(&yaml, "bugfix", "run-123", "bugfix-two-slot", &bindings())
+                .expect_err(name);
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{name}");
+    }
+
+    normalize_workflow_plan(VALID, "bugfix", "run-123", "bugfix-two-slot", &bindings())
+        .expect("one existing dependency is executable");
+}
+
+#[test]
 fn w12_terminal_runs_are_not_resumable() {
     for state in [
         RunState::Succeeded,
