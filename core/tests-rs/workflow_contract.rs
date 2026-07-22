@@ -669,3 +669,35 @@ fn h10_cancelled_state_requires_an_external_typed_cancellation_proof() {
     assert_eq!(cleaning["state"], "cancelled");
     assert_eq!(cleaning["cleanup_journal"][0]["state"], "running");
 }
+
+#[test]
+fn i01_generation_id_accepts_managed_guid_n_or_legacy_stable_id_only() {
+    for generation_id in ["0123456789abcdef0123456789abcdef", "generation-123"] {
+        let mut request = reducer_bootstrap_request();
+        request["identity"]["generation_id"] = serde_json::json!(generation_id);
+        let run = reduce_workflow_state_value(&request)
+            .unwrap_or_else(|error| panic!("{generation_id} must bootstrap: {error}"));
+        assert_eq!(run["generation_id"], generation_id);
+    }
+
+    for generation_id in [
+        "123",
+        "0123456789abcdef0123456789abcde",
+        "0123456789abcdef0123456789abcdef0",
+        "0123456789abcdef0123456789abcdeF",
+        "0123456789abcdef0123456789abcdeg",
+        "-generation-123",
+        " generation-123",
+        "generation-123 ",
+        "\u{4e16}\u{4ee3}-123",
+    ] {
+        let mut request = reducer_bootstrap_request();
+        request["identity"]["generation_id"] = serde_json::json!(generation_id);
+        let error = reduce_workflow_state_value(&request)
+            .expect_err("only the managed GUID-N or legacy stable generation forms are accepted");
+        assert!(
+            error.to_string().contains("generation_id"),
+            "{generation_id} must fail generation validation: {error}"
+        );
+    }
+}

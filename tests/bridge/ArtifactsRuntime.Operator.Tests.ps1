@@ -8,7 +8,11 @@ Describe 'operator-poll helpers' {
     BeforeAll {
         $script:operatorPollScriptPath = Join-Path (Split-Path -Parent $script:BridgeTestsRoot) 'winsmux-core\scripts\operator-poll.ps1'
         function New-TestDurableWorkflowEnvelope {
-            param([string]$MessageId = 'workflow-ack-f01', [string]$NodeId = 'inspect')
+            param(
+                [string]$MessageId = 'workflow-ack-f01',
+                [string]$NodeId = 'inspect',
+                [string]$GenerationId = 'generation-123'
+            )
             [ordered]@{
                 mailbox_version = 2; message_id = $MessageId; correlation_id = $MessageId; causation_id = $null
                 idempotency_key = "workflow-completion-$MessageId"; message_type = 'workflow-completion'; state = 'created'; ttl_seconds = 300
@@ -18,7 +22,7 @@ Describe 'operator-poll helpers' {
                     label = 'builder-1'; pane_id = '%2'; role = 'Builder'; status = 'succeeded'; exit_reason = ''
                     data = [ordered]@{
                         schema_version = 1; run_id = 'run-123'; node_id = $NodeId; idempotency_key = "run-123:$NodeId"
-                        generation_id = 'generation-123'; config_fingerprint = ('sha256:' + ('a' * 64)); workflow_fingerprint = ('sha256:' + ('d' * 64))
+                        generation_id = $GenerationId; config_fingerprint = ('sha256:' + ('a' * 64)); workflow_fingerprint = ('sha256:' + ('d' * 64))
                         source_head = ('b' * 40); pane_id = '%2'; status = 'succeeded'; evidence_ref = "workflow-ack:run-123:$NodeId"
                     }
                 }
@@ -330,6 +334,41 @@ panes:
         (ConvertTo-OperatorPollMailboxRecord -MailboxMessage $unknown -SessionName 'winsmux-orchestra') | Should -BeNullOrEmpty
     }
 
+    It 'I01 accepts only managed GUID-N or legacy stable generation IDs in a workflow completion envelope' {
+        foreach ($generationId in @('0123456789abcdef0123456789abcdef', 'generation-123')) {
+            $record = ConvertTo-OperatorPollMailboxRecord -MailboxMessage (New-TestDurableWorkflowEnvelope `
+                    -MessageId ('generation-id-' + $generationId) -GenerationId $generationId) -SessionName 'winsmux-orchestra'
+            $record | Should -Not -BeNullOrEmpty
+            $record.data.generation_id | Should -BeExactly $generationId
+        }
+
+        foreach ($generationId in @(
+                '123',
+                '0123456789abcdef0123456789abcde',
+                '0123456789abcdef0123456789abcdef0',
+                '0123456789abcdef0123456789abcdeF',
+                '0123456789abcdef0123456789abcdeg',
+                '-generation-123',
+                ' generation-123',
+                'generation-123 ',
+                '世代-123'
+            )) {
+            (ConvertTo-OperatorPollMailboxRecord -MailboxMessage (New-TestDurableWorkflowEnvelope `
+                    -MessageId 'generation-id-invalid' -GenerationId $generationId) -SessionName 'winsmux-orchestra') | Should -BeNullOrEmpty
+        }
+
+        $managedRecord = ConvertTo-OperatorPollMailboxRecord -MailboxMessage (New-TestDurableWorkflowEnvelope `
+                -MessageId 'generation-id-exact-mismatch' -GenerationId '0123456789abcdef0123456789abcdef') -SessionName 'winsmux-orchestra'
+        $manifest = Read-OperatorPollManifest -Path $script:operatorPollManifestPath
+        $summary = [ordered]@{ new_events = 0; dispatches = 0; completions = 0; approvals = 0; errors = 0; messages = @() }
+        Mock Write-OrchestraLog { throw 'a distinct managed generation must not become durable evidence for the legacy runtime generation' }
+
+        Invoke-OperatorPollEventRecord -Manifest $manifest -ManifestPath $script:operatorPollManifestPath -EventRecord $managedRecord -Summary $summary
+
+        $summary.errors | Should -Be 1
+        Should -Invoke Write-OrchestraLog -Times 0 -Exactly
+    }
+
     It 'rejects a stale workflow acknowledgement pane ID even when its label and envelope agree' {
         $acknowledgement = [ordered]@{
             schema_version      = 1
@@ -407,6 +446,69 @@ panes:
         $result.Summary.mailbox_events | Should -Be 0
         Test-Path -LiteralPath $pendingPath | Should -BeFalse
         Should -Invoke Write-OrchestraLog -Times 0 -Exactly
+    }
+
+    It 'J01 admits a live completion after twenty sorted poison files and deletes every terminal-invalid partition without effects' {
+        $pendingRoot = Join-Path $script:operatorPollTempRoot '.winsmux\mailbox\winsmux-orchestra-operator\pending'
+        [IO.Directory]::CreateDirectory($pendingRoot) | Out-Null
+        $poisonPaths = @()
+        foreach ($index in 1..20) {
+            $poisonPath = Join-Path $pendingRoot ('a-poison-{0:d2}.json' -f $index)
+            [IO.File]::WriteAllText($poisonPath, '{invalid', [Text.UTF8Encoding]::new($false))
+            $poisonPaths += $poisonPath
+        }
+        $livePath = Join-Path $pendingRoot 'workflow-ack-j01-live.json'
+        $livePayload = New-TestDurableWorkflowEnvelope -MessageId 'workflow-ack-j01-live'
+        [IO.File]::WriteAllText($livePath, ($livePayload | ConvertTo-Json -Compress -Depth 20), [Text.UTF8Encoding]::new($false))
+
+        $records = @(Receive-OperatorPollDurableWorkflowMessages -ProjectDir $script:operatorPollTempRoot -SessionName 'winsmux-orchestra' -MaxMessages 1)
+
+        $records.Count | Should -Be 1
+        $records[0].message_id | Should -BeExactly 'workflow-ack-j01-live'
+        foreach ($poisonPath in $poisonPaths) {
+            Test-Path -LiteralPath $poisonPath -PathType Leaf | Should -BeFalse
+        }
+        Test-Path -LiteralPath $livePath -PathType Leaf | Should -BeTrue
+        [IO.File]::Delete($livePath)
+
+        $terminalCases = @(
+            [PSCustomObject]@{ Name = 'filename'; FileName = '0-invalid-name.json'; Write = { param($Path) [IO.File]::WriteAllText($Path, '{}', [Text.UTF8Encoding]::new($false)) } },
+            [PSCustomObject]@{ Name = 'empty-size'; FileName = 'invalid-size-empty.json'; Write = { param($Path) [IO.File]::WriteAllBytes($Path, [byte[]]@()) } },
+            [PSCustomObject]@{ Name = 'over-limit-size'; FileName = 'invalid-size-large.json'; Write = { param($Path) [IO.File]::WriteAllBytes($Path, [byte[]]::new(65537)) } },
+            [PSCustomObject]@{ Name = 'nul'; FileName = 'invalid-nul.json'; Write = { param($Path) [IO.File]::WriteAllBytes($Path, [byte[]](0x7b, 0x00, 0x7d)) } },
+            [PSCustomObject]@{ Name = 'utf8'; FileName = 'invalid-utf8.json'; Write = { param($Path) [IO.File]::WriteAllBytes($Path, [byte[]](0xff, 0xfe)) } },
+            [PSCustomObject]@{ Name = 'json'; FileName = 'invalid-json.json'; Write = { param($Path) [IO.File]::WriteAllText($Path, '{invalid', [Text.UTF8Encoding]::new($false)) } },
+            [PSCustomObject]@{ Name = 'envelope'; FileName = 'invalid-envelope.json'; Write = { param($Path) [IO.File]::WriteAllText($Path, '{}', [Text.UTF8Encoding]::new($false)) } },
+            [PSCustomObject]@{ Name = 'message-identity'; FileName = 'invalid-message-identity.json'; Write = { param($Path) $payload = New-TestDurableWorkflowEnvelope -MessageId 'different-message-id'; [IO.File]::WriteAllText($Path, ($payload | ConvertTo-Json -Compress -Depth 20), [Text.UTF8Encoding]::new($false)) } },
+            [PSCustomObject]@{ Name = 'timestamp'; FileName = 'invalid-timestamp.json'; Write = { param($Path) $payload = New-TestDurableWorkflowEnvelope -MessageId 'invalid-timestamp'; $payload.timestamp = 'not-a-timestamp'; [IO.File]::WriteAllText($Path, ($payload | ConvertTo-Json -Compress -Depth 20), [Text.UTF8Encoding]::new($false)) } },
+            [PSCustomObject]@{ Name = 'ttl'; FileName = 'invalid-ttl.json'; Write = { param($Path) $payload = New-TestDurableWorkflowEnvelope -MessageId 'invalid-ttl'; $payload.ttl_seconds = 0; [IO.File]::WriteAllText($Path, ($payload | ConvertTo-Json -Compress -Depth 20), [Text.UTF8Encoding]::new($false)) } }
+        )
+        Mock Receive-OperatorPollMailboxMessages { @() }
+        Mock Write-OrchestraLog { throw 'terminal-invalid pending files must not reach the durable log' }
+        foreach ($case in $terminalCases) {
+            $casePath = Join-Path $pendingRoot $case.FileName
+            & $case.Write $casePath
+            $result = Invoke-OperatorPollCycle -ManifestPath $script:operatorPollManifestPath -ProcessedLineCount 0 -ProcessedEventSignatures ([ordered]@{})
+            $result.Summary.mailbox_events | Should -Be 0 -Because $case.Name
+            Test-Path -LiteralPath $casePath -PathType Leaf | Should -BeFalse -Because $case.Name
+        }
+        Should -Invoke Write-OrchestraLog -Times 0 -Exactly
+    }
+
+    It 'J02 retains a complete pending workflow completion when a transient file read fails' {
+        $pendingRoot = Join-Path $script:operatorPollTempRoot '.winsmux\mailbox\winsmux-orchestra-operator\pending'
+        [IO.Directory]::CreateDirectory($pendingRoot) | Out-Null
+        $pendingPath = Join-Path $pendingRoot 'workflow-ack-j02-transient.json'
+        $payload = New-TestDurableWorkflowEnvelope -MessageId 'workflow-ack-j02-transient'
+        [IO.File]::WriteAllText($pendingPath, ($payload | ConvertTo-Json -Compress -Depth 20), [Text.UTF8Encoding]::new($false))
+        $lease = [IO.File]::Open($pendingPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+        try {
+            $records = @(Receive-OperatorPollDurableWorkflowMessages -ProjectDir $script:operatorPollTempRoot -SessionName 'winsmux-orchestra')
+            $records.Count | Should -Be 0
+            Test-Path -LiteralPath $pendingPath -PathType Leaf | Should -BeTrue
+        } finally {
+            $lease.Dispose()
+        }
     }
 
     It 'F01 consumes a pending workflow ACK only after durable log success and leaves it for replay after log failure' {

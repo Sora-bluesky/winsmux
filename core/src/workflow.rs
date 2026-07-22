@@ -1095,7 +1095,7 @@ fn cleanup_action_mut(run: &mut WorkflowRun) -> io::Result<&mut CleanupActionRec
 
 fn validate_workflow_run_identity(identity: &WorkflowRunIdentity) -> io::Result<()> {
     require_stable_id("run_id", &identity.run_id)?;
-    require_stable_id("generation_id", &identity.generation_id)?;
+    require_generation_id("generation_id", &identity.generation_id)?;
     validate_digest("config_fingerprint", &identity.config_fingerprint)?;
     validate_digest("task_sha256", &identity.task_sha256)?;
     validate_source_head(&identity.source_head)
@@ -1769,6 +1769,18 @@ fn require_stable_id(label: &str, value: &str) -> io::Result<()> {
         )));
     }
     Ok(())
+}
+
+fn require_generation_id(label: &str, value: &str) -> io::Result<()> {
+    let bytes = value.as_bytes();
+    if bytes.len() == 32
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
+    {
+        return Ok(());
+    }
+    require_stable_id(label, value)
 }
 
 fn invalid_input(message: impl Into<String>) -> io::Error {

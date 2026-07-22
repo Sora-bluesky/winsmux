@@ -3,6 +3,7 @@ Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot 'json-compat.ps1')
 
 $script:DeclarativeWorkflowIdPattern = '^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$'
+$script:DeclarativeWorkflowGenerationIdPattern = '\A(?:[0-9a-f]{32}|[a-z][a-z0-9]*(?:-[a-z0-9]+)*)\z'
 $script:DeclarativeWorkflowDigestPattern = '^sha256:[0-9a-f]{64}$'
 $script:DeclarativeWorkflowHeadPattern = '^[0-9a-f]{40}$'
 $script:DeclarativeWorkflowTaskLimit = 262144
@@ -162,6 +163,13 @@ function Assert-DeclarativeWorkflowId {
     param([Parameter(Mandatory = $true)][string]$Name, [Parameter(Mandatory = $true)][string]$Value)
     if ($Value -cnotmatch $script:DeclarativeWorkflowIdPattern) {
         throw "$Name must be a stable lowercase ASCII identifier."
+    }
+}
+
+function Assert-DeclarativeWorkflowGenerationId {
+    param([Parameter(Mandatory = $true)][string]$Name, [Parameter(Mandatory = $true)][string]$Value)
+    if ($Value -cnotmatch $script:DeclarativeWorkflowGenerationIdPattern) {
+        throw "$Name must be a managed lowercase GUID-N or legacy stable identifier."
     }
 }
 
@@ -418,7 +426,7 @@ function New-DeclarativeWorkflowRun {
         [Parameter(Mandatory = $true)]$TaskInput
     )
     Assert-DeclarativeWorkflowId -Name 'run_id' -Value $RunId
-    Assert-DeclarativeWorkflowId -Name 'generation_id' -Value $GenerationId
+    Assert-DeclarativeWorkflowGenerationId -Name 'generation_id' -Value $GenerationId
     if ($SourceHead -cnotmatch $script:DeclarativeWorkflowHeadPattern) {
         throw 'source_head must be a lowercase full commit ID.'
     }
@@ -1215,7 +1223,7 @@ function Save-DeclarativeWorkflowRunState {
     $runId = [string](Get-DeclarativeWorkflowValue $Run 'run_id' '')
     $generationId = [string](Get-DeclarativeWorkflowValue $Run 'generation_id' '')
     Assert-DeclarativeWorkflowId -Name 'run_id' -Value $runId
-    Assert-DeclarativeWorkflowId -Name 'generation_id' -Value $generationId
+    Assert-DeclarativeWorkflowGenerationId -Name 'generation_id' -Value $generationId
     Assert-DeclarativeWorkflowStatePrivacy -Value $Run -Shape 'run'
     $path = Resolve-DeclarativeWorkflowOwnedRunPath -ProjectDir $ProjectDir -RunId $runId -LeafName 'state.json' -CreateRunDirectory
     $runRoot = Split-Path -Parent $path

@@ -95,6 +95,12 @@ function Test-OperatorPollExactPropertyNames {
         @($AllowedNames | Where-Object { $_ -notin $names }).Count -eq 0
 }
 
+function Test-OperatorPollGenerationId {
+    param([AllowNull()][string]$Value)
+
+    return $null -ne $Value -and $Value -cmatch '\A(?:[0-9a-f]{32}|[a-z][a-z0-9]*(?:-[a-z0-9]+)*)\z'
+}
+
 function Test-OperatorPollWorkflowAcknowledgementData {
     param([AllowNull()]$Data)
 
@@ -111,7 +117,7 @@ function Test-OperatorPollWorkflowAcknowledgementData {
         $runId -cnotmatch '^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$' -or
         $nodeId -cnotmatch '^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$' -or
         [string](Get-OperatorPollValue -InputObject $Data -Name 'idempotency_key' -Default '') -cne "$runId`:$nodeId" -or
-        [string](Get-OperatorPollValue -InputObject $Data -Name 'generation_id' -Default '') -cnotmatch '^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$' -or
+        -not (Test-OperatorPollGenerationId -Value ([string](Get-OperatorPollValue -InputObject $Data -Name 'generation_id' -Default ''))) -or
         [string](Get-OperatorPollValue -InputObject $Data -Name 'config_fingerprint' -Default '') -cnotmatch '^sha256:[0-9a-f]{64}$' -or
         [string](Get-OperatorPollValue -InputObject $Data -Name 'workflow_fingerprint' -Default '') -cnotmatch '^sha256:[0-9a-f]{64}$' -or
         [string](Get-OperatorPollValue -InputObject $Data -Name 'source_head' -Default '') -cnotmatch '^[0-9a-f]{40}$' -or
@@ -805,6 +811,15 @@ function Receive-OperatorPollMailboxMessages {
     return @($messages)
 }
 
+function Remove-OperatorPollTerminalPendingFile {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    try {
+        [IO.File]::Delete($Path)
+    } catch {
+    }
+}
+
 function Receive-OperatorPollDurableWorkflowMessages {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -817,28 +832,61 @@ function Receive-OperatorPollDurableWorkflowMessages {
     $pendingRoot = Join-Path $ProjectDir ".winsmux\mailbox\$channel\pending"
     if (-not [IO.Directory]::Exists($pendingRoot)) { return @() }
     $messages = [Collections.Generic.List[object]]::new()
-    foreach ($file in @(Get-ChildItem -LiteralPath $pendingRoot -File -Filter '*.json' -ErrorAction Stop | Sort-Object Name | Select-Object -First $MaxMessages)) {
-        if ($file.BaseName -cnotmatch '^[a-z][a-z0-9-]{0,127}$' -or $file.Length -lt 2 -or $file.Length -gt 65536) { continue }
+    if ($MaxMessages -lt 1) { return @($messages) }
+    try {
+        $pendingFiles = @(Get-ChildItem -LiteralPath $pendingRoot -File -Filter '*.json' -ErrorAction Stop | Sort-Object Name)
+    } catch {
+        return @($messages)
+    }
+    foreach ($file in $pendingFiles) {
+        if ($messages.Count -ge $MaxMessages) { break }
+        if ($file.BaseName -cnotmatch '^[a-z][a-z0-9-]{0,127}$') {
+            Remove-OperatorPollTerminalPendingFile -Path $file.FullName
+            continue
+        }
+        try {
+            $fileLength = [int64]$file.Length
+        } catch {
+            continue
+        }
+        if ($fileLength -lt 2 -or $fileLength -gt 65536) {
+            Remove-OperatorPollTerminalPendingFile -Path $file.FullName
+            continue
+        }
         try {
             $bytes = [IO.File]::ReadAllBytes($file.FullName)
-            if ([Array]::IndexOf($bytes, [byte]0) -ge 0) { continue }
+        } catch {
+            continue
+        }
+        if ([Array]::IndexOf($bytes, [byte]0) -ge 0) {
+            Remove-OperatorPollTerminalPendingFile -Path $file.FullName
+            continue
+        }
+        try {
             $json = [Text.UTF8Encoding]::new($false, $true).GetString($bytes)
             $mailboxMessage = $json | ConvertFrom-WinsmuxJson -AsHashtable -Depth 30 -ErrorAction Stop
             $record = ConvertTo-OperatorPollMailboxRecord -MailboxMessage $mailboxMessage -SessionName $SessionName
             if ($null -eq $record -or [string]$record['message_type'] -cne 'workflow-completion' -or
-                [string]$record['message_id'] -cne $file.BaseName) { continue }
+                [string]$record['message_id'] -cne $file.BaseName) {
+                Remove-OperatorPollTerminalPendingFile -Path $file.FullName
+                continue
+            }
             $createdAt = [DateTimeOffset]::MinValue
             $ttl = 0
             if (-not [DateTimeOffset]::TryParse([string]$record['timestamp'], [ref]$createdAt) -or
                 -not [int]::TryParse([string](Get-OperatorPollValue $record['data'] 'mailbox_ttl_seconds' 0), [ref]$ttl) -or
-                $ttl -lt 1 -or $ttl -gt 3600) { continue }
+                $ttl -lt 1 -or $ttl -gt 3600) {
+                Remove-OperatorPollTerminalPendingFile -Path $file.FullName
+                continue
+            }
             if ([DateTimeOffset]::UtcNow -gt $createdAt.ToUniversalTime().AddSeconds($ttl)) {
-                [IO.File]::Delete($file.FullName)
+                Remove-OperatorPollTerminalPendingFile -Path $file.FullName
                 continue
             }
             $record['durable_pending_path'] = $file.FullName
             $messages.Add($record) | Out-Null
         } catch {
+            Remove-OperatorPollTerminalPendingFile -Path $file.FullName
             continue
         }
     }

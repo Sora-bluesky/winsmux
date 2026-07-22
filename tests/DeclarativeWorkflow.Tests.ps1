@@ -1867,6 +1867,45 @@ while (`$true) { Start-Sleep -Seconds 1 }
         $run.nodes.verify.state | Should -Be 'pending'
     }
 
+    It 'I01 accepts only managed GUID-N or legacy stable generation IDs at bootstrap and save boundaries' {
+        $taskInput = New-TestTaskInput
+        $validGenerationIds = @(
+            '0123456789abcdef0123456789abcdef',
+            'generation-123'
+        )
+        for ($index = 0; $index -lt $validGenerationIds.Count; $index++) {
+            $generationId = $validGenerationIds[$index]
+            $run = New-DeclarativeWorkflowRun -Plan (New-TestWorkflowPlan) -RunId 'run-123' -GenerationId $generationId `
+                -ConfigFingerprint ('sha256:' + ('a' * 64)) -SourceHead ('b' * 40) -TaskInput $taskInput
+            $run.generation_id | Should -BeExactly $generationId
+            Save-DeclarativeWorkflowRunState -ProjectDir (Join-Path $TestDrive "generation-id-$index") -Run $run | Out-Null
+        }
+
+        $invalidGenerationIds = @(
+            '123',
+            '0123456789abcdef0123456789abcde',
+            '0123456789abcdef0123456789abcdef0',
+            '0123456789abcdef0123456789abcdeF',
+            '0123456789abcdef0123456789abcdeg',
+            '-generation-123',
+            ' generation-123',
+            'generation-123 ',
+            '世代-123'
+        )
+        foreach ($generationId in $invalidGenerationIds) {
+            {
+                New-DeclarativeWorkflowRun -Plan (New-TestWorkflowPlan) -RunId 'run-123' -GenerationId $generationId `
+                    -ConfigFingerprint ('sha256:' + ('a' * 64)) -SourceHead ('b' * 40) -TaskInput $taskInput
+            } | Should -Throw '*generation_id*'
+
+            $persisted = New-TestRun
+            $persisted.generation_id = $generationId
+            {
+                Save-DeclarativeWorkflowRunState -ProjectDir (Join-Path $TestDrive ('invalid-generation-' + [guid]::NewGuid().ToString('N'))) -Run $persisted
+            } | Should -Throw '*generation_id*'
+        }
+    }
+
     It 'H02 rejects a legacy v1 snapshot before save dispatch or cleanup effects' {
         $run = New-TestRun
         $run.schema_version = 1
