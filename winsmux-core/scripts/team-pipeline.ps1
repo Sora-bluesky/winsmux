@@ -115,13 +115,63 @@ function Get-TeamPipelineManifestPath {
     return Join-Path (Join-Path $ProjectDir '.winsmux') 'manifest.yaml'
 }
 
+function ConvertFrom-TeamPipelineDeclarativeWorkspaceContent {
+    param([Parameter(Mandatory = $true)][string]$Content)
+
+    $blocks = @(Get-ManifestUnknownTopLevelBlocks -Content $Content | Where-Object {
+            $firstLine = ([string]$_ -split "`r?`n", 2)[0]
+            (ConvertFrom-ManifestTopLevelYamlKey -Line $firstLine) -ceq 'declarative_workspace'
+        })
+    if ($blocks.Count -eq 0) { return $null }
+    if ($blocks.Count -ne 1) { throw 'workflow_manifest_declarative_workspace_invalid' }
+
+    $projection = [ordered]@{}
+    $bindings = [ordered]@{}
+    $inBindings = $false
+    foreach ($line in @(([string]$blocks[0] -split "`r?`n") | Select-Object -Skip 1)) {
+        if ([string]::IsNullOrWhiteSpace($line) -or $line -match '^\s*#') { continue }
+        if ($line -match '^  ([a-z_]+):\s*(.*?)\s*$') {
+            $name = [string]$Matches[1]
+            $rawValue = [string]$Matches[2]
+            if ($projection.Contains($name)) { throw 'workflow_manifest_declarative_workspace_invalid' }
+            if ($name -ceq 'resolved_bindings') {
+                if (-not [string]::IsNullOrWhiteSpace($rawValue) -and $rawValue -cne '{}') {
+                    throw 'workflow_manifest_declarative_workspace_invalid'
+                }
+                $projection[$name] = $bindings
+                $inBindings = $true
+            } else {
+                if ($name -notin @('schema_version', 'config_fingerprint', 'recipe_id', 'dry_run_plan_ref') -or
+                    [string]::IsNullOrWhiteSpace($rawValue)) {
+                    throw 'workflow_manifest_declarative_workspace_invalid'
+                }
+                $projection[$name] = ConvertFrom-ManifestYamlValue -Value $rawValue
+                $inBindings = $false
+            }
+            continue
+        }
+        if ($inBindings -and $line -match '^    ([a-z][a-z0-9]*(?:-[a-z0-9]+)*):\s*(.*?)\s*$') {
+            $name = [string]$Matches[1]
+            $rawValue = [string]$Matches[2]
+            if ($bindings.Contains($name) -or [string]::IsNullOrWhiteSpace($rawValue)) {
+                throw 'workflow_manifest_declarative_workspace_invalid'
+            }
+            $bindings[$name] = ConvertFrom-ManifestYamlValue -Value $rawValue
+            continue
+        }
+        throw 'workflow_manifest_declarative_workspace_invalid'
+    }
+    return $projection
+}
+
 function ConvertFrom-TeamPipelineManifestContent {
     param([Parameter(Mandatory = $true)][string]$Content)
 
     $parsed = ConvertFrom-ManifestYaml -Content $Content
     return [PSCustomObject]@{
-        Session = $parsed.session
-        Panes   = $parsed.panes
+        Session              = $parsed.session
+        Panes                = $parsed.panes
+        DeclarativeWorkspace = ConvertFrom-TeamPipelineDeclarativeWorkspaceContent -Content $Content
     }
 }
 
@@ -1872,6 +1922,7 @@ function Assert-TeamPipelineDeclarativeAdmission {
         [Parameter(Mandatory = $true)]$Confirmation,
         [Parameter(Mandatory = $true)]$TaskInput,
         [Parameter(Mandatory = $true)]$WorkspacePlan,
+        [Parameter(Mandatory = $true)]$Manifest,
         [Parameter(Mandatory = $true)][string]$ManifestGenerationId,
         [Parameter(Mandatory = $true)][string]$ObservedSourceHead,
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -1884,9 +1935,25 @@ function Assert-TeamPipelineDeclarativeAdmission {
         throw 'workflow_manifest_generation_mismatch'
     }
     Assert-TeamPipelineDeclarativeSourceHead -ExpectedSourceHead ([string](Get-DeclarativeWorkflowValue $Run 'source_head' '')) -ObservedSourceHead $ObservedSourceHead
+    $manifestWorkspace = Get-TeamPipelineValue -InputObject $Manifest -Name 'DeclarativeWorkspace' -Default $null
+    $manifestBindings = Get-DeclarativeWorkflowValue $manifestWorkspace 'resolved_bindings' $null
+    $freshBindings = Get-DeclarativeWorkflowValue $WorkspacePlan 'resolved_bindings' $null
+    $runBindings = Get-DeclarativeWorkflowValue $Run 'resolved_bindings' $null
+    $runRecipeId = [string](Get-DeclarativeWorkflowValue $Run 'recipe_ref' '')
+    $freshRecipeId = [string](Get-DeclarativeWorkflowValue $WorkspacePlan 'recipe_id' '')
+    $runConfigFingerprint = [string](Get-DeclarativeWorkflowValue $Run 'config_fingerprint' '')
     $freshConfigFingerprint = [string](Get-DeclarativeWorkflowValue $WorkspacePlan 'config_fingerprint' '')
-    if (-not [string]::Equals([string](Get-DeclarativeWorkflowValue $Run 'config_fingerprint' ''), $freshConfigFingerprint, [StringComparison]::Ordinal)) {
-        throw 'workflow_fresh_config_mismatch'
+    if ($null -eq $manifestWorkspace -or
+        [string](Get-DeclarativeWorkflowValue $manifestWorkspace 'schema_version' '') -cne '1' -or
+        [string](Get-DeclarativeWorkflowValue $WorkspacePlan 'schema_version' '') -cne '1' -or
+        [string](Get-DeclarativeWorkflowValue $manifestWorkspace 'recipe_id' '') -cne $runRecipeId -or
+        $freshRecipeId -cne $runRecipeId -or
+        [string](Get-DeclarativeWorkflowValue $manifestWorkspace 'config_fingerprint' '') -cne $runConfigFingerprint -or
+        $freshConfigFingerprint -cne $runConfigFingerprint -or
+        $null -eq $manifestBindings -or $null -eq $freshBindings -or $null -eq $runBindings -or
+        (ConvertTo-DeclarativeWorkflowCanonicalJson -Value $manifestBindings) -cne (ConvertTo-DeclarativeWorkflowCanonicalJson -Value $runBindings) -or
+        (ConvertTo-DeclarativeWorkflowCanonicalJson -Value $freshBindings) -cne (ConvertTo-DeclarativeWorkflowCanonicalJson -Value $runBindings)) {
+        throw 'workflow_manifest_declarative_workspace_mismatch'
     }
     $freshWorkflowPlan = ConvertTo-TeamPipelineDeclarativeWorkflowPlan -WorkspacePlan $WorkspacePlan
     Assert-DeclarativeWorkflowExecutionProjection -Run $Run -Plan $freshWorkflowPlan
@@ -2369,7 +2436,7 @@ function Invoke-TeamPipelineDeclarativeWorkflow {
             $workflowPlan = ConvertTo-TeamPipelineDeclarativeWorkflowPlan -WorkspacePlan $workspacePlan
             $run = New-DeclarativeWorkflowRun -Plan $workflowPlan -RunId $RunId -GenerationId $GenerationId -ConfigFingerprint $ConfigFingerprint -SourceHead $SourceHead -TaskInput $taskInput
             Assert-TeamPipelineDeclarativeAdmission -Run $run -Confirmation $confirmation -TaskInput $taskInput -WorkspacePlan $workspacePlan `
-                -ManifestGenerationId $manifestGenerationId -ObservedSourceHead $observedSourceHead -ProjectDir $ProjectDir -SessionName $sessionName
+                -Manifest $manifest -ManifestGenerationId $manifestGenerationId -ObservedSourceHead $observedSourceHead -ProjectDir $ProjectDir -SessionName $sessionName
             try {
                 Save-DeclarativeWorkflowRunState -ProjectDir $ProjectDir -Run $run -CreateNew | Out-Null
             } catch {
@@ -2402,7 +2469,7 @@ function Invoke-TeamPipelineDeclarativeWorkflow {
             $run = Invoke-DeclarativeWorkflowTransition -Run $run -Event ([ordered]@{ type = 'validate' }) -DurableProofs $durableProofs
             $workspacePlan = Invoke-TeamPipelineWorkspacePlanOnce -ProjectDir $ProjectDir -RecipeId ([string]$run.recipe_ref) -WorkflowId ([string]$run.workflow_id) -RunId $RunId
             Assert-TeamPipelineDeclarativeAdmission -Run $run -Confirmation $confirmation -TaskInput $taskInput -WorkspacePlan $workspacePlan `
-                -ManifestGenerationId $manifestGenerationId -ObservedSourceHead $observedSourceHead -ProjectDir $ProjectDir -SessionName $sessionName
+                -Manifest $manifest -ManifestGenerationId $manifestGenerationId -ObservedSourceHead $observedSourceHead -ProjectDir $ProjectDir -SessionName $sessionName
             Assert-TeamPipelineDeclarativeRunLockAdmission -ProjectDir $ProjectDir -Run $run | Out-Null
             $snapshotValidated = $true
             if ([string]$run.state -in @('succeeded', 'failed', 'cancelled')) {

@@ -24,6 +24,52 @@ BeforeAll {
         }
     }
 
+    function New-TestWorkspacePlan {
+        param(
+            [string]$RecipeId = 'bugfix-two-slot',
+            [string]$ConfigFingerprint = ('sha256:' + ('a' * 64)),
+            $ResolvedBindings = $null
+        )
+        if ($null -eq $ResolvedBindings) {
+            $ResolvedBindings = [ordered]@{ implement = 'worker-1'; verify = 'worker-2' }
+        }
+        [ordered]@{
+            schema_version      = 1
+            recipe_id          = $RecipeId
+            config_fingerprint = $ConfigFingerprint
+            resolved_bindings  = Copy-DeclarativeWorkflowValue $ResolvedBindings
+            workflow           = (New-TestWorkflowPlan)
+        }
+    }
+
+    function New-TestManifest {
+        param(
+            [string]$SessionName = 'workflow-session',
+            [string]$GenerationId = 'generation-123',
+            [bool]$IncludeDeclarativeWorkspace = $true,
+            [int]$SchemaVersion = 1,
+            [string]$RecipeId = 'bugfix-two-slot',
+            [string]$ConfigFingerprint = ('sha256:' + ('a' * 64)),
+            $ResolvedBindings = $null
+        )
+        if ($null -eq $ResolvedBindings) {
+            $ResolvedBindings = [ordered]@{ implement = 'worker-1'; verify = 'worker-2' }
+        }
+        $manifest = [PSCustomObject]@{
+            Session = [ordered]@{ name = $SessionName; generation_id = $GenerationId }
+            Panes   = [ordered]@{}
+        }
+        if ($IncludeDeclarativeWorkspace) {
+            $manifest | Add-Member -NotePropertyName DeclarativeWorkspace -NotePropertyValue ([ordered]@{
+                    schema_version      = $SchemaVersion
+                    recipe_id          = $RecipeId
+                    config_fingerprint = $ConfigFingerprint
+                    resolved_bindings  = Copy-DeclarativeWorkflowValue $ResolvedBindings
+                })
+        }
+        return $manifest
+    }
+
     function New-TestConfirmation {
         [ordered]@{
             run_id = 'run-123'
@@ -970,8 +1016,8 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         [IO.File]::WriteAllText($taskFile, 'Implement TASK-659 safely.', [Text.UTF8Encoding]::new($false))
 
         Mock Read-DeclarativeWorkflowRunState { Copy-DeclarativeWorkflowValue $script:w11WiredRun }
-        Mock Invoke-TeamPipelineWorkspacePlanOnce { [ordered]@{ config_fingerprint = ('sha256:' + ('a' * 64)); resolved_bindings = [ordered]@{ implement = 'worker-1'; verify = 'worker-2' }; workflow = (New-TestWorkflowPlan) } }
-        Mock Read-TeamPipelineManifest { [PSCustomObject]@{ Session = [ordered]@{ name = 'w11-session'; generation_id = 'generation-123' }; Panes = [ordered]@{} } }
+        Mock Invoke-TeamPipelineWorkspacePlanOnce { New-TestWorkspacePlan }
+        Mock Read-TeamPipelineManifest { New-TestManifest -SessionName 'w11-session' }
         Mock Get-TeamPipelineSessionName { 'w11-session' }
         Mock Get-TeamPipelineDeclarativeProjectHead { 'b' * 40 }
         Mock Resolve-TeamPipelineDeclarativeRuntimeLease { param($Label) [PSCustomObject]@{ label = [string]$Label; pane_id = '%2' } }
@@ -1086,16 +1132,14 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         Mock Invoke-TeamPipelineWorkspacePlanOnce {
             $workflow = [ordered]@{}
             (New-TestWorkflowPlan).PSObject.Properties | ForEach-Object { $workflow[$_.Name] = $_.Value }
-            [ordered]@{
-                config_fingerprint = ('sha256:' + ('a' * 64))
-                resolved_bindings = [ordered]@{ implement = 'worker-1'; verify = 'worker-2' }
-                workflow = $workflow
-            }
+            $plan = New-TestWorkspacePlan
+            $plan.workflow = $workflow
+            $plan
         }
         Mock New-DeclarativeWorkflowRun { Copy-DeclarativeWorkflowValue $script:startRouteRun }
         Mock New-DeclarativeWorkflowRunLock { Join-Path $TestDrive 'synthetic-start.lock' }
         Mock Save-DeclarativeWorkflowRunState { }
-        Mock Read-TeamPipelineManifest { [PSCustomObject]@{ Session = [ordered]@{ name = 'start-session'; generation_id = 'generation-123' }; Panes = [ordered]@{} } }
+        Mock Read-TeamPipelineManifest { New-TestManifest -SessionName 'start-session' }
         Mock Get-TeamPipelineSessionName { 'start-session' }
         Mock Resolve-TeamPipelineDeclarativeRuntimeLease { param($Label) [PSCustomObject]@{ label = [string]$Label; pane_id = '%2' } }
         Mock Invoke-TeamPipelineDeclarativeRunAdvancement {
@@ -1208,7 +1252,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
                     workflow = (New-TestWorkflowPlan)
                 }
             }
-            Mock Read-TeamPipelineManifest { [PSCustomObject]@{ Session = [ordered]@{ name = 'terminal-session'; generation_id = 'generation-123' }; Panes = [ordered]@{} } }
+            Mock Read-TeamPipelineManifest { New-TestManifest -SessionName 'terminal-session' }
             Mock Get-TeamPipelineSessionName { 'terminal-session' }
             Mock Get-TeamPipelineDeclarativeProjectHead { 'b' * 40 }
             Mock Resolve-TeamPipelineDeclarativeRuntimeLease { param($Label) [PSCustomObject]@{ label = [string]$Label; pane_id = '%2' } }
@@ -1404,15 +1448,147 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         ($run | ConvertTo-Json -Depth 40 -Compress) | Should -Be $before
     }
 
+    It 'U01 retains the versioned declarative workspace projection when reading a manifest' {
+        $content = @"
+version: 2
+session:
+  name: workflow-session
+  generation_id: generation-123
+panes: {}
+declarative_workspace:
+  schema_version: '1'
+  recipe_id: bugfix-two-slot
+  config_fingerprint: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  resolved_bindings:
+    implement: worker-1
+    verify: worker-2
+"@
+
+        $manifest = ConvertFrom-TeamPipelineManifestContent -Content $content
+
+        $manifest.DeclarativeWorkspace | Should -Not -BeNullOrEmpty
+        [int]$manifest.DeclarativeWorkspace.schema_version | Should -Be 1
+        [string]$manifest.DeclarativeWorkspace.recipe_id | Should -Be 'bugfix-two-slot'
+        [string]$manifest.DeclarativeWorkspace.config_fingerprint | Should -Be ('sha256:' + ('a' * 64))
+        [string]$manifest.DeclarativeWorkspace.resolved_bindings.implement | Should -Be 'worker-1'
+        [string]$manifest.DeclarativeWorkspace.resolved_bindings.verify | Should -Be 'worker-2'
+    }
+
+    It 'U02 rejects every manifest workspace mismatch before public start state lock dispatch or cleanup effects' {
+        $taskFile = Join-Path $TestDrive 'u02-task.txt'
+        [IO.File]::WriteAllText($taskFile, 'Implement TASK-659 safely.', [Text.UTF8Encoding]::new($false))
+        $script:u02Manifest = $null
+        $script:u02Plan = $null
+        $script:u02Effects = [ordered]@{ state = 0; lock = 0; dispatch = 0; cleanup = 0 }
+        Mock Get-TeamPipelineDeclarativeProjectHead { 'b' * 40 }
+        Mock Read-TeamPipelineManifest { Copy-DeclarativeWorkflowValue $script:u02Manifest }
+        Mock Get-TeamPipelineSessionName { 'u02-session' }
+        Mock Invoke-TeamPipelineWorkspacePlanOnce { Copy-DeclarativeWorkflowValue $script:u02Plan }
+        Mock Resolve-TeamPipelineDeclarativeRuntimeLease { param($Label) [PSCustomObject]@{ label = [string]$Label; pane_id = '%2' } }
+        Mock Save-DeclarativeWorkflowRunState { $script:u02Effects.state++ }
+        Mock New-DeclarativeWorkflowRunLock { $script:u02Effects.lock++; Join-Path $TestDrive 'u02.lock' }
+        Mock Invoke-TeamPipelineDeclarativeRunAdvancement { param($Run) $script:u02Effects.dispatch++; $Run }
+        Mock Invoke-TeamPipelineDeclarativeTerminalRecovery { $script:u02Effects.cleanup++; throw 'U02 rejection must not recover terminal state' }
+        Mock Invoke-DeclarativeWorkflowCleanup { $script:u02Effects.cleanup++; throw 'U02 rejection must not clean up' }
+
+        $cases = @(
+            [PSCustomObject]@{ Name = 'exact'; Accept = $true; Manifest = (New-TestManifest -SessionName 'u02-session'); Plan = (New-TestWorkspacePlan) },
+            [PSCustomObject]@{ Name = 'missing-projection'; Accept = $false; Manifest = (New-TestManifest -SessionName 'u02-session' -IncludeDeclarativeWorkspace $false); Plan = (New-TestWorkspacePlan) },
+            [PSCustomObject]@{ Name = 'manifest-schema-mismatch'; Accept = $false; Manifest = (New-TestManifest -SessionName 'u02-session' -SchemaVersion 2); Plan = (New-TestWorkspacePlan) },
+            [PSCustomObject]@{ Name = 'same-label-recipe-mismatch'; Accept = $false; Manifest = (New-TestManifest -SessionName 'u02-session' -RecipeId 'review-two-slot'); Plan = (New-TestWorkspacePlan) },
+            [PSCustomObject]@{ Name = 'fingerprint-mismatch'; Accept = $false; Manifest = (New-TestManifest -SessionName 'u02-session' -ConfigFingerprint ('sha256:' + ('c' * 64))); Plan = (New-TestWorkspacePlan) },
+            [PSCustomObject]@{ Name = 'binding-missing'; Accept = $false; Manifest = (New-TestManifest -SessionName 'u02-session' -ResolvedBindings ([ordered]@{ implement = 'worker-1' })); Plan = (New-TestWorkspacePlan) },
+            [PSCustomObject]@{ Name = 'binding-extra'; Accept = $false; Manifest = (New-TestManifest -SessionName 'u02-session' -ResolvedBindings ([ordered]@{ implement = 'worker-1'; verify = 'worker-2'; research = 'worker-3' })); Plan = (New-TestWorkspacePlan) },
+            [PSCustomObject]@{ Name = 'binding-exchanged'; Accept = $false; Manifest = (New-TestManifest -SessionName 'u02-session' -ResolvedBindings ([ordered]@{ implement = 'worker-2'; verify = 'worker-1' })); Plan = (New-TestWorkspacePlan) },
+            [PSCustomObject]@{ Name = 'fresh-schema-mismatch'; Accept = $false; Manifest = (New-TestManifest -SessionName 'u02-session'); Plan = (& { $p = New-TestWorkspacePlan; $p.schema_version = 2; $p }) },
+            [PSCustomObject]@{ Name = 'fresh-recipe-mismatch'; Accept = $false; Manifest = (New-TestManifest -SessionName 'u02-session'); Plan = (New-TestWorkspacePlan -RecipeId 'review-two-slot') }
+        )
+        foreach ($case in $cases) {
+            $project = Join-Path $TestDrive ('u02-' + $case.Name)
+            $script:u02Manifest = $case.Manifest
+            $script:u02Plan = $case.Plan
+            $script:u02Effects = [ordered]@{ state = 0; lock = 0; dispatch = 0; cleanup = 0 }
+            $invoke = {
+                Invoke-TeamPipelineDeclarativeWorkflow -Action start -RecipeId 'bugfix-two-slot' -WorkflowId 'bugfix' `
+                    -RunId 'run-123' -GenerationId 'generation-123' -ConfigFingerprint ('sha256:' + ('a' * 64)) `
+                    -SourceHead ('b' * 40) -TaskFile $taskFile -ProjectDir $project
+            }
+            if ($case.Accept) {
+                $invoke | Should -Not -Throw -Because $case.Name
+                $script:u02Effects.dispatch | Should -Be 1 -Because $case.Name
+            } else {
+                $invoke | Should -Throw '*workflow_manifest_declarative_workspace_mismatch*' -Because $case.Name
+                @($script:u02Effects.Values | Measure-Object -Sum).Sum | Should -Be 0 -Because $case.Name
+            }
+        }
+    }
+
+    It 'U03 rejects every manifest workspace mismatch on public resume while preserving state and lock bytes' {
+        $taskFile = Join-Path $TestDrive 'u03-task.txt'
+        [IO.File]::WriteAllText($taskFile, 'Implement TASK-659 safely.', [Text.UTF8Encoding]::new($false))
+        $cases = @(
+            [PSCustomObject]@{ Name = 'exact'; Accept = $true; Manifest = (New-TestManifest -SessionName 'u03-session'); Plan = (New-TestWorkspacePlan) },
+            [PSCustomObject]@{ Name = 'missing-projection'; Accept = $false; Manifest = (New-TestManifest -SessionName 'u03-session' -IncludeDeclarativeWorkspace $false); Plan = (New-TestWorkspacePlan) },
+            [PSCustomObject]@{ Name = 'manifest-schema-mismatch'; Accept = $false; Manifest = (New-TestManifest -SessionName 'u03-session' -SchemaVersion 2); Plan = (New-TestWorkspacePlan) },
+            [PSCustomObject]@{ Name = 'same-label-recipe-mismatch'; Accept = $false; Manifest = (New-TestManifest -SessionName 'u03-session' -RecipeId 'review-two-slot'); Plan = (New-TestWorkspacePlan) },
+            [PSCustomObject]@{ Name = 'fingerprint-mismatch'; Accept = $false; Manifest = (New-TestManifest -SessionName 'u03-session' -ConfigFingerprint ('sha256:' + ('c' * 64))); Plan = (New-TestWorkspacePlan) },
+            [PSCustomObject]@{ Name = 'binding-missing'; Accept = $false; Manifest = (New-TestManifest -SessionName 'u03-session' -ResolvedBindings ([ordered]@{ implement = 'worker-1' })); Plan = (New-TestWorkspacePlan) },
+            [PSCustomObject]@{ Name = 'binding-extra'; Accept = $false; Manifest = (New-TestManifest -SessionName 'u03-session' -ResolvedBindings ([ordered]@{ implement = 'worker-1'; verify = 'worker-2'; research = 'worker-3' })); Plan = (New-TestWorkspacePlan) },
+            [PSCustomObject]@{ Name = 'binding-exchanged'; Accept = $false; Manifest = (New-TestManifest -SessionName 'u03-session' -ResolvedBindings ([ordered]@{ implement = 'worker-2'; verify = 'worker-1' })); Plan = (New-TestWorkspacePlan) },
+            [PSCustomObject]@{ Name = 'fresh-schema-mismatch'; Accept = $false; Manifest = (New-TestManifest -SessionName 'u03-session'); Plan = (& { $p = New-TestWorkspacePlan; $p.schema_version = 2; $p }) },
+            [PSCustomObject]@{ Name = 'fresh-recipe-mismatch'; Accept = $false; Manifest = (New-TestManifest -SessionName 'u03-session'); Plan = (New-TestWorkspacePlan -RecipeId 'review-two-slot') }
+        )
+        foreach ($case in $cases) {
+            $project = Join-Path $TestDrive ('u03-' + $case.Name)
+            $run = New-TestBlockedRun
+            Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $run | Out-Null
+            $lockPath = New-DeclarativeWorkflowRunLock -ProjectDir $project -Run $run
+            $statePath = Resolve-DeclarativeWorkflowOwnedRunPath -ProjectDir $project -RunId 'run-123' -LeafName 'state.json'
+            $case | Add-Member -NotePropertyName Project -NotePropertyValue $project
+            $case | Add-Member -NotePropertyName StatePath -NotePropertyValue $statePath
+            $case | Add-Member -NotePropertyName LockPath -NotePropertyValue $lockPath
+            $case | Add-Member -NotePropertyName StateBefore -NotePropertyValue ([Convert]::ToBase64String([IO.File]::ReadAllBytes($statePath)))
+            $case | Add-Member -NotePropertyName LockBefore -NotePropertyValue ([Convert]::ToBase64String([IO.File]::ReadAllBytes($lockPath)))
+        }
+        $script:u03Manifest = $null
+        $script:u03Plan = $null
+        $script:u03Effects = [ordered]@{ state = 0; lock = 0; dispatch = 0; cleanup = 0 }
+        Mock Get-TeamPipelineDeclarativeProjectHead { 'b' * 40 }
+        Mock Read-TeamPipelineManifest { Copy-DeclarativeWorkflowValue $script:u03Manifest }
+        Mock Get-TeamPipelineSessionName { 'u03-session' }
+        Mock Invoke-TeamPipelineWorkspacePlanOnce { Copy-DeclarativeWorkflowValue $script:u03Plan }
+        Mock Resolve-TeamPipelineDeclarativeRuntimeLease { param($Label) [PSCustomObject]@{ label = [string]$Label; pane_id = '%2' } }
+        Mock Save-DeclarativeWorkflowRunState { $script:u03Effects.state++ }
+        Mock Assert-TeamPipelineDeclarativeRunLockAdmission { $script:u03Effects.lock++; Join-Path $TestDrive 'u03.lock' }
+        Mock Invoke-TeamPipelineDeclarativeRunAdvancement { param($Run) $script:u03Effects.dispatch++; $Run }
+        Mock Invoke-TeamPipelineDeclarativeTerminalRecovery { $script:u03Effects.cleanup++; throw 'U03 rejection must not recover terminal state' }
+        Mock Invoke-DeclarativeWorkflowCleanup { $script:u03Effects.cleanup++; throw 'U03 rejection must not clean up' }
+
+        foreach ($case in $cases) {
+            $script:u03Manifest = $case.Manifest
+            $script:u03Plan = $case.Plan
+            $script:u03Effects = [ordered]@{ state = 0; lock = 0; dispatch = 0; cleanup = 0 }
+            $invoke = {
+                Invoke-TeamPipelineDeclarativeWorkflow -Action resume -RunId 'run-123' -GenerationId 'generation-123' `
+                    -ConfigFingerprint ('sha256:' + ('a' * 64)) -SourceHead ('b' * 40) -TaskFile $taskFile -ProjectDir $case.Project
+            }
+            if ($case.Accept) {
+                $invoke | Should -Not -Throw -Because $case.Name
+                $script:u03Effects.dispatch | Should -Be 1 -Because $case.Name
+            } else {
+                $invoke | Should -Throw '*workflow_manifest_declarative_workspace_mismatch*' -Because $case.Name
+                @($script:u03Effects.Values | Measure-Object -Sum).Sum | Should -Be 0 -Because $case.Name
+            }
+            [Convert]::ToBase64String([IO.File]::ReadAllBytes($case.StatePath)) | Should -Be $case.StateBefore -Because $case.Name
+            [Convert]::ToBase64String([IO.File]::ReadAllBytes($case.LockPath)) | Should -Be $case.LockBefore -Because $case.Name
+        }
+    }
+
     It 'K01 admits resume only when confirmation fresh configuration workflow bindings source and generation all match' {
         $taskFile = Join-Path $TestDrive 'fresh-admission-task.txt'
         [IO.File]::WriteAllText($taskFile, 'Implement TASK-659 safely.', [Text.UTF8Encoding]::new($false))
         $script:k01Run = New-TestBlockedRun
-        $script:k01Plan = [ordered]@{
-            config_fingerprint = ('sha256:' + ('a' * 64))
-            resolved_bindings  = [ordered]@{ implement = 'worker-1'; verify = 'worker-2' }
-            workflow           = (New-TestWorkflowPlan)
-        }
+        $script:k01Plan = New-TestWorkspacePlan
         $script:k01ObservedHead = 'b' * 40
         $script:k01ManifestGeneration = 'generation-123'
         $script:k01LockAdmissions = 0
@@ -1425,7 +1601,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         Mock Invoke-TeamPipelineWorkspacePlanOnce { Copy-DeclarativeWorkflowValue $script:k01Plan }
         Mock Get-TeamPipelineDeclarativeProjectHead { $script:k01ObservedHead }
         Mock Read-TeamPipelineManifest {
-            [PSCustomObject]@{ Session = [ordered]@{ name = 'k01-session'; generation_id = $script:k01ManifestGeneration }; Panes = [ordered]@{} }
+            New-TestManifest -SessionName 'k01-session' -GenerationId $script:k01ManifestGeneration
         }
         Mock Get-TeamPipelineSessionName { 'k01-session' }
         Mock Resolve-TeamPipelineDeclarativeRuntimeLease { param($Label) [PSCustomObject]@{ label = [string]$Label; pane_id = '%2' } }
@@ -1446,11 +1622,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         )
 
         foreach ($case in $cases) {
-            $script:k01Plan = [ordered]@{
-                config_fingerprint = ('sha256:' + ('a' * 64))
-                resolved_bindings  = [ordered]@{ implement = 'worker-1'; verify = 'worker-2' }
-                workflow           = (New-TestWorkflowPlan)
-            }
+            $script:k01Plan = New-TestWorkspacePlan
             $configure = Get-DeclarativeWorkflowValue $case 'Configure' $null
             if ($null -ne $configure) { & $configure }
             $caseConfigFingerprint = [string](Get-DeclarativeWorkflowValue $case 'ConfigFingerprint' '')
@@ -1488,11 +1660,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         $project = Join-Path $TestDrive 'live-binding-start-reject'
         $taskFile = Join-Path $TestDrive 'live-binding-start-task.txt'
         [IO.File]::WriteAllText($taskFile, 'Implement TASK-659 safely.', [Text.UTF8Encoding]::new($false))
-        $workspacePlan = [ordered]@{
-            config_fingerprint = ('sha256:' + ('a' * 64))
-            resolved_bindings  = [ordered]@{ implement = 'worker-1'; verify = 'worker-2' }
-            workflow           = (New-TestWorkflowPlan)
-        }
+        $workspacePlan = New-TestWorkspacePlan
         $script:m03StateWrites = 0
         $script:m03LockWrites = 0
         $script:m03Dispatches = 0
@@ -1500,7 +1668,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         $script:m03ResolvedLabels = [Collections.Generic.List[string]]::new()
 
         Mock Get-TeamPipelineDeclarativeProjectHead { 'b' * 40 }
-        Mock Read-TeamPipelineManifest { [PSCustomObject]@{ Session = [ordered]@{ name = 'm03-session'; generation_id = 'generation-123' }; Panes = [ordered]@{} } }
+        Mock Read-TeamPipelineManifest { New-TestManifest -SessionName 'm03-session' }
         Mock Get-TeamPipelineSessionName { 'm03-session' }
         Mock Invoke-TeamPipelineWorkspacePlanOnce { Copy-DeclarativeWorkflowValue $workspacePlan }
         Mock Resolve-TeamPipelineDeclarativeRuntimeLease {
@@ -1539,18 +1707,14 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         $statePath = Resolve-DeclarativeWorkflowOwnedRunPath -ProjectDir $project -RunId 'run-123' -LeafName 'state.json'
         $stateBytesBefore = [Convert]::ToBase64String([IO.File]::ReadAllBytes($statePath))
         $lockBytesBefore = [Convert]::ToBase64String([IO.File]::ReadAllBytes($lockPath))
-        $workspacePlan = [ordered]@{
-            config_fingerprint = ('sha256:' + ('a' * 64))
-            resolved_bindings  = [ordered]@{ implement = 'worker-1'; verify = 'worker-2' }
-            workflow           = (New-TestWorkflowPlan)
-        }
+        $workspacePlan = New-TestWorkspacePlan
         $script:m05Saves = 0
         $script:m05Dispatches = 0
         $script:m05Cleanups = 0
         $script:m05LockAdmissions = 0
 
         Mock Get-TeamPipelineDeclarativeProjectHead { 'b' * 40 }
-        Mock Read-TeamPipelineManifest { [PSCustomObject]@{ Session = [ordered]@{ name = 'm05-session'; generation_id = 'generation-123' }; Panes = [ordered]@{} } }
+        Mock Read-TeamPipelineManifest { New-TestManifest -SessionName 'm05-session' }
         Mock Get-TeamPipelineSessionName { 'm05-session' }
         Mock Invoke-TeamPipelineWorkspacePlanOnce { Copy-DeclarativeWorkflowValue $workspacePlan }
         Mock Resolve-TeamPipelineDeclarativeRuntimeLease {
@@ -1598,16 +1762,14 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
             $run = New-TestRun
             $run.resolved_bindings = Copy-DeclarativeWorkflowValue $case.Bindings
             $run.normalized_snapshot.resolved_bindings = Copy-DeclarativeWorkflowValue $case.Bindings
-            $workspacePlan = [ordered]@{
-                config_fingerprint = ('sha256:' + ('a' * 64))
-                resolved_bindings  = Copy-DeclarativeWorkflowValue $case.Bindings
-                workflow           = Copy-DeclarativeWorkflowValue $run.normalized_snapshot
-            }
+            $workspacePlan = New-TestWorkspacePlan -ResolvedBindings $case.Bindings
+            $workspacePlan.workflow = Copy-DeclarativeWorkflowValue $run.normalized_snapshot
+            $manifest = New-TestManifest -SessionName 'm04-session' -ResolvedBindings $case.Bindings
             $script:m04Mode = [string]$case.Mode
             $script:m04Labels.Clear()
             $invoke = {
                 Assert-TeamPipelineDeclarativeAdmission -Run $run -Confirmation (New-TestConfirmation) -TaskInput (New-TestTaskInput) `
-                    -WorkspacePlan $workspacePlan -ManifestGenerationId 'generation-123' -ObservedSourceHead ('b' * 40) `
+                    -WorkspacePlan $workspacePlan -Manifest $manifest -ManifestGenerationId 'generation-123' -ObservedSourceHead ('b' * 40) `
                     -ProjectDir $TestDrive -SessionName 'm04-session'
             }
 
@@ -1778,16 +1940,10 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
             $script:l01Current.Run = Copy-DeclarativeWorkflowValue $Run
         }
         Mock Get-TeamPipelineDeclarativeProjectHead { 'b' * 40 }
-        Mock Read-TeamPipelineManifest { [PSCustomObject]@{ Session = [ordered]@{ name = 'l01-session'; generation_id = 'generation-123' }; Panes = [ordered]@{} } }
+        Mock Read-TeamPipelineManifest { New-TestManifest -SessionName 'l01-session' }
         Mock Get-TeamPipelineSessionName { 'l01-session' }
         Mock Resolve-TeamPipelineDeclarativeRuntimeLease { param($Label) [PSCustomObject]@{ label = [string]$Label; pane_id = '%2' } }
-        Mock Invoke-TeamPipelineWorkspacePlanOnce {
-            [ordered]@{
-                config_fingerprint = ('sha256:' + ('a' * 64))
-                resolved_bindings  = [ordered]@{ implement = 'worker-1'; verify = 'worker-2' }
-                workflow           = (New-TestWorkflowPlan)
-            }
-        }
+        Mock Invoke-TeamPipelineWorkspacePlanOnce { New-TestWorkspacePlan }
         Mock Resolve-TeamPipelineDeclarativeAcknowledgement {
             param($Run, $NodeId)
             if ($script:l01Current.Case.Outcome -ceq 'succeeded') {
@@ -2066,7 +2222,7 @@ future_state:
         $junctionPath = Join-Path $junctionRunsRoot 'run-123'
         $taskFile = Join-Path $TestDrive 'junction-state-task.txt'
         [IO.File]::WriteAllText($taskFile, 'Implement TASK-659 safely.', [Text.UTF8Encoding]::new($false))
-        Mock Read-TeamPipelineManifest { [PSCustomObject]@{ Session = [ordered]@{ name = 'm01-session'; generation_id = 'generation-123' }; Panes = [ordered]@{} } }
+        Mock Read-TeamPipelineManifest { New-TestManifest -SessionName 'm01-session' }
         Mock Get-TeamPipelineSessionName { 'm01-session' }
         try {
             try {
@@ -2089,11 +2245,8 @@ future_state:
         [Convert]::ToHexString([IO.File]::ReadAllBytes($externalState)) | Should -Be ([Convert]::ToHexString($externalBefore))
 
         $transactionWorkflow = (New-TestWorkflowPlan | ConvertTo-Json -Depth 20) | ConvertFrom-Json -AsHashtable
-        $transactionPlan = [ordered]@{
-            config_fingerprint = ('sha256:' + ('a' * 64))
-            resolved_bindings = [ordered]@{ implement = 'worker-1'; verify = 'worker-2' }
-            workflow = $transactionWorkflow
-        }
+        $transactionPlan = New-TestWorkspacePlan
+        $transactionPlan.workflow = $transactionWorkflow
         Mock Invoke-TeamPipelineWorkspacePlanOnce { Copy-DeclarativeWorkflowValue $transactionPlan }
         Mock Resolve-TeamPipelineDeclarativeRuntimeLease { param($Label) [PSCustomObject]@{ label = [string]$Label; pane_id = '%2' } }
         $existingLockProject = Join-Path $TestDrive 'existing-lock-project'
@@ -2130,11 +2283,7 @@ future_state:
     It 'C21 admits only a pristine state-only bootstrap, reuses a matching lock, and blocks a missing or mismatched lock after an effect' {
         $taskFile = Join-Path $TestDrive 'bootstrap-task.txt'
         [IO.File]::WriteAllText($taskFile, 'Implement TASK-659 safely.', [Text.UTF8Encoding]::new($false))
-        $workspacePlan = [ordered]@{
-            config_fingerprint = ('sha256:' + ('a' * 64))
-            resolved_bindings = [ordered]@{ implement = 'worker-1'; verify = 'worker-2' }
-            workflow = (New-TestWorkflowPlan)
-        }
+        $workspacePlan = New-TestWorkspacePlan
 
         foreach ($case in @(
                 [PSCustomObject]@{ Name = 'state-only-pristine'; Setup = { param($project, $run) } ; ExpectedAdvance = 1; ExpectedLock = $true },
@@ -2167,7 +2316,7 @@ future_state:
             $script:bootstrapAdvances = 0
             $script:bootstrapDispatches = 0
             Mock Get-TeamPipelineDeclarativeProjectHead { 'b' * 40 }
-            Mock Read-TeamPipelineManifest { [PSCustomObject]@{ Session = [ordered]@{ name = 'bootstrap-session'; generation_id = 'generation-123' }; Panes = [ordered]@{} } }
+            Mock Read-TeamPipelineManifest { New-TestManifest -SessionName 'bootstrap-session' }
             Mock Get-TeamPipelineSessionName { 'bootstrap-session' }
             Mock Invoke-TeamPipelineWorkspacePlanOnce { Copy-DeclarativeWorkflowValue $workspacePlan }
             Mock Resolve-TeamPipelineDeclarativeRuntimeLease { param($Label) [PSCustomObject]@{ label = [string]$Label; pane_id = '%2' } }
@@ -2286,14 +2435,10 @@ while (`$true) { Start-Sleep -Seconds 1 }
         $project = Join-Path $TestDrive 'invocation-lifetime'
         $taskFile = Join-Path $TestDrive 'invocation-lifetime-task.txt'
         [IO.File]::WriteAllText($taskFile, 'Implement TASK-659 safely.', [Text.UTF8Encoding]::new($false))
-        $workspacePlan = [ordered]@{
-            config_fingerprint = ('sha256:' + ('a' * 64))
-            resolved_bindings = [ordered]@{ implement = 'worker-1'; verify = 'worker-2' }
-            workflow = (New-TestWorkflowPlan)
-        }
+        $workspacePlan = New-TestWorkspacePlan
         $script:invocationBusyObserved = $false
         Mock Get-TeamPipelineDeclarativeProjectHead { 'b' * 40 }
-        Mock Read-TeamPipelineManifest { [PSCustomObject]@{ Session = [ordered]@{ name = 'lease-session'; generation_id = 'generation-123' }; Panes = [ordered]@{} } }
+        Mock Read-TeamPipelineManifest { New-TestManifest -SessionName 'lease-session' }
         Mock Get-TeamPipelineSessionName { 'lease-session' }
         Mock Invoke-TeamPipelineWorkspacePlanOnce {
             try {
