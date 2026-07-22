@@ -208,6 +208,18 @@ Describe 'public first-run helper' {
     BeforeEach {
         $script:publicFirstRunTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-public-first-run-tests-' + [guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $script:publicFirstRunTempRoot -Force | Out-Null
+        $script:publicFirstRunRendererPayloads = @()
+        Mock Get-WinsmuxBin { 'C:\test\winsmux.exe' }
+        Mock Invoke-BridgeProjectSettingsRenderProcess {
+            param($WinsmuxBin, $PayloadJson)
+
+            $payload = $PayloadJson | ConvertFrom-Json
+            $script:publicFirstRunRendererPayloads += $payload
+            [PSCustomObject]@{
+                ExitCode = 0
+                StdOut   = ($payload.desired_settings | ConvertTo-Json -Depth 8)
+            }
+        }
     }
 
     AfterEach {
@@ -245,6 +257,13 @@ Describe 'public first-run helper' {
         }
         $slotKeys | Should -Not -Contain 'model'
         $settings.workspace_lifecycle_preset | Should -Be 'managed-worktree'
+        $script:publicFirstRunRendererPayloads.Count | Should -Be 1
+        $contract = $script:publicFirstRunRendererPayloads[0].nested_contract
+        $contract.agent_slots.identity_key | Should -Be 'slot_id'
+        @($contract.agent_slots.owned_keys) | Should -Contain 'fallback_model'
+        $contract.agent_slots.aliases.backend | Should -Be 'worker_backend'
+        $contract.agent_slots.aliases.role | Should -Be 'worker_role'
+        @($contract.roles.owned_keys) | Should -Be @('agent', 'model', 'model_source', 'reasoning_effort', 'prompt_transport', 'auth_mode')
     }
 
     It 'stores a custom workspace lifecycle preset on init' {
@@ -253,8 +272,7 @@ Describe 'public first-run helper' {
         $result.status | Should -Be 'initialized'
         $result.workspace_lifecycle_preset | Should -Be 'ephemeral-worktree'
 
-        $settings = Get-BridgeSettings -RootPath $script:publicFirstRunTempRoot
-        $settings.workspace_lifecycle_preset | Should -Be 'ephemeral-worktree'
+        $script:publicFirstRunRendererPayloads[0].desired_settings.workspace_lifecycle_preset | Should -Be 'ephemeral-worktree'
     }
 
     It 'stores custom provider names in managed slots on init' {
@@ -263,16 +281,16 @@ Describe 'public first-run helper' {
         $result.status | Should -Be 'initialized'
         $result.slot_count | Should -Be 2
 
-        $settings = Get-BridgeSettings -RootPath $script:publicFirstRunTempRoot
-        $settings.agent | Should -Be 'codex-nightly'
-        $settings.model | Should -Be 'gpt-5.4-code'
-        $settings.worker_count | Should -Be 2
-        $settings.agent_slots.Count | Should -Be 2
-        $settings.agent_slots[0].agent | Should -Be 'codex'
-        $settings.agent_slots[0].model | Should -Be 'provider-default'
-        $settings.agent_slots[0].worker_role | Should -Be 'reviewer'
-        $settings.agent_slots[1].agent | Should -Be 'codex-nightly'
-        $settings.agent_slots[1].model | Should -Be 'gpt-5.4-code'
+        $desired = $script:publicFirstRunRendererPayloads[0].desired_settings
+        $desired.agent | Should -Be 'codex-nightly'
+        $desired.model | Should -Be 'gpt-5.4-code'
+        $desired.worker_count | Should -Be 2
+        $desired.agent_slots.Count | Should -Be 2
+        $desired.agent_slots[0].agent | Should -Be 'codex'
+        $desired.agent_slots[0].model | Should -Be 'provider-default'
+        $desired.agent_slots[0].worker_role | Should -Be 'reviewer'
+        $desired.agent_slots[1].agent | Should -Be 'codex-nightly'
+        $desired.agent_slots[1].model | Should -Be 'gpt-5.4-code'
     }
 
     It 'returns already_initialized when config exists and force is not set' {

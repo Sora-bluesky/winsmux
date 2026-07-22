@@ -14,8 +14,17 @@ Dot-source this script to load the helpers:
 #>
 
 . (Join-Path $PSScriptRoot 'json-compat.ps1')
+if (-not (Get-Command Invoke-WinsmuxWithFileLock -ErrorAction SilentlyContinue)) {
+    $script:BridgeSafeIoModule = New-Module -Name 'WinsmuxSettingsSafeIo' -ArgumentList (Join-Path $PSScriptRoot 'clm-safe-io.ps1') -ScriptBlock {
+        param([Parameter(Mandatory = $true)][string]$SafeIoPath)
+        . $SafeIoPath
+        Export-ModuleMember -Function Invoke-WinsmuxWithFileLock
+    }
+    Import-Module $script:BridgeSafeIoModule -Scope Local | Out-Null
+}
 
 $script:BridgeSettingsFileName = '.winsmux.yaml'
+$script:BridgeProjectSettingsSaveRejectedMessage = 'Project settings save was rejected.'
 $script:BridgeProviderRegistryFileName = 'provider-registry.json'
 $script:BridgeProviderCapabilityRegistryFileName = 'provider-capabilities.json'
 $script:BridgeRuntimeRolePreferencesFileName = 'runtime-role-preferences.json'
@@ -45,6 +54,14 @@ $script:BridgeSlotScalarKeys = @(
     'fallback_model'
 )
 $script:BridgeSlotListKeys = @()
+$script:BridgeRoleScalarKeys = @(
+    'agent',
+    'model',
+    'model_source',
+    'reasoning_effort',
+    'prompt_transport',
+    'auth_mode'
+)
 $script:BridgeSettingsSchema = [ordered]@{
     config_version      = @{ Type = 'int';      Default = 1;             Option = $null }
     agent               = @{ Type = 'string';   Default = 'codex';       Option = '@bridge-agent' }
@@ -307,8 +324,21 @@ function Remove-BridgeYamlComment {
     $builder = [System.Text.StringBuilder]::new()
     $inSingleQuote = $false
     $inDoubleQuote = $false
+    $escapeNext = $false
 
     foreach ($character in $Line.ToCharArray()) {
+        if ($inDoubleQuote -and $escapeNext) {
+            [void]$builder.Append($character)
+            $escapeNext = $false
+            continue
+        }
+
+        if ($inDoubleQuote -and $character -eq '\') {
+            [void]$builder.Append($character)
+            $escapeNext = $true
+            continue
+        }
+
         if ($character -eq "'" -and -not $inDoubleQuote) {
             $inSingleQuote = -not $inSingleQuote
             [void]$builder.Append($character)
@@ -340,6 +370,15 @@ function ConvertFrom-BridgeYamlScalar {
 
     $text = $Value.ToString().Trim()
     if ($text.Length -ge 2) {
+        if ($text.StartsWith('"') -and $text.EndsWith('"')) {
+            try {
+                $decoded = $text | ConvertFrom-Json -ErrorAction Stop
+                if ($decoded -is [string]) {
+                    return $decoded
+                }
+            } catch {
+            }
+        }
         if (($text.StartsWith("'") -and $text.EndsWith("'")) -or ($text.StartsWith('"') -and $text.EndsWith('"'))) {
             $text = $text.Substring(1, $text.Length - 2)
         }
@@ -2295,8 +2334,25 @@ function ConvertFrom-BridgeManualYaml {
         $currentSlotListKey = $null
         $currentSlotEntry = $null
         $currentSlotEntryListKey = $null
-        if ($null -ne $currentMapKey -and $line -match '^\s{2}([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*$') {
-            $currentMapEntryKey = $Matches[1] -replace '-', '_'
+        if ($null -ne $currentMapKey -and $null -ne $currentMapEntryKey -and $line -match '^\s{4}\{\}\s*$') {
+            continue
+        }
+        if ($null -ne $currentMapKey -and $line -match '^\s{2}((?:[A-Za-z_][A-Za-z0-9_-]*)|(?:"(?:\\.|[^"\\])*"))\s*:\s*$') {
+            $rawMapEntryKey = $Matches[1]
+            if ($rawMapEntryKey.StartsWith('"')) {
+                try {
+                    $decodedMapEntryKey = $rawMapEntryKey | ConvertFrom-Json -ErrorAction Stop
+                    if ($decodedMapEntryKey -isnot [string]) {
+                        throw 'Generated role identifier must be a JSON string.'
+                    }
+                    $currentMapEntryKey = $decodedMapEntryKey
+                } catch {
+                    $currentMapEntryKey = $null
+                    continue
+                }
+            } else {
+                $currentMapEntryKey = ConvertFrom-BridgeYamlScalar $rawMapEntryKey
+            }
             if (-not $settings[$currentMapKey].Contains($currentMapEntryKey)) {
                 $settings[$currentMapKey][$currentMapEntryKey] = [ordered]@{}
             }
@@ -2576,7 +2632,7 @@ function Test-BridgeSettingValue {
 
                 foreach ($rolePair in $rolePairs) {
                     $propertyKey = $rolePair.Key.ToString() -replace '-', '_'
-                    if ($propertyKey -notin @('agent', 'model', 'model_source', 'reasoning_effort', 'prompt_transport', 'auth_mode')) {
+                    if ($propertyKey -notin $script:BridgeRoleScalarKeys) {
                         continue
                     }
 
@@ -3357,26 +3413,125 @@ function Get-BridgeSetting {
     return (Get-BridgeSettings -RootPath $RootPath)[$key]
 }
 
-function ConvertTo-BridgeYamlScalar {
-    param([AllowNull()]$Value)
+function Invoke-BridgeProjectSettingsRenderProcess {
+    param(
+        [Parameter(Mandatory = $true)][string]$WinsmuxBin,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$PayloadJson
+    )
 
-    if ($null -eq $Value) {
-        return "''"
+    $utf8 = [System.Text.UTF8Encoding]::new($false, $true)
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $WinsmuxBin
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardInput = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.StandardOutputEncoding = $utf8
+    $startInfo.StandardErrorEncoding = $utf8
+    $startInfo.ArgumentList.Add('project-settings-render')
+
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    $started = $false
+    try {
+        $started = $process.Start()
+        if (-not $started) {
+            throw $script:BridgeProjectSettingsSaveRejectedMessage
+        }
+
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $payloadBytes = $utf8.GetBytes($PayloadJson)
+        $process.StandardInput.BaseStream.Write($payloadBytes, 0, $payloadBytes.Length)
+        $process.StandardInput.Close()
+        $process.WaitForExit()
+        $stdout = $stdoutTask.GetAwaiter().GetResult()
+        [void]$stderrTask.GetAwaiter().GetResult()
+
+        return [PSCustomObject][ordered]@{
+            ExitCode = $process.ExitCode
+            StdOut   = [string]$stdout
+        }
+    } finally {
+        if ($started -and -not $process.HasExited) {
+            try { $process.Kill($true) } catch { }
+        }
+        $process.Dispose()
     }
-
-    $text = $Value.ToString()
-    if ($text -match '^[A-Za-z0-9._/-]+$') {
-        return $text
-    }
-
-    return "'" + ($text -replace "'", "''") + "'"
 }
 
-function ConvertTo-BridgeYamlInlineList {
-    param([AllowNull()]$Value)
+function Invoke-BridgeProjectSettingsRenderer {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$OriginalYaml,
+        [Parameter(Mandatory = $true)][System.Collections.IDictionary]$DesiredSettings
+    )
 
-    $items = @(ConvertTo-BridgeStringArray $Value)
-    return '[' + (($items | ForEach-Object { ConvertTo-BridgeYamlScalar $_ }) -join ', ') + ']'
+    try {
+        $winsmuxBin = Get-WinsmuxBin
+        if ([string]::IsNullOrWhiteSpace([string]$winsmuxBin)) {
+            throw $script:BridgeProjectSettingsSaveRejectedMessage
+        }
+
+        $payload = [ordered]@{
+            original_yaml = $OriginalYaml
+            desired_settings = $DesiredSettings
+            owned_keys    = @($script:BridgeSettingsSchema.Keys | ForEach-Object { [string]$_ })
+            nested_contract = [ordered]@{
+                agent_slots = [ordered]@{
+                    identity_key = 'slot_id'
+                    owned_keys   = @($script:BridgeSlotScalarKeys + $script:BridgeSlotListKeys)
+                    aliases      = [ordered]@{
+                        backend = 'worker_backend'
+                        role    = 'worker_role'
+                    }
+                }
+                roles = [ordered]@{
+                    owned_keys = @($script:BridgeRoleScalarKeys)
+                }
+            }
+        }
+        $payloadJson = $payload | ConvertTo-Json -Depth 4 -Compress
+        $result = Invoke-BridgeProjectSettingsRenderProcess -WinsmuxBin ([string]$winsmuxBin) -PayloadJson $payloadJson
+        if ($null -eq $result -or
+            $null -eq $result.PSObject.Properties['ExitCode'] -or
+            $null -eq $result.PSObject.Properties['StdOut'] -or
+            [int]$result.ExitCode -ne 0 -or
+            [string]::IsNullOrWhiteSpace([string]$result.StdOut) -or
+            ([string]$result.StdOut).Contains([char]0)) {
+            throw $script:BridgeProjectSettingsSaveRejectedMessage
+        }
+
+        return [string]$result.StdOut
+    } catch {
+        throw $script:BridgeProjectSettingsSaveRejectedMessage
+    }
+}
+
+function Save-BridgeProjectSettingsAtomically {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][System.Collections.IDictionary]$DesiredSettings
+    )
+
+    Invoke-WinsmuxWithFileLock -Path $Path -Action {
+        $utf8 = [System.Text.UTF8Encoding]::new($false, $true)
+        $originalYaml = if (Test-Path -LiteralPath $Path -PathType Leaf) {
+            [System.IO.File]::ReadAllText($Path, $utf8)
+        } else {
+            ''
+        }
+        $renderedYaml = Invoke-BridgeProjectSettingsRenderer -OriginalYaml $originalYaml -DesiredSettings $DesiredSettings
+        $tempPath = "$Path.tmp-$([guid]::NewGuid().ToString('N'))"
+        try {
+            [System.IO.File]::WriteAllText($tempPath, $renderedYaml, $utf8)
+            [System.IO.File]::Move($tempPath, $Path, $true)
+        } finally {
+            if (Test-Path -LiteralPath $tempPath -PathType Leaf) {
+                Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
 }
 
 function Save-BridgeSettings {
@@ -3390,72 +3545,7 @@ function Save-BridgeSettings {
 
     if ($Scope -eq 'project') {
         $path = Get-BridgeProjectSettingsPath -RootPath $RootPath
-        $lines = [System.Collections.Generic.List[string]]::new()
-        $hasAgentSlots = @($normalized.agent_slots).Count -gt 0
-
-        foreach ($key in $script:BridgeSettingsSchema.Keys) {
-            if (-not $normalized.Contains($key)) {
-                continue
-            }
-
-            if ($key -eq 'worker_count' -and $hasAgentSlots) {
-                continue
-            }
-
-            $value = $normalized[$key]
-            if ($value -is [System.Array]) {
-                $lines.Add("${key}:")
-                if ($script:BridgeSettingsSchema[$key].Type -eq 'slotlist') {
-                    foreach ($item in $value) {
-                        $slot = ConvertTo-BridgeSlotEntry $item
-                        if ($null -eq $slot) {
-                            continue
-                        }
-
-                        $firstProperty = $true
-                        foreach ($slotEntry in $slot.GetEnumerator()) {
-                            $slotValue = if ($slotEntry.Key -in $script:BridgeSlotListKeys) {
-                                ConvertTo-BridgeYamlInlineList $slotEntry.Value
-                            } else {
-                                ConvertTo-BridgeYamlScalar $slotEntry.Value
-                            }
-
-                            if ($firstProperty) {
-                                $lines.Add("  - $($slotEntry.Key): $slotValue")
-                                $firstProperty = $false
-                                continue
-                            }
-
-                            $lines.Add("    $($slotEntry.Key): $slotValue")
-                        }
-                    }
-                } else {
-                    foreach ($item in $value) {
-                        $lines.Add("  - $(ConvertTo-BridgeYamlScalar $item)")
-                    }
-                }
-            } elseif ($value -is [System.Collections.IDictionary]) {
-                $lines.Add("${key}:")
-                foreach ($entry in $value.GetEnumerator()) {
-                    $lines.Add("  $($entry.Key):")
-                    $roleConfig = $entry.Value
-                    if ($roleConfig -is [System.Collections.IDictionary]) {
-                        foreach ($roleEntry in $roleConfig.GetEnumerator()) {
-                            $lines.Add("    $($roleEntry.Key): $(ConvertTo-BridgeYamlScalar $roleEntry.Value)")
-                        }
-                    } elseif ($null -ne $roleConfig -and $null -ne $roleConfig.PSObject) {
-                        foreach ($property in $roleConfig.PSObject.Properties) {
-                            $lines.Add("    $($property.Name): $(ConvertTo-BridgeYamlScalar $property.Value)")
-                        }
-                    }
-                }
-            } else {
-                $lines.Add("${key}: $(ConvertTo-BridgeYamlScalar $value)")
-            }
-        }
-
-        $content = if ($lines.Count -gt 0) { ($lines -join [Environment]::NewLine) + [Environment]::NewLine } else { '' }
-        Set-Content -Path $path -Value $content -Encoding UTF8
+        Save-BridgeProjectSettingsAtomically -Path $path -DesiredSettings $normalized
         return
     }
 

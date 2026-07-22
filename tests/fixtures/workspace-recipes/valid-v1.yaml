@@ -1,0 +1,38 @@
+config-version: 1
+team-profile:
+  schema-version: 1
+  preset: official-balanced-v1
+  future-lane-b-field: preserve-me
+agent-slots:
+  - slot-id: worker-1
+    agent: codex
+  - slot-id: reviewer-1
+    agent: review-only
+future-top-level:
+  owner: future
+workspace-recipes:
+  bugfix-two-slot:
+    schema-version: 1
+    panes:
+      - pane-key: implement
+        workflow-role: implementer
+        slot-ref: worker-1
+        requires-capabilities: [file-edit]
+        region: main
+        worktree:
+          mode: managed
+          name-template: "{{workflow-id}}-implement"
+      - pane-key: verify
+        workflow-role: verifier
+        slot-selector:
+          requires-capabilities: [review]
+        region: side
+        worktree:
+          mode: read-only-reference
+    startup-actions:
+      - action-id: prepare-implement-worktree
+        kind: ensure-managed-worktree
+        pane-ref: implement
+      - action-id: start-verify-slot
+        kind: ensure-slot-ready
+        pane-ref: verify

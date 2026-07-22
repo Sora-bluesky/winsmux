@@ -1,8 +1,2131 @@
 use std::fs;
+use std::io::Write as _;
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+#[allow(dead_code)]
+#[rustfmt::skip]
+#[path = "../src/workspace_project_settings.rs"]
+mod canonical_project_settings_reader;
+
+#[allow(dead_code)]
+#[path = "../src/workspace_recipe.rs"]
+mod workspace_recipe;
+
+fn run_project_settings_render(input: &[u8], extra_args: &[&str]) -> std::process::Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_winsmux"));
+    command
+        .arg("project-settings-render")
+        .args(extra_args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().expect("spawn project settings renderer");
+    child
+        .stdin
+        .take()
+        .expect("renderer stdin")
+        .write_all(input)
+        .expect("write renderer input");
+    child.wait_with_output().expect("wait for renderer")
+}
+
+fn render_payload(original_yaml: &str, desired_yaml: &str, owned_keys: &[&str]) -> Vec<u8> {
+    let desired_settings = serde_yaml::from_str::<serde_json::Value>(desired_yaml)
+        .expect("desired renderer settings should parse as typed JSON-compatible YAML");
+    serde_json::to_vec(&serde_json::json!({
+        "original_yaml": original_yaml,
+        "desired_settings": desired_settings,
+        "owned_keys": owned_keys,
+        "nested_contract": {
+            "agent_slots": {
+                "identity_key": "slot_id",
+                "owned_keys": [
+                    "slot_id", "runtime_role", "agent", "model", "model_source",
+                    "reasoning_effort", "prompt_transport", "mcp_mode", "auth_mode",
+                    "worktree_mode", "worker_backend", "execution_profile", "worker_role",
+                    "pane_title", "fallback_model"
+                ],
+                "aliases": { "backend": "worker_backend", "role": "worker_role" }
+            },
+            "roles": {
+                "owned_keys": [
+                    "agent", "model", "model_source", "reasoning_effort",
+                    "prompt_transport", "auth_mode"
+                ]
+            }
+        }
+    }))
+    .expect("serialize renderer payload")
+}
+
+fn legacy_render_payload(original_yaml: &str, desired_yaml: &str, owned_keys: &[&str]) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "original_yaml": original_yaml,
+        "desired_yaml": desired_yaml,
+        "owned_keys": owned_keys,
+        "nested_contract": {
+            "agent_slots": {
+                "identity_key": "slot_id",
+                "owned_keys": ["slot_id"],
+                "aliases": {}
+            },
+            "roles": { "owned_keys": [] }
+        }
+    }))
+    .expect("serialize legacy renderer payload")
+}
+
+fn yaml_mapping(yaml: &[u8]) -> serde_yaml::Mapping {
+    serde_yaml::from_slice::<serde_yaml::Value>(yaml)
+        .expect("renderer output should parse")
+        .as_mapping()
+        .expect("renderer output should be a mapping")
+        .clone()
+}
+
+#[test]
+fn project_settings_render_preserves_block_comments_and_unknown_fields() {
+    let original = "# heading\n'unknown-key': 'keep' # keep-comment\nworkspace-recipes:\n  old: value\ndrop-me: true\n";
+    let desired = "workspace_recipes:\n  new: value\nconfig_version: 1\n";
+    let input = render_payload(
+        original,
+        desired,
+        &["workspace-recipes", "config-version", "drop-me"],
+    );
+    let output = run_project_settings_render(&input, &[]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    let text = String::from_utf8(output.stdout).expect("UTF-8 YAML output");
+    assert!(text.starts_with("# heading\n'unknown-key': 'keep' # keep-comment\n"));
+    assert!(text.contains("workspace-recipes:"));
+    assert!(!text.contains("old: value"));
+    assert!(!text.contains("drop-me:"));
+
+    let mapping = yaml_mapping(text.as_bytes());
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("unknown-key".into())),
+        Some(&serde_yaml::Value::String("keep".into()))
+    );
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("config_version".into())),
+        Some(&serde_yaml::Value::Number(1.into()))
+    );
+    assert_eq!(
+        mapping
+            .get(serde_yaml::Value::String("workspace-recipes".into()))
+            .and_then(serde_yaml::Value::as_mapping)
+            .and_then(|workspace| { workspace.get(serde_yaml::Value::String("new".into())) }),
+        Some(&serde_yaml::Value::String("value".into()))
+    );
+}
+
+#[test]
+fn project_settings_render_mutates_single_line_flow_without_using_cst_insert() {
+    let original = "{unknown: keep, owned-old: 1, drop-me: true} # tail\n";
+    let desired = "{owned_old: 2, added_key: [x, 3]}\n";
+    let input = render_payload(original, desired, &["owned-old", "drop-me", "added-key"]);
+    let output = run_project_settings_render(&input, &[]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    let text = String::from_utf8(output.stdout).expect("UTF-8 YAML output");
+    assert!(text.trim_end().ends_with("} # tail"));
+    let mapping = yaml_mapping(text.as_bytes());
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("unknown".into())),
+        Some(&serde_yaml::Value::String("keep".into()))
+    );
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("owned-old".into())),
+        Some(&serde_yaml::Value::Number(2.into()))
+    );
+    assert!(!mapping.contains_key(serde_yaml::Value::String("drop-me".into())));
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("added_key".into())),
+        Some(&serde_yaml::Value::Sequence(vec![
+            serde_yaml::Value::String("x".into()),
+            serde_yaml::Value::Number(3.into()),
+        ]))
+    );
+}
+
+#[test]
+fn project_settings_render_preserves_separator_comment_after_deleted_flow_head() {
+    let original = "{model: old, # separator-comment\n future-owner: keep}\n";
+    let input = render_payload(original, "agent: codex\n", &["agent", "model"]);
+    let output = run_project_settings_render(&input, &[]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).expect("UTF-8 YAML output");
+    assert!(text.contains("# separator-comment"));
+    assert!(!text.contains("model: old"));
+    let mapping = yaml_mapping(text.as_bytes());
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("future-owner".into())),
+        Some(&serde_yaml::Value::String("keep".into()))
+    );
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("agent".into())),
+        Some(&serde_yaml::Value::String("codex".into()))
+    );
+}
+
+#[test]
+fn project_settings_render_preserves_separator_comment_after_deleted_flow_middle() {
+    let original = "{agent: old, model: old, # separator-comment\n future-owner: keep}\n";
+    let input = render_payload(original, "agent: new\n", &["agent", "model"]);
+    let output = run_project_settings_render(&input, &[]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).expect("UTF-8 YAML output");
+    assert!(text.contains("# separator-comment"));
+    assert!(!text.contains("model: old"));
+    let mapping = yaml_mapping(text.as_bytes());
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("future-owner".into())),
+        Some(&serde_yaml::Value::String("keep".into()))
+    );
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("agent".into())),
+        Some(&serde_yaml::Value::String("new".into()))
+    );
+}
+
+#[test]
+fn project_settings_render_coalesces_two_owned_deletions_at_flow_tail() {
+    let original = "{unknown: keep, model: old, reasoning_effort: high}\n";
+    let input = render_payload(
+        original,
+        "agent: codex\n",
+        &["agent", "model", "reasoning_effort"],
+    );
+    let output = run_project_settings_render(&input, &[]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"{unknown: keep, \"agent\": \"codex\"}\n");
+    let mapping = yaml_mapping(&output.stdout);
+    assert_eq!(mapping.len(), 2);
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("unknown".into())),
+        Some(&serde_yaml::Value::String("keep".into()))
+    );
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("agent".into())),
+        Some(&serde_yaml::Value::String("codex".into()))
+    );
+}
+
+#[test]
+fn project_settings_render_coalesces_all_owned_flow_deletions() {
+    let original = "{owned-a: 1, owned-b: 2}\n";
+    let input = render_payload(original, "{}\n", &["owned-a", "owned-b"]);
+    let output = run_project_settings_render(&input, &[]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(yaml_mapping(&output.stdout).is_empty());
+}
+
+#[test]
+fn project_settings_render_preserves_flow_separator_comment_when_deleting_tail() {
+    let original =
+        "{workspace-recipes: {review: {schema-version: 1}}, # recipe comment\n reasoning_effort: high}\n";
+    let input = render_payload(original, "{}\n", &["reasoning_effort"]);
+    let output = run_project_settings_render(&input, &[]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).expect("UTF-8 YAML output");
+    assert!(text.contains(", # recipe comment"));
+    assert!(!text.contains("reasoning_effort"));
+    let mapping = yaml_mapping(text.as_bytes());
+    assert_eq!(mapping.len(), 1);
+    assert_eq!(
+        mapping
+            .get(serde_yaml::Value::String("workspace-recipes".into()))
+            .and_then(serde_yaml::Value::as_mapping)
+            .and_then(|workspace| workspace.get(serde_yaml::Value::String("review".into())))
+            .and_then(serde_yaml::Value::as_mapping)
+            .and_then(|review| { review.get(serde_yaml::Value::String("schema-version".into())) }),
+        Some(&serde_yaml::Value::Number(1.into()))
+    );
+}
+
+#[test]
+fn project_settings_render_reuses_flow_separator_comment_when_replacing_tail() {
+    let original =
+        "{workspace-recipes: {review: {schema-version: 1}}, # recipe comment\n reasoning_effort: high}\n";
+    let input = render_payload(original, "agent: codex\n", &["agent", "reasoning_effort"]);
+    let output = run_project_settings_render(&input, &[]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).expect("UTF-8 YAML output");
+    assert!(text.contains(", # recipe comment"));
+    assert!(!text.contains("reasoning_effort"));
+    let mapping = yaml_mapping(text.as_bytes());
+    assert_eq!(mapping.len(), 2);
+    assert_eq!(
+        mapping
+            .get(serde_yaml::Value::String("workspace-recipes".into()))
+            .and_then(serde_yaml::Value::as_mapping)
+            .and_then(|workspace| workspace.get(serde_yaml::Value::String("review".into())))
+            .and_then(serde_yaml::Value::as_mapping)
+            .and_then(|review| { review.get(serde_yaml::Value::String("schema-version".into())) }),
+        Some(&serde_yaml::Value::Number(1.into()))
+    );
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("agent".into())),
+        Some(&serde_yaml::Value::String("codex".into()))
+    );
+}
+
+#[test]
+fn project_settings_render_preserves_unknown_alias_and_tagged_values() {
+    let cases = [
+        (
+            "defaults: &d\n  enabled: true\nfuture-owner: *d\nagent: old\n",
+            "future-owner: *d",
+        ),
+        (
+            "future-owner: !future keep\nagent: old\n",
+            "future-owner: !future keep",
+        ),
+    ];
+
+    for (original, preserved) in cases {
+        let input = render_payload(original, "agent: codex\n", &["agent"]);
+        let output = run_project_settings_render(&input, &[]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let text = String::from_utf8(output.stdout).expect("UTF-8 YAML output");
+        assert!(text.contains(preserved));
+        assert_eq!(
+            yaml_mapping(text.as_bytes()).get(serde_yaml::Value::String("agent".into())),
+            Some(&serde_yaml::Value::String("codex".into()))
+        );
+    }
+}
+
+#[test]
+fn project_settings_render_replaces_owned_alias_and_tagged_values() {
+    let cases = ["defaults: &d codex\nagent: *d\n", "agent: !legacy old\n"];
+
+    for original in cases {
+        let input = render_payload(original, "agent: codex\n", &["agent"]);
+        let output = run_project_settings_render(&input, &[]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            yaml_mapping(&output.stdout).get(serde_yaml::Value::String("agent".into())),
+            Some(&serde_yaml::Value::String("codex".into()))
+        );
+    }
+}
+
+#[test]
+fn project_settings_render_recursively_preserves_unknown_owned_descendants() {
+    let original = "defaults: &classes [implementation, review]\nagent_slots:\n  - slot_id: worker-1\n    model: old\n    backend: local\n    fallback_model: legacy\n    task_classes: *classes # keep-slot-extension\nroles:\n  builder:\n    model: old\n    auth_mode: local\n    task_classes: !future [implementation] # keep-role-extension\n  researcher:\n    model: old\n    task_classes: [research]\n";
+    let desired = "agent_slots:\n  - slot_id: worker-1\n    model: new\n    model_source: operator-override\n    worker_backend: codex\nroles:\n  builder:\n    model: new\n    model_source: operator-override\n  reviewer:\n    model: review-model\n";
+    let input = render_payload(original, desired, &["agent_slots", "roles"]);
+    let output = run_project_settings_render(&input, &[]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).expect("UTF-8 YAML output");
+    assert!(text.contains("task_classes: *classes # keep-slot-extension"));
+    assert!(text.contains("task_classes: !future [implementation] # keep-role-extension"));
+    assert!(!text.contains("fallback_model:"));
+    assert!(!text.contains("auth_mode:"));
+    assert!(!text.contains("researcher:"));
+
+    let mapping = yaml_mapping(text.as_bytes());
+    let slot = mapping
+        .get(serde_yaml::Value::String("agent_slots".into()))
+        .and_then(serde_yaml::Value::as_sequence)
+        .and_then(|slots| slots.first())
+        .and_then(serde_yaml::Value::as_mapping)
+        .expect("one slot mapping");
+    assert_eq!(
+        slot.get(serde_yaml::Value::String("model".into())),
+        Some(&serde_yaml::Value::String("new".into()))
+    );
+    assert_eq!(
+        slot.get(serde_yaml::Value::String("model_source".into())),
+        Some(&serde_yaml::Value::String("operator-override".into()))
+    );
+    assert_eq!(
+        slot.get(serde_yaml::Value::String("backend".into())),
+        Some(&serde_yaml::Value::String("codex".into()))
+    );
+    assert!(slot.contains_key(serde_yaml::Value::String("task_classes".into())));
+
+    let role = mapping
+        .get(serde_yaml::Value::String("roles".into()))
+        .and_then(serde_yaml::Value::as_mapping)
+        .and_then(|roles| roles.get(serde_yaml::Value::String("builder".into())))
+        .and_then(serde_yaml::Value::as_mapping)
+        .expect("builder role mapping");
+    assert_eq!(
+        role.get(serde_yaml::Value::String("model".into())),
+        Some(&serde_yaml::Value::String("new".into()))
+    );
+    assert!(role.contains_key(serde_yaml::Value::String("task_classes".into())));
+    assert!(mapping
+        .get(serde_yaml::Value::String("roles".into()))
+        .and_then(serde_yaml::Value::as_mapping)
+        .is_some_and(|roles| roles.contains_key(serde_yaml::Value::String("reviewer".into()))));
+}
+
+#[test]
+fn project_settings_render_combines_nested_edits_with_top_level_additions() {
+    let original = "defaults: &classes [implementation, review]\nagent_slots:\n  - slot_id: worker-1\n    model: old\n    backend: local\n    fallback_model: legacy\n    task_classes: *classes # keep-slot-extension\nroles:\n  builder:\n    model: old\n    auth_mode: local\n    task_classes: !future [implementation] # keep-role-extension\n";
+    let desired = "agent: codex\r\nmodel: gpt-5.6-terra\r\nagent_slots:\r\n  - slot_id: worker-1\r\n    runtime_role: worker\r\n    model: gpt-5.6-terra\r\n    model_source: operator-override\r\n    worker_backend: codex\r\n    worktree_mode: managed\r\nroles:\r\n  builder:\r\n    model: gpt-5.6-terra\r\n    model_source: operator-override\r\n";
+    let input = render_payload(
+        original,
+        desired,
+        &["agent", "model", "agent_slots", "roles"],
+    );
+    let output = run_project_settings_render(&input, &[]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).expect("UTF-8 YAML output");
+    let mapping = yaml_mapping(text.as_bytes());
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("agent".into())),
+        Some(&serde_yaml::Value::String("codex".into()))
+    );
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("model".into())),
+        Some(&serde_yaml::Value::String("gpt-5.6-terra".into()))
+    );
+    assert!(text.contains("task_classes: *classes # keep-slot-extension"));
+    assert!(text.contains("task_classes: !future [implementation] # keep-role-extension"));
+    assert!(!text.contains("fallback_model:"));
+    assert!(!text.contains("auth_mode:"));
+}
+
+#[test]
+fn project_settings_render_recursively_preserves_unknown_owned_flow_descendants() {
+    let original = "agent_slots: [{slot_id: worker-1, model: old, fallback_model: legacy, task_classes: !future keep} # slot-extension\n]\nroles: {builder: {model: old, auth_mode: local, task_classes: !future keep}}\n";
+    let desired = "agent_slots:\n  - slot_id: worker-1\n    model: new\n    model_source: operator-override\nroles:\n  builder:\n    model: new\n    model_source: operator-override\n";
+    let input = render_payload(original, desired, &["agent_slots", "roles"]);
+    let output = run_project_settings_render(&input, &[]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).expect("UTF-8 YAML output");
+    assert!(text.contains("task_classes: !future keep"));
+    assert!(text.contains("# slot-extension"));
+    assert!(!text.contains("fallback_model:"));
+    assert!(!text.contains("auth_mode:"));
+    let mapping = yaml_mapping(text.as_bytes());
+    assert_eq!(
+        mapping
+            .get(serde_yaml::Value::String("agent_slots".into()))
+            .and_then(serde_yaml::Value::as_sequence)
+            .and_then(|slots| slots.first())
+            .and_then(serde_yaml::Value::as_mapping)
+            .and_then(|slot| slot.get(serde_yaml::Value::String("model_source".into())))
+            .and_then(serde_yaml::Value::as_str),
+        Some("operator-override")
+    );
+}
+
+#[test]
+fn project_settings_render_rejects_ambiguous_unknown_slot_topology() {
+    let original = "agent_slots:\n  - slot_id: worker-1\n    model: old\n    task_classes: [implementation]\n  - slot_id: worker-2\n    model: old\n";
+    let cases = [
+        "agent_slots:\n  - slot_id: worker-2\n    model: new\n  - slot_id: worker-1\n    model: new\n",
+        "agent_slots:\n  - slot_id: worker-1\n    model: new\n",
+        "agent_slots:\n  - slot_id: worker-1\n    model: new\n  - slot_id: worker-2\n    model: new\n  - slot_id: worker-3\n    model: new\n",
+        "agent_slots:\n  - slot_id: worker-1\n    model: new\n  - slot_id: worker-1\n    model: duplicate\n",
+    ];
+
+    for desired in cases {
+        let input = render_payload(original, desired, &["agent_slots"]);
+        let output = run_project_settings_render(&input, &[]);
+        assert!(!output.status.success(), "unexpected output: {desired}");
+        assert!(output.stdout.is_empty());
+        assert_eq!(
+            String::from_utf8(output.stderr).expect("UTF-8 generic error"),
+            "winsmux: project settings render failed.\n"
+        );
+    }
+
+    let duplicate_original = "agent_slots:\n  - slot_id: worker-1\n    task_classes: [implementation]\n  - slot_id: worker-1\n    model: old\n";
+    let input = render_payload(
+        duplicate_original,
+        "agent_slots:\n  - slot_id: worker-1\n    model: new\n",
+        &["agent_slots"],
+    );
+    let output = run_project_settings_render(&input, &[]);
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn project_settings_render_matches_slot_identity_ascii_case_insensitively() {
+    let original = "agent_slots:\n  - slot_id: Worker-1 # identity-comment\n    model: old\n    task_classes: [implementation] # extension-comment\n";
+    let desired = "agent_slots:\n  - slot_id: worker-1\n    model: new\n    model_source: operator-override\n";
+    let input = render_payload(original, desired, &["agent_slots"]);
+    let output = run_project_settings_render(&input, &[]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).expect("UTF-8 YAML output");
+    assert!(text.contains("slot_id: \"Worker-1\" # identity-comment"));
+    assert!(text.contains("task_classes: [implementation] # extension-comment"));
+    assert!(text.contains("model: \"new\""));
+
+    let mapping = yaml_mapping(text.as_bytes());
+    let slot = mapping
+        .get(serde_yaml::Value::String("agent_slots".into()))
+        .and_then(serde_yaml::Value::as_sequence)
+        .and_then(|slots| slots.first())
+        .and_then(serde_yaml::Value::as_mapping)
+        .expect("one slot mapping");
+    assert_eq!(
+        slot.get(serde_yaml::Value::String("slot_id".into()))
+            .and_then(serde_yaml::Value::as_str),
+        Some("Worker-1")
+    );
+    assert_eq!(
+        slot.get(serde_yaml::Value::String("model_source".into()))
+            .and_then(serde_yaml::Value::as_str),
+        Some("operator-override")
+    );
+}
+
+#[test]
+fn project_settings_render_rejects_case_variant_original_slot_duplicates() {
+    let original = "agent_slots:\n  - slot_id: Worker-1\n    model: old\n  - slot_id: worker-1\n    model: duplicate\n";
+    let desired = "agent_slots:\n  - slot_id: worker-1\n    model: new\n";
+    let input = render_payload(original, desired, &["agent_slots"]);
+    let output = run_project_settings_render(&input, &[]);
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stderr).expect("UTF-8 generic error"),
+        "winsmux: project settings render failed.\n"
+    );
+}
+
+#[test]
+fn project_settings_render_rejects_case_variant_desired_slot_duplicates() {
+    let original = "agent_slots:\n  - slot_id: worker-1\n    model: old\n";
+    let desired = "agent_slots:\n  - slot_id: Worker-1\n    model: new\n  - slot_id: worker-1\n    model: duplicate\n";
+    let input = render_payload(original, desired, &["agent_slots"]);
+    let output = run_project_settings_render(&input, &[]);
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stderr).expect("UTF-8 generic error"),
+        "winsmux: project settings render failed.\n"
+    );
+}
+
+#[test]
+fn project_settings_render_still_allows_distinct_new_slot_identity() {
+    let original = "agent_slots:\n  - slot_id: Worker-1\n    model: old\n";
+    let desired = "agent_slots:\n  - slot_id: worker-2\n    model: added\n";
+    let input = render_payload(original, desired, &["agent_slots"]);
+    let output = run_project_settings_render(&input, &[]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mapping = yaml_mapping(&output.stdout);
+    let slots = mapping
+        .get(serde_yaml::Value::String("agent_slots".into()))
+        .and_then(serde_yaml::Value::as_sequence)
+        .expect("agent_slots sequence");
+    assert_eq!(slots.len(), 1);
+    assert_eq!(
+        slots[0]
+            .as_mapping()
+            .and_then(|slot| slot.get(serde_yaml::Value::String("slot_id".into())))
+            .and_then(serde_yaml::Value::as_str),
+        Some("worker-2")
+    );
+}
+
+#[test]
+fn project_settings_render_r48_matches_trimmed_slot_and_role_identities_in_block_yaml() {
+    let original = "agent_slots:\n  - slot_id: ' Worker-1 ' # slot-id-comment\n    model: old\n    task_classes: [implementation] # slot-extension\nroles:\n  ' Builder ': # role-name-comment\n    model: old\n    task_classes: [implementation] # role-extension\n";
+    let desired = "agent_slots:\n  - slot_id: worker-1\n    model: new\nroles:\n  builder:\n    model: new-role\n";
+    let input = render_payload(original, desired, &["agent_slots", "roles"]);
+    let first = run_project_settings_render(&input, &[]);
+
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let first_text = String::from_utf8(first.stdout).expect("UTF-8 YAML output");
+    assert!(first_text.contains("slot_id: \" Worker-1 \" # slot-id-comment"));
+    assert!(first_text.contains("task_classes: [implementation] # slot-extension"));
+    assert!(first_text.contains("' Builder ': # role-name-comment"));
+    assert!(first_text.contains("task_classes: [implementation] # role-extension"));
+    assert!(first_text.contains("model: \"new\""));
+    assert!(first_text.contains("model: \"new-role\""));
+
+    let second_input = render_payload(&first_text, desired, &["agent_slots", "roles"]);
+    let second = run_project_settings_render(&second_input, &[]);
+    assert!(second.status.success());
+    assert_eq!(second.stdout, first_text.as_bytes());
+}
+
+#[test]
+fn project_settings_render_r48_matches_trimmed_slot_and_role_identities_in_flow_yaml() {
+    let original = "{agent_slots: [{slot_id: ' Worker-1 ', model: old, future_slot: keep} # slot-comment\n], roles: {' Reviewer ': {model: old, future_role: keep} # role-comment\n}} # root-comment\n";
+    let desired = "agent_slots:\n  - slot_id: worker-1\n    model: new\nroles:\n  reviewer:\n    model: new-role\n";
+    let input = render_payload(original, desired, &["agent_slots", "roles"]);
+    let output = run_project_settings_render(&input, &[]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).expect("UTF-8 YAML output");
+    assert!(text.contains("slot_id: \" Worker-1 \""));
+    assert!(text.contains("future_slot: keep"));
+    assert!(text.contains("' Reviewer ':"));
+    assert!(text.contains("future_role: keep"));
+    assert!(text.contains("# slot-comment"));
+    assert!(text.contains("# role-comment"));
+    assert!(text.contains("# root-comment"));
+}
+
+#[test]
+fn project_settings_render_r48_rejects_trimmed_identity_duplicates_on_both_sides() {
+    let cases = [
+        (
+            "agent_slots:\n  - slot_id: ' Worker-1 '\n  - slot_id: worker-1\n",
+            "agent_slots:\n  - slot_id: worker-1\n",
+            &["agent_slots"][..],
+        ),
+        (
+            "agent_slots:\n  - slot_id: worker-1\n",
+            "agent_slots:\n  - slot_id: ' Worker-1 '\n  - slot_id: worker-1\n",
+            &["agent_slots"][..],
+        ),
+        (
+            "roles:\n  ' Builder ': {}\n  builder: {}\n",
+            "roles:\n  builder: {}\n",
+            &["roles"][..],
+        ),
+        (
+            "roles:\n  builder: {}\n",
+            "roles:\n  ' Builder ': {}\n  builder: {}\n",
+            &["roles"][..],
+        ),
+    ];
+
+    for (original, desired, owned) in cases {
+        let output = run_project_settings_render(&render_payload(original, desired, owned), &[]);
+        assert!(
+            !output.status.success(),
+            "unexpected output for {original:?}"
+        );
+        assert!(output.stdout.is_empty());
+        assert_eq!(
+            String::from_utf8(output.stderr).expect("UTF-8 generic error"),
+            "winsmux: project settings render failed.\n"
+        );
+    }
+}
+
+#[test]
+fn project_settings_render_r48_keeps_add_remove_and_owned_omission_controls() {
+    let original = "agent_slots:\n  - slot_id: Worker-1\n    model: old\n  - slot_id: removed-slot\n    model: old\nroles:\n  Builder:\n    model: old\n  removed-role:\n    model: old\n";
+    let desired = "agent_slots:\n  - slot_id: ' worker-1 '\n    reasoning_effort: high\n  - slot_id: worker-3\n    model: \"slot # \\\"added\"\nroles:\n  ' builder ': {}\n  reviewer:\n    model: added-role\n  \"review # \\\"lead\":\n    model: \"role # \\\"added\"\n";
+    let output = run_project_settings_render(
+        &render_payload(original, desired, &["agent_slots", "roles"]),
+        &[],
+    );
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mapping = yaml_mapping(&output.stdout);
+    let slots = mapping
+        .get(serde_yaml::Value::String("agent_slots".into()))
+        .and_then(serde_yaml::Value::as_sequence)
+        .expect("agent_slots sequence");
+    assert_eq!(slots.len(), 2);
+    assert_eq!(
+        slots[0]
+            .as_mapping()
+            .and_then(|slot| slot.get(serde_yaml::Value::String("slot_id".into())))
+            .and_then(serde_yaml::Value::as_str),
+        Some("Worker-1")
+    );
+    assert!(slots[0]
+        .as_mapping()
+        .is_some_and(|slot| !slot.contains_key(serde_yaml::Value::String("model".into()))));
+    assert_eq!(
+        slots[0]
+            .as_mapping()
+            .and_then(|slot| slot.get(serde_yaml::Value::String("reasoning_effort".into())))
+            .and_then(serde_yaml::Value::as_str),
+        Some("high")
+    );
+    let block_text = String::from_utf8(output.stdout.clone()).expect("UTF-8 block YAML output");
+    assert!(block_text.contains("agent_slots:\n  - reasoning_effort: \"high\""));
+    assert!(block_text.contains("    slot_id: \"Worker-1\""));
+    assert!(block_text.contains("roles:\n  Builder:\n    {}"));
+    assert!(block_text.contains("  reviewer:\n    model: \"added-role\""));
+    assert!(block_text.contains("  \"review # \\\"lead\":\n    model: \"role # \\\"added\""));
+    assert!(!block_text.contains("[{"));
+    assert!(!block_text.contains("{\\\"model\\\""));
+    let roles = mapping
+        .get(serde_yaml::Value::String("roles".into()))
+        .and_then(serde_yaml::Value::as_mapping)
+        .expect("roles mapping");
+    assert_eq!(roles.len(), 3);
+    assert!(roles
+        .get(serde_yaml::Value::String("Builder".into()))
+        .is_some_and(|role| role.as_mapping().is_some_and(serde_yaml::Mapping::is_empty)));
+    assert!(roles.contains_key(serde_yaml::Value::String("reviewer".into())));
+    assert_eq!(
+        roles
+            .get(serde_yaml::Value::String("review # \"lead".into()))
+            .and_then(serde_yaml::Value::as_mapping)
+            .and_then(|role| role.get(serde_yaml::Value::String("model".into())))
+            .and_then(serde_yaml::Value::as_str),
+        Some("role # \"added")
+    );
+
+    let second = run_project_settings_render(
+        &render_payload(&block_text, desired, &["agent_slots", "roles"]),
+        &[],
+    );
+    assert!(second.status.success());
+    assert_eq!(second.stdout, block_text.as_bytes());
+
+    let replace_only_original = "roles:\n  Builder:\n    model: old\n";
+    let replace_only_desired = "roles:\n  Reviewer:\n    model: new\n";
+    let replace_only = run_project_settings_render(
+        &render_payload(replace_only_original, replace_only_desired, &["roles"]),
+        &[],
+    );
+    assert!(
+        replace_only.status.success(),
+        "{}",
+        String::from_utf8_lossy(&replace_only.stderr)
+    );
+    let replace_only_text =
+        String::from_utf8(replace_only.stdout).expect("UTF-8 replaced roles YAML");
+    assert_eq!(
+        replace_only_text,
+        "roles:\n  Reviewer:\n    model: \"new\"\n"
+    );
+    let replace_only_second = run_project_settings_render(
+        &render_payload(&replace_only_text, replace_only_desired, &["roles"]),
+        &[],
+    );
+    assert!(replace_only_second.status.success());
+    assert_eq!(replace_only_second.stdout, replace_only_text.as_bytes());
+
+    let flow_original = "{roles: {' Builder ': {model: old} # builder-comment\n, removed-role: {model: old}}, untouched: keep} # root-comment\n";
+    let flow_desired = "roles:\n  ' builder ': {}\n  reviewer:\n    model: added-role\n";
+    let flow_input = render_payload(flow_original, flow_desired, &["roles"]);
+    let flow_first = run_project_settings_render(&flow_input, &[]);
+    assert!(
+        flow_first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&flow_first.stderr)
+    );
+    let flow_text = String::from_utf8(flow_first.stdout).expect("UTF-8 flow YAML output");
+    assert!(flow_text.contains("' Builder ': {} # builder-comment"));
+    assert!(flow_text.contains("\"reviewer\": {\"model\":\"added-role\"}"));
+    assert!(!flow_text.contains("removed-role"));
+    assert!(flow_text.contains("untouched: keep"));
+    assert!(flow_text.contains("# root-comment"));
+
+    let flow_second_input = render_payload(&flow_text, flow_desired, &["roles"]);
+    let flow_second = run_project_settings_render(&flow_second_input, &[]);
+    assert!(flow_second.status.success());
+    assert_eq!(flow_second.stdout, flow_text.as_bytes());
+}
+
+#[test]
+fn project_settings_render_r52_adds_missing_structured_roots_as_canonical_block_yaml() {
+    let original = "worker_count: 1 # keep-root-comment\n";
+    let desired = "worker_count: 1\nagent_slots:\n  - slot_id: worker-1\n    model: slot-added\nroles:\n  reviewer:\n    model: role-added\n";
+    let owned = &["worker_count", "agent_slots", "roles"];
+    let first = run_project_settings_render(&render_payload(original, desired, owned), &[]);
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let text = String::from_utf8(first.stdout).expect("UTF-8 block YAML output");
+    assert!(text.contains("worker_count: 1 # keep-root-comment"));
+    assert!(text.contains("agent_slots:\n  - model: \"slot-added\"\n    slot_id: \"worker-1\""));
+    assert!(text.contains("roles:\n  reviewer:\n    model: \"role-added\""));
+    assert!(!text.contains("agent_slots: ["));
+    assert!(!text.contains("roles: {"));
+
+    let second = run_project_settings_render(&render_payload(&text, desired, owned), &[]);
+    assert!(second.status.success());
+    assert_eq!(second.stdout, text.as_bytes());
+}
+
+#[test]
+fn project_settings_render_allows_owned_slot_topology_changes_without_extensions() {
+    let original = "agent_slots:\n  - slot_id: worker-1\n    model: old\n  - slot_id: worker-2\n    model: old\n    backend: local\n";
+    let desired = "agent_slots:\n  - slot_id: worker-2\n    model: new\n    worker_backend: codex\n  - slot_id: worker-3\n    model: added\n";
+    let input = render_payload(original, desired, &["agent_slots"]);
+    let output = run_project_settings_render(&input, &[]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mapping = yaml_mapping(&output.stdout);
+    let slots = mapping
+        .get(serde_yaml::Value::String("agent_slots".into()))
+        .and_then(serde_yaml::Value::as_sequence)
+        .expect("agent_slots sequence");
+    assert_eq!(slots.len(), 2);
+    assert_eq!(
+        slots[0]
+            .as_mapping()
+            .and_then(|slot| slot.get(serde_yaml::Value::String("slot_id".into())))
+            .and_then(serde_yaml::Value::as_str),
+        Some("worker-2")
+    );
+    assert_eq!(
+        slots[1]
+            .as_mapping()
+            .and_then(|slot| slot.get(serde_yaml::Value::String("slot_id".into())))
+            .and_then(serde_yaml::Value::as_str),
+        Some("worker-3")
+    );
+
+    let flow_original = "agent_slots: [{slot_id: worker-1, model: old}, {slot_id: removed-slot, model: old}] # slot-flow-comment\nuntouched: keep\n";
+    let flow_first = run_project_settings_render(
+        &render_payload(flow_original, desired, &["agent_slots"]),
+        &[],
+    );
+    assert!(
+        flow_first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&flow_first.stderr)
+    );
+    let flow_text = String::from_utf8(flow_first.stdout).expect("UTF-8 flow YAML output");
+    assert!(flow_text.contains("agent_slots: [{"));
+    assert!(flow_text.contains("# slot-flow-comment"));
+    assert!(flow_text.contains("untouched: keep"));
+
+    let flow_second =
+        run_project_settings_render(&render_payload(&flow_text, desired, &["agent_slots"]), &[]);
+    assert!(flow_second.status.success());
+    assert_eq!(flow_second.stdout, flow_text.as_bytes());
+}
+
+#[test]
+fn project_settings_render_preserves_multiline_flow_comments_and_is_idempotent() {
+    let original = "{\n  unknown: 'keep', # unknown-comment\n  owned: old # owned-comment\n}\n";
+    let desired = "{owned: new, added: {nested: true}}\n";
+    let first_input = render_payload(original, desired, &["owned", "added"]);
+    let first = run_project_settings_render(&first_input, &[]);
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let first_text = String::from_utf8(first.stdout).expect("UTF-8 YAML output");
+    assert!(first_text.contains("unknown: 'keep', # unknown-comment"));
+    assert!(first_text.contains("owned: \"new\" # owned-comment"));
+
+    let second_input = render_payload(&first_text, desired, &["owned", "added"]);
+    let second = run_project_settings_render(&second_input, &[]);
+    assert!(
+        second.status.success(),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert_eq!(second.stdout, first_text.as_bytes());
+}
+
+#[test]
+fn project_settings_render_creates_canonical_block_yaml_from_empty_source() {
+    for original in ["", " \r\n\t"] {
+        let input = render_payload(original, "worker_count: 2\n", &["worker_count"]);
+        let output = run_project_settings_render(&input, &[]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8(output.stdout.clone()).expect("UTF-8 YAML output"),
+            "worker_count: 2\n",
+            "new settings must use a block-style root"
+        );
+        assert_eq!(
+            yaml_mapping(&output.stdout).get(serde_yaml::Value::String("worker_count".into())),
+            Some(&serde_yaml::Value::Number(2.into()))
+        );
+    }
+
+    let nested = serde_json::json!({
+        "worker_count": 2,
+        "agent_slots": [{
+            "slot_id": "worker-1",
+            "agent": "codex",
+            "model": "provider-default"
+        }],
+        "roles": {
+            "worker": {
+                "model": "gpt-5.6-terra",
+                "prompt_transport": "stdin"
+            }
+        },
+        "vault_keys": []
+    });
+    let input = serde_json::to_vec(&serde_json::json!({
+        "original_yaml": "",
+        "desired_settings": nested,
+        "owned_keys": ["worker_count", "agent_slots", "roles", "vault_keys"],
+        "nested_contract": {
+            "agent_slots": {
+                "identity_key": "slot_id",
+                "owned_keys": ["slot_id", "agent", "model"],
+                "aliases": {}
+            },
+            "roles": { "owned_keys": ["model", "prompt_transport"] }
+        }
+    }))
+    .expect("serialize nested block-style renderer payload");
+    let output = run_project_settings_render(&input, &[]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout.clone()).expect("UTF-8 YAML output");
+    assert_eq!(
+        text,
+        concat!(
+            "agent_slots:\n",
+            "  - agent: \"codex\"\n",
+            "    model: \"provider-default\"\n",
+            "    slot_id: \"worker-1\"\n",
+            "roles:\n",
+            "  worker:\n",
+            "    model: \"gpt-5.6-terra\"\n",
+            "    prompt_transport: \"stdin\"\n",
+            "vault_keys:\n",
+            "  []\n",
+            "worker_count: 2\n"
+        ),
+        "new nested settings must use the manual fallback's block indentation"
+    );
+    let mapping = yaml_mapping(&output.stdout);
+    assert_eq!(
+        mapping
+            .get(serde_yaml::Value::String("agent_slots".into()))
+            .and_then(serde_yaml::Value::as_sequence)
+            .map(Vec::len),
+        Some(1)
+    );
+    assert!(mapping
+        .get(serde_yaml::Value::String("roles".into()))
+        .is_some_and(serde_yaml::Value::is_mapping));
+    assert!(mapping
+        .get(serde_yaml::Value::String("vault_keys".into()))
+        .is_some_and(serde_yaml::Value::is_sequence));
+
+    let empty_containers = render_payload(
+        "",
+        "agent_slots: []\nroles: {}\nvault_keys: []\n",
+        &["agent_slots", "roles", "vault_keys"],
+    );
+    let output = run_project_settings_render(&empty_containers, &[]);
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).expect("UTF-8 YAML output"),
+        "agent_slots:\n  []\nroles:\n  {}\nvault_keys:\n  []\n"
+    );
+}
+
+#[test]
+fn project_settings_render_r50_materializes_semantic_empty_roots_and_preserves_envelope() {
+    let cases = [
+        ("{}\n", &[][..]),
+        (
+            "# heading\n{} # inline-comment\n# trailing\n",
+            &["# heading", "# inline-comment", "# trailing"][..],
+        ),
+        ("--- {}\n...\n", &["---", "..."][..]),
+        (
+            "# heading\n---\n{}\n...\n# trailing\n",
+            &["# heading", "---", "...", "# trailing"][..],
+        ),
+    ];
+
+    for (original, preserved) in cases {
+        let desired = "agent: codex\n";
+        let first =
+            run_project_settings_render(&render_payload(original, desired, &["agent"]), &[]);
+        assert!(
+            first.status.success(),
+            "{original:?}: {}",
+            String::from_utf8_lossy(&first.stderr)
+        );
+        let first_text = String::from_utf8(first.stdout).expect("UTF-8 YAML output");
+        assert!(first_text.lines().any(|line| line == "agent: \"codex\""));
+        assert!(!first_text.contains("--- agent:"));
+        for marker in preserved {
+            assert!(
+                first_text.contains(marker),
+                "missing {marker:?} in {first_text:?}"
+            );
+        }
+        assert_eq!(
+            yaml_mapping(first_text.as_bytes())
+                .get(serde_yaml::Value::String("agent".into()))
+                .and_then(serde_yaml::Value::as_str),
+            Some("codex")
+        );
+
+        let second =
+            run_project_settings_render(&render_payload(&first_text, desired, &["agent"]), &[]);
+        assert!(second.status.success());
+        assert_eq!(second.stdout, first_text.as_bytes());
+    }
+}
+
+#[test]
+fn project_settings_render_r50_uses_manual_fallback_block_shape_for_empty_mapping() {
+    let desired = "agent_slots:\n  - slot_id: worker-1\n    runtime_role: worker\n    worktree_mode: managed\nroles: {}\nvault_keys: []\n";
+    let owned = &["agent_slots", "roles", "vault_keys"];
+    let first = run_project_settings_render(&render_payload("{}\n", desired, owned), &[]);
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let first_text = String::from_utf8(first.stdout).expect("UTF-8 YAML output");
+    assert!(first_text.contains("agent_slots:\n  - runtime_role: \"worker\""));
+    assert!(first_text.contains("    slot_id: \"worker-1\""));
+    assert!(first_text.contains("    worktree_mode: \"managed\""));
+    assert!(first_text.contains("roles:\n  {}\n"));
+    assert!(first_text.contains("vault_keys:\n  []\n"));
+    assert!(!first_text.contains("[{"));
+
+    let second = run_project_settings_render(&render_payload(&first_text, desired, owned), &[]);
+    assert!(second.status.success());
+    assert_eq!(second.stdout, first_text.as_bytes());
+}
+
+#[test]
+fn project_settings_render_r50_emits_explicit_empty_mapping_after_delete_all() {
+    for original in ["agent: old\n", "{agent: old}\n"] {
+        let desired = "{}\n";
+        let first =
+            run_project_settings_render(&render_payload(original, desired, &["agent"]), &[]);
+        assert!(
+            first.status.success(),
+            "{original:?}: {}",
+            String::from_utf8_lossy(&first.stderr)
+        );
+        assert_eq!(first.stdout, b"{}\n");
+
+        let second = run_project_settings_render(&render_payload("{}\n", desired, &["agent"]), &[]);
+        assert!(second.status.success());
+        assert_eq!(second.stdout, first.stdout);
+    }
+
+    let commented_cases = [
+        (
+            "# heading\nagent: old # keep-inline\n# trailing\n",
+            &["# heading", "# keep-inline", "# trailing"][..],
+        ),
+        (
+            "agent: old # keep-agent\nworker_count: 2 # keep-worker\n# trailing\n",
+            &["# keep-agent", "# keep-worker", "# trailing"][..],
+        ),
+        (
+            "{agent: old} # keep-flow\n# trailing\n",
+            &["# keep-flow", "# trailing"][..],
+        ),
+    ];
+    for (original, comments) in commented_cases {
+        let owned = if original.contains("worker_count") {
+            &["agent", "worker_count"][..]
+        } else {
+            &["agent"][..]
+        };
+        let first = run_project_settings_render(&render_payload(original, "{}\n", owned), &[]);
+        assert!(
+            first.status.success(),
+            "{original:?}: {}",
+            String::from_utf8_lossy(&first.stderr)
+        );
+        let first_text = String::from_utf8(first.stdout).expect("UTF-8 delete-all YAML");
+        assert!(
+            yaml_mapping(first_text.as_bytes()).is_empty(),
+            "{first_text:?}"
+        );
+        assert!(first_text.contains("{}"), "{first_text:?}");
+        for comment in comments {
+            assert!(
+                first_text.contains(comment),
+                "missing {comment:?} in {first_text:?}"
+            );
+        }
+        let second = run_project_settings_render(&render_payload(&first_text, "{}\n", owned), &[]);
+        assert!(second.status.success());
+        assert_eq!(second.stdout, first_text.as_bytes());
+    }
+}
+
+#[test]
+fn project_settings_render_r50_rejects_unsupported_root_states() {
+    let cases = [
+        "# comment only\n",
+        "---\n",
+        "...\n",
+        "null\n",
+        "scalar\n",
+        "- item\n",
+        "agent: [\n",
+        "agent: one\nagent: two\n",
+        "---\nagent: one\n---\nagent: two\n",
+    ];
+    for original in cases {
+        let output = run_project_settings_render(
+            &render_payload(original, "agent: codex\n", &["agent"]),
+            &[],
+        );
+        assert!(
+            !output.status.success(),
+            "unexpected output for {original:?}"
+        );
+        assert!(output.stdout.is_empty());
+        assert_eq!(
+            String::from_utf8(output.stderr).expect("UTF-8 generic error"),
+            "winsmux: project settings render failed.\n"
+        );
+    }
+}
+
+#[test]
+fn project_settings_render_uses_reader_canonicalization_for_mixed_case_owned_keys() {
+    let original = "Agent: claude # top-comment\nagent_slots:\n  - Slot-ID: worker-1\n    Model-Source: legacy\n    Future-Slot: keep # slot-comment\nroles:\n  worker:\n    Model-Source: legacy-role\n    Future-Role: keep # role-comment\n";
+    let desired = serde_json::json!({
+        "agent": "codex",
+        "agent_slots": [{
+            "slot_id": "worker-1",
+            "model_source": "operator-override"
+        }],
+        "roles": {
+            "worker": {
+                "model_source": "provider-default"
+            }
+        }
+    });
+    let input = serde_json::to_vec(&serde_json::json!({
+        "original_yaml": original,
+        "desired_settings": desired,
+        "owned_keys": ["agent", "agent_slots", "roles"],
+        "nested_contract": {
+            "agent_slots": {
+                "identity_key": "slot_id",
+                "owned_keys": ["slot_id", "model_source"],
+                "aliases": {}
+            },
+            "roles": { "owned_keys": ["model_source"] }
+        }
+    }))
+    .expect("serialize mixed-case renderer payload");
+    let output = run_project_settings_render(&input, &[]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).expect("UTF-8 YAML output");
+    assert!(text.contains("Agent: \"codex\" # top-comment"));
+    assert!(text.contains("Slot-ID: \"worker-1\""));
+    assert!(text.contains("Model-Source: \"operator-override\""));
+    assert!(text.contains("Future-Slot: keep # slot-comment"));
+    assert!(text.contains("Model-Source: \"provider-default\""));
+    assert!(text.contains("Future-Role: keep # role-comment"));
+    assert!(!text.lines().any(|line| line.starts_with("agent:")));
+    assert!(!text
+        .lines()
+        .any(|line| line.trim_start().starts_with("slot_id:")));
+    assert!(!text
+        .lines()
+        .any(|line| line.trim_start().starts_with("model_source:")));
+
+    let project = tempfile::tempdir().expect("create canonical reader fixture");
+    fs::write(project.path().join(".winsmux.yaml"), &text)
+        .expect("write rendered project settings");
+    let settings = canonical_project_settings_reader::read(project.path())
+        .expect("canonical reader must accept the rendered aliases without conflicts");
+    assert_eq!(settings.agent.as_deref(), Some("codex"));
+    assert_eq!(settings.agent_slots.len(), 1);
+    assert_eq!(settings.agent_slots[0].slot_id, "worker-1");
+    assert_eq!(
+        settings.agent_slots[0].model_source.as_deref(),
+        Some("operator-override")
+    );
+    assert_eq!(
+        settings.worker_role.model_source.as_deref(),
+        Some("provider-default")
+    );
+}
+
+#[test]
+fn project_settings_render_preserves_unknown_only_flow_when_adding_owned_keys() {
+    let original =
+        "{workspace-recipes: {review: {schema-version: 1}}, future-owner: {enabled: true}}\n";
+    let desired = "agent: codex\nmodel: gpt-5.6-sol\n";
+    let input = render_payload(original, desired, &["agent", "model"]);
+    let output = run_project_settings_render(&input, &[]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mapping = yaml_mapping(&output.stdout);
+    assert!(mapping.contains_key(serde_yaml::Value::String("workspace-recipes".into())));
+    assert!(mapping.contains_key(serde_yaml::Value::String("future-owner".into())));
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("agent".into())),
+        Some(&serde_yaml::Value::String("codex".into()))
+    );
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("model".into())),
+        Some(&serde_yaml::Value::String("gpt-5.6-sol".into()))
+    );
+}
+
+#[test]
+fn project_settings_render_rejects_invalid_contracts_without_reflection() {
+    let secret = "sk-proj-synthetic-secret-value";
+    let duplicate_original = format!("owned: one\nowned: {secret}\n");
+    let cases = vec![
+        b"not-json".to_vec(),
+        render_payload(secret, "owned: ok\n", &["owned"]),
+        render_payload(
+            "---\nowned: one\n---\nowned: two\n",
+            "owned: ok\n",
+            &["owned"],
+        ),
+        render_payload("[one, two]\n", "owned: ok\n", &["owned"]),
+        render_payload(&duplicate_original, "owned: ok\n", &["owned"]),
+        render_payload("unknown: keep\n", "unknown: changed\n", &["owned"]),
+        render_payload("owned: old\n", "owned: new\nunknown: leaked\n", &["owned"]),
+        render_payload("owned: old\n", "owned: new\n", &["owned", "owned"]),
+        render_payload(
+            "owned-key: old\n",
+            "owned_key: new\n",
+            &["owned-key", "owned_key"],
+        ),
+    ];
+
+    for input in cases {
+        let output = run_project_settings_render(&input, &[]);
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        let stderr = String::from_utf8(output.stderr).expect("UTF-8 generic error");
+        assert_eq!(stderr, "winsmux: project settings render failed.\n");
+        assert!(!stderr.contains(secret));
+    }
+}
+
+#[test]
+fn project_settings_render_rejects_arguments_and_oversized_stdin() {
+    let input = render_payload("", "owned: ok\n", &["owned"]);
+    let with_arg = run_project_settings_render(&input, &["unexpected-private-value"]);
+    assert!(!with_arg.status.success());
+    assert!(with_arg.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(with_arg.stderr).unwrap(),
+        "winsmux: project settings render failed.\n"
+    );
+
+    let oversized = vec![b'x'; 4 * 1024 * 1024 + 1];
+    let output = run_project_settings_render(&oversized, &[]);
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "winsmux: project settings render failed.\n"
+    );
+}
+
+#[test]
+fn project_settings_render_requires_typed_settings_and_preserves_json_value_kinds() {
+    let desired = serde_json::json!({
+        "agent_slots": [],
+        "roles": {},
+        "external_operator": false,
+        "worker_count": 0,
+        "agent": "false"
+    });
+    let input = serde_json::to_vec(&serde_json::json!({
+        "original_yaml": "agent_slots:\n  - slot_id: worker-1\nroles:\n  worker:\n    model: old\nexternal_operator: true\nworker_count: 6\nagent: codex\n",
+        "desired_settings": desired,
+        "owned_keys": ["agent_slots", "roles", "external_operator", "worker_count", "agent"],
+        "nested_contract": {
+            "agent_slots": {
+                "identity_key": "slot_id",
+                "owned_keys": ["slot_id"],
+                "aliases": {}
+            },
+            "roles": { "owned_keys": ["model"] }
+        }
+    }))
+    .expect("serialize typed renderer payload");
+    let output = run_project_settings_render(&input, &[]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mapping = yaml_mapping(&output.stdout);
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("agent_slots".into())),
+        Some(&serde_yaml::Value::Sequence(Vec::new()))
+    );
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("roles".into())),
+        Some(&serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))
+    );
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("external_operator".into())),
+        Some(&serde_yaml::Value::Bool(false))
+    );
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("worker_count".into())),
+        Some(&serde_yaml::Value::Number(0.into()))
+    );
+    assert_eq!(
+        mapping.get(serde_yaml::Value::String("agent".into())),
+        Some(&serde_yaml::Value::String("false".into()))
+    );
+
+    let legacy = legacy_render_payload("agent: old\n", "agent: new\n", &["agent"]);
+    let rejected = run_project_settings_render(&legacy, &[]);
+    assert!(!rejected.status.success());
+    assert!(rejected.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(rejected.stderr).expect("UTF-8 generic error"),
+        "winsmux: project settings render failed.\n"
+    );
+}
+
+#[test]
+#[cfg(windows)]
+fn operator_cli_workspace_plan_preserves_stale_startup_state() {
+    let fixture = tempfile::tempdir().expect("create isolated workspace-plan fixture");
+    let project_dir = fixture.path().join("project");
+    let runtime_dir = project_dir.join(".winsmux");
+    let home_dir = fixture.path().join("home");
+    let psmux_dir = home_dir.join(".psmux");
+    fs::create_dir_all(&runtime_dir).expect("create project runtime directory");
+    fs::create_dir_all(&psmux_dir).expect("create isolated psmux directory");
+    fs::write(
+        project_dir.join(".winsmux.yaml"),
+        include_str!("../../tests/fixtures/workspace-recipes/valid-v1.yaml"),
+    )
+    .expect("write workspace recipe fixture");
+    fs::write(
+        runtime_dir.join("provider-capabilities.json"),
+        include_str!("../../tests/fixtures/workspace-recipes/valid-v1.provider-capabilities.json"),
+    )
+    .expect("write provider capabilities fixture");
+
+    let binary = env!("CARGO_BIN_EXE_winsmux");
+    let normalized_binary = binary.replace('\\', "/").to_ascii_lowercase();
+    let stale_paths = [
+        (psmux_dir.join("dead.port"), b"not-a-port".to_vec()),
+        (psmux_dir.join("dead.key"), b"synthetic-key".to_vec()),
+        (
+            psmux_dir.join("dead.registry.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "protocol_version": 1,
+                "session": "dead",
+                "namespace": null,
+                "server_pid": u32::MAX,
+                "process_started_at": 1,
+                "server_exe": normalized_binary,
+                "instance_nonce": "stale-preview-fixture",
+                "port": 42124,
+                "state": "ready",
+                "owner": "normal",
+                "created_at": 1,
+                "ready_at": 2
+            }))
+            .expect("serialize stale registry fixture"),
+        ),
+    ];
+    for (path, bytes) in &stale_paths {
+        fs::write(path, bytes).expect("write stale startup state");
+    }
+
+    for prefix in [
+        Vec::<&str>::new(),
+        vec!["-u"],
+        vec!["--unknown"],
+        vec!["-L", "ops"],
+        vec!["-S", "socket-name"],
+        vec!["-f", "config"],
+        vec!["-t", "target"],
+        vec!["-C"],
+        vec!["-CC"],
+        vec!["-L", "ops", "-u"],
+    ] {
+        let output = Command::new(binary)
+            .args(&prefix)
+            .args([
+                "workspace-plan",
+                "--recipe-id",
+                "bugfix-two-slot",
+                "--workflow-id",
+                "issue-1204",
+                "--json",
+                "--project-dir",
+            ])
+            .arg(&project_dir)
+            .env("USERPROFILE", &home_dir)
+            .env("HOME", &home_dir)
+            .env_remove("PSMUX_TARGET_SESSION")
+            .env_remove("PSMUX_TARGET_FULL")
+            .env_remove("TMUX")
+            .output()
+            .expect("run workspace-plan preview");
+
+        assert!(
+            output.status.success(),
+            "workspace-plan {prefix:?} stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<serde_json::Value>(&output.stdout)
+            .expect("workspace-plan should emit JSON");
+        for (path, expected) in &stale_paths {
+            assert_eq!(
+                fs::read(path).expect("preview must preserve stale startup state"),
+                *expected,
+                "workspace-plan {prefix:?} changed {}",
+                path.display()
+            );
+        }
+    }
+
+    let ordinary = Command::new(binary)
+        .arg("version")
+        .env("USERPROFILE", &home_dir)
+        .env("HOME", &home_dir)
+        .env_remove("PSMUX_TARGET_SESSION")
+        .env_remove("PSMUX_TARGET_FULL")
+        .env_remove("TMUX")
+        .output()
+        .expect("run ordinary startup route");
+    assert!(ordinary.status.success(), "version command should succeed");
+    for (path, _) in &stale_paths {
+        assert!(
+            !path.exists(),
+            "ordinary startup cleanup should remove {}",
+            path.display()
+        );
+    }
+}
+
+fn workspace_plan_builtin_provider_yaml(
+    provider: &str,
+    model: &str,
+    model_source: &str,
+    prompt_transport: &str,
+    auth_mode: &str,
+) -> String {
+    format!(
+        r#"config-version: 1
+agent-slots:
+  - slot-id: reviewer-1
+    agent: {provider}
+    model: {model}
+    model-source: {model_source}
+    reasoning-effort: provider-default
+    prompt-transport: {prompt_transport}
+    auth-mode: {auth_mode}
+workspace-recipes:
+  review-one-slot:
+    schema-version: 1
+    panes:
+      - pane-key: verify
+        workflow-role: verifier
+        slot-ref: reviewer-1
+        requires-capabilities: [review]
+        region: main
+        worktree:
+          mode: read-only-reference
+    startup-actions:
+      - action-id: start-verify-slot
+        kind: ensure-slot-ready
+        pane-ref: verify
+"#
+    )
+}
+
+fn run_workspace_plan(project_dir: &std::path::Path, recipe_id: &str) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args([
+            "workspace-plan",
+            "--recipe-id",
+            recipe_id,
+            "--workflow-id",
+            "task-658",
+            "--json",
+            "--project-dir",
+        ])
+        .arg(project_dir)
+        .output()
+        .expect("run workspace-plan")
+}
+
+#[test]
+fn operator_cli_workspace_plan_uses_builtin_provider_capabilities_for_registry_gaps() {
+    let cases = [
+        (
+            "missing",
+            "openrouter",
+            "sakana/fugu-ultra",
+            "provider-api",
+            "file",
+            "api-key-env",
+        ),
+        (
+            "empty",
+            "antigravity",
+            "'Gemini 3.5 Flash (High)'",
+            "cli-discovery",
+            "file",
+            "antigravity-official-cli",
+        ),
+        (
+            "unrelated",
+            "grok-build",
+            "grok-build",
+            "cli-discovery",
+            "file",
+            "grok-build-local",
+        ),
+    ];
+
+    for (registry_case, provider, model, model_source, transport, auth_mode) in cases {
+        let project_dir = make_temp_project_dir(&format!(
+            "workspace-plan-builtin-{provider}-{registry_case}"
+        ));
+        fs::write(
+            project_dir.join(".winsmux.yaml"),
+            workspace_plan_builtin_provider_yaml(
+                provider,
+                model,
+                model_source,
+                transport,
+                auth_mode,
+            ),
+        )
+        .expect("write workspace plan fixture");
+
+        if registry_case != "missing" {
+            let runtime_dir = project_dir.join(".winsmux");
+            fs::create_dir_all(&runtime_dir).expect("create runtime fixture directory");
+            let registry = if registry_case == "empty" {
+                String::new()
+            } else {
+                r#"{"version":1,"providers":{"unrelated":{"adapter":"unrelated","command":"unrelated","prompt_transports":["argv"]}}}"#.to_string()
+            };
+            fs::write(runtime_dir.join("provider-capabilities.json"), registry)
+                .expect("write capability registry fixture");
+        }
+
+        let output = run_workspace_plan(&project_dir, "review-one-slot");
+        assert!(
+            output.status.success(),
+            "{provider} with {registry_case} registry failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let plan: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("workspace plan should be JSON");
+        assert_eq!(plan["resolved_bindings"]["verify"], "reviewer-1");
+    }
+}
+
+#[test]
+#[cfg(windows)]
+fn operator_cli_builtin_provider_mirror_matches_powershell_runtime_contract() {
+    let project_dir = make_temp_project_dir("builtin-provider-runtime-parity");
+    let settings_script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("core should have a repository parent")
+        .join("winsmux-core")
+        .join("scripts")
+        .join("settings.ps1");
+    let fields = [
+        "adapter",
+        "command",
+        "model_options",
+        "model_sources",
+        "reasoning_efforts",
+        "local_access_note",
+        "harness_availability",
+        "credential_requirements",
+        "execution_backend",
+        "runtime_requirements",
+        "analysis_posture",
+        "prompt_transports",
+        "auth_modes",
+        "local_interactive_oauth_modes",
+        "supports_parallel_runs",
+        "supports_interrupt",
+        "supports_structured_result",
+        "supports_file_edit",
+        "supports_subagents",
+        "supports_verification",
+        "supports_consultation",
+        "supports_context_reset",
+    ];
+    let quoted_fields = fields
+        .iter()
+        .map(|field| format!("'{field}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    for provider in ["openrouter", "antigravity", "grok-build"] {
+        let cli_output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+            .args(["provider-capabilities", provider, "--json", "--project-dir"])
+            .arg(&project_dir)
+            .output()
+            .expect("run Rust provider capability resolver");
+        assert!(
+            cli_output.status.success(),
+            "Rust resolver failed for {provider}: {}",
+            String::from_utf8_lossy(&cli_output.stderr)
+        );
+        let cli_json: serde_json::Value =
+            serde_json::from_slice(&cli_output.stdout).expect("Rust capability output is JSON");
+
+        let parity_script = project_dir.join(format!("provider-parity-{provider}.ps1"));
+        let escaped_settings = settings_script.to_string_lossy().replace('\'', "''");
+        fs::write(
+            &parity_script,
+            format!(
+                ". '{escaped_settings}'\n$cap = Get-BridgeBuiltinProviderCapability -ProviderId '{provider}'\n$fields = @({quoted_fields})\n$result = [ordered]@{{}}\nforeach ($field in $fields) {{ if ($cap.Contains($field)) {{ $result[$field] = $cap[$field] }} }}\n$result | ConvertTo-Json -Depth 16 -Compress\n"
+            ),
+        )
+        .expect("write PowerShell parity probe");
+        let runtime_output = Command::new("pwsh")
+            .args(["-NoLogo", "-NoProfile", "-File"])
+            .arg(&parity_script)
+            .output()
+            .expect("run PowerShell capability source of truth");
+        assert!(
+            runtime_output.status.success(),
+            "PowerShell resolver failed for {provider}: {}",
+            String::from_utf8_lossy(&runtime_output.stderr)
+        );
+        let runtime_json: serde_json::Value = serde_json::from_slice(&runtime_output.stdout)
+            .expect("PowerShell capability output is JSON");
+
+        assert_eq!(
+            cli_json["capabilities"], runtime_json,
+            "Rust builtin mirror diverged from settings.ps1 for {provider}"
+        );
+    }
+}
+
+#[test]
+fn operator_cli_workspace_plan_rejects_exact_duplicate_yaml_keys_before_interpretation() {
+    let valid = workspace_plan_builtin_provider_yaml(
+        "openrouter",
+        "sakana/fugu-ultra",
+        "provider-api",
+        "file",
+        "api-key-env",
+    );
+    let duplicate_cases = [
+        (
+            "runtime-root",
+            valid.replacen(
+                "config-version: 1",
+                "config-version: 1\nworker-count: 1\nworker-count: 2",
+                1,
+            ),
+        ),
+        (
+            "selected-recipe-id",
+            valid.replace(
+                "  review-one-slot:\n    schema-version: 1",
+                "  review-one-slot:\n    schema-version: 1\n    panes: []\n    startup-actions: []\n  review-one-slot:\n    schema-version: 1",
+            ),
+        ),
+        (
+            "nested-settings",
+            valid.replace(
+                "    model-source: provider-api",
+                "    model-source: provider-api\n    model-source: provider-default",
+            ),
+        ),
+        (
+            "nested-recipe",
+            valid.replace("        region: main", "        region: main\n        region: side"),
+        ),
+    ];
+
+    for (case_name, yaml) in duplicate_cases {
+        let project_dir = make_temp_project_dir(&format!("workspace-plan-duplicate-{case_name}"));
+        fs::write(project_dir.join(".winsmux.yaml"), yaml).expect("write duplicate YAML fixture");
+        let output = run_workspace_plan(&project_dir, "review-one-slot");
+        assert!(!output.status.success(), "{case_name} must fail closed");
+        assert!(output.stdout.is_empty(), "{case_name} must not emit a plan");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("duplicate YAML mapping key"),
+            "{case_name} stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
+fn canonical_project_settings_reader_uses_shared_duplicate_key_gate() {
+    let error = canonical_project_settings_reader::parse_str("worker-count: 1\nworker-count: 2\n")
+        .err()
+        .expect("direct settings reads must not collapse duplicate runtime-owned keys");
+    assert_eq!(error.to_string(), "duplicate YAML mapping key.");
+}
+
+#[test]
+fn operator_cli_workspace_plan_keeps_distinct_yaml_keys_valid() {
+    let project_dir = make_temp_project_dir("workspace-plan-distinct-yaml-keys");
+    let yaml = workspace_plan_builtin_provider_yaml(
+        "openrouter",
+        "sakana/fugu-ultra",
+        "provider-api",
+        "file",
+        "api-key-env",
+    )
+    .replacen(
+        "config-version: 1",
+        "config-version: 1\nfuture-one: preserve\nfuture-two: preserve",
+        1,
+    );
+    fs::write(project_dir.join(".winsmux.yaml"), yaml).expect("write distinct-key fixture");
+
+    let output = run_workspace_plan(&project_dir, "review-one-slot");
+    assert!(
+        output.status.success(),
+        "distinct keys must remain valid: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn write_workspace_overlay_fixture(project_dir: &std::path::Path) {
+    fs::write(
+        project_dir.join(".winsmux.yaml"),
+        workspace_plan_builtin_provider_yaml(
+            "openrouter",
+            "sakana/fugu-ultra",
+            "provider-api",
+            "file",
+            "api-key-env",
+        ),
+    )
+    .expect("write workspace overlay fixture");
+    fs::create_dir_all(project_dir.join(".winsmux")).expect("create workspace overlay directory");
+}
+
+#[test]
+fn operator_cli_workspace_plan_validates_entire_provider_registry_envelope() {
+    let rejected = [
+        ("slots-array", r#"{"version":1,"slots":[]}"#),
+        ("slots-string", r#"{"version":1,"slots":"worker-1"}"#),
+        (
+            "unselected-malformed",
+            r#"{"version":1,"slots":{"reviewer-1":{"agent":"openrouter"},"worker-99":{"agent":true}}}"#,
+        ),
+        (
+            "blank-slot-id",
+            r#"{"version":1,"slots":{"   ":{"agent":"codex"}}}"#,
+        ),
+        (
+            "case-duplicate-slot-id",
+            r#"{"version":1,"slots":{"worker-99":{"agent":"codex"},"WORKER-99":{"agent":"codex"}}}"#,
+        ),
+    ];
+
+    for (case_name, registry) in rejected {
+        let project_dir = make_temp_project_dir(&format!("workspace-provider-{case_name}"));
+        write_workspace_overlay_fixture(&project_dir);
+        fs::write(
+            project_dir.join(".winsmux").join("provider-registry.json"),
+            registry,
+        )
+        .expect("write provider registry case");
+
+        let output = run_workspace_plan(&project_dir, "review-one-slot");
+        assert!(!output.status.success(), "{case_name} must fail closed");
+        assert!(
+            output.stdout.is_empty(),
+            "{case_name} must not emit a partial workspace plan"
+        );
+    }
+
+    let accepted = [
+        ("missing-slots", r#"{"version":1,"future":"keep"}"#),
+        ("null-slots", r#"{"version":1,"slots":null}"#),
+        (
+            "valid-unrelated",
+            r#"{"version":1,"future":{"keep":true},"slots":{"worker-99":{"agent":"codex","future":"keep"}}}"#,
+        ),
+    ];
+
+    for (case_name, registry) in accepted {
+        let project_dir = make_temp_project_dir(&format!("workspace-provider-{case_name}"));
+        write_workspace_overlay_fixture(&project_dir);
+        fs::write(
+            project_dir.join(".winsmux").join("provider-registry.json"),
+            registry,
+        )
+        .expect("write provider registry control");
+
+        let output = run_workspace_plan(&project_dir, "review-one-slot");
+        assert!(
+            output.status.success(),
+            "{case_name} must remain accepted: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<serde_json::Value>(&output.stdout)
+            .expect("accepted workspace plan should be JSON");
+    }
+}
+
+#[test]
+fn operator_cli_workspace_plan_canonicalizes_provider_registry_entry_fields() {
+    let project_dir = make_temp_project_dir("workspace-provider-canonical-fields");
+    write_workspace_overlay_fixture(&project_dir);
+    let settings_path = project_dir.join(".winsmux.yaml");
+    let settings = fs::read_to_string(&settings_path)
+        .expect("read workspace overlay fixture")
+        .replace("prompt-transport: file", "prompt-transport: argv");
+    fs::write(&settings_path, settings).expect("write lower-precedence argv fixture");
+    fs::write(
+        project_dir.join(".winsmux").join("provider-registry.json"),
+        r#"{
+  "version": 1,
+  "slots": {
+    "reviewer-1": {
+      "Agent": "openrouter",
+      "Model": "sakana/fugu-ultra",
+      "Model-Source": "provider-api",
+      "Reasoning-Effort": "provider-default",
+      "Prompt-Transport": "file",
+      "Auth-Mode": "api-key-env",
+      "Updated-At-UTC": "2026-07-22T00:00:00Z",
+      "Reason": "canonical alias control",
+      "Future-Field": {"keep": true}
+    }
+  }
+}"#,
+    )
+    .expect("write canonical provider registry fixture");
+
+    let output = run_workspace_plan(&project_dir, "review-one-slot");
+    assert!(
+        output.status.success(),
+        "Prompt-Transport must override lower-precedence argv: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let collisions = [
+        ("agent", r#"{"agent":"openrouter","AGENT":"openrouter"}"#),
+        ("model", r#"{"model":"one","MODEL":"two"}"#),
+        (
+            "model-source",
+            r#"{"model_source":"provider-api","MODEL-SOURCE":"provider-api"}"#,
+        ),
+        (
+            "reasoning-effort",
+            r#"{"reasoning_effort":"provider-default","REASONING-EFFORT":"provider-default"}"#,
+        ),
+        (
+            "prompt-transport",
+            r#"{"prompt_transport":"file","PROMPT-TRANSPORT":"file"}"#,
+        ),
+        (
+            "auth-mode",
+            r#"{"auth_mode":"api-key-env","AUTH-MODE":"api-key-env"}"#,
+        ),
+        (
+            "updated-at-utc",
+            r#"{"updated_at_utc":"one","UPDATED-AT-UTC":"two"}"#,
+        ),
+        ("reason", r#"{"reason":"one","REASON":"two"}"#),
+    ];
+
+    for (case_name, entry) in collisions {
+        let project_dir = make_temp_project_dir(&format!("workspace-provider-alias-{case_name}"));
+        write_workspace_overlay_fixture(&project_dir);
+        let registry = format!(r#"{{"version":1,"slots":{{"reviewer-1":{entry}}}}}"#);
+        fs::write(
+            project_dir.join(".winsmux").join("provider-registry.json"),
+            registry,
+        )
+        .expect("write provider registry collision fixture");
+
+        let output = run_workspace_plan(&project_dir, "review-one-slot");
+        assert!(!output.status.success(), "{case_name} collision must fail");
+        assert!(
+            output.stdout.is_empty(),
+            "{case_name} collision must not emit a partial plan"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("failed to resolve the effective slot catalog"),
+            "{case_name} collision must use the existing public error: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
+fn operator_cli_workspace_plan_requires_canonical_runtime_role_version() {
+    let accepted = [
+        ("missing", r#"{"roles":{}}"#),
+        ("numeric-one", r#"{"version":1,"roles":{}}"#),
+    ];
+    for (case_name, preferences) in accepted {
+        let project_dir = make_temp_project_dir(&format!("workspace-role-{case_name}"));
+        write_workspace_overlay_fixture(&project_dir);
+        fs::write(
+            project_dir
+                .join(".winsmux")
+                .join("runtime-role-preferences.json"),
+            preferences,
+        )
+        .expect("write runtime role preferences control");
+
+        let output = run_workspace_plan(&project_dir, "review-one-slot");
+        assert!(
+            output.status.success(),
+            "{case_name} must remain accepted: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let rejected = [
+        ("numeric-two", r#"{"version":2,"roles":{}}"#),
+        (
+            "string-secret-marker",
+            r#"{"version":"secret-marker-version","roles":{}}"#,
+        ),
+        ("string-two", r#"{"version":"2","roles":{}}"#),
+        ("boolean", r#"{"version":true,"roles":{}}"#),
+        ("null", r#"{"version":null,"roles":{}}"#),
+        ("float", r#"{"version":1.0,"roles":{}}"#),
+        ("object", r#"{"version":{"value":1},"roles":{}}"#),
+        ("array", r#"{"version":[1],"roles":{}}"#),
+    ];
+    for (case_name, preferences) in rejected {
+        let project_dir = make_temp_project_dir(&format!("workspace-role-{case_name}"));
+        write_workspace_overlay_fixture(&project_dir);
+        fs::write(
+            project_dir
+                .join(".winsmux")
+                .join("runtime-role-preferences.json"),
+            preferences,
+        )
+        .expect("write runtime role preferences case");
+
+        let output = run_workspace_plan(&project_dir, "review-one-slot");
+        assert!(!output.status.success(), "{case_name} must fail closed");
+        assert!(
+            output.stdout.is_empty(),
+            "{case_name} must not emit a partial workspace plan"
+        );
+        assert!(
+            !String::from_utf8_lossy(&output.stderr).contains("secret-marker"),
+            "{case_name} must not reflect the rejected version"
+        );
+    }
+}
+
+#[test]
+fn operator_cli_workspace_plan_validates_all_runtime_roles_before_selection() {
+    let rejected = [
+        (
+            "unselected-domain",
+            r#"{"version":1,"roles":{"worker":{},"reviewer":{"reasoning_effort":"secret-marker-effort"}}}"#,
+        ),
+        (
+            "unselected-nonscalar",
+            r#"{"version":1,"roles":{"worker":{},"reviewer":{"model":{"secret-marker":"value"}}}}"#,
+        ),
+        (
+            "object-alias-collision",
+            r#"{"version":1,"roles":{"worker":{},"reviewer":{"agent":"codex","provider":"openrouter"}}}"#,
+        ),
+        (
+            "array-identity-collision",
+            r#"{"version":1,"roles":[{"runtimeRole":"worker"},{"role_id":"reviewer","runtime_role":"reviewer"}]}"#,
+        ),
+        (
+            "unselected-transport-domain",
+            r#"{"version":1,"roles":{"worker":{},"reviewer":{"promptTransport":"socket"}}}"#,
+        ),
+        (
+            "object-identity-duplicate",
+            r#"{"version":1,"roles":{" secret-marker-reviewer ":{},"SECRET-MARKER-REVIEWER":{}}}"#,
+        ),
+        (
+            "array-identity-alias-duplicate",
+            r#"{"version":1,"roles":[{"roleId":"reviewer"},{"runtime_role":" REVIEWER "}]}"#,
+        ),
+        (
+            "missing-identity-still-validates",
+            r#"{"version":1,"roles":[{"reasoningEffort":"secret-marker-effort"},{"roleId":"worker"}]}"#,
+        ),
+    ];
+    for (case_name, preferences) in rejected {
+        let project_dir = make_temp_project_dir(&format!("workspace-role-all-{case_name}"));
+        write_workspace_overlay_fixture(&project_dir);
+        fs::write(
+            project_dir
+                .join(".winsmux")
+                .join("runtime-role-preferences.json"),
+            preferences,
+        )
+        .expect("write invalid unselected runtime role");
+
+        let output = run_workspace_plan(&project_dir, "review-one-slot");
+        assert!(!output.status.success(), "{case_name} must fail closed");
+        assert!(
+            output.stdout.is_empty(),
+            "{case_name} must not emit a partial plan"
+        );
+        assert!(
+            !String::from_utf8_lossy(&output.stderr).contains("secret-marker"),
+            "{case_name} must not reflect a rejected value"
+        );
+    }
+
+    let accepted = [
+        (
+            "object-aliases",
+            r#"{"version":1,"roles":{"worker":{"provider":"openrouter","modelSource":"provider-api","reasoning-effort":"provider-default","promptTransport":"file","auth-mode":"api-key-env","future":{"keep":true}}}}"#,
+        ),
+        (
+            "array-aliases",
+            r#"{"version":1,"roles":[{"runtimeRole":"worker","provider":"openrouter","model-source":"provider-api","reasoningEffort":"provider-default","prompt-transport":"file","auth_mode":"api-key-env"}]}"#,
+        ),
+        (
+            "legacy-root-version",
+            r#"{"version":1,"worker":{"provider":"openrouter","promptTransport":"file"}}"#,
+        ),
+        (
+            "distinct-object-identities",
+            r#"{"version":1,"roles":{"worker":{"promptTransport":"file"},"reviewer":{}}}"#,
+        ),
+        (
+            "missing-and-blank-array-identities",
+            r#"{"version":1,"roles":[{"model":"unselected"},{"roleId":"  ","promptTransport":"file"},{"runtimeRole":"worker","promptTransport":"file"}]}"#,
+        ),
+    ];
+    for (case_name, preferences) in accepted {
+        let project_dir = make_temp_project_dir(&format!("workspace-role-control-{case_name}"));
+        write_workspace_overlay_fixture(&project_dir);
+        let settings_path = project_dir.join(".winsmux.yaml");
+        let settings = fs::read_to_string(&settings_path)
+            .expect("read workspace role fixture")
+            .replace("    prompt-transport: file\n", "");
+        fs::write(&settings_path, settings).expect("remove slot prompt transport");
+        fs::write(
+            project_dir
+                .join(".winsmux")
+                .join("runtime-role-preferences.json"),
+            preferences,
+        )
+        .expect("write canonical runtime role control");
+
+        let output = run_workspace_plan(&project_dir, "review-one-slot");
+        assert!(
+            output.status.success(),
+            "{case_name} must remain accepted: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
 
 struct ChildKillGuard(Child);
 
@@ -3408,6 +5531,75 @@ fn operator_cli_provider_switch_validates_candidate_before_write() {
         .join(".winsmux")
         .join("provider-registry.json")
         .exists());
+}
+
+#[test]
+fn operator_cli_provider_switch_rejects_unselected_malformed_registry_before_write() {
+    let project_dir = make_temp_project_dir("provider-switch-unselected-malformed-registry");
+    write_provider_switch_fixture(&project_dir);
+    let registry_path = project_dir.join(".winsmux").join("provider-registry.json");
+    let registry_before =
+        r#"{"version":1,"slots":{"worker-1":{"agent":"codex"},"worker-99":{"agent":true}}}"#;
+    fs::write(&registry_path, registry_before).expect("write malformed provider registry");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args([
+            "provider-switch",
+            "worker-1",
+            "--model",
+            "gpt-5.5",
+            "--model-source",
+            "cli-discovery",
+            "--json",
+        ])
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        fs::read_to_string(&registry_path).expect("read unchanged provider registry"),
+        registry_before
+    );
+}
+
+#[test]
+fn operator_cli_provider_switch_accepts_missing_or_null_slots() {
+    let cases = [
+        ("missing", r#"{"version":1,"future":"keep"}"#),
+        ("null", r#"{"version":1,"future":"keep","slots":null}"#),
+    ];
+
+    for (case_name, registry_before) in cases {
+        let project_dir = make_temp_project_dir(&format!("provider-switch-{case_name}-slots"));
+        write_provider_switch_fixture(&project_dir);
+        let registry_path = project_dir.join(".winsmux").join("provider-registry.json");
+        fs::write(&registry_path, registry_before).expect("write provider registry control");
+
+        let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+            .args([
+                "provider-switch",
+                "worker-1",
+                "--model",
+                "gpt-5.5",
+                "--model-source",
+                "cli-discovery",
+                "--json",
+            ])
+            .current_dir(&project_dir)
+            .output()
+            .expect("winsmux command should run");
+
+        assert!(
+            output.status.success(),
+            "{case_name} slots must remain accepted: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let registry = read_json_file(&registry_path);
+        assert_eq!(registry["future"], "keep");
+        assert_eq!(registry["slots"]["worker-1"]["model"], "gpt-5.5");
+    }
 }
 
 #[test]
@@ -7028,6 +9220,46 @@ fn operator_cli_restart_rejects_malformed_provider_registry() {
 }
 
 #[test]
+fn operator_cli_restart_rejects_invalid_runtime_overlays_before_dispatch() {
+    let cases = [
+        (
+            "provider-registry",
+            "provider-registry.json",
+            r#"{"version":1,"slots":{"unselected":{"agent":true}}}"#,
+        ),
+        (
+            "runtime-roles",
+            "runtime-role-preferences.json",
+            r#"{"version":"1","roles":{}}"#,
+        ),
+    ];
+
+    for (case_name, file_name, overlay) in cases {
+        let project_dir = make_temp_project_dir(&format!("restart-invalid-{case_name}"));
+        write_manifest(&project_dir);
+        fs::write(project_dir.join(".winsmux").join(file_name), overlay)
+            .expect("write invalid runtime overlay");
+        let (winsmux_bin, log_path) =
+            write_fake_winsmux_restart(&project_dir, Some("winsmux-orchestra"), &["%2", "%3"]);
+
+        let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+            .args(["restart", "builder-1"])
+            .env("WINSMUX_BIN", winsmux_bin)
+            .current_dir(&project_dir)
+            .output()
+            .expect("winsmux command should run");
+
+        assert!(!output.status.success(), "{case_name} must fail closed");
+        assert!(output.stdout.is_empty());
+        let log = fs::read_to_string(&log_path).unwrap_or_default();
+        assert!(
+            !log.contains("send-keys"),
+            "{case_name} must not dispatch a restart: {log}"
+        );
+    }
+}
+
+#[test]
 fn operator_cli_restart_rejects_stale_manifest_target() {
     let project_dir = make_temp_project_dir("restart-stale");
     write_manifest(&project_dir);
@@ -7696,24 +9928,17 @@ panes:
     branch: codex/task266-rust-operator-readmodels-20260424
     head_sha: abc123
     changed_file_count: 2
-    changed_files:
-      - core/src/main.rs
-      - core/src/operator_cli.rs
-    write_scope:
-      - core/src/operator_cli.rs
-    read_scope:
-      - scripts/winsmux-core.ps1
-    constraints:
-      - preserve PowerShell JSON shape
+    changed_files: '["core/src/main.rs","core/src/operator_cli.rs"]'
+    write_scope: '["core/src/operator_cli.rs"]'
+    read_scope: '["scripts/winsmux-core.ps1"]'
+    constraints: '["preserve PowerShell JSON shape"]'
     expected_output: Rust read-only CLI
-    verification_plan:
-      - cargo test --manifest-path core/Cargo.toml --test operator_cli
+    verification_plan: '["cargo test --manifest-path core/Cargo.toml --test operator_cli"]'
     review_required: true
     provider_target: codex:gpt-5.4
     agent_role: worker
     timeout_policy: standard
-    handoff_refs:
-      - docs/handoff.md
+    handoff_refs: '["docs/handoff.md"]'
     last_event: operator.review_requested
     last_event_at: 2026-04-24T12:00:00+09:00
   reviewer-1:

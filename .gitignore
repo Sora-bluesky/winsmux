@@ -129,6 +129,9 @@ tests/fixtures/*
 !tests/fixtures/rust-parity/*.json
 !tests/fixtures/rust-parity/*.jsonl
 !tests/fixtures/rust-parity/*.yaml
+!tests/fixtures/workspace-recipes/
+!tests/fixtures/workspace-recipes/*.json
+!tests/fixtures/workspace-recipes/*.yaml
 /hooks/
 .worktrees/
 INTERNAL*.md

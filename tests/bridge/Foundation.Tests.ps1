@@ -153,6 +153,21 @@ Describe 'Get-OrchestraLayoutSettings' {
         . (Join-Path (Split-Path -Parent $script:BridgeTestsRoot) 'winsmux-core\scripts\orchestra-start.ps1')
     }
 
+    BeforeEach {
+        $script:bridgeProjectSettingsPayloads = [System.Collections.Generic.List[object]]::new()
+        Mock Get-WinsmuxBin { return 'C:\test\winsmux.exe' }
+        Mock Invoke-BridgeProjectSettingsRenderProcess {
+            param($WinsmuxBin, $PayloadJson)
+
+            $payload = $PayloadJson | ConvertFrom-Json
+            $script:bridgeProjectSettingsPayloads.Add($payload) | Out-Null
+            return [PSCustomObject]@{
+                ExitCode = 0
+                StdOut   = ($payload.desired_settings | ConvertTo-Json -Depth 8)
+            }
+        }
+    }
+
     It 'uses external operator mode by default' {
         $layout = Get-OrchestraLayoutSettings -Settings ([ordered]@{
             external_operator = $true
@@ -246,7 +261,7 @@ Describe 'Get-OrchestraLayoutSettings' {
         } | Should -Throw '*runtime_role overrides are not supported yet at runtime*'
     }
 
-    It 'writes project settings to an explicit root path and omits worker_count when agent slots are present' {
+    It 'TASK658 sends typed project settings to an explicit root path' {
         $saveSettingsTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-save-settings-tests-' + [guid]::NewGuid().ToString('N'))
         $projectRoot = Join-Path $saveSettingsTempRoot 'repo-root'
 
@@ -270,25 +285,165 @@ Describe 'Get-OrchestraLayoutSettings' {
             $projectConfigPath = Join-Path $projectRoot '.winsmux.yaml'
             Test-Path $projectConfigPath | Should -Be $true
             $projectConfig = Get-Content -Raw -Path $projectConfigPath -Encoding UTF8
-            $projectConfig | Should -Match 'agent_slots:'
-            $projectConfig | Should -Not -Match 'worker_count:'
-            $projectConfig | Should -Match 'execution_profile: isolated-enterprise'
-            $projectConfig | Should -Match 'worker_backend: antigravity'
+            $projectConfigJson = $projectConfig | ConvertFrom-Json
+            $projectConfigJson.agent_slots.Count | Should -Be 2
+            $projectConfigJson.worker_count | Should -Be 2
+            $projectConfigJson.execution_profile | Should -Be 'isolated-enterprise'
+            $projectConfigJson.agent_slots[1].worker_backend | Should -Be 'antigravity'
+            $script:bridgeProjectSettingsPayloads.Count | Should -Be 1
+            $script:bridgeProjectSettingsPayloads[0].original_yaml | Should -Be ''
+            $script:bridgeProjectSettingsPayloads[0].desired_settings.agent_slots.Count | Should -Be 2
+            @($script:bridgeProjectSettingsPayloads[0].owned_keys) | Should -Contain 'agent'
+            @($script:bridgeProjectSettingsPayloads[0].owned_keys) | Should -Contain 'roles'
+            $projectConfigBytes = [System.IO.File]::ReadAllBytes($projectConfigPath)
+            if ($projectConfigBytes.Length -ge 3) {
+                @($projectConfigBytes[0..2]) -join ',' | Should -Not -Be '239,187,191'
+            }
 
-            Mock Get-WinsmuxOption { param($Name, $Default) return $null }
-
-            $roundTrip = Get-BridgeSettings -RootPath $projectRoot
-            $roundTrip.worker_backend | Should -Be 'local'
-            $roundTrip.execution_profile | Should -Be 'isolated-enterprise'
-            $roundTrip.worker_count | Should -Be 2
-            $roundTrip.agent_slots[0].worker_backend | Should -Be 'codex'
-            $roundTrip.agent_slots[0].execution_profile | Should -Be 'local-windows'
-            $roundTrip.agent_slots[0].worker_role | Should -Be 'reviewer'
-            $roundTrip.agent_slots[1].worker_backend | Should -Be 'antigravity'
-            $roundTrip.agent_slots[1].execution_profile | Should -Be 'isolated-enterprise'
-            $roundTrip.agent_slots[1].worker_role | Should -Be 'impl'
         } finally {
             Remove-Item -LiteralPath $saveSettingsTempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'TASK658 sends the exact original desired and owned key contract and installs the renderer output verbatim' {
+        $projectRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-settings-render-' + [guid]::NewGuid().ToString('N'))
+        try {
+            New-Item -ItemType Directory -Path $projectRoot -Force | Out-Null
+            $path = Join-Path $projectRoot '.winsmux.yaml'
+            $utf8 = [System.Text.UTF8Encoding]::new($false, $true)
+            $original = '{agent: legacy, workspace-recipes: {review: {schema-version: 1}}}'
+            $rendered = "{agent: codex, workspace-recipes: {review: {schema-version: 1}}}`n"
+            [System.IO.File]::WriteAllText($path, $original, $utf8)
+            Mock Invoke-BridgeProjectSettingsRenderProcess {
+                param($WinsmuxBin, $PayloadJson)
+
+                $payload = $PayloadJson | ConvertFrom-Json
+                $script:bridgeProjectSettingsPayloads.Add($payload) | Out-Null
+                return [PSCustomObject]@{ ExitCode = 0; StdOut = $rendered }
+            }
+
+            Save-BridgeSettings -Scope project -RootPath $projectRoot -Settings ([ordered]@{ agent = 'codex'; model = 'gpt-5.4' })
+
+            $script:bridgeProjectSettingsPayloads.Count | Should -Be 1
+            $payload = $script:bridgeProjectSettingsPayloads[0]
+            $payload.original_yaml | Should -BeExactly $original
+            $payload.desired_settings.agent | Should -Be 'codex'
+            $payload.desired_settings.model | Should -Be 'gpt-5.4'
+            $payload.desired_settings.PSObject.Properties.Name | Should -Not -Contain 'workspace-recipes'
+            @($payload.owned_keys).Count | Should -Be $script:BridgeSettingsSchema.Count
+            @($payload.owned_keys) | Should -Contain 'agent_slots'
+            @($payload.owned_keys) | Should -Not -Contain 'workspace-recipes'
+            [System.IO.File]::ReadAllText($path, $utf8) | Should -BeExactly $rendered
+            [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($path)) |
+                Should -Be ([Convert]::ToBase64String($utf8.GetBytes($rendered)))
+            @(Get-ChildItem -LiteralPath $projectRoot -Filter '.winsmux.yaml.tmp-*' -File).Count | Should -Be 0
+        } finally {
+            Remove-Item -LiteralPath $projectRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'TASK658 serializes an emptied role as a mapping and carries the unknown-descendant preservation contract for <Case>' -ForEach @(
+        @{ Case = 'ordered dictionary'; RoleConfig = [ordered]@{} }
+        @{ Case = 'PSCustomObject'; RoleConfig = [pscustomobject]@{} }
+    ) {
+        $projectRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-settings-empty-role-' + [guid]::NewGuid().ToString('N'))
+        try {
+            New-Item -ItemType Directory -Path $projectRoot -Force | Out-Null
+            $path = Join-Path $projectRoot '.winsmux.yaml'
+            $utf8 = [System.Text.UTF8Encoding]::new($false, $true)
+            $original = @'
+roles:
+  builder:
+    agent: codex
+    future_nested:
+      mode: retain
+'@
+            $rendered = @'
+roles:
+  builder:
+    future_nested:
+      mode: retain
+'@ + "`n"
+            [System.IO.File]::WriteAllText($path, $original, $utf8)
+            Mock Invoke-BridgeProjectSettingsRenderProcess {
+                param($WinsmuxBin, $PayloadJson)
+
+                $payload = $PayloadJson | ConvertFrom-Json
+                $script:bridgeProjectSettingsPayloads.Add($payload) | Out-Null
+                return [PSCustomObject]@{ ExitCode = 0; StdOut = $rendered }
+            }
+
+            Save-BridgeSettings -Scope project -RootPath $projectRoot -Settings ([ordered]@{
+                roles = [ordered]@{ builder = $RoleConfig }
+            })
+
+            $script:bridgeProjectSettingsPayloads.Count | Should -Be 1
+            $payload = $script:bridgeProjectSettingsPayloads[0]
+            $payload.original_yaml | Should -BeExactly $original
+            @($payload.desired_settings.roles.builder.PSObject.Properties).Count | Should -Be 0
+            @($payload.nested_contract.roles.owned_keys) | Should -Contain 'agent'
+            [System.IO.File]::ReadAllText($path, $utf8) | Should -BeExactly $rendered
+            [System.IO.File]::ReadAllText($path, $utf8) | Should -Match '(?m)^    future_nested:\r?$'
+            @(Get-ChildItem -LiteralPath $projectRoot -Filter '.winsmux.yaml.tmp-*' -File).Count | Should -Be 0
+        } finally {
+            Remove-Item -LiteralPath $projectRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'TASK658 keeps original bytes and removes temporary files when the renderer fails as <Case>' -ForEach @(
+        @{ Case = 'missing-native' }
+        @{ Case = 'nonzero' }
+        @{ Case = 'empty-success' }
+        @{ Case = 'invalid-outcome' }
+        @{ Case = 'throwing-process' }
+    ) {
+        $projectRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-settings-reject-' + [guid]::NewGuid().ToString('N'))
+        try {
+            New-Item -ItemType Directory -Path $projectRoot -Force | Out-Null
+            $path = Join-Path $projectRoot '.winsmux.yaml'
+            $utf8 = [System.Text.UTF8Encoding]::new($false, $true)
+            $original = "agent: legacy`nfuture-owner:`n  raw: do-not-reflect-this-marker`n"
+            [System.IO.File]::WriteAllText($path, $original, $utf8)
+            $beforeBytes = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($path))
+
+            switch ($Case) {
+                'missing-native' {
+                    Mock Get-WinsmuxBin { return $null }
+                }
+                'nonzero' {
+                    Mock Invoke-BridgeProjectSettingsRenderProcess {
+                        return [PSCustomObject]@{ ExitCode = 23; StdOut = 'do-not-reflect-this-marker' }
+                    }
+                }
+                'empty-success' {
+                    Mock Invoke-BridgeProjectSettingsRenderProcess {
+                        return [PSCustomObject]@{ ExitCode = 0; StdOut = '' }
+                    }
+                }
+                'invalid-outcome' {
+                    Mock Invoke-BridgeProjectSettingsRenderProcess {
+                        return [PSCustomObject]@{ ExitCode = 0 }
+                    }
+                }
+                'throwing-process' {
+                    Mock Invoke-BridgeProjectSettingsRenderProcess { throw 'do-not-reflect-this-marker' }
+                }
+            }
+
+            $caught = $null
+            try {
+                Save-BridgeSettings -Scope project -RootPath $projectRoot -Settings ([ordered]@{ agent = 'codex' })
+            } catch {
+                $caught = $_
+            }
+
+            $caught | Should -Not -BeNullOrEmpty
+            $caught.Exception.Message | Should -BeExactly 'Project settings save was rejected.'
+            $caught.Exception.Message | Should -Not -Match 'do-not-reflect-this-marker'
+            [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($path)) | Should -Be $beforeBytes
+            @(Get-ChildItem -LiteralPath $projectRoot -Filter '.winsmux.yaml.tmp-*' -File).Count | Should -Be 0
+        } finally {
+            Remove-Item -LiteralPath $projectRoot -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
 
@@ -324,6 +479,103 @@ Describe 'Get-OrchestraLayoutSettings' {
                 reviewers          = 1
             })
         } | Should -Throw '*legacy_role_layout=true*'
+    }
+    It 'TASK658 R38 preserves explicit empty agent_slots as a typed empty array and JSON output' {
+        $projectRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-settings-empty-' + [guid]::NewGuid().ToString('N'))
+        try {
+            New-Item -ItemType Directory -Path $projectRoot -Force | Out-Null
+            Save-BridgeSettings -Scope project -RootPath $projectRoot -Settings @{ agent_slots = @() }
+            $payload = $script:bridgeProjectSettingsPayloads[0]
+            @($payload.desired_settings.agent_slots).Count | Should -Be 0
+            $payload.desired_settings.agent_slots.GetType().Name | Should -Be 'Object[]'
+            Get-Content -LiteralPath (Join-Path $projectRoot '.winsmux.yaml') -Raw -Encoding UTF8 | Should -Match '"agent_slots"\s*:\s*\[\]'
+        } finally {
+            Remove-Item -LiteralPath $projectRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'TASK658 preserves canonical renderer YAML through the manual project-settings fallback on a new file' {
+        $projectRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-settings-fallback-' + [guid]::NewGuid().ToString('N'))
+        try {
+            New-Item -ItemType Directory -Path $projectRoot -Force | Out-Null
+            Mock Invoke-BridgeProjectSettingsRenderProcess {
+                [PSCustomObject]@{
+                    ExitCode = 0
+                    StdOut = "agent_slots:`n  - slot_id: `"worker-1`"`n    runtime_role: `"worker`"`n    worktree_mode: `"managed`"`nexternal_operator: false`nroles:`n  {}`nvault_keys:`n  []`nworker_count: 2`n"
+                }
+            }
+            Mock Get-Command {
+                param($Name)
+                if ($Name -eq 'ConvertFrom-Yaml') { return $null }
+                return Microsoft.PowerShell.Core\Get-Command -Name $Name -ErrorAction SilentlyContinue
+            }
+
+            Save-BridgeSettings -Scope project -RootPath $projectRoot -Settings @{ external_operator = $false; worker_count = 2; agent_slots = @([ordered]@{ slot_id = 'worker-1'; runtime_role = 'worker'; worktree_mode = 'managed' }) }
+            $settings = Get-BridgeSettings -RootPath $projectRoot
+
+            $settings.external_operator | Should -BeFalse
+            $settings.worker_count | Should -Be 1
+            @($settings.agent_slots).Count | Should -Be 1
+            $settings.agent_slots[0].runtime_role | Should -Be 'worker'
+            $settings.agent_slots[0].worktree_mode | Should -Be 'managed'
+            ($settings.roles -is [System.Collections.IDictionary]) | Should -BeTrue
+            $settings.roles.Count | Should -Be 0
+            @($settings.vault_keys).Count | Should -Be 0
+        } finally {
+            Remove-Item -LiteralPath $projectRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'TASK658 R52 manually reads renderer-shaped block roles slots and escaped JSON scalars' {
+        $content = @'
+agent_slots:
+  - slot_id: "Worker-1"
+    model: "slot # \"added"
+    reasoning_effort: "high"
+  - slot_id: "worker-3"
+    model: "added"
+roles:
+  Builder:
+    {}
+  reviewer:
+    model: "added-role"
+  "review # \"lead":
+    model: "role # \"added"
+  "invalid \q":
+    model: "must-not-attach"
+'@
+
+        $settings = ConvertFrom-BridgeManualYaml -Content $content
+
+        @($settings.agent_slots).Count | Should -Be 2
+        $settings.agent_slots[0].slot_id | Should -Be 'Worker-1'
+        $settings.agent_slots[0].model | Should -Be 'slot # "added'
+        $settings.agent_slots[0].reasoning_effort | Should -Be 'high'
+        $settings.roles.Count | Should -Be 3
+        $settings.roles.Builder.Count | Should -Be 0
+        $settings.roles.reviewer.model | Should -Be 'added-role'
+        $settings.roles['review # "lead'].model | Should -Be 'role # "added'
+        $settings.roles.Contains('invalid \q') | Should -BeFalse
+    }
+
+    It 'TASK658 R39 rejects unsupported owned manifest syntax and accepts canonical forms for <Case>' -ForEach @(
+        @{ Case = 'quoted session'; Content = ("version: 1`n" + [char]34 + "session" + [char]34 + ":`n  name: x`n"); Reject = $true }
+        @{ Case = 'flow session'; Content = "version: 1`nsession: {name: x}`n"; Reject = $true }
+        @{ Case = 'quoted version'; Content = (([char]34) + "version" + [char]34 + ": 1`n"); Reject = $true }
+        @{ Case = 'case changed session'; Content = "version: 1`nSession:`n  name: x`n"; Reject = $true }
+        @{ Case = 'quoted session property'; Content = ("version: 1`nsession:`n  " + [char]34 + "name" + [char]34 + ": x`n"); Reject = $true }
+        @{ Case = 'quoted pane property'; Content = ("version: 1`npanes:`n  main:`n    " + [char]34 + "title" + [char]34 + ": x`n"); Reject = $true }
+        @{ Case = 'noncanonical task flow list'; Content = "version: 1`ntasks:`n  queued: [x]`n"; Reject = $true }
+        @{ Case = 'quoted saved at'; Content = ("version: 1`n" + [char]34 + "saved_at" + [char]34 + ": now`n"); Reject = $true }
+        @{ Case = 'canonical version'; Content = "version: 1`n"; Reject = $false }
+        @{ Case = 'canonical saved at'; Content = "version: 1`nsaved_at: now`n"; Reject = $false }
+        @{ Case = 'canonical session'; Content = "version: 1`nsession:`n  name: x`n"; Reject = $false }
+        @{ Case = 'empty canonical session'; Content = "version: 1`nsession: {}`n"; Reject = $false }
+        @{ Case = 'opaque additive block'; Content = "version: 1`nworkflow_runs:`n  run-1:`n    state: done`n"; Reject = $false }
+    ) {
+        . (Join-Path (Split-Path -Parent $script:BridgeTestsRoot) 'winsmux-core\scripts\manifest.ps1')
+        if ($Reject) { { ConvertFrom-ManifestYaml -Content $Content } | Should -Throw }
+        else { { ConvertFrom-ManifestYaml -Content $Content } | Should -Not -Throw }
     }
 }
 
@@ -1072,7 +1324,358 @@ Describe 'manifest worker isolation metadata' {
         $entry.worktree_git_dir | Should -Be 'C:\repo\.git\worktrees\worker-1'
         $entry.expected_origin | Should -Be 'https://github.com/example/repo.git'
     }
+
+    It 'TASK658 preserves Rust-owned declarative workspace YAML without PowerShell interpretation' {
+        $declarativeBlock = @'
+declarative_workspace:
+    schema_version: '1'
+    config_fingerprint: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    recipe_id: 'review'
+    resolved_bindings:
+        implement: 'worker-1'
+        verify: 'worker-2'
+'@
+        $content = @"
+version: 1
+saved_at: '2026-07-21T00:00:00Z'
+session:
+  name: 'winsmux-orchestra'
+panes: {}
+tasks:
+  queued: []
+  in_progress: []
+  completed: []
+worktrees: {}
+$declarativeBlock
+workflow_runs:
+  run-1:
+    state: 'blocked'
+"@
+
+        $first = ConvertFrom-ManifestYaml -Content $content
+        $serialized = ConvertTo-ManifestYaml -Manifest $first
+
+        $first.PSObject.Properties.Name | Should -Not -Contain 'declarative_workspace'
+        ($serialized -replace "`r`n", "`n").Contains(($declarativeBlock -replace "`r`n", "`n")) | Should -Be $true
+        ([regex]::Matches($serialized, '(?m)^declarative_workspace:')).Count | Should -Be 1
+        $serialized | Should -Match '(?m)^workflow_runs:'
+        $serialized | Should -Match "(?m)^    state: 'blocked'"
+    }
+
+    It 'TASK658 shadows a preserved additive block when its property is materialized' {
+        foreach ($spelling in @('workflow_runs', "'workflow_runs'", '"workflow_runs"', '"workflow\u005fruns"')) {
+            $manifest = ConvertFrom-ManifestYaml -Content @"
+version: 1
+saved_at: '2026-07-21T00:00:00Z'
+session:
+  name: 'winsmux-orchestra'
+panes: {}
+tasks:
+  queued: []
+  in_progress: []
+  completed: []
+worktrees: {}
+$($spelling):
+  run-old:
+    state: 'blocked'
+"@
+            $manifest | Add-Member -NotePropertyName 'workflow_runs' -NotePropertyValue ([ordered]@{
+                'run-new' = [ordered]@{ state = 'running' }
+            }) -Force
+
+            $serialized = ConvertTo-ManifestYaml -Manifest $manifest
+
+            ([regex]::Matches($serialized, '(?m)^workflow_runs:')).Count | Should -Be 1
+            $serialized | Should -Match '(?m)^  run-new:$'
+            $serialized | Should -Match "(?m)^    state: 'running'$"
+            $serialized | Should -Not -Match '(?m)^  run-old:$'
+        }
+
+        $nullManifest = ConvertFrom-ManifestYaml -Content @'
+version: 1
+saved_at: '2026-07-21T00:00:00Z'
+session:
+  name: 'winsmux-orchestra'
+panes: {}
+tasks:
+  queued: []
+  in_progress: []
+  completed: []
+worktrees: {}
+workflow_runs:
+  run-old:
+    state: 'blocked'
+'@
+        $nullManifest | Add-Member -NotePropertyName 'workflow_runs' -NotePropertyValue $null -Force
+
+        $nullSerialized = ConvertTo-ManifestYaml -Manifest $nullManifest
+
+        ([regex]::Matches($nullSerialized, '(?m)^workflow_runs:')).Count | Should -Be 1
+        $nullSerialized | Should -Match '(?m)^workflow_runs: null$'
+        $nullSerialized | Should -Not -Match '(?m)^  run-old:$'
+    }
+
+    It 'TASK658 serializes empty materialized mappings as YAML mappings' {
+        foreach ($emptyMap in @([ordered]@{}, [pscustomobject]@{})) {
+            $manifest = ConvertFrom-ManifestYaml -Content @'
+version: 1
+saved_at: '2026-07-21T00:00:00Z'
+session:
+  name: 'winsmux-orchestra'
+panes: {}
+tasks:
+  queued: []
+  in_progress: []
+  completed: []
+worktrees: {}
+'@
+            $manifest | Add-Member -NotePropertyName 'workflow_runs' -NotePropertyValue $emptyMap -Force
+
+            $serialized = ConvertTo-ManifestYaml -Manifest $manifest
+
+            $serialized | Should -Match '(?m)^workflow_runs: \{\}$'
+            $serialized | Should -Not -Match 'OrderedDictionary|PSCustomObject|System\.Collections'
+        }
+    }
+
+    It 'TASK658 serializes additive object and string sequences without adapted-object recursion' {
+        $manifest = ConvertFrom-ManifestYaml -Content @'
+version: 1
+saved_at: '2026-07-21T00:00:00Z'
+session:
+  name: 'winsmux-orchestra'
+panes: {}
+tasks:
+  queued: []
+  in_progress: []
+  completed: []
+worktrees: {}
+'@
+        $manifest | Add-Member -NotePropertyName 'workflow_runs' -NotePropertyValue ([ordered]@{
+            'run-123' = [ordered]@{
+                evidence_refs = @('artifact:first', 'artifact:second')
+                cleanup_journal = @(
+                    [ordered]@{ action = 'remove-worktree'; state = 'completed' },
+                    [pscustomobject]@{ action = 'remove-branch'; state = 'pending' }
+                )
+            }
+        }) -Force
+
+        $serialized = ConvertTo-ManifestYaml -Manifest $manifest
+        $roundTrip = ConvertFrom-ManifestYaml -Content $serialized
+        $serializedAgain = ConvertTo-ManifestYaml -Manifest $roundTrip
+
+        $serialized | Should -Match '(?m)^workflow_runs:$'
+        $serialized | Should -Match "(?m)^\s+- 'artifact:first'$"
+        $serialized | Should -Match "(?m)^\s+- 'artifact:second'$"
+        $serialized | Should -Match '(?m)^\s+cleanup_journal:$'
+        $serialized | Should -Match "(?m)^\s+action: 'remove-worktree'$"
+        $serialized | Should -Match "(?m)^\s+action: 'remove-branch'$"
+        $serializedAgain | Should -Match "(?m)^\s+- 'artifact:first'$"
+        $serializedAgain | Should -Match "(?m)^\s+action: 'remove-worktree'$"
+        $serializedAgain | Should -Match "(?m)^\s+action: 'remove-branch'$"
+    }
+
+    It 'TASK658 preserves quoted additive manifest keys without retaining quoted known keys' {
+        foreach ($spelling in @('workflow_runs', "'workflow_runs'", '"workflow_runs"', '"workflow\u005fruns"')) {
+            $content = @"
+version: 1
+saved_at: '2026-07-21T00:00:00Z'
+session:
+  name: 'winsmux-orchestra'
+panes: {}
+tasks:
+  queued: []
+  in_progress: []
+  completed: []
+worktrees: {}
+$($spelling):
+  run-1:
+    state: 'blocked'
+"@
+
+            $serialized = ConvertTo-ManifestYaml -Manifest (ConvertFrom-ManifestYaml -Content $content)
+
+            $serialized | Should -Match ([regex]::Escape(("{0}:" -f $spelling)))
+            $serialized | Should -Match "(?m)^    state: 'blocked'$"
+        }
+
+        $quotedKnown = @(Get-ManifestUnknownTopLevelBlocks -Content @'
+"session":
+  name: 'quoted-known'
+'@)
+        $quotedKnown.Count | Should -Be 0
+    }
+
+    It 'TASK658 rejects manifest roots outside the supported single block mapping shape' -ForEach @(
+        @{ Case = 'flow mapping'; Content = '{version: 1, workflow_runs: {run-1: {state: blocked}}}' }
+        @{ Case = 'flow sequence'; Content = '[version, workflow_runs]' }
+        @{ Case = 'block sequence'; Content = "- version`n- workflow_runs" }
+        @{ Case = 'scalar'; Content = 'version' }
+        @{ Case = 'http URI scalar'; Content = 'http://example.com' }
+        @{ Case = 'https URI scalar'; Content = 'https://example.com/manifest' }
+        @{ Case = 'ssh URI scalar'; Content = 'ssh://git@example.com/repo' }
+        @{ Case = 'multiple documents'; Content = "version: 1`n---`nworkflow_runs: {}" }
+        @{ Case = 'mapping then block sequence'; Content = "version: 1`n- workflow_runs" }
+        @{ Case = 'mapping then scalar'; Content = "version: 1`nworkflow_runs" }
+        @{ Case = 'mapping then flow mapping'; Content = "version: 1`n{workflow_runs: {}}" }
+    ) {
+        { ConvertFrom-ManifestYaml -Content $Content } |
+            Should -Throw '*manifest parse rejected*single block-style mapping*'
+    }
+
+    It 'TASK658 preserves rejected flow and URI-scalar manifests across save and update attempts' -ForEach @(
+        @{ Case = 'flow mapping'; Content = '{version: 1, workflow_runs: {run-1: {state: blocked}}}' }
+        @{ Case = 'http URI scalar'; Content = 'http://example.com' }
+        @{ Case = 'https URI scalar'; Content = 'https://example.com/manifest' }
+        @{ Case = 'ssh URI scalar'; Content = 'ssh://git@example.com/repo' }
+    ) {
+        $projectDir = Join-Path $TestDrive ('task658-rejected-manifest-' + [guid]::NewGuid().ToString('N'))
+        $manifestDir = Join-Path $projectDir '.winsmux'
+        $manifestPath = Join-Path $manifestDir 'manifest.yaml'
+        $original = $Content
+        New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
+        [System.IO.File]::WriteAllText(
+            $manifestPath,
+            $original,
+            [System.Text.UTF8Encoding]::new($false)
+        )
+        $replacement = [PSCustomObject]@{
+            version = 1
+            saved_at = '2026-07-21T00:00:00Z'
+            session = [PSCustomObject]@{}
+            panes = [ordered]@{}
+            tasks = [PSCustomObject]@{ queued = @(); in_progress = @(); completed = @() }
+            worktrees = [ordered]@{}
+        }
+
+        { Save-WinsmuxManifest -ProjectDir $projectDir -Manifest $replacement } |
+            Should -Throw '*manifest_regeneration_required*'
+        [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($manifestPath)) |
+            Should -Be ([Convert]::ToBase64String([System.Text.UTF8Encoding]::new($false).GetBytes($original)))
+        @(Get-ChildItem -LiteralPath $manifestDir -Filter 'manifest.yaml.tmp-*' -File).Count | Should -Be 0
+
+        { Update-ManifestPanes -ManifestPath $manifestPath -PaneSummaries @(
+                [PSCustomObject]@{ Label = 'worker-1'; PaneId = '%2' }
+            ) } |
+            Should -Throw '*manifest parse rejected*single block-style mapping*'
+        [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($manifestPath)) |
+            Should -Be ([Convert]::ToBase64String([System.Text.UTF8Encoding]::new($false).GetBytes($original)))
+        @(Get-ChildItem -LiteralPath $manifestDir -Filter 'manifest.yaml.tmp-*' -File).Count | Should -Be 0
+    }
+
+    It 'TASK658 derives a deterministic declarative workspace fingerprint without writing state' {
+        $plan = [ordered]@{
+            recipe_id = 'review'
+            config_fingerprint = ('sha256:' + ('a' * 64))
+            resolved_bindings = [ordered]@{ implement = 'worker-1'; verify = 'worker-2' }
+        }
+        $first = New-WinsmuxDeclarativeWorkspaceProjection -Plan $plan
+        $second = New-WinsmuxDeclarativeWorkspaceProjection -Plan $plan
+
+        $first.config_fingerprint | Should -Be $second.config_fingerprint
+        $first.config_fingerprint | Should -Be $plan.config_fingerprint
+        $first.config_fingerprint | Should -Match '^sha256:[0-9a-f]{64}$'
+        $first.resolved_bindings.verify | Should -Be 'worker-2'
+
+        $invalid = [ordered]@{
+            recipe_id = 'C:\private\recipe'
+            config_fingerprint = $plan.config_fingerprint
+            resolved_bindings = $plan.resolved_bindings
+        }
+        { New-WinsmuxDeclarativeWorkspaceProjection -Plan $invalid } |
+            Should -Throw '*stable lowercase ASCII identifier*'
+        { New-WinsmuxDeclarativeWorkspaceProjection -Plan $plan -DryRunPlanRef 'evidence:../private' } |
+            Should -Throw '*safe evidence reference*'
+    }
 }
+
+BeforeDiscovery {
+    $task658RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+    $task658ParityFixturePath = Join-Path $task658RepoRoot 'tests\fixtures\rust-parity\task658-project-settings-parity.json'
+    $script:task658ParityCases = @(Get-Content -LiteralPath $task658ParityFixturePath -Raw -Encoding UTF8 |
+        ConvertFrom-Json |
+        ForEach-Object {
+            @{
+                Case           = [string]$_.Case
+                Settings       = [string]$_.Settings
+                Startup        = [string]$_.Startup
+                Preview        = [string]$_.Preview
+                Classification = [string]$_.Classification
+            }
+        })
+}
+
+Describe 'TASK658 R37 project-settings startup and workspace-plan differential contract' {
+    BeforeAll {
+        $script:task658DifferentialRepoRoot = Split-Path -Parent $script:BridgeTestsRoot
+        . (Join-Path $script:task658DifferentialRepoRoot 'winsmux-core\scripts\orchestra-start.ps1')
+    }
+
+    BeforeEach {
+        $script:task658DifferentialRoot = Join-Path $TestDrive ('task658-r37-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:task658DifferentialRoot -Force | Out-Null
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+    }
+
+    AfterEach {
+        if ($script:task658DifferentialRoot -and (Test-Path -LiteralPath $script:task658DifferentialRoot)) {
+            Remove-Item -LiteralPath $script:task658DifferentialRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'TASK658 R37 keeps the startup and preview rejection boundary explicit for <Case>' -ForEach $script:task658ParityCases {
+            $Settings | Should -Not -BeNullOrEmpty
+            $Startup | Should -BeIn @('accept', 'reject')
+            $Preview | Should -BeIn @('accept', 'reject')
+            $Classification | Should -BeIn @('equivalent', 'startup-rejection', 'R35-explicit-fail-closed')
+            $fixturePath = Join-Path $script:task658DifferentialRoot '.winsmux.yaml'
+            Write-PsmuxBridgeTestFile -Path $fixturePath -Content ($Settings.TrimEnd() + "`n")
+            $beforeBytes = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($fixturePath))
+            $beforeFiles = @(Get-ChildItem -LiteralPath $script:task658DifferentialRoot -Recurse -Force -File |
+                ForEach-Object { $_.FullName.Substring($script:task658DifferentialRoot.Length) } |
+                Sort-Object)
+
+            $startupError = $null
+            $startupSettings = $null
+            $startupLayout = $null
+            try {
+                $startupSettings = Get-BridgeSettings -RootPath $script:task658DifferentialRoot
+                $startupLayout = Get-OrchestraLayoutSettings -Settings $startupSettings
+            } catch {
+                $startupError = $_
+            }
+
+            if ($Startup -eq 'accept') {
+                $startupError | Should -BeNullOrEmpty
+                $startupLayout.Workers | Should -Be @($startupSettings.agent_slots).Count
+                @($startupSettings.agent_slots | ForEach-Object { [string]$_.slot_id }) | Should -Contain 'worker-1'
+            } else {
+                $startupError | Should -Not -BeNullOrEmpty
+            }
+
+            switch ($Classification) {
+                'equivalent' {
+                    $Startup | Should -Be 'accept'
+                    $Preview | Should -Be 'accept'
+                }
+                'startup-rejection' {
+                    $Startup | Should -Be 'reject'
+                    $Preview | Should -Be 'reject'
+                }
+                'R35-explicit-fail-closed' {
+                    $Preview | Should -Be 'reject'
+                }
+            }
+
+            [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($fixturePath)) | Should -Be $beforeBytes
+            $afterFiles = @(Get-ChildItem -LiteralPath $script:task658DifferentialRoot -Recurse -Force -File |
+                ForEach-Object { $_.FullName.Substring($script:task658DifferentialRoot.Length) } |
+                Sort-Object)
+            $afterFiles | Should -Be $beforeFiles
+    }
+}
+
 
 Describe 'winsmux pane env contract' {
     BeforeAll {

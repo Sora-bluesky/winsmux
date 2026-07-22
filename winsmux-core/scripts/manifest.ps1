@@ -195,6 +195,11 @@ function ConvertTo-ManifestPropertyMap {
         return $result
     }
 
+    if ($Value -is [string] -or $Value -is [System.ValueType] -or
+        ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [System.Collections.IDictionary]))) {
+        return $result
+    }
+
     if ($Value -is [System.Collections.Specialized.OrderedDictionary]) {
         foreach ($key in $Value.Keys) {
             $result[[string]$key] = $Value[$key]
@@ -220,6 +225,13 @@ function ConvertTo-ManifestPropertyMap {
     return $result
 }
 
+function Test-ManifestYamlMappingValue {
+    param([AllowNull()]$Value)
+
+    return ($null -ne $Value -and
+        ($Value -is [System.Collections.IDictionary] -or $Value -is [pscustomobject]))
+}
+
 function ConvertTo-ManifestKeyName {
     param([Parameter(Mandatory = $true)][string]$Name)
 
@@ -237,6 +249,176 @@ function ConvertTo-ManifestKeyName {
             $snake = [regex]::Replace($Name, '([a-z0-9])([A-Z])', '$1_$2')
             return $snake.ToLowerInvariant()
         }
+    }
+}
+
+function Add-ManifestYamlNode {
+    param(
+        [Parameter(Mandatory = $true)][System.Collections.Generic.List[string]]$Lines,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [AllowNull()]$Value,
+        [int]$Indent = 0
+    )
+
+    $prefix = ' ' * $Indent
+    if ($Value -is [System.Collections.IEnumerable] -and
+        -not ($Value -is [string]) -and -not ($Value -is [System.Collections.IDictionary])) {
+        $items = @($Value)
+        if ($items.Count -eq 0) {
+            $Lines.Add(("{0}{1}: []" -f $prefix, $Name)) | Out-Null
+            return
+        }
+
+        $Lines.Add(("{0}{1}:" -f $prefix, $Name)) | Out-Null
+        foreach ($item in $items) {
+            $itemMap = ConvertTo-ManifestPropertyMap -Value $item
+            $itemIsMapping = Test-ManifestYamlMappingValue -Value $item
+            if (-not $itemIsMapping) {
+                $Lines.Add(("{0}  - {1}" -f $prefix, (ConvertTo-ManifestYamlScalar -Value $item))) | Out-Null
+                continue
+            }
+
+            if ($itemMap.Count -eq 0) {
+                $Lines.Add(("{0}  - {{}}" -f $prefix)) | Out-Null
+                continue
+            }
+
+            $Lines.Add(("{0}  -" -f $prefix)) | Out-Null
+            foreach ($key in $itemMap.Keys) {
+                Add-ManifestYamlNode -Lines $Lines -Name ([string]$key) -Value $itemMap[$key] -Indent ($Indent + 4)
+            }
+        }
+        return
+    }
+
+    $map = ConvertTo-ManifestPropertyMap -Value $Value
+    if (Test-ManifestYamlMappingValue -Value $Value) {
+        if ($map.Count -eq 0) {
+            $Lines.Add(("{0}{1}: {{}}" -f $prefix, $Name)) | Out-Null
+            return
+        }
+
+        $Lines.Add(("{0}{1}:" -f $prefix, $Name)) | Out-Null
+        foreach ($key in $map.Keys) {
+            Add-ManifestYamlNode -Lines $Lines -Name ([string]$key) -Value $map[$key] -Indent ($Indent + 2)
+        }
+        return
+    }
+
+    $Lines.Add(("{0}{1}: {2}" -f $prefix, $Name, (ConvertTo-ManifestYamlValue -Value $Value))) | Out-Null
+}
+
+function ConvertFrom-ManifestTopLevelYamlKey {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Line)
+
+    if ([string]::IsNullOrWhiteSpace($Line) -or [char]::IsWhiteSpace($Line[0])) {
+        return $null
+    }
+
+    $match = [regex]::Match(
+        $Line,
+        '^(?<token>[A-Za-z0-9_.-]+|''(?:[^'']|'''')*''|"(?:[^"\\]|\\(?:["\\/bfnrt]|u[0-9A-Fa-f]{4}))*")\s*:(?=$|\s|#)'
+    )
+    if (-not $match.Success) {
+        return $null
+    }
+
+    $keyText = [string]$match.Groups['token'].Value
+    if ($keyText[0] -eq "'") {
+        $keyText = $keyText.Substring(1, $keyText.Length - 2).Replace("''", "'")
+    } elseif ($keyText[0] -eq '"') {
+        try {
+            $keyText = [string](ConvertFrom-Json -InputObject $keyText -ErrorAction Stop)
+        } catch {
+            return $null
+        }
+    }
+
+    if ($keyText -cnotmatch '^[A-Za-z0-9_.-]+$') {
+        return $null
+    }
+    return $keyText
+}
+
+function Get-ManifestUnknownTopLevelBlocks {
+    param([Parameter(Mandatory = $true)][string]$Content)
+
+    $known = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    # Rust owns semantic parsing for declarative_workspace and all additive sections.
+    # PowerShell retains those top-level blocks as opaque save-through state.
+    foreach ($name in @('version', 'saved_at', 'session', 'panes', 'tasks', 'worktrees')) {
+        [void]$known.Add($name)
+    }
+
+    $blocks = [System.Collections.Generic.List[string]]::new()
+    $current = [System.Collections.Generic.List[string]]::new()
+    $capturing = $false
+    foreach ($rawLine in ($Content -split "\r?\n")) {
+        $topLevelKey = ConvertFrom-ManifestTopLevelYamlKey -Line $rawLine
+        if ($null -ne $topLevelKey) {
+            if ($capturing -and $current.Count -gt 0) {
+                $blocks.Add(($current -join "`n")) | Out-Null
+                $current.Clear()
+            }
+            $capturing = -not $known.Contains($topLevelKey)
+        }
+        if ($capturing) {
+            $current.Add($rawLine) | Out-Null
+        }
+    }
+    if ($capturing -and $current.Count -gt 0) {
+        $blocks.Add(($current -join "`n")) | Out-Null
+    }
+    return @($blocks)
+}
+
+function Assert-ManifestYamlBlockMappingRoot {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Content)
+
+    $ownedTopLevelPatterns = [ordered]@{
+        version   = '^version:\s*[0-9]+\s*$'
+        saved_at  = '^saved_at:\s*(.*?)\s*$'
+        session   = '^session:\s*(\{\})?\s*$'
+        panes     = '^panes:\s*(\{\})?\s*$'
+        tasks     = '^tasks:\s*(\{\})?\s*$'
+        worktrees = '^worktrees:\s*(\{\})?\s*$'
+    }
+    $rootEntryObserved = $false
+    foreach ($rawLine in ($Content -split "\r?\n")) {
+        $line = $rawLine.TrimEnd()
+        if ([string]::IsNullOrWhiteSpace($line) -or $line -match '^\s*#') {
+            continue
+        }
+
+        # This parser supports one block-style mapping document. Reject document
+        # boundaries before the line-oriented reader can silently combine roots.
+        if ($line -match '^(?:---|\.\.\.)(?:\s+#.*)?$') {
+            throw 'manifest parse rejected: document must be a single block-style mapping.'
+        }
+
+        if ([char]::IsWhiteSpace($line[0])) {
+            if (-not $rootEntryObserved) {
+                throw 'manifest parse rejected: document must be a single block-style mapping.'
+            }
+            continue
+        }
+
+        # Every column-zero data line starts another mapping entry. Checking only
+        # the first entry would let a later root sequence/scalar/flow node pass
+        # through the line-oriented compatibility reader.
+        $topLevelKey = ConvertFrom-ManifestTopLevelYamlKey -Line $line
+        if ($null -eq $topLevelKey) {
+            throw 'manifest parse rejected: document must be a single block-style mapping.'
+        }
+        if ($ownedTopLevelPatterns.Contains($topLevelKey) -and
+            $line -cnotmatch $ownedTopLevelPatterns[$topLevelKey]) {
+            throw "manifest parse rejected: owned top-level key '$topLevelKey' must use the canonical form."
+        }
+        $rootEntryObserved = $true
+    }
+
+    if (-not $rootEntryObserved) {
+        throw 'manifest parse rejected: document must be a single block-style mapping.'
     }
 }
 
@@ -1376,7 +1558,11 @@ function ConvertTo-ManifestYaml {
     $worktreesMap = ConvertTo-ManifestPropertyMap -Value $manifestMap['worktrees']
 
     $lines = [System.Collections.Generic.List[string]]::new()
-    $lines.Add(('version: {0}' -f (ConvertTo-ManifestYamlScalar -Value $(if ($manifestMap.Contains('version')) { $manifestMap['version'] } else { 1 })))) | Out-Null
+    $manifestVersion = ConvertTo-WinsmuxRuntimeInteger -Value $(if ($manifestMap.Contains('version')) { $manifestMap['version'] } else { 1 })
+    if ($null -eq $manifestVersion) {
+        throw 'manifest serialization rejected: version must be an integer.'
+    }
+    $lines.Add(('version: {0}' -f $manifestVersion)) | Out-Null
     $lines.Add(('saved_at: {0}' -f (ConvertTo-ManifestYamlScalar -Value $(if ($manifestMap.Contains('saved_at')) { $manifestMap['saved_at'] } else { [System.DateTimeOffset]::Now.ToString('o') })))) | Out-Null
     $lines.Add('session:') | Out-Null
     foreach ($key in $sessionMap.Keys) {
@@ -1426,11 +1612,52 @@ function ConvertTo-ManifestYaml {
         }
     }
 
+    if ($manifestMap.Contains('declarative_workspace') -and $null -ne $manifestMap['declarative_workspace']) {
+        Add-ManifestYamlNode -Lines $lines -Name 'declarative_workspace' -Value $manifestMap['declarative_workspace']
+    }
+
+    $coreKeys = @('version', 'saved_at', 'session', 'panes', 'tasks', 'worktrees', 'declarative_workspace', '__preserved_top_level_yaml')
+    foreach ($key in $manifestMap.Keys) {
+        if ($key -in $coreKeys -or $key.StartsWith('__', [System.StringComparison]::Ordinal)) {
+            continue
+        }
+        Add-ManifestYamlNode -Lines $lines -Name ([string]$key) -Value $manifestMap[$key]
+    }
+    if ($manifestMap.Contains('__preserved_top_level_yaml')) {
+        $materializedKeys = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+        foreach ($key in $manifestMap.Keys) {
+            $keyText = [string]$key
+            if ($keyText -ceq 'declarative_workspace') {
+                if ($null -ne $manifestMap[$key]) {
+                    [void]$materializedKeys.Add($keyText)
+                }
+                continue
+            }
+            if ($key -notin $coreKeys -and
+                -not $keyText.StartsWith('__', [System.StringComparison]::Ordinal)) {
+                [void]$materializedKeys.Add($keyText)
+            }
+        }
+
+        foreach ($block in @($manifestMap['__preserved_top_level_yaml'])) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$block)) {
+                $firstLine = (([string]$block) -split "\r?\n", 2)[0]
+                $preservedKey = ConvertFrom-ManifestTopLevelYamlKey -Line $firstLine
+                if ($null -ne $preservedKey -and $materializedKeys.Contains($preservedKey)) {
+                    continue
+                }
+                $lines.Add(([string]$block).TrimEnd()) | Out-Null
+            }
+        }
+    }
+
     return ($lines -join "`n") + "`n"
 }
 
 function ConvertFrom-ManifestYaml {
     param([Parameter(Mandatory = $true)][string]$Content)
+
+    Assert-ManifestYamlBlockMappingRoot -Content $Content
 
     $manifest = [PSCustomObject]@{
         version  = 1
@@ -1446,6 +1673,7 @@ function ConvertFrom-ManifestYaml {
     }
 
     $section = ''
+    $opaqueTopLevel = $false
     $currentLabel = ''
     $currentMode = ''
     $taskListKey = ''
@@ -1472,6 +1700,10 @@ function ConvertFrom-ManifestYaml {
             continue
         }
 
+        if ($null -ne (ConvertFrom-ManifestTopLevelYamlKey -Line $line)) {
+            $opaqueTopLevel = $false
+        }
+
         if ($line -match '^version:\s*(.*?)\s*$') {
             if (-not $seenTopLevel.Add('version')) { & $recordDuplicate 'version' }
             $manifest.version = [int](ConvertFrom-ManifestYamlScalar $Matches[1])
@@ -1494,6 +1726,24 @@ function ConvertFrom-ManifestYaml {
             continue
         }
 
+        if ($null -ne (ConvertFrom-ManifestTopLevelYamlKey -Line $line)) {
+            # Unknown additive top-level sections are retained as raw YAML blocks.
+            # Stop interpreting their nested lines as part of the preceding known section.
+            $section = ''
+            $opaqueTopLevel = $true
+            $currentLabel = ''
+            $currentMode = ''
+            $taskListKey = ''
+            continue
+        }
+
+        if ($opaqueTopLevel) {
+            continue
+        }
+
+        if ($section -eq 'session' -and $line -match '^\s{2}' -and $line -notmatch '^\s{2}([A-Za-z0-9_.-]+):\s*(.*?)\s*$') {
+            throw 'manifest parse rejected: session entries must use canonical scalar keys.'
+        }
         if ($section -eq 'session' -and $line -match '^\s{2}([A-Za-z0-9_.-]+):\s*(.*?)\s*$') {
             $propertyName = [string]$Matches[1]
             if (-not $seenSessionKeys.Add($propertyName)) { & $recordDuplicate ("session.{0}" -f $propertyName) }
@@ -1573,6 +1823,8 @@ function ConvertFrom-ManifestYaml {
                 continue
             }
         }
+
+        throw 'manifest parse rejected: unsupported canonical manifest syntax.'
     }
 
     if (($observedVersion2 -or $manifest.version -eq 2) -and $duplicatePaths.Count -gt 0) {
@@ -1585,5 +1837,52 @@ function ConvertFrom-ManifestYaml {
         }
     }
 
+    $preservedBlocks = @(Get-ManifestUnknownTopLevelBlocks -Content $Content)
+    if ($preservedBlocks.Count -gt 0) {
+        $manifest | Add-Member -NotePropertyName '__preserved_top_level_yaml' -NotePropertyValue $preservedBlocks -Force
+    }
+
     return $manifest
+}
+
+function New-WinsmuxDeclarativeWorkspaceProjection {
+    param(
+        [Parameter(Mandatory = $true)]$Plan,
+        [AllowEmptyString()][string]$DryRunPlanRef = ''
+    )
+
+    $configFingerprint = [string]$Plan.config_fingerprint
+    if ($configFingerprint -cnotmatch '^sha256:[0-9a-f]{64}$') {
+        throw 'Workspace plan config_fingerprint must be a lowercase sha256 digest.'
+    }
+    $idPattern = '^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$'
+    $recipeId = [string]$Plan.recipe_id
+    if ($recipeId -cnotmatch $idPattern) {
+        throw 'Workspace plan recipe_id must be a stable lowercase ASCII identifier.'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($DryRunPlanRef) -and
+        ($DryRunPlanRef -cnotmatch '^evidence:[a-z0-9][a-z0-9._/-]*$' -or
+            $DryRunPlanRef.Contains('..') -or $DryRunPlanRef.Contains('\'))) {
+        throw 'Workspace dry_run_plan_ref must be a safe evidence reference.'
+    }
+
+    $bindings = [ordered]@{}
+    foreach ($entry in (ConvertTo-ManifestPropertyMap -Value $Plan.resolved_bindings).GetEnumerator()) {
+        $paneId = [string]$entry.Key
+        $slotId = [string]$entry.Value
+        if ($paneId -cnotmatch $idPattern -or $slotId -cnotmatch $idPattern) {
+            throw 'Workspace plan bindings must use stable lowercase ASCII identifiers.'
+        }
+        $bindings[$paneId] = $slotId
+    }
+    $projection = [ordered]@{
+        schema_version      = 1
+        config_fingerprint = $configFingerprint
+        recipe_id          = $recipeId
+        resolved_bindings  = $bindings
+    }
+    if (-not [string]::IsNullOrWhiteSpace($DryRunPlanRef)) {
+        $projection['dry_run_plan_ref'] = $DryRunPlanRef
+    }
+    return $projection
 }

@@ -19,6 +19,22 @@ use crate::ledger::{attach_evidence_chain_to_event, public_changed_files};
 use crate::machine_contract::machine_contract_catalog;
 use crate::read_path;
 use crate::types::VERSION;
+use crate::workspace_project_settings::{self, WorkspacePlanProjectSettings};
+#[cfg(test)]
+use crate::workspace_recipe::normalize_workspace_plan;
+use crate::workspace_recipe::{
+    normalize_workspace_plan_from_value, parse_workspace_yaml, SlotCapabilities,
+};
+
+#[path = "workspace_builtin_provider.rs"]
+mod workspace_builtin_provider;
+use workspace_builtin_provider::resolve_provider_capability_in_registry;
+#[path = "workspace_runtime_overlays.rs"]
+mod workspace_runtime_overlays;
+use workspace_runtime_overlays::{
+    read_provider_registry as read_provider_registry_envelope, read_runtime_role_preferences,
+    reject_retired_commander_options,
+};
 
 static REVIEW_REQUEST_COUNTER: AtomicU32 = AtomicU32::new(0);
 static ATOMIC_WRITE_COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -29,6 +45,21 @@ const FILE_LOCK_RETRY_DELAY: Duration = Duration::from_millis(50);
 const CODEX_MAX_REASONING_MODELS: [&str; 3] = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
 const LEGACY_CAPABILITY_REASONING_EFFORTS: [&str; 6] =
     ["provider-default", "low", "medium", "high", "max", "xhigh"];
+const WORKSPACE_PLAN_GLOBAL_OPTIONS: [&str; 13] = [
+    "@bridge-agent",
+    "@bridge-model",
+    "@bridge-prompt-transport",
+    "@bridge-external-operator",
+    "@bridge-worker-count",
+    "@bridge-execution-profile",
+    "@bridge-legacy-role-layout",
+    "@bridge-operators",
+    "@bridge-builders",
+    "@bridge-researchers",
+    "@bridge-reviewers",
+    "@bridge-external-commander",
+    "@bridge-commanders",
+];
 
 pub fn is_operator_status_invocation(args: &[&String]) -> bool {
     args.iter()
@@ -165,7 +196,15 @@ pub fn run_provider_capabilities_command(args: &[&String]) -> io::Result<()> {
     let registry = read_provider_capability_registry(&registry_path)?;
 
     if let Some(provider_id) = options.provider_id.as_deref() {
-        let Some(capabilities) = find_provider_capability(&registry, provider_id) else {
+        let capabilities = resolve_provider_capability_in_registry(&registry, provider_id)
+            .or_else(|error| {
+                if error.kind() == io::ErrorKind::NotFound {
+                    Ok(None)
+                } else {
+                    Err(error)
+                }
+            })?;
+        let Some(capabilities) = capabilities else {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
                 format!("provider capability '{provider_id}' was not found."),
@@ -208,6 +247,39 @@ pub fn run_provider_capabilities_command(args: &[&String]) -> io::Result<()> {
         println!("  {provider_id}");
     }
     Ok(())
+}
+
+pub fn run_workspace_plan_command(args: &[&String]) -> io::Result<()> {
+    if should_print_help(args) {
+        println!("{}", usage_for("workspace-plan"));
+        return Ok(());
+    }
+
+    let options = parse_workspace_plan_options(args)?;
+    let (_yaml, root, settings) = read_workspace_plan_snapshot(&options.project_dir)?;
+    let mut slots = Vec::with_capacity(settings.agent_slots.len());
+    for slot in &settings.agent_slots {
+        let effective = resolve_slot_agent_config(&options.project_dir, &settings, &slot.slot_id)
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "failed to resolve the effective slot catalog.",
+                )
+            })?;
+        slots.push(SlotCapabilities {
+            slot_id: slot.slot_id.clone(),
+            supports_file_edit: effective.supports_file_edit,
+            supports_verification: effective.supports_verification,
+            supports_structured_result: effective.supports_structured_result,
+        });
+    }
+    let plan = normalize_workspace_plan_from_value(
+        &root,
+        &options.recipe_id,
+        options.workflow_id.as_deref(),
+        &slots,
+    )?;
+    write_json(&plan)
 }
 
 pub fn run_operator_jobs_command(args: &[&String]) -> io::Result<()> {
@@ -1667,6 +1739,13 @@ struct ProviderCapabilitiesOptions {
 }
 
 #[derive(Debug)]
+struct WorkspacePlanOptions {
+    recipe_id: String,
+    workflow_id: Option<String>,
+    project_dir: PathBuf,
+}
+
+#[derive(Debug)]
 struct OperatorJobsOptions {
     project_dir: PathBuf,
     action: String,
@@ -1790,6 +1869,26 @@ struct BridgeSettings {
     agent_slots: Vec<ProviderSlotConfig>,
 }
 
+#[derive(Default)]
+struct WorkspacePlanGlobalSettings {
+    agent: Option<String>,
+    model: Option<String>,
+    prompt_transport: Option<String>,
+    external_operator: Option<bool>,
+    worker_count: Option<i32>,
+    legacy_role_layout: Option<bool>,
+    operators: Option<i32>,
+    builders: Option<i32>,
+    researchers: Option<i32>,
+    reviewers: Option<i32>,
+}
+
+enum WorkspacePlanGlobalOptionRead {
+    Value(String),
+    Missing,
+    SourceUnavailable,
+}
+
 #[derive(Clone, Debug, Default)]
 struct ProviderRoleConfig {
     agent: Option<String>,
@@ -1902,6 +2001,89 @@ fn parse_provider_capabilities_options(
         project_dir,
         provider_id,
         json,
+    })
+}
+
+fn parse_workspace_plan_options(args: &[&String]) -> io::Result<WorkspacePlanOptions> {
+    let mut recipe_id: Option<String> = None;
+    let mut workflow_id: Option<String> = None;
+    let mut project_dir = env::current_dir()?;
+    let mut project_dir_seen = false;
+    let mut json = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--recipe-id" => {
+                if recipe_id.is_some() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--recipe-id may be specified only once.",
+                    ));
+                }
+                recipe_id = Some(required_option_value(args, index, "--recipe-id")?);
+                index += 2;
+            }
+            "--workflow-id" => {
+                if workflow_id.is_some() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--workflow-id may be specified only once.",
+                    ));
+                }
+                workflow_id = Some(required_option_value(args, index, "--workflow-id")?);
+                index += 2;
+            }
+            "--project-dir" => {
+                if project_dir_seen {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--project-dir may be specified only once.",
+                    ));
+                }
+                project_dir_seen = true;
+                project_dir = PathBuf::from(required_option_value(
+                    args,
+                    index,
+                    "--project-dir",
+                )?);
+                index += 2;
+            }
+            "--json" => {
+                if json {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--json may be specified only once.",
+                    ));
+                }
+                json = true;
+                index += 1;
+            }
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "unknown workspace-plan argument.",
+                ));
+            }
+        }
+    }
+
+    let recipe_id = recipe_id.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "workspace-plan requires --recipe-id <id>.",
+        )
+    })?;
+    if !json {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "workspace-plan requires --json.",
+        ));
+    }
+    Ok(WorkspacePlanOptions {
+        recipe_id,
+        workflow_id,
+        project_dir,
     })
 }
 
@@ -2670,11 +2852,8 @@ fn apply_operator_job_update(job: &mut OperatorJobRecord, update: &Map<String, V
 }
 
 fn validate_model_source(value: &str) -> io::Result<()> {
-    let normalized = value.trim();
-    if matches!(
-        normalized,
-        "provider-default" | "cli-discovery" | "official-doc" | "operator-override"
-    ) {
+    let normalized = value.trim().to_ascii_lowercase();
+    if valid_model_source(&normalized) {
         Ok(())
     } else {
         Err(io::Error::new(
@@ -3183,15 +3362,16 @@ impl ProviderRegistryEntry {
                 ),
             ));
         };
-        let agent = provider_registry_optional_string(map, "agent")?;
-        let model = provider_registry_optional_string(map, "model")?;
-        let mut model_source = provider_registry_optional_string(map, "model_source")?;
-        let reasoning_effort = provider_registry_optional_string(map, "reasoning_effort")?;
-        let prompt_transport = provider_registry_optional_string(map, "prompt_transport")?;
-        let auth_mode = provider_registry_optional_string(map, "auth_mode")?;
+        let map = canonical_provider_registry_entry_fields(map)?;
+        let agent = provider_registry_optional_string(&map, "agent")?;
+        let model = provider_registry_optional_string(&map, "model")?;
+        let mut model_source = provider_registry_optional_string(&map, "model_source")?;
+        let reasoning_effort = provider_registry_optional_string(&map, "reasoning_effort")?;
+        let prompt_transport = provider_registry_optional_string(&map, "prompt_transport")?;
+        let auth_mode = provider_registry_optional_string(&map, "auth_mode")?;
         let updated_at_utc =
-            provider_registry_optional_string(map, "updated_at_utc")?.unwrap_or_default();
-        let reason = provider_registry_optional_string(map, "reason")?;
+            provider_registry_optional_string(&map, "updated_at_utc")?.unwrap_or_default();
+        let reason = provider_registry_optional_string(&map, "reason")?;
         if let Some(transport) = prompt_transport.as_deref() {
             if !matches!(transport, "argv" | "file" | "stdin") {
                 return Err(io::Error::new(
@@ -3272,9 +3452,37 @@ impl ProviderRegistryEntry {
     }
 }
 
-fn read_bridge_settings(project_dir: &Path) -> io::Result<BridgeSettings> {
-    let path = project_dir.join(".winsmux.yaml");
-    let mut settings = BridgeSettings {
+fn canonical_provider_registry_entry_fields(
+    source: &Map<String, Value>,
+) -> io::Result<Map<String, Value>> {
+    let mut fields = Map::new();
+    for (source_key, value) in source {
+        let key = source_key.to_ascii_lowercase().replace('-', "_");
+        if !matches!(
+            key.as_str(),
+            "agent"
+                | "model"
+                | "model_source"
+                | "reasoning_effort"
+                | "prompt_transport"
+                | "auth_mode"
+                | "updated_at_utc"
+                | "reason"
+        ) {
+            continue;
+        }
+        if fields.insert(key.clone(), value.clone()).is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Duplicate provider registry field '{key}'."),
+            ));
+        }
+    }
+    Ok(fields)
+}
+
+fn default_bridge_settings() -> BridgeSettings {
+    BridgeSettings {
         agent: "codex".to_string(),
         model: String::new(),
         model_source: "provider-default".to_string(),
@@ -3285,85 +3493,369 @@ fn read_bridge_settings(project_dir: &Path) -> io::Result<BridgeSettings> {
         model_explicit: false,
         worker_role: ProviderRoleConfig::default(),
         agent_slots: Vec::new(),
-    };
-    if !path.exists() {
-        if let Some(runtime_worker_role) = runtime_role_config(project_dir, "worker")? {
-            settings.worker_role = merge_role_config(settings.worker_role, runtime_worker_role);
-        }
-        return Ok(settings);
     }
+}
 
-    let raw = fs::read_to_string(&path)?;
-    if raw.trim().is_empty() {
-        if let Some(runtime_worker_role) = runtime_role_config(project_dir, "worker")? {
-            settings.worker_role = merge_role_config(settings.worker_role, runtime_worker_role);
-        }
-        return Ok(settings);
-    }
-    let root = serde_yaml::from_str::<serde_yaml::Value>(&raw).map_err(|err| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("invalid settings: {}: {err}", path.display()),
-        )
-    })?;
-
-    if let Some(value) = yaml_string(&root, "agent") {
-        settings.agent = value;
+fn apply_workspace_plan_global_settings(
+    settings: &mut BridgeSettings,
+    globals: &WorkspacePlanGlobalSettings,
+) {
+    if let Some(value) = globals.agent.as_deref() {
+        settings.agent = value.to_string();
         settings.agent_explicit = true;
     }
-    if let Some(value) = yaml_string(&root, "model") {
-        settings.model = value;
+    if let Some(value) = globals.model.as_deref() {
+        settings.model = value.to_string();
         settings.model_explicit = true;
+        settings.model_source = inferred_model_source_for_model(value);
     }
-    if let Some(value) =
-        yaml_string(&root, "model_source").or_else(|| yaml_string(&root, "model-source"))
-    {
-        settings.model_source = value;
-    } else if settings.model_explicit {
-        settings.model_source = inferred_model_source_for_model(&settings.model);
+    if let Some(value) = globals.prompt_transport.as_deref() {
+        settings.prompt_transport = value.to_string();
     }
-    if let Some(value) =
-        yaml_string(&root, "reasoning_effort").or_else(|| yaml_string(&root, "reasoning-effort"))
-    {
-        settings.reasoning_effort = value.to_ascii_lowercase();
+}
+
+fn apply_workspace_plan_project_settings(
+    settings: &mut BridgeSettings,
+    project: &WorkspacePlanProjectSettings,
+) {
+    if let Some(value) = project.agent.as_deref() {
+        settings.agent = value.to_string();
+        settings.agent_explicit = true;
     }
-    settings.prompt_transport = yaml_string(&root, "prompt_transport")
-        .or_else(|| yaml_string(&root, "prompt-transport"))
-        .unwrap_or(settings.prompt_transport);
-    settings.auth_mode = yaml_string(&root, "auth_mode")
-        .or_else(|| yaml_string(&root, "auth-mode"))
-        .unwrap_or_default();
-    settings.worker_role = yaml_role_config(&root, "Worker")
-        .or_else(|| yaml_role_config(&root, "worker"))
-        .unwrap_or_default();
+    if let Some(value) = project.model.as_deref() {
+        settings.model = value.to_string();
+        settings.model_explicit = true;
+        settings.model_source = inferred_model_source_for_model(value);
+    }
+    if let Some(value) = project.model_source.as_deref() {
+        settings.model_source = value.to_string();
+    }
+    if let Some(value) = project.reasoning_effort.as_deref() {
+        settings.reasoning_effort = value.to_string();
+    }
+    if let Some(value) = project.prompt_transport.as_deref() {
+        settings.prompt_transport = value.to_string();
+    }
+    if let Some(value) = project.auth_mode.as_deref() {
+        settings.auth_mode = value.to_string();
+    }
+    settings.worker_role = ProviderRoleConfig {
+        agent: project.worker_role.agent.clone(),
+        model: project.worker_role.model.clone(),
+        model_source: project.worker_role.model_source.clone(),
+        reasoning_effort: project.worker_role.reasoning_effort.clone(),
+        prompt_transport: project.worker_role.prompt_transport.clone(),
+        auth_mode: project.worker_role.auth_mode.clone(),
+    };
+    settings.agent_slots = project
+        .agent_slots
+        .iter()
+        .map(|slot| ProviderSlotConfig {
+            slot_id: slot.slot_id.clone(),
+            agent: slot.agent.clone(),
+            model: slot.model.clone(),
+            model_source: slot.model_source.clone(),
+            reasoning_effort: slot.reasoning_effort.clone(),
+            prompt_transport: slot.prompt_transport.clone(),
+            auth_mode: slot.auth_mode.clone(),
+        })
+        .collect();
+}
+
+fn finalize_bridge_settings(
+    project_dir: &Path,
+    globals: &WorkspacePlanGlobalSettings,
+    project: &WorkspacePlanProjectSettings,
+) -> io::Result<BridgeSettings> {
+    let mut settings = default_bridge_settings();
+    apply_workspace_plan_global_settings(&mut settings, globals);
+    apply_workspace_plan_project_settings(&mut settings, &project);
     if let Some(runtime_worker_role) = runtime_role_config(project_dir, "worker")? {
         settings.worker_role = merge_role_config(settings.worker_role, runtime_worker_role);
     }
-    settings.agent_slots = yaml_agent_slots(&root)?;
-    let external_operator = yaml_bool(&root, "external_operator")
-        .or_else(|| yaml_bool(&root, "external-operator"))
-        .unwrap_or(true);
-    let legacy_role_layout = yaml_bool(&root, "legacy_role_layout")
-        .or_else(|| yaml_bool(&root, "legacy-role-layout"))
+
+    let legacy_role_layout = project
+        .legacy_role_layout
+        .or(globals.legacy_role_layout)
         .unwrap_or(false);
-    let worker_count = yaml_u64(&root, "worker_count")
-        .or_else(|| yaml_u64(&root, "worker-count"))
-        .unwrap_or(6);
-    if settings.agent_slots.is_empty() && external_operator && !legacy_role_layout {
-        for index in 1..=worker_count {
-            settings.agent_slots.push(ProviderSlotConfig {
-                slot_id: format!("worker-{index}"),
-                agent: settings.agent_explicit.then(|| settings.agent.clone()),
-                model: settings.model_explicit.then(|| settings.model.clone()),
-                model_source: Some(settings.model_source.clone()),
-                reasoning_effort: Some(settings.reasoning_effort.clone()),
-                prompt_transport: Some(settings.prompt_transport.clone()),
-                auth_mode: (!settings.auth_mode.trim().is_empty())
-                    .then(|| settings.auth_mode.clone()),
-            });
+    let legacy_role_count: i64 = [
+        project.operators.or(globals.operators),
+        project.builders.or(globals.builders),
+        project.researchers.or(globals.researchers),
+        project.reviewers.or(globals.reviewers),
+    ]
+    .into_iter()
+    .flatten()
+    .map(i64::from)
+    .sum();
+    if legacy_role_count > 0 && !legacy_role_layout {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Legacy role counts require legacy_role_layout=true.",
+        ));
+    }
+    if !settings.agent_slots.is_empty() && legacy_role_layout {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "workspace-plan cannot bind agent_slots while legacy_role_layout is enabled.",
+        ));
+    }
+    if settings.agent_slots.is_empty() {
+        let external_operator = project
+            .external_operator
+            .or(globals.external_operator)
+            .unwrap_or(true);
+        let worker_count = project.worker_count.or(globals.worker_count).unwrap_or(6);
+
+        if !legacy_role_layout && worker_count < 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "workspace-plan worker_count must be at least 1 when agent_slots are omitted and legacy_role_layout is disabled.",
+            ));
+        }
+        if external_operator && !legacy_role_layout {
+            settings.agent_slots = generated_workspace_plan_worker_slots(&settings, worker_count);
         }
     }
     Ok(settings)
+}
+
+fn read_bridge_settings(project_dir: &Path) -> io::Result<BridgeSettings> {
+    let project = workspace_project_settings::read(project_dir)?;
+    finalize_bridge_settings(
+        project_dir,
+        &WorkspacePlanGlobalSettings::default(),
+        &project,
+    )
+}
+
+fn generated_workspace_plan_worker_slots(
+    settings: &BridgeSettings,
+    worker_count: i32,
+) -> Vec<ProviderSlotConfig> {
+    (1..=worker_count)
+        .map(|index| ProviderSlotConfig {
+            slot_id: format!("worker-{index}"),
+            agent: if index == 1 {
+                Some("codex".to_string())
+            } else {
+                settings.agent_explicit.then(|| settings.agent.clone())
+            },
+            model: if index == 1 {
+                Some("provider-default".to_string())
+            } else {
+                settings.model_explicit.then(|| settings.model.clone())
+            },
+            model_source: Some(if index == 1 {
+                "provider-default".to_string()
+            } else {
+                settings.model_source.clone()
+            }),
+            reasoning_effort: Some(settings.reasoning_effort.clone()),
+            prompt_transport: Some(settings.prompt_transport.clone()),
+            auth_mode: (!settings.auth_mode.trim().is_empty()).then(|| settings.auth_mode.clone()),
+        })
+        .collect()
+}
+
+fn read_workspace_plan_snapshot(
+    project_dir: &Path,
+) -> io::Result<(String, serde_yaml::Value, BridgeSettings)> {
+    let mut source_available = true;
+    let snapshot = load_workspace_plan_snapshot_with(
+        project_dir,
+        |path| {
+            fs::read_to_string(path).map_err(|error| {
+                io::Error::new(error.kind(), "failed to read project .winsmux.yaml.")
+            })
+        },
+        |name| {
+            if !source_available {
+                return None;
+            }
+            match read_workspace_plan_global_option(name) {
+                WorkspacePlanGlobalOptionRead::Value(value) => Some(value),
+                WorkspacePlanGlobalOptionRead::Missing => None,
+                WorkspacePlanGlobalOptionRead::SourceUnavailable => {
+                    source_available = false;
+                    None
+                }
+            }
+        },
+    );
+    snapshot.map_err(|error| {
+        let message = error.to_string();
+        if message == "failed to read project .winsmux.yaml."
+            || message == "duplicate YAML mapping key."
+        {
+            error
+        } else {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "failed to resolve the effective slot catalog.",
+            )
+        }
+    })
+}
+
+fn load_workspace_plan_snapshot_with<L, G>(
+    project_dir: &Path,
+    mut load_project: L,
+    mut read_global: G,
+) -> io::Result<(String, serde_yaml::Value, BridgeSettings)>
+where
+    L: FnMut(&Path) -> io::Result<String>,
+    G: FnMut(&str) -> Option<String>,
+{
+    let raw = load_project(&project_dir.join(".winsmux.yaml"))?;
+    let root = parse_workspace_yaml(&raw)?;
+    let globals = read_workspace_plan_global_settings(&mut read_global)?;
+    let project = workspace_project_settings::parse_value(&root)?;
+    let settings = finalize_bridge_settings(project_dir, &globals, &project)?;
+    Ok((raw, root, settings))
+}
+
+fn read_workspace_plan_global_option(name: &str) -> WorkspacePlanGlobalOptionRead {
+    read_workspace_plan_global_option_with_control(name, crate::session::send_control_with_response)
+}
+
+fn read_workspace_plan_global_option_with_control<F>(
+    name: &str,
+    send_control: F,
+) -> WorkspacePlanGlobalOptionRead
+where
+    F: FnOnce(String) -> io::Result<String>,
+{
+    let Ok(output) = send_control(format!("show-options -g -v {name}\n")) else {
+        return WorkspacePlanGlobalOptionRead::SourceUnavailable;
+    };
+    classify_workspace_plan_global_option(true, output.as_bytes())
+}
+
+fn classify_workspace_plan_global_option(
+    status_success: bool,
+    stdout: &[u8],
+) -> WorkspacePlanGlobalOptionRead {
+    // show-options reports an unset individual option with a non-zero exit. That
+    // is a per-key miss, not proof that the executable/server source is gone;
+    // later @bridge-* keys must still be queried like Get-WinsmuxOption does.
+    if !status_success {
+        return WorkspacePlanGlobalOptionRead::Missing;
+    }
+    let Ok(value) = std::str::from_utf8(stdout) else {
+        return WorkspacePlanGlobalOptionRead::SourceUnavailable;
+    };
+    let value = value.trim();
+    if value.is_empty() || workspace_plan_global_option_failure_text(value) {
+        return WorkspacePlanGlobalOptionRead::Missing;
+    }
+    WorkspacePlanGlobalOptionRead::Value(value.to_string())
+}
+
+fn workspace_plan_global_option_failure_text(value: &str) -> bool {
+    let value = value.to_ascii_lowercase();
+    [
+        "unknown",
+        "error",
+        "invalid",
+        "no server running on session",
+        "not recognized as the name",
+        "is not recognized as a name",
+        "failed with exit code",
+        "failed to connect",
+        "could not connect",
+        "no such session",
+    ]
+    .iter()
+    .any(|failure| value.contains(failure))
+}
+
+fn read_workspace_plan_settings_with_global_reader<F>(
+    project_dir: &Path,
+    mut read_global: F,
+) -> io::Result<BridgeSettings>
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    let globals = read_workspace_plan_global_settings(&mut read_global)?;
+    let project = workspace_project_settings::read(project_dir)?;
+    finalize_bridge_settings(project_dir, &globals, &project)
+}
+
+fn read_workspace_plan_global_settings<F>(
+    read_global: &mut F,
+) -> io::Result<WorkspacePlanGlobalSettings>
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    let mut settings = WorkspacePlanGlobalSettings::default();
+    let snapshot: Vec<_> = WORKSPACE_PLAN_GLOBAL_OPTIONS
+        .into_iter()
+        .map(|option| (option, read_global(option)))
+        .collect();
+    reject_retired_commander_options(&snapshot, workspace_plan_global_option_failure_text)?;
+    for (option, raw) in snapshot {
+        let Some(raw) = raw else {
+            continue;
+        };
+        let value = raw.trim();
+        if value.is_empty() {
+            continue;
+        }
+        match option {
+            "@bridge-agent" => settings.agent = Some(value.to_string()),
+            "@bridge-model" => settings.model = Some(value.to_string()),
+            "@bridge-prompt-transport" => {
+                let normalized = value.to_ascii_lowercase();
+                if !matches!(normalized.as_str(), "argv" | "file" | "stdin") {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "Invalid prompt_transport configuration: unsupported value '{value}'."
+                        ),
+                    ));
+                }
+                settings.prompt_transport = Some(normalized);
+            }
+            "@bridge-external-operator" => {
+                settings.external_operator = workspace_plan_bool(value)
+            }
+            "@bridge-worker-count" => settings.worker_count = workspace_plan_i32(value),
+            "@bridge-execution-profile" => {
+                let normalized = value.to_ascii_lowercase();
+                if !matches!(normalized.as_str(), "local-windows" | "isolated-enterprise") {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "Invalid execution_profile configuration: unsupported value '{value}'."
+                        ),
+                    ));
+                }
+            }
+            "@bridge-legacy-role-layout" => {
+                settings.legacy_role_layout = workspace_plan_bool(value)
+            }
+            "@bridge-operators" => settings.operators = workspace_plan_i32(value),
+            "@bridge-builders" => settings.builders = workspace_plan_i32(value),
+            "@bridge-researchers" => settings.researchers = workspace_plan_i32(value),
+            "@bridge-reviewers" => settings.reviewers = workspace_plan_i32(value),
+            "@bridge-external-commander" | "@bridge-commanders" => continue,
+            _ => unreachable!("workspace-plan global option allowlist is exhaustive"),
+        }
+    }
+    Ok(settings)
+}
+
+fn workspace_plan_bool(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Some(true),
+        "false" | "0" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn workspace_plan_i32(value: &str) -> Option<i32> {
+    value.trim().parse::<i32>().ok()
 }
 
 fn merge_role_config(
@@ -3392,34 +3884,10 @@ fn merge_role_config(
 }
 
 fn runtime_role_config(project_dir: &Path, role: &str) -> io::Result<Option<ProviderRoleConfig>> {
-    let path = project_dir
-        .join(".winsmux")
-        .join("runtime-role-preferences.json");
-    if !path.exists() {
+    let Some(root) = read_runtime_role_preferences(project_dir, validate_runtime_role_config)?
+    else {
         return Ok(None);
-    }
-    let raw = fs::read_to_string(&path)?;
-    if raw.trim().is_empty() {
-        return Ok(None);
-    }
-    let root = serde_json::from_str::<Value>(&raw).map_err(|err| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "invalid runtime role preferences: {}: {err}",
-                path.display()
-            ),
-        )
-    })?;
-    let version = root.get("version").and_then(Value::as_u64).unwrap_or(1);
-    if version != 1 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "Unsupported runtime role preferences version '{version}'. Supported versions: 1."
-            ),
-        ));
-    }
+    };
     let roles = root.get("roles").unwrap_or(&root);
     runtime_role_config_from_roles(roles, role)
 }
@@ -3463,7 +3931,8 @@ fn runtime_role_config_from_value(value: &Value) -> io::Result<ProviderRoleConfi
             &["reasoning_effort", "reasoning-effort", "reasoningEffort"],
         )
         .map(|value| value.to_ascii_lowercase()),
-        prompt_transport: json_string_any(value, &["prompt_transport", "prompt-transport"]),
+        prompt_transport: json_string_any(value, &["prompt_transport"])
+            .map(|value| value.to_ascii_lowercase()),
         auth_mode: json_string_any(value, &["auth_mode", "auth-mode"]),
     };
     if let Some(source) = config.model_source.as_deref() {
@@ -3472,9 +3941,24 @@ fn runtime_role_config_from_value(value: &Value) -> io::Result<ProviderRoleConfi
     if let Some(effort) = config.reasoning_effort.as_deref() {
         validate_reasoning_effort(effort)?;
     }
+    if config
+        .prompt_transport
+        .as_deref()
+        .is_some_and(|value| !matches!(value, "argv" | "file" | "stdin"))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Invalid runtime role preference prompt_transport.",
+        ));
+    }
     Ok(config)
 }
 
+fn validate_runtime_role_config(value: &Value) -> io::Result<()> {
+    runtime_role_config_from_value(value).map(|_| ()).map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidData, "Invalid runtime role preference.")
+    })
+}
 fn json_string_any(value: &Value, keys: &[&str]) -> Option<String> {
     keys.iter().find_map(|key| {
         value
@@ -3483,107 +3967,6 @@ fn json_string_any(value: &Value, keys: &[&str]) -> Option<String> {
             .map(str::trim)
             .filter(|text| !text.is_empty())
             .map(str::to_string)
-    })
-}
-
-fn yaml_agent_slots(root: &serde_yaml::Value) -> io::Result<Vec<ProviderSlotConfig>> {
-    let Some(slots) = yaml_get(root, "agent_slots").or_else(|| yaml_get(root, "agent-slots"))
-    else {
-        return Ok(Vec::new());
-    };
-    let Some(items) = slots.as_sequence() else {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Invalid agent_slots configuration: every slot entry must include at least slot_id.",
-        ));
-    };
-    let mut result = Vec::new();
-    for item in items {
-        let slot_id = yaml_string(item, "slot_id")
-            .or_else(|| yaml_string(item, "slot-id"))
-            .unwrap_or_default();
-        if slot_id.trim().is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Invalid agent_slots configuration: every slot entry must include at least slot_id.",
-            ));
-        }
-        let model = yaml_string(item, "model");
-        let model_source = yaml_string(item, "model_source")
-            .or_else(|| yaml_string(item, "model-source"))
-            .or_else(|| model.as_deref().map(inferred_model_source_for_model));
-        result.push(ProviderSlotConfig {
-            slot_id,
-            agent: yaml_string(item, "agent"),
-            model,
-            model_source,
-            reasoning_effort: yaml_string(item, "reasoning_effort")
-                .or_else(|| yaml_string(item, "reasoning-effort"))
-                .map(|value| value.to_ascii_lowercase()),
-            prompt_transport: yaml_string(item, "prompt_transport")
-                .or_else(|| yaml_string(item, "prompt-transport")),
-            auth_mode: yaml_string(item, "auth_mode").or_else(|| yaml_string(item, "auth-mode")),
-        });
-    }
-    Ok(result)
-}
-
-fn yaml_role_config(root: &serde_yaml::Value, role: &str) -> Option<ProviderRoleConfig> {
-    let roles = yaml_get(root, "roles")?;
-    let role_value = yaml_get(roles, role)?;
-    let model = yaml_string(role_value, "model");
-    let model_source = yaml_string(role_value, "model_source")
-        .or_else(|| yaml_string(role_value, "model-source"))
-        .or_else(|| model.as_deref().map(inferred_model_source_for_model));
-    Some(ProviderRoleConfig {
-        agent: yaml_string(role_value, "agent"),
-        model,
-        model_source,
-        reasoning_effort: yaml_string(role_value, "reasoning_effort")
-            .or_else(|| yaml_string(role_value, "reasoning-effort"))
-            .map(|value| value.to_ascii_lowercase()),
-        prompt_transport: yaml_string(role_value, "prompt_transport")
-            .or_else(|| yaml_string(role_value, "prompt-transport")),
-        auth_mode: yaml_string(role_value, "auth_mode")
-            .or_else(|| yaml_string(role_value, "auth-mode")),
-    })
-}
-
-fn yaml_get<'a>(value: &'a serde_yaml::Value, key: &str) -> Option<&'a serde_yaml::Value> {
-    let map = value.as_mapping()?;
-    let yaml_key = serde_yaml::Value::String(key.to_string());
-    map.get(&yaml_key)
-}
-
-fn yaml_string(value: &serde_yaml::Value, key: &str) -> Option<String> {
-    yaml_get(value, key)
-        .and_then(serde_yaml::Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-}
-
-fn yaml_bool(value: &serde_yaml::Value, key: &str) -> Option<bool> {
-    yaml_get(value, key).and_then(|item| {
-        item.as_bool().or_else(|| {
-            item.as_str()
-                .map(str::trim)
-                .and_then(|text| match text.to_ascii_lowercase().as_str() {
-                    "true" => Some(true),
-                    "false" => Some(false),
-                    _ => None,
-                })
-        })
-    })
-}
-
-fn yaml_u64(value: &serde_yaml::Value, key: &str) -> Option<u64> {
-    yaml_get(value, key).and_then(|item| {
-        item.as_u64().or_else(|| {
-            item.as_str()
-                .map(str::trim)
-                .and_then(|text| text.parse::<u64>().ok())
-        })
     })
 }
 
@@ -3915,42 +4298,9 @@ fn provider_registry_path(project_dir: &Path) -> PathBuf {
 }
 
 fn read_provider_registry(path: &Path) -> io::Result<Map<String, Value>> {
-    if !path.exists() {
-        let mut root = Map::new();
-        root.insert("version".to_string(), Value::from(1));
-        root.insert("slots".to_string(), Value::Object(Map::new()));
-        return Ok(root);
-    }
-    let raw = fs::read_to_string(path)?;
-    if raw.trim().is_empty() {
-        let mut root = Map::new();
-        root.insert("version".to_string(), Value::from(1));
-        root.insert("slots".to_string(), Value::Object(Map::new()));
-        return Ok(root);
-    }
-    let parsed: Value = serde_json::from_str(&raw).map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("Invalid provider registry JSON at '{}'.", path.display()),
-        )
-    })?;
-    let Some(root) = parsed.as_object() else {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("Invalid provider registry JSON at '{}'.", path.display()),
-        ));
-    };
-    match root.get("version") {
-        Some(Value::Number(number)) if number.as_u64() == Some(1) => {}
-        Some(_) => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Unsupported provider registry version. Supported versions: 1.",
-            ))
-        }
-        None => {}
-    }
-    Ok(root.clone())
+    read_provider_registry_envelope(path, |slot_id, entry, path| {
+        ProviderRegistryEntry::from_value(slot_id, entry, path).map(|_| ())
+    })
 }
 
 fn provider_registry_entry_full(
@@ -3963,7 +4313,7 @@ fn provider_registry_entry_full(
         return Ok(None);
     };
     for (candidate, value) in slots {
-        if candidate.eq_ignore_ascii_case(slot_id) {
+        if candidate.trim().eq_ignore_ascii_case(slot_id.trim()) {
             return Ok(Some(ProviderRegistryEntry::from_value(
                 candidate, value, &path,
             )?));
@@ -3981,7 +4331,7 @@ fn write_provider_registry_entry(
     let slots = ensure_provider_registry_slots(&mut root)?;
     let matched: Vec<String> = slots
         .keys()
-        .filter(|candidate| candidate.eq_ignore_ascii_case(slot_id))
+        .filter(|candidate| candidate.trim().eq_ignore_ascii_case(slot_id.trim()))
         .cloned()
         .collect();
     for key in matched {
@@ -3999,7 +4349,7 @@ fn remove_provider_registry_entry(
     let slots = ensure_provider_registry_slots(&mut root)?;
     let matched = slots
         .keys()
-        .find(|candidate| candidate.eq_ignore_ascii_case(slot_id))
+        .find(|candidate| candidate.trim().eq_ignore_ascii_case(slot_id.trim()))
         .cloned();
     let removed = if let Some(key) = matched {
         slots.remove(&key).is_some()
@@ -4020,7 +4370,7 @@ fn ensure_provider_registry_slots(
     if !root.contains_key("version") {
         root.insert("version".to_string(), Value::from(1));
     }
-    if !root.contains_key("slots") {
+    if !root.contains_key("slots") || root.get("slots").is_some_and(Value::is_null) {
         root.insert("slots".to_string(), Value::Object(Map::new()));
     }
     root.get_mut("slots")
@@ -4088,18 +4438,7 @@ fn provider_registry_optional_string(
 fn resolve_provider_capability(project_dir: &Path, provider_id: &str) -> io::Result<Option<Value>> {
     let path = provider_capability_registry_path(project_dir);
     let registry = read_provider_capability_registry(&path)?;
-    if registry.providers.is_empty() {
-        return Ok(None);
-    }
-    find_provider_capability(&registry, provider_id)
-        .cloned()
-        .map(Some)
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("Provider capability '{provider_id}' was not found."),
-            )
-        })
+    resolve_provider_capability_in_registry(&registry, provider_id)
 }
 
 fn assert_provider_prompt_transport(
@@ -6647,6 +6986,9 @@ fn usage_for(command: &str) -> &'static str {
         "meta-plan" => {
             "usage: winsmux meta-plan --task <text> [--roles <path>] [--review-rounds <1|2>] [--json] [--project-dir <path>] [--session <name>]"
         }
+        "workspace-plan" => {
+            "usage: winsmux workspace-plan --recipe-id <id> [--workflow-id <id>] --json [--project-dir <path>]"
+        }
         "provider-capabilities" => {
             "usage: winsmux provider-capabilities [provider] [--json] [--project-dir <path>]"
         }
@@ -7738,6 +8080,8 @@ fn resolve_restart_provider(
     project_dir: &Path,
     context: &RestartPlan,
 ) -> io::Result<(String, String, String, String, String)> {
+    let _ = read_runtime_role_preferences(project_dir, validate_runtime_role_config)?;
+    let _ = read_provider_registry(&provider_registry_path(project_dir))?;
     let manifest_provider_target = manifest_provider_target(project_dir, &context.pane_id);
     let manifest_capability_adapter =
         manifest_capability_adapter(project_dir, &context.pane_id).unwrap_or_default();
@@ -11232,224 +11576,82 @@ fn write_json<T: Serialize>(value: &T) -> io::Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+#[path = "../tests-rs/operator_cli_unit.rs"]
+mod tests;
+
+#[cfg(test)]
+mod task658_workspace_snapshot_tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    fn restart_plan(agent: &str, capability_adapter: &str) -> RestartPlan {
-        RestartPlan {
-            label: "worker-1".to_string(),
-            pane_id: "%2".to_string(),
-            role: "Worker".to_string(),
-            session_name: "winsmux-orchestra".to_string(),
-            launch_dir: "C:\\repo".to_string(),
-            git_worktree_dir: "C:\\repo\\.git".to_string(),
-            agent: agent.to_string(),
-            model: String::new(),
-            model_source: default_provider_model_source(),
-            reasoning_effort: default_provider_reasoning_effort(),
-            capability_adapter: capability_adapter.to_string(),
-            launch_command: "noop".to_string(),
-        }
-    }
-
-    fn test_project_dir(name: &str) -> PathBuf {
-        let suffix = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time should be after epoch")
-            .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("winsmux-{name}-{}-{suffix}", std::process::id()));
-        std::fs::create_dir_all(path.join(".winsmux")).expect("create test project");
-        path
-    }
+    use std::cell::Cell;
 
     #[test]
-    fn stream_event_reader_ignores_partial_tail_line() {
-        let project_dir = test_project_dir("stream-partial-tail");
-        let events_path = project_dir.join(".winsmux").join("events.jsonl");
-        std::fs::write(
-            &events_path,
-            concat!(
-                r#"{"timestamp":"2026-04-24T12:00:01+09:00","event":"operator.followup","data":{"run_id":"task:TASK-1"}}"#,
-                "\n",
-                r#"{"timestamp":"2026-04-24T12:00:02+09:00","event":"#
-            ),
-        )
-        .expect("write partial event log");
+    fn workspace_plan_r49_uses_one_project_snapshot_for_a_to_b_and_b_to_a() {
+        let fixture = tempfile::tempdir().expect("create workspace snapshot fixture");
+        let generation_a = "workspace-recipes:\n  generation-a: {}\nagent-slots:\n  - slot-id: slot-a\n";
+        let generation_b = "workspace-recipes:\n  generation-b: {}\nagent-slots:\n  - slot-id: slot-b\n";
 
-        let events =
-            read_desktop_summary_events_for_stream(&project_dir).expect("stream reader succeeds");
+        for (first, second, expected_slot) in [
+            (generation_a, generation_b, "slot-a"),
+            (generation_b, generation_a, "slot-b"),
+        ] {
+            let calls = Cell::new(0);
+            let (raw, _root, settings) = load_workspace_plan_snapshot_with(
+                fixture.path(),
+                |_| {
+                    let call = calls.get();
+                    calls.set(call + 1);
+                    Ok(if call == 0 { first } else { second }.to_string())
+                },
+                |_| None,
+            )
+            .expect("load one coherent project snapshot");
 
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].event, "operator.followup");
-        assert!(read_desktop_summary_events(&project_dir).is_err());
-    }
-
-    fn meta_plan_role(provider: &str, plan_mode: &str) -> MetaPlanRole {
-        MetaPlanRole {
-            role_id: "planner".to_string(),
-            label: "Planner".to_string(),
-            provider: provider.to_string(),
-            model: "provider-default".to_string(),
-            model_source: default_provider_model_source(),
-            reasoning_effort: default_provider_reasoning_effort(),
-            plan_mode: plan_mode.to_string(),
-            read_only: true,
-            review_rounds: 1,
-            capabilities: vec!["planning".to_string()],
-            prompt: "Plan without editing files.".to_string(),
+            assert_eq!(calls.get(), 1);
+            assert_eq!(raw, first);
+            assert_eq!(settings.agent_slots.len(), 1);
+            assert_eq!(settings.agent_slots[0].slot_id, expected_slot);
         }
     }
 
     #[test]
-    fn restart_readiness_agent_resolves_known_adapters() {
-        assert_eq!(
-            restart_readiness_agent(&restart_plan("custom", "codex")),
-            "codex"
+    fn workspace_plan_r49_snapshot_loader_keeps_invalid_empty_and_missing_controls() {
+        let fixture = tempfile::tempdir().expect("create workspace snapshot fixture");
+        let invalid_calls = Cell::new(0);
+        let invalid = load_workspace_plan_snapshot_with(
+            fixture.path(),
+            |_| {
+                invalid_calls.set(invalid_calls.get() + 1);
+                Ok("agent-slots: [".to_string())
+            },
+            |_| None,
         );
-        assert_eq!(
-            restart_readiness_agent(&restart_plan("claude-opus", "")),
-            "claude"
-        );
-        assert_eq!(
-            restart_readiness_agent(&restart_plan("gemini:flash", "")),
-            "gemini"
-        );
-    }
+        assert!(invalid.is_err());
+        assert_eq!(invalid_calls.get(), 1);
 
-    #[test]
-    fn restart_readiness_agent_does_not_default_unknown_to_codex() {
-        assert_eq!(restart_readiness_agent(&restart_plan("", "")), "");
-        assert_eq!(
-            restart_readiness_agent(&restart_plan("custom-agent", "")),
-            ""
-        );
-        assert_eq!(
-            restart_readiness_agent(&restart_plan("custom-agent", "custom-adapter")),
-            ""
-        );
-    }
-
-    #[test]
-    fn meta_plan_role_uses_provider_capability_metadata_for_future_provider() {
-        let project_dir = test_project_dir("meta-plan-provider-capability");
-        let capability_path = provider_capability_registry_path(&project_dir);
-        std::fs::write(
-            &capability_path,
-            r#"{
-              "version": 1,
-              "providers": {
-                "gemini-planner": {
-                  "adapter": "gemini",
-                  "command": "gemini",
-                  "prompt_transports": ["stdin"],
-                  "supports_file_edit": false,
-                  "supports_consultation": true
-                }
-              }
-            }"#,
+        let empty_calls = Cell::new(0);
+        let (raw, _root, settings) = load_workspace_plan_snapshot_with(
+            fixture.path(),
+            |_| {
+                empty_calls.set(empty_calls.get() + 1);
+                Ok(String::new())
+            },
+            |_| None,
         )
-        .expect("write provider capability registry");
+        .expect("empty project settings remain compatible");
+        assert_eq!(empty_calls.get(), 1);
+        assert!(raw.is_empty());
+        assert_eq!(settings.agent_slots.len(), 6);
 
-        let role = meta_plan_role("gemini-planner", "read_only_equivalent");
-        validate_meta_plan_role(&project_dir, &role).expect("role should validate");
-        let adapter = meta_plan_provider_adapter(&project_dir, &role).expect("adapter");
-        let command = meta_plan_provider_command(&project_dir, &role).expect("command");
-        let launch =
-            meta_plan_launch_contract(&project_dir, &role, &adapter, &command).expect("launch");
-
-        assert_eq!(adapter, "gemini");
-        assert_eq!(command, "gemini");
-        assert_eq!(launch["provider"], "gemini-planner");
-        assert_eq!(launch["provider_adapter"], "gemini");
-        assert_eq!(launch["read_only_equivalent"], true);
-        assert_eq!(launch["read_only"], true);
-
-        let _ = std::fs::remove_dir_all(project_dir);
-    }
-
-    #[test]
-    fn meta_plan_role_rejects_future_provider_without_capability_metadata() {
-        let project_dir = test_project_dir("meta-plan-missing-provider-capability");
-        let role = meta_plan_role("future-planner", "read_only_equivalent");
-        let error = validate_meta_plan_role(&project_dir, &role).expect_err("role should fail");
-
-        assert!(error
-            .to_string()
-            .contains("must be declared in .winsmux/provider-capabilities.json"));
-
-        let _ = std::fs::remove_dir_all(project_dir);
-    }
-
-    #[test]
-    fn meta_plan_role_rejects_custom_adapter_without_read_only_launch_args() {
-        let project_dir = test_project_dir("meta-plan-custom-provider-no-read-only-args");
-        let capability_path = provider_capability_registry_path(&project_dir);
-        std::fs::write(
-            &capability_path,
-            r#"{
-              "version": 1,
-              "providers": {
-                "future-planner": {
-                  "adapter": "future-cli",
-                  "command": "future",
-                  "prompt_transports": ["stdin"],
-                  "supports_file_edit": false,
-                  "supports_consultation": true
-                }
-              }
-            }"#,
-        )
-        .expect("write provider capability registry");
-
-        let role = meta_plan_role("future-planner", "read_only_equivalent");
-        let error = validate_meta_plan_role(&project_dir, &role).expect_err("role should fail");
-
-        assert!(error
-            .to_string()
-            .contains("must declare read_only_launch_args"));
-
-        let _ = std::fs::remove_dir_all(project_dir);
-    }
-
-    #[test]
-    fn meta_plan_role_uses_custom_adapter_read_only_launch_args() {
-        let project_dir = test_project_dir("meta-plan-custom-provider-read-only-args");
-        let capability_path = provider_capability_registry_path(&project_dir);
-        std::fs::write(
-            &capability_path,
-            r#"{
-              "version": 1,
-              "providers": {
-                "future-planner": {
-                  "adapter": "future-cli",
-                  "command": "future",
-                  "prompt_transports": ["stdin"],
-                  "read_only_launch_args": ["--read-only", "--no-write"],
-                  "supports_file_edit": false,
-                  "supports_consultation": true
-                }
-              }
-            }"#,
-        )
-        .expect("write provider capability registry");
-
-        let role = meta_plan_role("future-planner", "read_only_equivalent");
-        validate_meta_plan_role(&project_dir, &role).expect("role should validate");
-        let adapter = meta_plan_provider_adapter(&project_dir, &role).expect("adapter");
-        let command = meta_plan_provider_command(&project_dir, &role).expect("command");
-        let launch =
-            meta_plan_launch_contract(&project_dir, &role, &adapter, &command).expect("launch");
-
-        assert_eq!(adapter, "future-cli");
-        assert_eq!(command, "future");
-        assert_eq!(launch["provider"], "future-planner");
-        assert_eq!(launch["provider_adapter"], "future-cli");
-        assert_eq!(launch["args"], json!(["--read-only", "--no-write"]));
-        assert_eq!(launch["read_only_equivalent"], true);
-        assert_eq!(launch["read_only"], true);
-
-        let _ = std::fs::remove_dir_all(project_dir);
+        let missing_calls = Cell::new(0);
+        let missing = load_workspace_plan_snapshot_with(
+            fixture.path(),
+            |_| {
+                missing_calls.set(missing_calls.get() + 1);
+                Err(io::Error::new(io::ErrorKind::NotFound, "missing"))
+            },
+            |_| None,
+        );
+        assert!(missing.is_err());
+        assert_eq!(missing_calls.get(), 1);
     }
 }

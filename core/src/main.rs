@@ -22,6 +22,8 @@ mod help;
 mod server;
 mod terminal_engine;
 mod manifest_contract;
+mod workspace_recipe;
+mod workspace_project_settings;
 mod event_contract;
 mod ledger;
 mod read_path;
@@ -29,6 +31,7 @@ mod search_ledger;
 mod dogfood;
 mod machine_contract;
 mod operator_cli;
+mod project_settings_render;
 mod client;
 mod app;
 mod ssh_input;
@@ -393,11 +396,79 @@ fn bare_session_headless_server_config(
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct GlobalPrefixScan {
+    command_index: Option<usize>,
+}
+
+fn scan_global_prefix(args: &[String]) -> GlobalPrefixScan {
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "-L" | "-S" | "-f" | "-t" => {
+                if index + 1 >= args.len() {
+                    return GlobalPrefixScan {
+                        command_index: None,
+                    };
+                }
+                index += 2;
+            }
+            "-C" | "-CC" => index += 1,
+            "-h" | "--help" | "-V" | "-v" | "--version" => {
+                return GlobalPrefixScan {
+                    command_index: Some(index),
+                };
+            }
+            value if value.starts_with('-') => index += 1,
+            _ => {
+                return GlobalPrefixScan {
+                    command_index: Some(index),
+                };
+            }
+        }
+    }
+    GlobalPrefixScan {
+        command_index: None,
+    }
+}
+
+fn workspace_plan_skips_startup_cleanup(args: &[String]) -> bool {
+    global_prefix_command_is(args, scan_global_prefix(args), "workspace-plan")
+}
+
+fn global_prefix_command_is(args: &[String], scan: GlobalPrefixScan, expected: &str) -> bool {
+    scan.command_index
+        .and_then(|index| args.get(index))
+        .is_some_and(|command| command == expected)
+}
+
+fn command_args_from_global_prefix(
+    args: &[String],
+    scan: GlobalPrefixScan,
+) -> Vec<&String> {
+    let Some(command_index) = scan.command_index else {
+        return Vec::new();
+    };
+    let mut result = vec![&args[command_index]];
+    let strip_target = args[command_index] != "wait";
+    let mut index = command_index + 1;
+    while index < args.len() {
+        if strip_target && args[index] == "-t" && index + 1 < args.len() {
+            index += 2;
+            continue;
+        }
+        result.push(&args[index]);
+        index += 1;
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         bare_session_headless_server_config, is_winsmux_core_bridge_command,
-        resolve_attach_session_name_from_parts, winsmux_core_script_candidates,
+        command_args_from_global_prefix, resolve_attach_session_name_from_parts,
+        scan_global_prefix, winsmux_core_script_candidates, workspace_plan_skips_startup_cleanup,
     };
 
     #[test]
@@ -465,6 +536,84 @@ mod tests {
     fn typed_submission_commands_are_forwarded_to_the_shared_core_bridge() {
         assert!(is_winsmux_core_bridge_command("dispatch-task"));
         assert!(is_winsmux_core_bridge_command("dispatch-review"));
+    }
+
+    #[test]
+    fn workspace_plan_bypasses_startup_cleanup_for_every_accepted_global_prefix() {
+        for args in [
+            vec!["winsmux", "workspace-plan"],
+            vec!["winsmux", "-L", "ops", "workspace-plan"],
+            vec!["winsmux", "-S", "socket-name", "workspace-plan"],
+            vec!["winsmux", "-f", "config", "workspace-plan"],
+            vec!["winsmux", "-t", "target", "workspace-plan"],
+            vec!["winsmux", "-C", "workspace-plan"],
+            vec!["winsmux", "-CC", "workspace-plan"],
+            vec!["winsmux", "-u", "workspace-plan"],
+            vec!["winsmux", "--unknown", "workspace-plan"],
+            vec!["winsmux", "-L", "ops", "-u", "workspace-plan"],
+        ] {
+            let args = args.into_iter().map(str::to_string).collect::<Vec<_>>();
+            assert!(workspace_plan_skips_startup_cleanup(&args), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn runtime_and_control_commands_keep_startup_cleanup() {
+        for args in [
+            vec!["winsmux", "new-session"],
+            vec!["winsmux", "show-options", "-g"],
+            vec!["winsmux", "-L", "ops", "show-options", "-g"],
+            vec!["winsmux", "-h", "workspace-plan"],
+            vec!["winsmux", "--help", "workspace-plan"],
+            vec!["winsmux", "-V", "workspace-plan"],
+            vec!["winsmux", "--version", "workspace-plan"],
+            vec!["winsmux", "-L"],
+            vec!["winsmux", "-L", "workspace-plan"],
+            vec!["winsmux", "-u"],
+        ] {
+            let args = args.into_iter().map(str::to_string).collect::<Vec<_>>();
+            assert!(!workspace_plan_skips_startup_cleanup(&args), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn global_prefix_scan_matches_command_extraction_decision_table() {
+        let cases = [
+            (vec!["winsmux", "workspace-plan"], vec!["workspace-plan"]),
+            (
+                vec!["winsmux", "-u", "--unknown", "workspace-plan", "--json"],
+                vec!["workspace-plan", "--json"],
+            ),
+            (
+                vec!["winsmux", "-L", "ops", "-S", "socket", "workspace-plan"],
+                vec!["workspace-plan"],
+            ),
+            (
+                vec!["winsmux", "workspace-plan", "-t", "target", "--json"],
+                vec!["workspace-plan", "--json"],
+            ),
+            (
+                vec!["winsmux", "wait", "channel", "-t", "literal"],
+                vec!["wait", "channel", "-t", "literal"],
+            ),
+            (
+                vec!["winsmux", "-h", "workspace-plan"],
+                vec!["-h", "workspace-plan"],
+            ),
+            (vec!["winsmux", "-L"], vec![]),
+            (vec!["winsmux", "-L", "workspace-plan"], vec![]),
+            (vec!["winsmux", "-u"], vec![]),
+        ];
+
+        for (args, expected) in cases {
+            let args = args.into_iter().map(str::to_string).collect::<Vec<_>>();
+            let scan = scan_global_prefix(&args);
+            let actual = command_args_from_global_prefix(&args, scan)
+                .into_iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected, "{args:?}");
+        }
     }
 
     #[cfg(windows)]
@@ -579,9 +728,20 @@ mod tests {
 
 fn run_main() -> io::Result<()> {
     let args: Vec<String> = env::args().collect();
-    
-    // Clean up any stale port files at startup
-    cleanup_stale_port_files();
+
+    // Private, side-effect-free bridge used by the PowerShell settings writer.
+    // Handle it before runtime cleanup so rendering cannot mutate session state.
+    if args.get(1).map(String::as_str) == Some("project-settings-render") {
+        return project_settings_render::run(&args[2..]);
+    }
+
+    let global_prefix = scan_global_prefix(&args);
+
+    // Public workspace-plan is a read-only preview. It must not mutate session
+    // state before dispatch, including while resolving runtime global options.
+    if !global_prefix_command_is(&args, global_prefix, "workspace-plan") {
+        cleanup_stale_port_files();
+    }
     
     // Parse -L flag early (tmux-compatible: names the server socket for namespace isolation)
     // In psmux, -L <name> creates a namespace prefix for session port/key files.
@@ -713,49 +873,8 @@ fn run_main() -> io::Result<()> {
         }
     }
     
-    // Find the actual command by skipping global -t/-L and their arguments.
-    // -t is stripped everywhere (the global handler already set PSMUX_TARGET_SESSION).
-    // -L is only stripped BEFORE the subcommand (global socket namespace flag);
-    // after the subcommand, -L is kept (e.g. select-pane -L, resize-pane -L).
-    let cmd_args: Vec<&String> = {
-        let mut result: Vec<&String> = Vec::new();
-        let mut i = 1; // skip binary name
-        let mut found_subcommand = false;
-        while i < args.len() {
-            if !found_subcommand {
-                // Before subcommand: skip global flags with values
-                if (args[i] == "-t" || args[i] == "-L" || args[i] == "-f" || args[i] == "-S") && i + 1 < args.len() {
-                    i += 2; // skip flag and its value
-                    continue;
-                } else if args[i] == "-h" || args[i] == "--help"
-                       || args[i] == "-V" || args[i] == "-v" || args[i] == "--version" {
-                    // Treat help/version flags as the subcommand itself
-                    found_subcommand = true;
-                    // fall through to push
-                } else if args[i].starts_with('-') {
-                    i += 1; // skip single global flags (e.g. -v)
-                    continue;
-                } else {
-                    found_subcommand = true;
-                    // fall through to push the subcommand name
-                }
-            } else {
-                // After subcommand: strip only -t (and its value), except
-                // commands that intentionally treat the first argument as a
-                // literal channel name.
-                if result.first().map(|s| s.as_str()) != Some("wait")
-                    && args[i] == "-t"
-                    && i + 1 < args.len()
-                {
-                    i += 2;
-                    continue;
-                }
-            }
-            result.push(&args[i]);
-            i += 1;
-        }
-        result
-    };
+    // Use the same global-prefix classification that guarded startup cleanup.
+    let cmd_args = command_args_from_global_prefix(&args, global_prefix);
     
     let cmd = cmd_args.first().map(|s| s.as_str()).unwrap_or("");
     
@@ -798,6 +917,7 @@ fn run_main() -> io::Result<()> {
         "digest" => return operator_cli::run_digest_command(&cmd_args[1..]),
         "desktop-summary" => return operator_cli::run_desktop_summary_command(&cmd_args[1..]),
         "meta-plan" => return operator_cli::run_meta_plan_command(&cmd_args[1..]),
+        "workspace-plan" => return operator_cli::run_workspace_plan_command(&cmd_args[1..]),
         "provider-capabilities" => return operator_cli::run_provider_capabilities_command(&cmd_args[1..]),
         "operator-jobs" => return operator_cli::run_operator_jobs_command(&cmd_args[1..]),
         "skills" => return operator_cli::run_skills_command(&cmd_args[1..]),

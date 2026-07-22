@@ -18024,6 +18024,7 @@ Commands:
   consult-result <mode> [--message <text>] [--target-slot <slot>] [--confidence <0..1>] [--next-test <text>] [--risk <text>] [--run-id <run_id>] [--json]  Record a consultation result packet/event
   consult-error <mode> [--message <text>] [--target-slot <slot>]  Record a consultation error packet/event
   meta-plan --task <text> [--roles <path>] [--review-rounds <1|2>] [--json] [--project-dir <path>] [--session <name>]  Draft a read-only multi-role planning packet
+  workspace-plan --recipe-id <id> [--workflow-id <id>] --json [--project-dir <path>]  Validate and preview a declarative workspace recipe without applying it
   provider-capabilities [provider] [--json]  Inspect the provider capability registry contract
   runtime-roles apply --roles-json <json> [--json]  Persist local runtime role provider/model preferences
   skills [--json]  Print agent-readable command skill contracts

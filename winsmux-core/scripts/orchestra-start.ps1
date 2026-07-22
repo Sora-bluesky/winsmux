@@ -1703,6 +1703,7 @@ function Save-OrchestraSessionState {
         [AllowEmptyString()][string]$UiHostKind = '',
         [AllowEmptyString()][string]$AttachRequestId = '',
         [AllowEmptyCollection()]$AttachAdapterTrace = @(),
+        [AllowNull()]$DeclarativeWorkspace = $null,
         [int]$IdleThreshold = 120,
         [int]$MaxRestartAttempts = 3,
         [int]$RestartWindowMinutes = 10
@@ -1788,6 +1789,9 @@ function Save-OrchestraSessionState {
             completed   = @()
         }
         worktrees = [ordered]@{}
+    }
+    if ($null -ne $DeclarativeWorkspace) {
+        $manifest | Add-Member -NotePropertyName 'declarative_workspace' -NotePropertyValue $DeclarativeWorkspace -Force
     }
 
     if ((Test-Path -LiteralPath $manifestPath -PathType Leaf) -and
