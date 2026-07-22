@@ -55,6 +55,10 @@ name = "workspace_recipe_contract"
 path = "tests-rs/workspace_recipe_contract.rs"
 
 [[test]]
+name = "workflow_contract"
+path = "tests-rs/workflow_contract.rs"
+
+[[test]]
 name = "search_ledger_contract"
 path = "tests-rs/search_ledger_contract.rs"
 

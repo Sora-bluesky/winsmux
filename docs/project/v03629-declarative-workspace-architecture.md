@@ -177,28 +177,35 @@ workflows:
   bugfix:
     schema-version: 1
     recipe-ref: bugfix-two-slot
+    task-input:
+      source: runtime-task-file
+      privacy: digest-only
     nodes:
       - node-id: inspect
         pane-ref: implement
         action: operator-dispatch
         idempotency-key: "{{run-id}}:inspect"
+        cleanup: retain
       - node-id: implement
         pane-ref: implement
         depends-on: [inspect]
         action: operator-dispatch
         idempotency-key: "{{run-id}}:implement"
+        cleanup: retain
       - node-id: verify
         pane-ref: verify
         depends-on: [implement]
         action: verification
         context-pack-ref: review-pack
         idempotency-key: "{{run-id}}:verify"
+        cleanup: retain
     resume-policy:
       mode: operator-confirmed
       reject-completed-runs: true
     cleanup-policy:
       mode: compensating-actions
       on: [success, failure, cancel]
+      actions: [release-run-lock]
 
 context-packs:
   review-pack:
@@ -236,6 +243,30 @@ Normative field rules:
   TASK-658 accepts exactly `ensure-managed-worktree` and `ensure-slot-ready`.
   Arbitrary shell text, unknown fields, inline credentials, and provider prompt
   bodies are not valid startup actions.
+- TASK-659 v1 accepts one workflow task-input contract:
+  `source: runtime-task-file` plus `privacy: digest-only`. Declarative start and
+  resume require `--task-file <path>`; runtime reads that file exactly once as
+  BOM-free UTF-8, rejects NUL and input larger than 262144 bytes, and uses the same
+  bytes for all eligible nodes in that invocation. The operator supplies identical
+  task bytes for resume. Runtime stores only SHA-256 and byte count in the run state;
+  it never stores the task/prompt body or private task-file path. A missing task or
+  digest/length mismatch rejects resume before any side effect. Every
+  `operator-dispatch` node sends that runtime task through the existing guarded
+  team-pipeline dispatch path; every `verification` node uses the same existing
+  verification path with dependency evidence refs. Node-specific freeform payloads
+  and inline shell are not supported.
+- Node `cleanup` is required and accepts only `retain` in TASK-659 v1. It records
+  that the external dispatch/verification effect is not automatically reversible;
+  rollback never guesses how to undo it. `cleanup-policy.actions` is a closed list
+  containing only `release-run-lock`. That action has no user arguments: runtime
+  derives the lock path beneath `.winsmux/workflow-runs/` from the validated run ID
+  and executes it only when the lock payload matches the run ID, manifest generation
+  ID, config fingerprint, and source head. Unknown actions, arbitrary paths, shell
+  text, missing ownership evidence, and mismatches become `blocked` without removal.
+  All run-state and lock paths are derived by one runtime owner. The `.winsmux`,
+  `workflow-runs`, run directory, `state.json`, and `run.lock` components are checked
+  before access; any observed reparse point is rejected rather than followed outside
+  the managed project boundary.
 - Worktree paths are derived by runtime policy. Config may provide a safe name
   template but not an absolute private path or an escape outside the managed
   worktree root.
@@ -275,17 +306,29 @@ workflow_runs:
     workflow_id: bugfix
     state: blocked
     config_fingerprint: sha256:...
+    source_head: 0123456789abcdef...
+    task_sha256: sha256:...
+    task_byte_count: 1234
+    resolved_bindings:
+      implement: worker-1
+      verify: worker-2
     nodes:
       inspect:
         state: succeeded
         attempt: 1
         idempotency_key: run-123:inspect
+        agent_cli_session_id: opaque-local-routing-id
         evidence_refs: [evidence:...]
       implement:
         state: blocked
         attempt: 1
         checkpoint_ref: checkpoint:...
-    cleanup_journal: []
+    cleanup_journal:
+      - action_id: release-run-lock
+        kind: release-run-lock
+        state: succeeded
+        idempotency_key: run-123:cleanup:release-run-lock
+        resource_ref: workflow-run-lock:run-123
     rollback_state: not_requested
     context_pack_refs: [context-pack:...]
 ```
@@ -316,21 +359,73 @@ has `pending`, `ready`, `dispatching`, `running`, `blocked`, `failed`,
 
 State transitions are driven by structured runtime results and recorded
 acknowledgements, never by sniffing pane text for success words. Dispatch
-success requires the existing mailbox/acknowledgement contract; a process exit
-code or successful write is not sufficient proof.
+success requires a closed mailbox v2 completion envelope. `operator-poll.ps1`
+must validate that envelope against the current pane/generation and project it
+as one durable `workflow.node.acknowledged` record before the workflow consumes
+it. A process exit, successful pane write, `STATUS: EXEC_DONE`, or
+`VERIFY_PASS` text is not sufficient proof.
 
 For every side effect, runtime must persist the transition intent and
 idempotency key before dispatch and persist the acknowledgement/evidence before
 unlocking dependent nodes. On restart:
 
 1. load and validate the manifest and ledger evidence;
-2. verify the workflow schema version, config fingerprint, source head, slot
-   bindings, checkpoint freshness, and privacy gate;
-3. reconcile `dispatching` or `running` nodes with mailbox and pane state;
+2. verify the workflow schema version, workflow fingerprint, config
+   fingerprint, actual project `HEAD`, slot bindings, checkpoint freshness, and
+   privacy gate;
+3. reconcile `dispatching` or `running` nodes with durable mailbox
+   acknowledgements and the current session registry; pane status text is not
+   completion evidence;
 4. skip nodes whose matching idempotency record is already `succeeded`;
 5. surface ambiguous work as `blocked` for operator judgement;
 6. resume only unfinished nodes after explicit operator confirmation; and
 7. reject automatic resume of `succeeded`, `cancelled`, or `rolled_back` runs.
+
+Operator confirmation is bound to the exact run ID, manifest generation ID,
+config fingerprint, and source head observed by the operator. Before any run
+state mutation, runtime independently observes the actual project `HEAD` and
+requires an exact full-SHA match. The normalized workflow fingerprint is stored
+with the run and rechecked on resume, independently of the broader config
+fingerprint. A stale or partial confirmation is not reusable authority. TASK-659
+v1 does not automatically retry a failed dispatch: `attempt` and the stable node
+`idempotency_key` are persisted before the first dispatch, and a failed attempt
+requires a new operator-approved run rather than a second submission for the same
+node key.
+
+An optional node-level `agent_cli_session_id` is the persistent thread/session
+routing identity used for resume. It is local opaque metadata, not provider hidden
+metadata: runtime may set it only from a validated structured acknowledgement or a
+current session-registry record, never by deriving it from pane text or inventing a
+replacement. Once set, it is immutable for that node and run. An in-flight node with
+a missing, changed, or conflicting identity becomes `blocked`; resume does not create
+  a new provider thread. The value stays in local runtime state and the local
+  structured acknowledgement evidence needed for reconciliation; it is not copied
+  into configuration, public evidence, or review prompts.
+
+Declarative mode is selected only when the first argument after `pipeline` or its
+`task-run` alias is exactly `--workflow-action`. This preserves all existing
+positional task text, including a later literal `--workflow-action`, as legacy input.
+The closed v1 command forms are:
+
+```text
+winsmux pipeline --workflow-action start --recipe-id <id> --workflow-id <id> \
+  --run-id <id> --generation-id <id> --config-fingerprint <sha256:...> \
+  --source-head <full-commit-id> --task-file <path> [--project-dir <path>] --json
+winsmux pipeline --workflow-action resume --run-id <id> --generation-id <id> \
+  --config-fingerprint <sha256:...> --source-head <full-commit-id> \
+  --task-file <path> [--project-dir <path>] --json
+```
+
+The four confirmation values are validated as one indivisible tuple before any
+manifest transition. Start invokes `workspace-plan` exactly once and reuses its one
+strict JSON object for validation, snapshot, and DAG construction. Resume loads the
+persisted normalized snapshot as execution truth and invokes `workspace-plan` once
+only to compare current fingerprint/bindings; it does not reinterpret the in-flight
+run from changed config. Unknown, duplicate, missing, or positional declarative
+arguments, nonzero plan exit, malformed or extra stdout, and tuple mismatch reject
+before mutation. Declarative stdout is exactly one versioned JSON object with CLI
+status `accepted`, `blocked`, `rejected`, or `failed`; only `accepted` exits zero.
+Legacy output and exit behavior are unchanged.
 
 Cleanup is a journaled sequence of typed compensating actions. Each action has
 its own idempotency key and terminal status, so interruption during cleanup is
@@ -338,6 +433,15 @@ resumable without repeating a completed destructive action. Rollback means
 running those declared compensations in reverse dependency order; it does not
 mean `git reset --hard`, deleting an unverified worktree, or undoing external
 effects that the workflow never declared.
+
+Cleanup action state is one of `pending`, `running`, `blocked`, `succeeded`, or
+`failed`. Runtime persists the action intent and idempotency key before execution. If
+the effect may have occurred but terminal evidence is absent, the action becomes
+`blocked` and is not automatically repeated; an already `succeeded` action is always
+skipped. Terminal `succeeded`, `failed`, and `cancelled` outcomes invoke the same
+cleanup choke point. Cleanup preserves that original terminal outcome while its
+separate journal records success or a blocking ambiguity; a later resume completes
+only a still-safe pending cleanup action and never repeats a succeeded action.
 
 ## 5. Repository context pack
 
@@ -556,6 +660,8 @@ worktree merely because a workflow record is incomplete.
 | Arbitrary startup actions become a command-injection surface. | Closed action enum, schema-validated arguments, managed-path checks, no inline shell or credentials. |
 | Context packs leak private content or grow without bound. | Allowlisted projections, hard limits, public refs, deterministic redaction, and fail-closed privacy gate. |
 | Cleanup repeats destructive work. | Journal each compensation with a stable idempotency key and require explicit operator handling for ambiguity. |
+| A junction redirects workflow state or lock access outside the project. | Derive every run-state and lock path through one owner and reject any observed reparse component before access. |
+| Log rotation exposes the same durable acknowledgement twice. | Deduplicate byte-equivalent normalized acknowledgements; keep conflicting acknowledgements ambiguous and block resume. |
 | Desktop and CLI implement different semantics. | One normalized contract and golden parity fixtures; UI does not rederive runtime meaning. |
 | TASK-662 runs before Lane B is complete. | Allow Lane A-only gate development, but keep the combined release result blocked until TASK-718 evidence is present. |
 | Declarative automation weakens operator authority. | Operator-confirmed start/resume/rollback and evidence-based final judgement remain mandatory. |

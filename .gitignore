@@ -109,6 +109,7 @@ tests/bridge/_helpers/*
 !tests/V03628RaceAbnormalSoak.Tests.ps1
 !tests/V03628RuntimeReliabilityGate.Tests.ps1
 !tests/V03628PackagedRestoreGate.Tests.ps1
+!tests/DeclarativeWorkflow.Tests.ps1
 !tests/BuilderWorktree.Tests.ps1
 !tests/codex-subagent-worktree-guard.Tests.ps1
 !tests/PublicSurfacePolicy.Tests.ps1

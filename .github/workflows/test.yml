@@ -267,6 +267,11 @@ jobs:
             timeout_minutes: 12
             paths: tests/V03628PackagedRestoreGate.Tests.ps1
             full_name: ""
+          - name: declarative-workflow-v03629
+            result: declarative-workflow-v03629
+            timeout_minutes: 12
+            paths: tests/DeclarativeWorkflow.Tests.ps1
+            full_name: ""
     steps:
       - uses: actions/checkout@v6
 

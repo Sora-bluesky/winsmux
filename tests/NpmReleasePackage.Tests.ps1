@@ -696,16 +696,21 @@ param(
     }
 
     It 'verifies every installer download target against the release tree and rejects a missing target' {
+        $indexTreeish = (& git -C $script:RepoRoot write-tree 2>$null | Out-String).Trim()
+        $LASTEXITCODE | Should -Be 0
+        $indexTreeish | Should -Match '^[0-9a-f]{40,64}$'
+
         $valid = Invoke-PwshProcess -Arguments @(
             '-NoProfile', '-File', $script:InstallDownloadGatePath,
             '-RepositoryRoot', $script:RepoRoot,
-            '-Treeish', 'HEAD'
+            '-Treeish', $indexTreeish
         )
         $valid.ExitCode | Should -Be 0
         $valid.StdErr | Should -Be ''
         $validSummary = $valid.StdOut | ConvertFrom-Json -Depth 10
         $validSummary.download_target_count | Should -BeGreaterThan 0
         $validSummary.runtime_dependency_count | Should -BeGreaterThan 0
+        $validSummary.tree_object | Should -Be $indexTreeish
         @($validSummary.download_targets) | Should -Contain 'scripts/winsmux-core.ps1'
         @($validSummary.download_targets) | Should -Not -Contain 'winsmux.ps1'
         @($validSummary.runtime_dependencies) | Should -Contain 'json-compat.ps1'
@@ -723,7 +728,7 @@ param(
             '-NoProfile', '-File', $script:InstallDownloadGatePath,
             '-RepositoryRoot', $script:RepoRoot,
             '-InstallScriptPath', $invalidInstaller,
-            '-Treeish', 'HEAD'
+            '-Treeish', $indexTreeish
         )
         $missing.ExitCode | Should -Not -Be 0
         $missing.StdErr | Should -Match 'missing/installer-entrypoint\.ps1'
@@ -775,7 +780,7 @@ param(
                 '-NoProfile', '-File', $script:InstallDownloadGatePath,
                 '-RepositoryRoot', $script:RepoRoot,
                 '-InstallScriptPath', $casePath,
-                '-Treeish', 'HEAD'
+                '-Treeish', $indexTreeish
             )
             $caseResult.ExitCode | Should -Not -Be 0 -Because $case.Name
             $caseResult.StdErr | Should -Match $case.Error -Because $case.Name

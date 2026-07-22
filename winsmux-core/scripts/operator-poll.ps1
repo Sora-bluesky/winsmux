@@ -12,6 +12,30 @@ Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot 'manifest.ps1')
 . (Join-Path $PSScriptRoot 'clm-safe-io.ps1')
 . (Join-Path $PSScriptRoot 'pane-control.ps1')
+$operatorPollLoggerParameterNames = @(
+    'Command', 'ProjectDir', 'SessionName', 'Event', 'Level', 'Message', 'Role',
+    'PaneId', 'Target', 'DataJson', 'MaxBytes', 'RetentionCount', 'AsJson'
+)
+$operatorPollLoggerCallerVariables = [ordered]@{}
+foreach ($name in $operatorPollLoggerParameterNames) {
+    $variable = Get-Variable -Name $name -Scope Local -ErrorAction SilentlyContinue
+    if ($null -ne $variable) {
+        $operatorPollLoggerCallerVariables[$name] = $variable.Value
+    }
+}
+try {
+    . (Join-Path $PSScriptRoot 'logger.ps1')
+} finally {
+    foreach ($name in $operatorPollLoggerParameterNames) {
+        if ($operatorPollLoggerCallerVariables.Contains($name)) {
+            Set-Variable -Name $name -Value $operatorPollLoggerCallerVariables[$name] -Scope Local -Force
+        } else {
+            Remove-Variable -Name $name -Scope Local -Force -ErrorAction SilentlyContinue
+        }
+    }
+    Remove-Variable -Name operatorPollLoggerParameterNames -Scope Local -Force -ErrorAction SilentlyContinue
+    Remove-Variable -Name operatorPollLoggerCallerVariables -Scope Local -Force -ErrorAction SilentlyContinue
+}
 
 if (-not (Get-Command Get-WinsmuxBin -ErrorAction SilentlyContinue)) {
     function Get-WinsmuxBin {
@@ -52,6 +76,127 @@ function Get-OperatorPollValue {
     }
 
     return $Default
+}
+
+function Test-OperatorPollExactPropertyNames {
+    param(
+        [AllowNull()]$InputObject,
+        [Parameter(Mandatory = $true)][string[]]$AllowedNames
+    )
+
+    if ($null -eq $InputObject) { return $false }
+    $names = if ($InputObject -is [Collections.IDictionary]) {
+        @($InputObject.Keys | ForEach-Object { [string]$_ })
+    } else {
+        @($InputObject.PSObject.Properties.Name | ForEach-Object { [string]$_ })
+    }
+    return $names.Count -eq $AllowedNames.Count -and
+        @($names | Where-Object { $_ -notin $AllowedNames }).Count -eq 0 -and
+        @($AllowedNames | Where-Object { $_ -notin $names }).Count -eq 0
+}
+
+function Test-OperatorPollWorkflowAcknowledgementData {
+    param([AllowNull()]$Data)
+
+    $allowed = @(
+        'schema_version', 'run_id', 'node_id', 'idempotency_key', 'generation_id',
+        'config_fingerprint', 'workflow_fingerprint', 'source_head', 'pane_id', 'status', 'evidence_ref'
+    )
+    if (-not (Test-OperatorPollExactPropertyNames -InputObject $Data -AllowedNames $allowed)) { return $false }
+    $runId = [string](Get-OperatorPollValue -InputObject $Data -Name 'run_id' -Default '')
+    $nodeId = [string](Get-OperatorPollValue -InputObject $Data -Name 'node_id' -Default '')
+    $schemaVersion = Get-OperatorPollValue -InputObject $Data -Name 'schema_version' -Default $null
+    if (
+        $schemaVersion -isnot [ValueType] -or [int64]$schemaVersion -ne 1 -or
+        $runId -cnotmatch '^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$' -or
+        $nodeId -cnotmatch '^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$' -or
+        [string](Get-OperatorPollValue -InputObject $Data -Name 'idempotency_key' -Default '') -cne "$runId`:$nodeId" -or
+        [string](Get-OperatorPollValue -InputObject $Data -Name 'generation_id' -Default '') -cnotmatch '^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$' -or
+        [string](Get-OperatorPollValue -InputObject $Data -Name 'config_fingerprint' -Default '') -cnotmatch '^sha256:[0-9a-f]{64}$' -or
+        [string](Get-OperatorPollValue -InputObject $Data -Name 'workflow_fingerprint' -Default '') -cnotmatch '^sha256:[0-9a-f]{64}$' -or
+        [string](Get-OperatorPollValue -InputObject $Data -Name 'source_head' -Default '') -cnotmatch '^[0-9a-f]{40}$' -or
+        [string](Get-OperatorPollValue -InputObject $Data -Name 'pane_id' -Default '') -cnotmatch '^%[0-9]+$' -or
+        [string](Get-OperatorPollValue -InputObject $Data -Name 'status' -Default '') -cne 'succeeded' -or
+        [string](Get-OperatorPollValue -InputObject $Data -Name 'evidence_ref' -Default '') -cne "workflow-ack:$runId`:$nodeId"
+    ) {
+        return $false
+    }
+    return $true
+}
+
+function Test-OperatorPollWorkflowAcknowledgementMailbox {
+    param(
+        [AllowNull()]$MailboxMessage,
+        [Parameter(Mandatory = $true)][string]$SessionName
+    )
+
+    $allowedEnvelope = @(
+        'mailbox_version', 'message_id', 'correlation_id', 'causation_id', 'idempotency_key',
+        'message_type', 'state', 'ttl_seconds', 'ack_required', 'from', 'to', 'timestamp', 'content'
+    )
+    $allowedContent = @('session', 'event', 'message', 'label', 'pane_id', 'role', 'status', 'exit_reason', 'data')
+    if (-not (Test-OperatorPollExactPropertyNames -InputObject $MailboxMessage -AllowedNames $allowedEnvelope)) { return $false }
+    $content = Get-OperatorPollValue -InputObject $MailboxMessage -Name 'content' -Default $null
+    if (-not (Test-OperatorPollExactPropertyNames -InputObject $content -AllowedNames $allowedContent)) { return $false }
+    if (
+        [int](Get-OperatorPollValue -InputObject $MailboxMessage -Name 'mailbox_version' -Default 0) -ne 2 -or
+        [string](Get-OperatorPollValue -InputObject $MailboxMessage -Name 'message_type' -Default '') -cne 'workflow-completion' -or
+        [string](Get-OperatorPollValue -InputObject $MailboxMessage -Name 'state' -Default '') -cne 'created' -or
+        -not [bool](Get-OperatorPollValue -InputObject $MailboxMessage -Name 'ack_required' -Default $false) -or
+        [string](Get-OperatorPollValue -InputObject $MailboxMessage -Name 'to' -Default '') -cne 'Operator' -or
+        [string](Get-OperatorPollValue -InputObject $MailboxMessage -Name 'message_id' -Default '') -ne [string](Get-OperatorPollValue -InputObject $MailboxMessage -Name 'correlation_id' -Default '') -or
+        -not [string]::IsNullOrWhiteSpace([string](Get-OperatorPollValue -InputObject $MailboxMessage -Name 'causation_id' -Default '')) -or
+        [string](Get-OperatorPollValue -InputObject $content -Name 'session' -Default '') -cne $SessionName -or
+        [string](Get-OperatorPollValue -InputObject $content -Name 'event' -Default '') -cne 'workflow.node.acknowledged' -or
+        [string](Get-OperatorPollValue -InputObject $content -Name 'message' -Default '') -cne 'Declarative workflow completion.' -or
+        [string](Get-OperatorPollValue -InputObject $content -Name 'status' -Default '') -cne 'succeeded' -or
+        -not [string]::IsNullOrWhiteSpace([string](Get-OperatorPollValue -InputObject $content -Name 'exit_reason' -Default '')) -or
+        [string](Get-OperatorPollValue -InputObject $MailboxMessage -Name 'from' -Default '') -cne [string](Get-OperatorPollValue -InputObject $content -Name 'label' -Default '') -or
+        -not (Test-OperatorPollWorkflowAcknowledgementData -Data (Get-OperatorPollValue -InputObject $content -Name 'data' -Default $null))
+    ) {
+        return $false
+    }
+    return $true
+}
+
+function Get-OperatorPollWorkflowAcknowledgementData {
+    param([Parameter(Mandatory = $true)]$Data)
+
+    $acknowledgement = [ordered]@{}
+    foreach ($field in @(
+            'schema_version', 'run_id', 'node_id', 'idempotency_key', 'generation_id',
+            'config_fingerprint', 'workflow_fingerprint', 'source_head', 'pane_id', 'status', 'evidence_ref'
+        )) {
+        $acknowledgement[$field] = Get-OperatorPollValue -InputObject $Data -Name $field -Default $null
+    }
+    $acknowledgement['transport'] = 'mailbox'
+    return $acknowledgement
+}
+
+function Test-OperatorPollWorkflowAcknowledgementRecord {
+    param(
+        [Parameter(Mandatory = $true)]$EventRecord,
+        [Parameter(Mandatory = $true)]$PaneContext,
+        [Parameter(Mandatory = $true)][string]$SessionName
+    )
+
+    $data = Get-OperatorPollValue -InputObject $EventRecord -Name 'data' -Default $null
+    $acknowledgement = Get-OperatorPollWorkflowAcknowledgementData -Data $data
+    $generationId = [string]$PaneContext['generation_id']
+    return (
+        [string](Get-OperatorPollValue -InputObject $EventRecord -Name 'source' -Default '') -ceq 'mailbox' -and
+        [int](Get-OperatorPollValue -InputObject $EventRecord -Name 'mailbox_version' -Default 0) -eq 2 -and
+        [string](Get-OperatorPollValue -InputObject $EventRecord -Name 'mailbox_state' -Default '') -ceq 'created' -and
+        [string](Get-OperatorPollValue -InputObject $EventRecord -Name 'message_type' -Default '') -ceq 'workflow-completion' -and
+        [bool](Get-OperatorPollValue -InputObject $EventRecord -Name 'ack_required' -Default $false) -and
+        [string](Get-OperatorPollValue -InputObject $EventRecord -Name 'session' -Default '') -ceq $SessionName -and
+        [string](Get-OperatorPollValue -InputObject $EventRecord -Name 'pane_id' -Default '') -ceq [string]$PaneContext['pane_id'] -and
+        [string](Get-OperatorPollValue -InputObject $EventRecord -Name 'label' -Default '') -ceq [string]$PaneContext['label'] -and
+        [string](Get-OperatorPollValue -InputObject $EventRecord -Name 'mailbox_from' -Default '') -ceq [string]$PaneContext['label'] -and
+        [string](Get-OperatorPollValue -InputObject $acknowledgement -Name 'pane_id' -Default '') -ceq [string]$PaneContext['pane_id'] -and
+        ([string]::IsNullOrWhiteSpace($generationId) -or [string]::Equals([string](Get-OperatorPollValue -InputObject $acknowledgement -Name 'generation_id' -Default ''), $generationId, [StringComparison]::Ordinal)) -and
+        (Test-OperatorPollWorkflowAcknowledgementData -Data (Get-OperatorPollValue -InputObject $EventRecord -Name 'workflow_ack_payload' -Default $data))
+    )
 }
 
 function ConvertFrom-OperatorPollYamlScalar {
@@ -472,6 +617,9 @@ function ConvertTo-OperatorPollMailboxRecord {
     if ([string]::IsNullOrWhiteSpace($eventName)) {
         return $null
     }
+    if ($eventName -ceq 'workflow.node.acknowledged' -and -not (Test-OperatorPollWorkflowAcknowledgementMailbox -MailboxMessage $MailboxMessage -SessionName $SessionName)) {
+        return $null
+    }
 
     $messageId = [string](Get-OperatorPollValue -InputObject $MailboxMessage -Name 'message_id' -Default '')
     $correlationId = [string](Get-OperatorPollValue -InputObject $MailboxMessage -Name 'correlation_id' -Default '')
@@ -496,7 +644,8 @@ function ConvertTo-OperatorPollMailboxRecord {
         }
     }
 
-    $data = ConvertTo-OperatorPollDataMap -InputObject (Get-OperatorPollValue -InputObject $content -Name 'data' -Default ([ordered]@{}))
+    $workflowAcknowledgementPayload = Get-OperatorPollValue -InputObject $content -Name 'data' -Default ([ordered]@{})
+    $data = ConvertTo-OperatorPollDataMap -InputObject $workflowAcknowledgementPayload
     if ($mailboxVersion -ge 2) {
         $data['mailbox_version'] = $mailboxVersion
         $data['mailbox_message_id'] = $messageId
@@ -530,6 +679,7 @@ function ConvertTo-OperatorPollMailboxRecord {
         idempotency_key = $idempotencyKey
         message_type    = $messageType
         ack_required    = $ackRequired
+        workflow_ack_payload = if ($eventName -ceq 'workflow.node.acknowledged') { $workflowAcknowledgementPayload } else { $null }
     }
 }
 
@@ -725,6 +875,19 @@ function Invoke-OperatorPollEventRecord {
     $sourceName = [string](Get-OperatorPollValue -InputObject $EventRecord -Name 'source' -Default 'events_jsonl')
     $sourceId = [string](Get-OperatorPollValue -InputObject $EventRecord -Name 'id' -Default '')
     $Summary['new_events'] = [int]$Summary['new_events'] + 1
+
+    if ($eventName -ceq 'workflow.node.acknowledged') {
+        if (-not (Test-OperatorPollWorkflowAcknowledgementRecord -EventRecord $EventRecord -PaneContext $paneContext -SessionName $sessionName)) {
+            $Summary['errors'] = [int]$Summary['errors'] + 1
+            $Summary['messages'] += @('workflow.node.acknowledged mailbox record was rejected')
+            return
+        }
+        $acknowledgement = Get-OperatorPollWorkflowAcknowledgementData -Data (Get-OperatorPollValue -InputObject $EventRecord -Name 'workflow_ack_payload' -Default $null)
+        Write-OrchestraLog -ProjectDir $projectDir -SessionName $sessionName -Event 'workflow.node.acknowledged' -Level 'info' `
+            -Message 'Declarative workflow completion was received through the mailbox.' `
+            -Role ([string]$paneContext['role']) -PaneId ([string]$paneContext['pane_id']) -Target ([string]$paneContext['label']) -Data $acknowledgement | Out-Null
+        return
+    }
 
     if ($eventName -in @('pane.exec_completed', 'pane.completed')) {
         $diffData = Get-OperatorPollDiffData -WorktreePath ([string]$paneContext['worktree_path'])

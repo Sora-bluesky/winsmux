@@ -263,6 +263,7 @@ function Install-OrchestraSupportScripts {
     Download-File "winsmux-core/scripts/operator-poll.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "operator-poll.ps1")
     Download-File "winsmux-core/scripts/doctor.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "doctor.ps1")
     Download-File "winsmux-core/scripts/dispatch-router.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "dispatch-router.ps1")
+    Download-File "winsmux-core/scripts/declarative-workflow.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "declarative-workflow.ps1")
     Download-File "winsmux-core/scripts/github-write-preflight.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "github-write-preflight.ps1")
     Download-File "winsmux-core/scripts/harness-check.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "harness-check.ps1")
     Download-File "winsmux-core/scripts/logger.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "logger.ps1")

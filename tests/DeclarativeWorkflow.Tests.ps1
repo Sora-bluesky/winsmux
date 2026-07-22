@@ -1,0 +1,910 @@
+#pester:parallel-safe
+
+BeforeAll {
+    $script:RepoRoot = Split-Path -Parent $PSScriptRoot
+    . (Join-Path $script:RepoRoot 'winsmux-core\scripts\declarative-workflow.ps1')
+    . (Join-Path $script:RepoRoot 'winsmux-core\scripts\manifest.ps1')
+    . (Join-Path $script:RepoRoot 'winsmux-core\scripts\control-plane-dispatch.ps1')
+    . (Join-Path $script:RepoRoot 'winsmux-core\scripts\team-pipeline.ps1')
+
+    function New-TestWorkflowPlan {
+        [PSCustomObject]@{
+            schema_version = 1
+            workflow_id = 'bugfix'
+            recipe_ref = 'bugfix-two-slot'
+            config_fingerprint = ('sha256:' + ('a' * 64))
+            workflow_fingerprint = ('sha256:' + ('d' * 64))
+            resolved_bindings = [ordered]@{ implement = 'worker-1'; verify = 'worker-2' }
+            nodes = @(
+                [PSCustomObject]@{ node_id = 'inspect'; pane_ref = 'implement'; action = 'operator-dispatch'; depends_on = @(); idempotency_key = 'run-123:inspect'; cleanup = 'retain' },
+                [PSCustomObject]@{ node_id = 'verify'; pane_ref = 'verify'; action = 'verification'; depends_on = @('inspect'); idempotency_key = 'run-123:verify'; cleanup = 'retain'; context_pack_ref = 'review-pack' }
+            )
+            cleanup_actions = @('release-run-lock')
+        }
+    }
+
+    function New-TestConfirmation {
+        [ordered]@{
+            run_id = 'run-123'
+            generation_id = 'generation-123'
+            config_fingerprint = ('sha256:' + ('a' * 64))
+            source_head = ('b' * 40)
+        }
+    }
+
+    function New-TestTaskInput {
+        param([string]$Text = 'Implement TASK-659 safely.')
+        $bytes = [System.Text.UTF8Encoding]::new($false, $true).GetBytes($Text)
+        [PSCustomObject]@{
+            Text = $Text
+            ByteCount = $bytes.Length
+            Sha256 = Get-DeclarativeWorkflowSha256Digest -Bytes $bytes
+        }
+    }
+
+    function New-TestRun {
+        $taskInput = New-TestTaskInput
+        New-DeclarativeWorkflowRun `
+            -Plan (New-TestWorkflowPlan) `
+            -RunId 'run-123' `
+            -GenerationId 'generation-123' `
+            -SourceHead ('b' * 40) `
+            -TaskInput $taskInput
+    }
+
+    function New-TestAcknowledgement {
+        param(
+            [Parameter(Mandatory = $true)][string]$NodeId,
+            [Parameter(Mandatory = $true)][string]$PaneId
+        )
+        [ordered]@{
+            schema_version      = 1
+            run_id              = 'run-123'
+            node_id             = $NodeId
+            idempotency_key     = "run-123:$NodeId"
+            generation_id       = 'generation-123'
+            config_fingerprint  = ('sha256:' + ('a' * 64))
+            workflow_fingerprint = ('sha256:' + ('d' * 64))
+            source_head         = ('b' * 40)
+            pane_id             = $PaneId
+            status              = 'succeeded'
+            evidence_ref        = "workflow-ack:run-123:$NodeId"
+        }
+    }
+
+    function New-TestAcceptedReceipt {
+        param(
+            [Parameter(Mandatory = $true)][string]$NodeId,
+            [Parameter(Mandatory = $true)][string]$PaneId
+        )
+        $acknowledgement = New-TestAcknowledgement -NodeId $NodeId -PaneId $PaneId
+        [PSCustomObject]@{
+            status          = 'accepted'
+            target          = [PSCustomObject]@{ pane_id = $PaneId }
+            evidence_refs   = @($acknowledgement.evidence_ref)
+            acknowledgement = $acknowledgement
+        }
+    }
+}
+
+Describe 'TASK-659 declarative workflow runtime' -Tag 'unit' {
+    It 'L01 L02 selects declarative mode only for the leading marker' {
+        (ConvertTo-WinsmuxDeclarativePipelineArguments -CommandTarget 'legacy task' -CommandRest @('--workflow-action', 'start')) | Should -BeNullOrEmpty
+        (Join-WinsmuxControlPlaneText -Arguments (Get-WinsmuxControlPlaneArguments -CommandTarget 'legacy task' -CommandRest @('--workflow-action', 'start'))) | Should -Be 'legacy task --workflow-action start'
+    }
+
+    It 'A01 accepts only the closed start and resume argument sets' {
+        $common = @('--run-id', 'run-123', '--generation-id', 'generation-123', '--config-fingerprint', ('sha256:' + ('a' * 64)), '--source-head', ('b' * 40), '--task-file', 'task.txt', '--json')
+        $start = ConvertTo-WinsmuxDeclarativePipelineArguments -CommandTarget '--workflow-action' -CommandRest (@('start', '--recipe-id', 'bugfix-two-slot', '--workflow-id', 'bugfix') + $common)
+        $resume = ConvertTo-WinsmuxDeclarativePipelineArguments -CommandTarget '--workflow-action' -CommandRest (@('resume') + $common)
+        $start.workflow_action | Should -Be 'start'
+        $resume.workflow_action | Should -Be 'resume'
+        { ConvertTo-WinsmuxDeclarativePipelineArguments -CommandTarget '--workflow-action' -CommandRest (@('start', '--recipe-id', 'bugfix-two-slot', '--workflow-id', 'bugfix') + $common + @('--run-id', 'other')) } | Should -Throw '*Duplicate*'
+        { ConvertTo-WinsmuxDeclarativePipelineArguments -CommandTarget '--workflow-action' -CommandRest (@('resume') + $common + @('positional')) } | Should -Throw '*Unknown or positional*'
+        { ConvertTo-WinsmuxDeclarativePipelineArguments -CommandTarget '--workflow-action' -CommandRest (@('resume') + $common + @('--unknown', 'x')) } | Should -Throw '*Unknown*'
+
+        $bridge = Join-Path $script:RepoRoot 'scripts\winsmux-core.ps1'
+        $invalidCases = [Collections.Generic.List[object]]::new()
+        $invalidCases.Add([string[]]@('pipeline', '--workflow-action', 'resume', '--run-id', 'run-123', '--generation-id', 'generation-123', '--config-fingerprint', ('sha256:' + ('a' * 64)), '--source-head', ('b' * 40), '--json')) | Out-Null
+        $invalidCases.Add([string[]](@('pipeline', '--workflow-action', 'resume') + $common + @('--run-id', 'other'))) | Out-Null
+        $invalidCases.Add([string[]](@('pipeline', '--workflow-action', 'resume') + $common + @('--unknown', 'x'))) | Out-Null
+        foreach ($invalidArguments in $invalidCases) {
+            $startInfo = [Diagnostics.ProcessStartInfo]::new()
+            $startInfo.FileName = (Get-Command pwsh -ErrorAction Stop).Source
+            $startInfo.UseShellExecute = $false
+            $startInfo.RedirectStandardOutput = $true
+            $startInfo.RedirectStandardError = $true
+            foreach ($argument in @('-NoProfile', '-File', $bridge) + $invalidArguments) { $startInfo.ArgumentList.Add([string]$argument) }
+            $process = [Diagnostics.Process]::Start($startInfo)
+            $stdout = $process.StandardOutput.ReadToEnd()
+            $stderr = $process.StandardError.ReadToEnd()
+            $process.WaitForExit()
+            $output = @($stdout -split '\r?\n' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+            $exitCode = $process.ExitCode
+            $output.Count | Should -Be 1 -Because $stderr
+            $payload = $output[0] | ConvertFrom-Json -ErrorAction Stop
+            $payload.status | Should -Be 'rejected'
+            $exitCode | Should -Be 1
+        }
+    }
+
+    It 'A02 invokes workspace-plan exactly once and consumes its one strict JSON object' {
+        Mock Invoke-TeamPipelineBridge {
+            [PSCustomObject]@{
+                ExitCode = 0
+                Output = '{"schema_version":1,"config_fingerprint":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","resolved_bindings":{},"workflow":{}}'
+            }
+        }
+
+        $plan = Invoke-TeamPipelineWorkspacePlanOnce -ProjectDir $TestDrive -RecipeId 'bugfix-two-slot' -WorkflowId 'bugfix' -RunId 'run-123'
+
+        $plan.schema_version | Should -Be 1
+        $plan.workflow | Should -BeOfType ([System.Collections.IDictionary])
+        Should -Invoke Invoke-TeamPipelineBridge -Times 1 -Exactly
+    }
+
+    It 'A03 rejects nonzero, malformed, or extra workspace-plan output' {
+        Mock Invoke-TeamPipelineBridge { $script:WorkspacePlanResult }
+        $cases = @(
+            [PSCustomObject]@{ ExitCode = 1; Output = '{}' },
+            [PSCustomObject]@{ ExitCode = 0; Output = '{invalid' },
+            [PSCustomObject]@{ ExitCode = 0; Output = '{"workflow":{}} trailing' }
+        )
+
+        foreach ($case in $cases) {
+            $script:WorkspacePlanResult = $case
+            { Invoke-TeamPipelineWorkspacePlanOnce -ProjectDir $TestDrive -RecipeId 'bugfix-two-slot' -WorkflowId 'bugfix' -RunId 'run-123' } | Should -Throw 'workspace_plan_*'
+        }
+        Should -Invoke Invoke-TeamPipelineBridge -Times 3 -Exactly
+    }
+
+    It 'W16 reads BOM-free UTF-8 once and persists only digest metadata' {
+        $path = Join-Path $TestDrive 'task.txt'
+        [System.IO.File]::WriteAllBytes($path, [System.Text.UTF8Encoding]::new($false).GetBytes('日本語 task'))
+
+        $input = Read-DeclarativeWorkflowTaskFile -Path $path
+        $run = New-DeclarativeWorkflowRun -Plan (New-TestWorkflowPlan) -RunId 'run-123' -GenerationId 'generation-123' -SourceHead ('b' * 40) -TaskInput $input
+        $json = $run | ConvertTo-Json -Depth 20
+
+        $input.Text | Should -Be '日本語 task'
+        $run.task_byte_count | Should -Be 14
+        $run.task_sha256 | Should -Match '^sha256:[0-9a-f]{64}$'
+        $json | Should -Not -Match '日本語 task'
+        $json | Should -Not -Match ([regex]::Escape($path))
+    }
+
+    It 'W16 uses the shared SHA-256 boundary for task input and completion envelopes under Windows PowerShell 5.1' {
+        $caseRoot = Join-Path $TestDrive 'task659-ps51-digest-boundary'
+        New-Item -ItemType Directory -Path $caseRoot -Force | Out-Null
+        $taskPath = Join-Path $caseRoot 'task.txt'
+        $childScriptPath = Join-Path $caseRoot 'validate-digest-boundary.ps1'
+        [System.IO.File]::WriteAllBytes($taskPath, [System.Text.UTF8Encoding]::new($false).GetBytes('PS5.1 digest boundary'))
+
+        $childScript = @'
+param(
+    [Parameter(Mandatory = $true)][string]$DeclarativeScript,
+    [Parameter(Mandatory = $true)][string]$TeamPipelineScript,
+    [Parameter(Mandatory = $true)][string]$TaskPath
+)
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+. $DeclarativeScript
+. $TeamPipelineScript
+$Error.Clear()
+
+$taskInput = Read-DeclarativeWorkflowTaskFile -Path $TaskPath
+$plan = [ordered]@{
+    schema_version = 1
+    workflow_id = 'bugfix'
+    recipe_ref = 'bugfix-two-slot'
+    config_fingerprint = ('sha256:' + ('a' * 64))
+    workflow_fingerprint = ('sha256:' + ('d' * 64))
+    resolved_bindings = [ordered]@{ implement = 'worker-1' }
+    nodes = @(
+        [ordered]@{ node_id = 'inspect'; pane_ref = 'implement'; action = 'operator-dispatch'; depends_on = @(); idempotency_key = 'run-ps51:inspect'; cleanup = 'retain' }
+    )
+    cleanup_actions = @('release-run-lock')
+}
+$run = New-DeclarativeWorkflowRun -Plan $plan -RunId 'run-ps51' -GenerationId 'generation-ps51' -SourceHead ('b' * 40) -TaskInput $taskInput
+$instruction = New-TeamPipelineDeclarativeCompletionInstruction -Run $run -NodeId 'inspect' -SessionName 'workflow-ps51' -Target 'worker-1' -PaneId '%2' -Role 'implement'
+$mailboxCommand = @($instruction -split '\r?\n' | Where-Object { $_ -like 'winsmux mailbox-send *' })
+if ($mailboxCommand.Count -ne 1 -or $mailboxCommand[0] -notmatch "^winsmux mailbox-send '[^']+' '(?<payload>.+)'$") {
+    throw 'completion instruction did not contain exactly one mailbox envelope command.'
+}
+$envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
+
+[PSCustomObject][ordered]@{
+    host_version = $PSVersionTable.PSVersion.ToString()
+    error_count = @($Error).Count
+    task = [ordered]@{
+        text = $taskInput.Text
+        byte_count = $taskInput.ByteCount
+        sha256 = $taskInput.Sha256
+    }
+    envelope = [ordered]@{
+        mailbox_version = $envelope.mailbox_version
+        message_id = $envelope.message_id
+        correlation_id = $envelope.correlation_id
+        idempotency_key = $envelope.idempotency_key
+        message_type = $envelope.message_type
+        state = $envelope.state
+        ack_required = $envelope.ack_required
+        from = $envelope.from
+        to = $envelope.to
+        content = [ordered]@{
+            event = $envelope.content.event
+            status = $envelope.content.status
+            pane_id = $envelope.content.pane_id
+            role = $envelope.content.role
+            data = $envelope.content.data
+        }
+    }
+} | ConvertTo-Json -Compress -Depth 12
+'@
+        [System.IO.File]::WriteAllText($childScriptPath, $childScript, [System.Text.UTF8Encoding]::new($false))
+
+        $declarativeScript = Join-Path $script:RepoRoot 'winsmux-core\scripts\declarative-workflow.ps1'
+        $teamPipelineScript = Join-Path $script:RepoRoot 'winsmux-core\scripts\team-pipeline.ps1'
+        $output = @(& powershell.exe -NoProfile -File $childScriptPath -DeclarativeScript $declarativeScript -TeamPipelineScript $teamPipelineScript -TaskPath $taskPath 2>&1)
+        $exitCode = $LASTEXITCODE
+        $jsonLine = @($output | Where-Object { ([string]$_).TrimStart().StartsWith('{') } | Select-Object -Last 1)
+
+        $jsonLine.Count | Should -Be 1 -Because (($output | Out-String).Trim())
+        $result = ([string]$jsonLine[0]) | ConvertFrom-Json
+        $result.host_version | Should -Match '^5\.1\.'
+        $result.error_count | Should -Be 0
+        $result.task.text | Should -Be 'PS5.1 digest boundary'
+        $result.task.byte_count | Should -Be 21
+        $result.task.sha256 | Should -Be 'sha256:f960845f68f1ab41d39e591c0280d872b2bf4ed2141a35646a4c81810f4e1141'
+        $result.envelope.mailbox_version | Should -Be 2
+        $result.envelope.message_id | Should -Be 'workflow-ack-2ba826611c05107ef2c4af13'
+        $result.envelope.correlation_id | Should -Be $result.envelope.message_id
+        $result.envelope.idempotency_key | Should -Be ('workflow-completion-' + $result.envelope.message_id.Substring('workflow-ack-'.Length))
+        $result.envelope.message_type | Should -Be 'workflow-completion'
+        $result.envelope.state | Should -Be 'created'
+        $result.envelope.ack_required | Should -BeTrue
+        $result.envelope.from | Should -Be 'worker-1'
+        $result.envelope.to | Should -Be 'Operator'
+        $result.envelope.content.event | Should -Be 'workflow.node.acknowledged'
+        $result.envelope.content.status | Should -Be 'succeeded'
+        $result.envelope.content.pane_id | Should -Be '%2'
+        $result.envelope.content.role | Should -Be 'implement'
+        $result.envelope.content.data.run_id | Should -Be 'run-ps51'
+        $result.envelope.content.data.node_id | Should -Be 'inspect'
+        $result.envelope.content.data.idempotency_key | Should -Be 'run-ps51:inspect'
+        $result.envelope.content.data.generation_id | Should -Be 'generation-ps51'
+        $result.envelope.content.data.config_fingerprint | Should -Be ('sha256:' + ('a' * 64))
+        $result.envelope.content.data.workflow_fingerprint | Should -Be ('sha256:' + ('d' * 64))
+        $result.envelope.content.data.source_head | Should -Be ('b' * 40)
+        $result.envelope.content.data.pane_id | Should -Be '%2'
+        $result.envelope.content.data.status | Should -Be 'succeeded'
+        $result.envelope.content.data.evidence_ref | Should -Be 'workflow-ack:run-ps51:inspect'
+        $exitCode | Should -Be 0
+    }
+
+    It 'W16 rejects BOM NUL invalid UTF-8 and oversized files' {
+        $cases = @(
+            [byte[]](0xEF, 0xBB, 0xBF, 0x61),
+            [byte[]](0x61, 0x00, 0x62),
+            [byte[]](0xC3, 0x28),
+            [byte[]](New-Object byte[] 262145)
+        )
+        for ($index = 0; $index -lt $cases.Count; $index++) {
+            $path = Join-Path $TestDrive "invalid-$index.bin"
+            [IO.File]::WriteAllBytes($path, $cases[$index])
+            { Read-DeclarativeWorkflowTaskFile -Path $path } | Should -Throw
+        }
+    }
+
+    It 'W05 W06 persists intent before one effect and ACK before dependency release' {
+        $run = New-TestRun
+        $events = [Collections.Generic.List[string]]::new()
+        Mock Invoke-TeamPipelineGuardedSend { [PSCustomObject]@{ Status = 'EXEC_DONE' } }
+        Mock Wait-TeamPipelineDeclarativeCompletion {
+            $acknowledgement = New-TestAcknowledgement -NodeId 'inspect' -PaneId '%2'
+            $acknowledgement['transport'] = 'mailbox'
+            return $acknowledgement
+        }
+        Mock Write-TeamPipelineEvent { throw 'declarative completion must not be synthesized from pane text' }
+        $manifest = [PSCustomObject]@{ Panes = [ordered]@{ 'worker-1' = [ordered]@{ pane_id = '%2' } } }
+        $request = [PSCustomObject]@{ stage = 'EXEC'; node_id = 'inspect'; pane_ref = 'implement'; task = 'Implement TASK-659 safely.' }
+        $productionReceipt = Invoke-TeamPipelineDeclarativeDispatch -Request $request -Run $run -Manifest $manifest -ProjectDir $TestDrive -SessionName 'workflow-test'
+
+        $productionReceipt.acknowledgement.run_id | Should -Be 'run-123'
+        $productionReceipt.acknowledgement.node_id | Should -Be 'inspect'
+        $productionReceipt.acknowledgement.pane_id | Should -Be '%2'
+        $productionReceipt.acknowledgement.transport | Should -Be 'mailbox'
+        $productionReceipt.acknowledgement.evidence_ref | Should -Be 'workflow-ack:run-123:inspect'
+        Should -Invoke Write-TeamPipelineEvent -Times 0 -Exactly
+        Write-OrchestraLog -ProjectDir $TestDrive -SessionName 'workflow-test' -Event 'workflow.node.acknowledged' -PaneId '%2' -Data $productionReceipt.acknowledgement -MaxBytes 1 -RetentionCount 5 | Out-Null
+        Write-OrchestraLog -ProjectDir $TestDrive -SessionName 'workflow-test' -Event 'workflow.node.acknowledged' -PaneId '%2' -Data $productionReceipt.acknowledgement -MaxBytes 1 -RetentionCount 5 | Out-Null
+        $resolvedAcknowledgements = @(Resolve-TeamPipelineDeclarativeAcknowledgement -Run $run -NodeId 'inspect' -ProjectDir $TestDrive -SessionName 'workflow-test')
+        $resolvedAcknowledgements.Count | Should -Be 1
+        $resolvedAcknowledgements[0].pane_id | Should -Be '%2'
+
+        Write-OrchestraLog -ProjectDir $TestDrive -SessionName 'workflow-noise-test' -Event 'workflow.node.acknowledged' -PaneId '%2' -Data $productionReceipt.acknowledgement | Out-Null
+        $noiseLogPath = Get-OrchestraLogPath -ProjectDir $TestDrive -SessionName 'workflow-noise-test'
+        $noiseWriter = [IO.StreamWriter]::new($noiseLogPath, $true, [Text.UTF8Encoding]::new($false))
+        try {
+            foreach ($index in 1..4100) { $noiseWriter.WriteLine('{"event":"workflow.noise","data":{"index":' + $index + '}}') }
+        } finally {
+            $noiseWriter.Dispose()
+        }
+        $ackBeforeNoise = @(Resolve-TeamPipelineDeclarativeAcknowledgement -Run $run -NodeId 'inspect' -ProjectDir $TestDrive -SessionName 'workflow-noise-test')
+        $ackBeforeNoise.Count | Should -Be 1
+        $ackBeforeNoise[0].pane_id | Should -Be '%2'
+
+        $conflictingAcknowledgement = Copy-DeclarativeWorkflowValue $productionReceipt.acknowledgement
+        $conflictingAcknowledgement.pane_id = '%3'
+        Write-OrchestraLog -ProjectDir $TestDrive -SessionName 'workflow-test' -Event 'workflow.node.acknowledged' -PaneId '%3' -Data $conflictingAcknowledgement -MaxBytes 1 -RetentionCount 5 | Out-Null
+        $ambiguousAcknowledgements = @(Resolve-TeamPipelineDeclarativeAcknowledgement -Run $run -NodeId 'inspect' -ProjectDir $TestDrive -SessionName 'workflow-test')
+        $ambiguousAcknowledgements.Count | Should -Be 2
+        @($ambiguousAcknowledgements.pane_id | Sort-Object) | Should -Be @('%2', '%3')
+        $ambiguousRun = New-TestRun
+        $ambiguousRun.state = 'running'
+        $ambiguousRun.nodes.inspect.state = 'dispatching'
+        $ambiguousRun.nodes.inspect.attempt = 1
+        $script:ambiguousDispatches = 0
+        $ambiguousResult = Invoke-DeclarativeWorkflowResume -Run $ambiguousRun -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) `
+            -SaveRun { param($candidate) } `
+            -Dispatch { $script:ambiguousDispatches++ } `
+            -ResolveSession { param($paneId) $paneId } `
+            -ResolveAcknowledgement { $ambiguousAcknowledgements }
+        $ambiguousResult.nodes.inspect.state | Should -Be 'blocked'
+        $script:ambiguousDispatches | Should -Be 0
+
+        $result = Invoke-DeclarativeWorkflowNode `
+            -Run $run -NodeId 'inspect' -TaskInput (New-TestTaskInput) `
+            -Confirmation (New-TestConfirmation) `
+            -SaveRun { param($candidate) $events.Add("save:$($candidate.nodes.inspect.state):$($candidate.nodes.verify.state)") | Out-Null } `
+            -Dispatch { param($request) $events.Add("dispatch:$($request.stage)") | Out-Null; New-TestAcceptedReceipt -NodeId 'inspect' -PaneId '%2' } `
+            -ResolveSession { param($paneId) $events.Add("session:$paneId") | Out-Null; '%2' }
+
+        $events[0] | Should -Be 'save:dispatching:pending'
+        $events[1] | Should -Be 'dispatch:EXEC'
+        $events[2] | Should -Be 'session:%2'
+        $events[3] | Should -Be 'save:succeeded:pending'
+        $events[4] | Should -Be 'save:succeeded:ready'
+        @($events | Where-Object { $_ -like 'dispatch:*' }).Count | Should -Be 1
+        $result.nodes.inspect.state | Should -Be 'succeeded'
+        $result.nodes.inspect.attempt | Should -Be 1
+        $result.nodes.inspect.agent_cli_session_id | Should -Be '%2'
+        $result.nodes.verify.state | Should -Be 'ready'
+    }
+
+    It 'W05 does not call the adapter when intent persistence fails' {
+        $script:dispatches = 0
+        {
+            Invoke-DeclarativeWorkflowNode `
+                -Run (New-TestRun) -NodeId 'inspect' -TaskInput (New-TestTaskInput) `
+                -Confirmation (New-TestConfirmation) `
+                -SaveRun { throw 'injected save failure' } `
+                -Dispatch { $script:dispatches++; [PSCustomObject]@{ status = 'accepted' } } `
+                -ResolveSession { '%2' }
+        } | Should -Throw '*injected save failure*'
+        $script:dispatches | Should -Be 0
+    }
+
+    It 'W08 W15 blocks ambiguous acknowledgement or missing registry session without redispatch' {
+        foreach ($receipt in @($null, [PSCustomObject]@{ status = 'accepted'; target = [PSCustomObject]@{ pane_id = '%2' } })) {
+            $script:dispatches = 0
+            $run = New-TestRun
+            $result = Invoke-DeclarativeWorkflowNode `
+                -Run $run -NodeId 'inspect' -TaskInput (New-TestTaskInput) `
+                -Confirmation (New-TestConfirmation) `
+                -SaveRun { param($candidate) } `
+                -Dispatch { $script:dispatches++; $receipt } `
+                -ResolveSession { '' }
+            $result.nodes.inspect.state | Should -Be 'blocked'
+            $result.nodes.verify.state | Should -Be 'pending'
+            $script:dispatches | Should -Be 1
+        }
+
+        $secretInput = New-TestTaskInput -Text 'git reset --hard SECRET_MARKER'
+        $secretRun = New-DeclarativeWorkflowRun -Plan (New-TestWorkflowPlan) -RunId 'run-123' -GenerationId 'generation-123' -SourceHead ('b' * 40) -TaskInput $secretInput
+        $manifest = [PSCustomObject]@{ Panes = [ordered]@{ 'worker-1' = [ordered]@{ pane_id = '%2' } } }
+        $capturedEvents = [Collections.Generic.List[object]]::new()
+        $savedRuns = [Collections.Generic.List[string]]::new()
+        Mock Write-TeamPipelineEvent {
+            param($ProjectDir, $SessionName, $Event, $Message, $Role, $PaneId, $Target, $Data)
+            $capturedEvents.Add([PSCustomObject]@{ event = $Event; data = $Data }) | Out-Null
+            return [PSCustomObject]@{ event = $Event; data = $Data }
+        }
+        $secretResult = Invoke-DeclarativeWorkflowNode -Run $secretRun -NodeId 'inspect' -TaskInput $secretInput -Confirmation (New-TestConfirmation) `
+            -SaveRun { param($candidate) $savedRuns.Add(($candidate | ConvertTo-Json -Depth 20 -Compress)) | Out-Null } `
+            -Dispatch { param($request) Invoke-TeamPipelineDeclarativeDispatch -Request $request -Run $secretRun -Manifest $manifest -ProjectDir $TestDrive -SessionName 'privacy-test' } `
+            -ResolveSession { '' }
+        $secretResult.nodes.inspect.state | Should -Be 'blocked'
+        ($capturedEvents | ConvertTo-Json -Depth 20 -Compress) | Should -Not -Match 'SECRET_MARKER'
+        ($savedRuns -join "`n") | Should -Not -Match 'SECRET_MARKER'
+    }
+
+    It 'W09 W12 skips succeeded nodes and rejects terminal run resume' {
+        $run = New-TestRun
+        $run.nodes.inspect.state = 'succeeded'
+        $script:dispatches = 0
+        $same = Invoke-DeclarativeWorkflowNode -Run $run -NodeId 'inspect' -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) -SaveRun { } -Dispatch { $script:dispatches++ } -ResolveSession { 'x' }
+        $same.nodes.inspect.state | Should -Be 'succeeded'
+        $script:dispatches | Should -Be 0
+
+        foreach ($terminal in @('succeeded', 'cancelled', 'rolled_back')) {
+            $run.state = $terminal
+            { Invoke-DeclarativeWorkflowNode -Run $run -NodeId 'verify' -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) -SaveRun { } -Dispatch { } -ResolveSession { 'x' } } | Should -Throw '*terminal*'
+        }
+        $run = New-TestRun
+        $run.state = 'failed'
+        { Invoke-DeclarativeWorkflowNode -Run $run -NodeId 'inspect' -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) -SaveRun { } -Dispatch { $script:dispatches++ } -ResolveSession { '%2' } } | Should -Throw '*new operator-approved run*'
+        $script:dispatches | Should -Be 0
+    }
+
+    It 'W10 W13 W16 rejects stale confirmation and task mismatch before effects' {
+        $run = New-TestRun
+        $script:effects = 0
+        $badConfirmation = New-TestConfirmation
+        $badConfirmation.source_head = 'c' * 40
+        { Invoke-DeclarativeWorkflowNode -Run $run -NodeId 'inspect' -TaskInput (New-TestTaskInput) -Confirmation $badConfirmation -SaveRun { $script:effects++ } -Dispatch { $script:effects++ } -ResolveSession { 'x' } } | Should -Throw '*confirmation*'
+        { Invoke-DeclarativeWorkflowNode -Run $run -NodeId 'inspect' -TaskInput (New-TestTaskInput -Text 'changed') -Confirmation (New-TestConfirmation) -SaveRun { $script:effects++ } -Dispatch { $script:effects++ } -ResolveSession { 'x' } } | Should -Throw '*task*'
+        $script:effects | Should -Be 0
+    }
+
+    It 'W11 persists terminal run state after the final node succeeds' {
+        $project = Join-Path $TestDrive 'terminal-run-project'
+        $saved = [Collections.Generic.List[object]]::new()
+        $save = {
+            param($candidate)
+            $saved.Add((Copy-DeclarativeWorkflowValue $candidate)) | Out-Null
+            Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $candidate | Out-Null
+        }
+        $dispatch = {
+            param($request)
+            $paneId = if ($request.node_id -ceq 'inspect') { '%2' } else { '%3' }
+            New-TestAcceptedReceipt -NodeId $request.node_id -PaneId $paneId
+        }
+        $resolveSession = { param($paneId) $paneId }
+
+        $afterInspect = Invoke-DeclarativeWorkflowNode -Run (New-TestRun) -NodeId 'inspect' -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) -SaveRun $save -Dispatch $dispatch -ResolveSession $resolveSession
+        $afterVerify = Invoke-DeclarativeWorkflowNode -Run $afterInspect -NodeId 'verify' -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) -SaveRun $save -Dispatch $dispatch -ResolveSession $resolveSession
+        $reloaded = Read-DeclarativeWorkflowRunState -ProjectDir $project -RunId 'run-123'
+
+        $afterVerify.state | Should -Be 'succeeded'
+        $saved[$saved.Count - 1].state | Should -Be 'succeeded'
+        $reloaded.state | Should -Be 'succeeded'
+    }
+
+    It 'W11 reconciles a durable ACK after the ACK-event cut without redispatch and advances only unfinished nodes' {
+        $run = New-TestRun
+        $run.state = 'running'
+        $run.nodes.inspect.state = 'dispatching'
+        $run.nodes.inspect.attempt = 1
+        $saved = [Collections.Generic.List[object]]::new()
+        $requests = [Collections.Generic.List[object]]::new()
+
+        $result = Invoke-DeclarativeWorkflowResume -Run $run -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) `
+            -SaveRun { param($candidate) $saved.Add((Copy-DeclarativeWorkflowValue $candidate)) | Out-Null } `
+            -Dispatch { param($request) $requests.Add($request) | Out-Null; New-TestAcceptedReceipt -NodeId $request.node_id -PaneId '%3' } `
+            -ResolveSession { param($paneId) $paneId } `
+            -ResolveAcknowledgement { param($candidate, $nodeId) New-TestAcknowledgement -NodeId $nodeId -PaneId '%2' }
+
+        $result.state | Should -Be 'succeeded'
+        $result.nodes.inspect.state | Should -Be 'succeeded'
+        $result.nodes.inspect.attempt | Should -Be 1
+        $result.nodes.inspect.agent_cli_session_id | Should -Be '%2'
+        $result.nodes.inspect.evidence_refs | Should -Contain 'workflow-ack:run-123:inspect'
+        $result.nodes.inspect.idempotency_key | Should -Be 'run-123:inspect'
+        @($requests | Where-Object { $_.node_id -ceq 'inspect' }).Count | Should -Be 0
+        @($requests | Where-Object { $_.node_id -ceq 'verify' }).Count | Should -Be 1
+        $saved[$saved.Count - 1].state | Should -Be 'succeeded'
+    }
+
+    It 'W11 keeps a blocked node without ACK or registry evidence blocked with zero dispatches' {
+        $run = New-TestRun
+        $run.state = 'blocked'
+        $run.nodes.inspect.state = 'blocked'
+        $run.nodes.inspect.attempt = 1
+        $run.nodes.inspect.evidence_refs = @()
+        $saved = [Collections.Generic.List[object]]::new()
+        $script:w11Dispatches = 0
+
+        $result = Invoke-DeclarativeWorkflowResume -Run $run -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) `
+            -SaveRun { param($candidate) $saved.Add((Copy-DeclarativeWorkflowValue $candidate)) | Out-Null } `
+            -Dispatch { $script:w11Dispatches++; throw 'dispatch must not be called without reconciliation evidence' } `
+            -ResolveSession { '' } `
+            -ResolveAcknowledgement { $null }
+
+        $result.state | Should -Be 'blocked'
+        $result.nodes.inspect.state | Should -Be 'blocked'
+        $script:w11Dispatches | Should -Be 0
+        $saved[$saved.Count - 1].state | Should -Be 'blocked'
+        $saved[$saved.Count - 1].nodes.inspect.attempt | Should -Be 1
+
+        $conflict = New-TestRun
+        $conflict.state = 'blocked'
+        $conflict.nodes.inspect.state = 'blocked'
+        $conflict.nodes.inspect.attempt = 1
+        $conflict.nodes.inspect.agent_cli_session_id = '%2'
+        $conflict.nodes.inspect.evidence_refs = @('workflow-ack:run-123:inspect')
+        $conflictResult = Invoke-DeclarativeWorkflowResume -Run $conflict -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) `
+            -SaveRun { param($candidate) } `
+            -Dispatch { $script:w11Dispatches++; throw 'conflicting acknowledgement must not redispatch' } `
+            -ResolveSession { param($paneId) $paneId } `
+            -ResolveAcknowledgement { New-TestAcknowledgement -NodeId 'inspect' -PaneId '%3' }
+        $conflictResult.nodes.inspect.state | Should -Be 'blocked'
+        $script:w11Dispatches | Should -Be 0
+    }
+
+    It 'W11 skips a succeeded sibling without an additional effect when another node remains blocked' {
+        $run = New-TestRun
+        $run.state = 'blocked'
+        $run.nodes.inspect.state = 'blocked'
+        $run.nodes.inspect.attempt = 1
+        $run.nodes.inspect.evidence_refs = @()
+        $run.nodes.verify.depends_on = @()
+        $run.nodes.verify.state = 'succeeded'
+        $run.nodes.verify.attempt = 1
+        $run.nodes.verify.agent_cli_session_id = 'cli-session:verify-pane'
+        $run.nodes.verify.evidence_refs = @('evidence:verify')
+        $script:w11Effects = 0
+
+        $result = Invoke-DeclarativeWorkflowResume -Run $run -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) `
+            -SaveRun { param($candidate) } `
+            -Dispatch { $script:w11Effects++; throw 'succeeded sibling must be skipped' } `
+            -ResolveSession { '' } `
+            -ResolveAcknowledgement { $null }
+
+        $result.state | Should -Be 'blocked'
+        $result.nodes.inspect.state | Should -Be 'blocked'
+        $result.nodes.verify.state | Should -Be 'succeeded'
+        $script:w11Effects | Should -Be 0
+    }
+
+    It 'W11 wires resume through the reconciliation choke point for blocked evidence-free runs' {
+        $script:w11ResumeCalls = 0
+        $script:w11WiredRun = New-TestRun
+        $script:w11WiredRun.state = 'blocked'
+        $script:w11WiredRun.nodes.inspect.state = 'blocked'
+        $script:w11WiredRun.nodes.inspect.attempt = 1
+        $script:w11WiredRun.nodes.inspect.evidence_refs = @()
+        $taskFile = Join-Path $TestDrive 'resume-task.txt'
+        [IO.File]::WriteAllText($taskFile, 'Implement TASK-659 safely.', [Text.UTF8Encoding]::new($false))
+
+        Mock Read-DeclarativeWorkflowRunState { Copy-DeclarativeWorkflowValue $script:w11WiredRun }
+        Mock Invoke-TeamPipelineWorkspacePlanOnce { [ordered]@{ config_fingerprint = ('sha256:' + ('a' * 64)); resolved_bindings = [ordered]@{ implement = 'worker-1'; verify = 'worker-2' }; workflow = (New-TestWorkflowPlan) } }
+        Mock Read-TeamPipelineManifest { [PSCustomObject]@{ Session = [ordered]@{ name = 'w11-session' }; Panes = [ordered]@{} } }
+        Mock Get-TeamPipelineSessionName { 'w11-session' }
+        Mock Get-TeamPipelineDeclarativeProjectHead { 'b' * 40 }
+        Mock Save-DeclarativeWorkflowRunState { }
+        Mock Invoke-DeclarativeWorkflowResume {
+            param($Run, $TaskInput, $Confirmation, $SaveRun, $Dispatch, $ResolveSession, $ResolveAcknowledgement, $ValidateSnapshot)
+            $script:w11ResumeCalls++
+            & $SaveRun $Run
+            return $Run
+        }
+
+        $result = Invoke-TeamPipelineDeclarativeWorkflow -Action resume -RunId 'run-123' -GenerationId 'generation-123' -ConfigFingerprint ('sha256:' + ('a' * 64)) -SourceHead ('b' * 40) -TaskFile $taskFile -ProjectDir $TestDrive
+
+        $result.status | Should -Be 'blocked'
+        $result.state | Should -Be 'blocked'
+        $script:w11ResumeCalls | Should -Be 1
+        Should -Invoke Invoke-DeclarativeWorkflowResume -Times 1 -Exactly
+    }
+
+    It 'C01 C02 C04 releases only an owned run lock once after persisted intent' {
+        $project = Join-Path $TestDrive 'project'
+        $run = New-TestRun
+        $lock = New-DeclarativeWorkflowRunLock -ProjectDir $project -Run $run
+        $events = [Collections.Generic.List[string]]::new()
+        $first = Invoke-DeclarativeWorkflowCleanup -ProjectDir $project -Run $run -SaveRun { param($candidate) $events.Add("save:$($candidate.cleanup_journal[0].state)") | Out-Null } -ReleaseLock { param($path) $events.Add("release:$path") | Out-Null; Remove-Item -LiteralPath $path }
+        $second = Invoke-DeclarativeWorkflowCleanup -ProjectDir $project -Run $first -SaveRun { param($candidate) $events.Add("save:$($candidate.cleanup_journal[0].state)") | Out-Null } -ReleaseLock { $events.Add('release:again') | Out-Null }
+
+        $events[0] | Should -Be 'save:running'
+        @($events | Where-Object { $_ -like 'release:*' }).Count | Should -Be 1
+        $second.cleanup_journal[0].state | Should -Be 'succeeded'
+        Test-Path -LiteralPath $lock | Should -BeFalse
+    }
+
+    It 'C03 C05 blocks ambiguous or mismatched cleanup without repeating release' {
+        $project = Join-Path $TestDrive 'blocked-project'
+        $run = New-TestRun
+        $run.cleanup_journal[0].state = 'running'
+        $script:releases = 0
+        $ambiguous = Invoke-DeclarativeWorkflowCleanup -ProjectDir $project -Run $run -SaveRun { } -ReleaseLock { $script:releases++ }
+        $ambiguous.cleanup_journal[0].state | Should -Be 'blocked'
+        $script:releases | Should -Be 0
+
+        $run = New-TestRun
+        $lock = New-DeclarativeWorkflowRunLock -ProjectDir $project -Run $run
+        $payload = Get-Content -LiteralPath $lock -Raw | ConvertFrom-Json
+        $payload.source_head = 'c' * 40
+        [IO.File]::WriteAllText($lock, ($payload | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+        $blocked = Invoke-DeclarativeWorkflowCleanup -ProjectDir $project -Run $run -SaveRun { } -ReleaseLock { $script:releases++ }
+        $blocked.cleanup_journal[0].state | Should -Be 'blocked'
+        $script:releases | Should -Be 0
+        Test-Path -LiteralPath $lock | Should -BeTrue
+
+        $junctionProject = Join-Path $TestDrive 'junction-project'
+        $runsRoot = Join-Path $junctionProject '.winsmux\workflow-runs'
+        $externalRunRoot = Join-Path $TestDrive 'external-run-root'
+        [IO.Directory]::CreateDirectory($runsRoot) | Out-Null
+        [IO.Directory]::CreateDirectory($externalRunRoot) | Out-Null
+        $externalLock = Join-Path $externalRunRoot 'run.lock'
+        $junctionRun = New-TestRun
+        $junctionPayload = [ordered]@{
+            run_id = $junctionRun.run_id
+            generation_id = $junctionRun.generation_id
+            config_fingerprint = $junctionRun.config_fingerprint
+            source_head = $junctionRun.source_head
+        }
+        [IO.File]::WriteAllText($externalLock, ($junctionPayload | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+        $junctionPath = Join-Path $runsRoot 'run-123'
+        try {
+            try {
+                $junction = New-Item -ItemType Junction -Path $junctionPath -Target $externalRunRoot -ErrorAction Stop
+            } catch {
+                throw "Junction fixture creation failed explicitly: $($_.Exception.Message)"
+            }
+            [bool]($junction.Attributes -band [IO.FileAttributes]::ReparsePoint) | Should -BeTrue
+            $junctionBlocked = Invoke-DeclarativeWorkflowCleanup -ProjectDir $junctionProject -Run $junctionRun -SaveRun { } -ReleaseLock { $script:releases++; Remove-Item -LiteralPath $args[0] }
+            $junctionBlocked.cleanup_journal[0].state | Should -Be 'blocked'
+            $script:releases | Should -Be 0
+            Test-Path -LiteralPath $externalLock -PathType Leaf | Should -BeTrue
+        } finally {
+            if ([IO.Directory]::Exists($junctionPath)) { [IO.Directory]::Delete($junctionPath) }
+        }
+        Test-Path -LiteralPath $externalLock -PathType Leaf | Should -BeTrue
+    }
+
+    It 'W18 treats pane completion text as non-evidence until a typed mailbox completion is durable' {
+        $run = New-TestRun
+        $manifest = [PSCustomObject]@{
+            Panes = [ordered]@{
+                'worker-1' = [ordered]@{ pane_id = '%2'; role = 'Worker' }
+            }
+        }
+        Mock Invoke-TeamPipelineGuardedSend {
+            [PSCustomObject]@{ Status = 'EXEC_DONE'; Target = 'worker-1' }
+        }
+        Mock Wait-TeamPipelineStage {
+            throw 'pane output must not be polled for declarative completion'
+        }
+        Mock Wait-TeamPipelineDeclarativeCompletion { $null }
+        Mock Write-TeamPipelineEvent { throw 'the dispatcher must not synthesize an acknowledgement' }
+
+        $result = Invoke-TeamPipelineDeclarativeDispatch -Request ([PSCustomObject]@{
+                stage = 'EXEC'; node_id = 'inspect'; pane_ref = 'implement'; task = 'safe task body'
+            }) -Run $run -Manifest $manifest -ProjectDir $TestDrive -SessionName 'winsmux-orchestra'
+
+        $result.status | Should -Be 'blocked'
+        Should -Invoke Wait-TeamPipelineStage -Times 0 -Exactly
+        Should -Invoke Wait-TeamPipelineDeclarativeCompletion -Times 1 -Exactly
+        Should -Invoke Write-TeamPipelineEvent -Times 0 -Exactly
+    }
+
+    It 'W06 accepts only a durable typed mailbox completion and retains its exact tuple' {
+        $run = New-TestRun
+        $manifest = [PSCustomObject]@{
+            Panes = [ordered]@{
+                'worker-1' = [ordered]@{ pane_id = '%2'; role = 'Worker' }
+            }
+        }
+        $ack = New-TestAcknowledgement -NodeId 'inspect' -PaneId '%2'
+        $ack['transport'] = 'mailbox'
+        Mock Invoke-TeamPipelineGuardedSend { [PSCustomObject]@{ Status = 'SENT'; Target = 'worker-1' } }
+        Mock Wait-TeamPipelineStage { throw 'pane output must not be polled for declarative completion' }
+        Mock Wait-TeamPipelineDeclarativeCompletion { $ack }
+
+        $result = Invoke-TeamPipelineDeclarativeDispatch -Request ([PSCustomObject]@{
+                stage = 'EXEC'; node_id = 'inspect'; pane_ref = 'implement'; task = 'safe task body'
+            }) -Run $run -Manifest $manifest -ProjectDir $TestDrive -SessionName 'winsmux-orchestra'
+
+        $result.status | Should -Be 'accepted'
+        $result.acknowledgement.workflow_fingerprint | Should -Be ('sha256:' + ('d' * 64))
+        $result.acknowledgement.pane_id | Should -Be '%2'
+        Should -Invoke Wait-TeamPipelineStage -Times 0 -Exactly
+    }
+
+    It 'W17 blocks conflicting or unknown durable ACK candidates for the same identity' {
+        $run = New-TestRun
+        $first = New-TestAcknowledgement -NodeId 'inspect' -PaneId '%2'
+        $first['transport'] = 'mailbox'
+        $conflict = Copy-DeclarativeWorkflowValue $first
+        $conflict.source_head = ('c' * 40)
+        $unknown = Copy-DeclarativeWorkflowValue $first
+        $unknown['unexpected'] = 'field'
+
+        @(Resolve-DeclarativeWorkflowAcknowledgementCandidates -Run $run -NodeId 'inspect' -Acknowledgements @($first, $first)).Count | Should -Be 1
+        @(Resolve-DeclarativeWorkflowAcknowledgementCandidates -Run $run -NodeId 'inspect' -Acknowledgements @($first, $conflict)).Count | Should -Be 2
+        @(Resolve-DeclarativeWorkflowAcknowledgementCandidates -Run $run -NodeId 'inspect' -Acknowledgements @($unknown)).Count | Should -Be 1
+
+        $blocked = Invoke-DeclarativeWorkflowResume -Run ([ordered]@{
+                schema_version = $run.schema_version; workflow_id = $run.workflow_id; recipe_ref = $run.recipe_ref; run_id = $run.run_id
+                state = 'blocked'; generation_id = $run.generation_id; config_fingerprint = $run.config_fingerprint; workflow_fingerprint = $run.workflow_fingerprint
+                source_head = $run.source_head; task_sha256 = $run.task_sha256; task_byte_count = $run.task_byte_count; resolved_bindings = $run.resolved_bindings
+                normalized_snapshot = $run.normalized_snapshot; nodes = $run.nodes; cleanup_journal = $run.cleanup_journal; rollback_state = $run.rollback_state
+            }) -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) -SaveRun { } -Dispatch { throw 'must not dispatch' } -ResolveSession { param($paneId) $paneId } `
+            -ResolveAcknowledgement { @($first, $conflict) }
+        $blocked.state | Should -Be 'blocked'
+    }
+
+    It 'W19 observes the actual project HEAD exactly once and rejects mismatch or probe failure before state mutation' {
+        $expectedHead = ('b' * 40)
+        $observed = Get-TeamPipelineDeclarativeProjectHead -ProjectDir $script:RepoRoot
+        $observed | Should -Match '^[0-9a-f]{40}$'
+        $expectedHead | Should -Not -Be $observed
+
+        { Assert-TeamPipelineDeclarativeSourceHead -ExpectedSourceHead $expectedHead -ObservedSourceHead $observed } | Should -Throw '*source head*'
+        { Get-TeamPipelineDeclarativeProjectHead -ProjectDir (Join-Path $TestDrive 'not-a-git-project') } | Should -Throw '*source head*'
+    }
+
+    It 'W20 persists workflow fingerprint and rejects a workflow-only resume mismatch before dispatch' {
+        $run = New-TestRun
+        $run.state = 'blocked'
+        $run.nodes.inspect.state = 'blocked'
+        $run.nodes.inspect.attempt = 1
+        $before = $run | ConvertTo-Json -Depth 40 -Compress
+        $script:workflowEffects = 0
+
+        {
+            Invoke-DeclarativeWorkflowResume -Run $run -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) -SaveRun { $script:workflowEffects++ } `
+                -Dispatch { $script:workflowEffects++ } -ResolveSession { '' } -ResolveAcknowledgement { $null } `
+                -ValidateSnapshot { param($candidate) Assert-DeclarativeWorkflowSnapshot -Run $candidate -WorkflowFingerprint ('sha256:' + ('e' * 64)) -ConfigFingerprint $candidate.config_fingerprint -ResolvedBindings $candidate.resolved_bindings }
+        } | Should -Throw '*snapshot*'
+        $script:workflowEffects | Should -Be 0
+        ($run | ConvertTo-Json -Depth 40 -Compress) | Should -Be $before
+    }
+
+    It 'C07 preserves terminal success failure and cancel outcomes while releasing the lock exactly once' {
+        foreach ($terminalState in @('succeeded', 'failed', 'cancelled')) {
+            $project = Join-Path $TestDrive "terminal-cleanup-$terminalState"
+            $run = New-TestRun
+            $run.state = $terminalState
+            $run.nodes.inspect.state = if ($terminalState -eq 'failed') { 'failed' } else { 'succeeded' }
+            $lock = New-DeclarativeWorkflowRunLock -ProjectDir $project -Run $run
+            $releases = [Collections.Generic.List[string]]::new()
+            $after = Invoke-DeclarativeWorkflowTerminalCleanup -ProjectDir $project -Run $run -SaveRun { } -ReleaseLock {
+                param($path)
+                $releases.Add($path) | Out-Null
+                Remove-Item -LiteralPath $path
+            }
+
+            $after.state | Should -Be $terminalState
+            $after.cleanup_journal[0].state | Should -Be 'succeeded'
+            $releases.Count | Should -Be 1
+            Test-Path -LiteralPath $lock | Should -BeFalse
+        }
+    }
+
+    It 'C07 resumes a terminal crash-cut cleanup once and blocks an ambiguous running cleanup without rewriting terminal outcome' {
+        $project = Join-Path $TestDrive 'terminal-cleanup-crash-cut'
+        $run = New-TestRun
+        $run.state = 'failed'
+        $run.nodes.inspect.state = 'failed'
+        $lock = New-DeclarativeWorkflowRunLock -ProjectDir $project -Run $run
+        $resumeReleases = [Collections.Generic.List[string]]::new()
+        $afterCrash = Invoke-DeclarativeWorkflowTerminalCleanup -ProjectDir $project -Run $run -SaveRun { } -ReleaseLock {
+            param($path)
+            $resumeReleases.Add($path) | Out-Null
+            Remove-Item -LiteralPath $path
+        }
+        $afterCrash.state | Should -Be 'failed'
+        $resumeReleases.Count | Should -Be 1
+
+        $ambiguous = New-TestRun
+        $ambiguous.state = 'failed'
+        $ambiguous.nodes.inspect.state = 'failed'
+        $ambiguous.cleanup_journal[0].state = 'running'
+        $blocked = Invoke-DeclarativeWorkflowTerminalCleanup -ProjectDir $project -Run $ambiguous -SaveRun { } -ReleaseLock { throw 'must not repeat' }
+        $blocked.state | Should -Be 'failed'
+        $blocked.cleanup_journal[0].state | Should -Be 'blocked'
+    }
+
+    It 'M01 atomically projects workflow state while preserving unknown manifest sections' {
+        $project = Join-Path $TestDrive 'manifest-project'
+        $winsmuxDir = Join-Path $project '.winsmux'
+        [IO.Directory]::CreateDirectory($winsmuxDir) | Out-Null
+        $manifestPath = Join-Path $winsmuxDir 'manifest.yaml'
+        $manifest = @"
+version: 2
+saved_at: 2026-07-22T00:00:00Z
+session:
+  name: winsmux-orchestra
+  generation_id: generation-123
+  server_session_id: `$9
+  bootstrap_pane_id: "%1"
+panes: {}
+tasks:
+  queued: []
+  in_progress: []
+  completed: []
+worktrees: {}
+future_state:
+  keep: true
+"@
+        [IO.File]::WriteAllText($manifestPath, $manifest, [Text.UTF8Encoding]::new($false))
+        $run = New-TestRun
+        Mock Get-TeamPipelineDeclarativeProjectHead { 'b' * 40 }
+        Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $run | Out-Null
+        $after = [IO.File]::ReadAllText($manifestPath)
+        $after | Should -Match '(?m)^workflow_runs:'
+        $after | Should -Match '(?m)^future_state:'
+        $after | Should -Match '(?m)^  keep: true\r?$'
+        $after | Should -Not -Match 'Implement TASK-659 safely'
+
+        $stateBefore = [IO.File]::ReadAllBytes((Join-Path $winsmuxDir 'workflow-runs\run-123\state.json'))
+        $manifestBefore = [IO.File]::ReadAllBytes($manifestPath)
+        $badRun = Copy-DeclarativeWorkflowValue $run
+        $badRun.generation_id = 'generation-other'
+        { Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $badRun } | Should -Throw '*generation*'
+        [Convert]::ToHexString([IO.File]::ReadAllBytes($manifestPath)) | Should -Be ([Convert]::ToHexString($manifestBefore))
+        [Convert]::ToHexString([IO.File]::ReadAllBytes((Join-Path $winsmuxDir 'workflow-runs\run-123\state.json'))) | Should -Be ([Convert]::ToHexString($stateBefore))
+
+        $junctionProject = Join-Path $TestDrive 'state-junction-project'
+        $junctionRunsRoot = Join-Path $junctionProject '.winsmux\workflow-runs'
+        $externalRunRoot = Join-Path $TestDrive 'external-state-run'
+        [IO.Directory]::CreateDirectory($junctionRunsRoot) | Out-Null
+        [IO.Directory]::CreateDirectory($externalRunRoot) | Out-Null
+        $externalState = Join-Path $externalRunRoot 'state.json'
+        [IO.File]::WriteAllText($externalState, 'external-state-sentinel', [Text.UTF8Encoding]::new($false))
+        $externalBefore = [IO.File]::ReadAllBytes($externalState)
+        $junctionPath = Join-Path $junctionRunsRoot 'run-123'
+        $taskFile = Join-Path $TestDrive 'junction-state-task.txt'
+        [IO.File]::WriteAllText($taskFile, 'Implement TASK-659 safely.', [Text.UTF8Encoding]::new($false))
+        try {
+            try {
+                $stateJunction = New-Item -ItemType Junction -Path $junctionPath -Target $externalRunRoot -ErrorAction Stop
+            } catch {
+                throw "State junction fixture creation failed explicitly: $($_.Exception.Message)"
+            }
+            [bool]($stateJunction.Attributes -band [IO.FileAttributes]::ReparsePoint) | Should -BeTrue
+            { Read-DeclarativeWorkflowRunState -ProjectDir $junctionProject -RunId 'run-123' } | Should -Throw '*reparse*'
+            { Save-DeclarativeWorkflowRunState -ProjectDir $junctionProject -Run $run } | Should -Throw '*reparse*'
+            {
+                Invoke-TeamPipelineDeclarativeWorkflow -Action start -RecipeId 'bugfix-two-slot' -WorkflowId 'bugfix' `
+                    -RunId 'run-123' -GenerationId 'generation-123' -ConfigFingerprint ('sha256:' + ('a' * 64)) `
+                    -SourceHead ('b' * 40) -TaskFile $taskFile -ProjectDir $junctionProject
+            } | Should -Throw '*reparse*'
+            [Convert]::ToHexString([IO.File]::ReadAllBytes($externalState)) | Should -Be ([Convert]::ToHexString($externalBefore))
+        } finally {
+            if ([IO.Directory]::Exists($junctionPath)) { [IO.Directory]::Delete($junctionPath) }
+        }
+        [Convert]::ToHexString([IO.File]::ReadAllBytes($externalState)) | Should -Be ([Convert]::ToHexString($externalBefore))
+
+        $transactionWorkflow = (New-TestWorkflowPlan | ConvertTo-Json -Depth 20) | ConvertFrom-Json -AsHashtable
+        $transactionPlan = [ordered]@{
+            config_fingerprint = ('sha256:' + ('a' * 64))
+            resolved_bindings = [ordered]@{ implement = 'worker-1'; verify = 'worker-2' }
+            workflow = $transactionWorkflow
+        }
+        Mock Invoke-TeamPipelineWorkspacePlanOnce { Copy-DeclarativeWorkflowValue $transactionPlan }
+        $existingLockProject = Join-Path $TestDrive 'existing-lock-project'
+        $existingRunRoot = Join-Path $existingLockProject '.winsmux\workflow-runs\run-123'
+        [IO.Directory]::CreateDirectory($existingRunRoot) | Out-Null
+        $existingLockPath = Join-Path $existingRunRoot 'run.lock'
+        [IO.File]::WriteAllText($existingLockPath, 'existing-lock-sentinel', [Text.UTF8Encoding]::new($false))
+        $existingLockBefore = [IO.File]::ReadAllBytes($existingLockPath)
+        {
+            Invoke-TeamPipelineDeclarativeWorkflow -Action start -RecipeId 'bugfix-two-slot' -WorkflowId 'bugfix' `
+                -RunId 'run-123' -GenerationId 'generation-123' -ConfigFingerprint ('sha256:' + ('a' * 64)) `
+                -SourceHead ('b' * 40) -TaskFile $taskFile -ProjectDir $existingLockProject
+        } | Should -Throw
+        [Convert]::ToHexString([IO.File]::ReadAllBytes($existingLockPath)) | Should -Be ([Convert]::ToHexString($existingLockBefore))
+        Test-Path -LiteralPath (Join-Path $existingRunRoot 'state.json') -PathType Leaf | Should -BeFalse
+
+        $saveFailureProject = Join-Path $TestDrive 'save-failure-project'
+        $saveFailureLock = Join-Path $saveFailureProject '.winsmux\workflow-runs\run-123\run.lock'
+        $script:lockObservedBeforeStateSave = $false
+        Mock Save-DeclarativeWorkflowRunState {
+            $script:lockObservedBeforeStateSave = Test-Path -LiteralPath $saveFailureLock -PathType Leaf
+            throw 'injected state save failure'
+        }
+        {
+            Invoke-TeamPipelineDeclarativeWorkflow -Action start -RecipeId 'bugfix-two-slot' -WorkflowId 'bugfix' `
+                -RunId 'run-123' -GenerationId 'generation-123' -ConfigFingerprint ('sha256:' + ('a' * 64)) `
+                -SourceHead ('b' * 40) -TaskFile $taskFile -ProjectDir $saveFailureProject
+        } | Should -Throw '*injected state save failure*'
+        $script:lockObservedBeforeStateSave | Should -BeTrue
+        Test-Path -LiteralPath $saveFailureLock -PathType Leaf | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $saveFailureProject '.winsmux\workflow-runs\run-123\state.json') -PathType Leaf | Should -BeFalse
+    }
+}
