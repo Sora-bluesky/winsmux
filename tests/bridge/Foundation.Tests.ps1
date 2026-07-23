@@ -1677,6 +1677,98 @@ Describe 'TASK658 R37 project-settings startup and workspace-plan differential c
 }
 
 
+Describe 'TASK659 apply-ready orchestra application contract' -Tag 'task659-application' {
+    BeforeAll {
+        $script:task659RepoRoot = Split-Path -Parent $script:BridgeTestsRoot
+        . (Join-Path $script:task659RepoRoot 'winsmux-core\scripts\orchestra-start.ps1')
+    }
+
+    It 'reuses the Rust application layout and creates one stable manifest projection' {
+        $plan = [ordered]@{
+            schema_version = 1
+            config_fingerprint = ('sha256:' + ('a' * 64))
+            recipe_id = 'apply'
+            workflow_id = 'task-659'
+            application_layout = [ordered]@{
+                schema_version = 1
+                columns = @(
+                    [ordered]@{
+                        region = 'main'
+                        panes = @(
+                            [ordered]@{ pane_key = 'implement'; workflow_role = 'implementer'; slot_id = 'worker-1'; worktree = [ordered]@{ mode = 'managed'; name = 'task-659-implement' } }
+                        )
+                    },
+                    [ordered]@{
+                        region = 'side'
+                        panes = @(
+                            [ordered]@{ pane_key = 'verify'; workflow_role = 'verifier'; slot_id = 'worker-2'; worktree = [ordered]@{ mode = 'read-only-reference' } }
+                        )
+                    }
+                )
+            }
+            panes = @()
+            startup_actions = @(
+                [ordered]@{ action_id = 'prepare'; kind = 'ensure-managed-worktree'; pane_ref = 'implement' },
+                [ordered]@{ action_id = 'start-implement'; kind = 'ensure-slot-ready'; pane_ref = 'implement' },
+                [ordered]@{ action_id = 'start-verify'; kind = 'ensure-slot-ready'; pane_ref = 'verify' }
+            )
+            resolved_bindings = [ordered]@{ implement = 'worker-1'; verify = 'worker-2' }
+        }
+
+        $application = New-OrchestraDeclarativeApplication -Plan $plan -RecipeId 'apply' -WorkflowId 'task-659'
+
+        [object]::ReferenceEquals($application.Plan, $plan) | Should -BeTrue
+        [object]::ReferenceEquals($application.Layout, $plan.application_layout) | Should -BeTrue
+        $application.Projection.recipe_id | Should -Be 'apply'
+        $application.ManagedWorktrees.implement.PathSuffix | Should -Be '.worktrees\task-659-implement'
+        $application.ManagedWorktrees.implement.BranchName | Should -Be 'worktree-task-659-implement'
+        @($application.StartupActions).Count | Should -Be 3
+    }
+
+    It 'rejects a selector mismatch before returning an application object' {
+        $plan = [ordered]@{
+            schema_version = 1
+            config_fingerprint = ('sha256:' + ('b' * 64))
+            recipe_id = 'other'
+            workflow_id = $null
+            application_layout = [ordered]@{ schema_version = 1; columns = @() }
+            panes = @()
+            startup_actions = @()
+            resolved_bindings = [ordered]@{}
+        }
+
+        { New-OrchestraDeclarativeApplication -Plan $plan -RecipeId 'apply' -WorkflowId '' } |
+            Should -Throw '*recipe_id does not match*'
+    }
+
+    It 'rejects duplicate managed worktree names within one plan before application' {
+        $plan = [ordered]@{
+            schema_version = 1
+            config_fingerprint = ('sha256:' + ('c' * 64))
+            recipe_id = 'apply'
+            workflow_id = 'task-659'
+            application_layout = [ordered]@{
+                schema_version = 1
+                columns = @(
+                    [ordered]@{
+                        region = 'main'
+                        panes = @(
+                            [ordered]@{ pane_key = 'implement'; workflow_role = 'implementer'; slot_id = 'worker-1'; worktree = [ordered]@{ mode = 'managed'; name = 'Task-659-Shared' } },
+                            [ordered]@{ pane_key = 'verify'; workflow_role = 'verifier'; slot_id = 'worker-2'; worktree = [ordered]@{ mode = 'managed'; name = 'task-659-shared' } }
+                        )
+                    }
+                )
+            }
+            panes = @()
+            startup_actions = @()
+            resolved_bindings = [ordered]@{ implement = 'worker-1'; verify = 'worker-2' }
+        }
+
+        { New-OrchestraDeclarativeApplication -Plan $plan -RecipeId 'apply' -WorkflowId 'task-659' } |
+            Should -Throw '*duplicate managed worktree name*'
+    }
+}
+
 Describe 'winsmux pane env contract' {
     BeforeAll {
         . (Join-Path (Split-Path -Parent $script:BridgeTestsRoot) 'winsmux-core\scripts\pane-env.ps1')

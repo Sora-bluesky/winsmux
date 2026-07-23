@@ -216,6 +216,149 @@ fn multiple_panes_may_share_one_placement_region() {
     .expect("regions are placement classes, not unique IDs");
     assert_eq!(plan.panes[0].region, "main");
     assert_eq!(plan.panes[1].region, "main");
+    assert_eq!(plan.application_layout.schema_version, 1);
+    assert_eq!(plan.application_layout.columns.len(), 1);
+    assert_eq!(plan.application_layout.columns[0].region, "main");
+    assert_eq!(
+        plan.application_layout.columns[0].panes[0].pane_key,
+        "implement"
+    );
+    assert_eq!(
+        plan.application_layout.columns[0].panes[1].pane_key,
+        "verify"
+    );
+}
+
+fn apply_ready_recipe(pane_count: usize, duplicate_slot: bool) -> (String, Vec<SlotCapabilities>) {
+    let mut panes = Vec::new();
+    let mut actions = Vec::new();
+    let mut slot_catalog = Vec::new();
+    for index in 1..=pane_count {
+        let slot_index = if duplicate_slot && index == pane_count {
+            1
+        } else {
+            index
+        };
+        panes.push(format!(
+            "      - pane-key: pane-{index}\n        workflow-role: worker\n        slot-ref: slot-{slot_index}\n        region: region-{}\n        worktree:\n          mode: read-only-reference",
+            ((index - 1) % 3) + 1
+        ));
+        actions.push(format!(
+            "      - action-id: ready-{index}\n        kind: ensure-slot-ready\n        pane-ref: pane-{index}"
+        ));
+        slot_catalog.push(SlotCapabilities {
+            slot_id: format!("slot-{index}"),
+            supports_file_edit: false,
+            supports_verification: false,
+            supports_structured_result: false,
+        });
+    }
+    (
+        format!(
+            "config-version: 1\nworkspace-recipes:\n  apply:\n    schema-version: 1\n    panes:\n{}\n    startup-actions:\n{}\n",
+            panes.join("\n"),
+            actions.join("\n")
+        ),
+        slot_catalog,
+    )
+}
+
+#[test]
+fn application_layout_is_column_major_and_bounded_to_twelve_physical_panes() {
+    let (yaml, catalog) = apply_ready_recipe(12, false);
+    let plan = normalize_workspace_plan(&yaml, "apply", None, &catalog)
+        .expect("twelve physical panes should be apply-ready");
+    assert_eq!(plan.application_layout.schema_version, 1);
+    assert_eq!(plan.application_layout.columns.len(), 3);
+    assert_eq!(plan.application_layout.columns[0].region, "region-1");
+    assert_eq!(
+        plan.application_layout.columns[0]
+            .panes
+            .iter()
+            .map(|pane| pane.pane_key.as_str())
+            .collect::<Vec<_>>(),
+        ["pane-1", "pane-4", "pane-7", "pane-10"]
+    );
+
+    let (too_many, catalog) = apply_ready_recipe(13, false);
+    let error = normalize_workspace_plan(&too_many, "apply", None, &catalog)
+        .expect_err("thirteen physical panes must be rejected before output");
+    assert_eq!(
+        error.to_string(),
+        "workspace recipe must contain 1 to 12 panes."
+    );
+}
+
+#[test]
+fn application_layout_rejects_non_injective_slot_bindings() {
+    let (yaml, catalog) = apply_ready_recipe(2, true);
+    let error = normalize_workspace_plan(&yaml, "apply", None, &catalog)
+        .expect_err("one physical slot cannot back two physical panes in schema v1");
+    assert_eq!(
+        error.to_string(),
+        "workspace recipe panes must resolve to distinct slot IDs."
+    );
+}
+
+#[test]
+fn startup_action_schedule_requires_complete_non_interleaved_coverage() {
+    let valid_complete = VALID_RECIPE.replace("\r\n", "\n");
+    let missing_ready = valid_complete.replace(
+        "      - action-id: start-verify-slot\n        kind: ensure-slot-ready\n        pane-ref: verify\n",
+        "",
+    );
+    let duplicate_ready = valid_complete.replace(
+        "      - action-id: start-verify-slot",
+        "      - action-id: duplicate-verify-slot\n        kind: ensure-slot-ready\n        pane-ref: verify\n      - action-id: start-verify-slot",
+    );
+    let interleaved = valid_complete.replace(
+        "      - action-id: prepare-implement-worktree\n        kind: ensure-managed-worktree\n        pane-ref: implement\n      - action-id: start-implement-slot\n        kind: ensure-slot-ready\n        pane-ref: implement\n      - action-id: start-verify-slot\n        kind: ensure-slot-ready\n        pane-ref: verify",
+        "      - action-id: start-implement-slot\n        kind: ensure-slot-ready\n        pane-ref: implement\n      - action-id: prepare-implement-worktree\n        kind: ensure-managed-worktree\n        pane-ref: implement\n      - action-id: start-verify-slot\n        kind: ensure-slot-ready\n        pane-ref: verify",
+    );
+
+    let missing = normalize_workspace_plan(
+        &missing_ready,
+        "bugfix-two-slot",
+        Some("issue-1204"),
+        &slots(),
+    )
+    .expect_err("every pane requires exactly one slot-ready action");
+    assert_eq!(
+        missing.to_string(),
+        "every pane must have exactly one ensure-slot-ready action."
+    );
+
+    let duplicate = normalize_workspace_plan(
+        &duplicate_ready,
+        "bugfix-two-slot",
+        Some("issue-1204"),
+        &slots(),
+    )
+    .expect_err("duplicate slot-ready coverage must fail");
+    assert_eq!(
+        duplicate.to_string(),
+        "every pane must have exactly one ensure-slot-ready action."
+    );
+
+    let out_of_phase = normalize_workspace_plan(
+        &interleaved,
+        "bugfix-two-slot",
+        Some("issue-1204"),
+        &slots(),
+    )
+    .expect_err("managed actions cannot follow slot-ready actions");
+    assert_eq!(
+        out_of_phase.to_string(),
+        "ensure-managed-worktree actions must precede all ensure-slot-ready actions."
+    );
+
+    normalize_workspace_plan(
+        &valid_complete,
+        "bugfix-two-slot",
+        Some("issue-1204"),
+        &slots(),
+    )
+    .expect("one managed action followed by exactly one slot-ready action per pane is valid");
 }
 
 #[test]
@@ -381,10 +524,8 @@ fn startup_action_kind_must_be_compatible_with_the_target_pane() {
         "ensure-managed-worktree requires a managed target pane."
     );
 
-    let crlf_recipe = VALID_RECIPE.replace("\r\n", "\n").replace('\n', "\r\n");
-    let slot_ready_on_managed = crlf_recipe.replacen("pane-ref: verify", "pane-ref: implement", 1);
     let plan = normalize_workspace_plan(
-        &slot_ready_on_managed,
+        VALID_RECIPE,
         "bugfix-two-slot",
         Some("issue-1204"),
         &slots(),

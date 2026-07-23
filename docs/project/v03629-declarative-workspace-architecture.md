@@ -239,10 +239,26 @@ Normative field rules:
   and de-duplicated before matching.
 - `workflow-role` is a role in this workflow only. It is not Lane B's persistent
   slot `role_profile` and cannot rewrite it.
+- Apply-ready schema version 1 supports 1 to 12 physical panes. Unique `region`
+  values form equal-width columns in first occurrence order; panes that share a
+  region form equal-height rows in pane declaration order. The Rust planner emits
+  this concrete ordered `application_layout`; PowerShell applies it without
+  interpreting raw region names.
+- Resolved physical slot bindings are injective in apply-ready schema version 1.
+  Workflows that reuse one agent for several nodes reuse one pane key instead of
+  declaring several physical panes for one slot. Physical pane labels and manifest
+  `slot_id` values are the resolved Lane B slot IDs. `workflow-role` remains
+  workflow-only metadata; Lane B remains authoritative for runtime role, provider,
+  model, backend, and other launch settings.
 - Startup actions are a closed typed enum with schema-validated arguments.
   TASK-658 accepts exactly `ensure-managed-worktree` and `ensure-slot-ready`.
   Arbitrary shell text, unknown fields, inline credentials, and provider prompt
   bodies are not valid startup actions.
+- The schema version 1 startup schedule has two non-interleaved phases. Every
+  managed pane has exactly one `ensure-managed-worktree` in the first phase, and
+  read-only-reference panes have none. Every pane has exactly one
+  `ensure-slot-ready` in the second phase. Missing, duplicate, incompatible, or
+  out-of-order coverage is rejected before plan output.
 - TASK-659 v1 accepts one workflow task-input contract:
   `source: runtime-task-file` plus `privacy: digest-only`. Declarative start and
   resume require `--task-file <path>`; runtime reads that file exactly once as
@@ -270,6 +286,15 @@ Normative field rules:
 - Worktree paths are derived by runtime policy. Config may provide a safe name
   template but not an absolute private path or an escape outside the managed
   worktree root.
+- A managed pane uses `.worktrees/<normalized-name>` and branch
+  `worktree-<normalized-name>`. Runtime rejects all path, branch, registration,
+  reparse-point, and cardinality conflicts before effects. A read-only-reference
+  pane starts in the project root and creates no worktree; this mode does not claim
+  operating-system write isolation. Declarative rollback never force-removes a
+  worktree. Before any slot starts, cleanup removes only an exactly registered,
+  clean, unchanged worktree created by the current invocation. After a slot starts,
+  or when path, branch, gitdir, HEAD, or cleanliness differs, it preserves the
+  worktree for operator handling.
 - DAG dependencies must be acyclic. Each side-effecting node has a stable
   idempotency key and an explicit compensation or cleanup classification.
 - Context-pack `include` values are allowlisted projections. Omitted limits use

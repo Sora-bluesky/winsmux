@@ -164,9 +164,30 @@ pub struct NormalizedWorkspacePlan {
     pub config_fingerprint: String,
     pub recipe_id: String,
     pub workflow_id: Option<String>,
+    pub application_layout: NormalizedApplicationLayout,
     pub panes: Vec<NormalizedPane>,
     pub startup_actions: Vec<NormalizedStartupAction>,
     pub resolved_bindings: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct NormalizedApplicationLayout {
+    pub schema_version: u64,
+    pub columns: Vec<NormalizedApplicationColumn>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct NormalizedApplicationColumn {
+    pub region: String,
+    pub panes: Vec<NormalizedApplicationPane>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct NormalizedApplicationPane {
+    pub pane_key: String,
+    pub workflow_role: String,
+    pub slot_id: String,
+    pub worktree: NormalizedWorktree,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -287,16 +308,15 @@ pub(crate) fn normalize_workspace_plan_from_value(
             recipe.schema_version
         )));
     }
-    if recipe.panes.is_empty() {
-        return Err(invalid_data(
-            "workspace recipe must contain at least one pane.",
-        ));
+    if recipe.panes.is_empty() || recipe.panes.len() > 12 {
+        return Err(invalid_data("workspace recipe must contain 1 to 12 panes."));
     }
 
     let slot_catalog = validate_slot_catalog(slots)?;
     let mut pane_keys = BTreeSet::new();
     let mut normalized_panes = Vec::with_capacity(recipe.panes.len());
     let mut resolved_bindings = BTreeMap::new();
+    let mut resolved_slot_ids = BTreeSet::new();
 
     for pane in recipe.panes {
         require_stable_id("pane-key", &pane.pane_key)?;
@@ -356,6 +376,11 @@ pub(crate) fn normalize_workspace_plan_from_value(
             }
         };
 
+        if !resolved_slot_ids.insert(canonical_slot_identity(&slot_id)?) {
+            return Err(invalid_data(
+                "workspace recipe panes must resolve to distinct slot IDs.",
+            ));
+        }
         let worktree = normalize_worktree(&pane.worktree, workflow_id)?;
         resolved_bindings.insert(pane.pane_key.clone(), slot_id.clone());
         normalized_panes.push(NormalizedPane {
@@ -368,8 +393,12 @@ pub(crate) fn normalize_workspace_plan_from_value(
         });
     }
 
+    let application_layout = build_application_layout(&normalized_panes);
     let mut action_ids = BTreeSet::new();
     let mut normalized_actions = Vec::with_capacity(recipe.startup_actions.len());
+    let mut managed_action_counts = BTreeMap::<String, usize>::new();
+    let mut ready_action_counts = BTreeMap::<String, usize>::new();
+    let mut ready_phase_started = false;
     for action in recipe.startup_actions {
         require_stable_id("action-id", &action.action_id)?;
         require_stable_id("pane-ref", &action.pane_ref)?;
@@ -400,11 +429,53 @@ pub(crate) fn normalize_workspace_plan_from_value(
                 "ensure-managed-worktree requires a managed target pane.",
             ));
         }
+        if action.kind == "ensure-managed-worktree" {
+            if ready_phase_started {
+                return Err(invalid_data(
+                    "ensure-managed-worktree actions must precede all ensure-slot-ready actions.",
+                ));
+            }
+            *managed_action_counts
+                .entry(action.pane_ref.clone())
+                .or_default() += 1;
+        } else {
+            ready_phase_started = true;
+            *ready_action_counts
+                .entry(action.pane_ref.clone())
+                .or_default() += 1;
+        }
         normalized_actions.push(NormalizedStartupAction {
             action_id: action.action_id,
             kind: action.kind,
             pane_ref: action.pane_ref,
         });
+    }
+    for pane in &normalized_panes {
+        if ready_action_counts
+            .get(&pane.pane_key)
+            .copied()
+            .unwrap_or(0)
+            != 1
+        {
+            return Err(invalid_data(
+                "every pane must have exactly one ensure-slot-ready action.",
+            ));
+        }
+        let managed_count = managed_action_counts
+            .get(&pane.pane_key)
+            .copied()
+            .unwrap_or(0);
+        if pane.worktree.mode == "managed" {
+            if managed_count != 1 {
+                return Err(invalid_data(
+                    "every managed pane must have exactly one ensure-managed-worktree action.",
+                ));
+            }
+        } else if managed_count != 0 {
+            return Err(invalid_data(
+                "read-only-reference panes must not have ensure-managed-worktree actions.",
+            ));
+        }
     }
 
     let fingerprint_payload = FingerprintPayload {
@@ -427,10 +498,38 @@ pub(crate) fn normalize_workspace_plan_from_value(
         config_fingerprint,
         recipe_id: recipe_id.to_string(),
         workflow_id: workflow_id.map(str::to_string),
+        application_layout,
         panes: normalized_panes,
         startup_actions: normalized_actions,
         resolved_bindings,
     })
+}
+
+fn build_application_layout(panes: &[NormalizedPane]) -> NormalizedApplicationLayout {
+    let mut columns: Vec<NormalizedApplicationColumn> = Vec::new();
+    for pane in panes {
+        let application_pane = NormalizedApplicationPane {
+            pane_key: pane.pane_key.clone(),
+            workflow_role: pane.workflow_role.clone(),
+            slot_id: pane.slot_id.clone(),
+            worktree: pane.worktree.clone(),
+        };
+        if let Some(column) = columns
+            .iter_mut()
+            .find(|column| column.region == pane.region)
+        {
+            column.panes.push(application_pane);
+        } else {
+            columns.push(NormalizedApplicationColumn {
+                region: pane.region.clone(),
+                panes: vec![application_pane],
+            });
+        }
+    }
+    NormalizedApplicationLayout {
+        schema_version: SCHEMA_VERSION,
+        columns,
+    }
 }
 
 fn validate_document_config_version(root: &serde_yaml::Value) -> io::Result<()> {

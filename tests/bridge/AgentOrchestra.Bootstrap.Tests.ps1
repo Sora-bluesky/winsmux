@@ -4,6 +4,65 @@ BeforeAll {
     . (Join-Path $PSScriptRoot '_helpers\BridgeTestCommon.ps1')
 }
 
+Describe 'TASK659 declarative worktree transaction boundary' -Tag 'task659-application' {
+    BeforeAll {
+        . (Join-Path (Split-Path -Parent $script:BridgeTestsRoot) 'winsmux-core\scripts\orchestra-start.ps1')
+    }
+
+    It 'rejects all managed worktree collisions before invoking a mutating git command' {
+        $projectDir = Join-Path $TestDrive 'task659-collision'
+        $worktreeRoot = Join-Path $projectDir '.worktrees'
+        New-Item -ItemType Directory -Path $worktreeRoot -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $worktreeRoot 'task-659-implement') -Force | Out-Null
+        $application = [ordered]@{
+            ManagedWorktrees = [ordered]@{
+                implement = [ordered]@{
+                    PaneKey = 'implement'
+                    Name = 'task-659-implement'
+                    PathSuffix = '.worktrees\task-659-implement'
+                    BranchName = 'worktree-task-659-implement'
+                }
+            }
+        }
+        Mock Invoke-BuilderWorktreeGit {
+            if ($Arguments[0] -eq 'worktree' -and $Arguments[1] -eq 'list') {
+                return [pscustomobject]@{ ExitCode = 0; Output = ''; Lines = @() }
+            }
+            if ($Arguments[0] -eq 'branch' -and $Arguments[1] -eq '--list') {
+                return [pscustomobject]@{ ExitCode = 0; Output = ''; Lines = @() }
+            }
+            throw 'mutating git command must not run during preflight'
+        }
+
+        { Assert-OrchestraDeclarativeWorktreePreflight -ProjectDir $projectDir -Application $application } |
+            Should -Throw '*already exists*'
+        Should -Invoke Invoke-BuilderWorktreeGit -Times 0 -Exactly -ParameterFilter {
+            $Arguments -contains 'add' -or $Arguments -contains 'remove'
+        }
+    }
+
+    It 'preserves every declarative worktree after any slot has started' {
+        $created = @(
+            [ordered]@{
+                Declarative = $true
+                PaneKey = 'implement'
+                BranchName = 'worktree-task-659-implement'
+                WorktreePath = 'C:\repo\.worktrees\task-659-implement'
+                GitWorktreeDir = 'C:\repo\.git\worktrees\task-659-implement'
+                BaseHead = ('a' * 40)
+            }
+        )
+        Mock Invoke-BuilderWorktreeGit { throw 'git cleanup must not run after a slot starts' }
+
+        $result = Remove-OrchestraCreatedWorktrees -ProjectDir 'C:\repo' -CreatedWorktrees $created -PreserveDeclarativeWorktrees
+
+        @($result.RemovedWorktrees).Count | Should -Be 0
+        @($result.PreservedWorktrees).Count | Should -Be 1
+        $result.PreservedWorktrees[0].Reason | Should -Be 'slot_started'
+        Should -Invoke Invoke-BuilderWorktreeGit -Times 0 -Exactly
+    }
+}
+
 Describe 'orchestra-start server bootstrap' {
     BeforeAll {
         . (Join-Path (Split-Path -Parent $script:BridgeTestsRoot) 'winsmux-core\scripts\orchestra-start.ps1')
@@ -680,7 +739,7 @@ Describe 'orchestra-start server bootstrap' {
         }
     }
 
-    It 'persists worker isolation metadata through Save-OrchestraSessionState' {
+    It 'preserves the selectorless manifest pane shape' -Tag 'task659-application' {
         $script:savedManifest = $null
         Mock Save-WinsmuxManifest {
             param([string]$ProjectDir, $Manifest)
@@ -696,6 +755,8 @@ Describe 'orchestra-start server bootstrap' {
                 Label                  = 'worker-1'
                 PaneId                 = '%2'
                 SlotId                 = 'worker-1'
+                PaneKey               = 'ignored-without-declarative-workspace'
+                WorkflowRole          = 'ignored-without-declarative-workspace'
                 Role                   = 'Worker'
                 ExecMode               = $false
                 ProjectDir             = 'C:\repo'
@@ -725,6 +786,8 @@ Describe 'orchestra-start server bootstrap' {
         $pane.worktree_git_dir | Should -Be 'C:\repo\.git\worktrees\worker-1'
         $pane.expected_origin | Should -Be 'https://github.com/example/repo.git'
         $pane.supports_context_reset | Should -Be $false
+        $pane.PSObject.Properties.Name | Should -Not -Contain 'pane_key'
+        $pane.PSObject.Properties.Name | Should -Not -Contain 'workflow_role'
     }
 
     It 'persists background process registry entries with owner lease and recovery policy' {

@@ -9,7 +9,8 @@ param(
     [int]$Workers = 0,
     [int]$Builders = 0,
     [int]$Researchers = 0,
-    [int]$Reviewers = 0
+    [int]$Reviewers = 0,
+    [AllowNull()]$ApplicationLayout = $null
 )
 
 $ErrorActionPreference = 'Stop'
@@ -145,6 +146,18 @@ function Get-PaneIds {
     )
 }
 
+function Get-VisualPaneIds {
+    param([Parameter(Mandatory = $true)][string]$Target)
+    $records = Invoke-OrchestraLayoutWinsmux -Arguments @('list-panes', '-t', $Target, '-F', '#{pane_id},#{pane_left},#{pane_top}')
+    return @($records | ForEach-Object {
+            $parts = ([string]$_).Trim() -split ','
+            if ($parts.Count -ne 3 -or $parts[0] -notmatch '^%\d+$') {
+                throw "Unexpected pane geometry record: '$_'."
+            }
+            [PSCustomObject]@{ PaneId = $parts[0]; Left = [int]$parts[1]; Top = [int]$parts[2] }
+        } | Sort-Object Left, Top | ForEach-Object PaneId)
+}
+
 function Split-Equal {
     param(
         [Parameter(Mandatory = $true)]
@@ -220,14 +233,33 @@ if ([string]::IsNullOrWhiteSpace($SessionName)) {
     throw 'SessionName is required. Pass -SessionName or set WINSMUX_ORCHESTRA_SESSION.'
 }
 
-$total = $Operators + $Workers + $Builders + $Researchers + $Reviewers
+$applicationColumns = @()
+$applicationPanes = @()
+if ($null -ne $ApplicationLayout) {
+    $layoutVersion = if ($ApplicationLayout -is [System.Collections.IDictionary]) { $ApplicationLayout['schema_version'] } else { $ApplicationLayout.schema_version }
+    if ([int]$layoutVersion -ne 1) { throw 'ApplicationLayout schema_version must be 1.' }
+    $applicationColumns = @(if ($ApplicationLayout -is [System.Collections.IDictionary]) { $ApplicationLayout['columns'] } else { $ApplicationLayout.columns })
+    foreach ($column in $applicationColumns) {
+        $columnPanes = @(if ($column -is [System.Collections.IDictionary]) { $column['panes'] } else { $column.panes })
+        if ($columnPanes.Count -lt 1) { throw 'ApplicationLayout columns must contain at least one pane.' }
+        $applicationPanes += $columnPanes
+    }
+}
+$total = if ($null -ne $ApplicationLayout) { $applicationPanes.Count } else { $Operators + $Workers + $Builders + $Researchers + $Reviewers }
 if ($total -lt 1 -or $total -gt 12) {
     throw "Total panes must be 1-12 (got $total)."
 }
 
-$grid = Get-GridDimensions -PaneCount $total
-$rows = $grid.Rows
-$cols = $grid.Cols
+$grid = if ($null -ne $ApplicationLayout) {
+    $maximumRows = 0
+    foreach ($column in $applicationColumns) {
+        $columnPaneCount = @(if ($column -is [System.Collections.IDictionary]) { $column['panes'] } else { $column.panes }).Count
+        $maximumRows = [Math]::Max($maximumRows, $columnPaneCount)
+    }
+    @{ Rows = $maximumRows; Cols = $applicationColumns.Count }
+} else { Get-GridDimensions -PaneCount $total }
+$rows = [int]$grid.Rows
+$cols = [int]$grid.Cols
 
 try {
     Invoke-OrchestraLayoutWinsmux -Arguments @('has-session', '-t', $SessionName) | Out-Null
@@ -263,30 +295,41 @@ if (-not (Set-OrchestraPaneBorderOptions -WindowId $borderWindowTarget -WinsmuxB
     Write-Warning "Could not enable pane border labels for window $newWindowId."
 }
 
-if ($rows -gt 1) {
-    Split-Equal -Target $newPaneId -PaneCount $rows -Direction '-v'
-}
-
-$rowIds = @(Get-PaneIds -Target $newWindowId)
-if ($rowIds.Count -lt $rows) {
-    throw "Expected at least $rows row panes but found $($rowIds.Count)."
-}
-
-if ($cols -gt 1) {
-    for ($rowIndex = 0; $rowIndex -lt $rows; $rowIndex++) {
-        Invoke-OrchestraLayoutWinsmux -Arguments @('select-pane', '-t', $rowIds[$rowIndex]) | Out-Null
-        Split-Equal -Target $rowIds[$rowIndex] -PaneCount $cols -Direction '-h'
+if ($null -ne $ApplicationLayout) {
+    if ($cols -gt 1) {
+        Split-Equal -Target $newPaneId -PaneCount $cols -Direction '-h'
+    }
+    $columnIds = @(Get-VisualPaneIds -Target $newWindowId)
+    if ($columnIds.Count -ne $cols) { throw "Expected $cols application columns but found $($columnIds.Count)." }
+    for ($columnIndex = 0; $columnIndex -lt $cols; $columnIndex++) {
+        $column = $applicationColumns[$columnIndex]
+        $columnPanes = @(if ($column -is [System.Collections.IDictionary]) { $column['panes'] } else { $column.panes })
+        if ($columnPanes.Count -gt 1) {
+            Split-Equal -Target $columnIds[$columnIndex] -PaneCount $columnPanes.Count -Direction '-v'
+        }
+    }
+} else {
+    if ($rows -gt 1) {
+        Split-Equal -Target $newPaneId -PaneCount $rows -Direction '-v'
+    }
+    $rowIds = @(Get-PaneIds -Target $newWindowId)
+    if ($rowIds.Count -lt $rows) { throw "Expected at least $rows row panes but found $($rowIds.Count)." }
+    if ($cols -gt 1) {
+        for ($rowIndex = 0; $rowIndex -lt $rows; $rowIndex++) {
+            Invoke-OrchestraLayoutWinsmux -Arguments @('select-pane', '-t', $rowIds[$rowIndex]) | Out-Null
+            Split-Equal -Target $rowIds[$rowIndex] -PaneCount $cols -Direction '-h'
+        }
     }
 }
 
 Start-Sleep -Milliseconds 300
 
-$allIds = @(Get-PaneIds -Target $newWindowId)
+$allIds = @(if ($null -ne $ApplicationLayout) { Get-VisualPaneIds -Target $newWindowId } else { Get-PaneIds -Target $newWindowId })
 if ($allIds.Count -lt $total) {
     throw "Expected at least $total panes but found $($allIds.Count)."
 }
 
-$labels = @(Get-RoleLabels -OperatorCount $Operators -WorkerCount $Workers -BuilderCount $Builders -ResearcherCount $Researchers -ReviewerCount $Reviewers)
+$labels = @(if ($null -ne $ApplicationLayout) { $applicationPanes | ForEach-Object { if ($_ -is [System.Collections.IDictionary]) { [string]$_['slot_id'] } else { [string]$_.slot_id } } } else { Get-RoleLabels -OperatorCount $Operators -WorkerCount $Workers -BuilderCount $Builders -ResearcherCount $Researchers -ReviewerCount $Reviewers })
 $assignments = [System.Collections.Generic.List[object]]::new()
 
 for ($index = 0; $index -lt $total; $index++) {
@@ -295,10 +338,18 @@ for ($index = 0; $index -lt $total; $index++) {
 
     Invoke-OrchestraLayoutWinsmux -Arguments @('select-pane', '-t', $paneId, '-T', $label) | Out-Null
 
-    $assignments.Add([PSCustomObject]@{
+    $assignment = [ordered]@{
         PaneId = $paneId
         Role   = $label
-    })
+        SlotId = $label
+    }
+    if ($null -ne $ApplicationLayout) {
+        $sourcePane = $applicationPanes[$index]
+        $assignment['PaneKey'] = if ($sourcePane -is [System.Collections.IDictionary]) { [string]$sourcePane['pane_key'] } else { [string]$sourcePane.pane_key }
+        $assignment['WorkflowRole'] = if ($sourcePane -is [System.Collections.IDictionary]) { [string]$sourcePane['workflow_role'] } else { [string]$sourcePane.workflow_role }
+        $assignment['Worktree'] = if ($sourcePane -is [System.Collections.IDictionary]) { $sourcePane['worktree'] } else { $sourcePane.worktree }
+    }
+    $assignments.Add([PSCustomObject]$assignment)
 }
 
 Invoke-OrchestraLayoutWinsmux -Arguments @('select-pane', '-t', $allIds[0]) | Out-Null
@@ -311,5 +362,6 @@ Invoke-OrchestraLayoutWinsmux -Arguments @('select-pane', '-t', $allIds[0]) | Ou
     Total       = $total
     Rows        = $rows
     Cols        = $cols
+    Columns     = $cols
     Panes       = @($assignments)
 }
