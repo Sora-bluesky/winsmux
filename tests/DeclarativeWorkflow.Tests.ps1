@@ -2233,6 +2233,123 @@ declarative_workspace:
         [Convert]::ToHexString([IO.File]::ReadAllBytes($statePath)) | Should -Be ([Convert]::ToHexString($baseline))
     }
 
+    It 'Y01 preserves existing state bytes when atomic replacement fails before commit' {
+        $runRoot = Join-Path $TestDrive 'atomic-replacement-failure\.winsmux\workflow-runs\run-123'
+        [IO.Directory]::CreateDirectory($runRoot) | Out-Null
+        $statePath = Join-Path $runRoot 'state.json'
+        $previousBytes = [Text.UTF8Encoding]::new($false).GetBytes('previous-complete-state')
+        [IO.File]::WriteAllBytes($statePath, $previousBytes)
+
+        Mock Move-Item { throw 'injected atomic replacement failure' } -ParameterFilter {
+            [string]$Destination -ceq $statePath
+        }
+
+        {
+            Set-DeclarativeWorkflowRunStateBytesAtomically -Path $statePath -Bytes ([byte[]](1, 2, 3, 4))
+        } | Should -Throw '*injected atomic replacement failure*'
+
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($statePath)) | Should -Be ([Convert]::ToBase64String($previousBytes))
+        @(Get-ChildItem -LiteralPath $runRoot -Filter '.state-*.tmp' -File).Count | Should -Be 0
+    }
+
+    It 'Y02 routes non-create-new forward and rollback replacements through the same helper' {
+        $project = Join-Path $TestDrive 'atomic-forward-rollback-helper'
+        $winsmuxDir = Join-Path $project '.winsmux'
+        [IO.Directory]::CreateDirectory($winsmuxDir) | Out-Null
+        $run = New-TestRun
+        Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $run -CreateNew | Out-Null
+        $statePath = Join-Path $winsmuxDir 'workflow-runs\run-123\state.json'
+        $previousBytes = [IO.File]::ReadAllBytes($statePath)
+        [IO.File]::WriteAllText((Join-Path $winsmuxDir 'manifest.yaml'), @"
+version: 2
+session:
+  name: atomic-forward-rollback
+  generation_id: generation-123
+panes: {}
+worktrees: {}
+"@, [Text.UTF8Encoding]::new($false))
+        $updated = New-TestDispatchedRun -Run $run
+        $script:y02ReplacementCalls = [Collections.Generic.List[object]]::new()
+
+        Mock Set-DeclarativeWorkflowRunStateBytesAtomically {
+            param($Path, $Bytes)
+            $script:y02ReplacementCalls.Add([byte[]]($Bytes.Clone())) | Out-Null
+            [IO.File]::WriteAllBytes([string]$Path, [byte[]]$Bytes)
+            return $Path
+        }
+        Mock Save-WinsmuxManifest { throw 'injected manifest projection failure' }
+
+        { Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $updated } |
+            Should -Throw '*injected manifest projection failure*'
+
+        $script:y02ReplacementCalls.Count | Should -Be 2
+        [Convert]::ToBase64String($script:y02ReplacementCalls[1]) | Should -Be ([Convert]::ToBase64String($previousBytes))
+    }
+
+    It 'Y03 restores byte-exact previous state through a successful atomic rollback' {
+        $project = Join-Path $TestDrive 'atomic-rollback-success'
+        $winsmuxDir = Join-Path $project '.winsmux'
+        [IO.Directory]::CreateDirectory($winsmuxDir) | Out-Null
+        $run = New-TestRun
+        Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $run -CreateNew | Out-Null
+        $statePath = Join-Path $winsmuxDir 'workflow-runs\run-123\state.json'
+        $previousBytes = [IO.File]::ReadAllBytes($statePath)
+        [IO.File]::WriteAllText((Join-Path $winsmuxDir 'manifest.yaml'), @"
+version: 2
+session:
+  name: atomic-rollback-success
+  generation_id: generation-123
+panes: {}
+worktrees: {}
+"@, [Text.UTF8Encoding]::new($false))
+        $updated = New-TestDispatchedRun -Run $run
+        Mock Save-WinsmuxManifest { throw 'injected manifest projection failure' }
+
+        { Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $updated } |
+            Should -Throw '*injected manifest projection failure*'
+
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($statePath)) | Should -Be ([Convert]::ToBase64String($previousBytes))
+    }
+
+    It 'Y04 reports manifest and rollback failures while preserving the last complete state' {
+        $project = Join-Path $TestDrive 'atomic-rollback-failure'
+        $winsmuxDir = Join-Path $project '.winsmux'
+        [IO.Directory]::CreateDirectory($winsmuxDir) | Out-Null
+        $run = New-TestRun
+        Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $run -CreateNew | Out-Null
+        $statePath = Join-Path $winsmuxDir 'workflow-runs\run-123\state.json'
+        [IO.File]::WriteAllText((Join-Path $winsmuxDir 'manifest.yaml'), @"
+version: 2
+session:
+  name: atomic-rollback-failure
+  generation_id: generation-123
+panes: {}
+worktrees: {}
+"@, [Text.UTF8Encoding]::new($false))
+        $updated = New-TestDispatchedRun -Run $run
+        $script:y04ReplacementCalls = 0
+        $script:y04ForwardBytes = $null
+
+        Mock Set-DeclarativeWorkflowRunStateBytesAtomically {
+            param($Path, $Bytes)
+            $script:y04ReplacementCalls++
+            if ($script:y04ReplacementCalls -eq 1) {
+                $script:y04ForwardBytes = [byte[]]($Bytes.Clone())
+                [IO.File]::WriteAllBytes([string]$Path, [byte[]]$Bytes)
+                return $Path
+            }
+            throw 'injected atomic rollback failure'
+        }
+        Mock Save-WinsmuxManifest { throw 'injected manifest projection failure' }
+
+        {
+            Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $updated
+        } | Should -Throw '*injected manifest projection failure*injected atomic rollback failure*'
+
+        $script:y04ReplacementCalls | Should -Be 2
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($statePath)) | Should -Be ([Convert]::ToBase64String($script:y04ForwardBytes))
+    }
+
     It 'M01 atomically projects workflow state while preserving unknown manifest sections' {
         $project = Join-Path $TestDrive 'manifest-project'
         $winsmuxDir = Join-Path $project '.winsmux'

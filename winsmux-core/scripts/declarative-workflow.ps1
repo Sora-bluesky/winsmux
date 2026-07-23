@@ -1681,6 +1681,31 @@ function Assert-DeclarativeWorkflowStatePrivacy {
     }
 }
 
+function Set-DeclarativeWorkflowRunStateBytesAtomically {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][byte[]]$Bytes
+    )
+
+    $runRoot = Split-Path -Parent $Path
+    $temporaryPath = Join-Path $runRoot ('.state-{0}.tmp' -f [guid]::NewGuid().ToString('N'))
+    try {
+        $stream = [IO.File]::Open($temporaryPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try {
+            $stream.Write($Bytes, 0, $Bytes.Length)
+            $stream.Flush($true)
+        } finally {
+            $stream.Dispose()
+        }
+        Move-Item -LiteralPath $temporaryPath -Destination $Path -Force -ErrorAction Stop
+    } finally {
+        if ([IO.File]::Exists($temporaryPath)) {
+            Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+    return $Path
+}
+
 function Save-DeclarativeWorkflowRunState {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -1700,8 +1725,8 @@ function Save-DeclarativeWorkflowRunState {
         throw 'Declarative workflow run state already exists.'
     }
     $previousBytes = if (-not $CreateNew -and [IO.File]::Exists($path)) { [IO.File]::ReadAllBytes($path) } else { $null }
-    $tempPath = Join-Path $runRoot ('.state-{0}.tmp' -f [guid]::NewGuid().ToString('N'))
     $createdInitialState = $false
+    $forwardReplacementCompleted = $false
     try {
         $verifiedPath = Resolve-DeclarativeWorkflowOwnedRunPath -ProjectDir $ProjectDir -RunId $runId -LeafName 'state.json'
         if ($verifiedPath -cne $path) { throw 'Workflow run state ownership changed before write.' }
@@ -1715,8 +1740,8 @@ function Save-DeclarativeWorkflowRunState {
                 $stream.Dispose()
             }
         } else {
-            [IO.File]::WriteAllBytes($tempPath, $stateBytes)
-            Move-Item -LiteralPath $tempPath -Destination $path -Force
+            Set-DeclarativeWorkflowRunStateBytesAtomically -Path $path -Bytes $stateBytes | Out-Null
+            $forwardReplacementCompleted = $true
         }
 
         $manifestPath = Join-Path (Join-Path ([IO.Path]::GetFullPath($ProjectDir)) '.winsmux') 'manifest.yaml'
@@ -1742,10 +1767,9 @@ function Save-DeclarativeWorkflowRunState {
         }
     } catch {
         $saveFailure = $_
-        $rollbackPath = Resolve-DeclarativeWorkflowOwnedRunPath -ProjectDir $ProjectDir -RunId $runId -LeafName 'state.json'
-        if ($rollbackPath -cne $path) { throw 'Workflow run state ownership changed during rollback.' }
-        if ([IO.File]::Exists($tempPath)) { Remove-Item -LiteralPath $tempPath -Force }
         if ($CreateNew) {
+            $rollbackPath = Resolve-DeclarativeWorkflowOwnedRunPath -ProjectDir $ProjectDir -RunId $runId -LeafName 'state.json'
+            if ($rollbackPath -cne $path) { throw 'Workflow run state ownership changed during rollback.' }
             if ($createdInitialState -and [IO.File]::Exists($rollbackPath)) {
                 try {
                     $persisted = Read-DeclarativeWorkflowRunState -ProjectDir $ProjectDir -RunId $runId
@@ -1762,10 +1786,18 @@ function Save-DeclarativeWorkflowRunState {
                     throw "Declarative workflow initial state rollback failed: $([string]$saveFailure.Exception.Message); $([string]$_.Exception.Message)"
                 }
             }
-        } elseif ($null -ne $previousBytes) {
-            [IO.File]::WriteAllBytes($rollbackPath, $previousBytes)
-        } elseif ([IO.File]::Exists($rollbackPath)) {
-            Remove-Item -LiteralPath $rollbackPath -Force
+        } elseif ($forwardReplacementCompleted) {
+            try {
+                $rollbackPath = Resolve-DeclarativeWorkflowOwnedRunPath -ProjectDir $ProjectDir -RunId $runId -LeafName 'state.json'
+                if ($rollbackPath -cne $path) { throw 'Workflow run state ownership changed during rollback.' }
+                if ($null -ne $previousBytes) {
+                    Set-DeclarativeWorkflowRunStateBytesAtomically -Path $rollbackPath -Bytes $previousBytes | Out-Null
+                } elseif ([IO.File]::Exists($rollbackPath)) {
+                    Remove-Item -LiteralPath $rollbackPath -Force -ErrorAction Stop
+                }
+            } catch {
+                throw "Declarative workflow state rollback failed: $([string]$saveFailure.Exception.Message); $([string]$_.Exception.Message)"
+            }
         }
         throw $saveFailure
     }
