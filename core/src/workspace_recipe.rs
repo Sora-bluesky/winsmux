@@ -11,6 +11,7 @@ const SCHEMA_VERSION: u64 = 1;
 const DOCUMENT_CONFIG_VERSION: i64 = 1;
 const WORKFLOW_ID_TOKEN: &str = "{{workflow-id}}";
 const WINDOWS_MAX_COMPONENT_LENGTH: usize = 255;
+const MANAGED_WORKTREE_BRANCH_PREFIX: &str = "worktree-";
 const WINDOWS_RESERVED_PATH_NAMES: [&str; 22] = [
     "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
     "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
@@ -654,6 +655,11 @@ fn normalize_worktree(
                     "managed worktree name-template must resolve to a safe project-local name.",
                 ));
             }
+            if !is_safe_managed_worktree_branch_name(&name) {
+                return Err(invalid_data(
+                    "managed worktree name-template must resolve to a valid derived branch name.",
+                ));
+            }
             reject_synthetic_credential(&name)?;
             Ok(NormalizedWorktree {
                 mode: worktree.mode.clone(),
@@ -729,6 +735,11 @@ fn is_safe_worktree_name(value: &str, is_template: bool) -> bool {
         && bytes.all(|byte| {
             byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
         })
+}
+
+fn is_safe_managed_worktree_branch_name(name: &str) -> bool {
+    let branch_name = format!("{MANAGED_WORKTREE_BRANCH_PREFIX}{name}");
+    branch_name.len() <= WINDOWS_MAX_COMPONENT_LENGTH && !branch_name.ends_with(".lock")
 }
 
 fn is_windows_reserved_path_name(value: &str) -> bool {

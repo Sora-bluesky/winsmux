@@ -1957,15 +1957,39 @@ function Assert-TeamPipelineDeclarativeAdmission {
     }
     $freshWorkflowPlan = ConvertTo-TeamPipelineDeclarativeWorkflowPlan -WorkspacePlan $WorkspacePlan
     Assert-DeclarativeWorkflowExecutionProjection -Run $Run -Plan $freshWorkflowPlan
+}
+
+function Assert-TeamPipelineDeclarativeExecutionAdmission {
+    param(
+        [Parameter(Mandatory = $true)]$Run,
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$SessionName
+    )
+
     $bindings = Get-DeclarativeWorkflowValue $Run 'resolved_bindings' $null
-    if ($null -eq $bindings -or $bindings -isnot [Collections.IDictionary] -or $bindings.Count -lt 1) {
+    $nodes = Get-DeclarativeWorkflowValue $Run 'nodes' $null
+    $nodeOrder = @(Get-DeclarativeWorkflowValue $Run 'node_order' @())
+    if ($null -eq $bindings -or $bindings -isnot [Collections.IDictionary] -or
+        $null -eq $nodes -or $nodes -isnot [Collections.IDictionary] -or
+        $nodeOrder.Count -ne $nodes.Count) {
         throw 'workflow_live_binding_unavailable'
     }
-    $validatedLabels = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-    foreach ($entry in $bindings.GetEnumerator()) {
-        $label = [string]$entry.Value
+
+    $requiredLabels = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($nodeIdValue in $nodeOrder) {
+        $nodeId = [string]$nodeIdValue
+        if ([string]::IsNullOrWhiteSpace($nodeId) -or -not $nodes.Contains($nodeId)) {
+            throw 'workflow_live_binding_unavailable'
+        }
+        $node = $nodes[$nodeId]
+        if ([string](Get-DeclarativeWorkflowValue $node 'state' '') -ceq 'succeeded') { continue }
+        $paneRef = [string](Get-DeclarativeWorkflowValue $node 'pane_ref' '')
+        if ([string]::IsNullOrWhiteSpace($paneRef) -or -not $bindings.Contains($paneRef)) {
+            throw 'workflow_live_binding_unavailable'
+        }
+        $label = [string]$bindings[$paneRef]
         if ([string]::IsNullOrWhiteSpace($label)) { throw 'workflow_live_binding_unavailable' }
-        if (-not $validatedLabels.Add($label)) { continue }
+        if (-not $requiredLabels.Add($label)) { continue }
         $lease = Resolve-TeamPipelineDeclarativeRuntimeLease -ProjectDir $ProjectDir -Run $Run -SessionName $SessionName -Label $label
         if ($null -eq $lease) { throw 'workflow_live_binding_unavailable' }
     }
@@ -2437,6 +2461,7 @@ function Invoke-TeamPipelineDeclarativeWorkflow {
             $run = New-DeclarativeWorkflowRun -Plan $workflowPlan -RunId $RunId -GenerationId $GenerationId -ConfigFingerprint $ConfigFingerprint -SourceHead $SourceHead -TaskInput $taskInput
             Assert-TeamPipelineDeclarativeAdmission -Run $run -Confirmation $confirmation -TaskInput $taskInput -WorkspacePlan $workspacePlan `
                 -Manifest $manifest -ManifestGenerationId $manifestGenerationId -ObservedSourceHead $observedSourceHead -ProjectDir $ProjectDir -SessionName $sessionName
+            Assert-TeamPipelineDeclarativeExecutionAdmission -Run $run -ProjectDir $ProjectDir -SessionName $sessionName
             try {
                 Save-DeclarativeWorkflowRunState -ProjectDir $ProjectDir -Run $run -CreateNew | Out-Null
             } catch {
@@ -2470,6 +2495,9 @@ function Invoke-TeamPipelineDeclarativeWorkflow {
             $workspacePlan = Invoke-TeamPipelineWorkspacePlanOnce -ProjectDir $ProjectDir -RecipeId ([string]$run.recipe_ref) -WorkflowId ([string]$run.workflow_id) -RunId $RunId
             Assert-TeamPipelineDeclarativeAdmission -Run $run -Confirmation $confirmation -TaskInput $taskInput -WorkspacePlan $workspacePlan `
                 -Manifest $manifest -ManifestGenerationId $manifestGenerationId -ObservedSourceHead $observedSourceHead -ProjectDir $ProjectDir -SessionName $sessionName
+            if ([string]$run.state -notin @('succeeded', 'failed', 'cancelled', 'cleanup_pending')) {
+                Assert-TeamPipelineDeclarativeExecutionAdmission -Run $run -ProjectDir $ProjectDir -SessionName $sessionName
+            }
             Assert-TeamPipelineDeclarativeRunLockAdmission -ProjectDir $ProjectDir -Run $run | Out-Null
             $snapshotValidated = $true
             if ([string]$run.state -in @('succeeded', 'failed', 'cancelled')) {

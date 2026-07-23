@@ -612,20 +612,50 @@ fn managed_worktree_names_keep_safe_dotted_hyphenated_and_underscored_boundaries
 }
 
 #[test]
-fn managed_worktree_names_reject_windows_component_overflow_before_plan_output() {
-    let max_component = "a".repeat(255);
+fn managed_worktree_names_reject_git_lock_suffix_before_plan_output() {
+    for invalid in ["task.lock", "task.foo.lock"] {
+        let yaml = VALID_RECIPE.replace(
+            "name-template: \"{{workflow-id}}-implement\"",
+            &format!("name-template: \"{invalid}\""),
+        );
+        let error = normalize_workspace_plan(&yaml, "bugfix-two-slot", Some("task"), &slots())
+            .expect_err("a derived branch ending in .lock must be rejected");
+        assert!(error.to_string().contains("valid derived branch name"));
+    }
+
+    let substituted = VALID_RECIPE.replace(
+        "name-template: \"{{workflow-id}}-implement\"",
+        "name-template: \"{{workflow-id}}.lock\"",
+    );
+    let error = normalize_workspace_plan(&substituted, "bugfix-two-slot", Some("task"), &slots())
+        .expect_err("a substituted derived branch ending in .lock must be rejected");
+    assert!(error.to_string().contains("valid derived branch name"));
+
+    let accepted = VALID_RECIPE.replace(
+        "name-template: \"{{workflow-id}}-implement\"",
+        "name-template: \"task.locked\"",
+    );
+    let plan = normalize_workspace_plan(&accepted, "bugfix-two-slot", Some("task"), &slots())
+        .expect("a derived branch not ending in .lock must remain valid");
+    assert_eq!(plan.panes[0].worktree.name.as_deref(), Some("task.locked"));
+}
+
+#[test]
+fn managed_worktree_names_reject_derived_branch_component_overflow_before_plan_output() {
+    let max_component = "a".repeat(246);
     let at_limit = VALID_RECIPE.replace(
         "name-template: \"{{workflow-id}}-implement\"",
         &format!("name-template: \"{max_component}\""),
     );
     let plan = normalize_workspace_plan(&at_limit, "bugfix-two-slot", Some("issue-1204"), &slots())
-        .expect("a 255-byte ASCII component must remain valid");
+        .expect("a 255-byte derived branch component must remain valid");
     assert_eq!(
         plan.panes[0].worktree.name.as_deref(),
         Some(max_component.as_str())
     );
+    assert_eq!("worktree-".len() + max_component.len(), 255);
 
-    let overlong_component = "a".repeat(256);
+    let overlong_component = "a".repeat(247);
     let overlong_template = VALID_RECIPE.replace(
         "name-template: \"{{workflow-id}}-implement\"",
         &format!("name-template: \"{overlong_component}\""),
@@ -636,13 +666,14 @@ fn managed_worktree_names_reject_windows_component_overflow_before_plan_output()
         Some("issue-1204"),
         &slots(),
     )
-    .expect_err("a 256-byte template must be rejected before plan output");
-    assert!(error.to_string().contains("safe project-local name"));
+    .expect_err("a 256-byte derived branch component must be rejected before plan output");
+    assert!(error.to_string().contains("valid derived branch name"));
+    assert_eq!("worktree-".len() + overlong_component.len(), 256);
 
     let workflow_id = format!("a{}", "b".repeat(19));
     let expansion_at_limit = VALID_RECIPE.replace(
         "name-template: \"{{workflow-id}}-implement\"",
-        &format!("name-template: \"{{{{workflow-id}}}}-{}\"", "c".repeat(234)),
+        &format!("name-template: \"{{{{workflow-id}}}}-{}\"", "c".repeat(225)),
     );
     let plan = normalize_workspace_plan(
         &expansion_at_limit,
@@ -650,15 +681,15 @@ fn managed_worktree_names_reject_windows_component_overflow_before_plan_output()
         Some(&workflow_id),
         &slots(),
     )
-    .expect("a template resolving to a 255-byte component must remain valid");
+    .expect("a template resolving to a 255-byte derived branch component must remain valid");
     assert_eq!(
         plan.panes[0].worktree.name.as_deref().map(str::len),
-        Some(255)
+        Some(246)
     );
 
     let expansion_over_limit = VALID_RECIPE.replace(
         "name-template: \"{{workflow-id}}-implement\"",
-        &format!("name-template: \"{{{{workflow-id}}}}-{}\"", "c".repeat(235)),
+        &format!("name-template: \"{{{{workflow-id}}}}-{}\"", "c".repeat(226)),
     );
     let error = normalize_workspace_plan(
         &expansion_over_limit,
@@ -666,8 +697,10 @@ fn managed_worktree_names_reject_windows_component_overflow_before_plan_output()
         Some(&workflow_id),
         &slots(),
     )
-    .expect_err("a template resolving to a 256-byte component must be rejected before plan output");
-    assert!(error.to_string().contains("safe project-local name"));
+    .expect_err(
+        "a template resolving to a 256-byte derived branch component must be rejected before plan output",
+    );
+    assert!(error.to_string().contains("valid derived branch name"));
 }
 
 #[test]

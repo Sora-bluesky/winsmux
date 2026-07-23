@@ -948,6 +948,17 @@ function Assert-OrchestraDeclarativeWorktreePreflight {
     if (Test-OrchestraReparsePoint -Path $worktreeRoot) {
         throw "Managed worktree root is a reparse point: $worktreeRoot"
     }
+    $invalidBranches = [Collections.Generic.List[string]]::new()
+    foreach ($descriptor in @($Application.ManagedWorktrees.Values)) {
+        $branchName = [string]$descriptor.BranchName
+        $branchFormat = Invoke-BuilderWorktreeGit -ProjectDir $ProjectDir -Arguments @('check-ref-format', '--branch', $branchName) -AllowFailure
+        if ($branchFormat.ExitCode -ne 0) {
+            $invalidBranches.Add($branchName) | Out-Null
+        }
+    }
+    if ($invalidBranches.Count -gt 0) {
+        throw "Workspace application contains an invalid managed worktree branch: $($invalidBranches[0])"
+    }
     $registeredResult = Invoke-BuilderWorktreeGit -ProjectDir $ProjectDir -Arguments @('worktree', 'list', '--porcelain')
     $registered = @(ConvertFrom-GitWorktreeList -Content $registeredResult.Output)
     foreach ($descriptor in @($Application.ManagedWorktrees.Values)) {

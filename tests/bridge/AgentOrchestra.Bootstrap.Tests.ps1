@@ -25,6 +25,9 @@ Describe 'TASK659 declarative worktree transaction boundary' -Tag 'task659-appli
             }
         }
         Mock Invoke-BuilderWorktreeGit {
+            if ($Arguments[0] -eq 'check-ref-format' -and $Arguments[1] -eq '--branch') {
+                return [pscustomobject]@{ ExitCode = 0; Output = ''; Lines = @() }
+            }
             if ($Arguments[0] -eq 'worktree' -and $Arguments[1] -eq 'list') {
                 return [pscustomobject]@{ ExitCode = 0; Output = ''; Lines = @() }
             }
@@ -36,6 +39,48 @@ Describe 'TASK659 declarative worktree transaction boundary' -Tag 'task659-appli
 
         { Assert-OrchestraDeclarativeWorktreePreflight -ProjectDir $projectDir -Application $application } |
             Should -Throw '*already exists*'
+        Should -Invoke Invoke-BuilderWorktreeGit -Times 0 -Exactly -ParameterFilter {
+            $Arguments -contains 'add' -or $Arguments -contains 'remove'
+        }
+    }
+
+    It 'X02 rejects an injected invalid managed branch before invoking a mutating git command' {
+        $projectDir = Join-Path $TestDrive 'task659-invalid-managed-ref'
+        $application = [ordered]@{
+            ManagedWorktrees = [ordered]@{
+                implement = [ordered]@{
+                    PaneKey = 'implement'
+                    Name = 'task.locked'
+                    PathSuffix = '.worktrees\task.locked'
+                    BranchName = 'worktree-task.locked'
+                }
+                verify = [ordered]@{
+                    PaneKey = 'verify'
+                    Name = 'task.lock'
+                    PathSuffix = '.worktrees\task.lock'
+                    BranchName = 'worktree-task.lock'
+                }
+            }
+        }
+        Mock Invoke-BuilderWorktreeGit {
+            if ($Arguments[0] -eq 'check-ref-format' -and $Arguments[1] -eq '--branch') {
+                $exitCode = if ($Arguments[2] -eq 'worktree-task.lock') { 1 } else { 0 }
+                return [pscustomobject]@{ ExitCode = $exitCode; Output = $(if ($exitCode -eq 0) { '' } else { 'fatal: invalid branch name' }); Lines = @() }
+            }
+            if ($Arguments[0] -eq 'worktree' -and $Arguments[1] -eq 'list') {
+                return [pscustomobject]@{ ExitCode = 0; Output = ''; Lines = @() }
+            }
+            if ($Arguments[0] -eq 'branch' -and $Arguments[1] -eq '--list') {
+                return [pscustomobject]@{ ExitCode = 0; Output = ''; Lines = @() }
+            }
+            throw "unexpected git command: $([string]::Join(' ', @($Arguments)))"
+        }
+
+        { Assert-OrchestraDeclarativeWorktreePreflight -ProjectDir $projectDir -Application $application } |
+            Should -Throw '*invalid managed worktree branch*'
+        Should -Invoke Invoke-BuilderWorktreeGit -Times 2 -Exactly -ParameterFilter {
+            $Arguments[0] -eq 'check-ref-format' -and $Arguments[1] -eq '--branch' -and $AllowFailure
+        }
         Should -Invoke Invoke-BuilderWorktreeGit -Times 0 -Exactly -ParameterFilter {
             $Arguments -contains 'add' -or $Arguments -contains 'remove'
         }

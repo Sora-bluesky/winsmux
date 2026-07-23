@@ -1741,6 +1741,50 @@ declarative_workspace:
         [Convert]::ToBase64String([IO.File]::ReadAllBytes($lockPath)) | Should -Be $lockBytesBefore
     }
 
+    It 'X01 public resume requires live leases only for nodes unfinished after admitted proof reconciliation' {
+        $project = Join-Path $TestDrive 'reconciled-live-binding-resume'
+        $taskFile = Join-Path $TestDrive 'reconciled-live-binding-task.txt'
+        [IO.File]::WriteAllText($taskFile, 'Implement TASK-659 safely.', [Text.UTF8Encoding]::new($false))
+        $run = New-TestSucceededInspectRun
+        $proof = New-TestAcknowledgement -NodeId 'inspect' -PaneId '%2'
+        $workspacePlan = New-TestWorkspacePlan
+        $script:x01Run = Copy-DeclarativeWorkflowValue $run
+        $script:x01ResolvedLabels = [Collections.Generic.List[string]]::new()
+        $script:x01LockAdmissions = 0
+        $script:x01Advancements = 0
+
+        Mock Get-TeamPipelineDeclarativeProjectHead { 'b' * 40 }
+        Mock Read-TeamPipelineManifest { New-TestManifest -SessionName 'x01-session' }
+        Mock Get-TeamPipelineSessionName { 'x01-session' }
+        Mock Read-DeclarativeWorkflowRunState { Copy-DeclarativeWorkflowValue $script:x01Run }
+        Mock Invoke-TeamPipelineWorkspacePlanOnce { Copy-DeclarativeWorkflowValue $workspacePlan }
+        Mock Resolve-TeamPipelineDeclarativeAcknowledgement {
+            param($NodeId)
+            if ([string]$NodeId -ceq 'inspect') { return Copy-DeclarativeWorkflowValue $proof }
+            return @()
+        }
+        Mock Resolve-TeamPipelineDeclarativeRuntimeLease {
+            param($Label)
+            $script:x01ResolvedLabels.Add([string]$Label) | Out-Null
+            if ([string]$Label -ceq 'worker-1') { return $null }
+            return [PSCustomObject]@{ label = 'worker-2'; pane_id = '%3' }
+        }
+        Mock Assert-TeamPipelineDeclarativeRunLockAdmission { $script:x01LockAdmissions++ }
+        Mock Invoke-TeamPipelineDeclarativeRunAdvancement {
+            param($Run)
+            $script:x01Advancements++
+            return $Run
+        }
+
+        $result = Invoke-TeamPipelineDeclarativeWorkflow -Action resume -RunId 'run-123' -GenerationId 'generation-123' `
+            -ConfigFingerprint ('sha256:' + ('a' * 64)) -SourceHead ('b' * 40) -TaskFile $taskFile -ProjectDir $project
+
+        $result.status | Should -Be 'accepted'
+        [string]::Join(',', @($script:x01ResolvedLabels)) | Should -Be 'worker-2'
+        $script:x01LockAdmissions | Should -Be 1
+        $script:x01Advancements | Should -Be 1
+    }
+
     It 'M04 validates every ordinal-distinct live binding once and rejects each resolver-null partition' {
         $script:m04Mode = ''
         $script:m04Labels = [Collections.Generic.List[string]]::new()
@@ -1771,6 +1815,7 @@ declarative_workspace:
                 Assert-TeamPipelineDeclarativeAdmission -Run $run -Confirmation (New-TestConfirmation) -TaskInput (New-TestTaskInput) `
                     -WorkspacePlan $workspacePlan -Manifest $manifest -ManifestGenerationId 'generation-123' -ObservedSourceHead ('b' * 40) `
                     -ProjectDir $TestDrive -SessionName 'm04-session'
+                Assert-TeamPipelineDeclarativeExecutionAdmission -Run $run -ProjectDir $TestDrive -SessionName 'm04-session'
             }
 
             if ($case.Accept) { $invoke | Should -Not -Throw -Because $case.Name }
@@ -1911,13 +1956,23 @@ declarative_workspace:
                 [PSCustomObject]@{ Name = 'terminal-running-absent'; Outcome = 'failed'; ExpectedStatus = 'failed'; ExpectedCleanupState = 'succeeded'; LockPresent = $false; ExpectedLockAfter = $false; ExpectedDeletes = 0 },
                 [PSCustomObject]@{ Name = 'terminal-running-mismatch'; Outcome = 'failed'; ExpectedStatus = 'blocked'; ExpectedCleanupState = 'blocked'; LockPresent = $true; ExpectedLockAfter = $true; ExpectedDeletes = 0; Mismatch = $true },
                 [PSCustomObject]@{ Name = 'success-running-matching'; Outcome = 'succeeded'; ExpectedStatus = 'accepted'; ExpectedCleanupState = 'succeeded'; LockPresent = $true; ExpectedLockAfter = $false; ExpectedDeletes = 1 },
-                [PSCustomObject]@{ Name = 'success-running-absent'; Outcome = 'succeeded'; ExpectedStatus = 'accepted'; ExpectedCleanupState = 'succeeded'; LockPresent = $false; ExpectedLockAfter = $false; ExpectedDeletes = 0 }
+                [PSCustomObject]@{ Name = 'success-running-absent'; Outcome = 'succeeded'; ExpectedStatus = 'accepted'; ExpectedCleanupState = 'succeeded'; LockPresent = $false; ExpectedLockAfter = $false; ExpectedDeletes = 0 },
+                [PSCustomObject]@{ Name = 'cancel-running-matching'; Outcome = 'cancelled'; ExpectedStatus = 'accepted'; ExpectedCleanupState = 'succeeded'; LockPresent = $true; ExpectedLockAfter = $false; ExpectedDeletes = 1 }
             )) {
             $project = Join-Path $TestDrive ("l01-" + $case.Name)
-            $run = if ($case.Outcome -ceq 'failed') { New-TestFailedRun } else { New-TestSucceededRun }
+            $run = switch ($case.Outcome) {
+                'failed' { New-TestFailedRun }
+                'cancelled' { New-TestCancelledRun }
+                default { New-TestSucceededRun }
+            }
             $intent = [ordered]@{ type = 'cleanup_intent' }
-            if ($case.Outcome -ceq 'failed') { $intent['preserve_run_state'] = 'failed' }
-            $run = Invoke-DeclarativeWorkflowTransition -Run $run -Event $intent -DurableProofs $(if ($case.Outcome -ceq 'succeeded') { $completionProofs } else { New-TestDurableProofs })
+            if ($case.Outcome -cne 'succeeded') { $intent['preserve_run_state'] = [string]$case.Outcome }
+            $durableProofs = switch ($case.Outcome) {
+                'succeeded' { $completionProofs }
+                'cancelled' { New-TestDurableProofs -CancellationProofs @((New-TestCancellationProof)) }
+                default { New-TestDurableProofs }
+            }
+            $run = Invoke-DeclarativeWorkflowTransition -Run $run -Event $intent -DurableProofs $durableProofs
             if ($case.LockPresent) {
                 $lock = New-DeclarativeWorkflowRunLock -ProjectDir $project -Run $run
                 if ([bool](Get-DeclarativeWorkflowValue $case 'Mismatch' $false)) {
@@ -1933,6 +1988,7 @@ declarative_workspace:
         $script:l01SaveCount = 0
         $script:l01DeleteCount = 0
         $script:l01DispatchCount = 0
+        $script:l01LeaseResolutions = 0
         Mock Read-DeclarativeWorkflowRunState { Copy-DeclarativeWorkflowValue $script:l01Current.Run }
         Mock Save-DeclarativeWorkflowRunState {
             param($Run)
@@ -1942,7 +1998,10 @@ declarative_workspace:
         Mock Get-TeamPipelineDeclarativeProjectHead { 'b' * 40 }
         Mock Read-TeamPipelineManifest { New-TestManifest -SessionName 'l01-session' }
         Mock Get-TeamPipelineSessionName { 'l01-session' }
-        Mock Resolve-TeamPipelineDeclarativeRuntimeLease { param($Label) [PSCustomObject]@{ label = [string]$Label; pane_id = '%2' } }
+        Mock Resolve-TeamPipelineDeclarativeRuntimeLease {
+            $script:l01LeaseResolutions++
+            throw 'terminal and cleanup resume must not require a live pane'
+        }
         Mock Invoke-TeamPipelineWorkspacePlanOnce { New-TestWorkspacePlan }
         Mock Resolve-TeamPipelineDeclarativeAcknowledgement {
             param($Run, $NodeId)
@@ -1951,6 +2010,7 @@ declarative_workspace:
             }
             return $null
         }
+        Mock Resolve-TeamPipelineDeclarativeCancellation { New-TestCancellationProof }
         Mock Invoke-TeamPipelineDeclarativeDispatch { $script:l01DispatchCount++; throw 'cleanup recovery must not dispatch' }
         Mock Remove-Item {
             param($LiteralPath)
@@ -1963,6 +2023,7 @@ declarative_workspace:
             $saveBefore = $script:l01SaveCount
             $deleteBefore = $script:l01DeleteCount
             $dispatchBefore = $script:l01DispatchCount
+            $leaseBefore = $script:l01LeaseResolutions
             $lockPath = Resolve-DeclarativeWorkflowOwnedLock -ProjectDir $fixture.Project -Run $fixture.Run
 
             $result = Invoke-TeamPipelineDeclarativeWorkflow -Action resume -RunId 'run-123' -GenerationId 'generation-123' `
@@ -1975,6 +2036,7 @@ declarative_workspace:
             ($script:l01SaveCount - $saveBefore) | Should -Be 1 -Because $fixture.Case.Name
             ($script:l01DeleteCount - $deleteBefore) | Should -Be $fixture.Case.ExpectedDeletes -Because $fixture.Case.Name
             ($script:l01DispatchCount - $dispatchBefore) | Should -Be 0 -Because $fixture.Case.Name
+            ($script:l01LeaseResolutions - $leaseBefore) | Should -Be 0 -Because $fixture.Case.Name
             (Test-Path -LiteralPath $lockPath -PathType Leaf) | Should -Be $fixture.Case.ExpectedLockAfter -Because $fixture.Case.Name
 
             $saveAfterSuccess = $script:l01SaveCount
