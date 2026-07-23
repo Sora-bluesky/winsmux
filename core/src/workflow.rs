@@ -59,12 +59,14 @@ impl WorkflowPlanCliOptions {
         let (Some(workflow_id), Some(run_id)) = (&self.workflow_id, &self.run_id) else {
             return Ok(None);
         };
+        let pane_worktree_modes = normalized_pane_worktree_modes(plan)?;
         let workflow = normalize_workflow_plan_from_value(
             root,
             workflow_id,
             run_id,
             &plan.recipe_id,
             &plan.resolved_bindings,
+            &pane_worktree_modes,
         )?;
         let mut payload = serde_json::to_value(plan).map_err(|error| {
             invalid_data(format!("failed to serialize workspace plan: {error}"))
@@ -238,6 +240,7 @@ pub fn normalize_workflow_plan(
     run_id: &str,
     selected_recipe_id: &str,
     resolved_bindings: &BTreeMap<String, String>,
+    pane_worktree_modes: &BTreeMap<String, String>,
 ) -> io::Result<NormalizedWorkflowPlan> {
     let root = parse_workspace_yaml(yaml)?;
     normalize_workflow_plan_from_value(
@@ -246,7 +249,57 @@ pub fn normalize_workflow_plan(
         run_id,
         selected_recipe_id,
         resolved_bindings,
+        pane_worktree_modes,
     )
+}
+
+fn normalized_pane_worktree_modes(
+    plan: &NormalizedWorkspacePlan,
+) -> io::Result<BTreeMap<String, String>> {
+    let mut modes = BTreeMap::new();
+    for pane in &plan.panes {
+        let expected_slot = plan.resolved_bindings.get(&pane.pane_key).ok_or_else(|| {
+            invalid_data(format!(
+                "workspace pane '{}' has no resolved binding.",
+                pane.pane_key
+            ))
+        })?;
+        if expected_slot != &pane.slot_id {
+            return Err(invalid_data(format!(
+                "workspace pane '{}' slot does not match its resolved binding.",
+                pane.pane_key
+            )));
+        }
+        if !matches!(
+            pane.worktree.mode.as_str(),
+            "managed" | "read-only-reference"
+        ) {
+            return Err(invalid_data(format!(
+                "workspace pane '{}' has an unsupported worktree mode.",
+                pane.pane_key
+            )));
+        }
+        if modes
+            .insert(pane.pane_key.clone(), pane.worktree.mode.clone())
+            .is_some()
+        {
+            return Err(invalid_data(format!(
+                "duplicate workspace pane policy '{}'.",
+                pane.pane_key
+            )));
+        }
+    }
+    if modes.len() != plan.resolved_bindings.len()
+        || plan
+            .resolved_bindings
+            .keys()
+            .any(|pane_ref| !modes.contains_key(pane_ref))
+    {
+        return Err(invalid_data(
+            "workspace pane policies must exactly cover resolved bindings.",
+        ));
+    }
+    Ok(modes)
 }
 
 pub(crate) fn normalize_workflow_plan_from_value(
@@ -255,6 +308,7 @@ pub(crate) fn normalize_workflow_plan_from_value(
     run_id: &str,
     selected_recipe_id: &str,
     resolved_bindings: &BTreeMap<String, String>,
+    pane_worktree_modes: &BTreeMap<String, String>,
 ) -> io::Result<NormalizedWorkflowPlan> {
     require_stable_id("workflow-id", workflow_id)?;
     require_workflow_run_id("run-id", run_id)?;
@@ -262,6 +316,22 @@ pub(crate) fn normalize_workflow_plan_from_value(
     for (pane_ref, slot_id) in resolved_bindings {
         require_stable_id("pane-ref", pane_ref)?;
         require_stable_id("slot-id", slot_id)?;
+    }
+    if pane_worktree_modes.len() != resolved_bindings.len()
+        || resolved_bindings
+            .keys()
+            .any(|pane_ref| !pane_worktree_modes.contains_key(pane_ref))
+    {
+        return Err(invalid_data(
+            "workflow pane policies must exactly cover resolved bindings.",
+        ));
+    }
+    for (pane_ref, mode) in pane_worktree_modes {
+        if !resolved_bindings.contains_key(pane_ref)
+            || !matches!(mode.as_str(), "managed" | "read-only-reference")
+        {
+            return Err(invalid_data("invalid workflow pane worktree policy."));
+        }
     }
 
     let root = root
@@ -334,6 +404,14 @@ pub(crate) fn normalize_workflow_plan_from_value(
             return Err(invalid_data(format!(
                 "workflow node '{}' references unknown pane '{}'.",
                 node.node_id, node.pane_ref
+            )));
+        }
+        if node.action == WorkflowAction::OperatorDispatch
+            && pane_worktree_modes.get(&node.pane_ref).map(String::as_str) != Some("managed")
+        {
+            return Err(invalid_data(format!(
+                "workflow node '{}' operator-dispatch requires a managed worktree.",
+                node.node_id
             )));
         }
         if node.cleanup != "retain" {

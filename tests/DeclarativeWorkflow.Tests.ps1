@@ -38,6 +38,18 @@ BeforeAll {
             recipe_id          = $RecipeId
             config_fingerprint = $ConfigFingerprint
             resolved_bindings  = Copy-DeclarativeWorkflowValue $ResolvedBindings
+            panes              = @(
+                [ordered]@{
+                    pane_key = 'implement'
+                    slot_id = [string]$ResolvedBindings.implement
+                    worktree = [ordered]@{ mode = 'managed'; name = 'bugfix-implement' }
+                }
+                [ordered]@{
+                    pane_key = 'verify'
+                    slot_id = [string]$ResolvedBindings.verify
+                    worktree = [ordered]@{ mode = 'read-only-reference'; name = $null }
+                }
+            )
             workflow           = (New-TestWorkflowPlan)
         }
     }
@@ -385,12 +397,23 @@ Describe 'TASK-659 declarative workflow runtime' -Tag 'unit' {
             Invoke-TestWorkflowReducer -Request $request
         }
         $script:testDeclarativeSessionName = 'winsmux-orchestra'
+        $script:testDeclarativeWorktreeHead = ('b' * 40)
+        $script:testDeclarativeOriginalWorktreeHead = Get-Command Get-TeamPipelineDeclarativeWorktreeHead -CommandType Function
         Mock Get-PaneControlManifestEntries {
+            param($ProjectDir)
+            $managedPath = Join-Path $ProjectDir '.worktrees\bugfix-implement'
             @(
-                [PSCustomObject]@{ Label = 'worker-1'; PaneId = '%2'; GenerationId = 'generation-123'; Role = 'Builder' }
-                [PSCustomObject]@{ Label = 'worker-2'; PaneId = '%3'; GenerationId = 'generation-123'; Role = 'Reviewer' }
+                [PSCustomObject]@{
+                    Label = 'worker-1'; PaneId = '%2'; GenerationId = 'generation-123'; Role = 'Builder'
+                    LaunchDir = $managedPath; BuilderWorktreePath = $managedPath
+                }
+                [PSCustomObject]@{
+                    Label = 'worker-2'; PaneId = '%3'; GenerationId = 'generation-123'; Role = 'Reviewer'
+                    LaunchDir = $ProjectDir; BuilderWorktreePath = ''
+                }
             )
         }
+        Mock Get-TeamPipelineDeclarativeWorktreeHead { $script:testDeclarativeWorktreeHead }
         Mock Get-PaneControlManifestContext {
             param($ProjectDir, $PaneId)
             Get-PaneControlManifestEntries -ProjectDir $ProjectDir | Where-Object { $_.PaneId -ceq $PaneId } | Select-Object -First 1
@@ -1807,6 +1830,9 @@ declarative_workspace:
             $run.resolved_bindings = Copy-DeclarativeWorkflowValue $case.Bindings
             $run.normalized_snapshot.resolved_bindings = Copy-DeclarativeWorkflowValue $case.Bindings
             $workspacePlan = New-TestWorkspacePlan -ResolvedBindings $case.Bindings
+            if ([string]$case.Mode -ceq 'shared') {
+                $workspacePlan.panes[1].worktree = Copy-DeclarativeWorkflowValue $workspacePlan.panes[0].worktree
+            }
             $workspacePlan.workflow = Copy-DeclarativeWorkflowValue $run.normalized_snapshot
             $manifest = New-TestManifest -SessionName 'm04-session' -ResolvedBindings $case.Bindings
             $script:m04Mode = [string]$case.Mode
@@ -1815,7 +1841,7 @@ declarative_workspace:
                 Assert-TeamPipelineDeclarativeAdmission -Run $run -Confirmation (New-TestConfirmation) -TaskInput (New-TestTaskInput) `
                     -WorkspacePlan $workspacePlan -Manifest $manifest -ManifestGenerationId 'generation-123' -ObservedSourceHead ('b' * 40) `
                     -ProjectDir $TestDrive -SessionName 'm04-session'
-                Assert-TeamPipelineDeclarativeExecutionAdmission -Run $run -ProjectDir $TestDrive -SessionName 'm04-session'
+                Assert-TeamPipelineDeclarativeExecutionAdmission -Run $run -WorkspacePlan $workspacePlan -ProjectDir $TestDrive -SessionName 'm04-session'
             }
 
             if ($case.Accept) { $invoke | Should -Not -Throw -Because $case.Name }
@@ -2801,5 +2827,262 @@ while (`$true) { Start-Sleep -Seconds 1 }
         $overProject = Join-Path $TestDrive 't03-over-state-size'
         { Save-DeclarativeWorkflowRunState -ProjectDir $overProject -Run $overLimit -CreateNew } | Should -Throw '*state*size*'
         Test-Path -LiteralPath (Join-Path $overProject '.winsmux\workflow-runs\run-123') -PathType Container | Should -BeFalse
+    }
+
+    It 'Z01 rejects public start and resume when a required managed worktree HEAD differs from confirmed source' {
+        $project = Join-Path $TestDrive 'z01-source-worktree-head'
+        [IO.Directory]::CreateDirectory($project) | Out-Null
+        & git -C $project init --quiet
+        $LASTEXITCODE | Should -Be 0
+        $sourcePath = Join-Path $project 'source.txt'
+        [IO.File]::WriteAllText($sourcePath, 'source-a', [Text.UTF8Encoding]::new($false))
+        & git -C $project add -- source.txt
+        & git -C $project -c user.name=winsmux-test -c user.email=winsmux-test@example.invalid commit --quiet -m source-a
+        $LASTEXITCODE | Should -Be 0
+        $sourceA = ([string](& git -C $project rev-parse HEAD)).Trim()
+        $managedPath = Join-Path $project '.worktrees\bugfix-implement'
+        & git -C $project worktree add --quiet -b worktree-bugfix-implement $managedPath $sourceA
+        $LASTEXITCODE | Should -Be 0
+        [IO.File]::WriteAllText($sourcePath, 'source-b', [Text.UTF8Encoding]::new($false))
+        & git -C $project add -- source.txt
+        & git -C $project -c user.name=winsmux-test -c user.email=winsmux-test@example.invalid commit --quiet -m source-b
+        $LASTEXITCODE | Should -Be 0
+        $sourceB = ([string](& git -C $project rev-parse HEAD)).Trim()
+        ([string](& git -C $managedPath rev-parse HEAD)).Trim() | Should -BeExactly $sourceA
+        $sourceB | Should -Not -BeExactly $sourceA
+
+        $taskFile = Join-Path $project 'task.txt'
+        [IO.File]::WriteAllText($taskFile, 'Implement TASK-659 safely.', [Text.UTF8Encoding]::new($false))
+        $taskInput = Read-DeclarativeWorkflowTaskFile -Path $taskFile
+        $resumeRun = New-DeclarativeWorkflowRun -Plan (New-TestWorkflowPlan) -RunId 'run-123' `
+            -GenerationId 'generation-123' -ConfigFingerprint ('sha256:' + ('a' * 64)) `
+            -SourceHead $sourceB -TaskInput $taskInput
+        $workspacePlan = New-TestWorkspacePlan
+        $script:z01Run = Copy-DeclarativeWorkflowValue $resumeRun
+        $script:z01Effects = [ordered]@{ state = 0; lock = 0; advancement = 0; cleanup = 0 }
+        $script:testDeclarativeSessionName = 'z01-session'
+
+        Mock Read-TeamPipelineManifest { New-TestManifest -SessionName 'z01-session' }
+        Mock Get-TeamPipelineSessionName { 'z01-session' }
+        Mock Invoke-TeamPipelineWorkspacePlanOnce { Copy-DeclarativeWorkflowValue $workspacePlan }
+        Mock Read-DeclarativeWorkflowRunState { Copy-DeclarativeWorkflowValue $script:z01Run }
+        Mock Get-PaneControlManifestEntries {
+            @(
+                [PSCustomObject]@{
+                    Label = 'worker-1'; PaneId = '%2'; GenerationId = 'generation-123'; Role = 'Builder'
+                    LaunchDir = $managedPath; BuilderWorktreePath = $managedPath
+                }
+                [PSCustomObject]@{
+                    Label = 'worker-2'; PaneId = '%3'; GenerationId = 'generation-123'; Role = 'Reviewer'
+                    LaunchDir = $project; BuilderWorktreePath = ''
+                }
+            )
+        }
+        Mock Save-DeclarativeWorkflowRunState { $script:z01Effects.state++ }
+        Mock New-DeclarativeWorkflowRunLock { $script:z01Effects.lock++; Join-Path $project 'synthetic-start.lock' }
+        Mock Assert-TeamPipelineDeclarativeRunLockAdmission { $script:z01Effects.lock++; Join-Path $project 'synthetic-resume.lock' }
+        Mock Invoke-TeamPipelineDeclarativeRunAdvancement { param($Run) $script:z01Effects.advancement++; $Run }
+        Mock Invoke-TeamPipelineDeclarativeTerminalRecovery { $script:z01Effects.cleanup++; throw 'Z01 rejection must not recover terminal state' }
+        Mock Invoke-DeclarativeWorkflowCleanup { $script:z01Effects.cleanup++; throw 'Z01 rejection must not clean up' }
+
+        $startError = $null
+        try {
+            Invoke-TeamPipelineDeclarativeWorkflow -Action start -RecipeId 'bugfix-two-slot' -WorkflowId 'bugfix' `
+                -RunId 'run-123' -GenerationId 'generation-123' -ConfigFingerprint ('sha256:' + ('a' * 64)) `
+                -SourceHead $sourceB -TaskFile $taskFile -ProjectDir $project | Out-Null
+        } catch {
+            $startError = $_
+        }
+
+        $stateDir = Join-Path $project '.winsmux\workflow-runs\run-123'
+        [IO.Directory]::CreateDirectory($stateDir) | Out-Null
+        $statePath = Join-Path $stateDir 'state.json'
+        $lockPath = Join-Path $stateDir 'run.lock'
+        [IO.File]::WriteAllBytes($statePath, [byte[]](11, 22, 33, 44))
+        [IO.File]::WriteAllBytes($lockPath, [byte[]](55, 66, 77, 88))
+        $stateBefore = [Convert]::ToBase64String([IO.File]::ReadAllBytes($statePath))
+        $lockBefore = [Convert]::ToBase64String([IO.File]::ReadAllBytes($lockPath))
+
+        $resumeError = $null
+        try {
+            Invoke-TeamPipelineDeclarativeWorkflow -Action resume -RunId 'run-123' -GenerationId 'generation-123' `
+                -ConfigFingerprint ('sha256:' + ('a' * 64)) -SourceHead $sourceB -TaskFile $taskFile -ProjectDir $project | Out-Null
+        } catch {
+            $resumeError = $_
+        }
+
+        $startError | Should -Not -BeNullOrEmpty
+        $resumeError | Should -Not -BeNullOrEmpty
+        [string]$startError.Exception.Message | Should -Match 'workflow_managed_worktree_source_head_mismatch'
+        [string]$resumeError.Exception.Message | Should -Match 'workflow_managed_worktree_source_head_mismatch'
+        @($script:z01Effects.Values | Measure-Object -Sum).Sum | Should -Be 0
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($statePath)) | Should -BeExactly $stateBefore
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($lockPath)) | Should -BeExactly $lockBefore
+    }
+
+    It 'Z03 validates an offline succeeded producer worktree needed by unfinished verification without restoring its live lease' {
+        $project = Join-Path $TestDrive 'z03-producer-worktree-head'
+        [IO.Directory]::CreateDirectory($project) | Out-Null
+        & git -C $project init --quiet
+        $sourcePath = Join-Path $project 'source.txt'
+        [IO.File]::WriteAllText($sourcePath, 'source-a', [Text.UTF8Encoding]::new($false))
+        & git -C $project add -- source.txt
+        & git -C $project -c user.name=winsmux-test -c user.email=winsmux-test@example.invalid commit --quiet -m source-a
+        $sourceA = ([string](& git -C $project rev-parse HEAD)).Trim()
+        $managedPath = Join-Path $project '.worktrees\bugfix-implement'
+        & git -C $project worktree add --quiet -b worktree-bugfix-implement $managedPath $sourceA
+        [IO.File]::WriteAllText($sourcePath, 'source-b', [Text.UTF8Encoding]::new($false))
+        & git -C $project add -- source.txt
+        & git -C $project -c user.name=winsmux-test -c user.email=winsmux-test@example.invalid commit --quiet -m source-b
+        $sourceB = ([string](& git -C $project rev-parse HEAD)).Trim()
+
+        $taskFile = Join-Path $project 'task.txt'
+        [IO.File]::WriteAllText($taskFile, 'Implement TASK-659 safely.', [Text.UTF8Encoding]::new($false))
+        $run = New-TestSucceededInspectRun
+        $run.source_head = $sourceB
+        $run.nodes.inspect.completion_proof.source_head = $sourceB
+        $proof = New-TestAcknowledgement -NodeId 'inspect' -PaneId '%2'
+        $proof.source_head = $sourceB
+        $script:z03Run = Copy-DeclarativeWorkflowValue $run
+        $script:z03ResolvedLabels = [Collections.Generic.List[string]]::new()
+        $script:z03Effects = [ordered]@{ state = 0; lock = 0; advancement = 0; cleanup = 0 }
+        $script:testDeclarativeSessionName = 'z03-session'
+
+        Mock Read-TeamPipelineManifest { New-TestManifest -SessionName 'z03-session' }
+        Mock Get-TeamPipelineSessionName { 'z03-session' }
+        Mock Get-TeamPipelineDeclarativeProjectHead { $sourceB }
+        Mock Read-DeclarativeWorkflowRunState { Copy-DeclarativeWorkflowValue $script:z03Run }
+        Mock Invoke-TeamPipelineWorkspacePlanOnce { New-TestWorkspacePlan }
+        Mock Resolve-TeamPipelineDeclarativeAcknowledgement {
+            param($NodeId)
+            if ([string]$NodeId -ceq 'inspect') { return Copy-DeclarativeWorkflowValue $proof }
+            return @()
+        }
+        Mock Get-PaneControlManifestEntries {
+            @(
+                [PSCustomObject]@{
+                    Label = 'worker-1'; PaneId = '%2'; GenerationId = 'generation-123'; Role = 'Builder'
+                    LaunchDir = $managedPath; BuilderWorktreePath = $managedPath
+                }
+                [PSCustomObject]@{
+                    Label = 'worker-2'; PaneId = '%3'; GenerationId = 'generation-123'; Role = 'Reviewer'
+                    LaunchDir = $project; BuilderWorktreePath = ''
+                }
+            )
+        }
+        Mock Resolve-TeamPipelineDeclarativeRuntimeLease {
+            param($Label)
+            $script:z03ResolvedLabels.Add([string]$Label) | Out-Null
+            if ([string]$Label -ceq 'worker-1') { return $null }
+            return [PSCustomObject]@{ label = 'worker-2'; pane_id = '%3' }
+        }
+        Mock Save-DeclarativeWorkflowRunState { $script:z03Effects.state++ }
+        Mock Assert-TeamPipelineDeclarativeRunLockAdmission { $script:z03Effects.lock++ }
+        Mock Invoke-TeamPipelineDeclarativeRunAdvancement { param($Run) $script:z03Effects.advancement++; $Run }
+        Mock Invoke-TeamPipelineDeclarativeTerminalRecovery { $script:z03Effects.cleanup++; throw 'Z03 rejection must not recover terminal state' }
+        Mock Invoke-DeclarativeWorkflowCleanup { $script:z03Effects.cleanup++; throw 'Z03 rejection must not clean up' }
+
+        $resumeError = $null
+        try {
+            Invoke-TeamPipelineDeclarativeWorkflow -Action resume -RunId 'run-123' -GenerationId 'generation-123' `
+                -ConfigFingerprint ('sha256:' + ('a' * 64)) -SourceHead $sourceB -TaskFile $taskFile -ProjectDir $project | Out-Null
+        } catch {
+            $resumeError = $_
+        }
+
+        $resumeError | Should -Not -BeNullOrEmpty
+        [string]$resumeError.Exception.Message | Should -Match 'workflow_managed_worktree_source_head_mismatch'
+        [string]::Join(',', @($script:z03ResolvedLabels)) | Should -BeExactly 'worker-2'
+        @($script:z03Effects.Values | Measure-Object -Sum).Sum | Should -Be 0
+    }
+
+    It 'Z04 accepts exact managed HEAD without requiring a clean worktree' {
+        $script:testDeclarativeWorktreeHead = ('b' * 40)
+        $run = New-TestRun
+
+        {
+            Assert-TeamPipelineDeclarativeExecutionAdmission -Run $run -WorkspacePlan (New-TestWorkspacePlan) `
+                -ProjectDir $TestDrive -SessionName 'winsmux-orchestra'
+        } | Should -Not -Throw
+        Should -Invoke Get-TeamPipelineDeclarativeWorktreeHead -Times 1 -Exactly
+    }
+
+    It 'Z05 rejects managed and read-only path redirects plus a write action on read-only policy' {
+        $script:z05Mode = 'managed-redirect'
+        Mock Get-PaneControlManifestEntries {
+            param($ProjectDir)
+            $managedPath = if ($script:z05Mode -ceq 'managed-redirect') {
+                Join-Path $ProjectDir '.worktrees\other'
+            } else {
+                Join-Path $ProjectDir '.worktrees\bugfix-implement'
+            }
+            $reviewPath = if ($script:z05Mode -ceq 'read-only-redirect') {
+                Join-Path $ProjectDir '.worktrees\bugfix-implement'
+            } else {
+                $ProjectDir
+            }
+            @(
+                [PSCustomObject]@{
+                    Label = 'worker-1'; PaneId = '%2'; GenerationId = 'generation-123'; Role = 'Builder'
+                    LaunchDir = $managedPath; BuilderWorktreePath = $managedPath
+                }
+                [PSCustomObject]@{
+                    Label = 'worker-2'; PaneId = '%3'; GenerationId = 'generation-123'; Role = 'Reviewer'
+                    LaunchDir = $reviewPath; BuilderWorktreePath = ''
+                }
+            )
+        }
+        $run = New-TestRun
+        {
+            Assert-TeamPipelineDeclarativeExecutionAdmission -Run $run -WorkspacePlan (New-TestWorkspacePlan) `
+                -ProjectDir $TestDrive -SessionName 'winsmux-orchestra'
+        } | Should -Throw '*workflow_application_worktree_policy_mismatch*'
+
+        $script:z05Mode = 'read-only-redirect'
+        {
+            Assert-TeamPipelineDeclarativeExecutionAdmission -Run $run -WorkspacePlan (New-TestWorkspacePlan) `
+                -ProjectDir $TestDrive -SessionName 'winsmux-orchestra'
+        } | Should -Throw '*workflow_application_worktree_policy_mismatch*'
+
+        $script:z05Mode = 'exact'
+        $readOnlyWritePlan = New-TestWorkspacePlan
+        $readOnlyWritePlan.panes[0].worktree.mode = 'read-only-reference'
+        $readOnlyWritePlan.panes[0].worktree.name = $null
+        {
+            Assert-TeamPipelineDeclarativeExecutionAdmission -Run $run -WorkspacePlan $readOnlyWritePlan `
+                -ProjectDir $TestDrive -SessionName 'winsmux-orchestra'
+        } | Should -Throw '*workflow_application_worktree_policy_mismatch*'
+    }
+
+    It 'Z06 does not restore live or worktree requirements for a terminal run' {
+        Mock Get-PaneControlManifestEntries { @() }
+        Mock Resolve-TeamPipelineDeclarativeRuntimeLease { throw 'terminal run must not resolve a live lease' }
+        Mock Get-TeamPipelineDeclarativeWorktreeHead { throw 'terminal run must not inspect a worktree HEAD' }
+        $run = New-TestSucceededRun
+
+        {
+            Assert-TeamPipelineDeclarativeExecutionAdmission -Run $run -WorkspacePlan (New-TestWorkspacePlan) `
+                -ProjectDir $TestDrive -SessionName 'winsmux-orchestra'
+        } | Should -Not -Throw
+        Should -Invoke Resolve-TeamPipelineDeclarativeRuntimeLease -Times 0 -Exactly
+        Should -Invoke Get-TeamPipelineDeclarativeWorktreeHead -Times 0 -Exactly
+    }
+
+    It 'Z07 observes one exact lowercase worktree HEAD and fails closed when Git cannot resolve it' {
+        $project = Join-Path $TestDrive 'z07-worktree-head'
+        [IO.Directory]::CreateDirectory($project) | Out-Null
+        & git -C $project init --quiet
+        $LASTEXITCODE | Should -Be 0
+        $sourcePath = Join-Path $project 'source.txt'
+        [IO.File]::WriteAllText($sourcePath, 'source', [Text.UTF8Encoding]::new($false))
+        & git -C $project add -- source.txt
+        & git -C $project -c user.name=winsmux-test -c user.email=winsmux-test@example.invalid commit --quiet -m source
+        $LASTEXITCODE | Should -Be 0
+        $expectedHead = ([string](& git -C $project rev-parse HEAD)).Trim()
+
+        (& $script:testDeclarativeOriginalWorktreeHead -WorktreePath $project) | Should -BeExactly $expectedHead
+        {
+            & $script:testDeclarativeOriginalWorktreeHead -WorktreePath (Join-Path $project 'missing')
+        } | Should -Throw '*workflow_managed_worktree_source_head_mismatch*'
     }
 }

@@ -7,8 +7,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use workflow::{
     initial_node_states, normalize_workflow_plan, reduce_workflow_state_value, release_ready_nodes,
-    NodeState, RunState,
+    NodeState, RunState, WorkflowPlanCliOptions,
 };
+use workspace_recipe::{normalize_workspace_plan, parse_workspace_yaml, SlotCapabilities};
 
 const VALID: &str = r#"
 config-version: 1
@@ -48,13 +49,124 @@ fn bindings() -> BTreeMap<String, String> {
     ])
 }
 
+fn worktree_modes_for(bindings: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    bindings
+        .keys()
+        .map(|pane_ref| (pane_ref.clone(), "managed".to_string()))
+        .collect()
+}
+
+fn policy_slots() -> Vec<SlotCapabilities> {
+    vec![
+        SlotCapabilities {
+            slot_id: "worker-1".to_string(),
+            supports_file_edit: true,
+            supports_verification: false,
+            supports_structured_result: false,
+        },
+        SlotCapabilities {
+            slot_id: "worker-2".to_string(),
+            supports_file_edit: false,
+            supports_verification: true,
+            supports_structured_result: true,
+        },
+    ]
+}
+
+fn workflow_payload_from_plan(
+    yaml: &str,
+    plan: &workspace_recipe::NormalizedWorkspacePlan,
+) -> std::io::Result<Option<serde_json::Value>> {
+    let root = parse_workspace_yaml(yaml)?;
+    let arguments = [
+        "--workflow-id".to_string(),
+        "bugfix".to_string(),
+        "--run-id".to_string(),
+        "run-123".to_string(),
+    ];
+    let argument_refs = arguments.iter().collect::<Vec<_>>();
+    let mut options = WorkflowPlanCliOptions::default();
+    let mut index = 0;
+    while index < argument_refs.len() {
+        index = options.parse_option(&argument_refs, index)?;
+    }
+    options.validate()?;
+    options.normalized_payload(&root, plan)
+}
+
+fn workflow_with_application_policy() -> String {
+    format!(
+        "{VALID}\nworkspace-recipes:\n  bugfix-two-slot:\n    schema-version: 1\n    panes:\n      - pane-key: implement\n        workflow-role: implementer\n        slot-ref: worker-1\n        requires-capabilities: [file-edit]\n        region: main\n        worktree:\n          mode: managed\n          name-template: \"{{{{workflow-id}}}}-implement\"\n      - pane-key: verify\n        workflow-role: verifier\n        slot-ref: worker-2\n        requires-capabilities: [review]\n        region: side\n        worktree:\n          mode: read-only-reference\n    startup-actions:\n      - action-id: prepare-implement-worktree\n        kind: ensure-managed-worktree\n        pane-ref: implement\n      - action-id: start-implement-slot\n        kind: ensure-slot-ready\n        pane-ref: implement\n      - action-id: start-verify-slot\n        kind: ensure-slot-ready\n        pane-ref: verify\n"
+    )
+}
+
+#[test]
+fn z02_authorizes_workflow_actions_against_the_normalized_pane_worktree_policy() {
+    let valid_yaml = workflow_with_application_policy();
+    let plan = normalize_workspace_plan(
+        &valid_yaml,
+        "bugfix-two-slot",
+        Some("bugfix"),
+        &policy_slots(),
+    )
+    .expect("normalize workspace application policy");
+    workflow_payload_from_plan(&valid_yaml, &plan)
+        .expect("managed write and read-only verification are allowed")
+        .expect("workflow payload");
+
+    let read_only_write_yaml = valid_yaml.replacen("pane-ref: implement", "pane-ref: verify", 1);
+    let read_only_write = workflow_payload_from_plan(&read_only_write_yaml, &plan);
+
+    let mut missing_policy_plan = plan.clone();
+    missing_policy_plan
+        .panes
+        .retain(|pane| pane.pane_key != "verify");
+    let missing_policy = workflow_payload_from_plan(&valid_yaml, &missing_policy_plan);
+
+    let mut unknown_policy_plan = plan.clone();
+    unknown_policy_plan
+        .panes
+        .iter_mut()
+        .find(|pane| pane.pane_key == "verify")
+        .expect("verify pane")
+        .worktree
+        .mode = "unknown".to_string();
+    let unknown_policy = workflow_payload_from_plan(&valid_yaml, &unknown_policy_plan);
+
+    assert!(
+        read_only_write.is_err(),
+        "operator-dispatch must not target read-only-reference"
+    );
+    assert!(
+        missing_policy.is_err(),
+        "workflow policy keys must cover every resolved pane"
+    );
+    assert!(
+        unknown_policy.is_err(),
+        "unknown normalized worktree policies must be rejected"
+    );
+}
+
 #[test]
 fn w01_normalizes_dag_and_digest_deterministically_without_task_body() {
-    let first = normalize_workflow_plan(VALID, "bugfix", "run-123", "bugfix-two-slot", &bindings())
-        .expect("normalize valid workflow");
-    let second =
-        normalize_workflow_plan(VALID, "bugfix", "run-123", "bugfix-two-slot", &bindings())
-            .expect("normalize valid workflow again");
+    let first = normalize_workflow_plan(
+        VALID,
+        "bugfix",
+        "run-123",
+        "bugfix-two-slot",
+        &bindings(),
+        &worktree_modes_for(&bindings()),
+    )
+    .expect("normalize valid workflow");
+    let second = normalize_workflow_plan(
+        VALID,
+        "bugfix",
+        "run-123",
+        "bugfix-two-slot",
+        &bindings(),
+        &worktree_modes_for(&bindings()),
+    )
+    .expect("normalize valid workflow again");
 
     assert_eq!(first, second);
     assert_eq!(first.nodes[0].node_id, "inspect");
@@ -79,6 +191,7 @@ fn s01_rejects_normalized_idempotency_keys_over_192_ascii_bytes() {
         &accepted_run_id,
         "bugfix-two-slot",
         &bindings(),
+        &worktree_modes_for(&bindings()),
     )
     .expect("192-byte run_id:node_id must normalize");
     assert_eq!(accepted.nodes[0].idempotency_key.as_bytes().len(), 192);
@@ -89,6 +202,7 @@ fn s01_rejects_normalized_idempotency_keys_over_192_ascii_bytes() {
         &rejected_run_id,
         "bugfix-two-slot",
         &bindings(),
+        &worktree_modes_for(&bindings()),
     )
     .expect_err("193-byte run_id:node_id must be rejected");
     assert!(error.to_string().contains("idempotency"));
@@ -107,8 +221,15 @@ fn t01_rejects_expanded_state_over_one_mib_from_a_smaller_request() {
     yaml.push_str(
         "    resume-policy:\n      mode: operator-confirmed\n      reject-completed-runs: true\n    cleanup-policy:\n      mode: compensating-actions\n      on: [success, failure, cancel]\n      actions: [release-run-lock]\n",
     );
-    let plan = normalize_workflow_plan(&yaml, "bugfix", "run-123", "bugfix-two-slot", &bindings())
-        .expect("normalize large workflow below the request limit");
+    let plan = normalize_workflow_plan(
+        &yaml,
+        "bugfix",
+        "run-123",
+        "bugfix-two-slot",
+        &bindings(),
+        &worktree_modes_for(&bindings()),
+    )
+    .expect("normalize large workflow below the request limit");
     let request = serde_json::json!({
         "schema_version": 1,
         "operation": "bootstrap",
@@ -165,17 +286,30 @@ fn w02_rejects_cycle_self_edge_missing_dependency_duplicate_and_unknown_pane() {
     ];
 
     for (name, yaml) in cases {
-        let error =
-            normalize_workflow_plan(&yaml, "bugfix", "run-123", "bugfix-two-slot", &bindings())
-                .expect_err(name);
+        let error = normalize_workflow_plan(
+            &yaml,
+            "bugfix",
+            "run-123",
+            "bugfix-two-slot",
+            &bindings(),
+            &worktree_modes_for(&bindings()),
+        )
+        .expect_err(name);
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{name}");
     }
 }
 
 #[test]
 fn w03_w04_dependency_release_is_explicit_and_only_after_success() {
-    let plan = normalize_workflow_plan(VALID, "bugfix", "run-123", "bugfix-two-slot", &bindings())
-        .expect("normalize workflow");
+    let plan = normalize_workflow_plan(
+        VALID,
+        "bugfix",
+        "run-123",
+        "bugfix-two-slot",
+        &bindings(),
+        &worktree_modes_for(&bindings()),
+    )
+    .expect("normalize workflow");
     let mut states = initial_node_states(&plan);
     assert_eq!(states["inspect"], NodeState::Ready);
     assert_eq!(states["verify"], NodeState::Pending);
@@ -203,8 +337,15 @@ fn schema_is_closed_for_task_input_cleanup_action_and_node_payload() {
         ),
     ];
     for yaml in cases {
-        normalize_workflow_plan(&yaml, "bugfix", "run-123", "bugfix-two-slot", &bindings())
-            .expect_err("closed workflow schema must reject unsupported values");
+        normalize_workflow_plan(
+            &yaml,
+            "bugfix",
+            "run-123",
+            "bugfix-two-slot",
+            &bindings(),
+            &worktree_modes_for(&bindings()),
+        )
+        .expect_err("closed workflow schema must reject unsupported values");
     }
 }
 
@@ -220,14 +361,27 @@ fn f04_verification_requires_at_least_one_dependency_before_execution() {
             VALID.replace("depends-on: [inspect]", "depends-on: []"),
         ),
     ] {
-        let error =
-            normalize_workflow_plan(&yaml, "bugfix", "run-123", "bugfix-two-slot", &bindings())
-                .expect_err(name);
+        let error = normalize_workflow_plan(
+            &yaml,
+            "bugfix",
+            "run-123",
+            "bugfix-two-slot",
+            &bindings(),
+            &worktree_modes_for(&bindings()),
+        )
+        .expect_err(name);
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{name}");
     }
 
-    normalize_workflow_plan(VALID, "bugfix", "run-123", "bugfix-two-slot", &bindings())
-        .expect("one existing dependency is executable");
+    normalize_workflow_plan(
+        VALID,
+        "bugfix",
+        "run-123",
+        "bugfix-two-slot",
+        &bindings(),
+        &worktree_modes_for(&bindings()),
+    )
+    .expect("one existing dependency is executable");
 }
 
 #[test]
@@ -245,8 +399,15 @@ fn w12_terminal_runs_are_not_resumable() {
 }
 
 fn reducer_bootstrap_request() -> serde_json::Value {
-    let plan = normalize_workflow_plan(VALID, "bugfix", "run-123", "bugfix-two-slot", &bindings())
-        .expect("normalize workflow");
+    let plan = normalize_workflow_plan(
+        VALID,
+        "bugfix",
+        "run-123",
+        "bugfix-two-slot",
+        &bindings(),
+        &worktree_modes_for(&bindings()),
+    )
+    .expect("normalize workflow");
     serde_json::json!({
         "schema_version": 1,
         "operation": "bootstrap",
@@ -315,6 +476,8 @@ fn no_durable_proofs() -> serde_json::Value {
 }
 
 fn exact_ack(node_id: &str, pane_id: &str) -> serde_json::Value {
+    let resolved_bindings = bindings();
+    let pane_worktree_modes = worktree_modes_for(&resolved_bindings);
     serde_json::json!({
         "schema_version": 1,
         "run_id": "run-123",
@@ -322,7 +485,14 @@ fn exact_ack(node_id: &str, pane_id: &str) -> serde_json::Value {
         "idempotency_key": format!("run-123:{node_id}"),
         "generation_id": "generation-123",
         "config_fingerprint": format!("sha256:{}", "a".repeat(64)),
-        "workflow_fingerprint": normalize_workflow_plan(VALID, "bugfix", "run-123", "bugfix-two-slot", &bindings()).unwrap().workflow_fingerprint,
+        "workflow_fingerprint": normalize_workflow_plan(
+            VALID,
+            "bugfix",
+            "run-123",
+            "bugfix-two-slot",
+            &resolved_bindings,
+            &pane_worktree_modes
+        ).unwrap().workflow_fingerprint,
         "source_head": "b".repeat(40),
         "pane_id": pane_id,
         "status": "succeeded",
@@ -331,13 +501,22 @@ fn exact_ack(node_id: &str, pane_id: &str) -> serde_json::Value {
 }
 
 fn exact_cancellation() -> serde_json::Value {
+    let resolved_bindings = bindings();
+    let pane_worktree_modes = worktree_modes_for(&resolved_bindings);
     serde_json::json!({
         "schema_version": 1,
         "run_id": "run-123",
         "idempotency_key": "run-123:cancel",
         "generation_id": "generation-123",
         "config_fingerprint": format!("sha256:{}", "a".repeat(64)),
-        "workflow_fingerprint": normalize_workflow_plan(VALID, "bugfix", "run-123", "bugfix-two-slot", &bindings()).unwrap().workflow_fingerprint,
+        "workflow_fingerprint": normalize_workflow_plan(
+            VALID,
+            "bugfix",
+            "run-123",
+            "bugfix-two-slot",
+            &resolved_bindings,
+            &pane_worktree_modes
+        ).unwrap().workflow_fingerprint,
         "source_head": "b".repeat(40),
         "status": "cancelled",
         "evidence_ref": "workflow-cancel:run-123"
@@ -361,6 +540,7 @@ fn h01_verification_requires_one_resolved_producer_label() {
         "run-123",
         "bugfix-two-slot",
         &aliases,
+        &worktree_modes_for(&aliases),
     )
     .expect("aliases resolving to one producer label are executable");
 
@@ -374,6 +554,7 @@ fn h01_verification_requires_one_resolved_producer_label() {
         "run-123",
         "bugfix-two-slot",
         &aliases,
+        &worktree_modes_for(&aliases),
     )
     .expect_err("verification producers resolving to distinct labels must reject");
 }

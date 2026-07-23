@@ -1962,6 +1962,7 @@ function Assert-TeamPipelineDeclarativeAdmission {
 function Assert-TeamPipelineDeclarativeExecutionAdmission {
     param(
         [Parameter(Mandatory = $true)]$Run,
+        [Parameter(Mandatory = $true)]$WorkspacePlan,
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)][string]$SessionName
     )
@@ -1975,23 +1976,113 @@ function Assert-TeamPipelineDeclarativeExecutionAdmission {
         throw 'workflow_live_binding_unavailable'
     }
 
+    $policies = Get-TeamPipelineDeclarativeApplicationPolicies -WorkspacePlan $WorkspacePlan -Bindings $bindings
     $requiredLabels = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $requiredPaneRefs = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     foreach ($nodeIdValue in $nodeOrder) {
         $nodeId = [string]$nodeIdValue
         if ([string]::IsNullOrWhiteSpace($nodeId) -or -not $nodes.Contains($nodeId)) {
             throw 'workflow_live_binding_unavailable'
         }
         $node = $nodes[$nodeId]
-        if ([string](Get-DeclarativeWorkflowValue $node 'state' '') -ceq 'succeeded') { continue }
         $paneRef = [string](Get-DeclarativeWorkflowValue $node 'pane_ref' '')
-        if ([string]::IsNullOrWhiteSpace($paneRef) -or -not $bindings.Contains($paneRef)) {
+        if ([string]::IsNullOrWhiteSpace($paneRef) -or
+            -not $bindings.Contains($paneRef) -or
+            -not $policies.Contains($paneRef)) {
             throw 'workflow_live_binding_unavailable'
+        }
+        $action = [string](Get-DeclarativeWorkflowValue $node 'action' '')
+        $policy = $policies[$paneRef]
+        if ($action -notin @('operator-dispatch', 'verification') -or
+            ($action -ceq 'operator-dispatch' -and [string]$policy.mode -cne 'managed')) {
+            throw 'workflow_application_worktree_policy_mismatch'
+        }
+        if ([string](Get-DeclarativeWorkflowValue $node 'state' '') -ceq 'succeeded') { continue }
+        $requiredPaneRefs.Add($paneRef) | Out-Null
+        if ($action -ceq 'verification') {
+            foreach ($dependencyIdValue in @(Get-DeclarativeWorkflowValue $node 'depends_on' @())) {
+                $dependencyId = [string]$dependencyIdValue
+                if ([string]::IsNullOrWhiteSpace($dependencyId) -or -not $nodes.Contains($dependencyId)) {
+                    throw 'workflow_application_worktree_policy_mismatch'
+                }
+                $dependency = $nodes[$dependencyId]
+                if ([string](Get-DeclarativeWorkflowValue $dependency 'state' '') -cne 'succeeded') { continue }
+                $producerPaneRef = [string](Get-DeclarativeWorkflowValue $dependency 'pane_ref' '')
+                if ([string]::IsNullOrWhiteSpace($producerPaneRef) -or
+                    -not $bindings.Contains($producerPaneRef) -or
+                    -not $policies.Contains($producerPaneRef)) {
+                    throw 'workflow_application_worktree_policy_mismatch'
+                }
+                $requiredPaneRefs.Add($producerPaneRef) | Out-Null
+            }
         }
         $label = [string]$bindings[$paneRef]
         if ([string]::IsNullOrWhiteSpace($label)) { throw 'workflow_live_binding_unavailable' }
-        if (-not $requiredLabels.Add($label)) { continue }
+        $requiredLabels.Add($label) | Out-Null
+    }
+
+    foreach ($label in $requiredLabels) {
         $lease = Resolve-TeamPipelineDeclarativeRuntimeLease -ProjectDir $ProjectDir -Run $Run -SessionName $SessionName -Label $label
         if ($null -eq $lease) { throw 'workflow_live_binding_unavailable' }
+    }
+
+    try {
+        $manifestEntries = @(Get-PaneControlManifestEntries -ProjectDir $ProjectDir)
+    } catch {
+        throw 'workflow_application_worktree_policy_mismatch'
+    }
+    $generationId = [string](Get-DeclarativeWorkflowValue $Run 'generation_id' '')
+    $sourceHead = [string](Get-DeclarativeWorkflowValue $Run 'source_head' '')
+    $canonicalProjectDir = Get-TeamPipelineDeclarativeCanonicalPath -Path $ProjectDir
+    $canonicalWorktreeRoot = Get-TeamPipelineDeclarativeCanonicalPath -Path (Join-Path $canonicalProjectDir '.worktrees')
+    foreach ($paneRef in $requiredPaneRefs) {
+        $label = [string]$bindings[$paneRef]
+        $matches = @($manifestEntries | Where-Object {
+                [string](Get-TeamPipelineValue $_ 'Label' '') -ceq $label
+            })
+        if ($matches.Count -ne 1 -or
+            -not [string]::Equals(
+                [string](Get-TeamPipelineValue $matches[0] 'GenerationId' ''),
+                $generationId,
+                [StringComparison]::Ordinal
+            )) {
+            throw 'workflow_application_worktree_policy_mismatch'
+        }
+        $entry = $matches[0]
+        $launchDir = [string](Get-TeamPipelineValue $entry 'LaunchDir' '')
+        $builderWorktreePath = [string](Get-TeamPipelineValue $entry 'BuilderWorktreePath' '')
+        $policy = $policies[$paneRef]
+        if ([string]$policy.mode -ceq 'read-only-reference') {
+            if (-not (Test-TeamPipelineDeclarativePathEqual -Left $launchDir -Right $canonicalProjectDir) -or
+                -not [string]::IsNullOrWhiteSpace($builderWorktreePath)) {
+                throw 'workflow_application_worktree_policy_mismatch'
+            }
+            continue
+        }
+
+        $worktreeName = [string]$policy.name
+        if ([string]::IsNullOrWhiteSpace($worktreeName)) {
+            throw 'workflow_application_worktree_policy_mismatch'
+        }
+        $expectedWorktreePath = Get-TeamPipelineDeclarativeCanonicalPath -Path (
+            Join-Path $canonicalWorktreeRoot $worktreeName
+        )
+        $expectedParent = Get-TeamPipelineDeclarativeCanonicalPath -Path (
+            [IO.Path]::GetDirectoryName($expectedWorktreePath)
+        )
+        if (-not [string]::Equals(
+                $expectedParent,
+                $canonicalWorktreeRoot,
+                [StringComparison]::OrdinalIgnoreCase
+            ) -or
+            -not (Test-TeamPipelineDeclarativePathEqual -Left $launchDir -Right $expectedWorktreePath) -or
+            -not (Test-TeamPipelineDeclarativePathEqual -Left $builderWorktreePath -Right $expectedWorktreePath)) {
+            throw 'workflow_application_worktree_policy_mismatch'
+        }
+        $worktreeHead = Get-TeamPipelineDeclarativeWorktreeHead -WorktreePath $expectedWorktreePath
+        if ($sourceHead -cnotmatch '^[0-9a-f]{40}$' -or $worktreeHead -cne $sourceHead) {
+            throw 'workflow_managed_worktree_source_head_mismatch'
+        }
     }
 }
 
@@ -2078,6 +2169,89 @@ function Get-TeamPipelineDeclarativeProjectHead {
         throw 'Declarative workflow source head is malformed.'
     }
     return $head
+}
+
+function Get-TeamPipelineDeclarativeWorktreeHead {
+    param([Parameter(Mandatory = $true)][string]$WorktreePath)
+
+    $output = @(& git -C $WorktreePath rev-parse HEAD 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $output.Count -ne 1) {
+        throw 'workflow_managed_worktree_source_head_mismatch'
+    }
+    $head = ([string]$output[0]).Trim()
+    if ($head -cnotmatch '^[0-9a-f]{40}$') {
+        throw 'workflow_managed_worktree_source_head_mismatch'
+    }
+    return $head
+}
+
+function Get-TeamPipelineDeclarativeCanonicalPath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        throw 'workflow_application_worktree_policy_mismatch'
+    }
+    try {
+        return [IO.Path]::GetFullPath($Path).TrimEnd(
+            [char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+        )
+    } catch {
+        throw 'workflow_application_worktree_policy_mismatch'
+    }
+}
+
+function Test-TeamPipelineDeclarativePathEqual {
+    param(
+        [Parameter(Mandatory = $true)][string]$Left,
+        [Parameter(Mandatory = $true)][string]$Right
+    )
+
+    try {
+        $canonicalLeft = Get-TeamPipelineDeclarativeCanonicalPath -Path $Left
+        $canonicalRight = Get-TeamPipelineDeclarativeCanonicalPath -Path $Right
+        return [string]::Equals($canonicalLeft, $canonicalRight, [StringComparison]::OrdinalIgnoreCase)
+    } catch {
+        return $false
+    }
+}
+
+function Get-TeamPipelineDeclarativeApplicationPolicies {
+    param(
+        [Parameter(Mandatory = $true)]$WorkspacePlan,
+        [Parameter(Mandatory = $true)]$Bindings
+    )
+
+    $panes = @(Get-DeclarativeWorkflowValue $WorkspacePlan 'panes' @())
+    $policies = [ordered]@{}
+    foreach ($pane in $panes) {
+        $paneRef = [string](Get-DeclarativeWorkflowValue $pane 'pane_key' '')
+        $slotId = [string](Get-DeclarativeWorkflowValue $pane 'slot_id' '')
+        $worktree = Get-DeclarativeWorkflowValue $pane 'worktree' $null
+        $mode = [string](Get-DeclarativeWorkflowValue $worktree 'mode' '')
+        $name = [string](Get-DeclarativeWorkflowValue $worktree 'name' '')
+        if ([string]::IsNullOrWhiteSpace($paneRef) -or
+            $policies.Contains($paneRef) -or
+            -not $Bindings.Contains($paneRef) -or
+            [string]$Bindings[$paneRef] -cne $slotId -or
+            $mode -notin @('managed', 'read-only-reference')) {
+            throw 'workflow_application_worktree_policy_mismatch'
+        }
+        $policies[$paneRef] = [PSCustomObject]@{
+            pane_ref = $paneRef
+            slot_id  = $slotId
+            mode     = $mode
+            name     = $name
+        }
+    }
+    if ($policies.Count -ne $Bindings.Count) {
+        throw 'workflow_application_worktree_policy_mismatch'
+    }
+    foreach ($paneRefValue in @($Bindings.Keys)) {
+        if (-not $policies.Contains([string]$paneRefValue)) {
+            throw 'workflow_application_worktree_policy_mismatch'
+        }
+    }
+    return $policies
 }
 
 function Assert-TeamPipelineDeclarativeSourceHead {
@@ -2461,7 +2635,7 @@ function Invoke-TeamPipelineDeclarativeWorkflow {
             $run = New-DeclarativeWorkflowRun -Plan $workflowPlan -RunId $RunId -GenerationId $GenerationId -ConfigFingerprint $ConfigFingerprint -SourceHead $SourceHead -TaskInput $taskInput
             Assert-TeamPipelineDeclarativeAdmission -Run $run -Confirmation $confirmation -TaskInput $taskInput -WorkspacePlan $workspacePlan `
                 -Manifest $manifest -ManifestGenerationId $manifestGenerationId -ObservedSourceHead $observedSourceHead -ProjectDir $ProjectDir -SessionName $sessionName
-            Assert-TeamPipelineDeclarativeExecutionAdmission -Run $run -ProjectDir $ProjectDir -SessionName $sessionName
+            Assert-TeamPipelineDeclarativeExecutionAdmission -Run $run -WorkspacePlan $workspacePlan -ProjectDir $ProjectDir -SessionName $sessionName
             try {
                 Save-DeclarativeWorkflowRunState -ProjectDir $ProjectDir -Run $run -CreateNew | Out-Null
             } catch {
@@ -2496,7 +2670,7 @@ function Invoke-TeamPipelineDeclarativeWorkflow {
             Assert-TeamPipelineDeclarativeAdmission -Run $run -Confirmation $confirmation -TaskInput $taskInput -WorkspacePlan $workspacePlan `
                 -Manifest $manifest -ManifestGenerationId $manifestGenerationId -ObservedSourceHead $observedSourceHead -ProjectDir $ProjectDir -SessionName $sessionName
             if ([string]$run.state -notin @('succeeded', 'failed', 'cancelled', 'cleanup_pending')) {
-                Assert-TeamPipelineDeclarativeExecutionAdmission -Run $run -ProjectDir $ProjectDir -SessionName $sessionName
+                Assert-TeamPipelineDeclarativeExecutionAdmission -Run $run -WorkspacePlan $workspacePlan -ProjectDir $ProjectDir -SessionName $sessionName
             }
             Assert-TeamPipelineDeclarativeRunLockAdmission -ProjectDir $ProjectDir -Run $run | Out-Null
             $snapshotValidated = $true
