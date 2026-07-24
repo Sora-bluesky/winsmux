@@ -23,6 +23,7 @@ Describe 'winsmux npm release package contract' {
         $script:RootReadmePath = Join-Path $script:RepoRoot 'README.md'
         $script:RootReadmeJaPath = Join-Path $script:RepoRoot 'README.ja.md'
         $script:OutputRoot = Join-Path $script:RepoRoot 'output\npm-release\winsmux'
+        $script:ProductVersion = (Get-Content -LiteralPath (Join-Path $script:RepoRoot 'VERSION') -Raw -Encoding UTF8).Trim()
 
         $nodeCommand = Get-Command node -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($null -eq $nodeCommand) {
@@ -420,7 +421,7 @@ param(
         $installerLiteral = $script:InstallerPath.Replace("'", "''")
         foreach ($case in @(
             @{ Action = 'help'; Expected = 'Usage: install.ps1' },
-            @{ Action = 'version'; Expected = 'winsmux 0.36.28' },
+            @{ Action = 'version'; Expected = "winsmux $script:ProductVersion" },
             @{ Action = 'unknown-action'; Expected = 'Usage: install.ps1' }
         )) {
             $command = "`$env:WINSMUX_RELEASE_TAG = '../../attacker/repo/main'; & '$installerLiteral' $($case.Action) -ReleaseTag 'also-invalid'"

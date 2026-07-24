@@ -38,6 +38,27 @@ function ConvertFrom-QuotedYamlScalar {
     return $trimmed
 }
 
+function Write-Utf8TextPreservingBom {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$Content
+    )
+
+    $existingBytes = [System.IO.File]::ReadAllBytes($Path)
+    $hasUtf8Bom = (
+        $existingBytes.Length -ge 3 -and
+        $existingBytes[0] -eq 0xEF -and
+        $existingBytes[1] -eq 0xBB -and
+        $existingBytes[2] -eq 0xBF
+    )
+    $encoding = [System.Text.UTF8Encoding]::new($hasUtf8Bom)
+    [System.IO.File]::WriteAllText($Path, $Content, $encoding)
+}
+
 function Update-ReleaseBacklogStatus {
     param(
         [Parameter(Mandatory = $true)]
@@ -173,7 +194,8 @@ if ($Version) {
         Write-Error "Invalid version format: '$Version'. Expected: X.Y.Z"
         exit 1
     }
-    Set-Content -Path $VersionFile -Value $Version -NoNewline -Encoding UTF8
+    $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+    [System.IO.File]::WriteAllText($VersionFile, $Version, $utf8NoBom)
     Write-Host "[bump] VERSION file -> $Version"
 } else {
     if (-not (Test-Path $VersionFile)) {
@@ -278,7 +300,7 @@ function Update-WinsmuxAppPackageLockVersion {
     $updated = [regex]::Replace($updated, $rootPackagePattern, "`${1}$Version`${2}", 1)
 
     if ($updated -ne $content) {
-        Set-Content -Path $Path -Value $updated -NoNewline -Encoding UTF8
+        Write-Utf8TextPreservingBom -Path $Path -Content $updated
         Write-Host "[bump] UPDATED $relPath"
         return 'changed'
     }
@@ -302,7 +324,7 @@ foreach ($t in $targets) {
     $updated = $content -replace $t.Pattern, $t.Replace
 
     if ($updated -ne $content) {
-        Set-Content -Path $t.Path -Value $updated -NoNewline -Encoding UTF8
+        Write-Utf8TextPreservingBom -Path $t.Path -Content $updated
         Write-Host "[bump] UPDATED $relPath"
         $changed++
     } else {
