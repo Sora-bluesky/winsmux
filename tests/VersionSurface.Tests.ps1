@@ -56,6 +56,16 @@ Describe 'winsmux version surface' {
         $bytes[2] | Should -Be 0xBF
     }
 
+    It 'preserves each target file UTF-8 BOM state during version sync' {
+        $releaseScript = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'scripts\bump-version.ps1') -Raw -Encoding UTF8
+
+        $releaseScript | Should -Match 'function Write-Utf8TextPreservingBom'
+        $releaseScript | Should -Match '\$hasUtf8Bom\s*='
+        $releaseScript | Should -Match '\[System\.Text\.UTF8Encoding\]::new\(\$hasUtf8Bom\)'
+        $releaseScript | Should -Match '\[System\.IO\.File\]::WriteAllText\(\$Path, \$Content, \$encoding\)'
+        $releaseScript | Should -Not -Match 'Set-Content -Path \$t\.Path'
+    }
+
     It 'uses latest release resolution for tagless install and update actions' {
         $installScript = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'install.ps1') -Raw -Encoding UTF8
 
