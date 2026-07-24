@@ -109,12 +109,15 @@ Resolution order is fixed:
 
 1. Lane B normalizes `team-profile` and `agent-slots` into the effective slot
    catalog.
-2. Lane A validates recipe bindings against slot IDs and capabilities from
-   that catalog.
-3. A recipe may require a provider capability or refer to `slot_id`; it may not
+2. Lane A compiles workflow actions into per-pane capability requirements,
+   combines them with recipe and selector requirements, and only then resolves
+   and validates recipe bindings against that catalog.
+3. A recipe or workflow action may require a provider capability or refer to
+   `slot_id`; neither may
    override a slot's provider, model, reasoning effort, role profile,
    lifecycle, or task classes.
-4. The dry-run output shows the resolved slot for every logical recipe role.
+4. The dry-run output shows the resolved slot and its normalized actual
+   capability tuple for every logical recipe role.
    A missing, ambiguous, unavailable, or capability-incompatible binding fails
    closed before pane creation.
 
@@ -235,8 +238,11 @@ Normative field rules:
   mutually exclusive.
 - The TASK-658 capability vocabulary is closed: `file-edit` requires
   `supports_file_edit`; `review` requires both `supports_verification` and
-  `supports_structured_result`. Pane and selector requirements are combined
-  and de-duplicated before matching.
+  `supports_structured_result`. Pane, selector, and selected workflow-action
+  requirements are combined and de-duplicated before matching. Workflow actions
+  are not authorized from recipe declarations alone: the resolved slot's actual
+  capability tuple is serialized into the normalized application contract and
+  checked again by runtime.
 - `workflow-role` is a role in this workflow only. It is not Lane B's persistent
   slot `role_profile` and cannot rewrite it.
 - Apply-ready schema version 1 supports 1 to 12 physical panes. Unique `region`
@@ -327,7 +333,7 @@ declarative_workspace:
 
 workflow_runs:
   run-123:
-    schema_version: 1
+    schema_version: 3
     workflow_id: bugfix
     state: blocked
     config_fingerprint: sha256:...
@@ -337,14 +343,47 @@ workflow_runs:
     resolved_bindings:
       implement: worker-1
       verify: worker-2
+    application_contract:
+      implement:
+        pane_ref: implement
+        slot_id: worker-1
+        worktree: { mode: managed, name: bugfix-implement }
+        actual_capabilities:
+          supports_file_edit: true
+          supports_verification: false
+          supports_structured_result: false
+      verify:
+        pane_ref: verify
+        slot_id: worker-2
+        worktree: { mode: read-only-reference }
+        actual_capabilities:
+          supports_file_edit: false
+          supports_verification: true
+          supports_structured_result: true
+    pane_head_leases:
+      implement:
+        base_head: 0123456789abcdef...
+        admitted_head: fedcba9876543210...
     nodes:
       inspect:
         state: succeeded
         attempt: 1
         idempotency_key: run-123:inspect
         agent_cli_session_id: opaque-local-routing-id
+        execution_lease:
+          pane_ref: implement
+          slot_id: worker-1
+          worktree_mode: managed
+          input_head: 0123456789abcdef...
+        application_outcome:
+          input_head: 0123456789abcdef...
+          output_head: fedcba9876543210...
+        completion_proof:
+          schema_version: 2
+          input_head: 0123456789abcdef...
+          output_head: fedcba9876543210...
         evidence_refs: [evidence:...]
-      implement:
+      verify:
         state: blocked
         attempt: 1
         checkpoint_ref: checkpoint:...
@@ -368,8 +407,10 @@ Runtime values are projections, not re-parsed intent:
 
 - pane entries receive resolved slot, workflow role, worktree reference, task
   identity, capabilities, and current state;
-- workflow entries receive the normalized DAG, node states, attempts,
-  idempotency records, checkpoint refs, and cleanup journal;
+- workflow entries receive the normalized application contract and actual
+  capability tuple, normalized DAG, per-pane admitted-HEAD ledger, node
+  execution leases and outcomes, attempts, idempotency records, checkpoint
+  refs, and cleanup journal;
 - ledger events receive state transitions and attributable evidence refs;
 - context packs receive public repository-relative refs and digests only;
 - Context Capsule and Checkpoint package receive the context-pack ref and
@@ -386,8 +427,10 @@ State transitions are driven by structured runtime results and recorded
 acknowledgements, never by sniffing pane text for success words. Dispatch
 success requires a closed mailbox v2 completion envelope. `operator-poll.ps1`
 must validate that envelope against the current pane/generation and project it
-as one immutable run-owned proof under `.winsmux/workflow-runs/<run>/proofs/`
-before the workflow consumes it. The mailbox pending directory is transport
+as one immutable schema-version 2 run-owned proof, including exact `input_head`
+and operator-observed `output_head`, under
+`.winsmux/workflow-runs/<run>/proofs/` before the workflow consumes it. The
+mailbox pending directory is transport
 only, and active or rotated logs are observability only; neither TTL nor log
 retention may grant or revoke completion authority. A process exit, successful
 pane write, `STATUS: EXEC_DONE`, or `VERIFY_PASS` text is not sufficient proof.
@@ -407,6 +450,17 @@ unlocking dependent nodes. On restart:
 5. surface ambiguous work as `blocked` for operator judgement;
 6. resume only unfinished nodes after explicit operator confirmation; and
 7. reject automatic resume of `succeeded`, `cancelled`, or `rolled_back` runs.
+
+Each dispatch first persists an immutable execution lease containing the pane
+reference, resolved slot, worktree mode, and exact input `HEAD`. The project
+source `HEAD` remains immutable confirmation authority for read-only-reference
+applications. A managed application may publish only the same commit or a Git
+descendant of its leased input; after the operator verifies that relation, the
+reducer atomically records the node outcome and advances that pane's admitted
+`HEAD`. Later nodes resolve their input from the per-pane ledger rather than
+requiring every managed worktree to stay at the run's original source commit.
+A succeeded producer needed by unfinished verification must retain its exact
+path and admitted `HEAD`, but its old live pane lease is not restored.
 
 Operator confirmation is bound to the exact run ID, manifest generation ID,
 config fingerprint, and source head observed by the operator. Before any run
@@ -550,8 +604,13 @@ repository context selection, gallery content, or final desktop/CLI parity.
 **Acceptance gate:**
 
 - cyclic or missing dependencies fail before dispatch;
+- workflow action requirements participate in slot selection, and both compile
+  time and runtime reject capability or worktree-policy mismatch against the
+  persisted application contract;
 - an interruption is simulated at every side-effect boundary and resume
   continues only unfinished nodes;
+- managed node input/output commits form a verified per-pane chain, while
+  read-only verification cannot publish a changed `HEAD`;
 - repeating the same idempotency key cannot repeat a completed side effect;
 - ambiguous `dispatching`/`running` state becomes `blocked`, not guessed
   success or failure;

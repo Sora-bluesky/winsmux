@@ -159,6 +159,14 @@ pub struct SlotCapabilities {
     pub supports_structured_result: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NormalizedActualCapabilities {
+    pub supports_file_edit: bool,
+    pub supports_verification: bool,
+    pub supports_structured_result: bool,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct NormalizedWorkspacePlan {
     pub schema_version: u64,
@@ -197,11 +205,13 @@ pub struct NormalizedPane {
     pub workflow_role: String,
     pub slot_id: String,
     pub required_capabilities: Vec<String>,
+    pub actual_capabilities: NormalizedActualCapabilities,
     pub region: String,
     pub worktree: NormalizedWorktree,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NormalizedWorktree {
     pub mode: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -286,6 +296,22 @@ pub(crate) fn normalize_workspace_plan_from_value(
     workflow_id: Option<&str>,
     slots: &[SlotCapabilities],
 ) -> io::Result<NormalizedWorkspacePlan> {
+    normalize_workspace_plan_from_value_with_implied_capabilities(
+        root,
+        recipe_id,
+        workflow_id,
+        slots,
+        &BTreeMap::new(),
+    )
+}
+
+pub(crate) fn normalize_workspace_plan_from_value_with_implied_capabilities(
+    root: &serde_yaml::Value,
+    recipe_id: &str,
+    workflow_id: Option<&str>,
+    slots: &[SlotCapabilities],
+    implied_capabilities: &BTreeMap<String, Vec<String>>,
+) -> io::Result<NormalizedWorkspacePlan> {
     require_stable_id("recipe-id", recipe_id)?;
     if let Some(value) = workflow_id {
         require_stable_id("workflow-id", value)?;
@@ -339,8 +365,11 @@ pub(crate) fn normalize_workspace_plan_from_value(
             }
             append_capabilities(&mut required_capabilities, &selector.requires_capabilities)?;
         }
+        if let Some(capabilities) = implied_capabilities.get(&pane.pane_key) {
+            append_capabilities(&mut required_capabilities, capabilities)?;
+        }
 
-        let slot_id = match (pane.slot_ref.as_deref(), pane.slot_selector.as_ref()) {
+        let slot = match (pane.slot_ref.as_deref(), pane.slot_selector.as_ref()) {
             (Some(_), Some(_)) | (None, None) => {
                 return Err(invalid_data(format!(
                     "pane '{}' must set exactly one of slot-ref or slot-selector.",
@@ -358,7 +387,7 @@ pub(crate) fn normalize_workspace_plan_from_value(
                         ))
                     })?;
                 require_capabilities(slot, &required_capabilities, &pane.pane_key)?;
-                slot.slot_id.clone()
+                *slot
             }
             (None, Some(_)) => {
                 let matches: Vec<&SlotCapabilities> = slot_catalog
@@ -373,9 +402,10 @@ pub(crate) fn normalize_workspace_plan_from_value(
                         matches.len()
                     )));
                 }
-                matches[0].slot_id.clone()
+                matches[0]
             }
         };
+        let slot_id = slot.slot_id.clone();
 
         if !resolved_slot_ids.insert(canonical_slot_identity(&slot_id)?) {
             return Err(invalid_data(
@@ -389,9 +419,22 @@ pub(crate) fn normalize_workspace_plan_from_value(
             workflow_role: pane.workflow_role,
             slot_id,
             required_capabilities,
+            actual_capabilities: NormalizedActualCapabilities {
+                supports_file_edit: slot.supports_file_edit,
+                supports_verification: slot.supports_verification,
+                supports_structured_result: slot.supports_structured_result,
+            },
             region: pane.region,
             worktree,
         });
+    }
+    if implied_capabilities
+        .keys()
+        .any(|pane_ref| !pane_keys.contains(pane_ref))
+    {
+        return Err(invalid_data(
+            "workflow action requirements reference an unknown recipe pane.",
+        ));
     }
 
     let application_layout = build_application_layout(&normalized_panes);

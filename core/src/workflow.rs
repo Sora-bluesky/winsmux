@@ -5,7 +5,9 @@ use std::io::{self, Write};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::workspace_recipe::{parse_workspace_yaml, NormalizedWorkspacePlan};
+use crate::workspace_recipe::{
+    parse_workspace_yaml, NormalizedActualCapabilities, NormalizedWorkspacePlan, NormalizedWorktree,
+};
 
 const WORKFLOW_SCHEMA_VERSION: u64 = 1;
 const RUN_ID_TOKEN: &str = "{{run-id}}";
@@ -51,6 +53,21 @@ impl WorkflowPlanCliOptions {
         self.workflow_id.as_deref()
     }
 
+    pub(crate) fn application_capability_requirements(
+        &self,
+        root: &serde_yaml::Value,
+        selected_recipe_id: &str,
+    ) -> io::Result<BTreeMap<String, Vec<String>>> {
+        let Some(workflow_id) = self.workflow_id.as_deref() else {
+            return Ok(BTreeMap::new());
+        };
+        workflow_application_capability_requirements_from_value(
+            root,
+            workflow_id,
+            selected_recipe_id,
+        )
+    }
+
     pub(crate) fn normalized_payload(
         &self,
         root: &serde_yaml::Value,
@@ -59,14 +76,15 @@ impl WorkflowPlanCliOptions {
         let (Some(workflow_id), Some(run_id)) = (&self.workflow_id, &self.run_id) else {
             return Ok(None);
         };
-        let pane_worktree_modes = normalized_pane_worktree_modes(plan)?;
-        let workflow = normalize_workflow_plan_from_value(
+        let application_contract = normalized_application_contract(plan)?;
+        let workflow = normalize_workflow_plan_from_value_with_application(
             root,
             workflow_id,
             run_id,
             &plan.recipe_id,
             &plan.resolved_bindings,
-            &pane_worktree_modes,
+            &normalized_pane_worktree_modes(plan)?,
+            Some(&application_contract),
         )?;
         let mut payload = serde_json::to_value(plan).map_err(|error| {
             invalid_data(format!("failed to serialize workspace plan: {error}"))
@@ -93,9 +111,19 @@ pub struct NormalizedWorkflowPlan {
     pub workflow_fingerprint: String,
     pub task_input: NormalizedTaskInput,
     pub resolved_bindings: BTreeMap<String, String>,
+    pub application_contract: BTreeMap<String, NormalizedWorkflowApplication>,
     pub nodes: Vec<NormalizedWorkflowNode>,
     pub resume_policy: NormalizedResumePolicy,
     pub cleanup_policy: NormalizedCleanupPolicy,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NormalizedWorkflowApplication {
+    pub pane_ref: String,
+    pub slot_id: String,
+    pub worktree: NormalizedWorktree,
+    pub actual_capabilities: NormalizedActualCapabilities,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -118,6 +146,9 @@ pub struct NormalizedWorkflowNode {
     pub node_id: String,
     pub pane_ref: String,
     pub action: WorkflowAction,
+    pub required_capability: String,
+    pub allowed_worktree_modes: Vec<String>,
+    pub may_advance_head: bool,
     pub depends_on: Vec<String>,
     pub idempotency_key: String,
     pub cleanup: String,
@@ -229,6 +260,7 @@ struct FingerprintPayload<'a> {
     recipe_ref: &'a str,
     task_input: &'a NormalizedTaskInput,
     resolved_bindings: &'a BTreeMap<String, String>,
+    application_contract: &'a BTreeMap<String, NormalizedWorkflowApplication>,
     nodes: &'a [NormalizedWorkflowNode],
     resume_policy: &'a NormalizedResumePolicy,
     cleanup_policy: &'a NormalizedCleanupPolicy,
@@ -243,14 +275,63 @@ pub fn normalize_workflow_plan(
     pane_worktree_modes: &BTreeMap<String, String>,
 ) -> io::Result<NormalizedWorkflowPlan> {
     let root = parse_workspace_yaml(yaml)?;
-    normalize_workflow_plan_from_value(
+    normalize_workflow_plan_from_value_with_application(
         &root,
         workflow_id,
         run_id,
         selected_recipe_id,
         resolved_bindings,
         pane_worktree_modes,
+        None,
     )
+}
+
+fn normalized_application_contract(
+    plan: &NormalizedWorkspacePlan,
+) -> io::Result<BTreeMap<String, NormalizedWorkflowApplication>> {
+    let mut applications = BTreeMap::new();
+    for pane in &plan.panes {
+        let expected_slot = plan.resolved_bindings.get(&pane.pane_key).ok_or_else(|| {
+            invalid_data(format!(
+                "workspace pane '{}' has no resolved binding.",
+                pane.pane_key
+            ))
+        })?;
+        if expected_slot != &pane.slot_id {
+            return Err(invalid_data(format!(
+                "workspace pane '{}' slot does not match its resolved binding.",
+                pane.pane_key
+            )));
+        }
+        if applications
+            .insert(
+                pane.pane_key.clone(),
+                NormalizedWorkflowApplication {
+                    pane_ref: pane.pane_key.clone(),
+                    slot_id: pane.slot_id.clone(),
+                    worktree: pane.worktree.clone(),
+                    actual_capabilities: pane.actual_capabilities.clone(),
+                },
+            )
+            .is_some()
+        {
+            return Err(invalid_data(format!(
+                "duplicate workspace pane application '{}'.",
+                pane.pane_key
+            )));
+        }
+    }
+    if applications.len() != plan.resolved_bindings.len()
+        || plan
+            .resolved_bindings
+            .keys()
+            .any(|pane_ref| !applications.contains_key(pane_ref))
+    {
+        return Err(invalid_data(
+            "workspace pane applications must exactly cover resolved bindings.",
+        ));
+    }
+    Ok(applications)
 }
 
 fn normalized_pane_worktree_modes(
@@ -302,6 +383,48 @@ fn normalized_pane_worktree_modes(
     Ok(modes)
 }
 
+pub(crate) fn workflow_application_capability_requirements_from_value(
+    root: &serde_yaml::Value,
+    workflow_id: &str,
+    selected_recipe_id: &str,
+) -> io::Result<BTreeMap<String, Vec<String>>> {
+    require_stable_id("workflow-id", workflow_id)?;
+    require_stable_id("recipe-id", selected_recipe_id)?;
+    let root = root
+        .as_mapping()
+        .ok_or_else(|| invalid_data(".winsmux.yaml must be a mapping."))?;
+    let workflows = root
+        .get(&serde_yaml::Value::String("workflows".to_string()))
+        .and_then(serde_yaml::Value::as_mapping)
+        .ok_or_else(|| invalid_data("workflows must be a mapping."))?;
+    let value = workflows
+        .get(&serde_yaml::Value::String(workflow_id.to_string()))
+        .ok_or_else(|| invalid_input(format!("workflow '{workflow_id}' was not found.")))?;
+    let workflow: Workflow = serde_yaml::from_value(value.clone())
+        .map_err(|_| invalid_data("invalid workflow schema."))?;
+    if workflow.schema_version != WORKFLOW_SCHEMA_VERSION {
+        return Err(invalid_data(format!(
+            "unsupported workflow schema-version '{}'; supported version is {WORKFLOW_SCHEMA_VERSION}.",
+            workflow.schema_version
+        )));
+    }
+    if workflow.recipe_ref != selected_recipe_id {
+        return Err(invalid_data(
+            "workflow recipe-ref does not match the selected recipe.",
+        ));
+    }
+    let mut requirements = BTreeMap::<String, Vec<String>>::new();
+    for node in workflow.nodes {
+        require_stable_id("pane-ref", &node.pane_ref)?;
+        let capability = workflow_action_contract(node.action).0.to_string();
+        let entry = requirements.entry(node.pane_ref).or_default();
+        if !entry.contains(&capability) {
+            entry.push(capability);
+        }
+    }
+    Ok(requirements)
+}
+
 pub(crate) fn normalize_workflow_plan_from_value(
     root: &serde_yaml::Value,
     workflow_id: &str,
@@ -309,6 +432,26 @@ pub(crate) fn normalize_workflow_plan_from_value(
     selected_recipe_id: &str,
     resolved_bindings: &BTreeMap<String, String>,
     pane_worktree_modes: &BTreeMap<String, String>,
+) -> io::Result<NormalizedWorkflowPlan> {
+    normalize_workflow_plan_from_value_with_application(
+        root,
+        workflow_id,
+        run_id,
+        selected_recipe_id,
+        resolved_bindings,
+        pane_worktree_modes,
+        None,
+    )
+}
+
+fn normalize_workflow_plan_from_value_with_application(
+    root: &serde_yaml::Value,
+    workflow_id: &str,
+    run_id: &str,
+    selected_recipe_id: &str,
+    resolved_bindings: &BTreeMap<String, String>,
+    pane_worktree_modes: &BTreeMap<String, String>,
+    supplied_application_contract: Option<&BTreeMap<String, NormalizedWorkflowApplication>>,
 ) -> io::Result<NormalizedWorkflowPlan> {
     require_stable_id("workflow-id", workflow_id)?;
     require_workflow_run_id("run-id", run_id)?;
@@ -456,10 +599,18 @@ pub(crate) fn normalize_workflow_plan_from_value(
         .into_iter()
         .map(|node_id| {
             let node = &by_id[&node_id];
+            let (required_capability, allowed_worktree_modes, may_advance_head) =
+                workflow_action_contract(node.action);
             NormalizedWorkflowNode {
                 node_id: node.node_id.clone(),
                 pane_ref: node.pane_ref.clone(),
                 action: node.action,
+                required_capability: required_capability.to_string(),
+                allowed_worktree_modes: allowed_worktree_modes
+                    .iter()
+                    .map(|mode| (*mode).to_string())
+                    .collect(),
+                may_advance_head,
                 depends_on: node
                     .depends_on
                     .iter()
@@ -473,6 +624,16 @@ pub(crate) fn normalize_workflow_plan_from_value(
             }
         })
         .collect::<Vec<_>>();
+    let application_contract = match supplied_application_contract {
+        Some(contract) => contract.clone(),
+        None => synthetic_application_contract(resolved_bindings, pane_worktree_modes, &nodes),
+    };
+    validate_application_contract(
+        &application_contract,
+        resolved_bindings,
+        pane_worktree_modes,
+        &nodes,
+    )?;
     let task_input = NormalizedTaskInput {
         source: workflow.task_input.source,
         privacy: workflow.task_input.privacy,
@@ -492,6 +653,7 @@ pub(crate) fn normalize_workflow_plan_from_value(
         recipe_ref: selected_recipe_id,
         task_input: &task_input,
         resolved_bindings,
+        application_contract: &application_contract,
         nodes: &nodes,
         resume_policy: &resume_policy,
         cleanup_policy: &cleanup_policy,
@@ -509,12 +671,132 @@ pub(crate) fn normalize_workflow_plan_from_value(
         workflow_fingerprint: format!("sha256:{:x}", Sha256::digest(fingerprint_bytes)),
         task_input,
         resolved_bindings: resolved_bindings.clone(),
+        application_contract,
         nodes,
         resume_policy,
         cleanup_policy,
     };
     validate_normalized_workflow_plan(&plan, run_id)?;
     Ok(plan)
+}
+
+fn workflow_action_contract(
+    action: WorkflowAction,
+) -> (&'static str, &'static [&'static str], bool) {
+    match action {
+        WorkflowAction::OperatorDispatch => ("file-edit", &["managed"], true),
+        WorkflowAction::Verification => ("review", &["managed", "read-only-reference"], false),
+    }
+}
+
+fn synthetic_application_contract(
+    resolved_bindings: &BTreeMap<String, String>,
+    pane_worktree_modes: &BTreeMap<String, String>,
+    nodes: &[NormalizedWorkflowNode],
+) -> BTreeMap<String, NormalizedWorkflowApplication> {
+    let mut contract = resolved_bindings
+        .iter()
+        .map(|(pane_ref, slot_id)| {
+            (
+                pane_ref.clone(),
+                NormalizedWorkflowApplication {
+                    pane_ref: pane_ref.clone(),
+                    slot_id: slot_id.clone(),
+                    worktree: NormalizedWorktree {
+                        mode: pane_worktree_modes[pane_ref].clone(),
+                        name: None,
+                    },
+                    actual_capabilities: NormalizedActualCapabilities {
+                        supports_file_edit: false,
+                        supports_verification: false,
+                        supports_structured_result: false,
+                    },
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    for node in nodes {
+        let application = contract
+            .get_mut(&node.pane_ref)
+            .expect("normalized workflow pane binding was validated");
+        match node.action {
+            WorkflowAction::OperatorDispatch => {
+                application.actual_capabilities.supports_file_edit = true;
+            }
+            WorkflowAction::Verification => {
+                application.actual_capabilities.supports_verification = true;
+                application.actual_capabilities.supports_structured_result = true;
+            }
+        }
+    }
+    contract
+}
+
+fn validate_application_contract(
+    contract: &BTreeMap<String, NormalizedWorkflowApplication>,
+    resolved_bindings: &BTreeMap<String, String>,
+    pane_worktree_modes: &BTreeMap<String, String>,
+    nodes: &[NormalizedWorkflowNode],
+) -> io::Result<()> {
+    if contract.len() != resolved_bindings.len()
+        || resolved_bindings
+            .keys()
+            .any(|pane_ref| !contract.contains_key(pane_ref))
+    {
+        return Err(invalid_data(
+            "workflow application contract must exactly cover resolved bindings.",
+        ));
+    }
+    for (pane_ref, application) in contract {
+        let expected_slot = resolved_bindings
+            .get(pane_ref)
+            .ok_or_else(|| invalid_data("workflow application names an unknown pane."))?;
+        let expected_mode = pane_worktree_modes
+            .get(pane_ref)
+            .ok_or_else(|| invalid_data("workflow application has no worktree policy."))?;
+        if application.pane_ref != *pane_ref
+            || application.slot_id != *expected_slot
+            || application.worktree.mode != *expected_mode
+        {
+            return Err(invalid_data(
+                "workflow application does not match its pane binding and worktree policy.",
+            ));
+        }
+    }
+    for node in nodes {
+        let application = &contract[&node.pane_ref];
+        let (required_capability, allowed_modes, may_advance_head) =
+            workflow_action_contract(node.action);
+        if node.required_capability != required_capability
+            || node.allowed_worktree_modes
+                != allowed_modes
+                    .iter()
+                    .map(|mode| (*mode).to_string())
+                    .collect::<Vec<_>>()
+            || node.may_advance_head != may_advance_head
+            || !node
+                .allowed_worktree_modes
+                .contains(&application.worktree.mode)
+        {
+            return Err(invalid_data(
+                "workflow node application policy is not canonical.",
+            ));
+        }
+        let capabilities = &application.actual_capabilities;
+        let authorized = match node.action {
+            WorkflowAction::OperatorDispatch => capabilities.supports_file_edit,
+            WorkflowAction::Verification => {
+                capabilities.supports_verification && capabilities.supports_structured_result
+            }
+        };
+        if !authorized {
+            return Err(invalid_data(format!(
+                "workflow node '{}' is not authorized by its resolved slot capabilities.",
+                node.node_id
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn canonical_topological_order(nodes: &BTreeMap<String, WorkflowNode>) -> io::Result<Vec<String>> {
@@ -581,7 +863,7 @@ pub fn release_ready_nodes(
 }
 
 const REDUCER_REQUEST_SCHEMA_VERSION: u64 = 1;
-const WORKFLOW_RUN_SCHEMA_VERSION: u64 = 2;
+const WORKFLOW_RUN_SCHEMA_VERSION: u64 = 3;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -680,6 +962,8 @@ struct WorkflowCompletionProof {
     config_fingerprint: String,
     workflow_fingerprint: String,
     source_head: String,
+    input_head: String,
+    output_head: String,
     pane_id: String,
     status: AcknowledgementStatus,
     evidence_ref: String,
@@ -687,6 +971,40 @@ struct WorkflowCompletionProof {
     transport: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     message_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkflowDependencyInput {
+    node_id: String,
+    pane_ref: String,
+    output_head: String,
+    evidence_ref: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkflowExecutionLease {
+    pane_ref: String,
+    slot_id: String,
+    worktree_mode: String,
+    input_head: String,
+    dependency_inputs: Vec<WorkflowDependencyInput>,
+    dependency_heads: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkflowApplicationOutcome {
+    input_head: String,
+    output_head: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkflowPaneHeadLease {
+    base_head: String,
+    admitted_head: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -725,6 +1043,9 @@ struct WorkflowRuntimeNode {
     idempotency_key: String,
     pane_ref: String,
     action: WorkflowAction,
+    required_capability: String,
+    allowed_worktree_modes: Vec<String>,
+    may_advance_head: bool,
     depends_on: Vec<String>,
     cleanup: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -732,6 +1053,10 @@ struct WorkflowRuntimeNode {
     evidence_refs: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     agent_cli_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    execution_lease: Option<WorkflowExecutionLease>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    application_outcome: Option<WorkflowApplicationOutcome>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     completion_proof: Option<WorkflowCompletionProof>,
 }
@@ -752,6 +1077,7 @@ struct WorkflowRun {
     task_byte_count: u64,
     resolved_bindings: BTreeMap<String, String>,
     normalized_snapshot: NormalizedWorkflowPlan,
+    pane_head_leases: BTreeMap<String, WorkflowPaneHeadLease>,
     node_order: Vec<String>,
     nodes: BTreeMap<String, WorkflowRuntimeNode>,
     cleanup_journal: Vec<CleanupActionRecord>,
@@ -768,6 +1094,11 @@ enum WorkflowEvent {
     Validate,
     DispatchIntent {
         node_id: String,
+        input_head: String,
+        #[serde(default)]
+        dependency_inputs: Vec<WorkflowDependencyInput>,
+        #[serde(default)]
+        dependency_heads: BTreeMap<String, String>,
     },
     Acknowledge {
         node_id: String,
@@ -801,7 +1132,7 @@ pub fn reduce_workflow_state_value(request: &serde_json::Value) -> io::Result<se
             .and_then(serde_json::Value::as_object)
             .and_then(|run| run.get("schema_version"))
             .and_then(serde_json::Value::as_u64)
-            == Some(1)
+            != Some(WORKFLOW_RUN_SCHEMA_VERSION)
     {
         return Err(invalid_data("workflow_state_migration_required"));
     }
@@ -922,12 +1253,31 @@ fn bootstrap_workflow_run(
                     idempotency_key: node.idempotency_key.clone(),
                     pane_ref: node.pane_ref.clone(),
                     action: node.action,
+                    required_capability: node.required_capability.clone(),
+                    allowed_worktree_modes: node.allowed_worktree_modes.clone(),
+                    may_advance_head: node.may_advance_head,
                     depends_on: node.depends_on.clone(),
                     cleanup: node.cleanup.clone(),
                     context_pack_ref: node.context_pack_ref.clone(),
                     evidence_refs: Vec::new(),
                     agent_cli_session_id: None,
+                    execution_lease: None,
+                    application_outcome: None,
                     completion_proof: None,
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let pane_head_leases = plan
+        .application_contract
+        .iter()
+        .filter(|(_, application)| application.worktree.mode == "managed")
+        .map(|(pane_ref, _)| {
+            (
+                pane_ref.clone(),
+                WorkflowPaneHeadLease {
+                    base_head: identity.source_head.clone(),
+                    admitted_head: identity.source_head.clone(),
                 },
             )
         })
@@ -947,6 +1297,7 @@ fn bootstrap_workflow_run(
         task_byte_count: identity.task_byte_count,
         resolved_bindings: plan.resolved_bindings.clone(),
         normalized_snapshot: plan,
+        pane_head_leases,
         node_order,
         nodes,
         cleanup_journal: vec![CleanupActionRecord {
@@ -970,28 +1321,59 @@ fn transition_workflow_run(
     event: WorkflowEvent,
     mut durable_proofs: DurableProofs,
 ) -> io::Result<WorkflowRun> {
-    match &event {
-        WorkflowEvent::Acknowledge {
-            acknowledgement, ..
-        } => durable_proofs
-            .completion_acknowledgements
-            .push(acknowledgement.clone()),
-        WorkflowEvent::Cancel { cancellation } => durable_proofs
+    if let WorkflowEvent::Cancel { cancellation } = &event {
+        durable_proofs
             .cancellation_proofs
-            .push(cancellation.clone()),
-        _ => {}
+            .push(cancellation.clone());
     }
     let durable_proofs = normalize_durable_proofs(&run, durable_proofs)?;
     validate_workflow_run(&run, &durable_proofs)?;
     match event {
         WorkflowEvent::Validate => return Ok(run),
-        WorkflowEvent::DispatchIntent { node_id } => {
+        WorkflowEvent::DispatchIntent {
+            node_id,
+            input_head,
+            dependency_inputs,
+            dependency_heads,
+        } => {
             if !matches!(run.state, RunState::Ready | RunState::Running) {
                 return Err(workflow_state_invalid(
                     "terminal or blocked run cannot dispatch a node",
                 ));
             }
             require_stable_id("node_id", &node_id)?;
+            validate_source_head(&input_head)?;
+            let definition = run
+                .normalized_snapshot
+                .nodes
+                .iter()
+                .find(|node| node.node_id == node_id)
+                .ok_or_else(|| workflow_state_invalid("unknown normalized workflow node"))?;
+            let application = run
+                .normalized_snapshot
+                .application_contract
+                .get(&definition.pane_ref)
+                .ok_or_else(|| workflow_state_invalid("workflow application is missing"))?;
+            let expected_input = if application.worktree.mode == "managed" {
+                &run.pane_head_leases
+                    .get(&definition.pane_ref)
+                    .ok_or_else(|| workflow_state_invalid("managed pane head lease is missing"))?
+                    .admitted_head
+            } else {
+                &run.source_head
+            };
+            if input_head != *expected_input {
+                return Err(workflow_state_invalid(
+                    "dispatch input head does not match the admitted pane head",
+                ));
+            }
+            let expected_dependency_inputs = derive_workflow_dependency_inputs(&run, definition)?;
+            if dependency_inputs != expected_dependency_inputs {
+                return Err(workflow_state_invalid(
+                    "dispatch dependency inputs do not match direct dependency proofs",
+                ));
+            }
+            validate_workflow_dependency_heads(&dependency_inputs, &dependency_heads)?;
             let node = run
                 .nodes
                 .get_mut(&node_id)
@@ -1003,6 +1385,14 @@ fn transition_workflow_run(
             }
             node.state = NodeState::Dispatching;
             node.attempt = 1;
+            node.execution_lease = Some(WorkflowExecutionLease {
+                pane_ref: definition.pane_ref.clone(),
+                slot_id: application.slot_id.clone(),
+                worktree_mode: application.worktree.mode.clone(),
+                input_head,
+                dependency_inputs,
+                dependency_heads,
+            });
         }
         WorkflowEvent::Acknowledge {
             node_id,
@@ -1016,6 +1406,20 @@ fn transition_workflow_run(
                 .get(&node_id)
                 .ok_or_else(|| workflow_state_invalid("unknown workflow node"))?;
             validate_completion_proof(&run, node, &acknowledgement)?;
+            let external = durable_proofs
+                .completion_acknowledgements
+                .iter()
+                .filter(|candidate| {
+                    candidate.run_id == run.run_id
+                        && candidate.node_id == node_id
+                        && candidate.idempotency_key == node.idempotency_key
+                })
+                .collect::<Vec<_>>();
+            if external.len() != 1 || external[0] != &acknowledgement {
+                return Err(workflow_state_invalid(
+                    "acknowledgement requires exactly one matching external durable proof",
+                ));
+            }
             if acknowledgement.pane_id != resolved_session_id {
                 return Err(workflow_state_invalid(
                     "resolved session does not match acknowledgement pane",
@@ -1044,6 +1448,21 @@ fn transition_workflow_run(
                 ));
             }
             let evidence_ref = acknowledgement.evidence_ref.clone();
+            let pane_ref = node.pane_ref.clone();
+            let input_head = acknowledgement.input_head.clone();
+            let output_head = acknowledgement.output_head.clone();
+            let may_advance_head = run
+                .normalized_snapshot
+                .nodes
+                .iter()
+                .find(|definition| definition.node_id == node_id)
+                .map(|definition| definition.may_advance_head)
+                .ok_or_else(|| workflow_state_invalid("unknown normalized workflow node"))?;
+            if !may_advance_head && output_head != input_head {
+                return Err(workflow_state_invalid(
+                    "read-only workflow action changed its admitted head",
+                ));
+            }
             let node = run
                 .nodes
                 .get_mut(&node_id)
@@ -1051,7 +1470,23 @@ fn transition_workflow_run(
             node.state = NodeState::Succeeded;
             node.agent_cli_session_id = Some(resolved_session_id);
             node.evidence_refs = vec![evidence_ref];
+            node.application_outcome = Some(WorkflowApplicationOutcome {
+                input_head: input_head.clone(),
+                output_head: output_head.clone(),
+            });
             node.completion_proof = Some(acknowledgement);
+            if may_advance_head {
+                let pane_lease = run
+                    .pane_head_leases
+                    .get_mut(&pane_ref)
+                    .ok_or_else(|| workflow_state_invalid("managed pane head lease is missing"))?;
+                if pane_lease.admitted_head != input_head {
+                    return Err(workflow_state_invalid(
+                        "managed pane head lease changed before acknowledgement",
+                    ));
+                }
+                pane_lease.admitted_head = output_head;
+            }
             release_proof_ready_nodes(&mut run)?;
         }
         WorkflowEvent::Block { node_id } => {
@@ -1222,6 +1657,25 @@ fn validate_normalized_workflow_plan(
         require_stable_id("pane_ref", pane_ref)?;
         require_stable_id("binding_label", binding_label)?;
     }
+    let mut pane_worktree_modes = BTreeMap::new();
+    for (pane_ref, application) in &plan.application_contract {
+        require_stable_id("application pane_ref", pane_ref)?;
+        require_stable_id("application slot_id", &application.slot_id)?;
+        if application.pane_ref != *pane_ref
+            || plan.resolved_bindings.get(pane_ref) != Some(&application.slot_id)
+            || !matches!(
+                application.worktree.mode.as_str(),
+                "managed" | "read-only-reference"
+            )
+            || (application.worktree.mode == "read-only-reference"
+                && application.worktree.name.is_some())
+        {
+            return Err(workflow_state_invalid(
+                "normalized workflow application contract is invalid",
+            ));
+        }
+        pane_worktree_modes.insert(pane_ref.clone(), application.worktree.mode.clone());
+    }
     if plan.nodes.is_empty() {
         return Err(workflow_state_invalid(
             "normalized workflow must contain at least one node",
@@ -1321,6 +1775,13 @@ fn validate_normalized_workflow_plan(
             "normalized workflow node order is not canonical",
         ));
     }
+    validate_application_contract(
+        &plan.application_contract,
+        &plan.resolved_bindings,
+        &pane_worktree_modes,
+        &plan.nodes,
+    )
+    .map_err(|error| workflow_state_invalid(error.to_string()))?;
 
     let payload = FingerprintPayload {
         schema_version: plan.schema_version,
@@ -1328,6 +1789,7 @@ fn validate_normalized_workflow_plan(
         recipe_ref: &plan.recipe_ref,
         task_input: &plan.task_input,
         resolved_bindings: &plan.resolved_bindings,
+        application_contract: &plan.application_contract,
         nodes: &plan.nodes,
         resume_policy: &plan.resume_policy,
         cleanup_policy: &plan.cleanup_policy,
@@ -1430,7 +1892,7 @@ fn normalize_durable_proofs(run: &WorkflowRun, proofs: DurableProofs) -> io::Res
 
 fn validate_workflow_run(run: &WorkflowRun, durable_proofs: &DurableProofs) -> io::Result<()> {
     if run.schema_version != WORKFLOW_RUN_SCHEMA_VERSION {
-        return Err(if run.schema_version == 1 {
+        return Err(if matches!(run.schema_version, 1 | 2) {
             invalid_data("workflow_state_migration_required")
         } else {
             workflow_state_invalid("unsupported workflow run schema_version")
@@ -1473,6 +1935,9 @@ fn validate_workflow_run(run: &WorkflowRun, durable_proofs: &DurableProofs) -> i
             .ok_or_else(|| workflow_state_invalid("workflow run is missing a normalized node"))?;
         if node.node_id != definition.node_id
             || node.action != definition.action
+            || node.required_capability != definition.required_capability
+            || node.allowed_worktree_modes != definition.allowed_worktree_modes
+            || node.may_advance_head != definition.may_advance_head
             || node.pane_ref != definition.pane_ref
             || node.depends_on != definition.depends_on
             || node.idempotency_key != definition.idempotency_key
@@ -1485,6 +1950,7 @@ fn validate_workflow_run(run: &WorkflowRun, durable_proofs: &DurableProofs) -> i
         }
         validate_runtime_node_tuple(run, node, durable_proofs)?;
     }
+    validate_pane_head_leases(run)?;
     validate_external_cancellation_proof(run, durable_proofs)?;
     validate_cleanup_journal(run)?;
     let expected_state = derive_run_state(run)?;
@@ -1492,6 +1958,77 @@ fn validate_workflow_run(run: &WorkflowRun, durable_proofs: &DurableProofs) -> i
         return Err(workflow_state_invalid(
             "workflow run state is not proof-derived",
         ));
+    }
+    Ok(())
+}
+
+fn validate_pane_head_leases(run: &WorkflowRun) -> io::Result<()> {
+    let managed_panes = run
+        .normalized_snapshot
+        .application_contract
+        .iter()
+        .filter(|(_, application)| application.worktree.mode == "managed")
+        .map(|(pane_ref, _)| pane_ref.clone())
+        .collect::<BTreeSet<_>>();
+    if run
+        .pane_head_leases
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        != managed_panes
+    {
+        return Err(workflow_state_invalid(
+            "pane head leases must exactly cover managed applications",
+        ));
+    }
+    let mut expected = BTreeMap::new();
+    for (pane_ref, lease) in &run.pane_head_leases {
+        validate_source_head(&lease.base_head)?;
+        validate_source_head(&lease.admitted_head)?;
+        if lease.base_head != run.source_head {
+            return Err(workflow_state_invalid(
+                "managed pane base head does not match the run source",
+            ));
+        }
+        expected.insert(pane_ref.clone(), lease.base_head.clone());
+    }
+    for node_id in &run.node_order {
+        let node = &run.nodes[node_id];
+        let application = &run.normalized_snapshot.application_contract[&node.pane_ref];
+        let Some(execution_lease) = node.execution_lease.as_ref() else {
+            continue;
+        };
+        let expected_input = if application.worktree.mode == "managed" {
+            &expected[&node.pane_ref]
+        } else {
+            &run.source_head
+        };
+        if execution_lease.input_head != *expected_input {
+            return Err(workflow_state_invalid(
+                "node execution leases do not form one admitted pane chain",
+            ));
+        }
+        if node.state == NodeState::Succeeded {
+            let outcome = node.application_outcome.as_ref().ok_or_else(|| {
+                workflow_state_invalid("succeeded node is missing its application outcome")
+            })?;
+            let definition = run
+                .normalized_snapshot
+                .nodes
+                .iter()
+                .find(|definition| definition.node_id == *node_id)
+                .ok_or_else(|| workflow_state_invalid("normalized workflow node is missing"))?;
+            if definition.may_advance_head {
+                expected.insert(node.pane_ref.clone(), outcome.output_head.clone());
+            }
+        }
+    }
+    for (pane_ref, admitted_head) in expected {
+        if run.pane_head_leases[&pane_ref].admitted_head != admitted_head {
+            return Err(workflow_state_invalid(
+                "managed pane admitted head does not match its node outcomes",
+            ));
+        }
     }
     Ok(())
 }
@@ -1507,19 +2044,32 @@ fn validate_runtime_node_tuple(
             .map(|node| node.state == NodeState::Succeeded && node.completion_proof.is_some())
             .unwrap_or(false)
     });
-    let empty_outcome = node.agent_cli_session_id.is_none()
+    let empty_completion = node.agent_cli_session_id.is_none()
         && node.evidence_refs.is_empty()
+        && node.application_outcome.is_none()
         && node.completion_proof.is_none();
     match node.state {
         NodeState::Pending
             if node.attempt == 0
-                && empty_outcome
+                && node.execution_lease.is_none()
+                && empty_completion
                 && !node.depends_on.is_empty()
                 && !dependencies_proven => {}
-        NodeState::Ready if node.attempt == 0 && empty_outcome && dependencies_proven => {}
+        NodeState::Ready
+            if node.attempt == 0
+                && node.execution_lease.is_none()
+                && empty_completion
+                && dependencies_proven => {}
         NodeState::Dispatching | NodeState::Blocked | NodeState::Failed
-            if node.attempt == 1 && empty_outcome && dependencies_proven => {}
+            if node.attempt == 1
+                && node.execution_lease.is_some()
+                && empty_completion
+                && dependencies_proven =>
+        {
+            validate_execution_lease(run, node)?;
+        }
         NodeState::Succeeded if node.attempt == 1 => {
+            validate_execution_lease(run, node)?;
             let proof = node.completion_proof.as_ref().ok_or_else(|| {
                 workflow_state_invalid("succeeded node is missing a completion proof")
             })?;
@@ -1534,6 +2084,25 @@ fn validate_runtime_node_tuple(
             {
                 return Err(workflow_state_invalid(
                     "succeeded node outcome tuple does not match its proof",
+                ));
+            }
+            let outcome = node.application_outcome.as_ref().ok_or_else(|| {
+                workflow_state_invalid("succeeded node is missing its application outcome")
+            })?;
+            if outcome.input_head != proof.input_head || outcome.output_head != proof.output_head {
+                return Err(workflow_state_invalid(
+                    "succeeded node application outcome does not match its proof",
+                ));
+            }
+            let definition = run
+                .normalized_snapshot
+                .nodes
+                .iter()
+                .find(|definition| definition.node_id == node.node_id)
+                .ok_or_else(|| workflow_state_invalid("normalized workflow node is missing"))?;
+            if !definition.may_advance_head && outcome.output_head != outcome.input_head {
+                return Err(workflow_state_invalid(
+                    "read-only workflow action changed its admitted head",
                 ));
             }
             let external = durable_proofs
@@ -1560,12 +2129,134 @@ fn validate_runtime_node_tuple(
     Ok(())
 }
 
+fn derive_workflow_dependency_inputs(
+    run: &WorkflowRun,
+    definition: &NormalizedWorkflowNode,
+) -> io::Result<Vec<WorkflowDependencyInput>> {
+    definition
+        .depends_on
+        .iter()
+        .map(|dependency_id| {
+            let dependency = run
+                .nodes
+                .get(dependency_id)
+                .ok_or_else(|| workflow_state_invalid("workflow dependency node is missing"))?;
+            let proof = dependency.completion_proof.as_ref().ok_or_else(|| {
+                workflow_state_invalid("workflow dependency completion proof is missing")
+            })?;
+            if dependency.state != NodeState::Succeeded
+                || proof.node_id != dependency.node_id
+                || proof.output_head
+                    != dependency
+                        .application_outcome
+                        .as_ref()
+                        .ok_or_else(|| {
+                            workflow_state_invalid(
+                                "workflow dependency application outcome is missing",
+                            )
+                        })?
+                        .output_head
+                || dependency.evidence_refs != vec![proof.evidence_ref.clone()]
+            {
+                return Err(workflow_state_invalid(
+                    "workflow dependency proof tuple is invalid",
+                ));
+            }
+            validate_source_head(&proof.output_head)?;
+            Ok(WorkflowDependencyInput {
+                node_id: dependency.node_id.clone(),
+                pane_ref: dependency.pane_ref.clone(),
+                output_head: proof.output_head.clone(),
+                evidence_ref: proof.evidence_ref.clone(),
+            })
+        })
+        .collect()
+}
+
+fn validate_workflow_dependency_heads(
+    dependency_inputs: &[WorkflowDependencyInput],
+    dependency_heads: &BTreeMap<String, String>,
+) -> io::Result<()> {
+    let mut outputs_by_pane = BTreeMap::<String, BTreeSet<String>>::new();
+    for dependency in dependency_inputs {
+        require_stable_id("dependency node_id", &dependency.node_id)?;
+        require_stable_id("dependency pane_ref", &dependency.pane_ref)?;
+        validate_source_head(&dependency.output_head)?;
+        if dependency.evidence_ref.is_empty() {
+            return Err(workflow_state_invalid(
+                "workflow dependency evidence reference is empty",
+            ));
+        }
+        outputs_by_pane
+            .entry(dependency.pane_ref.clone())
+            .or_default()
+            .insert(dependency.output_head.clone());
+    }
+    if dependency_heads.len() != outputs_by_pane.len()
+        || dependency_heads
+            .keys()
+            .any(|pane_ref| !outputs_by_pane.contains_key(pane_ref))
+    {
+        return Err(workflow_state_invalid(
+            "workflow dependency head selection does not match dependency panes",
+        ));
+    }
+    for (pane_ref, outputs) in outputs_by_pane {
+        let selected = dependency_heads.get(&pane_ref).ok_or_else(|| {
+            workflow_state_invalid("workflow dependency head selection is missing")
+        })?;
+        validate_source_head(selected)?;
+        if !outputs.contains(selected) {
+            return Err(workflow_state_invalid(
+                "workflow dependency head was not produced by a direct dependency",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_execution_lease(run: &WorkflowRun, node: &WorkflowRuntimeNode) -> io::Result<()> {
+    let lease = node
+        .execution_lease
+        .as_ref()
+        .ok_or_else(|| workflow_state_invalid("dispatched node is missing its execution lease"))?;
+    let application = run
+        .normalized_snapshot
+        .application_contract
+        .get(&node.pane_ref)
+        .ok_or_else(|| workflow_state_invalid("workflow application is missing"))?;
+    if lease.pane_ref != node.pane_ref
+        || lease.slot_id != application.slot_id
+        || lease.worktree_mode != application.worktree.mode
+    {
+        return Err(workflow_state_invalid(
+            "node execution lease does not match its application contract",
+        ));
+    }
+    validate_source_head(&lease.input_head)?;
+    let definition = run
+        .normalized_snapshot
+        .nodes
+        .iter()
+        .find(|definition| definition.node_id == node.node_id)
+        .ok_or_else(|| workflow_state_invalid("normalized workflow node is missing"))?;
+    if lease.dependency_inputs != derive_workflow_dependency_inputs(run, definition)? {
+        return Err(workflow_state_invalid(
+            "node execution lease does not match direct dependency proofs",
+        ));
+    }
+    validate_workflow_dependency_heads(&lease.dependency_inputs, &lease.dependency_heads)
+}
+
 fn validate_completion_proof(
     run: &WorkflowRun,
     node: &WorkflowRuntimeNode,
     proof: &WorkflowCompletionProof,
 ) -> io::Result<()> {
-    if proof.schema_version != 1
+    let execution_lease = node.execution_lease.as_ref().ok_or_else(|| {
+        workflow_state_invalid("workflow acknowledgement requires an execution lease")
+    })?;
+    if proof.schema_version != 2
         || proof.run_id != run.run_id
         || proof.node_id != node.node_id
         || proof.idempotency_key != node.idempotency_key
@@ -1573,6 +2264,7 @@ fn validate_completion_proof(
         || proof.config_fingerprint != run.config_fingerprint
         || proof.workflow_fingerprint != run.workflow_fingerprint
         || proof.source_head != run.source_head
+        || proof.input_head != execution_lease.input_head
         || proof.status != AcknowledgementStatus::Succeeded
         || proof.evidence_ref != format!("workflow-ack:{}:{}", run.run_id, node.node_id)
     {
@@ -1580,6 +2272,8 @@ fn validate_completion_proof(
             "workflow acknowledgement identity does not match the run and node",
         ));
     }
+    validate_source_head(&proof.input_head)?;
+    validate_source_head(&proof.output_head)?;
     validate_session_id(&proof.pane_id)?;
     if proof
         .transport

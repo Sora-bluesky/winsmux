@@ -15,9 +15,37 @@ BeforeAll {
             workflow_fingerprint = ('sha256:' + ('d' * 64))
             task_input = [ordered]@{ source = 'runtime-task-file'; privacy = 'digest-only' }
             resolved_bindings = [ordered]@{ implement = 'worker-1'; verify = 'worker-2' }
+            application_contract = [ordered]@{
+                implement = [ordered]@{
+                    pane_ref = 'implement'; slot_id = 'worker-1'
+                    worktree = [ordered]@{ mode = 'managed'; name = 'bugfix-implement' }
+                    actual_capabilities = [ordered]@{
+                        supports_file_edit = $true
+                        supports_verification = $false
+                        supports_structured_result = $false
+                    }
+                }
+                verify = [ordered]@{
+                    pane_ref = 'verify'; slot_id = 'worker-2'
+                    worktree = [ordered]@{ mode = 'read-only-reference' }
+                    actual_capabilities = [ordered]@{
+                        supports_file_edit = $false
+                        supports_verification = $true
+                        supports_structured_result = $true
+                    }
+                }
+            }
             nodes = @(
-                [PSCustomObject]@{ node_id = 'inspect'; pane_ref = 'implement'; action = 'operator-dispatch'; depends_on = @(); idempotency_key = 'run-123:inspect'; cleanup = 'retain' },
-                [PSCustomObject]@{ node_id = 'verify'; pane_ref = 'verify'; action = 'verification'; depends_on = @('inspect'); idempotency_key = 'run-123:verify'; cleanup = 'retain'; context_pack_ref = 'review-pack' }
+                [PSCustomObject]@{
+                    node_id = 'inspect'; pane_ref = 'implement'; action = 'operator-dispatch'
+                    required_capability = 'file-edit'; allowed_worktree_modes = @('managed'); may_advance_head = $true
+                    depends_on = @(); idempotency_key = 'run-123:inspect'; cleanup = 'retain'
+                },
+                [PSCustomObject]@{
+                    node_id = 'verify'; pane_ref = 'verify'; action = 'verification'
+                    required_capability = 'review'; allowed_worktree_modes = @('managed', 'read-only-reference'); may_advance_head = $false
+                    depends_on = @('inspect'); idempotency_key = 'run-123:verify'; cleanup = 'retain'; context_pack_ref = 'review-pack'
+                }
             )
             resume_policy = [ordered]@{ mode = 'operator-confirmed'; reject_completed_runs = $true }
             cleanup_policy = [ordered]@{ mode = 'compensating-actions'; on = @('cancel', 'failure', 'success'); actions = @('release-run-lock') }
@@ -42,11 +70,21 @@ BeforeAll {
                 [ordered]@{
                     pane_key = 'implement'
                     slot_id = [string]$ResolvedBindings.implement
+                    actual_capabilities = [ordered]@{
+                        supports_file_edit = $true
+                        supports_verification = $false
+                        supports_structured_result = $false
+                    }
                     worktree = [ordered]@{ mode = 'managed'; name = 'bugfix-implement' }
                 }
                 [ordered]@{
                     pane_key = 'verify'
                     slot_id = [string]$ResolvedBindings.verify
+                    actual_capabilities = [ordered]@{
+                        supports_file_edit = $false
+                        supports_verification = $true
+                        supports_structured_result = $true
+                    }
                     worktree = [ordered]@{ mode = 'read-only-reference'; name = $null }
                 }
             )
@@ -69,7 +107,20 @@ BeforeAll {
         }
         $manifest = [PSCustomObject]@{
             Session = [ordered]@{ name = $SessionName; generation_id = $GenerationId }
-            Panes   = [ordered]@{}
+            Panes   = [ordered]@{
+                'worker-1' = [ordered]@{
+                    label = 'worker-1'; pane_id = '%2'
+                    supports_file_edit = $true
+                    supports_verification = $false
+                    supports_structured_result = $false
+                }
+                'worker-2' = [ordered]@{
+                    label = 'worker-2'; pane_id = '%3'
+                    supports_file_edit = $false
+                    supports_verification = $true
+                    supports_structured_result = $true
+                }
+            }
         }
         if ($IncludeDeclarativeWorkspace) {
             $manifest | Add-Member -NotePropertyName DeclarativeWorkspace -NotePropertyValue ([ordered]@{
@@ -142,8 +193,8 @@ BeforeAll {
             [Parameter(Mandatory = $true)]$Run,
             [Parameter(Mandatory = $true)]$DurableProofs
         )
-        if ([int]$Run.schema_version -eq 1) { throw 'workflow_state_migration_required' }
-        if ([int]$Run.schema_version -ne 2) { throw 'workflow_state_invalid' }
+        if ([int]$Run.schema_version -in @(1, 2)) { throw 'workflow_state_migration_required' }
+        if ([int]$Run.schema_version -ne 3) { throw 'workflow_state_invalid' }
         Assert-DeclarativeWorkflowExecutionProjection -Run $Run -Plan $Run.normalized_snapshot
         foreach ($node in $Run.nodes.Values) {
             $dependenciesProven = @($node.depends_on | Where-Object {
@@ -152,10 +203,12 @@ BeforeAll {
             $hasSession = -not [string]::IsNullOrWhiteSpace([string](Get-DeclarativeWorkflowValue $node 'agent_cli_session_id' ''))
             $evidence = @($node.evidence_refs)
             $proof = Get-DeclarativeWorkflowValue $node 'completion_proof' $null
+            $executionLease = Get-DeclarativeWorkflowValue $node 'execution_lease' $null
+            $applicationOutcome = Get-DeclarativeWorkflowValue $node 'application_outcome' $null
             switch ([string]$node.state) {
-                'pending' { if ([int]$node.attempt -ne 0 -or $hasSession -or $evidence.Count -ne 0 -or $null -ne $proof -or $dependenciesProven) { throw 'workflow_state_invalid' } }
-                'ready' { if ([int]$node.attempt -ne 0 -or $hasSession -or $evidence.Count -ne 0 -or $null -ne $proof -or -not $dependenciesProven) { throw 'workflow_state_invalid' } }
-                { $_ -in @('dispatching', 'blocked', 'failed') } { if ([int]$node.attempt -ne 1 -or $hasSession -or $evidence.Count -ne 0 -or $null -ne $proof -or -not $dependenciesProven) { throw 'workflow_state_invalid' } }
+                'pending' { if ([int]$node.attempt -ne 0 -or $null -ne $executionLease -or $hasSession -or $evidence.Count -ne 0 -or $null -ne $applicationOutcome -or $null -ne $proof -or $dependenciesProven) { throw 'workflow_state_invalid' } }
+                'ready' { if ([int]$node.attempt -ne 0 -or $null -ne $executionLease -or $hasSession -or $evidence.Count -ne 0 -or $null -ne $applicationOutcome -or $null -ne $proof -or -not $dependenciesProven) { throw 'workflow_state_invalid' } }
+                { $_ -in @('dispatching', 'blocked', 'failed') } { if ([int]$node.attempt -ne 1 -or $null -eq $executionLease -or $hasSession -or $evidence.Count -ne 0 -or $null -ne $applicationOutcome -or $null -ne $proof -or -not $dependenciesProven) { throw 'workflow_state_invalid' } }
                 'succeeded' {
                     $expectedEvidence = "workflow-ack:$($Run.run_id):$($node.node_id)"
                     if ([int]$node.attempt -ne 1 -or -not $hasSession -or $evidence.Count -ne 1 -or [string]$evidence[0] -cne $expectedEvidence -or $null -eq $proof -or
@@ -163,6 +216,10 @@ BeforeAll {
                         [string]$proof.idempotency_key -cne [string]$node.idempotency_key -or [string]$proof.generation_id -cne [string]$Run.generation_id -or
                         [string]$proof.config_fingerprint -cne [string]$Run.config_fingerprint -or [string]$proof.workflow_fingerprint -cne [string]$Run.workflow_fingerprint -or
                         [string]$proof.source_head -cne [string]$Run.source_head -or [string]$proof.pane_id -cne [string]$node.agent_cli_session_id -or
+                        [int]$proof.schema_version -ne 2 -or $null -eq $executionLease -or $null -eq $applicationOutcome -or
+                        [string]$proof.input_head -cne [string]$executionLease.input_head -or
+                        [string]$proof.input_head -cne [string]$applicationOutcome.input_head -or
+                        [string]$proof.output_head -cne [string]$applicationOutcome.output_head -or
                         [string]$proof.status -cne 'succeeded' -or [string]$proof.evidence_ref -cne $expectedEvidence -or -not $dependenciesProven) { throw 'workflow_state_invalid' }
                     $external = @($DurableProofs.completion_acknowledgements | Where-Object {
                             (ConvertTo-DeclarativeWorkflowCanonicalJson -Value $_) -ceq (ConvertTo-DeclarativeWorkflowCanonicalJson -Value $proof)
@@ -170,6 +227,11 @@ BeforeAll {
                     if ($external.Count -ne 1) { throw 'workflow_state_invalid' }
                 }
                 default { throw 'workflow_state_invalid' }
+            }
+            if ($null -ne $executionLease) {
+                Assert-DeclarativeWorkflowDependencyLeaseProposal -Run $Run -NodeId ([string]$node.node_id) `
+                    -DependencyInputs @(Get-DeclarativeWorkflowValue $executionLease 'dependency_inputs' @()) `
+                    -DependencyHeads (Get-DeclarativeWorkflowValue $executionLease 'dependency_heads' $null)
             }
         }
         $cancellation = Get-DeclarativeWorkflowValue $Run 'cancellation_proof' $null
@@ -230,17 +292,30 @@ BeforeAll {
                 $nodes[$nodeId] = [ordered]@{
                     node_id = $nodeId; state = if (@($definition.depends_on).Count -eq 0) { 'ready' } else { 'pending' }; attempt = 0
                     idempotency_key = [string]$definition.idempotency_key; pane_ref = [string]$definition.pane_ref; action = [string]$definition.action
+                    required_capability = [string]$definition.required_capability
+                    allowed_worktree_modes = @($definition.allowed_worktree_modes)
+                    may_advance_head = [bool]$definition.may_advance_head
                     depends_on = @($definition.depends_on); cleanup = [string]$definition.cleanup; evidence_refs = @()
                 }
                 if (Test-DeclarativeWorkflowFieldExists -InputObject $definition -Name 'context_pack_ref') {
                     $nodes[$nodeId]['context_pack_ref'] = $definition.context_pack_ref
                 }
             }
+            $paneHeadLeases = [ordered]@{}
+            foreach ($entry in $plan.application_contract.GetEnumerator()) {
+                if ([string]$entry.Value.worktree.mode -ceq 'managed') {
+                    $paneHeadLeases[[string]$entry.Key] = [ordered]@{
+                        base_head = [string]$identity.source_head
+                        admitted_head = [string]$identity.source_head
+                    }
+                }
+            }
             return [ordered]@{
-                schema_version = 2; workflow_id = [string]$plan.workflow_id; recipe_ref = [string]$plan.recipe_ref; run_id = [string]$identity.run_id; state = 'ready'
+                schema_version = 3; workflow_id = [string]$plan.workflow_id; recipe_ref = [string]$plan.recipe_ref; run_id = [string]$identity.run_id; state = 'ready'
                 generation_id = [string]$identity.generation_id; config_fingerprint = [string]$identity.config_fingerprint; workflow_fingerprint = [string]$plan.workflow_fingerprint
                 source_head = [string]$identity.source_head; task_sha256 = [string]$identity.task_sha256; task_byte_count = [int64]$identity.task_byte_count
                 resolved_bindings = Copy-DeclarativeWorkflowValue $plan.resolved_bindings; normalized_snapshot = Copy-DeclarativeWorkflowValue $plan
+                pane_head_leases = $paneHeadLeases
                 node_order = @($plan.nodes | ForEach-Object { [string]$_.node_id }); nodes = $nodes
                 cleanup_journal = @([ordered]@{ action_id = 'release-run-lock'; kind = 'release-run-lock'; state = 'pending'; idempotency_key = "$($identity.run_id):cleanup:release-run-lock"; resource_ref = "workflow-run-lock:$($identity.run_id)" })
                 rollback_state = 'not_requested'
@@ -249,22 +324,50 @@ BeforeAll {
         $run = Copy-DeclarativeWorkflowValue $Request.run
         $event = $Request.event
         $durableProofs = Copy-DeclarativeWorkflowValue $Request.durable_proofs
-        if ([string]$event.type -ceq 'acknowledge') {
-            $durableProofs.completion_acknowledgements = @($durableProofs.completion_acknowledgements) + @($event.acknowledgement)
-        } elseif ([string]$event.type -ceq 'cancel') {
+        if ([string]$event.type -ceq 'cancel') {
             $durableProofs.cancellation_proofs = @($durableProofs.cancellation_proofs) + @($event.cancellation)
         }
         Assert-TestWorkflowReducerSnapshot -Run $run -DurableProofs $durableProofs
         $node = if (Test-DeclarativeWorkflowFieldExists -InputObject $event -Name 'node_id') { $run.nodes[[string]$event.node_id] } else { $null }
         switch ([string]$event.type) {
             'validate' { return $run }
-            'dispatch_intent' { $node.state = 'dispatching'; $node.attempt = 1 }
+            'dispatch_intent' {
+                $application = $run.normalized_snapshot.application_contract[[string]$node.pane_ref]
+                $node.state = 'dispatching'; $node.attempt = 1
+                $node['execution_lease'] = [ordered]@{
+                    pane_ref = [string]$node.pane_ref
+                    slot_id = [string]$application.slot_id
+                    worktree_mode = [string]$application.worktree.mode
+                    input_head = [string]$event.input_head
+                    dependency_inputs = @(
+                        Get-DeclarativeWorkflowValue $event 'dependency_inputs' @() |
+                            ForEach-Object { Copy-DeclarativeWorkflowValue -Value $_ }
+                    )
+                    dependency_heads = Copy-DeclarativeWorkflowValue (
+                        Get-DeclarativeWorkflowValue $event 'dependency_heads' ([ordered]@{})
+                    )
+                }
+            }
             'block' { $node.state = 'blocked' }
             'dispatch_failed' { $node.state = 'failed' }
             'acknowledge' {
                 $ack = $event.acknowledgement
+                $external = @($durableProofs.completion_acknowledgements | Where-Object {
+                        (ConvertTo-DeclarativeWorkflowCanonicalJson -Value $_) -ceq
+                            (ConvertTo-DeclarativeWorkflowCanonicalJson -Value $ack)
+                    })
+                if ($external.Count -ne 1) {
+                    throw 'workflow_state_invalid: acknowledgement requires exactly one matching external durable proof'
+                }
                 $node.state = 'succeeded'; $node.agent_cli_session_id = [string]$event.resolved_session_id
+                $node['application_outcome'] = [ordered]@{
+                    input_head = [string]$ack.input_head
+                    output_head = [string]$ack.output_head
+                }
                 $node.evidence_refs = @([string]$ack.evidence_ref); $node.completion_proof = Copy-DeclarativeWorkflowValue $ack
+                if ([bool]$node.may_advance_head) {
+                    $run.pane_head_leases[[string]$node.pane_ref].admitted_head = [string]$ack.output_head
+                }
                 foreach ($candidate in $run.nodes.Values) {
                     if ([string]$candidate.state -cne 'pending') { continue }
                     if (@($candidate.depends_on | Where-Object { [string]$run.nodes[[string]$_].state -cne 'succeeded' -or $null -eq $run.nodes[[string]$_].completion_proof }).Count -eq 0) {
@@ -292,7 +395,7 @@ BeforeAll {
             [Parameter(Mandatory = $true)][string]$PaneId
         )
         [ordered]@{
-            schema_version      = 1
+            schema_version      = 2
             run_id              = 'run-123'
             node_id             = $NodeId
             idempotency_key     = "run-123:$NodeId"
@@ -300,6 +403,8 @@ BeforeAll {
             config_fingerprint  = ('sha256:' + ('a' * 64))
             workflow_fingerprint = ('sha256:' + ('d' * 64))
             source_head         = ('b' * 40)
+            input_head          = ('b' * 40)
+            output_head         = ('b' * 40)
             pane_id             = $PaneId
             status              = 'succeeded'
             evidence_ref        = "workflow-ack:run-123:$NodeId"
@@ -335,7 +440,12 @@ BeforeAll {
         param([string]$NodeId = 'inspect', $Run = $null, $DurableProofs = $null)
         if ($null -eq $Run) { $Run = New-TestRun }
         if ($null -eq $DurableProofs) { $DurableProofs = New-TestDurableProofs }
-        Invoke-DeclarativeWorkflowTransition -Run $Run -Event ([ordered]@{ type = 'dispatch_intent'; node_id = $NodeId }) -DurableProofs $DurableProofs
+        $dependencyProposal = Get-DeclarativeWorkflowDependencyLeaseProposal -Run $Run -NodeId $NodeId
+        Invoke-DeclarativeWorkflowTransition -Run $Run -Event ([ordered]@{
+                type = 'dispatch_intent'; node_id = $NodeId; input_head = ('b' * 40)
+                dependency_inputs = @($dependencyProposal.dependency_inputs)
+                dependency_heads = $dependencyProposal.dependency_heads
+            }) -DurableProofs $DurableProofs
     }
 
     function New-TestBlockedRun {
@@ -353,7 +463,7 @@ BeforeAll {
         $acknowledgement = New-TestAcknowledgement -NodeId 'inspect' -PaneId '%2'
         Invoke-DeclarativeWorkflowTransition -Run $run -Event ([ordered]@{
                 type = 'acknowledge'; node_id = 'inspect'; resolved_session_id = '%2'; acknowledgement = $acknowledgement
-            })
+            }) -DurableProofs (New-TestDurableProofs -CompletionAcknowledgements @($acknowledgement))
     }
 
     function New-TestSucceededRun {
@@ -364,7 +474,10 @@ BeforeAll {
         $verifyAcknowledgement = New-TestAcknowledgement -NodeId 'verify' -PaneId '%3'
         Invoke-DeclarativeWorkflowTransition -Run $run -Event ([ordered]@{
                 type = 'acknowledge'; node_id = 'verify'; resolved_session_id = '%3'; acknowledgement = $verifyAcknowledgement
-            }) -DurableProofs $durableProofs
+            }) -DurableProofs (New-TestDurableProofs -CompletionAcknowledgements @(
+                    $inspectAcknowledgement,
+                    $verifyAcknowledgement
+                ))
     }
 
     function New-TestCancelledRun {
@@ -398,6 +511,12 @@ Describe 'TASK-659 declarative workflow runtime' -Tag 'unit' {
         }
         $script:testDeclarativeSessionName = 'winsmux-orchestra'
         $script:testDeclarativeWorktreeHead = ('b' * 40)
+        $script:testDeclarativeResolveInputHead = { param($candidate, $nodeId) 'b' * 40 }
+        $script:testDeclarativeResolveAcknowledgement = {
+            param($candidate, $nodeId)
+            $paneId = if ($nodeId -ceq 'inspect') { '%2' } else { '%3' }
+            New-TestAcknowledgement -NodeId $nodeId -PaneId $paneId
+        }
         $script:testDeclarativeOriginalWorktreeHead = Get-Command Get-TeamPipelineDeclarativeWorktreeHead -CommandType Function
         Mock Get-PaneControlManifestEntries {
             param($ProjectDir)
@@ -543,11 +662,17 @@ function Invoke-DeclarativeWorkflowNativeReducerProcess {
     $request = [IO.File]::ReadAllText($RequestPath, [Text.UTF8Encoding]::new($false, $true)) | ConvertFrom-Json
     $definition = $request.plan.nodes[0]
     return [ordered]@{
-        schema_version = 2; workflow_id = [string]$request.plan.workflow_id; recipe_ref = [string]$request.plan.recipe_ref; run_id = [string]$request.identity.run_id; state = 'ready'
+        schema_version = 3; workflow_id = [string]$request.plan.workflow_id; recipe_ref = [string]$request.plan.recipe_ref; run_id = [string]$request.identity.run_id; state = 'ready'
         generation_id = [string]$request.identity.generation_id; config_fingerprint = [string]$request.identity.config_fingerprint; workflow_fingerprint = [string]$request.plan.workflow_fingerprint
         source_head = [string]$request.identity.source_head; task_sha256 = [string]$request.identity.task_sha256; task_byte_count = [int64]$request.identity.task_byte_count
         resolved_bindings = $request.plan.resolved_bindings; normalized_snapshot = $request.plan; node_order = @([string]$definition.node_id)
-        nodes = [ordered]@{ inspect = [ordered]@{ node_id = 'inspect'; state = 'ready'; attempt = 0; idempotency_key = 'run-ps51:inspect'; pane_ref = 'implement'; action = 'operator-dispatch'; depends_on = @(); cleanup = 'retain'; evidence_refs = @() } }
+        pane_head_leases = [ordered]@{ implement = [ordered]@{ base_head = [string]$request.identity.source_head; admitted_head = [string]$request.identity.source_head } }
+        nodes = [ordered]@{ inspect = [ordered]@{
+                node_id = 'inspect'; state = 'ready'; attempt = 0; idempotency_key = 'run-ps51:inspect'
+                pane_ref = 'implement'; action = 'operator-dispatch'; required_capability = 'file-edit'
+                allowed_worktree_modes = @('managed'); may_advance_head = $true
+                depends_on = @(); cleanup = 'retain'; evidence_refs = @()
+            } }
         cleanup_journal = @([ordered]@{ action_id = 'release-run-lock'; kind = 'release-run-lock'; state = 'pending'; idempotency_key = 'run-ps51:cleanup:release-run-lock'; resource_ref = 'workflow-run-lock:run-ps51' })
         rollback_state = 'not_requested'
     }
@@ -561,8 +686,23 @@ $plan = [ordered]@{
     workflow_fingerprint = ('sha256:' + ('d' * 64))
     task_input = [ordered]@{ source = 'runtime-task-file'; privacy = 'digest-only' }
     resolved_bindings = [ordered]@{ implement = 'worker-1' }
+    application_contract = [ordered]@{
+        implement = [ordered]@{
+            pane_ref = 'implement'; slot_id = 'worker-1'
+            worktree = [ordered]@{ mode = 'managed'; name = 'bugfix-implement' }
+            actual_capabilities = [ordered]@{
+                supports_file_edit = $true
+                supports_verification = $false
+                supports_structured_result = $false
+            }
+        }
+    }
     nodes = @(
-        [ordered]@{ node_id = 'inspect'; pane_ref = 'implement'; action = 'operator-dispatch'; depends_on = @(); idempotency_key = 'run-ps51:inspect'; cleanup = 'retain' }
+        [ordered]@{
+            node_id = 'inspect'; pane_ref = 'implement'; action = 'operator-dispatch'
+            required_capability = 'file-edit'; allowed_worktree_modes = @('managed'); may_advance_head = $true
+            depends_on = @(); idempotency_key = 'run-ps51:inspect'; cleanup = 'retain'
+        }
     )
     resume_policy = [ordered]@{ mode = 'operator-confirmed'; reject_completed_runs = $true }
     cleanup_policy = [ordered]@{ mode = 'compensating-actions'; on = @('cancel', 'failure', 'success'); actions = @('release-run-lock') }
@@ -696,6 +836,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
                 -SaveRun { $script:o01SaveCount++ } `
                 -Dispatch { $script:o01DispatchCount++ } `
                 -ResolveSession { '%2' } `
+                -ResolveInputHead $script:testDeclarativeResolveInputHead `
                 -ResolveAcknowledgement {
                     param($candidate, $nodeId)
                     Resolve-TeamPipelineDeclarativeAcknowledgement -Run $candidate -NodeId $nodeId -ProjectDir $project -SessionName 'unused-log'
@@ -776,7 +917,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         }
     }
 
-    It 'W05 W06 persists intent before one effect and ACK before dependency release' {
+    It 'AC02 W05 W06 persists intent before one effect and admits ACK only after external proof refresh' {
         $script:testDeclarativeSessionName = 'workflow-test'
         $run = New-TestRun
         $proofProject = Join-Path $TestDrive 'w05-durable-proof'
@@ -800,8 +941,14 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         $productionReceipt.acknowledgement.transport | Should -Be 'mailbox'
         $productionReceipt.acknowledgement.evidence_ref | Should -Be 'workflow-ack:run-123:inspect'
         Should -Invoke Write-TeamPipelineEvent -Times 0 -Exactly
-        Write-DeclarativeWorkflowDurableProof -ProjectDir $proofProject -Run $proofRun -Kind Completion -NodeId 'inspect' -Proof $productionReceipt.acknowledgement -TrustedSenderLabel 'worker-1' -TrustedSenderPaneId '%2' | Out-Null
-        $resolvedAcknowledgements = @(Resolve-TeamPipelineDeclarativeAcknowledgement -Run $run -NodeId 'inspect' -ProjectDir $proofProject -SessionName 'workflow-test')
+        $durableAcknowledgement = Copy-DeclarativeWorkflowValue $productionReceipt.acknowledgement
+        $durableAcknowledgement.schema_version = 2
+        $durableAcknowledgement['input_head'] = 'b' * 40
+        $durableAcknowledgement['output_head'] = 'b' * 40
+        (Test-DeclarativeWorkflowAcknowledgement -Run $proofRun -NodeId 'inspect' -Acknowledgement $durableAcknowledgement) |
+            Should -BeTrue
+        Write-DeclarativeWorkflowDurableProof -ProjectDir $proofProject -Run $proofRun -Kind Completion -NodeId 'inspect' -Proof $durableAcknowledgement -TrustedSenderLabel 'worker-1' -TrustedSenderPaneId '%2' | Out-Null
+        $resolvedAcknowledgements = @(Resolve-TeamPipelineDeclarativeAcknowledgement -Run $proofRun -NodeId 'inspect' -ProjectDir $proofProject -SessionName 'workflow-test')
         $resolvedAcknowledgements.Count | Should -Be 1
         $resolvedAcknowledgements[0].pane_id | Should -Be '%2'
 
@@ -813,7 +960,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         } finally {
             $noiseWriter.Dispose()
         }
-        $ackBeforeNoise = @(Resolve-TeamPipelineDeclarativeAcknowledgement -Run $run -NodeId 'inspect' -ProjectDir $proofProject -SessionName 'workflow-noise-test')
+        $ackBeforeNoise = @(Resolve-TeamPipelineDeclarativeAcknowledgement -Run $proofRun -NodeId 'inspect' -ProjectDir $proofProject -SessionName 'workflow-noise-test')
         $ackBeforeNoise.Count | Should -Be 1
         $ackBeforeNoise[0].pane_id | Should -Be '%2'
 
@@ -833,6 +980,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
             -SaveRun { param($candidate) } `
             -Dispatch { $script:ambiguousDispatches++ } `
             -ResolveSession { param($paneId) $paneId } `
+            -ResolveInputHead $script:testDeclarativeResolveInputHead `
             -ResolveAcknowledgement { $ambiguousAcknowledgements }
         $ambiguousResult.nodes.inspect.state | Should -Be 'blocked'
         $script:ambiguousDispatches | Should -Be 0
@@ -842,13 +990,20 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
             -Confirmation (New-TestConfirmation) `
             -SaveRun { param($candidate) $events.Add("save:$($candidate.nodes.inspect.state):$($candidate.nodes.verify.state)") | Out-Null } `
             -Dispatch { param($request) $events.Add("dispatch:$($request.stage)") | Out-Null; New-TestAcceptedReceipt -NodeId 'inspect' -PaneId '%2' } `
-            -ResolveSession { param($paneId) $events.Add("session:$paneId") | Out-Null; '%2' }
+            -ResolveSession { param($paneId) $events.Add("session:$paneId") | Out-Null; '%2' } `
+            -ResolveInputHead $script:testDeclarativeResolveInputHead `
+            -ResolveAcknowledgement {
+                param($candidate, $nodeId)
+                $events.Add("proof:$nodeId") | Out-Null
+                New-TestAcknowledgement -NodeId $nodeId -PaneId '%2'
+            }
 
         $events[0] | Should -Be 'save:dispatching:pending'
         $events[1] | Should -Be 'dispatch:EXEC'
         $events[2] | Should -Be 'session:%2'
-        $events[3] | Should -Be 'save:succeeded:ready'
-        $events.Count | Should -Be 4
+        $events[3] | Should -Be 'proof:inspect'
+        $events[4] | Should -Be 'save:succeeded:ready'
+        $events.Count | Should -Be 5
         @($events | Where-Object { $_ -like 'dispatch:*' }).Count | Should -Be 1
         $result.nodes.inspect.state | Should -Be 'succeeded'
         $result.nodes.inspect.attempt | Should -Be 1
@@ -864,7 +1019,9 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
                 -Confirmation (New-TestConfirmation) `
                 -SaveRun { throw 'injected save failure' } `
                 -Dispatch { $script:dispatches++; [PSCustomObject]@{ status = 'accepted' } } `
-                -ResolveSession { '%2' }
+                -ResolveSession { '%2' } `
+                -ResolveInputHead $script:testDeclarativeResolveInputHead `
+                -ResolveAcknowledgement $script:testDeclarativeResolveAcknowledgement
         } | Should -Throw '*injected save failure*'
         $script:dispatches | Should -Be 0
     }
@@ -878,7 +1035,9 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
                 -Confirmation (New-TestConfirmation) `
                 -SaveRun { param($candidate) } `
                 -Dispatch { $script:dispatches++; $receipt } `
-                -ResolveSession { '' }
+                -ResolveSession { '' } `
+                -ResolveInputHead $script:testDeclarativeResolveInputHead `
+                -ResolveAcknowledgement $script:testDeclarativeResolveAcknowledgement
             $result.nodes.inspect.state | Should -Be 'blocked'
             $result.nodes.verify.state | Should -Be 'pending'
             $script:dispatches | Should -Be 1
@@ -898,7 +1057,9 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         $secretResult = Invoke-DeclarativeWorkflowNode -Run $secretRun -NodeId 'inspect' -TaskInput $secretInput -Confirmation (New-TestConfirmation) `
             -SaveRun { param($candidate) $savedRuns.Add(($candidate | ConvertTo-Json -Depth 20 -Compress)) | Out-Null } `
             -Dispatch { param($request) Invoke-TeamPipelineDeclarativeDispatch -Request $request -Run $secretRun -Manifest $manifest -ProjectDir $TestDrive -SessionName 'privacy-test' } `
-            -ResolveSession { '' }
+            -ResolveSession { '' } `
+            -ResolveInputHead $script:testDeclarativeResolveInputHead `
+            -ResolveAcknowledgement $script:testDeclarativeResolveAcknowledgement
         $secretResult.nodes.inspect.state | Should -Be 'blocked'
         ($capturedEvents | ConvertTo-Json -Depth 20 -Compress) | Should -Not -Match 'SECRET_MARKER'
         ($savedRuns -join "`n") | Should -Not -Match 'SECRET_MARKER'
@@ -908,7 +1069,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         $run = New-TestSucceededInspectRun
         $inspectProofs = New-TestDurableProofs -CompletionAcknowledgements @((New-TestAcknowledgement -NodeId 'inspect' -PaneId '%2'))
         $script:dispatches = 0
-        $same = Invoke-DeclarativeWorkflowNode -Run $run -NodeId 'inspect' -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) -SaveRun { } -Dispatch { $script:dispatches++ } -ResolveSession { 'x' } -DurableProofs $inspectProofs
+        $same = Invoke-DeclarativeWorkflowNode -Run $run -NodeId 'inspect' -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) -SaveRun { } -Dispatch { $script:dispatches++ } -ResolveSession { 'x' } -ResolveInputHead $script:testDeclarativeResolveInputHead -ResolveAcknowledgement $script:testDeclarativeResolveAcknowledgement -DurableProofs $inspectProofs
         $same.nodes.inspect.state | Should -Be 'succeeded'
         $script:dispatches | Should -Be 0
 
@@ -917,14 +1078,14 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
             (New-TestAcknowledgement -NodeId 'inspect' -PaneId '%2'),
             (New-TestAcknowledgement -NodeId 'verify' -PaneId '%3')
         )
-        { Invoke-DeclarativeWorkflowNode -Run $run -NodeId 'verify' -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) -SaveRun { } -Dispatch { } -ResolveSession { 'x' } -DurableProofs $allProofs } | Should -Throw '*terminal*'
+        { Invoke-DeclarativeWorkflowNode -Run $run -NodeId 'verify' -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) -SaveRun { } -Dispatch { } -ResolveSession { 'x' } -ResolveInputHead $script:testDeclarativeResolveInputHead -ResolveAcknowledgement $script:testDeclarativeResolveAcknowledgement -DurableProofs $allProofs } | Should -Throw '*terminal*'
 
         $run = New-TestCancelledRun
         $cancellationProofs = New-TestDurableProofs -CancellationProofs @((New-TestCancellationProof))
-        { Invoke-DeclarativeWorkflowNode -Run $run -NodeId 'inspect' -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) -SaveRun { } -Dispatch { } -ResolveSession { 'x' } -DurableProofs $cancellationProofs } | Should -Throw '*terminal*'
+        { Invoke-DeclarativeWorkflowNode -Run $run -NodeId 'inspect' -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) -SaveRun { } -Dispatch { } -ResolveSession { 'x' } -ResolveInputHead $script:testDeclarativeResolveInputHead -ResolveAcknowledgement $script:testDeclarativeResolveAcknowledgement -DurableProofs $cancellationProofs } | Should -Throw '*terminal*'
 
         $run = New-TestFailedRun
-        { Invoke-DeclarativeWorkflowNode -Run $run -NodeId 'inspect' -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) -SaveRun { } -Dispatch { $script:dispatches++ } -ResolveSession { '%2' } } | Should -Throw '*new operator-approved run*'
+        { Invoke-DeclarativeWorkflowNode -Run $run -NodeId 'inspect' -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) -SaveRun { } -Dispatch { $script:dispatches++ } -ResolveSession { '%2' } -ResolveInputHead $script:testDeclarativeResolveInputHead -ResolveAcknowledgement $script:testDeclarativeResolveAcknowledgement } | Should -Throw '*new operator-approved run*'
         $script:dispatches | Should -Be 0
     }
 
@@ -933,8 +1094,8 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         $script:effects = 0
         $badConfirmation = New-TestConfirmation
         $badConfirmation.source_head = 'c' * 40
-        { Invoke-DeclarativeWorkflowNode -Run $run -NodeId 'inspect' -TaskInput (New-TestTaskInput) -Confirmation $badConfirmation -SaveRun { $script:effects++ } -Dispatch { $script:effects++ } -ResolveSession { 'x' } } | Should -Throw '*confirmation*'
-        { Invoke-DeclarativeWorkflowNode -Run $run -NodeId 'inspect' -TaskInput (New-TestTaskInput -Text 'changed') -Confirmation (New-TestConfirmation) -SaveRun { $script:effects++ } -Dispatch { $script:effects++ } -ResolveSession { 'x' } } | Should -Throw '*task*'
+        { Invoke-DeclarativeWorkflowNode -Run $run -NodeId 'inspect' -TaskInput (New-TestTaskInput) -Confirmation $badConfirmation -SaveRun { $script:effects++ } -Dispatch { $script:effects++ } -ResolveSession { 'x' } -ResolveInputHead $script:testDeclarativeResolveInputHead -ResolveAcknowledgement $script:testDeclarativeResolveAcknowledgement } | Should -Throw '*confirmation*'
+        { Invoke-DeclarativeWorkflowNode -Run $run -NodeId 'inspect' -TaskInput (New-TestTaskInput -Text 'changed') -Confirmation (New-TestConfirmation) -SaveRun { $script:effects++ } -Dispatch { $script:effects++ } -ResolveSession { 'x' } -ResolveInputHead $script:testDeclarativeResolveInputHead -ResolveAcknowledgement $script:testDeclarativeResolveAcknowledgement } | Should -Throw '*task*'
         $script:effects | Should -Be 0
     }
 
@@ -953,9 +1114,9 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         }
         $resolveSession = { param($paneId) $paneId }
 
-        $afterInspect = Invoke-DeclarativeWorkflowNode -Run (New-TestRun) -NodeId 'inspect' -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) -SaveRun $save -Dispatch $dispatch -ResolveSession $resolveSession
+        $afterInspect = Invoke-DeclarativeWorkflowNode -Run (New-TestRun) -NodeId 'inspect' -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) -SaveRun $save -Dispatch $dispatch -ResolveSession $resolveSession -ResolveInputHead $script:testDeclarativeResolveInputHead -ResolveAcknowledgement $script:testDeclarativeResolveAcknowledgement
         $inspectProofs = New-TestDurableProofs -CompletionAcknowledgements @((New-TestAcknowledgement -NodeId 'inspect' -PaneId '%2'))
-        $afterVerify = Invoke-DeclarativeWorkflowNode -Run $afterInspect -NodeId 'verify' -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) -SaveRun $save -Dispatch $dispatch -ResolveSession $resolveSession -DurableProofs $inspectProofs
+        $afterVerify = Invoke-DeclarativeWorkflowNode -Run $afterInspect -NodeId 'verify' -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) -SaveRun $save -Dispatch $dispatch -ResolveSession $resolveSession -ResolveInputHead $script:testDeclarativeResolveInputHead -ResolveAcknowledgement $script:testDeclarativeResolveAcknowledgement -DurableProofs $inspectProofs
         $reloaded = Read-DeclarativeWorkflowRunState -ProjectDir $project -RunId 'run-123'
 
         $afterVerify.state | Should -Be 'succeeded'
@@ -972,6 +1133,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
             -SaveRun { param($candidate) $saved.Add((Copy-DeclarativeWorkflowValue $candidate)) | Out-Null } `
             -Dispatch { param($request) $requests.Add($request) | Out-Null; New-TestAcceptedReceipt -NodeId $request.node_id -PaneId '%3' } `
             -ResolveSession { param($paneId) $paneId } `
+            -ResolveInputHead $script:testDeclarativeResolveInputHead `
             -ResolveAcknowledgement { param($candidate, $nodeId) New-TestAcknowledgement -NodeId $nodeId -PaneId $(if ($nodeId -ceq 'inspect') { '%2' } else { '%3' }) }
 
         $result.state | Should -Be 'succeeded'
@@ -994,6 +1156,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
             -SaveRun { param($candidate) $saved.Add((Copy-DeclarativeWorkflowValue $candidate)) | Out-Null } `
             -Dispatch { $script:w11Dispatches++; throw 'dispatch must not be called without reconciliation evidence' } `
             -ResolveSession { '' } `
+            -ResolveInputHead $script:testDeclarativeResolveInputHead `
             -ResolveAcknowledgement { $null }
 
         $result.state | Should -Be 'blocked'
@@ -1006,6 +1169,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
             -SaveRun { param($candidate) } `
             -Dispatch { $script:w11Dispatches++; throw 'conflicting acknowledgement must not redispatch' } `
             -ResolveSession { param($paneId) $paneId } `
+            -ResolveInputHead $script:testDeclarativeResolveInputHead `
             -ResolveAcknowledgement { @((New-TestAcknowledgement -NodeId 'inspect' -PaneId '%2'), (New-TestAcknowledgement -NodeId 'inspect' -PaneId '%3')) }
         $conflictResult.nodes.inspect.state | Should -Be 'blocked'
         $script:w11Dispatches | Should -Be 0
@@ -1028,6 +1192,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
             -SaveRun { $script:w11Effects++ } `
             -Dispatch { $script:w11Effects++ } `
             -ResolveSession { '' } `
+            -ResolveInputHead $script:testDeclarativeResolveInputHead `
             -ResolveAcknowledgement { $null } } | Should -Throw '*workflow_state_invalid*'
         $script:w11Effects | Should -Be 0
     }
@@ -1047,7 +1212,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         Mock Assert-TeamPipelineDeclarativeRunLockAdmission { }
         Mock Save-DeclarativeWorkflowRunState { }
         Mock Invoke-DeclarativeWorkflowResume {
-            param($Run, $TaskInput, $Confirmation, $SaveRun, $Dispatch, $ResolveSession, $ResolveAcknowledgement, $ResolveCancellation, $ValidateSnapshot)
+            param($Run, $TaskInput, $Confirmation, $SaveRun, $Dispatch, $ResolveSession, $ResolveInputHead, $ResolveAcknowledgement, $ResolveCancellation, $ValidateSnapshot)
             $script:w11ResumeCalls++
             & $SaveRun $Run
             return $Run
@@ -1073,6 +1238,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
                 if ($paneId -ceq '%2') { $script:r01OldPaneResolutions++; throw 'the original pane exited' }
                 return $paneId
             } `
+            -ResolveInputHead $script:testDeclarativeResolveInputHead `
             -ResolveAcknowledgement {
                 param($candidate, $nodeId)
                 if ($nodeId -ceq 'inspect') { return $proof }
@@ -1099,6 +1265,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
                 New-TestAcceptedReceipt -NodeId $request.node_id -PaneId $paneId
             } `
             -ResolveSession { param($paneId) $paneId } `
+            -ResolveInputHead $script:testDeclarativeResolveInputHead `
             -ResolveAcknowledgement { param($candidate, $nodeId) New-TestAcknowledgement -NodeId $nodeId -PaneId $(if ($nodeId -ceq 'inspect') { '%2' } else { '%3' }) } `
             -ReleaseLock {
                 param($path)
@@ -1442,7 +1609,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         @(Resolve-DeclarativeWorkflowAcknowledgementCandidates -Run $run -NodeId 'inspect' -Acknowledgements @($first, $conflict)).Count | Should -Be 2
         @(Resolve-DeclarativeWorkflowAcknowledgementCandidates -Run $run -NodeId 'inspect' -Acknowledgements @($unknown)).Count | Should -Be 1
 
-        $blocked = Invoke-DeclarativeWorkflowResume -Run (New-TestBlockedRun) -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) -SaveRun { } -Dispatch { throw 'must not dispatch' } -ResolveSession { param($paneId) $paneId } `
+        $blocked = Invoke-DeclarativeWorkflowResume -Run (New-TestBlockedRun) -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) -SaveRun { } -Dispatch { throw 'must not dispatch' } -ResolveSession { param($paneId) $paneId } -ResolveInputHead $script:testDeclarativeResolveInputHead `
             -ResolveAcknowledgement { @($first, $conflict) }
         $blocked.state | Should -Be 'blocked'
     }
@@ -1464,7 +1631,7 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
 
         {
             Invoke-DeclarativeWorkflowResume -Run $run -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) -SaveRun { $script:workflowEffects++ } `
-                -Dispatch { $script:workflowEffects++ } -ResolveSession { '' } -ResolveAcknowledgement { $null } `
+                -Dispatch { $script:workflowEffects++ } -ResolveSession { '' } -ResolveInputHead $script:testDeclarativeResolveInputHead -ResolveAcknowledgement { $null } `
                 -ValidateSnapshot { param($candidate) Assert-DeclarativeWorkflowSnapshot -Run $candidate -WorkflowFingerprint ('sha256:' + ('e' * 64)) -ConfigFingerprint $candidate.config_fingerprint -ResolvedBindings $candidate.resolved_bindings }
         } | Should -Throw '*snapshot*'
         $script:workflowEffects | Should -Be 0
@@ -1832,6 +1999,24 @@ declarative_workspace:
             $workspacePlan = New-TestWorkspacePlan -ResolvedBindings $case.Bindings
             if ([string]$case.Mode -ceq 'shared') {
                 $workspacePlan.panes[1].worktree = Copy-DeclarativeWorkflowValue $workspacePlan.panes[0].worktree
+                $sharedCapabilities = [ordered]@{
+                    supports_file_edit = $true
+                    supports_verification = $true
+                    supports_structured_result = $true
+                }
+                foreach ($pane in @($workspacePlan.panes)) {
+                    $pane.actual_capabilities = Copy-DeclarativeWorkflowValue $sharedCapabilities
+                }
+                foreach ($application in @($run.normalized_snapshot.application_contract.Values)) {
+                    $application.actual_capabilities = Copy-DeclarativeWorkflowValue $sharedCapabilities
+                }
+                $run.normalized_snapshot.application_contract.verify.slot_id = 'worker-1'
+                $run.normalized_snapshot.application_contract.verify.worktree =
+                    Copy-DeclarativeWorkflowValue $workspacePlan.panes[1].worktree
+                $run.pane_head_leases['verify'] = [ordered]@{
+                    base_head = 'b' * 40
+                    admitted_head = 'b' * 40
+                }
             }
             $workspacePlan.workflow = Copy-DeclarativeWorkflowValue $run.normalized_snapshot
             $manifest = New-TestManifest -SessionName 'm04-session' -ResolvedBindings $case.Bindings
@@ -1864,6 +2049,7 @@ declarative_workspace:
                     param($candidate)
                     $candidate.normalized_snapshot.nodes += [ordered]@{
                         node_id = 'extra'; pane_ref = 'implement'; action = 'operator-dispatch'; depends_on = @()
+                        required_capability = 'file-edit'; allowed_worktree_modes = @('managed'); may_advance_head = $true
                         idempotency_key = 'run-123:extra'; cleanup = 'retain'
                     }
                 }
@@ -1913,6 +2099,7 @@ declarative_workspace:
                     -SaveRun { $script:projectionSaves++ } `
                     -Dispatch { $script:projectionDispatches++; throw 'projection validation must happen before dispatch' } `
                     -ResolveSession { throw 'projection validation must happen before session lookup' } `
+                    -ResolveInputHead $script:testDeclarativeResolveInputHead `
                     -ResolveAcknowledgement { $script:projectionReconciles++; throw 'projection validation must happen before reconciliation' } `
                     -ReleaseLock { $script:projectionCleanups++ } `
                     -ValidateSnapshot { param($runToValidate) Assert-DeclarativeWorkflowExecutionProjection -Run $runToValidate -Plan $plan }
@@ -2105,6 +2292,15 @@ declarative_workspace:
                 Invoke-TeamPipelineDeclarativeDispatch -Request $request -Run $candidateRun -Manifest $manifest -ProjectDir $TestDrive -SessionName 'verification-session'
             } `
             -ResolveSession { param($paneId) $paneId } `
+            -ResolveInputHead $script:testDeclarativeResolveInputHead `
+            -ResolveAcknowledgement {
+                param($candidate, $nodeId)
+                if ($nodeId -ceq 'inspect') {
+                    New-TestAcknowledgement -NodeId 'inspect' -PaneId '%2'
+                } else {
+                    $acknowledgement
+                }
+            } `
             -DurableProofs (New-TestDurableProofs -CompletionAcknowledgements @((New-TestAcknowledgement -NodeId 'inspect' -PaneId '%2')))
 
         $after.nodes.verify.state | Should -Be 'succeeded'
@@ -2667,10 +2863,10 @@ while (`$true) { Start-Sleep -Seconds 1 }
         $after.Dispose()
     }
 
-    It 'H01 routes all workflow state changes through the native Rust reducer and creates only schema v2 snapshots' {
+    It 'H01 routes all workflow state changes through the native Rust reducer and creates only schema v3 snapshots' {
         Get-Command Invoke-DeclarativeWorkflowStateReducer -ErrorAction SilentlyContinue | Should -Not -BeNullOrEmpty
         $run = New-TestRun
-        $run.schema_version | Should -Be 2
+        $run.schema_version | Should -Be 3
         $run.nodes.inspect.state | Should -Be 'ready'
         $run.nodes.verify.state | Should -Be 'pending'
     }
@@ -2714,15 +2910,17 @@ while (`$true) { Start-Sleep -Seconds 1 }
         }
     }
 
-    It 'H02 rejects a legacy v1 snapshot before save dispatch or cleanup effects' {
-        $run = New-TestRun
-        $run.schema_version = 1
+    It 'H02 rejects legacy v1 and v2 snapshots before save dispatch or cleanup effects' {
         $script:h02Effects = 0
-        {
-            Invoke-DeclarativeWorkflowResume -Run $run -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) `
-                -SaveRun { $script:h02Effects++ } -Dispatch { $script:h02Effects++ } `
-                -ResolveSession { '%2' } -ResolveAcknowledgement { New-TestAcknowledgement -NodeId 'inspect' -PaneId '%2' }
-        } | Should -Throw '*workflow_state_migration_required*'
+        foreach ($schemaVersion in @(1, 2)) {
+            $run = New-TestRun
+            $run.schema_version = $schemaVersion
+            {
+                Invoke-DeclarativeWorkflowResume -Run $run -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) `
+                    -SaveRun { $script:h02Effects++ } -Dispatch { $script:h02Effects++ } `
+                    -ResolveSession { '%2' } -ResolveInputHead $script:testDeclarativeResolveInputHead -ResolveAcknowledgement { New-TestAcknowledgement -NodeId 'inspect' -PaneId '%2' }
+            } | Should -Throw '*workflow_state_migration_required*' -Because "schema v$schemaVersion is not resumable"
+        }
         $script:h02Effects | Should -Be 0
     }
 
@@ -2736,7 +2934,7 @@ while (`$true) { Start-Sleep -Seconds 1 }
         {
             Invoke-DeclarativeWorkflowResume -Run $run -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) `
                 -SaveRun { $script:h03Effects++ } -Dispatch { $script:h03Effects++ } `
-                -ResolveSession { '%2' } -ResolveAcknowledgement { $null }
+                -ResolveSession { '%2' } -ResolveInputHead $script:testDeclarativeResolveInputHead -ResolveAcknowledgement { $null }
         } | Should -Throw '*workflow_state_invalid*'
         $script:h03Effects | Should -Be 0
         $run.nodes.verify.state | Should -Be 'pending'
@@ -2920,6 +3118,332 @@ while (`$true) { Start-Sleep -Seconds 1 }
         [Convert]::ToBase64String([IO.File]::ReadAllBytes($lockPath)) | Should -BeExactly $lockBefore
     }
 
+    It 'AA03 resumes verification from the operator-admitted descendant output HEAD without restoring producer liveness' {
+        $project = Join-Path $TestDrive 'aa03-descendant-output-head'
+        [IO.Directory]::CreateDirectory($project) | Out-Null
+        & git -C $project init --quiet
+        $LASTEXITCODE | Should -Be 0
+        $basePath = Join-Path $project 'base.txt'
+        [IO.File]::WriteAllText($basePath, 'base', [Text.UTF8Encoding]::new($false))
+        & git -C $project add -- base.txt
+        & git -C $project -c user.name=winsmux-test -c user.email=winsmux-test@example.invalid commit --quiet -m base
+        $LASTEXITCODE | Should -Be 0
+        $baseHead = ([string](& git -C $project rev-parse HEAD)).Trim()
+        $managedPath = Join-Path $project '.worktrees\bugfix-implement'
+        & git -C $project worktree add --quiet -b worktree-bugfix-implement $managedPath $baseHead
+        $LASTEXITCODE | Should -Be 0
+        $implementationPath = Join-Path $managedPath 'implementation.txt'
+        [IO.File]::WriteAllText($implementationPath, 'implementation', [Text.UTF8Encoding]::new($false))
+        & git -C $managedPath add -- implementation.txt
+        & git -C $managedPath -c user.name=winsmux-test -c user.email=winsmux-test@example.invalid commit --quiet -m implementation
+        $LASTEXITCODE | Should -Be 0
+        $implementationHead = ([string](& git -C $managedPath rev-parse HEAD)).Trim()
+        & git -C $managedPath merge-base --is-ancestor $baseHead $implementationHead
+        $LASTEXITCODE | Should -Be 0
+        $implementationHead | Should -Not -BeExactly $baseHead
+
+        $taskFile = Join-Path $project 'task.txt'
+        [IO.File]::WriteAllText($taskFile, 'Implement TASK-659 safely.', [Text.UTF8Encoding]::new($false))
+        $run = New-TestSucceededInspectRun
+        $run.source_head = $baseHead
+        $run.nodes.inspect.completion_proof.source_head = $baseHead
+        $run.nodes.inspect.completion_proof.schema_version = 2
+        $run.nodes.inspect.completion_proof['input_head'] = $baseHead
+        $run.nodes.inspect.completion_proof['output_head'] = $implementationHead
+        $run.nodes.inspect['execution_lease'] = [ordered]@{
+            pane_ref = 'implement'; slot_id = 'worker-1'; worktree_mode = 'managed'; input_head = $baseHead
+            dependency_inputs = @(); dependency_heads = [ordered]@{}
+        }
+        $run.nodes.inspect['application_outcome'] = [ordered]@{
+            input_head = $baseHead; output_head = $implementationHead
+        }
+        $run['pane_head_leases'] = [ordered]@{
+                implement = [ordered]@{ base_head = $baseHead; admitted_head = $implementationHead }
+        }
+        $script:aa03Run = Copy-DeclarativeWorkflowValue $run
+        $script:aa03ResolvedLabels = [Collections.Generic.List[string]]::new()
+        $script:aa03Effects = [ordered]@{ state = 0; lock = 0; advancement = 0; cleanup = 0 }
+        $script:testDeclarativeSessionName = 'aa03-session'
+        Mock Get-TeamPipelineDeclarativeWorktreeHead { $implementationHead }
+
+        Mock Read-TeamPipelineManifest { New-TestManifest -SessionName 'aa03-session' }
+        Mock Get-TeamPipelineSessionName { 'aa03-session' }
+        Mock Get-TeamPipelineDeclarativeProjectHead { $baseHead }
+        Mock Read-DeclarativeWorkflowRunState { Copy-DeclarativeWorkflowValue $script:aa03Run }
+        Mock Read-DeclarativeWorkflowDurableProof {
+            param($Kind, $NodeId)
+            if ([string]$Kind -ceq 'Completion' -and [string]$NodeId -ceq 'inspect') {
+                return Copy-DeclarativeWorkflowValue $script:aa03Run.nodes.inspect.completion_proof
+            }
+            return $null
+        }
+        Mock Invoke-TeamPipelineWorkspacePlanOnce { New-TestWorkspacePlan }
+        Mock Invoke-DeclarativeWorkflowResume { param($Run) Copy-DeclarativeWorkflowValue $Run }
+        Mock Get-PaneControlManifestEntries {
+            @(
+                [PSCustomObject]@{
+                    Label = 'worker-1'; PaneId = '%2'; GenerationId = 'generation-123'; Role = 'Builder'
+                    LaunchDir = $managedPath; BuilderWorktreePath = $managedPath
+                }
+                [PSCustomObject]@{
+                    Label = 'worker-2'; PaneId = '%3'; GenerationId = 'generation-123'; Role = 'Reviewer'
+                    LaunchDir = $project; BuilderWorktreePath = ''
+                }
+            )
+        }
+        Mock Resolve-TeamPipelineDeclarativeRuntimeLease {
+            param($Label)
+            $script:aa03ResolvedLabels.Add([string]$Label) | Out-Null
+            if ([string]$Label -ceq 'worker-1') { throw 'succeeded producer liveness must not be restored' }
+            [PSCustomObject]@{ label = 'worker-2'; pane_id = '%3' }
+        }
+        Mock Save-DeclarativeWorkflowRunState { $script:aa03Effects.state++ }
+        Mock Assert-TeamPipelineDeclarativeRunLockAdmission {
+            $script:aa03Effects.lock++
+            Join-Path $project 'synthetic-resume.lock'
+        }
+        Mock Invoke-TeamPipelineDeclarativeRunAdvancement {
+            param($Run)
+            $script:aa03Effects.advancement++
+            Copy-DeclarativeWorkflowValue $Run
+        }
+        Mock Invoke-TeamPipelineDeclarativeTerminalRecovery {
+            $script:aa03Effects.cleanup++
+            throw 'AA03 must not recover terminal state'
+        }
+        Mock Invoke-DeclarativeWorkflowCleanup {
+            $script:aa03Effects.cleanup++
+            throw 'AA03 must not clean up'
+        }
+
+        {
+            Invoke-TeamPipelineDeclarativeWorkflow -Action resume -RunId 'run-123' -GenerationId 'generation-123' `
+                -ConfigFingerprint ('sha256:' + ('a' * 64)) -SourceHead $baseHead -TaskFile $taskFile -ProjectDir $project
+        } | Should -Not -Throw
+
+        [string]::Join(',', @($script:aa03ResolvedLabels)) | Should -BeExactly 'worker-2'
+        $script:aa03Effects.state | Should -Be 0
+        $script:aa03Effects.lock | Should -Be 1
+        $script:aa03Effects.advancement | Should -Be 1
+        $script:aa03Effects.cleanup | Should -Be 0
+    }
+
+    It 'AB04 rejects verification when a nondependency later node replaced the dependency proof output HEAD' {
+        $project = Join-Path $TestDrive 'ab04-dependency-scoped-head'
+        [IO.Directory]::CreateDirectory($project) | Out-Null
+        & git -C $project init --quiet
+        $LASTEXITCODE | Should -Be 0
+        $basePath = Join-Path $project 'base.txt'
+        [IO.File]::WriteAllText($basePath, 'base', [Text.UTF8Encoding]::new($false))
+        & git -C $project add -- base.txt
+        & git -C $project -c user.name=winsmux-test -c user.email=winsmux-test@example.invalid commit --quiet -m base
+        $LASTEXITCODE | Should -Be 0
+        $baseHead = ([string](& git -C $project rev-parse HEAD)).Trim()
+        $managedPath = Join-Path $project '.worktrees\bugfix-implement'
+        & git -C $project worktree add --quiet -b worktree-bugfix-implement $managedPath $baseHead
+        $LASTEXITCODE | Should -Be 0
+
+        $dependencyPath = Join-Path $managedPath 'dependency.txt'
+        [IO.File]::WriteAllText($dependencyPath, 'dependency output', [Text.UTF8Encoding]::new($false))
+        & git -C $managedPath add -- dependency.txt
+        & git -C $managedPath -c user.name=winsmux-test -c user.email=winsmux-test@example.invalid commit --quiet -m dependency
+        $LASTEXITCODE | Should -Be 0
+        $dependencyHead = ([string](& git -C $managedPath rev-parse HEAD)).Trim()
+
+        $laterPath = Join-Path $managedPath 'later.txt'
+        [IO.File]::WriteAllText($laterPath, 'unrelated later output', [Text.UTF8Encoding]::new($false))
+        & git -C $managedPath add -- later.txt
+        & git -C $managedPath -c user.name=winsmux-test -c user.email=winsmux-test@example.invalid commit --quiet -m later
+        $LASTEXITCODE | Should -Be 0
+        $laterHead = ([string](& git -C $managedPath rev-parse HEAD)).Trim()
+        & git -C $managedPath merge-base --is-ancestor $dependencyHead $laterHead
+        $LASTEXITCODE | Should -Be 0
+        $laterHead | Should -Not -BeExactly $dependencyHead
+
+        $run = New-TestSucceededInspectRun
+        $run.source_head = $baseHead
+        $run.nodes.inspect.execution_lease.input_head = $baseHead
+        $run.nodes.inspect.completion_proof.source_head = $baseHead
+        $run.nodes.inspect.completion_proof.input_head = $baseHead
+        $run.nodes.inspect.completion_proof.output_head = $dependencyHead
+        $run.nodes.inspect.application_outcome.input_head = $baseHead
+        $run.nodes.inspect.application_outcome.output_head = $dependencyHead
+        $laterNode = Copy-DeclarativeWorkflowValue $run.nodes.inspect
+        $laterNode.node_id = 'later'
+        $laterNode.idempotency_key = 'run-123:later'
+        $laterNode.depends_on = @('inspect')
+        $laterNode.execution_lease.input_head = $dependencyHead
+        $laterNode.execution_lease.dependency_inputs = @([ordered]@{
+                node_id = 'inspect'
+                pane_ref = 'implement'
+                output_head = $dependencyHead
+                evidence_ref = 'workflow-ack:run-123:inspect'
+            })
+        $laterNode.execution_lease.dependency_heads = [ordered]@{ implement = $dependencyHead }
+        $laterNode.completion_proof.node_id = 'later'
+        $laterNode.completion_proof.idempotency_key = 'run-123:later'
+        $laterNode.completion_proof.source_head = $baseHead
+        $laterNode.completion_proof.input_head = $dependencyHead
+        $laterNode.completion_proof.output_head = $laterHead
+        $laterNode.completion_proof.evidence_ref = 'workflow-ack:run-123:later'
+        $laterNode.application_outcome.input_head = $dependencyHead
+        $laterNode.application_outcome.output_head = $laterHead
+        $laterNode.evidence_refs = @('workflow-ack:run-123:later')
+        $run.nodes['later'] = $laterNode
+        $laterDefinition = Copy-DeclarativeWorkflowValue $run.normalized_snapshot.nodes[0]
+        $laterDefinition.node_id = 'later'
+        $laterDefinition.idempotency_key = 'run-123:later'
+        $laterDefinition.depends_on = @('inspect')
+        $run.normalized_snapshot.nodes = @($run.normalized_snapshot.nodes[0], $laterDefinition, $run.normalized_snapshot.nodes[1])
+        $run.node_order = @('inspect', 'later', 'verify')
+        $run.pane_head_leases.implement.base_head = $baseHead
+        $run.pane_head_leases.implement.admitted_head = $laterHead
+        $script:ab04Run = Copy-DeclarativeWorkflowValue $run
+        $script:ab04Effects = [ordered]@{ state = 0; lock = 0; advancement = 0; cleanup = 0 }
+        $script:testDeclarativeSessionName = 'ab04-session'
+        $taskFile = Join-Path $project 'task.txt'
+        [IO.File]::WriteAllText($taskFile, 'Implement TASK-659 safely.', [Text.UTF8Encoding]::new($false))
+
+        Mock Read-TeamPipelineManifest { New-TestManifest -SessionName 'ab04-session' }
+        Mock Get-TeamPipelineSessionName { 'ab04-session' }
+        Mock Get-TeamPipelineDeclarativeProjectHead { $baseHead }
+        Mock Get-TeamPipelineDeclarativeWorktreeHead { $laterHead }
+        Mock Read-DeclarativeWorkflowRunState { Copy-DeclarativeWorkflowValue $script:ab04Run }
+        Mock Read-DeclarativeWorkflowDurableProof {
+            param($Kind, $NodeId)
+            if ([string]$Kind -ceq 'Completion' -and [string]$NodeId -in @('inspect', 'later')) {
+                return Copy-DeclarativeWorkflowValue $script:ab04Run.nodes[[string]$NodeId].completion_proof
+            }
+            return $null
+        }
+        Mock Invoke-TeamPipelineWorkspacePlanOnce { New-TestWorkspacePlan }
+        Mock Assert-DeclarativeWorkflowExecutionProjection { }
+        Mock Invoke-DeclarativeWorkflowResume { param($Run) Copy-DeclarativeWorkflowValue $Run }
+        Mock Get-PaneControlManifestEntries {
+            @(
+                [PSCustomObject]@{
+                    Label = 'worker-1'; PaneId = '%2'; GenerationId = 'generation-123'; Role = 'Builder'
+                    LaunchDir = $managedPath; BuilderWorktreePath = $managedPath
+                }
+                [PSCustomObject]@{
+                    Label = 'worker-2'; PaneId = '%3'; GenerationId = 'generation-123'; Role = 'Reviewer'
+                    LaunchDir = $project; BuilderWorktreePath = ''
+                }
+            )
+        }
+        Mock Resolve-TeamPipelineDeclarativeRuntimeLease {
+            [PSCustomObject]@{ label = 'worker-2'; pane_id = '%3' }
+        }
+        Mock Save-DeclarativeWorkflowRunState { $script:ab04Effects.state++ }
+        Mock Assert-TeamPipelineDeclarativeRunLockAdmission {
+            $script:ab04Effects.lock++
+            Join-Path $project 'synthetic-resume.lock'
+        }
+        Mock Invoke-TeamPipelineDeclarativeRunAdvancement {
+            param($Run)
+            $script:ab04Effects.advancement++
+            Copy-DeclarativeWorkflowValue $Run
+        }
+        Mock Invoke-TeamPipelineDeclarativeTerminalRecovery {
+            $script:ab04Effects.cleanup++
+            throw 'AB04 must reject before terminal recovery'
+        }
+        Mock Invoke-DeclarativeWorkflowCleanup {
+            $script:ab04Effects.cleanup++
+            throw 'AB04 must reject before cleanup'
+        }
+
+        {
+            Invoke-TeamPipelineDeclarativeWorkflow -Action resume -RunId 'run-123' -GenerationId 'generation-123' `
+                -ConfigFingerprint ('sha256:' + ('a' * 64)) -SourceHead $baseHead -TaskFile $taskFile -ProjectDir $project
+        } | Should -Throw '*workflow_dependency_head_mismatch*'
+        @($script:ab04Effects.Values | Measure-Object -Sum).Sum | Should -Be 0
+    }
+
+    It 'AB05 selects the unique descendant for same-pane direct proofs and rejects incomparable outputs' {
+        $project = Join-Path $TestDrive 'ab05-same-pane-dependency-head'
+        [IO.Directory]::CreateDirectory($project) | Out-Null
+        & git -C $project init --quiet
+        $basePath = Join-Path $project 'base.txt'
+        [IO.File]::WriteAllText($basePath, 'base', [Text.UTF8Encoding]::new($false))
+        & git -C $project add -- base.txt
+        & git -C $project -c user.name=winsmux-test -c user.email=winsmux-test@example.invalid commit --quiet -m base
+        $baseHead = ([string](& git -C $project rev-parse HEAD)).Trim()
+
+        $managedPath = Join-Path $project '.worktrees\bugfix-implement'
+        & git -C $project worktree add --quiet -b worktree-bugfix-implement $managedPath $baseHead
+        $dependencyPath = Join-Path $managedPath 'dependency.txt'
+        [IO.File]::WriteAllText($dependencyPath, 'dependency', [Text.UTF8Encoding]::new($false))
+        & git -C $managedPath add -- dependency.txt
+        & git -C $managedPath -c user.name=winsmux-test -c user.email=winsmux-test@example.invalid commit --quiet -m dependency
+        $dependencyHead = ([string](& git -C $managedPath rev-parse HEAD)).Trim()
+        $refinePath = Join-Path $managedPath 'refine.txt'
+        [IO.File]::WriteAllText($refinePath, 'refine', [Text.UTF8Encoding]::new($false))
+        & git -C $managedPath add -- refine.txt
+        & git -C $managedPath -c user.name=winsmux-test -c user.email=winsmux-test@example.invalid commit --quiet -m refine
+        $refineHead = ([string](& git -C $managedPath rev-parse HEAD)).Trim()
+
+        $sidePath = Join-Path $project '.worktrees\ab05-side'
+        & git -C $project worktree add --quiet -b worktree-ab05-side $sidePath $dependencyHead
+        $sideFile = Join-Path $sidePath 'side.txt'
+        [IO.File]::WriteAllText($sideFile, 'side', [Text.UTF8Encoding]::new($false))
+        & git -C $sidePath add -- side.txt
+        & git -C $sidePath -c user.name=winsmux-test -c user.email=winsmux-test@example.invalid commit --quiet -m side
+        $sideHead = ([string](& git -C $sidePath rev-parse HEAD)).Trim()
+        & git -C $project merge-base --is-ancestor $refineHead $sideHead
+        $LASTEXITCODE | Should -Not -Be 0
+        & git -C $project merge-base --is-ancestor $sideHead $refineHead
+        $LASTEXITCODE | Should -Not -Be 0
+
+        $script:ab05DependencyInputs = @(
+            [ordered]@{
+                node_id = 'inspect'; pane_ref = 'implement'; output_head = $dependencyHead
+                evidence_ref = 'workflow-ack:run-123:inspect'
+            }
+            [ordered]@{
+                node_id = 'refine'; pane_ref = 'implement'; output_head = $refineHead
+                evidence_ref = 'workflow-ack:run-123:refine'
+            }
+        )
+        $script:ab05LiveHead = $refineHead
+        Mock Get-DeclarativeWorkflowDependencyLeaseProposal {
+            [PSCustomObject]@{ dependency_inputs = @($script:ab05DependencyInputs) }
+        }
+        Mock Get-TeamPipelineDeclarativeApplicationPolicies {
+            [ordered]@{
+                implement = [PSCustomObject]@{
+                    pane_ref = 'implement'; slot_id = 'worker-1'; mode = 'managed'
+                    name = 'bugfix-implement'
+                }
+            }
+        }
+        Mock Get-TeamPipelineDeclarativeWorktreeHead { $script:ab05LiveHead }
+        Mock Assert-DeclarativeWorkflowDependencyLeaseProposal { }
+        $run = [ordered]@{ resolved_bindings = [ordered]@{ implement = 'worker-1' } }
+
+        $lease = Resolve-TeamPipelineDeclarativeNodeExecutionLease -Run $run -NodeId 'verify' `
+            -ProjectDir $project -DependencyOnly
+
+        @($lease.dependency_inputs | ForEach-Object { $_.node_id }) |
+            Should -Be @('inspect', 'refine')
+        $lease.dependency_heads.implement | Should -BeExactly $refineHead
+
+        $script:ab05DependencyInputs = @(
+            [ordered]@{
+                node_id = 'refine'; pane_ref = 'implement'; output_head = $refineHead
+                evidence_ref = 'workflow-ack:run-123:refine'
+            }
+            [ordered]@{
+                node_id = 'side'; pane_ref = 'implement'; output_head = $sideHead
+                evidence_ref = 'workflow-ack:run-123:side'
+            }
+        )
+        {
+            Resolve-TeamPipelineDeclarativeNodeExecutionLease -Run $run -NodeId 'verify' `
+                -ProjectDir $project -DependencyOnly
+        } | Should -Throw '*workflow_dependency_head_mismatch*'
+    }
+
     It 'Z03 validates an offline succeeded producer worktree needed by unfinished verification without restoring its live lease' {
         $project = Join-Path $TestDrive 'z03-producer-worktree-head'
         [IO.Directory]::CreateDirectory($project) | Out-Null
@@ -2941,8 +3465,17 @@ while (`$true) { Start-Sleep -Seconds 1 }
         $run = New-TestSucceededInspectRun
         $run.source_head = $sourceB
         $run.nodes.inspect.completion_proof.source_head = $sourceB
+        $run.nodes.inspect.completion_proof.input_head = $sourceB
+        $run.nodes.inspect.completion_proof.output_head = $sourceB
+        $run.nodes.inspect.execution_lease.input_head = $sourceB
+        $run.nodes.inspect.application_outcome.input_head = $sourceB
+        $run.nodes.inspect.application_outcome.output_head = $sourceB
+        $run.pane_head_leases.implement.base_head = $sourceB
+        $run.pane_head_leases.implement.admitted_head = $sourceB
         $proof = New-TestAcknowledgement -NodeId 'inspect' -PaneId '%2'
         $proof.source_head = $sourceB
+        $proof.input_head = $sourceB
+        $proof.output_head = $sourceB
         $script:z03Run = Copy-DeclarativeWorkflowValue $run
         $script:z03ResolvedLabels = [Collections.Generic.List[string]]::new()
         $script:z03Effects = [ordered]@{ state = 0; lock = 0; advancement = 0; cleanup = 0 }
@@ -2951,6 +3484,7 @@ while (`$true) { Start-Sleep -Seconds 1 }
         Mock Read-TeamPipelineManifest { New-TestManifest -SessionName 'z03-session' }
         Mock Get-TeamPipelineSessionName { 'z03-session' }
         Mock Get-TeamPipelineDeclarativeProjectHead { $sourceB }
+        Mock Get-TeamPipelineDeclarativeWorktreeHead { $sourceA }
         Mock Read-DeclarativeWorkflowRunState { Copy-DeclarativeWorkflowValue $script:z03Run }
         Mock Invoke-TeamPipelineWorkspacePlanOnce { New-TestWorkspacePlan }
         Mock Resolve-TeamPipelineDeclarativeAcknowledgement {
@@ -2991,9 +3525,64 @@ while (`$true) { Start-Sleep -Seconds 1 }
         }
 
         $resumeError | Should -Not -BeNullOrEmpty
-        [string]$resumeError.Exception.Message | Should -Match 'workflow_managed_worktree_source_head_mismatch'
-        [string]::Join(',', @($script:z03ResolvedLabels)) | Should -BeExactly 'worker-2'
+        [string]$resumeError.Exception.Message | Should -Match 'workflow_dependency_head_mismatch'
+        [string]::Join(',', @($script:z03ResolvedLabels)) | Should -BeExactly ''
         @($script:z03Effects.Values | Measure-Object -Sum).Sum | Should -Be 0
+    }
+
+    It 'AB07 AA08 rejects post-proof drift even when the managed producer moved to a later descendant' {
+        $project = Join-Path $TestDrive 'aa08-post-proof-drift'
+        [IO.Directory]::CreateDirectory($project) | Out-Null
+        & git -C $project init --quiet
+        $basePath = Join-Path $project 'base.txt'
+        [IO.File]::WriteAllText($basePath, 'base', [Text.UTF8Encoding]::new($false))
+        & git -C $project add -- base.txt
+        & git -C $project -c user.name=winsmux-test -c user.email=winsmux-test@example.invalid commit --quiet -m base
+        $baseHead = ([string](& git -C $project rev-parse HEAD)).Trim()
+        $managedPath = Join-Path $project '.worktrees\bugfix-implement'
+        & git -C $project worktree add --quiet -b worktree-bugfix-implement $managedPath $baseHead
+        $firstPath = Join-Path $managedPath 'first.txt'
+        [IO.File]::WriteAllText($firstPath, 'first', [Text.UTF8Encoding]::new($false))
+        & git -C $managedPath add -- first.txt
+        & git -C $managedPath -c user.name=winsmux-test -c user.email=winsmux-test@example.invalid commit --quiet -m first
+        $admittedHead = ([string](& git -C $managedPath rev-parse HEAD)).Trim()
+        $laterPath = Join-Path $managedPath 'later.txt'
+        [IO.File]::WriteAllText($laterPath, 'later', [Text.UTF8Encoding]::new($false))
+        & git -C $managedPath add -- later.txt
+        & git -C $managedPath -c user.name=winsmux-test -c user.email=winsmux-test@example.invalid commit --quiet -m later
+        $laterHead = ([string](& git -C $managedPath rev-parse HEAD)).Trim()
+        & git -C $managedPath merge-base --is-ancestor $admittedHead $laterHead
+        $LASTEXITCODE | Should -Be 0
+        $laterHead | Should -Not -BeExactly $admittedHead
+
+        $run = New-TestSucceededInspectRun
+        $run.source_head = $baseHead
+        $run.nodes.inspect.execution_lease.input_head = $baseHead
+        $run.nodes.inspect.completion_proof.source_head = $baseHead
+        $run.nodes.inspect.completion_proof.input_head = $baseHead
+        $run.nodes.inspect.completion_proof.output_head = $admittedHead
+        $run.nodes.inspect.application_outcome.input_head = $baseHead
+        $run.nodes.inspect.application_outcome.output_head = $admittedHead
+        $run.pane_head_leases.implement.base_head = $baseHead
+        $run.pane_head_leases.implement.admitted_head = $admittedHead
+        Mock Get-PaneControlManifestEntries {
+            @(
+                [PSCustomObject]@{
+                    Label = 'worker-1'; PaneId = '%2'; GenerationId = 'generation-123'; Role = 'Builder'
+                    LaunchDir = $managedPath; BuilderWorktreePath = $managedPath
+                },
+                [PSCustomObject]@{
+                    Label = 'worker-2'; PaneId = '%3'; GenerationId = 'generation-123'; Role = 'Reviewer'
+                    LaunchDir = $project; BuilderWorktreePath = ''
+                }
+            )
+        }
+        Mock Get-TeamPipelineDeclarativeWorktreeHead { $laterHead }
+
+        {
+            Assert-TeamPipelineDeclarativeExecutionAdmission -Run $run -WorkspacePlan (New-TestWorkspacePlan) `
+                -ProjectDir $project -SessionName 'winsmux-orchestra'
+        } | Should -Throw '*workflow_dependency_head_mismatch*'
     }
 
     It 'Z04 accepts exact managed HEAD without requiring a clean worktree' {
@@ -3007,7 +3596,7 @@ while (`$true) { Start-Sleep -Seconds 1 }
         Should -Invoke Get-TeamPipelineDeclarativeWorktreeHead -Times 1 -Exactly
     }
 
-    It 'Z05 rejects managed and read-only path redirects plus a write action on read-only policy' {
+    It 'Z05 rejects managed and read-only path redirects plus a write action on persisted read-only policy' {
         $script:z05Mode = 'managed-redirect'
         Mock Get-PaneControlManifestEntries {
             param($ProjectDir)
@@ -3045,11 +3634,11 @@ while (`$true) { Start-Sleep -Seconds 1 }
         } | Should -Throw '*workflow_application_worktree_policy_mismatch*'
 
         $script:z05Mode = 'exact'
-        $readOnlyWritePlan = New-TestWorkspacePlan
-        $readOnlyWritePlan.panes[0].worktree.mode = 'read-only-reference'
-        $readOnlyWritePlan.panes[0].worktree.name = $null
+        $readOnlyWriteRun = Copy-DeclarativeWorkflowValue $run
+        $readOnlyWriteRun.normalized_snapshot.application_contract.implement.worktree.mode = 'read-only-reference'
+        $readOnlyWriteRun.normalized_snapshot.application_contract.implement.worktree.Remove('name')
         {
-            Assert-TeamPipelineDeclarativeExecutionAdmission -Run $run -WorkspacePlan $readOnlyWritePlan `
+            Assert-TeamPipelineDeclarativeExecutionAdmission -Run $readOnlyWriteRun -WorkspacePlan (New-TestWorkspacePlan) `
                 -ProjectDir $TestDrive -SessionName 'winsmux-orchestra'
         } | Should -Throw '*workflow_application_worktree_policy_mismatch*'
     }

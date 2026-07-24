@@ -23,9 +23,8 @@ use crate::workflow::WorkflowPlanCliOptions;
 use crate::workspace_project_settings::{self, WorkspacePlanProjectSettings};
 #[cfg(test)]
 use crate::workspace_recipe::normalize_workspace_plan;
-use crate::workspace_recipe::{
-    normalize_workspace_plan_from_value, parse_workspace_yaml, SlotCapabilities,
-};
+use crate::workspace_recipe::normalize_workspace_plan_from_value_with_implied_capabilities;
+use crate::workspace_recipe::{parse_workspace_yaml, SlotCapabilities};
 
 #[path = "workspace_builtin_provider.rs"]
 mod workspace_builtin_provider;
@@ -274,11 +273,15 @@ pub fn run_workspace_plan_command(args: &[&String]) -> io::Result<()> {
             supports_structured_result: effective.supports_structured_result,
         });
     }
-    let plan = normalize_workspace_plan_from_value(
+    let implied_capabilities = options
+        .workflow
+        .application_capability_requirements(&root, &options.recipe_id)?;
+    let plan = normalize_workspace_plan_from_value_with_implied_capabilities(
         &root,
         &options.recipe_id,
         options.workflow.workflow_id(),
         &slots,
+        &implied_capabilities,
     )?;
     if let Some(payload) = options.workflow.normalized_payload(&root, &plan)? {
         return write_json(&payload);

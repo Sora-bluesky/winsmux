@@ -18512,15 +18512,7 @@ function Publish-WinsmuxWorkflowCompletionEnvelope {
         throw 'mailbox-send: workflow completion channel does not match the fresh manifest session'
     }
     $envelope = ConvertTo-WinsmuxWorkflowCompletionEnvelope -Payload $Payload -SessionName $sessionName -GenerationId $generationId
-    $admission = Resolve-WinsmuxWorkflowCompletionAdmission -ProjectDir $projectRoot -Envelope $envelope
-    $acknowledgement = [ordered]@{}
-    foreach ($name in @('schema_version', 'run_id', 'node_id', 'idempotency_key', 'generation_id', 'config_fingerprint', 'workflow_fingerprint', 'source_head', 'pane_id', 'status', 'evidence_ref')) {
-        $acknowledgement[$name] = $envelope['content']['data'][$name]
-    }
-    $acknowledgement['transport'] = 'mailbox'
-    $acknowledgement['message_id'] = [string]$envelope['message_id']
-    Write-DeclarativeWorkflowDurableProof -ProjectDir $projectRoot -Run $admission.Run -Kind Completion -NodeId $admission.NodeId -Proof $acknowledgement `
-        -TrustedSenderLabel $admission.Label -TrustedSenderPaneId $admission.PaneId | Out-Null
+    Resolve-WinsmuxWorkflowCompletionAdmission -ProjectDir $projectRoot -Envelope $envelope | Out-Null
     $messageId = [string]$envelope['message_id']
     $pendingRoot = Resolve-DeclarativeWorkflowMailboxPendingPath -ProjectDir $projectRoot -Channel $Channel -CreateDirectory
     $destination = Resolve-DeclarativeWorkflowMailboxPendingPath -ProjectDir $projectRoot -Channel $Channel -MessageId $messageId

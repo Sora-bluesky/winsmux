@@ -112,12 +112,15 @@ function Test-OperatorPollWorkflowAcknowledgementData {
     if (-not (Test-OperatorPollExactPropertyNames -InputObject $Data -AllowedNames $allowed)) { return $false }
     $runId = [string](Get-OperatorPollValue -InputObject $Data -Name 'run_id' -Default '')
     $nodeId = [string](Get-OperatorPollValue -InputObject $Data -Name 'node_id' -Default '')
+    $idempotencyKey = [string](Get-OperatorPollValue -InputObject $Data -Name 'idempotency_key' -Default '')
     $schemaVersion = Get-OperatorPollValue -InputObject $Data -Name 'schema_version' -Default $null
     if (
         $schemaVersion -isnot [ValueType] -or [int64]$schemaVersion -ne 1 -or
         $runId -cnotmatch '^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$' -or
         $nodeId -cnotmatch '^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$' -or
-        [string](Get-OperatorPollValue -InputObject $Data -Name 'idempotency_key' -Default '') -cne "$runId`:$nodeId" -or
+        $script:DeclarativeWorkflowUtf8NoBom.GetByteCount($runId) -gt $script:DeclarativeWorkflowRunIdMaxBytes -or
+        $idempotencyKey -cne "$runId`:$nodeId" -or
+        $script:DeclarativeWorkflowUtf8NoBom.GetByteCount($idempotencyKey) -gt $script:DeclarativeWorkflowIdempotencyKeyMaxBytes -or
         -not (Test-OperatorPollGenerationId -Value ([string](Get-OperatorPollValue -InputObject $Data -Name 'generation_id' -Default ''))) -or
         [string](Get-OperatorPollValue -InputObject $Data -Name 'config_fingerprint' -Default '') -cnotmatch '^sha256:[0-9a-f]{64}$' -or
         [string](Get-OperatorPollValue -InputObject $Data -Name 'workflow_fingerprint' -Default '') -cnotmatch '^sha256:[0-9a-f]{64}$' -or
@@ -459,6 +462,382 @@ function New-OperatorPollStateData {
     }
 
     return $stateData
+}
+
+function Get-OperatorPollManifestPane {
+    param(
+        [Parameter(Mandatory = $true)]$Manifest,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    $panes = Get-OperatorPollValue -InputObject $Manifest -Name 'Panes' -Default $null
+    if ($panes -is [Collections.IDictionary] -and $panes.Contains($Label)) {
+        return $panes[$Label]
+    }
+    $matches = @($panes | Where-Object {
+            [string](Get-OperatorPollValue -InputObject $_ -Name 'label' -Default '') -ceq $Label
+        })
+    if ($matches.Count -ne 1) { return $null }
+    return $matches[0]
+}
+
+function Get-OperatorPollStrictCapabilityFlag {
+    param(
+        [Parameter(Mandatory = $true)]$InputObject,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    $value = Get-OperatorPollValue -InputObject $InputObject -Name $Name -Default $null
+    if ($value -is [bool]) { return [bool]$value }
+    if ([string]::Equals([string]$value, 'true', [StringComparison]::OrdinalIgnoreCase)) {
+        return $true
+    }
+    if ([string]::Equals([string]$value, 'false', [StringComparison]::OrdinalIgnoreCase)) {
+        return $false
+    }
+    throw 'workflow_completion_rejected: manifest capability is missing or malformed'
+}
+
+function Get-OperatorPollCanonicalPath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        throw 'workflow_completion_rejected: application path is missing'
+    }
+    try {
+        return [IO.Path]::GetFullPath($Path).TrimEnd(
+            [char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+        )
+    } catch {
+        throw 'workflow_completion_rejected: application path is malformed'
+    }
+}
+
+function Get-OperatorPollObservedHead {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $output = @(& git -C $Path rev-parse HEAD 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $output.Count -ne 1) {
+        throw 'workflow_completion_rejected: output HEAD could not be observed exactly once'
+    }
+    $head = ([string]$output[0]).Trim()
+    if ($head -cnotmatch '^[0-9a-f]{40}$') {
+        throw 'workflow_completion_rejected: output HEAD is malformed'
+    }
+    return $head
+}
+
+function Assert-OperatorPollWorkflowDependencyLease {
+    param(
+        [Parameter(Mandatory = $true)]$Run,
+        [Parameter(Mandatory = $true)]$Node,
+        [Parameter(Mandatory = $true)]$ExecutionLease,
+        [Parameter(Mandatory = $true)][string]$ProjectDir
+    )
+
+    $nodes = Get-OperatorPollValue $Run 'nodes' $null
+    $snapshot = Get-OperatorPollValue $Run 'normalized_snapshot' $null
+    $applications = Get-OperatorPollValue $snapshot 'application_contract' $null
+    $dependencyInputs = @(Get-OperatorPollValue $ExecutionLease 'dependency_inputs' @())
+    $dependencyHeads = Get-OperatorPollValue $ExecutionLease 'dependency_heads' $null
+    if ($nodes -isnot [Collections.IDictionary] -or
+        $applications -isnot [Collections.IDictionary] -or
+        -not (Test-DeclarativeWorkflowFieldExists -InputObject $ExecutionLease -Name 'dependency_inputs') -or
+        -not (Test-DeclarativeWorkflowFieldExists -InputObject $ExecutionLease -Name 'dependency_heads') -or
+        $dependencyHeads -isnot [Collections.IDictionary]) {
+        throw 'workflow_completion_rejected: dependency-scoped execution lease is missing'
+    }
+
+    $expectedInputs = [Collections.Generic.List[object]]::new()
+    $outputsByPane = [ordered]@{}
+    foreach ($dependencyIdValue in @(Get-OperatorPollValue $Node 'depends_on' @())) {
+        $dependencyId = [string]$dependencyIdValue
+        if ([string]::IsNullOrWhiteSpace($dependencyId) -or -not $nodes.Contains($dependencyId)) {
+            throw 'workflow_completion_rejected: direct dependency proof is missing'
+        }
+        $dependency = $nodes[$dependencyId]
+        $proof = Get-OperatorPollValue $dependency 'completion_proof' $null
+        $outcome = Get-OperatorPollValue $dependency 'application_outcome' $null
+        $paneRef = [string](Get-OperatorPollValue $dependency 'pane_ref' '')
+        $outputHead = [string](Get-OperatorPollValue $proof 'output_head' '')
+        $evidenceRef = [string](Get-OperatorPollValue $proof 'evidence_ref' '')
+        $evidenceRefs = @((Get-OperatorPollValue $dependency 'evidence_refs' @()) | ForEach-Object { [string]$_ })
+        if ([string](Get-OperatorPollValue $dependency 'state' '') -cne 'succeeded' -or
+            $null -eq $proof -or $null -eq $outcome -or
+            [string](Get-OperatorPollValue $proof 'node_id' '') -cne $dependencyId -or
+            [string](Get-OperatorPollValue $outcome 'output_head' '') -cne $outputHead -or
+            $outputHead -cnotmatch '^[0-9a-f]{40}$' -or
+            $evidenceRefs.Count -ne 1 -or $evidenceRefs[0] -cne $evidenceRef -or
+            -not $applications.Contains($paneRef)) {
+            throw 'workflow_completion_rejected: direct dependency proof is invalid'
+        }
+        $expectedInputs.Add([ordered]@{
+                node_id = $dependencyId
+                pane_ref = $paneRef
+                output_head = $outputHead
+                evidence_ref = $evidenceRef
+            }) | Out-Null
+        if (-not $outputsByPane.Contains($paneRef)) {
+            $outputsByPane[$paneRef] = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+        }
+        $outputsByPane[$paneRef].Add($outputHead) | Out-Null
+    }
+    if ((ConvertTo-DeclarativeWorkflowCanonicalJson -Value @($dependencyInputs)) -cne
+        (ConvertTo-DeclarativeWorkflowCanonicalJson -Value @($expectedInputs)) -or
+        $dependencyHeads.Count -ne $outputsByPane.Count -or
+        @($dependencyHeads.Keys | Where-Object { -not $outputsByPane.Contains([string]$_) }).Count -ne 0) {
+        throw 'workflow_completion_rejected: dependency-scoped execution lease does not match direct proofs'
+    }
+
+    $canonicalProjectDir = Get-OperatorPollCanonicalPath -Path $ProjectDir
+    foreach ($paneRef in @($outputsByPane.Keys)) {
+        $selectedHead = [string]$dependencyHeads[$paneRef]
+        if ($selectedHead -cnotmatch '^[0-9a-f]{40}$' -or
+            -not $outputsByPane[$paneRef].Contains($selectedHead)) {
+            throw 'workflow_completion_rejected: dependency head selection is invalid'
+        }
+        $application = $applications[$paneRef]
+        $worktree = Get-OperatorPollValue $application 'worktree' $null
+        $mode = [string](Get-OperatorPollValue $worktree 'mode' '')
+        if ($mode -ceq 'managed') {
+            $worktreeName = [string](Get-OperatorPollValue $worktree 'name' '')
+            $worktreeRoot = Get-OperatorPollCanonicalPath -Path (Join-Path $canonicalProjectDir '.worktrees')
+            $applicationPath = Get-OperatorPollCanonicalPath -Path (Join-Path $worktreeRoot $worktreeName)
+            if ([string]::IsNullOrWhiteSpace($worktreeName) -or
+                -not [string]::Equals(
+                    (Get-OperatorPollCanonicalPath -Path ([IO.Path]::GetDirectoryName($applicationPath))),
+                    $worktreeRoot,
+                    [StringComparison]::OrdinalIgnoreCase
+                )) {
+                throw 'workflow_completion_rejected: dependency application path is invalid'
+            }
+        } elseif ($mode -ceq 'read-only-reference') {
+            $applicationPath = $canonicalProjectDir
+        } else {
+            throw 'workflow_completion_rejected: dependency application mode is unsupported'
+        }
+        foreach ($otherHead in @($outputsByPane[$paneRef])) {
+            if ($otherHead -ceq $selectedHead) { continue }
+            & git -C $applicationPath merge-base --is-ancestor $otherHead $selectedHead 2>$null
+            if ($LASTEXITCODE -ne 0) {
+                throw 'workflow_completion_rejected: dependency heads are incomparable'
+            }
+        }
+        if ((Get-OperatorPollObservedHead -Path $applicationPath) -cne $selectedHead) {
+            throw 'workflow_completion_rejected: dependency worktree moved after execution admission'
+        }
+    }
+}
+
+function Get-OperatorPollExistingWorkflowCompletionProofReplay {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)]$Run,
+        [Parameter(Mandatory = $true)][string]$NodeId,
+        [Parameter(Mandatory = $true)]$Acknowledgement
+    )
+
+    $existing = Read-DeclarativeWorkflowDurableProof -ProjectDir $ProjectDir -Run $Run `
+        -Kind Completion -NodeId $NodeId
+    if ($null -eq $existing) { return $null }
+    if ([int](Get-OperatorPollValue -InputObject $existing -Name 'schema_version' -Default 0) -ne 2) {
+        throw 'workflow_completion_rejected: existing completion proof does not match authenticated pending input'
+    }
+    foreach ($field in @(
+            'run_id', 'node_id', 'idempotency_key', 'generation_id', 'config_fingerprint',
+            'workflow_fingerprint', 'source_head', 'pane_id', 'status', 'evidence_ref',
+            'transport', 'message_id'
+        )) {
+        if ([string](Get-OperatorPollValue -InputObject $existing -Name $field -Default '') -cne
+            [string](Get-OperatorPollValue -InputObject $Acknowledgement -Name $field -Default '')) {
+            throw 'workflow_completion_rejected: existing completion proof does not match authenticated pending input'
+        }
+    }
+    return $existing
+}
+
+function Publish-OperatorPollWorkflowCompletionProof {
+    param(
+        [Parameter(Mandatory = $true)]$Manifest,
+        [Parameter(Mandatory = $true)]$PaneContext,
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)]$Run,
+        [Parameter(Mandatory = $true)]$Acknowledgement
+    )
+
+    $nodeId = [string](Get-OperatorPollValue -InputObject $Acknowledgement -Name 'node_id' -Default '')
+    $nodes = Get-OperatorPollValue -InputObject $Run -Name 'nodes' -Default $null
+    if ([int](Get-OperatorPollValue -InputObject $Run -Name 'schema_version' -Default 0) -ne 3 -or
+        $nodes -isnot [Collections.IDictionary] -or
+        -not $nodes.Contains($nodeId)) {
+        throw 'workflow_completion_rejected: node is not present in the persisted run'
+    }
+    $node = $nodes[$nodeId]
+    $executionLease = Get-OperatorPollValue -InputObject $node -Name 'execution_lease' -Default $null
+    $paneRef = [string](Get-OperatorPollValue -InputObject $node -Name 'pane_ref' -Default '')
+    $snapshot = Get-OperatorPollValue -InputObject $Run -Name 'normalized_snapshot' -Default $null
+    $applications = Get-OperatorPollValue -InputObject $snapshot -Name 'application_contract' -Default $null
+    if ($null -eq $executionLease -or
+        $applications -isnot [Collections.IDictionary] -or
+        -not $applications.Contains($paneRef)) {
+        throw 'workflow_completion_rejected: versioned application execution lease is missing'
+    }
+    $application = $applications[$paneRef]
+    $bindings = Get-OperatorPollValue -InputObject $Run -Name 'resolved_bindings' -Default $null
+    $label = [string]$PaneContext['label']
+    $paneId = [string]$PaneContext['pane_id']
+    if ($bindings -isnot [Collections.IDictionary] -or
+        $applications.Count -ne $bindings.Count -or
+        @($applications.Keys | Where-Object { -not $bindings.Contains([string]$_) }).Count -ne 0 -or
+        -not $bindings.Contains($paneRef) -or
+        [string]$bindings[$paneRef] -cne $label -or
+        [string](Get-OperatorPollValue -InputObject $application -Name 'pane_ref' -Default '') -cne $paneRef -or
+        [string](Get-OperatorPollValue -InputObject $application -Name 'slot_id' -Default '') -cne $label -or
+        [string](Get-OperatorPollValue -InputObject $Acknowledgement -Name 'pane_id' -Default '') -cne $paneId) {
+        throw 'workflow_completion_rejected: authenticated pane does not match the application lease'
+    }
+
+    $definitions = @(
+        Get-OperatorPollValue -InputObject $snapshot -Name 'nodes' -Default @() |
+            Where-Object {
+                [string](Get-OperatorPollValue -InputObject $_ -Name 'node_id' -Default '') -ceq $nodeId
+            }
+    )
+    if ($definitions.Count -ne 1) {
+        throw 'workflow_completion_rejected: normalized node contract is missing'
+    }
+    $definition = $definitions[0]
+    $requiredCapability = [string](Get-OperatorPollValue -InputObject $definition -Name 'required_capability' -Default '')
+    $allowedModes = @(
+        Get-OperatorPollValue -InputObject $definition -Name 'allowed_worktree_modes' -Default @() |
+            ForEach-Object { [string]$_ }
+    )
+    $mayAdvanceHeadValue = Get-OperatorPollValue -InputObject $definition -Name 'may_advance_head' -Default $null
+    if ($mayAdvanceHeadValue -isnot [bool] -or
+        [string](Get-OperatorPollValue -InputObject $definition -Name 'pane_ref' -Default '') -cne $paneRef -or
+        [string](Get-OperatorPollValue -InputObject $definition -Name 'action' -Default '') -cne
+            [string](Get-OperatorPollValue -InputObject $node -Name 'action' -Default '') -or
+        $requiredCapability -cne [string](Get-OperatorPollValue -InputObject $node -Name 'required_capability' -Default '') -or
+        (ConvertTo-DeclarativeWorkflowCanonicalJson -Value $allowedModes) -cne
+            (ConvertTo-DeclarativeWorkflowCanonicalJson -Value (
+                Get-OperatorPollValue -InputObject $node -Name 'allowed_worktree_modes' -Default @()
+            )) -or
+        [bool]$mayAdvanceHeadValue -ne [bool](Get-OperatorPollValue -InputObject $node -Name 'may_advance_head' -Default $false)) {
+        throw 'workflow_completion_rejected: runtime node projection does not match'
+    }
+
+    $existingProof = Get-OperatorPollExistingWorkflowCompletionProofReplay -ProjectDir $ProjectDir `
+        -Run $Run -NodeId $nodeId -Acknowledgement $Acknowledgement
+    if ($null -ne $existingProof) { return $existingProof }
+    if ([string](Get-OperatorPollValue -InputObject $node -Name 'state' -Default '') -notin @('dispatching', 'blocked') -or
+        [int](Get-OperatorPollValue -InputObject $node -Name 'attempt' -Default 0) -ne 1) {
+        throw 'workflow_completion_rejected: runtime node projection does not match'
+    }
+
+    $manifestPane = Get-OperatorPollManifestPane -Manifest $Manifest -Label $label
+    if ($null -eq $manifestPane -or
+        [string](Get-OperatorPollValue -InputObject $manifestPane -Name 'pane_id' -Default '') -cne $paneId) {
+        throw 'workflow_completion_rejected: manifest pane identity does not match'
+    }
+    $actualCapabilities = Get-OperatorPollValue -InputObject $application -Name 'actual_capabilities' -Default $null
+    $capabilityTuple = [ordered]@{}
+    foreach ($capability in @('supports_file_edit', 'supports_verification', 'supports_structured_result')) {
+        $expectedCapability = Get-OperatorPollStrictCapabilityFlag -InputObject $actualCapabilities -Name $capability
+        $capabilityTuple[$capability] = $expectedCapability
+        if ((Get-OperatorPollStrictCapabilityFlag -InputObject $manifestPane -Name $capability) -ne $expectedCapability) {
+            throw 'workflow_completion_rejected: manifest capability does not match the application contract'
+        }
+    }
+
+    $inputHead = [string](Get-OperatorPollValue -InputObject $executionLease -Name 'input_head' -Default '')
+    if ($inputHead -cnotmatch '^[0-9a-f]{40}$' -or
+        [string](Get-OperatorPollValue -InputObject $executionLease -Name 'pane_ref' -Default '') -cne $paneRef -or
+        [string](Get-OperatorPollValue -InputObject $executionLease -Name 'slot_id' -Default '') -cne $label) {
+        throw 'workflow_completion_rejected: execution lease identity is malformed'
+    }
+    $worktree = Get-OperatorPollValue -InputObject $application -Name 'worktree' -Default $null
+    $mode = [string](Get-OperatorPollValue -InputObject $worktree -Name 'mode' -Default '')
+    $capabilityAuthorized = switch ($requiredCapability) {
+        'file-edit' { [bool]$capabilityTuple.supports_file_edit }
+        'review' {
+            [bool]$capabilityTuple.supports_verification -and
+                [bool]$capabilityTuple.supports_structured_result
+        }
+        default { $false }
+    }
+    if (-not $capabilityAuthorized -or
+        $allowedModes.Count -lt 1 -or
+        $mode -notin $allowedModes -or
+        [string](Get-OperatorPollValue -InputObject $executionLease -Name 'worktree_mode' -Default '') -cne $mode) {
+        throw 'workflow_completion_rejected: execution lease worktree mode changed'
+    }
+    Assert-OperatorPollWorkflowDependencyLease -Run $Run -Node $node -ExecutionLease $executionLease -ProjectDir $ProjectDir
+    $canonicalProjectDir = Get-OperatorPollCanonicalPath -Path $ProjectDir
+    if ($mode -ceq 'managed') {
+        $paneHeadLeases = Get-OperatorPollValue -InputObject $Run -Name 'pane_head_leases' -Default $null
+        if ($paneHeadLeases -isnot [Collections.IDictionary] -or
+            -not $paneHeadLeases.Contains($paneRef) -or
+            [string](Get-OperatorPollValue -InputObject $paneHeadLeases[$paneRef] -Name 'admitted_head' -Default '') -cne $inputHead) {
+            throw 'workflow_completion_rejected: managed pane input ledger does not match the execution lease'
+        }
+        $worktreeName = [string](Get-OperatorPollValue -InputObject $worktree -Name 'name' -Default '')
+        $worktreeRoot = Get-OperatorPollCanonicalPath -Path (Join-Path $canonicalProjectDir '.worktrees')
+        $applicationPath = Get-OperatorPollCanonicalPath -Path (Join-Path $worktreeRoot $worktreeName)
+        $applicationParent = Get-OperatorPollCanonicalPath -Path ([IO.Path]::GetDirectoryName($applicationPath))
+        if ([string]::IsNullOrWhiteSpace($worktreeName) -or
+            -not [string]::Equals($applicationParent, $worktreeRoot, [StringComparison]::OrdinalIgnoreCase) -or
+            -not [string]::Equals(
+                (Get-OperatorPollCanonicalPath -Path ([string]$PaneContext['worktree_path'])),
+                $applicationPath,
+                [StringComparison]::OrdinalIgnoreCase
+            )) {
+            throw 'workflow_completion_rejected: managed application path does not match'
+        }
+    } elseif ($mode -ceq 'read-only-reference') {
+        $applicationPath = $canonicalProjectDir
+        if ($inputHead -cne [string](Get-OperatorPollValue -InputObject $Run -Name 'source_head' -Default '') -or
+            -not [string]::Equals(
+                (Get-OperatorPollCanonicalPath -Path ([string]$PaneContext['worktree_path'])),
+                $applicationPath,
+                [StringComparison]::OrdinalIgnoreCase
+            )) {
+            throw 'workflow_completion_rejected: read-only application path does not match'
+        }
+    } else {
+        throw 'workflow_completion_rejected: application worktree mode is unsupported'
+    }
+    $outputHead = Get-OperatorPollObservedHead -Path $applicationPath
+
+    $mayAdvanceHead = [bool]$mayAdvanceHeadValue
+    if ($mayAdvanceHead) {
+        if ($outputHead -cne $inputHead) {
+            & git -C $applicationPath merge-base --is-ancestor $inputHead $outputHead 2>$null
+            if ($LASTEXITCODE -ne 0) {
+                throw 'workflow_completion_rejected: output HEAD is not an admitted descendant'
+            }
+        }
+    } elseif ($outputHead -cne $inputHead) {
+        throw 'workflow_completion_rejected: read-only action changed HEAD'
+    }
+
+    $proof = [ordered]@{ schema_version = 2 }
+    foreach ($field in @(
+            'run_id', 'node_id', 'idempotency_key', 'generation_id', 'config_fingerprint',
+            'workflow_fingerprint', 'source_head'
+        )) {
+        $proof[$field] = Get-OperatorPollValue -InputObject $Acknowledgement -Name $field -Default $null
+    }
+    $proof['input_head'] = $inputHead
+    $proof['output_head'] = $outputHead
+    foreach ($field in @('pane_id', 'status', 'evidence_ref', 'transport', 'message_id')) {
+        $value = Get-OperatorPollValue -InputObject $Acknowledgement -Name $field -Default $null
+        if ($null -ne $value -and -not [string]::IsNullOrWhiteSpace([string]$value)) {
+            $proof[$field] = $value
+        }
+    }
+    Write-DeclarativeWorkflowDurableProof -ProjectDir $ProjectDir -Run $Run -Kind Completion -NodeId $nodeId -Proof $proof `
+        -TrustedSenderLabel $label -TrustedSenderPaneId $paneId | Out-Null
+    return Read-DeclarativeWorkflowDurableProof -ProjectDir $ProjectDir -Run $Run -Kind Completion -NodeId $nodeId
 }
 
 function Invoke-OperatorPollWinsmux {
@@ -852,7 +1231,10 @@ function Receive-OperatorPollDurableWorkflowMessages {
     $messages = [Collections.Generic.List[object]]::new()
     if ($MaxMessages -lt 1) { return @($messages) }
     try {
-        $pendingFiles = @(Get-ChildItem -LiteralPath $pendingRoot -File -Filter '*.json' -ErrorAction Stop | Sort-Object Name)
+        $pendingFiles = @(
+            Get-ChildItem -LiteralPath $pendingRoot -File -Filter '*.json' -ErrorAction Stop |
+                Sort-Object LastWriteTimeUtc, Name
+        )
     } catch {
         return @($messages)
     }
@@ -908,6 +1290,7 @@ function Receive-OperatorPollDurableWorkflowMessages {
             $record['durable_pending_path'] = $pendingPath
             $record['durable_pending_channel'] = $channel
             $record['durable_pending_message_id'] = $messageId
+            $record['durable_pending_sha256'] = Get-DeclarativeWorkflowSha256Digest -Bytes $bytes
             $messages.Add($record) | Out-Null
         } catch {
             Remove-OperatorPollTerminalPendingFile -ProjectDir $ProjectDir -Channel $channel -MessageId $messageId
@@ -915,6 +1298,60 @@ function Receive-OperatorPollDurableWorkflowMessages {
         }
     }
     return @($messages)
+}
+
+function Test-OperatorPollDurableWorkflowAcknowledgementAuthority {
+    param(
+        [Parameter(Mandatory = $true)]$EventRecord,
+        [Parameter(Mandatory = $true)]$PaneContext,
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$SessionName
+    )
+
+    $pendingPath = [string](Get-OperatorPollValue $EventRecord 'durable_pending_path' '')
+    $pendingChannel = [string](Get-OperatorPollValue $EventRecord 'durable_pending_channel' '')
+    $pendingMessageId = [string](Get-OperatorPollValue $EventRecord 'durable_pending_message_id' '')
+    $pendingSha256 = [string](Get-OperatorPollValue $EventRecord 'durable_pending_sha256' '')
+    if (
+        [string](Get-OperatorPollValue $EventRecord 'source' '') -cne 'mailbox' -or
+        [string]::IsNullOrWhiteSpace($pendingPath) -or
+        [string]::IsNullOrWhiteSpace($pendingChannel) -or
+        [string]::IsNullOrWhiteSpace($pendingMessageId) -or
+        $pendingSha256 -cnotmatch '^sha256:[0-9a-f]{64}$' -or
+        [string](Get-OperatorPollValue $EventRecord 'message_id' '') -cne $pendingMessageId
+    ) {
+        return $false
+    }
+    try {
+        $verifiedPath = Resolve-DeclarativeWorkflowMailboxPendingPath -ProjectDir $ProjectDir `
+            -Channel $pendingChannel -MessageId $pendingMessageId
+        if ($verifiedPath -cne $pendingPath -or -not [IO.File]::Exists($verifiedPath)) {
+            return $false
+        }
+        $bytes = [IO.File]::ReadAllBytes($verifiedPath)
+        if ((Get-DeclarativeWorkflowSha256Digest -Bytes $bytes) -cne $pendingSha256) {
+            return $false
+        }
+        $json = [Text.UTF8Encoding]::new($false, $true).GetString($bytes)
+        $mailboxMessage = $json | ConvertFrom-WinsmuxJson -AsHashtable -Depth 30 -ErrorAction Stop
+        $fromPending = ConvertTo-OperatorPollMailboxRecord -MailboxMessage $mailboxMessage -SessionName $SessionName
+        if ($null -eq $fromPending) { return $false }
+        $candidate = Copy-DeclarativeWorkflowValue $EventRecord
+        foreach ($field in @(
+                'durable_pending_path', 'durable_pending_channel',
+                'durable_pending_message_id', 'durable_pending_sha256'
+            )) {
+            $candidate.Remove($field) | Out-Null
+        }
+        if ((ConvertTo-DeclarativeWorkflowCanonicalJson -Value $candidate) -cne
+            (ConvertTo-DeclarativeWorkflowCanonicalJson -Value $fromPending)) {
+            return $false
+        }
+        return Test-OperatorPollWorkflowAcknowledgementRecord -EventRecord $candidate `
+            -PaneContext $PaneContext -SessionName $SessionName
+    } catch {
+        return $false
+    }
 }
 
 function Get-OperatorPollEventSignature {
@@ -1085,6 +1522,11 @@ function Invoke-OperatorPollEventRecord {
     $Summary['new_events'] = [int]$Summary['new_events'] + 1
 
     if ($eventName -ceq 'workflow.node.acknowledged') {
+        if (-not (Test-OperatorPollDurableWorkflowAcknowledgementAuthority -EventRecord $EventRecord `
+                -PaneContext $paneContext -ProjectDir $projectDir -SessionName $sessionName)) {
+            $Summary['errors'] = [int]$Summary['errors'] + 1
+            return 'workflow_ack_untrusted_source'
+        }
         $acknowledgement = Get-OperatorPollWorkflowAcknowledgementData `
             -Data (Get-OperatorPollValue -InputObject $EventRecord -Name 'workflow_ack_payload' -Default $null) `
             -MessageId ([string](Get-OperatorPollValue $EventRecord 'message_id' ''))
@@ -1092,24 +1534,22 @@ function Invoke-OperatorPollEventRecord {
         $nodeId = [string](Get-OperatorPollValue $acknowledgement 'node_id' '')
         try {
             $run = Read-DeclarativeWorkflowRunState -ProjectDir $projectDir -RunId $runId
-            $proof = Read-DeclarativeWorkflowDurableProof -ProjectDir $projectDir -Run $run -Kind Completion -NodeId $nodeId
-            if ($null -eq $proof -or
-                (ConvertTo-DeclarativeWorkflowCanonicalJson -Value $proof) -cne (ConvertTo-DeclarativeWorkflowCanonicalJson -Value $acknowledgement)) {
+            $proof = Publish-OperatorPollWorkflowCompletionProof -Manifest $Manifest -PaneContext $paneContext `
+                -ProjectDir $projectDir -Run $run -Acknowledgement $acknowledgement
+            if ($null -eq $proof) {
                 $Summary['errors'] = [int]$Summary['errors'] + 1
                 return 'workflow_ack_rejected'
             }
         } catch {
             $admissionError = [string]$_.Exception.Message
-            if ($admissionError -clike 'Workflow durable proof *' -or $admissionError -clike "Declarative workflow run '$runId' was not found.*") {
-                $Summary['errors'] = [int]$Summary['errors'] + 1
-                return 'workflow_ack_rejected'
-            }
-            throw
+            $Summary['errors'] = [int]$Summary['errors'] + 1
+            $Summary['messages'] += @($admissionError)
+            return 'workflow_ack_rejected'
         }
         Write-OrchestraLog -ProjectDir $projectDir -SessionName $sessionName -Event 'workflow.node.acknowledged' -Level 'info' `
             -Message 'Declarative workflow completion was received through the mailbox.' `
-            -Role ([string]$paneContext['role']) -PaneId ([string]$paneContext['pane_id']) -Target ([string]$paneContext['label']) -Data $acknowledgement | Out-Null
-        return 'workflow_ack_logged'
+            -Role ([string]$paneContext['role']) -PaneId ([string]$paneContext['pane_id']) -Target ([string]$paneContext['label']) -Data $proof | Out-Null
+        return 'workflow_ack_proof_committed_and_logged'
     }
 
     if ($eventName -in @('pane.exec_completed', 'pane.completed')) {
@@ -1221,6 +1661,98 @@ function Invoke-OperatorPollEventRecord {
     }
 }
 
+function Resolve-OperatorPollVerifiedWorkflowPendingPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)]$EventRecord,
+        [Parameter(Mandatory = $true)][ValidateSet('delete', 'retry rotation')][string]$Purpose
+    )
+
+    $pendingPath = [string](Get-OperatorPollValue $EventRecord 'durable_pending_path' '')
+    $pendingChannel = [string](Get-OperatorPollValue $EventRecord 'durable_pending_channel' '')
+    $pendingMessageId = [string](Get-OperatorPollValue $EventRecord 'durable_pending_message_id' '')
+    $pendingSha256 = [string](Get-OperatorPollValue $EventRecord 'durable_pending_sha256' '')
+    $verifiedPendingPath = Resolve-DeclarativeWorkflowMailboxPendingPath -ProjectDir $ProjectDir `
+        -Channel $pendingChannel -MessageId $pendingMessageId
+    if ($verifiedPendingPath -cne $pendingPath) {
+        throw "Workflow pending ownership changed before $Purpose."
+    }
+    $verifiedPendingBytes = [IO.File]::ReadAllBytes($verifiedPendingPath)
+    if ((Get-DeclarativeWorkflowSha256Digest -Bytes $verifiedPendingBytes) -cne $pendingSha256) {
+        throw "Workflow pending bytes changed before $Purpose."
+    }
+    return $verifiedPendingPath
+}
+
+function Invoke-OperatorPollRecordTransaction {
+    param(
+        [Parameter(Mandatory = $true)]$Manifest,
+        [Parameter(Mandatory = $true)][string]$ManifestPath,
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)]$EventRecord,
+        [Parameter(Mandatory = $true)]$Summary,
+        [Parameter(Mandatory = $true)]$ProcessedEventSignatures
+    )
+
+    $signature = ''
+    $pendingPath = ''
+    $retryRotationAttempted = $false
+    try {
+        $pendingPath = [string](Get-OperatorPollValue $EventRecord 'durable_pending_path' '')
+        $signature = Get-OperatorPollEventSignature -EventRecord $EventRecord
+        if ([string]::IsNullOrWhiteSpace($pendingPath) -and $ProcessedEventSignatures.Contains($signature)) {
+            return 'operator_poll_record_duplicate'
+        }
+
+        $result = Invoke-OperatorPollEventRecord -Manifest $Manifest -ManifestPath $ManifestPath `
+            -EventRecord $EventRecord -Summary $Summary
+        if (-not [string]::IsNullOrWhiteSpace($pendingPath)) {
+            if ([string]$result -ceq 'workflow_ack_proof_committed_and_logged') {
+                $verifiedPendingPath = Resolve-OperatorPollVerifiedWorkflowPendingPath `
+                    -ProjectDir $ProjectDir -EventRecord $EventRecord -Purpose 'delete'
+                [IO.File]::Delete($verifiedPendingPath)
+                $ProcessedEventSignatures[$signature] = [string](Get-OperatorPollValue `
+                        -InputObject $EventRecord -Name 'timestamp' `
+                        -Default ([System.DateTimeOffset]::Now.ToString('o')))
+            } elseif ([string]$result -in @('workflow_ack_rejected', 'workflow_ack_untrusted_source')) {
+                $retryRotationAttempted = $true
+                $verifiedPendingPath = Resolve-OperatorPollVerifiedWorkflowPendingPath `
+                    -ProjectDir $ProjectDir -EventRecord $EventRecord -Purpose 'retry rotation'
+                [IO.File]::SetLastWriteTimeUtc($verifiedPendingPath, [DateTime]::UtcNow)
+            }
+            return [string]$result
+        }
+
+        $ProcessedEventSignatures[$signature] = [string](Get-OperatorPollValue `
+                -InputObject $EventRecord -Name 'timestamp' `
+                -Default ([System.DateTimeOffset]::Now.ToString('o')))
+        return [string]$result
+    } catch {
+        $recordError = [string]$_.Exception.Message
+        $Summary['errors'] = [int]$Summary['errors'] + 1
+        $Summary['messages'] += @($recordError)
+
+        if ([string]::IsNullOrWhiteSpace($pendingPath)) {
+            return 'operator_poll_record_failed'
+        }
+        if ($retryRotationAttempted) {
+            return 'workflow_ack_retry_finalization_failed'
+        }
+        try {
+            $retryRotationAttempted = $true
+            $verifiedPendingPath = Resolve-OperatorPollVerifiedWorkflowPendingPath `
+                -ProjectDir $ProjectDir -EventRecord $EventRecord -Purpose 'retry rotation'
+            [IO.File]::SetLastWriteTimeUtc($verifiedPendingPath, [DateTime]::UtcNow)
+        } catch {
+            $retryError = [string]$_.Exception.Message
+            $Summary['errors'] = [int]$Summary['errors'] + 1
+            $Summary['messages'] += @($retryError)
+            return 'workflow_ack_retry_finalization_failed'
+        }
+        return 'workflow_ack_retry_preserved'
+    }
+}
+
 function Invoke-OperatorPollCycle {
     param(
         [Parameter(Mandatory = $true)][string]$ManifestPath,
@@ -1281,25 +1813,9 @@ function Invoke-OperatorPollCycle {
         }
 
         foreach ($eventRecord in $eventRecords) {
-            $signature = Get-OperatorPollEventSignature -EventRecord $eventRecord
-            $pendingPath = [string](Get-OperatorPollValue $eventRecord 'durable_pending_path' '')
-            if ([string]::IsNullOrWhiteSpace($pendingPath) -and $ProcessedEventSignatures.Contains($signature)) {
-                continue
-            }
-
-            $result = Invoke-OperatorPollEventRecord -Manifest $manifest -ManifestPath $ManifestPath -EventRecord $eventRecord -Summary $summary
-            if (-not [string]::IsNullOrWhiteSpace($pendingPath)) {
-                if ([string]$result -in @('workflow_ack_logged', 'workflow_ack_rejected')) {
-                    $pendingChannel = [string](Get-OperatorPollValue $eventRecord 'durable_pending_channel' '')
-                    $pendingMessageId = [string](Get-OperatorPollValue $eventRecord 'durable_pending_message_id' '')
-                    $verifiedPendingPath = Resolve-DeclarativeWorkflowMailboxPendingPath -ProjectDir $projectDir -Channel $pendingChannel -MessageId $pendingMessageId
-                    if ($verifiedPendingPath -cne $pendingPath) { throw 'Workflow pending ownership changed before delete.' }
-                    [IO.File]::Delete($verifiedPendingPath)
-                    $ProcessedEventSignatures[$signature] = [string](Get-OperatorPollValue -InputObject $eventRecord -Name 'timestamp' -Default ([System.DateTimeOffset]::Now.ToString('o')))
-                }
-                continue
-            }
-            $ProcessedEventSignatures[$signature] = [string](Get-OperatorPollValue -InputObject $eventRecord -Name 'timestamp' -Default ([System.DateTimeOffset]::Now.ToString('o')))
+            Invoke-OperatorPollRecordTransaction -Manifest $manifest -ManifestPath $ManifestPath `
+                -ProjectDir $projectDir -EventRecord $eventRecord -Summary $summary `
+                -ProcessedEventSignatures $ProcessedEventSignatures | Out-Null
         }
     } catch {
         $summary['errors'] = [int]$summary['errors'] + 1

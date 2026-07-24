@@ -7,9 +7,13 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use workflow::{
     initial_node_states, normalize_workflow_plan, reduce_workflow_state_value, release_ready_nodes,
-    NodeState, RunState, WorkflowPlanCliOptions,
+    workflow_application_capability_requirements_from_value, NodeState, RunState,
+    WorkflowPlanCliOptions,
 };
-use workspace_recipe::{normalize_workspace_plan, parse_workspace_yaml, SlotCapabilities};
+use workspace_recipe::{
+    normalize_workspace_plan, normalize_workspace_plan_from_value_with_implied_capabilities,
+    parse_workspace_yaml, SlotCapabilities,
+};
 
 const VALID: &str = r#"
 config-version: 1
@@ -145,6 +149,151 @@ fn z02_authorizes_workflow_actions_against_the_normalized_pane_worktree_policy()
         unknown_policy.is_err(),
         "unknown normalized worktree policies must be rejected"
     );
+}
+
+#[test]
+fn aa01_workflow_actions_use_actual_slot_capabilities_and_serialize_their_application_contract() {
+    let yaml_without_explicit_requirements = workflow_with_application_policy()
+        .replace("        requires-capabilities: [file-edit]\n", "")
+        .replace("        requires-capabilities: [review]\n", "");
+    let selector_yaml = yaml_without_explicit_requirements.replace(
+        "        slot-ref: worker-1\n",
+        "        slot-selector:\n          requires-capabilities: [review]\n",
+    );
+    let selector_slots = vec![
+        SlotCapabilities {
+            slot_id: "worker-1".to_string(),
+            supports_file_edit: false,
+            supports_verification: true,
+            supports_structured_result: true,
+        },
+        policy_slots()[1].clone(),
+        SlotCapabilities {
+            slot_id: "worker-3".to_string(),
+            supports_file_edit: true,
+            supports_verification: true,
+            supports_structured_result: true,
+        },
+    ];
+    normalize_workspace_plan(
+        &selector_yaml,
+        "bugfix-two-slot",
+        Some("bugfix"),
+        &selector_slots,
+    )
+    .expect_err("recipe-only preview leaves the review selector ambiguous");
+    let selector_root = parse_workspace_yaml(&selector_yaml).expect("selector workspace yaml");
+    let implied_capabilities = workflow_application_capability_requirements_from_value(
+        &selector_root,
+        "bugfix",
+        "bugfix-two-slot",
+    )
+    .expect("workflow actions compile to pane capability requirements");
+    let selected = normalize_workspace_plan_from_value_with_implied_capabilities(
+        &selector_root,
+        "bugfix-two-slot",
+        Some("bugfix"),
+        &selector_slots,
+        &implied_capabilities,
+    )
+    .expect("workflow-implied file-edit capability disambiguates before slot selection");
+    assert_eq!(selected.resolved_bindings["implement"], "worker-3");
+    assert_eq!(
+        selected.panes[0].required_capabilities,
+        vec!["review".to_string(), "file-edit".to_string()]
+    );
+
+    let capable_plan = normalize_workspace_plan(
+        &yaml_without_explicit_requirements,
+        "bugfix-two-slot",
+        Some("bugfix"),
+        &policy_slots(),
+    )
+    .expect("omitted recipe requirements must not erase actual slot capabilities");
+    let payload = workflow_payload_from_plan(&yaml_without_explicit_requirements, &capable_plan)
+        .expect("actual capabilities authorize the matching workflow actions")
+        .expect("workflow-selected plan");
+
+    assert_eq!(
+        payload["panes"][0]["actual_capabilities"]["supports_file_edit"],
+        true
+    );
+    assert_eq!(
+        payload["panes"][1]["actual_capabilities"]["supports_verification"],
+        true
+    );
+    assert_eq!(
+        payload["panes"][1]["actual_capabilities"]["supports_structured_result"],
+        true
+    );
+    assert_eq!(
+        payload["workflow"]["application_contract"]["implement"]["slot_id"],
+        "worker-1"
+    );
+    assert_eq!(
+        payload["workflow"]["application_contract"]["implement"]["worktree"]["mode"],
+        "managed"
+    );
+    assert_eq!(
+        payload["workflow"]["application_contract"]["verify"]["slot_id"],
+        "worker-2"
+    );
+    assert_eq!(
+        payload["workflow"]["application_contract"]["verify"]["actual_capabilities"]
+            ["supports_structured_result"],
+        true
+    );
+    assert_eq!(
+        payload["workflow"]["nodes"][0]["required_capability"],
+        "file-edit"
+    );
+    assert_eq!(
+        payload["workflow"]["nodes"][0]["allowed_worktree_modes"],
+        serde_json::json!(["managed"])
+    );
+    assert_eq!(payload["workflow"]["nodes"][0]["may_advance_head"], true);
+    assert_eq!(
+        payload["workflow"]["nodes"][1]["required_capability"],
+        "review"
+    );
+    assert_eq!(
+        payload["workflow"]["nodes"][1]["allowed_worktree_modes"],
+        serde_json::json!(["managed", "read-only-reference"])
+    );
+    assert_eq!(payload["workflow"]["nodes"][1]["may_advance_head"], false);
+
+    let mut no_file_edit = policy_slots();
+    no_file_edit[0].supports_file_edit = false;
+    let no_file_edit_plan = normalize_workspace_plan(
+        &yaml_without_explicit_requirements,
+        "bugfix-two-slot",
+        Some("bugfix"),
+        &no_file_edit,
+    )
+    .expect("recipe-only normalization remains a pure preview");
+    workflow_payload_from_plan(&yaml_without_explicit_requirements, &no_file_edit_plan).expect_err(
+        "operator-dispatch must require the resolved slot's actual file-edit capability",
+    );
+
+    for (name, mutate) in [
+        ("verification", (false, true)),
+        ("structured-result", (true, false)),
+    ] {
+        let mut incomplete = policy_slots();
+        incomplete[1].supports_verification = mutate.0;
+        incomplete[1].supports_structured_result = mutate.1;
+        let plan = normalize_workspace_plan(
+            &yaml_without_explicit_requirements,
+            "bugfix-two-slot",
+            Some("bugfix"),
+            &incomplete,
+        )
+        .expect("recipe-only normalization remains a pure preview");
+        assert!(
+            workflow_payload_from_plan(&yaml_without_explicit_requirements, &plan).is_err(),
+            "verification must require actual {name} capability"
+        );
+    }
 }
 
 #[test]
@@ -423,6 +572,48 @@ fn reducer_bootstrap_request() -> serde_json::Value {
     })
 }
 
+fn aa_reducer_bootstrap_request() -> serde_json::Value {
+    let mut request = reducer_bootstrap_request();
+    let yaml = workflow_with_application_policy();
+    let workspace =
+        normalize_workspace_plan(&yaml, "bugfix-two-slot", Some("bugfix"), &policy_slots())
+            .expect("normalize combined workspace plan");
+    let payload = workflow_payload_from_plan(&yaml, &workspace)
+        .expect("normalize combined workflow payload")
+        .expect("workflow-selected payload");
+    request["plan"] = payload["workflow"].clone();
+    request
+}
+
+fn aa_sequential_writer_bootstrap_request() -> serde_json::Value {
+    let yaml = VALID.replace(
+        "      - node-id: verify\n        pane-ref: verify\n        depends-on: [inspect]\n        action: verification\n        context-pack-ref: review-pack\n        idempotency-key: \"{{run-id}}:verify\"\n        cleanup: retain\n",
+        "      - node-id: refine\n        pane-ref: implement\n        depends-on: [inspect]\n        action: operator-dispatch\n        idempotency-key: \"{{run-id}}:refine\"\n        cleanup: retain\n      - node-id: verify\n        pane-ref: verify\n        depends-on: [inspect, refine]\n        action: verification\n        context-pack-ref: review-pack\n        idempotency-key: \"{{run-id}}:verify\"\n        cleanup: retain\n",
+    );
+    let plan = normalize_workflow_plan(
+        &yaml,
+        "bugfix",
+        "run-123",
+        "bugfix-two-slot",
+        &bindings(),
+        &worktree_modes_for(&bindings()),
+    )
+    .expect("normalize sequential writer workflow");
+    serde_json::json!({
+        "schema_version": 1,
+        "operation": "bootstrap",
+        "plan": plan,
+        "identity": {
+            "run_id": "run-123",
+            "generation_id": "generation-123",
+            "config_fingerprint": format!("sha256:{}", "a".repeat(64)),
+            "source_head": "b".repeat(40),
+            "task_sha256": format!("sha256:{}", "c".repeat(64)),
+            "task_byte_count": 24
+        }
+    })
+}
+
 fn reducer_transition(
     run: serde_json::Value,
     event: serde_json::Value,
@@ -479,7 +670,7 @@ fn exact_ack(node_id: &str, pane_id: &str) -> serde_json::Value {
     let resolved_bindings = bindings();
     let pane_worktree_modes = worktree_modes_for(&resolved_bindings);
     serde_json::json!({
-        "schema_version": 1,
+        "schema_version": 2,
         "run_id": "run-123",
         "node_id": node_id,
         "idempotency_key": format!("run-123:{node_id}"),
@@ -494,9 +685,38 @@ fn exact_ack(node_id: &str, pane_id: &str) -> serde_json::Value {
             &pane_worktree_modes
         ).unwrap().workflow_fingerprint,
         "source_head": "b".repeat(40),
+        "input_head": "b".repeat(40),
+        "output_head": "b".repeat(40),
         "pane_id": pane_id,
         "status": "succeeded",
         "evidence_ref": format!("workflow-ack:run-123:{node_id}")
+    })
+}
+
+fn aa_exact_completion_proof(
+    run: &serde_json::Value,
+    node_id: &str,
+    pane_id: &str,
+    input_head: &str,
+    output_head: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 2,
+        "run_id": run["run_id"],
+        "node_id": node_id,
+        "idempotency_key": run["nodes"][node_id]["idempotency_key"],
+        "generation_id": run["generation_id"],
+        "config_fingerprint": run["config_fingerprint"],
+        "workflow_fingerprint": run["workflow_fingerprint"],
+        "source_head": run["source_head"],
+        "input_head": input_head,
+        "output_head": output_head,
+        "pane_id": pane_id,
+        "status": "succeeded",
+        "evidence_ref": format!(
+            "workflow-ack:{}:{node_id}",
+            run["run_id"].as_str().expect("run id")
+        )
     })
 }
 
@@ -561,31 +781,67 @@ fn h01_verification_requires_one_resolved_producer_label() {
 
 #[test]
 fn h02_h12_reducer_owns_bootstrap_transitions_proofs_release_and_run_state() {
-    let run = reduce_workflow_state_value(&reducer_bootstrap_request()).expect("bootstrap v2 run");
-    assert_eq!(run["schema_version"], 2);
+    let run = reduce_workflow_state_value(&reducer_bootstrap_request()).expect("bootstrap v3 run");
+    assert_eq!(run["schema_version"], 3);
     assert_eq!(run["state"], "ready");
     assert_eq!(run["nodes"]["inspect"]["state"], "ready");
     assert_eq!(run["nodes"]["verify"]["state"], "pending");
 
     let dispatching = reducer_transition(
         run,
-        serde_json::json!({"type":"dispatch_intent","node_id":"inspect"}),
+        serde_json::json!({"type":"dispatch_intent","node_id":"inspect","input_head":"b".repeat(40)}),
     )
     .expect("persist dispatch intent");
     assert_eq!(dispatching["nodes"]["inspect"]["state"], "dispatching");
     assert_eq!(dispatching["nodes"]["inspect"]["attempt"], 1);
     assert_eq!(dispatching["state"], "running");
 
-    let succeeded = reducer_transition(
-        dispatching,
+    let acknowledgement = exact_ack("inspect", "%2");
+    let acknowledge_event = serde_json::json!({
+        "type":"acknowledge",
+        "node_id":"inspect",
+        "acknowledgement": acknowledgement.clone(),
+        "resolved_session_id":"%2"
+    });
+    let before_rejected_event = dispatching.clone();
+    reducer_transition_with_proofs(
+        dispatching.clone(),
+        acknowledge_event.clone(),
+        no_durable_proofs(),
+    )
+    .expect_err("AC01 acknowledgement event cannot create its own durable proof authority");
+    assert_eq!(dispatching, before_rejected_event);
+
+    let mut mismatched_event_proof = acknowledgement.clone();
+    mismatched_event_proof["transport"] = serde_json::json!("mailbox");
+    mismatched_event_proof["message_id"] = serde_json::json!("workflow-ack-ac01-event");
+    let mut mismatched_external_proof = acknowledgement.clone();
+    mismatched_external_proof["transport"] = serde_json::json!("mailbox");
+    mismatched_external_proof["message_id"] = serde_json::json!("workflow-ack-ac01-proof");
+    reducer_transition_with_proofs(
+        dispatching.clone(),
         serde_json::json!({
             "type":"acknowledge",
             "node_id":"inspect",
-            "acknowledgement": exact_ack("inspect", "%2"),
+            "acknowledgement": mismatched_event_proof,
             "resolved_session_id":"%2"
         }),
+        serde_json::json!({
+            "completion_acknowledgements": [mismatched_external_proof],
+            "cancellation_proofs": []
+        }),
     )
-    .expect("exact acknowledgement succeeds");
+    .expect_err("AC01 event proof must equal the one external canonical proof");
+
+    let succeeded = reducer_transition_with_proofs(
+        dispatching,
+        acknowledge_event,
+        serde_json::json!({
+            "completion_acknowledgements": [acknowledgement],
+            "cancellation_proofs": []
+        }),
+    )
+    .expect("exact acknowledgement succeeds only with its pre-existing durable proof");
     assert_eq!(succeeded["nodes"]["inspect"]["state"], "succeeded");
     assert_eq!(succeeded["nodes"]["verify"]["state"], "ready");
     assert_eq!(
@@ -608,14 +864,414 @@ fn h02_h12_reducer_owns_bootstrap_transitions_proofs_release_and_run_state() {
 }
 
 #[test]
-fn h03_state_snapshot_is_untrusted_and_v1_or_forged_proof_never_releases_dependencies() {
-    let mut v1 = reduce_workflow_state_value(&reducer_bootstrap_request()).unwrap();
-    v1["schema_version"] = serde_json::json!(1);
-    let error = reducer_transition(v1, serde_json::json!({"type":"validate"}))
-        .expect_err("v1 requires migration");
-    assert!(error
-        .to_string()
-        .contains("workflow_state_migration_required"));
+fn aa02_ab03_run_v3_persists_input_and_empty_dependency_lease_before_first_send() {
+    let base_head = "b".repeat(40);
+    let implementation_head = "c".repeat(40);
+    let run = reduce_workflow_state_value(&aa_reducer_bootstrap_request())
+        .expect("combined application contract bootstraps run schema v3");
+    assert_eq!(run["schema_version"], 3);
+    assert_eq!(run["pane_head_leases"]["implement"]["base_head"], base_head);
+    assert_eq!(
+        run["pane_head_leases"]["implement"]["admitted_head"],
+        base_head
+    );
+    assert!(run["pane_head_leases"].get("verify").is_none());
+
+    let dispatching = reducer_transition(
+        run,
+        serde_json::json!({
+            "type": "dispatch_intent",
+            "node_id": "inspect",
+            "input_head": base_head
+        }),
+    )
+    .expect("managed dispatch persists its exact input HEAD before send");
+    assert_eq!(
+        dispatching["nodes"]["inspect"]["execution_lease"]["input_head"],
+        "b".repeat(40)
+    );
+    assert_eq!(
+        dispatching["nodes"]["inspect"]["execution_lease"]["worktree_mode"],
+        "managed"
+    );
+    assert_eq!(
+        dispatching["nodes"]["inspect"]["execution_lease"]["dependency_inputs"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        dispatching["nodes"]["inspect"]["execution_lease"]["dependency_heads"],
+        serde_json::json!({})
+    );
+
+    let completion = aa_exact_completion_proof(
+        &dispatching,
+        "inspect",
+        "%2",
+        &"b".repeat(40),
+        &implementation_head,
+    );
+    let succeeded = reducer_transition_with_proofs(
+        dispatching,
+        serde_json::json!({
+            "type": "acknowledge",
+            "node_id": "inspect",
+            "acknowledgement": completion.clone(),
+            "resolved_session_id": "%2"
+        }),
+        serde_json::json!({
+            "completion_acknowledgements": [completion],
+            "cancellation_proofs": []
+        }),
+    )
+    .expect("operator-observed descendant output atomically advances the pane ledger");
+    assert_eq!(
+        succeeded["nodes"]["inspect"]["application_outcome"]["input_head"],
+        "b".repeat(40)
+    );
+    assert_eq!(
+        succeeded["nodes"]["inspect"]["application_outcome"]["output_head"],
+        implementation_head
+    );
+    assert_eq!(
+        succeeded["pane_head_leases"]["implement"]["admitted_head"],
+        "c".repeat(40)
+    );
+    assert_eq!(succeeded["nodes"]["verify"]["state"], "ready");
+
+    let verification_dispatching = reducer_transition(
+        succeeded,
+        serde_json::json!({
+            "type": "dispatch_intent",
+            "node_id": "verify",
+            "input_head": "b".repeat(40),
+            "dependency_inputs": [{
+                "node_id": "inspect",
+                "pane_ref": "implement",
+                "output_head": "c".repeat(40),
+                "evidence_ref": "workflow-ack:run-123:inspect"
+            }],
+            "dependency_heads": {"implement": "c".repeat(40)}
+        }),
+    )
+    .expect("read-only verification binds the immutable project source HEAD");
+    let changed_verification = aa_exact_completion_proof(
+        &verification_dispatching,
+        "verify",
+        "%3",
+        &"b".repeat(40),
+        &"d".repeat(40),
+    );
+    reducer_transition_with_proofs(
+        verification_dispatching,
+        serde_json::json!({
+            "type": "acknowledge",
+            "node_id": "verify",
+            "acknowledgement": changed_verification.clone(),
+            "resolved_session_id": "%3"
+        }),
+        serde_json::json!({
+            "completion_acknowledgements": [changed_verification],
+            "cancellation_proofs": []
+        }),
+    )
+    .expect_err("verification may not publish a HEAD-changing outcome");
+}
+
+#[test]
+fn ab06_reducer_rejects_noncanonical_dependency_lease_without_partial_state() {
+    let base_head = "b".repeat(40);
+    let output_head = "c".repeat(40);
+    let run = reduce_workflow_state_value(&aa_reducer_bootstrap_request()).unwrap();
+    let dispatching = reducer_transition(
+        run,
+        serde_json::json!({
+            "type": "dispatch_intent",
+            "node_id": "inspect",
+            "input_head": base_head
+        }),
+    )
+    .unwrap();
+    let completion =
+        aa_exact_completion_proof(&dispatching, "inspect", "%2", &"b".repeat(40), &output_head);
+    let succeeded = reducer_transition_with_proofs(
+        dispatching,
+        serde_json::json!({
+            "type": "acknowledge",
+            "node_id": "inspect",
+            "acknowledgement": completion.clone(),
+            "resolved_session_id": "%2"
+        }),
+        serde_json::json!({
+            "completion_acknowledgements": [completion],
+            "cancellation_proofs": []
+        }),
+    )
+    .unwrap();
+    let canonical_input = serde_json::json!({
+        "node_id": "inspect",
+        "pane_ref": "implement",
+        "output_head": "c".repeat(40),
+        "evidence_ref": "workflow-ack:run-123:inspect"
+    });
+    let invalid_events = [
+        serde_json::json!({
+            "type": "dispatch_intent",
+            "node_id": "verify",
+            "input_head": "b".repeat(40)
+        }),
+        serde_json::json!({
+            "type": "dispatch_intent",
+            "node_id": "verify",
+            "input_head": "b".repeat(40),
+            "dependency_inputs": [canonical_input.clone(), canonical_input.clone()],
+            "dependency_heads": {"implement": "c".repeat(40)}
+        }),
+        serde_json::json!({
+            "type": "dispatch_intent",
+            "node_id": "verify",
+            "input_head": "b".repeat(40),
+            "dependency_inputs": [{
+                "node_id": "inspect",
+                "pane_ref": "implement",
+                "output_head": "c".repeat(40),
+                "evidence_ref": "workflow-ack:run-123:other"
+            }],
+            "dependency_heads": {"implement": "c".repeat(40)}
+        }),
+        serde_json::json!({
+            "type": "dispatch_intent",
+            "node_id": "verify",
+            "input_head": "b".repeat(40),
+            "dependency_inputs": [canonical_input.clone(), {
+                "node_id": "unrelated",
+                "pane_ref": "implement",
+                "output_head": "c".repeat(40),
+                "evidence_ref": "workflow-ack:run-123:unrelated"
+            }],
+            "dependency_heads": {"implement": "c".repeat(40)}
+        }),
+        serde_json::json!({
+            "type": "dispatch_intent",
+            "node_id": "verify",
+            "input_head": "b".repeat(40),
+            "dependency_inputs": [canonical_input],
+            "dependency_heads": {"implement": "d".repeat(40)}
+        }),
+    ];
+    for event in invalid_events {
+        reducer_transition(succeeded.clone(), event)
+            .expect_err("noncanonical dependency lease must reject before persistence");
+    }
+    assert_eq!(succeeded["nodes"]["verify"]["state"], "ready");
+    assert!(succeeded["nodes"]["verify"]["execution_lease"].is_null());
+}
+
+#[test]
+fn aa02_sequential_writers_chain_one_pane_without_advancing_an_independent_pane() {
+    let base_head = "b".repeat(40);
+    let first_output = "c".repeat(40);
+    let second_output = "d".repeat(40);
+    let run = reduce_workflow_state_value(&aa_sequential_writer_bootstrap_request())
+        .expect("bootstrap two independent managed pane ledgers");
+    assert_eq!(
+        run["pane_head_leases"]["implement"]["admitted_head"],
+        base_head
+    );
+    assert_eq!(
+        run["pane_head_leases"]["verify"]["admitted_head"],
+        base_head
+    );
+
+    let first_dispatch = reducer_transition(
+        run,
+        serde_json::json!({
+            "type": "dispatch_intent",
+            "node_id": "inspect",
+            "input_head": base_head
+        }),
+    )
+    .expect("first writer leases the pane base");
+    let first_proof = aa_exact_completion_proof(
+        &first_dispatch,
+        "inspect",
+        "%2",
+        &"b".repeat(40),
+        &first_output,
+    );
+    let first_succeeded = reducer_transition_with_proofs(
+        first_dispatch,
+        serde_json::json!({
+            "type": "acknowledge",
+            "node_id": "inspect",
+            "acknowledgement": first_proof.clone(),
+            "resolved_session_id": "%2"
+        }),
+        serde_json::json!({
+            "completion_acknowledgements": [first_proof],
+            "cancellation_proofs": []
+        }),
+    )
+    .expect("first writer advances only its pane");
+    assert_eq!(
+        first_succeeded["pane_head_leases"]["implement"]["admitted_head"],
+        first_output
+    );
+    assert_eq!(
+        first_succeeded["pane_head_leases"]["verify"]["admitted_head"],
+        "b".repeat(40)
+    );
+    assert_eq!(first_succeeded["nodes"]["refine"]["state"], "ready");
+
+    reducer_transition(
+        first_succeeded.clone(),
+        serde_json::json!({
+            "type": "dispatch_intent",
+            "node_id": "refine",
+            "input_head": "b".repeat(40),
+            "dependency_inputs": [{
+                "node_id": "inspect",
+                "pane_ref": "implement",
+                "output_head": "c".repeat(40),
+                "evidence_ref": "workflow-ack:run-123:inspect"
+            }],
+            "dependency_heads": {"implement": "c".repeat(40)}
+        }),
+    )
+    .expect_err("a later same-pane writer cannot rebind to the run base");
+    let second_dispatch = reducer_transition(
+        first_succeeded,
+        serde_json::json!({
+            "type": "dispatch_intent",
+            "node_id": "refine",
+            "input_head": "c".repeat(40),
+            "dependency_inputs": [{
+                "node_id": "inspect",
+                "pane_ref": "implement",
+                "output_head": "c".repeat(40),
+                "evidence_ref": "workflow-ack:run-123:inspect"
+            }],
+            "dependency_heads": {"implement": "c".repeat(40)}
+        }),
+    )
+    .expect("later same-pane writer leases the prior admitted output");
+    let second_proof = aa_exact_completion_proof(
+        &second_dispatch,
+        "refine",
+        "%2",
+        &"c".repeat(40),
+        &second_output,
+    );
+    let second_succeeded = reducer_transition_with_proofs(
+        second_dispatch,
+        serde_json::json!({
+            "type": "acknowledge",
+            "node_id": "refine",
+            "acknowledgement": second_proof.clone(),
+            "resolved_session_id": "%2"
+        }),
+        serde_json::json!({
+            "completion_acknowledgements": [second_proof],
+            "cancellation_proofs": []
+        }),
+    )
+    .expect("second writer advances the same pane monotonically");
+    assert_eq!(
+        second_succeeded["pane_head_leases"]["implement"]["admitted_head"],
+        second_output
+    );
+    assert_eq!(
+        second_succeeded["pane_head_leases"]["verify"]["admitted_head"],
+        "b".repeat(40)
+    );
+    assert_eq!(second_succeeded["nodes"]["verify"]["state"], "ready");
+
+    reducer_transition(
+        second_succeeded.clone(),
+        serde_json::json!({
+            "type": "dispatch_intent",
+            "node_id": "verify",
+            "input_head": "b".repeat(40),
+            "dependency_inputs": [
+                {
+                    "node_id": "refine",
+                    "pane_ref": "implement",
+                    "output_head": "d".repeat(40),
+                    "evidence_ref": "workflow-ack:run-123:refine"
+                },
+                {
+                    "node_id": "inspect",
+                    "pane_ref": "implement",
+                    "output_head": "c".repeat(40),
+                    "evidence_ref": "workflow-ack:run-123:inspect"
+                }
+            ],
+            "dependency_heads": {"implement": "d".repeat(40)}
+        }),
+    )
+    .expect_err("direct dependency inputs must remain in normalized depends-on order");
+    let verification_dispatch = reducer_transition(
+        second_succeeded,
+        serde_json::json!({
+            "type": "dispatch_intent",
+            "node_id": "verify",
+            "input_head": "b".repeat(40),
+            "dependency_inputs": [
+                {
+                    "node_id": "inspect",
+                    "pane_ref": "implement",
+                    "output_head": "c".repeat(40),
+                    "evidence_ref": "workflow-ack:run-123:inspect"
+                },
+                {
+                    "node_id": "refine",
+                    "pane_ref": "implement",
+                    "output_head": "d".repeat(40),
+                    "evidence_ref": "workflow-ack:run-123:refine"
+                }
+            ],
+            "dependency_heads": {"implement": "d".repeat(40)}
+        }),
+    )
+    .expect("independent managed verifier keeps its own base ledger");
+    let verification_proof = aa_exact_completion_proof(
+        &verification_dispatch,
+        "verify",
+        "%3",
+        &"b".repeat(40),
+        &"b".repeat(40),
+    );
+    let completed = reducer_transition_with_proofs(
+        verification_dispatch,
+        serde_json::json!({
+            "type": "acknowledge",
+            "node_id": "verify",
+            "acknowledgement": verification_proof.clone(),
+            "resolved_session_id": "%3"
+        }),
+        serde_json::json!({
+            "completion_acknowledgements": [verification_proof],
+            "cancellation_proofs": []
+        }),
+    )
+    .expect("managed verification records an unchanged outcome");
+    assert_eq!(completed["state"], "succeeded");
+    assert_eq!(
+        completed["pane_head_leases"]["verify"]["admitted_head"],
+        "b".repeat(40)
+    );
+}
+
+#[test]
+fn h03_state_snapshot_is_untrusted_and_legacy_or_forged_proof_never_releases_dependencies() {
+    for schema_version in [1, 2] {
+        let mut legacy = reduce_workflow_state_value(&reducer_bootstrap_request()).unwrap();
+        legacy["schema_version"] = serde_json::json!(schema_version);
+        let error = reducer_transition(legacy, serde_json::json!({"type":"validate"}))
+            .expect_err("legacy run schema requires migration");
+        assert!(error
+            .to_string()
+            .contains("workflow_state_migration_required"));
+    }
 
     let mut forged = reduce_workflow_state_value(&reducer_bootstrap_request()).unwrap();
     forged["state"] = serde_json::json!("succeeded");
@@ -654,7 +1310,7 @@ fn h04_reducer_rejects_tuple_and_ack_identity_mutations_and_terminal_regression(
 
     let dispatching = reducer_transition(
         base,
-        serde_json::json!({"type":"dispatch_intent","node_id":"inspect"}),
+        serde_json::json!({"type":"dispatch_intent","node_id":"inspect","input_head":"b".repeat(40)}),
     )
     .unwrap();
     for field in [
@@ -671,9 +1327,17 @@ fn h04_reducer_rejects_tuple_and_ack_identity_mutations_and_terminal_regression(
     ] {
         let mut ack = exact_ack("inspect", "%2");
         ack[field] = serde_json::json!("mutated");
-        reducer_transition(dispatching.clone(), serde_json::json!({
-            "type":"acknowledge", "node_id":"inspect", "acknowledgement":ack, "resolved_session_id":"%2"
-        })).expect_err(field);
+        reducer_transition_with_proofs(
+            dispatching.clone(),
+            serde_json::json!({
+                "type":"acknowledge", "node_id":"inspect", "acknowledgement":ack.clone(), "resolved_session_id":"%2"
+            }),
+            serde_json::json!({
+                "completion_acknowledgements": [ack],
+                "cancellation_proofs": []
+            }),
+        )
+        .expect_err(field);
     }
 
     let failed = reducer_transition(
@@ -683,7 +1347,7 @@ fn h04_reducer_rejects_tuple_and_ack_identity_mutations_and_terminal_regression(
     .unwrap();
     reducer_transition(
         failed,
-        serde_json::json!({"type":"dispatch_intent","node_id":"inspect"}),
+        serde_json::json!({"type":"dispatch_intent","node_id":"inspect","input_head":"b".repeat(40)}),
     )
     .expect_err("terminal failed node must not regress");
 }
@@ -693,7 +1357,7 @@ fn h05_no_or_ambiguous_ack_blocks_without_retry_and_unknown_or_private_request_f
     let run = reduce_workflow_state_value(&reducer_bootstrap_request()).unwrap();
     let dispatching = reducer_transition(
         run,
-        serde_json::json!({"type":"dispatch_intent","node_id":"inspect"}),
+        serde_json::json!({"type":"dispatch_intent","node_id":"inspect","input_head":"b".repeat(40)}),
     )
     .unwrap();
     let blocked = reducer_transition(
@@ -705,7 +1369,7 @@ fn h05_no_or_ambiguous_ack_blocks_without_retry_and_unknown_or_private_request_f
     assert_eq!(blocked["nodes"]["inspect"]["attempt"], 1);
     reducer_transition(
         blocked,
-        serde_json::json!({"type":"dispatch_intent","node_id":"inspect"}),
+        serde_json::json!({"type":"dispatch_intent","node_id":"inspect","input_head":"b".repeat(40)}),
     )
     .expect_err("blocked work is never redispatched");
 
@@ -727,7 +1391,7 @@ fn h06_late_exact_ack_is_the_only_allowed_blocked_node_transition() {
     let run = reduce_workflow_state_value(&reducer_bootstrap_request()).unwrap();
     let dispatching = reducer_transition(
         run,
-        serde_json::json!({"type":"dispatch_intent","node_id":"inspect"}),
+        serde_json::json!({"type":"dispatch_intent","node_id":"inspect","input_head":"b".repeat(40)}),
     )
     .unwrap();
     let blocked = reducer_transition(
@@ -735,13 +1399,18 @@ fn h06_late_exact_ack_is_the_only_allowed_blocked_node_transition() {
         serde_json::json!({"type":"block","node_id":"inspect"}),
     )
     .unwrap();
-    let succeeded = reducer_transition(
+    let acknowledgement = exact_ack("inspect", "%2");
+    let succeeded = reducer_transition_with_proofs(
         blocked,
         serde_json::json!({
             "type":"acknowledge",
             "node_id":"inspect",
-            "acknowledgement":exact_ack("inspect", "%2"),
+            "acknowledgement":acknowledgement.clone(),
             "resolved_session_id":"%2"
+        }),
+        serde_json::json!({
+            "completion_acknowledgements": [acknowledgement],
+            "cancellation_proofs": []
         }),
     )
     .expect("a late exact durable acknowledgement proves the blocked node");
@@ -754,31 +1423,55 @@ fn h07_cleanup_is_a_typed_single_action_transition_owned_by_the_reducer() {
     let run = reduce_workflow_state_value(&reducer_bootstrap_request()).unwrap();
     let dispatching = reducer_transition(
         run,
-        serde_json::json!({"type":"dispatch_intent","node_id":"inspect"}),
+        serde_json::json!({"type":"dispatch_intent","node_id":"inspect","input_head":"b".repeat(40)}),
     )
     .unwrap();
-    let inspect_done = reducer_transition(
+    let inspect_acknowledgement = exact_ack("inspect", "%2");
+    let inspect_done = reducer_transition_with_proofs(
         dispatching,
         serde_json::json!({
             "type":"acknowledge",
             "node_id":"inspect",
-            "acknowledgement":exact_ack("inspect", "%2"),
+            "acknowledgement":inspect_acknowledgement.clone(),
             "resolved_session_id":"%2"
+        }),
+        serde_json::json!({
+            "completion_acknowledgements": [inspect_acknowledgement],
+            "cancellation_proofs": []
         }),
     )
     .unwrap();
     let verify_dispatching = reducer_transition(
         inspect_done,
-        serde_json::json!({"type":"dispatch_intent","node_id":"verify"}),
+        serde_json::json!({
+            "type":"dispatch_intent",
+            "node_id":"verify",
+            "input_head":"b".repeat(40),
+            "dependency_inputs":[{
+                "node_id":"inspect",
+                "pane_ref":"implement",
+                "output_head":"b".repeat(40),
+                "evidence_ref":"workflow-ack:run-123:inspect"
+            }],
+            "dependency_heads":{"implement":"b".repeat(40)}
+        }),
     )
     .unwrap();
-    let completed = reducer_transition(
+    let verify_acknowledgement = exact_ack("verify", "%3");
+    let completed = reducer_transition_with_proofs(
         verify_dispatching,
         serde_json::json!({
             "type":"acknowledge",
             "node_id":"verify",
-            "acknowledgement":exact_ack("verify", "%3"),
+            "acknowledgement":verify_acknowledgement.clone(),
             "resolved_session_id":"%3"
+        }),
+        serde_json::json!({
+            "completion_acknowledgements": [
+                exact_ack("inspect", "%2"),
+                verify_acknowledgement
+            ],
+            "cancellation_proofs": []
         }),
     )
     .unwrap();
@@ -801,7 +1494,7 @@ fn h08_failed_run_cleanup_preserves_only_its_proof_derived_terminal_state() {
     let run = reduce_workflow_state_value(&reducer_bootstrap_request()).unwrap();
     let dispatching = reducer_transition(
         run,
-        serde_json::json!({"type":"dispatch_intent","node_id":"inspect"}),
+        serde_json::json!({"type":"dispatch_intent","node_id":"inspect","input_head":"b".repeat(40)}),
     )
     .unwrap();
     let failed = reducer_transition(

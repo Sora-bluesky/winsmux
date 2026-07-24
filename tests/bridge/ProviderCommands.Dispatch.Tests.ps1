@@ -856,7 +856,7 @@ Describe 'winsmux send dispatch payload' {
         $violation.reason | Should -Match 'allow_patterns'
     }
 
-    It 'F01 durably publishes workflow completion without a pipe listener and enforces channel and create-once identity' {
+    It 'F01 queues an authenticated workflow acknowledgement without publishing proof and enforces create-once identity' {
         $project = Join-Path $script:sendTempRoot 'durable-workflow-mailbox'
         [IO.Directory]::CreateDirectory((Join-Path $project '.winsmux')) | Out-Null
         Save-WinsmuxManifest -ProjectDir $project -Manifest ([ordered]@{
@@ -898,8 +898,7 @@ Describe 'winsmux send dispatch payload' {
         $publishedAt.UtcDateTime.Ticks | Should -BeLessOrEqual $publishedBefore.UtcDateTime.Ticks
 
         $proofPath = Join-Path $project '.winsmux\workflow-runs\run-123\proofs\completion\inspect.json'
-        Test-Path -LiteralPath $proofPath -PathType Leaf | Should -BeTrue
-        $proofBytes = [IO.File]::ReadAllBytes($proofPath)
+        Test-Path -LiteralPath $proofPath -PathType Leaf | Should -BeFalse
         Should -Invoke Get-PaneControlManifestEntries -Times 1 -Exactly -ParameterFilter { $ProjectDir -eq $project }
         Should -Invoke Test-PaneControlRuntimeContext -Times 1 -Exactly -ParameterFilter { $Operation -eq 'workflow_ack' -and $ManifestEntry.Label -eq 'builder-1' -and $ManifestEntry.PaneId -eq '%2' }
 
@@ -908,7 +907,7 @@ Describe 'winsmux send dispatch payload' {
         $retryJson = $retryPayload | ConvertTo-Json -Compress -Depth 20
         Publish-WinsmuxWorkflowCompletionEnvelope -ProjectDir $project -Channel 'winsmux-orchestra-operator' -Payload $retryJson | Out-Null
         [Convert]::ToBase64String([IO.File]::ReadAllBytes($pending)) | Should -BeExactly ([Convert]::ToBase64String($publishedBytes))
-        [Convert]::ToBase64String([IO.File]::ReadAllBytes($proofPath)) | Should -BeExactly ([Convert]::ToBase64String($proofBytes))
+        Test-Path -LiteralPath $proofPath -PathType Leaf | Should -BeFalse
 
         $changedPayload = $json | ConvertFrom-Json -AsHashtable
         $changedPayload.content.role = 'reviewer'
@@ -975,22 +974,13 @@ Publish-WinsmuxWorkflowCompletionEnvelope -ProjectDir $projectDir -Channel 'wins
         $racePending = Join-Path $raceProject '.winsmux\mailbox\winsmux-orchestra-operator\pending\workflow-ack-race.json'
         $raceProofPath = Join-Path $raceProject '.winsmux\workflow-runs\run-123\proofs\completion\inspect.json'
         @(Get-ChildItem -LiteralPath (Split-Path -Parent $racePending) -File -Filter '*.json').Count | Should -Be 1
-        Test-Path -LiteralPath $raceProofPath -PathType Leaf | Should -BeTrue
-        $raceProof = Read-DeclarativeWorkflowDurableProof -ProjectDir $raceProject -RunId 'run-123' -Kind Completion -NodeId 'inspect'
-        $expectedRaceProof = [ordered]@{}
-        foreach ($name in @('schema_version', 'run_id', 'node_id', 'idempotency_key', 'generation_id', 'config_fingerprint', 'workflow_fingerprint', 'source_head', 'pane_id', 'status', 'evidence_ref')) {
-            $expectedRaceProof[$name] = $racePayload.content.data[$name]
-        }
-        $expectedRaceProof.transport = 'mailbox'
-        $expectedRaceProof.message_id = 'workflow-ack-race'
-        (ConvertTo-DeclarativeWorkflowCanonicalJson -Value $raceProof) | Should -BeExactly (ConvertTo-DeclarativeWorkflowCanonicalJson -Value $expectedRaceProof)
+        Test-Path -LiteralPath $raceProofPath -PathType Leaf | Should -BeFalse
         $racePendingEnvelope = [IO.File]::ReadAllText($racePending, [Text.UTF8Encoding]::new($false, $true)) | ConvertFrom-Json -AsHashtable -DateKind String
         (ConvertTo-WinsmuxWorkflowCompletionSemanticJson -Envelope $racePendingEnvelope) | Should -BeExactly (ConvertTo-WinsmuxWorkflowCompletionSemanticJson -Envelope $racePayload)
-        $raceProofBytes = [IO.File]::ReadAllBytes($raceProofPath)
         $racePendingBytes = [IO.File]::ReadAllBytes($racePending)
         Enable-TestWorkflowCompletionCaller -ProjectDir $raceProject
         Publish-WinsmuxWorkflowCompletionEnvelope -ProjectDir $raceProject -Channel 'winsmux-orchestra-operator' -Payload $raceJson | Out-Null
-        [Convert]::ToBase64String([IO.File]::ReadAllBytes($raceProofPath)) | Should -BeExactly ([Convert]::ToBase64String($raceProofBytes))
+        Test-Path -LiteralPath $raceProofPath -PathType Leaf | Should -BeFalse
         [Convert]::ToBase64String([IO.File]::ReadAllBytes($racePending)) | Should -BeExactly ([Convert]::ToBase64String($racePendingBytes))
 
     }
@@ -1081,6 +1071,7 @@ Publish-WinsmuxWorkflowCompletionEnvelope -ProjectDir $projectDir -Channel 'wins
                 Should -Throw '*reparse*'
             [Convert]::ToBase64String([IO.File]::ReadAllBytes($marker)) | Should -BeExactly ([Convert]::ToBase64String($before))
             @(Get-ChildItem -LiteralPath $external -Force).Count | Should -Be 1
+            Test-Path -LiteralPath (Join-Path $project '.winsmux\workflow-runs\run-123\proofs\completion\inspect.json') -PathType Leaf | Should -BeFalse
         } finally {
             if ($null -ne $junction) { $junction.Delete() }
         }
@@ -1093,6 +1084,7 @@ Publish-WinsmuxWorkflowCompletionEnvelope -ProjectDir $projectDir -Channel 'wins
             { Publish-WinsmuxWorkflowCompletionEnvelope -ProjectDir $project -Channel 'winsmux-orchestra-operator' -Payload $json } |
                 Should -Throw '*reparse*'
             [Convert]::ToBase64String([IO.File]::ReadAllBytes($marker)) | Should -BeExactly ([Convert]::ToBase64String($before))
+            Test-Path -LiteralPath (Join-Path $project '.winsmux\workflow-runs\run-123\proofs\completion\inspect.json') -PathType Leaf | Should -BeFalse
         } finally {
             if ($null -ne $junction) { $junction.Delete() }
         }

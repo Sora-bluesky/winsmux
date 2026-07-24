@@ -399,7 +399,10 @@ function New-DeclarativeWorkflowExecutionProjection {
     $nodeOrder = [Collections.Generic.List[string]]::new()
     $runtimeNodes = [ordered]@{}
     foreach ($definition in $definitions) {
-        foreach ($field in @('node_id', 'action', 'pane_ref', 'depends_on', 'idempotency_key', 'cleanup')) {
+        foreach ($field in @(
+                'node_id', 'action', 'required_capability', 'allowed_worktree_modes',
+                'may_advance_head', 'pane_ref', 'depends_on', 'idempotency_key', 'cleanup'
+            )) {
             if (-not (Test-DeclarativeWorkflowFieldExists -InputObject $definition -Name $field)) {
                 throw "Normalized workflow node is missing immutable field '$field'."
             }
@@ -427,6 +430,11 @@ function New-DeclarativeWorkflowExecutionProjection {
         $runtimeNodes[$nodeId] = [ordered]@{
             node_id         = $nodeId
             action          = [string](Get-DeclarativeWorkflowValue $definition 'action' '')
+            required_capability = [string](Get-DeclarativeWorkflowValue $definition 'required_capability' '')
+            allowed_worktree_modes = @(
+                Get-DeclarativeWorkflowValue $definition 'allowed_worktree_modes' @()
+            )
+            may_advance_head = [bool](Get-DeclarativeWorkflowValue $definition 'may_advance_head' $false)
             pane_ref        = [string](Get-DeclarativeWorkflowValue $definition 'pane_ref' '')
             depends_on      = @($dependencies)
             idempotency_key = $idempotencyKey
@@ -482,13 +490,21 @@ function Assert-DeclarativeWorkflowExecutionProjection {
     foreach ($nodeId in $expectedOrder) {
         $persistedNode = $persistedNodes[$nodeId]
         $expectedNode = $expected.runtime_nodes[$nodeId]
-        foreach ($field in @('node_id', 'action', 'pane_ref', 'depends_on', 'idempotency_key', 'cleanup', 'context_pack_ref')) {
-            $persistedValue = if ($field -ceq 'depends_on') {
+        foreach ($field in @(
+                'node_id', 'action', 'required_capability', 'allowed_worktree_modes',
+                'may_advance_head', 'pane_ref', 'depends_on', 'idempotency_key',
+                'cleanup', 'context_pack_ref'
+            )) {
+            $persistedValue = if ($field -in @('depends_on', 'allowed_worktree_modes')) {
                 @((Get-DeclarativeWorkflowValue $persistedNode $field @()))
             } else {
                 Get-DeclarativeWorkflowValue $persistedNode $field $null
             }
-            $expectedValue = if ($field -ceq 'depends_on') { @($expectedNode[$field]) } else { $expectedNode[$field] }
+            $expectedValue = if ($field -in @('depends_on', 'allowed_worktree_modes')) {
+                @($expectedNode[$field])
+            } else {
+                $expectedNode[$field]
+            }
             $fieldRequired = $field -cne 'context_pack_ref' -or $null -ne $expectedValue
             if (($fieldRequired -and -not (Test-DeclarativeWorkflowFieldExists -InputObject $persistedNode -Name $field)) -or
                 (ConvertTo-DeclarativeWorkflowCanonicalJson -Value $persistedValue) -cne
@@ -621,8 +637,10 @@ function Test-DeclarativeWorkflowAcknowledgement {
     )
     if ($null -eq $Acknowledgement) { return $false }
     $node = Get-DeclarativeWorkflowNode -Run $Run -NodeId $NodeId
+    $executionLease = Get-DeclarativeWorkflowValue $node 'execution_lease' $null
+    if ($null -eq $executionLease) { return $false }
     $expected = [ordered]@{
-        schema_version     = '1'
+        schema_version     = '2'
         run_id             = [string](Get-DeclarativeWorkflowValue $Run 'run_id' '')
         node_id            = $NodeId
         idempotency_key    = [string](Get-DeclarativeWorkflowValue $node 'idempotency_key' '')
@@ -630,6 +648,7 @@ function Test-DeclarativeWorkflowAcknowledgement {
         config_fingerprint = [string](Get-DeclarativeWorkflowValue $Run 'config_fingerprint' '')
         workflow_fingerprint = [string](Get-DeclarativeWorkflowValue $Run 'workflow_fingerprint' '')
         source_head        = [string](Get-DeclarativeWorkflowValue $Run 'source_head' '')
+        input_head         = [string](Get-DeclarativeWorkflowValue $executionLease 'input_head' '')
         status             = 'succeeded'
         evidence_ref       = "workflow-ack:$([string](Get-DeclarativeWorkflowValue $Run 'run_id' '')):$NodeId"
     }
@@ -638,7 +657,7 @@ function Test-DeclarativeWorkflowAcknowledgement {
     } else {
         @($Acknowledgement.PSObject.Properties.Name)
     }
-    $requiredNames = @($expected.Keys) + @('pane_id')
+    $requiredNames = @($expected.Keys) + @('output_head', 'pane_id')
     $allowedNames = @($requiredNames) + @('transport', 'message_id')
     if (@($propertyNames | Where-Object { $_ -notin $allowedNames }).Count -ne 0 -or
         @($requiredNames | Where-Object { $_ -notin $propertyNames }).Count -ne 0) {
@@ -648,6 +667,10 @@ function Test-DeclarativeWorkflowAcknowledgement {
         if ([string](Get-DeclarativeWorkflowValue $Acknowledgement ([string]$entry.Key) '') -cne [string]$entry.Value) {
             return $false
         }
+    }
+    if ([string](Get-DeclarativeWorkflowValue $Acknowledgement 'input_head' '') -cnotmatch $script:DeclarativeWorkflowHeadPattern -or
+        [string](Get-DeclarativeWorkflowValue $Acknowledgement 'output_head' '') -cnotmatch $script:DeclarativeWorkflowHeadPattern) {
+        return $false
     }
     $transport = Get-DeclarativeWorkflowValue $Acknowledgement 'transport' $null
     if ($null -ne $transport -and [string]$transport -cne 'mailbox') { return $false }
@@ -751,6 +774,107 @@ function Get-DeclarativeWorkflowCompletionAcknowledgement {
     return $acknowledgement
 }
 
+function Get-DeclarativeWorkflowDependencyLeaseProposal {
+    param(
+        [Parameter(Mandatory = $true)]$Run,
+        [Parameter(Mandatory = $true)][string]$NodeId
+    )
+
+    $node = Get-DeclarativeWorkflowNode -Run $Run -NodeId $NodeId
+    $nodes = Get-DeclarativeWorkflowValue $Run 'nodes' $null
+    if ($nodes -isnot [Collections.IDictionary]) {
+        throw 'workflow_dependency_proof_unavailable'
+    }
+    $dependencyInputs = [Collections.Generic.List[object]]::new()
+    $outputsByPane = [ordered]@{}
+    foreach ($dependencyIdValue in @(Get-DeclarativeWorkflowValue $node 'depends_on' @())) {
+        $dependencyId = [string]$dependencyIdValue
+        if ([string]::IsNullOrWhiteSpace($dependencyId) -or -not $nodes.Contains($dependencyId)) {
+            throw 'workflow_dependency_proof_unavailable'
+        }
+        $dependency = $nodes[$dependencyId]
+        $proof = Get-DeclarativeWorkflowValue $dependency 'completion_proof' $null
+        $outcome = Get-DeclarativeWorkflowValue $dependency 'application_outcome' $null
+        $paneRef = [string](Get-DeclarativeWorkflowValue $dependency 'pane_ref' '')
+        $outputHead = [string](Get-DeclarativeWorkflowValue $proof 'output_head' '')
+        $evidenceRef = [string](Get-DeclarativeWorkflowValue $proof 'evidence_ref' '')
+        $evidenceRefs = @((Get-DeclarativeWorkflowValue $dependency 'evidence_refs' @()) | ForEach-Object { [string]$_ })
+        if (
+            [string](Get-DeclarativeWorkflowValue $dependency 'state' '') -cne 'succeeded' -or
+            $null -eq $proof -or $null -eq $outcome -or
+            [string](Get-DeclarativeWorkflowValue $proof 'node_id' '') -cne $dependencyId -or
+            [string]::IsNullOrWhiteSpace($paneRef) -or
+            $outputHead -cnotmatch $script:DeclarativeWorkflowHeadPattern -or
+            [string](Get-DeclarativeWorkflowValue $outcome 'output_head' '') -cne $outputHead -or
+            $evidenceRefs.Count -ne 1 -or $evidenceRefs[0] -cne $evidenceRef
+        ) {
+            throw 'workflow_dependency_proof_unavailable'
+        }
+        $dependencyInputs.Add([ordered]@{
+                node_id      = $dependencyId
+                pane_ref     = $paneRef
+                output_head  = $outputHead
+                evidence_ref = $evidenceRef
+            }) | Out-Null
+        if (-not $outputsByPane.Contains($paneRef)) {
+            $outputsByPane[$paneRef] = [Collections.Generic.List[string]]::new()
+        }
+        if (-not $outputsByPane[$paneRef].Contains($outputHead)) {
+            $outputsByPane[$paneRef].Add($outputHead) | Out-Null
+        }
+    }
+    $dependencyHeads = [ordered]@{}
+    foreach ($paneRef in @($outputsByPane.Keys)) {
+        if ($outputsByPane[$paneRef].Count -eq 1) {
+            $dependencyHeads[$paneRef] = [string]$outputsByPane[$paneRef][0]
+        }
+    }
+    return [PSCustomObject]@{
+        dependency_inputs = @($dependencyInputs)
+        dependency_heads  = $dependencyHeads
+    }
+}
+
+function Assert-DeclarativeWorkflowDependencyLeaseProposal {
+    param(
+        [Parameter(Mandatory = $true)]$Run,
+        [Parameter(Mandatory = $true)][string]$NodeId,
+        [Parameter(Mandatory = $true)]$DependencyInputs,
+        [Parameter(Mandatory = $true)]$DependencyHeads
+    )
+
+    $expected = Get-DeclarativeWorkflowDependencyLeaseProposal -Run $Run -NodeId $NodeId
+    if (
+        (ConvertTo-DeclarativeWorkflowCanonicalJson -Value @($DependencyInputs)) -cne
+            (ConvertTo-DeclarativeWorkflowCanonicalJson -Value @($expected.dependency_inputs))
+    ) {
+        throw 'workflow_dependency_proof_mismatch'
+    }
+    if ($DependencyHeads -isnot [Collections.IDictionary]) {
+        throw 'workflow_dependency_head_mismatch'
+    }
+    $inputsByPane = [ordered]@{}
+    foreach ($dependencyInput in @($DependencyInputs)) {
+        $paneRef = [string](Get-DeclarativeWorkflowValue $dependencyInput 'pane_ref' '')
+        $outputHead = [string](Get-DeclarativeWorkflowValue $dependencyInput 'output_head' '')
+        if (-not $inputsByPane.Contains($paneRef)) {
+            $inputsByPane[$paneRef] = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+        }
+        $inputsByPane[$paneRef].Add($outputHead) | Out-Null
+    }
+    if ($DependencyHeads.Count -ne $inputsByPane.Count -or
+        @($DependencyHeads.Keys | Where-Object { -not $inputsByPane.Contains([string]$_) }).Count -ne 0) {
+        throw 'workflow_dependency_head_mismatch'
+    }
+    foreach ($paneRef in @($inputsByPane.Keys)) {
+        $selectedHead = [string]$DependencyHeads[$paneRef]
+        if ($selectedHead -cnotmatch $script:DeclarativeWorkflowHeadPattern -or
+            -not $inputsByPane[$paneRef].Contains($selectedHead)) {
+            throw 'workflow_dependency_head_mismatch'
+        }
+    }
+}
+
 function Invoke-DeclarativeWorkflowNode {
     param(
         [Parameter(Mandatory = $true)]$Run,
@@ -760,6 +884,8 @@ function Invoke-DeclarativeWorkflowNode {
         [Parameter(Mandatory = $true)][scriptblock]$SaveRun,
         [Parameter(Mandatory = $true)][scriptblock]$Dispatch,
         [Parameter(Mandatory = $true)][scriptblock]$ResolveSession,
+        [Parameter(Mandatory = $true)][scriptblock]$ResolveInputHead,
+        [Parameter(Mandatory = $true)][scriptblock]$ResolveAcknowledgement,
         $DurableProofs = $null
     )
     Assert-DeclarativeWorkflowTaskIdentity -Run $Run -TaskInput $TaskInput
@@ -782,17 +908,42 @@ function Invoke-DeclarativeWorkflowNode {
         throw "Workflow node '$NodeId' cannot be retried automatically."
     }
 
-    $candidate = Invoke-DeclarativeWorkflowTransition -Run $candidate -Event ([ordered]@{ type = 'dispatch_intent'; node_id = $NodeId }) -DurableProofs $DurableProofs
+    $resolvedExecution = & $ResolveInputHead $candidate $NodeId
+    $dependencyProposal = Get-DeclarativeWorkflowDependencyLeaseProposal -Run $candidate -NodeId $NodeId
+    if ($resolvedExecution -is [string]) {
+        $inputHead = [string]$resolvedExecution
+        $dependencyInputs = @($dependencyProposal.dependency_inputs)
+        $dependencyHeads = $dependencyProposal.dependency_heads
+    } else {
+        $inputHead = [string](Get-DeclarativeWorkflowValue $resolvedExecution 'input_head' '')
+        $dependencyInputs = @(Get-DeclarativeWorkflowValue $resolvedExecution 'dependency_inputs' @())
+        $dependencyHeads = Get-DeclarativeWorkflowValue $resolvedExecution 'dependency_heads' $null
+    }
+    if ($inputHead -cnotmatch $script:DeclarativeWorkflowHeadPattern) {
+        throw 'workflow_execution_input_head_unavailable'
+    }
+    Assert-DeclarativeWorkflowDependencyLeaseProposal -Run $candidate -NodeId $NodeId `
+        -DependencyInputs $dependencyInputs -DependencyHeads $dependencyHeads
+    $candidate = Invoke-DeclarativeWorkflowTransition -Run $candidate -Event ([ordered]@{
+            type = 'dispatch_intent'; node_id = $NodeId; input_head = $inputHead
+            dependency_inputs = @($dependencyInputs)
+            dependency_heads = $dependencyHeads
+        }) -DurableProofs $DurableProofs
     & $SaveRun $candidate
     $node = Get-DeclarativeWorkflowNode -Run $candidate -NodeId $NodeId
+    $executionLease = Get-DeclarativeWorkflowValue $node 'execution_lease' $null
+    if ($null -eq $executionLease) { throw 'workflow_execution_lease_unavailable' }
 
     $stage = if ([string](Get-DeclarativeWorkflowValue $node 'action' '') -ceq 'verification') { 'VERIFY' } else { 'EXEC' }
     $request = [ordered]@{
         stage       = $stage
         node_id     = $NodeId
         pane_ref    = [string](Get-DeclarativeWorkflowValue $node 'pane_ref' '')
+        input_head  = $inputHead
         task        = [string](Get-DeclarativeWorkflowValue $TaskInput 'Text' '')
         evidence_refs = @()
+        dependency_inputs = @(Get-DeclarativeWorkflowValue $executionLease 'dependency_inputs' @())
+        dependency_heads = Get-DeclarativeWorkflowValue $executionLease 'dependency_heads' ([ordered]@{})
     }
     if ($stage -ceq 'VERIFY') {
         $verificationEnvelope = Get-DeclarativeWorkflowVerificationEnvelope -Run $candidate -NodeId $NodeId
@@ -839,12 +990,30 @@ function Invoke-DeclarativeWorkflowNode {
         return $candidate
     }
 
+    $refreshedDurableProofs = Resolve-DeclarativeWorkflowDurableProofs -Run $candidate `
+        -ResolveAcknowledgement $ResolveAcknowledgement
+    $rawExternalAcknowledgements = @(& $ResolveAcknowledgement $candidate $NodeId)
+    $externalAcknowledgements = @(
+        Resolve-DeclarativeWorkflowAcknowledgementCandidates -Run $candidate -NodeId $NodeId `
+            -Acknowledgements $rawExternalAcknowledgements
+    )
+    if ($externalAcknowledgements.Count -ne 1 -or
+        -not (Test-DeclarativeWorkflowAcknowledgement -Run $candidate -NodeId $NodeId -Acknowledgement $externalAcknowledgements[0]) -or
+        (ConvertTo-DeclarativeWorkflowCanonicalJson -Value $externalAcknowledgements[0]) -cne
+            (ConvertTo-DeclarativeWorkflowCanonicalJson -Value $acknowledgement)) {
+        $candidate = Invoke-DeclarativeWorkflowTransition -Run $candidate -Event ([ordered]@{ type = 'block'; node_id = $NodeId }) -DurableProofs $refreshedDurableProofs
+        & $SaveRun $candidate
+        return $candidate
+    }
+    $refreshedDurableProofs.completion_acknowledgements = @(
+        @($refreshedDurableProofs.completion_acknowledgements) + @($externalAcknowledgements[0])
+    )
     $candidate = Invoke-DeclarativeWorkflowTransition -Run $candidate -Event ([ordered]@{
             type                = 'acknowledge'
             node_id             = $NodeId
             acknowledgement     = $acknowledgement
             resolved_session_id = $sessionId
-        }) -DurableProofs $DurableProofs
+        }) -DurableProofs $refreshedDurableProofs
     & $SaveRun $candidate
     return $candidate
 }
@@ -857,6 +1026,7 @@ function Invoke-DeclarativeWorkflowResume {
         [Parameter(Mandatory = $true)][scriptblock]$SaveRun,
         [Parameter(Mandatory = $true)][scriptblock]$Dispatch,
         [Parameter(Mandatory = $true)][scriptblock]$ResolveSession,
+        [Parameter(Mandatory = $true)][scriptblock]$ResolveInputHead,
         [Parameter(Mandatory = $true)][scriptblock]$ResolveAcknowledgement,
         [scriptblock]$ResolveCancellation,
         [scriptblock]$ValidateSnapshot
@@ -910,6 +1080,9 @@ function Invoke-DeclarativeWorkflowResume {
             # immutable admission.  Resume must retain that original execution identity even
             # when the completed pane no longer exists in the current runtime registry.
             $resolvedSession = [string](Get-DeclarativeWorkflowValue $acknowledgement 'pane_id' '')
+            $durableProofs.completion_acknowledgements = @(
+                @($durableProofs.completion_acknowledgements) + @($acknowledgement)
+            )
             $candidate = Invoke-DeclarativeWorkflowTransition -Run $candidate -Event ([ordered]@{
                     type                = 'acknowledge'
                     node_id             = $nodeId
@@ -925,7 +1098,8 @@ function Invoke-DeclarativeWorkflowResume {
             } | Select-Object -First 1)
         if ($ready.Count -eq 0) { return $candidate }
         $candidate = Invoke-DeclarativeWorkflowNode -Run $candidate -NodeId ([string]$ready[0].Key) -TaskInput $TaskInput `
-            -Confirmation $Confirmation -SaveRun $SaveRun -Dispatch $Dispatch -ResolveSession $ResolveSession -DurableProofs $durableProofs
+            -Confirmation $Confirmation -SaveRun $SaveRun -Dispatch $Dispatch -ResolveSession $ResolveSession `
+            -ResolveInputHead $ResolveInputHead -ResolveAcknowledgement $ResolveAcknowledgement -DurableProofs $durableProofs
         if ([string](Get-DeclarativeWorkflowValue $candidate 'state' '') -in @('blocked', 'failed')) { return $candidate }
     }
 }
