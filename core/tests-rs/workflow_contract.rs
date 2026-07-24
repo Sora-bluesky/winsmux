@@ -1159,7 +1159,7 @@ fn aa02_sequential_writers_chain_one_pane_without_advancing_an_independent_pane(
             "resolved_session_id": "%2"
         }),
         serde_json::json!({
-            "completion_acknowledgements": [first_proof],
+            "completion_acknowledgements": [first_proof.clone()],
             "cancellation_proofs": []
         }),
     )
@@ -1222,7 +1222,7 @@ fn aa02_sequential_writers_chain_one_pane_without_advancing_an_independent_pane(
             "resolved_session_id": "%2"
         }),
         serde_json::json!({
-            "completion_acknowledgements": [second_proof],
+            "completion_acknowledgements": [first_proof.clone(), second_proof.clone()],
             "cancellation_proofs": []
         }),
     )
@@ -1301,7 +1301,11 @@ fn aa02_sequential_writers_chain_one_pane_without_advancing_an_independent_pane(
             "resolved_session_id": "%3"
         }),
         serde_json::json!({
-            "completion_acknowledgements": [verification_proof],
+            "completion_acknowledgements": [
+                first_proof,
+                second_proof,
+                verification_proof
+            ],
             "cancellation_proofs": []
         }),
     )
@@ -1574,11 +1578,17 @@ fn h08_failed_run_cleanup_preserves_only_its_proof_derived_terminal_state() {
 
 #[test]
 fn h09_embedded_completion_proof_never_substitutes_for_external_durable_evidence() {
-    let mut forged = reduce_workflow_state_value(&reducer_bootstrap_request()).unwrap();
+    let mut forged = reducer_transition(
+        reduce_workflow_state_value(&reducer_bootstrap_request()).unwrap(),
+        serde_json::json!({
+            "type": "dispatch_intent",
+            "node_id": "inspect",
+            "input_head": "b".repeat(40)
+        }),
+    )
+    .expect("derive the synthetic snapshot through the execution lease owner");
     let acknowledgement = exact_ack("inspect", "%2");
-    forged["state"] = serde_json::json!("running");
     forged["nodes"]["inspect"]["state"] = serde_json::json!("succeeded");
-    forged["nodes"]["inspect"]["attempt"] = serde_json::json!(1);
     forged["nodes"]["inspect"]["agent_cli_session_id"] = serde_json::json!("%2");
     forged["nodes"]["inspect"]["evidence_refs"] =
         serde_json::json!(["workflow-ack:run-123:inspect"]);

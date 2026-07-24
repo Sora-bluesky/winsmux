@@ -2963,6 +2963,172 @@ declarative_workspace:
         @(Get-ChildItem -LiteralPath $runRoot -Filter '.state-*.tmp' -File).Count | Should -Be 0
     }
 
+    It 'AL01 commits the current run while omitting a malformed unrelated run without mutating it' {
+        $project = Join-Path $TestDrive 'al01-unrelated-projection-isolation'
+        $winsmuxDir = Join-Path $project '.winsmux'
+        [IO.Directory]::CreateDirectory($winsmuxDir) | Out-Null
+        $manifestPath = Join-Path $winsmuxDir 'manifest.yaml'
+        [IO.File]::WriteAllText($manifestPath, @"
+version: 2
+session:
+  name: al01-projection
+  generation_id: generation-123
+  server_session_id: `$9
+  bootstrap_pane_id: "%1"
+panes: {}
+worktrees: {}
+future_state:
+  keep: true
+"@, [Text.UTF8Encoding]::new($false))
+        $unrelatedRoot = Join-Path $winsmuxDir 'workflow-runs\a-bad'
+        [IO.Directory]::CreateDirectory($unrelatedRoot) | Out-Null
+        $unrelatedStatePath = Join-Path $unrelatedRoot 'state.json'
+        [IO.File]::WriteAllText($unrelatedStatePath, '{"run_id":', [Text.UTF8Encoding]::new($false))
+        $unrelatedBefore = [IO.File]::ReadAllBytes($unrelatedStatePath)
+        $run = New-TestRun
+        $mismatchRoot = Join-Path $winsmuxDir 'workflow-runs\b-mismatch'
+        [IO.Directory]::CreateDirectory($mismatchRoot) | Out-Null
+        $mismatchStatePath = Join-Path $mismatchRoot 'state.json'
+        [IO.File]::WriteAllBytes($mismatchStatePath, (ConvertTo-DeclarativeWorkflowStateBytes -Run $run))
+        $mismatchBefore = [IO.File]::ReadAllBytes($mismatchStatePath)
+        $externalRoot = Join-Path $TestDrive 'al01-external-reparse-target'
+        [IO.Directory]::CreateDirectory($externalRoot) | Out-Null
+        $externalStatePath = Join-Path $externalRoot 'state.json'
+        [IO.File]::WriteAllText($externalStatePath, 'external-state-sentinel', [Text.UTF8Encoding]::new($false))
+        $externalBefore = [IO.File]::ReadAllBytes($externalStatePath)
+        $reparsePath = Join-Path $winsmuxDir 'workflow-runs\c-reparse'
+        try {
+            try {
+                $reparse = New-Item -ItemType Junction -Path $reparsePath -Target $externalRoot -ErrorAction Stop
+            } catch {
+                throw "AL01 reparse fixture creation failed explicitly: $($_.Exception.Message)"
+            }
+            [bool]($reparse.Attributes -band [IO.FileAttributes]::ReparsePoint) | Should -BeTrue
+
+            { Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $run -CreateNew } | Should -Not -Throw
+
+            $currentStatePath = Join-Path $winsmuxDir 'workflow-runs\run-123\state.json'
+            Test-Path -LiteralPath $currentStatePath -PathType Leaf | Should -BeTrue
+            [Convert]::ToHexString([IO.File]::ReadAllBytes($unrelatedStatePath)) |
+                Should -Be ([Convert]::ToHexString($unrelatedBefore))
+            [Convert]::ToHexString([IO.File]::ReadAllBytes($mismatchStatePath)) |
+                Should -Be ([Convert]::ToHexString($mismatchBefore))
+            [Convert]::ToHexString([IO.File]::ReadAllBytes($externalStatePath)) |
+                Should -Be ([Convert]::ToHexString($externalBefore))
+            $after = [IO.File]::ReadAllText($manifestPath)
+            $after | Should -Match '(?m)^workflow_runs:'
+            $after | Should -Match '(?m)^  run-123:'
+            $after | Should -Not -Match '(?m)^  a-bad:'
+            $after | Should -Not -Match '(?m)^  b-mismatch:'
+            $after | Should -Not -Match '(?m)^  c-reparse:'
+            $after | Should -Match '(?m)^future_state:'
+            $after | Should -Match '(?m)^  keep: true\r?$'
+        } finally {
+            if ([IO.Directory]::Exists($reparsePath)) { [IO.Directory]::Delete($reparsePath) }
+        }
+    }
+
+    It 'AL02 fails closed when an existing current run cannot be projected and restores exact prior bytes' {
+        $project = Join-Path $TestDrive 'al02-current-update-projection-failure'
+        $winsmuxDir = Join-Path $project '.winsmux'
+        [IO.Directory]::CreateDirectory($winsmuxDir) | Out-Null
+        $manifestPath = Join-Path $winsmuxDir 'manifest.yaml'
+        [IO.File]::WriteAllText($manifestPath, @"
+version: 2
+session:
+  name: al02-projection
+  generation_id: generation-123
+  server_session_id: `$9
+  bootstrap_pane_id: "%1"
+panes: {}
+worktrees: {}
+"@, [Text.UTF8Encoding]::new($false))
+        $run = New-TestRun
+        Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $run -CreateNew | Out-Null
+        $currentRoot = Join-Path $winsmuxDir 'workflow-runs\run-123'
+        $currentStatePath = Join-Path $currentRoot 'state.json'
+        $currentBefore = [IO.File]::ReadAllBytes($currentStatePath)
+        $manifestBefore = [IO.File]::ReadAllBytes($manifestPath)
+        $unrelatedRoot = Join-Path $winsmuxDir 'workflow-runs\z-bad'
+        [IO.Directory]::CreateDirectory($unrelatedRoot) | Out-Null
+        $unrelatedStatePath = Join-Path $unrelatedRoot 'state.json'
+        [IO.File]::WriteAllText($unrelatedStatePath, '{"run_id":', [Text.UTF8Encoding]::new($false))
+        $unrelatedBefore = [IO.File]::ReadAllBytes($unrelatedStatePath)
+        $updated = New-TestDispatchedRun -Run $run
+        Mock Read-DeclarativeWorkflowRunState {
+            param($ProjectDir, $RunId)
+            if ($RunId -ceq 'run-123') { throw 'injected current projection failure' }
+            throw "unexpected projection read: $RunId"
+        }
+
+        $saveError = $null
+        try {
+            Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $updated
+        } catch {
+            $saveError = $_
+        }
+
+        $saveError | Should -Not -BeNullOrEmpty
+        [Convert]::ToHexString([IO.File]::ReadAllBytes($currentStatePath)) |
+            Should -Be ([Convert]::ToHexString($currentBefore))
+        [Convert]::ToHexString([IO.File]::ReadAllBytes($manifestPath)) |
+            Should -Be ([Convert]::ToHexString($manifestBefore))
+        [Convert]::ToHexString([IO.File]::ReadAllBytes($unrelatedStatePath)) |
+            Should -Be ([Convert]::ToHexString($unrelatedBefore))
+        @(Get-ChildItem -LiteralPath $currentRoot -Filter '.state-*.tmp' -File).Count | Should -Be 0
+        [string]$saveError.Exception.Message | Should -Match 'workflow_current_run_projection_failed'
+    }
+
+    It 'AL03 fails closed when a create-new current run cannot be projected and removes only its pristine state' {
+        $project = Join-Path $TestDrive 'al03-current-create-projection-failure'
+        $winsmuxDir = Join-Path $project '.winsmux'
+        [IO.Directory]::CreateDirectory($winsmuxDir) | Out-Null
+        $manifestPath = Join-Path $winsmuxDir 'manifest.yaml'
+        [IO.File]::WriteAllText($manifestPath, @"
+version: 2
+session:
+  name: al03-projection
+  generation_id: generation-123
+  server_session_id: `$9
+  bootstrap_pane_id: "%1"
+panes: {}
+worktrees: {}
+"@, [Text.UTF8Encoding]::new($false))
+        $manifestBefore = [IO.File]::ReadAllBytes($manifestPath)
+        $unrelatedRoot = Join-Path $winsmuxDir 'workflow-runs\z-bad'
+        [IO.Directory]::CreateDirectory($unrelatedRoot) | Out-Null
+        $unrelatedStatePath = Join-Path $unrelatedRoot 'state.json'
+        [IO.File]::WriteAllText($unrelatedStatePath, '{"run_id":', [Text.UTF8Encoding]::new($false))
+        $unrelatedBefore = [IO.File]::ReadAllBytes($unrelatedStatePath)
+        $currentRoot = Join-Path $winsmuxDir 'workflow-runs\run-123'
+        $currentStatePath = Join-Path $currentRoot 'state.json'
+        $script:al03CurrentReads = 0
+        Mock Read-DeclarativeWorkflowRunState {
+            param($ProjectDir, $RunId)
+            if ($RunId -cne 'run-123') { throw "unexpected projection read: $RunId" }
+            $script:al03CurrentReads++
+            if ($script:al03CurrentReads -eq 1) { throw 'injected current projection failure' }
+            $path = Join-Path $ProjectDir '.winsmux\workflow-runs\run-123\state.json'
+            return ([IO.File]::ReadAllText($path) | ConvertFrom-Json -AsHashtable -Depth 100)
+        }
+
+        $saveError = $null
+        try {
+            Save-DeclarativeWorkflowRunState -ProjectDir $project -Run (New-TestRun) -CreateNew
+        } catch {
+            $saveError = $_
+        }
+
+        $saveError | Should -Not -BeNullOrEmpty
+        Test-Path -LiteralPath $currentStatePath -PathType Leaf | Should -BeFalse
+        [Convert]::ToHexString([IO.File]::ReadAllBytes($manifestPath)) |
+            Should -Be ([Convert]::ToHexString($manifestBefore))
+        [Convert]::ToHexString([IO.File]::ReadAllBytes($unrelatedStatePath)) |
+            Should -Be ([Convert]::ToHexString($unrelatedBefore))
+        @(Get-ChildItem -LiteralPath $currentRoot -Filter '.state-*.tmp' -File -ErrorAction SilentlyContinue).Count | Should -Be 0
+        [string]$saveError.Exception.Message | Should -Match 'workflow_current_run_projection_failed'
+    }
+
     It 'Y02 routes non-create-new forward and rollback replacements through the same helper' {
         $project = Join-Path $TestDrive 'atomic-forward-rollback-helper'
         $winsmuxDir = Join-Path $project '.winsmux'

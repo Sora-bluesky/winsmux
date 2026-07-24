@@ -1976,9 +1976,17 @@ function Save-DeclarativeWorkflowRunState {
             $runsRoot = Split-Path -Parent $runRoot
             foreach ($directory in @(Get-ChildItem -LiteralPath $runsRoot -Directory -ErrorAction Stop | Sort-Object Name)) {
                 if ($directory.Name -cnotmatch $script:DeclarativeWorkflowIdPattern) { continue }
-                $statePath = Resolve-DeclarativeWorkflowOwnedRunPath -ProjectDir $ProjectDir -RunId $directory.Name -LeafName 'state.json'
-                if (-not [IO.File]::Exists($statePath)) { continue }
-                $runs[$directory.Name] = Read-DeclarativeWorkflowRunState -ProjectDir $ProjectDir -RunId $directory.Name
+                try {
+                    $statePath = Resolve-DeclarativeWorkflowOwnedRunPath -ProjectDir $ProjectDir -RunId $directory.Name -LeafName 'state.json'
+                    if (-not [IO.File]::Exists($statePath)) { continue }
+                    $projectedRun = Read-DeclarativeWorkflowRunState -ProjectDir $ProjectDir -RunId $directory.Name
+                } catch {
+                    if ($directory.Name -ceq $runId) {
+                        throw "workflow_current_run_projection_failed: $([string]$_.Exception.Message)"
+                    }
+                    continue
+                }
+                $runs[$directory.Name] = $projectedRun
             }
             if ($manifest -is [Collections.IDictionary]) {
                 $manifest['workflow_runs'] = $runs
