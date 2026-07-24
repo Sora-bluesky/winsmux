@@ -130,7 +130,8 @@ function Resolve-DeclarativeWorkflowDurableProofs {
     param(
         [Parameter(Mandatory = $true)]$Run,
         [scriptblock]$ResolveAcknowledgement,
-        [scriptblock]$ResolveCancellation
+        [scriptblock]$ResolveCancellation,
+        [switch]$IncludeCancellation
     )
 
     $acknowledgements = [Collections.Generic.List[object]]::new()
@@ -148,7 +149,8 @@ function Resolve-DeclarativeWorkflowDurableProofs {
     }
 
     $cancellations = @()
-    $hasCancellation = $null -ne (Get-DeclarativeWorkflowValue $Run 'cancellation_proof' $null) -or
+    $hasCancellation = $IncludeCancellation -or
+        $null -ne (Get-DeclarativeWorkflowValue $Run 'cancellation_proof' $null) -or
         [string](Get-DeclarativeWorkflowValue $Run 'state' '') -ceq 'cancelled'
     if ($hasCancellation) {
         if ($null -eq $ResolveCancellation) { throw 'workflow_state_invalid: external durable cancellation proof required' }
@@ -1301,6 +1303,23 @@ function Test-DeclarativeWorkflowCancellationProof {
         if ([string](Get-DeclarativeWorkflowValue $Proof ([string]$entry.Key) '') -cne [string]$entry.Value) { return $false }
     }
     return $true
+}
+
+function New-DeclarativeWorkflowCancellationProof {
+    param([Parameter(Mandatory = $true)]$Run)
+
+    $runId = [string](Get-DeclarativeWorkflowValue $Run 'run_id' '')
+    return [ordered]@{
+        schema_version       = 1
+        run_id               = $runId
+        idempotency_key      = "$runId`:cancel"
+        generation_id        = [string](Get-DeclarativeWorkflowValue $Run 'generation_id' '')
+        config_fingerprint   = [string](Get-DeclarativeWorkflowValue $Run 'config_fingerprint' '')
+        workflow_fingerprint = [string](Get-DeclarativeWorkflowValue $Run 'workflow_fingerprint' '')
+        source_head          = [string](Get-DeclarativeWorkflowValue $Run 'source_head' '')
+        status               = 'cancelled'
+        evidence_ref         = "workflow-cancel:$runId"
+    }
 }
 
 function Read-DeclarativeWorkflowDurableProof {

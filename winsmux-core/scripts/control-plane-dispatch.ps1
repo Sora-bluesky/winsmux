@@ -421,13 +421,13 @@ function ConvertTo-WinsmuxDeclarativePipelineArguments {
         if (-not $values.Contains($required)) { throw "Missing declarative pipeline argument '$required'." }
     }
     $action = [string]$values['--workflow-action']
-    if ($action -notin @('start', 'resume')) { throw 'Declarative workflow action must be start or resume.' }
+    if ($action -notin @('start', 'resume', 'cancel')) { throw 'Declarative workflow action must be start, resume, or cancel.' }
     if ($action -ceq 'start') {
         foreach ($required in @('--recipe-id', '--workflow-id')) {
             if (-not $values.Contains($required)) { throw "Missing declarative pipeline argument '$required'." }
         }
     } elseif ($values.Contains('--recipe-id') -or $values.Contains('--workflow-id')) {
-        throw 'Declarative resume uses the persisted recipe and workflow identity.'
+        throw 'Declarative resume and cancel use the persisted recipe and workflow identity.'
     }
     $projectDir = if ($values.Contains('--project-dir')) { [string]$values['--project-dir'] } else { (Get-Location).Path }
     return [PSCustomObject]@{

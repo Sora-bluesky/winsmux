@@ -266,13 +266,13 @@ Normative field rules:
   `ensure-slot-ready` in the second phase. Missing, duplicate, incompatible, or
   out-of-order coverage is rejected before plan output.
 - TASK-659 v1 accepts one workflow task-input contract:
-  `source: runtime-task-file` plus `privacy: digest-only`. Declarative start and
-  resume require `--task-file <path>`; runtime reads that file exactly once as
+  `source: runtime-task-file` plus `privacy: digest-only`. Declarative start,
+  resume, and cancel require `--task-file <path>`; runtime reads that file exactly once as
   BOM-free UTF-8, rejects NUL and input larger than 262144 bytes, and uses the same
   bytes for all eligible nodes in that invocation. The operator supplies identical
-  task bytes for resume. Runtime stores only SHA-256 and byte count in the run state;
+  task bytes for resume or cancel. Runtime stores only SHA-256 and byte count in the run state;
   it never stores the task/prompt body or private task-file path. A missing task or
-  digest/length mismatch rejects resume before any side effect. Every
+  digest/length mismatch rejects resume or cancel before any side effect. Every
   `operator-dispatch` node sends that runtime task through the existing guarded
   team-pipeline dispatch path; every `verification` node uses the same existing
   verification path with dependency evidence refs. Node-specific freeform payloads
@@ -435,6 +435,14 @@ only, and active or rotated logs are observability only; neither TTL nor log
 retention may grant or revoke completion authority. A process exit, successful
 pane write, `STATUS: EXEC_DONE`, or `VERIFY_PASS` text is not sufficient proof.
 
+Cancellation has the same authority direction. The public cancel transaction
+constructs one schema-version 1 proof only from the validated persisted run and
+creates or reuses `.winsmux/workflow-runs/<run>/proofs/cancel.json` before asking
+the reducer to transition. The reducer requires the event proof to equal exactly
+one externally supplied durable proof; an event cannot publish or authenticate
+its own proof. A cancelled snapshot cannot validate or clean up without that same
+external proof.
+
 For every side effect, runtime must persist the transition intent and
 idempotency key before dispatch and persist the acknowledgement/evidence before
 unlocking dependent nodes. On restart:
@@ -463,9 +471,13 @@ A succeeded producer needed by unfinished verification must retain its exact
 path and admitted `HEAD`, but its old live pane lease is not restored.
 
 Operator confirmation is bound to the exact run ID, manifest generation ID,
-config fingerprint, and source head observed by the operator. Before any run
-state mutation, runtime independently observes the actual project `HEAD` and
-requires an exact full-SHA match. The normalized workflow fingerprint is stored
+config fingerprint, and source head observed by the operator. Before any start or
+resume state mutation, runtime independently observes the actual project `HEAD`
+and requires an exact full-SHA match. Cancel instead matches the complete
+confirmation tuple to the persisted run and deliberately performs no live
+manifest, pane, session, workspace-plan, mailbox, current checkout `HEAD`, or
+managed-worktree admission; loss of an execution dependency must not make
+abandonment unreachable. The normalized workflow fingerprint is stored
 with the run and rechecked on resume, independently of the broader config
 fingerprint. A stale or partial confirmation is not reusable authority. TASK-659
 v1 does not automatically retry a failed dispatch: `attempt` and the stable node
@@ -495,6 +507,9 @@ winsmux pipeline --workflow-action start --recipe-id <id> --workflow-id <id> \
 winsmux pipeline --workflow-action resume --run-id <id> --generation-id <id> \
   --config-fingerprint <sha256:...> --source-head <full-commit-id> \
   --task-file <path> [--project-dir <path>] --json
+winsmux pipeline --workflow-action cancel --run-id <id> --generation-id <id> \
+  --config-fingerprint <sha256:...> --source-head <persisted-full-commit-id> \
+  --task-file <path> [--project-dir <path>] --json
 ```
 
 The four confirmation values are validated as one indivisible tuple before any
@@ -502,7 +517,15 @@ manifest transition. Start invokes `workspace-plan` exactly once and reuses its 
 strict JSON object for validation, snapshot, and DAG construction. Resume loads the
 persisted normalized snapshot as execution truth and invokes `workspace-plan` once
 only to compare current fingerprint/bindings; it does not reinterpret the in-flight
-run from changed config. Unknown, duplicate, missing, or positional declarative
+run from changed config. Cancel accepts only persisted identity: recipe and
+workflow identifiers are rejected. Under the run-scoped invocation lease, one
+transaction validates task and confirmation, verifies the owned run lock, creates
+or reuses the canonical proof, refreshes external proof input, transitions and
+saves `cancelled`, then invokes the existing typed terminal cleanup. A retry after
+proof creation but before state save reuses the proof. A retry after successful
+cleanup returns the persisted cancelled result without rewriting state or proof or
+repeating lock deletion. `succeeded`, `failed`, `rolled_back`, and unrelated
+cleanup outcomes cannot be overwritten by cancel. Unknown, duplicate, missing, or positional declarative
 arguments, nonzero plan exit, malformed or extra stdout, and tuple mismatch reject
 before mutation. Declarative stdout is exactly one versioned JSON object with CLI
 status `accepted`, `blocked`, `rejected`, or `failed`; only `accepted` exits zero.
@@ -592,7 +615,7 @@ desktop release parity.
 ### 6.2 TASK-659: resumable workflow and pipeline
 
 **Owns:** workflow DAG validation; the run/node state machines; dependency
-release; persisted idempotency records; operator-confirmed resume; structured
+release; persisted idempotency records; operator-confirmed resume and cancel; structured
 dispatch acknowledgement; retry accounting; checkpoint reconciliation;
 journaled cleanup; and declared rollback. It evolves or wraps
 `winsmux-core/scripts/team-pipeline.ps1` so the current pipeline remains the
@@ -616,6 +639,11 @@ repository context selection, gallery content, or final desktop/CLI parity.
   success or failure;
 - cleanup can itself be interrupted and resumed, and each compensation runs at
   most once;
+- cancel is product-reachable for `planned`, `ready`, `running`, and `blocked`
+  runs without execution-runtime admission, and proof-first or response-loss
+  retry cannot duplicate proof, state, or cleanup effects;
+- cancel events require one exact external run-owned proof and cannot create
+  authority inside the reducer;
 - completed/cancelled/rolled-back runs reject automatic resume; and
 - the existing non-declarative team pipeline still passes its focused tests
   and uses the same operator approval/review boundaries.

@@ -1319,13 +1319,8 @@ fn bootstrap_workflow_run(
 fn transition_workflow_run(
     mut run: WorkflowRun,
     event: WorkflowEvent,
-    mut durable_proofs: DurableProofs,
+    durable_proofs: DurableProofs,
 ) -> io::Result<WorkflowRun> {
-    if let WorkflowEvent::Cancel { cancellation } = &event {
-        durable_proofs
-            .cancellation_proofs
-            .push(cancellation.clone());
-    }
     let durable_proofs = normalize_durable_proofs(&run, durable_proofs)?;
     validate_workflow_run(&run, &durable_proofs)?;
     match event {
@@ -1548,7 +1543,7 @@ fn transition_workflow_run(
             action.state = CleanupActionState::Succeeded;
         }
         WorkflowEvent::Cancel { cancellation } => {
-            validate_cancellation_proof(&run, &cancellation)?;
+            require_exact_external_cancellation_proof(&run, &cancellation, &durable_proofs)?;
             if run.cancellation_proof.as_ref() == Some(&cancellation) {
                 return Ok(run);
             }
@@ -2316,17 +2311,24 @@ fn validate_external_cancellation_proof(
     durable_proofs: &DurableProofs,
 ) -> io::Result<()> {
     match &run.cancellation_proof {
-        Some(embedded) => {
-            validate_cancellation_proof(run, embedded)?;
-            if durable_proofs.cancellation_proofs.len() != 1
-                || durable_proofs.cancellation_proofs.first() != Some(embedded)
-            {
-                return Err(workflow_state_invalid(
-                    "cancelled run requires exactly one matching external durable proof",
-                ));
-            }
-        }
+        Some(embedded) => require_exact_external_cancellation_proof(run, embedded, durable_proofs)?,
         None => {}
+    }
+    Ok(())
+}
+
+fn require_exact_external_cancellation_proof(
+    run: &WorkflowRun,
+    proof: &WorkflowCancellationProof,
+    durable_proofs: &DurableProofs,
+) -> io::Result<()> {
+    validate_cancellation_proof(run, proof)?;
+    if durable_proofs.cancellation_proofs.len() != 1
+        || durable_proofs.cancellation_proofs.first() != Some(proof)
+    {
+        return Err(workflow_state_invalid(
+            "cancellation requires exactly one matching external durable proof",
+        ));
     }
     Ok(())
 }

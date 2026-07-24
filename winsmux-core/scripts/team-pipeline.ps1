@@ -2,7 +2,7 @@
 param(
     [Parameter(Position = 0)]
     [string]$Task,
-    [ValidateSet('', 'start', 'resume')]
+    [ValidateSet('', 'start', 'resume', 'cancel')]
     [string]$WorkflowAction = '',
     [string]$RecipeId = '',
     [string]$WorkflowId = '',
@@ -2533,7 +2533,7 @@ function Resolve-TeamPipelineDeclarativeAcknowledgement {
         [Parameter(Mandatory = $true)]$Run,
         [Parameter(Mandatory = $true)][string]$NodeId,
         [Parameter(Mandatory = $true)][string]$ProjectDir,
-        [Parameter(Mandatory = $true)][string]$SessionName
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$SessionName
     )
     $proof = Read-DeclarativeWorkflowDurableProof -ProjectDir $ProjectDir -Run $Run -Kind Completion -NodeId $NodeId
     if ($null -eq $proof) { return @() }
@@ -2544,7 +2544,7 @@ function Resolve-TeamPipelineDeclarativeCancellation {
     param(
         [Parameter(Mandatory = $true)]$Run,
         [Parameter(Mandatory = $true)][string]$ProjectDir,
-        [Parameter(Mandatory = $true)][string]$SessionName
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$SessionName
     )
     $proof = Read-DeclarativeWorkflowDurableProof -ProjectDir $ProjectDir -Run $Run -Kind Cancellation
     if ($null -eq $proof) { return @() }
@@ -2823,9 +2823,64 @@ function Invoke-TeamPipelineDeclarativeTerminalRecovery {
         -ResolveAcknowledgement $ResolveAcknowledgement -ResolveCancellation $ResolveCancellation
 }
 
+function Invoke-TeamPipelineDeclarativeCancellationTransaction {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)]$Run,
+        [Parameter(Mandatory = $true)]$TaskInput,
+        [Parameter(Mandatory = $true)]$Confirmation,
+        [Parameter(Mandatory = $true)][scriptblock]$SaveRun,
+        [Parameter(Mandatory = $true)][scriptblock]$ReleaseLock,
+        [Parameter(Mandatory = $true)][scriptblock]$ResolveAcknowledgement,
+        [Parameter(Mandatory = $true)][scriptblock]$ResolveCancellation
+    )
+
+    Assert-DeclarativeWorkflowTaskIdentity -Run $Run -TaskInput $TaskInput
+    Assert-DeclarativeWorkflowConfirmation -Run $Run -Confirmation $Confirmation
+    $durableProofs = Resolve-DeclarativeWorkflowDurableProofs -Run $Run `
+        -ResolveAcknowledgement $ResolveAcknowledgement -ResolveCancellation $ResolveCancellation
+    $Run = Invoke-DeclarativeWorkflowTransition -Run $Run -Event ([ordered]@{ type = 'validate' }) -DurableProofs $durableProofs
+    $runState = [string](Get-DeclarativeWorkflowValue $Run 'state' '')
+    $cleanupState = Get-DeclarativeWorkflowCleanupActionState -Run $Run -AllowedStates @('pending', 'running', 'blocked', 'succeeded')
+
+    if ($runState -ceq 'cancelled') {
+        if ($cleanupState -ceq 'succeeded') { return $Run }
+        return Invoke-DeclarativeWorkflowTerminalCleanup -ProjectDir $ProjectDir -Run $Run `
+            -SaveRun $SaveRun -ReleaseLock $ReleaseLock `
+            -ResolveAcknowledgement $ResolveAcknowledgement -ResolveCancellation $ResolveCancellation
+    }
+    if ($runState -notin @('planned', 'ready', 'running', 'blocked') -or $cleanupState -cne 'pending') {
+        throw "Declarative workflow run '$runState' cannot be cancelled."
+    }
+
+    Assert-TeamPipelineDeclarativeRunLockAdmission -ProjectDir $ProjectDir -Run $Run | Out-Null
+    $cancellation = New-DeclarativeWorkflowCancellationProof -Run $Run
+    Write-DeclarativeWorkflowDurableProof -ProjectDir $ProjectDir -Run $Run -Kind Cancellation -Proof $cancellation | Out-Null
+
+    $persistedAfterProof = Read-DeclarativeWorkflowRunState -ProjectDir $ProjectDir -RunId ([string]$Run.run_id)
+    Assert-DeclarativeWorkflowTaskIdentity -Run $persistedAfterProof -TaskInput $TaskInput
+    Assert-DeclarativeWorkflowConfirmation -Run $persistedAfterProof -Confirmation $Confirmation
+    if (
+        (ConvertTo-DeclarativeWorkflowCanonicalJson -Value $persistedAfterProof) -cne
+        (ConvertTo-DeclarativeWorkflowCanonicalJson -Value $Run)
+    ) {
+        throw 'workflow_run_changed_during_cancel'
+    }
+
+    $durableProofs = Resolve-DeclarativeWorkflowDurableProofs -Run $persistedAfterProof `
+        -ResolveAcknowledgement $ResolveAcknowledgement -ResolveCancellation $ResolveCancellation -IncludeCancellation
+    $cancelled = Invoke-DeclarativeWorkflowTransition -Run $persistedAfterProof `
+        -Event ([ordered]@{ type = 'cancel'; cancellation = $cancellation }) -DurableProofs $durableProofs
+    & $SaveRun $cancelled
+
+    return Invoke-DeclarativeWorkflowTerminalCleanup -ProjectDir $ProjectDir -Run $cancelled `
+        -SaveRun $SaveRun -ReleaseLock $ReleaseLock `
+        -ResolveAcknowledgement $ResolveAcknowledgement -ResolveCancellation $ResolveCancellation
+}
+
 function Invoke-TeamPipelineDeclarativeWorkflow {
     param(
-        [Parameter(Mandatory = $true)][ValidateSet('start', 'resume')][string]$Action,
+        [Parameter(Mandatory = $true)][ValidateSet('start', 'resume', 'cancel')][string]$Action,
         [string]$RecipeId,
         [string]$WorkflowId,
         [Parameter(Mandatory = $true)][string]$RunId,
@@ -2837,6 +2892,35 @@ function Invoke-TeamPipelineDeclarativeWorkflow {
         [int]$PollIntervalSeconds = 10,
         [int]$StageTimeoutSeconds = 240
     )
+    if ($Action -ceq 'cancel') {
+        $invocationLease = Enter-DeclarativeWorkflowInvocationLease -ProjectDir $ProjectDir -RunId $RunId
+        try {
+            $taskInput = Read-DeclarativeWorkflowTaskFile -Path $TaskFile
+            $confirmation = [ordered]@{ run_id = $RunId; generation_id = $GenerationId; config_fingerprint = $ConfigFingerprint; source_head = $SourceHead }
+            $run = Read-DeclarativeWorkflowRunState -ProjectDir $ProjectDir -RunId $RunId
+            $save = { param($candidate) Save-DeclarativeWorkflowRunState -ProjectDir $ProjectDir -Run $candidate | Out-Null }
+            $releaseLock = { param($path) Remove-Item -LiteralPath $path -Force -ErrorAction Stop }
+            $resolveAcknowledgement = {
+                param($candidateRun, $nodeId)
+                Resolve-TeamPipelineDeclarativeAcknowledgement -Run $candidateRun -NodeId $nodeId -ProjectDir $ProjectDir -SessionName ''
+            }
+            $resolveCancellation = {
+                param($candidateRun)
+                Resolve-TeamPipelineDeclarativeCancellation -Run $candidateRun -ProjectDir $ProjectDir -SessionName ''
+            }
+            $run = Invoke-TeamPipelineDeclarativeCancellationTransaction -ProjectDir $ProjectDir -Run $run `
+                -TaskInput $taskInput -Confirmation $confirmation -SaveRun $save -ReleaseLock $releaseLock `
+                -ResolveAcknowledgement $resolveAcknowledgement -ResolveCancellation $resolveCancellation
+            $cleanupBlocked = @((Get-DeclarativeWorkflowValue $run 'cleanup_journal' @()) | Where-Object {
+                    [string](Get-DeclarativeWorkflowValue $_ 'state' '') -ceq 'blocked'
+                }).Count -gt 0
+            $status = if ($cleanupBlocked) { 'blocked' } else { 'accepted' }
+            return [PSCustomObject][ordered]@{ schema_version = 1; status = $status; run_id = $RunId; state = [string]$run.state }
+        } finally {
+            $invocationLease.Dispose()
+        }
+    }
+
     $taskInput = Read-DeclarativeWorkflowTaskFile -Path $TaskFile
     $observedSourceHead = Get-TeamPipelineDeclarativeProjectHead -ProjectDir $ProjectDir
     Assert-TeamPipelineDeclarativeSourceHead -ExpectedSourceHead $SourceHead -ObservedSourceHead $observedSourceHead

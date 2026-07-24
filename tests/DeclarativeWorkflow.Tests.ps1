@@ -324,9 +324,6 @@ BeforeAll {
         $run = Copy-DeclarativeWorkflowValue $Request.run
         $event = $Request.event
         $durableProofs = Copy-DeclarativeWorkflowValue $Request.durable_proofs
-        if ([string]$event.type -ceq 'cancel') {
-            $durableProofs.cancellation_proofs = @($durableProofs.cancellation_proofs) + @($event.cancellation)
-        }
         Assert-TestWorkflowReducerSnapshot -Run $run -DurableProofs $durableProofs
         $node = if (Test-DeclarativeWorkflowFieldExists -InputObject $event -Name 'node_id') { $run.nodes[[string]$event.node_id] } else { $null }
         switch ([string]$event.type) {
@@ -483,7 +480,8 @@ BeforeAll {
     function New-TestCancelledRun {
         $run = New-TestRun
         $cancellation = New-TestCancellationProof
-        Invoke-DeclarativeWorkflowTransition -Run $run -Event ([ordered]@{ type = 'cancel'; cancellation = $cancellation })
+        Invoke-DeclarativeWorkflowTransition -Run $run -Event ([ordered]@{ type = 'cancel'; cancellation = $cancellation }) `
+            -DurableProofs (New-TestDurableProofs -CancellationProofs @($cancellation))
     }
 
     function New-TestAcceptedReceipt {
@@ -556,15 +554,18 @@ Describe 'TASK-659 declarative workflow runtime' -Tag 'unit' {
         (Join-WinsmuxControlPlaneText -Arguments (Get-WinsmuxControlPlaneArguments -CommandTarget 'legacy task' -CommandRest @('--workflow-action', 'start'))) | Should -Be 'legacy task --workflow-action start'
     }
 
-    It 'A01 accepts only the closed start and resume argument sets' {
+    It 'A01 AE01 accepts only the closed start resume and cancel argument sets' {
         $common = @('--run-id', 'run-123', '--generation-id', 'generation-123', '--config-fingerprint', ('sha256:' + ('a' * 64)), '--source-head', ('b' * 40), '--task-file', 'task.txt', '--json')
         $start = ConvertTo-WinsmuxDeclarativePipelineArguments -CommandTarget '--workflow-action' -CommandRest (@('start', '--recipe-id', 'bugfix-two-slot', '--workflow-id', 'bugfix') + $common)
         $resume = ConvertTo-WinsmuxDeclarativePipelineArguments -CommandTarget '--workflow-action' -CommandRest (@('resume') + $common)
+        $cancel = ConvertTo-WinsmuxDeclarativePipelineArguments -CommandTarget '--workflow-action' -CommandRest (@('cancel') + $common)
         $start.workflow_action | Should -Be 'start'
         $resume.workflow_action | Should -Be 'resume'
+        $cancel.workflow_action | Should -Be 'cancel'
         { ConvertTo-WinsmuxDeclarativePipelineArguments -CommandTarget '--workflow-action' -CommandRest (@('start', '--recipe-id', 'bugfix-two-slot', '--workflow-id', 'bugfix') + $common + @('--run-id', 'other')) } | Should -Throw '*Duplicate*'
         { ConvertTo-WinsmuxDeclarativePipelineArguments -CommandTarget '--workflow-action' -CommandRest (@('resume') + $common + @('positional')) } | Should -Throw '*Unknown or positional*'
         { ConvertTo-WinsmuxDeclarativePipelineArguments -CommandTarget '--workflow-action' -CommandRest (@('resume') + $common + @('--unknown', 'x')) } | Should -Throw '*Unknown*'
+        { ConvertTo-WinsmuxDeclarativePipelineArguments -CommandTarget '--workflow-action' -CommandRest (@('cancel', '--recipe-id', 'bugfix-two-slot') + $common) } | Should -Throw '*persisted recipe and workflow identity*'
 
         $bridge = Join-Path $script:RepoRoot 'scripts\winsmux-core.ps1'
         $invalidCases = [Collections.Generic.List[object]]::new()
@@ -589,6 +590,184 @@ Describe 'TASK-659 declarative workflow runtime' -Tag 'unit' {
             $payload.status | Should -Be 'rejected'
             $exitCode | Should -Be 1
         }
+    }
+
+    It 'AE02 AE04 cancels a blocked durable run without execution admission and makes response-loss retry byte-idempotent' {
+        $project = Join-Path $TestDrive 'ae02-public-cancel'
+        $taskFile = Join-Path $TestDrive 'ae02-public-cancel-task.txt'
+        [IO.File]::WriteAllText($taskFile, 'Implement TASK-659 safely.', [Text.UTF8Encoding]::new($false))
+        $run = New-TestBlockedRun
+        Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $run -CreateNew | Out-Null
+        $lockPath = New-DeclarativeWorkflowRunLock -ProjectDir $project -Run $run
+        $statePath = Resolve-DeclarativeWorkflowOwnedRunPath -ProjectDir $project -RunId 'run-123' -LeafName 'state.json'
+        $proofPath = Resolve-DeclarativeWorkflowDurableProofPath -ProjectDir $project -RunId 'run-123' -Kind Cancellation
+
+        Mock Get-TeamPipelineDeclarativeProjectHead { throw 'cancel must not inspect current checkout HEAD' }
+        Mock Read-TeamPipelineManifest { throw 'cancel must not read the live manifest' }
+        Mock Invoke-TeamPipelineWorkspacePlanOnce { throw 'cancel must not reconstruct the workflow plan' }
+        Mock Resolve-TeamPipelineDeclarativeRuntimeLease { throw 'cancel must not resolve a live pane' }
+        Mock Invoke-TeamPipelineDeclarativeDispatch { throw 'cancel must not dispatch' }
+
+        $result = Invoke-TeamPipelineDeclarativeWorkflow -Action cancel -RunId 'run-123' -GenerationId 'generation-123' `
+            -ConfigFingerprint ('sha256:' + ('a' * 64)) -SourceHead ('b' * 40) -TaskFile $taskFile -ProjectDir $project
+
+        $result.status | Should -Be 'accepted'
+        $result.state | Should -Be 'cancelled'
+        Test-Path -LiteralPath $proofPath -PathType Leaf | Should -BeTrue
+        Test-Path -LiteralPath $lockPath -PathType Leaf | Should -BeFalse
+        $persisted = Read-DeclarativeWorkflowRunState -ProjectDir $project -RunId 'run-123'
+        $persisted.state | Should -Be 'cancelled'
+        $persisted.cleanup_journal[0].state | Should -Be 'succeeded'
+        $stateBeforeRetry = [IO.File]::ReadAllBytes($statePath)
+        $proofBeforeRetry = [IO.File]::ReadAllBytes($proofPath)
+
+        $retry = Invoke-TeamPipelineDeclarativeWorkflow -Action cancel -RunId 'run-123' -GenerationId 'generation-123' `
+            -ConfigFingerprint ('sha256:' + ('a' * 64)) -SourceHead ('b' * 40) -TaskFile $taskFile -ProjectDir $project
+
+        $retry.status | Should -Be 'accepted'
+        $retry.state | Should -Be 'cancelled'
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($statePath)) | Should -BeExactly ([Convert]::ToBase64String($stateBeforeRetry))
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($proofPath)) | Should -BeExactly ([Convert]::ToBase64String($proofBeforeRetry))
+        Should -Invoke Get-TeamPipelineDeclarativeProjectHead -Times 0 -Exactly
+        Should -Invoke Read-TeamPipelineManifest -Times 0 -Exactly
+        Should -Invoke Invoke-TeamPipelineWorkspacePlanOnce -Times 0 -Exactly
+        Should -Invoke Resolve-TeamPipelineDeclarativeRuntimeLease -Times 0 -Exactly
+        Should -Invoke Invoke-TeamPipelineDeclarativeDispatch -Times 0 -Exactly
+    }
+
+    It 'AE02 rejects task confirmation and terminal outcomes before cancellation effects' {
+        $exactTaskFile = Join-Path $TestDrive 'ae02-negative-exact-task.txt'
+        $wrongTaskFile = Join-Path $TestDrive 'ae02-negative-wrong-task.txt'
+        [IO.File]::WriteAllText($exactTaskFile, 'Implement TASK-659 safely.', [Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($wrongTaskFile, 'Different task.', [Text.UTF8Encoding]::new($false))
+
+        $negativeCases = @(
+            [PSCustomObject]@{ Name = 'task-mismatch'; TaskFile = $wrongTaskFile; SourceHead = ('b' * 40) },
+            [PSCustomObject]@{ Name = 'confirmation-mismatch'; TaskFile = $exactTaskFile; SourceHead = ('c' * 40) }
+        )
+        foreach ($case in $negativeCases) {
+            $project = Join-Path $TestDrive ("ae02-" + $case.Name)
+            $run = New-TestBlockedRun
+            Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $run -CreateNew | Out-Null
+            $lockPath = New-DeclarativeWorkflowRunLock -ProjectDir $project -Run $run
+            $statePath = Resolve-DeclarativeWorkflowOwnedRunPath -ProjectDir $project -RunId 'run-123' -LeafName 'state.json'
+            $stateBefore = [IO.File]::ReadAllBytes($statePath)
+            $lockBefore = [IO.File]::ReadAllBytes($lockPath)
+
+            {
+                Invoke-TeamPipelineDeclarativeWorkflow -Action cancel -RunId 'run-123' -GenerationId 'generation-123' `
+                    -ConfigFingerprint ('sha256:' + ('a' * 64)) -SourceHead $case.SourceHead `
+                    -TaskFile $case.TaskFile -ProjectDir $project
+            } | Should -Throw -Because $case.Name
+
+            [Convert]::ToBase64String([IO.File]::ReadAllBytes($statePath)) | Should -BeExactly ([Convert]::ToBase64String($stateBefore)) -Because $case.Name
+            [Convert]::ToBase64String([IO.File]::ReadAllBytes($lockPath)) | Should -BeExactly ([Convert]::ToBase64String($lockBefore)) -Because $case.Name
+            Test-Path -LiteralPath (Resolve-DeclarativeWorkflowDurableProofPath -ProjectDir $project -RunId 'run-123' -Kind Cancellation) -PathType Leaf |
+                Should -BeFalse -Because $case.Name
+        }
+
+        foreach ($terminalRun in @((New-TestSucceededRun), (New-TestFailedRun))) {
+            $script:ae02TerminalSaves = 0
+            $script:ae02TerminalReleases = 0
+            {
+                Invoke-TeamPipelineDeclarativeCancellationTransaction -ProjectDir (Join-Path $TestDrive ('ae02-terminal-' + [guid]::NewGuid().ToString('N'))) `
+                    -Run $terminalRun -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) `
+                    -SaveRun { $script:ae02TerminalSaves++ } -ReleaseLock { $script:ae02TerminalReleases++ } `
+                    -ResolveAcknowledgement {
+                        param($candidate, $nodeId)
+                        New-TestAcknowledgement -NodeId $nodeId -PaneId $(if ($nodeId -ceq 'inspect') { '%2' } else { '%3' })
+                    } -ResolveCancellation { @() }
+            } | Should -Throw '*cannot be cancelled*'
+            $script:ae02TerminalSaves | Should -Be 0
+            $script:ae02TerminalReleases | Should -Be 0
+        }
+    }
+
+    It 'AE03 rejects a persisted cancelled state without its external proof before cleanup' {
+        $project = Join-Path $TestDrive 'ae03-missing-cancel-proof'
+        $taskFile = Join-Path $TestDrive 'ae03-missing-cancel-proof-task.txt'
+        [IO.File]::WriteAllText($taskFile, 'Implement TASK-659 safely.', [Text.UTF8Encoding]::new($false))
+        $run = New-TestCancelledRun
+        Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $run -CreateNew | Out-Null
+        $lockPath = New-DeclarativeWorkflowRunLock -ProjectDir $project -Run $run
+        $statePath = Resolve-DeclarativeWorkflowOwnedRunPath -ProjectDir $project -RunId 'run-123' -LeafName 'state.json'
+        $stateBefore = [IO.File]::ReadAllBytes($statePath)
+        $lockBefore = [IO.File]::ReadAllBytes($lockPath)
+
+        {
+            Invoke-TeamPipelineDeclarativeWorkflow -Action cancel -RunId 'run-123' -GenerationId 'generation-123' `
+                -ConfigFingerprint ('sha256:' + ('a' * 64)) -SourceHead ('b' * 40) -TaskFile $taskFile -ProjectDir $project
+        } | Should -Throw '*external durable cancellation proof required*'
+
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($statePath)) | Should -BeExactly ([Convert]::ToBase64String($stateBefore))
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($lockPath)) | Should -BeExactly ([Convert]::ToBase64String($lockBefore))
+    }
+
+    It 'AE04 preserves proof-first crash state and reuses the immutable proof on retry' {
+        $project = Join-Path $TestDrive 'ae04-proof-first-retry'
+        $run = New-TestBlockedRun
+        Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $run -CreateNew | Out-Null
+        $lockPath = New-DeclarativeWorkflowRunLock -ProjectDir $project -Run $run
+        $resolveAcknowledgement = {
+            param($candidate, $nodeId)
+            Resolve-TeamPipelineDeclarativeAcknowledgement -Run $candidate -NodeId $nodeId -ProjectDir $project -SessionName ''
+        }
+        $resolveCancellation = {
+            param($candidate)
+            Resolve-TeamPipelineDeclarativeCancellation -Run $candidate -ProjectDir $project -SessionName ''
+        }
+
+        {
+            Invoke-TeamPipelineDeclarativeCancellationTransaction -ProjectDir $project -Run $run `
+                -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) `
+                -SaveRun { throw 'ae04_state_save_cut' } -ReleaseLock { throw 'cleanup must not start before cancelled state save' } `
+                -ResolveAcknowledgement $resolveAcknowledgement -ResolveCancellation $resolveCancellation
+        } | Should -Throw '*ae04_state_save_cut*'
+
+        $proofPath = Resolve-DeclarativeWorkflowDurableProofPath -ProjectDir $project -RunId 'run-123' -Kind Cancellation
+        Test-Path -LiteralPath $proofPath -PathType Leaf | Should -BeTrue
+        $proofBeforeRetry = [IO.File]::ReadAllBytes($proofPath)
+        (Read-DeclarativeWorkflowRunState -ProjectDir $project -RunId 'run-123').state | Should -Be 'blocked'
+        Test-Path -LiteralPath $lockPath -PathType Leaf | Should -BeTrue
+
+        $retryRun = Read-DeclarativeWorkflowRunState -ProjectDir $project -RunId 'run-123'
+        $after = Invoke-TeamPipelineDeclarativeCancellationTransaction -ProjectDir $project -Run $retryRun `
+            -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) `
+            -SaveRun { param($candidate) Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $candidate | Out-Null } `
+            -ReleaseLock { param($path) Remove-Item -LiteralPath $path -Force -ErrorAction Stop } `
+            -ResolveAcknowledgement $resolveAcknowledgement -ResolveCancellation $resolveCancellation
+
+        $after.state | Should -Be 'cancelled'
+        $after.cleanup_journal[0].state | Should -Be 'succeeded'
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($proofPath)) | Should -BeExactly ([Convert]::ToBase64String($proofBeforeRetry))
+        Test-Path -LiteralPath $lockPath -PathType Leaf | Should -BeFalse
+    }
+
+    It 'AE04 serializes concurrent public cancellation before proof state or lock mutation' {
+        $project = Join-Path $TestDrive 'ae04-cancel-serialization'
+        $taskFile = Join-Path $TestDrive 'ae04-cancel-serialization-task.txt'
+        [IO.File]::WriteAllText($taskFile, 'Implement TASK-659 safely.', [Text.UTF8Encoding]::new($false))
+        $run = New-TestBlockedRun
+        Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $run -CreateNew | Out-Null
+        $lockPath = New-DeclarativeWorkflowRunLock -ProjectDir $project -Run $run
+        $statePath = Resolve-DeclarativeWorkflowOwnedRunPath -ProjectDir $project -RunId 'run-123' -LeafName 'state.json'
+        $stateBefore = [IO.File]::ReadAllBytes($statePath)
+        $lockBefore = [IO.File]::ReadAllBytes($lockPath)
+
+        $owner = Enter-DeclarativeWorkflowInvocationLease -ProjectDir $project -RunId 'run-123'
+        try {
+            {
+                Invoke-TeamPipelineDeclarativeWorkflow -Action cancel -RunId 'run-123' -GenerationId 'generation-123' `
+                    -ConfigFingerprint ('sha256:' + ('a' * 64)) -SourceHead ('b' * 40) -TaskFile $taskFile -ProjectDir $project
+            } | Should -Throw '*workflow_run_invocation_busy*'
+        } finally {
+            $owner.Dispose()
+        }
+
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($statePath)) | Should -BeExactly ([Convert]::ToBase64String($stateBefore))
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($lockPath)) | Should -BeExactly ([Convert]::ToBase64String($lockBefore))
+        Test-Path -LiteralPath (Resolve-DeclarativeWorkflowDurableProofPath -ProjectDir $project -RunId 'run-123' -Kind Cancellation) -PathType Leaf |
+            Should -BeFalse
     }
 
     It 'A02 invokes workspace-plan exactly once and consumes its one strict JSON object' {

@@ -1579,12 +1579,31 @@ fn h09_embedded_completion_proof_never_substitutes_for_external_durable_evidence
 fn h10_cancelled_state_requires_an_external_typed_cancellation_proof() {
     let run = reduce_workflow_state_value(&reducer_bootstrap_request()).unwrap();
     let cancellation = exact_cancellation();
-    let cancelled = reducer_transition_with_proofs(
-        run,
+    reducer_transition_with_proofs(
+        run.clone(),
         serde_json::json!({"type":"cancel","cancellation":cancellation.clone()}),
         no_durable_proofs(),
     )
-    .expect("the typed cancel event proof is external authority for this transition");
+    .expect_err("the typed cancel event cannot create its own external authority");
+
+    let external = serde_json::json!({
+        "completion_acknowledgements": [],
+        "cancellation_proofs": [cancellation.clone(), cancellation.clone()]
+    });
+    let mut mismatched_event = cancellation.clone();
+    mismatched_event["evidence_ref"] = serde_json::json!("workflow-cancel:another-run");
+    reducer_transition_with_proofs(
+        run.clone(),
+        serde_json::json!({"type":"cancel","cancellation":mismatched_event}),
+        external.clone(),
+    )
+    .expect_err("the cancel event must exactly match the external durable proof");
+    let cancelled = reducer_transition_with_proofs(
+        run,
+        serde_json::json!({"type":"cancel","cancellation":cancellation.clone()}),
+        external.clone(),
+    )
+    .expect("one exact external cancellation proof authorizes the transition");
     assert_eq!(cancelled["state"], "cancelled");
 
     reducer_transition_with_proofs(
@@ -1594,10 +1613,6 @@ fn h10_cancelled_state_requires_an_external_typed_cancellation_proof() {
     )
     .expect_err("persisted cancellation cannot prove itself");
 
-    let external = serde_json::json!({
-        "completion_acknowledgements": [],
-        "cancellation_proofs": [cancellation.clone(), cancellation]
-    });
     let validated = reducer_transition_with_proofs(
         cancelled,
         serde_json::json!({"type":"validate"}),
