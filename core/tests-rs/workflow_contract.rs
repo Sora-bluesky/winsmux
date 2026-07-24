@@ -77,17 +77,11 @@ fn policy_slots() -> Vec<SlotCapabilities> {
     ]
 }
 
-fn workflow_payload_from_plan(
-    yaml: &str,
-    plan: &workspace_recipe::NormalizedWorkspacePlan,
-) -> std::io::Result<Option<serde_json::Value>> {
-    let root = parse_workspace_yaml(yaml)?;
-    let arguments = [
-        "--workflow-id".to_string(),
-        "bugfix".to_string(),
-        "--run-id".to_string(),
-        "run-123".to_string(),
-    ];
+fn workflow_plan_cli_options(arguments: &[&str]) -> std::io::Result<WorkflowPlanCliOptions> {
+    let arguments = arguments
+        .iter()
+        .map(|argument| argument.to_string())
+        .collect::<Vec<_>>();
     let argument_refs = arguments.iter().collect::<Vec<_>>();
     let mut options = WorkflowPlanCliOptions::default();
     let mut index = 0;
@@ -95,6 +89,15 @@ fn workflow_payload_from_plan(
         index = options.parse_option(&argument_refs, index)?;
     }
     options.validate()?;
+    Ok(options)
+}
+
+fn workflow_payload_from_plan(
+    yaml: &str,
+    plan: &workspace_recipe::NormalizedWorkspacePlan,
+) -> std::io::Result<Option<serde_json::Value>> {
+    let root = parse_workspace_yaml(yaml)?;
+    let options = workflow_plan_cli_options(&["--workflow-id", "bugfix", "--run-id", "run-123"])?;
     options.normalized_payload(&root, plan)
 }
 
@@ -102,6 +105,37 @@ fn workflow_with_application_policy() -> String {
     format!(
         "{VALID}\nworkspace-recipes:\n  bugfix-two-slot:\n    schema-version: 1\n    panes:\n      - pane-key: implement\n        workflow-role: implementer\n        slot-ref: worker-1\n        requires-capabilities: [file-edit]\n        region: main\n        worktree:\n          mode: managed\n          name-template: \"{{{{workflow-id}}}}-implement\"\n      - pane-key: verify\n        workflow-role: verifier\n        slot-ref: worker-2\n        requires-capabilities: [review]\n        region: side\n        worktree:\n          mode: read-only-reference\n    startup-actions:\n      - action-id: prepare-implement-worktree\n        kind: ensure-managed-worktree\n        pane-ref: implement\n      - action-id: start-implement-slot\n        kind: ensure-slot-ready\n        pane-ref: implement\n      - action-id: start-verify-slot\n        kind: ensure-slot-ready\n        pane-ref: verify\n"
     )
+}
+
+#[test]
+fn ag01_workflow_id_only_remains_preview_until_run_id_selects_application() {
+    let preview_root =
+        parse_workspace_yaml("config-version: 1\n").expect("parse recipe-preview root");
+    let preview =
+        workflow_plan_cli_options(&["--workflow-id", "issue-1204"]).expect("preview options");
+    assert!(
+        preview
+            .application_capability_requirements(&preview_root, "bugfix-two-slot")
+            .expect("workflow-id-only preview must not inspect workflows")
+            .is_empty(),
+        "workflow-id alone is recipe identity, not application selection"
+    );
+
+    let run_only = workflow_plan_cli_options(&["--run-id", "run-123"])
+        .expect_err("run-id alone must be rejected");
+    assert!(run_only
+        .to_string()
+        .contains("workspace-plan --run-id requires --workflow-id"));
+
+    let application_root = parse_workspace_yaml(VALID).expect("parse workflow application root");
+    let application =
+        workflow_plan_cli_options(&["--workflow-id", "bugfix", "--run-id", "run-123"])
+            .expect("application options");
+    let requirements = application
+        .application_capability_requirements(&application_root, "bugfix-two-slot")
+        .expect("workflow+run must compile action capabilities");
+    assert_eq!(requirements["implement"], vec!["file-edit".to_string()]);
+    assert_eq!(requirements["verify"], vec!["review".to_string()]);
 }
 
 #[test]

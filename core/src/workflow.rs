@@ -53,12 +53,16 @@ impl WorkflowPlanCliOptions {
         self.workflow_id.as_deref()
     }
 
+    fn application_selection(&self) -> Option<(&str, &str)> {
+        self.workflow_id.as_deref().zip(self.run_id.as_deref())
+    }
+
     pub(crate) fn application_capability_requirements(
         &self,
         root: &serde_yaml::Value,
         selected_recipe_id: &str,
     ) -> io::Result<BTreeMap<String, Vec<String>>> {
-        let Some(workflow_id) = self.workflow_id.as_deref() else {
+        let Some((workflow_id, _)) = self.application_selection() else {
             return Ok(BTreeMap::new());
         };
         workflow_application_capability_requirements_from_value(
@@ -73,7 +77,7 @@ impl WorkflowPlanCliOptions {
         root: &serde_yaml::Value,
         plan: &NormalizedWorkspacePlan,
     ) -> io::Result<Option<serde_json::Value>> {
-        let (Some(workflow_id), Some(run_id)) = (&self.workflow_id, &self.run_id) else {
+        let Some((workflow_id, run_id)) = self.application_selection() else {
             return Ok(None);
         };
         let application_contract = normalized_application_contract(plan)?;

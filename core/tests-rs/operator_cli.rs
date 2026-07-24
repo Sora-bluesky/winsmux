@@ -1567,6 +1567,8 @@ fn run_workspace_plan(project_dir: &std::path::Path, recipe_id: &str) -> std::pr
             recipe_id,
             "--workflow-id",
             "task-658",
+            "--run-id",
+            "task-658-run",
             "--json",
             "--project-dir",
         ])
