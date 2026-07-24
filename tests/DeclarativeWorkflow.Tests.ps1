@@ -497,6 +497,24 @@ BeforeAll {
             acknowledgement = $acknowledgement
         }
     }
+
+    function New-AKCancellationEvidenceFixture {
+        param(
+            [Parameter(Mandatory = $true)][string]$Project,
+            [Parameter(Mandatory = $true)]$Run
+        )
+
+        Save-DeclarativeWorkflowRunState -ProjectDir $Project -Run $Run -CreateNew | Out-Null
+        $lockPath = New-DeclarativeWorkflowRunLock -ProjectDir $Project -Run $Run
+        [PSCustomObject]@{
+            Project = $Project
+            Run = $Run
+            StatePath = Resolve-DeclarativeWorkflowOwnedRunPath -ProjectDir $Project -RunId 'run-123' -LeafName 'state.json'
+            LockPath = $lockPath
+            ProofPath = Resolve-DeclarativeWorkflowDurableProofPath -ProjectDir $Project -RunId 'run-123' -Kind Cancellation
+            ConflictPath = Resolve-DeclarativeWorkflowDurableProofConflictPath -ProjectDir $Project -RunId 'run-123' -Kind Cancellation
+        }
+    }
 }
 
 Describe 'TASK-659 declarative workflow runtime' -Tag 'unit' {
@@ -741,6 +759,254 @@ Describe 'TASK-659 declarative workflow runtime' -Tag 'unit' {
         $after.cleanup_journal[0].state | Should -Be 'succeeded'
         [Convert]::ToBase64String([IO.File]::ReadAllBytes($proofPath)) | Should -BeExactly ([Convert]::ToBase64String($proofBeforeRetry))
         Test-Path -LiteralPath $lockPath -PathType Leaf | Should -BeFalse
+    }
+
+    It 'AJ02 public resume reconciles a proof-first cancellation cut before every mutable caller or runtime admission' {
+        $project = Join-Path $TestDrive 'ai01-public-resume-cancel-cut'
+        $taskFile = Join-Path $TestDrive 'ai01-public-resume-missing-task.txt'
+        $run = New-TestBlockedRun
+        Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $run -CreateNew | Out-Null
+        $lockPath = New-DeclarativeWorkflowRunLock -ProjectDir $project -Run $run
+        $cancellation = New-TestCancellationProof
+        $proofPath = Write-DeclarativeWorkflowDurableProof -ProjectDir $project -Run $run `
+            -Kind Cancellation -Proof $cancellation
+        $proofBeforeResume = [IO.File]::ReadAllBytes($proofPath)
+
+        Mock Read-DeclarativeWorkflowTaskFile { throw 'orphan cancellation proof must precede mutable task input' }
+        Mock Get-TeamPipelineDeclarativeProjectHead { throw 'orphan cancellation proof must precede current HEAD' }
+        Mock Read-TeamPipelineManifest { throw 'orphan cancellation proof must precede the live manifest' }
+        Mock Get-TeamPipelineSessionName { throw 'orphan cancellation proof must precede live session identity' }
+        Mock Invoke-TeamPipelineWorkspacePlanOnce { throw 'orphan cancellation proof must precede workspace reconstruction' }
+        Mock Assert-TeamPipelineDeclarativeAdmission { throw 'orphan cancellation proof must precede application admission' }
+        Mock Assert-TeamPipelineDeclarativeExecutionAdmission { throw 'orphan cancellation proof must precede execution admission' }
+        Mock Resolve-TeamPipelineDeclarativeRuntimeLease {
+            throw 'orphan cancellation proof must stop runtime resolution'
+        }
+        Mock Invoke-TeamPipelineDeclarativeDispatch {
+            throw 'orphan cancellation proof must stop public resume dispatch'
+        }
+
+        $result = Invoke-TeamPipelineDeclarativeWorkflow -Action resume -RunId 'run-123' `
+            -GenerationId 'caller-generation-is-stale' -ConfigFingerprint ('sha256:' + ('f' * 64)) `
+            -SourceHead ('e' * 40) -TaskFile $taskFile -ProjectDir $project
+
+        $result.status | Should -BeExactly 'accepted'
+        $result.state | Should -BeExactly 'cancelled'
+        $persisted = Read-DeclarativeWorkflowRunState -ProjectDir $project -RunId 'run-123'
+        $persisted.state | Should -BeExactly 'cancelled'
+        $persisted.cleanup_journal[0].state | Should -BeExactly 'succeeded'
+        Test-Path -LiteralPath $lockPath -PathType Leaf | Should -BeFalse
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($proofPath)) |
+            Should -BeExactly ([Convert]::ToBase64String($proofBeforeResume))
+        Should -Invoke Read-DeclarativeWorkflowTaskFile -Times 0 -Exactly
+        Should -Invoke Get-TeamPipelineDeclarativeProjectHead -Times 0 -Exactly
+        Should -Invoke Read-TeamPipelineManifest -Times 0 -Exactly
+        Should -Invoke Get-TeamPipelineSessionName -Times 0 -Exactly
+        Should -Invoke Invoke-TeamPipelineWorkspacePlanOnce -Times 0 -Exactly
+        Should -Invoke Assert-TeamPipelineDeclarativeAdmission -Times 0 -Exactly
+        Should -Invoke Assert-TeamPipelineDeclarativeExecutionAdmission -Times 0 -Exactly
+        Should -Invoke Resolve-TeamPipelineDeclarativeRuntimeLease -Times 0 -Exactly
+        Should -Invoke Invoke-TeamPipelineDeclarativeDispatch -Times 0 -Exactly
+    }
+
+    It 'AK01 public resume rejects an embedded cancellation proof without its external counterpart before mutable admission' {
+        $fixture = New-AKCancellationEvidenceFixture -Project (Join-Path $TestDrive 'ak01-missing-counterpart') `
+            -Run (New-TestCancelledRun)
+        $stateBefore = [IO.File]::ReadAllBytes($fixture.StatePath)
+        $lockBefore = [IO.File]::ReadAllBytes($fixture.LockPath)
+
+        Mock Read-DeclarativeWorkflowTaskFile { throw 'missing counterpart reached mutable task input' }
+        Mock Get-TeamPipelineDeclarativeProjectHead { throw 'missing counterpart reached current HEAD' }
+        Mock Read-TeamPipelineManifest { throw 'missing counterpart reached live manifest' }
+        Mock Invoke-TeamPipelineWorkspacePlanOnce { throw 'missing counterpart reached workspace reconstruction' }
+        Mock Assert-TeamPipelineDeclarativeAdmission { throw 'missing counterpart reached application admission' }
+        Mock Assert-TeamPipelineDeclarativeExecutionAdmission { throw 'missing counterpart reached execution admission' }
+        Mock Resolve-TeamPipelineDeclarativeRuntimeLease { throw 'missing counterpart reached runtime resolution' }
+        Mock Invoke-TeamPipelineDeclarativeDispatch { throw 'missing counterpart reached dispatch' }
+        Mock Invoke-TeamPipelineDeclarativeTerminalRecovery { throw 'missing counterpart reached terminal cleanup' }
+        Mock Invoke-DeclarativeWorkflowCleanup { throw 'missing counterpart reached cleanup' }
+
+        {
+            Invoke-TeamPipelineDeclarativeWorkflow -Action resume -RunId 'run-123' `
+                -GenerationId 'caller-generation-is-stale' -ConfigFingerprint ('sha256:' + ('f' * 64)) `
+                -SourceHead ('e' * 40) -TaskFile (Join-Path $TestDrive 'missing-task.txt') -ProjectDir $fixture.Project
+        } | Should -Throw '*external durable cancellation proof required*'
+
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($fixture.StatePath)) |
+            Should -BeExactly ([Convert]::ToBase64String($stateBefore))
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($fixture.LockPath)) |
+            Should -BeExactly ([Convert]::ToBase64String($lockBefore))
+        Test-Path -LiteralPath $fixture.ProofPath -PathType Leaf | Should -BeFalse
+        Should -Invoke Read-DeclarativeWorkflowTaskFile -Times 0 -Exactly
+        Should -Invoke Get-TeamPipelineDeclarativeProjectHead -Times 0 -Exactly
+        Should -Invoke Read-TeamPipelineManifest -Times 0 -Exactly
+        Should -Invoke Invoke-TeamPipelineWorkspacePlanOnce -Times 0 -Exactly
+        Should -Invoke Assert-TeamPipelineDeclarativeAdmission -Times 0 -Exactly
+        Should -Invoke Assert-TeamPipelineDeclarativeExecutionAdmission -Times 0 -Exactly
+        Should -Invoke Resolve-TeamPipelineDeclarativeRuntimeLease -Times 0 -Exactly
+        Should -Invoke Invoke-TeamPipelineDeclarativeDispatch -Times 0 -Exactly
+        Should -Invoke Invoke-TeamPipelineDeclarativeTerminalRecovery -Times 0 -Exactly
+        Should -Invoke Invoke-DeclarativeWorkflowCleanup -Times 0 -Exactly
+    }
+
+    It 'AK02 public resume rejects malformed cancellation evidence before mutable admission' {
+        $fixture = New-AKCancellationEvidenceFixture -Project (Join-Path $TestDrive 'ak02-malformed') `
+            -Run (New-TestBlockedRun)
+        $proofDirectory = Split-Path -Parent $fixture.ProofPath
+        [IO.Directory]::CreateDirectory($proofDirectory) | Out-Null
+        [IO.File]::WriteAllText($fixture.ProofPath, '{', [Text.UTF8Encoding]::new($false))
+        $stateBefore = [IO.File]::ReadAllBytes($fixture.StatePath)
+        $lockBefore = [IO.File]::ReadAllBytes($fixture.LockPath)
+        $proofBefore = [IO.File]::ReadAllBytes($fixture.ProofPath)
+
+        Mock Read-DeclarativeWorkflowTaskFile { throw 'malformed proof reached mutable task input' }
+        Mock Get-TeamPipelineDeclarativeProjectHead { throw 'malformed proof reached current HEAD' }
+        Mock Read-TeamPipelineManifest { throw 'malformed proof reached live manifest' }
+        Mock Invoke-TeamPipelineWorkspacePlanOnce { throw 'malformed proof reached workspace reconstruction' }
+        Mock Assert-TeamPipelineDeclarativeAdmission { throw 'malformed proof reached application admission' }
+        Mock Assert-TeamPipelineDeclarativeExecutionAdmission { throw 'malformed proof reached execution admission' }
+        Mock Resolve-TeamPipelineDeclarativeRuntimeLease { throw 'malformed proof reached runtime resolution' }
+        Mock Invoke-TeamPipelineDeclarativeDispatch { throw 'malformed proof reached dispatch' }
+        Mock Invoke-TeamPipelineDeclarativeTerminalRecovery { throw 'malformed proof reached terminal cleanup' }
+        Mock Invoke-DeclarativeWorkflowCleanup { throw 'malformed proof reached cleanup' }
+
+        {
+            Invoke-TeamPipelineDeclarativeWorkflow -Action resume -RunId 'run-123' `
+                -GenerationId 'caller-generation-is-stale' -ConfigFingerprint ('sha256:' + ('f' * 64)) `
+                -SourceHead ('e' * 40) -TaskFile (Join-Path $TestDrive 'missing-task.txt') -ProjectDir $fixture.Project
+        } | Should -Throw '*durable proof is malformed*'
+
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($fixture.StatePath)) |
+            Should -BeExactly ([Convert]::ToBase64String($stateBefore))
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($fixture.LockPath)) |
+            Should -BeExactly ([Convert]::ToBase64String($lockBefore))
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($fixture.ProofPath)) |
+            Should -BeExactly ([Convert]::ToBase64String($proofBefore))
+        Should -Invoke Read-DeclarativeWorkflowTaskFile -Times 0 -Exactly
+        Should -Invoke Get-TeamPipelineDeclarativeProjectHead -Times 0 -Exactly
+        Should -Invoke Read-TeamPipelineManifest -Times 0 -Exactly
+        Should -Invoke Invoke-TeamPipelineWorkspacePlanOnce -Times 0 -Exactly
+        Should -Invoke Assert-TeamPipelineDeclarativeAdmission -Times 0 -Exactly
+        Should -Invoke Assert-TeamPipelineDeclarativeExecutionAdmission -Times 0 -Exactly
+        Should -Invoke Resolve-TeamPipelineDeclarativeRuntimeLease -Times 0 -Exactly
+        Should -Invoke Invoke-TeamPipelineDeclarativeDispatch -Times 0 -Exactly
+        Should -Invoke Invoke-TeamPipelineDeclarativeTerminalRecovery -Times 0 -Exactly
+        Should -Invoke Invoke-DeclarativeWorkflowCleanup -Times 0 -Exactly
+    }
+
+    It 'AK03 public resume rejects conflicting cancellation evidence before mutable admission' {
+        $fixture = New-AKCancellationEvidenceFixture -Project (Join-Path $TestDrive 'ak03-conflict') `
+            -Run (New-TestBlockedRun)
+        Set-DeclarativeWorkflowDurableProofConflict -ProjectDir $fixture.Project -RunId 'run-123' -Kind Cancellation
+        $stateBefore = [IO.File]::ReadAllBytes($fixture.StatePath)
+        $lockBefore = [IO.File]::ReadAllBytes($fixture.LockPath)
+        $proofBefore = [IO.File]::ReadAllBytes($fixture.ConflictPath)
+
+        Mock Read-DeclarativeWorkflowTaskFile { throw 'conflict reached mutable task input' }
+        Mock Get-TeamPipelineDeclarativeProjectHead { throw 'conflict reached current HEAD' }
+        Mock Read-TeamPipelineManifest { throw 'conflict reached live manifest' }
+        Mock Invoke-TeamPipelineWorkspacePlanOnce { throw 'conflict reached workspace reconstruction' }
+        Mock Assert-TeamPipelineDeclarativeAdmission { throw 'conflict reached application admission' }
+        Mock Assert-TeamPipelineDeclarativeExecutionAdmission { throw 'conflict reached execution admission' }
+        Mock Resolve-TeamPipelineDeclarativeRuntimeLease { throw 'conflict reached runtime resolution' }
+        Mock Invoke-TeamPipelineDeclarativeDispatch { throw 'conflict reached dispatch' }
+        Mock Invoke-TeamPipelineDeclarativeTerminalRecovery { throw 'conflict reached terminal cleanup' }
+        Mock Invoke-DeclarativeWorkflowCleanup { throw 'conflict reached cleanup' }
+
+        {
+            Invoke-TeamPipelineDeclarativeWorkflow -Action resume -RunId 'run-123' `
+                -GenerationId 'caller-generation-is-stale' -ConfigFingerprint ('sha256:' + ('f' * 64)) `
+                -SourceHead ('e' * 40) -TaskFile (Join-Path $TestDrive 'missing-task.txt') -ProjectDir $fixture.Project
+        } | Should -Throw '*durable proof conflict*'
+
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($fixture.StatePath)) |
+            Should -BeExactly ([Convert]::ToBase64String($stateBefore))
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($fixture.LockPath)) |
+            Should -BeExactly ([Convert]::ToBase64String($lockBefore))
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($fixture.ConflictPath)) |
+            Should -BeExactly ([Convert]::ToBase64String($proofBefore))
+        Should -Invoke Read-DeclarativeWorkflowTaskFile -Times 0 -Exactly
+        Should -Invoke Get-TeamPipelineDeclarativeProjectHead -Times 0 -Exactly
+        Should -Invoke Read-TeamPipelineManifest -Times 0 -Exactly
+        Should -Invoke Invoke-TeamPipelineWorkspacePlanOnce -Times 0 -Exactly
+        Should -Invoke Assert-TeamPipelineDeclarativeAdmission -Times 0 -Exactly
+        Should -Invoke Assert-TeamPipelineDeclarativeExecutionAdmission -Times 0 -Exactly
+        Should -Invoke Resolve-TeamPipelineDeclarativeRuntimeLease -Times 0 -Exactly
+        Should -Invoke Invoke-TeamPipelineDeclarativeDispatch -Times 0 -Exactly
+        Should -Invoke Invoke-TeamPipelineDeclarativeTerminalRecovery -Times 0 -Exactly
+        Should -Invoke Invoke-DeclarativeWorkflowCleanup -Times 0 -Exactly
+    }
+
+    It 'AK04 public resume rejects identity-mismatched cancellation evidence before mutable admission' {
+        $fixture = New-AKCancellationEvidenceFixture -Project (Join-Path $TestDrive 'ak04-identity-mismatch') `
+            -Run (New-TestBlockedRun)
+        $proof = New-TestCancellationProof
+        $proof.source_head = ('c' * 40)
+        $proofDirectory = Split-Path -Parent $fixture.ProofPath
+        [IO.Directory]::CreateDirectory($proofDirectory) | Out-Null
+        [IO.File]::WriteAllText($fixture.ProofPath, ($proof | ConvertTo-Json -Compress -Depth 10), [Text.UTF8Encoding]::new($false))
+        $stateBefore = [IO.File]::ReadAllBytes($fixture.StatePath)
+        $lockBefore = [IO.File]::ReadAllBytes($fixture.LockPath)
+        $proofBefore = [IO.File]::ReadAllBytes($fixture.ProofPath)
+
+        Mock Read-DeclarativeWorkflowTaskFile { throw 'identity mismatch reached mutable task input' }
+        Mock Get-TeamPipelineDeclarativeProjectHead { throw 'identity mismatch reached current HEAD' }
+        Mock Read-TeamPipelineManifest { throw 'identity mismatch reached live manifest' }
+        Mock Invoke-TeamPipelineWorkspacePlanOnce { throw 'identity mismatch reached workspace reconstruction' }
+        Mock Assert-TeamPipelineDeclarativeAdmission { throw 'identity mismatch reached application admission' }
+        Mock Assert-TeamPipelineDeclarativeExecutionAdmission { throw 'identity mismatch reached execution admission' }
+        Mock Resolve-TeamPipelineDeclarativeRuntimeLease { throw 'identity mismatch reached runtime resolution' }
+        Mock Invoke-TeamPipelineDeclarativeDispatch { throw 'identity mismatch reached dispatch' }
+        Mock Invoke-TeamPipelineDeclarativeTerminalRecovery { throw 'identity mismatch reached terminal cleanup' }
+        Mock Invoke-DeclarativeWorkflowCleanup { throw 'identity mismatch reached cleanup' }
+
+        {
+            Invoke-TeamPipelineDeclarativeWorkflow -Action resume -RunId 'run-123' `
+                -GenerationId 'caller-generation-is-stale' -ConfigFingerprint ('sha256:' + ('f' * 64)) `
+                -SourceHead ('e' * 40) -TaskFile (Join-Path $TestDrive 'missing-task.txt') -ProjectDir $fixture.Project
+        } | Should -Throw '*conflicts with its derived identity*'
+
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($fixture.StatePath)) |
+            Should -BeExactly ([Convert]::ToBase64String($stateBefore))
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($fixture.LockPath)) |
+            Should -BeExactly ([Convert]::ToBase64String($lockBefore))
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($fixture.ProofPath)) |
+            Should -BeExactly ([Convert]::ToBase64String($proofBefore))
+        Should -Invoke Read-DeclarativeWorkflowTaskFile -Times 0 -Exactly
+        Should -Invoke Get-TeamPipelineDeclarativeProjectHead -Times 0 -Exactly
+        Should -Invoke Read-TeamPipelineManifest -Times 0 -Exactly
+        Should -Invoke Invoke-TeamPipelineWorkspacePlanOnce -Times 0 -Exactly
+        Should -Invoke Assert-TeamPipelineDeclarativeAdmission -Times 0 -Exactly
+        Should -Invoke Assert-TeamPipelineDeclarativeExecutionAdmission -Times 0 -Exactly
+        Should -Invoke Resolve-TeamPipelineDeclarativeRuntimeLease -Times 0 -Exactly
+        Should -Invoke Invoke-TeamPipelineDeclarativeDispatch -Times 0 -Exactly
+        Should -Invoke Invoke-TeamPipelineDeclarativeTerminalRecovery -Times 0 -Exactly
+        Should -Invoke Invoke-DeclarativeWorkflowCleanup -Times 0 -Exactly
+    }
+
+    It 'AJ01 gives only managed edit producers the local commit and clean-output contract' {
+        $run = New-TestRun
+        $managedInstruction = New-TeamPipelineDeclarativeCompletionInstruction -Run $run -NodeId 'inspect' `
+            -SessionName 'workflow-aj01' -Target 'worker-1' -PaneId '%2' -Role 'Builder'
+        $readOnlyInstruction = New-TeamPipelineDeclarativeCompletionInstruction -Run $run -NodeId 'verify' `
+            -SessionName 'workflow-aj01' -Target 'worker-2' -PaneId '%3' -Role 'Reviewer'
+
+        $managedInstruction | Should -Match 'explicit declarative managed completion'
+        $managedInstruction | Should -Match 'stage only the intended task files'
+        $managedInstruction | Should -Match 'git add'
+        $managedInstruction | Should -Match 'git commit'
+        $managedInstruction | Should -Match 'Conventional Commit'
+        $managedInstruction | Should -Match 'git status --porcelain=v1 --untracked-files=all'
+        $managedInstruction | Should -Match 'do not send the mailbox'
+        $managedInstruction.IndexOf('git commit', [StringComparison]::Ordinal) |
+            Should -BeLessThan $managedInstruction.IndexOf('winsmux mailbox-send', [StringComparison]::Ordinal)
+        $readOnlyInstruction | Should -Not -Match 'explicit declarative managed completion'
+        $readOnlyInstruction | Should -Not -Match 'git commit'
+
+        $builderTemplatePath = Join-Path $script:RepoRoot 'winsmux-core\agents\builder.sh'
+        $builderTemplate = [IO.File]::ReadAllText($builderTemplatePath, [Text.UTF8Encoding]::new($false, $true))
+        $builderTemplate | Should -Match 'explicit declarative managed completion instruction'
+        $builderTemplate | Should -Match 'never grants git push'
     }
 
     It 'AE04 serializes concurrent public cancellation before proof state or lock mutation' {
@@ -1324,6 +1590,31 @@ $envelope = $matches['payload'] | ConvertFrom-Json -ErrorAction Stop
         @($requests | Where-Object { $_.node_id -ceq 'inspect' }).Count | Should -Be 0
         @($requests | Where-Object { $_.node_id -ceq 'verify' }).Count | Should -Be 1
         $saved[$saved.Count - 1].state | Should -Be 'succeeded'
+    }
+
+    It 'AI01 reconciles a proof-first cancellation cut before validation or redispatch' {
+        $run = New-TestBlockedRun
+        $cancellation = New-TestCancellationProof
+        $saved = [Collections.Generic.List[object]]::new()
+        $script:ai01Dispatches = 0
+        $script:ai01SnapshotValidations = 0
+
+        $result = Invoke-DeclarativeWorkflowResume -Run $run -TaskInput (New-TestTaskInput) -Confirmation (New-TestConfirmation) `
+            -SaveRun { param($candidate) $saved.Add((Copy-DeclarativeWorkflowValue $candidate)) | Out-Null } `
+            -Dispatch { $script:ai01Dispatches++; throw 'orphan cancellation proof must stop dispatch' } `
+            -ResolveSession { throw 'orphan cancellation proof must stop runtime resolution' } `
+            -ResolveInputHead { throw 'orphan cancellation proof must stop HEAD resolution' } `
+            -ResolveAcknowledgement { @() } `
+            -ResolveCancellation { @($cancellation) } `
+            -ValidateSnapshot { $script:ai01SnapshotValidations++ }
+
+        $result.state | Should -BeExactly 'cancelled'
+        (ConvertTo-DeclarativeWorkflowCanonicalJson -Value $result.cancellation_proof) |
+            Should -BeExactly (ConvertTo-DeclarativeWorkflowCanonicalJson -Value $cancellation)
+        $saved.Count | Should -Be 1
+        $saved[0].state | Should -BeExactly 'cancelled'
+        $script:ai01Dispatches | Should -Be 0
+        $script:ai01SnapshotValidations | Should -Be 0
     }
 
     It 'W11 keeps a blocked node without ACK or registry evidence blocked with zero dispatches' {
@@ -2357,14 +2648,24 @@ declarative_workspace:
                 'cancelled' { New-TestCancelledRun }
                 default { New-TestSucceededRun }
             }
+            $cancellationProof = if ($case.Outcome -ceq 'cancelled') {
+                Copy-DeclarativeWorkflowValue (Get-DeclarativeWorkflowValue $run 'cancellation_proof' $null)
+            } else {
+                $null
+            }
             $intent = [ordered]@{ type = 'cleanup_intent' }
             if ($case.Outcome -cne 'succeeded') { $intent['preserve_run_state'] = [string]$case.Outcome }
             $durableProofs = switch ($case.Outcome) {
                 'succeeded' { $completionProofs }
-                'cancelled' { New-TestDurableProofs -CancellationProofs @((New-TestCancellationProof)) }
+                'cancelled' { New-TestDurableProofs -CancellationProofs @($cancellationProof) }
                 default { New-TestDurableProofs }
             }
             $run = Invoke-DeclarativeWorkflowTransition -Run $run -Event $intent -DurableProofs $durableProofs
+            if ($case.Outcome -ceq 'cancelled') {
+                Save-DeclarativeWorkflowRunState -ProjectDir $project -Run $run -CreateNew | Out-Null
+                Write-DeclarativeWorkflowDurableProof -ProjectDir $project -Run $run `
+                    -Kind Cancellation -Proof $cancellationProof | Out-Null
+            }
             if ($case.LockPresent) {
                 $lock = New-DeclarativeWorkflowRunLock -ProjectDir $project -Run $run
                 if ([bool](Get-DeclarativeWorkflowValue $case 'Mismatch' $false)) {
@@ -2433,13 +2734,22 @@ declarative_workspace:
 
             $saveAfterSuccess = $script:l01SaveCount
             $deleteAfterSuccess = $script:l01DeleteCount
-            {
-                Invoke-TeamPipelineDeclarativeWorkflow -Action resume -RunId 'run-123' -GenerationId 'generation-123' `
+            $leaseAfterSuccess = $script:l01LeaseResolutions
+            if ($fixture.Case.Outcome -ceq 'cancelled') {
+                $repeatResult = Invoke-TeamPipelineDeclarativeWorkflow -Action resume -RunId 'run-123' -GenerationId 'generation-123' `
                     -ConfigFingerprint ('sha256:' + ('a' * 64)) -SourceHead ('b' * 40) -TaskFile $taskFile -ProjectDir $fixture.Project
-            } | Should -Throw -Because "cleanup success is terminal and idempotently rejected for $($fixture.Case.Name)"
+                $repeatResult.status | Should -BeExactly 'accepted' -Because $fixture.Case.Name
+                $repeatResult.state | Should -BeExactly 'cancelled' -Because $fixture.Case.Name
+            } else {
+                {
+                    Invoke-TeamPipelineDeclarativeWorkflow -Action resume -RunId 'run-123' -GenerationId 'generation-123' `
+                        -ConfigFingerprint ('sha256:' + ('a' * 64)) -SourceHead ('b' * 40) -TaskFile $taskFile -ProjectDir $fixture.Project
+                } | Should -Throw -Because "cleanup success is terminal and idempotently rejected for $($fixture.Case.Name)"
+            }
             $script:l01SaveCount | Should -Be $saveAfterSuccess -Because $fixture.Case.Name
             $script:l01DeleteCount | Should -Be $deleteAfterSuccess -Because $fixture.Case.Name
             $script:l01DispatchCount | Should -Be $dispatchBefore -Because $fixture.Case.Name
+            $script:l01LeaseResolutions | Should -Be $leaseAfterSuccess -Because $fixture.Case.Name
         }
     }
 
@@ -3204,6 +3514,47 @@ while (`$true) { Start-Sleep -Seconds 1 }
         $overProject = Join-Path $TestDrive 't03-over-state-size'
         { Save-DeclarativeWorkflowRunState -ProjectDir $overProject -Run $overLimit -CreateNew } | Should -Throw '*state*size*'
         Test-Path -LiteralPath (Join-Path $overProject '.winsmux\workflow-runs\run-123') -PathType Container | Should -BeFalse
+    }
+
+    It 'AI02 transitions an exact 1 MiB persisted state through the larger reducer request envelope' {
+        $atLimit = Copy-DeclarativeWorkflowValue (New-TestRun)
+        $atLimit['opaque_padding'] = ''
+        $baseBytes = ConvertTo-DeclarativeWorkflowStateBytes -Run $atLimit
+        $atLimit['opaque_padding'] = 'a' * ($script:DeclarativeWorkflowStateMaxBytes - $baseBytes.Length)
+        (ConvertTo-DeclarativeWorkflowStateBytes -Run $atLimit).Length |
+            Should -Be $script:DeclarativeWorkflowStateMaxBytes
+
+        $request = [ordered]@{
+            schema_version = 1
+            operation = 'transition'
+            run = $atLimit
+            event = [ordered]@{ type = 'validate' }
+            durable_proofs = New-TestDurableProofs
+        }
+        $requestBytes = [Text.UTF8Encoding]::new($false).GetBytes(($request | ConvertTo-Json -Compress -Depth 100))
+        $requestBytes.Length | Should -BeGreaterThan $script:DeclarativeWorkflowStateMaxBytes
+
+        $transitioned = Invoke-DeclarativeWorkflowTransition -Run $atLimit `
+            -Event ([ordered]@{ type = 'validate' }) -DurableProofs (New-TestDurableProofs)
+
+        $transitioned.state | Should -BeExactly 'ready'
+        (ConvertTo-DeclarativeWorkflowStateBytes -Run $transitioned).Length |
+            Should -Be $script:DeclarativeWorkflowStateMaxBytes
+    }
+
+    It 'AI02 rejects a reducer transport envelope above 4 MiB before native execution' {
+        $request = [ordered]@{
+            schema_version = 1
+            operation = 'bootstrap'
+            opaque_padding = 'a' * 4194304
+        }
+        Mock Invoke-DeclarativeWorkflowNativeReducerProcess {
+            throw 'oversize reducer request must not reach native execution'
+        }
+
+        { Invoke-DeclarativeWorkflowStateReducer -Request $request } |
+            Should -Throw '*workflow_state_reducer_request_invalid*'
+        Should -Invoke Invoke-DeclarativeWorkflowNativeReducerProcess -Times 0 -Exactly
     }
 
     It 'Z01 rejects public start and resume when a required managed worktree HEAD differs from confirmed source' {

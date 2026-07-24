@@ -6,7 +6,7 @@ This directory contains bash wrappers that generate fixed user prompts for winsm
 
 - `builder.sh`
   - Purpose: emit a Builder prompt for implementation work in a dedicated worktree.
-  - Guardrails: requires `WORKTREE`, tells the agent to `cd` into it, mirrors the current `New-BuilderQueueDispatchPrompt` format from `winsmux-core/scripts/builder-queue.ps1`, requires tests or checks before finishing, and requires Conventional Commits if a commit is created.
+  - Guardrails: requires `WORKTREE`, tells the agent to `cd` into it, mirrors the current `New-BuilderQueueDispatchPrompt` format from `winsmux-core/scripts/builder-queue.ps1`, and requires tests or checks before finishing. Git writes remain prohibited unless a later declarative managed completion instruction grants the narrow local `git add`/`git commit` exception for that assigned worktree; the exception requires intended-file staging, configured hooks, a Conventional Commit, and a clean status, and never permits push or writes in another worktree.
   - Completion markers: `STATUS: EXEC_DONE` or `STATUS: BLOCKED`
 
 - `reviewer.sh`

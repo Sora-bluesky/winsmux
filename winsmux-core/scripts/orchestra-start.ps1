@@ -2915,13 +2915,11 @@ if ($MyInvocation.InvocationName -ne '.') {
         $script:winsmuxBin = Get-WinsmuxBin
         $winsmuxBin = $script:winsmuxBin
         if (-not $winsmuxBin) {
-            Write-Error (Get-WinsmuxOperatorNotFoundMessage)
-            exit 1
+            throw (Get-WinsmuxOperatorNotFoundMessage)
         }
 
         if (-not (Test-Path $bridgeScript)) {
-            Write-Error "Bridge CLI not found: $bridgeScript"
-            exit 1
+            throw "Bridge CLI not found: $bridgeScript"
         }
 
         $projectDir = Get-ProjectDir
@@ -2958,15 +2956,6 @@ if ($MyInvocation.InvocationName -ne '.') {
         $startupLock = Acquire-OrchestraStartupLock -ProjectDir $projectDir -SessionName $sessionName
         $startupToken = [string]$startupLock.StartupToken
         Write-WinsmuxLog -Level INFO -Event 'preflight.startup_lock.acquired' -Message "Acquired orchestra startup lock for $sessionName." -Data @{ session_name = $sessionName } | Out-Null
-        if ($null -ne $declarativeApplication) {
-            foreach ($action in @($declarativeApplication.StartupActions)) {
-                if ([string](Get-OrchestraObjectPropertyValue -InputObject $action -Name 'kind' -Default '') -cne 'ensure-managed-worktree') { continue }
-                $paneKey = [string](Get-OrchestraObjectPropertyValue -InputObject $action -Name 'pane_ref' -Default '')
-                $created = New-OrchestraManagedWorktree -ProjectDir $projectDir -Descriptor $declarativeApplication.ManagedWorktrees[$paneKey]
-                $declarativeWorktreesByPane[$paneKey] = $created
-                $createdWorktrees += $created
-            }
-        }
         $sessionExistedAtStart = Test-OrchestraServerSession -SessionName $sessionName
         Write-WinsmuxLog -Level INFO -Event 'preflight.vault.start' -Message 'Running vault preflight.' | Out-Null
         Invoke-VaultPreflight -Settings $settings
@@ -2983,8 +2972,7 @@ if ($MyInvocation.InvocationName -ne '.') {
                 $vaultValues[$key] = Get-VaultValue -Key $key
                 Write-WinsmuxLog -Level INFO -Event 'preflight.vault_value.loaded' -Message "Resolved vault key $key." -Data @{ key = $key } | Out-Null
             } catch {
-                Write-Error "Missing required vault key '$key': $($_.Exception.Message)"
-                exit 1
+                throw "Missing required vault key '$key': $($_.Exception.Message)"
             }
         }
 
@@ -3114,6 +3102,15 @@ if ($MyInvocation.InvocationName -ne '.') {
         Write-Warning "Preflight: stale Builder cleanup skipped a locked resource: $cleanupError"
         Write-WinsmuxLog -Level WARN -Event 'preflight.builder_worktree_cleanup.skipped' -Message 'Skipped a locked stale Builder resource during cleanup.' -Data ([ordered]@{ error = $cleanupError }) | Out-Null
     }
+    if ($null -ne $declarativeApplication) {
+        foreach ($action in @($declarativeApplication.StartupActions)) {
+            if ([string](Get-OrchestraObjectPropertyValue -InputObject $action -Name 'kind' -Default '') -cne 'ensure-managed-worktree') { continue }
+            $paneKey = [string](Get-OrchestraObjectPropertyValue -InputObject $action -Name 'pane_ref' -Default '')
+            $created = New-OrchestraManagedWorktree -ProjectDir $projectDir -Descriptor $declarativeApplication.ManagedWorktrees[$paneKey]
+            $declarativeWorktreesByPane[$paneKey] = $created
+            $createdWorktrees += $created
+        }
+    }
 
         Write-WinsmuxLog -Level INFO -Event 'preflight.bootstrap.ready' -Message "Bootstrap session $sessionName created by Ensure-OrchestraBootstrapSession." -Data ([ordered]@{
             session_name    = $sessionName
@@ -3204,8 +3201,7 @@ if ($MyInvocation.InvocationName -ne '.') {
     }
 
         if ($null -eq $layout -or $null -eq $layout.Panes -or $layout.Panes.Count -lt 1) {
-            Write-Error 'orchestra-layout did not return any panes.'
-            exit 1
+            throw 'orchestra-layout did not return any panes.'
         }
 
     $startupPanes = @($layout.Panes)
@@ -3463,8 +3459,7 @@ if ($MyInvocation.InvocationName -ne '.') {
             Wait-AgentReady -PaneId $paneSummary.PaneId -Agent $readinessAgent -SessionName $sessionName -TimeoutSeconds 60
             $paneSummary['RuntimeReady'] = $true
         } catch {
-            Write-Error "Agent readiness timeout for $($paneSummary.Label) [$($paneSummary.PaneId)]: $($_.Exception.Message)"
-            exit 1
+            throw "Agent readiness timeout for $($paneSummary.Label) [$($paneSummary.PaneId)]: $($_.Exception.Message)"
         }
     }
 

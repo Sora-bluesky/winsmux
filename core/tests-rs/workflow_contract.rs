@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use workflow::{
     initial_node_states, normalize_workflow_plan, reduce_workflow_state_value, release_ready_nodes,
+    validate_workflow_reducer_request_bytes,
     workflow_application_capability_requirements_from_value, NodeState, RunState,
     WorkflowPlanCliOptions,
 };
@@ -136,6 +137,23 @@ fn ag01_workflow_id_only_remains_preview_until_run_id_selects_application() {
         .expect("workflow+run must compile action capabilities");
     assert_eq!(requirements["implement"], vec!["file-edit".to_string()]);
     assert_eq!(requirements["verify"], vec!["review".to_string()]);
+}
+
+#[test]
+fn ai02_reducer_request_transport_has_a_distinct_four_mib_boundary() {
+    let exact = vec![b'a'; 4_194_304];
+    validate_workflow_reducer_request_bytes(&exact)
+        .expect("the exact reducer request transport boundary must be accepted");
+
+    let oversized = vec![b'a'; 4_194_305];
+    let oversized_error = validate_workflow_reducer_request_bytes(&oversized)
+        .expect_err("a reducer request above 4 MiB must be rejected");
+    assert!(oversized_error
+        .to_string()
+        .contains("request exceeds 4194304 bytes"));
+
+    assert!(validate_workflow_reducer_request_bytes(&[0xef, 0xbb, 0xbf, b'{', b'}']).is_err());
+    assert!(validate_workflow_reducer_request_bytes(&[b'{', 0, b'}']).is_err());
 }
 
 #[test]

@@ -527,6 +527,18 @@ function Get-OperatorPollObservedHead {
     return $head
 }
 
+function Assert-OperatorPollManagedWorktreeClean {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $status = @(& git -C $Path status --porcelain=v1 --untracked-files=all 2>$null)
+    if ($LASTEXITCODE -ne 0) {
+        throw 'workflow_completion_rejected: managed application cleanliness could not be observed'
+    }
+    if ($status.Count -ne 0) {
+        throw 'workflow_completion_rejected: managed application contains uncommitted output'
+    }
+}
+
 function Assert-OperatorPollWorkflowDependencyLease {
     param(
         [Parameter(Mandatory = $true)]$Run,
@@ -793,6 +805,7 @@ function Publish-OperatorPollWorkflowCompletionProof {
             )) {
             throw 'workflow_completion_rejected: managed application path does not match'
         }
+        Assert-OperatorPollManagedWorktreeClean -Path $applicationPath
     } elseif ($mode -ceq 'read-only-reference') {
         $applicationPath = $canonicalProjectDir
         if ($inputHead -cne [string](Get-OperatorPollValue -InputObject $Run -Name 'source_head' -Default '') -or

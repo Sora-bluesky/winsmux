@@ -131,19 +131,22 @@ Describe 'operator-poll helpers' {
         }
 
         function New-TestManagedPublisherFixture {
-            param([string]$MessageId = 'workflow-ack-publisher-matrix')
+            param(
+                [string]$MessageId = 'workflow-ack-publisher-matrix',
+                [string]$WorktreeName = 'publisher-matrix',
+                [string]$RunId = 'run-123'
+            )
 
             $project = $script:operatorPollTempRoot
             $baseHead = $script:operatorPollSourceHead
-            $worktreeName = 'publisher-matrix'
             $managedPath = Join-Path $project ".worktrees\$worktreeName"
             & git -C $project worktree add --quiet -b $worktreeName $managedPath $baseHead
             $LASTEXITCODE | Should -Be 0
 
-            $runRoot = Join-Path $project '.winsmux\workflow-runs\run-123'
+            $runRoot = Join-Path $project ".winsmux\workflow-runs\$RunId"
             [IO.Directory]::CreateDirectory($runRoot) | Out-Null
             $run = [ordered]@{
-                schema_version = 3; workflow_id = 'bugfix'; recipe_ref = 'bugfix-two-slot'; run_id = 'run-123'
+                schema_version = 3; workflow_id = 'bugfix'; recipe_ref = 'bugfix-two-slot'; run_id = $RunId
                 state = 'running'; generation_id = 'generation-123'
                 config_fingerprint = ('sha256:' + ('a' * 64)); workflow_fingerprint = ('sha256:' + ('d' * 64))
                 source_head = $baseHead; task_sha256 = ('sha256:' + ('c' * 64)); task_byte_count = 24
@@ -174,7 +177,7 @@ Describe 'operator-poll helpers' {
                 }
                 nodes = [ordered]@{
                     inspect = [ordered]@{
-                        node_id = 'inspect'; idempotency_key = 'run-123:inspect'; state = 'dispatching'
+                        node_id = 'inspect'; idempotency_key = "$RunId`:inspect"; state = 'dispatching'
                         attempt = 1; pane_ref = 'implement'; action = 'operator-dispatch'
                         required_capability = 'file-edit'; allowed_worktree_modes = @('managed')
                         may_advance_head = $true
@@ -188,7 +191,7 @@ Describe 'operator-poll helpers' {
             }
             $statePath = Join-Path $runRoot 'state.json'
             [IO.File]::WriteAllText($statePath, ($run | ConvertTo-Json -Compress -Depth 30), [Text.UTF8Encoding]::new($false))
-            $acknowledgement = (New-TestDurableWorkflowEnvelope -MessageId $MessageId).content.data
+            $acknowledgement = (New-TestDurableWorkflowEnvelope -MessageId $MessageId -RunId $RunId).content.data
             $acknowledgement.source_head = $baseHead
             $acknowledgement['transport'] = 'mailbox'
             $acknowledgement['message_id'] = $MessageId
@@ -666,19 +669,82 @@ panes:
         }
     }
 
-    It 'AA05 publishes a no-commit managed outcome without consuming dirty worktree bytes' {
+    It 'AA05 rejects dirty managed output, preserves pending bytes, and accepts intended clean commit and no-op outcomes' {
         $fixture = New-TestManagedPublisherFixture -MessageId 'workflow-ack-aa05'
         $dirtyPath = Join-Path $fixture.ManagedPath 'dirty-output.txt'
         [IO.File]::WriteAllText($dirtyPath, 'uncommitted output', [Text.UTF8Encoding]::new($false))
+        $payload = New-TestDurableWorkflowEnvelope -MessageId 'workflow-ack-aa05'
+        $payload.content.data.source_head = $fixture.BaseHead
+        $record = ConvertTo-TestAuthenticatedDurableWorkflowRecord -MailboxMessage $payload
+        $pendingPath = [string]$record.durable_pending_path
+        $pendingBytes = [IO.File]::ReadAllBytes($pendingPath)
+        $pendingDigest = Get-DeclarativeWorkflowSha256Digest -Bytes $pendingBytes
+        $summary = [ordered]@{ new_events = 0; dispatches = 0; completions = 0; approvals = 0; errors = 0; messages = @() }
+        $processed = [ordered]@{}
+        Mock Write-OrchestraLog { }
+
+        $transaction = Invoke-OperatorPollRecordTransaction -Manifest $fixture.Manifest `
+            -ManifestPath $script:operatorPollManifestPath -ProjectDir $fixture.ProjectDir `
+            -EventRecord $record -Summary $summary -ProcessedEventSignatures $processed
+
+        $transaction | Should -BeExactly 'workflow_ack_rejected'
+        $summary.errors | Should -Be 1
+        $processed.Count | Should -Be 0
+        Test-Path -LiteralPath $pendingPath -PathType Leaf | Should -BeTrue
+        (Get-DeclarativeWorkflowSha256Digest -Bytes ([IO.File]::ReadAllBytes($pendingPath))) |
+            Should -BeExactly $pendingDigest
+        Read-DeclarativeWorkflowDurableProof -ProjectDir $fixture.ProjectDir -Run $null -RunId 'run-123' `
+            -Kind Completion -NodeId 'inspect' | Should -BeNullOrEmpty
+
+        Remove-Item -LiteralPath $dirtyPath -Force
+        $trackedPath = Join-Path $fixture.ManagedPath 'operator-poll-fixture.txt'
+        [IO.File]::WriteAllText($trackedPath, 'modified output', [Text.UTF8Encoding]::new($false))
         $run = Read-DeclarativeWorkflowRunState -ProjectDir $fixture.ProjectDir -RunId 'run-123'
+        {
+            Publish-OperatorPollWorkflowCompletionProof -Manifest $fixture.Manifest -PaneContext $fixture.PaneContext `
+                -ProjectDir $fixture.ProjectDir -Run $run -Acknowledgement $fixture.Acknowledgement
+        } | Should -Throw '*uncommitted*'
+        [IO.File]::WriteAllText($trackedPath, 'fixture', [Text.UTF8Encoding]::new($false))
+
+        $stagedPath = Join-Path $fixture.ManagedPath 'staged-output.txt'
+        [IO.File]::WriteAllText($stagedPath, 'staged output', [Text.UTF8Encoding]::new($false))
+        & git -C $fixture.ManagedPath add -- staged-output.txt
+        $LASTEXITCODE | Should -Be 0
+        {
+            Publish-OperatorPollWorkflowCompletionProof -Manifest $fixture.Manifest -PaneContext $fixture.PaneContext `
+                -ProjectDir $fixture.ProjectDir -Run $run -Acknowledgement $fixture.Acknowledgement
+        } | Should -Throw '*uncommitted*'
+        & git -C $fixture.ManagedPath reset --quiet -- staged-output.txt
+        $LASTEXITCODE | Should -Be 0
+        Remove-Item -LiteralPath $stagedPath -Force
+
+        [IO.File]::WriteAllText($trackedPath, 'committed managed output', [Text.UTF8Encoding]::new($false))
+        & git -C $fixture.ManagedPath add -- operator-poll-fixture.txt
+        $LASTEXITCODE | Should -Be 0
+        & git -C $fixture.ManagedPath -c user.name=winsmux-test -c user.email=winsmux-test@example.invalid `
+            commit --quiet -m 'test: persist managed output'
+        $LASTEXITCODE | Should -Be 0
+        $committedHead = ([string](& git -C $fixture.ManagedPath rev-parse HEAD)).Trim()
+        $committedHead | Should -Not -BeExactly $fixture.BaseHead
+        @(& git -C $fixture.ManagedPath status --porcelain=v1 --untracked-files=all).Count | Should -Be 0
 
         $proof = Publish-OperatorPollWorkflowCompletionProof -Manifest $fixture.Manifest -PaneContext $fixture.PaneContext `
             -ProjectDir $fixture.ProjectDir -Run $run -Acknowledgement $fixture.Acknowledgement
 
         $proof.input_head | Should -BeExactly $fixture.BaseHead
-        $proof.output_head | Should -BeExactly $fixture.BaseHead
-        Test-Path -LiteralPath $dirtyPath -PathType Leaf | Should -BeTrue
-        ([IO.File]::ReadAllText($dirtyPath, [Text.UTF8Encoding]::new($false, $true))) | Should -BeExactly 'uncommitted output'
+        $proof.output_head | Should -BeExactly $committedHead
+        Test-Path -LiteralPath $pendingPath -PathType Leaf | Should -BeTrue
+        (Get-DeclarativeWorkflowSha256Digest -Bytes ([IO.File]::ReadAllBytes($pendingPath))) |
+            Should -BeExactly $pendingDigest
+
+        $noOpFixture = New-TestManagedPublisherFixture -MessageId 'workflow-ack-aa05-noop' `
+            -WorktreeName 'publisher-noop' -RunId 'run-noop'
+        $noOpRun = Read-DeclarativeWorkflowRunState -ProjectDir $noOpFixture.ProjectDir -RunId 'run-noop'
+        $noOpProof = Publish-OperatorPollWorkflowCompletionProof -Manifest $noOpFixture.Manifest `
+            -PaneContext $noOpFixture.PaneContext -ProjectDir $noOpFixture.ProjectDir `
+            -Run $noOpRun -Acknowledgement $noOpFixture.Acknowledgement
+        $noOpProof.input_head | Should -BeExactly $noOpFixture.BaseHead
+        $noOpProof.output_head | Should -BeExactly $noOpFixture.BaseHead
     }
 
     It 'AA06 rejects managed rewind divergence and unresolved input before proof publication' {

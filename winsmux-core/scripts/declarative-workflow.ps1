@@ -10,6 +10,7 @@ $script:DeclarativeWorkflowTaskLimit = 262144
 $script:DeclarativeWorkflowRunIdMaxBytes = 192
 $script:DeclarativeWorkflowIdempotencyKeyMaxBytes = 192
 $script:DeclarativeWorkflowStateMaxBytes = 1048576
+$script:DeclarativeWorkflowReducerRequestMaxBytes = 4194304
 $script:DeclarativeWorkflowUtf8NoBom = [Text.UTF8Encoding]::new($false)
 
 function Get-DeclarativeWorkflowValue {
@@ -86,7 +87,8 @@ function Invoke-DeclarativeWorkflowStateReducer {
 
     $json = $Request | ConvertTo-Json -Compress -Depth 100
     [byte[]]$bytes = [Text.UTF8Encoding]::new($false).GetBytes($json)
-    if ($bytes.Length -gt 1048576 -or [Array]::IndexOf($bytes, [byte]0) -ge 0) {
+    if ($bytes.Length -gt $script:DeclarativeWorkflowReducerRequestMaxBytes -or
+        [Array]::IndexOf($bytes, [byte]0) -ge 0) {
         throw 'workflow_state_reducer_request_invalid'
     }
 
@@ -131,7 +133,8 @@ function Resolve-DeclarativeWorkflowDurableProofs {
         [Parameter(Mandatory = $true)]$Run,
         [scriptblock]$ResolveAcknowledgement,
         [scriptblock]$ResolveCancellation,
-        [switch]$IncludeCancellation
+        [switch]$IncludeCancellation,
+        [switch]$ProbeCancellation
     )
 
     $acknowledgements = [Collections.Generic.List[object]]::new()
@@ -149,14 +152,28 @@ function Resolve-DeclarativeWorkflowDurableProofs {
     }
 
     $cancellations = @()
-    $hasCancellation = $IncludeCancellation -or
+    $requiresCancellation = $IncludeCancellation -or
         $null -ne (Get-DeclarativeWorkflowValue $Run 'cancellation_proof' $null) -or
         [string](Get-DeclarativeWorkflowValue $Run 'state' '') -ceq 'cancelled'
-    if ($hasCancellation) {
-        if ($null -eq $ResolveCancellation) { throw 'workflow_state_invalid: external durable cancellation proof required' }
+    if ($requiresCancellation -or $ProbeCancellation) {
+        if ($null -eq $ResolveCancellation) {
+            if ($requiresCancellation) {
+                throw 'workflow_state_invalid: external durable cancellation proof required'
+            }
+            return [ordered]@{
+                completion_acknowledgements = @($acknowledgements)
+                cancellation_proofs         = @()
+            }
+        }
         $cancellations = @(& $ResolveCancellation $Run)
-        if ($cancellations.Count -ne 1 -or $null -eq $cancellations[0]) {
+        if ($requiresCancellation -and
+            ($cancellations.Count -ne 1 -or $null -eq $cancellations[0])) {
             throw 'workflow_state_invalid: external durable cancellation proof required'
+        }
+        if ($ProbeCancellation -and
+            ($cancellations.Count -gt 1 -or
+                ($cancellations.Count -eq 1 -and $null -eq $cancellations[0]))) {
+            throw 'workflow_state_invalid: external durable cancellation proof is ambiguous'
         }
     }
     return [ordered]@{
@@ -1040,7 +1057,19 @@ function Invoke-DeclarativeWorkflowResume {
     $initialValidation = $true
 
     while ($true) {
-        $durableProofs = Resolve-DeclarativeWorkflowDurableProofs -Run $candidate -ResolveAcknowledgement $ResolveAcknowledgement -ResolveCancellation $ResolveCancellation
+        $durableProofs = Resolve-DeclarativeWorkflowDurableProofs -Run $candidate `
+            -ResolveAcknowledgement $ResolveAcknowledgement -ResolveCancellation $ResolveCancellation `
+            -ProbeCancellation:($null -ne $ResolveCancellation)
+        $embeddedCancellation = Get-DeclarativeWorkflowValue $candidate 'cancellation_proof' $null
+        $externalCancellations = @($durableProofs.cancellation_proofs)
+        if ($null -eq $embeddedCancellation -and $externalCancellations.Count -eq 1) {
+            $candidate = Invoke-DeclarativeWorkflowTransition -Run $candidate -Event ([ordered]@{
+                    type = 'cancel'
+                    cancellation = $externalCancellations[0]
+                }) -DurableProofs $durableProofs
+            & $SaveRun $candidate
+            return $candidate
+        }
         $candidate = Invoke-DeclarativeWorkflowTransition -Run $candidate -Event ([ordered]@{ type = 'validate' }) -DurableProofs $durableProofs
         $runState = [string](Get-DeclarativeWorkflowValue $candidate 'state' '')
         if ($runState -in @('succeeded', 'cancelled', 'rolled_back')) {

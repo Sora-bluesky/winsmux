@@ -6,7 +6,56 @@ BeforeAll {
 
 Describe 'TASK659 declarative worktree transaction boundary' -Tag 'task659-application' {
     BeforeAll {
-        . (Join-Path (Split-Path -Parent $script:BridgeTestsRoot) 'winsmux-core\scripts\orchestra-start.ps1')
+        $script:orchestraStartPath = Join-Path (Split-Path -Parent $script:BridgeTestsRoot) 'winsmux-core\scripts\orchestra-start.ps1'
+        . $script:orchestraStartPath
+    }
+
+    It 'AI04 rejects existing declarative collisions before cleanup and creates only after cleanup' {
+        $source = [IO.File]::ReadAllText($script:orchestraStartPath, [Text.UTF8Encoding]::new($false, $true))
+        $mainMarker = "if (`$MyInvocation.InvocationName -ne '.') {"
+        $mainIndex = $source.IndexOf($mainMarker, [StringComparison]::Ordinal)
+        $mainIndex | Should -BeGreaterThan -1
+        $main = $source.Substring($mainIndex)
+        $cleanupIndex = $main.IndexOf('$builderCleanup = Invoke-StaleBuilderWorktreeCleanup -ProjectDir $projectDir', [StringComparison]::Ordinal)
+        $preflightIndex = $main.IndexOf('Assert-OrchestraDeclarativeWorktreePreflight -ProjectDir $projectDir -Application $declarativeApplication', [StringComparison]::Ordinal)
+        $createIndex = $main.IndexOf('$created = New-OrchestraManagedWorktree -ProjectDir $projectDir', [StringComparison]::Ordinal)
+
+        $cleanupIndex | Should -BeGreaterThan -1
+        $preflightIndex | Should -BeLessThan $cleanupIndex
+        $createIndex | Should -BeGreaterThan $cleanupIndex
+    }
+
+    It 'AI05 routes every outer main try failure through rollback before the sole terminal exit' {
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile(
+            $script:orchestraStartPath,
+            [ref]$tokens,
+            [ref]$parseErrors
+        )
+        @($parseErrors).Count | Should -Be 0
+        $outerTry = @($ast.FindAll({
+                    param($node)
+                    $node -is [Management.Automation.Language.TryStatementAst] -and
+                    $node.CatchClauses.Count -eq 1 -and
+                    $node.CatchClauses[0].Extent.Text -match 'STARTUP ERROR'
+                }, $true))
+        $outerTry.Count | Should -Be 1
+        @($outerTry[0].Body.FindAll({
+                    param($node)
+                    $node -is [Management.Automation.Language.ExitStatementAst]
+                }, $true)).Count | Should -Be 0
+
+        $catch = $outerTry[0].CatchClauses[0]
+        $catchExits = @($catch.FindAll({
+                    param($node)
+                    $node -is [Management.Automation.Language.ExitStatementAst]
+                }, $true))
+        $catchExits.Count | Should -Be 1
+        $rollbackIndex = $catch.Extent.Text.IndexOf('Invoke-OrchestraStartupRollback', [StringComparison]::Ordinal)
+        $exitIndex = $catch.Extent.Text.LastIndexOf('exit 1', [StringComparison]::Ordinal)
+        $rollbackIndex | Should -BeGreaterThan -1
+        $exitIndex | Should -BeGreaterThan $rollbackIndex
     }
 
     It 'rejects all managed worktree collisions before invoking a mutating git command' {

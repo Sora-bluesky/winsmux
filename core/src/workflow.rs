@@ -14,6 +14,7 @@ const RUN_ID_TOKEN: &str = "{{run-id}}";
 const MAX_WORKFLOW_RUN_ID_BYTES: usize = 192;
 const MAX_WORKFLOW_IDEMPOTENCY_KEY_BYTES: usize = 192;
 const MAX_WORKFLOW_STATE_BYTES: usize = 1_048_576;
+const MAX_WORKFLOW_REDUCER_REQUEST_BYTES: usize = 4_194_304;
 
 #[derive(Debug, Default)]
 pub(crate) struct WorkflowPlanCliOptions {
@@ -1184,18 +1185,7 @@ pub fn run_workflow_state_reduce_command(args: &[&String]) -> io::Result<()> {
         ));
     }
     let bytes = fs::read(args[1])?;
-    if bytes.len() > MAX_WORKFLOW_STATE_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "workflow state reducer request exceeds 1048576 bytes",
-        ));
-    }
-    if bytes.starts_with(&[0xef, 0xbb, 0xbf]) || bytes.contains(&0) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "workflow state reducer request must be BOM-free UTF-8 without NUL",
-        ));
-    }
+    validate_workflow_reducer_request_bytes(&bytes)?;
     let request = serde_json::from_slice(&bytes).map_err(|error| {
         io::Error::new(
             io::ErrorKind::InvalidData,
@@ -1212,6 +1202,22 @@ pub fn run_workflow_state_reduce_command(args: &[&String]) -> io::Result<()> {
         )
     })?;
     writeln!(stdout)?;
+    Ok(())
+}
+
+pub(crate) fn validate_workflow_reducer_request_bytes(bytes: &[u8]) -> io::Result<()> {
+    if bytes.len() > MAX_WORKFLOW_REDUCER_REQUEST_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "workflow state reducer request exceeds 4194304 bytes",
+        ));
+    }
+    if bytes.starts_with(&[0xef, 0xbb, 0xbf]) || bytes.contains(&0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "workflow state reducer request must be BOM-free UTF-8 without NUL",
+        ));
+    }
     Ok(())
 }
 

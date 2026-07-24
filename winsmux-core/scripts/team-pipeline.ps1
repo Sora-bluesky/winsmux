@@ -2482,6 +2482,38 @@ function New-TeamPipelineDeclarativeCompletionInstruction {
         [Parameter(Mandatory = $true)][string]$Role
     )
 
+    $nodes = Get-DeclarativeWorkflowValue $Run 'nodes' $null
+    $snapshot = Get-DeclarativeWorkflowValue $Run 'normalized_snapshot' $null
+    $applications = Get-DeclarativeWorkflowValue $snapshot 'application_contract' $null
+    $node = Get-DeclarativeWorkflowValue $nodes $NodeId $null
+    if ($null -eq $node) {
+        throw 'workflow_completion_instruction_node_invalid'
+    }
+    $paneRef = [string](Get-DeclarativeWorkflowValue $node 'pane_ref' '')
+    $application = Get-DeclarativeWorkflowValue $applications $paneRef $null
+    if ([string]::IsNullOrWhiteSpace($paneRef) -or $null -eq $application) {
+        throw 'workflow_completion_instruction_application_invalid'
+    }
+    $worktree = Get-DeclarativeWorkflowValue $application 'worktree' $null
+    $capabilities = Get-DeclarativeWorkflowValue $application 'actual_capabilities' $null
+    $managedEdit = [string](Get-DeclarativeWorkflowValue $node 'action' '') -ceq 'operator-dispatch' -and
+        [bool](Get-DeclarativeWorkflowValue $node 'may_advance_head' $false) -and
+        [string](Get-DeclarativeWorkflowValue $worktree 'mode' '') -ceq 'managed' -and
+        [bool](Get-DeclarativeWorkflowValue $capabilities 'supports_file_edit' $false)
+    $managedCompletionContract = if ($managedEdit) {
+        @"
+
+This is an explicit declarative managed completion instruction. It grants one narrow exception to the generic Builder no-Git guardrail:
+- In your assigned managed worktree only, stage only the intended task files by using git add -- followed by their explicit paths.
+- Create one Conventional Commit with git commit and allow all configured hooks to run. Never use --no-verify.
+- Then run git status --porcelain=v1 --untracked-files=all. It must return no records before completion evidence is sent.
+- If the intended commit or clean-status check cannot complete, do not send the mailbox command. Report STATUS: BLOCKED instead.
+- This exception permits local git add, git commit, and read-only status inspection only. It never grants git push, merge, checkout, reset, force operations, or Git writes in any other worktree.
+"@
+    } else {
+        ''
+    }
+
     $acknowledgement = New-TeamPipelineDeclarativeAcknowledgement -Run $Run -NodeId $NodeId -PaneId $PaneId
     $canonical = $acknowledgement | ConvertTo-Json -Compress -Depth 8
     $digest = Get-DeclarativeWorkflowSha256Digest -Bytes ([Text.UTF8Encoding]::new($false).GetBytes($canonical))
@@ -2518,7 +2550,7 @@ function New-TeamPipelineDeclarativeCompletionInstruction {
     $quotedChannel = "'$($safeSession + '-operator')'"
     $escapedPayload = $payload.Replace("'", "''")
     $quotedPayload = "'" + $escapedPayload + "'"
-    return @"
+    return $managedCompletionContract + @"
 
 Completion evidence is not inferred from pane text. After the requested work and checks actually finish, run this exact command once, then report your normal summary:
 
@@ -2878,6 +2910,54 @@ function Invoke-TeamPipelineDeclarativeCancellationTransaction {
         -ResolveAcknowledgement $ResolveAcknowledgement -ResolveCancellation $ResolveCancellation
 }
 
+function Invoke-TeamPipelineDeclarativeCancellationProofRecovery {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)]$Run,
+        [Parameter(Mandatory = $true)][scriptblock]$SaveRun,
+        [Parameter(Mandatory = $true)][scriptblock]$ReleaseLock,
+        [Parameter(Mandatory = $true)][scriptblock]$ResolveAcknowledgement,
+        [Parameter(Mandatory = $true)][scriptblock]$ResolveCancellation
+    )
+
+    $embeddedCancellation = Get-DeclarativeWorkflowValue $Run 'cancellation_proof' $null
+    $externalCancellation = Read-DeclarativeWorkflowDurableProof -ProjectDir $ProjectDir -Run $Run -Kind Cancellation
+    if ($null -eq $externalCancellation) {
+        if ($null -ne $embeddedCancellation) {
+            throw 'Workflow external durable cancellation proof required.'
+        }
+        return $null
+    }
+
+    $durableProofs = Resolve-DeclarativeWorkflowDurableProofs -Run $Run `
+        -ResolveAcknowledgement $ResolveAcknowledgement -ResolveCancellation $ResolveCancellation -IncludeCancellation
+    $candidate = $Run
+    if ($null -eq $embeddedCancellation) {
+        $candidate = Invoke-DeclarativeWorkflowTransition -Run $candidate -Event ([ordered]@{
+                type = 'cancel'
+                cancellation = $externalCancellation
+            }) -DurableProofs $durableProofs
+        & $SaveRun $candidate
+    } else {
+        $candidate = Invoke-DeclarativeWorkflowTransition -Run $candidate `
+            -Event ([ordered]@{ type = 'validate' }) -DurableProofs $durableProofs
+    }
+
+    $state = [string](Get-DeclarativeWorkflowValue $candidate 'state' '')
+    if ($state -in @('succeeded', 'failed', 'cancelled')) {
+        return Invoke-DeclarativeWorkflowTerminalCleanup -ProjectDir $ProjectDir -Run $candidate `
+            -SaveRun $SaveRun -ReleaseLock $ReleaseLock `
+            -ResolveAcknowledgement $ResolveAcknowledgement -ResolveCancellation $ResolveCancellation
+    }
+    if ($state -ceq 'cleanup_pending') {
+        Get-DeclarativeWorkflowCleanupActionState -Run $candidate -AllowedStates @('running') | Out-Null
+        return Invoke-DeclarativeWorkflowCleanup -ProjectDir $ProjectDir -Run $candidate `
+            -SaveRun $SaveRun -ReleaseLock $ReleaseLock `
+            -ResolveAcknowledgement $ResolveAcknowledgement -ResolveCancellation $ResolveCancellation
+    }
+    throw "workflow_cancellation_proof_recovery_invalid_state: $state"
+}
+
 function Invoke-TeamPipelineDeclarativeWorkflow {
     param(
         [Parameter(Mandatory = $true)][ValidateSet('start', 'resume', 'cancel')][string]$Action,
@@ -2921,28 +3001,63 @@ function Invoke-TeamPipelineDeclarativeWorkflow {
         }
     }
 
-    $taskInput = Read-DeclarativeWorkflowTaskFile -Path $TaskFile
-    $observedSourceHead = Get-TeamPipelineDeclarativeProjectHead -ProjectDir $ProjectDir
-    Assert-TeamPipelineDeclarativeSourceHead -ExpectedSourceHead $SourceHead -ObservedSourceHead $observedSourceHead
-    $confirmation = [ordered]@{ run_id = $RunId; generation_id = $GenerationId; config_fingerprint = $ConfigFingerprint; source_head = $SourceHead }
-    $manifestPath = Join-Path (Join-Path $ProjectDir '.winsmux') 'manifest.yaml'
-    $manifest = Read-TeamPipelineManifest -Path $manifestPath
-    if ($null -eq $manifest) { throw 'workflow_manifest_unavailable' }
-    $manifestSession = Get-TeamPipelineValue -InputObject $manifest -Name 'session' -Default $null
-    $manifestSessionName = [string](Get-TeamPipelineValue -InputObject $manifestSession -Name 'name' -Default '')
-    $manifestGenerationId = [string](Get-TeamPipelineValue -InputObject $manifestSession -Name 'generation_id' -Default '')
-    if ([string]::IsNullOrWhiteSpace($manifestSessionName)) { throw 'workflow_manifest_session_identity_unavailable' }
-    $sessionName = Get-TeamPipelineSessionName -Manifest $manifest
-    if ([string]::IsNullOrWhiteSpace($sessionName) -or
-        -not [string]::Equals($sessionName, $manifestSessionName, [StringComparison]::Ordinal)) {
-        throw 'workflow_manifest_session_identity_unavailable'
-    }
-    if ([string]::IsNullOrWhiteSpace($manifestGenerationId) -or
-        -not [string]::Equals($manifestGenerationId, $GenerationId, [StringComparison]::Ordinal)) {
-        throw 'workflow_manifest_generation_mismatch'
-    }
-    $invocationLease = Enter-DeclarativeWorkflowInvocationLease -ProjectDir $ProjectDir -RunId $RunId
+    $invocationLease = $null
     try {
+        $run = $null
+        $save = { param($candidate) Save-DeclarativeWorkflowRunState -ProjectDir $ProjectDir -Run $candidate | Out-Null }
+        $releaseLock = { param($path) Remove-Item -LiteralPath $path -Force -ErrorAction Stop }
+        $resolveAcknowledgement = {
+            param($candidateRun, $nodeId)
+            Resolve-TeamPipelineDeclarativeAcknowledgement -Run $candidateRun -NodeId $nodeId -ProjectDir $ProjectDir -SessionName ''
+        }
+        $resolveCancellation = {
+            param($candidateRun)
+            Resolve-TeamPipelineDeclarativeCancellation -Run $candidateRun -ProjectDir $ProjectDir -SessionName ''
+        }
+        if ($Action -ceq 'resume') {
+            $invocationLease = Enter-DeclarativeWorkflowInvocationLease -ProjectDir $ProjectDir -RunId $RunId
+            $run = Read-DeclarativeWorkflowRunState -ProjectDir $ProjectDir -RunId $RunId
+            $recoveredCancellation = Invoke-TeamPipelineDeclarativeCancellationProofRecovery `
+                -ProjectDir $ProjectDir -Run $run -SaveRun $save -ReleaseLock $releaseLock `
+                -ResolveAcknowledgement $resolveAcknowledgement -ResolveCancellation $resolveCancellation
+            if ($null -ne $recoveredCancellation) {
+                $cleanupBlocked = @((Get-DeclarativeWorkflowValue $recoveredCancellation 'cleanup_journal' @()) | Where-Object {
+                        [string](Get-DeclarativeWorkflowValue $_ 'state' '') -ceq 'blocked'
+                    }).Count -gt 0
+                $status = if ($cleanupBlocked) { 'blocked' } else { 'accepted' }
+                return [PSCustomObject][ordered]@{
+                    schema_version = 1
+                    status = $status
+                    run_id = $RunId
+                    state = [string]$recoveredCancellation.state
+                }
+            }
+        }
+
+        $taskInput = Read-DeclarativeWorkflowTaskFile -Path $TaskFile
+        $observedSourceHead = Get-TeamPipelineDeclarativeProjectHead -ProjectDir $ProjectDir
+        Assert-TeamPipelineDeclarativeSourceHead -ExpectedSourceHead $SourceHead -ObservedSourceHead $observedSourceHead
+        $confirmation = [ordered]@{ run_id = $RunId; generation_id = $GenerationId; config_fingerprint = $ConfigFingerprint; source_head = $SourceHead }
+        $manifestPath = Join-Path (Join-Path $ProjectDir '.winsmux') 'manifest.yaml'
+        $manifest = Read-TeamPipelineManifest -Path $manifestPath
+        if ($null -eq $manifest) { throw 'workflow_manifest_unavailable' }
+        $manifestSession = Get-TeamPipelineValue -InputObject $manifest -Name 'session' -Default $null
+        $manifestSessionName = [string](Get-TeamPipelineValue -InputObject $manifestSession -Name 'name' -Default '')
+        $manifestGenerationId = [string](Get-TeamPipelineValue -InputObject $manifestSession -Name 'generation_id' -Default '')
+        if ([string]::IsNullOrWhiteSpace($manifestSessionName)) { throw 'workflow_manifest_session_identity_unavailable' }
+        $sessionName = Get-TeamPipelineSessionName -Manifest $manifest
+        if ([string]::IsNullOrWhiteSpace($sessionName) -or
+            -not [string]::Equals($sessionName, $manifestSessionName, [StringComparison]::Ordinal)) {
+            throw 'workflow_manifest_session_identity_unavailable'
+        }
+        if ([string]::IsNullOrWhiteSpace($manifestGenerationId) -or
+            -not [string]::Equals($manifestGenerationId, $GenerationId, [StringComparison]::Ordinal)) {
+            throw 'workflow_manifest_generation_mismatch'
+        }
+
+        if ($null -eq $invocationLease) {
+            $invocationLease = Enter-DeclarativeWorkflowInvocationLease -ProjectDir $ProjectDir -RunId $RunId
+        }
         if ($Action -ceq 'start') {
             $statePath = Resolve-DeclarativeWorkflowOwnedRunPath -ProjectDir $ProjectDir -RunId $RunId -LeafName 'state.json'
             if ([IO.File]::Exists($statePath)) { throw 'workflow_run_already_exists' }
@@ -2968,19 +3083,13 @@ function Invoke-TeamPipelineDeclarativeWorkflow {
                 }
                 throw $lockCreateError
             }
-        } else {
-            $run = Read-DeclarativeWorkflowRunState -ProjectDir $ProjectDir -RunId $RunId
         }
-        $save = { param($candidate) Save-DeclarativeWorkflowRunState -ProjectDir $ProjectDir -Run $candidate | Out-Null }
         $dispatch = { param($request, $candidateRun) Invoke-TeamPipelineDeclarativeDispatch -Request $request -Run $candidateRun -Manifest $manifest -ProjectDir $ProjectDir -SessionName $sessionName -PollIntervalSeconds $PollIntervalSeconds -StageTimeoutSeconds $StageTimeoutSeconds }
         $resolveSession = { param($paneId) Get-TeamPipelineDeclarativeSessionId -ProjectDir $ProjectDir -GenerationId $GenerationId -PaneId $paneId }
         $resolveInputHead = {
             param($candidateRun, $nodeId)
             Resolve-TeamPipelineDeclarativeNodeExecutionLease -Run $candidateRun -NodeId $nodeId -ProjectDir $ProjectDir
         }
-        $releaseLock = { param($path) Remove-Item -LiteralPath $path -Force -ErrorAction Stop }
-        $resolveAcknowledgement = { param($candidateRun, $nodeId) Resolve-TeamPipelineDeclarativeAcknowledgement -Run $candidateRun -NodeId $nodeId -ProjectDir $ProjectDir -SessionName $sessionName }
-        $resolveCancellation = { param($candidateRun) Resolve-TeamPipelineDeclarativeCancellation -Run $candidateRun -ProjectDir $ProjectDir -SessionName $sessionName }
         $validateSnapshot = $null
         $snapshotValidated = $false
         if ($Action -ceq 'resume') {
@@ -3033,7 +3142,9 @@ function Invoke-TeamPipelineDeclarativeWorkflow {
         }
         return [PSCustomObject][ordered]@{ schema_version = 1; status = $status; run_id = $RunId; state = [string]$run.state }
     } finally {
-        $invocationLease.Dispose()
+        if ($null -ne $invocationLease) {
+            $invocationLease.Dispose()
+        }
     }
 }
 
