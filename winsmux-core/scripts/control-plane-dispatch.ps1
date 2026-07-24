@@ -342,6 +342,41 @@ function Invoke-WinsmuxTeamPipelineCommand {
         [AllowNull()][string[]]$CommandRest
     )
 
+    if ($CommandTarget -ceq '--workflow-action') {
+        try {
+            $declarative = ConvertTo-WinsmuxDeclarativePipelineArguments -CommandTarget $CommandTarget -CommandRest $CommandRest
+        } catch {
+            [PSCustomObject][ordered]@{
+                schema_version = 1
+                status = 'rejected'
+                reason = [string]$_.Exception.Message
+            } | ConvertTo-Json -Compress | Write-Output
+            exit 1
+        }
+    } else {
+        $declarative = ConvertTo-WinsmuxDeclarativePipelineArguments -CommandTarget $CommandTarget -CommandRest $CommandRest
+    }
+    if ($null -ne $declarative) {
+        $pipelineArgs = @(
+            '-WorkflowAction', [string]$declarative.workflow_action,
+            '-RunId', [string]$declarative.run_id,
+            '-GenerationId', [string]$declarative.generation_id,
+            '-ConfigFingerprint', [string]$declarative.config_fingerprint,
+            '-SourceHead', [string]$declarative.source_head,
+            '-TaskFile', [string]$declarative.task_file,
+            '-ProjectDir', [string]$declarative.project_dir,
+            '-AsJson'
+        )
+        if ($declarative.workflow_action -ceq 'start') {
+            $pipelineArgs += @('-RecipeId', [string]$declarative.recipe_id, '-WorkflowId', [string]$declarative.workflow_id)
+        }
+        Invoke-WinsmuxControlPlaneScript `
+            -ScriptPath (Get-WinsmuxControlPlaneScriptPath -BridgeScriptRoot $BridgeScriptRoot -ScriptName 'team-pipeline.ps1') `
+            -Arguments $pipelineArgs `
+            -PropagateExitCode
+        return
+    }
+
     $taskText = Join-WinsmuxControlPlaneText -Arguments (Get-WinsmuxControlPlaneArguments -CommandTarget $CommandTarget -CommandRest $CommandRest)
     $pipelineArgs = @()
     if ($taskText) {
@@ -351,6 +386,61 @@ function Invoke-WinsmuxTeamPipelineCommand {
     Invoke-WinsmuxControlPlaneScript `
         -ScriptPath (Get-WinsmuxControlPlaneScriptPath -BridgeScriptRoot $BridgeScriptRoot -ScriptName 'team-pipeline.ps1') `
         -Arguments $pipelineArgs
+}
+
+function ConvertTo-WinsmuxDeclarativePipelineArguments {
+    param(
+        [AllowNull()][string]$CommandTarget,
+        [AllowNull()][string[]]$CommandRest
+    )
+    if ($CommandTarget -cne '--workflow-action') { return $null }
+    $arguments = @(@($CommandTarget) + @($CommandRest) | Where-Object { $null -ne $_ })
+    $values = [ordered]@{}
+    $allowed = @(
+        '--workflow-action', '--recipe-id', '--workflow-id', '--run-id',
+        '--generation-id', '--config-fingerprint', '--source-head', '--task-file',
+        '--project-dir', '--json'
+    )
+    for ($index = 0; $index -lt $arguments.Count; $index++) {
+        $name = [string]$arguments[$index]
+        if ($name -notin $allowed -or $name -cnotmatch '^--') {
+            throw "Unknown or positional declarative pipeline argument '$name'."
+        }
+        if ($values.Contains($name)) { throw "Duplicate declarative pipeline argument '$name'." }
+        if ($name -ceq '--json') {
+            $values[$name] = $true
+            continue
+        }
+        if ($index + 1 -ge $arguments.Count -or [string]$arguments[$index + 1] -cmatch '^--') {
+            throw "Declarative pipeline argument '$name' requires one value."
+        }
+        $values[$name] = [string]$arguments[$index + 1]
+        $index++
+    }
+    foreach ($required in @('--workflow-action', '--run-id', '--generation-id', '--config-fingerprint', '--source-head', '--task-file', '--json')) {
+        if (-not $values.Contains($required)) { throw "Missing declarative pipeline argument '$required'." }
+    }
+    $action = [string]$values['--workflow-action']
+    if ($action -notin @('start', 'resume', 'cancel')) { throw 'Declarative workflow action must be start, resume, or cancel.' }
+    if ($action -ceq 'start') {
+        foreach ($required in @('--recipe-id', '--workflow-id')) {
+            if (-not $values.Contains($required)) { throw "Missing declarative pipeline argument '$required'." }
+        }
+    } elseif ($values.Contains('--recipe-id') -or $values.Contains('--workflow-id')) {
+        throw 'Declarative resume and cancel use the persisted recipe and workflow identity.'
+    }
+    $projectDir = if ($values.Contains('--project-dir')) { [string]$values['--project-dir'] } else { (Get-Location).Path }
+    return [PSCustomObject]@{
+        workflow_action   = $action
+        recipe_id        = if ($values.Contains('--recipe-id')) { [string]$values['--recipe-id'] } else { '' }
+        workflow_id      = if ($values.Contains('--workflow-id')) { [string]$values['--workflow-id'] } else { '' }
+        run_id           = [string]$values['--run-id']
+        generation_id    = [string]$values['--generation-id']
+        config_fingerprint = [string]$values['--config-fingerprint']
+        source_head      = [string]$values['--source-head']
+        task_file        = [string]$values['--task-file']
+        project_dir      = $projectDir
+    }
 }
 
 function Invoke-WinsmuxBuilderQueueCommand {

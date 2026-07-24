@@ -696,16 +696,21 @@ param(
     }
 
     It 'verifies every installer download target against the release tree and rejects a missing target' {
+        $indexTreeish = (& git -C $script:RepoRoot write-tree 2>$null | Out-String).Trim()
+        $LASTEXITCODE | Should -Be 0
+        $indexTreeish | Should -Match '^[0-9a-f]{40,64}$'
+
         $valid = Invoke-PwshProcess -Arguments @(
             '-NoProfile', '-File', $script:InstallDownloadGatePath,
             '-RepositoryRoot', $script:RepoRoot,
-            '-Treeish', 'HEAD'
+            '-Treeish', $indexTreeish
         )
         $valid.ExitCode | Should -Be 0
         $valid.StdErr | Should -Be ''
         $validSummary = $valid.StdOut | ConvertFrom-Json -Depth 10
         $validSummary.download_target_count | Should -BeGreaterThan 0
         $validSummary.runtime_dependency_count | Should -BeGreaterThan 0
+        $validSummary.tree_object | Should -Be $indexTreeish
         @($validSummary.download_targets) | Should -Contain 'scripts/winsmux-core.ps1'
         @($validSummary.download_targets) | Should -Not -Contain 'winsmux.ps1'
         @($validSummary.runtime_dependencies) | Should -Contain 'json-compat.ps1'
@@ -723,7 +728,7 @@ param(
             '-NoProfile', '-File', $script:InstallDownloadGatePath,
             '-RepositoryRoot', $script:RepoRoot,
             '-InstallScriptPath', $invalidInstaller,
-            '-Treeish', 'HEAD'
+            '-Treeish', $indexTreeish
         )
         $missing.ExitCode | Should -Not -Be 0
         $missing.StdErr | Should -Match 'missing/installer-entrypoint\.ps1'
@@ -775,7 +780,7 @@ param(
                 '-NoProfile', '-File', $script:InstallDownloadGatePath,
                 '-RepositoryRoot', $script:RepoRoot,
                 '-InstallScriptPath', $casePath,
-                '-Treeish', 'HEAD'
+                '-Treeish', $indexTreeish
             )
             $caseResult.ExitCode | Should -Not -Be 0 -Because $case.Name
             $caseResult.StdErr | Should -Match $case.Error -Because $case.Name
@@ -949,6 +954,16 @@ param(
         $stagedInstallScript | Should -Match 'Install-SecuritySupportScripts'
         $stagedInstallScript | Should -Match 'Remove-ProfileExcludedSupportScripts'
         $stagedInstallScript | Should -Match 'Removed profile-excluded support script'
+
+        $orchestraDownloadBlock = [regex]::Match($stagedInstallScript, '(?ms)^function Install-OrchestraSupportScripts \{(?<body>.*?)^\}')
+        $orchestraDownloadBlock.Success | Should -BeTrue
+        $orchestraDownloads = @([regex]::Matches($orchestraDownloadBlock.Groups['body'].Value, 'Download-File\s+"winsmux-core/scripts/(?<script>[^"]+)"') | ForEach-Object { $_.Groups['script'].Value })
+        $orchestrationRemovalBlock = [regex]::Match($stagedInstallScript, '(?ms)Content = "orchestration_scripts"\s*Files = @\((?<body>.*?)^\s*\)\s*\}')
+        $orchestrationRemovalBlock.Success | Should -BeTrue
+        $orchestrationRemovals = @([regex]::Matches($orchestrationRemovalBlock.Groups['body'].Value, '(?m)^\s*"(?<script>[^"]+)"') | ForEach-Object { $_.Groups['script'].Value })
+        @($orchestraDownloads | Where-Object { $_ -notin $orchestrationRemovals }).Count | Should -Be 0
+        $orchestrationRemovals | Should -Contain 'declarative-workflow.ps1'
+
         $stagedInstallScript | Should -Match 'Sync-WindowsTerminalFragment -Profile \$resolvedInstallProfile'
         $stagedInstallScript | Should -Match 'SHA256SUMS asset not found in release'
         $stagedInstallScript | Should -Match 'Cannot verify release asset'

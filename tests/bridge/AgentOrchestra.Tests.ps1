@@ -4,6 +4,80 @@ BeforeAll {
     . (Join-Path $PSScriptRoot '_helpers\BridgeTestCommon.ps1')
 }
 
+Describe 'TASK659 declarative orchestra layout' -Tag 'task659-application' {
+    BeforeAll {
+        $script:task659LayoutPath = Join-Path (Split-Path -Parent $script:BridgeTestsRoot) 'winsmux-core\scripts\orchestra-layout.ps1'
+    }
+
+    BeforeEach {
+        Mock Start-Sleep { }
+        $env:WINSMUX_BIN = 'winsmux'
+        $global:task659PaneIds = @('%2')
+        $global:task659LayoutCalls = [System.Collections.Generic.List[string]]::new()
+    }
+
+    AfterEach {
+        Remove-Item Function:\global:winsmux -ErrorAction SilentlyContinue
+        Remove-Item Env:\WINSMUX_BIN -ErrorAction SilentlyContinue
+    }
+
+    It 'creates first-occurrence region columns and declaration-order rows with slot labels' {
+        $applicationLayout = [ordered]@{
+            schema_version = 1
+            columns = @(
+                [ordered]@{
+                    region = 'main'
+                    panes = @(
+                        [ordered]@{ pane_key = 'implement'; workflow_role = 'implementer'; slot_id = 'worker-1'; worktree = [ordered]@{ mode = 'managed'; name = 'task-659-implement' } },
+                        [ordered]@{ pane_key = 'inspect'; workflow_role = 'researcher'; slot_id = 'worker-2'; worktree = [ordered]@{ mode = 'read-only-reference' } }
+                    )
+                },
+                [ordered]@{
+                    region = 'side'
+                    panes = @(
+                        [ordered]@{ pane_key = 'verify'; workflow_role = 'verifier'; slot_id = 'reviewer-1'; worktree = [ordered]@{ mode = 'read-only-reference' } }
+                    )
+                }
+            )
+        }
+
+        function global:winsmux {
+            $global:LASTEXITCODE = 0
+            $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+            $global:task659LayoutCalls.Add($commandLine) | Out-Null
+            switch -Regex ($commandLine) {
+                '^has-session ' { return @() }
+                '^new-window ' { return '@1 %2' }
+                '^set-option ' { return @() }
+                '^display-message -t %2 -p #\{window_id\}$' { return '@1' }
+                '^display-message -t %2 -p #\{pane_width\}x#\{pane_height\}$' { return '120x40' }
+                '^split-window -t %2 -h -p 50$' { $global:task659PaneIds = @('%2', '%3'); return @() }
+                '^split-window -t %2 -v -p 50$' { $global:task659PaneIds = @('%2', '%3', '%4'); return @() }
+                '^list-panes -t @1 -F #\{pane_id\}$' { return $global:task659PaneIds }
+                '^list-panes -t @1 -F #\{pane_id\},#\{pane_left\},#\{pane_top\}$' {
+                    if ($global:task659PaneIds.Count -eq 2) { return @('%3,60,0', '%2,0,0') }
+                    return @('%4,0,20', '%3,60,0', '%2,0,0')
+                }
+                '^select-pane -t %2 -T worker-1$' { return @() }
+                '^select-pane -t %4 -T worker-2$' { return @() }
+                '^select-pane -t %3 -T reviewer-1$' { return @() }
+                '^select-pane -t %2$' { return @() }
+                default { throw "unexpected winsmux call: $commandLine" }
+            }
+        }
+
+        $result = & $script:task659LayoutPath -SessionName 'winsmux-orchestra' -ApplicationLayout $applicationLayout
+
+        $result.Total | Should -Be 3
+        $result.Columns | Should -Be 2
+        @($result.Panes | ForEach-Object SlotId) | Should -Be @('worker-1', 'worker-2', 'reviewer-1')
+        @($result.Panes | ForEach-Object PaneKey) | Should -Be @('implement', 'inspect', 'verify')
+        @($result.Panes | ForEach-Object WorkflowRole) | Should -Be @('implementer', 'researcher', 'verifier')
+        @($global:task659LayoutCalls) | Should -Contain 'split-window -t %2 -h -p 50'
+        @($global:task659LayoutCalls) | Should -Contain 'split-window -t %2 -v -p 50'
+    }
+}
+
 Describe 'agent-monitor helpers' {
     BeforeAll {
         . (Join-Path (Split-Path -Parent $script:BridgeTestsRoot) 'winsmux-core\scripts\agent-monitor.ps1')
@@ -2190,12 +2264,16 @@ Describe 'orchestra-start session reuse contract' {
         $script:orchestraStartContent | Should -Match 'Save-OrchestraSessionState[^\r\n]+SupervisorPid \$supervisorProcess\.Id[^\r\n]+SessionReady \$true'
     }
 
-    It 'TASK781 C42 persists the authoritative expected pane count in both runtime manifests' {
+    It 'TASK781 C42 persists the authoritative expected pane count in legacy and declarative manifests' {
         $script:orchestraStartContent | Should -Match 'expected_pane_count\s*=\s*\$ExpectedPaneCount'
-        ([regex]::Matches(
+        $expectedPaneCountSaves = [regex]::Matches(
             $script:orchestraStartContent,
             'Save-OrchestraSessionState[^\r\n]+-ExpectedPaneCount \$expectedPaneCount'
-        )).Count | Should -Be 2
+        )
+        $expectedPaneCountSaves.Count | Should -Be 3
+        $script:orchestraStartContent | Should -Match 'Save-OrchestraSessionState[^\r\n]+-PaneSummaries \$prestartPaneSummaries[^\r\n]+-SessionReady \$false[^\r\n]+-ExpectedPaneCount \$expectedPaneCount -DeclarativeWorkspace \$declarativeWorkspace'
+        $script:orchestraStartContent | Should -Match 'if \(\$null -eq \$declarativeApplication\) \{\s*\$manifestPath\s*=\s*Save-OrchestraSessionState[^\r\n]+-PaneSummaries \$validPaneSummaries[^\r\n]+-SessionReady \$false[^\r\n]+-ExpectedPaneCount \$expectedPaneCount'
+        $script:orchestraStartContent | Should -Match 'Save-OrchestraSessionState[^\r\n]+-PaneSummaries \$validPaneSummaries[^\r\n]+-SessionReady \$true[^\r\n]+-ExpectedPaneCount \$expectedPaneCount -DeclarativeWorkspace \$declarativeWorkspace'
     }
 
     It 'keeps detached startup on the session-ready path even when visible attach still needs retry' {
@@ -2348,7 +2426,7 @@ Describe 'orchestra-start session reuse contract' {
     }
 
     It 'checks the expected pane count before layout and requires a pre-layout liveness gate' {
-        $script:orchestraStartContent | Should -Match '\$expectedPaneCount\s*=\s*Get-OrchestraExpectedPaneCount -LayoutSettings \$layoutSettings'
+        $script:orchestraStartContent | Should -Match '\$expectedPaneCount\s*=\s*if \(\$null -ne \$declarativeApplication\) \{ \[int\]\$declarativeApplication\.PaneByKey\.Count \} else \{ Get-OrchestraExpectedPaneCount -LayoutSettings \$layoutSettings \}'
         $script:orchestraStartContent | Should -Match '\$bootstrapPaneCount\s*=\s*1'
         $script:orchestraStartContent | Should -Match 'Test-OrchestraServerHealth -SessionName \$sessionName -WinsmuxBin \$winsmuxBin -ExpectedPaneCount \$expectedPaneCount'
         $script:orchestraStartContent | Should -Match 'Reset-OrchestraServerSession -SessionName \$sessionName -WinsmuxBin \$winsmuxBin -ProjectDir \$projectDir -GitWorktreeDir \$gitWorktreeDir -BridgeScript \$bridgeScript -Reason ''healthy_existing_session'' -ExpectedPaneCount \$bootstrapPaneCount'

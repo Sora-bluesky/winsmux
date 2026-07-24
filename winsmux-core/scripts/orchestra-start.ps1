@@ -1,7 +1,9 @@
 [CmdletBinding()]
 param(
     [Alias('ProjectDir')]
-    [string]$RequestedRootPath = ''
+    [string]$RequestedRootPath = '',
+    [string]$RecipeId = '',
+    [string]$WorkflowId = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -820,6 +822,179 @@ function Get-GitWorktreeDir {
     }
 
     return $ProjectDir
+}
+
+function Invoke-OrchestraWorkspacePlanOnce {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$RecipeId,
+        [AllowEmptyString()][string]$WorkflowId = ''
+    )
+
+    $arguments = @('workspace-plan', '--recipe-id', $RecipeId)
+    if (-not [string]::IsNullOrWhiteSpace($WorkflowId)) {
+        $arguments += @('--workflow-id', $WorkflowId)
+    }
+    $arguments += @('--project-dir', $ProjectDir, '--json')
+    $output = & pwsh -NoProfile -File $bridgeScript @arguments 2>&1
+    $exitCode = $LASTEXITCODE
+    $text = ($output | Out-String).Trim()
+    if ($exitCode -ne 0) {
+        throw "workspace-plan rejected the selected recipe: $text"
+    }
+    if ([string]::IsNullOrWhiteSpace($text) -or -not $text.StartsWith('{') -or -not $text.EndsWith('}')) {
+        throw 'workspace-plan returned invalid JSON.'
+    }
+    try {
+        $plan = $text | ConvertFrom-WinsmuxJson -AsHashtable -Depth 100 -ErrorAction Stop
+    } catch {
+        throw 'workspace-plan returned invalid JSON.'
+    }
+    if ($plan -isnot [System.Collections.IDictionary]) {
+        throw 'workspace-plan must return one JSON object.'
+    }
+    return $plan
+}
+
+function New-OrchestraDeclarativeApplication {
+    param(
+        [Parameter(Mandatory = $true)]$Plan,
+        [Parameter(Mandatory = $true)][string]$RecipeId,
+        [AllowEmptyString()][string]$WorkflowId = ''
+    )
+
+    if ([int](Get-OrchestraObjectPropertyValue -InputObject $Plan -Name 'schema_version' -Default 0) -ne 1) {
+        throw 'Workspace plan schema_version is not supported.'
+    }
+    if ([string](Get-OrchestraObjectPropertyValue -InputObject $Plan -Name 'recipe_id' -Default '') -cne $RecipeId) {
+        throw 'Workspace plan recipe_id does not match the selected recipe.'
+    }
+    $plannedWorkflowId = Get-OrchestraObjectPropertyValue -InputObject $Plan -Name 'workflow_id' -Default $null
+    if ([string]::IsNullOrWhiteSpace($WorkflowId)) {
+        if ($null -ne $plannedWorkflowId -and -not [string]::IsNullOrWhiteSpace([string]$plannedWorkflowId)) {
+            throw 'Workspace plan workflow_id does not match the selected workflow.'
+        }
+    } elseif ([string]$plannedWorkflowId -cne $WorkflowId) {
+        throw 'Workspace plan workflow_id does not match the selected workflow.'
+    }
+
+    $layout = Get-OrchestraObjectPropertyValue -InputObject $Plan -Name 'application_layout' -Default $null
+    if ($null -eq $layout -or [int](Get-OrchestraObjectPropertyValue -InputObject $layout -Name 'schema_version' -Default 0) -ne 1) {
+        throw 'Workspace plan application_layout is missing or unsupported.'
+    }
+    $columns = @(Get-OrchestraObjectPropertyValue -InputObject $layout -Name 'columns' -Default @())
+    $paneByKey = [ordered]@{}
+    $slotIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $managedNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $managedWorktrees = [ordered]@{}
+    foreach ($column in $columns) {
+        foreach ($pane in @(Get-OrchestraObjectPropertyValue -InputObject $column -Name 'panes' -Default @())) {
+            $paneKey = [string](Get-OrchestraObjectPropertyValue -InputObject $pane -Name 'pane_key' -Default '')
+            $slotId = [string](Get-OrchestraObjectPropertyValue -InputObject $pane -Name 'slot_id' -Default '')
+            if ([string]::IsNullOrWhiteSpace($paneKey) -or [string]::IsNullOrWhiteSpace($slotId) -or
+                $paneByKey.Contains($paneKey) -or -not $slotIds.Add($slotId)) {
+                throw 'Workspace application layout contains invalid or duplicate pane bindings.'
+            }
+            $paneByKey[$paneKey] = $pane
+            $worktree = Get-OrchestraObjectPropertyValue -InputObject $pane -Name 'worktree' -Default $null
+            $mode = [string](Get-OrchestraObjectPropertyValue -InputObject $worktree -Name 'mode' -Default '')
+            if ($mode -eq 'managed') {
+                $name = [string](Get-OrchestraObjectPropertyValue -InputObject $worktree -Name 'name' -Default '')
+                if ([string]::IsNullOrWhiteSpace($name)) {
+                    throw 'Managed workspace application pane is missing its normalized name.'
+                }
+                if (-not $managedNames.Add($name)) {
+                    throw "Workspace application contains duplicate managed worktree name: $name"
+                }
+                $managedWorktrees[$paneKey] = [ordered]@{
+                    PaneKey = $paneKey
+                    Name = $name
+                    PathSuffix = (Join-Path '.worktrees' $name)
+                    BranchName = "worktree-$name"
+                }
+            } elseif ($mode -ne 'read-only-reference') {
+                throw 'Workspace application pane has an unsupported worktree mode.'
+            }
+        }
+    }
+    if ($paneByKey.Count -lt 1 -or $paneByKey.Count -gt 12) {
+        throw 'Workspace application layout must contain 1 to 12 panes.'
+    }
+
+    return [ordered]@{
+        Plan = $Plan
+        Layout = $layout
+        Projection = (New-WinsmuxDeclarativeWorkspaceProjection -Plan $Plan)
+        PaneByKey = $paneByKey
+        ManagedWorktrees = $managedWorktrees
+        StartupActions = @(Get-OrchestraObjectPropertyValue -InputObject $Plan -Name 'startup_actions' -Default @())
+    }
+}
+
+function Test-OrchestraReparsePoint {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return $false }
+    $item = Get-Item -LiteralPath $Path -Force
+    return [bool]($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)
+}
+
+function Assert-OrchestraDeclarativeWorktreePreflight {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)]$Application
+    )
+
+    $worktreeRoot = [System.IO.Path]::GetFullPath((Join-Path $ProjectDir '.worktrees'))
+    if (Test-OrchestraReparsePoint -Path $worktreeRoot) {
+        throw "Managed worktree root is a reparse point: $worktreeRoot"
+    }
+    $invalidBranches = [Collections.Generic.List[string]]::new()
+    foreach ($descriptor in @($Application.ManagedWorktrees.Values)) {
+        $branchName = [string]$descriptor.BranchName
+        $branchFormat = Invoke-BuilderWorktreeGit -ProjectDir $ProjectDir -Arguments @('check-ref-format', '--branch', $branchName) -AllowFailure
+        if ($branchFormat.ExitCode -ne 0) {
+            $invalidBranches.Add($branchName) | Out-Null
+        }
+    }
+    if ($invalidBranches.Count -gt 0) {
+        throw "Workspace application contains an invalid managed worktree branch: $($invalidBranches[0])"
+    }
+    $registeredResult = Invoke-BuilderWorktreeGit -ProjectDir $ProjectDir -Arguments @('worktree', 'list', '--porcelain')
+    $registered = @(ConvertFrom-GitWorktreeList -Content $registeredResult.Output)
+    foreach ($descriptor in @($Application.ManagedWorktrees.Values)) {
+        $path = [System.IO.Path]::GetFullPath((Join-Path $ProjectDir ([string]$descriptor.PathSuffix)))
+        if (-not (Test-BuilderWorktreePathUnderRoot -Path $path -Root $worktreeRoot)) {
+            throw "Managed worktree path escaped its root: $path"
+        }
+        if ((Test-Path -LiteralPath $path) -or @($registered | Where-Object {
+                    [string]::Equals([System.IO.Path]::GetFullPath($_.WorktreePath), $path, [System.StringComparison]::OrdinalIgnoreCase)
+                }).Count -gt 0) {
+            throw "Managed worktree path already exists: $path"
+        }
+        $branch = Invoke-BuilderWorktreeGit -ProjectDir $ProjectDir -Arguments @('branch', '--list', '--format', '%(refname:short)', [string]$descriptor.BranchName)
+        if (-not [string]::IsNullOrWhiteSpace($branch.Output)) {
+            throw "Managed worktree branch already exists: $($descriptor.BranchName)"
+        }
+    }
+}
+
+function New-OrchestraManagedWorktree {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)]$Descriptor
+    )
+    $baseHead = (Invoke-BuilderWorktreeGit -ProjectDir $ProjectDir -Arguments @('rev-parse', 'HEAD')).Output.Trim()
+    $path = [System.IO.Path]::GetFullPath((Join-Path $ProjectDir ([string]$Descriptor.PathSuffix)))
+    [System.IO.Directory]::CreateDirectory((Split-Path -Parent $path)) | Out-Null
+    Invoke-BuilderWorktreeGit -ProjectDir $ProjectDir -Arguments @('worktree', 'add', [string]$Descriptor.PathSuffix, '-b', [string]$Descriptor.BranchName) | Out-Null
+    return [ordered]@{
+        Declarative = $true
+        PaneKey = [string]$Descriptor.PaneKey
+        BranchName = [string]$Descriptor.BranchName
+        WorktreePath = $path
+        GitWorktreeDir = Get-GitWorktreeDir -ProjectDir $path
+        BaseHead = $baseHead
+    }
 }
 
 function New-BuilderWorktree {
@@ -1745,6 +1920,10 @@ function Save-OrchestraSessionState {
             task                       = $null
             status                     = if ($paneSummary.Status) { $paneSummary.Status } else { 'ready' }
         }
+        if ($null -ne $DeclarativeWorkspace) {
+            $paneEntry | Add-Member -NotePropertyName 'pane_key' -NotePropertyValue ([string](Get-OrchestraObjectPropertyValue -InputObject $paneSummary -Name 'PaneKey' -Default ''))
+            $paneEntry | Add-Member -NotePropertyName 'workflow_role' -NotePropertyValue ([string](Get-OrchestraObjectPropertyValue -InputObject $paneSummary -Name 'WorkflowRole' -Default ''))
+        }
         if ($paneSummary.Contains('BootstrapFailures') -and $paneSummary['BootstrapFailures']) {
             $paneEntry | Add-Member -NotePropertyName 'bootstrap_failures' -NotePropertyValue $paneSummary['BootstrapFailures']
         }
@@ -2259,10 +2438,12 @@ function Assert-OrchestraSessionPaneCount {
 function Remove-OrchestraCreatedWorktrees {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
-        [Parameter(Mandatory = $true)][System.Collections.IEnumerable]$CreatedWorktrees
+        [Parameter(Mandatory = $true)][System.Collections.IEnumerable]$CreatedWorktrees,
+        [switch]$PreserveDeclarativeWorktrees
     )
 
     $removedWorktrees = [System.Collections.Generic.List[object]]::new()
+    $preservedWorktrees = [System.Collections.Generic.List[object]]::new()
     $cleanupErrors = [System.Collections.Generic.List[string]]::new()
     foreach ($createdWorktree in @($CreatedWorktrees)) {
         if ($null -eq $createdWorktree) {
@@ -2272,6 +2453,55 @@ function Remove-OrchestraCreatedWorktrees {
         $worktreePath = [string]$createdWorktree.WorktreePath
         $branchName = [string]$createdWorktree.BranchName
         if ([string]::IsNullOrWhiteSpace($worktreePath) -and [string]::IsNullOrWhiteSpace($branchName)) {
+            continue
+        }
+
+        $isDeclarative = [bool](Get-OrchestraObjectPropertyValue -InputObject $createdWorktree -Name 'Declarative' -Default $false)
+        if ($isDeclarative) {
+            if ($PreserveDeclarativeWorktrees) {
+                $preservedWorktrees.Add([ordered]@{ WorktreePath = $worktreePath; BranchName = $branchName; Reason = 'slot_started' }) | Out-Null
+                continue
+            }
+            $expectedHead = [string](Get-OrchestraObjectPropertyValue -InputObject $createdWorktree -Name 'BaseHead' -Default '')
+            $expectedGitDir = [string](Get-OrchestraObjectPropertyValue -InputObject $createdWorktree -Name 'GitWorktreeDir' -Default '')
+            try {
+                $inventory = @(ConvertFrom-GitWorktreeList -Content (Invoke-BuilderWorktreeGit -ProjectDir $ProjectDir -Arguments @('worktree', 'list', '--porcelain')).Output)
+                $matches = @($inventory | Where-Object {
+                        [string]::Equals([System.IO.Path]::GetFullPath($_.WorktreePath), [System.IO.Path]::GetFullPath($worktreePath), [System.StringComparison]::OrdinalIgnoreCase) -and
+                        [string]::Equals([string]$_.BranchName, $branchName, [System.StringComparison]::Ordinal)
+                    })
+                $actualGitDir = if (Test-Path -LiteralPath $worktreePath -PathType Container) { Get-GitWorktreeDir -ProjectDir $worktreePath } else { '' }
+                $actualHead = if ($matches.Count -eq 1) { (Invoke-BuilderWorktreeGit -ProjectDir $worktreePath -Arguments @('rev-parse', 'HEAD')).Output.Trim() } else { '' }
+                $status = if ($matches.Count -eq 1) { (Invoke-BuilderWorktreeGit -ProjectDir $worktreePath -Arguments @('status', '--porcelain', '--untracked-files=all')).Output } else { 'identity-mismatch' }
+                if ($matches.Count -ne 1 -or
+                    -not [string]::Equals($actualGitDir, $expectedGitDir, [System.StringComparison]::OrdinalIgnoreCase) -or
+                    -not [string]::Equals($actualHead, $expectedHead, [System.StringComparison]::Ordinal) -or
+                    -not [string]::IsNullOrWhiteSpace($status)) {
+                    $preservedWorktrees.Add([ordered]@{ WorktreePath = $worktreePath; BranchName = $branchName; Reason = 'identity_or_content_changed' }) | Out-Null
+                    continue
+                }
+                $removeResult = Invoke-BuilderWorktreeGit -ProjectDir $ProjectDir -Arguments @('worktree', 'remove', $worktreePath) -AllowFailure
+                if ($removeResult.ExitCode -ne 0) {
+                    $cleanupErrors.Add("worktree remove $worktreePath failed: $($removeResult.Output)") | Out-Null
+                    $preservedWorktrees.Add([ordered]@{ WorktreePath = $worktreePath; BranchName = $branchName; Reason = 'remove_failed' }) | Out-Null
+                    continue
+                }
+                $branchHead = (Invoke-BuilderWorktreeGit -ProjectDir $ProjectDir -Arguments @('rev-parse', "refs/heads/$branchName") -AllowFailure).Output.Trim()
+                if (-not [string]::Equals($branchHead, $expectedHead, [System.StringComparison]::Ordinal)) {
+                    $preservedWorktrees.Add([ordered]@{ WorktreePath = ''; BranchName = $branchName; Reason = 'branch_head_changed' }) | Out-Null
+                    continue
+                }
+                $deleteResult = Invoke-BuilderWorktreeGit -ProjectDir $ProjectDir -Arguments @('branch', '-d', $branchName) -AllowFailure
+                if ($deleteResult.ExitCode -ne 0) {
+                    $cleanupErrors.Add("branch delete $branchName failed: $($deleteResult.Output)") | Out-Null
+                    $preservedWorktrees.Add([ordered]@{ WorktreePath = ''; BranchName = $branchName; Reason = 'branch_delete_failed' }) | Out-Null
+                    continue
+                }
+                $removedWorktrees.Add([ordered]@{ BranchName = $branchName; WorktreePath = $worktreePath }) | Out-Null
+            } catch {
+                $cleanupErrors.Add("declarative worktree cleanup failed for ${worktreePath}: $($_.Exception.Message)") | Out-Null
+                $preservedWorktrees.Add([ordered]@{ WorktreePath = $worktreePath; BranchName = $branchName; Reason = 'verification_failed' }) | Out-Null
+            }
             continue
         }
 
@@ -2306,6 +2536,7 @@ function Remove-OrchestraCreatedWorktrees {
 
     return [ordered]@{
         RemovedWorktrees = @($removedWorktrees)
+        PreservedWorktrees = @($preservedWorktrees)
         Errors           = @($cleanupErrors)
     }
 }
@@ -2365,7 +2596,8 @@ function Invoke-OrchestraStartupRollback {
         [AllowEmptyString()][string]$OwnedGenerationId = '',
         [AllowEmptyString()][string]$OwnedServerSessionId = '',
         [Nullable[int]]$OwnedSupervisorPid = $null,
-        [AllowEmptyString()][string]$OwnedSupervisorProcessStartedAt = ''
+        [AllowEmptyString()][string]$OwnedSupervisorProcessStartedAt = '',
+        [switch]$PreserveDeclarativeWorktrees
     )
 
     $removedPaneIds = [System.Collections.Generic.List[string]]::new()
@@ -2450,7 +2682,7 @@ function Invoke-OrchestraStartupRollback {
     }
 
     if (-not [string]::IsNullOrWhiteSpace($ProjectDir)) {
-        $worktreeCleanup = Remove-OrchestraCreatedWorktrees -ProjectDir $ProjectDir -CreatedWorktrees $CreatedWorktrees
+        $worktreeCleanup = Remove-OrchestraCreatedWorktrees -ProjectDir $ProjectDir -CreatedWorktrees $CreatedWorktrees -PreserveDeclarativeWorktrees:$PreserveDeclarativeWorktrees
         $hasStructuredCleanup = $false
         $cleanupResultRemoved = @()
         $cleanupResultErrors = @()
@@ -2656,6 +2888,9 @@ function ConvertTo-SafeGitRemoteUrl {
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
+    if ([string]::IsNullOrWhiteSpace($RecipeId) -and -not [string]::IsNullOrWhiteSpace($WorkflowId)) {
+        throw 'WorkflowId requires RecipeId.'
+    }
     $operatorPollProcess = $null
     $watchdogProcess = $null
     $serverWatchdogProcess = $null
@@ -2672,6 +2907,9 @@ if ($MyInvocation.InvocationName -ne '.') {
     $createdPaneIds = @()
     $bootstrapPaneId = $null
     $createdWorktrees = @()
+    $declarativeApplication = $null
+    $declarativeWorkerStarted = $false
+    $declarativeWorktreesByPane = [ordered]@{}
     try {
         Enable-OrchestraManagedWarmSuppression
         $script:winsmuxBin = Get-WinsmuxBin
@@ -2687,10 +2925,15 @@ if ($MyInvocation.InvocationName -ne '.') {
         }
 
         $projectDir = Get-ProjectDir
+        if (-not [string]::IsNullOrWhiteSpace($RecipeId)) {
+            $workspacePlan = Invoke-OrchestraWorkspacePlanOnce -ProjectDir $projectDir -RecipeId $RecipeId -WorkflowId $WorkflowId
+            $declarativeApplication = New-OrchestraDeclarativeApplication -Plan $workspacePlan -RecipeId $RecipeId -WorkflowId $WorkflowId
+            Assert-OrchestraDeclarativeWorktreePreflight -ProjectDir $projectDir -Application $declarativeApplication
+        }
         $settings = Get-BridgeSettings -RootPath $projectDir
         $layoutSettings = Get-OrchestraLayoutSettings -Settings $settings
         $bootstrapPaneCount = 1
-        $expectedPaneCount = Get-OrchestraExpectedPaneCount -LayoutSettings $layoutSettings
+        $expectedPaneCount = if ($null -ne $declarativeApplication) { [int]$declarativeApplication.PaneByKey.Count } else { Get-OrchestraExpectedPaneCount -LayoutSettings $layoutSettings }
         Initialize-WinsmuxLog -ProjectDir $projectDir -SessionName $sessionName | Out-Null
         Write-WinsmuxLog -Level INFO -Event 'preflight.settings.loaded' -Message 'Loaded orchestra settings.' -Data @{
             agent              = $settings.agent
@@ -2715,6 +2958,15 @@ if ($MyInvocation.InvocationName -ne '.') {
         $startupLock = Acquire-OrchestraStartupLock -ProjectDir $projectDir -SessionName $sessionName
         $startupToken = [string]$startupLock.StartupToken
         Write-WinsmuxLog -Level INFO -Event 'preflight.startup_lock.acquired' -Message "Acquired orchestra startup lock for $sessionName." -Data @{ session_name = $sessionName } | Out-Null
+        if ($null -ne $declarativeApplication) {
+            foreach ($action in @($declarativeApplication.StartupActions)) {
+                if ([string](Get-OrchestraObjectPropertyValue -InputObject $action -Name 'kind' -Default '') -cne 'ensure-managed-worktree') { continue }
+                $paneKey = [string](Get-OrchestraObjectPropertyValue -InputObject $action -Name 'pane_ref' -Default '')
+                $created = New-OrchestraManagedWorktree -ProjectDir $projectDir -Descriptor $declarativeApplication.ManagedWorktrees[$paneKey]
+                $declarativeWorktreesByPane[$paneKey] = $created
+                $createdWorktrees += $created
+            }
+        }
         $sessionExistedAtStart = Test-OrchestraServerSession -SessionName $sessionName
         Write-WinsmuxLog -Level INFO -Event 'preflight.vault.start' -Message 'Running vault preflight.' | Out-Null
         Invoke-VaultPreflight -Settings $settings
@@ -2911,7 +3163,11 @@ if ($MyInvocation.InvocationName -ne '.') {
 
         try {
             try {
-                $layout = . $layoutScript -SessionName $sessionName -Operators $layoutSettings.Operators -Workers $layoutSettings.Workers -Builders $layoutSettings.Builders -Researchers $layoutSettings.Researchers -Reviewers $layoutSettings.Reviewers
+                if ($null -ne $declarativeApplication) {
+                    $layout = . $layoutScript -SessionName $sessionName -ApplicationLayout $declarativeApplication.Layout
+                } else {
+                    $layout = . $layoutScript -SessionName $sessionName -Operators $layoutSettings.Operators -Workers $layoutSettings.Workers -Builders $layoutSettings.Builders -Researchers $layoutSettings.Researchers -Reviewers $layoutSettings.Reviewers
+                }
                 foreach ($sessionPaneId in @(Get-OrchestraSessionPaneIds -SessionName $sessionName)) {
                     if ($createdPaneIds -notcontains $sessionPaneId) {
                         $createdPaneIds += $sessionPaneId
@@ -2952,9 +3208,42 @@ if ($MyInvocation.InvocationName -ne '.') {
             exit 1
         }
 
+    $startupPanes = @($layout.Panes)
+    if ($null -ne $declarativeApplication) {
+        $startupPanes = @($declarativeApplication.StartupActions | Where-Object {
+                [string](Get-OrchestraObjectPropertyValue -InputObject $_ -Name 'kind' -Default '') -ceq 'ensure-slot-ready'
+            } | ForEach-Object {
+                $paneKey = [string](Get-OrchestraObjectPropertyValue -InputObject $_ -Name 'pane_ref' -Default '')
+                @($layout.Panes | Where-Object { [string]$_.PaneKey -ceq $paneKey })[0]
+            })
+    }
+    $declarativeWorkspace = if ($null -ne $declarativeApplication) { $declarativeApplication.Projection } else { $null }
+    if ($null -ne $declarativeApplication) {
+        $prestartPaneSummaries = @($startupPanes | ForEach-Object {
+                $paneKey = [string]$_.PaneKey
+                $slotId = [string]$_.SlotId
+                $created = if ($declarativeWorktreesByPane.Contains($paneKey)) { $declarativeWorktreesByPane[$paneKey] } else { $null }
+                [ordered]@{
+                    Label = $slotId; PaneId = [string]$_.PaneId; SlotId = $slotId; PaneKey = $paneKey
+                    WorkflowRole = [string]$_.WorkflowRole; Role = 'Worker'; ExecMode = $false
+                    ProjectDir = $projectDir; LaunchDir = if ($null -ne $created) { [string]$created.WorktreePath } else { $projectDir }
+                    BuilderBranch = if ($null -ne $created) { [string]$created.BranchName } else { $null }
+                    BuilderWorktreePath = if ($null -ne $created) { [string]$created.WorktreePath } else { $null }
+                    WorktreeGitDir = if ($null -ne $created) { [string]$created.GitWorktreeDir } else { $gitWorktreeDir }
+                    ExpectedOrigin = $expectedOrigin; Title = $slotId; WorkerBackend = 'local'; WorkerRole = ''
+                    CapabilityAdapter = ''; CapabilityCommand = ''; SupportsParallelRuns = $false
+                    SupportsInterrupt = $false; SupportsStructuredResult = $false; SupportsFileEdit = $false
+                    SupportsSubagents = $false; SupportsVerification = $false; SupportsConsultation = $false
+                    SupportsContextReset = $false; ApprovedLaunch = $null; BootstrapPlanPath = ''; BootstrapMarkerPath = ''
+                    Status = 'planned'; RuntimeReady = $false
+                }
+            })
+        $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $prestartPaneSummaries -GenerationId $runtimeGenerationId -ServerSessionId $serverSessionId -BootstrapPaneId $bootstrapPaneId -StartupToken $startupToken -BootstrapMode ([string]$orchestraServer.BootstrapMode) -SessionReady $false -UiAttachSource 'none' -ExpectedPaneCount $expectedPaneCount -DeclarativeWorkspace $declarativeWorkspace
+        $manifestPublished = $true
+    }
     $sessionRoleMap = [ordered]@{}
-    foreach ($pane in @($layout.Panes)) {
-        $sessionRoleMap[[string]$pane.PaneId] = Get-CanonicalRole -AssignmentRole ([string]$pane.Role)
+    foreach ($pane in @($startupPanes)) {
+        $sessionRoleMap[[string]$pane.PaneId] = if ($null -ne $declarativeApplication) { 'Worker' } else { Get-CanonicalRole -AssignmentRole ([string]$pane.Role) }
     }
     $sessionRoleMapJson = ($sessionRoleMap | ConvertTo-Json -Compress)
     $environmentContract = Get-WinsmuxEnvironmentContract -ProjectDir $projectDir
@@ -2967,10 +3256,10 @@ if ($MyInvocation.InvocationName -ne '.') {
     $paneSummaries = [System.Collections.Generic.List[object]]::new()
     $builderIndex = 0
 
-    foreach ($pane in @($layout.Panes)) {
+    foreach ($pane in @($startupPanes)) {
         $assignmentLabel = [string]$pane.Role
-        $canonicalRole = Get-CanonicalRole -AssignmentRole $assignmentLabel
-        $label = $assignmentLabel.ToLowerInvariant()
+        $canonicalRole = if ($null -ne $declarativeApplication) { 'Worker' } else { Get-CanonicalRole -AssignmentRole $assignmentLabel }
+        $label = if ($null -ne $declarativeApplication) { [string]$pane.SlotId } else { $assignmentLabel.ToLowerInvariant() }
         $paneId = [string]$pane.PaneId
         $launchDir = $projectDir
         $launchGitWorktreeDir = $gitWorktreeDir
@@ -2980,7 +3269,16 @@ if ($MyInvocation.InvocationName -ne '.') {
         $bootstrapMarkerPath = ''
         $paneStatus = 'ready'
 
-        if ($canonicalRole -in @('Builder', 'Worker')) {
+        if ($null -ne $declarativeApplication) {
+            $paneKey = [string]$pane.PaneKey
+            if ($declarativeWorktreesByPane.Contains($paneKey)) {
+                $builderWorktree = $declarativeWorktreesByPane[$paneKey]
+                $launchDir = $builderWorktree.WorktreePath
+                $launchGitWorktreeDir = $builderWorktree.GitWorktreeDir
+                $builderBranch = $builderWorktree.BranchName
+                $builderWorktreePath = $builderWorktree.WorktreePath
+            }
+        } elseif ($canonicalRole -in @('Builder', 'Worker')) {
             $builderIndex++
             $builderWorktree = New-BuilderWorktree -ProjectDir $projectDir -BuilderIndex $builderIndex
             $createdWorktrees += [ordered]@{
@@ -3098,6 +3396,7 @@ if ($MyInvocation.InvocationName -ne '.') {
                         worker_backend      = [string]$slotAgentConfig.WorkerBackend
                     }) | Out-Null
                 } else {
+                    $declarativeWorkerStarted = $declarativeWorkerStarted -or ($null -ne $declarativeApplication)
                     Start-OrchestraPaneBootstrap -PaneId $paneId -PlanPath $bootstrapPlanPath -SessionName $sessionName
                     $bootstrapMarkerPath = Get-OrchestraPaneBootstrapMarkerPath -PlanPath $bootstrapPlanPath -GenerationId $runtimeGenerationId
                 }
@@ -3121,6 +3420,8 @@ if ($MyInvocation.InvocationName -ne '.') {
             Label = $label
             PaneId = $paneId
             SlotId = $label
+            PaneKey = if ($null -ne $declarativeApplication) { [string]$pane.PaneKey } else { '' }
+            WorkflowRole = if ($null -ne $declarativeApplication) { [string]$pane.WorkflowRole } else { '' }
             Role = $canonicalRole
             WorkerBackend = [string]$slotAgentConfig.WorkerBackend
             WorkerRole = $runtimeWorkerRole
@@ -3213,8 +3514,10 @@ if ($MyInvocation.InvocationName -ne '.') {
     foreach ($paneSummary in $validPaneSummaries) {
         Invoke-Winsmux -Arguments @('select-pane', '-t', [string]$paneSummary.PaneId, '-T', [string]$paneSummary.Title) -TargetSessionName $sessionName
     }
-    $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $validPaneSummaries -GenerationId $runtimeGenerationId -ServerSessionId $serverSessionId -BootstrapPaneId $bootstrapPaneId -StartupToken $startupToken -BootstrapMode ([string]$orchestraServer.BootstrapMode) -SessionReady $false -UiAttachLaunched ([bool]$uiAttachResult.Launched) -UiAttached ([bool]$uiAttachResult.Attached) -UiAttachStatus ([string]$uiAttachResult.Status) -UiAttachReason ([string]$uiAttachResult.Reason) -UiAttachSource ([string]$uiAttachResult.Source) -UiHostKind ([string]$uiAttachResult.ui_host_kind) -AttachRequestId ([string]$uiAttachResult.attach_request_id) -AttachAdapterTrace @($uiAttachResult.attach_adapter_trace) -ExpectedPaneCount $expectedPaneCount
-    $manifestPublished = $true
+    if ($null -eq $declarativeApplication) {
+        $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $validPaneSummaries -GenerationId $runtimeGenerationId -ServerSessionId $serverSessionId -BootstrapPaneId $bootstrapPaneId -StartupToken $startupToken -BootstrapMode ([string]$orchestraServer.BootstrapMode) -SessionReady $false -UiAttachLaunched ([bool]$uiAttachResult.Launched) -UiAttached ([bool]$uiAttachResult.Attached) -UiAttachStatus ([string]$uiAttachResult.Status) -UiAttachReason ([string]$uiAttachResult.Reason) -UiAttachSource ([string]$uiAttachResult.Source) -UiHostKind ([string]$uiAttachResult.ui_host_kind) -AttachRequestId ([string]$uiAttachResult.attach_request_id) -AttachAdapterTrace @($uiAttachResult.attach_adapter_trace) -ExpectedPaneCount $expectedPaneCount
+        $manifestPublished = $true
+    }
     $supervisorScriptPath = Join-Path $scriptDir 'orchestra-supervisor.ps1'
     $supervisorProcess = Start-OrchestraSupervisorJob -SupervisorScriptPath $supervisorScriptPath -ManifestPath $manifestPath -SessionName $sessionName -GenerationId $runtimeGenerationId -ServerSessionId $serverSessionId -StartupToken $startupToken
     Assert-OrchestraBackgroundProcessStarted -Process $supervisorProcess -Name 'Orchestra supervisor job'
@@ -3224,7 +3527,7 @@ if ($MyInvocation.InvocationName -ne '.') {
     }
     Wait-OrchestraRuntimeRegistryReady -ProjectDir $projectDir -SessionName $sessionName -GenerationId $runtimeGenerationId `
         -ServerSessionId $serverSessionId -BootstrapPaneId $bootstrapPaneId -SupervisorProcess $supervisorProcess -PaneSummaries $validPaneSummaries | Out-Null
-    $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $validPaneSummaries -GenerationId $runtimeGenerationId -ServerSessionId $serverSessionId -BootstrapPaneId $bootstrapPaneId -StartupToken $startupToken -SupervisorPid $supervisorProcess.Id -BootstrapMode ([string]$orchestraServer.BootstrapMode) -SessionReady $true -UiAttachLaunched ([bool]$uiAttachResult.Launched) -UiAttached ([bool]$uiAttachResult.Attached) -UiAttachStatus ([string]$uiAttachResult.Status) -UiAttachReason ([string]$uiAttachResult.Reason) -UiAttachSource ([string]$uiAttachResult.Source) -UiHostKind ([string]$uiAttachResult.ui_host_kind) -AttachRequestId ([string]$uiAttachResult.attach_request_id) -AttachAdapterTrace @($uiAttachResult.attach_adapter_trace) -ExpectedPaneCount $expectedPaneCount
+    $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $validPaneSummaries -GenerationId $runtimeGenerationId -ServerSessionId $serverSessionId -BootstrapPaneId $bootstrapPaneId -StartupToken $startupToken -SupervisorPid $supervisorProcess.Id -BootstrapMode ([string]$orchestraServer.BootstrapMode) -SessionReady $true -UiAttachLaunched ([bool]$uiAttachResult.Launched) -UiAttached ([bool]$uiAttachResult.Attached) -UiAttachStatus ([string]$uiAttachResult.Status) -UiAttachReason ([string]$uiAttachResult.Reason) -UiAttachSource ([string]$uiAttachResult.Source) -UiHostKind ([string]$uiAttachResult.ui_host_kind) -AttachRequestId ([string]$uiAttachResult.attach_request_id) -AttachAdapterTrace @($uiAttachResult.attach_adapter_trace) -ExpectedPaneCount $expectedPaneCount -DeclarativeWorkspace $declarativeWorkspace
     $labelPublication = Publish-OrchestraPaneLabels -PaneSummaries $validPaneSummaries
     Write-WinsmuxLog -Level INFO -Event 'preflight.labels.published' -Message "Published $($labelPublication.PublishedCount) orchestra labels atomically." -Data ([ordered]@{
         published_count = [int]$labelPublication.PublishedCount
@@ -3312,7 +3615,7 @@ if ($MyInvocation.InvocationName -ne '.') {
         try { Stop-Process -Id $supervisorProcess.Id -Force -ErrorAction SilentlyContinue } catch {}
     }
 
-    $rollback = Invoke-OrchestraStartupRollback -ProjectDir $projectDir -SessionName $sessionName -BootstrapPaneId $bootstrapPaneId -CreatedPaneIds $createdPaneIds -CreatedWorktrees $createdWorktrees -FailureMessage $_.Exception.Message -ManifestPublished:$manifestPublished -OwnedGenerationId $runtimeGenerationId -OwnedServerSessionId $serverSessionId -OwnedSupervisorPid $rollbackSupervisorPid -OwnedSupervisorProcessStartedAt $supervisorProcessStartedAt
+    $rollback = Invoke-OrchestraStartupRollback -ProjectDir $projectDir -SessionName $sessionName -BootstrapPaneId $bootstrapPaneId -CreatedPaneIds $createdPaneIds -CreatedWorktrees $createdWorktrees -FailureMessage $_.Exception.Message -ManifestPublished:$manifestPublished -OwnedGenerationId $runtimeGenerationId -OwnedServerSessionId $serverSessionId -OwnedSupervisorPid $rollbackSupervisorPid -OwnedSupervisorProcessStartedAt $supervisorProcessStartedAt -PreserveDeclarativeWorktrees:$declarativeWorkerStarted
     $rollbackSuffix = if ($rollback.BootstrapRespawned) { 'session preserved' } else { 'rollback attempted' }
     Write-Error "Orchestra startup failed ($rollbackSuffix): $($_.Exception.Message)"
     exit 1

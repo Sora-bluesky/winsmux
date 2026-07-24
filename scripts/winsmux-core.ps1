@@ -71,6 +71,7 @@ $PaneControlScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\
 $PaneStatusScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\pane-status.ps1'))
 $RoleGateScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\role-gate.ps1'))
 $ClmSafeIoScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\clm-safe-io.ps1'))
+$DeclarativeWorkflowScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\declarative-workflow.ps1'))
 $PaneEnvScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\pane-env.ps1'))
 $PublicFirstRunScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\public-first-run.ps1'))
 $ConflictPreflightScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\conflict-preflight.ps1'))
@@ -115,6 +116,10 @@ if (Test-Path $RoleGateScript -PathType Leaf) {
 
 if (Test-Path $ClmSafeIoScript -PathType Leaf) {
     . $ClmSafeIoScript
+}
+
+if (Test-Path $DeclarativeWorkflowScript -PathType Leaf) {
+    . $DeclarativeWorkflowScript
 }
 
 if (Test-Path $PaneEnvScript -PathType Leaf) {
@@ -4387,6 +4392,7 @@ function Resolve-SendInvocationArguments {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
 
     $taskSlug = ''
+    $expectedGenerationId = ''
     $messageParts = New-Object System.Collections.Generic.List[string]
     for ($index = 0; $index -lt $Arguments.Count; $index++) {
         $token = [string]$Arguments[$index]
@@ -4404,12 +4410,28 @@ function Resolve-SendInvocationArguments {
             throw '--delivery-class is internal-only and cannot be supplied through argv'
         }
 
+        if ([string]::Equals($token, '--expected-generation-id', [StringComparison]::Ordinal)) {
+            if ($index + 1 -ge $Arguments.Count) {
+                throw '--expected-generation-id requires a value'
+            }
+            if (-not [string]::IsNullOrWhiteSpace($expectedGenerationId)) {
+                throw '--expected-generation-id may be supplied only once'
+            }
+            $index++
+            $expectedGenerationId = [string]$Arguments[$index]
+            if ($expectedGenerationId -cnotmatch '^[A-Za-z0-9][A-Za-z0-9-]{0,127}$') {
+                throw 'invalid expected generation id'
+            }
+            continue
+        }
+
         $messageParts.Add($token) | Out-Null
     }
 
     return [ordered]@{
-        TaskSlug     = $taskSlug
-        MessageParts = @($messageParts)
+        TaskSlug             = $taskSlug
+        ExpectedGenerationId = $expectedGenerationId
+        MessageParts         = @($messageParts)
     }
 }
 
@@ -4602,6 +4624,7 @@ function Invoke-Send {
 
     $resolvedSendArguments = Resolve-SendInvocationArguments -Arguments $SendArguments
     $taskSlug = [string]$resolvedSendArguments['TaskSlug']
+    $explicitExpectedGenerationId = [string]$resolvedSendArguments['ExpectedGenerationId']
     $messageParts = @($resolvedSendArguments['MessageParts'])
 
     if ($messageParts.Count -lt 1) {
@@ -4640,9 +4663,15 @@ function Invoke-Send {
         $bridgeSettingsLoadError = [string]$_.Exception.Message
     }
 
-    $runtimeAccess = Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $currentProjectDir -Operation auto
+    $runtimeAccess = Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $currentProjectDir -Operation auto `
+        -ExpectedGenerationId $explicitExpectedGenerationId
     $projectDir = [string]$runtimeAccess.ProjectDir
     $context = $runtimeAccess.Context
+    $runtimeLeaseGenerationId = if (-not [string]::IsNullOrWhiteSpace($explicitExpectedGenerationId)) {
+        $explicitExpectedGenerationId
+    } else {
+        [string]$runtimeAccess.GenerationId
+    }
     $hasRoleConfigHelper = Get-Command Get-RoleAgentConfig -ErrorAction SilentlyContinue
     if ($runtimeAccess.Managed -and (
             -not [string]::IsNullOrWhiteSpace($paneControlLoadError) -or
@@ -4717,7 +4746,7 @@ function Invoke-Send {
             }
             if ([bool]$runtimeAccess.Managed) {
                 Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $projectDir `
-                    -Operation ([string]$runtimeAccess.Operation) -ExpectedGenerationId ([string]$runtimeAccess.GenerationId) | Out-Null
+                    -Operation ([string]$runtimeAccess.Operation) -ExpectedGenerationId $runtimeLeaseGenerationId | Out-Null
             }
             Write-BridgeEventRecord -ProjectDir $projectDir -EventRecord $eventRecord | Out-Null
             Stop-WithError ([string]$policyViolation['reason'])
@@ -4728,7 +4757,7 @@ function Invoke-Send {
         $runtimeOperation = [string]$runtimeAccess.Operation
         if (-not $SkipDeferredPaneStart) {
             Start-DeferredPaneFromManifestEntry -ProjectDir $projectDir -ManifestEntry $context `
-                -ExpectedGenerationId ([string]$runtimeAccess.GenerationId) | Out-Null
+                -ExpectedGenerationId $runtimeLeaseGenerationId | Out-Null
             if ($runtimeOperation -ceq 'start_deferred') {
                 $context = Get-PaneControlManifestContext -ProjectDir $projectDir -PaneId $paneId
                 $runtimeResult = Wait-PaneControlRuntimeContext -ProjectDir $projectDir -ManifestEntry $context -Operation dispatch
@@ -4778,7 +4807,7 @@ function Invoke-Send {
     $transportIntent = Resolve-SendTransportIntent @transportPlanRequest
     $sendRuntimeOperation = if ($SkipDeferredPaneStart) { 'start_deferred' } else { 'dispatch' }
     $sendRuntimeProjectDir = if ($null -ne $context) { $projectDir } else { '' }
-    $sendExpectedGenerationId = if ($null -ne $context) { [string]$runtimeAccess.GenerationId } else { '' }
+    $sendExpectedGenerationId = if ($null -ne $context) { $runtimeLeaseGenerationId } else { '' }
 
     if ($null -ne $context) {
         Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $projectDir `
@@ -18284,6 +18313,271 @@ function Get-MailboxPipeName {
     return "winsmux-mailbox-$Channel"
 }
 
+function Test-WinsmuxExactJsonProperties {
+    param(
+        [AllowNull()]$Value,
+        [Parameter(Mandatory = $true)][string[]]$Names
+    )
+
+    if ($Value -isnot [Collections.IDictionary]) { return $false }
+    $actual = @($Value.Keys | ForEach-Object { [string]$_ })
+    return $actual.Count -eq $Names.Count -and
+        @($actual | Where-Object { $_ -notin $Names }).Count -eq 0 -and
+        @($Names | Where-Object { $_ -notin $actual }).Count -eq 0
+}
+
+function ConvertTo-WinsmuxWorkflowCompletionEnvelope {
+    param(
+        [Parameter(Mandatory = $true)][string]$Payload,
+        [Parameter(Mandatory = $true)][string]$SessionName,
+        [Parameter(Mandatory = $true)][string]$GenerationId,
+        [switch]$RequireTimestamp
+    )
+
+    $bytes = [Text.UTF8Encoding]::new($false).GetBytes($Payload)
+    if ($bytes.Length -lt 2 -or $bytes.Length -gt 65536 -or [Array]::IndexOf($bytes, [byte]0) -ge 0) {
+        throw 'mailbox-send: workflow completion payload exceeds the bounded envelope size'
+    }
+    try {
+        $envelope = $Payload | ConvertFrom-WinsmuxJson -AsHashtable -Depth 30 -ErrorAction Stop
+    } catch {
+        throw 'mailbox-send: workflow completion payload must be valid JSON'
+    }
+    $envelopeNames = @(
+        'mailbox_version', 'message_id', 'correlation_id', 'causation_id', 'idempotency_key',
+        'message_type', 'state', 'ttl_seconds', 'ack_required', 'from', 'to', 'timestamp', 'content'
+    )
+    $contentNames = @('session', 'event', 'message', 'label', 'pane_id', 'role', 'status', 'exit_reason', 'data')
+    $dataNames = @(
+        'schema_version', 'run_id', 'node_id', 'idempotency_key', 'generation_id',
+        'config_fingerprint', 'workflow_fingerprint', 'source_head', 'pane_id', 'status', 'evidence_ref'
+    )
+    $content = if ($envelope -is [Collections.IDictionary] -and $envelope.Contains('content')) { $envelope['content'] } else { $null }
+    $data = if ($content -is [Collections.IDictionary] -and $content.Contains('data')) { $content['data'] } else { $null }
+    $messageId = if ($envelope -is [Collections.IDictionary] -and $envelope.Contains('message_id')) { [string]$envelope['message_id'] } else { '' }
+    $runId = if ($data -is [Collections.IDictionary] -and $data.Contains('run_id')) { [string]$data['run_id'] } else { '' }
+    $nodeId = if ($data -is [Collections.IDictionary] -and $data.Contains('node_id')) { [string]$data['node_id'] } else { '' }
+    $timestampText = if ($envelope -is [Collections.IDictionary] -and $envelope.Contains('timestamp')) { [string]$envelope['timestamp'] } else { '' }
+    $timestamp = [DateTimeOffset]::MinValue
+    $ttl = 0
+    if (-not (Test-WinsmuxExactJsonProperties -Value $envelope -Names $envelopeNames) -or
+        -not (Test-WinsmuxExactJsonProperties -Value $content -Names $contentNames) -or
+        -not (Test-WinsmuxExactJsonProperties -Value $data -Names $dataNames) -or
+        [int]$envelope['mailbox_version'] -ne 2 -or
+        $messageId -cnotmatch '^[a-z][a-z0-9-]{0,127}$' -or
+        [string]$envelope['correlation_id'] -cne $messageId -or
+        -not [string]::IsNullOrWhiteSpace([string]$envelope['causation_id']) -or
+        [string]$envelope['idempotency_key'] -cnotmatch '^[A-Za-z0-9:_-]{1,192}$' -or
+        [string]$envelope['message_type'] -cne 'workflow-completion' -or
+        [string]$envelope['state'] -cne 'created' -or
+        -not [int]::TryParse([string]$envelope['ttl_seconds'], [ref]$ttl) -or $ttl -lt 1 -or $ttl -gt 3600 -or
+        -not [bool]$envelope['ack_required'] -or
+        [string]$envelope['from'] -cnotmatch '^[A-Za-z0-9_-]{1,64}$' -or
+        [string]$envelope['to'] -cne 'Operator' -or
+        ($RequireTimestamp -and [string]::IsNullOrWhiteSpace($timestampText)) -or
+        (-not [string]::IsNullOrWhiteSpace($timestampText) -and -not [DateTimeOffset]::TryParse($timestampText, [ref]$timestamp)) -or
+        [string]$content['session'] -cne $SessionName -or
+        [string]$content['event'] -cne 'workflow.node.acknowledged' -or
+        [string]$content['message'] -cne 'Declarative workflow completion.' -or
+        [string]$content['label'] -cne [string]$envelope['from'] -or
+        [string]$content['pane_id'] -cnotmatch '^%[0-9]+$' -or
+        [string]$content['status'] -cne 'succeeded' -or
+        -not [string]::IsNullOrWhiteSpace([string]$content['exit_reason']) -or
+        [int]$data['schema_version'] -ne 1 -or
+        $runId -cnotmatch '^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$' -or
+        $nodeId -cnotmatch '^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$' -or
+        [string]$data['idempotency_key'] -cne "$runId`:$nodeId" -or
+        -not [string]::Equals([string]$data['generation_id'], $GenerationId, [StringComparison]::Ordinal) -or
+        [string]$data['config_fingerprint'] -cnotmatch '^sha256:[0-9a-f]{64}$' -or
+        [string]$data['workflow_fingerprint'] -cnotmatch '^sha256:[0-9a-f]{64}$' -or
+        [string]$data['source_head'] -cnotmatch '^[0-9a-f]{40}$' -or
+        [string]$data['pane_id'] -cne [string]$content['pane_id'] -or
+        [string]$data['status'] -cne 'succeeded' -or
+        [string]$data['evidence_ref'] -cne "workflow-ack:$runId`:$nodeId") {
+        throw 'mailbox-send: workflow completion payload violates the bounded v2 envelope contract'
+    }
+    return $envelope
+}
+
+function ConvertTo-WinsmuxWorkflowCompletionSemanticJson {
+    param([Parameter(Mandatory = $true)][Collections.IDictionary]$Envelope)
+
+    $content = $Envelope['content']
+    $data = $content['data']
+    return ([ordered]@{
+        mailbox_version = [int]$Envelope['mailbox_version']
+        message_id = [string]$Envelope['message_id']
+        correlation_id = [string]$Envelope['correlation_id']
+        causation_id = $null
+        idempotency_key = [string]$Envelope['idempotency_key']
+        message_type = [string]$Envelope['message_type']
+        state = [string]$Envelope['state']
+        ttl_seconds = [int]$Envelope['ttl_seconds']
+        ack_required = [bool]$Envelope['ack_required']
+        from = [string]$Envelope['from']
+        to = [string]$Envelope['to']
+        content = [ordered]@{
+            session = [string]$content['session']
+            event = [string]$content['event']
+            message = [string]$content['message']
+            label = [string]$content['label']
+            pane_id = [string]$content['pane_id']
+            role = [string]$content['role']
+            status = [string]$content['status']
+            exit_reason = [string]$content['exit_reason']
+            data = [ordered]@{
+                schema_version = [int]$data['schema_version']
+                run_id = [string]$data['run_id']
+                node_id = [string]$data['node_id']
+                idempotency_key = [string]$data['idempotency_key']
+                generation_id = [string]$data['generation_id']
+                config_fingerprint = [string]$data['config_fingerprint']
+                workflow_fingerprint = [string]$data['workflow_fingerprint']
+                source_head = [string]$data['source_head']
+                pane_id = [string]$data['pane_id']
+                status = [string]$data['status']
+                evidence_ref = [string]$data['evidence_ref']
+            }
+        }
+    } | ConvertTo-Json -Compress -Depth 12)
+}
+
+function Resolve-WinsmuxWorkflowCompletionAdmission {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][Collections.IDictionary]$Envelope
+    )
+
+    $data = $Envelope['content']['data']
+    $runId = [string]$data['run_id']
+    $nodeId = [string]$data['node_id']
+    $run = Read-DeclarativeWorkflowRunState -ProjectDir $ProjectDir -RunId $runId
+    $nodes = Get-DeclarativeWorkflowValue -InputObject $run -Name 'nodes' -Default $null
+    if ($nodes -isnot [Collections.IDictionary] -or -not $nodes.Contains($nodeId)) {
+        throw 'mailbox-send: workflow completion run does not own the claimed node'
+    }
+    $node = $nodes[$nodeId]
+    $paneRef = [string](Get-DeclarativeWorkflowValue -InputObject $node -Name 'pane_ref' -Default '')
+    $bindings = Get-DeclarativeWorkflowValue -InputObject $run -Name 'resolved_bindings' -Default $null
+    if ($bindings -isnot [Collections.IDictionary] -or [string]::IsNullOrWhiteSpace($paneRef) -or -not $bindings.Contains($paneRef)) {
+        throw 'mailbox-send: workflow completion node has no resolved runtime binding'
+    }
+    $expectedLabel = [string]$bindings[$paneRef]
+    $entries = @(Get-PaneControlManifestEntries -ProjectDir $ProjectDir | Where-Object { [string]$_.Label -ceq $expectedLabel })
+    if ($entries.Count -ne 1) {
+        throw 'mailbox-send: workflow completion binding does not resolve to exactly one manifest target'
+    }
+    $entry = $entries[0]
+    $expectedPaneId = [string]$entry.PaneId
+    $content = $Envelope['content']
+    if ([string]$Envelope['from'] -cne $expectedLabel -or [string]$content['label'] -cne $expectedLabel -or
+        [string]$content['pane_id'] -cne $expectedPaneId -or [string]$data['pane_id'] -cne $expectedPaneId) {
+        throw 'mailbox-send: workflow completion payload does not match the resolved runtime target'
+    }
+    $validation = Test-PaneControlRuntimeContext -ProjectDir $ProjectDir -ManifestEntry $entry -Operation workflow_ack
+    if ($null -eq $validation -or -not [bool](Get-PaneControlValue -InputObject $validation -Name 'valid' -Default $false)) {
+        $reasonCode = [string](Get-PaneControlValue -InputObject $validation -Name 'reason_code' -Default 'caller_identity_mismatch')
+        $diagnostic = [string](Get-PaneControlValue -InputObject $validation -Name 'diagnostic' -Default 'workflow caller identity could not be verified')
+        throw ('mailbox-send: workflow completion caller identity refused ({0}): {1}' -f $reasonCode, $diagnostic)
+    }
+    $runtime = Get-PaneControlValue -InputObject $validation -Name 'context' -Default $null
+    if (-not [string]::Equals([string](Get-PaneControlValue -InputObject $runtime -Name 'generation_id' -Default ''), [string]$data['generation_id'], [StringComparison]::Ordinal) -or
+        [string](Get-PaneControlValue -InputObject $runtime -Name 'label' -Default '') -cne $expectedLabel -or
+        [string](Get-PaneControlValue -InputObject $runtime -Name 'pane_id' -Default '') -cne $expectedPaneId) {
+        throw 'mailbox-send: workflow completion authenticated runtime target changed before admission'
+    }
+    return [PSCustomObject][ordered]@{ Run = $run; NodeId = $nodeId; Label = $expectedLabel; PaneId = $expectedPaneId }
+}
+
+function Publish-WinsmuxWorkflowCompletionEnvelope {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$Channel,
+        [Parameter(Mandatory = $true)][string]$Payload
+    )
+
+    $projectRoot = ConvertTo-WinsmuxCanonicalProjectPath -Path $ProjectDir
+    Resolve-DeclarativeWorkflowMailboxPendingPath -ProjectDir $projectRoot -Channel $Channel | Out-Null
+    $manifestPath = Join-Path (Join-Path $projectRoot '.winsmux') 'manifest.yaml'
+    if (-not [IO.File]::Exists($manifestPath)) { throw 'mailbox-send: managed project manifest is unavailable' }
+    $manifestText = [IO.File]::ReadAllText($manifestPath, [Text.UTF8Encoding]::new($false, $true))
+    $manifest = ConvertFrom-PaneControlManifestContent -Content $manifestText
+    $session = Get-PaneControlValue -InputObject $manifest -Name 'Session' -Default $null
+    $sessionName = [string](Get-PaneControlValue -InputObject $session -Name 'name' -Default '')
+    $generationId = [string](Get-PaneControlValue -InputObject $session -Name 'generation_id' -Default '')
+    $expectedChannel = "$sessionName-operator"
+    Get-MailboxPipeName -Channel $Channel | Out-Null
+    if ([string]::IsNullOrWhiteSpace($sessionName) -or [string]::IsNullOrWhiteSpace($generationId) -or
+        $expectedChannel.Length -gt 64 -or $Channel -cne $expectedChannel) {
+        throw 'mailbox-send: workflow completion channel does not match the fresh manifest session'
+    }
+    $envelope = ConvertTo-WinsmuxWorkflowCompletionEnvelope -Payload $Payload -SessionName $sessionName -GenerationId $generationId
+    Resolve-WinsmuxWorkflowCompletionAdmission -ProjectDir $projectRoot -Envelope $envelope | Out-Null
+    $messageId = [string]$envelope['message_id']
+    $pendingRoot = Resolve-DeclarativeWorkflowMailboxPendingPath -ProjectDir $projectRoot -Channel $Channel -CreateDirectory
+    $destination = Resolve-DeclarativeWorkflowMailboxPendingPath -ProjectDir $projectRoot -Channel $Channel -MessageId $messageId
+    $semanticJson = ConvertTo-WinsmuxWorkflowCompletionSemanticJson -Envelope $envelope
+    if ([IO.File]::Exists($destination)) {
+        try {
+            $verifiedDestination = Resolve-DeclarativeWorkflowMailboxPendingPath -ProjectDir $projectRoot -Channel $Channel -MessageId $messageId
+            if ($verifiedDestination -cne $destination) { throw 'mailbox-send: workflow completion ownership changed before read' }
+            $existingPayload = [Text.UTF8Encoding]::new($false, $true).GetString([IO.File]::ReadAllBytes($destination))
+            $existingEnvelope = ConvertTo-WinsmuxWorkflowCompletionEnvelope -Payload $existingPayload -SessionName $sessionName -GenerationId $generationId -RequireTimestamp
+            if ((ConvertTo-WinsmuxWorkflowCompletionSemanticJson -Envelope $existingEnvelope) -ceq $semanticJson) {
+                return $destination
+            }
+        } catch {
+            # A malformed or differently-owned destination is a create-once conflict.
+        }
+        throw 'mailbox-send: workflow completion message_id conflict'
+    }
+    $envelope['timestamp'] = [DateTimeOffset]::UtcNow.ToString('o')
+    $publishedPayload = $envelope | ConvertTo-Json -Compress -Depth 20
+    $payloadBytes = [Text.UTF8Encoding]::new($false).GetBytes($publishedPayload)
+    if ($payloadBytes.Length -lt 2 -or $payloadBytes.Length -gt 65536) {
+        throw 'mailbox-send: workflow completion payload exceeds the bounded envelope size'
+    }
+    $temporaryName = '.publish-{0}.tmp' -f [guid]::NewGuid().ToString('N')
+    $temporary = Resolve-DeclarativeWorkflowManagedPath -ProjectDir $projectRoot `
+        -RelativeComponents @('mailbox', $Channel, 'pending', $temporaryName) -DirectoryComponentCount 3
+    try {
+        $stream = [IO.File]::Open($temporary, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try {
+            $stream.Write($payloadBytes, 0, $payloadBytes.Length)
+            $stream.Flush($true)
+        } finally {
+            $stream.Dispose()
+        }
+        try {
+            $verifiedDestination = Resolve-DeclarativeWorkflowMailboxPendingPath -ProjectDir $projectRoot -Channel $Channel -MessageId $messageId
+            if ($verifiedDestination -cne $destination) { throw 'mailbox-send: workflow completion ownership changed before commit' }
+            [IO.File]::Move($temporary, $destination)
+        } catch [IO.IOException] {
+            if ([IO.File]::Exists($destination)) {
+                try {
+                    $verifiedDestination = Resolve-DeclarativeWorkflowMailboxPendingPath -ProjectDir $projectRoot -Channel $Channel -MessageId $messageId
+                    if ($verifiedDestination -cne $destination) { throw 'mailbox-send: workflow completion ownership changed before retry read' }
+                    $existingPayload = [Text.UTF8Encoding]::new($false, $true).GetString([IO.File]::ReadAllBytes($destination))
+                    $existingEnvelope = ConvertTo-WinsmuxWorkflowCompletionEnvelope -Payload $existingPayload -SessionName $sessionName -GenerationId $generationId -RequireTimestamp
+                    if ((ConvertTo-WinsmuxWorkflowCompletionSemanticJson -Envelope $existingEnvelope) -ceq $semanticJson) {
+                        return $destination
+                    }
+                } catch {
+                    # A malformed or differently-owned winner is a create-once conflict.
+                }
+            }
+            throw 'mailbox-send: workflow completion message_id conflict'
+        }
+    } finally {
+        if ([IO.File]::Exists($temporary)) {
+            $verifiedTemporary = Resolve-DeclarativeWorkflowManagedPath -ProjectDir $projectRoot `
+                -RelativeComponents @('mailbox', $Channel, 'pending', $temporaryName) -DirectoryComponentCount 3
+            if ($verifiedTemporary -ceq $temporary) { [IO.File]::Delete($temporary) }
+        }
+    }
+    return $destination
+}
+
 function Invoke-MailboxCreate {
     if (-not $Target) { Stop-WithError "usage: winsmux mailbox-create <channel>" }
 
@@ -18335,19 +18629,34 @@ function Invoke-MailboxCreate {
 
 function Invoke-MailboxSend {
     if (-not $Target) { Stop-WithError "usage: winsmux mailbox-send <channel> <json>" }
-    if (-not $Rest -or $Rest.Count -eq 0) {
+    $mailboxArguments = @($Rest)
+    if ($mailboxArguments.Count -eq 0) {
         Stop-WithError "usage: winsmux mailbox-send <channel> <json>"
     }
 
-    $pipeName = Get-MailboxPipeName $Target
-    $payload = $Rest -join ' '
+    $payload = $mailboxArguments -join ' '
 
     # Validate JSON
     try {
-        $null = $payload | ConvertFrom-Json -ErrorAction Stop
+        $message = $payload | ConvertFrom-Json -ErrorAction Stop
     } catch {
         Stop-WithError "mailbox-send: payload must be valid JSON"
     }
+
+    if ($null -ne $message -and [string]$message.message_type -ceq 'workflow-completion') {
+        if ([string]::IsNullOrWhiteSpace([string]$env:WINSMUX_ORCHESTRA_PROJECT_DIR)) {
+            Stop-WithError 'mailbox-send: workflow completion requires WINSMUX_ORCHESTRA_PROJECT_DIR'
+        }
+        try {
+            Publish-WinsmuxWorkflowCompletionEnvelope -ProjectDir ([string]$env:WINSMUX_ORCHESTRA_PROJECT_DIR) -Channel $Target -Payload $payload | Out-Null
+        } catch {
+            Stop-WithError ([string]$_.Exception.Message)
+        }
+        Write-Output "mailbox queued: $Target"
+        return
+    }
+
+    $pipeName = Get-MailboxPipeName $Target
 
     $client = [System.IO.Pipes.NamedPipeClientStream]::new(
         ".",

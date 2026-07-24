@@ -1534,6 +1534,27 @@ workspace-recipes:
       - action-id: start-verify-slot
         kind: ensure-slot-ready
         pane-ref: verify
+workflows:
+  task-658:
+    schema-version: 1
+    recipe-ref: review-one-slot
+    task-input:
+      source: runtime-task-file
+      privacy: digest-only
+    nodes:
+      - node-id: verify
+        pane-ref: verify
+        action: verification
+        context-pack-ref: review-pack
+        idempotency-key: "{{{{run-id}}}}:verify"
+        cleanup: retain
+    resume-policy:
+      mode: operator-confirmed
+      reject-completed-runs: true
+    cleanup-policy:
+      mode: compensating-actions
+      on: [success, failure, cancel]
+      actions: [release-run-lock]
 "#
     )
 }
@@ -1546,6 +1567,8 @@ fn run_workspace_plan(project_dir: &std::path::Path, recipe_id: &str) -> std::pr
             recipe_id,
             "--workflow-id",
             "task-658",
+            "--run-id",
+            "task-658-run",
             "--json",
             "--project-dir",
         ])

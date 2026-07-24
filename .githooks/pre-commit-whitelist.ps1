@@ -150,6 +150,7 @@ $whitelistPatterns = @(
     'tests/V03628RaceAbnormalSoak.Tests.ps1',
     'tests/V03628RuntimeReliabilityGate.Tests.ps1',
     'tests/V03628PackagedRestoreGate.Tests.ps1',
+    'tests/DeclarativeWorkflow.Tests.ps1',
     'tests/bridge/*.Tests.ps1',
     'tests/bridge/_helpers/BridgeTestCommon.ps1',
     'tests/fixtures/rust-parity/*.json',

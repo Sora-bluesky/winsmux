@@ -457,7 +457,7 @@ function Test-PaneControlRuntimeContext {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)]$ManifestEntry,
-        [ValidateSet('dispatch', 'start_deferred', 'caller_ack', 'stop_transition')][string]$Operation = 'dispatch',
+        [ValidateSet('dispatch', 'start_deferred', 'caller_ack', 'workflow_ack', 'stop_transition')][string]$Operation = 'dispatch',
         [AllowNull()]$CallerIdentity = $null,
         [AllowNull()][scriptblock]$ProcessResolver = $null
     )
@@ -517,12 +517,12 @@ function Test-PaneControlRuntimeContext {
     if ($null -eq $ProcessResolver) {
         try { $ProcessResolver = New-WinsmuxProcessSnapshotResolver }
         catch {
-            $reasonCode = if ($Operation -ceq 'caller_ack') { 'caller_identity_mismatch' } else { 'invalid_supervisor_identity' }
+            $reasonCode = if ($Operation -in @('caller_ack', 'workflow_ack')) { 'caller_identity_mismatch' } else { 'invalid_supervisor_identity' }
             return New-WinsmuxRuntimeValidationResult -Valid $false -ReasonCode $reasonCode `
                 -Diagnostic 'OS process identity evidence is unavailable.'
         }
     }
-    if ($null -eq $CallerIdentity -and $Operation -ceq 'caller_ack' -and $backend -in @('local', 'codex')) {
+    if ($null -eq $CallerIdentity -and ($Operation -ceq 'workflow_ack' -or ($Operation -ceq 'caller_ack' -and $backend -in @('local', 'codex')))) {
         $callerSnapshot = & $ProcessResolver $PID
         $callerStartedAt = ConvertTo-WinsmuxRuntimeUtcIdentity -Value (Get-WinsmuxRuntimeValue -InputObject $callerSnapshot -Name 'StartTime' -Default (Get-WinsmuxRuntimeValue -InputObject $callerSnapshot -Name 'CreationDate' -Default ''))
         $CallerIdentity = [PSCustomObject][ordered]@{
@@ -545,7 +545,7 @@ function Wait-PaneControlRuntimeContext {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)]$ManifestEntry,
-        [ValidateSet('dispatch', 'start_deferred', 'caller_ack', 'stop_transition')][string]$Operation = 'dispatch',
+        [ValidateSet('dispatch', 'start_deferred', 'caller_ack', 'workflow_ack', 'stop_transition')][string]$Operation = 'dispatch',
         [int]$TimeoutSeconds = 15
     )
 

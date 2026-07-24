@@ -117,7 +117,7 @@ Describe 'TASK781 runtime identity registry' {
         function Invoke-Task781RuntimeFixture {
             param(
                 [Parameter(Mandatory = $true)]$Fixture,
-                [ValidateSet('dispatch', 'start_deferred', 'caller_ack', 'stop_transition')][string]$Operation = 'dispatch'
+                [ValidateSet('dispatch', 'start_deferred', 'caller_ack', 'workflow_ack', 'stop_transition')][string]$Operation = 'dispatch'
             )
 
             return Test-WinsmuxRuntimeContext -Manifest $Fixture.Manifest -Registry $Fixture.Registry `
@@ -800,6 +800,56 @@ panes:
 
         $result.valid | Should -BeTrue
         $result.reason_code | Should -Be 'live_runtime_verified'
+    }
+
+    It 'TASK781 accepts workflow acknowledgement with the verified canonical caller ancestry' {
+        $fixture = New-Task781RuntimeFixture
+
+        $result = Invoke-Task781RuntimeFixture -Fixture $fixture -Operation workflow_ack
+
+        $result.valid | Should -BeTrue
+        $result.reason_code | Should -Be 'live_runtime_verified'
+    }
+
+    It 'TASK781 requires workflow caller ancestry for api_llm rather than limiting it to local or Codex' {
+        $fixture = New-Task781RuntimeFixture
+        $fixture.Manifest.panes['worker-1'].worker_backend = 'api_llm'
+        $fixture.Registry.panes[0].backend = 'api_llm'
+        $fixture.Entry.WorkerBackend = 'api_llm'
+        $fixture.Marker.backend = 'api_llm'
+        $fixture.Caller.backend = 'api_llm'
+        $fixture.ProcessResolver = {
+            param([int]$Id)
+            switch ($Id) {
+                4100 { [PSCustomObject]@{ Id = 4100; StartTime = [datetime]'2026-07-15T00:00:00Z'; ParentProcessId = 1; Name = 'pwsh.exe' } }
+                4200 { [PSCustomObject]@{ Id = 4200; StartTime = [datetime]'2026-07-15T00:00:01Z'; ParentProcessId = 1; Name = 'pwsh.exe' } }
+                4300 { [PSCustomObject]@{ Id = 4300; StartTime = [datetime]'2026-07-15T00:00:02Z'; ParentProcessId = 4200; Name = 'pwsh.exe' } }
+                default { $null }
+            }
+        }
+
+        $result = Invoke-Task781RuntimeFixture -Fixture $fixture -Operation workflow_ack
+
+        $result.valid | Should -BeTrue
+        $result.reason_code | Should -Be 'live_runtime_verified'
+    }
+
+    It 'TASK781 rejects workflow acknowledgement when the observed caller ancestry misses bootstrap' {
+        $fixture = New-Task781RuntimeFixture
+        $fixture.ProcessResolver = {
+            param([int]$Id)
+            switch ($Id) {
+                4100 { [PSCustomObject]@{ Id = 4100; StartTime = [datetime]'2026-07-15T00:00:00Z'; ParentProcessId = 1; Name = 'pwsh.exe' } }
+                4200 { [PSCustomObject]@{ Id = 4200; StartTime = [datetime]'2026-07-15T00:00:01Z'; ParentProcessId = 1; Name = 'pwsh.exe' } }
+                4300 { [PSCustomObject]@{ Id = 4300; StartTime = [datetime]'2026-07-15T00:00:02Z'; ParentProcessId = 4999; Name = 'codex.exe' } }
+                default { $null }
+            }
+        }
+
+        $result = Invoke-Task781RuntimeFixture -Fixture $fixture -Operation workflow_ack
+
+        $result.valid | Should -BeFalse
+        $result.reason_code | Should -Be 'caller_identity_mismatch'
     }
 
     It 'TASK781 ignores self-reported ancestry when the OS parent chain does not reach bootstrap' {

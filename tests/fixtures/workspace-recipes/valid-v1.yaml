@@ -33,6 +33,9 @@ workspace-recipes:
       - action-id: prepare-implement-worktree
         kind: ensure-managed-worktree
         pane-ref: implement
+      - action-id: start-implement-slot
+        kind: ensure-slot-ready
+        pane-ref: implement
       - action-id: start-verify-slot
         kind: ensure-slot-ready
         pane-ref: verify
