@@ -127,9 +127,13 @@ gate complete until TASK-718 has verified the combined desktop/CLI behavior.
 ### 3.2 Schema sketch
 
 Public YAML uses the repository's existing hyphenated spelling; normalized
-runtime objects use snake_case. The following is a valid configuration fragment;
-the ownership, reference, and fail-closed rules are normative.
+runtime objects use snake_case. The marker-delimited fragment below is the
+current executable workflow schema-version 1 contract. Its exact bytes are
+consumed by `core/tests-rs/workflow_contract.rs` through the canonical
+workspace/workflow normalizers, so a documented field cannot drift from the
+public parser.
 
+<!-- TASK659-RUNNABLE-WORKFLOW-V1:START -->
 ```yaml
 config-version: 1
 
@@ -181,25 +185,28 @@ workflows:
       - node-id: inspect
         pane-ref: implement
         action: operator-dispatch
-        idempotency-key: "{{run-id}}:inspect"
       - node-id: implement
         pane-ref: implement
         depends-on: [inspect]
         action: operator-dispatch
-        idempotency-key: "{{run-id}}:implement"
       - node-id: verify
         pane-ref: verify
         depends-on: [implement]
-        action: verification
-        context-pack-ref: review-pack
-        idempotency-key: "{{run-id}}:verify"
-    resume-policy:
-      mode: operator-confirmed
-      reject-completed-runs: true
-    cleanup-policy:
-      mode: compensating-actions
-      on: [success, failure, cancel]
+        action: operator-dispatch
+```
+<!-- TASK659-RUNNABLE-WORKFLOW-V1:END -->
 
+The current workflow v1 parser derives every node idempotency key as
+`<run-id>:<node-id>`; it does not accept an authored `idempotency-key`.
+Workflow-level `resume-policy` and `cleanup-policy`, and node-level
+`verification` actions or `context-pack-ref`, are target concepts owned by
+later child tasks. They are not executable TASK-659 fields and require a new
+implemented schema contract before they may appear in a runnable example.
+
+The following context-pack fragment is therefore an illustrative,
+non-executable TASK-660 target, not part of the current workflow v1 contract:
+
+```yaml
 context-packs:
   review-pack:
     schema-version: 1
@@ -239,10 +246,13 @@ Normative field rules:
 - Worktree paths are derived by runtime policy. Config may provide a safe name
   template but not an absolute private path or an escape outside the managed
   worktree root.
-- DAG dependencies must be acyclic. Each side-effecting node has a stable
-  idempotency key and an explicit compensation or cleanup classification.
-- Context-pack `include` values are allowlisted projections. Omitted limits use
-  conservative defaults; disabling privacy exclusions is not supported.
+- DAG dependencies must be acyclic. TASK-659 derives each side-effecting
+  node's stable idempotency key from the public run and node identities;
+  authored idempotency, compensation, and cleanup fields are not workflow v1
+  inputs.
+- For the non-executable TASK-660 target, context-pack `include` values are
+  allowlisted projections. Omitted limits use conservative defaults;
+  disabling privacy exclusions is not supported.
 
 Recipe selection is explicit. The TASK-658 preview entry point is
 `winsmux workspace-plan --recipe-id <id> [--workflow-id <id>] --json

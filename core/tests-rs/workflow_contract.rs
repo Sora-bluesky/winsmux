@@ -12,6 +12,10 @@ use workspace_recipe::{normalize_workspace_plan, parse_workspace_yaml, SlotCapab
 const VALID_RECIPE: &str = include_str!("../../tests/fixtures/workspace-recipes/valid-v1.yaml");
 const VALID_PROVIDER_CAPABILITIES: &str =
     include_str!("../../tests/fixtures/workspace-recipes/valid-v1.provider-capabilities.json");
+const ARCHITECTURE_DOC: &str =
+    include_str!("../../docs/project/v03629-declarative-workspace-architecture.md");
+const RUNNABLE_WORKFLOW_V1_START: &str = "<!-- TASK659-RUNNABLE-WORKFLOW-V1:START -->";
+const RUNNABLE_WORKFLOW_V1_END: &str = "<!-- TASK659-RUNNABLE-WORKFLOW-V1:END -->";
 
 fn slots() -> Vec<SlotCapabilities> {
     vec![
@@ -40,6 +44,66 @@ fn normalize(yaml: &str) -> std::io::Result<workflow::NormalizedWorkflow> {
     let root = parse_workspace_yaml(yaml)?;
     let plan = normalize_workspace_plan(yaml, "bugfix-two-slot", Some("bugfix"), &slots())?;
     normalize_workflow_from_value(&root, "bugfix", "run-task-659", &plan)
+}
+
+fn documented_runnable_workflow_v1() -> &'static str {
+    assert_eq!(
+        ARCHITECTURE_DOC.matches(RUNNABLE_WORKFLOW_V1_START).count(),
+        1,
+        "architecture doc must contain exactly one runnable workflow v1 start marker"
+    );
+    assert_eq!(
+        ARCHITECTURE_DOC.matches(RUNNABLE_WORKFLOW_V1_END).count(),
+        1,
+        "architecture doc must contain exactly one runnable workflow v1 end marker"
+    );
+    let (_, after_start) = ARCHITECTURE_DOC
+        .split_once(RUNNABLE_WORKFLOW_V1_START)
+        .expect("architecture doc must contain the runnable workflow v1 start marker");
+    let (marked_block, _) = after_start
+        .split_once(RUNNABLE_WORKFLOW_V1_END)
+        .expect("architecture doc must contain the runnable workflow v1 end marker");
+    let fenced_block = marked_block.trim();
+    let yaml = fenced_block
+        .strip_prefix("```yaml\r\n")
+        .or_else(|| fenced_block.strip_prefix("```yaml\n"))
+        .expect("runnable workflow v1 must start with a YAML fence");
+    yaml.strip_suffix("\r\n```")
+        .or_else(|| yaml.strip_suffix("\n```"))
+        .expect("runnable workflow v1 must end with a YAML fence")
+}
+
+#[test]
+fn documented_runnable_workflow_v1_matches_the_canonical_normalizer() {
+    let yaml = documented_runnable_workflow_v1();
+    let root = parse_workspace_yaml(yaml).expect("documented workflow v1 must parse as YAML");
+    let plan = normalize_workspace_plan(yaml, "bugfix-two-slot", Some("bugfix"), &slots())
+        .expect("documented workflow v1 recipe must normalize");
+    let workflow = normalize_workflow_from_value(&root, "bugfix", "run-task-659", &plan)
+        .expect("documented workflow v1 must normalize");
+
+    assert_eq!(workflow.schema_version, 1);
+    assert_eq!(workflow.recipe_ref, "bugfix-two-slot");
+    assert_eq!(
+        workflow.topological_order,
+        ["inspect", "implement", "verify"]
+    );
+    assert!(workflow
+        .nodes
+        .iter()
+        .all(|node| node.action == "operator-dispatch"));
+    assert_eq!(
+        workflow
+            .nodes
+            .iter()
+            .map(|node| node.idempotency_key.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "run-task-659:inspect",
+            "run-task-659:implement",
+            "run-task-659:verify"
+        ]
+    );
 }
 
 #[test]
