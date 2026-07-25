@@ -715,11 +715,16 @@ param(
             $candidateTree = $candidateTree.Trim()
             $candidateTree | Should -Match '^[0-9a-f]{40}$'
         } finally {
-            [Environment]::SetEnvironmentVariable(
-                'GIT_INDEX_FILE',
-                $originalIndex,
-                [EnvironmentVariableTarget]::Process
-            )
+            if ($null -eq $originalIndex) {
+                Remove-Item Env:GIT_INDEX_FILE -ErrorAction SilentlyContinue
+            } else {
+                $env:GIT_INDEX_FILE = $originalIndex
+            }
+        }
+        if ($null -eq $originalIndex) {
+            Test-Path Env:GIT_INDEX_FILE | Should -BeFalse
+        } else {
+            $env:GIT_INDEX_FILE | Should -BeExactly $originalIndex
         }
 
         $valid = Invoke-PwshProcess -Arguments @(

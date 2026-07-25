@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::workspace_recipe::{
     normalize_workspace_plan_from_value, NormalizedWorkspacePlan, SlotCapabilities,
@@ -29,33 +28,38 @@ pub struct NormalizedWorkflowNode {
     pub idempotency_key: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct NormalizedWorkspacePlanPayload {
+    #[serde(flatten)]
+    pub plan: NormalizedWorkspacePlan,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<NormalizedWorkflow>,
+}
+
 pub fn normalize_workspace_plan_payload(
     root: &serde_yaml::Value,
     recipe_id: &str,
     workflow_id: Option<&str>,
     run_id: Option<&str>,
     slots: &[SlotCapabilities],
-) -> io::Result<Value> {
+) -> io::Result<NormalizedWorkspacePlanPayload> {
     if run_id.is_some() && workflow_id.is_none() {
         return Err(invalid_input(
             "workspace-plan --run-id requires --workflow-id.",
         ));
     }
     let plan = normalize_workspace_plan_from_value(root, recipe_id, workflow_id, slots)?;
-    let mut payload = serde_json::to_value(&plan)
-        .map_err(|error| invalid_data(format!("failed to serialize workspace plan: {error}")))?;
-    if let Some(run_id) = run_id {
-        let workflow = normalize_workflow_from_value(
-            root,
-            workflow_id.expect("validated workflow-id"),
-            run_id,
-            &plan,
-        )?;
-        payload["workflow"] = serde_json::to_value(workflow).map_err(|error| {
-            invalid_data(format!("failed to serialize normalized workflow: {error}"))
-        })?;
-    }
-    Ok(payload)
+    let workflow = run_id
+        .map(|run_id| {
+            normalize_workflow_from_value(
+                root,
+                workflow_id.expect("validated workflow-id"),
+                run_id,
+                &plan,
+            )
+        })
+        .transpose()?;
+    Ok(NormalizedWorkspacePlanPayload { plan, workflow })
 }
 
 #[derive(Debug, Deserialize)]

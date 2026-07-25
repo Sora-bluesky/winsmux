@@ -161,6 +161,27 @@ fn public_workspace_plan_requires_run_identity_and_emits_the_normalized_workflow
         "workspace-plan stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    let output_text =
+        std::str::from_utf8(&output.stdout).expect("workspace-plan JSON must be UTF-8");
+    let top_level_keys = [
+        "\"schema_version\":",
+        "\"config_fingerprint\":",
+        "\"recipe_id\":",
+        "\"workflow_id\":",
+        "\"panes\":",
+        "\"startup_actions\":",
+        "\"resolved_bindings\":",
+        "\"workflow\":",
+    ];
+    let mut previous = None;
+    for key in top_level_keys {
+        let position = output_text.find(key).expect("expected top-level key");
+        assert!(
+            previous.is_none_or(|previous| previous < position),
+            "workspace-plan public key order changed at {key}: {output_text}"
+        );
+        previous = Some(position);
+    }
     let payload: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("parse workspace-plan JSON");
     assert_eq!(payload["workflow"]["run_id"], "run-task-659");
