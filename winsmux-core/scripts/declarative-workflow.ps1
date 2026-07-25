@@ -389,6 +389,9 @@ function Assert-DeclarativeWorkflowPlan {
         [string](Get-DeclarativeWorkflowValue -InputObject $workflow -Name 'run_id' -Default '') -cne $RunId) {
         throw 'workflow_plan_invalid: normalized workflow identity mismatch.'
     }
+    if ([string](Get-DeclarativeWorkflowValue -InputObject $workflow -Name 'recipe_ref' -Default '') -cne $RecipeId) {
+        throw 'workflow_plan_invalid: normalized workflow recipe binding mismatch.'
+    }
 
     $nodes = @(Get-DeclarativeWorkflowValue -InputObject $workflow -Name 'nodes' -Default @())
     $order = @(Get-DeclarativeWorkflowValue -InputObject $workflow -Name 'topological_order' -Default @())
@@ -414,6 +417,67 @@ function Assert-DeclarativeWorkflowPlan {
     return $workflow
 }
 
+function ConvertTo-DeclarativeWorkflowPowerShellLiteral {
+    param([Parameter(Mandatory = $true)][string]$Value)
+
+    return "'" + $Value.Replace("'", "''") + "'"
+}
+
+function New-DeclarativeWorkflowDispatchPrompt {
+    param(
+        [Parameter(Mandatory = $true)][string]$TaskContent,
+        [Parameter(Mandatory = $true)]$Node,
+        [Parameter(Mandatory = $true)]$Run,
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$ResultAdapterPath
+    )
+
+    $nodeId = [string](Get-DeclarativeWorkflowValue -InputObject $Node -Name 'node_id' -Default '')
+    Assert-DeclarativeWorkflowIdentifier -Value $nodeId -Name 'node_id'
+    $runId = [string](Get-DeclarativeWorkflowValue -InputObject $Run -Name 'run_id' -Default '')
+    Assert-DeclarativeWorkflowIdentifier -Value $runId -Name 'run_id'
+    $taskDigest = [string](Get-DeclarativeWorkflowValue -InputObject $Run -Name 'task_digest' -Default '')
+    $workflowFingerprint = [string](Get-DeclarativeWorkflowValue -InputObject $Run -Name 'workflow_fingerprint' -Default '')
+    if ($taskDigest -cnotmatch '^sha256:[0-9a-f]{64}$' -or
+        $workflowFingerprint -cnotmatch '^sha256:[0-9a-f]{64}$') {
+        throw 'workflow_dispatch_invalid: durable content identity is missing.'
+    }
+
+    $resolvedProject = [IO.Path]::GetFullPath($ProjectDir)
+    $resolvedAdapter = [IO.Path]::GetFullPath($ResultAdapterPath)
+    $callback = [ordered]@{
+        schema_version = 1
+        adapter_path = $resolvedAdapter
+        project_dir = $resolvedProject
+        run_id = $runId
+        node_id = $nodeId
+        task_digest = $taskDigest
+        workflow_fingerprint = $workflowFingerprint
+    }
+    $callbackJson = $callback | ConvertTo-Json -Depth 5 -Compress
+    $adapterLiteral = ConvertTo-DeclarativeWorkflowPowerShellLiteral -Value $resolvedAdapter
+    $projectLiteral = ConvertTo-DeclarativeWorkflowPowerShellLiteral -Value $resolvedProject
+    $runLiteral = ConvertTo-DeclarativeWorkflowPowerShellLiteral -Value $runId
+    $nodeLiteral = ConvertTo-DeclarativeWorkflowPowerShellLiteral -Value $nodeId
+    $commandPrefix = "pwsh -NoProfile -File $adapterLiteral -WorkflowResult -RunId $runLiteral " +
+        "-WorkflowResultNodeId $nodeLiteral -ProjectDir $projectLiteral"
+    $successCommand = "$commandPrefix -WorkflowResultOutcome succeeded " +
+        '-WorkflowResultExitCode 0 -AsJson'
+    $failureCommand = "$commandPrefix -WorkflowResultOutcome failed " +
+        '-WorkflowResultExitCode 1 -AsJson'
+    $lineBreak = "`n"
+    $contract = @(
+        '<winsmux-workflow-result-v1>',
+        $callbackJson,
+        'After completing this node, execute exactly one result command.',
+        "Success command: $successCommand",
+        "Failure command: $failureCommand",
+        '</winsmux-workflow-result-v1>'
+    ) -join $lineBreak
+
+    return $TaskContent + $lineBreak + $lineBreak + $contract
+}
+
 function Get-DeclarativeWorkflowNode {
     param(
         [Parameter(Mandatory = $true)]$Workflow,
@@ -436,12 +500,14 @@ function Update-DeclarativeWorkflowOverallState {
             [string]$State['nodes'][$nodeId]['state']
         }
     )
-    if ($nodeStates -contains 'failed') {
-        $State['state'] = 'failed'
-    } elseif ($nodeStates.Count -gt 0 -and @($nodeStates | Where-Object { $_ -cne 'succeeded' }).Count -eq 0) {
+    if ($nodeStates.Count -gt 0 -and @($nodeStates | Where-Object { $_ -cne 'succeeded' }).Count -eq 0) {
         $State['state'] = 'succeeded'
     } elseif (@($nodeStates | Where-Object { $_ -in @('running', 'dispatching') }).Count -gt 0) {
         $State['state'] = 'running'
+    } elseif ($nodeStates -contains 'blocked') {
+        $State['state'] = 'blocked'
+    } elseif ($nodeStates -contains 'failed') {
+        $State['state'] = 'failed'
     } else {
         $State['state'] = 'blocked'
     }
@@ -1031,14 +1097,23 @@ function Invoke-DeclarativeWorkflow {
         }
     }
     if ($null -eq $DispatchNode) {
+        $resultAdapterPath = [System.IO.Path]::GetFullPath(
+            (Join-Path $PSScriptRoot 'team-pipeline.ps1')
+        )
+        if (-not (Test-Path -LiteralPath $resultAdapterPath -PathType Leaf)) {
+            throw "workflow_dispatch_unavailable: result adapter was not found: $resultAdapterPath"
+        }
         $DispatchNode = {
             param($Node, $TaskContent, $Run)
             if (-not (Get-Command Invoke-TeamPipelineGuardedSend -CommandType Function -ErrorAction SilentlyContinue)) {
                 throw 'workflow_dispatch_unavailable: guarded send is not loaded.'
             }
             $target = [string](Get-DeclarativeWorkflowValue -InputObject $Node -Name 'pane_ref' -Default '')
+            $prompt = New-DeclarativeWorkflowDispatchPrompt `
+                -TaskContent $TaskContent -Node $Node -Run $Run `
+                -ProjectDir $resolvedProject -ResultAdapterPath $resultAdapterPath
             $blocked = Invoke-TeamPipelineGuardedSend `
-                -StageName 'WORKFLOW' -Target $target -Prompt $TaskContent `
+                -StageName 'WORKFLOW' -Target $target -Prompt $prompt `
                 -ProjectDir $resolvedProject -SessionName ([string]$Run['session']['session_name']) `
                 -ExpectedGenerationId ([string]$Run['session']['generation_id']) `
                 -ExpectedServerSessionId ([string]$Run['session']['server_session_id']) `

@@ -75,6 +75,7 @@ BeforeAll {
             workflow = [ordered]@{
                 schema_version = 1
                 workflow_id = 'bugfix'
+                recipe_ref = 'bugfix-two-slot'
                 run_id = $RunId
                 topological_order = @($nodes | ForEach-Object { $_.node_id })
                 nodes = $nodes
@@ -683,7 +684,7 @@ Describe 'TASK-659 v0.36.30 production-path closure' {
         $consumed.Count | Should -Be 1
     }
 
-    It 'DW04 maps an exact nonzero mailbox result to failed without releasing or redispatching a dependent' {
+    It 'DW04 keeps failure resumable until every dispatched sibling settles and never releases a dependent' {
         Assert-Task659RuntimeLoaded
         $fixture = New-Task659Fixture -Name 'dw04' -RunId 'run-dw04'
         $null = Invoke-Task659Start -Fixture $fixture
@@ -699,6 +700,63 @@ Describe 'TASK-659 v0.36.30 production-path closure' {
         $state.nodes.build.exit_code | Should -Be 23
         $state.nodes.verify.state | Should -Be 'pending'
         $fixture.Dispatches.Count | Should -Be 1
+
+        $parallelCases = @(
+            [ordered]@{
+                name = 'failure-first'
+                first_outcome = 'failed'
+                first_exit_code = 23
+                second_outcome = 'succeeded'
+                second_exit_code = 0
+            },
+            [ordered]@{
+                name = 'success-first'
+                first_outcome = 'succeeded'
+                first_exit_code = 0
+                second_outcome = 'failed'
+                second_exit_code = 29
+            }
+        )
+        foreach ($case in $parallelCases) {
+            $parallel = New-Task659Fixture `
+                -Name "dw04-$($case.name)" `
+                -RunId "run-dw04-$($case.name)"
+            $parallel.Plan.workflow.nodes[1].depends_on = @()
+            $null = Invoke-Task659Start -Fixture $parallel
+            $parallel.Dispatches.Count | Should -Be 2
+            $parallelState = Read-DeclarativeWorkflowRunState `
+                -ProjectDir $parallel.ProjectDir -RunId $parallel.RunId
+            $parallelState.nodes.build.state | Should -BeExactly 'running'
+            $parallelState.nodes.verify.state | Should -BeExactly 'running'
+
+            $first = Send-Task659InternalResult `
+                -Fixture $parallel `
+                -NodeId build `
+                -Outcome $case.first_outcome `
+                -ExitCode $case.first_exit_code
+            $first.ExitCode | Should -Be 0 -Because $first.Output
+            $waiting = Invoke-Task659Resume -Fixture $parallel
+            $waiting.state | Should -BeExactly 'blocked'
+            $waiting.nodes.build.state | Should -BeExactly $case.first_outcome
+            $waiting.nodes.verify.state | Should -BeExactly 'blocked'
+            $parallel.Dispatches.Count | Should -Be 2
+            (Get-Task659MailboxFiles -Fixture $parallel -State consumed).Count |
+                Should -Be 1
+
+            $late = Send-Task659InternalResult `
+                -Fixture $parallel `
+                -NodeId verify `
+                -Outcome $case.second_outcome `
+                -ExitCode $case.second_exit_code
+            $late.ExitCode | Should -Be 0 -Because $late.Output
+            $settled = Invoke-Task659Resume -Fixture $parallel
+            $settled.state | Should -BeExactly 'failed'
+            $settled.nodes.build.state | Should -BeExactly $case.first_outcome
+            $settled.nodes.verify.state | Should -BeExactly $case.second_outcome
+            $parallel.Dispatches.Count | Should -Be 2
+            (Get-Task659MailboxFiles -Fixture $parallel -State consumed).Count |
+                Should -Be 2
+        }
     }
 
     It 'DW05 rejects cancel retry rollback and unknown actions before any product subprocess or mutable sink' {
@@ -755,7 +813,7 @@ Describe 'TASK-659 v0.36.30 production-path closure' {
         Should -Invoke Invoke-WinsmuxControlPlaneScript -Times 0 -Exactly
     }
 
-    It 'DW07 rejects a noncanonical DAG from workspace-plan before the lease state mailbox or dispatch sinks' {
+    It 'DW07 rejects a noncanonical DAG or mismatched recipe binding before the lease state mailbox or dispatch sinks' {
         Assert-Task659RuntimeLoaded
         $fixture = New-Task659Fixture -Name 'dw07' -RunId 'run-dw07'
         $workspacePlanProbe = [PSCustomObject]@{ Count = 0 }
@@ -780,6 +838,27 @@ Describe 'TASK-659 v0.36.30 production-path closure' {
         Test-Path -LiteralPath $statePath | Should -BeFalse
         (Get-Task659MailboxFiles -Fixture $fixture -State pending).Count | Should -Be 0
         $fixture.Dispatches.Count | Should -Be 0
+
+        $binding = New-Task659Fixture -Name 'dw07-binding' -RunId 'run-dw07-binding'
+        $binding.Plan.workflow.recipe_ref = 'review-one-slot'
+        $bindingPlanInvoker = {
+            param([string]$RecipeId, [string]$WorkflowId, [string]$RunId, [string]$ProjectDir)
+            return $binding.Plan
+        }.GetNewClosure()
+        $bindingStatePath = Get-DeclarativeWorkflowRunStatePath `
+            -ProjectDir $binding.ProjectDir -RunId $binding.RunId
+        {
+            Invoke-DeclarativeWorkflow `
+                -Action start -RecipeId 'bugfix-two-slot' -WorkflowId 'bugfix' `
+                -RunId $binding.RunId -TaskFile $binding.TaskFile -ProjectDir $binding.ProjectDir `
+                -WorkspacePlanInvoker $bindingPlanInvoker `
+                -ManifestIdentityReader $binding.ManifestIdentityReader `
+                -SourceHeadReader $binding.SourceHeadReader `
+                -DispatchNode $binding.DispatchNode
+        } | Should -Throw '*recipe*'
+        Test-Path -LiteralPath $bindingStatePath | Should -BeFalse
+        (Get-Task659MailboxFiles -Fixture $binding -State pending).Count | Should -Be 0
+        $binding.Dispatches.Count | Should -Be 0
     }
 
     It 'DW08 rejects task source and manifest identity drift before mailbox consume state write or dispatch' {
@@ -1539,15 +1618,170 @@ try { Start-Sleep -Seconds 10 } finally { `$lease.Dispose() }
         $bridgeSource | Should -Not -Match "(?m)^\s*'workflow-result'\s*\{"
     }
 
-    It 'DW19 derives one exact durable envelope in the installed internal result adapter and exposes no public result command' {
+    It 'DW19 carries an executable internal result contract through default guarded dispatch and exposes no public result command' {
         Assert-Task659RuntimeLoaded
         $fixture = New-Task659Fixture -Name 'dw19' -RunId 'run-dw19'
-        $null = Invoke-Task659Start -Fixture $fixture
-        $run = Read-DeclarativeWorkflowRunState -ProjectDir $fixture.ProjectDir -RunId $fixture.RunId
+        $planPath = Join-Path $fixture.ProjectDir 'dw19-plan.json'
+        $runnerPath = Join-Path $fixture.ProjectDir 'dw19-default-dispatch.ps1'
+        $teamPipelinePath = [IO.Path]::GetFullPath($script:Task659TeamPipelinePath)
+        $fixtureProjectDir = [IO.Path]::GetFullPath($fixture.ProjectDir)
+        $fixtureRunId = [string]$fixture.RunId
+        $fixtureTaskFile = [IO.Path]::GetFullPath($fixture.TaskFile)
+        [IO.File]::WriteAllText(
+            $planPath,
+            ($fixture.Plan | ConvertTo-Json -Depth 50 -Compress),
+            [Text.UTF8Encoding]::new($false)
+        )
+        $runnerSource = @'
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $true)][string]$TeamPipelinePath,
+    [Parameter(Mandatory = $true)][string]$PlanPath,
+    [Parameter(Mandatory = $true)][string]$ProjectDir,
+    [Parameter(Mandatory = $true)][string]$RunId,
+    [Parameter(Mandatory = $true)][string]$TaskFile,
+    [ValidateSet('start', 'resume')][string]$Action
+)
 
-        $send = Send-Task659InternalResult -Fixture $fixture -Outcome succeeded -ExitCode 0
-        $send.ExitCode | Should -Be 0 -Because $send.Output
-        $receipt = $send.Output | ConvertFrom-Json
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+
+$requestedTeamPipelinePath = $TeamPipelinePath
+$requestedPlanPath = $PlanPath
+$requestedProjectDir = $ProjectDir
+$requestedRunId = $RunId
+$requestedTaskFile = $TaskFile
+$requestedAction = $Action
+
+. $requestedTeamPipelinePath
+
+$script:CapturedWorkflowDispatches = [Collections.Generic.List[object]]::new()
+function Invoke-TeamPipelineBridge {
+    param(
+        [string[]]$Arguments,
+        [switch]$AllowFailure,
+        [string]$ProjectDir,
+        [string]$ExpectedSessionName,
+        [string]$ExpectedGenerationId,
+        [string]$ExpectedServerSessionId
+    )
+
+    $script:CapturedWorkflowDispatches.Add([ordered]@{
+            arguments = @($Arguments)
+            project_dir = $ProjectDir
+            session_name = $ExpectedSessionName
+            generation_id = $ExpectedGenerationId
+            server_session_id = $ExpectedServerSessionId
+        }) | Out-Null
+    return [PSCustomObject]@{ ExitCode = 0; Output = '' }
+}
+
+$plan = Get-Content -Raw -LiteralPath $requestedPlanPath |
+    ConvertFrom-Json -AsHashtable -Depth 50
+$identity = [ordered]@{
+    session_name = 'winsmux-orchestra'
+    generation_id = 'generation-dw'
+    server_session_id = '$659'
+}
+$workspacePlanInvoker = {
+    param(
+        [string]$RecipeId,
+        [string]$WorkflowId,
+        [string]$RequestedRunId,
+        [string]$RequestedProjectDir
+    )
+    return $plan
+}.GetNewClosure()
+$manifestIdentityReader = {
+    param([string]$RequestedProjectDir)
+    return $identity
+}.GetNewClosure()
+$sourceHeadReader = {
+    param([string]$RequestedProjectDir)
+    return 'a' * 40
+}.GetNewClosure()
+$invokeParameters = @{
+    Action = $requestedAction
+    RunId = $requestedRunId
+    TaskFile = $requestedTaskFile
+    ProjectDir = $requestedProjectDir
+    WorkspacePlanInvoker = $workspacePlanInvoker
+    ManifestIdentityReader = $manifestIdentityReader
+    SourceHeadReader = $sourceHeadReader
+}
+if ($requestedAction -ceq 'start') {
+    $invokeParameters['RecipeId'] = 'bugfix-two-slot'
+    $invokeParameters['WorkflowId'] = 'bugfix'
+}
+$result = Invoke-DeclarativeWorkflow @invokeParameters
+[ordered]@{
+    result = $result
+    calls = @($script:CapturedWorkflowDispatches)
+} | ConvertTo-Json -Depth 50 -Compress
+'@
+        [IO.File]::WriteAllText(
+            $runnerPath,
+            $runnerSource,
+            [Text.UTF8Encoding]::new($false)
+        )
+        $invokeDefaultRuntime = {
+            param([ValidateSet('start', 'resume')][string]$Action)
+
+            $output = & pwsh -NoProfile -File $runnerPath `
+                -TeamPipelinePath $teamPipelinePath `
+                -PlanPath $planPath `
+                -ProjectDir $fixtureProjectDir `
+                -RunId $fixtureRunId `
+                -TaskFile $fixtureTaskFile `
+                -Action $Action 2>&1
+            $exitCode = $LASTEXITCODE
+            $text = ($output | Out-String).Trim()
+            $exitCode | Should -Be 0 -Because $text
+            return $text | ConvertFrom-Json -Depth 50
+        }.GetNewClosure()
+
+        $startCapture = & $invokeDefaultRuntime -Action start
+        $run = Read-DeclarativeWorkflowRunState -ProjectDir $fixture.ProjectDir -RunId $fixture.RunId
+        @($startCapture.calls).Count | Should -Be 1
+        $firstDispatch = $startCapture.calls[0]
+        $firstDispatch.arguments[0] | Should -BeExactly 'send'
+        $firstDispatch.arguments[1] | Should -BeExactly 'builder-1'
+        $prompt = [string]$firstDispatch.arguments[2]
+        $prompt.Substring(0, $fixture.TaskText.Length) |
+            Should -BeExactly $fixture.TaskText
+        $callbackMatch = [regex]::Match(
+            $prompt,
+            '(?s)<winsmux-workflow-result-v1>\r?\n(?<json>\{[^\r\n]+\})\r?\n'
+        )
+        $callbackMatch.Success | Should -BeTrue -Because $prompt
+        $callback = $callbackMatch.Groups['json'].Value |
+            ConvertFrom-Json
+        [int]$callback.schema_version | Should -Be 1
+        [string]$callback.adapter_path |
+            Should -BeExactly ([IO.Path]::GetFullPath($script:Task659TeamPipelinePath))
+        [string]$callback.project_dir |
+            Should -BeExactly ([IO.Path]::GetFullPath($fixture.ProjectDir))
+        [string]$callback.run_id | Should -BeExactly $fixture.RunId
+        [string]$callback.node_id | Should -BeExactly 'build'
+        [string]$callback.task_digest | Should -BeExactly ([string]$run.task_digest)
+        [string]$callback.workflow_fingerprint |
+            Should -BeExactly ([string]$run.workflow_fingerprint)
+        $prompt | Should -Match '(?m)^Success command: .* -WorkflowResultOutcome succeeded -WorkflowResultExitCode 0 -AsJson$'
+        $prompt | Should -Match '(?m)^Failure command: .* -WorkflowResultOutcome failed -WorkflowResultExitCode 1 -AsJson$'
+
+        $adapterOutput = & pwsh -NoProfile -File ([string]$callback.adapter_path) `
+            -WorkflowResult `
+            -RunId ([string]$callback.run_id) `
+            -WorkflowResultNodeId ([string]$callback.node_id) `
+            -WorkflowResultOutcome succeeded `
+            -WorkflowResultExitCode 0 `
+            -ProjectDir ([string]$callback.project_dir) `
+            -AsJson 2>&1
+        $adapterExitCode = $LASTEXITCODE
+        $adapterText = ($adapterOutput | Out-String).Trim()
+        $adapterExitCode | Should -Be 0 -Because $adapterText
+        $receipt = $adapterText | ConvertFrom-Json
         $receipt.accepted | Should -BeTrue
         $pending = Get-Task659MailboxFiles -Fixture $fixture -State pending
         $pending.Count | Should -Be 1
@@ -1581,11 +1815,13 @@ try { Start-Sleep -Seconds 10 } finally { `$lease.Dispose() }
             [Text.UTF8Encoding]::new($false, $true)
         )
         $bridgeSource | Should -Not -Match "(?m)^\s*'workflow-result'\s*\{"
-        $null = Invoke-Task659Resume -Fixture $fixture
+        $resumeCapture = & $invokeDefaultRuntime -Action resume
         $after = Read-DeclarativeWorkflowRunState -ProjectDir $fixture.ProjectDir -RunId $fixture.RunId
         $after.nodes.build.state | Should -BeExactly 'succeeded'
         $after.nodes.verify.state | Should -BeExactly 'running'
-        $fixture.Dispatches.Count | Should -Be 2
+        @($resumeCapture.calls).Count | Should -Be 1
+        [string]$resumeCapture.calls[0].arguments[2] |
+            Should -Match '"node_id":"verify"'
     }
 
     It 'DW20 preserves one exact result when the dispatch owner exits after the submission effect but before running is durable' {

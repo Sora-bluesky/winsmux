@@ -14,6 +14,7 @@ const MAX_WORKFLOW_NODES: usize = 128;
 pub struct NormalizedWorkflow {
     pub schema_version: u64,
     pub workflow_id: String,
+    pub recipe_ref: String,
     pub run_id: String,
     pub topological_order: Vec<String>,
     pub nodes: Vec<NormalizedWorkflowNode>,
@@ -66,6 +67,7 @@ pub fn normalize_workspace_plan_payload(
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 struct WorkflowDefinition {
     schema_version: u64,
+    recipe_ref: String,
     nodes: Vec<WorkflowNodeDefinition>,
 }
 
@@ -105,6 +107,13 @@ pub fn normalize_workflow_from_value(
         return Err(invalid_data(format!(
             "unsupported workflow schema-version '{}'; supported version is {WORKFLOW_SCHEMA_VERSION}.",
             definition.schema_version
+        )));
+    }
+    require_stable_id("recipe-ref", &definition.recipe_ref)?;
+    if definition.recipe_ref != workspace_plan.recipe_id {
+        return Err(invalid_data(format!(
+            "workflow recipe-ref '{}' does not match selected recipe '{}'.",
+            definition.recipe_ref, workspace_plan.recipe_id
         )));
     }
     if definition.nodes.is_empty() || definition.nodes.len() > MAX_WORKFLOW_NODES {
@@ -217,6 +226,7 @@ pub fn normalize_workflow_from_value(
     Ok(NormalizedWorkflow {
         schema_version: WORKFLOW_SCHEMA_VERSION,
         workflow_id: workflow_id.to_string(),
+        recipe_ref: definition.recipe_ref,
         run_id: run_id.to_string(),
         topological_order,
         nodes,

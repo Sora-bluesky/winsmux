@@ -31,7 +31,9 @@ fn slots() -> Vec<SlotCapabilities> {
 }
 
 fn workflow_yaml(nodes: &str) -> String {
-    format!("{VALID_RECIPE}\nworkflows:\n  bugfix:\n    schema-version: 1\n    nodes:\n{nodes}")
+    format!(
+        "{VALID_RECIPE}\nworkflows:\n  bugfix:\n    schema-version: 1\n    recipe-ref: bugfix-two-slot\n    nodes:\n{nodes}"
+    )
 }
 
 fn normalize(yaml: &str) -> std::io::Result<workflow::NormalizedWorkflow> {
@@ -55,6 +57,7 @@ fn workflow_normalization_is_deterministic_and_resolves_runtime_slots() {
     let second_bytes = serde_json::to_vec(&second).expect("serialize normalized workflow");
 
     assert_eq!(first_bytes, second_bytes);
+    assert_eq!(first.recipe_ref, "bugfix-two-slot");
     assert_eq!(first.topological_order, ["build", "verify"]);
     assert_eq!(first.nodes[0].pane_ref, "worker-1");
     assert_eq!(first.nodes[1].pane_ref, "reviewer-1");
@@ -113,6 +116,21 @@ fn workflow_normalization_rejects_unknown_panes_actions_fields_and_duplicate_nod
 
     for yaml in cases {
         normalize(&yaml).expect_err("unsupported workflow surface must fail closed");
+    }
+
+    let missing_recipe_ref = workflow_yaml(
+        "      - node-id: build\n        pane-ref: implement\n        depends-on: []\n        action: operator-dispatch\n",
+    )
+    .replace("    recipe-ref: bugfix-two-slot\n", "");
+    let mismatched_recipe_ref = workflow_yaml(
+        "      - node-id: build\n        pane-ref: implement\n        depends-on: []\n        action: operator-dispatch\n",
+    )
+    .replace(
+        "    recipe-ref: bugfix-two-slot",
+        "    recipe-ref: review-one-slot",
+    );
+    for yaml in [missing_recipe_ref, mismatched_recipe_ref] {
+        normalize(&yaml).expect_err("workflow recipe binding must fail closed");
     }
 }
 
@@ -185,6 +203,7 @@ fn public_workspace_plan_requires_run_identity_and_emits_the_normalized_workflow
     let payload: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("parse workspace-plan JSON");
     assert_eq!(payload["workflow"]["run_id"], "run-task-659");
+    assert_eq!(payload["workflow"]["recipe_ref"], "bugfix-two-slot");
     assert_eq!(
         payload["workflow"]["topological_order"],
         serde_json::json!(["build", "verify"])
